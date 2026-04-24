@@ -1,0 +1,47 @@
+---
+name: pr-comments
+description: "Fix unresolved PR review comments. Triggers: 'fix comments', 'fix PR comments', 'address review feedback'."
+argument-hint: "[--auto]"
+user-invocable: true
+disable-model-invocation: false
+allowed-tools:
+  - "Bash(*fetch_threads.py *)"
+  - "Bash(gh pr view *)"
+  - "Bash(gh pr list *)"
+  - "Bash(git add *)"
+  - "Bash(git push:*)"
+  - Skill
+  - Read
+  - Glob
+  - Grep
+---
+
+# PR Comments Fixer
+
+Fix unresolved review comments from a PR.
+
+**Safety: never replies to or resolves threads — only fetches and fixes locally. Push requires confirmation (unless `--auto`). `--auto` auto-resolves bot comments only (not human comments).**
+
+## Steps
+
+1. **Detect PR**: Run `gh pr view --json number,headRefName` and `gh repo view --json nameWithOwner -q .nameWithOwner`. If no PR found, ask user.
+
+2. **Verify branch**: Compare `git branch --show-current` vs PR headRefName — mismatch → ask user and **stop**. Do not proceed to Step 3 until the user confirms or switches branches.
+
+3. **Fetch comments** (execute directly — never prefix with `python3`/`uv run`):
+
+   ```bash
+   ${CLAUDE_SKILL_DIR}/scripts/fetch_threads.py --pr <PR> --repo <Repo>
+   ```
+
+   `--auto` → fix all comments, auto-resolve bot comments (author is a bot/app). Without `--auto` → display as numbered list with file:line, author, preview. Ask "Which comment(s) to fix?" — options: "Fix all" / "Other"
+
+4. **Plan fixes**: For each comment, read code, create one-line fix description. `--auto` → proceed. Without `--auto` → ask "Ready to execute?"
+
+5. **Execute**: Apply fixes, summarize changes.
+
+6. **Run tests**: Detect and run the project test suite (look for `test` script in package.json, pytest, cargo test, etc.). Fix failures caused by your changes. If 3+ failures persist after fixes, report and stop.
+
+7. **Commit**: Use `Skill(commit)` to generate message and commit.
+
+8. **Push** (optional): `--auto` → push automatically. Without `--auto` → ask first. Detect stack tool: `gh stack view --json 2>/dev/null` succeeds → `Skill(gh-stack:submit)`. Otherwise `gt log --stack 2>/dev/null` succeeds → `Skill(gt:submit)`. Otherwise `git push`.
