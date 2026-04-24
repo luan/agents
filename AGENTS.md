@@ -1,4 +1,4 @@
-# Agent Instructions
+# AGENTS.md instructions for this repo
 
 1. Delete dead code completely. No commented-out code, shims, or "just in case."
 2. Comments for WHY / edge cases / surprises only.
@@ -6,18 +6,32 @@
 4. All tests pass before committing. You own every failure you can see.
 5. Prefer `apply_patch` for file edits, renames, creates, deletes.
 
-## Shared Rules
+## Repo Purpose
 
-The rules section below is generated from `rules/*.md`. Read the referenced rule file when the task matches its topic.
+This repo is the central hub for local agent configuration. The checked-in
+root `AGENTS.md` is only for working on this repo. The global instruction file
+linked into Claude, Codex, OpenCode, and Pi is generated as `GLOBAL_AGENTS.md`
+and is intentionally gitignored.
 
-<!-- BEGIN GENERATED RULES -->
-- `rules/arc-core-workflow.md` (~/.agents/rules/arc-core-workflow.md): Arc-Core / Chromium Workflow - Arc-Core / Chromium Workflow
-- `rules/blueprints.md` (~/.agents/rules/blueprints.md): Blueprints - Blueprints
-- `rules/cargo.md` (~/.agents/rules/cargo.md): Cargo - Cargo
-- `rules/positive-framing.md` (~/.agents/rules/positive-framing.md): Positive Framing - Positive Framing
-- `rules/python.md` (~/.agents/rules/python.md): Python - Python
-- `rules/rtk.md` (~/.agents/rules/rtk.md): RTK - Rust Token Killer - RTK - Rust Token Killer
-- `rules/rust.md` (~/.agents/rules/rust.md): Rust - Rust
-- `rules/svelte5.md` (~/.agents/rules/svelte5.md): Svelte 5 - Svelte 5
-- `rules/testing.md` (~/.agents/rules/testing.md): Test Quality - Test Quality
-<!-- END GENERATED RULES -->
+## Portability Rules
+
+- Do not commit checkout-specific absolute paths in config, hooks, docs,
+  rules, or scripts.
+  Use `~`, `$HOME`, a Stow-managed path, or a wrapper in `bin/`.
+- Hook commands should go through `~/bin/agents-hook <name>` when they need
+  repo files. The wrapper resolves this repo from its own symlink target, so
+  configs remain independent of where the repo is cloned.
+- `just setup` must be idempotent and converge the live machine state: render,
+  install local Codex plugins, stow links, install `ct`, register MCP servers,
+  and validate.
+- Shared configuration is the default. Tool-specific files belong under
+  `claude/`, `codex/`, `opencode/`, or `pi/` only when the tool requires a
+  different schema, filename, or runtime registration mechanism.
+
+## Hook Rules
+
+- Keep hook scripts in `hooks/<agent>/` or plugin-owned `plugins/<name>/hooks/`.
+- Keep hook registrations minimal; config files should reference stable wrapper
+  commands rather than repo checkout paths.
+- If a hook is shared conceptually but tool schemas differ, document that in
+  `docs/exceptions.md` and keep the script body shared where practical.

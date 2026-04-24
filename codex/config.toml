@@ -8,8 +8,6 @@ plan_mode_reasoning_effort = "high"
 sandbox_mode = "danger-full-access"
 web_search = "live"
 
-notify = ["/Users/luan.santos/.codex/plugins/cache/openai-bundled/computer-use/1.0.755/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient", "turn-ended"]
-
 [features]
 codex_hooks = true
 external_migration = true
@@ -24,9 +22,6 @@ fast_default_opt_out = true
 
 [notice.external_config_migration_prompts]
 home_last_prompted_at = 1776895160
-
-[notice.external_config_migration_prompts.project_last_prompted_at]
-"/Users/luan.santos/src/chromium/src/arc" = 1776977609
 
 [notice.model_migrations]
 "gpt-5.2" = "gpt-5.2-codex"
@@ -84,51 +79,10 @@ last_revision = "8b4e53f1b2e17aa1275164017fb866b4c72da0cf"
 source_type = "git"
 source = "https://github.com/max-sixty/worktrunk.git"
 
-[marketplaces.openai-bundled]
-last_updated = "2026-04-23T19:38:25Z"
-source_type = "local"
-source = "/Users/luan.santos/.codex/.tmp/bundled-marketplaces/openai-bundled"
-
-[marketplaces.openai-primary-runtime]
-last_updated = "2026-04-23T20:11:14Z"
-source_type = "local"
-source = "/Users/luan.santos/.cache/codex-runtimes/codex-primary-runtime/plugins/openai-primary-runtime"
-
-[marketplaces.agents]
-last_updated = "2026-04-24T18:19:23Z"
-source_type = "local"
-source = "/Users/luan.santos/src/agents"
-
-[projects."/Users/luan.santos/.claude"]
-trust_level = "trusted"
-
-[projects."/Users/luan.santos/.config/opencode"]
-trust_level = "trusted"
-
-[projects."/Users/luan.santos/dotfiles"]
-trust_level = "trusted"
-
-[projects."/Users/luan.santos/src"]
-trust_level = "trusted"
-
-[projects."/Users/luan.santos/src/codex"]
-trust_level = "trusted"
-
-[projects."/Users/luan.santos/src/majin"]
-trust_level = "trusted"
-
-[projects."/private/tmp/tui-explore"]
-trust_level = "trusted"
-
-[projects."/Users/luan.santos/.agents"]
-trust_level = "trusted"
-
-[projects."/Users/luan.santos/src/chromium/src/arc"]
-trust_level = "trusted"
-
-[projects."/Users/luan.santos/src/agents"]
-trust_level = "trusted"
-
 [mcp_servers.blueprint]
 command = "ct"
 args = ["mcp", "blueprint"]
+
+[mcp_servers.apply-patch]
+command = "ct"
+args = ["mcp", "apply-patch"]

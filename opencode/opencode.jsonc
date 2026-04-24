@@ -5,6 +5,9 @@
   "plugin": ["@tarquinen/opencode-dcp@latest"],
 
   "instructions": ["AGENTS.md"],
+  "skills": {
+    "paths": ["~/.agents/skills"],
+  },
 
   "compaction": {
     "auto": true,

@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash /Users/luan.santos/src/agents/plugins/gt/hooks/session-start.sh",
+            "command": "~/bin/agents-hook gt-session-start",
             "statusMessage": "Checking Graphite workflow",
             "timeout": 5
           }
@@ -30,13 +30,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /Users/luan.santos/src/agents/hooks/codex/sym_nudge.py",
+            "command": "~/bin/agents-hook codex-sym-nudge",
             "statusMessage": "Checking for sym lookup",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "bash /Users/luan.santos/src/agents/plugins/gt/hooks/validate-git-commands.sh",
+            "command": "~/bin/agents-hook gt-validate-git",
             "statusMessage": "Checking Graphite command policy",
             "timeout": 5
           }

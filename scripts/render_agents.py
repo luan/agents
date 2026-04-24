@@ -7,7 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE = ROOT / "AGENTS.template.md"
-OUTPUT = ROOT / "AGENTS.md"
+OUTPUT = ROOT / "GLOBAL_AGENTS.md"
 RULES_DIR = ROOT / "rules"
 BEGIN = "<!-- BEGIN GENERATED RULES -->"
 END = "<!-- END GENERATED RULES -->"
