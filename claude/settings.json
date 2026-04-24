@@ -103,6 +103,7 @@
   "autoDreamEnabled": true,
   "showThinkingSummaries": true,
   "skipDangerousModePermissionPrompt": true,
+  "verbose": true,
   "preferredNotifChannel": "notifications_disabled",
   "teammateMode": "in-process",
   "remoteControlAtStartup": true,
