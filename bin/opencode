@@ -1,0 +1,11 @@
+#!/usr/bin/env sh
+set -eu
+
+export OPENCODE_DISABLE_CLAUDE_CODE=1
+
+if [ -x "$HOME/.opencode/bin/opencode" ]; then
+  exec "$HOME/.opencode/bin/opencode" "$@"
+fi
+
+echo "opencode binary not found at $HOME/.opencode/bin/opencode" >&2
+exit 127

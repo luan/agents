@@ -1,0 +1,47 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ct sym hook remind --format=claude-code",
+            "statusMessage": "Loading sym guidance",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /Users/luan.santos/src/agents/plugins/gt/hooks/session-start.sh",
+            "statusMessage": "Checking Graphite workflow",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /Users/luan.santos/src/agents/hooks/codex/sym_nudge.py",
+            "statusMessage": "Checking for sym lookup",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "bash /Users/luan.santos/src/agents/plugins/gt/hooks/validate-git-commands.sh",
+            "statusMessage": "Checking Graphite command policy",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
