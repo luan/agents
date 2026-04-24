@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "env": {
+    "GIT_USERNAME": "luan",
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
+    "CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING": "1"
+  },
+  "attribution": {
+    "commit": "",
+    "pr": ""
+  },
+  "includeGitInstructions": false,
+  "permissions": {
+    "deny": [],
+    "defaultMode": "bypassPermissions"
+  },
+  "hooks": {
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ct notify"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/session_start_apply_patch.sh"
+          },
+          {
+            "type": "command",
+            "command": "ct sym hook remind --format=claude-code",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/rtk-rewrite.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ct sym hook nudge --format=claude-code",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "uv run ~/.claude/statusline.py",
+    "padding": 0,
+    "refreshInterval": 5
+  },
+  "enabledPlugins": {
+    "clangd-lsp@claude-plugins-official": false,
+    "context7@claude-plugins-official": true,
+    "gopls-lsp@claude-plugins-official": false,
+    "pyright-lsp@claude-plugins-official": false,
+    "rust-analyzer-lsp@claude-plugins-official": false,
+    "swift-lsp@claude-plugins-official": false,
+    "gt@local": true,
+    "skill-creator@claude-plugins-official": false,
+    "lua-lsp@claude-plugins-official": false,
+    "linear@claude-plugins-official": false,
+    "notion@claude-plugins-official": false,
+    "worktrunk@worktrunk": true
+  },
+  "extraKnownMarketplaces": {
+    "claude-plugins-official": {
+      "source": {
+        "source": "github",
+        "repo": "anthropics/claude-plugins-official"
+      }
+    },
+    "worktrunk": {
+      "source": {
+        "source": "github",
+        "repo": "max-sixty/worktrunk"
+      }
+    }
+  },
+  "alwaysThinkingEnabled": true,
+  "effortLevel": "xhigh",
+  "promptSuggestionEnabled": true,
+  "tui": "fullscreen",
+  "autoDreamEnabled": true,
+  "showThinkingSummaries": true,
+  "skipDangerousModePermissionPrompt": true,
+  "preferredNotifChannel": "notifications_disabled",
+  "teammateMode": "in-process",
+  "remoteControlAtStartup": true,
+  "voiceEnabled": true
+}

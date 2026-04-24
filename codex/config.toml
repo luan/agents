@@ -1,0 +1,134 @@
+approval_policy = "never"
+model = "gpt-5.5"
+model_auto_compact_token_limit = 9000000
+model_context_window = 1000000
+model_reasoning_effort = "high"
+personality = "pragmatic"
+plan_mode_reasoning_effort = "high"
+sandbox_mode = "danger-full-access"
+web_search = "live"
+
+notify = ["/Users/luan.santos/.codex/plugins/cache/openai-bundled/computer-use/1.0.755/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient", "turn-ended"]
+
+[features]
+codex_hooks = true
+external_migration = true
+image_generation = true
+memories = true
+multi_agent = true
+
+[notice]
+hide_full_access_warning = true
+hide_rate_limit_model_nudge = true
+fast_default_opt_out = true
+
+[notice.external_config_migration_prompts]
+home_last_prompted_at = 1776895160
+
+[notice.external_config_migration_prompts.project_last_prompted_at]
+"/Users/luan.santos/src/chromium/src/arc" = 1776977609
+
+[notice.model_migrations]
+"gpt-5.2" = "gpt-5.2-codex"
+
+[plugins."github@openai-curated"]
+enabled = true
+
+[plugins."context7@claude-plugins-official"]
+enabled = true
+
+[plugins."computer-use@openai-bundled"]
+enabled = true
+
+[plugins."browser-use@openai-bundled"]
+enabled = true
+
+[plugins."documents@openai-primary-runtime"]
+enabled = true
+
+[plugins."spreadsheets@openai-primary-runtime"]
+enabled = true
+
+[plugins."presentations@openai-primary-runtime"]
+enabled = true
+
+[plugins."gt@agents"]
+enabled = true
+
+[shell_environment_policy]
+inherit = "core"
+
+[shell_environment_policy.set]
+GIT_USERNAME = "luan"
+
+[tui]
+status_line = [
+    "model-with-reasoning",
+    "current-dir",
+    "context-usage",
+    "context-window-size",
+]
+
+[tui.model_availability_nux]
+"gpt-5.5" = 3
+
+[marketplaces.claude-plugins-official]
+last_updated = "2026-04-24T18:25:10Z"
+last_revision = "020446a4294f09d9c32e60bff0c4ae8fb39205cb"
+source_type = "git"
+source = "https://github.com/anthropics/claude-plugins-official.git"
+
+[marketplaces.worktrunk]
+last_updated = "2026-04-24T18:13:59Z"
+last_revision = "8b4e53f1b2e17aa1275164017fb866b4c72da0cf"
+source_type = "git"
+source = "https://github.com/max-sixty/worktrunk.git"
+
+[marketplaces.openai-bundled]
+last_updated = "2026-04-23T19:38:25Z"
+source_type = "local"
+source = "/Users/luan.santos/.codex/.tmp/bundled-marketplaces/openai-bundled"
+
+[marketplaces.openai-primary-runtime]
+last_updated = "2026-04-23T20:11:14Z"
+source_type = "local"
+source = "/Users/luan.santos/.cache/codex-runtimes/codex-primary-runtime/plugins/openai-primary-runtime"
+
+[marketplaces.agents]
+last_updated = "2026-04-24T18:19:23Z"
+source_type = "local"
+source = "/Users/luan.santos/src/agents"
+
+[projects."/Users/luan.santos/.claude"]
+trust_level = "trusted"
+
+[projects."/Users/luan.santos/.config/opencode"]
+trust_level = "trusted"
+
+[projects."/Users/luan.santos/dotfiles"]
+trust_level = "trusted"
+
+[projects."/Users/luan.santos/src"]
+trust_level = "trusted"
+
+[projects."/Users/luan.santos/src/codex"]
+trust_level = "trusted"
+
+[projects."/Users/luan.santos/src/majin"]
+trust_level = "trusted"
+
+[projects."/private/tmp/tui-explore"]
+trust_level = "trusted"
+
+[projects."/Users/luan.santos/.agents"]
+trust_level = "trusted"
+
+[projects."/Users/luan.santos/src/chromium/src/arc"]
+trust_level = "trusted"
+
+[projects."/Users/luan.santos/src/agents"]
+trust_level = "trusted"
+
+[mcp_servers.blueprint]
+command = "ct"
+args = ["mcp", "blueprint"]
