@@ -7,6 +7,10 @@ edition = "2024"
 name = "ct"
 path = "tools/main.rs"
 
+[[bin]]
+name = "opencode"
+path = "tools/opencode.rs"
+
 [[test]]
 name = "apply_patch_contract"
 path = "tools/tests/apply_patch_contract.rs"
@@ -16,6 +20,7 @@ name = "cli_contract"
 path = "tools/tests/cli_contract.rs"
 
 [dependencies]
+anyhow = "^1"
 clap = { version = "^4", features = ["derive"] }
 clap_complete = "^4"
 dirs = "^6"

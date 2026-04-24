@@ -88,6 +88,14 @@ pub enum Command {
         action: McpAction,
     },
 
+    #[command(about = "Run a harness hook")]
+    Hook {
+        #[arg(
+            help = "Hook name: apply-patch-remind, codex-sym-nudge, gt-session-start, gt-validate-git, rtk-rewrite"
+        )]
+        name: String,
+    },
+
     #[command(about = "Inspect or prune apply_patch telemetry")]
     ApplyPatch {
         #[command(subcommand)]

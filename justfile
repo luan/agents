@@ -1,4 +1,4 @@
-set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
+set shell := ["sh", "-eu", "-c"]
 
 repo := justfile_directory()
 home := env("HOME")
@@ -34,10 +34,15 @@ doctor:
 validate: render-agents
     python3 "{{ repo }}/scripts/validate.py"
 
-setup: doctor link ct-install validate
+setup: doctor link claude-plugins-install ct-install validate
 
 codex-plugins-install:
     python3 "{{ repo }}/scripts/install_codex_plugins.py"
+
+claude-plugins-install:
+    claude plugin marketplace update local
+    claude plugin uninstall gt@local || true
+    claude plugin install -s user gt@local
 
 ct-build:
     cargo build --release --manifest-path="{{ repo }}/tools/ct/Cargo.toml"
