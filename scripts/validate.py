@@ -79,7 +79,7 @@ def main() -> None:
     assert_symlink(ROOT / "claude" / "local-plugins" / "plugins" / "gt", ROOT / "plugins" / "gt")
     with tempfile.TemporaryDirectory() as tmp:
         target = Path(tmp)
-        for package in ["claude", "codex", "opencode", "pi", "rules", "skills", "bin"]:
+        for package in ["claude", "codex", "opencode", "pi", "rules", "skills"]:
             package_target = target / package
             package_target.mkdir()
             run(["stow", "-n", "-v", "-R", package, "-t", str(package_target)])

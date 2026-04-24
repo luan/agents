@@ -124,13 +124,13 @@ pub fn read_nudge_input(args: &[String]) -> Result<(Vec<String>, String)> {
     }
 
     let stdin = io::stdin();
-    let stat = stdin.lock();
-    if stat.is_terminal() {
+    let mut stdin = stdin.lock();
+    if stdin.is_terminal() {
         return Ok((Vec::new(), String::new()));
     }
 
     let mut text = String::new();
-    io::stdin().read_to_string(&mut text)?;
+    stdin.read_to_string(&mut text)?;
     let text = text.trim();
     if text.is_empty() {
         return Ok((Vec::new(), String::new()));

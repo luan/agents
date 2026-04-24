@@ -5,6 +5,7 @@ mod churn;
 mod cli;
 mod cochanges;
 mod gitcontext;
+mod hook;
 mod mcp;
 mod notify;
 mod phases;
@@ -165,6 +166,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             cli::McpAction::Blueprint => mcp::run_blueprint_server(),
             cli::McpAction::ApplyPatch => mcp::run_apply_patch_server(),
         },
+        Some(cli::Command::Hook { name }) => Ok(hook::run_hook(&name)?),
         Some(cli::Command::Tool { action }) => match action {
             cli::ToolAction::Slug { words } => cli::run_slug(words),
             cli::ToolAction::Phases { file } => phases::run_phases(file),

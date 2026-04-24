@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/bin/agents-hook gt-session-start",
+            "command": "ct hook gt-session-start",
             "statusMessage": "Checking Graphite workflow",
             "timeout": 5
           }
@@ -30,13 +30,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/bin/agents-hook codex-sym-nudge",
+            "command": "ct hook codex-sym-nudge",
             "statusMessage": "Checking for sym lookup",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "~/bin/agents-hook gt-validate-git",
+            "command": "ct hook gt-validate-git",
             "statusMessage": "Checking Graphite command policy",
             "timeout": 5
           }

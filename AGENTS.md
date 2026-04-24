@@ -17,10 +17,11 @@ and is intentionally gitignored.
 
 - Do not commit checkout-specific absolute paths in config, hooks, docs,
   rules, or scripts.
-  Use `~`, `$HOME`, a Stow-managed path, or a wrapper in `bin/`.
-- Hook commands should go through `~/bin/agents-hook <name>` when they need
-  repo files. The wrapper resolves this repo from its own symlink target, so
-  configs remain independent of where the repo is cloned.
+  Use `~`, `$HOME`, a Stow-managed path, or a stable command installed by
+  `just setup`.
+- Hook commands should go through `ct hook <name>`. Keep hook behavior
+  in Rust when practical so configs are cross-platform and independent of
+  where this repo is cloned.
 - `just setup` must be idempotent and converge the live machine state: render,
   install local Codex plugins, stow links, install `ct`, register MCP servers,
   and validate.
@@ -30,8 +31,7 @@ and is intentionally gitignored.
 
 ## Hook Rules
 
-- Keep hook scripts in `hooks/<agent>/` or plugin-owned `plugins/<name>/hooks/`.
-- Keep hook registrations minimal; config files should reference stable wrapper
+- Keep hook registrations minimal; config files should reference stable `ct`
   commands rather than repo checkout paths.
 - If a hook is shared conceptually but tool schemas differ, document that in
   `docs/exceptions.md` and keep the script body shared where practical.

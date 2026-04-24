@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ./hooks/session-start.sh"
+            "command": "ct hook gt-session-start"
           }
         ]
       }
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ./hooks/validate-git-commands.sh",
+            "command": "ct hook gt-validate-git",
             "timeout": 5
           }
         ]

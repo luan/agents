@@ -30,7 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/session_start_apply_patch.sh"
+            "command": "ct hook apply-patch-remind"
           },
           {
             "type": "command",
@@ -46,7 +46,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/rtk-rewrite.sh"
+            "command": "ct hook rtk-rewrite"
           }
         ]
       },
@@ -75,12 +75,12 @@
     "pyright-lsp@claude-plugins-official": false,
     "rust-analyzer-lsp@claude-plugins-official": false,
     "swift-lsp@claude-plugins-official": false,
-    "gt@local": true,
     "skill-creator@claude-plugins-official": false,
     "lua-lsp@claude-plugins-official": false,
     "linear@claude-plugins-official": false,
     "notion@claude-plugins-official": false,
-    "worktrunk@worktrunk": true
+    "worktrunk@worktrunk": true,
+    "gt@local": true
   },
   "extraKnownMarketplaces": {
     "claude-plugins-official": {
