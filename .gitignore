@@ -1,4 +1,5 @@
 .DS_Store
+GLOBAL_AGENTS.md
 .backup/
 target/
 **/target/

@@ -1,8 +1,8 @@
 ---
 paths:
-  - "/Users/luan.santos/src/chromium/**"
-  - "/Users/luan.santos/src/core-tools/**"
-  - "/Users/luan.santos/src/arc.git/**"
+  - "~/src/chromium/**"
+  - "~/src/core-tools/**"
+  - "~/src/arc.git/**"
 ---
 
 # Arc-Core / Chromium Workflow
@@ -11,9 +11,9 @@ paths:
 
 | Repo | Path | Contains |
 |------|------|----------|
-| chromium | `/Users/luan.santos/src/chromium/src/arc` | C++ arc-core (ADK bridge, bookmark impl, WinRT) |
-| core-tools | `/Users/luan.santos/src/core-tools` | Build scripts for arc-core |
-| arc.git (wt2) | `/Users/luan.santos/src/arc.git/wt2` | Dia Swift app |
+| chromium | `~/src/chromium/src/arc` | C++ arc-core (ADK bridge, bookmark impl, WinRT) |
+| core-tools | `~/src/core-tools` | Build scripts for arc-core |
+| arc.git (wt2) | `~/src/arc.git/wt2` | Dia Swift app |
 
 ## Agent Teams Required
 
@@ -23,13 +23,13 @@ paths:
 
 ```bash
 # 1. Sync (REQUIRED first — fetches deps, runs hooks)
-/Users/luan.santos/src/core-tools/scripts/core-sync \
-  --workspace=/Users/luan.santos/src
+~/src/core-tools/scripts/core-sync \
+  --workspace=~/src
 
 # 2. Build + install ArcCore.framework into Dia
-/Users/luan.santos/src/core-tools/scripts/update-local-arc-core \
-  --workspace=/Users/luan.santos/src \
-  --arcRepo=/Users/luan.santos/src/arc.git/wt2
+~/src/core-tools/scripts/update-local-arc-core \
+  --workspace=~/src \
+  --arcRepo=~/src/arc.git/wt2
 
 # 3. Configure + build Dia
 just configure-local && just build

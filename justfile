@@ -12,10 +12,7 @@ render-agents:
 link-dry-run: render-agents
     python3 "{{ repo }}/scripts/stow_targets.py" dry-run
 
-backup-conflicts:
-    python3 "{{ repo }}/scripts/backup_conflicts.py"
-
-link: render-agents backup-conflicts codex-plugins-install
+link: render-agents codex-plugins-install
     python3 "{{ repo }}/scripts/stow_targets.py" link
 
 unlink:
@@ -33,12 +30,11 @@ doctor:
     command -v opencode
     command -v ct || true
     test -d "{{ home }}/.pi" || echo "warning: {{ home }}/.pi does not exist yet"
-    if [ "$${OPENCODE_DISABLE_CLAUDE_CODE:-}" != "1" ]; then echo "warning: OPENCODE_DISABLE_CLAUDE_CODE=1 is not active in this shell"; fi
 
 validate: render-agents
     python3 "{{ repo }}/scripts/validate.py"
 
-setup: doctor link codex-plugins-install ct-install validate
+setup: doctor link ct-install validate
 
 codex-plugins-install:
     python3 "{{ repo }}/scripts/install_codex_plugins.py"
