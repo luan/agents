@@ -209,9 +209,9 @@ jobs:
         run: rm -rf "$HOME/.claude" "$HOME/.codex" "$HOME/.config/opencode" "$HOME/.pi" "$HOME/.agents"
 
       # validate runs: render-agents freshness, JSON validity, in-repo symlink
-      # asserts, stow dry-run, and `cargo test --workspace`. The workspace tests
-      # currently have 5 path-separator-related failures on Windows; allow that
-      # job to soft-fail until those are fixed (tracked separately).
+      # asserts, stow dry-run, and `cargo test --workspace`. Enforced on all
+      # OSes; path-separator hardcodes that previously broke Windows have
+      # been normalised at the storage boundary (sym indexer rel_path) and
+      # in the affected tests (ct churn/artifact, sym repo_config).
       - name: cargo xtask validate
         run: cargo xtask validate
-        continue-on-error: ${{ runner.os == 'Windows' }}

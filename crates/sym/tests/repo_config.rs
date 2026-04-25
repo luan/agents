@@ -32,7 +32,7 @@ fn select_db_path_falls_back_to_repo_scoped_hash() -> Result<()> {
 
     let selected = sym::repo::select_db_path(root.path(), None, None)?;
     assert_eq!(selected.file_name(), Some(std::ffi::OsStr::new("index.db")));
-    assert!(selected.to_string_lossy().contains("/sym/repos/"));
+    assert!(selected.to_string_lossy().replace('\\', "/").contains("/sym/repos/"));
     assert_ne!(selected, PathBuf::from("index.db"));
     Ok(())
 }

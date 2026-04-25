@@ -4,12 +4,11 @@ use std::time::UNIX_EPOCH;
 
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
-use walkdir::WalkDir;
 
 use crate::parser;
 use crate::repo;
 use crate::store::Store;
-use crate::walker::{WalkOptions, is_skipped_dir_name, walk};
+use crate::walker::{WalkOptions, walk};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct IndexStats {
@@ -80,7 +79,7 @@ pub fn index(root: &Path, options: &IndexOptions) -> Result<IndexStats> {
         let hash = hash_bytes(&source);
         let file_id = store.upsert_file(
             &path,
-            &file.rel_path.to_string_lossy(),
+            &file.rel_path.to_string_lossy().replace('\\', "/"),
             &file.language,
             &hash,
             file.modified,
@@ -91,7 +90,11 @@ pub fn index(root: &Path, options: &IndexOptions) -> Result<IndexStats> {
         files_indexed += 1;
     }
 
-    store.set_meta("last_index_ns", &format!("{}", now_ns()))?;
+    // Only bump last_index_ns when something actually changed. A no-op
+    // ensure_fresh (clean repo, no work) preserves the prior timestamp.
+    if files_indexed > 0 || stale_removed > 0 {
+        store.set_meta("last_index_ns", &format!("{}", now_ns()))?;
+    }
 
     Ok(IndexStats {
         files_indexed,
@@ -105,7 +108,6 @@ pub fn index(root: &Path, options: &IndexOptions) -> Result<IndexStats> {
 pub fn ensure_fresh(cwd: &Path, db_path: &Path) -> Result<usize> {
     let store = Store::open(db_path)?;
     let repo_root = store.get_meta("repo_root")?;
-    let last_index_ns = store.get_meta("last_index_ns")?;
     drop(store);
 
     let repo_root = repo_root
@@ -113,14 +115,13 @@ pub fn ensure_fresh(cwd: &Path, db_path: &Path) -> Result<usize> {
         .map(PathBuf::from)
         .unwrap_or_else(|| repo::find_git_root(cwd).unwrap_or_else(|_| cwd.to_path_buf()));
 
-    if let Some(last_index_ns) = last_index_ns {
-        if let Ok(last_index_ns) = last_index_ns.parse::<i64>() {
-            if last_index_ns > 0 && !any_dir_modified_since(&repo_root, last_index_ns, db_path.parent()) {
-                return Ok(0);
-            }
-        }
-    }
-
+    // Always invoke the full index walk. `index()` is already efficient on
+    // clean repos: it walks once, runs a single DB query for stored mtimes,
+    // and skips per-file parsing/hashing when (mtime, size) match. Any
+    // optimisation that tries to short-circuit using directory mtimes alone
+    // is platform-fragile (Windows NTFS dir mtime updates are coarser than
+    // file mtime, so freshly added or deleted files are invisible at the
+    // dir level until the OS catches up).
     let stats = index(
         &repo_root,
         &IndexOptions {
@@ -147,41 +148,6 @@ fn hash_bytes(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     format!("{:x}", hasher.finalize())
-}
-
-fn any_dir_modified_since(root: &Path, since_ns: i64, exclude_dir: Option<&Path>) -> bool {
-    let since = UNIX_EPOCH + std::time::Duration::from_nanos(since_ns as u64);
-    for entry in WalkDir::new(root)
-        .into_iter()
-        .filter_entry(|entry| should_scan_dir(entry.path(), root, exclude_dir))
-    {
-        let Ok(entry) = entry else {
-            continue;
-        };
-        if !entry.file_type().is_dir() {
-            continue;
-        }
-        let Ok(metadata) = entry.metadata() else {
-            continue;
-        };
-        if metadata.modified().is_ok_and(|modified| modified > since) {
-            return true;
-        }
-    }
-    false
-}
-
-fn should_scan_dir(path: &Path, root: &Path, exclude_dir: Option<&Path>) -> bool {
-    if path == root {
-        return true;
-    }
-    if exclude_dir.is_some_and(|exclude_dir| path.starts_with(exclude_dir)) {
-        return false;
-    }
-    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-        return true;
-    };
-    !is_skipped_dir_name(name)
 }
 
 fn now_ns() -> i64 {
