@@ -256,6 +256,28 @@ pub fn resolve_artifact_path(file_arg: &str, kind: ArtifactKind) -> Result<PathB
     }
 }
 
+/// Resolve a stem with an optional kind filter. When `kind` is `Some`, the
+/// search is restricted to that kind's directories; when `None`, the universal
+/// resolver runs and the kind is inferred from the matched file's parent dir.
+pub fn resolve_optional_kind(
+    stem: &str,
+    kind: Option<ArtifactKind>,
+) -> Result<(PathBuf, ArtifactKind), CtError> {
+    match kind {
+        Some(k) => {
+            let path = resolve_artifact_path(stem, k)?;
+            Ok((path, k))
+        }
+        None => {
+            let path = resolve_stem_universal(stem)?;
+            let inferred = super::infer_kind_from_path(&path).ok_or_else(|| {
+                CtError::Validation(format!("cannot infer kind from path: {}", path.display()))
+            })?;
+            Ok((path, inferred))
+        }
+    }
+}
+
 /// Resolve a bare stem across ALL artifact kinds in priority order:
 /// Doc > Report > Review > Plan > Spec.
 pub fn resolve_stem_universal(stem: &str) -> Result<PathBuf, ResolveError> {

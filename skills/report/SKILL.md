@@ -18,7 +18,7 @@ Generate a post-implementation summary as a blueprint artifact. Captures what wa
 
 - `--spec <path>` — source spec to correlate against (optional)
 - `--plan <path>` — source plan to correlate against (optional)
-- No arguments → auto-detect from `ct spec latest` and `ct plan latest`
+- No arguments → list candidates via `ct vault list -t plan` and `ct vault list -t spec`, ask the user to pick (or skip)
 
 ## Workflow
 
@@ -36,7 +36,7 @@ Collect:
 
 ### 2. Read source artifacts
 
-If `--spec` or `--plan` provided, read via `ct spec read` / `ct plan read`. Otherwise try `ct spec latest` and `ct plan latest` — skip silently if none found.
+If `--spec` or `--plan` provided, read via `ct vault read -t spec <path>` / `ct vault read -t plan <path>`. Otherwise list candidates with `ct vault list -t spec` / `ct vault list -t plan` and ask the user which (if any) to correlate against — skip silently if the user opts out.
 
 ### 3. Synthesize report
 
@@ -50,7 +50,7 @@ If `--spec` or `--plan` provided, read via `ct spec read` / `ct plan read`. Othe
 
 ### 4. Store
 
-Scaffold with `blueprint_create`, Edit the body, then `blueprint_commit`.
+Scaffold with the MCP `create` tool (kind=report), Edit the body, then `commit`.
 
 ### 5. Output
 

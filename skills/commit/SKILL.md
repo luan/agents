@@ -17,8 +17,8 @@ allowed-tools:
   - Read
   - Glob
   - Grep
-  - "Bash(ct plan archive:*)"
-  - "Bash(ct plan list:*)"
+  - "Bash(ct vault archive:*)"
+  - "Bash(ct vault list:*)"
 ---
 
 # Commit
@@ -47,7 +47,7 @@ Workers never commit — they lack branch context for meaningful messages.
    )"
    ```
 
-4. **Post-commit**: archive active plans (`ct plan list --json`, then `ct plan archive <path>` each). Skip silently if ct unavailable.
+4. **Post-commit**: archive active plans (`ct vault list -t plan --json`, then `ct vault archive <path>` each). Skip silently if ct unavailable.
 
 ## Hook Failures
 

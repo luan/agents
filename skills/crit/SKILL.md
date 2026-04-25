@@ -12,7 +12,7 @@ allowed-tools:
   - "Bash(git log:*)"
   - "Bash(git status:*)"
   - "Bash(ct tool:*)"
-  - "Bash(ct review:*)"
+  - "Bash(ct vault:*)"
   - "Bash(gh pr:*)"
   - "Bash(gh api:*)"
 ---
@@ -181,7 +181,7 @@ Output `# Review Summary`:
 - **IGNORE** section (collapsed): findings below threshold
 - **Verdict**: PASS (no FIX items) | CHANGES_REQUESTED (any FIX) | FAIL (any Critical)
 
-Store the review via `blueprint_create { kind: "review", topic: "Review: <branch>" }`, Edit the scaffold with the findings body, then `blueprint_commit`.
+Store the review via `create { kind: "review", topic: "Review: <branch>" }`, Edit the scaffold with the findings body, then `commit`.
 
 ## Step 6: Fix
 

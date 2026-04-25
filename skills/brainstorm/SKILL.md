@@ -124,27 +124,27 @@ When the conversation has matured and the user is satisfied with the direction, 
   linked back to hub via `source: "[[hub-stem]]"` frontmatter and `Part of [[hub-name]]` in body
 
 **Writing to the vault.**
-For projects using the blueprints system, scaffold each spec via `blueprint_create` (MCP),
-Edit the body, then `blueprint_commit`. The hub is a regular spec; each deep dive is a spec
+For projects using the blueprints system, scaffold each spec via the MCP `create` tool,
+Edit the body, then `commit`. The hub is a regular spec; each deep dive is a spec
 with `dive: true` and a `source` linking back to the hub. For other vaults, write files
 directly using the same sibling-folder layout.
 
 ```
 # Hub (vision-level spec)
-blueprint_create { kind: "spec", topic: "<hub topic>",
-                   tags: ["domain/<area>", "stage/research", "status/needs-review"] }
+create { kind: "spec", topic: "<hub topic>",
+         tags: ["domain/<area>", "stage/research", "status/needs-review"] }
 # → ~/blueprints/<project>/spec/YYYYMMDD-<hub-slug>.md
 # Edit the scaffold body, then:
-blueprint_commit { path: "<returned path>" }
+commit { path: "<returned path>" }
 
 # Each deep dive (routed to dive/ via dive=true, linked via source)
-blueprint_create { kind: "spec", dive: true,
-                   topic: "<dive subtopic>",
-                   slug: "<hub-slug>-<dive-subtopic-slug>",
-                   source: "<hub-stem>",
-                   tags: ["domain/<area>", "stage/research", "status/needs-review"] }
+create { kind: "spec", dive: true,
+         topic: "<dive subtopic>",
+         slug: "<hub-slug>-<dive-subtopic-slug>",
+         source: "<hub-stem>",
+         tags: ["domain/<area>", "stage/research", "status/needs-review"] }
 # → ~/blueprints/<project>/dive/YYYYMMDD-<hub-slug>-<dive-subtopic>.md
-# Edit, then blueprint_commit.
+# Edit, then commit.
 ```
 
 **Dive slug composition.**
@@ -154,9 +154,9 @@ across brainstorms and groups dives from the same hub together in alphabetical s
 Do not rely on ct's auto-slug for dives — it would derive from `topic` alone and lose the
 hub prefix.
 
-**`ct spec list` defaults.**
-`blueprint_list` with `kind: "spec"` hides dives by default. Pass `include_dives: true`
-(or `ct spec list --include-dives`) to see dives alongside hubs.
+**`ct vault list -t spec` defaults.**
+The MCP `list` tool with `kind: "spec"` hides dives by default. Pass `include_dives: true`
+(or `ct vault list -t spec --include-dives`) to see dives alongside hubs.
 
 **Frontmatter** (every hub and every dive gets the same rich shape — Obsidian needs it for
 queries, tag filters, and backlinks):
@@ -176,7 +176,7 @@ tags:
 ---
 ```
 
-`blueprint_create` writes `topic`, `created`, `type/spec`, `project/<name>`, and (for dives)
+The `create` tool writes `topic`, `created`, `type/spec`, `project/<name>`, and (for dives)
 `source` automatically. The brainstorm skill is responsible for passing the domain/stage/status
 tags on every call and for appending an `author: <user>` line to the frontmatter after
 scaffolding (or whatever convention the project uses). Keep hub and dive frontmatter

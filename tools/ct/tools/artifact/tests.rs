@@ -3,7 +3,7 @@ use super::crud::{
     Comment, CreateOpts, cmd_retag, create, parse_comments, read, resolve_artifact_path,
     resolve_stem_universal,
 };
-use super::listing::{latest_artifact, list_archived_artifacts, list_artifacts};
+use super::listing::{list_archived_artifacts, list_artifacts};
 use super::{
     ArtifactKind, CtError, ResolveError, SyncError, artifact_dir_with_base, chrono_rfc3339, env,
     extract_frontmatter_full_from_str, fs, parse_frontmatter, parse_yaml_map, project_name,
@@ -40,41 +40,6 @@ fn normal_path_uses_last_component() {
 fn dots_replaced_with_underscores() {
     assert_eq!(project_name("/Users/me/src/.claude"), "_claude");
     assert_eq!(project_name("/Users/me/src/my.project"), "my_project");
-}
-
-#[test]
-fn task_file_returns_specified_path() {
-    let tmp = std::env::temp_dir().join(format!("ck-latest-test-{}", std::process::id()));
-    std::fs::create_dir_all(&tmp).unwrap();
-
-    let plan = tmp.join("my-plan.md");
-    std::fs::write(&plan, "# plan\n").unwrap();
-
-    let result = latest_artifact(ArtifactKind::Plan, Some(plan.to_str().unwrap()), "", false);
-    assert!(result.is_ok(), "expected Ok, got {result:?}");
-    assert_eq!(
-        result.unwrap().canonicalize().unwrap(),
-        plan.canonicalize().unwrap(),
-        "--task-file should return the specified path"
-    );
-
-    std::fs::remove_dir_all(&tmp).ok();
-}
-
-#[test]
-fn task_file_flag_errors_when_file_missing() {
-    let result = latest_artifact(
-        ArtifactKind::Plan,
-        Some("/nonexistent/path/plan.md"),
-        "",
-        false,
-    );
-    assert!(result.is_err(), "expected Err for missing task-file");
-    let msg = result.unwrap_err();
-    assert!(
-        msg.contains("task-file not found"),
-        "error message should mention task-file, got: {msg}"
-    );
 }
 
 #[test]

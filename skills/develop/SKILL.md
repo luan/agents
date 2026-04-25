@@ -22,7 +22,7 @@ Read a plan (preferred) or spec, dispatch workers per phase, verify each worker'
 
 - `<path>` — path to plan file (preferred) or spec file
 - `--auto` — skip user confirmations (for vibe/supervibe calls)
-- No argument → find most recent plan: `ct plan latest`. If no plan, fall back to `ct spec latest`.
+- No argument → list recent plans via `ct vault list -t plan`, ask the user to pick one. If no plans exist, fall back to `ct vault list -t spec`. Never silently pick the most recent.
 
 ## Step 1: Read Plan and Spec
 
@@ -30,20 +30,20 @@ If content is already in your conversation (from a preceding /spec call), use it
 
 **Plan file provided (preferred path):**
 ```bash
-PLAN_CONTENT=$(ct plan read <path>)
+PLAN_CONTENT=$(ct vault read -t plan <path>)
 ```
 The plan's frontmatter contains `source:` linking to its spec. Read the spec too — workers need both:
 ```bash
-SPEC_CONTENT=$(ct spec read <spec-stem>)
+SPEC_CONTENT=$(ct vault read -t spec <spec-stem>)
 ```
 
 **Spec file provided (no plan):**
 ```bash
-SPEC_CONTENT=$(ct spec read <path>)
+SPEC_CONTENT=$(ct vault read -t spec <path>)
 ```
 Decompose into tasks yourself (Step 2 fallback).
 
-**Extract reviewer annotations:** Run `ct spec comments <spec-file>` and (if plan exists) `ct plan comments <plan-file>`. If either returns comments, store them — they'll be appended to worker prompts in Step 3.
+**Extract reviewer annotations:** Run `ct vault comments <spec-file>` and (if plan exists) `ct vault comments <plan-file>`. If either returns comments, store them — they'll be appended to worker prompts in Step 3.
 
 If the file doesn't exist or is empty, report and stop.
 

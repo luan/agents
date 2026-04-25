@@ -65,24 +65,31 @@ status_line = [
 ]
 
 [tui.model_availability_nux]
-"gpt-5.5" = 3
+"gpt-5.5" = 4
 
 [marketplaces.claude-plugins-official]
-last_updated = "2026-04-24T18:25:10Z"
+last_updated = "2026-04-25T05:50:44Z"
 last_revision = "020446a4294f09d9c32e60bff0c4ae8fb39205cb"
 source_type = "git"
 source = "https://github.com/anthropics/claude-plugins-official.git"
 
 [marketplaces.worktrunk]
-last_updated = "2026-04-24T18:13:59Z"
-last_revision = "8b4e53f1b2e17aa1275164017fb866b4c72da0cf"
+last_updated = "2026-04-25T05:50:48Z"
+last_revision = "5f126d21fe1b4edfc06af7ab436bb3d493089938"
 source_type = "git"
 source = "https://github.com/max-sixty/worktrunk.git"
 
-[mcp_servers.blueprint]
+[mcp_servers.vault]
 command = "ct"
-args = ["mcp", "blueprint"]
+args = ["mcp", "vault"]
 
 [mcp_servers.apply-patch]
 command = "ct"
 args = ["mcp", "apply-patch"]
+
+[mcp_servers.sym]
+command = "ct"
+args = ["mcp", "sym"]
+
+[projects."/Users/luan/src/agents"]
+trust_level = "trusted"

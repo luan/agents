@@ -30,7 +30,7 @@ Output `[1/M] Spec`.
 Skill("spec", args="<prompt> --auto")
 ```
 
-Spec runs silently with `--auto` and returns both spec and plan file paths. Read the plan file path from the output or find via `ct plan latest`.
+Spec runs silently with `--auto` and returns both spec and plan file paths. Read the plan file path directly from the spec output — do not fall back to a "find latest" lookup.
 
 Verify the plan file exists and has content. Immediately proceed to develop.
 

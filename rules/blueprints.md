@@ -18,41 +18,43 @@ All structured artifacts (specs, plans, reviews, reports, docs) live in the blue
 
 ## Commands
 
-| Operation               | Command                          |
-| ----------------------- | -------------------------------- |
-| Init repo               | `ct vault init`                  |
-| Migrate from ~/.claude/ | `ct vault migrate`               |
-| Project name            | `ct vault project`               |
-| Create                  | `ct <type> create --topic "..."` |
-| Read                    | `ct <type> read <file>`          |
-| List                    | `ct <type> list [--all]`         |
-| Latest                  | `ct <type> latest`               |
-| Archive                 | `ct <type> archive <file>`       |
-| Prune                   | `ct <type> prune [--days N]`     |
+Every artifact operation lives under `ct vault`. Use `-t <type>` to scope to one kind (`spec`, `plan`, `review`, `report`, `doc`); the default `-t all` operates across kinds.
 
-Where `<type>` is `spec`, `plan`, `review`, `report`, or `doc`.
+| Operation    | Command                                              |
+| ------------ | ---------------------------------------------------- |
+| Project name | `ct project`                                         |
+| Create       | `ct vault create -t <type> --topic "..."`            |
+| Read         | `ct vault read [-t <type>] <stem>`                   |
+| List         | `ct vault list [-t <type>] [--all]`                  |
+| Archive      | `ct vault archive [-t <type>] <stem>`                |
+| Prune        | `ct vault prune [-t <type>] [--days N]`              |
+| Comments     | `ct vault comments [-t <type>] <stem>`               |
+| Rename       | `ct vault rename [-t <type>] <stem> <new-slug>`      |
+| Retag        | `ct vault retag [-t <type>] <stem>`                  |
+| Commit edits | `ct vault commit <path>`                             |
+| Status       | `ct vault status`                                    |
 
 ## Linking (Obsidian)
 
 The blueprints repo is an Obsidian vault. Use `[[wiki-links]]` to connect related artifacts.
 
-- **`--source`**: When creating an artifact derived from another (plan from spec, review against spec), pass `--source <stem>` to `ct create`. This adds `source: "[[stem]]"` to frontmatter.
+- **`--source`**: When creating an artifact derived from another (plan from spec, review against spec), pass `--source <stem>` to `ct vault create`. This adds `source: "[[stem]]"` to frontmatter.
 - **Related artifacts**: After creating an artifact, run `ct vault related "<topic>"`. If matches found, append a `## Related` section with the wiki-links.
 - **Inline links**: When referencing another artifact in body text, use `[[stem]]` (filename without extension or path — Obsidian resolves across the vault).
 - Keep linking shallow — don't read related files to summarize them, just link by name.
 
-| Operation    | Command                                  |
-| ------------ | ---------------------------------------- |
-| Find related | `ct vault related "<topic>"`             |
-| Link source  | `ct <type> create --source "<stem>" ...` |
-| Check links  | `ct vault check`                         |
-| Search       | `ct vault search "<query>"`              |
+| Operation    | Command                                                  |
+| ------------ | -------------------------------------------------------- |
+| Find related | `ct vault related "<topic>"`                             |
+| Link source  | `ct vault create -t <type> --source "<stem>" ...`        |
+| Check links  | `ct vault check`                                         |
+| Search       | `ct vault search "<query>"`                              |
 
 ## Tags
 
 All artifacts have `tags:` in frontmatter. `ct` auto-derives `type/` and `project/` tags; add domain/stage tags via `--tags`.
 
-**Auto-derived** (always added by `ct create`):
+**Auto-derived** (always added by `ct vault create`):
 
 - `type/spec`, `type/plan`, `type/review`, `type/report`, `type/doc`
 - `project/<name>` (from project path)
@@ -69,32 +71,28 @@ All artifacts have `tags:` in frontmatter. `ct` auto-derives `type/` and `projec
 
 A dive is a vision-level spec linked to a hub spec. It lives in a sibling `dive/` folder so the top-level `spec/` list stays scannable as "major things we're building." Dives share the `type/spec` tag.
 
-- Create via `dive: true` (MCP `blueprint_create`) or `--dive` (CLI). Both require a `source` — a dive without a hub link is rejected.
+- Create via `dive: true` (MCP `create`) or `--dive` (CLI). Both require a `source` — a dive without a hub link is rejected.
 - Dive-only for specs; rejected for other artifact kinds.
 - Slug convention: `<hub-slug>-<subtopic>` so dives from the same hub sort together.
-- `ct spec list` hides dives by default; `--include-dives` to see them. `blueprint_read` / `ct spec read <stem>` finds dives by bare stem.
+- `ct vault list -t spec` hides dives by default; `--include-dives` to see them. `read` (MCP) / `ct vault read <stem>` finds dives by bare stem.
 - Archive preserves the subfolder: dives archive to `archive/<project>/dive/`.
 
 ## Writing artifact bodies
 
-Preferred path: `blueprint_create` (MCP) scaffolds the file with frontmatter, Edit/apply_patch writes the body, `blueprint_commit` commits+pushes. Bypasses shell quoting entirely.
+`ct vault create` scaffolds the file with frontmatter only. The body is written by editing the returned path with Edit/apply_patch, and pushed via `ct vault commit <path>`.
 
-CLI path (still supported): `ct <type> create` reads the body from stdin. Write the body to a temp file first, then `cat` it into the command — heredocs and `echo` escape backticks (`` ` `` → `` \` ``) and corrupt markdown.
+The MCP `vault` server exposes the same operations as bare-name tools (`create`, `read`, `list`, `archive`, `prune`, `comments`, `rename`, `retag`, `commit`, `search`, `related`, `check`, `status`). Prefer the MCP path — it bypasses shell quoting entirely.
 
-```bash
-# Correct
-cat /tmp/artifact-body.md | ct spec create --topic "..."
-rm /tmp/artifact-body.md
-
-# Wrong — backticks get escaped
-cat <<'EOF' | ct spec create ...
-echo "..." | ct spec create ...
+```
+create { kind: "spec", topic: "..." }   # returns path
+# Edit/apply_patch writes the body to the returned path
+commit { path: "<returned path>" }      # commit+push
 ```
 
 ## Rules
 
-- Use `blueprint_create` + Edit + `blueprint_commit`, or `ct <type> create` with stdin — never write blueprint files directly.
+- Use the MCP `create` + Edit + `commit` flow, or `ct vault create` + Edit + `ct vault commit` — never write vault files directly.
 - `--project` auto-detects from cwd (git toplevel, falls back to cwd). Pass it only to target a different project.
 - If push fails during commit+push, stop and report to user. Never force-push.
-- `ct vault init` must be run before first use. `ct` errors if the vault directory is missing.
+- `ct` errors if the vault directory is missing — initialize `~/blueprints/` (or `$CT_BLUEPRINTS_DIR`) as a git repo before first use.
 - Set `CT_BLUEPRINTS_DIR` to override the default `~/blueprints/` location.

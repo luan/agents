@@ -1,8 +1,13 @@
 use super::{handle_sync_error, truncate_at_char_boundary};
 use crate::ansi;
+use crate::artifact::{self, ALL_KINDS, Artifact, ArtifactKind, CtError};
 
-pub fn run_artifact_list(
-    kind: crate::artifact::ArtifactKind,
+// ---------------------------------------------------------------------------
+// List
+// ---------------------------------------------------------------------------
+
+pub fn run_vault_list(
+    kind: Option<ArtifactKind>,
     cwd: &str,
     json: bool,
     all: bool,
@@ -10,23 +15,43 @@ pub fn run_artifact_list(
     archived: bool,
     include_dives: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut items = if archived {
-        crate::artifact::list_archived_artifacts(kind)
-    } else {
-        crate::artifact::list_artifacts(kind, include_dives)
+    let mut items: Vec<Artifact> = match kind {
+        Some(k) => {
+            if archived {
+                artifact::list_archived_artifacts(k)
+            } else {
+                artifact::list_artifacts(k, include_dives)
+            }
+        }
+        None => {
+            let mut combined = Vec::new();
+            for k in ALL_KINDS {
+                let chunk = if archived {
+                    artifact::list_archived_artifacts(k)
+                } else {
+                    artifact::list_artifacts(k, include_dives)
+                };
+                combined.extend(chunk);
+            }
+            combined.sort_by_key(|a| std::cmp::Reverse(a.mod_time));
+            combined
+        }
     };
 
     items.retain(|a| !a.project.is_empty());
 
     if let Some(ref proj) = project {
-        let resolved = crate::artifact::resolve_repo_root(proj);
+        let resolved = artifact::resolve_repo_root(proj);
         items.retain(|a| a.project.contains(resolved.as_str()));
     } else if !all {
-        let resolved_cwd = crate::artifact::resolve_repo_root(cwd);
+        let resolved_cwd = artifact::resolve_repo_root(cwd);
         items.retain(|a| resolved_cwd.contains(&a.project));
     }
 
-    let label = kind.dir_name();
+    let label = match kind {
+        Some(k) => k.dir_name(),
+        None => "artifact",
+    };
 
     if items.is_empty() {
         if all {
@@ -52,9 +77,9 @@ pub fn run_artifact_list(
                 serde_json::json!({
                     "name": a.name,
                     "title": a.title,
-                    "project": crate::artifact::project_name(&a.project),
-                    "modified": crate::artifact::format_date(a.mod_time),
-                    "size": crate::artifact::format_size(a.size),
+                    "project": artifact::project_name(&a.project),
+                    "modified": artifact::format_date(a.mod_time),
+                    "size": artifact::format_size(a.size),
                     "created": a.created,
                     "source": a.source,
                     "tags": a.tags,
@@ -74,7 +99,7 @@ pub fn run_artifact_list(
         println!("{}", ansi::dim(&"-".repeat(100)));
 
         for a in &items {
-            let proj = crate::artifact::project_name(&a.project);
+            let proj = artifact::project_name(&a.project);
 
             let name = if a.name.len() > 28 {
                 format!("{}...", truncate_at_char_boundary(&a.name, 25))
@@ -88,14 +113,14 @@ pub fn run_artifact_list(
                 a.title.clone()
             };
 
-            let title_col = format!("{:<42}", title);
+            let title_col = format!("{title:<42}");
             println!(
                 "{} {} {} {} {}",
-                ansi::id(&format!("{:<12}", proj)),
-                ansi::dim(&format!("{:<30}", name)),
+                ansi::id(&format!("{proj:<12}")),
+                ansi::dim(&format!("{name:<30}")),
                 title_col,
-                ansi::dim(&format!("{:<12}", crate::artifact::format_date(a.mod_time))),
-                ansi::dim(&crate::artifact::format_size(a.size))
+                ansi::dim(&format!("{:<12}", artifact::format_date(a.mod_time))),
+                ansi::dim(&artifact::format_size(a.size))
             );
         }
     }
@@ -103,40 +128,12 @@ pub fn run_artifact_list(
     Ok(())
 }
 
-pub fn run_artifact_show(
-    kind: crate::artifact::ArtifactKind,
-    id: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let items = crate::artifact::list_artifacts(kind, true);
-    let label = kind.dir_name();
-
-    if items.is_empty() {
-        eprintln!(
-            "{}",
-            ansi::dim(&format!("No {label}s found in ~/blueprints/"))
-        );
-        return Ok(());
-    }
-
-    let normalized_id = id.strip_suffix(".md").unwrap_or(id);
-
-    let found = items.iter().find(|a| {
-        a.name == normalized_id || a.name == id || a.path.file_name().is_some_and(|f| f == id)
-    });
-
-    let Some(artifact_ref) = found else {
-        eprintln!("{label} not found: {id}");
-        return Ok(());
-    };
-
-    let content = crate::artifact::load_content(kind, &artifact_ref.path);
-    println!("{content}");
-
-    Ok(())
-}
+// ---------------------------------------------------------------------------
+// Create
+// ---------------------------------------------------------------------------
 
 pub struct ArtifactCreateArgs {
-    pub kind: crate::artifact::ArtifactKind,
+    pub kind: ArtifactKind,
     pub topic: String,
     pub project: Option<String>,
     pub slug: Option<String>,
@@ -145,7 +142,7 @@ pub struct ArtifactCreateArgs {
     pub dive: bool,
 }
 
-pub fn run_artifact_create(args: ArtifactCreateArgs) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run_vault_create(args: ArtifactCreateArgs) -> Result<(), Box<dyn std::error::Error>> {
     let ArtifactCreateArgs {
         kind,
         topic,
@@ -161,8 +158,8 @@ pub fn run_artifact_create(args: ArtifactCreateArgs) -> Result<(), Box<dyn std::
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
-    let project = project.unwrap_or_else(crate::artifact::current_project);
-    match crate::artifact::create(crate::artifact::CreateOpts {
+    let project = project.unwrap_or_else(artifact::current_project);
+    match artifact::create(artifact::CreateOpts {
         kind,
         topic: &topic,
         project: &project,
@@ -174,7 +171,7 @@ pub fn run_artifact_create(args: ArtifactCreateArgs) -> Result<(), Box<dyn std::
         Ok(outcome) => {
             println!("{}", outcome.path.display());
         }
-        Err(crate::artifact::CtError::Sync(e)) => handle_sync_error(e),
+        Err(CtError::Sync(e)) => handle_sync_error(e),
         Err(e) => {
             eprintln!("{e}");
             std::process::exit(1);
@@ -183,69 +180,145 @@ pub fn run_artifact_create(args: ArtifactCreateArgs) -> Result<(), Box<dyn std::
     Ok(())
 }
 
-pub fn run_artifact_read(
-    kind: crate::artifact::ArtifactKind,
+// ---------------------------------------------------------------------------
+// Read
+// ---------------------------------------------------------------------------
+
+pub fn run_vault_read(
+    kind: Option<ArtifactKind>,
     file: String,
     frontmatter: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    crate::artifact::cmd_read(&file, kind, frontmatter);
+    match kind {
+        Some(k) => artifact::cmd_read(&file, k, frontmatter),
+        None => {
+            let resolved = match artifact::resolve_stem_universal(&file) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            };
+            artifact::cmd_read_resolved(&resolved, frontmatter);
+        }
+    }
     Ok(())
 }
 
-pub fn run_artifact_comments(
-    kind: crate::artifact::ArtifactKind,
+// ---------------------------------------------------------------------------
+// Comments
+// ---------------------------------------------------------------------------
+
+pub fn run_vault_comments(
+    kind: Option<ArtifactKind>,
     file: String,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    crate::artifact::cmd_comments(&file, kind, json);
+    let (path, resolved_kind) = match artifact::resolve_optional_kind(&file, kind) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    };
+    artifact::cmd_comments(&path.to_string_lossy(), resolved_kind, json);
     Ok(())
 }
 
-pub fn run_artifact_latest(
-    kind: crate::artifact::ArtifactKind,
-    project: Option<String>,
-    task_file: Option<String>,
-    include_dives: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    crate::artifact::cmd_latest(
-        kind,
-        project.as_deref(),
-        task_file.as_deref(),
-        include_dives,
-    );
-    Ok(())
-}
+// ---------------------------------------------------------------------------
+// Archive
+// ---------------------------------------------------------------------------
 
-pub fn run_artifact_archive(
-    kind: crate::artifact::ArtifactKind,
+pub fn run_vault_archive(
+    kind: Option<ArtifactKind>,
     file: Option<String>,
     batch: Vec<String>,
     dry_run: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !batch.is_empty() {
-        if let Err(e) = crate::artifact::cmd_archive_batch(kind, &batch, dry_run) {
+        // Resolve each entry, infer kind from first entry when kind is None,
+        // and require all entries to share the same kind.
+        let mut resolved: Vec<(std::path::PathBuf, ArtifactKind)> = Vec::with_capacity(batch.len());
+        for entry in &batch {
+            let pair = match artifact::resolve_optional_kind(entry, kind) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            };
+            resolved.push(pair);
+        }
+        let first_kind = resolved[0].1;
+        for (path, k) in &resolved[1..] {
+            if *k != first_kind {
+                eprintln!(
+                    "mixed kinds in batch: expected {}, got {} for {}",
+                    first_kind.dir_name(),
+                    k.dir_name(),
+                    path.display()
+                );
+                std::process::exit(1);
+            }
+        }
+        let paths: Vec<String> = resolved
+            .into_iter()
+            .map(|(p, _)| p.to_string_lossy().to_string())
+            .collect();
+        if let Err(e) = artifact::cmd_archive_batch(first_kind, &paths, dry_run) {
             handle_sync_error(e);
         }
     } else if let Some(f) = file {
-        if let Err(e) = crate::artifact::cmd_archive(kind, &f, dry_run) {
+        let (path, resolved_kind) = match artifact::resolve_optional_kind(&f, kind) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        };
+        if let Err(e) = artifact::cmd_archive(resolved_kind, &path.to_string_lossy(), dry_run) {
             handle_sync_error(e);
         }
     } else {
-        eprintln!(
-            "Usage: ct <type> archive <file> or ct <type> archive --batch <file1> <file2> ..."
-        );
+        eprintln!("Usage: ct vault archive <file> or ct vault archive --batch <file1> <file2> ...");
         std::process::exit(1);
     }
     Ok(())
 }
 
-pub fn run_artifact_prune(
-    kind: crate::artifact::ArtifactKind,
+// ---------------------------------------------------------------------------
+// Prune
+// ---------------------------------------------------------------------------
+
+pub fn run_vault_prune(
+    kind: Option<ArtifactKind>,
     days: u64,
     dry_run: bool,
     project: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let bp = crate::artifact::blueprints_dir();
+    let kinds: Vec<ArtifactKind> = match kind {
+        Some(k) => vec![k],
+        None => ALL_KINDS.to_vec(),
+    };
+    let mut total_archived = 0u32;
+    let mut sync_errors = 0u32;
+    for k in kinds {
+        let (archived, errors) = prune_kind(k, days, dry_run, project.as_deref());
+        total_archived += archived;
+        sync_errors += errors;
+    }
+    if !dry_run && total_archived > 0 {
+        println!("Archived {total_archived} file(s)");
+    }
+    if sync_errors > 0 {
+        eprintln!("{sync_errors} file(s) failed to sync");
+        std::process::exit(2);
+    }
+    Ok(())
+}
+
+fn prune_kind(kind: ArtifactKind, days: u64, dry_run: bool, project: Option<&str>) -> (u32, u32) {
+    let bp = artifact::blueprints_dir();
     let kind_dir = kind.dir_name();
     let threshold = std::time::Duration::from_secs(days * 86400);
     let now = std::time::SystemTime::now();
@@ -253,11 +326,7 @@ pub fn run_artifact_prune(
     let mut sync_errors = 0u32;
 
     let Ok(project_dirs) = std::fs::read_dir(&bp) else {
-        eprintln!(
-            "{}",
-            ansi::dim(&format!("No {kind_dir} found in ~/blueprints/"))
-        );
-        return Ok(());
+        return (0, 0);
     };
 
     for dir_entry in project_dirs.flatten() {
@@ -268,15 +337,15 @@ pub fn run_artifact_prune(
         if dir_name == "archive" {
             continue;
         }
-        if let Some(ref proj) = project {
-            let resolved = crate::artifact::project_name(&crate::artifact::resolve_repo_root(proj));
+        if let Some(proj) = project {
+            let resolved = artifact::project_name(&artifact::resolve_repo_root(proj));
             if !dir_name.contains(resolved.as_str()) {
                 continue;
             }
         }
 
         let mut scan_dirs = vec![dir_entry.path().join(kind_dir)];
-        if kind == crate::artifact::ArtifactKind::Spec {
+        if kind == ArtifactKind::Spec {
             scan_dirs.push(dir_entry.path().join("dive"));
         }
         for artifact_dir in scan_dirs {
@@ -305,7 +374,7 @@ pub fn run_artifact_prune(
                 if dry_run {
                     println!("would archive: {path_str}");
                 } else {
-                    match crate::artifact::cmd_archive(kind, &path_str, false) {
+                    match artifact::cmd_archive(kind, &path_str, false) {
                         Ok(()) => archived_count += 1,
                         Err(e) => {
                             eprintln!("{e}");
@@ -317,33 +386,43 @@ pub fn run_artifact_prune(
         }
     }
 
-    if !dry_run && archived_count > 0 {
-        println!("Archived {archived_count} {} file(s)", kind.dir_name());
-    }
-    if sync_errors > 0 {
-        eprintln!("{sync_errors} file(s) failed to sync");
-        std::process::exit(2);
-    }
-
-    Ok(())
+    (archived_count, sync_errors)
 }
 
-pub fn run_artifact_rename(
-    kind: crate::artifact::ArtifactKind,
+// ---------------------------------------------------------------------------
+// Rename / Retag
+// ---------------------------------------------------------------------------
+
+pub fn run_vault_rename(
+    kind: Option<ArtifactKind>,
     old: String,
     new_slug: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if let Err(e) = crate::artifact::cmd_rename(kind, &old, &new_slug) {
+    let (path, resolved_kind) = match artifact::resolve_optional_kind(&old, kind) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    };
+    if let Err(e) = artifact::cmd_rename(resolved_kind, &path.to_string_lossy(), &new_slug) {
         handle_sync_error(e);
     }
     Ok(())
 }
 
-pub fn run_artifact_retag(
-    kind: crate::artifact::ArtifactKind,
+pub fn run_vault_retag(
+    kind: Option<ArtifactKind>,
     file: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if let Err(e) = crate::artifact::cmd_retag(kind, &file) {
+    let (path, resolved_kind) = match artifact::resolve_optional_kind(&file, kind) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    };
+    if let Err(e) = artifact::cmd_retag(resolved_kind, &path.to_string_lossy()) {
         handle_sync_error(e);
     }
     Ok(())

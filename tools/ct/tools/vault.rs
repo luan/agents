@@ -1,122 +1,12 @@
 use std::collections::HashSet;
 use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process;
 
 use serde::Serialize;
 
-use crate::artifact::{
-    ALL_KINDS, ArtifactKind, CtError, blueprints_dir, blueprints_dir_unchecked, fatal, home_dir,
-    project_name,
-};
-
-pub fn cmd_init() {
-    let bp = blueprints_dir_unchecked();
-    if bp.is_dir() {
-        eprintln!("{} already exists", bp.display());
-        return;
-    }
-
-    fs::create_dir_all(&bp)
-        .unwrap_or_else(|e| fatal(&format!("cannot create {}: {e}", bp.display())));
-
-    let init_ok = process::Command::new("git")
-        .args(["-C", &bp.to_string_lossy(), "init"])
-        .status()
-        .is_ok_and(|s| s.success());
-
-    if !init_ok {
-        fatal(&format!("git init failed in {}", bp.display()));
-    }
-
-    eprintln!("Initialized {} as a git repository", bp.display());
-}
-
-pub fn cmd_migrate() {
-    let bp = blueprints_dir();
-    let home = home_dir();
-
-    let mut migrated = 0u32;
-
-    for kind in ALL_KINDS {
-        let legacy_base = Path::new(&home)
-            .join(".claude")
-            .join(kind.legacy_dir_name());
-        let Ok(project_dirs) = fs::read_dir(&legacy_base) else {
-            continue;
-        };
-
-        for dir_entry in project_dirs.flatten() {
-            let proj_dir = dir_entry.path();
-            if !proj_dir.is_dir() {
-                continue;
-            }
-            let proj_name = proj_dir
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-            if proj_name == "archive" {
-                continue;
-            }
-
-            let dest_dir = bp.join(&proj_name).join(kind.dir_name());
-            fs::create_dir_all(&dest_dir)
-                .unwrap_or_else(|e| fatal(&format!("cannot create {}: {e}", dest_dir.display())));
-
-            let Ok(files) = fs::read_dir(&proj_dir) else {
-                continue;
-            };
-            for file_entry in files.flatten() {
-                let src = file_entry.path();
-                if src.is_dir() || src.extension().is_none_or(|ext| ext != "md") {
-                    continue;
-                }
-                let file_name = src
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
-                let dest = dest_dir.join(&file_name);
-
-                if let Err(e) = fs::copy(&src, &dest) {
-                    eprintln!("warning: failed to copy {}: {e}", src.display());
-                    continue;
-                }
-
-                let archive_dir = proj_dir.join("archive");
-                fs::create_dir_all(&archive_dir).ok();
-                if let Err(e) = fs::rename(&src, archive_dir.join(&file_name)) {
-                    eprintln!("warning: failed to archive original {}: {e}", src.display());
-                }
-
-                migrated += 1;
-            }
-        }
-    }
-
-    if migrated > 0 {
-        let bp_str = bp.to_string_lossy();
-        let _ = process::Command::new("git")
-            .args(["-C", &bp_str, "add", "."])
-            .status();
-        let _ = process::Command::new("git")
-            .args([
-                "-C",
-                &bp_str,
-                "commit",
-                "-m",
-                &format!("migrate: {migrated} artifacts from ~/.claude/"),
-            ])
-            .status();
-        let _ = process::Command::new("git")
-            .args(["-C", &bp_str, "push"])
-            .status();
-    }
-
-    eprintln!("Migrated {migrated} artifact(s) to {}", bp.display());
-}
+use crate::artifact::{ALL_KINDS, ArtifactKind, CtError, blueprints_dir, fatal, project_name};
 
 pub fn cmd_project() {
     let toplevel = process::Command::new("git")
@@ -408,79 +298,121 @@ fn cmd_search_json(
     }
 }
 
-pub fn cmd_status() {
+pub fn cmd_commit(path: &str, message: Option<String>) {
+    match crate::artifact::commit_edits(path, message.as_deref()) {
+        Ok(outcome) => {
+            if outcome.committed {
+                println!("{}", outcome.message);
+            } else {
+                eprintln!("nothing to commit: {path}");
+            }
+        }
+        Err(CtError::Sync(crate::artifact::SyncError::Push(msg))) => {
+            eprintln!("git push failed: {msg}");
+            std::process::exit(2);
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Structured snapshot of the vault's git + artifact state. Reused by both the
+/// CLI `status` printer and the MCP `status` tool.
+#[derive(Debug, Clone, Serialize)]
+pub struct VaultStatus {
+    pub working_tree_dirty: Option<usize>,
+    pub unpushed_commits: usize,
+    pub has_upstream: bool,
+    pub artifacts: usize,
+}
+
+pub fn status_snapshot() -> VaultStatus {
     let bp = blueprints_dir();
     let bp_str = bp.to_string_lossy();
 
-    // Git status: clean or dirty
-    let status_output = process::Command::new("git")
+    let working_tree_dirty = process::Command::new("git")
         .args(["-C", &bp_str, "status", "--porcelain"])
-        .output();
-    match &status_output {
-        Ok(o) if o.status.success() => {
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
             let text = String::from_utf8_lossy(&o.stdout);
             if text.trim().is_empty() {
-                println!("working tree: clean");
+                0
             } else {
-                let dirty_count = text.lines().count();
-                println!("working tree: {dirty_count} dirty file(s)");
+                text.lines().count()
             }
-        }
-        Ok(_) | Err(_) => println!("working tree: unknown (git status failed)"),
-    }
+        });
 
-    // Unpushed commits
     let log_output = process::Command::new("git")
         .args(["-C", &bp_str, "log", "--oneline", "@{u}..HEAD"])
         .output();
-    match &log_output {
+    let (unpushed_commits, has_upstream) = match log_output {
         Ok(o) if o.status.success() => {
             let text = String::from_utf8_lossy(&o.stdout);
-            let count = text.lines().filter(|l| !l.is_empty()).count();
-            println!("unpushed commits: {count}");
+            (text.lines().filter(|l| !l.is_empty()).count(), true)
         }
-        // No upstream configured or other error — report 0
-        Ok(_) | Err(_) => println!("unpushed commits: 0 (no upstream)"),
-    }
-
-    // Total artifact count
-    let mut total = 0usize;
-    let Ok(projects) = fs::read_dir(&bp) else {
-        println!("artifacts: 0");
-        return;
+        _ => (0, false),
     };
-    for proj_entry in projects.flatten() {
-        let proj_dir = proj_entry.path();
-        if !proj_dir.is_dir() {
-            continue;
-        }
-        // Skip .git and hidden dirs
-        if proj_dir
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .starts_with('.')
-        {
-            continue;
-        }
-        for kind in ALL_KINDS {
-            let kind_dir = proj_dir.join(kind.dir_name());
-            let Ok(entries) = fs::read_dir(&kind_dir) else {
+
+    let mut artifacts = 0usize;
+    if let Ok(projects) = fs::read_dir(&bp) {
+        for proj_entry in projects.flatten() {
+            let proj_dir = proj_entry.path();
+            if !proj_dir.is_dir() {
                 continue;
-            };
-            for entry in entries.flatten() {
-                if entry.path().extension().is_some_and(|ext| ext == "md") {
-                    total += 1;
+            }
+            if proj_dir
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .starts_with('.')
+            {
+                continue;
+            }
+            for kind in ALL_KINDS {
+                let kind_dir = proj_dir.join(kind.dir_name());
+                let Ok(entries) = fs::read_dir(&kind_dir) else {
+                    continue;
+                };
+                for entry in entries.flatten() {
+                    if entry.path().extension().is_some_and(|ext| ext == "md") {
+                        artifacts += 1;
+                    }
                 }
             }
         }
     }
-    println!("artifacts: {total}");
+
+    VaultStatus {
+        working_tree_dirty,
+        unpushed_commits,
+        has_upstream,
+        artifacts,
+    }
+}
+
+pub fn cmd_status() {
+    let snap = status_snapshot();
+    match snap.working_tree_dirty {
+        Some(0) => println!("working tree: clean"),
+        Some(n) => println!("working tree: {n} dirty file(s)"),
+        None => println!("working tree: unknown (git status failed)"),
+    }
+    if snap.has_upstream {
+        println!("unpushed commits: {}", snap.unpushed_commits);
+    } else {
+        println!("unpushed commits: 0 (no upstream)");
+    }
+    println!("artifacts: {}", snap.artifacts);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
     use std::sync::Mutex;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
