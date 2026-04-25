@@ -25,14 +25,20 @@ use crate::apply_patch::{
 /// `Io` is a server-side failure and becomes `internal_error`.
 fn classify_error(err: &ApplyPatchError) -> &'static str {
     match err {
-        ApplyPatchError::Parse(_) => "parse",
+        // Surface the parser's own subkind so telemetry can break the
+        // dominant `parse` bucket into actionable shapes
+        // (`parse_add_missing_plus`, `parse_unprefixed_line`, etc.).
+        ApplyPatchError::Parse(p) => p.subkind_str(),
         ApplyPatchError::ContextNotFound { .. } => "context_not_found",
         ApplyPatchError::AmbiguousContext { .. } => "ambiguous_context",
         ApplyPatchError::AnchorShadowsFirstContext { .. } => "anchor_shadows",
         ApplyPatchError::DeleteIsDirectory(_) => "delete_is_directory",
+        ApplyPatchError::TargetIsDirectory(_) => "target_is_directory",
+        ApplyPatchError::ReadOnlyTarget(_) => "read_only_target",
         ApplyPatchError::AddTargetExists(_) => "add_target_exists",
         ApplyPatchError::DuplicateUpdate(_) => "duplicate_update",
         ApplyPatchError::MoveTargetExists(_) => "move_target_exists",
+        ApplyPatchError::RollbackFailed { .. } => "rollback_failed",
         ApplyPatchError::Io { .. } => "io",
     }
 }
@@ -194,6 +200,7 @@ fn enrich_and_record_failure(
     duration_us: u64,
     patch_sha: &str,
     patch_body: &str,
+    cwd: &Path,
 ) -> Option<String> {
     let enriched = enrichable_context(&failure.error).map(|(path, chunk, anchor)| {
         let current_fp = failure
@@ -201,12 +208,24 @@ fn enrich_and_record_failure(
             .iter()
             .find(|(p, _)| p == path)
             .map(|(_, fp)| fp);
+        // Re-read the file so the synthesizer can suggest structural
+        // anchors. Cheap: enrichment only runs on failure, and the file
+        // was just successfully read by `apply_patch::plan` moments ago.
+        // Errors here are silent — synthesis is best-effort and never
+        // worth blocking the error report.
+        let abs = if std::path::Path::new(path).is_absolute() {
+            std::path::PathBuf::from(path)
+        } else {
+            cwd.join(path)
+        };
+        let file_content = std::fs::read_to_string(&abs).ok();
         let ctx = enrich::EnrichContext {
             file_path: path,
             chunk_index: chunk,
             anchor_text: anchor,
             error_kind: classify_error(&failure.error),
             current_fingerprint: current_fp,
+            file_content: file_content.as_deref(),
         };
         enrich::enrich(tel, failure.error.to_string(), &ctx).into_message()
     });
@@ -226,6 +245,8 @@ fn enriched_error_to_tool(err: &ApplyPatchError, message: String) -> ErrorData {
     match err {
         ApplyPatchError::Parse(_)
         | ApplyPatchError::DeleteIsDirectory(_)
+        | ApplyPatchError::TargetIsDirectory(_)
+        | ApplyPatchError::ReadOnlyTarget(_)
         | ApplyPatchError::AddTargetExists(_)
         | ApplyPatchError::DuplicateUpdate(_)
         | ApplyPatchError::MoveTargetExists(_)
@@ -234,6 +255,7 @@ fn enriched_error_to_tool(err: &ApplyPatchError, message: String) -> ErrorData {
         | ApplyPatchError::AnchorShadowsFirstContext { .. } => {
             ErrorData::invalid_params(message, None)
         }
+        ApplyPatchError::RollbackFailed { .. } => ErrorData::internal_error(message, None),
         ApplyPatchError::Io { .. } => ErrorData::internal_error(message, None),
     }
 }
@@ -246,15 +268,23 @@ fn enrichable_context(err: &ApplyPatchError) -> Option<(&str, usize, Option<&str
         ApplyPatchError::ContextNotFound {
             path,
             chunk,
-            change_context,
+            change_contexts,
             ..
-        } => Some((path.as_str(), *chunk, change_context.as_deref())),
+        } => Some((
+            path.as_str(),
+            *chunk,
+            change_contexts.last().map(String::as_str),
+        )),
         ApplyPatchError::AmbiguousContext {
             path,
             chunk,
-            change_context,
+            change_contexts,
             ..
-        } => Some((path.as_str(), *chunk, change_context.as_deref())),
+        } => Some((
+            path.as_str(),
+            *chunk,
+            change_contexts.last().map(String::as_str),
+        )),
         ApplyPatchError::AnchorShadowsFirstContext {
             path,
             chunk,
@@ -406,6 +436,12 @@ Anchors — the anchor line is *consumed* and the pattern search resumes on the 
 - Don't repeat the anchor text as your first ` ` context line. That's the most common shape error and the tool rejects it explicitly.
 - Pick something structurally unique *near* the change (an import line above the function, a `struct` or `impl` header, a doc comment), not the function signature you're editing. Signatures collide when several functions share a similar shape.
 - Bare `@@` is fine — use it whenever the surrounding context already pins the hunk uniquely.
+- Stack multiple `@@ <line>` markers to narrow into a nested location. Each anchor advances the cursor past its own match before the next one (or the body) is searched. Useful when no single line near the change is unique:
+
+      @@ impl Bar for Baz
+      @@     fn run(&self) {
+      -        return;
+      +        return 42;
 
 Context: include *as little as makes the hunk unique* — often 1-2 lines, and zero when the `-` line alone is distinctive (a unique string, a fully qualified name, a rare function signature). Generic lines (`    return;`, `}`, bare `None`) almost always need at least one neighbor for disambiguation. If the hunk matches multiple locations the patch is rejected with every candidate line number; add one line above or below until only one remains, or pin with a `@@ <unique line>` anchor. Wider context isn't safer — it just gives concurrent edits more surface to drift against.
 
@@ -481,7 +517,14 @@ Set `dry_run` to true to preview the unified diff without writing."#
             Err(failure) => {
                 let duration_us = start.elapsed().as_micros() as u64;
                 let enriched_message = tel.as_ref().and_then(|tel| {
-                    enrich_and_record_failure(tel, &failure, duration_us, &patch_sha, &input.patch)
+                    enrich_and_record_failure(
+                        tel,
+                        &failure,
+                        duration_us,
+                        &patch_sha,
+                        &input.patch,
+                        &cwd,
+                    )
                 });
                 let ApplyFailure { error, .. } = *failure;
                 let err_data = match enriched_message {
@@ -537,7 +580,7 @@ mod tests {
             error: ApplyPatchError::ContextNotFound {
                 path: "foo.rs".into(),
                 chunk: 0,
-                change_context: None,
+                change_contexts: Vec::new(),
                 first_old_line: None,
                 near_miss: None,
             },
@@ -552,8 +595,15 @@ mod tests {
             )],
         };
 
-        let message = enrich_and_record_failure(&tel, &failure, 0, "patchsha", "body")
-            .expect("enrichable context produces a message");
+        let message = enrich_and_record_failure(
+            &tel,
+            &failure,
+            0,
+            "patchsha",
+            "body",
+            std::path::Path::new("/tmp"),
+        )
+        .expect("enrichable context produces a message");
         assert!(message.contains("mtime changed"), "message was: {message}");
         assert!(message.contains("aaaaaaaa"), "message was: {message}");
         assert!(message.contains("bbbbbbbb"), "message was: {message}");

@@ -13,6 +13,11 @@ pub struct EnrichContext<'a> {
     pub anchor_text: Option<&'a str>,
     pub error_kind: &'a str,
     pub current_fingerprint: Option<&'a Fingerprint>,
+    /// Current file contents on disk, when the caller has them at hand.
+    /// Used by `anchor_reliability_hint` to synthesize structural anchors
+    /// when the failing anchor is `bare @@` and the project has no
+    /// historical alternatives to suggest.
+    pub file_content: Option<&'a str>,
 }
 
 pub struct EnrichedError {
@@ -132,8 +137,113 @@ fn anchor_reliability_hint(
             .collect();
         out.push_str(&parts.join(", "));
         out.push('.');
+    } else if let Some(content) = ctx.file_content {
+        // No historical alternatives — fall back to synthesizing structural
+        // anchors directly from the current file. This is the common case
+        // for projects where the model has only ever used bare `@@` (the
+        // dominant failing anchor in the telemetry).
+        let synthesized = synthesize_structural_anchors(content);
+        if !synthesized.is_empty() {
+            out.push_str(" Try one of these unique structural anchors from the current file: ");
+            let parts: Vec<String> = synthesized
+                .iter()
+                .map(|line| format!("`@@ {}`", line.trim_end()))
+                .collect();
+            out.push_str(&parts.join(", "));
+            out.push('.');
+        }
     }
     Ok(Some(out))
+}
+
+/// Maximum structural-anchor suggestions to surface in a single hint. Three
+/// is enough to give the model real options without flooding the error.
+const SYNTHESIS_MAX_ANCHORS: usize = 3;
+
+/// Minimum failure→success pairs before the cross-call transition hint is
+/// shown. Lower than the original threshold of 20 because real-world
+/// telemetry showed only one project ever crossed it (after 583 calls);
+/// 5 pairs is enough signal that *some* shape change is the common fix.
+pub(crate) const TRANSITION_HINT_MIN_PAIRS: usize = 5;
+
+/// Pick up to `SYNTHESIS_MAX_ANCHORS` lines from `content` that are good
+/// `@@` anchors:
+///
+///   1. Appear exactly once in the file.
+///   2. Look like a declaration or header (start with a structural keyword
+///      or a top-level pattern).
+///   3. Aren't pure punctuation or trivially short.
+///
+/// Returned lines are dedup'd and ordered as they appear in the file, so
+/// the suggestions reflect the file's natural reading order.
+pub(crate) fn synthesize_structural_anchors(content: &str) -> Vec<String> {
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    let lines: Vec<&str> = content.lines().collect();
+    for line in &lines {
+        *counts.entry(*line).or_insert(0) += 1;
+    }
+
+    let mut out: Vec<String> = Vec::new();
+    for line in lines {
+        if out.len() >= SYNTHESIS_MAX_ANCHORS {
+            break;
+        }
+        if counts.get(line).copied().unwrap_or(0) != 1 {
+            continue;
+        }
+        if !looks_like_declaration(line) {
+            continue;
+        }
+        out.push(line.to_string());
+    }
+    out
+}
+
+/// Heuristic for "this line looks like a declaration/header that's a good
+/// anchor candidate". Matches common cross-language structural keywords
+/// (Rust, JS/TS, Python, Go, Java, C/C++, Svelte, etc.). Indented matches
+/// also count — the goal is to suggest substantive lines, not zero-indent
+/// only.
+fn looks_like_declaration(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    if trimmed.len() < 4 {
+        return false;
+    }
+    const KEYWORDS: &[&str] = &[
+        "fn ",
+        "pub fn ",
+        "pub(crate) fn ",
+        "async fn ",
+        "pub async fn ",
+        "impl ",
+        "struct ",
+        "enum ",
+        "trait ",
+        "mod ",
+        "pub struct ",
+        "pub enum ",
+        "pub trait ",
+        "pub mod ",
+        "const ",
+        "pub const ",
+        "static ",
+        "type ",
+        "pub type ",
+        "use ",
+        "class ",
+        "interface ",
+        "function ",
+        "export ",
+        "def ",
+        "async def ",
+        "package ",
+        "import ",
+        "func ",
+        "namespace ",
+        "<script",
+        "<style",
+    ];
+    KEYWORDS.iter().any(|kw| trimmed.starts_with(kw))
 }
 
 fn format_anchor(anchor: Option<&str>) -> String {
@@ -178,7 +288,7 @@ fn transition_hint(tel: &Telemetry, ctx: &EnrichContext) -> Result<Option<String
 
     let pairs = pair_failures_with_successes(&rows, ctx.error_kind);
 
-    if pairs.len() < 20 {
+    if pairs.len() < TRANSITION_HINT_MIN_PAIRS {
         return Ok(None);
     }
 
@@ -480,6 +590,7 @@ mod tests {
             anchor_text: None,
             error_kind: "context_not_found",
             current_fingerprint: Some(&current),
+            file_content: None,
         };
         let got = stale_read_hint(&t, &ctx).unwrap().unwrap();
         assert!(got.contains("mtime changed"), "{got}");
@@ -510,6 +621,7 @@ mod tests {
             anchor_text: None,
             error_kind: "context_not_found",
             current_fingerprint: Some(&current),
+            file_content: None,
         };
         assert!(stale_read_hint(&t, &ctx).unwrap().is_none());
     }
@@ -574,6 +686,7 @@ mod tests {
             anchor_text: Some("fn bar("),
             error_kind: "context_not_found",
             current_fingerprint: None,
+            file_content: None,
         };
         let got = anchor_reliability_hint(&t, &ctx).unwrap().unwrap();
         assert!(got.contains("failed 3/4"), "hint was: {got}");
@@ -610,6 +723,7 @@ mod tests {
             anchor_text: Some("fn bar("),
             error_kind: "context_not_found",
             current_fingerprint: None,
+            file_content: None,
         };
         assert!(anchor_reliability_hint(&t, &ctx).unwrap().is_none());
     }
@@ -643,9 +757,10 @@ mod tests {
     }
 
     #[test]
-    fn transition_hint_silent_below_twenty() {
+    fn transition_hint_silent_below_threshold() {
         let t = Telemetry::open_in_memory().unwrap();
-        for i in 0..5 {
+        // One below TRANSITION_HINT_MIN_PAIRS — must stay silent.
+        for i in 0..(TRANSITION_HINT_MIN_PAIRS - 1) {
             seed_transition_pair(
                 &t,
                 &format!("s{i}"),
@@ -661,14 +776,15 @@ mod tests {
             anchor_text: None,
             error_kind: "context_not_found",
             current_fingerprint: None,
+            file_content: None,
         };
         assert!(transition_hint(&t, &ctx).unwrap().is_none());
     }
 
     #[test]
-    fn transition_hint_classifies_at_twenty() {
+    fn transition_hint_classifies_at_threshold() {
         let t = Telemetry::open_in_memory().unwrap();
-        for i in 0..20 {
+        for i in 0..TRANSITION_HINT_MIN_PAIRS {
             seed_transition_pair(
                 &t,
                 &format!("s{i}"),
@@ -684,6 +800,7 @@ mod tests {
             anchor_text: None,
             error_kind: "context_not_found",
             current_fingerprint: None,
+            file_content: None,
         };
         let got = transition_hint(&t, &ctx).unwrap().unwrap();
         assert!(got.contains("anchor change"), "hint was: {got}");
@@ -801,5 +918,87 @@ mod tests {
             hints: vec!["one".into(), "two".into()],
         };
         assert_eq!(e.into_message(), "base\n\none\n\ntwo");
+    }
+
+    /// Bare `@@` failing on a file with no historical alternatives now
+    /// synthesizes structural anchors directly from the current file
+    /// content. This is the dominant failing-anchor shape in real-world
+    /// telemetry — without this hint the model has nothing concrete to try
+    /// next.
+    #[test]
+    fn anchor_reliability_synthesizes_anchors_for_bare_at() {
+        let t = Telemetry::open_in_memory().unwrap();
+        let cid = record_basic(&t, "error", Some("context_not_found"));
+        // Bare `@@` (anchor_text: None) failed 3 times, succeeded 0 times.
+        // No `Some(anchor)` rows at all — historical alternatives are empty.
+        insert_attempts(
+            &t,
+            cid,
+            &[
+                AnchorAttempt {
+                    file_path: "foo.rs".into(),
+                    chunk_index: 0,
+                    anchor_text: None,
+                    success: false,
+                    fuzzy_tier: None,
+                },
+                AnchorAttempt {
+                    file_path: "foo.rs".into(),
+                    chunk_index: 0,
+                    anchor_text: None,
+                    success: false,
+                    fuzzy_tier: None,
+                },
+                AnchorAttempt {
+                    file_path: "foo.rs".into(),
+                    chunk_index: 0,
+                    anchor_text: None,
+                    success: false,
+                    fuzzy_tier: None,
+                },
+            ],
+        );
+        let content = "use std::io;\n\npub fn one() {\n    return;\n}\n\
+                       impl Bar for Baz {\n    fn run(&self) {\n        return;\n    }\n}\n";
+        let ctx = EnrichContext {
+            file_path: "foo.rs",
+            chunk_index: 0,
+            anchor_text: None,
+            error_kind: "context_not_found",
+            current_fingerprint: None,
+            file_content: Some(content),
+        };
+        let got = anchor_reliability_hint(&t, &ctx).unwrap().unwrap();
+        assert!(got.contains("failed 3/3"), "hint was: {got}");
+        assert!(got.contains("structural anchors"), "hint was: {got}");
+        // At least one of the file's structural lines must surface.
+        assert!(
+            got.contains("@@ use std::io;")
+                || got.contains("@@ pub fn one()")
+                || got.contains("@@ impl Bar for Baz"),
+            "expected a synthesized anchor, got: {got}"
+        );
+    }
+
+    #[test]
+    fn synthesize_picks_unique_declarations() {
+        let content = "use std::io;\n\
+                       fn dup() {}\n\
+                       fn dup() {}\n\
+                       pub fn unique_one() {}\n\
+                       impl Foo for Bar {}\n\
+                       const X: u8 = 1;\n";
+        let got = synthesize_structural_anchors(content);
+        // `fn dup() {}` repeats — must be excluded. Up to 3 unique
+        // declarations should be returned in file order.
+        assert!(got.iter().all(|l| !l.contains("fn dup")), "got: {got:?}");
+        assert_eq!(got.len(), 3, "got: {got:?}");
+        assert_eq!(got[0], "use std::io;");
+    }
+
+    #[test]
+    fn synthesize_skips_when_nothing_structural() {
+        let content = "    return;\n    let x = 1;\n    println!(\"hi\");\n";
+        assert!(synthesize_structural_anchors(content).is_empty());
     }
 }

@@ -19,8 +19,8 @@
 //! add_line: "+" /(.+)/ LF -> line
 //!
 //! change_move: "*** Move to: " filename LF
-//! change: (change_context | change_line)+ eof_line?
-//! change_context: ("@@" | "@@ " /(.+)/) LF
+//! change: change_context* (change_line+ eof_line?)
+//! change_context: ("@@" | "@@ " /(.+)/) LF      # one or more may stack
 //! change_line: ("+" | "-" | " ") /(.+)/ LF
 //! eof_line: "*** End of File" LF
 //!
@@ -38,6 +38,26 @@ const EOF_MARKER: &str = "*** End of File";
 const CHANGE_CONTEXT_MARKER: &str = "@@ ";
 const EMPTY_CHANGE_CONTEXT_MARKER: &str = "@@";
 
+/// Subkind of `InvalidHunkError`. Surfaced through telemetry so the dominant
+/// parse-failure shape (e.g. Add-File body lines without a `+` prefix) is
+/// visible in `ct apply-patch stats` rather than collapsed into a single
+/// `parse` bucket.
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum ParseErrorKind {
+    /// Add-File body line without the required `+` prefix.
+    AddMissingPlus,
+    /// Update-hunk body line that doesn't start with ` `, `+`, or `-`.
+    UnprefixedLine,
+    /// First chunk of an Update started with neither `@@` nor a body line.
+    MissingChunkHeader,
+    /// Update hunk had no chunks and no `*** Move to:`.
+    EmptyUpdate,
+    /// Hunk header didn't match Add/Delete/Update.
+    UnknownHunkHeader,
+    /// Anything that doesn't fit a more specific subkind above.
+    Other,
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum ParseError {
     InvalidPatchError(String),
@@ -45,6 +65,7 @@ pub enum ParseError {
         message: String,
         line_number: usize,
         snippet: Option<String>,
+        kind: ParseErrorKind,
     },
 }
 
@@ -56,6 +77,7 @@ impl std::fmt::Display for ParseError {
                 message,
                 line_number,
                 snippet,
+                kind: _,
             } => write!(
                 f,
                 "invalid hunk at line {line_number}, {message}{}",
@@ -66,6 +88,26 @@ impl std::fmt::Display for ParseError {
 }
 
 impl std::error::Error for ParseError {}
+
+impl ParseError {
+    /// Stable string discriminator used by the telemetry layer to bucket
+    /// parse failures. The empty-string sentinel for `InvalidPatchError`
+    /// keeps the existing `parse` bucket intact for envelope-shape errors
+    /// while letting hunk-shape errors break out by kind.
+    pub fn subkind_str(&self) -> &'static str {
+        match self {
+            ParseError::InvalidPatchError(_) => "parse_envelope",
+            ParseError::InvalidHunkError { kind, .. } => match kind {
+                ParseErrorKind::AddMissingPlus => "parse_add_missing_plus",
+                ParseErrorKind::UnprefixedLine => "parse_unprefixed_line",
+                ParseErrorKind::MissingChunkHeader => "parse_missing_chunk_header",
+                ParseErrorKind::EmptyUpdate => "parse_empty_update",
+                ParseErrorKind::UnknownHunkHeader => "parse_unknown_hunk_header",
+                ParseErrorKind::Other => "parse_other",
+            },
+        }
+    }
+}
 
 use ParseError::*;
 
@@ -93,12 +135,17 @@ use Hunk::*;
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct UpdateFileChunk {
-    /// A single line of context used to narrow down the position of the chunk
-    /// (this is usually a class, method, or function definition.)
-    pub change_context: Option<String>,
+    /// Anchor lines used to narrow the position of the chunk. Each
+    /// `@@ <line>` immediately before the body contributes one entry, applied
+    /// in order: the file cursor advances past anchor[0]'s match, then
+    /// anchor[1] is searched after that point, etc. A bare `@@` is a no-op
+    /// (consumed but not stored). Empty vec means "no anchor — use the body
+    /// pattern alone".
+    pub change_contexts: Vec<String>,
 
     /// A contiguous block of lines that should be replaced with `new_lines`.
-    /// `old_lines` must occur strictly after `change_context`.
+    /// `old_lines` must occur strictly after the last anchor in
+    /// `change_contexts`.
     pub old_lines: Vec<String>,
     pub new_lines: Vec<String>,
 
@@ -136,12 +183,14 @@ fn annotate(err: ParseError, all_lines: &[&str]) -> ParseError {
             message,
             line_number,
             snippet: None,
+            kind,
         } => {
             let snippet = snippet_for(all_lines, line_number);
             ParseError::InvalidHunkError {
                 message,
                 line_number,
                 snippet,
+                kind,
             }
         }
         other => other,
@@ -247,6 +296,26 @@ fn parse_one_hunk(lines: &[&str], line_number: usize) -> Result<(Hunk, usize), P
                 contents.push('\n');
                 parsed_lines += 1;
             } else {
+                // Stop on the next hunk marker — that's the legitimate end of
+                // this Add-File body. Anything else here is the most common
+                // Add-File mistake: the model wrote raw file contents without
+                // the required `+` prefix (e.g. literal `---` for markdown
+                // frontmatter). Surface it specifically so telemetry buckets
+                // it as `parse_add_missing_plus` and the model sees a precise
+                // hint instead of "unknown hunk header" for the next line.
+                let trimmed = add_line.trim_start();
+                if !trimmed.starts_with("***") {
+                    let preview: String = add_line.chars().take(80).collect();
+                    return Err(InvalidHunkError {
+                        message: format!(
+                            "Add File body lines must start with '+' — got: {preview:?}. \
+                             Prefix every initial-content line with '+', including blank lines (' +' for an empty line is fine, just `+` works too)."
+                        ),
+                        line_number: line_number + parsed_lines,
+                        snippet: None,
+                        kind: ParseErrorKind::AddMissingPlus,
+                    });
+                }
                 break;
             }
         }
@@ -309,6 +378,7 @@ fn parse_one_hunk(lines: &[&str], line_number: usize) -> Result<(Hunk, usize), P
                 message: format!("Update file hunk for path '{path}' is empty"),
                 line_number,
                 snippet: None,
+                kind: ParseErrorKind::EmptyUpdate,
             });
         }
 
@@ -328,6 +398,7 @@ fn parse_one_hunk(lines: &[&str], line_number: usize) -> Result<(Hunk, usize), P
         ),
         line_number,
         snippet: None,
+        kind: ParseErrorKind::UnknownHunkHeader,
     })
 }
 
@@ -341,36 +412,54 @@ fn parse_update_file_chunk(
             message: "Update hunk does not contain any lines".to_string(),
             line_number,
             snippet: None,
+            kind: ParseErrorKind::EmptyUpdate,
         });
     }
-    // If we see an explicit context marker @@ or @@ <context>, consume it; otherwise, optionally
-    // allow treating the chunk as starting directly with diff lines.
-    let (change_context, start_index) = if lines[0] == EMPTY_CHANGE_CONTEXT_MARKER {
-        (None, 1)
-    } else if let Some(context) = lines[0].strip_prefix(CHANGE_CONTEXT_MARKER) {
-        (Some(context.to_string()), 1)
-    } else {
-        if !allow_missing_context {
-            return Err(InvalidHunkError {
-                message: format!(
-                    "Expected update hunk to start with a @@ context marker, got: '{}'",
-                    lines[0]
-                ),
-                line_number,
-                snippet: None,
-            });
+    // Collect *all* consecutive @@ / @@ <text> lines as a stacked anchor
+    // sequence. Each non-empty anchor advances the cursor past its own match
+    // before the next anchor (or the body) is searched. Bare `@@` is consumed
+    // as a marker but contributes no anchor text.
+    //
+    // Stacked anchors used to be a parse error and were the dominant failure
+    // shape in telemetry — models reach for them naturally to narrow into a
+    // function or block before the change. Supporting them removes the
+    // footgun.
+    let mut change_contexts: Vec<String> = Vec::new();
+    let mut start_index = 0;
+    while start_index < lines.len() {
+        let line = lines[start_index];
+        if line == EMPTY_CHANGE_CONTEXT_MARKER {
+            start_index += 1;
+            continue;
         }
-        (None, 0)
-    };
+        if let Some(context) = line.strip_prefix(CHANGE_CONTEXT_MARKER) {
+            change_contexts.push(context.to_string());
+            start_index += 1;
+            continue;
+        }
+        break;
+    }
+    if start_index == 0 && !allow_missing_context {
+        return Err(InvalidHunkError {
+            message: format!(
+                "Expected update hunk to start with a @@ context marker, got: '{}'",
+                lines[0]
+            ),
+            line_number,
+            snippet: None,
+            kind: ParseErrorKind::MissingChunkHeader,
+        });
+    }
     if start_index >= lines.len() {
         return Err(InvalidHunkError {
             message: "Update hunk does not contain any lines".to_string(),
             line_number: line_number + 1,
             snippet: None,
+            kind: ParseErrorKind::EmptyUpdate,
         });
     }
     let mut chunk = UpdateFileChunk {
-        change_context,
+        change_contexts,
         old_lines: Vec::new(),
         new_lines: Vec::new(),
         is_end_of_file: false,
@@ -384,6 +473,7 @@ fn parse_update_file_chunk(
                         message: "Update hunk does not contain any lines".to_string(),
                         line_number: line_number + 1,
                         snippet: None,
+                        kind: ParseErrorKind::EmptyUpdate,
                     });
                 }
                 chunk.is_end_of_file = true;
@@ -415,6 +505,7 @@ fn parse_update_file_chunk(
                                 ),
                                 line_number: line_number + 1,
                                 snippet: None,
+                                kind: ParseErrorKind::UnprefixedLine,
                             });
                         }
                         // Assume this is the start of the next hunk.
@@ -471,6 +562,7 @@ mod tests {
                 ref message,
                 line_number: 2,
                 snippet: Some(_),
+                kind: ParseErrorKind::EmptyUpdate,
             }) => {
                 assert_eq!(message, "Update file hunk for path 'test.py' is empty");
             }
@@ -527,7 +619,7 @@ mod tests {
                     path: PathBuf::from("path/update.py"),
                     move_path: Some(PathBuf::from("path/update2.py")),
                     chunks: vec![UpdateFileChunk {
-                        change_context: Some("def f():".to_string()),
+                        change_contexts: vec!["def f():".to_string()],
                         old_lines: vec!["    pass".to_string()],
                         new_lines: vec!["    return 123".to_string()],
                         is_end_of_file: false
@@ -552,7 +644,7 @@ mod tests {
                     path: PathBuf::from("file.py"),
                     move_path: None,
                     chunks: vec![UpdateFileChunk {
-                        change_context: None,
+                        change_contexts: vec![],
                         old_lines: vec![],
                         new_lines: vec!["line".to_string()],
                         is_end_of_file: false
@@ -580,7 +672,7 @@ mod tests {
                 path: PathBuf::from("file2.py"),
                 move_path: None,
                 chunks: vec![UpdateFileChunk {
-                    change_context: None,
+                    change_contexts: vec![],
                     old_lines: vec!["import foo".to_string()],
                     new_lines: vec!["import foo".to_string(), "bar".to_string()],
                     is_end_of_file: false,
@@ -622,7 +714,7 @@ mod tests {
                     path: absolute_update.clone(),
                     move_path: None,
                     chunks: vec![UpdateFileChunk {
-                        change_context: None,
+                        change_contexts: vec![],
                         old_lines: vec!["old".to_string()],
                         new_lines: vec!["new".to_string()],
                         is_end_of_file: false
@@ -641,6 +733,7 @@ mod tests {
             Valid hunk headers: '*** Add File: {path}', '*** Delete File: {path}', '*** Update File: {path}'".to_string(),
                 line_number: 234,
                 snippet: None,
+                kind: ParseErrorKind::UnknownHunkHeader,
             })
         );
         // Other edge cases are already covered by tests above/below.
@@ -659,6 +752,7 @@ mod tests {
                     .to_string(),
                 line_number: 123,
                 snippet: None,
+                kind: ParseErrorKind::MissingChunkHeader,
             })
         );
         assert_eq!(
@@ -671,6 +765,7 @@ mod tests {
                 message: "Update hunk does not contain any lines".to_string(),
                 line_number: 124,
                 snippet: None,
+                kind: ParseErrorKind::EmptyUpdate,
             })
         );
         assert_eq!(
@@ -680,6 +775,7 @@ mod tests {
                        Every line should start with ' ' (context line), '+' (added line), or '-' (removed line)".to_string(),
                 line_number: 124,
                 snippet: None,
+                kind: ParseErrorKind::UnprefixedLine,
             })
         );
         assert_eq!(
@@ -692,6 +788,7 @@ mod tests {
                 message: "Update hunk does not contain any lines".to_string(),
                 line_number: 124,
                 snippet: None,
+                kind: ParseErrorKind::EmptyUpdate,
             })
         );
         assert_eq!(
@@ -710,7 +807,7 @@ mod tests {
             ),
             Ok((
                 (UpdateFileChunk {
-                    change_context: Some("change_context".to_string()),
+                    change_contexts: vec!["change_context".to_string()],
                     old_lines: vec![
                         "".to_string(),
                         "context".to_string(),
@@ -736,13 +833,119 @@ mod tests {
             ),
             Ok((
                 (UpdateFileChunk {
-                    change_context: None,
+                    change_contexts: vec![],
                     old_lines: vec![],
                     new_lines: vec!["line".to_string()],
                     is_end_of_file: true
                 }),
                 3
             ))
+        );
+    }
+
+    /// Two consecutive `@@ <text>` lines used to fail parsing — the model
+    /// reaches for them naturally to narrow into a function or block, and
+    /// telemetry showed this as the dominant `parse` shape. Both anchors
+    /// must end up in `change_contexts`, in order.
+    #[test]
+    fn stacked_anchors_collected_in_order() {
+        let chunk = parse_update_file_chunk(
+            &[
+                "@@ impl Foo for Bar",
+                "@@ fn baz(&self)",
+                "-    return false;",
+                "+    return true;",
+                "*** End Patch",
+            ],
+            123,
+            false,
+        )
+        .unwrap()
+        .0;
+        assert_eq!(
+            chunk.change_contexts,
+            vec!["impl Foo for Bar".to_string(), "fn baz(&self)".to_string()]
+        );
+        assert_eq!(chunk.old_lines, vec!["    return false;".to_string()]);
+        assert_eq!(chunk.new_lines, vec!["    return true;".to_string()]);
+    }
+
+    /// Bare `@@` lines mixed into a stacked anchor sequence are consumed
+    /// without contributing to `change_contexts` — they're a no-op marker.
+    #[test]
+    fn bare_at_in_stack_is_skipped() {
+        let chunk = parse_update_file_chunk(
+            &[
+                "@@ impl Foo",
+                "@@",
+                "@@ fn bar()",
+                "-old",
+                "+new",
+                "*** End Patch",
+            ],
+            1,
+            false,
+        )
+        .unwrap()
+        .0;
+        assert_eq!(
+            chunk.change_contexts,
+            vec!["impl Foo".to_string(), "fn bar()".to_string()]
+        );
+    }
+
+    /// Add-File body line without a `+` prefix gets a specific subkind so
+    /// telemetry can break it out of the generic `parse` bucket. Common
+    /// trigger: literal markdown frontmatter (`---`) right after `*** Add
+    /// File:`.
+    #[test]
+    fn add_file_missing_plus_returns_specific_subkind() {
+        let err = parse_patch_text(
+            "*** Begin Patch\n\
+             *** Add File: notes.md\n\
+             ---\n\
+             title: foo\n\
+             ---\n\
+             *** End Patch",
+        )
+        .unwrap_err();
+        match err {
+            ParseError::InvalidHunkError { kind, message, .. } => {
+                assert_eq!(kind, ParseErrorKind::AddMissingPlus);
+                assert!(message.contains("must start with '+'"), "msg: {message}");
+            }
+            other => panic!("expected InvalidHunkError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn subkind_str_maps_each_kind() {
+        let kinds = [
+            (ParseErrorKind::AddMissingPlus, "parse_add_missing_plus"),
+            (ParseErrorKind::UnprefixedLine, "parse_unprefixed_line"),
+            (
+                ParseErrorKind::MissingChunkHeader,
+                "parse_missing_chunk_header",
+            ),
+            (ParseErrorKind::EmptyUpdate, "parse_empty_update"),
+            (
+                ParseErrorKind::UnknownHunkHeader,
+                "parse_unknown_hunk_header",
+            ),
+            (ParseErrorKind::Other, "parse_other"),
+        ];
+        for (kind, want) in kinds {
+            let err = ParseError::InvalidHunkError {
+                message: "x".into(),
+                line_number: 0,
+                snippet: None,
+                kind,
+            };
+            assert_eq!(err.subkind_str(), want);
+        }
+        assert_eq!(
+            ParseError::InvalidPatchError("x".into()).subkind_str(),
+            "parse_envelope"
         );
     }
 }

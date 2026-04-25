@@ -2,7 +2,8 @@
 // https://github.com/openai/codex/tree/fe7c959e90d46abb8311e4a0b369e6cb32bf337e
 // Licensed under Apache License 2.0. See NOTICE at workspace root.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::fs::OpenOptions;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -71,29 +72,39 @@ pub enum ApplyPatchError {
     Parse(#[from] super::parser::ParseError),
     #[error(
         "context not found in {path} at chunk #{chunk}{}{}{}",
-        .change_context.as_deref().map(|c| format!(" (@@ {c})")).unwrap_or_default(),
+        format_anchor_stack(.change_contexts),
         .first_old_line.as_deref().map(|l| format!(": first expected line was {l:?}")).unwrap_or_default(),
         .near_miss.as_deref().unwrap_or("")
     )]
     ContextNotFound {
         path: String,
         chunk: usize,
-        change_context: Option<String>,
+        change_contexts: Vec<String>,
         first_old_line: Option<String>,
         near_miss: Option<String>,
     },
     #[error(
-        "ambiguous context in {path} at chunk #{chunk}{} — matched at lines {candidates:?}; widen the context or use a more specific @@ anchor",
-        .change_context.as_deref().map(|c| format!(" (@@ {c})")).unwrap_or_default(),
+        "ambiguous context in {path} at chunk #{chunk}{} — matched at lines {candidates:?}; widen the context or use a more specific @@ anchor{}",
+        format_anchor_stack(.change_contexts),
+        format_disambiguation(.disambiguation_hints),
     )]
     AmbiguousContext {
         path: String,
         chunk: usize,
-        change_context: Option<String>,
+        change_contexts: Vec<String>,
         candidates: Vec<usize>,
+        /// Pre-computed `@@ <anchor> → line N` suggestions, one per
+        /// candidate where a unique upstream anchor was found. Empty when
+        /// no disambiguator was synthesizable (file too short, or every
+        /// upstream line is also ambiguous).
+        disambiguation_hints: Vec<String>,
     },
     #[error("delete target is a directory: {0}")]
     DeleteIsDirectory(String),
+    #[error("target is a directory: {0}")]
+    TargetIsDirectory(String),
+    #[error("target is read-only: {0}")]
+    ReadOnlyTarget(String),
     #[error("add target already exists: {0}")]
     AddTargetExists(String),
     #[error(
@@ -116,19 +127,50 @@ pub enum ApplyPatchError {
         #[source]
         source: std::io::Error,
     },
+    #[error("{error}; rollback failed: {rollback}")]
+    RollbackFailed {
+        error: Box<ApplyPatchError>,
+        rollback: String,
+    },
+}
+
+/// Render a stacked-anchor list for inclusion in error messages. One anchor
+/// renders as `(@@ foo)`; multiple as `(@@ foo / @@ bar)`. Empty stack →
+/// empty string.
+fn format_anchor_stack(contexts: &[String]) -> String {
+    if contexts.is_empty() {
+        return String::new();
+    }
+    let parts: Vec<String> = contexts.iter().map(|c| format!("@@ {c}")).collect();
+    format!(" ({})", parts.join(" / "))
+}
+
+/// Render the AmbiguousContext disambiguation suggestions block. Each hint is
+/// already a self-contained `@@ <line>  →  line N` string.
+fn format_disambiguation(hints: &[String]) -> String {
+    if hints.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("\nsuggested anchors:");
+    for h in hints {
+        out.push_str("\n  ");
+        out.push_str(h);
+    }
+    out
 }
 
 enum ChunkFailure {
     NotFound {
         chunk_index: usize,
-        change_context: Option<String>,
+        change_contexts: Vec<String>,
         first_old_line: Option<String>,
         near_miss: Option<String>,
     },
     Ambiguous {
         chunk_index: usize,
-        change_context: Option<String>,
+        change_contexts: Vec<String>,
         candidates: Vec<usize>,
+        disambiguation_hints: Vec<String>,
     },
     AnchorShadowsFirstContext {
         chunk_index: usize,
@@ -343,49 +385,206 @@ pub fn commit(cwd: &Path, changes: &[FileChange]) -> Result<(), ApplyPatchError>
         path: cwd.display().to_string(),
         source,
     })?;
+
+    preflight_commit(&cwd_canon, changes)?;
+    let snapshots = collect_snapshots(&cwd_canon, changes)?;
+
     for change in changes {
-        let source_abs = resolve_path(&cwd_canon, Path::new(&change.path))?;
-        match change.kind {
-            ChangeType::Add | ChangeType::Update => {
-                let content = change
-                    .new_content
-                    .as_deref()
-                    .expect("Add/Update change missing new_content");
-                write_file(&source_abs, &change.path, content)?;
+        if let Err(error) = commit_one(&cwd_canon, change) {
+            if let Err(rollback) = rollback_snapshots(&snapshots) {
+                return Err(ApplyPatchError::RollbackFailed {
+                    error: Box::new(error),
+                    rollback,
+                });
             }
-            ChangeType::Move => {
-                let dest_rel = change
-                    .move_path
-                    .as_ref()
-                    .expect("Move change missing move_path");
-                let dest_abs = resolve_path(&cwd_canon, Path::new(dest_rel))?;
-                let content = change
-                    .new_content
-                    .as_deref()
-                    .expect("Move change missing new_content");
-                write_file(&dest_abs, dest_rel, content)?;
-                if source_abs != dest_abs {
-                    std::fs::remove_file(&source_abs).map_err(|source| ApplyPatchError::Io {
-                        path: change.path.clone(),
-                        source,
-                    })?;
-                }
-            }
-            ChangeType::Delete => {
-                let meta =
-                    std::fs::metadata(&source_abs).map_err(|source| ApplyPatchError::Io {
-                        path: change.path.clone(),
-                        source,
-                    })?;
-                if meta.is_dir() {
-                    return Err(ApplyPatchError::DeleteIsDirectory(change.path.clone()));
-                }
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
+fn commit_one(cwd_canon: &Path, change: &FileChange) -> Result<(), ApplyPatchError> {
+    let source_abs = resolve_path(cwd_canon, Path::new(&change.path))?;
+    match change.kind {
+        ChangeType::Add | ChangeType::Update => {
+            let content = change
+                .new_content
+                .as_deref()
+                .expect("Add/Update change missing new_content");
+            write_file(&source_abs, &change.path, content)?;
+        }
+        ChangeType::Move => {
+            let dest_rel = change
+                .move_path
+                .as_ref()
+                .expect("Move change missing move_path");
+            let dest_abs = resolve_path(cwd_canon, Path::new(dest_rel))?;
+            let content = change
+                .new_content
+                .as_deref()
+                .expect("Move change missing new_content");
+            write_file(&dest_abs, dest_rel, content)?;
+            if source_abs != dest_abs {
                 std::fs::remove_file(&source_abs).map_err(|source| ApplyPatchError::Io {
                     path: change.path.clone(),
                     source,
                 })?;
             }
         }
+        ChangeType::Delete => {
+            let meta = std::fs::metadata(&source_abs).map_err(|source| ApplyPatchError::Io {
+                path: change.path.clone(),
+                source,
+            })?;
+            if meta.is_dir() {
+                return Err(ApplyPatchError::DeleteIsDirectory(change.path.clone()));
+            }
+            std::fs::remove_file(&source_abs).map_err(|source| ApplyPatchError::Io {
+                path: change.path.clone(),
+                source,
+            })?;
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct FileSnapshot {
+    abs: PathBuf,
+    rel: String,
+    content: Option<String>,
+}
+
+fn preflight_commit(cwd_canon: &Path, changes: &[FileChange]) -> Result<(), ApplyPatchError> {
+    for change in changes {
+        let source_abs = resolve_path(cwd_canon, Path::new(&change.path))?;
+        match change.kind {
+            ChangeType::Add | ChangeType::Update => {
+                ensure_writable_target(&source_abs, &change.path)?;
+            }
+            ChangeType::Delete => ensure_deletable_target(&source_abs, &change.path)?,
+            ChangeType::Move => {
+                ensure_deletable_target(&source_abs, &change.path)?;
+                let dest_rel = change
+                    .move_path
+                    .as_ref()
+                    .expect("Move change missing move_path");
+                let dest_abs = resolve_path(cwd_canon, Path::new(dest_rel))?;
+                ensure_writable_target(&dest_abs, dest_rel)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn collect_snapshots(
+    cwd_canon: &Path,
+    changes: &[FileChange],
+) -> Result<Vec<FileSnapshot>, ApplyPatchError> {
+    let mut seen: HashMap<PathBuf, String> = HashMap::new();
+
+    for change in changes {
+        let source_abs = resolve_path(cwd_canon, Path::new(&change.path))?;
+        seen.entry(source_abs).or_insert_with(|| change.path.clone());
+        if let ChangeType::Move = change.kind {
+            let dest_rel = change
+                .move_path
+                .as_ref()
+                .expect("Move change missing move_path");
+            let dest_abs = resolve_path(cwd_canon, Path::new(dest_rel))?;
+            seen.entry(dest_abs).or_insert_with(|| dest_rel.clone());
+        }
+    }
+
+    let mut snapshots = Vec::with_capacity(seen.len());
+    for (abs, rel) in seen {
+        let content = if abs.exists() {
+            Some(std::fs::read_to_string(&abs).map_err(|source| ApplyPatchError::Io {
+                path: rel.clone(),
+                source,
+            })?)
+        } else {
+            None
+        };
+        snapshots.push(FileSnapshot { abs, rel, content });
+    }
+    Ok(snapshots)
+}
+
+fn rollback_snapshots(snapshots: &[FileSnapshot]) -> Result<(), String> {
+    let mut errors = Vec::new();
+    for snapshot in snapshots {
+        let result = match &snapshot.content {
+            Some(content) => {
+                write_file(&snapshot.abs, &snapshot.rel, content).map_err(|e| e.to_string())
+            }
+            None => {
+                if snapshot.abs.exists() {
+                    std::fs::remove_file(&snapshot.abs).map_err(|e| e.to_string())
+                } else {
+                    Ok(())
+                }
+            }
+        };
+        if let Err(error) = result {
+            errors.push(format!("{}: {error}", snapshot.rel));
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+fn ensure_writable_target(abs: &Path, rel: &str) -> Result<(), ApplyPatchError> {
+    if let Ok(meta) = std::fs::metadata(abs) {
+        if meta.is_dir() {
+            return Err(ApplyPatchError::TargetIsDirectory(rel.to_string()));
+        }
+        if meta.permissions().readonly() {
+            return Err(ApplyPatchError::ReadOnlyTarget(rel.to_string()));
+        }
+        OpenOptions::new()
+            .write(true)
+            .open(abs)
+            .map_err(|source| ApplyPatchError::Io {
+                path: rel.to_string(),
+                source,
+            })?;
+    }
+    ensure_parent_writable(abs, rel)
+}
+
+fn ensure_deletable_target(abs: &Path, rel: &str) -> Result<(), ApplyPatchError> {
+    let meta = std::fs::metadata(abs).map_err(|source| ApplyPatchError::Io {
+        path: rel.to_string(),
+        source,
+    })?;
+    if meta.is_dir() {
+        return Err(ApplyPatchError::DeleteIsDirectory(rel.to_string()));
+    }
+    ensure_parent_writable(abs, rel)
+}
+
+fn ensure_parent_writable(abs: &Path, rel: &str) -> Result<(), ApplyPatchError> {
+    let Some(mut cursor) = abs.parent().map(Path::to_path_buf) else {
+        return Ok(());
+    };
+    while !cursor.exists() {
+        if !cursor.pop() {
+            return Ok(());
+        }
+    }
+    let meta = std::fs::metadata(&cursor).map_err(|source| ApplyPatchError::Io {
+        path: rel.to_string(),
+        source,
+    })?;
+    if !meta.is_dir() {
+        return Err(ApplyPatchError::TargetIsDirectory(cursor.display().to_string()));
+    }
+    if meta.permissions().readonly() {
+        return Err(ApplyPatchError::ReadOnlyTarget(cursor.display().to_string()));
     }
     Ok(())
 }
@@ -562,25 +761,32 @@ fn compute_replacements(
 
     for (chunk_index, chunk) in chunks.iter().enumerate() {
         let mut chunk_worst = MatchQuality::Exact;
-        if let Some(ctx_line) = &chunk.change_context {
+        // Walk every stacked anchor in order. Each `@@ <line>` advances the
+        // file cursor past its match before the next anchor (or the body
+        // pattern) is searched. The last anchor in the stack is the one
+        // immediately before the body — that's the one used for the
+        // anchor-shadow check.
+        if let Some(last_anchor) = chunk.change_contexts.last()
+            && chunk.old_lines.first() == Some(last_anchor)
+        {
             // Catch the anchor-shadow footgun *before* seeking: the anchor
             // consumes its line and the pattern search resumes below, so if
             // the first pattern line is the same text it will either miss
             // entirely or (worse) match a later duplicate. Specific error
             // beats a confusing "context not found".
-            if chunk.old_lines.first() == Some(ctx_line) {
-                attempts.push(AnchorAttempt {
-                    file_path: file_rel.to_string(),
-                    chunk_index,
-                    anchor_text: Some(ctx_line.clone()),
-                    success: false,
-                    fuzzy_tier: None,
-                });
-                return Err(ChunkFailure::AnchorShadowsFirstContext {
-                    chunk_index,
-                    anchor: ctx_line.clone(),
-                });
-            }
+            attempts.push(AnchorAttempt {
+                file_path: file_rel.to_string(),
+                chunk_index,
+                anchor_text: Some(last_anchor.clone()),
+                success: false,
+                fuzzy_tier: None,
+            });
+            return Err(ChunkFailure::AnchorShadowsFirstContext {
+                chunk_index,
+                anchor: last_anchor.clone(),
+            });
+        }
+        for ctx_line in &chunk.change_contexts {
             match seek_sequence(
                 original_lines,
                 std::slice::from_ref(ctx_line),
@@ -590,6 +796,13 @@ fn compute_replacements(
                 SeekOutcome::Unique { idx, quality } => {
                     line_index = idx + 1;
                     chunk_worst = worse_of(chunk_worst, quality);
+                    attempts.push(AnchorAttempt {
+                        file_path: file_rel.to_string(),
+                        chunk_index,
+                        anchor_text: Some(ctx_line.clone()),
+                        success: true,
+                        fuzzy_tier: Some(quality.as_str().to_string()),
+                    });
                 }
                 SeekOutcome::Ambiguous { matches, .. } => {
                     attempts.push(AnchorAttempt {
@@ -599,10 +812,13 @@ fn compute_replacements(
                         success: false,
                         fuzzy_tier: None,
                     });
+                    let candidates = one_based(&matches);
+                    let disambiguation_hints = disambiguate_candidates(original_lines, &matches);
                     return Err(ChunkFailure::Ambiguous {
                         chunk_index,
-                        change_context: chunk.change_context.clone(),
-                        candidates: one_based(&matches),
+                        change_contexts: chunk.change_contexts.clone(),
+                        candidates,
+                        disambiguation_hints,
                     });
                 }
                 SeekOutcome::NotFound => {
@@ -615,7 +831,7 @@ fn compute_replacements(
                     });
                     return Err(ChunkFailure::NotFound {
                         chunk_index,
-                        change_context: chunk.change_context.clone(),
+                        change_contexts: chunk.change_contexts.clone(),
                         first_old_line: chunk.old_lines.first().cloned(),
                         near_miss: near_miss_snippet(
                             original_lines,
@@ -642,7 +858,7 @@ fn compute_replacements(
             attempts.push(AnchorAttempt {
                 file_path: file_rel.to_string(),
                 chunk_index,
-                anchor_text: chunk.change_context.clone(),
+                anchor_text: chunk.change_contexts.last().cloned(),
                 success: true,
                 fuzzy_tier: Some(chunk_worst.as_str().to_string()),
             });
@@ -677,27 +893,30 @@ fn compute_replacements(
                 attempts.push(AnchorAttempt {
                     file_path: file_rel.to_string(),
                     chunk_index,
-                    anchor_text: chunk.change_context.clone(),
+                    anchor_text: chunk.change_contexts.last().cloned(),
                     success: false,
                     fuzzy_tier: None,
                 });
+                let candidates = one_based(&matches);
+                let disambiguation_hints = disambiguate_candidates(original_lines, &matches);
                 return Err(ChunkFailure::Ambiguous {
                     chunk_index,
-                    change_context: chunk.change_context.clone(),
-                    candidates: one_based(&matches),
+                    change_contexts: chunk.change_contexts.clone(),
+                    candidates,
+                    disambiguation_hints,
                 });
             }
             SeekOutcome::NotFound => {
                 attempts.push(AnchorAttempt {
                     file_path: file_rel.to_string(),
                     chunk_index,
-                    anchor_text: chunk.change_context.clone(),
+                    anchor_text: chunk.change_contexts.last().cloned(),
                     success: false,
                     fuzzy_tier: None,
                 });
                 return Err(ChunkFailure::NotFound {
                     chunk_index,
-                    change_context: chunk.change_context.clone(),
+                    change_contexts: chunk.change_contexts.clone(),
                     first_old_line: chunk.old_lines.first().cloned(),
                     near_miss: near_miss_snippet(
                         original_lines,
@@ -711,7 +930,7 @@ fn compute_replacements(
         attempts.push(AnchorAttempt {
             file_path: file_rel.to_string(),
             chunk_index,
-            anchor_text: chunk.change_context.clone(),
+            anchor_text: chunk.change_contexts.last().cloned(),
             success: true,
             fuzzy_tier: Some(chunk_worst.as_str().to_string()),
         });
@@ -851,25 +1070,27 @@ fn chunk_failure_to_error(fail: ChunkFailure, path: &str) -> ApplyPatchError {
     match fail {
         ChunkFailure::NotFound {
             chunk_index,
-            change_context,
+            change_contexts,
             first_old_line,
             near_miss,
         } => ApplyPatchError::ContextNotFound {
             path: path.to_string(),
             chunk: chunk_index,
-            change_context,
+            change_contexts,
             first_old_line,
             near_miss,
         },
         ChunkFailure::Ambiguous {
             chunk_index,
-            change_context,
+            change_contexts,
             candidates,
+            disambiguation_hints,
         } => ApplyPatchError::AmbiguousContext {
             path: path.to_string(),
             chunk: chunk_index,
-            change_context,
+            change_contexts,
             candidates,
+            disambiguation_hints,
         },
         ChunkFailure::AnchorShadowsFirstContext {
             chunk_index,
@@ -880,6 +1101,87 @@ fn chunk_failure_to_error(fail: ChunkFailure, path: &str) -> ApplyPatchError {
             anchor,
         },
     }
+}
+
+/// Maximum lines to scan upward from each ambiguous candidate when looking
+/// for a structurally distinct anchor. Bounded so a 50k-line file doesn't
+/// quadratic-search itself when ambiguity strikes near the end.
+const DISAMBIGUATION_LOOKBACK: usize = 80;
+
+/// Maximum number of disambiguation suggestions to emit. Past this, the
+/// error message is just clutter — the caller has enough to pick.
+const DISAMBIGUATION_MAX_HINTS: usize = 4;
+
+/// For each ambiguous candidate (0-based file index of the start of the
+/// match), walk upward up to `DISAMBIGUATION_LOOKBACK` lines looking for a
+/// "structural" line that:
+///
+///   1. Is non-blank.
+///   2. Appears exactly once in the file (so it's a valid `@@` anchor).
+///   3. Doesn't itself match any of the other candidate locations' upstream
+///      window (so it discriminates *this* candidate from the others).
+///
+/// Returns one suggestion per candidate where such a line exists, capped at
+/// `DISAMBIGUATION_MAX_HINTS`. Empty when no disambiguator could be found.
+fn disambiguate_candidates(original_lines: &[String], candidates: &[usize]) -> Vec<String> {
+    if candidates.len() < 2 {
+        return Vec::new();
+    }
+    // Pre-build a uniqueness map: count occurrences of each line across the
+    // whole file. A line is a candidate anchor only if its count is 1.
+    let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for line in original_lines {
+        *counts.entry(line.as_str()).or_insert(0) += 1;
+    }
+
+    let mut hints: Vec<String> = Vec::new();
+    for &cand in candidates {
+        if hints.len() >= DISAMBIGUATION_MAX_HINTS {
+            break;
+        }
+        let lookback_start = cand.saturating_sub(DISAMBIGUATION_LOOKBACK);
+        // Walk upward from the line just above the candidate.
+        let mut anchor_line: Option<(usize, &str)> = None;
+        for i in (lookback_start..cand).rev() {
+            let line = original_lines[i].as_str();
+            if !is_structural_line(line) {
+                continue;
+            }
+            if counts.get(line).copied().unwrap_or(0) != 1 {
+                continue;
+            }
+            anchor_line = Some((i, line));
+            break;
+        }
+        if let Some((idx, line)) = anchor_line {
+            // 1-based line numbers in the hint match what the user sees in
+            // their editor and what the candidates list reports.
+            hints.push(format!(
+                "@@ {}  →  pins to candidate at line {} (anchor at line {})",
+                line.trim_end(),
+                cand + 1,
+                idx + 1
+            ));
+        }
+    }
+    hints
+}
+
+/// A "structural" line that's worth proposing as an anchor: non-blank,
+/// non-pure-punctuation, and ideally a declaration/header. We err on the
+/// side of accepting any non-trivial content — `is_unique` filters down to
+/// the lines that actually disambiguate.
+fn is_structural_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    // Reject pure-punctuation lines like `}`, `};`, `);`, `})`, etc.
+    // They're rarely unique enough to be useful, and are noisy.
+    if trimmed.chars().all(|c| !c.is_alphanumeric()) {
+        return false;
+    }
+    true
 }
 
 fn apply_replacements(mut lines: Vec<String>, replacements: Replacements) -> Vec<String> {
@@ -1190,5 +1492,145 @@ mod tests {
             content.contains("pub fn three() {\n    return;\n}"),
             "fn three must stay untouched, got: {content}",
         );
+    }
+
+    /// Stacked `@@` anchors narrow into a function inside an impl block,
+    /// then patch a line that's repeated across multiple impls. Without
+    /// stacked anchor support this used to be unreachable without echoing
+    /// the entire impl as context.
+    #[test]
+    fn stacked_anchors_narrow_into_impl_block() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("code.rs"),
+            "impl Foo {\n    fn run(&self) {\n        return;\n    }\n}\n\
+             impl Bar {\n    fn run(&self) {\n        return;\n    }\n}\n",
+        )
+        .unwrap();
+        let patch = concat!(
+            "*** Begin Patch\n",
+            "*** Update File: code.rs\n",
+            "@@ impl Bar {\n",
+            "@@     fn run(&self) {\n",
+            "-        return;\n",
+            "+        return 42;\n",
+            "*** End Patch\n",
+        );
+        let outcome = plan(patch, tmp.path()).unwrap();
+        let content = outcome.changes[0].new_content.as_deref().unwrap();
+        assert!(
+            content.contains("impl Bar {\n    fn run(&self) {\n        return 42;\n"),
+            "hunk must land in Bar::run, got: {content}",
+        );
+        assert!(
+            content.contains("impl Foo {\n    fn run(&self) {\n        return;\n"),
+            "Foo::run must stay untouched, got: {content}",
+        );
+    }
+
+    /// AmbiguousContext on a generic body line surfaces a suggested anchor
+    /// for each candidate, drawn from a unique upstream structural line.
+    /// Converts a re-try into a deterministic fix instead of forcing the
+    /// model to re-read the file.
+    #[test]
+    fn ambiguous_context_emits_disambiguation_hints() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("code.rs"),
+            "pub fn alpha() {\n    return;\n}\n\
+             pub fn beta() {\n    return;\n}\n",
+        )
+        .unwrap();
+        let patch = concat!(
+            "*** Begin Patch\n",
+            "*** Update File: code.rs\n",
+            "@@\n",
+            "-    return;\n",
+            "+    return 42;\n",
+            "*** End Patch\n",
+        );
+        let err = plan(patch, tmp.path()).unwrap_err().error;
+        let msg = err.to_string();
+        assert!(msg.contains("ambiguous context"), "msg: {msg}");
+        assert!(msg.contains("suggested anchors:"), "msg: {msg}");
+        assert!(
+            msg.contains("@@ pub fn alpha()") || msg.contains("@@ pub fn beta()"),
+            "expected at least one structural anchor suggestion, got: {msg}"
+        );
+    }
+
+    /// Stacked anchor anchor-shadow check uses the *last* anchor (the one
+    /// immediately before the body), not the first.
+    #[test]
+    fn anchor_shadow_check_uses_last_stacked_anchor() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("m.rs"),
+            "mod outer {\n    fn greet() {\n        println!(\"hi\");\n    }\n}\n",
+        )
+        .unwrap();
+        // Two stacked anchors. The *second* (`fn greet() {`) shadows the
+        // first body line — that's what should be flagged.
+        let patch = concat!(
+            "*** Begin Patch\n",
+            "*** Update File: m.rs\n",
+            "@@ mod outer {\n",
+            "@@ fn greet() {\n",
+            " fn greet() {\n",
+            "-        println!(\"hi\");\n",
+            "+        println!(\"hello\");\n",
+            " }\n",
+            "*** End Patch\n",
+        );
+        let err = plan(patch, tmp.path()).unwrap_err().error;
+        match err {
+            ApplyPatchError::AnchorShadowsFirstContext { anchor, .. } => {
+                assert_eq!(anchor, "fn greet() {");
+            }
+            other => panic!("expected AnchorShadowsFirstContext, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn anchor_stack_renders_one_or_many() {
+        assert_eq!(format_anchor_stack(&[]), "");
+        assert_eq!(format_anchor_stack(&["foo".into()]), " (@@ foo)");
+        assert_eq!(
+            format_anchor_stack(&["foo".into(), "bar".into()]),
+            " (@@ foo / @@ bar)"
+        );
+    }
+
+    #[test]
+    fn disambiguate_skips_when_only_one_candidate() {
+        let lines: Vec<String> = vec!["fn foo()".into(), "    return;".into()];
+        assert!(disambiguate_candidates(&lines, &[1]).is_empty());
+    }
+
+    #[test]
+    fn disambiguate_picks_nearest_unique_upstream_line() {
+        let lines: Vec<String> = vec![
+            "fn alpha()".into(),
+            "    return;".into(),
+            "fn beta()".into(),
+            "    return;".into(),
+        ];
+        let hints = disambiguate_candidates(&lines, &[1, 3]);
+        assert_eq!(hints.len(), 2);
+        assert!(hints[0].contains("@@ fn alpha()"), "hints: {hints:?}");
+        assert!(hints[1].contains("@@ fn beta()"), "hints: {hints:?}");
+        assert!(hints[0].contains("line 2"), "hints: {hints:?}");
+        assert!(hints[1].contains("line 4"), "hints: {hints:?}");
+    }
+
+    #[test]
+    fn is_structural_rejects_pure_punctuation() {
+        assert!(!is_structural_line("}"));
+        assert!(!is_structural_line("};"));
+        assert!(!is_structural_line("    )"));
+        assert!(!is_structural_line(""));
+        assert!(!is_structural_line("   "));
+        assert!(is_structural_line("fn foo()"));
+        assert!(is_structural_line("    return;"));
     }
 }
