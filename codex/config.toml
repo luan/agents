@@ -83,13 +83,9 @@ source = "https://github.com/max-sixty/worktrunk.git"
 command = "ct"
 args = ["mcp", "vault"]
 
-[mcp_servers.apply-patch]
-command = "ct"
-args = ["mcp", "apply-patch"]
-
 [mcp_servers.sym]
 command = "ct"
 args = ["mcp", "sym"]
 
-[projects."/Users/luan/src/agents"]
+[projects."~/src/agents"]
 trust_level = "trusted"
