@@ -94,6 +94,11 @@ Address these in your implementation.
 
 Workers get the **full spec text** plus their **phase details** from the plan. The spec provides the "why", the plan provides the "how". Both fit in a worker's context.
 
+**Team Mode option:** If the user explicitly asks for named background workers,
+long-running team orchestration, or `/team`/Team Mode dispatch, use Team Mode
+instead of the default transient Agent dispatch. Keep normal `/develop` behavior
+as the default for ordinary implementation plans.
+
 ## Step 4: Spec Compliance Review
 
 After each worker completes, spawn a reviewer Agent:
