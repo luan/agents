@@ -55,6 +55,8 @@ type RuntimeState = {
 };
 
 export default function teamModeExtension(pi: ExtensionAPI) {
+	if (process.env.PI_TEAM_MODE_WORKER === "1") return;
+
 	const state: RuntimeState = {
 		store: new TeamStore(),
 		coordinatorMode: false,
@@ -264,6 +266,12 @@ export default function teamModeExtension(pi: ExtensionAPI) {
 
 async function handleRuntimeEvent(pi: ExtensionAPI, state: RuntimeState, teamId: string, worker: WorkerRecord, status: "completed" | "failed" | "stopped", summary: string): Promise<void> {
 	const eventType = status === "completed" ? "worker_completed" : "worker_failed";
+	if (worker.currentTaskId) {
+		const task = (await state.store.listTasks(teamId)).find((item) => item.id === worker.currentTaskId);
+		if (task && task.status !== "completed" && task.status !== "cancelled") {
+			await state.store.updateTask(teamId, task.id, { status: status === "completed" ? "completed" : "failed", result: summary }, task.version);
+		}
+	}
 	const event = await state.store.appendEvent(teamId, { type: eventType, actor: worker.name, taskId: worker.currentTaskId, message: summary });
 	sendTeamNotification(pi, event, worker);
 }
@@ -314,7 +322,7 @@ async function openDashboard(ctx: ExtensionContext, state: RuntimeState): Promis
 			});
 		});
 		return dashboard;
-	}, { overlay: true, overlayOptions: { anchor: "right-center", width: "70%", minWidth: 72, margin: 1 } });
+	}, { overlay: true, overlayOptions: { anchor: "top-center", width: "96%", minWidth: 72, maxHeight: "85%", margin: 1 } });
 }
 
 async function handleDashboardAction(ctx: ExtensionContext, state: RuntimeState, action: TeamDashboardAction, done: (value: null) => void): Promise<void> {
