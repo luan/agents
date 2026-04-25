@@ -27,7 +27,13 @@ doctor:
 validate: render-agents
     cd "{{ repo }}" && cargo xtask validate
 
-setup: doctor link claude-plugins-install ct-install validate
+setup: doctor link worktrunk-install claude-plugins-install ct-install validate
+
+worktrunk-install:
+    # The `wt` binary backs the worktrunk claude plugin. `cargo install`
+    # rebuilds even when the version is unchanged, so skip when `wt` is
+    # already on PATH. To upgrade, run `cargo install worktrunk --force`.
+    @command -v wt >/dev/null 2>&1 || cargo install worktrunk --locked
 
 codex-plugins-install:
     cd "{{ repo }}" && cargo xtask codex-plugins-install
