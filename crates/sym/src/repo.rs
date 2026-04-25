@@ -4,21 +4,20 @@ use anyhow::{Result, bail};
 use sha2::{Digest, Sha256};
 
 pub fn sym_dir() -> Result<PathBuf> {
+    // Honour an explicit XDG_CACHE_HOME override on every platform, even
+    // outside Linux — useful for tests and for users who pin a custom cache.
     if let Ok(cache_dir) = std::env::var("XDG_CACHE_HOME") {
         if !cache_dir.is_empty() {
             return Ok(PathBuf::from(cache_dir).join("sym"));
         }
     }
 
-    #[cfg(target_os = "macos")]
-    {
-        if let Ok(home) = std::env::var("HOME") {
-            return Ok(PathBuf::from(home).join("Library/Caches/sym"));
-        }
-    }
-
-    if let Ok(home) = std::env::var("HOME") {
-        return Ok(PathBuf::from(home).join(".cache/sym"));
+    // dirs::cache_dir() resolves to:
+    //   Linux:   $HOME/.cache
+    //   macOS:   $HOME/Library/Caches
+    //   Windows: %LOCALAPPDATA%
+    if let Some(cache) = dirs::cache_dir() {
+        return Ok(cache.join("sym"));
     }
 
     bail!("cannot determine cache directory")

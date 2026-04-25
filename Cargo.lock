@@ -1927,6 +1927,7 @@ dependencies = [
  "aho-corasick",
  "anyhow",
  "clap",
+ "dirs",
  "hex",
  "ignore",
  "rusqlite",
