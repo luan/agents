@@ -91,18 +91,26 @@ jobs:
         shell: bash
         run: |
           set -eu
+          # In a clean-home install, each top-level entry of every package
+          # source becomes one symlink under the corresponding target. Children
+          # below that level are accessed *through* the dir-symlink — they are
+          # not separately symlinked unless tree-unfolding kicked in (covered
+          # by scenario 3).
           for p in \
             "$HOME/.claude/CLAUDE.md" \
             "$HOME/.claude/settings.json" \
             "$HOME/.claude/statusline.py" \
+            "$HOME/.claude/hooks" \
+            "$HOME/.claude/rules" \
+            "$HOME/.claude/local-plugins" \
             "$HOME/.codex/AGENTS.md" \
             "$HOME/.codex/config.toml" \
             "$HOME/.codex/hooks.json" \
             "$HOME/.config/opencode/AGENTS.md" \
             "$HOME/.config/opencode/opencode.jsonc" \
+            "$HOME/.config/opencode/profiles" \
             "$HOME/.pi/AGENTS.md" \
-            "$HOME/.pi/agent/keybindings.json" \
-            "$HOME/.pi/agent/settings.json" \
+            "$HOME/.pi/agent" \
             "$HOME/.agents/rules/cargo.md" \
             "$HOME/.agents/skills/commit" \
             "$HOME/.claude/skills/commit"; do
