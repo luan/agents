@@ -107,5 +107,6 @@
   "preferredNotifChannel": "notifications_disabled",
   "teammateMode": "in-process",
   "remoteControlAtStartup": true,
+  "agentPushNotifEnabled": true,
   "voiceEnabled": true
 }
