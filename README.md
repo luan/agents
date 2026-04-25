@@ -39,8 +39,13 @@ Shared configuration is the default. Tool-specific folders (`claude/`, `codex/`,
 
 ```sh
 just setup          # idempotent: render, link, install ct, register MCP servers, validate
-just link-dry-run   # preview stow targets before linking
+just link-dry-run   # preview link targets before linking
 just ct-install     # rebuild and reinstall ct + register MCP servers
 ```
 
-Prerequisites: `stow`, `just`, `cargo`, `claude`, `codex`, `opencode`.
+Prerequisites: `just`, `cargo`, `claude`, `codex`, `opencode`.
+
+On Windows, `cargo xtask doctor` additionally verifies that symlinks work
+(requires Developer Mode) and that the repo's tracked symlinks were
+materialised by Git (requires `git config --global core.symlinks true` at
+clone time, otherwise re-clone or `git rm --cached -r . && git reset --hard`).

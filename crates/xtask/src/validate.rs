@@ -5,6 +5,8 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use walkdir::WalkDir;
 
+use crate::stow;
+
 pub fn run() -> Result<()> {
     let root = crate::repo_root();
     assert_fresh_agents(&root)?;
@@ -22,7 +24,7 @@ pub fn run() -> Result<()> {
         &root.join("claude/local-plugins/plugins/gt"),
         &root.join("plugins/gt"),
     )?;
-    stow_dry_run(&root)?;
+    stow::run(stow::Mode::DryRun).context("stow dry-run")?;
     cargo_test(&root)?;
     Ok(())
 }
@@ -123,25 +125,6 @@ fn assert_no_checkout_paths(root: &Path) -> Result<()> {
                     );
                 }
             }
-        }
-    }
-    Ok(())
-}
-
-fn stow_dry_run(root: &Path) -> Result<()> {
-    let tmp = tempfile::tempdir().context("create tempdir")?;
-    for package in ["claude", "codex", "opencode", "pi", "rules", "skills"] {
-        let target = tmp.path().join(package);
-        fs::create_dir(&target)
-            .with_context(|| format!("mkdir {}", target.display()))?;
-        let status = Command::new("stow")
-            .args(["-n", "-v", "-R", package, "-t"])
-            .arg(&target)
-            .current_dir(root)
-            .status()
-            .context("invoke stow")?;
-        if !status.success() {
-            bail!("stow dry-run for {package} exited with {status}");
         }
     }
     Ok(())
