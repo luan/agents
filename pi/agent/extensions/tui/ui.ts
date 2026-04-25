@@ -115,6 +115,17 @@ export class PolishedEditor extends CustomEditor {
     this.getThinkingLevel = getThinkingLevel;
   }
 
+  /**
+   * Hook for extensions to transform each editor content line before the
+   * rail and background decoration is applied. Default is identity. Other
+   * extensions (e.g. skill-dollar) reassign this on the live instance to
+   * inject inline highlighting that needs to render cleanly underneath
+   * customMessageBg without fighting post-wrap ANSI sequences.
+   */
+  transformEditorLine(line: string): string {
+    return line;
+  }
+
   render(width: number): string[] {
     const innerWidth = Math.max(1, width - 2);
     const rendered = super.render(innerWidth);
@@ -146,7 +157,9 @@ export class PolishedEditor extends CustomEditor {
       return rendered;
     }
 
-    const editorLines = editorFrame.slice(1, -1);
+    const editorLines = editorFrame
+      .slice(1, -1)
+      .map((line) => this.transformEditorLine(line));
     const metaParts = [this.getModelMeta()];
     const thinkingLevel = this.getThinkingLevel();
     if (thinkingLevel && thinkingLevel !== "off") {
