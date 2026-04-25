@@ -56,8 +56,8 @@ export class TeamDashboard {
 		const { team, workers, tasks, events } = this.summary;
 		const doneTasks = tasks.filter((task) => task.status === "completed").length;
 		push(this.borderTop(` Team: ${team.name} `, w));
-		push(`│ ${this.label("Objective")} ${truncateToWidth(team.objective, w - 14, "…", true).padEnd(Math.max(0, w - 14))} │`);
-		push(`│ ${this.label("Status")} ${team.status.padEnd(10)} Tasks ${String(doneTasks).padStart(2)}/${String(tasks.length).padEnd(2)} Workers ${String(workers.length).padEnd(2)}${" ".repeat(Math.max(0, w - 48))} │`);
+		push(this.row(`${this.label("Objective")} ${team.objective}`, w));
+		push(this.row(`${this.label("Status")} ${team.status}    Tasks ${doneTasks}/${tasks.length}    Workers ${workers.length}`, w));
 		push(this.section("Workers", w, this.pane === "workers"));
 		for (const line of this.workerLines(w)) push(line);
 		push(this.section("Task Board", w, this.pane === "tasks"));
@@ -121,7 +121,7 @@ export class TeamDashboard {
 	}
 
 	private workerLines(width: number): string[] {
-		const workers = this.summary.workers.slice(0, 5);
+		const workers = this.summary.workers.slice(0, 4);
 		if (workers.length === 0) return [this.row("No workers yet", width)];
 		return workers.map((worker, index) => {
 			const selected = this.pane === "workers" && index === this.selected;
@@ -132,7 +132,7 @@ export class TeamDashboard {
 	}
 
 	private taskLines(width: number): string[] {
-		const tasks = this.summary.tasks.slice(0, 6);
+		const tasks = this.summary.tasks.slice(0, 4);
 		if (tasks.length === 0) return [this.row("No tasks yet", width)];
 		return tasks.map((task, index) => {
 			const selected = this.pane === "tasks" && index === this.selected;
@@ -142,7 +142,7 @@ export class TeamDashboard {
 	}
 
 	private eventLines(events: TeamEvent[], width: number): string[] {
-		const list = events.slice(-4).reverse();
+		const list = events.slice(-3).reverse();
 		if (list.length === 0) return [this.row("No events yet", width)];
 		return list.map((event, index) => {
 			const selected = this.pane === "events" && index === this.selected;
@@ -179,7 +179,8 @@ export class TeamDashboard {
 	}
 
 	private borderBottom(help: string, width: number): string {
-		return `╰─${this.theme.fg("dim", truncateToWidth(help, Math.max(1, width - 3), "", true))}${"─".repeat(Math.max(0, width - visibleWidth(help) - 3))}╯`;
+		const text = truncateToWidth(help, Math.max(1, width - 3), "", true);
+		return `╰─${this.theme.fg("dim", text)}${"─".repeat(Math.max(0, width - visibleWidth(text) - 3))}╯`;
 	}
 }
 

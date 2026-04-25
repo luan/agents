@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -67,7 +67,7 @@ export class PiSubagentRuntime implements TeamRuntime {
 		const promptPath = await writePrompt(launchWorker.id, prompt);
 		const sessionFile = launchWorker.sessionFile ?? this.store.workerSessionFile(launchWorker.id);
 		await mkdir(dirname(sessionFile), { recursive: true });
-		const args = ["--mode", "json", "-p", "--session", sessionFile, "--append-system-prompt", promptPath, prompt];
+		const args = ["--no-extensions", "--mode", "json", "-p", "--session", sessionFile, "--append-system-prompt", promptPath, prompt];
 		const proc = spawn("pi", args, { cwd: launchWorker.cwd, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, PI_TEAM_MODE_WORKER: "1" } });
 		const updated: WorkerRecord = { ...launchWorker, status: "running", sessionFile, asyncRunId: proc.pid ? String(proc.pid) : undefined };
 		await this.store.saveWorker(updated);
@@ -88,14 +88,18 @@ export class PiSubagentRuntime implements TeamRuntime {
 			if (stderr.length > 8_000) stderr = stderr.slice(-8_000);
 		});
 		proc.on("close", (code, signal) => {
-			this.live.delete(workerId);
-			const failed = code !== 0 || !!signal;
-			const summary = extractFinalText(stdout) || stderr.trim() || (failed ? `pi exited ${code ?? signal}` : "Worker completed.");
-			const next: WorkerRecord = { ...worker, status: failed ? "failed" : "completed", lastResult: summary, lastSummary: summary.split("\n")[0], lastExitCode: code };
-			void this.store.saveWorker(next).then(() => {
-				this.onEvent({ worker: next, status: next.status as "completed" | "failed", summary });
-			});
+			void this.finishRun(workerId, worker, stdout, stderr, code, signal);
 		});
+	}
+
+	private async finishRun(workerId: string, worker: WorkerRecord, stdout: string, stderr: string, code: number | null, signal: NodeJS.Signals | null): Promise<void> {
+		this.live.delete(workerId);
+		const failed = code !== 0 || !!signal;
+		const sessionText = worker.sessionFile ? await readFile(worker.sessionFile, "utf8").catch(() => "") : "";
+		const summary = extractFinalText(sessionText) || extractFinalText(stdout) || (failed ? stderr.trim() : "") || (failed ? `pi exited ${code ?? signal}` : "Worker completed.");
+		const next: WorkerRecord = { ...worker, status: failed ? "failed" : "completed", lastResult: summary, lastSummary: summary.split("\n")[0], lastExitCode: code };
+		await this.store.saveWorker(next);
+		this.onEvent({ worker: next, status: next.status as "completed" | "failed", summary });
 	}
 }
 
@@ -134,19 +138,35 @@ function runGit(cwd: string, args: string[]): Promise<string> {
 	});
 }
 
-function extractFinalText(stdout: string): string | undefined {
-	const lines = stdout.split("\n").filter(Boolean);
+type PiTextPart = { type?: string; text?: string };
+type PiMessageEvent = {
+	type?: string;
+	text?: string;
+	message?: { role?: string; content?: PiTextPart[] };
+};
+
+function extractFinalText(output: string): string | undefined {
+	const lines = output.split("\n").filter(Boolean);
 	for (const line of lines.reverse()) {
 		try {
-			const event = JSON.parse(line) as { type?: string; message?: { content?: Array<{ type?: string; text?: string }> }; text?: string };
-			if (event.type === "message_end" && Array.isArray(event.message?.content)) {
-				const text = event.message.content.filter((part) => part.type === "text" && part.text).map((part) => part.text).join("\n");
-				if (text.trim()) return text.trim();
-			}
-			if (typeof event.text === "string" && event.text.trim()) return event.text.trim();
+			const event = JSON.parse(line) as PiMessageEvent;
+			const text = textFromEvent(event);
+			if (text) return text;
 		} catch {
 			// ignore non-json output
 		}
 	}
 	return undefined;
+}
+
+function textFromEvent(event: PiMessageEvent): string | undefined {
+	if (typeof event.text === "string" && event.text.trim()) return event.text.trim();
+	if (!Array.isArray(event.message?.content)) return undefined;
+	if (event.message.role && event.message.role !== "assistant") return undefined;
+	const text = event.message.content
+		.filter((part) => part.type === "text" && part.text)
+		.map((part) => part.text)
+		.join("\n")
+		.trim();
+	return text || undefined;
 }
