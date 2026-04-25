@@ -10,7 +10,7 @@ import {
 	keyHint,
 } from "@mariozechner/pi-coding-agent";
 import { codeToANSI } from "@shikijs/cli";
-import { Text, truncateToWidth } from "@mariozechner/pi-tui";
+import { Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@mariozechner/pi-tui";
 import type { BundledLanguage, BundledTheme } from "shiki";
 import { Type } from "typebox";
 
@@ -136,6 +136,11 @@ type SplitDiffRow = {
 
 const ADD_ROW_BG = "\x1b[48;2;20;53;31m";
 const REMOVE_ROW_BG = "\x1b[48;2;59;29;36m";
+const SAFE_MUTED_FG = "\x1b[38;2;139;148;158m";
+const BORDER_BAR = "▌";
+const SPLIT_MIN_CODE_WIDTH = 60;
+const SPLIT_MAX_WRAP_RATIO = 0.2;
+const SPLIT_MAX_WRAP_LINES = 8;
 const LANGUAGE_ALIASES: Record<string, { inline?: string; shiki?: BundledLanguage }> = {
 	svelte: {
 		inline: "html",
@@ -223,8 +228,34 @@ function keepBackgroundAcrossResets(text: string, backgroundAnsi: string): strin
 	});
 }
 
+function isLowContrastShikiFg(rawParams: string): boolean {
+	if (rawParams === "30" || rawParams === "90") return true;
+	if (rawParams === "38;5;0" || rawParams === "38;5;8") return true;
+	if (!rawParams.startsWith("38;2;")) return false;
+	const parts = rawParams.split(";").map(Number);
+	if (parts.length !== 5 || parts.some((value) => !Number.isFinite(value))) return false;
+	const [, , red, green, blue] = parts;
+	const luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+	return luminance < 72;
+}
+
+function normalizeShikiContrast(ansi: string): string {
+	return ansi.replace(ANSI_SGR_PATTERN, (sequence, rawParams: string) =>
+		isLowContrastShikiFg(rawParams) ? SAFE_MUTED_FG : sequence,
+	);
+}
+
 function hasVisibleText(text: string | undefined): text is string {
 	return !!text && text.replace(ANSI_PATTERN, "").trim().length > 0;
+}
+
+function normalizeLineForDiff(text: string): string {
+	return text.replace(/\r\n?/g, "\n").replace(/\t/g, "  ");
+}
+
+function highlightedLineMatches(candidate: string | undefined, expected: string): candidate is string {
+	if (!candidate) return false;
+	return candidate.replace(ANSI_PATTERN, "") === normalizeLineForDiff(expected);
 }
 
 function normalizeRepoPath(path: string): string {
@@ -269,13 +300,15 @@ async function highlightWithShiki(code: string, language: BundledLanguage): Prom
 	if (!code) return [""];
 	if (code.length > SHIKI_MAX_CHARS) return code.split("\n");
 
-	const normalized = code.replace(/\r\n?/g, "\n").replace(/\t/g, "  ");
+	const normalized = normalizeLineForDiff(code);
 	const cacheKey = `${SHIKI_THEME}\0${language}\0${normalized}`;
 	const cached = shikiCache.get(cacheKey);
 	if (cached) return touchShikiCache(cacheKey, cached);
 
 	try {
-		const ansi = (await codeToANSI(normalized, language, SHIKI_THEME)).replace(SHIKI_BACKGROUND_PATTERN, "");
+		const ansi = normalizeShikiContrast(
+			(await codeToANSI(normalized, language, SHIKI_THEME)).replace(SHIKI_BACKGROUND_PATTERN, ""),
+		);
 		const lines = (ansi.endsWith("\n") ? ansi.slice(0, -1) : ansi).split("\n");
 		return touchShikiCache(cacheKey, lines);
 	} catch {
@@ -349,14 +382,17 @@ function highlightedContentForRow(
 ): string | undefined {
 	const path = row.path ? normalizeRepoPath(row.path) : undefined;
 	if (!path) return undefined;
+	let candidate: string | undefined;
 
 	if (row.kind === "remove" && row.oldLine !== null) {
-		return oldHighlights.get(path)?.[row.oldLine - 1];
+		candidate = oldHighlights.get(path)?.[row.oldLine - 1];
+		return highlightedLineMatches(candidate, row.content) ? candidate : undefined;
 	}
 
 	if (row.newLine !== null) {
 		const oldIndex = row.oldLine !== null ? row.oldLine - 1 : row.newLine - 1;
-		return newHighlights.get(path)?.[row.newLine - 1] ?? oldHighlights.get(path)?.[oldIndex];
+		candidate = newHighlights.get(path)?.[row.newLine - 1] ?? oldHighlights.get(path)?.[oldIndex];
+		return highlightedLineMatches(candidate, row.content) ? candidate : undefined;
 	}
 
 	return undefined;
@@ -477,8 +513,8 @@ function highlightDiffContent(content: string, path: string | undefined): string
 	}
 }
 
-function formatDiffLineNumber(value: number | null): string {
-	return value === null ? "    " : String(value).padStart(4, " ");
+function formatDiffLineNumber(value: number | null, width: number): string {
+	return value === null ? " ".repeat(width) : String(value).padStart(width, " ");
 }
 
 function rowBackground(kind: DiffLineKind): string | undefined {
@@ -497,26 +533,68 @@ function paintDiffSegment(line: string, width: number, background: string | unde
 	return paintDiffRow(line, width, background);
 }
 
-function renderUnifiedDiffRow(
-	row: ParsedDiffLine,
-	theme: ThemeLike,
-	width: number,
-	baseBackground: string | undefined,
-): string {
-	const background = rowBackground(row.kind) ?? baseBackground;
-	const oldLine = formatDiffLineNumber(row.oldLine);
-	const newLine = formatDiffLineNumber(row.newLine);
-	const glyph = row.kind === "add" ? "+" : row.kind === "remove" ? "-" : " ";
-	const glyphColor = row.kind === "add" ? "toolDiffAdded" : row.kind === "remove" ? "toolDiffRemoved" : "dim";
-	const numberColor = row.kind === "add" ? "toolDiffAdded" : row.kind === "remove" ? "toolDiffRemoved" : "dim";
-	const prefix = [
-		theme.fg(numberColor, oldLine),
-		theme.fg(numberColor, newLine),
-		theme.fg(glyphColor, glyph),
-		theme.fg("dim", "│"),
-	].join(" ");
-	const content = row.highlightedContent ?? highlightDiffContent(row.content, row.path);
-	return paintDiffRow(`${prefix} ${content}`, width, background);
+function diffLineNumberWidth(rows: ParsedDiffLine[]): number {
+	const maxLineNumber = rows.reduce(
+		(max, row) => Math.max(max, row.oldLine ?? 0, row.newLine ?? 0),
+		0,
+	);
+	return Math.max(2, String(maxLineNumber).length);
+}
+
+function diffWrapRows(width: number): number {
+	if (width >= 180) return 3;
+	if (width >= 120) return 2;
+	return 1;
+}
+
+function wrapDiffContent(content: string, width: number, maxRows: number): string[] {
+	if (width <= 0) return [""];
+	const wrapped = content.length === 0 ? [""] : wrapTextWithAnsi(content, width);
+	if (wrapped.length <= maxRows) {
+		return wrapped.map((line) => truncateToWidth(line, width, "", true));
+	}
+	return wrapped.slice(0, maxRows).map((line, index) =>
+		truncateToWidth(line, width, index === maxRows - 1 ? "…" : "", true)
+	);
+}
+
+function diffContentForRow(row: ParsedDiffLine): string {
+	return row.highlightedContent ?? highlightDiffContent(row.content, row.path);
+}
+
+function stripedDiffFill(width: number, theme: ThemeLike): string {
+	return truncateToWidth(theme.fg("dim", "╱".repeat(Math.max(width, 1))), width, "", true);
+}
+
+// Adapted from buddingnewinsights/pi-diff (MIT): prefer split diffs only when
+// each side still has enough code width to be readable.
+function shouldUseSideBySideDiff(rows: ParsedDiffLine[], width: number, config: ApplyPatchConfig): boolean {
+	if (config.diffView === "unified") return false;
+	if (config.diffView === "side-by-side") return true;
+	const hasRemovals = rows.some((row) => row.kind === "remove");
+	const hasAdditions = rows.some((row) => row.kind === "add");
+	if (!hasRemovals || !hasAdditions) return false;
+	if (width < config.sideBySideMinWidth) return false;
+
+	const numberWidth = diffLineNumberWidth(rows);
+	const separatorWidth = 1;
+	const halfWidth = Math.max(20, Math.floor((width - separatorWidth) / 2));
+	const codeWidth = Math.max(8, halfWidth - (numberWidth + 5));
+	if (codeWidth < SPLIT_MIN_CODE_WIDTH) return false;
+
+	const sampledRows = rows.slice(0, config.maxDiffLines);
+	let contentRows = 0;
+	let wrapCandidates = 0;
+	for (const row of sampledRows) {
+		contentRows += 1;
+		if (visibleWidth(row.content.replace(/\t/g, "  ")) > codeWidth) {
+			wrapCandidates += 1;
+		}
+	}
+
+	if (wrapCandidates >= SPLIT_MAX_WRAP_LINES) return false;
+	if (contentRows > 0 && wrapCandidates / contentRows >= SPLIT_MAX_WRAP_RATIO) return false;
+	return true;
 }
 
 function buildSplitRows(rows: ParsedDiffLine[]): SplitDiffRow[] {
@@ -560,20 +638,80 @@ function buildSplitRows(rows: ParsedDiffLine[]): SplitDiffRow[] {
 	return output;
 }
 
-function renderSplitCell(
-	row: ParsedDiffLine | undefined,
-	side: "left" | "right",
+function renderUnifiedDiffRows(
+	rows: ParsedDiffLine[],
 	theme: ThemeLike,
 	width: number,
 	baseBackground: string | undefined,
-): string {
-	if (!row) return paintDiffSegment("", width, baseBackground);
+): string[] {
+	const numberWidth = diffLineNumberWidth(rows);
+	const gutterWidth = numberWidth + 5;
+	const codeWidth = Math.max(8, width - gutterWidth);
+	const wrapLimit = diffWrapRows(width);
+
+	return rows.flatMap((row) => {
+		const kindColor = row.kind === "add" ? "toolDiffAdded" : row.kind === "remove" ? "toolDiffRemoved" : "dim";
+		const sign = row.kind === "add" ? "+" : row.kind === "remove" ? "-" : " ";
+		const lineNumber = row.kind === "remove" ? row.oldLine : row.newLine;
+		const background = rowBackground(row.kind) ?? baseBackground;
+		const border = row.kind === "context" ? " " : theme.fg(kindColor, BORDER_BAR);
+		const prefix = `${border}${theme.fg(kindColor, formatDiffLineNumber(lineNumber, numberWidth))}${theme.fg(kindColor, sign)} ${theme.fg("dim", "│")} `;
+		const continuation = `${border}${" ".repeat(numberWidth + 1)} ${theme.fg("dim", "│")} `;
+		const bodyLines = wrapDiffContent(diffContentForRow(row), codeWidth, wrapLimit);
+		return bodyLines.map((body, index) =>
+			paintDiffRow(`${index === 0 ? prefix : continuation}${body}`, width, background)
+		);
+	});
+}
+
+function renderSplitCellRows(
+	row: ParsedDiffLine | undefined,
+	side: "left" | "right",
+	theme: ThemeLike,
+	halfWidth: number,
+	numberWidth: number,
+	baseBackground: string | undefined,
+	wrapLimit: number,
+): string[] {
+	const gutterWidth = numberWidth + 5;
+	const codeWidth = Math.max(8, halfWidth - gutterWidth);
+	if (!row) {
+		const prefix = `${" ".repeat(numberWidth + 2)}${theme.fg("dim", "│")} `;
+		return [paintDiffSegment(`${prefix}${stripedDiffFill(codeWidth, theme)}`, halfWidth, baseBackground)];
+	}
+
+	const kindColor = row.kind === "add" ? "toolDiffAdded" : row.kind === "remove" ? "toolDiffRemoved" : "dim";
+	const sign = row.kind === "add" ? "+" : row.kind === "remove" ? "-" : " ";
 	const lineNumber = side === "left" ? row.oldLine : row.newLine;
-	const numberColor = row.kind === "add" ? "toolDiffAdded" : row.kind === "remove" ? "toolDiffRemoved" : "dim";
-	const prefix = `${theme.fg(numberColor, formatDiffLineNumber(lineNumber))} ${theme.fg("dim", "│")}`;
-	const content = row.highlightedContent ?? highlightDiffContent(row.content, row.path);
 	const background = rowBackground(row.kind) ?? baseBackground;
-	return paintDiffSegment(`${prefix} ${content}`, width, background);
+	const border = row.kind === "context" ? " " : theme.fg(kindColor, BORDER_BAR);
+	const prefix = `${border}${theme.fg(kindColor, formatDiffLineNumber(lineNumber, numberWidth))}${theme.fg(kindColor, sign)} ${theme.fg("dim", "│")} `;
+	const continuation = `${border}${" ".repeat(numberWidth + 1)} ${theme.fg("dim", "│")} `;
+	const bodyLines = wrapDiffContent(diffContentForRow(row), codeWidth, wrapLimit);
+	return bodyLines.map((body, index) =>
+		paintDiffSegment(`${index === 0 ? prefix : continuation}${body}`, halfWidth, background)
+	);
+}
+
+function renderSplitContinuationCell(
+	row: ParsedDiffLine | undefined,
+	theme: ThemeLike,
+	halfWidth: number,
+	numberWidth: number,
+	baseBackground: string | undefined,
+): string {
+	const gutterWidth = numberWidth + 5;
+	const codeWidth = Math.max(8, halfWidth - gutterWidth);
+	if (!row) {
+		const prefix = `${" ".repeat(numberWidth + 2)}${theme.fg("dim", "│")} `;
+		return paintDiffSegment(`${prefix}${stripedDiffFill(codeWidth, theme)}`, halfWidth, baseBackground);
+	}
+
+	const kindColor = row.kind === "add" ? "toolDiffAdded" : row.kind === "remove" ? "toolDiffRemoved" : "dim";
+	const border = row.kind === "context" ? " " : theme.fg(kindColor, BORDER_BAR);
+	const continuation = `${border}${" ".repeat(numberWidth + 1)} ${theme.fg("dim", "│")} `;
+	const background = rowBackground(row.kind) ?? baseBackground;
+	return paintDiffSegment(`${continuation}${" ".repeat(codeWidth)}`, halfWidth, background);
 }
 
 function renderSideBySideDiffRows(
@@ -582,21 +720,36 @@ function renderSideBySideDiffRows(
 	width: number,
 	baseBackground: string | undefined,
 ): string[] {
-	const separator = theme.fg("dim", " │ ");
-	const separatorWidth = 3;
-	const leftWidth = Math.max(20, Math.floor((width - separatorWidth) / 2));
-	const rightWidth = Math.max(20, width - separatorWidth - leftWidth);
-	return buildSplitRows(rows).map((row) => {
-		const left = renderSplitCell(row.left, "left", theme, leftWidth, baseBackground);
-		const right = renderSplitCell(row.right, "right", theme, rightWidth, baseBackground);
-		return `${left}${baseBackground ? `${baseBackground}${separator}${ANSI_RESET}` : separator}${right}`;
-	});
-}
+	const separator = baseBackground
+		? `${baseBackground}${theme.fg("dim", "┊")}${ANSI_RESET}`
+		: theme.fg("dim", "┊");
+	const separatorWidth = 1;
+	const halfWidth = Math.max(20, Math.floor((width - separatorWidth) / 2));
+	const numberWidth = diffLineNumberWidth(rows);
+	const gutterWidth = numberWidth + 5;
+	const wrapLimit = diffWrapRows(width);
+	const headerPadding = Math.max(0, gutterWidth - 3);
+	const header = [
+		paintDiffSegment(`${" ".repeat(headerPadding)}${theme.fg("toolDiffRemoved", "old")}`, halfWidth, baseBackground),
+		separator,
+		paintDiffSegment(`${" ".repeat(headerPadding)}${theme.fg("toolDiffAdded", "new")}`, halfWidth, baseBackground),
+	].join("");
 
-function resolveDiffView(config: ApplyPatchConfig, width: number): "unified" | "side-by-side" {
-	if (config.diffView === "side-by-side") return "side-by-side";
-	if (config.diffView === "auto" && width >= config.sideBySideMinWidth) return "side-by-side";
-	return "unified";
+	const lines = [header];
+	for (const row of buildSplitRows(rows)) {
+		const leftLines = renderSplitCellRows(row.left, "left", theme, halfWidth, numberWidth, baseBackground, wrapLimit);
+		const rightLines = renderSplitCellRows(row.right, "right", theme, halfWidth, numberWidth, baseBackground, wrapLimit);
+		const maxRows = Math.max(leftLines.length, rightLines.length);
+		for (let index = 0; index < maxRows; index += 1) {
+			lines.push([
+				leftLines[index] ?? renderSplitContinuationCell(row.left, theme, halfWidth, numberWidth, baseBackground),
+				separator,
+				rightLines[index] ?? renderSplitContinuationCell(row.right, theme, halfWidth, numberWidth, baseBackground),
+			].join(""));
+		}
+	}
+
+	return lines;
 }
 
 function limitDiffRows(
@@ -634,9 +787,9 @@ function renderNativeDiff(
 ): string[] {
 	const diffRows = rows ?? parseUnifiedDiff(diff);
 	if (diffRows.length === 0) return [];
-	const rendered = resolveDiffView(config, width) === "side-by-side"
+	const rendered = shouldUseSideBySideDiff(diffRows, width, config)
 		? renderSideBySideDiffRows(diffRows, theme, width, baseBackground)
-		: diffRows.map((row) => renderUnifiedDiffRow(row, theme, width, baseBackground));
+		: renderUnifiedDiffRows(diffRows, theme, width, baseBackground);
 	return limitDiffRows(rendered, config, theme, width, baseBackground, expanded);
 }
 
