@@ -5,8 +5,8 @@
   "transport": "auto",
   "doubleEscapeAction": "tree",
   "treeFilterMode": "default",
-  "defaultProvider": "openai-codex",
-  "defaultModel": "gpt-5.5",
+  "defaultProvider": "github-copilot",
+  "defaultModel": "gpt-5.4",
   "defaultThinkingLevel": "medium",
   "packages": [
     {

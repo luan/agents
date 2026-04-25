@@ -299,7 +299,12 @@ mod tests {
         let modules = discover_modules(root);
         let rel_names: Vec<String> = modules
             .iter()
-            .map(|p| p.strip_prefix(root).unwrap().to_string_lossy().to_string())
+            .map(|p| {
+                p.strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
             .collect();
 
         assert!(rel_names.contains(&"crates/foo".to_string()));
@@ -337,7 +342,12 @@ mod tests {
         let modules = discover_modules(root);
         let rel_names: Vec<String> = modules
             .iter()
-            .map(|p| p.strip_prefix(root).unwrap().to_string_lossy().to_string())
+            .map(|p| {
+                p.strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
             .collect();
 
         assert!(rel_names.contains(&"src/api".to_string()));

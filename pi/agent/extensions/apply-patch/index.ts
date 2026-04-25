@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -9,7 +9,9 @@ import {
 	highlightCode,
 	keyHint,
 } from "@mariozechner/pi-coding-agent";
+import { codeToANSI } from "@shikijs/cli";
 import { Text, truncateToWidth } from "@mariozechner/pi-tui";
+import type { BundledLanguage, BundledTheme } from "shiki";
 import { Type } from "typebox";
 
 const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
@@ -55,6 +57,7 @@ type ApplyPatchProgressFile = {
 type ApplyPatchRenderDetails = {
 	stage?: "validate" | "apply" | "done";
 	diff?: string;
+	highlightedDiffRows?: ParsedDiffLine[];
 	filesChanged?: number;
 	operations?: number;
 	currentFile?: string;
@@ -123,6 +126,7 @@ type ParsedDiffLine = {
 	newLine: number | null;
 	content: string;
 	path?: string;
+	highlightedContent?: string;
 };
 
 type SplitDiffRow = {
@@ -132,6 +136,17 @@ type SplitDiffRow = {
 
 const ADD_ROW_BG = "\x1b[48;2;20;53;31m";
 const REMOVE_ROW_BG = "\x1b[48;2;59;29;36m";
+const LANGUAGE_ALIASES: Record<string, { inline?: string; shiki?: BundledLanguage }> = {
+	svelte: {
+		inline: "html",
+		shiki: "svelte",
+	},
+};
+const SHIKI_THEME = (process.env.APPLY_PATCH_SHIKI_THEME ?? "github-dark") as BundledTheme;
+const SHIKI_MAX_CHARS = 80_000;
+const SHIKI_CACHE_LIMIT = 64;
+const SHIKI_BACKGROUND_PATTERN = /\x1b\[(?:48;2;\d+;\d+;\d+|48;5;\d+|49)m/g;
+const shikiCache = new Map<string, string[]>();
 
 class ApplyPatchDiffView {
 	constructor(
@@ -144,6 +159,7 @@ class ApplyPatchDiffView {
 		private status?: string,
 		private diff?: string,
 		private expanded = false,
+		private rows?: ParsedDiffLine[],
 	) {}
 
 	invalidate() {}
@@ -161,7 +177,7 @@ class ApplyPatchDiffView {
 		};
 
 		if (hasVisibleText(this.diff)) {
-			const diffLines = renderNativeDiff(this.diff, this.theme, safeWidth, bgAnsi, this.config, this.expanded);
+			const diffLines = renderNativeDiff(this.diff, this.rows, this.theme, safeWidth, bgAnsi, this.config, this.expanded);
 			return [paintLine(this.renderHeader(safeWidth)), paintLine(""), ...diffLines];
 		}
 
@@ -209,19 +225,183 @@ function hasVisibleText(text: string | undefined): text is string {
 	return !!text && text.replace(ANSI_PATTERN, "").trim().length > 0;
 }
 
+function normalizeRepoPath(path: string): string {
+	return path.replace(/^\.\//, "").replace(/\\/g, "/");
+}
+
+function normalizeDiffHeaderPath(rawPath: string): string | undefined {
+	const normalized = rawPath.trim().replace(/^a\//, "").replace(/^b\//, "");
+	if (!normalized || normalized === "/dev/null") return undefined;
+	return normalizeRepoPath(normalized);
+}
+
+function fileExtension(path: string | undefined): string | undefined {
+	if (!path) return undefined;
+	const extension = extname(path).slice(1).toLowerCase();
+	return extension || undefined;
+}
+
+function shikiLanguageForPath(path: string | undefined): BundledLanguage | undefined {
+	const extension = fileExtension(path);
+	try {
+		const language = path ? getLanguageFromPath(path) : undefined;
+		if (language) return language as BundledLanguage;
+	} catch {
+		// Fall back to explicit aliases below.
+	}
+	return extension ? LANGUAGE_ALIASES[extension]?.shiki : undefined;
+}
+
+function touchShikiCache(key: string, value: string[]): string[] {
+	shikiCache.delete(key);
+	shikiCache.set(key, value);
+	while (shikiCache.size > SHIKI_CACHE_LIMIT) {
+		const oldest = shikiCache.keys().next().value;
+		if (oldest === undefined) break;
+		shikiCache.delete(oldest);
+	}
+	return value;
+}
+
+async function highlightWithShiki(code: string, language: BundledLanguage): Promise<string[]> {
+	if (!code) return [""];
+	if (code.length > SHIKI_MAX_CHARS) return code.split("\n");
+
+	const normalized = code.replace(/\r\n?/g, "\n").replace(/\t/g, "  ");
+	const cacheKey = `${SHIKI_THEME}\0${language}\0${normalized}`;
+	const cached = shikiCache.get(cacheKey);
+	if (cached) return touchShikiCache(cacheKey, cached);
+
+	try {
+		const ansi = (await codeToANSI(normalized, language, SHIKI_THEME)).replace(SHIKI_BACKGROUND_PATTERN, "");
+		const lines = (ansi.endsWith("\n") ? ansi.slice(0, -1) : ansi).split("\n");
+		return touchShikiCache(cacheKey, lines);
+	} catch {
+		return normalized.split("\n");
+	}
+}
+
+type HighlightedFileSource = {
+	path: string;
+	language: BundledLanguage;
+	content: string;
+};
+
+function readNormalizedTextFile(path: string): string | undefined {
+	try {
+		return readFileSync(path, "utf8").replace(/\r\n?/g, "\n");
+	} catch {
+		return undefined;
+	}
+}
+
+function collectShikiSources(
+	cwd: string,
+	files: ApplyPatchProgressFile[],
+	pathForFile: (file: ApplyPatchProgressFile) => string | undefined,
+): HighlightedFileSource[] {
+	const sources: HighlightedFileSource[] = [];
+	for (const file of files) {
+		const targetPath = pathForFile(file);
+		if (!targetPath) continue;
+		const language = shikiLanguageForPath(targetPath);
+		if (!language) continue;
+		const content = readNormalizedTextFile(resolve(cwd, targetPath));
+		if (content === undefined) continue;
+		sources.push({
+			path: normalizeRepoPath(targetPath),
+			language,
+			content,
+		});
+	}
+	return sources;
+}
+
+function collectPrePatchShikiSources(cwd: string, files: ApplyPatchProgressFile[]): HighlightedFileSource[] {
+	return collectShikiSources(cwd, files, (file) =>
+		file.operation === "add" ? undefined : file.path,
+	);
+}
+
+function collectPostPatchShikiSources(cwd: string, files: ApplyPatchProgressFile[]): HighlightedFileSource[] {
+	return collectShikiSources(cwd, files, (file) =>
+		file.operation === "delete" ? undefined : file.moveTo ?? file.path,
+	);
+}
+
+async function highlightSources(
+	sources: HighlightedFileSource[],
+	signal?: AbortSignal,
+): Promise<Map<string, string[]>> {
+	const entries = await Promise.all(sources.map(async (source) => {
+		if (signal?.aborted) return undefined;
+		return [source.path, await highlightWithShiki(source.content, source.language)] as const;
+	}));
+	return new Map(entries.filter((entry): entry is readonly [string, string[]] => entry !== undefined));
+}
+
+function highlightedContentForRow(
+	row: ParsedDiffLine,
+	oldHighlights: Map<string, string[]>,
+	newHighlights: Map<string, string[]>,
+): string | undefined {
+	const path = row.path ? normalizeRepoPath(row.path) : undefined;
+	if (!path) return undefined;
+
+	if (row.kind === "remove" && row.oldLine !== null) {
+		return oldHighlights.get(path)?.[row.oldLine - 1];
+	}
+
+	if (row.newLine !== null) {
+		const oldIndex = row.oldLine !== null ? row.oldLine - 1 : row.newLine - 1;
+		return newHighlights.get(path)?.[row.newLine - 1] ?? oldHighlights.get(path)?.[oldIndex];
+	}
+
+	return undefined;
+}
+
+async function buildHighlightedDiffRows(
+	diff: string,
+	oldSources: HighlightedFileSource[],
+	newSources: HighlightedFileSource[],
+	signal?: AbortSignal,
+): Promise<ParsedDiffLine[]> {
+	const rows = parseUnifiedDiff(diff);
+	if (rows.length === 0 || signal?.aborted) return rows;
+
+	const [oldHighlights, newHighlights] = await Promise.all([
+		highlightSources(oldSources, signal),
+		highlightSources(newSources, signal),
+	]);
+
+	if (oldHighlights.size === 0 && newHighlights.size === 0) return rows;
+
+	return rows.map((row) => ({
+		...row,
+		highlightedContent: highlightedContentForRow(row, oldHighlights, newHighlights),
+	}));
+}
+
 function parseUnifiedDiff(diff: string): ParsedDiffLine[] {
 	const rows: ParsedDiffLine[] = [];
 	let currentPath: string | undefined;
+	let oldPath: string | undefined;
+	let newPath: string | undefined;
 	let oldLine: number | null = null;
 	let newLine: number | null = null;
 
 	for (const rawLine of diff.replace(/\r\n?/g, "\n").split("\n")) {
-		if (rawLine.startsWith("+++ ")) {
-			currentPath = rawLine.slice(4).replace(/^b\//, "").trim();
+		if (rawLine.startsWith("--- ")) {
+			oldPath = normalizeDiffHeaderPath(rawLine.slice(4));
+			currentPath = oldPath ?? newPath;
 			continue;
 		}
 
-		if (rawLine.startsWith("--- ")) continue;
+		if (rawLine.startsWith("+++ ")) {
+			newPath = normalizeDiffHeaderPath(rawLine.slice(4));
+			currentPath = newPath ?? oldPath;
+			continue;
+		}
 
 		const hunk = rawLine.match(/^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/);
 		if (hunk) {
@@ -239,7 +419,7 @@ function parseUnifiedDiff(diff: string): ParsedDiffLine[] {
 				oldLine,
 				newLine: null,
 				content: rawLine.slice(1),
-				path: currentPath,
+				path: oldPath ?? currentPath,
 			});
 			oldLine += 1;
 			continue;
@@ -251,7 +431,7 @@ function parseUnifiedDiff(diff: string): ParsedDiffLine[] {
 				oldLine: null,
 				newLine,
 				content: rawLine.slice(1),
-				path: currentPath,
+				path: newPath ?? currentPath,
 			});
 			newLine += 1;
 			continue;
@@ -263,7 +443,7 @@ function parseUnifiedDiff(diff: string): ParsedDiffLine[] {
 				oldLine,
 				newLine,
 				content: rawLine.slice(1),
-				path: currentPath,
+				path: newPath ?? oldPath ?? currentPath,
 			});
 			oldLine += 1;
 			newLine += 1;
@@ -275,10 +455,11 @@ function parseUnifiedDiff(diff: string): ParsedDiffLine[] {
 
 function languageForPath(path: string | undefined): string | undefined {
 	if (!path) return undefined;
+	const extension = fileExtension(path);
 	try {
-		return getLanguageFromPath(path);
+		return getLanguageFromPath(path) ?? (extension ? LANGUAGE_ALIASES[extension]?.inline : undefined);
 	} catch {
-		return undefined;
+		return extension ? LANGUAGE_ALIASES[extension]?.inline : undefined;
 	}
 }
 
@@ -332,7 +513,7 @@ function renderUnifiedDiffRow(
 		theme.fg(glyphColor, glyph),
 		theme.fg("dim", "│"),
 	].join(" ");
-	const content = highlightDiffContent(row.content, row.path);
+	const content = row.highlightedContent ?? highlightDiffContent(row.content, row.path);
 	return paintDiffRow(`${prefix} ${content}`, width, background);
 }
 
@@ -388,7 +569,7 @@ function renderSplitCell(
 	const lineNumber = side === "left" ? row.oldLine : row.newLine;
 	const numberColor = row.kind === "add" ? "toolDiffAdded" : row.kind === "remove" ? "toolDiffRemoved" : "dim";
 	const prefix = `${theme.fg(numberColor, formatDiffLineNumber(lineNumber))} ${theme.fg("dim", "│")}`;
-	const content = highlightDiffContent(row.content, row.path);
+	const content = row.highlightedContent ?? highlightDiffContent(row.content, row.path);
 	const background = rowBackground(row.kind) ?? baseBackground;
 	return paintDiffSegment(`${prefix} ${content}`, width, background);
 }
@@ -442,17 +623,18 @@ function limitDiffRows(
 
 function renderNativeDiff(
 	diff: string,
+	rows: ParsedDiffLine[] | undefined,
 	theme: ThemeLike,
 	width: number,
 	baseBackground: string | undefined,
 	config: ApplyPatchConfig,
 	expanded: boolean,
 ): string[] {
-	const rows = parseUnifiedDiff(diff);
-	if (rows.length === 0) return [];
+	const diffRows = rows ?? parseUnifiedDiff(diff);
+	if (diffRows.length === 0) return [];
 	const rendered = resolveDiffView(config, width) === "side-by-side"
-		? renderSideBySideDiffRows(rows, theme, width, baseBackground)
-		: rows.map((row) => renderUnifiedDiffRow(row, theme, width, baseBackground));
+		? renderSideBySideDiffRows(diffRows, theme, width, baseBackground)
+		: diffRows.map((row) => renderUnifiedDiffRow(row, theme, width, baseBackground));
 	return limitDiffRows(rendered, config, theme, width, baseBackground, expanded);
 }
 
@@ -533,10 +715,11 @@ function renderApplyPatchBox(
 	state: "success" | "pending" | "error" = "success",
 	status?: string,
 	expanded = false,
+	rows?: ParsedDiffLine[],
 ): ApplyPatchDiffView {
 	const target = files.length === 1 ? formatTarget(files[0]) : `${count} files`;
 	const summary = renderPatchSummary(theme, files, count, { showDone: true });
-	return new ApplyPatchDiffView(target, files, summary, theme, config, state, status, diff, expanded);
+	return new ApplyPatchDiffView(target, files, summary, theme, config, state, status, diff, expanded, rows);
 }
 
 function parsePatchInputProgress(input: string): {
@@ -660,6 +843,18 @@ function runCommand(
 	input?: string,
 ): Promise<{ stdout: string; stderr: string }> {
 	return new Promise((resolve, reject) => {
+		let settled = false;
+		let stdinError: NodeJS.ErrnoException | undefined;
+		const resolveOnce = (value: { stdout: string; stderr: string }) => {
+			if (settled) return;
+			settled = true;
+			resolve(value);
+		};
+		const rejectOnce = (error: Error) => {
+			if (settled) return;
+			settled = true;
+			reject(error);
+		};
 		const child = spawn(command, args, {
 			cwd,
 			env: process.env,
@@ -671,12 +866,19 @@ function runCommand(
 
 		child.stdout.on("data", (chunk) => stdoutChunks.push(Buffer.from(chunk)));
 		child.stderr.on("data", (chunk) => stderrChunks.push(Buffer.from(chunk)));
-		child.on("error", (error) => {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-				reject(new Error(`${command} not found on PATH`));
+		child.stdin.on("error", (error) => {
+			stdinError = error as NodeJS.ErrnoException;
+			if (stdinError.code === "EPIPE" || stdinError.code === "ERR_STREAM_DESTROYED") {
 				return;
 			}
-			reject(error);
+			rejectOnce(stdinError);
+		});
+		child.on("error", (error) => {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+				rejectOnce(new Error(`${command} not found on PATH`));
+				return;
+			}
+			rejectOnce(error instanceof Error ? error : new Error(String(error)));
 		});
 
 		const onAbort = () => child.kill();
@@ -693,12 +895,13 @@ function runCommand(
 			const stdout = Buffer.concat(stdoutChunks).toString("utf8");
 			const stderr = Buffer.concat(stderrChunks).toString("utf8");
 			if (exitCode === 0) {
-				resolve({ stdout, stderr });
+				resolveOnce({ stdout, stderr });
 				return;
 			}
-			reject(
+			const stdinMessage = stdinError ? `: ${stdinError.message}` : "";
+			rejectOnce(
 				new Error(
-					`${command} ${args.join(" ")} failed with exit code ${exitCode ?? 1}${trimOutput(stderr) ? `: ${trimOutput(stderr)}` : ""}`,
+					`${command} ${args.join(" ")} failed with exit code ${exitCode ?? 1}${trimOutput(stderr) ? `: ${trimOutput(stderr)}` : stdinMessage}`,
 				),
 			);
 		});
@@ -871,6 +1074,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 			const baseText = textBlock?.type === "text" ? textBlock.text : "";
 			const files = details?.fileDiffs ?? details?.files ?? [];
 			const count = details?.filesChanged ?? details?.operations ?? files.length;
+			const highlightedRows = details?.highlightedDiffRows;
 
 			if (isPartial) {
 				if (details?.stage === "validate") {
@@ -941,6 +1145,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 						"success",
 						undefined,
 						expanded,
+						highlightedRows,
 					);
 				}
 				return renderApplyPatchBox(
@@ -952,6 +1157,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 					"success",
 					undefined,
 					expanded,
+					highlightedRows,
 				);
 			}
 
@@ -1007,6 +1213,8 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 					return errorResult("apply_patch aborted before applying changes.");
 				}
 
+				const prePatchShikiSources = collectPrePatchShikiSources(ctx.cwd, progress.files);
+
 				onUpdate?.({
 					content: [{ type: "text", text: "Applying patch..." }],
 					details: {
@@ -1036,6 +1244,14 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 
 				const filesChanged = parseApplyPatchSummary(applied.stdout);
 				const diff = dryRun.stdout.trim();
+				const highlightedDiffRows = diff.length > 0
+					? await buildHighlightedDiffRows(
+						diff,
+						prePatchShikiSources,
+						collectPostPatchShikiSources(ctx.cwd, progress.files),
+						signal,
+					)
+					: [];
 				pi.appendEntry(APPLY_PATCH_USAGE_ENTRY, {
 					used: true,
 					modelId: ctx.model?.id,
@@ -1043,9 +1259,16 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 				});
 
 				for (const file of progress.files) {
-					const path = resolve(ctx.cwd, file.moveTo ?? file.path);
-					pi.events.emit("apply-patch:file-modified", { path, operation: file.operation });
-					pi.events.emit("context-guard:file-modified", { path });
+					const targets = file.moveTo
+						? [
+							{ path: resolve(ctx.cwd, file.path), operation: "delete" },
+							{ path: resolve(ctx.cwd, file.moveTo), operation: "add" },
+						]
+						: [{ path: resolve(ctx.cwd, file.path), operation: file.operation }];
+					for (const target of targets) {
+						pi.events.emit("apply-patch:file-modified", target);
+						pi.events.emit("context-guard:file-modified", { path: target.path });
+					}
 				}
 
 				return makeResult(
@@ -1057,6 +1280,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 						filesChanged,
 						operations: progress.totalOperations,
 						diff,
+						highlightedDiffRows,
 						fileDiffs: progress.files,
 					},
 				);

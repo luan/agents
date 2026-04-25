@@ -1,0 +1,11 @@
+{
+	"name": "agents-pi-extensions",
+	"private": true,
+	"dependencies": {
+		"@mariozechner/pi-ai": "^0.70.2",
+		"@mariozechner/pi-coding-agent": "^0.70.2",
+		"@mariozechner/pi-tui": "^0.70.2",
+		"@shikijs/cli": "^4.0.2",
+		"typebox": "^1.1.33"
+	}
+}

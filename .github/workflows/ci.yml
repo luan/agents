@@ -1,0 +1,273 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      # Git for Windows defaults to core.symlinks=false. Set it BEFORE checkout
+      # so the repo's tracked symlinks (claude/CLAUDE.md, codex/AGENTS.md, ...)
+      # land as real symlinks rather than 19-byte text placeholders.
+      - name: Configure git symlinks (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: git config --global core.symlinks true
+
+      - uses: actions/checkout@v4
+
+      - name: Sanity-check that tracked symlinks materialised (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -eu
+          for p in claude/CLAUDE.md codex/AGENTS.md opencode/AGENTS.md pi/AGENTS.md; do
+            test -L "$p" || { echo "::error::$p is not a symlink — core.symlinks=true was not honoured"; exit 1; }
+          done
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: extractions/setup-just@v2
+
+      # Stubs satisfy `cargo xtask doctor`'s PATH check. xtask itself never
+      # invokes these (only the `just claude-plugins-install` / `just ct-install`
+      # recipes do), so a no-op stub is sufficient for xtask coverage.
+      - name: Stub external tools (codex, claude, opencode)
+        shell: bash
+        run: |
+          set -eu
+          stubs_dir="$RUNNER_TEMP/bin-stubs"
+          mkdir -p "$stubs_dir"
+          ext=""
+          if [ "${{ runner.os }}" = "Windows" ]; then ext=".exe"; fi
+          for t in codex claude opencode; do
+            f="$stubs_dir/${t}${ext}"
+            printf '%s\n%s\n' '#!/bin/sh' 'exit 0' > "$f"
+            chmod +x "$f"
+          done
+          # GITHUB_PATH expects the OS's native path format. On Windows, bash's
+          # $RUNNER_TEMP looks like /d/a/_temp/...; convert to D:\a\_temp\...
+          # before appending so subsequent (non-bash) steps can resolve PATH.
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cygpath -w "$stubs_dir" >> "$GITHUB_PATH"
+          else
+            echo "$stubs_dir" >> "$GITHUB_PATH"
+          fi
+
+      - name: cargo build (workspace)
+        run: cargo build --workspace
+
+      - name: xtask doctor
+        run: cargo xtask doctor
+
+      # GLOBAL_AGENTS.md is intentionally gitignored, so CI cannot compare it
+      # against tracked repo state. Instead, materialise it once for later
+      # validation and assert that rendering is idempotent.
+      - name: render GLOBAL_AGENTS.md
+        shell: bash
+        run: |
+          set -eu
+          cargo xtask render-agents
+
+      - name: GLOBAL_AGENTS.md render is idempotent
+        shell: bash
+        run: |
+          set -eu
+          before=$(mktemp)
+          cp GLOBAL_AGENTS.md "$before"
+          cargo xtask render-agents
+          cmp -s "$before" GLOBAL_AGENTS.md \
+            || { echo "::error::GLOBAL_AGENTS.md render is not idempotent"; exit 1; }
+
+      # ---------- Scenario 1: no conflicts (happy path) ----------
+
+      - name: scenario 1 — clean target dirs
+        shell: bash
+        run: rm -rf "$HOME/.claude" "$HOME/.codex" "$HOME/.config/opencode" "$HOME/.pi" "$HOME/.agents"
+
+      - name: scenario 1 — xtask link-dry-run on clean home
+        run: cargo xtask link-dry-run
+
+      - name: scenario 1 — xtask link
+        run: cargo xtask link
+
+      - name: scenario 1 — verify symlinks exist and resolve
+        shell: bash
+        run: |
+          set -eu
+          # In a clean-home install, each top-level entry of every package
+          # source becomes one symlink under the corresponding target. Children
+          # below that level are accessed *through* the dir-symlink — they are
+          # not separately symlinked unless tree-unfolding kicked in (covered
+          # by scenario 3).
+          for p in \
+            "$HOME/.claude/CLAUDE.md" \
+            "$HOME/.claude/settings.json" \
+            "$HOME/.claude/statusline.py" \
+            "$HOME/.claude/hooks" \
+            "$HOME/.claude/rules" \
+            "$HOME/.claude/local-plugins" \
+            "$HOME/.codex/AGENTS.md" \
+            "$HOME/.codex/config.toml" \
+            "$HOME/.codex/hooks.json" \
+            "$HOME/.config/opencode/AGENTS.md" \
+            "$HOME/.config/opencode/opencode.jsonc" \
+            "$HOME/.config/opencode/profiles" \
+            "$HOME/.pi/AGENTS.md" \
+            "$HOME/.pi/agent" \
+            "$HOME/.agents/rules/cargo.md" \
+            "$HOME/.agents/skills/commit" \
+            "$HOME/.claude/skills/commit"; do
+            test -L "$p" || { echo "::error::missing symlink: $p"; exit 1; }
+            test -e "$p" || { echo "::error::broken symlink: $p"; exit 1; }
+          done
+
+      - name: scenario 1 — xtask link is idempotent
+        shell: bash
+        run: |
+          set -eu
+          out=$(cargo xtask link 2>&1)
+          echo "$out"
+          echo "$out" | grep -q "(up to date)" || { echo "::error::expected '(up to date)' on second link"; exit 1; }
+          if echo "$out" | grep -E '^[[:space:]]*\+ ' | grep -v -E '^[[:space:]]*\+ link ' >/dev/null; then
+            echo "::error::second link should be a no-op but created new symlinks"; exit 1
+          fi
+
+      - name: scenario 1 — xtask unlink
+        run: cargo xtask unlink
+
+      - name: scenario 1 — verify symlinks removed
+        shell: bash
+        run: |
+          set -eu
+          for p in \
+            "$HOME/.claude/CLAUDE.md" \
+            "$HOME/.agents/skills/commit"; do
+            if [ -L "$p" ]; then echo "::error::$p still a symlink after unlink"; exit 1; fi
+          done
+
+      # ---------- Scenario 2: file conflict (refuses to clobber) ----------
+
+      - name: scenario 2 — clean and pre-create a conflicting file
+        shell: bash
+        run: |
+          set -eu
+          rm -rf "$HOME/.claude" "$HOME/.codex" "$HOME/.config/opencode" "$HOME/.pi" "$HOME/.agents"
+          mkdir -p "$HOME/.claude"
+          printf '%s' '{"sentinel":"user-data-must-not-be-clobbered"}' > "$HOME/.claude/settings.json"
+
+      - name: scenario 2 — link must fail with the conflict error
+        shell: bash
+        run: |
+          set +e
+          cargo xtask link >/tmp/link-out 2>&1
+          rc=$?
+          set -e
+          cat /tmp/link-out
+          [ "$rc" != "0" ] || { echo "::error::link succeeded but should have failed on conflict"; exit 1; }
+          grep -q "settings.json already exists and is not a symlink" /tmp/link-out \
+            || { echo "::error::expected conflict message not found in output"; exit 1; }
+
+      - name: scenario 2 — verify user file is untouched
+        shell: bash
+        run: |
+          set -eu
+          got=$(cat "$HOME/.claude/settings.json")
+          want='{"sentinel":"user-data-must-not-be-clobbered"}'
+          [ "$got" = "$want" ] || { echo "::error::user file content changed: $got"; exit 1; }
+          if [ -L "$HOME/.claude/settings.json" ]; then echo "::error::user file became a symlink"; exit 1; fi
+
+      - name: scenario 2b — clean and pre-create a foreign symlink
+        shell: bash
+        run: |
+          set -eu
+          rm -rf "$HOME/.claude" "$HOME/.codex" "$HOME/.config/opencode" "$HOME/.pi" "$HOME/.agents"
+          mkdir -p "$HOME/.claude"
+          printf '%s' '{"sentinel":"foreign-symlink-target"}' > "$HOME/foreign-settings.json"
+          node -e 'require("fs").symlinkSync(process.argv[1], process.argv[2], "file")' \
+            "$HOME/foreign-settings.json" "$HOME/.claude/settings.json"
+
+      - name: scenario 2b — link must fail on foreign symlink
+        shell: bash
+        run: |
+          set +e
+          cargo xtask link >/tmp/link-out 2>&1
+          rc=$?
+          set -e
+          cat /tmp/link-out
+          [ "$rc" != "0" ] || { echo "::error::link succeeded but should have failed on foreign symlink"; exit 1; }
+          grep -q "settings.json already exists as a symlink" /tmp/link-out \
+            || { echo "::error::expected foreign symlink conflict message not found in output"; exit 1; }
+
+      - name: scenario 2b — verify foreign symlink is untouched
+        shell: bash
+        run: |
+          set -eu
+          test -L "$HOME/.claude/settings.json" \
+            || { echo "::error::foreign symlink was replaced"; exit 1; }
+          got=$(cat "$HOME/.claude/settings.json")
+          want='{"sentinel":"foreign-symlink-target"}'
+          [ "$got" = "$want" ] || { echo "::error::foreign symlink target changed: $got"; exit 1; }
+
+      # ---------- Scenario 3: tree-unfolding (target subdir already exists) ----------
+
+      - name: scenario 3 — clean and pre-create a real target subdir with userdata
+        shell: bash
+        run: |
+          set -eu
+          rm -rf "$HOME/.claude" "$HOME/.codex" "$HOME/.config/opencode" "$HOME/.pi" "$HOME/.agents"
+          mkdir -p "$HOME/.pi/agent"
+          echo "preexisting userdata" > "$HOME/.pi/agent/runtime.txt"
+
+      - name: scenario 3 — link merges into existing dir
+        run: cargo xtask link
+
+      - name: scenario 3 — verify tree-unfolding worked
+        shell: bash
+        run: |
+          set -eu
+          [ -f "$HOME/.pi/agent/runtime.txt" ] \
+            || { echo "::error::userdata clobbered by link"; exit 1; }
+          [ "$(cat "$HOME/.pi/agent/runtime.txt")" = "preexisting userdata" ] \
+            || { echo "::error::userdata content changed"; exit 1; }
+          test -L "$HOME/.pi/agent/keybindings.json" \
+            || { echo "::error::repo file not linked into existing dir"; exit 1; }
+          test -L "$HOME/.pi/agent/extensions" \
+            || { echo "::error::repo subdir not linked into existing dir"; exit 1; }
+
+      - name: scenario 3 — unlink preserves userdata
+        shell: bash
+        run: |
+          set -eu
+          cargo xtask unlink
+          [ -f "$HOME/.pi/agent/runtime.txt" ] \
+            || { echo "::error::userdata clobbered by unlink"; exit 1; }
+          if [ -L "$HOME/.pi/agent/keybindings.json" ]; then
+            echo "::error::repo symlink not removed by unlink"; exit 1
+          fi
+
+      # ---------- xtask validate (renders + asserts + cargo test --workspace) ----------
+
+      - name: scenario 4 — clean home for validate
+        shell: bash
+        run: rm -rf "$HOME/.claude" "$HOME/.codex" "$HOME/.config/opencode" "$HOME/.pi" "$HOME/.agents"
+
+      # validate runs: render-agents freshness, JSON validity, in-repo symlink
+      # asserts, stow dry-run, and `cargo test --workspace`. Enforced on all
+      # OSes; path-separator hardcodes that previously broke Windows have
+      # been normalised at the storage boundary (sym indexer rel_path) and
+      # in the affected tests (ct churn/artifact, sym repo_config).
+      - name: cargo xtask validate
+        run: cargo xtask validate

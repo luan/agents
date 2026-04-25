@@ -1,10 +1,10 @@
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     DryRun,
     Link,
@@ -27,54 +27,267 @@ pub fn run(mode: Mode) -> Result<()> {
     let root = crate::repo_root();
     let home = dirs::home_dir().context("cannot determine HOME")?;
 
-    if matches!(mode, Mode::Link | Mode::Unlink) {
+    if mode != Mode::DryRun {
         cleanup_legacy_bin_links(&root, &home);
     }
 
-    let mut last_status: i32 = 0;
+    let mut errors: usize = 0;
     for (package, segments) in TARGETS {
+        let source = root.join(package);
         let mut target = home.clone();
         for s in *segments {
             target.push(s);
         }
-        fs::create_dir_all(&target)
-            .with_context(|| format!("mkdir -p {}", target.display()))?;
-        let cmd = stow_args(mode, package, &target);
-        eprintln!("+ {}", cmd.join(" "));
-        let status = Command::new(&cmd[0])
-            .args(&cmd[1..])
-            .current_dir(&root)
-            .status()
-            .with_context(|| format!("invoke {}", cmd[0]))?;
-        if !status.success() {
-            last_status = status.code().unwrap_or(1);
-            if matches!(mode, Mode::Link) {
+        eprintln!(
+            "+ {} {} -> {}",
+            mode_verb(mode),
+            display_rel(&source, &root),
+            target.display()
+        );
+        if let Err(err) = process_package(mode, &source, &target) {
+            eprintln!("  error: {err:#}");
+            errors += 1;
+            if mode == Mode::Link {
                 break;
             }
         }
     }
 
-    if last_status != 0 {
-        bail!("stow exited with status {last_status}");
+    if errors > 0 {
+        bail!("stow operation completed with {errors} package error(s)");
     }
     Ok(())
 }
 
-fn stow_args(mode: Mode, package: &str, target: &Path) -> Vec<String> {
-    let mut cmd: Vec<String> = vec!["stow".into()];
+fn mode_verb(mode: Mode) -> &'static str {
     match mode {
-        Mode::DryRun => {
-            cmd.push("-n".into());
-            cmd.push("-v".into());
-            cmd.push("-R".into());
-        }
-        Mode::Link => cmd.push("-R".into()),
-        Mode::Unlink => cmd.push("-D".into()),
+        Mode::DryRun => "[dry-run]",
+        Mode::Link => "link",
+        Mode::Unlink => "unlink",
     }
-    cmd.push(package.into());
-    cmd.push("-t".into());
-    cmd.push(target.display().to_string());
-    cmd
+}
+
+fn display_rel(p: &Path, root: &Path) -> String {
+    p.strip_prefix(root)
+        .map(|r| r.display().to_string())
+        .unwrap_or_else(|_| p.display().to_string())
+}
+
+fn process_package(mode: Mode, source: &Path, target: &Path) -> Result<()> {
+    if !source.is_dir() {
+        bail!("source {} is not a directory", source.display());
+    }
+
+    if mode == Mode::Link {
+        fs::create_dir_all(target)
+            .with_context(|| format!("mkdir -p {}", target.display()))?;
+    }
+
+    for source_entry in iter_children(source)? {
+        let name = source_entry.file_name().expect("entry has filename");
+        let target_entry = target.join(name);
+        match mode {
+            Mode::DryRun => act_dry_run(&source_entry, &target_entry)?,
+            Mode::Link => act_link(&source_entry, &target_entry)?,
+            Mode::Unlink => act_unlink(&source_entry, &target_entry)?,
+        }
+    }
+    Ok(())
+}
+
+fn iter_children(source: &Path) -> Result<Vec<PathBuf>> {
+    let mut entries = fs::read_dir(source)
+        .with_context(|| format!("read_dir {}", source.display()))?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .with_context(|| format!("read_dir entries {}", source.display()))?;
+    entries.sort_by_key(|e| e.file_name());
+    Ok(entries.into_iter().map(|e| e.path()).collect())
+}
+
+fn act_link(source: &Path, target: &Path) -> Result<()> {
+    match fs::symlink_metadata(target) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            let source_canon = fs::canonicalize(source)
+                .with_context(|| format!("canonicalize {}", source.display()))?;
+            let existing_canon = fs::canonicalize(target).ok();
+            if existing_canon.as_deref() == Some(source_canon.as_path()) {
+                eprintln!("  = {} (up to date)", target.display());
+                return Ok(());
+            }
+            bail!(
+                "{} already exists as a symlink to {} (refusing to replace non-owned symlink)",
+                target.display(),
+                existing_canon
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "<broken>".to_string())
+            );
+        }
+        Ok(meta) if meta.is_dir() => {
+            // Tree-unfolding: target dir already exists, source is a dir → recurse.
+            let src_meta = fs::metadata(source)
+                .with_context(|| format!("stat target of {}", source.display()))?;
+            if !src_meta.is_dir() {
+                bail!(
+                    "{} is a directory but source {} is a file",
+                    target.display(),
+                    source.display()
+                );
+            }
+            for child in iter_children(source)? {
+                let name = child.file_name().expect("entry has filename");
+                act_link(&child, &target.join(name))?;
+            }
+        }
+        Ok(_) => {
+            bail!(
+                "{} already exists and is not a symlink (refusing to clobber)",
+                target.display()
+            );
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            create_symlink(source, target)?;
+            eprintln!("  + {} -> {}", target.display(), source.display());
+        }
+        Err(err) => {
+            return Err(anyhow::Error::from(err))
+                .with_context(|| format!("stat {}", target.display()));
+        }
+    }
+    Ok(())
+}
+
+fn act_dry_run(source: &Path, target: &Path) -> Result<()> {
+    match fs::symlink_metadata(target) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            let source_canon = fs::canonicalize(source)
+                .with_context(|| format!("canonicalize {}", source.display()))?;
+            let existing_canon = fs::canonicalize(target).ok();
+            if existing_canon.as_deref() == Some(source_canon.as_path()) {
+                eprintln!("  = {} (up to date)", target.display());
+            } else {
+                bail!(
+                    "{} already exists as a symlink to {} (refusing to replace non-owned symlink)",
+                    target.display(),
+                    existing_canon
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "<broken>".to_string())
+                );
+            }
+        }
+        Ok(meta) if meta.is_dir() => {
+            let src_meta = fs::metadata(source)
+                .with_context(|| format!("stat target of {}", source.display()))?;
+            if !src_meta.is_dir() {
+                bail!(
+                    "{} is a directory but source {} is a file",
+                    target.display(),
+                    source.display()
+                );
+            }
+            for child in iter_children(source)? {
+                let name = child.file_name().expect("entry has filename");
+                act_dry_run(&child, &target.join(name))?;
+            }
+        }
+        Ok(_) => {
+            bail!(
+                "{} already exists and is not a symlink",
+                target.display()
+            );
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            eprintln!(
+                "  + would link {} -> {}",
+                target.display(),
+                source.display()
+            );
+        }
+        Err(err) => {
+            return Err(anyhow::Error::from(err))
+                .with_context(|| format!("stat {}", target.display()));
+        }
+    }
+    Ok(())
+}
+
+fn act_unlink(source: &Path, target: &Path) -> Result<()> {
+    match fs::symlink_metadata(target) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            let source_canon = fs::canonicalize(source)
+                .with_context(|| format!("canonicalize {}", source.display()))?;
+            let existing_canon = fs::canonicalize(target).ok();
+            if existing_canon.as_deref() == Some(source_canon.as_path()) {
+                remove_symlink(target)
+                    .with_context(|| format!("remove {}", target.display()))?;
+                eprintln!("  - {}", target.display());
+            } else {
+                eprintln!(
+                    "  skip {} (symlink not owned by this repo)",
+                    target.display()
+                );
+            }
+        }
+        Ok(meta) if meta.is_dir() => {
+            let src_meta = match fs::metadata(source) {
+                Ok(m) => m,
+                Err(_) => return Ok(()),
+            };
+            if !src_meta.is_dir() {
+                return Ok(());
+            }
+            for child in iter_children(source)? {
+                let name = child.file_name().expect("entry has filename");
+                act_unlink(&child, &target.join(name))?;
+            }
+        }
+        Ok(_) => {
+            eprintln!("  skip {} (not a symlink)", target.display());
+        }
+        Err(_) => {}
+    }
+    Ok(())
+}
+
+// Remove a symlink at `target`, regardless of whether it points to a file or
+// directory. On Unix both kinds are removed via fs::remove_file (the syscall
+// operates on the link itself, not the target). On Windows fs::remove_file
+// only removes file symlinks; directory symlinks must go through
+// fs::remove_dir (which removes the link, not the dir's contents) and
+// fs::remove_file would otherwise fail with ERROR_ACCESS_DENIED (os error 5).
+fn remove_symlink(target: &Path) -> std::io::Result<()> {
+    match fs::remove_file(target) {
+        Ok(()) => Ok(()),
+        #[cfg(windows)]
+        Err(_) => fs::remove_dir(target),
+        #[cfg(not(windows))]
+        Err(err) => Err(err),
+    }
+}
+
+#[cfg(unix)]
+fn create_symlink(source: &Path, target: &Path) -> Result<()> {
+    std::os::unix::fs::symlink(source, target).with_context(|| {
+        format!("symlink {} -> {}", target.display(), source.display())
+    })
+}
+
+#[cfg(windows)]
+fn create_symlink(source: &Path, target: &Path) -> Result<()> {
+    use std::os::windows::fs::{symlink_dir, symlink_file};
+    let meta = fs::metadata(source)
+        .with_context(|| format!("stat target of {}", source.display()))?;
+    let res = if meta.is_dir() {
+        symlink_dir(source, target)
+    } else {
+        symlink_file(source, target)
+    };
+    res.with_context(|| {
+        format!(
+            "symlink {} -> {} (Windows symlinks require Developer Mode or an elevated shell; run `cargo xtask doctor` for diagnostics)",
+            target.display(),
+            source.display()
+        )
+    })
 }
 
 fn cleanup_legacy_bin_links(root: &Path, home: &Path) {

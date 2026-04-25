@@ -12,13 +12,13 @@ render-agents:
 link-dry-run: render-agents
     cd "{{ repo }}" && cargo xtask link-dry-run
 
-link: render-agents codex-plugins-install
+link: render-agents codex-plugins-install pi-extensions-install
     cd "{{ repo }}" && cargo xtask link
 
 unlink:
     cd "{{ repo }}" && cargo xtask unlink || true
 
-restow: render-agents codex-plugins-install
+restow: render-agents codex-plugins-install pi-extensions-install
     cd "{{ repo }}" && cargo xtask link
 
 doctor:
@@ -27,15 +27,27 @@ doctor:
 validate: render-agents
     cd "{{ repo }}" && cargo xtask validate
 
-setup: doctor link claude-plugins-install ct-install validate
+setup: doctor link worktrunk-install claude-plugins-install ct-install validate
+
+worktrunk-install:
+    # The `wt` binary backs the worktrunk claude plugin. `cargo install`
+    # rebuilds even when the version is unchanged, so skip when `wt` is
+    # already on PATH. To upgrade, run `cargo install worktrunk --force`.
+    @command -v wt >/dev/null 2>&1 || cargo install worktrunk --locked
 
 codex-plugins-install:
     cd "{{ repo }}" && cargo xtask codex-plugins-install
 
 claude-plugins-install:
-    claude plugin marketplace update local
-    claude plugin uninstall gt@local || true
-    claude plugin install -s user gt@local
+    # worktrunk: marketplace is auto-registered from claude/settings.json's
+    # extraKnownMarketplaces once `link` ran; settings.json also enables
+    # worktrunk@worktrunk, so claude breaks on startup if it isn't installed.
+    # `claude plugin install` is idempotent (no-op when already installed).
+    claude plugin install worktrunk@worktrunk
+    # Keep the local `agents` marketplace disabled until its schema is updated.
+
+pi-extensions-install:
+    cd "{{ repo }}/pi/agent/extensions" && npm install --omit=dev
 
 ct-build:
     cd "{{ repo }}" && cargo build --release -p ct

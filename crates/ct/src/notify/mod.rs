@@ -187,6 +187,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .as_deref()
         .and_then(icon::tmux_session_color)
         .unwrap_or_else(|| mapping.color.to_string());
+    // icon_path feeds the linux/macos backends below; Windows currently has
+    // no notification backend, so the binding is unused there.
+    #[cfg_attr(windows, allow(unused_variables))]
     let icon_path = icon::generate(&icon_color, mapping.symbol, icon_sess);
 
     #[cfg(target_os = "linux")]

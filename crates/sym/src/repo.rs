@@ -3,25 +3,52 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, bail};
 use sha2::{Digest, Sha256};
 
-pub fn sym_dir() -> Result<PathBuf> {
-    if let Ok(cache_dir) = std::env::var("XDG_CACHE_HOME") {
-        if !cache_dir.is_empty() {
-            return Ok(PathBuf::from(cache_dir).join("sym"));
-        }
+fn resolve_cache_base_dir(
+    xdg_cache_home: Option<PathBuf>,
+    cache_dir: Option<PathBuf>,
+    home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    if let Some(cache_dir) = xdg_cache_home {
+        return Some(cache_dir);
     }
+
+    // dirs::cache_dir() resolves to:
+    //   Linux:   $HOME/.cache
+    //   macOS:   $HOME/Library/Caches
+    //   Windows: %LOCALAPPDATA%
+    if let Some(cache) = cache_dir {
+        return Some(cache);
+    }
+
+    let home = home?;
 
     #[cfg(target_os = "macos")]
     {
-        if let Ok(home) = std::env::var("HOME") {
-            return Ok(PathBuf::from(home).join("Library/Caches/sym"));
-        }
+        return Some(home.join("Library").join("Caches"));
     }
 
-    if let Ok(home) = std::env::var("HOME") {
-        return Ok(PathBuf::from(home).join(".cache/sym"));
+    #[cfg(windows)]
+    {
+        return Some(home.join("AppData").join("Local"));
     }
 
-    bail!("cannot determine cache directory")
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        Some(home.join(".cache"))
+    }
+}
+
+fn cache_base_dir() -> Option<PathBuf> {
+    let xdg_cache_home = std::env::var_os("XDG_CACHE_HOME")
+        .filter(|cache_dir| !cache_dir.is_empty())
+        .map(PathBuf::from);
+    resolve_cache_base_dir(xdg_cache_home, dirs::cache_dir(), dirs::home_dir())
+}
+
+pub fn sym_dir() -> Result<PathBuf> {
+    cache_base_dir()
+        .map(|cache| cache.join("sym"))
+        .ok_or_else(|| anyhow::anyhow!("cannot determine cache directory"))
 }
 
 pub fn repo_db_path(repo_root: &Path) -> Result<PathBuf> {
@@ -66,4 +93,38 @@ pub fn find_git_root(dir: &Path) -> Result<PathBuf> {
     }
 
     bail!("no git repository found from {}", dir.display())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::resolve_cache_base_dir;
+
+    #[test]
+    fn cache_base_dir_respects_xdg_override() {
+        let resolved = resolve_cache_base_dir(
+            Some(PathBuf::from("/tmp/xdg-cache")),
+            Some(PathBuf::from("/tmp/platform-cache")),
+            Some(PathBuf::from("/tmp/home")),
+        )
+        .expect("cache dir");
+
+        assert_eq!(resolved, PathBuf::from("/tmp/xdg-cache"));
+    }
+
+    #[test]
+    fn cache_base_dir_falls_back_to_home_convention() {
+        let resolved = resolve_cache_base_dir(None, None, Some(PathBuf::from("/tmp/home")))
+            .expect("cache dir");
+
+        #[cfg(target_os = "macos")]
+        assert_eq!(resolved, PathBuf::from("/tmp/home/Library/Caches"));
+
+        #[cfg(windows)]
+        assert_eq!(resolved, PathBuf::from("/tmp/home/AppData/Local"));
+
+        #[cfg(not(any(target_os = "macos", windows)))]
+        assert_eq!(resolved, PathBuf::from("/tmp/home/.cache"));
+    }
 }

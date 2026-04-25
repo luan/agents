@@ -369,7 +369,11 @@ fn include_dives_flag_toggles_list_visibility() {
             "list without --include-dives should show 1 artifact"
         );
         assert!(
-            without[0].path.to_string_lossy().contains("spec/"),
+            without[0]
+                .path
+                .to_string_lossy()
+                .replace('\\', "/")
+                .contains("spec/"),
             "should be the spec hub"
         );
 
@@ -498,7 +502,7 @@ fn archived_dive_is_listable() {
         assert!(
             archived
                 .iter()
-                .any(|a| a.path.to_string_lossy().contains("archive/dive")),
+                .any(|a| a.path.to_string_lossy().replace('\\', "/").contains("archive/dive")),
             "archived dive must be visible in list_archived_artifacts; got: {:?}",
             archived
                 .iter()
@@ -523,7 +527,7 @@ fn resolve_artifact_path_finds_dive_by_bare_stem() {
         let resolved = resolve_artifact_path("20260411-hub-detail", ArtifactKind::Spec)
             .expect("resolve dive stem");
         assert!(
-            resolved.to_string_lossy().contains("dive/"),
+            resolved.to_string_lossy().replace('\\', "/").contains("dive/"),
             "resolved path must be inside dive/; got: {}",
             resolved.display()
         );
