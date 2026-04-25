@@ -22,9 +22,14 @@
       "command": ["bunx", "-y", "@upstash/context7-mcp"],
       "environment": {},
     },
-    "blueprint": {
+    "vault": {
       "type": "local",
-      "command": ["ct", "mcp", "blueprint"],
+      "command": ["ct", "mcp", "vault"],
+      "environment": {},
+    },
+    "sym": {
+      "type": "local",
+      "command": ["ct", "mcp", "sym"],
       "environment": {},
     },
   },

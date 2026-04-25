@@ -4,11 +4,10 @@ mod args;
 mod artifact;
 mod tool;
 
-pub use args::{ApplyPatchCmd, ArtifactAction, McpAction, ToolAction, VaultAction};
+pub use args::{ApplyPatchCmd, McpAction, ToolAction, VaultAction, parse_kind_filter};
 pub use artifact::{
-    ArtifactCreateArgs, run_artifact_archive, run_artifact_comments, run_artifact_create,
-    run_artifact_latest, run_artifact_list, run_artifact_prune, run_artifact_read,
-    run_artifact_rename, run_artifact_retag, run_artifact_show,
+    ArtifactCreateArgs, run_vault_archive, run_vault_comments, run_vault_create, run_vault_list,
+    run_vault_prune, run_vault_read, run_vault_rename, run_vault_retag,
 };
 pub use tool::{
     run_apply_patch, run_apply_patch_prune, run_apply_patch_stats, run_cochanges, run_completion,
@@ -25,50 +24,14 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    #[command(visible_alias = "p", about = "Plan file operations")]
-    Plan {
-        #[command(subcommand)]
-        action: ArtifactAction,
-    },
-
-    #[command(visible_alias = "s", about = "Spec file operations")]
-    Spec {
-        #[command(subcommand)]
-        action: ArtifactAction,
-    },
-
-    #[command(visible_alias = "r", about = "Review file operations")]
-    Review {
-        #[command(subcommand)]
-        action: ArtifactAction,
-    },
-
-    #[command(visible_alias = "rp", about = "Report file operations")]
-    Report {
-        #[command(subcommand)]
-        action: ArtifactAction,
-    },
-
-    #[command(visible_alias = "d", about = "Doc file operations")]
-    Doc {
-        #[command(subcommand)]
-        action: ArtifactAction,
-    },
-
-    #[command(visible_alias = "v", about = "Vault repository management")]
+    #[command(visible_alias = "v", about = "Vault operations")]
     Vault {
         #[command(subcommand)]
         action: VaultAction,
     },
 
-    #[command(about = "Read artifact by stem (resolves across all types)")]
-    Read {
-        #[arg(help = "File path or stem")]
-        file: String,
-
-        #[arg(long, help = "Output frontmatter as JSON")]
-        frontmatter: bool,
-    },
+    #[command(about = "Print detected project name")]
+    Project,
 
     #[command(visible_alias = "n", about = "Handle notification hooks")]
     Notify,

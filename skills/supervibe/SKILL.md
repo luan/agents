@@ -31,7 +31,7 @@ Read the spec file. The spec's Architecture Context tells you the scope — what
 
 ## [2] Plan Chunks
 
-Read the spec file via `ct spec read <path>`. Break the goal into 2-5 independent chunks based on the spec's Architecture Context. Each chunk:
+Read the spec file via `ct vault read -t spec <path>`. Break the goal into 2-5 independent chunks based on the spec's Architecture Context. Each chunk:
 - Can be implemented and tested independently
 - Has a clear "done" state
 - Fits in a single vibe cycle

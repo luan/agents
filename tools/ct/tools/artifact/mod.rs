@@ -14,11 +14,11 @@ mod listing;
 pub use archive::{archive, cmd_archive, cmd_archive_batch};
 pub use crud::{
     CreateOpts, cmd_comments, cmd_read, cmd_read_resolved, cmd_rename, cmd_retag, create, read,
-    resolve_artifact_path, resolve_stem_universal,
+    resolve_artifact_path, resolve_optional_kind, resolve_stem_universal,
 };
 pub use listing::{
-    cmd_latest, list_archived_artifacts, list_archived_artifacts_for_project, list_artifacts,
-    list_artifacts_for_project, load_content,
+    list_archived_artifacts, list_archived_artifacts_for_project, list_artifacts,
+    list_artifacts_for_project,
 };
 
 pub(crate) fn fatal(msg: &str) -> ! {
@@ -78,17 +78,6 @@ impl ArtifactKind {
             Self::Review => "review",
             Self::Report => "report",
             Self::Doc => "doc",
-        }
-    }
-
-    /// Legacy directory name used in ~/.claude/ (before blueprints migration).
-    pub fn legacy_dir_name(self) -> &'static str {
-        match self {
-            Self::Plan => "plans",
-            Self::Spec => "specs",
-            Self::Review => "reviews",
-            Self::Report => "reports",
-            Self::Doc => "docs",
         }
     }
 }
@@ -275,6 +264,18 @@ pub fn artifact_dir(project_path: &str, kind: ArtifactKind) -> PathBuf {
     let bp = blueprints_dir();
     let name = project_name(project_path);
     bp.join(name).join(kind.dir_name())
+}
+
+/// Infer the artifact kind from the directory just above the file
+/// (e.g. `<project>/spec/foo.md` → `Spec`). Returns None when the
+/// containing directory is `dive/` (still a Spec) or unrecognized.
+pub fn infer_kind_from_path(path: &Path) -> Option<ArtifactKind> {
+    let parent = path.parent()?;
+    let name = parent.file_name()?.to_str()?;
+    if name == "dive" {
+        return Some(ArtifactKind::Spec);
+    }
+    ArtifactKind::from_dir_name(name)
 }
 
 /// Test helper: artifact dir with custom base.
@@ -826,6 +827,97 @@ pub fn commit_and_push_paths(relative_paths: &[&Path], message: &str) -> Result<
 /// Commit and push a single file in the blueprints repo.
 pub fn commit_and_push(relative_path: &Path, message: &str) -> Result<(), SyncError> {
     commit_and_push_paths(&[relative_path], message)
+}
+
+/// Outcome of a `commit_edits` call. `committed: false` means the file had no
+/// pending changes, so nothing was sent to the remote.
+#[derive(Debug, Clone, Serialize)]
+pub struct CommitOutcome {
+    pub committed: bool,
+    pub pushed: bool,
+    pub message: String,
+}
+
+/// Commit and push pending edits to a vault file. Validates that the path
+/// resides inside the vault, refuses non-`.md` files and `.git/` paths, and
+/// no-ops when there are no pending changes.
+pub fn commit_edits(path_arg: &str, message: Option<&str>) -> Result<CommitOutcome, CtError> {
+    let bp = blueprints_dir_checked()?;
+    let path = Path::new(path_arg);
+    let full_path: PathBuf = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        bp.join(path)
+    };
+
+    let (full_canonical, bp_canonical) = canonicalize_in_vault(&full_path)?;
+    if full_canonical.components().any(|c| c.as_os_str() == ".git") {
+        return Err(CtError::Validation(
+            "path contains a .git component".to_string(),
+        ));
+    }
+    if full_canonical.extension().and_then(|e| e.to_str()) != Some("md") {
+        return Err(CtError::Validation(
+            "only .md artifacts can be committed through this tool".to_string(),
+        ));
+    }
+
+    let rel_path = full_canonical
+        .strip_prefix(&bp_canonical)
+        .expect("canonicalize_in_vault guarantees prefix")
+        .to_path_buf();
+
+    let resolved_message = message
+        .map(|m| m.to_string())
+        .unwrap_or_else(|| default_edit_message(&rel_path));
+
+    if no_pending_changes(&bp_canonical, &rel_path) {
+        return Ok(CommitOutcome {
+            committed: false,
+            pushed: false,
+            message: "nothing to commit".to_string(),
+        });
+    }
+
+    commit_and_push(&rel_path, &resolved_message)?;
+
+    Ok(CommitOutcome {
+        committed: true,
+        pushed: true,
+        message: resolved_message,
+    })
+}
+
+/// Default commit message of the form `<kind>(<project>): edit <slug>` derived
+/// from a vault-relative path like `myproj/spec/20260416-10-foo.md`.
+fn default_edit_message(rel_path: &Path) -> String {
+    let components: Vec<&str> = rel_path
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .collect();
+    let project = components.first().copied().unwrap_or("unknown");
+    let kind_dir = components.get(1).copied().unwrap_or("edit");
+    let kind = ArtifactKind::from_dir_name(kind_dir)
+        .map(|k| k.commit_name().to_string())
+        .unwrap_or_else(|| kind_dir.to_string());
+    let slug = rel_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    format!("{kind}({project}): edit {slug}")
+}
+
+fn no_pending_changes(bp: &Path, rel_path: &Path) -> bool {
+    let bp_str = bp.to_string_lossy();
+    let is_clean = |cached: bool| {
+        let mut cmd = std::process::Command::new("git");
+        cmd.args(["-C", &bp_str, "diff", "--quiet"]);
+        if cached {
+            cmd.arg("--cached");
+        }
+        cmd.arg("--")
+            .arg(rel_path)
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    is_clean(false) && is_clean(true)
 }
 
 #[cfg(test)]

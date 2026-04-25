@@ -54,9 +54,12 @@ ct-install: ct-test
     cargo install --path "{{ repo }}/tools/ct"
     claude mcp remove -s user ct 2>/dev/null || true
     claude mcp remove -s user blueprint 2>/dev/null || true
+    claude mcp remove -s user vault 2>/dev/null || true
     claude mcp remove -s user apply-patch 2>/dev/null || true
-    claude mcp add -s user blueprint ct mcp blueprint
+    claude mcp remove -s user sym 2>/dev/null || true
+    claude mcp add -s user vault ct mcp vault
     claude mcp add -s user apply-patch ct mcp apply-patch
+    claude mcp add -s user sym ct mcp sym
 
 ct-completions:
     mkdir -p "{{ home }}/.config/fish/completions"

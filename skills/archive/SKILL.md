@@ -22,20 +22,17 @@ Move consumed blueprint artifacts to `archive/` and store their content as git n
 
 ### Without arguments
 
-List active artifacts:
+List active artifacts across all types:
 
 ```bash
-ct spec list --all
-ct plan list --all
-ct review list --all
-ct report list --all
+ct vault list --all
 ```
 
 Present the combined list and ask which to archive via AskUserQuestion.
 
 ### With slug argument
 
-Search for matching artifact across types (or filtered by `--type`):
+Search for matching artifact across types (or filtered by `-t <type>`):
 
 ```bash
 # Try each type, find file whose name contains the slug
@@ -46,14 +43,15 @@ If exactly one match → archive it. Multiple matches → present choices. No ma
 
 ### Archive
 
-Prefer the MCP `blueprint_archive` tool (`{ stem, kind? }`). It moves the file to `~/blueprints/<project>/archive/`, stores content as a git note, and commits+pushes.
+Prefer the MCP `archive` tool (`{ stem, kind? }`). It moves the file to `~/blueprints/<project>/archive/`, stores content as a git note, and commits+pushes.
 
 CLI equivalent, useful for batch archival or previewing:
 
 ```bash
-ct <type> archive <file-path>                     # single
-ct <type> archive --batch <f1> <f2> <f3>          # one commit for all
-ct <type> archive --dry-run --batch <f1> <f2>     # preview, no writes
+ct vault archive <file-path>                          # single (kind inferred from path)
+ct vault archive -t <type> <slug>                     # restrict resolution to one kind
+ct vault archive --batch <f1> <f2> <f3>               # one commit for all
+ct vault archive --dry-run --batch <f1> <f2>          # preview, no writes
 ```
 
 Report what was archived.

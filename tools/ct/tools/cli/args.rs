@@ -1,6 +1,22 @@
 use clap::Subcommand;
 use clap_complete::Shell;
 
+use crate::artifact::ArtifactKind;
+
+/// Parse a `-t` argument into an optional kind. `"all"` (the default) yields
+/// `None`, signalling cross-kind operation. `"doc"` is accepted as an alias
+/// for the on-disk `docs/` directory.
+pub fn parse_kind_filter(s: &str) -> Option<ArtifactKind> {
+    match s {
+        "all" => None,
+        "doc" => Some(ArtifactKind::Doc),
+        _ => ArtifactKind::from_dir_name(s),
+    }
+}
+
+const KIND_VALUES: [&str; 6] = ["all", "spec", "plan", "review", "report", "doc"];
+const KIND_VALUES_NO_ALL: [&str; 5] = ["spec", "plan", "review", "report", "doc"];
+
 #[derive(Subcommand)]
 pub enum ToolAction {
     #[command(about = "Generate URL-safe slug from text")]
@@ -141,17 +157,23 @@ pub enum ApplyPatchCmd {
 
 #[derive(Subcommand)]
 pub enum McpAction {
-    #[command(about = "Serve the blueprint/vault MCP over stdio")]
-    Blueprint,
+    #[command(about = "Serve the vault MCP over stdio")]
+    Vault,
 
     #[command(about = "Serve the apply_patch MCP over stdio")]
     ApplyPatch,
+
+    #[command(about = "Serve the sym MCP over stdio")]
+    Sym,
 }
 
 #[derive(Subcommand)]
-pub enum ArtifactAction {
-    #[command(about = "List artifacts for the current project")]
+pub enum VaultAction {
+    #[command(about = "List artifacts (defaults to current project)")]
     List {
+        #[arg(short = 't', long = "type", default_value = "all", value_parser = KIND_VALUES, help = "Artifact type filter ('all' for cross-kind)")]
+        kind: String,
+
         #[arg(long, help = "Output as JSON")]
         json: bool,
 
@@ -164,12 +186,15 @@ pub enum ArtifactAction {
         #[arg(long, help = "Show archived artifacts instead of active")]
         archived: bool,
 
-        #[arg(long, help = "Also show dive/ files (spec only)")]
+        #[arg(long, help = "Include dive/ files (spec only)")]
         include_dives: bool,
     },
 
-    #[command(about = "Create a new artifact file")]
+    #[command(about = "Create a new artifact")]
     Create {
+        #[arg(short = 't', long = "type", value_parser = KIND_VALUES_NO_ALL, help = "Artifact type")]
+        kind: String,
+
         #[arg(long, help = "Artifact topic")]
         topic: String,
 
@@ -195,8 +220,11 @@ pub enum ArtifactAction {
         dive: bool,
     },
 
-    #[command(about = "Read artifact file body or frontmatter")]
+    #[command(about = "Read artifact body or frontmatter (universal stem resolution by default)")]
     Read {
+        #[arg(short = 't', long = "type", default_value = "all", value_parser = KIND_VALUES, help = "Restrict resolution to this artifact type")]
+        kind: String,
+
         #[arg(help = "File path or stem")]
         file: String,
 
@@ -204,20 +232,11 @@ pub enum ArtifactAction {
         frontmatter: bool,
     },
 
-    #[command(about = "Find most recently modified artifact file")]
-    Latest {
-        #[arg(long, help = "Project path (defaults to git root or cwd)")]
-        project: Option<String>,
-
-        #[arg(long, help = "Resolve this file directly instead of mtime heuristic")]
-        task_file: Option<String>,
-
-        #[arg(long, help = "Also scan dive/ files when finding latest (spec only)")]
-        include_dives: bool,
-    },
-
-    #[command(about = "Move an artifact file to archive/ subfolder")]
+    #[command(about = "Move an artifact to archive/")]
     Archive {
+        #[arg(short = 't', long = "type", default_value = "all", value_parser = KIND_VALUES, help = "Restrict resolution to this artifact type")]
+        kind: String,
+
         #[arg(help = "File path or stem")]
         file: Option<String>,
 
@@ -228,14 +247,11 @@ pub enum ArtifactAction {
         dry_run: bool,
     },
 
-    #[command(about = "Show artifact content by ID")]
-    Show {
-        #[arg(help = "Artifact ID or name")]
-        id: String,
-    },
-
-    #[command(about = "Archive artifact files older than N days")]
+    #[command(about = "Archive artifacts older than N days")]
     Prune {
+        #[arg(short = 't', long = "type", default_value = "all", value_parser = KIND_VALUES, help = "Restrict to this artifact type")]
+        kind: String,
+
         #[arg(long, default_value_t = 30, help = "Age threshold in days")]
         days: u64,
 
@@ -248,6 +264,9 @@ pub enum ArtifactAction {
 
     #[command(about = "Extract inline HTML comments from an artifact")]
     Comments {
+        #[arg(short = 't', long = "type", default_value = "all", value_parser = KIND_VALUES, help = "Restrict resolution to this artifact type")]
+        kind: String,
+
         #[arg(help = "File path or stem")]
         file: String,
 
@@ -255,8 +274,11 @@ pub enum ArtifactAction {
         json: bool,
     },
 
-    #[command(about = "Rename an artifact file and update its frontmatter")]
+    #[command(about = "Rename an artifact and update its frontmatter")]
     Rename {
+        #[arg(short = 't', long = "type", default_value = "all", value_parser = KIND_VALUES, help = "Restrict resolution to this artifact type")]
+        kind: String,
+
         #[arg(help = "Current file path or stem")]
         old: String,
 
@@ -266,21 +288,12 @@ pub enum ArtifactAction {
 
     #[command(about = "Fix auto-derived tags (type/*, project/*) in frontmatter")]
     Retag {
+        #[arg(short = 't', long = "type", default_value = "all", value_parser = KIND_VALUES, help = "Restrict resolution to this artifact type")]
+        kind: String,
+
         #[arg(help = "File path or stem")]
         file: String,
     },
-}
-
-#[derive(Subcommand)]
-pub enum VaultAction {
-    #[command(about = "Initialize ~/blueprints/ repository")]
-    Init,
-
-    #[command(about = "Migrate artifacts from ~/.claude/ to ~/blueprints/")]
-    Migrate,
-
-    #[command(about = "Print detected project name")]
-    Project,
 
     #[command(about = "Find related artifacts by topic keyword overlap")]
     Related {
@@ -308,8 +321,8 @@ pub enum VaultAction {
         #[arg(long, help = "Output as JSON")]
         json: bool,
 
-        #[arg(long, help = "Filter by artifact type (spec, plan, review, report, doc)", value_parser = ["spec", "plan", "review", "report", "doc"])]
-        r#type: Option<String>,
+        #[arg(long = "type", value_parser = KIND_VALUES_NO_ALL, help = "Filter by artifact type")]
+        kind: Option<String>,
 
         #[arg(short, long, help = "Filter by project path")]
         project: Option<String>,
@@ -320,4 +333,16 @@ pub enum VaultAction {
 
     #[command(about = "Show vault status (git state, artifact count)")]
     Status,
+
+    #[command(about = "Commit and push edits to a vault file")]
+    Commit {
+        #[arg(help = "Absolute or vault-relative path to the edited file")]
+        path: String,
+
+        #[arg(
+            long,
+            help = "Commit message (defaults to '<kind>(<project>): edit <slug>')"
+        )]
+        message: Option<String>,
+    },
 }

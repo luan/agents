@@ -87,7 +87,7 @@ Build the spec from validated research. The spec defines the **target state** �
 
 ### 4. Store spec
 
-Scaffold with `blueprint_create`, Edit the body, then `blueprint_commit`. Before committing, call `vault_related` on the topic — if matches, append a `## Related` section with wiki-links.
+Scaffold with the MCP `create` tool (kind=spec), Edit the body, then `commit`. Before committing, call `related` on the topic — if matches, append a `## Related` section with wiki-links.
 
 ### 5. Present spec
 
@@ -142,7 +142,7 @@ Add **gates** (build/test/review checkpoints) between phases when the next phase
 
 ### 8. Store plan
 
-Same pattern as spec storage — scaffold with `blueprint_create`, Edit, commit. Pass the spec stem as `source` so the plan wiki-links back to it.
+Same pattern as spec storage — `create` (kind=plan), Edit, `commit`. Pass the spec stem as `source` so the plan wiki-links back to it.
 
 ### 9. Present plan
 
@@ -171,6 +171,6 @@ Next: /develop <plan-path> or /vibe
 
 ## Resume (`--continue`)
 
-Check for an existing plan first (`blueprint_latest` with kind=plan). If found, `blueprint_read` it, re-present, resume from step 9.
+Use `list` (kind=plan) to find candidate plans for the current branch/topic; pick the one that matches by topic, ask the user to confirm if more than one is plausible. If found, `read` it, re-present, resume from step 9.
 
-Otherwise check for a spec (`blueprint_latest` with kind=spec). `blueprint_read` returns body and inline HTML comments together — if comments are non-empty, append them as `## Inline Comments` to the re-presented spec (user review feedback to address during refinement). Resume from step 5.
+If no plan exists, do the same for kind=spec. `read` returns body and inline HTML comments together — if comments are non-empty, append them as `## Inline Comments` to the re-presented spec (user review feedback to address during refinement). Resume from step 5.

@@ -1,31 +1,45 @@
 {
-	"lastChangelogVersion": "0.70.2",
-	"steeringMode": "all",
-	"autoUpdate": true,
-	"transport": "auto",
-	"doubleEscapeAction": "tree",
-	"treeFilterMode": "default",
-	"defaultProvider": "openai-codex",
-	"defaultModel": "gpt-5.5",
-	"defaultThinkingLevel": "high",
-	"packages": [
-		{
-			"source": "npm:pi-extension-manager",
-			"extensions": ["+src/index.ts"]
-		},
-		"npm:pi-which-key",
-		"npm:pi-subagents",
-		"npm:@ifi/oh-pi-themes",
-		"npm:@ollama/pi-web-search",
-		"npm:pi-lens",
-		"npm:@termdraw/pi"
-	],
-	"enabledModels": ["github-copilot/gpt-5.4", "openai-codex/gpt-5.5"],
-	"theme": "catppuccin-mocha",
-	"hideThinkingBlock": false,
-	"editorPaddingX": 0,
-	"terminal": {
-		"clearOnShrink": false,
-		"showTerminalProgress": true
-	}
+  "lastChangelogVersion": "0.70.2",
+  "steeringMode": "all",
+  "autoUpdate": true,
+  "transport": "auto",
+  "doubleEscapeAction": "tree",
+  "treeFilterMode": "default",
+  "defaultProvider": "claude-agent-sdk",
+  "defaultModel": "claude-opus-4-7",
+  "defaultThinkingLevel": "high",
+  "packages": [
+    {
+      "source": "npm:pi-extension-manager",
+      "extensions": [
+        "+src/index.ts"
+      ]
+    },
+    "npm:pi-which-key",
+    "npm:pi-subagents",
+    "npm:@ifi/oh-pi-themes",
+    "npm:@ollama/pi-web-search",
+    "npm:pi-lens",
+    "npm:@termdraw/pi",
+    "npm:pi-tool-display",
+    "npm:pi-mcp-adapter",
+    "npm:claude-agent-sdk-pi"
+  ],
+  "enabledModels": [
+    "github-copilot/gpt-5.4",
+    "openai-codex/gpt-5.5",
+    "github-copilot/gpt-5.4-mini",
+    "openai-codex/gpt-5.4",
+    "openai-codex/gpt-5.4-mini",
+    "claude-agent-sdk/claude-sonnet-4-6",
+    "claude-agent-sdk/claude-opus-4-7",
+    "claude-agent-sdk/claude-haiku-4-5"
+  ],
+  "theme": "tokyo-night",
+  "hideThinkingBlock": false,
+  "editorPaddingX": 0,
+  "terminal": {
+    "clearOnShrink": false,
+    "showTerminalProgress": true
+  }
 }

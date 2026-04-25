@@ -5,6 +5,11 @@ description: "Tree-sitter indexed code navigator (ct sym CLI). Use INSTEAD OF Re
 
 # sym — code navigation
 
+Prefer native `sym` MCP/tool calls when available (`search`, `investigate`,
+`show`, `outline`, `refs`, `impact`, `trace`, `impls`, `context`,
+`structure`, `diff`). Use the `ct sym` CLI examples below as the fallback
+interface and as the exact semantic reference for each tool.
+
 ## Default investigation loop
 
 ```

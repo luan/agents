@@ -1,6 +1,5 @@
-//! CLI contract baseline — locks the stdout/file shape of `ct <kind> create`
-//! before any refactor. If a future change alters the exposed contract these
-//! tests must fail loudly.
+//! CLI contract baseline — locks the stdout/file shape of `ct vault create`.
+//! If a future change alters the exposed contract these tests must fail loudly.
 
 use std::fs;
 use std::path::Path;
@@ -72,8 +71,10 @@ fn spec_create_prints_absolute_path_then_newline() {
 
     let assert = ct_cmd(bp.path())
         .args([
-            "spec",
+            "vault",
             "create",
+            "-t",
+            "spec",
             "--topic",
             "test-contract",
             "--project",
@@ -118,8 +119,10 @@ fn plan_create_with_source_includes_wiki_link() {
 
     let assert = ct_cmd(bp.path())
         .args([
-            "plan",
+            "vault",
             "create",
+            "-t",
+            "plan",
             "--topic",
             "child",
             "--source",
@@ -147,8 +150,10 @@ fn create_writes_frontmatter_only_body() {
 
     let assert = ct_cmd(bp.path())
         .args([
-            "spec",
+            "vault",
             "create",
+            "-t",
+            "spec",
             "--topic",
             "no-body-here",
             "--project",

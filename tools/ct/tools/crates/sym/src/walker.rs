@@ -124,7 +124,12 @@ pub fn print_tree(node: &TreeNode) -> String {
     out
 }
 
-fn build_tree_recursive(root: &Path, path: &Path, depth: usize, max_depth: usize) -> Result<TreeNode> {
+fn build_tree_recursive(
+    root: &Path,
+    path: &Path,
+    depth: usize,
+    max_depth: usize,
+) -> Result<TreeNode> {
     let metadata = fs::metadata(path).with_context(|| format!("reading {}", path.display()))?;
     let mut node = TreeNode {
         name: path
@@ -150,8 +155,12 @@ fn build_tree_recursive(root: &Path, path: &Path, depth: usize, max_depth: usize
         if should_skip_tree_entry(&child_path, root) {
             continue;
         }
-        node.children
-            .push(build_tree_recursive(root, &child_path, depth + 1, max_depth)?);
+        node.children.push(build_tree_recursive(
+            root,
+            &child_path,
+            depth + 1,
+            max_depth,
+        )?);
     }
 
     Ok(node)

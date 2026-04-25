@@ -15,30 +15,24 @@ mod vault;
 
 use clap::{CommandFactory, Parser};
 
-fn dispatch_artifact(
-    kind: artifact::ArtifactKind,
-    action: cli::ArtifactAction,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn dispatch_vault(action: cli::VaultAction) -> Result<(), Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
 
     match action {
-        cli::ArtifactAction::List {
+        cli::VaultAction::List {
+            kind,
             json,
             all,
             project,
             archived,
             include_dives,
-        } => cli::run_artifact_list(kind, &cwd, json, all, project, archived, include_dives),
-        cli::ArtifactAction::Create {
-            topic,
-            project,
-            slug,
-            source,
-            tags,
-            dive,
-        } => cli::run_artifact_create(cli::ArtifactCreateArgs {
+        } => {
+            let kind = cli::parse_kind_filter(&kind);
+            cli::run_vault_list(kind, &cwd, json, all, project, archived, include_dives)
+        }
+        cli::VaultAction::Create {
             kind,
             topic,
             project,
@@ -46,33 +40,92 @@ fn dispatch_artifact(
             source,
             tags,
             dive,
-        }),
-        cli::ArtifactAction::Read { file, frontmatter } => {
-            cli::run_artifact_read(kind, file, frontmatter)
+        } => {
+            let kind = cli::parse_kind_filter(&kind).expect("clap rejects 'all' for create");
+            cli::run_vault_create(cli::ArtifactCreateArgs {
+                kind,
+                topic,
+                project,
+                slug,
+                source,
+                tags,
+                dive,
+            })
         }
-        cli::ArtifactAction::Latest {
-            project,
-            task_file,
-            include_dives,
-        } => cli::run_artifact_latest(kind, project, task_file, include_dives),
-        cli::ArtifactAction::Archive {
+        cli::VaultAction::Read {
+            kind,
+            file,
+            frontmatter,
+        } => {
+            let kind = cli::parse_kind_filter(&kind);
+            cli::run_vault_read(kind, file, frontmatter)
+        }
+        cli::VaultAction::Archive {
+            kind,
             file,
             batch,
             dry_run,
-        } => cli::run_artifact_archive(kind, file, batch, dry_run),
-        cli::ArtifactAction::Show { id } => cli::run_artifact_show(kind, &id),
-        cli::ArtifactAction::Prune {
+        } => {
+            let kind = cli::parse_kind_filter(&kind);
+            cli::run_vault_archive(kind, file, batch, dry_run)
+        }
+        cli::VaultAction::Prune {
+            kind,
             days,
             dry_run,
             project,
-        } => cli::run_artifact_prune(kind, days, dry_run, project),
-        cli::ArtifactAction::Comments { file, json } => {
-            cli::run_artifact_comments(kind, file, json)
+        } => {
+            let kind = cli::parse_kind_filter(&kind);
+            cli::run_vault_prune(kind, days, dry_run, project)
         }
-        cli::ArtifactAction::Rename { old, new_slug } => {
-            cli::run_artifact_rename(kind, old, new_slug)
+        cli::VaultAction::Comments { kind, file, json } => {
+            let kind = cli::parse_kind_filter(&kind);
+            cli::run_vault_comments(kind, file, json)
         }
-        cli::ArtifactAction::Retag { file } => cli::run_artifact_retag(kind, file),
+        cli::VaultAction::Rename {
+            kind,
+            old,
+            new_slug,
+        } => {
+            let kind = cli::parse_kind_filter(&kind);
+            cli::run_vault_rename(kind, old, new_slug)
+        }
+        cli::VaultAction::Retag { kind, file } => {
+            let kind = cli::parse_kind_filter(&kind);
+            cli::run_vault_retag(kind, file)
+        }
+        cli::VaultAction::Related {
+            project,
+            topic,
+            archive,
+        } => {
+            let project = project.unwrap_or_else(artifact::current_project);
+            vault::cmd_related(&project, &topic, archive);
+            Ok(())
+        }
+        cli::VaultAction::Check { archive } => {
+            vault::cmd_check(archive);
+            Ok(())
+        }
+        cli::VaultAction::Search {
+            query,
+            json,
+            kind,
+            project,
+            archive,
+        } => {
+            let kind = kind.as_deref().and_then(cli::parse_kind_filter);
+            vault::cmd_search(&query, json, kind, project.as_deref(), archive);
+            Ok(())
+        }
+        cli::VaultAction::Status => {
+            vault::cmd_status();
+            Ok(())
+        }
+        cli::VaultAction::Commit { path, message } => {
+            vault::cmd_commit(&path, message);
+            Ok(())
+        }
     }
 }
 
@@ -85,86 +138,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!();
             Ok(())
         }
-        Some(cli::Command::Plan { action }) => {
-            dispatch_artifact(artifact::ArtifactKind::Plan, action)
-        }
-        Some(cli::Command::Spec { action }) => {
-            dispatch_artifact(artifact::ArtifactKind::Spec, action)
-        }
-        Some(cli::Command::Review { action }) => {
-            dispatch_artifact(artifact::ArtifactKind::Review, action)
-        }
-        Some(cli::Command::Report { action }) => {
-            dispatch_artifact(artifact::ArtifactKind::Report, action)
-        }
-        Some(cli::Command::Doc { action }) => {
-            dispatch_artifact(artifact::ArtifactKind::Doc, action)
-        }
-        Some(cli::Command::Vault { action }) => match action {
-            cli::VaultAction::Init => {
-                vault::cmd_init();
-                Ok(())
-            }
-            cli::VaultAction::Migrate => {
-                vault::cmd_migrate();
-                Ok(())
-            }
-            cli::VaultAction::Project => {
-                vault::cmd_project();
-                Ok(())
-            }
-            cli::VaultAction::Related {
-                project,
-                topic,
-                archive,
-            } => {
-                let project = project.unwrap_or_else(artifact::current_project);
-                vault::cmd_related(&project, &topic, archive);
-                Ok(())
-            }
-            cli::VaultAction::Check { archive } => {
-                vault::cmd_check(archive);
-                Ok(())
-            }
-            cli::VaultAction::Search {
-                query,
-                json,
-                r#type,
-                project,
-                archive,
-            } => {
-                let kind = r#type.as_deref().and_then(|k| match k {
-                    "spec" => Some(artifact::ArtifactKind::Spec),
-                    "plan" => Some(artifact::ArtifactKind::Plan),
-                    "review" => Some(artifact::ArtifactKind::Review),
-                    "report" => Some(artifact::ArtifactKind::Report),
-                    "doc" => Some(artifact::ArtifactKind::Doc),
-                    _ => None,
-                });
-                vault::cmd_search(&query, json, kind, project.as_deref(), archive);
-                Ok(())
-            }
-            cli::VaultAction::Status => {
-                vault::cmd_status();
-                Ok(())
-            }
-        },
-        Some(cli::Command::Read { file, frontmatter }) => {
-            let resolved = match artifact::resolve_stem_universal(&file) {
-                Ok(p) => p,
-                Err(e) => {
-                    eprintln!("{e}");
-                    std::process::exit(1);
-                }
-            };
-            artifact::cmd_read_resolved(&resolved, frontmatter);
+        Some(cli::Command::Vault { action }) => dispatch_vault(action),
+        Some(cli::Command::Project) => {
+            vault::cmd_project();
             Ok(())
         }
         Some(cli::Command::Notify) => notify::run(),
         Some(cli::Command::Sym(args)) => sym::run(args).map_err(|e| e.into()),
         Some(cli::Command::Mcp { action }) => match action {
-            cli::McpAction::Blueprint => mcp::run_blueprint_server(),
+            cli::McpAction::Vault => mcp::run_vault_server(),
             cli::McpAction::ApplyPatch => mcp::run_apply_patch_server(),
+            cli::McpAction::Sym => mcp::run_sym_server(),
         },
         Some(cli::Command::Hook { name }) => Ok(hook::run_hook(&name)?),
         Some(cli::Command::Tool { action }) => match action {

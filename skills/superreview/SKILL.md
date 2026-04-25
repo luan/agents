@@ -12,9 +12,6 @@ allowed-tools:
   - "Bash(git log:*)"
   - "Bash(git status:*)"
   - "Bash(ct tool:*)"
-  - "Bash(ct review:*)"
-  - "Bash(ct spec:*)"
-  - "Bash(ct plan:*)"
   - "Bash(ct vault:*)"
   - "Bash(gh pr:*)"
   - "Bash(gh api:*)"
@@ -104,7 +101,7 @@ PROJECT=$(git rev-parse --show-toplevel)
 SPEC_FILE=$(ct vault search "$BRANCH_SLUG" --project "$PROJECT" --type spec 2>/dev/null | head -1)
 PLAN_FILE=$(ct vault search "$BRANCH_SLUG" --project "$PROJECT" --type plan 2>/dev/null | head -1)
 ```
-Set `$HAS_SPEC` = true if found. Read spec content for coherence reviewer. If spec found, run `ct spec comments <file>` — if non-empty, include as "Prior review annotations on the spec" in the coherence reviewer's prompt.
+Set `$HAS_SPEC` = true if found. Read spec content for coherence reviewer. If spec found, run `ct vault comments <file>` — if non-empty, include as "Prior review annotations on the spec" in the coherence reviewer's prompt.
 
 **Detect primary language** from changed file extensions. Set `$LANG` if one dominates.
 
@@ -181,7 +178,7 @@ Reviewer Summaries → Approach Assessment → Verification stats → Consensus 
 
 ## Step 5: Store
 
-Scaffold with `blueprint_create { kind: "review", topic: "Review: <branch>" }`, Edit the body with the review output, then `blueprint_commit`. Pass `source: "<spec-stem>"` if `$HAS_SPEC`.
+Scaffold with `create { kind: "review", topic: "Review: <branch>" }`, Edit the body with the review output, then `commit`. Pass `source: "<spec-stem>"` if `$HAS_SPEC`.
 
 ## Step 6: Fix
 
