@@ -48,15 +48,23 @@ jobs:
         shell: bash
         run: |
           set -eu
-          mkdir -p "$HOME/bin-stubs"
+          stubs_dir="$RUNNER_TEMP/bin-stubs"
+          mkdir -p "$stubs_dir"
           ext=""
           if [ "${{ runner.os }}" = "Windows" ]; then ext=".exe"; fi
           for t in codex claude opencode; do
-            f="$HOME/bin-stubs/${t}${ext}"
+            f="$stubs_dir/${t}${ext}"
             printf '%s\n%s\n' '#!/bin/sh' 'exit 0' > "$f"
             chmod +x "$f"
           done
-          echo "$HOME/bin-stubs" >> "$GITHUB_PATH"
+          # GITHUB_PATH expects the OS's native path format. On Windows, bash's
+          # $RUNNER_TEMP looks like /d/a/_temp/...; convert to D:\a\_temp\...
+          # before appending so subsequent (non-bash) steps can resolve PATH.
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cygpath -w "$stubs_dir" >> "$GITHUB_PATH"
+          else
+            echo "$stubs_dir" >> "$GITHUB_PATH"
+          fi
 
       - name: cargo build (workspace)
         run: cargo build --workspace
