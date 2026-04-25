@@ -148,6 +148,8 @@ const SHIKI_CACHE_LIMIT = 64;
 const SHIKI_BACKGROUND_PATTERN = /\x1b\[(?:48;2;\d+;\d+;\d+|48;5;\d+|49)m/g;
 const shikiCache = new Map<string, string[]>();
 
+codeToANSI("", "typescript", SHIKI_THEME).catch(() => {});
+
 class ApplyPatchDiffView {
 	constructor(
 		private label: string,
