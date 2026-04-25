@@ -7,37 +7,30 @@ default:
     @just --list
 
 render-agents:
-    python3 "{{ repo }}/scripts/render_agents.py"
+    cd "{{ repo }}" && cargo xtask render-agents
 
 link-dry-run: render-agents
-    python3 "{{ repo }}/scripts/stow_targets.py" dry-run
+    cd "{{ repo }}" && cargo xtask link-dry-run
 
 link: render-agents codex-plugins-install
-    python3 "{{ repo }}/scripts/stow_targets.py" link
+    cd "{{ repo }}" && cargo xtask link
 
 unlink:
-    python3 "{{ repo }}/scripts/stow_targets.py" unlink || true
+    cd "{{ repo }}" && cargo xtask unlink || true
 
 restow: render-agents codex-plugins-install
-    python3 "{{ repo }}/scripts/stow_targets.py" link
+    cd "{{ repo }}" && cargo xtask link
 
 doctor:
-    command -v stow
-    command -v just
-    command -v cargo
-    command -v codex
-    command -v claude
-    command -v opencode
-    command -v ct || true
-    test -d "{{ home }}/.pi" || echo "warning: {{ home }}/.pi does not exist yet"
+    cd "{{ repo }}" && cargo xtask doctor
 
 validate: render-agents
-    python3 "{{ repo }}/scripts/validate.py"
+    cd "{{ repo }}" && cargo xtask validate
 
 setup: doctor link claude-plugins-install ct-install validate
 
 codex-plugins-install:
-    python3 "{{ repo }}/scripts/install_codex_plugins.py"
+    cd "{{ repo }}" && cargo xtask codex-plugins-install
 
 claude-plugins-install:
     claude plugin marketplace update local
@@ -45,13 +38,13 @@ claude-plugins-install:
     claude plugin install -s user gt@local
 
 ct-build:
-    cargo build --release --manifest-path="{{ repo }}/tools/ct/Cargo.toml"
+    cd "{{ repo }}" && cargo build --release -p ct
 
 ct-test:
-    cargo test --manifest-path="{{ repo }}/tools/ct/Cargo.toml"
+    cd "{{ repo }}" && cargo test -p ct
 
 ct-install: ct-test
-    cargo install --path "{{ repo }}/tools/ct"
+    cargo install --path "{{ repo }}/crates/ct"
     claude mcp remove -s user ct 2>/dev/null || true
     claude mcp remove -s user blueprint 2>/dev/null || true
     claude mcp remove -s user vault 2>/dev/null || true

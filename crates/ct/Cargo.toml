@@ -5,19 +5,11 @@ edition = "2024"
 
 [[bin]]
 name = "ct"
-path = "tools/main.rs"
+path = "src/main.rs"
 
 [[bin]]
 name = "opencode"
-path = "tools/opencode.rs"
-
-[[test]]
-name = "apply_patch_contract"
-path = "tools/tests/apply_patch_contract.rs"
-
-[[test]]
-name = "cli_contract"
-path = "tools/tests/cli_contract.rs"
+path = "src/opencode.rs"
 
 [dependencies]
 anyhow = "^1"
@@ -32,7 +24,7 @@ serde = { version = "^1", features = ["derive"] }
 serde_json = "^1"
 sha1 = "^0.11"
 similar = "^3"
-sym = { path = "tools/crates/sym" }
+sym = { path = "../sym" }
 thiserror = "^2"
 tokio = { version = "^1", features = ["rt", "macros", "io-std"] }
 
