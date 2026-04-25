@@ -1,0 +1,31 @@
+{
+	"lastChangelogVersion": "0.70.2",
+	"steeringMode": "all",
+	"autoUpdate": true,
+	"transport": "auto",
+	"doubleEscapeAction": "tree",
+	"treeFilterMode": "default",
+	"defaultProvider": "openai-codex",
+	"defaultModel": "gpt-5.5",
+	"defaultThinkingLevel": "high",
+	"packages": [
+		{
+			"source": "npm:pi-extension-manager",
+			"extensions": ["+src/index.ts"]
+		},
+		"npm:pi-which-key",
+		"npm:pi-subagents",
+		"npm:@ifi/oh-pi-themes",
+		"npm:@ollama/pi-web-search",
+		"npm:pi-lens",
+		"npm:@termdraw/pi"
+	],
+	"enabledModels": ["github-copilot/gpt-5.4", "openai-codex/gpt-5.5"],
+	"theme": "catppuccin-mocha",
+	"hideThinkingBlock": false,
+	"editorPaddingX": 0,
+	"terminal": {
+		"clearOnShrink": false,
+		"showTerminalProgress": true
+	}
+}
