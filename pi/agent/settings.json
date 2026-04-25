@@ -5,9 +5,9 @@
   "transport": "auto",
   "doubleEscapeAction": "tree",
   "treeFilterMode": "default",
-  "defaultProvider": "openai-codex",
-  "defaultModel": "gpt-5.5",
-  "defaultThinkingLevel": "medium",
+  "defaultProvider": "github-copilot",
+  "defaultModel": "gpt-5.4",
+  "defaultThinkingLevel": "high",
   "packages": [
     {
       "source": "npm:pi-extension-manager",

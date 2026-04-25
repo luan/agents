@@ -12,13 +12,13 @@ render-agents:
 link-dry-run: render-agents
     cd "{{ repo }}" && cargo xtask link-dry-run
 
-link: render-agents codex-plugins-install
+link: render-agents codex-plugins-install pi-extensions-install
     cd "{{ repo }}" && cargo xtask link
 
 unlink:
     cd "{{ repo }}" && cargo xtask unlink || true
 
-restow: render-agents codex-plugins-install
+restow: render-agents codex-plugins-install pi-extensions-install
     cd "{{ repo }}" && cargo xtask link
 
 doctor:
@@ -36,6 +36,9 @@ claude-plugins-install:
     claude plugin marketplace update local
     claude plugin uninstall gt@local || true
     claude plugin install -s user gt@local
+
+pi-extensions-install:
+    cd "{{ repo }}/pi/agent/extensions" && npm install --omit=dev
 
 ct-build:
     cd "{{ repo }}" && cargo build --release -p ct

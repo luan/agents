@@ -1,0 +1,7 @@
+{
+	"name": "agents-pi-extensions",
+	"private": true,
+	"dependencies": {
+		"@shikijs/cli": "^4.0.2"
+	}
+}

@@ -1,6 +1,6 @@
 {
-  "dependencies": {},
-  "devDependencies": {
-    "@mariozechner/pi-coding-agent": "^0.70.2"
-  }
+	"dependencies": {},
+	"devDependencies": {
+		"@mariozechner/pi-coding-agent": "^0.70.2"
+	}
 }
