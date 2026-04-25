@@ -17,13 +17,14 @@ Shared configuration is the default. Tool-specific folders (`claude/`, `codex/`,
 | `skills/` | Linked to `~/.agents/skills` and `~/.claude/skills` |
 | `hooks/` | Python hook integrations (tool-specific formats) |
 | `plugins/` | Shared plugin sources; tool folders link here |
-| `tools/ct/` | `ct` Rust CLI — vault, sym, hooks, MCP, apply-patch |
+| `crates/ct/` | `ct` Rust CLI — vault, sym, hooks, MCP, apply-patch |
+| `crates/sym/` | Tree-sitter symbol indexer (library + `sym` binary) |
+| `crates/xtask/` | Task automation invoked via `cargo xtask <cmd>` |
 | `docs/` | Permanent reference docs (architecture, exceptions) |
-| `scripts/` | Render, stow, validate automation |
 
 ## `ct` CLI
 
-`ct` is the primary tool installed from `tools/ct/`. It provides:
+`ct` is the primary tool installed from `crates/ct/`. It provides:
 
 - `ct vault` — blueprint artifact management (create, read, list, archive, commit)
 - `ct sym` — code indexing and symbol discovery
