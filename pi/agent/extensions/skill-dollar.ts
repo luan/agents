@@ -87,6 +87,7 @@ function wrapProvider(
 function enhance(
 	editor: unknown,
 	getItems: () => AutocompleteItem[],
+	getSkillNames: () => Iterable<string>,
 ): unknown {
 	if (!editor || typeof editor !== "object") return editor;
 	const e = editor as Record<PropertyKey, unknown> & { [ENHANCED]?: true };
@@ -115,6 +116,26 @@ function enhance(
 			if (!findMentionAtCursor(lines[cursor.line] ?? "", cursor.col)) return;
 			const trigger = e.tryTriggerAutocomplete as (() => void) | undefined;
 			if (typeof trigger === "function") trigger.call(e);
+		};
+	}
+
+	// PolishedEditor exposes transformEditorLine for in-flow highlighting that
+	// runs before the rail/background wrap. For other editors (plain CustomEditor),
+	// fall back to wrapping render() — same pattern, less clean visually because
+	// it runs after any decoration the editor itself does.
+	if (typeof e.transformEditorLine === "function") {
+		const orig = (e.transformEditorLine as (l: string) => string).bind(e);
+		e.transformEditorLine = (line: string) => {
+			const out = orig(line);
+			return colorize(out, new Set(getSkillNames()));
+		};
+	} else if (typeof e.render === "function") {
+		const orig = (e.render as (w: number) => string[]).bind(e);
+		e.render = (width: number) => {
+			const out = orig(width);
+			if (!Array.isArray(out)) return out;
+			const set = new Set(getSkillNames());
+			return out.map((line) => colorize(line, set));
 		};
 	}
 
@@ -213,7 +234,9 @@ export default function (pi: ExtensionAPI) {
 					original(undefined);
 					return;
 				}
-				original((...args: unknown[]) => enhance(factory(...args), () => items));
+				original((...args: unknown[]) =>
+					enhance(factory(...args), () => items, () => skills.keys()),
+				);
 			};
 		}
 

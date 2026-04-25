@@ -1,6 +1,6 @@
 ---
 name: start
-description: "Create a new branch. Uses Graphite (gt) if available, falls back to git."
+description: "Create a new branch. Uses Graphite (gt) if available, falls back to git-spite."
 argument-hint: "<branch-name> [--auto]"
 user-invocable: true
 allowed-tools:
@@ -22,7 +22,7 @@ Create branch.
 2. Normalize: prefix with !`echo "${GIT_USERNAME:-$(whoami)}"/` if not already present
 3. Create branch (detect stack tool for current branch):
    - gt plugin loaded → `Skill(gt:gt, "create <branch-name>")`
-   - Otherwise → `git checkout -b <branch-name>`
+   - Otherwise → `git-spice branch create <branch-name>` – git-spice automatically prepends the prefix, so use only the branch name here.
 4. Report branch. If `--auto` was NOT passed, suggest `/spec` or `/develop`. If `--auto` was passed, output nothing — no report, no suggestions. The caller is an orchestrator that will handle next steps; any output text risks the model ending its turn prematurely.
 
 ## Error Handling

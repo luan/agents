@@ -5,13 +5,15 @@
   "transport": "auto",
   "doubleEscapeAction": "tree",
   "treeFilterMode": "default",
-  "defaultProvider": "claude-agent-sdk",
-  "defaultModel": "claude-opus-4-7",
+  "defaultProvider": "openai-codex",
+  "defaultModel": "gpt-5.5",
   "defaultThinkingLevel": "medium",
   "packages": [
     {
       "source": "npm:pi-extension-manager",
-      "extensions": ["+src/index.ts"]
+      "extensions": [
+        "+src/index.ts"
+      ]
     },
     "npm:pi-which-key",
     "npm:pi-subagents",
@@ -46,4 +48,3 @@
     "strictMcpConfig": true
   }
 }
-
