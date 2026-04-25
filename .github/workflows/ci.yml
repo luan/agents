@@ -79,9 +79,15 @@ jobs:
         shell: bash
         run: |
           set -eu
+          before=$(mktemp)
+          if [ -f GLOBAL_AGENTS.md ]; then
+            cp GLOBAL_AGENTS.md "$before"
+          else
+            : > "$before"
+          fi
           cargo xtask render-agents
-          git diff --exit-code GLOBAL_AGENTS.md \
-            || { echo "::error::GLOBAL_AGENTS.md is stale; run 'cargo xtask render-agents' and commit the result"; exit 1; }
+          cmp -s "$before" GLOBAL_AGENTS.md \
+            || { echo "::error::GLOBAL_AGENTS.md is stale; run 'cargo xtask render-agents' before CI"; exit 1; }
 
       # ---------- Scenario 1: no conflicts (happy path) ----------
 
@@ -133,7 +139,7 @@ jobs:
           out=$(cargo xtask link 2>&1)
           echo "$out"
           echo "$out" | grep -q "(up to date)" || { echo "::error::expected '(up to date)' on second link"; exit 1; }
-          if echo "$out" | grep -E "^\s*\+ " | grep -v "^\+ link " >/dev/null; then
+          if echo "$out" | grep -E '^[[:space:]]*\+ ' | grep -v -E '^[[:space:]]*\+ link ' >/dev/null; then
             echo "::error::second link should be a no-op but created new symlinks"; exit 1
           fi
 
@@ -180,6 +186,38 @@ jobs:
           want='{"sentinel":"user-data-must-not-be-clobbered"}'
           [ "$got" = "$want" ] || { echo "::error::user file content changed: $got"; exit 1; }
           if [ -L "$HOME/.claude/settings.json" ]; then echo "::error::user file became a symlink"; exit 1; fi
+
+      - name: scenario 2b — clean and pre-create a foreign symlink
+        shell: bash
+        run: |
+          set -eu
+          rm -rf "$HOME/.claude" "$HOME/.codex" "$HOME/.config/opencode" "$HOME/.pi" "$HOME/.agents"
+          mkdir -p "$HOME/.claude"
+          printf '%s' '{"sentinel":"foreign-symlink-target"}' > "$HOME/foreign-settings.json"
+          node -e 'require("fs").symlinkSync(process.argv[1], process.argv[2], "file")' \
+            "$HOME/foreign-settings.json" "$HOME/.claude/settings.json"
+
+      - name: scenario 2b — link must fail on foreign symlink
+        shell: bash
+        run: |
+          set +e
+          cargo xtask link >/tmp/link-out 2>&1
+          rc=$?
+          set -e
+          cat /tmp/link-out
+          [ "$rc" != "0" ] || { echo "::error::link succeeded but should have failed on foreign symlink"; exit 1; }
+          grep -q "settings.json already exists as a symlink" /tmp/link-out \
+            || { echo "::error::expected foreign symlink conflict message not found in output"; exit 1; }
+
+      - name: scenario 2b — verify foreign symlink is untouched
+        shell: bash
+        run: |
+          set -eu
+          test -L "$HOME/.claude/settings.json" \
+            || { echo "::error::foreign symlink was replaced"; exit 1; }
+          got=$(cat "$HOME/.claude/settings.json")
+          want='{"sentinel":"foreign-symlink-target"}'
+          [ "$got" = "$want" ] || { echo "::error::foreign symlink target changed: $got"; exit 1; }
 
       # ---------- Scenario 3: tree-unfolding (target subdir already exists) ----------
 

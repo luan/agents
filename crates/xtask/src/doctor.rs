@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 
-const REQUIRED: &[&str] = &["just", "cargo", "codex", "claude", "opencode"];
+const REQUIRED: &[&str] = &["just", "cargo", "npm", "codex", "claude", "opencode"];
 const OPTIONAL: &[&str] = &["ct", "wt"];
 
 pub fn run() -> Result<()> {

@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -136,19 +136,17 @@ type SplitDiffRow = {
 
 const ADD_ROW_BG = "\x1b[48;2;20;53;31m";
 const REMOVE_ROW_BG = "\x1b[48;2;59;29;36m";
-const LANGUAGE_ALIASES: Record<string, string> = {
-	svelte: "html",
-};
-const SHIKI_LANGUAGES: Record<string, BundledLanguage> = {
-	svelte: "svelte",
+const LANGUAGE_ALIASES: Record<string, { inline?: string; shiki?: BundledLanguage }> = {
+	svelte: {
+		inline: "html",
+		shiki: "svelte",
+	},
 };
 const SHIKI_THEME = (process.env.APPLY_PATCH_SHIKI_THEME ?? "github-dark") as BundledTheme;
 const SHIKI_MAX_CHARS = 80_000;
 const SHIKI_CACHE_LIMIT = 64;
 const SHIKI_BACKGROUND_PATTERN = /\x1b\[(?:48;2;\d+;\d+;\d+|48;5;\d+|49)m/g;
 const shikiCache = new Map<string, string[]>();
-
-codeToANSI("", "typescript", SHIKI_THEME).catch(() => {});
 
 class ApplyPatchDiffView {
 	constructor(
@@ -237,9 +235,21 @@ function normalizeDiffHeaderPath(rawPath: string): string | undefined {
 	return normalizeRepoPath(normalized);
 }
 
-function shikiLanguageForPath(path: string | undefined): BundledLanguage | undefined {
+function fileExtension(path: string | undefined): string | undefined {
 	if (!path) return undefined;
-	return SHIKI_LANGUAGES[path.split(".").pop()?.toLowerCase() ?? ""];
+	const extension = extname(path).slice(1).toLowerCase();
+	return extension || undefined;
+}
+
+function shikiLanguageForPath(path: string | undefined): BundledLanguage | undefined {
+	const extension = fileExtension(path);
+	try {
+		const language = path ? getLanguageFromPath(path) : undefined;
+		if (language) return language as BundledLanguage;
+	} catch {
+		// Fall back to explicit aliases below.
+	}
+	return extension ? LANGUAGE_ALIASES[extension]?.shiki : undefined;
 }
 
 function touchShikiCache(key: string, value: string[]): string[] {
@@ -279,35 +289,21 @@ type HighlightedFileSource = {
 
 function readNormalizedTextFile(path: string): string | undefined {
 	try {
-		if (!existsSync(path)) return undefined;
 		return readFileSync(path, "utf8").replace(/\r\n?/g, "\n");
 	} catch {
 		return undefined;
 	}
 }
 
-function collectPrePatchShikiSources(cwd: string, files: ApplyPatchProgressFile[]): HighlightedFileSource[] {
+function collectShikiSources(
+	cwd: string,
+	files: ApplyPatchProgressFile[],
+	pathForFile: (file: ApplyPatchProgressFile) => string | undefined,
+): HighlightedFileSource[] {
 	const sources: HighlightedFileSource[] = [];
 	for (const file of files) {
-		if (file.operation === "add") continue;
-		const language = shikiLanguageForPath(file.path);
-		if (!language) continue;
-		const content = readNormalizedTextFile(resolve(cwd, file.path));
-		if (content === undefined) continue;
-		sources.push({
-			path: normalizeRepoPath(file.path),
-			language,
-			content,
-		});
-	}
-	return sources;
-}
-
-function collectPostPatchShikiSources(cwd: string, files: ApplyPatchProgressFile[]): HighlightedFileSource[] {
-	const sources: HighlightedFileSource[] = [];
-	for (const file of files) {
-		if (file.operation === "delete") continue;
-		const targetPath = file.moveTo ?? file.path;
+		const targetPath = pathForFile(file);
+		if (!targetPath) continue;
 		const language = shikiLanguageForPath(targetPath);
 		if (!language) continue;
 		const content = readNormalizedTextFile(resolve(cwd, targetPath));
@@ -321,16 +317,27 @@ function collectPostPatchShikiSources(cwd: string, files: ApplyPatchProgressFile
 	return sources;
 }
 
+function collectPrePatchShikiSources(cwd: string, files: ApplyPatchProgressFile[]): HighlightedFileSource[] {
+	return collectShikiSources(cwd, files, (file) =>
+		file.operation === "add" ? undefined : file.path,
+	);
+}
+
+function collectPostPatchShikiSources(cwd: string, files: ApplyPatchProgressFile[]): HighlightedFileSource[] {
+	return collectShikiSources(cwd, files, (file) =>
+		file.operation === "delete" ? undefined : file.moveTo ?? file.path,
+	);
+}
+
 async function highlightSources(
 	sources: HighlightedFileSource[],
 	signal?: AbortSignal,
 ): Promise<Map<string, string[]>> {
-	const highlighted = new Map<string, string[]>();
-	for (const source of sources) {
-		if (signal?.aborted) break;
-		highlighted.set(source.path, await highlightWithShiki(source.content, source.language));
-	}
-	return highlighted;
+	const entries = await Promise.all(sources.map(async (source) => {
+		if (signal?.aborted) return undefined;
+		return [source.path, await highlightWithShiki(source.content, source.language)] as const;
+	}));
+	return new Map(entries.filter((entry): entry is readonly [string, string[]] => entry !== undefined));
 }
 
 function highlightedContentForRow(
@@ -448,10 +455,11 @@ function parseUnifiedDiff(diff: string): ParsedDiffLine[] {
 
 function languageForPath(path: string | undefined): string | undefined {
 	if (!path) return undefined;
+	const extension = fileExtension(path);
 	try {
-		return getLanguageFromPath(path) ?? LANGUAGE_ALIASES[path.split(".").pop()?.toLowerCase() ?? ""];
+		return getLanguageFromPath(path) ?? (extension ? LANGUAGE_ALIASES[extension]?.inline : undefined);
 	} catch {
-		return LANGUAGE_ALIASES[path.split(".").pop()?.toLowerCase() ?? ""];
+		return extension ? LANGUAGE_ALIASES[extension]?.inline : undefined;
 	}
 }
 
@@ -835,6 +843,18 @@ function runCommand(
 	input?: string,
 ): Promise<{ stdout: string; stderr: string }> {
 	return new Promise((resolve, reject) => {
+		let settled = false;
+		let stdinError: NodeJS.ErrnoException | undefined;
+		const resolveOnce = (value: { stdout: string; stderr: string }) => {
+			if (settled) return;
+			settled = true;
+			resolve(value);
+		};
+		const rejectOnce = (error: Error) => {
+			if (settled) return;
+			settled = true;
+			reject(error);
+		};
 		const child = spawn(command, args, {
 			cwd,
 			env: process.env,
@@ -846,12 +866,19 @@ function runCommand(
 
 		child.stdout.on("data", (chunk) => stdoutChunks.push(Buffer.from(chunk)));
 		child.stderr.on("data", (chunk) => stderrChunks.push(Buffer.from(chunk)));
-		child.on("error", (error) => {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-				reject(new Error(`${command} not found on PATH`));
+		child.stdin.on("error", (error) => {
+			stdinError = error as NodeJS.ErrnoException;
+			if (stdinError.code === "EPIPE" || stdinError.code === "ERR_STREAM_DESTROYED") {
 				return;
 			}
-			reject(error);
+			rejectOnce(stdinError);
+		});
+		child.on("error", (error) => {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+				rejectOnce(new Error(`${command} not found on PATH`));
+				return;
+			}
+			rejectOnce(error instanceof Error ? error : new Error(String(error)));
 		});
 
 		const onAbort = () => child.kill();
@@ -868,12 +895,13 @@ function runCommand(
 			const stdout = Buffer.concat(stdoutChunks).toString("utf8");
 			const stderr = Buffer.concat(stderrChunks).toString("utf8");
 			if (exitCode === 0) {
-				resolve({ stdout, stderr });
+				resolveOnce({ stdout, stderr });
 				return;
 			}
-			reject(
+			const stdinMessage = stdinError ? `: ${stdinError.message}` : "";
+			rejectOnce(
 				new Error(
-					`${command} ${args.join(" ")} failed with exit code ${exitCode ?? 1}${trimOutput(stderr) ? `: ${trimOutput(stderr)}` : ""}`,
+					`${command} ${args.join(" ")} failed with exit code ${exitCode ?? 1}${trimOutput(stderr) ? `: ${trimOutput(stderr)}` : stdinMessage}`,
 				),
 			);
 		});
@@ -1159,7 +1187,6 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 				}
 
 				const progress = parsePatchInputProgress(input);
-				const prePatchShikiSources = collectPrePatchShikiSources(ctx.cwd, progress.files);
 				onUpdate?.({
 					content: [
 						{ type: "text", text: "Validating apply_patch payload..." },
@@ -1185,6 +1212,8 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 				if (signal?.aborted) {
 					return errorResult("apply_patch aborted before applying changes.");
 				}
+
+				const prePatchShikiSources = collectPrePatchShikiSources(ctx.cwd, progress.files);
 
 				onUpdate?.({
 					content: [{ type: "text", text: "Applying patch..." }],
@@ -1230,9 +1259,16 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 				});
 
 				for (const file of progress.files) {
-					const path = resolve(ctx.cwd, file.moveTo ?? file.path);
-					pi.events.emit("apply-patch:file-modified", { path, operation: file.operation });
-					pi.events.emit("context-guard:file-modified", { path });
+					const targets = file.moveTo
+						? [
+							{ path: resolve(ctx.cwd, file.path), operation: "delete" },
+							{ path: resolve(ctx.cwd, file.moveTo), operation: "add" },
+						]
+						: [{ path: resolve(ctx.cwd, file.path), operation: file.operation }];
+					for (const target of targets) {
+						pi.events.emit("apply-patch:file-modified", target);
+						pi.events.emit("context-guard:file-modified", { path: target.path });
+					}
 				}
 
 				return makeResult(

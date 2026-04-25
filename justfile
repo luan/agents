@@ -44,10 +44,7 @@ claude-plugins-install:
     # worktrunk@worktrunk, so claude breaks on startup if it isn't installed.
     # `claude plugin install` is idempotent (no-op when already installed).
     claude plugin install worktrunk@worktrunk
-    # Local `agents` marketplace + gt plugin: re-enable once
-    # .agents/plugins/marketplace.json is updated to the current claude schema.
-    # claude plugin marketplace add ./.agents/plugins/marketplace.json
-    # claude plugin install -s user gt@agents
+    # Keep the local `agents` marketplace disabled until its schema is updated.
 
 pi-extensions-install:
     cd "{{ repo }}/pi/agent/extensions" && npm install --omit=dev

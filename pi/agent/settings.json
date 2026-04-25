@@ -7,7 +7,7 @@
   "treeFilterMode": "default",
   "defaultProvider": "github-copilot",
   "defaultModel": "gpt-5.4",
-  "defaultThinkingLevel": "high",
+  "defaultThinkingLevel": "medium",
   "packages": [
     {
       "source": "npm:pi-extension-manager",

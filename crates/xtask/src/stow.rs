@@ -83,16 +83,9 @@ fn process_package(mode: Mode, source: &Path, target: &Path) -> Result<()> {
             .with_context(|| format!("mkdir -p {}", target.display()))?;
     }
 
-    let mut entries: Vec<_> = fs::read_dir(source)
-        .with_context(|| format!("read_dir {}", source.display()))?
-        .filter_map(|e| e.ok())
-        .collect();
-    entries.sort_by_key(|e| e.file_name());
-
-    for entry in entries {
-        let name = entry.file_name();
-        let source_entry = source.join(&name);
-        let target_entry = target.join(&name);
+    for source_entry in iter_children(source)? {
+        let name = source_entry.file_name().expect("entry has filename");
+        let target_entry = target.join(name);
         match mode {
             Mode::DryRun => act_dry_run(&source_entry, &target_entry)?,
             Mode::Link => act_link(&source_entry, &target_entry)?,
@@ -103,36 +96,31 @@ fn process_package(mode: Mode, source: &Path, target: &Path) -> Result<()> {
 }
 
 fn iter_children(source: &Path) -> Result<Vec<PathBuf>> {
-    let mut entries: Vec<_> = fs::read_dir(source)
+    let mut entries = fs::read_dir(source)
         .with_context(|| format!("read_dir {}", source.display()))?
-        .filter_map(|e| e.ok())
-        .collect();
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .with_context(|| format!("read_dir entries {}", source.display()))?;
     entries.sort_by_key(|e| e.file_name());
     Ok(entries.into_iter().map(|e| e.path()).collect())
 }
 
 fn act_link(source: &Path, target: &Path) -> Result<()> {
-    let source_canon = fs::canonicalize(source)
-        .with_context(|| format!("canonicalize {}", source.display()))?;
-
     match fs::symlink_metadata(target) {
         Ok(meta) if meta.file_type().is_symlink() => {
+            let source_canon = fs::canonicalize(source)
+                .with_context(|| format!("canonicalize {}", source.display()))?;
             let existing_canon = fs::canonicalize(target).ok();
             if existing_canon.as_deref() == Some(source_canon.as_path()) {
                 eprintln!("  = {} (up to date)", target.display());
                 return Ok(());
             }
-            eprintln!(
-                "  ~ replacing {} (was -> {})",
+            bail!(
+                "{} already exists as a symlink to {} (refusing to replace non-owned symlink)",
                 target.display(),
                 existing_canon
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|| "<broken>".to_string())
             );
-            remove_symlink(target).with_context(|| {
-                format!("remove existing symlink {}", target.display())
-            })?;
-            create_symlink(source, target)?;
         }
         Ok(meta) if meta.is_dir() => {
             // Tree-unfolding: target dir already exists, source is a dir → recurse.
@@ -169,16 +157,21 @@ fn act_link(source: &Path, target: &Path) -> Result<()> {
 }
 
 fn act_dry_run(source: &Path, target: &Path) -> Result<()> {
-    let source_canon = fs::canonicalize(source)
-        .with_context(|| format!("canonicalize {}", source.display()))?;
-
     match fs::symlink_metadata(target) {
         Ok(meta) if meta.file_type().is_symlink() => {
+            let source_canon = fs::canonicalize(source)
+                .with_context(|| format!("canonicalize {}", source.display()))?;
             let existing_canon = fs::canonicalize(target).ok();
             if existing_canon.as_deref() == Some(source_canon.as_path()) {
                 eprintln!("  = {} (up to date)", target.display());
             } else {
-                eprintln!("  ~ would replace {}", target.display());
+                bail!(
+                    "{} already exists as a symlink to {} (refusing to replace non-owned symlink)",
+                    target.display(),
+                    existing_canon
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "<broken>".to_string())
+                );
             }
         }
         Ok(meta) if meta.is_dir() => {
@@ -218,11 +211,10 @@ fn act_dry_run(source: &Path, target: &Path) -> Result<()> {
 }
 
 fn act_unlink(source: &Path, target: &Path) -> Result<()> {
-    let source_canon = fs::canonicalize(source)
-        .with_context(|| format!("canonicalize {}", source.display()))?;
-
     match fs::symlink_metadata(target) {
         Ok(meta) if meta.file_type().is_symlink() => {
+            let source_canon = fs::canonicalize(source)
+                .with_context(|| format!("canonicalize {}", source.display()))?;
             let existing_canon = fs::canonicalize(target).ok();
             if existing_canon.as_deref() == Some(source_canon.as_path()) {
                 remove_symlink(target)

@@ -43,9 +43,10 @@ just link-dry-run   # preview link targets before linking
 just ct-install     # rebuild and reinstall ct + register MCP servers
 ```
 
-Prerequisites: `just`, `cargo`, `claude`, `codex`, `opencode`.
+Prerequisites: `just`, `cargo`, `npm`, `claude`, `codex`, `opencode`.
 
 On Windows, `cargo xtask doctor` additionally verifies that symlinks work
 (requires Developer Mode) and that the repo's tracked symlinks were
 materialised by Git (requires `git config --global core.symlinks true` at
-clone time, otherwise re-clone or `git rm --cached -r . && git reset --hard`).
+clone time, otherwise re-clone or re-materialise only symlink-mode files as
+shown by `cargo xtask doctor`).
