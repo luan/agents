@@ -129,7 +129,7 @@ fn act_link(source: &Path, target: &Path) -> Result<()> {
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|| "<broken>".to_string())
             );
-            fs::remove_file(target).with_context(|| {
+            remove_symlink(target).with_context(|| {
                 format!("remove existing symlink {}", target.display())
             })?;
             create_symlink(source, target)?;
@@ -225,7 +225,7 @@ fn act_unlink(source: &Path, target: &Path) -> Result<()> {
         Ok(meta) if meta.file_type().is_symlink() => {
             let existing_canon = fs::canonicalize(target).ok();
             if existing_canon.as_deref() == Some(source_canon.as_path()) {
-                fs::remove_file(target)
+                remove_symlink(target)
                     .with_context(|| format!("remove {}", target.display()))?;
                 eprintln!("  - {}", target.display());
             } else {
@@ -254,6 +254,22 @@ fn act_unlink(source: &Path, target: &Path) -> Result<()> {
         Err(_) => {}
     }
     Ok(())
+}
+
+// Remove a symlink at `target`, regardless of whether it points to a file or
+// directory. On Unix both kinds are removed via fs::remove_file (the syscall
+// operates on the link itself, not the target). On Windows fs::remove_file
+// only removes file symlinks; directory symlinks must go through
+// fs::remove_dir (which removes the link, not the dir's contents) and
+// fs::remove_file would otherwise fail with ERROR_ACCESS_DENIED (os error 5).
+fn remove_symlink(target: &Path) -> std::io::Result<()> {
+    match fs::remove_file(target) {
+        Ok(()) => Ok(()),
+        #[cfg(windows)]
+        Err(_) => fs::remove_dir(target),
+        #[cfg(not(windows))]
+        Err(err) => Err(err),
+    }
 }
 
 #[cfg(unix)]
