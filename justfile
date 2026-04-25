@@ -33,9 +33,15 @@ codex-plugins-install:
     cd "{{ repo }}" && cargo xtask codex-plugins-install
 
 claude-plugins-install:
-    claude plugin marketplace update local
-    claude plugin uninstall gt@local || true
-    claude plugin install -s user gt@local
+    # worktrunk: marketplace is auto-registered from claude/settings.json's
+    # extraKnownMarketplaces once `link` ran; settings.json also enables
+    # worktrunk@worktrunk, so claude breaks on startup if it isn't installed.
+    # `claude plugin install` is idempotent (no-op when already installed).
+    claude plugin install worktrunk@worktrunk
+    # Local `agents` marketplace + gt plugin: re-enable once
+    # .agents/plugins/marketplace.json is updated to the current claude schema.
+    # claude plugin marketplace add ./.agents/plugins/marketplace.json
+    # claude plugin install -s user gt@agents
 
 pi-extensions-install:
     cd "{{ repo }}/pi/agent/extensions" && npm install --omit=dev
