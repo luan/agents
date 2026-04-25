@@ -123,6 +123,7 @@ fn enrich_appends_anchor_reliability_hint() {
         anchor_text: Some("fn foo"),
         error_kind: "context_not_found",
         current_fingerprint: None,
+        file_content: None,
     };
     let enriched = enrich::enrich(&tel, "base error".into(), &ctx);
     let msg = enriched.into_message();
