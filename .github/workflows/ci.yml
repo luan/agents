@@ -72,22 +72,24 @@ jobs:
       - name: xtask doctor
         run: cargo xtask doctor
 
-      # Verify GLOBAL_AGENTS.md is in sync with the rules/template. Done
-      # *before* anything that runs render-agents as a side effect (link /
-      # link-dry-run / validate all do), otherwise staleness goes undetected.
-      - name: GLOBAL_AGENTS.md is fresh
+      # GLOBAL_AGENTS.md is intentionally gitignored, so CI cannot compare it
+      # against tracked repo state. Instead, materialise it once for later
+      # validation and assert that rendering is idempotent.
+      - name: render GLOBAL_AGENTS.md
+        shell: bash
+        run: |
+          set -eu
+          cargo xtask render-agents
+
+      - name: GLOBAL_AGENTS.md render is idempotent
         shell: bash
         run: |
           set -eu
           before=$(mktemp)
-          if [ -f GLOBAL_AGENTS.md ]; then
-            cp GLOBAL_AGENTS.md "$before"
-          else
-            : > "$before"
-          fi
+          cp GLOBAL_AGENTS.md "$before"
           cargo xtask render-agents
           cmp -s "$before" GLOBAL_AGENTS.md \
-            || { echo "::error::GLOBAL_AGENTS.md is stale; run 'cargo xtask render-agents' before CI"; exit 1; }
+            || { echo "::error::GLOBAL_AGENTS.md render is not idempotent"; exit 1; }
 
       # ---------- Scenario 1: no conflicts (happy path) ----------
 
