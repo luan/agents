@@ -68,14 +68,14 @@ status_line = [
 "gpt-5.5" = 4
 
 [marketplaces.claude-plugins-official]
-last_updated = "2026-04-25T05:50:44Z"
+last_updated = "2026-04-25T17:03:22Z"
 last_revision = "020446a4294f09d9c32e60bff0c4ae8fb39205cb"
 source_type = "git"
 source = "https://github.com/anthropics/claude-plugins-official.git"
 
 [marketplaces.worktrunk]
-last_updated = "2026-04-25T05:50:48Z"
-last_revision = "5f126d21fe1b4edfc06af7ab436bb3d493089938"
+last_updated = "2026-04-25T17:03:25Z"
+last_revision = "3ab57e7c176861e9a5d4a398d7c3538f9b9cec92"
 source_type = "git"
 source = "https://github.com/max-sixty/worktrunk.git"
 
@@ -88,4 +88,7 @@ command = "ct"
 args = ["mcp", "sym"]
 
 [projects."~/src/agents"]
+trust_level = "trusted"
+
+[projects."~/src/sifty"]
 trust_level = "trusted"

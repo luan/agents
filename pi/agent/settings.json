@@ -7,13 +7,11 @@
   "treeFilterMode": "default",
   "defaultProvider": "claude-agent-sdk",
   "defaultModel": "claude-opus-4-7",
-  "defaultThinkingLevel": "high",
+  "defaultThinkingLevel": "medium",
   "packages": [
     {
       "source": "npm:pi-extension-manager",
-      "extensions": [
-        "+src/index.ts"
-      ]
+      "extensions": ["+src/index.ts"]
     },
     "npm:pi-which-key",
     "npm:pi-subagents",
@@ -41,5 +39,11 @@
   "terminal": {
     "clearOnShrink": false,
     "showTerminalProgress": true
+  },
+  "claudeAgentSdkProvider": {
+    "appendSystemPrompt": true,
+    "settingSources": [],
+    "strictMcpConfig": true
   }
 }
+
