@@ -99,6 +99,8 @@ fn assert_no_checkout_paths(root: &Path) -> Result<()> {
             Box::new(
                 WalkDir::new(r)
                     .into_iter()
+                    // Vendored dependencies contain example absolute paths in docs.
+                    .filter_entry(|e| e.file_name().to_str() != Some("node_modules"))
                     .filter_map(|e| e.ok())
                     .map(|e| e.into_path()),
             )

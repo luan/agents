@@ -21,9 +21,9 @@
     "npm:@ollama/pi-web-search",
     "npm:pi-lens",
     "npm:@termdraw/pi",
-    "npm:pi-tool-display",
     "npm:pi-mcp-adapter",
-    "npm:claude-agent-sdk-pi"
+    "npm:claude-agent-sdk-pi",
+    "npm:@heyhuynhgiabuu/pi-diff"
   ],
   "enabledModels": [
     "github-copilot/gpt-5.4",

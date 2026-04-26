@@ -574,6 +574,15 @@ function shouldUseSideBySideDiff(rows: ParsedDiffLine[], width: number, config: 
 	const hasRemovals = rows.some((row) => row.kind === "remove");
 	const hasAdditions = rows.some((row) => row.kind === "add");
 	if (!hasRemovals || !hasAdditions) return false;
+	const splitRows = buildSplitRows(rows);
+	const pairedChangeRows = splitRows.filter((row) =>
+		row.left?.kind === "remove" && row.right?.kind === "add"
+	).length;
+	const oneSidedChangeRows = splitRows.filter((row) =>
+		(row.left?.kind === "remove" || row.right?.kind === "add") && (!row.left || !row.right)
+	).length;
+	if (pairedChangeRows === 0) return false;
+	if (oneSidedChangeRows > pairedChangeRows * 2) return false;
 	if (width < config.sideBySideMinWidth) return false;
 
 	const numberWidth = diffLineNumberWidth(rows);
@@ -734,8 +743,13 @@ function renderSideBySideDiffRows(
 		separator,
 		paintDiffSegment(`${" ".repeat(headerPadding)}${theme.fg("toolDiffAdded", "new")}`, halfWidth, baseBackground),
 	].join("");
+	const rule = [
+		paintDiffSegment(theme.fg("dim", "─".repeat(halfWidth)), halfWidth, baseBackground),
+		separator,
+		paintDiffSegment(theme.fg("dim", "─".repeat(halfWidth)), halfWidth, baseBackground),
+	].join("");
 
-	const lines = [header];
+	const lines = [header, rule];
 	for (const row of buildSplitRows(rows)) {
 		const leftLines = renderSplitCellRows(row.left, "left", theme, halfWidth, numberWidth, baseBackground, wrapLimit);
 		const rightLines = renderSplitCellRows(row.right, "right", theme, halfWidth, numberWidth, baseBackground, wrapLimit);
@@ -748,7 +762,6 @@ function renderSideBySideDiffRows(
 			].join(""));
 		}
 	}
-
 	return lines;
 }
 
