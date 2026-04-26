@@ -11,16 +11,12 @@
   "packages": [
     {
       "source": "npm:pi-extension-manager",
-      "extensions": [
-        "+src/index.ts"
-      ]
+      "extensions": ["+src/index.ts"]
     },
     "npm:pi-subagents",
     "npm:@ifi/oh-pi-themes",
     "npm:@ollama/pi-web-search",
-    "npm:pi-lens",
     "npm:pi-mcp-adapter",
-    "npm:claude-agent-sdk-pi",
     "npm:@heyhuynhgiabuu/pi-diff",
     "npm:pi-free"
   ],
@@ -29,10 +25,7 @@
     "openai-codex/gpt-5.5",
     "github-copilot/gpt-5.4-mini",
     "openai-codex/gpt-5.4",
-    "openai-codex/gpt-5.4-mini",
-    "claude-agent-sdk/claude-sonnet-4-6",
-    "claude-agent-sdk/claude-opus-4-7",
-    "claude-agent-sdk/claude-haiku-4-5"
+    "openai-codex/gpt-5.4-mini"
   ],
   "theme": "tokyo-night",
   "hideThinkingBlock": false,
@@ -47,3 +40,4 @@
     "strictMcpConfig": true
   }
 }
+

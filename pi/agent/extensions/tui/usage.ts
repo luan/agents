@@ -25,7 +25,6 @@ const THIRTY_DAYS_SECS = 30 * 24 * 60 * 60;
 
 const PROVIDER_MAP: Record<string, string> = {
   anthropic: "claude",
-  "claude-agent-sdk": "claude",
   "openai-codex": "codex",
   "github-copilot": "copilot",
   "google-gemini-cli": "gemini",
@@ -33,7 +32,9 @@ const PROVIDER_MAP: Record<string, string> = {
   "minimax-cn": "minimax-cn",
 };
 
-export function detectUsageProvider(modelProvider: string | undefined): string | null {
+export function detectUsageProvider(
+  modelProvider: string | undefined,
+): string | null {
   if (!modelProvider) return null;
   return PROVIDER_MAP[modelProvider] ?? null;
 }
@@ -95,7 +96,8 @@ function getClaudeToken(): string | undefined {
     ).trim();
     if (keychainData) {
       const parsed = JSON.parse(keychainData);
-      if (parsed.claudeAiOauth?.accessToken) return parsed.claudeAiOauth.accessToken;
+      if (parsed.claudeAiOauth?.accessToken)
+        return parsed.claudeAiOauth.accessToken;
     }
   } catch {}
 
@@ -115,13 +117,19 @@ function getCodexToken(): { token: string; accountId?: string } | undefined {
     };
   }
 
-  const codexPath = join(process.env.CODEX_HOME || join(homedir(), ".codex"), "auth.json");
+  const codexPath = join(
+    process.env.CODEX_HOME || join(homedir(), ".codex"),
+    "auth.json",
+  );
   try {
     if (existsSync(codexPath)) {
       const data = JSON.parse(readFileSync(codexPath, "utf-8"));
       if (data.OPENAI_API_KEY) return { token: data.OPENAI_API_KEY };
       if (data.tokens?.access_token) {
-        return { token: data.tokens.access_token, accountId: data.tokens.account_id };
+        return {
+          token: data.tokens.access_token,
+          accountId: data.tokens.account_id,
+        };
       }
     }
   } catch {}
@@ -131,7 +139,8 @@ function getCodexToken(): { token: string; accountId?: string } | undefined {
 
 function getGeminiToken(): string | undefined {
   const auth = loadAuthJson();
-  if (auth["google-gemini-cli"]?.access) return auth["google-gemini-cli"].access;
+  if (auth["google-gemini-cli"]?.access)
+    return auth["google-gemini-cli"].access;
 
   const geminiPath = join(homedir(), ".gemini", "oauth_creds.json");
   try {
@@ -143,7 +152,9 @@ function getGeminiToken(): string | undefined {
   return undefined;
 }
 
-function getMinimaxToken(provider: "minimax" | "minimax-cn"): string | undefined {
+function getMinimaxToken(
+  provider: "minimax" | "minimax-cn",
+): string | undefined {
   return provider === "minimax"
     ? getApiKey("minimax", "MINIMAX_API_KEY")
     : getApiKey("minimax-cn", "MINIMAX_CN_API_KEY");
@@ -170,8 +181,12 @@ function normalizePercent(value: number): number {
   return Math.max(0, Math.min(100, normalized));
 }
 
-function getWindowLabel(durationMs: number | undefined, fallback: string): string {
-  if (!durationMs || !Number.isFinite(durationMs) || durationMs <= 0) return fallback;
+function getWindowLabel(
+  durationMs: number | undefined,
+  fallback: string,
+): string {
+  if (!durationMs || !Number.isFinite(durationMs) || durationMs <= 0)
+    return fallback;
 
   const hourMs = 60 * 60 * 1000;
   const dayMs = 24 * hourMs;
@@ -195,7 +210,11 @@ function getWindowLabel(durationMs: number | undefined, fallback: string): strin
   return `${mins}m`;
 }
 
-async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 5000): Promise<Response> {
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs = 5000,
+): Promise<Response> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -208,19 +227,32 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 5000
 async function fetchClaudeUsage(): Promise<UsageSnapshot> {
   const token = getClaudeToken();
   if (!token) {
-    return { provider: "Claude", windows: [], error: "no-auth", fetchedAt: Date.now() };
+    return {
+      provider: "Claude",
+      windows: [],
+      error: "no-auth",
+      fetchedAt: Date.now(),
+    };
   }
 
   try {
-    const res = await fetchWithTimeout("https://api.anthropic.com/api/oauth/usage", {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "anthropic-beta": "oauth-2025-04-20",
+    const res = await fetchWithTimeout(
+      "https://api.anthropic.com/api/oauth/usage",
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "anthropic-beta": "oauth-2025-04-20",
+        },
       },
-    });
+    );
 
     if (!res.ok) {
-      return { provider: "Claude", windows: [], error: `HTTP ${res.status}`, fetchedAt: Date.now() };
+      return {
+        provider: "Claude",
+        windows: [],
+        error: `HTTP ${res.status}`,
+        fetchedAt: Date.now(),
+      };
     }
 
     const data = (await res.json()) as any;
@@ -252,35 +284,55 @@ async function fetchClaudeUsage(): Promise<UsageSnapshot> {
 
     return { provider: "Claude", windows, fetchedAt: Date.now() };
   } catch (e) {
-    return { provider: "Claude", windows: [], error: String(e), fetchedAt: Date.now() };
+    return {
+      provider: "Claude",
+      windows: [],
+      error: String(e),
+      fetchedAt: Date.now(),
+    };
   }
 }
 
 async function fetchCopilotUsage(): Promise<UsageSnapshot> {
   const token = getCopilotToken();
   if (!token) {
-    return { provider: "Copilot", windows: [], error: "no-auth", fetchedAt: Date.now() };
+    return {
+      provider: "Copilot",
+      windows: [],
+      error: "no-auth",
+      fetchedAt: Date.now(),
+    };
   }
 
   try {
-    const res = await fetchWithTimeout("https://api.github.com/copilot_internal/user", {
-      headers: {
-        "Editor-Version": "vscode/1.96.2",
-        "User-Agent": "GitHubCopilotChat/0.26.7",
-        "X-Github-Api-Version": "2025-04-01",
-        Accept: "application/json",
-        Authorization: `token ${token}`,
+    const res = await fetchWithTimeout(
+      "https://api.github.com/copilot_internal/user",
+      {
+        headers: {
+          "Editor-Version": "vscode/1.96.2",
+          "User-Agent": "GitHubCopilotChat/0.26.7",
+          "X-Github-Api-Version": "2025-04-01",
+          Accept: "application/json",
+          Authorization: `token ${token}`,
+        },
       },
-    });
+    );
 
     if (!res.ok) {
-      return { provider: "Copilot", windows: [], error: `HTTP ${res.status}`, fetchedAt: Date.now() };
+      return {
+        provider: "Copilot",
+        windows: [],
+        error: `HTTP ${res.status}`,
+        fetchedAt: Date.now(),
+      };
     }
 
     const data = (await res.json()) as any;
     const windows: RateWindow[] = [];
 
-    const resetDate = data.quota_reset_date_utc ? new Date(data.quota_reset_date_utc) : undefined;
+    const resetDate = data.quota_reset_date_utc
+      ? new Date(data.quota_reset_date_utc)
+      : undefined;
     const resetSecs = secondsUntil(resetDate);
 
     if (data.quota_snapshots?.premium_interactions) {
@@ -305,14 +357,24 @@ async function fetchCopilotUsage(): Promise<UsageSnapshot> {
 
     return { provider: "Copilot", windows, fetchedAt: Date.now() };
   } catch (e) {
-    return { provider: "Copilot", windows: [], error: String(e), fetchedAt: Date.now() };
+    return {
+      provider: "Copilot",
+      windows: [],
+      error: String(e),
+      fetchedAt: Date.now(),
+    };
   }
 }
 
 async function fetchCodexUsage(): Promise<UsageSnapshot> {
   const creds = getCodexToken();
   if (!creds) {
-    return { provider: "Codex", windows: [], error: "no-auth", fetchedAt: Date.now() };
+    return {
+      provider: "Codex",
+      windows: [],
+      error: "no-auth",
+      fetchedAt: Date.now(),
+    };
   }
 
   try {
@@ -323,13 +385,21 @@ async function fetchCodexUsage(): Promise<UsageSnapshot> {
     };
     if (creds.accountId) headers["ChatGPT-Account-Id"] = creds.accountId;
 
-    const res = await fetchWithTimeout("https://chatgpt.com/backend-api/wham/usage", {
-      method: "GET",
-      headers,
-    });
+    const res = await fetchWithTimeout(
+      "https://chatgpt.com/backend-api/wham/usage",
+      {
+        method: "GET",
+        headers,
+      },
+    );
 
     if (!res.ok) {
-      return { provider: "Codex", windows: [], error: `HTTP ${res.status}`, fetchedAt: Date.now() };
+      return {
+        provider: "Codex",
+        windows: [],
+        error: `HTTP ${res.status}`,
+        fetchedAt: Date.now(),
+      };
     }
 
     const data = (await res.json()) as any;
@@ -339,7 +409,9 @@ async function fetchCodexUsage(): Promise<UsageSnapshot> {
       const pw = data.rate_limit.primary_window;
       const resetDate = pw.reset_at ? new Date(pw.reset_at * 1000) : undefined;
       const durationMs =
-        typeof pw.limit_window_seconds === "number" ? pw.limit_window_seconds * 1000 : undefined;
+        typeof pw.limit_window_seconds === "number"
+          ? pw.limit_window_seconds * 1000
+          : undefined;
       windows.push({
         label: getWindowLabel(durationMs, "5h"),
         usedPercent: clampPercent(pw.used_percent || 0),
@@ -352,7 +424,9 @@ async function fetchCodexUsage(): Promise<UsageSnapshot> {
       const sw = data.rate_limit.secondary_window;
       const resetDate = sw.reset_at ? new Date(sw.reset_at * 1000) : undefined;
       const durationMs =
-        typeof sw.limit_window_seconds === "number" ? sw.limit_window_seconds * 1000 : undefined;
+        typeof sw.limit_window_seconds === "number"
+          ? sw.limit_window_seconds * 1000
+          : undefined;
       windows.push({
         label: getWindowLabel(durationMs, "Week"),
         usedPercent: clampPercent(sw.used_percent || 0),
@@ -363,14 +437,24 @@ async function fetchCodexUsage(): Promise<UsageSnapshot> {
 
     return { provider: "Codex", windows, fetchedAt: Date.now() };
   } catch (e) {
-    return { provider: "Codex", windows: [], error: String(e), fetchedAt: Date.now() };
+    return {
+      provider: "Codex",
+      windows: [],
+      error: String(e),
+      fetchedAt: Date.now(),
+    };
   }
 }
 
 async function fetchGeminiUsage(): Promise<UsageSnapshot> {
   const token = getGeminiToken();
   if (!token) {
-    return { provider: "Gemini", windows: [], error: "no-auth", fetchedAt: Date.now() };
+    return {
+      provider: "Gemini",
+      windows: [],
+      error: "no-auth",
+      fetchedAt: Date.now(),
+    };
   }
 
   try {
@@ -378,13 +462,21 @@ async function fetchGeminiUsage(): Promise<UsageSnapshot> {
       "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota",
       {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
         body: "{}",
       },
     );
 
     if (!res.ok) {
-      return { provider: "Gemini", windows: [], error: `HTTP ${res.status}`, fetchedAt: Date.now() };
+      return {
+        provider: "Gemini",
+        windows: [],
+        error: `HTTP ${res.status}`,
+        fetchedAt: Date.now(),
+      };
     }
 
     const data = (await res.json()) as any;
@@ -430,11 +522,18 @@ async function fetchGeminiUsage(): Promise<UsageSnapshot> {
 
     return { provider: "Gemini", windows, fetchedAt: Date.now() };
   } catch (e) {
-    return { provider: "Gemini", windows: [], error: String(e), fetchedAt: Date.now() };
+    return {
+      provider: "Gemini",
+      windows: [],
+      error: String(e),
+      fetchedAt: Date.now(),
+    };
   }
 }
 
-async function fetchMinimaxUsage(provider: "minimax" | "minimax-cn"): Promise<UsageSnapshot> {
+async function fetchMinimaxUsage(
+  provider: "minimax" | "minimax-cn",
+): Promise<UsageSnapshot> {
   const token = getMinimaxToken(provider);
   const providerLabel = provider === "minimax-cn" ? "MiniMax CN" : "MiniMax";
   const endpoint =
@@ -443,13 +542,21 @@ async function fetchMinimaxUsage(provider: "minimax" | "minimax-cn"): Promise<Us
       : "https://api.minimax.io/v1/api/openplatform/coding_plan/remains";
 
   if (!token) {
-    return { provider: providerLabel, windows: [], error: "no-auth", fetchedAt: Date.now() };
+    return {
+      provider: providerLabel,
+      windows: [],
+      error: "no-auth",
+      fetchedAt: Date.now(),
+    };
   }
 
   try {
     const res = await fetchWithTimeout(endpoint, {
       method: "GET",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
     });
 
     if (!res.ok) {
@@ -472,15 +579,19 @@ async function fetchMinimaxUsage(provider: "minimax" | "minimax-cn"): Promise<Us
       };
     }
 
-    const remains = Array.isArray(data?.model_remains) ? data.model_remains : [];
+    const remains = Array.isArray(data?.model_remains)
+      ? data.model_remains
+      : [];
     const textBucket =
       remains.find(
         (entry: any) =>
-          typeof entry?.model_name === "string" && /^minimax-m/i.test(entry.model_name),
+          typeof entry?.model_name === "string" &&
+          /^minimax-m/i.test(entry.model_name),
       ) ||
       remains.find(
         (entry: any) =>
-          typeof entry?.model_name === "string" && /minimax/i.test(entry.model_name),
+          typeof entry?.model_name === "string" &&
+          /minimax/i.test(entry.model_name),
       ) ||
       remains[0];
 
@@ -496,11 +607,14 @@ async function fetchMinimaxUsage(provider: "minimax" | "minimax-cn"): Promise<Us
     const windows: RateWindow[] = [];
 
     const intervalTotal = Number(textBucket.current_interval_total_count) || 0;
-    const intervalRemaining = Number(textBucket.current_interval_usage_count) || 0;
+    const intervalRemaining =
+      Number(textBucket.current_interval_usage_count) || 0;
     if (intervalTotal > 0) {
       const used = intervalTotal - intervalRemaining;
       const usedPercent = clampPercent((used / intervalTotal) * 100);
-      const resetDate = textBucket.end_time ? new Date(Number(textBucket.end_time)) : undefined;
+      const resetDate = textBucket.end_time
+        ? new Date(Number(textBucket.end_time))
+        : undefined;
       const durationMs =
         textBucket.start_time && textBucket.end_time
           ? Number(textBucket.end_time) - Number(textBucket.start_time)
@@ -523,7 +637,8 @@ async function fetchMinimaxUsage(provider: "minimax" | "minimax-cn"): Promise<Us
         : undefined;
       const durationMs =
         textBucket.weekly_start_time && textBucket.weekly_end_time
-          ? Number(textBucket.weekly_end_time) - Number(textBucket.weekly_start_time)
+          ? Number(textBucket.weekly_end_time) -
+            Number(textBucket.weekly_start_time)
           : undefined;
       windows.push({
         label: getWindowLabel(durationMs, "Week"),
@@ -535,11 +650,18 @@ async function fetchMinimaxUsage(provider: "minimax" | "minimax-cn"): Promise<Us
 
     return { provider: providerLabel, windows, fetchedAt: Date.now() };
   } catch (e) {
-    return { provider: providerLabel, windows: [], error: String(e), fetchedAt: Date.now() };
+    return {
+      provider: providerLabel,
+      windows: [],
+      error: String(e),
+      fetchedAt: Date.now(),
+    };
   }
 }
 
-export async function fetchUsageForProvider(provider: string): Promise<UsageSnapshot> {
+export async function fetchUsageForProvider(
+  provider: string,
+): Promise<UsageSnapshot> {
   switch (provider) {
     case "claude":
       return fetchClaudeUsage();

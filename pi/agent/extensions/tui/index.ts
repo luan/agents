@@ -11,7 +11,11 @@ import {
   ensureConfigExists,
   loadConfig,
 } from "./config";
-import { emptyFooterState, type FooterRenderState, renderFooter } from "./footer";
+import {
+  emptyFooterState,
+  type FooterRenderState,
+  renderFooter,
+} from "./footer";
 import { readGitStatus } from "./git";
 import { readRuntimeInfo } from "./runtime";
 import { PolishedEditor, patchUserMessageComponent } from "./ui";
@@ -39,7 +43,6 @@ function formatProviderLabel(provider: string | undefined): string {
   if (!provider) return "Unknown";
   const known: Record<string, string> = {
     anthropic: "Anthropic",
-    "claude-agent-sdk": "Anthropic",
     gemini: "Google",
     google: "Google",
     ollama: "Ollama",
@@ -75,7 +78,8 @@ function getUsageTotals(ctx: ExtensionContext): UsageTotals {
   let output = 0;
   let cost = 0;
   for (const entry of ctx.sessionManager.getBranch()) {
-    if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+    if (entry.type !== "message" || entry.message.role !== "assistant")
+      continue;
     const message = entry.message as AssistantMessage;
     input += message.usage?.input ?? 0;
     output += message.usage?.output ?? 0;
@@ -168,7 +172,9 @@ export default function (pi: ExtensionAPI) {
 
     state.modelLabel = ctx.model?.name ?? "no-model";
     state.providerLabel = formatProviderLabel(ctx.model?.provider);
-    state.thinkingLevel = ctx.model?.reasoning ? pi.getThinkingLevel() : undefined;
+    state.thinkingLevel = ctx.model?.reasoning
+      ? pi.getThinkingLevel()
+      : undefined;
     state.contextPercent = usage?.percent ?? null;
     state.contextTotal = contextWindow;
     state.contextUsed =
@@ -216,7 +222,12 @@ export default function (pi: ExtensionAPI) {
   const applyUsageResult = (provider: string, snapshot: UsageSnapshot) => {
     if (activeProvider !== provider) return;
     const cached = usageCache.get(provider);
-    if (snapshot.windows.length === 0 && snapshot.error && cached?.windows.length) return;
+    if (
+      snapshot.windows.length === 0 &&
+      snapshot.error &&
+      cached?.windows.length
+    )
+      return;
     usageCache.set(provider, snapshot);
     state.usage = snapshot;
     state.usageLines = undefined;
@@ -313,12 +324,7 @@ export default function (pi: ExtensionAPI) {
       theme: EditorTheme,
       keybindings: KeybindingsManager,
     ) => {
-      const editor = new PolishedEditor(
-        tui,
-        theme,
-        keybindings,
-        ctx.ui.theme,
-      );
+      const editor = new PolishedEditor(tui, theme, keybindings, ctx.ui.theme);
       currentEditor = editor;
 
       const originalHandleInput = editor.handleInput.bind(editor);
