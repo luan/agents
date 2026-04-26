@@ -3,7 +3,7 @@ use std::path::Path;
 use rusqlite::{Connection, params};
 
 use super::paths;
-use super::types::PatchDraftSummary;
+use super::types::{PatchDraftChunk, PatchDraftSummary};
 
 const SCHEMA_VERSION: i32 = 2;
 
@@ -177,6 +177,16 @@ pub struct LensStore {
     project_id: i64,
 }
 
+pub struct NewPatchDraft<'a> {
+    pub id: &'a str,
+    pub cwd: &'a str,
+    pub session_id: Option<&'a str>,
+    pub status: &'a str,
+    pub patch_sha: &'a str,
+    pub body: &'a str,
+    pub chunks: &'a [PatchDraftChunk],
+}
+
 impl LensStore {
     pub fn open_for_project(root: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         let dir = paths::project_state_dir(root)?;
@@ -247,32 +257,55 @@ impl LensStore {
     }
 
     pub fn create_patch_draft(
-        &self,
-        id: &str,
-        cwd: &str,
-        session_id: Option<&str>,
-        status: &str,
-        patch_sha: &str,
-        body: &str,
+        &mut self,
+        draft: NewPatchDraft<'_>,
     ) -> Result<PatchDraftSummary, rusqlite::Error> {
         let now = now_ms();
-        let body_bytes = body.len() as i64;
-        self.conn.execute(
+        let body_bytes = draft.body.len() as i64;
+        let tx = self.conn.transaction()?;
+        tx.execute(
             "INSERT INTO patch_drafts (id, project_id, session_id, cwd, status, patch_sha, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
              ON CONFLICT(id) DO UPDATE SET status = excluded.status, updated_at = excluded.updated_at",
-            params![id, self.project_id, session_id, cwd, status, patch_sha, now],
+            params![draft.id, self.project_id, draft.session_id, draft.cwd, draft.status, draft.patch_sha, now],
         )?;
-        self.conn.execute(
+        tx.execute(
             "INSERT INTO patch_draft_bodies (patch_id, body, body_bytes, first_seen_at)
              VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(patch_id) DO UPDATE SET body = excluded.body, body_bytes = excluded.body_bytes",
-            params![id, body, body_bytes, now],
+            params![draft.id, draft.body, body_bytes, now],
         )?;
+        tx.execute(
+            "DELETE FROM patch_draft_chunks WHERE patch_id = ?1",
+            params![draft.id],
+        )?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO patch_draft_chunks
+                 (patch_id, chunk_index, file_path, change_type, status, old_start, old_end, new_start, new_end, error_kind, error_message)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            )?;
+            for chunk in draft.chunks {
+                stmt.execute(params![
+                    draft.id,
+                    chunk.chunk_index,
+                    chunk.file_path,
+                    chunk.change_type,
+                    chunk.status,
+                    chunk.old_start,
+                    chunk.old_end,
+                    chunk.new_start,
+                    chunk.new_end,
+                    chunk.error_kind,
+                    chunk.error_message,
+                ])?;
+            }
+        }
+        tx.commit()?;
         Ok(PatchDraftSummary {
-            id: id.to_string(),
-            status: status.to_string(),
-            patch_sha: patch_sha.to_string(),
+            id: draft.id.to_string(),
+            status: draft.status.to_string(),
+            patch_sha: draft.patch_sha.to_string(),
             body_bytes,
             created_at: now,
             updated_at: now,
@@ -301,6 +334,48 @@ impl LensStore {
             created_at: row.get(4)?,
             updated_at: row.get(5)?,
         }))
+    }
+
+    pub fn patch_draft_chunks(&self, id: &str) -> Result<Vec<PatchDraftChunk>, rusqlite::Error> {
+        let mut stmt = self.conn.prepare(
+            "SELECT chunk_index, file_path, change_type, status, old_start, old_end, new_start, new_end, error_kind, error_message
+             FROM patch_draft_chunks
+             WHERE patch_id = ?1
+             ORDER BY chunk_index ASC",
+        )?;
+        stmt.query_map(params![id], |row| {
+            Ok(PatchDraftChunk {
+                chunk_index: row.get(0)?,
+                file_path: row.get(1)?,
+                change_type: row.get(2)?,
+                status: row.get(3)?,
+                old_start: row.get(4)?,
+                old_end: row.get(5)?,
+                new_start: row.get(6)?,
+                new_end: row.get(7)?,
+                error_kind: row.get(8)?,
+                error_message: row.get(9)?,
+            })
+        })?
+        .collect()
+    }
+
+    pub fn patch_draft_body(&self, id: &str) -> Result<Option<String>, rusqlite::Error> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT body FROM patch_draft_bodies WHERE patch_id = ?1")?;
+        let mut rows = stmt.query(params![id])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        Ok(Some(row.get(0)?))
+    }
+
+    pub fn discard_patch_draft(&self, id: &str) -> Result<bool, rusqlite::Error> {
+        Ok(self
+            .conn
+            .execute("DELETE FROM patch_drafts WHERE id = ?1", params![id])?
+            > 0)
     }
 }
 

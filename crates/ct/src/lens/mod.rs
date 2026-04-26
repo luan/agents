@@ -5,3 +5,4 @@ pub mod types;
 
 pub use paths::project_db_path;
 pub use store::LensStore;
+pub use types::*;
