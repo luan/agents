@@ -212,7 +212,7 @@ fn amend(
 
 fn apply(patch_id: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let root = std::env::current_dir()?;
-    let store = crate::lens::LensStore::open_for_project(&root)?;
+    let mut store = crate::lens::LensStore::open_for_project(&root)?;
     let Some(body) = store.patch_draft_body(patch_id)? else {
         return print_out(
             json,
@@ -220,15 +220,18 @@ fn apply(patch_id: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
         );
     };
     match crate::apply_patch::apply(&body, &root, false) {
-        Ok(outcome) => print_out(
-            json,
-            &serde_json::json!({
-                "patch_id": patch_id,
-                "applied": true,
-                "status": "applied",
-                "changes": outcome.changes
-            }),
-        ),
+        Ok(outcome) => {
+            store.record_applied_changes(None, "ct_patch_draft", &outcome.changes)?;
+            print_out(
+                json,
+                &serde_json::json!({
+                    "patch_id": patch_id,
+                    "applied": true,
+                    "status": "applied",
+                    "changes": outcome.changes
+                }),
+            )
+        }
         Err(failure) => print_out(
             json,
             &serde_json::json!({

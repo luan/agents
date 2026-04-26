@@ -162,6 +162,8 @@ pub fn run_apply_patch(
             print!("{}", change.unified_diff);
         }
     } else {
+        let mut store = crate::lens::LensStore::open_for_project(&cwd_path)?;
+        store.record_applied_changes(None, "ct_tool_apply_patch", &changes)?;
         for change in &changes {
             match change.kind {
                 crate::apply_patch::ChangeType::Add => println!("A {}", change.path),

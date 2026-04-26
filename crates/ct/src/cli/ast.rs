@@ -201,7 +201,9 @@ pub(crate) fn sg_replace_apply(
         chunks: &chunks,
         candidates: &[],
     })?;
-    crate::apply_patch::apply(&patch, &root, false).map_err(|failure| failure.error.to_string())?;
+    let outcome = crate::apply_patch::apply(&patch, &root, false)
+        .map_err(|failure| failure.error.to_string())?;
+    store.record_applied_changes(None, "ct_ast_replace", &outcome.changes)?;
     Ok(())
 }
 

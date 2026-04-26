@@ -507,6 +507,20 @@ Set `dry_run` to true to preview the unified diff without writing."#
                         &input.patch,
                     );
                 }
+                if !dry_run {
+                    let mut store =
+                        crate::lens::LensStore::open_for_project(&cwd).map_err(|e| {
+                            ErrorData::internal_error(format!("open lens store: {e}"), None)
+                        })?;
+                    store
+                        .record_applied_changes(None, "ct_mcp_apply_patch", &outcome.changes)
+                        .map_err(|e| {
+                            ErrorData::internal_error(
+                                format!("record patch read coverage: {e}"),
+                                None,
+                            )
+                        })?;
+                }
                 let files: Vec<FileChangeOut> =
                     outcome.changes.iter().map(|c| to_out(c, dry_run)).collect();
                 super::json_success(&serde_json::json!({

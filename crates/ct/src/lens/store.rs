@@ -411,6 +411,96 @@ impl LensStore {
         Ok(())
     }
 
+    pub fn record_applied_changes(
+        &mut self,
+        session_id: Option<&str>,
+        tool: &str,
+        changes: &[crate::apply_patch::FileChange],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for change in changes {
+            if matches!(change.kind, crate::apply_patch::ChangeType::Delete) {
+                continue;
+            }
+            let path = change.move_path.as_deref().unwrap_or(&change.path);
+            if change.post_apply_regions.is_empty() {
+                if let Some(new_content) = &change.new_content {
+                    let line_count = new_content.lines().count().max(1) as i64;
+                    self.record_read(session_id, Path::new(path), 1, line_count)?;
+                }
+            } else {
+                for region in &change.post_apply_regions {
+                    if region.lines.is_empty() {
+                        continue;
+                    }
+                    let start = region.start_line as i64;
+                    let end = start + region.lines.len() as i64 - 1;
+                    self.record_read(session_id, Path::new(path), start, end)?;
+                }
+            }
+            self.record_patch_event(session_id, Path::new(path), tool, change)?;
+        }
+        Ok(())
+    }
+
+    fn record_patch_event(
+        &mut self,
+        session_id: Option<&str>,
+        path: &Path,
+        tool: &str,
+        change: &crate::apply_patch::FileChange,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if matches!(change.kind, crate::apply_patch::ChangeType::Delete) {
+            return Ok(());
+        }
+        let snapshot = self.file_snapshot(path)?;
+        let Some(new_hash) = snapshot.hash else {
+            return Ok(());
+        };
+        self.conn.execute(
+            "INSERT INTO files(project_id, rel_path, language, ignored, hash, mtime_ns, size_bytes, line_count)
+             VALUES(?1, ?2, ?3, 0, ?4, ?5, ?6, ?7)
+             ON CONFLICT(project_id, rel_path) DO UPDATE SET
+                language=excluded.language,
+                hash=excluded.hash,
+                mtime_ns=excluded.mtime_ns,
+                size_bytes=excluded.size_bytes,
+                line_count=excluded.line_count",
+            params![
+                self.project_id,
+                snapshot.rel_path,
+                snapshot.language,
+                new_hash,
+                snapshot.mtime_ns,
+                snapshot.size_bytes,
+                snapshot.line_count
+            ],
+        )?;
+        let file_id: i64 = self.conn.query_row(
+            "SELECT id FROM files WHERE project_id=?1 AND rel_path=?2",
+            params![self.project_id, snapshot.rel_path],
+            |row| row.get(0),
+        )?;
+        self.conn.execute(
+            "INSERT INTO patch_events(session_id, file_id, old_hash, new_hash, tool, accepted, created_at)
+             VALUES(?1, ?2, NULL, ?3, ?4, 1, ?5)",
+            params![session_id, file_id, new_hash, tool, now_ms()],
+        )?;
+        let patch_event_id = self.conn.last_insert_rowid();
+        for region in &change.post_apply_regions {
+            if region.lines.is_empty() {
+                continue;
+            }
+            let start = region.start_line as i64;
+            let end = start + region.lines.len() as i64 - 1;
+            self.conn.execute(
+                "INSERT INTO patch_hunks(patch_event_id, old_start, old_end, new_start, new_end)
+                 VALUES(?1, NULL, NULL, ?2, ?3)",
+                params![patch_event_id, start, end],
+            )?;
+        }
+        Ok(())
+    }
+
     fn covered_ranges(
         &self,
         session_id: Option<&str>,
