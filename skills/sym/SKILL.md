@@ -1,14 +1,20 @@
 ---
 name: sym
-description: "Tree-sitter indexed code navigator (ct sym CLI). Use INSTEAD OF Read/Grep/Glob/Bash when exploring existing code, understanding how something works, locating a symbol, tracing the call graph up (impact) or down (trace), finding implementations of an interface, scoping a diff to one symbol, or preparing to edit code you have not read yet. Triggers: 'how does X work', 'explain this class/file/symbol', 'walk me through X', 'what does X do', 'where is X defined', 'who calls X', 'what does X call', 'find implementations of', 'what breaks if I change X', 'outline this file', 'map imports', 'show me this symbol', exploring unfamiliar repo, tracing call graph, scoping diff to a symbol, preparing to edit code I haven't read, about to Read a file over ~500 lines to understand it. Do NOT use for: writing new code from scratch, editing prose or config, running tests, or when a stack trace already names the file and line."
+description: "Tree-sitter indexed code navigator. **Default to the `mcp__sym__*` tools** (search, show, outline, refs, impact, trace, impls, context, investigate, structure, diff) — they avoid shell quoting, return structured data, and bypass Bash hooks. The `ct sym` CLI is the fallback for shell pipelines (`outline --names | show --stdin`) and as the semantic reference for each operation. Use INSTEAD OF Read/Grep/Glob/Bash when exploring existing code, understanding how something works, locating a symbol, tracing the call graph up (impact) or down (trace), finding implementations of an interface, scoping a diff to one symbol, or preparing to edit code you have not read yet. Triggers: 'how does X work', 'explain this class/file/symbol', 'walk me through X', 'what does X do', 'where is X defined', 'who calls X', 'what does X call', 'find implementations of', 'what breaks if I change X', 'outline this file', 'map imports', 'show me this symbol', exploring unfamiliar repo, tracing call graph, scoping diff to a symbol, preparing to edit code I haven't read, about to Read a file over ~500 lines to understand it. Do NOT use for: writing new code from scratch, editing prose or config, running tests, or when a stack trace already names the file and line."
 ---
 
 # sym — code navigation
 
-Prefer native `sym` MCP/tool calls when available (`search`, `investigate`,
-`show`, `outline`, `refs`, `impact`, `trace`, `impls`, `context`,
-`structure`, `diff`). Use the `ct sym` CLI examples below as the fallback
-interface and as the exact semantic reference for each tool.
+**Default path: `mcp__sym__*` tools.** They have the same operation names as
+the CLI subcommands (`search`, `investigate`, `show`, `outline`, `refs`,
+`impact`, `trace`, `impls`, `context`, `structure`, `diff`), but accept
+structured arguments — no shell quoting, no rtk/Bash-hook interference, and
+the JSON shapes round-trip cleanly into the next call.
+
+**Fallback: `ct sym <cmd>` via Bash.** Only reach for the CLI when you need
+to pipe (`outline -s --names | show --stdin`), when you want quick `| grep`
+plumbing, or when the MCP tool isn't available in this session. Every CLI
+example below maps 1:1 to the MCP form.
 
 ## Default investigation loop
 
@@ -205,6 +211,7 @@ Run `ct sym structure` to surface the actual entry points and hotspots, then
 
 ## Don't
 
+- **Don't shell out to `ct sym` when the `mcp__sym__*` tool exists.** The MCP form avoids shell quoting, bypasses Bash hooks/rtk filtering, and returns structured data. CLI is the fallback for pipes (`outline --names | show --stdin`) or when MCP is unavailable.
 - **Don't `rg`/`grep`/`Read` for a symbol sym can resolve directly.** Use `search` → `investigate`/`show`.
 - **Don't `Read` a large (>500-line) file without `outline` first.** Outline it, then `show` the slice.
 - **Don't run `ct sym index` manually.** Every query auto-refreshes on staleness.
