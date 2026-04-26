@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use crate::cli::args::AstAction;
 
 pub fn run_ast(action: AstAction) -> Result<(), Box<dyn std::error::Error>> {
@@ -141,6 +143,13 @@ pub(crate) fn sg_replace_apply(
     lang: &str,
     paths: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let root = std::env::current_dir()?.canonicalize()?;
+    let temp = TempWorkspace::create()?;
+    let files = copy_workspace(&root, temp.path())?;
+    let temp_paths = paths
+        .iter()
+        .map(|path| path_for_temp(&root, path))
+        .collect::<Result<Vec<_>, _>>()?;
     let mut args = vec![
         "run".to_string(),
         "-p".to_string(),
@@ -151,11 +160,48 @@ pub(crate) fn sg_replace_apply(
         lang.to_string(),
         "--update-all".to_string(),
     ];
-    args.extend(paths.iter().cloned());
-    let output = std::process::Command::new("sg").args(args).output()?;
+    args.extend(temp_paths);
+    let output = std::process::Command::new("sg")
+        .args(args)
+        .current_dir(temp.path())
+        .output()?;
     if !output.status.success() {
         return Err(format!("sg failed: {}", String::from_utf8_lossy(&output.stderr)).into());
     }
+    let patch = patch_from_workspace_diff(&root, temp.path(), &files)?;
+    if patch.is_none() {
+        return Ok(());
+    }
+    let patch = patch.unwrap();
+    let patch_id = crate::apply_patch::sha1_hex(patch.as_bytes());
+    let chunks = crate::apply_patch::draft::chunk_plan(&patch)?
+        .into_iter()
+        .map(|chunk| crate::lens::PatchDraftChunk {
+            chunk_index: chunk.chunk_index,
+            file_path: chunk.file_path,
+            change_type: chunk.change_type,
+            status: "applicable".to_string(),
+            old_start: chunk.old_start,
+            old_end: chunk.old_end,
+            new_start: chunk.new_start,
+            new_end: chunk.new_end,
+            error_kind: None,
+            error_message: None,
+        })
+        .collect::<Vec<_>>();
+    crate::apply_patch::apply(&patch, &root, true).map_err(|failure| failure.error.to_string())?;
+    let mut store = crate::lens::LensStore::open_for_project(&root)?;
+    store.create_patch_draft(crate::lens::store::NewPatchDraft {
+        id: &patch_id,
+        cwd: &root.to_string_lossy(),
+        session_id: None,
+        status: "applicable",
+        patch_sha: &patch_id,
+        body: &patch,
+        chunks: &chunks,
+        candidates: &[],
+    })?;
+    crate::apply_patch::apply(&patch, &root, false).map_err(|failure| failure.error.to_string())?;
     Ok(())
 }
 
@@ -171,4 +217,129 @@ fn run_sg_json(args: Vec<String>) -> Result<serde_json::Value, Box<dyn std::erro
 fn print_output(_json: bool, value: &serde_json::Value) -> Result<(), Box<dyn std::error::Error>> {
     println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
+}
+
+struct TempWorkspace {
+    path: PathBuf,
+}
+
+impl TempWorkspace {
+    fn create() -> Result<Self, Box<dyn std::error::Error>> {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "ct-ast-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&path)?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempWorkspace {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+fn copy_workspace(root: &Path, temp: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let files = workspace_files(root)?;
+    let mut copied = Vec::new();
+    for rel in &files {
+        let source = root.join(rel);
+        if !source.is_file() {
+            continue;
+        }
+        let target = temp.join(rel);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(source, target)?;
+        copied.push(rel.clone());
+    }
+    Ok(copied)
+}
+
+fn workspace_files(root: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let output = std::process::Command::new("git")
+        .args(["ls-files", "-co", "--exclude-standard"])
+        .current_dir(root)
+        .output()?;
+    if !output.status.success() {
+        return Err("ct ast replace --apply currently requires a git worktree".into());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+fn path_for_temp(root: &Path, path: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let path = PathBuf::from(path);
+    if path.is_absolute() {
+        Ok(path.strip_prefix(root)?.to_string_lossy().to_string())
+    } else {
+        Ok(path.to_string_lossy().to_string())
+    }
+}
+
+fn patch_from_workspace_diff(
+    root: &Path,
+    temp: &Path,
+    files: &[String],
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let mut body = String::from("*** Begin Patch\n");
+    let mut changed = false;
+    for rel in files {
+        let old = std::fs::read_to_string(root.join(rel));
+        let new = std::fs::read_to_string(temp.join(rel));
+        let (Ok(old), Ok(new)) = (old, new) else {
+            continue;
+        };
+        if old == new {
+            continue;
+        }
+        changed = true;
+        body.push_str(&update_patch_for_file(rel, &old, &new));
+    }
+    if !changed {
+        return Ok(None);
+    }
+    body.push_str("*** End Patch\n");
+    if body.len() > crate::apply_patch::MAX_PATCH_SIZE_BYTES {
+        return Err(format!(
+            "generated patch exceeds {} byte limit",
+            crate::apply_patch::MAX_PATCH_SIZE_BYTES
+        )
+        .into());
+    }
+    Ok(Some(body))
+}
+
+fn update_patch_for_file(path: &str, old: &str, new: &str) -> String {
+    let diff = similar::TextDiff::from_lines(old, new);
+    let mut out = format!("*** Update File: {path}\n");
+    for group in diff.grouped_ops(3) {
+        out.push_str("@@\n");
+        for op in group {
+            for change in diff.iter_changes(&op) {
+                let prefix = match change.tag() {
+                    similar::ChangeTag::Delete => '-',
+                    similar::ChangeTag::Insert => '+',
+                    similar::ChangeTag::Equal => ' ',
+                };
+                out.push(prefix);
+                out.push_str(change.value().trim_end_matches('\n').trim_end_matches('\r'));
+                out.push('\n');
+            }
+        }
+    }
+    out
 }
