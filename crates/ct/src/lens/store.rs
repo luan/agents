@@ -3,7 +3,7 @@ use std::path::Path;
 use rusqlite::{Connection, params};
 
 use super::paths;
-use super::types::{PatchDraftChunk, PatchDraftSummary};
+use super::types::{PatchCandidate, PatchDraftChunk, PatchDraftSummary};
 
 const SCHEMA_VERSION: i32 = 2;
 
@@ -185,6 +185,7 @@ pub struct NewPatchDraft<'a> {
     pub patch_sha: &'a str,
     pub body: &'a str,
     pub chunks: &'a [PatchDraftChunk],
+    pub candidates: &'a [PatchCandidate],
 }
 
 impl LensStore {
@@ -279,6 +280,10 @@ impl LensStore {
             "DELETE FROM patch_draft_chunks WHERE patch_id = ?1",
             params![draft.id],
         )?;
+        tx.execute(
+            "DELETE FROM patch_draft_candidates WHERE patch_id = ?1",
+            params![draft.id],
+        )?;
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO patch_draft_chunks
@@ -298,6 +303,25 @@ impl LensStore {
                     chunk.new_end,
                     chunk.error_kind,
                     chunk.error_message,
+                ])?;
+            }
+        }
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO patch_draft_candidates
+                 (patch_id, chunk_index, line, suggested_anchor, enclosing_symbol, enclosing_kind, symbol_start, symbol_end)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            )?;
+            for candidate in draft.candidates {
+                stmt.execute(params![
+                    draft.id,
+                    candidate.chunk_index,
+                    candidate.line,
+                    candidate.suggested_anchor,
+                    candidate.enclosing_symbol,
+                    candidate.enclosing_kind,
+                    candidate.symbol_start,
+                    candidate.symbol_end,
                 ])?;
             }
         }
@@ -355,6 +379,27 @@ impl LensStore {
                 new_end: row.get(7)?,
                 error_kind: row.get(8)?,
                 error_message: row.get(9)?,
+            })
+        })?
+        .collect()
+    }
+
+    pub fn patch_draft_candidates(&self, id: &str) -> Result<Vec<PatchCandidate>, rusqlite::Error> {
+        let mut stmt = self.conn.prepare(
+            "SELECT chunk_index, line, suggested_anchor, enclosing_symbol, enclosing_kind, symbol_start, symbol_end
+             FROM patch_draft_candidates
+             WHERE patch_id = ?1
+             ORDER BY chunk_index ASC, line ASC",
+        )?;
+        stmt.query_map(params![id], |row| {
+            Ok(PatchCandidate {
+                chunk_index: row.get(0)?,
+                line: row.get(1)?,
+                suggested_anchor: row.get(2)?,
+                enclosing_symbol: row.get(3)?,
+                enclosing_kind: row.get(4)?,
+                symbol_start: row.get(5)?,
+                symbol_end: row.get(6)?,
             })
         })?
         .collect()

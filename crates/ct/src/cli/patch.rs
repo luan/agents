@@ -2,7 +2,7 @@ use std::io::IsTerminal;
 use std::io::Read;
 
 use crate::cli::args::{PatchAction, PatchDraftAction};
-use crate::lens::PatchDraftChunk;
+use crate::lens::{PatchCandidate, PatchDraftChunk};
 
 pub fn run_patch(action: PatchAction) -> Result<(), Box<dyn std::error::Error>> {
     match action {
@@ -52,14 +52,16 @@ fn create(cwd: Option<String>, json: bool) -> Result<(), Box<dyn std::error::Err
     let root = std::path::PathBuf::from(&cwd).canonicalize()?;
     let patch_id = crate::apply_patch::sha1_hex(body.as_bytes());
     let mut chunks = draft_chunks(&body)?;
-    let (status, error_kind, error_message) = match crate::apply_patch::apply(&body, &root, true) {
-        Ok(_) => ("applicable", None, None),
-        Err(failure) => (
-            "blocked",
-            Some(crate::apply_patch::draft::error_kind(&failure.error).to_string()),
-            Some(failure.error.to_string()),
-        ),
-    };
+    let (status, error_kind, error_message, candidates) =
+        match crate::apply_patch::apply(&body, &root, true) {
+            Ok(_) => ("applicable", None, None, Vec::new()),
+            Err(failure) => (
+                "blocked",
+                Some(crate::apply_patch::draft::error_kind(&failure.error).to_string()),
+                Some(failure.error.to_string()),
+                patch_candidates(&failure.error, &root),
+            ),
+        };
     for chunk in &mut chunks {
         chunk.status = status.to_string();
         if status == "blocked" {
@@ -77,6 +79,7 @@ fn create(cwd: Option<String>, json: bool) -> Result<(), Box<dyn std::error::Err
         patch_sha: &patch_id,
         body: &body,
         chunks: &chunks,
+        candidates: &candidates,
     })?;
     print_out(
         json,
@@ -86,7 +89,8 @@ fn create(cwd: Option<String>, json: bool) -> Result<(), Box<dyn std::error::Err
             "status": summary.status,
             "body_bytes": summary.body_bytes,
             "stored": true,
-            "chunks": chunks
+            "chunks": chunks,
+            "candidates": candidates
         }),
     )
 }
@@ -100,12 +104,14 @@ fn status(patch_id: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> 
             "status": summary.status,
             "patch_sha": summary.patch_sha,
             "body_bytes": summary.body_bytes,
-            "chunks": store.patch_draft_chunks(patch_id)?
+            "chunks": store.patch_draft_chunks(patch_id)?,
+            "candidates": store.patch_draft_candidates(patch_id)?
         }),
         None => serde_json::json!({
             "patch_id": patch_id,
             "status": "not_found",
-            "chunks": []
+            "chunks": [],
+            "candidates": []
         }),
     };
     print_out(json, &out)
@@ -118,14 +124,8 @@ fn show(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let root = std::env::current_dir()?;
     let store = crate::lens::LensStore::open_for_project(&root)?;
-    let chunks = store.patch_draft_chunks(patch_id)?;
-    let selected = match chunk {
-        Some(index) => chunks
-            .into_iter()
-            .filter(|item| item.chunk_index == index as i64)
-            .collect::<Vec<_>>(),
-        None => chunks,
-    };
+    let chunks = select_chunk(store.patch_draft_chunks(patch_id)?, chunk);
+    let candidates = select_candidate(store.patch_draft_candidates(patch_id)?, chunk);
     let body = if chunk.is_none() {
         store.patch_draft_body(patch_id)?
     } else {
@@ -136,7 +136,8 @@ fn show(
         &serde_json::json!({
             "patch_id": patch_id,
             "chunk": chunk,
-            "chunks": selected,
+            "chunks": chunks,
+            "candidates": candidates,
             "body": body
         }),
     )
@@ -186,7 +187,8 @@ fn apply(patch_id: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
                 "applied": false,
                 "status": "blocked",
                 "error_kind": crate::apply_patch::draft::error_kind(&failure.error),
-                "error": failure.error.to_string()
+                "error": failure.error.to_string(),
+                "candidates": patch_candidates(&failure.error, &root)
             }),
         ),
     }
@@ -206,6 +208,26 @@ fn discard(patch_id: &str, json: bool) -> Result<(), Box<dyn std::error::Error>>
     )
 }
 
+fn select_chunk(chunks: Vec<PatchDraftChunk>, chunk: Option<usize>) -> Vec<PatchDraftChunk> {
+    match chunk {
+        Some(index) => chunks
+            .into_iter()
+            .filter(|item| item.chunk_index == index as i64)
+            .collect(),
+        None => chunks,
+    }
+}
+
+fn select_candidate(candidates: Vec<PatchCandidate>, chunk: Option<usize>) -> Vec<PatchCandidate> {
+    match chunk {
+        Some(index) => candidates
+            .into_iter()
+            .filter(|item| item.chunk_index == index as i64)
+            .collect(),
+        None => candidates,
+    }
+}
+
 fn draft_chunks(body: &str) -> Result<Vec<PatchDraftChunk>, Box<dyn std::error::Error>> {
     Ok(crate::apply_patch::draft::chunk_plan(body)?
         .into_iter()
@@ -222,6 +244,105 @@ fn draft_chunks(body: &str) -> Result<Vec<PatchDraftChunk>, Box<dyn std::error::
             error_message: chunk.error_message,
         })
         .collect())
+}
+
+fn patch_candidates(
+    error: &crate::apply_patch::ApplyPatchError,
+    root: &std::path::Path,
+) -> Vec<PatchCandidate> {
+    let crate::apply_patch::ApplyPatchError::AmbiguousContext {
+        path,
+        chunk,
+        candidates,
+        ..
+    } = error
+    else {
+        return Vec::new();
+    };
+    let abs = root.join(path);
+    let Ok(content) = std::fs::read_to_string(&abs) else {
+        return candidates
+            .iter()
+            .map(|line| simple_candidate(*chunk as i64, *line as i64, None))
+            .collect();
+    };
+    let lines = content.lines().collect::<Vec<_>>();
+    candidates
+        .iter()
+        .map(|line| semantic_candidate(*chunk as i64, *line as i64, &lines))
+        .collect()
+}
+
+fn semantic_candidate(chunk_index: i64, line: i64, lines: &[&str]) -> PatchCandidate {
+    let idx = line.saturating_sub(1) as usize;
+    let start = idx.saturating_sub(40);
+    for cursor in (start..=idx.min(lines.len().saturating_sub(1))).rev() {
+        let trimmed = lines[cursor].trim();
+        if looks_like_symbol_anchor(trimmed) {
+            return PatchCandidate {
+                chunk_index,
+                line,
+                suggested_anchor: Some(format!("@@ {trimmed}")),
+                enclosing_symbol: symbol_name(trimmed),
+                enclosing_kind: symbol_kind(trimmed).map(str::to_string),
+                symbol_start: Some((cursor + 1) as i64),
+                symbol_end: None,
+            };
+        }
+    }
+    let anchor = lines.get(idx).map(|line| format!("@@ {}", line.trim()));
+    simple_candidate(chunk_index, line, anchor)
+}
+
+fn simple_candidate(
+    chunk_index: i64,
+    line: i64,
+    suggested_anchor: Option<String>,
+) -> PatchCandidate {
+    PatchCandidate {
+        chunk_index,
+        line,
+        suggested_anchor,
+        enclosing_symbol: None,
+        enclosing_kind: None,
+        symbol_start: None,
+        symbol_end: None,
+    }
+}
+
+fn looks_like_symbol_anchor(line: &str) -> bool {
+    line.starts_with("fn ")
+        || line.starts_with("pub fn ")
+        || line.starts_with("async fn ")
+        || line.starts_with("pub async fn ")
+        || line.starts_with("impl ")
+        || line.starts_with("class ")
+        || line.starts_with("function ")
+        || line.starts_with("export function ")
+}
+
+fn symbol_kind(line: &str) -> Option<&'static str> {
+    if line.contains("fn ") || line.contains("function ") {
+        Some("function")
+    } else if line.starts_with("impl ") {
+        Some("impl")
+    } else if line.starts_with("class ") {
+        Some("class")
+    } else {
+        None
+    }
+}
+
+fn symbol_name(line: &str) -> Option<String> {
+    for marker in ["fn ", "function ", "class ", "impl "] {
+        if let Some(rest) = line.split_once(marker).map(|(_, rest)| rest) {
+            return rest
+                .split(|ch: char| !(ch.is_alphanumeric() || ch == '_'))
+                .find(|part| !part.is_empty())
+                .map(str::to_string);
+        }
+    }
+    None
 }
 
 fn print_out(_json: bool, value: &serde_json::Value) -> Result<(), Box<dyn std::error::Error>> {
