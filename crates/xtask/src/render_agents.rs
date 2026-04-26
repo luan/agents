@@ -30,10 +30,10 @@ pub fn run() -> Result<()> {
     let rules_block = render_rules(&rules_dir, &root)?;
     let new_output = format!("{before}{BEGIN}\n{rules_block}{END}{after}");
 
-    if let Ok(existing) = fs::read_to_string(&output_path) {
-        if existing == new_output {
-            return Ok(());
-        }
+    if let Ok(existing) = fs::read_to_string(&output_path)
+        && existing == new_output
+    {
+        return Ok(());
     }
     fs::write(&output_path, new_output)
         .with_context(|| format!("write {}", output_path.display()))?;

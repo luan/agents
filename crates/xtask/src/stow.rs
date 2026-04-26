@@ -298,11 +298,11 @@ fn cleanup_legacy_bin_links(root: &Path, home: &Path) {
         }
         match fs::canonicalize(&link) {
             Ok(resolved) => {
-                if let Ok(canon_repo) = fs::canonicalize(&repo_bin) {
-                    if resolved.starts_with(&canon_repo) {
-                        eprintln!("- unlink legacy {}", link.display());
-                        let _ = fs::remove_file(&link);
-                    }
+                if let Ok(canon_repo) = fs::canonicalize(&repo_bin)
+                    && resolved.starts_with(&canon_repo)
+                {
+                    eprintln!("- unlink legacy {}", link.display());
+                    let _ = fs::remove_file(&link);
                 }
             }
             Err(_) => {
