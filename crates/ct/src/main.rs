@@ -7,6 +7,7 @@ mod cochanges;
 mod gitcontext;
 mod hook;
 pub mod lens;
+mod lsp;
 mod mcp;
 mod notify;
 mod phases;
