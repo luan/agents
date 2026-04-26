@@ -187,7 +187,7 @@ class ApplyPatchDiffView {
 		while (bodyLines.length > 0 && bodyLines[0].trim() === "") {
 			bodyLines.shift();
 		}
-		while (bodyLines.length > 0 && bodyLines[bodyLines.length - 1].trim() === "") {
+		while (bodyLines.at(-1)?.trim() === "") {
 			bodyLines.pop();
 		}
 		const content = bodyLines.length > 0 ? bodyLines : [this.theme.fg("muted", "(no diff)")];

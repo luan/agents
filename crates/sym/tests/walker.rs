@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use sym::lang;
-use sym::walker::{WalkOptions, walk};
+use sym::walker::{WalkOptions, is_allowed_path, walk, walk_with_languages};
 use tempfile::TempDir;
 
 #[test]
@@ -85,6 +85,46 @@ fn walk_respects_custom_ignore_patterns() -> Result<()> {
     assert!(!rel_paths.contains(&PathBuf::from("generated/skip_me.go")));
     assert!(!rel_paths.contains(&PathBuf::from("frontend/app.ts")));
     assert!(rel_paths.contains(&PathBuf::from("src/main.go")));
+
+    Ok(())
+}
+
+#[test]
+fn allowed_path_uses_same_ignore_rules_as_walk() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let options = WalkOptions {
+        parseable_only: false,
+        ignore: vec!["generated".to_string()],
+    };
+
+    assert!(is_allowed_path(
+        fixture.root(),
+        Path::new("src/main.go"),
+        &options
+    )?);
+    assert!(!is_allowed_path(
+        fixture.root(),
+        Path::new("generated/skip_me.go"),
+        &options
+    )?);
+    assert!(!is_allowed_path(
+        fixture.root(),
+        Path::new("node_modules/pkg/index.js"),
+        &options
+    )?);
+
+    Ok(())
+}
+
+#[test]
+fn walk_with_languages_matches_walk() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let options = WalkOptions::default();
+
+    assert_eq!(
+        walk(fixture.root(), &options)?,
+        walk_with_languages(fixture.root(), &options)?
+    );
 
     Ok(())
 }

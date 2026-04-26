@@ -500,9 +500,11 @@ fn archived_dive_is_listable() {
 
         let archived = list_archived_artifacts(ArtifactKind::Spec);
         assert!(
-            archived
-                .iter()
-                .any(|a| a.path.to_string_lossy().replace('\\', "/").contains("archive/dive")),
+            archived.iter().any(|a| a
+                .path
+                .to_string_lossy()
+                .replace('\\', "/")
+                .contains("archive/dive")),
             "archived dive must be visible in list_archived_artifacts; got: {:?}",
             archived
                 .iter()
@@ -527,7 +529,10 @@ fn resolve_artifact_path_finds_dive_by_bare_stem() {
         let resolved = resolve_artifact_path("20260411-hub-detail", ArtifactKind::Spec)
             .expect("resolve dive stem");
         assert!(
-            resolved.to_string_lossy().replace('\\', "/").contains("dive/"),
+            resolved
+                .to_string_lossy()
+                .replace('\\', "/")
+                .contains("dive/"),
             "resolved path must be inside dive/; got: {}",
             resolved.display()
         );

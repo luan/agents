@@ -1,14 +1,8 @@
-import { spawn } from "node:child_process";
-
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { Type } from "typebox";
 
-type CtResult = {
-	stdout: string;
-	stderr: string;
-	exitCode: number;
-};
+import { type CtResult, formatCommand, runCommand } from "../shared/ct-runner.ts";
 
 type SymDetails = {
 	operation: string;
@@ -111,42 +105,6 @@ const ctSymDiffSchema = Type.Object({
 	stat: Type.Optional(Type.Boolean({ description: "Return diffstat instead of full diff" })),
 	...commonOptions,
 });
-
-function runCommand(command: string, args: string[], cwd: string, signal?: AbortSignal): Promise<CtResult> {
-	return new Promise((resolve, reject) => {
-		const child = spawn(command, args, { cwd, env: process.env, stdio: ["ignore", "pipe", "pipe"] });
-		const stdoutChunks: Buffer[] = [];
-		const stderrChunks: Buffer[] = [];
-
-		child.stdout.on("data", (chunk) => stdoutChunks.push(Buffer.from(chunk)));
-		child.stderr.on("data", (chunk) => stderrChunks.push(Buffer.from(chunk)));
-		child.on("error", (error) => {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-				reject(new Error(`${command} not found on PATH`));
-				return;
-			}
-			reject(error);
-		});
-
-		const onAbort = () => child.kill();
-		signal?.addEventListener("abort", onAbort, { once: true });
-
-		child.on("close", (exitCode) => {
-			signal?.removeEventListener("abort", onAbort);
-			const stdout = Buffer.concat(stdoutChunks).toString("utf8");
-			const stderr = Buffer.concat(stderrChunks).toString("utf8");
-			if (exitCode === 0) {
-				resolve({ stdout, stderr, exitCode: 0 });
-				return;
-			}
-			reject(new Error(`${formatCommand(command, args)} failed with exit code ${exitCode ?? 1}${stderr.trim() ? `: ${stderr.trim()}` : ""}`));
-		});
-	});
-}
-
-function formatCommand(command: string, args: string[]): string {
-	return [command, ...args.map((arg) => (/[\s\t]/.test(arg) ? JSON.stringify(arg) : arg))].join(" ");
-}
 
 function pushFlag(args: string[], enabled: unknown, flag: string) {
 	if (enabled === true) args.push(flag);

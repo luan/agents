@@ -79,8 +79,7 @@ fn process_package(mode: Mode, source: &Path, target: &Path) -> Result<()> {
     }
 
     if mode == Mode::Link {
-        fs::create_dir_all(target)
-            .with_context(|| format!("mkdir -p {}", target.display()))?;
+        fs::create_dir_all(target).with_context(|| format!("mkdir -p {}", target.display()))?;
     }
 
     for source_entry in iter_children(source)? {
@@ -190,10 +189,7 @@ fn act_dry_run(source: &Path, target: &Path) -> Result<()> {
             }
         }
         Ok(_) => {
-            bail!(
-                "{} already exists and is not a symlink",
-                target.display()
-            );
+            bail!("{} already exists and is not a symlink", target.display());
         }
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
             eprintln!(
@@ -217,8 +213,7 @@ fn act_unlink(source: &Path, target: &Path) -> Result<()> {
                 .with_context(|| format!("canonicalize {}", source.display()))?;
             let existing_canon = fs::canonicalize(target).ok();
             if existing_canon.as_deref() == Some(source_canon.as_path()) {
-                remove_symlink(target)
-                    .with_context(|| format!("remove {}", target.display()))?;
+                remove_symlink(target).with_context(|| format!("remove {}", target.display()))?;
                 eprintln!("  - {}", target.display());
             } else {
                 eprintln!(
@@ -266,16 +261,15 @@ fn remove_symlink(target: &Path) -> std::io::Result<()> {
 
 #[cfg(unix)]
 fn create_symlink(source: &Path, target: &Path) -> Result<()> {
-    std::os::unix::fs::symlink(source, target).with_context(|| {
-        format!("symlink {} -> {}", target.display(), source.display())
-    })
+    std::os::unix::fs::symlink(source, target)
+        .with_context(|| format!("symlink {} -> {}", target.display(), source.display()))
 }
 
 #[cfg(windows)]
 fn create_symlink(source: &Path, target: &Path) -> Result<()> {
     use std::os::windows::fs::{symlink_dir, symlink_file};
-    let meta = fs::metadata(source)
-        .with_context(|| format!("stat target of {}", source.display()))?;
+    let meta =
+        fs::metadata(source).with_context(|| format!("stat target of {}", source.display()))?;
     let res = if meta.is_dir() {
         symlink_dir(source, target)
     } else {

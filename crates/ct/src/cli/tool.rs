@@ -176,3 +176,25 @@ pub fn run_apply_patch(
     }
     Ok(())
 }
+
+pub fn run_usage_bar(width: usize) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::IsTerminal;
+    use std::io::Read;
+
+    if std::io::stdin().is_terminal() {
+        eprintln!("usage-bar: expected JSON request on stdin");
+        std::process::exit(1);
+    }
+
+    let mut buf = String::new();
+    std::io::stdin().lock().read_to_string(&mut buf)?;
+
+    let mut req: usage_bars::RenderRequest =
+        serde_json::from_str(&buf).map_err(|e| format!("usage-bar: invalid JSON: {e}"))?;
+    req.width = width;
+
+    for line in usage_bars::render(&req) {
+        println!("{line}");
+    }
+    Ok(())
+}

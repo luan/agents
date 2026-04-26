@@ -1,4 +1,5 @@
 use clap::Subcommand;
+use clap::ValueEnum;
 use clap_complete::Shell;
 
 use crate::artifact::ArtifactKind;
@@ -165,6 +166,252 @@ pub enum McpAction {
 
     #[command(about = "Serve the sym MCP over stdio")]
     Sym,
+
+    #[command(about = "Serve the ast MCP over stdio")]
+    Ast,
+
+    #[command(about = "Serve the lens MCP over stdio")]
+    Lens,
+
+    #[command(about = "Serve the lsp MCP over stdio")]
+    Lsp,
+}
+
+#[derive(Subcommand)]
+pub enum AstAction {
+    #[command(about = "Search code using AST-aware patterns")]
+    Search {
+        #[arg(long, help = "AST pattern to search for")]
+        pattern: String,
+        #[arg(long, help = "Target language")]
+        lang: String,
+        #[arg(long = "path", help = "Paths/globs to search")]
+        paths: Vec<String>,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+        #[arg(long, help = "Extract this selector")]
+        selector: Option<String>,
+        #[arg(long, help = "Context lines around matches")]
+        context: Option<usize>,
+        #[arg(long, help = "Include ignored files explicitly")]
+        include_ignored: bool,
+    },
+
+    #[command(about = "Replace code using AST-aware patterns")]
+    Replace {
+        #[arg(long, help = "AST pattern to match")]
+        pattern: String,
+        #[arg(long, help = "Replacement using metavariables")]
+        rewrite: String,
+        #[arg(long, help = "Target language")]
+        lang: String,
+        #[arg(long = "path", help = "Paths/globs to search")]
+        paths: Vec<String>,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+        #[arg(long, help = "Apply changes; default is dry-run")]
+        apply: bool,
+        #[arg(long, help = "Include ignored files explicitly")]
+        include_ignored: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum LspAction {
+    #[command(about = "Run an LSP navigation request")]
+    Request {
+        #[arg(long, help = "Operation name")]
+        operation: String,
+        #[arg(long, help = "File path")]
+        file_path: Option<String>,
+        #[arg(long, help = "1-based line")]
+        line: Option<usize>,
+        #[arg(long, help = "1-based character")]
+        character: Option<usize>,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+        #[arg(long, help = "Workspace symbol query")]
+        query: Option<String>,
+        #[arg(long, help = "New symbol name for rename")]
+        new_name: Option<String>,
+    },
+
+    #[command(about = "Collect LSP diagnostics")]
+    Diagnostics {
+        #[arg(long, help = "Optional file path")]
+        file_path: Option<String>,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum LensAction {
+    #[command(about = "Show lens state status")]
+    Status {
+        #[arg(long, help = "Working directory")]
+        cwd: Option<String>,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+        #[arg(long, help = "Include disk usage")]
+        disk: bool,
+    },
+
+    #[command(about = "Inspect lens diagnostics")]
+    Diagnostics {
+        #[command(subcommand)]
+        action: LensDiagnosticsAction,
+    },
+
+    #[command(about = "Record read coverage")]
+    Read {
+        #[command(subcommand)]
+        action: LensReadAction,
+    },
+
+    #[command(about = "Check edit guard decisions")]
+    Guard {
+        #[command(subcommand)]
+        action: LensGuardAction,
+    },
+
+    #[command(about = "Prune lens state")]
+    Prune {
+        #[arg(long, help = "Working directory")]
+        cwd: Option<String>,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+        #[arg(long, help = "Preview without deleting")]
+        dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum LensDiagnosticsAction {
+    #[command(about = "List diagnostics")]
+    List {
+        #[arg(long, help = "Working directory")]
+        cwd: Option<String>,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+        #[arg(long, help = "Optional path filter")]
+        path: Option<String>,
+        #[arg(long, help = "Show all diagnostics")]
+        all: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum LensReadAction {
+    #[command(about = "Record a read range")]
+    Record {
+        #[arg(long, help = "Working directory")]
+        cwd: Option<String>,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+        #[arg(long, help = "Path read")]
+        path: String,
+        #[arg(long, help = "Start line")]
+        start_line: i64,
+        #[arg(long, help = "End line")]
+        end_line: i64,
+        #[arg(long, help = "Session id")]
+        session: Option<String>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum GuardAction {
+    Off,
+    Warn,
+    Block,
+}
+
+#[derive(Subcommand)]
+pub enum LensGuardAction {
+    #[command(about = "Check whether an edit range is covered")]
+    Check {
+        #[arg(long, help = "Working directory")]
+        cwd: Option<String>,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+        #[arg(long, help = "Path to edit")]
+        path: String,
+        #[arg(long, help = "Start line")]
+        start_line: i64,
+        #[arg(long, help = "End line")]
+        end_line: i64,
+        #[arg(long, help = "Session id")]
+        session: Option<String>,
+        #[arg(long, value_enum, default_value_t = GuardAction::Warn)]
+        mode: GuardAction,
+    },
+
+    #[command(about = "Allow one edit despite guard findings")]
+    AllowOnce {
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+        #[arg(long, help = "Path to allow")]
+        path: String,
+        #[arg(long, help = "Session id")]
+        session: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum PatchAction {
+    #[command(about = "Manage durable patch drafts")]
+    Draft {
+        #[command(subcommand)]
+        action: PatchDraftAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum PatchDraftAction {
+    #[command(about = "Create a patch draft from stdin")]
+    Create {
+        #[arg(long, help = "Working directory")]
+        cwd: Option<String>,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+    },
+    #[command(about = "Show patch draft status")]
+    Status {
+        patch_id: String,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+    },
+    #[command(about = "Show a patch draft or chunk")]
+    Show {
+        patch_id: String,
+        #[arg(long, help = "Chunk index")]
+        chunk: Option<usize>,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+    },
+    #[command(about = "Amend a patch draft chunk")]
+    Amend {
+        patch_id: String,
+        #[arg(long, help = "Chunk index")]
+        chunk: usize,
+        #[arg(long, help = "Replacement anchor")]
+        anchor: Option<String>,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+    },
+    #[command(about = "Apply a patch draft atomically")]
+    Apply {
+        patch_id: String,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+    },
+    #[command(about = "Discard a patch draft")]
+    Discard {
+        patch_id: String,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]

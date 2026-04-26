@@ -108,8 +108,8 @@ fn install_plugin(
         .path
         .as_deref()
         .with_context(|| format!("plugin {} missing source.path", plugin.name))?;
-    let source_path = fs::canonicalize(root.join(rel))
-        .with_context(|| format!("resolve plugin path {}", rel))?;
+    let source_path =
+        fs::canonicalize(root.join(rel)).with_context(|| format!("resolve plugin path {}", rel))?;
 
     let manifest_path = manifest_path(&source_path)?;
     let manifest: PluginManifest = serde_json::from_str(
@@ -137,8 +137,7 @@ fn install_plugin(
         .parent()
         .context("plugin target has no parent")?
         .to_path_buf();
-    fs::create_dir_all(&parent)
-        .with_context(|| format!("mkdir -p {}", parent.display()))?;
+    fs::create_dir_all(&parent).with_context(|| format!("mkdir -p {}", parent.display()))?;
 
     let tmp = parent.join(format!(".{}.tmp", file_name(&target)?));
     let backup = parent.join(format!(".{}.old", file_name(&target)?));
@@ -147,11 +146,9 @@ fn install_plugin(
     copy_tree(&source_path, &tmp)?;
     let _ = fs::remove_dir_all(&backup);
     if target.exists() || fs::symlink_metadata(&target).is_ok() {
-        fs::rename(&target, &backup)
-            .with_context(|| format!("backup {}", target.display()))?;
+        fs::rename(&target, &backup).with_context(|| format!("backup {}", target.display()))?;
     }
-    fs::rename(&tmp, &target)
-        .with_context(|| format!("install {}", target.display()))?;
+    fs::rename(&tmp, &target).with_context(|| format!("install {}", target.display()))?;
     let _ = fs::remove_dir_all(&backup);
 
     println!(
@@ -198,18 +195,14 @@ fn file_name(p: &Path) -> Result<String> {
 }
 
 fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
-    let meta = fs::symlink_metadata(src)
-        .with_context(|| format!("stat {}", src.display()))?;
+    let meta = fs::symlink_metadata(src).with_context(|| format!("stat {}", src.display()))?;
     if meta.file_type().is_symlink() {
         copy_symlink(src, dst)?;
         return Ok(());
     }
     if meta.is_dir() {
-        fs::create_dir_all(dst)
-            .with_context(|| format!("mkdir -p {}", dst.display()))?;
-        for entry in fs::read_dir(src)
-            .with_context(|| format!("read_dir {}", src.display()))?
-        {
+        fs::create_dir_all(dst).with_context(|| format!("mkdir -p {}", dst.display()))?;
+        for entry in fs::read_dir(src).with_context(|| format!("read_dir {}", src.display()))? {
             let entry = entry?;
             copy_tree(&entry.path(), &dst.join(entry.file_name()))?;
         }
@@ -222,8 +215,7 @@ fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
 
 #[cfg(unix)]
 fn copy_symlink(src: &Path, dst: &Path) -> Result<()> {
-    let target = fs::read_link(src)
-        .with_context(|| format!("read_link {}", src.display()))?;
+    let target = fs::read_link(src).with_context(|| format!("read_link {}", src.display()))?;
     std::os::unix::fs::symlink(&target, dst)
         .with_context(|| format!("symlink {} -> {}", dst.display(), target.display()))?;
     Ok(())
@@ -231,8 +223,7 @@ fn copy_symlink(src: &Path, dst: &Path) -> Result<()> {
 
 #[cfg(not(unix))]
 fn copy_symlink(src: &Path, dst: &Path) -> Result<()> {
-    let target = fs::read_link(src)
-        .with_context(|| format!("read_link {}", src.display()))?;
+    let target = fs::read_link(src).with_context(|| format!("read_link {}", src.display()))?;
     if target.is_dir() {
         std::os::windows::fs::symlink_dir(&target, dst)?;
     } else {

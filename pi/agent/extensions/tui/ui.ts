@@ -87,17 +87,12 @@ export function patchUserMessageComponent(uiTheme: Theme): void {
     }
 
     styledLines[0] = OSC133_ZONE_START + styledLines[0];
-    styledLines[styledLines.length - 1] =
-      styledLines[styledLines.length - 1] +
-      OSC133_ZONE_END +
-      OSC133_ZONE_FINAL;
+    styledLines[styledLines.length - 1] += OSC133_ZONE_END + OSC133_ZONE_FINAL;
     return [...leadingLines, ...styledLines];
   };
 }
 
 export class PolishedEditor extends CustomEditor {
-  private readonly getModelMeta: () => string;
-  private readonly getThinkingLevel: () => string | undefined;
   private readonly uiTheme: Theme;
 
   constructor(
@@ -105,14 +100,10 @@ export class PolishedEditor extends CustomEditor {
     theme: EditorTheme,
     keybindings: KeybindingsManager,
     uiTheme: Theme,
-    getModelMeta: () => string,
-    getThinkingLevel: () => string | undefined,
   ) {
     super(tui, theme, keybindings, { paddingX: 0 });
     this.borderColor = (text: string) => uiTheme.fg("border", text);
     this.uiTheme = uiTheme;
-    this.getModelMeta = getModelMeta;
-    this.getThinkingLevel = getThinkingLevel;
   }
 
   /**
@@ -160,17 +151,8 @@ export class PolishedEditor extends CustomEditor {
     const editorLines = editorFrame
       .slice(1, -1)
       .map((line) => this.transformEditorLine(line));
-    const metaParts = [this.getModelMeta()];
-    const thinkingLevel = this.getThinkingLevel();
-    if (thinkingLevel && thinkingLevel !== "off") {
-      metaParts.push(this.uiTheme.fg("muted", thinkingLevel));
-    }
-    const meta = metaParts
-      .filter(Boolean)
-      .join(this.uiTheme.fg("border", "  "));
-
     const rail = `${this.uiTheme.fg("accent", "┃")}${RESET}${this.uiTheme.bg("customMessageBg", " ")}`;
-    const lines = ["", ...editorLines, "", meta];
+    const lines = ["", ...editorLines, ""];
 
     return [
       ...lines.map(

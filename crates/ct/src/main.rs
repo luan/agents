@@ -6,6 +6,7 @@ mod cli;
 mod cochanges;
 mod gitcontext;
 mod hook;
+pub mod lens;
 mod mcp;
 mod notify;
 mod phases;
@@ -145,10 +146,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Some(cli::Command::Notify) => notify::run(),
         Some(cli::Command::Sym(args)) => sym::run(args).map_err(|e| e.into()),
+        Some(cli::Command::Ast { action }) => cli::run_ast(action),
+        Some(cli::Command::Lens { action }) => cli::run_lens(action),
+        Some(cli::Command::Lsp { action }) => cli::run_lsp(action),
+        Some(cli::Command::Patch { action }) => cli::run_patch(action),
         Some(cli::Command::Mcp { action }) => match action {
             cli::McpAction::Vault => mcp::run_vault_server(),
             cli::McpAction::ApplyPatch => mcp::run_apply_patch_server(),
             cli::McpAction::Sym => mcp::run_sym_server(),
+            cli::McpAction::Ast => mcp::run_ast_server(),
+            cli::McpAction::Lens => mcp::run_lens_server(),
+            cli::McpAction::Lsp => mcp::run_lsp_server(),
         },
         Some(cli::Command::Hook { name }) => Ok(hook::run_hook(&name)?),
         Some(cli::Command::Tool { action }) => match action {
@@ -184,5 +192,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             cli::ApplyPatchCmd::Prune { days } => cli::run_apply_patch_prune(days),
         },
+        Some(cli::Command::UsageBar { width }) => cli::run_usage_bar(width),
     }
 }

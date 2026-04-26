@@ -8,6 +8,9 @@ use serde_json::json;
 use crate::artifact::{self, ArtifactKind, CtError, ResolveError};
 
 mod apply_patch;
+mod ast;
+mod lens;
+mod lsp;
 mod sym;
 mod vault;
 
@@ -99,6 +102,18 @@ pub fn run_apply_patch_server() -> Result<(), Box<dyn std::error::Error>> {
 /// Run the sym MCP server over stdio.
 pub fn run_sym_server() -> Result<(), Box<dyn std::error::Error>> {
     serve_stdio(sym::SymMcpServer::new())
+}
+
+pub fn run_ast_server() -> Result<(), Box<dyn std::error::Error>> {
+    serve_stdio(ast::AstMcpServer::new())
+}
+
+pub fn run_lens_server() -> Result<(), Box<dyn std::error::Error>> {
+    serve_stdio(lens::LensMcpServer::new())
+}
+
+pub fn run_lsp_server() -> Result<(), Box<dyn std::error::Error>> {
+    serve_stdio(lsp::LspMcpServer::new())
 }
 
 /// Drive a server struct through rmcp's stdio transport until shutdown.

@@ -485,7 +485,8 @@ fn collect_snapshots(
 
     for change in changes {
         let source_abs = resolve_path(cwd_canon, Path::new(&change.path))?;
-        seen.entry(source_abs).or_insert_with(|| change.path.clone());
+        seen.entry(source_abs)
+            .or_insert_with(|| change.path.clone());
         if let ChangeType::Move = change.kind {
             let dest_rel = change
                 .move_path
@@ -499,10 +500,12 @@ fn collect_snapshots(
     let mut snapshots = Vec::with_capacity(seen.len());
     for (abs, rel) in seen {
         let content = if abs.exists() {
-            Some(std::fs::read_to_string(&abs).map_err(|source| ApplyPatchError::Io {
-                path: rel.clone(),
-                source,
-            })?)
+            Some(
+                std::fs::read_to_string(&abs).map_err(|source| ApplyPatchError::Io {
+                    path: rel.clone(),
+                    source,
+                })?,
+            )
         } else {
             None
         };
@@ -581,10 +584,14 @@ fn ensure_parent_writable(abs: &Path, rel: &str) -> Result<(), ApplyPatchError> 
         source,
     })?;
     if !meta.is_dir() {
-        return Err(ApplyPatchError::TargetIsDirectory(cursor.display().to_string()));
+        return Err(ApplyPatchError::TargetIsDirectory(
+            cursor.display().to_string(),
+        ));
     }
     if meta.permissions().readonly() {
-        return Err(ApplyPatchError::ReadOnlyTarget(cursor.display().to_string()));
+        return Err(ApplyPatchError::ReadOnlyTarget(
+            cursor.display().to_string(),
+        ));
     }
     Ok(())
 }

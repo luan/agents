@@ -113,6 +113,68 @@ pub fn walk(root: &Path, options: &WalkOptions) -> Result<Vec<FileEntry>> {
     Ok(files)
 }
 
+pub fn walk_with_languages(root: &Path, options: &WalkOptions) -> Result<Vec<FileEntry>> {
+    walk(root, options)
+}
+
+pub fn is_allowed_path(root: &Path, path: &Path, options: &WalkOptions) -> Result<bool> {
+    let root = root
+        .canonicalize()
+        .with_context(|| format!("canonicalizing root {}", root.display()))?;
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+    let path = path
+        .canonicalize()
+        .with_context(|| format!("canonicalizing path {}", path.display()))?;
+    if !path.starts_with(&root) {
+        return Ok(false);
+    }
+
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return Ok(false);
+    };
+    if is_skipped_dir_name(file_name) {
+        return Ok(false);
+    }
+    let rel_path = path
+        .strip_prefix(&root)
+        .with_context(|| format!("computing relative path for {}", path.display()))?;
+    if rel_path.components().any(|component| {
+        component
+            .as_os_str()
+            .to_str()
+            .is_some_and(|name| DEFAULT_SKIP_DIRS.contains(&name))
+    }) {
+        return Ok(false);
+    }
+
+    for entry in WalkBuilder::new(&root)
+        .standard_filters(true)
+        .require_git(false)
+        .follow_links(false)
+        .build()
+    {
+        let entry = entry.with_context(|| format!("walking {}", root.display()))?;
+        if entry.path() == path {
+            let Some(file_type) = entry.file_type() else {
+                return Ok(false);
+            };
+            if !file_type.is_file() {
+                return Ok(false);
+            }
+            let extra = build_extra_ignore(&root, &options.ignore)?;
+            return Ok(!extra
+                .matched_path_or_any_parents(rel_path, false)
+                .is_ignore());
+        }
+    }
+
+    Ok(false)
+}
+
 pub fn build_tree(root: &Path, max_depth: usize) -> Result<TreeNode> {
     let root = root.canonicalize()?;
     build_tree_recursive(&root, &root, 1, max_depth)

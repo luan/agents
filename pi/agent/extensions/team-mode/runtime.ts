@@ -32,11 +32,11 @@ export class PiSubagentRuntime implements TeamRuntime {
 		private readonly onEvent: (event: RuntimeEvent) => void,
 	) {}
 
-	async launchWorker(worker: WorkerRecord, task?: TeamTask, message?: string): Promise<WorkerRecord> {
+	launchWorker(worker: WorkerRecord, task?: TeamTask, message?: string): Promise<WorkerRecord> {
 		return this.start(worker, task, message);
 	}
 
-	async resumeWorker(worker: WorkerRecord, task?: TeamTask, message?: string): Promise<WorkerRecord> {
+	resumeWorker(worker: WorkerRecord, task?: TeamTask, message?: string): Promise<WorkerRecord> {
 		return this.start(worker, task, message ?? "Continue from the last checkpoint and report progress.");
 	}
 
@@ -52,7 +52,7 @@ export class PiSubagentRuntime implements TeamRuntime {
 		return updated;
 	}
 
-	async interruptWorker(worker: WorkerRecord): Promise<WorkerRecord> {
+	interruptWorker(worker: WorkerRecord): Promise<WorkerRecord> {
 		return this.stopWorker(worker);
 	}
 
@@ -147,7 +147,7 @@ type PiMessageEvent = {
 
 function extractFinalText(output: string): string | undefined {
 	const lines = output.split("\n").filter(Boolean);
-	for (const line of lines.reverse()) {
+	for (const line of lines.toReversed()) {
 		try {
 			const event = JSON.parse(line) as PiMessageEvent;
 			const text = textFromEvent(event);

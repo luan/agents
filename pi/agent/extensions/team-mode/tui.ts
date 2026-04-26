@@ -142,7 +142,7 @@ export class TeamDashboard {
 	}
 
 	private eventLines(events: TeamEvent[], width: number): string[] {
-		const list = events.slice(-3).reverse();
+		const list = events.slice(-3).toReversed();
 		if (list.length === 0) return [this.row("No events yet", width)];
 		return list.map((event, index) => {
 			const selected = this.pane === "events" && index === this.selected;

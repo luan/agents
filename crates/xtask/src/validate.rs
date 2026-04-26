@@ -33,8 +33,7 @@ fn assert_fresh_agents(root: &Path) -> Result<()> {
     let path = root.join("GLOBAL_AGENTS.md");
     let before = fs::read_to_string(&path).unwrap_or_default();
     crate::render_agents::run()?;
-    let after = fs::read_to_string(&path)
-        .with_context(|| format!("read {}", path.display()))?;
+    let after = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
     if before != after {
         bail!("GLOBAL_AGENTS.md was stale; regenerated it. Re-run validation.");
     }
@@ -42,23 +41,20 @@ fn assert_fresh_agents(root: &Path) -> Result<()> {
 }
 
 fn validate_json(path: &Path) -> Result<()> {
-    let text = fs::read_to_string(path)
-        .with_context(|| format!("read {}", path.display()))?;
+    let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     serde_json::from_str::<serde_json::Value>(&text)
         .with_context(|| format!("parse {}", path.display()))?;
     Ok(())
 }
 
 fn assert_symlink(path: &Path, expected: &Path) -> Result<()> {
-    let meta = fs::symlink_metadata(path)
-        .with_context(|| format!("stat {}", path.display()))?;
+    let meta = fs::symlink_metadata(path).with_context(|| format!("stat {}", path.display()))?;
     if !meta.file_type().is_symlink() {
         bail!("{} must be a symlink", path.display());
     }
-    let resolved = fs::canonicalize(path)
-        .with_context(|| format!("resolve {}", path.display()))?;
-    let want = fs::canonicalize(expected)
-        .with_context(|| format!("resolve {}", expected.display()))?;
+    let resolved = fs::canonicalize(path).with_context(|| format!("resolve {}", path.display()))?;
+    let want =
+        fs::canonicalize(expected).with_context(|| format!("resolve {}", expected.display()))?;
     if resolved != want {
         bail!(
             "{} resolves to {}, expected {}",
