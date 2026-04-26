@@ -1,11 +1,10 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, extname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
 	type ExtensionAPI,
-	getLanguageFromPath,
 	highlightCode,
 	keyHint,
 } from "@mariozechner/pi-coding-agent";
@@ -13,6 +12,8 @@ import { codeToANSI } from "@shikijs/cli";
 import { Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@mariozechner/pi-tui";
 import type { BundledLanguage, BundledTheme } from "shiki";
 import { Type } from "typebox";
+
+import { resolveInlineLanguageForPath, resolveShikiLanguageForPath } from "../shared/path-language";
 
 const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const ANSI_SGR_PATTERN = /\x1b\[([0-9;]*)m/g;
@@ -141,12 +142,6 @@ const BORDER_BAR = "▌";
 const SPLIT_MIN_CODE_WIDTH = 60;
 const SPLIT_MAX_WRAP_RATIO = 0.2;
 const SPLIT_MAX_WRAP_LINES = 8;
-const LANGUAGE_ALIASES: Record<string, { inline?: string; shiki?: BundledLanguage }> = {
-	svelte: {
-		inline: "html",
-		shiki: "svelte",
-	},
-};
 const SHIKI_THEME = (process.env.APPLY_PATCH_SHIKI_THEME ?? "github-dark") as BundledTheme;
 const SHIKI_MAX_CHARS = 80_000;
 const SHIKI_CACHE_LIMIT = 64;
@@ -268,21 +263,8 @@ function normalizeDiffHeaderPath(rawPath: string): string | undefined {
 	return normalizeRepoPath(normalized);
 }
 
-function fileExtension(path: string | undefined): string | undefined {
-	if (!path) return undefined;
-	const extension = extname(path).slice(1).toLowerCase();
-	return extension || undefined;
-}
-
 function shikiLanguageForPath(path: string | undefined): BundledLanguage | undefined {
-	const extension = fileExtension(path);
-	try {
-		const language = path ? getLanguageFromPath(path) : undefined;
-		if (language) return language as BundledLanguage;
-	} catch {
-		// Fall back to explicit aliases below.
-	}
-	return extension ? LANGUAGE_ALIASES[extension]?.shiki : undefined;
+	return resolveShikiLanguageForPath(path);
 }
 
 function touchShikiCache(key: string, value: string[]): string[] {
@@ -492,13 +474,7 @@ function parseUnifiedDiff(diff: string): ParsedDiffLine[] {
 }
 
 function languageForPath(path: string | undefined): string | undefined {
-	if (!path) return undefined;
-	const extension = fileExtension(path);
-	try {
-		return getLanguageFromPath(path) ?? (extension ? LANGUAGE_ALIASES[extension]?.inline : undefined);
-	} catch {
-		return extension ? LANGUAGE_ALIASES[extension]?.inline : undefined;
-	}
+	return resolveInlineLanguageForPath(path);
 }
 
 
