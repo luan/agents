@@ -17,6 +17,19 @@ const guardSchema = Type.Object({
 	session: Type.Optional(Type.String({ description: "Session id" })),
 	mode: Type.Optional(Type.String({ description: "off, warn, or block" })),
 });
+const diagnosticsListSchema = Type.Object({
+	path: Type.Optional(Type.String({ description: "Optional path filter" })),
+});
+const diagnosticsRecordSchema = Type.Object({
+	source: Type.String({ description: "Diagnostic source" }),
+	severity: Type.String({ description: "error, warning, info, or hint" }),
+	path: Type.Optional(Type.String({ description: "Path for the diagnostic" })),
+	code: Type.Optional(Type.String({ description: "Diagnostic code" })),
+	message: Type.String({ description: "Diagnostic message" }),
+	startLine: Type.Optional(Type.Number({ description: "Start line" })),
+	endLine: Type.Optional(Type.Number({ description: "End line" })),
+	fingerprint: Type.Optional(Type.String({ description: "Stable fingerprint" })),
+});
 
 function pushOpt(args: string[], flag: string, value: unknown) {
 	if (value !== undefined && value !== null) args.push(flag, String(value));
@@ -69,6 +82,36 @@ export default function lensExtension(pi: ExtensionAPI) {
 			const args = ["guard", "check", "--path", params.path, "--start-line", String(params.startLine), "--end-line", String(params.endLine)];
 			pushOpt(args, "--session", params.session);
 			pushOpt(args, "--mode", params.mode);
+			return runCtLens(args, ctx.cwd, signal);
+		},
+	});
+
+	registerTool({
+		name: "lens_diagnostics_list",
+		label: "lens diagnostics list",
+		description: "List diagnostics stored in ct lens.",
+		parameters: diagnosticsListSchema,
+		executionMode: "parallel",
+		async execute(_id, params, signal, _onUpdate, ctx) {
+			const args = ["diagnostics", "list"];
+			pushOpt(args, "--path", params.path);
+			return runCtLens(args, ctx.cwd, signal);
+		},
+	});
+
+	registerTool({
+		name: "lens_diagnostics_record",
+		label: "lens diagnostics record",
+		description: "Record one diagnostic in ct lens.",
+		parameters: diagnosticsRecordSchema,
+		executionMode: "parallel",
+		async execute(_id, params, signal, _onUpdate, ctx) {
+			const args = ["diagnostics", "record", "--source", params.source, "--severity", params.severity, "--message", params.message];
+			pushOpt(args, "--path", params.path);
+			pushOpt(args, "--code", params.code);
+			pushOpt(args, "--start-line", params.startLine);
+			pushOpt(args, "--end-line", params.endLine);
+			pushOpt(args, "--fingerprint", params.fingerprint);
 			return runCtLens(args, ctx.cwd, signal);
 		},
 	});

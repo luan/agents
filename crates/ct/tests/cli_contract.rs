@@ -234,3 +234,45 @@ fn ast_replace_apply_routes_through_lens_patch_draft() {
         .success()
         .stdout(predicate::str::contains("\"patch_drafts\": 1"));
 }
+
+#[test]
+fn lens_diagnostics_record_and_list_round_trip() {
+    let (bp, _remote) = setup_blueprints();
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+    fs::write(project.path().join("main.rs"), "fn main() {}\n").expect("write source");
+
+    ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .args([
+            "lens",
+            "diagnostics",
+            "record",
+            "--source",
+            "test",
+            "--severity",
+            "warning",
+            "--path",
+            "main.rs",
+            "--message",
+            "watch this",
+            "--start-line",
+            "1",
+            "--end-line",
+            "1",
+            "--json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"recorded\": true"));
+
+    ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .args(["lens", "diagnostics", "list", "--path", "main.rs", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("watch this"))
+        .stdout(predicate::str::contains("\"diagnostic_count\": 1"));
+}

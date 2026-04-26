@@ -299,6 +299,29 @@ pub enum LensDiagnosticsAction {
         #[arg(long, help = "Show all diagnostics")]
         all: bool,
     },
+    #[command(about = "Record one diagnostic")]
+    Record {
+        #[arg(long, help = "Working directory")]
+        cwd: Option<String>,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+        #[arg(long, help = "Diagnostic source")]
+        source: String,
+        #[arg(long, help = "Diagnostic severity: error, warning, info, hint")]
+        severity: String,
+        #[arg(long, help = "Path for the diagnostic")]
+        path: Option<String>,
+        #[arg(long, help = "Diagnostic code")]
+        code: Option<String>,
+        #[arg(long, help = "Diagnostic message")]
+        message: String,
+        #[arg(long, help = "Start line")]
+        start_line: Option<i64>,
+        #[arg(long, help = "End line")]
+        end_line: Option<i64>,
+        #[arg(long, help = "Stable diagnostic fingerprint")]
+        fingerprint: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

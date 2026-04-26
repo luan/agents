@@ -32,6 +32,25 @@ struct GuardCheckIn {
     mode: Option<String>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+struct DiagnosticsListIn {
+    cwd: Option<String>,
+    path: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct DiagnosticsRecordIn {
+    cwd: Option<String>,
+    source: String,
+    severity: String,
+    path: Option<String>,
+    code: Option<String>,
+    message: String,
+    start_line: Option<i64>,
+    end_line: Option<i64>,
+    fingerprint: Option<String>,
+}
+
 #[derive(Clone)]
 pub(super) struct LensMcpServer {
     tool_router: ToolRouter<Self>,
@@ -136,6 +155,101 @@ impl LensMcpServer {
             "required_ranges": decision.required_ranges,
             "covered_ranges": decision.covered_ranges
         }))
+    }
+
+    #[tool(
+        name = "diagnostics_list",
+        description = "List diagnostics stored in ct lens."
+    )]
+    async fn diagnostics_list(
+        &self,
+        Parameters(input): Parameters<DiagnosticsListIn>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let root = cwd(input.cwd)?;
+        let store = crate::lens::LensStore::open_for_project(&root)
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        let diagnostics = store
+            .list_diagnostics(input.path.as_deref())
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        json_success(&json!({
+            "project_id": store.project_id(),
+            "path": input.path,
+            "diagnostics": diagnostics,
+            "diagnostic_count": diagnostics.len()
+        }))
+    }
+
+    #[tool(
+        name = "diagnostics_record",
+        description = "Record one diagnostic in ct lens."
+    )]
+    async fn diagnostics_record(
+        &self,
+        Parameters(input): Parameters<DiagnosticsRecordIn>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let root = cwd(input.cwd)?;
+        let mut store = crate::lens::LensStore::open_for_project(&root)
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        let fingerprint = input.fingerprint.unwrap_or_else(|| {
+            crate::apply_patch::sha1_hex(
+                format!(
+                    "{}:{}:{:?}:{:?}:{:?}:{:?}:{}",
+                    input.source,
+                    input.severity,
+                    input.path,
+                    input.start_line,
+                    input.end_line,
+                    input.code,
+                    input.message
+                )
+                .as_bytes(),
+            )
+        });
+        let diagnostic = crate::lens::Diagnostic {
+            source: parse_source(&input.source),
+            severity: parse_severity(&input.severity)?,
+            code: input.code,
+            message: input.message,
+            rel_path: input.path,
+            start_line: input.start_line,
+            end_line: input.end_line,
+            fingerprint,
+            content_hash: None,
+        };
+        store
+            .record_diagnostics(std::slice::from_ref(&diagnostic))
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        json_success(&json!({
+            "project_id": store.project_id(),
+            "recorded": true,
+            "diagnostic": diagnostic
+        }))
+    }
+}
+
+fn parse_source(source: &str) -> crate::lens::DiagnosticSource {
+    match source {
+        "lsp" => crate::lens::DiagnosticSource::Lsp,
+        "ast_grep" => crate::lens::DiagnosticSource::AstGrep,
+        "tree_sitter" => crate::lens::DiagnosticSource::TreeSitter,
+        "secrets" => crate::lens::DiagnosticSource::Secrets,
+        "formatter" => crate::lens::DiagnosticSource::Formatter,
+        "autofix" => crate::lens::DiagnosticSource::Autofix,
+        "test" => crate::lens::DiagnosticSource::Test,
+        other => crate::lens::DiagnosticSource::Other(other.to_string()),
+    }
+}
+
+fn parse_severity(severity: &str) -> Result<crate::lens::DiagnosticSeverity, ErrorData> {
+    match severity {
+        "error" => Ok(crate::lens::DiagnosticSeverity::Error),
+        "warning" => Ok(crate::lens::DiagnosticSeverity::Warning),
+        "info" => Ok(crate::lens::DiagnosticSeverity::Info),
+        "hint" => Ok(crate::lens::DiagnosticSeverity::Hint),
+        other => Err(ErrorData::invalid_params(
+            format!("invalid diagnostic severity: {other}"),
+            None,
+        )),
     }
 }
 
