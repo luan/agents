@@ -73,19 +73,27 @@ fn read(action: LensReadAction) -> Result<(), Box<dyn std::error::Error>> {
         session,
     } = action;
     let root = cwd.map(Into::into).unwrap_or(std::env::current_dir()?);
-    let store = LensStore::open_for_project(&root)?;
+    let mut store = LensStore::open_for_project(&root)?;
+    let range = store.record_read(
+        session.as_deref(),
+        std::path::Path::new(&path),
+        start_line,
+        end_line,
+    )?;
     let out = serde_json::json!({
         "project_id": store.project_id(),
         "session": session,
         "path": path,
-        "range": { "start_line": start_line, "end_line": end_line },
-        "recorded": false,
-        "note": "read ledger storage is scaffolded but recording is not populated yet"
+        "range": range,
+        "recorded": true
     });
     if json {
         println!("{}", serde_json::to_string_pretty(&out)?);
     } else {
-        println!("read ledger scaffolded for {path}:{start_line}-{end_line}");
+        println!(
+            "recorded read for {path}:{}-{}",
+            range.start_line, range.end_line
+        );
     }
     Ok(())
 }
@@ -102,25 +110,32 @@ fn guard(action: LensGuardAction) -> Result<(), Box<dyn std::error::Error>> {
             mode,
         } => {
             let root = cwd.map(Into::into).unwrap_or(std::env::current_dir()?);
-            let store = LensStore::open_for_project(&root)?;
-            let decision = match mode {
-                GuardAction::Off => "allow",
-                GuardAction::Warn => "warn",
-                GuardAction::Block => "block",
+            let mut store = LensStore::open_for_project(&root)?;
+            let requested = match mode {
+                GuardAction::Off => crate::lens::GuardAction::Allow,
+                GuardAction::Warn => crate::lens::GuardAction::Warn,
+                GuardAction::Block => crate::lens::GuardAction::Block,
             };
+            let decision = store.check_guard(
+                session.as_deref(),
+                std::path::Path::new(&path),
+                start_line,
+                end_line,
+                requested,
+            )?;
             let out = serde_json::json!({
                 "project_id": store.project_id(),
                 "session": session,
-                "decision": decision,
-                "reason": "zero_read",
-                "file": path,
-                "required_ranges": [{ "start_line": start_line, "end_line": end_line }],
-                "covered_ranges": []
+                "decision": decision.decision,
+                "reason": decision.reason,
+                "file": decision.file,
+                "required_ranges": decision.required_ranges,
+                "covered_ranges": decision.covered_ranges
             });
             if json {
                 println!("{}", serde_json::to_string_pretty(&out)?);
             } else {
-                println!("{decision}: zero_read");
+                println!("{:?}: {:?}", decision.decision, decision.reason);
             }
         }
         LensGuardAction::AllowOnce {
@@ -128,11 +143,14 @@ fn guard(action: LensGuardAction) -> Result<(), Box<dyn std::error::Error>> {
             path,
             session,
         } => {
-            let out = serde_json::json!({ "session": session, "path": path, "allowed_once": false, "note": "override ledger is scaffolded but not populated yet" });
+            let root = std::env::current_dir()?;
+            let store = LensStore::open_for_project(&root)?;
+            store.allow_once(session.as_deref(), std::path::Path::new(&path))?;
+            let out = serde_json::json!({ "session": session, "path": path, "allowed_once": true });
             if json {
                 println!("{}", serde_json::to_string_pretty(&out)?);
             } else {
-                println!("allow-once scaffolded for {path}");
+                println!("allow-once recorded for {path}");
             }
         }
     }

@@ -1,11 +1,16 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 use rusqlite::{Connection, params};
+use sha1::{Digest, Sha1};
 
 use super::paths;
-use super::types::{PatchCandidate, PatchDraftChunk, PatchDraftSummary};
+use super::types::{
+    GuardAction, GuardDecision, GuardReason, PatchCandidate, PatchDraftChunk, PatchDraftSummary,
+    ReadCoverageRange,
+};
 
-const SCHEMA_VERSION: i32 = 2;
+const SCHEMA_VERSION: i32 = 3;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS projects (
@@ -52,6 +57,16 @@ CREATE TABLE IF NOT EXISTS read_ranges (
     read_event_id INTEGER NOT NULL REFERENCES read_events(id) ON DELETE CASCADE,
     start_line INTEGER NOT NULL,
     end_line INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS guard_overrides (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    session_id TEXT,
+    rel_path TEXT NOT NULL,
+    consumed INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    consumed_at INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS patch_events (
@@ -168,6 +183,7 @@ CREATE TABLE IF NOT EXISTS retention_metadata (
 CREATE INDEX IF NOT EXISTS idx_files_project_rel ON files(project_id, rel_path);
 CREATE INDEX IF NOT EXISTS idx_diagnostics_project_file ON diagnostics(project_id, file_id);
 CREATE INDEX IF NOT EXISTS idx_read_events_session_file ON read_events(session_id, file_id);
+CREATE INDEX IF NOT EXISTS idx_guard_overrides_project_session_path ON guard_overrides(project_id, session_id, rel_path, consumed);
 CREATE INDEX IF NOT EXISTS idx_patch_drafts_project_status ON patch_drafts(project_id, status);
 CREATE INDEX IF NOT EXISTS idx_patch_draft_chunks_patch ON patch_draft_chunks(patch_id);
 "#;
@@ -175,6 +191,7 @@ CREATE INDEX IF NOT EXISTS idx_patch_draft_chunks_patch ON patch_draft_chunks(pa
 pub struct LensStore {
     conn: Connection,
     project_id: i64,
+    root: PathBuf,
 }
 
 pub struct NewPatchDraft<'a> {
@@ -216,19 +233,24 @@ impl LensStore {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         }
         let now = now_ms();
-        let root = root.canonicalize()?.to_string_lossy().to_string();
+        let root = root.canonicalize()?;
+        let root_text = root.to_string_lossy().to_string();
         conn.execute(
             "INSERT INTO projects (root, vcs_id, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?3)
              ON CONFLICT(root) DO UPDATE SET updated_at = excluded.updated_at",
-            params![root, Option::<String>::None, now],
+            params![root_text, Option::<String>::None, now],
         )?;
         let project_id = conn.query_row(
             "SELECT id FROM projects WHERE root = ?1",
-            params![root],
+            params![root_text],
             |row| row.get(0),
         )?;
-        Ok(Self { conn, project_id })
+        Ok(Self {
+            conn,
+            project_id,
+            root,
+        })
     }
 
     pub fn project_id(&self) -> i64 {
@@ -255,6 +277,254 @@ impl LensStore {
 
     pub fn with_conn<R>(&self, f: impl FnOnce(&Connection) -> R) -> R {
         f(&self.conn)
+    }
+
+    pub fn record_read(
+        &mut self,
+        session_id: Option<&str>,
+        path: &Path,
+        start_line: i64,
+        end_line: i64,
+    ) -> Result<ReadCoverageRange, Box<dyn std::error::Error>> {
+        let range = normalize_range(start_line, end_line)?;
+        let snapshot = self.file_snapshot(path)?;
+        let session_id = session_id.unwrap_or("default");
+        let now = now_ms();
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "INSERT INTO sessions(id, project_id, agent, started_at, last_seen_at, status)
+             VALUES(?1, ?2, NULL, ?3, ?3, 'active')
+             ON CONFLICT(id) DO UPDATE SET last_seen_at=excluded.last_seen_at, status='active'",
+            params![session_id, self.project_id, now],
+        )?;
+        tx.execute(
+            "INSERT INTO files(project_id, rel_path, language, ignored, hash, mtime_ns, size_bytes, line_count)
+             VALUES(?1, ?2, ?3, 0, ?4, ?5, ?6, ?7)
+             ON CONFLICT(project_id, rel_path) DO UPDATE SET
+                language=excluded.language,
+                hash=excluded.hash,
+                mtime_ns=excluded.mtime_ns,
+                size_bytes=excluded.size_bytes,
+                line_count=excluded.line_count",
+            params![
+                self.project_id,
+                snapshot.rel_path,
+                snapshot.language,
+                snapshot.hash,
+                snapshot.mtime_ns,
+                snapshot.size_bytes,
+                snapshot.line_count
+            ],
+        )?;
+        let file_id: i64 = tx.query_row(
+            "SELECT id FROM files WHERE project_id=?1 AND rel_path=?2",
+            params![self.project_id, snapshot.rel_path],
+            |row| row.get(0),
+        )?;
+        tx.execute(
+            "INSERT INTO read_events(session_id, file_id, file_hash, source, created_at)
+             VALUES(?1, ?2, ?3, 'ct_lens_read', ?4)",
+            params![session_id, file_id, snapshot.hash.unwrap_or_default(), now],
+        )?;
+        let read_event_id = tx.last_insert_rowid();
+        tx.execute(
+            "INSERT INTO read_ranges(read_event_id, start_line, end_line) VALUES(?1, ?2, ?3)",
+            params![read_event_id, range.start_line, range.end_line],
+        )?;
+        tx.commit()?;
+        Ok(range)
+    }
+
+    pub fn check_guard(
+        &mut self,
+        session_id: Option<&str>,
+        path: &Path,
+        start_line: i64,
+        end_line: i64,
+        requested_action: GuardAction,
+    ) -> Result<GuardDecision, Box<dyn std::error::Error>> {
+        let required = normalize_range(start_line, end_line)?;
+        let rel_path = self.rel_path(path);
+        if matches!(requested_action, GuardAction::Allow) {
+            return Ok(decision(
+                GuardAction::Allow,
+                GuardReason::ExplicitOverride,
+                rel_path,
+                required,
+                Vec::new(),
+            ));
+        }
+        if !self.root.join(&rel_path).exists() {
+            return Ok(decision(
+                GuardAction::Allow,
+                GuardReason::NewFile,
+                rel_path,
+                required,
+                Vec::new(),
+            ));
+        }
+        if self.consume_guard_override(session_id, &rel_path)? {
+            return Ok(decision(
+                GuardAction::Allow,
+                GuardReason::ExplicitOverride,
+                rel_path,
+                required,
+                Vec::new(),
+            ));
+        }
+        let snapshot = self.file_snapshot(path)?;
+        let current_hash = snapshot.hash.unwrap_or_default();
+        let covered = self.covered_ranges(session_id, &rel_path, &current_hash)?;
+        if range_covered(required, &covered) {
+            return Ok(decision(
+                GuardAction::Allow,
+                GuardReason::Covered,
+                rel_path,
+                required,
+                covered,
+            ));
+        }
+        let reason = if self.has_any_read(session_id, &rel_path)? {
+            GuardReason::StaleRead
+        } else {
+            GuardReason::ZeroRead
+        };
+        Ok(decision(
+            requested_action,
+            reason,
+            rel_path,
+            required,
+            covered,
+        ))
+    }
+
+    pub fn allow_once(
+        &self,
+        session_id: Option<&str>,
+        path: &Path,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.conn.execute(
+            "INSERT INTO guard_overrides(project_id, session_id, rel_path, consumed, created_at)
+             VALUES(?1, ?2, ?3, 0, ?4)",
+            params![self.project_id, session_id, self.rel_path(path), now_ms()],
+        )?;
+        Ok(())
+    }
+
+    fn covered_ranges(
+        &self,
+        session_id: Option<&str>,
+        rel_path: &str,
+        current_hash: &str,
+    ) -> Result<Vec<ReadCoverageRange>, rusqlite::Error> {
+        let mut stmt = self.conn.prepare(
+            "SELECT rr.start_line, rr.end_line
+             FROM read_ranges rr
+             JOIN read_events re ON re.id = rr.read_event_id
+             JOIN files f ON f.id = re.file_id
+             WHERE f.project_id=?1
+               AND f.rel_path=?2
+               AND re.file_hash=?3
+               AND (?4 IS NULL OR re.session_id=?4)
+             ORDER BY rr.start_line, rr.end_line",
+        )?;
+        let rows = stmt.query_map(
+            params![self.project_id, rel_path, current_hash, session_id],
+            |row| {
+                Ok(ReadCoverageRange {
+                    start_line: row.get(0)?,
+                    end_line: row.get(1)?,
+                })
+            },
+        )?;
+        rows.collect()
+    }
+
+    fn has_any_read(
+        &self,
+        session_id: Option<&str>,
+        rel_path: &str,
+    ) -> Result<bool, rusqlite::Error> {
+        self.conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1
+                FROM read_events re
+                JOIN files f ON f.id = re.file_id
+                WHERE f.project_id=?1
+                  AND f.rel_path=?2
+                  AND (?3 IS NULL OR re.session_id=?3)
+             )",
+            params![self.project_id, rel_path, session_id],
+            |row| row.get(0),
+        )
+    }
+
+    fn consume_guard_override(
+        &self,
+        session_id: Option<&str>,
+        rel_path: &str,
+    ) -> Result<bool, rusqlite::Error> {
+        let id = self.conn.query_row(
+            "SELECT id FROM guard_overrides
+             WHERE project_id=?1
+               AND rel_path=?2
+               AND consumed=0
+               AND (session_id IS NULL OR session_id=?3)
+             ORDER BY created_at ASC
+             LIMIT 1",
+            params![self.project_id, rel_path, session_id],
+            |row| row.get::<_, i64>(0),
+        );
+        let Ok(id) = id else {
+            return Ok(false);
+        };
+        self.conn.execute(
+            "UPDATE guard_overrides SET consumed=1, consumed_at=?1 WHERE id=?2",
+            params![now_ms(), id],
+        )?;
+        Ok(true)
+    }
+
+    fn file_snapshot(
+        &self,
+        path: &Path,
+    ) -> Result<super::types::FileSnapshot, Box<dyn std::error::Error>> {
+        let full_path = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.root.join(path)
+        };
+        let content = std::fs::read(&full_path)?;
+        let metadata = std::fs::metadata(&full_path)?;
+        let text = String::from_utf8_lossy(&content);
+        Ok(super::types::FileSnapshot {
+            rel_path: self.rel_path(path),
+            language: full_path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(str::to_string),
+            hash: Some(sha1_hex(&content)),
+            mtime_ns: metadata
+                .modified()
+                .ok()
+                .and_then(|mtime| mtime.duration_since(UNIX_EPOCH).ok())
+                .map(|duration| duration.as_nanos() as i64),
+            size_bytes: Some(metadata.len() as i64),
+            line_count: Some(text.lines().count() as i64),
+        })
+    }
+
+    fn rel_path(&self, path: &Path) -> String {
+        let absolute = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.root.join(path)
+        };
+        absolute
+            .strip_prefix(&self.root)
+            .unwrap_or(&absolute)
+            .to_string_lossy()
+            .to_string()
     }
 
     pub fn create_patch_draft(
@@ -439,6 +709,64 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+fn normalize_range(
+    start_line: i64,
+    end_line: i64,
+) -> Result<ReadCoverageRange, Box<dyn std::error::Error>> {
+    if start_line < 1 || end_line < 1 || end_line < start_line {
+        return Err(format!("invalid line range {start_line}-{end_line}").into());
+    }
+    Ok(ReadCoverageRange {
+        start_line,
+        end_line,
+    })
+}
+
+fn decision(
+    decision: GuardAction,
+    reason: GuardReason,
+    file: String,
+    required: ReadCoverageRange,
+    covered_ranges: Vec<ReadCoverageRange>,
+) -> GuardDecision {
+    GuardDecision {
+        decision,
+        reason,
+        file,
+        required_ranges: vec![required],
+        covered_ranges,
+    }
+}
+
+fn range_covered(required: ReadCoverageRange, covered: &[ReadCoverageRange]) -> bool {
+    let mut cursor = required.start_line;
+    for range in covered {
+        if range.end_line < cursor {
+            continue;
+        }
+        if range.start_line > cursor {
+            return false;
+        }
+        cursor = cursor.max(range.end_line + 1);
+        if cursor > required.end_line {
+            return true;
+        }
+    }
+    false
+}
+
+fn sha1_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha1::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write;
+        write!(&mut out, "{byte:02x}").expect("writing to String never fails");
+    }
+    out
 }
 
 #[cfg(test)]
