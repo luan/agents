@@ -45,20 +45,22 @@ fn diagnostics(action: LensDiagnosticsAction) -> Result<(), Box<dyn std::error::
     let LensDiagnosticsAction::List {
         cwd,
         json,
-        path: _,
+        path,
         all: _,
     } = action;
     let root = cwd.map(Into::into).unwrap_or(std::env::current_dir()?);
     let store = LensStore::open_for_project(&root)?;
+    let diagnostics = store.list_diagnostics(path.as_deref())?;
     let out = serde_json::json!({
         "project_id": store.project_id(),
-        "diagnostics": [],
-        "note": "diagnostic collection is not populated yet"
+        "path": path,
+        "diagnostics": diagnostics,
+        "diagnostic_count": diagnostics.len()
     });
     if json {
         println!("{}", serde_json::to_string_pretty(&out)?);
     } else {
-        println!("no diagnostics recorded");
+        println!("{} diagnostics recorded", diagnostics.len());
     }
     Ok(())
 }

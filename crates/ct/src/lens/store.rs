@@ -6,8 +6,8 @@ use sha1::{Digest, Sha1};
 
 use super::paths;
 use super::types::{
-    GuardAction, GuardDecision, GuardReason, PatchCandidate, PatchDraftChunk, PatchDraftSummary,
-    ReadCoverageRange,
+    Diagnostic, DiagnosticSeverity, DiagnosticSource, GuardAction, GuardDecision, GuardReason,
+    PatchCandidate, PatchDraftChunk, PatchDraftSummary, ReadCoverageRange,
 };
 
 const SCHEMA_VERSION: i32 = 3;
@@ -442,6 +442,72 @@ impl LensStore {
         Ok(())
     }
 
+    pub fn record_diagnostics(
+        &mut self,
+        diagnostics: &[Diagnostic],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for diagnostic in diagnostics {
+            let file_id = match diagnostic.rel_path.as_deref() {
+                Some(path) => Some(self.ensure_file_row(Path::new(path))?),
+                None => None,
+            };
+            self.conn.execute(
+                "INSERT INTO diagnostics(project_id, file_id, source, severity, code, message, start_line, end_line, fingerprint, content_hash, created_at)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                 ON CONFLICT(project_id, source, fingerprint) DO UPDATE SET
+                    file_id=excluded.file_id,
+                    severity=excluded.severity,
+                    code=excluded.code,
+                    message=excluded.message,
+                    start_line=excluded.start_line,
+                    end_line=excluded.end_line,
+                    content_hash=excluded.content_hash,
+                    created_at=excluded.created_at",
+                params![
+                    self.project_id,
+                    file_id,
+                    diagnostic_source(&diagnostic.source),
+                    diagnostic_severity(&diagnostic.severity),
+                    diagnostic.code,
+                    diagnostic.message,
+                    diagnostic.start_line,
+                    diagnostic.end_line,
+                    diagnostic.fingerprint,
+                    diagnostic.content_hash,
+                    now_ms()
+                ],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn list_diagnostics(
+        &self,
+        rel_path: Option<&str>,
+    ) -> Result<Vec<Diagnostic>, Box<dyn std::error::Error>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT d.source, d.severity, d.code, d.message, f.rel_path, d.start_line, d.end_line, d.fingerprint, d.content_hash
+             FROM diagnostics d
+             LEFT JOIN files f ON f.id = d.file_id
+             WHERE d.project_id=?1 AND (?2 IS NULL OR f.rel_path=?2)
+             ORDER BY f.rel_path, d.start_line, d.severity, d.message",
+        )?;
+        let rows = stmt.query_map(params![self.project_id, rel_path], |row| {
+            Ok(Diagnostic {
+                source: parse_diagnostic_source(row.get::<_, String>(0)?.as_str()),
+                severity: parse_diagnostic_severity(row.get::<_, String>(1)?.as_str()),
+                code: row.get(2)?,
+                message: row.get(3)?,
+                rel_path: row.get(4)?,
+                start_line: row.get(5)?,
+                end_line: row.get(6)?,
+                fingerprint: row.get(7)?,
+                content_hash: row.get(8)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     fn record_patch_event(
         &mut self,
         session_id: Option<&str>,
@@ -499,6 +565,34 @@ impl LensStore {
             )?;
         }
         Ok(())
+    }
+
+    fn ensure_file_row(&mut self, path: &Path) -> Result<i64, Box<dyn std::error::Error>> {
+        let snapshot = self.file_snapshot(path)?;
+        self.conn.execute(
+            "INSERT INTO files(project_id, rel_path, language, ignored, hash, mtime_ns, size_bytes, line_count)
+             VALUES(?1, ?2, ?3, 0, ?4, ?5, ?6, ?7)
+             ON CONFLICT(project_id, rel_path) DO UPDATE SET
+                language=excluded.language,
+                hash=excluded.hash,
+                mtime_ns=excluded.mtime_ns,
+                size_bytes=excluded.size_bytes,
+                line_count=excluded.line_count",
+            params![
+                self.project_id,
+                snapshot.rel_path,
+                snapshot.language,
+                snapshot.hash,
+                snapshot.mtime_ns,
+                snapshot.size_bytes,
+                snapshot.line_count
+            ],
+        )?;
+        Ok(self.conn.query_row(
+            "SELECT id FROM files WHERE project_id=?1 AND rel_path=?2",
+            params![self.project_id, snapshot.rel_path],
+            |row| row.get(0),
+        )?)
     }
 
     fn covered_ranges(
@@ -857,6 +951,51 @@ fn sha1_hex(bytes: &[u8]) -> String {
         write!(&mut out, "{byte:02x}").expect("writing to String never fails");
     }
     out
+}
+
+fn diagnostic_source(source: &DiagnosticSource) -> String {
+    match source {
+        DiagnosticSource::Lsp => "lsp".to_string(),
+        DiagnosticSource::AstGrep => "ast_grep".to_string(),
+        DiagnosticSource::TreeSitter => "tree_sitter".to_string(),
+        DiagnosticSource::Secrets => "secrets".to_string(),
+        DiagnosticSource::Formatter => "formatter".to_string(),
+        DiagnosticSource::Autofix => "autofix".to_string(),
+        DiagnosticSource::Test => "test".to_string(),
+        DiagnosticSource::Other(value) => value.clone(),
+    }
+}
+
+fn diagnostic_severity(severity: &DiagnosticSeverity) -> &'static str {
+    match severity {
+        DiagnosticSeverity::Error => "error",
+        DiagnosticSeverity::Warning => "warning",
+        DiagnosticSeverity::Info => "info",
+        DiagnosticSeverity::Hint => "hint",
+    }
+}
+
+fn parse_diagnostic_source(source: &str) -> DiagnosticSource {
+    match source {
+        "lsp" => DiagnosticSource::Lsp,
+        "ast_grep" => DiagnosticSource::AstGrep,
+        "tree_sitter" => DiagnosticSource::TreeSitter,
+        "secrets" => DiagnosticSource::Secrets,
+        "formatter" => DiagnosticSource::Formatter,
+        "autofix" => DiagnosticSource::Autofix,
+        "test" => DiagnosticSource::Test,
+        other => DiagnosticSource::Other(other.to_string()),
+    }
+}
+
+fn parse_diagnostic_severity(severity: &str) -> DiagnosticSeverity {
+    match severity {
+        "error" => DiagnosticSeverity::Error,
+        "warning" => DiagnosticSeverity::Warning,
+        "info" => DiagnosticSeverity::Info,
+        "hint" => DiagnosticSeverity::Hint,
+        _ => DiagnosticSeverity::Warning,
+    }
 }
 
 #[cfg(test)]
