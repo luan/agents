@@ -841,6 +841,42 @@ impl Store {
             .map_err(Into::into)
     }
 
+    pub fn enclosing_symbol_detail(
+        &self,
+        file_path: &str,
+        line: usize,
+    ) -> Result<Option<SymbolResult>> {
+        self.conn
+            .query_row(
+                r#"
+                SELECT s.name, s.kind, s.parent, s.language, f.rel_path, f.path, s.start_line, s.end_line, s.depth, s.signature
+                FROM symbols s
+                JOIN files f ON s.file_id = f.id
+                WHERE f.path = ?1
+                  AND s.start_line <= ?2 AND s.end_line >= ?2
+                ORDER BY (s.end_line - s.start_line) ASC
+                LIMIT 1
+                "#,
+                params![file_path, line as i64],
+                |row| {
+                    Ok(SymbolResult {
+                        name: row.get(0)?,
+                        kind: row.get(1)?,
+                        parent: row.get(2)?,
+                        language: row.get(3)?,
+                        rel_path: row.get(4)?,
+                        file: row.get(5)?,
+                        start_line: row.get::<_, i64>(6)? as usize,
+                        end_line: row.get::<_, i64>(7)? as usize,
+                        depth: row.get::<_, i64>(8)? as usize,
+                        signature: row.get(9)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
     pub fn find_impact(
         &self,
         symbol_name: &str,

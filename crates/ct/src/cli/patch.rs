@@ -403,13 +403,31 @@ fn patch_candidates(
             .collect();
     };
     let lines = content.lines().collect::<Vec<_>>();
+    let sym_store = sym_store(root).ok();
     candidates
         .iter()
-        .map(|line| semantic_candidate(*chunk as i64, *line as i64, &lines))
+        .map(|line| {
+            semantic_candidate(
+                *chunk as i64,
+                *line as i64,
+                &lines,
+                sym_store.as_ref(),
+                &abs,
+            )
+        })
         .collect()
 }
 
-fn semantic_candidate(chunk_index: i64, line: i64, lines: &[&str]) -> PatchCandidate {
+fn semantic_candidate(
+    chunk_index: i64,
+    line: i64,
+    lines: &[&str],
+    sym_store: Option<&sym::store::Store>,
+    abs_path: &std::path::Path,
+) -> PatchCandidate {
+    if let Some(candidate) = sym_candidate(chunk_index, line, sym_store, abs_path, lines) {
+        return candidate;
+    }
     let idx = line.saturating_sub(1) as usize;
     let start = idx.saturating_sub(40);
     for cursor in (start..=idx.min(lines.len().saturating_sub(1))).rev() {
@@ -428,6 +446,39 @@ fn semantic_candidate(chunk_index: i64, line: i64, lines: &[&str]) -> PatchCandi
     }
     let anchor = lines.get(idx).map(|line| format!("@@ {}", line.trim()));
     simple_candidate(chunk_index, line, anchor)
+}
+
+fn sym_store(root: &std::path::Path) -> anyhow::Result<sym::store::Store> {
+    let db_path = sym::repo::configured_db_path(root, None)?;
+    sym::indexer::ensure_fresh(root, &db_path)?;
+    sym::store::Store::open(&db_path)
+}
+
+fn sym_candidate(
+    chunk_index: i64,
+    line: i64,
+    store: Option<&sym::store::Store>,
+    abs_path: &std::path::Path,
+    lines: &[&str],
+) -> Option<PatchCandidate> {
+    let symbol = store?
+        .enclosing_symbol_detail(&abs_path.to_string_lossy(), line as usize)
+        .ok()??;
+    let source_anchor = lines
+        .get(symbol.start_line.saturating_sub(1))
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
+        .map(|line| format!("@@ {line}"));
+    Some(PatchCandidate {
+        chunk_index,
+        line,
+        suggested_anchor: source_anchor
+            .or_else(|| (!symbol.signature.is_empty()).then(|| format!("@@ {}", symbol.signature))),
+        enclosing_symbol: Some(symbol.name),
+        enclosing_kind: Some(symbol.kind),
+        symbol_start: Some(symbol.start_line as i64),
+        symbol_end: Some(symbol.end_line as i64),
+    })
 }
 
 fn simple_candidate(
