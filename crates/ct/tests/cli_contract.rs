@@ -186,3 +186,51 @@ fn create_writes_frontmatter_only_body() {
         "expected exactly one frontmatter close, got {close_count}:\n{content}"
     );
 }
+
+#[test]
+fn ast_replace_apply_routes_through_lens_patch_draft() {
+    if StdCommand::new("sg").arg("--version").output().is_err() {
+        return;
+    }
+    let (bp, _remote) = setup_blueprints();
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+    run_git(project.path(), &["init", "--initial-branch=main"]);
+    fs::write(
+        project.path().join("main.rs"),
+        "fn main() {\n    let value = 1;\n}\n",
+    )
+    .expect("write source");
+
+    ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .args([
+            "ast",
+            "replace",
+            "--lang",
+            "rust",
+            "--pattern",
+            "let $A = 1",
+            "--rewrite",
+            "let $A = 2",
+            "--path",
+            "main.rs",
+            "--apply",
+            "--json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"apply\": true"));
+
+    let source = fs::read_to_string(project.path().join("main.rs")).expect("read source");
+    assert!(source.contains("let value = 2;"));
+
+    ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .args(["lens", "status", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"patch_drafts\": 1"));
+}
