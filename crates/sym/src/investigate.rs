@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::Result;
 
 use crate::context::{is_type_like, open_store, read_symbol_source, resolve_symbol};
-use crate::store::{ImplementorResult, ImpactResult, RefResult, SymbolResult};
+use crate::store::{ImpactResult, ImplementorResult, RefResult, SymbolResult};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct InvestigateResult {
@@ -44,7 +44,8 @@ pub fn investigate(cwd: &Path, symbol_name: &str) -> Result<InvestigateResult> {
         }
         kind if is_type_like(kind) => {
             result.kind = "type".into();
-            result.members = store.child_symbols(&result.symbol.name, 50, Some(&result.symbol.file))?;
+            result.members =
+                store.child_symbols(&result.symbol.name, 50, Some(&result.symbol.file))?;
             result.refs = store.find_references(&result.symbol.name, 20, &[])?;
             result.implementors = store.find_implementors(&result.symbol.name, 20)?;
             result.implements = store.find_implements(&result.symbol.name, 20)?;

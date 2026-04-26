@@ -63,17 +63,17 @@ pub fn index(root: &Path, options: &IndexOptions) -> Result<IndexStats> {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos() as i64;
-        if !options.force {
-            if let Some(check) = file_checks.get(&path) {
-                if check.mtime_ns == mtime_ns && check.size == file_size {
-                    files_skipped += 1;
-                    continue;
-                }
-            }
+        if !options.force
+            && let Some(check) = file_checks.get(&path)
+            && check.mtime_ns == mtime_ns
+            && check.size == file_size
+        {
+            files_skipped += 1;
+            continue;
         }
 
-        let source = fs::read(&file.path)
-            .with_context(|| format!("reading {}", file.path.display()))?;
+        let source =
+            fs::read(&file.path).with_context(|| format!("reading {}", file.path.display()))?;
         let parsed = parser::parse_source(&source, &file.path.to_string_lossy(), &file.language)
             .with_context(|| format!("parsing {}", file.path.display()))?;
         let hash = hash_bytes(&source);

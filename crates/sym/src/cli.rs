@@ -348,7 +348,6 @@ pub fn run_index(path: &Path, force: bool, reset: bool, ignore: &[String]) -> an
             db_path: Some(db_path),
             cli_ignore_patterns: ignore.to_vec(),
             force,
-            ..indexer::IndexOptions::default()
         },
     )?;
 
@@ -368,32 +367,34 @@ pub fn run_index(path: &Path, force: bool, reset: bool, ignore: &[String]) -> an
     Ok(())
 }
 
-pub fn run_search(
-    query: &[String],
-    text: bool,
-    limit: usize,
-    kind: Option<&str>,
-    lang: Option<&str>,
-    exact: bool,
-    ignore_case: bool,
-    path_filters: &[String],
-    excludes: &[String],
-) -> anyhow::Result<()> {
-    let query = query.join(" ");
+pub struct SearchArgs<'a> {
+    pub query: &'a [String],
+    pub text: bool,
+    pub limit: usize,
+    pub kind: Option<&'a str>,
+    pub lang: Option<&'a str>,
+    pub exact: bool,
+    pub ignore_case: bool,
+    pub path_filters: &'a [String],
+    pub excludes: &'a [String],
+}
+
+pub fn run_search(args: &SearchArgs<'_>) -> anyhow::Result<()> {
+    let query = args.query.join(" ");
     if query.trim().is_empty() {
         bail!("search query cannot be empty");
     }
 
-    let effective_exact = search::normalize_search_mode(exact, ignore_case, text)?;
+    let effective_exact = search::normalize_search_mode(args.exact, args.ignore_case, args.text)?;
     let root = std::env::current_dir()?;
-    if text {
+    if args.text {
         let results = search::search_text(
             &root,
             &query,
-            lang,
-            limit,
-            path_filters,
-            excludes,
+            args.lang,
+            args.limit,
+            args.path_filters,
+            args.excludes,
             effective_exact,
         )?;
         if results.is_empty() {
@@ -402,12 +403,20 @@ pub fn run_search(
 
         let mut content = String::new();
         for result in &results {
-            content.push_str(&format!("{}:{}: {}\n", result.rel_path.display(), result.line, result.snippet));
+            content.push_str(&format!(
+                "{}:{}: {}\n",
+                result.rel_path.display(),
+                result.line,
+                result.snippet
+            ));
         }
 
         return output::render(
             &results,
-            &[("query", query.clone()), ("result_count", results.len().to_string())],
+            &[
+                ("query", query.clone()),
+                ("result_count", results.len().to_string()),
+            ],
             &content,
         );
     }
@@ -415,13 +424,15 @@ pub fn run_search(
     let results = search::search_symbols(
         &root,
         &query,
-        kind,
-        lang,
-        limit,
-        effective_exact,
-        ignore_case,
-        path_filters,
-        excludes,
+        &search::SymbolSearchOptions {
+            kind: args.kind,
+            lang: args.lang,
+            limit: args.limit,
+            exact: effective_exact,
+            ignore_case: args.ignore_case,
+            includes: args.path_filters,
+            excludes: args.excludes,
+        },
     )?;
     if results.is_empty() {
         bail!("no results found for '{query}'");
@@ -429,12 +440,18 @@ pub fn run_search(
 
     let mut content = String::new();
     for result in &results {
-        content.push_str(&format!("{} {} {}:{}\n", result.kind, result.name, result.rel_path, result.start_line));
+        content.push_str(&format!(
+            "{} {} {}:{}\n",
+            result.kind, result.name, result.rel_path, result.start_line
+        ));
     }
 
     output::render(
         &results,
-        &[("query", query), ("result_count", results.len().to_string())],
+        &[
+            ("query", query),
+            ("result_count", results.len().to_string()),
+        ],
         &content,
     )
 }
@@ -470,7 +487,12 @@ pub fn run_outline(file: &Path, signatures: bool, names: bool) -> anyhow::Result
         if signatures && !symbol.signature.is_empty() {
             content.push_str(&format!(
                 "{}{} {}{} (L{}-{})",
-                indent, symbol.kind, symbol.name, symbol.signature, symbol.start_line, symbol.end_line
+                indent,
+                symbol.kind,
+                symbol.name,
+                symbol.signature,
+                symbol.start_line,
+                symbol.end_line
             ));
         } else {
             content.push_str(&format!(
@@ -482,7 +504,10 @@ pub fn run_outline(file: &Path, signatures: bool, names: bool) -> anyhow::Result
     }
 
     output::write_frontmatter(
-        &[("file", rel_file), ("symbol_count", symbols.len().to_string())],
+        &[
+            ("file", rel_file),
+            ("symbol_count", symbols.len().to_string()),
+        ],
         &content,
     )
 }
@@ -581,18 +606,32 @@ pub fn run_ls(path: Option<&Path>, repos: bool, stats: bool, depth: usize) -> an
     Ok(())
 }
 
-pub fn run_refs(
-    targets: &[String],
-    importers: bool,
-    impact: bool,
-    depth: usize,
-    limit: usize,
-    context: usize,
-    path_filters: &[String],
-    excludes: &[String],
-    file: Option<&str>,
-    stdin: bool,
-) -> anyhow::Result<()> {
+pub struct RefsArgs<'a> {
+    pub targets: &'a [String],
+    pub importers: bool,
+    pub impact: bool,
+    pub depth: usize,
+    pub limit: usize,
+    pub context: usize,
+    pub path_filters: &'a [String],
+    pub excludes: &'a [String],
+    pub file: Option<&'a str>,
+    pub stdin: bool,
+}
+
+pub fn run_refs(args: &RefsArgs<'_>) -> anyhow::Result<()> {
+    let RefsArgs {
+        targets,
+        importers,
+        impact,
+        depth,
+        limit,
+        context,
+        path_filters,
+        excludes,
+        file,
+        stdin,
+    } = *args;
     let cwd = std::env::current_dir()?;
     let targets = multisym::collect_symbols(targets, stdin)?;
 
@@ -609,15 +648,22 @@ pub fn run_refs(
         let mut grouped = Vec::new();
         for target in targets {
             if importers {
-                let results = graph::find_importers(&cwd, &target, depth, limit, &includes, excludes)?;
-                grouped.push(TargetResult { target, results: json!(results) });
+                let results =
+                    graph::find_importers(&cwd, &target, depth, limit, &includes, excludes)?;
+                grouped.push(TargetResult {
+                    target,
+                    results: json!(results),
+                });
             } else {
                 let results = graph::find_references(&cwd, &target, limit, &includes, excludes)?;
                 let enriched = results
                     .into_iter()
                     .map(|row| {
-                        let (ctx_lines, _) =
-                            source_context::read_source_context(Path::new(&row.file), row.line, context);
+                        let (ctx_lines, _) = source_context::read_source_context(
+                            Path::new(&row.file),
+                            row.line,
+                            context,
+                        );
                         json!({
                             "name": row.name,
                             "rel_path": row.rel_path,
@@ -652,7 +698,10 @@ pub fn run_refs(
                 content.push_str(&format!("{}:{}\n", result.rel_path, result.import));
             }
             output::write_frontmatter(
-                &[("symbol", target.clone()), ("importer_count", results.len().to_string())],
+                &[
+                    ("symbol", target.clone()),
+                    ("importer_count", results.len().to_string()),
+                ],
                 &content,
             )?;
             continue;
@@ -713,7 +762,10 @@ pub fn run_importers(target: &str, depth: usize, limit: usize) -> anyhow::Result
         content.push_str(&format!("{}:{}\n", result.rel_path, result.import));
     }
     output::write_frontmatter(
-        &[("target", target.to_string()), ("importer_count", results.len().to_string())],
+        &[
+            ("target", target.to_string()),
+            ("importer_count", results.len().to_string()),
+        ],
         &content,
     )
 }
@@ -889,7 +941,10 @@ pub fn run_trace(
         let key = format!("{}:{}|{}", row.file, row.line, row.callee);
         let hits = source_map.get(&key).cloned().unwrap_or_default();
         if hits.is_empty() {
-            println!("[{}] {} -> {} {}:{}", row.depth, row.caller, row.callee, row.rel_path, row.line);
+            println!(
+                "[{}] {} -> {} {}:{}",
+                row.depth, row.caller, row.callee, row.rel_path, row.line
+            );
         } else {
             println!(
                 "[{}] {} -> {} {}:{} [{}]",
@@ -906,32 +961,44 @@ pub fn run_trace(
     Ok(())
 }
 
-pub fn run_impls(
-    targets: &[String],
-    lang: Option<&str>,
-    limit: usize,
-    path_filters: &[String],
-    excludes: &[String],
-    of: Option<&str>,
-    resolved: bool,
-    unresolved: bool,
-    stdin: bool,
-) -> anyhow::Result<()> {
+pub struct ImplsArgs<'a> {
+    pub targets: &'a [String],
+    pub lang: Option<&'a str>,
+    pub limit: usize,
+    pub path_filters: &'a [String],
+    pub excludes: &'a [String],
+    pub of: Option<&'a str>,
+    pub resolved: bool,
+    pub unresolved: bool,
+    pub stdin: bool,
+}
+
+pub fn run_impls(args: &ImplsArgs<'_>) -> anyhow::Result<()> {
+    let ImplsArgs {
+        targets,
+        lang,
+        limit,
+        path_filters,
+        excludes,
+        of,
+        resolved,
+        unresolved,
+        stdin,
+    } = *args;
     let cwd = std::env::current_dir()?;
+    let opts = impls::FindImplOptions {
+        lang,
+        limit,
+        includes: path_filters,
+        excludes,
+        resolved_only: resolved,
+        unresolved_only: unresolved,
+    };
     if let Some(of) = of {
         if !targets.is_empty() || stdin {
             bail!("pass either positional symbols or --of <type>, not both");
         }
-        let results = impls::find_implements(
-            &cwd,
-            of,
-            lang,
-            limit,
-            path_filters,
-            excludes,
-            resolved,
-            unresolved,
-        )?;
+        let results = impls::find_implements(&cwd, of, &opts)?;
         if results.is_empty() {
             println!("No implements edges found for '{of}'.");
             return Ok(());
@@ -939,7 +1006,10 @@ pub fn run_impls(
         let mut content = String::new();
         for result in &results {
             let tag = if result.resolved { "" } else { " (external)" };
-            content.push_str(&format!("{} {}:{}{}\n", result.target, result.rel_path, result.line, tag));
+            content.push_str(&format!(
+                "{} {}:{}{}\n",
+                result.target, result.rel_path, result.line, tag
+            ));
         }
         return output::render(
             &results,
@@ -957,16 +1027,7 @@ pub fn run_impls(
     if output::json_enabled() {
         let mut grouped = Vec::new();
         for target in targets {
-            let results = impls::find_implementors(
-                &cwd,
-                &target,
-                lang,
-                limit,
-                path_filters,
-                excludes,
-                resolved,
-                unresolved,
-            )?;
+            let results = impls::find_implementors(&cwd, &target, &opts)?;
             grouped.push(TargetResult { target, results });
         }
         return output::write_json(&grouped);
@@ -974,16 +1035,7 @@ pub fn run_impls(
 
     for (index, target) in targets.iter().enumerate() {
         print!("{}", multisym::multi_symbol_header(target, index == 0));
-        let results = impls::find_implementors(
-            &cwd,
-            target,
-            lang,
-            limit,
-            path_filters,
-            excludes,
-            resolved,
-            unresolved,
-        )?;
+        let results = impls::find_implementors(&cwd, target, &opts)?;
         if results.is_empty() {
             println!("No implementors found for '{target}'.");
             continue;
@@ -991,7 +1043,10 @@ pub fn run_impls(
         let mut content = String::new();
         for result in &results {
             let tag = if result.resolved { "" } else { " (external)" };
-            content.push_str(&format!("{} {}:{}{}\n", result.implementer, result.rel_path, result.line, tag));
+            content.push_str(&format!(
+                "{} {}:{}{}\n",
+                result.implementer, result.rel_path, result.line, tag
+            ));
         }
         output::write_frontmatter(
             &[
@@ -1014,7 +1069,10 @@ pub fn run_context(targets: &[String], callers: usize, stdin: bool) -> anyhow::R
         let mut grouped = Vec::new();
         for target in targets {
             let result = context::symbol_context(&cwd, &target, callers)?;
-            grouped.push(TargetResult { target, results: result });
+            grouped.push(TargetResult {
+                target,
+                results: result,
+            });
         }
         return output::write_json(&grouped);
     }
@@ -1033,8 +1091,15 @@ pub fn run_context(targets: &[String], callers: usize, stdin: bool) -> anyhow::R
         if !result.implementors.is_empty() {
             println!("\n# Implementors ({})", result.implementors.len());
             for implementor in result.implementors {
-                let tag = if implementor.resolved { "" } else { " (external)" };
-                println!("{} {}:{}{}", implementor.implementer, implementor.rel_path, implementor.line, tag);
+                let tag = if implementor.resolved {
+                    ""
+                } else {
+                    " (external)"
+                };
+                println!(
+                    "{} {}:{}{}",
+                    implementor.implementer, implementor.rel_path, implementor.line, tag
+                );
             }
         }
         if !result.implements.is_empty() {
@@ -1063,7 +1128,10 @@ pub fn run_investigate(targets: &[String], stdin: bool) -> anyhow::Result<()> {
         let mut grouped = Vec::new();
         for target in targets {
             let result = investigate::investigate(&cwd, &target)?;
-            grouped.push(TargetResult { target, results: result });
+            grouped.push(TargetResult {
+                target,
+                results: result,
+            });
         }
         return output::write_json(&grouped);
     }
@@ -1077,18 +1145,29 @@ pub fn run_investigate(targets: &[String], stdin: bool) -> anyhow::Result<()> {
             println!("\n# Members ({})", result.members.len());
             for member in result.members {
                 if member.signature.is_empty() {
-                    println!("{} {} {}:{}", member.kind, member.name, member.rel_path, member.start_line);
+                    println!(
+                        "{} {} {}:{}",
+                        member.kind, member.name, member.rel_path, member.start_line
+                    );
                 } else {
                     println!(
                         "{} {} {} {}:{}",
-                        member.kind, member.name, member.signature, member.rel_path, member.start_line
+                        member.kind,
+                        member.name,
+                        member.signature,
+                        member.rel_path,
+                        member.start_line
                     );
                 }
             }
         }
 
         if !result.refs.is_empty() {
-            let label = if result.kind == "function" { "Callers" } else { "References" };
+            let label = if result.kind == "function" {
+                "Callers"
+            } else {
+                "References"
+            };
             println!("\n# {label} ({})", result.refs.len());
             for reference in result.refs {
                 println!("{}:{}", reference.rel_path, reference.line);
@@ -1098,15 +1177,25 @@ pub fn run_investigate(targets: &[String], stdin: bool) -> anyhow::Result<()> {
         if !result.impact.is_empty() {
             println!("\n# Impact (depth 2)");
             for edge in result.impact {
-                println!("[{}] {} -> {} {}:{}", edge.depth, edge.caller, edge.symbol, edge.rel_path, edge.line);
+                println!(
+                    "[{}] {} -> {} {}:{}",
+                    edge.depth, edge.caller, edge.symbol, edge.rel_path, edge.line
+                );
             }
         }
 
         if !result.implementors.is_empty() {
             println!("\n# Implementors ({})", result.implementors.len());
             for implementor in result.implementors {
-                let tag = if implementor.resolved { "" } else { " (external)" };
-                println!("{} {}:{}{}", implementor.implementer, implementor.rel_path, implementor.line, tag);
+                let tag = if implementor.resolved {
+                    ""
+                } else {
+                    " (external)"
+                };
+                println!(
+                    "{} {}:{}{}",
+                    implementor.implementer, implementor.rel_path, implementor.line, tag
+                );
             }
         }
 
@@ -1139,7 +1228,10 @@ pub fn run_structure(limit: usize) -> anyhow::Result<()> {
     if !result.entry_points.is_empty() {
         println!("Entry points:");
         for symbol in result.entry_points {
-            println!("  {} {} {}:{}", symbol.kind, symbol.name, symbol.rel_path, symbol.start_line);
+            println!(
+                "  {} {} {}:{}",
+                symbol.kind, symbol.name, symbol.rel_path, symbol.start_line
+            );
         }
         println!();
     }
@@ -1162,7 +1254,10 @@ pub fn run_structure(limit: usize) -> anyhow::Result<()> {
     if !result.top_packages.is_empty() {
         println!("Largest packages:");
         for package in result.top_packages {
-            println!("  {} {} symbols, {} files", package.path, package.symbols, package.files);
+            println!(
+                "  {} {} symbols, {} files",
+                package.path, package.symbols, package.files
+            );
         }
         println!();
     }
@@ -1258,7 +1353,10 @@ fn parse_kinds(raw: &str) -> Vec<&str> {
 }
 
 fn strip_symbol_hint(target: &str) -> &str {
-    target.rsplit_once(':').map(|(_, symbol)| symbol).unwrap_or(target)
+    target
+        .rsplit_once(':')
+        .map(|(_, symbol)| symbol)
+        .unwrap_or(target)
 }
 
 fn looks_like_file_target(target: &str) -> bool {

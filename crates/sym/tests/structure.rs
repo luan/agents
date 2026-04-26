@@ -12,14 +12,27 @@ fn structure_reports_entry_points_hotspots_import_fan_and_packages() -> Result<(
 
     assert_eq!(result.files, 4);
     assert!(result.symbols >= 4);
-    assert!(result.entry_points.iter().any(|symbol| symbol.name == "main"));
-    assert!(result.top_by_refs.iter().any(|symbol| symbol.symbol.name == "Run" || symbol.symbol.name == "Handle"));
+    assert!(
+        result
+            .entry_points
+            .iter()
+            .any(|symbol| symbol.name == "main")
+    );
+    assert!(
+        result
+            .top_by_refs
+            .iter()
+            .any(|symbol| symbol.symbol.name == "Run" || symbol.symbol.name == "Handle")
+    );
     let service = result
         .top_by_import_fan
         .iter()
         .find(|file| file.rel_path == "service/service.go")
         .expect("service should appear in import fan-in");
-    assert_eq!(service.count, 2, "service is imported by handler and worker");
+    assert_eq!(
+        service.count, 2,
+        "service is imported by handler and worker"
+    );
     assert!(!result.top_packages.is_empty());
 
     Ok(())
@@ -55,7 +68,10 @@ fn import_fan_credits_stem_only_matches_and_dedupes_importers() -> Result<()> {
         .iter()
         .find(|file| file.rel_path == "utils/utils.go")
         .expect("utils should appear in import fan-in");
-    assert_eq!(utils.count, 2, "two distinct importers, regardless of row count");
+    assert_eq!(
+        utils.count, 2,
+        "two distinct importers, regardless of row count"
+    );
     Ok(())
 }
 
@@ -83,8 +99,15 @@ fn top_by_refs_counts_each_reference_once_across_definers() -> Result<()> {
     )?;
 
     let result = structure::analyze(root.path(), 20)?;
-    for entry in result.top_by_refs.iter().filter(|e| e.symbol.name == "Widget") {
-        assert_eq!(entry.count, 1, "Widget is referenced once, regardless of definer count");
+    for entry in result
+        .top_by_refs
+        .iter()
+        .filter(|e| e.symbol.name == "Widget")
+    {
+        assert_eq!(
+            entry.count, 1,
+            "Widget is referenced once, regardless of definer count"
+        );
     }
     Ok(())
 }

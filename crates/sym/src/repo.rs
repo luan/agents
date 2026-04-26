@@ -24,7 +24,7 @@ fn resolve_cache_base_dir(
 
     #[cfg(target_os = "macos")]
     {
-        return Some(home.join("Library").join("Caches"));
+        Some(home.join("Library").join("Caches"))
     }
 
     #[cfg(windows)]
@@ -55,7 +55,10 @@ pub fn repo_db_path(repo_root: &Path) -> Result<PathBuf> {
     let base = sym_dir()?;
     let repo_root = repo_root.canonicalize()?;
     let hash = Sha256::digest(repo_root.to_string_lossy().as_bytes());
-    Ok(base.join("repos").join(hex::encode(&hash[..8])).join("index.db"))
+    Ok(base
+        .join("repos")
+        .join(hex::encode(&hash[..8]))
+        .join("index.db"))
 }
 
 pub fn configured_db_path(cwd: &Path, explicit: Option<&Path>) -> Result<PathBuf> {
@@ -65,7 +68,11 @@ pub fn configured_db_path(cwd: &Path, explicit: Option<&Path>) -> Result<PathBuf
     select_db_path(cwd, explicit, env_db.as_deref())
 }
 
-pub fn select_db_path(cwd: &Path, explicit: Option<&Path>, env_db: Option<&Path>) -> Result<PathBuf> {
+pub fn select_db_path(
+    cwd: &Path,
+    explicit: Option<&Path>,
+    env_db: Option<&Path>,
+) -> Result<PathBuf> {
     if let Some(explicit) = explicit {
         return Ok(explicit.to_path_buf());
     }
@@ -81,10 +88,10 @@ pub fn find_git_root(dir: &Path) -> Result<PathBuf> {
     let mut current = dir.canonicalize()?;
     loop {
         let dot_git = current.join(".git");
-        if let Ok(metadata) = std::fs::metadata(&dot_git) {
-            if metadata.is_dir() || metadata.is_file() {
-                return Ok(current);
-            }
+        if let Ok(metadata) = std::fs::metadata(&dot_git)
+            && (metadata.is_dir() || metadata.is_file())
+        {
+            return Ok(current);
         }
 
         if !current.pop() {

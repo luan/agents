@@ -9,13 +9,7 @@ use sym::symbols::{REF_KIND_CALL, REF_KIND_USE};
 fn graph_queries_auto_index_and_filter_references() -> Result<()> {
     let fixture = RepoFixture::new()?;
 
-    let refs = graph::find_references(
-        fixture.root(),
-        "Handle",
-        20,
-        &["api.go".to_string()],
-        &[],
-    )?;
+    let refs = graph::find_references(fixture.root(), "Handle", 20, &["api.go".to_string()], &[])?;
 
     assert_eq!(refs.len(), 1);
     assert_eq!(refs[0].rel_path, "api.go");
@@ -53,7 +47,13 @@ fn graph_queries_trace_defaults_to_calls_and_can_widen() -> Result<()> {
     assert!(default.iter().any(|edge| edge.callee == "DoWork"));
     assert!(!default.iter().any(|edge| edge.callee == "Widget"));
 
-    let wide = graph::find_trace(fixture.root(), "main", 3, 20, &[REF_KIND_CALL, REF_KIND_USE])?;
+    let wide = graph::find_trace(
+        fixture.root(),
+        "main",
+        3,
+        20,
+        &[REF_KIND_CALL, REF_KIND_USE],
+    )?;
     assert!(wide.iter().any(|edge| edge.callee == "Widget"));
 
     Ok(())

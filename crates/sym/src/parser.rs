@@ -146,7 +146,9 @@ impl<'a> Extractor<'a> {
 
     fn classify_bash<'tree>(&self, node: Node<'tree>) -> Option<(String, Node<'tree>)> {
         match node.kind() {
-            "function_definition" => Some(("function".to_string(), node.child_by_field_name("name")?)),
+            "function_definition" => {
+                Some(("function".to_string(), node.child_by_field_name("name")?))
+            }
             _ => None,
         }
     }
@@ -187,10 +189,10 @@ impl<'a> Extractor<'a> {
             "decorated_definition" => {
                 let count = node.child_count();
                 for index in 0..count {
-                    if let Some(child) = node.child(index) {
-                        if let Some(classified) = self.classify_python_inner(child) {
-                            return Some(classified);
-                        }
+                    if let Some(child) = node.child(index)
+                        && let Some(classified) = self.classify_python_inner(child)
+                    {
+                        return Some(classified);
                     }
                 }
                 None
@@ -234,10 +236,10 @@ impl<'a> Extractor<'a> {
             "export_statement" => {
                 let count = node.child_count();
                 for index in 0..count {
-                    if let Some(child) = node.child(index) {
-                        if let Some(classified) = self.classify_js_inner(child) {
-                            return Some(classified);
-                        }
+                    if let Some(child) = node.child(index)
+                        && let Some(classified) = self.classify_js_inner(child)
+                    {
+                        return Some(classified);
                     }
                 }
                 None
@@ -287,12 +289,13 @@ impl<'a> Extractor<'a> {
             "const_item" => Some(("constant".to_string(), node.child_by_field_name("name")?)),
             "static_item" => Some(("variable".to_string(), node.child_by_field_name("name")?)),
             "mod_item" => Some(("module".to_string(), node.child_by_field_name("name")?)),
+            "enum_variant" => Some(("variant".to_string(), node.child_by_field_name("name")?)),
             "impl_item" => {
                 let mut type_node = node.child_by_field_name("type")?;
-                if type_node.kind() == "generic_type" {
-                    if let Some(inner) = type_node.child_by_field_name("type") {
-                        type_node = inner;
-                    }
+                if type_node.kind() == "generic_type"
+                    && let Some(inner) = type_node.child_by_field_name("type")
+                {
+                    type_node = inner;
                 }
                 Some(("impl".to_string(), type_node))
             }
@@ -366,10 +369,7 @@ impl<'a> Extractor<'a> {
 
     fn classify_kotlin<'tree>(&self, node: Node<'tree>) -> Option<(String, Node<'tree>)> {
         match node.kind() {
-            "class_declaration" => Some((
-                "class".to_string(),
-                node.child_by_field_name("name")?,
-            )),
+            "class_declaration" => Some(("class".to_string(), node.child_by_field_name("name")?)),
             "function_declaration" => {
                 Some(("function".to_string(), node.child_by_field_name("name")?))
             }
@@ -383,12 +383,8 @@ impl<'a> Extractor<'a> {
             "interface_declaration" => {
                 Some(("interface".to_string(), node.child_by_field_name("name")?))
             }
-            "struct_declaration" => {
-                Some(("struct".to_string(), node.child_by_field_name("name")?))
-            }
-            "record_declaration" => {
-                Some(("record".to_string(), node.child_by_field_name("name")?))
-            }
+            "struct_declaration" => Some(("struct".to_string(), node.child_by_field_name("name")?)),
+            "record_declaration" => Some(("record".to_string(), node.child_by_field_name("name")?)),
             "method_declaration" => Some(("method".to_string(), node.child_by_field_name("name")?)),
             _ => None,
         }
@@ -409,7 +405,9 @@ impl<'a> Extractor<'a> {
             "protocol_declaration" => {
                 Some(("protocol".to_string(), node.child_by_field_name("name")?))
             }
-            "function_declaration" => Some(("function".to_string(), node.child_by_field_name("name")?)),
+            "function_declaration" => {
+                Some(("function".to_string(), node.child_by_field_name("name")?))
+            }
             _ => None,
         }
     }
@@ -419,7 +417,7 @@ impl<'a> Extractor<'a> {
             "c" | "cpp" if node.kind() == "preproc_include" => {
                 let raw = node
                     .child_by_field_name("path")
-                    .and_then(|path| trimmed_node_text(self.source, path, "\"<>") )
+                    .and_then(|path| trimmed_node_text(self.source, path, "\"<>"))
                     .or_else(|| node_text(self.source, node))?;
                 Some(Import {
                     raw_path: raw,
@@ -467,18 +465,24 @@ impl<'a> Extractor<'a> {
                 raw_path: node_text(self.source, node)?,
                 language: self.language.to_string(),
             }),
-            "ruby" if node.kind() == "call" => extract_ruby_import(self.source, node).map(|raw_path| Import {
-                raw_path,
-                language: self.language.to_string(),
-            }),
-            "bash" if node.kind() == "command" => extract_bash_import(self.source, node).map(|raw_path| Import {
-                raw_path,
-                language: self.language.to_string(),
-            }),
-            "lua" if node.kind() == "function_call" => extract_lua_import(self.source, node).map(|raw_path| Import {
-                raw_path,
-                language: self.language.to_string(),
-            }),
+            "ruby" if node.kind() == "call" => {
+                extract_ruby_import(self.source, node).map(|raw_path| Import {
+                    raw_path,
+                    language: self.language.to_string(),
+                })
+            }
+            "bash" if node.kind() == "command" => {
+                extract_bash_import(self.source, node).map(|raw_path| Import {
+                    raw_path,
+                    language: self.language.to_string(),
+                })
+            }
+            "lua" if node.kind() == "function_call" => {
+                extract_lua_import(self.source, node).map(|raw_path| Import {
+                    raw_path,
+                    language: self.language.to_string(),
+                })
+            }
             "scala" if node.kind() == "import_declaration" => Some(Import {
                 raw_path: node_text(self.source, node)?,
                 language: self.language.to_string(),
@@ -536,10 +540,10 @@ impl<'a> Extractor<'a> {
         if let Some(reference) = self.extract_call_ref(node, "call_expression", "function") {
             refs.push(reference);
         }
-        if node.kind() == "composite_literal" {
-            if let Some(reference) = self.extract_go_use_ref(node) {
-                refs.push(reference);
-            }
+        if node.kind() == "composite_literal"
+            && let Some(reference) = self.extract_go_use_ref(node)
+        {
+            refs.push(reference);
         }
         if node.kind() == "type_spec" {
             refs.extend(self.extract_go_interface_embeds(node));
@@ -599,10 +603,10 @@ impl<'a> Extractor<'a> {
         let mut refs = Vec::new();
         let count = superclasses.named_child_count();
         for index in 0..count {
-            if let Some(child) = superclasses.named_child(index) {
-                if let Some(reference) = self.implements_ref(child, node.start_position().row + 1) {
-                    refs.push(reference);
-                }
+            if let Some(child) = superclasses.named_child(index)
+                && let Some(reference) = self.implements_ref(child, node.start_position().row + 1)
+            {
+                refs.push(reference);
             }
         }
         refs
@@ -613,12 +617,15 @@ impl<'a> Extractor<'a> {
         if let Some(reference) = self.extract_call_ref(node, "call_expression", "function") {
             refs.push(reference);
         }
-        if node.kind() == "new_expression" {
-            if let Some(reference) = self.extract_js_new_ref(node) {
-                refs.push(reference);
-            }
+        if node.kind() == "new_expression"
+            && let Some(reference) = self.extract_js_new_ref(node)
+        {
+            refs.push(reference);
         }
-        if matches!(node.kind(), "class_declaration" | "class" | "interface_declaration") {
+        if matches!(
+            node.kind(),
+            "class_declaration" | "class" | "interface_declaration"
+        ) {
             refs.extend(self.extract_js_implements(node));
         }
         refs
@@ -640,7 +647,12 @@ impl<'a> Extractor<'a> {
         collect_clause_refs(
             self.source,
             node,
-            &["class_heritage", "extends_clause", "implements_clause", "extends_type_clause"],
+            &[
+                "class_heritage",
+                "extends_clause",
+                "implements_clause",
+                "extends_type_clause",
+            ],
             node.start_position().row + 1,
             self.language,
             &mut refs,
@@ -653,22 +665,19 @@ impl<'a> Extractor<'a> {
         if let Some(reference) = self.extract_call_ref(node, "call_expression", "function") {
             refs.push(reference);
         }
-        if node.kind() == "impl_item" {
-            if let Some(trait_node) = node.child_by_field_name("trait") {
-                if let Some(reference) = self.implements_ref(trait_node, node.start_position().row + 1) {
-                    refs.push(reference);
-                }
-            }
+        if node.kind() == "impl_item"
+            && let Some(trait_node) = node.child_by_field_name("trait")
+            && let Some(reference) = self.implements_ref(trait_node, node.start_position().row + 1)
+        {
+            refs.push(reference);
         }
         refs
     }
 
     fn extract_java_refs(&self, node: Node<'_>) -> Vec<Ref> {
         if matches!(node.kind(), "class_declaration" | "interface_declaration") {
-            return self.extract_named_clauses(
-                node,
-                &["superclass", "interfaces", "extends_interfaces"],
-            );
+            return self
+                .extract_named_clauses(node, &["superclass", "interfaces", "extends_interfaces"]);
         }
         Vec::new()
     }
@@ -681,16 +690,19 @@ impl<'a> Extractor<'a> {
         let mut refs = Vec::new();
         let count = node.named_child_count();
         for index in 0..count {
-            if let Some(child) = node.named_child(index) {
-                if matches!(child.kind(), "delegation_specifier" | "delegation_specifiers") {
-                    collect_clause_items(
-                        self.source,
-                        child,
-                        node.start_position().row + 1,
-                        self.language,
-                        &mut refs,
-                    );
-                }
+            if let Some(child) = node.named_child(index)
+                && matches!(
+                    child.kind(),
+                    "delegation_specifier" | "delegation_specifiers"
+                )
+            {
+                collect_clause_items(
+                    self.source,
+                    child,
+                    node.start_position().row + 1,
+                    self.language,
+                    &mut refs,
+                );
             }
         }
         refs
@@ -699,7 +711,10 @@ impl<'a> Extractor<'a> {
     fn extract_csharp_refs(&self, node: Node<'_>) -> Vec<Ref> {
         if matches!(
             node.kind(),
-            "class_declaration" | "interface_declaration" | "struct_declaration" | "record_declaration"
+            "class_declaration"
+                | "interface_declaration"
+                | "struct_declaration"
+                | "record_declaration"
         ) {
             return self.extract_child_clause(node, "base_list");
         }
@@ -715,10 +730,10 @@ impl<'a> Extractor<'a> {
 
     fn extract_lua_refs(&self, node: Node<'_>) -> Vec<Ref> {
         let mut refs = Vec::new();
-        if let Some(reference) = self.extract_call_ref(node, "function_call", "name") {
-            if reference.name != "require" {
-                refs.push(reference);
-            }
+        if let Some(reference) = self.extract_call_ref(node, "function_call", "name")
+            && reference.name != "require"
+        {
+            refs.push(reference);
         }
         refs
     }
@@ -738,10 +753,9 @@ impl<'a> Extractor<'a> {
     fn extract_php_call_ref(&self, node: Node<'_>) -> Option<Ref> {
         let target = match node.kind() {
             "function_call_expression" => node.child_by_field_name("function")?,
-            "member_call_expression" | "scoped_call_expression" => {
-                node.child_by_field_name("name")
-                    .or_else(|| node.child_by_field_name("member_name"))?
-            }
+            "member_call_expression" | "scoped_call_expression" => node
+                .child_by_field_name("name")
+                .or_else(|| node.child_by_field_name("member_name"))?,
             "object_creation_expression" => node.child_by_field_name("class")?,
             _ => return None,
         };
@@ -756,12 +770,11 @@ impl<'a> Extractor<'a> {
 
     fn extract_ruby_refs(&self, node: Node<'_>) -> Vec<Ref> {
         let mut refs = Vec::new();
-        if node.kind() == "class" {
-            if let Some(superclass) = node.child_by_field_name("superclass") {
-                if let Some(reference) = self.implements_ref(superclass, node.start_position().row + 1) {
-                    refs.push(reference);
-                }
-            }
+        if node.kind() == "class"
+            && let Some(superclass) = node.child_by_field_name("superclass")
+            && let Some(reference) = self.implements_ref(superclass, node.start_position().row + 1)
+        {
+            refs.push(reference);
         }
         if let Some(reference) = extract_ruby_call_ref(self.source, node, self.language) {
             refs.push(reference);
@@ -774,12 +787,15 @@ impl<'a> Extractor<'a> {
         if let Some(reference) = self.extract_call_ref(node, "call_expression", "function") {
             refs.push(reference);
         }
-        if node.kind() == "instance_expression" {
-            if let Some(reference) = self.extract_call_ref(node, "instance_expression", "function") {
-                refs.push(reference);
-            }
+        if node.kind() == "instance_expression"
+            && let Some(reference) = self.extract_call_ref(node, "instance_expression", "function")
+        {
+            refs.push(reference);
         }
-        if matches!(node.kind(), "class_definition" | "trait_definition" | "object_definition") {
+        if matches!(
+            node.kind(),
+            "class_definition" | "trait_definition" | "object_definition"
+        ) {
             refs.extend(self.extract_child_clause(node, "extends_clause"));
         }
         refs
@@ -805,16 +821,16 @@ impl<'a> Extractor<'a> {
         let mut refs = Vec::new();
         let count = node.named_child_count();
         for index in 0..count {
-            if let Some(child) = node.named_child(index) {
-                if child.kind() == child_kind {
-                    collect_clause_items(
-                        self.source,
-                        child,
-                        node.start_position().row + 1,
-                        self.language,
-                        &mut refs,
-                    );
-                }
+            if let Some(child) = node.named_child(index)
+                && child.kind() == child_kind
+            {
+                collect_clause_items(
+                    self.source,
+                    child,
+                    node.start_position().row + 1,
+                    self.language,
+                    &mut refs,
+                );
             }
         }
         refs
@@ -841,13 +857,13 @@ impl<'a> Extractor<'a> {
                     .child_by_field_name("parameters")
                     .and_then(|parameters| node_text(self.source, parameters))
                     .unwrap_or_default();
-                if let Some(return_type) = node.child_by_field_name("return_type") {
-                    if let Some(return_type) = node_text(self.source, return_type) {
-                        match self.language {
-                            "python" => signature.push_str(&format!(" -> {return_type}")),
-                            "go" => signature.push_str(&format!(" {return_type}")),
-                            _ => signature.push_str(&return_type),
-                        }
+                if let Some(return_type) = node.child_by_field_name("return_type")
+                    && let Some(return_type) = node_text(self.source, return_type)
+                {
+                    match self.language {
+                        "python" => signature.push_str(&format!(" -> {return_type}")),
+                        "go" => signature.push_str(&format!(" {return_type}")),
+                        _ => signature.push_str(&return_type),
                     }
                 }
                 signature
@@ -891,9 +907,7 @@ fn extract_call_name(source: &[u8], node: Node<'_>) -> Option<String> {
         | "field_identifier"
         | "name"
         | "relative_name"
-        | "constant" => {
-            node_text(source, node)
-        }
+        | "constant" => node_text(source, node),
         "selector_expression"
         | "member_expression"
         | "field_expression"
@@ -901,21 +915,20 @@ fn extract_call_name(source: &[u8], node: Node<'_>) -> Option<String> {
         | "scope_resolution"
         | "qualified_name"
         | "attribute"
-        | "generic_type" => {
-            node.child_by_field_name("field")
-                .or_else(|| node.child_by_field_name("attribute"))
-                .or_else(|| node.child_by_field_name("property"))
-                .or_else(|| node.child_by_field_name("name"))
-                .or_else(|| node.child_by_field_name("type"))
-                .and_then(|child| node_text(source, child))
-        }
+        | "generic_type" => node
+            .child_by_field_name("field")
+            .or_else(|| node.child_by_field_name("attribute"))
+            .or_else(|| node.child_by_field_name("property"))
+            .or_else(|| node.child_by_field_name("name"))
+            .or_else(|| node.child_by_field_name("type"))
+            .and_then(|child| node_text(source, child)),
         _ => {
             let count = node.named_child_count();
             for index in 0..count {
-                if let Some(child) = node.named_child(index) {
-                    if let Some(name) = extract_call_name(source, child) {
-                        return Some(name);
-                    }
+                if let Some(child) = node.named_child(index)
+                    && let Some(name) = extract_call_name(source, child)
+                {
+                    return Some(name);
                 }
             }
             None
@@ -938,16 +951,16 @@ fn collect_go_embedded_types(source: &[u8], node: Node<'_>, refs: &mut Vec<Ref>,
     if node.kind() == "type_elem" {
         let count = node.named_child_count();
         for index in 0..count {
-            if let Some(child) = node.named_child(index) {
-                if let Some(name) = extract_call_name(source, child) {
-                    refs.push(Ref {
-                        name,
-                        line: child.start_position().row + 1,
-                        language: language.to_string(),
-                        kind: REF_KIND_IMPLEMENTS.to_string(),
-                    });
-                    return;
-                }
+            if let Some(child) = node.named_child(index)
+                && let Some(name) = extract_call_name(source, child)
+            {
+                refs.push(Ref {
+                    name,
+                    line: child.start_position().row + 1,
+                    language: language.to_string(),
+                    kind: REF_KIND_IMPLEMENTS.to_string(),
+                });
+                return;
             }
         }
     }

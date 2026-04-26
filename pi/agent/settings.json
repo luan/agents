@@ -5,9 +5,9 @@
   "transport": "auto",
   "doubleEscapeAction": "tree",
   "treeFilterMode": "default",
-  "defaultProvider": "github-copilot",
-  "defaultModel": "gpt-5.4",
-  "defaultThinkingLevel": "high",
+  "defaultProvider": "claude-agent-sdk",
+  "defaultModel": "claude-opus-4-7",
+  "defaultThinkingLevel": "xhigh",
   "packages": [
     {
       "source": "npm:pi-extension-manager",
@@ -15,12 +15,10 @@
         "+src/index.ts"
       ]
     },
-    "npm:pi-which-key",
     "npm:pi-subagents",
     "npm:@ifi/oh-pi-themes",
     "npm:@ollama/pi-web-search",
     "npm:pi-lens",
-    "npm:@termdraw/pi",
     "npm:pi-mcp-adapter",
     "npm:claude-agent-sdk-pi",
     "npm:@heyhuynhgiabuu/pi-diff"

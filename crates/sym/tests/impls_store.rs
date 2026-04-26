@@ -50,7 +50,13 @@ fn store_finds_inverse_implements_and_skips_nested_type_edges() -> Result<()> {
         "swift",
         vec![
             symbol("Session", "class", "/repo/Session.swift", 1, 100),
-            symbol("RequestConvertible", "struct", "/repo/Session.swift", 50, 60),
+            symbol(
+                "RequestConvertible",
+                "struct",
+                "/repo/Session.swift",
+                50,
+                60,
+            ),
         ],
         vec![
             implements_ref("Sendable", 1, "swift"),
@@ -128,7 +134,8 @@ impl Fixture {
             SystemTime::UNIX_EPOCH,
             100,
         )?;
-        self.store.replace_file_contents(file_id, &symbols, &[], &refs)
+        self.store
+            .replace_file_contents(file_id, &symbols, &[], &refs)
     }
 }
 

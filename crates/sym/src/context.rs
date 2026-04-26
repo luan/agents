@@ -25,9 +25,13 @@ pub fn symbol_context(cwd: &Path, symbol_name: &str, caller_limit: usize) -> Res
     let file_imports = store.file_imports(&symbol.file)?;
 
     let (implementors, implements) = if is_type_like(&symbol.kind) {
+        let opts = impls::FindImplOptions {
+            limit: 20,
+            ..Default::default()
+        };
         (
-            impls::find_implementors(cwd, &symbol.name, None, 20, &[], &[], false, false)?,
-            impls::find_implements(cwd, &symbol.name, None, 20, &[], &[], false, false)?,
+            impls::find_implementors(cwd, &symbol.name, &opts)?,
+            impls::find_implements(cwd, &symbol.name, &opts)?,
         )
     } else {
         (Vec::new(), Vec::new())
@@ -51,27 +55,38 @@ pub(crate) fn resolve_symbol(cwd: &Path, symbol_name: &str) -> Result<SymbolResu
     Ok(resolve::resolve_symbol(cwd, symbol_name)?.symbol)
 }
 
-pub(crate) fn read_symbol_source(symbol: &SymbolResult, max_lines: Option<usize>) -> Result<String> {
+pub(crate) fn read_symbol_source(
+    symbol: &SymbolResult,
+    max_lines: Option<usize>,
+) -> Result<String> {
     let end_line = max_lines
-        .map(|max_lines| symbol.end_line.min(symbol.start_line + max_lines.saturating_sub(1)))
+        .map(|max_lines| {
+            symbol
+                .end_line
+                .min(symbol.start_line + max_lines.saturating_sub(1))
+        })
         .unwrap_or(symbol.end_line);
-    let lines = show::show_file(Path::new(&symbol.file), Some((symbol.start_line, end_line)), 0)?;
+    let lines = show::show_file(
+        Path::new(&symbol.file),
+        Some((symbol.start_line, end_line)),
+        0,
+    )?;
     let mut source = lines
         .iter()
         .map(|line| line.content.as_str())
         .collect::<Vec<_>>()
         .join("\n");
     source.push('\n');
-    if let Some(max_lines) = max_lines {
-        if symbol.end_line.saturating_sub(symbol.start_line) + 1 > max_lines {
-            source.push_str(&format!(
-                "... ({} more lines — see sym show {}:{}-{})\n",
-                symbol.end_line - end_line,
-                symbol.rel_path,
-                symbol.start_line,
-                symbol.end_line
-            ));
-        }
+    if let Some(max_lines) = max_lines
+        && symbol.end_line.saturating_sub(symbol.start_line) + 1 > max_lines
+    {
+        source.push_str(&format!(
+            "... ({} more lines — see sym show {}:{}-{})\n",
+            symbol.end_line - end_line,
+            symbol.rel_path,
+            symbol.start_line,
+            symbol.end_line
+        ));
     }
     Ok(source)
 }

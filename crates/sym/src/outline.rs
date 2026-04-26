@@ -2,8 +2,8 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use crate::repo;
 use crate::indexer;
+use crate::repo;
 use crate::store::{Store, SymbolResult};
 
 pub fn file_outline(cwd: &Path, file_path: &Path) -> Result<Vec<SymbolResult>> {

@@ -97,7 +97,11 @@ impl Fixture {
         let root = tempfile::tempdir()?;
         let db_dir = tempfile::tempdir()?;
         fs::create_dir(root.path().join(".git"))?;
-        write(root.path(), "src/main.go", "package main\n\nfunc Handle() {}\n")?;
+        write(
+            root.path(),
+            "src/main.go",
+            "package main\n\nfunc Handle() {}\n",
+        )?;
         Ok(Self { root, db_dir })
     }
 

@@ -8,12 +8,16 @@ use sym::impls;
 fn impls_queries_auto_index_for_incoming_and_inverse_directions() -> Result<()> {
     let fixture = Fixture::new()?;
 
-    let incoming = impls::find_implementors(fixture.root(), "Reader", None, 50, &[], &[], false, false)?;
+    let opts = impls::FindImplOptions {
+        limit: 50,
+        ..Default::default()
+    };
+    let incoming = impls::find_implementors(fixture.root(), "Reader", &opts)?;
     assert_eq!(incoming.len(), 1);
     assert_eq!(incoming[0].implementer, "Cache");
     assert!(incoming[0].resolved);
 
-    let inverse = impls::find_implements(fixture.root(), "Cache", None, 50, &[], &[], false, false)?;
+    let inverse = impls::find_implements(fixture.root(), "Cache", &opts)?;
     assert_eq!(inverse.len(), 1);
     assert_eq!(inverse[0].target, "Reader");
 
@@ -24,27 +28,28 @@ fn impls_queries_auto_index_for_incoming_and_inverse_directions() -> Result<()> 
 fn impls_queries_support_path_filters_and_resolved_filters() -> Result<()> {
     let fixture = Fixture::new()?;
 
+    let includes = vec!["src/*".to_string()];
+    let excludes = vec!["src/cache.rs".to_string()];
     let filtered = impls::find_implementors(
         fixture.root(),
         "Reader",
-        None,
-        50,
-        &["src/*".to_string()],
-        &["src/cache.rs".to_string()],
-        false,
-        false,
+        &impls::FindImplOptions {
+            limit: 50,
+            includes: &includes,
+            excludes: &excludes,
+            ..Default::default()
+        },
     )?;
     assert!(filtered.is_empty());
 
     let unresolved = impls::find_implementors(
         fixture.root(),
         "ExternalReader",
-        None,
-        50,
-        &[],
-        &[],
-        false,
-        true,
+        &impls::FindImplOptions {
+            limit: 50,
+            unresolved_only: true,
+            ..Default::default()
+        },
     )?;
     assert_eq!(unresolved.len(), 1);
     assert_eq!(unresolved[0].implementer, "RemoteCache");

@@ -19,7 +19,12 @@ pub struct ShownSymbol {
     pub content: String,
 }
 
-pub fn show_symbol(cwd: &Path, name: &str, context: usize, show_all: bool) -> Result<Vec<ShownSymbol>> {
+pub fn show_symbol(
+    cwd: &Path,
+    name: &str,
+    context: usize,
+    show_all: bool,
+) -> Result<Vec<ShownSymbol>> {
     let resolved = resolve::resolve_symbol(cwd, name)?;
     let mut results = resolved.matches;
     if !show_all {
@@ -29,7 +34,11 @@ pub fn show_symbol(cwd: &Path, name: &str, context: usize, show_all: bool) -> Re
     results
         .into_iter()
         .map(|symbol| {
-            let lines = show_file(Path::new(&symbol.file), Some((symbol.start_line, symbol.end_line)), context)?;
+            let lines = show_file(
+                Path::new(&symbol.file),
+                Some((symbol.start_line, symbol.end_line)),
+                context,
+            )?;
             let content = lines
                 .iter()
                 .map(|line| line.content.as_str())
@@ -44,9 +53,16 @@ pub fn show_symbol(cwd: &Path, name: &str, context: usize, show_all: bool) -> Re
         .collect()
 }
 
-pub fn show_file(path: &Path, range: Option<(usize, usize)>, context: usize) -> Result<Vec<LineEntry>> {
-    let path = path.canonicalize().with_context(|| format!("resolving {}", path.display()))?;
-    let contents = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+pub fn show_file(
+    path: &Path,
+    range: Option<(usize, usize)>,
+    context: usize,
+) -> Result<Vec<LineEntry>> {
+    let path = path
+        .canonicalize()
+        .with_context(|| format!("resolving {}", path.display()))?;
+    let contents =
+        fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
 
     let (start, end) = range.unwrap_or((1, usize::MAX));
     let start = if range.is_some() {

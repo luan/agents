@@ -54,9 +54,21 @@ impl Fixture {
     fn new() -> Result<Self> {
         let root = tempfile::tempdir()?;
         fs::create_dir(root.path().join(".git"))?;
-        write(root.path(), "src/config.go", "package main\n\ntype Config struct{}\n")?;
-        write(root.path(), "docs/config.go", "package docs\n\ntype Config struct{}\n")?;
-        write(root.path(), "tests/config_test.go", "package tests\n\ntype Config struct{}\n")?;
+        write(
+            root.path(),
+            "src/config.go",
+            "package main\n\ntype Config struct{}\n",
+        )?;
+        write(
+            root.path(),
+            "docs/config.go",
+            "package docs\n\ntype Config struct{}\n",
+        )?;
+        write(
+            root.path(),
+            "tests/config_test.go",
+            "package tests\n\ntype Config struct{}\n",
+        )?;
         write(
             root.path(),
             "src/cache.ts",

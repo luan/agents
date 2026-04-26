@@ -2,7 +2,7 @@ use std::time::SystemTime;
 
 use anyhow::Result;
 use sym::store::Store;
-use sym::symbols::{Import, Ref, Symbol, REF_KIND_CALL};
+use sym::symbols::{Import, REF_KIND_CALL, Ref, Symbol};
 
 #[test]
 fn store_supports_prefix_exact_and_case_insensitive_search() -> Result<()> {

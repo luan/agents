@@ -55,7 +55,10 @@ fn git_diff(repo_root: &Path, rel_path: &Path, base: &str, stat: bool) -> Result
         .output()
         .with_context(|| format!("running git diff in {}", repo_root.display()))?;
     if !output.status.success() && !output.stderr.is_empty() {
-        bail!("git diff: {}", String::from_utf8_lossy(&output.stderr).trim());
+        bail!(
+            "git diff: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }

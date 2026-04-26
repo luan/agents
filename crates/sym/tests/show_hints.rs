@@ -35,8 +35,16 @@ impl Fixture {
     fn new() -> Result<Self> {
         let root = tempfile::tempdir()?;
         fs::create_dir(root.path().join(".git"))?;
-        write(root.path(), "src/config.go", "package main\n\ntype Config struct{}\n")?;
-        write(root.path(), "docs/config.go", "package docs\n\ntype Config struct{}\n")?;
+        write(
+            root.path(),
+            "src/config.go",
+            "package main\n\ntype Config struct{}\n",
+        )?;
+        write(
+            root.path(),
+            "docs/config.go",
+            "package docs\n\ntype Config struct{}\n",
+        )?;
         write(
             root.path(),
             "src/cache.ts",
@@ -68,6 +76,10 @@ where
         .args(args)
         .current_dir(cwd)
         .output()?;
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     Ok(String::from_utf8(output.stdout)?)
 }

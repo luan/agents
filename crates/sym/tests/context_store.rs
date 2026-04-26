@@ -60,7 +60,13 @@ fn store_child_symbols_are_file_scoped_and_file_imports_are_sorted() -> Result<(
     assert_eq!(all.len(), 3);
 
     let scoped = store.child_symbols("Cache", 50, Some("/repo/cache.ts"))?;
-    assert_eq!(scoped.iter().map(|symbol| symbol.name.as_str()).collect::<Vec<_>>(), vec!["read", "write"]);
+    assert_eq!(
+        scoped
+            .iter()
+            .map(|symbol| symbol.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["read", "write"]
+    );
 
     let imports = store.file_imports("/repo/cache.ts")?;
     assert_eq!(imports, vec!["./base", "./helpers"]);
@@ -68,7 +74,15 @@ fn store_child_symbols_are_file_scoped_and_file_imports_are_sorted() -> Result<(
     Ok(())
 }
 
-fn symbol(name: &str, kind: &str, file: &str, start_line: usize, end_line: usize, parent: &str, depth: usize) -> Symbol {
+fn symbol(
+    name: &str,
+    kind: &str,
+    file: &str,
+    start_line: usize,
+    end_line: usize,
+    parent: &str,
+    depth: usize,
+) -> Symbol {
     Symbol {
         name: name.into(),
         kind: kind.into(),

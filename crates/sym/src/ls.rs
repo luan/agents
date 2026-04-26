@@ -25,7 +25,9 @@ pub fn list_repos() -> Result<Vec<RepoStats>> {
     }
 
     let mut repos = Vec::new();
-    for entry in fs::read_dir(&repos_dir).with_context(|| format!("reading {}", repos_dir.display()))? {
+    for entry in
+        fs::read_dir(&repos_dir).with_context(|| format!("reading {}", repos_dir.display()))?
+    {
         let entry = entry?;
         let db_path = entry.path().join("index.db");
         if !db_path.is_file() {

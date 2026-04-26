@@ -53,7 +53,10 @@ fn dedup_groups_same_call_site_across_multiple_lines() {
         },
     ];
     let (lines, group_count) = dedup_ref_lines(&refs);
-    assert_eq!(group_count, 2, "same (path, text) across 2 lines collapses to 1 group");
+    assert_eq!(
+        group_count, 2,
+        "same (path, text) across 2 lines collapses to 1 group"
+    );
     assert!(
         lines.iter().any(|s| s.starts_with("src/a.rs (2 sites):")),
         "multi-line group must render as '(N sites):', got: {lines:?}"

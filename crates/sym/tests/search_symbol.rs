@@ -24,21 +24,26 @@ fn search_symbols_auto_indexes_repo_and_honors_filters() -> Result<()> {
         "package main\n\nfunc HandleRequestTest() {}\n",
     )?;
 
+    let includes = vec!["src/*".to_string()];
+    let excludes = vec!["*_test.go".to_string()];
     let results = search::search_symbols(
         temp_dir.path(),
         "Handle",
-        None,
-        None,
-        20,
-        false,
-        false,
-        &["src/*".to_string()],
-        &["*_test.go".to_string()],
+        &search::SymbolSearchOptions {
+            limit: 20,
+            includes: &includes,
+            excludes: &excludes,
+            ..Default::default()
+        },
     )?;
 
     assert!(results.iter().any(|result| result.name == "HandleRequest"));
     assert!(results.iter().any(|result| result.name == "HandleServer"));
-    assert!(!results.iter().any(|result| result.name == "HandleRequestTest"));
+    assert!(
+        !results
+            .iter()
+            .any(|result| result.name == "HandleRequestTest")
+    );
 
     Ok(())
 }
@@ -63,13 +68,10 @@ fn search_filters_by_kind_and_applies_ranking() -> Result<()> {
     let all = search::search_symbols(
         temp_dir.path(),
         "Widget",
-        None,
-        None,
-        20,
-        false,
-        false,
-        &[],
-        &[],
+        &search::SymbolSearchOptions {
+            limit: 20,
+            ..Default::default()
+        },
     )?;
     assert_eq!(
         all.first().map(|r| r.kind.as_str()),
@@ -80,13 +82,11 @@ fn search_filters_by_kind_and_applies_ranking() -> Result<()> {
     let only_structs = search::search_symbols(
         temp_dir.path(),
         "Widget",
-        Some("struct"),
-        None,
-        20,
-        false,
-        false,
-        &[],
-        &[],
+        &search::SymbolSearchOptions {
+            kind: Some("struct"),
+            limit: 20,
+            ..Default::default()
+        },
     )?;
     assert!(only_structs.iter().all(|r| r.kind == "struct"));
     assert!(only_structs.iter().any(|r| r.name == "Widget"));

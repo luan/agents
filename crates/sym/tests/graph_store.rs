@@ -2,7 +2,7 @@ use std::time::SystemTime;
 
 use anyhow::Result;
 use sym::store::Store;
-use sym::symbols::{Import, Ref, Symbol, REF_KIND_CALL, REF_KIND_USE};
+use sym::symbols::{Import, REF_KIND_CALL, REF_KIND_USE, Ref, Symbol};
 
 #[test]
 fn store_finds_references_by_name() -> Result<()> {

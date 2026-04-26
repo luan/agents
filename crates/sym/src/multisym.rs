@@ -23,7 +23,11 @@ pub fn collect_symbols(args: &[String], use_stdin: bool) -> Result<Vec<String>> 
     collect_symbols_from(args, use_stdin, stdin.as_deref())
 }
 
-pub fn collect_symbols_from(args: &[String], use_stdin: bool, stdin: Option<&str>) -> Result<Vec<String>> {
+pub fn collect_symbols_from(
+    args: &[String],
+    use_stdin: bool,
+    stdin: Option<&str>,
+) -> Result<Vec<String>> {
     let mut seen = std::collections::BTreeSet::new();
     let mut out = Vec::new();
 
@@ -39,11 +43,9 @@ pub fn collect_symbols_from(args: &[String], use_stdin: bool, stdin: Option<&str
     for arg in args {
         add(arg);
     }
-    if use_stdin {
-        if let Some(stdin) = stdin {
-            for line in stdin.lines() {
-                add(line);
-            }
+    if use_stdin && let Some(stdin) = stdin {
+        for line in stdin.lines() {
+            add(line);
         }
     }
     if out.is_empty() {

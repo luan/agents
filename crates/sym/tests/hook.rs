@@ -3,9 +3,9 @@ use std::path::PathBuf;
 use anyhow::Result;
 use serde_json::Value;
 use sym::hook::{
-    ClaudeSettings, Suggestion, append_unique_hook_group, claude_hook_entries, detect_search_command,
-    emit_nudge, emit_remind, hook_group_has_marker, lookup_hook_adapter, merge_claude_hooks,
-    remove_claude_hooks, split_shellish,
+    ClaudeSettings, Suggestion, append_unique_hook_group, claude_hook_entries,
+    detect_search_command, emit_nudge, emit_remind, hook_group_has_marker, lookup_hook_adapter,
+    merge_claude_hooks, remove_claude_hooks, split_shellish,
 };
 
 #[test]
@@ -25,16 +25,32 @@ fn detect_ripgrep_and_find_queries() {
 
 #[test]
 fn detect_skips_noise_and_non_shell_tools() {
-    assert!(detect_search_command(&["rg", "-n", "ab", "."], "").replacement.is_empty());
-    assert!(detect_search_command(&["find", ".", "-name", "*.log"], "").replacement.is_empty());
-    assert!(detect_search_command(&["rg", "-n", r"^(foo|bar)+\s*$", "src/"], "")
-        .replacement
-        .is_empty());
-    assert!(detect_search_command(&["rg", "something"], "Edit").replacement.is_empty());
+    assert!(
+        detect_search_command(&["rg", "-n", "ab", "."], "")
+            .replacement
+            .is_empty()
+    );
+    assert!(
+        detect_search_command(&["find", ".", "-name", "*.log"], "")
+            .replacement
+            .is_empty()
+    );
+    assert!(
+        detect_search_command(&["rg", "-n", r"^(foo|bar)+\s*$", "src/"], "")
+            .replacement
+            .is_empty()
+    );
+    assert!(
+        detect_search_command(&["rg", "something"], "Edit")
+            .replacement
+            .is_empty()
+    );
     let fields = split_shellish("ls | wc -l");
-    assert!(detect_search_command(&fields.iter().map(String::as_str).collect::<Vec<_>>(), "")
-        .replacement
-        .is_empty());
+    assert!(
+        detect_search_command(&fields.iter().map(String::as_str).collect::<Vec<_>>(), "")
+            .replacement
+            .is_empty()
+    );
 }
 
 #[test]
@@ -51,10 +67,12 @@ fn emit_nudge_shapes() -> Result<()> {
     assert!(value.get("systemMessage").is_none());
     assert_eq!(value["hookSpecificOutput"]["hookEventName"], "PreToolUse");
     assert_eq!(value["hookSpecificOutput"]["permissionDecision"], "allow");
-    assert!(value["hookSpecificOutput"]["additionalContext"]
-        .as_str()
-        .unwrap()
-        .contains("ct sym search Foo"));
+    assert!(
+        value["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap()
+            .contains("ct sym search Foo")
+    );
 
     let text = emit_nudge("text", &["rg", "Foo"], &suggestion)?;
     assert!(text.stdout.is_empty());
@@ -70,7 +88,10 @@ fn emit_nudge_shapes() -> Result<()> {
 fn emit_remind_shapes() -> Result<()> {
     let text = emit_remind("text")?;
     assert!(text.contains("ct sym search"));
-    assert!(!text.contains("\n  sym "), "reminder must not suggest bare `sym`");
+    assert!(
+        !text.contains("\n  sym "),
+        "reminder must not suggest bare `sym`"
+    );
 
     let json = emit_remind("json")?;
     let value: Value = serde_json::from_str(&json)?;
@@ -80,17 +101,21 @@ fn emit_remind_shapes() -> Result<()> {
     let value: Value = serde_json::from_str(&claude)?;
     assert!(value.get("systemMessage").is_none());
     assert_eq!(value["hookSpecificOutput"]["hookEventName"], "SessionStart");
-    assert!(value["hookSpecificOutput"]["additionalContext"]
-        .as_str()
-        .unwrap()
-        .contains("ct sym search"));
+    assert!(
+        value["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap()
+            .contains("ct sym search")
+    );
     Ok(())
 }
 
 #[test]
 fn claude_install_is_idempotent_and_uninstall_preserves_user_hooks() {
     let mut settings = ClaudeSettings::new();
-    settings.raw.insert("model".into(), Value::String("sonnet".into()));
+    settings
+        .raw
+        .insert("model".into(), Value::String("sonnet".into()));
     settings.raw.insert(
         "hooks".into(),
         serde_json::json!({
@@ -158,7 +183,10 @@ fn settings_roundtrip_to_disk() -> Result<()> {
     merge_claude_hooks(&mut settings);
     sym::hook::write_claude_settings(&path, &settings)?;
     let loaded = sym::hook::load_claude_settings(&path)?;
-    assert_eq!(loaded.raw["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        loaded.raw["hooks"]["PreToolUse"].as_array().unwrap().len(),
+        1
+    );
     Ok(())
 }
 

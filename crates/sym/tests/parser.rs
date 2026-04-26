@@ -189,6 +189,11 @@ trait Runner {}
 fn execute() {}
 
 impl Config {}
+
+enum Status {
+    Ready,
+    Failed { reason: String },
+}
 "#;
     let result = parse_source(source, "test.rs", "rust")?;
 
@@ -196,6 +201,10 @@ impl Config {}
     assert_has_symbol(&result, "Runner", "trait");
     assert_has_symbol(&result, "execute", "function");
     assert_has_symbol(&result, "Config", "impl");
+    assert_has_symbol(&result, "Status", "enum");
+    let ready = assert_has_symbol(&result, "Ready", "variant");
+    assert_eq!(ready.parent, "Status");
+    assert_has_symbol(&result, "Failed", "variant");
 
     Ok(())
 }
@@ -320,7 +329,12 @@ void run(void) {
             .iter()
             .any(|import_| import_.raw_path.contains("worker.h"))
     );
-    assert!(c_result.refs.iter().any(|reference| reference.name == "helper"));
+    assert!(
+        c_result
+            .refs
+            .iter()
+            .any(|reference| reference.name == "helper")
+    );
 
     let cpp = br#"#include "runner.hpp"
 
@@ -335,7 +349,12 @@ public:
     assert_has_symbol(&cpp_result, "Runner", "class");
     assert_has_ref(&cpp_result, "BaseRunner", REF_KIND_IMPLEMENTS);
     assert_has_ref(&cpp_result, "Runnable", REF_KIND_IMPLEMENTS);
-    assert!(cpp_result.refs.iter().any(|reference| reference.name == "helper"));
+    assert!(
+        cpp_result
+            .refs
+            .iter()
+            .any(|reference| reference.name == "helper")
+    );
 
     let php = br#"<?php
 namespace App;
@@ -353,7 +372,12 @@ class UserRepo extends BaseRepo implements JsonSerializable {
     assert_has_symbol(&php_result, "run", "method");
     assert_has_ref(&php_result, "BaseRepo", REF_KIND_IMPLEMENTS);
     assert_has_ref(&php_result, "JsonSerializable", REF_KIND_IMPLEMENTS);
-    assert!(php_result.refs.iter().any(|reference| reference.name == "helper"));
+    assert!(
+        php_result
+            .refs
+            .iter()
+            .any(|reference| reference.name == "helper")
+    );
 
     let ruby = br#"require "json"
 
@@ -373,7 +397,12 @@ end
             .any(|import_| import_.raw_path.contains("json"))
     );
     assert_has_ref(&ruby_result, "BaseWorker", REF_KIND_IMPLEMENTS);
-    assert!(ruby_result.refs.iter().any(|reference| reference.name == "helper"));
+    assert!(
+        ruby_result
+            .refs
+            .iter()
+            .any(|reference| reference.name == "helper")
+    );
 
     let bash = br#"source "./lib.sh"
 
@@ -389,7 +418,12 @@ run() {
             .iter()
             .any(|import_| import_.raw_path.contains("./lib.sh"))
     );
-    assert!(bash_result.refs.iter().any(|reference| reference.name == "helper"));
+    assert!(
+        bash_result
+            .refs
+            .iter()
+            .any(|reference| reference.name == "helper")
+    );
 
     let lua = br#"local base = require("base")
 
@@ -405,7 +439,12 @@ end
             .iter()
             .any(|import_| import_.raw_path.contains("base"))
     );
-    assert!(lua_result.refs.iter().any(|reference| reference.name == "helper"));
+    assert!(
+        lua_result
+            .refs
+            .iter()
+            .any(|reference| reference.name == "helper")
+    );
 
     let scala = br#"import service.BaseService
 
@@ -424,7 +463,12 @@ def runApp() = helper()
     );
     assert_has_ref(&scala_result, "BaseService", REF_KIND_IMPLEMENTS);
     assert_has_ref(&scala_result, "Runnable", REF_KIND_IMPLEMENTS);
-    assert!(scala_result.refs.iter().any(|reference| reference.name == "helper"));
+    assert!(
+        scala_result
+            .refs
+            .iter()
+            .any(|reference| reference.name == "helper")
+    );
 
     Ok(())
 }

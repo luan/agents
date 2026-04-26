@@ -68,19 +68,19 @@ pub fn resolve_symbol(cwd: &Path, arg: &str) -> Result<ResolveResult> {
 }
 
 fn parse_symbol_arg(arg: &str) -> (Option<String>, Option<String>, String) {
-    if let Some((left, right)) = arg.rsplit_once(':') {
-        if !right.is_empty()
-            && (left.contains('/') || left.contains('.') || left.contains(std::path::MAIN_SEPARATOR))
-            && right.trim_start_matches('L').parse::<usize>().is_err()
-        {
-            return (Some(left.to_string()), None, right.to_string());
-        }
+    if let Some((left, right)) = arg.rsplit_once(':')
+        && !right.is_empty()
+        && (left.contains('/') || left.contains('.') || left.contains(std::path::MAIN_SEPARATOR))
+        && right.trim_start_matches('L').parse::<usize>().is_err()
+    {
+        return (Some(left.to_string()), None, right.to_string());
     }
 
-    if let Some((parent, symbol)) = arg.split_once('.') {
-        if !parent.is_empty() && !symbol.is_empty() {
-            return (None, Some(parent.to_string()), symbol.to_string());
-        }
+    if let Some((parent, symbol)) = arg.split_once('.')
+        && !parent.is_empty()
+        && !symbol.is_empty()
+    {
+        return (None, Some(parent.to_string()), symbol.to_string());
     }
 
     (None, None, arg.to_string())
@@ -88,24 +88,26 @@ fn parse_symbol_arg(arg: &str) -> (Option<String>, Option<String>, String) {
 
 fn filter_by_file_hint(results: &[SymbolResult], file_hint: &str) -> Vec<SymbolResult> {
     results
-        .into_iter()
+        .iter()
+        .filter(|&result| {
+            result.rel_path.ends_with(file_hint) || result.rel_path.contains(file_hint)
+        })
         .cloned()
-        .filter(|result| result.rel_path.ends_with(file_hint) || result.rel_path.contains(file_hint))
         .collect()
 }
 
 fn filter_by_parent_hint(results: &[SymbolResult], parent_hint: &str) -> Vec<SymbolResult> {
     results
-        .into_iter()
-        .cloned()
-        .filter(|result| {
+        .iter()
+        .filter(|&result| {
             result.parent.eq_ignore_ascii_case(parent_hint) || result.rel_path.contains(parent_hint)
         })
+        .cloned()
         .collect()
 }
 
 pub fn rank_symbols(results: &mut [SymbolResult]) {
-    results.sort_by(|left, right| symbol_score(right).cmp(&symbol_score(left)));
+    results.sort_by_key(|result| std::cmp::Reverse(symbol_score(result)));
 }
 
 /// Over-fetch window for ranking: exact queries fetch unbounded (0 means "no
@@ -138,8 +140,17 @@ fn symbol_score(result: &SymbolResult) -> i32 {
     };
 
     for segment in [
-        "/test/", "/tests/", "/testing/", "_test.go", "_test.", "_spec.", ".test.", ".spec.",
-        "/testdata/", "/testutil/", "/testutils/",
+        "/test/",
+        "/tests/",
+        "/testing/",
+        "_test.go",
+        "_test.",
+        "_spec.",
+        ".test.",
+        ".spec.",
+        "/testdata/",
+        "/testutil/",
+        "/testutils/",
     ] {
         if path_matches_segment(&path, segment) {
             score -= 80;
@@ -147,8 +158,15 @@ fn symbol_score(result: &SymbolResult) -> i32 {
         }
     }
     for segment in [
-        "/playground/", "/example/", "/examples/", "/demo/", "/demos/", "/sample/", "/samples/",
-        "/fixture/", "/fixtures/",
+        "/playground/",
+        "/example/",
+        "/examples/",
+        "/demo/",
+        "/demos/",
+        "/sample/",
+        "/samples/",
+        "/fixture/",
+        "/fixtures/",
     ] {
         if path_matches_segment(&path, segment) {
             score -= 70;
@@ -161,7 +179,13 @@ fn symbol_score(result: &SymbolResult) -> i32 {
             break;
         }
     }
-    for segment in ["/vendor/", "/node_modules/", "/third_party/", "/external/", "/deps/"] {
+    for segment in [
+        "/vendor/",
+        "/node_modules/",
+        "/third_party/",
+        "/external/",
+        "/deps/",
+    ] {
         if path_matches_segment(&path, segment) {
             score -= 90;
             break;
@@ -174,8 +198,19 @@ fn symbol_score(result: &SymbolResult) -> i32 {
         }
     }
     for segment in [
-        ".pb.go", "_pb2.py", "_pb2_grpc.py", "_generated.go", "_gen.go", ".gen.go", ".generated.ts",
-        ".generated.js", ".gen.ts", "__generated__", "_pb.d.ts", "_grpc.pb.go", ".g.dart",
+        ".pb.go",
+        "_pb2.py",
+        "_pb2_grpc.py",
+        "_generated.go",
+        "_gen.go",
+        ".gen.go",
+        ".generated.ts",
+        ".generated.js",
+        ".gen.ts",
+        "__generated__",
+        "_pb.d.ts",
+        "_grpc.pb.go",
+        ".g.dart",
     ] {
         if path.ends_with(segment) || path.contains(&format!("{segment}/")) {
             score -= 70;
@@ -188,7 +223,15 @@ fn symbol_score(result: &SymbolResult) -> i32 {
             break;
         }
     }
-    for segment in ["/src/", "/pkg/", "/lib/", "/crates/", "/packages/", "/internal/", "/cmd/"] {
+    for segment in [
+        "/src/",
+        "/pkg/",
+        "/lib/",
+        "/crates/",
+        "/packages/",
+        "/internal/",
+        "/cmd/",
+    ] {
         if path_matches_segment(&path, segment) {
             score += 15;
             break;

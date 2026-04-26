@@ -81,11 +81,7 @@ fn index_persists_symbols_and_supports_incremental_skips() -> Result<()> {
         "main.go",
         "package main\n\nfunc HandleRequest() {}\n",
     )?;
-    write(
-        temp_dir.path(),
-        "calc.py",
-        "class Calculator:\n    pass\n",
-    )?;
+    write(temp_dir.path(), "calc.py", "class Calculator:\n    pass\n")?;
 
     let first = indexer::index(
         temp_dir.path(),
@@ -147,11 +143,7 @@ fn index_force_reindexes_and_prunes_stale_files() -> Result<()> {
         "main.go",
         "package main\n\ntype Server struct{}\n",
     )?;
-    write(
-        temp_dir.path(),
-        "calc.py",
-        "class Calculator:\n    pass\n",
-    )?;
+    write(temp_dir.path(), "calc.py", "class Calculator:\n    pass\n")?;
 
     let initial = indexer::index(
         temp_dir.path(),

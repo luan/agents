@@ -41,12 +41,22 @@ pub fn find_importers(
     Ok(results)
 }
 
-pub fn find_importers_by_path(cwd: &Path, target: &str, depth: usize, limit: usize) -> Result<Vec<ImporterResult>> {
+pub fn find_importers_by_path(
+    cwd: &Path,
+    target: &str,
+    depth: usize,
+    limit: usize,
+) -> Result<Vec<ImporterResult>> {
     let store = open_store(cwd)?;
     store.find_importers_by_path(target, depth, limit.max(1))
 }
 
-pub fn find_impact(cwd: &Path, name: &str, depth: usize, limit: usize) -> Result<Vec<ImpactResult>> {
+pub fn find_impact(
+    cwd: &Path,
+    name: &str,
+    depth: usize,
+    limit: usize,
+) -> Result<Vec<ImpactResult>> {
     let store = open_store(cwd)?;
     store.find_impact(name, depth, limit.max(1))
 }

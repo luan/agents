@@ -78,7 +78,8 @@ pub fn detect_search_command(fields: &[&str], tool_name: &str) -> Suggestion {
             Suggestion {
                 tool,
                 replacement: format!("ct sym search {}", sh_quote_if_needed(&query)),
-                why: "sym indexes symbols by name; for file discovery use `ct sym ls --stats`.".into(),
+                why: "sym indexes symbols by name; for file discovery use `ct sym ls --stats`."
+                    .into(),
             }
         }
         _ => Suggestion::default(),
@@ -154,7 +155,11 @@ pub fn read_nudge_input(args: &[String]) -> Result<(Vec<String>, String)> {
     Ok((split_shellish(text), String::new()))
 }
 
-pub fn emit_nudge(format: &str, fields: &[&str], suggestion: &Suggestion) -> Result<RenderedOutput> {
+pub fn emit_nudge(
+    format: &str,
+    fields: &[&str],
+    suggestion: &Suggestion,
+) -> Result<RenderedOutput> {
     if suggestion.replacement.is_empty() {
         return Ok(RenderedOutput::default());
     }
@@ -189,7 +194,10 @@ pub fn emit_nudge(format: &str, fields: &[&str], suggestion: &Suggestion) -> Res
             }))? + "\n",
             stderr: String::new(),
         }),
-        other => bail!("unknown --format {:?} (want: claude-code, text, json)", other),
+        other => bail!(
+            "unknown --format {:?} (want: claude-code, text, json)",
+            other
+        ),
     }
 }
 
@@ -205,7 +213,10 @@ pub fn emit_remind(format: &str) -> Result<String> {
                 "additionalContext": REMINDER_TEXT,
             }
         }))? + "\n"),
-        other => bail!("unknown --format {:?} (want: text, json, claude-code)", other),
+        other => bail!(
+            "unknown --format {:?} (want: text, json, claude-code)",
+            other
+        ),
     }
 }
 
@@ -295,7 +306,10 @@ pub fn remove_claude_hooks(settings: &mut ClaudeSettings) {
 
 pub fn append_unique_hook_group(existing: &Value, group: Value) -> Vec<Value> {
     let mut arr = existing.as_array().cloned().unwrap_or_default();
-    if arr.iter().any(|entry| hook_group_has_marker(entry, CLAUDE_HOOK_MARKER)) {
+    if arr
+        .iter()
+        .any(|entry| hook_group_has_marker(entry, CLAUDE_HOOK_MARKER))
+    {
         return arr;
     }
     arr.push(group);
@@ -386,7 +400,12 @@ pub fn lookup_hook_adapter(name: &str) -> Result<HookAdapter> {
     }
 }
 
-pub fn run_hook_install(agent: &str, scope: &str, dry_run: bool, uninstall: bool) -> Result<String> {
+pub fn run_hook_install(
+    agent: &str,
+    scope: &str,
+    dry_run: bool,
+    uninstall: bool,
+) -> Result<String> {
     let adapter = lookup_hook_adapter(agent)?;
     let (target, summary) = if uninstall {
         (adapter.uninstall)(scope, dry_run)?
@@ -397,7 +416,9 @@ pub fn run_hook_install(agent: &str, scope: &str, dry_run: bool, uninstall: bool
         return Ok(format!("[dry-run] would update {target}\n---\n{summary}\n"));
     }
     let verb = if uninstall { "removed" } else { "installed" };
-    Ok(format!("sym hooks {verb} for {agent} ({scope} scope) -> {target}\n"))
+    Ok(format!(
+        "sym hooks {verb} for {agent} ({scope} scope) -> {target}\n"
+    ))
 }
 
 fn is_shell_tool_name(name: &str) -> bool {
@@ -451,12 +472,20 @@ fn looks_like_code_query(query: &str) -> bool {
     if query.len() < 3 || query.starts_with("*.") {
         return false;
     }
-    if !query.chars().any(|ch| ch.is_ascii_alphabetic() || ch == '_') {
+    if !query
+        .chars()
+        .any(|ch| ch.is_ascii_alphabetic() || ch == '_')
+    {
         return false;
     }
     let meta = query
         .chars()
-        .filter(|ch| matches!(ch, '(' | ')' | '[' | ']' | '{' | '}' | '|' | '^' | '$' | '+' | '?' | '*' | '\\'))
+        .filter(|ch| {
+            matches!(
+                ch,
+                '(' | ')' | '[' | ']' | '{' | '}' | '|' | '^' | '$' | '+' | '?' | '*' | '\\'
+            )
+        })
         .count();
     meta * 2 <= query.len()
 }

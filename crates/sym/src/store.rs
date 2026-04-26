@@ -190,8 +190,8 @@ impl Store {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating {}", parent.display()))?;
         }
-        let conn = Connection::open(db_path)
-            .with_context(|| format!("opening {}", db_path.display()))?;
+        let conn =
+            Connection::open(db_path).with_context(|| format!("opening {}", db_path.display()))?;
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
         conn.execute_batch(SCHEMA)?;
         let files_has_indexed_at = table_has_column(&conn, "files", "indexed_at")?;
@@ -246,13 +246,17 @@ impl Store {
         }
 
         self.conn
-            .query_row("SELECT id FROM files WHERE path = ?1", [path], |row| row.get(0))
+            .query_row("SELECT id FROM files WHERE path = ?1", [path], |row| {
+                row.get(0)
+            })
             .context("loading upserted file id")
     }
 
     pub fn get_meta(&self, key: &str) -> Result<Option<String>> {
         self.conn
-            .query_row("SELECT value FROM meta WHERE key = ?1", [key], |row| row.get(0))
+            .query_row("SELECT value FROM meta WHERE key = ?1", [key], |row| {
+                row.get(0)
+            })
             .optional()
             .map_err(Into::into)
     }
@@ -307,9 +311,8 @@ impl Store {
         }
 
         {
-            let mut stmt = tx.prepare(
-                "INSERT INTO imports (file_id, raw_path, language) VALUES (?1, ?2, ?3)",
-            )?;
+            let mut stmt = tx
+                .prepare("INSERT INTO imports (file_id, raw_path, language) VALUES (?1, ?2, ?3)")?;
             for import in imports {
                 stmt.execute(params![file_id, import.raw_path, import.language])?;
             }
@@ -423,7 +426,12 @@ impl Store {
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
-    pub fn child_symbols(&self, parent_name: &str, limit: usize, file_path: Option<&str>) -> Result<Vec<SymbolResult>> {
+    pub fn child_symbols(
+        &self,
+        parent_name: &str,
+        limit: usize,
+        file_path: Option<&str>,
+    ) -> Result<Vec<SymbolResult>> {
         let (sql, params): (&str, Vec<String>) = if let Some(file_path) = file_path {
             (
                 r#"
@@ -434,7 +442,11 @@ impl Store {
                 ORDER BY s.start_line
                 LIMIT ?3
                 "#,
-                vec![parent_name.to_string(), file_path.to_string(), limit.to_string()],
+                vec![
+                    parent_name.to_string(),
+                    file_path.to_string(),
+                    limit.to_string(),
+                ],
             )
         } else {
             (
@@ -509,12 +521,13 @@ impl Store {
             as usize;
         let symbol_count = self
             .conn
-            .query_row("SELECT COUNT(*) FROM symbols", [], |row| row.get::<_, i64>(0))?
-            as usize;
+            .query_row("SELECT COUNT(*) FROM symbols", [], |row| {
+                row.get::<_, i64>(0)
+            })? as usize;
 
-        let mut stmt = self.conn.prepare(
-            "SELECT language, COUNT(*) FROM files GROUP BY language ORDER BY language",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT language, COUNT(*) FROM files GROUP BY language ORDER BY language")?;
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as usize))
         })?;
@@ -594,23 +607,24 @@ impl Store {
             LIMIT ?1
             "#,
         )?;
-        let ref_rows = ref_stmt.query_map([limit as i64, (limit as i64).saturating_mul(4)], |row| {
-            Ok(RankedSymbol {
-                symbol: SymbolResult {
-                    name: row.get(0)?,
-                    kind: row.get(2)?,
-                    parent: row.get(3)?,
-                    language: row.get(4)?,
-                    rel_path: row.get(5)?,
-                    file: row.get(6)?,
-                    start_line: row.get::<_, i64>(7)? as usize,
-                    end_line: row.get::<_, i64>(8)? as usize,
-                    depth: row.get::<_, i64>(9)? as usize,
-                    signature: row.get(10)?,
-                },
-                count: row.get::<_, i64>(1)? as usize,
-            })
-        })?;
+        let ref_rows =
+            ref_stmt.query_map([limit as i64, (limit as i64).saturating_mul(4)], |row| {
+                Ok(RankedSymbol {
+                    symbol: SymbolResult {
+                        name: row.get(0)?,
+                        kind: row.get(2)?,
+                        parent: row.get(3)?,
+                        language: row.get(4)?,
+                        rel_path: row.get(5)?,
+                        file: row.get(6)?,
+                        start_line: row.get::<_, i64>(7)? as usize,
+                        end_line: row.get::<_, i64>(8)? as usize,
+                        depth: row.get::<_, i64>(9)? as usize,
+                        signature: row.get(10)?,
+                    },
+                    count: row.get::<_, i64>(1)? as usize,
+                })
+            })?;
         result.top_by_refs = ref_rows.collect::<std::result::Result<Vec<_>, _>>()?;
 
         result.top_by_import_fan = self.compute_import_fan(limit)?;
@@ -681,8 +695,9 @@ impl Store {
             Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
         })?;
 
-        let mut fan_in: Vec<std::collections::HashSet<i64>> =
-            (0..files.len()).map(|_| std::collections::HashSet::new()).collect();
+        let mut fan_in: Vec<std::collections::HashSet<i64>> = (0..files.len())
+            .map(|_| std::collections::HashSet::new())
+            .collect();
         let mut hit_files: std::collections::HashSet<usize> = std::collections::HashSet::new();
         for row in import_rows {
             let (importer_id, raw_path) = row?;
@@ -710,12 +725,21 @@ impl Store {
                 }
             })
             .collect();
-        top.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.rel_path.cmp(&b.rel_path)));
+        top.sort_by(|a, b| {
+            b.count
+                .cmp(&a.count)
+                .then_with(|| a.rel_path.cmp(&b.rel_path))
+        });
         top.truncate(limit);
         Ok(top)
     }
 
-    pub fn find_references(&self, name: &str, limit: usize, kinds: &[&str]) -> Result<Vec<RefResult>> {
+    pub fn find_references(
+        &self,
+        name: &str,
+        limit: usize,
+        kinds: &[&str],
+    ) -> Result<Vec<RefResult>> {
         if kinds.is_empty() {
             let mut stmt = self.conn.prepare(
                 r#"
@@ -766,7 +790,12 @@ impl Store {
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
-    pub fn find_importers(&self, symbol_name: &str, depth: usize, limit: usize) -> Result<Vec<ImporterResult>> {
+    pub fn find_importers(
+        &self,
+        symbol_name: &str,
+        depth: usize,
+        limit: usize,
+    ) -> Result<Vec<ImporterResult>> {
         let depth = depth.clamp(1, 3);
         let mut stmt = self.conn.prepare(
             r#"
@@ -784,7 +813,12 @@ impl Store {
         self.find_importers_for_targets(targets, depth, limit)
     }
 
-    pub fn find_importers_by_path(&self, target: &str, depth: usize, limit: usize) -> Result<Vec<ImporterResult>> {
+    pub fn find_importers_by_path(
+        &self,
+        target: &str,
+        depth: usize,
+        limit: usize,
+    ) -> Result<Vec<ImporterResult>> {
         let depth = depth.clamp(1, 3);
         self.find_importers_for_targets(vec![target.to_string()], depth, limit)
     }
@@ -807,7 +841,12 @@ impl Store {
             .map_err(Into::into)
     }
 
-    pub fn find_impact(&self, symbol_name: &str, depth: usize, limit: usize) -> Result<Vec<ImpactResult>> {
+    pub fn find_impact(
+        &self,
+        symbol_name: &str,
+        depth: usize,
+        limit: usize,
+    ) -> Result<Vec<ImpactResult>> {
         let depth = depth.clamp(1, 5);
         let mut seen = std::collections::HashSet::new();
         let mut results = Vec::new();
@@ -821,7 +860,8 @@ impl Store {
             let mut next_symbols = Vec::new();
             for symbol in current_symbols {
                 for reference in self.find_references(&symbol, limit.max(1), &[])? {
-                    let Some(caller) = self.enclosing_symbol(&reference.file, reference.line)? else {
+                    let Some(caller) = self.enclosing_symbol(&reference.file, reference.line)?
+                    else {
                         continue;
                     };
                     if caller == symbol {
@@ -923,7 +963,11 @@ impl Store {
             "#,
         )?;
         let rows = stmt.query_map(
-            params![target, crate::symbols::REF_KIND_IMPLEMENTS, limit.max(1) as i64],
+            params![
+                target,
+                crate::symbols::REF_KIND_IMPLEMENTS,
+                limit.max(1) as i64
+            ],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -1052,7 +1096,10 @@ impl Store {
     }
 
     pub fn delete_stale_paths(&self, current_paths: &[String]) -> Result<usize> {
-        let current = current_paths.iter().cloned().collect::<std::collections::HashSet<_>>();
+        let current = current_paths
+            .iter()
+            .cloned()
+            .collect::<std::collections::HashSet<_>>();
         let stored = self.all_stored_paths()?;
         let stale = stored
             .into_iter()
@@ -1073,7 +1120,9 @@ impl Store {
 
     pub fn file_hash(&self, path: &str) -> Result<Option<String>> {
         self.conn
-            .query_row("SELECT hash FROM files WHERE path = ?1", [path], |row| row.get(0))
+            .query_row("SELECT hash FROM files WHERE path = ?1", [path], |row| {
+                row.get(0)
+            })
             .optional()
             .map_err(Into::into)
     }
@@ -1316,18 +1365,16 @@ fn package_bucket(rel_path: &str) -> String {
 
 fn is_project_symbol(name: &str) -> bool {
     match name {
-        "len" | "cap" | "make" | "append" | "close" | "delete" | "copy" | "new"
-        | "panic" | "recover" | "int" | "int8" | "int16" | "int32" | "int64"
-        | "uint" | "uint8" | "uint16" | "uint32" | "uint64" | "float32"
-        | "float64" | "string" | "bool" | "byte" | "rune" | "error" | "nil"
-        | "Errorf" | "Sprintf" | "Fprintf" | "Printf" | "Println" | "Error"
-        | "String" | "Close" | "Read" | "Write" | "Lock" | "Unlock" | "RLock"
-        | "RUnlock" | "Add" | "Load" | "Store" | "Done" | "Wait" | "Begin"
-        | "Commit" | "Rollback" | "Exec" | "Query" | "QueryRow" | "Scan" | "Now"
-        | "Since" | "Sleep" | "Join" | "Split" | "Contains" | "HasPrefix"
-        | "HasSuffix" | "TrimPrefix" | "TrimSuffix" | "Open" | "Create" | "Remove"
-        | "Stat" | "Lstat" | "ReadFile" | "WriteFile" | "Abs" | "Dir" | "Base"
-        | "Ext" | "Rel" | "Go" | "Next" | "Rows" => false,
+        "len" | "cap" | "make" | "append" | "close" | "delete" | "copy" | "new" | "panic"
+        | "recover" | "int" | "int8" | "int16" | "int32" | "int64" | "uint" | "uint8"
+        | "uint16" | "uint32" | "uint64" | "float32" | "float64" | "string" | "bool" | "byte"
+        | "rune" | "error" | "nil" | "Errorf" | "Sprintf" | "Fprintf" | "Printf" | "Println"
+        | "Error" | "String" | "Close" | "Read" | "Write" | "Lock" | "Unlock" | "RLock"
+        | "RUnlock" | "Add" | "Load" | "Store" | "Done" | "Wait" | "Begin" | "Commit"
+        | "Rollback" | "Exec" | "Query" | "QueryRow" | "Scan" | "Now" | "Since" | "Sleep"
+        | "Join" | "Split" | "Contains" | "HasPrefix" | "HasSuffix" | "TrimPrefix"
+        | "TrimSuffix" | "Open" | "Create" | "Remove" | "Stat" | "Lstat" | "ReadFile"
+        | "WriteFile" | "Abs" | "Dir" | "Base" | "Ext" | "Rel" | "Go" | "Next" | "Rows" => false,
         _ => name.len() > 2,
     }
 }

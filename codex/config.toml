@@ -23,6 +23,12 @@ fast_default_opt_out = true
 [notice.external_config_migration_prompts]
 home_last_prompted_at = 1776895160
 
+[notice.external_config_migration_prompts.project_last_prompted_at]
+"/Users/luan/src/skrl" = 1777175267
+
+[notice.external_config_migration_prompts.projects]
+"/Users/luan/src/skrl" = true
+
 [notice.model_migrations]
 "gpt-5.2" = "gpt-5.2-codex"
 
@@ -68,14 +74,14 @@ status_line = [
 "gpt-5.5" = 4
 
 [marketplaces.claude-plugins-official]
-last_updated = "2026-04-25T17:03:22Z"
+last_updated = "2026-04-26T03:52:14Z"
 last_revision = "020446a4294f09d9c32e60bff0c4ae8fb39205cb"
 source_type = "git"
 source = "https://github.com/anthropics/claude-plugins-official.git"
 
 [marketplaces.worktrunk]
-last_updated = "2026-04-25T17:03:25Z"
-last_revision = "3ab57e7c176861e9a5d4a398d7c3538f9b9cec92"
+last_updated = "2026-04-26T03:47:50Z"
+last_revision = "66a5becc250f65d21ec35a55c22d56aba68d24e1"
 source_type = "git"
 source = "https://github.com/max-sixty/worktrunk.git"
 
@@ -91,4 +97,10 @@ args = ["mcp", "sym"]
 trust_level = "trusted"
 
 [projects."~/src/sifty"]
+trust_level = "trusted"
+
+[projects."/Users/luan/src/skrl"]
+trust_level = "trusted"
+
+[projects."/Users/luan/src/agents"]
 trust_level = "trusted"

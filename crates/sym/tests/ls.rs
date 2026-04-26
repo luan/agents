@@ -20,9 +20,17 @@ fn ls_tree_respects_depth_and_skips_ignored_dirs() -> Result<()> {
     assert!(!child_names.contains(&"node_modules"));
     assert!(!child_names.contains(&".hidden"));
 
-    let src = tree.children.iter().find(|child| child.name == "src").unwrap();
+    let src = tree
+        .children
+        .iter()
+        .find(|child| child.name == "src")
+        .unwrap();
     assert!(src.children.iter().any(|child| child.name == "nested"));
-    let nested = src.children.iter().find(|child| child.name == "nested").unwrap();
+    let nested = src
+        .children
+        .iter()
+        .find(|child| child.name == "nested")
+        .unwrap();
     assert!(nested.children.is_empty());
 
     Ok(())
@@ -50,10 +58,22 @@ impl Fixture {
     fn new() -> Result<Self> {
         let root = tempfile::tempdir()?;
         fs::create_dir(root.path().join(".git"))?;
-        write(root.path(), "src/main.go", "package main\n\nfunc HandleRequest() {}\n")?;
-        write(root.path(), "src/nested/worker.py", "def run():\n    pass\n")?;
+        write(
+            root.path(),
+            "src/main.go",
+            "package main\n\nfunc HandleRequest() {}\n",
+        )?;
+        write(
+            root.path(),
+            "src/nested/worker.py",
+            "def run():\n    pass\n",
+        )?;
         write(root.path(), "docs/readme.md", "# docs\n")?;
-        write(root.path(), "node_modules/pkg/index.js", "module.exports = {}\n")?;
+        write(
+            root.path(),
+            "node_modules/pkg/index.js",
+            "module.exports = {}\n",
+        )?;
         write(root.path(), ".hidden/secret.go", "package hidden\n")?;
         Ok(Self { root })
     }

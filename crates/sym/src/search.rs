@@ -46,10 +46,10 @@ pub fn search_text(
 
     let mut results = Vec::new();
     for file in files {
-        if let Some(lang) = lang {
-            if file.language != lang {
-                continue;
-            }
+        if let Some(lang) = lang
+            && file.language != lang
+        {
+            continue;
         }
         if !include_path(&file.rel_path, includes, excludes) {
             continue;
@@ -77,29 +77,32 @@ pub fn search_text(
 pub fn search_symbols(
     cwd: &Path,
     query: &str,
-    kind: Option<&str>,
-    lang: Option<&str>,
-    limit: usize,
-    exact: bool,
-    ignore_case: bool,
-    includes: &[String],
-    excludes: &[String],
+    options: &SymbolSearchOptions<'_>,
 ) -> Result<Vec<SymbolResult>> {
-    let widened = widen_path_filter_limit(limit, !includes.is_empty() || !excludes.is_empty());
-    let fetch_limit = resolve::rank_fetch_window(widened, exact);
+    let widened = widen_path_filter_limit(
+        options.limit,
+        !options.includes.is_empty() || !options.excludes.is_empty(),
+    );
+    let fetch_limit = resolve::rank_fetch_window(widened, options.exact);
     let store = resolve::open_store(cwd)?;
     let mut results = store.search_symbols(
         query,
-        kind.unwrap_or(""),
-        lang.unwrap_or(""),
-        exact,
-        ignore_case,
+        options.kind.unwrap_or(""),
+        options.lang.unwrap_or(""),
+        options.exact,
+        options.ignore_case,
         fetch_limit,
     )?;
-    results.retain(|result| include_path(Path::new(&result.rel_path), includes, excludes));
+    results.retain(|result| {
+        include_path(
+            Path::new(&result.rel_path),
+            options.includes,
+            options.excludes,
+        )
+    });
     resolve::rank_symbols(&mut results);
-    if limit > 0 && results.len() > limit {
-        results.truncate(limit);
+    if options.limit > 0 && results.len() > options.limit {
+        results.truncate(options.limit);
     }
     Ok(results)
 }
@@ -109,4 +112,15 @@ fn truncate_results(mut results: Vec<TextResult>, limit: usize) -> Vec<TextResul
         results.truncate(limit);
     }
     results
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct SymbolSearchOptions<'a> {
+    pub kind: Option<&'a str>,
+    pub lang: Option<&'a str>,
+    pub limit: usize,
+    pub exact: bool,
+    pub ignore_case: bool,
+    pub includes: &'a [String],
+    pub excludes: &'a [String],
 }

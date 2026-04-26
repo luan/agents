@@ -25,7 +25,10 @@ fn ls_stats_text_mode_uses_frontmatter() -> Result<()> {
     let output = run_sym(fixture.root(), ["ls", "--stats"])?;
 
     assert!(output.starts_with("---\n"));
-    assert!(output.contains(&format!("repo: {}\n", fixture.root().canonicalize()?.display())));
+    assert!(output.contains(&format!(
+        "repo: {}\n",
+        fixture.root().canonicalize()?.display()
+    )));
     assert!(output.contains("files: 2\n"));
     assert!(output.contains("symbols: 3\n"));
     assert!(output.contains("go: 2 files\n"));
@@ -105,6 +108,10 @@ where
         .args(args)
         .current_dir(cwd)
         .output()?;
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     Ok(String::from_utf8(output.stdout)?)
 }

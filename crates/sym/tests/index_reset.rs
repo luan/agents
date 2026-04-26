@@ -31,7 +31,11 @@ fn index_reset_replaces_invalid_existing_db() -> Result<()> {
         ])
         .output()?;
 
-    assert!(reset.status.success(), "{}", String::from_utf8_lossy(&reset.stderr));
+    assert!(
+        reset.status.success(),
+        "{}",
+        String::from_utf8_lossy(&reset.stderr)
+    );
     assert!(db_path.exists());
     assert!(String::from_utf8_lossy(&reset.stdout).contains("Indexed 1 parseable files"));
 
@@ -46,7 +50,11 @@ impl Fixture {
     fn new() -> Result<Self> {
         let root = tempfile::tempdir()?;
         fs::create_dir(root.path().join(".git"))?;
-        write(root.path(), "main.go", "package main\n\nfunc HandleRequest() {}\n")?;
+        write(
+            root.path(),
+            "main.go",
+            "package main\n\nfunc HandleRequest() {}\n",
+        )?;
         Ok(Self { root })
     }
 
