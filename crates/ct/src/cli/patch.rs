@@ -149,14 +149,63 @@ fn amend(
     anchor: Option<String>,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let root = std::env::current_dir()?;
+    let store = crate::lens::LensStore::open_for_project(&root)?;
+    let Some(body) = store.patch_draft_body(patch_id)? else {
+        return print_out(
+            json,
+            &serde_json::json!({
+                "patch_id": patch_id,
+                "chunk": chunk,
+                "amended": false,
+                "status": "not_found"
+            }),
+        );
+    };
+    let anchor = anchor.ok_or("patch draft amend currently requires --anchor")?;
+    let amended_body = amend_chunk_anchor(&body, chunk, &anchor)?;
+    let new_patch_id = crate::apply_patch::sha1_hex(amended_body.as_bytes());
+    let mut chunks = draft_chunks(&amended_body)?;
+    let (status, error_kind, error_message, candidates) =
+        match crate::apply_patch::apply(&amended_body, &root, true) {
+            Ok(_) => ("applicable", None, None, Vec::new()),
+            Err(failure) => (
+                "blocked",
+                Some(crate::apply_patch::draft::error_kind(&failure.error).to_string()),
+                Some(failure.error.to_string()),
+                patch_candidates(&failure.error, &root),
+            ),
+        };
+    for chunk in &mut chunks {
+        chunk.status = status.to_string();
+        if status == "blocked" {
+            chunk.error_kind = error_kind.clone();
+            chunk.error_message = error_message.clone();
+        }
+    }
+    let mut store = crate::lens::LensStore::open_for_project(&root)?;
+    let summary = store.create_patch_draft(crate::lens::store::NewPatchDraft {
+        id: &new_patch_id,
+        cwd: &root.to_string_lossy(),
+        session_id: None,
+        status,
+        patch_sha: &new_patch_id,
+        body: &amended_body,
+        chunks: &chunks,
+        candidates: &candidates,
+    })?;
     print_out(
         json,
         &serde_json::json!({
             "patch_id": patch_id,
+            "new_patch_id": summary.id,
             "chunk": chunk,
             "anchor": anchor,
-            "amended": false,
-            "note": "patch draft chunk amendment is not wired yet"
+            "amended": true,
+            "status": summary.status,
+            "body_bytes": summary.body_bytes,
+            "chunks": chunks,
+            "candidates": candidates
         }),
     )
 }
@@ -244,6 +293,90 @@ fn draft_chunks(body: &str) -> Result<Vec<PatchDraftChunk>, Box<dyn std::error::
             error_message: chunk.error_message,
         })
         .collect())
+}
+
+fn amend_chunk_anchor(
+    body: &str,
+    target_chunk: usize,
+    anchor: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let anchor = normalize_anchor(anchor)?;
+    let mut lines = body.lines().map(str::to_string).collect::<Vec<_>>();
+    let mut chunk_index = 0_usize;
+    let mut i = 0_usize;
+    while i < lines.len() {
+        let line = lines[i].as_str();
+        if line.starts_with("*** Add File: ") {
+            if chunk_index == target_chunk {
+                return Err("cannot add an anchor to an add-file chunk".into());
+            }
+            chunk_index += 1;
+            i += 1;
+            while i < lines.len() && !is_hunk_header(&lines[i]) {
+                i += 1;
+            }
+            continue;
+        }
+        if line.starts_with("*** Delete File: ") {
+            if chunk_index == target_chunk {
+                return Err("cannot add an anchor to a delete-file chunk".into());
+            }
+            chunk_index += 1;
+            i += 1;
+            continue;
+        }
+        if line.starts_with("*** Update File: ") {
+            i += 1;
+            if i < lines.len() && lines[i].starts_with("*** Move to: ") {
+                if chunk_index == target_chunk {
+                    return Err("cannot add an anchor to a pure move chunk".into());
+                }
+                i += 1;
+            }
+            while i < lines.len() && !is_hunk_header(&lines[i]) && lines[i] != "*** End Patch" {
+                let insert_at = i;
+                while i < lines.len() && lines[i].starts_with("@@") {
+                    i += 1;
+                }
+                if i >= lines.len() || is_hunk_header(&lines[i]) || lines[i] == "*** End Patch" {
+                    break;
+                }
+                if chunk_index == target_chunk {
+                    lines.insert(insert_at, anchor);
+                    return Ok(lines.join("\n") + "\n");
+                }
+                chunk_index += 1;
+                while i < lines.len()
+                    && !lines[i].starts_with("@@")
+                    && !is_hunk_header(&lines[i])
+                    && lines[i] != "*** End Patch"
+                {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        i += 1;
+    }
+    Err(format!("chunk {target_chunk} not found").into())
+}
+
+fn normalize_anchor(anchor: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let anchor = anchor.trim();
+    if anchor.is_empty() {
+        return Err("anchor cannot be empty".into());
+    }
+    if anchor == "@@" {
+        return Err("anchor must include context after @@".into());
+    }
+    let anchor = anchor.strip_prefix("@@").unwrap_or(anchor).trim();
+    Ok(format!("@@ {anchor}"))
+}
+
+fn is_hunk_header(line: &str) -> bool {
+    line.starts_with("*** Add File: ")
+        || line.starts_with("*** Delete File: ")
+        || line.starts_with("*** Update File: ")
 }
 
 fn patch_candidates(
