@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 
 mod args;
 mod artifact;
-mod ast;
+pub(crate) mod ast;
 mod lens;
 mod lsp;
 mod patch;

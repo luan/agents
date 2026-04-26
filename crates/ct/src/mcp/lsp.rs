@@ -38,17 +38,77 @@ impl LspMcpServer {
         &self,
         Parameters(input): Parameters<RequestIn>,
     ) -> Result<CallToolResult, ErrorData> {
+        let Some(file_path) = input.file_path.clone() else {
+            return Err(ErrorData::invalid_params(
+                "LSP request requires file_path".to_string(),
+                None,
+            ));
+        };
+        let path = std::path::PathBuf::from(&file_path);
+        let path = if path.is_absolute() {
+            path
+        } else {
+            std::env::current_dir()
+                .map_err(|error| ErrorData::internal_error(error.to_string(), None))?
+                .join(path)
+        };
+        let Some(probe) = crate::lsp::registry::probe_for_file(&path) else {
+            return json_success(&json!({
+                "operation": input.operation,
+                "filePath": path,
+                "line": input.line,
+                "character": input.character,
+                "query": input.query,
+                "newName": input.new_name,
+                "server": null,
+                "result": null,
+                "resultCount": 0,
+                "failureKind": "no_server_definition"
+            }));
+        };
+        if !probe.available {
+            return json_success(&json!({
+                "operation": input.operation,
+                "filePath": path,
+                "line": input.line,
+                "character": input.character,
+                "query": input.query,
+                "newName": input.new_name,
+                "server": probe,
+                "result": null,
+                "resultCount": 0,
+                "failureKind": "server_unavailable"
+            }));
+        }
+        let mut client = crate::lsp::client::LspClient::start(&probe)
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        client
+            .initialize(&probe)
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        client
+            .open_file(&probe, &path)
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        let output = client
+            .run_text_operation(
+                &input.operation,
+                &path,
+                input.line,
+                input.character,
+                input.query.as_deref(),
+                input.new_name.as_deref(),
+            )
+            .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
         json_success(&json!({
             "operation": input.operation,
-            "filePath": input.file_path,
+            "filePath": path,
             "line": input.line,
             "character": input.character,
             "query": input.query,
             "newName": input.new_name,
-            "result": null,
-            "resultCount": 0,
-            "failureKind": "no_server",
-            "note": "LSP client is not wired yet"
+            "server": probe,
+            "result": output.result,
+            "resultCount": output.result_count,
+            "failureKind": null
         }))
     }
 }

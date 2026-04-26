@@ -59,7 +59,7 @@ pub fn run_ast(action: AstAction) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn default_paths(paths: Vec<String>) -> Vec<String> {
+pub(crate) fn default_paths(paths: Vec<String>) -> Vec<String> {
     if paths.is_empty() {
         vec![".".to_string()]
     } else {
@@ -67,7 +67,7 @@ fn default_paths(paths: Vec<String>) -> Vec<String> {
     }
 }
 
-fn reject_plain_text_pattern(pattern: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn reject_plain_text_pattern(pattern: &str) -> Result<(), Box<dyn std::error::Error>> {
     let text = pattern.trim();
     if text.is_empty() {
         return Err("ast pattern cannot be empty".into());
@@ -88,7 +88,7 @@ fn reject_plain_text_pattern(pattern: &str) -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
-fn sg_search(
+pub(crate) fn sg_search(
     pattern: &str,
     lang: &str,
     paths: &[String],
@@ -115,7 +115,7 @@ fn sg_search(
     run_sg_json(args)
 }
 
-fn sg_replace_dry_run(
+pub(crate) fn sg_replace_dry_run(
     pattern: &str,
     rewrite: &str,
     lang: &str,
@@ -135,7 +135,7 @@ fn sg_replace_dry_run(
     run_sg_json(args)
 }
 
-fn sg_replace_apply(
+pub(crate) fn sg_replace_apply(
     pattern: &str,
     rewrite: &str,
     lang: &str,

@@ -49,16 +49,26 @@ impl AstMcpServer {
         &self,
         Parameters(input): Parameters<SearchIn>,
     ) -> Result<CallToolResult, ErrorData> {
+        crate::cli::ast::reject_plain_text_pattern(&input.pattern)
+            .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
+        let paths = crate::cli::ast::default_paths(input.paths.unwrap_or_default());
+        let matches = crate::cli::ast::sg_search(
+            &input.pattern,
+            &input.lang,
+            &paths,
+            input.selector.as_deref(),
+            input.context,
+        )
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
         json_success(&json!({
             "pattern": input.pattern,
             "lang": input.lang,
-            "paths": input.paths.unwrap_or_default(),
+            "paths": paths,
             "selector": input.selector,
             "context": input.context,
-            "matches": [],
-            "match_count": 0,
-            "available": false,
-            "note": "native ast-grep execution is not wired yet"
+            "matches": matches,
+            "match_count": matches.as_array().map(Vec::len).unwrap_or(0),
+            "available": true
         }))
     }
 
@@ -70,16 +80,27 @@ impl AstMcpServer {
         &self,
         Parameters(input): Parameters<ReplaceIn>,
     ) -> Result<CallToolResult, ErrorData> {
+        crate::cli::ast::reject_plain_text_pattern(&input.pattern)
+            .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
+        let paths = crate::cli::ast::default_paths(input.paths.unwrap_or_default());
+        let apply = input.apply.unwrap_or(false);
+        let matches = if apply {
+            crate::cli::ast::sg_replace_apply(&input.pattern, &input.rewrite, &input.lang, &paths)
+                .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+            crate::cli::ast::sg_search(&input.rewrite, &input.lang, &paths, None, None)
+        } else {
+            crate::cli::ast::sg_replace_dry_run(&input.pattern, &input.rewrite, &input.lang, &paths)
+        }
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
         json_success(&json!({
             "pattern": input.pattern,
             "rewrite": input.rewrite,
             "lang": input.lang,
-            "paths": input.paths.unwrap_or_default(),
-            "applied": input.apply.unwrap_or(false),
-            "matches": [],
-            "match_count": 0,
-            "available": false,
-            "note": "native ast-grep replacement is not wired yet"
+            "paths": paths,
+            "applied": apply,
+            "matches": matches,
+            "match_count": matches.as_array().map(Vec::len).unwrap_or(0),
+            "available": true
         }))
     }
 }
