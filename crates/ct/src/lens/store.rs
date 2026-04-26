@@ -1010,4 +1010,49 @@ mod tests {
         assert_eq!(counts.files, 0);
         assert!(store.project_id() > 0);
     }
+
+    #[test]
+    fn records_and_lists_diagnostics() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("main.rs"), "fn main() {}\n").unwrap();
+        let mut store = LensStore::open_in_memory_for_tests(temp.path()).unwrap();
+        store
+            .record_diagnostics(&[Diagnostic {
+                source: DiagnosticSource::Lsp,
+                severity: DiagnosticSeverity::Error,
+                code: Some("E000".to_string()),
+                message: "broken".to_string(),
+                rel_path: Some("main.rs".to_string()),
+                start_line: Some(1),
+                end_line: Some(1),
+                fingerprint: "diag-1".to_string(),
+                content_hash: None,
+            }])
+            .unwrap();
+
+        let diagnostics = store.list_diagnostics(Some("main.rs")).unwrap();
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].message, "broken");
+        assert_eq!(diagnostics[0].severity, DiagnosticSeverity::Error);
+    }
+
+    #[test]
+    fn read_guard_allows_recorded_current_ranges() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("main.rs"),
+            "fn main() {\n    println!();\n}\n",
+        )
+        .unwrap();
+        let mut store = LensStore::open_in_memory_for_tests(temp.path()).unwrap();
+        store
+            .record_read(Some("s"), Path::new("main.rs"), 1, 3)
+            .unwrap();
+
+        let decision = store
+            .check_guard(Some("s"), Path::new("main.rs"), 2, 2, GuardAction::Block)
+            .unwrap();
+        assert_eq!(decision.decision, GuardAction::Allow);
+        assert_eq!(decision.reason, GuardReason::Covered);
+    }
 }
