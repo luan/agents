@@ -6,12 +6,6 @@ export type CtResult = {
 	exitCode: number;
 };
 
-export type RunCommandOptions = {
-	signal?: AbortSignal;
-	input?: string;
-	allowNonZero?: boolean;
-};
-
 export function formatCommand(command: string, args: string[]): string {
 	return [command, ...args.map((arg) => (/[\s\t]/.test(arg) ? JSON.stringify(arg) : arg))].join(" ");
 }
@@ -20,10 +14,9 @@ export function runCommand(
 	command: string,
 	args: string[],
 	cwd: string,
-	signalOrOptions?: AbortSignal | RunCommandOptions,
+	signal?: AbortSignal,
 	input?: string,
 ): Promise<CtResult> {
-	const options = isRunCommandOptions(signalOrOptions) ? signalOrOptions : { signal: signalOrOptions, input };
 	return new Promise((resolve, reject) => {
 		const child = spawn(command, args, {
 			cwd,
@@ -45,20 +38,20 @@ export function runCommand(
 		});
 
 		const onAbort = () => child.kill();
-		options.signal?.addEventListener("abort", onAbort, { once: true });
+		signal?.addEventListener("abort", onAbort, { once: true });
 
-		if (options.input === undefined) {
+		if (input === undefined) {
 			child.stdin.end();
 		} else {
-			child.stdin.end(options.input);
+			child.stdin.end(input);
 		}
 
 		child.on("close", (exitCode) => {
-			options.signal?.removeEventListener("abort", onAbort);
+			signal?.removeEventListener("abort", onAbort);
 			const stdout = Buffer.concat(stdoutChunks).toString("utf8");
 			const stderr = Buffer.concat(stderrChunks).toString("utf8");
-			if (exitCode === 0 || options.allowNonZero) {
-				resolve({ stdout, stderr, exitCode: exitCode ?? 0 });
+			if (exitCode === 0) {
+				resolve({ stdout, stderr, exitCode: 0 });
 				return;
 			}
 			reject(
@@ -68,8 +61,4 @@ export function runCommand(
 			);
 		});
 	});
-}
-
-function isRunCommandOptions(value: unknown): value is RunCommandOptions {
-	return Boolean(value && typeof value === "object" && !("aborted" in (value as Record<string, unknown>)));
 }
