@@ -1,7 +1,9 @@
+use std::io::Read;
+
 use serde::Serialize;
 
 use crate::cli::args::{
-    GuardAction, LensAction, LensDiagnosticsAction, LensGuardAction, LensReadAction,
+    GuardAction, LensAction, LensDiagnosticsAction, LensGuardAction, LensReadAction, LensTurnAction,
 };
 use crate::lens::{
     Diagnostic, DiagnosticSeverity, DiagnosticSource, DiscoveryIntent, DiscoveryOptions,
@@ -55,6 +57,7 @@ pub fn run_lens(action: LensAction) -> Result<(), Box<dyn std::error::Error>> {
         LensAction::Diagnostics { action } => diagnostics(action),
         LensAction::Read { action } => read(action),
         LensAction::Guard { action } => guard(action),
+        LensAction::Turn { action } => turn(action),
         LensAction::Prune { cwd, json, dry_run } => prune(cwd, json, dry_run),
     }
 }
@@ -333,6 +336,47 @@ fn guard(action: LensGuardAction) -> Result<(), Box<dyn std::error::Error>> {
                 print_json(&LensEnvelope::ok(out))?;
             } else {
                 println!("allow-once recorded for {path}");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn turn(action: LensTurnAction) -> Result<(), Box<dyn std::error::Error>> {
+    match action {
+        LensTurnAction::Record { cwd, json } => {
+            let fallback_cwd = cwd.map(Into::into).unwrap_or(std::env::current_dir()?);
+            let mut input = String::new();
+            std::io::stdin().read_to_string(&mut input)?;
+            let event: crate::lens::LensTurnEvent = serde_json::from_str(&input)?;
+            let envelope = crate::lens::record_turn_event_envelope(&fallback_cwd, event)?;
+            if json {
+                print_json(&envelope)?;
+            } else {
+                println!(
+                    "recorded {} touched files for {}/{}",
+                    envelope.data.file_count, envelope.data.session, envelope.data.turn
+                );
+            }
+        }
+        LensTurnAction::Touched {
+            cwd,
+            session,
+            turn,
+            json,
+        } => {
+            let root = cwd.map(Into::into).unwrap_or(std::env::current_dir()?);
+            let envelope = crate::lens::touched_files_envelope(&root, &session, &turn)?;
+            if json {
+                print_json(&envelope)?;
+            } else {
+                println!(
+                    "{} touched files for {}/{}",
+                    envelope.data.file_count, envelope.data.session, envelope.data.turn
+                );
+                for file in &envelope.data.files {
+                    println!("- {} ({:?})", file.path, file.source);
+                }
             }
         }
     }

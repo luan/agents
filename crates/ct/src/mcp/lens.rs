@@ -55,6 +55,13 @@ struct GuardCheckIn {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+struct TurnTouchedIn {
+    cwd: Option<String>,
+    session: String,
+    turn: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 struct DiagnosticsListIn {
     cwd: Option<String>,
     path: Option<String>,
@@ -177,6 +184,20 @@ impl LensMcpServer {
             "required_ranges": decision.required_ranges,
             "covered_ranges": decision.covered_ranges
         })))
+    }
+
+    #[tool(
+        name = "turn_touched",
+        description = "List files touched during a Lens turn."
+    )]
+    async fn turn_touched(
+        &self,
+        Parameters(input): Parameters<TurnTouchedIn>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let root = cwd(input.cwd)?;
+        let envelope = crate::lens::touched_files_envelope(&root, &input.session, &input.turn)
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        json_success(&envelope)
     }
 
     #[tool(

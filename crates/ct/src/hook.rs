@@ -17,8 +17,9 @@ pub fn run_hook(name: &str) -> Result<()> {
         "rtk-rewrite" => rtk_rewrite(),
         "gt-session-start" => gt_session_start(),
         "gt-validate-git" => gt_validate_git(),
+        "lens-turn-event" => lens_turn_event(),
         other => anyhow::bail!(
-            "unknown hook {other:?} (supported: apply-patch-remind, codex-sym-nudge, gt-session-start, gt-validate-git, rtk-rewrite)"
+            "unknown hook {other:?} (supported: apply-patch-remind, codex-sym-nudge, gt-session-start, gt-validate-git, lens-turn-event, rtk-rewrite)"
         ),
     }
 }
@@ -68,6 +69,21 @@ fn apply_patch_remind() -> Result<()> {
             }
         }))?
     );
+    Ok(())
+}
+
+fn lens_turn_event() -> Result<()> {
+    let mut input = String::new();
+    io::stdin().read_to_string(&mut input)?;
+    if input.trim().is_empty() {
+        return Ok(());
+    }
+    let event: crate::lens::LensTurnEvent =
+        serde_json::from_str(&input).context("lens turn hook input must be normalized JSON")?;
+    let cwd = std::env::current_dir()?;
+    let envelope = crate::lens::record_turn_event_envelope(&cwd, event)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    println!("{}", serde_json::to_string(&envelope)?);
     Ok(())
 }
 

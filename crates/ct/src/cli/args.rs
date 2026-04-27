@@ -318,6 +318,12 @@ pub enum LensAction {
         action: LensGuardAction,
     },
 
+    #[command(about = "Record and inspect turn-scoped touched files")]
+    Turn {
+        #[command(subcommand)]
+        action: LensTurnAction,
+    },
+
     #[command(about = "Prune lens state")]
     Prune {
         #[arg(long, help = "Working directory")]
@@ -391,6 +397,28 @@ pub enum GuardAction {
     Off,
     Warn,
     Block,
+}
+
+#[derive(Subcommand)]
+pub enum LensTurnAction {
+    #[command(about = "Record one normalized Lens turn event from stdin")]
+    Record {
+        #[arg(long, help = "Working directory used when event.cwd is empty")]
+        cwd: Option<String>,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+    },
+    #[command(about = "List files touched during a turn")]
+    Touched {
+        #[arg(long, help = "Working directory")]
+        cwd: Option<String>,
+        #[arg(long, help = "Session id")]
+        session: String,
+        #[arg(long, help = "Turn id")]
+        turn: String,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]

@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+pub const LENS_TURN_EVENT_SCHEMA_VERSION: &str = "lens.turn_event.v1";
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ProjectId(pub String);
 
@@ -61,6 +63,133 @@ pub struct ToolRunSummary {
     pub file_count: usize,
     pub diagnostic_count: usize,
     pub duration_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LensTurnEventKind {
+    TurnStart,
+    ToolStart,
+    ToolEnd,
+    TurnEnd,
+}
+
+impl Default for LensTurnEventKind {
+    fn default() -> Self {
+        Self::ToolEnd
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LensToolEventPhase {
+    PreTool,
+    PostTool,
+}
+
+impl Default for LensToolEventPhase {
+    fn default() -> Self {
+        Self::PostTool
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LensTurnEventPolicy {
+    pub git_fallback: bool,
+    pub include_ignored: bool,
+}
+
+impl Default for LensTurnEventPolicy {
+    fn default() -> Self {
+        Self {
+            git_fallback: true,
+            include_ignored: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LensTouchedFileInput {
+    pub path: String,
+    #[serde(default = "default_touch_operation")]
+    pub operation: String,
+    #[serde(default)]
+    pub generated: bool,
+    #[serde(default)]
+    pub include_ignored: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LensTurnEvent {
+    #[serde(default = "default_turn_event_schema")]
+    pub schema_version: String,
+    #[serde(alias = "session_id")]
+    pub session: String,
+    #[serde(alias = "turn_id")]
+    pub turn: String,
+    pub host: String,
+    pub cwd: String,
+    #[serde(default)]
+    pub event: LensTurnEventKind,
+    pub tool: String,
+    #[serde(default)]
+    pub phase: LensToolEventPhase,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub files: Vec<LensTouchedFileInput>,
+    #[serde(default)]
+    pub policy: LensTurnEventPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LensTouchedFileSource {
+    StructuredEvent,
+    GitStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LensTouchedFile {
+    pub path: String,
+    pub operation: String,
+    pub tool: String,
+    pub source: LensTouchedFileSource,
+    pub explicit: bool,
+    pub ignored: bool,
+    pub generated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LensTurnTouchedData {
+    pub project_id: i64,
+    pub session: String,
+    pub turn: String,
+    pub files: Vec<LensTouchedFile>,
+    pub file_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LensTurnRecordData {
+    pub project_id: i64,
+    pub session: String,
+    pub turn: String,
+    pub host: String,
+    pub cwd: String,
+    pub tool: String,
+    pub event: LensTurnEventKind,
+    pub phase: LensToolEventPhase,
+    pub git_fallback_used: bool,
+    pub files: Vec<LensTouchedFile>,
+    pub file_count: usize,
+}
+
+fn default_turn_event_schema() -> String {
+    LENS_TURN_EVENT_SCHEMA_VERSION.to_string()
+}
+
+fn default_touch_operation() -> String {
+    "modify".to_string()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

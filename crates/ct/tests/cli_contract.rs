@@ -354,6 +354,73 @@ fn lens_discover_symbol_json_is_compact_and_records_coverage() {
 }
 
 #[test]
+fn lens_turn_touched_json_is_schema_versioned_and_stable() {
+    let (bp, _remote) = setup_blueprints();
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+    fs::write(project.path().join("main.rs"), "fn main() {}\n").expect("write source");
+    let event = serde_json::json!({
+        "schema_version": "lens.turn_event.v1",
+        "session": "cli-session",
+        "turn": "turn-1",
+        "host": "contract-test",
+        "cwd": project.path().to_string_lossy(),
+        "event": "tool_end",
+        "tool": "edit",
+        "phase": "post_tool",
+        "status": "success",
+        "files": [{
+            "path": "main.rs",
+            "operation": "modify",
+            "generated": false,
+            "include_ignored": false
+        }],
+        "policy": {"git_fallback": true, "include_ignored": false}
+    });
+
+    ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .args(["lens", "turn", "record", "--json"])
+        .write_stdin(event.to_string())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"git_fallback_used\": false"));
+
+    let assert = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .args([
+            "lens",
+            "turn",
+            "touched",
+            "--session",
+            "cli-session",
+            "--turn",
+            "turn-1",
+            "--json",
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("touched json");
+
+    assert_eq!(value["schema_version"], "lens.response.v1");
+    assert_eq!(value["data"]["session"], "cli-session");
+    assert_eq!(value["data"]["turn"], "turn-1");
+    assert_eq!(value["data"]["file_count"], 1);
+    assert_eq!(value["data"]["files"][0]["path"], "main.rs");
+    assert_eq!(value["data"]["files"][0]["operation"], "modify");
+    assert_eq!(value["data"]["files"][0]["tool"], "edit");
+    assert_eq!(value["data"]["files"][0]["source"], "structured_event");
+    assert_eq!(value["data"]["files"][0]["explicit"], true);
+    assert_eq!(value["data"]["files"][0]["ignored"], false);
+    assert_eq!(value["data"]["files"][0]["generated"], false);
+    assert!(value.get("debug").is_none());
+    assert!(value.get("raw").is_none());
+}
+
+#[test]
 fn lens_diagnostics_record_and_list_round_trip() {
     let (bp, _remote) = setup_blueprints();
     let project = project_dir();

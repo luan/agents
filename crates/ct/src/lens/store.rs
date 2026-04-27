@@ -7,10 +7,11 @@ use sha1::{Digest, Sha1};
 use super::paths;
 use super::types::{
     Diagnostic, DiagnosticSeverity, DiagnosticSource, GuardAction, GuardDecision, GuardReason,
-    PatchCandidate, PatchDraftChunk, PatchDraftSummary, ReadCoverageRange,
+    LensToolEventPhase, LensTouchedFile, LensTouchedFileSource, LensTurnEvent, PatchCandidate,
+    PatchDraftChunk, PatchDraftSummary, ReadCoverageRange,
 };
 
-const SCHEMA_VERSION: i32 = 4;
+const SCHEMA_VERSION: i32 = 5;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS projects (
@@ -180,6 +181,48 @@ CREATE TABLE IF NOT EXISTS tool_runs (
     created_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS turns (
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    host TEXT NOT NULL,
+    cwd TEXT NOT NULL,
+    started_at INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    PRIMARY KEY(project_id, session_id, turn_id)
+);
+
+CREATE TABLE IF NOT EXISTS turn_tool_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    host TEXT NOT NULL,
+    cwd TEXT NOT NULL,
+    tool TEXT NOT NULL,
+    phase TEXT NOT NULL,
+    status TEXT,
+    policy_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS turn_touched_files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    rel_path TEXT NOT NULL,
+    tool TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    source TEXT NOT NULL,
+    explicit INTEGER NOT NULL,
+    ignored INTEGER NOT NULL,
+    generated INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE(project_id, session_id, turn_id, rel_path, source, tool, operation)
+);
+
 CREATE TABLE IF NOT EXISTS retention_metadata (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -191,6 +234,8 @@ CREATE INDEX IF NOT EXISTS idx_read_events_session_file ON read_events(session_i
 CREATE INDEX IF NOT EXISTS idx_guard_overrides_project_session_path ON guard_overrides(project_id, session_id, rel_path, consumed);
 CREATE INDEX IF NOT EXISTS idx_patch_drafts_project_status ON patch_drafts(project_id, status);
 CREATE INDEX IF NOT EXISTS idx_patch_draft_chunks_patch ON patch_draft_chunks(patch_id);
+CREATE INDEX IF NOT EXISTS idx_turns_project_session_turn ON turns(project_id, session_id, turn_id);
+CREATE INDEX IF NOT EXISTS idx_turn_touched_project_session_turn ON turn_touched_files(project_id, session_id, turn_id);
 "#;
 
 pub struct LensStore {
@@ -448,6 +493,101 @@ impl LensStore {
             self.record_patch_event(session_id, Path::new(path), tool, change)?;
         }
         Ok(())
+    }
+
+    pub fn record_turn_event(
+        &mut self,
+        event: &LensTurnEvent,
+        files: &[LensTouchedFile],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let now = now_ms();
+        let policy_json = serde_json::to_string(&event.policy)?;
+        let tx = self.conn.transaction()?;
+        upsert_session_tx(&tx, self.project_id, &event.session, now)?;
+        tx.execute(
+            "INSERT INTO turns(project_id, session_id, turn_id, host, cwd, started_at, last_seen_at, status)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?6, 'active')
+             ON CONFLICT(project_id, session_id, turn_id) DO UPDATE SET
+                host=excluded.host,
+                cwd=excluded.cwd,
+                last_seen_at=excluded.last_seen_at,
+                status=excluded.status",
+            params![
+                self.project_id,
+                event.session,
+                event.turn,
+                event.host,
+                event.cwd,
+                now
+            ],
+        )?;
+        tx.execute(
+            "INSERT INTO turn_tool_events(project_id, session_id, turn_id, host, cwd, tool, phase, status, policy_json, created_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                self.project_id,
+                event.session,
+                event.turn,
+                event.host,
+                event.cwd,
+                event.tool,
+                tool_phase(&event.phase),
+                event.status,
+                policy_json,
+                now
+            ],
+        )?;
+        for file in files {
+            tx.execute(
+                "INSERT INTO turn_touched_files(project_id, session_id, turn_id, rel_path, tool, operation, source, explicit, ignored, generated, created_at)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                 ON CONFLICT(project_id, session_id, turn_id, rel_path, source, tool, operation) DO UPDATE SET
+                    explicit=MAX(turn_touched_files.explicit, excluded.explicit),
+                    ignored=excluded.ignored,
+                    generated=MAX(turn_touched_files.generated, excluded.generated),
+                    created_at=excluded.created_at",
+                params![
+                    self.project_id,
+                    event.session,
+                    event.turn,
+                    file.path,
+                    file.tool,
+                    file.operation,
+                    touched_source(&file.source),
+                    file.explicit,
+                    file.ignored,
+                    file.generated,
+                    now
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn list_touched_files(
+        &self,
+        session: &str,
+        turn: &str,
+    ) -> Result<Vec<LensTouchedFile>, Box<dyn std::error::Error>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT rel_path, operation, tool, source, explicit, ignored, generated
+             FROM turn_touched_files
+             WHERE project_id=?1 AND session_id=?2 AND turn_id=?3
+             ORDER BY rel_path, source, tool, operation",
+        )?;
+        let rows = stmt.query_map(params![self.project_id, session, turn], |row| {
+            Ok(LensTouchedFile {
+                path: row.get(0)?,
+                operation: row.get(1)?,
+                tool: row.get(2)?,
+                source: parse_touched_source(row.get::<_, String>(3)?.as_str()),
+                explicit: row.get(4)?,
+                ignored: row.get(5)?,
+                generated: row.get(6)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     pub fn record_diagnostics(
@@ -928,6 +1068,42 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+fn upsert_session_tx(
+    tx: &rusqlite::Transaction<'_>,
+    project_id: i64,
+    session_id: &str,
+    now: i64,
+) -> Result<(), rusqlite::Error> {
+    tx.execute(
+        "INSERT INTO sessions(id, project_id, agent, started_at, last_seen_at, status)
+         VALUES(?1, ?2, NULL, ?3, ?3, 'active')
+         ON CONFLICT(id) DO UPDATE SET last_seen_at=excluded.last_seen_at, status='active'",
+        params![session_id, project_id, now],
+    )?;
+    Ok(())
+}
+
+fn tool_phase(phase: &LensToolEventPhase) -> &'static str {
+    match phase {
+        LensToolEventPhase::PreTool => "pre_tool",
+        LensToolEventPhase::PostTool => "post_tool",
+    }
+}
+
+fn touched_source(source: &LensTouchedFileSource) -> &'static str {
+    match source {
+        LensTouchedFileSource::StructuredEvent => "structured_event",
+        LensTouchedFileSource::GitStatus => "git_status",
+    }
+}
+
+fn parse_touched_source(source: &str) -> LensTouchedFileSource {
+    match source {
+        "git_status" => LensTouchedFileSource::GitStatus,
+        _ => LensTouchedFileSource::StructuredEvent,
+    }
 }
 
 fn migrate_patch_candidates_to_v4(conn: &Connection) -> Result<(), rusqlite::Error> {
