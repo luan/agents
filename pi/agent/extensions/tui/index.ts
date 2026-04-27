@@ -141,7 +141,7 @@ export default function (pi: ExtensionAPI) {
 
     void runCommand(
       "ct",
-      ["usage-bar", "--width", String(width)],
+      ["tui", "usage-bar", "--width", String(width)],
       process.cwd(),
       undefined,
       JSON.stringify(request),
