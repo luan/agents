@@ -18,6 +18,24 @@ struct StatusIn {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+struct DiscoverIn {
+    cwd: Option<String>,
+    intent: String,
+    query: Option<String>,
+    path: Option<String>,
+    line: Option<usize>,
+    end_line: Option<usize>,
+    character: Option<usize>,
+    lang: Option<String>,
+    limit: Option<usize>,
+    context: Option<usize>,
+    session: Option<String>,
+    lsp_operation: Option<String>,
+    debug: Option<bool>,
+    raw: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 struct ReadRecordIn {
     cwd: Option<String>,
     path: String,
@@ -76,6 +94,18 @@ impl LensMcpServer {
         Parameters(input): Parameters<StatusIn>,
     ) -> Result<CallToolResult, ErrorData> {
         let envelope = status_envelope(input)?;
+        json_success(&envelope)
+    }
+
+    #[tool(
+        name = "discover",
+        description = "Route code discovery intents to sym, AST, source, or LSP backends."
+    )]
+    async fn discover(
+        &self,
+        Parameters(input): Parameters<DiscoverIn>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let envelope = discover_envelope(input)?;
         json_success(&envelope)
     }
 
@@ -219,6 +249,29 @@ impl LensMcpServer {
     }
 }
 
+fn discover_envelope(
+    input: DiscoverIn,
+) -> Result<crate::lens::LensEnvelope<crate::lens::DiscoveryData>, ErrorData> {
+    let root = cwd(input.cwd)?;
+    let intent = crate::lens::DiscoveryIntent::parse(&input.intent)
+        .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
+    let mut options = crate::lens::DiscoveryOptions::new(root, intent);
+    options.query = input.query;
+    options.path = input.path;
+    options.line = input.line;
+    options.end_line = input.end_line;
+    options.character = input.character;
+    options.lang = input.lang;
+    options.limit = input.limit.unwrap_or(10);
+    options.context = input.context.unwrap_or(2);
+    options.session = input.session;
+    options.lsp_operation = input.lsp_operation;
+    options.include_debug = input.debug.unwrap_or(false);
+    options.include_raw = input.raw.unwrap_or(false);
+    crate::lens::build_discovery_envelope(options)
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))
+}
+
 fn status_envelope(
     input: StatusIn,
 ) -> Result<crate::lens::LensEnvelope<crate::lens::LensStatusData>, ErrorData> {
@@ -288,6 +341,42 @@ fn cwd(input: Option<String>) -> Result<std::path::PathBuf, ErrorData> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mcp_discover_uses_shared_normalized_discovery_envelope() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("main.rs"), "fn target() {}\n").unwrap();
+        let cwd = temp.path().display().to_string();
+        let mcp = discover_envelope(DiscoverIn {
+            cwd: Some(cwd.clone()),
+            intent: "symbol".to_string(),
+            query: Some("target".to_string()),
+            path: None,
+            line: None,
+            end_line: None,
+            character: None,
+            lang: None,
+            limit: Some(10),
+            context: Some(2),
+            session: Some("mcp".to_string()),
+            lsp_operation: None,
+            debug: Some(false),
+            raw: Some(false),
+        })
+        .unwrap();
+        let mut options = crate::lens::DiscoveryOptions::new(
+            temp.path().to_path_buf(),
+            crate::lens::DiscoveryIntent::Symbol,
+        );
+        options.query = Some("target".to_string());
+        options.session = Some("mcp".to_string());
+        let direct = crate::lens::build_discovery_envelope(options).unwrap();
+
+        assert_eq!(
+            serde_json::to_value(mcp).unwrap(),
+            serde_json::to_value(direct).unwrap()
+        );
+    }
 
     #[test]
     fn mcp_status_matches_shared_normalized_status_envelope() {

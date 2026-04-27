@@ -247,6 +247,43 @@ pub enum LspAction {
 
 #[derive(Subcommand)]
 pub enum LensAction {
+    #[command(about = "Discover code through the routed Lens facade")]
+    Discover {
+        #[arg(long, help = "Working directory")]
+        cwd: Option<String>,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+        #[arg(
+            long,
+            help = "Discovery intent: symbol, text, path, source-context, ast, or lsp"
+        )]
+        intent: String,
+        #[arg(long, help = "Symbol, text, AST, or LSP workspace query")]
+        query: Option<String>,
+        #[arg(long, help = "Optional file/path filter")]
+        path: Option<String>,
+        #[arg(long, help = "1-based source line")]
+        line: Option<usize>,
+        #[arg(long, help = "1-based ending source line")]
+        end_line: Option<usize>,
+        #[arg(long, help = "1-based source character for LSP requests")]
+        character: Option<usize>,
+        #[arg(long, help = "Language hint")]
+        lang: Option<String>,
+        #[arg(long, default_value_t = 10, help = "Maximum normalized results")]
+        limit: usize,
+        #[arg(long, default_value_t = 2, help = "Context lines when source is shown")]
+        context: usize,
+        #[arg(long, help = "Session id for read coverage")]
+        session: Option<String>,
+        #[arg(long, help = "LSP operation, e.g. hover or definition")]
+        lsp_operation: Option<String>,
+        #[arg(long, help = "Include resolver/debug fields in JSON")]
+        debug: bool,
+        #[arg(long, help = "Include raw backend fields in JSON")]
+        raw: bool,
+    },
+
     #[command(about = "Show lens state status")]
     Status {
         #[arg(long, help = "Working directory")]

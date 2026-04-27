@@ -293,6 +293,67 @@ fn lens_prune_dry_run_uses_response_envelope() {
 }
 
 #[test]
+fn lens_discover_symbol_json_is_compact_and_records_coverage() {
+    let (bp, _remote) = setup_blueprints();
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+    fs::write(
+        project.path().join("lib.rs"),
+        "fn target() {\n    println!(\"hi\");\n}\n",
+    )
+    .expect("write source");
+
+    let assert = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .env("XDG_CACHE_HOME", state.path())
+        .args([
+            "lens",
+            "discover",
+            "--intent",
+            "symbol",
+            "--query",
+            "target",
+            "--session",
+            "cli",
+            "--json",
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("discover json");
+
+    assert_eq!(value["schema_version"], "lens.response.v1");
+    assert_eq!(value["data"]["route"]["backend"], "sym");
+    assert_eq!(value["data"]["items"][0]["path"], "lib.rs");
+    assert!(value["data"]["items"][0].get("file").is_none());
+    assert!(value["data"]["next_actions"].as_array().unwrap().len() >= 1);
+    assert!(value.get("debug").is_none());
+    assert!(value.get("raw").is_none());
+
+    ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .args([
+            "lens",
+            "guard",
+            "check",
+            "--path",
+            "lib.rs",
+            "--start-line",
+            "1",
+            "--end-line",
+            "1",
+            "--session",
+            "cli",
+            "--json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"reason\": \"covered\""));
+}
+
+#[test]
 fn lens_diagnostics_record_and_list_round_trip() {
     let (bp, _remote) = setup_blueprints();
     let project = project_dir();

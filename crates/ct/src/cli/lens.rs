@@ -4,12 +4,46 @@ use crate::cli::args::{
     GuardAction, LensAction, LensDiagnosticsAction, LensGuardAction, LensReadAction,
 };
 use crate::lens::{
-    Diagnostic, DiagnosticSeverity, DiagnosticSource, LensEnvelope, LensGuardMode,
-    LensStatusOptions, LensStore, RuntimePolicyOverrides, build_status_envelope, retention,
+    Diagnostic, DiagnosticSeverity, DiagnosticSource, DiscoveryIntent, DiscoveryOptions,
+    LensEnvelope, LensGuardMode, LensStatusOptions, LensStore, RuntimePolicyOverrides,
+    build_discovery_envelope, build_status_envelope, retention,
 };
 
 pub fn run_lens(action: LensAction) -> Result<(), Box<dyn std::error::Error>> {
     match action {
+        LensAction::Discover {
+            cwd,
+            json,
+            intent,
+            query,
+            path,
+            line,
+            end_line,
+            character,
+            lang,
+            limit,
+            context,
+            session,
+            lsp_operation,
+            debug,
+            raw,
+        } => discover(DiscoverCliOptions {
+            cwd,
+            json,
+            intent,
+            query,
+            path,
+            line,
+            end_line,
+            character,
+            lang,
+            limit,
+            context,
+            session,
+            lsp_operation,
+            debug,
+            raw,
+        }),
         LensAction::Status {
             cwd,
             json,
@@ -23,6 +57,64 @@ pub fn run_lens(action: LensAction) -> Result<(), Box<dyn std::error::Error>> {
         LensAction::Guard { action } => guard(action),
         LensAction::Prune { cwd, json, dry_run } => prune(cwd, json, dry_run),
     }
+}
+
+struct DiscoverCliOptions {
+    cwd: Option<String>,
+    json: bool,
+    intent: String,
+    query: Option<String>,
+    path: Option<String>,
+    line: Option<usize>,
+    end_line: Option<usize>,
+    character: Option<usize>,
+    lang: Option<String>,
+    limit: usize,
+    context: usize,
+    session: Option<String>,
+    lsp_operation: Option<String>,
+    debug: bool,
+    raw: bool,
+}
+
+fn discover(options: DiscoverCliOptions) -> Result<(), Box<dyn std::error::Error>> {
+    let root = options
+        .cwd
+        .map(Into::into)
+        .unwrap_or(std::env::current_dir()?);
+    let mut discovery_options =
+        DiscoveryOptions::new(root, DiscoveryIntent::parse(&options.intent)?);
+    discovery_options.query = options.query;
+    discovery_options.path = options.path;
+    discovery_options.line = options.line;
+    discovery_options.end_line = options.end_line;
+    discovery_options.character = options.character;
+    discovery_options.lang = options.lang;
+    discovery_options.limit = options.limit;
+    discovery_options.context = options.context;
+    discovery_options.session = options.session;
+    discovery_options.lsp_operation = options.lsp_operation;
+    discovery_options.include_debug = options.debug;
+    discovery_options.include_raw = options.raw;
+    let envelope = build_discovery_envelope(discovery_options)?;
+    if options.json {
+        print_json(&envelope)?;
+    } else {
+        println!(
+            "lens discover: {} via {} ({} results)",
+            envelope.data.route.intent, envelope.data.route.backend, envelope.data.item_count
+        );
+        for item in &envelope.data.items {
+            println!("- {}", item.summary);
+        }
+        for warning in &envelope.warnings {
+            println!("warning: {}", warning.message);
+        }
+        for action in &envelope.data.next_actions {
+            println!("next: {}: {}", action.label, action.command);
+        }
+    }
+    Ok(())
 }
 
 fn status(
