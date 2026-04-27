@@ -102,6 +102,14 @@ pub struct PatchDraftChunk {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PatchRepairSymbol {
+    pub name: String,
+    pub kind: String,
+    pub start_line: i64,
+    pub end_line: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PatchCandidate {
     pub chunk_index: i64,
     pub line: i64,
@@ -110,6 +118,11 @@ pub struct PatchCandidate {
     pub enclosing_kind: Option<String>,
     pub symbol_start: Option<i64>,
     pub symbol_end: Option<i64>,
+    pub candidate_kind: String,
+    pub symbol: Option<PatchRepairSymbol>,
+    pub anchors: Vec<String>,
+    pub confidence: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

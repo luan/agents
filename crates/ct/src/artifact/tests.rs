@@ -5,15 +5,11 @@ use super::crud::{
 };
 use super::listing::{list_archived_artifacts, list_artifacts};
 use super::{
-    ArtifactKind, CtError, ResolveError, SyncError, artifact_dir_with_base, chrono_rfc3339, env,
-    extract_frontmatter_full_from_str, fs, parse_frontmatter, parse_yaml_map, project_name,
-    strip_date_prefix, yaml_quote,
+    ArtifactKind, CT_BLUEPRINTS_ENV_LOCK, CtError, ResolveError, SyncError, artifact_dir_with_base,
+    chrono_rfc3339, env, extract_frontmatter_full_from_str, fs, parse_frontmatter, parse_yaml_map,
+    project_name, strip_date_prefix, yaml_quote,
 };
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-
-// Serialize all tests that mutate CT_BLUEPRINTS_DIR to prevent env-var races.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn worktrees_share_repo_name() {
@@ -277,7 +273,9 @@ fn parse_comments_on_later_line() {
 }
 
 fn with_blueprints_dir<F: FnOnce()>(tmp: &std::path::Path, f: F) {
-    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = CT_BLUEPRINTS_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let prev = env::var("CT_BLUEPRINTS_DIR").ok();
     unsafe { env::set_var("CT_BLUEPRINTS_DIR", tmp) };
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));

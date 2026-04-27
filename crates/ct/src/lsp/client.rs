@@ -23,6 +23,7 @@ pub struct LspClient {
     stdin: ChildStdin,
     rx: mpsc::Receiver<Result<Value, String>>,
     next_id: i64,
+    closed: bool,
 }
 
 impl LspClient {
@@ -65,7 +66,27 @@ impl LspClient {
             stdin,
             rx,
             next_id: 1,
+            closed: false,
         })
+    }
+
+    pub fn is_alive(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
+    }
+
+    pub fn shutdown(&mut self) {
+        if self.closed {
+            return;
+        }
+        self.closed = true;
+        if self.is_alive() {
+            let _ = self.request("shutdown", Value::Null, Duration::from_millis(500));
+            let _ = self.notify("exit", Value::Null);
+        }
+        if self.is_alive() {
+            let _ = self.child.kill();
+        }
+        let _ = self.child.wait();
     }
 
     pub fn initialize(&mut self, probe: &LspServerProbe) -> Result<()> {
@@ -269,9 +290,7 @@ impl LspClient {
 
 impl Drop for LspClient {
     fn drop(&mut self) {
-        let _ = self.notify("exit", Value::Null);
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        self.shutdown();
     }
 }
 

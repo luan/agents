@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 
 import { formatCommand, runCommand } from "../shared/ct-runner.ts";
+import { renderText, toolResult } from "../shared/ct-render.ts";
 
 const statusSchema = Type.Object({});
 const readSchema = Type.Object({
@@ -57,6 +58,14 @@ export default function lensExtension(pi: ExtensionAPI) {
 		async execute(_id, _params, signal, _onUpdate, ctx) {
 			return runCtLens(["status"], ctx.cwd, signal);
 		},
+		renderCall(_args, _theme, ctx) {
+			return renderText(ctx, "ct lens status");
+		},
+		renderResult(result, _options, _theme, ctx) {
+			const data = toolResult(result) as any;
+			const counts = data.counts ?? {};
+			return renderText(ctx, `✓ lens status · files ${counts.files ?? 0} · reads ${counts.read_events ?? counts.sessions ?? 0} · drafts ${counts.patch_drafts ?? 0}`);
+		},
 	});
 
 	registerTool({
@@ -69,6 +78,13 @@ export default function lensExtension(pi: ExtensionAPI) {
 			const args = ["read", "record", "--path", params.path, "--start-line", String(params.startLine), "--end-line", String(params.endLine)];
 			pushOpt(args, "--session", params.session);
 			return runCtLens(args, ctx.cwd, signal);
+		},
+		renderCall(args, _theme, ctx) {
+			return renderText(ctx, `ct lens read ${args.path}:${args.startLine}-${args.endLine}`);
+		},
+		renderResult(result, _options, _theme, ctx) {
+			const data = toolResult(result) as any;
+			return renderText(ctx, `✓ lens read recorded · ${data.path ?? ""}:${data.range?.start_line ?? "?"}-${data.range?.end_line ?? "?"}`);
 		},
 	});
 
@@ -84,6 +100,15 @@ export default function lensExtension(pi: ExtensionAPI) {
 			pushOpt(args, "--mode", params.mode);
 			return runCtLens(args, ctx.cwd, signal);
 		},
+		renderCall(args, _theme, ctx) {
+			return renderText(ctx, `ct lens guard ${args.path}:${args.startLine}-${args.endLine}`);
+		},
+		renderResult(result, _options, _theme, ctx) {
+			const data = toolResult(result) as any;
+			const required = (data.required_ranges ?? []).map((r: any) => `${r.start_line}-${r.end_line}`).join(", ");
+			const covered = (data.covered_ranges ?? []).map((r: any) => `${r.start_line}-${r.end_line}`).join(", ") || "none";
+			return renderText(ctx, `${data.decision === "allow" ? "✓" : "⚠"} lens guard → ${data.decision ?? "unknown"} (${data.reason ?? "unknown"})\n  required: ${required}\n  covered: ${covered}`);
+		},
 	});
 
 	registerTool({
@@ -96,6 +121,13 @@ export default function lensExtension(pi: ExtensionAPI) {
 			const args = ["diagnostics", "list"];
 			pushOpt(args, "--path", params.path);
 			return runCtLens(args, ctx.cwd, signal);
+		},
+		renderCall(args, _theme, ctx) {
+			return renderText(ctx, `ct lens diagnostics list${args.path ? ` ${args.path}` : ""}`);
+		},
+		renderResult(result, _options, _theme, ctx) {
+			const data = toolResult(result) as any;
+			return renderText(ctx, `✓ lens diagnostics → ${data.diagnostic_count ?? data.diagnostics?.length ?? 0}`);
 		},
 	});
 
@@ -113,6 +145,13 @@ export default function lensExtension(pi: ExtensionAPI) {
 			pushOpt(args, "--end-line", params.endLine);
 			pushOpt(args, "--fingerprint", params.fingerprint);
 			return runCtLens(args, ctx.cwd, signal);
+		},
+		renderCall(args, _theme, ctx) {
+			return renderText(ctx, `ct lens diagnostic record ${args.severity}`);
+		},
+		renderResult(result, _options, _theme, ctx) {
+			const data = toolResult(result) as any;
+			return renderText(ctx, `${data.recorded === true ? "✓" : "⚠"} lens diagnostic record · ${data.fingerprint ?? ""}`);
 		},
 	});
 }

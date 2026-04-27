@@ -2,6 +2,8 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 
 import { formatCommand, runCommand } from "../shared/ct-runner.ts";
+import { firstLocations, renderText, resultCount, toolResult } from "../shared/ct-render.ts";
+import { recordLensReadsFromAstMatches } from "../shared/lens-read.ts";
 
 const paths = Type.Optional(Type.Array(Type.String({ description: "Files or directories to search" })));
 
@@ -30,14 +32,19 @@ function pushOpt(args: string[], flag: string, value: unknown) {
 	if (value !== undefined && value !== null) args.push(flag, String(value));
 }
 
-async function runCtAst(args: string[], cwd: string, signal?: AbortSignal) {
+async function runCtAst(args: string[], cwd: string, signal?: AbortSignal, session?: string) {
 	const fullArgs = ["ast", ...args, "--json"];
 	const result = await runCommand("ct", fullArgs, cwd, signal);
 	const parsed = JSON.parse(result.stdout);
+	await recordLensReadsFromAstMatches(parsed, cwd, session, signal);
 	return {
 		content: [{ type: "text" as const, text: JSON.stringify(parsed, null, 2) }],
 		details: { command: formatCommand("ct", fullArgs), cwd, results: parsed, stdout: result.stdout, stderr: result.stderr },
 	};
+}
+
+function sessionId(ctx: any): string | undefined {
+	return ctx?.sessionManager?.getSessionId?.();
 }
 
 export default function astExtension(pi: ExtensionAPI) {
@@ -54,7 +61,16 @@ export default function astExtension(pi: ExtensionAPI) {
 			pushMany(args, "--path", params.paths);
 			pushOpt(args, "--selector", params.selector);
 			pushOpt(args, "--context", params.context);
-			return runCtAst(args, ctx.cwd, signal);
+			return runCtAst(args, ctx.cwd, signal, sessionId(ctx));
+		},
+		renderCall(args, _theme, ctx) {
+			const pathCount = Array.isArray(args.paths) ? args.paths.length : 1;
+			return renderText(ctx, `ct ast search ${args.lang} · ${pathCount} path${pathCount === 1 ? "" : "s"}`);
+		},
+		renderResult(result, _options, _theme, ctx) {
+			const data = toolResult(result);
+			const locations = firstLocations(data.matches).map((line) => `  ${line}`);
+			return renderText(ctx, [`✓ ast search → ${resultCount(data)} matches`, ...locations].join("\n"));
 		},
 	});
 
@@ -63,12 +79,21 @@ export default function astExtension(pi: ExtensionAPI) {
 		label: "ast replace",
 		description: "Replace code using native ct ast. Apply routes through ct patch drafts.",
 		parameters: replaceSchema,
-		executionMode: "exclusive",
+			executionMode: "exclusive",
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const args = ["replace", "--lang", params.lang, "--pattern", params.pattern, "--rewrite", params.rewrite];
 			pushMany(args, "--path", params.paths);
 			if (params.apply === true) args.push("--apply");
-			return runCtAst(args, ctx.cwd, signal);
+			return runCtAst(args, ctx.cwd, signal, sessionId(ctx));
+		},
+		renderCall(args, _theme, ctx) {
+			const mode = args.apply === true ? "apply" : "dry-run";
+			return renderText(ctx, `ct ast replace ${args.lang} · ${mode}`);
+		},
+		renderResult(result, _options, _theme, ctx) {
+			const data = toolResult(result);
+			const locations = firstLocations(data.matches).map((line) => `  ${line}`);
+			return renderText(ctx, [`✓ ast replace → ${resultCount(data)} matches`, ...locations].join("\n"));
 		},
 	});
 }

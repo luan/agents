@@ -4,7 +4,8 @@ use rmcp::model::{CallToolResult, ErrorData};
 use rmcp::schemars::{self, JsonSchema};
 use rmcp::{ServerHandler, tool, tool_handler, tool_router};
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Value, json};
+use std::sync::{Arc, Mutex};
 
 use super::json_success;
 
@@ -26,12 +27,14 @@ struct DiagnosticsIn {
 #[derive(Clone)]
 pub(super) struct LspMcpServer {
     tool_router: ToolRouter<Self>,
+    pool: Arc<Mutex<crate::lsp::session::LspSessionPool>>,
 }
 
 impl LspMcpServer {
     pub(super) fn new() -> Self {
         Self {
             tool_router: Self::tool_router(),
+            pool: Arc::new(Mutex::new(crate::lsp::session::LspSessionPool::new())),
         }
     }
 }
@@ -85,36 +88,28 @@ impl LspMcpServer {
                 "failureKind": "server_unavailable"
             }));
         }
-        let mut client = crate::lsp::client::LspClient::start(&probe)
+        let root = std::env::current_dir()
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-        client
-            .initialize(&probe)
-            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-        client
-            .open_file(&probe, &path)
-            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-        let output = client
-            .run_text_operation(
-                &input.operation,
-                &path,
-                input.line,
-                input.character,
-                input.query.as_deref(),
-                input.new_name.as_deref(),
-            )
-            .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
-        json_success(&json!({
-            "operation": input.operation,
-            "filePath": path,
-            "line": input.line,
-            "character": input.character,
-            "query": input.query,
-            "newName": input.new_name,
-            "server": probe,
-            "result": output.result,
-            "resultCount": output.result_count,
-            "failureKind": null
-        }))
+        let pooled = self
+            .pool
+            .lock()
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?
+            .with_session(&probe, &path, &root, |client| {
+                client.run_text_operation(
+                    &input.operation,
+                    &path,
+                    input.line,
+                    input.character,
+                    input.query.as_deref(),
+                    input.new_name.as_deref(),
+                )
+            });
+        let output = match pooled {
+            Ok(output) => output,
+            Err(_) => run_one_shot_request(&probe, &path, &input)
+                .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?,
+        };
+        json_success(&request_success_json(&input, &path, &probe, output))
     }
 
     #[tool(
@@ -151,20 +146,21 @@ impl LspMcpServer {
                 "failureKind": "server_unavailable"
             }));
         }
-        let mut client = crate::lsp::client::LspClient::start(&probe)
-            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-        client
-            .initialize(&probe)
-            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-        client
-            .open_file(&probe, &path)
-            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-        let diagnostics = client
-            .collect_diagnostics(&path)
-            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-        let lens_diagnostics = lsp_diagnostics_for_store(&path, &diagnostics)?;
         let root = std::env::current_dir()
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        let pooled = self
+            .pool
+            .lock()
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?
+            .with_session(&probe, &path, &root, |client| {
+                client.collect_diagnostics(&path)
+            });
+        let diagnostics = match pooled {
+            Ok(diagnostics) => diagnostics,
+            Err(_) => run_one_shot_diagnostics(&probe, &path)
+                .map_err(|error| ErrorData::internal_error(error.to_string(), None))?,
+        };
+        let lens_diagnostics = lsp_diagnostics_for_store(&path, &diagnostics)?;
         let mut store = crate::lens::LensStore::open_for_project(&root)
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
         store
@@ -179,6 +175,54 @@ impl LspMcpServer {
             "failureKind": null
         }))
     }
+}
+
+fn run_one_shot_request(
+    probe: &crate::lsp::registry::LspServerProbe,
+    path: &std::path::Path,
+    input: &RequestIn,
+) -> anyhow::Result<crate::lsp::client::LspOperationResult> {
+    let mut client = crate::lsp::client::LspClient::start(probe)?;
+    client.initialize(probe)?;
+    client.open_file(probe, path)?;
+    client.run_text_operation(
+        &input.operation,
+        path,
+        input.line,
+        input.character,
+        input.query.as_deref(),
+        input.new_name.as_deref(),
+    )
+}
+
+fn run_one_shot_diagnostics(
+    probe: &crate::lsp::registry::LspServerProbe,
+    path: &std::path::Path,
+) -> anyhow::Result<Vec<serde_json::Value>> {
+    let mut client = crate::lsp::client::LspClient::start(probe)?;
+    client.initialize(probe)?;
+    client.open_file(probe, path)?;
+    client.collect_diagnostics(path)
+}
+
+fn request_success_json(
+    input: &RequestIn,
+    path: &std::path::Path,
+    probe: &crate::lsp::registry::LspServerProbe,
+    output: crate::lsp::client::LspOperationResult,
+) -> Value {
+    json!({
+        "operation": input.operation,
+        "filePath": path,
+        "line": input.line,
+        "character": input.character,
+        "query": input.query,
+        "newName": input.new_name,
+        "server": probe,
+        "result": output.result,
+        "resultCount": output.result_count,
+        "failureKind": null
+    })
 }
 
 fn lsp_diagnostics_for_store(

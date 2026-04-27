@@ -413,12 +413,11 @@ pub fn cmd_status() {
 mod tests {
     use super::*;
     use std::path::Path;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn with_blueprints_dir<F: FnOnce()>(tmp: &Path, f: F) {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::artifact::CT_BLUEPRINTS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let prev = env::var("CT_BLUEPRINTS_DIR").ok();
         unsafe { env::set_var("CT_BLUEPRINTS_DIR", tmp) };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));

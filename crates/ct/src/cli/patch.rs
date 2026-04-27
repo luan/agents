@@ -2,7 +2,7 @@ use std::io::IsTerminal;
 use std::io::Read;
 
 use crate::cli::args::{PatchAction, PatchDraftAction};
-use crate::lens::{PatchCandidate, PatchDraftChunk};
+use crate::lens::{PatchCandidate, PatchDraftChunk, PatchRepairSymbol};
 
 pub fn run_patch(action: PatchAction) -> Result<(), Box<dyn std::error::Error>> {
     match action {
@@ -50,20 +50,33 @@ fn create(cwd: Option<String>, json: bool) -> Result<(), Box<dyn std::error::Err
 
     let cwd = cwd.unwrap_or_else(|| ".".to_string());
     let root = std::path::PathBuf::from(&cwd).canonicalize()?;
-    let patch_id = crate::apply_patch::sha1_hex(body.as_bytes());
-    let mut chunks = draft_chunks(&body)?;
-    let (status, error_kind, error_message, candidates) =
-        match crate::apply_patch::apply(&body, &root, true) {
-            Ok(_) => ("applicable", None, None, Vec::new()),
-            Err(failure) => (
-                "blocked",
-                Some(crate::apply_patch::draft::error_kind(&failure.error).to_string()),
-                Some(failure.error.to_string()),
-                patch_candidates(&failure.error, &root),
-            ),
-        };
+    let original_patch_id = crate::apply_patch::sha1_hex(body.as_bytes());
+    let mut patch_id = original_patch_id.clone();
+    let mut draft_body = body.clone();
+    let mut chunks = draft_chunks(&draft_body)?;
+    let mut status = "applicable".to_string();
+    let mut error_kind = None;
+    let mut error_message = None;
+    let mut candidates = Vec::new();
+    let mut auto_repaired = false;
+    let mut repair_evidence = Vec::new();
+    if let Err(failure) = crate::apply_patch::apply(&draft_body, &root, true) {
+        let failure_candidates = patch_candidates(&failure.error, &root);
+        if let Some(amended_body) = unique_auto_repair(&draft_body, &root, &failure_candidates) {
+            draft_body = amended_body;
+            patch_id = crate::apply_patch::sha1_hex(draft_body.as_bytes());
+            chunks = draft_chunks(&draft_body)?;
+            auto_repaired = true;
+            repair_evidence = failure_candidates;
+        } else {
+            status = "blocked".to_string();
+            error_kind = Some(crate::apply_patch::draft::error_kind(&failure.error).to_string());
+            error_message = Some(failure.error.to_string());
+            candidates = failure_candidates;
+        }
+    }
     for chunk in &mut chunks {
-        chunk.status = status.to_string();
+        chunk.status = status.clone();
         if status == "blocked" {
             chunk.error_kind = error_kind.clone();
             chunk.error_message = error_message.clone();
@@ -75,9 +88,9 @@ fn create(cwd: Option<String>, json: bool) -> Result<(), Box<dyn std::error::Err
         id: &patch_id,
         cwd: &root.to_string_lossy(),
         session_id: None,
-        status,
+        status: &status,
         patch_sha: &patch_id,
-        body: &body,
+        body: &draft_body,
         chunks: &chunks,
         candidates: &candidates,
     })?;
@@ -89,6 +102,9 @@ fn create(cwd: Option<String>, json: bool) -> Result<(), Box<dyn std::error::Err
             "status": summary.status,
             "body_bytes": summary.body_bytes,
             "stored": true,
+            "original_patch_id": if auto_repaired { Some(original_patch_id) } else { None },
+            "auto_repaired": auto_repaired,
+            "repair_evidence": repair_evidence,
             "chunks": chunks,
             "candidates": candidates
         }),
@@ -418,6 +434,37 @@ fn patch_candidates(
         .collect()
 }
 
+fn unique_auto_repair(
+    body: &str,
+    root: &std::path::Path,
+    candidates: &[PatchCandidate],
+) -> Option<String> {
+    let mut successful_repairs = Vec::new();
+    for candidate in candidates {
+        if candidate.confidence != "high" {
+            continue;
+        }
+        let anchors = candidate
+            .anchors
+            .iter()
+            .filter(|anchor| !anchor.trim().is_empty())
+            .collect::<Vec<_>>();
+        let [anchor] = anchors.as_slice() else {
+            continue;
+        };
+        let Ok(amended) = amend_chunk_anchor(body, candidate.chunk_index as usize, anchor) else {
+            continue;
+        };
+        if crate::apply_patch::apply(&amended, root, true).is_ok() {
+            successful_repairs.push(amended);
+        }
+    }
+    let [amended] = successful_repairs.as_slice() else {
+        return None;
+    };
+    Some(amended.clone())
+}
+
 fn semantic_candidate(
     chunk_index: i64,
     line: i64,
@@ -433,14 +480,21 @@ fn semantic_candidate(
     for cursor in (start..=idx.min(lines.len().saturating_sub(1))).rev() {
         let trimmed = lines[cursor].trim();
         if looks_like_symbol_anchor(trimmed) {
+            let anchor = format!("@@ {trimmed}");
             return PatchCandidate {
                 chunk_index,
                 line,
-                suggested_anchor: Some(format!("@@ {trimmed}")),
+                suggested_anchor: Some(anchor.clone()),
                 enclosing_symbol: symbol_name(trimmed),
                 enclosing_kind: symbol_kind(trimmed).map(str::to_string),
                 symbol_start: Some((cursor + 1) as i64),
                 symbol_end: None,
+                candidate_kind: "heuristic_symbol_anchor".to_string(),
+                symbol: None,
+                anchors: vec![anchor],
+                confidence: "medium".to_string(),
+                reason: "nearest preceding symbol-like line is a plausible disambiguating anchor"
+                    .to_string(),
             };
         }
     }
@@ -469,16 +523,45 @@ fn sym_candidate(
         .map(|line| line.trim())
         .filter(|line| !line.is_empty())
         .map(|line| format!("@@ {line}"));
+    let signature_anchor =
+        (!symbol.signature.is_empty()).then(|| format!("@@ {}", symbol.signature));
+    let anchors = distinct_anchors(source_anchor.iter().chain(signature_anchor.iter()).cloned());
+    let suggested_anchor = anchors.first().cloned();
+    let symbol_name = symbol.name;
+    let symbol_kind = symbol.kind;
+    let symbol_start = symbol.start_line as i64;
+    let symbol_end = symbol.end_line as i64;
     Some(PatchCandidate {
         chunk_index,
         line,
-        suggested_anchor: source_anchor
-            .or_else(|| (!symbol.signature.is_empty()).then(|| format!("@@ {}", symbol.signature))),
-        enclosing_symbol: Some(symbol.name),
-        enclosing_kind: Some(symbol.kind),
-        symbol_start: Some(symbol.start_line as i64),
-        symbol_end: Some(symbol.end_line as i64),
+        suggested_anchor,
+        enclosing_symbol: Some(symbol_name.clone()),
+        enclosing_kind: Some(symbol_kind.clone()),
+        symbol_start: Some(symbol_start),
+        symbol_end: Some(symbol_end),
+        candidate_kind: "enclosing_symbol".to_string(),
+        symbol: Some(PatchRepairSymbol {
+            name: symbol_name.clone(),
+            kind: symbol_kind,
+            start_line: symbol_start,
+            end_line: symbol_end,
+        }),
+        anchors,
+        confidence: "high".to_string(),
+        reason: format!(
+            "candidate is inside the smallest indexed symbol containing line {line}: {symbol_name}"
+        ),
     })
+}
+
+fn distinct_anchors(anchors: impl Iterator<Item = String>) -> Vec<String> {
+    let mut out = Vec::new();
+    for anchor in anchors {
+        if !out.contains(&anchor) {
+            out.push(anchor);
+        }
+    }
+    out
 }
 
 fn simple_candidate(
@@ -486,6 +569,7 @@ fn simple_candidate(
     line: i64,
     suggested_anchor: Option<String>,
 ) -> PatchCandidate {
+    let anchors = suggested_anchor.iter().cloned().collect::<Vec<_>>();
     PatchCandidate {
         chunk_index,
         line,
@@ -494,6 +578,11 @@ fn simple_candidate(
         enclosing_kind: None,
         symbol_start: None,
         symbol_end: None,
+        candidate_kind: "line_anchor".to_string(),
+        symbol: None,
+        anchors,
+        confidence: "low".to_string(),
+        reason: "fallback candidate from the ambiguous line text".to_string(),
     }
 }
 

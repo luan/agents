@@ -11,6 +11,9 @@ mod archive;
 mod crud;
 mod listing;
 
+#[cfg(test)]
+pub(crate) static CT_BLUEPRINTS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub use archive::{archive, cmd_archive, cmd_archive_batch};
 pub use crud::{
     CreateOpts, cmd_comments, cmd_read, cmd_read_resolved, cmd_rename, cmd_retag, create, read,

@@ -10,7 +10,7 @@ use super::types::{
     PatchCandidate, PatchDraftChunk, PatchDraftSummary, ReadCoverageRange,
 };
 
-const SCHEMA_VERSION: i32 = 3;
+const SCHEMA_VERSION: i32 = 4;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS projects (
@@ -133,7 +133,12 @@ CREATE TABLE IF NOT EXISTS patch_draft_candidates (
     enclosing_symbol TEXT,
     enclosing_kind TEXT,
     symbol_start INTEGER,
-    symbol_end INTEGER
+    symbol_end INTEGER,
+    candidate_kind TEXT,
+    symbol_json TEXT,
+    anchors_json TEXT,
+    confidence TEXT,
+    reason TEXT
 );
 
 CREATE TABLE IF NOT EXISTS patch_affected_symbols (
@@ -230,6 +235,9 @@ impl LensStore {
         }
         if current < SCHEMA_VERSION {
             conn.execute_batch(SCHEMA)?;
+            if current > 0 && current < 4 {
+                migrate_patch_candidates_to_v4(&conn)?;
+            }
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         }
         let now = now_ms();
@@ -763,10 +771,18 @@ impl LensStore {
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO patch_draft_candidates
-                 (patch_id, chunk_index, line, suggested_anchor, enclosing_symbol, enclosing_kind, symbol_start, symbol_end)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 (patch_id, chunk_index, line, suggested_anchor, enclosing_symbol, enclosing_kind, symbol_start, symbol_end, candidate_kind, symbol_json, anchors_json, confidence, reason)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             )?;
             for candidate in draft.candidates {
+                let symbol_json = candidate
+                    .symbol
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()
+                    .map_err(|error| rusqlite::Error::ToSqlConversionFailure(error.into()))?;
+                let anchors_json = serde_json::to_string(&candidate.anchors)
+                    .map_err(|error| rusqlite::Error::ToSqlConversionFailure(error.into()))?;
                 stmt.execute(params![
                     draft.id,
                     candidate.chunk_index,
@@ -776,6 +792,11 @@ impl LensStore {
                     candidate.enclosing_kind,
                     candidate.symbol_start,
                     candidate.symbol_end,
+                    candidate.candidate_kind,
+                    symbol_json,
+                    anchors_json,
+                    candidate.confidence,
+                    candidate.reason,
                 ])?;
             }
         }
@@ -840,12 +861,15 @@ impl LensStore {
 
     pub fn patch_draft_candidates(&self, id: &str) -> Result<Vec<PatchCandidate>, rusqlite::Error> {
         let mut stmt = self.conn.prepare(
-            "SELECT chunk_index, line, suggested_anchor, enclosing_symbol, enclosing_kind, symbol_start, symbol_end
+            "SELECT chunk_index, line, suggested_anchor, enclosing_symbol, enclosing_kind, symbol_start, symbol_end,
+                    candidate_kind, symbol_json, anchors_json, confidence, reason
              FROM patch_draft_candidates
              WHERE patch_id = ?1
              ORDER BY chunk_index ASC, line ASC",
         )?;
         stmt.query_map(params![id], |row| {
+            let symbol_json: Option<String> = row.get(8)?;
+            let anchors_json: Option<String> = row.get(9)?;
             Ok(PatchCandidate {
                 chunk_index: row.get(0)?,
                 line: row.get(1)?,
@@ -854,6 +878,17 @@ impl LensStore {
                 enclosing_kind: row.get(4)?,
                 symbol_start: row.get(5)?,
                 symbol_end: row.get(6)?,
+                candidate_kind: row
+                    .get::<_, Option<String>>(7)?
+                    .unwrap_or_else(|| "line_anchor".to_string()),
+                symbol: symbol_json.and_then(|value| serde_json::from_str(&value).ok()),
+                anchors: anchors_json
+                    .and_then(|value| serde_json::from_str(&value).ok())
+                    .unwrap_or_default(),
+                confidence: row
+                    .get::<_, Option<String>>(10)?
+                    .unwrap_or_else(|| "low".to_string()),
+                reason: row.get::<_, Option<String>>(11)?.unwrap_or_default(),
             })
         })?
         .collect()
@@ -893,6 +928,38 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+fn migrate_patch_candidates_to_v4(conn: &Connection) -> Result<(), rusqlite::Error> {
+    for column in [
+        "candidate_kind TEXT",
+        "symbol_json TEXT",
+        "anchors_json TEXT",
+        "confidence TEXT",
+        "reason TEXT",
+    ] {
+        let name = column
+            .split_once(' ')
+            .map(|(name, _)| name)
+            .unwrap_or(column);
+        if !table_has_column(conn, "patch_draft_candidates", name)? {
+            conn.execute_batch(&format!(
+                "ALTER TABLE patch_draft_candidates ADD COLUMN {column};"
+            ))?;
+        }
+    }
+    Ok(())
+}
+
+fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, rusqlite::Error> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let names = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for name in names {
+        if name? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn normalize_range(
