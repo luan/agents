@@ -1,3 +1,4 @@
+pub mod checks;
 pub mod cleanup;
 pub mod contract;
 pub mod discovery;
@@ -10,6 +11,7 @@ pub mod store;
 pub mod turn;
 pub mod types;
 
+pub use checks::*;
 pub use cleanup::*;
 pub use contract::*;
 pub use discovery::*;

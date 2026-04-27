@@ -171,6 +171,7 @@ fn diagnostics(file_path: Option<String>, json: bool) -> Result<(), Box<dyn std:
                 ),
                 diagnostics: lens_diagnostics.clone(),
                 raw_output: Some(serde_json::to_string(&diagnostics)?),
+                raw_output_max_bytes: None,
                 metadata: crate::lens::DiagnosticSnapshotMetadata::default(),
             })?;
             let out = serde_json::json!({

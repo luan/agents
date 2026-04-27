@@ -37,6 +37,7 @@ pub enum DiagnosticSource {
     AstGrep,
     TreeSitter,
     Secrets,
+    Security,
     Formatter,
     Autofix,
     Test,
@@ -95,6 +96,20 @@ impl DiagnosticScope {
             key: command.into(),
         }
     }
+
+    pub fn check(name: impl Into<String>) -> Self {
+        Self {
+            kind: "check".to_string(),
+            key: name.into(),
+        }
+    }
+
+    pub fn scanner(name: impl Into<String>) -> Self {
+        Self {
+            kind: "scanner".to_string(),
+            key: name.into(),
+        }
+    }
 }
 
 impl Default for DiagnosticScope {
@@ -130,6 +145,8 @@ pub struct DiagnosticSnapshotInput {
     pub diagnostics: Vec<Diagnostic>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_output: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_output_max_bytes: Option<usize>,
     #[serde(default)]
     pub metadata: DiagnosticSnapshotMetadata,
 }
@@ -331,6 +348,8 @@ pub struct LensTurnRecordData {
     pub file_count: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cleanup: Option<super::cleanup::CleanupReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checks: Option<super::checks::LensChecksData>,
 }
 
 fn default_turn_event_schema() -> String {

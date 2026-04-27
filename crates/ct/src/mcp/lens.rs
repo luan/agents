@@ -97,6 +97,20 @@ struct DiagnosticsSnapshotIn {
     snapshot: serde_json::Value,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+struct ChecksListIn {
+    cwd: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct ChecksRunIn {
+    cwd: Option<String>,
+    automatic: Option<bool>,
+    all: Option<bool>,
+    name: Option<Vec<String>>,
+    scanners: Option<bool>,
+}
+
 #[derive(Clone)]
 pub(super) struct LensMcpServer {
     tool_router: ToolRouter<Self>,
@@ -218,6 +232,43 @@ impl LensMcpServer {
             crate::lens::CleanupOptions {
                 allow_unsafe: input.allow_unsafe.unwrap_or(false),
                 ..crate::lens::CleanupOptions::default()
+            },
+        )
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        json_success(&envelope)
+    }
+
+    #[tool(
+        name = "checks_list",
+        description = "List configured Lens checks, scanners, and suggestions without running them."
+    )]
+    async fn checks_list(
+        &self,
+        Parameters(input): Parameters<ChecksListIn>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let root = cwd(input.cwd)?;
+        let envelope = crate::lens::list_checks_envelope(&root)
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        json_success(&envelope)
+    }
+
+    #[tool(
+        name = "checks_run",
+        description = "Run repository-configured Lens checks and scanners."
+    )]
+    async fn checks_run(
+        &self,
+        Parameters(input): Parameters<ChecksRunIn>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let root = cwd(input.cwd)?;
+        let names = input.name.unwrap_or_default();
+        let all = input.all.unwrap_or(false);
+        let envelope = crate::lens::run_checks_envelope(
+            &root,
+            crate::lens::LensCheckRunOptions {
+                automatic_only: input.automatic.unwrap_or(false) || !all && names.is_empty(),
+                names,
+                include_scanners: input.scanners.unwrap_or(false) || all,
             },
         )
         .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
@@ -477,6 +528,7 @@ fn parse_source(source: &str) -> crate::lens::DiagnosticSource {
         "ast_grep" => crate::lens::DiagnosticSource::AstGrep,
         "tree_sitter" => crate::lens::DiagnosticSource::TreeSitter,
         "secrets" => crate::lens::DiagnosticSource::Secrets,
+        "security" => crate::lens::DiagnosticSource::Security,
         "formatter" => crate::lens::DiagnosticSource::Formatter,
         "autofix" => crate::lens::DiagnosticSource::Autofix,
         "test" => crate::lens::DiagnosticSource::Test,

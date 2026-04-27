@@ -72,6 +72,11 @@ pub fn record_turn_event_envelope(
     let warned = guard_decisions
         .iter()
         .any(|decision| matches!(decision.decision, GuardAction::Warn));
+    let turn_checks = if matches!(event.event, LensTurnEventKind::TurnEnd) {
+        Some(super::checks::automatic_turn_checks_envelope(&root)?)
+    } else {
+        None
+    };
     let mut warnings = Vec::new();
     if warned {
         warnings.push(LensMessage::warning(
@@ -81,6 +86,9 @@ pub fn record_turn_event_envelope(
     }
     if let Some(cleanup) = &cleanup {
         warnings.extend(super::cleanup::cleanup_envelope(cleanup.clone()).warnings);
+    }
+    if let Some(checks) = &turn_checks {
+        warnings.extend(checks.warnings.clone());
     }
     let data = LensTurnRecordData {
         project_id: store.project_id(),
@@ -96,6 +104,7 @@ pub fn record_turn_event_envelope(
         file_count: files.len(),
         files,
         cleanup,
+        checks: turn_checks.map(|envelope| envelope.data),
     };
     if blocked {
         Ok(LensEnvelope::error(

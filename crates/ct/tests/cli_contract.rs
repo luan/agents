@@ -763,3 +763,59 @@ fn lens_guard_has_no_default_public_override_path() {
         .failure()
         .stdout(predicate::str::contains("guard_overrides_disabled"));
 }
+
+#[test]
+fn lens_checks_run_configured_fixture_and_records_snapshot() {
+    let (bp, _remote) = setup_blueprints();
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+    fs::write(project.path().join("main.rs"), "fn main() {}\n").expect("write source");
+    fs::create_dir_all(project.path().join(".ct")).expect("create config dir");
+    fs::write(
+        project.path().join("check.sh"),
+        "#!/bin/sh\necho 'main.rs:1:error:fixture failed'\nexit 1\n",
+    )
+    .expect("write check script");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let script = project.path().join("check.sh");
+        let mut perms = fs::metadata(&script)
+            .expect("script metadata")
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(script, perms).expect("chmod script");
+    }
+    fs::write(
+        project.path().join(".ct/lens.json"),
+        r#"{"checks":{"fixture":{"command":"./check.sh","automatic":true,"parser":"line","raw_output_max_bytes":128}}}"#,
+    )
+    .expect("write lens config");
+
+    let assert = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .args(["lens", "checks", "run", "--json"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("checks json");
+    assert_eq!(value["schema_version"], "lens.response.v1");
+    assert_eq!(value["status"], "warning");
+    assert_eq!(value["data"]["runs"][0]["name"], "fixture");
+    assert_eq!(value["data"]["runs"][0]["scope"]["kind"], "check");
+    assert_eq!(value["data"]["runs"][0]["diagnostic_count"], 1);
+    assert_eq!(
+        value["data"]["runs"][0]["snapshot"]["raw_output"]["truncated"],
+        false
+    );
+
+    ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .args(["lens", "diagnostics", "list", "--all", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("fixture failed"))
+        .stdout(predicate::str::contains("\"kind\": \"check\""));
+}

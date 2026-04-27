@@ -967,9 +967,17 @@ impl LensStore {
         let source_text = diagnostic_source(&snapshot.source);
         let metadata_json = serde_json::to_string(&snapshot.metadata)?;
         let raw_output = match snapshot.raw_output.as_deref() {
-            Some(raw) => {
-                Some(self.insert_raw_output(&snapshot.source, &snapshot.scope, raw, now)?)
-            }
+            Some(raw) => Some(
+                self.insert_raw_output(
+                    &snapshot.source,
+                    &snapshot.scope,
+                    raw,
+                    now,
+                    snapshot
+                        .raw_output_max_bytes
+                        .unwrap_or(raw_output::DEFAULT_RAW_OUTPUT_MAX_BYTES),
+                )?,
+            ),
             None => None,
         };
         let raw_output_id = raw_output.as_ref().map(|raw| raw.id);
@@ -1131,8 +1139,9 @@ impl LensStore {
         scope: &DiagnosticScope,
         raw: &str,
         now: i64,
+        max_bytes: usize,
     ) -> Result<RawOutputRef, Box<dyn std::error::Error>> {
-        let sanitized = raw_output::sanitize(raw, raw_output::DEFAULT_RAW_OUTPUT_MAX_BYTES);
+        let sanitized = raw_output::sanitize(raw, max_bytes);
         let expires_at = raw_output::expires_at(now, raw_output::DEFAULT_RAW_OUTPUT_TTL_DAYS);
         self.conn.execute(
             "INSERT INTO raw_outputs(project_id, source, scope_kind, scope_key, body, original_bytes, retained_bytes, truncated, redacted, created_at, expires_at)
@@ -2253,6 +2262,7 @@ fn diagnostic_source(source: &DiagnosticSource) -> String {
         DiagnosticSource::AstGrep => "ast_grep".to_string(),
         DiagnosticSource::TreeSitter => "tree_sitter".to_string(),
         DiagnosticSource::Secrets => "secrets".to_string(),
+        DiagnosticSource::Security => "security".to_string(),
         DiagnosticSource::Formatter => "formatter".to_string(),
         DiagnosticSource::Autofix => "autofix".to_string(),
         DiagnosticSource::Test => "test".to_string(),
@@ -2275,6 +2285,7 @@ fn parse_diagnostic_source(source: &str) -> DiagnosticSource {
         "ast_grep" => DiagnosticSource::AstGrep,
         "tree_sitter" => DiagnosticSource::TreeSitter,
         "secrets" => DiagnosticSource::Secrets,
+        "security" => DiagnosticSource::Security,
         "formatter" => DiagnosticSource::Formatter,
         "autofix" => DiagnosticSource::Autofix,
         "test" => DiagnosticSource::Test,
@@ -2562,6 +2573,7 @@ mod tests {
             scope: DiagnosticScope::file(path),
             diagnostics,
             raw_output: None,
+            raw_output_max_bytes: None,
             metadata: Default::default(),
         }
     }
@@ -2669,6 +2681,7 @@ mod tests {
                 scope: DiagnosticScope::workspace(),
                 diagnostics: diagnostics.clone(),
                 raw_output: None,
+                raw_output_max_bytes: None,
                 metadata: Default::default(),
             })
             .unwrap();
@@ -2678,6 +2691,7 @@ mod tests {
                 scope: DiagnosticScope::workspace(),
                 diagnostics,
                 raw_output: None,
+                raw_output_max_bytes: None,
                 metadata: Default::default(),
             })
             .unwrap();
@@ -2716,6 +2730,7 @@ mod tests {
                     ..diagnostic("ignored.log", "ignored", "ignored")
                 }],
                 raw_output: None,
+                raw_output_max_bytes: None,
                 metadata: Default::default(),
             })
             .unwrap();
@@ -2755,6 +2770,7 @@ mod tests {
                     ..diagnostic("main.rs", "raw", "raw")
                 }],
                 raw_output: Some(raw),
+                raw_output_max_bytes: None,
                 metadata: Default::default(),
             })
             .unwrap();

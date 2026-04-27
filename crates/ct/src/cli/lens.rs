@@ -3,8 +3,8 @@ use std::io::Read;
 use serde::Serialize;
 
 use crate::cli::args::{
-    GuardAction, LensAction, LensCleanupAction, LensDiagnosticsAction, LensGuardAction,
-    LensReadAction, LensTurnAction,
+    GuardAction, LensAction, LensChecksAction, LensCleanupAction, LensDiagnosticsAction,
+    LensGuardAction, LensReadAction, LensTurnAction,
 };
 use crate::lens::{
     Diagnostic, DiagnosticSeverity, DiagnosticSource, DiscoveryIntent, DiscoveryOptions,
@@ -56,6 +56,7 @@ pub fn run_lens(action: LensAction) -> Result<(), Box<dyn std::error::Error>> {
             guard_mode,
         } => status(cwd, json, disk, debug, raw, guard_mode),
         LensAction::Diagnostics { action } => diagnostics(action),
+        LensAction::Checks { action } => checks(action),
         LensAction::Read { action } => read(action),
         LensAction::Guard { action } => guard(action),
         LensAction::Turn { action } => turn(action),
@@ -153,6 +154,59 @@ fn status(
         println!("diagnostics: {}", envelope.data.state.counts.diagnostics);
         for warning in &envelope.warnings {
             println!("warning: {}", warning.message);
+        }
+    }
+    Ok(())
+}
+
+fn checks(action: LensChecksAction) -> Result<(), Box<dyn std::error::Error>> {
+    match action {
+        LensChecksAction::List { cwd, json } => {
+            let root = cwd.map(Into::into).unwrap_or(std::env::current_dir()?);
+            let envelope = crate::lens::list_checks_envelope(&root)?;
+            if json {
+                print_json(&envelope)?;
+            } else {
+                println!(
+                    "{} checks, {} scanners configured",
+                    envelope.data.configured_checks.len(),
+                    envelope.data.configured_scanners.len()
+                );
+                for suggestion in &envelope.data.suggestions {
+                    println!("suggested: {} ({})", suggestion.name, suggestion.command);
+                }
+            }
+        }
+        LensChecksAction::Run {
+            cwd,
+            json,
+            automatic,
+            all,
+            name,
+            scanners,
+        } => {
+            let root = cwd.map(Into::into).unwrap_or(std::env::current_dir()?);
+            let envelope = crate::lens::run_checks_envelope(
+                &root,
+                crate::lens::LensCheckRunOptions {
+                    automatic_only: automatic || !all && name.is_empty(),
+                    names: name,
+                    include_scanners: scanners || all,
+                },
+            )?;
+            if json {
+                print_json(&envelope)?;
+            } else {
+                for run in &envelope.data.runs {
+                    println!(
+                        "{} {}: {} ({} diagnostics)",
+                        run.kind, run.name, run.status, run.diagnostic_count
+                    );
+                }
+                for warning in &envelope.warnings {
+                    println!("warning: {}", warning.message);
+                }
+            }
         }
     }
     Ok(())
@@ -260,6 +314,7 @@ fn parse_source(source: &str) -> DiagnosticSource {
         "ast_grep" => DiagnosticSource::AstGrep,
         "tree_sitter" => DiagnosticSource::TreeSitter,
         "secrets" => DiagnosticSource::Secrets,
+        "security" => DiagnosticSource::Security,
         "formatter" => DiagnosticSource::Formatter,
         "autofix" => DiagnosticSource::Autofix,
         "test" => DiagnosticSource::Test,

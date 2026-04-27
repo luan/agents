@@ -306,6 +306,12 @@ pub enum LensAction {
         action: LensDiagnosticsAction,
     },
 
+    #[command(about = "Run repository-configured Lens checks and scanners")]
+    Checks {
+        #[command(subcommand)]
+        action: LensChecksAction,
+    },
+
     #[command(about = "Record read coverage")]
     Read {
         #[command(subcommand)]
@@ -338,6 +344,32 @@ pub enum LensAction {
         json: bool,
         #[arg(long, help = "Preview without deleting")]
         dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum LensChecksAction {
+    #[command(about = "List configured checks, scanners, and suggestions")]
+    List {
+        #[arg(long, help = "Working directory")]
+        cwd: Option<String>,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+    },
+    #[command(about = "Run configured checks and scanners")]
+    Run {
+        #[arg(long, help = "Working directory")]
+        cwd: Option<String>,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+        #[arg(long, help = "Run only automatic checks/scanners")]
+        automatic: bool,
+        #[arg(long, help = "Run all configured checks/scanners")]
+        all: bool,
+        #[arg(long, help = "Configured check/scanner name to run")]
+        name: Vec<String>,
+        #[arg(long, help = "Include configured scanners")]
+        scanners: bool,
     },
 }
 

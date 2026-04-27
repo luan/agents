@@ -177,6 +177,7 @@ impl LspMcpServer {
                     serde_json::to_string(&diagnostics)
                         .map_err(|error| ErrorData::internal_error(error.to_string(), None))?,
                 ),
+                raw_output_max_bytes: None,
                 metadata: crate::lens::DiagnosticSnapshotMetadata::default(),
             })
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
