@@ -903,6 +903,7 @@ fn record_cleanup_snapshot(
             scope: DiagnosticScope::command(tool.id.clone()),
             diagnostics,
             raw_output: (!raw_output.is_empty()).then_some(raw_output.to_string()),
+            raw_output_max_bytes: None,
             metadata: DiagnosticSnapshotMetadata {
                 command: Some(tool.id.clone()),
                 exit_code: process.exit_code.map(i64::from),
