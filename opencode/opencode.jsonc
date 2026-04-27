@@ -5,7 +5,7 @@
   "plugin": [
     "context-mode",
     "@tarquinen/opencode-dcp@latest",
-    "./plugins/lens.js",
+    "./plugins/lens.ts",
   ],
 
   "instructions": ["AGENTS.md", "CLAUDE.local.md"],

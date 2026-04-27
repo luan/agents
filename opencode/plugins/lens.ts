@@ -1,23 +1,34 @@
+import type { Plugin } from "@opencode-ai/plugin";
 import { spawn } from "node:child_process";
 
 export const id = "agents-lens";
 
-export async function server({ directory }) {
-  const hook = (name, payload) => runLensHook(name, payload, directory);
+export const server: Plugin = async ({ directory }) => {
+  const hook = (name: string, payload: any) =>
+    runLensHook(name, payload, directory);
 
   return {
     async event({ event }) {
       if (event.type === "session.created") {
-        const sessionID = event.properties?.sessionID ?? event.properties?.info?.id;
+        const sessionID = event.properties?.info?.id;
         if (sessionID) {
-          await hook("lens-session-start", basePayload(directory, sessionID, "SessionStart"));
+          await hook(
+            "lens-session-start",
+            basePayload(directory, sessionID, "SessionStart"),
+          );
         }
       }
       if (event.type === "session.idle") {
         const sessionID = event.properties?.sessionID;
         if (sessionID) {
-          await hook("lens-turn-end", basePayload(directory, sessionID, "Stop"));
-          await hook("lens-agent-end", basePayload(directory, sessionID, "Stop"));
+          await hook(
+            "lens-turn-end",
+            basePayload(directory, sessionID, "Stop"),
+          );
+          await hook(
+            "lens-agent-end",
+            basePayload(directory, sessionID, "Stop"),
+          );
         }
       }
     },
@@ -45,9 +56,9 @@ export async function server({ directory }) {
       });
     },
   };
-}
+};
 
-function basePayload(cwd, sessionID, hookEventName) {
+function basePayload(cwd: string, sessionID: string, hookEventName: string) {
   return {
     session_id: sessionID,
     turn_id: sessionID,
@@ -56,7 +67,7 @@ function basePayload(cwd, sessionID, hookEventName) {
   };
 }
 
-async function runLensHook(name, payload, cwd) {
+async function runLensHook(name: string, payload: any, cwd: string) {
   await new Promise((resolve) => {
     const child = spawn("ct", ["hook", name], {
       cwd,
