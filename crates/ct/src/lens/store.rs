@@ -18,7 +18,7 @@ use super::types::{
     ReadCoverageRange,
 };
 
-const SCHEMA_VERSION: i32 = 7;
+const SCHEMA_VERSION: i32 = 8;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS projects (
@@ -302,6 +302,17 @@ CREATE TABLE IF NOT EXISTS turn_touched_files (
     UNIQUE(project_id, session_id, turn_id, rel_path, source, tool, operation)
 );
 
+CREATE TABLE IF NOT EXISTS lens_action_acknowledgements (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    health_fingerprint TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE(project_id, session_id, turn_id, health_fingerprint)
+);
+
 CREATE TABLE IF NOT EXISTS retention_metadata (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -320,6 +331,7 @@ CREATE INDEX IF NOT EXISTS idx_patch_drafts_project_status ON patch_drafts(proje
 CREATE INDEX IF NOT EXISTS idx_patch_draft_chunks_patch ON patch_draft_chunks(patch_id);
 CREATE INDEX IF NOT EXISTS idx_turns_project_session_turn ON turns(project_id, session_id, turn_id);
 CREATE INDEX IF NOT EXISTS idx_turn_touched_project_session_turn ON turn_touched_files(project_id, session_id, turn_id);
+CREATE INDEX IF NOT EXISTS idx_lens_ack_project_session_turn ON lens_action_acknowledgements(project_id, session_id, turn_id);
 "#;
 
 pub struct LensStore {

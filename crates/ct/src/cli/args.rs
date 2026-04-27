@@ -336,6 +336,48 @@ pub enum LensAction {
         action: LensCleanupAction,
     },
 
+    #[command(about = "Show compact turn health")]
+    Health {
+        #[arg(long, help = "Working directory")]
+        cwd: Option<String>,
+        #[arg(long, help = "Session id")]
+        session: String,
+        #[arg(long, help = "Turn id")]
+        turn: String,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+        #[arg(long, help = "Print final/agent-end style text")]
+        final_output: bool,
+    },
+
+    #[command(about = "Show action-forcing Lens context for next turn")]
+    Context {
+        #[arg(long, help = "Working directory")]
+        cwd: Option<String>,
+        #[arg(long, help = "Session id")]
+        session: String,
+        #[arg(long, help = "Turn id")]
+        turn: String,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+        #[arg(long, help = "Acknowledge current warning-or-worse health")]
+        ack: bool,
+    },
+
+    #[command(about = "Show deeper Lens changed-file report")]
+    Report {
+        #[arg(long, help = "Working directory")]
+        cwd: Option<String>,
+        #[arg(long, help = "Session id")]
+        session: String,
+        #[arg(long, help = "Turn id")]
+        turn: String,
+        #[arg(long, help = "Optional changed-file path")]
+        path: Option<String>,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+    },
+
     #[command(about = "Prune lens state")]
     Prune {
         #[arg(long, help = "Working directory")]

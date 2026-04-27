@@ -61,6 +61,27 @@ pub fn run_lens(action: LensAction) -> Result<(), Box<dyn std::error::Error>> {
         LensAction::Guard { action } => guard(action),
         LensAction::Turn { action } => turn(action),
         LensAction::Cleanup { action } => cleanup(action),
+        LensAction::Health {
+            cwd,
+            session,
+            turn,
+            json,
+            final_output,
+        } => health(cwd, session, turn, json, final_output),
+        LensAction::Context {
+            cwd,
+            session,
+            turn,
+            json,
+            ack,
+        } => context(cwd, session, turn, json, ack),
+        LensAction::Report {
+            cwd,
+            session,
+            turn,
+            path,
+            json,
+        } => report(cwd, session, turn, path, json),
         LensAction::Prune { cwd, json, dry_run } => prune(cwd, json, dry_run),
     }
 }
@@ -535,6 +556,109 @@ fn cleanup(action: LensCleanupAction) -> Result<(), Box<dyn std::error::Error>> 
         );
         for warning in &envelope.warnings {
             println!("warning: {}", warning.message);
+        }
+    }
+    Ok(())
+}
+
+fn health(
+    cwd: Option<String>,
+    session: String,
+    turn: String,
+    json: bool,
+    final_output: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let root = cwd.map(Into::into).unwrap_or(std::env::current_dir()?);
+    let envelope = crate::lens::build_turn_health_envelope(
+        &root,
+        crate::lens::TurnHealthOptions {
+            session,
+            turn,
+            acknowledge: false,
+        },
+    )?;
+    if json {
+        print_json(&envelope)?;
+    } else if final_output {
+        println!("{}", crate::lens::final_health_text(&envelope.data));
+    } else {
+        println!("{}", crate::lens::compact_health_text(&envelope.data));
+        if envelope.data.action_context.required {
+            println!(
+                "action required: {}",
+                envelope.data.action_context.instructions
+            );
+            if let Some(command) = &envelope.data.action_context.ack_command {
+                println!("ack: {command}");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn context(
+    cwd: Option<String>,
+    session: String,
+    turn: String,
+    json: bool,
+    ack: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let root = cwd.map(Into::into).unwrap_or(std::env::current_dir()?);
+    let envelope = crate::lens::build_action_context_envelope(
+        &root,
+        crate::lens::TurnHealthOptions {
+            session,
+            turn,
+            acknowledge: ack,
+        },
+    )?;
+    if json {
+        print_json(&envelope)?;
+    } else {
+        println!("lens context: {}", envelope.data.state);
+        println!("{}", envelope.data.reason);
+        for action in &envelope.data.remediation {
+            println!("remediate: {action}");
+        }
+        if let Some(command) = &envelope.data.ack_command {
+            println!("ack: {command}");
+        }
+    }
+    Ok(())
+}
+
+fn report(
+    cwd: Option<String>,
+    session: String,
+    turn: String,
+    path: Option<String>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let root = cwd.map(Into::into).unwrap_or(std::env::current_dir()?);
+    let envelope = crate::lens::build_changed_file_report_envelope(
+        &root,
+        crate::lens::TurnHealthOptions {
+            session,
+            turn,
+            acknowledge: false,
+        },
+        path.as_deref(),
+    )?;
+    if json {
+        print_json(&envelope)?;
+    } else {
+        println!(
+            "lens report: {:?}, {} changed files",
+            envelope.data.status, envelope.data.file_count
+        );
+        for file in &envelope.data.files {
+            println!("- {}: {} diagnostics", file.path, file.diagnostics.len());
+            if let Some(guard) = &file.guard {
+                println!("  guard: {:?} ({:?})", guard.decision, guard.reason);
+            }
+            for action in &file.next_actions {
+                println!("  next: {action}");
+            }
         }
     }
     Ok(())

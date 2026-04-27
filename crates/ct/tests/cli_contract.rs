@@ -421,6 +421,118 @@ fn lens_turn_touched_json_is_schema_versioned_and_stable() {
 }
 
 #[test]
+fn lens_health_context_report_and_final_outputs_are_schema_versioned() {
+    let (bp, _remote) = setup_blueprints();
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+    fs::write(project.path().join("main.rs"), "fn main() {}\n").expect("write source");
+    let event = serde_json::json!({
+        "schema_version": "lens.turn_event.v1",
+        "session": "health-cli",
+        "turn": "turn-health",
+        "host": "contract-test",
+        "cwd": project.path().to_string_lossy(),
+        "event": "tool_end",
+        "tool": "edit",
+        "phase": "post_tool",
+        "status": "success",
+        "files": [{"path": "main.rs", "operation": "modify"}],
+        "policy": {"git_fallback": false, "include_ignored": false}
+    });
+
+    ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .env("XDG_CONFIG_HOME", state.path())
+        .args(["lens", "turn", "record", "--json"])
+        .write_stdin(event.to_string())
+        .assert()
+        .success();
+
+    let assert = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .env("XDG_CONFIG_HOME", state.path())
+        .args([
+            "lens",
+            "health",
+            "--session",
+            "health-cli",
+            "--turn",
+            "turn-health",
+            "--json",
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("health json");
+    assert_eq!(value["schema_version"], "lens.response.v1");
+    assert_eq!(value["data"]["status"], "blocked");
+    assert_eq!(value["data"]["action_context"]["required"], true);
+    assert!(
+        value["data"]["compact"]
+            .as_str()
+            .unwrap()
+            .contains("blocked")
+    );
+
+    ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .env("XDG_CONFIG_HOME", state.path())
+        .args([
+            "lens",
+            "report",
+            "--session",
+            "health-cli",
+            "--turn",
+            "turn-health",
+            "--path",
+            "main.rs",
+            "--json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("symbol_context"))
+        .stdout(predicate::str::contains("next_actions"));
+
+    ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .env("XDG_CONFIG_HOME", state.path())
+        .args([
+            "lens",
+            "context",
+            "--session",
+            "health-cli",
+            "--turn",
+            "turn-health",
+            "--ack",
+            "--json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"state\": \"acknowledged\""));
+
+    ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .env("XDG_CONFIG_HOME", state.path())
+        .args([
+            "lens",
+            "health",
+            "--session",
+            "health-cli",
+            "--turn",
+            "turn-health",
+            "--final-output",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Lens final health: blocked"));
+}
+
+#[test]
 fn lens_turn_end_runs_safe_cleanup_for_changed_files() {
     let (bp, _remote) = setup_blueprints();
     let project = project_dir();

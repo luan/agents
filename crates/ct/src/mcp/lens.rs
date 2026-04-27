@@ -111,6 +111,29 @@ struct ChecksRunIn {
     scanners: Option<bool>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+struct HealthIn {
+    cwd: Option<String>,
+    session: String,
+    turn: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct ContextIn {
+    cwd: Option<String>,
+    session: String,
+    turn: String,
+    ack: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct ReportIn {
+    cwd: Option<String>,
+    session: String,
+    turn: String,
+    path: Option<String>,
+}
+
 #[derive(Clone)]
 pub(super) struct LensMcpServer {
     tool_router: ToolRouter<Self>,
@@ -361,6 +384,85 @@ impl LensMcpServer {
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
         json_success(&crate::lens::LensEnvelope::ok(result))
     }
+
+    #[tool(name = "health", description = "Show compact Lens turn health.")]
+    async fn health(
+        &self,
+        Parameters(input): Parameters<HealthIn>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let envelope = health_envelope(input)?;
+        json_success(&envelope)
+    }
+
+    #[tool(
+        name = "context",
+        description = "Show or acknowledge action-forcing Lens next-turn context."
+    )]
+    async fn context(
+        &self,
+        Parameters(input): Parameters<ContextIn>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let envelope = context_envelope(input)?;
+        json_success(&envelope)
+    }
+
+    #[tool(
+        name = "report",
+        description = "Show deeper Lens changed-file reports for a turn."
+    )]
+    async fn report(
+        &self,
+        Parameters(input): Parameters<ReportIn>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let envelope = report_envelope(input)?;
+        json_success(&envelope)
+    }
+}
+
+fn health_envelope(
+    input: HealthIn,
+) -> Result<crate::lens::LensEnvelope<crate::lens::TurnHealthData>, ErrorData> {
+    let root = cwd(input.cwd)?;
+    crate::lens::build_turn_health_envelope(
+        &root,
+        crate::lens::TurnHealthOptions {
+            session: input.session,
+            turn: input.turn,
+            acknowledge: false,
+        },
+    )
+    .map_err(|error| ErrorData::internal_error(error.to_string(), None))
+}
+
+fn context_envelope(
+    input: ContextIn,
+) -> Result<crate::lens::LensEnvelope<crate::lens::ActionContextState>, ErrorData> {
+    let root = cwd(input.cwd)?;
+    crate::lens::build_action_context_envelope(
+        &root,
+        crate::lens::TurnHealthOptions {
+            session: input.session,
+            turn: input.turn,
+            acknowledge: input.ack.unwrap_or(false),
+        },
+    )
+    .map_err(|error| ErrorData::internal_error(error.to_string(), None))
+}
+
+fn report_envelope(
+    input: ReportIn,
+) -> Result<crate::lens::LensEnvelope<crate::lens::ChangedFileReportData>, ErrorData> {
+    let root = cwd(input.cwd)?;
+    crate::lens::build_changed_file_report_envelope(
+        &root,
+        crate::lens::TurnHealthOptions {
+            session: input.session,
+            turn: input.turn,
+            acknowledge: false,
+        },
+        input.path.as_deref(),
+    )
+    .map_err(|error| ErrorData::internal_error(error.to_string(), None))
 }
 
 fn diagnostics_list_envelope(
@@ -659,6 +761,63 @@ mod tests {
             serde_json::to_value(mcp).unwrap(),
             serde_json::to_value(direct).unwrap()
         );
+    }
+
+    #[test]
+    fn mcp_health_report_context_use_shared_envelopes() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("main.rs"), "fn main() {}\n").unwrap();
+        let cwd = temp.path().display().to_string();
+        let event = crate::lens::LensTurnEvent {
+            schema_version: crate::lens::LENS_TURN_EVENT_SCHEMA_VERSION.to_string(),
+            session: "mcp-health".to_string(),
+            turn: "turn".to_string(),
+            host: "mcp-test".to_string(),
+            cwd: cwd.clone(),
+            event: crate::lens::LensTurnEventKind::ToolEnd,
+            tool: "edit".to_string(),
+            phase: crate::lens::LensToolEventPhase::PostTool,
+            status: Some("success".to_string()),
+            files: vec![crate::lens::LensTouchedFileInput {
+                path: "main.rs".to_string(),
+                operation: "modify".to_string(),
+                start_line: None,
+                end_line: None,
+                generated: false,
+                include_ignored: false,
+            }],
+            policy: crate::lens::LensTurnEventPolicy {
+                git_fallback: false,
+                include_ignored: false,
+            },
+        };
+        crate::lens::record_turn_event_envelope(temp.path(), event).unwrap();
+
+        let health = health_envelope(HealthIn {
+            cwd: Some(cwd.clone()),
+            session: "mcp-health".to_string(),
+            turn: "turn".to_string(),
+        })
+        .unwrap();
+        assert_eq!(health.data.status, crate::lens::TurnHealthStatus::Blocked);
+
+        let context = context_envelope(ContextIn {
+            cwd: Some(cwd.clone()),
+            session: "mcp-health".to_string(),
+            turn: "turn".to_string(),
+            ack: Some(true),
+        })
+        .unwrap();
+        assert_eq!(context.data.state, "acknowledged");
+
+        let report = report_envelope(ReportIn {
+            cwd: Some(cwd),
+            session: "mcp-health".to_string(),
+            turn: "turn".to_string(),
+            path: Some("main.rs".to_string()),
+        })
+        .unwrap();
+        assert_eq!(report.data.file_count, 1);
     }
 }
 
