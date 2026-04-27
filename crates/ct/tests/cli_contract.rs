@@ -421,6 +421,73 @@ fn lens_turn_touched_json_is_schema_versioned_and_stable() {
 }
 
 #[test]
+fn lens_turn_end_runs_safe_cleanup_for_changed_files() {
+    let (bp, _remote) = setup_blueprints();
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+    fs::write(project.path().join("main.fixture"), "one\n").expect("write source");
+    fs::write(project.path().join("other.fixture"), "other\n").expect("write other");
+    run_git(project.path(), &["init", "--initial-branch=main"]);
+    let registry = serde_json::json!({
+        "tools": [{
+            "id": "fixture-format",
+            "command": "sh",
+            "args": ["-c", "for f do printf 'cleaned:%s\\n' \"$f\" >> \"$f\"; done", "fixture", "{files}"],
+            "extensions": ["fixture"],
+            "filenames": [],
+            "safety": "safe_auto_apply",
+            "mutability": "mutates",
+            "timeout_ms": 5000,
+            "parser": "line_diagnostics",
+            "raw_output_max_bytes": 128,
+            "purpose": "fixture formatter",
+            "install_hint": "fixture"
+        }]
+    });
+    let event = serde_json::json!({
+        "schema_version": "lens.turn_event.v1",
+        "session": "cleanup-cli",
+        "turn": "turn-cleanup",
+        "host": "contract-test",
+        "cwd": project.path().to_string_lossy(),
+        "event": "turn_end",
+        "tool": "agent",
+        "phase": "post_tool",
+        "status": "success",
+        "files": [{"path": "main.fixture", "operation": "modify"}],
+        "policy": {"git_fallback": false, "include_ignored": false}
+    });
+
+    let assert = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .env("CT_LENS_CLEANUP_REGISTRY", registry.to_string())
+        .args(["lens", "turn", "record", "--json"])
+        .write_stdin(event.to_string())
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("turn cleanup json");
+
+    assert_eq!(value["schema_version"], "lens.response.v1");
+    assert_eq!(
+        value["data"]["cleanup"]["runs"][0]["tool"],
+        "fixture-format"
+    );
+    assert_eq!(value["data"]["cleanup"]["mutation_count"], 1);
+    assert!(
+        fs::read_to_string(project.path().join("main.fixture"))
+            .unwrap()
+            .contains("cleaned:main.fixture")
+    );
+    assert!(
+        !fs::read_to_string(project.path().join("other.fixture"))
+            .unwrap()
+            .contains("cleaned")
+    );
+}
+
+#[test]
 fn lens_diagnostics_record_and_list_round_trip() {
     let (bp, _remote) = setup_blueprints();
     let project = project_dir();

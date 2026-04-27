@@ -329,6 +329,8 @@ pub struct LensTurnRecordData {
     pub guard_decisions: Vec<GuardDecision>,
     pub files: Vec<LensTouchedFile>,
     pub file_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup: Option<super::cleanup::CleanupReport>,
 }
 
 fn default_turn_event_schema() -> String {

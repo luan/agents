@@ -54,6 +54,17 @@ pub fn record_turn_event_envelope(
         }
     }
     store.record_turn_event(&event, &files)?;
+    let cleanup = if matches!(event.event, LensTurnEventKind::TurnEnd) {
+        Some(super::cleanup::run_turn_cleanup_with_store(
+            &root,
+            &mut store,
+            &event.session,
+            &event.turn,
+            super::cleanup::CleanupOptions::default(),
+        )?)
+    } else {
+        None
+    };
     let files = store.list_touched_files(&event.session, &event.turn)?;
     let blocked = guard_decisions
         .iter()
@@ -61,6 +72,16 @@ pub fn record_turn_event_envelope(
     let warned = guard_decisions
         .iter()
         .any(|decision| matches!(decision.decision, GuardAction::Warn));
+    let mut warnings = Vec::new();
+    if warned {
+        warnings.push(LensMessage::warning(
+            "guard_warned",
+            "one or more write targets are not covered by current read ranges",
+        ));
+    }
+    if let Some(cleanup) = &cleanup {
+        warnings.extend(super::cleanup::cleanup_envelope(cleanup.clone()).warnings);
+    }
     let data = LensTurnRecordData {
         project_id: store.project_id(),
         session: event.session,
@@ -74,6 +95,7 @@ pub fn record_turn_event_envelope(
         guard_decisions,
         file_count: files.len(),
         files,
+        cleanup,
     };
     if blocked {
         Ok(LensEnvelope::error(
@@ -83,14 +105,8 @@ pub fn record_turn_event_envelope(
                 "one or more write targets are not covered by current read ranges",
             )],
         ))
-    } else if warned {
-        Ok(LensEnvelope::warning(
-            data,
-            vec![LensMessage::warning(
-                "guard_warned",
-                "one or more write targets are not covered by current read ranges",
-            )],
-        ))
+    } else if !warnings.is_empty() {
+        Ok(LensEnvelope::warning(data, warnings))
     } else {
         Ok(LensEnvelope::ok(data))
     }

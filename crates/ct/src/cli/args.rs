@@ -324,6 +324,12 @@ pub enum LensAction {
         action: LensTurnAction,
     },
 
+    #[command(about = "Run safe turn-scoped cleanup")]
+    Cleanup {
+        #[command(subcommand)]
+        action: LensCleanupAction,
+    },
+
     #[command(about = "Prune lens state")]
     Prune {
         #[arg(long, help = "Working directory")]
@@ -429,6 +435,23 @@ pub enum LensTurnAction {
         turn: String,
         #[arg(long, help = "Output JSON")]
         json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum LensCleanupAction {
+    #[command(about = "Run cleanup for files touched during a turn")]
+    Run {
+        #[arg(long, help = "Working directory")]
+        cwd: Option<String>,
+        #[arg(long, help = "Session id")]
+        session: String,
+        #[arg(long, help = "Turn id")]
+        turn: String,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+        #[arg(long, help = "Run unsafe/invasive registry entries explicitly")]
+        allow_unsafe: bool,
     },
 }
 

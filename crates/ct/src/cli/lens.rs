@@ -3,7 +3,8 @@ use std::io::Read;
 use serde::Serialize;
 
 use crate::cli::args::{
-    GuardAction, LensAction, LensDiagnosticsAction, LensGuardAction, LensReadAction, LensTurnAction,
+    GuardAction, LensAction, LensCleanupAction, LensDiagnosticsAction, LensGuardAction,
+    LensReadAction, LensTurnAction,
 };
 use crate::lens::{
     Diagnostic, DiagnosticSeverity, DiagnosticSource, DiscoveryIntent, DiscoveryOptions,
@@ -58,6 +59,7 @@ pub fn run_lens(action: LensAction) -> Result<(), Box<dyn std::error::Error>> {
         LensAction::Read { action } => read(action),
         LensAction::Guard { action } => guard(action),
         LensAction::Turn { action } => turn(action),
+        LensAction::Cleanup { action } => cleanup(action),
         LensAction::Prune { cwd, json, dry_run } => prune(cwd, json, dry_run),
     }
 }
@@ -444,6 +446,40 @@ fn turn(action: LensTurnAction) -> Result<(), Box<dyn std::error::Error>> {
                     println!("- {} ({:?})", file.path, file.source);
                 }
             }
+        }
+    }
+    Ok(())
+}
+
+fn cleanup(action: LensCleanupAction) -> Result<(), Box<dyn std::error::Error>> {
+    let LensCleanupAction::Run {
+        cwd,
+        session,
+        turn,
+        json,
+        allow_unsafe,
+    } = action;
+    let root = cwd.map(Into::into).unwrap_or(std::env::current_dir()?);
+    let envelope = crate::lens::cleanup_turn_envelope(
+        &root,
+        &session,
+        &turn,
+        crate::lens::CleanupOptions {
+            allow_unsafe,
+            ..crate::lens::CleanupOptions::default()
+        },
+    )?;
+    if json {
+        print_json(&envelope)?;
+    } else {
+        println!(
+            "cleanup: {} runs, {} mutations, {} diagnostic regressions",
+            envelope.data.runs.len(),
+            envelope.data.mutation_count,
+            envelope.data.diagnostics.regression_count
+        );
+        for warning in &envelope.warnings {
+            println!("warning: {}", warning.message);
         }
     }
     Ok(())

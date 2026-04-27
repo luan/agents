@@ -6,6 +6,7 @@ use std::time::UNIX_EPOCH;
 use rusqlite::{Connection, OptionalExtension, params};
 use sha1::{Digest, Sha1};
 
+use super::cleanup::{CleanupMutability, CleanupMutation, CleanupRunStatus, CleanupSafetyClass};
 use super::paths;
 use super::raw_output;
 use super::types::{
@@ -17,7 +18,7 @@ use super::types::{
     ReadCoverageRange,
 };
 
-const SCHEMA_VERSION: i32 = 6;
+const SCHEMA_VERSION: i32 = 7;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS projects (
@@ -229,6 +230,36 @@ CREATE TABLE IF NOT EXISTS tool_runs (
     created_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS cleanup_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    tool TEXT NOT NULL,
+    command_json TEXT NOT NULL,
+    status TEXT NOT NULL,
+    safety TEXT NOT NULL,
+    mutability TEXT NOT NULL,
+    file_count INTEGER NOT NULL,
+    mutation_count INTEGER NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    timed_out INTEGER NOT NULL,
+    exit_code INTEGER,
+    diagnostic_snapshot_id INTEGER REFERENCES diagnostic_snapshots(id) ON DELETE SET NULL,
+    raw_output_id INTEGER REFERENCES raw_outputs(id) ON DELETE SET NULL,
+    created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cleanup_mutations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cleanup_run_id INTEGER NOT NULL REFERENCES cleanup_runs(id) ON DELETE CASCADE,
+    rel_path TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    before_hash TEXT,
+    after_hash TEXT,
+    generated INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS turns (
     project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     session_id TEXT NOT NULL,
@@ -281,6 +312,8 @@ CREATE INDEX IF NOT EXISTS idx_diagnostics_project_file ON diagnostics(project_i
 CREATE INDEX IF NOT EXISTS idx_diagnostics_project_scope ON diagnostics(project_id, source, scope_kind, scope_key, resolved_at);
 CREATE INDEX IF NOT EXISTS idx_diagnostic_snapshots_project_scope ON diagnostic_snapshots(project_id, source, scope_kind, scope_key, created_at);
 CREATE INDEX IF NOT EXISTS idx_raw_outputs_project_expires ON raw_outputs(project_id, expires_at);
+CREATE INDEX IF NOT EXISTS idx_cleanup_runs_project_turn ON cleanup_runs(project_id, session_id, turn_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_cleanup_mutations_run ON cleanup_mutations(cleanup_run_id);
 CREATE INDEX IF NOT EXISTS idx_read_events_session_file ON read_events(session_id, file_id);
 CREATE INDEX IF NOT EXISTS idx_guard_overrides_project_session_path ON guard_overrides(project_id, session_id, rel_path, consumed);
 CREATE INDEX IF NOT EXISTS idx_patch_drafts_project_status ON patch_drafts(project_id, status);
@@ -304,6 +337,24 @@ pub struct NewPatchDraft<'a> {
     pub body: &'a str,
     pub chunks: &'a [PatchDraftChunk],
     pub candidates: &'a [PatchCandidate],
+}
+
+pub struct CleanupRunRecordInput<'a> {
+    pub session: &'a str,
+    pub turn: &'a str,
+    pub tool: &'a str,
+    pub command: &'a [String],
+    pub status: CleanupRunStatus,
+    pub safety: CleanupSafetyClass,
+    pub mutability: CleanupMutability,
+    pub file_count: usize,
+    pub mutation_count: usize,
+    pub duration_ms: u64,
+    pub timed_out: bool,
+    pub exit_code: Option<i32>,
+    pub diagnostic_snapshot_id: Option<i64>,
+    pub raw_output_id: Option<i64>,
+    pub mutations: &'a [CleanupMutation],
 }
 
 impl LensStore {
@@ -791,6 +842,72 @@ impl LensStore {
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn record_cleanup_run(
+        &mut self,
+        input: CleanupRunRecordInput<'_>,
+    ) -> Result<i64, Box<dyn std::error::Error>> {
+        let now = now_ms();
+        let command_json = serde_json::to_string(input.command)?;
+        let tx = self.conn.transaction()?;
+        upsert_session_tx(&tx, self.project_id, input.session, now)?;
+        tx.execute(
+            "INSERT INTO cleanup_runs(project_id, session_id, turn_id, tool, command_json, status, safety, mutability, file_count, mutation_count, duration_ms, timed_out, exit_code, diagnostic_snapshot_id, raw_output_id, created_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            params![
+                self.project_id,
+                input.session,
+                input.turn,
+                input.tool,
+                command_json,
+                cleanup_status(input.status),
+                cleanup_safety(input.safety),
+                cleanup_mutability(input.mutability),
+                input.file_count as i64,
+                input.mutation_count as i64,
+                input.duration_ms as i64,
+                input.timed_out,
+                input.exit_code,
+                input.diagnostic_snapshot_id,
+                input.raw_output_id,
+                now
+            ],
+        )?;
+        let run_id = tx.last_insert_rowid();
+        for mutation in input.mutations {
+            tx.execute(
+                "INSERT INTO cleanup_mutations(cleanup_run_id, rel_path, operation, before_hash, after_hash, generated)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    run_id,
+                    mutation.path,
+                    mutation.operation,
+                    mutation.before_hash,
+                    mutation.after_hash,
+                    mutation.generated
+                ],
+            )?;
+            tx.execute(
+                "INSERT INTO turn_touched_files(project_id, session_id, turn_id, rel_path, tool, operation, source, explicit, ignored, generated, created_at)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, 'structured_event', 0, 0, ?7, ?8)
+                 ON CONFLICT(project_id, session_id, turn_id, rel_path, source, tool, operation) DO UPDATE SET
+                    generated=MAX(turn_touched_files.generated, excluded.generated),
+                    created_at=excluded.created_at",
+                params![
+                    self.project_id,
+                    input.session,
+                    input.turn,
+                    mutation.path,
+                    format!("cleanup:{}", input.tool),
+                    mutation.operation,
+                    mutation.generated,
+                    now
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(run_id)
     }
 
     pub fn record_diagnostics(
@@ -1871,6 +1988,32 @@ fn parse_touched_source(source: &str) -> LensTouchedFileSource {
     match source {
         "git_status" => LensTouchedFileSource::GitStatus,
         _ => LensTouchedFileSource::StructuredEvent,
+    }
+}
+
+fn cleanup_status(status: CleanupRunStatus) -> &'static str {
+    match status {
+        CleanupRunStatus::Success => "success",
+        CleanupRunStatus::Failed => "failed",
+        CleanupRunStatus::TimedOut => "timed_out",
+        CleanupRunStatus::SkippedMissingCommand => "skipped_missing_command",
+        CleanupRunStatus::SkippedNoFiles => "skipped_no_files",
+        CleanupRunStatus::SkippedUnsafe => "skipped_unsafe",
+    }
+}
+
+fn cleanup_safety(safety: CleanupSafetyClass) -> &'static str {
+    match safety {
+        CleanupSafetyClass::SafeAutoApply => "safe_auto_apply",
+        CleanupSafetyClass::Unsafe => "unsafe",
+        CleanupSafetyClass::Invasive => "invasive",
+    }
+}
+
+fn cleanup_mutability(mutability: CleanupMutability) -> &'static str {
+    match mutability {
+        CleanupMutability::Mutates => "mutates",
+        CleanupMutability::CheckOnly => "check_only",
     }
 }
 

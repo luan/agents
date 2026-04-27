@@ -62,6 +62,14 @@ struct TurnTouchedIn {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+struct CleanupRunIn {
+    cwd: Option<String>,
+    session: String,
+    turn: String,
+    allow_unsafe: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 struct DiagnosticsListIn {
     cwd: Option<String>,
     path: Option<String>,
@@ -191,6 +199,28 @@ impl LensMcpServer {
         let root = cwd(input.cwd)?;
         let envelope = crate::lens::touched_files_envelope(&root, &input.session, &input.turn)
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        json_success(&envelope)
+    }
+
+    #[tool(
+        name = "cleanup_run",
+        description = "Run safe cleanup for files touched during a Lens turn."
+    )]
+    async fn cleanup_run(
+        &self,
+        Parameters(input): Parameters<CleanupRunIn>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let root = cwd(input.cwd)?;
+        let envelope = crate::lens::cleanup_turn_envelope(
+            &root,
+            &input.session,
+            &input.turn,
+            crate::lens::CleanupOptions {
+                allow_unsafe: input.allow_unsafe.unwrap_or(false),
+                ..crate::lens::CleanupOptions::default()
+            },
+        )
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
         json_success(&envelope)
     }
 

@@ -1,3 +1,4 @@
+pub mod cleanup;
 pub mod contract;
 pub mod discovery;
 pub mod paths;
@@ -9,6 +10,7 @@ pub mod store;
 pub mod turn;
 pub mod types;
 
+pub use cleanup::*;
 pub use contract::*;
 pub use discovery::*;
 pub use paths::project_db_path;
