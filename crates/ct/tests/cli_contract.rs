@@ -1473,8 +1473,6 @@ fn checked_in_public_surfaces_avoid_removed_command_taxonomy() {
         "codex/hooks.json",
         "opencode/opencode.jsonc",
         "opencode/dcp.jsonc",
-        "opencode/profiles/default/opencode.jsonc",
-        "opencode/profiles/default/ocx.jsonc",
         "pi/agent/settings.json",
         "rules/blueprints.md",
         "skills/crit/SKILL.md",
