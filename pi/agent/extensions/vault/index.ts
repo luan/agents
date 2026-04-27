@@ -3,6 +3,8 @@ import { spawn } from "node:child_process";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 
+import { chip, nf, okLine, renderText, title, warnLine } from "../shared/ct-render.ts";
+
 const vaultKindSchema = Type.Union([
 	Type.Literal("all"),
 	Type.Literal("spec"),
@@ -266,6 +268,56 @@ function toolResult(
 	};
 }
 
+function vaultIcon(operation: string): string {
+	if (operation === "project") return "󰏗";
+	if (operation === "status") return "";
+	if (operation === "create") return "";
+	if (operation === "read") return nf.read;
+	if (operation === "archive" || operation === "prune") return "";
+	if (operation === "search") return "";
+	if (operation === "check") return "󰅙";
+	if (operation === "commit") return "";
+	return "󰋼";
+}
+
+function renderVaultCall(operation: string, detail: string | undefined, theme: any, ctx: any) {
+	return renderText(ctx, title(theme, vaultIcon(operation), operation === "project" ? "project" : `vault ${operation}`, detail ?? ""));
+}
+
+function renderVaultResult(operation: string, result: any, theme: any, ctx: any) {
+	const details = result?.details ?? {};
+	const raw = String(details.stdout || result?.content?.[0]?.text || "").trim();
+	const stderr = String(details.stderr || "").trim();
+	const failed = Boolean(stderr && !raw);
+	const line = failed ? warnLine : okLine;
+	return renderText(ctx, line(theme, [chip(theme, vaultIcon(operation), operation, summarizeVaultOutput(raw || stderr))]));
+}
+
+function summarizeVaultOutput(raw: string): string {
+	if (!raw) return "ok";
+	const parsed = parseJson(raw);
+	if (Array.isArray(parsed)) return String(parsed.length);
+	if (parsed && typeof parsed === "object") {
+		const obj = parsed as Record<string, unknown>;
+		for (const key of ["artifact_count", "count", "unresolved_count"]) {
+			if (typeof obj[key] === "number") return String(obj[key]);
+		}
+		if (Array.isArray(obj.artifacts)) return String(obj.artifacts.length);
+		if (Array.isArray(obj.comments)) return String(obj.comments.length);
+		if (Array.isArray(obj.results)) return String(obj.results.length);
+	}
+	const first = raw.split("\n").find((line) => line.trim().length > 0) ?? "ok";
+	return first.length > 80 ? `${first.slice(0, 79)}…` : first;
+}
+
+function parseJson(raw: string): unknown {
+	try {
+		return JSON.parse(raw);
+	} catch {
+		return undefined;
+	}
+}
+
 export default function vaultExtension(pi: ExtensionAPI) {
 	const registerTool = pi.registerTool.bind(pi) as any;
 
@@ -281,6 +333,8 @@ export default function vaultExtension(pi: ExtensionAPI) {
 			const result = await runCt(["project"], ctx.cwd, signal);
 			return toolResult(command, ctx.cwd, result);
 		},
+		renderCall: (_args, theme, ctx) => renderVaultCall("project", undefined, theme, ctx),
+		renderResult: (result, _options, theme, ctx) => renderVaultResult("project", result, theme, ctx),
 	});
 
 	registerTool({
@@ -312,6 +366,8 @@ export default function vaultExtension(pi: ExtensionAPI) {
 			const result = await runCt(args, ctx.cwd, signal);
 			return toolResult(formatCommand("ct", args), ctx.cwd, result);
 		},
+		renderCall: (args, theme, ctx) => renderVaultCall("create", `${args.kind} · ${args.topic}`, theme, ctx),
+		renderResult: (result, _options, theme, ctx) => renderVaultResult("create", result, theme, ctx),
 	});
 
 	registerTool({
@@ -339,6 +395,8 @@ export default function vaultExtension(pi: ExtensionAPI) {
 				useJson ? prettyJson : undefined,
 			);
 		},
+		renderCall: (args, theme, ctx) => renderVaultCall("list", args.kind ?? "all", theme, ctx),
+		renderResult: (result, _options, theme, ctx) => renderVaultResult("list", result, theme, ctx),
 	});
 
 	registerTool({
@@ -362,6 +420,8 @@ export default function vaultExtension(pi: ExtensionAPI) {
 				params.frontmatter ? prettyJson : undefined,
 			);
 		},
+		renderCall: (args, theme, ctx) => renderVaultCall("read", args.target, theme, ctx),
+		renderResult: (result, _options, theme, ctx) => renderVaultResult("read", result, theme, ctx),
 	});
 
 	registerTool({
@@ -387,6 +447,8 @@ export default function vaultExtension(pi: ExtensionAPI) {
 			const result = await runCt(args, ctx.cwd, signal);
 			return toolResult(formatCommand("ct", args), ctx.cwd, result);
 		},
+		renderCall: (args, theme, ctx) => renderVaultCall("archive", args.target ?? `${args.targets?.length ?? 0} targets`, theme, ctx),
+		renderResult: (result, _options, theme, ctx) => renderVaultResult("archive", result, theme, ctx),
 	});
 
 	registerTool({
@@ -406,6 +468,8 @@ export default function vaultExtension(pi: ExtensionAPI) {
 			const result = await runCt(args, ctx.cwd, signal);
 			return toolResult(formatCommand("ct", args), ctx.cwd, result);
 		},
+		renderCall: (args, theme, ctx) => renderVaultCall("prune", `${args.kind ?? "all"} · ${args.days ?? "default"}d`, theme, ctx),
+		renderResult: (result, _options, theme, ctx) => renderVaultResult("prune", result, theme, ctx),
 	});
 
 	registerTool({
@@ -429,6 +493,8 @@ export default function vaultExtension(pi: ExtensionAPI) {
 				useJson ? prettyJson : undefined,
 			);
 		},
+		renderCall: (args, theme, ctx) => renderVaultCall("comments", args.target, theme, ctx),
+		renderResult: (result, _options, theme, ctx) => renderVaultResult("comments", result, theme, ctx),
 	});
 
 	registerTool({
@@ -447,6 +513,8 @@ export default function vaultExtension(pi: ExtensionAPI) {
 			const result = await runCt(args, ctx.cwd, signal);
 			return toolResult(formatCommand("ct", args), ctx.cwd, result);
 		},
+		renderCall: (args, theme, ctx) => renderVaultCall("rename", `${args.old} → ${args.newSlug}`, theme, ctx),
+		renderResult: (result, _options, theme, ctx) => renderVaultResult("rename", result, theme, ctx),
 	});
 
 	registerTool({
@@ -462,6 +530,8 @@ export default function vaultExtension(pi: ExtensionAPI) {
 			const result = await runCt(args, ctx.cwd, signal);
 			return toolResult(formatCommand("ct", args), ctx.cwd, result);
 		},
+		renderCall: (args, theme, ctx) => renderVaultCall("retag", args.target, theme, ctx),
+		renderResult: (result, _options, theme, ctx) => renderVaultResult("retag", result, theme, ctx),
 	});
 
 	registerTool({
@@ -479,6 +549,8 @@ export default function vaultExtension(pi: ExtensionAPI) {
 			const result = await runCt(args, ctx.cwd, signal);
 			return toolResult(formatCommand("ct", args), ctx.cwd, result);
 		},
+		renderCall: (args, theme, ctx) => renderVaultCall("related", args.topic, theme, ctx),
+		renderResult: (result, _options, theme, ctx) => renderVaultResult("related", result, theme, ctx),
 	});
 
 	registerTool({
@@ -495,6 +567,8 @@ export default function vaultExtension(pi: ExtensionAPI) {
 			const result = await runCt(args, ctx.cwd, signal);
 			return toolResult(formatCommand("ct", args), ctx.cwd, result);
 		},
+		renderCall: (_args, theme, ctx) => renderVaultCall("check", undefined, theme, ctx),
+		renderResult: (result, _options, theme, ctx) => renderVaultResult("check", result, theme, ctx),
 	});
 
 	registerTool({
@@ -520,6 +594,8 @@ export default function vaultExtension(pi: ExtensionAPI) {
 				useJson ? prettyJson : undefined,
 			);
 		},
+		renderCall: (args, theme, ctx) => renderVaultCall("search", args.query, theme, ctx),
+		renderResult: (result, _options, theme, ctx) => renderVaultResult("search", result, theme, ctx),
 	});
 
 	registerTool({
@@ -534,6 +610,8 @@ export default function vaultExtension(pi: ExtensionAPI) {
 			const result = await runCt(["vault", "status"], ctx.cwd, signal);
 			return toolResult(command, ctx.cwd, result);
 		},
+		renderCall: (_args, theme, ctx) => renderVaultCall("status", undefined, theme, ctx),
+		renderResult: (result, _options, theme, ctx) => renderVaultResult("status", result, theme, ctx),
 	});
 
 	registerTool({
@@ -551,5 +629,7 @@ export default function vaultExtension(pi: ExtensionAPI) {
 			const result = await runCt(args, ctx.cwd, signal);
 			return toolResult(formatCommand("ct", args), ctx.cwd, result);
 		},
+		renderCall: (args, theme, ctx) => renderVaultCall("commit", args.path, theme, ctx),
+		renderResult: (result, _options, theme, ctx) => renderVaultResult("commit", result, theme, ctx),
 	});
 }

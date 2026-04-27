@@ -13,6 +13,7 @@ import { Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@mariozec
 import type { BundledLanguage, BundledTheme } from "shiki";
 import { Type } from "typebox";
 
+import { nf, title } from "../shared/ct-render.ts";
 import { resolveInlineLanguageForPath, resolveShikiLanguageForPath } from "../shared/path-language";
 
 const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
@@ -201,7 +202,7 @@ class ApplyPatchDiffView {
 			? ` ${this.theme.fg("muted", "(")}${this.theme.fg("toolDiffAdded", `+${added}`)} ${this.theme.fg("toolDiffRemoved", `-${removed}`)}${this.theme.fg("muted", ")")}`
 			: "";
 		const verb = this.status ?? (this.state === "error" ? "Patch failed" : this.state === "pending" ? "Patching" : "Patched");
-		const marker = this.state === "error" ? "×" : this.state === "pending" ? "◌" : "•";
+		const marker = this.state === "error" ? nf.error : this.state === "pending" ? nf.warn : nf.ok;
 		const markerColor = this.state === "error" ? "error" : this.state === "pending" ? "warning" : "toolTitle";
 		const title = `${this.theme.fg(markerColor, marker)} ${this.theme.fg("toolTitle", this.theme.bold(verb))} ${this.theme.fg("accent", this.label)}${stats}`;
 		return truncateToWidth(title, width, "…", true);
@@ -1200,7 +1201,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 			}
 
 			const progress = parsePatchInputProgress(input);
-			let text = theme.fg("toolTitle", theme.bold("apply_patch"));
+			let text = title(theme, nf.apply, "apply_patch");
 			if (progress.totalOperations > 0) {
 				text += theme.fg(
 					"muted",

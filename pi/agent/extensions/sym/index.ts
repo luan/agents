@@ -1,8 +1,8 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Text } from "@mariozechner/pi-tui";
 import { Type } from "typebox";
 
 import { type CtResult, formatCommand, runCommand } from "../shared/ct-runner.ts";
+import { chip, color, compactLocations, okLine, renderText, title, warnLine } from "../shared/ct-render.ts";
 
 type SymDetails = {
 	operation: string;
@@ -168,8 +168,9 @@ function resultCount(results: unknown): number | undefined {
 function summarize(details: SymDetails | undefined, expanded: boolean, theme: any): string {
 	if (!details) return "";
 	const count = resultCount(details.results);
-	const prefix = theme.fg("success", "✓ ") + theme.fg("toolTitle", theme.bold(`sym ${details.operation}`));
-	const suffix = count === undefined ? "" : theme.fg("muted", ` → ${count} result${count === 1 ? "" : "s"}`);
+	const prefix = okLine(theme, [chip(theme, "󰓹", details.operation, count ?? "ok")]);
+	const loc = compactLocations(details.results, 2);
+	const suffix = loc ? `  ${color(theme, "muted", loc)}` : "";
 	if (!expanded) return prefix + suffix;
 
 	const lines = [prefix + suffix];
@@ -196,15 +197,13 @@ function summarize(details: SymDetails | undefined, expanded: boolean, theme: an
 	return lines.join("\n");
 }
 
-function renderCall(operation: string, target: string | undefined, theme: any) {
-	let text = theme.fg("toolTitle", theme.bold("sym ")) + theme.fg("accent", operation);
-	if (target) text += " " + theme.fg("muted", truncate(target));
-	return new Text(text, 0, 0);
+function renderCall(operation: string, target: string | undefined, theme: any, ctx: any) {
+	return renderText(ctx, title(theme, "󰓹", `sym ${operation}`, target ? truncate(target) : ""));
 }
 
-function renderResult(result: any, options: { expanded?: boolean; isPartial?: boolean }, theme: any) {
-	if (options.isPartial) return new Text(theme.fg("warning", "sym running…"), 0, 0);
-	return new Text(summarize(result.details as SymDetails | undefined, options.expanded === true, theme), 0, 0);
+function renderResult(result: any, options: { expanded?: boolean; isPartial?: boolean }, theme: any, ctx: any) {
+	if (options.isPartial) return renderText(ctx, warnLine(theme, [chip(theme, "󰓹", "sym", "running…")]));
+	return renderText(ctx, summarize(result.details as SymDetails | undefined, options.expanded === true, theme));
 }
 
 export default function symExtension(pi: ExtensionAPI) {
@@ -231,7 +230,7 @@ export default function symExtension(pi: ExtensionAPI) {
 			args.push(params.query);
 			return runSym("search", args, ctx.cwd, signal, params.db);
 		},
-		renderCall: (args, theme) => renderCall("search", args.query, theme),
+		renderCall: (args, theme, ctx) => renderCall("search", args.query, theme, ctx),
 		renderResult,
 	});
 
@@ -246,7 +245,7 @@ export default function symExtension(pi: ExtensionAPI) {
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			return runSym("investigate", ["investigate", ...params.targets], ctx.cwd, signal, params.db);
 		},
-		renderCall: (args, theme) => renderCall("investigate", args.targets?.join(", "), theme),
+		renderCall: (args, theme, ctx) => renderCall("investigate", args.targets?.join(", "), theme, ctx),
 		renderResult,
 	});
 
@@ -264,7 +263,7 @@ export default function symExtension(pi: ExtensionAPI) {
 			args.push(...params.targets);
 			return runSym("show", args, ctx.cwd, signal, params.db);
 		},
-		renderCall: (args, theme) => renderCall("show", args.targets?.join(", "), theme),
+		renderCall: (args, theme, ctx) => renderCall("show", args.targets?.join(", "), theme, ctx),
 		renderResult,
 	});
 
@@ -283,7 +282,7 @@ export default function symExtension(pi: ExtensionAPI) {
 			args.push(params.file);
 			return runSym("outline", args, ctx.cwd, signal, params.db);
 		},
-		renderCall: (args, theme) => renderCall("outline", args.file, theme),
+		renderCall: (args, theme, ctx) => renderCall("outline", args.file, theme, ctx),
 		renderResult,
 	});
 
@@ -307,7 +306,7 @@ export default function symExtension(pi: ExtensionAPI) {
 			args.push(...params.targets);
 			return runSym("refs", args, ctx.cwd, signal, params.db);
 		},
-		renderCall: (args, theme) => renderCall("refs", args.targets?.join(", "), theme),
+		renderCall: (args, theme, ctx) => renderCall("refs", args.targets?.join(", "), theme, ctx),
 		renderResult,
 	});
 
@@ -326,7 +325,7 @@ export default function symExtension(pi: ExtensionAPI) {
 			args.push(...params.targets);
 			return runSym("impact", args, ctx.cwd, signal, params.db);
 		},
-		renderCall: (args, theme) => renderCall("impact", args.targets?.join(", "), theme),
+		renderCall: (args, theme, ctx) => renderCall("impact", args.targets?.join(", "), theme, ctx),
 		renderResult,
 	});
 
@@ -345,7 +344,7 @@ export default function symExtension(pi: ExtensionAPI) {
 			args.push(...params.targets);
 			return runSym("trace", args, ctx.cwd, signal, params.db);
 		},
-		renderCall: (args, theme) => renderCall("trace", args.targets?.join(", "), theme),
+		renderCall: (args, theme, ctx) => renderCall("trace", args.targets?.join(", "), theme, ctx),
 		renderResult,
 	});
 
@@ -368,7 +367,7 @@ export default function symExtension(pi: ExtensionAPI) {
 			args.push(...params.targets);
 			return runSym("impls", args, ctx.cwd, signal, params.db);
 		},
-		renderCall: (args, theme) => renderCall("impls", args.targets?.join(", "), theme),
+		renderCall: (args, theme, ctx) => renderCall("impls", args.targets?.join(", "), theme, ctx),
 		renderResult,
 	});
 
@@ -385,7 +384,7 @@ export default function symExtension(pi: ExtensionAPI) {
 			args.push(...params.targets);
 			return runSym("context", args, ctx.cwd, signal, params.db);
 		},
-		renderCall: (args, theme) => renderCall("context", args.targets?.join(", "), theme),
+		renderCall: (args, theme, ctx) => renderCall("context", args.targets?.join(", "), theme, ctx),
 		renderResult,
 	});
 
@@ -401,7 +400,7 @@ export default function symExtension(pi: ExtensionAPI) {
 			pushOpt(args, "--limit", params.limit);
 			return runSym("structure", args, ctx.cwd, signal, params.db);
 		},
-		renderCall: (_args, theme) => renderCall("structure", undefined, theme),
+		renderCall: (_args, theme, ctx) => renderCall("structure", undefined, theme, ctx),
 		renderResult,
 	});
 
@@ -419,7 +418,7 @@ export default function symExtension(pi: ExtensionAPI) {
 			if (params.base) args.push(params.base);
 			return runSym("diff", args, ctx.cwd, signal, params.db);
 		},
-		renderCall: (args, theme) => renderCall("diff", args.target, theme),
+		renderCall: (args, theme, ctx) => renderCall("diff", args.target, theme, ctx),
 		renderResult,
 	});
 }
