@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use super::store::LensStore;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RetentionPolicy {
     pub max_diagnostics: i64,
     pub max_tool_runs: i64,
@@ -23,7 +23,7 @@ impl Default for RetentionPolicy {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PruneReport {
     pub diagnostics_deleted: i64,
     pub tool_runs_deleted: i64,
@@ -79,4 +79,46 @@ fn delete_overflow(conn: &rusqlite::Connection, table: &str, max: i64) -> rusqli
         rusqlite::params![max],
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lens::{Diagnostic, DiagnosticSeverity, DiagnosticSource, LensStore};
+
+    #[test]
+    fn prune_dry_run_reports_without_deleting_state() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("main.rs"), "fn main() {}\n").unwrap();
+        let mut store = LensStore::open_in_memory_for_tests(temp.path()).unwrap();
+        for index in 0..3 {
+            store
+                .record_diagnostics(&[Diagnostic {
+                    source: DiagnosticSource::Test,
+                    severity: DiagnosticSeverity::Warning,
+                    code: None,
+                    message: format!("warning {index}"),
+                    rel_path: Some("main.rs".to_string()),
+                    start_line: Some(1),
+                    end_line: Some(1),
+                    fingerprint: format!("warning-{index}"),
+                    content_hash: None,
+                }])
+                .unwrap();
+        }
+
+        let report = prune(
+            &store,
+            &RetentionPolicy {
+                max_diagnostics: 1,
+                ..RetentionPolicy::default()
+            },
+            true,
+        )
+        .unwrap();
+
+        assert!(report.dry_run);
+        assert_eq!(report.diagnostics_deleted, 2);
+        assert_eq!(store.counts().unwrap().diagnostics, 3);
+    }
 }

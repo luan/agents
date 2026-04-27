@@ -3,11 +3,21 @@ use serde::Serialize;
 use crate::cli::args::{
     GuardAction, LensAction, LensDiagnosticsAction, LensGuardAction, LensReadAction,
 };
-use crate::lens::{Diagnostic, DiagnosticSeverity, DiagnosticSource, LensStore, retention};
+use crate::lens::{
+    Diagnostic, DiagnosticSeverity, DiagnosticSource, LensEnvelope, LensGuardMode,
+    LensStatusOptions, LensStore, RuntimePolicyOverrides, build_status_envelope, retention,
+};
 
 pub fn run_lens(action: LensAction) -> Result<(), Box<dyn std::error::Error>> {
     match action {
-        LensAction::Status { cwd, json, disk } => status(cwd, json, disk),
+        LensAction::Status {
+            cwd,
+            json,
+            disk,
+            debug,
+            raw,
+            guard_mode,
+        } => status(cwd, json, disk, debug, raw, guard_mode),
         LensAction::Diagnostics { action } => diagnostics(action),
         LensAction::Read { action } => read(action),
         LensAction::Guard { action } => guard(action),
@@ -15,28 +25,38 @@ pub fn run_lens(action: LensAction) -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-fn status(cwd: Option<String>, json: bool, disk: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn status(
+    cwd: Option<String>,
+    json: bool,
+    disk: bool,
+    debug: bool,
+    raw: bool,
+    guard_mode: Option<GuardAction>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let root = cwd.map(Into::into).unwrap_or(std::env::current_dir()?);
-    let store = LensStore::open_for_project(&root)?;
-    let db_path = crate::lens::project_db_path(&root)?;
-    let counts = store.counts()?;
-    let bytes = if disk && db_path.exists() {
-        Some(std::fs::metadata(&db_path)?.len())
-    } else {
-        None
-    };
-    let out = StatusOut {
-        project_id: store.project_id(),
-        db_path: db_path.display().to_string(),
-        counts,
-        db_bytes: bytes,
-    };
+    let envelope = build_status_envelope(
+        &root,
+        LensStatusOptions {
+            include_disk: disk,
+            include_debug: debug,
+            include_raw: raw,
+            runtime_policy: RuntimePolicyOverrides {
+                guard_mode: guard_mode.map(cli_guard_mode),
+                allow_overrides: None,
+            },
+            ..LensStatusOptions::default()
+        },
+    )?;
     if json {
-        println!("{}", serde_json::to_string_pretty(&out)?);
+        print_json(&envelope)?;
     } else {
-        println!("lens db: {}", out.db_path);
-        println!("project id: {}", out.project_id);
-        println!("diagnostics: {}", out.counts.diagnostics);
+        println!("lens status: {:?}", envelope.status);
+        println!("lens db: {}", envelope.data.state.db_path);
+        println!("project id: {}", envelope.data.project_id);
+        println!("diagnostics: {}", envelope.data.state.counts.diagnostics);
+        for warning in &envelope.warnings {
+            println!("warning: {}", warning.message);
+        }
     }
     Ok(())
 }
@@ -59,7 +79,7 @@ fn diagnostics(action: LensDiagnosticsAction) -> Result<(), Box<dyn std::error::
                 "diagnostic_count": diagnostics.len()
             });
             if json {
-                println!("{}", serde_json::to_string_pretty(&out)?);
+                print_json(&LensEnvelope::ok(out))?;
             } else {
                 println!("{} diagnostics recorded", diagnostics.len());
             }
@@ -101,7 +121,7 @@ fn diagnostics(action: LensDiagnosticsAction) -> Result<(), Box<dyn std::error::
                 "diagnostic": diagnostic
             });
             if json {
-                println!("{}", serde_json::to_string_pretty(&out)?);
+                print_json(&LensEnvelope::ok(out))?;
             } else {
                 println!("diagnostic recorded");
             }
@@ -158,7 +178,7 @@ fn read(action: LensReadAction) -> Result<(), Box<dyn std::error::Error>> {
         "recorded": true
     });
     if json {
-        println!("{}", serde_json::to_string_pretty(&out)?);
+        print_json(&LensEnvelope::ok(out))?;
     } else {
         println!(
             "recorded read for {path}:{}-{}",
@@ -203,7 +223,7 @@ fn guard(action: LensGuardAction) -> Result<(), Box<dyn std::error::Error>> {
                 "covered_ranges": decision.covered_ranges
             });
             if json {
-                println!("{}", serde_json::to_string_pretty(&out)?);
+                print_json(&LensEnvelope::ok(out))?;
             } else {
                 println!("{:?}: {:?}", decision.decision, decision.reason);
             }
@@ -218,7 +238,7 @@ fn guard(action: LensGuardAction) -> Result<(), Box<dyn std::error::Error>> {
             store.allow_once(session.as_deref(), std::path::Path::new(&path))?;
             let out = serde_json::json!({ "session": session, "path": path, "allowed_once": true });
             if json {
-                println!("{}", serde_json::to_string_pretty(&out)?);
+                print_json(&LensEnvelope::ok(out))?;
             } else {
                 println!("allow-once recorded for {path}");
             }
@@ -230,9 +250,10 @@ fn guard(action: LensGuardAction) -> Result<(), Box<dyn std::error::Error>> {
 fn prune(cwd: Option<String>, json: bool, dry_run: bool) -> Result<(), Box<dyn std::error::Error>> {
     let root = cwd.map(Into::into).unwrap_or(std::env::current_dir()?);
     let store = LensStore::open_for_project(&root)?;
-    let report = retention::prune(&store, &retention::RetentionPolicy::default(), dry_run)?;
+    let policy = crate::lens::resolve_policy(&root);
+    let report = retention::prune(&store, &policy.policy.retention, dry_run)?;
     if json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        print_json(&LensEnvelope::ok(report))?;
     } else {
         println!(
             "pruned: {} diagnostics, {} tool runs, {} sessions, {} patch drafts, {} patch draft bodies",
@@ -246,10 +267,15 @@ fn prune(cwd: Option<String>, json: bool, dry_run: bool) -> Result<(), Box<dyn s
     Ok(())
 }
 
-#[derive(Serialize)]
-struct StatusOut {
-    project_id: i64,
-    db_path: String,
-    counts: crate::lens::store::StoreCounts,
-    db_bytes: Option<u64>,
+fn cli_guard_mode(action: GuardAction) -> LensGuardMode {
+    match action {
+        GuardAction::Off => LensGuardMode::Off,
+        GuardAction::Warn => LensGuardMode::Warn,
+        GuardAction::Block => LensGuardMode::Block,
+    }
+}
+
+fn print_json<T: Serialize>(value: &T) -> Result<(), Box<dyn std::error::Error>> {
+    println!("{}", serde_json::to_string_pretty(value)?);
+    Ok(())
 }

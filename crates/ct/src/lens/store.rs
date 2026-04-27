@@ -913,7 +913,7 @@ impl LensStore {
     }
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StoreCounts {
     pub files: i64,
     pub sessions: i64,

@@ -8,9 +8,13 @@ use serde_json::json;
 
 use super::json_success;
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 struct StatusIn {
     cwd: Option<String>,
+    disk: Option<bool>,
+    debug: Option<bool>,
+    raw: Option<bool>,
+    guard_mode: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -71,20 +75,8 @@ impl LensMcpServer {
         &self,
         Parameters(input): Parameters<StatusIn>,
     ) -> Result<CallToolResult, ErrorData> {
-        let root = cwd(input.cwd)?;
-        let store = crate::lens::LensStore::open_for_project(&root)
-            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-        let counts = store
-            .counts()
-            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-        let db_path = crate::lens::project_db_path(&root)
-            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-        json_success(&json!({
-            "project_id": store.project_id(),
-            "db_path": db_path,
-            "counts": counts,
-            "available": true
-        }))
+        let envelope = status_envelope(input)?;
+        json_success(&envelope)
     }
 
     #[tool(
@@ -106,13 +98,13 @@ impl LensMcpServer {
                 input.end_line,
             )
             .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
-        json_success(&json!({
+        json_success(&crate::lens::LensEnvelope::ok(json!({
             "project_id": store.project_id(),
             "session": input.session,
             "path": input.path,
             "range": range,
             "recorded": true
-        }))
+        })))
     }
 
     #[tool(
@@ -146,7 +138,7 @@ impl LensMcpServer {
                 mode,
             )
             .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
-        json_success(&json!({
+        json_success(&crate::lens::LensEnvelope::ok(json!({
             "project_id": store.project_id(),
             "session": input.session,
             "decision": decision.decision,
@@ -154,7 +146,7 @@ impl LensMcpServer {
             "file": decision.file,
             "required_ranges": decision.required_ranges,
             "covered_ranges": decision.covered_ranges
-        }))
+        })))
     }
 
     #[tool(
@@ -171,12 +163,12 @@ impl LensMcpServer {
         let diagnostics = store
             .list_diagnostics(input.path.as_deref())
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-        json_success(&json!({
+        json_success(&crate::lens::LensEnvelope::ok(json!({
             "project_id": store.project_id(),
             "path": input.path,
             "diagnostics": diagnostics,
             "diagnostic_count": diagnostics.len()
-        }))
+        })))
     }
 
     #[tool(
@@ -219,12 +211,44 @@ impl LensMcpServer {
         store
             .record_diagnostics(std::slice::from_ref(&diagnostic))
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-        json_success(&json!({
+        json_success(&crate::lens::LensEnvelope::ok(json!({
             "project_id": store.project_id(),
             "recorded": true,
             "diagnostic": diagnostic
-        }))
+        })))
     }
+}
+
+fn status_envelope(
+    input: StatusIn,
+) -> Result<crate::lens::LensEnvelope<crate::lens::LensStatusData>, ErrorData> {
+    let root = cwd(input.cwd)?;
+    let guard_mode = match input.guard_mode.as_deref() {
+        Some("off") | Some("allow") => Some(crate::lens::LensGuardMode::Off),
+        Some("warn") => Some(crate::lens::LensGuardMode::Warn),
+        Some("block") => Some(crate::lens::LensGuardMode::Block),
+        None => None,
+        Some(other) => {
+            return Err(ErrorData::invalid_params(
+                format!("invalid guard mode: {other}"),
+                None,
+            ));
+        }
+    };
+    crate::lens::build_status_envelope(
+        &root,
+        crate::lens::LensStatusOptions {
+            include_disk: input.disk.unwrap_or(false),
+            include_debug: input.debug.unwrap_or(false),
+            include_raw: input.raw.unwrap_or(false),
+            runtime_policy: crate::lens::RuntimePolicyOverrides {
+                guard_mode,
+                allow_overrides: None,
+            },
+            ..crate::lens::LensStatusOptions::default()
+        },
+    )
+    .map_err(|error| ErrorData::internal_error(error.to_string(), None))
 }
 
 fn parse_source(source: &str) -> crate::lens::DiagnosticSource {
@@ -258,6 +282,35 @@ fn cwd(input: Option<String>) -> Result<std::path::PathBuf, ErrorData> {
         Some(cwd) => Ok(std::path::PathBuf::from(cwd)),
         None => std::env::current_dir()
             .map_err(|error| ErrorData::internal_error(error.to_string(), None)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mcp_status_matches_shared_normalized_status_envelope() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().display().to_string();
+        let mcp = status_envelope(StatusIn {
+            cwd: Some(cwd.clone()),
+            disk: Some(false),
+            debug: Some(false),
+            raw: Some(false),
+            guard_mode: None,
+        })
+        .unwrap();
+        let direct = crate::lens::build_status_envelope(
+            temp.path(),
+            crate::lens::LensStatusOptions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            serde_json::to_value(mcp).unwrap(),
+            serde_json::to_value(direct).unwrap()
+        );
     }
 }
 

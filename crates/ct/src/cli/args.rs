@@ -255,6 +255,12 @@ pub enum LensAction {
         json: bool,
         #[arg(long, help = "Include disk usage")]
         disk: bool,
+        #[arg(long, help = "Include resolver/debug fields in JSON")]
+        debug: bool,
+        #[arg(long, help = "Include raw backend fields in JSON")]
+        raw: bool,
+        #[arg(long, value_enum, help = "Runtime guard policy override")]
+        guard_mode: Option<GuardAction>,
     },
 
     #[command(about = "Inspect lens diagnostics")]

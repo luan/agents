@@ -236,6 +236,63 @@ fn ast_replace_apply_routes_through_lens_patch_draft() {
 }
 
 #[test]
+fn lens_status_json_is_schema_versioned_and_compact() {
+    let (bp, _remote) = setup_blueprints();
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+
+    let assert = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .env("XDG_CONFIG_HOME", state.path())
+        .args(["lens", "status", "--json"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("status json");
+
+    assert_eq!(value["schema_version"], "lens.response.v1");
+    assert!(value["warnings"].is_array());
+    assert!(value["errors"].is_array());
+    assert_eq!(value["data"]["policy"]["policy"]["guard"]["mode"], "block");
+    assert_eq!(value["data"]["state"]["stored_outside_repository"], true);
+    assert!(value.get("debug").is_none());
+    assert!(value.get("raw").is_none());
+
+    let assert = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .env("XDG_CONFIG_HOME", state.path())
+        .args(["lens", "status", "--json", "--debug", "--raw"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("expanded status json");
+    assert!(value.get("debug").is_some());
+    assert!(value.get("raw").is_some());
+}
+
+#[test]
+fn lens_prune_dry_run_uses_response_envelope() {
+    let (bp, _remote) = setup_blueprints();
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+
+    let assert = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .env("XDG_CONFIG_HOME", state.path())
+        .args(["lens", "prune", "--dry-run", "--json"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("prune json");
+
+    assert_eq!(value["schema_version"], "lens.response.v1");
+    assert_eq!(value["data"]["dry_run"], true);
+}
+
+#[test]
 fn lens_diagnostics_record_and_list_round_trip() {
     let (bp, _remote) = setup_blueprints();
     let project = project_dir();
