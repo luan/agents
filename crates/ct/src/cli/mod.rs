@@ -21,8 +21,8 @@ pub use lens::run_lens;
 pub use lsp::run_lsp;
 pub use patch::run_patch;
 pub use tool::{
-    run_apply_patch, run_apply_patch_prune, run_apply_patch_stats, run_cochanges, run_completion,
-    run_slug, run_usage_bar,
+    run_apply_patch, run_apply_patch_prune, run_apply_patch_report, run_apply_patch_show,
+    run_apply_patch_stats, run_cochanges, run_completion, run_slug, run_usage_bar,
 };
 
 #[derive(Parser)]

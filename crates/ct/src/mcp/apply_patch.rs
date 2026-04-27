@@ -20,27 +20,9 @@ use crate::apply_patch::{
 // Error mapping
 // ---------------------------------------------------------------------------
 
-/// Map an `ApplyPatchError` to an MCP `ErrorData`. Bad-input variants (parse,
-/// path validation, context miss, state conflicts) surface as `invalid_params`;
-/// `Io` is a server-side failure and becomes `internal_error`.
+/// Stable failure-kind label shared by MCP telemetry and repair diagnostics.
 fn classify_error(err: &ApplyPatchError) -> &'static str {
-    match err {
-        // Surface the parser's own subkind so telemetry can break the
-        // dominant `parse` bucket into actionable shapes
-        // (`parse_add_missing_plus`, `parse_unprefixed_line`, etc.).
-        ApplyPatchError::Parse(p) => p.subkind_str(),
-        ApplyPatchError::ContextNotFound { .. } => "context_not_found",
-        ApplyPatchError::AmbiguousContext { .. } => "ambiguous_context",
-        ApplyPatchError::AnchorShadowsFirstContext { .. } => "anchor_shadows",
-        ApplyPatchError::DeleteIsDirectory(_) => "delete_is_directory",
-        ApplyPatchError::TargetIsDirectory(_) => "target_is_directory",
-        ApplyPatchError::ReadOnlyTarget(_) => "read_only_target",
-        ApplyPatchError::AddTargetExists(_) => "add_target_exists",
-        ApplyPatchError::DuplicateUpdate(_) => "duplicate_update",
-        ApplyPatchError::MoveTargetExists(_) => "move_target_exists",
-        ApplyPatchError::RollbackFailed { .. } => "rollback_failed",
-        ApplyPatchError::Io { .. } => "io",
-    }
+    apply_patch::failure_kind(err)
 }
 
 fn build_file_entries_from_changes(
@@ -61,38 +43,6 @@ fn build_file_entries_from_changes(
                 path: c.path.clone(),
                 chunk_count,
                 fuzzy_tier_used,
-                file_sha1,
-            }
-        })
-        .collect()
-}
-
-fn build_file_entries_from_attempts(
-    attempts: &[AnchorAttempt],
-    fingerprints: &[(String, Fingerprint)],
-) -> Vec<FileCallEntry> {
-    let mut seen: Vec<String> = Vec::new();
-    for a in attempts {
-        if !seen.iter().any(|p| p == &a.file_path) {
-            seen.push(a.file_path.clone());
-        }
-    }
-    for (p, _) in fingerprints {
-        if !seen.iter().any(|s| s == p) {
-            seen.push(p.clone());
-        }
-    }
-    seen.into_iter()
-        .map(|path| {
-            let chunk_count = attempts.iter().filter(|a| a.file_path == path).count();
-            let file_sha1 = fingerprints
-                .iter()
-                .find(|(p, _)| p == &path)
-                .map(|(_, fp)| fp.sha1.clone());
-            FileCallEntry {
-                path,
-                chunk_count,
-                fuzzy_tier_used: None,
                 file_sha1,
             }
         })
@@ -147,61 +97,7 @@ fn record_success(
     }
 }
 
-/// Record the failure call + anchor attempts + patch body. Does NOT upsert
-/// fingerprints — enrichment needs to read the previous-generation fingerprint
-/// first (the stale-read hint compares last-seen against the *current* call's
-/// fingerprint). Pair with `record_failure_fingerprints` after enrichment.
-fn record_failure_call(
-    tel: &Telemetry,
-    failure: &ApplyFailure,
-    duration_us: u64,
-    patch_sha: &str,
-    patch_body: &str,
-) {
-    if let Err(e) = tel.record_patch_body(patch_sha, patch_body) {
-        eprintln!("apply-patch telemetry: {e}");
-    }
-    let error_kind = classify_error(&failure.error).to_string();
-    let files = build_file_entries_from_attempts(&failure.attempts, &failure.fingerprints);
-    let record = CallRecord {
-        outcome: error_kind.clone(),
-        error_kind: Some(error_kind),
-        files,
-        duration_us,
-        patch_sha: patch_sha.to_string(),
-        fingerprints_json: fingerprints_to_json(&failure.fingerprints),
-    };
-    match tel.record_call(&record) {
-        Ok(call_id) => {
-            if let Err(e) = tel.record_anchor_attempts(call_id, &failure.attempts) {
-                eprintln!("apply-patch telemetry: {e}");
-            }
-        }
-        Err(e) => eprintln!("apply-patch telemetry: {e}"),
-    }
-}
-
-fn record_failure_fingerprints(tel: &Telemetry, fingerprints: &[(String, Fingerprint)]) {
-    for (path, fp) in fingerprints {
-        if let Err(e) = tel.upsert_fingerprint(path, fp) {
-            eprintln!("apply-patch telemetry: {e}");
-        }
-    }
-}
-
-/// Enrich the failure message using telemetry, then record the call. Returns
-/// the enriched error ready to hand back to the MCP caller. Split from the
-/// handler so tests can exercise the ordering: enrichment reads
-/// `last_fingerprint` BEFORE the call's fingerprints are upserted, so a stale
-/// read on disk compares against the previous generation's fingerprint.
-fn enrich_and_record_failure(
-    tel: &Telemetry,
-    failure: &ApplyFailure,
-    duration_us: u64,
-    patch_sha: &str,
-    patch_body: &str,
-    cwd: &Path,
-) -> Option<String> {
+fn enrich_failure_message(tel: &Telemetry, failure: &ApplyFailure, cwd: &Path) -> Option<String> {
     let enriched = enrichable_context(&failure.error).map(|(path, chunk, anchor)| {
         let current_fp = failure
             .fingerprints
@@ -229,19 +125,16 @@ fn enrich_and_record_failure(
         };
         enrich::enrich(tel, failure.error.to_string(), &ctx).into_message()
     });
-    record_failure_call(tel, failure, duration_us, patch_sha, patch_body);
-    record_failure_fingerprints(tel, &failure.fingerprints);
     enriched
 }
 
-fn apply_patch_error_to_tool(err: ApplyPatchError) -> ErrorData {
-    enriched_error_to_tool(&err, err.to_string())
-}
-
-/// Map an `ApplyPatchError` to an `ErrorData` using a pre-built message.
-/// Mirrors the variant→severity decision of `apply_patch_error_to_tool` but
-/// lets the caller swap the displayed text (for example, after enrichment).
-fn enriched_error_to_tool(err: &ApplyPatchError, message: String) -> ErrorData {
+/// Map an `ApplyPatchError` to an `ErrorData` using a pre-built message and
+/// optional repair block.
+fn enriched_error_to_tool(
+    err: &ApplyPatchError,
+    message: String,
+    repair_block: Option<&apply_patch::RepairBlock>,
+) -> ErrorData {
     match err {
         ApplyPatchError::Parse(_)
         | ApplyPatchError::DeleteIsDirectory(_)
@@ -253,11 +146,17 @@ fn enriched_error_to_tool(err: &ApplyPatchError, message: String) -> ErrorData {
         | ApplyPatchError::ContextNotFound { .. }
         | ApplyPatchError::AmbiguousContext { .. }
         | ApplyPatchError::AnchorShadowsFirstContext { .. } => {
-            ErrorData::invalid_params(message, None)
+            ErrorData::invalid_params(message, repair_data(repair_block))
         }
-        ApplyPatchError::RollbackFailed { .. } => ErrorData::internal_error(message, None),
-        ApplyPatchError::Io { .. } => ErrorData::internal_error(message, None),
+        ApplyPatchError::RollbackFailed { .. } => {
+            ErrorData::internal_error(message, repair_data(repair_block))
+        }
+        ApplyPatchError::Io { .. } => ErrorData::internal_error(message, repair_data(repair_block)),
     }
+}
+
+fn repair_data(repair_block: Option<&apply_patch::RepairBlock>) -> Option<serde_json::Value> {
+    repair_block.map(|block| serde_json::json!({ "repair": block }))
 }
 
 /// Pull the (file_path, chunk_index, anchor) enrichment context out of the
@@ -533,22 +432,25 @@ Set `dry_run` to true to preview the unified diff without writing."#
             }
             Err(failure) => {
                 let duration_us = start.elapsed().as_micros() as u64;
-                let enriched_message = tel.as_ref().and_then(|tel| {
-                    enrich_and_record_failure(
-                        tel,
-                        &failure,
-                        duration_us,
-                        &patch_sha,
-                        &input.patch,
-                        &cwd,
-                    )
-                });
+                let enriched_message = tel
+                    .as_ref()
+                    .and_then(|tel| enrich_failure_message(tel, &failure, &cwd));
+                let artifacts = apply_patch::repair::handle_failure(
+                    tel.as_deref(),
+                    &cwd,
+                    &failure,
+                    duration_us,
+                    &patch_sha,
+                    &input.patch,
+                );
+                let repair_text = artifacts.repair_block.render_compact();
                 let ApplyFailure { error, .. } = *failure;
-                let err_data = match enriched_message {
-                    Some(message) => enriched_error_to_tool(&error, message),
-                    None => apply_patch_error_to_tool(error),
-                };
-                Err(err_data)
+                let message = enriched_message.unwrap_or_else(|| error.to_string());
+                Err(enriched_error_to_tool(
+                    &error,
+                    format!("{message}\n\n{repair_text}"),
+                    Some(&artifacts.repair_block),
+                ))
             }
         }
     }
@@ -577,6 +479,36 @@ mod tests {
     /// call upserts it. Previously `record_failure` upserted first, which
     /// overwrote the previous generation's fingerprint, so the stale-read
     /// comparison always saw equal mtimes and the hint never fired.
+    #[test]
+    fn mcp_error_data_carries_repair_block() {
+        let block = apply_patch::RepairBlock {
+            patch_id: "patch".into(),
+            telemetry_id: Some("apt-call-1".into()),
+            diagnostic_id: Some("apd-1".into()),
+            failure_kind: "context_not_found".into(),
+            anchors: vec!["bare @@".into()],
+            report_command: "ct apply-patch report apd-1".into(),
+            next_action: "inspect draft".into(),
+            draft_created: true,
+        };
+        let err = enriched_error_to_tool(
+            &ApplyPatchError::ContextNotFound {
+                path: "main.rs".into(),
+                chunk: 0,
+                change_contexts: Vec::new(),
+                first_old_line: None,
+                near_miss: None,
+            },
+            format!("failed\n\n{}", block.render_compact()),
+            Some(&block),
+        );
+        assert!(err.message.contains("repair:"));
+        assert_eq!(
+            err.data.unwrap()["repair"]["diagnostic_id"],
+            serde_json::Value::String("apd-1".into())
+        );
+    }
+
     #[test]
     fn stale_read_hint_fires_through_failure_recording_path() {
         let tel = Telemetry::open_in_memory().unwrap();
@@ -612,15 +544,16 @@ mod tests {
             )],
         };
 
-        let message = enrich_and_record_failure(
-            &tel,
+        let message = enrich_failure_message(&tel, &failure, std::path::Path::new("/tmp"))
+            .expect("enrichable context produces a message");
+        apply_patch::repair::handle_failure(
+            Some(&tel),
+            std::path::Path::new("/tmp"),
             &failure,
             0,
             "patchsha",
             "body",
-            std::path::Path::new("/tmp"),
-        )
-        .expect("enrichable context produces a message");
+        );
         assert!(message.contains("mtime changed"), "message was: {message}");
         assert!(message.contains("aaaaaaaa"), "message was: {message}");
         assert!(message.contains("bbbbbbbb"), "message was: {message}");

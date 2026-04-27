@@ -191,6 +191,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             cli::ApplyPatchCmd::Stats { all_projects, days } => {
                 cli::run_apply_patch_stats(all_projects, days)
             }
+            cli::ApplyPatchCmd::Report {
+                diagnostic_id,
+                limit,
+                json,
+            } => cli::run_apply_patch_report(diagnostic_id, limit, json),
+            cli::ApplyPatchCmd::Show {
+                diagnostic_id,
+                json,
+            } => cli::run_apply_patch_show(diagnostic_id, json),
             cli::ApplyPatchCmd::Prune { days } => cli::run_apply_patch_prune(days),
         },
         Some(cli::Command::UsageBar { width }) => cli::run_usage_bar(width),

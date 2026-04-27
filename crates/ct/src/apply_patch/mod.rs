@@ -2,6 +2,7 @@ mod apply;
 mod diff;
 pub mod draft;
 mod parser;
+pub mod repair;
 mod seek_sequence;
 pub mod telemetry;
 #[cfg(test)]
@@ -11,6 +12,7 @@ pub use apply::{
     ApplyFailure, ApplyOutcome, ApplyPatchError, ChangeType, FileChange, HunkFuzzy, HunkRegion,
     LineChange, apply,
 };
+pub use repair::{RepairBlock, failure_kind};
 pub use telemetry::{
     AnchorAttempt, CallRecord, FileCallEntry, Fingerprint, Telemetry, enrich, sha1_hex,
 };

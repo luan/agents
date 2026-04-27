@@ -76,6 +76,53 @@ pub fn run_apply_patch_stats(
     Ok(())
 }
 
+pub fn run_apply_patch_report(
+    diagnostic_id: Option<String>,
+    limit: usize,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::apply_patch::telemetry::{Telemetry, diagnostics};
+
+    let project_name = crate::artifact::project_name(&crate::artifact::current_project());
+    let tel = Telemetry::open(&project_name)?;
+    if let Some(diagnostic_id) = diagnostic_id {
+        let Some(diagnostic) = tel.failure_diagnostic(&diagnostic_id)? else {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "diagnostic_id": diagnostic_id,
+                        "status": "not_found"
+                    }))?
+                );
+            } else {
+                println!("apply-patch diagnostic not found: {diagnostic_id}");
+            }
+            return Ok(());
+        };
+        if json {
+            println!("{}", serde_json::to_string_pretty(&diagnostic)?);
+        } else {
+            print!("{}", diagnostics::render_diagnostic(&diagnostic));
+        }
+        return Ok(());
+    }
+    let report = tel.failure_report(limit)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", diagnostics::render_report(&report));
+    }
+    Ok(())
+}
+
+pub fn run_apply_patch_show(
+    diagnostic_id: String,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    run_apply_patch_report(Some(diagnostic_id), 1, json)
+}
+
 pub fn run_apply_patch_prune(days: i64) -> Result<(), Box<dyn std::error::Error>> {
     use crate::apply_patch::telemetry::{Telemetry, prune};
 
@@ -143,10 +190,24 @@ pub fn run_apply_patch(
         std::process::exit(1);
     }
 
+    let patch_sha = crate::apply_patch::sha1_hex(patch.as_bytes());
+    let start = std::time::Instant::now();
     let outcome = match crate::apply_patch::apply(&patch, &cwd_path, dry_run) {
         Ok(o) => o,
         Err(failure) => {
+            let telemetry_root = cwd_path.canonicalize().unwrap_or_else(|_| cwd_path.clone());
+            let project_name = crate::artifact::project_name(&telemetry_root.to_string_lossy());
+            let tel = crate::apply_patch::Telemetry::open(&project_name).ok();
+            let artifacts = crate::apply_patch::repair::handle_failure(
+                tel.as_ref(),
+                &cwd_path,
+                &failure,
+                start.elapsed().as_micros() as u64,
+                &patch_sha,
+                &patch,
+            );
             eprintln!("{}", failure.error);
+            eprintln!("{}", artifacts.repair_block.render_compact());
             std::process::exit(1);
         }
     };

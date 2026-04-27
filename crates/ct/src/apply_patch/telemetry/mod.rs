@@ -1,3 +1,4 @@
+pub mod diagnostics;
 pub mod enrich;
 pub mod prune;
 mod schema;
@@ -217,7 +218,7 @@ pub fn sha1_hex(bytes: &[u8]) -> String {
     out
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -368,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn migrates_v1_to_v2() {
+    fn migrates_v1_to_v3() {
         let conn = Connection::open_in_memory().unwrap();
         // Hand-build a v1 database: `calls` without fingerprints_json, no
         // `patch_bodies` table.
@@ -406,7 +407,7 @@ mod tests {
         let version: i32 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
 
         // New column exists on calls.
         let has_fp: i64 = conn
@@ -418,15 +419,121 @@ mod tests {
             .unwrap();
         assert_eq!(has_fp, 1);
 
-        // patch_bodies table exists.
-        let has_table: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'patch_bodies'",
-                [],
-                |row| row.get(0),
-            )
+        // patch_bodies and failure diagnostic tables exist.
+        for table in [
+            "patch_bodies",
+            "failure_diagnostics",
+            "failure_fingerprints",
+        ] {
+            let has_table: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    params![table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(has_table, 1, "missing {table}");
+        }
+    }
+
+    #[test]
+    fn migrates_v2_to_v3() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE calls (
+                id INTEGER PRIMARY KEY,
+                ts INTEGER NOT NULL,
+                session_id TEXT,
+                outcome TEXT NOT NULL,
+                error_kind TEXT,
+                files_json TEXT NOT NULL,
+                duration_us INTEGER NOT NULL,
+                patch_sha TEXT NOT NULL,
+                fingerprints_json TEXT
+            );
+            CREATE TABLE anchor_attempts (
+                call_id INTEGER NOT NULL REFERENCES calls(id),
+                file_path TEXT NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                anchor_text TEXT,
+                success INTEGER NOT NULL,
+                fuzzy_tier TEXT
+            );
+            CREATE TABLE file_fingerprints (
+                file_path TEXT PRIMARY KEY,
+                last_seen_mtime_ns INTEGER NOT NULL,
+                last_seen_sha1 TEXT NOT NULL,
+                last_seen_ts INTEGER NOT NULL
+            );
+            CREATE TABLE patch_bodies (
+                patch_sha TEXT PRIMARY KEY,
+                body TEXT NOT NULL,
+                first_seen_ts INTEGER NOT NULL
+            );",
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 2i32).unwrap();
+
+        schema::apply(&conn).unwrap();
+
+        let version: i32 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(has_table, 1);
+        assert_eq!(version, 3);
+        for table in ["failure_diagnostics", "failure_fingerprints"] {
+            let has_table: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    params![table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(has_table, 1, "missing {table}");
+        }
+    }
+
+    #[test]
+    fn failure_diagnostic_marks_novel_then_repeated() {
+        let t = Telemetry::open_in_memory().unwrap();
+        let first_call = t.record_call(&sample_call()).unwrap();
+        let first = t
+            .record_failure_diagnostic(&diagnostics::FailureDiagnosticInput {
+                call_id: first_call,
+                patch_id: "patch-a".into(),
+                patch_sha: "patch-a".into(),
+                failure_kind: "context_not_found".into(),
+                message: "context not found".into(),
+                anchors: vec!["@@ fn main".into()],
+                files: vec!["main.rs".into()],
+                candidates: serde_json::Value::Null,
+            })
+            .unwrap();
+        assert_eq!(first.novelty, "novel");
+        assert_eq!(first.occurrence_count, 1);
+
+        let second_call = t.record_call(&sample_call()).unwrap();
+        let second = t
+            .record_failure_diagnostic(&diagnostics::FailureDiagnosticInput {
+                call_id: second_call,
+                patch_id: "patch-b".into(),
+                patch_sha: "patch-b".into(),
+                failure_kind: "context_not_found".into(),
+                message: "context not found".into(),
+                anchors: vec!["@@ fn main".into()],
+                files: vec!["main.rs".into()],
+                candidates: serde_json::Value::Null,
+            })
+            .unwrap();
+        assert_eq!(second.novelty, "repeated");
+        assert_eq!(second.occurrence_count, 2);
+        assert_eq!(first.fingerprint, second.fingerprint);
+
+        let report = t.failure_report(10).unwrap();
+        assert_eq!(report.recurring.len(), 1);
+        assert_eq!(report.recurring[0].occurrence_count, 2);
+        let rendered = diagnostics::render_report(&report);
+        assert!(rendered.contains("apply-patch failure diagnostics"));
+        assert!(rendered.contains("context_not_found"));
     }
 
     #[test]

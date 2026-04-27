@@ -755,6 +755,80 @@ fn lens_diagnostics_snapshot_reports_deltas_and_all_flag() {
 }
 
 #[test]
+fn apply_patch_failure_creates_draft_and_patch_telemetry_not_lens_diagnostic() {
+    let (bp, _remote) = setup_blueprints();
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+    let data = tempfile::tempdir().expect("data dir");
+    fs::write(project.path().join("dup.rs"), "foo\nbar\nfoo\nbar\n").expect("write source");
+    let patch = "\
+*** Begin Patch
+*** Update File: dup.rs
+@@
+-foo
++FOO
+ bar
+*** End Patch
+";
+
+    let assert = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .env("XDG_DATA_HOME", data.path())
+        .args(["tool", "apply-patch", "--cwd", "."])
+        .write_stdin(patch)
+        .assert()
+        .failure();
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(stderr.contains("repair: patch="), "stderr was: {stderr}");
+    assert!(stderr.contains("diagnostic=apd-"), "stderr was: {stderr}");
+    assert!(
+        stderr.contains("kind=ambiguous_context"),
+        "stderr was: {stderr}"
+    );
+
+    let status = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .args(["lens", "status", "--json"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(status.get_output().stdout.clone()).expect("status utf8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("status json");
+    assert_eq!(value["data"]["state"]["counts"]["patch_drafts"], 1);
+
+    let list = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .args(["lens", "diagnostics", "list", "--all", "--json"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(list.get_output().stdout.clone()).expect("diagnostics utf8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("diagnostics json");
+    assert_eq!(value["data"]["diagnostic_count"], 0);
+
+    let report = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_DATA_HOME", data.path())
+        .args(["apply-patch", "report", "--json"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(report.get_output().stdout.clone()).expect("report utf8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("report json");
+    assert_eq!(value["diagnostics"].as_array().unwrap().len(), 1);
+    let diagnostic_id = value["diagnostics"][0]["diagnostic_id"].as_str().unwrap();
+
+    ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_DATA_HOME", data.path())
+        .args(["apply-patch", "show", diagnostic_id])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("apply-patch diagnostic"))
+        .stdout(predicate::str::contains("ambiguous_context"));
+}
+
+#[test]
 fn lens_guard_default_blocks_unread_code_and_allows_after_read() {
     let (bp, _remote) = setup_blueprints();
     let project = project_dir();

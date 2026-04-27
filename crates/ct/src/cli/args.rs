@@ -149,6 +149,22 @@ pub enum ApplyPatchCmd {
         days: i64,
     },
 
+    #[command(about = "Render apply_patch failure diagnostic report")]
+    Report {
+        diagnostic_id: Option<String>,
+        #[arg(long, default_value_t = 20, help = "Maximum diagnostics to show")]
+        limit: usize,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+    },
+
+    #[command(about = "Show one apply_patch failure diagnostic")]
+    Show {
+        diagnostic_id: String,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+    },
+
     #[command(about = "Delete telemetry older than --days")]
     Prune {
         #[arg(long, default_value_t = 90, help = "Retention window in days")]
