@@ -8,7 +8,7 @@
     "./plugins/lens.js",
   ],
 
-  "instructions": ["AGENTS.md"],
+  "instructions": ["AGENTS.md", "CLAUDE.local.md"],
   "skills": {
     "paths": ["~/.agents/skills"],
   },
