@@ -1005,3 +1005,191 @@ fn lens_checks_run_configured_fixture_and_records_snapshot() {
         .stdout(predicate::str::contains("fixture failed"))
         .stdout(predicate::str::contains("\"kind\": \"check\""));
 }
+
+fn lens_hook_event(project: &Path, event: &str) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": "lens.hook_event.v1",
+        "host": {"name": "codex", "kind": "non_pi", "version": "fixture"},
+        "session": {"id": "hook-session", "seq": 1},
+        "cwd": project.to_string_lossy(),
+        "turn": {"id": "hook-turn", "index": 1},
+        "event": event,
+        "tool": {"name": "read", "status": "success"},
+        "known_files": [{"path": "main.rs", "operation": "read", "start_line": 1, "end_line": 1}],
+        "policy": {"git_fallback": false, "include_ignored": false, "run_cleanup": true, "run_checks": true}
+    })
+}
+
+#[test]
+fn lens_lifecycle_hooks_return_host_neutral_contracts() {
+    let (bp, _remote) = setup_blueprints();
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+    fs::write(project.path().join("main.rs"), "fn main() {}\n").expect("write source");
+
+    let cases = [
+        ("lens-session-start", "session_start"),
+        ("lens-turn-start", "turn_start"),
+        ("lens-pre-tool", "pre_tool"),
+        ("lens-post-tool", "post_tool"),
+        ("lens-turn-end", "turn_end"),
+        ("lens-context-injection", "context_injection"),
+        ("lens-agent-end", "agent_end"),
+        ("lens-session-shutdown", "session_shutdown"),
+    ];
+
+    for (command, event) in cases {
+        let assert = ct_cmd(bp.path())
+            .current_dir(project.path())
+            .env("XDG_STATE_HOME", state.path())
+            .env("XDG_CONFIG_HOME", state.path())
+            .args(["hook", command])
+            .write_stdin(lens_hook_event(project.path(), event).to_string())
+            .assert()
+            .success();
+        let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+        let value: serde_json::Value = serde_json::from_str(&stdout).expect("hook json");
+        assert_eq!(
+            value["schema_version"], "lens.hook_response.v1",
+            "{command}"
+        );
+        assert_eq!(value["host"]["name"], "codex", "{command}");
+        assert_eq!(value["host"]["kind"], "non_pi", "{command}");
+        assert_eq!(value["session"]["id"], "hook-session", "{command}");
+        assert_eq!(value["turn"]["id"], "hook-turn", "{command}");
+        assert_eq!(value["event"], event, "{command}");
+        assert!(value["decision"]["outcome"].is_string(), "{command}");
+        assert!(value["actions"].is_array(), "{command}");
+        assert!(value["context"]["inject"].is_boolean(), "{command}");
+        assert!(value["diagnostics"]["active"].is_number(), "{command}");
+        assert!(value["health"]["status"].is_string(), "{command}");
+        assert!(value["warnings"].is_array(), "{command}");
+        assert!(value["errors"].is_array(), "{command}");
+    }
+}
+
+#[test]
+fn lens_pre_tool_hook_blocks_unread_writes_with_strict_guard() {
+    let (bp, _remote) = setup_blueprints();
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+    fs::write(project.path().join("main.rs"), "fn main() {}\n").expect("write source");
+    let mut event = lens_hook_event(project.path(), "pre_tool");
+    event["tool"] = serde_json::json!({"name": "edit", "status": "pending"});
+    event["known_files"] = serde_json::json!([{
+        "path": "main.rs",
+        "operation": "modify",
+        "start_line": 1,
+        "end_line": 1
+    }]);
+    event["policy"]["guard_mode"] = serde_json::json!("off");
+
+    let assert = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .env("XDG_CONFIG_HOME", state.path())
+        .args(["hook", "lens-pre-tool"])
+        .write_stdin(event.to_string())
+        .assert()
+        .failure();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("pre-tool json");
+    assert_eq!(value["schema_version"], "lens.hook_response.v1");
+    assert_eq!(value["status"], "error");
+    assert_eq!(value["decision"]["outcome"], "block");
+    assert_eq!(value["decision"]["reason"], "strict_guard_blocked");
+    assert_eq!(value["decision"]["guard"][0]["decision"], "block");
+    assert_eq!(value["errors"][0]["code"], "guard_blocked");
+}
+
+#[test]
+fn lens_post_tool_hook_records_touched_files_reads_and_raw_output() {
+    let (bp, _remote) = setup_blueprints();
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+    fs::write(project.path().join("main.rs"), "fn main() {}\n").expect("write source");
+    let mut event = lens_hook_event(project.path(), "post_tool");
+    event["tool"] = serde_json::json!({
+        "name": "read",
+        "status": "success",
+        "raw_output": "token=secret-value\nread main.rs",
+        "raw_output_max_bytes": 128
+    });
+
+    let assert = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .env("XDG_CONFIG_HOME", state.path())
+        .args(["hook", "lens-post-tool"])
+        .write_stdin(event.to_string())
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("post-tool json");
+    assert_eq!(value["schema_version"], "lens.hook_response.v1");
+    assert_eq!(value["data"]["turn"]["file_count"], 1);
+    assert_eq!(value["data"]["turn"]["files"][0]["operation"], "read");
+    assert_eq!(value["data"]["raw_output"]["redacted"], true);
+
+    ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .args([
+            "lens",
+            "guard",
+            "check",
+            "--path",
+            "main.rs",
+            "--start-line",
+            "1",
+            "--end-line",
+            "1",
+            "--session",
+            "hook-session",
+            "--json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"reason\": \"covered\""));
+}
+
+#[test]
+fn lens_hook_reports_json_errors_for_malformed_and_unknown_schema() {
+    let (bp, _remote) = setup_blueprints();
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+
+    let assert = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .args(["hook", "lens-session-start"])
+        .write_stdin("{not json")
+        .assert()
+        .failure();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("malformed json response");
+    assert_eq!(value["schema_version"], "lens.hook_response.v1");
+    assert_eq!(value["status"], "error");
+    assert_eq!(value["errors"][0]["code"], "malformed_json");
+
+    let bad_schema = serde_json::json!({
+        "schema_version": "lens.hook_event.v0",
+        "host": {"name": "opencode", "kind": "non_pi"},
+        "session": {"id": "s"},
+        "cwd": project.path().to_string_lossy(),
+        "turn": {"id": "t"},
+        "event": "session_start",
+        "policy": {}
+    });
+    let assert = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .args(["hook", "lens-session-start"])
+        .write_stdin(bad_schema.to_string())
+        .assert()
+        .failure();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("unknown schema response");
+    assert_eq!(value["schema_version"], "lens.hook_response.v1");
+    assert_eq!(value["errors"][0]["code"], "unknown_schema");
+}

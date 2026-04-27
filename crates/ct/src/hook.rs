@@ -11,6 +11,15 @@ const GRAPHITE_CONTEXT: &str = "## Graphite Workflow\n\nThis repo uses Graphite 
 const APPLY_PATCH_CONTEXT: &str = "File-edit tool: `mcp__apply-patch__apply_patch` is a deferred MCP tool. Before your first file edit in this session, call `ToolSearch` with query `select:mcp__apply-patch__apply_patch` to load its schema. Then use it for every file change - single-line, single-file, multi-file, creates, deletes, renames alike. Do not fall back to Edit/Write because a change is \"just one line\" or \"just one file\"; that is the documented failure mode. Use Edit/Write only when apply_patch genuinely cannot express the change (e.g. binary files) and say why in the same turn.";
 
 pub fn run_hook(name: &str) -> Result<()> {
+    if crate::lens::LensLifecycleHook::from_command(name).is_some() {
+        let code = crate::lens::run_lifecycle_hook(name)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
+    }
+
     match name {
         "codex-sym-nudge" => codex_sym_nudge(),
         "apply-patch-remind" => apply_patch_remind(),
@@ -19,7 +28,7 @@ pub fn run_hook(name: &str) -> Result<()> {
         "gt-validate-git" => gt_validate_git(),
         "lens-turn-event" => lens_turn_event(),
         other => anyhow::bail!(
-            "unknown hook {other:?} (supported: apply-patch-remind, codex-sym-nudge, gt-session-start, gt-validate-git, lens-turn-event, rtk-rewrite)"
+            "unknown hook {other:?} (supported: apply-patch-remind, codex-sym-nudge, gt-session-start, gt-validate-git, lens-agent-end, lens-context, lens-context-injection, lens-post-tool, lens-pre-tool, lens-session-shutdown, lens-session-start, lens-turn-end, lens-turn-event, lens-turn-start, rtk-rewrite)"
         ),
     }
 }
