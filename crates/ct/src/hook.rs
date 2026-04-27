@@ -22,7 +22,6 @@ pub fn run_hook(name: &str) -> Result<()> {
     }
 
     match name {
-        "codex-sym-nudge" | "source-nudge" => codex_sym_nudge(),
         "source-remind" => source_remind(),
         "notify" => crate::notify::run().map_err(|error| anyhow::anyhow!(error.to_string())),
         "apply-patch-remind" => apply_patch_remind(),
@@ -31,36 +30,9 @@ pub fn run_hook(name: &str) -> Result<()> {
         "gt-validate-git" => gt_validate_git(),
         "lens-turn-event" => lens_turn_event(),
         other => anyhow::bail!(
-            "unknown hook {other:?} (supported: apply-patch-remind, source-nudge, source-remind, notify, gt-session-start, gt-validate-git, lens-agent-end, lens-context, lens-context-injection, lens-post-tool, lens-pre-tool, lens-session-shutdown, lens-session-start, lens-turn-end, lens-turn-event, lens-turn-start, rtk-rewrite)"
+            "unknown hook {other:?} (supported: apply-patch-remind, source-remind, notify, gt-session-start, gt-validate-git, lens-agent-end, lens-context, lens-context-injection, lens-post-tool, lens-pre-tool, lens-session-shutdown, lens-session-start, lens-turn-end, lens-turn-event, lens-turn-start, rtk-rewrite)"
         ),
     }
-}
-
-fn codex_sym_nudge() -> Result<()> {
-    let (fields, tool_name) = sym::hook::read_nudge_input(&[])?;
-    let field_refs = fields.iter().map(String::as_str).collect::<Vec<_>>();
-    let suggestion = sym::hook::detect_search_command(&field_refs, &tool_name);
-    if suggestion.replacement.is_empty() {
-        return Ok(());
-    }
-    let legacy_search = ["ct", "sym", "search"].join(" ");
-    let canonical_search = "ct source search";
-    let replacement = suggestion
-        .replacement
-        .replacen(&legacy_search, canonical_search, 1);
-    let why = suggestion
-        .why
-        .replace(&legacy_search, canonical_search)
-        .replace("sym indexes", "source indexes");
-    println!(
-        "{}",
-        serde_json::to_string(&json!({
-            "systemMessage": format!(
-                "source can answer this faster: `{replacement}`. {why}",
-            )
-        }))?
-    );
-    Ok(())
 }
 
 fn gt_session_start() -> Result<()> {

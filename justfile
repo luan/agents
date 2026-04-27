@@ -12,13 +12,13 @@ render-agents:
 link-dry-run: render-agents
     cd "{{ repo }}" && cargo xtask link-dry-run
 
-link: render-agents codex-plugins-install pi-extensions-install
+link: render-agents codex-plugins-install
     cd "{{ repo }}" && cargo xtask link
 
 unlink:
     cd "{{ repo }}" && cargo xtask unlink || true
 
-restow: render-agents codex-plugins-install pi-extensions-install
+restow: render-agents codex-plugins-install
     cd "{{ repo }}" && cargo xtask link
 
 doctor:
@@ -45,9 +45,6 @@ claude-plugins-install:
     # `claude plugin install` is idempotent (no-op when already installed).
     claude plugin install worktrunk@worktrunk
     # Keep the local `agents` marketplace disabled until its schema is updated.
-
-pi-extensions-install:
-    cd "{{ repo }}/pi/agent/extensions" && npm install --omit=dev
 
 build:
     cd "{{ repo }}" && cargo build --release -p ct

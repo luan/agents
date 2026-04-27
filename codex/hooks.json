@@ -51,12 +51,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "ct hook source-nudge",
-            "statusMessage": "Checking for source lookup",
-            "timeout": 5
-          },
-          {
-            "type": "command",
             "command": "ct hook gt-validate-git",
             "statusMessage": "Checking Graphite command policy",
             "timeout": 5

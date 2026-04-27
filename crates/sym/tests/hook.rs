@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use serde_json::Value;
 use sym::hook::{
-    ClaudeSettings, Suggestion, append_unique_hook_group, claude_hook_entries,
+    ClaudeSettings, Suggestion, append_unique_hook_group, claude_session_hook_entry,
     detect_search_command, emit_nudge, emit_remind, hook_group_has_marker, lookup_hook_adapter,
     merge_claude_hooks, remove_claude_hooks, split_shellish,
 };
@@ -130,7 +130,7 @@ fn claude_install_is_idempotent_and_uninstall_preserves_user_hooks() {
     merge_claude_hooks(&mut settings);
 
     let hooks = settings.raw["hooks"].as_object().unwrap();
-    assert_eq!(hooks["PreToolUse"].as_array().unwrap().len(), 2);
+    assert_eq!(hooks["PreToolUse"].as_array().unwrap().len(), 1);
     assert_eq!(hooks["SessionStart"].as_array().unwrap().len(), 1);
 
     remove_claude_hooks(&mut settings);
@@ -141,11 +141,15 @@ fn claude_install_is_idempotent_and_uninstall_preserves_user_hooks() {
 }
 
 #[test]
-fn claude_install_migrates_old_user_prompt_submit_entry() {
+fn claude_install_migrates_old_sym_hook_entries() {
     let mut settings = ClaudeSettings::new();
     settings.raw.insert(
         "hooks".into(),
         serde_json::json!({
+            "PreToolUse": [
+                {"matcher": "Bash", "hooks": [{"type": "command", "command": "sym hook nudge --format=claude-code", "marker": "sym-hook", "timeout": 5}]},
+                {"matcher": "Bash", "hooks": [{"type": "command", "command": "user-bash-hook"}]}
+            ],
             "UserPromptSubmit": [
                 {"hooks": [{"type": "command", "command": "sym hook remind --format=claude-code", "marker": "sym-hook", "timeout": 5}]},
                 {"hooks": [{"type": "command", "command": "user-unrelated-hook"}]}
@@ -156,6 +160,9 @@ fn claude_install_migrates_old_user_prompt_submit_entry() {
     merge_claude_hooks(&mut settings);
 
     let hooks = settings.raw["hooks"].as_object().unwrap();
+    let pre_tool = hooks["PreToolUse"].as_array().unwrap();
+    assert_eq!(pre_tool.len(), 1);
+    assert!(!hook_group_has_marker(&pre_tool[0], "sym-hook"));
     let user_prompt = hooks["UserPromptSubmit"].as_array().unwrap();
     assert_eq!(user_prompt.len(), 1);
     assert!(!hook_group_has_marker(&user_prompt[0], "sym-hook"));
@@ -166,9 +173,9 @@ fn claude_install_migrates_old_user_prompt_submit_entry() {
 
 #[test]
 fn hook_helpers_and_unknown_adapter_error() {
-    let (pre_tool, _) = claude_hook_entries();
-    let appended = append_unique_hook_group(&Value::Array(vec![]), pre_tool.clone());
-    let appended = append_unique_hook_group(&Value::Array(appended), pre_tool);
+    let session_start = claude_session_hook_entry();
+    let appended = append_unique_hook_group(&Value::Array(vec![]), session_start.clone());
+    let appended = append_unique_hook_group(&Value::Array(appended), session_start);
     assert_eq!(appended.len(), 1);
 
     let err = lookup_hook_adapter("cursor").unwrap_err();
@@ -184,9 +191,13 @@ fn settings_roundtrip_to_disk() -> Result<()> {
     sym::hook::write_claude_settings(&path, &settings)?;
     let loaded = sym::hook::load_claude_settings(&path)?;
     assert_eq!(
-        loaded.raw["hooks"]["PreToolUse"].as_array().unwrap().len(),
+        loaded.raw["hooks"]["SessionStart"]
+            .as_array()
+            .unwrap()
+            .len(),
         1
     );
+    assert!(loaded.raw["hooks"].get("PreToolUse").is_none());
     Ok(())
 }
 
@@ -198,8 +209,8 @@ fn install_preserves_user_key_order_and_is_byte_idempotent() -> Result<()> {
     // User's existing settings with a deliberate key order. Two things must
     // survive install: top-level order ($schema, env, permissions, hooks) and
     // the order of existing keys inside `hooks` — here SessionStart appears
-    // before PreToolUse, and a pre-existing user-owned hook block under
-    // PreToolUse must stay in its original slot rather than moving to the end.
+    // before PreToolUse, and pre-existing user-owned hook blocks must stay in
+    // their original slots rather than moving to the end.
     let original = b"{\n  \"$schema\": \"https://example.com/schema.json\",\n  \"env\": {\n    \"FOO\": \"bar\"\n  },\n  \"hooks\": {\n    \"SessionStart\": [\n      {\n        \"hooks\": [\n          {\"type\": \"command\", \"command\": \"user-session-thing\"}\n        ]\n      }\n    ],\n    \"PreToolUse\": [\n      {\n        \"matcher\": \"Bash\",\n        \"hooks\": [\n          {\"type\": \"command\", \"command\": \"user-bash-thing\"}\n        ]\n      }\n    ]\n  },\n  \"permissions\": {\n    \"allow\": []\n  }\n}\n";
     std::fs::write(&path, original)?;
 
