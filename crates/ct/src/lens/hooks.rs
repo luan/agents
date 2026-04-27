@@ -284,9 +284,126 @@ pub fn run_lifecycle_hook(name: &str) -> Result<i32, Box<dyn std::error::Error>>
     let mut stdin = std::io::stdin();
     stdin.read_to_string(&mut input)?;
     let cwd = std::env::current_dir()?;
+    let emit_native_response = should_emit_native_hook_response(&input);
     let response = handle_lifecycle_hook(hook, &input, &cwd);
-    println!("{}", serde_json::to_string_pretty(&response)?);
+    if emit_native_response {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&native_hook_response(hook, &response))?
+        );
+    } else {
+        println!("{}", serde_json::to_string_pretty(&response)?);
+    }
     Ok(if response.should_exit_nonzero() { 2 } else { 0 })
+}
+
+fn should_emit_native_hook_response(input: &str) -> bool {
+    match std::env::var("CT_LENS_OUTPUT") {
+        Ok(value) if value == "lens" => return false,
+        Ok(value) if value == "native" => return true,
+        _ => {}
+    }
+
+    if let Ok(value) = serde_json::from_str::<Value>(input) {
+        return value.get("schema_version").is_none();
+    }
+
+    matches!(
+        std::env::var("CT_LENS_HOST").as_deref(),
+        Ok("claude-code") | Ok("codex") | Ok("opencode")
+    )
+}
+
+fn native_hook_response(hook: LensLifecycleHook, response: &LensHookResponse) -> Value {
+    let mut payload = serde_json::Map::new();
+    let blocked = matches!(response.decision.outcome, LensHookDecisionOutcome::Block);
+
+    payload.insert("continue".to_string(), Value::Bool(!blocked));
+    payload.insert("suppressOutput".to_string(), Value::Bool(true));
+
+    if blocked {
+        payload.insert("decision".to_string(), Value::String("block".to_string()));
+        payload.insert(
+            "reason".to_string(),
+            Value::String(response.decision.reason.clone()),
+        );
+    }
+
+    if let Some(message) = native_system_message(response) {
+        payload.insert("systemMessage".to_string(), Value::String(message));
+    }
+
+    match hook {
+        LensLifecycleHook::PreTool => {
+            payload.insert(
+                "hookSpecificOutput".to_string(),
+                json!({
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": if blocked { "deny" } else { "allow" },
+                    "permissionDecisionReason": response.decision.reason,
+                }),
+            );
+        }
+        LensLifecycleHook::PostTool => {
+            if let Some(context) = native_additional_context(response) {
+                payload.insert(
+                    "hookSpecificOutput".to_string(),
+                    json!({
+                        "hookEventName": "PostToolUse",
+                        "additionalContext": context,
+                    }),
+                );
+            }
+        }
+        LensLifecycleHook::ContextInjection => {
+            payload.insert(
+                "hookSpecificOutput".to_string(),
+                json!({
+                    "hookEventName": "UserPromptSubmit",
+                    "additionalContext": native_additional_context(response).unwrap_or_default(),
+                }),
+            );
+        }
+        LensLifecycleHook::SessionStart => {
+            if let Some(context) = native_additional_context(response) {
+                payload.insert(
+                    "hookSpecificOutput".to_string(),
+                    json!({
+                        "hookEventName": "SessionStart",
+                        "additionalContext": context,
+                    }),
+                );
+            }
+        }
+        LensLifecycleHook::TurnStart
+        | LensLifecycleHook::TurnEnd
+        | LensLifecycleHook::AgentEnd
+        | LensLifecycleHook::SessionShutdown => {}
+    }
+
+    Value::Object(payload)
+}
+
+fn native_additional_context(response: &LensHookResponse) -> Option<String> {
+    if response.context.inject && !response.context.content.trim().is_empty() {
+        return Some(response.context.content.clone());
+    }
+    None
+}
+
+fn native_system_message(response: &LensHookResponse) -> Option<String> {
+    if !matches!(response.status, LensResponseStatus::Error) || response.errors.is_empty() {
+        return None;
+    }
+    Some(
+        response
+            .errors
+            .iter()
+            .take(3)
+            .map(|error| format!("{}: {}", error.code, error.message))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
 }
 
 pub fn handle_lifecycle_hook(
@@ -343,6 +460,9 @@ fn parse_event(
         .get("schema_version")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    if schema.is_empty() {
+        return native_hook_event(hook, value, fallback_cwd);
+    }
     if schema != LENS_HOOK_EVENT_SCHEMA_VERSION {
         return Err(error_response(
             hook,
@@ -361,6 +481,193 @@ fn parse_event(
             format!("invalid Lens hook event: {error}"),
         )
     })
+}
+
+fn native_hook_event(
+    hook: LensLifecycleHook,
+    value: Value,
+    fallback_cwd: &Path,
+) -> Result<LensHookEvent, LensHookResponse> {
+    let session_id = string_field(&value, &["session_id", "sessionId", "session"])
+        .unwrap_or_else(|| "ephemeral".to_string());
+    let cwd = string_field(&value, &["cwd", "workspace", "workspace_root"])
+        .unwrap_or_else(|| fallback_cwd.display().to_string());
+    let turn_id = string_field(
+        &value,
+        &[
+            "turn_id",
+            "turnId",
+            "request_id",
+            "requestId",
+            "message_id",
+            "messageId",
+            "conversation_id",
+            "conversationId",
+        ],
+    )
+    .unwrap_or_else(|| session_id.clone());
+    let tool_name = string_field(&value, &["tool_name", "toolName", "tool"]);
+    let tool_input = value
+        .get("tool_input")
+        .or_else(|| value.get("toolInput"))
+        .cloned();
+    let tool_output = value
+        .get("tool_response")
+        .or_else(|| value.get("toolResponse"))
+        .or_else(|| value.get("result"))
+        .cloned();
+    let status = native_tool_status(hook, tool_output.as_ref());
+    let raw_output = tool_output
+        .as_ref()
+        .and_then(|output| serde_json::to_string(output).ok());
+    let known_files = tool_name
+        .as_deref()
+        .zip(tool_input.as_ref())
+        .map(|(tool, input)| native_known_files(tool, input))
+        .unwrap_or_default();
+
+    Ok(LensHookEvent {
+        schema_version: LENS_HOOK_EVENT_SCHEMA_VERSION.to_string(),
+        host: LensHookHost {
+            name: std::env::var("CT_LENS_HOST").unwrap_or_else(|_| native_host_name(&value)),
+            version: string_field(&value, &["version", "agent_version"]),
+            kind: Some("native-hook".to_string()),
+        },
+        session: LensHookSession {
+            id: session_id,
+            seq: i64_field(&value, &["session_seq", "sessionSeq"]),
+        },
+        cwd,
+        turn: LensHookTurn {
+            id: turn_id,
+            index: i64_field(&value, &["turn_index", "turnIndex"]),
+        },
+        event: hook.event(),
+        tool: tool_name.map(|name| LensHookTool {
+            name,
+            id: string_field(&value, &["tool_call_id", "toolCallId", "tool_id", "toolId"]),
+            status,
+            input: tool_input,
+            output: tool_output,
+            raw_output,
+            raw_output_max_bytes: Some(256 * 1024),
+        }),
+        known_files,
+        policy: LensHookPolicy::default(),
+    })
+}
+
+fn native_host_name(value: &Value) -> String {
+    string_field(value, &["agent", "host", "client"])
+        .or_else(|| {
+            std::env::var("USER")
+                .ok()
+                .map(|user| format!("native-{user}"))
+        })
+        .unwrap_or_else(|| "native-agent".to_string())
+}
+
+fn native_tool_status(hook: LensLifecycleHook, output: Option<&Value>) -> Option<String> {
+    match hook {
+        LensLifecycleHook::PreTool => Some("started".to_string()),
+        LensLifecycleHook::PostTool => {
+            let is_error = output.is_some_and(|value| {
+                bool_field(value, &["is_error", "isError", "error"])
+                    || string_field(value, &["status"]).is_some_and(|status| {
+                        matches!(status.as_str(), "error" | "failed" | "failure")
+                    })
+            });
+            Some(if is_error { "error" } else { "success" }.to_string())
+        }
+        _ => None,
+    }
+}
+
+fn native_known_files(tool_name: &str, input: &Value) -> Vec<LensTouchedFileInput> {
+    let operation = native_file_operation(tool_name);
+    let start_line = i64_field(input, &["start_line", "startLine", "line", "offset"]);
+    let end_line = i64_field(input, &["end_line", "endLine"]).or_else(|| {
+        let start = start_line?;
+        let limit = i64_field(input, &["limit"])?;
+        Some(start + limit.saturating_sub(1))
+    });
+    let mut files = Vec::new();
+    for field in [
+        "file_path",
+        "filePath",
+        "path",
+        "notebook_path",
+        "notebookPath",
+    ] {
+        if let Some(path) = string_field(input, &[field]) {
+            files.push(touched_input(path, operation, start_line, end_line));
+        }
+    }
+    for field in ["paths", "files"] {
+        if let Some(items) = input.get(field).and_then(Value::as_array) {
+            for item in items {
+                if let Some(path) = item.as_str() {
+                    files.push(touched_input(path.to_string(), operation, None, None));
+                }
+            }
+        }
+    }
+    files
+}
+
+fn native_file_operation(tool_name: &str) -> &'static str {
+    let lower = tool_name.to_ascii_lowercase();
+    if lower.contains("read") || lower.contains("grep") || lower.contains("glob") || lower == "ls" {
+        "read"
+    } else if lower.contains("write") {
+        "write"
+    } else if lower.contains("edit") || lower.contains("patch") {
+        "edit"
+    } else {
+        "modify"
+    }
+}
+
+fn touched_input(
+    path: String,
+    operation: &str,
+    start_line: Option<i64>,
+    end_line: Option<i64>,
+) -> LensTouchedFileInput {
+    LensTouchedFileInput {
+        path,
+        operation: operation.to_string(),
+        start_line,
+        end_line,
+        generated: false,
+        include_ignored: false,
+    }
+}
+
+fn string_field(value: &Value, fields: &[&str]) -> Option<String> {
+    fields.iter().find_map(|field| {
+        value
+            .get(*field)
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+            .map(ToString::to_string)
+    })
+}
+
+fn i64_field(value: &Value, fields: &[&str]) -> Option<i64> {
+    fields.iter().find_map(|field| {
+        value.get(*field).and_then(|field_value| {
+            field_value
+                .as_i64()
+                .or_else(|| field_value.as_u64().map(|n| n as i64))
+        })
+    })
+}
+
+fn bool_field(value: &Value, fields: &[&str]) -> bool {
+    fields
+        .iter()
+        .any(|field| value.get(*field).and_then(Value::as_bool).unwrap_or(false))
 }
 
 fn session_start(event: LensHookEvent) -> LensHookResponse {
@@ -906,4 +1213,91 @@ fn turn_health_status_str(status: &TurnHealthStatus) -> &'static str {
 
 fn default_true() -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn native_post_tool_payload_maps_to_lens_event() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = json!({
+            "session_id": "session-1",
+            "cwd": temp.path().display().to_string(),
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Read",
+            "tool_call_id": "tool-1",
+            "tool_input": {
+                "file_path": "src/main.rs",
+                "offset": 3,
+                "limit": 4
+            },
+            "tool_response": {
+                "content": "fn main() {}"
+            }
+        });
+
+        let event =
+            parse_event(LensLifecycleHook::PostTool, &input.to_string(), temp.path()).unwrap();
+
+        assert_eq!(event.schema_version, LENS_HOOK_EVENT_SCHEMA_VERSION);
+        assert_eq!(event.host.kind.as_deref(), Some("native-hook"));
+        assert_eq!(event.session.id, "session-1");
+        assert_eq!(event.turn.id, "session-1");
+        assert_eq!(event.event, LensHookEventKind::PostTool);
+        let tool = event.tool.unwrap();
+        assert_eq!(tool.name, "Read");
+        assert_eq!(tool.id.as_deref(), Some("tool-1"));
+        assert_eq!(tool.status.as_deref(), Some("success"));
+        assert_eq!(event.known_files.len(), 1);
+        assert_eq!(event.known_files[0].path, "src/main.rs");
+        assert_eq!(event.known_files[0].operation, "read");
+        assert_eq!(event.known_files[0].start_line, Some(3));
+        assert_eq!(event.known_files[0].end_line, Some(6));
+    }
+
+    #[test]
+    fn lens_schema_payload_still_parses_without_native_adapter() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = json!({
+            "schema_version": LENS_HOOK_EVENT_SCHEMA_VERSION,
+            "host": { "name": "pi", "kind": "extension" },
+            "session": { "id": "s" },
+            "cwd": temp.path().display().to_string(),
+            "turn": { "id": "t" },
+            "event": "pre_tool",
+            "known_files": [],
+            "policy": {}
+        });
+
+        let event =
+            parse_event(LensLifecycleHook::PreTool, &input.to_string(), temp.path()).unwrap();
+
+        assert_eq!(event.host.name, "pi");
+        assert_eq!(event.session.id, "s");
+        assert_eq!(event.turn.id, "t");
+        assert_eq!(event.event, LensHookEventKind::PreTool);
+    }
+
+    #[test]
+    fn native_stop_response_uses_host_hook_schema() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = json!({
+            "session_id": "session-1",
+            "cwd": temp.path().display().to_string(),
+            "hook_event_name": "Stop"
+        });
+
+        let response =
+            handle_lifecycle_hook(LensLifecycleHook::AgentEnd, &input.to_string(), temp.path());
+        let native = native_hook_response(LensLifecycleHook::AgentEnd, &response);
+
+        assert!(native.get("schema_version").is_none());
+        assert_eq!(native["continue"], true);
+        assert_eq!(native["suppressOutput"], true);
+        assert!(native.get("decision").is_none());
+        assert!(native.get("hookSpecificOutput").is_none());
+    }
 }

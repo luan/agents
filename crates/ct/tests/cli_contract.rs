@@ -1064,6 +1064,35 @@ fn lens_lifecycle_hooks_return_host_neutral_contracts() {
 }
 
 #[test]
+fn lens_lifecycle_hooks_adapt_native_host_output() {
+    let (bp, _remote) = setup_blueprints();
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+
+    let payload = serde_json::json!({
+        "session_id": "native-session",
+        "cwd": project.path().to_string_lossy(),
+        "hook_event_name": "Stop"
+    });
+    let assert = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .env("XDG_CONFIG_HOME", state.path())
+        .env("CT_LENS_HOST", "claude-code")
+        .args(["hook", "lens-turn-end"])
+        .write_stdin(payload.to_string())
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("hook json");
+    assert!(value.get("schema_version").is_none());
+    assert_eq!(value["continue"], true);
+    assert_eq!(value["suppressOutput"], true);
+    assert!(value.get("decision").is_none());
+}
+
+#[test]
 fn lens_pre_tool_hook_warns_on_unread_writes_with_advisory_guard() {
     let (bp, _remote) = setup_blueprints();
     let project = project_dir();

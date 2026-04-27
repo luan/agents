@@ -6,6 +6,17 @@
         "hooks": [
           {
             "type": "command",
+            "command": "CT_LENS_HOST=codex ct hook lens-session-start",
+            "statusMessage": "Initializing Lens",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
             "command": "ct sym hook remind --format=claude-code",
             "statusMessage": "Loading sym guidance",
             "timeout": 5
@@ -26,6 +37,16 @@
     ],
     "PreToolUse": [
       {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "CT_LENS_HOST=codex ct hook lens-pre-tool",
+            "statusMessage": "Checking Lens guard",
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "matcher": "Bash",
         "hooks": [
           {
@@ -38,6 +59,36 @@
             "type": "command",
             "command": "ct hook gt-validate-git",
             "statusMessage": "Checking Graphite command policy",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "CT_LENS_HOST=codex ct hook lens-post-tool",
+            "statusMessage": "Recording Lens event",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "CT_LENS_HOST=codex ct hook lens-turn-end",
+            "statusMessage": "Closing Lens turn",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "CT_LENS_HOST=codex ct hook lens-agent-end",
+            "statusMessage": "Checking Lens health",
             "timeout": 5
           }
         ]

@@ -30,6 +30,15 @@
         "hooks": [
           {
             "type": "command",
+            "command": "CT_LENS_HOST=claude-code ct hook lens-session-start",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
             "command": "ct hook apply-patch-remind"
           },
           {
@@ -41,6 +50,15 @@
       }
     ],
     "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "CT_LENS_HOST=claude-code ct hook lens-pre-tool",
+            "timeout": 5
+          }
+        ]
+      },
       {
         "matcher": "Bash",
         "hooks": [
@@ -56,6 +74,33 @@
           {
             "type": "command",
             "command": "ct sym hook nudge --format=claude-code",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "CT_LENS_HOST=claude-code ct hook lens-post-tool",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "CT_LENS_HOST=claude-code ct hook lens-turn-end",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "CT_LENS_HOST=claude-code ct hook lens-agent-end",
             "timeout": 5
           }
         ]

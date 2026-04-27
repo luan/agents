@@ -14,6 +14,7 @@ node_modules/
 .skill-lock.json
 history.jsonl
 session_index.jsonl
+pi/agent/sessions/
 auth.json
 state_*.sqlite*
 generated_images/

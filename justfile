@@ -57,14 +57,14 @@ test:
 
 install:
     cargo install --path "{{ repo }}/crates/ct"
-    claude mcp remove -s user ct 2>/dev/null || true
-    claude mcp remove -s user blueprint 2>/dev/null || true
     claude mcp remove -s user vault 2>/dev/null || true
     claude mcp remove -s user apply-patch 2>/dev/null || true
     claude mcp remove -s user sym 2>/dev/null || true
+    claude mcp remove -s user lens 2>/dev/null || true
     claude mcp add -s user vault ct mcp vault
     claude mcp add -s user apply-patch ct mcp apply-patch
     claude mcp add -s user sym ct mcp sym
+    claude mcp add -s user lens ct mcp lens
 
 completions:
     mkdir -p "{{ home }}/.config/fish/completions"

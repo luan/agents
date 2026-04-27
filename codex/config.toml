@@ -93,6 +93,10 @@ args = ["mcp", "vault"]
 command = "ct"
 args = ["mcp", "sym"]
 
+[mcp_servers.lens]
+command = "ct"
+args = ["mcp", "lens"]
+
 [projects."~/src/agents"]
 trust_level = "trusted"
 

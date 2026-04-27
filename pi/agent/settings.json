@@ -11,14 +11,20 @@
   "packages": [
     {
       "source": "npm:pi-extension-manager",
-      "extensions": ["+src/index.ts"]
+      "extensions": [
+        "+src/index.ts"
+      ]
     },
     "npm:pi-subagents",
     "npm:@ifi/oh-pi-themes",
     "npm:@ollama/pi-web-search",
-    "npm:pi-mcp-adapter",
-    "npm:@heyhuynhgiabuu/pi-diff",
-    "npm:pi-free"
+    {
+      "source": "npm:pi-mcp-adapter",
+      "extensions": [
+        "-index.ts"
+      ]
+    },
+    "npm:@heyhuynhgiabuu/pi-diff"
   ],
   "enabledModels": [
     "github-copilot/gpt-5.4",
@@ -40,4 +46,3 @@
     "strictMcpConfig": true
   }
 }
-
