@@ -1,6 +1,5 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use walkdir::WalkDir;
@@ -25,7 +24,6 @@ pub fn run() -> Result<()> {
         &root.join("plugins/gt"),
     )?;
     stow::run(stow::Mode::DryRun).context("stow dry-run")?;
-    cargo_test(&root)?;
     Ok(())
 }
 
@@ -124,18 +122,6 @@ fn assert_no_checkout_paths(root: &Path) -> Result<()> {
                 }
             }
         }
-    }
-    Ok(())
-}
-
-fn cargo_test(root: &Path) -> Result<()> {
-    let status = Command::new("cargo")
-        .args(["test", "--workspace"])
-        .current_dir(root)
-        .status()
-        .context("invoke cargo test")?;
-    if !status.success() {
-        bail!("cargo test exited with {status}");
     }
     Ok(())
 }

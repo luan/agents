@@ -327,7 +327,7 @@ fn lens_discover_symbol_json_is_compact_and_records_coverage() {
     assert_eq!(value["data"]["route"]["backend"], "sym");
     assert_eq!(value["data"]["items"][0]["path"], "lib.rs");
     assert!(value["data"]["items"][0].get("file").is_none());
-    assert!(value["data"]["next_actions"].as_array().unwrap().len() >= 1);
+    assert!(!value["data"]["next_actions"].as_array().unwrap().is_empty());
     assert!(value.get("debug").is_none());
     assert!(value.get("raw").is_none());
 
@@ -582,12 +582,16 @@ fn lens_turn_end_runs_safe_cleanup_for_changed_files() {
         "fixture-format"
     );
     assert_eq!(value["data"]["cleanup"]["mutation_count"], 1);
-    assert!(fs::read_to_string(project.path().join("main.fixture"))
-        .unwrap()
-        .contains("cleaned:main.fixture"));
-    assert!(!fs::read_to_string(project.path().join("other.fixture"))
-        .unwrap()
-        .contains("cleaned"));
+    assert!(
+        fs::read_to_string(project.path().join("main.fixture"))
+            .unwrap()
+            .contains("cleaned:main.fixture")
+    );
+    assert!(
+        !fs::read_to_string(project.path().join("other.fixture"))
+            .unwrap()
+            .contains("cleaned")
+    );
 }
 
 #[test]

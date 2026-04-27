@@ -1130,6 +1130,21 @@ fn cwd(input: Option<String>) -> Result<std::path::PathBuf, ErrorData> {
     }
 }
 
+#[tool_handler(router = self.tool_router)]
+impl ServerHandler for LensMcpServer {
+    fn get_info(&self) -> rmcp::model::ServerInfo {
+        rmcp::model::ServerInfo::new(
+            rmcp::model::ServerCapabilities::builder()
+                .enable_tools()
+                .build(),
+        )
+        .with_server_info(rmcp::model::Implementation::new(
+            "lens",
+            env!("CARGO_PKG_VERSION"),
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1463,20 +1478,5 @@ mod tests {
         assert_eq!(response.status, crate::lens::LensResponseStatus::Warning);
         assert_eq!(response.warnings[0].code, "ast_lang_required");
         assert!(response.errors.is_empty());
-    }
-}
-
-#[tool_handler(router = self.tool_router)]
-impl ServerHandler for LensMcpServer {
-    fn get_info(&self) -> rmcp::model::ServerInfo {
-        rmcp::model::ServerInfo::new(
-            rmcp::model::ServerCapabilities::builder()
-                .enable_tools()
-                .build(),
-        )
-        .with_server_info(rmcp::model::Implementation::new(
-            "lens",
-            env!("CARGO_PKG_VERSION"),
-        ))
     }
 }

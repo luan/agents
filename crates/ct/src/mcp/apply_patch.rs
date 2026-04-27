@@ -98,7 +98,7 @@ fn record_success(
 }
 
 fn enrich_failure_message(tel: &Telemetry, failure: &ApplyFailure, cwd: &Path) -> Option<String> {
-    let enriched = enrichable_context(&failure.error).map(|(path, chunk, anchor)| {
+    enrichable_context(&failure.error).map(|(path, chunk, anchor)| {
         let current_fp = failure
             .fingerprints
             .iter()
@@ -124,8 +124,7 @@ fn enrich_failure_message(tel: &Telemetry, failure: &ApplyFailure, cwd: &Path) -
             file_content: file_content.as_deref(),
         };
         enrich::enrich(tel, failure.error.to_string(), &ctx).into_message()
-    });
-    enriched
+    })
 }
 
 /// Map an `ApplyPatchError` to an `ErrorData` using a pre-built message and

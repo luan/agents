@@ -222,30 +222,22 @@ pub struct ToolRunSummary {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum LensTurnEventKind {
     TurnStart,
     ToolStart,
+    #[default]
     ToolEnd,
     TurnEnd,
 }
 
-impl Default for LensTurnEventKind {
-    fn default() -> Self {
-        Self::ToolEnd
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum LensToolEventPhase {
     PreTool,
+    #[default]
     PostTool,
-}
-
-impl Default for LensToolEventPhase {
-    fn default() -> Self {
-        Self::PostTool
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

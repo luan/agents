@@ -8,16 +8,12 @@ use super::retention::RetentionPolicy;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum LensGuardMode {
     Off,
     Warn,
+    #[default]
     Block,
-}
-
-impl Default for LensGuardMode {
-    fn default() -> Self {
-        Self::Block
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,23 +31,12 @@ impl Default for LensGuardPolicy {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct LensPolicy {
     pub guard: LensGuardPolicy,
     pub retention: RetentionPolicy,
     pub checks: BTreeMap<String, LensCheckConfig>,
     pub scanners: BTreeMap<String, LensScannerConfig>,
-}
-
-impl Default for LensPolicy {
-    fn default() -> Self {
-        Self {
-            guard: LensGuardPolicy::default(),
-            retention: RetentionPolicy::default(),
-            checks: BTreeMap::new(),
-            scanners: BTreeMap::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

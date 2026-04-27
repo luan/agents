@@ -27,7 +27,7 @@ doctor:
 validate: render-agents
     cd "{{ repo }}" && cargo xtask validate
 
-setup: doctor link worktrunk-install claude-plugins-install ct-install validate
+setup: doctor link worktrunk-install claude-plugins-install install validate
 
 worktrunk-install:
     # The `wt` binary backs the worktrunk claude plugin. `cargo install`
@@ -49,13 +49,13 @@ claude-plugins-install:
 pi-extensions-install:
     cd "{{ repo }}/pi/agent/extensions" && npm install --omit=dev
 
-ct-build:
+build:
     cd "{{ repo }}" && cargo build --release -p ct
 
-ct-test:
-    cd "{{ repo }}" && cargo test -p ct
+test:
+    cd "{{ repo }}" && cargo nextest run
 
-ct-install: ct-test
+install:
     cargo install --path "{{ repo }}/crates/ct"
     claude mcp remove -s user ct 2>/dev/null || true
     claude mcp remove -s user blueprint 2>/dev/null || true
@@ -66,6 +66,6 @@ ct-install: ct-test
     claude mcp add -s user apply-patch ct mcp apply-patch
     claude mcp add -s user sym ct mcp sym
 
-ct-completions:
+completions:
     mkdir -p "{{ home }}/.config/fish/completions"
     ct tool completion fish > "{{ home }}/.config/fish/completions/ct.fish"
