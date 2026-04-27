@@ -2,7 +2,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 
 import { formatCommand, runCommand } from "../shared/ct-runner.ts";
-import { compactLocations, nf, renderText, resultCount, toolResult } from "../shared/ct-render.ts";
+import { chip, color, compactLocations, nf, okLine, renderText, resultCount, title, toolResult } from "../shared/ct-render.ts";
 import { recordLensReadsFromAstMatches } from "../shared/lens-read.ts";
 
 const paths = Type.Optional(Type.Array(Type.String({ description: "Files or directories to search" })));
@@ -63,13 +63,14 @@ export default function astExtension(pi: ExtensionAPI) {
 			pushOpt(args, "--context", params.context);
 			return runCtAst(args, ctx.cwd, signal, sessionId(ctx));
 		},
-		renderCall(args, _theme, ctx) {
+		renderCall(args, theme, ctx) {
 			const pathCount = Array.isArray(args.paths) ? args.paths.length : 1;
-			return renderText(ctx, `${nf.ast} search ${args.lang}  ${nf.files} ${pathCount}`);
+			return renderText(ctx, title(theme, nf.ast, "search", `${args.lang} · ${pathCount} path${pathCount === 1 ? "" : "s"}`));
 		},
-		renderResult(result, _options, _theme, ctx) {
+		renderResult(result, _options, theme, ctx) {
 			const data = toolResult(result);
-			return renderText(ctx, `${nf.ok} ${nf.ast} search ${resultCount(data)}${compactLocations(data.matches)}`);
+			const locations = compactLocations(data.matches);
+			return renderText(ctx, `${okLine(theme, [chip(theme, nf.ast, "matches", resultCount(data))])}${locations ? `  ${color(theme, "muted", locations)}` : ""}`);
 		},
 	});
 
@@ -85,13 +86,14 @@ export default function astExtension(pi: ExtensionAPI) {
 			if (params.apply === true) args.push("--apply");
 			return runCtAst(args, ctx.cwd, signal, sessionId(ctx));
 		},
-		renderCall(args, _theme, ctx) {
+		renderCall(args, theme, ctx) {
 			const mode = args.apply === true ? `${nf.apply} apply` : `${nf.dryRun} dry`;
-			return renderText(ctx, `${nf.ast} replace ${args.lang}  ${mode}`);
+			return renderText(ctx, title(theme, nf.ast, "replace", `${args.lang} · ${mode}`));
 		},
-		renderResult(result, _options, _theme, ctx) {
+		renderResult(result, _options, theme, ctx) {
 			const data = toolResult(result);
-			return renderText(ctx, `${nf.ok} ${nf.ast} replace ${resultCount(data)}${compactLocations(data.matches)}`);
+			const locations = compactLocations(data.matches);
+			return renderText(ctx, `${okLine(theme, [chip(theme, nf.ast, "matches", resultCount(data))])}${locations ? `  ${color(theme, "muted", locations)}` : ""}`);
 		},
 	});
 }

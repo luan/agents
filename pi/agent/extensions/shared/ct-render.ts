@@ -1,6 +1,7 @@
 import { Text } from "@mariozechner/pi-tui";
 
 type RenderContext = { lastComponent?: { setText(value: string): void } };
+type RenderTheme = { fg?: (role: string, text: string) => string; bold?: (text: string) => string };
 
 export const nf = {
 	ok: "",
@@ -24,6 +25,31 @@ export function renderText(ctx: RenderContext, value: string) {
 	const text = ctx.lastComponent ?? new Text("", 0, 0);
 	text.setText(value);
 	return text;
+}
+
+export function title(theme: RenderTheme, icon: string, label: string, detail = ""): string {
+	const head = color(theme, "toolTitle", bold(theme, `${icon} ${label}`));
+	return detail ? `${head} ${color(theme, "muted", detail)}` : head;
+}
+
+export function okLine(theme: RenderTheme, parts: string[]): string {
+	return `${color(theme, "success", nf.ok)} ${parts.join("  ")}`;
+}
+
+export function warnLine(theme: RenderTheme, parts: string[]): string {
+	return `${color(theme, "warning", nf.warn)} ${parts.join("  ")}`;
+}
+
+export function chip(theme: RenderTheme, icon: string, label: string, value: unknown): string {
+	return `${color(theme, "accent", icon)} ${color(theme, "muted", label)} ${String(value)}`;
+}
+
+export function color(theme: RenderTheme, role: string, text: string): string {
+	return theme.fg ? theme.fg(role, text) : text;
+}
+
+function bold(theme: RenderTheme, text: string): string {
+	return theme.bold ? theme.bold(text) : text;
 }
 
 export function toolResult(result: unknown): Record<string, unknown> {

@@ -2,7 +2,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 
 import { formatCommand, runCommand } from "../shared/ct-runner.ts";
-import { nf, ranges, renderText, toolResult } from "../shared/ct-render.ts";
+import { chip, nf, okLine, ranges, renderText, title, toolResult, warnLine } from "../shared/ct-render.ts";
 
 const statusSchema = Type.Object({});
 const readSchema = Type.Object({
@@ -58,13 +58,13 @@ export default function lensExtension(pi: ExtensionAPI) {
 		async execute(_id, _params, signal, _onUpdate, ctx) {
 			return runCtLens(["status"], ctx.cwd, signal);
 		},
-		renderCall(_args, _theme, ctx) {
-			return renderText(ctx, `${nf.lens} lens status`);
+		renderCall(_args, theme, ctx) {
+			return renderText(ctx, title(theme, nf.lens, "lens status"));
 		},
-		renderResult(result, _options, _theme, ctx) {
+		renderResult(result, _options, theme, ctx) {
 			const data = toolResult(result) as any;
 			const counts = data.counts ?? {};
-			return renderText(ctx, `${nf.ok} ${nf.lens} lens  ${nf.files} ${counts.files ?? 0}  ${nf.read} ${counts.read_events ?? counts.sessions ?? 0}  ${nf.drafts} ${counts.patch_drafts ?? 0}  ${nf.diagnostics} ${counts.diagnostics ?? 0}`);
+			return renderText(ctx, okLine(theme, [chip(theme, nf.files, "files", counts.files ?? 0), chip(theme, nf.read, "sessions", counts.sessions ?? 0), chip(theme, nf.drafts, "drafts", counts.patch_drafts ?? 0), chip(theme, nf.diagnostics, "diag", counts.diagnostics ?? 0)]));
 		},
 	});
 
@@ -79,12 +79,12 @@ export default function lensExtension(pi: ExtensionAPI) {
 			pushOpt(args, "--session", params.session);
 			return runCtLens(args, ctx.cwd, signal);
 		},
-		renderCall(args, _theme, ctx) {
-			return renderText(ctx, `${nf.read} read ${args.path}:${args.startLine}-${args.endLine}`);
+		renderCall(args, theme, ctx) {
+			return renderText(ctx, title(theme, nf.read, "read", `${args.path}:${args.startLine}-${args.endLine}`));
 		},
-		renderResult(result, _options, _theme, ctx) {
+		renderResult(result, _options, theme, ctx) {
 			const data = toolResult(result) as any;
-			return renderText(ctx, `${nf.ok} ${nf.read} ${data.path ?? ""}:${data.range?.start_line ?? "?"}-${data.range?.end_line ?? "?"}`);
+			return renderText(ctx, okLine(theme, [chip(theme, nf.read, "recorded", `${data.path ?? ""}:${data.range?.start_line ?? "?"}-${data.range?.end_line ?? "?"}`)]));
 		},
 	});
 
@@ -100,13 +100,13 @@ export default function lensExtension(pi: ExtensionAPI) {
 			pushOpt(args, "--mode", params.mode);
 			return runCtLens(args, ctx.cwd, signal);
 		},
-		renderCall(args, _theme, ctx) {
-			return renderText(ctx, `${nf.guard} guard ${args.path}:${args.startLine}-${args.endLine}`);
+		renderCall(args, theme, ctx) {
+			return renderText(ctx, title(theme, nf.guard, "guard", `${args.path}:${args.startLine}-${args.endLine}`));
 		},
-		renderResult(result, _options, _theme, ctx) {
+		renderResult(result, _options, theme, ctx) {
 			const data = toolResult(result) as any;
-			const icon = data.decision === "allow" ? nf.ok : nf.warn;
-			return renderText(ctx, `${icon} ${nf.guard} ${data.decision ?? "unknown"} ${data.reason ?? "unknown"}  ${data.file ?? ""}:${ranges(data.required_ranges)}\n  ${nf.read} ${ranges(data.covered_ranges)}`);
+			const line = data.decision === "allow" ? okLine : warnLine;
+			return renderText(ctx, line(theme, [chip(theme, nf.guard, data.decision ?? "unknown", data.reason ?? "unknown"), chip(theme, nf.files, "need", `${data.file ?? ""}:${ranges(data.required_ranges)}`), chip(theme, nf.read, "read", ranges(data.covered_ranges))]));
 		},
 	});
 
@@ -121,12 +121,12 @@ export default function lensExtension(pi: ExtensionAPI) {
 			pushOpt(args, "--path", params.path);
 			return runCtLens(args, ctx.cwd, signal);
 		},
-		renderCall(args, _theme, ctx) {
-			return renderText(ctx, `${nf.diagnostics} diagnostics${args.path ? ` ${args.path}` : ""}`);
+		renderCall(args, theme, ctx) {
+			return renderText(ctx, title(theme, nf.diagnostics, "diagnostics", args.path ?? ""));
 		},
-		renderResult(result, _options, _theme, ctx) {
+		renderResult(result, _options, theme, ctx) {
 			const data = toolResult(result) as any;
-			return renderText(ctx, `${nf.ok} ${nf.diagnostics} diagnostics ${data.diagnostic_count ?? data.diagnostics?.length ?? 0}`);
+			return renderText(ctx, okLine(theme, [chip(theme, nf.diagnostics, "diagnostics", data.diagnostic_count ?? data.diagnostics?.length ?? 0)]));
 		},
 	});
 
@@ -145,12 +145,13 @@ export default function lensExtension(pi: ExtensionAPI) {
 			pushOpt(args, "--fingerprint", params.fingerprint);
 			return runCtLens(args, ctx.cwd, signal);
 		},
-		renderCall(args, _theme, ctx) {
-			return renderText(ctx, `${nf.diagnostics} record ${args.severity}`);
+		renderCall(args, theme, ctx) {
+			return renderText(ctx, title(theme, nf.diagnostics, "record", args.severity));
 		},
-		renderResult(result, _options, _theme, ctx) {
+		renderResult(result, _options, theme, ctx) {
 			const data = toolResult(result) as any;
-			return renderText(ctx, `${data.recorded === true ? nf.ok : nf.warn} ${nf.diagnostics} ${data.fingerprint ?? ""}`);
+			const line = data.recorded === true ? okLine : warnLine;
+			return renderText(ctx, line(theme, [chip(theme, nf.diagnostics, "fingerprint", data.fingerprint ?? "")]));
 		},
 	});
 }

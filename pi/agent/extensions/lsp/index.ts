@@ -2,7 +2,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 
 import { formatCommand, runCommand } from "../shared/ct-runner.ts";
-import { compactLocations, nf, renderText, resultCount, toolResult } from "../shared/ct-render.ts";
+import { chip, color, compactLocations, nf, okLine, renderText, resultCount, title, toolResult, warnLine } from "../shared/ct-render.ts";
 import { recordLensRead } from "../shared/lens-read.ts";
 
 const requestSchema = Type.Object({
@@ -58,13 +58,14 @@ export default function lspExtension(pi: ExtensionAPI) {
 			}
 			return result;
 		},
-		renderCall(args, _theme, ctx) {
-			return renderText(ctx, `${nf.lsp} ${args.operation}${args.filePath ? ` ${args.filePath}` : ""}`);
+		renderCall(args, theme, ctx) {
+			return renderText(ctx, title(theme, nf.lsp, args.operation, args.filePath ?? ""));
 		},
-		renderResult(result, _options, _theme, ctx) {
+		renderResult(result, _options, theme, ctx) {
 			const data = toolResult(result) as any;
-			if (data.failureKind) return renderText(ctx, `${nf.warn} ${nf.lsp} ${data.operation ?? "request"} ${data.failureKind}`);
-			return renderText(ctx, `${nf.ok} ${nf.lsp} ${data.operation ?? "request"} ${resultCount(data)}${compactLocations(data.result)}`);
+			if (data.failureKind) return renderText(ctx, warnLine(theme, [chip(theme, nf.lsp, data.operation ?? "request", data.failureKind)]));
+			const locations = compactLocations(data.result);
+			return renderText(ctx, `${okLine(theme, [chip(theme, nf.lsp, data.operation ?? "request", resultCount(data))])}${locations ? `  ${color(theme, "muted", locations)}` : ""}`);
 		},
 	});
 
@@ -77,13 +78,13 @@ export default function lspExtension(pi: ExtensionAPI) {
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			return runCtLsp(["diagnostics", "--file-path", params.filePath], ctx.cwd, signal);
 		},
-		renderCall(args, _theme, ctx) {
-			return renderText(ctx, `${nf.lsp} ${nf.diagnostics} ${args.filePath}`);
+		renderCall(args, theme, ctx) {
+			return renderText(ctx, title(theme, `${nf.lsp} ${nf.diagnostics}`, "diagnostics", args.filePath));
 		},
-		renderResult(result, _options, _theme, ctx) {
+		renderResult(result, _options, theme, ctx) {
 			const data = toolResult(result) as any;
-			if (data.failureKind) return renderText(ctx, `${nf.warn} ${nf.lsp} ${nf.diagnostics} ${data.failureKind}`);
-			return renderText(ctx, `${nf.ok} ${nf.lsp} ${nf.diagnostics} ${data.resultCount ?? 0}  ${nf.lens} ${data.recordedDiagnostics ?? 0}`);
+			if (data.failureKind) return renderText(ctx, warnLine(theme, [chip(theme, nf.diagnostics, "failed", data.failureKind)]));
+			return renderText(ctx, okLine(theme, [chip(theme, nf.diagnostics, "diagnostics", data.resultCount ?? 0), chip(theme, nf.lens, "recorded", data.recordedDiagnostics ?? 0)]));
 		},
 	});
 }
