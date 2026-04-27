@@ -36,19 +36,19 @@ const warning = {
 	warnings: [{ code: "diagnostics_active", message: "active diagnostics remain" }],
 };
 
-const blocked = {
-	status: "error",
-	decision: { outcome: "block", reason: "strict_guard_blocked", guard: [{ decision: "block" }] },
-	health: { status: "blocked", compact: "blocked · read coverage required" },
+const guardAdvisory = {
+	status: "warning",
+	decision: { outcome: "warn", reason: "guard_advisory", guard: [{ decision: "warn" }] },
+	health: { status: "warning", compact: "warning · read coverage advisory" },
 	data: {
 		health: {
 			summary: {
-				guard: { clean: 0, warnings: 0, blocked: 1 },
+				guard: { clean: 0, warnings: 1, blocked: 0 },
 				diagnostics: { active: 0, errors: 0, warnings: 0 },
 			},
 		},
 	},
-	errors: [{ code: "guard_blocked", message: "strict Lens guard blocked one or more write targets" }],
+	warnings: [{ code: "guard_advisory", message: "Lens guard found write targets without current read coverage" }],
 };
 
 const degraded = {
@@ -84,10 +84,10 @@ describe("Lens Pi UI rendering", () => {
 		expect(new Set(LENS_TOOL_NAMES).size).toBe(LENS_TOOL_NAMES.length);
 	});
 
-	it("renders compact clean, warning, blocked, degraded/error, and patch states", () => {
+	it("renders compact clean, warning, guard advisory, degraded/error, and patch states", () => {
 		expect(renderLensCompactStatus(clean)).toBe("󰛩 Lens ✓ clean · clean · 0 changed · 0 diag · diag 0 (0 err/0 warn) · cleanup 0 run/0 failed/0 timeout");
 		expect(renderLensCompactStatus(warning)).toContain("󰛩 Lens ⚠ warning");
-		expect(renderLensCompactStatus(blocked)).toContain("󰛩 Lens ⛔ blocked");
+		expect(renderLensCompactStatus(guardAdvisory)).toContain("󰛩 Lens ⚠ warning");
 		expect(renderLensCompactStatus(degraded)).toContain("󰛩 Lens ◌ degraded");
 		expect(renderLensCompactStatus(patchTelemetry)).toContain("patch 2 drafts/5 hunks/1 accepts");
 	});

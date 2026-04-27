@@ -5,7 +5,6 @@ use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 use super::contract::{LensEnvelope, LensMessage, LensResponseStatus};
-use super::policy::{LensGuardMode, resolve_policy};
 use super::store::LensStore;
 use super::types::{
     Diagnostic, DiagnosticDeltaSet, DiagnosticSeverity, GuardAction, GuardDecision, LensTouchedFile,
@@ -16,7 +15,6 @@ use super::types::{
 pub enum TurnHealthStatus {
     Clean,
     Warning,
-    Blocked,
     Error,
 }
 
@@ -28,7 +26,7 @@ impl TurnHealthStatus {
     fn envelope_status(&self) -> LensResponseStatus {
         match self {
             Self::Clean => LensResponseStatus::Ok,
-            Self::Warning | Self::Blocked => LensResponseStatus::Warning,
+            Self::Warning => LensResponseStatus::Warning,
             Self::Error => LensResponseStatus::Error,
         }
     }
@@ -37,7 +35,6 @@ impl TurnHealthStatus {
         match self {
             Self::Clean => "clean",
             Self::Warning => "warning",
-            Self::Blocked => "blocked",
             Self::Error => "error",
         }
     }
@@ -312,7 +309,7 @@ pub fn final_health_text(data: &TurnHealthData) -> String {
     )];
     if data.action_context.required {
         lines.push(format!(
-            "Next turn must acknowledge: {}",
+            "Next turn should review: {}",
             data.action_context.reason
         ));
         if let Some(command) = &data.action_context.ack_command {
@@ -434,11 +431,6 @@ fn health_messages(data: &TurnHealthData) -> Vec<LensMessage> {
             data.action_context.reason.clone(),
             hint,
         ),
-        TurnHealthStatus::Blocked => LensMessage::warning_with_hint(
-            "lens_health_blocked",
-            data.action_context.reason.clone(),
-            hint,
-        ),
         TurnHealthStatus::Error => {
             LensMessage::error("lens_health_error", data.action_context.reason.clone())
         }
@@ -496,8 +488,7 @@ fn guard_summary(
     session: &str,
     touched: &[LensTouchedFile],
 ) -> Result<GuardSummary, Box<dyn std::error::Error>> {
-    let policy = resolve_policy(root).policy.guard;
-    let requested = guard_action_for_mode(policy.mode);
+    let requested = GuardAction::Warn;
     let mut seen = BTreeSet::new();
     let mut decisions = Vec::new();
     for file in touched {
@@ -708,9 +699,8 @@ fn compute_status(
         || check_errors(checks) > 0
     {
         TurnHealthStatus::Error
-    } else if guard.blocked > 0 {
-        TurnHealthStatus::Blocked
-    } else if guard.warnings > 0
+    } else if guard.blocked > 0
+        || guard.warnings > 0
         || diagnostics.warnings > 0
         || diagnostics.deltas.new > 0
         || cleanup.diagnostics > 0
@@ -725,7 +715,7 @@ fn compute_status(
 
 fn compact_summary(status: &TurnHealthStatus, summary: &TurnHealthSummary) -> String {
     format!(
-        "{}: {} changed, {} read ranges, guard {}/{}/{}, diagnostics {} active ({} new), cleanup {} runs/{} mutations, checks {} snapshots, patch refs {}/{}",
+        "{}: {} changed, {} read ranges, guard {} clean/{} warn/{} advisory, diagnostics {} active ({} new), cleanup {} runs/{} mutations, checks {} snapshots, patch refs {}/{}",
         status.as_str(),
         summary.changed_files.count,
         summary.reads.count,
@@ -819,7 +809,8 @@ fn action_context(
     let mut remediation = Vec::new();
     if summary.guard.blocked > 0 || summary.guard.warnings > 0 {
         remediation.push(
-            "read affected ranges with ct lens discover/read, then retry the edit".to_string(),
+            "review affected ranges with ct lens discover/read; guard findings are advisory"
+                .to_string(),
         );
     }
     if summary.diagnostics.errors > 0 || summary.diagnostics.warnings > 0 {
@@ -848,9 +839,8 @@ fn action_context(
         fingerprint,
         status,
         reason: compact,
-        instructions:
-            "Acknowledge this Lens context before continuing, or remediate the listed findings."
-                .to_string(),
+        instructions: "Review this Lens context or remediate the listed findings when useful."
+            .to_string(),
         ack_command: required.then(|| {
             format!(
                 "ct lens context --session {} --turn {} --ack --json",
@@ -1035,14 +1025,6 @@ fn known_line_count(store: &LensStore, root: &Path, path: &str) -> Option<i64> {
     })
 }
 
-fn guard_action_for_mode(mode: LensGuardMode) -> GuardAction {
-    match mode {
-        LensGuardMode::Off => GuardAction::Allow,
-        LensGuardMode::Warn => GuardAction::Warn,
-        LensGuardMode::Block => GuardAction::Block,
-    }
-}
-
 fn is_write_operation(operation: &str) -> bool {
     matches!(
         operation,
@@ -1144,7 +1126,7 @@ mod tests {
     }
 
     #[test]
-    fn health_status_computation_blocks_unread_writes() {
+    fn health_status_computation_warns_on_unread_writes() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("main.rs"), "fn main() {}\n").unwrap();
         record_turn(temp.path());
@@ -1159,8 +1141,9 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(envelope.data.status, TurnHealthStatus::Blocked);
-        assert_eq!(envelope.data.summary.guard.blocked, 1);
+        assert_eq!(envelope.data.status, TurnHealthStatus::Warning);
+        assert_eq!(envelope.data.summary.guard.warnings, 1);
+        assert_eq!(envelope.data.summary.guard.blocked, 0);
         assert!(envelope.data.action_context.required);
     }
 
@@ -1210,8 +1193,8 @@ mod tests {
         )
         .unwrap();
 
-        assert!(compact_health_text(&health.data).contains("blocked"));
-        assert!(final_health_text(&health.data).contains("Lens final health: blocked"));
+        assert!(compact_health_text(&health.data).contains("warning"));
+        assert!(final_health_text(&health.data).contains("Lens final health: warning"));
         assert!(final_health_text(&health.data).contains("Ack:"));
     }
 

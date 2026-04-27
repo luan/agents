@@ -154,7 +154,7 @@ impl LensMcpServer {
 
     #[tool(
         name = "guard",
-        description = "Check Lens read-before-write guard coverage or record a read range. action: check (default), record_read/read, allow_once."
+        description = "Inspect Lens read-before-write guard coverage or record a read range. action: check (default), record_read/read; allow_once is only for explicit override-enabled policies."
     )]
     async fn guard(
         &self,
@@ -198,7 +198,7 @@ impl LensMcpServer {
 
     #[tool(
         name = "report",
-        description = "Show Lens changed-file reports for a turn, including diagnostics, guard, cleanup, patch refs, and symbol context."
+        description = "Show Lens changed-file reports for a turn, including diagnostics, guard advisories, cleanup, patch refs, and symbol context."
     )]
     async fn report(
         &self,
@@ -970,7 +970,7 @@ fn guard_next_actions(
         .and_then(Value::as_str)
         .is_some_and(|decision| decision != "allow")
     {
-        actions.push("read the required ranges, then retry the edit".to_string());
+        actions.push("review/read the required ranges; guard findings are advisory".to_string());
     }
     actions
 }
@@ -1079,7 +1079,7 @@ fn guard_envelope(
         code: format!("guard_{code}"),
         message: decision.message.clone(),
         hint: Some(
-            "read the required range with the guard record_read action or Lens discovery before editing"
+            "review the required range with the guard record_read action or Lens discovery"
                 .to_string(),
         ),
     };
@@ -1413,8 +1413,8 @@ mod tests {
             raw: Some(false),
         })
         .unwrap();
-        assert_eq!(health.data["status"], "blocked");
-        assert!(health.summary.contains("blocked"));
+        assert_eq!(health.data["status"], "warning");
+        assert!(health.summary.contains("warning"));
 
         let context = context_mcp_response(ContextIn {
             cwd: Some(cwd.clone()),

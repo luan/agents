@@ -66,9 +66,6 @@ pub fn record_turn_event_envelope(
         None
     };
     let files = store.list_touched_files(&event.session, &event.turn)?;
-    let blocked = guard_decisions
-        .iter()
-        .any(|decision| matches!(decision.decision, GuardAction::Block));
     let warned = guard_decisions
         .iter()
         .any(|decision| matches!(decision.decision, GuardAction::Warn));
@@ -106,15 +103,7 @@ pub fn record_turn_event_envelope(
         cleanup,
         checks: turn_checks.map(|envelope| envelope.data),
     };
-    if blocked {
-        Ok(LensEnvelope::error(
-            data,
-            vec![LensMessage::error(
-                "guard_blocked",
-                "one or more write targets are not covered by current read ranges",
-            )],
-        ))
-    } else if !warnings.is_empty() {
+    if !warnings.is_empty() {
         Ok(LensEnvelope::warning(data, warnings))
     } else {
         Ok(LensEnvelope::ok(data))
@@ -124,8 +113,9 @@ pub fn record_turn_event_envelope(
 fn guard_action_for_mode(mode: super::policy::LensGuardMode) -> GuardAction {
     match mode {
         super::policy::LensGuardMode::Off => GuardAction::Allow,
-        super::policy::LensGuardMode::Warn => GuardAction::Warn,
-        super::policy::LensGuardMode::Block => GuardAction::Block,
+        super::policy::LensGuardMode::Warn | super::policy::LensGuardMode::Block => {
+            GuardAction::Warn
+        }
     }
 }
 
@@ -482,9 +472,10 @@ mod tests {
 
         assert_eq!(
             envelope.status,
-            super::super::contract::LensResponseStatus::Error
+            super::super::contract::LensResponseStatus::Warning
         );
         assert_eq!(envelope.data.guard_decisions.len(), 1);
+        assert_eq!(envelope.data.guard_decisions[0].decision, GuardAction::Warn);
         assert_eq!(
             envelope.data.guard_decisions[0].reason,
             GuardReason::ZeroRead

@@ -399,24 +399,25 @@ fn context_injection(event: LensHookEvent) -> LensHookResponse {
 
 fn pre_tool(event: LensHookEvent) -> LensHookResponse {
     let mut response = base_response(&event, LensHookDecisionOutcome::Allow, "guard_clean");
-    match root_for_event(&event).and_then(|root| strict_guard(&root, &event)) {
+    match root_for_event(&event).and_then(|root| advisory_guard(&root, &event)) {
         Ok((decisions, files)) => {
-            let blocked = decisions
+            let warned = decisions
                 .iter()
-                .any(|decision| matches!(decision.decision, GuardAction::Block));
+                .any(|decision| !matches!(decision.decision, GuardAction::Allow));
             response.decision.guard = decisions;
             response.data = Some(json!({ "files": files }));
-            if blocked {
-                response.status = LensResponseStatus::Error;
-                response.decision.outcome = LensHookDecisionOutcome::Block;
-                response.decision.reason = "strict_guard_blocked".to_string();
-                response.errors.push(LensMessage::error(
-                    "guard_blocked",
-                    "strict Lens guard blocked one or more write targets",
+            if warned {
+                response.status = LensResponseStatus::Warning;
+                response.decision.outcome = LensHookDecisionOutcome::Warn;
+                response.decision.reason = "guard_advisory".to_string();
+                response.warnings.push(LensMessage::warning_with_hint(
+                    "guard_advisory",
+                    "Lens guard found write targets without current read coverage",
+                    "review the advisory and read affected ranges when useful; the tool call was not blocked",
                 ));
-                return response;
+            } else {
+                response.actions.push(action("guard_advisory", "ok", None));
             }
-            response.actions.push(action("strict_guard", "ok", None));
             if let Err(error) = record_tool_turn_event(
                 &event,
                 LensTurnEventKind::ToolStart,
@@ -450,8 +451,8 @@ fn post_tool(event: LensHookEvent) -> LensHookResponse {
             response.data = Some(json!({ "turn": envelope.data }));
             if matches!(envelope.status, LensResponseStatus::Error) {
                 response.status = LensResponseStatus::Error;
-                response.decision.outcome = LensHookDecisionOutcome::Block;
-                response.decision.reason = "guard_blocked".to_string();
+                response.decision.outcome = LensHookDecisionOutcome::Warn;
+                response.decision.reason = "recorded_with_errors".to_string();
             } else if matches!(envelope.status, LensResponseStatus::Warning) {
                 response.status = LensResponseStatus::Warning;
                 response.decision.outcome = LensHookDecisionOutcome::Warn;
@@ -585,7 +586,7 @@ fn record_tool_turn_event(
     super::turn::record_turn_event_envelope(&cwd, turn_event)
 }
 
-fn strict_guard(
+fn advisory_guard(
     root: &Path,
     event: &LensHookEvent,
 ) -> Result<(Vec<GuardDecision>, Vec<LensTouchedFile>), Box<dyn std::error::Error>> {
@@ -608,7 +609,7 @@ fn strict_guard(
             Path::new(&file.path),
             start,
             end,
-            GuardAction::Block,
+            GuardAction::Warn,
             false,
         )?);
     }
@@ -899,7 +900,6 @@ fn turn_health_status_str(status: &TurnHealthStatus) -> &'static str {
     match status {
         TurnHealthStatus::Clean => "clean",
         TurnHealthStatus::Warning => "warning",
-        TurnHealthStatus::Blocked => "blocked",
         TurnHealthStatus::Error => "error",
     }
 }

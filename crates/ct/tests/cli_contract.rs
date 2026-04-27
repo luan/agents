@@ -467,13 +467,13 @@ fn lens_health_context_report_and_final_outputs_are_schema_versioned() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
     let value: serde_json::Value = serde_json::from_str(&stdout).expect("health json");
     assert_eq!(value["schema_version"], "lens.response.v1");
-    assert_eq!(value["data"]["status"], "blocked");
+    assert_eq!(value["data"]["status"], "warning");
     assert_eq!(value["data"]["action_context"]["required"], true);
     assert!(
         value["data"]["compact"]
             .as_str()
             .unwrap()
-            .contains("blocked")
+            .contains("warning")
     );
 
     ct_cmd(bp.path())
@@ -529,7 +529,7 @@ fn lens_health_context_report_and_final_outputs_are_schema_versioned() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Lens final health: blocked"));
+        .stdout(predicate::str::contains("Lens final health: warning"));
 }
 
 #[test]
@@ -1069,7 +1069,7 @@ fn lens_lifecycle_hooks_return_host_neutral_contracts() {
 }
 
 #[test]
-fn lens_pre_tool_hook_blocks_unread_writes_with_strict_guard() {
+fn lens_pre_tool_hook_warns_on_unread_writes_with_advisory_guard() {
     let (bp, _remote) = setup_blueprints();
     let project = project_dir();
     let state = tempfile::tempdir().expect("state dir");
@@ -1091,15 +1091,16 @@ fn lens_pre_tool_hook_blocks_unread_writes_with_strict_guard() {
         .args(["hook", "lens-pre-tool"])
         .write_stdin(event.to_string())
         .assert()
-        .failure();
+        .success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
     let value: serde_json::Value = serde_json::from_str(&stdout).expect("pre-tool json");
     assert_eq!(value["schema_version"], "lens.hook_response.v1");
-    assert_eq!(value["status"], "error");
-    assert_eq!(value["decision"]["outcome"], "block");
-    assert_eq!(value["decision"]["reason"], "strict_guard_blocked");
-    assert_eq!(value["decision"]["guard"][0]["decision"], "block");
-    assert_eq!(value["errors"][0]["code"], "guard_blocked");
+    assert_eq!(value["status"], "warning");
+    assert_eq!(value["decision"]["outcome"], "warn");
+    assert_eq!(value["decision"]["reason"], "guard_advisory");
+    assert_eq!(value["decision"]["guard"][0]["decision"], "warn");
+    assert_eq!(value["warnings"][0]["code"], "guard_advisory");
+    assert!(value["errors"].as_array().unwrap().is_empty());
 }
 
 #[test]

@@ -8,7 +8,7 @@ export const LENS_TOOL_NAMES = [
 	"lens_context",
 ] as const;
 
-export type LensSeverity = "clean" | "warning" | "blocked" | "degraded" | "error" | "unknown";
+export type LensSeverity = "clean" | "warning" | "degraded" | "error" | "unknown";
 
 type LensRecord = Record<string, any>;
 type LensRenderOptions = { ansi?: boolean };
@@ -20,7 +20,6 @@ const ansi = {
 	separator: "\x1b[2;38;5;60m",
 	clean: "\x1b[2;38;5;108m",
 	warning: "\x1b[2;38;5;179m",
-	blocked: "\x1b[2;38;5;167m",
 	degraded: "\x1b[2;38;5;104m",
 	error: "\x1b[2;38;5;203m",
 	diagnostics: "\x1b[2;38;5;181m",
@@ -35,14 +34,16 @@ const ansi = {
 export function lensSeverity(value: unknown): LensSeverity {
 	const data = asRecord(value);
 	const decision = lower(data?.decision?.outcome);
-	if (decision === "block") return "blocked";
+	if (decision === "block") return "warning";
 	const health = lower(data?.health?.status ?? data?.data?.status ?? data?.status);
-	if (health === "blocked") return "blocked";
+	if (health === "blocked") return "warning";
 	if (health === "error") return "error";
 	if (health === "degraded") return "degraded";
 	if (health === "warning") return "warning";
 	if (health === "clean") return "clean";
 	const envelopeStatus = lower(data?.status);
+	const guardDecision = lower(data?.data?.guard?.decision ?? data?.guard?.decision);
+	if (envelopeStatus === "error" && (guardDecision === "block" || guardDecision === "warn")) return "warning";
 	if (envelopeStatus === "error") return "error";
 	if (envelopeStatus === "warning") return "warning";
 	if (hasItems(data?.errors)) return "error";
@@ -111,7 +112,7 @@ function actionLines(data: LensRecord | undefined, actionContext: LensRecord | u
 
 	const summary = asRecord(data?.data?.health?.summary ?? data?.data?.summary ?? data?.health?.details);
 	const guard = asRecord(summary?.guard);
-	if ((guard?.blocked ?? 0) > 0) out.push(`  guard: read required ranges before editing (${guard.blocked} blocked)`);
+	if ((guard?.blocked ?? 0) > 0) out.push(`  guard: review/read required ranges (${guard.blocked} advisory finding(s))`);
 	if ((guard?.warnings ?? 0) > 0) out.push(`  guard: ${guard.warnings} warning decision(s) need review`);
 	const cleanup = asRecord(summary?.cleanup);
 	if ((cleanup?.failed ?? 0) > 0 || (cleanup?.timed_out ?? 0) > 0) out.push(`  cleanup: inspect ${cleanup.failed ?? 0} failed/${cleanup.timed_out ?? 0} timed-out run(s)`);
@@ -146,7 +147,7 @@ function guardSummary(data: LensRecord | undefined): string | undefined {
 	const guard = asRecord(data?.data?.health?.summary?.guard ?? data?.data?.summary?.guard);
 	const blocked = numberValue(guard?.blocked);
 	const warnings = numberValue(guard?.warnings);
-	if ((blocked ?? 0) > 0) return `guard ${blocked} blocked`;
+	if ((blocked ?? 0) > 0) return `guard ${blocked} advisory`;
 	if ((warnings ?? 0) > 0) return `guard ${warnings} warn`;
 	const decisions = Array.isArray(data?.decision?.guard) ? data?.decision?.guard : [];
 	if (decisions.length > 0) return `guard ${decisions.length} decision(s)`;
@@ -199,8 +200,6 @@ function severityIcon(severity: LensSeverity): string {
 			return "✓";
 		case "warning":
 			return "⚠";
-		case "blocked":
-			return "⛔";
 		case "degraded":
 			return "◌";
 		case "error":
@@ -216,8 +215,6 @@ function severityColor(severity: LensSeverity): keyof typeof ansi {
 			return "clean";
 		case "warning":
 			return "warning";
-		case "blocked":
-			return "blocked";
 		case "degraded":
 			return "degraded";
 		case "error":

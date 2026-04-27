@@ -10,8 +10,6 @@ import { renderLensCompactStatus, renderLensWidgetLines, summarizeLensResult } f
 
 const HOOK_EVENT_SCHEMA = "lens.hook_event.v1";
 const RAW_OUTPUT_MAX_BYTES = 256 * 1024;
-const BLOCKING_GUARD_ENABLED = false;
-
 type LensHookEventName = "session_start" | "context_injection" | "pre_tool" | "post_tool" | "turn_start" | "turn_end" | "agent_end" | "session_shutdown";
 
 type ToolFile = {
@@ -45,8 +43,8 @@ const discoverSchema = Type.Object({
 });
 
 const guardSchema = Type.Object({
-	action: Type.Optional(StringEnum(["check", "record_read", "allow_once"] as const)),
-	path: Type.String({ description: "Path to check, record, or allow once." }),
+	action: Type.Optional(StringEnum(["check", "record_read"] as const)),
+	path: Type.String({ description: "Path to check or record." }),
 	startLine: Type.Optional(Type.Number({ description: "Start line for check/record_read." })),
 	endLine: Type.Optional(Type.Number({ description: "End line for check/record_read." })),
 	session: sessionTurnSchema.session,
@@ -220,16 +218,7 @@ export default function lensExtension(pi: ExtensionAPI) {
 			ctx.signal,
 		);
 		applyLensUi(ctx, response);
-		if (isExplicitGuardBlock(response)) {
-			return { block: true, reason: renderLensCompactStatus(response) };
-		}
 	});
-
-	function isExplicitGuardBlock(response: any) {
-		if (!BLOCKING_GUARD_ENABLED) return false;
-		if (String(response?.decision?.outcome ?? "").toLowerCase() !== "block") return false;
-		return String(response?.decision?.reason ?? "") !== "invalid_hook_response";
-	}
 
 	pi.on("tool_result", async (event, ctx) => {
 		const response = await runHook(
@@ -302,18 +291,13 @@ export default function lensExtension(pi: ExtensionAPI) {
 	registerTool({
 		name: "lens_guard",
 		label: "Lens guard",
-		description: "Check or update Lens read-before-edit guard via ct lens guard/read. Actions: check, record_read, allow_once.",
+		description: "Inspect Lens read-before-edit guard advisories or record read coverage via ct lens guard/read. Actions: check, record_read.",
 		parameters: guardSchema,
 		executionMode: "parallel",
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const action = params.action ?? "check";
 			if (action === "record_read") {
 				const args = ["read", "record", "--path", params.path, "--start-line", String(required(params.startLine, "startLine")), "--end-line", String(required(params.endLine, "endLine"))];
-				pushOpt(args, "--session", params.session ?? currentSession(ctx));
-				return runCtLens(args, ctx.cwd, signal);
-			}
-			if (action === "allow_once") {
-				const args = ["guard", "allow-once", "--path", params.path];
 				pushOpt(args, "--session", params.session ?? currentSession(ctx));
 				return runCtLens(args, ctx.cwd, signal);
 			}
@@ -407,7 +391,7 @@ export default function lensExtension(pi: ExtensionAPI) {
 	registerTool({
 		name: "lens_report",
 		label: "Lens report",
-		description: "Show a deeper Lens changed-file report with diagnostics, guard, cleanup, patch refs, and symbols.",
+		description: "Show a deeper Lens changed-file report with diagnostics, guard advisories, cleanup, patch refs, and symbols.",
 		parameters: reportSchema,
 		executionMode: "parallel",
 		async execute(_id, params, signal, _onUpdate, ctx) {

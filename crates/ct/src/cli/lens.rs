@@ -585,7 +585,7 @@ fn health(
         println!("{}", crate::lens::compact_health_text(&envelope.data));
         if envelope.data.action_context.required {
             println!(
-                "action required: {}",
+                "action recommended: {}",
                 envelope.data.action_context.instructions
             );
             if let Some(command) = &envelope.data.action_context.ack_command {
@@ -654,7 +654,10 @@ fn report(
         for file in &envelope.data.files {
             println!("- {}: {} diagnostics", file.path, file.diagnostics.len());
             if let Some(guard) = &file.guard {
-                println!("  guard: {:?} ({:?})", guard.decision, guard.reason);
+                println!(
+                    "  guard advisory: {:?} ({:?})",
+                    guard.decision, guard.reason
+                );
             }
             for action in &file.next_actions {
                 println!("  next: {action}");
