@@ -1147,8 +1147,11 @@ fn disambiguate_candidates(original_lines: &[String], candidates: &[usize]) -> V
             break;
         }
         let lookback_start = cand.saturating_sub(DISAMBIGUATION_LOOKBACK);
-        // Walk upward from the line just above the candidate.
-        let mut anchor_line: Option<(usize, &str)> = None;
+        // Walk upward from the line just above the candidate. Prefer stable
+        // semantic parent lines (e.g. `name: "tool"`, function headers) over
+        // nearer incidental statements so the suggestion remains useful when
+        // retrying with stacked anchors.
+        let mut anchor_line: Option<(u8, usize, &str)> = None;
         for i in (lookback_start..cand).rev() {
             let line = original_lines[i].as_str();
             if !is_structural_line(line) {
@@ -1157,10 +1160,13 @@ fn disambiguate_candidates(original_lines: &[String], candidates: &[usize]) -> V
             if counts.get(line).copied().unwrap_or(0) != 1 {
                 continue;
             }
-            anchor_line = Some((i, line));
-            break;
+            let priority = anchor_priority(line);
+            match anchor_line {
+                Some((best_priority, _, _)) if best_priority >= priority => {}
+                _ => anchor_line = Some((priority, i, line)),
+            }
         }
-        if let Some((idx, line)) = anchor_line {
+        if let Some((_, idx, line)) = anchor_line {
             // 1-based line numbers in the hint match what the user sees in
             // their editor and what the candidates list reports.
             hints.push(format!(
@@ -1189,6 +1195,36 @@ fn is_structural_line(line: &str) -> bool {
         return false;
     }
     true
+}
+
+fn anchor_priority(line: &str) -> u8 {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("name:")
+        || trimmed.starts_with("id:")
+        || trimmed.starts_with("key:")
+        || trimmed.starts_with("type:")
+    {
+        return 4;
+    }
+    if trimmed.starts_with("pub fn ")
+        || trimmed.starts_with("fn ")
+        || trimmed.starts_with("async fn ")
+        || trimmed.starts_with("impl ")
+        || trimmed.starts_with("mod ")
+        || trimmed.starts_with("pub struct ")
+        || trimmed.starts_with("struct ")
+        || trimmed.starts_with("pub enum ")
+        || trimmed.starts_with("enum ")
+        || trimmed.starts_with("class ")
+        || trimmed.starts_with("function ")
+        || trimmed.starts_with("export function ")
+    {
+        return 3;
+    }
+    if trimmed.ends_with("{") || trimmed.ends_with("({") || trimmed.ends_with("[") {
+        return 2;
+    }
+    1
 }
 
 fn apply_replacements(mut lines: Vec<String>, replacements: Replacements) -> Vec<String> {
@@ -1628,6 +1664,38 @@ mod tests {
         assert!(hints[1].contains("@@ fn beta()"), "hints: {hints:?}");
         assert!(hints[0].contains("line 2"), "hints: {hints:?}");
         assert!(hints[1].contains("line 4"), "hints: {hints:?}");
+    }
+
+    #[test]
+    fn disambiguate_prefers_semantic_parent_over_nearer_statement() {
+        let lines: Vec<String> = vec![
+            "registerTool({".into(),
+            "\tname: \"vault_create\",".into(),
+            "\tasync execute() {".into(),
+            "\t\tif (dive) args.push(\"--dive\");".into(),
+            "\t\tconst result = await runCt(args, ctx.cwd, signal);".into(),
+            "\t\treturn toolResult(formatCommand(\"ct\", args), ctx.cwd, result);".into(),
+            "\t},".into(),
+            "});".into(),
+            "registerTool({".into(),
+            "\tname: \"vault_archive\",".into(),
+            "\tasync execute() {".into(),
+            "\t\tthrow new Error(\"target required\");".into(),
+            "\t\tconst result = await runCt(args, ctx.cwd, signal);".into(),
+            "\t\treturn toolResult(formatCommand(\"ct\", args), ctx.cwd, result);".into(),
+            "\t},".into(),
+            "});".into(),
+        ];
+        let hints = disambiguate_candidates(&lines, &[4, 12]);
+        assert_eq!(hints.len(), 2);
+        assert!(
+            hints[0].contains("@@ \tname: \"vault_create\","),
+            "hints: {hints:?}"
+        );
+        assert!(
+            hints[1].contains("@@ \tname: \"vault_archive\","),
+            "hints: {hints:?}"
+        );
     }
 
     #[test]
