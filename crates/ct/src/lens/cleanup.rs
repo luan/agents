@@ -192,7 +192,11 @@ pub fn default_cleanup_registry() -> CleanupRegistry {
             CleanupToolDefinition {
                 id: "rustfmt".to_string(),
                 command: "rustfmt".to_string(),
-                args: vec!["{files}".to_string()],
+                args: vec![
+                    "--edition".to_string(),
+                    "2024".to_string(),
+                    "{files}".to_string(),
+                ],
                 extensions: vec!["rs".to_string()],
                 filenames: Vec::new(),
                 safety: CleanupSafetyClass::SafeAutoApply,
@@ -835,15 +839,16 @@ fn diagnostic_from_line(
     let mut severity = default_severity;
     let mut message = line.trim().to_string();
     let parts = line.splitn(4, ':').collect::<Vec<_>>();
-    if parts.len() >= 3 && safe_rel_path(parts[0]) {
-        if let Ok(line_number) = parts[1].parse::<i64>() {
-            rel_path = Some(parts[0].to_string());
-            start_line = Some(line_number.max(1));
-            message = parts[2..].join(":").trim().to_string();
-            if parts.len() == 4 {
-                severity = parse_line_severity(parts[2]).unwrap_or(severity);
-                message = parts[3].trim().to_string();
-            }
+    if parts.len() >= 3
+        && safe_rel_path(parts[0])
+        && let Ok(line_number) = parts[1].parse::<i64>()
+    {
+        rel_path = Some(parts[0].to_string());
+        start_line = Some(line_number.max(1));
+        message = parts[2..].join(":").trim().to_string();
+        if parts.len() == 4 {
+            severity = parse_line_severity(parts[2]).unwrap_or(severity);
+            message = parts[3].trim().to_string();
         }
     }
     let scope = rel_path
@@ -891,12 +896,6 @@ fn record_cleanup_snapshot(
     raw_output: &str,
     diagnostics: Vec<Diagnostic>,
 ) -> Result<Option<DiagnosticSnapshotResult>, Box<dyn std::error::Error>> {
-    if raw_output.is_empty()
-        && diagnostics.is_empty()
-        && matches!(process.status, CleanupRunStatus::Success)
-    {
-        return Ok(None);
-    }
     Ok(Some(store.record_diagnostic_snapshot(
         DiagnosticSnapshotInput {
             source: DiagnosticSource::Formatter,
@@ -1156,6 +1155,55 @@ mod tests {
         assert_eq!(report.runs[0].status, CleanupRunStatus::TimedOut);
         assert!(report.runs[0].timed_out);
         assert_eq!(report.diagnostics.regression_count, 1);
+    }
+
+    #[test]
+    fn successful_cleanup_clears_prior_formatter_diagnostics() {
+        let temp = repo();
+        let mut store = LensStore::open_for_project(temp.path()).unwrap();
+        store
+            .record_diagnostic_snapshot(DiagnosticSnapshotInput {
+                source: DiagnosticSource::Formatter,
+                scope: DiagnosticScope::command("fixture"),
+                diagnostics: vec![Diagnostic {
+                    source: DiagnosticSource::Formatter,
+                    scope: DiagnosticScope::command("fixture"),
+                    severity: DiagnosticSeverity::Error,
+                    code: Some("fixture".to_string()),
+                    message: "stale formatter failure".to_string(),
+                    rel_path: None,
+                    start_line: None,
+                    end_line: None,
+                    fingerprint: "stale-formatter-failure".to_string(),
+                    content_hash: None,
+                    raw_output_id: None,
+                    snapshot_id: None,
+                    first_seen_at: None,
+                    last_seen_at: None,
+                    resolved_at: None,
+                }],
+                raw_output: Some("failed".to_string()),
+                raw_output_max_bytes: None,
+                metadata: Default::default(),
+            })
+            .unwrap();
+        record_touch(&mut store, temp.path(), "main.fixture");
+        let tool = fixture_tool(vec!["-c", "exit 0", "fixture", "{files}"]);
+
+        let report = run_turn_cleanup_with_store(
+            temp.path(),
+            &mut store,
+            "s",
+            "t",
+            CleanupOptions {
+                registry: Some(registry(tool)),
+                ..CleanupOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(report.runs[0].status, CleanupRunStatus::Success);
+        assert_eq!(report.diagnostics.post_cleanup.diagnostic_count, 0);
     }
 
     #[test]
