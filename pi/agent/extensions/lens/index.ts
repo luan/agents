@@ -6,7 +6,7 @@ import { Type } from "typebox";
 
 import { formatCommand, runCommand } from "../shared/ct-runner.ts";
 import { nf, renderText, title } from "../shared/ct-render.ts";
-import { lensSeverity, renderLensCompactStatus, renderLensWidgetLines, summarizeLensResult } from "../shared/lens-ui.ts";
+import { renderLensCompactStatus, renderLensWidgetLines, summarizeLensResult } from "../shared/lens-ui.ts";
 
 const HOOK_EVENT_SCHEMA = "lens.hook_event.v1";
 const RAW_OUTPUT_MAX_BYTES = 256 * 1024;
@@ -172,7 +172,7 @@ export default function lensExtension(pi: ExtensionAPI) {
 	function applyLensUi(ctx: any, response: unknown) {
 		if (!ctx?.hasUI) return;
 		ctx.ui.setStatus("lens", renderLensCompactStatus(response, { ansi: true }));
-		ctx.ui.setWidget("lens-health", lensSeverity(response) === "clean" ? [] : renderLensWidgetLines(response, false, { ansi: true }));
+		ctx.ui.setWidget("lens-health", renderLensWidgetLines(response, false, { ansi: true }));
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
