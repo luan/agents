@@ -1413,8 +1413,8 @@ mod tests {
             raw: Some(false),
         })
         .unwrap();
-        assert_eq!(health.data["status"], "warning");
-        assert!(health.summary.contains("warning"));
+        assert_eq!(health.data["status"], "clean");
+        assert!(health.summary.contains("clean"));
 
         let context = context_mcp_response(ContextIn {
             cwd: Some(cwd.clone()),
@@ -1425,7 +1425,7 @@ mod tests {
             raw: Some(false),
         })
         .unwrap();
-        assert_eq!(context.data["state"], "acknowledged");
+        assert_eq!(context.data["state"], "clear");
 
         let report = report_mcp_response(ReportIn {
             cwd: Some(cwd),

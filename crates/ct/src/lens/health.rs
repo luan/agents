@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use super::contract::{LensEnvelope, LensMessage, LensResponseStatus};
@@ -236,7 +236,7 @@ pub fn build_action_context_envelope(
     let mut store = LensStore::open_for_project(root)?;
     let health = compute_turn_health(root, &mut store, &options)?;
     let mut context = health.action_context;
-    if options.acknowledge && context.status.is_warning_or_worse() && !context.acknowledged {
+    if options.acknowledge && context.required && !context.acknowledged {
         acknowledge_context(&store, &options.session, &options.turn, &context)?;
         context.acknowledged = true;
         context.required = false;
@@ -688,7 +688,7 @@ fn patch_ref_summary(
 }
 
 fn compute_status(
-    guard: &GuardSummary,
+    _guard: &GuardSummary,
     cleanup: &CleanupSummary,
     diagnostics: &DiagnosticSummary,
     checks: &CheckSummary,
@@ -699,9 +699,7 @@ fn compute_status(
         || check_errors(checks) > 0
     {
         TurnHealthStatus::Error
-    } else if guard.blocked > 0
-        || guard.warnings > 0
-        || diagnostics.warnings > 0
+    } else if diagnostics.warnings > 0
         || diagnostics.deltas.new > 0
         || cleanup.diagnostics > 0
         || cleanup.skipped > 0
@@ -714,22 +712,39 @@ fn compute_status(
 }
 
 fn compact_summary(status: &TurnHealthStatus, summary: &TurnHealthSummary) -> String {
-    format!(
-        "{}: {} changed, {} read ranges, guard {} clean/{} warn/{} advisory, diagnostics {} active ({} new), cleanup {} runs/{} mutations, checks {} snapshots, patch refs {}/{}",
+    let mut parts = vec![format!(
+        "{} · {} changed",
         status.as_str(),
-        summary.changed_files.count,
-        summary.reads.count,
-        summary.guard.clean,
-        summary.guard.warnings,
-        summary.guard.blocked,
-        summary.diagnostics.active,
-        summary.diagnostics.deltas.new,
-        summary.cleanup.runs,
-        summary.cleanup.mutations,
-        summary.checks.snapshots,
-        summary.patch_refs.accepted_events,
-        summary.patch_refs.hunks
-    )
+        summary.changed_files.count
+    )];
+    if summary.diagnostics.active > 0
+        || summary.diagnostics.errors > 0
+        || summary.diagnostics.warnings > 0
+        || summary.diagnostics.deltas.new > 0
+    {
+        parts.push(format!(
+            "diag {} ({} err/{} warn)",
+            summary.diagnostics.active, summary.diagnostics.errors, summary.diagnostics.warnings
+        ));
+    }
+    if summary.cleanup.failed > 0 || summary.cleanup.timed_out > 0 || summary.cleanup.skipped > 0 {
+        parts.push(format!(
+            "cleanup {} failed/{} timeout",
+            summary.cleanup.failed, summary.cleanup.timed_out
+        ));
+    }
+    let check_failures = check_errors(&summary.checks);
+    let check_warnings = check_warnings(&summary.checks);
+    if check_failures > 0 || check_warnings > 0 {
+        parts.push(format!("checks {check_failures} err/{check_warnings} warn"));
+    }
+    if summary.patch_refs.hunks > 0 || summary.patch_refs.accepted_events > 0 {
+        parts.push(format!(
+            "patch {}/{}",
+            summary.patch_refs.accepted_events, summary.patch_refs.hunks
+        ));
+    }
+    parts.join(" · ")
 }
 
 fn health_fingerprint(status: &TurnHealthStatus, summary: &TurnHealthSummary) -> String {
@@ -797,8 +812,9 @@ fn action_context(
     acknowledged: bool,
     summary: &TurnHealthSummary,
 ) -> ActionContextState {
-    let required = status.is_warning_or_worse() && !acknowledged;
-    let state = if !status.is_warning_or_worse() {
+    let actionable = matches!(status, TurnHealthStatus::Error);
+    let required = actionable && !acknowledged;
+    let state = if !actionable {
         "clear"
     } else if acknowledged {
         "acknowledged"
@@ -807,12 +823,6 @@ fn action_context(
     }
     .to_string();
     let mut remediation = Vec::new();
-    if summary.guard.blocked > 0 || summary.guard.warnings > 0 {
-        remediation.push(
-            "review affected ranges with ct lens discover/read; guard findings are advisory"
-                .to_string(),
-        );
-    }
     if summary.diagnostics.errors > 0 || summary.diagnostics.warnings > 0 {
         remediation
             .push("fix or snapshot diagnostics with ct lens diagnostics list --all".to_string());
@@ -1126,7 +1136,7 @@ mod tests {
     }
 
     #[test]
-    fn health_status_computation_warns_on_unread_writes() {
+    fn health_status_computation_keeps_guard_findings_advisory() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("main.rs"), "fn main() {}\n").unwrap();
         record_turn(temp.path());
@@ -1141,10 +1151,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(envelope.data.status, TurnHealthStatus::Warning);
+        assert_eq!(envelope.data.status, TurnHealthStatus::Clean);
         assert_eq!(envelope.data.summary.guard.warnings, 1);
         assert_eq!(envelope.data.summary.guard.blocked, 0);
-        assert!(envelope.data.action_context.required);
+        assert!(!envelope.data.action_context.required);
     }
 
     #[test]
@@ -1162,7 +1172,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(context.data.state, "acknowledged");
+        assert_eq!(context.data.state, "clear");
         assert!(!context.data.required);
 
         let health = build_turn_health_envelope(
@@ -1174,12 +1184,12 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(health.data.action_context.acknowledged);
+        assert!(!health.data.action_context.acknowledged);
         assert!(!health.data.action_context.required);
     }
 
     #[test]
-    fn compact_and_final_output_include_status_and_action() {
+    fn compact_and_final_output_stay_quiet_for_guard_advisory() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("main.rs"), "fn main() {}\n").unwrap();
         record_turn(temp.path());
@@ -1193,9 +1203,9 @@ mod tests {
         )
         .unwrap();
 
-        assert!(compact_health_text(&health.data).contains("warning"));
-        assert!(final_health_text(&health.data).contains("Lens final health: warning"));
-        assert!(final_health_text(&health.data).contains("Ack:"));
+        assert!(compact_health_text(&health.data).contains("clean"));
+        assert!(final_health_text(&health.data).contains("Lens final health: clean"));
+        assert!(!final_health_text(&health.data).contains("Ack:"));
     }
 
     #[test]
@@ -1224,7 +1234,7 @@ mod tests {
     }
 
     #[test]
-    fn warning_diagnostics_force_action_context() {
+    fn warning_diagnostics_do_not_force_action_context() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("main.rs"), "fn main() {}\n").unwrap();
         let mut store = LensStore::open_for_project(temp.path()).unwrap();
@@ -1246,7 +1256,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(health.data.status, TurnHealthStatus::Warning);
-        assert!(health.data.action_context.required);
-        assert!(health.data.action_context.ack_command.is_some());
+        assert!(!health.data.action_context.required);
+        assert!(health.data.action_context.ack_command.is_none());
     }
 }

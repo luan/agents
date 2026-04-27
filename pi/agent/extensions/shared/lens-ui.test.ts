@@ -85,9 +85,9 @@ describe("Lens Pi UI rendering", () => {
 	});
 
 	it("renders compact clean, warning, guard advisory, degraded/error, and patch states", () => {
-		expect(renderLensCompactStatus(clean)).toBe("󰛩 Lens ✓ clean · clean · 0 changed · 0 diag · diag 0 (0 err/0 warn) · cleanup 0 run/0 failed/0 timeout");
+		expect(renderLensCompactStatus(clean)).toBe("󰛩 Lens ✓ clean");
 		expect(renderLensCompactStatus(warning)).toContain("󰛩 Lens ⚠ warning");
-		expect(renderLensCompactStatus(guardAdvisory)).toContain("󰛩 Lens ⚠ warning");
+		expect(renderLensCompactStatus(guardAdvisory)).toBe("󰛩 Lens ✓ clean");
 		expect(renderLensCompactStatus(degraded)).toContain("󰛩 Lens ◌ degraded");
 		expect(renderLensCompactStatus(patchTelemetry)).toContain("patch 2 drafts/5 hunks/1 accepts");
 	});
@@ -97,8 +97,8 @@ describe("Lens Pi UI rendering", () => {
 		expect(rendered).toContain("\x1b[2;38;5;111m󰛩 Lens\x1b[0m");
 		expect(rendered).toContain("\x1b[2;38;5;179m⚠ warning\x1b[0m");
 		expect(rendered).toContain("\x1b[2;38;5;181mdiag 3 (1 err/2 warn)\x1b[0m");
-		expect(rendered).toContain("\x1b[2;38;5;173mguard 1 warn\x1b[0m");
-		expect(rendered).toContain("\x1b[2;38;5;109mcleanup 2 run/0 failed/0 timeout\x1b[0m");
+		expect(rendered).not.toContain("guard 1 warn");
+		expect(rendered).not.toContain("cleanup 2 run/0 failed/0 timeout");
 	});
 
 	it("renders actionable expanded widget lines", () => {

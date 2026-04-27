@@ -3,14 +3,14 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use super::checks::LensChecksData;
 use super::contract::{LensMessage, LensResponseStatus};
 use super::health::{TurnHealthData, TurnHealthOptions, TurnHealthStatus};
 use super::policy::LensGuardMode;
 use super::retention;
-use super::status::{DiagnosticHealth, LensStatusOptions, build_status_envelope};
+use super::status::{build_status_envelope, DiagnosticHealth, LensStatusOptions};
 use super::store::LensStore;
 use super::types::{
     DiagnosticScope, DiagnosticSnapshotInput, DiagnosticSnapshotMetadata, DiagnosticSource,

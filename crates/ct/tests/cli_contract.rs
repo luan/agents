@@ -467,14 +467,9 @@ fn lens_health_context_report_and_final_outputs_are_schema_versioned() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
     let value: serde_json::Value = serde_json::from_str(&stdout).expect("health json");
     assert_eq!(value["schema_version"], "lens.response.v1");
-    assert_eq!(value["data"]["status"], "warning");
-    assert_eq!(value["data"]["action_context"]["required"], true);
-    assert!(
-        value["data"]["compact"]
-            .as_str()
-            .unwrap()
-            .contains("warning")
-    );
+    assert_eq!(value["data"]["status"], "clean");
+    assert_eq!(value["data"]["action_context"]["required"], false);
+    assert!(value["data"]["compact"].as_str().unwrap().contains("clean"));
 
     ct_cmd(bp.path())
         .current_dir(project.path())
@@ -512,7 +507,7 @@ fn lens_health_context_report_and_final_outputs_are_schema_versioned() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("\"state\": \"acknowledged\""));
+        .stdout(predicate::str::contains("\"state\": \"clear\""));
 
     ct_cmd(bp.path())
         .current_dir(project.path())
@@ -529,7 +524,7 @@ fn lens_health_context_report_and_final_outputs_are_schema_versioned() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Lens final health: warning"));
+        .stdout(predicate::str::contains("Lens final health: clean"));
 }
 
 #[test]
@@ -587,16 +582,12 @@ fn lens_turn_end_runs_safe_cleanup_for_changed_files() {
         "fixture-format"
     );
     assert_eq!(value["data"]["cleanup"]["mutation_count"], 1);
-    assert!(
-        fs::read_to_string(project.path().join("main.fixture"))
-            .unwrap()
-            .contains("cleaned:main.fixture")
-    );
-    assert!(
-        !fs::read_to_string(project.path().join("other.fixture"))
-            .unwrap()
-            .contains("cleaned")
-    );
+    assert!(fs::read_to_string(project.path().join("main.fixture"))
+        .unwrap()
+        .contains("cleaned:main.fixture"));
+    assert!(!fs::read_to_string(project.path().join("other.fixture"))
+        .unwrap()
+        .contains("cleaned"));
 }
 
 #[test]
