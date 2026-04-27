@@ -10,6 +10,7 @@ import { lensSeverity, renderLensCompactStatus, renderLensWidgetLines, summarize
 
 const HOOK_EVENT_SCHEMA = "lens.hook_event.v1";
 const RAW_OUTPUT_MAX_BYTES = 256 * 1024;
+const BLOCKING_GUARD_ENABLED = false;
 
 type LensHookEventName = "session_start" | "context_injection" | "pre_tool" | "post_tool" | "turn_start" | "turn_end" | "agent_end" | "session_shutdown";
 
@@ -163,7 +164,7 @@ export default function lensExtension(pi: ExtensionAPI) {
 			turn: { id: currentTurn(), index: activeTurnIndex },
 			event,
 			known_files: [],
-			policy: {},
+			policy: { guard_mode: "warn", allow_overrides: false },
 			...extra,
 		};
 	}
@@ -225,6 +226,7 @@ export default function lensExtension(pi: ExtensionAPI) {
 	});
 
 	function isExplicitGuardBlock(response: any) {
+		if (!BLOCKING_GUARD_ENABLED) return false;
 		if (String(response?.decision?.outcome ?? "").toLowerCase() !== "block") return false;
 		return String(response?.decision?.reason ?? "") !== "invalid_hook_response";
 	}
