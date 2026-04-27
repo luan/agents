@@ -1,6 +1,9 @@
 {
 	"name": "agents-pi-extensions",
 	"private": true,
+	"scripts": {
+		"test:lens": "bun test shared/lens-ui.test.ts"
+	},
 	"dependencies": {
 		"@mariozechner/pi-ai": "^0.70.2",
 		"@mariozechner/pi-coding-agent": "^0.70.2",
