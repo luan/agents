@@ -1,3 +1,4 @@
+use rmcp::schemars::{self, JsonSchema};
 use serde::{Deserialize, Serialize};
 
 pub const LENS_TURN_EVENT_SCHEMA_VERSION: &str = "lens.turn_event.v1";
@@ -21,7 +22,7 @@ pub struct FileSnapshot {
     pub line_count: Option<i64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DiagnosticSeverity {
     Error,
@@ -30,7 +31,7 @@ pub enum DiagnosticSeverity {
     Hint,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DiagnosticSource {
     Lsp,
@@ -44,7 +45,7 @@ pub enum DiagnosticSource {
     Other(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Diagnostic {
     pub source: DiagnosticSource,
     #[serde(default)]
@@ -69,7 +70,7 @@ pub struct Diagnostic {
     pub resolved_at: Option<i64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct DiagnosticScope {
     pub kind: String,
     pub key: String,
@@ -126,7 +127,7 @@ pub enum DiagnosticDeltaStatus {
     Unchanged,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 pub struct DiagnosticSnapshotMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
@@ -136,7 +137,7 @@ pub struct DiagnosticSnapshotMetadata {
     pub duration_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DiagnosticSnapshotInput {
     pub source: DiagnosticSource,
     #[serde(default)]
