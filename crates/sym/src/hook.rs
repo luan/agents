@@ -6,7 +6,6 @@ use anyhow::{Result, anyhow, bail};
 use serde_json::{Value, json};
 
 pub const CLAUDE_HOOK_MARKER: &str = "sym-hook";
-const CLAUDE_NUDGE_CMD: &str = "ct sym hook nudge --format=claude-code";
 const CLAUDE_REMIND_CMD: &str = "ct sym hook remind --format=claude-code";
 const CLAUDE_HOOK_KEYS: &[&str] = &["PreToolUse", "SessionStart", "UserPromptSubmit"];
 
@@ -226,31 +225,20 @@ impl ClaudeSettings {
     }
 }
 
-pub fn claude_hook_entries() -> (Value, Value) {
-    (
-        json!({
-            "matcher": "Bash",
-            "hooks": [{
-                "type": "command",
-                "command": CLAUDE_NUDGE_CMD,
-                "marker": CLAUDE_HOOK_MARKER,
-                "timeout": 5,
-            }]
-        }),
-        json!({
-            "hooks": [{
-                "type": "command",
-                "command": CLAUDE_REMIND_CMD,
-                "marker": CLAUDE_HOOK_MARKER,
-                "timeout": 5,
-            }]
-        }),
-    )
+pub fn claude_session_hook_entry() -> Value {
+    json!({
+        "hooks": [{
+            "type": "command",
+            "command": CLAUDE_REMIND_CMD,
+            "marker": CLAUDE_HOOK_MARKER,
+            "timeout": 5,
+        }]
+    })
 }
 
 pub fn merge_claude_hooks(settings: &mut ClaudeSettings) {
     remove_claude_hooks(settings);
-    let (pre_tool, session_start) = claude_hook_entries();
+    let session_start = claude_session_hook_entry();
     let hooks = settings
         .raw
         .entry("hooks")
@@ -261,14 +249,6 @@ pub fn merge_claude_hooks(settings: &mut ClaudeSettings) {
     // existing key preserves its position in the map. A prior `remove` would
     // drop the position and the re-insert would shift the key to the end,
     // silently reordering the user's `hooks` object on every install.
-    let pre_tool_existing = hooks
-        .get("PreToolUse")
-        .cloned()
-        .unwrap_or_else(|| Value::Array(vec![]));
-    hooks.insert(
-        "PreToolUse".into(),
-        Value::Array(append_unique_hook_group(&pre_tool_existing, pre_tool)),
-    );
     let session_existing = hooks
         .get("SessionStart")
         .cloned()

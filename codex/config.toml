@@ -68,13 +68,13 @@ status_line = [
 "gpt-5.5" = 4
 
 [marketplaces.claude-plugins-official]
-last_updated = "2026-04-27T22:06:02Z"
+last_updated = "2026-04-27T23:38:22Z"
 last_revision = "1c81b812991b6cf68535eb81933256bad635bc15"
 source_type = "git"
 source = "https://github.com/anthropics/claude-plugins-official.git"
 
 [marketplaces.worktrunk]
-last_updated = "2026-04-27T22:06:14Z"
+last_updated = "2026-04-27T23:38:26Z"
 last_revision = "c32297994cbce868f8a986850486d43d1e65352a"
 source_type = "git"
 source = "https://github.com/max-sixty/worktrunk.git"

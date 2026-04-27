@@ -76,7 +76,7 @@ pub enum Command {
     #[command(about = "Run a harness hook")]
     Hook {
         #[arg(
-            help = "Hook name: apply-patch-remind, source-remind, source-nudge, notify, gt-session-start, gt-validate-git, lens-turn-event, rtk-rewrite"
+            help = "Hook name: apply-patch-remind, source-remind, notify, gt-session-start, gt-validate-git, lens-turn-event, rtk-rewrite"
         )]
         name: String,
     },

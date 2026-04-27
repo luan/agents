@@ -66,16 +66,6 @@
             "timeout": 5
           }
         ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "ct hook source-nudge",
-            "timeout": 5
-          }
-        ]
       }
     ],
     "PostToolUse": [
