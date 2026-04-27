@@ -11,9 +11,10 @@ use super::raw_output;
 use super::types::{
     Diagnostic, DiagnosticDeltaSet, DiagnosticDeltaStatus, DiagnosticListData, DiagnosticRelevance,
     DiagnosticScope, DiagnosticSeverity, DiagnosticSnapshotInput, DiagnosticSnapshotResult,
-    DiagnosticSource, GuardAction, GuardDecision, GuardReason, LensToolEventPhase, LensTouchedFile,
-    LensTouchedFileSource, LensTurnEvent, PatchCandidate, PatchDraftChunk, PatchDraftSummary,
-    RawOutputRef, ReadCoverageRange,
+    DiagnosticSource, GuardAction, GuardDecision, GuardFileClassification, GuardFileKind,
+    GuardPolicySnapshot, GuardReason, LensToolEventPhase, LensTouchedFile, LensTouchedFileSource,
+    LensTurnEvent, PatchCandidate, PatchDraftChunk, PatchDraftSummary, RawOutputRef,
+    ReadCoverageRange,
 };
 
 const SCHEMA_VERSION: i32 = 6;
@@ -452,38 +453,100 @@ impl LensStore {
         end_line: i64,
         requested_action: GuardAction,
     ) -> Result<GuardDecision, Box<dyn std::error::Error>> {
+        self.check_guard_with_overrides(
+            session_id,
+            path,
+            start_line,
+            end_line,
+            requested_action,
+            false,
+        )
+    }
+
+    pub fn check_guard_with_overrides(
+        &mut self,
+        session_id: Option<&str>,
+        path: &Path,
+        start_line: i64,
+        end_line: i64,
+        requested_action: GuardAction,
+        allow_overrides: bool,
+    ) -> Result<GuardDecision, Box<dyn std::error::Error>> {
         let required = normalize_range(start_line, end_line)?;
         let rel_path = self.rel_path(path);
+        let policy = GuardPolicySnapshot {
+            mode: requested_action.clone(),
+            allow_overrides,
+        };
+        let full_path = self.root.join(&rel_path);
         if matches!(requested_action, GuardAction::Allow) {
             return Ok(decision(
                 GuardAction::Allow,
-                GuardReason::ExplicitOverride,
+                GuardReason::GuardDisabled,
                 rel_path,
                 required,
                 Vec::new(),
+                Vec::new(),
+                classification(GuardFileKind::Code, true, None),
+                policy,
+                None,
+                None,
             ));
         }
-        if !self.root.join(&rel_path).exists() {
+        if !full_path.exists() {
             return Ok(decision(
                 GuardAction::Allow,
                 GuardReason::NewFile,
                 rel_path,
                 required,
                 Vec::new(),
+                Vec::new(),
+                classification(GuardFileKind::NewFile, false, Some(GuardReason::NewFile)),
+                policy,
+                None,
+                None,
             ));
         }
-        if self.consume_guard_override(session_id, &rel_path)? {
+
+        let snapshot = self.file_snapshot(path)?;
+        let current_hash = snapshot.hash.clone().unwrap_or_default();
+        let file_classification = classify_existing_path(&full_path)?;
+        if file_classification.exempt {
+            let reason = file_classification
+                .exemption
+                .clone()
+                .unwrap_or(GuardReason::BuiltInNonCode);
+            return Ok(decision(
+                GuardAction::Allow,
+                reason,
+                rel_path,
+                required,
+                Vec::new(),
+                Vec::new(),
+                file_classification,
+                policy,
+                Some(current_hash),
+                snapshot.line_count,
+            ));
+        }
+
+        if allow_overrides && self.consume_guard_override(session_id, &rel_path)? {
             return Ok(decision(
                 GuardAction::Allow,
                 GuardReason::ExplicitOverride,
                 rel_path,
                 required,
                 Vec::new(),
+                Vec::new(),
+                file_classification,
+                policy,
+                Some(current_hash),
+                snapshot.line_count,
             ));
         }
-        let snapshot = self.file_snapshot(path)?;
-        let current_hash = snapshot.hash.unwrap_or_default();
-        let covered = self.covered_ranges(session_id, &rel_path, &current_hash)?;
+
+        let effective_session = session_id.unwrap_or("default");
+        let covered = self.covered_ranges(effective_session, &rel_path, &current_hash)?;
         if range_covered(required, &covered) {
             return Ok(decision(
                 GuardAction::Allow,
@@ -491,12 +554,21 @@ impl LensStore {
                 rel_path,
                 required,
                 covered,
+                Vec::new(),
+                file_classification,
+                policy,
+                Some(current_hash),
+                snapshot.line_count,
             ));
         }
-        let reason = if self.has_any_read(session_id, &rel_path)? {
+        let has_any = self.has_any_read(effective_session, &rel_path)?;
+        let stale = self.stale_ranges(effective_session, &rel_path, &current_hash)?;
+        let reason = if !has_any {
+            GuardReason::ZeroRead
+        } else if covered.is_empty() && !stale.is_empty() {
             GuardReason::StaleRead
         } else {
-            GuardReason::ZeroRead
+            GuardReason::OutOfRange
         };
         Ok(decision(
             requested_action,
@@ -504,6 +576,11 @@ impl LensStore {
             rel_path,
             required,
             covered,
+            stale,
+            file_classification,
+            policy,
+            Some(current_hash),
+            snapshot.line_count,
         ))
     }
 
@@ -636,6 +713,8 @@ impl LensStore {
             Ok(LensTouchedFile {
                 path: row.get(0)?,
                 operation: row.get(1)?,
+                start_line: None,
+                end_line: None,
                 tool: row.get(2)?,
                 source: parse_touched_source(row.get::<_, String>(3)?.as_str()),
                 explicit: row.get(4)?,
@@ -1219,7 +1298,7 @@ impl LensStore {
 
     fn covered_ranges(
         &self,
-        session_id: Option<&str>,
+        session_id: &str,
         rel_path: &str,
         current_hash: &str,
     ) -> Result<Vec<ReadCoverageRange>, rusqlite::Error> {
@@ -1231,7 +1310,7 @@ impl LensStore {
              WHERE f.project_id=?1
                AND f.rel_path=?2
                AND re.file_hash=?3
-               AND (?4 IS NULL OR re.session_id=?4)
+               AND re.session_id=?4
              ORDER BY rr.start_line, rr.end_line",
         )?;
         let rows = stmt.query_map(
@@ -1246,11 +1325,7 @@ impl LensStore {
         rows.collect()
     }
 
-    fn has_any_read(
-        &self,
-        session_id: Option<&str>,
-        rel_path: &str,
-    ) -> Result<bool, rusqlite::Error> {
+    fn has_any_read(&self, session_id: &str, rel_path: &str) -> Result<bool, rusqlite::Error> {
         self.conn.query_row(
             "SELECT EXISTS(
                 SELECT 1
@@ -1258,11 +1333,40 @@ impl LensStore {
                 JOIN files f ON f.id = re.file_id
                 WHERE f.project_id=?1
                   AND f.rel_path=?2
-                  AND (?3 IS NULL OR re.session_id=?3)
+                  AND re.session_id=?3
              )",
             params![self.project_id, rel_path, session_id],
             |row| row.get(0),
         )
+    }
+
+    fn stale_ranges(
+        &self,
+        session_id: &str,
+        rel_path: &str,
+        current_hash: &str,
+    ) -> Result<Vec<ReadCoverageRange>, rusqlite::Error> {
+        let mut stmt = self.conn.prepare(
+            "SELECT rr.start_line, rr.end_line
+             FROM read_ranges rr
+             JOIN read_events re ON re.id = rr.read_event_id
+             JOIN files f ON f.id = re.file_id
+             WHERE f.project_id=?1
+               AND f.rel_path=?2
+               AND re.session_id=?3
+               AND re.file_hash<>?4
+             ORDER BY rr.start_line, rr.end_line",
+        )?;
+        let rows = stmt.query_map(
+            params![self.project_id, rel_path, session_id, current_hash],
+            |row| {
+                Ok(ReadCoverageRange {
+                    start_line: row.get(0)?,
+                    end_line: row.get(1)?,
+                })
+            },
+        )?;
+        rows.collect()
     }
 
     fn consume_guard_override(
@@ -1633,13 +1737,153 @@ fn decision(
     file: String,
     required: ReadCoverageRange,
     covered_ranges: Vec<ReadCoverageRange>,
+    stale_ranges: Vec<ReadCoverageRange>,
+    classification: GuardFileClassification,
+    policy: GuardPolicySnapshot,
+    current_hash: Option<String>,
+    current_line_count: Option<i64>,
 ) -> GuardDecision {
+    let message = guard_message(&decision, &reason, &file, required);
     GuardDecision {
         decision,
         reason,
+        message,
         file,
+        classification,
+        policy,
         required_ranges: vec![required],
         covered_ranges,
+        stale_ranges,
+        current_hash,
+        current_line_count,
+    }
+}
+
+fn classification(
+    kind: GuardFileKind,
+    exists: bool,
+    exemption: Option<GuardReason>,
+) -> GuardFileClassification {
+    GuardFileClassification {
+        kind,
+        exists,
+        exempt: exemption.is_some(),
+        exemption,
+    }
+}
+
+fn classify_existing_path(
+    path: &Path,
+) -> Result<GuardFileClassification, Box<dyn std::error::Error>> {
+    let path_text = path.to_string_lossy().replace('\\', "/").to_lowercase();
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_lowercase();
+    if is_generated_path(&path_text, &file_name) || has_generated_marker(path)? {
+        return Ok(classification(
+            GuardFileKind::Generated,
+            true,
+            Some(GuardReason::BuiltInGenerated),
+        ));
+    }
+    if is_non_code_path(path, &file_name) {
+        return Ok(classification(
+            GuardFileKind::NonCode,
+            true,
+            Some(GuardReason::BuiltInNonCode),
+        ));
+    }
+    Ok(classification(GuardFileKind::Code, true, None))
+}
+
+fn is_generated_path(path_text: &str, file_name: &str) -> bool {
+    path_text.contains("/target/")
+        || path_text.contains("/dist/")
+        || path_text.contains("/build/")
+        || path_text.contains("/generated/")
+        || path_text.contains("/gen/")
+        || file_name.ends_with(".min.js")
+        || file_name.ends_with(".min.css")
+        || file_name.ends_with(".pb.go")
+        || file_name.ends_with(".pb.rs")
+        || file_name.ends_with(".generated.rs")
+        || file_name.ends_with(".generated.ts")
+}
+
+fn has_generated_marker(path: &Path) -> Result<bool, Box<dyn std::error::Error>> {
+    let bytes = std::fs::read(path)?;
+    let head = &bytes[..bytes.len().min(4096)];
+    let text = String::from_utf8_lossy(head).to_lowercase();
+    Ok(text.contains("@generated")
+        || text.contains("code generated")
+        || text.contains("do not edit")
+        || text.contains("auto-generated"))
+}
+
+fn is_non_code_path(path: &Path, file_name: &str) -> bool {
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_lowercase();
+    matches!(
+        extension.as_str(),
+        "md" | "markdown"
+            | "txt"
+            | "json"
+            | "jsonl"
+            | "yaml"
+            | "yml"
+            | "toml"
+            | "lock"
+            | "csv"
+            | "tsv"
+            | "xml"
+            | "svg"
+            | "plist"
+            | "ron"
+    ) || matches!(
+        file_name,
+        "license" | "notice" | "readme" | ".gitignore" | ".editorconfig"
+    )
+}
+
+fn guard_message(
+    decision: &GuardAction,
+    reason: &GuardReason,
+    file: &str,
+    required: ReadCoverageRange,
+) -> String {
+    let range = format!("{}:{}-{}", file, required.start_line, required.end_line);
+    match (decision, reason) {
+        (GuardAction::Allow, GuardReason::Covered) => {
+            format!("edit allowed: {range} is covered by a current session read")
+        }
+        (GuardAction::Allow, GuardReason::NewFile) => format!("edit allowed: {file} is a new file"),
+        (GuardAction::Allow, GuardReason::BuiltInNonCode) => {
+            format!("edit allowed: {file} is classified as built-in non-code")
+        }
+        (GuardAction::Allow, GuardReason::BuiltInGenerated) => {
+            format!("edit allowed: {file} is classified as built-in generated")
+        }
+        (GuardAction::Allow, GuardReason::GuardDisabled) => {
+            "edit allowed: guard policy mode is off".to_string()
+        }
+        (GuardAction::Allow, GuardReason::ExplicitOverride) => {
+            format!("edit allowed: explicit override consumed for {file}")
+        }
+        (_, GuardReason::ZeroRead) => {
+            format!("read {range} before editing; no current-session read coverage exists")
+        }
+        (_, GuardReason::StaleRead) => {
+            format!("reread {range} before editing; prior read coverage is stale")
+        }
+        (_, GuardReason::OutOfRange) => format!(
+            "read {range} before editing; current coverage does not include the required range"
+        ),
+        _ => format!("guard decision for {range}: {reason:?}"),
     }
 }
 
@@ -2070,6 +2314,8 @@ mod tests {
                 &[LensTouchedFile {
                     path: "changed.rs".to_string(),
                     operation: "modify".to_string(),
+                    start_line: None,
+                    end_line: None,
                     tool: "edit".to_string(),
                     source: LensTouchedFileSource::StructuredEvent,
                     explicit: true,
@@ -2208,12 +2454,7 @@ mod tests {
 
     #[test]
     fn read_guard_allows_recorded_current_ranges() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::write(
-            temp.path().join("main.rs"),
-            "fn main() {\n    println!();\n}\n",
-        )
-        .unwrap();
+        let temp = code_project();
         let mut store = LensStore::open_in_memory_for_tests(temp.path()).unwrap();
         store
             .record_read(Some("s"), Path::new("main.rs"), 1, 3)
@@ -2224,5 +2465,154 @@ mod tests {
             .unwrap();
         assert_eq!(decision.decision, GuardAction::Allow);
         assert_eq!(decision.reason, GuardReason::Covered);
+        assert_eq!(decision.covered_ranges.len(), 1);
+    }
+
+    #[test]
+    fn read_guard_blocks_unread_code_with_zero_read_reason() {
+        let temp = code_project();
+        let mut store = LensStore::open_in_memory_for_tests(temp.path()).unwrap();
+
+        let decision = store
+            .check_guard(Some("s"), Path::new("main.rs"), 1, 1, GuardAction::Block)
+            .unwrap();
+
+        assert_eq!(decision.decision, GuardAction::Block);
+        assert_eq!(decision.reason, GuardReason::ZeroRead);
+        assert!(decision.covered_ranges.is_empty());
+        assert_eq!(decision.classification.kind, GuardFileKind::Code);
+    }
+
+    #[test]
+    fn read_guard_blocks_out_of_range_current_reads() {
+        let temp = code_project();
+        let mut store = LensStore::open_in_memory_for_tests(temp.path()).unwrap();
+        store
+            .record_read(Some("s"), Path::new("main.rs"), 1, 1)
+            .unwrap();
+
+        let decision = store
+            .check_guard(Some("s"), Path::new("main.rs"), 2, 2, GuardAction::Block)
+            .unwrap();
+
+        assert_eq!(decision.decision, GuardAction::Block);
+        assert_eq!(decision.reason, GuardReason::OutOfRange);
+        assert_eq!(decision.covered_ranges[0].start_line, 1);
+    }
+
+    #[test]
+    fn read_guard_blocks_stale_reads_after_file_changes() {
+        let temp = code_project();
+        let mut store = LensStore::open_in_memory_for_tests(temp.path()).unwrap();
+        store
+            .record_read(Some("s"), Path::new("main.rs"), 1, 3)
+            .unwrap();
+        std::fs::write(
+            temp.path().join("main.rs"),
+            "fn main() {\n    dbg!(1);\n}\n",
+        )
+        .unwrap();
+
+        let decision = store
+            .check_guard(Some("s"), Path::new("main.rs"), 1, 1, GuardAction::Block)
+            .unwrap();
+
+        assert_eq!(decision.decision, GuardAction::Block);
+        assert_eq!(decision.reason, GuardReason::StaleRead);
+        assert!(decision.covered_ranges.is_empty());
+        assert_eq!(decision.stale_ranges[0].start_line, 1);
+    }
+
+    #[test]
+    fn read_guard_is_session_scoped() {
+        let temp = code_project();
+        let mut store = LensStore::open_in_memory_for_tests(temp.path()).unwrap();
+        store
+            .record_read(Some("reader"), Path::new("main.rs"), 1, 3)
+            .unwrap();
+
+        let decision = store
+            .check_guard(
+                Some("writer"),
+                Path::new("main.rs"),
+                1,
+                1,
+                GuardAction::Block,
+            )
+            .unwrap();
+
+        assert_eq!(decision.decision, GuardAction::Block);
+        assert_eq!(decision.reason, GuardReason::ZeroRead);
+    }
+
+    #[test]
+    fn read_guard_allows_new_non_code_and_generated_exemptions() {
+        let temp = code_project();
+        std::fs::write(temp.path().join("README.md"), "# docs\n").unwrap();
+        std::fs::write(
+            temp.path().join("generated.rs"),
+            "// @generated by a fixture\npub fn value() {}\n",
+        )
+        .unwrap();
+        let mut store = LensStore::open_in_memory_for_tests(temp.path()).unwrap();
+
+        let new_file = store
+            .check_guard(Some("s"), Path::new("new.rs"), 1, 1, GuardAction::Block)
+            .unwrap();
+        let docs = store
+            .check_guard(Some("s"), Path::new("README.md"), 1, 1, GuardAction::Block)
+            .unwrap();
+        let generated = store
+            .check_guard(
+                Some("s"),
+                Path::new("generated.rs"),
+                1,
+                1,
+                GuardAction::Block,
+            )
+            .unwrap();
+
+        assert_eq!(new_file.reason, GuardReason::NewFile);
+        assert_eq!(docs.reason, GuardReason::BuiltInNonCode);
+        assert_eq!(generated.reason, GuardReason::BuiltInGenerated);
+        assert!(matches!(new_file.decision, GuardAction::Allow));
+        assert!(matches!(docs.decision, GuardAction::Allow));
+        assert!(matches!(generated.decision, GuardAction::Allow));
+    }
+
+    #[test]
+    fn guard_override_is_not_consumed_unless_policy_allows_overrides() {
+        let temp = code_project();
+        let mut store = LensStore::open_in_memory_for_tests(temp.path()).unwrap();
+        store.allow_once(Some("s"), Path::new("main.rs")).unwrap();
+
+        let disabled = store
+            .check_guard(Some("s"), Path::new("main.rs"), 1, 1, GuardAction::Block)
+            .unwrap();
+        assert_eq!(disabled.decision, GuardAction::Block);
+        assert_eq!(disabled.reason, GuardReason::ZeroRead);
+
+        let enabled = store
+            .check_guard_with_overrides(
+                Some("s"),
+                Path::new("main.rs"),
+                1,
+                1,
+                GuardAction::Block,
+                true,
+            )
+            .unwrap();
+        assert_eq!(enabled.decision, GuardAction::Allow);
+        assert_eq!(enabled.reason, GuardReason::ExplicitOverride);
+    }
+
+    fn code_project() -> tempfile::TempDir {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("main.rs"),
+            "fn main() {\n    println!();\n}\n",
+        )
+        .unwrap();
+        temp
     }
 }

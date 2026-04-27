@@ -7,8 +7,8 @@ use crate::cli::args::{
 };
 use crate::lens::{
     Diagnostic, DiagnosticSeverity, DiagnosticSource, DiscoveryIntent, DiscoveryOptions,
-    LensEnvelope, LensGuardMode, LensStatusOptions, LensStore, RuntimePolicyOverrides,
-    build_discovery_envelope, build_status_envelope, retention,
+    LensEnvelope, LensGuardMode, LensResponseStatus, LensStatusOptions, LensStore,
+    RuntimePolicyOverrides, build_discovery_envelope, build_status_envelope, retention,
 };
 
 pub fn run_lens(action: LensAction) -> Result<(), Box<dyn std::error::Error>> {
@@ -349,32 +349,22 @@ fn guard(action: LensGuardAction) -> Result<(), Box<dyn std::error::Error>> {
             mode,
         } => {
             let root = cwd.map(Into::into).unwrap_or(std::env::current_dir()?);
+            let policy = crate::lens::resolve_policy(&root).policy.guard;
+            let requested = effective_guard_action(policy.mode, mode, policy.allow_overrides)?;
             let mut store = LensStore::open_for_project(&root)?;
-            let requested = match mode {
-                GuardAction::Off => crate::lens::GuardAction::Allow,
-                GuardAction::Warn => crate::lens::GuardAction::Warn,
-                GuardAction::Block => crate::lens::GuardAction::Block,
-            };
-            let decision = store.check_guard(
+            let decision = store.check_guard_with_overrides(
                 session.as_deref(),
                 std::path::Path::new(&path),
                 start_line,
                 end_line,
                 requested,
+                policy.allow_overrides,
             )?;
-            let out = serde_json::json!({
-                "project_id": store.project_id(),
-                "session": session,
-                "decision": decision.decision,
-                "reason": decision.reason,
-                "file": decision.file,
-                "required_ranges": decision.required_ranges,
-                "covered_ranges": decision.covered_ranges
-            });
+            let envelope = guard_envelope(store.project_id(), session, decision);
             if json {
-                print_json(&LensEnvelope::ok(out))?;
+                print_json(&envelope)?;
             } else {
-                println!("{:?}: {:?}", decision.decision, decision.reason);
+                print_guard_human(&envelope.data)?;
             }
         }
         LensGuardAction::AllowOnce {
@@ -383,6 +373,28 @@ fn guard(action: LensGuardAction) -> Result<(), Box<dyn std::error::Error>> {
             session,
         } => {
             let root = std::env::current_dir()?;
+            let policy = crate::lens::resolve_policy(&root).policy.guard;
+            if !policy.allow_overrides {
+                let out = serde_json::json!({
+                    "session": session,
+                    "path": path,
+                    "allowed_once": false,
+                    "reason": "overrides_disabled"
+                });
+                let envelope = LensEnvelope::error(
+                    out,
+                    vec![crate::lens::LensMessage::error(
+                        "guard_overrides_disabled",
+                        "guard overrides are disabled by policy",
+                    )],
+                );
+                if json {
+                    print_json(&envelope)?;
+                } else {
+                    eprintln!("guard overrides are disabled by policy");
+                }
+                std::process::exit(2);
+            }
             let store = LensStore::open_for_project(&root)?;
             store.allow_once(session.as_deref(), std::path::Path::new(&path))?;
             let out = serde_json::json!({ "session": session, "path": path, "allowed_once": true });
@@ -453,6 +465,83 @@ fn prune(cwd: Option<String>, json: bool, dry_run: bool) -> Result<(), Box<dyn s
             report.patch_drafts_deleted,
             report.patch_draft_bodies_deleted
         );
+    }
+    Ok(())
+}
+
+fn effective_guard_action(
+    policy_mode: LensGuardMode,
+    requested: Option<GuardAction>,
+    allow_overrides: bool,
+) -> Result<crate::lens::GuardAction, Box<dyn std::error::Error>> {
+    let action = requested.map(cli_guard_mode).unwrap_or(policy_mode);
+    if !allow_overrides && guard_mode_rank(action) < guard_mode_rank(policy_mode) {
+        return Err("guard mode override weakens policy but allow_overrides is false".into());
+    }
+    Ok(match action {
+        LensGuardMode::Off => crate::lens::GuardAction::Allow,
+        LensGuardMode::Warn => crate::lens::GuardAction::Warn,
+        LensGuardMode::Block => crate::lens::GuardAction::Block,
+    })
+}
+
+fn guard_mode_rank(mode: LensGuardMode) -> u8 {
+    match mode {
+        LensGuardMode::Off => 0,
+        LensGuardMode::Warn => 1,
+        LensGuardMode::Block => 2,
+    }
+}
+
+fn guard_envelope(
+    project_id: i64,
+    session: Option<String>,
+    decision: crate::lens::GuardDecision,
+) -> LensEnvelope<serde_json::Value> {
+    let status = match decision.decision {
+        crate::lens::GuardAction::Allow => LensResponseStatus::Ok,
+        crate::lens::GuardAction::Warn => LensResponseStatus::Warning,
+        crate::lens::GuardAction::Block => LensResponseStatus::Error,
+    };
+    let code = serde_json::to_value(&decision.reason)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_else(|| "unknown".to_string());
+    let message = crate::lens::LensMessage {
+        code: format!("guard_{code}"),
+        message: decision.message.clone(),
+        hint: Some(
+            "read the required range with ct lens read record or lens discover before editing"
+                .to_string(),
+        ),
+    };
+    let data = serde_json::json!({
+        "project_id": project_id,
+        "session": session,
+        "guard": decision
+    });
+    match status {
+        LensResponseStatus::Ok => LensEnvelope::ok(data),
+        LensResponseStatus::Warning => LensEnvelope::warning(data, vec![message]),
+        LensResponseStatus::Error => LensEnvelope::error(data, vec![message]),
+    }
+}
+
+fn print_guard_human(envelope: &serde_json::Value) -> Result<(), Box<dyn std::error::Error>> {
+    let guard = &envelope["guard"];
+    println!(
+        "{}: {} ({})",
+        guard["decision"].as_str().unwrap_or("unknown"),
+        guard["reason"].as_str().unwrap_or("unknown"),
+        guard["message"].as_str().unwrap_or("")
+    );
+    println!("required: {}", guard["required_ranges"]);
+    println!("covered: {}", guard["covered_ranges"]);
+    if guard["stale_ranges"]
+        .as_array()
+        .is_some_and(|ranges| !ranges.is_empty())
+    {
+        println!("stale: {}", guard["stale_ranges"]);
     }
     Ok(())
 }

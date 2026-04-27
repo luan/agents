@@ -84,6 +84,9 @@ fn lens_turn_event() -> Result<()> {
     let envelope = crate::lens::record_turn_event_envelope(&cwd, event)
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     println!("{}", serde_json::to_string(&envelope)?);
+    if matches!(envelope.status, crate::lens::LensResponseStatus::Error) {
+        std::process::exit(2);
+    }
     Ok(())
 }
 

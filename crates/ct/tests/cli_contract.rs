@@ -574,3 +574,125 @@ fn lens_diagnostics_snapshot_reports_deltas_and_all_flag() {
         1
     );
 }
+
+#[test]
+fn lens_guard_default_blocks_unread_code_and_allows_after_read() {
+    let (bp, _remote) = setup_blueprints();
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+    fs::write(
+        project.path().join("main.rs"),
+        "fn main() {\n    println!(\"hi\");\n}\n",
+    )
+    .expect("write source");
+
+    let assert = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .env("XDG_CONFIG_HOME", state.path())
+        .args([
+            "lens",
+            "guard",
+            "check",
+            "--path",
+            "main.rs",
+            "--start-line",
+            "1",
+            "--end-line",
+            "1",
+            "--session",
+            "cli",
+            "--json",
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("guard json");
+    assert_eq!(value["schema_version"], "lens.response.v1");
+    assert_eq!(value["status"], "error");
+    assert_eq!(value["data"]["guard"]["decision"], "block");
+    assert_eq!(value["data"]["guard"]["reason"], "zero_read");
+    assert_eq!(value["data"]["guard"]["classification"]["kind"], "code");
+
+    ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .env("XDG_CONFIG_HOME", state.path())
+        .args([
+            "lens",
+            "read",
+            "record",
+            "--path",
+            "main.rs",
+            "--start-line",
+            "1",
+            "--end-line",
+            "1",
+            "--session",
+            "cli",
+            "--json",
+        ])
+        .assert()
+        .success();
+
+    ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .env("XDG_CONFIG_HOME", state.path())
+        .args([
+            "lens",
+            "guard",
+            "check",
+            "--path",
+            "main.rs",
+            "--start-line",
+            "1",
+            "--end-line",
+            "1",
+            "--session",
+            "cli",
+            "--json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"decision\": \"allow\""))
+        .stdout(predicate::str::contains("\"reason\": \"covered\""));
+}
+
+#[test]
+fn lens_guard_has_no_default_public_override_path() {
+    let (bp, _remote) = setup_blueprints();
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+    fs::write(project.path().join("main.rs"), "fn main() {}\n").expect("write source");
+
+    ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .env("XDG_CONFIG_HOME", state.path())
+        .args([
+            "lens",
+            "guard",
+            "check",
+            "--path",
+            "main.rs",
+            "--start-line",
+            "1",
+            "--end-line",
+            "1",
+            "--mode",
+            "warn",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("allow_overrides is false"));
+
+    ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .env("XDG_CONFIG_HOME", state.path())
+        .args(["lens", "guard", "allow-once", "--path", "main.rs", "--json"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("guard_overrides_disabled"));
+}

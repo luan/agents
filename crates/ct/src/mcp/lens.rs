@@ -162,37 +162,22 @@ impl LensMcpServer {
         Parameters(input): Parameters<GuardCheckIn>,
     ) -> Result<CallToolResult, ErrorData> {
         let root = cwd(input.cwd)?;
+        let policy = crate::lens::resolve_policy(&root).policy.guard;
+        let mode =
+            effective_guard_action(policy.mode, input.mode.as_deref(), policy.allow_overrides)?;
         let mut store = crate::lens::LensStore::open_for_project(&root)
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-        let mode = match input.mode.as_deref().unwrap_or("warn") {
-            "off" | "allow" => crate::lens::GuardAction::Allow,
-            "warn" => crate::lens::GuardAction::Warn,
-            "block" => crate::lens::GuardAction::Block,
-            other => {
-                return Err(ErrorData::invalid_params(
-                    format!("invalid guard mode: {other}"),
-                    None,
-                ));
-            }
-        };
         let decision = store
-            .check_guard(
+            .check_guard_with_overrides(
                 input.session.as_deref(),
                 std::path::Path::new(&input.path),
                 input.start_line,
                 input.end_line,
                 mode,
+                policy.allow_overrides,
             )
             .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
-        json_success(&crate::lens::LensEnvelope::ok(json!({
-            "project_id": store.project_id(),
-            "session": input.session,
-            "decision": decision.decision,
-            "reason": decision.reason,
-            "file": decision.file,
-            "required_ranges": decision.required_ranges,
-            "covered_ranges": decision.covered_ranges
-        })))
+        json_success(&guard_envelope(store.project_id(), input.session, decision))
     }
 
     #[tool(
@@ -388,6 +373,71 @@ fn diagnostic_scope(
         (None, None) => path
             .map(crate::lens::DiagnosticScope::file)
             .unwrap_or_else(crate::lens::DiagnosticScope::workspace),
+    }
+}
+
+fn effective_guard_action(
+    policy_mode: crate::lens::LensGuardMode,
+    requested: Option<&str>,
+    allow_overrides: bool,
+) -> Result<crate::lens::GuardAction, ErrorData> {
+    let action = match requested {
+        Some("off") | Some("allow") => crate::lens::LensGuardMode::Off,
+        Some("warn") => crate::lens::LensGuardMode::Warn,
+        Some("block") => crate::lens::LensGuardMode::Block,
+        None => policy_mode,
+        Some(other) => {
+            return Err(ErrorData::invalid_params(
+                format!("invalid guard mode: {other}"),
+                None,
+            ));
+        }
+    };
+    if !allow_overrides && guard_mode_rank(action) < guard_mode_rank(policy_mode) {
+        return Err(ErrorData::invalid_params(
+            "guard mode override weakens policy but allow_overrides is false".to_string(),
+            None,
+        ));
+    }
+    Ok(match action {
+        crate::lens::LensGuardMode::Off => crate::lens::GuardAction::Allow,
+        crate::lens::LensGuardMode::Warn => crate::lens::GuardAction::Warn,
+        crate::lens::LensGuardMode::Block => crate::lens::GuardAction::Block,
+    })
+}
+
+fn guard_mode_rank(mode: crate::lens::LensGuardMode) -> u8 {
+    match mode {
+        crate::lens::LensGuardMode::Off => 0,
+        crate::lens::LensGuardMode::Warn => 1,
+        crate::lens::LensGuardMode::Block => 2,
+    }
+}
+
+fn guard_envelope(
+    project_id: i64,
+    session: Option<String>,
+    decision: crate::lens::GuardDecision,
+) -> crate::lens::LensEnvelope<serde_json::Value> {
+    let action = decision.decision.clone();
+    let code = serde_json::to_value(&decision.reason)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_else(|| "unknown".to_string());
+    let message = crate::lens::LensMessage {
+        code: format!("guard_{code}"),
+        message: decision.message.clone(),
+        hint: Some("read the required range before editing".to_string()),
+    };
+    let data = json!({
+        "project_id": project_id,
+        "session": session,
+        "guard": decision
+    });
+    match action {
+        crate::lens::GuardAction::Block => crate::lens::LensEnvelope::error(data, vec![message]),
+        crate::lens::GuardAction::Warn => crate::lens::LensEnvelope::warning(data, vec![message]),
+        crate::lens::GuardAction::Allow => crate::lens::LensEnvelope::ok(data),
     }
 }
 

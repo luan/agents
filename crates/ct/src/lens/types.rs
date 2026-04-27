@@ -252,6 +252,10 @@ pub struct LensTouchedFileInput {
     #[serde(default = "default_touch_operation")]
     pub operation: String,
     #[serde(default)]
+    pub start_line: Option<i64>,
+    #[serde(default)]
+    pub end_line: Option<i64>,
+    #[serde(default)]
     pub generated: bool,
     #[serde(default)]
     pub include_ignored: bool,
@@ -291,6 +295,10 @@ pub enum LensTouchedFileSource {
 pub struct LensTouchedFile {
     pub path: String,
     pub operation: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_line: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_line: Option<i64>,
     pub tool: String,
     pub source: LensTouchedFileSource,
     pub explicit: bool,
@@ -318,6 +326,7 @@ pub struct LensTurnRecordData {
     pub event: LensTurnEventKind,
     pub phase: LensToolEventPhase,
     pub git_fallback_used: bool,
+    pub guard_decisions: Vec<GuardDecision>,
     pub files: Vec<LensTouchedFile>,
     pub file_count: usize,
 }
@@ -419,15 +428,49 @@ pub enum GuardReason {
     StaleRead,
     OutOfRange,
     NewFile,
-    GeneratedOrPlaintext,
+    BuiltInNonCode,
+    BuiltInGenerated,
+    GuardDisabled,
     ExplicitOverride,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GuardFileKind {
+    Code,
+    NonCode,
+    Generated,
+    NewFile,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GuardFileClassification {
+    pub kind: GuardFileKind,
+    pub exists: bool,
+    pub exempt: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exemption: Option<GuardReason>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GuardPolicySnapshot {
+    pub mode: GuardAction,
+    pub allow_overrides: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GuardDecision {
     pub decision: GuardAction,
     pub reason: GuardReason,
+    pub message: String,
     pub file: String,
+    pub classification: GuardFileClassification,
+    pub policy: GuardPolicySnapshot,
     pub required_ranges: Vec<ReadCoverageRange>,
     pub covered_ranges: Vec<ReadCoverageRange>,
+    pub stale_ranges: Vec<ReadCoverageRange>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_line_count: Option<i64>,
 }

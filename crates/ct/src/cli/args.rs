@@ -448,8 +448,12 @@ pub enum LensGuardAction {
         end_line: i64,
         #[arg(long, help = "Session id")]
         session: Option<String>,
-        #[arg(long, value_enum, default_value_t = GuardAction::Warn)]
-        mode: GuardAction,
+        #[arg(
+            long,
+            value_enum,
+            help = "Runtime guard policy override; weakening a policy requires allow_overrides"
+        )]
+        mode: Option<GuardAction>,
     },
 
     #[command(about = "Allow one edit despite guard findings")]

@@ -104,9 +104,10 @@ export default function lensExtension(pi: ExtensionAPI) {
 			return renderText(ctx, title(theme, nf.guard, "guard", `${args.path}:${args.startLine}-${args.endLine}`));
 		},
 		renderResult(result, _options, theme, ctx) {
-			const data = toolResult(result) as any;
+			const envelope = toolResult(result) as any;
+			const data = envelope.data?.guard ?? envelope.guard ?? envelope;
 			const line = data.decision === "allow" ? okLine : warnLine;
-			return renderText(ctx, line(theme, [chip(theme, nf.guard, data.decision ?? "unknown", data.reason ?? "unknown"), chip(theme, nf.files, "need", `${data.file ?? ""}:${ranges(data.required_ranges)}`), chip(theme, nf.read, "read", ranges(data.covered_ranges))]));
+			return renderText(ctx, line(theme, [chip(theme, nf.guard, data.decision ?? "unknown", data.reason ?? "unknown"), chip(theme, nf.files, "need", `${data.file ?? ""}:${ranges(data.required_ranges)}`), chip(theme, nf.read, "read", ranges(data.covered_ranges)), chip(theme, nf.lens, "why", data.message ?? "")]));
 		},
 	});
 
