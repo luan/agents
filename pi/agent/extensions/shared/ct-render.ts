@@ -2,6 +2,24 @@ import { Text } from "@mariozechner/pi-tui";
 
 type RenderContext = { lastComponent?: { setText(value: string): void } };
 
+export const nf = {
+	ok: "",
+	warn: "",
+	error: "",
+	ast: "",
+	lens: "󰛩",
+	lsp: "󰒓",
+	guard: "󰌾",
+	read: "",
+	files: "",
+	drafts: "",
+	diagnostics: "",
+	db: "",
+	location: "",
+	apply: "󰁨",
+	dryRun: "󰄱",
+};
+
 export function renderText(ctx: RenderContext, value: string) {
 	const text = ctx.lastComponent ?? new Text("", 0, 0);
 	text.setText(value);
@@ -28,6 +46,16 @@ export function firstLocations(value: unknown, limit = 3): string[] {
 export function resultCount(data: Record<string, unknown>): number {
 	const count = data.resultCount ?? data.result_count ?? data.match_count ?? data.diagnostic_count;
 	return typeof count === "number" ? count : Array.isArray(data.matches) ? data.matches.length : 0;
+}
+
+export function compactLocations(value: unknown, limit = 2): string {
+	const locations = firstLocations(value, limit);
+	return locations.length > 0 ? `  ${nf.location} ${locations.join("  ")}` : "";
+}
+
+export function ranges(value: unknown): string {
+	if (!Array.isArray(value) || value.length === 0) return "∅";
+	return value.map((range: any) => `${range.start_line ?? "?"}-${range.end_line ?? "?"}`).join(",");
 }
 
 function visit(value: unknown, each: (item: Record<string, unknown>) => void) {

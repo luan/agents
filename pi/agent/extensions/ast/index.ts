@@ -2,7 +2,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 
 import { formatCommand, runCommand } from "../shared/ct-runner.ts";
-import { firstLocations, renderText, resultCount, toolResult } from "../shared/ct-render.ts";
+import { compactLocations, nf, renderText, resultCount, toolResult } from "../shared/ct-render.ts";
 import { recordLensReadsFromAstMatches } from "../shared/lens-read.ts";
 
 const paths = Type.Optional(Type.Array(Type.String({ description: "Files or directories to search" })));
@@ -65,12 +65,11 @@ export default function astExtension(pi: ExtensionAPI) {
 		},
 		renderCall(args, _theme, ctx) {
 			const pathCount = Array.isArray(args.paths) ? args.paths.length : 1;
-			return renderText(ctx, `ct ast search ${args.lang} · ${pathCount} path${pathCount === 1 ? "" : "s"}`);
+			return renderText(ctx, `${nf.ast} search ${args.lang}  ${nf.files} ${pathCount}`);
 		},
 		renderResult(result, _options, _theme, ctx) {
 			const data = toolResult(result);
-			const locations = firstLocations(data.matches).map((line) => `  ${line}`);
-			return renderText(ctx, [`✓ ast search → ${resultCount(data)} matches`, ...locations].join("\n"));
+			return renderText(ctx, `${nf.ok} ${nf.ast} search ${resultCount(data)}${compactLocations(data.matches)}`);
 		},
 	});
 
@@ -79,7 +78,7 @@ export default function astExtension(pi: ExtensionAPI) {
 		label: "ast replace",
 		description: "Replace code using native ct ast. Apply routes through ct patch drafts.",
 		parameters: replaceSchema,
-			executionMode: "exclusive",
+		executionMode: "exclusive",
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const args = ["replace", "--lang", params.lang, "--pattern", params.pattern, "--rewrite", params.rewrite];
 			pushMany(args, "--path", params.paths);
@@ -87,13 +86,12 @@ export default function astExtension(pi: ExtensionAPI) {
 			return runCtAst(args, ctx.cwd, signal, sessionId(ctx));
 		},
 		renderCall(args, _theme, ctx) {
-			const mode = args.apply === true ? "apply" : "dry-run";
-			return renderText(ctx, `ct ast replace ${args.lang} · ${mode}`);
+			const mode = args.apply === true ? `${nf.apply} apply` : `${nf.dryRun} dry`;
+			return renderText(ctx, `${nf.ast} replace ${args.lang}  ${mode}`);
 		},
 		renderResult(result, _options, _theme, ctx) {
 			const data = toolResult(result);
-			const locations = firstLocations(data.matches).map((line) => `  ${line}`);
-			return renderText(ctx, [`✓ ast replace → ${resultCount(data)} matches`, ...locations].join("\n"));
+			return renderText(ctx, `${nf.ok} ${nf.ast} replace ${resultCount(data)}${compactLocations(data.matches)}`);
 		},
 	});
 }

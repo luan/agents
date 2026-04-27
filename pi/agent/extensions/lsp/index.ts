@@ -2,7 +2,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 
 import { formatCommand, runCommand } from "../shared/ct-runner.ts";
-import { firstLocations, renderText, resultCount, toolResult } from "../shared/ct-render.ts";
+import { compactLocations, nf, renderText, resultCount, toolResult } from "../shared/ct-render.ts";
 import { recordLensRead } from "../shared/lens-read.ts";
 
 const requestSchema = Type.Object({
@@ -59,13 +59,12 @@ export default function lspExtension(pi: ExtensionAPI) {
 			return result;
 		},
 		renderCall(args, _theme, ctx) {
-			return renderText(ctx, `ct lsp ${args.operation}${args.filePath ? ` ${args.filePath}` : ""}`);
+			return renderText(ctx, `${nf.lsp} ${args.operation}${args.filePath ? ` ${args.filePath}` : ""}`);
 		},
 		renderResult(result, _options, _theme, ctx) {
 			const data = toolResult(result) as any;
-			if (data.failureKind) return renderText(ctx, `⚠ lsp ${data.operation ?? "request"} → ${data.failureKind}`);
-			const locations = firstLocations(data.result).map((line) => `  ${line}`);
-			return renderText(ctx, [`✓ lsp ${data.operation ?? "request"} → ${resultCount(data)} result${resultCount(data) === 1 ? "" : "s"}`, ...locations].join("\n"));
+			if (data.failureKind) return renderText(ctx, `${nf.warn} ${nf.lsp} ${data.operation ?? "request"} ${data.failureKind}`);
+			return renderText(ctx, `${nf.ok} ${nf.lsp} ${data.operation ?? "request"} ${resultCount(data)}${compactLocations(data.result)}`);
 		},
 	});
 
@@ -79,12 +78,12 @@ export default function lspExtension(pi: ExtensionAPI) {
 			return runCtLsp(["diagnostics", "--file-path", params.filePath], ctx.cwd, signal);
 		},
 		renderCall(args, _theme, ctx) {
-			return renderText(ctx, `ct lsp diagnostics ${args.filePath}`);
+			return renderText(ctx, `${nf.lsp} ${nf.diagnostics} ${args.filePath}`);
 		},
 		renderResult(result, _options, _theme, ctx) {
 			const data = toolResult(result) as any;
-			if (data.failureKind) return renderText(ctx, `⚠ lsp diagnostics → ${data.failureKind}`);
-			return renderText(ctx, `✓ lsp diagnostics → ${data.resultCount ?? 0} diagnostics · recorded ${data.recordedDiagnostics ?? 0}`);
+			if (data.failureKind) return renderText(ctx, `${nf.warn} ${nf.lsp} ${nf.diagnostics} ${data.failureKind}`);
+			return renderText(ctx, `${nf.ok} ${nf.lsp} ${nf.diagnostics} ${data.resultCount ?? 0}  ${nf.lens} ${data.recordedDiagnostics ?? 0}`);
 		},
 	});
 }
