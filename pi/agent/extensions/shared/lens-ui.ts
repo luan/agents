@@ -145,7 +145,7 @@ function diagnosticsSummary(data: LensRecord | undefined): string | undefined {
 	const errors = numberValue(summary?.errors);
 	const warnings = numberValue(summary?.warnings);
 	if (active === undefined && errors === undefined && warnings === undefined) return undefined;
-	if ((active ?? 0) === 0 && (errors ?? 0) === 0 && (warnings ?? 0) === 0) return undefined;
+	if ((errors ?? 0) === 0 && (warnings ?? 0) === 0) return undefined;
 	return `diag ${active ?? (errors ?? 0) + (warnings ?? 0)} (${errors ?? 0} err/${warnings ?? 0} warn)`;
 }
 

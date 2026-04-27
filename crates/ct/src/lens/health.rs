@@ -533,17 +533,18 @@ fn cleanup_summary(
 ) -> Result<CleanupSummary, Box<dyn std::error::Error>> {
     store.with_conn(|conn| {
         let mut stmt = conn.prepare(
-            "SELECT status, mutation_count, diagnostic_snapshot_id, raw_output_id
-             FROM cleanup_runs
-             WHERE project_id=?1 AND session_id=?2 AND turn_id=?3
-             ORDER BY created_at DESC, id DESC",
+            "SELECT tool, status, mutation_count, diagnostic_snapshot_id, raw_output_id
+              FROM cleanup_runs
+              WHERE project_id=?1 AND session_id=?2 AND turn_id=?3
+              ORDER BY created_at DESC, id DESC",
         )?;
         let rows = stmt.query_map(params![store.project_id(), session, turn], |row| {
             Ok((
                 row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, Option<i64>>(2)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
                 row.get::<_, Option<i64>>(3)?,
+                row.get::<_, Option<i64>>(4)?,
             ))
         })?;
         let mut summary = CleanupSummary {
@@ -555,22 +556,25 @@ fn cleanup_summary(
             skipped: 0,
             raw_output_refs: Vec::new(),
         };
+        let mut latest_by_tool = BTreeSet::new();
         for row in rows {
-            let (status, mutations, diagnostic_snapshot_id, raw_output_id) = row?;
+            let (tool, status, mutations, diagnostic_snapshot_id, raw_output_id) = row?;
             summary.runs += 1;
             summary.mutations += mutations.max(0) as usize;
             if diagnostic_snapshot_id.is_some() {
                 summary.diagnostics +=
                     cleanup_snapshot_diagnostic_count(conn, diagnostic_snapshot_id)?;
             }
-            if let Some(raw_output_id) = raw_output_id {
-                summary.raw_output_refs.push(raw_output_id);
-            }
-            match status.as_str() {
-                "failed" => summary.failed += 1,
-                "timed_out" => summary.timed_out += 1,
-                status if status.starts_with("skipped_") => summary.skipped += 1,
-                _ => {}
+            if latest_by_tool.insert(tool) {
+                if let Some(raw_output_id) = raw_output_id {
+                    summary.raw_output_refs.push(raw_output_id);
+                }
+                match status.as_str() {
+                    "failed" => summary.failed += 1,
+                    "timed_out" => summary.timed_out += 1,
+                    status if status.starts_with("skipped_") => summary.skipped += 1,
+                    _ => {}
+                }
             }
         }
         Ok(summary)
@@ -701,7 +705,6 @@ fn compute_status(
         TurnHealthStatus::Error
     } else if diagnostics.warnings > 0
         || diagnostics.deltas.new > 0
-        || cleanup.diagnostics > 0
         || cleanup.skipped > 0
         || check_warnings(checks) > 0
     {
@@ -717,8 +720,7 @@ fn compact_summary(status: &TurnHealthStatus, summary: &TurnHealthSummary) -> St
         status.as_str(),
         summary.changed_files.count
     )];
-    if summary.diagnostics.active > 0
-        || summary.diagnostics.errors > 0
+    if summary.diagnostics.errors > 0
         || summary.diagnostics.warnings > 0
         || summary.diagnostics.deltas.new > 0
     {
