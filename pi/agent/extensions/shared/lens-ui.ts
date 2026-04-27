@@ -11,6 +11,26 @@ export const LENS_TOOL_NAMES = [
 export type LensSeverity = "clean" | "warning" | "blocked" | "degraded" | "error" | "unknown";
 
 type LensRecord = Record<string, any>;
+type LensRenderOptions = { ansi?: boolean };
+
+const ansi = {
+	reset: "\x1b[0m",
+	lens: "\x1b[2;38;5;111m",
+	muted: "\x1b[2;38;5;103m",
+	separator: "\x1b[2;38;5;60m",
+	clean: "\x1b[2;38;5;108m",
+	warning: "\x1b[2;38;5;179m",
+	blocked: "\x1b[2;38;5;167m",
+	degraded: "\x1b[2;38;5;104m",
+	error: "\x1b[2;38;5;203m",
+	diagnostics: "\x1b[2;38;5;181m",
+	guard: "\x1b[2;38;5;173m",
+	cleanup: "\x1b[2;38;5;109m",
+	patch: "\x1b[2;38;5;140m",
+	action: "\x1b[2;38;5;116m",
+	fix: "\x1b[2;38;5;114m",
+	ack: "\x1b[2;38;5;147m",
+};
 
 export function lensSeverity(value: unknown): LensSeverity {
 	const data = asRecord(value);
@@ -30,50 +50,52 @@ export function lensSeverity(value: unknown): LensSeverity {
 	return envelopeStatus === "ok" ? "clean" : "unknown";
 }
 
-export function renderLensCompactStatus(value: unknown): string {
+export function renderLensCompactStatus(value: unknown, options: LensRenderOptions = {}): string {
 	const data = asRecord(value);
 	const severity = lensSeverity(data);
 	const icon = severityIcon(severity);
-	const parts = [`󰛩 Lens ${icon} ${severity}`];
+	const style = options.ansi === true;
+	const parts = [`${paint("lens", "󰛩 Lens", style)} ${paint(severityColor(severity), `${icon} ${severity}`, style)}`];
 	const compact = stringValue(data?.health?.compact ?? data?.data?.compact ?? data?.compact);
-	if (compact) parts.push(compact);
+	if (compact) parts.push(paint("muted", compact, style));
 	const diagnostics = diagnosticsSummary(data);
-	if (diagnostics) parts.push(diagnostics);
+	if (diagnostics) parts.push(paint("diagnostics", diagnostics, style));
 	const guard = guardSummary(data);
-	if (guard) parts.push(guard);
+	if (guard) parts.push(paint("guard", guard, style));
 	const cleanup = cleanupSummary(data);
-	if (cleanup) parts.push(cleanup);
+	if (cleanup) parts.push(paint("cleanup", cleanup, style));
 	const patch = patchSummary(data);
-	if (patch) parts.push(patch);
+	if (patch) parts.push(paint("patch", patch, style));
 	const errors = messages(data?.errors, 1);
-	if (errors.length > 0) parts.push(errors[0]!);
-	return parts.join(" · ");
+	if (errors.length > 0) parts.push(paint("error", errors[0]!, style));
+	return parts.join(paint("separator", " · ", style));
 }
 
-export function renderLensWidgetLines(value: unknown, expanded = false): string[] {
+export function renderLensWidgetLines(value: unknown, expanded = false, options: LensRenderOptions = {}): string[] {
 	const data = asRecord(value);
-	const lines = [renderLensCompactStatus(data)];
+	const style = options.ansi === true;
+	const lines = [renderLensCompactStatus(data, options)];
 	const actionContext = asRecord(data?.context ?? data?.data?.action_context ?? data?.data?.health?.action_context ?? data?.data);
-	const actions = actionLines(data, actionContext);
+	const actions = actionLines(data, actionContext).map((line) => colorDetailLine(line, style));
 	if (!expanded && actions.length > 0) {
 		lines.push(...actions.slice(0, 3));
-		if (actions.length > 3) lines.push(`  … ${actions.length - 3} more Lens action(s)`);
+		if (actions.length > 3) lines.push(paint("muted", `  … ${actions.length - 3} more Lens action(s)`, style));
 		return lines;
 	}
 	if (expanded) {
-		lines.push(...messageLines("warning", data?.warnings));
-		lines.push(...messageLines("error", data?.errors));
+		lines.push(...messageLines("warning", data?.warnings).map((line) => colorDetailLine(line, style)));
+		lines.push(...messageLines("error", data?.errors).map((line) => colorDetailLine(line, style)));
 		lines.push(...actions);
 		const jsonRefs = referenceLines(data);
-		if (jsonRefs.length > 0) lines.push(...jsonRefs);
+		if (jsonRefs.length > 0) lines.push(...jsonRefs.map((line) => colorDetailLine(line, style)));
 	}
 	return lines;
 }
 
-export function summarizeLensResult(result: unknown, expanded = false): string {
+export function summarizeLensResult(result: unknown, expanded = false, options: LensRenderOptions = {}): string {
 	const data = asRecord(result);
 	const envelope = asRecord(data?.details?.results ?? data?.results ?? data);
-	const lines = renderLensWidgetLines(envelope, expanded);
+	const lines = renderLensWidgetLines(envelope, expanded, options);
 	if (expanded) return lines.join("\n");
 	return lines[0] ?? "󰛩 Lens unknown";
 }
@@ -186,6 +208,42 @@ function severityIcon(severity: LensSeverity): string {
 		default:
 			return "?";
 	}
+}
+
+function severityColor(severity: LensSeverity): keyof typeof ansi {
+	switch (severity) {
+		case "clean":
+			return "clean";
+		case "warning":
+			return "warning";
+		case "blocked":
+			return "blocked";
+		case "degraded":
+			return "degraded";
+		case "error":
+			return "error";
+		default:
+			return "muted";
+	}
+}
+
+function colorDetailLine(line: string, style: boolean): string {
+	const trimmed = line.trimStart();
+	if (trimmed.startsWith("warning:")) return paint("warning", line, style);
+	if (trimmed.startsWith("error:")) return paint("error", line, style);
+	if (trimmed.startsWith("action:")) return paint("action", line, style);
+	if (trimmed.startsWith("fix:")) return paint("fix", line, style);
+	if (trimmed.startsWith("ack:")) return paint("ack", line, style);
+	if (trimmed.startsWith("guard:")) return paint("guard", line, style);
+	if (trimmed.startsWith("diagnostics:")) return paint("diagnostics", line, style);
+	if (trimmed.startsWith("cleanup:")) return paint("cleanup", line, style);
+	if (trimmed.startsWith("patch:")) return paint("patch", line, style);
+	if (trimmed.startsWith("refs:")) return paint("muted", line, style);
+	return paint("muted", line, style);
+}
+
+function paint(role: keyof typeof ansi, text: string, style: boolean): string {
+	return style ? `${ansi[role]}${text}${ansi.reset}` : text;
 }
 
 function asRecord(value: unknown): LensRecord | undefined {

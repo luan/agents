@@ -6,7 +6,7 @@ import { Type } from "typebox";
 
 import { formatCommand, runCommand } from "../shared/ct-runner.ts";
 import { nf, renderText, title } from "../shared/ct-render.ts";
-import { renderLensCompactStatus, renderLensWidgetLines, summarizeLensResult } from "../shared/lens-ui.ts";
+import { lensSeverity, renderLensCompactStatus, renderLensWidgetLines, summarizeLensResult } from "../shared/lens-ui.ts";
 
 const HOOK_EVENT_SCHEMA = "lens.hook_event.v1";
 const RAW_OUTPUT_MAX_BYTES = 256 * 1024;
@@ -138,14 +138,20 @@ export default function lensExtension(pi: ExtensionAPI) {
 		} catch (error) {
 			return {
 				schema_version: "lens.hook_response.v1",
-				status: "error",
-				decision: { outcome: "block", reason: "invalid_hook_response", guard: [] },
-				health: { status: "error" },
+				status: "degraded",
+				decision: { outcome: "allow", reason: "invalid_hook_response", guard: [] },
+				health: { status: "degraded", compact: "degraded · hook failed" },
 				warnings: [],
-				errors: [{ code: "invalid_hook_response", message: String(error) }],
+				errors: [{ code: "invalid_hook_response", message: hookFailureMessage(error, result) }],
 				data: { stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode },
 			};
 		}
+	}
+
+	function hookFailureMessage(error: unknown, result: { stderr?: string; exitCode?: number }) {
+		const stderr = result.stderr?.trim();
+		const suffix = stderr ? `: ${stderr}` : `: ${String(error)}`;
+		return `ct hook failed${typeof result.exitCode === "number" ? ` with exit code ${result.exitCode}` : ""}${suffix}`;
 	}
 
 	function eventFor(ctx: any, event: LensHookEventName, extra: Record<string, unknown> = {}) {
@@ -164,8 +170,8 @@ export default function lensExtension(pi: ExtensionAPI) {
 
 	function applyLensUi(ctx: any, response: unknown) {
 		if (!ctx?.hasUI) return;
-		ctx.ui.setStatus("lens", renderLensCompactStatus(response));
-		ctx.ui.setWidget("lens-health", renderLensWidgetLines(response, false));
+		ctx.ui.setStatus("lens", renderLensCompactStatus(response, { ansi: true }));
+		ctx.ui.setWidget("lens-health", lensSeverity(response) === "clean" ? [] : renderLensWidgetLines(response, false, { ansi: true }));
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -188,7 +194,7 @@ export default function lensExtension(pi: ExtensionAPI) {
 				message: {
 					customType: "lens-context",
 					content: response.context.content,
-					display: true,
+					display: false,
 					details: response,
 				},
 			};
@@ -213,10 +219,15 @@ export default function lensExtension(pi: ExtensionAPI) {
 			ctx.signal,
 		);
 		applyLensUi(ctx, response);
-		if (String(response?.decision?.outcome ?? "").toLowerCase() === "block") {
+		if (isExplicitGuardBlock(response)) {
 			return { block: true, reason: renderLensCompactStatus(response) };
 		}
 	});
+
+	function isExplicitGuardBlock(response: any) {
+		if (String(response?.decision?.outcome ?? "").toLowerCase() !== "block") return false;
+		return String(response?.decision?.reason ?? "") !== "invalid_hook_response";
+	}
 
 	pi.on("tool_result", async (event, ctx) => {
 		const response = await runHook(
@@ -282,7 +293,7 @@ export default function lensExtension(pi: ExtensionAPI) {
 			return renderText(ctx, title(theme, nf.lens, "lens discover", `${args.intent}${args.query ? ` · ${args.query}` : ""}`));
 		},
 		renderResult(result, options, _theme, ctx) {
-			return renderText(ctx, summarizeLensResult(result, options.expanded));
+			return renderText(ctx, summarizeLensResult(result, options.expanded, { ansi: true }));
 		},
 	});
 
@@ -313,7 +324,7 @@ export default function lensExtension(pi: ExtensionAPI) {
 			return renderText(ctx, title(theme, nf.guard, "lens guard", `${args.action ?? "check"} · ${args.path}`));
 		},
 		renderResult(result, options, _theme, ctx) {
-			return renderText(ctx, summarizeLensResult(result, options.expanded));
+			return renderText(ctx, summarizeLensResult(result, options.expanded, { ansi: true }));
 		},
 	});
 
@@ -348,7 +359,7 @@ export default function lensExtension(pi: ExtensionAPI) {
 			return renderText(ctx, title(theme, nf.diagnostics, "lens diagnostics", args.action ?? "list"));
 		},
 		renderResult(result, options, _theme, ctx) {
-			return renderText(ctx, summarizeLensResult(result, options.expanded));
+			return renderText(ctx, summarizeLensResult(result, options.expanded, { ansi: true }));
 		},
 	});
 
@@ -368,7 +379,7 @@ export default function lensExtension(pi: ExtensionAPI) {
 			return renderText(ctx, title(theme, nf.lens, "lens health", args.operation ?? "turn"));
 		},
 		renderResult(result, options, _theme, ctx) {
-			return renderText(ctx, summarizeLensResult(result, options.expanded));
+			return renderText(ctx, summarizeLensResult(result, options.expanded, { ansi: true }));
 		},
 	});
 
@@ -387,7 +398,7 @@ export default function lensExtension(pi: ExtensionAPI) {
 			return renderText(ctx, title(theme, nf.lens, "lens cleanup", args.allowUnsafe ? "allow unsafe" : "safe"));
 		},
 		renderResult(result, options, _theme, ctx) {
-			return renderText(ctx, summarizeLensResult(result, options.expanded));
+			return renderText(ctx, summarizeLensResult(result, options.expanded, { ansi: true }));
 		},
 	});
 
@@ -406,7 +417,7 @@ export default function lensExtension(pi: ExtensionAPI) {
 			return renderText(ctx, title(theme, nf.files, "lens report", args.path ?? "turn"));
 		},
 		renderResult(result, options, _theme, ctx) {
-			return renderText(ctx, summarizeLensResult(result, options.expanded));
+			return renderText(ctx, summarizeLensResult(result, options.expanded, { ansi: true }));
 		},
 	});
 
@@ -425,7 +436,7 @@ export default function lensExtension(pi: ExtensionAPI) {
 			return renderText(ctx, title(theme, nf.lens, "lens context", args.ack ? "ack" : "show"));
 		},
 		renderResult(result, options, _theme, ctx) {
-			return renderText(ctx, summarizeLensResult(result, options.expanded));
+			return renderText(ctx, summarizeLensResult(result, options.expanded, { ansi: true }));
 		},
 	});
 

@@ -92,6 +92,15 @@ describe("Lens Pi UI rendering", () => {
 		expect(renderLensCompactStatus(patchTelemetry)).toContain("patch 2 drafts/5 hunks/1 accepts");
 	});
 
+	it("can render dim ANSI color by status section", () => {
+		const rendered = renderLensCompactStatus(warning, { ansi: true });
+		expect(rendered).toContain("\x1b[2;38;5;111m󰛩 Lens\x1b[0m");
+		expect(rendered).toContain("\x1b[2;38;5;179m⚠ warning\x1b[0m");
+		expect(rendered).toContain("\x1b[2;38;5;181mdiag 3 (1 err/2 warn)\x1b[0m");
+		expect(rendered).toContain("\x1b[2;38;5;173mguard 1 warn\x1b[0m");
+		expect(rendered).toContain("\x1b[2;38;5;109mcleanup 2 run/0 failed/0 timeout\x1b[0m");
+	});
+
 	it("renders actionable expanded widget lines", () => {
 		const lines = renderLensWidgetLines(warning, true);
 		expect(lines).toContain("  warning: active diagnostics remain");
