@@ -107,11 +107,9 @@ jobs:
         shell: bash
         run: |
           set -eu
-          # In a clean-home install, each top-level entry of every package
-          # source becomes one symlink under the corresponding target. Children
-          # below that level are accessed *through* the dir-symlink — they are
-          # not separately symlinked unless tree-unfolding kicked in (covered
-          # by scenario 3).
+          # ~/.agents is the repo checkout (or a symlink to it), so paths under
+          # it resolve through the checkout rather than through per-skill links.
+          test -L "$HOME/.agents" || { echo "::error::missing ~/.agents symlink"; exit 1; }
           for p in \
             "$HOME/.claude/CLAUDE.md" \
             "$HOME/.claude/settings.json" \
@@ -127,11 +125,15 @@ jobs:
             "$HOME/.config/opencode/profiles" \
             "$HOME/.pi/AGENTS.md" \
             "$HOME/.pi/agent" \
-            "$HOME/.agents/rules/cargo.md" \
-            "$HOME/.agents/skills/commit" \
             "$HOME/.claude/skills/commit"; do
             test -L "$p" || { echo "::error::missing symlink: $p"; exit 1; }
             test -e "$p" || { echo "::error::broken symlink: $p"; exit 1; }
+          done
+          for p in \
+            "$HOME/.agents/rules/cargo.md" \
+            "$HOME/.agents/skills/commit" \
+            "$HOME/.agents/plugins/marketplace.json"; do
+            test -e "$p" || { echo "::error::missing agents-home path: $p"; exit 1; }
           done
 
       - name: scenario 1 — xtask link is idempotent
@@ -154,9 +156,24 @@ jobs:
           set -eu
           for p in \
             "$HOME/.claude/CLAUDE.md" \
-            "$HOME/.agents/skills/commit"; do
+            "$HOME/.agents"; do
             if [ -L "$p" ]; then echo "::error::$p still a symlink after unlink"; exit 1; fi
           done
+
+      - name: scenario 1b — legacy managed ~/.agents is migrated
+        shell: bash
+        run: |
+          set -eu
+          rm -rf "$HOME/.claude" "$HOME/.codex" "$HOME/.config/opencode" "$HOME/.pi" "$HOME/.agents"
+          mkdir -p "$HOME/.agents"
+          node -e 'require("fs").symlinkSync(process.argv[1], process.argv[2], "dir")' \
+            "$GITHUB_WORKSPACE/rules" "$HOME/.agents/rules"
+          node -e 'require("fs").symlinkSync(process.argv[1], process.argv[2], "dir")' \
+            "$GITHUB_WORKSPACE/skills" "$HOME/.agents/skills"
+          cargo xtask link
+          test -L "$HOME/.agents" || { echo "::error::legacy ~/.agents was not replaced by a repo symlink"; exit 1; }
+          test -e "$HOME/.agents/skills/commit/SKILL.md" \
+            || { echo "::error::migrated ~/.agents does not expose skills"; exit 1; }
 
       # ---------- Scenario 2: file conflict (refuses to clobber) ----------
 

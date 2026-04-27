@@ -11,7 +11,7 @@ pub fn run() -> Result<()> {
     assert_fresh_agents(&root)?;
     assert_no_checkout_paths(&root)?;
     validate_json(&root.join("codex/hooks.json"))?;
-    validate_json(&root.join(".agents/plugins/marketplace.json"))?;
+    validate_json(&root.join("plugins/marketplace.json"))?;
     validate_json(&root.join("plugins/gt/.codex-plugin/plugin.json"))?;
     validate_json(&root.join("plugins/gt/hooks.json"))?;
     let global_agents = root.join("GLOBAL_AGENTS.md");
@@ -81,7 +81,6 @@ fn assert_no_checkout_paths(root: &Path) -> Result<()> {
         root.join("opencode"),
         root.join("pi"),
         root.join("plugins"),
-        root.join(".agents"),
     ];
     for r in roots {
         if !r.exists() {

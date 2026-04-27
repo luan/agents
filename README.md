@@ -13,8 +13,8 @@ Shared configuration is the default. Tool-specific folders (`claude/`, `codex/`,
 | `AGENTS.template.md` | Hand-edited instruction source |
 | `GLOBAL_AGENTS.md` | Generated — template + `rules/*.md` (gitignored) |
 | `AGENTS.md` | Repo-local guidance for working on this hub |
-| `rules/` | Linked to `~/.agents/rules`; sourced by generated instructions |
-| `skills/` | Linked to `~/.agents/skills` and `~/.claude/skills` |
+| `rules/` | Available as `~/.agents/rules` when this repo is cloned or linked to `~/.agents` |
+| `skills/` | Available as `~/.agents/skills`; also linked to `~/.claude/skills` |
 | `hooks/` | Python hook integrations (tool-specific formats) |
 | `plugins/` | Shared plugin sources; tool folders link here |
 | `crates/ct/` | `ct` Rust CLI — vault, sym, hooks, MCP, apply-patch |
@@ -42,6 +42,11 @@ just setup          # idempotent: render, link, install ct, register MCP servers
 just link-dry-run   # preview link targets before linking
 just ct-install     # rebuild and reinstall ct + register MCP servers
 ```
+
+The repo is designed to be the agents home itself. Clone it directly to
+`~/.agents`, or clone it elsewhere and let `just setup` link `~/.agents` to the
+checkout. The setup task migrates the old managed `~/.agents/rules` and
+`~/.agents/skills` symlinks when they are still owned by this repo.
 
 Prerequisites: `just`, `cargo`, `npm`, `claude`, `codex`, `opencode`.
 

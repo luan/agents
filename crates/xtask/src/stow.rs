@@ -16,10 +16,11 @@ const TARGETS: &[(&str, &[&str])] = &[
     ("codex", &[".codex"]),
     ("opencode", &[".config", "opencode"]),
     ("pi", &[".pi"]),
-    ("rules", &[".agents", "rules"]),
-    ("skills", &[".agents", "skills"]),
     ("skills", &[".claude", "skills"]),
 ];
+
+const AGENTS_HOME: &[&str] = &[".agents"];
+const LEGACY_AGENTS_HOME_ENTRIES: &[&str] = &["rules", "skills"];
 
 const LEGACY_BIN_LINKS: &[&str] = &["agents-hook", "opencode"];
 
@@ -32,12 +33,19 @@ pub fn run(mode: Mode) -> Result<()> {
     }
 
     let mut errors: usize = 0;
+    let agents_home = target_from_segments(&home, AGENTS_HOME);
+    eprintln!("+ {} {} -> {}", mode_verb(mode), ".", agents_home.display());
+    if let Err(err) = process_agents_home(mode, &root, &agents_home) {
+        eprintln!("  error: {err:#}");
+        errors += 1;
+        if mode == Mode::Link {
+            bail!("stow operation completed with {errors} package error(s)");
+        }
+    }
+
     for (package, segments) in TARGETS {
         let source = root.join(package);
-        let mut target = home.clone();
-        for s in *segments {
-            target.push(s);
-        }
+        let target = target_from_segments(&home, segments);
         eprintln!(
             "+ {} {} -> {}",
             mode_verb(mode),
@@ -67,6 +75,14 @@ fn mode_verb(mode: Mode) -> &'static str {
     }
 }
 
+fn target_from_segments(home: &Path, segments: &[&str]) -> PathBuf {
+    let mut target = home.to_path_buf();
+    for s in segments {
+        target.push(s);
+    }
+    target
+}
+
 fn display_rel(p: &Path, root: &Path) -> String {
     p.strip_prefix(root)
         .map(|r| r.display().to_string())
@@ -92,6 +108,191 @@ fn process_package(mode: Mode, source: &Path, target: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn process_agents_home(mode: Mode, root: &Path, target: &Path) -> Result<()> {
+    match mode {
+        Mode::DryRun => act_agents_home_dry_run(root, target),
+        Mode::Link => act_agents_home_link(root, target),
+        Mode::Unlink => act_agents_home_unlink(root, target),
+    }
+}
+
+fn act_agents_home_link(root: &Path, target: &Path) -> Result<()> {
+    match fs::symlink_metadata(target) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            if same_canonical_path(root, target)? {
+                eprintln!("  = {} (up to date)", target.display());
+                Ok(())
+            } else {
+                bail_foreign_symlink(root, target)
+            }
+        }
+        Ok(meta) if meta.is_dir() => {
+            if same_canonical_path(root, target)? {
+                eprintln!("  = {} (repo checkout)", target.display());
+                return Ok(());
+            }
+            if is_legacy_agents_home(root, target)? {
+                fs::remove_dir_all(target)
+                    .with_context(|| format!("remove legacy {}", target.display()))?;
+                create_symlink(root, target)?;
+                eprintln!("  + {} -> {}", target.display(), root.display());
+                return Ok(());
+            }
+            bail!(
+                "{} already exists and is not this repo checkout (refusing to clobber)",
+                target.display()
+            );
+        }
+        Ok(_) => bail!(
+            "{} already exists and is not a symlink or directory",
+            target.display()
+        ),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            create_symlink(root, target)?;
+            eprintln!("  + {} -> {}", target.display(), root.display());
+            Ok(())
+        }
+        Err(err) => {
+            Err(anyhow::Error::from(err)).with_context(|| format!("stat {}", target.display()))
+        }
+    }
+}
+
+fn act_agents_home_dry_run(root: &Path, target: &Path) -> Result<()> {
+    match fs::symlink_metadata(target) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            if same_canonical_path(root, target)? {
+                eprintln!("  = {} (up to date)", target.display());
+                Ok(())
+            } else {
+                bail_foreign_symlink(root, target)
+            }
+        }
+        Ok(meta) if meta.is_dir() => {
+            if same_canonical_path(root, target)? {
+                eprintln!("  = {} (repo checkout)", target.display());
+                return Ok(());
+            }
+            if is_legacy_agents_home(root, target)? {
+                eprintln!(
+                    "  + would replace legacy {} with symlink to {}",
+                    target.display(),
+                    root.display()
+                );
+                return Ok(());
+            }
+            bail!(
+                "{} already exists and is not this repo checkout",
+                target.display()
+            );
+        }
+        Ok(_) => bail!(
+            "{} already exists and is not a symlink or directory",
+            target.display()
+        ),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            eprintln!("  + would link {} -> {}", target.display(), root.display());
+            Ok(())
+        }
+        Err(err) => {
+            Err(anyhow::Error::from(err)).with_context(|| format!("stat {}", target.display()))
+        }
+    }
+}
+
+fn act_agents_home_unlink(root: &Path, target: &Path) -> Result<()> {
+    match fs::symlink_metadata(target) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            if same_canonical_path(root, target)? {
+                remove_symlink(target).with_context(|| format!("remove {}", target.display()))?;
+                eprintln!("  - {}", target.display());
+            } else {
+                eprintln!(
+                    "  skip {} (symlink not owned by this repo)",
+                    target.display()
+                );
+            }
+        }
+        Ok(meta) if meta.is_dir() => {
+            if same_canonical_path(root, target)? {
+                eprintln!("  skip {} (repo checkout)", target.display());
+            } else if is_legacy_agents_home(root, target)? {
+                fs::remove_dir_all(target)
+                    .with_context(|| format!("remove legacy {}", target.display()))?;
+                eprintln!("  - {} (legacy)", target.display());
+            } else {
+                eprintln!("  skip {} (not owned by this repo)", target.display());
+            }
+        }
+        Ok(_) => eprintln!("  skip {} (not a symlink)", target.display()),
+        Err(_) => {}
+    }
+    Ok(())
+}
+
+fn same_canonical_path(a: &Path, b: &Path) -> Result<bool> {
+    let a = fs::canonicalize(a).with_context(|| format!("canonicalize {}", a.display()))?;
+    Ok(fs::canonicalize(b).ok().as_deref() == Some(a.as_path()))
+}
+
+fn bail_foreign_symlink(root: &Path, target: &Path) -> Result<()> {
+    let root_canon =
+        fs::canonicalize(root).with_context(|| format!("canonicalize {}", root.display()))?;
+    let existing_canon = fs::canonicalize(target).ok();
+    bail!(
+        "{} already exists as a symlink to {} (expected {}; refusing to replace non-owned symlink)",
+        target.display(),
+        existing_canon
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "<broken>".to_string()),
+        root_canon.display(),
+    )
+}
+
+fn is_legacy_agents_home(root: &Path, target: &Path) -> Result<bool> {
+    let entries = fs::read_dir(target)
+        .with_context(|| format!("read_dir {}", target.display()))?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .with_context(|| format!("read_dir entries {}", target.display()))?;
+    if entries.is_empty() {
+        return Ok(true);
+    }
+    for entry in entries {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            return Ok(false);
+        };
+        if !LEGACY_AGENTS_HOME_ENTRIES.contains(&name) {
+            return Ok(false);
+        }
+        if !is_owned_legacy_tree(&root.join(name), &entry.path())? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn is_owned_legacy_tree(source: &Path, target: &Path) -> Result<bool> {
+    let meta = match fs::symlink_metadata(target) {
+        Ok(m) => m,
+        Err(_) => return Ok(false),
+    };
+    if meta.file_type().is_symlink() {
+        return same_canonical_path(source, target);
+    }
+    if !meta.is_dir() || !source.is_dir() {
+        return Ok(false);
+    }
+    for entry in fs::read_dir(target).with_context(|| format!("read_dir {}", target.display()))? {
+        let entry = entry?;
+        let source_child = source.join(entry.file_name());
+        if !is_owned_legacy_tree(&source_child, &entry.path())? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn iter_children(source: &Path) -> Result<Vec<PathBuf>> {

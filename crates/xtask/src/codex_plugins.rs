@@ -45,7 +45,7 @@ pub fn run() -> Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".codex"));
 
-    let marketplace_path = root.join(".agents/plugins/marketplace.json");
+    let marketplace_path = root.join("plugins/marketplace.json");
     let config_path = root.join("codex/config.toml");
 
     let marketplace: Marketplace = serde_json::from_str(

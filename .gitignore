@@ -11,6 +11,7 @@ node_modules/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+.skill-lock.json
 history.jsonl
 session_index.jsonl
 auth.json
