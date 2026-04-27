@@ -25,6 +25,18 @@ export function runCommand(
 ): Promise<CtResult> {
 	const options = isRunCommandOptions(signalOrOptions) ? signalOrOptions : { signal: signalOrOptions, input };
 	return new Promise((resolve, reject) => {
+		let settled = false;
+		const rejectOnce = (error: Error) => {
+			if (settled) return;
+			settled = true;
+			reject(error);
+		};
+		const resolveOnce = (result: CtResult) => {
+			if (settled) return;
+			settled = true;
+			resolve(result);
+		};
+
 		const child = spawn(command, args, {
 			cwd,
 			env: process.env,
@@ -38,10 +50,14 @@ export function runCommand(
 		child.stderr.on("data", (chunk) => stderrChunks.push(Buffer.from(chunk)));
 		child.on("error", (error) => {
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-				reject(new Error(`${command} not found on PATH`));
+				rejectOnce(new Error(`${command} not found on PATH`));
 				return;
 			}
-			reject(error);
+			rejectOnce(error);
+		});
+		child.stdin.on("error", (error) => {
+			if ((error as NodeJS.ErrnoException).code === "EPIPE") return;
+			rejectOnce(error);
 		});
 
 		const onAbort = () => child.kill();
@@ -58,10 +74,10 @@ export function runCommand(
 			const stdout = Buffer.concat(stdoutChunks).toString("utf8");
 			const stderr = Buffer.concat(stderrChunks).toString("utf8");
 			if (exitCode === 0 || options.allowNonZero) {
-				resolve({ stdout, stderr, exitCode: exitCode ?? 0 });
+				resolveOnce({ stdout, stderr, exitCode: exitCode ?? 0 });
 				return;
 			}
-			reject(
+			rejectOnce(
 				new Error(
 					`${formatCommand(command, args)} failed with exit code ${exitCode ?? 1}${stderr.trim() ? `: ${stderr.trim()}` : ""}`,
 				),

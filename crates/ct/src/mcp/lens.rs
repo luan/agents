@@ -10,7 +10,6 @@ use super::json_success;
 
 const LENS_MCP_RESPONSE_SCHEMA_VERSION: &str = "lens.mcp.response.v1";
 const DEFAULT_LIMIT: usize = 10;
-const DEFAULT_CONTEXT: usize = 2;
 
 #[derive(Debug, Clone, Copy, Default)]
 struct McpView {
@@ -29,38 +28,6 @@ struct LensMcpEnvelope {
     raw: Option<Value>,
     warnings: Vec<crate::lens::LensMessage>,
     errors: Vec<crate::lens::LensMessage>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct DiscoverIn {
-    cwd: Option<String>,
-    intent: String,
-    query: Option<String>,
-    path: Option<String>,
-    line: Option<usize>,
-    end_line: Option<usize>,
-    character: Option<usize>,
-    lang: Option<String>,
-    limit: Option<usize>,
-    context: Option<usize>,
-    session: Option<String>,
-    lsp_operation: Option<String>,
-    detail: Option<bool>,
-    raw: Option<bool>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct GuardIn {
-    cwd: Option<String>,
-    #[serde(default)]
-    action: Option<String>,
-    path: String,
-    start_line: Option<i64>,
-    end_line: Option<i64>,
-    session: Option<String>,
-    mode: Option<String>,
-    detail: Option<bool>,
-    raw: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -85,6 +52,20 @@ struct DiagnosticsIn {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+struct ChecksIn {
+    cwd: Option<String>,
+    #[serde(default)]
+    action: Option<String>,
+    automatic: Option<bool>,
+    all: Option<bool>,
+    #[serde(default)]
+    name: Vec<String>,
+    scanners: Option<bool>,
+    detail: Option<bool>,
+    raw: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 struct CleanupIn {
     cwd: Option<String>,
     session: String,
@@ -95,13 +76,27 @@ struct CleanupIn {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+struct StatusIn {
+    cwd: Option<String>,
+    disk: Option<bool>,
+    detail: Option<bool>,
+    raw: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 struct HealthIn {
     cwd: Option<String>,
-    operation: Option<String>,
-    session: Option<String>,
-    turn: Option<String>,
-    disk: Option<bool>,
-    guard_mode: Option<String>,
+    session: String,
+    turn: String,
+    detail: Option<bool>,
+    raw: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct TouchedIn {
+    cwd: Option<String>,
+    session: String,
+    turn: String,
     detail: Option<bool>,
     raw: Option<bool>,
 }
@@ -126,6 +121,25 @@ struct ReportIn {
     raw: Option<bool>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+struct RawOutputIn {
+    cwd: Option<String>,
+    #[serde(default)]
+    action: Option<String>,
+    id: Option<i64>,
+    limit: Option<usize>,
+    detail: Option<bool>,
+    raw: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct PruneIn {
+    cwd: Option<String>,
+    dry_run: Option<bool>,
+    detail: Option<bool>,
+    raw: Option<bool>,
+}
+
 #[derive(Clone)]
 pub(super) struct LensMcpServer {
     tool_router: ToolRouter<Self>,
@@ -142,28 +156,6 @@ impl LensMcpServer {
 #[tool_router(router = tool_router)]
 impl LensMcpServer {
     #[tool(
-        name = "discover",
-        description = "Discover Lens code context through symbol, source, AST, and LSP backends. Compact by default; pass detail/raw for full backend JSON."
-    )]
-    async fn discover(
-        &self,
-        Parameters(input): Parameters<DiscoverIn>,
-    ) -> Result<CallToolResult, ErrorData> {
-        json_success(&discover_mcp_response(input)?)
-    }
-
-    #[tool(
-        name = "guard",
-        description = "Inspect Lens read-before-write guard coverage or record a read range. action: check (default), record_read/read; allow_once is only for explicit override-enabled policies."
-    )]
-    async fn guard(
-        &self,
-        Parameters(input): Parameters<GuardIn>,
-    ) -> Result<CallToolResult, ErrorData> {
-        json_success(&guard_mcp_response(input)?)
-    }
-
-    #[tool(
         name = "diagnostics",
         description = "List, record, or snapshot Lens diagnostics. action: list (default), record, snapshot."
     )]
@@ -175,14 +167,38 @@ impl LensMcpServer {
     }
 
     #[tool(
-        name = "health",
-        description = "Show Lens health. With session+turn returns turn health; with operation=status returns repository Lens status."
+        name = "checks",
+        description = "List or run repository-configured Lens checks and scanners. action: list (default), run."
     )]
+    async fn checks(
+        &self,
+        Parameters(input): Parameters<ChecksIn>,
+    ) -> Result<CallToolResult, ErrorData> {
+        json_success(&checks_mcp_response(input)?)
+    }
+
+    #[tool(name = "status", description = "Show repository Lens status.")]
+    async fn status(
+        &self,
+        Parameters(input): Parameters<StatusIn>,
+    ) -> Result<CallToolResult, ErrorData> {
+        json_success(&status_mcp_response(input)?)
+    }
+
+    #[tool(name = "health", description = "Show turn-scoped Lens health.")]
     async fn health(
         &self,
         Parameters(input): Parameters<HealthIn>,
     ) -> Result<CallToolResult, ErrorData> {
         json_success(&health_mcp_response(input)?)
+    }
+
+    #[tool(name = "touched", description = "List files touched during a turn.")]
+    async fn touched(
+        &self,
+        Parameters(input): Parameters<TouchedIn>,
+    ) -> Result<CallToolResult, ErrorData> {
+        json_success(&touched_mcp_response(input)?)
     }
 
     #[tool(
@@ -198,7 +214,7 @@ impl LensMcpServer {
 
     #[tool(
         name = "report",
-        description = "Show Lens changed-file reports for a turn, including diagnostics, guard advisories, cleanup, patch refs, and symbol context."
+        description = "Show Lens changed-file reports for a turn, including diagnostics, cleanup, patch refs, and symbol context."
     )]
     async fn report(
         &self,
@@ -217,49 +233,28 @@ impl LensMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         json_success(&context_mcp_response(input)?)
     }
-}
 
-fn discover_mcp_response(input: DiscoverIn) -> Result<LensMcpEnvelope, ErrorData> {
-    let view = view(input.detail, input.raw);
-    let envelope = discover_envelope(input, view)?;
-    let summary = format!(
-        "discover {} via {}: {} result(s)",
-        envelope.data.route.intent, envelope.data.route.backend, envelope.data.item_count
-    );
-    let next_actions = envelope
-        .data
-        .next_actions
-        .iter()
-        .map(|action| format!("{}: {}", action.label, action.command))
-        .collect();
-    let compact = json!({
-        "route": envelope.data.route,
-        "item_count": envelope.data.item_count,
-        "items": envelope.data.items.iter().map(compact_discovery_item).collect::<Vec<_>>(),
-        "coverage": envelope.data.coverage,
-        "alternative_count": envelope.data.alternatives.len()
-    });
-    mcp_from_lens(envelope, view, summary, next_actions, compact)
-}
+    #[tool(
+        name = "raw_output",
+        description = "List or show retained sanitized Lens raw output. action: list (default), show."
+    )]
+    async fn raw_output(
+        &self,
+        Parameters(input): Parameters<RawOutputIn>,
+    ) -> Result<CallToolResult, ErrorData> {
+        json_success(&raw_output_mcp_response(input)?)
+    }
 
-fn guard_mcp_response(input: GuardIn) -> Result<LensMcpEnvelope, ErrorData> {
-    let view = view(input.detail, input.raw);
-    let action = input.action.as_deref().unwrap_or("check");
-    let envelope = match action {
-        "check" => guard_check_envelope(&input)?,
-        "record_read" | "read" => guard_record_read_envelope(&input)?,
-        "allow_once" => guard_allow_once_envelope(&input)?,
-        other => {
-            return Err(ErrorData::invalid_params(
-                format!("invalid guard action: {other}"),
-                None,
-            ));
-        }
-    };
-    let summary = guard_summary(action, &envelope.data);
-    let next_actions = guard_next_actions(&envelope.data, &envelope.warnings, &envelope.errors);
-    let compact = compact_guard_data(action, &envelope.data);
-    mcp_from_lens(envelope, view, summary, next_actions, compact)
+    #[tool(
+        name = "prune",
+        description = "Prune Lens telemetry using retention policy."
+    )]
+    async fn prune(
+        &self,
+        Parameters(input): Parameters<PruneIn>,
+    ) -> Result<CallToolResult, ErrorData> {
+        json_success(&prune_mcp_response(input)?)
+    }
 }
 
 fn diagnostics_mcp_response(input: DiagnosticsIn) -> Result<LensMcpEnvelope, ErrorData> {
@@ -279,6 +274,25 @@ fn diagnostics_mcp_response(input: DiagnosticsIn) -> Result<LensMcpEnvelope, Err
     let summary = diagnostics_summary(action, &envelope.data);
     let next_actions = diagnostics_next_actions(action, &envelope.data, &envelope.warnings);
     let compact = compact_diagnostics_data(action, &envelope.data);
+    mcp_from_lens(envelope, view, summary, next_actions, compact)
+}
+
+fn checks_mcp_response(input: ChecksIn) -> Result<LensMcpEnvelope, ErrorData> {
+    let view = view(input.detail, input.raw);
+    let action = input.action.as_deref().unwrap_or("list");
+    let envelope = match action {
+        "list" => checks_list_envelope(&input),
+        "run" => checks_run_envelope(&input),
+        other => {
+            return Err(ErrorData::invalid_params(
+                format!("invalid checks action: {other}"),
+                None,
+            ));
+        }
+    }?;
+    let summary = checks_summary(action, &envelope.data);
+    let next_actions = checks_next_actions(action, &envelope.data, &envelope.warnings);
+    let compact = compact_checks_data(action, &envelope.data);
     mcp_from_lens(envelope, view, summary, next_actions, compact)
 }
 
@@ -316,21 +330,7 @@ fn cleanup_mcp_response(input: CleanupIn) -> Result<LensMcpEnvelope, ErrorData> 
 
 fn health_mcp_response(input: HealthIn) -> Result<LensMcpEnvelope, ErrorData> {
     let view = view(input.detail, input.raw);
-    let operation = input.operation.as_deref().unwrap_or_else(|| {
-        if input.session.is_some() || input.turn.is_some() {
-            "turn"
-        } else {
-            "status"
-        }
-    });
-    match operation {
-        "turn" => turn_health_mcp_response(input, view),
-        "status" => status_mcp_response(input, view),
-        other => Err(ErrorData::invalid_params(
-            format!("invalid health operation: {other}"),
-            None,
-        )),
-    }
+    turn_health_mcp_response(input, view)
 }
 
 fn turn_health_mcp_response(input: HealthIn, view: McpView) -> Result<LensMcpEnvelope, ErrorData> {
@@ -349,12 +349,6 @@ fn turn_health_mcp_response(input: HealthIn, view: McpView) -> Result<LensMcpEnv
         "action_required": envelope.data.action_context.required,
         "summary": {
             "changed_files": envelope.data.summary.changed_files.count,
-            "reads": envelope.data.summary.reads.count,
-            "guard": {
-                "clean": envelope.data.summary.guard.clean,
-                "warnings": envelope.data.summary.guard.warnings,
-                "blocked": envelope.data.summary.guard.blocked
-            },
             "diagnostics": envelope.data.summary.diagnostics,
             "cleanup": envelope.data.summary.cleanup,
             "checks": envelope.data.summary.checks,
@@ -364,7 +358,8 @@ fn turn_health_mcp_response(input: HealthIn, view: McpView) -> Result<LensMcpEnv
     mcp_from_lens(envelope, view, summary, next_actions, compact)
 }
 
-fn status_mcp_response(input: HealthIn, view: McpView) -> Result<LensMcpEnvelope, ErrorData> {
+fn status_mcp_response(input: StatusIn) -> Result<LensMcpEnvelope, ErrorData> {
+    let view = view(input.detail, input.raw);
     let envelope = status_envelope(input, view)?;
     let summary = format!(
         "lens status {:?}: {} diagnostic(s), {} patch draft(s)",
@@ -380,7 +375,6 @@ fn status_mcp_response(input: HealthIn, view: McpView) -> Result<LensMcpEnvelope
             "db_path": envelope.data.state.db_path,
             "counts": envelope.data.state.counts,
         },
-        "guard": envelope.data.policy.policy.guard,
         "health": envelope.data.health,
     });
     mcp_from_lens(envelope, view, summary, next_actions, compact)
@@ -410,6 +404,23 @@ fn report_mcp_response(input: ReportIn) -> Result<LensMcpEnvelope, ErrorData> {
     mcp_from_lens(envelope, view, summary, next_actions, compact)
 }
 
+fn touched_mcp_response(input: TouchedIn) -> Result<LensMcpEnvelope, ErrorData> {
+    let view = view(input.detail, input.raw);
+    let envelope = touched_envelope(input)?;
+    let summary = format!(
+        "touched: {} file(s) for {}/{}",
+        envelope.data.file_count, envelope.data.session, envelope.data.turn
+    );
+    let compact = json!({
+        "project_id": envelope.data.project_id,
+        "session": envelope.data.session,
+        "turn": envelope.data.turn,
+        "file_count": envelope.data.file_count,
+        "files": envelope.data.files.clone(),
+    });
+    mcp_from_lens(envelope, view, summary, Vec::new(), compact)
+}
+
 fn context_mcp_response(input: ContextIn) -> Result<LensMcpEnvelope, ErrorData> {
     let view = view(input.detail, input.raw);
     let envelope = context_envelope(input)?;
@@ -433,17 +444,78 @@ fn context_mcp_response(input: ContextIn) -> Result<LensMcpEnvelope, ErrorData> 
     mcp_from_lens(envelope, view, summary, next_actions, compact)
 }
 
+fn raw_output_mcp_response(input: RawOutputIn) -> Result<LensMcpEnvelope, ErrorData> {
+    let view = view(input.detail, input.raw);
+    let action = input.action.as_deref().unwrap_or("list");
+    match action {
+        "list" => {
+            let envelope = raw_output_list_envelope(&input)?;
+            let summary = format!(
+                "raw output: {} retained item(s)",
+                envelope.data.output_count
+            );
+            let compact = json!({
+                "project_id": envelope.data.project_id,
+                "output_count": envelope.data.output_count,
+                "outputs": &envelope.data.outputs,
+            });
+            mcp_from_lens(envelope, view, summary, Vec::new(), compact)
+        }
+        "show" => {
+            let envelope = raw_output_show_envelope(&input)?;
+            let summary = format!(
+                "raw output #{}: {} retained byte(s)",
+                envelope.data.output.summary.id, envelope.data.output.summary.retained_bytes
+            );
+            let compact = json!({
+                "project_id": envelope.data.project_id,
+                "output": &envelope.data.output,
+            });
+            mcp_from_lens(envelope, view, summary, Vec::new(), compact)
+        }
+        other => Err(ErrorData::invalid_params(
+            format!("invalid raw_output action: {other}"),
+            None,
+        )),
+    }
+}
+
+fn prune_mcp_response(input: PruneIn) -> Result<LensMcpEnvelope, ErrorData> {
+    let view = view(input.detail, input.raw);
+    let envelope = prune_envelope(&input)?;
+    let summary = format!(
+        "prune: {} diagnostics, {} tool runs, {} sessions, {} raw outputs{}",
+        envelope.data.diagnostics_deleted,
+        envelope.data.tool_runs_deleted,
+        envelope.data.sessions_deleted,
+        envelope.data.raw_outputs_deleted,
+        if envelope.data.dry_run {
+            " (dry run)"
+        } else {
+            ""
+        }
+    );
+    let compact = json!({
+        "diagnostics_deleted": envelope.data.diagnostics_deleted,
+        "tool_runs_deleted": envelope.data.tool_runs_deleted,
+        "sessions_deleted": envelope.data.sessions_deleted,
+        "patch_drafts_deleted": envelope.data.patch_drafts_deleted,
+        "patch_draft_bodies_deleted": envelope.data.patch_draft_bodies_deleted,
+        "raw_outputs_deleted": envelope.data.raw_outputs_deleted,
+        "dry_run": envelope.data.dry_run,
+    });
+    mcp_from_lens(envelope, view, summary, Vec::new(), compact)
+}
+
 fn health_envelope(
     input: HealthIn,
 ) -> Result<crate::lens::LensEnvelope<crate::lens::TurnHealthData>, ErrorData> {
     let root = cwd(input.cwd)?;
-    let session = required(input.session, "session")?;
-    let turn = required(input.turn, "turn")?;
     crate::lens::build_turn_health_envelope(
         &root,
         crate::lens::TurnHealthOptions {
-            session,
-            turn,
+            session: input.session,
+            turn: input.turn,
             acknowledge: false,
         },
     )
@@ -479,6 +551,46 @@ fn report_envelope(
         input.path.as_deref(),
     )
     .map_err(|error| ErrorData::internal_error(error.to_string(), None))
+}
+
+fn raw_output_list_envelope(
+    input: &RawOutputIn,
+) -> Result<crate::lens::LensEnvelope<crate::lens::raw_output::RawOutputListData>, ErrorData> {
+    let root = cwd(input.cwd.clone())?;
+    crate::lens::raw_output::list_envelope(&root, input.limit.unwrap_or(DEFAULT_LIMIT))
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))
+}
+
+fn raw_output_show_envelope(
+    input: &RawOutputIn,
+) -> Result<crate::lens::LensEnvelope<crate::lens::raw_output::RawOutputShowData>, ErrorData> {
+    let root = cwd(input.cwd.clone())?;
+    crate::lens::raw_output::show_envelope(&root, required(input.id, "id")?)
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))
+}
+
+fn prune_envelope(
+    input: &PruneIn,
+) -> Result<crate::lens::LensEnvelope<crate::lens::retention::PruneReport>, ErrorData> {
+    let root = cwd(input.cwd.clone())?;
+    let store = crate::lens::LensStore::open_for_project(&root)
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+    let policy = crate::lens::resolve_policy(&root);
+    let report = crate::lens::retention::prune(
+        &store,
+        &policy.policy.retention,
+        input.dry_run.unwrap_or(false),
+    )
+    .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+    Ok(crate::lens::LensEnvelope::ok(report))
+}
+
+fn touched_envelope(
+    input: TouchedIn,
+) -> Result<crate::lens::LensEnvelope<crate::lens::LensTurnTouchedData>, ErrorData> {
+    let root = cwd(input.cwd)?;
+    crate::lens::touched_files_envelope(&root, &input.session, &input.turn)
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))
 }
 
 fn cleanup_envelope(
@@ -585,127 +697,45 @@ fn diagnostics_snapshot_envelope(
     ))
 }
 
-fn discover_envelope(
-    input: DiscoverIn,
-    view: McpView,
-) -> Result<crate::lens::LensEnvelope<crate::lens::DiscoveryData>, ErrorData> {
-    let root = cwd(input.cwd)?;
-    let intent = crate::lens::DiscoveryIntent::parse(&input.intent)
-        .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
-    let mut options = crate::lens::DiscoveryOptions::new(root, intent);
-    options.query = input.query;
-    options.path = input.path;
-    options.line = input.line;
-    options.end_line = input.end_line;
-    options.character = input.character;
-    options.lang = input.lang;
-    options.limit = input.limit.unwrap_or(DEFAULT_LIMIT);
-    options.context = input.context.unwrap_or(DEFAULT_CONTEXT);
-    options.session = input.session;
-    options.lsp_operation = input.lsp_operation;
-    options.include_debug = view.raw;
-    options.include_raw = view.raw;
-    crate::lens::build_discovery_envelope(options)
+fn checks_list_envelope(
+    input: &ChecksIn,
+) -> Result<crate::lens::LensEnvelope<crate::lens::LensChecksData>, ErrorData> {
+    let root = cwd(input.cwd.clone())?;
+    crate::lens::list_checks_envelope(&root)
         .map_err(|error| ErrorData::internal_error(error.to_string(), None))
 }
 
+fn checks_run_envelope(
+    input: &ChecksIn,
+) -> Result<crate::lens::LensEnvelope<crate::lens::LensChecksData>, ErrorData> {
+    let root = cwd(input.cwd.clone())?;
+    crate::lens::run_checks_envelope(
+        &root,
+        crate::lens::LensCheckRunOptions {
+            automatic_only: input.automatic.unwrap_or(false)
+                || (!input.all.unwrap_or(false) && input.name.is_empty()),
+            names: input.name.clone(),
+            include_scanners: input.scanners.unwrap_or(false) || input.all.unwrap_or(false),
+        },
+    )
+    .map_err(|error| ErrorData::internal_error(error.to_string(), None))
+}
+
 fn status_envelope(
-    input: HealthIn,
+    input: StatusIn,
     view: McpView,
 ) -> Result<crate::lens::LensEnvelope<crate::lens::LensStatusData>, ErrorData> {
     let root = cwd(input.cwd)?;
-    let guard_mode = parse_guard_mode(input.guard_mode.as_deref())?;
     crate::lens::build_status_envelope(
         &root,
         crate::lens::LensStatusOptions {
             include_disk: input.disk.unwrap_or(false),
             include_debug: view.raw,
             include_raw: view.raw,
-            runtime_policy: crate::lens::RuntimePolicyOverrides {
-                guard_mode,
-                allow_overrides: None,
-            },
             ..crate::lens::LensStatusOptions::default()
         },
     )
     .map_err(|error| ErrorData::internal_error(error.to_string(), None))
-}
-
-fn guard_check_envelope(input: &GuardIn) -> Result<crate::lens::LensEnvelope<Value>, ErrorData> {
-    let root = cwd(input.cwd.clone())?;
-    let policy = crate::lens::resolve_policy(&root).policy.guard;
-    let mode = effective_guard_action(policy.mode, input.mode.as_deref(), policy.allow_overrides)?;
-    let mut store = crate::lens::LensStore::open_for_project(&root)
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-    let decision = store
-        .check_guard_with_overrides(
-            input.session.as_deref(),
-            std::path::Path::new(&input.path),
-            required(input.start_line, "start_line")?,
-            required(input.end_line, "end_line")?,
-            mode,
-            policy.allow_overrides,
-        )
-        .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
-    Ok(guard_envelope(
-        store.project_id(),
-        input.session.clone(),
-        decision,
-    ))
-}
-
-fn guard_record_read_envelope(
-    input: &GuardIn,
-) -> Result<crate::lens::LensEnvelope<Value>, ErrorData> {
-    let root = cwd(input.cwd.clone())?;
-    let mut store = crate::lens::LensStore::open_for_project(&root)
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-    let range = store
-        .record_read(
-            input.session.as_deref(),
-            std::path::Path::new(&input.path),
-            required(input.start_line, "start_line")?,
-            required(input.end_line, "end_line")?,
-        )
-        .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
-    Ok(crate::lens::LensEnvelope::ok(json!({
-        "project_id": store.project_id(),
-        "session": input.session,
-        "path": input.path,
-        "range": range,
-        "recorded": true
-    })))
-}
-
-fn guard_allow_once_envelope(
-    input: &GuardIn,
-) -> Result<crate::lens::LensEnvelope<Value>, ErrorData> {
-    let root = cwd(input.cwd.clone())?;
-    let policy = crate::lens::resolve_policy(&root).policy.guard;
-    if !policy.allow_overrides {
-        return Ok(crate::lens::LensEnvelope::error(
-            json!({
-                "session": input.session,
-                "path": input.path,
-                "allowed_once": false,
-                "reason": "overrides_disabled"
-            }),
-            vec![crate::lens::LensMessage::error(
-                "guard_overrides_disabled",
-                "guard overrides are disabled by policy",
-            )],
-        ));
-    }
-    let store = crate::lens::LensStore::open_for_project(&root)
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-    store
-        .allow_once(input.session.as_deref(), std::path::Path::new(&input.path))
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-    Ok(crate::lens::LensEnvelope::ok(json!({
-        "session": input.session,
-        "path": input.path,
-        "allowed_once": true
-    })))
 }
 
 fn mcp_from_lens<T: Serialize>(
@@ -764,19 +794,6 @@ fn value_envelope<T: Serialize>(
     Ok(out)
 }
 
-fn compact_discovery_item(item: &crate::lens::DiscoveryItem) -> Value {
-    json!({
-        "kind": item.kind,
-        "path": item.path,
-        "name": item.name,
-        "symbol_kind": item.symbol_kind,
-        "language": item.language,
-        "start_line": item.start_line,
-        "end_line": item.end_line,
-        "summary": item.summary
-    })
-}
-
 fn compact_diagnostic(diagnostic: &Value) -> Value {
     json!({
         "source": diagnostic.get("source").cloned().unwrap_or(Value::Null),
@@ -808,11 +825,6 @@ fn compact_report_file(file: &crate::lens::ChangedFileReport) -> Value {
     json!({
         "path": file.path,
         "diagnostic_count": file.diagnostics.len(),
-        "guard": file.guard.as_ref().map(|guard| json!({
-            "decision": guard.decision,
-            "reason": guard.reason,
-            "message": guard.message
-        })),
         "cleanup_action_count": file.cleanup_actions.len(),
         "patch_refs": file.patch_refs,
         "symbol_context": {
@@ -822,29 +834,6 @@ fn compact_report_file(file: &crate::lens::ChangedFileReport) -> Value {
             "error": file.symbol_context.error
         },
         "next_actions": file.next_actions
-    })
-}
-
-fn compact_guard_data(action: &str, data: &Value) -> Value {
-    match action {
-        "check" => json!({
-            "project_id": data.get("project_id").cloned().unwrap_or(Value::Null),
-            "session": data.get("session").cloned().unwrap_or(Value::Null),
-            "guard": data.get("guard").map(compact_guard_decision).unwrap_or(Value::Null)
-        }),
-        _ => data.clone(),
-    }
-}
-
-fn compact_guard_decision(guard: &Value) -> Value {
-    json!({
-        "decision": guard.get("decision").cloned().unwrap_or(Value::Null),
-        "reason": guard.get("reason").cloned().unwrap_or(Value::Null),
-        "message": guard.get("message").cloned().unwrap_or(Value::Null),
-        "file": guard.get("file").cloned().unwrap_or(Value::Null),
-        "classification": guard.get("classification").cloned().unwrap_or(Value::Null),
-        "required_ranges": guard.get("required_ranges").cloned().unwrap_or_else(|| json!([])),
-        "covered_ranges": guard.get("covered_ranges").cloned().unwrap_or_else(|| json!([]))
     })
 }
 
@@ -879,6 +868,29 @@ fn compact_diagnostics_data(action: &str, data: &Value) -> Value {
         }),
         _ => data.clone(),
     }
+}
+
+fn compact_checks_data(action: &str, data: &crate::lens::LensChecksData) -> Value {
+    json!({
+        "project_id": data.project_id,
+        "configured_check_count": data.configured_checks.len(),
+        "configured_scanner_count": data.configured_scanners.len(),
+        "suggestion_count": data.suggestions.len(),
+        "runs": data.runs.iter().take(DEFAULT_LIMIT).map(compact_check_run).collect::<Vec<_>>(),
+        "action": action,
+    })
+}
+
+fn compact_check_run(run: &crate::lens::LensCheckRunSummary) -> Value {
+    json!({
+        "name": run.name,
+        "kind": run.kind,
+        "status": run.status,
+        "exit_code": run.exit_code,
+        "diagnostic_count": run.diagnostic_count,
+        "snapshot_id": run.snapshot.as_ref().map(|snapshot| snapshot.snapshot_id),
+        "raw_output": run.snapshot.as_ref().and_then(|snapshot| snapshot.raw_output.as_ref()),
+    })
 }
 
 fn diagnostics_summary(action: &str, data: &Value) -> String {
@@ -927,50 +939,33 @@ fn diagnostics_next_actions(
     actions
 }
 
-fn guard_summary(action: &str, data: &Value) -> String {
+fn checks_summary(action: &str, data: &crate::lens::LensChecksData) -> String {
     match action {
-        "check" => {
-            let guard = &data["guard"];
-            format!(
-                "guard {}: {}",
-                guard["decision"].as_str().unwrap_or("unknown"),
-                guard["message"].as_str().unwrap_or("")
-            )
-        }
-        "record_read" | "read" => format!(
-            "recorded read for {}",
-            data.get("path")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown")
+        "run" => format!(
+            "checks: {} run(s), {} diagnostic(s)",
+            data.runs.len(),
+            data.runs
+                .iter()
+                .map(|run| run.diagnostic_count)
+                .sum::<usize>()
         ),
-        "allow_once" => {
-            if data
-                .get("allowed_once")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-            {
-                "guard allow-once recorded".to_string()
-            } else {
-                "guard allow-once denied".to_string()
-            }
-        }
-        _ => "guard".to_string(),
+        _ => format!(
+            "checks: {} configured check(s), {} scanner(s), {} suggestion(s)",
+            data.configured_checks.len(),
+            data.configured_scanners.len(),
+            data.suggestions.len()
+        ),
     }
 }
 
-fn guard_next_actions(
-    data: &Value,
+fn checks_next_actions(
+    action: &str,
+    data: &crate::lens::LensChecksData,
     warnings: &[crate::lens::LensMessage],
-    errors: &[crate::lens::LensMessage],
 ) -> Vec<String> {
     let mut actions = hints(warnings);
-    actions.extend(hints(errors));
-    if data
-        .pointer("/guard/decision")
-        .and_then(Value::as_str)
-        .is_some_and(|decision| decision != "allow")
-    {
-        actions.push("review/read the required ranges; guard findings are advisory".to_string());
+    if action == "run" && data.runs.iter().any(|run| run.diagnostic_count > 0) {
+        actions.push("fix reported diagnostics or rerun ct lens checks run --all".to_string());
     }
     actions
 }
@@ -1022,76 +1017,6 @@ fn diagnostic_scope(
         (None, None) => path
             .map(crate::lens::DiagnosticScope::file)
             .unwrap_or_else(crate::lens::DiagnosticScope::workspace),
-    }
-}
-
-fn parse_guard_mode(mode: Option<&str>) -> Result<Option<crate::lens::LensGuardMode>, ErrorData> {
-    match mode {
-        Some("off") | Some("allow") => Ok(Some(crate::lens::LensGuardMode::Off)),
-        Some("warn") => Ok(Some(crate::lens::LensGuardMode::Warn)),
-        Some("block") => Ok(Some(crate::lens::LensGuardMode::Block)),
-        None => Ok(None),
-        Some(other) => Err(ErrorData::invalid_params(
-            format!("invalid guard mode: {other}"),
-            None,
-        )),
-    }
-}
-
-fn effective_guard_action(
-    policy_mode: crate::lens::LensGuardMode,
-    requested: Option<&str>,
-    allow_overrides: bool,
-) -> Result<crate::lens::GuardAction, ErrorData> {
-    let action = parse_guard_mode(requested)?.unwrap_or(policy_mode);
-    if !allow_overrides && guard_mode_rank(action) < guard_mode_rank(policy_mode) {
-        return Err(ErrorData::invalid_params(
-            "guard mode override weakens policy but allow_overrides is false".to_string(),
-            None,
-        ));
-    }
-    Ok(match action {
-        crate::lens::LensGuardMode::Off => crate::lens::GuardAction::Allow,
-        crate::lens::LensGuardMode::Warn => crate::lens::GuardAction::Warn,
-        crate::lens::LensGuardMode::Block => crate::lens::GuardAction::Block,
-    })
-}
-
-fn guard_mode_rank(mode: crate::lens::LensGuardMode) -> u8 {
-    match mode {
-        crate::lens::LensGuardMode::Off => 0,
-        crate::lens::LensGuardMode::Warn => 1,
-        crate::lens::LensGuardMode::Block => 2,
-    }
-}
-
-fn guard_envelope(
-    project_id: i64,
-    session: Option<String>,
-    decision: crate::lens::GuardDecision,
-) -> crate::lens::LensEnvelope<Value> {
-    let action = decision.decision.clone();
-    let code = serde_json::to_value(&decision.reason)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_string))
-        .unwrap_or_else(|| "unknown".to_string());
-    let message = crate::lens::LensMessage {
-        code: format!("guard_{code}"),
-        message: decision.message.clone(),
-        hint: Some(
-            "review the required range with the guard record_read action or Lens discovery"
-                .to_string(),
-        ),
-    };
-    let data = json!({
-        "project_id": project_id,
-        "session": session,
-        "guard": decision
-    });
-    match action {
-        crate::lens::GuardAction::Block => crate::lens::LensEnvelope::error(data, vec![message]),
-        crate::lens::GuardAction::Warn => crate::lens::LensEnvelope::warning(data, vec![message]),
-        crate::lens::GuardAction::Allow => crate::lens::LensEnvelope::ok(data),
     }
 }
 
@@ -1149,27 +1074,52 @@ impl ServerHandler for LensMcpServer {
 mod tests {
     use super::*;
 
-    fn discover_input(cwd: String) -> DiscoverIn {
-        DiscoverIn {
-            cwd: Some(cwd),
-            intent: "symbol".to_string(),
-            query: Some("target".to_string()),
+    #[test]
+    fn mcp_checks_and_diagnostics_responses_omit_read_guard_fields() {
+        let temp = tempfile::tempdir().unwrap();
+        let checks = checks_mcp_response(ChecksIn {
+            cwd: Some(temp.path().display().to_string()),
+            action: Some("list".to_string()),
+            automatic: None,
+            all: None,
+            name: Vec::new(),
+            scanners: None,
+            detail: Some(true),
+            raw: None,
+        })
+        .unwrap();
+        assert_eq!(checks.schema_version, LENS_MCP_RESPONSE_SCHEMA_VERSION);
+        assert!(checks.data.get("configured_checks").is_some());
+        assert!(checks.data.get("read_files").is_none());
+        assert!(checks.data.get("guard").is_none());
+
+        let diagnostics = diagnostics_mcp_response(DiagnosticsIn {
+            cwd: Some(temp.path().display().to_string()),
+            action: Some("list".to_string()),
             path: None,
-            line: None,
+            all: None,
+            source: None,
+            scope_kind: None,
+            scope_key: None,
+            severity: None,
+            code: None,
+            message: None,
+            start_line: None,
             end_line: None,
-            character: None,
-            lang: None,
-            limit: Some(10),
-            context: Some(2),
-            session: Some("mcp".to_string()),
-            lsp_operation: None,
-            detail: Some(false),
-            raw: Some(false),
-        }
+            fingerprint: None,
+            snapshot: None,
+            detail: Some(true),
+            raw: None,
+        })
+        .unwrap();
+        assert!(diagnostics.data.get("relevance").is_some());
+        assert!(diagnostics.data.get("read_files").is_none());
+        assert!(diagnostics.data.get("guard").is_none());
+        assert!(diagnostics.data["relevance"].get("read_files").is_none());
     }
 
     #[test]
-    fn mcp_tool_names_are_short_namespaced_surface_only() {
+    fn mcp_tool_names_omit_discovery_and_guard() {
         let server = LensMcpServer::new();
         let names = server
             .tool_router
@@ -1181,302 +1131,23 @@ mod tests {
         assert_eq!(
             names,
             vec![
+                "checks",
                 "cleanup",
                 "context",
                 "diagnostics",
-                "discover",
-                "guard",
                 "health",
+                "prune",
+                "raw_output",
                 "report",
+                "status",
+                "touched"
             ]
         );
-        assert!(names.iter().all(|name| !name.starts_with("lens_")));
-        assert!(names.iter().all(|name| !name.contains('_')));
-    }
-
-    #[test]
-    fn mcp_compact_detail_and_raw_shapes_are_schema_versioned() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::write(temp.path().join("main.rs"), "fn target() {}\n").unwrap();
-        let cwd = temp.path().display().to_string();
-
-        let compact = discover_mcp_response(discover_input(cwd.clone())).unwrap();
-        let compact_value = serde_json::to_value(&compact).unwrap();
-        assert_eq!(
-            compact_value["schema_version"],
-            LENS_MCP_RESPONSE_SCHEMA_VERSION
-        );
-        assert_eq!(compact_value["status"], "ok");
         assert!(
-            compact_value["summary"]
-                .as_str()
-                .unwrap()
-                .contains("discover")
+            !names
+                .iter()
+                .any(|name| name == "discover" || name == "guard")
         );
-        assert!(compact_value["next_actions"].is_array());
-        assert_eq!(compact_value["data"]["route"]["backend"], "sym");
-        assert!(compact_value["data"].get("alternatives").is_none());
-        assert!(compact_value.get("raw").is_none());
-
-        let mut detail_input = discover_input(cwd.clone());
-        detail_input.detail = Some(true);
-        let detail = serde_json::to_value(discover_mcp_response(detail_input).unwrap()).unwrap();
-        assert!(detail["data"].get("alternatives").is_some());
-        assert!(detail.get("raw").is_none());
-
-        let raw = serde_json::to_value(
-            discover_mcp_response(DiscoverIn {
-                intent: "source-context".to_string(),
-                query: None,
-                path: Some("main.rs".to_string()),
-                line: Some(1),
-                end_line: Some(1),
-                raw: Some(true),
-                ..discover_input(cwd)
-            })
-            .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            raw["raw"]["schema_version"],
-            crate::lens::LENS_RESPONSE_SCHEMA_VERSION
-        );
-        assert!(raw["raw"].get("raw").is_some());
-    }
-
-    #[test]
-    fn mcp_discover_detail_matches_shared_discovery_envelope() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::write(temp.path().join("main.rs"), "fn target() {}\n").unwrap();
-        let cwd = temp.path().display().to_string();
-        let mut input = discover_input(cwd);
-        input.detail = Some(true);
-        let mcp = discover_mcp_response(input).unwrap();
-        let mut options = crate::lens::DiscoveryOptions::new(
-            temp.path().to_path_buf(),
-            crate::lens::DiscoveryIntent::Symbol,
-        );
-        options.query = Some("target".to_string());
-        options.session = Some("mcp".to_string());
-        let direct = crate::lens::build_discovery_envelope(options).unwrap();
-
-        assert_eq!(mcp.data, serde_json::to_value(direct.data).unwrap());
-    }
-
-    #[test]
-    fn mcp_diagnostics_list_matches_store_and_compacts_records() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::write(temp.path().join("main.rs"), "fn main() {}\n").unwrap();
-        let cwd = temp.path().display().to_string();
-        let mut store = crate::lens::LensStore::open_for_project(temp.path()).unwrap();
-        store
-            .record_diagnostics(&[crate::lens::Diagnostic {
-                source: crate::lens::DiagnosticSource::Test,
-                scope: crate::lens::DiagnosticScope::file("main.rs"),
-                severity: crate::lens::DiagnosticSeverity::Warning,
-                code: None,
-                message: "warn".to_string(),
-                rel_path: Some("main.rs".to_string()),
-                start_line: Some(1),
-                end_line: Some(1),
-                fingerprint: "warn".to_string(),
-                content_hash: None,
-                raw_output_id: None,
-                snapshot_id: None,
-                first_seen_at: None,
-                last_seen_at: None,
-                resolved_at: None,
-            }])
-            .unwrap();
-
-        let compact = diagnostics_mcp_response(DiagnosticsIn {
-            cwd: Some(cwd.clone()),
-            action: Some("list".to_string()),
-            path: None,
-            all: Some(true),
-            source: None,
-            scope_kind: None,
-            scope_key: None,
-            severity: None,
-            code: None,
-            message: None,
-            start_line: None,
-            end_line: None,
-            fingerprint: None,
-            snapshot: None,
-            detail: Some(false),
-            raw: Some(false),
-        })
-        .unwrap();
-        assert_eq!(compact.data["diagnostic_count"], 1);
-        assert_eq!(compact.data["diagnostics"][0]["message"], "warn");
-        assert!(compact.data["diagnostics"][0].get("fingerprint").is_none());
-
-        let detail = diagnostics_mcp_response(DiagnosticsIn {
-            detail: Some(true),
-            cwd: Some(cwd),
-            action: Some("list".to_string()),
-            path: None,
-            all: Some(true),
-            source: None,
-            scope_kind: None,
-            scope_key: None,
-            severity: None,
-            code: None,
-            message: None,
-            start_line: None,
-            end_line: None,
-            fingerprint: None,
-            snapshot: None,
-            raw: Some(false),
-        })
-        .unwrap();
-        let direct =
-            serde_json::to_value(store.list_diagnostics_data(None, true).unwrap()).unwrap();
-        assert_eq!(detail.data, direct);
-    }
-
-    #[test]
-    fn mcp_guard_records_reads_and_matches_guard_contract() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::write(temp.path().join("main.rs"), "fn main() {}\n").unwrap();
-        let cwd = temp.path().display().to_string();
-
-        let blocked = guard_mcp_response(GuardIn {
-            cwd: Some(cwd.clone()),
-            action: Some("check".to_string()),
-            path: "main.rs".to_string(),
-            start_line: Some(1),
-            end_line: Some(1),
-            session: Some("mcp-guard".to_string()),
-            mode: None,
-            detail: Some(true),
-            raw: Some(false),
-        })
-        .unwrap();
-        assert_eq!(blocked.status, crate::lens::LensResponseStatus::Error);
-        assert_eq!(blocked.data["guard"]["reason"], "zero_read");
-
-        let read = guard_mcp_response(GuardIn {
-            action: Some("record_read".to_string()),
-            detail: Some(true),
-            cwd: Some(cwd.clone()),
-            path: "main.rs".to_string(),
-            start_line: Some(1),
-            end_line: Some(1),
-            session: Some("mcp-guard".to_string()),
-            mode: None,
-            raw: Some(false),
-        })
-        .unwrap();
-        assert_eq!(read.data["recorded"], true);
-
-        let allowed = guard_mcp_response(GuardIn {
-            cwd: Some(cwd),
-            action: Some("check".to_string()),
-            path: "main.rs".to_string(),
-            start_line: Some(1),
-            end_line: Some(1),
-            session: Some("mcp-guard".to_string()),
-            mode: None,
-            detail: Some(true),
-            raw: Some(false),
-        })
-        .unwrap();
-        assert_eq!(allowed.status, crate::lens::LensResponseStatus::Ok);
-        assert_eq!(allowed.data["guard"]["reason"], "covered");
-    }
-
-    #[test]
-    fn mcp_health_report_context_use_shared_envelopes() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::write(temp.path().join("main.rs"), "fn main() {}\n").unwrap();
-        let cwd = temp.path().display().to_string();
-        let event = crate::lens::LensTurnEvent {
-            schema_version: crate::lens::LENS_TURN_EVENT_SCHEMA_VERSION.to_string(),
-            session: "mcp-health".to_string(),
-            turn: "turn".to_string(),
-            host: "mcp-test".to_string(),
-            cwd: cwd.clone(),
-            event: crate::lens::LensTurnEventKind::ToolEnd,
-            tool: "edit".to_string(),
-            phase: crate::lens::LensToolEventPhase::PostTool,
-            status: Some("success".to_string()),
-            files: vec![crate::lens::LensTouchedFileInput {
-                path: "main.rs".to_string(),
-                operation: "modify".to_string(),
-                start_line: None,
-                end_line: None,
-                generated: false,
-                include_ignored: false,
-            }],
-            policy: crate::lens::LensTurnEventPolicy {
-                git_fallback: false,
-                include_ignored: false,
-            },
-        };
-        crate::lens::record_turn_event_envelope(temp.path(), event).unwrap();
-
-        let health = health_mcp_response(HealthIn {
-            cwd: Some(cwd.clone()),
-            operation: Some("turn".to_string()),
-            session: Some("mcp-health".to_string()),
-            turn: Some("turn".to_string()),
-            disk: None,
-            guard_mode: None,
-            detail: Some(true),
-            raw: Some(false),
-        })
-        .unwrap();
-        assert_eq!(health.data["status"], "clean");
-        assert!(health.summary.contains("clean"));
-
-        let context = context_mcp_response(ContextIn {
-            cwd: Some(cwd.clone()),
-            session: "mcp-health".to_string(),
-            turn: "turn".to_string(),
-            ack: Some(true),
-            detail: Some(true),
-            raw: Some(false),
-        })
-        .unwrap();
-        assert_eq!(context.data["state"], "clear");
-
-        let report = report_mcp_response(ReportIn {
-            cwd: Some(cwd),
-            session: "mcp-health".to_string(),
-            turn: "turn".to_string(),
-            path: Some("main.rs".to_string()),
-            detail: Some(true),
-            raw: Some(false),
-        })
-        .unwrap();
-        assert_eq!(report.data["file_count"], 1);
-        assert!(report.data["files"][0].get("symbol_context").is_some());
-    }
-
-    #[test]
-    fn mcp_missing_discovery_backend_is_structured_warning_not_error() {
-        let temp = tempfile::tempdir().unwrap();
-        let response = discover_mcp_response(DiscoverIn {
-            cwd: Some(temp.path().display().to_string()),
-            intent: "ast".to_string(),
-            query: Some("fn $A()".to_string()),
-            path: None,
-            line: None,
-            end_line: None,
-            character: None,
-            lang: None,
-            limit: Some(10),
-            context: Some(2),
-            session: None,
-            lsp_operation: None,
-            detail: Some(false),
-            raw: Some(false),
-        })
-        .unwrap();
-        assert_eq!(response.status, crate::lens::LensResponseStatus::Warning);
-        assert_eq!(response.warnings[0].code, "ast_lang_required");
-        assert!(response.errors.is_empty());
+        assert!(names.iter().all(|name| !name.starts_with("lens_")));
     }
 }

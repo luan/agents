@@ -6,9 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use super::contract::{LensEnvelope, LensMessage, LensResponseStatus};
 use super::store::LensStore;
-use super::types::{
-    Diagnostic, DiagnosticDeltaSet, DiagnosticSeverity, GuardAction, GuardDecision, LensTouchedFile,
-};
+use super::types::{Diagnostic, DiagnosticDeltaSet, DiagnosticSeverity, LensTouchedFile};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -61,8 +59,6 @@ pub struct TurnHealthData {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TurnHealthSummary {
     pub changed_files: ChangedFilesSummary,
-    pub reads: ReadSummary,
-    pub guard: GuardSummary,
     pub cleanup: CleanupSummary,
     pub diagnostics: DiagnosticSummary,
     pub checks: CheckSummary,
@@ -73,28 +69,6 @@ pub struct TurnHealthSummary {
 pub struct ChangedFilesSummary {
     pub count: usize,
     pub paths: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReadSummary {
-    pub count: usize,
-    pub files: Vec<String>,
-    pub ranges: Vec<ReadFileRange>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReadFileRange {
-    pub path: String,
-    pub start_line: i64,
-    pub end_line: i64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GuardSummary {
-    pub clean: usize,
-    pub warnings: usize,
-    pub blocked: usize,
-    pub decisions: Vec<GuardDecision>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -179,7 +153,6 @@ pub struct ChangedFileReport {
     pub path: String,
     pub touched: Vec<LensTouchedFile>,
     pub diagnostics: Vec<Diagnostic>,
-    pub guard: Option<GuardDecision>,
     pub cleanup_actions: Vec<CleanupActionReport>,
     pub patch_refs: FilePatchRefs,
     pub symbol_context: SymbolGraphContext,
@@ -263,23 +236,15 @@ pub fn build_changed_file_report_envelope(
     let mut files = Vec::new();
     for (file_path, touched) in by_path {
         let diagnostics = store.list_diagnostics(Some(&file_path))?;
-        let guard = health
-            .summary
-            .guard
-            .decisions
-            .iter()
-            .find(|decision| decision.file == file_path)
-            .cloned();
         let cleanup_actions =
             cleanup_actions_for_file(&store, &options.session, &options.turn, &file_path)?;
         let patch_refs = patch_refs_for_file(&store, &options.session, &file_path)?;
         let symbol_context = symbol_context(root, &file_path, &diagnostics);
-        let next_actions = report_next_actions(&options, &file_path, &diagnostics, guard.as_ref());
+        let next_actions = report_next_actions(&file_path, &diagnostics);
         files.push(ChangedFileReport {
             path: file_path,
             touched,
             diagnostics,
-            guard,
             cleanup_actions,
             patch_refs,
             symbol_context,
@@ -323,27 +288,23 @@ pub fn final_health_text(data: &TurnHealthData) -> String {
 }
 
 fn compute_turn_health(
-    root: &Path,
+    _root: &Path,
     store: &mut LensStore,
     options: &TurnHealthOptions,
 ) -> Result<TurnHealthData, Box<dyn std::error::Error>> {
     let touched = store.list_touched_files(&options.session, &options.turn)?;
     let changed_paths = unique_changed_paths(&touched);
-    let reads = read_summary(store, &options.session)?;
-    let guard = guard_summary(root, store, &options.session, &touched)?;
     let cleanup = cleanup_summary(store, &options.session, &options.turn)?;
     let diagnostics_data = store.list_diagnostics_data(None, false)?;
     let diagnostics = diagnostic_summary(&diagnostics_data.diagnostics, &diagnostics_data.deltas);
     let checks = check_summary(store)?;
     let patch_refs = patch_ref_summary(store, &options.session, &changed_paths)?;
-    let status = compute_status(&guard, &cleanup, &diagnostics, &checks);
+    let status = compute_status(&cleanup, &diagnostics, &checks);
     let summary = TurnHealthSummary {
         changed_files: ChangedFilesSummary {
             count: changed_paths.len(),
             paths: changed_paths.iter().cloned().collect(),
         },
-        reads,
-        guard,
         cleanup,
         diagnostics,
         checks,
@@ -445,85 +406,6 @@ fn unique_changed_paths(touched: &[LensTouchedFile]) -> BTreeSet<String> {
         .filter(|file| !file.ignored && !file.generated)
         .map(|file| file.path.clone())
         .collect()
-}
-
-fn read_summary(
-    store: &LensStore,
-    session: &str,
-) -> Result<ReadSummary, Box<dyn std::error::Error>> {
-    store.with_conn(|conn| {
-        let mut stmt = conn.prepare(
-            "SELECT f.rel_path, rr.start_line, rr.end_line
-             FROM read_events re
-             JOIN read_ranges rr ON rr.read_event_id = re.id
-             JOIN files f ON f.id = re.file_id
-             WHERE f.project_id=?1 AND re.session_id=?2
-             ORDER BY f.rel_path, rr.start_line, rr.end_line",
-        )?;
-        let rows = stmt.query_map(params![store.project_id(), session], |row| {
-            Ok(ReadFileRange {
-                path: row.get(0)?,
-                start_line: row.get(1)?,
-                end_line: row.get(2)?,
-            })
-        })?;
-        let ranges = rows.collect::<Result<Vec<_>, _>>()?;
-        let files = ranges
-            .iter()
-            .map(|range| range.path.clone())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>();
-        Ok(ReadSummary {
-            count: ranges.len(),
-            files,
-            ranges,
-        })
-    })
-}
-
-fn guard_summary(
-    root: &Path,
-    store: &mut LensStore,
-    session: &str,
-    touched: &[LensTouchedFile],
-) -> Result<GuardSummary, Box<dyn std::error::Error>> {
-    let requested = GuardAction::Warn;
-    let mut seen = BTreeSet::new();
-    let mut decisions = Vec::new();
-    for file in touched {
-        if !is_write_operation(&file.operation) || file.ignored || file.generated {
-            continue;
-        }
-        if !seen.insert(file.path.clone()) {
-            continue;
-        }
-        let end_line = known_line_count(store, root, &file.path)
-            .unwrap_or(1)
-            .max(1);
-        let decision = store.check_guard(
-            Some(session),
-            Path::new(&file.path),
-            1,
-            end_line,
-            requested.clone(),
-        )?;
-        decisions.push(decision);
-    }
-    let mut summary = GuardSummary {
-        clean: 0,
-        warnings: 0,
-        blocked: 0,
-        decisions,
-    };
-    for decision in &summary.decisions {
-        match decision.decision {
-            GuardAction::Allow => summary.clean += 1,
-            GuardAction::Warn => summary.warnings += 1,
-            GuardAction::Block => summary.blocked += 1,
-        }
-    }
-    Ok(summary)
 }
 
 fn cleanup_summary(
@@ -692,7 +574,6 @@ fn patch_ref_summary(
 }
 
 fn compute_status(
-    _guard: &GuardSummary,
     cleanup: &CleanupSummary,
     diagnostics: &DiagnosticSummary,
     checks: &CheckSummary,
@@ -753,7 +634,6 @@ fn health_fingerprint(status: &TurnHealthStatus, summary: &TurnHealthSummary) ->
     let value = serde_json::json!({
         "status": status,
         "changed": summary.changed_files.paths,
-        "guard": {"warnings": summary.guard.warnings, "blocked": summary.guard.blocked},
         "diagnostics": summary.diagnostics,
         "cleanup": summary.cleanup,
         "checks": summary.checks,
@@ -814,7 +694,7 @@ fn action_context(
     acknowledged: bool,
     summary: &TurnHealthSummary,
 ) -> ActionContextState {
-    let actionable = matches!(status, TurnHealthStatus::Error);
+    let actionable = status.is_warning_or_worse();
     let required = actionable && !acknowledged;
     let state = if !actionable {
         "clear"
@@ -942,7 +822,7 @@ fn patch_refs_for_file(
 }
 
 fn symbol_context(root: &Path, path: &str, diagnostics: &[Diagnostic]) -> SymbolGraphContext {
-    let command = format!("ct sym outline {}", shell_word(path));
+    let command = format!("ct source outline {} --json", shell_word(path));
     let full_path = root.join(path);
     match sym::outline::file_outline(root, &full_path) {
         Ok(outline) => {
@@ -986,17 +866,8 @@ fn symbol_context(root: &Path, path: &str, diagnostics: &[Diagnostic]) -> Symbol
     }
 }
 
-fn report_next_actions(
-    options: &TurnHealthOptions,
-    path: &str,
-    diagnostics: &[Diagnostic],
-    guard: Option<&GuardDecision>,
-) -> Vec<String> {
-    let mut actions = vec![format!(
-        "ct lens discover --intent source-context --path {} --session {} --json",
-        shell_word(path),
-        shell_word(&options.session)
-    )];
+fn report_next_actions(path: &str, diagnostics: &[Diagnostic]) -> Vec<String> {
+    let mut actions = vec![format!("ct source show {} --json", shell_word(path))];
     if diagnostics.iter().any(|diagnostic| {
         matches!(
             diagnostic.severity,
@@ -1008,40 +879,7 @@ fn report_next_actions(
             shell_word(path)
         ));
     }
-    if guard.is_some_and(|decision| !matches!(decision.decision, GuardAction::Allow)) {
-        actions.push(format!(
-            "ct lens read record --path {} --start-line 1 --end-line <line> --session {} --json",
-            shell_word(path),
-            shell_word(&options.session)
-        ));
-    }
     actions
-}
-
-fn known_line_count(store: &LensStore, root: &Path, path: &str) -> Option<i64> {
-    let from_store = store.with_conn(|conn| {
-        conn.query_row(
-            "SELECT line_count FROM files WHERE project_id=?1 AND rel_path=?2",
-            params![store.project_id(), path],
-            |row| row.get::<_, Option<i64>>(0),
-        )
-        .optional()
-        .ok()
-        .flatten()
-        .flatten()
-    });
-    from_store.or_else(|| {
-        std::fs::read_to_string(root.join(path))
-            .ok()
-            .map(|text| text.lines().count().max(1) as i64)
-    })
-}
-
-fn is_write_operation(operation: &str) -> bool {
-    matches!(
-        operation,
-        "create" | "write" | "modify" | "edit" | "delete" | "rename"
-    )
 }
 
 fn check_errors(checks: &CheckSummary) -> usize {
@@ -1138,7 +976,7 @@ mod tests {
     }
 
     #[test]
-    fn health_status_computation_keeps_guard_findings_advisory() {
+    fn health_status_ignores_missing_read_coverage() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("main.rs"), "fn main() {}\n").unwrap();
         record_turn(temp.path());
@@ -1154,8 +992,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(envelope.data.status, TurnHealthStatus::Clean);
-        assert_eq!(envelope.data.summary.guard.warnings, 1);
-        assert_eq!(envelope.data.summary.guard.blocked, 0);
         assert!(!envelope.data.action_context.required);
     }
 
@@ -1191,7 +1027,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_and_final_output_stay_quiet_for_guard_advisory() {
+    fn compact_and_final_output_stay_quiet_when_clean() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("main.rs"), "fn main() {}\n").unwrap();
         record_turn(temp.path());
@@ -1211,7 +1047,7 @@ mod tests {
     }
 
     #[test]
-    fn deep_report_includes_diagnostics_guard_and_symbol_context() {
+    fn deep_report_includes_diagnostics_and_symbol_context() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("main.rs"), "fn target() {}\n").unwrap();
         record_turn(temp.path());
@@ -1231,18 +1067,13 @@ mod tests {
 
         assert_eq!(report.data.file_count, 1);
         assert_eq!(report.data.files[0].diagnostics.len(), 1);
-        assert!(report.data.files[0].guard.is_some());
         assert!(!report.data.files[0].symbol_context.command.is_empty());
     }
 
     #[test]
-    fn warning_diagnostics_do_not_force_action_context() {
+    fn warning_diagnostics_require_action_context() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("main.rs"), "fn main() {}\n").unwrap();
-        let mut store = LensStore::open_for_project(temp.path()).unwrap();
-        store
-            .record_read(Some("s"), Path::new("main.rs"), 1, 1)
-            .unwrap();
         record_turn(temp.path());
         let mut store = LensStore::open_for_project(temp.path()).unwrap();
         store.record_diagnostics(&[warning_diagnostic()]).unwrap();
@@ -1258,7 +1089,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(health.data.status, TurnHealthStatus::Warning);
-        assert!(!health.data.action_context.required);
-        assert!(health.data.action_context.ack_command.is_none());
+        assert!(health.data.action_context.required);
+        assert!(health.data.action_context.ack_command.is_some());
     }
 }

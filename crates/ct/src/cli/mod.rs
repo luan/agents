@@ -1,29 +1,34 @@
 use clap::{Parser, Subcommand};
 
+mod apply_patch;
 mod args;
 mod artifact;
 pub(crate) mod ast;
+mod dev;
 mod lens;
 mod lsp;
 mod patch;
+mod repo;
+mod shell;
+pub(crate) mod source;
 mod tool;
+mod tui;
 
+pub use apply_patch::run_apply_patch;
 pub use args::{
-    ApplyPatchCmd, AstAction, LensAction, LspAction, McpAction, PatchAction, ToolAction,
-    VaultAction, parse_kind_filter,
+    ApplyPatchArgs, DevAction, LensAction, McpAction, RepoAction, ShellAction, SourceAction,
+    SourceSearchMode, TuiAction, VaultAction, parse_kind_filter,
 };
 pub use artifact::{
     ArtifactCreateArgs, run_vault_archive, run_vault_comments, run_vault_create, run_vault_list,
     run_vault_prune, run_vault_read, run_vault_rename, run_vault_retag,
 };
-pub use ast::run_ast;
+pub use dev::run_dev;
 pub use lens::run_lens;
-pub use lsp::run_lsp;
-pub use patch::run_patch;
-pub use tool::{
-    run_apply_patch, run_apply_patch_prune, run_apply_patch_report, run_apply_patch_show,
-    run_apply_patch_stats, run_cochanges, run_completion, run_slug, run_usage_bar,
-};
+pub use repo::run_repo;
+pub use shell::run_shell;
+pub use source::run_source;
+pub use tui::run_tui;
 
 #[derive(Parser)]
 #[command(name = "ct")]
@@ -35,31 +40,10 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    #[command(visible_alias = "v", about = "Vault operations")]
-    Vault {
+    #[command(about = "Read-only source code search and navigation")]
+    Source {
         #[command(subcommand)]
-        action: VaultAction,
-    },
-
-    #[command(about = "Print detected project name")]
-    Project,
-
-    #[command(visible_alias = "n", about = "Handle notification hooks")]
-    Notify,
-
-    #[command(visible_alias = "o", about = "Utility tools")]
-    Tool {
-        #[command(subcommand)]
-        action: ToolAction,
-    },
-
-    #[command(about = "Code indexing and symbol discovery")]
-    Sym(sym::cli::SymArgs),
-
-    #[command(about = "AST-aware code search and replacement")]
-    Ast {
-        #[command(subcommand)]
-        action: AstAction,
+        action: SourceAction,
     },
 
     #[command(about = "Lens code intelligence and edit-safety state")]
@@ -68,17 +52,20 @@ pub enum Command {
         action: LensAction,
     },
 
-    #[command(about = "LSP navigation overlay")]
-    Lsp {
+    #[command(visible_alias = "v", about = "Vault operations")]
+    Vault {
         #[command(subcommand)]
-        action: LspAction,
+        action: VaultAction,
     },
 
-    #[command(about = "Durable patch draft operations")]
-    Patch {
+    #[command(about = "Repository and git analysis")]
+    Repo {
         #[command(subcommand)]
-        action: PatchAction,
+        action: RepoAction,
     },
+
+    #[command(about = "Apply patches and inspect apply_patch telemetry")]
+    ApplyPatch(ApplyPatchArgs),
 
     #[command(about = "Run the MCP stdio server")]
     Mcp {
@@ -89,22 +76,31 @@ pub enum Command {
     #[command(about = "Run a harness hook")]
     Hook {
         #[arg(
-            help = "Hook name: apply-patch-remind, codex-sym-nudge, gt-session-start, gt-validate-git, lens-turn-event, rtk-rewrite"
+            help = "Hook name: apply-patch-remind, source-remind, source-nudge, notify, gt-session-start, gt-validate-git, lens-turn-event, rtk-rewrite"
         )]
         name: String,
     },
 
-    #[command(about = "Inspect or prune apply_patch telemetry")]
-    ApplyPatch {
+    #[command(about = "Shell integration helpers")]
+    Shell {
         #[command(subcommand)]
-        cmd: ApplyPatchCmd,
+        action: ShellAction,
     },
 
-    #[command(about = "Render subscription usage bars from JSON on stdin")]
-    UsageBar {
-        #[arg(long, default_value_t = 80, help = "Terminal width in cells")]
-        width: usize,
+    #[command(about = "Terminal UI helpers")]
+    Tui {
+        #[command(subcommand)]
+        action: TuiAction,
     },
+
+    #[command(about = "Developer/internal helpers")]
+    Dev {
+        #[command(subcommand)]
+        action: DevAction,
+    },
+
+    #[command(hide = true, visible_alias = "n", about = "Handle notification hooks")]
+    Notify,
 }
 
 pub(crate) fn handle_sync_error(e: crate::artifact::SyncError) -> ! {

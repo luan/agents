@@ -294,9 +294,11 @@ pub fn anchors_for_failure(error: &ApplyPatchError, attempts: &[AnchorAttempt]) 
 
 fn next_action(patch_id: &str, kind: &str, anchors: &[String]) -> String {
     if kind == "ambiguous_context" && !anchors.is_empty() {
-        format!("inspect `ct patch draft show {patch_id}` and amend with a suggested @@ anchor")
+        format!(
+            "inspect `ct apply-patch draft show {patch_id}` and amend with a suggested @@ anchor"
+        )
     } else {
-        format!("inspect `ct patch draft show {patch_id}` and regenerate the failing hunk")
+        format!("inspect `ct apply-patch draft show {patch_id}` and regenerate the failing hunk")
     }
 }
 

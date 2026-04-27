@@ -152,7 +152,7 @@ pub fn run_apply_patch_prune(days: i64) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
-pub fn run_apply_patch(
+pub fn run_apply_patch_raw(
     cwd: Option<String>,
     dry_run: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -224,7 +224,7 @@ pub fn run_apply_patch(
         }
     } else {
         let mut store = crate::lens::LensStore::open_for_project(&cwd_path)?;
-        store.record_applied_changes(None, "ct_tool_apply_patch", &changes)?;
+        store.record_applied_changes(None, "ct_apply_patch", &changes)?;
         for change in &changes {
             match change.kind {
                 crate::apply_patch::ChangeType::Add => println!("A {}", change.path),

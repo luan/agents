@@ -6,34 +6,8 @@ use serde::{Deserialize, Serialize};
 use super::contract::LensMessage;
 use super::retention::RetentionPolicy;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[derive(Default)]
-pub enum LensGuardMode {
-    Off,
-    Warn,
-    #[default]
-    Block,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LensGuardPolicy {
-    pub mode: LensGuardMode,
-    pub allow_overrides: bool,
-}
-
-impl Default for LensGuardPolicy {
-    fn default() -> Self {
-        Self {
-            mode: LensGuardMode::Block,
-            allow_overrides: false,
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct LensPolicy {
-    pub guard: LensGuardPolicy,
     pub retention: RetentionPolicy,
     pub checks: BTreeMap<String, LensCheckConfig>,
     pub scanners: BTreeMap<String, LensScannerConfig>,
@@ -100,10 +74,7 @@ fn default_scanner_source() -> String {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RuntimePolicyOverrides {
-    pub guard_mode: Option<LensGuardMode>,
-    pub allow_overrides: Option<bool>,
-}
+pub struct RuntimePolicyOverrides {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PolicyLayerStatus {
@@ -130,17 +101,9 @@ pub struct PolicyResolveOptions {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LensPolicyConfig {
-    guard: Option<LensGuardPolicyConfig>,
     retention: Option<RetentionPolicyConfig>,
     checks: Option<BTreeMap<String, LensCheckConfig>>,
     scanners: Option<BTreeMap<String, LensScannerConfig>>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LensGuardPolicyConfig {
-    mode: Option<LensGuardMode>,
-    allow_overrides: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -245,14 +208,6 @@ fn read_config(path: &Path) -> Result<LensPolicyConfig, Box<dyn std::error::Erro
 }
 
 fn apply_config(config: LensPolicyConfig, policy: &mut LensPolicy) {
-    if let Some(guard) = config.guard {
-        if let Some(mode) = guard.mode {
-            policy.guard.mode = mode;
-        }
-        if let Some(allow_overrides) = guard.allow_overrides {
-            policy.guard.allow_overrides = allow_overrides;
-        }
-    }
     if let Some(retention) = config.retention {
         if let Some(max) = retention.max_diagnostics {
             policy.retention.max_diagnostics = max;
@@ -282,22 +237,15 @@ fn apply_config(config: LensPolicyConfig, policy: &mut LensPolicy) {
 }
 
 fn apply_runtime(
-    runtime: RuntimePolicyOverrides,
-    policy: &mut LensPolicy,
+    _runtime: RuntimePolicyOverrides,
+    _policy: &mut LensPolicy,
     layers: &mut Vec<PolicyLayerStatus>,
 ) {
-    let applied = runtime.guard_mode.is_some() || runtime.allow_overrides.is_some();
-    if let Some(mode) = runtime.guard_mode {
-        policy.guard.mode = mode;
-    }
-    if let Some(allow_overrides) = runtime.allow_overrides {
-        policy.guard.allow_overrides = allow_overrides;
-    }
     layers.push(PolicyLayerStatus {
         layer: "runtime".to_string(),
         path: None,
-        present: applied,
-        applied,
+        present: false,
+        applied: false,
     });
 }
 
@@ -370,49 +318,23 @@ mod tests {
     }
 
     #[test]
-    fn policy_layers_apply_repository_over_weaker_user_default_and_runtime_last() {
+    fn policy_layers_apply_retention_without_guard_state() {
         let temp = tempfile::tempdir().unwrap();
         let user = temp.path().join("user.json");
         let repo_dir = temp.path().join("repo");
         std::fs::create_dir_all(&repo_dir).unwrap();
-        let repo = repo_dir.join("lens.json");
-        std::fs::write(
-            &user,
-            r#"{"guard":{"mode":"off","allow_overrides":true},"retention":{"max_diagnostics":7}}"#,
-        )
-        .unwrap();
-        std::fs::write(
-            &repo,
-            r#"{"guard":{"mode":"block","allow_overrides":false}}"#,
-        )
-        .unwrap();
+        std::fs::write(&user, r#"{"retention":{"max_diagnostics":7}}"#).unwrap();
 
         let resolved = resolve_policy_with_options(
             &repo_dir,
             PolicyResolveOptions {
                 user_config_path: Some(user),
-                repo_config_path: Some(repo),
+                repo_config_path: Some(temp.path().join("missing-repo.json")),
                 runtime: RuntimePolicyOverrides::default(),
             },
         );
 
-        assert_eq!(resolved.policy.guard.mode, LensGuardMode::Block);
-        assert!(!resolved.policy.guard.allow_overrides);
         assert_eq!(resolved.policy.retention.max_diagnostics, 7);
         assert!(resolved.warnings.is_empty());
-
-        let runtime = resolve_policy_with_options(
-            &repo_dir,
-            PolicyResolveOptions {
-                user_config_path: Some(temp.path().join("missing-user.json")),
-                repo_config_path: Some(temp.path().join("missing-repo.json")),
-                runtime: RuntimePolicyOverrides {
-                    guard_mode: Some(LensGuardMode::Warn),
-                    allow_overrides: Some(true),
-                },
-            },
-        );
-        assert_eq!(runtime.policy.guard.mode, LensGuardMode::Warn);
-        assert!(runtime.policy.guard.allow_overrides);
     }
 }

@@ -8,14 +8,13 @@ use serde_json::{Value, json};
 use super::checks::LensChecksData;
 use super::contract::{LensMessage, LensResponseStatus};
 use super::health::{TurnHealthData, TurnHealthOptions, TurnHealthStatus};
-use super::policy::LensGuardMode;
 use super::retention;
 use super::status::{DiagnosticHealth, LensStatusOptions, build_status_envelope};
 use super::store::LensStore;
 use super::types::{
     DiagnosticScope, DiagnosticSnapshotInput, DiagnosticSnapshotMetadata, DiagnosticSource,
-    GuardAction, GuardDecision, LensToolEventPhase, LensTouchedFile, LensTouchedFileInput,
-    LensTurnEvent, LensTurnEventKind, LensTurnEventPolicy, RawOutputRef,
+    LensToolEventPhase, LensTouchedFileInput, LensTurnEvent, LensTurnEventKind,
+    LensTurnEventPolicy, RawOutputRef,
 };
 
 pub const LENS_HOOK_EVENT_SCHEMA_VERSION: &str = "lens.hook_event.v1";
@@ -121,10 +120,6 @@ pub struct LensHookPolicy {
     pub git_fallback: bool,
     #[serde(default)]
     pub include_ignored: bool,
-    #[serde(default)]
-    pub guard_mode: Option<LensGuardMode>,
-    #[serde(default)]
-    pub allow_overrides: Option<bool>,
     #[serde(default = "default_true")]
     pub run_cleanup: bool,
     #[serde(default = "default_true")]
@@ -138,8 +133,6 @@ impl Default for LensHookPolicy {
         Self {
             git_fallback: true,
             include_ignored: false,
-            guard_mode: None,
-            allow_overrides: None,
             run_cleanup: true,
             run_checks: true,
             record_raw_output: true,
@@ -176,8 +169,6 @@ pub enum LensHookDecisionOutcome {
 pub struct LensHookDecision {
     pub outcome: LensHookDecisionOutcome,
     pub reason: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub guard: Vec<GuardDecision>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -319,7 +310,9 @@ fn native_hook_response(hook: LensLifecycleHook, response: &LensHookResponse) ->
     let blocked = matches!(response.decision.outcome, LensHookDecisionOutcome::Block);
 
     payload.insert("continue".to_string(), Value::Bool(!blocked));
-    payload.insert("suppressOutput".to_string(), Value::Bool(true));
+    if response.host.name == "claude-code" {
+        payload.insert("suppressOutput".to_string(), Value::Bool(true));
+    }
 
     if blocked {
         payload.insert("decision".to_string(), Value::String("block".to_string()));
@@ -335,14 +328,16 @@ fn native_hook_response(hook: LensLifecycleHook, response: &LensHookResponse) ->
 
     match hook {
         LensLifecycleHook::PreTool => {
-            payload.insert(
-                "hookSpecificOutput".to_string(),
-                json!({
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": if blocked { "deny" } else { "allow" },
-                    "permissionDecisionReason": response.decision.reason,
-                }),
-            );
+            if response.host.name != "codex" || blocked {
+                payload.insert(
+                    "hookSpecificOutput".to_string(),
+                    json!({
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": if blocked { "deny" } else { "allow" },
+                        "permissionDecisionReason": response.decision.reason,
+                    }),
+                );
+            }
         }
         LensLifecycleHook::PostTool => {
             if let Some(context) = native_additional_context(response) {
@@ -705,39 +700,19 @@ fn context_injection(event: LensHookEvent) -> LensHookResponse {
 }
 
 fn pre_tool(event: LensHookEvent) -> LensHookResponse {
-    let mut response = base_response(&event, LensHookDecisionOutcome::Allow, "guard_clean");
-    match root_for_event(&event).and_then(|root| advisory_guard(&root, &event)) {
-        Ok((decisions, files)) => {
-            let warned = decisions
-                .iter()
-                .any(|decision| !matches!(decision.decision, GuardAction::Allow));
-            response.decision.guard = decisions;
-            response.data = Some(json!({ "files": files }));
-            if warned {
-                response.status = LensResponseStatus::Warning;
-                response.decision.outcome = LensHookDecisionOutcome::Warn;
-                response.decision.reason = "guard_advisory".to_string();
-                response.warnings.push(LensMessage::warning_with_hint(
-                    "guard_advisory",
-                    "Lens guard found write targets without current read coverage",
-                    "review the advisory and read affected ranges when useful; the tool call was not blocked",
-                ));
-            } else {
-                response.actions.push(action("guard_advisory", "ok", None));
-            }
-            if let Err(error) = record_tool_turn_event(
-                &event,
-                LensTurnEventKind::ToolStart,
-                LensToolEventPhase::PreTool,
-            ) {
-                push_error(&mut response, "pre_tool_record_failed", error);
-            } else {
-                response
-                    .actions
-                    .push(action("record_turn_event", "ok", None));
-            }
+    let mut response = base_response(&event, LensHookDecisionOutcome::Allow, "tool_allowed");
+    match record_tool_turn_event(
+        &event,
+        LensTurnEventKind::ToolStart,
+        LensToolEventPhase::PreTool,
+    ) {
+        Ok(envelope) => {
+            response
+                .actions
+                .push(action("record_turn_event", "ok", None));
+            response.data = Some(json!({ "turn": envelope.data }));
         }
-        Err(error) => push_error(&mut response, "pre_tool_failed", error),
+        Err(error) => push_error(&mut response, "pre_tool_record_failed", error),
     }
     response
 }
@@ -891,36 +866,6 @@ fn record_tool_turn_event(
     let cwd = PathBuf::from(&event.cwd);
     let turn_event = turn_event(event, kind, phase);
     super::turn::record_turn_event_envelope(&cwd, turn_event)
-}
-
-fn advisory_guard(
-    root: &Path,
-    event: &LensHookEvent,
-) -> Result<(Vec<GuardDecision>, Vec<LensTouchedFile>), Box<dyn std::error::Error>> {
-    let cwd = canonical_or_self(&PathBuf::from(&event.cwd));
-    let turn_event = turn_event(
-        event,
-        LensTurnEventKind::ToolStart,
-        LensToolEventPhase::PreTool,
-    );
-    let (files, _) = super::turn::touched_files_from_event(root, &cwd, &turn_event)?;
-    let mut store = LensStore::open_for_project(root)?;
-    let mut decisions = Vec::new();
-    for file in files
-        .iter()
-        .filter(|file| is_write_operation(&file.operation))
-    {
-        let (start, end) = guard_range(root, file);
-        decisions.push(store.check_guard_with_overrides(
-            Some(&event.session.id),
-            Path::new(&file.path),
-            start,
-            end,
-            GuardAction::Warn,
-            false,
-        )?);
-    }
-    Ok((decisions, files))
 }
 
 fn record_raw_output(
@@ -1082,26 +1027,6 @@ fn canonical_or_self(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
-fn guard_range(root: &Path, file: &LensTouchedFile) -> (i64, i64) {
-    if let (Some(start), Some(end)) = (file.start_line, file.end_line) {
-        return (start, end);
-    }
-    let line_count = std::fs::read_to_string(root.join(&file.path))
-        .map(|content| content.lines().count().max(1) as i64)
-        .unwrap_or(1);
-    (
-        file.start_line.unwrap_or(1),
-        file.end_line.unwrap_or(line_count),
-    )
-}
-
-fn is_write_operation(operation: &str) -> bool {
-    matches!(
-        operation,
-        "add" | "create" | "delete" | "edit" | "modify" | "move" | "rename" | "write"
-    )
-}
-
 fn base_response(
     event: &LensHookEvent,
     outcome: LensHookDecisionOutcome,
@@ -1118,7 +1043,6 @@ fn base_response(
         decision: LensHookDecision {
             outcome,
             reason: reason.to_string(),
-            guard: Vec::new(),
         },
         actions: Vec::new(),
         context: LensHookContextInjection {
@@ -1296,8 +1220,45 @@ mod tests {
 
         assert!(native.get("schema_version").is_none());
         assert_eq!(native["continue"], true);
-        assert_eq!(native["suppressOutput"], true);
+        assert!(native.get("suppressOutput").is_none());
         assert!(native.get("decision").is_none());
+        assert!(native.get("hookSpecificOutput").is_none());
+    }
+
+    #[test]
+    fn native_claude_response_can_suppress_output() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = json!({
+            "session_id": "session-1",
+            "cwd": temp.path().display().to_string(),
+            "hook_event_name": "Stop"
+        });
+
+        let mut response =
+            handle_lifecycle_hook(LensLifecycleHook::AgentEnd, &input.to_string(), temp.path());
+        response.host.name = "claude-code".to_string();
+        let native = native_hook_response(LensLifecycleHook::AgentEnd, &response);
+
+        assert_eq!(native["suppressOutput"], true);
+    }
+
+    #[test]
+    fn native_codex_pre_tool_allow_response_stays_silent() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = json!({
+            "session_id": "session-1",
+            "cwd": temp.path().display().to_string(),
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "date"}
+        });
+
+        let mut response =
+            handle_lifecycle_hook(LensLifecycleHook::PreTool, &input.to_string(), temp.path());
+        response.host.name = "codex".to_string();
+        let native = native_hook_response(LensLifecycleHook::PreTool, &response);
+
+        assert_eq!(native["continue"], true);
         assert!(native.get("hookSpecificOutput").is_none());
     }
 }

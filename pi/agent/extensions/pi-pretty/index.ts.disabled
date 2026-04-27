@@ -46,7 +46,6 @@ import type { BundledLanguage, BundledTheme } from "shiki";
 
 import { CursorStore, fffFormatGrepText } from "./fff-helpers";
 import type { FffFileItem, FffFinderLike, FffGrepResult, FffModuleLike, FffSearchResult } from "./fff-types";
-import { recordLensRead } from "../shared/lens-read.ts";
 import { resolveShikiLanguageForPath } from "../shared/path-language";
 
 // ---------------------------------------------------------------------------
@@ -1143,14 +1142,6 @@ export default function piPrettyExtension(pi: PiPrettyApi, deps?: PiPrettyDeps):
 					content: textContent,
 					offset,
 					lineCount,
-				});
-				await recordLensRead({
-					cwd: ctx.cwd,
-					path: fp,
-					startLine: offset,
-					endLine: offset + Math.max(0, lineCount - 1),
-					session: ctx.sessionManager.getSessionId(),
-					signal: sig,
 				});
 			}
 

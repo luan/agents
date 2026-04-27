@@ -2,9 +2,7 @@ import type { AssistantMessage } from "@mariozechner/pi-ai";
 import type {
   ExtensionAPI,
   ExtensionContext,
-  KeybindingsManager,
 } from "@mariozechner/pi-coding-agent";
-import type { EditorTheme, TUI } from "@mariozechner/pi-tui";
 import { runCommand } from "../shared/ct-runner";
 import {
   type PolishedTuiConfig,
@@ -18,7 +16,7 @@ import {
 } from "./footer";
 import { readGitStatus } from "./git";
 import { readRuntimeInfo } from "./runtime";
-import { PolishedEditor, patchUserMessageComponent } from "./ui";
+import { installEditorComposition, patchUserMessageComponent } from "./ui";
 import {
   USAGE_REFRESH_INTERVAL,
   detectUsageProvider,
@@ -313,36 +311,7 @@ export default function (pi: ExtensionAPI) {
 
   const installEditor = (ctx: ExtensionContext) => {
     syncState(ctx);
-
-    let currentEditor: PolishedEditor | undefined;
-    let autocompleteFixed = false;
-
-    type AutocompleteEditorInternals = { autocompleteProvider?: unknown };
-
-    const editorFactory = (
-      tui: TUI,
-      theme: EditorTheme,
-      keybindings: KeybindingsManager,
-    ) => {
-      const editor = new PolishedEditor(tui, theme, keybindings, ctx.ui.theme);
-      currentEditor = editor;
-
-      const originalHandleInput = editor.handleInput.bind(editor);
-      editor.handleInput = (data: string) => {
-        const internals = editor as unknown as AutocompleteEditorInternals;
-        if (!autocompleteFixed && !internals.autocompleteProvider) {
-          autocompleteFixed = true;
-          ctx.ui.setEditorComponent(editorFactory);
-          currentEditor?.handleInput(data);
-          return;
-        }
-        originalHandleInput(data);
-      };
-
-      return editor;
-    };
-
-    ctx.ui.setEditorComponent(editorFactory);
+    installEditorComposition(ctx.ui.theme);
   };
 
   const installUi = (ctx: ExtensionContext) => {

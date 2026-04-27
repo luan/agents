@@ -31,3 +31,4 @@ plugins/*_history.jsonl
 plugins/*_violations.jsonl
 plugins/install-counts-cache.json
 *.local.*
+/pi/agent/.extmgr-cache

@@ -1,7 +1,6 @@
 pub mod checks;
 pub mod cleanup;
 pub mod contract;
-pub mod discovery;
 pub mod health;
 pub mod hooks;
 pub mod paths;
@@ -16,7 +15,6 @@ pub mod types;
 pub use checks::*;
 pub use cleanup::*;
 pub use contract::*;
-pub use discovery::*;
 pub use health::*;
 pub use hooks::*;
 pub use paths::project_db_path;

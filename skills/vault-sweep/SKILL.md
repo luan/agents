@@ -29,7 +29,7 @@ List all active artifacts for the current project using JSON output for reliable
 
 ```bash
 PROJECT_ROOT=$(git rev-parse --show-toplevel)
-PROJECT_NAME=$(ct project)
+PROJECT_NAME=$(ct repo project)
 ct vault list --json
 ```
 
@@ -89,12 +89,12 @@ Group consumed artifacts by feature area for the final report. One line per feat
 
 ## Phase 4: Doc audit
 
-Use `ct tool check-refs` for deterministic staleness scoring, then read docs that need qualitative judgment.
+Use `ct repo check-refs` for deterministic staleness scoring, then read docs that need qualitative judgment.
 
 **Step 1 — Programmatic check:** For each doc, run:
 
 ```bash
-ct tool check-refs <doc-stem> --project-root "$PROJECT_ROOT"
+ct repo check-refs <doc-stem> --project-root "$PROJECT_ROOT"
 ```
 
 This extracts file paths, backtick identifiers, and crate names from the doc body, validates each against the project filesystem, and outputs a JSON report with a `staleness` score (0.0–1.0).
@@ -123,12 +123,12 @@ For docs marked "update," be specific about which sections are stale and what ch
 
 Skip if `--no-gap-analysis`.
 
-Identify stable, substantive systems that deserve reference docs. Use `ct tool churn` for deterministic data, then dispatch a subagent to assess documentation value.
+Identify stable, substantive systems that deserve reference docs. Use `ct repo churn` for deterministic data, then dispatch a subagent to assess documentation value.
 
 **Step 1 — Gather stability data:**
 
 ```bash
-ct tool churn --project-root "$PROJECT_ROOT" --since 2w --min-loc 500
+ct repo churn --project-root "$PROJECT_ROOT" --since 2w --min-loc 500
 ```
 
 This outputs per-module LOC, recent commit count, and last change date as JSON.
@@ -139,7 +139,7 @@ This outputs per-module LOC, recent commit count, and last change date as JSON.
 Assess which undocumented systems deserve reference docs.
 
 Here is the per-module stability data (LOC, commits in last 2 weeks, last change):
-<ct tool churn output>
+<ct repo churn output>
 
 Existing docs already cover: <list of doc topics from Phase 4>
 

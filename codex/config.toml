@@ -10,7 +10,7 @@ web_search = "live"
 
 [features]
 codex_hooks = true
-external_migration = true
+external_migration = false
 image_generation = true
 memories = true
 multi_agent = true
@@ -22,12 +22,6 @@ fast_default_opt_out = true
 
 [notice.external_config_migration_prompts]
 home_last_prompted_at = 1776895160
-
-[notice.external_config_migration_prompts.project_last_prompted_at]
-"~/src/skrl" = 1777175267
-
-[notice.external_config_migration_prompts.projects]
-"~/src/skrl" = true
 
 [notice.model_migrations]
 "gpt-5.2" = "gpt-5.2-codex"
@@ -74,28 +68,32 @@ status_line = [
 "gpt-5.5" = 4
 
 [marketplaces.claude-plugins-official]
-last_updated = "2026-04-26T03:52:14Z"
-last_revision = "020446a4294f09d9c32e60bff0c4ae8fb39205cb"
+last_updated = "2026-04-27T22:06:02Z"
+last_revision = "1c81b812991b6cf68535eb81933256bad635bc15"
 source_type = "git"
 source = "https://github.com/anthropics/claude-plugins-official.git"
 
 [marketplaces.worktrunk]
-last_updated = "2026-04-26T03:47:50Z"
-last_revision = "66a5becc250f65d21ec35a55c22d56aba68d24e1"
+last_updated = "2026-04-27T22:06:14Z"
+last_revision = "c32297994cbce868f8a986850486d43d1e65352a"
 source_type = "git"
 source = "https://github.com/max-sixty/worktrunk.git"
+
+[mcp_servers.source]
+command = "ct"
+args = ["mcp", "source"]
+
+[mcp_servers.lens]
+command = "ct"
+args = ["mcp", "lens"]
 
 [mcp_servers.vault]
 command = "ct"
 args = ["mcp", "vault"]
 
-[mcp_servers.sym]
-command = "ct"
-args = ["mcp", "sym"]
-
-[mcp_servers.lens]
-command = "ct"
-args = ["mcp", "lens"]
+[mcp_servers.fff]
+command = "fff-mcp"
+args = []
 
 [projects."~/src/agents"]
 trust_level = "trusted"
@@ -104,4 +102,10 @@ trust_level = "trusted"
 trust_level = "trusted"
 
 [projects."~/src/skrl"]
+trust_level = "trusted"
+
+[projects."/Users/luan.santos/src/agents"]
+trust_level = "trusted"
+
+[projects."/Users/luan.santos/src"]
 trust_level = "trusted"

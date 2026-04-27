@@ -97,6 +97,18 @@ pub(crate) fn sg_search(
     selector: Option<&str>,
     context: Option<usize>,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let cwd = std::env::current_dir()?;
+    sg_search_in(&cwd, pattern, lang, paths, selector, context)
+}
+
+pub(crate) fn sg_search_in(
+    cwd: &Path,
+    pattern: &str,
+    lang: &str,
+    paths: &[String],
+    selector: Option<&str>,
+    context: Option<usize>,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let mut args = vec![
         "run".to_string(),
         "-p".to_string(),
@@ -114,7 +126,7 @@ pub(crate) fn sg_search(
         args.push(context.to_string());
     }
     args.extend(paths.iter().cloned());
-    run_sg_json(args)
+    run_sg_json_in(args, Some(cwd))
 }
 
 pub(crate) fn sg_replace_dry_run(
@@ -208,7 +220,19 @@ pub(crate) fn sg_replace_apply(
 }
 
 fn run_sg_json(args: Vec<String>) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-    let output = std::process::Command::new("sg").args(args).output()?;
+    run_sg_json_in(args, None)
+}
+
+fn run_sg_json_in(
+    args: Vec<String>,
+    cwd: Option<&Path>,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let mut command = std::process::Command::new("sg");
+    command.args(args);
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    let output = command.output()?;
     if !output.status.success() {
         return Err(format!("sg failed: {}", String::from_utf8_lossy(&output.stderr)).into());
     }
@@ -274,7 +298,7 @@ fn workspace_files(root: &Path) -> Result<Vec<String>, Box<dyn std::error::Error
         .current_dir(root)
         .output()?;
     if !output.status.success() {
-        return Err("ct ast replace --apply currently requires a git worktree".into());
+        return Err("ct dev debug ast replace --apply currently requires a git worktree".into());
     }
     Ok(String::from_utf8_lossy(&output.stdout)
         .lines()

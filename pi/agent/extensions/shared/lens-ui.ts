@@ -1,11 +1,14 @@
 export const LENS_TOOL_NAMES = [
-	"lens_discover",
-	"lens_guard",
-	"lens_diagnostics",
+	"lens_status",
 	"lens_health",
+	"lens_touched",
+	"lens_diagnostics",
+	"lens_checks",
 	"lens_cleanup",
 	"lens_report",
 	"lens_context",
+	"lens_raw_output",
+	"lens_prune",
 ] as const;
 
 export type LensSeverity = "clean" | "warning" | "degraded" | "error" | "unknown";
@@ -23,7 +26,6 @@ const ansi = {
 	degraded: "\x1b[2;38;5;104m",
 	error: "\x1b[2;38;5;203m",
 	diagnostics: "\x1b[2;38;5;181m",
-	guard: "\x1b[2;38;5;173m",
 	cleanup: "\x1b[2;38;5;109m",
 	patch: "\x1b[2;38;5;140m",
 	action: "\x1b[2;38;5;116m",
@@ -34,8 +36,6 @@ const ansi = {
 export function lensSeverity(value: unknown): LensSeverity {
 	const data = asRecord(value);
 	const decision = lower(data?.decision?.outcome);
-	const decisionReason = lower(data?.decision?.reason);
-	if (decision === "warn" && decisionReason === "guard_advisory") return "clean";
 	if (decision === "block") return "warning";
 	const health = lower(data?.health?.status ?? data?.data?.status ?? data?.status);
 	if (health === "blocked") return "warning";
@@ -44,8 +44,6 @@ export function lensSeverity(value: unknown): LensSeverity {
 	if (health === "warning") return "warning";
 	if (health === "clean") return "clean";
 	const envelopeStatus = lower(data?.status);
-	const guardDecision = lower(data?.data?.guard?.decision ?? data?.guard?.decision);
-	if (envelopeStatus === "error" && (guardDecision === "block" || guardDecision === "warn")) return "warning";
 	if (envelopeStatus === "error") return "error";
 	if (envelopeStatus === "warning") return "warning";
 	if (hasItems(data?.errors)) return "error";
@@ -63,8 +61,8 @@ export function renderLensCompactStatus(value: unknown, options: LensRenderOptio
 	if (compact && !hasHealthSummary(data)) parts.push(paint("muted", compact, style));
 	const diagnostics = diagnosticsSummary(data);
 	if (diagnostics) parts.push(paint("diagnostics", diagnostics, style));
-	const guard = guardSummary(data);
-	if (guard) parts.push(paint("guard", guard, style));
+	const checks = checksSummary(data);
+	if (checks) parts.push(paint("diagnostics", checks, style));
 	const cleanup = cleanupSummary(data);
 	if (cleanup) parts.push(paint("cleanup", cleanup, style));
 	const patch = patchSummary(data);
@@ -119,6 +117,9 @@ function actionLines(data: LensRecord | undefined, actionContext: LensRecord | u
 	if ((cleanup?.failed ?? 0) > 0 || (cleanup?.timed_out ?? 0) > 0) out.push(`  cleanup: inspect ${cleanup.failed ?? 0} failed/${cleanup.timed_out ?? 0} timed-out run(s)`);
 	const diagnostics = asRecord(summary?.diagnostics ?? data?.diagnostics);
 	if ((diagnostics?.errors ?? 0) > 0 || (diagnostics?.warnings ?? 0) > 0) out.push(`  diagnostics: resolve ${diagnostics.errors ?? 0} error(s), ${diagnostics.warnings ?? 0} warning(s)`);
+	const checks = asRecord(summary?.checks ?? data?.checks);
+	const failingChecks = Array.isArray(checks?.latest) ? checks.latest.filter((check: LensRecord) => (check?.exit_code ?? 0) !== 0 || (check?.diagnostic_count ?? 0) > 0).length : 0;
+	if (failingChecks > 0) out.push(`  checks: inspect ${failingChecks} recent check/scanner snapshot(s)`);
 	const patch = asRecord(summary?.patch_refs);
 	if ((patch?.hunks ?? 0) > 0 || (patch?.accepted_events ?? 0) > 0) out.push(`  patch: inspect telemetry refs (${patch?.draft_refs ?? 0} drafts, ${patch.hunks ?? 0} hunks, ${patch.accepted_events ?? 0} accepts)`);
 	return [...new Set(out)];
@@ -149,10 +150,14 @@ function diagnosticsSummary(data: LensRecord | undefined): string | undefined {
 	return `diag ${active ?? (errors ?? 0) + (warnings ?? 0)} (${errors ?? 0} err/${warnings ?? 0} warn)`;
 }
 
-function guardSummary(data: LensRecord | undefined): string | undefined {
-	const decisions = Array.isArray(data?.decision?.guard) ? data?.decision?.guard : [];
-	const hasBlockingDecision = decisions.some((decision) => lower(decision?.decision) === "block");
-	if (hasBlockingDecision) return `guard ${decisions.length} advisory`;
+function checksSummary(data: LensRecord | undefined): string | undefined {
+	const checks = asRecord(data?.data?.health?.summary?.checks ?? data?.data?.summary?.checks ?? data?.checks);
+	const latest = Array.isArray(checks?.latest) ? checks.latest : undefined;
+	if (!latest) return undefined;
+	const errors = latest.filter((check: LensRecord) => typeof check?.exit_code === "number" && check.exit_code !== 0 && (check?.diagnostic_count ?? 0) > 0).length;
+	const warnings = latest.filter((check: LensRecord) => check?.exit_code === null && (check?.diagnostic_count ?? 0) > 0).length;
+	if (errors === 0 && warnings === 0) return undefined;
+	return `checks ${errors} err/${warnings} warn`;
 }
 
 function cleanupSummary(data: LensRecord | undefined): string | undefined {
@@ -234,7 +239,6 @@ function colorDetailLine(line: string, style: boolean): string {
 	if (trimmed.startsWith("action:")) return paint("action", line, style);
 	if (trimmed.startsWith("fix:")) return paint("fix", line, style);
 	if (trimmed.startsWith("ack:")) return paint("ack", line, style);
-	if (trimmed.startsWith("guard:")) return paint("guard", line, style);
 	if (trimmed.startsWith("diagnostics:")) return paint("diagnostics", line, style);
 	if (trimmed.startsWith("cleanup:")) return paint("cleanup", line, style);
 	if (trimmed.startsWith("patch:")) return paint("patch", line, style);

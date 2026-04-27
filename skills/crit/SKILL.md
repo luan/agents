@@ -11,7 +11,7 @@ allowed-tools:
   - "Bash(git diff:*)"
   - "Bash(git log:*)"
   - "Bash(git status:*)"
-  - "Bash(ct tool:*)"
+  - "Bash(ct repo:*)"
   - "Bash(ct vault:*)"
   - "Bash(gh pr:*)"
   - "Bash(gh api:*)"
@@ -88,7 +88,7 @@ Output: table with File:Line | Issue | Fix. Brief summary.
 
 ## Step 3: Context
 
-`ct tool gitcontext --base $BASE --stat` → diff-stat, changed-files, log. Fetch PR context via `gh pr view` if available.
+`ct repo context --base $BASE --stat` → diff-stat, changed-files, log. Fetch PR context via `gh pr view` if available.
 
 ## Step 4: Dispatch 2 Reviewers
 
@@ -102,7 +102,7 @@ Spawn both in ONE message. Pass raw diffs, not summaries.
 You are an adversarial correctness and security reviewer.
 
 ## Gather Context
-1. Run: `ct tool gitcontext --base {base_ref} --format json`
+1. Run: `ct repo context --base {base_ref} --format json`
 2. Read all changed files from the output
 3. If `truncated_files` is non-empty, `Read` those files in full
 
@@ -141,7 +141,7 @@ Then brief summary.
 You are an adversarial devil's advocate reviewer. Try to break everything.
 
 ## Gather Context
-1. Run: `ct tool gitcontext --base {base_ref} --format json`
+1. Run: `ct repo context --base {base_ref} --format json`
 2. Read all changed files from the output
 3. If `truncated_files` is non-empty, `Read` those files in full
 

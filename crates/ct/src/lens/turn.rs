@@ -2,10 +2,10 @@ use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
-use super::contract::{LensEnvelope, LensMessage};
+use super::contract::LensEnvelope;
 use super::store::LensStore;
 use super::types::{
-    GuardAction, LensToolEventPhase, LensTouchedFile, LensTouchedFileInput, LensTouchedFileSource,
+    LensToolEventPhase, LensTouchedFile, LensTouchedFileInput, LensTouchedFileSource,
     LensTurnEvent, LensTurnEventKind, LensTurnRecordData, LensTurnTouchedData,
 };
 
@@ -23,36 +23,6 @@ pub fn record_turn_event_envelope(
     let root = project_root(&event_cwd).unwrap_or_else(|| canonical_or_self(&event_cwd));
     let mut store = LensStore::open_for_project(&root)?;
     let (files, git_fallback_used) = touched_files_from_event(&root, &event_cwd, &event)?;
-    let policy = super::policy::resolve_policy(&root).policy.guard;
-    let guard_action = guard_action_for_mode(policy.mode);
-    let mut guard_decisions = Vec::new();
-    if matches!(event.phase, LensToolEventPhase::PreTool) {
-        for file in files
-            .iter()
-            .filter(|file| is_write_operation(&file.operation))
-        {
-            let (start, end) = guard_range(&root, file)?;
-            guard_decisions.push(store.check_guard_with_overrides(
-                Some(&event.session),
-                Path::new(&file.path),
-                start,
-                end,
-                guard_action.clone(),
-                policy.allow_overrides,
-            )?);
-        }
-    }
-    if matches!(event.phase, LensToolEventPhase::PostTool) {
-        for file in files
-            .iter()
-            .filter(|file| is_read_operation(&file.operation))
-        {
-            let (start, end) = guard_range(&root, file)?;
-            if root.join(&file.path).is_file() {
-                store.record_read(Some(&event.session), Path::new(&file.path), start, end)?;
-            }
-        }
-    }
     store.record_turn_event(&event, &files)?;
     let cleanup = if matches!(event.event, LensTurnEventKind::TurnEnd) {
         Some(super::cleanup::run_turn_cleanup_with_store(
@@ -66,21 +36,12 @@ pub fn record_turn_event_envelope(
         None
     };
     let files = store.list_touched_files(&event.session, &event.turn)?;
-    let warned = guard_decisions
-        .iter()
-        .any(|decision| matches!(decision.decision, GuardAction::Warn));
     let turn_checks = if matches!(event.event, LensTurnEventKind::TurnEnd) {
         Some(super::checks::automatic_turn_checks_envelope(&root)?)
     } else {
         None
     };
     let mut warnings = Vec::new();
-    if warned {
-        warnings.push(LensMessage::warning(
-            "guard_warned",
-            "one or more write targets are not covered by current read ranges",
-        ));
-    }
     if let Some(cleanup) = &cleanup {
         warnings.extend(super::cleanup::cleanup_envelope(cleanup.clone()).warnings);
     }
@@ -97,7 +58,6 @@ pub fn record_turn_event_envelope(
         event: event.event,
         phase: event.phase,
         git_fallback_used,
-        guard_decisions,
         file_count: files.len(),
         files,
         cleanup,
@@ -108,42 +68,6 @@ pub fn record_turn_event_envelope(
     } else {
         Ok(LensEnvelope::ok(data))
     }
-}
-
-fn guard_action_for_mode(mode: super::policy::LensGuardMode) -> GuardAction {
-    match mode {
-        super::policy::LensGuardMode::Off => GuardAction::Allow,
-        super::policy::LensGuardMode::Warn | super::policy::LensGuardMode::Block => {
-            GuardAction::Warn
-        }
-    }
-}
-
-fn guard_range(
-    root: &Path,
-    file: &LensTouchedFile,
-) -> Result<(i64, i64), Box<dyn std::error::Error>> {
-    if let (Some(start), Some(end)) = (file.start_line, file.end_line) {
-        return Ok((start, end));
-    }
-    let line_count = std::fs::read_to_string(root.join(&file.path))
-        .map(|content| content.lines().count().max(1) as i64)
-        .unwrap_or(1);
-    Ok((
-        file.start_line.unwrap_or(1),
-        file.end_line.unwrap_or(line_count),
-    ))
-}
-
-fn is_write_operation(operation: &str) -> bool {
-    matches!(
-        operation,
-        "add" | "create" | "delete" | "edit" | "modify" | "move" | "rename" | "write"
-    )
-}
-
-fn is_read_operation(operation: &str) -> bool {
-    matches!(operation, "discover" | "open" | "read" | "view")
 }
 
 pub fn touched_files_envelope(
@@ -356,7 +280,6 @@ fn canonical_or_self(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::super::types::GuardReason;
     use super::*;
 
     fn git(cwd: &Path, args: &[&str]) {
@@ -454,7 +377,7 @@ mod tests {
     }
 
     #[test]
-    fn pre_tool_write_event_runs_guard_checks() {
+    fn pre_tool_write_event_records_touched_files_without_guard_checks() {
         let temp = repo();
         let mut event = event(temp.path());
         event.phase = LensToolEventPhase::PreTool;
@@ -472,18 +395,19 @@ mod tests {
 
         assert_eq!(
             envelope.status,
-            super::super::contract::LensResponseStatus::Warning
+            super::super::contract::LensResponseStatus::Ok
         );
-        assert_eq!(envelope.data.guard_decisions.len(), 1);
-        assert_eq!(envelope.data.guard_decisions[0].decision, GuardAction::Warn);
-        assert_eq!(
-            envelope.data.guard_decisions[0].reason,
-            GuardReason::ZeroRead
+        assert!(
+            envelope
+                .data
+                .files
+                .iter()
+                .any(|file| file.path == "main.rs")
         );
     }
 
     #[test]
-    fn post_tool_read_event_records_guard_coverage() {
+    fn post_tool_read_event_records_touched_file_only() {
         let temp = repo();
         let mut read_event = event(temp.path());
         read_event.phase = LensToolEventPhase::PostTool;
@@ -503,11 +427,9 @@ mod tests {
             super::super::contract::LensResponseStatus::Ok
         );
 
-        let mut store = LensStore::open_for_project(temp.path()).unwrap();
-        let decision = store
-            .check_guard(Some("s"), Path::new("main.rs"), 1, 1, GuardAction::Block)
-            .unwrap();
-        assert_eq!(decision.reason, GuardReason::Covered);
+        let store = LensStore::open_for_project(temp.path()).unwrap();
+        let files = store.list_touched_files("s", "t").unwrap();
+        assert!(files.iter().any(|file| file.path == "main.rs"));
     }
 
     #[test]

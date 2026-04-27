@@ -433,6 +433,32 @@ impl VaultMcpServer {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::VaultMcpServer;
+
+    #[test]
+    fn vault_mcp_exposes_short_vault_tool_names() {
+        let server = VaultMcpServer::new();
+        let names = server
+            .tool_router
+            .list_all()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            vec![
+                "archive", "check", "comments", "commit", "create", "list", "prune", "read",
+                "related", "rename", "retag", "search", "status",
+            ]
+        );
+        assert!(names.iter().all(|name| !name.starts_with("vault_")));
+        assert!(!names.iter().any(|name| name == "project"));
+    }
+}
+
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for VaultMcpServer {
     fn get_info(&self) -> rmcp::model::ServerInfo {

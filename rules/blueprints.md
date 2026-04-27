@@ -22,7 +22,7 @@ Every artifact operation lives under `ct vault`. Use `-t <type>` to scope to one
 
 | Operation    | Command                                              |
 | ------------ | ---------------------------------------------------- |
-| Project name | `ct project`                                         |
+| Project name | `ct repo project`                                    |
 | Create       | `ct vault create -t <type> --topic "..."`            |
 | Read         | `ct vault read [-t <type>] <stem>`                   |
 | List         | `ct vault list [-t <type>] [--all]`                  |

@@ -28,27 +28,12 @@ const warning = {
 		},
 		summary: {
 			diagnostics: { active: 3, errors: 1, warnings: 2 },
-			guard: { clean: 1, warnings: 1, blocked: 0 },
 			cleanup: { runs: 2, failed: 0, timed_out: 0 },
+			checks: { snapshots: 1, latest: [{ exit_code: 1, diagnostic_count: 2 }] },
 			patch_refs: { draft_refs: 0, hunks: 0, accepted_events: 0 },
 		},
 	},
 	warnings: [{ code: "diagnostics_active", message: "active diagnostics remain" }],
-};
-
-const guardAdvisory = {
-	status: "warning",
-	decision: { outcome: "warn", reason: "guard_advisory", guard: [{ decision: "warn" }] },
-	health: { status: "warning", compact: "warning · read coverage advisory" },
-	data: {
-		health: {
-			summary: {
-				guard: { clean: 0, warnings: 1, blocked: 0 },
-				diagnostics: { active: 0, errors: 0, warnings: 0 },
-			},
-		},
-	},
-	warnings: [{ code: "guard_advisory", message: "Lens guard found write targets without current read coverage" }],
 };
 
 const degraded = {
@@ -73,21 +58,24 @@ const patchTelemetry = {
 describe("Lens Pi UI rendering", () => {
 	it("exposes the collision-safe flat Pi tool namespace", () => {
 		expect(LENS_TOOL_NAMES).toEqual([
-			"lens_discover",
-			"lens_guard",
-			"lens_diagnostics",
+			"lens_status",
 			"lens_health",
+			"lens_touched",
+			"lens_diagnostics",
+			"lens_checks",
 			"lens_cleanup",
 			"lens_report",
 			"lens_context",
+			"lens_raw_output",
+			"lens_prune",
 		]);
 		expect(new Set(LENS_TOOL_NAMES).size).toBe(LENS_TOOL_NAMES.length);
 	});
 
-	it("renders compact clean, warning, guard advisory, degraded/error, and patch states", () => {
+	it("renders compact clean, warning, degraded/error, and patch states", () => {
 		expect(renderLensCompactStatus(clean)).toBe("󰛩 Lens ✓ clean");
 		expect(renderLensCompactStatus(warning)).toContain("󰛩 Lens ⚠ warning");
-		expect(renderLensCompactStatus(guardAdvisory)).toBe("󰛩 Lens ✓ clean");
+		expect(renderLensCompactStatus(warning)).toContain("checks 1 err/0 warn");
 		expect(renderLensCompactStatus(degraded)).toContain("󰛩 Lens ◌ degraded");
 		expect(renderLensCompactStatus(patchTelemetry)).toContain("patch 2 drafts/5 hunks/1 accepts");
 	});
@@ -97,7 +85,6 @@ describe("Lens Pi UI rendering", () => {
 		expect(rendered).toContain("\x1b[2;38;5;111m󰛩 Lens\x1b[0m");
 		expect(rendered).toContain("\x1b[2;38;5;179m⚠ warning\x1b[0m");
 		expect(rendered).toContain("\x1b[2;38;5;181mdiag 3 (1 err/2 warn)\x1b[0m");
-		expect(rendered).not.toContain("guard 1 warn");
 		expect(rendered).not.toContain("cleanup 2 run/0 failed/0 timeout");
 	});
 
@@ -106,6 +93,7 @@ describe("Lens Pi UI rendering", () => {
 		expect(lines).toContain("  warning: active diagnostics remain");
 		expect(lines).toContain("  action: Resolve active diagnostics before handoff.");
 		expect(lines).toContain("  diagnostics: resolve 1 error(s), 2 warning(s)");
+		expect(lines).toContain("  checks: inspect 1 recent check/scanner snapshot(s)");
 		expect(lines.some((line) => line.includes("ack:"))).toBe(true);
 	});
 

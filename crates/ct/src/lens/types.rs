@@ -196,7 +196,6 @@ pub struct DiagnosticSnapshotResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiagnosticRelevance {
     pub changed_files: Vec<String>,
-    pub read_files: Vec<String>,
     pub all: bool,
 }
 
@@ -335,7 +334,6 @@ pub struct LensTurnRecordData {
     pub event: LensTurnEventKind,
     pub phase: LensToolEventPhase,
     pub git_fallback_used: bool,
-    pub guard_decisions: Vec<GuardDecision>,
     pub files: Vec<LensTouchedFile>,
     pub file_count: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -350,12 +348,6 @@ fn default_turn_event_schema() -> String {
 
 fn default_touch_operation() -> String {
     "modify".to_string()
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReadCoverageRange {
-    pub start_line: i64,
-    pub end_line: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -423,67 +415,4 @@ pub struct AffectedSymbol {
     pub old_end: Option<i64>,
     pub new_start: Option<i64>,
     pub new_end: Option<i64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum GuardAction {
-    Allow,
-    Warn,
-    Block,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum GuardReason {
-    Covered,
-    ZeroRead,
-    StaleRead,
-    OutOfRange,
-    NewFile,
-    BuiltInNonCode,
-    BuiltInGenerated,
-    GuardDisabled,
-    ExplicitOverride,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum GuardFileKind {
-    Code,
-    NonCode,
-    Generated,
-    NewFile,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GuardFileClassification {
-    pub kind: GuardFileKind,
-    pub exists: bool,
-    pub exempt: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub exemption: Option<GuardReason>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GuardPolicySnapshot {
-    pub mode: GuardAction,
-    pub allow_overrides: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GuardDecision {
-    pub decision: GuardAction,
-    pub reason: GuardReason,
-    pub message: String,
-    pub file: String,
-    pub classification: GuardFileClassification,
-    pub policy: GuardPolicySnapshot,
-    pub required_ranges: Vec<ReadCoverageRange>,
-    pub covered_ranges: Vec<ReadCoverageRange>,
-    pub stale_ranges: Vec<ReadCoverageRange>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub current_hash: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub current_line_count: Option<i64>,
 }

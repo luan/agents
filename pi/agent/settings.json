@@ -1,5 +1,5 @@
 {
-  "lastChangelogVersion": "0.70.2",
+  "lastChangelogVersion": "0.70.5",
   "steeringMode": "all",
   "autoUpdate": true,
   "transport": "auto",
@@ -24,7 +24,9 @@
         "-index.ts"
       ]
     },
-    "npm:@heyhuynhgiabuu/pi-diff"
+    "npm:@heyhuynhgiabuu/pi-diff",
+    "npm:@ff-labs/pi-fff",
+    "npm:context-mode"
   ],
   "enabledModels": [
     "github-copilot/gpt-5.4",
@@ -38,7 +40,7 @@
   "editorPaddingX": 0,
   "terminal": {
     "clearOnShrink": false,
-    "showTerminalProgress": true
+    "showTerminalProgress": false
   },
   "claudeAgentSdkProvider": {
     "appendSystemPrompt": true,

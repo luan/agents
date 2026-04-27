@@ -406,7 +406,7 @@ fn run_sym_command(
     let exe = std::env::current_exe()
         .map_err(|e| ErrorData::internal_error(format!("resolve current executable: {e}"), None))?;
     let mut cmd = Command::new(exe);
-    cmd.arg("sym");
+    cmd.args(["dev", "debug", "sym"]);
     cmd.arg("--json");
     if let Some(db) = db {
         cmd.arg("--db").arg(db);
@@ -418,7 +418,7 @@ fn run_sym_command(
 
     let out = cmd
         .output()
-        .map_err(|e| ErrorData::internal_error(format!("run ct sym: {e}"), None))?;
+        .map_err(|e| ErrorData::internal_error(format!("run ct dev debug sym: {e}"), None))?;
     if !out.status.success() {
         return Err(sym_error(out.status.code(), &out.stdout, &out.stderr));
     }
@@ -426,7 +426,7 @@ fn run_sym_command(
     let stdout = String::from_utf8_lossy(&out.stdout);
     let mut value: Value = serde_json::from_str(&stdout).map_err(|e| {
         ErrorData::internal_error(
-            format!("ct sym returned invalid JSON: {e}"),
+            format!("ct dev debug sym returned invalid JSON: {e}"),
             Some(json!({ "stdout": stdout.trim() })),
         )
     })?;
@@ -441,7 +441,7 @@ fn sym_error(code: Option<i32>, stdout: &[u8], stderr: &[u8]) -> ErrorData {
     let stderr = String::from_utf8_lossy(stderr).trim().to_string();
     ErrorData::invalid_params(
         if stderr.is_empty() {
-            format!("ct sym failed with status {:?}", code)
+            format!("ct dev debug sym failed with status {:?}", code)
         } else {
             stderr.clone()
         },

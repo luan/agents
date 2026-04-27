@@ -11,7 +11,7 @@ allowed-tools:
   - "Bash(git diff:*)"
   - "Bash(git log:*)"
   - "Bash(git status:*)"
-  - "Bash(ct tool:*)"
+  - "Bash(ct repo:*)"
   - "Bash(ct vault:*)"
   - "Bash(gh pr:*)"
   - "Bash(gh api:*)"
@@ -92,7 +92,7 @@ Output: table with File:Line | Issue | Fix. Brief summary.
 
 ## Step 2: Setup + Context
 
-`ct tool gitcontext --base $BASE --stat --cochanges` → diff-stat, changed-files, log, cochanges.
+`ct repo context --base $BASE --stat --cochanges` → diff-stat, changed-files, log, cochanges.
 
 **Auto-detect spec/plan** for coherence review:
 ```bash

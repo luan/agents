@@ -1059,7 +1059,7 @@ function runApplyPatch(
 	dryRun: boolean,
 	signal?: AbortSignal,
 ) {
-	const args = ["tool", "apply-patch", "--cwd", cwd];
+	const args = ["apply-patch", "--cwd", cwd];
 	if (dryRun) args.push("--dry-run");
 	return runCommand("ct", args, cwd, signal, input);
 }
@@ -1417,7 +1417,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 				}
 
 				return makeResult(
-					"ct tool apply-patch",
+					"ct apply-patch",
 					ctx.cwd,
 					applied.stdout,
 					applied.stderr,

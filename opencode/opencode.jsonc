@@ -2,7 +2,11 @@
   "$schema": "https://opencode.ai/config.json",
   "autoupdate": true,
 
-  "plugin": ["@tarquinen/opencode-dcp@latest", "./plugins/lens.js"],
+  "plugin": [
+    "context-mode",
+    "@tarquinen/opencode-dcp@latest",
+    "./plugins/lens.js",
+  ],
 
   "instructions": ["AGENTS.md"],
   "skills": {
@@ -22,20 +26,29 @@
       "command": ["bunx", "-y", "@upstash/context7-mcp"],
       "environment": {},
     },
-    "vault": {
+    "context-mode": {
       "type": "local",
-      "command": ["ct", "mcp", "vault"],
-      "environment": {},
+      "command": ["context-mode"],
     },
-    "sym": {
+    "source": {
       "type": "local",
-      "command": ["ct", "mcp", "sym"],
+      "command": ["ct", "mcp", "source"],
       "environment": {},
     },
     "lens": {
       "type": "local",
       "command": ["ct", "mcp", "lens"],
       "environment": {},
+    },
+    "vault": {
+      "type": "local",
+      "command": ["ct", "mcp", "vault"],
+      "environment": {},
+    },
+    "fff": {
+      "type": "local",
+      "command": ["fff-mcp"],
+      "enabled": true,
     },
   },
 }

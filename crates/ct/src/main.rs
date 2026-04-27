@@ -141,17 +141,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         Some(cli::Command::Vault { action }) => dispatch_vault(action),
-        Some(cli::Command::Project) => {
-            vault::cmd_project();
-            Ok(())
-        }
+        Some(cli::Command::Repo { action }) => cli::run_repo(action),
         Some(cli::Command::Notify) => notify::run(),
-        Some(cli::Command::Sym(args)) => sym::run(args).map_err(|e| e.into()),
-        Some(cli::Command::Ast { action }) => cli::run_ast(action),
+        Some(cli::Command::Source { action }) => cli::run_source(action),
         Some(cli::Command::Lens { action }) => cli::run_lens(action),
-        Some(cli::Command::Lsp { action }) => cli::run_lsp(action),
-        Some(cli::Command::Patch { action }) => cli::run_patch(action),
         Some(cli::Command::Mcp { action }) => match action {
+            cli::McpAction::Source => mcp::run_source_server(),
             cli::McpAction::Vault => mcp::run_vault_server(),
             cli::McpAction::ApplyPatch => mcp::run_apply_patch_server(),
             cli::McpAction::Sym => mcp::run_sym_server(),
@@ -160,48 +155,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             cli::McpAction::Lsp => mcp::run_lsp_server(),
         },
         Some(cli::Command::Hook { name }) => Ok(hook::run_hook(&name)?),
-        Some(cli::Command::Tool { action }) => match action {
-            cli::ToolAction::Slug { words } => cli::run_slug(words),
-            cli::ToolAction::Phases { file } => phases::run_phases(file),
-            cli::ToolAction::Completion { shell } => cli::run_completion(shell),
-            cli::ToolAction::Gitcontext {
-                base,
-                format,
-                max_total,
-                max_file,
-                stat,
-                cochanges,
-            } => gitcontext::run(base, format, max_total, max_file, stat, cochanges),
-            cli::ToolAction::CheckRefs { file, project_root } => refs::run(file, project_root),
-            cli::ToolAction::Cochanges {
-                base,
-                threshold,
-                min_commits,
-                max_files,
-                num_commits,
-            } => cli::run_cochanges(base, threshold, min_commits, max_files, num_commits),
-            cli::ToolAction::Churn {
-                project_root,
-                since,
-                min_loc,
-            } => churn::run(project_root, since, min_loc),
-            cli::ToolAction::ApplyPatch { cwd, dry_run } => cli::run_apply_patch(cwd, dry_run),
-        },
-        Some(cli::Command::ApplyPatch { cmd }) => match cmd {
-            cli::ApplyPatchCmd::Stats { all_projects, days } => {
-                cli::run_apply_patch_stats(all_projects, days)
-            }
-            cli::ApplyPatchCmd::Report {
-                diagnostic_id,
-                limit,
-                json,
-            } => cli::run_apply_patch_report(diagnostic_id, limit, json),
-            cli::ApplyPatchCmd::Show {
-                diagnostic_id,
-                json,
-            } => cli::run_apply_patch_show(diagnostic_id, json),
-            cli::ApplyPatchCmd::Prune { days } => cli::run_apply_patch_prune(days),
-        },
-        Some(cli::Command::UsageBar { width }) => cli::run_usage_bar(width),
+        Some(cli::Command::ApplyPatch(args)) => cli::run_apply_patch(args),
+        Some(cli::Command::Shell { action }) => cli::run_shell(action),
+        Some(cli::Command::Tui { action }) => cli::run_tui(action),
+        Some(cli::Command::Dev { action }) => cli::run_dev(action),
     }
 }

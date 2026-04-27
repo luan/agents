@@ -206,6 +206,8 @@ fn ast_replace_apply_routes_through_lens_patch_draft() {
         .current_dir(project.path())
         .env("XDG_STATE_HOME", state.path())
         .args([
+            "dev",
+            "debug",
             "ast",
             "replace",
             "--lang",
@@ -245,7 +247,14 @@ fn lens_status_json_is_schema_versioned_and_compact() {
         .current_dir(project.path())
         .env("XDG_STATE_HOME", state.path())
         .env("XDG_CONFIG_HOME", state.path())
-        .args(["lens", "status", "--json"])
+        .args([
+            "lens",
+            "status",
+            "--cwd",
+            &project.path().to_string_lossy(),
+            "--json",
+            "--disk",
+        ])
         .assert()
         .success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
@@ -254,8 +263,19 @@ fn lens_status_json_is_schema_versioned_and_compact() {
     assert_eq!(value["schema_version"], "lens.response.v1");
     assert!(value["warnings"].is_array());
     assert!(value["errors"].is_array());
-    assert_eq!(value["data"]["policy"]["policy"]["guard"]["mode"], "block");
+    assert!(value["data"]["policy"]["policy"].get("guard").is_none());
+    assert!(
+        value["data"]["state"]["counts"]
+            .get("read_events")
+            .is_none()
+    );
+    assert!(
+        value["data"]["state"]["counts"]
+            .get("guard_overrides")
+            .is_none()
+    );
     assert_eq!(value["data"]["state"]["stored_outside_repository"], true);
+    assert!(value["data"]["state"]["db_bytes"].is_number());
     assert!(value.get("debug").is_none());
     assert!(value.get("raw").is_none());
 
@@ -293,83 +313,42 @@ fn lens_prune_dry_run_uses_response_envelope() {
 }
 
 #[test]
-fn lens_discover_symbol_json_is_compact_and_records_coverage() {
+fn lens_removed_discover_read_guard_surfaces_fail() {
     let (bp, _remote) = setup_blueprints();
     let project = project_dir();
-    let state = tempfile::tempdir().expect("state dir");
-    fs::write(
-        project.path().join("lib.rs"),
-        "fn target() {\n    println!(\"hi\");\n}\n",
-    )
-    .expect("write source");
 
-    let assert = ct_cmd(bp.path())
-        .current_dir(project.path())
-        .env("XDG_STATE_HOME", state.path())
-        .env("XDG_CACHE_HOME", state.path())
-        .args([
-            "lens",
-            "discover",
-            "--intent",
-            "symbol",
-            "--query",
-            "target",
-            "--session",
-            "cli",
-            "--json",
-        ])
-        .assert()
-        .success();
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let value: serde_json::Value = serde_json::from_str(&stdout).expect("discover json");
-
-    assert_eq!(value["schema_version"], "lens.response.v1");
-    assert_eq!(value["data"]["route"]["backend"], "sym");
-    assert_eq!(value["data"]["items"][0]["path"], "lib.rs");
-    assert!(value["data"]["items"][0].get("file").is_none());
-    assert!(!value["data"]["next_actions"].as_array().unwrap().is_empty());
-    assert!(value.get("debug").is_none());
-    assert!(value.get("raw").is_none());
-
-    ct_cmd(bp.path())
-        .current_dir(project.path())
-        .env("XDG_STATE_HOME", state.path())
-        .args([
-            "lens",
-            "guard",
-            "check",
-            "--path",
-            "lib.rs",
-            "--start-line",
-            "1",
-            "--end-line",
-            "1",
-            "--session",
-            "cli",
-            "--json",
-        ])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("\"reason\": \"covered\""));
+    for args in [
+        vec!["lens", "discover", "--help"],
+        vec!["lens", "read", "--help"],
+        vec!["lens", "guard", "--help"],
+        vec!["lens", "guard", "allow-once", "--path", "main.rs", "--json"],
+        vec!["lens", "status", "--guard-mode", "warn", "--json"],
+        vec!["lens", "turn", "record", "--json"],
+        vec!["lens", "turn", "touched", "--session", "s", "--turn", "t"],
+    ] {
+        ct_cmd(bp.path())
+            .current_dir(project.path())
+            .args(args)
+            .assert()
+            .failure();
+    }
 }
 
 #[test]
-fn lens_turn_touched_json_is_schema_versioned_and_stable() {
+fn lens_touched_json_is_schema_versioned_and_stable() {
     let (bp, _remote) = setup_blueprints();
     let project = project_dir();
     let state = tempfile::tempdir().expect("state dir");
     fs::write(project.path().join("main.rs"), "fn main() {}\n").expect("write source");
     let event = serde_json::json!({
-        "schema_version": "lens.turn_event.v1",
-        "session": "cli-session",
-        "turn": "turn-1",
-        "host": "contract-test",
+        "schema_version": "lens.hook_event.v1",
+        "host": {"name": "contract-test", "kind": "test"},
+        "session": {"id": "cli-session"},
         "cwd": project.path().to_string_lossy(),
-        "event": "tool_end",
-        "tool": "edit",
-        "phase": "post_tool",
-        "status": "success",
-        "files": [{
+        "turn": {"id": "turn-1"},
+        "event": "post_tool",
+        "tool": {"name": "edit", "status": "success"},
+        "known_files": [{
             "path": "main.rs",
             "operation": "modify",
             "generated": false,
@@ -381,7 +360,7 @@ fn lens_turn_touched_json_is_schema_versioned_and_stable() {
     ct_cmd(bp.path())
         .current_dir(project.path())
         .env("XDG_STATE_HOME", state.path())
-        .args(["lens", "turn", "record", "--json"])
+        .args(["hook", "lens-post-tool"])
         .write_stdin(event.to_string())
         .assert()
         .success()
@@ -392,7 +371,6 @@ fn lens_turn_touched_json_is_schema_versioned_and_stable() {
         .env("XDG_STATE_HOME", state.path())
         .args([
             "lens",
-            "turn",
             "touched",
             "--session",
             "cli-session",
@@ -427,16 +405,14 @@ fn lens_health_context_report_and_final_outputs_are_schema_versioned() {
     let state = tempfile::tempdir().expect("state dir");
     fs::write(project.path().join("main.rs"), "fn main() {}\n").expect("write source");
     let event = serde_json::json!({
-        "schema_version": "lens.turn_event.v1",
-        "session": "health-cli",
-        "turn": "turn-health",
-        "host": "contract-test",
+        "schema_version": "lens.hook_event.v1",
+        "host": {"name": "contract-test", "kind": "test"},
+        "session": {"id": "health-cli"},
         "cwd": project.path().to_string_lossy(),
-        "event": "tool_end",
-        "tool": "edit",
-        "phase": "post_tool",
-        "status": "success",
-        "files": [{"path": "main.rs", "operation": "modify"}],
+        "turn": {"id": "turn-health"},
+        "event": "post_tool",
+        "tool": {"name": "edit", "status": "success"},
+        "known_files": [{"path": "main.rs", "operation": "modify"}],
         "policy": {"git_fallback": false, "include_ignored": false}
     });
 
@@ -444,7 +420,7 @@ fn lens_health_context_report_and_final_outputs_are_schema_versioned() {
         .current_dir(project.path())
         .env("XDG_STATE_HOME", state.path())
         .env("XDG_CONFIG_HOME", state.path())
-        .args(["lens", "turn", "record", "--json"])
+        .args(["hook", "lens-post-tool"])
         .write_stdin(event.to_string())
         .assert()
         .success();
@@ -528,6 +504,151 @@ fn lens_health_context_report_and_final_outputs_are_schema_versioned() {
 }
 
 #[test]
+fn lens_warning_context_injects_acknowledges_and_report_uses_canonical_source_actions() {
+    let (bp, _remote) = setup_blueprints();
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+    fs::write(project.path().join("main.rs"), "fn main() {}\n").expect("write source");
+    let event = serde_json::json!({
+        "schema_version": "lens.hook_event.v1",
+        "host": {"name": "contract-test", "kind": "test"},
+        "session": {"id": "warn-cli"},
+        "cwd": project.path().to_string_lossy(),
+        "turn": {"id": "turn-warning"},
+        "event": "post_tool",
+        "tool": {"name": "edit", "status": "success"},
+        "known_files": [{"path": "main.rs", "operation": "modify"}],
+        "policy": {"git_fallback": false, "include_ignored": false}
+    });
+
+    ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .args(["hook", "lens-post-tool"])
+        .write_stdin(event.to_string())
+        .assert()
+        .success();
+
+    ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .args([
+            "lens",
+            "diagnostics",
+            "record",
+            "--source",
+            "test",
+            "--severity",
+            "warning",
+            "--path",
+            "main.rs",
+            "--message",
+            "needs attention",
+            "--start-line",
+            "1",
+            "--end-line",
+            "1",
+            "--json",
+        ])
+        .assert()
+        .success();
+
+    let injection = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .args(["hook", "lens-context-injection"])
+        .write_stdin(
+            serde_json::json!({
+                "schema_version": "lens.hook_event.v1",
+                "host": {"name": "contract-test", "kind": "test"},
+                "session": {"id": "warn-cli"},
+                "cwd": project.path().to_string_lossy(),
+                "turn": {"id": "turn-warning"},
+                "event": "context_injection",
+                "policy": {"git_fallback": false, "include_ignored": false}
+            })
+            .to_string(),
+        )
+        .assert()
+        .success();
+    let injection_value: serde_json::Value =
+        serde_json::from_slice(&injection.get_output().stdout).expect("context injection json");
+    assert_eq!(injection_value["context"]["inject"], true);
+    assert!(
+        injection_value["context"]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Lens Action Required")
+    );
+
+    let context = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .args([
+            "lens",
+            "context",
+            "--session",
+            "warn-cli",
+            "--turn",
+            "turn-warning",
+            "--json",
+        ])
+        .assert()
+        .success();
+    let context_value: serde_json::Value =
+        serde_json::from_slice(&context.get_output().stdout).expect("context json");
+    assert_eq!(context_value["status"], "warning");
+    assert_eq!(context_value["data"]["required"], true);
+    assert!(!context_value.to_string().contains("read_files"));
+    assert!(!context_value.to_string().contains("guard"));
+
+    let ack = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .args([
+            "lens",
+            "context",
+            "--session",
+            "warn-cli",
+            "--turn",
+            "turn-warning",
+            "--ack",
+            "--json",
+        ])
+        .assert()
+        .success();
+    let ack_value: serde_json::Value =
+        serde_json::from_slice(&ack.get_output().stdout).expect("ack json");
+    assert_eq!(ack_value["data"]["state"], "acknowledged");
+    assert_eq!(ack_value["data"]["required"], false);
+
+    let report = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .args([
+            "lens",
+            "report",
+            "--session",
+            "warn-cli",
+            "--turn",
+            "turn-warning",
+            "--json",
+        ])
+        .assert()
+        .success();
+    let report_value: serde_json::Value =
+        serde_json::from_slice(&report.get_output().stdout).expect("report json");
+    let report_text = report_value.to_string();
+    assert!(report_text.contains("ct source show"));
+    assert!(report_text.contains("ct source outline"));
+    assert!(!report_text.contains("ct lens discover"));
+    assert!(!report_text.contains("ct lens read"));
+    assert!(!report_text.contains("ct sym"));
+    assert!(!report_text.contains("read_files"));
+    assert!(!report_text.contains("guard"));
+}
+
+#[test]
 fn lens_turn_end_runs_safe_cleanup_for_changed_files() {
     let (bp, _remote) = setup_blueprints();
     let project = project_dir();
@@ -552,16 +673,14 @@ fn lens_turn_end_runs_safe_cleanup_for_changed_files() {
         }]
     });
     let event = serde_json::json!({
-        "schema_version": "lens.turn_event.v1",
-        "session": "cleanup-cli",
-        "turn": "turn-cleanup",
-        "host": "contract-test",
+        "schema_version": "lens.hook_event.v1",
+        "host": {"name": "contract-test", "kind": "test"},
+        "session": {"id": "cleanup-cli"},
         "cwd": project.path().to_string_lossy(),
+        "turn": {"id": "turn-cleanup"},
         "event": "turn_end",
-        "tool": "agent",
-        "phase": "post_tool",
-        "status": "success",
-        "files": [{"path": "main.fixture", "operation": "modify"}],
+        "tool": {"name": "agent", "status": "success"},
+        "known_files": [{"path": "main.fixture", "operation": "modify"}],
         "policy": {"git_fallback": false, "include_ignored": false}
     });
 
@@ -569,19 +688,19 @@ fn lens_turn_end_runs_safe_cleanup_for_changed_files() {
         .current_dir(project.path())
         .env("XDG_STATE_HOME", state.path())
         .env("CT_LENS_CLEANUP_REGISTRY", registry.to_string())
-        .args(["lens", "turn", "record", "--json"])
+        .args(["hook", "lens-turn-end"])
         .write_stdin(event.to_string())
         .assert()
         .success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
     let value: serde_json::Value = serde_json::from_str(&stdout).expect("turn cleanup json");
 
-    assert_eq!(value["schema_version"], "lens.response.v1");
+    assert_eq!(value["schema_version"], "lens.hook_response.v1");
     assert_eq!(
-        value["data"]["cleanup"]["runs"][0]["tool"],
+        value["data"]["turn"]["cleanup"]["runs"][0]["tool"],
         "fixture-format"
     );
-    assert_eq!(value["data"]["cleanup"]["mutation_count"], 1);
+    assert_eq!(value["data"]["turn"]["cleanup"]["mutation_count"], 1);
     assert!(
         fs::read_to_string(project.path().join("main.fixture"))
             .unwrap()
@@ -626,14 +745,19 @@ fn lens_diagnostics_record_and_list_round_trip() {
         .success()
         .stdout(predicate::str::contains("\"recorded\": true"));
 
-    ct_cmd(bp.path())
+    let assert = ct_cmd(bp.path())
         .current_dir(project.path())
         .env("XDG_STATE_HOME", state.path())
         .args(["lens", "diagnostics", "list", "--path", "main.rs", "--json"])
         .assert()
-        .success()
-        .stdout(predicate::str::contains("watch this"))
-        .stdout(predicate::str::contains("\"diagnostic_count\": 1"));
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("diagnostics json");
+    assert_eq!(value["data"]["diagnostic_count"], 1);
+    assert_eq!(value["data"]["diagnostics"][0]["message"], "watch this");
+    assert!(value["data"].get("read_files").is_none());
+    assert!(value["data"].get("guard").is_none());
+    assert!(value["data"]["relevance"].get("read_files").is_none());
 }
 
 #[test]
@@ -669,7 +793,7 @@ fn lens_diagnostics_snapshot_reports_deltas_and_all_flag() {
         "raw_output": "token=secret-value\ncompiler output",
         "metadata": {"command": "cargo test", "exit_code": 1}
     });
-    ct_cmd(bp.path())
+    let first_assert = ct_cmd(bp.path())
         .current_dir(project.path())
         .env("XDG_STATE_HOME", state.path())
         .args(["lens", "diagnostics", "snapshot", "--json"])
@@ -677,6 +801,54 @@ fn lens_diagnostics_snapshot_reports_deltas_and_all_flag() {
         .assert()
         .success()
         .stdout(predicate::str::contains("\"redacted\": true"));
+    let first_stdout =
+        String::from_utf8(first_assert.get_output().stdout.clone()).expect("first stdout utf8");
+    let first_value: serde_json::Value =
+        serde_json::from_str(&first_stdout).expect("first snapshot json");
+    let raw_output_id = first_value["data"]["raw_output"]["id"]
+        .as_i64()
+        .expect("raw output id");
+
+    let raw_list = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .args(["lens", "raw-output", "list", "--json"])
+        .assert()
+        .success();
+    let raw_list_value: serde_json::Value =
+        serde_json::from_slice(&raw_list.get_output().stdout).expect("raw output list json");
+    assert_eq!(raw_list_value["schema_version"], "lens.response.v1");
+    assert_eq!(raw_list_value["data"]["output_count"], 1);
+    assert_eq!(raw_list_value["data"]["outputs"][0]["id"], raw_output_id);
+    assert!(!raw_list_value.to_string().contains("secret-value"));
+
+    let raw_show = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .args([
+            "lens",
+            "raw-output",
+            "show",
+            &raw_output_id.to_string(),
+            "--json",
+        ])
+        .assert()
+        .success();
+    let raw_show_value: serde_json::Value =
+        serde_json::from_slice(&raw_show.get_output().stdout).expect("raw output show json");
+    assert_eq!(raw_show_value["data"]["output"]["id"], raw_output_id);
+    assert!(
+        raw_show_value["data"]["output"]["body"]
+            .as_str()
+            .unwrap()
+            .contains("token=[REDACTED]")
+    );
+    assert!(
+        !raw_show_value["data"]["output"]["body"]
+            .as_str()
+            .unwrap()
+            .contains("secret-value")
+    );
 
     let second = serde_json::json!({
         "source": "test",
@@ -770,7 +942,7 @@ fn apply_patch_failure_creates_draft_and_patch_telemetry_not_lens_diagnostic() {
         .current_dir(project.path())
         .env("XDG_STATE_HOME", state.path())
         .env("XDG_DATA_HOME", data.path())
-        .args(["tool", "apply-patch", "--cwd", "."])
+        .args(["apply-patch", "--cwd", "."])
         .write_stdin(patch)
         .assert()
         .failure();
@@ -824,128 +996,6 @@ fn apply_patch_failure_creates_draft_and_patch_telemetry_not_lens_diagnostic() {
 }
 
 #[test]
-fn lens_guard_default_blocks_unread_code_and_allows_after_read() {
-    let (bp, _remote) = setup_blueprints();
-    let project = project_dir();
-    let state = tempfile::tempdir().expect("state dir");
-    fs::write(
-        project.path().join("main.rs"),
-        "fn main() {\n    println!(\"hi\");\n}\n",
-    )
-    .expect("write source");
-
-    let assert = ct_cmd(bp.path())
-        .current_dir(project.path())
-        .env("XDG_STATE_HOME", state.path())
-        .env("XDG_CONFIG_HOME", state.path())
-        .args([
-            "lens",
-            "guard",
-            "check",
-            "--path",
-            "main.rs",
-            "--start-line",
-            "1",
-            "--end-line",
-            "1",
-            "--session",
-            "cli",
-            "--json",
-        ])
-        .assert()
-        .success();
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let value: serde_json::Value = serde_json::from_str(&stdout).expect("guard json");
-    assert_eq!(value["schema_version"], "lens.response.v1");
-    assert_eq!(value["status"], "error");
-    assert_eq!(value["data"]["guard"]["decision"], "block");
-    assert_eq!(value["data"]["guard"]["reason"], "zero_read");
-    assert_eq!(value["data"]["guard"]["classification"]["kind"], "code");
-
-    ct_cmd(bp.path())
-        .current_dir(project.path())
-        .env("XDG_STATE_HOME", state.path())
-        .env("XDG_CONFIG_HOME", state.path())
-        .args([
-            "lens",
-            "read",
-            "record",
-            "--path",
-            "main.rs",
-            "--start-line",
-            "1",
-            "--end-line",
-            "1",
-            "--session",
-            "cli",
-            "--json",
-        ])
-        .assert()
-        .success();
-
-    ct_cmd(bp.path())
-        .current_dir(project.path())
-        .env("XDG_STATE_HOME", state.path())
-        .env("XDG_CONFIG_HOME", state.path())
-        .args([
-            "lens",
-            "guard",
-            "check",
-            "--path",
-            "main.rs",
-            "--start-line",
-            "1",
-            "--end-line",
-            "1",
-            "--session",
-            "cli",
-            "--json",
-        ])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("\"decision\": \"allow\""))
-        .stdout(predicate::str::contains("\"reason\": \"covered\""));
-}
-
-#[test]
-fn lens_guard_has_no_default_public_override_path() {
-    let (bp, _remote) = setup_blueprints();
-    let project = project_dir();
-    let state = tempfile::tempdir().expect("state dir");
-    fs::write(project.path().join("main.rs"), "fn main() {}\n").expect("write source");
-
-    ct_cmd(bp.path())
-        .current_dir(project.path())
-        .env("XDG_STATE_HOME", state.path())
-        .env("XDG_CONFIG_HOME", state.path())
-        .args([
-            "lens",
-            "guard",
-            "check",
-            "--path",
-            "main.rs",
-            "--start-line",
-            "1",
-            "--end-line",
-            "1",
-            "--mode",
-            "warn",
-        ])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("allow_overrides is false"));
-
-    ct_cmd(bp.path())
-        .current_dir(project.path())
-        .env("XDG_STATE_HOME", state.path())
-        .env("XDG_CONFIG_HOME", state.path())
-        .args(["lens", "guard", "allow-once", "--path", "main.rs", "--json"])
-        .assert()
-        .failure()
-        .stdout(predicate::str::contains("guard_overrides_disabled"));
-}
-
-#[test]
 fn lens_checks_run_configured_fixture_and_records_snapshot() {
     let (bp, _remote) = setup_blueprints();
     let project = project_dir();
@@ -976,6 +1026,19 @@ fn lens_checks_run_configured_fixture_and_records_snapshot() {
     let assert = ct_cmd(bp.path())
         .current_dir(project.path())
         .env("XDG_STATE_HOME", state.path())
+        .args(["lens", "checks", "list", "--json"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("checks list json");
+    assert_eq!(value["schema_version"], "lens.response.v1");
+    assert_eq!(value["data"]["configured_checks"][0]["name"], "fixture");
+    assert!(value["data"].get("read_files").is_none());
+    assert!(value["data"].get("guard").is_none());
+
+    let assert = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
         .args(["lens", "checks", "run", "--json"])
         .assert()
         .success();
@@ -999,6 +1062,35 @@ fn lens_checks_run_configured_fixture_and_records_snapshot() {
         .success()
         .stdout(predicate::str::contains("fixture failed"))
         .stdout(predicate::str::contains("\"kind\": \"check\""));
+
+    let assert = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .env("XDG_CONFIG_HOME", state.path())
+        .args([
+            "lens",
+            "health",
+            "--session",
+            "checks-cli",
+            "--turn",
+            "turn-checks",
+            "--json",
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("health utf8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("health json");
+    assert_eq!(value["data"]["status"], "error");
+    assert_eq!(value["data"]["action_context"]["required"], true);
+    assert!(
+        value["data"]["summary"]["checks"]["latest"]
+            .as_array()
+            .unwrap()
+            .len()
+            > 0
+    );
+    assert!(value["data"]["summary"].get("read_files").is_none());
+    assert!(value["data"]["summary"].get("guard").is_none());
 }
 
 fn lens_hook_event(project: &Path, event: &str) -> serde_json::Value {
@@ -1093,7 +1185,65 @@ fn lens_lifecycle_hooks_adapt_native_host_output() {
 }
 
 #[test]
-fn lens_pre_tool_hook_warns_on_unread_writes_with_advisory_guard() {
+fn lens_lifecycle_hooks_omit_claude_only_output_for_codex() {
+    let (bp, _remote) = setup_blueprints();
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+
+    let payload = serde_json::json!({
+        "session_id": "native-session",
+        "cwd": project.path().to_string_lossy(),
+        "hook_event_name": "Stop"
+    });
+    let assert = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .env("XDG_CONFIG_HOME", state.path())
+        .env("CT_LENS_HOST", "codex")
+        .args(["hook", "lens-turn-end"])
+        .write_stdin(payload.to_string())
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("hook json");
+    assert!(value.get("schema_version").is_none());
+    assert_eq!(value["continue"], true);
+    assert!(value.get("suppressOutput").is_none());
+    assert!(value.get("decision").is_none());
+}
+
+#[test]
+fn lens_pre_tool_hook_omits_claude_permission_allow_for_codex() {
+    let (bp, _remote) = setup_blueprints();
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+
+    let payload = serde_json::json!({
+        "session_id": "native-session",
+        "cwd": project.path().to_string_lossy(),
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": "date"}
+    });
+    let assert = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .env("XDG_CONFIG_HOME", state.path())
+        .env("CT_LENS_HOST", "codex")
+        .args(["hook", "lens-pre-tool"])
+        .write_stdin(payload.to_string())
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("hook json");
+    assert_eq!(value["continue"], true);
+    assert!(value.get("hookSpecificOutput").is_none());
+}
+
+#[test]
+fn lens_pre_tool_hook_records_without_guard_advisory() {
     let (bp, _remote) = setup_blueprints();
     let project = project_dir();
     let state = tempfile::tempdir().expect("state dir");
@@ -1106,8 +1256,6 @@ fn lens_pre_tool_hook_warns_on_unread_writes_with_advisory_guard() {
         "start_line": 1,
         "end_line": 1
     }]);
-    event["policy"]["guard_mode"] = serde_json::json!("off");
-
     let assert = ct_cmd(bp.path())
         .current_dir(project.path())
         .env("XDG_STATE_HOME", state.path())
@@ -1119,16 +1267,16 @@ fn lens_pre_tool_hook_warns_on_unread_writes_with_advisory_guard() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
     let value: serde_json::Value = serde_json::from_str(&stdout).expect("pre-tool json");
     assert_eq!(value["schema_version"], "lens.hook_response.v1");
-    assert_eq!(value["status"], "warning");
-    assert_eq!(value["decision"]["outcome"], "warn");
-    assert_eq!(value["decision"]["reason"], "guard_advisory");
-    assert_eq!(value["decision"]["guard"][0]["decision"], "warn");
-    assert_eq!(value["warnings"][0]["code"], "guard_advisory");
+    assert_eq!(value["status"], "ok");
+    assert_eq!(value["decision"]["outcome"], "allow");
+    assert_eq!(value["decision"]["reason"], "tool_allowed");
+    assert!(value["decision"].get("guard").is_none());
+    assert!(value["warnings"].as_array().unwrap().is_empty());
     assert!(value["errors"].as_array().unwrap().is_empty());
 }
 
 #[test]
-fn lens_post_tool_hook_records_touched_files_reads_and_raw_output() {
+fn lens_post_tool_hook_records_touched_files_and_raw_output_without_reads() {
     let (bp, _remote) = setup_blueprints();
     let project = project_dir();
     let state = tempfile::tempdir().expect("state dir");
@@ -1155,27 +1303,6 @@ fn lens_post_tool_hook_records_touched_files_reads_and_raw_output() {
     assert_eq!(value["data"]["turn"]["file_count"], 1);
     assert_eq!(value["data"]["turn"]["files"][0]["operation"], "read");
     assert_eq!(value["data"]["raw_output"]["redacted"], true);
-
-    ct_cmd(bp.path())
-        .current_dir(project.path())
-        .env("XDG_STATE_HOME", state.path())
-        .args([
-            "lens",
-            "guard",
-            "check",
-            "--path",
-            "main.rs",
-            "--start-line",
-            "1",
-            "--end-line",
-            "1",
-            "--session",
-            "hook-session",
-            "--json",
-        ])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("\"reason\": \"covered\""));
 }
 
 #[test]
@@ -1217,4 +1344,464 @@ fn lens_hook_reports_json_errors_for_malformed_and_unknown_schema() {
     let value: serde_json::Value = serde_json::from_str(&stdout).expect("unknown schema response");
     assert_eq!(value["schema_version"], "lens.hook_response.v1");
     assert_eq!(value["errors"][0]["code"], "unknown_schema");
+}
+
+#[test]
+fn repo_namespace_routes_project_and_removes_top_level_project() {
+    let (bp, _remote) = setup_blueprints();
+    let project = project_dir();
+
+    let expected_project = project
+        .path()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .replace('.', "_");
+    ct_cmd(bp.path())
+        .current_dir(project.path())
+        .args(["repo", "project"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(expected_project));
+
+    ct_cmd(bp.path())
+        .current_dir(project.path())
+        .arg("project")
+        .assert()
+        .failure();
+}
+
+#[test]
+fn support_namespaces_route_and_removed_homes_fail() {
+    let (bp, _remote) = setup_blueprints();
+
+    ct_cmd(bp.path())
+        .args(["dev", "slug", "Fix:", "The", "Thing!"])
+        .assert()
+        .success()
+        .stdout(predicate::eq("fix-thing\n"));
+
+    ct_cmd(bp.path())
+        .args(["dev", "phases"])
+        .write_stdin("### Phase 1: Setup\n1. Install deps\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Setup"));
+
+    ct_cmd(bp.path())
+        .args(["shell", "completion", "bash"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("_ct"));
+
+    let usage_req = serde_json::json!({
+        "provider_label": "Codex",
+        "provider_color": null,
+        "windows": [{
+            "label": "5h",
+            "used_percent": 25.0,
+            "window_secs": 18000,
+            "reset_secs": 9000
+        }],
+        "width": 80
+    });
+    ct_cmd(bp.path())
+        .args(["tui", "usage-bar", "--width", "80"])
+        .write_stdin(usage_req.to_string())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Codex"));
+
+    for removed in ["tool", "usage-bar", "sym", "ast", "lsp", "notify"] {
+        ct_cmd(bp.path()).arg(removed).assert().failure();
+    }
+}
+
+#[test]
+fn top_level_help_exposes_only_canonical_public_domains() {
+    let (bp, _remote) = setup_blueprints();
+
+    let assert = ct_cmd(bp.path()).arg("--help").assert().success();
+    let help = String::from_utf8(assert.get_output().stdout.clone()).expect("help utf8");
+
+    for canonical in [
+        "source",
+        "lens",
+        "vault",
+        "repo",
+        "apply-patch",
+        "mcp",
+        "hook",
+        "shell",
+        "tui",
+        "dev",
+    ] {
+        assert!(
+            help.contains(canonical),
+            "help should contain {canonical}:\n{help}"
+        );
+    }
+    for removed in [
+        "sym",
+        "ast",
+        "lsp",
+        "tool",
+        "project",
+        "usage-bar",
+        "notify",
+    ] {
+        assert!(
+            !help.contains(removed),
+            "help should omit {removed}:\n{help}"
+        );
+    }
+}
+
+#[test]
+fn checked_in_public_surfaces_avoid_removed_command_taxonomy() {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("repo root");
+    let paths = [
+        "AGENTS.md",
+        "AGENTS.template.md",
+        "README.md",
+        "justfile",
+        "claude/settings.json",
+        "codex/config.toml",
+        "codex/hooks.json",
+        "opencode/opencode.jsonc",
+        "opencode/dcp.jsonc",
+        "opencode/profiles/default/opencode.jsonc",
+        "opencode/profiles/default/ocx.jsonc",
+        "pi/agent/settings.json",
+        "rules/blueprints.md",
+        "skills/crit/SKILL.md",
+        "skills/superreview/SKILL.md",
+        "skills/superreview/references/reviewer-prompts.md",
+        "skills/vault-sweep/SKILL.md",
+        "skills/sym/SKILL.md",
+    ];
+    let denied = [
+        "ct sym",
+        "ct ast",
+        "ct lsp",
+        "ct tool",
+        "ct patch",
+        "ct project",
+        "ct usage-bar",
+        "ct mcp sym",
+        "ct mcp ast",
+        "ct mcp lsp",
+        "ct mcp apply-patch",
+        "ct notify",
+        "lens discover",
+        "lens read",
+        "lens guard",
+        "Lens guard",
+        "mcp__sym__",
+    ];
+
+    let mut failures = Vec::new();
+    for path in paths {
+        let body = fs::read_to_string(repo.join(path))
+            .unwrap_or_else(|error| panic!("read {path}: {error}"));
+        for needle in denied {
+            if body.contains(needle) {
+                failures.push(format!("{path}: {needle}"));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "stale public surface hits:\n{}",
+        failures.join("\n")
+    );
+}
+
+#[test]
+fn source_search_routes_symbol_text_and_path_modes() {
+    let (bp, _remote) = setup_blueprints();
+    let project = project_dir();
+    fs::create_dir_all(project.path().join("src")).expect("create src");
+    fs::write(
+        project.path().join("src/lib.rs"),
+        "pub fn source_target() -> &'static str {\n    \"needle text\"\n}\n",
+    )
+    .expect("write source");
+
+    let symbol = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .args([
+            "source",
+            "search",
+            "--json",
+            "--mode",
+            "symbol",
+            "source_target",
+        ])
+        .assert()
+        .success();
+    let value: serde_json::Value =
+        serde_json::from_slice(&symbol.get_output().stdout).expect("symbol json");
+    assert_eq!(value["mode"], "symbol");
+    assert_eq!(value["read_only"], true);
+    assert!(value["result_count"].as_u64().unwrap_or(0) >= 1);
+    assert!(
+        value["results"][0]["name"]
+            .as_str()
+            .unwrap_or("")
+            .contains("source_target")
+    );
+
+    let text = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .args([
+            "source",
+            "search",
+            "--json",
+            "--mode",
+            "text",
+            "needle text",
+        ])
+        .assert()
+        .success();
+    let value: serde_json::Value =
+        serde_json::from_slice(&text.get_output().stdout).expect("text json");
+    assert_eq!(value["mode"], "text");
+    assert_eq!(value["results"][0]["rel_path"], "src/lib.rs");
+
+    let path = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .args(["source", "search", "--json", "--mode", "path", "lib.rs"])
+        .assert()
+        .success();
+    let value: serde_json::Value =
+        serde_json::from_slice(&path.get_output().stdout).expect("path json");
+    assert_eq!(value["mode"], "path");
+    assert_eq!(value["results"][0]["path"], "src/lib.rs");
+}
+
+#[test]
+fn source_search_routes_structural_mode_when_ast_grep_is_available() {
+    if StdCommand::new("sg").arg("--version").status().is_err() {
+        return;
+    }
+
+    let (bp, _remote) = setup_blueprints();
+    let project = project_dir();
+    fs::create_dir_all(project.path().join("src")).expect("create src");
+    fs::write(
+        project.path().join("src/lib.rs"),
+        "pub fn structural_target() -> i32 {\n    42\n}\n",
+    )
+    .expect("write source");
+
+    let assert = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .args([
+            "source",
+            "search",
+            "--json",
+            "--mode",
+            "structural",
+            "--lang",
+            "rust",
+            "--pattern",
+            "pub fn $NAME() -> i32 { $$BODY }",
+            "--path",
+            "src/lib.rs",
+        ])
+        .assert()
+        .success();
+    let value: serde_json::Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("structural json");
+    assert_eq!(value["mode"], "structural");
+    assert_eq!(value["match_count"].as_u64().unwrap_or(0), 1);
+    assert!(value["matches"].is_array());
+}
+
+#[test]
+fn source_show_and_outline_are_read_only_without_lens_read_tracking() {
+    let (bp, _remote) = setup_blueprints();
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+    fs::create_dir_all(project.path().join("src")).expect("create src");
+    fs::write(
+        project.path().join("src/lib.rs"),
+        "pub fn nav_target() -> i32 {\n    7\n}\n",
+    )
+    .expect("write source");
+
+    let range = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .args(["source", "show", "--json", "src/lib.rs:L1-L2"])
+        .assert()
+        .success();
+    let value: serde_json::Value =
+        serde_json::from_slice(&range.get_output().stdout).expect("show range json");
+    assert_eq!(value["operation"], "show");
+    assert_eq!(value["read_only"], true);
+    assert_eq!(value["results"][0]["kind"], "file");
+    assert_eq!(value["results"][0]["results"][0]["line"], 1);
+
+    let symbol = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .args(["source", "show", "--json", "nav_target"])
+        .assert()
+        .success();
+    let value: serde_json::Value =
+        serde_json::from_slice(&symbol.get_output().stdout).expect("show symbol json");
+    assert_eq!(value["results"][0]["kind"], "symbol");
+    assert!(
+        value["results"][0]["results"][0]["content"]
+            .as_str()
+            .unwrap_or("")
+            .contains("nav_target")
+    );
+
+    let outline = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .args(["source", "outline", "--json", "src/lib.rs"])
+        .assert()
+        .success();
+    let value: serde_json::Value =
+        serde_json::from_slice(&outline.get_output().stdout).expect("outline json");
+    assert_eq!(value["operation"], "outline");
+    assert_eq!(value["read_only"], true);
+    assert!(value["symbol_count"].as_u64().unwrap_or(0) >= 1);
+    assert_eq!(value["symbols"][0]["name"], "nav_target");
+
+    ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .args(["lens", "guard", "check", "--path", "src/lib.rs"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn source_graph_and_investigation_commands_route_to_read_only_sym_internals() {
+    let (bp, _remote) = setup_blueprints();
+    let project = project_dir();
+    fs::create_dir_all(project.path().join("src")).expect("create src");
+    fs::write(
+        project.path().join("src/lib.rs"),
+        "pub trait Service { fn run(&self) -> i32; }\n\
+         pub struct Worker;\n\
+         impl Service for Worker { fn run(&self) -> i32 { helper() } }\n\
+         pub fn helper() -> i32 { 1 }\n\
+         pub fn caller() -> i32 { helper() }\n",
+    )
+    .expect("write source");
+
+    let refs = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .args(["source", "refs", "--json", "helper"])
+        .assert()
+        .success();
+    let value: serde_json::Value =
+        serde_json::from_slice(&refs.get_output().stdout).expect("refs json");
+    assert_eq!(value["operation"], "refs");
+    assert_eq!(value["read_only"], true);
+    assert!(value["result_count"].as_u64().unwrap_or(0) >= 1);
+
+    let trace = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .args(["source", "trace", "--json", "caller"])
+        .assert()
+        .success();
+    let value: serde_json::Value =
+        serde_json::from_slice(&trace.get_output().stdout).expect("trace json");
+    assert_eq!(value["operation"], "trace");
+    assert_eq!(value["results"][0]["callee"], "helper");
+
+    let impls = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .args(["source", "impls", "--json", "Service"])
+        .assert()
+        .success();
+    let value: serde_json::Value =
+        serde_json::from_slice(&impls.get_output().stdout).expect("impls json");
+    assert_eq!(value["operation"], "impls");
+    assert_eq!(value["read_only"], true);
+    assert!(value["result_count"].as_u64().unwrap_or(0) >= 1);
+
+    let investigation = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .args(["source", "investigate", "--json", "helper"])
+        .assert()
+        .success();
+    let value: serde_json::Value =
+        serde_json::from_slice(&investigation.get_output().stdout).expect("investigate json");
+    assert_eq!(value["operation"], "investigate");
+    assert_eq!(value["results"][0]["results"]["kind"], "function");
+}
+
+#[test]
+fn source_diff_scopes_git_diff_to_symbol() {
+    let (bp, _remote) = setup_blueprints();
+    let project = project_dir();
+    run_git(project.path(), &["init", "--initial-branch=main"]);
+    run_git(project.path(), &["config", "user.name", "ct-test"]);
+    run_git(
+        project.path(),
+        &["config", "user.email", "ct-test@example.com"],
+    );
+    fs::create_dir_all(project.path().join("src")).expect("create src");
+    fs::write(
+        project.path().join("src/lib.rs"),
+        "pub fn helper() -> i32 {\n    1\n}\n\npub fn untouched() -> i32 {\n    0\n}\n",
+    )
+    .expect("write source");
+    run_git(project.path(), &["add", "src/lib.rs"]);
+    run_git(project.path(), &["commit", "-m", "init"]);
+    fs::write(
+        project.path().join("src/lib.rs"),
+        "pub fn helper() -> i32 {\n    2\n}\n\npub fn untouched() -> i32 {\n    0\n}\n",
+    )
+    .expect("modify source");
+
+    let diff = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .args(["source", "diff", "--json", "helper"])
+        .assert()
+        .success();
+    let value: serde_json::Value =
+        serde_json::from_slice(&diff.get_output().stdout).expect("diff json");
+    assert_eq!(value["operation"], "diff");
+    assert_eq!(value["read_only"], true);
+    assert!(
+        value["result"]["content"]
+            .as_str()
+            .unwrap_or("")
+            .contains("+    2")
+    );
+}
+
+#[test]
+fn source_mcp_is_canonical_and_backend_mcp_servers_are_hidden_from_help() {
+    let (bp, _remote) = setup_blueprints();
+
+    ct_cmd(bp.path())
+        .args(["mcp", "source", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Serve the source MCP"));
+
+    ct_cmd(bp.path())
+        .args(["mcp", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("source"))
+        .stdout(predicate::str::contains("lens"))
+        .stdout(predicate::str::contains("vault"))
+        .stdout(predicate::str::contains("apply-patch").not())
+        .stdout(predicate::str::contains("sym").not())
+        .stdout(predicate::str::contains("ast").not())
+        .stdout(predicate::str::contains("lsp").not());
 }

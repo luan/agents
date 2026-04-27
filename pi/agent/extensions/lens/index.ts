@@ -1,6 +1,6 @@
+import { StringEnum } from "@mariozechner/pi-ai";
 import { basename } from "node:path";
 
-import { StringEnum } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 
@@ -26,31 +26,6 @@ const sessionTurnSchema = {
 	turn: Type.Optional(Type.String({ description: "Turn id; defaults to current Pi turn." })),
 };
 
-const discoverSchema = Type.Object({
-	intent: StringEnum(["symbol", "text", "path", "source-context", "ast", "lsp"] as const),
-	query: Type.Optional(Type.String({ description: "Symbol, text, AST, or LSP query." })),
-	path: Type.Optional(Type.String({ description: "Optional file/path filter." })),
-	line: Type.Optional(Type.Number({ description: "1-based source line." })),
-	endLine: Type.Optional(Type.Number({ description: "1-based ending source line." })),
-	character: Type.Optional(Type.Number({ description: "1-based source character for LSP requests." })),
-	lang: Type.Optional(Type.String({ description: "Language hint." })),
-	limit: Type.Optional(Type.Number({ description: "Maximum normalized results." })),
-	context: Type.Optional(Type.Number({ description: "Context lines when source is shown." })),
-	lspOperation: Type.Optional(Type.String({ description: "LSP operation, e.g. hover or definition." })),
-	detail: Type.Optional(Type.Boolean({ description: "Include resolver/debug fields." })),
-	raw: Type.Optional(Type.Boolean({ description: "Include raw backend fields." })),
-	session: sessionTurnSchema.session,
-});
-
-const guardSchema = Type.Object({
-	action: Type.Optional(StringEnum(["check", "record_read"] as const)),
-	path: Type.String({ description: "Path to check or record." }),
-	startLine: Type.Optional(Type.Number({ description: "Start line for check/record_read." })),
-	endLine: Type.Optional(Type.Number({ description: "End line for check/record_read." })),
-	session: sessionTurnSchema.session,
-	mode: Type.Optional(StringEnum(["off", "warn", "block"] as const)),
-});
-
 const diagnosticsSchema = Type.Object({
 	action: Type.Optional(StringEnum(["list", "record", "snapshot"] as const)),
 	path: Type.Optional(Type.String({ description: "Optional path filter." })),
@@ -67,11 +42,25 @@ const diagnosticsSchema = Type.Object({
 	snapshot: Type.Optional(Type.Any({ description: "DiagnosticSnapshotInput JSON for snapshot." })),
 });
 
+const checksSchema = Type.Object({
+	action: Type.Optional(StringEnum(["list", "run"] as const)),
+	automatic: Type.Optional(Type.Boolean({ description: "Run only automatic checks/scanners." })),
+	all: Type.Optional(Type.Boolean({ description: "Run all configured checks/scanners." })),
+	name: Type.Optional(Type.Array(Type.String({ description: "Configured check/scanner name to run." }))),
+	scanners: Type.Optional(Type.Boolean({ description: "Include configured scanners." })),
+});
+
+const statusSchema = Type.Object({});
+
 const healthSchema = Type.Object({
-	operation: Type.Optional(StringEnum(["turn", "status"] as const)),
 	session: sessionTurnSchema.session,
 	turn: sessionTurnSchema.turn,
 	finalOutput: Type.Optional(Type.Boolean({ description: "Request final/agent-end style text for CLI parity." })),
+});
+
+const touchedSchema = Type.Object({
+	session: sessionTurnSchema.session,
+	turn: sessionTurnSchema.turn,
 });
 
 const cleanupSchema = Type.Object({
@@ -90,6 +79,16 @@ const contextSchema = Type.Object({
 	session: sessionTurnSchema.session,
 	turn: sessionTurnSchema.turn,
 	ack: Type.Optional(Type.Boolean({ description: "Acknowledge current warning-or-worse health." })),
+});
+
+const rawOutputSchema = Type.Object({
+	action: Type.Optional(StringEnum(["list", "show"] as const)),
+	id: Type.Optional(Type.Number({ description: "Raw output id for show." })),
+	limit: Type.Optional(Type.Number({ description: "Maximum outputs to list." })),
+});
+
+const pruneSchema = Type.Object({
+	dryRun: Type.Optional(Type.Boolean({ description: "Preview retention pruning without deleting." })),
 });
 
 function pushOpt(args: string[], flag: string, value: unknown) {
@@ -138,7 +137,7 @@ export default function lensExtension(pi: ExtensionAPI) {
 			return {
 				schema_version: "lens.hook_response.v1",
 				status: "degraded",
-				decision: { outcome: "allow", reason: "invalid_hook_response", guard: [] },
+				decision: { outcome: "allow", reason: "invalid_hook_response" },
 				health: { status: "degraded", compact: "degraded · hook failed" },
 				warnings: [],
 				errors: [{ code: "invalid_hook_response", message: hookFailureMessage(error, result) }],
@@ -162,7 +161,6 @@ export default function lensExtension(pi: ExtensionAPI) {
 			turn: { id: currentTurn(), index: activeTurnIndex },
 			event,
 			known_files: [],
-			policy: { guard_mode: "warn", allow_overrides: false },
 			...extra,
 		};
 	}
@@ -258,61 +256,7 @@ export default function lensExtension(pi: ExtensionAPI) {
 		applyLensUi(ctx, response);
 	});
 
-	registerTool({
-		name: "lens_discover",
-		label: "Lens discover",
-		description: "Discover Lens code context through ct lens discover. Full JSON is preserved in tool details.",
-		parameters: discoverSchema,
-		executionMode: "parallel",
-		async execute(_id, params, signal, _onUpdate, ctx) {
-			const args = ["discover", "--intent", params.intent];
-			pushOpt(args, "--query", params.query);
-			pushOpt(args, "--path", params.path);
-			pushOpt(args, "--line", params.line);
-			pushOpt(args, "--end-line", params.endLine);
-			pushOpt(args, "--character", params.character);
-			pushOpt(args, "--lang", params.lang);
-			pushOpt(args, "--limit", params.limit);
-			pushOpt(args, "--context", params.context);
-			pushOpt(args, "--session", params.session ?? currentSession(ctx));
-			pushOpt(args, "--lsp-operation", params.lspOperation);
-			pushBool(args, "--debug", params.detail);
-			pushBool(args, "--raw", params.raw);
-			return runCtLens(args, ctx.cwd, signal);
-		},
-		renderCall(args, theme, ctx) {
-			return renderText(ctx, title(theme, nf.lens, "lens discover", `${args.intent}${args.query ? ` · ${args.query}` : ""}`));
-		},
-		renderResult(result, options, _theme, ctx) {
-			return renderText(ctx, summarizeLensResult(result, options.expanded, { ansi: true }));
-		},
-	});
 
-	registerTool({
-		name: "lens_guard",
-		label: "Lens guard",
-		description: "Inspect Lens read-before-edit guard advisories or record read coverage via ct lens guard/read. Actions: check, record_read.",
-		parameters: guardSchema,
-		executionMode: "parallel",
-		async execute(_id, params, signal, _onUpdate, ctx) {
-			const action = params.action ?? "check";
-			if (action === "record_read") {
-				const args = ["read", "record", "--path", params.path, "--start-line", String(required(params.startLine, "startLine")), "--end-line", String(required(params.endLine, "endLine"))];
-				pushOpt(args, "--session", params.session ?? currentSession(ctx));
-				return runCtLens(args, ctx.cwd, signal);
-			}
-			const args = ["guard", "check", "--path", params.path, "--start-line", String(required(params.startLine, "startLine")), "--end-line", String(required(params.endLine, "endLine"))];
-			pushOpt(args, "--session", params.session ?? currentSession(ctx));
-			pushOpt(args, "--mode", params.mode);
-			return runCtLens(args, ctx.cwd, signal);
-		},
-		renderCall(args, theme, ctx) {
-			return renderText(ctx, title(theme, nf.guard, "lens guard", `${args.action ?? "check"} · ${args.path}`));
-		},
-		renderResult(result, options, _theme, ctx) {
-			return renderText(ctx, summarizeLensResult(result, options.expanded, { ansi: true }));
-		},
-	});
 
 	registerTool({
 		name: "lens_diagnostics",
@@ -320,6 +264,7 @@ export default function lensExtension(pi: ExtensionAPI) {
 		description: "List, record, or snapshot Lens diagnostics via ct lens diagnostics. Full JSON is preserved in details.",
 		parameters: diagnosticsSchema,
 		executionMode: "parallel",
+		renderShell: "self",
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const action = params.action ?? "list";
 			if (action === "record") {
@@ -350,19 +295,81 @@ export default function lensExtension(pi: ExtensionAPI) {
 	});
 
 	registerTool({
+		name: "lens_checks",
+		label: "Lens checks",
+		description: "List or run repository-configured Lens checks and scanners via ct lens checks.",
+		parameters: checksSchema,
+		executionMode: "exclusive",
+		renderShell: "self",
+		async execute(_id, params, signal, _onUpdate, ctx) {
+			const action = params.action ?? "list";
+			const args = ["checks", action];
+			if (action === "run") {
+				pushBool(args, "--automatic", params.automatic);
+				pushBool(args, "--all", params.all);
+				pushBool(args, "--scanners", params.scanners);
+				for (const name of params.name ?? []) pushOpt(args, "--name", name);
+			}
+			return runCtLens(args, ctx.cwd, signal);
+		},
+		renderCall(args, theme, ctx) {
+			return renderText(ctx, title(theme, nf.lens, "lens checks", args.action ?? "list"));
+		},
+		renderResult(result, options, _theme, ctx) {
+			return renderText(ctx, summarizeLensResult(result, options.expanded, { ansi: true }));
+		},
+	});
+
+	registerTool({
+		name: "lens_status",
+		label: "Lens status",
+		description: "Show repository Lens status via ct lens status.",
+		parameters: statusSchema,
+		executionMode: "parallel",
+		renderShell: "self",
+		async execute(_id, _params, signal, _onUpdate, ctx) {
+			return runCtLens(["status"], ctx.cwd, signal);
+		},
+		renderCall(_args, theme, ctx) {
+			return renderText(ctx, title(theme, nf.lens, "lens status"));
+		},
+		renderResult(result, options, _theme, ctx) {
+			return renderText(ctx, summarizeLensResult(result, options.expanded, { ansi: true }));
+		},
+	});
+
+	registerTool({
 		name: "lens_health",
 		label: "Lens health",
-		description: "Show Lens turn health, or repository status when operation=status/no turn is provided.",
+		description: "Show turn-scoped Lens health via ct lens health.",
 		parameters: healthSchema,
 		executionMode: "parallel",
+		renderShell: "self",
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			if (params.operation === "status" || (!params.session && !params.turn)) return runCtLens(["status"], ctx.cwd, signal);
 			const args = ["health", "--session", params.session ?? currentSession(ctx), "--turn", params.turn ?? currentTurn()];
 			pushBool(args, "--final-output", params.finalOutput);
 			return runCtLens(args, ctx.cwd, signal);
 		},
-		renderCall(args, theme, ctx) {
-			return renderText(ctx, title(theme, nf.lens, "lens health", args.operation ?? "turn"));
+		renderCall(_args, theme, ctx) {
+			return renderText(ctx, title(theme, nf.lens, "lens health", "turn"));
+		},
+		renderResult(result, options, _theme, ctx) {
+			return renderText(ctx, summarizeLensResult(result, options.expanded, { ansi: true }));
+		},
+	});
+
+	registerTool({
+		name: "lens_touched",
+		label: "Lens touched",
+		description: "List files touched during a turn via ct lens touched.",
+		parameters: touchedSchema,
+		executionMode: "parallel",
+		renderShell: "self",
+		async execute(_id, params, signal, _onUpdate, ctx) {
+			return runCtLens(["touched", "--session", params.session ?? currentSession(ctx), "--turn", params.turn ?? currentTurn()], ctx.cwd, signal);
+		},
+		renderCall(_args, theme, ctx) {
+			return renderText(ctx, title(theme, nf.files, "lens touched", "turn"));
 		},
 		renderResult(result, options, _theme, ctx) {
 			return renderText(ctx, summarizeLensResult(result, options.expanded, { ansi: true }));
@@ -375,6 +382,7 @@ export default function lensExtension(pi: ExtensionAPI) {
 		description: "Run safe Lens turn-scoped cleanup via ct lens cleanup run.",
 		parameters: cleanupSchema,
 		executionMode: "exclusive",
+		renderShell: "self",
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const args = ["cleanup", "run", "--session", params.session ?? currentSession(ctx), "--turn", params.turn ?? currentTurn()];
 			pushBool(args, "--allow-unsafe", params.allowUnsafe);
@@ -391,9 +399,10 @@ export default function lensExtension(pi: ExtensionAPI) {
 	registerTool({
 		name: "lens_report",
 		label: "Lens report",
-		description: "Show a deeper Lens changed-file report with diagnostics, guard advisories, cleanup, patch refs, and symbols.",
+		description: "Show a deeper Lens changed-file report with diagnostics, cleanup, patch refs, and symbols.",
 		parameters: reportSchema,
 		executionMode: "parallel",
+		renderShell: "self",
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const args = ["report", "--session", params.session ?? currentSession(ctx), "--turn", params.turn ?? currentTurn()];
 			pushOpt(args, "--path", params.path);
@@ -413,6 +422,7 @@ export default function lensExtension(pi: ExtensionAPI) {
 		description: "Show or acknowledge action-forcing Lens next-turn context.",
 		parameters: contextSchema,
 		executionMode: "parallel",
+		renderShell: "self",
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const args = ["context", "--session", params.session ?? currentSession(ctx), "--turn", params.turn ?? currentTurn()];
 			pushBool(args, "--ack", params.ack);
@@ -420,6 +430,48 @@ export default function lensExtension(pi: ExtensionAPI) {
 		},
 		renderCall(args, theme, ctx) {
 			return renderText(ctx, title(theme, nf.lens, "lens context", args.ack ? "ack" : "show"));
+		},
+		renderResult(result, options, _theme, ctx) {
+			return renderText(ctx, summarizeLensResult(result, options.expanded, { ansi: true }));
+		},
+	});
+
+	registerTool({
+		name: "lens_raw_output",
+		label: "Lens raw output",
+		description: "List or show retained sanitized Lens raw output via ct lens raw-output.",
+		parameters: rawOutputSchema,
+		executionMode: "parallel",
+		renderShell: "self",
+		async execute(_id, params, signal, _onUpdate, ctx) {
+			const action = params.action ?? "list";
+			const args = ["raw-output", action];
+			if (action === "show") args.push(String(required(params.id, "id")));
+			else pushOpt(args, "--limit", params.limit);
+			return runCtLens(args, ctx.cwd, signal);
+		},
+		renderCall(args, theme, ctx) {
+			return renderText(ctx, title(theme, nf.lens, "lens raw output", args.action ?? "list"));
+		},
+		renderResult(result, options, _theme, ctx) {
+			return renderText(ctx, summarizeLensResult(result, options.expanded, { ansi: true }));
+		},
+	});
+
+	registerTool({
+		name: "lens_prune",
+		label: "Lens prune",
+		description: "Prune Lens telemetry using retention policy via ct lens prune.",
+		parameters: pruneSchema,
+		executionMode: "exclusive",
+		renderShell: "self",
+		async execute(_id, params, signal, _onUpdate, ctx) {
+			const args = ["prune"];
+			pushBool(args, "--dry-run", params.dryRun);
+			return runCtLens(args, ctx.cwd, signal);
+		},
+		renderCall(args, theme, ctx) {
+			return renderText(ctx, title(theme, nf.lens, "lens prune", args.dryRun ? "dry run" : "retention"));
 		},
 		renderResult(result, options, _theme, ctx) {
 			return renderText(ctx, summarizeLensResult(result, options.expanded, { ansi: true }));
@@ -445,8 +497,6 @@ function filesFromTool(toolName: string, input: any): ToolFile[] {
 		if (toolName === "read") files.push(file(path, "read", input.offset, input.offset && input.limit ? input.offset + input.limit - 1 : undefined));
 		else if (toolName === "write") files.push(file(path, "write"));
 		else if (toolName === "edit") files.push(file(path, "edit"));
-		else if (toolName === "lens_discover") files.push(file(path, "discover", input.line, input.endLine));
-		else if (toolName === "lens_guard" && input?.action === "record_read") files.push(file(path, "read", input.startLine, input.endLine));
 	}
 	for (const key of ["paths", "files"]) {
 		if (!Array.isArray(input?.[key])) continue;

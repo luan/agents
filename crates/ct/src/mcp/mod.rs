@@ -11,6 +11,7 @@ mod apply_patch;
 mod ast;
 mod lens;
 mod lsp;
+mod source;
 mod sym;
 mod vault;
 
@@ -97,6 +98,11 @@ pub fn run_vault_server() -> Result<(), Box<dyn std::error::Error>> {
 /// Run the apply_patch MCP server over stdio.
 pub fn run_apply_patch_server() -> Result<(), Box<dyn std::error::Error>> {
     serve_stdio(apply_patch::ApplyPatchMcpServer::new())
+}
+
+/// Run the source MCP server over stdio.
+pub fn run_source_server() -> Result<(), Box<dyn std::error::Error>> {
+    serve_stdio(source::SourceMcpServer::new())
 }
 
 /// Run the sym MCP server over stdio.

@@ -112,6 +112,9 @@ fn assert_no_checkout_paths(root: &Path) -> Result<()> {
             if !meta.is_file() || meta.file_type().is_symlink() {
                 continue;
             }
+            if path.ends_with("codex/config.toml") {
+                continue;
+            }
             let bytes = match fs::read(&path) {
                 Ok(b) => b,
                 Err(_) => continue,

@@ -1,38 +1,32 @@
 use std::io::IsTerminal;
 use std::io::Read;
 
-use crate::cli::args::{PatchAction, PatchDraftAction};
+use crate::cli::args::ApplyPatchDraftAction;
 use crate::lens::{PatchCandidate, PatchDraftChunk, PatchRepairSymbol};
 
-pub fn run_patch(action: PatchAction) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run_draft(action: ApplyPatchDraftAction) -> Result<(), Box<dyn std::error::Error>> {
     match action {
-        PatchAction::Draft { action } => run_draft(action),
-    }
-}
-
-fn run_draft(action: PatchDraftAction) -> Result<(), Box<dyn std::error::Error>> {
-    match action {
-        PatchDraftAction::Create { cwd, json } => create(cwd, json),
-        PatchDraftAction::Status { patch_id, json } => status(&patch_id, json),
-        PatchDraftAction::Show {
+        ApplyPatchDraftAction::Create { cwd, json } => create(cwd, json),
+        ApplyPatchDraftAction::Status { patch_id, json } => status(&patch_id, json),
+        ApplyPatchDraftAction::Show {
             patch_id,
             chunk,
             json,
         } => show(&patch_id, chunk, json),
-        PatchDraftAction::Amend {
+        ApplyPatchDraftAction::Amend {
             patch_id,
             chunk,
             anchor,
             json,
         } => amend(&patch_id, chunk, anchor, json),
-        PatchDraftAction::Apply { patch_id, json } => apply(&patch_id, json),
-        PatchDraftAction::Discard { patch_id, json } => discard(&patch_id, json),
+        ApplyPatchDraftAction::Apply { patch_id, json } => apply(&patch_id, json),
+        ApplyPatchDraftAction::Discard { patch_id, json } => discard(&patch_id, json),
     }
 }
 
 fn create(cwd: Option<String>, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     if std::io::stdin().is_terminal() {
-        eprintln!("patch draft create: expected patch on stdin");
+        eprintln!("apply-patch draft create: expected patch on stdin");
         std::process::exit(1);
     }
     let mut body = String::new();
@@ -42,7 +36,7 @@ fn create(cwd: Option<String>, json: bool) -> Result<(), Box<dyn std::error::Err
         .read_to_string(&mut body)?;
     if body.len() > crate::apply_patch::MAX_PATCH_SIZE_BYTES {
         eprintln!(
-            "patch draft create: patch exceeds {} byte limit",
+            "apply-patch draft create: patch exceeds {} byte limit",
             crate::apply_patch::MAX_PATCH_SIZE_BYTES
         );
         std::process::exit(1);
@@ -178,7 +172,7 @@ fn amend(
             }),
         );
     };
-    let anchor = anchor.ok_or("patch draft amend currently requires --anchor")?;
+    let anchor = anchor.ok_or("apply-patch draft amend currently requires --anchor")?;
     let amended_body = amend_chunk_anchor(&body, chunk, &anchor)?;
     let new_patch_id = crate::apply_patch::sha1_hex(amended_body.as_bytes());
     let mut chunks = draft_chunks(&amended_body)?;
@@ -237,7 +231,7 @@ fn apply(patch_id: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     };
     match crate::apply_patch::apply(&body, &root, false) {
         Ok(outcome) => {
-            store.record_applied_changes(None, "ct_patch_draft", &outcome.changes)?;
+            store.record_applied_changes(None, "ct_apply_patch_draft", &outcome.changes)?;
             print_out(
                 json,
                 &serde_json::json!({

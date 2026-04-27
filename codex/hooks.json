@@ -17,8 +17,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "ct sym hook remind --format=claude-code",
-            "statusMessage": "Loading sym guidance",
+            "command": "ct hook source-remind",
+            "statusMessage": "Loading source guidance",
             "timeout": 5
           }
         ]
@@ -41,7 +41,7 @@
           {
             "type": "command",
             "command": "CT_LENS_HOST=codex ct hook lens-pre-tool",
-            "statusMessage": "Checking Lens guard",
+            "statusMessage": "Recording Lens pre-tool event",
             "timeout": 5
           }
         ]
@@ -51,8 +51,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "ct hook codex-sym-nudge",
-            "statusMessage": "Checking for sym lookup",
+            "command": "ct hook source-nudge",
+            "statusMessage": "Checking for source lookup",
             "timeout": 5
           },
           {
@@ -71,7 +71,7 @@
             "type": "command",
             "command": "CT_LENS_HOST=codex ct hook lens-post-tool",
             "statusMessage": "Recording Lens event",
-            "timeout": 5
+            "timeout": 20
           }
         ]
       }
@@ -83,13 +83,13 @@
             "type": "command",
             "command": "CT_LENS_HOST=codex ct hook lens-turn-end",
             "statusMessage": "Closing Lens turn",
-            "timeout": 5
+            "timeout": 20
           },
           {
             "type": "command",
             "command": "CT_LENS_HOST=codex ct hook lens-agent-end",
             "statusMessage": "Checking Lens health",
-            "timeout": 5
+            "timeout": 20
           }
         ]
       }

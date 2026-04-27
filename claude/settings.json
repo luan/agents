@@ -20,7 +20,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "ct notify"
+            "command": "ct hook notify"
           }
         ]
       }
@@ -43,8 +43,16 @@
           },
           {
             "type": "command",
-            "command": "ct sym hook remind --format=claude-code",
+            "command": "ct hook source-remind",
             "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ~/.claude/hooks/context-mode-cache-heal.mjs"
           }
         ]
       }
@@ -64,16 +72,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "ct hook rtk-rewrite"
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "ct sym hook nudge --format=claude-code",
+            "command": "ct hook source-nudge",
             "timeout": 5
           }
         ]
@@ -125,7 +124,8 @@
     "linear@claude-plugins-official": false,
     "notion@claude-plugins-official": false,
     "worktrunk@worktrunk": true,
-    "gt@local": true
+    "gt@local": true,
+    "context-mode@context-mode": true
   },
   "extraKnownMarketplaces": {
     "claude-plugins-official": {
@@ -138,6 +138,12 @@
       "source": {
         "source": "github",
         "repo": "max-sixty/worktrunk"
+      }
+    },
+    "context-mode": {
+      "source": {
+        "source": "github",
+        "repo": "mksglu/context-mode"
       }
     }
   },

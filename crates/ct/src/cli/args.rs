@@ -1,5 +1,7 @@
-use clap::Subcommand;
+use std::path::PathBuf;
+
 use clap::ValueEnum;
+use clap::{Args, Subcommand};
 use clap_complete::Shell;
 
 use crate::artifact::ArtifactKind;
@@ -18,128 +20,20 @@ pub fn parse_kind_filter(s: &str) -> Option<ArtifactKind> {
 const KIND_VALUES: [&str; 6] = ["all", "spec", "plan", "review", "report", "doc"];
 const KIND_VALUES_NO_ALL: [&str; 5] = ["spec", "plan", "review", "report", "doc"];
 
-#[derive(Subcommand)]
-pub enum ToolAction {
-    #[command(about = "Generate URL-safe slug from text")]
-    Slug {
-        #[arg(
-            help = "Words to slugify",
-            trailing_var_arg = true,
-            allow_hyphen_values = true
-        )]
-        words: Vec<String>,
-    },
+#[derive(Args)]
+pub struct ApplyPatchArgs {
+    #[command(subcommand)]
+    pub action: Option<ApplyPatchAction>,
 
-    #[command(about = "Parse phase markers from plan file")]
-    Phases {
-        #[arg(help = "Plan file to parse (or stdin if omitted)")]
-        file: Option<String>,
-    },
+    #[arg(long, help = "Working directory for raw apply; default: process cwd")]
+    pub cwd: Option<String>,
 
-    #[command(about = "Generate shell completion scripts")]
-    Completion {
-        #[arg(help = "Shell type (bash, zsh, fish, powershell, elvish)")]
-        shell: Shell,
-    },
-
-    #[command(about = "Gather branch context (diff, log, files) for skills")]
-    Gitcontext {
-        #[arg(long, default_value = "main", help = "Base branch for comparison")]
-        base: String,
-
-        #[arg(long, default_value = "text", help = "Output format: text or json", value_parser = ["text", "json"])]
-        format: String,
-
-        #[arg(
-            long,
-            default_value_t = 3000,
-            help = "Max total diff lines before truncation"
-        )]
-        max_total: usize,
-
-        #[arg(long, default_value_t = 200, help = "Per-file diff line threshold")]
-        max_file: usize,
-
-        #[arg(long, help = "Output diff --stat instead of full diff")]
-        stat: bool,
-
-        #[arg(long, help = "Include co-change candidates in output")]
-        cochanges: bool,
-    },
-
-    #[command(about = "Check doc references against project filesystem")]
-    CheckRefs {
-        #[arg(help = "Doc file path or stem")]
-        file: String,
-
-        #[arg(
-            long,
-            help = "Project root path (default: git rev-parse --show-toplevel)"
-        )]
-        project_root: Option<String>,
-    },
-
-    #[command(about = "Find files frequently changed together with current changes")]
-    Cochanges {
-        #[arg(
-            long,
-            default_value = "main",
-            help = "Base branch/ref for changed-file detection"
-        )]
-        base: String,
-
-        #[arg(long, default_value_t = 0.3, help = "Min co-change fraction 0.0-1.0")]
-        threshold: f64,
-
-        #[arg(long, default_value_t = 5, help = "Min commits a file must appear in")]
-        min_commits: usize,
-
-        #[arg(
-            long,
-            default_value = "20",
-            help = "Max output files (integer or 'all')"
-        )]
-        max_files: String,
-
-        #[arg(
-            long,
-            default_value_t = 10000,
-            help = "How many recent commits to analyze"
-        )]
-        num_commits: usize,
-    },
-
-    #[command(about = "Report per-module LOC and recent git churn")]
-    Churn {
-        #[arg(
-            long,
-            help = "Project root path (default: git rev-parse --show-toplevel)"
-        )]
-        project_root: Option<String>,
-
-        #[arg(
-            long,
-            default_value = "2w",
-            help = "Git log time window (e.g. 2w, 30d, 3m)"
-        )]
-        since: String,
-
-        #[arg(long, default_value_t = 0, help = "Minimum LOC to include in output")]
-        min_loc: usize,
-    },
-
-    #[command(about = "Apply a patch (envelope format) to files under cwd")]
-    ApplyPatch {
-        #[arg(long, help = "Working directory (default: process cwd)")]
-        cwd: Option<String>,
-
-        #[arg(long, help = "Preview changes without writing to disk")]
-        dry_run: bool,
-    },
+    #[arg(long, help = "Preview raw apply without writing to disk")]
+    pub dry_run: bool,
 }
 
 #[derive(Subcommand)]
-pub enum ApplyPatchCmd {
+pub enum ApplyPatchAction {
     #[command(about = "Show apply_patch telemetry summary")]
     Stats {
         #[arg(long, help = "Walk all project databases")]
@@ -170,27 +64,446 @@ pub enum ApplyPatchCmd {
         #[arg(long, default_value_t = 90, help = "Retention window in days")]
         days: i64,
     },
+
+    #[command(about = "Manage retained apply_patch drafts")]
+    Draft {
+        #[command(subcommand)]
+        action: ApplyPatchDraftAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ApplyPatchDraftAction {
+    #[command(about = "Create an apply_patch draft from stdin")]
+    Create {
+        #[arg(long, help = "Working directory")]
+        cwd: Option<String>,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+    },
+    #[command(about = "Show apply_patch draft status")]
+    Status {
+        patch_id: String,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+    },
+    #[command(about = "Show an apply_patch draft or chunk")]
+    Show {
+        patch_id: String,
+        #[arg(long, help = "Chunk index")]
+        chunk: Option<usize>,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+    },
+    #[command(about = "Amend an apply_patch draft chunk")]
+    Amend {
+        patch_id: String,
+        #[arg(long, help = "Chunk index")]
+        chunk: usize,
+        #[arg(long, help = "Replacement anchor")]
+        anchor: Option<String>,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+    },
+    #[command(about = "Apply an apply_patch draft atomically")]
+    Apply {
+        patch_id: String,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+    },
+    #[command(about = "Discard an apply_patch draft")]
+    Discard {
+        patch_id: String,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum RepoAction {
+    #[command(about = "Print detected project identity")]
+    Project,
+
+    #[command(about = "Gather branch context: diff, log, and files")]
+    Context {
+        #[arg(long, default_value = "main", help = "Base branch for comparison")]
+        base: String,
+        #[arg(long, default_value = "text", value_parser = ["text", "json"], help = "Output format")]
+        format: String,
+        #[arg(
+            long,
+            default_value_t = 3000,
+            help = "Max total diff lines before truncation"
+        )]
+        max_total: usize,
+        #[arg(long, default_value_t = 200, help = "Per-file diff line threshold")]
+        max_file: usize,
+        #[arg(long, help = "Output diff --stat instead of full diff")]
+        stat: bool,
+        #[arg(long, help = "Include co-change candidates in output")]
+        cochanges: bool,
+    },
+
+    #[command(about = "Check doc references against project filesystem")]
+    CheckRefs {
+        #[arg(help = "Doc file path or stem")]
+        file: String,
+        #[arg(
+            long,
+            help = "Project root path (default: git rev-parse --show-toplevel)"
+        )]
+        project_root: Option<String>,
+    },
+
+    #[command(about = "Find files frequently changed together with current changes")]
+    Cochanges {
+        #[arg(
+            long,
+            default_value = "main",
+            help = "Base branch/ref for changed-file detection"
+        )]
+        base: String,
+        #[arg(long, default_value_t = 0.3, help = "Min co-change fraction 0.0-1.0")]
+        threshold: f64,
+        #[arg(long, default_value_t = 5, help = "Min commits a file must appear in")]
+        min_commits: usize,
+        #[arg(
+            long,
+            default_value = "20",
+            help = "Max output files (integer or 'all')"
+        )]
+        max_files: String,
+        #[arg(
+            long,
+            default_value_t = 10000,
+            help = "How many recent commits to analyze"
+        )]
+        num_commits: usize,
+    },
+
+    #[command(about = "Report per-module LOC and recent git churn")]
+    Churn {
+        #[arg(
+            long,
+            help = "Project root path (default: git rev-parse --show-toplevel)"
+        )]
+        project_root: Option<String>,
+        #[arg(
+            long,
+            default_value = "2w",
+            help = "Git log time window (e.g. 2w, 30d, 3m)"
+        )]
+        since: String,
+        #[arg(long, default_value_t = 0, help = "Minimum LOC to include in output")]
+        min_loc: usize,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ShellAction {
+    #[command(about = "Generate shell completion scripts")]
+    Completion {
+        #[arg(help = "Shell type (bash, zsh, fish, powershell, elvish)")]
+        shell: Shell,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum TuiAction {
+    #[command(about = "Render subscription usage bars from JSON on stdin")]
+    UsageBar {
+        #[arg(long, default_value_t = 80, help = "Terminal width in cells")]
+        width: usize,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum DevAction {
+    #[command(about = "Generate URL-safe slug from text")]
+    Slug {
+        #[arg(
+            help = "Words to slugify",
+            trailing_var_arg = true,
+            allow_hyphen_values = true
+        )]
+        words: Vec<String>,
+    },
+
+    #[command(about = "Parse phase markers from plan file")]
+    Phases {
+        #[arg(help = "Plan file to parse (or stdin if omitted)")]
+        file: Option<String>,
+    },
+
+    #[command(about = "Raw backend/debug helpers")]
+    Debug {
+        #[command(subcommand)]
+        action: DevDebugAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum DevDebugAction {
+    #[command(about = "Raw symbol backend CLI")]
+    Sym(sym::cli::SymArgs),
+
+    #[command(about = "Raw AST backend CLI")]
+    Ast {
+        #[command(subcommand)]
+        action: AstAction,
+    },
+
+    #[command(about = "Raw LSP backend CLI")]
+    Lsp {
+        #[command(subcommand)]
+        action: LspAction,
+    },
 }
 
 #[derive(Subcommand)]
 pub enum McpAction {
+    #[command(about = "Serve the source MCP over stdio")]
+    Source,
+
     #[command(about = "Serve the vault MCP over stdio")]
     Vault,
 
-    #[command(about = "Serve the apply_patch MCP over stdio")]
+    #[command(hide = true, about = "Serve the apply_patch MCP over stdio")]
     ApplyPatch,
 
-    #[command(about = "Serve the sym MCP over stdio")]
+    #[command(hide = true, about = "Serve the sym MCP over stdio")]
     Sym,
 
-    #[command(about = "Serve the ast MCP over stdio")]
+    #[command(hide = true, about = "Serve the ast MCP over stdio")]
     Ast,
 
     #[command(about = "Serve the lens MCP over stdio")]
     Lens,
 
-    #[command(about = "Serve the lsp MCP over stdio")]
+    #[command(hide = true, about = "Serve the lsp MCP over stdio")]
     Lsp,
+}
+
+#[derive(Subcommand)]
+pub enum SourceAction {
+    #[command(about = "Search source by symbol, text, path, or structural pattern")]
+    Search {
+        #[arg(help = "Search query; structural mode may use --pattern instead")]
+        query: Vec<String>,
+        #[arg(long, value_enum, default_value_t = SourceSearchMode::Symbol)]
+        mode: SourceSearchMode,
+        #[arg(short = 'n', long, default_value_t = 20, help = "Maximum results")]
+        limit: usize,
+        #[arg(short = 'k', long, help = "Symbol kind filter for symbol mode")]
+        kind: Option<String>,
+        #[arg(
+            short = 'l',
+            long,
+            help = "Language filter; required for structural mode"
+        )]
+        lang: Option<String>,
+        #[arg(short = 'e', long, help = "Require exact matching where supported")]
+        exact: bool,
+        #[arg(
+            short = 'i',
+            long = "ignore-case",
+            help = "Case-insensitive symbol matching"
+        )]
+        ignore_case: bool,
+        #[arg(long = "path", help = "Include path/glob filters")]
+        paths: Vec<String>,
+        #[arg(long = "exclude", help = "Exclude path/glob filters")]
+        excludes: Vec<String>,
+        #[arg(long, help = "Structural AST pattern; defaults to query text")]
+        pattern: Option<String>,
+        #[arg(long, help = "ast-grep selector for structural mode")]
+        selector: Option<String>,
+        #[arg(long, help = "Context lines for structural matches")]
+        context: Option<usize>,
+        #[arg(long, help = "Include ignored files where the backend supports it")]
+        include_ignored: bool,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+        #[arg(long, help = "Override sym database path for symbol mode")]
+        db: Option<String>,
+    },
+
+    #[command(about = "Show source by symbol, path, or file:line-line range")]
+    Show {
+        #[arg(help = "Symbols, file paths, or file:line-line ranges to show")]
+        targets: Vec<String>,
+        #[arg(
+            short = 'C',
+            long,
+            default_value_t = 0,
+            help = "Context lines around ranges or definitions"
+        )]
+        context: usize,
+        #[arg(
+            long,
+            help = "Return every definition when a symbol target is ambiguous"
+        )]
+        all: bool,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+        #[arg(long, help = "Override sym database path for symbol resolution")]
+        db: Option<String>,
+    },
+
+    #[command(about = "Outline symbols defined in a file")]
+    Outline {
+        #[arg(help = "File to outline")]
+        file: PathBuf,
+        #[arg(short = 's', long, help = "Include signatures in text renderers")]
+        signatures: bool,
+        #[arg(long, help = "Return only unique symbol names")]
+        names: bool,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+        #[arg(long, help = "Override sym database path for symbol resolution")]
+        db: Option<String>,
+    },
+
+    #[command(about = "Find references to symbols")]
+    Refs {
+        #[arg(help = "Symbols to find references for")]
+        targets: Vec<String>,
+        #[arg(long, help = "Also include files importing the defining file")]
+        importers: bool,
+        #[arg(long, help = "Route to transitive impact analysis")]
+        impact: bool,
+        #[arg(
+            short = 'D',
+            long = "depth",
+            default_value_t = 1,
+            help = "Reference/importer depth"
+        )]
+        depth: usize,
+        #[arg(short = 'n', long, default_value_t = 20, help = "Maximum results")]
+        limit: usize,
+        #[arg(
+            short = 'C',
+            long = "context",
+            default_value_t = 1,
+            help = "Context lines around references"
+        )]
+        context: usize,
+        #[arg(long = "path", help = "Include path/glob filters")]
+        paths: Vec<String>,
+        #[arg(long = "exclude", help = "Exclude path/glob filters")]
+        excludes: Vec<String>,
+        #[arg(long, help = "Limit references to paths containing this fragment")]
+        file: Option<String>,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+        #[arg(long, help = "Override sym database path for symbol resolution")]
+        db: Option<String>,
+    },
+
+    #[command(about = "Find transitive callers/dependents of symbols")]
+    Impact {
+        #[arg(help = "Symbols to analyze")]
+        targets: Vec<String>,
+        #[arg(
+            short = 'D',
+            long = "depth",
+            default_value_t = 2,
+            help = "Traversal depth"
+        )]
+        depth: usize,
+        #[arg(short = 'n', long, default_value_t = 50, help = "Maximum results")]
+        limit: usize,
+        #[arg(
+            short = 'C',
+            long = "context",
+            default_value_t = 1,
+            help = "Context lines around hits"
+        )]
+        context: usize,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+        #[arg(long, help = "Override sym database path for symbol resolution")]
+        db: Option<String>,
+    },
+
+    #[command(about = "Follow the call graph downward from symbols")]
+    Trace {
+        #[arg(help = "Symbols to trace")]
+        targets: Vec<String>,
+        #[arg(long, default_value_t = 3, help = "Traversal depth")]
+        depth: usize,
+        #[arg(short = 'n', long, default_value_t = 50, help = "Maximum results")]
+        limit: usize,
+        #[arg(
+            long,
+            default_value = "call",
+            help = "Trace edge kinds, e.g. call or call,use"
+        )]
+        kinds: String,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+        #[arg(long, help = "Override sym database path for symbol resolution")]
+        db: Option<String>,
+    },
+
+    #[command(about = "Find types that implement a symbol or what a type implements")]
+    Impls {
+        #[arg(help = "Symbols to find implementations/conformances for")]
+        targets: Vec<String>,
+        #[arg(short = 'l', long, help = "Language filter")]
+        lang: Option<String>,
+        #[arg(short = 'n', long, default_value_t = 50, help = "Maximum results")]
+        limit: usize,
+        #[arg(long = "path", help = "Include path/glob filters")]
+        paths: Vec<String>,
+        #[arg(long = "exclude", help = "Exclude path/glob filters")]
+        excludes: Vec<String>,
+        #[arg(
+            long = "of",
+            help = "Find protocols/interfaces implemented by this symbol"
+        )]
+        of: Option<String>,
+        #[arg(long, help = "Only include resolved implementation targets")]
+        resolved: bool,
+        #[arg(long, help = "Only include unresolved implementation targets")]
+        unresolved: bool,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+        #[arg(long, help = "Override sym database path for symbol resolution")]
+        db: Option<String>,
+    },
+
+    #[command(about = "Kind-adaptive investigation for symbols")]
+    Investigate {
+        #[arg(help = "Symbols to investigate")]
+        targets: Vec<String>,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+        #[arg(long, help = "Override sym database path for symbol resolution")]
+        db: Option<String>,
+    },
+
+    #[command(about = "Show git diff scoped to a symbol's definition")]
+    Diff {
+        #[arg(help = "Symbol whose definition-scoped diff should be shown")]
+        target: String,
+        #[arg(default_value = "HEAD", help = "Base ref")]
+        base: String,
+        #[arg(long, help = "Return diffstat instead of full diff")]
+        stat: bool,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+        #[arg(long, help = "Override sym database path for symbol resolution")]
+        db: Option<String>,
+    },
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub enum SourceSearchMode {
+    Symbol,
+    Text,
+    Path,
+    Structural,
 }
 
 #[derive(Subcommand)]
@@ -263,43 +576,6 @@ pub enum LspAction {
 
 #[derive(Subcommand)]
 pub enum LensAction {
-    #[command(about = "Discover code through the routed Lens facade")]
-    Discover {
-        #[arg(long, help = "Working directory")]
-        cwd: Option<String>,
-        #[arg(long, help = "Output JSON")]
-        json: bool,
-        #[arg(
-            long,
-            help = "Discovery intent: symbol, text, path, source-context, ast, or lsp"
-        )]
-        intent: String,
-        #[arg(long, help = "Symbol, text, AST, or LSP workspace query")]
-        query: Option<String>,
-        #[arg(long, help = "Optional file/path filter")]
-        path: Option<String>,
-        #[arg(long, help = "1-based source line")]
-        line: Option<usize>,
-        #[arg(long, help = "1-based ending source line")]
-        end_line: Option<usize>,
-        #[arg(long, help = "1-based source character for LSP requests")]
-        character: Option<usize>,
-        #[arg(long, help = "Language hint")]
-        lang: Option<String>,
-        #[arg(long, default_value_t = 10, help = "Maximum normalized results")]
-        limit: usize,
-        #[arg(long, default_value_t = 2, help = "Context lines when source is shown")]
-        context: usize,
-        #[arg(long, help = "Session id for read coverage")]
-        session: Option<String>,
-        #[arg(long, help = "LSP operation, e.g. hover or definition")]
-        lsp_operation: Option<String>,
-        #[arg(long, help = "Include resolver/debug fields in JSON")]
-        debug: bool,
-        #[arg(long, help = "Include raw backend fields in JSON")]
-        raw: bool,
-    },
-
     #[command(about = "Show lens state status")]
     Status {
         #[arg(long, help = "Working directory")]
@@ -312,8 +588,6 @@ pub enum LensAction {
         debug: bool,
         #[arg(long, help = "Include raw backend fields in JSON")]
         raw: bool,
-        #[arg(long, value_enum, help = "Runtime guard policy override")]
-        guard_mode: Option<GuardAction>,
     },
 
     #[command(about = "Inspect lens diagnostics")]
@@ -328,22 +602,16 @@ pub enum LensAction {
         action: LensChecksAction,
     },
 
-    #[command(about = "Record read coverage")]
-    Read {
-        #[command(subcommand)]
-        action: LensReadAction,
-    },
-
-    #[command(about = "Check edit guard decisions")]
-    Guard {
-        #[command(subcommand)]
-        action: LensGuardAction,
-    },
-
-    #[command(about = "Record and inspect turn-scoped touched files")]
-    Turn {
-        #[command(subcommand)]
-        action: LensTurnAction,
+    #[command(about = "List files touched during a turn")]
+    Touched {
+        #[arg(long, help = "Working directory")]
+        cwd: Option<String>,
+        #[arg(long, help = "Session id")]
+        session: String,
+        #[arg(long, help = "Turn id")]
+        turn: String,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
     },
 
     #[command(about = "Run safe turn-scoped cleanup")]
@@ -392,6 +660,12 @@ pub enum LensAction {
         path: Option<String>,
         #[arg(long, help = "Output JSON")]
         json: bool,
+    },
+
+    #[command(about = "List or show retained sanitized raw output")]
+    RawOutput {
+        #[command(subcommand)]
+        action: LensRawOutputAction,
     },
 
     #[command(about = "Prune lens state")]
@@ -481,54 +755,6 @@ pub enum LensDiagnosticsAction {
 }
 
 #[derive(Subcommand)]
-pub enum LensReadAction {
-    #[command(about = "Record a read range")]
-    Record {
-        #[arg(long, help = "Working directory")]
-        cwd: Option<String>,
-        #[arg(long, help = "Output JSON")]
-        json: bool,
-        #[arg(long, help = "Path read")]
-        path: String,
-        #[arg(long, help = "Start line")]
-        start_line: i64,
-        #[arg(long, help = "End line")]
-        end_line: i64,
-        #[arg(long, help = "Session id")]
-        session: Option<String>,
-    },
-}
-
-#[derive(Clone, Copy, Debug, ValueEnum)]
-pub enum GuardAction {
-    Off,
-    Warn,
-    Block,
-}
-
-#[derive(Subcommand)]
-pub enum LensTurnAction {
-    #[command(about = "Record one normalized Lens turn event from stdin")]
-    Record {
-        #[arg(long, help = "Working directory used when event.cwd is empty")]
-        cwd: Option<String>,
-        #[arg(long, help = "Output JSON")]
-        json: bool,
-    },
-    #[command(about = "List files touched during a turn")]
-    Touched {
-        #[arg(long, help = "Working directory")]
-        cwd: Option<String>,
-        #[arg(long, help = "Session id")]
-        session: String,
-        #[arg(long, help = "Turn id")]
-        turn: String,
-        #[arg(long, help = "Output JSON")]
-        json: bool,
-    },
-}
-
-#[derive(Subcommand)]
 pub enum LensCleanupAction {
     #[command(about = "Run cleanup for files touched during a turn")]
     Run {
@@ -546,91 +772,22 @@ pub enum LensCleanupAction {
 }
 
 #[derive(Subcommand)]
-pub enum LensGuardAction {
-    #[command(about = "Check whether an edit range is covered")]
-    Check {
+pub enum LensRawOutputAction {
+    #[command(about = "List retained sanitized raw outputs")]
+    List {
         #[arg(long, help = "Working directory")]
         cwd: Option<String>,
-        #[arg(long, help = "Output JSON")]
-        json: bool,
-        #[arg(long, help = "Path to edit")]
-        path: String,
-        #[arg(long, help = "Start line")]
-        start_line: i64,
-        #[arg(long, help = "End line")]
-        end_line: i64,
-        #[arg(long, help = "Session id")]
-        session: Option<String>,
-        #[arg(
-            long,
-            value_enum,
-            help = "Runtime guard policy override; weakening a policy requires allow_overrides"
-        )]
-        mode: Option<GuardAction>,
-    },
-
-    #[command(about = "Allow one edit despite guard findings")]
-    AllowOnce {
-        #[arg(long, help = "Output JSON")]
-        json: bool,
-        #[arg(long, help = "Path to allow")]
-        path: String,
-        #[arg(long, help = "Session id")]
-        session: Option<String>,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum PatchAction {
-    #[command(about = "Manage durable patch drafts")]
-    Draft {
-        #[command(subcommand)]
-        action: PatchDraftAction,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum PatchDraftAction {
-    #[command(about = "Create a patch draft from stdin")]
-    Create {
-        #[arg(long, help = "Working directory")]
-        cwd: Option<String>,
+        #[arg(long, default_value_t = 20, help = "Maximum outputs to list")]
+        limit: usize,
         #[arg(long, help = "Output JSON")]
         json: bool,
     },
-    #[command(about = "Show patch draft status")]
-    Status {
-        patch_id: String,
-        #[arg(long, help = "Output JSON")]
-        json: bool,
-    },
-    #[command(about = "Show a patch draft or chunk")]
+    #[command(about = "Show a retained sanitized raw output body")]
     Show {
-        patch_id: String,
-        #[arg(long, help = "Chunk index")]
-        chunk: Option<usize>,
-        #[arg(long, help = "Output JSON")]
-        json: bool,
-    },
-    #[command(about = "Amend a patch draft chunk")]
-    Amend {
-        patch_id: String,
-        #[arg(long, help = "Chunk index")]
-        chunk: usize,
-        #[arg(long, help = "Replacement anchor")]
-        anchor: Option<String>,
-        #[arg(long, help = "Output JSON")]
-        json: bool,
-    },
-    #[command(about = "Apply a patch draft atomically")]
-    Apply {
-        patch_id: String,
-        #[arg(long, help = "Output JSON")]
-        json: bool,
-    },
-    #[command(about = "Discard a patch draft")]
-    Discard {
-        patch_id: String,
+        #[arg(help = "Raw output id")]
+        id: i64,
+        #[arg(long, help = "Working directory")]
+        cwd: Option<String>,
         #[arg(long, help = "Output JSON")]
         json: bool,
     },

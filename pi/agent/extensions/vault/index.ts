@@ -22,8 +22,6 @@ const scopedVaultKindSchema = Type.Union([
 	Type.Literal("doc"),
 ]);
 
-const ctProjectSchema = Type.Object({});
-
 const ctVaultCreateSchema = Type.Object({
 	kind: scopedVaultKindSchema,
 	topic: Type.String({ description: "Artifact topic" }),
@@ -269,7 +267,6 @@ function toolResult(
 }
 
 function vaultIcon(operation: string): string {
-	if (operation === "project") return "󰏗";
 	if (operation === "status") return "";
 	if (operation === "create") return "";
 	if (operation === "read") return nf.read;
@@ -281,7 +278,7 @@ function vaultIcon(operation: string): string {
 }
 
 function renderVaultCall(operation: string, detail: string | undefined, theme: any, ctx: any) {
-	return renderText(ctx, title(theme, vaultIcon(operation), operation === "project" ? "project" : `vault ${operation}`, detail ?? ""));
+	return renderText(ctx, title(theme, vaultIcon(operation), `vault ${operation}`, detail ?? ""));
 }
 
 function renderVaultResult(operation: string, result: any, theme: any, ctx: any) {
@@ -320,22 +317,6 @@ function parseJson(raw: string): unknown {
 
 export default function vaultExtension(pi: ExtensionAPI) {
 	const registerTool = pi.registerTool.bind(pi) as any;
-
-	registerTool({
-		name: "project",
-		label: "project",
-		description: "Print the detected project name for the current cwd.",
-		promptSnippet: "Print the detected project name for the current cwd.",
-		parameters: ctProjectSchema,
-		executionMode: "parallel",
-		async execute(_toolCallId, _params, signal, _onUpdate, ctx) {
-			const command = "ct project";
-			const result = await runCt(["project"], ctx.cwd, signal);
-			return toolResult(command, ctx.cwd, result);
-		},
-		renderCall: (_args, theme, ctx) => renderVaultCall("project", undefined, theme, ctx),
-		renderResult: (result, _options, theme, ctx) => renderVaultResult("project", result, theme, ctx),
-	});
 
 	registerTool({
 		name: "vault_create",

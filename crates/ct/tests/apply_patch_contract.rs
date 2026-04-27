@@ -1,7 +1,7 @@
-//! End-to-end contract tests for `ct tool apply-patch`.
+//! End-to-end contract tests for `ct apply-patch`.
 //!
 //! Each test provisions a throwaway sandbox via `tempfile::TempDir`, shells
-//! `ct tool apply-patch --cwd <sandbox>` with a patch on stdin, and asserts
+//! `ct apply-patch --cwd <sandbox>` with a patch on stdin, and asserts
 //! exit code, stdout, stderr, and the final filesystem state.
 
 use assert_cmd::Command;
@@ -32,8 +32,7 @@ fn add_creates_file() {
 *** End Patch
 ";
 
-    ct().arg("tool")
-        .arg("apply-patch")
+    ct().arg("apply-patch")
         .arg("--cwd")
         .arg(sandbox.path())
         .write_stdin(patch)
@@ -65,8 +64,7 @@ fn update_applies_hunk() {
 *** End Patch
 ";
 
-    ct().arg("tool")
-        .arg("apply-patch")
+    ct().arg("apply-patch")
         .arg("--cwd")
         .arg(sandbox.path())
         .write_stdin(patch)
@@ -89,8 +87,7 @@ fn delete_removes_file() {
 *** End Patch
 ";
 
-    ct().arg("tool")
-        .arg("apply-patch")
+    ct().arg("apply-patch")
         .arg("--cwd")
         .arg(sandbox.path())
         .write_stdin(patch)
@@ -118,8 +115,7 @@ fn move_renames_file() {
 *** End Patch
 ";
 
-    ct().arg("tool")
-        .arg("apply-patch")
+    ct().arg("apply-patch")
         .arg("--cwd")
         .arg(sandbox.path())
         .write_stdin(patch)
@@ -146,8 +142,7 @@ fn dry_run_writes_nothing() {
 *** End Patch
 ";
 
-    ct().arg("tool")
-        .arg("apply-patch")
+    ct().arg("apply-patch")
         .arg("--cwd")
         .arg(sandbox.path())
         .arg("--dry-run")
@@ -178,8 +173,7 @@ fn add_existing_file_rejected() {
 *** End Patch
 ";
 
-    ct().arg("tool")
-        .arg("apply-patch")
+    ct().arg("apply-patch")
         .arg("--cwd")
         .arg(sandbox.path())
         .write_stdin(patch)
@@ -213,8 +207,7 @@ fn duplicate_update_rejected() {
 *** End Patch
 ";
 
-    ct().arg("tool")
-        .arg("apply-patch")
+    ct().arg("apply-patch")
         .arg("--cwd")
         .arg(sandbox.path())
         .write_stdin(patch)
@@ -244,8 +237,7 @@ fn move_to_existing_rejected() {
 *** End Patch
 ";
 
-    ct().arg("tool")
-        .arg("apply-patch")
+    ct().arg("apply-patch")
         .arg("--cwd")
         .arg(sandbox.path())
         .write_stdin(patch)
@@ -274,7 +266,6 @@ fn malformed_envelope_rejected() {
 ";
 
     let result = ct()
-        .arg("tool")
         .arg("apply-patch")
         .arg("--cwd")
         .arg(sandbox.path())
@@ -303,8 +294,7 @@ fn absolute_path_add_creates_file() {
         abs.display()
     );
 
-    ct().arg("tool")
-        .arg("apply-patch")
+    ct().arg("apply-patch")
         .arg("--cwd")
         .arg(sandbox.path())
         .write_stdin(patch)
@@ -327,8 +317,7 @@ fn delete_then_add_replaces_file_in_one_envelope() {
 *** End Patch
 ";
 
-    ct().arg("tool")
-        .arg("apply-patch")
+    ct().arg("apply-patch")
         .arg("--cwd")
         .arg(sandbox.path())
         .write_stdin(patch)
@@ -356,8 +345,7 @@ fn ambiguous_context_rejected() {
 *** End Patch
 ";
 
-    ct().arg("tool")
-        .arg("apply-patch")
+    ct().arg("apply-patch")
         .arg("--cwd")
         .arg(sandbox.path())
         .write_stdin(patch)
@@ -381,8 +369,7 @@ fn pure_rename_without_hunks_moves_file() {
 *** End Patch
 ";
 
-    ct().arg("tool")
-        .arg("apply-patch")
+    ct().arg("apply-patch")
         .arg("--cwd")
         .arg(sandbox.path())
         .write_stdin(patch)
@@ -418,7 +405,6 @@ fn context_mismatch_reports_near_miss_snippet() {
 ";
 
     let result = ct()
-        .arg("tool")
         .arg("apply-patch")
         .arg("--cwd")
         .arg(sandbox.path())
@@ -455,8 +441,7 @@ fn anchor_shadow_rejected_with_specific_error() {
 *** End Patch
 ";
 
-    ct().arg("tool")
-        .arg("apply-patch")
+    ct().arg("apply-patch")
         .arg("--cwd")
         .arg(sandbox.path())
         .write_stdin(patch)
@@ -466,4 +451,52 @@ fn anchor_shadow_rejected_with_specific_error() {
             predicate::str::contains("also appears as the first context line")
                 .and(predicate::str::contains("anchor is consumed")),
         );
+}
+
+#[test]
+fn draft_lifecycle_lives_under_apply_patch_and_patch_namespace_is_removed() {
+    let sandbox = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let patch = "\
+*** Begin Patch
+*** Add File: draft.txt
++drafted
+*** End Patch
+";
+
+    let create = ct()
+        .arg("apply-patch")
+        .arg("draft")
+        .arg("create")
+        .arg("--json")
+        .arg("--cwd")
+        .arg(sandbox.path())
+        .env("XDG_STATE_HOME", state.path())
+        .write_stdin(patch)
+        .assert()
+        .success();
+    let stdout = String::from_utf8(create.get_output().stdout.clone()).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let patch_id = value["patch_id"].as_str().unwrap();
+    assert_eq!(value["status"], "applicable");
+
+    ct().arg("apply-patch")
+        .arg("draft")
+        .arg("status")
+        .arg(patch_id)
+        .arg("--json")
+        .current_dir(sandbox.path())
+        .env("XDG_STATE_HOME", state.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("applicable"));
+
+    ct().arg("patch")
+        .arg("draft")
+        .arg("status")
+        .arg(patch_id)
+        .current_dir(sandbox.path())
+        .env("XDG_STATE_HOME", state.path())
+        .assert()
+        .failure();
 }

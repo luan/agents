@@ -17,7 +17,7 @@ Shared configuration is the default. Tool-specific folders (`claude/`, `codex/`,
 | `skills/` | Available as `~/.agents/skills`; also linked to `~/.claude/skills` |
 | `hooks/` | Python hook integrations (tool-specific formats) |
 | `plugins/` | Shared plugin sources; tool folders link here |
-| `crates/ct/` | `ct` Rust CLI — vault, sym, hooks, MCP, apply-patch |
+| `crates/ct/` | `ct` Rust CLI — source, lens, vault, repo, hooks, MCP, apply-patch |
 | `crates/sym/` | Tree-sitter symbol indexer (library + `sym` binary) |
 | `crates/xtask/` | Task automation invoked via `cargo xtask <cmd>` |
 | `docs/` | Permanent reference docs (architecture, exceptions) |
@@ -26,14 +26,16 @@ Shared configuration is the default. Tool-specific folders (`claude/`, `codex/`,
 
 `ct` is the primary tool installed from `crates/ct/`. It provides:
 
+- `ct source` — read-only source search, navigation, graph, and scoped diff
+- `ct lens` — edit-safety state, diagnostics, cleanup, and turn health
 - `ct vault` — blueprint artifact management (create, read, list, archive, commit)
-- `ct sym` — code indexing and symbol discovery
-- `ct hook` — run harness hooks
-- `ct mcp vault` — MCP server for vault operations
-- `ct mcp apply-patch` — MCP server for deferred file patching
-- `ct mcp sym` — MCP server for agent-native code navigation
-- `ct notify` — notification hooks
-- `ct tool` — utilities (completions, etc.)
+- `ct repo` — repository identity, branch context, references, cochanges, and churn
+- `ct apply-patch` — raw patch apply plus apply_patch telemetry and drafts
+- `ct mcp source`, `ct mcp lens`, `ct mcp vault` — default MCP servers
+- `ct hook` — run harness hooks, including notifications and Lens lifecycle hooks
+- `ct shell completion` — shell completions
+- `ct tui usage-bar` — terminal UI helpers
+- `ct dev` — developer/internal helpers; raw backends live under `ct dev debug`
 
 ## Setup
 

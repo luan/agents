@@ -1,10 +1,10 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 
-import { type CtResult, formatCommand, runCommand } from "../shared/ct-runner.ts";
+import { formatCommand, runCommand } from "../shared/ct-runner.ts";
 import { chip, color, compactLocations, okLine, renderText, title, warnLine } from "../shared/ct-render.ts";
 
-type SymDetails = {
+type SourceDetails = {
 	operation: string;
 	command: string;
 	cwd: string;
@@ -15,46 +15,50 @@ type SymDetails = {
 };
 
 const commonOptions = {
-	db: Type.Optional(Type.String({ description: "Override sym database path" })),
+	db: Type.Optional(Type.String({ description: "Override source database path" })),
 };
 
 const targetList = Type.Array(Type.String({ description: "Symbol, file, or range target" }), {
 	description: "Symbols, file paths, or ranges to analyze",
 });
 
-const ctSymSearchSchema = Type.Object({
-	query: Type.String({ description: "Symbol or text query" }),
-	text: Type.Optional(Type.Boolean({ description: "Search full text instead of indexed symbols" })),
+const sourceSearchSchema = Type.Object({
+	query: Type.Optional(Type.String({ description: "Search query; structural mode may use pattern instead" })),
+	mode: Type.Optional(Type.Union([Type.Literal("symbol"), Type.Literal("text"), Type.Literal("path"), Type.Literal("structural")], { description: "Search mode" })),
+	pattern: Type.Optional(Type.String({ description: "Structural AST pattern; defaults to query" })),
 	limit: Type.Optional(Type.Number({ description: "Maximum results to return" })),
 	kind: Type.Optional(Type.String({ description: "Symbol kind filter" })),
-	lang: Type.Optional(Type.String({ description: "Language filter" })),
-	exact: Type.Optional(Type.Boolean({ description: "Require exact matching" })),
-	ignoreCase: Type.Optional(Type.Boolean({ description: "Case-insensitive matching" })),
+	lang: Type.Optional(Type.String({ description: "Language filter; required for structural mode" })),
+	exact: Type.Optional(Type.Boolean({ description: "Require exact matching where supported" })),
+	ignoreCase: Type.Optional(Type.Boolean({ description: "Case-insensitive matching where supported" })),
 	paths: Type.Optional(Type.Array(Type.String({ description: "Include globs" }))),
 	excludes: Type.Optional(Type.Array(Type.String({ description: "Exclude globs" }))),
+	selector: Type.Optional(Type.String({ description: "ast-grep selector for structural mode" })),
+	context: Type.Optional(Type.Number({ description: "Context lines for structural matches" })),
+	includeIgnored: Type.Optional(Type.Boolean({ description: "Include ignored files where supported" })),
 	...commonOptions,
 });
 
-const ctSymTargetsSchema = Type.Object({
+const sourceTargetsSchema = Type.Object({
 	targets: targetList,
 	...commonOptions,
 });
 
-const ctSymShowSchema = Type.Object({
+const sourceShowSchema = Type.Object({
 	targets: targetList,
 	context: Type.Optional(Type.Number({ description: "Context lines around definitions" })),
 	all: Type.Optional(Type.Boolean({ description: "Return every definition for ambiguous targets" })),
 	...commonOptions,
 });
 
-const ctSymOutlineSchema = Type.Object({
+const sourceOutlineSchema = Type.Object({
 	file: Type.String({ description: "File to outline" }),
 	signatures: Type.Optional(Type.Boolean({ description: "Include signatures" })),
 	names: Type.Optional(Type.Boolean({ description: "Only return names" })),
 	...commonOptions,
 });
 
-const ctSymRefsSchema = Type.Object({
+const sourceRefsSchema = Type.Object({
 	targets: targetList,
 	importers: Type.Optional(Type.Boolean({ description: "Also include importers" })),
 	impact: Type.Optional(Type.Boolean({ description: "Include shallow impact" })),
@@ -67,7 +71,7 @@ const ctSymRefsSchema = Type.Object({
 	...commonOptions,
 });
 
-const ctSymGraphSchema = Type.Object({
+const sourceGraphSchema = Type.Object({
 	targets: targetList,
 	depth: Type.Optional(Type.Number({ description: "Traversal depth" })),
 	limit: Type.Optional(Type.Number({ description: "Maximum results" })),
@@ -76,7 +80,7 @@ const ctSymGraphSchema = Type.Object({
 	...commonOptions,
 });
 
-const ctSymImplsSchema = Type.Object({
+const sourceImplsSchema = Type.Object({
 	targets: targetList,
 	lang: Type.Optional(Type.String({ description: "Language filter" })),
 	limit: Type.Optional(Type.Number({ description: "Maximum results" })),
@@ -88,18 +92,7 @@ const ctSymImplsSchema = Type.Object({
 	...commonOptions,
 });
 
-const ctSymContextSchema = Type.Object({
-	targets: targetList,
-	callers: Type.Optional(Type.Number({ description: "Maximum callers per symbol" })),
-	...commonOptions,
-});
-
-const ctSymStructureSchema = Type.Object({
-	limit: Type.Optional(Type.Number({ description: "Maximum entries per section" })),
-	...commonOptions,
-});
-
-const ctSymDiffSchema = Type.Object({
+const sourceDiffSchema = Type.Object({
 	target: Type.String({ description: "Symbol whose definition-scoped diff should be shown" }),
 	base: Type.Optional(Type.String({ description: "Base ref" })),
 	stat: Type.Optional(Type.Boolean({ description: "Return diffstat instead of full diff" })),
@@ -119,18 +112,12 @@ function pushMany(args: string[], flag: string, values: unknown) {
 	for (const value of values) args.push(flag, String(value));
 }
 
-function parseSymResults(stdout: string): unknown {
-	const parsed = JSON.parse(stdout);
-	if (parsed && typeof parsed === "object" && "results" in parsed) return parsed.results;
-	return parsed;
-}
-
-async function runSym(operation: string, args: string[], cwd: string, signal?: AbortSignal, db?: string) {
-	const fullArgs = ["sym", "--json"];
+async function runSource(operation: string, subcommand: string, args: string[], cwd: string, signal?: AbortSignal, db?: string) {
+	const fullArgs = ["source", subcommand, "--json"];
 	if (db) fullArgs.push("--db", db);
 	fullArgs.push(...args);
 	const result = await runCommand("ct", fullArgs, cwd, signal);
-	const results = parseSymResults(result.stdout);
+	const results = JSON.parse(result.stdout);
 	const command = formatCommand("ct", fullArgs);
 	return {
 		content: [{ type: "text" as const, text: JSON.stringify(results, null, 2) }],
@@ -142,7 +129,7 @@ async function runSym(operation: string, args: string[], cwd: string, signal?: A
 			results,
 			stdout: result.stdout,
 			stderr: result.stderr,
-		} satisfies SymDetails,
+		} satisfies SourceDetails,
 	};
 }
 
@@ -165,7 +152,7 @@ function resultCount(results: unknown): number | undefined {
 	return undefined;
 }
 
-function summarize(details: SymDetails | undefined, expanded: boolean, theme: any): string {
+function summarize(details: SourceDetails | undefined, expanded: boolean, theme: any): string {
 	if (!details) return "";
 	const count = resultCount(details.results);
 	const prefix = okLine(theme, [chip(theme, "󰓹", details.operation, count ?? "ok")]);
@@ -197,29 +184,30 @@ function summarize(details: SymDetails | undefined, expanded: boolean, theme: an
 	return lines.join("\n");
 }
 
-function renderCall(operation: string, target: string | undefined, theme: any, ctx: any) {
-	return renderText(ctx, title(theme, "󰓹", `sym ${operation}`, target ? truncate(target) : ""));
+function renderSourceCall(operation: string, target: string | undefined, theme: any, ctx: any) {
+	return renderText(ctx, title(theme, "󰓹", `source ${operation}`, target ? truncate(target) : ""));
 }
 
 function renderResult(result: any, options: { expanded?: boolean; isPartial?: boolean }, theme: any, ctx: any) {
-	if (options.isPartial) return renderText(ctx, warnLine(theme, [chip(theme, "󰓹", "sym", "running…")]));
-	return renderText(ctx, summarize(result.details as SymDetails | undefined, options.expanded === true, theme));
+	if (options.isPartial) return renderText(ctx, warnLine(theme, [chip(theme, "󰓹", "source", "running…")]));
+	return renderText(ctx, summarize(result.details as SourceDetails | undefined, options.expanded === true, theme));
 }
 
-export default function symExtension(pi: ExtensionAPI) {
+export default function sourceExtension(pi: ExtensionAPI) {
 	const registerTool = pi.registerTool.bind(pi) as any;
 
 	registerTool({
-		name: "sym_search",
-		label: "sym search",
-		description: "Search indexed symbols, or full text with text=true.",
-		promptSnippet: "Search indexed symbols with ct sym.",
-		promptGuidelines: ["Use sym_search instead of grep/find when looking for code symbols."],
-		parameters: ctSymSearchSchema,
+		name: "source_search",
+		label: "source search",
+		description: "Search source by symbol, text, path, or structural AST pattern.",
+		promptSnippet: "Use source_search for code search. Modes: symbol, text, path, structural.",
+		promptGuidelines: ["Use source_search instead of grep/find or backend-specific search tools."],
+		parameters: sourceSearchSchema,
 		executionMode: "parallel",
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			const args = ["search"];
-			pushFlag(args, params.text, "--text");
+			const args: string[] = [];
+			pushOpt(args, "--mode", params.mode);
+			pushOpt(args, "--pattern", params.pattern);
 			pushOpt(args, "--limit", params.limit);
 			pushOpt(args, "--kind", params.kind);
 			pushOpt(args, "--lang", params.lang);
@@ -227,74 +215,79 @@ export default function symExtension(pi: ExtensionAPI) {
 			pushFlag(args, params.ignoreCase, "--ignore-case");
 			pushMany(args, "--path", params.paths);
 			pushMany(args, "--exclude", params.excludes);
-			args.push(params.query);
-			return runSym("search", args, ctx.cwd, signal, params.db);
+			pushOpt(args, "--selector", params.selector);
+			pushOpt(args, "--context", params.context);
+			pushFlag(args, params.includeIgnored, "--include-ignored");
+			if (params.query) args.push(params.query);
+			return runSource("source search", "search", args, ctx.cwd, signal, params.db);
 		},
-		renderCall: (args, theme, ctx) => renderCall("search", args.query, theme, ctx),
+		renderCall: (args, theme, ctx) => renderText(ctx, title(theme, "󰓹", "source search", args.query ?? args.pattern ?? args.mode ?? "symbol")),
 		renderResult,
 	});
 
 	registerTool({
-		name: "sym_investigate",
-		label: "sym investigate",
-		description: "Resolve and inspect symbols with kind-adaptive context.",
-		promptSnippet: "Investigate symbols with source, callers, and references.",
-		promptGuidelines: ["Use sym_investigate before reading unfamiliar symbols."],
-		parameters: ctSymTargetsSchema,
+		name: "source_show",
+		label: "source show",
+		description: "Show source by symbol, file path, or file:line-line range.",
+		promptSnippet: "Use source_show to inspect source by symbol, path, or range.",
+		promptGuidelines: ["Use source_show instead of backend-specific source display tools."],
+		parameters: sourceShowSchema,
 		executionMode: "parallel",
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			return runSym("investigate", ["investigate", ...params.targets], ctx.cwd, signal, params.db);
-		},
-		renderCall: (args, theme, ctx) => renderCall("investigate", args.targets?.join(", "), theme, ctx),
-		renderResult,
-	});
-
-	registerTool({
-		name: "sym_show",
-		label: "sym show",
-		description: "Read source by symbol, file path, or file:line-line range.",
-		promptSnippet: "Read source by symbol or file range.",
-		parameters: ctSymShowSchema,
-		executionMode: "parallel",
-		async execute(_id, params, signal, _onUpdate, ctx) {
-			const args = ["show"];
+			const args: string[] = [];
 			pushOpt(args, "--context", params.context);
 			pushFlag(args, params.all, "--all");
 			args.push(...params.targets);
-			return runSym("show", args, ctx.cwd, signal, params.db);
+			return runSource("source show", "show", args, ctx.cwd, signal, params.db);
 		},
-		renderCall: (args, theme, ctx) => renderCall("show", args.targets?.join(", "), theme, ctx),
+		renderCall: (args, theme, ctx) => renderSourceCall("show", args.targets?.join(", ") ?? "", theme, ctx),
 		renderResult,
 	});
 
 	registerTool({
-		name: "sym_outline",
-		label: "sym outline",
-		description: "List symbols defined in a file.",
-		promptSnippet: "Outline symbols in a source file.",
-		promptGuidelines: ["Use sym_outline before opening large or unfamiliar source files."],
-		parameters: ctSymOutlineSchema,
+		name: "source_outline",
+		label: "source outline",
+		description: "List symbols defined in a source file.",
+		promptSnippet: "Use source_outline before opening large or unfamiliar source files.",
+		promptGuidelines: ["Use source_outline instead of backend-specific outline tools."],
+		parameters: sourceOutlineSchema,
 		executionMode: "parallel",
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			const args = ["outline"];
+			const args: string[] = [];
 			pushFlag(args, params.signatures, "--signatures");
 			pushFlag(args, params.names, "--names");
 			args.push(params.file);
-			return runSym("outline", args, ctx.cwd, signal, params.db);
+			return runSource("source outline", "outline", args, ctx.cwd, signal, params.db);
 		},
-		renderCall: (args, theme, ctx) => renderCall("outline", args.file, theme, ctx),
+		renderCall: (args, theme, ctx) => renderSourceCall("outline", args.file, theme, ctx),
 		renderResult,
 	});
 
 	registerTool({
-		name: "sym_refs",
-		label: "sym refs",
-		description: "Find direct references to symbols.",
-		promptSnippet: "Find direct references to symbols.",
-		parameters: ctSymRefsSchema,
+		name: "source_investigate",
+		label: "source investigate",
+		description: "Resolve and inspect symbols with kind-adaptive context.",
+		promptSnippet: "Use source_investigate before reading unfamiliar symbols.",
+		promptGuidelines: ["Use source_investigate instead of backend-specific investigation tools."],
+		parameters: sourceTargetsSchema,
 		executionMode: "parallel",
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			const args = ["refs"];
+			return runSource("source investigate", "investigate", [...params.targets], ctx.cwd, signal, params.db);
+		},
+		renderCall: (args, theme, ctx) => renderSourceCall("investigate", args.targets?.join(", "), theme, ctx),
+		renderResult,
+	});
+
+	registerTool({
+		name: "source_refs",
+		label: "source refs",
+		description: "Find direct references to symbols.",
+		promptSnippet: "Use source_refs to find direct references to symbols.",
+		promptGuidelines: ["Use source_refs instead of backend-specific reference tools."],
+		parameters: sourceRefsSchema,
+		executionMode: "parallel",
+		async execute(_id, params, signal, _onUpdate, ctx) {
+			const args: string[] = [];
 			pushFlag(args, params.importers, "--importers");
 			pushFlag(args, params.impact, "--impact");
 			pushOpt(args, "--depth", params.depth);
@@ -304,59 +297,62 @@ export default function symExtension(pi: ExtensionAPI) {
 			pushMany(args, "--exclude", params.excludes);
 			pushOpt(args, "--file", params.file);
 			args.push(...params.targets);
-			return runSym("refs", args, ctx.cwd, signal, params.db);
+			return runSource("source refs", "refs", args, ctx.cwd, signal, params.db);
 		},
-		renderCall: (args, theme, ctx) => renderCall("refs", args.targets?.join(", "), theme, ctx),
+		renderCall: (args, theme, ctx) => renderSourceCall("refs", args.targets?.join(", "), theme, ctx),
 		renderResult,
 	});
 
 	registerTool({
-		name: "sym_impact",
-		label: "sym impact",
+		name: "source_impact",
+		label: "source impact",
 		description: "Find transitive callers/dependents of symbols.",
-		promptSnippet: "Trace who depends on a symbol.",
-		parameters: ctSymGraphSchema,
+		promptSnippet: "Use source_impact to trace who depends on a symbol.",
+		promptGuidelines: ["Use source_impact instead of backend-specific impact tools."],
+		parameters: sourceGraphSchema,
 		executionMode: "parallel",
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			const args = ["impact"];
+			const args: string[] = [];
 			pushOpt(args, "--depth", params.depth);
 			pushOpt(args, "--limit", params.limit);
 			pushOpt(args, "--context", params.context);
 			args.push(...params.targets);
-			return runSym("impact", args, ctx.cwd, signal, params.db);
+			return runSource("source impact", "impact", args, ctx.cwd, signal, params.db);
 		},
-		renderCall: (args, theme, ctx) => renderCall("impact", args.targets?.join(", "), theme, ctx),
+		renderCall: (args, theme, ctx) => renderSourceCall("impact", args.targets?.join(", "), theme, ctx),
 		renderResult,
 	});
 
 	registerTool({
-		name: "sym_trace",
-		label: "sym trace",
+		name: "source_trace",
+		label: "source trace",
 		description: "Follow the call graph downward from symbols.",
-		promptSnippet: "Trace what a symbol calls.",
-		parameters: ctSymGraphSchema,
+		promptSnippet: "Use source_trace to trace what a symbol calls.",
+		promptGuidelines: ["Use source_trace instead of backend-specific trace tools."],
+		parameters: sourceGraphSchema,
 		executionMode: "parallel",
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			const args = ["trace"];
+			const args: string[] = [];
 			pushOpt(args, "--depth", params.depth);
 			pushOpt(args, "--limit", params.limit);
 			pushOpt(args, "--kinds", params.kinds);
 			args.push(...params.targets);
-			return runSym("trace", args, ctx.cwd, signal, params.db);
+			return runSource("source trace", "trace", args, ctx.cwd, signal, params.db);
 		},
-		renderCall: (args, theme, ctx) => renderCall("trace", args.targets?.join(", "), theme, ctx),
+		renderCall: (args, theme, ctx) => renderSourceCall("trace", args.targets?.join(", "), theme, ctx),
 		renderResult,
 	});
 
 	registerTool({
-		name: "sym_impls",
-		label: "sym impls",
+		name: "source_impls",
+		label: "source impls",
 		description: "Find types that implement/extend/conform to symbols.",
-		promptSnippet: "Find implementations or conformances for a type/interface.",
-		parameters: ctSymImplsSchema,
+		promptSnippet: "Use source_impls to find implementations or conformances for a type/interface.",
+		promptGuidelines: ["Use source_impls instead of backend-specific implementation tools."],
+		parameters: sourceImplsSchema,
 		executionMode: "parallel",
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			const args = ["impls"];
+			const args: string[] = [];
 			pushOpt(args, "--lang", params.lang);
 			pushOpt(args, "--limit", params.limit);
 			pushMany(args, "--path", params.paths);
@@ -365,60 +361,28 @@ export default function symExtension(pi: ExtensionAPI) {
 			pushFlag(args, params.resolved, "--resolved");
 			pushFlag(args, params.unresolved, "--unresolved");
 			args.push(...params.targets);
-			return runSym("impls", args, ctx.cwd, signal, params.db);
+			return runSource("source impls", "impls", args, ctx.cwd, signal, params.db);
 		},
-		renderCall: (args, theme, ctx) => renderCall("impls", args.targets?.join(", "), theme, ctx),
+		renderCall: (args, theme, ctx) => renderSourceCall("impls", args.targets?.join(", "), theme, ctx),
 		renderResult,
 	});
 
 	registerTool({
-		name: "sym_context",
-		label: "sym context",
-		description: "Bundle source, callers, conformance, and file imports for symbols.",
-		promptSnippet: "Get bundled symbol context.",
-		parameters: ctSymContextSchema,
-		executionMode: "parallel",
-		async execute(_id, params, signal, _onUpdate, ctx) {
-			const args = ["context"];
-			pushOpt(args, "--callers", params.callers);
-			args.push(...params.targets);
-			return runSym("context", args, ctx.cwd, signal, params.db);
-		},
-		renderCall: (args, theme, ctx) => renderCall("context", args.targets?.join(", "), theme, ctx),
-		renderResult,
-	});
-
-	registerTool({
-		name: "sym_structure",
-		label: "sym structure",
-		description: "Return a structural overview of the indexed codebase.",
-		promptSnippet: "Get a structural overview of the indexed codebase.",
-		parameters: ctSymStructureSchema,
-		executionMode: "parallel",
-		async execute(_id, params, signal, _onUpdate, ctx) {
-			const args = ["structure"];
-			pushOpt(args, "--limit", params.limit);
-			return runSym("structure", args, ctx.cwd, signal, params.db);
-		},
-		renderCall: (_args, theme, ctx) => renderCall("structure", undefined, theme, ctx),
-		renderResult,
-	});
-
-	registerTool({
-		name: "sym_diff",
-		label: "sym diff",
+		name: "source_diff",
+		label: "source diff",
 		description: "Return git diff scoped to a symbol definition.",
-		promptSnippet: "Show git diff scoped to a symbol definition.",
-		parameters: ctSymDiffSchema,
+		promptSnippet: "Use source_diff to show git diff scoped to a symbol definition.",
+		promptGuidelines: ["Use source_diff instead of backend-specific symbol diff tools."],
+		parameters: sourceDiffSchema,
 		executionMode: "parallel",
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			const args = ["diff"];
+			const args: string[] = [];
 			pushFlag(args, params.stat, "--stat");
 			args.push(params.target);
 			if (params.base) args.push(params.base);
-			return runSym("diff", args, ctx.cwd, signal, params.db);
+			return runSource("source diff", "diff", args, ctx.cwd, signal, params.db);
 		},
-		renderCall: (args, theme, ctx) => renderCall("diff", args.target, theme, ctx),
+		renderCall: (args, theme, ctx) => renderSourceCall("diff", args.target, theme, ctx),
 		renderResult,
 	});
 }

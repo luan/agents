@@ -12,13 +12,11 @@ use super::raw_output;
 use super::types::{
     Diagnostic, DiagnosticDeltaSet, DiagnosticDeltaStatus, DiagnosticListData, DiagnosticRelevance,
     DiagnosticScope, DiagnosticSeverity, DiagnosticSnapshotInput, DiagnosticSnapshotResult,
-    DiagnosticSource, GuardAction, GuardDecision, GuardFileClassification, GuardFileKind,
-    GuardPolicySnapshot, GuardReason, LensToolEventPhase, LensTouchedFile, LensTouchedFileSource,
-    LensTurnEvent, PatchCandidate, PatchDraftChunk, PatchDraftSummary, RawOutputRef,
-    ReadCoverageRange,
+    DiagnosticSource, LensToolEventPhase, LensTouchedFile, LensTouchedFileSource, LensTurnEvent,
+    PatchCandidate, PatchDraftChunk, PatchDraftSummary, RawOutputRef,
 };
 
-const SCHEMA_VERSION: i32 = 8;
+const SCHEMA_VERSION: i32 = 9;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS projects (
@@ -49,32 +47,6 @@ CREATE TABLE IF NOT EXISTS sessions (
     started_at INTEGER NOT NULL,
     last_seen_at INTEGER NOT NULL,
     status TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS read_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-    file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
-    file_hash TEXT NOT NULL,
-    source TEXT NOT NULL,
-    created_at INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS read_ranges (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    read_event_id INTEGER NOT NULL REFERENCES read_events(id) ON DELETE CASCADE,
-    start_line INTEGER NOT NULL,
-    end_line INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS guard_overrides (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    session_id TEXT,
-    rel_path TEXT NOT NULL,
-    consumed INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL,
-    consumed_at INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS patch_events (
@@ -325,8 +297,6 @@ CREATE INDEX IF NOT EXISTS idx_diagnostic_snapshots_project_scope ON diagnostic_
 CREATE INDEX IF NOT EXISTS idx_raw_outputs_project_expires ON raw_outputs(project_id, expires_at);
 CREATE INDEX IF NOT EXISTS idx_cleanup_runs_project_turn ON cleanup_runs(project_id, session_id, turn_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_cleanup_mutations_run ON cleanup_mutations(cleanup_run_id);
-CREATE INDEX IF NOT EXISTS idx_read_events_session_file ON read_events(session_id, file_id);
-CREATE INDEX IF NOT EXISTS idx_guard_overrides_project_session_path ON guard_overrides(project_id, session_id, rel_path, consumed);
 CREATE INDEX IF NOT EXISTS idx_patch_drafts_project_status ON patch_drafts(project_id, status);
 CREATE INDEX IF NOT EXISTS idx_patch_draft_chunks_patch ON patch_draft_chunks(patch_id);
 CREATE INDEX IF NOT EXISTS idx_turns_project_session_turn ON turns(project_id, session_id, turn_id);
@@ -394,13 +364,10 @@ impl LensStore {
             .into());
         }
         if current < SCHEMA_VERSION {
-            if current > 0 && current < 6 {
-                migrate_diagnostics_to_v6(&conn)?;
+            if current > 0 && current < 9 {
+                reset_schema_for_v9(&conn)?;
             }
             conn.execute_batch(SCHEMA)?;
-            if current > 0 && current < 4 {
-                migrate_patch_candidates_to_v4(&conn)?;
-            }
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         }
         let now = now_ms();
@@ -452,308 +419,17 @@ impl LensStore {
         f(&self.conn)
     }
 
-    pub fn record_read(
-        &mut self,
-        session_id: Option<&str>,
-        path: &Path,
-        start_line: i64,
-        end_line: i64,
-    ) -> Result<ReadCoverageRange, Box<dyn std::error::Error>> {
-        let range = normalize_range(start_line, end_line)?;
-        let snapshot = self.file_snapshot(path)?;
-        let session_id = session_id.unwrap_or("default");
-        let now = now_ms();
-        let tx = self.conn.transaction()?;
-        tx.execute(
-            "INSERT INTO sessions(id, project_id, agent, started_at, last_seen_at, status)
-             VALUES(?1, ?2, NULL, ?3, ?3, 'active')
-             ON CONFLICT(id) DO UPDATE SET last_seen_at=excluded.last_seen_at, status='active'",
-            params![session_id, self.project_id, now],
-        )?;
-        tx.execute(
-            "INSERT INTO files(project_id, rel_path, language, ignored, hash, mtime_ns, size_bytes, line_count)
-             VALUES(?1, ?2, ?3, 0, ?4, ?5, ?6, ?7)
-             ON CONFLICT(project_id, rel_path) DO UPDATE SET
-                language=excluded.language,
-                hash=excluded.hash,
-                mtime_ns=excluded.mtime_ns,
-                size_bytes=excluded.size_bytes,
-                line_count=excluded.line_count",
-            params![
-                self.project_id,
-                snapshot.rel_path,
-                snapshot.language,
-                snapshot.hash,
-                snapshot.mtime_ns,
-                snapshot.size_bytes,
-                snapshot.line_count
-            ],
-        )?;
-        let file_id: i64 = tx.query_row(
-            "SELECT id FROM files WHERE project_id=?1 AND rel_path=?2",
-            params![self.project_id, snapshot.rel_path],
-            |row| row.get(0),
-        )?;
-        tx.execute(
-            "INSERT INTO read_events(session_id, file_id, file_hash, source, created_at)
-             VALUES(?1, ?2, ?3, 'ct_lens_read', ?4)",
-            params![session_id, file_id, snapshot.hash.unwrap_or_default(), now],
-        )?;
-        let read_event_id = tx.last_insert_rowid();
-        tx.execute(
-            "INSERT INTO read_ranges(read_event_id, start_line, end_line) VALUES(?1, ?2, ?3)",
-            params![read_event_id, range.start_line, range.end_line],
-        )?;
-        tx.commit()?;
-        Ok(range)
-    }
-
-    fn record_coverage_ranges(
-        &mut self,
-        session_id: Option<&str>,
-        path: &Path,
-        file_hash: &str,
-        ranges: &[ReadCoverageRange],
-        source: &str,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        if ranges.is_empty() {
-            return Ok(());
-        }
-        let snapshot = self.file_snapshot(path)?;
-        let session_id = session_id.unwrap_or("default");
-        let now = now_ms();
-        let tx = self.conn.transaction()?;
-        tx.execute(
-            "INSERT INTO sessions(id, project_id, agent, started_at, last_seen_at, status)
-             VALUES(?1, ?2, NULL, ?3, ?3, 'active')
-             ON CONFLICT(id) DO UPDATE SET last_seen_at=excluded.last_seen_at, status='active'",
-            params![session_id, self.project_id, now],
-        )?;
-        tx.execute(
-            "INSERT INTO files(project_id, rel_path, language, ignored, hash, mtime_ns, size_bytes, line_count)
-             VALUES(?1, ?2, ?3, 0, ?4, ?5, ?6, ?7)
-             ON CONFLICT(project_id, rel_path) DO UPDATE SET
-                language=excluded.language,
-                hash=excluded.hash,
-                mtime_ns=excluded.mtime_ns,
-                size_bytes=excluded.size_bytes,
-                line_count=excluded.line_count",
-            params![
-                self.project_id,
-                snapshot.rel_path,
-                snapshot.language,
-                file_hash,
-                snapshot.mtime_ns,
-                snapshot.size_bytes,
-                snapshot.line_count
-            ],
-        )?;
-        let file_id: i64 = tx.query_row(
-            "SELECT id FROM files WHERE project_id=?1 AND rel_path=?2",
-            params![self.project_id, snapshot.rel_path],
-            |row| row.get(0),
-        )?;
-        tx.execute(
-            "INSERT INTO read_events(session_id, file_id, file_hash, source, created_at)
-             VALUES(?1, ?2, ?3, ?4, ?5)",
-            params![session_id, file_id, file_hash, source, now],
-        )?;
-        let read_event_id = tx.last_insert_rowid();
-        for range in ranges {
-            tx.execute(
-                "INSERT INTO read_ranges(read_event_id, start_line, end_line) VALUES(?1, ?2, ?3)",
-                params![read_event_id, range.start_line, range.end_line],
-            )?;
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
-    pub fn check_guard(
-        &mut self,
-        session_id: Option<&str>,
-        path: &Path,
-        start_line: i64,
-        end_line: i64,
-        requested_action: GuardAction,
-    ) -> Result<GuardDecision, Box<dyn std::error::Error>> {
-        self.check_guard_with_overrides(
-            session_id,
-            path,
-            start_line,
-            end_line,
-            requested_action,
-            false,
-        )
-    }
-
-    pub fn check_guard_with_overrides(
-        &mut self,
-        session_id: Option<&str>,
-        path: &Path,
-        start_line: i64,
-        end_line: i64,
-        requested_action: GuardAction,
-        allow_overrides: bool,
-    ) -> Result<GuardDecision, Box<dyn std::error::Error>> {
-        let required = normalize_range(start_line, end_line)?;
-        let rel_path = self.rel_path(path);
-        let policy = GuardPolicySnapshot {
-            mode: requested_action.clone(),
-            allow_overrides,
-        };
-        let full_path = self.root.join(&rel_path);
-        if matches!(requested_action, GuardAction::Allow) {
-            return Ok(decision(
-                GuardAction::Allow,
-                GuardReason::GuardDisabled,
-                rel_path,
-                required,
-                Vec::new(),
-                Vec::new(),
-                classification(GuardFileKind::Code, true, None),
-                policy,
-                None,
-                None,
-            ));
-        }
-        if !full_path.exists() {
-            return Ok(decision(
-                GuardAction::Allow,
-                GuardReason::NewFile,
-                rel_path,
-                required,
-                Vec::new(),
-                Vec::new(),
-                classification(GuardFileKind::NewFile, false, Some(GuardReason::NewFile)),
-                policy,
-                None,
-                None,
-            ));
-        }
-
-        let snapshot = self.file_snapshot(path)?;
-        let current_hash = snapshot.hash.clone().unwrap_or_default();
-        let file_classification = classify_existing_path(&full_path)?;
-        if file_classification.exempt {
-            let reason = file_classification
-                .exemption
-                .clone()
-                .unwrap_or(GuardReason::BuiltInNonCode);
-            return Ok(decision(
-                GuardAction::Allow,
-                reason,
-                rel_path,
-                required,
-                Vec::new(),
-                Vec::new(),
-                file_classification,
-                policy,
-                Some(current_hash),
-                snapshot.line_count,
-            ));
-        }
-
-        if allow_overrides && self.consume_guard_override(session_id, &rel_path)? {
-            return Ok(decision(
-                GuardAction::Allow,
-                GuardReason::ExplicitOverride,
-                rel_path,
-                required,
-                Vec::new(),
-                Vec::new(),
-                file_classification,
-                policy,
-                Some(current_hash),
-                snapshot.line_count,
-            ));
-        }
-
-        let effective_session = session_id.unwrap_or("default");
-        let covered = self.covered_ranges(effective_session, &rel_path, &current_hash)?;
-        if range_covered(required, &covered) {
-            return Ok(decision(
-                GuardAction::Allow,
-                GuardReason::Covered,
-                rel_path,
-                required,
-                covered,
-                Vec::new(),
-                file_classification,
-                policy,
-                Some(current_hash),
-                snapshot.line_count,
-            ));
-        }
-        let has_any = self.has_any_read(effective_session, &rel_path)?;
-        let stale = self.stale_ranges(effective_session, &rel_path, &current_hash)?;
-        let reason = if !has_any {
-            GuardReason::ZeroRead
-        } else if covered.is_empty() && !stale.is_empty() {
-            GuardReason::StaleRead
-        } else {
-            GuardReason::OutOfRange
-        };
-        Ok(decision(
-            requested_action,
-            reason,
-            rel_path,
-            required,
-            covered,
-            stale,
-            file_classification,
-            policy,
-            Some(current_hash),
-            snapshot.line_count,
-        ))
-    }
-
-    pub fn allow_once(
-        &self,
-        session_id: Option<&str>,
-        path: &Path,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        self.conn.execute(
-            "INSERT INTO guard_overrides(project_id, session_id, rel_path, consumed, created_at)
-             VALUES(?1, ?2, ?3, 0, ?4)",
-            params![self.project_id, session_id, self.rel_path(path), now_ms()],
-        )?;
-        Ok(())
-    }
-
     pub fn record_applied_changes(
         &mut self,
         session_id: Option<&str>,
         tool: &str,
         changes: &[crate::apply_patch::FileChange],
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let effective_session = session_id.unwrap_or("default");
         for change in changes {
             if matches!(change.kind, crate::apply_patch::ChangeType::Delete) {
                 continue;
             }
             let new_path = change.move_path.as_deref().unwrap_or(&change.path);
-            let snapshot = self.file_snapshot(Path::new(new_path))?;
-            let Some(new_hash) = snapshot.hash.as_deref() else {
-                continue;
-            };
-            let source_path = if matches!(change.kind, crate::apply_patch::ChangeType::Move) {
-                change.path.as_str()
-            } else {
-                new_path
-            };
-            let old_ranges = match change.old_hash.as_deref() {
-                Some(old_hash) => self.covered_ranges(effective_session, source_path, old_hash)?,
-                None => Vec::new(),
-            };
-            let ranges = transformed_patch_coverage(&old_ranges, &change.line_changes);
-            self.record_coverage_ranges(
-                Some(effective_session),
-                Path::new(new_path),
-                new_hash,
-                &ranges,
-                "ct_lens_patch_coverage",
-            )?;
             self.record_patch_event(session_id, Path::new(new_path), tool, change)?;
         }
         Ok(())
@@ -1084,7 +760,7 @@ impl LensStore {
         rel_path: Option<&str>,
         all: bool,
     ) -> Result<DiagnosticListData, Box<dyn std::error::Error>> {
-        let (changed_files, read_files) = self.relevant_file_sets()?;
+        let changed_files = self.relevant_file_set()?;
         let active = self.query_diagnostics(rel_path, false)?;
         let latest_snapshot_id = self.latest_snapshot_id()?;
         let mut deltas = match latest_snapshot_id {
@@ -1094,8 +770,6 @@ impl LensStore {
         let diagnostics = if all || rel_path.is_some() {
             active
         } else {
-            let mut relevant = changed_files.clone();
-            relevant.extend(read_files.iter().cloned());
             active
                 .into_iter()
                 .filter(|diagnostic| {
@@ -1109,17 +783,12 @@ impl LensStore {
                     }) || diagnostic
                         .rel_path
                         .as_ref()
-                        .is_some_and(|path| relevant.contains(path))
+                        .is_some_and(|path| changed_files.contains(path))
                 })
                 .collect()
         };
         if !all && rel_path.is_none() {
-            let relevant: BTreeSet<_> = changed_files
-                .iter()
-                .chain(read_files.iter())
-                .cloned()
-                .collect();
-            filter_delta_set(&mut deltas, &relevant);
+            filter_delta_set(&mut deltas, &changed_files);
             deltas
                 .new
                 .retain(|diagnostic| !self.diagnostic_path_ignored(diagnostic));
@@ -1139,7 +808,6 @@ impl LensStore {
             deltas,
             relevance: DiagnosticRelevance {
                 changed_files: changed_files.into_iter().collect(),
-                read_files: read_files.into_iter().collect(),
                 all,
             },
         })
@@ -1350,29 +1018,28 @@ impl LensStore {
         Ok(out)
     }
 
-    fn relevant_file_sets(&self) -> Result<(BTreeSet<String>, BTreeSet<String>), rusqlite::Error> {
+    fn relevant_file_set(&self) -> Result<BTreeSet<String>, rusqlite::Error> {
         let mut changed = BTreeSet::new();
-        let mut stmt = self.conn.prepare(
+        let mut touched = self.conn.prepare(
             "SELECT DISTINCT rel_path FROM turn_touched_files
              WHERE project_id=?1 AND ignored=0 AND generated=0
              ORDER BY rel_path",
         )?;
-        for row in stmt.query_map(params![self.project_id], |row| row.get::<_, String>(0))? {
+        for row in touched.query_map(params![self.project_id], |row| row.get::<_, String>(0))? {
             changed.insert(row?);
         }
 
-        let mut read = BTreeSet::new();
-        let mut stmt = self.conn.prepare(
+        let mut patched = self.conn.prepare(
             "SELECT DISTINCT f.rel_path
-             FROM read_events re
-             JOIN files f ON f.id = re.file_id
-             WHERE f.project_id=?1 AND f.ignored=0
+             FROM patch_events pe
+             JOIN files f ON f.id = pe.file_id
+             WHERE f.project_id=?1 AND pe.accepted=1
              ORDER BY f.rel_path",
         )?;
-        for row in stmt.query_map(params![self.project_id], |row| row.get::<_, String>(0))? {
-            read.insert(row?);
+        for row in patched.query_map(params![self.project_id], |row| row.get::<_, String>(0))? {
+            changed.insert(row?);
         }
-        Ok((changed, read))
+        Ok(changed)
     }
 
     fn diagnostic_path_ignored(&self, diagnostic: &Diagnostic) -> bool {
@@ -1501,105 +1168,6 @@ impl LensStore {
             .arg(rel_path)
             .output();
         matches!(output, Ok(output) if output.status.code() == Some(0))
-    }
-
-    fn covered_ranges(
-        &self,
-        session_id: &str,
-        rel_path: &str,
-        current_hash: &str,
-    ) -> Result<Vec<ReadCoverageRange>, rusqlite::Error> {
-        let mut stmt = self.conn.prepare(
-            "SELECT rr.start_line, rr.end_line
-             FROM read_ranges rr
-             JOIN read_events re ON re.id = rr.read_event_id
-             JOIN files f ON f.id = re.file_id
-             WHERE f.project_id=?1
-               AND f.rel_path=?2
-               AND re.file_hash=?3
-               AND re.session_id=?4
-             ORDER BY rr.start_line, rr.end_line",
-        )?;
-        let rows = stmt.query_map(
-            params![self.project_id, rel_path, current_hash, session_id],
-            |row| {
-                Ok(ReadCoverageRange {
-                    start_line: row.get(0)?,
-                    end_line: row.get(1)?,
-                })
-            },
-        )?;
-        rows.collect()
-    }
-
-    fn has_any_read(&self, session_id: &str, rel_path: &str) -> Result<bool, rusqlite::Error> {
-        self.conn.query_row(
-            "SELECT EXISTS(
-                SELECT 1
-                FROM read_events re
-                JOIN files f ON f.id = re.file_id
-                WHERE f.project_id=?1
-                  AND f.rel_path=?2
-                  AND re.session_id=?3
-             )",
-            params![self.project_id, rel_path, session_id],
-            |row| row.get(0),
-        )
-    }
-
-    fn stale_ranges(
-        &self,
-        session_id: &str,
-        rel_path: &str,
-        current_hash: &str,
-    ) -> Result<Vec<ReadCoverageRange>, rusqlite::Error> {
-        let mut stmt = self.conn.prepare(
-            "SELECT rr.start_line, rr.end_line
-             FROM read_ranges rr
-             JOIN read_events re ON re.id = rr.read_event_id
-             JOIN files f ON f.id = re.file_id
-             WHERE f.project_id=?1
-               AND f.rel_path=?2
-               AND re.session_id=?3
-               AND re.file_hash<>?4
-             ORDER BY rr.start_line, rr.end_line",
-        )?;
-        let rows = stmt.query_map(
-            params![self.project_id, rel_path, session_id, current_hash],
-            |row| {
-                Ok(ReadCoverageRange {
-                    start_line: row.get(0)?,
-                    end_line: row.get(1)?,
-                })
-            },
-        )?;
-        rows.collect()
-    }
-
-    fn consume_guard_override(
-        &self,
-        session_id: Option<&str>,
-        rel_path: &str,
-    ) -> Result<bool, rusqlite::Error> {
-        let id = self.conn.query_row(
-            "SELECT id FROM guard_overrides
-             WHERE project_id=?1
-               AND rel_path=?2
-               AND consumed=0
-               AND (session_id IS NULL OR session_id=?3)
-             ORDER BY created_at ASC
-             LIMIT 1",
-            params![self.project_id, rel_path, session_id],
-            |row| row.get::<_, i64>(0),
-        );
-        let Ok(id) = id else {
-            return Ok(false);
-        };
-        self.conn.execute(
-            "UPDATE guard_overrides SET consumed=1, consumed_at=?1 WHERE id=?2",
-            params![now_ms(), id],
-        )?;
-        Ok(true)
     }
 
     fn file_snapshot(
@@ -1850,125 +1418,6 @@ pub struct StoreCounts {
     pub patch_draft_bodies: i64,
 }
 
-fn transformed_patch_coverage(
-    old_ranges: &[ReadCoverageRange],
-    line_changes: &[crate::apply_patch::LineChange],
-) -> Vec<ReadCoverageRange> {
-    let mut changes: Vec<&crate::apply_patch::LineChange> = line_changes
-        .iter()
-        .filter(|change| change.old_start.is_some())
-        .collect();
-    changes.sort_by_key(|change| change.old_start.unwrap_or(usize::MAX));
-
-    let mut ranges = Vec::new();
-    for old_range in old_ranges {
-        let mut cursor = old_range.start_line;
-        for change in &changes {
-            let change_start = change.old_start.unwrap_or(usize::MAX) as i64;
-            if change_start > old_range.end_line + 1 {
-                break;
-            }
-            if change.old_len == 0 {
-                if change_start > cursor && change_start <= old_range.end_line {
-                    push_mapped_unchanged_range(&mut ranges, cursor, change_start - 1, &changes);
-                    cursor = change_start;
-                }
-                continue;
-            }
-
-            let change_end = change_start + change.old_len as i64 - 1;
-            if change_end < cursor {
-                continue;
-            }
-            if change_start > old_range.end_line {
-                break;
-            }
-            if cursor < change_start {
-                push_mapped_unchanged_range(
-                    &mut ranges,
-                    cursor,
-                    (change_start - 1).min(old_range.end_line),
-                    &changes,
-                );
-            }
-            cursor = cursor.max(change_end + 1);
-            if cursor > old_range.end_line {
-                break;
-            }
-        }
-        if cursor <= old_range.end_line {
-            push_mapped_unchanged_range(&mut ranges, cursor, old_range.end_line, &changes);
-        }
-    }
-
-    for change in line_changes {
-        if change.new_len == 0 {
-            continue;
-        }
-        if let (Some(start), Some(end)) = (change.new_start, change.new_end) {
-            ranges.push(ReadCoverageRange {
-                start_line: start as i64,
-                end_line: end as i64,
-            });
-        }
-    }
-
-    merge_ranges(ranges)
-}
-
-fn push_mapped_unchanged_range(
-    out: &mut Vec<ReadCoverageRange>,
-    old_start: i64,
-    old_end: i64,
-    changes: &[&crate::apply_patch::LineChange],
-) {
-    if old_start > old_end {
-        return;
-    }
-    let delta = line_delta_before(old_start, changes);
-    out.push(ReadCoverageRange {
-        start_line: old_start + delta,
-        end_line: old_end + delta,
-    });
-}
-
-fn line_delta_before(line: i64, changes: &[&crate::apply_patch::LineChange]) -> i64 {
-    let mut delta = 0_i64;
-    for change in changes {
-        let Some(start) = change.old_start else {
-            continue;
-        };
-        let start = start as i64;
-        if change.old_len == 0 {
-            if start <= line {
-                delta += change.new_len as i64;
-            }
-            continue;
-        }
-        let end = start + change.old_len as i64 - 1;
-        if end < line {
-            delta += change.new_len as i64 - change.old_len as i64;
-        }
-    }
-    delta
-}
-
-fn merge_ranges(mut ranges: Vec<ReadCoverageRange>) -> Vec<ReadCoverageRange> {
-    ranges.retain(|range| range.start_line <= range.end_line);
-    ranges.sort_by_key(|range| (range.start_line, range.end_line));
-    let mut merged: Vec<ReadCoverageRange> = Vec::new();
-    for range in ranges {
-        if let Some(last) = merged.last_mut()
-            && range.start_line <= last.end_line + 1
-        {
-            last.end_line = last.end_line.max(range.end_line);
-            continue;
-        }
-        merged.push(range);
-    }
-    merged
-}
-
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2036,224 +1485,6 @@ fn cleanup_mutability(mutability: CleanupMutability) -> &'static str {
         CleanupMutability::Mutates => "mutates",
         CleanupMutability::CheckOnly => "check_only",
     }
-}
-
-fn migrate_patch_candidates_to_v4(conn: &Connection) -> Result<(), rusqlite::Error> {
-    for column in [
-        "candidate_kind TEXT",
-        "symbol_json TEXT",
-        "anchors_json TEXT",
-        "confidence TEXT",
-        "reason TEXT",
-    ] {
-        let name = column
-            .split_once(' ')
-            .map(|(name, _)| name)
-            .unwrap_or(column);
-        if !table_has_column(conn, "patch_draft_candidates", name)? {
-            conn.execute_batch(&format!(
-                "ALTER TABLE patch_draft_candidates ADD COLUMN {column};"
-            ))?;
-        }
-    }
-    Ok(())
-}
-
-fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, rusqlite::Error> {
-    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
-    let names = stmt.query_map([], |row| row.get::<_, String>(1))?;
-    for name in names {
-        if name? == column {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-fn normalize_range(
-    start_line: i64,
-    end_line: i64,
-) -> Result<ReadCoverageRange, Box<dyn std::error::Error>> {
-    if start_line < 1 || end_line < 1 || end_line < start_line {
-        return Err(format!("invalid line range {start_line}-{end_line}").into());
-    }
-    Ok(ReadCoverageRange {
-        start_line,
-        end_line,
-    })
-}
-
-fn decision(
-    decision: GuardAction,
-    reason: GuardReason,
-    file: String,
-    required: ReadCoverageRange,
-    covered_ranges: Vec<ReadCoverageRange>,
-    stale_ranges: Vec<ReadCoverageRange>,
-    classification: GuardFileClassification,
-    policy: GuardPolicySnapshot,
-    current_hash: Option<String>,
-    current_line_count: Option<i64>,
-) -> GuardDecision {
-    let message = guard_message(&decision, &reason, &file, required);
-    GuardDecision {
-        decision,
-        reason,
-        message,
-        file,
-        classification,
-        policy,
-        required_ranges: vec![required],
-        covered_ranges,
-        stale_ranges,
-        current_hash,
-        current_line_count,
-    }
-}
-
-fn classification(
-    kind: GuardFileKind,
-    exists: bool,
-    exemption: Option<GuardReason>,
-) -> GuardFileClassification {
-    GuardFileClassification {
-        kind,
-        exists,
-        exempt: exemption.is_some(),
-        exemption,
-    }
-}
-
-fn classify_existing_path(
-    path: &Path,
-) -> Result<GuardFileClassification, Box<dyn std::error::Error>> {
-    let path_text = path.to_string_lossy().replace('\\', "/").to_lowercase();
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or_default()
-        .to_lowercase();
-    if is_generated_path(&path_text, &file_name) || has_generated_marker(path)? {
-        return Ok(classification(
-            GuardFileKind::Generated,
-            true,
-            Some(GuardReason::BuiltInGenerated),
-        ));
-    }
-    if is_non_code_path(path, &file_name) {
-        return Ok(classification(
-            GuardFileKind::NonCode,
-            true,
-            Some(GuardReason::BuiltInNonCode),
-        ));
-    }
-    Ok(classification(GuardFileKind::Code, true, None))
-}
-
-fn is_generated_path(path_text: &str, file_name: &str) -> bool {
-    path_text.contains("/target/")
-        || path_text.contains("/dist/")
-        || path_text.contains("/build/")
-        || path_text.contains("/generated/")
-        || path_text.contains("/gen/")
-        || file_name.ends_with(".min.js")
-        || file_name.ends_with(".min.css")
-        || file_name.ends_with(".pb.go")
-        || file_name.ends_with(".pb.rs")
-        || file_name.ends_with(".generated.rs")
-        || file_name.ends_with(".generated.ts")
-}
-
-fn has_generated_marker(path: &Path) -> Result<bool, Box<dyn std::error::Error>> {
-    let bytes = std::fs::read(path)?;
-    let head = &bytes[..bytes.len().min(4096)];
-    let text = String::from_utf8_lossy(head).to_lowercase();
-    Ok(text.contains("@generated")
-        || text.contains("code generated")
-        || text.contains("do not edit")
-        || text.contains("auto-generated"))
-}
-
-fn is_non_code_path(path: &Path, file_name: &str) -> bool {
-    let extension = path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .unwrap_or_default()
-        .to_lowercase();
-    matches!(
-        extension.as_str(),
-        "md" | "markdown"
-            | "txt"
-            | "json"
-            | "jsonl"
-            | "yaml"
-            | "yml"
-            | "toml"
-            | "lock"
-            | "csv"
-            | "tsv"
-            | "xml"
-            | "svg"
-            | "plist"
-            | "ron"
-    ) || matches!(
-        file_name,
-        "license" | "notice" | "readme" | ".gitignore" | ".editorconfig"
-    )
-}
-
-fn guard_message(
-    decision: &GuardAction,
-    reason: &GuardReason,
-    file: &str,
-    required: ReadCoverageRange,
-) -> String {
-    let range = format!("{}:{}-{}", file, required.start_line, required.end_line);
-    match (decision, reason) {
-        (GuardAction::Allow, GuardReason::Covered) => {
-            format!("edit allowed: {range} is covered by a current session read")
-        }
-        (GuardAction::Allow, GuardReason::NewFile) => format!("edit allowed: {file} is a new file"),
-        (GuardAction::Allow, GuardReason::BuiltInNonCode) => {
-            format!("edit allowed: {file} is classified as built-in non-code")
-        }
-        (GuardAction::Allow, GuardReason::BuiltInGenerated) => {
-            format!("edit allowed: {file} is classified as built-in generated")
-        }
-        (GuardAction::Allow, GuardReason::GuardDisabled) => {
-            "edit allowed: guard policy mode is off".to_string()
-        }
-        (GuardAction::Allow, GuardReason::ExplicitOverride) => {
-            format!("edit allowed: explicit override consumed for {file}")
-        }
-        (_, GuardReason::ZeroRead) => {
-            format!("read {range} before editing; no current-session read coverage exists")
-        }
-        (_, GuardReason::StaleRead) => {
-            format!("reread {range} before editing; prior read coverage is stale")
-        }
-        (_, GuardReason::OutOfRange) => format!(
-            "read {range} before editing; current coverage does not include the required range"
-        ),
-        _ => format!("guard decision for {range}: {reason:?}"),
-    }
-}
-
-fn range_covered(required: ReadCoverageRange, covered: &[ReadCoverageRange]) -> bool {
-    let mut cursor = required.start_line;
-    for range in covered {
-        if range.end_line < cursor {
-            continue;
-        }
-        if range.start_line > cursor {
-            return false;
-        }
-        cursor = cursor.max(range.end_line + 1);
-        if cursor > required.end_line {
-            return true;
-        }
-    }
-    false
 }
 
 fn sha1_hex(bytes: &[u8]) -> String {
@@ -2393,73 +1624,51 @@ fn filter_delta_set(deltas: &mut DiagnosticDeltaSet, relevant: &BTreeSet<String>
         .collect();
 }
 
-fn migrate_diagnostics_to_v6(conn: &Connection) -> Result<(), rusqlite::Error> {
+fn reset_schema_for_v9(conn: &Connection) -> Result<(), rusqlite::Error> {
     conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS raw_outputs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-            source TEXT NOT NULL,
-            scope_kind TEXT NOT NULL,
-            scope_key TEXT NOT NULL,
-            body TEXT NOT NULL,
-            original_bytes INTEGER NOT NULL,
-            retained_bytes INTEGER NOT NULL,
-            truncated INTEGER NOT NULL,
-            redacted INTEGER NOT NULL,
-            created_at INTEGER NOT NULL,
-            expires_at INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS diagnostic_snapshots (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-            source TEXT NOT NULL,
-            scope_kind TEXT NOT NULL,
-            scope_key TEXT NOT NULL,
-            raw_output_id INTEGER REFERENCES raw_outputs(id) ON DELETE SET NULL,
-            metadata_json TEXT NOT NULL,
-            diagnostic_count INTEGER NOT NULL,
-            created_at INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS diagnostic_snapshot_deltas (
-            snapshot_id INTEGER NOT NULL REFERENCES diagnostic_snapshots(id) ON DELETE CASCADE,
-            diagnostic_id INTEGER NOT NULL REFERENCES diagnostics(id) ON DELETE CASCADE,
-            status TEXT NOT NULL,
-            PRIMARY KEY(snapshot_id, diagnostic_id, status)
-        );",
-    )?;
-    if table_has_column(conn, "diagnostics", "scope_kind")? {
-        return Ok(());
-    }
-    conn.execute_batch(
-        "CREATE TABLE diagnostics_v6 (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-            file_id INTEGER REFERENCES files(id) ON DELETE CASCADE,
-            source TEXT NOT NULL,
-            scope_kind TEXT NOT NULL DEFAULT 'workspace',
-            scope_key TEXT NOT NULL DEFAULT '',
-            severity TEXT NOT NULL,
-            code TEXT,
-            message TEXT NOT NULL,
-            start_line INTEGER,
-            end_line INTEGER,
-            fingerprint TEXT NOT NULL,
-            content_hash TEXT,
-            raw_output_id INTEGER REFERENCES raw_outputs(id) ON DELETE SET NULL,
-            snapshot_id INTEGER REFERENCES diagnostic_snapshots(id) ON DELETE SET NULL,
-            created_at INTEGER NOT NULL,
-            first_seen_at INTEGER NOT NULL,
-            last_seen_at INTEGER NOT NULL,
-            resolved_at INTEGER,
-            resolved_snapshot_id INTEGER REFERENCES diagnostic_snapshots(id) ON DELETE SET NULL,
-            UNIQUE(project_id, source, scope_kind, scope_key, fingerprint)
-        );
-        INSERT INTO diagnostics_v6(id, project_id, file_id, source, scope_kind, scope_key, severity, code, message, start_line, end_line, fingerprint, content_hash, raw_output_id, snapshot_id, created_at, first_seen_at, last_seen_at, resolved_at, resolved_snapshot_id)
-        SELECT id, project_id, file_id, source, 'workspace', '', severity, code, message, start_line, end_line, fingerprint, content_hash, NULL, NULL, created_at, created_at, created_at, NULL, NULL FROM diagnostics;
-        DROP TABLE diagnostics;
-        ALTER TABLE diagnostics_v6 RENAME TO diagnostics;",
-    )?;
-    Ok(())
+        r#"
+        DROP INDEX IF EXISTS idx_lens_ack_project_session_turn;
+        DROP INDEX IF EXISTS idx_turn_touched_project_session_turn;
+        DROP INDEX IF EXISTS idx_turns_project_session_turn;
+        DROP INDEX IF EXISTS idx_patch_draft_chunks_patch;
+        DROP INDEX IF EXISTS idx_patch_drafts_project_status;
+        DROP INDEX IF EXISTS idx_guard_overrides_project_session_path;
+        DROP INDEX IF EXISTS idx_read_events_session_file;
+        DROP INDEX IF EXISTS idx_cleanup_mutations_run;
+        DROP INDEX IF EXISTS idx_cleanup_runs_project_turn;
+        DROP INDEX IF EXISTS idx_raw_outputs_project_expires;
+        DROP INDEX IF EXISTS idx_diagnostic_snapshots_project_scope;
+        DROP INDEX IF EXISTS idx_diagnostics_project_scope;
+        DROP INDEX IF EXISTS idx_diagnostics_project_file;
+        DROP INDEX IF EXISTS idx_files_project_rel;
+
+        DROP TABLE IF EXISTS retention_metadata;
+        DROP TABLE IF EXISTS lens_action_acknowledgements;
+        DROP TABLE IF EXISTS turn_touched_files;
+        DROP TABLE IF EXISTS turn_tool_events;
+        DROP TABLE IF EXISTS turns;
+        DROP TABLE IF EXISTS cleanup_mutations;
+        DROP TABLE IF EXISTS cleanup_runs;
+        DROP TABLE IF EXISTS tool_runs;
+        DROP TABLE IF EXISTS diagnostic_snapshot_deltas;
+        DROP TABLE IF EXISTS diagnostics;
+        DROP TABLE IF EXISTS diagnostic_snapshots;
+        DROP TABLE IF EXISTS raw_outputs;
+        DROP TABLE IF EXISTS patch_affected_symbols;
+        DROP TABLE IF EXISTS patch_draft_candidates;
+        DROP TABLE IF EXISTS patch_draft_chunks;
+        DROP TABLE IF EXISTS patch_draft_bodies;
+        DROP TABLE IF EXISTS patch_drafts;
+        DROP TABLE IF EXISTS patch_hunks;
+        DROP TABLE IF EXISTS patch_events;
+        DROP TABLE IF EXISTS guard_overrides;
+        DROP TABLE IF EXISTS read_ranges;
+        DROP TABLE IF EXISTS read_events;
+        DROP TABLE IF EXISTS sessions;
+        DROP TABLE IF EXISTS files;
+        DROP TABLE IF EXISTS projects;
+        "#,
+    )
 }
 
 #[cfg(test)]
@@ -2476,56 +1685,46 @@ mod tests {
     }
 
     #[test]
-    fn migrates_v5_diagnostics_schema_before_creating_scope_indexes() {
+    fn v9_reset_drops_read_and_guard_state() {
         let temp = tempfile::tempdir().unwrap();
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE projects (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                root TEXT NOT NULL UNIQUE,
-                vcs_id TEXT,
-                created_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL
-            );
-            CREATE TABLE files (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                rel_path TEXT NOT NULL,
-                language TEXT,
-                ignored INTEGER NOT NULL DEFAULT 0,
-                hash TEXT,
-                mtime_ns INTEGER,
-                size_bytes INTEGER,
-                line_count INTEGER,
-                UNIQUE(project_id, rel_path)
-            );
-            CREATE TABLE diagnostics (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                file_id INTEGER REFERENCES files(id) ON DELETE CASCADE,
-                source TEXT NOT NULL,
-                severity TEXT NOT NULL,
-                code TEXT,
-                message TEXT NOT NULL,
-                start_line INTEGER,
-                end_line INTEGER,
-                fingerprint TEXT NOT NULL,
-                content_hash TEXT,
-                created_at INTEGER NOT NULL,
-                UNIQUE(project_id, source, fingerprint)
-            );
-            PRAGMA user_version = 5;",
+            "CREATE TABLE projects (id INTEGER PRIMARY KEY AUTOINCREMENT, root TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+             CREATE TABLE files (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, rel_path TEXT NOT NULL);
+             CREATE TABLE sessions (id TEXT PRIMARY KEY, project_id INTEGER NOT NULL, started_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL, status TEXT NOT NULL);
+             CREATE TABLE read_events (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, file_id INTEGER NOT NULL, file_hash TEXT NOT NULL, source TEXT NOT NULL, created_at INTEGER NOT NULL);
+             CREATE TABLE read_ranges (id INTEGER PRIMARY KEY AUTOINCREMENT, read_event_id INTEGER NOT NULL, start_line INTEGER NOT NULL, end_line INTEGER NOT NULL);
+             CREATE TABLE guard_overrides (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, session_id TEXT, rel_path TEXT NOT NULL, consumed INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
+             INSERT INTO projects(id, root, created_at, updated_at) VALUES(1, 'old', 1, 1);
+             INSERT INTO files(id, project_id, rel_path) VALUES(1, 1, 'main.rs');
+             INSERT INTO sessions(id, project_id, started_at, last_seen_at, status) VALUES('s', 1, 1, 1, 'active');
+             INSERT INTO read_events(id, session_id, file_id, file_hash, source, created_at) VALUES(1, 's', 1, 'hash', 'test', 1);
+             INSERT INTO read_ranges(read_event_id, start_line, end_line) VALUES(1, 1, 1);
+             INSERT INTO guard_overrides(project_id, session_id, rel_path, created_at) VALUES(1, 's', 'main.rs', 1);
+             PRAGMA user_version = 8;",
         )
         .unwrap();
 
         let store = LensStore::init(conn, temp.path()).unwrap();
 
-        assert!(
-            store.with_conn(|conn| table_has_column(conn, "diagnostics", "scope_kind").unwrap())
-        );
-        assert!(
-            store.with_conn(|conn| table_has_column(conn, "diagnostics", "raw_output_id").unwrap())
-        );
+        let user_version: i32 = store
+            .with_conn(|conn| conn.query_row("PRAGMA user_version", [], |row| row.get(0)))
+            .unwrap();
+        assert_eq!(user_version, 9);
+        for table in ["read_events", "read_ranges", "guard_overrides"] {
+            let exists: Option<String> = store
+                .with_conn(|conn| {
+                    conn.query_row(
+                        "SELECT name FROM sqlite_master WHERE type='table' AND name=?1",
+                        params![table],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                })
+                .unwrap();
+            assert!(exists.is_none(), "{table} should be dropped by v9 reset");
+        }
+        assert_eq!(store.counts().unwrap().diagnostics, 0);
     }
 
     #[test]
@@ -2644,9 +1843,9 @@ mod tests {
     }
 
     #[test]
-    fn default_listing_filters_to_changed_read_and_new_findings() {
+    fn default_listing_filters_to_changed_and_new_findings() {
         let temp = tempfile::tempdir().unwrap();
-        for path in ["changed.rs", "read.rs", "untouched.rs"] {
+        for path in ["changed.rs", "unrelated.rs", "untouched.rs"] {
             std::fs::write(temp.path().join(path), "fn main() {}\n").unwrap();
         }
         let mut store = LensStore::open_in_memory_for_tests(temp.path()).unwrap();
@@ -2679,24 +1878,25 @@ mod tests {
                 }],
             )
             .unwrap();
-        store
-            .record_read(Some("s"), Path::new("read.rs"), 1, 1)
-            .unwrap();
-        let diagnostics = vec![
+        let baseline = vec![
             diagnostic("changed.rs", "changed", "changed"),
-            diagnostic("read.rs", "read", "read"),
             diagnostic("untouched.rs", "untouched", "untouched"),
         ];
         store
             .record_diagnostic_snapshot(DiagnosticSnapshotInput {
                 source: DiagnosticSource::Lsp,
                 scope: DiagnosticScope::workspace(),
-                diagnostics: diagnostics.clone(),
+                diagnostics: baseline,
                 raw_output: None,
                 raw_output_max_bytes: None,
                 metadata: Default::default(),
             })
             .unwrap();
+        let diagnostics = vec![
+            diagnostic("changed.rs", "changed", "changed"),
+            diagnostic("unrelated.rs", "unrelated", "unrelated"),
+            diagnostic("untouched.rs", "untouched", "untouched"),
+        ];
         store
             .record_diagnostic_snapshot(DiagnosticSnapshotInput {
                 source: DiagnosticSource::Lsp,
@@ -2714,8 +1914,9 @@ mod tests {
             .iter()
             .filter_map(|diagnostic| diagnostic.rel_path.as_deref())
             .collect();
-        assert_eq!(paths, BTreeSet::from(["changed.rs", "read.rs"]));
-        assert_eq!(relevant.deltas.unchanged.len(), 2);
+        assert_eq!(paths, BTreeSet::from(["changed.rs", "unrelated.rs"]));
+        assert_eq!(relevant.deltas.new.len(), 1);
+        assert_eq!(relevant.deltas.unchanged.len(), 1);
 
         let all = store.list_diagnostics_data(None, true).unwrap();
         assert_eq!(all.diagnostic_count, 3);
@@ -2809,286 +2010,5 @@ mod tests {
         assert_eq!(report.raw_outputs_deleted, 1);
         assert_eq!(store.counts().unwrap().raw_outputs, 0);
         assert_eq!(store.list_diagnostics(None).unwrap().len(), 1);
-    }
-
-    #[test]
-    fn read_guard_allows_recorded_current_ranges() {
-        let temp = code_project();
-        let mut store = LensStore::open_in_memory_for_tests(temp.path()).unwrap();
-        store
-            .record_read(Some("s"), Path::new("main.rs"), 1, 3)
-            .unwrap();
-
-        let decision = store
-            .check_guard(Some("s"), Path::new("main.rs"), 2, 2, GuardAction::Block)
-            .unwrap();
-        assert_eq!(decision.decision, GuardAction::Allow);
-        assert_eq!(decision.reason, GuardReason::Covered);
-        assert_eq!(decision.covered_ranges.len(), 1);
-    }
-
-    #[test]
-    fn read_guard_blocks_unread_code_with_zero_read_reason() {
-        let temp = code_project();
-        let mut store = LensStore::open_in_memory_for_tests(temp.path()).unwrap();
-
-        let decision = store
-            .check_guard(Some("s"), Path::new("main.rs"), 1, 1, GuardAction::Block)
-            .unwrap();
-
-        assert_eq!(decision.decision, GuardAction::Block);
-        assert_eq!(decision.reason, GuardReason::ZeroRead);
-        assert!(decision.covered_ranges.is_empty());
-        assert_eq!(decision.classification.kind, GuardFileKind::Code);
-    }
-
-    #[test]
-    fn read_guard_blocks_out_of_range_current_reads() {
-        let temp = code_project();
-        let mut store = LensStore::open_in_memory_for_tests(temp.path()).unwrap();
-        store
-            .record_read(Some("s"), Path::new("main.rs"), 1, 1)
-            .unwrap();
-
-        let decision = store
-            .check_guard(Some("s"), Path::new("main.rs"), 2, 2, GuardAction::Block)
-            .unwrap();
-
-        assert_eq!(decision.decision, GuardAction::Block);
-        assert_eq!(decision.reason, GuardReason::OutOfRange);
-        assert_eq!(decision.covered_ranges[0].start_line, 1);
-    }
-
-    #[test]
-    fn read_guard_blocks_stale_reads_after_file_changes() {
-        let temp = code_project();
-        let mut store = LensStore::open_in_memory_for_tests(temp.path()).unwrap();
-        store
-            .record_read(Some("s"), Path::new("main.rs"), 1, 3)
-            .unwrap();
-        std::fs::write(
-            temp.path().join("main.rs"),
-            "fn main() {\n    dbg!(1);\n}\n",
-        )
-        .unwrap();
-
-        let decision = store
-            .check_guard(Some("s"), Path::new("main.rs"), 1, 1, GuardAction::Block)
-            .unwrap();
-
-        assert_eq!(decision.decision, GuardAction::Block);
-        assert_eq!(decision.reason, GuardReason::StaleRead);
-        assert!(decision.covered_ranges.is_empty());
-        assert_eq!(decision.stale_ranges[0].start_line, 1);
-    }
-
-    #[test]
-    fn read_guard_is_session_scoped() {
-        let temp = code_project();
-        let mut store = LensStore::open_in_memory_for_tests(temp.path()).unwrap();
-        store
-            .record_read(Some("reader"), Path::new("main.rs"), 1, 3)
-            .unwrap();
-
-        let decision = store
-            .check_guard(
-                Some("writer"),
-                Path::new("main.rs"),
-                1,
-                1,
-                GuardAction::Block,
-            )
-            .unwrap();
-
-        assert_eq!(decision.decision, GuardAction::Block);
-        assert_eq!(decision.reason, GuardReason::ZeroRead);
-    }
-
-    #[test]
-    fn read_guard_allows_new_non_code_and_generated_exemptions() {
-        let temp = code_project();
-        std::fs::write(temp.path().join("README.md"), "# docs\n").unwrap();
-        std::fs::write(
-            temp.path().join("generated.rs"),
-            "// @generated by a fixture\npub fn value() {}\n",
-        )
-        .unwrap();
-        let mut store = LensStore::open_in_memory_for_tests(temp.path()).unwrap();
-
-        let new_file = store
-            .check_guard(Some("s"), Path::new("new.rs"), 1, 1, GuardAction::Block)
-            .unwrap();
-        let docs = store
-            .check_guard(Some("s"), Path::new("README.md"), 1, 1, GuardAction::Block)
-            .unwrap();
-        let generated = store
-            .check_guard(
-                Some("s"),
-                Path::new("generated.rs"),
-                1,
-                1,
-                GuardAction::Block,
-            )
-            .unwrap();
-
-        assert_eq!(new_file.reason, GuardReason::NewFile);
-        assert_eq!(docs.reason, GuardReason::BuiltInNonCode);
-        assert_eq!(generated.reason, GuardReason::BuiltInGenerated);
-        assert!(matches!(new_file.decision, GuardAction::Allow));
-        assert!(matches!(docs.decision, GuardAction::Allow));
-        assert!(matches!(generated.decision, GuardAction::Allow));
-    }
-
-    #[test]
-    fn patch_coverage_transforms_insertions_and_blocks_unread_lines() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::write(temp.path().join("main.rs"), "one\ntwo\nthree\nfour\n").unwrap();
-        let mut store = LensStore::open_in_memory_for_tests(temp.path()).unwrap();
-        store
-            .record_read(Some("s"), Path::new("main.rs"), 3, 3)
-            .unwrap();
-        let patch = concat!(
-            "*** Begin Patch\n",
-            "*** Update File: main.rs\n",
-            "@@\n",
-            " one\n",
-            "+inserted\n",
-            " two\n",
-            "*** End Patch\n",
-        );
-        let outcome = crate::apply_patch::apply(patch, temp.path(), false).unwrap();
-        store
-            .record_applied_changes(Some("s"), "test", &outcome.changes)
-            .unwrap();
-
-        let authored = store
-            .check_guard(Some("s"), Path::new("main.rs"), 2, 2, GuardAction::Block)
-            .unwrap();
-        assert_eq!(authored.decision, GuardAction::Allow);
-        let shifted = store
-            .check_guard(Some("s"), Path::new("main.rs"), 4, 4, GuardAction::Block)
-            .unwrap();
-        assert_eq!(shifted.decision, GuardAction::Allow);
-        let unread = store
-            .check_guard(Some("s"), Path::new("main.rs"), 5, 5, GuardAction::Block)
-            .unwrap();
-        assert_eq!(unread.decision, GuardAction::Block);
-        assert_eq!(unread.reason, GuardReason::OutOfRange);
-    }
-
-    #[test]
-    fn patch_coverage_transforms_replacements_and_deletions() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::write(temp.path().join("main.rs"), "one\ntwo\nthree\nfour\n").unwrap();
-        let mut store = LensStore::open_in_memory_for_tests(temp.path()).unwrap();
-        store
-            .record_read(Some("s"), Path::new("main.rs"), 3, 3)
-            .unwrap();
-        let replace = concat!(
-            "*** Begin Patch\n",
-            "*** Update File: main.rs\n",
-            "@@\n",
-            " one\n",
-            "-two\n",
-            "+TWO\n",
-            " three\n",
-            "*** End Patch\n",
-        );
-        let outcome = crate::apply_patch::apply(replace, temp.path(), false).unwrap();
-        store
-            .record_applied_changes(Some("s"), "test", &outcome.changes)
-            .unwrap();
-
-        let authored = store
-            .check_guard(Some("s"), Path::new("main.rs"), 2, 2, GuardAction::Block)
-            .unwrap();
-        assert_eq!(authored.decision, GuardAction::Allow);
-        let preserved = store
-            .check_guard(Some("s"), Path::new("main.rs"), 3, 3, GuardAction::Block)
-            .unwrap();
-        assert_eq!(preserved.decision, GuardAction::Allow);
-
-        let delete = concat!(
-            "*** Begin Patch\n",
-            "*** Update File: main.rs\n",
-            "@@\n",
-            " TWO\n",
-            "-three\n",
-            " four\n",
-            "*** End Patch\n",
-        );
-        let outcome = crate::apply_patch::apply(delete, temp.path(), false).unwrap();
-        store
-            .record_applied_changes(Some("s"), "test", &outcome.changes)
-            .unwrap();
-        let shifted_after_delete = store
-            .check_guard(Some("s"), Path::new("main.rs"), 3, 3, GuardAction::Block)
-            .unwrap();
-        assert_eq!(shifted_after_delete.decision, GuardAction::Block);
-        assert_eq!(shifted_after_delete.reason, GuardReason::OutOfRange);
-    }
-
-    #[test]
-    fn patch_coverage_treats_formatting_changes_as_authored() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::write(temp.path().join("main.rs"), "fn main(){\nprintln!();\n}\n").unwrap();
-        let mut store = LensStore::open_in_memory_for_tests(temp.path()).unwrap();
-        let patch = concat!(
-            "*** Begin Patch\n",
-            "*** Update File: main.rs\n",
-            "@@\n",
-            "-fn main(){\n",
-            "-println!();\n",
-            "+fn main() {\n",
-            "+    println!();\n",
-            " }\n",
-            "*** End Patch\n",
-        );
-        let outcome = crate::apply_patch::apply(patch, temp.path(), false).unwrap();
-        store
-            .record_applied_changes(Some("s"), "test", &outcome.changes)
-            .unwrap();
-
-        let decision = store
-            .check_guard(Some("s"), Path::new("main.rs"), 1, 2, GuardAction::Block)
-            .unwrap();
-        assert_eq!(decision.decision, GuardAction::Allow);
-        assert_eq!(decision.reason, GuardReason::Covered);
-    }
-
-    #[test]
-    fn guard_override_is_not_consumed_unless_policy_allows_overrides() {
-        let temp = code_project();
-        let mut store = LensStore::open_in_memory_for_tests(temp.path()).unwrap();
-        store.allow_once(Some("s"), Path::new("main.rs")).unwrap();
-
-        let disabled = store
-            .check_guard(Some("s"), Path::new("main.rs"), 1, 1, GuardAction::Block)
-            .unwrap();
-        assert_eq!(disabled.decision, GuardAction::Block);
-        assert_eq!(disabled.reason, GuardReason::ZeroRead);
-
-        let enabled = store
-            .check_guard_with_overrides(
-                Some("s"),
-                Path::new("main.rs"),
-                1,
-                1,
-                GuardAction::Block,
-                true,
-            )
-            .unwrap();
-        assert_eq!(enabled.decision, GuardAction::Allow);
-        assert_eq!(enabled.reason, GuardReason::ExplicitOverride);
-    }
-
-    fn code_project() -> tempfile::TempDir {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::write(
-            temp.path().join("main.rs"),
-            "fn main() {\n    println!();\n}\n",
-        )
-        .unwrap();
-        temp
     }
 }
