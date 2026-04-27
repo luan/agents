@@ -46,7 +46,7 @@ struct DiagnosticsIn {
     start_line: Option<i64>,
     end_line: Option<i64>,
     fingerprint: Option<String>,
-    snapshot: Option<Value>,
+    snapshot: Option<crate::lens::DiagnosticSnapshotInput>,
     detail: Option<bool>,
     raw: Option<bool>,
 }
@@ -685,9 +685,7 @@ fn diagnostics_snapshot_envelope(
     let root = cwd(input.cwd.clone())?;
     let mut store = crate::lens::LensStore::open_for_project(&root)
         .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-    let snapshot_value = required(input.snapshot.clone(), "snapshot")?;
-    let snapshot: crate::lens::DiagnosticSnapshotInput = serde_json::from_value(snapshot_value)
-        .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
+    let snapshot = required(input.snapshot.clone(), "snapshot")?;
     let result = store
         .record_diagnostic_snapshot(snapshot)
         .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
@@ -1149,5 +1147,16 @@ mod tests {
                 .any(|name| name == "discover" || name == "guard")
         );
         assert!(names.iter().all(|name| !name.starts_with("lens_")));
+    }
+
+    #[test]
+    fn diagnostics_schema_exposes_typed_snapshot_input() {
+        let schema = serde_json::to_value(schemars::schema_for!(DiagnosticsIn)).unwrap();
+        let snapshot = &schema["properties"]["snapshot"];
+        let variants = snapshot["anyOf"].as_array().unwrap();
+
+        assert!(snapshot.is_object());
+        assert!(variants.iter().any(|variant| variant["$ref"].is_string()));
+        assert!(variants.iter().any(|variant| variant["type"] == "null"));
     }
 }
