@@ -445,6 +445,67 @@ impl LensStore {
         Ok(range)
     }
 
+    fn record_coverage_ranges(
+        &mut self,
+        session_id: Option<&str>,
+        path: &Path,
+        file_hash: &str,
+        ranges: &[ReadCoverageRange],
+        source: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if ranges.is_empty() {
+            return Ok(());
+        }
+        let snapshot = self.file_snapshot(path)?;
+        let session_id = session_id.unwrap_or("default");
+        let now = now_ms();
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "INSERT INTO sessions(id, project_id, agent, started_at, last_seen_at, status)
+             VALUES(?1, ?2, NULL, ?3, ?3, 'active')
+             ON CONFLICT(id) DO UPDATE SET last_seen_at=excluded.last_seen_at, status='active'",
+            params![session_id, self.project_id, now],
+        )?;
+        tx.execute(
+            "INSERT INTO files(project_id, rel_path, language, ignored, hash, mtime_ns, size_bytes, line_count)
+             VALUES(?1, ?2, ?3, 0, ?4, ?5, ?6, ?7)
+             ON CONFLICT(project_id, rel_path) DO UPDATE SET
+                language=excluded.language,
+                hash=excluded.hash,
+                mtime_ns=excluded.mtime_ns,
+                size_bytes=excluded.size_bytes,
+                line_count=excluded.line_count",
+            params![
+                self.project_id,
+                snapshot.rel_path,
+                snapshot.language,
+                file_hash,
+                snapshot.mtime_ns,
+                snapshot.size_bytes,
+                snapshot.line_count
+            ],
+        )?;
+        let file_id: i64 = tx.query_row(
+            "SELECT id FROM files WHERE project_id=?1 AND rel_path=?2",
+            params![self.project_id, snapshot.rel_path],
+            |row| row.get(0),
+        )?;
+        tx.execute(
+            "INSERT INTO read_events(session_id, file_id, file_hash, source, created_at)
+             VALUES(?1, ?2, ?3, ?4, ?5)",
+            params![session_id, file_id, file_hash, source, now],
+        )?;
+        let read_event_id = tx.last_insert_rowid();
+        for range in ranges {
+            tx.execute(
+                "INSERT INTO read_ranges(read_event_id, start_line, end_line) VALUES(?1, ?2, ?3)",
+                params![read_event_id, range.start_line, range.end_line],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn check_guard(
         &mut self,
         session_id: Option<&str>,
@@ -603,27 +664,34 @@ impl LensStore {
         tool: &str,
         changes: &[crate::apply_patch::FileChange],
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let effective_session = session_id.unwrap_or("default");
         for change in changes {
             if matches!(change.kind, crate::apply_patch::ChangeType::Delete) {
                 continue;
             }
-            let path = change.move_path.as_deref().unwrap_or(&change.path);
-            if change.post_apply_regions.is_empty() {
-                if let Some(new_content) = &change.new_content {
-                    let line_count = new_content.lines().count().max(1) as i64;
-                    self.record_read(session_id, Path::new(path), 1, line_count)?;
-                }
+            let new_path = change.move_path.as_deref().unwrap_or(&change.path);
+            let snapshot = self.file_snapshot(Path::new(new_path))?;
+            let Some(new_hash) = snapshot.hash.as_deref() else {
+                continue;
+            };
+            let source_path = if matches!(change.kind, crate::apply_patch::ChangeType::Move) {
+                change.path.as_str()
             } else {
-                for region in &change.post_apply_regions {
-                    if region.lines.is_empty() {
-                        continue;
-                    }
-                    let start = region.start_line as i64;
-                    let end = start + region.lines.len() as i64 - 1;
-                    self.record_read(session_id, Path::new(path), start, end)?;
-                }
-            }
-            self.record_patch_event(session_id, Path::new(path), tool, change)?;
+                new_path
+            };
+            let old_ranges = match change.old_hash.as_deref() {
+                Some(old_hash) => self.covered_ranges(effective_session, source_path, old_hash)?,
+                None => Vec::new(),
+            };
+            let ranges = transformed_patch_coverage(&old_ranges, &change.line_changes);
+            self.record_coverage_ranges(
+                Some(effective_session),
+                Path::new(new_path),
+                new_hash,
+                &ranges,
+                "ct_lens_patch_coverage",
+            )?;
+            self.record_patch_event(session_id, Path::new(new_path), tool, change)?;
         }
         Ok(())
     }
@@ -1222,20 +1290,21 @@ impl LensStore {
         )?;
         self.conn.execute(
             "INSERT INTO patch_events(session_id, file_id, old_hash, new_hash, tool, accepted, created_at)
-             VALUES(?1, ?2, NULL, ?3, ?4, 1, ?5)",
-            params![session_id, file_id, new_hash, tool, now_ms()],
+             VALUES(?1, ?2, ?3, ?4, ?5, 1, ?6)",
+            params![session_id, file_id, change.old_hash.as_deref(), new_hash, tool, now_ms()],
         )?;
         let patch_event_id = self.conn.last_insert_rowid();
-        for region in &change.post_apply_regions {
-            if region.lines.is_empty() {
-                continue;
-            }
-            let start = region.start_line as i64;
-            let end = start + region.lines.len() as i64 - 1;
+        for line_change in &change.line_changes {
             self.conn.execute(
                 "INSERT INTO patch_hunks(patch_event_id, old_start, old_end, new_start, new_end)
-                 VALUES(?1, NULL, NULL, ?2, ?3)",
-                params![patch_event_id, start, end],
+                 VALUES(?1, ?2, ?3, ?4, ?5)",
+                params![
+                    patch_event_id,
+                    line_change.old_start.map(|value| value as i64),
+                    line_change.old_end.map(|value| value as i64),
+                    line_change.new_start.map(|value| value as i64),
+                    line_change.new_end.map(|value| value as i64)
+                ],
             )?;
         }
         Ok(())
@@ -1641,6 +1710,125 @@ pub struct StoreCounts {
     pub diagnostic_snapshots: i64,
     pub patch_drafts: i64,
     pub patch_draft_bodies: i64,
+}
+
+fn transformed_patch_coverage(
+    old_ranges: &[ReadCoverageRange],
+    line_changes: &[crate::apply_patch::LineChange],
+) -> Vec<ReadCoverageRange> {
+    let mut changes: Vec<&crate::apply_patch::LineChange> = line_changes
+        .iter()
+        .filter(|change| change.old_start.is_some())
+        .collect();
+    changes.sort_by_key(|change| change.old_start.unwrap_or(usize::MAX));
+
+    let mut ranges = Vec::new();
+    for old_range in old_ranges {
+        let mut cursor = old_range.start_line;
+        for change in &changes {
+            let change_start = change.old_start.unwrap_or(usize::MAX) as i64;
+            if change_start > old_range.end_line + 1 {
+                break;
+            }
+            if change.old_len == 0 {
+                if change_start > cursor && change_start <= old_range.end_line {
+                    push_mapped_unchanged_range(&mut ranges, cursor, change_start - 1, &changes);
+                    cursor = change_start;
+                }
+                continue;
+            }
+
+            let change_end = change_start + change.old_len as i64 - 1;
+            if change_end < cursor {
+                continue;
+            }
+            if change_start > old_range.end_line {
+                break;
+            }
+            if cursor < change_start {
+                push_mapped_unchanged_range(
+                    &mut ranges,
+                    cursor,
+                    (change_start - 1).min(old_range.end_line),
+                    &changes,
+                );
+            }
+            cursor = cursor.max(change_end + 1);
+            if cursor > old_range.end_line {
+                break;
+            }
+        }
+        if cursor <= old_range.end_line {
+            push_mapped_unchanged_range(&mut ranges, cursor, old_range.end_line, &changes);
+        }
+    }
+
+    for change in line_changes {
+        if change.new_len == 0 {
+            continue;
+        }
+        if let (Some(start), Some(end)) = (change.new_start, change.new_end) {
+            ranges.push(ReadCoverageRange {
+                start_line: start as i64,
+                end_line: end as i64,
+            });
+        }
+    }
+
+    merge_ranges(ranges)
+}
+
+fn push_mapped_unchanged_range(
+    out: &mut Vec<ReadCoverageRange>,
+    old_start: i64,
+    old_end: i64,
+    changes: &[&crate::apply_patch::LineChange],
+) {
+    if old_start > old_end {
+        return;
+    }
+    let delta = line_delta_before(old_start, changes);
+    out.push(ReadCoverageRange {
+        start_line: old_start + delta,
+        end_line: old_end + delta,
+    });
+}
+
+fn line_delta_before(line: i64, changes: &[&crate::apply_patch::LineChange]) -> i64 {
+    let mut delta = 0_i64;
+    for change in changes {
+        let Some(start) = change.old_start else {
+            continue;
+        };
+        let start = start as i64;
+        if change.old_len == 0 {
+            if start <= line {
+                delta += change.new_len as i64;
+            }
+            continue;
+        }
+        let end = start + change.old_len as i64 - 1;
+        if end < line {
+            delta += change.new_len as i64 - change.old_len as i64;
+        }
+    }
+    delta
+}
+
+fn merge_ranges(mut ranges: Vec<ReadCoverageRange>) -> Vec<ReadCoverageRange> {
+    ranges.retain(|range| range.start_line <= range.end_line);
+    ranges.sort_by_key(|range| (range.start_line, range.end_line));
+    let mut merged: Vec<ReadCoverageRange> = Vec::new();
+    for range in ranges {
+        if let Some(last) = merged.last_mut()
+            && range.start_line <= last.end_line + 1
+        {
+            last.end_line = last.end_line.max(range.end_line);
+            continue;
+        }
+        merged.push(range);
+    }
+    merged
 }
 
 fn now_ms() -> i64 {
@@ -2578,6 +2766,123 @@ mod tests {
         assert!(matches!(new_file.decision, GuardAction::Allow));
         assert!(matches!(docs.decision, GuardAction::Allow));
         assert!(matches!(generated.decision, GuardAction::Allow));
+    }
+
+    #[test]
+    fn patch_coverage_transforms_insertions_and_blocks_unread_lines() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("main.rs"), "one\ntwo\nthree\nfour\n").unwrap();
+        let mut store = LensStore::open_in_memory_for_tests(temp.path()).unwrap();
+        store
+            .record_read(Some("s"), Path::new("main.rs"), 3, 3)
+            .unwrap();
+        let patch = concat!(
+            "*** Begin Patch\n",
+            "*** Update File: main.rs\n",
+            "@@\n",
+            " one\n",
+            "+inserted\n",
+            " two\n",
+            "*** End Patch\n",
+        );
+        let outcome = crate::apply_patch::apply(patch, temp.path(), false).unwrap();
+        store
+            .record_applied_changes(Some("s"), "test", &outcome.changes)
+            .unwrap();
+
+        let authored = store
+            .check_guard(Some("s"), Path::new("main.rs"), 2, 2, GuardAction::Block)
+            .unwrap();
+        assert_eq!(authored.decision, GuardAction::Allow);
+        let shifted = store
+            .check_guard(Some("s"), Path::new("main.rs"), 4, 4, GuardAction::Block)
+            .unwrap();
+        assert_eq!(shifted.decision, GuardAction::Allow);
+        let unread = store
+            .check_guard(Some("s"), Path::new("main.rs"), 5, 5, GuardAction::Block)
+            .unwrap();
+        assert_eq!(unread.decision, GuardAction::Block);
+        assert_eq!(unread.reason, GuardReason::OutOfRange);
+    }
+
+    #[test]
+    fn patch_coverage_transforms_replacements_and_deletions() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("main.rs"), "one\ntwo\nthree\nfour\n").unwrap();
+        let mut store = LensStore::open_in_memory_for_tests(temp.path()).unwrap();
+        store
+            .record_read(Some("s"), Path::new("main.rs"), 3, 3)
+            .unwrap();
+        let replace = concat!(
+            "*** Begin Patch\n",
+            "*** Update File: main.rs\n",
+            "@@\n",
+            " one\n",
+            "-two\n",
+            "+TWO\n",
+            " three\n",
+            "*** End Patch\n",
+        );
+        let outcome = crate::apply_patch::apply(replace, temp.path(), false).unwrap();
+        store
+            .record_applied_changes(Some("s"), "test", &outcome.changes)
+            .unwrap();
+
+        let authored = store
+            .check_guard(Some("s"), Path::new("main.rs"), 2, 2, GuardAction::Block)
+            .unwrap();
+        assert_eq!(authored.decision, GuardAction::Allow);
+        let preserved = store
+            .check_guard(Some("s"), Path::new("main.rs"), 3, 3, GuardAction::Block)
+            .unwrap();
+        assert_eq!(preserved.decision, GuardAction::Allow);
+
+        let delete = concat!(
+            "*** Begin Patch\n",
+            "*** Update File: main.rs\n",
+            "@@\n",
+            " TWO\n",
+            "-three\n",
+            " four\n",
+            "*** End Patch\n",
+        );
+        let outcome = crate::apply_patch::apply(delete, temp.path(), false).unwrap();
+        store
+            .record_applied_changes(Some("s"), "test", &outcome.changes)
+            .unwrap();
+        let shifted_after_delete = store
+            .check_guard(Some("s"), Path::new("main.rs"), 3, 3, GuardAction::Block)
+            .unwrap();
+        assert_eq!(shifted_after_delete.decision, GuardAction::Block);
+        assert_eq!(shifted_after_delete.reason, GuardReason::OutOfRange);
+    }
+
+    #[test]
+    fn patch_coverage_treats_formatting_changes_as_authored() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("main.rs"), "fn main(){\nprintln!();\n}\n").unwrap();
+        let mut store = LensStore::open_in_memory_for_tests(temp.path()).unwrap();
+        let patch = concat!(
+            "*** Begin Patch\n",
+            "*** Update File: main.rs\n",
+            "@@\n",
+            "-fn main(){\n",
+            "-println!();\n",
+            "+fn main() {\n",
+            "+    println!();\n",
+            " }\n",
+            "*** End Patch\n",
+        );
+        let outcome = crate::apply_patch::apply(patch, temp.path(), false).unwrap();
+        store
+            .record_applied_changes(Some("s"), "test", &outcome.changes)
+            .unwrap();
+
+        let decision = store
+            .check_guard(Some("s"), Path::new("main.rs"), 1, 2, GuardAction::Block)
+            .unwrap();
+        assert_eq!(decision.decision, GuardAction::Allow);
+        assert_eq!(decision.reason, GuardReason::Covered);
     }
 
     #[test]

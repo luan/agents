@@ -12,8 +12,8 @@ use serde::Deserialize;
 
 use crate::apply_patch::{
     self, AnchorAttempt, ApplyFailure, ApplyOutcome, ApplyPatchError, CallRecord, ChangeType,
-    FileCallEntry, FileChange, Fingerprint, HunkFuzzy, HunkRegion, MAX_PATCH_SIZE_BYTES, Telemetry,
-    enrich, sha1_hex,
+    FileCallEntry, FileChange, Fingerprint, HunkFuzzy, HunkRegion, LineChange,
+    MAX_PATCH_SIZE_BYTES, Telemetry, enrich, sha1_hex,
 };
 
 // ---------------------------------------------------------------------------
@@ -313,6 +313,8 @@ struct FileChangeOut<'a> {
     /// and for any hunk whose change was purely additive at end-of-file.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     post_apply_regions: Vec<HunkRegion>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    line_changes: Vec<LineChange>,
     /// Only present on dry_run or when a chunk needed fuzzy matching — skip
     /// the echo on routine exact-match applies to keep responses small.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -337,6 +339,7 @@ fn to_out(c: &FileChange, dry_run: bool) -> FileChangeOut<'_> {
         move_path: c.move_path.as_deref(),
         fuzzy_hunks: c.fuzzy_hunks.clone(),
         post_apply_regions: c.post_apply_regions.clone(),
+        line_changes: c.line_changes.clone(),
         unified_diff: if dry_run || !c.fuzzy_hunks.is_empty() {
             Some(c.unified_diff.as_str())
         } else {

@@ -22,10 +22,14 @@ pub struct FileChange {
     pub path: String,
     #[serde(rename = "type")]
     pub kind: ChangeType,
+    #[serde(skip)]
+    pub old_hash: Option<String>,
     pub additions: usize,
     pub deletions: usize,
     pub unified_diff: String,
     pub move_path: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub line_changes: Vec<LineChange>,
     /// Per-hunk fuzzy-match report. Empty when every chunk matched exactly.
     /// Entries name only the chunks that needed fuzzy matching (trim /
     /// normalise); callers may echo the diff when the list is non-empty.
@@ -55,6 +59,25 @@ pub struct HunkRegion {
     pub chunk: usize,
     pub start_line: usize,
     pub lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct LineChange {
+    /// 0-based index of the chunk within the file's Update section.
+    pub chunk: usize,
+    /// 1-based first old line touched by this changed run. For insertions,
+    /// this is the old line before which the new run was inserted; EOF
+    /// insertions use old line count + 1.
+    pub old_start: Option<usize>,
+    /// 1-based last old line removed/replaced by this run. Empty for pure
+    /// insertions and add-file changes.
+    pub old_end: Option<usize>,
+    /// 1-based first new line authored by this run. Empty for pure deletions.
+    pub new_start: Option<usize>,
+    /// 1-based last new line authored by this run. Empty for pure deletions.
+    pub new_end: Option<usize>,
+    pub old_len: usize,
+    pub new_len: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -275,13 +298,24 @@ pub fn plan(patch: &str, cwd: &Path) -> Result<ApplyOutcome, Box<ApplyFailure>> 
                     ));
                 }
                 let (diff_text, additions, deletions) = unified_diff(&rel, "", &contents);
+                let line_count = contents.lines().count().max(1);
                 changes.push(FileChange {
                     path: rel,
                     kind: ChangeType::Add,
+                    old_hash: None,
                     additions,
                     deletions,
                     unified_diff: diff_text,
                     move_path: None,
+                    line_changes: vec![LineChange {
+                        chunk: 0,
+                        old_start: None,
+                        old_end: None,
+                        new_start: Some(1),
+                        new_end: Some(line_count),
+                        old_len: 0,
+                        new_len: line_count,
+                    }],
                     fuzzy_hunks: Vec::new(),
                     post_apply_regions: Vec::new(),
                     new_content: Some(contents),
@@ -293,16 +327,28 @@ pub fn plan(patch: &str, cwd: &Path) -> Result<ApplyOutcome, Box<ApplyFailure>> 
                 let rel = display_rel(&path);
                 let (original, fp) =
                     read_file(&abs, &rel).map_err(|e| fail(e, &attempts, &fingerprints))?;
+                let old_hash = fp.sha1.clone();
                 fingerprints.push((rel.clone(), fp));
+                let old_line_count = original.lines().count().max(1);
                 let (diff_text, additions, deletions) = unified_diff(&rel, &original, "");
                 pending_deletes.insert(abs);
                 changes.push(FileChange {
                     path: rel,
                     kind: ChangeType::Delete,
+                    old_hash: Some(old_hash),
                     additions,
                     deletions,
                     unified_diff: diff_text,
                     move_path: None,
+                    line_changes: vec![LineChange {
+                        chunk: 0,
+                        old_start: Some(1),
+                        old_end: Some(old_line_count),
+                        new_start: None,
+                        new_end: None,
+                        old_len: old_line_count,
+                        new_len: 0,
+                    }],
                     fuzzy_hunks: Vec::new(),
                     post_apply_regions: Vec::new(),
                     new_content: None,
@@ -318,8 +364,9 @@ pub fn plan(patch: &str, cwd: &Path) -> Result<ApplyOutcome, Box<ApplyFailure>> 
                 let rel = display_rel(&path);
                 let (original, fp) =
                     read_file(&abs, &rel).map_err(|e| fail(e, &attempts, &fingerprints))?;
+                let old_hash = fp.sha1.clone();
                 fingerprints.push((rel.clone(), fp));
-                let (new_content, fuzzy_hunks, post_apply_regions) =
+                let (new_content, fuzzy_hunks, post_apply_regions, line_changes) =
                     derive_new_contents(&original, &chunks, &rel, &mut attempts).map_err(
                         |err| fail(chunk_failure_to_error(err, &rel), &attempts, &fingerprints),
                     )?;
@@ -344,10 +391,12 @@ pub fn plan(patch: &str, cwd: &Path) -> Result<ApplyOutcome, Box<ApplyFailure>> 
                         changes.push(FileChange {
                             path: rel,
                             kind: ChangeType::Move,
+                            old_hash: Some(old_hash),
                             additions,
                             deletions,
                             unified_diff: diff_text,
                             move_path: Some(dest_rel),
+                            line_changes,
                             fuzzy_hunks,
                             post_apply_regions,
                             new_content: Some(new_content),
@@ -359,10 +408,12 @@ pub fn plan(patch: &str, cwd: &Path) -> Result<ApplyOutcome, Box<ApplyFailure>> 
                         changes.push(FileChange {
                             path: rel,
                             kind: ChangeType::Update,
+                            old_hash: Some(old_hash),
                             additions,
                             deletions,
                             unified_diff: diff_text,
                             move_path: None,
+                            line_changes,
                             fuzzy_hunks,
                             post_apply_regions,
                             new_content: Some(new_content),
@@ -689,7 +740,7 @@ fn derive_new_contents(
     chunks: &[UpdateFileChunk],
     file_rel: &str,
     attempts: &mut Vec<AnchorAttempt>,
-) -> Result<(String, Vec<HunkFuzzy>, Vec<HunkRegion>), ChunkFailure> {
+) -> Result<(String, Vec<HunkFuzzy>, Vec<HunkRegion>, Vec<LineChange>), ChunkFailure> {
     let mut original_lines: Vec<String> = original.split('\n').map(String::from).collect();
     if original_lines.last().is_some_and(String::is_empty) {
         original_lines.pop();
@@ -698,20 +749,27 @@ fn derive_new_contents(
     let (replacements, fuzzy_hunks) =
         compute_replacements(&original_lines, chunks, file_rel, attempts)?;
     let regions_meta = plan_post_apply_regions(&replacements);
+    let line_changes = plan_line_changes(&replacements);
     let mut new_lines = apply_replacements(original_lines, replacements);
     if !new_lines.last().is_some_and(String::is_empty) {
         new_lines.push(String::new());
     }
     let regions = materialize_regions(&new_lines, &regions_meta);
-    Ok((new_lines.join("\n"), fuzzy_hunks, regions))
+    Ok((new_lines.join("\n"), fuzzy_hunks, regions, line_changes))
 }
 
 #[derive(Debug)]
 struct Replacement {
     chunk: usize,
     start: usize,
-    old_len: usize,
+    old: Vec<String>,
     new: Vec<String>,
+}
+
+impl Replacement {
+    fn old_len(&self) -> usize {
+        self.old.len()
+    }
 }
 
 type Replacements = Vec<Replacement>;
@@ -730,9 +788,107 @@ fn plan_post_apply_regions(replacements: &[Replacement]) -> Vec<(usize, usize, u
     for r in replacements {
         let new_start = (r.start as isize + delta).max(0) as usize;
         out.push((r.chunk, new_start, r.new.len()));
-        delta += r.new.len() as isize - r.old_len as isize;
+        delta += r.new.len() as isize - r.old_len() as isize;
     }
     out
+}
+
+fn plan_line_changes(replacements: &[Replacement]) -> Vec<LineChange> {
+    let mut out = Vec::new();
+    let mut delta: isize = 0;
+    for r in replacements {
+        let new_start = (r.start as isize + delta).max(0) as usize;
+        out.extend(line_changes_for_replacement(r, new_start));
+        delta += r.new.len() as isize - r.old_len() as isize;
+    }
+    out
+}
+
+fn line_changes_for_replacement(r: &Replacement, replacement_new_start: usize) -> Vec<LineChange> {
+    if r.old.is_empty() || r.new.is_empty() {
+        return vec![line_change(
+            r.chunk,
+            r.start,
+            r.old_len(),
+            replacement_new_start,
+            r.new.len(),
+        )];
+    }
+
+    let equal_pairs = lcs_equal_pairs(&r.old, &r.new);
+    let mut changes = Vec::new();
+    let mut old_cursor = 0;
+    let mut new_cursor = 0;
+    for (old_idx, new_idx) in equal_pairs {
+        if old_idx > old_cursor || new_idx > new_cursor {
+            changes.push(line_change(
+                r.chunk,
+                r.start + old_cursor,
+                old_idx - old_cursor,
+                replacement_new_start + new_cursor,
+                new_idx - new_cursor,
+            ));
+        }
+        old_cursor = old_idx + 1;
+        new_cursor = new_idx + 1;
+    }
+    if old_cursor < r.old.len() || new_cursor < r.new.len() {
+        changes.push(line_change(
+            r.chunk,
+            r.start + old_cursor,
+            r.old.len() - old_cursor,
+            replacement_new_start + new_cursor,
+            r.new.len() - new_cursor,
+        ));
+    }
+    changes
+}
+
+fn line_change(
+    chunk: usize,
+    old_start_zero: usize,
+    old_len: usize,
+    new_start_zero: usize,
+    new_len: usize,
+) -> LineChange {
+    LineChange {
+        chunk,
+        old_start: Some(old_start_zero + 1),
+        old_end: (old_len > 0).then_some(old_start_zero + old_len),
+        new_start: (new_len > 0).then_some(new_start_zero + 1),
+        new_end: (new_len > 0).then_some(new_start_zero + new_len),
+        old_len,
+        new_len,
+    }
+}
+
+fn lcs_equal_pairs(old: &[String], new: &[String]) -> Vec<(usize, usize)> {
+    let mut dp = vec![vec![0_usize; new.len() + 1]; old.len() + 1];
+    for old_idx in (0..old.len()).rev() {
+        for new_idx in (0..new.len()).rev() {
+            dp[old_idx][new_idx] = if old[old_idx] == new[new_idx] {
+                dp[old_idx + 1][new_idx + 1] + 1
+            } else {
+                dp[old_idx + 1][new_idx].max(dp[old_idx][new_idx + 1])
+            };
+        }
+    }
+
+    let mut pairs = Vec::new();
+    let mut old_idx = 0;
+    let mut new_idx = 0;
+    while old_idx < old.len() && new_idx < new.len() {
+        if old[old_idx] == new[new_idx] {
+            pairs.push((old_idx, new_idx));
+            old_idx += 1;
+            new_idx += 1;
+        } else if dp[old_idx + 1][new_idx] >= dp[old_idx][new_idx + 1] {
+            old_idx += 1;
+        } else {
+            new_idx += 1;
+        }
+    }
+    pairs
 }
 
 /// Slice a padded window out of the post-apply file for each hunk.
@@ -859,7 +1015,7 @@ fn compute_replacements(
             replacements.push(Replacement {
                 chunk: chunk_index,
                 start: insertion_idx,
-                old_len: 0,
+                old: Vec::new(),
                 new: chunk.new_lines.clone(),
             });
             attempts.push(AnchorAttempt {
@@ -890,7 +1046,7 @@ fn compute_replacements(
                 replacements.push(Replacement {
                     chunk: chunk_index,
                     start: idx,
-                    old_len: pattern.len(),
+                    old: pattern.to_vec(),
                     new: new_slice.to_vec(),
                 });
                 line_index = idx + pattern.len();
@@ -1233,7 +1389,7 @@ fn apply_replacements(mut lines: Vec<String>, replacements: Replacements) -> Vec
     // moves owned `String`s into place without cloning.
     for r in replacements.into_iter().rev() {
         let start = r.start.min(lines.len());
-        let end = (r.start + r.old_len).min(lines.len());
+        let end = (r.start + r.old_len()).min(lines.len());
         lines.splice(start..end, r.new);
     }
     lines
@@ -1394,6 +1550,72 @@ mod tests {
         let new_content = changes[0].new_content.as_deref().unwrap();
         let new_lines: Vec<&str> = new_content.lines().collect();
         assert_eq!(new_lines[regions[0].start_line - 1], expected_first);
+    }
+
+    #[test]
+    fn line_changes_describe_authored_runs_without_context() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("lib.rs"), "one\ntwo\nthree\nfour\n").unwrap();
+        let patch = concat!(
+            "*** Begin Patch\n",
+            "*** Update File: lib.rs\n",
+            "@@\n",
+            " one\n",
+            "-two\n",
+            "+TWO\n",
+            "+two and a half\n",
+            " three\n",
+            "*** End Patch\n",
+        );
+
+        let outcome = plan(patch, tmp.path()).unwrap();
+        let changes = &outcome.changes[0].line_changes;
+        assert_eq!(
+            changes,
+            &[LineChange {
+                chunk: 0,
+                old_start: Some(2),
+                old_end: Some(2),
+                new_start: Some(2),
+                new_end: Some(3),
+                old_len: 1,
+                new_len: 2,
+            }]
+        );
+    }
+
+    #[test]
+    fn line_changes_track_insertions_and_deletions() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("lib.rs"), "one\ntwo\nthree\n").unwrap();
+        let insert = concat!(
+            "*** Begin Patch\n",
+            "*** Update File: lib.rs\n",
+            "@@\n",
+            "+four\n",
+            "*** End Patch\n",
+        );
+        let inserted = plan(insert, tmp.path()).unwrap();
+        assert_eq!(inserted.changes[0].line_changes[0].old_start, Some(4));
+        assert_eq!(inserted.changes[0].line_changes[0].new_start, Some(4));
+        assert_eq!(inserted.changes[0].line_changes[0].old_len, 0);
+        assert_eq!(inserted.changes[0].line_changes[0].new_len, 1);
+
+        let delete = concat!(
+            "*** Begin Patch\n",
+            "*** Update File: lib.rs\n",
+            "@@\n",
+            " one\n",
+            "-two\n",
+            " three\n",
+            "*** End Patch\n",
+        );
+        let deleted = plan(delete, tmp.path()).unwrap();
+        assert_eq!(deleted.changes[0].line_changes[0].old_start, Some(2));
+        assert_eq!(deleted.changes[0].line_changes[0].old_end, Some(2));
+        assert_eq!(deleted.changes[0].line_changes[0].new_start, None);
+        assert_eq!(deleted.changes[0].line_changes[0].old_len, 1);
+        assert_eq!(deleted.changes[0].line_changes[0].new_len, 0);
     }
 
     #[test]

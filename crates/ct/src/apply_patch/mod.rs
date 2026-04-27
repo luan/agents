@@ -9,7 +9,7 @@ mod tests;
 
 pub use apply::{
     ApplyFailure, ApplyOutcome, ApplyPatchError, ChangeType, FileChange, HunkFuzzy, HunkRegion,
-    apply,
+    LineChange, apply,
 };
 pub use telemetry::{
     AnchorAttempt, CallRecord, FileCallEntry, Fingerprint, Telemetry, enrich, sha1_hex,
