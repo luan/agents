@@ -9,6 +9,7 @@ pub struct RetentionPolicy {
     pub max_sessions: i64,
     pub max_patch_drafts: i64,
     pub max_patch_draft_bodies: i64,
+    pub max_raw_outputs: i64,
 }
 
 impl Default for RetentionPolicy {
@@ -19,6 +20,7 @@ impl Default for RetentionPolicy {
             max_sessions: 500,
             max_patch_drafts: 500,
             max_patch_draft_bodies: 100,
+            max_raw_outputs: 1_000,
         }
     }
 }
@@ -30,6 +32,7 @@ pub struct PruneReport {
     pub sessions_deleted: i64,
     pub patch_drafts_deleted: i64,
     pub patch_draft_bodies_deleted: i64,
+    pub raw_outputs_deleted: i64,
     pub dry_run: bool,
 }
 
@@ -45,12 +48,17 @@ pub fn prune(
         let patch_drafts_deleted = overflow_count(conn, "patch_drafts", policy.max_patch_drafts)?;
         let patch_draft_bodies_deleted =
             overflow_count(conn, "patch_draft_bodies", policy.max_patch_draft_bodies)?;
+        let raw_output_overflow = overflow_count(conn, "raw_outputs", policy.max_raw_outputs)?;
+        let raw_output_expired = expired_count(conn, "raw_outputs")?;
+        let raw_outputs_deleted = raw_output_overflow + raw_output_expired;
         if !dry_run {
             delete_overflow(conn, "diagnostics", policy.max_diagnostics)?;
             delete_overflow(conn, "tool_runs", policy.max_tool_runs)?;
             delete_overflow(conn, "sessions", policy.max_sessions)?;
             delete_overflow(conn, "patch_drafts", policy.max_patch_drafts)?;
             delete_overflow(conn, "patch_draft_bodies", policy.max_patch_draft_bodies)?;
+            delete_expired(conn, "raw_outputs")?;
+            delete_overflow(conn, "raw_outputs", policy.max_raw_outputs)?;
             conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
         }
         Ok(PruneReport {
@@ -59,6 +67,7 @@ pub fn prune(
             sessions_deleted,
             patch_drafts_deleted,
             patch_draft_bodies_deleted,
+            raw_outputs_deleted,
             dry_run,
         })
     })
@@ -71,10 +80,37 @@ fn overflow_count(conn: &rusqlite::Connection, table: &str, max: i64) -> rusqlit
     Ok((total - max).max(0))
 }
 
+fn expired_count(conn: &rusqlite::Connection, table: &str) -> rusqlite::Result<i64> {
+    conn.query_row(
+        &format!("SELECT COUNT(*) FROM {table} WHERE expires_at <= ?1"),
+        rusqlite::params![now_ms()],
+        |row| row.get(0),
+    )
+}
+
+fn delete_expired(conn: &rusqlite::Connection, table: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        &format!("DELETE FROM {table} WHERE expires_at <= ?1"),
+        rusqlite::params![now_ms()],
+    )?;
+    Ok(())
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 fn delete_overflow(conn: &rusqlite::Connection, table: &str, max: i64) -> rusqlite::Result<()> {
+    let key = match table {
+        "patch_draft_bodies" => "patch_id",
+        _ => "id",
+    };
     conn.execute(
         &format!(
-            "DELETE FROM {table} WHERE id IN (SELECT id FROM {table} ORDER BY id ASC LIMIT (SELECT MAX(COUNT(*) - ?1, 0) FROM {table}))"
+            "DELETE FROM {table} WHERE {key} IN (SELECT {key} FROM {table} ORDER BY {key} ASC LIMIT (SELECT MAX(COUNT(*) - ?1, 0) FROM {table}))"
         ),
         rusqlite::params![max],
     )?;
@@ -84,7 +120,9 @@ fn delete_overflow(conn: &rusqlite::Connection, table: &str, max: i64) -> rusqli
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lens::{Diagnostic, DiagnosticSeverity, DiagnosticSource, LensStore};
+    use crate::lens::{
+        Diagnostic, DiagnosticScope, DiagnosticSeverity, DiagnosticSource, LensStore,
+    };
 
     #[test]
     fn prune_dry_run_reports_without_deleting_state() {
@@ -95,6 +133,7 @@ mod tests {
             store
                 .record_diagnostics(&[Diagnostic {
                     source: DiagnosticSource::Test,
+                    scope: DiagnosticScope::file("main.rs"),
                     severity: DiagnosticSeverity::Warning,
                     code: None,
                     message: format!("warning {index}"),
@@ -103,6 +142,11 @@ mod tests {
                     end_line: Some(1),
                     fingerprint: format!("warning-{index}"),
                     content_hash: None,
+                    raw_output_id: None,
+                    snapshot_id: None,
+                    first_seen_at: None,
+                    last_seen_at: None,
+                    resolved_at: None,
                 }])
                 .unwrap();
         }

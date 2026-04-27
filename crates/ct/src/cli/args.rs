@@ -356,6 +356,10 @@ pub enum LensDiagnosticsAction {
         json: bool,
         #[arg(long, help = "Diagnostic source")]
         source: String,
+        #[arg(long, help = "Diagnostic scope kind (workspace, file, command)")]
+        scope_kind: Option<String>,
+        #[arg(long, help = "Diagnostic scope key")]
+        scope_key: Option<String>,
         #[arg(long, help = "Diagnostic severity: error, warning, info, hint")]
         severity: String,
         #[arg(long, help = "Path for the diagnostic")]
@@ -370,6 +374,13 @@ pub enum LensDiagnosticsAction {
         end_line: Option<i64>,
         #[arg(long, help = "Stable diagnostic fingerprint")]
         fingerprint: Option<String>,
+    },
+    #[command(about = "Record a replacing diagnostic snapshot from JSON stdin")]
+    Snapshot {
+        #[arg(long, help = "Working directory")]
+        cwd: Option<String>,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
     },
 }
 

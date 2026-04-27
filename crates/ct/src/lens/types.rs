@@ -46,6 +46,8 @@ pub enum DiagnosticSource {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Diagnostic {
     pub source: DiagnosticSource,
+    #[serde(default)]
+    pub scope: DiagnosticScope,
     pub severity: DiagnosticSeverity,
     pub code: Option<String>,
     pub message: String,
@@ -54,6 +56,142 @@ pub struct Diagnostic {
     pub end_line: Option<i64>,
     pub fingerprint: String,
     pub content_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_output_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_seen_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct DiagnosticScope {
+    pub kind: String,
+    pub key: String,
+}
+
+impl DiagnosticScope {
+    pub fn workspace() -> Self {
+        Self {
+            kind: "workspace".to_string(),
+            key: String::new(),
+        }
+    }
+
+    pub fn file(path: impl Into<String>) -> Self {
+        Self {
+            kind: "file".to_string(),
+            key: path.into(),
+        }
+    }
+
+    pub fn command(command: impl Into<String>) -> Self {
+        Self {
+            kind: "command".to_string(),
+            key: command.into(),
+        }
+    }
+}
+
+impl Default for DiagnosticScope {
+    fn default() -> Self {
+        Self::workspace()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiagnosticDeltaStatus {
+    New,
+    Resolved,
+    Unchanged,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct DiagnosticSnapshotMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiagnosticSnapshotInput {
+    pub source: DiagnosticSource,
+    #[serde(default)]
+    pub scope: DiagnosticScope,
+    #[serde(default)]
+    pub diagnostics: Vec<Diagnostic>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_output: Option<String>,
+    #[serde(default)]
+    pub metadata: DiagnosticSnapshotMetadata,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RawOutputRef {
+    pub id: i64,
+    pub original_bytes: i64,
+    pub retained_bytes: i64,
+    pub truncated: bool,
+    pub redacted: bool,
+    pub expires_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiagnosticDeltaSet {
+    pub new: Vec<Diagnostic>,
+    pub resolved: Vec<Diagnostic>,
+    pub unchanged: Vec<Diagnostic>,
+}
+
+impl DiagnosticDeltaSet {
+    pub fn empty() -> Self {
+        Self {
+            new: Vec::new(),
+            resolved: Vec::new(),
+            unchanged: Vec::new(),
+        }
+    }
+
+    pub fn count(&self) -> usize {
+        self.new.len() + self.resolved.len() + self.unchanged.len()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiagnosticSnapshotResult {
+    pub project_id: i64,
+    pub snapshot_id: i64,
+    pub source: DiagnosticSource,
+    pub scope: DiagnosticScope,
+    pub raw_output: Option<RawOutputRef>,
+    pub diagnostic_count: usize,
+    pub deltas: DiagnosticDeltaSet,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiagnosticRelevance {
+    pub changed_files: Vec<String>,
+    pub read_files: Vec<String>,
+    pub all: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiagnosticListData {
+    pub project_id: i64,
+    pub path: Option<String>,
+    pub diagnostics: Vec<Diagnostic>,
+    pub diagnostic_count: usize,
+    pub deltas: DiagnosticDeltaSet,
+    pub delta_count: usize,
+    pub relevance: DiagnosticRelevance,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

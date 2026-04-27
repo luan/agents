@@ -461,3 +461,116 @@ fn lens_diagnostics_record_and_list_round_trip() {
         .stdout(predicate::str::contains("watch this"))
         .stdout(predicate::str::contains("\"diagnostic_count\": 1"));
 }
+
+#[test]
+fn lens_diagnostics_snapshot_reports_deltas_and_all_flag() {
+    let (bp, _remote) = setup_blueprints();
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+    fs::write(project.path().join("main.rs"), "fn main() {}\n").expect("write source");
+    let first = serde_json::json!({
+        "source": "test",
+        "scope": {"kind": "command", "key": "cargo test"},
+        "diagnostics": [{
+            "source": "test",
+            "scope": {"kind": "command", "key": "cargo test"},
+            "severity": "warning",
+            "message": "kept",
+            "rel_path": "main.rs",
+            "start_line": 1,
+            "end_line": 1,
+            "fingerprint": "kept",
+            "content_hash": null
+        }, {
+            "source": "test",
+            "scope": {"kind": "command", "key": "cargo test"},
+            "severity": "error",
+            "message": "gone",
+            "rel_path": "main.rs",
+            "start_line": 1,
+            "end_line": 1,
+            "fingerprint": "gone",
+            "content_hash": null
+        }],
+        "raw_output": "token=secret-value\ncompiler output",
+        "metadata": {"command": "cargo test", "exit_code": 1}
+    });
+    ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .args(["lens", "diagnostics", "snapshot", "--json"])
+        .write_stdin(first.to_string())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"redacted\": true"));
+
+    let second = serde_json::json!({
+        "source": "test",
+        "scope": {"kind": "command", "key": "cargo test"},
+        "diagnostics": [{
+            "source": "test",
+            "scope": {"kind": "command", "key": "cargo test"},
+            "severity": "warning",
+            "message": "kept",
+            "rel_path": "main.rs",
+            "start_line": 1,
+            "end_line": 1,
+            "fingerprint": "kept",
+            "content_hash": null
+        }, {
+            "source": "test",
+            "scope": {"kind": "command", "key": "cargo test"},
+            "severity": "warning",
+            "message": "new",
+            "rel_path": "main.rs",
+            "start_line": 1,
+            "end_line": 1,
+            "fingerprint": "new",
+            "content_hash": null
+        }],
+        "metadata": {"command": "cargo test", "exit_code": 1}
+    });
+    let assert = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .args(["lens", "diagnostics", "snapshot", "--json"])
+        .write_stdin(second.to_string())
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("snapshot json");
+    assert_eq!(value["schema_version"], "lens.response.v1");
+    assert_eq!(value["data"]["deltas"]["new"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        value["data"]["deltas"]["resolved"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        value["data"]["deltas"]["unchanged"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let assert = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .args(["lens", "diagnostics", "list", "--all", "--json"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("list json");
+    assert_eq!(value["data"]["diagnostic_count"], 2);
+    assert_eq!(value["data"]["relevance"]["all"], true);
+    assert_eq!(
+        value["data"]["deltas"]["resolved"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}

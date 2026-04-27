@@ -161,7 +161,18 @@ fn diagnostics(file_path: Option<String>, json: bool) -> Result<(), Box<dyn std:
             let lens_diagnostics = lsp_diagnostics_for_store(&path, &diagnostics)?;
             let root = std::env::current_dir()?;
             let mut store = crate::lens::LensStore::open_for_project(&root)?;
-            store.record_diagnostics(&lens_diagnostics)?;
+            store.record_diagnostic_snapshot(crate::lens::DiagnosticSnapshotInput {
+                source: crate::lens::DiagnosticSource::Lsp,
+                scope: crate::lens::DiagnosticScope::file(
+                    lens_diagnostics
+                        .first()
+                        .and_then(|diagnostic| diagnostic.rel_path.clone())
+                        .unwrap_or_else(|| path.display().to_string()),
+                ),
+                diagnostics: lens_diagnostics.clone(),
+                raw_output: Some(serde_json::to_string(&diagnostics)?),
+                metadata: crate::lens::DiagnosticSnapshotMetadata::default(),
+            })?;
             let out = serde_json::json!({
                 "filePath": path,
                 "server": probe,
@@ -298,6 +309,7 @@ fn lsp_diagnostics_for_store(
             );
             crate::lens::Diagnostic {
                 source: crate::lens::DiagnosticSource::Lsp,
+                scope: crate::lens::DiagnosticScope::file(rel_path.clone()),
                 severity,
                 code,
                 message,
@@ -306,6 +318,11 @@ fn lsp_diagnostics_for_store(
                 end_line,
                 fingerprint,
                 content_hash: None,
+                raw_output_id: None,
+                snapshot_id: None,
+                first_seen_at: None,
+                last_seen_at: None,
+                resolved_at: None,
             }
         })
         .collect())

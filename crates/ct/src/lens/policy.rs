@@ -99,6 +99,7 @@ struct RetentionPolicyConfig {
     max_sessions: Option<i64>,
     max_patch_drafts: Option<i64>,
     max_patch_draft_bodies: Option<i64>,
+    max_raw_outputs: Option<i64>,
 }
 
 pub fn resolve_policy(root: &Path) -> ResolvedLensPolicy {
@@ -215,6 +216,9 @@ fn apply_config(config: LensPolicyConfig, policy: &mut LensPolicy) {
         }
         if let Some(max) = retention.max_patch_draft_bodies {
             policy.retention.max_patch_draft_bodies = max;
+        }
+        if let Some(max) = retention.max_raw_outputs {
+            policy.retention.max_raw_outputs = max;
         }
     }
 }

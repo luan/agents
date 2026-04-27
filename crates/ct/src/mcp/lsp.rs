@@ -164,7 +164,21 @@ impl LspMcpServer {
         let mut store = crate::lens::LensStore::open_for_project(&root)
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
         store
-            .record_diagnostics(&lens_diagnostics)
+            .record_diagnostic_snapshot(crate::lens::DiagnosticSnapshotInput {
+                source: crate::lens::DiagnosticSource::Lsp,
+                scope: crate::lens::DiagnosticScope::file(
+                    lens_diagnostics
+                        .first()
+                        .and_then(|diagnostic| diagnostic.rel_path.clone())
+                        .unwrap_or_else(|| path.display().to_string()),
+                ),
+                diagnostics: lens_diagnostics.clone(),
+                raw_output: Some(
+                    serde_json::to_string(&diagnostics)
+                        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?,
+                ),
+                metadata: crate::lens::DiagnosticSnapshotMetadata::default(),
+            })
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
         json_success(&json!({
             "filePath": path,
@@ -274,6 +288,7 @@ fn lsp_diagnostics_for_store(
             );
             crate::lens::Diagnostic {
                 source: crate::lens::DiagnosticSource::Lsp,
+                scope: crate::lens::DiagnosticScope::file(rel_path.clone()),
                 severity,
                 code,
                 message,
@@ -282,6 +297,11 @@ fn lsp_diagnostics_for_store(
                 end_line,
                 fingerprint,
                 content_hash: None,
+                raw_output_id: None,
+                snapshot_id: None,
+                first_seen_at: None,
+                last_seen_at: None,
+                resolved_at: None,
             }
         })
         .collect())

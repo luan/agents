@@ -1,17 +1,22 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::UNIX_EPOCH;
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use sha1::{Digest, Sha1};
 
 use super::paths;
+use super::raw_output;
 use super::types::{
-    Diagnostic, DiagnosticSeverity, DiagnosticSource, GuardAction, GuardDecision, GuardReason,
-    LensToolEventPhase, LensTouchedFile, LensTouchedFileSource, LensTurnEvent, PatchCandidate,
-    PatchDraftChunk, PatchDraftSummary, ReadCoverageRange,
+    Diagnostic, DiagnosticDeltaSet, DiagnosticDeltaStatus, DiagnosticListData, DiagnosticRelevance,
+    DiagnosticScope, DiagnosticSeverity, DiagnosticSnapshotInput, DiagnosticSnapshotResult,
+    DiagnosticSource, GuardAction, GuardDecision, GuardReason, LensToolEventPhase, LensTouchedFile,
+    LensTouchedFileSource, LensTurnEvent, PatchCandidate, PatchDraftChunk, PatchDraftSummary,
+    RawOutputRef, ReadCoverageRange,
 };
 
-const SCHEMA_VERSION: i32 = 5;
+const SCHEMA_VERSION: i32 = 6;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS projects (
@@ -154,11 +159,40 @@ CREATE TABLE IF NOT EXISTS patch_affected_symbols (
     new_end INTEGER
 );
 
+CREATE TABLE IF NOT EXISTS raw_outputs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    scope_kind TEXT NOT NULL,
+    scope_key TEXT NOT NULL,
+    body TEXT NOT NULL,
+    original_bytes INTEGER NOT NULL,
+    retained_bytes INTEGER NOT NULL,
+    truncated INTEGER NOT NULL,
+    redacted INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS diagnostic_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    scope_kind TEXT NOT NULL,
+    scope_key TEXT NOT NULL,
+    raw_output_id INTEGER REFERENCES raw_outputs(id) ON DELETE SET NULL,
+    metadata_json TEXT NOT NULL,
+    diagnostic_count INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS diagnostics (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     file_id INTEGER REFERENCES files(id) ON DELETE CASCADE,
     source TEXT NOT NULL,
+    scope_kind TEXT NOT NULL DEFAULT 'workspace',
+    scope_key TEXT NOT NULL DEFAULT '',
     severity TEXT NOT NULL,
     code TEXT,
     message TEXT NOT NULL,
@@ -166,8 +200,21 @@ CREATE TABLE IF NOT EXISTS diagnostics (
     end_line INTEGER,
     fingerprint TEXT NOT NULL,
     content_hash TEXT,
+    raw_output_id INTEGER REFERENCES raw_outputs(id) ON DELETE SET NULL,
+    snapshot_id INTEGER REFERENCES diagnostic_snapshots(id) ON DELETE SET NULL,
     created_at INTEGER NOT NULL,
-    UNIQUE(project_id, source, fingerprint)
+    first_seen_at INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL,
+    resolved_at INTEGER,
+    resolved_snapshot_id INTEGER REFERENCES diagnostic_snapshots(id) ON DELETE SET NULL,
+    UNIQUE(project_id, source, scope_kind, scope_key, fingerprint)
+);
+
+CREATE TABLE IF NOT EXISTS diagnostic_snapshot_deltas (
+    snapshot_id INTEGER NOT NULL REFERENCES diagnostic_snapshots(id) ON DELETE CASCADE,
+    diagnostic_id INTEGER NOT NULL REFERENCES diagnostics(id) ON DELETE CASCADE,
+    status TEXT NOT NULL,
+    PRIMARY KEY(snapshot_id, diagnostic_id, status)
 );
 
 CREATE TABLE IF NOT EXISTS tool_runs (
@@ -230,6 +277,9 @@ CREATE TABLE IF NOT EXISTS retention_metadata (
 
 CREATE INDEX IF NOT EXISTS idx_files_project_rel ON files(project_id, rel_path);
 CREATE INDEX IF NOT EXISTS idx_diagnostics_project_file ON diagnostics(project_id, file_id);
+CREATE INDEX IF NOT EXISTS idx_diagnostics_project_scope ON diagnostics(project_id, source, scope_kind, scope_key, resolved_at);
+CREATE INDEX IF NOT EXISTS idx_diagnostic_snapshots_project_scope ON diagnostic_snapshots(project_id, source, scope_kind, scope_key, created_at);
+CREATE INDEX IF NOT EXISTS idx_raw_outputs_project_expires ON raw_outputs(project_id, expires_at);
 CREATE INDEX IF NOT EXISTS idx_read_events_session_file ON read_events(session_id, file_id);
 CREATE INDEX IF NOT EXISTS idx_guard_overrides_project_session_path ON guard_overrides(project_id, session_id, rel_path, consumed);
 CREATE INDEX IF NOT EXISTS idx_patch_drafts_project_status ON patch_drafts(project_id, status);
@@ -271,6 +321,7 @@ impl LensStore {
     fn init(conn: Connection, root: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "busy_timeout", 5000)?;
+        conn.pragma_update(None, "foreign_keys", "ON")?;
         let current: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         if current > SCHEMA_VERSION {
             return Err(format!(
@@ -279,6 +330,9 @@ impl LensStore {
             .into());
         }
         if current < SCHEMA_VERSION {
+            if current > 0 && current < 6 {
+                migrate_diagnostics_to_v6(&conn)?;
+            }
             conn.execute_batch(SCHEMA)?;
             if current > 0 && current < 4 {
                 migrate_patch_candidates_to_v4(&conn)?;
@@ -316,6 +370,8 @@ impl LensStore {
             sessions: self.count("sessions")?,
             diagnostics: self.count("diagnostics")?,
             tool_runs: self.count("tool_runs")?,
+            raw_outputs: self.count("raw_outputs")?,
+            diagnostic_snapshots: self.count("diagnostic_snapshots")?,
             patch_drafts: self.count("patch_drafts")?,
             patch_draft_bodies: self.count("patch_draft_bodies")?,
         })
@@ -595,14 +651,16 @@ impl LensStore {
         diagnostics: &[Diagnostic],
     ) -> Result<(), Box<dyn std::error::Error>> {
         for diagnostic in diagnostics {
+            let now = now_ms();
             let file_id = match diagnostic.rel_path.as_deref() {
                 Some(path) => Some(self.ensure_file_row(Path::new(path))?),
                 None => None,
             };
+            let fingerprint = normalized_fingerprint(diagnostic);
             self.conn.execute(
-                "INSERT INTO diagnostics(project_id, file_id, source, severity, code, message, start_line, end_line, fingerprint, content_hash, created_at)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
-                 ON CONFLICT(project_id, source, fingerprint) DO UPDATE SET
+                "INSERT INTO diagnostics(project_id, file_id, source, scope_kind, scope_key, severity, code, message, start_line, end_line, fingerprint, content_hash, raw_output_id, snapshot_id, created_at, first_seen_at, last_seen_at, resolved_at)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15, ?15, NULL)
+                 ON CONFLICT(project_id, source, scope_kind, scope_key, fingerprint) DO UPDATE SET
                     file_id=excluded.file_id,
                     severity=excluded.severity,
                     code=excluded.code,
@@ -610,23 +668,116 @@ impl LensStore {
                     start_line=excluded.start_line,
                     end_line=excluded.end_line,
                     content_hash=excluded.content_hash,
-                    created_at=excluded.created_at",
+                    raw_output_id=COALESCE(excluded.raw_output_id, diagnostics.raw_output_id),
+                    snapshot_id=COALESCE(excluded.snapshot_id, diagnostics.snapshot_id),
+                    created_at=excluded.created_at,
+                    last_seen_at=excluded.last_seen_at,
+                    resolved_at=NULL",
                 params![
                     self.project_id,
                     file_id,
                     diagnostic_source(&diagnostic.source),
+                    diagnostic.scope.kind,
+                    diagnostic.scope.key,
                     diagnostic_severity(&diagnostic.severity),
                     diagnostic.code,
                     diagnostic.message,
                     diagnostic.start_line,
                     diagnostic.end_line,
-                    diagnostic.fingerprint,
+                    fingerprint,
                     diagnostic.content_hash,
-                    now_ms()
+                    diagnostic.raw_output_id,
+                    diagnostic.snapshot_id,
+                    now
                 ],
             )?;
         }
         Ok(())
+    }
+
+    pub fn record_diagnostic_snapshot(
+        &mut self,
+        snapshot: DiagnosticSnapshotInput,
+    ) -> Result<DiagnosticSnapshotResult, Box<dyn std::error::Error>> {
+        let now = now_ms();
+        let source_text = diagnostic_source(&snapshot.source);
+        let metadata_json = serde_json::to_string(&snapshot.metadata)?;
+        let raw_output = match snapshot.raw_output.as_deref() {
+            Some(raw) => {
+                Some(self.insert_raw_output(&snapshot.source, &snapshot.scope, raw, now)?)
+            }
+            None => None,
+        };
+        let raw_output_id = raw_output.as_ref().map(|raw| raw.id);
+        self.conn.execute(
+            "INSERT INTO diagnostic_snapshots(project_id, source, scope_kind, scope_key, raw_output_id, metadata_json, diagnostic_count, created_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                self.project_id,
+                source_text,
+                snapshot.scope.kind,
+                snapshot.scope.key,
+                raw_output_id,
+                metadata_json,
+                snapshot.diagnostics.len() as i64,
+                now
+            ],
+        )?;
+        let snapshot_id = self.conn.last_insert_rowid();
+        let previous = self.active_diagnostic_ids(&snapshot.source, &snapshot.scope)?;
+        let mut seen = BTreeSet::new();
+        let mut deltas = DiagnosticDeltaSet::empty();
+
+        for input in &snapshot.diagnostics {
+            let mut diagnostic = input.clone();
+            diagnostic.source = snapshot.source.clone();
+            diagnostic.scope = snapshot.scope.clone();
+            diagnostic.raw_output_id = raw_output_id;
+            diagnostic.snapshot_id = Some(snapshot_id);
+            let fingerprint = normalized_fingerprint(&diagnostic);
+            seen.insert(fingerprint.clone());
+            let status = if previous.contains_key(&fingerprint) {
+                DiagnosticDeltaStatus::Unchanged
+            } else {
+                DiagnosticDeltaStatus::New
+            };
+            let id = self.upsert_snapshot_diagnostic(
+                &diagnostic,
+                &fingerprint,
+                snapshot_id,
+                raw_output_id,
+                now,
+            )?;
+            self.record_snapshot_delta(snapshot_id, id, &status)?;
+            let stored = self.diagnostic_by_id(id)?;
+            match status {
+                DiagnosticDeltaStatus::New => deltas.new.push(stored),
+                DiagnosticDeltaStatus::Unchanged => deltas.unchanged.push(stored),
+                DiagnosticDeltaStatus::Resolved => unreachable!(),
+            }
+        }
+
+        for (fingerprint, id) in previous {
+            if seen.contains(&fingerprint) {
+                continue;
+            }
+            self.conn.execute(
+                "UPDATE diagnostics SET resolved_at=?1, resolved_snapshot_id=?2, last_seen_at=?1 WHERE id=?3",
+                params![now, snapshot_id, id],
+            )?;
+            self.record_snapshot_delta(snapshot_id, id, &DiagnosticDeltaStatus::Resolved)?;
+            deltas.resolved.push(self.diagnostic_by_id(id)?);
+        }
+
+        Ok(DiagnosticSnapshotResult {
+            project_id: self.project_id,
+            snapshot_id,
+            source: snapshot.source,
+            scope: snapshot.scope,
+            raw_output,
+            diagnostic_count: snapshot.diagnostics.len(),
+            deltas,
+        })
     }
 
     pub fn list_diagnostics(
@@ -634,26 +785,322 @@ impl LensStore {
         rel_path: Option<&str>,
     ) -> Result<Vec<Diagnostic>, Box<dyn std::error::Error>> {
         let mut stmt = self.conn.prepare(
-            "SELECT d.source, d.severity, d.code, d.message, f.rel_path, d.start_line, d.end_line, d.fingerprint, d.content_hash
+            "SELECT d.id, d.source, d.scope_kind, d.scope_key, d.severity, d.code, d.message, f.rel_path, d.start_line, d.end_line, d.fingerprint, d.content_hash, d.raw_output_id, d.snapshot_id, d.first_seen_at, d.last_seen_at, d.resolved_at
              FROM diagnostics d
              LEFT JOIN files f ON f.id = d.file_id
-             WHERE d.project_id=?1 AND (?2 IS NULL OR f.rel_path=?2)
+             WHERE d.project_id=?1 AND d.resolved_at IS NULL AND (?2 IS NULL OR f.rel_path=?2)
              ORDER BY f.rel_path, d.start_line, d.severity, d.message",
         )?;
-        let rows = stmt.query_map(params![self.project_id, rel_path], |row| {
-            Ok(Diagnostic {
-                source: parse_diagnostic_source(row.get::<_, String>(0)?.as_str()),
-                severity: parse_diagnostic_severity(row.get::<_, String>(1)?.as_str()),
-                code: row.get(2)?,
-                message: row.get(3)?,
-                rel_path: row.get(4)?,
-                start_line: row.get(5)?,
-                end_line: row.get(6)?,
-                fingerprint: row.get(7)?,
-                content_hash: row.get(8)?,
-            })
-        })?;
+        let rows = stmt.query_map(params![self.project_id, rel_path], diagnostic_from_row)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn list_diagnostics_data(
+        &self,
+        rel_path: Option<&str>,
+        all: bool,
+    ) -> Result<DiagnosticListData, Box<dyn std::error::Error>> {
+        let (changed_files, read_files) = self.relevant_file_sets()?;
+        let active = self.query_diagnostics(rel_path, false)?;
+        let latest_snapshot_id = self.latest_snapshot_id()?;
+        let mut deltas = match latest_snapshot_id {
+            Some(snapshot_id) => self.snapshot_deltas(snapshot_id, rel_path)?,
+            None => DiagnosticDeltaSet::empty(),
+        };
+        let diagnostics = if all || rel_path.is_some() {
+            active
+        } else {
+            let mut relevant = changed_files.clone();
+            relevant.extend(read_files.iter().cloned());
+            active
+                .into_iter()
+                .filter(|diagnostic| {
+                    if self.diagnostic_path_ignored(diagnostic) {
+                        return false;
+                    }
+                    deltas.new.iter().any(|new| {
+                        new.fingerprint == diagnostic.fingerprint
+                            && new.scope == diagnostic.scope
+                            && new.source == diagnostic.source
+                    }) || diagnostic
+                        .rel_path
+                        .as_ref()
+                        .is_some_and(|path| relevant.contains(path))
+                })
+                .collect()
+        };
+        if !all && rel_path.is_none() {
+            let relevant: BTreeSet<_> = changed_files
+                .iter()
+                .chain(read_files.iter())
+                .cloned()
+                .collect();
+            filter_delta_set(&mut deltas, &relevant);
+            deltas
+                .new
+                .retain(|diagnostic| !self.diagnostic_path_ignored(diagnostic));
+            deltas
+                .resolved
+                .retain(|diagnostic| !self.diagnostic_path_ignored(diagnostic));
+            deltas
+                .unchanged
+                .retain(|diagnostic| !self.diagnostic_path_ignored(diagnostic));
+        }
+        Ok(DiagnosticListData {
+            project_id: self.project_id,
+            path: rel_path.map(str::to_string),
+            diagnostic_count: diagnostics.len(),
+            diagnostics,
+            delta_count: deltas.count(),
+            deltas,
+            relevance: DiagnosticRelevance {
+                changed_files: changed_files.into_iter().collect(),
+                read_files: read_files.into_iter().collect(),
+                all,
+            },
+        })
+    }
+
+    fn insert_raw_output(
+        &self,
+        source: &DiagnosticSource,
+        scope: &DiagnosticScope,
+        raw: &str,
+        now: i64,
+    ) -> Result<RawOutputRef, Box<dyn std::error::Error>> {
+        let sanitized = raw_output::sanitize(raw, raw_output::DEFAULT_RAW_OUTPUT_MAX_BYTES);
+        let expires_at = raw_output::expires_at(now, raw_output::DEFAULT_RAW_OUTPUT_TTL_DAYS);
+        self.conn.execute(
+            "INSERT INTO raw_outputs(project_id, source, scope_kind, scope_key, body, original_bytes, retained_bytes, truncated, redacted, created_at, expires_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                self.project_id,
+                diagnostic_source(source),
+                scope.kind,
+                scope.key,
+                sanitized.body,
+                sanitized.original_bytes,
+                sanitized.retained_bytes,
+                sanitized.truncated,
+                sanitized.redacted,
+                now,
+                expires_at
+            ],
+        )?;
+        Ok(raw_output::ref_from_row(
+            self.conn.last_insert_rowid(),
+            sanitized.original_bytes,
+            sanitized.retained_bytes,
+            sanitized.truncated,
+            sanitized.redacted,
+            expires_at,
+        ))
+    }
+
+    fn active_diagnostic_ids(
+        &self,
+        source: &DiagnosticSource,
+        scope: &DiagnosticScope,
+    ) -> Result<BTreeMap<String, i64>, rusqlite::Error> {
+        let mut stmt = self.conn.prepare(
+            "SELECT fingerprint, id FROM diagnostics
+             WHERE project_id=?1 AND source=?2 AND scope_kind=?3 AND scope_key=?4 AND resolved_at IS NULL",
+        )?;
+        let rows = stmt.query_map(
+            params![
+                self.project_id,
+                diagnostic_source(source),
+                scope.kind,
+                scope.key
+            ],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )?;
+        rows.collect()
+    }
+
+    fn upsert_snapshot_diagnostic(
+        &mut self,
+        diagnostic: &Diagnostic,
+        fingerprint: &str,
+        snapshot_id: i64,
+        raw_output_id: Option<i64>,
+        now: i64,
+    ) -> Result<i64, Box<dyn std::error::Error>> {
+        let file_id = match diagnostic.rel_path.as_deref() {
+            Some(path) => Some(self.ensure_file_row(Path::new(path))?),
+            None => None,
+        };
+        self.conn.execute(
+            "INSERT INTO diagnostics(project_id, file_id, source, scope_kind, scope_key, severity, code, message, start_line, end_line, fingerprint, content_hash, raw_output_id, snapshot_id, created_at, first_seen_at, last_seen_at, resolved_at, resolved_snapshot_id)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15, ?15, NULL, NULL)
+             ON CONFLICT(project_id, source, scope_kind, scope_key, fingerprint) DO UPDATE SET
+                file_id=excluded.file_id,
+                severity=excluded.severity,
+                code=excluded.code,
+                message=excluded.message,
+                start_line=excluded.start_line,
+                end_line=excluded.end_line,
+                content_hash=excluded.content_hash,
+                raw_output_id=excluded.raw_output_id,
+                snapshot_id=excluded.snapshot_id,
+                created_at=excluded.created_at,
+                last_seen_at=excluded.last_seen_at,
+                resolved_at=NULL,
+                resolved_snapshot_id=NULL",
+            params![
+                self.project_id,
+                file_id,
+                diagnostic_source(&diagnostic.source),
+                diagnostic.scope.kind,
+                diagnostic.scope.key,
+                diagnostic_severity(&diagnostic.severity),
+                diagnostic.code,
+                diagnostic.message,
+                diagnostic.start_line,
+                diagnostic.end_line,
+                fingerprint,
+                diagnostic.content_hash,
+                raw_output_id,
+                snapshot_id,
+                now
+            ],
+        )?;
+        Ok(self.conn.query_row(
+            "SELECT id FROM diagnostics WHERE project_id=?1 AND source=?2 AND scope_kind=?3 AND scope_key=?4 AND fingerprint=?5",
+            params![
+                self.project_id,
+                diagnostic_source(&diagnostic.source),
+                diagnostic.scope.kind,
+                diagnostic.scope.key,
+                fingerprint
+            ],
+            |row| row.get(0),
+        )?)
+    }
+
+    fn record_snapshot_delta(
+        &self,
+        snapshot_id: i64,
+        diagnostic_id: i64,
+        status: &DiagnosticDeltaStatus,
+    ) -> Result<(), rusqlite::Error> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO diagnostic_snapshot_deltas(snapshot_id, diagnostic_id, status) VALUES(?1, ?2, ?3)",
+            params![snapshot_id, diagnostic_id, delta_status(status)],
+        )?;
+        Ok(())
+    }
+
+    fn diagnostic_by_id(&self, id: i64) -> Result<Diagnostic, rusqlite::Error> {
+        self.conn.query_row(
+            "SELECT d.id, d.source, d.scope_kind, d.scope_key, d.severity, d.code, d.message, f.rel_path, d.start_line, d.end_line, d.fingerprint, d.content_hash, d.raw_output_id, d.snapshot_id, d.first_seen_at, d.last_seen_at, d.resolved_at
+             FROM diagnostics d
+             LEFT JOIN files f ON f.id = d.file_id
+             WHERE d.id=?1",
+            params![id],
+            diagnostic_from_row,
+        )
+    }
+
+    fn latest_snapshot_id(&self) -> Result<Option<i64>, rusqlite::Error> {
+        self.conn
+            .query_row(
+                "SELECT id FROM diagnostic_snapshots WHERE project_id=?1 ORDER BY created_at DESC, id DESC LIMIT 1",
+                params![self.project_id],
+                |row| row.get(0),
+            )
+            .optional()
+    }
+
+    fn query_diagnostics(
+        &self,
+        rel_path: Option<&str>,
+        include_resolved: bool,
+    ) -> Result<Vec<Diagnostic>, Box<dyn std::error::Error>> {
+        let resolved_filter = if include_resolved {
+            ""
+        } else {
+            "AND d.resolved_at IS NULL"
+        };
+        let sql = format!(
+            "SELECT d.id, d.source, d.scope_kind, d.scope_key, d.severity, d.code, d.message, f.rel_path, d.start_line, d.end_line, d.fingerprint, d.content_hash, d.raw_output_id, d.snapshot_id, d.first_seen_at, d.last_seen_at, d.resolved_at
+             FROM diagnostics d
+             LEFT JOIN files f ON f.id = d.file_id
+             WHERE d.project_id=?1 {resolved_filter} AND (?2 IS NULL OR f.rel_path=?2)
+             ORDER BY f.rel_path, d.start_line, d.severity, d.message"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![self.project_id, rel_path], diagnostic_from_row)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    fn snapshot_deltas(
+        &self,
+        snapshot_id: i64,
+        rel_path: Option<&str>,
+    ) -> Result<DiagnosticDeltaSet, Box<dyn std::error::Error>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT sd.status, d.id, d.source, d.scope_kind, d.scope_key, d.severity, d.code, d.message, f.rel_path, d.start_line, d.end_line, d.fingerprint, d.content_hash, d.raw_output_id, d.snapshot_id, d.first_seen_at, d.last_seen_at, d.resolved_at
+             FROM diagnostic_snapshot_deltas sd
+             JOIN diagnostics d ON d.id = sd.diagnostic_id
+             LEFT JOIN files f ON f.id = d.file_id
+             WHERE sd.snapshot_id=?1 AND (?2 IS NULL OR f.rel_path=?2)
+             ORDER BY sd.status, f.rel_path, d.start_line, d.message",
+        )?;
+        let rows = stmt.query_map(params![snapshot_id, rel_path], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                diagnostic_from_row_offset(row, 1)?,
+            ))
+        })?;
+        let mut out = DiagnosticDeltaSet::empty();
+        for row in rows {
+            let (status, diagnostic) = row?;
+            match status.as_str() {
+                "new" => out.new.push(diagnostic),
+                "resolved" => out.resolved.push(diagnostic),
+                _ => out.unchanged.push(diagnostic),
+            }
+        }
+        Ok(out)
+    }
+
+    fn relevant_file_sets(&self) -> Result<(BTreeSet<String>, BTreeSet<String>), rusqlite::Error> {
+        let mut changed = BTreeSet::new();
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT rel_path FROM turn_touched_files
+             WHERE project_id=?1 AND ignored=0 AND generated=0
+             ORDER BY rel_path",
+        )?;
+        for row in stmt.query_map(params![self.project_id], |row| row.get::<_, String>(0))? {
+            changed.insert(row?);
+        }
+
+        let mut read = BTreeSet::new();
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT f.rel_path
+             FROM read_events re
+             JOIN files f ON f.id = re.file_id
+             WHERE f.project_id=?1 AND f.ignored=0
+             ORDER BY f.rel_path",
+        )?;
+        for row in stmt.query_map(params![self.project_id], |row| row.get::<_, String>(0))? {
+            read.insert(row?);
+        }
+        Ok((changed, read))
+    }
+
+    fn diagnostic_path_ignored(&self, diagnostic: &Diagnostic) -> bool {
+        let Some(path) = diagnostic.rel_path.as_deref() else {
+            return false;
+        };
+        self.conn
+            .query_row(
+                "SELECT ignored FROM files WHERE project_id=?1 AND rel_path=?2",
+                params![self.project_id, path],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap_or(false)
     }
 
     fn record_patch_event(
@@ -716,31 +1163,58 @@ impl LensStore {
     }
 
     fn ensure_file_row(&mut self, path: &Path) -> Result<i64, Box<dyn std::error::Error>> {
-        let snapshot = self.file_snapshot(path)?;
+        let rel_path = self.rel_path(path);
+        let ignored = self.is_ignored_path(&rel_path);
+        let snapshot = self.file_snapshot(path).ok();
+        let language = snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.language.clone())
+            .or_else(|| {
+                Path::new(&rel_path)
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(str::to_string)
+            });
+        let hash = snapshot.as_ref().and_then(|snapshot| snapshot.hash.clone());
+        let mtime_ns = snapshot.as_ref().and_then(|snapshot| snapshot.mtime_ns);
+        let size_bytes = snapshot.as_ref().and_then(|snapshot| snapshot.size_bytes);
+        let line_count = snapshot.as_ref().and_then(|snapshot| snapshot.line_count);
         self.conn.execute(
             "INSERT INTO files(project_id, rel_path, language, ignored, hash, mtime_ns, size_bytes, line_count)
-             VALUES(?1, ?2, ?3, 0, ?4, ?5, ?6, ?7)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(project_id, rel_path) DO UPDATE SET
-                language=excluded.language,
-                hash=excluded.hash,
-                mtime_ns=excluded.mtime_ns,
-                size_bytes=excluded.size_bytes,
-                line_count=excluded.line_count",
+                language=COALESCE(excluded.language, files.language),
+                ignored=excluded.ignored,
+                hash=COALESCE(excluded.hash, files.hash),
+                mtime_ns=COALESCE(excluded.mtime_ns, files.mtime_ns),
+                size_bytes=COALESCE(excluded.size_bytes, files.size_bytes),
+                line_count=COALESCE(excluded.line_count, files.line_count)",
             params![
                 self.project_id,
-                snapshot.rel_path,
-                snapshot.language,
-                snapshot.hash,
-                snapshot.mtime_ns,
-                snapshot.size_bytes,
-                snapshot.line_count
+                rel_path,
+                language,
+                ignored,
+                hash,
+                mtime_ns,
+                size_bytes,
+                line_count
             ],
         )?;
         Ok(self.conn.query_row(
             "SELECT id FROM files WHERE project_id=?1 AND rel_path=?2",
-            params![self.project_id, snapshot.rel_path],
+            params![self.project_id, rel_path],
             |row| row.get(0),
         )?)
+    }
+
+    fn is_ignored_path(&self, rel_path: &str) -> bool {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&self.root)
+            .args(["check-ignore", "-q", "--"])
+            .arg(rel_path)
+            .output();
+        matches!(output, Ok(output) if output.status.code() == Some(0))
     }
 
     fn covered_ranges(
@@ -1059,6 +1533,8 @@ pub struct StoreCounts {
     pub sessions: i64,
     pub diagnostics: i64,
     pub tool_runs: i64,
+    pub raw_outputs: i64,
+    pub diagnostic_snapshots: i64,
     pub patch_drafts: i64,
     pub patch_draft_bodies: i64,
 }
@@ -1241,6 +1717,153 @@ fn parse_diagnostic_severity(severity: &str) -> DiagnosticSeverity {
     }
 }
 
+fn diagnostic_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Diagnostic> {
+    diagnostic_from_row_offset(row, 0)
+}
+
+fn diagnostic_from_row_offset(
+    row: &rusqlite::Row<'_>,
+    offset: usize,
+) -> rusqlite::Result<Diagnostic> {
+    Ok(Diagnostic {
+        source: parse_diagnostic_source(row.get::<_, String>(offset + 1)?.as_str()),
+        scope: DiagnosticScope {
+            kind: row.get(offset + 2)?,
+            key: row.get(offset + 3)?,
+        },
+        severity: parse_diagnostic_severity(row.get::<_, String>(offset + 4)?.as_str()),
+        code: row.get(offset + 5)?,
+        message: row.get(offset + 6)?,
+        rel_path: row.get(offset + 7)?,
+        start_line: row.get(offset + 8)?,
+        end_line: row.get(offset + 9)?,
+        fingerprint: row.get(offset + 10)?,
+        content_hash: row.get(offset + 11)?,
+        raw_output_id: row.get(offset + 12)?,
+        snapshot_id: row.get(offset + 13)?,
+        first_seen_at: row.get(offset + 14)?,
+        last_seen_at: row.get(offset + 15)?,
+        resolved_at: row.get(offset + 16)?,
+    })
+}
+
+fn normalized_fingerprint(diagnostic: &Diagnostic) -> String {
+    if !diagnostic.fingerprint.trim().is_empty() {
+        return diagnostic.fingerprint.clone();
+    }
+    crate::apply_patch::sha1_hex(
+        format!(
+            "{}:{}:{}:{:?}:{:?}:{:?}:{}",
+            diagnostic_source(&diagnostic.source),
+            diagnostic.scope.kind,
+            diagnostic.scope.key,
+            diagnostic.rel_path,
+            diagnostic.start_line,
+            diagnostic.code,
+            diagnostic.message
+        )
+        .as_bytes(),
+    )
+}
+
+fn delta_status(status: &DiagnosticDeltaStatus) -> &'static str {
+    match status {
+        DiagnosticDeltaStatus::New => "new",
+        DiagnosticDeltaStatus::Resolved => "resolved",
+        DiagnosticDeltaStatus::Unchanged => "unchanged",
+    }
+}
+
+fn filter_delta_set(deltas: &mut DiagnosticDeltaSet, relevant: &BTreeSet<String>) {
+    let relevant_path = |diagnostic: &Diagnostic| {
+        diagnostic
+            .rel_path
+            .as_ref()
+            .is_some_and(|path| relevant.contains(path))
+    };
+    deltas.resolved = deltas
+        .resolved
+        .iter()
+        .filter(|diagnostic| relevant_path(diagnostic))
+        .cloned()
+        .collect();
+    deltas.unchanged = deltas
+        .unchanged
+        .iter()
+        .filter(|diagnostic| relevant_path(diagnostic))
+        .cloned()
+        .collect();
+}
+
+fn migrate_diagnostics_to_v6(conn: &Connection) -> Result<(), rusqlite::Error> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS raw_outputs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            source TEXT NOT NULL,
+            scope_kind TEXT NOT NULL,
+            scope_key TEXT NOT NULL,
+            body TEXT NOT NULL,
+            original_bytes INTEGER NOT NULL,
+            retained_bytes INTEGER NOT NULL,
+            truncated INTEGER NOT NULL,
+            redacted INTEGER NOT NULL,
+            created_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS diagnostic_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            source TEXT NOT NULL,
+            scope_kind TEXT NOT NULL,
+            scope_key TEXT NOT NULL,
+            raw_output_id INTEGER REFERENCES raw_outputs(id) ON DELETE SET NULL,
+            metadata_json TEXT NOT NULL,
+            diagnostic_count INTEGER NOT NULL,
+            created_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS diagnostic_snapshot_deltas (
+            snapshot_id INTEGER NOT NULL REFERENCES diagnostic_snapshots(id) ON DELETE CASCADE,
+            diagnostic_id INTEGER NOT NULL REFERENCES diagnostics(id) ON DELETE CASCADE,
+            status TEXT NOT NULL,
+            PRIMARY KEY(snapshot_id, diagnostic_id, status)
+        );",
+    )?;
+    if table_has_column(conn, "diagnostics", "scope_kind")? {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "CREATE TABLE diagnostics_v6 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            file_id INTEGER REFERENCES files(id) ON DELETE CASCADE,
+            source TEXT NOT NULL,
+            scope_kind TEXT NOT NULL DEFAULT 'workspace',
+            scope_key TEXT NOT NULL DEFAULT '',
+            severity TEXT NOT NULL,
+            code TEXT,
+            message TEXT NOT NULL,
+            start_line INTEGER,
+            end_line INTEGER,
+            fingerprint TEXT NOT NULL,
+            content_hash TEXT,
+            raw_output_id INTEGER REFERENCES raw_outputs(id) ON DELETE SET NULL,
+            snapshot_id INTEGER REFERENCES diagnostic_snapshots(id) ON DELETE SET NULL,
+            created_at INTEGER NOT NULL,
+            first_seen_at INTEGER NOT NULL,
+            last_seen_at INTEGER NOT NULL,
+            resolved_at INTEGER,
+            resolved_snapshot_id INTEGER REFERENCES diagnostic_snapshots(id) ON DELETE SET NULL,
+            UNIQUE(project_id, source, scope_kind, scope_key, fingerprint)
+        );
+        INSERT INTO diagnostics_v6(id, project_id, file_id, source, scope_kind, scope_key, severity, code, message, start_line, end_line, fingerprint, content_hash, raw_output_id, snapshot_id, created_at, first_seen_at, last_seen_at, resolved_at, resolved_snapshot_id)
+        SELECT id, project_id, file_id, source, 'workspace', '', severity, code, message, start_line, end_line, fingerprint, content_hash, NULL, NULL, created_at, created_at, created_at, NULL, NULL FROM diagnostics;
+        DROP TABLE diagnostics;
+        ALTER TABLE diagnostics_v6 RENAME TO diagnostics;",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1255,6 +1878,59 @@ mod tests {
     }
 
     #[test]
+    fn migrates_v5_diagnostics_schema_before_creating_scope_indexes() {
+        let temp = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE projects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                root TEXT NOT NULL UNIQUE,
+                vcs_id TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            CREATE TABLE files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                rel_path TEXT NOT NULL,
+                language TEXT,
+                ignored INTEGER NOT NULL DEFAULT 0,
+                hash TEXT,
+                mtime_ns INTEGER,
+                size_bytes INTEGER,
+                line_count INTEGER,
+                UNIQUE(project_id, rel_path)
+            );
+            CREATE TABLE diagnostics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                file_id INTEGER REFERENCES files(id) ON DELETE CASCADE,
+                source TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                code TEXT,
+                message TEXT NOT NULL,
+                start_line INTEGER,
+                end_line INTEGER,
+                fingerprint TEXT NOT NULL,
+                content_hash TEXT,
+                created_at INTEGER NOT NULL,
+                UNIQUE(project_id, source, fingerprint)
+            );
+            PRAGMA user_version = 5;",
+        )
+        .unwrap();
+
+        let store = LensStore::init(conn, temp.path()).unwrap();
+
+        assert!(
+            store.with_conn(|conn| table_has_column(conn, "diagnostics", "scope_kind").unwrap())
+        );
+        assert!(
+            store.with_conn(|conn| table_has_column(conn, "diagnostics", "raw_output_id").unwrap())
+        );
+    }
+
+    #[test]
     fn records_and_lists_diagnostics() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("main.rs"), "fn main() {}\n").unwrap();
@@ -1262,6 +1938,7 @@ mod tests {
         store
             .record_diagnostics(&[Diagnostic {
                 source: DiagnosticSource::Lsp,
+                scope: DiagnosticScope::file("main.rs"),
                 severity: DiagnosticSeverity::Error,
                 code: Some("E000".to_string()),
                 message: "broken".to_string(),
@@ -1270,6 +1947,11 @@ mod tests {
                 end_line: Some(1),
                 fingerprint: "diag-1".to_string(),
                 content_hash: None,
+                raw_output_id: None,
+                snapshot_id: None,
+                first_seen_at: None,
+                last_seen_at: None,
+                resolved_at: None,
             }])
             .unwrap();
 
@@ -1277,6 +1959,251 @@ mod tests {
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].message, "broken");
         assert_eq!(diagnostics[0].severity, DiagnosticSeverity::Error);
+    }
+
+    fn diagnostic(path: &str, fingerprint: &str, message: &str) -> Diagnostic {
+        Diagnostic {
+            source: DiagnosticSource::Lsp,
+            scope: DiagnosticScope::file(path),
+            severity: DiagnosticSeverity::Error,
+            code: None,
+            message: message.to_string(),
+            rel_path: Some(path.to_string()),
+            start_line: Some(1),
+            end_line: Some(1),
+            fingerprint: fingerprint.to_string(),
+            content_hash: None,
+            raw_output_id: None,
+            snapshot_id: None,
+            first_seen_at: None,
+            last_seen_at: None,
+            resolved_at: None,
+        }
+    }
+
+    fn snapshot(path: &str, diagnostics: Vec<Diagnostic>) -> DiagnosticSnapshotInput {
+        DiagnosticSnapshotInput {
+            source: DiagnosticSource::Lsp,
+            scope: DiagnosticScope::file(path),
+            diagnostics,
+            raw_output: None,
+            metadata: Default::default(),
+        }
+    }
+
+    #[test]
+    fn snapshots_replace_by_source_scope_and_report_deltas() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(temp.path().join("other.rs"), "fn other() {}\n").unwrap();
+        let mut store = LensStore::open_in_memory_for_tests(temp.path()).unwrap();
+
+        let first = store
+            .record_diagnostic_snapshot(snapshot(
+                "main.rs",
+                vec![
+                    diagnostic("main.rs", "same", "kept"),
+                    diagnostic("main.rs", "gone", "gone"),
+                ],
+            ))
+            .unwrap();
+        assert_eq!(first.deltas.new.len(), 2);
+
+        let second = store
+            .record_diagnostic_snapshot(snapshot(
+                "main.rs",
+                vec![
+                    diagnostic("main.rs", "same", "kept"),
+                    diagnostic("main.rs", "new", "new"),
+                ],
+            ))
+            .unwrap();
+        assert_eq!(second.deltas.new.len(), 1);
+        assert_eq!(second.deltas.resolved.len(), 1);
+        assert_eq!(second.deltas.unchanged.len(), 1);
+
+        store
+            .record_diagnostic_snapshot(snapshot(
+                "other.rs",
+                vec![diagnostic("other.rs", "same", "other")],
+            ))
+            .unwrap();
+
+        let main = store.list_diagnostics(Some("main.rs")).unwrap();
+        assert_eq!(main.len(), 2);
+        assert!(
+            main.iter()
+                .all(|diagnostic| diagnostic.fingerprint != "gone")
+        );
+        let all = store.list_diagnostics(None).unwrap();
+        assert_eq!(
+            all.iter()
+                .filter(|diagnostic| diagnostic.fingerprint == "same")
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn default_listing_filters_to_changed_read_and_new_findings() {
+        let temp = tempfile::tempdir().unwrap();
+        for path in ["changed.rs", "read.rs", "untouched.rs"] {
+            std::fs::write(temp.path().join(path), "fn main() {}\n").unwrap();
+        }
+        let mut store = LensStore::open_in_memory_for_tests(temp.path()).unwrap();
+        let event = LensTurnEvent {
+            schema_version: super::super::types::LENS_TURN_EVENT_SCHEMA_VERSION.to_string(),
+            session: "s".to_string(),
+            turn: "t".to_string(),
+            host: "test".to_string(),
+            cwd: temp.path().display().to_string(),
+            event: super::super::types::LensTurnEventKind::ToolEnd,
+            tool: "edit".to_string(),
+            phase: LensToolEventPhase::PostTool,
+            status: Some("success".to_string()),
+            files: Vec::new(),
+            policy: Default::default(),
+        };
+        store
+            .record_turn_event(
+                &event,
+                &[LensTouchedFile {
+                    path: "changed.rs".to_string(),
+                    operation: "modify".to_string(),
+                    tool: "edit".to_string(),
+                    source: LensTouchedFileSource::StructuredEvent,
+                    explicit: true,
+                    ignored: false,
+                    generated: false,
+                }],
+            )
+            .unwrap();
+        store
+            .record_read(Some("s"), Path::new("read.rs"), 1, 1)
+            .unwrap();
+        let diagnostics = vec![
+            diagnostic("changed.rs", "changed", "changed"),
+            diagnostic("read.rs", "read", "read"),
+            diagnostic("untouched.rs", "untouched", "untouched"),
+        ];
+        store
+            .record_diagnostic_snapshot(DiagnosticSnapshotInput {
+                source: DiagnosticSource::Lsp,
+                scope: DiagnosticScope::workspace(),
+                diagnostics: diagnostics.clone(),
+                raw_output: None,
+                metadata: Default::default(),
+            })
+            .unwrap();
+        store
+            .record_diagnostic_snapshot(DiagnosticSnapshotInput {
+                source: DiagnosticSource::Lsp,
+                scope: DiagnosticScope::workspace(),
+                diagnostics,
+                raw_output: None,
+                metadata: Default::default(),
+            })
+            .unwrap();
+
+        let relevant = store.list_diagnostics_data(None, false).unwrap();
+        let paths: BTreeSet<_> = relevant
+            .diagnostics
+            .iter()
+            .filter_map(|diagnostic| diagnostic.rel_path.as_deref())
+            .collect();
+        assert_eq!(paths, BTreeSet::from(["changed.rs", "read.rs"]));
+        assert_eq!(relevant.deltas.unchanged.len(), 2);
+
+        let all = store.list_diagnostics_data(None, true).unwrap();
+        assert_eq!(all.diagnostic_count, 3);
+    }
+
+    #[test]
+    fn default_listing_ignores_git_ignored_paths_but_all_includes_them() {
+        let temp = tempfile::tempdir().unwrap();
+        std::process::Command::new("git")
+            .current_dir(temp.path())
+            .args(["init", "--initial-branch=main"])
+            .status()
+            .unwrap();
+        std::fs::write(temp.path().join(".gitignore"), "ignored.log\n").unwrap();
+        std::fs::write(temp.path().join("ignored.log"), "noise\n").unwrap();
+        let mut store = LensStore::open_in_memory_for_tests(temp.path()).unwrap();
+        store
+            .record_diagnostic_snapshot(DiagnosticSnapshotInput {
+                source: DiagnosticSource::Test,
+                scope: DiagnosticScope::command("test"),
+                diagnostics: vec![Diagnostic {
+                    source: DiagnosticSource::Test,
+                    scope: DiagnosticScope::command("test"),
+                    ..diagnostic("ignored.log", "ignored", "ignored")
+                }],
+                raw_output: None,
+                metadata: Default::default(),
+            })
+            .unwrap();
+
+        assert_eq!(
+            store
+                .list_diagnostics_data(None, false)
+                .unwrap()
+                .diagnostic_count,
+            0
+        );
+        assert_eq!(
+            store
+                .list_diagnostics_data(None, true)
+                .unwrap()
+                .diagnostic_count,
+            1
+        );
+    }
+
+    #[test]
+    fn raw_outputs_are_capped_redacted_and_pruned_without_dropping_diagnostics() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("main.rs"), "fn main() {}\n").unwrap();
+        let mut store = LensStore::open_in_memory_for_tests(temp.path()).unwrap();
+        let raw = format!(
+            "token=super-secret\n{}",
+            "x".repeat(raw_output::DEFAULT_RAW_OUTPUT_MAX_BYTES + 10)
+        );
+        let result = store
+            .record_diagnostic_snapshot(DiagnosticSnapshotInput {
+                source: DiagnosticSource::Test,
+                scope: DiagnosticScope::command("cargo test"),
+                diagnostics: vec![Diagnostic {
+                    source: DiagnosticSource::Test,
+                    scope: DiagnosticScope::command("cargo test"),
+                    ..diagnostic("main.rs", "raw", "raw")
+                }],
+                raw_output: Some(raw),
+                metadata: Default::default(),
+            })
+            .unwrap();
+        let raw_ref = result.raw_output.unwrap();
+        assert!(raw_ref.truncated);
+        assert!(raw_ref.redacted);
+        store.with_conn(|conn| {
+            let body: String = conn
+                .query_row(
+                    "SELECT body FROM raw_outputs WHERE id=?1",
+                    params![raw_ref.id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(!body.contains("super-secret"));
+            assert!(body.len() <= raw_output::DEFAULT_RAW_OUTPUT_MAX_BYTES);
+            conn.execute(
+                "UPDATE raw_outputs SET expires_at=0 WHERE id=?1",
+                params![raw_ref.id],
+            )
+            .unwrap();
+        });
+        let report = super::super::retention::prune(&store, &Default::default(), false).unwrap();
+        assert_eq!(report.raw_outputs_deleted, 1);
+        assert_eq!(store.counts().unwrap().raw_outputs, 0);
+        assert_eq!(store.list_diagnostics(None).unwrap().len(), 1);
     }
 
     #[test]

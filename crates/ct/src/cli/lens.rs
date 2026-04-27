@@ -162,27 +162,29 @@ fn diagnostics(action: LensDiagnosticsAction) -> Result<(), Box<dyn std::error::
             cwd,
             json,
             path,
-            all: _,
+            all,
         } => {
             let root = cwd.map(Into::into).unwrap_or(std::env::current_dir()?);
             let store = LensStore::open_for_project(&root)?;
-            let diagnostics = store.list_diagnostics(path.as_deref())?;
-            let out = serde_json::json!({
-                "project_id": store.project_id(),
-                "path": path,
-                "diagnostics": diagnostics,
-                "diagnostic_count": diagnostics.len()
-            });
+            let data = store.list_diagnostics_data(path.as_deref(), all)?;
             if json {
-                print_json(&LensEnvelope::ok(out))?;
+                print_json(&LensEnvelope::ok(data))?;
             } else {
-                println!("{} diagnostics recorded", diagnostics.len());
+                println!("{} diagnostics recorded", data.diagnostic_count);
+                println!(
+                    "deltas: {} new, {} resolved, {} unchanged",
+                    data.deltas.new.len(),
+                    data.deltas.resolved.len(),
+                    data.deltas.unchanged.len()
+                );
             }
         }
         LensDiagnosticsAction::Record {
             cwd,
             json,
             source,
+            scope_kind,
+            scope_key,
             severity,
             path,
             code,
@@ -193,13 +195,15 @@ fn diagnostics(action: LensDiagnosticsAction) -> Result<(), Box<dyn std::error::
         } => {
             let root = cwd.map(Into::into).unwrap_or(std::env::current_dir()?);
             let mut store = LensStore::open_for_project(&root)?;
+            let scope = diagnostic_scope(scope_kind, scope_key, path.as_deref());
             let fingerprint = fingerprint.unwrap_or_else(|| {
                 crate::apply_patch::sha1_hex(
-                    format!("{source}:{severity}:{path:?}:{start_line:?}:{end_line:?}:{code:?}:{message}").as_bytes(),
+                    format!("{source}:{}:{}:{severity}:{path:?}:{start_line:?}:{end_line:?}:{code:?}:{message}", scope.kind, scope.key).as_bytes(),
                 )
             });
             let diagnostic = Diagnostic {
                 source: parse_source(&source),
+                scope,
                 severity: parse_severity(&severity)?,
                 code,
                 message,
@@ -208,6 +212,11 @@ fn diagnostics(action: LensDiagnosticsAction) -> Result<(), Box<dyn std::error::
                 end_line,
                 fingerprint,
                 content_hash: None,
+                raw_output_id: None,
+                snapshot_id: None,
+                first_seen_at: None,
+                last_seen_at: None,
+                resolved_at: None,
             };
             store.record_diagnostics(std::slice::from_ref(&diagnostic))?;
             let out = serde_json::json!({
@@ -219,6 +228,24 @@ fn diagnostics(action: LensDiagnosticsAction) -> Result<(), Box<dyn std::error::
                 print_json(&LensEnvelope::ok(out))?;
             } else {
                 println!("diagnostic recorded");
+            }
+        }
+        LensDiagnosticsAction::Snapshot { cwd, json } => {
+            let root = cwd.map(Into::into).unwrap_or(std::env::current_dir()?);
+            let mut input = String::new();
+            std::io::stdin().read_to_string(&mut input)?;
+            let snapshot: crate::lens::DiagnosticSnapshotInput = serde_json::from_str(&input)?;
+            let mut store = LensStore::open_for_project(&root)?;
+            let result = store.record_diagnostic_snapshot(snapshot)?;
+            if json {
+                print_json(&LensEnvelope::ok(result))?;
+            } else {
+                println!(
+                    "diagnostic snapshot recorded: {} new, {} resolved, {} unchanged",
+                    result.deltas.new.len(),
+                    result.deltas.resolved.len(),
+                    result.deltas.unchanged.len()
+                );
             }
         }
     }
@@ -245,6 +272,33 @@ fn parse_severity(severity: &str) -> Result<DiagnosticSeverity, Box<dyn std::err
         "info" => Ok(DiagnosticSeverity::Info),
         "hint" => Ok(DiagnosticSeverity::Hint),
         other => Err(format!("invalid diagnostic severity: {other}").into()),
+    }
+}
+
+fn diagnostic_scope(
+    kind: Option<String>,
+    key: Option<String>,
+    path: Option<&str>,
+) -> crate::lens::DiagnosticScope {
+    match (kind.as_deref(), key) {
+        (Some("file"), Some(key)) => crate::lens::DiagnosticScope::file(key),
+        (Some("file"), None) => crate::lens::DiagnosticScope::file(path.unwrap_or_default()),
+        (Some("command"), Some(key)) => crate::lens::DiagnosticScope::command(key),
+        (Some(other), Some(key)) => crate::lens::DiagnosticScope {
+            kind: other.to_string(),
+            key,
+        },
+        (Some(other), None) => crate::lens::DiagnosticScope {
+            kind: other.to_string(),
+            key: String::new(),
+        },
+        (None, Some(key)) => crate::lens::DiagnosticScope {
+            kind: "workspace".to_string(),
+            key,
+        },
+        (None, None) => path
+            .map(crate::lens::DiagnosticScope::file)
+            .unwrap_or_else(crate::lens::DiagnosticScope::workspace),
     }
 }
 

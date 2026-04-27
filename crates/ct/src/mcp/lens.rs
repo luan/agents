@@ -65,12 +65,15 @@ struct TurnTouchedIn {
 struct DiagnosticsListIn {
     cwd: Option<String>,
     path: Option<String>,
+    all: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct DiagnosticsRecordIn {
     cwd: Option<String>,
     source: String,
+    scope_kind: Option<String>,
+    scope_key: Option<String>,
     severity: String,
     path: Option<String>,
     code: Option<String>,
@@ -78,6 +81,12 @@ struct DiagnosticsRecordIn {
     start_line: Option<i64>,
     end_line: Option<i64>,
     fingerprint: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct DiagnosticsSnapshotIn {
+    cwd: Option<String>,
+    snapshot: serde_json::Value,
 }
 
 #[derive(Clone)]
@@ -208,18 +217,8 @@ impl LensMcpServer {
         &self,
         Parameters(input): Parameters<DiagnosticsListIn>,
     ) -> Result<CallToolResult, ErrorData> {
-        let root = cwd(input.cwd)?;
-        let store = crate::lens::LensStore::open_for_project(&root)
-            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-        let diagnostics = store
-            .list_diagnostics(input.path.as_deref())
-            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-        json_success(&crate::lens::LensEnvelope::ok(json!({
-            "project_id": store.project_id(),
-            "path": input.path,
-            "diagnostics": diagnostics,
-            "diagnostic_count": diagnostics.len()
-        })))
+        let envelope = diagnostics_list_envelope(input)?;
+        json_success(&envelope)
     }
 
     #[tool(
@@ -233,11 +232,14 @@ impl LensMcpServer {
         let root = cwd(input.cwd)?;
         let mut store = crate::lens::LensStore::open_for_project(&root)
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        let scope = diagnostic_scope(input.scope_kind, input.scope_key, input.path.as_deref());
         let fingerprint = input.fingerprint.unwrap_or_else(|| {
             crate::apply_patch::sha1_hex(
                 format!(
-                    "{}:{}:{:?}:{:?}:{:?}:{:?}:{}",
+                    "{}:{}:{}:{}:{:?}:{:?}:{:?}:{:?}:{}",
                     input.source,
+                    scope.kind,
+                    scope.key,
                     input.severity,
                     input.path,
                     input.start_line,
@@ -250,6 +252,7 @@ impl LensMcpServer {
         });
         let diagnostic = crate::lens::Diagnostic {
             source: parse_source(&input.source),
+            scope,
             severity: parse_severity(&input.severity)?,
             code: input.code,
             message: input.message,
@@ -258,6 +261,11 @@ impl LensMcpServer {
             end_line: input.end_line,
             fingerprint,
             content_hash: None,
+            raw_output_id: None,
+            snapshot_id: None,
+            first_seen_at: None,
+            last_seen_at: None,
+            resolved_at: None,
         };
         store
             .record_diagnostics(std::slice::from_ref(&diagnostic))
@@ -268,6 +276,37 @@ impl LensMcpServer {
             "diagnostic": diagnostic
         })))
     }
+
+    #[tool(
+        name = "diagnostics_snapshot",
+        description = "Record a replacing Lens diagnostic snapshot."
+    )]
+    async fn diagnostics_snapshot(
+        &self,
+        Parameters(input): Parameters<DiagnosticsSnapshotIn>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let root = cwd(input.cwd)?;
+        let mut store = crate::lens::LensStore::open_for_project(&root)
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        let snapshot: crate::lens::DiagnosticSnapshotInput = serde_json::from_value(input.snapshot)
+            .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
+        let result = store
+            .record_diagnostic_snapshot(snapshot)
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        json_success(&crate::lens::LensEnvelope::ok(result))
+    }
+}
+
+fn diagnostics_list_envelope(
+    input: DiagnosticsListIn,
+) -> Result<crate::lens::LensEnvelope<crate::lens::DiagnosticListData>, ErrorData> {
+    let root = cwd(input.cwd)?;
+    let store = crate::lens::LensStore::open_for_project(&root)
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+    let data = store
+        .list_diagnostics_data(input.path.as_deref(), input.all.unwrap_or(false))
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+    Ok(crate::lens::LensEnvelope::ok(data))
 }
 
 fn discover_envelope(
@@ -323,6 +362,33 @@ fn status_envelope(
         },
     )
     .map_err(|error| ErrorData::internal_error(error.to_string(), None))
+}
+
+fn diagnostic_scope(
+    kind: Option<String>,
+    key: Option<String>,
+    path: Option<&str>,
+) -> crate::lens::DiagnosticScope {
+    match (kind.as_deref(), key) {
+        (Some("file"), Some(key)) => crate::lens::DiagnosticScope::file(key),
+        (Some("file"), None) => crate::lens::DiagnosticScope::file(path.unwrap_or_default()),
+        (Some("command"), Some(key)) => crate::lens::DiagnosticScope::command(key),
+        (Some(other), Some(key)) => crate::lens::DiagnosticScope {
+            kind: other.to_string(),
+            key,
+        },
+        (Some(other), None) => crate::lens::DiagnosticScope {
+            kind: other.to_string(),
+            key: String::new(),
+        },
+        (None, Some(key)) => crate::lens::DiagnosticScope {
+            kind: "workspace".to_string(),
+            key,
+        },
+        (None, None) => path
+            .map(crate::lens::DiagnosticScope::file)
+            .unwrap_or_else(crate::lens::DiagnosticScope::workspace),
+    }
 }
 
 fn parse_source(source: &str) -> crate::lens::DiagnosticSource {
@@ -392,6 +458,46 @@ mod tests {
         options.query = Some("target".to_string());
         options.session = Some("mcp".to_string());
         let direct = crate::lens::build_discovery_envelope(options).unwrap();
+
+        assert_eq!(
+            serde_json::to_value(mcp).unwrap(),
+            serde_json::to_value(direct).unwrap()
+        );
+    }
+
+    #[test]
+    fn mcp_diagnostics_list_matches_shared_store_projection() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("main.rs"), "fn main() {}\n").unwrap();
+        let cwd = temp.path().display().to_string();
+        let mut store = crate::lens::LensStore::open_for_project(temp.path()).unwrap();
+        store
+            .record_diagnostics(&[crate::lens::Diagnostic {
+                source: crate::lens::DiagnosticSource::Test,
+                scope: crate::lens::DiagnosticScope::file("main.rs"),
+                severity: crate::lens::DiagnosticSeverity::Warning,
+                code: None,
+                message: "warn".to_string(),
+                rel_path: Some("main.rs".to_string()),
+                start_line: Some(1),
+                end_line: Some(1),
+                fingerprint: "warn".to_string(),
+                content_hash: None,
+                raw_output_id: None,
+                snapshot_id: None,
+                first_seen_at: None,
+                last_seen_at: None,
+                resolved_at: None,
+            }])
+            .unwrap();
+        let mcp = diagnostics_list_envelope(DiagnosticsListIn {
+            cwd: Some(cwd),
+            path: None,
+            all: Some(true),
+        })
+        .unwrap();
+        let direct =
+            crate::lens::LensEnvelope::ok(store.list_diagnostics_data(None, true).unwrap());
 
         assert_eq!(
             serde_json::to_value(mcp).unwrap(),

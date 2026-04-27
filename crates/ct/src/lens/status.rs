@@ -253,6 +253,7 @@ mod tests {
         store
             .record_diagnostics(&[Diagnostic {
                 source: super::super::types::DiagnosticSource::Test,
+                scope: super::super::types::DiagnosticScope::file("main.rs"),
                 severity: DiagnosticSeverity::Warning,
                 code: None,
                 message: "warn".to_string(),
@@ -261,6 +262,11 @@ mod tests {
                 end_line: Some(1),
                 fingerprint: "warn-1".to_string(),
                 content_hash: None,
+                raw_output_id: None,
+                snapshot_id: None,
+                first_seen_at: None,
+                last_seen_at: None,
+                resolved_at: None,
             }])
             .unwrap();
         let health = LensHealth {
