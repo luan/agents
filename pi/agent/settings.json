@@ -11,20 +11,15 @@
   "packages": [
     {
       "source": "npm:pi-extension-manager",
-      "extensions": [
-        "+src/index.ts"
-      ]
+      "extensions": ["+src/index.ts"]
     },
     "npm:pi-subagents",
     "npm:@ifi/oh-pi-themes",
     "npm:@ollama/pi-web-search",
     {
       "source": "npm:pi-mcp-adapter",
-      "extensions": [
-        "-index.ts"
-      ]
+      "extensions": ["+index.ts"]
     },
-    "npm:@heyhuynhgiabuu/pi-diff",
     "npm:@ff-labs/pi-fff",
     "npm:context-mode"
   ],

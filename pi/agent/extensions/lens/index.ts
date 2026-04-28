@@ -122,7 +122,32 @@ export default function lensExtension(pi: ExtensionAPI) {
 	let activeTurnIndex = 0;
 	let activeTurnId = "turn-0-0";
 
-	const currentSession = (ctx: any) => ctx?.sessionManager?.getSessionId?.() ?? sessionIdFromFile(ctx) ?? "ephemeral";
+	const isStaleCtxError = (error: unknown) =>
+		(error instanceof Error ? error.message : String(error)).includes("ctx is stale");
+	const safeCwd = (ctx: any) => {
+		try {
+			return ctx?.cwd ?? process.cwd();
+		} catch (error) {
+			if (isStaleCtxError(error)) return process.cwd();
+			throw error;
+		}
+	};
+	const safeSignal = (ctx: any) => {
+		try {
+			return ctx?.signal;
+		} catch (error) {
+			if (isStaleCtxError(error)) return undefined;
+			throw error;
+		}
+	};
+	const currentSession = (ctx: any) => {
+		try {
+			return ctx?.sessionManager?.getSessionId?.() ?? sessionIdFromFile(ctx) ?? "ephemeral";
+		} catch (error) {
+			if (isStaleCtxError(error)) return "ephemeral";
+			throw error;
+		}
+	};
 	const currentTurn = () => activeTurnId;
 
 	async function runHook(name: string, event: Record<string, unknown>, cwd: string, signal?: AbortSignal) {
@@ -157,7 +182,7 @@ export default function lensExtension(pi: ExtensionAPI) {
 			schema_version: HOOK_EVENT_SCHEMA,
 			host: { name: "pi", kind: "extension" },
 			session: { id: currentSession(ctx), seq: sessionSeq },
-			cwd: ctx.cwd,
+			cwd: safeCwd(ctx),
 			turn: { id: currentTurn(), index: activeTurnIndex },
 			event,
 			known_files: [],
@@ -166,97 +191,116 @@ export default function lensExtension(pi: ExtensionAPI) {
 	}
 
 	function applyLensUi(ctx: any, response: unknown) {
-		if (!ctx?.hasUI) return;
-		ctx.ui.setStatus("lens", renderLensCompactStatus(response, { ansi: true }));
-		ctx.ui.setWidget("lens-health", renderLensWidgetLines(response, false, { ansi: true }));
+		try {
+			if (!ctx?.hasUI) return;
+			ctx.ui.setStatus("lens", renderLensCompactStatus(response, { ansi: true }));
+			ctx.ui.setWidget("lens-health", renderLensWidgetLines(response, false, { ansi: true }));
+		} catch (error) {
+			if (!isStaleCtxError(error)) throw error;
+		}
+	}
+
+	async function ignoreStaleCtx<T>(task: () => Promise<T>): Promise<T | undefined> {
+		try {
+			return await task();
+		} catch (error) {
+			if (!isStaleCtxError(error)) throw error;
+		}
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
-		sessionSeq++;
-		agentSeq = 0;
-		activeTurnIndex = 0;
-		activeTurnId = "turn-0-0";
-		const response = await runHook("lens-session-start", eventFor(ctx, "session_start"), ctx.cwd);
-		applyLensUi(ctx, response);
+		await ignoreStaleCtx(async () => {
+			sessionSeq++;
+			agentSeq = 0;
+			activeTurnIndex = 0;
+			activeTurnId = "turn-0-0";
+			const response = await runHook("lens-session-start", eventFor(ctx, "session_start"), safeCwd(ctx));
+			applyLensUi(ctx, response);
+		});
 	});
 
 	pi.on("before_agent_start", async (_event, ctx) => {
-		agentSeq++;
-		activeTurnIndex = 0;
-		activeTurnId = `turn-${agentSeq}-0`;
-		const response = await runHook("lens-context", eventFor(ctx, "context_injection"), ctx.cwd, ctx.signal);
-		applyLensUi(ctx, response);
-		if (response?.context?.inject === true && response.context.content) {
-			return {
-				message: {
-					customType: "lens-context",
-					content: response.context.content,
-					display: false,
-					details: response,
-				},
-			};
-		}
+		return ignoreStaleCtx(async () => {
+			agentSeq++;
+			activeTurnIndex = 0;
+			activeTurnId = `turn-${agentSeq}-0`;
+			const response = await runHook("lens-context", eventFor(ctx, "context_injection"), safeCwd(ctx), safeSignal(ctx));
+			applyLensUi(ctx, response);
+			if (response?.context?.inject === true && response.context.content) {
+				return {
+					message: {
+						customType: "lens-context",
+						content: response.context.content,
+						display: false,
+						details: response,
+					},
+				};
+			}
+		});
 	});
 
 	pi.on("turn_start", async (event, ctx) => {
-		activeTurnIndex = Number.isFinite(event.turnIndex) ? event.turnIndex : activeTurnIndex;
-		activeTurnId = `turn-${agentSeq}-${activeTurnIndex}`;
-		const response = await runHook("lens-turn-start", eventFor(ctx, "turn_start"), ctx.cwd, ctx.signal);
-		applyLensUi(ctx, response);
+		await ignoreStaleCtx(async () => {
+			activeTurnIndex = Number.isFinite(event.turnIndex) ? event.turnIndex : activeTurnIndex;
+			activeTurnId = `turn-${agentSeq}-${activeTurnIndex}`;
+			const response = await runHook("lens-turn-start", eventFor(ctx, "turn_start"), safeCwd(ctx), safeSignal(ctx));
+			applyLensUi(ctx, response);
+		});
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
-		const response = await runHook(
-			"lens-pre-tool",
-			eventFor(ctx, "pre_tool", {
-				tool: { name: event.toolName, id: event.toolCallId, status: "started", input: event.input },
-				known_files: filesFromTool(event.toolName, event.input),
-			}),
-			ctx.cwd,
-			ctx.signal,
-		);
-		applyLensUi(ctx, response);
+		await ignoreStaleCtx(async () => {
+			const response = await runHook(
+				"lens-pre-tool",
+				eventFor(ctx, "pre_tool", {
+					tool: { name: event.toolName, id: event.toolCallId, status: "started", input: event.input },
+					known_files: filesFromTool(event.toolName, event.input),
+				}),
+				safeCwd(ctx),
+				safeSignal(ctx),
+			);
+			applyLensUi(ctx, response);
+		});
 	});
 
 	pi.on("tool_result", async (event, ctx) => {
-		const response = await runHook(
-			"lens-post-tool",
-			eventFor(ctx, "post_tool", {
-				tool: {
-					name: event.toolName,
-					id: event.toolCallId,
-					status: event.isError ? "error" : "success",
-					input: event.input,
-					output: event.details,
-					raw_output: contentText(event.content),
-					raw_output_max_bytes: RAW_OUTPUT_MAX_BYTES,
-				},
-				known_files: filesFromTool(event.toolName, event.input),
-			}),
-			ctx.cwd,
-			ctx.signal,
-		);
-		applyLensUi(ctx, response);
+		await ignoreStaleCtx(async () => {
+			const response = await runHook(
+				"lens-post-tool",
+				eventFor(ctx, "post_tool", {
+					tool: {
+						name: event.toolName,
+						id: event.toolCallId,
+						status: event.isError ? "error" : "success",
+						input: event.input,
+						output: event.details,
+						raw_output: contentText(event.content),
+						raw_output_max_bytes: RAW_OUTPUT_MAX_BYTES,
+					},
+					known_files: filesFromTool(event.toolName, event.input),
+				}),
+				safeCwd(ctx),
+				safeSignal(ctx),
+			);
+			applyLensUi(ctx, response);
+		});
 	});
 
 	pi.on("turn_end", async (event, ctx) => {
-		activeTurnIndex = Number.isFinite(event.turnIndex) ? event.turnIndex : activeTurnIndex;
-		activeTurnId = `turn-${agentSeq}-${activeTurnIndex}`;
-		const response = await runHook("lens-turn-end", eventFor(ctx, "turn_end"), ctx.cwd, ctx.signal);
-		applyLensUi(ctx, response);
+		await ignoreStaleCtx(async () => {
+			activeTurnIndex = Number.isFinite(event.turnIndex) ? event.turnIndex : activeTurnIndex;
+			activeTurnId = `turn-${agentSeq}-${activeTurnIndex}`;
+			const response = await runHook("lens-turn-end", eventFor(ctx, "turn_end"), safeCwd(ctx), safeSignal(ctx));
+			applyLensUi(ctx, response);
+		});
 	});
 
 	pi.on("agent_end", async (_event, ctx) => {
-		const response = await runHook("lens-agent-end", eventFor(ctx, "agent_end"), ctx.cwd, ctx.signal);
-		applyLensUi(ctx, response);
+		await ignoreStaleCtx(async () => {
+			const response = await runHook("lens-agent-end", eventFor(ctx, "agent_end"), safeCwd(ctx), safeSignal(ctx));
+			applyLensUi(ctx, response);
+		});
 	});
-
-	pi.on("session_shutdown", async (_event, ctx) => {
-		const response = await runHook("lens-session-shutdown", eventFor(ctx, "session_shutdown"), ctx.cwd);
-		applyLensUi(ctx, response);
-	});
-
-
 
 	registerTool({
 		name: "lens_diagnostics",

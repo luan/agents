@@ -99,8 +99,16 @@ export default function (pi: ExtensionAPI) {
   let refreshTimer: ReturnType<typeof setInterval> | null = null;
   let usageBarCache: UsageBarCache | null = null;
   let usageBarPendingKey: string | null = null;
+  let disposed = false;
+  let uiGeneration = 0;
 
-  const refresh = () => requestFooterRender?.();
+  const isStaleCtxError = (error: unknown) =>
+    (error instanceof Error ? error.message : String(error)).includes("ctx is stale");
+  const isCurrent = (generation: number) => !disposed && generation === uiGeneration;
+
+  const refresh = () => {
+    if (!disposed) requestFooterRender?.();
+  };
 
   const usageBarKey = (width: number): string =>
     JSON.stringify({
@@ -185,27 +193,40 @@ export default function (pi: ExtensionAPI) {
     state.hasCost = totals.cost > 0;
   };
 
-  const refreshProjectState = async (ctx: ExtensionContext) => {
+  const syncStateIfCurrent = (ctx: ExtensionContext) => {
+    if (disposed) return false;
+    try {
+      syncState(ctx);
+      return true;
+    } catch (error) {
+      if (isStaleCtxError(error)) return false;
+      throw error;
+    }
+  };
+
+  const refreshProjectState = async (ctx: ExtensionContext, generation: number) => {
     const [gitStatus, runtime] = await Promise.all([
       readGitStatus(ctx.cwd),
       readRuntimeInfo(ctx.cwd),
     ]);
+    if (!isCurrent(generation)) return;
     Object.assign(state, gitStatus);
     state.runtime = runtime;
   };
 
-  const scheduleProjectRefresh = (ctx: ExtensionContext) => {
+  const scheduleProjectRefresh = (ctx: ExtensionContext, generation = uiGeneration) => {
+    if (!isCurrent(generation)) return;
     if (projectRefreshInFlight) {
       projectRefreshPending = true;
       return;
     }
     projectRefreshInFlight = true;
-    void refreshProjectState(ctx).finally(() => {
+    void refreshProjectState(ctx, generation).finally(() => {
       projectRefreshInFlight = false;
-      refresh();
+      if (isCurrent(generation)) refresh();
       if (projectRefreshPending) {
         projectRefreshPending = false;
-        scheduleProjectRefresh(ctx);
+        scheduleProjectRefresh(ctx, generation);
       }
     });
   };
@@ -218,6 +239,7 @@ export default function (pi: ExtensionAPI) {
   };
 
   const applyUsageResult = (provider: string, snapshot: UsageSnapshot) => {
+    if (disposed) return;
     if (activeProvider !== provider) return;
     const cached = usageCache.get(provider);
     if (
@@ -280,12 +302,14 @@ export default function (pi: ExtensionAPI) {
   };
 
   const installFooter = (ctx: ExtensionContext) => {
-    syncState(ctx);
+    const generation = uiGeneration;
+    const cwd = ctx.cwd;
+    syncStateIfCurrent(ctx);
 
     ctx.ui.setFooter((tui, theme, footerData) => {
       requestFooterRender = () => tui.requestRender();
       const unsubscribeBranch = footerData.onBranchChange(() => {
-        scheduleProjectRefresh(ctx);
+        scheduleProjectRefresh(ctx, generation);
         tui.requestRender();
       });
 
@@ -303,14 +327,14 @@ export default function (pi: ExtensionAPI) {
         invalidate() {},
         render(width: number): string[] {
           ensureUsageBarLines(width);
-          return renderFooter(state, currentConfig, ctx.cwd, theme, width);
+          return renderFooter(state, currentConfig, cwd, theme, width);
         },
       };
     });
   };
 
   const installEditor = (ctx: ExtensionContext) => {
-    syncState(ctx);
+    syncStateIfCurrent(ctx);
     installEditorComposition(ctx.ui.theme);
   };
 
@@ -325,22 +349,31 @@ export default function (pi: ExtensionAPI) {
   };
 
   pi.on("session_start", async (_event, ctx) => {
+    disposed = false;
+    uiGeneration++;
     installUi(ctx);
   });
 
+  pi.on("session_shutdown", async () => {
+    disposed = true;
+    uiGeneration++;
+    requestFooterRender = undefined;
+    stopRefreshTimer();
+  });
+
   pi.on("agent_start", async (_event, ctx) => {
-    syncState(ctx);
+    if (!syncStateIfCurrent(ctx)) return;
     refresh();
   });
 
   pi.on("agent_end", async (_event, ctx) => {
-    syncState(ctx);
+    if (!syncStateIfCurrent(ctx)) return;
     scheduleProjectRefresh(ctx);
     refresh();
   });
 
   pi.on("model_select", async (event, ctx) => {
-    syncState(ctx);
+    if (!syncStateIfCurrent(ctx)) return;
     if (event.model?.provider) {
       fetchUsage(event.model.provider);
       startRefreshTimer();
@@ -349,19 +382,19 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("message_end", async (_event, ctx) => {
-    syncState(ctx);
+    if (!syncStateIfCurrent(ctx)) return;
     scheduleProjectRefresh(ctx);
     refresh();
   });
 
   pi.on("tool_execution_end", async (_event, ctx) => {
-    syncState(ctx);
+    if (!syncStateIfCurrent(ctx)) return;
     scheduleProjectRefresh(ctx);
     refresh();
   });
 
   pi.on("session_compact", async (_event, ctx) => {
-    syncState(ctx);
+    if (!syncStateIfCurrent(ctx)) return;
     scheduleProjectRefresh(ctx);
     refresh();
   });
