@@ -1,6 +1,6 @@
 ---
 name: pr-ci
-description: "Fix failing CI/GitHub Actions checks. Triggers: 'fix CI', 'fix GHA', 'build failing', 'tests failing in CI', 'checks red'."
+description: "Fix failing CI/GitHub Actions checks."
 argument-hint: "[--auto]"
 user-invocable: true
 allowed-tools:

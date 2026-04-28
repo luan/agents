@@ -1,7 +1,7 @@
 ---
 name: spec
-description: "Research a codebase and produce a target-state spec and implementation plan — what to build and how. Two approval gates: spec (what) then plan (how). Triggers: 'spec', 'specify', 'define the target', 'what are we building', 'write a spec', 'plan'. Use for both greenfield features and bug investigations."
-argument-hint: "<topic> [--auto] [--continue] [--spec-only] [--depth medium|high|max]"
+description: "Create a PRD-style vault spec: what to build, why, user stories, decisions. No implementation plan."
+argument-hint: "<topic> [--auto] [--continue] [--depth medium|high|max]"
 allowed-tools:
   - Agent
   - Bash
@@ -13,164 +13,139 @@ user-invocable: true
 
 # Spec
 
-Research a codebase and produce a **target-state spec** (what to build) and an **implementation plan** (how to build it). Two approval gates — the user approves the spec before seeing the plan. The plan becomes the contract `/develop` consumes.
+Create a PRD-style blueprints vault `spec` artifact. This skill answers **what are we building and why?** It does not produce implementation plans; use `/prepare` after the spec is approved.
 
-Subagents do all codebase exploration. The main thread synthesizes, validates, and presents.
+The blueprints vault is canonical. Use vault MCP tools when available, otherwise `ct vault`. New specs start with the `stage/needs-triage` tag.
 
 ## Arguments
 
-- `<topic>` — what to spec (required unless `--continue`)
-- `--auto` — skip both approval gates. Return the plan file path silently.
-- `--continue` — resume from existing spec or plan file
-- `--spec-only` — stop after spec approval, don't generate a plan
-- `--depth medium|high|max` — controls research and plan granularity (default: medium)
-  - **medium**: behavioral analysis, phases follow natural code boundaries
-  - **high**: component contracts, integration points, gates between phases
-  - **max**: exhaustive analysis, full execution model with agent allocation and dependency graph
+- `<topic>` — what to specify, required unless `--continue`
+- `--auto` — skip the approval gate and commit the best spec you can synthesize from current context
+- `--continue` — resume from an existing vault spec; ask the user to choose if multiple matches are plausible
+- `--depth medium|high|max` — controls research depth, not planning detail
 
-## Phase 1: Spec (the "what")
+## Process
 
-### 1. Research
+### 1. Gather vault context
 
-Dispatch Agent (subagent_type="Explore"):
+Search/read relevant vault artifacts before exploring code:
 
-```
-Research <topic>. Return findings as text.
+- domain docs for project vocabulary and context boundaries
+- decision docs/specs for architectural choices in the touched area
+- related specs/plans/reviews that capture active or historical intent
 
-## Output
-1. **Current Behavior**: what the system does today, where it falls short, and why
-2. **Component Boundaries**: modules/layers involved, their contracts, how they interact
-3. **Constraints**: what's load-bearing, what must not break, external interfaces
-4. **Design Space**: viable approaches with tradeoffs — name at least two, recommend one with rationale
-```
+If no relevant vault docs exist, proceed silently.
 
-**Warm-start:** When the prompt contains prior research (from brainstorm or previous spec), include it and say: "Prior research provided below. Validate and fill gaps — focus on what's new."
+### 2. Research current state
 
-**Complex domains (3+ subsystems or 3+ viable approaches):** Dispatch 3 parallel Explore agents — Researcher (breadth), Architect (approach), Skeptic (risks). Synthesize the architect's approach with the skeptic's contradictions.
+Dispatch Explore subagents for codebase research when the answer is not already in context.
 
-### 2. Validate research
+Required findings:
 
-Spot-check architectural claims — wrong understanding invalidates the spec. Check every odd-numbered claim (1st, 3rd, 5th...), minimum 3. Each check: Grep or Read a few lines. Failed check → follow-up subagent to correct.
+1. **Current behavior** — what exists today and where it falls short
+2. **User/problem context** — who is affected and why this matters
+3. **Relevant modules/interfaces** — current public behavior and constraints, not a plan
+4. **Design space** — viable product/technical directions with tradeoffs
+5. **Risks/open questions** — specific uncertainties that affect scope or acceptance
 
-**Production data correlation** (when upstream context includes logs, error traces, database state): list each concrete observation, state which hypothesis explains it, flag observations that multiple hypotheses explain equally. An unvalidated hypothesis produces a wrong spec.
+For complex domains, dispatch parallel Explore agents with different lenses: product behavior, architecture constraints, and skeptical risk review.
 
-### 3. Synthesize spec
+### 3. Validate research
 
-Build the spec from validated research. The spec defines the **target state** — the system as if already built, present tense throughout. A developer should understand the target system from the spec alone — without needing to read source code to resolve ambiguities about intent.
+Spot-check important architectural claims with direct reads/searches. If a claim affects product behavior, acceptance criteria, or scope, validate it before including it.
 
-**Sections:**
+For bug specs, include root-cause confidence:
 
-- **Problem**: What's broken or missing. The only section describing current state.
+- **HIGH** — reproduced and traced to a specific cause
+- **MEDIUM** — strong evidence but not fully isolated
+- **LOW** — plausible hypothesis, significant uncertainty remains
 
-- **Recommendation**: The system as-if-built — behavior, contracts, data flow. This is the heart of the spec and must be self-sufficient. Include:
-  - **Concrete behavior** in present tense. For UI: ASCII mockups showing exactly what appears on screen. For APIs: request/response shapes. For data models: type definitions or schemas. For protocols: message sequences.
-  - **Data flow**: numbered steps showing how data moves end-to-end. "1. User clicks Save → 2. App serializes to KDL → 3. MapStore writes sector files."
+If confidence is LOW, say so explicitly in the spec.
 
-  For refactors, add a **removal table** mapping every current element to its disposition — deleted, renamed, absorbed into X. Every element accounted for.
-  - **Key decisions**: choices baked into the design and the reasoning. Alternatives considered and why rejected.
+### 4. Draft the spec
 
-  File paths do not belong in the Recommendation. The spec defines *what the system is*, not *where code lives*. Implementation geography belongs in the plan.
+Write the spec as target product intent. It should be understandable without reading source code to infer what the user wants.
 
-- **Architecture Context**: How components relate post-implementation. Use Mermaid diagrams to show relationships visually. Include a brief new/modified/deleted file list as a reference — the diagram carries the meaning, but the file list gives developers a geographic anchor. Keep prose minimal; the file list is cheap.
-
-- **Risks**: Each risk names a concrete failure scenario and a mitigation. Not vague categories — specific things that can go wrong and what prevents them.
-
-**Confidence gate** (for bug investigations):
-- **Root-cause confidence**: HIGH / MEDIUM / LOW
-- **Supporting evidence**: what confirms the hypothesis
-- **Not yet ruled out**: alternatives that remain plausible
-- If LOW, flag explicitly — the user must know they're approving under uncertainty.
-
-**Quality gates** (run in parallel before presenting):
-- **Simplifier** (conditional — fires when Recommendation has >5 bullets or Architecture Context has >3 subsections): Spawn a subagent to flag over-specification and suggest cuts.
-- **Devil's advocate** (always): Spawn a subagent to challenge — is the problem real? Is the scope right? What's the simplest version that works? Carry challenges forward for the user to see.
-
-### 4. Store spec
-
-Scaffold with the MCP `create` tool (kind=spec), Edit the body, then `commit`. Before committing, call `related` on the topic — if matches, append a `## Related` section with wiki-links.
-
-### 5. Present spec
-
-If `--auto` → skip to Phase 2 silently.
-
-Otherwise → present the spec: Problem, Recommendation, Architecture Context, Risks (+ confidence gate if bug investigation). Include devil's advocate challenges. **Stop for user review.**
-
-### 6. Spec refinement
-
-If user gives feedback:
-- **Minor (no new research):** Revise from stored research + feedback. Overwrite the spec file.
-- **Major (unexplored code or new approach):** Dispatch follow-up subagent with current spec as context. Merge findings. Overwrite spec file.
-
-If `--spec-only` → after approval, output spec path and stop.
-
-## Phase 2: Plan (the "how")
-
-Generated from the approved spec + research findings. The plan is tactical and consumable — `/develop` auto-parses it into tasks.
-
-### 7. Generate plan
-
-From the approved spec and retained research, produce an execution plan. The plan is the contract `/develop` consumes — precise enough that an agent can execute each step without judgment calls about intent.
-
-**Plan structure:**
-
-Start with an **execution model** — a Mermaid graph showing phases and their dependencies. The shape of this graph should reflect the work's actual dependency structure, not a template. Most plans are sequential; parallelism is justified only when phases touch genuinely independent code with no shared state. Show agent allocation on each node when multiple tiers are used.
-
-Think critically about agent allocation. Default to the strongest available agent — only delegate to faster/cheaper agents when the work is unambiguously mechanical (additive type definitions, dead code deletion, imports). If in doubt, use the stronger agent.
-
-Add **gates** (build/test/review checkpoints) between phases when the next phase depends on correctness of the previous one. Gates are where an agent reviews the diff against the spec and flags deviations. Not every phase boundary needs a gate — use them at natural convergence points.
-
-**Per-phase details:**
+Use this structure:
 
 ```markdown
-## Phase N: <title>
+# <Spec Title>
 
-- **Agent**: <tier>, <execution mode>
-- **Files**: Modify: <paths> | Create: <paths>
-- **Approach**: what this phase accomplishes and why it's sequenced here
-- **Steps**:
-  1. `<file path>` — <exact change: "add X with Y", "change A from B to C", "remove D">
-  2. ...
-- **Dependencies**: Phase M (if any)
-- **Verification**: <build/test> + <spec compliance checks for this phase>
+## Problem Statement
+
+The problem from the user's perspective. Include current limitations only where they clarify the problem.
+
+## Solution
+
+The desired target behavior from the user's perspective. Present tense. Include important edge cases and non-goals.
+
+## User Stories
+
+1. As an <actor>, I want <capability>, so that <benefit>.
+2. ...
+
+## Product Decisions
+
+- Durable decisions about scope, behavior, UX, or workflow.
+- Alternatives considered and why they were rejected, when useful.
+
+## Technical Decisions
+
+- Durable implementation-facing decisions needed to understand intent.
+- Public interfaces, contracts, data shapes, or integration constraints when they are part of the product contract.
+- Do not include step-by-step implementation instructions.
+
+## Testing Decisions
+
+- Behaviors that must be covered.
+- Test seams or prior art when known.
+- What not to test because it would couple to implementation details.
+
+## Out of Scope
+
+- Explicit non-goals and adjacent features that should not be pulled in.
+
+## Risks and Open Questions
+
+- Concrete uncertainty, failure scenarios, or dependencies.
+
+## Related
+
+- [[related-artifact]]
 ```
 
-**Rules:**
-- Every step specifies an exact behavioral change with a file path — "add enum variant X with derives Y", "change method Z to accept A instead of B", "remove struct W." Never "refactor" or "update as needed."
-- Phase boundaries follow natural code boundaries. The number of phases emerges from the dependency structure — don't pad or compress to hit a count.
-- Earlier phases unblock later ones — order by dependency, not importance.
-- Verification for phases at `--depth high|max` includes a spec compliance checklist — concrete requirements from the spec that this phase should satisfy.
+Do not include an implementation plan, phase list, task breakdown, or file-by-file instructions. Those belong in `/prepare`.
 
-### 8. Store plan
+### 5. Review with the user
 
-Same pattern as spec storage — `create` (kind=plan), Edit, `commit`. Pass the spec stem as `source` so the plan wiki-links back to it.
+If `--auto` is not set, present the draft and stop for approval. Ask about scope, missing user stories, wrong vocabulary, and decisions that need correction.
 
-### 9. Present plan
+For feedback:
 
-If `--auto` → return the plan file path silently.
+- Minor corrections → revise directly.
+- New unexplored behavior or architecture → dispatch follow-up research, then revise.
 
-Otherwise → present the plan phases. **Stop for user review.**
+### 6. Store in the vault
 
-### 10. Plan refinement
+Create or update a `spec` artifact:
 
-If user gives feedback:
-- **Reorder/resize phases:** Revise plan from existing research.
-- **New approach or missed files:** Dispatch follow-up subagent, update plan.
-- Overwrite the plan file after each revision.
+1. MCP `create` with `kind: "spec"`, topic, and tags including `stage/needs-triage`.
+2. Edit the returned path with the approved body.
+3. Run MCP `related` and append related wiki-links when useful.
+4. MCP `commit` the returned path.
 
-### 11. Approve
+CLI equivalent: `ct vault create -t spec`, edit the returned path, then `ct vault commit <path>`.
 
-Output:
-```
+## Resume
+
+With `--continue`, search/list vault specs for the current topic, read the selected artifact, and resume at user review. Include inline vault comments if present.
+
+## Output
+
+Return:
+
+```text
 Spec: <topic>
-<one-line recommendation>
-Spec file: <spec-path>
-Plan file: <plan-path>
-Phases: N
-Next: /develop <plan-path> or /vibe
+Spec file: <path-or-stem>
+Next: /prepare <spec-stem>
 ```
-
-## Resume (`--continue`)
-
-Use `list` (kind=plan) to find candidate plans for the current branch/topic; pick the one that matches by topic, ask the user to confirm if more than one is plausible. If found, `read` it, re-present, resume from step 9.
-
-If no plan exists, do the same for kind=spec. `read` returns body and inline HTML comments together — if comments are non-empty, append them as `## Inline Comments` to the re-presented spec (user review feedback to address during refinement). Resume from step 5.

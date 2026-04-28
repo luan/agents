@@ -1,6 +1,6 @@
 ---
-name: sym
-description: "Canonical code navigator. Default to the source MCP tools (`mcp__source__search`, `mcp__source__show`, `mcp__source__outline`, `mcp__source__refs`, `mcp__source__impact`, `mcp__source__trace`, `mcp__source__impls`, `mcp__source__investigate`, `mcp__source__diff`); `ct source` is the CLI fallback for shell pipelines. Use before grep/find or broad file reads when exploring code, locating symbols, tracing callers/callees, finding implementations, or scoping a diff to a symbol."
+name: source
+description: "Canonical code navigator for symbols, refs, callers/callees, implementations, and symbol diffs."
 ---
 
 # source — code navigation
@@ -22,20 +22,20 @@ search → investigate → refs / impact / trace / impls → show / outline → 
 
 ## Goal → command
 
-| I want to… | Command |
-|---|---|
-| Find a symbol | `ct source search <q>` |
-| Find text | `ct source search --mode text <q>` |
-| Find paths | `ct source search --mode path <q>` |
-| Find structural matches | `ct source search --mode structural --lang <lang> --pattern <pattern>` |
-| Get kind-appropriate context | `ct source investigate <symbol>` |
-| Read source by symbol or range | `ct source show <symbol \| file[:L1-L2]>` |
-| List symbols in a file | `ct source outline <file>` |
-| Find direct references | `ct source refs <symbol>` |
-| See who depends on a symbol transitively | `ct source impact <symbol>` |
-| See what a symbol calls | `ct source trace <symbol>` |
-| Find implementations/conformances | `ct source impls <symbol>` |
-| Scope a git diff to a symbol | `ct source diff <symbol> [base]` |
+| I want to…                               | Command                                                                |
+| ---------------------------------------- | ---------------------------------------------------------------------- |
+| Find a symbol                            | `ct source search <q>`                                                 |
+| Find text                                | `ct source search --mode text <q>`                                     |
+| Find paths                               | `ct source search --mode path <q>`                                     |
+| Find structural matches                  | `ct source search --mode structural --lang <lang> --pattern <pattern>` |
+| Get kind-appropriate context             | `ct source investigate <symbol>`                                       |
+| Read source by symbol or range           | `ct source show <symbol \| file[:L1-L2]>`                              |
+| List symbols in a file                   | `ct source outline <file>`                                             |
+| Find direct references                   | `ct source refs <symbol>`                                              |
+| See who depends on a symbol transitively | `ct source impact <symbol>`                                            |
+| See what a symbol calls                  | `ct source trace <symbol>`                                             |
+| Find implementations/conformances        | `ct source impls <symbol>`                                             |
+| Scope a git diff to a symbol             | `ct source diff <symbol> [base]`                                       |
 
 Every command supports `--json`.
 

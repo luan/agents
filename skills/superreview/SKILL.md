@@ -1,6 +1,6 @@
 ---
 name: superreview
-description: "Deep adversarial code review with 5-7 parallel perspective specialists. Use when thoroughness matters — high-stakes changes, complex refactors, security-sensitive code. Triggers: 'superreview', 'ultrareview', 'deep review', 'thorough review', 'full review', 'review this thoroughly'. Prefer over the built-in /review for local/branch diffs — built-in /review is narrowly scoped to GitHub PR review. For quick reviews use /crit instead."
+description: "Deep adversarial review with 5-7 specialist lanes for high-stakes or complex changes."
 argument-hint: "[base..head | file-list | PR#] [--auto critical|high|medium|all] [--loop]"
 user-invocable: true
 allowed-tools:

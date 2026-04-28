@@ -1,6 +1,6 @@
 ---
 name: crit
-description: "Quick adversarial code review — cleanup pre-pass + 2 focused reviewers. Default for everyday reviews. Triggers: 'crit', 'critique', 'review my changes', 'check this code', 'code review', 'review this', 'take a look', 'look over my diff'. Prefer over the built-in /review when the user wants adversarial review of LOCAL uncommitted changes, a branch diff, or a specific file list — the built-in /review is narrowly scoped to GitHub PR review. For deep multi-perspective review use /superreview."
+description: "Quick adversarial review of local changes or branch diffs. Use /superreview for deep review."
 argument-hint: "[base..head | file-list | PR#] [--auto critical|high|medium|all]"
 user-invocable: true
 allowed-tools:

@@ -1,6 +1,6 @@
 ---
 name: vibe
-description: "Fully autonomous development workflow from prompt to commit. Chains spec → develop → review → commit. Triggers: /vibe, 'vibe this', 'autonomous workflow', 'just do it all', 'build this end-to-end', 'full pipeline', 'handle everything'."
+description: "Legacy autonomous pipeline: spec → prepare → develop → review → commit. Redesign pending."
 allowed-tools: Bash, Read, Glob, Skill
 argument-hint: "<prompt> [--dry-run]"
 user-invocable: true
@@ -8,7 +8,7 @@ user-invocable: true
 
 # Vibe
 
-Full pipeline (spec → develop → review → commit) from a single prompt.
+Legacy full pipeline (spec → prepare → develop → review → commit) from a single prompt. This skill is intentionally thin until the autonomous workflow is redesigned.
 
 ## Arguments
 
@@ -20,7 +20,7 @@ No prompt → tell user: `/vibe <what to build>`, stop.
 
 ## Pipeline
 
-**Stage numbering `[N/M]`:** M = total stages that will run. Base: 5 (spec, develop, review, commit, report). `--no-review` → 4. `--dry-run` → 1.
+**Stage numbering `[N/M]`:** M = total stages that will run. Base: 5 (spec, prepare, develop, review, commit). `--no-review` → 4. `--dry-run` → 1.
 
 ### [1/M] Spec
 
@@ -30,29 +30,41 @@ Output `[1/M] Spec`.
 Skill("spec", args="<prompt> --auto")
 ```
 
-Spec runs silently with `--auto` and returns both spec and plan file paths. Read the plan file path directly from the spec output — do not fall back to a "find latest" lookup.
+Spec runs silently with `--auto` and returns the spec file path or stem. Read the path directly from the spec output — do not fall back to a "find latest" lookup.
 
-Verify the plan file exists and has content. Immediately proceed to develop.
+Verify the spec exists and has content. Immediately proceed to prepare.
 
-### [2/M] Develop
+### [2/M] Prepare
 
-Output `[2/M] Develop`.
+Output `[2/M] Prepare`.
 
-If `--dry-run` → stop here. Report the plan file path, suggest `/develop <path>`.
+If `--dry-run` → stop here. Report the spec file path, suggest `/prepare <spec-stem>`.
+
+```
+Skill("prepare", args="<spec-file-path-or-stem> --auto")
+```
+
+Prepare returns one or more plan artifact paths/stems. If multiple independent plans are produced, run develop on the first unblocked AFK plan only; leave the rest for explicit user orchestration until this skill is redesigned.
+
+Verify the selected plan exists and has content. Immediately proceed to develop.
+
+### [3/M] Develop
+
+Output `[3/M] Develop`.
 
 ```
 Skill("develop", args="<plan-file-path> --auto")
 ```
 
-Verify all workers completed. If some failed, report per-worker status and stop.
+Verify the selected plan's acceptance criteria were satisfied. If develop stops blocked, report the blocker and stop.
 
 **Bugfix detection:** If the spec mentions "bug", "fix", "regression", or includes reproduction steps — after develop completes, re-run the reproduction scenario to confirm the fix works. If reproduction still fails, report and stop (do not proceed to review with a broken fix).
 
 Immediately proceed to review.
 
-### [3/M] Review
+### [4/M] Review
 
-Output `[3/M] Review`.
+Output `[4/M] Review`.
 
 Skip if `--no-review`.
 
@@ -62,25 +74,15 @@ Skill("crit")
 
 Fix any critical issues inline. Immediately proceed to commit.
 
-### [4/M] Commit
+### [5/M] Commit
 
-Output `[4/M] Commit`.
+Output `[5/M] Commit`.
 
 If `git diff --stat` is empty → skip.
 
 ```
 Skill("commit")
 ```
-
-### [M/M] Report
-
-Output `[M/M] Report`.
-
-```
-Skill("report")
-```
-
-Generates a post-implementation summary in `~/blueprints/`. Runs silently — failure here doesn't block the pipeline.
 
 ## Finalize
 
