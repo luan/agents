@@ -1,6 +1,6 @@
 ---
 name: pr-descr
-description: "Update PR title and description from branch context. Triggers: 'pr description', 'update PR', 'PR title', 'describe PR'."
+description: "Update PR title and description from branch context."
 argument-hint: "[--auto]"
 user-invocable: true
 disable-model-invocation: false

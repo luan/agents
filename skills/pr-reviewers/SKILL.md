@@ -1,6 +1,6 @@
 ---
 name: pr-reviewers
-description: "Recommend PR reviewers based on code ownership. Triggers: 'who should review', 'add reviewers', 'find reviewers'. Spreads load to avoid always picking same people."
+description: "Recommend PR reviewers from ownership and load balance."
 model: sonnet
 context: fork
 agent: general-purpose

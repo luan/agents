@@ -1,6 +1,6 @@
 ---
 name: bootstrap-web
-description: "Bootstrap a new web project with the preferred stack. Triggers: 'bootstrap web', 'new webapp', 'scaffold project', 'new web project'."
+description: "Bootstrap a new web project with the preferred stack."
 argument-hint: "<project-name> [description] [--auto]"
 user-invocable: true
 disable-model-invocation: true

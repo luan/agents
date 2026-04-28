@@ -1,6 +1,6 @@
 ---
 name: git-surgeon
-description: "Non-interactive hunk-level git operations by stable hunk ID: stage, unstage, discard, undo, fixup, split, reword, and selective commit. Use instead of raw git commands whenever the user wants to operate on PART of a file, commit, or staging area rather than the whole thing. Replaces workflows like `git add -p`, `git restore`, partial reset/discard, fixup commits, commit splitting, and selective cherry-pick/undo. Triggers: 'only commit part of this file', 'discard changes to X but keep the rest', 'stage only the relevant parts', 'split this commit into two', 'fixup an earlier commit', 'undo just that part of the commit', 'reword commit message'."
+description: "Hunk-level git ops: stage, unstage, discard, fixup, split, reword, selective commit."
 ---
 
 # git-surgeon

@@ -1,7 +1,7 @@
 ---
 name: develop
-description: "Execute implementation from a plan or spec file. Reads the plan phases, dispatches workers with full spec context, verifies each against the spec. Triggers: 'develop', 'execute the plan', 'build this', 'implement this spec'."
-argument-hint: "<plan-or-spec-path> [--auto]"
+description: "Execute one approved vault plan artifact, satisfy acceptance criteria, verify, and stop."
+argument-hint: "<plan-stem-or-path> [--auto]"
 user-invocable: true
 allowed-tools:
   - Agent
@@ -9,133 +9,114 @@ allowed-tools:
   - Read
   - Glob
   - Grep
-  - TaskCreate
-  - TaskUpdate
-  - TaskList
 ---
 
 # Develop
 
-Read a plan (preferred) or spec, dispatch workers per phase, verify each worker's output against the spec.
+Execute one approved blueprints vault `plan` artifact. This skill answers **make this plan true**. It does not plan, split, rescope, or invent adjacent work.
+
+Use `/prepare` when a spec still needs executable plan artifacts. If the user passes a `spec`, stop and ask to run `/prepare <spec-stem>` first.
 
 ## Arguments
 
-- `<path>` — path to plan file (preferred) or spec file
-- `--auto` — skip user confirmations (for vibe/supervibe calls)
-- No argument → list recent plans via `ct vault list -t plan`, ask the user to pick one. If no plans exist, fall back to `ct vault list -t spec`. Never silently pick the most recent.
+- `<plan-stem-or-path>` — vault `plan` artifact to execute
+- `--auto` — skip optional confirmations, but still stop on scope ambiguity or broken acceptance criteria
+- No argument → list candidate `stage/ready-for-agent` plans from the vault and ask the user to pick one. Never silently pick the newest plan.
 
-## Step 1: Read Plan and Spec
+## Rules
 
-If content is already in your conversation (from a preceding /spec call), use it directly.
+- Implement exactly the selected plan's acceptance criteria.
+- Read the linked source artifact when the plan has `source: [[...]]`. If the source is a parent plan, also follow its source link to the original spec.
+- Read relevant vault domain and decision artifacts before changing code.
+- If the plan is ambiguous, too large, stale, or contradicts the spec, stop and ask. Do not silently rewrite scope.
+- If the plan needs to be split or corrected, suggest `/prepare` and explain the issue.
+- Prefer direct implementation in the main thread. Use subagents only for focused research or review, not independent scope ownership.
+- Use the `/tdd` discipline for implementation. TDD is mandatory for `/develop`, not an option.
 
-**Plan file provided (preferred path):**
-```bash
-PLAN_CONTENT=$(ct vault read -t plan <path>)
-```
-The plan's frontmatter contains `source:` linking to its spec. Read the spec too — workers need both:
-```bash
-SPEC_CONTENT=$(ct vault read -t spec <spec-stem>)
-```
+## Step 1: Load context
 
-**Spec file provided (no plan):**
-```bash
-SPEC_CONTENT=$(ct vault read -t spec <path>)
-```
-Decompose into tasks yourself (Step 2 fallback).
+Read the plan with vault read operations. Capture:
 
-**Extract reviewer annotations:** Run `ct vault comments <spec-file>` and (if plan exists) `ct vault comments <plan-file>`. If either returns comments, store them — they'll be appended to worker prompts in Step 3.
+- parent spec/source link, including parent-plan-to-spec links for child plans
+- related artifacts and blockers
+- acceptance criteria
+- explicit out-of-scope items
+- verification commands or expectations
+- inline comments
 
-If the file doesn't exist or is empty, report and stop.
+Then read:
 
-## Step 2: Decompose
+- the linked source artifact and, for child plans, the original parent spec
+- relevant vault domain docs
+- relevant vault decision docs
 
-**From plan file:** Parse phase markers directly into tasks. Each phase becomes one task. The plan already specifies files, approach, steps, and dependencies — use them as-is.
+If blockers are unresolved or the plan lacks acceptance criteria, stop.
 
-**From spec file (fallback):** Break the spec into implementation tasks. Use the Architecture Context to determine natural boundaries (files, modules, layers). For each task, note:
-- What to build
-- Relevant spec excerpts, file paths, and approach
-- Dependencies on other tasks (which must complete first)
+## Step 2: Confirm execution target
 
-**Create a task list:** After decomposing, create a TaskCreate entry for each phase/task. This gives the user visible progress tracking throughout execution. Set dependencies between tasks using `addBlockedBy` to reflect the plan's dependency graph. Mark each task `in_progress` when its worker starts and `completed` when it passes spec compliance.
+Summarize before coding unless `--auto` is set:
 
-## Step 3: Dispatch Workers
-
-For each ready task, spawn an Agent with the worker prompt below. Cap: 4 concurrent workers. Dispatch unblocked tasks in parallel, re-dispatch as tasks complete and unblock others. Single task → one worker.
-
-### Worker Prompt
-
-```
-Implement this phase.
-
-## Phase
-<phase title, files, approach, steps from plan>
-
-## Full Spec
-<entire spec content — Problem, Recommendation, Architecture Context, Risks>
-
-## Your Workflow
-1. Read the files listed in the phase (Modify + Create paths)
-2. Write a failing test that describes the target behavior
-3. Run the test — confirm it fails for the right reason (missing method, wrong behavior — not random error)
-4. Implement the minimum code to make the test pass
-5. Run all tests — confirm green
-6. Run the project build command — confirm it compiles
-7. Run the phase's verification step if specified
-8. Report completion with a summary of what you implemented
-
-## Reviewer Annotations
-<if spec or plan had inline comments, include them here>
-Address these in your implementation.
-
-## If blocked
-- Design conflict with the spec → report "RESCOPE: <reason>" and stop
-- Task too large → break it down and report the subtasks
+```text
+Plan: <stem/title>
+Parent spec: <stem/title or none>
+Acceptance criteria: <N>
+Out of scope: <summary>
+Verification: <commands/checks>
 ```
 
-Workers get the **full spec text** plus their **phase details** from the plan. The spec provides the "why", the plan provides the "how". Both fit in a worker's context.
+Ask for confirmation only if there is ambiguity. Otherwise proceed.
 
-**Team Mode option:** If the user explicitly asks for named background workers,
-long-running team orchestration, or `/team`/Team Mode dispatch, use Team Mode
-instead of the default transient Agent dispatch. Keep normal `/develop` behavior
-as the default for ordinary implementation plans.
+## Step 3: Implement
 
-## Step 4: Spec Compliance Review
+Work vertically against the acceptance criteria:
 
-After each worker completes, spawn a reviewer Agent:
+1. Identify the public behavior seam for the first criterion.
+2. Write or update one behavior test for that criterion.
+3. Run it and confirm it fails for the expected reason.
+4. Implement the minimum code needed to pass.
+5. Run the focused test/check and confirm it passes.
+6. Refactor only while green.
+7. Repeat for the remaining criteria.
 
-```
-Review this implementation against the spec.
+If no durable test seam exists for a criterion, stop and explain why the plan cannot be developed safely. Do not silently skip the red-green loop.
 
-## Spec
-<full spec content>
+Do not add speculative features. Do not broaden scope because nearby code looks related.
 
-## Changes
-<git diff for this worker's changes>
+If using subagents, their prompts must include the plan, parent spec, acceptance criteria, out-of-scope items, and relevant vault vocabulary. A subagent may research or review; the main thread remains responsible for edits and scope control unless the user explicitly asks for delegated implementation.
 
-## Check
-1. Does the implementation match the Recommendation section?
-2. Does it fit the Architecture Context (right files, right patterns)?
-3. Are the Risks addressed or acknowledged?
+## Step 4: Verify
 
-Output: PASS or FAIL with specific citations.
-If FAIL: list exactly what doesn't match and what should change.
-```
+Run, in order:
 
-**PASS** → mark task complete, dispatch next worker.
-**FAIL** → send feedback to the worker, worker fixes, re-review. Max 2 fix cycles per worker.
+1. Focused tests/checks for changed behavior.
+2. Plan-specified verification commands.
+3. The project-level test/build command when discoverable and reasonable.
 
-## Step 5: Completion
+If verification fails:
 
-After all workers complete and pass spec compliance:
+- Fix failures caused by your changes.
+- If failure reveals bad plan assumptions, stop and explain the mismatch.
+- After two failed repair attempts, stop with the exact failing command and blocker.
 
-1. Run full test suite. Red → spawn fix agent (max 2 cycles). Still red → report to user.
-2. Stage changes: `git add -u`, show `git diff --cached --stat`.
-3. Stop for user verification.
+## Step 5: Scope review
 
-Output:
-```
-Develop: <spec topic>
-Workers: N/N completed, all passed spec compliance
-Files changed: <list>
-Next: verify the implementation, then /crit and /commit
+Review the final diff against the plan and linked spec:
+
+- every acceptance criterion satisfied or explicitly blocked
+- no out-of-scope behavior added
+- no unrelated cleanup bundled in
+- no debug artifacts or temporary files left behind
+
+Use an advisory review subagent if the diff is large or touches unfamiliar code.
+
+## Step 6: Finish
+
+Do not create a report artifact. Output a concise handoff:
+
+```text
+Developed: <plan title>
+Verification: <commands and pass/fail>
+Acceptance criteria: <satisfied/blocked summary>
+Files changed: <paths>
+Next: /crit, then /commit
 ```

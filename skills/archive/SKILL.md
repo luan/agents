@@ -1,6 +1,6 @@
 ---
 name: archive
-description: "Archive consumed blueprint artifacts. Moves artifacts to archive/ and stores content in git notes. Triggers: 'archive', 'archive blueprint', 'clean up blueprints', 'done with this spec/plan/review'."
+description: "Archive consumed blueprint artifacts and preserve content in git notes."
 argument-hint: "[<slug-or-path>] [--type <spec|plan|review|report>]"
 allowed-tools:
   - Bash

@@ -1,6 +1,6 @@
 ---
 name: pr-comments
-description: "Fix unresolved PR review comments. Triggers: 'fix comments', 'fix PR comments', 'address review feedback'."
+description: "Fix unresolved PR review comments."
 argument-hint: "[--auto]"
 user-invocable: true
 disable-model-invocation: false

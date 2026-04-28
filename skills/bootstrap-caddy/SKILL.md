@@ -1,6 +1,6 @@
 ---
 name: bootstrap-caddy
-description: "Register a project in the local dev routing system. Triggers: 'register project', 'add to caddy', 'bootstrap caddy', 'dev routing'."
+description: "Register a project in the local dev routing system."
 argument-hint: "<project-name> [port]"
 user-invocable: true
 disable-model-invocation: true

@@ -1,6 +1,6 @@
 ---
 name: vault-sweep
-description: "Comprehensive vault maintenance — cross-references blueprints against codebase state to produce a maintenance plan: archive consumed artifacts, audit docs for staleness, propose new docs for undocumented stable systems. Triggers: 'vault sweep', 'sweep the vault', 'clean up vault', 'vault maintenance', 'what can we archive', 'audit blueprints', 'vault hygiene', 'blueprint cleanup'. Use whenever the user wants a holistic view of vault health rather than archiving a single artifact (that's /archive). Also use when the user asks what's stale, what needs docs, or whether artifacts can be cleaned up."
+description: "Comprehensive blueprints vault maintenance: archive consumed artifacts, audit staleness, propose missing docs."
 argument-hint: "[--execute] [--docs-only] [--no-gap-analysis]"
 allowed-tools:
   - Agent

@@ -1,6 +1,6 @@
 ---
 name: split-commit
-description: "Repackage branch into clean, tested, vertical commits. Triggers: 'split commits', 'repackage commits', 'reorganize commits', 'clean up branch history'. Not for single-commit branches — use /commit instead."
+description: "Repackage a branch into clean, tested, vertical commits. For single commits use /commit."
 argument-hint: "[base-branch] [--test='command'] [--auto]"
 user-invocable: true
 allowed-tools:

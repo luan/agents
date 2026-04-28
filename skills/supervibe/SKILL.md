@@ -1,6 +1,6 @@
 ---
 name: supervibe
-description: "Goal-directed autonomous development — reads the spec, breaks it into chunks, runs each as a vibe cycle. Triggers: /supervibe, 'super vibe', 'multi-phase', 'keep going until done'."
+description: "Legacy multi-phase autonomous development over chunks. Redesign pending."
 allowed-tools: Bash, Read, Glob, Grep, Skill
 argument-hint: "<goal> [--max-iterations N]"
 user-invocable: true
@@ -67,4 +67,4 @@ If max iterations hit before completion, report what remains.
 
 - Chunk fails → record it, continue to next chunk. Failed chunks noted in final report.
 - Max iterations hit → stop, report accomplished vs remaining.
-- All chunks fail → stop, suggest `/debugging` or manual investigation.
+- All chunks fail → stop, suggest `/diagnose` or manual investigation.

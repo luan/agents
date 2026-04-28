@@ -1,6 +1,6 @@
 ---
 name: frontend-design
-description: "Create distinctive, production-grade frontend interfaces with high design quality. Triggers: 'build UI', 'design component', 'create page', 'frontend', 'make it look good'. Works with any framework or vanilla HTML/CSS/JS."
+description: "Create distinctive, production-grade frontend UI/components with strong visual design."
 user-invocable: true
 ---
 
