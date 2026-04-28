@@ -4,8 +4,7 @@
 2. Comments for WHY / edge cases / surprises only.
 3. Use `ct source` for lookup and code exploration.
 4. All tests pass before committing. You own every failure you can see.
-5. Prefer `apply_patch` for file edits, renames, creates, deletes.
-6. For any file search or grep in the current git-indexed directory, use fff tools.
+5. For any file search or grep in the current git-indexed directory, use fff tools.
    When constraining `fffgrep`/`ffffind` to a directory, include the trailing
    slash (`src/`, not `src`) so the constraint is treated as a directory.
 

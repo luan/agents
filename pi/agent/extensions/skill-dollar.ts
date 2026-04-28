@@ -10,8 +10,8 @@ const MENTION_AT_CURSOR_RE = /(?:^|\s)\$([a-zA-Z0-9\-_]*)$/;
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 const HL = (s: string) => `\x1b[36m${s}\x1b[39m`;
 
-const ENHANCED = Symbol.for("skill-dollar.enhanced");
-const PATCHED = Symbol.for("skill-dollar.uiPatched");
+const AUTOCOMPLETE_INSTALLED = Symbol.for("skill-dollar.autocompleteInstalled");
+const INPUT_TRIGGER_PATCHED = Symbol.for("skill-dollar.inputTriggerPatched");
 const RENDER_WRAPPED = Symbol.for("skill-dollar.userMessageWrapped");
 
 function isPrintable(data: string): boolean {
@@ -81,74 +81,44 @@ function wrapProvider(
 	return wrapped;
 }
 
-// Reassign methods on the live instance instead of subclassing, so this works
-// regardless of which class the underlying editor extends (CustomEditor,
-// PolishedEditor from the tui extension, etc.). Idempotent via marker symbol.
-function enhance(
-	editor: unknown,
-	getItems: () => AutocompleteItem[],
-	getSkillNames: () => Iterable<string>,
-): unknown {
-	if (!editor || typeof editor !== "object") return editor;
-	const e = editor as Record<PropertyKey, unknown> & { [ENHANCED]?: true };
-	if (e[ENHANCED]) return editor;
-	e[ENHANCED] = true;
-
-	if (typeof e.setAutocompleteProvider === "function") {
-		const orig = (e.setAutocompleteProvider as Function).bind(e);
-		e.setAutocompleteProvider = (provider: AutocompleteProvider) => {
-			orig(wrapProvider(provider, getItems));
-		};
-	}
-
-	if (typeof e.handleInput === "function") {
-		const orig = (e.handleInput as Function).bind(e);
-		e.handleInput = (data: string) => {
-			orig(data);
-			const showing = e.isShowingAutocomplete as (() => boolean) | undefined;
-			if (showing && showing.call(e)) return;
-			if (!isPrintable(data)) return;
-			const getLines = e.getLines as (() => string[]) | undefined;
-			const getCursor = e.getCursor as (() => { line: number; col: number }) | undefined;
-			if (!getLines || !getCursor) return;
-			const cursor = getCursor.call(e);
-			const lines = getLines.call(e);
-			if (!findMentionAtCursor(lines[cursor.line] ?? "", cursor.col)) return;
-			const trigger = e.tryTriggerAutocomplete as (() => void) | undefined;
-			if (typeof trigger === "function") trigger.call(e);
-		};
-	}
-
-	// PolishedEditor exposes transformEditorLine for in-flow highlighting that
-	// runs before the rail/background wrap. For other editors (plain CustomEditor),
-	// fall back to wrapping render() — same pattern, less clean visually because
-	// it runs after any decoration the editor itself does.
-	if (typeof e.transformEditorLine === "function") {
-		const orig = (e.transformEditorLine as (l: string) => string).bind(e);
-		e.transformEditorLine = (line: string) => {
-			const out = orig(line);
-			return colorize(out, new Set(getSkillNames()));
-		};
-	} else if (typeof e.render === "function") {
-		const orig = (e.render as (w: number) => string[]).bind(e);
-		e.render = (width: number) => {
-			const out = orig(width);
-			if (!Array.isArray(out)) return out;
-			const set = new Set(getSkillNames());
-			return out.map((line) => colorize(line, set));
-		};
-	}
-
-	return editor;
+function patchDollarAutocompleteTrigger() {
+	const proto = CustomEditor.prototype as unknown as {
+		handleInput: (data: string) => void;
+		[INPUT_TRIGGER_PATCHED]?: true;
+	};
+	if (proto[INPUT_TRIGGER_PATCHED]) return;
+	proto[INPUT_TRIGGER_PATCHED] = true;
+	const original = proto.handleInput;
+	proto.handleInput = function (this: Record<string, unknown>, data: string) {
+		original.call(this, data);
+		const showing = this.isShowingAutocomplete as (() => boolean) | undefined;
+		if (showing?.call(this)) return;
+		if (!isPrintable(data)) return;
+		const getLines = this.getLines as (() => string[]) | undefined;
+		const getCursor = this.getCursor as (() => { line: number; col: number }) | undefined;
+		const trigger = this.tryTriggerAutocomplete as (() => void) | undefined;
+		if (!getLines || !getCursor || !trigger) return;
+		const cursor = getCursor.call(this);
+		const lines = getLines.call(this);
+		if (findMentionAtCursor(lines[cursor.line] ?? "", cursor.col)) {
+			trigger.call(this);
+		}
+	};
 }
 
 export default function (pi: ExtensionAPI) {
+	patchDollarAutocompleteTrigger();
+
 	let skills: Map<string, string> = new Map();
 	let items: AutocompleteItem[] = [];
 
 	const refresh = () => {
 		skills = collectSkills(pi);
 		items = buildItems(skills);
+	};
+	const currentItems = () => {
+		refresh();
+		return items;
 	};
 
 	// Idempotently wrap UserMessageComponent.prototype.render so $skill / /skill:name
@@ -180,6 +150,7 @@ export default function (pi: ExtensionAPI) {
 	// keeping the literal $name in the user message so the transcript shows
 	// what the user typed.
 	pi.on("before_agent_start", async (event) => {
+		refresh();
 		// Re-apply transcript highlight in case another extension repatched
 		// the prototype after we did.
 		ensureTranscriptHighlight();
@@ -214,38 +185,15 @@ export default function (pi: ExtensionAPI) {
 		// Defer past the end of the session_start tick so tui (which runs
 		// after us alphabetically) has a chance to install its own
 		// UserMessageComponent.render patch first; then we wrap on top of it.
-		setTimeout(ensureTranscriptHighlight, 0);
+		setTimeout(() => {
+			refresh();
+			ensureTranscriptHighlight();
+		}, 0);
 		if (!ctx.hasUI) return;
-
-		// Patch setEditorComponent so any factory installed by a later extension
-		// (or by us below) gets composed with skill-dollar's enhancements. This
-		// is the only way to chain — the API has no getter and only the last
-		// setter wins. Relies on extensions running in load order: skill-dollar
-		// patches first, later extensions' factories flow through the wrapper.
-		const ui = ctx.ui as unknown as Record<PropertyKey, unknown> & {
-			[PATCHED]?: true;
-			setEditorComponent: (factory: ((...a: unknown[]) => unknown) | undefined) => void;
-		};
-		if (!ui[PATCHED]) {
-			ui[PATCHED] = true;
-			const original = ui.setEditorComponent.bind(ui);
-			ui.setEditorComponent = (factory) => {
-				if (!factory) {
-					original(undefined);
-					return;
-				}
-				original((...args: unknown[]) =>
-					enhance(factory(...args), () => items, () => skills.keys()),
-				);
-			};
-		}
-
-		// Install a default so $-completion works even with no other editor
-		// extension. Later setEditorComponent calls (e.g. tui) replace this
-		// with their own editor, still flowing through the wrapper above.
-		ctx.ui.setEditorComponent(
-			(tui, theme, keybindings) => new CustomEditor(tui, theme, keybindings),
-		);
+		const ui = ctx.ui as typeof ctx.ui & { [AUTOCOMPLETE_INSTALLED]?: true };
+		if (ui[AUTOCOMPLETE_INSTALLED]) return;
+		ui[AUTOCOMPLETE_INSTALLED] = true;
+		ctx.ui.addAutocompleteProvider((current) => wrapProvider(current, currentItems));
 	});
 }
 
