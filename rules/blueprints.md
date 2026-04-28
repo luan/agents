@@ -79,13 +79,13 @@ A dive is a vision-level spec linked to a hub spec. It lives in a sibling `dive/
 
 ## Writing artifact bodies
 
-`ct vault create` scaffolds the file with frontmatter only. The body is written by editing the returned path with Edit/apply_patch, and pushed via `ct vault commit <path>`.
+`ct vault create` scaffolds the file with frontmatter only. The body is written by editing the returned path with the active file-edit tool, and pushed via `ct vault commit <path>`.
 
 The MCP `vault` server exposes the same operations as bare-name tools (`create`, `read`, `list`, `archive`, `prune`, `comments`, `rename`, `retag`, `commit`, `search`, `related`, `check`, `status`). Prefer the MCP path — it bypasses shell quoting entirely.
 
 ```
 create { kind: "spec", topic: "..." }   # returns path
-# Edit/apply_patch writes the body to the returned path
+# Your file-edit tool writes the body to the returned path
 commit { path: "<returned path>" }      # commit+push
 ```
 

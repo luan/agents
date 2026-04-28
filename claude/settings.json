@@ -39,10 +39,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "ct hook apply-patch-remind"
-          },
-          {
-            "type": "command",
             "command": "ct hook source-remind",
             "timeout": 5
           }
