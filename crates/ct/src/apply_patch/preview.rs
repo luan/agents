@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -9,6 +9,7 @@ use super::apply::read_file;
 use super::apply::resolve_path;
 use super::parser::Hunk;
 use super::parser::UpdateFileChunk;
+use super::parser::UpdateScopeChunk;
 use super::parser::parse_patch;
 use super::scope::SourceScope;
 use super::seek_sequence::SeekOutcome;
@@ -125,6 +126,8 @@ fn preview_partial(patch: &str, cwd: &Path, complete: bool) -> Option<PreviewRes
     let cwd_canon = cwd.canonicalize().ok()?;
     let mut changes = Vec::new();
     let mut seen_updates = HashSet::<PathBuf>::new();
+    let scope_updates = collect_scope_preview_updates(&hunks, &cwd_canon)?;
+    let mut processed_scope_updates = HashSet::<PathBuf>::new();
 
     for hunk in hunks {
         match hunk {
@@ -164,7 +167,7 @@ fn preview_partial(patch: &str, cwd: &Path, complete: bool) -> Option<PreviewRes
                 chunks,
             } => {
                 let abs = resolve_path(&cwd_canon, &path).ok()?;
-                if !seen_updates.insert(abs.clone()) {
+                if scope_updates.contains_key(&abs) || !seen_updates.insert(abs.clone()) {
                     return None;
                 }
                 let rel = display_rel(&path);
@@ -190,6 +193,38 @@ fn preview_partial(patch: &str, cwd: &Path, complete: bool) -> Option<PreviewRes
                     move_path: move_path.as_ref().map(|path| display_rel(path)),
                 });
             }
+            Hunk::UpdateScope { path, chunks } => {
+                let abs = resolve_path(&cwd_canon, &path).ok()?;
+                if seen_updates.contains(&abs) {
+                    return None;
+                }
+                if !processed_scope_updates.insert(abs.clone()) {
+                    continue;
+                }
+                let rel = display_rel(&path);
+                let (original, _) = read_file(&abs, &rel).ok()?;
+                let chunks = scope_updates
+                    .get(&abs)
+                    .map(|(_, chunks)| chunks.as_slice())
+                    .unwrap_or(chunks.as_slice());
+                let original_lines = lines(&original);
+                let resolved =
+                    resolve_partial_scope_chunks(&original_lines, &original, &rel, chunks)?;
+                let new_lines = apply_partial_replacements(original_lines.clone(), resolved);
+                let new_content = new_lines.join("\n");
+                let (diff, additions, deletions) =
+                    super::diff::unified_diff(&rel, &original, &new_content);
+                let scopes = super::scope::source_scopes(&rel, &new_content);
+                changes.push(PreviewChange {
+                    path: rel,
+                    kind: PreviewChangeType::Update,
+                    additions,
+                    deletions,
+                    unified_diff: diff,
+                    scopes,
+                    move_path: None,
+                });
+            }
         }
     }
 
@@ -208,6 +243,25 @@ fn preview_partial(patch: &str, cwd: &Path, complete: bool) -> Option<PreviewRes
         changes,
         error: None,
     })
+}
+
+fn collect_scope_preview_updates(
+    hunks: &[Hunk],
+    cwd_canon: &Path,
+) -> Option<HashMap<PathBuf, (PathBuf, Vec<UpdateScopeChunk>)>> {
+    let mut updates: HashMap<PathBuf, (PathBuf, Vec<UpdateScopeChunk>)> = HashMap::new();
+    for hunk in hunks {
+        let Hunk::UpdateScope { path, chunks } = hunk else {
+            continue;
+        };
+        let abs = resolve_path(cwd_canon, path).ok()?;
+        updates
+            .entry(abs)
+            .or_insert_with(|| (path.clone(), Vec::new()))
+            .1
+            .extend(chunks.iter().cloned());
+    }
+    Some(updates)
 }
 
 #[derive(Clone)]
@@ -247,15 +301,109 @@ fn resolve_partial_chunks(
         } else {
             &chunk.new_lines
         };
-        let outcome = seek_sequence(original_lines, old, line_index, chunk.is_end_of_file);
+        let mut outcome = seek_sequence(original_lines, old, line_index, chunk.is_end_of_file);
+        let mut repaired_old: Option<Vec<String>> = None;
+        let mut repaired_new: Option<Vec<String>> = None;
+        if matches!(outcome, SeekOutcome::NotFound) {
+            let candidate = repair_missing_marker_space(old);
+            if candidate != old {
+                outcome =
+                    seek_sequence(original_lines, &candidate, line_index, chunk.is_end_of_file);
+                if !matches!(outcome, SeekOutcome::NotFound) {
+                    repaired_old = Some(candidate);
+                    repaired_new = Some(repair_missing_marker_space(new));
+                }
+            }
+        }
+        let old = repaired_old.as_deref().unwrap_or(old);
+        let new = repaired_new.as_deref().unwrap_or(new);
         match outcome {
             SeekOutcome::Unique { idx, .. } => {
                 replacements.push(PartialReplacement {
                     start: idx,
                     old: old.to_vec(),
-                    new: new.to_vec(),
+                    new: preserve_matched_context(original_lines, idx, old, new),
                 });
                 line_index = idx + old.len();
+            }
+            SeekOutcome::NotFound | SeekOutcome::Ambiguous { .. } => return None,
+        }
+    }
+
+    Some(replacements)
+}
+
+fn resolve_partial_scope_chunks(
+    original_lines: &[String],
+    original: &str,
+    file_rel: &str,
+    chunks: &[UpdateScopeChunk],
+) -> Option<Vec<PartialReplacement>> {
+    let mut replacements = Vec::new();
+    let mut cursors: HashMap<(usize, usize, String, String), usize> = HashMap::new();
+
+    for chunk in chunks {
+        let (_, _, scope) =
+            super::scope::anchor_for_locator(file_rel, original, &chunk.locator).ok()?;
+        let start = scope.start_line.saturating_sub(1).min(original_lines.len());
+        let end = scope.end_line.min(original_lines.len()).max(start);
+        let key = (
+            start,
+            end,
+            scope.kind.clone(),
+            format!("{}:{}", scope.name, chunk.locator),
+        );
+        let cursor = cursors.entry(key).or_insert(start);
+        let scope_lines = &original_lines[start..end];
+        let relative_cursor = cursor.saturating_sub(start).min(scope_lines.len());
+
+        let old = if chunk.old_lines.last().is_some_and(String::is_empty) {
+            &chunk.old_lines[..chunk.old_lines.len() - 1]
+        } else {
+            &chunk.old_lines
+        };
+        let new = if chunk.new_lines.last().is_some_and(String::is_empty) {
+            &chunk.new_lines[..chunk.new_lines.len() - 1]
+        } else {
+            &chunk.new_lines
+        };
+        if old.is_empty() {
+            replacements.push(PartialReplacement {
+                start: *cursor,
+                old: Vec::new(),
+                new: new.to_vec(),
+            });
+            continue;
+        }
+        let mut outcome = seek_sequence(scope_lines, old, relative_cursor, chunk.is_end_of_file);
+        let mut repaired_old: Option<Vec<String>> = None;
+        let mut repaired_new: Option<Vec<String>> = None;
+        if matches!(outcome, SeekOutcome::NotFound) {
+            let candidate = repair_missing_marker_space(old);
+            if candidate != old {
+                outcome = seek_sequence(
+                    scope_lines,
+                    &candidate,
+                    relative_cursor,
+                    chunk.is_end_of_file,
+                );
+                if !matches!(outcome, SeekOutcome::NotFound) {
+                    repaired_old = Some(candidate);
+                    repaired_new = Some(repair_missing_marker_space(new));
+                }
+            }
+        }
+        let old = repaired_old.as_deref().unwrap_or(old);
+        let new = repaired_new.as_deref().unwrap_or(new);
+        match outcome {
+            SeekOutcome::Unique { idx, .. } => {
+                let abs_idx = start + idx;
+                replacements.push(PartialReplacement {
+                    start: abs_idx,
+                    old: old.to_vec(),
+                    new: preserve_matched_context(original_lines, abs_idx, old, new),
+                });
+                *cursor = abs_idx + old.len();
             }
             SeekOutcome::NotFound | SeekOutcome::Ambiguous { .. } => return None,
         }
@@ -276,6 +424,45 @@ fn apply_partial_replacements(
         );
     }
     lines
+}
+
+fn preserve_matched_context(
+    original_lines: &[String],
+    start: usize,
+    old: &[String],
+    new: &[String],
+) -> Vec<String> {
+    let mut out = new.to_vec();
+    let mut old_index = 0;
+    for line in &mut out {
+        if old_index >= old.len() {
+            break;
+        }
+        if let Some(relative) = old[old_index..]
+            .iter()
+            .position(|old_line| old_line == line)
+        {
+            old_index += relative;
+            if let Some(original) = original_lines.get(start + old_index) {
+                *line = original.clone();
+            }
+            old_index += 1;
+        }
+    }
+    out
+}
+
+fn repair_missing_marker_space(lines: &[String]) -> Vec<String> {
+    lines
+        .iter()
+        .map(|line| {
+            if line.starts_with(' ') {
+                format!(" {line}")
+            } else {
+                line.clone()
+            }
+        })
+        .collect()
 }
 
 fn lines(text: &str) -> Vec<String> {
@@ -310,5 +497,30 @@ mod tests {
                 .iter()
                 .any(|scope| scope.name == "sample")
         );
+    }
+
+    #[test]
+    fn partial_preview_batches_repeated_update_scope_sections() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join("sample.js"),
+            "function alpha() {\n  return 1;\n}\n\nfunction beta() {\n  return 1;\n}\n",
+        )
+        .unwrap();
+        let patch = concat!(
+            "*** Begin Patch\n",
+            "*** Update Scope: sample.js\n",
+            "@@ function alpha\n",
+            "-  return 1;\n",
+            "+  return 10;\n",
+            "*** Update Scope: sample.js\n",
+            "@@ function beta\n",
+            "-  return 1;\n",
+            "+  return 20;\n",
+        );
+        let response = preview(patch, temp.path(), true);
+        assert_eq!(response.status, "valid");
+        assert!(response.diff.contains("+  return 10;"));
+        assert!(response.diff.contains("+  return 20;"));
     }
 }

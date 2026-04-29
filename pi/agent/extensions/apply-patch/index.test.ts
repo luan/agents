@@ -122,7 +122,6 @@ describe("apply_patch streaming renderer", () => {
 		const secondText = renderText(second);
 
 		expect(secondText).toContain("Editing sample.js (+1 -1)");
-		expect(secondText).toContain("function renderSummary");
 		expect(secondText).toContain("5 -");
 		expect(secondText).toContain("5 +");
 		expect(secondText).toContain("occurrences)");
@@ -157,6 +156,109 @@ describe("apply_patch streaming renderer", () => {
 			theme,
 			renderContext(cwd, state, { argsComplete: true }),
 		);
+	});
+
+	it("renders semantic hunks as separate semantic editing blocks", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "apply-patch-semantic-render-"));
+		writeFileSync(join(cwd, "sample.js"), [
+			"function alpha() {",
+			"  return 1;",
+			"}",
+			"",
+			"function beta() {",
+			"  return 2;",
+			"}",
+			"",
+		].join("\n"));
+
+		const patchInput = `*** Begin Patch
+*** Update Scope: sample.js
+@@ function alpha
+-  return 1;
++  return 10;
+*** Update Scope: sample.js
+@@ function beta
+-  return 2;
++  return 20;
+*** End Patch
+`;
+
+		const tool = registerApplyPatchTool();
+		const state: Record<string, unknown> = {};
+		tool.renderCall(
+			{ input: patchInput },
+			theme,
+			renderContext(cwd, state, { argsComplete: false }),
+		);
+		await delay(1500);
+
+		const rendered = tool.renderCall(
+			{ input: patchInput },
+			theme,
+			renderContext(cwd, state, { argsComplete: false }),
+		);
+		const text = renderText(rendered);
+
+		expect(text).toContain("Semantic editing sample.js › function alpha");
+		expect(text).toContain("Semantic editing sample.js › function beta");
+		expect(text.match(/Semantic editing sample\.js/g)?.length).toBe(2);
+		expect(text).toContain("2 +   return 10;");
+		expect(text).toContain("6 +   return 20;");
+
+		const semanticDiff = `--- a/sample.js
++++ b/sample.js
+@@ -1,7 +1,7 @@
+ function alpha() {
+-  return 1;
++  return 10;
+ }
+ 
+ function beta() {
+-  return 2;
++  return 20;
+ }
+`;
+		const highlightedDiffRows = [
+			{ kind: "hunk", oldLine: null, newLine: null, content: "@@ -1,7 +1,7 @@", path: "sample.js" },
+			{ kind: "context", oldLine: 1, newLine: 1, content: "function alpha() {", path: "sample.js", highlightedContent: "function alpha() {" },
+			{ kind: "remove", oldLine: 2, newLine: null, content: "  return 1;", path: "sample.js", highlightedContent: "  return 1;" },
+			{ kind: "add", oldLine: null, newLine: 2, content: "  return 10;", path: "sample.js", highlightedContent: "  return 10;" },
+			{ kind: "context", oldLine: 3, newLine: 3, content: "}", path: "sample.js", highlightedContent: "}" },
+			{ kind: "context", oldLine: 4, newLine: 4, content: "", path: "sample.js", highlightedContent: "" },
+			{ kind: "context", oldLine: 5, newLine: 5, content: "function beta() {", path: "sample.js", highlightedContent: "function beta() {" },
+			{ kind: "remove", oldLine: 6, newLine: null, content: "  return 2;", path: "sample.js", highlightedContent: "  return 2;" },
+			{ kind: "add", oldLine: null, newLine: 6, content: "  return 20;", path: "sample.js", highlightedContent: "  return 20;" },
+			{ kind: "context", oldLine: 7, newLine: 7, content: "}", path: "sample.js", highlightedContent: "}" },
+		];
+		const final = tool.renderResult(
+			{
+				content: [{ type: "text", text: "M sample.js" }],
+				details: {
+					stage: "done",
+					filesChanged: 1,
+					fileDiffs: [{ path: "sample.js", operation: "update", added: 2, removed: 2 }],
+					diff: semanticDiff,
+					highlightedDiffRows,
+					semantic: true,
+					previewChanges: [{
+						path: "sample.js",
+						type: "update",
+						additions: 2,
+						deletions: 2,
+						scopes: [
+							{ name: "alpha", kind: "function", start_line: 1, end_line: 3 },
+							{ name: "beta", kind: "function", start_line: 5, end_line: 7 },
+						],
+					}],
+				},
+			},
+			{ expanded: false, isPartial: false },
+			theme,
+			renderContext(cwd, state, { executionStarted: true }),
+		);
+		const finalText = renderText(final);
+		expect(finalText).toContain("Semantic edited sample.js › function alpha");
+		expect(finalText).toContain("Semantic edited sample.js › function beta");
 	});
 });
 

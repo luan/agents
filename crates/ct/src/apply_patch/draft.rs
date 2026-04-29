@@ -97,6 +97,28 @@ pub fn chunk_plan(patch: &str) -> Result<Vec<DraftChunkPlan>, super::parser::Par
                     chunk_index += 1;
                 }
             }
+            Hunk::UpdateScope {
+                path,
+                chunks: update_chunks,
+            } => {
+                for chunk in update_chunks {
+                    let old_len = chunk.old_lines.len() as i64;
+                    let new_len = chunk.new_lines.len() as i64;
+                    chunks.push(DraftChunkPlan {
+                        chunk_index,
+                        file_path: path.display().to_string(),
+                        change_type: "update_scope".to_string(),
+                        old_start: None,
+                        old_end: old_len.checked_sub(1),
+                        new_start: None,
+                        new_end: new_len.checked_sub(1),
+                        status: "planned".to_string(),
+                        error_kind: None,
+                        error_message: None,
+                    });
+                    chunk_index += 1;
+                }
+            }
         }
     }
     Ok(chunks)

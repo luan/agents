@@ -35,22 +35,31 @@ const APPLY_PATCH_PROMPT_APPENDIX = `## apply_patch
 Use the \`apply_patch\` tool for all file edits. The patch payload format is:
 
 *** Begin Patch
+*** Update Scope: path/to/existing-file.txt
+@@ function renderSummary
+-old line inside that scope
++new line inside that scope
+*** Update File: path/to/existing-file.txt
+@@
+-old line
++new line
 *** Add File: path/to/new-file.txt
 +file contents
 *** Update File: path/to/existing-file.txt
 *** Move to: path/to/new-name.txt
-@@
--old line
-+new line
 *** Delete File: path/to/remove.txt
 *** End Patch
 
 Rules:
 - Include exactly one Begin Patch / End Patch envelope.
 - Prefix all new file contents and added lines with '+'.
-- For Update File hunks, prefer anchored hunks like '@@ functionName' or
-  '@@ className' over bare '@@'. Include nearby unchanged context lines before
-  and after every changed run so repeated code is unambiguous.`;
+- Use \`*** Update Scope\` when it is the shortest clear way to target an
+  existing function, class, type, top-level constant/variable, struct, enum,
+  impl, module, trait, or method.
+- Use \`*** Update File\` freely for cross-scope edits, unsupported languages,
+  moves, top-level data/config, or when plain text context is clearer.
+- For \`Update File\`, use specific \`@@ symbolName\` anchors and 2-3 nearby
+  unchanged context lines when the file is large or repetitive.`;
 
 const applyPatchToolSchema = Type.Object({
   input: Type.String({
@@ -65,6 +74,7 @@ type ApplyPatchProgressFile = {
   added: number;
   removed: number;
   done?: boolean;
+  semantic?: boolean;
 };
 
 type ApplyPatchRenderDetails = {
@@ -77,6 +87,7 @@ type ApplyPatchRenderDetails = {
   files?: ApplyPatchProgressFile[];
   fileDiffs?: ApplyPatchProgressFile[];
   previewChanges?: ApplyPatchPreviewChange[];
+  semantic?: boolean;
 };
 
 type ToolResult = {
@@ -95,6 +106,7 @@ type ThemeLike = {
 };
 
 type CollapsedPreviewMode = "hidden" | "digest";
+type ApplyPatchEditKind = "raw" | "semantic";
 
 type ApplyPatchConfig = {
   maxDiffLines: number;
@@ -115,7 +127,7 @@ type ApplyPatchConfig = {
 };
 
 const APPLY_PATCH_TOOL_DESCRIPTION =
-  "Edit files using the apply_patch format. For updates, prefer '@@ symbolName' anchors plus nearby unchanged context instead of bare '@@' so repeated code is unambiguous.";
+  "Edit files using apply_patch. Use '*** Update Scope' when it is the shortest clear way to target an existing symbol; use '*** Update File' when plain text context is clearer.";
 
 const DEFAULT_CONFIG: ApplyPatchConfig = {
   maxDiffLines: 160,
@@ -288,6 +300,7 @@ type ApplyPatchRenderState = {
   previewDiff?: string;
   previewRows?: ParsedDiffLine[];
   previewFiles?: ApplyPatchProgressFile[];
+  previewSemantic?: boolean;
   previewError?: string;
 };
 
@@ -309,6 +322,21 @@ const PREVIEW_THROTTLE_MS = 200;
 function streamingPreviewEnabled(): boolean {
   return true;
 }
+
+function editVerb(state: "success" | "pending" | "error", kind: ApplyPatchEditKind): string {
+  if (kind === "semantic") {
+    return state === "pending" ? "Semantic editing" : "Semantic edited";
+  }
+  return state === "pending" ? "Editing" : "Edited";
+}
+
+function editKindFromFiles(files: ApplyPatchProgressFile[] | undefined): ApplyPatchEditKind {
+  return files?.some((file) => file.semantic) ? "semantic" : "raw";
+}
+
+function isSemanticPatchInput(input: string): boolean {
+  return input.includes("*** Update Scope: ");
+}
 const shikiCache = new Map<string, string[]>();
 
 class ApplyPatchDiffView {
@@ -329,6 +357,7 @@ class ApplyPatchDiffView {
     private expanded = false,
     private rows?: ParsedDiffLine[],
     private maxDiffRows?: number,
+    private editKind: ApplyPatchEditKind = "raw",
   ) {}
 
   invalidate() {}
@@ -351,13 +380,14 @@ class ApplyPatchDiffView {
     };
 
     if (this.rows && this.rows.length > 0) {
-      const fileVerb = this.state === "pending" ? "Editing" : "Edited";
+      const fileVerb = editVerb(this.state, this.editKind);
       const cacheKey = [
         "rows",
         safeWidth,
         this.expanded,
         this.maxDiffRows ?? "",
         fileVerb,
+        this.editKind,
         this.rows.length,
       ].join("\0");
       const diffLines =
@@ -372,6 +402,7 @@ class ApplyPatchDiffView {
               this.expanded,
               this.maxDiffRows,
               fileVerb,
+              this.editKind,
             );
       this.renderedDiffCache = { key: cacheKey, lines: diffLines };
       return diffLines;
@@ -403,12 +434,13 @@ class ApplyPatchDiffView {
         this.renderedDiffCache = { key: cacheKey, lines: diffLines };
         return diffLines;
       }
-      const fileVerb = this.state === "pending" ? "Editing" : "Edited";
+      const fileVerb = editVerb(this.state, this.editKind);
       const cacheKey = [
         safeWidth,
         this.expanded,
         this.maxDiffRows ?? "",
         fileVerb,
+        this.editKind,
         this.diff.length,
         this.rows?.length ?? "",
       ].join("\0");
@@ -425,6 +457,7 @@ class ApplyPatchDiffView {
               this.expanded,
               this.maxDiffRows,
               fileVerb,
+              this.editKind,
             );
       this.renderedDiffCache = { key: cacheKey, lines: diffLines };
       return diffLines;
@@ -1053,6 +1086,18 @@ function parseUnifiedDiffWithScopes(
   return rows;
 }
 
+function mergeScopedDiffRows(
+  rows: ParsedDiffLine[] | undefined,
+  scopedRows: ParsedDiffLine[] | undefined,
+): ParsedDiffLine[] | undefined {
+  if (!rows) return scopedRows;
+  if (!scopedRows) return rows;
+  return rows.map((row, index) => ({
+    ...row,
+    scope: row.scope ?? scopedRows[index]?.scope,
+  }));
+}
+
 function languageForPath(path: string | undefined): string | undefined {
   return resolveInlineLanguageForPath(path);
 }
@@ -1129,37 +1174,92 @@ function diffContentForRow(row: ParsedDiffLine): string {
   return row.highlightedContent ?? highlightDiffContent(row.content, row.path);
 }
 
+function diffBlockStats(
+  rows: ParsedDiffLine[],
+  hunkIndex: number,
+): { added: number; removed: number } {
+  const stats = { added: 0, removed: 0 };
+  for (let index = hunkIndex + 1; index < rows.length; index += 1) {
+    const row = rows[index];
+    if (!row || row.kind === "hunk") break;
+    if (row.kind === "add") stats.added += 1;
+    if (row.kind === "remove") stats.removed += 1;
+  }
+  return stats;
+}
+
+function diffBlockScope(
+  rows: ParsedDiffLine[],
+  hunkIndex: number,
+): ApplyPatchPreviewScope | undefined {
+  for (let index = hunkIndex + 1; index < rows.length; index += 1) {
+    const row = rows[index];
+    if (!row || row.kind === "hunk") break;
+    if (row.scope) return row.scope;
+  }
+  return undefined;
+}
+
+function diffScopeRunStats(
+  rows: ParsedDiffLine[],
+  rowIndex: number,
+  key: string,
+): { added: number; removed: number } {
+  const stats = { added: 0, removed: 0 };
+  for (let index = rowIndex; index < rows.length; index += 1) {
+    const row = rows[index];
+    if (!row || row.kind === "hunk") break;
+    if (formatScopeKey(row.path, row.scope) !== key) break;
+    if (row.kind === "add") stats.added += 1;
+    if (row.kind === "remove") stats.removed += 1;
+  }
+  return stats;
+}
+
+function formatScopeKey(
+  path: string | undefined,
+  scope: ApplyPatchPreviewScope | undefined,
+): string | undefined {
+  return scope
+    ? `${path ?? ""}:${scope.kind}:${scope.name}:${scope.start_line}-${scope.end_line}`
+    : undefined;
+}
+
+function editBlockHeader(
+  theme: ThemeLike,
+  fileVerb: string,
+  path: string | undefined,
+  scope: ApplyPatchPreviewScope | undefined,
+  stats: { added: number; removed: number },
+  editKind: ApplyPatchEditKind,
+): string {
+  const target =
+    editKind === "semantic" && scope
+      ? `${theme.fg("accent", path ?? "patch")} ${theme.fg("muted", "›")} ${theme.fg("muted", `${scope.kind} `)}${theme.fg("accent", scope.name)}${theme.fg("dim", `:${scope.start_line}-${scope.end_line}`)}`
+      : theme.fg("accent", path ?? "patch");
+  return `${theme.fg("muted", "•")} ${theme.bold(fileVerb)} ${target} ${theme.fg("muted", "(")}${theme.fg("toolDiffAdded", `+${stats.added}`)} ${theme.fg("toolDiffRemoved", `-${stats.removed}`)}${theme.fg("muted", ")")}`;
+}
+
 function renderUnifiedDiffRows(
   rows: ParsedDiffLine[],
   theme: ThemeLike,
   width: number,
   baseBackground: string | undefined,
   fileVerb = "Edited",
+  editKind: ApplyPatchEditKind = "raw",
 ): string[] {
   const numberWidth = diffLineNumberWidth(rows);
   const gutterWidth = numberWidth + 3;
   const codeWidth = Math.max(8, width - gutterWidth);
   const wrapLimit = diffWrapRows(width);
   const lines: string[] = [];
-  const pathStats = new Map<string, { added: number; removed: number }>();
-  for (const row of rows) {
-    if (!row.path) continue;
-    const stats = pathStats.get(row.path) ?? { added: 0, removed: 0 };
-    if (row.kind === "add") stats.added += 1;
-    if (row.kind === "remove") stats.removed += 1;
-    pathStats.set(row.path, stats);
-  }
   let currentPath: string | undefined;
   let currentScopeKey: string | undefined;
 
-  for (const row of rows) {
+  for (const [rowIndex, row] of rows.entries()) {
     if (row.path && row.path !== currentPath) {
       currentPath = row.path;
       currentScopeKey = undefined;
-      if (lines.length > 0) lines.push(paintDiffRow("", width, baseBackground));
-      const stats = pathStats.get(currentPath) ?? { added: 0, removed: 0 };
-      const label = `${theme.fg("muted", "•")} ${theme.bold(fileVerb)} ${theme.fg("accent", currentPath)} ${theme.fg("muted", "(")}${theme.fg("toolDiffAdded", `+${stats.added}`)} ${theme.fg("toolDiffRemoved", `-${stats.removed}`)}${theme.fg("muted", ")")}`;
-      lines.push(paintDiffRow(label, width, baseBackground));
     }
 
     const scopeKey = row.scope
@@ -1168,6 +1268,23 @@ function renderUnifiedDiffRows(
     if (scopeKey && scopeKey !== currentScopeKey) {
       currentScopeKey = scopeKey;
       const scope = row.scope!;
+      if (editKind === "semantic") {
+        if (lines.length > 0) lines.push(paintDiffRow("", width, baseBackground));
+        lines.push(
+          paintDiffRow(
+            editBlockHeader(
+              theme,
+              fileVerb,
+              row.path ?? currentPath,
+              scope,
+              diffScopeRunStats(rows, rowIndex, scopeKey),
+              editKind,
+            ),
+            width,
+            baseBackground,
+          ),
+        );
+      } else {
       const label = `${" ".repeat(numberWidth)} ${theme.fg("dim", "▾")} ${theme.fg(
         "muted",
         `${scope.kind} `,
@@ -1176,12 +1293,23 @@ function renderUnifiedDiffRows(
         `:${scope.start_line}-${scope.end_line}`,
       )}`;
       lines.push(paintDiffRow(label, width, baseBackground));
+      }
     }
 
     if (row.kind === "hunk") {
+      if (lines.length > 0) lines.push(paintDiffRow("", width, baseBackground));
+      const blockScope = diffBlockScope(rows, rowIndex);
+      currentScopeKey = formatScopeKey(row.path, blockScope);
       lines.push(
         paintDiffRow(
-          `${" ".repeat(numberWidth)} ${theme.fg("dim", "⋮")}`,
+          editBlockHeader(
+            theme,
+            fileVerb,
+            row.path ?? currentPath,
+            blockScope,
+            diffBlockStats(rows, rowIndex),
+            editKind,
+          ),
           width,
           baseBackground,
         ),
@@ -1279,6 +1407,7 @@ function renderNativeDiff(
   expanded: boolean,
   maxRows = config.maxDiffLines,
   fileVerb = "Edited",
+  editKind: ApplyPatchEditKind = "raw",
 ): string[] {
   if (!expanded && maxRows <= 0) {
     const lineCount = diff
@@ -1309,6 +1438,7 @@ function renderNativeDiff(
     expanded,
     maxRows,
     fileVerb,
+    editKind,
   );
 }
 
@@ -1321,6 +1451,7 @@ function renderNativeDiffRows(
   expanded: boolean,
   maxRows = config.maxDiffLines,
   fileVerb = "Edited",
+  editKind: ApplyPatchEditKind = "raw",
 ): string[] {
   const rendered = renderUnifiedDiffRows(
     diffRows,
@@ -1328,6 +1459,7 @@ function renderNativeDiffRows(
     width,
     baseBackground,
     fileVerb,
+    editKind,
   );
   return limitDiffRows(
     rendered,
@@ -1448,6 +1580,7 @@ function renderApplyPatchBox(
     expanded,
     rows,
     maxDiffRows,
+    editKindFromFiles(files),
   );
 }
 
@@ -1504,6 +1637,17 @@ function parsePatchInputProgress(input: string): {
         operation: "update",
         added: 0,
         removed: 0,
+      };
+      continue;
+    }
+    if (line.startsWith("*** Update Scope: ")) {
+      flush();
+      current = {
+        path: line.slice("*** Update Scope: ".length).trim(),
+        operation: "update",
+        added: 0,
+        removed: 0,
+        semantic: true,
       };
       continue;
     }
@@ -1581,6 +1725,15 @@ function filesFromPreviewChanges(
     }));
 }
 
+function markFilesSemantic(
+  files: ApplyPatchProgressFile[],
+  semantic: boolean,
+): ApplyPatchProgressFile[] {
+  return semantic
+    ? files.map((file) => ({ ...file, semantic: file.semantic ?? true }))
+    : files;
+}
+
 function parsePreviewResponse(stdout: string): ApplyPatchPreviewResponse | undefined {
   const line = stdout.trim().split("\n").find((candidate) => candidate.trim().startsWith("{"));
   if (!line) return undefined;
@@ -1614,7 +1767,10 @@ function handlePreviewSnapshot(
         preview.diff,
         preview.changes,
       );
-      state.previewFiles = filesFromPreviewChanges(preview.changes);
+      state.previewFiles = markFilesSemantic(
+        filesFromPreviewChanges(preview.changes),
+        state.previewSemantic ?? false,
+      );
     }
     state.previewError = undefined;
     return;
@@ -1750,6 +1906,7 @@ function startLivePatchFile(
   state: LivePatchPreviewState,
   operation: ApplyPatchProgressFile["operation"],
   path: string,
+  semantic = false,
 ) {
   if (state.currentFile) state.currentFile.done = true;
   const file: ApplyPatchProgressFile = {
@@ -1757,6 +1914,7 @@ function startLivePatchFile(
     operation,
     added: 0,
     removed: 0,
+    semantic,
   };
   state.files.push(file);
   state.currentFile = file;
@@ -1773,6 +1931,10 @@ function ingestLivePatchLine(state: LivePatchPreviewState, line: string): void {
   }
   if (line.startsWith("*** Update File: ")) {
     startLivePatchFile(state, "update", line.slice("*** Update File: ".length).trim());
+    return;
+  }
+  if (line.startsWith("*** Update Scope: ")) {
+    startLivePatchFile(state, "update", line.slice("*** Update Scope: ".length).trim(), true);
     return;
   }
   if (line.startsWith("*** Delete File: ")) {
@@ -2118,7 +2280,10 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
       : {}),
     promptGuidelines:
       config.promptMetadata && config.promptGuidelines && config.enforce
-        ? ["Use apply_patch for every file edit."]
+        ? [
+            "Use apply_patch for every file edit.",
+            "Use *** Update Scope when it is the shortest clear way to target an existing code symbol; use *** Update File when plain text context is clearer.",
+          ]
         : [],
     parameters: applyPatchToolSchema,
     renderShell: "self",
@@ -2141,9 +2306,10 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
                 label,
                 undefined,
                 context.expanded,
-                state.previewRows,
-                config.maxDiffLines,
-              ),
+              state.previewRows,
+              config.maxDiffLines,
+              state.previewSemantic ? "semantic" : editKindFromFiles(state.previewFiles),
+            ),
             )
           : undefined;
       if (context.executionStarted) {
@@ -2153,6 +2319,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 
       const input = typeof args?.input === "string" ? args.input : "";
       const inputKey = patchInputKey(input);
+      const semanticInput = isSemanticPatchInput(input);
       if (
         inputKey &&
         (executingPatchInputs.has(inputKey) ||
@@ -2166,6 +2333,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
         state.livePreview = parseLivePatchPreview(input, state.livePreview);
         if (streamingPreviewEnabled() && inputKey && input.includes("\n")) {
           state.previewInput = input;
+          state.previewSemantic = semanticInput;
           startPreviewWorker(context.cwd, state, context.invalidate);
           schedulePreviewWorkerUpdate(state, context.invalidate);
         } else if (!streamingPreviewEnabled()) {
@@ -2184,6 +2352,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
             context.expanded,
             state.previewRows,
             config.maxDiffLines,
+            semanticInput ? "semantic" : editKindFromFiles(state.previewFiles),
           );
         }
         if (state.livePreview.files.length > 0) {
@@ -2254,14 +2423,18 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
       const details = result.details as ApplyPatchRenderDetails | undefined;
       const textBlock = result.content.find((block) => block.type === "text");
       const baseText = textBlock?.type === "text" ? textBlock.text : "";
-      const files = details?.fileDiffs ?? details?.files ?? [];
+      const files = markFilesSemantic(
+        details?.fileDiffs ?? details?.files ?? [],
+        details?.semantic ?? false,
+      );
       const count =
         details?.filesChanged ?? details?.operations ?? files.length;
-        const highlightedRows = details?.highlightedDiffRows;
-        const scopedRows =
-          !highlightedRows && details?.diff && details.previewChanges
-            ? parseUnifiedDiffWithScopes(details.diff, details.previewChanges)
-            : undefined;
+      const highlightedRows = details?.highlightedDiffRows;
+      const scopedRows =
+        details?.diff && details.previewChanges
+          ? parseUnifiedDiffWithScopes(details.diff, details.previewChanges)
+          : undefined;
+      const displayRows = mergeScopedDiffRows(highlightedRows, scopedRows);
       const state = context.state as ApplyPatchRenderState;
       state.resultRendered = true;
       stopPreviewWorker(state);
@@ -2352,7 +2525,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
             "success",
             undefined,
             expanded,
-            highlightedRows ?? scopedRows,
+            displayRows,
             diffLineLimit,
           );
         }
@@ -2365,7 +2538,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
           "success",
           undefined,
           expanded,
-          highlightedRows ?? scopedRows,
+          displayRows,
           diffLineLimit,
         );
       }
@@ -2387,6 +2560,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 
       const input = typeof params.input === "string" ? params.input : "";
       const inputKey = patchInputKey(input);
+      const semanticInput = isSemanticPatchInput(input);
       executingPatchInputs.add(inputKey);
       completedPatchInputs.delete(inputKey);
 
@@ -2412,6 +2586,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
                 stage: "validate",
                 operations: progress.totalOperations,
                 files: progress.files,
+                semantic: semanticInput,
               },
             });
           }
@@ -2459,6 +2634,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
             stage: "apply",
             operations: progress.totalOperations,
             files: progress.files,
+            semantic: semanticInput,
             ...(config.richRender && config.renderDiff
               ? { diff: dryRun?.stdout ?? previewDiff, previewChanges }
               : {}),
@@ -2478,6 +2654,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
         if ("error" in applied) {
           return errorResult(applied.error, {
             stage: "apply",
+            semantic: semanticInput,
             ...(dryRun ? { diff: dryRun.stdout } : {}),
           });
         }
@@ -2531,6 +2708,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
           {
             filesChanged,
             operations: progress.totalOperations,
+            semantic: semanticInput,
           ...(config.richRender && config.renderDiff
             ? { diff, highlightedDiffRows, previewChanges }
             : {}),
