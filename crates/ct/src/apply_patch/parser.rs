@@ -11,16 +11,18 @@
 //! begin_patch: "*** Begin Patch" LF
 //! end_patch: "*** End Patch" LF?
 //!
-//! hunk: add_hunk | delete_hunk | update_hunk
+//! hunk: add_hunk | delete_hunk | update_hunk | update_scope_hunk
 //! add_hunk: "*** Add File: " filename LF add_line+
 //! delete_hunk: "*** Delete File: " filename LF
 //! update_hunk: "*** Update File: " filename LF change_move? change?
+//! update_scope_hunk: "*** Update Scope: " filename LF scope_change+
 //! filename: /(.+)/
 //! add_line: "+" /(.+)/ LF -> line
 //!
 //! change_move: "*** Move to: " filename LF
 //! change: change_context* (change_line+ eof_line?)
 //! change_context: ("@@" | "@@ " /(.+)/) LF      # one or more may stack
+//! scope_change: "@@ " /(.+)/ LF change_line+ eof_line?
 //! change_line: ("+" | "-" | " ") /(.+)/ LF
 //! eof_line: "*** End of File" LF
 //!
@@ -33,6 +35,7 @@ const END_PATCH_MARKER: &str = "*** End Patch";
 const ADD_FILE_MARKER: &str = "*** Add File: ";
 const DELETE_FILE_MARKER: &str = "*** Delete File: ";
 const UPDATE_FILE_MARKER: &str = "*** Update File: ";
+const UPDATE_SCOPE_MARKER: &str = "*** Update Scope: ";
 const MOVE_TO_MARKER: &str = "*** Move to: ";
 const EOF_MARKER: &str = "*** End of File";
 const CHANGE_CONTEXT_MARKER: &str = "@@ ";
@@ -129,6 +132,10 @@ pub enum Hunk {
         /// should occur later in the file than the previous chunk.
         chunks: Vec<UpdateFileChunk>,
     },
+    UpdateScope {
+        path: PathBuf,
+        chunks: Vec<UpdateScopeChunk>,
+    },
 }
 
 use Hunk::*;
@@ -151,6 +158,14 @@ pub struct UpdateFileChunk {
 
     /// If set to true, `old_lines` must occur at the end of the source file.
     /// (Tolerance around trailing newlines should be encouraged.)
+    pub is_end_of_file: bool,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct UpdateScopeChunk {
+    pub locator: String,
+    pub old_lines: Vec<String>,
+    pub new_lines: Vec<String>,
     pub is_end_of_file: bool,
 }
 
@@ -390,11 +405,45 @@ fn parse_one_hunk(lines: &[&str], line_number: usize) -> Result<(Hunk, usize), P
             },
             parsed_lines,
         ));
+    } else if let Some(path) = first_line.strip_prefix(UPDATE_SCOPE_MARKER) {
+        let mut remaining_lines = &lines[1..];
+        let mut parsed_lines = 1;
+        let mut chunks = Vec::new();
+        while !remaining_lines.is_empty() {
+            if remaining_lines[0].trim().is_empty() {
+                parsed_lines += 1;
+                remaining_lines = &remaining_lines[1..];
+                continue;
+            }
+            if remaining_lines[0].starts_with('*') {
+                break;
+            }
+            let (chunk, chunk_lines) =
+                parse_update_scope_chunk(remaining_lines, line_number + parsed_lines)?;
+            chunks.push(chunk);
+            parsed_lines += chunk_lines;
+            remaining_lines = &remaining_lines[chunk_lines..];
+        }
+        if chunks.is_empty() {
+            return Err(InvalidHunkError {
+                message: format!("Update scope hunk for path '{path}' is empty"),
+                line_number,
+                snippet: None,
+                kind: ParseErrorKind::EmptyUpdate,
+            });
+        }
+        return Ok((
+            UpdateScope {
+                path: PathBuf::from(path),
+                chunks,
+            },
+            parsed_lines,
+        ));
     }
 
     Err(InvalidHunkError {
         message: format!(
-            "'{first_line}' is not a valid hunk header. Valid hunk headers: '*** Add File: {{path}}', '*** Delete File: {{path}}', '*** Update File: {{path}}'"
+            "'{first_line}' is not a valid hunk header. Valid hunk headers: '*** Add File: {{path}}', '*** Delete File: {{path}}', '*** Update File: {{path}}', '*** Update Scope: {{path}}'"
         ),
         line_number,
         snippet: None,
@@ -518,6 +567,44 @@ fn parse_update_file_chunk(
     }
 
     Ok((chunk, parsed_lines + start_index))
+}
+
+fn parse_update_scope_chunk(
+    lines: &[&str],
+    line_number: usize,
+) -> Result<(UpdateScopeChunk, usize), ParseError> {
+    let Some(locator) = lines
+        .first()
+        .and_then(|line| line.strip_prefix(CHANGE_CONTEXT_MARKER))
+        .map(str::trim)
+        .filter(|locator| !locator.is_empty())
+    else {
+        return Err(InvalidHunkError {
+            message: "Expected scope update hunk to start with '@@ <scope locator>'".to_string(),
+            line_number,
+            snippet: None,
+            kind: ParseErrorKind::MissingChunkHeader,
+        });
+    };
+
+    let (chunk, parsed_lines) = parse_update_file_chunk(lines, line_number, false)?;
+    if chunk.change_contexts.len() != 1 {
+        return Err(InvalidHunkError {
+            message: "Update Scope hunks require exactly one semantic locator marker, e.g. '@@ function renderSummary'".to_string(),
+            line_number,
+            snippet: None,
+            kind: ParseErrorKind::MissingChunkHeader,
+        });
+    }
+    Ok((
+        UpdateScopeChunk {
+            locator: locator.to_string(),
+            old_lines: chunk.old_lines,
+            new_lines: chunk.new_lines,
+            is_end_of_file: chunk.is_end_of_file,
+        },
+        parsed_lines,
+    ))
 }
 
 #[cfg(test)]
@@ -730,7 +817,7 @@ mod tests {
             parse_one_hunk(&["bad"], /*line_number*/ 234),
             Err(InvalidHunkError {
                 message: "'bad' is not a valid hunk header. \
-            Valid hunk headers: '*** Add File: {path}', '*** Delete File: {path}', '*** Update File: {path}'".to_string(),
+            Valid hunk headers: '*** Add File: {path}', '*** Delete File: {path}', '*** Update File: {path}', '*** Update Scope: {path}'".to_string(),
                 line_number: 234,
                 snippet: None,
                 kind: ParseErrorKind::UnknownHunkHeader,

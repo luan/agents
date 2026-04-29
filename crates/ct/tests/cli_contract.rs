@@ -1799,7 +1799,7 @@ fn source_mcp_is_canonical_and_backend_mcp_servers_are_hidden_from_help() {
         .stdout(predicate::str::contains("lens"))
         .stdout(predicate::str::contains("vault"))
         .stdout(predicate::str::contains("apply-patch").not())
-        .stdout(predicate::str::contains("source").not())
+        .stdout(predicate::str::contains("sym").not())
         .stdout(predicate::str::contains("ast").not())
         .stdout(predicate::str::contains("lsp").not());
 }

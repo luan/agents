@@ -11,7 +11,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use super::diff::unified_diff;
 use super::parser::Hunk;
 use super::parser::UpdateFileChunk;
+use super::parser::UpdateScopeChunk;
 use super::parser::parse_patch;
+use super::scope::ScopeResolveError;
 use super::seek_sequence::MatchQuality;
 use super::seek_sequence::SeekOutcome;
 use super::seek_sequence::seek_sequence;
@@ -248,8 +250,11 @@ pub fn plan(patch: &str, cwd: &Path) -> Result<ApplyOutcome, Box<ApplyFailure>> 
             source,
         })
     })?;
+    let scope_updates = collect_scope_update_chunks(&hunks, &cwd_canon)?;
 
-    // Detect two `*** Update File:` sections targeting the same canonical path.
+    // Detect duplicate concrete updates. Multiple `*** Update Scope:` sections
+    // for one path are deliberately batched below, but mixing those with a
+    // whole-file Update would otherwise produce two independent write plans.
     // Independent plans would both read the original and the second write would
     // silently overwrite the first — reject up front and ask the caller to
     // combine hunks.
@@ -257,7 +262,7 @@ pub fn plan(patch: &str, cwd: &Path) -> Result<ApplyOutcome, Box<ApplyFailure>> 
     for hunk in &hunks {
         if let Hunk::UpdateFile { path, .. } = hunk {
             let abs = resolve_path(&cwd_canon, path)?;
-            if !seen_updates.insert(abs) {
+            if scope_updates.contains_key(&abs) || !seen_updates.insert(abs) {
                 return Err(Box::<ApplyFailure>::from(ApplyPatchError::DuplicateUpdate(
                     display_rel(path),
                 )));
@@ -272,6 +277,7 @@ pub fn plan(patch: &str, cwd: &Path) -> Result<ApplyOutcome, Box<ApplyFailure>> 
     let mut changes = Vec::with_capacity(hunks.len());
     let mut attempts: Vec<AnchorAttempt> = Vec::new();
     let mut fingerprints: Vec<(String, Fingerprint)> = Vec::new();
+    let mut processed_scope_updates: HashSet<PathBuf> = HashSet::new();
 
     let fail = |error: ApplyPatchError,
                 attempts: &[AnchorAttempt],
@@ -421,6 +427,39 @@ pub fn plan(patch: &str, cwd: &Path) -> Result<ApplyOutcome, Box<ApplyFailure>> 
                     }
                 }
             }
+            Hunk::UpdateScope { path, chunks } => {
+                let abs = resolve_path(&cwd_canon, &path)
+                    .map_err(|e| fail(e, &attempts, &fingerprints))?;
+                if !processed_scope_updates.insert(abs.clone()) {
+                    continue;
+                }
+                let rel = display_rel(&path);
+                let (original, fp) =
+                    read_file(&abs, &rel).map_err(|e| fail(e, &attempts, &fingerprints))?;
+                let old_hash = fp.sha1.clone();
+                fingerprints.push((rel.clone(), fp));
+                let chunks = scope_updates
+                    .get(&abs)
+                    .map(|(_, chunks)| chunks.as_slice())
+                    .unwrap_or(chunks.as_slice());
+                let (new_content, fuzzy_hunks, post_apply_regions, line_changes) =
+                    derive_new_contents_from_scope_chunks(&original, chunks, &rel, &mut attempts)
+                        .map_err(|e| fail(e, &attempts, &fingerprints))?;
+                let (diff_text, additions, deletions) = unified_diff(&rel, &original, &new_content);
+                changes.push(FileChange {
+                    path: rel,
+                    kind: ChangeType::Update,
+                    old_hash: Some(old_hash),
+                    additions,
+                    deletions,
+                    unified_diff: diff_text,
+                    move_path: None,
+                    line_changes,
+                    fuzzy_hunks,
+                    post_apply_regions,
+                    new_content: Some(new_content),
+                });
+            }
         }
     }
 
@@ -429,6 +468,25 @@ pub fn plan(patch: &str, cwd: &Path) -> Result<ApplyOutcome, Box<ApplyFailure>> 
         attempts,
         fingerprints,
     })
+}
+
+fn collect_scope_update_chunks(
+    hunks: &[Hunk],
+    cwd_canon: &Path,
+) -> Result<HashMap<PathBuf, (PathBuf, Vec<UpdateScopeChunk>)>, ApplyPatchError> {
+    let mut updates: HashMap<PathBuf, (PathBuf, Vec<UpdateScopeChunk>)> = HashMap::new();
+    for hunk in hunks {
+        let Hunk::UpdateScope { path, chunks } = hunk else {
+            continue;
+        };
+        let abs = resolve_path(cwd_canon, path)?;
+        updates
+            .entry(abs)
+            .or_insert_with(|| (path.clone(), Vec::new()))
+            .1
+            .extend(chunks.iter().cloned());
+    }
+    Ok(updates)
 }
 
 pub fn commit(cwd: &Path, changes: &[FileChange]) -> Result<(), ApplyPatchError> {
@@ -1031,6 +1089,8 @@ fn compute_replacements(
         let mut pattern: &[String] = &chunk.old_lines;
         let mut new_slice: &[String] = &chunk.new_lines;
         let mut outcome = seek_sequence(original_lines, pattern, line_index, chunk.is_end_of_file);
+        let mut repaired_pattern: Option<Vec<String>> = None;
+        let mut repaired_new: Option<Vec<String>> = None;
 
         if matches!(outcome, SeekOutcome::NotFound) && pattern.last().is_some_and(String::is_empty)
         {
@@ -1040,6 +1100,19 @@ fn compute_replacements(
             }
             outcome = seek_sequence(original_lines, pattern, line_index, chunk.is_end_of_file);
         }
+        if matches!(outcome, SeekOutcome::NotFound) {
+            let candidate = repair_missing_marker_space(pattern);
+            if candidate != pattern {
+                outcome =
+                    seek_sequence(original_lines, &candidate, line_index, chunk.is_end_of_file);
+                if !matches!(outcome, SeekOutcome::NotFound) {
+                    repaired_pattern = Some(candidate);
+                    repaired_new = Some(repair_missing_marker_space(new_slice));
+                }
+            }
+        }
+        let pattern = repaired_pattern.as_deref().unwrap_or(pattern);
+        let new_slice = repaired_new.as_deref().unwrap_or(new_slice);
 
         match outcome {
             SeekOutcome::Unique { idx, quality } => {
@@ -1047,7 +1120,7 @@ fn compute_replacements(
                     chunk: chunk_index,
                     start: idx,
                     old: pattern.to_vec(),
-                    new: new_slice.to_vec(),
+                    new: preserve_matched_context(original_lines, idx, pattern, new_slice),
                 });
                 line_index = idx + pattern.len();
                 chunk_worst = worse_of(chunk_worst, quality);
@@ -1108,6 +1181,281 @@ fn compute_replacements(
 
     replacements.sort_by_key(|r| r.start);
     Ok((replacements, fuzzy_hunks))
+}
+
+fn derive_new_contents_from_scope_chunks(
+    original: &str,
+    chunks: &[UpdateScopeChunk],
+    file_rel: &str,
+    attempts: &mut Vec<AnchorAttempt>,
+) -> Result<(String, Vec<HunkFuzzy>, Vec<HunkRegion>, Vec<LineChange>), ApplyPatchError> {
+    let mut original_lines: Vec<String> = original.split('\n').map(String::from).collect();
+    if original_lines.last().is_some_and(String::is_empty) {
+        original_lines.pop();
+    }
+
+    let (replacements, fuzzy_hunks) =
+        compute_scope_replacements(&original_lines, original, chunks, file_rel, attempts)?;
+    let regions_meta = plan_post_apply_regions(&replacements);
+    let line_changes = plan_line_changes(&replacements);
+    let mut new_lines = apply_replacements(original_lines, replacements);
+    if !new_lines.last().is_some_and(String::is_empty) {
+        new_lines.push(String::new());
+    }
+    let regions = materialize_regions(&new_lines, &regions_meta);
+    Ok((new_lines.join("\n"), fuzzy_hunks, regions, line_changes))
+}
+
+type ScopeCursorKey = (usize, usize, String, String);
+
+fn compute_scope_replacements(
+    original_lines: &[String],
+    original: &str,
+    chunks: &[UpdateScopeChunk],
+    file_rel: &str,
+    attempts: &mut Vec<AnchorAttempt>,
+) -> Result<(Replacements, Vec<HunkFuzzy>), ApplyPatchError> {
+    let mut replacements: Replacements = Vec::new();
+    let mut fuzzy_hunks = Vec::new();
+    let mut cursors: HashMap<ScopeCursorKey, usize> = HashMap::new();
+
+    for (chunk_index, chunk) in chunks.iter().enumerate() {
+        let (_, _, scope) = super::scope::anchor_for_locator(file_rel, original, &chunk.locator)
+            .map_err(|error| scope_resolve_error(file_rel, original, chunk_index, chunk, error))?;
+        let start = scope.start_line.saturating_sub(1).min(original_lines.len());
+        let end = scope.end_line.min(original_lines.len()).max(start);
+        let key = (
+            start,
+            end,
+            scope.kind.clone(),
+            format!("{}:{}", scope.name, chunk.locator),
+        );
+        let cursor = cursors.entry(key).or_insert(start);
+        let scope_lines = &original_lines[start..end];
+        let relative_cursor = cursor.saturating_sub(start).min(scope_lines.len());
+
+        if chunk.old_lines.is_empty() {
+            replacements.push(Replacement {
+                chunk: chunk_index,
+                start: *cursor,
+                old: Vec::new(),
+                new: chunk.new_lines.clone(),
+            });
+            attempts.push(AnchorAttempt {
+                file_path: file_rel.to_string(),
+                chunk_index,
+                anchor_text: Some(chunk.locator.clone()),
+                success: true,
+                fuzzy_tier: Some(MatchQuality::Exact.as_str().to_string()),
+            });
+            continue;
+        }
+
+        let mut pattern: &[String] = &chunk.old_lines;
+        let mut new_slice: &[String] = &chunk.new_lines;
+        let mut outcome =
+            seek_sequence(scope_lines, pattern, relative_cursor, chunk.is_end_of_file);
+        let mut repaired_pattern: Option<Vec<String>> = None;
+        let mut repaired_new: Option<Vec<String>> = None;
+        if matches!(outcome, SeekOutcome::NotFound) && pattern.last().is_some_and(String::is_empty)
+        {
+            pattern = &pattern[..pattern.len() - 1];
+            if new_slice.last().is_some_and(String::is_empty) {
+                new_slice = &new_slice[..new_slice.len() - 1];
+            }
+            outcome = seek_sequence(scope_lines, pattern, relative_cursor, chunk.is_end_of_file);
+        }
+        if matches!(outcome, SeekOutcome::NotFound) {
+            let candidate = repair_missing_marker_space(pattern);
+            if candidate != pattern {
+                outcome = seek_sequence(
+                    scope_lines,
+                    &candidate,
+                    relative_cursor,
+                    chunk.is_end_of_file,
+                );
+                if !matches!(outcome, SeekOutcome::NotFound) {
+                    repaired_pattern = Some(candidate);
+                    repaired_new = Some(repair_missing_marker_space(new_slice));
+                }
+            }
+        }
+        let pattern = repaired_pattern.as_deref().unwrap_or(pattern);
+        let new_slice = repaired_new.as_deref().unwrap_or(new_slice);
+
+        match outcome {
+            SeekOutcome::Unique { idx, quality } => {
+                let abs_idx = start + idx;
+                replacements.push(Replacement {
+                    chunk: chunk_index,
+                    start: abs_idx,
+                    old: pattern.to_vec(),
+                    new: preserve_matched_context(original_lines, abs_idx, pattern, new_slice),
+                });
+                *cursor = abs_idx + pattern.len();
+                attempts.push(AnchorAttempt {
+                    file_path: file_rel.to_string(),
+                    chunk_index,
+                    anchor_text: Some(chunk.locator.clone()),
+                    success: true,
+                    fuzzy_tier: Some(quality.as_str().to_string()),
+                });
+                if quality != MatchQuality::Exact {
+                    fuzzy_hunks.push(HunkFuzzy {
+                        chunk: chunk_index,
+                        tier: quality,
+                    });
+                }
+            }
+            SeekOutcome::Ambiguous { matches, .. } => {
+                let abs_matches = matches
+                    .into_iter()
+                    .map(|matched| start + matched)
+                    .collect::<Vec<_>>();
+                attempts.push(AnchorAttempt {
+                    file_path: file_rel.to_string(),
+                    chunk_index,
+                    anchor_text: Some(chunk.locator.clone()),
+                    success: false,
+                    fuzzy_tier: None,
+                });
+                return Err(ApplyPatchError::AmbiguousContext {
+                    path: file_rel.to_string(),
+                    chunk: chunk_index,
+                    change_contexts: vec![chunk.locator.clone()],
+                    candidates: one_based(&abs_matches),
+                    disambiguation_hints: disambiguate_candidates(original_lines, &abs_matches),
+                });
+            }
+            SeekOutcome::NotFound => {
+                attempts.push(AnchorAttempt {
+                    file_path: file_rel.to_string(),
+                    chunk_index,
+                    anchor_text: Some(chunk.locator.clone()),
+                    success: false,
+                    fuzzy_tier: None,
+                });
+                return Err(ApplyPatchError::ContextNotFound {
+                    path: file_rel.to_string(),
+                    chunk: chunk_index,
+                    change_contexts: vec![chunk.locator.clone()],
+                    first_old_line: chunk.old_lines.first().cloned(),
+                    near_miss: scope_near_miss_snippet(
+                        original_lines,
+                        *cursor,
+                        chunk.old_lines.first().map(String::as_str),
+                        &scope,
+                    ),
+                });
+            }
+        }
+    }
+
+    replacements.sort_by_key(|replacement| replacement.start);
+    Ok((replacements, fuzzy_hunks))
+}
+
+fn scope_resolve_error(
+    file_rel: &str,
+    original: &str,
+    chunk_index: usize,
+    chunk: &UpdateScopeChunk,
+    error: ScopeResolveError,
+) -> ApplyPatchError {
+    match error {
+        ScopeResolveError::NotFound | ScopeResolveError::EmptySource => {
+            ApplyPatchError::ContextNotFound {
+                path: file_rel.to_string(),
+                chunk: chunk_index,
+                change_contexts: vec![chunk.locator.clone()],
+                first_old_line: chunk.old_lines.first().cloned(),
+                near_miss: available_scope_snippet(file_rel, original),
+            }
+        }
+        ScopeResolveError::Ambiguous(scopes) => ApplyPatchError::AmbiguousContext {
+            path: file_rel.to_string(),
+            chunk: chunk_index,
+            change_contexts: vec![chunk.locator.clone()],
+            candidates: scopes.iter().map(|scope| scope.start_line).collect(),
+            disambiguation_hints: scopes
+                .iter()
+                .take(4)
+                .map(|scope| {
+                    format!(
+                        "@@ {} {}  →  line {}",
+                        scope.kind, scope.name, scope.start_line
+                    )
+                })
+                .collect(),
+        },
+    }
+}
+
+fn scope_near_miss_snippet(
+    original_lines: &[String],
+    cursor: usize,
+    expected: Option<&str>,
+    scope: &super::scope::SourceScope,
+) -> Option<String> {
+    let mut snippet = format!(
+        "\ninside {} {} (lines {}-{}):",
+        scope.kind, scope.name, scope.start_line, scope.end_line
+    );
+    if let Some(near_miss) = near_miss_snippet(original_lines, cursor, expected) {
+        snippet.push_str(&near_miss);
+    }
+    Some(snippet)
+}
+
+fn available_scope_snippet(file_rel: &str, original: &str) -> Option<String> {
+    let scopes = super::scope::source_scopes(file_rel, original);
+    if scopes.is_empty() {
+        return None;
+    }
+    let mut out = String::from("\navailable scopes:\n");
+    for scope in scopes.into_iter().take(16) {
+        out.push_str(&format!(
+            "{:>4}: {} {} (ends {})\n",
+            scope.start_line, scope.kind, scope.name, scope.end_line
+        ));
+    }
+    Some(out)
+}
+
+fn preserve_matched_context(
+    original_lines: &[String],
+    start: usize,
+    pattern: &[String],
+    new_lines: &[String],
+) -> Vec<String> {
+    let mut out = new_lines.to_vec();
+    let mut old_index = 0;
+    for line in &mut out {
+        if old_index >= pattern.len() {
+            break;
+        }
+        if let Some(relative) = pattern[old_index..].iter().position(|old| old == line) {
+            old_index += relative;
+            if let Some(original) = original_lines.get(start + old_index) {
+                *line = original.clone();
+            }
+            old_index += 1;
+        }
+    }
+    out
+}
+
+fn repair_missing_marker_space(lines: &[String]) -> Vec<String> {
+    lines
+        .iter()
+        .map(|line| {
+            if line.starts_with(' ') {
+                format!(" {line}")
+            } else {
+                line.clone()
+            }
+        })
+        .collect()
 }
 
 fn worse_of(a: MatchQuality, b: MatchQuality) -> MatchQuality {
@@ -1432,6 +1780,102 @@ mod tests {
         assert_eq!(c.new_content.as_deref(), Some("hi\nworld\n"));
         // Filesystem untouched by plan alone.
         assert!(!tmp.path().join("hello.txt").exists());
+    }
+
+    #[test]
+    fn update_scope_uses_tree_sitter_locator() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("sample.js"),
+            "function alpha() {\n  return 1;\n}\n\nfunction beta() {\n  return 1;\n}\n",
+        )
+        .unwrap();
+        let patch = concat!(
+            "*** Begin Patch\n",
+            "*** Update Scope: sample.js\n",
+            "@@ function beta\n",
+            "-  return 1;\n",
+            "+  return 2;\n",
+            "*** End Patch\n",
+        );
+        let outcome = plan(patch, tmp.path()).unwrap();
+        let content = outcome.changes[0].new_content.as_deref().unwrap();
+        assert!(content.contains("function alpha() {\n  return 1;\n}"));
+        assert!(content.contains("function beta() {\n  return 2;\n}"));
+    }
+
+    #[test]
+    fn update_scope_batches_multiple_sections_for_one_file() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("sample.js"),
+            "function alpha() {\n  return 1;\n}\n\nfunction beta() {\n  return 1;\n}\n",
+        )
+        .unwrap();
+        let patch = concat!(
+            "*** Begin Patch\n",
+            "*** Update Scope: sample.js\n",
+            "@@ function alpha\n",
+            "-  return 1;\n",
+            "+  return 10;\n",
+            "*** Update Scope: sample.js\n",
+            "@@ function beta\n",
+            "-  return 1;\n",
+            "+  return 20;\n",
+            "*** End Patch\n",
+        );
+        let outcome = plan(patch, tmp.path()).unwrap();
+        let content = outcome.changes[0].new_content.as_deref().unwrap();
+        assert!(content.contains("function alpha() {\n  return 10;\n}"));
+        assert!(content.contains("function beta() {\n  return 20;\n}"));
+    }
+
+    #[test]
+    fn update_scope_allows_repeated_locator_chunks_in_one_scope() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("sample.js"),
+            "function alpha() {\n  const one = 1;\n  const two = 2;\n  return one + two;\n}\n",
+        )
+        .unwrap();
+        let patch = concat!(
+            "*** Begin Patch\n",
+            "*** Update Scope: sample.js\n",
+            "@@ function alpha\n",
+            "-  const one = 1;\n",
+            "+  const one = 10;\n",
+            "@@ function alpha\n",
+            "-  return one + two;\n",
+            "+  return one * two;\n",
+            "*** End Patch\n",
+        );
+        let outcome = plan(patch, tmp.path()).unwrap();
+        let content = outcome.changes[0].new_content.as_deref().unwrap();
+        assert!(content.contains("  const one = 10;"));
+        assert!(content.contains("  return one * two;"));
+    }
+
+    #[test]
+    fn update_scope_repairs_missing_marker_space_for_indented_lines() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("sample.rs"),
+            "#[test]\nfn sample() {\n        assert!(\n            true\n        );\n}\n",
+        )
+        .unwrap();
+        let patch = concat!(
+            "*** Begin Patch\n",
+            "*** Update Scope: sample.rs\n",
+            "@@ function sample\n",
+            "        assert!(\n",
+            "-            true\n",
+            "+            false\n",
+            "        );\n",
+            "*** End Patch\n",
+        );
+        let outcome = plan(patch, tmp.path()).unwrap();
+        let content = outcome.changes[0].new_content.as_deref().unwrap();
+        assert!(content.contains("        assert!(\n            false\n        );"));
     }
 
     #[test]
