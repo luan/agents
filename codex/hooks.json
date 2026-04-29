@@ -40,6 +40,16 @@
         "hooks": [
           {
             "type": "command",
+            "command": "mux hook",
+            "statusMessage": "Updating mux sidebar",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
             "command": "CT_LENS_HOST=codex ct hook lens-pre-tool",
             "statusMessage": "Recording Lens pre-tool event",
             "timeout": 5
@@ -58,7 +68,29 @@
         ]
       }
     ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "mux hook",
+            "statusMessage": "Updating mux sidebar",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "mux hook",
+            "statusMessage": "Updating mux sidebar",
+            "timeout": 5
+          }
+        ]
+      },
       {
         "hooks": [
           {
@@ -70,7 +102,29 @@
         ]
       }
     ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "mux hook",
+            "statusMessage": "Updating mux sidebar",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "mux hook",
+            "statusMessage": "Updating mux sidebar",
+            "timeout": 5
+          }
+        ]
+      },
       {
         "hooks": [
           {
