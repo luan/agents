@@ -5,11 +5,16 @@
     "test:lens": "bun test shared/lens-ui.test.ts"
   },
   "dependencies": {
+    "@mozilla/readability": "^0.5.0",
     "@mariozechner/pi-ai": "^0.70.2",
     "@mariozechner/pi-coding-agent": "^0.70.2",
     "@mariozechner/pi-tui": "^0.70.2",
     "@shikijs/cli": "^4.0.2",
-    "typebox": "^1.1.34"
+    "linkedom": "^0.16.0",
+    "p-limit": "^6.1.0",
+    "turndown": "^7.2.0",
+    "typebox": "^1.1.34",
+    "unpdf": "^1.4.0"
   },
   "devDependencies": {
     "@opencode-ai/plugin": "^1.14.28"
