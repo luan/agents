@@ -1,9 +1,8 @@
 import { basename, extname } from "node:path";
 
 import { getLanguageFromPath } from "@mariozechner/pi-coding-agent";
-import { bundledLanguages, type BundledLanguage } from "shiki";
+import type { BundledLanguage } from "shiki";
 
-const SHIKI_LANGUAGES = new Set<string>(Object.keys(bundledLanguages));
 const PATH_LANGUAGE_CANDIDATES: Record<string, string[]> = {
 	".env": ["dotenv"],
 	".envrc": ["bash"],
@@ -21,6 +20,27 @@ const INLINE_LANGUAGE_FALLBACKS: Record<string, string> = {
 	mdx: "markdown",
 	svelte: "html",
 	vue: "html",
+};
+
+const SHIKI_LANGUAGE_ALIASES: Record<string, string> = {
+	cjs: "javascript",
+	cc: "cpp",
+	cxx: "cpp",
+	h: "c",
+	hpp: "cpp",
+	js: "javascript",
+	jsx: "jsx",
+	kts: "kotlin",
+	md: "markdown",
+	mjs: "javascript",
+	py: "python",
+	rb: "ruby",
+	rs: "rust",
+	sh: "bash",
+	ts: "typescript",
+	tsx: "tsx",
+	yml: "yaml",
+	zsh: "bash",
 };
 
 function normalizePath(path: string): string {
@@ -55,7 +75,9 @@ export function pathLanguageCandidates(path: string | undefined): string[] {
 }
 
 export function resolveShikiLanguageForPath(path: string | undefined): BundledLanguage | undefined {
-	const language = pathLanguageCandidates(path).find((candidate) => SHIKI_LANGUAGES.has(candidate));
+	const language = pathLanguageCandidates(path)
+		.map((candidate) => SHIKI_LANGUAGE_ALIASES[candidate] ?? candidate)
+		.find(Boolean);
 	return language as BundledLanguage | undefined;
 }
 

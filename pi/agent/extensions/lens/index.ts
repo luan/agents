@@ -99,6 +99,8 @@ function pushBool(args: string[], flag: string, value: unknown) {
 	if (value === true) args.push(flag);
 }
 
+type CommandRunner = typeof runCommand;
+
 async function runCtLens(args: string[], cwd: string, signal?: AbortSignal, input?: string) {
 	const fullArgs = ["lens", ...args, "--json"];
 	const result = await runCommand("ct", fullArgs, cwd, { signal, input, allowNonZero: true });
@@ -113,6 +115,58 @@ async function runCtLens(args: string[], cwd: string, signal?: AbortSignal, inpu
 		content: [{ type: "text" as const, text: JSON.stringify(parsed, null, 2) }],
 		details: { command: formatCommand("ct", fullArgs), cwd, results: parsed, stdout: result.stdout, stderr: result.stderr },
 	};
+}
+
+export async function runLensHookCommand(
+	name: string,
+	event: Record<string, unknown>,
+	cwd: string,
+	options: { signal?: AbortSignal; runner?: CommandRunner } = {},
+) {
+	let result: CtHookCommandResult;
+	try {
+		result = await (options.runner ?? runCommand)("ct", ["hook", name], cwd, {
+			signal: options.signal,
+			input: JSON.stringify(event),
+			allowNonZero: true,
+		});
+	} catch (error) {
+		return hookFailureResponse("hook_command_failed", `ct hook failed to start: ${errorMessage(error)}`);
+	}
+
+	try {
+		return JSON.parse(result.stdout);
+	} catch (error) {
+		return hookFailureResponse("invalid_hook_response", hookFailureMessage(error, result), result);
+	}
+}
+
+type CtHookCommandResult = {
+	stdout: string;
+	stderr: string;
+	exitCode: number;
+};
+
+function hookFailureResponse(code: string, message: string, result?: CtHookCommandResult) {
+	return {
+		schema_version: "lens.hook_response.v1",
+		status: "degraded",
+		decision: { outcome: "allow", reason: code },
+		health: { status: "degraded", compact: "degraded · hook failed" },
+		warnings: [],
+		errors: [{ code, message }],
+		data: result ? { stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode } : {},
+	};
+}
+
+function hookFailureMessage(error: unknown, result: { stderr?: string; exitCode?: number }) {
+	const stderr = result.stderr?.trim();
+	const suffix = stderr ? `: ${stderr}` : `: ${String(error)}`;
+	return `ct hook failed${typeof result.exitCode === "number" ? ` with exit code ${result.exitCode}` : ""}${suffix}`;
+}
+
+function errorMessage(error: unknown) {
+	return error instanceof Error ? error.message : String(error);
 }
 
 export default function lensExtension(pi: ExtensionAPI) {
@@ -151,30 +205,7 @@ export default function lensExtension(pi: ExtensionAPI) {
 	const currentTurn = () => activeTurnId;
 
 	async function runHook(name: string, event: Record<string, unknown>, cwd: string, signal?: AbortSignal) {
-		const result = await runCommand("ct", ["hook", name], cwd, {
-			signal,
-			input: JSON.stringify(event),
-			allowNonZero: true,
-		});
-		try {
-			return JSON.parse(result.stdout);
-		} catch (error) {
-			return {
-				schema_version: "lens.hook_response.v1",
-				status: "degraded",
-				decision: { outcome: "allow", reason: "invalid_hook_response" },
-				health: { status: "degraded", compact: "degraded · hook failed" },
-				warnings: [],
-				errors: [{ code: "invalid_hook_response", message: hookFailureMessage(error, result) }],
-				data: { stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode },
-			};
-		}
-	}
-
-	function hookFailureMessage(error: unknown, result: { stderr?: string; exitCode?: number }) {
-		const stderr = result.stderr?.trim();
-		const suffix = stderr ? `: ${stderr}` : `: ${String(error)}`;
-		return `ct hook failed${typeof result.exitCode === "number" ? ` with exit code ${result.exitCode}` : ""}${suffix}`;
+		return runLensHookCommand(name, event, cwd, { signal });
 	}
 
 	function eventFor(ctx: any, event: LensHookEventName, extra: Record<string, unknown> = {}) {

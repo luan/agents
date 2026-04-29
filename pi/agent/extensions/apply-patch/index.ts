@@ -8,7 +8,6 @@ import {
 	highlightCode,
 	keyHint,
 } from "@mariozechner/pi-coding-agent";
-import { codeToANSI } from "@shikijs/cli";
 import { Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@mariozechner/pi-tui";
 import type { BundledLanguage, BundledTheme } from "shiki";
 import { Type } from "typebox";
@@ -149,8 +148,6 @@ const SHIKI_CACHE_LIMIT = 64;
 const SHIKI_BACKGROUND_PATTERN = /\x1b\[(?:48;2;\d+;\d+;\d+|48;5;\d+|49)m/g;
 const shikiCache = new Map<string, string[]>();
 
-codeToANSI("", "typescript", SHIKI_THEME).catch(() => {});
-
 class ApplyPatchDiffView {
 	constructor(
 		private label: string,
@@ -289,6 +286,7 @@ async function highlightWithShiki(code: string, language: BundledLanguage): Prom
 	if (cached) return touchShikiCache(cacheKey, cached);
 
 	try {
+		const { codeToANSI } = await import("@shikijs/cli");
 		const ansi = normalizeShikiContrast(
 			(await codeToANSI(normalized, language, SHIKI_THEME)).replace(SHIKI_BACKGROUND_PATTERN, ""),
 		);
