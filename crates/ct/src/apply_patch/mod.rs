@@ -2,7 +2,9 @@ mod apply;
 mod diff;
 pub mod draft;
 mod parser;
+pub mod preview;
 pub mod repair;
+mod scope;
 mod seek_sequence;
 pub mod telemetry;
 #[cfg(test)]

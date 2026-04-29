@@ -1,5 +1,17 @@
 {
-  "diffView": "auto",
-  "sideBySideMinWidth": 140,
-  "maxDiffLines": 30
+  "maxDiffLines": 30,
+  "resumeMaxDiffLines": 0,
+  "collapsedPreview": "digest",
+  "digestMaxItems": 4,
+  "syntaxHighlight": false,
+  "richRender": true,
+  "renderDiff": true,
+  "enforce": false,
+  "validateBeforeApply": false,
+  "recordUsageEntry": false,
+  "registerTool": true,
+  "activeByDefault": true,
+  "promptMetadata": true,
+  "promptSnippet": true,
+  "promptGuidelines": false
 }

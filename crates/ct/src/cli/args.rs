@@ -65,6 +65,18 @@ pub enum ApplyPatchAction {
         days: i64,
     },
 
+    #[command(about = "Validate and describe an apply_patch payload from stdin as JSON")]
+    Preview {
+        #[arg(long, help = "Working directory; default: process cwd")]
+        cwd: Option<String>,
+        #[arg(long, help = "Accept an incomplete envelope by appending End Patch")]
+        partial: bool,
+        #[arg(long, help = "Read JSONL preview requests from stdin until EOF")]
+        watch: bool,
+        #[arg(long, help = "Use JSON Lines protocol for --watch")]
+        jsonl: bool,
+    },
+
     #[command(about = "Manage retained apply_patch drafts")]
     Draft {
         #[command(subcommand)]
