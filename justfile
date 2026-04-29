@@ -27,7 +27,13 @@ doctor:
 validate: render-agents
     cd "{{ repo }}" && cargo xtask validate
 
-setup: doctor link worktrunk-install claude-plugins-install install validate
+setup: node-deps-install pi-node-modules-link doctor link worktrunk-install claude-plugins-install install validate
+
+node-deps-install:
+    cd "{{ repo }}" && bun install
+
+pi-node-modules-link:
+    ln -sfn ../../node_modules "{{ repo }}/pi/agent/node_modules"
 
 worktrunk-install:
     # The `wt` binary backs the worktrunk claude plugin. `cargo install`

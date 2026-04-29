@@ -5,12 +5,12 @@ import type {
 	Model,
 	SimpleStreamOptions,
 	Tool,
-} from "../node_modules/@mariozechner/pi-ai/dist/index.js";
-import { AssistantMessageEventStream } from "../node_modules/@mariozechner/pi-ai/dist/utils/event-stream.js";
+} from "../../node_modules/@mariozechner/pi-ai/dist/index.js";
+import { AssistantMessageEventStream } from "../../node_modules/@mariozechner/pi-ai/dist/utils/event-stream.js";
 import {
 	convertResponsesMessages,
 	processResponsesStream,
-} from "../node_modules/@mariozechner/pi-ai/dist/providers/openai-responses-shared.js";
+} from "../../node_modules/@mariozechner/pi-ai/dist/providers/openai-responses-shared.js";
 
 const APPLY_PATCH_GRAMMAR = String.raw`start: begin_patch hunk+ end_patch
 begin_patch: "*** Begin Patch" LF
