@@ -13,6 +13,7 @@ node_modules/
 *.sqlite-wal
 .skill-lock.json
 history.jsonl
+run-history.jsonl
 session_index.jsonl
 pi/agent/sessions/
 auth.json
