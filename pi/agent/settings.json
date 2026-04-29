@@ -1,5 +1,5 @@
 {
-  "lastChangelogVersion": "0.70.5",
+  "lastChangelogVersion": "0.70.6",
   "steeringMode": "all",
   "autoUpdate": true,
   "transport": "auto",
@@ -8,25 +8,21 @@
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-5.5",
   "defaultThinkingLevel": "high",
+  "skills": [
+    "../.codex/skills"
+  ],
   "packages": [
-    {
-      "source": "npm:pi-extension-manager",
-      "extensions": ["+src/index.ts"]
-    },
     "npm:pi-subagents",
     "npm:@ifi/oh-pi-themes",
-    "npm:@ollama/pi-web-search",
-    {
-      "source": "npm:pi-mcp-adapter",
-      "extensions": ["+index.ts"]
-    },
     "npm:@ff-labs/pi-fff",
-    "npm:context-mode"
+    "npm:context-mode",
+    "npm:@dreki-gg/pi-context7"
+  ],
+  "extensions": [
+    "-extensions/team-mode/index.ts"
   ],
   "enabledModels": [
-    "github-copilot/gpt-5.4",
     "openai-codex/gpt-5.5",
-    "github-copilot/gpt-5.4-mini",
     "openai-codex/gpt-5.4",
     "openai-codex/gpt-5.4-mini"
   ],
@@ -37,9 +33,5 @@
     "clearOnShrink": false,
     "showTerminalProgress": false
   },
-  "claudeAgentSdkProvider": {
-    "appendSystemPrompt": true,
-    "settingSources": [],
-    "strictMcpConfig": true
-  }
+  "quietStartup": true
 }
