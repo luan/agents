@@ -152,6 +152,165 @@ pub fn run_apply_patch_prune(days: i64) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
+pub fn run_apply_patch_preview(
+    cwd: Option<String>,
+    partial: bool,
+    watch: bool,
+    jsonl: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::BufRead;
+    use std::io::IsTerminal;
+    use std::io::Read;
+    use std::path::PathBuf;
+
+    let cwd_path = match cwd {
+        Some(s) => PathBuf::from(s),
+        None => std::env::current_dir()?,
+    };
+    if !cwd_path.is_dir() {
+        println!(
+            "{}",
+            serde_json::to_string(&crate::apply_patch::preview::PreviewResponse {
+                status: "invalid",
+                complete: false,
+                diff: String::new(),
+                changes: Vec::new(),
+                error: Some(format!("cwd is not a directory: {}", cwd_path.display())),
+            })?
+        );
+        return Ok(());
+    }
+
+    if watch {
+        if !jsonl {
+            println!(
+                "{}",
+                serde_json::to_string(&crate::apply_patch::preview::PreviewResponse {
+                    status: "invalid",
+                    complete: false,
+                    diff: String::new(),
+                    changes: Vec::new(),
+                    error: Some("--watch requires --jsonl".to_string()),
+                })?
+            );
+            return Ok(());
+        }
+        #[derive(serde::Deserialize)]
+        struct PreviewRequest {
+            input: Option<String>,
+            patch: Option<String>,
+            stop: Option<bool>,
+        }
+
+        let stdin = std::io::stdin();
+        let mut stdout = std::io::stdout();
+        for line in stdin.lock().lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let request = match serde_json::from_str::<PreviewRequest>(&line) {
+                Ok(request) => request,
+                Err(error) => {
+                    serde_json::to_writer(
+                        &mut stdout,
+                        &crate::apply_patch::preview::PreviewResponse {
+                            status: "invalid",
+                            complete: false,
+                            diff: String::new(),
+                            changes: Vec::new(),
+                            error: Some(format!("invalid preview request JSON: {error}")),
+                        },
+                    )?;
+                    use std::io::Write;
+                    stdout.write_all(b"\n")?;
+                    stdout.flush()?;
+                    continue;
+                }
+            };
+            if request.stop.unwrap_or(false) {
+                break;
+            }
+            let Some(patch) = request.input.or(request.patch) else {
+                serde_json::to_writer(
+                    &mut stdout,
+                    &crate::apply_patch::preview::PreviewResponse {
+                        status: "empty",
+                        complete: false,
+                        diff: String::new(),
+                        changes: Vec::new(),
+                        error: Some("preview request missing input".to_string()),
+                    },
+                )?;
+                use std::io::Write;
+                stdout.write_all(b"\n")?;
+                stdout.flush()?;
+                continue;
+            };
+            let response = if patch.len() > crate::apply_patch::MAX_PATCH_SIZE_BYTES {
+                crate::apply_patch::preview::PreviewResponse {
+                    status: "invalid",
+                    complete: false,
+                    diff: String::new(),
+                    changes: Vec::new(),
+                    error: Some(format!(
+                        "patch exceeds {} byte limit",
+                        crate::apply_patch::MAX_PATCH_SIZE_BYTES
+                    )),
+                }
+            } else {
+                crate::apply_patch::preview::preview(&patch, &cwd_path, partial)
+            };
+            serde_json::to_writer(&mut stdout, &response)?;
+            use std::io::Write;
+            stdout.write_all(b"\n")?;
+            stdout.flush()?;
+        }
+        return Ok(());
+    }
+
+    if std::io::stdin().is_terminal() {
+        println!(
+            "{}",
+            serde_json::to_string(&crate::apply_patch::preview::PreviewResponse {
+                status: "empty",
+                complete: false,
+                diff: String::new(),
+                changes: Vec::new(),
+                error: Some("expected patch on stdin".to_string()),
+            })?
+        );
+        return Ok(());
+    }
+
+    let limit = crate::apply_patch::MAX_PATCH_SIZE_BYTES as u64 + 1;
+    let mut patch = String::new();
+    std::io::stdin()
+        .lock()
+        .take(limit)
+        .read_to_string(&mut patch)?;
+    if patch.len() > crate::apply_patch::MAX_PATCH_SIZE_BYTES {
+        println!(
+            "{}",
+            serde_json::to_string(&crate::apply_patch::preview::PreviewResponse {
+                status: "invalid",
+                complete: false,
+                diff: String::new(),
+                changes: Vec::new(),
+                error: Some(format!(
+                    "patch exceeds {} byte limit",
+                    crate::apply_patch::MAX_PATCH_SIZE_BYTES
+                )),
+            })?
+        );
+        return Ok(());
+    }
+
+    let response = crate::apply_patch::preview::preview(&patch, &cwd_path, partial);
+    println!("{}", serde_json::to_string(&response)?);
+    Ok(())
+}
+
 pub fn run_apply_patch_raw(
     cwd: Option<String>,
     dry_run: bool,

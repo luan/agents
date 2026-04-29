@@ -295,8 +295,10 @@ pub fn anchors_for_failure(error: &ApplyPatchError, attempts: &[AnchorAttempt]) 
 fn next_action(patch_id: &str, kind: &str, anchors: &[String]) -> String {
     if kind == "ambiguous_context" && !anchors.is_empty() {
         format!(
-            "inspect `ct apply-patch draft show {patch_id}` and amend with a suggested @@ anchor"
+            "retry using one suggested `@@ symbol-or-line` anchor plus 2-3 unchanged context lines; if needed inspect `ct apply-patch draft show {patch_id}`"
         )
+    } else if kind == "context_not_found" {
+        "regenerate the failing hunk from the numbered file-state snippet above; prefer `@@ symbol-or-line` anchors and keep 2-3 unchanged context lines".to_string()
     } else {
         format!("inspect `ct apply-patch draft show {patch_id}` and regenerate the failing hunk")
     }

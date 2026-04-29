@@ -647,7 +647,7 @@ fn ensure_parent_writable(abs: &Path, rel: &str) -> Result<(), ApplyPatchError> 
     Ok(())
 }
 
-fn read_file(abs: &Path, rel: &str) -> Result<(String, Fingerprint), ApplyPatchError> {
+pub(crate) fn read_file(abs: &Path, rel: &str) -> Result<(String, Fingerprint), ApplyPatchError> {
     let contents = std::fs::read_to_string(abs).map_err(|source| ApplyPatchError::Io {
         path: rel.to_string(),
         source,
@@ -683,7 +683,7 @@ fn write_file(abs: &Path, rel: &str, content: &str) -> Result<(), ApplyPatchErro
     })
 }
 
-fn display_rel(path: &Path) -> String {
+pub(crate) fn display_rel(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
@@ -691,7 +691,7 @@ fn display_rel(path: &Path) -> String {
 /// relative paths are joined with `cwd_canon`. The canonicalisation walk
 /// handles not-yet-existing targets (e.g. Add) by canonicalising the longest
 /// existing prefix and appending the rest verbatim.
-fn resolve_path(cwd_canon: &Path, rel: &Path) -> Result<PathBuf, ApplyPatchError> {
+pub(crate) fn resolve_path(cwd_canon: &Path, rel: &Path) -> Result<PathBuf, ApplyPatchError> {
     let target = if rel.is_absolute() {
         rel.to_path_buf()
     } else {
@@ -1137,8 +1137,8 @@ fn near_miss_snippet(
     if original_lines.is_empty() {
         return None;
     }
-    const LEAD: usize = 5;
-    const WINDOW: usize = 14;
+    const LEAD: usize = 8;
+    const WINDOW: usize = 24;
 
     // Trust the closest match only when it's plausibly the same line — within
     // half the expected character length, floor 3. Beyond that the "closest"
