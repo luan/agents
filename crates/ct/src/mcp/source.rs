@@ -54,10 +54,8 @@ struct SearchIn {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct ShowIn {
-    #[schemars(description = "Symbol names, file paths, or file:line-line ranges")]
+    #[schemars(description = "Symbol names to resolve; file:symbol hints are supported")]
     targets: Vec<String>,
-    #[schemars(description = "Context lines around symbol definitions or ranges (default 0)")]
-    context: Option<usize>,
     #[schemars(description = "Return every definition when a target is ambiguous")]
     all: Option<bool>,
     #[schemars(description = "Working directory; defaults to the MCP server cwd")]
@@ -220,7 +218,7 @@ impl SourceMcpServer {
 
     #[tool(
         name = "show",
-        description = "Show source by symbol, file path, or file:line-line range."
+        description = "Resolve symbols to structured source metadata."
     )]
     async fn show(
         &self,
@@ -230,7 +228,6 @@ impl SourceMcpServer {
         let output = crate::cli::source::source_show_value(crate::cli::source::SourceShowRequest {
             cwd,
             targets: input.targets,
-            context: input.context.unwrap_or(0),
             all: input.all.unwrap_or(false),
             db: input.db,
         })

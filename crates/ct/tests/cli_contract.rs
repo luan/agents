@@ -639,7 +639,6 @@ fn lens_warning_context_injects_acknowledges_and_report_uses_canonical_source_ac
     let report_value: serde_json::Value =
         serde_json::from_slice(&report.get_output().stdout).expect("report json");
     let report_text = report_value.to_string();
-    assert!(report_text.contains("ct source show"));
     assert!(report_text.contains("ct source outline"));
     assert!(!report_text.contains("ct lens discover"));
     assert!(!report_text.contains("ct lens read"));
@@ -1632,18 +1631,15 @@ fn source_show_and_outline_are_read_only_without_lens_read_tracking() {
     )
     .expect("write source");
 
-    let range = ct_cmd(bp.path())
+    ct_cmd(bp.path())
         .current_dir(project.path())
         .env("XDG_STATE_HOME", state.path())
         .args(["source", "show", "--json", "src/lib.rs:L1-L2"])
         .assert()
-        .success();
-    let value: serde_json::Value =
-        serde_json::from_slice(&range.get_output().stdout).expect("show range json");
-    assert_eq!(value["operation"], "show");
-    assert_eq!(value["read_only"], true);
-    assert_eq!(value["results"][0]["kind"], "file");
-    assert_eq!(value["results"][0]["results"][0]["line"], 1);
+        .failure()
+        .stderr(predicates::str::contains(
+            "source show only resolves symbols; use read for source lines",
+        ));
 
     ct_cmd(bp.path())
         .current_dir(project.path())
@@ -1652,7 +1648,7 @@ fn source_show_and_outline_are_read_only_without_lens_read_tracking() {
         .assert()
         .failure()
         .stderr(predicates::str::contains(
-            "source show does not accept bare file paths",
+            "source show only resolves symbols; use source outline or read for files",
         ));
 
     let symbol = ct_cmd(bp.path())
@@ -1664,12 +1660,8 @@ fn source_show_and_outline_are_read_only_without_lens_read_tracking() {
     let value: serde_json::Value =
         serde_json::from_slice(&symbol.get_output().stdout).expect("show symbol json");
     assert_eq!(value["results"][0]["kind"], "symbol");
-    assert!(
-        value["results"][0]["results"][0]["content"]
-            .as_str()
-            .unwrap_or("")
-            .contains("nav_target")
-    );
+    assert_eq!(value["results"][0]["results"][0]["name"], "nav_target");
+    assert_eq!(value["results"][0]["results"][0]["start_line"], 1);
 
     let outline = ct_cmd(bp.path())
         .current_dir(project.path())

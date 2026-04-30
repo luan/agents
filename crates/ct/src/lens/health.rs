@@ -867,7 +867,7 @@ fn symbol_context(root: &Path, path: &str, diagnostics: &[Diagnostic]) -> Symbol
 }
 
 fn report_next_actions(path: &str, diagnostics: &[Diagnostic]) -> Vec<String> {
-    let mut actions = vec![format!("ct source show {} --json", shell_word(path))];
+    let mut actions = vec![format!("ct source outline {} --json", shell_word(path))];
     if diagnostics.iter().any(|diagnostic| {
         matches!(
             diagnostic.severity,

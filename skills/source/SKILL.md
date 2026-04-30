@@ -18,7 +18,7 @@ search → investigate → refs / impact / trace / impls → show / outline → 
 1. **Find it** — `ct source search <query>`; add `--mode text`, `--mode path`, or `--mode structural` as needed.
 2. **Understand it** — `ct source investigate <symbol>` for kind-adaptive context.
 3. **Trace flow** — `ct source refs`, `ct source impact`, `ct source trace`, or `ct source impls`.
-4. **Read** — `ct source show <symbol|file[:L1-L2]>` or `ct source outline <file>` before opening large files.
+4. **Read** — use `ct source show <symbol>` for symbol metadata, `ct source outline <file>` before opening large files, then the read tool for source lines.
 
 ## Goal → command
 
@@ -29,7 +29,7 @@ search → investigate → refs / impact / trace / impls → show / outline → 
 | Find paths                               | `ct source search --mode path <q>`                                     |
 | Find structural matches                  | `ct source search --mode structural --lang <lang> --pattern <pattern>` |
 | Get kind-appropriate context             | `ct source investigate <symbol>`                                       |
-| Read source by symbol or range           | `ct source show <symbol \| file[:L1-L2]>`                              |
+| Resolve symbol metadata                  | `ct source show <symbol>`                                              |
 | List symbols in a file                   | `ct source outline <file>`                                             |
 | Find direct references                   | `ct source refs <symbol>`                                              |
 | See who depends on a symbol transitively | `ct source impact <symbol>`                                            |
@@ -47,7 +47,7 @@ ct source search parse --kind function --lang go
 ct source search --mode text "TODO"
 ct source search Handler --path 'internal/**' --exclude '**/*_test.go'
 ct source investigate OpenStore
-ct source show internal/index/store.go:80-120
+ct source show internal/index/store.go:OpenStore
 ct source outline internal/index/store.go --signatures
 ct source refs ParseFile --file internal/
 ct source impact handleRegister --depth 3
