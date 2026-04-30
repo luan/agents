@@ -22,6 +22,10 @@ const targetList = Type.Array(Type.String({ description: "Symbol, file, or range
 	description: "Symbols, file paths, or ranges to analyze",
 });
 
+const sourceShowTargetList = Type.Array(Type.String({ description: "Symbol or file:line-line range target" }), {
+	description: "Symbols or explicit file:line-line ranges to show. Bare file paths are rejected.",
+});
+
 const sourceSearchSchema = Type.Object({
 	query: Type.Optional(Type.String({ description: "Search query; structural mode may use pattern instead" })),
 	mode: Type.Optional(Type.Union([Type.Literal("symbol"), Type.Literal("text"), Type.Literal("path"), Type.Literal("structural")], { description: "Search mode" })),
@@ -45,7 +49,7 @@ const sourceTargetsSchema = Type.Object({
 });
 
 const sourceShowSchema = Type.Object({
-	targets: targetList,
+	targets: sourceShowTargetList,
 	context: Type.Optional(Type.Number({ description: "Context lines around definitions" })),
 	all: Type.Optional(Type.Boolean({ description: "Return every definition for ambiguous targets" })),
 	...commonOptions,
@@ -228,8 +232,8 @@ export default function sourceExtension(pi: ExtensionAPI) {
 	registerTool({
 		name: "source_show",
 		label: "source show",
-		description: "Show source by symbol, file path, or file:line-line range.",
-		promptSnippet: "Use source_show to inspect source by symbol, path, or range.",
+		description: "Show source by symbol or file:line-line range. Bare file paths are rejected.",
+		promptSnippet: "Use source_show to inspect source by symbol or explicit file:line-line range.",
 		promptGuidelines: ["Use source_show instead of backend-specific source display tools."],
 		parameters: sourceShowSchema,
 		executionMode: "parallel",

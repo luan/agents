@@ -332,9 +332,15 @@ pub(crate) fn source_show_value(
     for target in &request.targets {
         if looks_like_file_target(target) {
             let (path, range) = parse_file_target(target);
+            let Some(range) = range else {
+                return Err(format!(
+                    "source show does not accept bare file paths: {target}. Use file:line-line, source outline, or read instead"
+                )
+                .into());
+            };
             let lines = sym::show::show_file(
                 &resolve_target_path(&request.cwd, Path::new(&path)),
-                range,
+                Some(range),
                 request.context,
             )?;
             rendered.push(json!({
