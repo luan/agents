@@ -1,43 +1,42 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use rusqlite::{OptionalExtension, params};
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
 use super::contract::{LensEnvelope, LensMessage, LensResponseStatus};
 use super::store::LensStore;
-use super::types::{Diagnostic, DiagnosticDeltaSet, DiagnosticSeverity, LensTouchedFile};
+use super::types::{
+    Diagnostic, DiagnosticDeltaSet, DiagnosticSeverity, DiagnosticSource, LensTouchedFile,
+};
 use crate::lsp::registry::{SERVERS, probe_for_server_root};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TurnHealthStatus {
-    Pending,
     Clean,
-    Warning,
-    Error,
+    Warnings,
+    Errors,
 }
 
 impl TurnHealthStatus {
     pub fn is_warning_or_worse(&self) -> bool {
-        matches!(self, Self::Warning | Self::Error)
+        matches!(self, Self::Warnings | Self::Errors)
     }
 
     fn envelope_status(&self) -> LensResponseStatus {
         match self {
-            Self::Pending => LensResponseStatus::Ok,
             Self::Clean => LensResponseStatus::Ok,
-            Self::Warning => LensResponseStatus::Warning,
-            Self::Error => LensResponseStatus::Error,
+            Self::Warnings => LensResponseStatus::Warning,
+            Self::Errors => LensResponseStatus::Error,
         }
     }
 
     fn as_str(&self) -> &'static str {
         match self {
-            Self::Pending => "pending",
             Self::Clean => "clean",
-            Self::Warning => "warning",
-            Self::Error => "error",
+            Self::Warnings => "warnings",
+            Self::Errors => "errors",
         }
     }
 }
@@ -57,7 +56,9 @@ pub struct TurnHealthData {
     pub status: TurnHealthStatus,
     pub compact: String,
     pub summary: TurnHealthSummary,
+    #[serde(skip_serializing)]
     pub action_context: ActionContextState,
+    pub issues: Vec<SessionDiagnosticIssue>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,6 +70,7 @@ pub struct TurnHealthSummary {
     pub diagnostics: DiagnosticSummary,
     pub checks: CheckSummary,
     pub patch_refs: PatchRefSummary,
+    pub sources: Vec<DiagnosticSourceSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,6 +136,28 @@ pub struct DiagnosticDeltaSummary {
     pub new: usize,
     pub resolved: usize,
     pub unchanged: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiagnosticSourceSummary {
+    pub source: String,
+    pub name: String,
+    pub connected: bool,
+    pub errors: usize,
+    pub warnings: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionDiagnosticIssue {
+    pub source: String,
+    pub severity: DiagnosticSeverity,
+    pub path: String,
+    pub line: Option<i64>,
+    pub message: String,
+    pub code: Option<String>,
+    pub fingerprint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fix_instruction: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -245,15 +269,7 @@ pub fn build_action_context_envelope(
 ) -> Result<LensEnvelope<ActionContextState>, Box<dyn std::error::Error>> {
     let mut store = LensStore::open_for_project(root)?;
     let health = compute_turn_health(root, &mut store, &options)?;
-    let mut context = health.action_context;
-    if options.acknowledge && context.required && !context.acknowledged {
-        acknowledge_context(&store, &options.session, &options.turn, &context)?;
-        context.acknowledged = true;
-        context.required = false;
-        context.state = "acknowledged".to_string();
-        context.ack_command = None;
-    }
-    Ok(context_envelope(context))
+    Ok(context_envelope(health.action_context))
 }
 
 pub fn build_changed_file_report_envelope(
@@ -263,7 +279,7 @@ pub fn build_changed_file_report_envelope(
 ) -> Result<LensEnvelope<ChangedFileReportData>, Box<dyn std::error::Error>> {
     let mut store = LensStore::open_for_project(root)?;
     let health = compute_turn_health(root, &mut store, &options)?;
-    let touched = store.list_touched_files(&options.session, &options.turn)?;
+    let touched = store.list_session_touched_files(&options.session)?;
     let mut by_path: BTreeMap<String, Vec<LensTouchedFile>> = BTreeMap::new();
     for file in touched {
         if path.is_none_or(|wanted| wanted == file.path) {
@@ -309,18 +325,7 @@ pub fn final_health_text(data: &TurnHealthData) -> String {
         data.status.as_str(),
         data.compact
     )];
-    if data.action_context.required {
-        lines.push(format!(
-            "Next turn should review: {}",
-            data.action_context.reason
-        ));
-        if let Some(command) = &data.action_context.ack_command {
-            lines.push(format!("Ack: {command}"));
-        }
-    }
-    for action in &data.action_context.remediation {
-        lines.push(format!("Remediate: {action}"));
-    }
+    lines.extend(session_issue_report_lines(data));
     lines.join("\n")
 }
 
@@ -329,7 +334,7 @@ fn compute_turn_health(
     store: &mut LensStore,
     options: &TurnHealthOptions,
 ) -> Result<TurnHealthData, Box<dyn std::error::Error>> {
-    let touched = store.list_touched_files(&options.session, &options.turn)?;
+    let touched = store.list_session_touched_files(&options.session)?;
     let changed_paths = unique_changed_paths(&touched);
     let turn_active = store
         .turn_status(&options.session, &options.turn)?
@@ -338,10 +343,14 @@ fn compute_turn_health(
     let validation_plan = validation_plan_summary(root, turn_active)?;
     let lsp = lsp_summary(root);
     let cleanup = cleanup_summary(store, &options.session, &options.turn)?;
-    let diagnostics = turn_diagnostic_summary(store, &changed_paths)?;
+    let active_diagnostics = session_diagnostics(store, &changed_paths)?;
+    let diagnostics =
+        diagnostic_summary(&active_diagnostics, &session_deltas(store, &changed_paths)?);
     let checks = check_summary(store)?;
     let patch_refs = patch_ref_summary(store, &options.session, &changed_paths)?;
-    let status = compute_status(turn_active, &cleanup, &diagnostics, &checks);
+    let sources = diagnostic_sources(&lsp, &active_diagnostics);
+    let status = compute_status(&diagnostics);
+    let issues = diagnostic_issues(&active_diagnostics);
     let summary = TurnHealthSummary {
         changed_files: ChangedFilesSummary {
             count: changed_paths.len(),
@@ -353,19 +362,10 @@ fn compute_turn_health(
         diagnostics,
         checks,
         patch_refs,
+        sources,
     };
     let compact = compact_summary(&status, &summary);
-    let fingerprint = health_fingerprint(&status, &summary);
-    let acknowledged = is_acknowledged(store, &options.session, &options.turn, &fingerprint)?;
-    let action_context = action_context(
-        &options.session,
-        &options.turn,
-        status.clone(),
-        compact.clone(),
-        fingerprint,
-        acknowledged,
-        &summary,
-    );
+    let action_context = action_context(status.clone(), compact.clone());
     Ok(TurnHealthData {
         project_id: store.project_id(),
         session: options.session.clone(),
@@ -374,6 +374,7 @@ fn compute_turn_health(
         compact,
         summary,
         action_context,
+        issues,
     })
 }
 
@@ -422,27 +423,18 @@ fn report_envelope(data: ChangedFileReportData) -> LensEnvelope<ChangedFileRepor
 }
 
 fn health_messages(data: &TurnHealthData) -> Vec<LensMessage> {
-    if !data.status.is_warning_or_worse() {
-        return Vec::new();
+    match data.status {
+        TurnHealthStatus::Clean => Vec::new(),
+        TurnHealthStatus::Warnings => vec![LensMessage::warning_with_hint(
+            "lens_health_warnings",
+            data.compact.clone(),
+            "fix the listed session diagnostics".to_string(),
+        )],
+        TurnHealthStatus::Errors => vec![LensMessage::error(
+            "lens_health_errors",
+            data.compact.clone(),
+        )],
     }
-    let hint = data
-        .action_context
-        .ack_command
-        .clone()
-        .unwrap_or_else(|| "remediate findings or acknowledge Lens context".to_string());
-    let message = match data.status {
-        TurnHealthStatus::Warning => LensMessage::warning_with_hint(
-            "lens_health_warning",
-            data.action_context.reason.clone(),
-            hint,
-        ),
-        TurnHealthStatus::Error => {
-            LensMessage::error("lens_health_error", data.action_context.reason.clone())
-        }
-        TurnHealthStatus::Pending => return Vec::new(),
-        TurnHealthStatus::Clean => return Vec::new(),
-    };
-    vec![message]
 }
 
 fn unique_changed_paths(touched: &[LensTouchedFile]) -> BTreeSet<String> {
@@ -550,21 +542,26 @@ fn diagnostic_summary(
     summary
 }
 
-fn turn_diagnostic_summary(
+fn session_diagnostics(
     store: &LensStore,
     changed_paths: &BTreeSet<String>,
-) -> Result<DiagnosticSummary, Box<dyn std::error::Error>> {
+) -> Result<Vec<Diagnostic>, Box<dyn std::error::Error>> {
     let mut diagnostics = Vec::new();
     for path in changed_paths {
         diagnostics.extend(store.list_diagnostics(Some(path))?);
     }
+    Ok(diagnostics)
+}
 
+fn session_deltas(
+    store: &LensStore,
+    changed_paths: &BTreeSet<String>,
+) -> Result<DiagnosticDeltaSet, Box<dyn std::error::Error>> {
     let mut deltas = store.list_diagnostics_data(None, true)?.deltas;
     retain_deltas_for_paths(&mut deltas.new, changed_paths);
     retain_deltas_for_paths(&mut deltas.resolved, changed_paths);
     retain_deltas_for_paths(&mut deltas.unchanged, changed_paths);
-
-    Ok(diagnostic_summary(&diagnostics, &deltas))
+    Ok(deltas)
 }
 
 fn retain_deltas_for_paths(diagnostics: &mut Vec<Diagnostic>, changed_paths: &BTreeSet<String>) {
@@ -574,6 +571,144 @@ fn retain_deltas_for_paths(diagnostics: &mut Vec<Diagnostic>, changed_paths: &BT
             .as_ref()
             .is_some_and(|path| changed_paths.contains(path))
     });
+}
+
+fn diagnostic_sources(
+    lsp: &LspSummary,
+    diagnostics: &[Diagnostic],
+) -> Vec<DiagnosticSourceSummary> {
+    let mut sources: BTreeMap<String, DiagnosticSourceSummary> = BTreeMap::new();
+    if !lsp.connected.is_empty() || !lsp.missing.is_empty() {
+        sources.insert(
+            "lsp".to_string(),
+            DiagnosticSourceSummary {
+                source: "lsp".to_string(),
+                name: "lsp".to_string(),
+                connected: !lsp.connected.is_empty(),
+                errors: 0,
+                warnings: 0,
+            },
+        );
+    }
+    for diagnostic in diagnostics {
+        let source = diagnostic_source_name(&diagnostic.source);
+        let summary = sources
+            .entry(source.clone())
+            .or_insert(DiagnosticSourceSummary {
+                source: source.clone(),
+                name: source,
+                connected: true,
+                errors: 0,
+                warnings: 0,
+            });
+        match diagnostic.severity {
+            DiagnosticSeverity::Error => summary.errors += 1,
+            DiagnosticSeverity::Warning => summary.warnings += 1,
+            DiagnosticSeverity::Info | DiagnosticSeverity::Hint => {}
+        }
+    }
+    sources.into_values().collect()
+}
+
+fn diagnostic_issues(diagnostics: &[Diagnostic]) -> Vec<SessionDiagnosticIssue> {
+    diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            matches!(
+                diagnostic.severity,
+                DiagnosticSeverity::Error | DiagnosticSeverity::Warning
+            )
+        })
+        .filter_map(|diagnostic| {
+            let path = diagnostic.rel_path.clone()?;
+            Some(SessionDiagnosticIssue {
+                source: diagnostic_source_name(&diagnostic.source),
+                severity: diagnostic.severity.clone(),
+                path: path.clone(),
+                line: diagnostic.start_line,
+                message: diagnostic.message.clone(),
+                code: diagnostic.code.clone(),
+                fingerprint: diagnostic.fingerprint.clone(),
+                fix_instruction: fix_instruction(diagnostic, &path),
+            })
+        })
+        .collect()
+}
+
+pub fn session_issue_report_text(data: &TurnHealthData) -> Option<String> {
+    let lines = session_issue_report_lines(data);
+    (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
+fn session_issue_report_lines(data: &TurnHealthData) -> Vec<String> {
+    if data.issues.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec![format!(
+        "Lens session diagnostics: {} issue(s) across {} edited file(s)",
+        data.issues.len(),
+        data.summary.changed_files.count
+    )];
+    for issue in &data.issues {
+        let location = match issue.line {
+            Some(line) => format!("{}:{line}", issue.path),
+            None => issue.path.clone(),
+        };
+        let code = issue
+            .code
+            .as_ref()
+            .map(|code| format!(" [{code}]"))
+            .unwrap_or_default();
+        lines.push(format!(
+            "- {}/{} {}{}: {}",
+            issue.source,
+            diagnostic_severity_text(&issue.severity),
+            location,
+            code,
+            issue.message
+        ));
+        if let Some(fix) = &issue.fix_instruction {
+            lines.push(format!("  fix: {fix}"));
+        }
+    }
+    lines.push(
+        "Fix the listed files or inspect with `ct lens diagnostics list --all --json`.".to_string(),
+    );
+    lines
+}
+
+fn fix_instruction(diagnostic: &Diagnostic, path: &str) -> Option<String> {
+    match diagnostic.source {
+        DiagnosticSource::Formatter | DiagnosticSource::Autofix => Some(format!(
+            "run the project formatter for {} or inspect with `ct lens diagnostics list --path {} --all --json`",
+            shell_word(path),
+            shell_word(path)
+        )),
+        _ => None,
+    }
+}
+
+fn diagnostic_source_name(source: &DiagnosticSource) -> String {
+    match source {
+        DiagnosticSource::Lsp => "lsp".to_string(),
+        DiagnosticSource::AstGrep => "ast_grep".to_string(),
+        DiagnosticSource::TreeSitter => "tree_sitter".to_string(),
+        DiagnosticSource::Secrets => "secrets".to_string(),
+        DiagnosticSource::Security => "security".to_string(),
+        DiagnosticSource::Formatter => "formatter".to_string(),
+        DiagnosticSource::Autofix => "autofix".to_string(),
+        DiagnosticSource::Test => "test".to_string(),
+        DiagnosticSource::Other(value) => value.clone(),
+    }
+}
+
+fn diagnostic_severity_text(severity: &DiagnosticSeverity) -> &'static str {
+    match severity {
+        DiagnosticSeverity::Error => "error",
+        DiagnosticSeverity::Warning => "warning",
+        DiagnosticSeverity::Info => "info",
+        DiagnosticSeverity::Hint => "hint",
+    }
 }
 
 fn check_summary(store: &LensStore) -> Result<CheckSummary, Box<dyn std::error::Error>> {
@@ -764,26 +899,11 @@ fn patch_ref_summary(
     Ok(summary)
 }
 
-fn compute_status(
-    turn_active: bool,
-    cleanup: &CleanupSummary,
-    diagnostics: &DiagnosticSummary,
-    checks: &CheckSummary,
-) -> TurnHealthStatus {
-    if diagnostics.errors > 0
-        || cleanup.failed > 0
-        || cleanup.timed_out > 0
-        || check_errors(checks) > 0
-    {
-        TurnHealthStatus::Error
-    } else if diagnostics.warnings > 0
-        || diagnostics.deltas.new > 0
-        || cleanup.skipped > 0
-        || check_warnings(checks) > 0
-    {
-        TurnHealthStatus::Warning
-    } else if turn_active {
-        TurnHealthStatus::Pending
+fn compute_status(diagnostics: &DiagnosticSummary) -> TurnHealthStatus {
+    if diagnostics.errors > 0 {
+        TurnHealthStatus::Errors
+    } else if diagnostics.warnings > 0 {
+        TurnHealthStatus::Warnings
     } else {
         TurnHealthStatus::Clean
     }
@@ -791,185 +911,51 @@ fn compute_status(
 
 fn compact_summary(status: &TurnHealthStatus, summary: &TurnHealthSummary) -> String {
     let mut parts = vec![format!(
-        "{} · {} changed",
+        "{} · {} session-edited",
         status.as_str(),
         summary.changed_files.count
     )];
-    if summary.diagnostics.errors > 0
-        || summary.diagnostics.warnings > 0
-        || summary.diagnostics.deltas.new > 0
-        || *status == TurnHealthStatus::Pending
-    {
-        parts.push(format!(
-            "diag {} ({} err/{} warn)",
-            summary.diagnostics.active, summary.diagnostics.errors, summary.diagnostics.warnings
-        ));
-    }
-    if summary.cleanup.failed > 0 || summary.cleanup.timed_out > 0 || summary.cleanup.skipped > 0 {
-        parts.push(format!(
-            "cleanup {} failed/{} timeout",
-            summary.cleanup.failed, summary.cleanup.timed_out
-        ));
-    }
-    let check_failures = check_errors(&summary.checks);
-    let check_warnings = check_warnings(&summary.checks);
-    if check_failures > 0 || check_warnings > 0 {
-        parts.push(format!("checks {check_failures} err/{check_warnings} warn"));
-    }
-    if summary.validation_plan.turn_active {
-        let queue = summary
-            .validation_plan
-            .automatic_checks
-            .iter()
-            .chain(summary.validation_plan.automatic_scanners.iter())
-            .cloned()
-            .collect::<Vec<_>>();
-        if queue.is_empty() {
-            parts.push("end: cleanup".to_string());
-        } else {
-            parts.push(format!("queue: {}", queue.join(", ")));
-        }
-        if !summary.validation_plan.suggestions.is_empty() {
-            let suggestions = summary.validation_plan.suggestions.to_vec();
-            parts.push(format!("suggested: {}", suggestions.join(", ")));
-        }
-    }
-    let lsp_names = summary
-        .lsp
-        .connected
-        .iter()
-        .map(|lsp| lsp.name.clone())
-        .collect::<Vec<_>>();
     parts.push(format!(
-        "lsp: {}",
-        if lsp_names.is_empty() {
-            "none".to_string()
-        } else {
-            lsp_names.join(", ")
-        }
+        "diag {} ({} err/{} warn)",
+        summary.diagnostics.active, summary.diagnostics.errors, summary.diagnostics.warnings
     ));
-    if summary.patch_refs.hunks > 0 || summary.patch_refs.accepted_events > 0 {
+    if !summary.sources.is_empty() {
         parts.push(format!(
-            "patch {}/{}",
-            summary.patch_refs.accepted_events, summary.patch_refs.hunks
+            "sources: {}",
+            summary
+                .sources
+                .iter()
+                .map(|source| format!(
+                    "{} {} {}/{}",
+                    source.name,
+                    if source.connected {
+                        "connected"
+                    } else {
+                        "unavailable"
+                    },
+                    source.errors,
+                    source.warnings
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     }
     parts.join(" · ")
 }
 
-fn health_fingerprint(status: &TurnHealthStatus, summary: &TurnHealthSummary) -> String {
-    let value = serde_json::json!({
-        "status": status,
-        "changed": summary.changed_files.paths,
-        "validation_plan": summary.validation_plan,
-        "lsp": summary.lsp,
-        "diagnostics": summary.diagnostics,
-        "cleanup": summary.cleanup,
-        "checks": summary.checks,
-        "patch_refs": summary.patch_refs,
-    });
-    crate::apply_patch::sha1_hex(value.to_string().as_bytes())
-}
-
-fn is_acknowledged(
-    store: &LensStore,
-    session: &str,
-    turn: &str,
-    fingerprint: &str,
-) -> Result<bool, Box<dyn std::error::Error>> {
-    store.with_conn(|conn| {
-        let found: Option<i64> = conn
-            .query_row(
-                "SELECT id FROM lens_action_acknowledgements
-                 WHERE project_id=?1 AND session_id=?2 AND turn_id=?3 AND health_fingerprint=?4
-                 LIMIT 1",
-                params![store.project_id(), session, turn, fingerprint],
-                |row| row.get(0),
-            )
-            .optional()?;
-        Ok(found.is_some())
-    })
-}
-
-fn acknowledge_context(
-    store: &LensStore,
-    session: &str,
-    turn: &str,
-    context: &ActionContextState,
-) -> Result<(), Box<dyn std::error::Error>> {
-    store.with_conn(|conn| {
-        conn.execute(
-            "INSERT OR IGNORE INTO lens_action_acknowledgements(project_id, session_id, turn_id, health_fingerprint, status, created_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                store.project_id(),
-                session,
-                turn,
-                context.fingerprint,
-                context.status.as_str(),
-                now_ms()
-            ],
-        )?;
-        Ok(())
-    })
-}
-
-fn action_context(
-    session: &str,
-    turn: &str,
-    status: TurnHealthStatus,
-    compact: String,
-    fingerprint: String,
-    acknowledged: bool,
-    summary: &TurnHealthSummary,
-) -> ActionContextState {
-    let actionable = status.is_warning_or_worse();
-    let required = actionable && !acknowledged;
-    let state = if !actionable {
-        "clear"
-    } else if acknowledged {
-        "acknowledged"
-    } else {
-        "required"
-    }
-    .to_string();
-    let mut remediation = Vec::new();
-    if summary.diagnostics.errors > 0 || summary.diagnostics.warnings > 0 {
-        remediation
-            .push("fix or snapshot diagnostics with ct lens diagnostics list --all".to_string());
-    }
-    if summary.cleanup.failed > 0 || summary.cleanup.timed_out > 0 || summary.cleanup.skipped > 0 {
-        remediation
-            .push("inspect cleanup output and rerun ct lens cleanup run if safe".to_string());
-    }
-    if summary
-        .checks
-        .latest
-        .iter()
-        .any(|check| check.exit_code.unwrap_or(0) != 0)
-    {
-        remediation.push("rerun failing checks with ct lens checks run --all".to_string());
-    }
-    if remediation.is_empty() && status.is_warning_or_worse() {
-        remediation.push("inspect ct lens report for changed-file details".to_string());
-    }
+fn action_context(status: TurnHealthStatus, compact: String) -> ActionContextState {
     ActionContextState {
-        required,
-        acknowledged,
-        state,
-        fingerprint,
+        required: false,
+        acknowledged: false,
+        state: "clear".to_string(),
+        fingerprint: String::new(),
         status,
         reason: compact,
-        instructions: "Review this Lens context or remediate the listed findings when useful."
-            .to_string(),
-        ack_command: required.then(|| {
-            format!(
-                "ct lens context --session {} --turn {} --ack --json",
-                shell_word(session),
-                shell_word(turn)
-            )
-        }),
-        remediation,
+        instructions:
+            "Lens action acknowledgement is disabled; use the diagnostics report directly."
+                .to_string(),
+        ack_command: None,
+        remediation: Vec::new(),
     }
 }
 
@@ -1111,22 +1097,6 @@ fn report_next_actions(path: &str, diagnostics: &[Diagnostic]) -> Vec<String> {
     actions
 }
 
-fn check_errors(checks: &CheckSummary) -> usize {
-    checks
-        .latest
-        .iter()
-        .filter(|check| check.exit_code.is_some_and(|code| code != 0) && check.diagnostic_count > 0)
-        .count()
-}
-
-fn check_warnings(checks: &CheckSummary) -> usize {
-    checks
-        .latest
-        .iter()
-        .filter(|check| check.exit_code.is_none() && check.diagnostic_count > 0)
-        .count()
-}
-
 fn shell_word(value: &str) -> String {
     if value
         .chars()
@@ -1136,14 +1106,6 @@ fn shell_word(value: &str) -> String {
     } else {
         format!("'{}'", value.replace('\'', "'\\''"))
     }
-}
-
-fn now_ms() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -1243,7 +1205,7 @@ mod tests {
     }
 
     #[test]
-    fn active_turn_reports_pending_validation_plan_instead_of_clean() {
+    fn active_turn_reports_clean_when_session_diagnostics_are_clean() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("main.rs"), "fn main() {}\n").unwrap();
         let mut store = LensStore::open_for_project(temp.path()).unwrap();
@@ -1262,10 +1224,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(envelope.data.status, TurnHealthStatus::Pending);
+        assert_eq!(envelope.data.status, TurnHealthStatus::Clean);
         assert!(envelope.data.summary.validation_plan.turn_active);
         assert!(envelope.data.summary.validation_plan.cleanup_pending);
-        assert!(envelope.data.compact.contains("end: cleanup"));
+        assert!(envelope.data.compact.contains("clean"));
         assert!(!envelope.data.action_context.required);
     }
 
@@ -1345,7 +1307,7 @@ mod tests {
     }
 
     #[test]
-    fn warning_diagnostics_require_action_context() {
+    fn warning_diagnostics_report_warnings_without_action_context() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("main.rs"), "fn main() {}\n").unwrap();
         record_turn(temp.path());
@@ -1362,13 +1324,15 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(health.data.status, TurnHealthStatus::Warning);
-        assert!(health.data.action_context.required);
-        assert!(health.data.action_context.ack_command.is_some());
+        assert_eq!(health.data.status, TurnHealthStatus::Warnings);
+        assert!(!health.data.action_context.required);
+        assert!(health.data.action_context.ack_command.is_none());
+        assert_eq!(health.data.issues.len(), 1);
+        assert_eq!(health.data.summary.sources[0].warnings, 1);
     }
 
     #[test]
-    fn turn_health_ignores_diagnostics_from_other_turns() {
+    fn turn_health_aggregates_diagnostics_from_session_edited_files() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("first.rs"), "fn first() {}\n").unwrap();
         std::fs::write(temp.path().join("second.rs"), "fn second() {}\n").unwrap();
@@ -1405,8 +1369,11 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(health.data.summary.changed_files.paths, vec!["second.rs"]);
-        assert_eq!(health.data.summary.diagnostics.active, 0);
-        assert_eq!(health.data.status, TurnHealthStatus::Clean);
+        assert_eq!(
+            health.data.summary.changed_files.paths,
+            vec!["first.rs", "second.rs"]
+        );
+        assert_eq!(health.data.summary.diagnostics.active, 1);
+        assert_eq!(health.data.status, TurnHealthStatus::Warnings);
     }
 }

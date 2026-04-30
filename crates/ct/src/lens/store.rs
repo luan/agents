@@ -553,6 +553,32 @@ impl LensStore {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    pub fn list_session_touched_files(
+        &self,
+        session: &str,
+    ) -> Result<Vec<LensTouchedFile>, Box<dyn std::error::Error>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT rel_path, operation, tool, source, explicit, ignored, generated
+             FROM turn_touched_files
+             WHERE project_id=?1 AND session_id=?2
+             ORDER BY rel_path, source, tool, operation",
+        )?;
+        let rows = stmt.query_map(params![self.project_id, session], |row| {
+            Ok(LensTouchedFile {
+                path: row.get(0)?,
+                operation: row.get(1)?,
+                start_line: None,
+                end_line: None,
+                tool: row.get(2)?,
+                source: parse_touched_source(row.get::<_, String>(3)?.as_str()),
+                explicit: row.get(4)?,
+                ignored: row.get(5)?,
+                generated: row.get(6)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     pub fn record_cleanup_run(
         &mut self,
         input: CleanupRunRecordInput<'_>,
