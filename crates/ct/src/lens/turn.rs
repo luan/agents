@@ -25,7 +25,6 @@ pub fn record_turn_event_envelope(
     let mut store = LensStore::open_for_project(&root)?;
     let files = touched_files_from_event(&root, &event_cwd, &event)?;
     store.record_turn_event(&event, &files)?;
-    let cleanup = None;
     let files = store.list_touched_files(&event.session, &event.turn)?;
     let turn_health = if matches!(event.event, LensTurnEventKind::TurnEnd) {
         Some(
@@ -34,7 +33,6 @@ pub fn record_turn_event_envelope(
                 TurnHealthOptions {
                     session: event.session.clone(),
                     turn: event.turn.clone(),
-                    acknowledge: false,
                 },
             )?
             .data,
@@ -66,7 +64,6 @@ pub fn record_turn_event_envelope(
         phase: event.phase,
         file_count: files.len(),
         files,
-        cleanup,
         checks: turn_checks.map(|envelope| envelope.data),
     };
     if !warnings.is_empty() {

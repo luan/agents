@@ -214,7 +214,7 @@ fn default_tool_requirements() -> Vec<ToolRequirement> {
         },
         ToolRequirement {
             command: "sg".to_string(),
-            purpose: "AST search/replace diagnostics and cleanup discovery".to_string(),
+            purpose: "AST search/replace diagnostics".to_string(),
             install_hint: "install ast-grep (sg) to enable AST-backed Lens features".to_string(),
         },
     ]

@@ -613,12 +613,6 @@ pub enum LensAction {
         json: bool,
     },
 
-    #[command(about = "Run safe turn-scoped cleanup")]
-    Cleanup {
-        #[command(subcommand)]
-        action: LensCleanupAction,
-    },
-
     #[command(about = "Show compact turn health")]
     Health {
         #[arg(long, help = "Working directory")]
@@ -631,50 +625,6 @@ pub enum LensAction {
         json: bool,
         #[arg(long, help = "Print final/agent-end style text")]
         final_output: bool,
-    },
-
-    #[command(about = "Show action-forcing Lens context for next turn")]
-    Context {
-        #[arg(long, help = "Working directory")]
-        cwd: Option<String>,
-        #[arg(long, help = "Session id")]
-        session: String,
-        #[arg(long, help = "Turn id")]
-        turn: String,
-        #[arg(long, help = "Output JSON")]
-        json: bool,
-        #[arg(long, help = "Acknowledge current warning-or-worse health")]
-        ack: bool,
-    },
-
-    #[command(about = "Show deeper Lens changed-file report")]
-    Report {
-        #[arg(long, help = "Working directory")]
-        cwd: Option<String>,
-        #[arg(long, help = "Session id")]
-        session: String,
-        #[arg(long, help = "Turn id")]
-        turn: String,
-        #[arg(long, help = "Optional changed-file path")]
-        path: Option<String>,
-        #[arg(long, help = "Output JSON")]
-        json: bool,
-    },
-
-    #[command(about = "List or show retained sanitized raw output")]
-    RawOutput {
-        #[command(subcommand)]
-        action: LensRawOutputAction,
-    },
-
-    #[command(about = "Prune lens state")]
-    Prune {
-        #[arg(long, help = "Working directory")]
-        cwd: Option<String>,
-        #[arg(long, help = "Output JSON")]
-        json: bool,
-        #[arg(long, help = "Preview without deleting")]
-        dry_run: bool,
     },
 }
 
@@ -746,45 +696,6 @@ pub enum LensDiagnosticsAction {
     },
     #[command(about = "Record a replacing diagnostic snapshot from JSON stdin")]
     Snapshot {
-        #[arg(long, help = "Working directory")]
-        cwd: Option<String>,
-        #[arg(long, help = "Output JSON")]
-        json: bool,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum LensCleanupAction {
-    #[command(about = "Run cleanup for files touched during a turn")]
-    Run {
-        #[arg(long, help = "Working directory")]
-        cwd: Option<String>,
-        #[arg(long, help = "Session id")]
-        session: String,
-        #[arg(long, help = "Turn id")]
-        turn: String,
-        #[arg(long, help = "Output JSON")]
-        json: bool,
-        #[arg(long, help = "Run unsafe/invasive registry entries explicitly")]
-        allow_unsafe: bool,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum LensRawOutputAction {
-    #[command(about = "List retained sanitized raw outputs")]
-    List {
-        #[arg(long, help = "Working directory")]
-        cwd: Option<String>,
-        #[arg(long, default_value_t = 20, help = "Maximum outputs to list")]
-        limit: usize,
-        #[arg(long, help = "Output JSON")]
-        json: bool,
-    },
-    #[command(about = "Show a retained sanitized raw output body")]
-    Show {
-        #[arg(help = "Raw output id")]
-        id: i64,
         #[arg(long, help = "Working directory")]
         cwd: Option<String>,
         #[arg(long, help = "Output JSON")]

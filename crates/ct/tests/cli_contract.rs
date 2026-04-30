@@ -293,23 +293,16 @@ fn lens_status_json_is_schema_versioned_and_compact() {
 }
 
 #[test]
-fn lens_prune_dry_run_uses_response_envelope() {
+fn lens_prune_surface_is_removed() {
     let (bp, _remote) = setup_blueprints();
     let project = project_dir();
-    let state = tempfile::tempdir().expect("state dir");
 
-    let assert = ct_cmd(bp.path())
+    ct_cmd(bp.path())
         .current_dir(project.path())
-        .env("XDG_STATE_HOME", state.path())
-        .env("XDG_CONFIG_HOME", state.path())
         .args(["lens", "prune", "--dry-run", "--json"])
         .assert()
-        .success();
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let value: serde_json::Value = serde_json::from_str(&stdout).expect("prune json");
-
-    assert_eq!(value["schema_version"], "lens.response.v1");
-    assert_eq!(value["data"]["dry_run"], true);
+        .failure()
+        .stderr(predicate::str::contains("unrecognized subcommand"));
 }
 
 #[test]
@@ -399,7 +392,7 @@ fn lens_touched_json_is_schema_versioned_and_stable() {
 }
 
 #[test]
-fn lens_health_context_report_and_final_outputs_are_schema_versioned() {
+fn lens_health_and_final_outputs_are_schema_versioned() {
     let (bp, _remote) = setup_blueprints();
     let project = project_dir();
     let state = tempfile::tempdir().expect("state dir");
@@ -450,6 +443,8 @@ fn lens_health_context_report_and_final_outputs_are_schema_versioned() {
         value["data"]["summary"]["validation_plan"]["turn_active"],
         true
     );
+    assert!(value["data"]["summary"].get("cleanup").is_none());
+    assert!(value["data"]["summary"].get("patch_refs").is_none());
 
     ct_cmd(bp.path())
         .current_dir(project.path())
@@ -462,14 +457,10 @@ fn lens_health_context_report_and_final_outputs_are_schema_versioned() {
             "health-cli",
             "--turn",
             "turn-health",
-            "--path",
-            "main.rs",
-            "--json",
         ])
         .assert()
-        .success()
-        .stdout(predicate::str::contains("symbol_context"))
-        .stdout(predicate::str::contains("next_actions"));
+        .failure()
+        .stderr(predicate::str::contains("unrecognized subcommand"));
 
     ct_cmd(bp.path())
         .current_dir(project.path())
@@ -482,12 +473,10 @@ fn lens_health_context_report_and_final_outputs_are_schema_versioned() {
             "health-cli",
             "--turn",
             "turn-health",
-            "--ack",
-            "--json",
         ])
         .assert()
-        .success()
-        .stdout(predicate::str::contains("\"state\": \"clear\""));
+        .failure()
+        .stderr(predicate::str::contains("unrecognized subcommand"));
 
     ct_cmd(bp.path())
         .current_dir(project.path())
@@ -579,7 +568,7 @@ fn lens_warning_context_stays_clear_and_report_uses_canonical_source_actions() {
         serde_json::from_slice(&injection.get_output().stdout).expect("context injection json");
     assert_eq!(injection_value["context"]["inject"], false);
 
-    let context = ct_cmd(bp.path())
+    ct_cmd(bp.path())
         .current_dir(project.path())
         .env("XDG_STATE_HOME", state.path())
         .args([
@@ -589,38 +578,12 @@ fn lens_warning_context_stays_clear_and_report_uses_canonical_source_actions() {
             "warn-cli",
             "--turn",
             "turn-warning",
-            "--json",
         ])
         .assert()
-        .success();
-    let context_value: serde_json::Value =
-        serde_json::from_slice(&context.get_output().stdout).expect("context json");
-    assert_eq!(context_value["status"], "ok");
-    assert_eq!(context_value["data"]["required"], false);
-    assert!(!context_value.to_string().contains("read_files"));
-    assert!(!context_value.to_string().contains("guard"));
+        .failure()
+        .stderr(predicate::str::contains("unrecognized subcommand"));
 
-    let ack = ct_cmd(bp.path())
-        .current_dir(project.path())
-        .env("XDG_STATE_HOME", state.path())
-        .args([
-            "lens",
-            "context",
-            "--session",
-            "warn-cli",
-            "--turn",
-            "turn-warning",
-            "--ack",
-            "--json",
-        ])
-        .assert()
-        .success();
-    let ack_value: serde_json::Value =
-        serde_json::from_slice(&ack.get_output().stdout).expect("ack json");
-    assert_eq!(ack_value["data"]["state"], "clear");
-    assert_eq!(ack_value["data"]["required"], false);
-
-    let report = ct_cmd(bp.path())
+    ct_cmd(bp.path())
         .current_dir(project.path())
         .env("XDG_STATE_HOME", state.path())
         .args([
@@ -630,19 +593,34 @@ fn lens_warning_context_stays_clear_and_report_uses_canonical_source_actions() {
             "warn-cli",
             "--turn",
             "turn-warning",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unrecognized subcommand"));
+
+    let health = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .args([
+            "lens",
+            "health",
+            "--session",
+            "warn-cli",
+            "--turn",
+            "turn-warning",
             "--json",
         ])
         .assert()
         .success();
-    let report_value: serde_json::Value =
-        serde_json::from_slice(&report.get_output().stdout).expect("report json");
-    let report_text = report_value.to_string();
-    assert!(report_text.contains("ct source outline"));
-    assert!(!report_text.contains("ct lens discover"));
-    assert!(!report_text.contains("ct lens read"));
-    assert!(!report_text.contains("ct sym"));
-    assert!(!report_text.contains("read_files"));
-    assert!(!report_text.contains("guard"));
+    let health_value: serde_json::Value =
+        serde_json::from_slice(&health.get_output().stdout).expect("health json");
+    let health_text = health_value.to_string();
+    assert_eq!(health_value["data"]["status"], "warnings");
+    assert!(!health_text.contains("action_context"));
+    assert!(!health_text.contains("cleanup"));
+    assert!(!health_text.contains("patch_refs"));
+    assert!(!health_text.contains("symbol"));
+    assert!(!health_text.contains("raw_output_ref"));
 }
 
 #[test]
@@ -780,7 +758,7 @@ fn lens_diagnostics_snapshot_reports_deltas_and_all_flag() {
         "raw_output": "token=secret-value\ncompiler output",
         "metadata": {"command": "cargo test", "exit_code": 1}
     });
-    let first_assert = ct_cmd(bp.path())
+    let _first_assert = ct_cmd(bp.path())
         .current_dir(project.path())
         .env("XDG_STATE_HOME", state.path())
         .args(["lens", "diagnostics", "snapshot", "--json"])
@@ -788,54 +766,13 @@ fn lens_diagnostics_snapshot_reports_deltas_and_all_flag() {
         .assert()
         .success()
         .stdout(predicate::str::contains("\"redacted\": true"));
-    let first_stdout =
-        String::from_utf8(first_assert.get_output().stdout.clone()).expect("first stdout utf8");
-    let first_value: serde_json::Value =
-        serde_json::from_str(&first_stdout).expect("first snapshot json");
-    let raw_output_id = first_value["data"]["raw_output"]["id"]
-        .as_i64()
-        .expect("raw output id");
-
-    let raw_list = ct_cmd(bp.path())
+    ct_cmd(bp.path())
         .current_dir(project.path())
         .env("XDG_STATE_HOME", state.path())
         .args(["lens", "raw-output", "list", "--json"])
         .assert()
-        .success();
-    let raw_list_value: serde_json::Value =
-        serde_json::from_slice(&raw_list.get_output().stdout).expect("raw output list json");
-    assert_eq!(raw_list_value["schema_version"], "lens.response.v1");
-    assert_eq!(raw_list_value["data"]["output_count"], 1);
-    assert_eq!(raw_list_value["data"]["outputs"][0]["id"], raw_output_id);
-    assert!(!raw_list_value.to_string().contains("secret-value"));
-
-    let raw_show = ct_cmd(bp.path())
-        .current_dir(project.path())
-        .env("XDG_STATE_HOME", state.path())
-        .args([
-            "lens",
-            "raw-output",
-            "show",
-            &raw_output_id.to_string(),
-            "--json",
-        ])
-        .assert()
-        .success();
-    let raw_show_value: serde_json::Value =
-        serde_json::from_slice(&raw_show.get_output().stdout).expect("raw output show json");
-    assert_eq!(raw_show_value["data"]["output"]["id"], raw_output_id);
-    assert!(
-        raw_show_value["data"]["output"]["body"]
-            .as_str()
-            .unwrap()
-            .contains("token=[REDACTED]")
-    );
-    assert!(
-        !raw_show_value["data"]["output"]["body"]
-            .as_str()
-            .unwrap()
-            .contains("secret-value")
-    );
+        .failure()
+        .stderr(predicate::str::contains("unrecognized subcommand"));
 
     let second = serde_json::json!({
         "source": "test",
@@ -1069,6 +1006,8 @@ fn lens_checks_run_configured_fixture_and_records_snapshot() {
     let value: serde_json::Value = serde_json::from_str(&stdout).expect("health json");
     assert_eq!(value["data"]["status"], "clean");
     assert!(value["data"].get("action_context").is_none());
+    assert!(value["data"]["summary"].get("cleanup").is_none());
+    assert!(value["data"]["summary"].get("patch_refs").is_none());
     assert!(
         value["data"]["summary"]["checks"]["latest"]
             .as_array()
