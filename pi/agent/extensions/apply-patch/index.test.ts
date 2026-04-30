@@ -82,7 +82,7 @@ function delay(ms: number) {
 }
 
 describe("apply_patch streaming renderer", () => {
-	it("uses preview worker for live line numbers instead of speculative line-numberless diff rows", async () => {
+	it("streams authored diff rows immediately before preview worker line-number upgrade", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "apply-patch-render-"));
 		writeFileSync(join(cwd, "sample.js"), [
 			"function renderSummary(summary) {",
@@ -114,8 +114,10 @@ describe("apply_patch streaming renderer", () => {
 		);
 		const firstText = renderText(first);
 		expect(firstText).toContain("sample.js");
-		expect(firstText).not.toContain("occurrences)");
-		expect(firstText).not.toContain("hits)");
+		expect(firstText).toContain("occurrences)");
+		expect(firstText).toContain("hits)");
+		expect(firstText).not.toContain("5 -");
+		expect(firstText).not.toContain("5 +");
 
 		await delay(1500);
 
@@ -190,11 +192,16 @@ describe("apply_patch streaming renderer", () => {
 
 		const tool = registerApplyPatchTool();
 		const state: Record<string, unknown> = {};
-		tool.renderCall(
+		const immediate = tool.renderCall(
 			{ input: patchInput },
 			theme,
 			renderContext(cwd, state, { argsComplete: false }),
 		);
+		const immediateText = renderText(immediate);
+		expect(immediateText).toContain("Semantic editing sample.js");
+		expect(immediateText).toContain("return 10;");
+		expect(immediateText).toContain("return 20;");
+
 		await delay(1500);
 
 		const rendered = tool.renderCall(
@@ -304,6 +311,7 @@ describe("apply_patch Codex freeform provider", () => {
 		const events = [
 			{
 				type: "response.output_item.added",
+				output_index: 3,
 				item: { id: "apply", type: "custom_tool_call", name: "apply_patch", input: "" },
 			},
 			{
@@ -317,6 +325,7 @@ describe("apply_patch Codex freeform provider", () => {
 			},
 			{
 				type: "response.custom_tool_call_input.delta",
+				output_index: 3,
 				item_id: "apply",
 				delta: "*** Begin Patch\n",
 			},
@@ -327,6 +336,7 @@ describe("apply_patch Codex freeform provider", () => {
 			},
 			{
 				type: "response.custom_tool_call_input.done",
+				output_index: 3,
 				item_id: "apply",
 			},
 			{
@@ -335,6 +345,7 @@ describe("apply_patch Codex freeform provider", () => {
 			},
 			{
 				type: "response.output_item.done",
+				output_index: 3,
 				item: { id: "apply", type: "custom_tool_call", name: "apply_patch" },
 			},
 		];
@@ -348,15 +359,18 @@ describe("apply_patch Codex freeform provider", () => {
 		expect(mapped[2]).toBe(events[2]);
 		expect(mapped[3]).toMatchObject({
 			type: "response.function_call_arguments.delta",
+			output_index: 3,
 			delta: "{\"input\":\"*** Begin Patch\\n",
 		});
 		expect(mapped[4]).toBe(events[4]);
 		expect(mapped[5]).toEqual({
 			type: "response.function_call_arguments.delta",
+			output_index: 3,
 			delta: "\"}",
 		});
 		expect(mapped.at(-2)).toMatchObject({
 			type: "response.function_call_arguments.done",
+			output_index: 3,
 			arguments: JSON.stringify({ input: "*** Begin Patch\n" }),
 		});
 		expect(mapped.at(-1)).toMatchObject({

@@ -293,6 +293,7 @@ export async function* mapFreeformEvents(events: AsyncIterable<any>, toolName: s
 			jsonStringOpen.add(itemId);
 			yield {
 				type: "response.function_call_arguments.delta",
+				output_index: event.output_index,
 				delta: `${prefix}${escapeJsonStringFragment(delta)}`,
 			};
 			continue;
@@ -305,7 +306,7 @@ export async function* mapFreeformEvents(events: AsyncIterable<any>, toolName: s
 			}
 			customInputs.set(itemId, event.input ?? customInputs.get(itemId) ?? "");
 			if (jsonStringOpen.has(itemId)) {
-				yield { type: "response.function_call_arguments.delta", delta: "\"}" };
+				yield { type: "response.function_call_arguments.delta", output_index: event.output_index, delta: "\"}" };
 				jsonStringOpen.delete(itemId);
 			}
 			continue;
@@ -313,11 +314,11 @@ export async function* mapFreeformEvents(events: AsyncIterable<any>, toolName: s
 		if (event.type === "response.output_item.done" && event.item?.type === "custom_tool_call" && event.item.name === toolName) {
 			const raw = event.item.input ?? customInputs.get(event.item.id) ?? "";
 			if (jsonStringOpen.has(event.item.id)) {
-				yield { type: "response.function_call_arguments.delta", delta: "\"}" };
+				yield { type: "response.function_call_arguments.delta", output_index: event.output_index, delta: "\"}" };
 				jsonStringOpen.delete(event.item.id);
 			}
 			customInputs.delete(event.item.id);
-			yield { type: "response.function_call_arguments.done", arguments: JSON.stringify({ input: raw }) };
+			yield { type: "response.function_call_arguments.done", output_index: event.output_index, arguments: JSON.stringify({ input: raw }) };
 			yield { ...event, item: { ...event.item, type: "function_call", arguments: JSON.stringify({ input: raw }) } };
 			continue;
 		}

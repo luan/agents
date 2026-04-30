@@ -2384,6 +2384,22 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
             semanticInput ? "semantic" : editKindFromFiles(state.previewFiles),
           );
         }
+        if (state.livePreview.rows.length > 0) {
+          return new ApplyPatchDiffView(
+            "patch",
+            state.livePreview.files,
+            theme.fg("warning", "Streaming patch..."),
+            theme,
+            config,
+            "pending",
+            "Streaming",
+            undefined,
+            context.expanded,
+            state.livePreview.rows,
+            config.maxDiffLines,
+            semanticInput ? "semantic" : editKindFromFiles(state.livePreview.files),
+          );
+        }
         if (state.livePreview.files.length > 0) {
           let text = title(theme, nf.apply, "apply_patch", "streaming");
           text += `\n${state.livePreview.files.map((file) => formatCounterLine(theme, file)).join("\n")}`;
