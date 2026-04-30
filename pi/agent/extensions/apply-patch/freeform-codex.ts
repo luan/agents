@@ -10,7 +10,7 @@ import { AssistantMessageEventStream } from "@mariozechner/pi-ai";
 import {
 	convertResponsesMessages,
 	processResponsesStream,
-} from "./openai-responses-shared.ts";
+} from "../codex-native/openai-responses-shared.ts";
 import {
 	IMAGE_SAVE_DISPLAY_MESSAGE_TYPE,
 	WEB_SEARCH_ACTIVITY_MESSAGE_TYPE,
@@ -22,7 +22,7 @@ import {
 	saveOpenAICodexGeneratedImage,
 	type SavedGeneratedImage,
 	type SurfacedWebSearch,
-} from "./codex-native.ts";
+} from "../codex-native/native-tools.ts";
 
 const DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api";
 const JWT_CLAIM_PATH = "https://api.openai.com/auth";
