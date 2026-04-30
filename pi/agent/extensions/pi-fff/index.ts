@@ -133,6 +133,161 @@ function formatFindOutput(result: SearchResult, limit: number): string {
     : items.map((i: { relativePath: string }) => i.relativePath).join("\n");
 }
 
+function getResultText(result: { content?: { type: string; text?: string }[] }): string {
+  return result.content?.find((c) => c.type === "text")?.text?.trim() ?? "";
+}
+
+function searchStatusDot(theme: any, context: any): string {
+  return theme.fg(context?.isError ? "error" : "success", "•");
+}
+
+function renderSearchCall(
+  title: string,
+  query: string,
+  details: string[],
+  theme: any,
+  context: any,
+): Text {
+  const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+  const suffix = details.length
+    ? `${theme.fg("dim", " · ")}${details.map((detail) => theme.fg("muted", detail)).join(theme.fg("dim", " · "))}`
+    : "";
+  text.setText(`${searchStatusDot(theme, context)} ${theme.bold(title)} ${theme.fg("accent", query)}${suffix}`);
+  return text;
+}
+
+function renderGutterBlock(lines: string[], theme: any): string {
+  const body = lines.length > 0 ? lines : [theme.fg("muted", "(no output)")];
+  return body
+    .map((line, index) => {
+      const prefix = index === body.length - 1 ? "  └ " : index === 0 ? "  ├ " : "  │ ";
+      return `${theme.fg("dim", prefix)}${line}`;
+    })
+    .join("\n");
+}
+
+function limitRenderedLines(lines: string[], options: { expanded?: boolean }, maxLines: number, theme: any): string[] {
+  if (options.expanded || lines.length <= maxLines) return lines;
+  return [
+    ...lines.slice(0, maxLines),
+    theme.fg("muted", `... (${lines.length - maxLines} more lines)`),
+  ];
+}
+
+function isNoticeLine(line: string): boolean {
+  const trimmed = line.trim();
+  return trimmed.startsWith("[") && trimmed.endsWith("]");
+}
+
+function renderFindOutputLines(output: string, theme: any): string[] {
+  if (!output || output === "No files found matching pattern") {
+    return [theme.fg("muted", "No files found matching pattern")];
+  }
+
+  const groups = new Map<string, string[]>();
+  const notices: string[] = [];
+  for (const rawLine of output.split("\n")) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (isNoticeLine(line)) {
+      notices.push(theme.fg("muted", line));
+      continue;
+    }
+    const dir = path.posix.dirname(line);
+    const file = path.posix.basename(line);
+    const key = dir === "." ? "." : dir;
+    const files = groups.get(key) ?? [];
+    files.push(file);
+    groups.set(key, files);
+  }
+
+  const lines: string[] = [];
+  for (const [dir, files] of groups) {
+    if (lines.length > 0) lines.push("");
+    const label = dir === "." ? "./" : `${dir}/`;
+    lines.push(theme.fg("accent", label));
+    files.forEach((file, index) => {
+      const branch = index === files.length - 1 ? "└ " : "├ ";
+      lines.push(`  ${theme.fg("dim", branch)}${theme.fg("toolOutput", file)}`);
+    });
+  }
+  if (notices.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push(...notices);
+  }
+  return lines;
+}
+
+type HighlightMode = "literal" | "regex";
+
+function renderGrepOutputLines(output: string, patterns: string[], theme: any, mode: HighlightMode = "literal"): string[] {
+  if (!output || output === "No matches found") {
+    return [theme.fg("muted", "No matches found")];
+  }
+
+  const lines: string[] = [];
+  let currentFile = "";
+  for (const rawLine of output.split("\n")) {
+    const line = rawLine.trimEnd();
+    if (!line) {
+      lines.push("");
+      continue;
+    }
+    if (isNoticeLine(line)) {
+      lines.push(theme.fg("muted", line));
+      continue;
+    }
+
+    const match = line.match(/^(.+?)([:-])(\d+)\2\s?(.*)$/);
+    if (!match) {
+      lines.push(theme.fg("toolOutput", line));
+      continue;
+    }
+
+    const [, file, separator, lineNumber, content] = match;
+    if (file !== currentFile) {
+      if (currentFile) lines.push("");
+      lines.push(theme.fg("accent", file));
+      currentFile = file;
+    }
+
+    const paddedLineNumber = lineNumber.padStart(4, " ");
+    const lineNumberText = theme.fg(separator === ":" ? "success" : "muted", paddedLineNumber);
+    const body = highlightPatterns(content, patterns, theme, mode);
+    lines.push(`  ${lineNumberText} ${theme.fg("dim", "│")} ${body}`);
+  }
+  return lines;
+}
+
+function highlightPatterns(text: string, patterns: string[], theme: any, mode: HighlightMode): string {
+  const usablePatterns = patterns.filter((pattern) => pattern.length > 0);
+  if (usablePatterns.length === 0) return theme.fg("toolOutput", text);
+
+  try {
+    const regex =
+      mode === "regex"
+        ? new RegExp(usablePatterns.join("|"), "gi")
+        : new RegExp(usablePatterns.sort((a, b) => b.length - a.length).map(escapeRegex).join("|"), "gi");
+    let lastIndex = 0;
+    let highlighted = "";
+    for (const match of text.matchAll(regex)) {
+      const index = match.index ?? 0;
+      if (match[0].length === 0) continue;
+      highlighted += theme.fg("toolOutput", text.slice(lastIndex, index));
+      highlighted += theme.bold(theme.fg("warning", match[0]));
+      lastIndex = index + match[0].length;
+    }
+    highlighted += theme.fg("toolOutput", text.slice(lastIndex));
+    return highlighted;
+  } catch {
+    return theme.fg("toolOutput", text);
+  }
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function toFffPath(value: string): string {
   return value.split(path.sep).join("/");
 }
@@ -421,35 +576,6 @@ export default function fffExtension(pi: ExtensionAPI) {
     destroyFinder();
   });
 
-  // --- Shared render helpers ---
-
-  const renderTextResult = (
-    result: { content?: { type: string; text?: string }[] },
-    options: { expanded?: boolean },
-    theme: any,
-    context: any,
-    maxLines = 15,
-  ) => {
-    const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-    const output = result.content?.find((c) => c.type === "text")?.text?.trim() ?? "";
-    if (!output) {
-      text.setText(theme.fg("muted", "No output"));
-      return text;
-    }
-
-    const lines = output.split("\n");
-    const displayLines = lines.slice(0, options.expanded ? lines.length : maxLines);
-    let content = `\n${displayLines.map((line: string) => theme.fg("toolOutput", line)).join("\n")}`;
-    if (lines.length > displayLines.length) {
-      content += theme.fg(
-        "muted",
-        `\n... (${lines.length - displayLines.length} more lines)`,
-      );
-    }
-    text.setText(content);
-    return text;
-  };
-
   // --- grep tool ---
 
   const grepSchema = Type.Object({
@@ -483,6 +609,7 @@ export default function fffExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: toolNames.grep,
     label: toolNames.grep,
+    renderShell: "self",
     description: `Search file contents for a pattern using FFF (fast, frecency-ranked, git-aware). Returns matching lines with file paths and line numbers. Respects .gitignore. Supports plain text, regex, and fuzzy search modes. Smart case by default. Output truncated to ${DEFAULT_GREP_LIMIT} matches or ${DEFAULT_MAX_BYTES / 1024}KB.`,
     promptSnippet:
       "Search file contents for patterns (FFF: frecency-ranked, git-aware, respects .gitignore)",
@@ -541,28 +668,35 @@ export default function fffExtension(pi: ExtensionAPI) {
           totalMatched: result.totalMatched,
           totalFiles: result.totalFiles,
           truncated: truncation.truncated,
+          pattern: params.pattern,
+          patterns: [params.pattern],
+          matchMode: params.literal === false ? "regex" : "literal",
         },
       };
     },
 
     renderCall(args, theme, context) {
-      const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
       const pattern = args?.pattern ?? "";
       const path = args?.path ?? ".";
-      let content =
-        theme.fg("toolTitle", theme.bold(toolNames.grep)) +
-        " " +
-        theme.fg("accent", `/${pattern}/`) +
-        theme.fg("toolOutput", ` in ${path}`);
-      if (args?.limit !== undefined)
-        content += theme.fg("toolOutput", ` limit ${args.limit}`);
-      if (args?.cursor) content += theme.fg("muted", ` (page)`);
-      text.setText(content);
-      return text;
+      const details = [`in ${path}`];
+      if (args?.limit !== undefined) details.push(`limit ${args.limit}`);
+      if (args?.cursor) details.push("page");
+      return renderSearchCall(`Searched with ${toolNames.grep}`, `/${pattern}/`, details, theme, context);
     },
 
     renderResult(result, options, theme, context) {
-      return renderTextResult(result, options, theme, context, 15);
+      const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+      const output = getResultText(result);
+      const details = (result as any).details;
+      const patterns = Array.isArray(details?.patterns)
+        ? details.patterns
+        : typeof details?.pattern === "string"
+          ? [details.pattern]
+          : [];
+      const matchMode = details?.matchMode === "regex" ? "regex" : "literal";
+      const lines = limitRenderedLines(renderGrepOutputLines(output, patterns, theme, matchMode), options, 28, theme);
+      text.setText(renderGutterBlock(lines, theme));
+      return text;
     },
   });
 
@@ -586,6 +720,7 @@ export default function fffExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: toolNames.find,
     label: toolNames.find,
+    renderShell: "self",
     description: `Fuzzy file search by name using FFF (fast, frecency-ranked, git-aware). Returns matching file paths relative to project root. Respects .gitignore. Supports fuzzy matching, path prefixes ('src/'), and glob constraints ('*.ts', '**/*.spec.ts'). Output truncated to ${DEFAULT_FIND_LIMIT} results or ${DEFAULT_MAX_BYTES / 1024}KB.`,
     promptSnippet:
       "Find files by name (FFF: fuzzy, frecency-ranked, git-aware, respects .gitignore)",
@@ -631,27 +766,25 @@ export default function fffExtension(pi: ExtensionAPI) {
           totalMatched: result.totalMatched,
           totalFiles: result.totalFiles,
           truncated: truncation.truncated,
+          pattern: params.pattern,
         },
       };
     },
 
     renderCall(args, theme, context) {
-      const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
       const pattern = args?.pattern ?? "";
       const path = args?.path ?? ".";
-      let content =
-        theme.fg("toolTitle", theme.bold(toolNames.find)) +
-        " " +
-        theme.fg("accent", pattern) +
-        theme.fg("toolOutput", ` in ${path}`);
-      if (args?.limit !== undefined)
-        content += theme.fg("toolOutput", ` (limit ${args.limit})`);
-      text.setText(content);
-      return text;
+      const details = [`in ${path}`];
+      if (args?.limit !== undefined) details.push(`limit ${args.limit}`);
+      return renderSearchCall(`Searched files with ${toolNames.find}`, pattern, details, theme, context);
     },
 
     renderResult(result, options, theme, context) {
-      return renderTextResult(result, options, theme, context, 20);
+      const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+      const output = getResultText(result);
+      const lines = limitRenderedLines(renderFindOutputLines(output, theme), options, 32, theme);
+      text.setText(renderGutterBlock(lines, theme));
+      return text;
     },
   });
 
@@ -686,6 +819,7 @@ export default function fffExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: toolNames.multiGrep,
     label: toolNames.multiGrep,
+    renderShell: "self",
     description:
       "Search file contents for lines matching ANY of multiple patterns (OR logic). Uses SIMD-accelerated Aho-Corasick multi-pattern matching. Faster than regex alternation. Patterns are literal text -- never escape special characters. Use the constraints parameter for file filtering ('*.rs', 'src/', '!test/').",
     promptSnippet:
@@ -749,21 +883,27 @@ export default function fffExtension(pi: ExtensionAPI) {
     },
 
     renderCall(args, theme, context) {
-      const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
       const patterns = args?.patterns ?? [];
-      const constraints = args?.constraints;
-      let content =
-        theme.fg("toolTitle", theme.bold(toolNames.multiGrep)) +
-        " " +
-        theme.fg("accent", patterns.map((p: string) => `"${p}"`).join(", "));
-      if (constraints) content += theme.fg("toolOutput", ` (${constraints})`);
-      if (args?.cursor) content += theme.fg("muted", ` (page)`);
-      text.setText(content);
-      return text;
+      const details: string[] = [];
+      if (args?.constraints) details.push(args.constraints);
+      if (args?.limit !== undefined) details.push(`limit ${args.limit}`);
+      if (args?.cursor) details.push("page");
+      return renderSearchCall(
+        `Searched with ${toolNames.multiGrep}`,
+        patterns.map((p: string) => `"${p}"`).join(", "),
+        details,
+        theme,
+        context,
+      );
     },
 
     renderResult(result, options, theme, context) {
-      return renderTextResult(result, options, theme, context, 15);
+      const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+      const output = getResultText(result);
+      const patterns = Array.isArray((result as any).details?.patterns) ? (result as any).details.patterns : [];
+      const lines = limitRenderedLines(renderGrepOutputLines(output, patterns, theme, "literal"), options, 28, theme);
+      text.setText(renderGutterBlock(lines, theme));
+      return text;
     },
   });
 
