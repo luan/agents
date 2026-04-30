@@ -18,12 +18,12 @@ const commonOptions = {
 	db: Type.Optional(Type.String({ description: "Override source database path" })),
 };
 
-const targetList = Type.Array(Type.String({ description: "Symbol, file, or range target" }), {
-	description: "Symbols, file paths, or ranges to analyze",
+const targetList = Type.Array(Type.String({ description: "Symbol target" }), {
+	description: "Symbols to analyze",
 });
 
-const sourceShowTargetList = Type.Array(Type.String({ description: "Symbol or file:line-line range target" }), {
-	description: "Symbols or explicit file:line-line ranges to show. Bare file paths are rejected.",
+const sourceShowTargetList = Type.Array(Type.String({ description: "Symbol target" }), {
+	description: "Symbols to resolve; use file:symbol for file hints.",
 });
 
 const sourceSearchSchema = Type.Object({
@@ -50,7 +50,6 @@ const sourceTargetsSchema = Type.Object({
 
 const sourceShowSchema = Type.Object({
 	targets: sourceShowTargetList,
-	context: Type.Optional(Type.Number({ description: "Context lines around definitions" })),
 	all: Type.Optional(Type.Boolean({ description: "Return every definition for ambiguous targets" })),
 	...commonOptions,
 });
@@ -232,14 +231,13 @@ export default function sourceExtension(pi: ExtensionAPI) {
 	registerTool({
 		name: "source_show",
 		label: "source show",
-		description: "Show source by symbol or file:line-line range. Bare file paths are rejected.",
-		promptSnippet: "Use source_show to inspect source by symbol or explicit file:line-line range.",
-		promptGuidelines: ["Use source_show instead of backend-specific source display tools."],
+		description: "Resolve symbols to structured source metadata.",
+		promptSnippet: "Use source_show to resolve symbols to structured metadata; use read for source lines.",
+		promptGuidelines: ["Use source_show instead of backend-specific symbol display tools."],
 		parameters: sourceShowSchema,
 		executionMode: "parallel",
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const args: string[] = [];
-			pushOpt(args, "--context", params.context);
 			pushFlag(args, params.all, "--all");
 			args.push(...params.targets);
 			return runSource("source show", "show", args, ctx.cwd, signal, params.db);

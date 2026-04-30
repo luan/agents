@@ -340,17 +340,10 @@ pub enum SourceAction {
         db: Option<String>,
     },
 
-    #[command(about = "Show source by symbol, path, or file:line-line range")]
+    #[command(about = "Resolve symbols to structured source metadata")]
     Show {
-        #[arg(help = "Symbols, file paths, or file:line-line ranges to show")]
+        #[arg(help = "Symbols to resolve; use file:symbol for file hints")]
         targets: Vec<String>,
-        #[arg(
-            short = 'C',
-            long,
-            default_value_t = 0,
-            help = "Context lines around ranges or definitions"
-        )]
-        context: usize,
         #[arg(
             long,
             help = "Return every definition when a symbol target is ambiguous"

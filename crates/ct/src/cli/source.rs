@@ -32,7 +32,6 @@ pub(crate) struct SourceSearchRequest {
 pub(crate) struct SourceShowRequest {
     pub cwd: PathBuf,
     pub targets: Vec<String>,
-    pub context: usize,
     pub all: bool,
     pub db: Option<String>,
 }
@@ -158,7 +157,6 @@ pub fn run_source(action: SourceAction) -> Result<(), Box<dyn std::error::Error>
         }
         SourceAction::Show {
             targets,
-            context,
             all,
             json: _json,
             db,
@@ -166,7 +164,6 @@ pub fn run_source(action: SourceAction) -> Result<(), Box<dyn std::error::Error>
             let output = source_show_value(SourceShowRequest {
                 cwd: std::env::current_dir()?,
                 targets,
-                context,
                 all,
                 db,
             })?;
@@ -330,40 +327,38 @@ pub(crate) fn source_show_value(
 
     let mut rendered = Vec::new();
     for target in &request.targets {
-        if looks_like_file_target(target) {
-            let (path, range) = parse_file_target(target);
-            let Some(range) = range else {
-                return Err(format!(
-                    "source show does not accept bare file paths: {target}. Use file:line-line, source outline, or read instead"
-                )
-                .into());
-            };
-            let lines = sym::show::show_file(
-                &resolve_target_path(&request.cwd, Path::new(&path)),
-                Some(range),
-                request.context,
-            )?;
-            rendered.push(json!({
-                "target": target,
-                "kind": "file",
-                "results": lines,
-            }));
-        } else {
-            let shown = with_sym_db(request.db.as_deref(), || {
-                sym::show::show_symbol(&request.cwd, target, request.context, request.all)
-            })?;
-            rendered.push(json!({
-                "target": target,
-                "kind": "symbol",
-                "results": shown,
-            }));
+        if target_looks_like_line_range(target) {
+            return Err(format!(
+                "source show only resolves symbols; use read for source lines: {target}"
+            )
+            .into());
         }
+        if target_looks_like_file_path(target) {
+            return Err(format!(
+                "source show only resolves symbols; use source outline or read for files: {target}"
+            )
+            .into());
+        }
+        let resolved = with_sym_db(request.db.as_deref(), || {
+            sym::resolve::resolve_symbol(&request.cwd, target)
+        })?;
+        let mut results = resolved.matches;
+        if !request.all {
+            results.truncate(1);
+        }
+        rendered.push(json!({
+            "target": target,
+            "kind": "symbol",
+            "fuzzy": resolved.fuzzy,
+            "total_found": resolved.total_found,
+            "result_count": results.len(),
+            "results": results,
+        }));
     }
 
     Ok(json!({
         "operation": "show",
         "targets": request.targets,
-        "context": request.context,
         "all": request.all,
         "result_count": rendered.len(),
         "results": rendered,
@@ -992,45 +987,25 @@ fn resolve_target_path(cwd: &Path, path: &Path) -> PathBuf {
     }
 }
 
-fn looks_like_file_target(target: &str) -> bool {
-    if let Some((path, suffix)) = target.rsplit_once(':') {
-        if is_line_range(suffix) {
-            return true;
-        }
-        if looks_like_plain_file(path) {
-            return false;
-        }
-    }
-
-    looks_like_plain_file(target)
-}
-
-fn parse_file_target(target: &str) -> (String, Option<(usize, usize)>) {
-    let Some((path, range)) = target.rsplit_once(':') else {
-        return (target.to_string(), None);
+fn target_looks_like_line_range(target: &str) -> bool {
+    let Some((_, range)) = target.rsplit_once(':') else {
+        return false;
     };
     let Some((start, end)) = range.split_once('-') else {
-        return (target.to_string(), None);
-    };
-    let Ok(start) = start.trim_start_matches('L').parse::<usize>() else {
-        return (target.to_string(), None);
-    };
-    let Ok(end) = end.trim_start_matches('L').parse::<usize>() else {
-        return (target.to_string(), None);
-    };
-    (path.to_string(), Some((start, end)))
-}
-
-fn looks_like_plain_file(target: &str) -> bool {
-    target.contains('/') || sym::lang::language_for_file(Path::new(target)).is_some()
-}
-
-fn is_line_range(value: &str) -> bool {
-    let Some((start, end)) = value.split_once('-') else {
         return false;
     };
     start.trim_start_matches('L').parse::<usize>().is_ok()
         && end.trim_start_matches('L').parse::<usize>().is_ok()
+}
+
+fn target_looks_like_file_path(target: &str) -> bool {
+    if let Some((path, _)) = target.rsplit_once(':')
+        && (path.contains('/') || sym::lang::language_for_file(Path::new(path)).is_some())
+    {
+        return false;
+    }
+
+    target.contains('/') || sym::lang::language_for_file(Path::new(target)).is_some()
 }
 
 fn wildcard_match(value: &str, pattern: &str) -> bool {
