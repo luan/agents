@@ -121,7 +121,7 @@ pub struct LensHookTool {
 pub struct LensHookPolicy {
     #[serde(default)]
     pub include_ignored: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub run_cleanup: bool,
     #[serde(default = "default_true")]
     pub run_checks: bool,
@@ -133,7 +133,7 @@ impl Default for LensHookPolicy {
     fn default() -> Self {
         Self {
             include_ignored: false,
-            run_cleanup: true,
+            run_cleanup: false,
             run_checks: true,
             record_raw_output: true,
         }
@@ -1115,6 +1115,7 @@ fn turn_event(
         files: event.known_files.clone(),
         policy: LensTurnEventPolicy {
             include_ignored: event.policy.include_ignored,
+            run_checks: event.policy.run_checks,
         },
     }
 }
@@ -1550,5 +1551,58 @@ mod tests {
                 .to_string()
                 .contains("formatting differs")
         );
+    }
+
+    #[test]
+    fn turn_end_reports_configured_check_failures_as_warnings() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("main.rs"), "fn main() {}\n").unwrap();
+        std::fs::create_dir_all(temp.path().join(".ct")).unwrap();
+        std::fs::write(
+            temp.path().join("check.sh"),
+            "#!/bin/sh\necho 'main.rs:1:error:fixture failed'\nexit 1\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let script = temp.path().join("check.sh");
+            let mut perms = std::fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(script, perms).unwrap();
+        }
+        std::fs::write(
+            temp.path().join(".ct/lens.json"),
+            r#"{"checks":{"fixture":{"command":"./check.sh","automatic":true,"parser":"line"}}}"#,
+        )
+        .unwrap();
+        let input = json!({
+            "schema_version": LENS_HOOK_EVENT_SCHEMA_VERSION,
+            "host": {"name": "pi", "kind": "extension"},
+            "session": {"id": "s"},
+            "cwd": temp.path().display().to_string(),
+            "turn": {"id": "t"},
+            "event": "turn_end",
+            "tool": {"name": "agent", "status": "success"},
+            "known_files": [{"path": "main.rs", "operation": "modify"}],
+            "policy": {}
+        });
+
+        let response =
+            handle_lifecycle_hook(LensLifecycleHook::TurnEnd, &input.to_string(), temp.path());
+
+        assert_eq!(response.status, LensResponseStatus::Warning);
+        assert!(
+            response
+                .warnings
+                .iter()
+                .any(|warning| warning.code == "check_failed")
+        );
+        assert_eq!(
+            response.data.as_ref().unwrap()["turn"]["checks"]["runs"][0]["name"],
+            "fixture"
+        );
+        assert_eq!(response.health.status, "errors");
+        assert!(response.context.content.contains("fixture failed"));
     }
 }

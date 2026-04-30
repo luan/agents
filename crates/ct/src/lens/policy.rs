@@ -159,31 +159,48 @@ pub fn resolve_policy_with_options(
 }
 
 fn apply_built_in_defaults(root: &Path, policy: &mut LensPolicy) {
-    if !root.join("Cargo.toml").is_file() {
-        return;
+    if root.join("Cargo.toml").is_file() {
+        policy.checks.insert(
+            "cargo-fmt".to_string(),
+            LensCheckConfig {
+                command: "cargo fmt --check".to_string(),
+                scope: "workspace".to_string(),
+                automatic: true,
+                timeout_ms: default_check_timeout_ms(),
+                parser: LensCheckParser::Generic,
+                raw_output_max_bytes: None,
+            },
+        );
+        policy.checks.insert(
+            "cargo-clippy".to_string(),
+            LensCheckConfig {
+                command: "cargo clippy -- -D warnings".to_string(),
+                scope: "workspace".to_string(),
+                automatic: true,
+                timeout_ms: default_check_timeout_ms(),
+                parser: LensCheckParser::Generic,
+                raw_output_max_bytes: None,
+            },
+        );
     }
-    policy.checks.insert(
-        "cargo-fmt".to_string(),
-        LensCheckConfig {
-            command: "cargo fmt --check".to_string(),
-            scope: "workspace".to_string(),
-            automatic: true,
-            timeout_ms: default_check_timeout_ms(),
-            parser: LensCheckParser::Generic,
-            raw_output_max_bytes: None,
-        },
-    );
-    policy.checks.insert(
-        "cargo-clippy".to_string(),
-        LensCheckConfig {
-            command: "cargo clippy -- -D warnings".to_string(),
-            scope: "workspace".to_string(),
-            automatic: true,
-            timeout_ms: default_check_timeout_ms(),
-            parser: LensCheckParser::Generic,
-            raw_output_max_bytes: None,
-        },
-    );
+
+    if has_biome_config(root) {
+        policy.checks.insert(
+            "biome-check".to_string(),
+            LensCheckConfig {
+                command: "biome ci .".to_string(),
+                scope: "workspace".to_string(),
+                automatic: true,
+                timeout_ms: default_check_timeout_ms(),
+                parser: LensCheckParser::Generic,
+                raw_output_max_bytes: None,
+            },
+        );
+    }
+}
+
+fn has_biome_config(root: &Path) -> bool {
+    root.join("biome.json").is_file() || root.join("biome.jsonc").is_file()
 }
 
 fn apply_file_layer(
@@ -366,6 +383,35 @@ mod tests {
         let clippy = resolved.policy.checks.get("cargo-clippy").unwrap();
         assert_eq!(clippy.command, "cargo clippy -- -D warnings");
         assert!(clippy.automatic);
+    }
+
+    #[test]
+    fn biome_built_in_requires_project_config() {
+        let without_config = tempfile::tempdir().unwrap();
+        let without = resolve_policy_with_options(
+            without_config.path(),
+            PolicyResolveOptions {
+                user_config_path: Some(without_config.path().join("missing-user.json")),
+                repo_config_path: Some(without_config.path().join("missing-repo.json")),
+                runtime: RuntimePolicyOverrides::default(),
+            },
+        );
+        assert!(!without.policy.checks.contains_key("biome-check"));
+
+        let with_config = tempfile::tempdir().unwrap();
+        std::fs::write(with_config.path().join("biome.jsonc"), "{}\n").unwrap();
+        let with = resolve_policy_with_options(
+            with_config.path(),
+            PolicyResolveOptions {
+                user_config_path: Some(with_config.path().join("missing-user.json")),
+                repo_config_path: Some(with_config.path().join("missing-repo.json")),
+                runtime: RuntimePolicyOverrides::default(),
+            },
+        );
+
+        let biome = with.policy.checks.get("biome-check").unwrap();
+        assert_eq!(biome.command, "biome ci .");
+        assert!(biome.automatic);
     }
 
     #[test]

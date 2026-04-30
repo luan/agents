@@ -3,6 +3,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 use super::contract::LensEnvelope;
+use super::health::{TurnHealthOptions, TurnHealthStatus};
 use super::store::LensStore;
 use super::types::{
     LensTouchedFile, LensTouchedFileInput, LensTouchedFileSource, LensTurnEvent, LensTurnEventKind,
@@ -24,27 +25,33 @@ pub fn record_turn_event_envelope(
     let mut store = LensStore::open_for_project(&root)?;
     let files = touched_files_from_event(&root, &event_cwd, &event)?;
     store.record_turn_event(&event, &files)?;
-    let cleanup = if matches!(event.event, LensTurnEventKind::TurnEnd) {
-        Some(super::cleanup::run_turn_cleanup_with_store(
-            &root,
-            &mut store,
-            &event.session,
-            &event.turn,
-            super::cleanup::CleanupOptions::default(),
-        )?)
+    let cleanup = None;
+    let files = store.list_touched_files(&event.session, &event.turn)?;
+    let turn_health = if matches!(event.event, LensTurnEventKind::TurnEnd) {
+        Some(
+            super::health::build_turn_health_envelope(
+                &root,
+                TurnHealthOptions {
+                    session: event.session.clone(),
+                    turn: event.turn.clone(),
+                    acknowledge: false,
+                },
+            )?
+            .data,
+        )
     } else {
         None
     };
-    let files = store.list_touched_files(&event.session, &event.turn)?;
-    let turn_checks = if matches!(event.event, LensTurnEventKind::TurnEnd) {
+    let turn_checks = if event.policy.run_checks
+        && turn_health
+            .as_ref()
+            .is_some_and(|health| matches!(health.status, TurnHealthStatus::Clean))
+    {
         Some(super::checks::automatic_turn_checks_envelope(&root)?)
     } else {
         None
     };
     let mut warnings = Vec::new();
-    if let Some(cleanup) = &cleanup {
-        warnings.extend(super::cleanup::cleanup_envelope(cleanup.clone()).warnings);
-    }
     if let Some(checks) = &turn_checks {
         warnings.extend(checks.warnings.clone());
     }
@@ -336,6 +343,106 @@ mod tests {
         let files = touched_files_from_event(temp.path(), temp.path(), &event).unwrap();
 
         assert!(files.is_empty());
+    }
+
+    #[test]
+    fn turn_end_runs_configured_checks_after_clean_session_diagnostics() {
+        let temp = repo();
+        std::fs::create_dir_all(temp.path().join(".ct")).unwrap();
+        std::fs::write(
+            temp.path().join("check.sh"),
+            "#!/bin/sh\necho ran > check-ran\nexit 0\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let script = temp.path().join("check.sh");
+            let mut perms = std::fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(script, perms).unwrap();
+        }
+        std::fs::write(
+            temp.path().join(".ct/lens.json"),
+            r#"{"checks":{"fixture":{"command":"./check.sh","automatic":true}}}"#,
+        )
+        .unwrap();
+        let mut event = event(temp.path());
+        event.event = LensTurnEventKind::TurnEnd;
+        event.tool = "agent".to_string();
+        event.files.push(LensTouchedFileInput {
+            path: "main.rs".to_string(),
+            operation: "modify".to_string(),
+            start_line: None,
+            end_line: None,
+            generated: false,
+            include_ignored: false,
+        });
+
+        let envelope = record_turn_event_envelope(temp.path(), event).unwrap();
+
+        assert_eq!(envelope.data.checks.unwrap().runs.len(), 1);
+        assert!(temp.path().join("check-ran").is_file());
+    }
+
+    #[test]
+    fn turn_end_skips_checks_when_session_diagnostics_are_not_clean() {
+        let temp = repo();
+        std::fs::create_dir_all(temp.path().join(".ct")).unwrap();
+        std::fs::write(
+            temp.path().join("check.sh"),
+            "#!/bin/sh\necho ran > check-ran\nexit 0\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let script = temp.path().join("check.sh");
+            let mut perms = std::fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(script, perms).unwrap();
+        }
+        std::fs::write(
+            temp.path().join(".ct/lens.json"),
+            r#"{"checks":{"fixture":{"command":"./check.sh","automatic":true}}}"#,
+        )
+        .unwrap();
+        let mut store = LensStore::open_for_project(temp.path()).unwrap();
+        store
+            .record_diagnostics(&[super::super::types::Diagnostic {
+                source: super::super::types::DiagnosticSource::Lsp,
+                scope: super::super::types::DiagnosticScope::file("main.rs"),
+                severity: super::super::types::DiagnosticSeverity::Warning,
+                code: None,
+                message: "existing warning".to_string(),
+                rel_path: Some("main.rs".to_string()),
+                start_line: Some(1),
+                end_line: Some(1),
+                fingerprint: "existing-warning".to_string(),
+                content_hash: None,
+                raw_output_id: None,
+                snapshot_id: None,
+                first_seen_at: None,
+                last_seen_at: None,
+                resolved_at: None,
+            }])
+            .unwrap();
+        let mut event = event(temp.path());
+        event.event = LensTurnEventKind::TurnEnd;
+        event.tool = "agent".to_string();
+        event.files.push(LensTouchedFileInput {
+            path: "main.rs".to_string(),
+            operation: "modify".to_string(),
+            start_line: None,
+            end_line: None,
+            generated: false,
+            include_ignored: false,
+        });
+
+        let envelope = record_turn_event_envelope(temp.path(), event).unwrap();
+
+        assert!(envelope.data.checks.is_none());
+        assert!(!temp.path().join("check-ran").exists());
     }
 
     #[test]
