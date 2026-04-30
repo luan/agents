@@ -28,6 +28,13 @@ import type {
   SearchResult,
   MixedItem,
 } from "@ff-labs/fff-node";
+import {
+  isExplorationHidden,
+  registerExplorationEventHandlers,
+  registerExplorationTool,
+  renderExplorationCall,
+  type ExplorationAction,
+} from "../shared/exploration-rendering";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -137,23 +144,22 @@ function getResultText(result: { content?: { type: string; text?: string }[] }):
   return result.content?.find((c) => c.type === "text")?.text?.trim() ?? "";
 }
 
-function searchStatusDot(theme: any, context: any): string {
-  return theme.fg(context?.isError ? "error" : "success", "•");
+function searchAction(query: string, path: string): ExplorationAction {
+  return { kind: "search", title: "Search", body: path && path !== "." ? `${query} in ${path}` : query };
 }
 
-function renderSearchCall(
-  title: string,
-  query: string,
-  details: string[],
-  theme: any,
-  context: any,
-): Text {
+function findAction(query: string, path: string): ExplorationAction {
+  return { kind: "find", title: "Find", body: path && path !== "." ? `${query} in ${path}` : query };
+}
+
+function renderExploreCall(action: ExplorationAction, theme: any, context: any): Text {
   const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-  const suffix = details.length
-    ? `${theme.fg("dim", " · ")}${details.map((detail) => theme.fg("muted", detail)).join(theme.fg("dim", " · "))}`
-    : "";
-  text.setText(`${searchStatusDot(theme, context)} ${theme.bold(title)} ${theme.fg("accent", query)}${suffix}`);
+  text.setText(renderExplorationCall(action, theme, context));
   return text;
+}
+
+function shouldHideSearchResult(options: { expanded?: boolean }, context: any): boolean {
+  return !context?.isError && (!options.expanded || isExplorationHidden(context?.toolCallId));
 }
 
 function renderGutterBlock(lines: string[], theme: any): string {
@@ -444,6 +450,25 @@ export default function fffExtension(pi: ExtensionAPI) {
     "override";
 
   const toolNames = resolveToolNames(currentMode);
+  registerExplorationTool(toolNames.grep, (args) => {
+    const pattern = args && typeof args === "object" && "pattern" in args && typeof args.pattern === "string" ? args.pattern : "";
+    const path = args && typeof args === "object" && "path" in args && typeof args.path === "string" ? args.path : ".";
+    return searchAction(pattern, path);
+  });
+  registerExplorationTool(toolNames.find, (args) => {
+    const pattern = args && typeof args === "object" && "pattern" in args && typeof args.pattern === "string" ? args.pattern : "";
+    const path = args && typeof args === "object" && "path" in args && typeof args.path === "string" ? args.path : ".";
+    return findAction(pattern, path);
+  });
+  registerExplorationTool(toolNames.multiGrep, (args) => {
+    const patterns =
+      args && typeof args === "object" && "patterns" in args && Array.isArray(args.patterns)
+        ? args.patterns.filter((pattern): pattern is string => typeof pattern === "string")
+        : [];
+    const constraints = args && typeof args === "object" && "constraints" in args && typeof args.constraints === "string" ? args.constraints : ".";
+    return searchAction(patterns.map((pattern) => `"${pattern}"`).join(", "), constraints);
+  });
+  registerExplorationEventHandlers(pi);
 
   // DB path resolution: flag > env > undefined (use fff-node defaults)
   const frecencyDbPath =
@@ -678,14 +703,15 @@ export default function fffExtension(pi: ExtensionAPI) {
     renderCall(args, theme, context) {
       const pattern = args?.pattern ?? "";
       const path = args?.path ?? ".";
-      const details = [`in ${path}`];
-      if (args?.limit !== undefined) details.push(`limit ${args.limit}`);
-      if (args?.cursor) details.push("page");
-      return renderSearchCall(`Searched with ${toolNames.grep}`, `/${pattern}/`, details, theme, context);
+      return renderExploreCall(searchAction(pattern, path), theme, context);
     },
 
     renderResult(result, options, theme, context) {
       const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+      if (shouldHideSearchResult(options, context)) {
+        text.setText("");
+        return text;
+      }
       const output = getResultText(result);
       const details = (result as any).details;
       const patterns = Array.isArray(details?.patterns)
@@ -774,13 +800,15 @@ export default function fffExtension(pi: ExtensionAPI) {
     renderCall(args, theme, context) {
       const pattern = args?.pattern ?? "";
       const path = args?.path ?? ".";
-      const details = [`in ${path}`];
-      if (args?.limit !== undefined) details.push(`limit ${args.limit}`);
-      return renderSearchCall(`Searched files with ${toolNames.find}`, pattern, details, theme, context);
+      return renderExploreCall(findAction(pattern, path), theme, context);
     },
 
     renderResult(result, options, theme, context) {
       const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+      if (shouldHideSearchResult(options, context)) {
+        text.setText("");
+        return text;
+      }
       const output = getResultText(result);
       const lines = limitRenderedLines(renderFindOutputLines(output, theme), options, 32, theme);
       text.setText(renderGutterBlock(lines, theme));
@@ -884,21 +912,15 @@ export default function fffExtension(pi: ExtensionAPI) {
 
     renderCall(args, theme, context) {
       const patterns = args?.patterns ?? [];
-      const details: string[] = [];
-      if (args?.constraints) details.push(args.constraints);
-      if (args?.limit !== undefined) details.push(`limit ${args.limit}`);
-      if (args?.cursor) details.push("page");
-      return renderSearchCall(
-        `Searched with ${toolNames.multiGrep}`,
-        patterns.map((p: string) => `"${p}"`).join(", "),
-        details,
-        theme,
-        context,
-      );
+      return renderExploreCall(searchAction(patterns.map((p: string) => `"${p}"`).join(", "), args?.constraints ?? "."), theme, context);
     },
 
     renderResult(result, options, theme, context) {
       const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+      if (shouldHideSearchResult(options, context)) {
+        text.setText("");
+        return text;
+      }
       const output = getResultText(result);
       const patterns = Array.isArray((result as any).details?.patterns) ? (result as any).details.patterns : [];
       const lines = limitRenderedLines(renderGrepOutputLines(output, patterns, theme, "literal"), options, 28, theme);

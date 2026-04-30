@@ -48,7 +48,43 @@ describe("pi-fff rendering", () => {
     expect(tools.find((tool) => tool.name === "multi_grep")?.renderShell).toBe("self");
   });
 
-  test("grep results render with a Codex-style gutter and highlighted matches", () => {
+  test("grep calls render as compact exploration", () => {
+    const grep = createTools().find((tool) => tool.name === "grep");
+    const text = createText();
+
+    grep.renderCall(
+      { pattern: "foo", path: "src/" },
+      theme,
+      { lastComponent: text, toolCallId: "grep-call", isPartial: false },
+    );
+
+    expect(text.getText()).toContain("• **Explored**");
+    expect(text.getText()).toContain("└ Search foo in src/");
+  });
+
+  test("collapsed grep results stay hidden under the exploration block", () => {
+    const grep = createTools().find((tool) => tool.name === "grep");
+    const text = createText();
+
+    grep.renderResult(
+      {
+        content: [
+          {
+            type: "text",
+            text: "src/a.ts:12: const foo = 1;",
+          },
+        ],
+        details: { patterns: ["foo"] },
+      },
+      { expanded: false },
+      theme,
+      { lastComponent: text, toolCallId: "grep-call" },
+    );
+
+    expect(text.getText()).toBe("");
+  });
+
+  test("expanded grep results render with a Codex-style gutter and highlighted matches", () => {
     const grep = createTools().find((tool) => tool.name === "grep");
     const text = createText();
 
@@ -62,7 +98,7 @@ describe("pi-fff rendering", () => {
         ],
         details: { patterns: ["foo"] },
       },
-      { expanded: false },
+      { expanded: true },
       theme,
       { lastComponent: text },
     );
@@ -72,7 +108,7 @@ describe("pi-fff rendering", () => {
     expect(text.getText()).toContain("  └     13 │ const bar = 2;");
   });
 
-  test("grep highlighting respects regex search mode", () => {
+  test("expanded grep highlighting respects regex search mode", () => {
     const grep = createTools().find((tool) => tool.name === "grep");
     const text = createText();
 
@@ -86,7 +122,7 @@ describe("pi-fff rendering", () => {
         ],
         details: { patterns: ["render(Shell|Result)"], matchMode: "regex" },
       },
-      { expanded: false },
+      { expanded: true },
       theme,
       { lastComponent: text },
     );
@@ -94,13 +130,13 @@ describe("pi-fff rendering", () => {
     expect(text.getText()).toContain("const **renderShell** = true;");
   });
 
-  test("find results render grouped by directory under the gutter", () => {
+  test("expanded find results render grouped by directory under the gutter", () => {
     const find = createTools().find((tool) => tool.name === "find");
     const text = createText();
 
     find.renderResult(
       { content: [{ type: "text", text: "src/a.ts\nsrc/b.ts\nREADME.md" }] },
-      { expanded: false },
+      { expanded: true },
       theme,
       { lastComponent: text },
     );
