@@ -646,12 +646,11 @@ fn lens_warning_context_stays_clear_and_report_uses_canonical_source_actions() {
 }
 
 #[test]
-fn lens_turn_end_runs_safe_cleanup_for_changed_files() {
+fn lens_turn_end_does_not_run_formatter_cleanup() {
     let (bp, _remote) = setup_blueprints();
     let project = project_dir();
     let state = tempfile::tempdir().expect("state dir");
     fs::write(project.path().join("main.fixture"), "one\n").expect("write source");
-    fs::write(project.path().join("other.fixture"), "other\n").expect("write other");
     run_git(project.path(), &["init", "--initial-branch=main"]);
     let registry = serde_json::json!({
         "tools": [{
@@ -678,7 +677,7 @@ fn lens_turn_end_runs_safe_cleanup_for_changed_files() {
         "event": "turn_end",
         "tool": {"name": "agent", "status": "success"},
         "known_files": [{"path": "main.fixture", "operation": "modify"}],
-        "policy": {"git_fallback": false, "include_ignored": false}
+        "policy": {"include_ignored": false}
     });
 
     let assert = ct_cmd(bp.path())
@@ -693,18 +692,9 @@ fn lens_turn_end_runs_safe_cleanup_for_changed_files() {
     let value: serde_json::Value = serde_json::from_str(&stdout).expect("turn cleanup json");
 
     assert_eq!(value["schema_version"], "lens.hook_response.v1");
-    assert_eq!(
-        value["data"]["turn"]["cleanup"]["runs"][0]["tool"],
-        "fixture-format"
-    );
-    assert_eq!(value["data"]["turn"]["cleanup"]["mutation_count"], 1);
+    assert!(value["data"]["turn"].get("cleanup").is_none());
     assert!(
-        fs::read_to_string(project.path().join("main.fixture"))
-            .unwrap()
-            .contains("cleaned:main.fixture")
-    );
-    assert!(
-        !fs::read_to_string(project.path().join("other.fixture"))
+        !fs::read_to_string(project.path().join("main.fixture"))
             .unwrap()
             .contains("cleaned")
     );

@@ -94,7 +94,7 @@ pub fn list_checks_envelope(
         project_id: store.project_id(),
         configured_checks: configured_check_summaries(&policy.checks),
         configured_scanners: configured_scanner_summaries(&policy.scanners),
-        suggestions: detected_suggestions(root, &policy.checks),
+        suggestions: Vec::new(),
         runs: Vec::new(),
     };
     let warnings = check_warnings(&data);
@@ -120,7 +120,7 @@ pub fn planned_turn_checks_envelope(
             .into_iter()
             .filter(|scanner| scanner.automatic)
             .collect(),
-        suggestions: detected_suggestions(root, &policy.checks),
+        suggestions: Vec::new(),
         runs: Vec::new(),
     }))
 }
@@ -131,7 +131,6 @@ pub fn run_checks_envelope(
 ) -> Result<LensEnvelope<LensChecksData>, Box<dyn std::error::Error>> {
     let policy = resolve_policy(root).policy;
     let mut store = LensStore::open_for_project(root)?;
-    let suggestions = detected_suggestions(root, &policy.checks);
     let configured_checks = configured_check_summaries(&policy.checks);
     let configured_scanners = configured_scanner_summaries(&policy.scanners);
     let mut runs = Vec::new();
@@ -183,7 +182,7 @@ pub fn run_checks_envelope(
         project_id,
         configured_checks,
         configured_scanners,
-        suggestions,
+        suggestions: Vec::new(),
         runs,
     };
     let warnings = check_warnings(&data);
@@ -793,85 +792,8 @@ fn command_available(root: &Path, command: &str) -> bool {
     std::env::split_paths(&paths).any(|dir| dir.join(command).is_file())
 }
 
-fn detected_suggestions(
-    root: &Path,
-    configured: &BTreeMap<String, LensCheckConfig>,
-) -> Vec<LensCheckSuggestion> {
-    let mut suggestions = Vec::new();
-    push_suggestion(
-        root,
-        configured,
-        &mut suggestions,
-        "cargo-fmt",
-        "cargo fmt --check",
-        "Cargo.toml detected",
-    );
-    push_suggestion(
-        root,
-        configured,
-        &mut suggestions,
-        "cargo-clippy",
-        "cargo clippy -- -D warnings",
-        "Cargo.toml detected",
-    );
-    push_suggestion(
-        root,
-        configured,
-        &mut suggestions,
-        "pytest",
-        "pytest",
-        "pyproject.toml detected",
-    );
-    push_suggestion(
-        root,
-        configured,
-        &mut suggestions,
-        "make-test",
-        "make test",
-        "Makefile detected",
-    );
-    suggestions
-}
-
-fn push_suggestion(
-    root: &Path,
-    configured: &BTreeMap<String, LensCheckConfig>,
-    suggestions: &mut Vec<LensCheckSuggestion>,
-    name: &str,
-    command: &str,
-    reason: &str,
-) {
-    let file = match name {
-        "cargo-fmt" | "cargo-clippy" => "Cargo.toml",
-        "pytest" => "pyproject.toml",
-        "make-test" => "Makefile",
-        _ => return,
-    };
-    if !root.join(file).is_file() || configured.contains_key(name) {
-        return;
-    }
-    suggestions.push(LensCheckSuggestion {
-        name: name.to_string(),
-        command: command.to_string(),
-        reason: reason.to_string(),
-        hint: format!(
-            "add checks.{name} to .ct/lens.json to allow Lens to run `{command}` automatically"
-        ),
-    });
-}
-
 fn check_warnings(data: &LensChecksData) -> Vec<LensMessage> {
     let mut warnings = Vec::new();
-    for suggestion in &data.suggestions {
-        warnings.push(LensMessage::warning_with_hint(
-            "check_suggested",
-            format!(
-                "detected unconfigured Lens check '{}' ({})",
-                suggestion.name, suggestion.command
-            ),
-            suggestion.hint.clone(),
-        ));
-    }
     for run in &data.runs {
         match run.status.as_str() {
             "passed" => {}
@@ -958,6 +880,44 @@ mod tests {
                 .all(|check| check.automatic)
         );
         assert!(envelope.data.suggestions.is_empty());
+    }
+
+    #[test]
+    fn heuristic_suggestions_are_not_lens_warnings() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("Makefile"), "test:\n\ttrue\n").unwrap();
+
+        let envelope = list_checks_envelope(temp.path()).unwrap();
+
+        assert!(envelope.data.suggestions.is_empty());
+        assert!(envelope.warnings.is_empty());
+    }
+
+    #[test]
+    fn biome_check_is_planned_only_with_project_config() {
+        let without_config = tempfile::tempdir().unwrap();
+        let without = planned_turn_checks_envelope(without_config.path()).unwrap();
+        assert!(
+            without
+                .data
+                .configured_checks
+                .iter()
+                .all(|check| check.name != "biome-check")
+        );
+
+        let with_config = tempfile::tempdir().unwrap();
+        std::fs::write(with_config.path().join("biome.json"), "{}\n").unwrap();
+
+        let with = planned_turn_checks_envelope(with_config.path()).unwrap();
+
+        let biome = with
+            .data
+            .configured_checks
+            .iter()
+            .find(|check| check.name == "biome-check")
+            .unwrap();
+        assert_eq!(biome.command, "biome ci .");
+        assert!(biome.automatic);
     }
 
     #[test]
