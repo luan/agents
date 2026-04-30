@@ -16,13 +16,10 @@ pub(crate) static CT_BLUEPRINTS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mute
 
 pub use archive::{archive, cmd_archive, cmd_archive_batch};
 pub use crud::{
-    CreateOpts, cmd_comments, cmd_read, cmd_read_resolved, cmd_rename, cmd_retag, create, read,
+    CreateOpts, cmd_comments, cmd_read_resolved, cmd_rename, cmd_retag, create, read,
     resolve_artifact_path, resolve_optional_kind, resolve_stem_universal,
 };
-pub use listing::{
-    list_archived_artifacts, list_archived_artifacts_for_project, list_artifacts,
-    list_artifacts_for_project,
-};
+pub use listing::{list_archived_artifacts, list_artifacts};
 
 pub(crate) fn fatal(msg: &str) -> ! {
     eprintln!("artifact: {msg}");

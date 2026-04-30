@@ -42,6 +42,7 @@ fn dispatch_vault(action: cli::VaultAction) -> Result<(), Box<dyn std::error::Er
             source,
             tags,
             dive,
+            json,
         } => {
             let kind = cli::parse_kind_filter(&kind).expect("clap rejects 'all' for create");
             cli::run_vault_create(cli::ArtifactCreateArgs {
@@ -52,33 +53,37 @@ fn dispatch_vault(action: cli::VaultAction) -> Result<(), Box<dyn std::error::Er
                 source,
                 tags,
                 dive,
+                json,
             })
         }
         cli::VaultAction::Read {
             kind,
             file,
             frontmatter,
+            json,
         } => {
             let kind = cli::parse_kind_filter(&kind);
-            cli::run_vault_read(kind, file, frontmatter)
+            cli::run_vault_read(kind, file, frontmatter, json)
         }
         cli::VaultAction::Archive {
             kind,
             file,
             batch,
             dry_run,
+            json,
         } => {
             let kind = cli::parse_kind_filter(&kind);
-            cli::run_vault_archive(kind, file, batch, dry_run)
+            cli::run_vault_archive(kind, file, batch, dry_run, json)
         }
         cli::VaultAction::Prune {
             kind,
             days,
             dry_run,
             project,
+            json,
         } => {
             let kind = cli::parse_kind_filter(&kind);
-            cli::run_vault_prune(kind, days, dry_run, project)
+            cli::run_vault_prune(kind, days, dry_run, project, json)
         }
         cli::VaultAction::Comments { kind, file, json } => {
             let kind = cli::parse_kind_filter(&kind);
@@ -88,25 +93,27 @@ fn dispatch_vault(action: cli::VaultAction) -> Result<(), Box<dyn std::error::Er
             kind,
             old,
             new_slug,
+            json,
         } => {
             let kind = cli::parse_kind_filter(&kind);
-            cli::run_vault_rename(kind, old, new_slug)
+            cli::run_vault_rename(kind, old, new_slug, json)
         }
-        cli::VaultAction::Retag { kind, file } => {
+        cli::VaultAction::Retag { kind, file, json } => {
             let kind = cli::parse_kind_filter(&kind);
-            cli::run_vault_retag(kind, file)
+            cli::run_vault_retag(kind, file, json)
         }
         cli::VaultAction::Related {
             project,
             topic,
             archive,
+            json,
         } => {
             let project = project.unwrap_or_else(artifact::current_project);
-            vault::cmd_related(&project, &topic, archive);
+            vault::cmd_related(&project, &topic, archive, json);
             Ok(())
         }
-        cli::VaultAction::Check { archive } => {
-            vault::cmd_check(archive);
+        cli::VaultAction::Check { archive, json } => {
+            vault::cmd_check(archive, json);
             Ok(())
         }
         cli::VaultAction::Search {
@@ -120,12 +127,16 @@ fn dispatch_vault(action: cli::VaultAction) -> Result<(), Box<dyn std::error::Er
             vault::cmd_search(&query, json, kind, project.as_deref(), archive);
             Ok(())
         }
-        cli::VaultAction::Status => {
-            vault::cmd_status();
+        cli::VaultAction::Status { json } => {
+            vault::cmd_status(json);
             Ok(())
         }
-        cli::VaultAction::Commit { path, message } => {
-            vault::cmd_commit(&path, message);
+        cli::VaultAction::Commit {
+            path,
+            message,
+            json,
+        } => {
+            vault::cmd_commit(&path, message, json);
             Ok(())
         }
     }
@@ -146,8 +157,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(cli::Command::Source { action }) => cli::run_source(action),
         Some(cli::Command::Lens { action }) => cli::run_lens(action),
         Some(cli::Command::Mcp { action }) => match action {
-            cli::McpAction::Source => mcp::run_source_server(),
-            cli::McpAction::Vault => mcp::run_vault_server(),
             cli::McpAction::ApplyPatch => mcp::run_apply_patch_server(),
             cli::McpAction::Sym => mcp::run_sym_server(),
             cli::McpAction::Ast => mcp::run_ast_server(),

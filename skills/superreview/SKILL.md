@@ -178,7 +178,7 @@ Reviewer Summaries → Approach Assessment → Verification stats → Consensus 
 
 ## Step 5: Store
 
-Scaffold with `create { kind: "review", topic: "Review: <branch>" }`, Edit the body with the review output, then `commit`. Pass `source: "<spec-stem>"` if `$HAS_SPEC`.
+Scaffold with `ct vault create -t review --topic "Review: <branch>"`, edit the body with the review output, then `ct vault commit <path>`. Pass `source: "<spec-stem>"` if `$HAS_SPEC`.
 
 ## Step 6: Fix
 

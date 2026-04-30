@@ -255,7 +255,7 @@ understand the system well enough to make their first change without asking some
 Output the doc body only (no frontmatter — ct adds that).
 ```
 
-Store with a clean topic name (no timestamps for docs). Scaffold with the MCP `create` tool (kind=doc), Edit the body, then `commit`.
+Store with a clean topic name (no timestamps for docs). Scaffold with `ct vault create -t doc`, edit the body, then `ct vault commit <path>`.
 
 Link related artifacts after creation:
 

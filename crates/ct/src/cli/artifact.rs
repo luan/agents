@@ -87,7 +87,7 @@ pub fn run_vault_list(
                 })
             })
             .collect();
-        println!("{}", serde_json::to_string_pretty(&json_items)?);
+        println!("{}", serde_json::to_string(&json_items)?);
     } else {
         println!(
             "{}",
@@ -140,6 +140,7 @@ pub struct ArtifactCreateArgs {
     pub source: Option<String>,
     pub tags: Option<String>,
     pub dive: bool,
+    pub json: bool,
 }
 
 pub fn run_vault_create(args: ArtifactCreateArgs) -> Result<(), Box<dyn std::error::Error>> {
@@ -151,6 +152,7 @@ pub fn run_vault_create(args: ArtifactCreateArgs) -> Result<(), Box<dyn std::err
         source,
         tags,
         dive,
+        json,
     } = args;
     let tag_list: Vec<String> = tags
         .unwrap_or_default()
@@ -169,7 +171,14 @@ pub fn run_vault_create(args: ArtifactCreateArgs) -> Result<(), Box<dyn std::err
         dive,
     }) {
         Ok(outcome) => {
-            println!("{}", outcome.path.display());
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string(&serde_json::json!({"path": outcome.path}))?
+                );
+            } else {
+                println!("{}", outcome.path.display());
+            }
         }
         Err(CtError::Sync(e)) => handle_sync_error(e),
         Err(e) => {
@@ -188,19 +197,46 @@ pub fn run_vault_read(
     kind: Option<ArtifactKind>,
     file: String,
     frontmatter: bool,
+    json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    match kind {
-        Some(k) => artifact::cmd_read(&file, k, frontmatter),
-        None => {
-            let resolved = match artifact::resolve_stem_universal(&file) {
-                Ok(p) => p,
-                Err(e) => {
-                    eprintln!("{e}");
-                    std::process::exit(1);
-                }
-            };
-            artifact::cmd_read_resolved(&resolved, frontmatter);
-        }
+    let resolved = match kind {
+        Some(k) => match artifact::resolve_artifact_path(&file, k) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        },
+        None => match artifact::resolve_stem_universal(&file) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        },
+    };
+    if json {
+        let content = std::fs::read_to_string(&resolved)?;
+        let artifact = artifact::read(&resolved)?;
+        let (title, project, created, source, tags, author) =
+            artifact::extract_frontmatter_full_from_str(&content);
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({
+                "path": resolved,
+                "body": artifact.body,
+                "frontmatter": {
+                    "title": title,
+                    "project": project,
+                    "created": created,
+                    "source": source,
+                    "tags": tags,
+                    "author": author,
+                },
+            }))?
+        );
+    } else {
+        artifact::cmd_read_resolved(&resolved, frontmatter);
     }
     Ok(())
 }
@@ -234,7 +270,10 @@ pub fn run_vault_archive(
     file: Option<String>,
     batch: Vec<String>,
     dry_run: bool,
+    json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let mut json_paths: Vec<String> = Vec::new();
+    let mut json_destinations: Vec<String> = Vec::new();
     if !batch.is_empty() {
         // Resolve each entry, infer kind from first entry when kind is None,
         // and require all entries to share the same kind.
@@ -261,11 +300,26 @@ pub fn run_vault_archive(
                 std::process::exit(1);
             }
         }
-        let paths: Vec<String> = resolved
-            .into_iter()
-            .map(|(p, _)| p.to_string_lossy().to_string())
+        let paths: Vec<std::path::PathBuf> = resolved.into_iter().map(|(p, _)| p).collect();
+        json_paths = paths
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
             .collect();
-        if let Err(e) = artifact::cmd_archive_batch(first_kind, &paths, dry_run) {
+        if json && !dry_run {
+            for path in &paths {
+                match artifact::archive(first_kind, path) {
+                    Ok(outcome) => {
+                        json_destinations.push(outcome.path.to_string_lossy().to_string())
+                    }
+                    Err(artifact::CtError::Sync(e)) => handle_sync_error(e),
+                    Err(e) => {
+                        eprintln!("{e}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+        } else if json && dry_run {
+        } else if let Err(e) = artifact::cmd_archive_batch(first_kind, &json_paths, dry_run) {
             handle_sync_error(e);
         }
     } else if let Some(f) = file {
@@ -276,12 +330,36 @@ pub fn run_vault_archive(
                 std::process::exit(1);
             }
         };
-        if let Err(e) = artifact::cmd_archive(resolved_kind, &path.to_string_lossy(), dry_run) {
+        json_paths.push(path.to_string_lossy().to_string());
+        if json && !dry_run {
+            match artifact::archive(resolved_kind, &path) {
+                Ok(outcome) => json_destinations.push(outcome.path.to_string_lossy().to_string()),
+                Err(artifact::CtError::Sync(e)) => handle_sync_error(e),
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            }
+        } else if json && dry_run {
+        } else if let Err(e) =
+            artifact::cmd_archive(resolved_kind, &path.to_string_lossy(), dry_run)
+        {
             handle_sync_error(e);
         }
     } else {
         eprintln!("Usage: ct vault archive <file> or ct vault archive --batch <file1> <file2> ...");
         std::process::exit(1);
+    }
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({
+                "archived": !dry_run,
+                "dry_run": dry_run,
+                "paths": json_paths,
+                "destinations": json_destinations,
+            }))?
+        );
     }
     Ok(())
 }
@@ -295,6 +373,7 @@ pub fn run_vault_prune(
     days: u64,
     dry_run: bool,
     project: Option<String>,
+    json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let kinds: Vec<ArtifactKind> = match kind {
         Some(k) => vec![k],
@@ -303,11 +382,18 @@ pub fn run_vault_prune(
     let mut total_archived = 0u32;
     let mut sync_errors = 0u32;
     for k in kinds {
-        let (archived, errors) = prune_kind(k, days, dry_run, project.as_deref());
+        let (archived, errors) = prune_kind(k, days, dry_run, project.as_deref(), !json);
         total_archived += archived;
         sync_errors += errors;
     }
-    if !dry_run && total_archived > 0 {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(
+                &serde_json::json!({"archived": total_archived, "sync_errors": sync_errors, "dry_run": dry_run})
+            )?
+        );
+    } else if !dry_run && total_archived > 0 {
         println!("Archived {total_archived} file(s)");
     }
     if sync_errors > 0 {
@@ -317,7 +403,13 @@ pub fn run_vault_prune(
     Ok(())
 }
 
-fn prune_kind(kind: ArtifactKind, days: u64, dry_run: bool, project: Option<&str>) -> (u32, u32) {
+fn prune_kind(
+    kind: ArtifactKind,
+    days: u64,
+    dry_run: bool,
+    project: Option<&str>,
+    print_dry_run: bool,
+) -> (u32, u32) {
     let bp = artifact::blueprints_dir();
     let kind_dir = kind.dir_name();
     let threshold = std::time::Duration::from_secs(days * 86400);
@@ -371,8 +463,9 @@ fn prune_kind(kind: ArtifactKind, days: u64, dry_run: bool, project: Option<&str
                 }
 
                 let path_str = path.to_string_lossy().to_string();
-                if dry_run {
+                if dry_run && print_dry_run {
                     println!("would archive: {path_str}");
+                } else if dry_run {
                 } else {
                     match artifact::cmd_archive(kind, &path_str, false) {
                         Ok(()) => archived_count += 1,
@@ -397,6 +490,7 @@ pub fn run_vault_rename(
     kind: Option<ArtifactKind>,
     old: String,
     new_slug: String,
+    json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (path, resolved_kind) = match artifact::resolve_optional_kind(&old, kind) {
         Ok(v) => v,
@@ -407,6 +501,13 @@ pub fn run_vault_rename(
     };
     if let Err(e) = artifact::cmd_rename(resolved_kind, &path.to_string_lossy(), &new_slug) {
         handle_sync_error(e);
+    } else if json {
+        println!(
+            "{}",
+            serde_json::to_string(
+                &serde_json::json!({"renamed": true, "old": path, "new_slug": new_slug})
+            )?
+        );
     }
     Ok(())
 }
@@ -414,6 +515,7 @@ pub fn run_vault_rename(
 pub fn run_vault_retag(
     kind: Option<ArtifactKind>,
     file: String,
+    json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (path, resolved_kind) = match artifact::resolve_optional_kind(&file, kind) {
         Ok(v) => v,
@@ -424,6 +526,11 @@ pub fn run_vault_retag(
     };
     if let Err(e) = artifact::cmd_retag(resolved_kind, &path.to_string_lossy()) {
         handle_sync_error(e);
+    } else if json {
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({"retagged": true, "path": path}))?
+        );
     }
     Ok(())
 }

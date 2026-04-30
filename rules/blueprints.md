@@ -71,27 +71,27 @@ All artifacts have `tags:` in frontmatter. `ct` auto-derives `type/` and `projec
 
 A dive is a vision-level spec linked to a hub spec. It lives in a sibling `dive/` folder so the top-level `spec/` list stays scannable as "major things we're building." Dives share the `type/spec` tag.
 
-- Create via `dive: true` (MCP `create`) or `--dive` (CLI). Both require a `source` — a dive without a hub link is rejected.
+- Create dives with `ct vault create -t spec --dive --source <stem>`. A dive without a hub link is rejected.
 - Dive-only for specs; rejected for other artifact kinds.
 - Slug convention: `<hub-slug>-<subtopic>` so dives from the same hub sort together.
-- `ct vault list -t spec` hides dives by default; `--include-dives` to see them. `read` (MCP) / `ct vault read <stem>` finds dives by bare stem.
+- `ct vault list -t spec` hides dives by default; `--include-dives` to see them. `ct vault read <stem>` finds dives by bare stem.
 - Archive preserves the subfolder: dives archive to `archive/<project>/dive/`.
 
 ## Writing artifact bodies
 
 `ct vault create` scaffolds the file with frontmatter only. The body is written by editing the returned path with the active file-edit tool, and pushed via `ct vault commit <path>`.
 
-The MCP `vault` server exposes the same operations as bare-name tools (`create`, `read`, `list`, `archive`, `prune`, `comments`, `rename`, `retag`, `commit`, `search`, `related`, `check`, `status`). Prefer the MCP path — it bypasses shell quoting entirely.
+Use `ct vault` for artifact operations. Quote shell arguments normally.
 
-```
-create { kind: "spec", topic: "..." }   # returns path
+```text
+ct vault create -t spec --topic "..."   # returns path
 # Your file-edit tool writes the body to the returned path
-commit { path: "<returned path>" }      # commit+push
+ct vault commit <returned path>          # commit+push
 ```
 
 ## Rules
 
-- Use the MCP `create` + Edit + `commit` flow, or `ct vault create` + Edit + `ct vault commit` — never write vault files directly.
+- Use `ct vault create` + Edit + `ct vault commit` — never write vault files directly.
 - `--project` auto-detects from cwd (git toplevel, falls back to cwd). Pass it only to target a different project.
 - If push fails during commit+push, stop and report to user. Never force-push.
 - `ct` errors if the vault directory is missing — initialize `~/blueprints/` (or `$CT_BLUEPRINTS_DIR`) as a git repo before first use.

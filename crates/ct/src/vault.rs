@@ -103,7 +103,7 @@ pub fn related(
     Ok(hits)
 }
 
-pub fn cmd_related(project: &str, topic: &str, include_archive: bool) {
+pub fn cmd_related(project: &str, topic: &str, include_archive: bool, json: bool) {
     let hits = match related(topic, Some(project), include_archive) {
         Ok(h) => h,
         Err(e) => {
@@ -111,8 +111,15 @@ pub fn cmd_related(project: &str, topic: &str, include_archive: bool) {
             return;
         }
     };
-    for hit in &hits {
-        println!("[[{}]]", hit.stem);
+    if json {
+        match serde_json::to_string(&hits) {
+            Ok(body) => println!("{body}"),
+            Err(e) => eprintln!("serialize: {e}"),
+        }
+    } else {
+        for hit in &hits {
+            println!("[[{}]]", hit.stem);
+        }
     }
 }
 
@@ -153,11 +160,18 @@ pub fn check(include_archive: bool) -> Result<VaultCheckResult, CtError> {
     })
 }
 
-pub fn cmd_check(include_archive: bool) {
+pub fn cmd_check(include_archive: bool, json: bool) {
     match check(include_archive) {
         Ok(result) => {
-            for link in &result.unresolved_links {
-                println!("{}", link.line);
+            if json {
+                match serde_json::to_string(&result) {
+                    Ok(body) => println!("{body}"),
+                    Err(e) => eprintln!("serialize: {e}"),
+                }
+            } else {
+                for link in &result.unresolved_links {
+                    println!("{}", link.line);
+                }
             }
         }
         Err(e) => eprintln!("{e}"),
@@ -230,23 +244,18 @@ pub fn cmd_search(
     project: Option<&str>,
     include_archive: bool,
 ) {
-    // JSON mode routes through obsidian's own JSON formatter so downstream
-    // skills keep parsing the same shape. Plain-text mode uses the core
-    // `search()` so CLI + MCP share filter logic.
-    if json {
-        cmd_search_json(query, kind_filter, project, include_archive);
-        return;
-    }
-
     let filters = SearchFilters {
         kind: kind_filter,
         project: project.map(|s| s.to_string()),
         archived: include_archive,
     };
     match search(query, filters) {
+        Ok(hits) if json => match serde_json::to_string(&hits) {
+            Ok(body) => println!("{body}"),
+            Err(e) => eprintln!("serialize: {e}"),
+        },
         Ok(hits) => {
             for hit in &hits {
-                // Skills parse obsidian's raw line output — keep it verbatim.
                 println!("{}", hit.raw_line);
             }
         }
@@ -254,54 +263,17 @@ pub fn cmd_search(
     }
 }
 
-/// JSON path: preserve obsidian's exact JSON shape by not re-rendering it.
-fn cmd_search_json(
-    query: &str,
-    kind_filter: Option<ArtifactKind>,
-    project: Option<&str>,
-    include_archive: bool,
-) {
-    let bp = blueprints_dir();
-    let args = vec![
-        "search".to_string(),
-        format!("query={query}"),
-        "format=json".to_string(),
-    ];
-    let output = process::Command::new("obsidian")
-        .args(&args)
-        .current_dir(&bp)
-        .output();
-    match output {
-        Ok(o) if o.status.success() => {
-            let text = String::from_utf8_lossy(&o.stdout);
-            let proj_prefix = project.map(|p| {
-                let resolved = crate::artifact::resolve_repo_root(p);
-                let name = project_name(&resolved);
-                format!("{name}/")
-            });
-            let kind_dir = kind_filter.map(|k| format!("{}/", k.dir_name()));
-            for line in text.lines() {
-                if !include_archive && line.contains("archive/") {
-                    continue;
-                }
-                let matches_kind = kind_dir.as_deref().is_none_or(|d| line.contains(d));
-                let matches_proj = proj_prefix.as_deref().is_none_or(|p| line.contains(p));
-                if matches_kind && matches_proj {
-                    println!("{line}");
-                }
-            }
-        }
-        Ok(o) => {
-            eprint!("{}", String::from_utf8_lossy(&o.stderr));
-        }
-        Err(e) => eprintln!("failed to run obsidian cli: {e}"),
-    }
-}
-
-pub fn cmd_commit(path: &str, message: Option<String>) {
+pub fn cmd_commit(path: &str, message: Option<String>, json: bool) {
     match crate::artifact::commit_edits(path, message.as_deref()) {
         Ok(outcome) => {
-            if outcome.committed {
+            if json {
+                match serde_json::to_string(
+                    &serde_json::json!({"committed": outcome.committed, "message": outcome.message}),
+                ) {
+                    Ok(body) => println!("{body}"),
+                    Err(e) => eprintln!("serialize: {e}"),
+                }
+            } else if outcome.committed {
                 println!("{}", outcome.message);
             } else {
                 eprintln!("nothing to commit: {path}");
@@ -394,8 +366,15 @@ pub fn status_snapshot() -> VaultStatus {
     }
 }
 
-pub fn cmd_status() {
+pub fn cmd_status(json: bool) {
     let snap = status_snapshot();
+    if json {
+        match serde_json::to_string(&snap) {
+            Ok(body) => println!("{body}"),
+            Err(e) => eprintln!("serialize: {e}"),
+        }
+        return;
+    }
     match snap.working_tree_dirty {
         Some(0) => println!("working tree: clean"),
         Some(n) => println!("working tree: {n} dirty file(s)"),

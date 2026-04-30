@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 const GRAPHITE_CONTEXT: &str = "## Graphite Workflow\n\nThis repo uses Graphite for stacked PRs. Decision rule: if on a gt-managed branch, use gt commands exclusively (never raw git rebase, git push, or git checkout -b). If not on a gt-managed branch, use git normally. Never mix.\n\n- Push / create-update PRs -> `Skill(gt:submit)`\n- Rebase / sync with main -> `Skill(gt:restack)`\n- Create branch / navigate / stack ops -> `Skill(gt:gt)`\n\nRaw git/gt in Bash is fine only when the user explicitly requests it. Return `app.graphite.com/...` URLs.";
 const APPLY_PATCH_CONTEXT: &str = "File-edit tool: use `apply_patch` when the host provides it, otherwise pipe patches to `ct apply-patch`. Use it for every text file change - single-line, single-file, multi-file, creates, deletes, renames alike. Do not fall back to Edit/Write because a change is \"just one line\" or \"just one file\"; that is the documented failure mode. Use Edit/Write only when apply_patch genuinely cannot express the change (e.g. binary files) and say why in the same turn.";
-const SOURCE_CONTEXT: &str = "This project exposes canonical source navigation through `ct source` and the source MCP. Prefer source search/show/outline/refs/impact/trace/impls/investigate/diff before falling back to grep/find or broad file reads.";
+const SOURCE_CONTEXT: &str = "This project exposes canonical source navigation through `ct source`. Prefer source search/show/outline/refs/impact/trace/impls/investigate/diff before falling back to grep/find or broad file reads.";
 
 pub fn run_hook(name: &str) -> Result<()> {
     if crate::lens::LensLifecycleHook::from_command(name).is_some() {

@@ -5,9 +5,7 @@ description: "Canonical code navigator for symbols, refs, callers/callees, imple
 
 # source — code navigation
 
-**Default path:** use the source MCP tools when available. They return structured data and avoid shell quoting. Tool names are short within the `source` MCP server: `search`, `show`, `outline`, `refs`, `impact`, `trace`, `impls`, `investigate`, and `diff`.
-
-**CLI fallback:** use `ct source <cmd>` when MCP is unavailable or when a shell pipeline is useful.
+**Default path:** use `ct source <cmd>`. Text output is concise by default; add `--json` only when a machine-readable result is useful.
 
 ## Default loop
 

@@ -1,19 +1,15 @@
-use std::path::PathBuf;
-
 use rmcp::ServiceExt;
 use rmcp::model::ErrorData;
 use rmcp::transport::stdio;
 use serde_json::json;
 
-use crate::artifact::{self, ArtifactKind, CtError, ResolveError};
+use crate::artifact::{self, CtError, ResolveError};
 
 mod apply_patch;
 mod ast;
 mod lens;
 mod lsp;
-mod source;
 mod sym;
-mod vault;
 
 // ---------------------------------------------------------------------------
 // Shared error mapping + resolution helpers used by every sub-server.
@@ -47,28 +43,6 @@ pub(crate) fn json_success<T: serde::Serialize>(
     Ok(rmcp::model::CallToolResult::structured(v))
 }
 
-/// Resolve a stem (optionally scoped to a kind) to a vault path.
-pub(crate) fn resolve(stem: &str, kind: Option<ArtifactKind>) -> Result<PathBuf, ErrorData> {
-    let result = match kind {
-        Some(k) => artifact::resolve_artifact_path(stem, k),
-        None => artifact::resolve_stem_universal(stem),
-    };
-    result.map_err(|e| ct_error_to_tool(CtError::from(e)))
-}
-
-/// Ensure the vault directory exists before a handler does real work. A missing
-/// vault at request time used to call `fatal()` and exit the server process —
-/// this turns it into a per-request validation error instead.
-pub(crate) fn require_vault() -> Result<(), ErrorData> {
-    artifact::blueprints_dir_checked()
-        .map(|_| ())
-        .map_err(ct_error_to_tool)
-}
-
-/// Turn a user-supplied project hint into a project name. Bare names (no path
-/// separator) skip the git round-trip that `resolve_repo_root` would perform,
-/// but must still be valid subdirectory names — a bare ".." would otherwise
-/// crash the server downstream via `project_name`.
 pub(crate) fn project_input_to_name(input: Option<String>) -> Result<String, ErrorData> {
     match input {
         Some(s) if !s.contains('/') && !s.contains('\\') => {
@@ -84,25 +58,9 @@ pub(crate) fn project_input_to_name(input: Option<String>) -> Result<String, Err
 // Server entrypoints
 // ---------------------------------------------------------------------------
 
-/// Run the vault MCP server over stdio.
-pub fn run_vault_server() -> Result<(), Box<dyn std::error::Error>> {
-    // One-shot vault health warning so operators see the problem at startup;
-    // handlers still re-check per request via `require_vault()` so the server
-    // fails each call cleanly instead of crashing once the dir goes missing.
-    if let Err(e) = artifact::blueprints_dir_checked() {
-        eprintln!("vault-mcp: warning — {e}");
-    }
-    serve_stdio(vault::VaultMcpServer::new())
-}
-
 /// Run the apply_patch MCP server over stdio.
 pub fn run_apply_patch_server() -> Result<(), Box<dyn std::error::Error>> {
     serve_stdio(apply_patch::ApplyPatchMcpServer::new())
-}
-
-/// Run the source MCP server over stdio.
-pub fn run_source_server() -> Result<(), Box<dyn std::error::Error>> {
-    serve_stdio(source::SourceMcpServer::new())
 }
 
 /// Run the sym MCP server over stdio.

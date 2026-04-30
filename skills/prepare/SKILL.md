@@ -11,7 +11,7 @@ Turn an approved blueprints vault `spec` into executable vault `plan` artifacts 
 
 For small specs, create one plan per executable slice. For large specs, create a parent plan plus linked child plans: the parent plan is the roadmap, and each child plan is an independently executable vertical slice.
 
-The blueprints vault is canonical. Use vault MCP tools when available, otherwise `ct vault`.
+The blueprints vault is canonical. Use `ct vault`.
 
 ## Arguments
 
@@ -85,7 +85,7 @@ For each approved slice, create a new `plan` artifact in the blueprints vault. U
 
 For large specs, create and commit the parent plan first, then create child plans with `source: [[parent-plan-stem]]`. Publish child artifacts in dependency order (blockers first) so you can reference real wiki-links in the "Blocked by" field.
 
-Create with MCP `create`, edit the returned path, then MCP `commit`. The equivalent CLI flow is `ct vault create`, edit the returned path, then `ct vault commit <path>`.
+Create with `ct vault create`, edit the returned path, then `ct vault commit <path>`.
 
 <parent-plan-template>
 ## Parent

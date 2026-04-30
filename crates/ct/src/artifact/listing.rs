@@ -12,23 +12,6 @@ pub fn list_archived_artifacts(kind: ArtifactKind) -> Vec<Artifact> {
     list_artifacts_filtered(kind, true, false, None)
 }
 
-/// Like `list_artifacts`, but only scans a single project subdirectory.
-pub fn list_artifacts_for_project(
-    kind: ArtifactKind,
-    include_dives: bool,
-    project_name_filter: &str,
-) -> Vec<Artifact> {
-    list_artifacts_filtered(kind, false, include_dives, Some(project_name_filter))
-}
-
-/// Like `list_archived_artifacts`, but only scans a single project subdirectory.
-pub fn list_archived_artifacts_for_project(
-    kind: ArtifactKind,
-    project_name_filter: &str,
-) -> Vec<Artifact> {
-    list_artifacts_filtered(kind, true, false, Some(project_name_filter))
-}
-
 fn list_artifacts_filtered(
     kind: ArtifactKind,
     archived: bool,

@@ -43,7 +43,7 @@ If exactly one match → archive it. Multiple matches → present choices. No ma
 
 ### Archive
 
-Prefer the MCP `archive` tool (`{ stem, kind? }`). It moves the file to `~/blueprints/<project>/archive/`, stores content as a git note, and commits+pushes.
+Prefer `ct vault archive [-t <type>] <stem>`. It moves the file to `~/blueprints/<project>/archive/`, stores content as a git note, and commits+pushes.
 
 CLI equivalent, useful for batch archival or previewing:
 

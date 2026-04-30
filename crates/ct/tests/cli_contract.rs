@@ -1554,6 +1554,8 @@ fn checked_in_public_surfaces_avoid_removed_command_taxonomy() {
         "ct patch",
         "ct project",
         "ct usage-bar",
+        "ct mcp source",
+        "ct mcp vault",
         "ct mcp sym",
         "ct mcp ast",
         "ct mcp lsp",
@@ -1851,22 +1853,26 @@ fn source_diff_scopes_git_diff_to_symbol() {
 }
 
 #[test]
-fn source_mcp_is_canonical_and_backend_mcp_servers_are_hidden_from_help() {
+fn vault_and_source_mcp_servers_are_removed_from_help() {
     let (bp, _remote) = setup_blueprints();
 
     ct_cmd(bp.path())
         .args(["mcp", "source", "--help"])
         .assert()
-        .success()
-        .stdout(predicate::str::contains("Serve the source MCP"));
+        .failure();
+
+    ct_cmd(bp.path())
+        .args(["mcp", "vault", "--help"])
+        .assert()
+        .failure();
 
     ct_cmd(bp.path())
         .args(["mcp", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("source"))
         .stdout(predicate::str::contains("lens"))
-        .stdout(predicate::str::contains("vault"))
+        .stdout(predicate::str::contains("source").not())
+        .stdout(predicate::str::contains("vault").not())
         .stdout(predicate::str::contains("apply-patch").not())
         .stdout(predicate::str::contains("sym").not())
         .stdout(predicate::str::contains("ast").not())

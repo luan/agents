@@ -15,7 +15,7 @@ user-invocable: true
 
 Create a PRD-style blueprints vault `spec` artifact. This skill answers **what are we building and why?** It does not produce implementation plans; use `/prepare` after the spec is approved.
 
-The blueprints vault is canonical. Use vault MCP tools when available, otherwise `ct vault`. New specs start with the `stage/needs-triage` tag.
+The blueprints vault is canonical. Use `ct vault`. New specs start with the `stage/needs-triage` tag.
 
 ## Arguments
 
@@ -129,12 +129,10 @@ For feedback:
 
 Create or update a `spec` artifact:
 
-1. MCP `create` with `kind: "spec"`, topic, and tags including `stage/needs-triage`.
+1. Run `ct vault create -t spec --topic "..." --tags stage/needs-triage,...`.
 2. Edit the returned path with the approved body.
-3. Run MCP `related` and append related wiki-links when useful.
-4. MCP `commit` the returned path.
-
-CLI equivalent: `ct vault create -t spec`, edit the returned path, then `ct vault commit <path>`.
+3. Run `ct vault related "<topic>"` and append related wiki-links when useful.
+4. Run `ct vault commit <path>`.
 
 ## Resume
 
