@@ -15,5 +15,5 @@
   "promptSnippet": true,
   "promptGuidelines": false,
   "codexExecRegister": true,
-  "codexExecActiveByDefault": false
+  "codexExecActiveByDefault": true
 }
