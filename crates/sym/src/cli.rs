@@ -521,7 +521,12 @@ pub fn run_show(targets: &[String], context: usize, all: bool, stdin: bool) -> a
         for target in targets {
             if looks_like_file_target(&target) {
                 let (path, range) = parse_file_target(&target);
-                let lines = show::show_file(Path::new(&path), range, context)?;
+                let Some(range) = range else {
+                    anyhow::bail!(
+                        "source show does not accept bare file paths: {target}. Use file:line-line, outline, or a file reader instead"
+                    );
+                };
+                let lines = show::show_file(Path::new(&path), Some(range), context)?;
                 rendered.push(json!({
                     "target": target,
                     "kind": "file",
@@ -543,7 +548,12 @@ pub fn run_show(targets: &[String], context: usize, all: bool, stdin: bool) -> a
         print!("{}", multisym::multi_symbol_header(target, index == 0));
         if looks_like_file_target(target) {
             let (path, range) = parse_file_target(target);
-            let lines = show::show_file(Path::new(&path), range, context)?;
+            let Some(range) = range else {
+                anyhow::bail!(
+                    "source show does not accept bare file paths: {target}. Use file:line-line, outline, or a file reader instead"
+                );
+            };
+            let lines = show::show_file(Path::new(&path), Some(range), context)?;
             for line in lines {
                 println!("{}", line.content);
             }

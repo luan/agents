@@ -1645,6 +1645,16 @@ fn source_show_and_outline_are_read_only_without_lens_read_tracking() {
     assert_eq!(value["results"][0]["kind"], "file");
     assert_eq!(value["results"][0]["results"][0]["line"], 1);
 
+    ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .args(["source", "show", "--json", "src/lib.rs"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "source show does not accept bare file paths",
+        ));
+
     let symbol = ct_cmd(bp.path())
         .current_dir(project.path())
         .env("XDG_STATE_HOME", state.path())
