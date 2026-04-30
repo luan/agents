@@ -36,7 +36,7 @@ pub fn run_hook(name: &str) -> Result<()> {
 }
 
 fn gt_session_start() -> Result<()> {
-    if graphite_config_path()?.is_none() {
+    if !graphite_active_branch()? {
         return Ok(());
     }
     println!(
@@ -136,16 +136,17 @@ fn gt_validate_git() -> Result<()> {
         return Ok(());
     }
 
-    let Some(config) = graphite_config_path()? else {
+    let Some(repo) = graphite_repo()? else {
         return Ok(());
     };
-    let trunk = graphite_trunk(&config)?;
-    let current_branch = git_output(&["symbolic-ref", "--short", "HEAD"]).unwrap_or_default();
+    if !is_graphite_active_branch(&repo.current_branch, &repo.trunk) {
+        return Ok(());
+    }
 
-    if contains_command(&command, r"git\s+push") && current_branch != trunk {
+    if contains_command(&command, r"git\s+push") {
         deny("BLOCKED: raw 'git push' on stacked branch. Use /gt:submit instead.");
     }
-    if contains_command(&command, r"git\s+pull") && current_branch != trunk {
+    if contains_command(&command, r"git\s+pull") {
         deny("BLOCKED: raw 'git pull' on stacked branch. Use /gt:restack instead.");
     }
     if contains_command(&command, r"gh\s+pr\s+create") {
@@ -235,6 +236,29 @@ fn hook_command(input: &str) -> Result<String> {
         .to_string())
 }
 
+struct GraphiteRepo {
+    trunk: String,
+    current_branch: String,
+}
+
+fn graphite_active_branch() -> Result<bool> {
+    Ok(graphite_repo()?
+        .map(|repo| is_graphite_active_branch(&repo.current_branch, &repo.trunk))
+        .unwrap_or(false))
+}
+
+fn graphite_repo() -> Result<Option<GraphiteRepo>> {
+    let Some(config) = graphite_config_path()? else {
+        return Ok(None);
+    };
+    let trunk = graphite_trunk(&config)?;
+    let current_branch = git_output(&["symbolic-ref", "--short", "HEAD"]).unwrap_or_default();
+    Ok(Some(GraphiteRepo {
+        trunk,
+        current_branch,
+    }))
+}
+
 fn graphite_config_path() -> Result<Option<PathBuf>> {
     let Ok(git_dir) = git_output(&["rev-parse", "--path-format=absolute", "--git-common-dir"])
     else {
@@ -264,6 +288,10 @@ fn git_output(args: &[&str]) -> Result<String> {
 fn contains_command(command: &str, pattern: &str) -> bool {
     let re = Regex::new(&format!(r"(^|[;&|])\s*{pattern}(\s|$)")).expect("valid hook regex");
     re.is_match(command)
+}
+
+fn is_graphite_active_branch(current_branch: &str, trunk: &str) -> bool {
+    !current_branch.is_empty() && current_branch != trunk
 }
 
 fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
@@ -296,7 +324,7 @@ fn deny(message: &str) -> ! {
 
 #[cfg(test)]
 mod tests {
-    use super::{contains_command, hook_command, parse_version};
+    use super::{contains_command, hook_command, is_graphite_active_branch, parse_version};
 
     #[test]
     fn command_match_respects_shell_separators() {
@@ -318,5 +346,12 @@ mod tests {
     fn parse_version_finds_semver_in_cli_output() {
         assert_eq!(parse_version("rtk 0.23.1"), Some((0, 23, 1)));
         assert_eq!(parse_version("rtk dev"), None);
+    }
+
+    #[test]
+    fn graphite_is_active_only_on_non_trunk_branch() {
+        assert!(!is_graphite_active_branch("", "main"));
+        assert!(!is_graphite_active_branch("main", "main"));
+        assert!(is_graphite_active_branch("luan/stacked-change", "main"));
     }
 }
