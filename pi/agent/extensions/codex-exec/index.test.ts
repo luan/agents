@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createExecSessionManager } from "./codex-exec/tools/exec-session-manager.ts";
+import { createExecSessionManager } from "./tools/exec-session-manager.ts";
 
 test("exec session manager runs short non-interactive commands", async () => {
 	const sessions = createExecSessionManager({ defaultExecYieldTimeMs: 5000 });
