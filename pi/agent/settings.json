@@ -10,14 +10,14 @@
   "defaultThinkingLevel": "high",
   "skills": ["../.codex/skills"],
   "packages": [
-    "npm:pi-subagents",
     "npm:@ifi/oh-pi-themes",
-    "npm:context-mode",
-    "npm:@dreki-gg/pi-context7"
+    "npm:@dreki-gg/pi-context7",
+    "npm:@tintinweb/pi-subagents"
   ],
   "extensions": [
     "-extensions/team-mode/index.ts",
-    "extensions/pi-pretty/index.ts"
+    "-extensions/pi-web-access/index.ts",
+    "extensions/vault/index.ts"
   ],
   "enabledModels": [
     "openai-codex/gpt-5.5",

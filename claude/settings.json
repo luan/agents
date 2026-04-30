@@ -43,14 +43,6 @@
             "timeout": 5
           }
         ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node ~/.claude/hooks/context-mode-cache-heal.mjs"
-          }
-        ]
       }
     ],
     "PreToolUse": [
@@ -110,8 +102,7 @@
     "linear@claude-plugins-official": false,
     "notion@claude-plugins-official": false,
     "worktrunk@worktrunk": true,
-    "gt@local": false,
-    "context-mode@context-mode": true
+    "gt@local": false
   },
   "extraKnownMarketplaces": {
     "claude-plugins-official": {
@@ -124,12 +115,6 @@
       "source": {
         "source": "github",
         "repo": "max-sixty/worktrunk"
-      }
-    },
-    "context-mode": {
-      "source": {
-        "source": "github",
-        "repo": "mksglu/context-mode"
       }
     }
   },
