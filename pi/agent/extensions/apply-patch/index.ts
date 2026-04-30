@@ -364,14 +364,19 @@ const SHIKI_BACKGROUND_PATTERN = /\x1b\[(?:48;2;\d+;\d+;\d+|48;5;\d+|49)m/g;
 const PREVIEW_THROTTLE_MS = 200;
 const COMPLETED_PATCH_INPUT_LIMIT = 128;
 
-function editVerb(state: "success" | "pending" | "error", kind: ApplyPatchEditKind): string {
+function editVerb(
+  state: "success" | "pending" | "error",
+  kind: ApplyPatchEditKind,
+): string {
   if (kind === "semantic") {
     return state === "pending" ? "Semantic editing" : "Semantic edited";
   }
   return state === "pending" ? "Editing" : "Edited";
 }
 
-function editKindFromFiles(files: ApplyPatchProgressFile[] | undefined): ApplyPatchEditKind {
+function editKindFromFiles(
+  files: ApplyPatchProgressFile[] | undefined,
+): ApplyPatchEditKind {
   return files?.some((file) => file.semantic) ? "semantic" : "raw";
 }
 
@@ -513,10 +518,22 @@ class ApplyPatchDiffView {
     }
     const content =
       bodyLines.length > 0 ? bodyLines : [this.theme.fg("muted", "(no diff)")];
+    const fallbackRole =
+      this.state === "error"
+        ? "error"
+        : this.state === "pending"
+          ? "warning"
+          : undefined;
+    const contentLines = content.flatMap((line) => {
+      const styledLine = fallbackRole
+        ? this.theme.fg(fallbackRole, line)
+        : line;
+      return line.length === 0 ? [""] : wrapTextWithAnsi(styledLine, safeWidth);
+    });
     return [
       paintLine(this.renderHeader(safeWidth)),
       paintLine(""),
-      ...content.map((line) => paintLine(line)),
+      ...contentLines.map((line) => paintLine(line)),
     ];
   }
 
@@ -1311,7 +1328,8 @@ function renderUnifiedDiffRows(
       currentScopeKey = scopeKey;
       const scope = row.scope!;
       if (editKind === "semantic") {
-        if (lines.length > 0) lines.push(paintDiffRow("", width, baseBackground));
+        if (lines.length > 0)
+          lines.push(paintDiffRow("", width, baseBackground));
         lines.push(
           paintDiffRow(
             editBlockHeader(
@@ -1327,14 +1345,14 @@ function renderUnifiedDiffRows(
           ),
         );
       } else {
-      const label = `${" ".repeat(numberWidth)} ${theme.fg("dim", "▾")} ${theme.fg(
-        "muted",
-        `${scope.kind} `,
-      )}${theme.fg("accent", scope.name)}${theme.fg(
-        "dim",
-        `:${scope.start_line}-${scope.end_line}`,
-      )}`;
-      lines.push(paintDiffRow(label, width, baseBackground));
+        const label = `${" ".repeat(numberWidth)} ${theme.fg("dim", "▾")} ${theme.fg(
+          "muted",
+          `${scope.kind} `,
+        )}${theme.fg("accent", scope.name)}${theme.fg(
+          "dim",
+          `:${scope.start_line}-${scope.end_line}`,
+        )}`;
+        lines.push(paintDiffRow(label, width, baseBackground));
       }
     }
 
@@ -1788,7 +1806,9 @@ function filesFromPreviewChanges(
   changes: ApplyPatchPreviewChange[] | undefined,
 ): ApplyPatchProgressFile[] {
   return (changes ?? [])
-    .filter((change) => typeof change.path === "string" && change.path.length > 0)
+    .filter(
+      (change) => typeof change.path === "string" && change.path.length > 0,
+    )
     .map((change) => ({
       path: change.path as string,
       moveTo: change.move_path ?? undefined,
@@ -1813,8 +1833,13 @@ function markFilesSemantic(
     : files;
 }
 
-function parsePreviewResponse(stdout: string): ApplyPatchPreviewResponse | undefined {
-  const line = stdout.trim().split("\n").find((candidate) => candidate.trim().startsWith("{"));
+function parsePreviewResponse(
+  stdout: string,
+): ApplyPatchPreviewResponse | undefined {
+  const line = stdout
+    .trim()
+    .split("\n")
+    .find((candidate) => candidate.trim().startsWith("{"));
   if (!line) return undefined;
   try {
     return JSON.parse(line) as ApplyPatchPreviewResponse;
@@ -1894,7 +1919,15 @@ function startPreviewWorker(
   const worker: PreviewWorker = {
     child: spawn(
       "ct",
-      ["apply-patch", "preview", "--cwd", cwd, "--partial", "--watch", "--jsonl"],
+      [
+        "apply-patch",
+        "preview",
+        "--cwd",
+        cwd,
+        "--partial",
+        "--watch",
+        "--jsonl",
+      ],
       {
         cwd,
         env: process.env,
@@ -1929,7 +1962,8 @@ function startPreviewWorker(
   });
 
   worker.child.stderr.on("data", (chunk) => {
-    worker.stderr = `${worker.stderr}${Buffer.from(chunk).toString("utf8")}`.slice(-4000);
+    worker.stderr =
+      `${worker.stderr}${Buffer.from(chunk).toString("utf8")}`.slice(-4000);
   });
   worker.child.stdin.on("error", (error) => {
     if (worker.stopped) return;
@@ -1953,7 +1987,8 @@ function startPreviewWorker(
     state.previewError =
       exitCode === 0
         ? undefined
-        : trimOutput(worker.stderr) || `ct preview worker exited with ${exitCode ?? 1}`;
+        : trimOutput(worker.stderr) ||
+          `ct preview worker exited with ${exitCode ?? 1}`;
     invalidate();
   });
 
@@ -2008,11 +2043,19 @@ function startLivePatchFile(
 
 function ingestLivePatchLine(state: LivePatchPreviewState, line: string): void {
   if (line.startsWith("*** Add File: ")) {
-    startLivePatchFile(state, "add", line.slice("*** Add File: ".length).trim());
+    startLivePatchFile(
+      state,
+      "add",
+      line.slice("*** Add File: ".length).trim(),
+    );
     return;
   }
   if (line.startsWith("*** Update File: ")) {
-    startLivePatchFile(state, "update", line.slice("*** Update File: ".length).trim());
+    startLivePatchFile(
+      state,
+      "update",
+      line.slice("*** Update File: ".length).trim(),
+    );
     return;
   }
   if (line.startsWith("*** Move File: ")) {
@@ -2026,15 +2069,28 @@ function ingestLivePatchLine(state: LivePatchPreviewState, line: string): void {
     return;
   }
   if (line.startsWith("*** Replace All In File: ")) {
-    startLivePatchFile(state, "update", line.slice("*** Replace All In File: ".length).trim());
+    startLivePatchFile(
+      state,
+      "update",
+      line.slice("*** Replace All In File: ".length).trim(),
+    );
     return;
   }
   if (line.startsWith("*** Update Scope: ")) {
-    startLivePatchFile(state, "update", line.slice("*** Update Scope: ".length).trim(), true);
+    startLivePatchFile(
+      state,
+      "update",
+      line.slice("*** Update Scope: ".length).trim(),
+      true,
+    );
     return;
   }
   if (line.startsWith("*** Delete File: ")) {
-    startLivePatchFile(state, "delete", line.slice("*** Delete File: ".length).trim());
+    startLivePatchFile(
+      state,
+      "delete",
+      line.slice("*** Delete File: ".length).trim(),
+    );
     if (state.currentFile) state.currentFile.done = true;
     return;
   }
@@ -2059,7 +2115,8 @@ function ingestLivePatchLine(state: LivePatchPreviewState, line: string): void {
       content: line,
       path: state.currentPath,
     });
-    state.newLine = state.currentOperation === "add" ? (state.newLine ?? 1) : null;
+    state.newLine =
+      state.currentOperation === "add" ? (state.newLine ?? 1) : null;
     return;
   }
   if (line.startsWith("+")) {
@@ -2195,7 +2252,6 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
   const completedPatchInputs = new Set<string>();
   const toolsRemovedForCodex = new Set<string>();
 
-
   const applyCodexToolPolicy = (ctx?: ExtensionContext) => {
     if (!ctx) return;
     const active = pi.getActiveTools();
@@ -2208,18 +2264,25 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
       return true;
     });
 
-    if (codexModel && config.registerTool && !next.includes(APPLY_PATCH_TOOL_NAME)) {
+    if (
+      codexModel &&
+      config.registerTool &&
+      !next.includes(APPLY_PATCH_TOOL_NAME)
+    ) {
       next = [...next, APPLY_PATCH_TOOL_NAME];
     }
 
-
-
     if (!codexModel && toolsRemovedForCodex.size > 0) {
       const registeredTools = new Set(
-        ((pi as any).getAllTools?.() ?? []).map((tool: { name?: string }) => tool.name),
+        ((pi as any).getAllTools?.() ?? []).map(
+          (tool: { name?: string }) => tool.name,
+        ),
       );
       for (const toolName of toolsRemovedForCodex) {
-        if ((!registeredTools.size || registeredTools.has(toolName)) && !next.includes(toolName)) {
+        if (
+          (!registeredTools.size || registeredTools.has(toolName)) &&
+          !next.includes(toolName)
+        ) {
           next.push(toolName);
         }
       }
@@ -2265,7 +2328,8 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
     ) {
       return {
         block: true,
-        reason: "edit and write are disabled for Codex models. Use apply_patch instead.",
+        reason:
+          "edit and write are disabled for Codex models. Use apply_patch instead.",
       };
     }
     if (!config.enforce) return;
@@ -2397,7 +2461,9 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
             context.expanded,
             state.livePreview.rows,
             config.maxDiffLines,
-            semanticInput ? "semantic" : editKindFromFiles(state.livePreview.files),
+            semanticInput
+              ? "semantic"
+              : editKindFromFiles(state.livePreview.files),
           );
         }
         if (state.livePreview.files.length > 0) {
@@ -2541,7 +2607,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
         return new ApplyPatchDiffView(
           "patch",
           files,
-          theme.fg("error", baseText),
+          baseText,
           theme,
           config,
           "error",
