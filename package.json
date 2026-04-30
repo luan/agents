@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "check": "biome check --write --error-on-warnings . && bun run test:codex-native && bun run test:compaction && bun run test:lens",
-    "test:lens": "bun test pi/agent/extensions/shared/lens-ui.test.ts",
+    "test:lens": "bun test pi/agent/extensions/lens/index.test.ts pi/agent/extensions/shared/lens-ui.test.ts",
     "test:codex-native": "bun test pi/agent/extensions/apply-patch/index.test.ts pi/agent/extensions/codex-native/index.test.ts pi/agent/extensions/codex-exec/index.test.ts",
     "test:compaction": "bun test pi/agent/extensions/codex-native/compaction/src/unit.test.ts pi/agent/extensions/codex-native/compaction/src/validation.test.ts",
     "prepare": "husky"

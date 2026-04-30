@@ -4,8 +4,8 @@ import {
 	applyLensUi,
 	filesFromTool,
 	filesFromToolAndResult,
+	default as lensExtension,
 	runLensHookCommand,
-	shouldApplyHookUiForTool,
 } from "./index.ts";
 
 const hookEvent = {
@@ -19,7 +19,7 @@ const hookEvent = {
 };
 
 describe("Lens hook runner", () => {
-	it("degrades instead of throwing when spawning ct fails", async () => {
+	it("reports hook start failures as Lens source errors", async () => {
 		const response = await runLensHookCommand("lens-agent-end", hookEvent, "/tmp", {
 			runner: async () => {
 				const error = new Error("spawn EBADF") as NodeJS.ErrnoException;
@@ -28,18 +28,19 @@ describe("Lens hook runner", () => {
 			},
 		});
 
-		expect(response.status).toBe("degraded");
+		expect(response.status).toBe("error");
 		expect(response.decision).toEqual({
 			outcome: "allow",
 			reason: "hook_command_failed",
 		});
+		expect(response.data.sources).toEqual([{ name: "lens", connected: false, errors: 1, warnings: 0 }]);
 		expect(response.errors[0]).toEqual({
 			code: "hook_command_failed",
 			message: "ct hook failed to start: spawn EBADF",
 		});
 	});
 
-	it("degrades invalid hook stdout without dropping command details", async () => {
+	it("reports invalid hook stdout as Lens source errors without dropping command details", async () => {
 		const response = await runLensHookCommand("lens-agent-end", hookEvent, "/tmp", {
 			runner: async () => ({
 				stdout: "not json",
@@ -48,14 +49,12 @@ describe("Lens hook runner", () => {
 			}),
 		});
 
-		expect(response.status).toBe("degraded");
+		expect(response.status).toBe("error");
 		expect(response.decision.reason).toBe("invalid_hook_response");
 		expect(response.errors[0].message).toBe("ct hook failed with exit code 2: bad output");
-		expect(response.data).toEqual({
-			stdout: "not json",
-			stderr: "bad output",
-			exitCode: 2,
-		});
+		expect(response.data.stdout).toBe("not json");
+		expect(response.data.stderr).toBe("bad output");
+		expect(response.data.exitCode).toBe(2);
 	});
 });
 
@@ -145,14 +144,34 @@ describe("Lens tool file attribution", () => {
 	});
 });
 
-describe("Lens live HUD updates", () => {
-	it("does not let Lens tool post-hook responses overwrite Lens tool result HUD state", () => {
-		expect(shouldApplyHookUiForTool("lens_health")).toBe(false);
-		expect(shouldApplyHookUiForTool("lens_checks")).toBe(false);
-		expect(shouldApplyHookUiForTool("exec_command")).toBe(true);
+describe("Lens hook-only Pi extension", () => {
+	it("registers lifecycle hooks without registering model-visible Lens tools", () => {
+		const events: string[] = [];
+		const tools: string[] = [];
+		const pi = {
+			on: (event: string) => {
+				events.push(event);
+			},
+			registerTool: (tool: { name: string }) => {
+				tools.push(tool.name);
+			},
+		};
+
+		lensExtension(pi as any);
+
+		expect(events).toEqual([
+			"session_start",
+			"before_agent_start",
+			"turn_start",
+			"tool_call",
+			"tool_result",
+			"turn_end",
+			"agent_end",
+		]);
+		expect(tools).toEqual([]);
 	});
 
-	it("applies actual Lens tool result envelopes to the HUD", () => {
+	it("applies hook response envelopes to the HUD", () => {
 		const status: Record<string, string> = {};
 		const widgets: Record<string, string[]> = {};
 		const ctx = {
@@ -170,19 +189,13 @@ describe("Lens live HUD updates", () => {
 		applyLensUi(ctx, {
 			status: "warning",
 			data: {
-				status: "warning",
-				compact: "warning · diag 1",
-				summary: {
-					diagnostics: { active: 1, errors: 0, warnings: 1 },
-					checks: { latest: [] },
-					cleanup: { failed: 0, timed_out: 0 },
-					patch_refs: { draft_refs: 0, hunks: 0, accepted_events: 0 },
-				},
+				status: "warnings",
+				sources: [{ name: "lsp", connected: true, errors: 0, warnings: 1 }],
 			},
 		});
 
-		expect(status.lens).toContain("warning");
-		expect(status.lens).toContain("diag 1");
-		expect(widgets["lens-health"]?.[0]).toContain("warning");
+		expect(status.lens).toContain("warnings");
+		expect(status.lens).toContain("lsp 0 err/1 warn");
+		expect(widgets["lens-health"]?.[0]).toContain("warnings");
 	});
 });
