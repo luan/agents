@@ -67,12 +67,14 @@ pub fn handle_failure(
         match record_failure(
             tel,
             failure,
-            duration_us,
-            patch_sha,
-            patch_body,
-            &patch_id,
-            &kind,
-            &anchors,
+            FailureRecordContext {
+                duration_us,
+                patch_sha,
+                patch_body,
+                patch_id: &patch_id,
+                kind: &kind,
+                anchors: &anchors,
+            },
         ) {
             Ok(recorded) => diagnostic = Some(recorded),
             Err(e) => eprintln!("apply-patch telemetry: {e}"),
@@ -132,36 +134,31 @@ impl RepairBlock {
 fn record_failure(
     tel: &Telemetry,
     failure: &ApplyFailure,
-    duration_us: u64,
-    patch_sha: &str,
-    patch_body: &str,
-    patch_id: &str,
-    kind: &str,
-    anchors: &[String],
+    context: FailureRecordContext<'_>,
 ) -> Result<FailureDiagnostic, super::telemetry::TelemetryError> {
-    tel.record_patch_body(patch_sha, patch_body)?;
+    tel.record_patch_body(context.patch_sha, context.patch_body)?;
     let files = build_file_entries_from_attempts(&failure.attempts, &failure.fingerprints);
     let file_names = files
         .iter()
         .map(|file| file.path.clone())
         .collect::<Vec<_>>();
     let record = CallRecord {
-        outcome: kind.to_string(),
-        error_kind: Some(kind.to_string()),
+        outcome: context.kind.to_string(),
+        error_kind: Some(context.kind.to_string()),
         files,
-        duration_us,
-        patch_sha: patch_sha.to_string(),
+        duration_us: context.duration_us,
+        patch_sha: context.patch_sha.to_string(),
         fingerprints_json: fingerprints_to_json(&failure.fingerprints),
     };
     let call_id = tel.record_call(&record)?;
     tel.record_anchor_attempts(call_id, &failure.attempts)?;
     let diagnostic = tel.record_failure_diagnostic(&FailureDiagnosticInput {
         call_id,
-        patch_id: patch_id.to_string(),
-        patch_sha: patch_sha.to_string(),
-        failure_kind: kind.to_string(),
+        patch_id: context.patch_id.to_string(),
+        patch_sha: context.patch_sha.to_string(),
+        failure_kind: context.kind.to_string(),
         message: failure.error.to_string(),
-        anchors: anchors.to_vec(),
+        anchors: context.anchors.to_vec(),
         files: file_names,
         candidates: candidates_json(&failure.error),
     })?;
@@ -169,6 +166,15 @@ fn record_failure(
         tel.upsert_fingerprint(path, fp)?;
     }
     Ok(diagnostic)
+}
+
+struct FailureRecordContext<'a> {
+    duration_us: u64,
+    patch_sha: &'a str,
+    patch_body: &'a str,
+    patch_id: &'a str,
+    kind: &'a str,
+    anchors: &'a [String],
 }
 
 fn create_or_link_draft(

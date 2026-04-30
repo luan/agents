@@ -62,10 +62,8 @@ pub fn preview(patch: &str, cwd: &Path, partial: bool) -> PreviewResponse {
         patch.push_str("*** End Patch\n");
     }
 
-    if partial {
-        if let Some(response) = preview_partial(&patch, cwd, complete) {
-            return response;
-        }
+    if partial && let Some(response) = preview_partial(&patch, cwd, complete) {
+        return response;
     }
 
     match super::apply::plan(&patch, cwd) {

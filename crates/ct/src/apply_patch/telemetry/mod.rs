@@ -537,6 +537,49 @@ mod tests {
     }
 
     #[test]
+    fn failure_diagnostic_groups_bare_anchor_root_cause() {
+        let t = Telemetry::open_in_memory().unwrap();
+        let first_call = t.record_call(&sample_call()).unwrap();
+        let first = t
+            .record_failure_diagnostic(&diagnostics::FailureDiagnosticInput {
+                call_id: first_call,
+                patch_id: "patch-a".into(),
+                patch_sha: "patch-a".into(),
+                failure_kind: "context_not_found".into(),
+                message: "context not found in main.rs at chunk #0: first expected line was \"a\""
+                    .into(),
+                anchors: vec!["bare @@".into()],
+                files: vec!["main.rs".into()],
+                candidates: serde_json::Value::Null,
+            })
+            .unwrap();
+
+        let second_call = t.record_call(&sample_call()).unwrap();
+        let second = t
+            .record_failure_diagnostic(&diagnostics::FailureDiagnosticInput {
+                call_id: second_call,
+                patch_id: "patch-b".into(),
+                patch_sha: "patch-b".into(),
+                failure_kind: "context_not_found".into(),
+                message: "context not found in main.rs at chunk #2: first expected line was \"b\""
+                    .into(),
+                anchors: vec!["bare @@".into()],
+                files: vec!["main.rs".into()],
+                candidates: serde_json::Value::Null,
+            })
+            .unwrap();
+
+        assert_eq!(first.fingerprint, second.fingerprint);
+        assert_eq!(second.novelty, "repeated");
+
+        let report = t.failure_report(10).unwrap();
+        let rendered = diagnostics::render_report(&report);
+        assert!(rendered.contains("summary:"));
+        assert!(rendered.contains("anchor issues: bare @@=2"));
+        assert!(rendered.contains("draft: ct apply-patch draft show patch-b"));
+    }
+
+    #[test]
     fn sha1_hex_known_answer() {
         assert_eq!(sha1_hex(b""), "da39a3ee5e6b4b0d3255bfef95601890afd80709");
         assert_eq!(sha1_hex(b"abc"), "a9993e364706816aba3e25717850c26c9cd0d89d");
