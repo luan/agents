@@ -768,7 +768,7 @@ fn validation_plan_summary(
     let planned = super::checks::planned_turn_checks_envelope(root)?.data;
     Ok(ValidationPlanSummary {
         turn_active,
-        cleanup_pending: turn_active,
+        cleanup_pending: false,
         automatic_checks: planned
             .configured_checks
             .into_iter()
@@ -1226,7 +1226,7 @@ mod tests {
 
         assert_eq!(envelope.data.status, TurnHealthStatus::Clean);
         assert!(envelope.data.summary.validation_plan.turn_active);
-        assert!(envelope.data.summary.validation_plan.cleanup_pending);
+        assert!(!envelope.data.summary.validation_plan.cleanup_pending);
         assert!(envelope.data.compact.contains("clean"));
         assert!(!envelope.data.action_context.required);
     }
