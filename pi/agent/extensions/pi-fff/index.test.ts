@@ -1,9 +1,13 @@
 import { describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import fffExtension from "./index";
 
-function createTools() {
+function createHarness() {
 	const tools: any[] = [];
+	const handlers: Record<string, any> = {};
 	fffExtension({
 		registerTool(tool: any) {
 			tools.push(tool);
@@ -13,8 +17,15 @@ function createTools() {
 		getFlag() {
 			return undefined;
 		},
-		on() {},
+		on(name: string, handler: any) {
+			handlers[name] = handler;
+		},
 	} as any);
+	return { tools, handlers };
+}
+
+function createTools() {
+	const { tools } = createHarness();
 	return tools;
 }
 
@@ -146,5 +157,42 @@ describe("pi-fff rendering", () => {
 		expect(text.getText()).toContain("  │   └ b.ts");
 		expect(text.getText()).toContain("  │ ./");
 		expect(text.getText()).toContain("  └   └ README.md");
+	});
+
+	test("tool execution loads FFF native libraries from the staged runtime cache", async () => {
+		const previousRuntimeDir = process.env.PI_FFF_RUNTIME_DIR;
+		const tmp = mkdtempSync(path.join(os.tmpdir(), "pi-fff-"));
+		const cwd = path.join(tmp, "repo");
+		const runtimeDir = path.join(tmp, "runtime");
+		mkdirSync(cwd);
+		writeFileSync(path.join(cwd, "alpha.txt"), "needle\n");
+		process.env.PI_FFF_RUNTIME_DIR = runtimeDir;
+
+		const { handlers, tools } = createHarness();
+		try {
+			await handlers.session_start({}, { cwd, ui: { notify() {}, setEditorComponent() {} } });
+
+			const grep = tools.find((tool) => tool.name === "grep");
+			const result = await grep.execute(
+				"grep-test",
+				{ pattern: "needle", path: "*.txt" },
+				new AbortController().signal,
+			);
+
+			expect(result.content[0].text).toContain("alpha.txt");
+			expect(result.content[0].text).toContain("needle");
+			expect(existsSync(runtimeDir)).toBe(true);
+			expect(
+				readdirSync(runtimeDir, { recursive: true }).some((entry) => String(entry).endsWith("libfff_c.dylib")),
+			).toBe(true);
+		} finally {
+			await handlers.session_shutdown?.();
+			if (previousRuntimeDir === undefined) {
+				delete process.env.PI_FFF_RUNTIME_DIR;
+			} else {
+				process.env.PI_FFF_RUNTIME_DIR = previousRuntimeDir;
+			}
+			rmSync(tmp, { recursive: true, force: true });
+		}
 	});
 });
