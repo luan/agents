@@ -2,7 +2,8 @@
   "name": "agents",
   "private": true,
   "scripts": {
-    "test:lens": "bun test shared/lens-ui.test.ts"
+    "test:lens": "bun test shared/lens-ui.test.ts",
+    "test:openai-native-compaction": "bun test pi/agent/extensions/openai-native-compaction/src/unit.test.ts pi/agent/extensions/openai-native-compaction/src/validation.test.ts"
   },
   "dependencies": {
     "@ff-labs/fff-node": "0.6.4",
