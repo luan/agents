@@ -1,4 +1,5 @@
 import { summarizeShellCommand, type ShellAction } from "../shell/summary.ts";
+import { shellSplit } from "../shell/tokenize.ts";
 import type { ExecCommandStatus } from "./exec-command-state.ts";
 
 export interface RenderTheme {
@@ -6,13 +7,13 @@ export interface RenderTheme {
 	bold(text: string): string;
 }
 
-export function renderExecCommandCall(command: string, state: ExecCommandStatus, theme: RenderTheme): string {
+export function renderExecCommandCall(command: string, state: ExecCommandStatus, theme: RenderTheme, failed = false): string {
 	const summary = summarizeShellCommand(command);
-	return summary.maskAsExplored ? renderExplorationText([summary.actions], state, theme) : renderCommandText(command, state, theme);
+	return summary.maskAsExplored ? renderExplorationText([summary.actions], state, theme, failed) : renderCommandText(command, state, theme, failed);
 }
 
-export function renderGroupedExecCommandCall(actionGroups: ShellAction[][], state: ExecCommandStatus, theme: RenderTheme): string {
-	return renderExplorationText(actionGroups, state, theme);
+export function renderGroupedExecCommandCall(actionGroups: ShellAction[][], state: ExecCommandStatus, theme: RenderTheme, failed = false): string {
+	return renderExplorationText(actionGroups, state, theme, failed);
 }
 
 export function renderWriteStdinCall(
@@ -20,11 +21,13 @@ export function renderWriteStdinCall(
 	input: string | undefined,
 	command: string | undefined,
 	theme: RenderTheme,
+	state: ExecCommandStatus = "done",
+	failed = false,
 ): string {
 	const interacted = typeof input === "string" && input.length > 0;
 	const marker = interacted ? "↳ " : "• ";
 	const title = interacted ? "Interacted with background terminal" : "Waited for background terminal";
-	let text = `${theme.fg("dim", marker)}${theme.bold(title)}`;
+	let text = `${renderStatusMarker(marker, state, theme, failed)}${theme.bold(title)}`;
 	const commandPreview = formatCommandPreview(command);
 	if (commandPreview) {
 		text += `${theme.fg("dim", " · ")}${theme.fg("muted", commandPreview)}`;
@@ -36,9 +39,22 @@ export function renderWriteStdinCall(
 	return text;
 }
 
-function renderExplorationText(actionGroups: ShellAction[][], state: ExecCommandStatus, theme: RenderTheme): string {
+export function renderOutputBlock(output: string, theme: Pick<RenderTheme, "fg">, footer?: string): string {
+	const text = output.length > 0 ? output.replace(/\n$/, "") : "(no output)";
+	const lines = text.split("\n");
+	if (footer) lines.push(footer);
+	return lines
+		.map((line, index) => {
+			const isLast = index === lines.length - 1;
+			const prefix = isLast ? "  └ " : index === 0 ? "  ├ " : "  │ ";
+			return `${theme.fg("dim", prefix)}${styleOutputLine(line, theme)}`;
+		})
+		.join("\n");
+}
+
+function renderExplorationText(actionGroups: ShellAction[][], state: ExecCommandStatus, theme: RenderTheme, failed: boolean): string {
 	const header = state === "running" ? "Exploring" : "Explored";
-	let text = `${theme.fg("dim", "•")} ${theme.bold(header)}`;
+	let text = `${renderStatusMarker("•", state, theme, failed)} ${theme.bold(header)}`;
 
 	for (const [index, line] of coalesceReadGroups(actionGroups).map(formatActionLine).entries()) {
 		const prefix = index === 0 ? "  └ " : "    ";
@@ -48,11 +64,20 @@ function renderExplorationText(actionGroups: ShellAction[][], state: ExecCommand
 	return text;
 }
 
-function renderCommandText(command: string, state: ExecCommandStatus, theme: RenderTheme): string {
+function renderCommandText(command: string, state: ExecCommandStatus, theme: RenderTheme, failed: boolean): string {
 	const verb = state === "running" ? "Running" : "Ran";
-	let text = `${theme.fg("dim", "•")} ${theme.bold(verb)}`;
-	text += `\n${theme.fg("dim", "  └ ")}${theme.fg("accent", shortenCommand(command))}`;
-	return text;
+	const displayCommand = shortenCommand(stripShellWrapper(command), 500);
+	return `${renderStatusMarker("•", state, theme, failed)} ${theme.bold(verb)} ${highlightShellCommand(displayCommand, theme)}`;
+}
+
+function renderStatusMarker(marker: string, state: ExecCommandStatus, theme: Pick<RenderTheme, "fg">, failed: boolean): string {
+	if (state === "running") return theme.fg("dim", marker);
+	return theme.fg(failed ? "error" : "success", marker);
+}
+
+function styleOutputLine(line: string, theme: Pick<RenderTheme, "fg">): string {
+	if (/\u001b\[[0-?]*[ -/]*[@-~]/.test(line)) return line;
+	return theme.fg("dim", line);
 }
 
 function shortenCommand(command: string, max = 100): string {
@@ -65,7 +90,174 @@ function formatCommandPreview(command: string | undefined): string | undefined {
 	if (!command) return undefined;
 	const singleLine = command.replace(/\s+/g, " ").trim();
 	if (singleLine.length === 0) return undefined;
-	return shortenCommand(singleLine, 80);
+	return shortenCommand(stripShellWrapper(singleLine), 80);
+}
+
+function stripShellWrapper(command: string): string {
+	const trimmed = command.trim();
+	const tokens = shellSplit(trimmed);
+	if (tokens.length === 3 && (tokens[1] === "-c" || tokens[1] === "-lc")) {
+		const shell = tokens[0]?.replace(/\\/g, "/").split("/").pop()?.toLowerCase();
+		if (shell === "bash" || shell === "zsh" || shell === "sh") {
+			return tokens[2] ?? trimmed;
+		}
+	}
+	return trimmed;
+}
+
+function highlightShellCommand(command: string, theme: RenderTheme): string {
+	const segments = tokenizeShellHighlight(command);
+	return segments.map((segment) => (segment.role ? theme.fg(segment.role, segment.text) : segment.text)).join("");
+}
+
+type ShellHighlightSegment = { text: string; role?: string };
+
+function tokenizeShellHighlight(command: string): ShellHighlightSegment[] {
+	const segments: ShellHighlightSegment[] = [];
+	let index = 0;
+	let expectingCommand = true;
+
+	const push = (text: string, role?: string) => {
+		if (text.length === 0) return;
+		segments.push(role ? { text, role } : { text });
+	};
+
+	while (index < command.length) {
+		const char = command[index]!;
+		const next = command[index + 1];
+
+		if (/\s/.test(char)) {
+			const start = index;
+			while (index < command.length && /\s/.test(command[index]!)) index += 1;
+			const whitespace = command.slice(start, index);
+			push(whitespace);
+			if (whitespace.includes("\n")) expectingCommand = true;
+			continue;
+		}
+
+		if (char === "#") {
+			const start = index;
+			while (index < command.length && command[index] !== "\n") index += 1;
+			push(command.slice(start, index), "syntaxComment");
+			continue;
+		}
+
+		if ((char === "$" && (next === "'" || next === '"')) || char === "'" || char === '"') {
+			const start = index;
+			const quote = char === "$" ? next! : char;
+			index += char === "$" ? 2 : 1;
+			while (index < command.length) {
+				if (command[index] === "\\" && quote === '"') {
+					index = Math.min(index + 2, command.length);
+					continue;
+				}
+				if (command[index] === quote) {
+					index += 1;
+					break;
+				}
+				index += 1;
+			}
+			push(command.slice(start, index), "syntaxString");
+			expectingCommand = false;
+			continue;
+		}
+
+		if (char === "$") {
+			const end = variableEnd(command, index);
+			push(command.slice(index, end), "syntaxVariable");
+			index = end;
+			expectingCommand = false;
+			continue;
+		}
+
+		const operator = readOperator(command, index);
+		if (operator) {
+			push(operator, operator === "(" || operator === ")" ? "syntaxPunctuation" : "syntaxOperator");
+			index += operator.length;
+			if (operator === "&&" || operator === "||" || operator === "|" || operator === ";" || operator === "(") {
+				expectingCommand = true;
+			}
+			continue;
+		}
+
+		const start = index;
+		while (index < command.length && !/\s/.test(command[index]!) && !startsSpecial(command, index)) {
+			index += 1;
+		}
+		const word = command.slice(start, index);
+		const role = roleForWord(word, expectingCommand);
+		push(word, role);
+		if (expectingCommand && isEnvironmentAssignment(word)) {
+			expectingCommand = true;
+		} else if (expectingCommand && COMMAND_PREFIXES.has(word)) {
+			expectingCommand = true;
+		} else {
+			expectingCommand = false;
+		}
+	}
+
+	return segments;
+}
+
+const COMMAND_PREFIXES = new Set(["builtin", "command", "env", "exec", "noglob", "sudo", "time"]);
+const SHELL_KEYWORDS = new Set(["case", "do", "done", "elif", "else", "esac", "fi", "for", "function", "if", "in", "select", "then", "until", "while"]);
+
+function roleForWord(word: string, expectingCommand: boolean): string | undefined {
+	if (SHELL_KEYWORDS.has(word)) return "syntaxKeyword";
+	if (isEnvironmentAssignment(word)) return "syntaxVariable";
+	if (word.startsWith("-") && word !== "-") return "syntaxKeyword";
+	if (expectingCommand) return "syntaxFunction";
+	return undefined;
+}
+
+function isEnvironmentAssignment(word: string): boolean {
+	return /^[A-Za-z_][A-Za-z0-9_]*=/.test(word);
+}
+
+function startsSpecial(command: string, index: number): boolean {
+	const char = command[index];
+	if (char === "'" || char === '"' || char === "$") return true;
+	return readOperator(command, index) !== undefined;
+}
+
+function readOperator(command: string, index: number): string | undefined {
+	const three = command.slice(index, index + 3);
+	if (three === "<<<" || three === ">&-" || three === "<&-") return three;
+	const two = command.slice(index, index + 2);
+	if (two === "&&" || two === "||" || two === ">>" || two === "<<" || two === ">|" || two === ">&" || two === "<&" || /^[0-9][<>]$/.test(two)) return two;
+	const char = command[index];
+	return char && "|;&()<>".includes(char) ? char : undefined;
+}
+
+function variableEnd(command: string, start: number): number {
+	const next = command[start + 1];
+	if (!next) return start + 1;
+	if (next === "{") return balancedEnd(command, start, "{", "}");
+	if (next === "(") return balancedEnd(command, start, "(", ")");
+	if (/[A-Za-z_]/.test(next)) {
+		let index = start + 2;
+		while (index < command.length && /[A-Za-z0-9_]/.test(command[index]!)) index += 1;
+		return index;
+	}
+	if (/[0-9?#@*!$-]/.test(next)) return start + 2;
+	return start + 1;
+}
+
+function balancedEnd(command: string, start: number, open: string, close: string): number {
+	let depth = 0;
+	for (let index = start + 1; index < command.length; index += 1) {
+		const char = command[index];
+		if (char === "\\") {
+			index += 1;
+			continue;
+		}
+		if (char === open) depth += 1;
+		if (char === close) {
+			depth -= 1;
+			if (depth === 0) return index + 1;
+		}
+	}
+	return command.length;
 }
 
 function formatActionLine(action: ShellAction): { title: string; body: string } {
