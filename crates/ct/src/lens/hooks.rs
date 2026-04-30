@@ -370,8 +370,18 @@ fn native_hook_response(hook: LensLifecycleHook, response: &LensHookResponse) ->
                 );
             }
         }
+        LensLifecycleHook::TurnEnd => {
+            if let Some(context) = native_additional_context(response) {
+                payload.insert(
+                    "hookSpecificOutput".to_string(),
+                    json!({
+                        "hookEventName": "Stop",
+                        "additionalContext": context,
+                    }),
+                );
+            }
+        }
         LensLifecycleHook::TurnStart
-        | LensLifecycleHook::TurnEnd
         | LensLifecycleHook::AgentEnd
         | LensLifecycleHook::SessionShutdown => {}
     }
@@ -697,11 +707,7 @@ fn context_injection(event: LensHookEvent) -> LensHookResponse {
         Ok(health) => {
             response.health = health_status_from_turn(&health);
             response.diagnostics = diagnostics_from_turn(&health);
-            response.context = context_from_turn(&health);
-            response.data = Some(json!({
-                "action_context": health.action_context,
-                "health": health,
-            }));
+            response.data = Some(json!({ "health": health }));
         }
         Err(error) => push_error(&mut response, "context_failed", error),
     }
@@ -836,7 +842,10 @@ fn turn_end(event: LensHookEvent) -> LensHookResponse {
         Err(error) => push_error(&mut response, "turn_end_record_failed", error),
     }
     match root_for_event(&event).and_then(|root| turn_health(&root, &event)) {
-        Ok(health) => apply_turn_health(&mut response, &health),
+        Ok(health) => {
+            apply_turn_health(&mut response, &health);
+            apply_turn_end_report(&mut response, &health);
+        }
         Err(error) => push_error(&mut response, "turn_end_health_failed", error),
     }
     response
@@ -852,7 +861,6 @@ fn agent_end(event: LensHookEvent) -> LensHookResponse {
         Ok(health) => {
             response.health = health_status_from_turn(&health);
             response.diagnostics = diagnostics_from_turn(&health);
-            response.context = context_from_turn(&health);
             if health.status.is_warning_or_worse() {
                 response.status = LensResponseStatus::Warning;
             }
@@ -1168,31 +1176,25 @@ fn apply_turn_health(response: &mut LensHookResponse, health: &TurnHealthData) {
     }
 }
 
-fn context_from_turn(health: &TurnHealthData) -> LensHookContextInjection {
-    let action = &health.action_context;
-    if !action.required {
-        return LensHookContextInjection {
-            inject: false,
-            content: String::new(),
-            state: Some(action.state.clone()),
-        };
-    }
-    let mut lines = vec![
-        "## Lens Action Required".to_string(),
-        action.instructions.clone(),
-        format!("Reason: {}", action.reason),
-    ];
-    for remediation in &action.remediation {
-        lines.push(format!("- {remediation}"));
-    }
-    if let Some(command) = &action.ack_command {
-        lines.push(format!("Acknowledge when handled: `{command}`"));
-    }
-    LensHookContextInjection {
+fn apply_turn_end_report(response: &mut LensHookResponse, health: &TurnHealthData) {
+    let Some(report) = super::health::session_issue_report_text(health) else {
+        return;
+    };
+    response.context = LensHookContextInjection {
         inject: true,
-        content: lines.join("\n"),
-        state: Some(action.state.clone()),
-    }
+        content: report.clone(),
+        state: Some(turn_health_status_str(&health.status).to_string()),
+    };
+    merge_data(
+        response,
+        "report",
+        json!({
+            "status": turn_health_status_str(&health.status),
+            "issue_count": health.issues.len(),
+            "issues": health.issues,
+            "text": report,
+        }),
+    );
 }
 
 fn root_for_event(event: &LensHookEvent) -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -1320,10 +1322,9 @@ fn checks_ran(checks: Option<&LensChecksData>) -> bool {
 
 fn turn_health_status_str(status: &TurnHealthStatus) -> &'static str {
     match status {
-        TurnHealthStatus::Pending => "pending",
         TurnHealthStatus::Clean => "clean",
-        TurnHealthStatus::Warning => "warning",
-        TurnHealthStatus::Error => "error",
+        TurnHealthStatus::Warnings => "warnings",
+        TurnHealthStatus::Errors => "errors",
     }
 }
 
@@ -1334,6 +1335,7 @@ fn default_true() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lens::{Diagnostic, DiagnosticScope, DiagnosticSeverity, DiagnosticSource};
     use serde_json::json;
 
     #[test]
@@ -1494,5 +1496,59 @@ mod tests {
         assert!(!is_lsp_diagnostic_candidate(&file));
         file.operation = "modify".to_string();
         assert!(is_lsp_diagnostic_candidate(&file));
+    }
+    #[test]
+    fn turn_end_returns_session_issue_report_without_ack_context() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("main.rs"), "fn main() {}\n").unwrap();
+        let mut store = LensStore::open_for_project(temp.path()).unwrap();
+        store
+            .record_diagnostics(&[Diagnostic {
+                source: DiagnosticSource::Formatter,
+                scope: DiagnosticScope::file("main.rs"),
+                severity: DiagnosticSeverity::Warning,
+                code: Some("fmt".to_string()),
+                message: "formatting differs".to_string(),
+                rel_path: Some("main.rs".to_string()),
+                start_line: Some(1),
+                end_line: Some(1),
+                fingerprint: "fmt-main".to_string(),
+                content_hash: None,
+                raw_output_id: None,
+                snapshot_id: None,
+                first_seen_at: None,
+                last_seen_at: None,
+                resolved_at: None,
+            }])
+            .unwrap();
+        let input = json!({
+            "schema_version": LENS_HOOK_EVENT_SCHEMA_VERSION,
+            "host": {"name": "pi", "kind": "extension"},
+            "session": {"id": "s"},
+            "cwd": temp.path().display().to_string(),
+            "turn": {"id": "t"},
+            "event": "turn_end",
+            "tool": {"name": "agent", "status": "success"},
+            "known_files": [{"path": "main.rs", "operation": "modify"}],
+            "policy": {}
+        });
+
+        let response =
+            handle_lifecycle_hook(LensLifecycleHook::TurnEnd, &input.to_string(), temp.path());
+
+        assert_eq!(response.health.status, "warnings");
+        assert!(response.context.inject);
+        assert!(
+            response
+                .context
+                .content
+                .contains("Lens session diagnostics")
+        );
+        assert!(response.context.content.contains("fix:"));
+        assert!(
+            response.data.unwrap()["report"]
+                .to_string()
+                .contains("formatting differs")
+        );
     }
 }

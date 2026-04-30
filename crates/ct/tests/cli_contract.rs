@@ -443,14 +443,9 @@ fn lens_health_context_report_and_final_outputs_are_schema_versioned() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
     let value: serde_json::Value = serde_json::from_str(&stdout).expect("health json");
     assert_eq!(value["schema_version"], "lens.response.v1");
-    assert_eq!(value["data"]["status"], "pending");
-    assert_eq!(value["data"]["action_context"]["required"], false);
-    assert!(
-        value["data"]["compact"]
-            .as_str()
-            .unwrap()
-            .contains("pending")
-    );
+    assert_eq!(value["data"]["status"], "clean");
+    assert!(value["data"].get("action_context").is_none());
+    assert!(value["data"]["compact"].as_str().unwrap().contains("clean"));
     assert_eq!(
         value["data"]["summary"]["validation_plan"]["turn_active"],
         true
@@ -509,11 +504,11 @@ fn lens_health_context_report_and_final_outputs_are_schema_versioned() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Lens final health: pending"));
+        .stdout(predicate::str::contains("Lens final health: clean"));
 }
 
 #[test]
-fn lens_warning_context_injects_acknowledges_and_report_uses_canonical_source_actions() {
+fn lens_warning_context_stays_clear_and_report_uses_canonical_source_actions() {
     let (bp, _remote) = setup_blueprints();
     let project = project_dir();
     let state = tempfile::tempdir().expect("state dir");
@@ -582,13 +577,7 @@ fn lens_warning_context_injects_acknowledges_and_report_uses_canonical_source_ac
         .success();
     let injection_value: serde_json::Value =
         serde_json::from_slice(&injection.get_output().stdout).expect("context injection json");
-    assert_eq!(injection_value["context"]["inject"], true);
-    assert!(
-        injection_value["context"]["content"]
-            .as_str()
-            .unwrap()
-            .contains("Lens Action Required")
-    );
+    assert_eq!(injection_value["context"]["inject"], false);
 
     let context = ct_cmd(bp.path())
         .current_dir(project.path())
@@ -606,8 +595,8 @@ fn lens_warning_context_injects_acknowledges_and_report_uses_canonical_source_ac
         .success();
     let context_value: serde_json::Value =
         serde_json::from_slice(&context.get_output().stdout).expect("context json");
-    assert_eq!(context_value["status"], "warning");
-    assert_eq!(context_value["data"]["required"], true);
+    assert_eq!(context_value["status"], "ok");
+    assert_eq!(context_value["data"]["required"], false);
     assert!(!context_value.to_string().contains("read_files"));
     assert!(!context_value.to_string().contains("guard"));
 
@@ -628,7 +617,7 @@ fn lens_warning_context_injects_acknowledges_and_report_uses_canonical_source_ac
         .success();
     let ack_value: serde_json::Value =
         serde_json::from_slice(&ack.get_output().stdout).expect("ack json");
-    assert_eq!(ack_value["data"]["state"], "acknowledged");
+    assert_eq!(ack_value["data"]["state"], "clear");
     assert_eq!(ack_value["data"]["required"], false);
 
     let report = ct_cmd(bp.path())
@@ -1088,8 +1077,8 @@ fn lens_checks_run_configured_fixture_and_records_snapshot() {
         .success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("health utf8");
     let value: serde_json::Value = serde_json::from_str(&stdout).expect("health json");
-    assert_eq!(value["data"]["status"], "error");
-    assert_eq!(value["data"]["action_context"]["required"], true);
+    assert_eq!(value["data"]["status"], "clean");
+    assert!(value["data"].get("action_context").is_none());
     assert!(
         value["data"]["summary"]["checks"]["latest"]
             .as_array()
@@ -1343,7 +1332,7 @@ fn lens_post_tool_hook_parses_command_output_diagnostics_without_config() {
         String::from_utf8(hook_assert.get_output().stdout.clone()).expect("hook stdout utf8");
     let hook_value: serde_json::Value = serde_json::from_str(&hook_stdout).expect("post-tool json");
     assert_eq!(hook_value["status"], "warning");
-    assert_eq!(hook_value["health"]["status"], "warning");
+    assert_eq!(hook_value["health"]["status"], "warnings");
     assert_eq!(
         hook_value["data"]["health"]["summary"]["diagnostics"]["warnings"],
         1
@@ -1366,7 +1355,7 @@ fn lens_post_tool_hook_parses_command_output_diagnostics_without_config() {
         .success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
     let value: serde_json::Value = serde_json::from_str(&stdout).expect("health json");
-    assert_eq!(value["data"]["status"], "warning");
+    assert_eq!(value["data"]["status"], "warnings");
     assert_eq!(value["data"]["summary"]["diagnostics"]["warnings"], 1);
 }
 
