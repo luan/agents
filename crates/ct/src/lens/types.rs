@@ -342,8 +342,6 @@ pub struct LensTurnRecordData {
     pub files: Vec<LensTouchedFile>,
     pub file_count: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cleanup: Option<super::cleanup::CleanupReport>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checks: Option<super::checks::LensChecksData>,
 }
 

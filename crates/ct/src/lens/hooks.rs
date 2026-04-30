@@ -9,7 +9,6 @@ use serde_json::{Value, json};
 use super::checks::LensChecksData;
 use super::contract::{LensMessage, LensResponseStatus};
 use super::health::{TurnHealthData, TurnHealthOptions, TurnHealthStatus};
-use super::retention;
 use super::status::{DiagnosticHealth, LensStatusOptions, build_status_envelope};
 use super::store::LensStore;
 use super::types::{
@@ -121,8 +120,6 @@ pub struct LensHookTool {
 pub struct LensHookPolicy {
     #[serde(default)]
     pub include_ignored: bool,
-    #[serde(default)]
-    pub run_cleanup: bool,
     #[serde(default = "default_true")]
     pub run_checks: bool,
     #[serde(default = "default_true")]
@@ -133,7 +130,6 @@ impl Default for LensHookPolicy {
     fn default() -> Self {
         Self {
             include_ignored: false,
-            run_cleanup: false,
             run_checks: true,
             record_raw_output: true,
         }
@@ -826,16 +822,16 @@ fn turn_end(event: LensHookEvent) -> LensHookResponse {
             response
                 .actions
                 .push(action("record_turn_event", "ok", None));
-            if envelope.data.cleanup.is_some() {
-                response.actions.push(action("cleanup", "ok", None));
-            }
             if checks_ran(envelope.data.checks.as_ref()) {
                 response.actions.push(action("checks", "ok", None));
+                response.status = LensResponseStatus::Warning;
             }
             response.warnings.extend(envelope.warnings.clone());
             response.errors.extend(envelope.errors.clone());
             response.data = Some(json!({ "turn": envelope.data }));
-            if matches!(envelope.status, LensResponseStatus::Warning) {
+            if matches!(envelope.status, LensResponseStatus::Warning)
+                || !response.warnings.is_empty()
+            {
                 response.status = LensResponseStatus::Warning;
             }
         }
@@ -875,17 +871,9 @@ fn agent_end(event: LensHookEvent) -> LensHookResponse {
 fn session_shutdown(event: LensHookEvent) -> LensHookResponse {
     let mut response = base_response(&event, LensHookDecisionOutcome::Allow, "session_flushed");
     match root_for_event(&event) {
-        Ok(root) => match LensStore::open_for_project(&root).and_then(|store| {
-            retention::prune(
-                &store,
-                &super::policy::resolve_policy(&root).policy.retention,
-                false,
-            )
-        }) {
-            Ok(report) => {
+        Ok(root) => match LensStore::open_for_project(&root) {
+            Ok(_) => {
                 response.actions.push(action("flush_state", "ok", None));
-                response.actions.push(action("prune_retention", "ok", None));
-                response.data = Some(json!({ "retention": report }));
             }
             Err(error) => push_error(&mut response, "session_shutdown_failed", error),
         },
@@ -1129,7 +1117,6 @@ fn turn_health(
         TurnHealthOptions {
             session: event.session.id.clone(),
             turn: event.turn.id.clone(),
-            acknowledge: false,
         },
     )?
     .data)

@@ -2,12 +2,10 @@ use std::io::Read;
 
 use serde::Serialize;
 
-use crate::cli::args::{
-    LensAction, LensChecksAction, LensCleanupAction, LensDiagnosticsAction, LensRawOutputAction,
-};
+use crate::cli::args::{LensAction, LensChecksAction, LensDiagnosticsAction};
 use crate::lens::{
     Diagnostic, DiagnosticSeverity, DiagnosticSource, LensEnvelope, LensStatusOptions, LensStore,
-    build_status_envelope, retention,
+    build_status_envelope,
 };
 
 pub fn run_lens(action: LensAction) -> Result<(), Box<dyn std::error::Error>> {
@@ -27,7 +25,6 @@ pub fn run_lens(action: LensAction) -> Result<(), Box<dyn std::error::Error>> {
             turn,
             json,
         } => touched(cwd, session, turn, json),
-        LensAction::Cleanup { action } => cleanup(action),
         LensAction::Health {
             cwd,
             session,
@@ -35,22 +32,6 @@ pub fn run_lens(action: LensAction) -> Result<(), Box<dyn std::error::Error>> {
             json,
             final_output,
         } => health(cwd, session, turn, json, final_output),
-        LensAction::Context {
-            cwd,
-            session,
-            turn,
-            json,
-            ack,
-        } => context(cwd, session, turn, json, ack),
-        LensAction::Report {
-            cwd,
-            session,
-            turn,
-            path,
-            json,
-        } => report(cwd, session, turn, path, json),
-        LensAction::RawOutput { action } => raw_output(action),
-        LensAction::Prune { cwd, json, dry_run } => prune(cwd, json, dry_run),
     }
 }
 
@@ -307,40 +288,6 @@ fn touched(
     Ok(())
 }
 
-fn cleanup(action: LensCleanupAction) -> Result<(), Box<dyn std::error::Error>> {
-    let LensCleanupAction::Run {
-        cwd,
-        session,
-        turn,
-        json,
-        allow_unsafe,
-    } = action;
-    let root = cwd.map(Into::into).unwrap_or(std::env::current_dir()?);
-    let envelope = crate::lens::cleanup_turn_envelope(
-        &root,
-        &session,
-        &turn,
-        crate::lens::CleanupOptions {
-            allow_unsafe,
-            ..crate::lens::CleanupOptions::default()
-        },
-    )?;
-    if json {
-        print_json(&envelope)?;
-    } else {
-        println!(
-            "cleanup: {} runs, {} mutations, {} diagnostic regressions",
-            envelope.data.runs.len(),
-            envelope.data.mutation_count,
-            envelope.data.diagnostics.regression_count
-        );
-        for warning in &envelope.warnings {
-            println!("warning: {}", warning.message);
-        }
-    }
-    Ok(())
-}
-
 fn health(
     cwd: Option<String>,
     session: String,
@@ -351,11 +298,7 @@ fn health(
     let root = cwd.map(Into::into).unwrap_or(std::env::current_dir()?);
     let envelope = crate::lens::build_turn_health_envelope(
         &root,
-        crate::lens::TurnHealthOptions {
-            session,
-            turn,
-            acknowledge: false,
-        },
+        crate::lens::TurnHealthOptions { session, turn },
     )?;
     if json {
         print_json(&envelope)?;
@@ -363,149 +306,6 @@ fn health(
         println!("{}", crate::lens::final_health_text(&envelope.data));
     } else {
         println!("{}", crate::lens::compact_health_text(&envelope.data));
-        if envelope.data.action_context.required {
-            println!(
-                "action recommended: {}",
-                envelope.data.action_context.instructions
-            );
-            if let Some(command) = &envelope.data.action_context.ack_command {
-                println!("ack: {command}");
-            }
-        }
-    }
-    Ok(())
-}
-
-fn context(
-    cwd: Option<String>,
-    session: String,
-    turn: String,
-    json: bool,
-    ack: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let root = cwd.map(Into::into).unwrap_or(std::env::current_dir()?);
-    let envelope = crate::lens::build_action_context_envelope(
-        &root,
-        crate::lens::TurnHealthOptions {
-            session,
-            turn,
-            acknowledge: ack,
-        },
-    )?;
-    if json {
-        print_json(&envelope)?;
-    } else {
-        println!("lens context: {}", envelope.data.state);
-        println!("{}", envelope.data.reason);
-        for action in &envelope.data.remediation {
-            println!("remediate: {action}");
-        }
-        if let Some(command) = &envelope.data.ack_command {
-            println!("ack: {command}");
-        }
-    }
-    Ok(())
-}
-
-fn report(
-    cwd: Option<String>,
-    session: String,
-    turn: String,
-    path: Option<String>,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let root = cwd.map(Into::into).unwrap_or(std::env::current_dir()?);
-    let envelope = crate::lens::build_changed_file_report_envelope(
-        &root,
-        crate::lens::TurnHealthOptions {
-            session,
-            turn,
-            acknowledge: false,
-        },
-        path.as_deref(),
-    )?;
-    if json {
-        print_json(&envelope)?;
-    } else {
-        println!(
-            "lens report: {:?}, {} changed files",
-            envelope.data.status, envelope.data.file_count
-        );
-        for file in &envelope.data.files {
-            println!("- {}: {} diagnostics", file.path, file.diagnostics.len());
-            for action in &file.next_actions {
-                println!("  next: {action}");
-            }
-        }
-    }
-    Ok(())
-}
-
-fn raw_output(action: LensRawOutputAction) -> Result<(), Box<dyn std::error::Error>> {
-    match action {
-        LensRawOutputAction::List { cwd, limit, json } => {
-            let root = cwd.map(Into::into).unwrap_or(std::env::current_dir()?);
-            let envelope = crate::lens::raw_output::list_envelope(&root, limit)?;
-            if json {
-                print_json(&envelope)?;
-            } else {
-                println!("{} raw outputs retained", envelope.data.output_count);
-                for output in &envelope.data.outputs {
-                    println!(
-                        "#{} {} {}:{} retained={}/{} redacted={} truncated={}",
-                        output.id,
-                        output.source,
-                        output.scope.kind,
-                        output.scope.key,
-                        output.retained_bytes,
-                        output.original_bytes,
-                        output.redacted,
-                        output.truncated
-                    );
-                }
-            }
-        }
-        LensRawOutputAction::Show { id, cwd, json } => {
-            let root = cwd.map(Into::into).unwrap_or(std::env::current_dir()?);
-            let envelope = crate::lens::raw_output::show_envelope(&root, id)?;
-            if json {
-                print_json(&envelope)?;
-            } else {
-                println!(
-                    "raw output #{} {} {}:{} retained={}/{} redacted={} truncated={}",
-                    envelope.data.output.summary.id,
-                    envelope.data.output.summary.source,
-                    envelope.data.output.summary.scope.kind,
-                    envelope.data.output.summary.scope.key,
-                    envelope.data.output.summary.retained_bytes,
-                    envelope.data.output.summary.original_bytes,
-                    envelope.data.output.summary.redacted,
-                    envelope.data.output.summary.truncated
-                );
-                println!("{}", envelope.data.output.body);
-            }
-        }
-    }
-    Ok(())
-}
-
-fn prune(cwd: Option<String>, json: bool, dry_run: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let root = cwd.map(Into::into).unwrap_or(std::env::current_dir()?);
-    let store = LensStore::open_for_project(&root)?;
-    let policy = crate::lens::resolve_policy(&root);
-    let report = retention::prune(&store, &policy.policy.retention, dry_run)?;
-    if json {
-        print_json(&LensEnvelope::ok(report))?;
-    } else {
-        println!(
-            "pruned: {} diagnostics, {} tool runs, {} sessions, {} patch drafts, {} patch draft bodies, {} raw outputs",
-            report.diagnostics_deleted,
-            report.tool_runs_deleted,
-            report.sessions_deleted,
-            report.patch_drafts_deleted,
-            report.patch_draft_bodies_deleted,
-            report.raw_outputs_deleted
-        );
     }
     Ok(())
 }

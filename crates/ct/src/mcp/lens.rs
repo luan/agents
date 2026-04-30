@@ -66,16 +66,6 @@ struct ChecksIn {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct CleanupIn {
-    cwd: Option<String>,
-    session: String,
-    turn: String,
-    allow_unsafe: Option<bool>,
-    detail: Option<bool>,
-    raw: Option<bool>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
 struct StatusIn {
     cwd: Option<String>,
     disk: Option<bool>,
@@ -97,45 +87,6 @@ struct TouchedIn {
     cwd: Option<String>,
     session: String,
     turn: String,
-    detail: Option<bool>,
-    raw: Option<bool>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct ContextIn {
-    cwd: Option<String>,
-    session: String,
-    turn: String,
-    ack: Option<bool>,
-    detail: Option<bool>,
-    raw: Option<bool>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct ReportIn {
-    cwd: Option<String>,
-    session: String,
-    turn: String,
-    path: Option<String>,
-    detail: Option<bool>,
-    raw: Option<bool>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct RawOutputIn {
-    cwd: Option<String>,
-    #[serde(default)]
-    action: Option<String>,
-    id: Option<i64>,
-    limit: Option<usize>,
-    detail: Option<bool>,
-    raw: Option<bool>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct PruneIn {
-    cwd: Option<String>,
-    dry_run: Option<bool>,
     detail: Option<bool>,
     raw: Option<bool>,
 }
@@ -200,61 +151,6 @@ impl LensMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         json_success(&touched_mcp_response(input)?)
     }
-
-    #[tool(
-        name = "cleanup",
-        description = "Run Lens turn-end cleanup for touched files. Missing cleanup tools are returned as structured warnings."
-    )]
-    async fn cleanup(
-        &self,
-        Parameters(input): Parameters<CleanupIn>,
-    ) -> Result<CallToolResult, ErrorData> {
-        json_success(&cleanup_mcp_response(input)?)
-    }
-
-    #[tool(
-        name = "report",
-        description = "Show Lens changed-file reports for a turn, including diagnostics, cleanup, patch refs, and symbol context."
-    )]
-    async fn report(
-        &self,
-        Parameters(input): Parameters<ReportIn>,
-    ) -> Result<CallToolResult, ErrorData> {
-        json_success(&report_mcp_response(input)?)
-    }
-
-    #[tool(
-        name = "context",
-        description = "Show or acknowledge action-forcing Lens next-turn context."
-    )]
-    async fn context(
-        &self,
-        Parameters(input): Parameters<ContextIn>,
-    ) -> Result<CallToolResult, ErrorData> {
-        json_success(&context_mcp_response(input)?)
-    }
-
-    #[tool(
-        name = "raw_output",
-        description = "List or show retained sanitized Lens raw output. action: list (default), show."
-    )]
-    async fn raw_output(
-        &self,
-        Parameters(input): Parameters<RawOutputIn>,
-    ) -> Result<CallToolResult, ErrorData> {
-        json_success(&raw_output_mcp_response(input)?)
-    }
-
-    #[tool(
-        name = "prune",
-        description = "Prune Lens telemetry using retention policy."
-    )]
-    async fn prune(
-        &self,
-        Parameters(input): Parameters<PruneIn>,
-    ) -> Result<CallToolResult, ErrorData> {
-        json_success(&prune_mcp_response(input)?)
-    }
 }
 
 fn diagnostics_mcp_response(input: DiagnosticsIn) -> Result<LensMcpEnvelope, ErrorData> {
@@ -296,38 +192,6 @@ fn checks_mcp_response(input: ChecksIn) -> Result<LensMcpEnvelope, ErrorData> {
     mcp_from_lens(envelope, view, summary, next_actions, compact)
 }
 
-fn cleanup_mcp_response(input: CleanupIn) -> Result<LensMcpEnvelope, ErrorData> {
-    let view = view(input.detail, input.raw);
-    let envelope = cleanup_envelope(input)?;
-    let summary = format!(
-        "cleanup: {} run(s), {} mutation(s), {} diagnostic regression(s)",
-        envelope.data.runs.len(),
-        envelope.data.mutation_count,
-        envelope.data.diagnostics.regression_count
-    );
-    let mut next_actions = hints(&envelope.warnings);
-    next_actions.extend(envelope.data.suggestions.iter().map(|suggestion| {
-        format!(
-            "run {} manually if this wider cleanup is desired",
-            suggestion.tool
-        )
-    }));
-    let compact = json!({
-        "project_id": envelope.data.project_id,
-        "session": envelope.data.session,
-        "turn": envelope.data.turn,
-        "scoped_file_count": envelope.data.scoped_files.len(),
-        "runs": envelope.data.runs.iter().map(compact_cleanup_run).collect::<Vec<_>>(),
-        "suggestion_count": envelope.data.suggestions.len(),
-        "mutation_count": envelope.data.mutation_count,
-        "diagnostics": {
-            "regression_count": envelope.data.diagnostics.regression_count,
-            "post_cleanup_count": envelope.data.diagnostics.post_cleanup.diagnostic_count
-        }
-    });
-    mcp_from_lens(envelope, view, summary, next_actions, compact)
-}
-
 fn health_mcp_response(input: HealthIn) -> Result<LensMcpEnvelope, ErrorData> {
     let view = view(input.detail, input.raw);
     turn_health_mcp_response(input, view)
@@ -336,23 +200,22 @@ fn health_mcp_response(input: HealthIn) -> Result<LensMcpEnvelope, ErrorData> {
 fn turn_health_mcp_response(input: HealthIn, view: McpView) -> Result<LensMcpEnvelope, ErrorData> {
     let envelope = health_envelope(input)?;
     let summary = envelope.data.compact.clone();
-    let mut next_actions = envelope.data.action_context.remediation.clone();
-    if let Some(command) = &envelope.data.action_context.ack_command {
-        next_actions.push(command.clone());
-    }
+    let next_actions = envelope
+        .data
+        .issues
+        .iter()
+        .filter_map(|issue| issue.fix_instruction.clone())
+        .collect();
     let compact = json!({
         "project_id": envelope.data.project_id,
         "session": envelope.data.session,
         "turn": envelope.data.turn,
         "status": envelope.data.status,
         "compact": envelope.data.compact,
-        "action_required": envelope.data.action_context.required,
         "summary": {
             "changed_files": envelope.data.summary.changed_files.count,
             "diagnostics": envelope.data.summary.diagnostics,
-            "cleanup": envelope.data.summary.cleanup,
-            "checks": envelope.data.summary.checks,
-            "patch_refs": envelope.data.summary.patch_refs
+            "checks": envelope.data.summary.checks
         }
     });
     mcp_from_lens(envelope, view, summary, next_actions, compact)
@@ -380,30 +243,6 @@ fn status_mcp_response(input: StatusIn) -> Result<LensMcpEnvelope, ErrorData> {
     mcp_from_lens(envelope, view, summary, next_actions, compact)
 }
 
-fn report_mcp_response(input: ReportIn) -> Result<LensMcpEnvelope, ErrorData> {
-    let view = view(input.detail, input.raw);
-    let envelope = report_envelope(input)?;
-    let summary = format!(
-        "lens report {:?}: {} changed file(s)",
-        envelope.data.status, envelope.data.file_count
-    );
-    let next_actions = envelope
-        .data
-        .files
-        .iter()
-        .flat_map(|file| file.next_actions.iter().cloned())
-        .collect();
-    let compact = json!({
-        "project_id": envelope.data.project_id,
-        "session": envelope.data.session,
-        "turn": envelope.data.turn,
-        "status": envelope.data.status,
-        "file_count": envelope.data.file_count,
-        "files": envelope.data.files.iter().map(compact_report_file).collect::<Vec<_>>()
-    });
-    mcp_from_lens(envelope, view, summary, next_actions, compact)
-}
-
 fn touched_mcp_response(input: TouchedIn) -> Result<LensMcpEnvelope, ErrorData> {
     let view = view(input.detail, input.raw);
     let envelope = touched_envelope(input)?;
@@ -421,92 +260,6 @@ fn touched_mcp_response(input: TouchedIn) -> Result<LensMcpEnvelope, ErrorData> 
     mcp_from_lens(envelope, view, summary, Vec::new(), compact)
 }
 
-fn context_mcp_response(input: ContextIn) -> Result<LensMcpEnvelope, ErrorData> {
-    let view = view(input.detail, input.raw);
-    let envelope = context_envelope(input)?;
-    let summary = format!(
-        "lens context: {} ({})",
-        envelope.data.state, envelope.data.reason
-    );
-    let mut next_actions = envelope.data.remediation.clone();
-    if let Some(command) = &envelope.data.ack_command {
-        next_actions.push(command.clone());
-    }
-    let compact = json!({
-        "required": envelope.data.required,
-        "acknowledged": envelope.data.acknowledged,
-        "state": envelope.data.state,
-        "status": envelope.data.status,
-        "reason": envelope.data.reason,
-        "instructions": envelope.data.instructions,
-        "ack_command": envelope.data.ack_command
-    });
-    mcp_from_lens(envelope, view, summary, next_actions, compact)
-}
-
-fn raw_output_mcp_response(input: RawOutputIn) -> Result<LensMcpEnvelope, ErrorData> {
-    let view = view(input.detail, input.raw);
-    let action = input.action.as_deref().unwrap_or("list");
-    match action {
-        "list" => {
-            let envelope = raw_output_list_envelope(&input)?;
-            let summary = format!(
-                "raw output: {} retained item(s)",
-                envelope.data.output_count
-            );
-            let compact = json!({
-                "project_id": envelope.data.project_id,
-                "output_count": envelope.data.output_count,
-                "outputs": &envelope.data.outputs,
-            });
-            mcp_from_lens(envelope, view, summary, Vec::new(), compact)
-        }
-        "show" => {
-            let envelope = raw_output_show_envelope(&input)?;
-            let summary = format!(
-                "raw output #{}: {} retained byte(s)",
-                envelope.data.output.summary.id, envelope.data.output.summary.retained_bytes
-            );
-            let compact = json!({
-                "project_id": envelope.data.project_id,
-                "output": &envelope.data.output,
-            });
-            mcp_from_lens(envelope, view, summary, Vec::new(), compact)
-        }
-        other => Err(ErrorData::invalid_params(
-            format!("invalid raw_output action: {other}"),
-            None,
-        )),
-    }
-}
-
-fn prune_mcp_response(input: PruneIn) -> Result<LensMcpEnvelope, ErrorData> {
-    let view = view(input.detail, input.raw);
-    let envelope = prune_envelope(&input)?;
-    let summary = format!(
-        "prune: {} diagnostics, {} tool runs, {} sessions, {} raw outputs{}",
-        envelope.data.diagnostics_deleted,
-        envelope.data.tool_runs_deleted,
-        envelope.data.sessions_deleted,
-        envelope.data.raw_outputs_deleted,
-        if envelope.data.dry_run {
-            " (dry run)"
-        } else {
-            ""
-        }
-    );
-    let compact = json!({
-        "diagnostics_deleted": envelope.data.diagnostics_deleted,
-        "tool_runs_deleted": envelope.data.tool_runs_deleted,
-        "sessions_deleted": envelope.data.sessions_deleted,
-        "patch_drafts_deleted": envelope.data.patch_drafts_deleted,
-        "patch_draft_bodies_deleted": envelope.data.patch_draft_bodies_deleted,
-        "raw_outputs_deleted": envelope.data.raw_outputs_deleted,
-        "dry_run": envelope.data.dry_run,
-    });
-    mcp_from_lens(envelope, view, summary, Vec::new(), compact)
-}
-
 fn health_envelope(
     input: HealthIn,
 ) -> Result<crate::lens::LensEnvelope<crate::lens::TurnHealthData>, ErrorData> {
@@ -516,73 +269,9 @@ fn health_envelope(
         crate::lens::TurnHealthOptions {
             session: input.session,
             turn: input.turn,
-            acknowledge: false,
         },
     )
     .map_err(|error| ErrorData::internal_error(error.to_string(), None))
-}
-
-fn context_envelope(
-    input: ContextIn,
-) -> Result<crate::lens::LensEnvelope<crate::lens::ActionContextState>, ErrorData> {
-    let root = cwd(input.cwd)?;
-    crate::lens::build_action_context_envelope(
-        &root,
-        crate::lens::TurnHealthOptions {
-            session: input.session,
-            turn: input.turn,
-            acknowledge: input.ack.unwrap_or(false),
-        },
-    )
-    .map_err(|error| ErrorData::internal_error(error.to_string(), None))
-}
-
-fn report_envelope(
-    input: ReportIn,
-) -> Result<crate::lens::LensEnvelope<crate::lens::ChangedFileReportData>, ErrorData> {
-    let root = cwd(input.cwd)?;
-    crate::lens::build_changed_file_report_envelope(
-        &root,
-        crate::lens::TurnHealthOptions {
-            session: input.session,
-            turn: input.turn,
-            acknowledge: false,
-        },
-        input.path.as_deref(),
-    )
-    .map_err(|error| ErrorData::internal_error(error.to_string(), None))
-}
-
-fn raw_output_list_envelope(
-    input: &RawOutputIn,
-) -> Result<crate::lens::LensEnvelope<crate::lens::raw_output::RawOutputListData>, ErrorData> {
-    let root = cwd(input.cwd.clone())?;
-    crate::lens::raw_output::list_envelope(&root, input.limit.unwrap_or(DEFAULT_LIMIT))
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))
-}
-
-fn raw_output_show_envelope(
-    input: &RawOutputIn,
-) -> Result<crate::lens::LensEnvelope<crate::lens::raw_output::RawOutputShowData>, ErrorData> {
-    let root = cwd(input.cwd.clone())?;
-    crate::lens::raw_output::show_envelope(&root, required(input.id, "id")?)
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))
-}
-
-fn prune_envelope(
-    input: &PruneIn,
-) -> Result<crate::lens::LensEnvelope<crate::lens::retention::PruneReport>, ErrorData> {
-    let root = cwd(input.cwd.clone())?;
-    let store = crate::lens::LensStore::open_for_project(&root)
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-    let policy = crate::lens::resolve_policy(&root);
-    let report = crate::lens::retention::prune(
-        &store,
-        &policy.policy.retention,
-        input.dry_run.unwrap_or(false),
-    )
-    .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-    Ok(crate::lens::LensEnvelope::ok(report))
 }
 
 fn touched_envelope(
@@ -591,22 +280,6 @@ fn touched_envelope(
     let root = cwd(input.cwd)?;
     crate::lens::touched_files_envelope(&root, &input.session, &input.turn)
         .map_err(|error| ErrorData::internal_error(error.to_string(), None))
-}
-
-fn cleanup_envelope(
-    input: CleanupIn,
-) -> Result<crate::lens::LensEnvelope<crate::lens::CleanupReport>, ErrorData> {
-    let root = cwd(input.cwd)?;
-    crate::lens::cleanup_turn_envelope(
-        &root,
-        &input.session,
-        &input.turn,
-        crate::lens::CleanupOptions {
-            allow_unsafe: input.allow_unsafe.unwrap_or(false),
-            ..crate::lens::CleanupOptions::default()
-        },
-    )
-    .map_err(|error| ErrorData::internal_error(error.to_string(), None))
 }
 
 fn diagnostics_list_envelope(
@@ -802,36 +475,6 @@ fn compact_diagnostic(diagnostic: &Value) -> Value {
         "code": diagnostic.get("code").cloned().unwrap_or(Value::Null),
         "message": diagnostic.get("message").cloned().unwrap_or(Value::Null),
         "scope": diagnostic.get("scope").cloned().unwrap_or(Value::Null)
-    })
-}
-
-fn compact_cleanup_run(run: &crate::lens::CleanupRunReport) -> Value {
-    json!({
-        "tool": run.tool,
-        "status": run.status,
-        "safety": run.safety,
-        "mutability": run.mutability,
-        "file_count": run.files.len(),
-        "diagnostic_count": run.diagnostic_snapshot.as_ref().map(|snapshot| snapshot.diagnostic_count).unwrap_or(0),
-        "mutation_count": run.mutations.len(),
-        "timed_out": run.timed_out,
-        "exit_code": run.exit_code
-    })
-}
-
-fn compact_report_file(file: &crate::lens::ChangedFileReport) -> Value {
-    json!({
-        "path": file.path,
-        "diagnostic_count": file.diagnostics.len(),
-        "cleanup_action_count": file.cleanup_actions.len(),
-        "patch_refs": file.patch_refs,
-        "symbol_context": {
-            "status": file.symbol_context.status,
-            "command": file.symbol_context.command,
-            "symbol_count": file.symbol_context.symbols.len(),
-            "error": file.symbol_context.error
-        },
-        "next_actions": file.next_actions
     })
 }
 
@@ -1128,24 +771,12 @@ mod tests {
 
         assert_eq!(
             names,
-            vec![
-                "checks",
-                "cleanup",
-                "context",
-                "diagnostics",
-                "health",
-                "prune",
-                "raw_output",
-                "report",
-                "status",
-                "touched"
-            ]
+            vec!["checks", "diagnostics", "health", "status", "touched"]
         );
-        assert!(
-            !names
-                .iter()
-                .any(|name| name == "discover" || name == "guard")
-        );
+        assert!(!names.iter().any(|name| matches!(
+            name.as_str(),
+            "cleanup" | "context" | "discover" | "guard" | "raw_output" | "report" | "prune"
+        )));
         assert!(names.iter().all(|name| !name.starts_with("lens_")));
     }
 

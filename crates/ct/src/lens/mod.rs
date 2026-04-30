@@ -1,5 +1,4 @@
 pub mod checks;
-pub mod cleanup;
 pub mod contract;
 pub mod health;
 pub mod hooks;
@@ -13,7 +12,6 @@ pub mod turn;
 pub mod types;
 
 pub use checks::*;
-pub use cleanup::*;
 pub use contract::*;
 pub use health::*;
 pub use hooks::*;
