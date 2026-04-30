@@ -5,8 +5,8 @@ use std::process::Command;
 use super::contract::LensEnvelope;
 use super::store::LensStore;
 use super::types::{
-    LensToolEventPhase, LensTouchedFile, LensTouchedFileInput, LensTouchedFileSource,
-    LensTurnEvent, LensTurnEventKind, LensTurnRecordData, LensTurnTouchedData,
+    LensTouchedFile, LensTouchedFileInput, LensTouchedFileSource, LensTurnEvent, LensTurnEventKind,
+    LensTurnRecordData, LensTurnTouchedData,
 };
 
 pub fn record_turn_event_envelope(
@@ -22,7 +22,7 @@ pub fn record_turn_event_envelope(
     event.cwd = event_cwd.display().to_string();
     let root = project_root(&event_cwd).unwrap_or_else(|| canonical_or_self(&event_cwd));
     let mut store = LensStore::open_for_project(&root)?;
-    let (files, git_fallback_used) = touched_files_from_event(&root, &event_cwd, &event)?;
+    let files = touched_files_from_event(&root, &event_cwd, &event)?;
     store.record_turn_event(&event, &files)?;
     let cleanup = if matches!(event.event, LensTurnEventKind::TurnEnd) {
         Some(super::cleanup::run_turn_cleanup_with_store(
@@ -57,7 +57,6 @@ pub fn record_turn_event_envelope(
         tool: event.tool,
         event: event.event,
         phase: event.phase,
-        git_fallback_used,
         file_count: files.len(),
         files,
         cleanup,
@@ -90,31 +89,16 @@ pub fn touched_files_from_event(
     root: &Path,
     event_cwd: &Path,
     event: &LensTurnEvent,
-) -> Result<(Vec<LensTouchedFile>, bool), Box<dyn std::error::Error>> {
-    let mut files: BTreeMap<(String, LensTouchedFileSource), LensTouchedFile> = BTreeMap::new();
+) -> Result<Vec<LensTouchedFile>, Box<dyn std::error::Error>> {
+    let mut files: BTreeMap<String, LensTouchedFile> = BTreeMap::new();
 
     for input in &event.files {
         if let Some(file) = structured_file(root, event_cwd, event, input)? {
-            files.insert((file.path.clone(), file.source.clone()), file);
+            files.insert(file.path.clone(), file);
         }
     }
 
-    let should_fallback = event.policy.git_fallback
-        && (matches!(event.event, LensTurnEventKind::TurnEnd)
-            || (matches!(event.phase, LensToolEventPhase::PostTool)
-                && event.files.is_empty()
-                && is_shell_tool(&event.tool)));
-    let mut git_fallback_used = false;
-    if should_fallback {
-        for file in git_status_files(root, event)? {
-            git_fallback_used = true;
-            files
-                .entry((file.path.clone(), file.source.clone()))
-                .or_insert(file);
-        }
-    }
-
-    Ok((files.into_values().collect(), git_fallback_used))
+    Ok(files.into_values().collect())
 }
 
 fn structured_file(
@@ -138,79 +122,6 @@ fn structured_file(
         ignored,
         generated: input.generated,
     }))
-}
-
-fn git_status_files(
-    root: &Path,
-    event: &LensTurnEvent,
-) -> Result<Vec<LensTouchedFile>, Box<dyn std::error::Error>> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
-        .output();
-    let Ok(output) = output else {
-        return Ok(Vec::new());
-    };
-    if !output.status.success() {
-        return Ok(Vec::new());
-    }
-
-    let mut out = Vec::new();
-    let mut entries = output.stdout.split(|byte| *byte == 0).peekable();
-    while let Some(entry) = entries.next() {
-        if entry.is_empty() || entry.len() < 4 {
-            continue;
-        }
-        let x = entry[0] as char;
-        let y = entry[1] as char;
-        let path_bytes = &entry[3..];
-        let path = String::from_utf8_lossy(path_bytes).to_string();
-        if matches!(x, 'R' | 'C') || matches!(y, 'R' | 'C') {
-            let _ = entries.next();
-        }
-        if path.is_empty() || is_git_ignored(root, &path)? {
-            continue;
-        }
-        out.push(LensTouchedFile {
-            path,
-            operation: git_operation(x, y),
-            start_line: None,
-            end_line: None,
-            tool: event.tool.clone(),
-            source: LensTouchedFileSource::GitStatus,
-            explicit: false,
-            ignored: false,
-            generated: false,
-        });
-    }
-    Ok(out)
-}
-
-fn git_operation(x: char, y: char) -> String {
-    if matches!(x, 'R' | 'C') || matches!(y, 'R' | 'C') {
-        "rename".to_string()
-    } else if x == '?' || x == 'A' || y == 'A' {
-        "create".to_string()
-    } else if x == 'D' || y == 'D' {
-        "delete".to_string()
-    } else {
-        "modify".to_string()
-    }
-}
-
-fn is_shell_tool(tool: &str) -> bool {
-    matches!(
-        tool.to_ascii_lowercase().as_str(),
-        "bash"
-            | "shell"
-            | "sh"
-            | "zsh"
-            | "terminal"
-            | "run_command"
-            | "exec_command"
-            | "write_stdin"
-    )
 }
 
 fn is_git_ignored(root: &Path, rel_path: &str) -> Result<bool, Box<dyn std::error::Error>> {
@@ -287,6 +198,7 @@ fn canonical_or_self(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use super::super::types::LensToolEventPhase;
     use super::*;
 
     fn git(cwd: &Path, args: &[&str]) {
@@ -337,6 +249,7 @@ mod tests {
     #[test]
     fn structured_event_extracts_explicit_touched_files() {
         let temp = repo();
+        std::fs::write(temp.path().join("unreported.rs"), "fn hidden() {}\n").unwrap();
         let mut event = event(temp.path());
         event.files.push(LensTouchedFileInput {
             path: "main.rs".to_string(),
@@ -347,40 +260,38 @@ mod tests {
             include_ignored: false,
         });
 
-        let (files, fallback) = touched_files_from_event(temp.path(), temp.path(), &event).unwrap();
+        let files = touched_files_from_event(temp.path(), temp.path(), &event).unwrap();
 
-        assert!(!fallback);
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, "main.rs");
+        assert!(files.iter().all(|file| file.path != "unreported.rs"));
         assert_eq!(files[0].source, LensTouchedFileSource::StructuredEvent);
         assert!(files[0].explicit);
     }
 
     #[test]
-    fn git_status_fallback_finds_shell_mutations() {
+    fn shell_tool_without_structured_metadata_records_no_touched_files() {
         let temp = repo();
         std::fs::write(temp.path().join("main.rs"), "fn main() { println!(); }\n").unwrap();
         let mut event = event(temp.path());
         event.tool = "bash".to_string();
 
-        let (files, fallback) = touched_files_from_event(temp.path(), temp.path(), &event).unwrap();
+        let files = touched_files_from_event(temp.path(), temp.path(), &event).unwrap();
 
-        assert!(fallback);
-        assert!(files.iter().any(|file| file.path == "main.rs"
-            && file.source == LensTouchedFileSource::GitStatus
-            && !file.explicit));
+        assert!(files.is_empty());
     }
 
     #[test]
-    fn git_fallback_drops_ignored_noise() {
+    fn turn_end_without_structured_metadata_does_not_scan_worktree() {
         let temp = repo();
-        std::fs::write(temp.path().join("ignored.log"), "noise\n").unwrap();
+        std::fs::write(temp.path().join("main.rs"), "fn main() { println!(); }\n").unwrap();
         let mut event = event(temp.path());
-        event.tool = "bash".to_string();
+        event.event = LensTurnEventKind::TurnEnd;
+        event.tool = "agent".to_string();
 
-        let (files, _) = touched_files_from_event(temp.path(), temp.path(), &event).unwrap();
+        let files = touched_files_from_event(temp.path(), temp.path(), &event).unwrap();
 
-        assert!(files.iter().all(|file| file.path != "ignored.log"));
+        assert!(files.is_empty());
     }
 
     #[test]
@@ -422,9 +333,8 @@ mod tests {
         event.event = LensTurnEventKind::ToolStart;
         event.tool = "lens_health".to_string();
 
-        let (files, fallback) = touched_files_from_event(temp.path(), temp.path(), &event).unwrap();
+        let files = touched_files_from_event(temp.path(), temp.path(), &event).unwrap();
 
-        assert!(!fallback);
         assert!(files.is_empty());
     }
 
@@ -468,7 +378,7 @@ mod tests {
             include_ignored: true,
         });
 
-        let (files, _) = touched_files_from_event(temp.path(), temp.path(), &event).unwrap();
+        let files = touched_files_from_event(temp.path(), temp.path(), &event).unwrap();
 
         let ignored = files
             .iter()

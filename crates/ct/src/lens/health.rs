@@ -1181,7 +1181,7 @@ mod tests {
         let mut store = LensStore::open_for_project(root).unwrap();
         let mut event = event(root);
         event.event = LensTurnEventKind::TurnEnd;
-        let (touched, _) = crate::lens::turn::touched_files_from_event(root, root, &event).unwrap();
+        let touched = crate::lens::turn::touched_files_from_event(root, root, &event).unwrap();
         store.record_turn_event(&event, &touched).unwrap();
     }
 
@@ -1198,7 +1198,7 @@ mod tests {
             generated: false,
             include_ignored: false,
         }];
-        let (touched, _) = crate::lens::turn::touched_files_from_event(root, root, &event).unwrap();
+        let touched = crate::lens::turn::touched_files_from_event(root, root, &event).unwrap();
         store.record_turn_event(&event, &touched).unwrap();
     }
 
@@ -1248,7 +1248,7 @@ mod tests {
         std::fs::write(temp.path().join("main.rs"), "fn main() {}\n").unwrap();
         let mut store = LensStore::open_for_project(temp.path()).unwrap();
         let event = event(temp.path());
-        let (touched, _) =
+        let touched =
             crate::lens::turn::touched_files_from_event(temp.path(), temp.path(), &event).unwrap();
         store.record_turn_event(&event, &touched).unwrap();
 

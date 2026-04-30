@@ -119,8 +119,6 @@ pub struct LensHookTool {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LensHookPolicy {
-    #[serde(default = "default_true")]
-    pub git_fallback: bool,
     #[serde(default)]
     pub include_ignored: bool,
     #[serde(default = "default_true")]
@@ -134,7 +132,6 @@ pub struct LensHookPolicy {
 impl Default for LensHookPolicy {
     fn default() -> Self {
         Self {
-            git_fallback: true,
             include_ignored: false,
             run_cleanup: true,
             run_checks: true,
@@ -1109,7 +1106,6 @@ fn turn_event(
         status: event.tool.as_ref().and_then(|tool| tool.status.clone()),
         files: event.known_files.clone(),
         policy: LensTurnEventPolicy {
-            git_fallback: event.policy.git_fallback,
             include_ignored: event.policy.include_ignored,
         },
     }
