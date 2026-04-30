@@ -8,7 +8,9 @@
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-5.5",
   "defaultThinkingLevel": "high",
-  "skills": ["../.codex/skills"],
+  "skills": [
+    "../.codex/skills"
+  ],
   "packages": [
     "npm:@ifi/oh-pi-themes",
     "npm:@dreki-gg/pi-context7",
@@ -17,6 +19,7 @@
   "extensions": [
     "-extensions/team-mode/index.ts",
     "-extensions/pi-web-access/index.ts",
+    "-extensions/lens/index.ts",
     "extensions/vault/index.ts"
   ],
   "enabledModels": [
