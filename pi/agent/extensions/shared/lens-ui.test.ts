@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { renderLensCompactStatus, renderLensWidgetLines, summarizeLensResult } from "./lens-ui.ts";
+import { renderLensCompactStatus, renderLensWidgetLines } from "./lens-ui.ts";
 
 const clean = {
 	status: "ok",
@@ -86,9 +86,9 @@ describe("Lens Pi UI rendering", () => {
 		expect(lines).toContain("  fix: bun run typecheck");
 	});
 
-	it("summarizes tool-like envelopes without requiring Lens tools", () => {
-		const toolResult = { details: { results: warnings, extra: { full: true } } };
-		expect(summarizeLensResult(toolResult, false)).toContain("Lens ⚠ warnings");
-		expect(toolResult.details.results.data.diagnostics[0].fix_instructions).toBe("Remove the unused variable.");
+	it("renders warning diagnostics with fix instructions", () => {
+		const lines = renderLensWidgetLines(warnings, true);
+		expect(lines).toContain("  diagnostics: [lsp/warning] src/foo.ts:12: Unused variable");
+		expect(lines).toContain("  fix: Remove the unused variable.");
 	});
 });

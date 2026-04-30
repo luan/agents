@@ -89,13 +89,6 @@ export function renderLensWidgetLines(value: unknown, expanded = false, options:
 	return [...new Set(lines)];
 }
 
-export function summarizeLensResult(result: unknown, expanded = false, options: LensRenderOptions = {}): string {
-	const data = asRecord(result);
-	const envelope = asRecord(data?.details?.results ?? data?.results ?? data);
-	const lines = renderLensWidgetLines(envelope, expanded, options);
-	return lines[0] ?? "󰛩 Lens clean";
-}
-
 function sourceSummaries(data: LensRecord | undefined): SourceSummary[] {
 	const raw =
 		data?.data?.sources ??
