@@ -240,9 +240,25 @@ pub enum LensToolEventPhase {
     PostTool,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LensTurnEventPolicy {
+    #[serde(default)]
     pub include_ignored: bool,
+    #[serde(default = "default_true")]
+    pub run_checks: bool,
+}
+
+impl Default for LensTurnEventPolicy {
+    fn default() -> Self {
+        Self {
+            include_ignored: false,
+            run_checks: true,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
