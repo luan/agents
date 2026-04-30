@@ -242,14 +242,12 @@ pub enum LensToolEventPhase {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LensTurnEventPolicy {
-    pub git_fallback: bool,
     pub include_ignored: bool,
 }
 
 impl Default for LensTurnEventPolicy {
     fn default() -> Self {
         Self {
-            git_fallback: true,
             include_ignored: false,
         }
     }
@@ -297,7 +295,6 @@ pub struct LensTurnEvent {
 #[serde(rename_all = "snake_case")]
 pub enum LensTouchedFileSource {
     StructuredEvent,
-    GitStatus,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -334,7 +331,6 @@ pub struct LensTurnRecordData {
     pub tool: String,
     pub event: LensTurnEventKind,
     pub phase: LensToolEventPhase,
-    pub git_fallback_used: bool,
     pub files: Vec<LensTouchedFile>,
     pub file_count: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]

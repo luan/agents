@@ -364,7 +364,7 @@ fn lens_touched_json_is_schema_versioned_and_stable() {
         .write_stdin(event.to_string())
         .assert()
         .success()
-        .stdout(predicate::str::contains("\"git_fallback_used\": false"));
+        .stdout(predicate::str::contains("\"source\": \"structured_event\""));
 
     let assert = ct_cmd(bp.path())
         .current_dir(project.path())

@@ -142,6 +142,15 @@ describe("Lens tool file attribution", () => {
 
 		expect(files).toEqual([{ path: "src/namespaced.rs", operation: "write" }]);
 	});
+
+	it("records no files for shell tools without structured file metadata", () => {
+		expect(
+			filesFromTool("bash", {
+				command: "python3 - <<'PY'\nopen('src/hidden.ts', 'w').write('x')\nPY",
+			}),
+		).toEqual([]);
+		expect(filesFromToolAndResult("exec_command", { command: "touch src/hidden.ts" }, { stdout: "" })).toEqual([]);
+	});
 });
 
 describe("Lens hook-only Pi extension", () => {
