@@ -192,7 +192,7 @@ const DEFAULT_CONFIG: ApplyPatchConfig = {
   promptSnippet: true,
   promptGuidelines: true,
   codexExecRegister: true,
-  codexExecActiveByDefault: false,
+  codexExecActiveByDefault: true,
 };
 
 const CONFIG_PATH = join(
@@ -2362,29 +2362,6 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
       config = { ...config, maxDiffLines: maxLines };
       saveConfig(config);
       ctx.ui.notify(formatConfig(config), "info");
-    },
-  });
-
-  pi.registerCommand("codex-exec", {
-    description: "Toggle opt-in Codex exec_command/write_stdin tools",
-    handler: async (args, ctx) => {
-      const value = args.trim().toLowerCase();
-      if (!value || value === "status") {
-        ctx.ui.notify(`codex exec ${config.codexExecActiveByDefault ? "on" : "off"}`, "info");
-        return;
-      }
-      if (value !== "on" && value !== "off") {
-        ctx.ui.notify("Usage: /codex-exec [on|off|status]", "error");
-        return;
-      }
-      config = {
-        ...config,
-        codexExecRegister: true,
-        codexExecActiveByDefault: value === "on",
-      };
-      saveConfig(config);
-      applyCodexToolPolicy(ctx);
-      ctx.ui.notify(`codex exec ${config.codexExecActiveByDefault ? "on" : "off"}`, "info");
     },
   });
 
