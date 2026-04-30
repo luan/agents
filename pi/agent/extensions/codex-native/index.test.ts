@@ -7,7 +7,7 @@ import {
 	rewriteNativeImageGenerationTool,
 	rewriteNativeWebSearchTool,
 	saveOpenAICodexGeneratedImage,
-} from "./codex-native.ts";
+} from "./native-tools.ts";
 
 const codexModel = {
 	provider: "openai-codex",

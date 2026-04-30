@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "test:lens": "bun test shared/lens-ui.test.ts",
-    "test:codex-native": "bun test pi/agent/extensions/apply-patch/index.test.ts pi/agent/extensions/apply-patch/codex-native.test.ts pi/agent/extensions/apply-patch/codex-exec.test.ts",
+    "test:codex-native": "bun test pi/agent/extensions/apply-patch/index.test.ts pi/agent/extensions/codex-native/index.test.ts pi/agent/extensions/codex-exec/index.test.ts",
     "test:openai-native-compaction": "bun test pi/agent/extensions/openai-native-compaction/src/unit.test.ts pi/agent/extensions/openai-native-compaction/src/validation.test.ts"
   },
   "dependencies": {
