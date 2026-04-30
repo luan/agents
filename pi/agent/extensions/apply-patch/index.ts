@@ -37,10 +37,6 @@ import {
   extractPiPromptSkills,
   type PromptSkill,
 } from "./codex-prompt.ts";
-import { createExecCommandTracker } from "./codex-exec/tools/exec-command-state.ts";
-import { registerExecCommandTool } from "./codex-exec/tools/exec-command-tool.ts";
-import { createExecSessionManager } from "./codex-exec/tools/exec-session-manager.ts";
-import { registerWriteStdinTool } from "./codex-exec/tools/write-stdin-tool.ts";
 import { registerApplyPatchFreeformProvider } from "./freeform-codex.ts";
 
 const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
@@ -166,8 +162,6 @@ type ApplyPatchConfig = {
   promptMetadata: boolean;
   promptSnippet: boolean;
   promptGuidelines: boolean;
-  codexExecRegister: boolean;
-  codexExecActiveByDefault: boolean;
 };
 
 const APPLY_PATCH_TOOL_DESCRIPTION =
@@ -191,8 +185,6 @@ const DEFAULT_CONFIG: ApplyPatchConfig = {
   promptMetadata: true,
   promptSnippet: true,
   promptGuidelines: true,
-  codexExecRegister: true,
-  codexExecActiveByDefault: true,
 };
 
 const CONFIG_PATH = join(
@@ -265,14 +257,6 @@ function loadConfig(): ApplyPatchConfig {
         typeof parsed.promptGuidelines === "boolean"
           ? parsed.promptGuidelines
           : DEFAULT_CONFIG.promptGuidelines,
-      codexExecRegister:
-        typeof parsed.codexExecRegister === "boolean"
-          ? parsed.codexExecRegister
-          : DEFAULT_CONFIG.codexExecRegister,
-      codexExecActiveByDefault:
-        typeof parsed.codexExecActiveByDefault === "boolean"
-          ? parsed.codexExecActiveByDefault
-          : DEFAULT_CONFIG.codexExecActiveByDefault,
     };
   } catch {
     return DEFAULT_CONFIG;
@@ -2153,31 +2137,12 @@ function isCodexModel(model: ModelLike | undefined): boolean {
 }
 
 function formatConfig(config: ApplyPatchConfig): string {
-  return `apply_patch diff: unified (max ${config.maxDiffLines} lines, syntax ${config.syntaxHighlight ? "on" : "off"}, rich render ${config.richRender ? "on" : "off"}, render diff ${config.renderDiff ? "on" : "off"}, enforce ${config.enforce ? "on" : "off"}, validate ${config.validateBeforeApply ? "on" : "off"}, tool ${config.registerTool ? "on" : "off"}, active ${config.activeByDefault ? "on" : "off"}, prompt snippet ${config.promptSnippet ? "on" : "off"}, prompt guidelines ${config.promptGuidelines ? "on" : "off"}, codex exec ${config.codexExecActiveByDefault ? "on" : "off"})`;
-}
-
-function getCommandArg(args: unknown): string | undefined {
-  if (!args || typeof args !== "object" || !("cmd" in args)) return undefined;
-  return typeof args.cmd === "string" ? args.cmd : undefined;
-}
-
-function isToolCallOnlyAssistantMessage(message: unknown): boolean {
-  if (!message || typeof message !== "object" || !("role" in message) || message.role !== "assistant") {
-    return false;
-  }
-  if (!("content" in message) || !Array.isArray(message.content) || message.content.length === 0) {
-    return false;
-  }
-  return message.content.every(
-    (item) => typeof item === "object" && item !== null && "type" in item && item.type === "toolCall",
-  );
+  return `apply_patch diff: unified (max ${config.maxDiffLines} lines, syntax ${config.syntaxHighlight ? "on" : "off"}, rich render ${config.richRender ? "on" : "off"}, render diff ${config.renderDiff ? "on" : "off"}, enforce ${config.enforce ? "on" : "off"}, validate ${config.validateBeforeApply ? "on" : "off"}, tool ${config.registerTool ? "on" : "off"}, active ${config.activeByDefault ? "on" : "off"}, prompt snippet ${config.promptSnippet ? "on" : "off"}, prompt guidelines ${config.promptGuidelines ? "on" : "off"})`;
 }
 
 export default function applyPatchExtension(pi: ExtensionAPI) {
   let currentCwd = process.cwd();
   let promptSkills: PromptSkill[] = [];
-  const execTracker = createExecCommandTracker();
-  const execSessions = createExecSessionManager();
 
   registerApplyPatchFreeformProvider(pi, {
     toolName: APPLY_PATCH_TOOL_NAME,
@@ -2191,13 +2156,6 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
   const completedPatchInputs = new Set<string>();
   const toolsRemovedForCodex = new Set<string>();
 
-  if (config.codexExecRegister) {
-    registerExecCommandTool(pi, execTracker, execSessions);
-    registerWriteStdinTool(pi, execSessions);
-    execSessions.onSessionExit((sessionId) => {
-      execTracker.recordSessionFinished(sessionId);
-    });
-  }
 
   const applyCodexToolPolicy = (ctx?: ExtensionContext) => {
     if (!ctx) return;
@@ -2227,15 +2185,6 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
       next = next.filter((toolName) => toolName !== IMAGE_GENERATION_TOOL_NAME);
     }
 
-    if (config.codexExecRegister) {
-      if (codexModel && config.codexExecActiveByDefault) {
-        for (const toolName of ["exec_command", "write_stdin"]) {
-          if (!next.includes(toolName)) next.push(toolName);
-        }
-      } else {
-        next = next.filter((toolName) => toolName !== "exec_command" && toolName !== "write_stdin");
-      }
-    }
 
     if (!codexModel && toolsRemovedForCodex.size > 0) {
       const registeredTools = new Set(
@@ -2259,7 +2208,6 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
     promptSkills = extractPiPromptSkills(ctx?.getSystemPrompt?.() ?? "");
     executingPatchInputs.clear();
     completedPatchInputs.clear();
-    execTracker.clear();
     applyToolAvailability(pi, config);
     enforceToolPolicy(pi, config);
     applyCodexToolPolicy(ctx);
@@ -2267,11 +2215,6 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 
   pi.on("session_start", resetSessionState);
   pi.on("session_tree", resetSessionState);
-  pi.on("message_start", (event) => {
-    if (event.message.role === "toolResult") return;
-    if (isToolCallOnlyAssistantMessage(event.message)) return;
-    execTracker.resetExplorationGroup();
-  });
   pi.on("model_select", (_event, ctx) => {
     currentCwd = ctx.cwd;
     promptSkills = extractPiPromptSkills(ctx.getSystemPrompt());
@@ -2307,18 +2250,6 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
     );
   });
 
-  pi.on("tool_execution_start", (event) => {
-    if (event.toolName !== "exec_command") {
-      execTracker.resetExplorationGroup();
-      return;
-    }
-    const command = getCommandArg(event.args);
-    if (command) execTracker.recordStart(event.toolCallId, command);
-  });
-
-  pi.on("tool_execution_end", (event) => {
-    if (event.toolName === "exec_command") execTracker.recordEnd(event.toolCallId);
-  });
 
   pi.on("tool_call", (event, ctx) => {
     if (
@@ -2337,11 +2268,6 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
         reason: "edit and write are disabled. Use apply_patch instead.",
       };
     }
-  });
-
-  pi.on("session_shutdown", () => {
-    execTracker.clear();
-    execSessions.shutdown();
   });
 
   pi.registerCommand("apply-patch-diff", {
