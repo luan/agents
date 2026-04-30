@@ -131,7 +131,11 @@ const renderExecCommandResultWithOptionalContext: any = (
 			: details?.exit_code !== undefined && details.exit_code !== 0
 				? theme.fg("muted", `Exit code: ${details.exit_code}`)
 				: undefined;
-	let text = renderOutputBlock(output ?? "", theme, footer);
+	let text = renderOutputBlock(output ?? "", theme, footer, {
+		expanded: options.expanded,
+		truncatedAbove: details?.output_truncated,
+		originalTokenCount: details?.original_token_count,
+	});
 	return new Text(text, 0, 0);
 };
 

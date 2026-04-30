@@ -44,6 +44,36 @@ test("output block keeps a vertical gutter and preserves ANSI color", () => {
 	expect(rendered).toBe(`<dim>  ├ </dim><dim>plain</dim>\n<dim>  └ </dim>\u001b[32m✓ green\u001b[0m`);
 });
 
+test("output block collapses large output in the middle", () => {
+	const rendered = renderOutputBlock(
+		Array.from({ length: 8 }, (_, index) => `line ${index + 1}`).join("\n"),
+		testTheme,
+		undefined,
+		{ maxLines: 5 },
+	);
+
+	expect(rendered).toBe(
+		[
+			"<dim>  ├ </dim><dim>line 1</dim>",
+			"<dim>  │ </dim><dim>line 2</dim>",
+			"<dim>  │ </dim><dim>… +4 lines</dim>",
+			"<dim>  │ </dim><dim>line 7</dim>",
+			"<dim>  └ </dim><dim>line 8</dim>",
+		].join("\n"),
+	);
+});
+
+test("output block marks token-truncated output at the top", () => {
+	const rendered = renderOutputBlock("tail", testTheme, undefined, {
+		truncatedAbove: true,
+		originalTokenCount: 1234,
+	});
+
+	expect(rendered).toBe(
+		"<dim>  ├ </dim><dim>… output truncated above (original ~1234 tokens)</dim>\n<dim>  └ </dim><dim>tail</dim>",
+	);
+});
+
 
 test("exec renderers self-render without the default success shell", () => {
 	let tool: any;

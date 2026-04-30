@@ -12,6 +12,7 @@ export interface UnifiedExecResult {
 	exit_code?: number;
 	session_id?: number;
 	original_token_count?: number;
+	output_truncated?: boolean;
 }
 
 export interface ExecCommandInput {
@@ -356,7 +357,7 @@ function generateChunkId(): string {
 	return randomBytes(3).toString("hex");
 }
 
-function consumeOutput(session: ExecSession, maxOutputTokens?: number): { output: string; original_token_count?: number } {
+function consumeOutput(session: ExecSession, maxOutputTokens?: number): { output: string; original_token_count?: number; output_truncated?: boolean } {
 	const text =
 		session.kind === "pty" ? computePtyDelta(session.emittedBuffer, session.buffer) : session.buffer.slice(session.emittedBuffer.length);
 	session.emittedBuffer = session.buffer;
@@ -373,6 +374,7 @@ function consumeOutput(session: ExecSession, maxOutputTokens?: number): { output
 	return {
 		output: text.slice(-maxChars),
 		original_token_count: originalTokenCount,
+		output_truncated: true,
 	};
 }
 
@@ -478,6 +480,9 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		};
 		if (consumed.original_token_count !== undefined) {
 			result.original_token_count = consumed.original_token_count;
+		}
+		if (consumed.output_truncated) {
+			result.output_truncated = true;
 		}
 		if (session.exitCode === undefined || session.exitCode === null) {
 			result.session_id = session.id;
