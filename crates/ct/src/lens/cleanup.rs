@@ -189,79 +189,284 @@ pub fn cleanup_registry_from_env() -> Result<Option<CleanupRegistry>, Box<dyn st
 pub fn default_cleanup_registry() -> CleanupRegistry {
     CleanupRegistry {
         tools: vec![
-            CleanupToolDefinition {
-                id: "rustfmt".to_string(),
-                command: "rustfmt".to_string(),
-                args: vec![
-                    "--edition".to_string(),
-                    "2024".to_string(),
-                    "{files}".to_string(),
+            cleanup_tool(
+                "air",
+                "air",
+                &["format", "{files}"],
+                &["R"],
+                CleanupSafetyClass::SafeAutoApply,
+                "format changed R files",
+                "install air and make the air command available",
+            ),
+            cleanup_tool(
+                "biome",
+                "biome",
+                &["format", "--write", "{files}"],
+                &[
+                    "js", "jsx", "ts", "tsx", "html", "css", "md", "json", "yaml", "yml",
                 ],
-                extensions: vec!["rs".to_string()],
-                filenames: Vec::new(),
-                safety: CleanupSafetyClass::SafeAutoApply,
-                mutability: CleanupMutability::Mutates,
-                timeout_ms: DEFAULT_CLEANUP_TIMEOUT_MS,
-                parser: CleanupParserBehavior::LineDiagnostics,
-                raw_output_max_bytes: DEFAULT_CLEANUP_RAW_OUTPUT_MAX_BYTES,
-                purpose: "format changed Rust files".to_string(),
-                install_hint: "install rustfmt with rustup component add rustfmt".to_string(),
-            },
-            CleanupToolDefinition {
-                id: "gofmt".to_string(),
-                command: "gofmt".to_string(),
-                args: vec!["-w".to_string(), "{files}".to_string()],
-                extensions: vec!["go".to_string()],
-                filenames: Vec::new(),
-                safety: CleanupSafetyClass::SafeAutoApply,
-                mutability: CleanupMutability::Mutates,
-                timeout_ms: DEFAULT_CLEANUP_TIMEOUT_MS,
-                parser: CleanupParserBehavior::LineDiagnostics,
-                raw_output_max_bytes: DEFAULT_CLEANUP_RAW_OUTPUT_MAX_BYTES,
-                purpose: "format changed Go files".to_string(),
-                install_hint: "install Go to make gofmt available".to_string(),
-            },
-            CleanupToolDefinition {
-                id: "prettier".to_string(),
-                command: "prettier".to_string(),
-                args: vec!["--write".to_string(), "{files}".to_string()],
-                extensions: vec![
-                    "css".to_string(),
-                    "html".to_string(),
-                    "js".to_string(),
-                    "json".to_string(),
-                    "jsx".to_string(),
-                    "md".to_string(),
-                    "ts".to_string(),
-                    "tsx".to_string(),
-                    "yaml".to_string(),
-                    "yml".to_string(),
+                CleanupSafetyClass::SafeAutoApply,
+                "format changed files with Biome",
+                "install biome and add biome.json or biome.jsonc when Biome should own formatting",
+            ),
+            cleanup_tool(
+                "cargofmt",
+                "cargo",
+                &["fmt", "--", "{files}"],
+                &["rs"],
+                CleanupSafetyClass::SafeAutoApply,
+                "format changed Rust files through cargo fmt",
+                "install rustfmt with rustup component add rustfmt",
+            ),
+            cleanup_tool(
+                "clang-format",
+                "clang-format",
+                &["-i", "{files}"],
+                &[
+                    "c", "cpp", "cc", "cxx", "c++", "h", "hpp", "hh", "hxx", "h++", "ino",
                 ],
-                filenames: Vec::new(),
-                safety: CleanupSafetyClass::SafeAutoApply,
-                mutability: CleanupMutability::Mutates,
-                timeout_ms: DEFAULT_CLEANUP_TIMEOUT_MS,
-                parser: CleanupParserBehavior::LineDiagnostics,
-                raw_output_max_bytes: DEFAULT_CLEANUP_RAW_OUTPUT_MAX_BYTES,
-                purpose: "format changed web/config files".to_string(),
-                install_hint: "install prettier in the project or PATH".to_string(),
-            },
-            CleanupToolDefinition {
-                id: "cargo-fmt-workspace".to_string(),
-                command: "cargo".to_string(),
-                args: vec!["fmt".to_string(), "{no_files}".to_string()],
-                extensions: vec!["rs".to_string()],
-                filenames: Vec::new(),
-                safety: CleanupSafetyClass::Invasive,
-                mutability: CleanupMutability::Mutates,
-                timeout_ms: DEFAULT_CLEANUP_TIMEOUT_MS,
-                parser: CleanupParserBehavior::LineDiagnostics,
-                raw_output_max_bytes: DEFAULT_CLEANUP_RAW_OUTPUT_MAX_BYTES,
-                purpose: "format the whole Rust workspace".to_string(),
-                install_hint: "run cargo fmt explicitly when workspace-wide formatting is desired"
-                    .to_string(),
-            },
+                CleanupSafetyClass::SafeAutoApply,
+                "format changed C/C++ files",
+                "install clang-format and add .clang-format when clang-format should own formatting",
+            ),
+            cleanup_tool(
+                "cljfmt",
+                "cljfmt",
+                &["fix", "{files}"],
+                &["clj", "cljs", "cljc", "edn"],
+                CleanupSafetyClass::SafeAutoApply,
+                "format changed Clojure files",
+                "install cljfmt",
+            ),
+            cleanup_tool(
+                "dart",
+                "dart",
+                &["format", "{files}"],
+                &["dart"],
+                CleanupSafetyClass::SafeAutoApply,
+                "format changed Dart files",
+                "install Dart",
+            ),
+            cleanup_tool(
+                "dfmt",
+                "dfmt",
+                &["-i", "{files}"],
+                &["d"],
+                CleanupSafetyClass::SafeAutoApply,
+                "format changed D files",
+                "install dfmt",
+            ),
+            cleanup_tool(
+                "gleam",
+                "gleam",
+                &["format", "{files}"],
+                &["gleam"],
+                CleanupSafetyClass::SafeAutoApply,
+                "format changed Gleam files",
+                "install gleam",
+            ),
+            cleanup_tool(
+                "gofmt",
+                "gofmt",
+                &["-w", "{files}"],
+                &["go"],
+                CleanupSafetyClass::SafeAutoApply,
+                "format changed Go files",
+                "install Go to make gofmt available",
+            ),
+            cleanup_tool(
+                "htmlbeautifier",
+                "htmlbeautifier",
+                &["-r", "{files}"],
+                &["erb"],
+                CleanupSafetyClass::SafeAutoApply,
+                "format changed ERB files",
+                "install htmlbeautifier",
+            ),
+            cleanup_tool(
+                "ktlint",
+                "ktlint",
+                &["-F", "{files}"],
+                &["kt", "kts"],
+                CleanupSafetyClass::SafeAutoApply,
+                "format changed Kotlin files",
+                "install ktlint",
+            ),
+            cleanup_tool(
+                "mix",
+                "mix",
+                &["format", "{files}"],
+                &["ex", "exs", "eex", "heex", "leex", "neex", "sface"],
+                CleanupSafetyClass::SafeAutoApply,
+                "format changed Elixir files",
+                "install Elixir",
+            ),
+            cleanup_tool(
+                "nixfmt",
+                "nixfmt",
+                &["{files}"],
+                &["nix"],
+                CleanupSafetyClass::SafeAutoApply,
+                "format changed Nix files",
+                "install nixfmt",
+            ),
+            cleanup_tool(
+                "ocamlformat",
+                "ocamlformat",
+                &["--inplace", "{files}"],
+                &["ml", "mli"],
+                CleanupSafetyClass::SafeAutoApply,
+                "format changed OCaml files",
+                "install ocamlformat and add .ocamlformat",
+            ),
+            cleanup_tool(
+                "ormolu",
+                "ormolu",
+                &["--mode", "inplace", "{files}"],
+                &["hs"],
+                CleanupSafetyClass::SafeAutoApply,
+                "format changed Haskell files",
+                "install ormolu",
+            ),
+            cleanup_tool(
+                "oxfmt",
+                "oxfmt",
+                &["--write", "{files}"],
+                &["js", "jsx", "ts", "tsx"],
+                CleanupSafetyClass::Unsafe,
+                "format changed JS/TS files with experimental oxfmt",
+                "install oxfmt and enable it explicitly when desired",
+            ),
+            cleanup_tool(
+                "pint",
+                "vendor/bin/pint",
+                &["{files}"],
+                &["php"],
+                CleanupSafetyClass::SafeAutoApply,
+                "format changed PHP files with Laravel Pint",
+                "install laravel/pint in composer.json",
+            ),
+            cleanup_tool(
+                "prettier",
+                "prettier",
+                &["--write", "{files}"],
+                &[
+                    "js", "jsx", "ts", "tsx", "html", "css", "md", "json", "yaml", "yml",
+                ],
+                CleanupSafetyClass::SafeAutoApply,
+                "format changed web/config files",
+                "install prettier in the project or PATH",
+            ),
+            cleanup_tool(
+                "rubocop",
+                "rubocop",
+                &["-A", "{files}"],
+                &["rb", "rake", "gemspec", "ru"],
+                CleanupSafetyClass::SafeAutoApply,
+                "format changed Ruby files with RuboCop autocorrect",
+                "install rubocop",
+            ),
+            cleanup_tool(
+                "ruff",
+                "ruff",
+                &["format", "{files}"],
+                &["py", "pyi"],
+                CleanupSafetyClass::SafeAutoApply,
+                "format changed Python files with Ruff",
+                "install ruff and configure it for the project",
+            ),
+            cleanup_tool(
+                "rustfmt",
+                "rustfmt",
+                &["--edition", "2024", "{files}"],
+                &["rs"],
+                CleanupSafetyClass::SafeAutoApply,
+                "format changed Rust files",
+                "install rustfmt with rustup component add rustfmt",
+            ),
+            cleanup_tool(
+                "shfmt",
+                "shfmt",
+                &["-w", "{files}"],
+                &["sh", "bash"],
+                CleanupSafetyClass::SafeAutoApply,
+                "format changed shell files",
+                "install shfmt",
+            ),
+            cleanup_tool(
+                "standardrb",
+                "standardrb",
+                &["--fix", "{files}"],
+                &["rb", "rake", "gemspec", "ru"],
+                CleanupSafetyClass::SafeAutoApply,
+                "format changed Ruby files with Standard Ruby",
+                "install standardrb",
+            ),
+            cleanup_tool(
+                "terraform",
+                "terraform",
+                &["fmt", "{files}"],
+                &["tf", "tfvars"],
+                CleanupSafetyClass::SafeAutoApply,
+                "format changed Terraform files",
+                "install terraform",
+            ),
+            cleanup_tool(
+                "uv",
+                "uv",
+                &["run", "ruff", "format", "{files}"],
+                &["py", "pyi"],
+                CleanupSafetyClass::SafeAutoApply,
+                "format changed Python files with uv-managed Ruff",
+                "install uv and ruff",
+            ),
+            cleanup_tool(
+                "zig",
+                "zig",
+                &["fmt", "{files}"],
+                &["zig", "zon"],
+                CleanupSafetyClass::SafeAutoApply,
+                "format changed Zig files",
+                "install zig",
+            ),
+            cleanup_tool(
+                "cargo-fmt-workspace",
+                "cargo",
+                &["fmt", "{no_files}"],
+                &["rs"],
+                CleanupSafetyClass::Invasive,
+                "format the whole Rust workspace",
+                "run cargo fmt explicitly when workspace-wide formatting is desired",
+            ),
         ],
+    }
+}
+
+fn cleanup_tool(
+    id: &str,
+    command: &str,
+    args: &[&str],
+    extensions: &[&str],
+    safety: CleanupSafetyClass,
+    purpose: &str,
+    install_hint: &str,
+) -> CleanupToolDefinition {
+    CleanupToolDefinition {
+        id: id.to_string(),
+        command: command.to_string(),
+        args: args.iter().map(|arg| arg.to_string()).collect(),
+        extensions: extensions
+            .iter()
+            .map(|extension| extension.trim_start_matches('.').to_string())
+            .collect(),
+        filenames: Vec::new(),
+        safety,
+        mutability: CleanupMutability::Mutates,
+        timeout_ms: DEFAULT_CLEANUP_TIMEOUT_MS,
+        parser: CleanupParserBehavior::LineDiagnostics,
+        raw_output_max_bytes: DEFAULT_CLEANUP_RAW_OUTPUT_MAX_BYTES,
+        purpose: purpose.to_string(),
+        install_hint: install_hint.to_string(),
     }
 }
 
@@ -352,7 +557,7 @@ pub fn run_turn_cleanup_with_store(
         if matched_files.is_empty() {
             continue;
         }
-        let command = command_line(tool, &matched_files);
+        let command = command_line(root, tool, &matched_files);
         if !is_safe_to_run(tool, options.allow_unsafe) {
             suggestions.push(CleanupSuggestion {
                 tool: tool.id.clone(),
@@ -368,7 +573,7 @@ pub fn run_turn_cleanup_with_store(
             });
             continue;
         }
-        if !command_available(&tool.command) {
+        if !command_available(root, &tool.command) {
             runs.push(CleanupRunReport {
                 run_id: None,
                 tool: tool.id.clone(),
@@ -391,7 +596,7 @@ pub fn run_turn_cleanup_with_store(
         let before = state.clone();
         let process = run_process(root, tool, &command)?;
         let raw_output = combine_output(&process, tool.raw_output_max_bytes);
-        let diagnostics = diagnostics_from_output(tool, &process, &raw_output.body);
+        let diagnostics = diagnostics_from_output(root, tool, &process, &raw_output.body);
         let diagnostic_snapshot =
             record_cleanup_snapshot(store, tool, &process, &raw_output.body, diagnostics)?;
         let after = file_states(root, &scoped_files);
@@ -612,8 +817,9 @@ fn tool_matches(tool: &CleanupToolDefinition, rel_path: &str) -> bool {
     })
 }
 
-fn command_line(tool: &CleanupToolDefinition, files: &[String]) -> Vec<String> {
-    let mut command = vec![tool.command.clone()];
+fn command_line(root: &Path, tool: &CleanupToolDefinition, files: &[String]) -> Vec<String> {
+    let mut command =
+        vec![resolve_command(root, &tool.command).unwrap_or_else(|| tool.command.clone())];
     let mut expanded = false;
     for arg in &tool.args {
         if arg == "{files}" {
@@ -631,15 +837,39 @@ fn command_line(tool: &CleanupToolDefinition, files: &[String]) -> Vec<String> {
     command
 }
 
-fn command_available(command: &str) -> bool {
+fn command_available(root: &Path, command: &str) -> bool {
+    resolve_command(root, command).is_some()
+}
+
+fn resolve_command(root: &Path, command: &str) -> Option<String> {
     let path = Path::new(command);
     if path.components().count() > 1 {
-        return path.is_file();
+        let path = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            root.join(path)
+        };
+        return path.is_file().then(|| path.display().to_string());
     }
-    let Some(paths) = std::env::var_os("PATH") else {
-        return false;
-    };
-    std::env::split_paths(&paths).any(|dir| dir.join(command).is_file())
+    let local = root.join("node_modules").join(".bin").join(command);
+    if local.is_file() {
+        return Some(local.display().to_string());
+    }
+    let mason = dirs::home_dir()?
+        .join(".local")
+        .join("share")
+        .join("nvim")
+        .join("mason")
+        .join("bin")
+        .join(command);
+    if mason.is_file() {
+        return Some(mason.display().to_string());
+    }
+    let paths = std::env::var_os("PATH")?;
+    std::env::split_paths(&paths)
+        .map(|dir| dir.join(command))
+        .find(|path| path.is_file())
+        .map(|path| path.display().to_string())
 }
 
 fn run_process(
@@ -760,6 +990,7 @@ fn truncate_utf8(value: &str, max_bytes: usize) -> (String, bool) {
 }
 
 fn diagnostics_from_output(
+    root: &Path,
     tool: &CleanupToolDefinition,
     process: &ProcessOutput,
     raw_output: &str,
@@ -784,6 +1015,7 @@ fn diagnostics_from_output(
                 continue;
             }
             diagnostics.push(diagnostic_from_line(
+                root,
                 &tool.id,
                 line,
                 default_severity.clone(),
@@ -830,6 +1062,7 @@ fn diagnostics_from_output(
 }
 
 fn diagnostic_from_line(
+    root: &Path,
     tool: &str,
     line: &str,
     default_severity: DiagnosticSeverity,
@@ -839,7 +1072,10 @@ fn diagnostic_from_line(
     let mut severity = default_severity;
     let mut message = line.trim().to_string();
     let parts = line.splitn(4, ':').collect::<Vec<_>>();
-    if parts.len() >= 3
+    if let Some((path, line_number)) = rustfmt_location(root, line) {
+        rel_path = Some(path);
+        start_line = Some(line_number);
+    } else if parts.len() >= 3
         && safe_rel_path(parts[0])
         && let Ok(line_number) = parts[1].parse::<i64>()
     {
@@ -872,6 +1108,23 @@ fn diagnostic_from_line(
         last_seen_at: None,
         resolved_at: None,
     }
+}
+
+fn rustfmt_location(root: &Path, line: &str) -> Option<(String, i64)> {
+    let location = line.trim_start().strip_prefix("-->")?.trim();
+    let mut parts = location.rsplitn(3, ':');
+    let _column = parts.next()?;
+    let line_number = parts.next()?.parse::<i64>().ok()?.max(1);
+    let path = Path::new(parts.next()?.trim());
+    let relative = if path.is_absolute() {
+        path.strip_prefix(root).ok()?
+    } else {
+        path
+    };
+    if !safe_rel_path(relative.to_str()?) {
+        return None;
+    }
+    Some((path_to_slash(relative)?, line_number))
 }
 
 fn line_has_explicit_severity(line: &str) -> bool {
@@ -995,6 +1248,7 @@ mod tests {
             temp.path(),
             &["config", "user.email", "ct-test@example.com"],
         );
+        git(temp.path(), &["config", "commit.gpgsign", "false"]);
         std::fs::write(temp.path().join("main.fixture"), "one\n").unwrap();
         git(temp.path(), &["add", "."]);
         git(temp.path(), &["commit", "-m", "init"]);
@@ -1003,6 +1257,46 @@ mod tests {
 
     fn registry(tool: CleanupToolDefinition) -> CleanupRegistry {
         CleanupRegistry { tools: vec![tool] }
+    }
+
+    #[test]
+    fn default_registry_covers_opencode_builtin_formatters() {
+        let registry = default_cleanup_registry();
+        let ids = registry
+            .tools
+            .iter()
+            .map(|tool| tool.id.as_str())
+            .collect::<Vec<_>>();
+        for expected in [
+            "air",
+            "biome",
+            "cargofmt",
+            "clang-format",
+            "cljfmt",
+            "dart",
+            "dfmt",
+            "gleam",
+            "gofmt",
+            "htmlbeautifier",
+            "ktlint",
+            "mix",
+            "nixfmt",
+            "ocamlformat",
+            "ormolu",
+            "oxfmt",
+            "pint",
+            "prettier",
+            "rubocop",
+            "ruff",
+            "rustfmt",
+            "shfmt",
+            "standardrb",
+            "terraform",
+            "uv",
+            "zig",
+        ] {
+            assert!(ids.contains(&expected), "missing {expected}");
+        }
     }
 
     fn fixture_tool(args: Vec<&str>) -> CleanupToolDefinition {
@@ -1155,6 +1449,47 @@ mod tests {
         assert_eq!(report.runs[0].status, CleanupRunStatus::TimedOut);
         assert!(report.runs[0].timed_out);
         assert_eq!(report.diagnostics.regression_count, 1);
+    }
+
+    #[test]
+    fn cleanup_parses_rustfmt_absolute_locations() {
+        let temp = repo();
+        let root = temp.path().canonicalize().unwrap();
+        std::fs::create_dir_all(temp.path().join("src")).unwrap();
+        std::fs::write(temp.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+        let process = ProcessOutput {
+            status: CleanupRunStatus::Failed,
+            exit_code: Some(1),
+            timed_out: false,
+            duration_ms: 1,
+            stdout: CappedBytes {
+                bytes: Vec::new(),
+                original_bytes: 0,
+                truncated: false,
+            },
+            stderr: CappedBytes {
+                bytes: Vec::new(),
+                original_bytes: 0,
+                truncated: false,
+            },
+        };
+
+        let diagnostics = diagnostics_from_output(
+            &root,
+            &fixture_tool(Vec::new()),
+            &process,
+            &format!(
+                "error: expected expression, found `;`\n --> {}:2:18\n  |\n2 |     let broken = ;\n",
+                root.join("src/main.rs").display()
+            ),
+        );
+
+        let diagnostic = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.rel_path.as_deref() == Some("src/main.rs"))
+            .unwrap();
+        assert_eq!(diagnostic.start_line, Some(2));
+        assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
     }
 
     #[test]

@@ -7,10 +7,12 @@ use serde::{Deserialize, Serialize};
 use super::contract::{LensEnvelope, LensMessage, LensResponseStatus};
 use super::store::LensStore;
 use super::types::{Diagnostic, DiagnosticDeltaSet, DiagnosticSeverity, LensTouchedFile};
+use crate::lsp::registry::{SERVERS, probe_for_server_root};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TurnHealthStatus {
+    Pending,
     Clean,
     Warning,
     Error,
@@ -18,11 +20,12 @@ pub enum TurnHealthStatus {
 
 impl TurnHealthStatus {
     pub fn is_warning_or_worse(&self) -> bool {
-        !matches!(self, Self::Clean)
+        matches!(self, Self::Warning | Self::Error)
     }
 
     fn envelope_status(&self) -> LensResponseStatus {
         match self {
+            Self::Pending => LensResponseStatus::Ok,
             Self::Clean => LensResponseStatus::Ok,
             Self::Warning => LensResponseStatus::Warning,
             Self::Error => LensResponseStatus::Error,
@@ -31,6 +34,7 @@ impl TurnHealthStatus {
 
     fn as_str(&self) -> &'static str {
         match self {
+            Self::Pending => "pending",
             Self::Clean => "clean",
             Self::Warning => "warning",
             Self::Error => "error",
@@ -59,10 +63,43 @@ pub struct TurnHealthData {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TurnHealthSummary {
     pub changed_files: ChangedFilesSummary,
+    pub validation_plan: ValidationPlanSummary,
+    pub lsp: LspSummary,
     pub cleanup: CleanupSummary,
     pub diagnostics: DiagnosticSummary,
     pub checks: CheckSummary,
     pub patch_refs: PatchRefSummary,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LspSummary {
+    pub connected: Vec<LspConnectionSummary>,
+    pub missing: Vec<LspMissingSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LspConnectionSummary {
+    pub id: String,
+    pub name: String,
+    pub command: String,
+    pub root: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LspMissingSummary {
+    pub id: String,
+    pub name: String,
+    pub commands: Vec<String>,
+    pub root: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValidationPlanSummary {
+    pub turn_active: bool,
+    pub cleanup_pending: bool,
+    pub automatic_checks: Vec<String>,
+    pub automatic_scanners: Vec<String>,
+    pub suggestions: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -288,23 +325,30 @@ pub fn final_health_text(data: &TurnHealthData) -> String {
 }
 
 fn compute_turn_health(
-    _root: &Path,
+    root: &Path,
     store: &mut LensStore,
     options: &TurnHealthOptions,
 ) -> Result<TurnHealthData, Box<dyn std::error::Error>> {
     let touched = store.list_touched_files(&options.session, &options.turn)?;
     let changed_paths = unique_changed_paths(&touched);
+    let turn_active = store
+        .turn_status(&options.session, &options.turn)?
+        .as_deref()
+        == Some("active");
+    let validation_plan = validation_plan_summary(root, turn_active)?;
+    let lsp = lsp_summary(root);
     let cleanup = cleanup_summary(store, &options.session, &options.turn)?;
-    let diagnostics_data = store.list_diagnostics_data(None, false)?;
-    let diagnostics = diagnostic_summary(&diagnostics_data.diagnostics, &diagnostics_data.deltas);
+    let diagnostics = turn_diagnostic_summary(store, &changed_paths)?;
     let checks = check_summary(store)?;
     let patch_refs = patch_ref_summary(store, &options.session, &changed_paths)?;
-    let status = compute_status(&cleanup, &diagnostics, &checks);
+    let status = compute_status(turn_active, &cleanup, &diagnostics, &checks);
     let summary = TurnHealthSummary {
         changed_files: ChangedFilesSummary {
             count: changed_paths.len(),
             paths: changed_paths.iter().cloned().collect(),
         },
+        validation_plan,
+        lsp,
         cleanup,
         diagnostics,
         checks,
@@ -395,6 +439,7 @@ fn health_messages(data: &TurnHealthData) -> Vec<LensMessage> {
         TurnHealthStatus::Error => {
             LensMessage::error("lens_health_error", data.action_context.reason.clone())
         }
+        TurnHealthStatus::Pending => return Vec::new(),
         TurnHealthStatus::Clean => return Vec::new(),
     };
     vec![message]
@@ -505,6 +550,32 @@ fn diagnostic_summary(
     summary
 }
 
+fn turn_diagnostic_summary(
+    store: &LensStore,
+    changed_paths: &BTreeSet<String>,
+) -> Result<DiagnosticSummary, Box<dyn std::error::Error>> {
+    let mut diagnostics = Vec::new();
+    for path in changed_paths {
+        diagnostics.extend(store.list_diagnostics(Some(path))?);
+    }
+
+    let mut deltas = store.list_diagnostics_data(None, true)?.deltas;
+    retain_deltas_for_paths(&mut deltas.new, changed_paths);
+    retain_deltas_for_paths(&mut deltas.resolved, changed_paths);
+    retain_deltas_for_paths(&mut deltas.unchanged, changed_paths);
+
+    Ok(diagnostic_summary(&diagnostics, &deltas))
+}
+
+fn retain_deltas_for_paths(diagnostics: &mut Vec<Diagnostic>, changed_paths: &BTreeSet<String>) {
+    diagnostics.retain(|diagnostic| {
+        diagnostic
+            .rel_path
+            .as_ref()
+            .is_some_and(|path| changed_paths.contains(path))
+    });
+}
+
 fn check_summary(store: &LensStore) -> Result<CheckSummary, Box<dyn std::error::Error>> {
     store.with_conn(|conn| {
         let snapshots: i64 = conn.query_row(
@@ -518,7 +589,7 @@ fn check_summary(store: &LensStore) -> Result<CheckSummary, Box<dyn std::error::
              FROM diagnostic_snapshots
              WHERE project_id=?1 AND scope_kind IN ('check', 'scanner')
              ORDER BY created_at DESC, id DESC
-             LIMIT 5",
+             LIMIT 50",
         )?;
         let rows = stmt.query_map(params![store.project_id()], |row| {
             let metadata: String = row.get(5)?;
@@ -537,11 +608,131 @@ fn check_summary(store: &LensStore) -> Result<CheckSummary, Box<dyn std::error::
                 exit_code: metadata.get("exit_code").and_then(serde_json::Value::as_i64),
             })
         })?;
+        let mut latest = Vec::new();
+        let mut seen = BTreeSet::new();
+        for row in rows {
+            let summary = row?;
+            if seen.insert((summary.scope_kind.clone(), summary.scope_key.clone())) {
+                latest.push(summary);
+            }
+            if latest.len() >= 5 {
+                break;
+            }
+        }
         Ok(CheckSummary {
             snapshots: snapshots.max(0) as usize,
-            latest: rows.collect::<Result<Vec<_>, _>>()?,
+            latest,
         })
     })
+}
+
+fn validation_plan_summary(
+    root: &Path,
+    turn_active: bool,
+) -> Result<ValidationPlanSummary, Box<dyn std::error::Error>> {
+    let planned = super::checks::planned_turn_checks_envelope(root)?.data;
+    Ok(ValidationPlanSummary {
+        turn_active,
+        cleanup_pending: turn_active,
+        automatic_checks: planned
+            .configured_checks
+            .into_iter()
+            .map(|check| check.command)
+            .collect(),
+        automatic_scanners: planned
+            .configured_scanners
+            .into_iter()
+            .map(|scanner| scanner.command)
+            .collect(),
+        suggestions: planned
+            .suggestions
+            .into_iter()
+            .map(|suggestion| suggestion.command)
+            .collect(),
+    })
+}
+
+fn lsp_summary(root: &Path) -> LspSummary {
+    let mut connected = Vec::new();
+    let mut missing = Vec::new();
+    for server in SERVERS {
+        if !project_uses_lsp(root, server.extensions, server.root_markers) {
+            continue;
+        }
+        let probe = probe_for_server_root(server.clone(), root);
+        if probe.available {
+            connected.push(LspConnectionSummary {
+                id: probe.server.id.to_string(),
+                name: probe.server.name.to_string(),
+                command: probe
+                    .command
+                    .as_ref()
+                    .map(|command| command.display().to_string())
+                    .unwrap_or_default(),
+                root: probe.root.map(|root| root.display().to_string()),
+            });
+        } else {
+            missing.push(LspMissingSummary {
+                id: server.id.to_string(),
+                name: server.name.to_string(),
+                commands: server
+                    .commands
+                    .iter()
+                    .map(|command| command.to_string())
+                    .collect(),
+                root: Some(root.display().to_string()),
+            });
+        }
+    }
+    LspSummary { connected, missing }
+}
+
+fn project_uses_lsp(root: &Path, extensions: &[&str], root_markers: &[&str]) -> bool {
+    let has_root_marker = root_markers
+        .iter()
+        .any(|marker| *marker != ".git" && root.join(marker).exists());
+    has_root_marker && project_has_extension(root, extensions)
+}
+
+fn project_has_extension(root: &Path, extensions: &[&str]) -> bool {
+    fn visit(dir: &Path, extensions: &[&str], remaining: &mut usize) -> bool {
+        if *remaining == 0 {
+            return false;
+        }
+        *remaining -= 1;
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return false;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if path.is_dir() {
+                if matches!(
+                    name.as_ref(),
+                    ".git" | ".pi" | ".cargo" | "node_modules" | "target"
+                ) {
+                    continue;
+                }
+                if visit(&path, extensions, remaining) {
+                    return true;
+                }
+            } else if path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| {
+                    extensions
+                        .iter()
+                        .any(|expected| expected.trim_start_matches('.') == extension)
+                })
+            {
+                return true;
+            }
+        }
+        false
+    }
+    let mut remaining = 10_000;
+    visit(root, extensions, &mut remaining)
 }
 
 fn patch_ref_summary(
@@ -574,6 +765,7 @@ fn patch_ref_summary(
 }
 
 fn compute_status(
+    turn_active: bool,
     cleanup: &CleanupSummary,
     diagnostics: &DiagnosticSummary,
     checks: &CheckSummary,
@@ -590,6 +782,8 @@ fn compute_status(
         || check_warnings(checks) > 0
     {
         TurnHealthStatus::Warning
+    } else if turn_active {
+        TurnHealthStatus::Pending
     } else {
         TurnHealthStatus::Clean
     }
@@ -604,6 +798,7 @@ fn compact_summary(status: &TurnHealthStatus, summary: &TurnHealthSummary) -> St
     if summary.diagnostics.errors > 0
         || summary.diagnostics.warnings > 0
         || summary.diagnostics.deltas.new > 0
+        || *status == TurnHealthStatus::Pending
     {
         parts.push(format!(
             "diag {} ({} err/{} warn)",
@@ -621,6 +816,38 @@ fn compact_summary(status: &TurnHealthStatus, summary: &TurnHealthSummary) -> St
     if check_failures > 0 || check_warnings > 0 {
         parts.push(format!("checks {check_failures} err/{check_warnings} warn"));
     }
+    if summary.validation_plan.turn_active {
+        let queue = summary
+            .validation_plan
+            .automatic_checks
+            .iter()
+            .chain(summary.validation_plan.automatic_scanners.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+        if queue.is_empty() {
+            parts.push("end: cleanup".to_string());
+        } else {
+            parts.push(format!("queue: {}", queue.join(", ")));
+        }
+        if !summary.validation_plan.suggestions.is_empty() {
+            let suggestions = summary.validation_plan.suggestions.to_vec();
+            parts.push(format!("suggested: {}", suggestions.join(", ")));
+        }
+    }
+    let lsp_names = summary
+        .lsp
+        .connected
+        .iter()
+        .map(|lsp| lsp.name.clone())
+        .collect::<Vec<_>>();
+    parts.push(format!(
+        "lsp: {}",
+        if lsp_names.is_empty() {
+            "none".to_string()
+        } else {
+            lsp_names.join(", ")
+        }
+    ));
     if summary.patch_refs.hunks > 0 || summary.patch_refs.accepted_events > 0 {
         parts.push(format!(
             "patch {}/{}",
@@ -634,6 +861,8 @@ fn health_fingerprint(status: &TurnHealthStatus, summary: &TurnHealthSummary) ->
     let value = serde_json::json!({
         "status": status,
         "changed": summary.changed_files.paths,
+        "validation_plan": summary.validation_plan,
+        "lsp": summary.lsp,
         "diagnostics": summary.diagnostics,
         "cleanup": summary.cleanup,
         "checks": summary.checks,
@@ -950,7 +1179,25 @@ mod tests {
 
     fn record_turn(root: &Path) {
         let mut store = LensStore::open_for_project(root).unwrap();
-        let event = event(root);
+        let mut event = event(root);
+        event.event = LensTurnEventKind::TurnEnd;
+        let (touched, _) = crate::lens::turn::touched_files_from_event(root, root, &event).unwrap();
+        store.record_turn_event(&event, &touched).unwrap();
+    }
+
+    fn record_turn_with(root: &Path, turn: &str, path: &str) {
+        let mut store = LensStore::open_for_project(root).unwrap();
+        let mut event = event(root);
+        event.event = LensTurnEventKind::TurnEnd;
+        event.turn = turn.to_string();
+        event.files = vec![LensTouchedFileInput {
+            path: path.to_string(),
+            operation: "modify".to_string(),
+            start_line: None,
+            end_line: None,
+            generated: false,
+            include_ignored: false,
+        }];
         let (touched, _) = crate::lens::turn::touched_files_from_event(root, root, &event).unwrap();
         store.record_turn_event(&event, &touched).unwrap();
     }
@@ -992,6 +1239,33 @@ mod tests {
         .unwrap();
 
         assert_eq!(envelope.data.status, TurnHealthStatus::Clean);
+        assert!(!envelope.data.action_context.required);
+    }
+
+    #[test]
+    fn active_turn_reports_pending_validation_plan_instead_of_clean() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("main.rs"), "fn main() {}\n").unwrap();
+        let mut store = LensStore::open_for_project(temp.path()).unwrap();
+        let event = event(temp.path());
+        let (touched, _) =
+            crate::lens::turn::touched_files_from_event(temp.path(), temp.path(), &event).unwrap();
+        store.record_turn_event(&event, &touched).unwrap();
+
+        let envelope = build_turn_health_envelope(
+            temp.path(),
+            TurnHealthOptions {
+                session: "s".to_string(),
+                turn: "t".to_string(),
+                acknowledge: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(envelope.data.status, TurnHealthStatus::Pending);
+        assert!(envelope.data.summary.validation_plan.turn_active);
+        assert!(envelope.data.summary.validation_plan.cleanup_pending);
+        assert!(envelope.data.compact.contains("end: cleanup"));
         assert!(!envelope.data.action_context.required);
     }
 
@@ -1091,5 +1365,48 @@ mod tests {
         assert_eq!(health.data.status, TurnHealthStatus::Warning);
         assert!(health.data.action_context.required);
         assert!(health.data.action_context.ack_command.is_some());
+    }
+
+    #[test]
+    fn turn_health_ignores_diagnostics_from_other_turns() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("first.rs"), "fn first() {}\n").unwrap();
+        std::fs::write(temp.path().join("second.rs"), "fn second() {}\n").unwrap();
+        record_turn_with(temp.path(), "first", "first.rs");
+        let mut store = LensStore::open_for_project(temp.path()).unwrap();
+        store
+            .record_diagnostics(&[Diagnostic {
+                source: DiagnosticSource::Test,
+                scope: DiagnosticScope::file("first.rs"),
+                severity: DiagnosticSeverity::Warning,
+                code: None,
+                message: "old turn warning".to_string(),
+                rel_path: Some("first.rs".to_string()),
+                start_line: Some(1),
+                end_line: Some(1),
+                fingerprint: "old-turn-warning".to_string(),
+                content_hash: None,
+                raw_output_id: None,
+                snapshot_id: None,
+                first_seen_at: None,
+                last_seen_at: None,
+                resolved_at: None,
+            }])
+            .unwrap();
+        record_turn_with(temp.path(), "second", "second.rs");
+
+        let health = build_turn_health_envelope(
+            temp.path(),
+            TurnHealthOptions {
+                session: "s".to_string(),
+                turn: "second".to_string(),
+                acknowledge: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(health.data.summary.changed_files.paths, vec!["second.rs"]);
+        assert_eq!(health.data.summary.diagnostics.active, 0);
+        assert_eq!(health.data.status, TurnHealthStatus::Clean);
     }
 }

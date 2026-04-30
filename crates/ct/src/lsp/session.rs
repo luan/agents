@@ -47,9 +47,16 @@ struct LspSession {
 }
 
 impl LspSession {
-    fn start(probe: &LspServerProbe, key: LspSessionKey) -> Result<Self> {
+    fn start_with_initialize_timeout(
+        probe: &LspServerProbe,
+        key: LspSessionKey,
+        initialize_timeout: Option<Duration>,
+    ) -> Result<Self> {
         let mut client = LspClient::start(probe)?;
-        client.initialize(probe)?;
+        match initialize_timeout {
+            Some(timeout) => client.initialize_with_timeout(probe, timeout)?,
+            None => client.initialize(probe)?,
+        }
         let _ = key;
         Ok(Self {
             client,
@@ -114,10 +121,21 @@ impl LspSessionPool {
         cwd: &Path,
         op: impl FnOnce(&mut LspClient) -> Result<T>,
     ) -> Result<T> {
+        self.with_session_with_initialize_timeout(probe, path, cwd, None, op)
+    }
+
+    pub fn with_session_with_initialize_timeout<T>(
+        &mut self,
+        probe: &LspServerProbe,
+        path: &Path,
+        cwd: &Path,
+        initialize_timeout: Option<Duration>,
+        op: impl FnOnce(&mut LspClient) -> Result<T>,
+    ) -> Result<T> {
         self.prune();
         let key = LspSessionKey::from_probe(probe, cwd)?;
         if !self.sessions.contains_key(&key) {
-            self.insert_session(probe, key.clone())?;
+            self.insert_session_with_initialize_timeout(probe, key.clone(), initialize_timeout)?;
         }
         let needs_restart = {
             let session = self.sessions.get_mut(&key).context("LSP session missing")?;
@@ -132,7 +150,7 @@ impl LspSessionPool {
         };
         if needs_restart {
             self.sessions.remove(&key);
-            self.insert_session(probe, key.clone())?;
+            self.insert_session_with_initialize_timeout(probe, key.clone(), initialize_timeout)?;
             let session = self.sessions.get_mut(&key).context("LSP session missing")?;
             session.ensure_document(probe, path)?;
         }
@@ -141,7 +159,12 @@ impl LspSessionPool {
         op(&mut session.client)
     }
 
-    fn insert_session(&mut self, probe: &LspServerProbe, key: LspSessionKey) -> Result<()> {
+    fn insert_session_with_initialize_timeout(
+        &mut self,
+        probe: &LspServerProbe,
+        key: LspSessionKey,
+        initialize_timeout: Option<Duration>,
+    ) -> Result<()> {
         while self.sessions.len() >= self.max_sessions {
             let Some(oldest) = self
                 .sessions
@@ -153,7 +176,8 @@ impl LspSessionPool {
             };
             self.sessions.remove(&oldest);
         }
-        let session = LspSession::start(probe, key.clone())?;
+        let session =
+            LspSession::start_with_initialize_timeout(probe, key.clone(), initialize_timeout)?;
         self.sessions.insert(key, session);
         Ok(())
     }

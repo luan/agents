@@ -100,10 +100,10 @@ pub fn touched_files_from_event(
     }
 
     let should_fallback = event.policy.git_fallback
-        && (event.files.is_empty()
-            || is_shell_tool(&event.tool)
-            || !matches!(event.phase, LensToolEventPhase::PostTool)
-            || matches!(event.event, LensTurnEventKind::ToolStart));
+        && (matches!(event.event, LensTurnEventKind::TurnEnd)
+            || (matches!(event.phase, LensToolEventPhase::PostTool)
+                && event.files.is_empty()
+                && is_shell_tool(&event.tool)));
     let mut git_fallback_used = false;
     if should_fallback {
         for file in git_status_files(root, event)? {
@@ -202,7 +202,14 @@ fn git_operation(x: char, y: char) -> String {
 fn is_shell_tool(tool: &str) -> bool {
     matches!(
         tool.to_ascii_lowercase().as_str(),
-        "bash" | "shell" | "sh" | "zsh" | "terminal" | "run_command"
+        "bash"
+            | "shell"
+            | "sh"
+            | "zsh"
+            | "terminal"
+            | "run_command"
+            | "exec_command"
+            | "write_stdin"
     )
 }
 
@@ -404,6 +411,21 @@ mod tests {
                 .iter()
                 .any(|file| file.path == "main.rs")
         );
+    }
+
+    #[test]
+    fn pre_tool_without_explicit_files_does_not_treat_dirty_worktree_as_touched() {
+        let temp = repo();
+        std::fs::write(temp.path().join("main.rs"), "fn main() { println!(); }\n").unwrap();
+        let mut event = event(temp.path());
+        event.phase = LensToolEventPhase::PreTool;
+        event.event = LensTurnEventKind::ToolStart;
+        event.tool = "lens_health".to_string();
+
+        let (files, fallback) = touched_files_from_event(temp.path(), temp.path(), &event).unwrap();
+
+        assert!(!fallback);
+        assert!(files.is_empty());
     }
 
     #[test]

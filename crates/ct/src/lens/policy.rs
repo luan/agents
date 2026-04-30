@@ -139,6 +139,7 @@ pub fn resolve_policy_with_options(
         present: true,
         applied: true,
     }];
+    apply_built_in_defaults(root, &mut policy);
 
     apply_file_layer("user", &user_path, &mut policy, &mut layers, &mut warnings);
     apply_file_layer(
@@ -155,6 +156,34 @@ pub fn resolve_policy_with_options(
         layers,
         warnings,
     }
+}
+
+fn apply_built_in_defaults(root: &Path, policy: &mut LensPolicy) {
+    if !root.join("Cargo.toml").is_file() {
+        return;
+    }
+    policy.checks.insert(
+        "cargo-fmt".to_string(),
+        LensCheckConfig {
+            command: "cargo fmt --check".to_string(),
+            scope: "workspace".to_string(),
+            automatic: true,
+            timeout_ms: default_check_timeout_ms(),
+            parser: LensCheckParser::Generic,
+            raw_output_max_bytes: None,
+        },
+    );
+    policy.checks.insert(
+        "cargo-clippy".to_string(),
+        LensCheckConfig {
+            command: "cargo clippy -- -D warnings".to_string(),
+            scope: "workspace".to_string(),
+            automatic: true,
+            timeout_ms: default_check_timeout_ms(),
+            parser: LensCheckParser::Generic,
+            raw_output_max_bytes: None,
+        },
+    );
 }
 
 fn apply_file_layer(
@@ -315,6 +344,28 @@ mod tests {
             resolved.policy.scanners.get("secrets").unwrap().source,
             "security"
         );
+    }
+
+    #[test]
+    fn cargo_projects_get_built_in_automatic_checks_without_config() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("Cargo.toml"), "[package]\nname='x'\n").unwrap();
+
+        let resolved = resolve_policy_with_options(
+            temp.path(),
+            PolicyResolveOptions {
+                user_config_path: Some(temp.path().join("missing-user.json")),
+                repo_config_path: Some(temp.path().join("missing-repo.json")),
+                runtime: RuntimePolicyOverrides::default(),
+            },
+        );
+
+        let fmt = resolved.policy.checks.get("cargo-fmt").unwrap();
+        assert_eq!(fmt.command, "cargo fmt --check");
+        assert!(fmt.automatic);
+        let clippy = resolved.policy.checks.get("cargo-clippy").unwrap();
+        assert_eq!(clippy.command, "cargo clippy -- -D warnings");
+        assert!(clippy.automatic);
     }
 
     #[test]

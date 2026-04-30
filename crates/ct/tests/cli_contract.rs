@@ -443,9 +443,18 @@ fn lens_health_context_report_and_final_outputs_are_schema_versioned() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
     let value: serde_json::Value = serde_json::from_str(&stdout).expect("health json");
     assert_eq!(value["schema_version"], "lens.response.v1");
-    assert_eq!(value["data"]["status"], "clean");
+    assert_eq!(value["data"]["status"], "pending");
     assert_eq!(value["data"]["action_context"]["required"], false);
-    assert!(value["data"]["compact"].as_str().unwrap().contains("clean"));
+    assert!(
+        value["data"]["compact"]
+            .as_str()
+            .unwrap()
+            .contains("pending")
+    );
+    assert_eq!(
+        value["data"]["summary"]["validation_plan"]["turn_active"],
+        true
+    );
 
     ct_cmd(bp.path())
         .current_dir(project.path())
@@ -500,7 +509,7 @@ fn lens_health_context_report_and_final_outputs_are_schema_versioned() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Lens final health: clean"));
+        .stdout(predicate::str::contains("Lens final health: pending"));
 }
 
 #[test]
@@ -1302,6 +1311,63 @@ fn lens_post_tool_hook_records_touched_files_and_raw_output_without_reads() {
     assert_eq!(value["data"]["turn"]["file_count"], 1);
     assert_eq!(value["data"]["turn"]["files"][0]["operation"], "read");
     assert_eq!(value["data"]["raw_output"]["redacted"], true);
+}
+
+#[test]
+fn lens_post_tool_hook_parses_command_output_diagnostics_without_config() {
+    let (bp, _remote) = setup_blueprints();
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+    fs::write(project.path().join("main.rs"), "fn main() {}\n").expect("write source");
+    let mut event = lens_hook_event(project.path(), "post_tool");
+    event["session"] = serde_json::json!({"id": "auto-output-diagnostics"});
+    event["turn"] = serde_json::json!({"id": "turn-output"});
+    event["tool"] = serde_json::json!({
+        "name": "exec_command",
+        "status": "error",
+        "input": {"cmd": "cargo test"},
+        "raw_output": "main.rs:1:warning:automatic output diagnostic",
+        "raw_output_max_bytes": 128
+    });
+    event["known_files"] = serde_json::json!([{"path": "main.rs", "operation": "modify"}]);
+
+    let hook_assert = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .env("XDG_CONFIG_HOME", state.path())
+        .args(["hook", "lens-post-tool"])
+        .write_stdin(event.to_string())
+        .assert()
+        .success();
+    let hook_stdout =
+        String::from_utf8(hook_assert.get_output().stdout.clone()).expect("hook stdout utf8");
+    let hook_value: serde_json::Value = serde_json::from_str(&hook_stdout).expect("post-tool json");
+    assert_eq!(hook_value["status"], "warning");
+    assert_eq!(hook_value["health"]["status"], "warning");
+    assert_eq!(
+        hook_value["data"]["health"]["summary"]["diagnostics"]["warnings"],
+        1
+    );
+
+    let assert = ct_cmd(bp.path())
+        .current_dir(project.path())
+        .env("XDG_STATE_HOME", state.path())
+        .env("XDG_CONFIG_HOME", state.path())
+        .args([
+            "lens",
+            "health",
+            "--session",
+            "auto-output-diagnostics",
+            "--turn",
+            "turn-output",
+            "--json",
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("health json");
+    assert_eq!(value["data"]["status"], "warning");
+    assert_eq!(value["data"]["summary"]["diagnostics"]["warnings"], 1);
 }
 
 #[test]
