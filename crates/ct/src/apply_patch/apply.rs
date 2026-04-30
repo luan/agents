@@ -82,6 +82,8 @@ pub struct LineChange {
     pub new_len: usize,
 }
 
+type DerivedContents = (String, Vec<HunkFuzzy>, Vec<HunkRegion>, Vec<LineChange>);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ChangeType {
@@ -874,7 +876,7 @@ fn derive_new_contents(
     chunks: &[UpdateFileChunk],
     file_rel: &str,
     attempts: &mut Vec<AnchorAttempt>,
-) -> Result<(String, Vec<HunkFuzzy>, Vec<HunkRegion>, Vec<LineChange>), ChunkFailure> {
+) -> Result<DerivedContents, ChunkFailure> {
     let original_lines = lines_without_trailing_empty(original);
 
     let (replacements, fuzzy_hunks) =
@@ -1339,7 +1341,7 @@ fn derive_new_contents_from_scope_chunks(
     chunks: &[UpdateScopeChunk],
     file_rel: &str,
     attempts: &mut Vec<AnchorAttempt>,
-) -> Result<(String, Vec<HunkFuzzy>, Vec<HunkRegion>, Vec<LineChange>), ApplyPatchError> {
+) -> Result<DerivedContents, ApplyPatchError> {
     let mut original_lines: Vec<String> = original.split('\n').map(String::from).collect();
     if original_lines.last().is_some_and(String::is_empty) {
         original_lines.pop();

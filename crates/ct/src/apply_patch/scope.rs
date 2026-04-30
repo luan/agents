@@ -149,15 +149,15 @@ fn locator_matches(scope: &SourceScope, locator: &ScopeLocator) -> bool {
 }
 
 fn collect_scopes(node: Node<'_>, source: &[u8], scopes: &mut Vec<SourceScope>) {
-    if let Some(kind) = scope_kind(node.kind()) {
-        if let Some(name) = scope_name(node, source) {
-            scopes.push(SourceScope {
-                name,
-                kind: kind.to_string(),
-                start_line: node.start_position().row + 1,
-                end_line: node.end_position().row + 1,
-            });
-        }
+    if let Some(kind) = scope_kind(node.kind())
+        && let Some(name) = scope_name(node, source)
+    {
+        scopes.push(SourceScope {
+            name,
+            kind: kind.to_string(),
+            start_line: node.start_position().row + 1,
+            end_line: node.end_position().row + 1,
+        });
     }
 
     let mut cursor = node.walk();
@@ -213,10 +213,9 @@ fn find_named_identifier(node: Node<'_>, source: &[u8]) -> Option<String> {
                 | "type_identifier"
                 | "constant"
                 | "name"
-        ) {
-            if let Some(text) = node_text(child, source) {
-                return Some(text);
-            }
+        ) && let Some(text) = node_text(child, source)
+        {
+            return Some(text);
         }
     }
     None
