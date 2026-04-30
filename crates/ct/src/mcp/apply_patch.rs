@@ -142,6 +142,8 @@ fn enriched_error_to_tool(
         | ApplyPatchError::AddTargetExists(_)
         | ApplyPatchError::DuplicateUpdate(_)
         | ApplyPatchError::MoveTargetExists(_)
+        | ApplyPatchError::LineRangeMismatch { .. }
+        | ApplyPatchError::ReplacementCountMismatch { .. }
         | ApplyPatchError::ContextNotFound { .. }
         | ApplyPatchError::AmbiguousContext { .. }
         | ApplyPatchError::AnchorShadowsFirstContext { .. } => {
@@ -183,6 +185,9 @@ fn enrichable_context(err: &ApplyPatchError) -> Option<(&str, usize, Option<&str
             *chunk,
             change_contexts.last().map(String::as_str),
         )),
+        ApplyPatchError::LineRangeMismatch { path, chunk, .. } => {
+            Some((path.as_str(), *chunk, None))
+        }
         ApplyPatchError::AnchorShadowsFirstContext {
             path,
             chunk,

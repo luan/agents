@@ -387,6 +387,148 @@ fn pure_rename_without_hunks_moves_file() {
 }
 
 #[test]
+fn move_file_shorthand_moves_without_update_body() {
+    let sandbox = TempDir::new().unwrap();
+    write_seed(&sandbox, "src/old.rs", "fn main() {}\n");
+
+    let patch = "\
+*** Begin Patch
+*** Move File: src/old.rs -> src/new.rs
+*** End Patch
+";
+
+    ct().arg("apply-patch")
+        .arg("--cwd")
+        .arg(sandbox.path())
+        .write_stdin(patch)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("R src/old.rs \u{2192} src/new.rs"));
+
+    assert!(!sandbox.path().join("src/old.rs").exists());
+    assert_eq!(
+        fs::read_to_string(sandbox.path().join("src/new.rs")).unwrap(),
+        "fn main() {}\n"
+    );
+}
+
+#[test]
+fn line_range_targets_repeated_context_exactly() {
+    let sandbox = TempDir::new().unwrap();
+    write_seed(&sandbox, "dup.txt", "same\nvalue\nsame\nvalue\n");
+
+    let patch = "\
+*** Begin Patch
+*** Update File: dup.txt
+@@ lines 3-4
+-same
+-value
++same
++changed
+*** End Patch
+";
+
+    ct().arg("apply-patch")
+        .arg("--cwd")
+        .arg(sandbox.path())
+        .write_stdin(patch)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("M dup.txt"));
+
+    assert_eq!(
+        fs::read_to_string(sandbox.path().join("dup.txt")).unwrap(),
+        "same\nvalue\nsame\nchanged\n"
+    );
+}
+
+#[test]
+fn line_range_mismatch_is_rejected() {
+    let sandbox = TempDir::new().unwrap();
+    write_seed(&sandbox, "dup.txt", "same\nvalue\nsame\nvalue\n");
+
+    let patch = "\
+*** Begin Patch
+*** Update File: dup.txt
+@@ lines 2-3
+-same
+-value
++same
++changed
+*** End Patch
+";
+
+    ct().arg("apply-patch")
+        .arg("--cwd")
+        .arg(sandbox.path())
+        .write_stdin(patch)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("line range mismatch"));
+
+    assert_eq!(
+        fs::read_to_string(sandbox.path().join("dup.txt")).unwrap(),
+        "same\nvalue\nsame\nvalue\n"
+    );
+}
+
+#[test]
+fn replace_all_is_guarded_by_expected_count() {
+    let sandbox = TempDir::new().unwrap();
+    write_seed(&sandbox, "words.txt", "alpha\nbeta\nalpha\nbeta\n");
+
+    let patch = "\
+*** Begin Patch
+*** Replace All In File: words.txt
+*** Expect Replacements: 2
+-alpha
++ALPHA
+*** End Patch
+";
+
+    ct().arg("apply-patch")
+        .arg("--cwd")
+        .arg(sandbox.path())
+        .write_stdin(patch)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("M words.txt"));
+
+    assert_eq!(
+        fs::read_to_string(sandbox.path().join("words.txt")).unwrap(),
+        "ALPHA\nbeta\nALPHA\nbeta\n"
+    );
+}
+
+#[test]
+fn replace_all_count_mismatch_is_rejected() {
+    let sandbox = TempDir::new().unwrap();
+    write_seed(&sandbox, "words.txt", "alpha\nbeta\nalpha\nbeta\n");
+
+    let patch = "\
+*** Begin Patch
+*** Replace All In File: words.txt
+*** Expect Replacements: 1
+-alpha
++ALPHA
+*** End Patch
+";
+
+    ct().arg("apply-patch")
+        .arg("--cwd")
+        .arg(sandbox.path())
+        .write_stdin(patch)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("replace-all count mismatch"));
+
+    assert_eq!(
+        fs::read_to_string(sandbox.path().join("words.txt")).unwrap(),
+        "alpha\nbeta\nalpha\nbeta\n"
+    );
+}
+
+#[test]
 fn context_mismatch_reports_near_miss_snippet() {
     let sandbox = TempDir::new().unwrap();
     write_seed(

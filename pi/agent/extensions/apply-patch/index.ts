@@ -38,13 +38,16 @@ const APPLY_PATCH_GRAMMAR = String.raw`start: begin_patch hunk+ end_patch
 begin_patch: "*** Begin Patch" LF
 end_patch: "*** End Patch" LF?
 
-hunk: add_hunk | delete_hunk | update_hunk | update_scope_hunk
+hunk: add_hunk | delete_hunk | update_hunk | move_hunk | replace_all_hunk | update_scope_hunk
 add_hunk: "*** Add File: " filename LF add_line+
 delete_hunk: "*** Delete File: " filename LF
 update_hunk: "*** Update File: " filename LF change_move? change?
+move_hunk: "*** Move File: " move_spec LF
+replace_all_hunk: "*** Replace All In File: " filename LF expect_replacements replace_line+
 update_scope_hunk: "*** Update Scope: " filename LF scope_change+
 
 filename: /(.+)/
+move_spec: /(.+) -> (.+)/
 add_line: "+" /(.*)/ LF -> line
 
 change_move: "*** Move to: " filename LF
@@ -52,6 +55,8 @@ change: (change_context | change_line)+ eof_line?
 change_context: ("@@" | "@@ " /(.+)/) LF
 scope_change: "@@ " /(.+)/ LF change_line+ eof_line?
 change_line: ("+" | "-" | " ") /(.*)/ LF
+expect_replacements: "*** Expect Replacements: " /[0-9]+/ LF
+replace_line: ("+" | "-") /(.*)/ LF
 eof_line: "*** End of File" LF
 
 %import common.LF`;
@@ -69,10 +74,19 @@ Use the \`apply_patch\` tool for all file edits. The patch payload format is:
 @@
 -old line
 +new line
+*** Update File: path/to/existing-file.txt
+@@ lines 10-12
+-exact old line 10
++exact new line 10
 *** Add File: path/to/new-file.txt
 +file contents
 *** Update File: path/to/existing-file.txt
 *** Move to: path/to/new-name.txt
+*** Move File: path/to/old-name.txt -> path/to/new-name.txt
+*** Replace All In File: path/to/existing-file.txt
+*** Expect Replacements: 2
+-old repeated line
++new repeated line
 *** Delete File: path/to/remove.txt
 *** End Patch
 
@@ -85,7 +99,11 @@ Rules:
 - Use \`*** Update File\` freely for cross-scope edits, unsupported languages,
   moves, top-level data/config, or when plain text context is clearer.
 - For \`Update File\`, use specific \`@@ symbolName\` anchors and 2-3 nearby
-  unchanged context lines when the file is large or repetitive.`;
+  unchanged context lines when the file is large or repetitive.
+- Use \`@@ lines START-END\` when exact line numbers are safer than repeated
+  context, and keep the old hunk body matching that range exactly.
+- Use \`Replace All In File\` only with \`Expect Replacements\` so bulk edits are
+  guarded against accidental over/under-replacement.`;
 
 const applyPatchToolSchema = Type.Object({
   input: Type.String({
@@ -1668,6 +1686,29 @@ function parsePatchInputProgress(input: string): {
       };
       continue;
     }
+    if (line.startsWith("*** Move File: ")) {
+      flush();
+      const spec = line.slice("*** Move File: ".length).trim();
+      const [from, to] = spec.split(" -> ", 2);
+      current = {
+        path: from?.trim() ?? spec,
+        moveTo: to?.trim(),
+        operation: "update",
+        added: 0,
+        removed: 0,
+      };
+      continue;
+    }
+    if (line.startsWith("*** Replace All In File: ")) {
+      flush();
+      current = {
+        path: line.slice("*** Replace All In File: ".length).trim(),
+        operation: "update",
+        added: 0,
+        removed: 0,
+      };
+      continue;
+    }
     if (line.startsWith("*** Update File: ")) {
       flush();
       current = {
@@ -1972,6 +2013,20 @@ function ingestLivePatchLine(state: LivePatchPreviewState, line: string): void {
   }
   if (line.startsWith("*** Update File: ")) {
     startLivePatchFile(state, "update", line.slice("*** Update File: ".length).trim());
+    return;
+  }
+  if (line.startsWith("*** Move File: ")) {
+    const spec = line.slice("*** Move File: ".length).trim();
+    const [from, to] = spec.split(" -> ", 2);
+    startLivePatchFile(state, "update", from?.trim() ?? spec);
+    if (state.currentFile) {
+      state.currentFile.moveTo = to?.trim();
+      state.currentPath = state.currentFile.moveTo;
+    }
+    return;
+  }
+  if (line.startsWith("*** Replace All In File: ")) {
+    startLivePatchFile(state, "update", line.slice("*** Replace All In File: ".length).trim());
     return;
   }
   if (line.startsWith("*** Update Scope: ")) {

@@ -11,10 +11,12 @@
 //! begin_patch: "*** Begin Patch" LF
 //! end_patch: "*** End Patch" LF?
 //!
-//! hunk: add_hunk | delete_hunk | update_hunk | update_scope_hunk
+//! hunk: add_hunk | delete_hunk | update_hunk | move_hunk | replace_all_hunk | update_scope_hunk
 //! add_hunk: "*** Add File: " filename LF add_line+
 //! delete_hunk: "*** Delete File: " filename LF
 //! update_hunk: "*** Update File: " filename LF change_move? change?
+//! move_hunk: "*** Move File: " filename " -> " filename LF
+//! replace_all_hunk: "*** Replace All In File: " filename LF "*** Expect Replacements: " int LF replace_line+
 //! update_scope_hunk: "*** Update Scope: " filename LF scope_change+
 //! filename: /(.+)/
 //! add_line: "+" /(.+)/ LF -> line
@@ -36,10 +38,14 @@ const ADD_FILE_MARKER: &str = "*** Add File: ";
 const DELETE_FILE_MARKER: &str = "*** Delete File: ";
 const UPDATE_FILE_MARKER: &str = "*** Update File: ";
 const UPDATE_SCOPE_MARKER: &str = "*** Update Scope: ";
+const MOVE_FILE_MARKER: &str = "*** Move File: ";
 const MOVE_TO_MARKER: &str = "*** Move to: ";
+const REPLACE_ALL_MARKER: &str = "*** Replace All In File: ";
+const EXPECT_REPLACEMENTS_MARKER: &str = "*** Expect Replacements: ";
 const EOF_MARKER: &str = "*** End of File";
 const CHANGE_CONTEXT_MARKER: &str = "@@ ";
 const EMPTY_CHANGE_CONTEXT_MARKER: &str = "@@";
+const LINE_RANGE_CONTEXT_PREFIX: &str = "lines ";
 
 /// Subkind of `InvalidHunkError`. Surfaced through telemetry so the dominant
 /// parse-failure shape (e.g. Add-File body lines without a `+` prefix) is
@@ -132,6 +138,12 @@ pub enum Hunk {
         /// should occur later in the file than the previous chunk.
         chunks: Vec<UpdateFileChunk>,
     },
+    ReplaceAll {
+        path: PathBuf,
+        expected_replacements: usize,
+        old_lines: Vec<String>,
+        new_lines: Vec<String>,
+    },
     UpdateScope {
         path: PathBuf,
         chunks: Vec<UpdateScopeChunk>,
@@ -149,6 +161,8 @@ pub struct UpdateFileChunk {
     /// (consumed but not stored). Empty vec means "no anchor — use the body
     /// pattern alone".
     pub change_contexts: Vec<String>,
+    /// Optional 1-based inclusive target from `@@ lines A-B`.
+    pub line_range: Option<(usize, usize)>,
 
     /// A contiguous block of lines that should be replaced with `new_lines`.
     /// `old_lines` must occur strictly after the last anchor in
@@ -349,6 +363,81 @@ fn parse_one_hunk(lines: &[&str], line_number: usize) -> Result<(Hunk, usize), P
             },
             1,
         ));
+    } else if let Some(spec) = first_line.strip_prefix(MOVE_FILE_MARKER) {
+        let Some((from, to)) = spec.split_once(" -> ") else {
+            return Err(InvalidHunkError {
+                message: "Move File hunk must be written as '*** Move File: old/path -> new/path'"
+                    .to_string(),
+                line_number,
+                snippet: None,
+                kind: ParseErrorKind::UnknownHunkHeader,
+            });
+        };
+        return Ok((
+            UpdateFile {
+                path: PathBuf::from(from),
+                move_path: Some(PathBuf::from(to)),
+                chunks: Vec::new(),
+            },
+            1,
+        ));
+    } else if let Some(path) = first_line.strip_prefix(REPLACE_ALL_MARKER) {
+        let Some(expect_line) = lines.get(1).and_then(|line| {
+            line.trim()
+                .strip_prefix(EXPECT_REPLACEMENTS_MARKER)
+                .map(str::trim)
+        }) else {
+            return Err(InvalidHunkError {
+                message: "Replace All hunks require '*** Expect Replacements: N' immediately after the file header".to_string(),
+                line_number: line_number + 1,
+                snippet: None,
+                kind: ParseErrorKind::MissingChunkHeader,
+            });
+        };
+        let expected_replacements = expect_line.parse::<usize>().map_err(|_| InvalidHunkError {
+            message: format!("Invalid replacement count: {expect_line:?}"),
+            line_number: line_number + 1,
+            snippet: None,
+            kind: ParseErrorKind::MissingChunkHeader,
+        })?;
+        let mut old_lines = Vec::new();
+        let mut new_lines = Vec::new();
+        let mut parsed_lines = 2;
+        for line in &lines[2..] {
+            if line.starts_with("***") {
+                break;
+            }
+            match line.chars().next() {
+                Some('-') => old_lines.push(line[1..].to_string()),
+                Some('+') => new_lines.push(line[1..].to_string()),
+                _ => {
+                    return Err(InvalidHunkError {
+                        message: "Replace All body lines must start with '-' or '+'".to_string(),
+                        line_number: line_number + parsed_lines,
+                        snippet: None,
+                        kind: ParseErrorKind::UnprefixedLine,
+                    });
+                }
+            }
+            parsed_lines += 1;
+        }
+        if old_lines.is_empty() {
+            return Err(InvalidHunkError {
+                message: "Replace All requires at least one '-' line".to_string(),
+                line_number,
+                snippet: None,
+                kind: ParseErrorKind::EmptyUpdate,
+            });
+        }
+        return Ok((
+            ReplaceAll {
+                path: PathBuf::from(path),
+                expected_replacements,
+                old_lines,
+                new_lines,
+            },
+            parsed_lines,
+        ));
     } else if let Some(path) = first_line.strip_prefix(UPDATE_FILE_MARKER) {
         // Update File
         let mut remaining_lines = &lines[1..];
@@ -443,12 +532,43 @@ fn parse_one_hunk(lines: &[&str], line_number: usize) -> Result<(Hunk, usize), P
 
     Err(InvalidHunkError {
         message: format!(
-            "'{first_line}' is not a valid hunk header. Valid hunk headers: '*** Add File: {{path}}', '*** Delete File: {{path}}', '*** Update File: {{path}}', '*** Update Scope: {{path}}'"
+            "'{first_line}' is not a valid hunk header. Valid hunk headers: '*** Add File: {{path}}', '*** Delete File: {{path}}', '*** Update File: {{path}}', '*** Move File: {{old}} -> {{new}}', '*** Replace All In File: {{path}}', '*** Update Scope: {{path}}'"
         ),
         line_number,
         snippet: None,
         kind: ParseErrorKind::UnknownHunkHeader,
     })
+}
+
+fn parse_line_range_context(
+    context: &str,
+    line_number: usize,
+) -> Option<Result<(usize, usize), ParseError>> {
+    let spec = context
+        .trim()
+        .strip_prefix(LINE_RANGE_CONTEXT_PREFIX)?
+        .trim();
+    let Some((start, end)) = spec.split_once('-') else {
+        return Some(Err(InvalidHunkError {
+            message: "Line range context must use '@@ lines START-END'".to_string(),
+            line_number,
+            snippet: None,
+            kind: ParseErrorKind::MissingChunkHeader,
+        }));
+    };
+    let parsed = start
+        .trim()
+        .parse::<usize>()
+        .ok()
+        .zip(end.trim().parse::<usize>().ok())
+        .filter(|(start, end)| *start >= 1 && *start <= *end)
+        .ok_or_else(|| InvalidHunkError {
+            message: "Line range context must use a valid 1-based inclusive range".to_string(),
+            line_number,
+            snippet: None,
+            kind: ParseErrorKind::MissingChunkHeader,
+        });
+    Some(parsed)
 }
 
 fn parse_update_file_chunk(
@@ -474,6 +594,7 @@ fn parse_update_file_chunk(
     // function or block before the change. Supporting them removes the
     // footgun.
     let mut change_contexts: Vec<String> = Vec::new();
+    let mut line_range: Option<(usize, usize)> = None;
     let mut start_index = 0;
     while start_index < lines.len() {
         let line = lines[start_index];
@@ -482,7 +603,11 @@ fn parse_update_file_chunk(
             continue;
         }
         if let Some(context) = line.strip_prefix(CHANGE_CONTEXT_MARKER) {
-            change_contexts.push(context.to_string());
+            if let Some(range) = parse_line_range_context(context, line_number + start_index) {
+                line_range = Some(range?);
+            } else {
+                change_contexts.push(context.to_string());
+            }
             start_index += 1;
             continue;
         }
@@ -509,6 +634,7 @@ fn parse_update_file_chunk(
     }
     let mut chunk = UpdateFileChunk {
         change_contexts,
+        line_range,
         old_lines: Vec::new(),
         new_lines: Vec::new(),
         is_end_of_file: false,
@@ -707,6 +833,7 @@ mod tests {
                     move_path: Some(PathBuf::from("path/update2.py")),
                     chunks: vec![UpdateFileChunk {
                         change_contexts: vec!["def f():".to_string()],
+                        line_range: None,
                         old_lines: vec!["    pass".to_string()],
                         new_lines: vec!["    return 123".to_string()],
                         is_end_of_file: false
@@ -732,6 +859,7 @@ mod tests {
                     move_path: None,
                     chunks: vec![UpdateFileChunk {
                         change_contexts: vec![],
+                        line_range: None,
                         old_lines: vec![],
                         new_lines: vec!["line".to_string()],
                         is_end_of_file: false
@@ -760,6 +888,7 @@ mod tests {
                 move_path: None,
                 chunks: vec![UpdateFileChunk {
                     change_contexts: vec![],
+                    line_range: None,
                     old_lines: vec!["import foo".to_string()],
                     new_lines: vec!["import foo".to_string(), "bar".to_string()],
                     is_end_of_file: false,
@@ -802,6 +931,7 @@ mod tests {
                     move_path: None,
                     chunks: vec![UpdateFileChunk {
                         change_contexts: vec![],
+                        line_range: None,
                         old_lines: vec!["old".to_string()],
                         new_lines: vec!["new".to_string()],
                         is_end_of_file: false
@@ -817,13 +947,55 @@ mod tests {
             parse_one_hunk(&["bad"], /*line_number*/ 234),
             Err(InvalidHunkError {
                 message: "'bad' is not a valid hunk header. \
-            Valid hunk headers: '*** Add File: {path}', '*** Delete File: {path}', '*** Update File: {path}', '*** Update Scope: {path}'".to_string(),
+            Valid hunk headers: '*** Add File: {path}', '*** Delete File: {path}', '*** Update File: {path}', '*** Move File: {old} -> {new}', '*** Replace All In File: {path}', '*** Update Scope: {path}'".to_string(),
                 line_number: 234,
                 snippet: None,
                 kind: ParseErrorKind::UnknownHunkHeader,
             })
         );
         // Other edge cases are already covered by tests above/below.
+    }
+
+    #[test]
+    fn parses_move_file_and_replace_all_hunks() {
+        assert_eq!(
+            parse_patch_text(
+                "*** Begin Patch\n\
+                 *** Move File: old.txt -> new.txt\n\
+                 *** Replace All In File: words.txt\n\
+                 *** Expect Replacements: 2\n\
+                 -old\n\
+                 +new\n\
+                 *** End Patch",
+            )
+            .unwrap(),
+            vec![
+                UpdateFile {
+                    path: PathBuf::from("old.txt"),
+                    move_path: Some(PathBuf::from("new.txt")),
+                    chunks: Vec::new(),
+                },
+                ReplaceAll {
+                    path: PathBuf::from("words.txt"),
+                    expected_replacements: 2,
+                    old_lines: vec!["old".to_string()],
+                    new_lines: vec!["new".to_string()],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_line_range_context() {
+        let chunk = parse_update_file_chunk(
+            &["@@ lines 10-12", "-old", "+new", "*** End Patch"],
+            123,
+            false,
+        )
+        .unwrap()
+        .0;
+        assert_eq!(chunk.line_range, Some((10, 12)));
+        assert!(chunk.change_contexts.is_empty());
     }
 
     #[test]
@@ -895,6 +1067,7 @@ mod tests {
             Ok((
                 (UpdateFileChunk {
                     change_contexts: vec!["change_context".to_string()],
+                    line_range: None,
                     old_lines: vec![
                         "".to_string(),
                         "context".to_string(),
@@ -921,6 +1094,7 @@ mod tests {
             Ok((
                 (UpdateFileChunk {
                     change_contexts: vec![],
+                    line_range: None,
                     old_lines: vec![],
                     new_lines: vec!["line".to_string()],
                     is_end_of_file: true

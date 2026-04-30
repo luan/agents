@@ -97,6 +97,29 @@ pub fn chunk_plan(patch: &str) -> Result<Vec<DraftChunkPlan>, super::parser::Par
                     chunk_index += 1;
                 }
             }
+            Hunk::ReplaceAll {
+                path,
+                expected_replacements,
+                old_lines,
+                ..
+            } => {
+                let old_len = old_lines.len() as i64;
+                for _ in 0..expected_replacements.max(1) {
+                    chunks.push(DraftChunkPlan {
+                        chunk_index,
+                        file_path: path.display().to_string(),
+                        change_type: "replace_all".to_string(),
+                        old_start: None,
+                        old_end: old_len.checked_sub(1),
+                        new_start: None,
+                        new_end: None,
+                        status: "planned".to_string(),
+                        error_kind: None,
+                        error_message: None,
+                    });
+                    chunk_index += 1;
+                }
+            }
             Hunk::UpdateScope {
                 path,
                 chunks: update_chunks,
@@ -129,6 +152,8 @@ pub fn error_kind(error: &ApplyPatchError) -> &'static str {
         ApplyPatchError::Parse(e) => e.subkind_str(),
         ApplyPatchError::ContextNotFound { .. } => "context_not_found",
         ApplyPatchError::AmbiguousContext { .. } => "ambiguous_context",
+        ApplyPatchError::LineRangeMismatch { .. } => "line_range_mismatch",
+        ApplyPatchError::ReplacementCountMismatch { .. } => "replacement_count_mismatch",
         ApplyPatchError::AnchorShadowsFirstContext { .. } => "anchor_shadows_first_context",
         ApplyPatchError::DuplicateUpdate(_) => "duplicate_update",
         ApplyPatchError::DeleteIsDirectory(_) => "delete_is_directory",
