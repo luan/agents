@@ -274,12 +274,6 @@ pub enum DevDebugAction {
 
 #[derive(Subcommand)]
 pub enum McpAction {
-    #[command(about = "Serve the source MCP over stdio")]
-    Source,
-
-    #[command(about = "Serve the vault MCP over stdio")]
-    Vault,
-
     #[command(hide = true, about = "Serve the apply_patch MCP over stdio")]
     ApplyPatch,
 
@@ -849,6 +843,9 @@ pub enum VaultAction {
             help = "Route to dive/ instead of spec/ (requires --source; spec only)"
         )]
         dive: bool,
+
+        #[arg(long, help = "Output JSON")]
+        json: bool,
     },
 
     #[command(about = "Read artifact body or frontmatter (universal stem resolution by default)")]
@@ -861,6 +858,9 @@ pub enum VaultAction {
 
         #[arg(long, help = "Output frontmatter as JSON")]
         frontmatter: bool,
+
+        #[arg(long, help = "Output JSON envelope")]
+        json: bool,
     },
 
     #[command(about = "Move an artifact to archive/")]
@@ -876,6 +876,9 @@ pub enum VaultAction {
 
         #[arg(long, help = "Preview what would be archived without acting")]
         dry_run: bool,
+
+        #[arg(long, help = "Output JSON")]
+        json: bool,
     },
 
     #[command(about = "Archive artifacts older than N days")]
@@ -891,6 +894,9 @@ pub enum VaultAction {
 
         #[arg(short, long, help = "Filter by project path")]
         project: Option<String>,
+
+        #[arg(long, help = "Output JSON")]
+        json: bool,
     },
 
     #[command(about = "Extract inline HTML comments from an artifact")]
@@ -915,6 +921,9 @@ pub enum VaultAction {
 
         #[arg(help = "New slug for the file")]
         new_slug: String,
+
+        #[arg(long, help = "Output JSON")]
+        json: bool,
     },
 
     #[command(about = "Fix auto-derived tags (type/*, project/*) in frontmatter")]
@@ -924,6 +933,9 @@ pub enum VaultAction {
 
         #[arg(help = "File path or stem")]
         file: String,
+
+        #[arg(long, help = "Output JSON")]
+        json: bool,
     },
 
     #[command(about = "Find related artifacts by topic keyword overlap")]
@@ -936,12 +948,18 @@ pub enum VaultAction {
 
         #[arg(long, help = "Include archived artifacts")]
         archive: bool,
+
+        #[arg(long, help = "Output JSON")]
+        json: bool,
     },
 
     #[command(about = "Check for unresolved wiki-links (via Obsidian CLI)")]
     Check {
         #[arg(long, help = "Include archived artifacts")]
         archive: bool,
+
+        #[arg(long, help = "Output JSON")]
+        json: bool,
     },
 
     #[command(about = "Search artifacts (via Obsidian CLI)")]
@@ -963,7 +981,10 @@ pub enum VaultAction {
     },
 
     #[command(about = "Show vault status (git state, artifact count)")]
-    Status,
+    Status {
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+    },
 
     #[command(about = "Commit and push edits to a vault file")]
     Commit {
@@ -975,5 +996,8 @@ pub enum VaultAction {
             help = "Commit message (defaults to '<kind>(<project>): edit <slug>')"
         )]
         message: Option<String>,
+
+        #[arg(long, help = "Output JSON")]
+        json: bool,
     },
 }

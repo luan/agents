@@ -19,7 +19,7 @@ During codebase exploration, also search/read relevant blueprints vault artifact
 - Decision docs/specs that record architectural choices for the touched area.
 - Related specs/plans that capture active or historical product intent.
 
-Use vault MCP tools when available, otherwise `ct vault`. Create or update vault artifacts lazily — only when you have a resolved term or decision to record.
+Use `ct vault`. Create or update vault artifacts lazily — only when you have a resolved term or decision to record.
 
 ## During the session
 

@@ -133,7 +133,7 @@ pub fn run_source(action: SourceAction) -> Result<(), Box<dyn std::error::Error>
             selector,
             context,
             include_ignored,
-            json: _json,
+            json,
             db,
         } => {
             let output = source_search_value(SourceSearchRequest {
@@ -153,12 +153,12 @@ pub fn run_source(action: SourceAction) -> Result<(), Box<dyn std::error::Error>
                 include_ignored,
                 db,
             })?;
-            println!("{}", serde_json::to_string_pretty(&output)?);
+            print_source_output(&output, json)?;
         }
         SourceAction::Show {
             targets,
             all,
-            json: _json,
+            json,
             db,
         } => {
             let output = source_show_value(SourceShowRequest {
@@ -167,13 +167,13 @@ pub fn run_source(action: SourceAction) -> Result<(), Box<dyn std::error::Error>
                 all,
                 db,
             })?;
-            println!("{}", serde_json::to_string_pretty(&output)?);
+            print_source_output(&output, json)?;
         }
         SourceAction::Outline {
             file,
             signatures,
             names,
-            json: _json,
+            json,
             db,
         } => {
             let output = source_outline_value(SourceOutlineRequest {
@@ -183,7 +183,7 @@ pub fn run_source(action: SourceAction) -> Result<(), Box<dyn std::error::Error>
                 names,
                 db,
             })?;
-            println!("{}", serde_json::to_string_pretty(&output)?);
+            print_source_output(&output, json)?;
         }
         SourceAction::Refs {
             targets,
@@ -195,7 +195,7 @@ pub fn run_source(action: SourceAction) -> Result<(), Box<dyn std::error::Error>
             paths,
             excludes,
             file,
-            json: _json,
+            json,
             db,
         } => {
             let output = source_refs_value(SourceRefsRequest {
@@ -211,14 +211,14 @@ pub fn run_source(action: SourceAction) -> Result<(), Box<dyn std::error::Error>
                 file,
                 db,
             })?;
-            println!("{}", serde_json::to_string_pretty(&output)?);
+            print_source_output(&output, json)?;
         }
         SourceAction::Impact {
             targets,
             depth,
             limit,
             context,
-            json: _json,
+            json,
             db,
         } => {
             let output = source_impact_value(SourceImpactRequest {
@@ -229,14 +229,14 @@ pub fn run_source(action: SourceAction) -> Result<(), Box<dyn std::error::Error>
                 context,
                 db,
             })?;
-            println!("{}", serde_json::to_string_pretty(&output)?);
+            print_source_output(&output, json)?;
         }
         SourceAction::Trace {
             targets,
             depth,
             limit,
             kinds,
-            json: _json,
+            json,
             db,
         } => {
             let output = source_trace_value(SourceTraceRequest {
@@ -247,7 +247,7 @@ pub fn run_source(action: SourceAction) -> Result<(), Box<dyn std::error::Error>
                 kinds,
                 db,
             })?;
-            println!("{}", serde_json::to_string_pretty(&output)?);
+            print_source_output(&output, json)?;
         }
         SourceAction::Impls {
             targets,
@@ -258,7 +258,7 @@ pub fn run_source(action: SourceAction) -> Result<(), Box<dyn std::error::Error>
             of,
             resolved,
             unresolved,
-            json: _json,
+            json,
             db,
         } => {
             let output = source_impls_value(SourceImplsRequest {
@@ -273,25 +273,21 @@ pub fn run_source(action: SourceAction) -> Result<(), Box<dyn std::error::Error>
                 unresolved,
                 db,
             })?;
-            println!("{}", serde_json::to_string_pretty(&output)?);
+            print_source_output(&output, json)?;
         }
-        SourceAction::Investigate {
-            targets,
-            json: _json,
-            db,
-        } => {
+        SourceAction::Investigate { targets, json, db } => {
             let output = source_investigate_value(SourceInvestigateRequest {
                 cwd: std::env::current_dir()?,
                 targets,
                 db,
             })?;
-            println!("{}", serde_json::to_string_pretty(&output)?);
+            print_source_output(&output, json)?;
         }
         SourceAction::Diff {
             target,
             base,
             stat,
-            json: _json,
+            json,
             db,
         } => {
             let output = source_diff_value(SourceDiffRequest {
@@ -301,7 +297,7 @@ pub fn run_source(action: SourceAction) -> Result<(), Box<dyn std::error::Error>
                 stat,
                 db,
             })?;
-            println!("{}", serde_json::to_string_pretty(&output)?);
+            print_source_output(&output, json)?;
         }
     }
     Ok(())
@@ -888,6 +884,256 @@ pub(crate) fn source_diff_value(
         "available": true,
         "read_only": true,
     }))
+}
+
+fn print_source_output(output: &Value, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+    if json {
+        println!("{}", serde_json::to_string(output)?);
+    } else {
+        render_source_text(output);
+    }
+    Ok(())
+}
+
+fn render_source_text(output: &Value) {
+    match output.get("operation").and_then(Value::as_str) {
+        Some("show") => render_show_text(output),
+        Some("outline") => render_outline_text(output),
+        Some("refs") => render_grouped_text(output, "refs"),
+        Some("impact") => render_flat_text(output, "impact"),
+        Some("trace") => render_flat_text(output, "trace"),
+        Some("impls") => render_impls_text(output),
+        Some("investigate") => render_investigate_text(output),
+        Some("diff") => render_diff_text(output),
+        _ => render_search_text(output),
+    }
+}
+
+fn render_search_text(output: &Value) {
+    let mode = output
+        .get("mode")
+        .and_then(Value::as_str)
+        .unwrap_or("search");
+    let count = output
+        .get("result_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    println!("{mode}: {count} result(s)");
+    let Some(results) = output.get("results").and_then(Value::as_array) else {
+        return;
+    };
+    for item in results {
+        if let Some(path) = item.get("path").and_then(Value::as_str) {
+            println!("{path}");
+            continue;
+        }
+        let rel = item
+            .get("rel_path")
+            .and_then(Value::as_str)
+            .or_else(|| item.get("file").and_then(Value::as_str))
+            .unwrap_or("?");
+        let line = item
+            .get("line")
+            .or_else(|| item.get("start_line"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let name = item.get("name").and_then(Value::as_str).unwrap_or("");
+        let kind = item.get("kind").and_then(Value::as_str).unwrap_or("");
+        let text = item
+            .get("text")
+            .or_else(|| item.get("snippet"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if !name.is_empty() {
+            println!("{rel}:{line} {kind} {name}");
+        } else if !text.is_empty() {
+            println!("{rel}:{line}: {text}");
+        } else {
+            println!("{}", compact_json(item));
+        }
+    }
+}
+
+fn render_show_text(output: &Value) {
+    let Some(groups) = output.get("results").and_then(Value::as_array) else {
+        return;
+    };
+    for group in groups {
+        let target = group.get("target").and_then(Value::as_str).unwrap_or("?");
+        let count = group
+            .get("total_found")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        println!("{target}: {count} match(es)");
+        for item in group
+            .get("results")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let rel = item.get("rel_path").and_then(Value::as_str).unwrap_or("?");
+            let line = item.get("start_line").and_then(Value::as_u64).unwrap_or(0);
+            let kind = item.get("kind").and_then(Value::as_str).unwrap_or("");
+            let name = item.get("name").and_then(Value::as_str).unwrap_or("");
+            println!("{rel}:{line} {kind} {name}");
+        }
+    }
+}
+
+fn render_outline_text(output: &Value) {
+    let count = output
+        .get("symbol_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let file = output.get("file").and_then(Value::as_str).unwrap_or("?");
+    println!("outline {file}: {count} symbol(s)");
+    if let Some(names) = output
+        .get("results")
+        .and_then(Value::as_array)
+        .filter(|_| output.get("names_only").and_then(Value::as_bool) == Some(true))
+    {
+        for name in names.iter().filter_map(Value::as_str) {
+            println!("{name}");
+        }
+        return;
+    }
+    for item in output
+        .get("symbols")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let line = item.get("start_line").and_then(Value::as_u64).unwrap_or(0);
+        let kind = item.get("kind").and_then(Value::as_str).unwrap_or("");
+        let name = item.get("name").and_then(Value::as_str).unwrap_or("");
+        let sig = item.get("signature").and_then(Value::as_str).unwrap_or("");
+        if sig.is_empty() {
+            println!("{line} {kind} {name}");
+        } else {
+            println!("{line} {kind} {name} {sig}");
+        }
+    }
+}
+
+fn render_grouped_text(output: &Value, label: &str) {
+    let count = output
+        .get("result_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    println!("{label}: {count} result(s)");
+    for group in output
+        .get("results")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let target = group.get("target").and_then(Value::as_str).unwrap_or("?");
+        for item in group
+            .get("results")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            println!("{target} <- {}", source_hit_line(item));
+        }
+    }
+}
+
+fn render_flat_text(output: &Value, label: &str) {
+    let count = output
+        .get("result_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    println!("{label}: {count} result(s)");
+    for item in output
+        .get("results")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        println!("{}", source_hit_line(item));
+    }
+}
+
+fn render_impls_text(output: &Value) {
+    let count = output
+        .get("result_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    println!("impls: {count} result(s)");
+    let results = &output["results"]["results"];
+    if let Some(groups) = results.as_array() {
+        for group in groups {
+            if let Some(items) = group.get("results").and_then(Value::as_array) {
+                let target = group.get("target").and_then(Value::as_str).unwrap_or("?");
+                for item in items {
+                    println!("{target} <- {}", source_hit_line(item));
+                }
+            } else {
+                println!("{}", source_hit_line(group));
+            }
+        }
+    }
+}
+
+fn render_investigate_text(output: &Value) {
+    for group in output
+        .get("results")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let target = group.get("target").and_then(Value::as_str).unwrap_or("?");
+        let result = &group["results"];
+        let kind = result.get("kind").and_then(Value::as_str).unwrap_or("");
+        let file = result
+            .get("symbol")
+            .and_then(|v| v.get("rel_path"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        println!("{target}: {kind} {file}");
+        if let Some(src) = result.get("source").and_then(Value::as_str) {
+            print!("{src}");
+        }
+    }
+}
+
+fn render_diff_text(output: &Value) {
+    let result = &output["result"];
+    if let Some(content) = result.get("content").and_then(Value::as_str) {
+        print!("{content}");
+    } else {
+        println!("{}", compact_json(result));
+    }
+}
+
+fn source_hit_line(item: &Value) -> String {
+    let rel = item
+        .get("rel_path")
+        .and_then(Value::as_str)
+        .or_else(|| item.get("file").and_then(Value::as_str))
+        .unwrap_or("?");
+    let line = item
+        .get("line")
+        .or_else(|| item.get("start_line"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let primary = item
+        .get("caller")
+        .or_else(|| item.get("callee"))
+        .or_else(|| item.get("name"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if primary.is_empty() {
+        format!("{rel}:{line}")
+    } else {
+        format!("{rel}:{line} {primary}")
+    }
+}
+
+fn compact_json(value: &Value) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string())
 }
 
 fn require_targets(targets: &[String], message: &str) -> Result<(), Box<dyn std::error::Error>> {

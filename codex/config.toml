@@ -77,20 +77,11 @@ last_revision = "6164fe2bcb934b091b6c060d8fab5228992e3a3b"
 source_type = "git"
 source = "https://github.com/max-sixty/worktrunk.git"
 
-[mcp_servers.source]
-command = "ct"
-args = ["mcp", "source"]
-
-[mcp_servers.source.tools.show]
-approval_mode = "approve"
 
 [mcp_servers.lens]
 command = "ct"
 args = ["mcp", "lens"]
 
-[mcp_servers.vault]
-command = "ct"
-args = ["mcp", "vault"]
 
 [mcp_servers.fff]
 command = "fff-mcp"

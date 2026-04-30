@@ -72,14 +72,12 @@ install:
     cargo install --path "{{ repo }}/crates/ct"
     claude mcp remove -s user fff 2>/dev/null || true
     claude mcp remove -s user vault 2>/dev/null || true
+    claude mcp remove -s user source 2>/dev/null || true
     claude mcp remove -s user apply-patch 2>/dev/null || true
     claude mcp remove -s user sym 2>/dev/null || true
-    claude mcp remove -s user source 2>/dev/null || true
     claude mcp remove -s user lens 2>/dev/null || true
     claude mcp add -s user fff -- $HOME/.local/bin/fff-mcp
-    claude mcp add -s user source ct mcp source
     claude mcp add -s user lens ct mcp lens
-    claude mcp add -s user vault ct mcp vault
 
 completions:
     mkdir -p "{{ home }}/.config/fish/completions"

@@ -420,14 +420,6 @@ pub fn read(path: &Path) -> Result<ReadOutcome, CtError> {
     })
 }
 
-pub fn cmd_read(file_path: &str, kind: ArtifactKind, frontmatter_mode: bool) {
-    let resolved = match resolve_artifact_path(file_path, kind) {
-        Ok(p) => p,
-        Err(e) => fatal(&e.to_string()),
-    };
-    cmd_read_resolved(&resolved, frontmatter_mode);
-}
-
 /// Read and print an artifact from a resolved path (no kind needed).
 pub fn cmd_read_resolved(resolved: &Path, frontmatter_mode: bool) {
     // Frontmatter-as-JSON mode preserves the raw YAML key order from the file

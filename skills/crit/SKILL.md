@@ -181,7 +181,7 @@ Output `# Review Summary`:
 - **IGNORE** section (collapsed): findings below threshold
 - **Verdict**: PASS (no FIX items) | CHANGES_REQUESTED (any FIX) | FAIL (any Critical)
 
-Store the review via `create { kind: "review", topic: "Review: <branch>" }`, Edit the scaffold with the findings body, then `commit`.
+Store the review via `ct vault create -t review --topic "Review: <branch>"`, edit the scaffold with the findings body, then `ct vault commit <path>`.
 
 ## Step 6: Fix
 
