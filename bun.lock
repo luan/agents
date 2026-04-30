@@ -12,6 +12,7 @@
         "@shikijs/cli": "^4.0.2",
         "linkedom": "^0.16.0",
         "p-limit": "^6.1.0",
+        "partial-json": "^0.1.7",
         "turndown": "^7.2.0",
         "typebox": "^1.1.34",
         "unpdf": "^1.4.0",
