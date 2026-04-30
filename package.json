@@ -2,9 +2,11 @@
   "name": "agents",
   "private": true,
   "scripts": {
-    "test:lens": "bun test shared/lens-ui.test.ts",
+    "check": "biome check --write --error-on-warnings . && bun run test:codex-native && bun run test:compaction && bun run test:lens",
+    "test:lens": "bun test pi/agent/extensions/shared/lens-ui.test.ts",
     "test:codex-native": "bun test pi/agent/extensions/apply-patch/index.test.ts pi/agent/extensions/codex-native/index.test.ts pi/agent/extensions/codex-exec/index.test.ts",
-    "test:compaction": "bun test pi/agent/extensions/codex-native/compaction/src/unit.test.ts pi/agent/extensions/codex-native/compaction/src/validation.test.ts"
+    "test:compaction": "bun test pi/agent/extensions/codex-native/compaction/src/unit.test.ts pi/agent/extensions/codex-native/compaction/src/validation.test.ts",
+    "prepare": "husky"
   },
   "dependencies": {
     "@ff-labs/fff-node": "0.6.4",
@@ -24,6 +26,10 @@
     "web-tree-sitter": "^0.26.7"
   },
   "devDependencies": {
-    "@opencode-ai/plugin": "^1.14.28"
+    "@biomejs/biome": "^2.4.13",
+    "@opencode-ai/plugin": "^1.14.28",
+    "@types/node": "^25.6.0",
+    "husky": "^9.1.7",
+    "shx": "^0.4.0"
   }
 }

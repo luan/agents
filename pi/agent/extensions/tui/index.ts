@@ -5,9 +5,9 @@ import type {
 } from "@mariozechner/pi-coding-agent";
 import { runCommand } from "../shared/ct-runner";
 import {
-  type PolishedTuiConfig,
   ensureConfigExists,
   loadConfig,
+  type PolishedTuiConfig,
 } from "./config";
 import {
   emptyFooterState,
@@ -18,9 +18,9 @@ import { readGitStatus } from "./git";
 import { readRuntimeInfo } from "./runtime";
 import { installEditorComposition, patchUserMessageComponent } from "./ui";
 import {
-  USAGE_REFRESH_INTERVAL,
   detectUsageProvider,
   fetchUsageForProvider,
+  USAGE_REFRESH_INTERVAL,
   type UsageSnapshot,
 } from "./usage";
 
@@ -103,8 +103,11 @@ export default function (pi: ExtensionAPI) {
   let uiGeneration = 0;
 
   const isStaleCtxError = (error: unknown) =>
-    (error instanceof Error ? error.message : String(error)).includes("ctx is stale");
-  const isCurrent = (generation: number) => !disposed && generation === uiGeneration;
+    (error instanceof Error ? error.message : String(error)).includes(
+      "ctx is stale",
+    );
+  const isCurrent = (generation: number) =>
+    !disposed && generation === uiGeneration;
 
   const refresh = () => {
     if (!disposed) requestFooterRender?.();
@@ -204,7 +207,10 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  const refreshProjectState = async (ctx: ExtensionContext, generation: number) => {
+  const refreshProjectState = async (
+    ctx: ExtensionContext,
+    generation: number,
+  ) => {
     const [gitStatus, runtime] = await Promise.all([
       readGitStatus(ctx.cwd),
       readRuntimeInfo(ctx.cwd),
@@ -214,7 +220,10 @@ export default function (pi: ExtensionAPI) {
     state.runtime = runtime;
   };
 
-  const scheduleProjectRefresh = (ctx: ExtensionContext, generation = uiGeneration) => {
+  const scheduleProjectRefresh = (
+    ctx: ExtensionContext,
+    generation = uiGeneration,
+  ) => {
     if (!isCurrent(generation)) return;
     if (projectRefreshInFlight) {
       projectRefreshPending = true;

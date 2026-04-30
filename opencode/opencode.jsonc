@@ -1,46 +1,46 @@
 {
-  "$schema": "https://opencode.ai/config.json",
-  "autoupdate": true,
+	"$schema": "https://opencode.ai/config.json",
+	"autoupdate": true,
 
-  "plugin": ["@tarquinen/opencode-dcp@latest", "./plugins/lens.ts"],
+	"plugin": ["@tarquinen/opencode-dcp@latest", "./plugins/lens.ts"],
 
-  "instructions": ["AGENTS.md", "CLAUDE.local.md"],
-  "skills": {
-    "paths": ["~/.agents/skills"],
-  },
+	"instructions": ["AGENTS.md", "CLAUDE.local.md"],
+	"skills": {
+		"paths": ["~/.agents/skills"]
+	},
 
-  "compaction": {
-    "auto": true,
-    "prune": true,
-  },
+	"compaction": {
+		"auto": true,
+		"prune": true
+	},
 
-  "permission": "allow",
+	"permission": "allow",
 
-  "mcp": {
-    "context7": {
-      "type": "local",
-      "command": ["bunx", "-y", "@upstash/context7-mcp"],
-      "environment": {},
-    },
-    "source": {
-      "type": "local",
-      "command": ["ct", "mcp", "source"],
-      "environment": {},
-    },
-    "lens": {
-      "type": "local",
-      "command": ["ct", "mcp", "lens"],
-      "environment": {},
-    },
-    "vault": {
-      "type": "local",
-      "command": ["ct", "mcp", "vault"],
-      "environment": {},
-    },
-    "fff": {
-      "type": "local",
-      "command": ["fff-mcp"],
-      "enabled": true,
-    },
-  },
+	"mcp": {
+		"context7": {
+			"type": "local",
+			"command": ["bunx", "-y", "@upstash/context7-mcp"],
+			"environment": {}
+		},
+		"source": {
+			"type": "local",
+			"command": ["ct", "mcp", "source"],
+			"environment": {}
+		},
+		"lens": {
+			"type": "local",
+			"command": ["ct", "mcp", "lens"],
+			"environment": {}
+		},
+		"vault": {
+			"type": "local",
+			"command": ["ct", "mcp", "vault"],
+			"environment": {}
+		},
+		"fff": {
+			"type": "local",
+			"command": ["fff-mcp"],
+			"enabled": true
+		}
+	}
 }

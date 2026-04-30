@@ -2,9 +2,8 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
-import applyPatchExtension from "./index.ts";
 import { convertTools, mapFreeformEvents, parseSSE } from "./freeform-codex.ts";
+import applyPatchExtension from "./index.ts";
 
 const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 
@@ -92,10 +91,12 @@ describe("apply_patch streaming renderer", () => {
       [
         "function renderSummary(summary) {",
         "const lines = [",
-        "  `total words: ${summary.totalWords}`,",
-        "  `unique words: ${summary.uniqueWords}`,",
-        '  `most common character: ${summary.mostCommonCharacter?.char ?? "(none)"} (${summary.mostCommonCharacter?.count ?? 0} occurrences)`,',
-        '  `last word: ${summary.lastWord ?? "(none)"}`,',
+        "  `total words: $" + "{summary.totalWords}`,",
+        "  `unique words: $" + "{summary.uniqueWords}`,",
+        "  `most common character: $" +
+          '{summary.mostCommonCharacter?.char ?? "(none)"} ($' +
+          "{summary.mostCommonCharacter?.count ?? 0} occurrences)`,",
+        "  `last word: $" + '{summary.lastWord ?? "(none)"}`,',
         "  ];",
         "}",
         "",
@@ -385,9 +386,10 @@ describe("apply_patch streaming renderer", () => {
 
 describe("apply_patch Codex tool policy", () => {
   it("blocks edit and write when the selected model is from the Codex provider", () => {
-    const handlers = new Map<string, Function>();
+    type Handler = (...args: any[]) => any;
+    const handlers = new Map<string, Handler>();
     const pi = {
-      on: (name: string, handler: Function) => {
+      on: (name: string, handler: Handler) => {
         handlers.set(name, handler);
       },
       registerCommand: () => {},

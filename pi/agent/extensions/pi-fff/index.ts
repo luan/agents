@@ -5,35 +5,35 @@
  * @-mention autocomplete suggestions in the interactive editor.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import {
-  CustomEditor,
-  truncateHead,
-  DEFAULT_MAX_BYTES,
-  formatSize,
-} from "@mariozechner/pi-coding-agent";
-import {
-  Text,
-  type AutocompleteItem,
-  type AutocompleteProvider,
-} from "@mariozechner/pi-tui";
 import { existsSync, statSync } from "node:fs";
 import path from "node:path";
-import { Type } from "typebox";
-import { FileFinder } from "@ff-labs/fff-node";
 import type {
   GrepCursor,
   GrepMode,
   GrepResult,
-  SearchResult,
   MixedItem,
+  SearchResult,
 } from "@ff-labs/fff-node";
+import { FileFinder } from "@ff-labs/fff-node";
+import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import {
+  CustomEditor,
+  DEFAULT_MAX_BYTES,
+  formatSize,
+  truncateHead,
+} from "@mariozechner/pi-coding-agent";
+import {
+  type AutocompleteItem,
+  type AutocompleteProvider,
+  Text,
+} from "@mariozechner/pi-tui";
+import { Type } from "typebox";
+import {
+  type ExplorationAction,
   isExplorationHidden,
   registerExplorationEventHandlers,
   registerExplorationTool,
   renderExplorationCall,
-  type ExplorationAction,
 } from "../shared/exploration-rendering";
 
 // ---------------------------------------------------------------------------
@@ -140,39 +140,66 @@ function formatFindOutput(result: SearchResult, limit: number): string {
     : items.map((i: { relativePath: string }) => i.relativePath).join("\n");
 }
 
-function getResultText(result: { content?: { type: string; text?: string }[] }): string {
+function getResultText(result: {
+  content?: { type: string; text?: string }[];
+}): string {
   return result.content?.find((c) => c.type === "text")?.text?.trim() ?? "";
 }
 
 function searchAction(query: string, path: string): ExplorationAction {
-  return { kind: "search", title: "Search", body: path && path !== "." ? `${query} in ${path}` : query };
+  return {
+    kind: "search",
+    title: "Search",
+    body: path && path !== "." ? `${query} in ${path}` : query,
+  };
 }
 
 function findAction(query: string, path: string): ExplorationAction {
-  return { kind: "find", title: "Find", body: path && path !== "." ? `${query} in ${path}` : query };
+  return {
+    kind: "find",
+    title: "Find",
+    body: path && path !== "." ? `${query} in ${path}` : query,
+  };
 }
 
-function renderExploreCall(action: ExplorationAction, theme: any, context: any): Text {
-  const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+function renderExploreCall(
+  action: ExplorationAction,
+  theme: any,
+  context: any,
+): Text {
+  const text =
+    (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
   text.setText(renderExplorationCall(action, theme, context));
   return text;
 }
 
-function shouldHideSearchResult(options: { expanded?: boolean }, context: any): boolean {
-  return !context?.isError && (!options.expanded || isExplorationHidden(context?.toolCallId));
+function shouldHideSearchResult(
+  options: { expanded?: boolean },
+  context: any,
+): boolean {
+  return (
+    !context?.isError &&
+    (!options.expanded || isExplorationHidden(context?.toolCallId))
+  );
 }
 
 function renderGutterBlock(lines: string[], theme: any): string {
   const body = lines.length > 0 ? lines : [theme.fg("muted", "(no output)")];
   return body
     .map((line, index) => {
-      const prefix = index === body.length - 1 ? "  └ " : index === 0 ? "  ├ " : "  │ ";
+      const prefix =
+        index === body.length - 1 ? "  └ " : index === 0 ? "  ├ " : "  │ ";
       return `${theme.fg("dim", prefix)}${line}`;
     })
     .join("\n");
 }
 
-function limitRenderedLines(lines: string[], options: { expanded?: boolean }, maxLines: number, theme: any): string[] {
+function limitRenderedLines(
+  lines: string[],
+  options: { expanded?: boolean },
+  maxLines: number,
+  theme: any,
+): string[] {
   if (options.expanded || lines.length <= maxLines) return lines;
   return [
     ...lines.slice(0, maxLines),
@@ -226,7 +253,12 @@ function renderFindOutputLines(output: string, theme: any): string[] {
 
 type HighlightMode = "literal" | "regex";
 
-function renderGrepOutputLines(output: string, patterns: string[], theme: any, mode: HighlightMode = "literal"): string[] {
+function renderGrepOutputLines(
+  output: string,
+  patterns: string[],
+  theme: any,
+  mode: HighlightMode = "literal",
+): string[] {
   if (!output || output === "No matches found") {
     return [theme.fg("muted", "No matches found")];
   }
@@ -258,14 +290,22 @@ function renderGrepOutputLines(output: string, patterns: string[], theme: any, m
     }
 
     const paddedLineNumber = lineNumber.padStart(4, " ");
-    const lineNumberText = theme.fg(separator === ":" ? "success" : "muted", paddedLineNumber);
+    const lineNumberText = theme.fg(
+      separator === ":" ? "success" : "muted",
+      paddedLineNumber,
+    );
     const body = highlightPatterns(content, patterns, theme, mode);
     lines.push(`  ${lineNumberText} ${theme.fg("dim", "│")} ${body}`);
   }
   return lines;
 }
 
-function highlightPatterns(text: string, patterns: string[], theme: any, mode: HighlightMode): string {
+function highlightPatterns(
+  text: string,
+  patterns: string[],
+  theme: any,
+  mode: HighlightMode,
+): string {
   const usablePatterns = patterns.filter((pattern) => pattern.length > 0);
   if (usablePatterns.length === 0) return theme.fg("toolOutput", text);
 
@@ -273,7 +313,13 @@ function highlightPatterns(text: string, patterns: string[], theme: any, mode: H
     const regex =
       mode === "regex"
         ? new RegExp(usablePatterns.join("|"), "gi")
-        : new RegExp(usablePatterns.sort((a, b) => b.length - a.length).map(escapeRegex).join("|"), "gi");
+        : new RegExp(
+            usablePatterns
+              .sort((a, b) => b.length - a.length)
+              .map(escapeRegex)
+              .join("|"),
+            "gi",
+          );
     let lastIndex = 0;
     let highlighted = "";
     for (const match of text.matchAll(regex)) {
@@ -298,14 +344,25 @@ function toFffPath(value: string): string {
   return value.split(path.sep).join("/");
 }
 
-function normalizePathConstraint(rawPath: string | undefined, cwd: string): string | undefined {
+function normalizePathConstraint(
+  rawPath: string | undefined,
+  cwd: string,
+): string | undefined {
   const trimmed = rawPath?.trim();
   if (!trimmed) return undefined;
 
-  const absolutePath = path.isAbsolute(trimmed) ? trimmed : path.join(cwd, trimmed);
-  const relativePath = path.isAbsolute(trimmed) ? path.relative(cwd, absolutePath) : trimmed;
+  const absolutePath = path.isAbsolute(trimmed)
+    ? trimmed
+    : path.join(cwd, trimmed);
+  const relativePath = path.isAbsolute(trimmed)
+    ? path.relative(cwd, absolutePath)
+    : trimmed;
 
-  if (!relativePath.startsWith("..") && !path.isAbsolute(relativePath) && existsSync(absolutePath)) {
+  if (
+    !relativePath.startsWith("..") &&
+    !path.isAbsolute(relativePath) &&
+    existsSync(absolutePath)
+  ) {
     const normalized = toFffPath(relativePath);
     return statSync(absolutePath).isDirectory() && !normalized.endsWith("/")
       ? `${normalized}/`
@@ -315,7 +372,10 @@ function normalizePathConstraint(rawPath: string | undefined, cwd: string): stri
   return toFffPath(trimmed);
 }
 
-function normalizeConstraintExpression(rawConstraints: string | undefined, cwd: string): string | undefined {
+function normalizeConstraintExpression(
+  rawConstraints: string | undefined,
+  cwd: string,
+): string | undefined {
   const trimmed = rawConstraints?.trim();
   if (!trimmed) return undefined;
 
@@ -354,7 +414,9 @@ function createFffMentionProvider(
 
       const query = prefix.startsWith('@"') ? prefix.slice(2) : prefix.slice(1);
       const items = await getItems(query, options.signal);
-      return options.signal.aborted || items.length === 0 ? null : { items, prefix };
+      return options.signal.aborted || items.length === 0
+        ? null
+        : { items, prefix };
     },
     applyCompletion(_lines, cursorLine, cursorCol, item, prefix) {
       const currentLine = _lines[cursorLine] || "";
@@ -363,7 +425,11 @@ function createFffMentionProvider(
       const newLine = before + item.value + after;
       const newCursorCol = cursorCol - prefix.length + item.value.length;
       return {
-        lines: [..._lines.slice(0, cursorLine), newLine, ..._lines.slice(cursorLine + 1)],
+        lines: [
+          ..._lines.slice(0, cursorLine),
+          newLine,
+          ..._lines.slice(cursorLine + 1),
+        ],
         cursorLine,
         cursorCol: newCursorCol,
       };
@@ -383,7 +449,10 @@ class FffEditor extends CustomEditor {
     tui: any,
     theme: any,
     keybindings: any,
-    getMentionItems: (query: string, signal: AbortSignal) => Promise<AutocompleteItem[]>,
+    getMentionItems: (
+      query: string,
+      signal: AbortSignal,
+    ) => Promise<AutocompleteItem[]>,
   ) {
     super(tui, theme, keybindings);
     this.getMentionItems = getMentionItems;
@@ -405,7 +474,12 @@ class FffEditor extends CustomEditor {
         if (mentionResult) return mentionResult;
         // Fall back to base provider
         return (
-          this.baseProvider?.getSuggestions(lines, cursorLine, cursorCol, options) ?? null
+          this.baseProvider?.getSuggestions(
+            lines,
+            cursorLine,
+            cursorCol,
+            options,
+          ) ?? null
         );
       },
       applyCompletion: (lines, cursorLine, cursorCol, item, prefix) => {
@@ -426,7 +500,11 @@ class FffEditor extends CustomEditor {
             cursorCol,
             item,
             prefix,
-          ) ?? { lines, cursorLine, cursorCol }
+          ) ?? {
+            lines,
+            cursorLine,
+            cursorCol,
+          }
         );
       },
     };
@@ -451,22 +529,60 @@ export default function fffExtension(pi: ExtensionAPI) {
 
   const toolNames = resolveToolNames(currentMode);
   registerExplorationTool(toolNames.grep, (args) => {
-    const pattern = args && typeof args === "object" && "pattern" in args && typeof args.pattern === "string" ? args.pattern : "";
-    const path = args && typeof args === "object" && "path" in args && typeof args.path === "string" ? args.path : ".";
+    const pattern =
+      args &&
+      typeof args === "object" &&
+      "pattern" in args &&
+      typeof args.pattern === "string"
+        ? args.pattern
+        : "";
+    const path =
+      args &&
+      typeof args === "object" &&
+      "path" in args &&
+      typeof args.path === "string"
+        ? args.path
+        : ".";
     return searchAction(pattern, path);
   });
   registerExplorationTool(toolNames.find, (args) => {
-    const pattern = args && typeof args === "object" && "pattern" in args && typeof args.pattern === "string" ? args.pattern : "";
-    const path = args && typeof args === "object" && "path" in args && typeof args.path === "string" ? args.path : ".";
+    const pattern =
+      args &&
+      typeof args === "object" &&
+      "pattern" in args &&
+      typeof args.pattern === "string"
+        ? args.pattern
+        : "";
+    const path =
+      args &&
+      typeof args === "object" &&
+      "path" in args &&
+      typeof args.path === "string"
+        ? args.path
+        : ".";
     return findAction(pattern, path);
   });
   registerExplorationTool(toolNames.multiGrep, (args) => {
     const patterns =
-      args && typeof args === "object" && "patterns" in args && Array.isArray(args.patterns)
-        ? args.patterns.filter((pattern): pattern is string => typeof pattern === "string")
+      args &&
+      typeof args === "object" &&
+      "patterns" in args &&
+      Array.isArray(args.patterns)
+        ? args.patterns.filter(
+            (pattern): pattern is string => typeof pattern === "string",
+          )
         : [];
-    const constraints = args && typeof args === "object" && "constraints" in args && typeof args.constraints === "string" ? args.constraints : ".";
-    return searchAction(patterns.map((pattern) => `"${pattern}"`).join(", "), constraints);
+    const constraints =
+      args &&
+      typeof args === "object" &&
+      "constraints" in args &&
+      typeof args.constraints === "string"
+        ? args.constraints
+        : ".";
+    return searchAction(
+      patterns.map((pattern) => `"${pattern}"`).join(", "),
+      constraints,
+    );
   });
   registerExplorationEventHandlers(pi);
 
@@ -507,7 +623,8 @@ export default function fffExtension(pi: ExtensionAPI) {
       aiMode: true,
     });
 
-    if (!result.ok) throw new Error(`Failed to create FFF file finder: ${result.error}`);
+    if (!result.ok)
+      throw new Error(`Failed to create FFF file finder: ${result.error}`);
 
     finder = result.value;
     finderCwd = cwd;
@@ -534,20 +651,22 @@ export default function fffExtension(pi: ExtensionAPI) {
     const result = f.mixedSearch(query, { pageSize: MENTION_MAX_RESULTS });
     if (!result.ok) return [];
 
-    return result.value.items.slice(0, MENTION_MAX_RESULTS).map((mixed: MixedItem) => {
-      if (mixed.type === "directory") {
+    return result.value.items
+      .slice(0, MENTION_MAX_RESULTS)
+      .map((mixed: MixedItem) => {
+        if (mixed.type === "directory") {
+          return {
+            value: buildAtCompletionValue(mixed.item.relativePath),
+            label: mixed.item.dirName,
+            description: mixed.item.relativePath,
+          };
+        }
         return {
           value: buildAtCompletionValue(mixed.item.relativePath),
-          label: mixed.item.dirName,
+          label: mixed.item.fileName,
           description: mixed.item.relativePath,
         };
-      }
-      return {
-        value: buildAtCompletionValue(mixed.item.relativePath),
-        label: mixed.item.fileName,
-        description: mixed.item.relativePath,
-      };
-    });
+      });
   }
 
   function applyEditorMode(ctx: {
@@ -575,12 +694,14 @@ export default function fffExtension(pi: ExtensionAPI) {
   });
 
   pi.registerFlag("fff-frecency-db", {
-    description: "Path to the frecency database (overrides FFF_FRECENCY_DB env)",
+    description:
+      "Path to the frecency database (overrides FFF_FRECENCY_DB env)",
     type: "string",
   });
 
   pi.registerFlag("fff-history-db", {
-    description: "Path to the query history database (overrides FFF_HISTORY_DB env)",
+    description:
+      "Path to the query history database (overrides FFF_HISTORY_DB env)",
     type: "string",
   });
 
@@ -604,7 +725,9 @@ export default function fffExtension(pi: ExtensionAPI) {
   // --- grep tool ---
 
   const grepSchema = Type.Object({
-    pattern: Type.String({ description: "Search pattern (plain text or regex)" }),
+    pattern: Type.String({
+      description: "Search pattern (plain text or regex)",
+    }),
     path: Type.Optional(
       Type.String({
         description:
@@ -613,12 +736,14 @@ export default function fffExtension(pi: ExtensionAPI) {
     ),
     literal: Type.Optional(
       Type.Boolean({
-        description: "Treat pattern as literal string instead of regex (default: true)",
+        description:
+          "Treat pattern as literal string instead of regex (default: true)",
       }),
     ),
     context: Type.Optional(
       Type.Number({
-        description: "Number of lines to show before and after each match (default: 0)",
+        description:
+          "Number of lines to show before and after each match (default: 0)",
       }),
     ),
     limit: Type.Optional(
@@ -627,7 +752,9 @@ export default function fffExtension(pi: ExtensionAPI) {
       }),
     ),
     cursor: Type.Optional(
-      Type.String({ description: "Cursor from previous result for pagination" }),
+      Type.String({
+        description: "Cursor from previous result for pagination",
+      }),
     ),
   });
 
@@ -652,7 +779,9 @@ export default function fffExtension(pi: ExtensionAPI) {
       const f = await ensureFinder(activeCwd);
       const effectiveLimit = Math.max(1, params.limit ?? DEFAULT_GREP_LIMIT);
       const pathConstraint = normalizePathConstraint(params.path, activeCwd);
-      const query = pathConstraint ? `${pathConstraint} ${params.pattern}` : params.pattern;
+      const query = pathConstraint
+        ? `${pathConstraint} ${params.pattern}`
+        : params.pattern;
       const mode: GrepMode = params.literal === false ? "regex" : "plain";
 
       const grepResult = f.grep(query, {
@@ -668,7 +797,9 @@ export default function fffExtension(pi: ExtensionAPI) {
 
       const result = grepResult.value;
       let output = formatGrepOutput(result, effectiveLimit);
-      const truncation = truncateHead(output, { maxLines: Number.MAX_SAFE_INTEGER });
+      const truncation = truncateHead(output, {
+        maxLines: Number.MAX_SAFE_INTEGER,
+      });
       output = truncation.content;
 
       const notices: string[] = [];
@@ -679,7 +810,9 @@ export default function fffExtension(pi: ExtensionAPI) {
       if (truncation.truncated)
         notices.push(`${formatSize(DEFAULT_MAX_BYTES)} limit reached`);
       if (result.regexFallbackError)
-        notices.push(`Regex failed: ${result.regexFallbackError}, used literal match`);
+        notices.push(
+          `Regex failed: ${result.regexFallbackError}, used literal match`,
+        );
       if (result.nextCursor)
         notices.push(
           `More results available. Use cursor="${storeCursor(result.nextCursor)}" to continue`,
@@ -707,7 +840,8 @@ export default function fffExtension(pi: ExtensionAPI) {
     },
 
     renderResult(result, options, theme, context) {
-      const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+      const text =
+        (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
       if (shouldHideSearchResult(options, context)) {
         text.setText("");
         return text;
@@ -720,7 +854,12 @@ export default function fffExtension(pi: ExtensionAPI) {
           ? [details.pattern]
           : [];
       const matchMode = details?.matchMode === "regex" ? "regex" : "literal";
-      const lines = limitRenderedLines(renderGrepOutputLines(output, patterns, theme, matchMode), options, 28, theme);
+      const lines = limitRenderedLines(
+        renderGrepOutputLines(output, patterns, theme, matchMode),
+        options,
+        28,
+        theme,
+      );
       text.setText(renderGutterBlock(lines, theme));
       return text;
     },
@@ -734,7 +873,9 @@ export default function fffExtension(pi: ExtensionAPI) {
         "Fuzzy search query for file names. Supports path prefixes ('src/') and globs ('*.ts').",
     }),
     path: Type.Optional(
-      Type.String({ description: "Directory to search in (default: project root)" }),
+      Type.String({
+        description: "Directory to search in (default: project root)",
+      }),
     ),
     limit: Type.Optional(
       Type.Number({
@@ -762,14 +903,18 @@ export default function fffExtension(pi: ExtensionAPI) {
 
       const f = await ensureFinder(activeCwd);
       const effectiveLimit = Math.max(1, params.limit ?? DEFAULT_FIND_LIMIT);
-      const query = params.path ? `${params.path} ${params.pattern}` : params.pattern;
+      const query = params.path
+        ? `${params.path} ${params.pattern}`
+        : params.pattern;
 
       const searchResult = f.fileSearch(query, { pageSize: effectiveLimit });
       if (!searchResult.ok) throw new Error(searchResult.error);
 
       const result = searchResult.value;
       let output = formatFindOutput(result, effectiveLimit);
-      const truncation = truncateHead(output, { maxLines: Number.MAX_SAFE_INTEGER });
+      const truncation = truncateHead(output, {
+        maxLines: Number.MAX_SAFE_INTEGER,
+      });
       output = truncation.content;
 
       const notices: string[] = [];
@@ -804,13 +949,19 @@ export default function fffExtension(pi: ExtensionAPI) {
     },
 
     renderResult(result, options, theme, context) {
-      const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+      const text =
+        (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
       if (shouldHideSearchResult(options, context)) {
         text.setText("");
         return text;
       }
       const output = getResultText(result);
-      const lines = limitRenderedLines(renderFindOutputLines(output, theme), options, 32, theme);
+      const lines = limitRenderedLines(
+        renderFindOutputLines(output, theme),
+        options,
+        32,
+        theme,
+      );
       text.setText(renderGutterBlock(lines, theme));
       return text;
     },
@@ -831,7 +982,8 @@ export default function fffExtension(pi: ExtensionAPI) {
     ),
     context: Type.Optional(
       Type.Number({
-        description: "Number of context lines before and after each match (default: 0)",
+        description:
+          "Number of context lines before and after each match (default: 0)",
       }),
     ),
     limit: Type.Optional(
@@ -840,7 +992,9 @@ export default function fffExtension(pi: ExtensionAPI) {
       }),
     ),
     cursor: Type.Optional(
-      Type.String({ description: "Cursor from previous result for pagination" }),
+      Type.String({
+        description: "Cursor from previous result for pagination",
+      }),
     ),
   });
 
@@ -870,7 +1024,10 @@ export default function fffExtension(pi: ExtensionAPI) {
 
       const grepResult = f.multiGrep({
         patterns: params.patterns,
-        constraints: normalizeConstraintExpression(params.constraints, activeCwd),
+        constraints: normalizeConstraintExpression(
+          params.constraints,
+          activeCwd,
+        ),
         maxMatchesPerFile: Math.min(effectiveLimit, 50),
         smartCase: true,
         cursor: (params.cursor ? getCursor(params.cursor) : null) ?? null,
@@ -882,7 +1039,9 @@ export default function fffExtension(pi: ExtensionAPI) {
 
       const result = grepResult.value;
       let output = formatGrepOutput(result, effectiveLimit);
-      const truncation = truncateHead(output, { maxLines: Number.MAX_SAFE_INTEGER });
+      const truncation = truncateHead(output, {
+        maxLines: Number.MAX_SAFE_INTEGER,
+      });
       output = truncation.content;
 
       const notices: string[] = [];
@@ -912,18 +1071,33 @@ export default function fffExtension(pi: ExtensionAPI) {
 
     renderCall(args, theme, context) {
       const patterns = args?.patterns ?? [];
-      return renderExploreCall(searchAction(patterns.map((p: string) => `"${p}"`).join(", "), args?.constraints ?? "."), theme, context);
+      return renderExploreCall(
+        searchAction(
+          patterns.map((p: string) => `"${p}"`).join(", "),
+          args?.constraints ?? ".",
+        ),
+        theme,
+        context,
+      );
     },
 
     renderResult(result, options, theme, context) {
-      const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+      const text =
+        (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
       if (shouldHideSearchResult(options, context)) {
         text.setText("");
         return text;
       }
       const output = getResultText(result);
-      const patterns = Array.isArray((result as any).details?.patterns) ? (result as any).details.patterns : [];
-      const lines = limitRenderedLines(renderGrepOutputLines(output, patterns, theme, "literal"), options, 28, theme);
+      const patterns = Array.isArray((result as any).details?.patterns)
+        ? (result as any).details.patterns
+        : [];
+      const lines = limitRenderedLines(
+        renderGrepOutputLines(output, patterns, theme, "literal"),
+        options,
+        28,
+        theme,
+      );
       text.setText(renderGutterBlock(lines, theme));
       return text;
     },
@@ -932,7 +1106,8 @@ export default function fffExtension(pi: ExtensionAPI) {
   // --- commands ---
 
   pi.registerCommand("fff-mode", {
-    description: "Show or set FFF mode: /fff-mode [tools-and-ui | tools-only | override]",
+    description:
+      "Show or set FFF mode: /fff-mode [tools-and-ui | tools-only | override]",
     handler: async (args, ctx) => {
       const arg = (args || "").trim();
 
@@ -941,13 +1116,19 @@ export default function fffExtension(pi: ExtensionAPI) {
         const mode = getMode();
         const flag = pi.getFlag("fff-mode") ?? "unset";
         const env = process.env.PI_FFF_MODE ?? "unset";
-        ctx.ui.notify(`Current mode: '${mode}'\nFlag: ${flag}, Env: ${env}`, "info");
+        ctx.ui.notify(
+          `Current mode: '${mode}'\nFlag: ${flag}, Env: ${env}`,
+          "info",
+        );
         return;
       }
 
       // Validate and set mode
       if (!VALID_MODES.includes(arg as FffMode)) {
-        ctx.ui.notify(`Usage: /fff-mode [${VALID_MODES.join(" | ")}]`, "warning");
+        ctx.ui.notify(
+          `Usage: /fff-mode [${VALID_MODES.join(" | ")}]`,
+          "warning",
+        );
         return;
       }
 

@@ -1,7 +1,7 @@
 import {
-  summarizeShellCommand,
   type CommandSummary,
   type ShellAction,
+  summarizeShellCommand,
 } from "../shell/summary.ts";
 
 export type ExecCommandStatus = "running" | "done";

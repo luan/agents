@@ -92,7 +92,10 @@ function getClaudeToken(): string | undefined {
   try {
     const keychainData = execSync(
       'security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null',
-      { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+      {
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+      },
     ).trim();
     if (keychainData) {
       const parsed = JSON.parse(keychainData);
