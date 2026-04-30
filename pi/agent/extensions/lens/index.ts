@@ -1,16 +1,8 @@
 import { basename } from "node:path";
-import { StringEnum } from "@mariozechner/pi-ai";
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Type } from "typebox";
-import { nf, renderText, title } from "../shared/ct-render.ts";
-import { formatCommand, runCommand } from "../shared/ct-runner.ts";
-import {
-	LENS_TOOL_NAMES,
-	renderLensCompactStatus,
-	renderLensWidgetLines,
-	summarizeLensResult,
-} from "../shared/lens-ui.ts";
+import { runCommand } from "../shared/ct-runner.ts";
+import { renderLensCompactStatus, renderLensWidgetLines } from "../shared/lens-ui.ts";
 
 const HOOK_EVENT_SCHEMA = "lens.hook_event.v1";
 const RAW_OUTPUT_MAX_BYTES = 256 * 1024;
@@ -33,110 +25,10 @@ type ToolFile = {
 	include_ignored?: boolean;
 };
 
-const sessionTurnSchema = {
-	session: Type.Optional(Type.String({ description: "Session id; defaults to current Pi session." })),
-	turn: Type.Optional(Type.String({ description: "Turn id; defaults to current Pi turn." })),
-};
-
-const diagnosticsSchema = Type.Object({
-	action: Type.Optional(StringEnum(["list", "record", "snapshot"] as const)),
-	path: Type.Optional(Type.String({ description: "Optional path filter." })),
-	all: Type.Optional(Type.Boolean({ description: "Show all diagnostics for list." })),
-	source: Type.Optional(Type.String({ description: "Diagnostic source for record." })),
-	scopeKind: Type.Optional(Type.String({ description: "Diagnostic scope kind." })),
-	scopeKey: Type.Optional(Type.String({ description: "Diagnostic scope key." })),
-	severity: Type.Optional(StringEnum(["error", "warning", "info", "hint"] as const)),
-	code: Type.Optional(Type.String({ description: "Diagnostic code." })),
-	message: Type.Optional(Type.String({ description: "Diagnostic message for record." })),
-	startLine: Type.Optional(Type.Number({ description: "Start line." })),
-	endLine: Type.Optional(Type.Number({ description: "End line." })),
-	fingerprint: Type.Optional(Type.String({ description: "Stable diagnostic fingerprint." })),
-	snapshot: Type.Optional(Type.Any({ description: "DiagnosticSnapshotInput JSON for snapshot." })),
-});
-
-const checksSchema = Type.Object({
-	action: Type.Optional(StringEnum(["list", "run"] as const)),
-	automatic: Type.Optional(Type.Boolean({ description: "Run only automatic checks/scanners." })),
-	all: Type.Optional(Type.Boolean({ description: "Run all configured checks/scanners." })),
-	name: Type.Optional(Type.Array(Type.String({ description: "Configured check/scanner name to run." }))),
-	scanners: Type.Optional(Type.Boolean({ description: "Include configured scanners." })),
-});
-
-const statusSchema = Type.Object({});
-
-const healthSchema = Type.Object({
-	session: sessionTurnSchema.session,
-	turn: sessionTurnSchema.turn,
-	finalOutput: Type.Optional(
-		Type.Boolean({
-			description: "Request final/agent-end style text for CLI parity.",
-		}),
-	),
-});
-
-const touchedSchema = Type.Object({
-	session: sessionTurnSchema.session,
-	turn: sessionTurnSchema.turn,
-});
-
-const cleanupSchema = Type.Object({
-	session: Type.Optional(Type.String({ description: "Session id; defaults to current Pi session." })),
-	turn: Type.Optional(Type.String({ description: "Turn id; defaults to current Pi turn." })),
-	allowUnsafe: Type.Optional(
-		Type.Boolean({
-			description: "Run unsafe/invasive registry entries explicitly.",
-		}),
-	),
-});
-
-const reportSchema = Type.Object({
-	session: sessionTurnSchema.session,
-	turn: sessionTurnSchema.turn,
-	path: Type.Optional(Type.String({ description: "Optional changed-file path." })),
-});
-
-const contextSchema = Type.Object({
-	session: sessionTurnSchema.session,
-	turn: sessionTurnSchema.turn,
-	ack: Type.Optional(
-		Type.Boolean({
-			description: "Acknowledge current warning-or-worse health.",
-		}),
-	),
-});
-
-const rawOutputSchema = Type.Object({
-	action: Type.Optional(StringEnum(["list", "show"] as const)),
-	id: Type.Optional(Type.Number({ description: "Raw output id for show." })),
-	limit: Type.Optional(Type.Number({ description: "Maximum outputs to list." })),
-});
-
-const pruneSchema = Type.Object({
-	dryRun: Type.Optional(
-		Type.Boolean({
-			description: "Preview retention pruning without deleting.",
-		}),
-	),
-});
-
-function pushOpt(args: string[], flag: string, value: unknown) {
-	if (value !== undefined && value !== null && value !== false) args.push(flag, String(value));
-}
-
-function pushBool(args: string[], flag: string, value: unknown) {
-	if (value === true) args.push(flag);
-}
-
 type CommandRunner = typeof runCommand;
-
-const lensToolNames = new Set<string>(LENS_TOOL_NAMES);
 
 function isStaleCtxError(error: unknown) {
 	return (error instanceof Error ? error.message : String(error)).includes("ctx is stale");
-}
-
-export function shouldApplyHookUiForTool(toolName: string | undefined): boolean {
-	return !toolName || !lensToolNames.has(toolName);
 }
 
 export function applyLensUi(ctx: any, response: unknown) {
@@ -147,40 +39,6 @@ export function applyLensUi(ctx: any, response: unknown) {
 	} catch (error) {
 		if (!isStaleCtxError(error)) throw error;
 	}
-}
-
-function applyLensToolResultUi(ctx: any, result: unknown) {
-	const envelope = (result as any)?.details?.results ?? result;
-	applyLensUi(ctx, envelope);
-}
-
-async function runCtLens(args: string[], cwd: string, signal?: AbortSignal, input?: string) {
-	const fullArgs = ["lens", ...args, "--json"];
-	const result = await runCommand("ct", fullArgs, cwd, {
-		signal,
-		input,
-		allowNonZero: true,
-	});
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(result.stdout);
-	} catch (error) {
-		if (result.exitCode !== 0)
-			throw new Error(
-				`${formatCommand("ct", fullArgs)} failed with exit code ${result.exitCode}${result.stderr.trim() ? `: ${result.stderr.trim()}` : ""}`,
-			);
-		throw error;
-	}
-	return {
-		content: [{ type: "text" as const, text: JSON.stringify(parsed, null, 2) }],
-		details: {
-			command: formatCommand("ct", fullArgs),
-			cwd,
-			results: parsed,
-			stdout: result.stdout,
-			stderr: result.stderr,
-		},
-	};
 }
 
 export async function runLensHookCommand(
@@ -216,18 +74,21 @@ type CtHookCommandResult = {
 function hookFailureResponse(code: string, message: string, result?: CtHookCommandResult) {
 	return {
 		schema_version: "lens.hook_response.v1",
-		status: "degraded",
+		status: "error",
 		decision: { outcome: "allow", reason: code },
-		health: { status: "degraded", compact: "degraded · hook failed" },
+		data: {
+			status: "errors",
+			sources: [{ name: "lens", connected: false, errors: 1, warnings: 0 }],
+			...(result
+				? {
+						stdout: result.stdout,
+						stderr: result.stderr,
+						exitCode: result.exitCode,
+					}
+				: {}),
+		},
 		warnings: [],
 		errors: [{ code, message }],
-		data: result
-			? {
-					stdout: result.stdout,
-					stderr: result.stderr,
-					exitCode: result.exitCode,
-				}
-			: {},
 	};
 }
 
@@ -242,7 +103,6 @@ function errorMessage(error: unknown) {
 }
 
 export default function lensExtension(pi: ExtensionAPI) {
-	const registerTool = pi.registerTool.bind(pi) as any;
 	let sessionSeq = 0;
 	let agentSeq = 0;
 	let activeTurnIndex = 0;
@@ -276,18 +136,6 @@ export default function lensExtension(pi: ExtensionAPI) {
 
 	async function runHook(name: string, event: Record<string, unknown>, cwd: string, signal?: AbortSignal) {
 		return runLensHookCommand(name, event, cwd, { signal });
-	}
-
-	async function runCtLensTool(
-		args: string[],
-		cwd: string,
-		signal: AbortSignal | undefined,
-		ctx: any,
-		input?: string,
-	) {
-		const result = await runCtLens(args, cwd, signal, input);
-		applyLensToolResultUi(ctx, result);
-		return result;
 	}
 
 	function eventFor(ctx: any, event: LensHookEventName, extra: Record<string, unknown> = {}) {
@@ -334,16 +182,6 @@ export default function lensExtension(pi: ExtensionAPI) {
 				safeSignal(ctx),
 			);
 			applyLensUi(ctx, response);
-			if (response?.context?.inject === true && response.context.content) {
-				return {
-					message: {
-						customType: "lens-context",
-						content: response.context.content,
-						display: false,
-						details: response,
-					},
-				};
-			}
 		});
 	});
 
@@ -372,7 +210,7 @@ export default function lensExtension(pi: ExtensionAPI) {
 				safeCwd(ctx),
 				safeSignal(ctx),
 			);
-			if (shouldApplyHookUiForTool(event.toolName)) applyLensUi(ctx, response);
+			applyLensUi(ctx, response);
 		});
 	});
 
@@ -395,7 +233,7 @@ export default function lensExtension(pi: ExtensionAPI) {
 				safeCwd(ctx),
 				safeSignal(ctx),
 			);
-			if (shouldApplyHookUiForTool(event.toolName)) applyLensUi(ctx, response);
+			applyLensUi(ctx, response);
 		});
 	});
 
@@ -414,282 +252,11 @@ export default function lensExtension(pi: ExtensionAPI) {
 			applyLensUi(ctx, response);
 		});
 	});
-
-	registerTool({
-		name: "lens_diagnostics",
-		label: "Lens diagnostics",
-		description:
-			"List, record, or snapshot Lens diagnostics via ct lens diagnostics. Full JSON is preserved in details.",
-		parameters: diagnosticsSchema,
-		executionMode: "parallel",
-		renderShell: "self",
-		async execute(_id, params, signal, _onUpdate, ctx) {
-			const action = params.action ?? "list";
-			if (action === "record") {
-				const args = [
-					"diagnostics",
-					"record",
-					"--source",
-					required(params.source, "source"),
-					"--severity",
-					required(params.severity, "severity"),
-					"--message",
-					required(params.message, "message"),
-				];
-				pushOpt(args, "--scope-kind", params.scopeKind);
-				pushOpt(args, "--scope-key", params.scopeKey);
-				pushOpt(args, "--path", params.path);
-				pushOpt(args, "--code", params.code);
-				pushOpt(args, "--start-line", params.startLine);
-				pushOpt(args, "--end-line", params.endLine);
-				pushOpt(args, "--fingerprint", params.fingerprint);
-				return runCtLensTool(args, ctx.cwd, signal, ctx);
-			}
-			if (action === "snapshot") {
-				return runCtLensTool(
-					["diagnostics", "snapshot"],
-					ctx.cwd,
-					signal,
-					ctx,
-					JSON.stringify(required(params.snapshot, "snapshot")),
-				);
-			}
-			const args = ["diagnostics", "list"];
-			pushOpt(args, "--path", params.path);
-			pushBool(args, "--all", params.all);
-			return runCtLensTool(args, ctx.cwd, signal, ctx);
-		},
-		renderCall(args, theme, ctx) {
-			return renderText(ctx, title(theme, nf.diagnostics, "lens diagnostics", args.action ?? "list"));
-		},
-		renderResult(result, options, _theme, ctx) {
-			return renderText(ctx, summarizeLensResult(result, options.expanded, { ansi: true }));
-		},
-	});
-
-	registerTool({
-		name: "lens_checks",
-		label: "Lens checks",
-		description: "List or run repository-configured Lens checks and scanners via ct lens checks.",
-		parameters: checksSchema,
-		executionMode: "exclusive",
-		renderShell: "self",
-		async execute(_id, params, signal, _onUpdate, ctx) {
-			const action = params.action ?? "list";
-			const args = ["checks", action];
-			if (action === "run") {
-				pushBool(args, "--automatic", params.automatic);
-				pushBool(args, "--all", params.all);
-				pushBool(args, "--scanners", params.scanners);
-				for (const name of params.name ?? []) pushOpt(args, "--name", name);
-			}
-			return runCtLensTool(args, ctx.cwd, signal, ctx);
-		},
-		renderCall(args, theme, ctx) {
-			return renderText(ctx, title(theme, nf.lens, "lens checks", args.action ?? "list"));
-		},
-		renderResult(result, options, _theme, ctx) {
-			return renderText(ctx, summarizeLensResult(result, options.expanded, { ansi: true }));
-		},
-	});
-
-	registerTool({
-		name: "lens_status",
-		label: "Lens status",
-		description: "Show repository Lens status via ct lens status.",
-		parameters: statusSchema,
-		executionMode: "parallel",
-		renderShell: "self",
-		async execute(_id, _params, signal, _onUpdate, ctx) {
-			return runCtLensTool(["status"], ctx.cwd, signal, ctx);
-		},
-		renderCall(_args, theme, ctx) {
-			return renderText(ctx, title(theme, nf.lens, "lens status"));
-		},
-		renderResult(result, options, _theme, ctx) {
-			return renderText(ctx, summarizeLensResult(result, options.expanded, { ansi: true }));
-		},
-	});
-
-	registerTool({
-		name: "lens_health",
-		label: "Lens health",
-		description: "Show turn-scoped Lens health via ct lens health.",
-		parameters: healthSchema,
-		executionMode: "parallel",
-		renderShell: "self",
-		async execute(_id, params, signal, _onUpdate, ctx) {
-			const args = [
-				"health",
-				"--session",
-				params.session ?? currentSession(ctx),
-				"--turn",
-				params.turn ?? currentTurn(),
-			];
-			pushBool(args, "--final-output", params.finalOutput);
-			return runCtLensTool(args, ctx.cwd, signal, ctx);
-		},
-		renderCall(_args, theme, ctx) {
-			return renderText(ctx, title(theme, nf.lens, "lens health", "turn"));
-		},
-		renderResult(result, options, _theme, ctx) {
-			return renderText(ctx, summarizeLensResult(result, options.expanded, { ansi: true }));
-		},
-	});
-
-	registerTool({
-		name: "lens_touched",
-		label: "Lens touched",
-		description: "List files touched during a turn via ct lens touched.",
-		parameters: touchedSchema,
-		executionMode: "parallel",
-		renderShell: "self",
-		async execute(_id, params, signal, _onUpdate, ctx) {
-			return runCtLensTool(
-				["touched", "--session", params.session ?? currentSession(ctx), "--turn", params.turn ?? currentTurn()],
-				ctx.cwd,
-				signal,
-				ctx,
-			);
-		},
-		renderCall(_args, theme, ctx) {
-			return renderText(ctx, title(theme, nf.files, "lens touched", "turn"));
-		},
-		renderResult(result, options, _theme, ctx) {
-			return renderText(ctx, summarizeLensResult(result, options.expanded, { ansi: true }));
-		},
-	});
-
-	registerTool({
-		name: "lens_cleanup",
-		label: "Lens cleanup",
-		description: "Run safe Lens turn-scoped cleanup via ct lens cleanup run.",
-		parameters: cleanupSchema,
-		executionMode: "exclusive",
-		renderShell: "self",
-		async execute(_id, params, signal, _onUpdate, ctx) {
-			const args = [
-				"cleanup",
-				"run",
-				"--session",
-				params.session ?? currentSession(ctx),
-				"--turn",
-				params.turn ?? currentTurn(),
-			];
-			pushBool(args, "--allow-unsafe", params.allowUnsafe);
-			return runCtLensTool(args, ctx.cwd, signal, ctx);
-		},
-		renderCall(args, theme, ctx) {
-			return renderText(ctx, title(theme, nf.lens, "lens cleanup", args.allowUnsafe ? "allow unsafe" : "safe"));
-		},
-		renderResult(result, options, _theme, ctx) {
-			return renderText(ctx, summarizeLensResult(result, options.expanded, { ansi: true }));
-		},
-	});
-
-	registerTool({
-		name: "lens_report",
-		label: "Lens report",
-		description: "Show a deeper Lens changed-file report with diagnostics, cleanup, patch refs, and symbols.",
-		parameters: reportSchema,
-		executionMode: "parallel",
-		renderShell: "self",
-		async execute(_id, params, signal, _onUpdate, ctx) {
-			const args = [
-				"report",
-				"--session",
-				params.session ?? currentSession(ctx),
-				"--turn",
-				params.turn ?? currentTurn(),
-			];
-			pushOpt(args, "--path", params.path);
-			return runCtLensTool(args, ctx.cwd, signal, ctx);
-		},
-		renderCall(args, theme, ctx) {
-			return renderText(ctx, title(theme, nf.files, "lens report", args.path ?? "turn"));
-		},
-		renderResult(result, options, _theme, ctx) {
-			return renderText(ctx, summarizeLensResult(result, options.expanded, { ansi: true }));
-		},
-	});
-
-	registerTool({
-		name: "lens_context",
-		label: "Lens context",
-		description: "Show or acknowledge action-forcing Lens next-turn context.",
-		parameters: contextSchema,
-		executionMode: "parallel",
-		renderShell: "self",
-		async execute(_id, params, signal, _onUpdate, ctx) {
-			const args = [
-				"context",
-				"--session",
-				params.session ?? currentSession(ctx),
-				"--turn",
-				params.turn ?? currentTurn(),
-			];
-			pushBool(args, "--ack", params.ack);
-			return runCtLensTool(args, ctx.cwd, signal, ctx);
-		},
-		renderCall(args, theme, ctx) {
-			return renderText(ctx, title(theme, nf.lens, "lens context", args.ack ? "ack" : "show"));
-		},
-		renderResult(result, options, _theme, ctx) {
-			return renderText(ctx, summarizeLensResult(result, options.expanded, { ansi: true }));
-		},
-	});
-
-	registerTool({
-		name: "lens_raw_output",
-		label: "Lens raw output",
-		description: "List or show retained sanitized Lens raw output via ct lens raw-output.",
-		parameters: rawOutputSchema,
-		executionMode: "parallel",
-		renderShell: "self",
-		async execute(_id, params, signal, _onUpdate, ctx) {
-			const action = params.action ?? "list";
-			const args = ["raw-output", action];
-			if (action === "show") args.push(String(required(params.id, "id")));
-			else pushOpt(args, "--limit", params.limit);
-			return runCtLensTool(args, ctx.cwd, signal, ctx);
-		},
-		renderCall(args, theme, ctx) {
-			return renderText(ctx, title(theme, nf.lens, "lens raw output", args.action ?? "list"));
-		},
-		renderResult(result, options, _theme, ctx) {
-			return renderText(ctx, summarizeLensResult(result, options.expanded, { ansi: true }));
-		},
-	});
-
-	registerTool({
-		name: "lens_prune",
-		label: "Lens prune",
-		description: "Prune Lens telemetry using retention policy via ct lens prune.",
-		parameters: pruneSchema,
-		executionMode: "exclusive",
-		renderShell: "self",
-		async execute(_id, params, signal, _onUpdate, ctx) {
-			const args = ["prune"];
-			pushBool(args, "--dry-run", params.dryRun);
-			return runCtLensTool(args, ctx.cwd, signal, ctx);
-		},
-		renderCall(args, theme, ctx) {
-			return renderText(ctx, title(theme, nf.lens, "lens prune", args.dryRun ? "dry run" : "retention"));
-		},
-		renderResult(result, options, _theme, ctx) {
-			return renderText(ctx, summarizeLensResult(result, options.expanded, { ansi: true }));
-		},
-	});
 }
 
 function sessionIdFromFile(ctx: any): string | undefined {
 	const file = ctx?.sessionManager?.getSessionFile?.();
 	return typeof file === "string" && file ? basename(file).replace(/\.jsonl$/, "") : undefined;
-}
-
-function required<T>(value: T | undefined | null, name: string): T {
-	if (value === undefined || value === null || value === "") throw new Error(`${name} is required`);
-	return value;
 }
 
 export function filesFromTool(toolName: string, input: any): ToolFile[] {
