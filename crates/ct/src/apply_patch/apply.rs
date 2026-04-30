@@ -109,8 +109,9 @@ pub enum ApplyPatchError {
         near_miss: Option<String>,
     },
     #[error(
-        "ambiguous context in {path} at chunk #{chunk}{} — matched at lines {candidates:?}; widen the context or use a more specific @@ anchor{}",
+        "ambiguous context in {path} at chunk #{chunk}{} — matched {} location(s) at lines {candidates:?}; widen the context or use a more specific @@ anchor{}",
         format_anchor_stack(.change_contexts),
+        .candidates.len(),
         format_disambiguation(.disambiguation_hints),
     )]
     AmbiguousContext {
@@ -138,6 +139,25 @@ pub enum ApplyPatchError {
     DuplicateUpdate(String),
     #[error("move target already exists: {0}")]
     MoveTargetExists(String),
+    #[error(
+        "line range mismatch in {path} at chunk #{chunk}: expected lines {start}-{end} to match the hunk body{}",
+        .near_miss.as_deref().unwrap_or("")
+    )]
+    LineRangeMismatch {
+        path: String,
+        chunk: usize,
+        start: usize,
+        end: usize,
+        near_miss: Option<String>,
+    },
+    #[error(
+        "replace-all count mismatch in {path}: expected {expected} replacement(s), found {actual}"
+    )]
+    ReplacementCountMismatch {
+        path: String,
+        expected: usize,
+        actual: usize,
+    },
     #[error(
         "in {path} chunk #{chunk}: anchor `@@ {anchor}` also appears as the first context line. The anchor is consumed and the pattern search starts on the line *after* it — drop either the anchor or that first context line."
     )]
@@ -196,6 +216,12 @@ enum ChunkFailure {
         change_contexts: Vec<String>,
         candidates: Vec<usize>,
         disambiguation_hints: Vec<String>,
+    },
+    LineRangeMismatch {
+        chunk_index: usize,
+        start: usize,
+        end: usize,
+        near_miss: Option<String>,
     },
     AnchorShadowsFirstContext {
         chunk_index: usize,
@@ -260,7 +286,7 @@ pub fn plan(patch: &str, cwd: &Path) -> Result<ApplyOutcome, Box<ApplyFailure>> 
     // combine hunks.
     let mut seen_updates: HashSet<PathBuf> = HashSet::new();
     for hunk in &hunks {
-        if let Hunk::UpdateFile { path, .. } = hunk {
+        if let Hunk::UpdateFile { path, .. } | Hunk::ReplaceAll { path, .. } = hunk {
             let abs = resolve_path(&cwd_canon, path)?;
             if scope_updates.contains_key(&abs) || !seen_updates.insert(abs) {
                 return Err(Box::<ApplyFailure>::from(ApplyPatchError::DuplicateUpdate(
@@ -426,6 +452,56 @@ pub fn plan(patch: &str, cwd: &Path) -> Result<ApplyOutcome, Box<ApplyFailure>> 
                         });
                     }
                 }
+            }
+            Hunk::ReplaceAll {
+                path,
+                expected_replacements,
+                old_lines,
+                new_lines,
+            } => {
+                let abs = resolve_path(&cwd_canon, &path)
+                    .map_err(|e| fail(e, &attempts, &fingerprints))?;
+                let rel = display_rel(&path);
+                let (original, fp) =
+                    read_file(&abs, &rel).map_err(|e| fail(e, &attempts, &fingerprints))?;
+                let old_hash = fp.sha1.clone();
+                fingerprints.push((rel.clone(), fp));
+                let original_lines = lines_without_trailing_empty(&original);
+                let replacements =
+                    replace_all_replacements(&original_lines, &old_lines, &new_lines, 0);
+                if replacements.len() != expected_replacements {
+                    return Err(fail(
+                        ApplyPatchError::ReplacementCountMismatch {
+                            path: rel,
+                            expected: expected_replacements,
+                            actual: replacements.len(),
+                        },
+                        &attempts,
+                        &fingerprints,
+                    ));
+                }
+                let regions_meta = plan_post_apply_regions(&replacements);
+                let line_changes = plan_line_changes(&replacements);
+                let mut new_content_lines = apply_replacements(original_lines, replacements);
+                if !new_content_lines.last().is_some_and(String::is_empty) {
+                    new_content_lines.push(String::new());
+                }
+                let regions = materialize_regions(&new_content_lines, &regions_meta);
+                let new_content = new_content_lines.join("\n");
+                let (diff_text, additions, deletions) = unified_diff(&rel, &original, &new_content);
+                changes.push(FileChange {
+                    path: rel,
+                    kind: ChangeType::Update,
+                    old_hash: Some(old_hash),
+                    additions,
+                    deletions,
+                    unified_diff: diff_text,
+                    move_path: None,
+                    line_changes,
+                    fuzzy_hunks: Vec::new(),
+                    post_apply_regions: regions,
+                    new_content: Some(new_content),
+                });
             }
             Hunk::UpdateScope { path, chunks } => {
                 let abs = resolve_path(&cwd_canon, &path)
@@ -799,10 +875,7 @@ fn derive_new_contents(
     file_rel: &str,
     attempts: &mut Vec<AnchorAttempt>,
 ) -> Result<(String, Vec<HunkFuzzy>, Vec<HunkRegion>, Vec<LineChange>), ChunkFailure> {
-    let mut original_lines: Vec<String> = original.split('\n').map(String::from).collect();
-    if original_lines.last().is_some_and(String::is_empty) {
-        original_lines.pop();
-    }
+    let original_lines = lines_without_trailing_empty(original);
 
     let (replacements, fuzzy_hunks) =
         compute_replacements(&original_lines, chunks, file_rel, attempts)?;
@@ -814,6 +887,14 @@ fn derive_new_contents(
     }
     let regions = materialize_regions(&new_lines, &regions_meta);
     Ok((new_lines.join("\n"), fuzzy_hunks, regions, line_changes))
+}
+
+fn lines_without_trailing_empty(text: &str) -> Vec<String> {
+    let mut lines: Vec<String> = text.split('\n').map(String::from).collect();
+    if lines.last().is_some_and(String::is_empty) {
+        lines.pop();
+    }
+    lines
 }
 
 #[derive(Debug)]
@@ -970,6 +1051,33 @@ fn materialize_regions(
     regions
 }
 
+fn replace_all_replacements(
+    original_lines: &[String],
+    old_lines: &[String],
+    new_lines: &[String],
+    chunk: usize,
+) -> Vec<Replacement> {
+    if old_lines.is_empty() {
+        return Vec::new();
+    }
+    let mut replacements = Vec::new();
+    let mut idx = 0;
+    while idx + old_lines.len() <= original_lines.len() {
+        if original_lines[idx..idx + old_lines.len()] == *old_lines {
+            replacements.push(Replacement {
+                chunk,
+                start: idx,
+                old: old_lines.to_vec(),
+                new: new_lines.to_vec(),
+            });
+            idx += old_lines.len();
+        } else {
+            idx += 1;
+        }
+    }
+    replacements
+}
+
 fn compute_replacements(
     original_lines: &[String],
     chunks: &[UpdateFileChunk],
@@ -982,6 +1090,49 @@ fn compute_replacements(
 
     for (chunk_index, chunk) in chunks.iter().enumerate() {
         let mut chunk_worst = MatchQuality::Exact;
+        if let Some((start, end)) = chunk.line_range {
+            let start_zero = start.saturating_sub(1);
+            if start == 0 || end < start || end > original_lines.len() {
+                return Err(ChunkFailure::LineRangeMismatch {
+                    chunk_index,
+                    start,
+                    end,
+                    near_miss: near_miss_snippet(
+                        original_lines,
+                        start_zero.min(original_lines.len()),
+                        chunk.old_lines.first().map(String::as_str),
+                    ),
+                });
+            }
+            let old_slice = &original_lines[start_zero..end];
+            if old_slice != chunk.old_lines.as_slice() {
+                return Err(ChunkFailure::LineRangeMismatch {
+                    chunk_index,
+                    start,
+                    end,
+                    near_miss: near_miss_snippet(
+                        original_lines,
+                        start_zero,
+                        chunk.old_lines.first().map(String::as_str),
+                    ),
+                });
+            }
+            replacements.push(Replacement {
+                chunk: chunk_index,
+                start: start_zero,
+                old: chunk.old_lines.clone(),
+                new: chunk.new_lines.clone(),
+            });
+            line_index = end;
+            attempts.push(AnchorAttempt {
+                file_path: file_rel.to_string(),
+                chunk_index,
+                anchor_text: Some(format!("lines {start}-{end}")),
+                success: true,
+                fuzzy_tier: Some(chunk_worst.as_str().to_string()),
+            });
+            continue;
+        }
         // Walk every stacked anchor in order. Each `@@ <line>` advances the
         // file cursor past its match before the next anchor (or the body
         // pattern) is searched. The last anchor in the stack is the one
@@ -1602,6 +1753,18 @@ fn chunk_failure_to_error(fail: ChunkFailure, path: &str) -> ApplyPatchError {
             change_contexts,
             candidates,
             disambiguation_hints,
+        },
+        ChunkFailure::LineRangeMismatch {
+            chunk_index,
+            start,
+            end,
+            near_miss,
+        } => ApplyPatchError::LineRangeMismatch {
+            path: path.to_string(),
+            chunk: chunk_index,
+            start,
+            end,
+            near_miss,
         },
         ChunkFailure::AnchorShadowsFirstContext {
             chunk_index,

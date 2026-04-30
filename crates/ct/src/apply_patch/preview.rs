@@ -193,6 +193,39 @@ fn preview_partial(patch: &str, cwd: &Path, complete: bool) -> Option<PreviewRes
                     move_path: move_path.as_ref().map(|path| display_rel(path)),
                 });
             }
+            Hunk::ReplaceAll {
+                path,
+                expected_replacements,
+                old_lines,
+                new_lines,
+            } => {
+                let abs = resolve_path(&cwd_canon, &path).ok()?;
+                if !seen_updates.insert(abs.clone()) {
+                    return None;
+                }
+                let rel = display_rel(&path);
+                let (original, _) = read_file(&abs, &rel).ok()?;
+                let original_lines = lines(&original);
+                let resolved =
+                    replace_all_partial_replacements(&original_lines, &old_lines, &new_lines);
+                if resolved.len() != expected_replacements {
+                    return None;
+                }
+                let new_lines = apply_partial_replacements(original_lines.clone(), resolved);
+                let new_content = new_lines.join("\n");
+                let (diff, additions, deletions) =
+                    super::diff::unified_diff(&rel, &original, &new_content);
+                let scopes = super::scope::source_scopes(&rel, &new_content);
+                changes.push(PreviewChange {
+                    path: rel,
+                    kind: PreviewChangeType::Update,
+                    additions,
+                    deletions,
+                    unified_diff: diff,
+                    scopes,
+                    move_path: None,
+                });
+            }
             Hunk::UpdateScope { path, chunks } => {
                 let abs = resolve_path(&cwd_canon, &path).ok()?;
                 if seen_updates.contains(&abs) {
@@ -279,6 +312,23 @@ fn resolve_partial_chunks(
     let mut line_index = 0usize;
 
     for chunk in chunks {
+        if let Some((start, end)) = chunk.line_range {
+            let start_zero = start.checked_sub(1)?;
+            if end < start || end > original_lines.len() {
+                return None;
+            }
+            let old = &chunk.old_lines;
+            if original_lines[start_zero..end] != *old {
+                return None;
+            }
+            replacements.push(PartialReplacement {
+                start: start_zero,
+                old: old.clone(),
+                new: chunk.new_lines.clone(),
+            });
+            line_index = end;
+            continue;
+        }
         for ctx_line in &chunk.change_contexts {
             match seek_sequence(
                 original_lines,
@@ -331,6 +381,31 @@ fn resolve_partial_chunks(
     }
 
     Some(replacements)
+}
+
+fn replace_all_partial_replacements(
+    original_lines: &[String],
+    old_lines: &[String],
+    new_lines: &[String],
+) -> Vec<PartialReplacement> {
+    if old_lines.is_empty() {
+        return Vec::new();
+    }
+    let mut replacements = Vec::new();
+    let mut idx = 0;
+    while idx + old_lines.len() <= original_lines.len() {
+        if original_lines[idx..idx + old_lines.len()] == *old_lines {
+            replacements.push(PartialReplacement {
+                start: idx,
+                old: old_lines.to_vec(),
+                new: new_lines.to_vec(),
+            });
+            idx += old_lines.len();
+        } else {
+            idx += 1;
+        }
+    }
+    replacements
 }
 
 fn resolve_partial_scope_chunks(
