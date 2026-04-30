@@ -121,11 +121,7 @@ function sourceSummaries(data: LensRecord | undefined): SourceSummary[] {
 
 function diagnostics(data: LensRecord | undefined): LensRecord[] {
 	const raw =
-		data?.data?.diagnostics ??
-		data?.diagnostics ??
-		data?.data?.issues ??
-		data?.data?.health?.issues ??
-		data?.issues;
+		data?.data?.diagnostics ?? data?.diagnostics ?? data?.data?.issues ?? data?.data?.health?.issues ?? data?.issues;
 	return Array.isArray(raw) ? raw.filter((item): item is LensRecord => !!asRecord(item)) : [];
 }
 
