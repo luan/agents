@@ -2,10 +2,7 @@ import { accessSync, constants as fsConstants } from "node:fs";
 import { delimiter, join } from "node:path";
 import { CombinedAutocompleteProvider } from "@mariozechner/pi-tui";
 
-const FD_BINARY_NAMES =
-  process.platform === "win32"
-    ? ["fd.exe", "fdfind.exe", "fd", "fdfind"]
-    : ["fd", "fdfind"];
+const FD_BINARY_NAMES = process.platform === "win32" ? ["fd.exe", "fdfind.exe", "fd", "fdfind"] : ["fd", "fdfind"];
 
 /**
  * pi resolves fd internally for its main editor, but that resolver is not part of
@@ -13,37 +10,31 @@ const FD_BINARY_NAMES =
  * themselves when reusing CombinedAutocompleteProvider for `@` file mentions.
  */
 export function createAskAutocompleteProvider(cwd: string) {
-  return new CombinedAutocompleteProvider(
-    [],
-    cwd,
-    findAutocompleteBinary(FD_BINARY_NAMES),
-  );
+	return new CombinedAutocompleteProvider([], cwd, findAutocompleteBinary(FD_BINARY_NAMES));
 }
 
 function findAutocompleteBinary(binaryNames: readonly string[]): string | null {
-  const pathValue = process.env.PATH;
-  if (!pathValue) {
-    return null;
-  }
+	const pathValue = process.env.PATH;
+	if (!pathValue) {
+		return null;
+	}
 
-  const directories = pathValue.split(delimiter).filter(Boolean);
-  for (const binaryName of binaryNames) {
-    const executablePath = directories
-      .map((directory) => join(directory, binaryName))
-      .find(isExecutableFile);
-    if (executablePath) {
-      return executablePath;
-    }
-  }
+	const directories = pathValue.split(delimiter).filter(Boolean);
+	for (const binaryName of binaryNames) {
+		const executablePath = directories.map((directory) => join(directory, binaryName)).find(isExecutableFile);
+		if (executablePath) {
+			return executablePath;
+		}
+	}
 
-  return null;
+	return null;
 }
 
 function isExecutableFile(path: string): boolean {
-  try {
-    accessSync(path, fsConstants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
+	try {
+		accessSync(path, fsConstants.X_OK);
+		return true;
+	} catch {
+		return false;
+	}
 }
