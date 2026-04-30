@@ -83,7 +83,7 @@ export function renderLensWidgetLines(value: unknown, expanded = false, options:
 		const line = numberValue(diagnostic.start_line ?? diagnostic.line);
 		const location = path ? `${path}${line ? `:${line}` : ""}` : source;
 		lines.push(colorDetailLine(`  diagnostics: [${source}/${severity}] ${location}: ${diagnostic.message}`, style));
-		const fix = stringValue(diagnostic.fix_command ?? diagnostic.fix_instructions);
+		const fix = stringValue(diagnostic.fix_command ?? diagnostic.fix_instruction ?? diagnostic.fix_instructions);
 		if (fix) lines.push(colorDetailLine(`  fix: ${fix}`, style));
 	}
 	return [...new Set(lines)];
@@ -94,6 +94,7 @@ function sourceSummaries(data: LensRecord | undefined): SourceSummary[] {
 		data?.data?.sources ??
 		data?.sources ??
 		data?.data?.summary?.sources ??
+		data?.data?.health?.summary?.sources ??
 		data?.summary?.sources ??
 		data?.health?.details?.sources;
 	if (!Array.isArray(raw)) return [];
@@ -119,7 +120,12 @@ function sourceSummaries(data: LensRecord | undefined): SourceSummary[] {
 }
 
 function diagnostics(data: LensRecord | undefined): LensRecord[] {
-	const raw = data?.data?.diagnostics ?? data?.diagnostics ?? data?.data?.issues ?? data?.issues;
+	const raw =
+		data?.data?.diagnostics ??
+		data?.diagnostics ??
+		data?.data?.issues ??
+		data?.data?.health?.issues ??
+		data?.issues;
 	return Array.isArray(raw) ? raw.filter((item): item is LensRecord => !!asRecord(item)) : [];
 }
 
