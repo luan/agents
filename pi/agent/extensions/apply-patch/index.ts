@@ -25,6 +25,18 @@ import {
   resolveInlineLanguageForPath,
   resolveShikiLanguageForPath,
 } from "../shared/path-language";
+import {
+  IMAGE_GENERATION_TOOL_NAME,
+  createImageGenerationTool,
+  rewriteNativeImageGenerationTool,
+  rewriteNativeWebSearchTool,
+  supportsNativeImageGeneration,
+} from "./codex-native.ts";
+import {
+  buildCodexSystemPrompt,
+  extractPiPromptSkills,
+  type PromptSkill,
+} from "./codex-prompt.ts";
 import { registerApplyPatchFreeformProvider } from "./freeform-codex.ts";
 
 const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
@@ -2129,10 +2141,14 @@ function formatConfig(config: ApplyPatchConfig): string {
 }
 
 export default function applyPatchExtension(pi: ExtensionAPI) {
+  let currentCwd = process.cwd();
+  let promptSkills: PromptSkill[] = [];
+
   registerApplyPatchFreeformProvider(pi, {
     toolName: APPLY_PATCH_TOOL_NAME,
     description: APPLY_PATCH_FREEFORM_TOOL_DESCRIPTION,
     grammar: APPLY_PATCH_GRAMMAR,
+    getCurrentCwd: () => currentCwd,
   });
 
   let config = loadConfig();
@@ -2156,6 +2172,18 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
       next = [...next, APPLY_PATCH_TOOL_NAME];
     }
 
+    if (
+      codexModel &&
+      supportsNativeImageGeneration(ctx.model) &&
+      !next.includes(IMAGE_GENERATION_TOOL_NAME)
+    ) {
+      next = [...next, IMAGE_GENERATION_TOOL_NAME];
+    }
+
+    if (!codexModel && next.includes(IMAGE_GENERATION_TOOL_NAME)) {
+      next = next.filter((toolName) => toolName !== IMAGE_GENERATION_TOOL_NAME);
+    }
+
     if (!codexModel && toolsRemovedForCodex.size > 0) {
       const registeredTools = new Set(
         ((pi as any).getAllTools?.() ?? []).map((tool: { name?: string }) => tool.name),
@@ -2174,6 +2202,8 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
   };
 
   const resetSessionState = (_event?: unknown, ctx?: ExtensionContext) => {
+    if (ctx?.cwd) currentCwd = ctx.cwd;
+    promptSkills = extractPiPromptSkills(ctx?.getSystemPrompt?.() ?? "");
     executingPatchInputs.clear();
     completedPatchInputs.clear();
     applyToolAvailability(pi, config);
@@ -2184,20 +2214,38 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
   pi.on("session_start", resetSessionState);
   pi.on("session_tree", resetSessionState);
   pi.on("model_select", (_event, ctx) => {
+    currentCwd = ctx.cwd;
+    promptSkills = extractPiPromptSkills(ctx.getSystemPrompt());
     applyToolAvailability(pi, config);
     enforceToolPolicy(pi, config);
     applyCodexToolPolicy(ctx);
   });
 
   pi.on("before_agent_start", (event, ctx) => {
+    currentCwd = ctx.cwd;
+    promptSkills = extractPiPromptSkills(event.systemPrompt);
     applyToolAvailability(pi, config);
     enforceToolPolicy(pi, config);
     applyCodexToolPolicy(ctx);
-    if (!config.enforce) return;
-    if (event.systemPrompt.includes("## apply_patch")) return;
-    return {
-      systemPrompt: `${event.systemPrompt}\n\n${APPLY_PATCH_PROMPT_APPENDIX}`,
-    };
+    let systemPrompt = event.systemPrompt;
+    if (config.enforce && !systemPrompt.includes("## apply_patch")) {
+      systemPrompt = `${systemPrompt}\n\n${APPLY_PATCH_PROMPT_APPENDIX}`;
+    }
+    if (isCodexModel(ctx.model)) {
+      systemPrompt = buildCodexSystemPrompt(systemPrompt, {
+        skills: promptSkills,
+        shell: process.env.SHELL,
+      });
+    }
+    if (systemPrompt !== event.systemPrompt) return { systemPrompt };
+  });
+
+  pi.on("before_provider_request", async (event, ctx) => {
+    currentCwd = ctx.cwd;
+    return rewriteNativeImageGenerationTool(
+      rewriteNativeWebSearchTool(event.payload, ctx.model),
+      ctx.model,
+    );
   });
 
   pi.on("tool_call", (event, ctx) => {
@@ -2241,6 +2289,8 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
   });
 
   if (!config.registerTool) return;
+
+  pi.registerTool(createImageGenerationTool());
 
   pi.registerTool({
     name: APPLY_PATCH_TOOL_NAME,
