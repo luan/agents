@@ -1,11 +1,10 @@
-import { StringEnum } from "@mariozechner/pi-ai";
 import { basename } from "node:path";
+import { StringEnum } from "@mariozechner/pi-ai";
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
-
-import { formatCommand, runCommand } from "../shared/ct-runner.ts";
 import { nf, renderText, title } from "../shared/ct-render.ts";
+import { formatCommand, runCommand } from "../shared/ct-runner.ts";
 import {
   LENS_TOOL_NAMES,
   renderLensCompactStatus,

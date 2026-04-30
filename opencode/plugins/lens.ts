@@ -1,5 +1,5 @@
-import type { Plugin } from "@opencode-ai/plugin";
 import { spawn } from "node:child_process";
+import type { Plugin } from "@opencode-ai/plugin";
 
 export const id = "agents-lens";
 

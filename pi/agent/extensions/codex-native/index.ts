@@ -2,14 +2,14 @@ import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
+import registerOpenAINativeCompaction from "./compaction/index.ts";
 import {
-  IMAGE_GENERATION_TOOL_NAME,
   createImageGenerationTool,
+  IMAGE_GENERATION_TOOL_NAME,
   rewriteNativeImageGenerationTool,
   rewriteNativeWebSearchTool,
   supportsNativeImageGeneration,
 } from "./native-tools.ts";
-import registerOpenAINativeCompaction from "./compaction/index.ts";
 import { buildCodexSystemPrompt } from "./prompt.ts";
 
 function isCodexModel(model: ExtensionContext["model"] | undefined): boolean {

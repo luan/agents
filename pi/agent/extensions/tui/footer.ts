@@ -1,8 +1,8 @@
 import type { Theme, ThemeColor } from "@mariozechner/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
-import { type GitStatusSummary, emptyGitStatus } from "./git";
-import type { RuntimeInfo } from "./runtime";
 import type { PolishedTuiConfig } from "./config";
+import { emptyGitStatus, type GitStatusSummary } from "./git";
+import type { RuntimeInfo } from "./runtime";
 import type { UsageSnapshot } from "./usage";
 
 const BAR_FILLED = "━";
@@ -68,7 +68,11 @@ function fitFooterSegment(width: number, variants: string[]): string {
   return truncateToWidth(variants[variants.length - 1] || "", safeWidth);
 }
 
-function wrapFooterSegments(segments: string[], width: number, sep: string): string[] {
+function wrapFooterSegments(
+  segments: string[],
+  width: number,
+  sep: string,
+): string[] {
   const safeWidth = Math.max(1, width);
   const lines: string[] = [];
   let current = "";
@@ -112,13 +116,14 @@ function renderContextGauge(
   const bar =
     theme.fg(color, BAR_FILLED.repeat(filled)) +
     theme.fg("dim", BAR_EMPTY.repeat(empty));
-  const pctValue = state.contextPercent === null ? "?" : `${Math.round(rawPercent)}%`;
+  const pctValue =
+    state.contextPercent === null ? "?" : `${Math.round(rawPercent)}%`;
   const counts =
     !options.includeCounts || !state.contextTotal
       ? ""
       : ` ${formatTokenCount(state.contextUsed)}/${formatTokenCount(state.contextTotal)}`;
 
-  return theme.fg("dim", "ctx ") + bar + " " + theme.fg("dim", pctValue + counts);
+  return `${theme.fg("dim", "ctx ") + bar} ${theme.fg("dim", pctValue + counts)}`;
 }
 
 function getRuntimeColorToken(runtime: RuntimeInfo | undefined): ThemeColor {
@@ -144,9 +149,14 @@ function getRuntimeColorToken(runtime: RuntimeInfo | undefined): ThemeColor {
   }
 }
 
-function renderRuntimeSegment(theme: Theme, runtime: RuntimeInfo | undefined): string {
+function renderRuntimeSegment(
+  theme: Theme,
+  runtime: RuntimeInfo | undefined,
+): string {
   if (!runtime) return "";
-  const label = runtime.version ? `${runtime.symbol} ${runtime.version}` : runtime.symbol;
+  const label = runtime.version
+    ? `${runtime.symbol} ${runtime.version}`
+    : runtime.symbol;
   return theme.fg(getRuntimeColorToken(runtime), label);
 }
 
@@ -161,8 +171,10 @@ function renderBranchSegment(
   const branchColor = state.dirty ? "warning" : "success";
   let str = theme.fg(branchColor, branch);
   if (state.dirty) str += theme.fg("warning", " *");
-  if (state.ahead) str += theme.fg("success", ` ${config.icons.ahead}${state.ahead}`);
-  if (state.behind) str += theme.fg("error", ` ${config.icons.behind}${state.behind}`);
+  if (state.ahead)
+    str += theme.fg("success", ` ${config.icons.ahead}${state.ahead}`);
+  if (state.behind)
+    str += theme.fg("error", ` ${config.icons.behind}${state.behind}`);
   return str;
 }
 
@@ -174,7 +186,7 @@ export function renderFooter(
   width: number,
 ): string[] {
   const dim = (s: string) => theme.fg("dim", s);
-  const sep = " " + dim(">") + " ";
+  const sep = ` ${dim(">")} `;
 
   const cwdLabel = theme.fg("accent", formatCwdLabel(cwd, config.icons.cwd));
   const branchLabel = renderBranchSegment(theme, state, config);
@@ -184,11 +196,14 @@ export function renderFooter(
   if (cwdLabel && branchLabel && runtimeLabel) {
     locationVariants.push([cwdLabel, branchLabel, runtimeLabel].join(sep));
   }
-  if (cwdLabel && branchLabel) locationVariants.push([cwdLabel, branchLabel].join(sep));
+  if (cwdLabel && branchLabel)
+    locationVariants.push([cwdLabel, branchLabel].join(sep));
   if (cwdLabel) locationVariants.push(cwdLabel);
   if (branchLabel) locationVariants.push(branchLabel);
   const locationBlock =
-    locationVariants.length > 0 ? fitFooterSegment(width, locationVariants) : "";
+    locationVariants.length > 0
+      ? fitFooterSegment(width, locationVariants)
+      : "";
 
   const plainModelStr = theme.fg("muted", state.modelLabel);
   const modelStr =
@@ -201,7 +216,10 @@ export function renderFooter(
   );
 
   const ctxBlock = fitFooterSegment(width, [
-    renderContextGauge(state, theme, { barWidth: CTX_GAUGE_WIDTH, includeCounts: true }),
+    renderContextGauge(state, theme, {
+      barWidth: CTX_GAUGE_WIDTH,
+      includeCounts: true,
+    }),
     renderContextGauge(state, theme, { barWidth: 10, includeCounts: false }),
     renderContextGauge(state, theme, { barWidth: 8, includeCounts: false }),
     renderContextGauge(state, theme, { barWidth: 6, includeCounts: false }),
@@ -214,7 +232,11 @@ export function renderFooter(
   const rightBlock = rightParts.join(" ");
   const rightWidth = visibleWidth(rightBlock);
 
-  const lines = wrapFooterSegments([locationBlock, modelBlock, ctxBlock], width, sep);
+  const lines = wrapFooterSegments(
+    [locationBlock, modelBlock, ctxBlock],
+    width,
+    sep,
+  );
 
   if (rightBlock) {
     const lastIdx = lines.length - 1;

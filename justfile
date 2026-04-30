@@ -6,6 +6,21 @@ home := env("HOME")
 default:
     @just --list
 
+check:
+    cd "{{ repo }}" && \
+    cargo fmt --all -- --check && \
+    cargo clippy --all -- -D warnings && \
+    cargo check --all-targets && \
+    bun run check
+
+test:
+    cd "{{ repo }}" && \
+    cargo nextest run && \
+    bun run test
+
+build:
+    cd "{{ repo }}" && cargo build --release -p ct
+
 render-agents:
     cd "{{ repo }}" && cargo xtask render-agents
 
@@ -51,12 +66,6 @@ claude-plugins-install:
     # `claude plugin install` is idempotent (no-op when already installed).
     claude plugin install worktrunk@worktrunk
     # Keep the local `agents` marketplace disabled until its schema is updated.
-
-build:
-    cd "{{ repo }}" && cargo build --release -p ct
-
-test:
-    cd "{{ repo }}" && cargo nextest run
 
 install:
     curl -L https://dmtrkovalenko.dev/install-fff-mcp.sh | bash

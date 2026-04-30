@@ -2,8 +2,8 @@ import { describe, expect, it } from "bun:test";
 
 import {
   applyLensUi,
-  filesFromToolAndResult,
   filesFromTool,
+  filesFromToolAndResult,
   runLensHookCommand,
   shouldApplyHookUiForTool,
 } from "./index.ts";

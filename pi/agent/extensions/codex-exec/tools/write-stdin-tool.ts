@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Type } from "typebox";
 import { Container, Text } from "@mariozechner/pi-tui";
+import { Type } from "typebox";
 import { renderOutputBlock, renderWriteStdinCall } from "./codex-rendering.ts";
 import type {
   ExecSessionManager,
@@ -217,7 +217,7 @@ export function registerWriteStdinTool(
           : state.exitCode !== undefined && state.exitCode !== 0
             ? theme.fg("muted", `Exit code: ${state.exitCode}`)
             : undefined;
-      let text = renderOutputBlock(output, theme, footer, {
+      const text = renderOutputBlock(output, theme, footer, {
         expanded,
         truncatedAbove: state.outputTruncated,
         originalTokenCount: state.originalTokenCount,

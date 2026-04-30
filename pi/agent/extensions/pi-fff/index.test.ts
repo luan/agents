@@ -43,20 +43,26 @@ describe("pi-fff rendering", () => {
   test("search tools self-render without the default success shell", () => {
     const tools = createTools();
 
-    expect(tools.find((tool) => tool.name === "grep")?.renderShell).toBe("self");
-    expect(tools.find((tool) => tool.name === "find")?.renderShell).toBe("self");
-    expect(tools.find((tool) => tool.name === "multi_grep")?.renderShell).toBe("self");
+    expect(tools.find((tool) => tool.name === "grep")?.renderShell).toBe(
+      "self",
+    );
+    expect(tools.find((tool) => tool.name === "find")?.renderShell).toBe(
+      "self",
+    );
+    expect(tools.find((tool) => tool.name === "multi_grep")?.renderShell).toBe(
+      "self",
+    );
   });
 
   test("grep calls render as compact exploration", () => {
     const grep = createTools().find((tool) => tool.name === "grep");
     const text = createText();
 
-    grep.renderCall(
-      { pattern: "foo", path: "src/" },
-      theme,
-      { lastComponent: text, toolCallId: "grep-call", isPartial: false },
-    );
+    grep.renderCall({ pattern: "foo", path: "src/" }, theme, {
+      lastComponent: text,
+      toolCallId: "grep-call",
+      isPartial: false,
+    });
 
     expect(text.getText()).toContain("• **Explored**");
     expect(text.getText()).toContain("└ Search foo in src/");

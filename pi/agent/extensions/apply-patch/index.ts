@@ -5,8 +5,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  type ExtensionContext,
   type ExtensionAPI,
+  type ExtensionContext,
   highlightCode,
   keyHint,
 } from "@mariozechner/pi-coding-agent";
@@ -34,7 +34,7 @@ const ANSI_RESET = "\x1b[0m";
 const APPLY_PATCH_USAGE_ENTRY = "apply_patch_usage";
 const APPLY_PATCH_TOOL_NAME = "apply_patch";
 
-const APPLY_PATCH_GRAMMAR = String.raw`start: begin_patch hunk+ end_patch
+const APPLY_PATCH_GRAMMAR = `start: begin_patch hunk+ end_patch
 begin_patch: "*** Begin Patch" LF
 end_patch: "*** End Patch" LF?
 
@@ -1348,10 +1348,7 @@ function renderUnifiedDiffRows(
         const label = `${" ".repeat(numberWidth)} ${theme.fg("dim", "▾")} ${theme.fg(
           "muted",
           `${scope.kind} `,
-        )}${theme.fg("accent", scope.name)}${theme.fg(
-          "dim",
-          `:${scope.start_line}-${scope.end_line}`,
-        )}`;
+        )}${theme.fg("accent", scope.name)}${theme.fg("dim", `:${scope.start_line}-${scope.end_line}`)}`;
         lines.push(paintDiffRow(label, width, baseBackground));
       }
     }

@@ -450,8 +450,6 @@ type RenderContextLike<
   toolCallId?: string;
   invalidate: () => void;
 };
-type SessionContextLike = ExtensionContext;
-type CommandContextLike = ExtensionCommandContext;
 type ToolExecutor<TParams, TDetails = unknown> = (
   toolCallId: string,
   params: TParams,

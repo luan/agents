@@ -1,4 +1,7 @@
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+} from "@mariozechner/pi-coding-agent";
 import { createExecCommandTracker } from "./tools/exec-command-state.ts";
 import { registerExecCommandTool } from "./tools/exec-command-tool.ts";
 import { createExecSessionManager } from "./tools/exec-session-manager.ts";
@@ -20,9 +23,26 @@ function getCommandArg(args: unknown): string | undefined {
 }
 
 function isToolCallOnlyAssistantMessage(message: unknown): boolean {
-  if (!message || typeof message !== "object" || !("role" in message) || message.role !== "assistant") return false;
-  if (!("content" in message) || !Array.isArray(message.content) || message.content.length === 0) return false;
-  return message.content.every((item) => typeof item === "object" && item !== null && "type" in item && item.type === "toolCall");
+  if (
+    !message ||
+    typeof message !== "object" ||
+    !("role" in message) ||
+    message.role !== "assistant"
+  )
+    return false;
+  if (
+    !("content" in message) ||
+    !Array.isArray(message.content) ||
+    message.content.length === 0
+  )
+    return false;
+  return message.content.every(
+    (item) =>
+      typeof item === "object" &&
+      item !== null &&
+      "type" in item &&
+      item.type === "toolCall",
+  );
 }
 
 export default function codexExecExtension(pi: ExtensionAPI) {
@@ -31,7 +51,9 @@ export default function codexExecExtension(pi: ExtensionAPI) {
 
   registerExecCommandTool(pi, tracker, sessions);
   registerWriteStdinTool(pi, sessions);
-  sessions.onSessionExit((sessionId) => tracker.recordSessionFinished(sessionId));
+  sessions.onSessionExit((sessionId) =>
+    tracker.recordSessionFinished(sessionId),
+  );
 
   const applyToolPolicy = (ctx?: ExtensionContext) => {
     if (!ctx) return;
@@ -44,7 +66,9 @@ export default function codexExecExtension(pi: ExtensionAPI) {
         if (!next.includes(toolName)) next.push(toolName);
       }
     } else {
-      next = active.filter((toolName) => toolName !== "exec_command" && toolName !== "write_stdin");
+      next = active.filter(
+        (toolName) => toolName !== "exec_command" && toolName !== "write_stdin",
+      );
     }
     if (!arraysEqual(active, next)) pi.setActiveTools(next);
   };
@@ -80,9 +104,11 @@ export default function codexExecExtension(pi: ExtensionAPI) {
     if (event.toolName === "exec_command") tracker.recordEnd(event.toolCallId);
   });
   pi.on("tool_result", (event) => {
-    if (event.toolName !== "exec_command" && event.toolName !== "write_stdin") return;
+    if (event.toolName !== "exec_command" && event.toolName !== "write_stdin")
+      return;
     const details = event.details;
-    if (!details || typeof details !== "object" || !("exit_code" in details)) return;
+    if (!details || typeof details !== "object" || !("exit_code" in details))
+      return;
     const exitCode = (details as { exit_code?: unknown }).exit_code;
     if (typeof exitCode === "number" && exitCode !== 0) {
       return { isError: true };

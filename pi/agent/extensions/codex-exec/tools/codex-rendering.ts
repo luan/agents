@@ -1,4 +1,4 @@
-import { summarizeShellCommand, type ShellAction } from "../shell/summary.ts";
+import { type ShellAction, summarizeShellCommand } from "../shell/summary.ts";
 import { shellSplit } from "../shell/tokenize.ts";
 import type { ExecCommandStatus } from "./exec-command-state.ts";
 

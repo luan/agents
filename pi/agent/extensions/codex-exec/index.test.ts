@@ -1,15 +1,15 @@
 import { expect, test } from "bun:test";
 import codexExecExtension from "./index.ts";
-import { createExecSessionManager } from "./tools/exec-session-manager.ts";
 import {
   formatElapsedTime,
+  type RenderTheme,
   renderExecCommandCall,
   renderOutputBlock,
   renderWriteStdinCall,
-  type RenderTheme,
 } from "./tools/codex-rendering.ts";
 import { createExecCommandTracker } from "./tools/exec-command-state.ts";
 import { registerExecCommandTool } from "./tools/exec-command-tool.ts";
+import { createExecSessionManager } from "./tools/exec-session-manager.ts";
 import { registerWriteStdinTool } from "./tools/write-stdin-tool.ts";
 
 const testTheme: RenderTheme = {
@@ -182,12 +182,13 @@ test("write stdin renderer self-renders without the default success shell", () =
 });
 
 test("extension marks nonzero exec results as errors for red status dots", () => {
-  const handlers = new Map<string, Function[]>();
+  type Handler = (event?: any) => any;
+  const handlers = new Map<string, Handler[]>();
   const pi = {
     registerTool() {},
     getActiveTools: () => [],
     setActiveTools() {},
-    on: (event: string, handler: Function) => {
+    on: (event: string, handler: Handler) => {
       handlers.set(event, [...(handlers.get(event) ?? []), handler]);
     },
   } as any;

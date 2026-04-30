@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Type } from "typebox";
 import { Container, Text } from "@mariozechner/pi-tui";
+import { Type } from "typebox";
 import {
   renderExecCommandCall,
   renderGroupedExecCommandCall,
@@ -232,7 +232,7 @@ const renderExecCommandResultWithOptionalContext: any = (
       : details?.exit_code !== undefined && details.exit_code !== 0
         ? theme.fg("muted", `Exit code: ${details.exit_code}`)
         : undefined;
-  let text = renderOutputBlock(output ?? "", theme, footer, {
+  const text = renderOutputBlock(output ?? "", theme, footer, {
     expanded: options.expanded,
     truncatedAbove: details?.output_truncated,
     originalTokenCount: details?.original_token_count,

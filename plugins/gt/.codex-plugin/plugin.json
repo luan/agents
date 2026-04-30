@@ -5,13 +5,7 @@
   "author": {
     "name": "Luan"
   },
-  "keywords": [
-    "graphite",
-    "git",
-    "stacked-prs",
-    "branches",
-    "pull-requests"
-  ],
+  "keywords": ["graphite", "git", "stacked-prs", "branches", "pull-requests"],
   "skills": "./skills/",
   "hooks": "./hooks.json",
   "interface": {
@@ -20,11 +14,7 @@
     "longDescription": "Graphite workflow support for creating stacked branches, navigating stacks, syncing with trunk, restacking, submitting PRs, and avoiding raw git operations that break gt-managed branches.",
     "developerName": "Luan",
     "category": "Coding",
-    "capabilities": [
-      "Interactive",
-      "Read",
-      "Write"
-    ],
+    "capabilities": ["Interactive", "Read", "Write"],
     "defaultPrompt": [
       "Check my Graphite stack",
       "Restack and sync this branch",

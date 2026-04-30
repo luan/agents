@@ -1,5 +1,5 @@
+import { type ChildProcessByStdio, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { spawn, type ChildProcessByStdio } from "node:child_process";
 import { resolve } from "node:path";
 import type { Readable } from "node:stream";
 import * as pty from "node-pty";
