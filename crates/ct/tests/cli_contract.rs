@@ -1752,6 +1752,7 @@ fn source_diff_scopes_git_diff_to_symbol() {
         project.path(),
         &["config", "user.email", "ct-test@example.com"],
     );
+    run_git(project.path(), &["config", "commit.gpgsign", "false"]);
     fs::create_dir_all(project.path().join("src")).expect("create src");
     fs::write(
         project.path().join("src/lib.rs"),

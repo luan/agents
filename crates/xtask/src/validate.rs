@@ -97,8 +97,7 @@ fn assert_no_checkout_paths(root: &Path) -> Result<()> {
                         if e.file_name().to_str() == Some("node_modules") {
                             return false;
                         }
-                        // Pi runtime transcripts include checkout-local cwd/session paths.
-                        !e.path().ends_with("pi/agent/sessions")
+                        !is_checkout_path_scan_excluded(e.path())
                     })
                     .filter_map(|e| e.ok())
                     .map(|e| e.into_path()),
@@ -113,6 +112,9 @@ fn assert_no_checkout_paths(root: &Path) -> Result<()> {
                 continue;
             }
             if path.ends_with("codex/config.toml") {
+                continue;
+            }
+            if is_checkout_path_scan_excluded(&path) {
                 continue;
             }
             let bytes = match fs::read(&path) {
@@ -132,4 +134,9 @@ fn assert_no_checkout_paths(root: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn is_checkout_path_scan_excluded(path: &Path) -> bool {
+    // Pi runtime state includes checkout-local cwd/session paths and is gitignored.
+    path.ends_with("pi/agent/sessions") || path.ends_with("pi/agent/run-history.jsonl")
 }

@@ -34,7 +34,7 @@ pub fn run(mode: Mode) -> Result<()> {
 
     let mut errors: usize = 0;
     let agents_home = target_from_segments(&home, AGENTS_HOME);
-    eprintln!("+ {} {} -> {}", mode_verb(mode), ".", agents_home.display());
+    eprintln!("+ {} . -> {}", mode_verb(mode), agents_home.display());
     if let Err(err) = process_agents_home(mode, &root, &agents_home) {
         eprintln!("  error: {err:#}");
         errors += 1;
