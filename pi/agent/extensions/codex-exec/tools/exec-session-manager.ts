@@ -52,6 +52,8 @@ interface PtyExecSession extends BaseExecSession {
 	terminalCommitted: string;
 	terminalLine: string[];
 	terminalCursor: number;
+	terminalStyle: string;
+	terminalPendingEscape: string;
 }
 
 type ExecSession = PipeExecSession | PtyExecSession;
@@ -133,7 +135,7 @@ function buildSyncedBashCommand(command: string, env: NodeJS.ProcessEnv): string
 
 function resolveExecution(requestedShell: string | undefined, command: string): { shell: string; command: string; env: NodeJS.ProcessEnv } {
 	const shell = resolveShell(requestedShell);
-	const env: NodeJS.ProcessEnv = { ...process.env };
+	const env = withColorEnvironment({ ...process.env });
 	if (!shouldSyncBashEnv(requestedShell, shell)) {
 		return { shell, command, env };
 	}
@@ -143,6 +145,18 @@ function resolveExecution(requestedShell: string | undefined, command: string): 
 		command: buildSyncedBashCommand(command, env),
 		env,
 	};
+}
+
+function withColorEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+	if (env.NO_COLOR === undefined) {
+		env.FORCE_COLOR ??= "1";
+		env.CLICOLOR ??= "1";
+		if (!env.TERM || env.TERM === "dumb") {
+			env.TERM = "xterm-256color";
+		}
+		env.COLORTERM ??= "truecolor";
+	}
+	return env;
 }
 
 function clampYieldTime(yieldTimeMs: number | undefined, fallback: number): number {
@@ -180,44 +194,68 @@ function maxCharsForTokens(maxOutputTokens = DEFAULT_MAX_OUTPUT_TOKENS): number 
 	return Math.max(256, maxOutputTokens * 4);
 }
 
-function stripTerminalControlSequences(text: string, preserveCsi = false): string {
+function stripTerminalControlSequences(text: string, preserveCsi = false, preserveSgr = false): string {
 	const withoutOscAndDcs = text
 		.replace(/\u001B\][^\u0007\u001B]*(?:\u0007|\u001B\\)/g, "")
 		.replace(/\u001B[P_X^][\s\S]*?\u001B\\/g, "");
 	if (preserveCsi) {
 		return withoutOscAndDcs;
 	}
-	return withoutOscAndDcs.replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, "").replace(/\u001B[@-_]/g, "");
+	return withoutOscAndDcs
+		.replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, (sequence) => (preserveSgr && sequence.endsWith("m") ? sequence : ""))
+		.replace(preserveSgr ? /\u001B(?!\[)[@-_]/g : /\u001B[@-_]/g, "");
 }
 
-function sanitizeBinaryOutput(text: string, preserveBackspace = false): string {
-	return Array.from(text)
-		.filter((char) => {
-			const code = char.codePointAt(0);
-			if (code === undefined) return false;
-			if (code === 0x09 || code === 0x0a || code === 0x0d) return true;
-			if (preserveBackspace && code === 0x08) return true;
-			if (code <= 0x1f) return false;
-			if (code >= 0xfff9 && code <= 0xfffb) return false;
-			return true;
-		})
-		.join("");
+function sanitizeBinaryOutput(text: string, preserveBackspace = false, preserveSgr = false): string {
+	let output = "";
+	for (let index = 0; index < text.length; index += 1) {
+		const char = text[index]!;
+		if (preserveSgr && char === "\u001b" && text[index + 1] === "[") {
+			let sequenceEnd = index + 2;
+			while (sequenceEnd < text.length) {
+				const code = text.charCodeAt(sequenceEnd);
+				if (code >= 0x40 && code <= 0x7e) break;
+				sequenceEnd += 1;
+			}
+			if (sequenceEnd < text.length && text[sequenceEnd] === "m") {
+				output += text.slice(index, sequenceEnd + 1);
+				index = sequenceEnd;
+			}
+			continue;
+		}
+
+		const code = char.codePointAt(0);
+		if (code === undefined) continue;
+		if (code === 0x09 || code === 0x0a || code === 0x0d) {
+			output += char;
+			continue;
+		}
+		if (preserveBackspace && code === 0x08) {
+			output += char;
+			continue;
+		}
+		if (code <= 0x1f) continue;
+		if (code >= 0xfff9 && code <= 0xfffb) continue;
+		output += char;
+	}
+	return output;
 }
 
 function normalizePipeOutput(text: string): string {
-	return sanitizeBinaryOutput(stripTerminalControlSequences(text)).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+	return sanitizeBinaryOutput(stripTerminalControlSequences(text, false, true), false, true).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 }
 
 function writeTerminalChar(session: PtyExecSession, char: string): void {
 	if (session.terminalCursor > session.terminalLine.length) {
 		session.terminalLine.push(...Array.from({ length: session.terminalCursor - session.terminalLine.length }, () => " "));
 	}
-	session.terminalLine[session.terminalCursor] = char;
+	session.terminalLine[session.terminalCursor] = session.terminalStyle ? `${session.terminalStyle}${char}\u001b[0m` : char;
 	session.terminalCursor += 1;
 }
 
 function applyTerminalOutput(session: PtyExecSession, text: string): string {
-	const sanitized = stripTerminalControlSequences(text, true);
+	const sanitized = session.terminalPendingEscape + stripTerminalControlSequences(text, true);
+	session.terminalPendingEscape = "";
 	if (sanitized.length === 0) {
 		return session.terminalCommitted + session.terminalLine.join("");
 	}
@@ -235,11 +273,14 @@ function applyTerminalOutput(session: PtyExecSession, text: string): string {
 					sequenceEnd += 1;
 				}
 				if (sequenceEnd >= sanitized.length) {
+					session.terminalPendingEscape = sanitized.slice(index);
 					break;
 				}
 				const params = sanitized.slice(index + 2, sequenceEnd);
 				const finalByte = sanitized[sequenceEnd];
-				if (finalByte === "K") {
+				if (finalByte === "m") {
+					session.terminalStyle = params === "" || params.split(";").includes("0") ? "" : `\u001b[${params}m`;
+				} else if (finalByte === "K") {
 					const mode = Number(params || "0");
 					if (mode === 0) {
 						session.terminalLine = session.terminalLine.slice(0, session.terminalCursor);
@@ -260,6 +301,10 @@ function applyTerminalOutput(session: PtyExecSession, text: string): string {
 			if (next && /[()*+,\-./]/.test(next) && index + 2 < sanitized.length) {
 				index += 2;
 				continue;
+			}
+			if (!next) {
+				session.terminalPendingEscape = sanitized.slice(index);
+				break;
 			}
 			if (next) {
 				index += 1;
@@ -517,6 +562,8 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			terminalCommitted: "",
 			terminalLine: [],
 			terminalCursor: 0,
+				terminalStyle: "",
+				terminalPendingEscape: "",
 		};
 
 		child.onData((data) => {

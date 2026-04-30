@@ -67,11 +67,20 @@ export type ResponsesFunctionCallOutputItem = {
 
 export type ResponsesReasoningItem = Record<string, unknown>;
 
+export type ResponsesImageGenerationCallItem = {
+	type: "image_generation_call";
+	id: string;
+	status: string;
+	result: string | null;
+	revised_prompt?: string;
+};
+
 export type ResponsesInputItem =
 	| ResponsesInputMessageItem
 	| ResponsesAssistantOutputItem
 	| ResponsesFunctionCallItem
 	| ResponsesFunctionCallOutputItem
+	| ResponsesImageGenerationCallItem
 	| ResponsesReasoningItem;
 
 export type NativeCompactionRequestBody = {
@@ -96,6 +105,13 @@ type ParsedTextSignature = {
 	id: string;
 	phase?: AssistantPhase;
 };
+
+type ImageGenerationCallBlock = {
+	type: "image_generation_call";
+	item?: unknown;
+};
+
+type InternalAssistantContent = AssistantMessage["content"][number] | ImageGenerationCallBlock;
 
 const SYNTHETIC_TOOL_RESULT_TEXT = "No result provided";
 
@@ -343,7 +359,15 @@ function serializeUserContentItem<TApi extends Api>(
 function serializeAssistantMessage(message: AssistantMessage, messageIndex: number): ResponsesInputItem[] {
 	const items: ResponsesInputItem[] = [];
 
-	for (const block of message.content) {
+	for (const block of message.content as InternalAssistantContent[]) {
+		if (isImageGenerationCallBlock(block)) {
+			const item = sanitizeImageGenerationCallItem(block.item);
+			if (item) {
+				items.push(item);
+			}
+			continue;
+		}
+
 		if (block.type === "thinking") {
 			const reasoningItem = parseReasoningItem(block);
 			if (reasoningItem) {
@@ -365,14 +389,16 @@ function serializeAssistantMessage(message: AssistantMessage, messageIndex: numb
 			continue;
 		}
 
-		const [callId, rawItemId] = block.id.split("|");
-		items.push({
-			type: "function_call",
-			id: rawItemId,
-			call_id: callId,
-			name: block.name,
-			arguments: JSON.stringify(block.arguments),
-		});
+		if (block.type === "toolCall") {
+			const [callId, rawItemId] = block.id.split("|");
+			items.push({
+				type: "function_call",
+				id: rawItemId,
+				call_id: callId,
+				name: block.name,
+				arguments: JSON.stringify(block.arguments),
+			});
+		}
 	}
 
 	return items;
@@ -421,6 +447,38 @@ function serializeToolResultMessage<TApi extends Api>(
 
 function normalizeUserContent(content: UserMessage["content"]): Array<TextContent | ImageContent> {
 	return typeof content === "string" ? [{ type: "text", text: content }] : content;
+}
+
+function isImageGenerationCallBlock(block: InternalAssistantContent): block is ImageGenerationCallBlock {
+	return block.type === "image_generation_call";
+}
+
+function sanitizeImageGenerationCallItem(item: unknown): ResponsesImageGenerationCallItem | undefined {
+	if (!item || typeof item !== "object") {
+		return undefined;
+	}
+
+	const candidate = item as Record<string, unknown>;
+	if (candidate.type !== "image_generation_call") {
+		return undefined;
+	}
+	if (typeof candidate.id !== "string" || candidate.id === "") {
+		return undefined;
+	}
+	if (typeof candidate.status !== "string" || candidate.status === "") {
+		return undefined;
+	}
+	if (!(typeof candidate.result === "string" || candidate.result === null)) {
+		return undefined;
+	}
+
+	return {
+		type: "image_generation_call",
+		id: candidate.id,
+		status: candidate.status,
+		result: candidate.result,
+		...(typeof candidate.revised_prompt === "string" ? { revised_prompt: candidate.revised_prompt } : {}),
+	};
 }
 
 function parseReasoningItem(block: ThinkingContent): ResponsesReasoningItem | undefined {

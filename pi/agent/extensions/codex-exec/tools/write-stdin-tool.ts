@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 import { Container, Text } from "@mariozechner/pi-tui";
-import { renderWriteStdinCall } from "./codex-rendering.ts";
+import { renderOutputBlock, renderWriteStdinCall } from "./codex-rendering.ts";
 import type { ExecSessionManager, UnifiedExecResult } from "./exec-session-manager.ts";
 import { formatUnifiedExecResult } from "./unified-exec-format.ts";
 
@@ -109,6 +109,7 @@ export function registerWriteStdinTool(pi: ExtensionAPI, sessions: ExecSessionMa
 		name: "write_stdin",
 		label: "write_stdin",
 		description: "Writes characters to an existing unified exec session and returns recent output.",
+		renderShell: "self",
 		promptSnippet: "Write to an exec session.",
 		promptGuidelines: [
 			"Use empty `chars` only to poll a running exec session.",
@@ -128,25 +129,26 @@ export function registerWriteStdinTool(pi: ExtensionAPI, sessions: ExecSessionMa
 			return {
 				content: [{ type: "text", text: formatUnifiedExecResult(result, command) }],
 				details: result,
+				isError: result.exit_code !== undefined && result.exit_code !== 0,
 			};
 		},
-		renderCall(args, theme) {
+		renderCall(args, theme, context) {
 			const sessionId = typeof args.session_id === "number" ? args.session_id : "?";
 			const input = typeof args.chars === "string" ? args.chars : undefined;
 			const command = typeof sessionId === "number" ? sessions.getSessionCommand(sessionId) : undefined;
-			return new Text(renderWriteStdinCall(sessionId, input, command, theme), 0, 0);
+			return new Text(renderWriteStdinCall(sessionId, input, command, theme, context?.isPartial ? "running" : "done", context?.isError === true), 0, 0);
 		},
-		renderResult(result, { expanded, isPartial }, theme) {
-			if (isPartial || !expanded) return createEmptyResultComponent();
+		renderResult(result, { isPartial }, theme) {
+			if (isPartial) return createEmptyResultComponent();
 			const state = getResultState(result);
 			const output = renderTerminalText(state.output);
-			let text = theme.fg("dim", output || "(no output)");
-			if (state.sessionId !== undefined) {
-				text += `\n${theme.fg("accent", `Session ${state.sessionId} still running`)}`;
-			}
-			if (state.exitCode !== undefined) {
-				text += `\n${theme.fg("muted", `Exit code: ${state.exitCode}`)}`;
-			}
+			const footer =
+				state.sessionId !== undefined
+					? theme.fg("accent", `Session ${state.sessionId} still running`)
+					: state.exitCode !== undefined && state.exitCode !== 0
+						? theme.fg("muted", `Exit code: ${state.exitCode}`)
+						: undefined;
+			let text = renderOutputBlock(output, theme, footer);
 			return new Text(text, 0, 0);
 		},
 	});

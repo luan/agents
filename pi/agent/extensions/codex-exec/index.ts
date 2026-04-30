@@ -79,6 +79,15 @@ export default function codexExecExtension(pi: ExtensionAPI) {
   pi.on("tool_execution_end", (event) => {
     if (event.toolName === "exec_command") tracker.recordEnd(event.toolCallId);
   });
+  pi.on("tool_result", (event) => {
+    if (event.toolName !== "exec_command" && event.toolName !== "write_stdin") return;
+    const details = event.details;
+    if (!details || typeof details !== "object" || !("exit_code" in details)) return;
+    const exitCode = (details as { exit_code?: unknown }).exit_code;
+    if (typeof exitCode === "number" && exitCode !== 0) {
+      return { isError: true };
+    }
+  });
   pi.on("session_shutdown", () => {
     tracker.clear();
     sessions.shutdown();

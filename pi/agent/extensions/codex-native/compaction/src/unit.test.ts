@@ -147,3 +147,39 @@ test("serializer sanitizes unpaired surrogates in instructions and message conte
 	expect(JSON.stringify(inputOnly)).not.toContain("\\ud800");
 	expect(JSON.stringify(inputOnly)).not.toContain("\\udc00");
 });
+
+test("serializer preserves assistant image generation call blocks", async () => {
+	const { serializeMessagesToResponsesInput } = await loadSerializerModule();
+	const input = serializeMessagesToResponsesInput(baseModel as never, [
+		{
+			role: "assistant",
+			provider: baseModel.provider,
+			api: baseModel.api,
+			model: baseModel.id,
+			stopReason: "stop",
+			content: [
+				{
+					type: "image_generation_call",
+					item: {
+						type: "image_generation_call",
+						id: "ig_1",
+						status: "completed",
+						result: "base64-image",
+						revised_prompt: "A clearer prompt",
+					},
+				},
+			],
+			timestamp: 1,
+		},
+	] as never);
+
+	expect(input).toEqual([
+		{
+			type: "image_generation_call",
+			id: "ig_1",
+			status: "completed",
+			result: "base64-image",
+			revised_prompt: "A clearer prompt",
+		},
+	]);
+});

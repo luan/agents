@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 import { Container, Text } from "@mariozechner/pi-tui";
-import { renderExecCommandCall, renderGroupedExecCommandCall } from "./codex-rendering.ts";
+import { renderExecCommandCall, renderGroupedExecCommandCall, renderOutputBlock } from "./codex-rendering.ts";
 import type { ExecCommandTracker } from "./exec-command-state.ts";
 import type { ExecSessionManager, UnifiedExecResult } from "./exec-session-manager.ts";
 import { formatUnifiedExecResult } from "./unified-exec-format.ts";
@@ -83,6 +83,8 @@ function createEmptyResultComponent(): Container {
 interface ExecCommandRenderContextLike {
 	toolCallId?: string;
 	invalidate?: () => void;
+	args?: unknown;
+	isError?: boolean;
 }
 
 const renderExecCommandCallWithOptionalContext: any = (
@@ -94,12 +96,13 @@ const renderExecCommandCallWithOptionalContext: any = (
 	const command = typeof args.cmd === "string" ? args.cmd : "";
 	tracker.registerRenderContext(context?.toolCallId, context?.invalidate ?? (() => {}));
 	const renderInfo = tracker.getRenderInfo(context?.toolCallId, command);
+	const failed = context?.isError === true;
 	if (renderInfo.hidden) {
 		return new Text("", 0, 0);
 	}
 	const text = renderInfo.actionGroups
-		? renderGroupedExecCommandCall(renderInfo.actionGroups, renderInfo.status, theme)
-		: renderExecCommandCall(command, renderInfo.status, theme);
+		? renderGroupedExecCommandCall(renderInfo.actionGroups, renderInfo.status, theme, failed)
+		: renderExecCommandCall(command, renderInfo.status, theme, failed);
 	return new Text(text, 0, 0);
 };
 
@@ -110,7 +113,7 @@ const renderExecCommandResultWithOptionalContext: any = (
 	context: ExecCommandRenderContextLike | undefined,
 	tracker: ExecCommandTracker,
 ) => {
-	if (options.isPartial || !options.expanded) {
+	if (options.isPartial) {
 		return createEmptyResultComponent();
 	}
 
@@ -122,13 +125,13 @@ const renderExecCommandResultWithOptionalContext: any = (
 	const details = isUnifiedExecResult(result.details) ? result.details : undefined;
 	const content = result.content.find((item) => item.type === "text");
 	const output = details?.output ?? (content?.type === "text" ? content.text : "");
-	let text = theme.fg("dim", output || "(no output)");
-	if (details?.session_id !== undefined) {
-		text += `\n${theme.fg("accent", `Session ${details.session_id} still running`)}`;
-	}
-	if (details?.exit_code !== undefined) {
-		text += `\n${theme.fg("muted", `Exit code: ${details.exit_code}`)}`;
-	}
+	const footer =
+		details?.session_id !== undefined
+			? theme.fg("accent", `Session ${details.session_id} still running`)
+			: details?.exit_code !== undefined && details.exit_code !== 0
+				? theme.fg("muted", `Exit code: ${details.exit_code}`)
+				: undefined;
+	let text = renderOutputBlock(output ?? "", theme, footer);
 	return new Text(text, 0, 0);
 };
 
@@ -137,6 +140,7 @@ export function registerExecCommandTool(pi: ExtensionAPI, tracker: ExecCommandTr
 		name: "exec_command",
 		label: "exec_command",
 		description: "Runs a command in a PTY, returning output or a session ID for ongoing interaction.",
+		renderShell: "self",
 		promptSnippet: "Run a command.",
 		promptGuidelines: [
 			"Use exec_command for search, listing files, and local text-file reads.",
@@ -158,6 +162,7 @@ export function registerExecCommandTool(pi: ExtensionAPI, tracker: ExecCommandTr
 			return {
 				content: [{ type: "text", text: formatUnifiedExecResult(result, typedParams.cmd) }],
 				details: result,
+				isError: result.exit_code !== undefined && result.exit_code !== 0,
 			};
 		},
 		renderCall: ((args: { cmd?: unknown }, theme: { fg(role: string, text: string): string; bold(text: string): string }, context?: ExecCommandRenderContextLike) =>
