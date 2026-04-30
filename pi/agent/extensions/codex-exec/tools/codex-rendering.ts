@@ -7,6 +7,15 @@ export interface RenderTheme {
 	bold(text: string): string;
 }
 
+export interface RenderOutputBlockOptions {
+	expanded?: boolean;
+	maxLines?: number;
+	truncatedAbove?: boolean;
+	originalTokenCount?: number;
+}
+
+const DEFAULT_OUTPUT_MAX_LINES = 5;
+
 export function renderExecCommandCall(command: string, state: ExecCommandStatus, theme: RenderTheme, failed = false): string {
 	const summary = summarizeShellCommand(command);
 	return summary.maskAsExplored ? renderExplorationText([summary.actions], state, theme, failed) : renderCommandText(command, state, theme, failed);
@@ -39,9 +48,13 @@ export function renderWriteStdinCall(
 	return text;
 }
 
-export function renderOutputBlock(output: string, theme: Pick<RenderTheme, "fg">, footer?: string): string {
+export function renderOutputBlock(output: string, theme: Pick<RenderTheme, "fg">, footer?: string, options: RenderOutputBlockOptions = {}): string {
 	const text = output.length > 0 ? output.replace(/\n$/, "") : "(no output)";
-	const lines = text.split("\n");
+	let lines = text.split("\n");
+	if (options.truncatedAbove) {
+		lines.unshift(formatTruncatedAboveLine(options.originalTokenCount));
+	}
+	lines = limitOutputLines(lines, options);
 	if (footer) lines.push(footer);
 	return lines
 		.map((line, index) => {
@@ -50,6 +63,30 @@ export function renderOutputBlock(output: string, theme: Pick<RenderTheme, "fg">
 			return `${theme.fg("dim", prefix)}${styleOutputLine(line, theme)}`;
 		})
 		.join("\n");
+}
+
+function limitOutputLines(lines: string[], options: RenderOutputBlockOptions): string[] {
+	if (options.expanded) return lines;
+	const maxLines = options.maxLines ?? DEFAULT_OUTPUT_MAX_LINES;
+	if (maxLines <= 0 || lines.length <= maxLines) return lines;
+	if (maxLines === 1) return [formatOmittedLines(lines.length)];
+
+	const visibleLines = maxLines - 1;
+	const headCount = Math.floor(visibleLines / 2);
+	const tailCount = visibleLines - headCount;
+	const omitted = lines.length - headCount - tailCount;
+	return [...lines.slice(0, headCount), formatOmittedLines(omitted), ...lines.slice(lines.length - tailCount)];
+}
+
+function formatOmittedLines(omitted: number): string {
+	return `… +${omitted} lines`;
+}
+
+function formatTruncatedAboveLine(originalTokenCount: number | undefined): string {
+	if (originalTokenCount !== undefined) {
+		return `… output truncated above (original ~${originalTokenCount} tokens)`;
+	}
+	return "… output truncated above";
 }
 
 function renderExplorationText(actionGroups: ShellAction[][], state: ExecCommandStatus, theme: RenderTheme, failed: boolean): string {

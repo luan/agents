@@ -23,6 +23,8 @@ interface FormattedExecTranscript {
 	output: string;
 	sessionId?: number;
 	exitCode?: number;
+	originalTokenCount?: number;
+	outputTruncated?: boolean;
 }
 
 function parseFormattedExecTranscript(text: string): FormattedExecTranscript {
@@ -77,6 +79,8 @@ function getResultState(result: { details?: unknown; content: Array<{ type: stri
 			output: details.output,
 			sessionId: details.session_id,
 			exitCode: details.exit_code,
+			originalTokenCount: details.original_token_count,
+			outputTruncated: details.output_truncated,
 		};
 	}
 	if (content?.type === "text") {
@@ -138,7 +142,7 @@ export function registerWriteStdinTool(pi: ExtensionAPI, sessions: ExecSessionMa
 			const command = typeof sessionId === "number" ? sessions.getSessionCommand(sessionId) : undefined;
 			return new Text(renderWriteStdinCall(sessionId, input, command, theme, context?.isPartial ? "running" : "done", context?.isError === true), 0, 0);
 		},
-		renderResult(result, { isPartial }, theme) {
+		renderResult(result, { expanded, isPartial }, theme) {
 			if (isPartial) return createEmptyResultComponent();
 			const state = getResultState(result);
 			const output = renderTerminalText(state.output);
@@ -148,7 +152,11 @@ export function registerWriteStdinTool(pi: ExtensionAPI, sessions: ExecSessionMa
 					: state.exitCode !== undefined && state.exitCode !== 0
 						? theme.fg("muted", `Exit code: ${state.exitCode}`)
 						: undefined;
-			let text = renderOutputBlock(output, theme, footer);
+			let text = renderOutputBlock(output, theme, footer, {
+				expanded,
+				truncatedAbove: state.outputTruncated,
+				originalTokenCount: state.originalTokenCount,
+			});
 			return new Text(text, 0, 0);
 		},
 	});
