@@ -1,8 +1,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { createExecCommandTracker } from "./codex-exec/tools/exec-command-state.ts";
-import { registerExecCommandTool } from "./codex-exec/tools/exec-command-tool.ts";
-import { createExecSessionManager } from "./codex-exec/tools/exec-session-manager.ts";
-import { registerWriteStdinTool } from "./codex-exec/tools/write-stdin-tool.ts";
+import { createExecCommandTracker } from "./tools/exec-command-state.ts";
+import { registerExecCommandTool } from "./tools/exec-command-tool.ts";
+import { createExecSessionManager } from "./tools/exec-session-manager.ts";
+import { registerWriteStdinTool } from "./tools/write-stdin-tool.ts";
 
 function isCodexModel(model: ExtensionContext["model"] | undefined): boolean {
   const provider = model?.provider?.toLowerCase() ?? "";
