@@ -105,6 +105,26 @@ pub fn list_checks_envelope(
     }
 }
 
+pub fn planned_turn_checks_envelope(
+    root: &Path,
+) -> Result<LensEnvelope<LensChecksData>, Box<dyn std::error::Error>> {
+    let policy = resolve_policy(root).policy;
+    let store = LensStore::open_for_project(root)?;
+    Ok(LensEnvelope::ok(LensChecksData {
+        project_id: store.project_id(),
+        configured_checks: configured_check_summaries(&policy.checks)
+            .into_iter()
+            .filter(|check| check.automatic)
+            .collect(),
+        configured_scanners: configured_scanner_summaries(&policy.scanners)
+            .into_iter()
+            .filter(|scanner| scanner.automatic)
+            .collect(),
+        suggestions: detected_suggestions(root, &policy.checks),
+        runs: Vec::new(),
+    }))
+}
+
 pub fn run_checks_envelope(
     root: &Path,
     options: LensCheckRunOptions,
@@ -266,16 +286,16 @@ fn run_one(
         effective_timeout_ms(config.timeout_ms),
     );
     let raw = join_raw_output(&outcome.stdout, &outcome.stderr);
-    let diagnostics = parse_diagnostics(
-        config.name,
-        config.kind,
-        config.parser,
-        config.source.clone(),
-        scope.clone(),
-        outcome.exit_code,
-        &outcome.stdout,
-        &outcome.stderr,
-    );
+    let diagnostics = parse_diagnostics(DiagnosticParseInput {
+        name: config.name,
+        kind: config.kind,
+        parser: config.parser,
+        source: config.source.clone(),
+        scope: scope.clone(),
+        exit_code: outcome.exit_code,
+        stdout: &outcome.stdout,
+        stderr: &outcome.stderr,
+    });
     let diagnostic_count = diagnostics.len();
     let snapshot = store.record_diagnostic_snapshot(DiagnosticSnapshotInput {
         source: config.source,
@@ -413,28 +433,48 @@ fn run_command(root: &Path, command: &str, timeout_ms: u64) -> CommandOutcome {
     }
 }
 
-fn parse_diagnostics(
-    name: &str,
-    kind: &str,
-    parser: LensCheckParser,
-    source: DiagnosticSource,
-    scope: DiagnosticScope,
-    exit_code: Option<i64>,
-    stdout: &str,
-    stderr: &str,
-) -> Vec<Diagnostic> {
-    match parser {
+fn parse_diagnostics(input: DiagnosticParseInput<'_>) -> Vec<Diagnostic> {
+    match input.parser {
         LensCheckParser::Line => {
-            let diagnostics =
-                parse_line_diagnostics(name, kind, source.clone(), scope.clone(), stdout, stderr);
-            if diagnostics.is_empty() && kind == "check" && exit_code != Some(0) {
-                generic_diagnostic(name, kind, source, scope, exit_code)
+            let diagnostics = parse_line_diagnostics(
+                input.name,
+                input.kind,
+                input.source.clone(),
+                input.scope.clone(),
+                input.stdout,
+                input.stderr,
+            );
+            if diagnostics.is_empty() && input.kind == "check" && input.exit_code != Some(0) {
+                generic_diagnostic(
+                    input.name,
+                    input.kind,
+                    input.source,
+                    input.scope,
+                    input.exit_code,
+                )
             } else {
                 diagnostics
             }
         }
-        LensCheckParser::Generic => generic_diagnostic(name, kind, source, scope, exit_code),
+        LensCheckParser::Generic => generic_diagnostic(
+            input.name,
+            input.kind,
+            input.source,
+            input.scope,
+            input.exit_code,
+        ),
     }
+}
+
+struct DiagnosticParseInput<'a> {
+    name: &'a str,
+    kind: &'a str,
+    parser: LensCheckParser,
+    source: DiagnosticSource,
+    scope: DiagnosticScope,
+    exit_code: Option<i64>,
+    stdout: &'a str,
+    stderr: &'a str,
 }
 
 fn generic_diagnostic(
@@ -482,6 +522,136 @@ fn parse_line_diagnostics(
         .chain(stderr.lines())
         .filter_map(|line| line_diagnostic(name, kind, source.clone(), scope.clone(), line))
         .collect()
+}
+
+pub fn diagnostics_from_output_lines(
+    root: &Path,
+    name: &str,
+    source: DiagnosticSource,
+    scope: DiagnosticScope,
+    output: &str,
+) -> Vec<Diagnostic> {
+    output
+        .lines()
+        .filter_map(|line| path_line_diagnostic(root, name, source.clone(), scope.clone(), line))
+        .collect()
+}
+
+fn path_line_diagnostic(
+    root: &Path,
+    name: &str,
+    source: DiagnosticSource,
+    scope: DiagnosticScope,
+    line: &str,
+) -> Option<Diagnostic> {
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
+    }
+    let parts = line.splitn(5, ':').collect::<Vec<_>>();
+    let (rel_path, start_line, severity, message) = match parts.as_slice() {
+        [path, line, severity, message] if line.parse::<i64>().is_ok() => (
+            (*path).to_string(),
+            line.parse::<i64>().ok()?,
+            parse_explicit_output_severity(severity)?,
+            (*message).trim().to_string(),
+        ),
+        [path, line, column, message]
+            if line.parse::<i64>().is_ok() && column.parse::<i64>().is_ok() =>
+        {
+            (
+                (*path).to_string(),
+                line.parse::<i64>().ok()?,
+                parse_prefixed_output_severity(message)?,
+                (*message).trim().to_string(),
+            )
+        }
+        [path, line, column, severity, message]
+            if line.parse::<i64>().is_ok() && column.parse::<i64>().is_ok() =>
+        {
+            (
+                (*path).to_string(),
+                line.parse::<i64>().ok()?,
+                parse_explicit_output_severity(severity)?,
+                (*message).trim().to_string(),
+            )
+        }
+        _ => return None,
+    };
+    let rel_path = normalize_output_diagnostic_path(root, &rel_path)?;
+    let fingerprint = crate::apply_patch::sha1_hex(
+        format!("tool:{name}:{rel_path:?}:{start_line:?}:{message}").as_bytes(),
+    );
+    Some(Diagnostic {
+        source,
+        scope,
+        severity,
+        code: None,
+        message,
+        rel_path: Some(rel_path),
+        start_line: Some(start_line),
+        end_line: Some(start_line),
+        fingerprint,
+        content_hash: None,
+        raw_output_id: None,
+        snapshot_id: None,
+        first_seen_at: None,
+        last_seen_at: None,
+        resolved_at: None,
+    })
+}
+
+fn parse_explicit_output_severity(value: &str) -> Option<DiagnosticSeverity> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "error" => Some(DiagnosticSeverity::Error),
+        "warning" | "warn" => Some(DiagnosticSeverity::Warning),
+        "info" | "note" => Some(DiagnosticSeverity::Info),
+        "hint" | "help" => Some(DiagnosticSeverity::Hint),
+        _ => None,
+    }
+}
+
+fn parse_prefixed_output_severity(message: &str) -> Option<DiagnosticSeverity> {
+    let prefix = message
+        .trim_start()
+        .split(|c: char| c == ':' || c.is_whitespace())
+        .next()?;
+    parse_explicit_output_severity(prefix)
+}
+
+fn normalize_output_diagnostic_path(root: &Path, path: &str) -> Option<String> {
+    let path = path.trim();
+    if path.is_empty()
+        || path.starts_with('-')
+        || path
+            .chars()
+            .any(|c| c.is_whitespace() || matches!(c, '"' | '\'' | '`' | '<' | '>' | '|'))
+    {
+        return None;
+    }
+    let path = Path::new(path);
+    if path.components().any(|component| {
+        matches!(
+            component,
+            std::path::Component::ParentDir | std::path::Component::Prefix(_)
+        )
+    }) {
+        return None;
+    }
+    let relative = if path.is_absolute() {
+        path.strip_prefix(root).ok()?
+    } else {
+        path
+    };
+    if relative.as_os_str().is_empty() {
+        return None;
+    }
+    let candidate = root.join(relative);
+    if candidate.exists() || relative.components().count() > 1 || relative.extension().is_some() {
+        Some(relative.to_string_lossy().into_owned())
+    } else {
+        None
+    }
 }
 
 fn line_diagnostic(
@@ -632,17 +802,17 @@ fn detected_suggestions(
         root,
         configured,
         &mut suggestions,
-        "cargo-test",
-        "cargo test",
+        "cargo-fmt",
+        "cargo fmt --check",
         "Cargo.toml detected",
     );
     push_suggestion(
         root,
         configured,
         &mut suggestions,
-        "npm-test",
-        "npm test",
-        "package.json detected",
+        "cargo-clippy",
+        "cargo clippy -- -D warnings",
+        "Cargo.toml detected",
     );
     push_suggestion(
         root,
@@ -672,8 +842,7 @@ fn push_suggestion(
     reason: &str,
 ) {
     let file = match name {
-        "cargo-test" => "Cargo.toml",
-        "npm-test" => "package.json",
+        "cargo-fmt" | "cargo-clippy" => "Cargo.toml",
         "pytest" => "pyproject.toml",
         "make-test" => "Makefile",
         _ => return,
@@ -774,15 +943,21 @@ mod tests {
     }
 
     #[test]
-    fn detected_suggestions_are_reported_without_execution() {
+    fn built_in_cargo_checks_are_planned_without_config() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("Cargo.toml"), "[package]\nname='x'\n").unwrap();
 
-        let envelope = automatic_turn_checks_envelope(temp.path()).unwrap();
+        let envelope = planned_turn_checks_envelope(temp.path()).unwrap();
 
-        assert!(envelope.data.runs.is_empty());
-        assert_eq!(envelope.data.suggestions[0].name, "cargo-test");
-        assert_eq!(envelope.warnings[0].code, "check_suggested");
+        assert_eq!(envelope.data.configured_checks.len(), 2);
+        assert!(
+            envelope
+                .data
+                .configured_checks
+                .iter()
+                .all(|check| check.automatic)
+        );
+        assert!(envelope.data.suggestions.is_empty());
     }
 
     #[test]
@@ -823,6 +998,48 @@ mod tests {
         assert_eq!(diagnostics[0].source, DiagnosticSource::Security);
         assert_ne!(diagnostics[0].source, DiagnosticSource::Autofix);
         assert_eq!(diagnostics[0].scope.kind, "scanner");
+    }
+
+    #[test]
+    fn command_output_diagnostics_ignore_shell_transcript_noise() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("main.rs"), "fn main() {}\n").unwrap();
+
+        let diagnostics = diagnostics_from_output_lines(
+            temp.path(),
+            "exec_command",
+            DiagnosticSource::Other("hook_output".to_string()),
+            DiagnosticScope::command("exec_command:cargo test"),
+            "Command: cargo test\nzsh:1: command not found\nmain.rs:1:warning:real warning\nif echo 'main.rs:1:warning:not a diagnostic command'; then true; fi",
+        );
+
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].rel_path.as_deref(), Some("main.rs"));
+        assert_eq!(diagnostics[0].message, "real warning");
+    }
+
+    #[test]
+    fn command_output_diagnostics_ignore_ripgrep_matches() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("src")).unwrap();
+        std::fs::write(
+            temp.path().join("src/main.ts"),
+            "pi.registerTool({\n  name: \"read\",\n});\n",
+        )
+        .unwrap();
+
+        let diagnostics = diagnostics_from_output_lines(
+            temp.path(),
+            "exec_command",
+            DiagnosticSource::Other("hook_output".to_string()),
+            DiagnosticScope::command("exec_command:rg registerTool"),
+            "src/main.ts:1:pi.registerTool({\nsrc/main.ts:2:  name: \"read\",\nsrc/main.ts:3:10: warning: real warning",
+        );
+
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].rel_path.as_deref(), Some("src/main.ts"));
+        assert_eq!(diagnostics[0].start_line, Some(3));
+        assert_eq!(diagnostics[0].message, "real warning");
     }
 
     #[test]

@@ -444,9 +444,14 @@ impl LensStore {
         let policy_json = serde_json::to_string(&event.policy)?;
         let tx = self.conn.transaction()?;
         upsert_session_tx(&tx, self.project_id, &event.session, now)?;
+        let turn_status = if matches!(event.event, super::types::LensTurnEventKind::TurnEnd) {
+            "completed"
+        } else {
+            "active"
+        };
         tx.execute(
             "INSERT INTO turns(project_id, session_id, turn_id, host, cwd, started_at, last_seen_at, status)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?6, 'active')
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7)
              ON CONFLICT(project_id, session_id, turn_id) DO UPDATE SET
                 host=excluded.host,
                 cwd=excluded.cwd,
@@ -458,7 +463,8 @@ impl LensStore {
                 event.turn,
                 event.host,
                 event.cwd,
-                now
+                now,
+                turn_status
             ],
         )?;
         tx.execute(
@@ -503,6 +509,21 @@ impl LensStore {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    pub fn turn_status(
+        &self,
+        session: &str,
+        turn: &str,
+    ) -> Result<Option<String>, Box<dyn std::error::Error>> {
+        self.conn
+            .query_row(
+                "SELECT status FROM turns WHERE project_id=?1 AND session_id=?2 AND turn_id=?3",
+                params![self.project_id, session, turn],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
     }
 
     pub fn list_touched_files(

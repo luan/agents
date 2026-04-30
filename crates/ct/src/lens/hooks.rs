@@ -1,6 +1,7 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -12,10 +13,12 @@ use super::retention;
 use super::status::{DiagnosticHealth, LensStatusOptions, build_status_envelope};
 use super::store::LensStore;
 use super::types::{
-    DiagnosticScope, DiagnosticSnapshotInput, DiagnosticSnapshotMetadata, DiagnosticSource,
-    LensToolEventPhase, LensTouchedFileInput, LensTurnEvent, LensTurnEventKind,
-    LensTurnEventPolicy, RawOutputRef,
+    Diagnostic, DiagnosticScope, DiagnosticSeverity, DiagnosticSnapshotInput,
+    DiagnosticSnapshotMetadata, DiagnosticSource, LensToolEventPhase, LensTouchedFile,
+    LensTouchedFileInput, LensTurnEvent, LensTurnEventKind, LensTurnEventPolicy, RawOutputRef,
 };
+use crate::lsp::registry::probe_for_file;
+use crate::lsp::session::LspSessionPool;
 
 pub const LENS_HOOK_EVENT_SCHEMA_VERSION: &str = "lens.hook_event.v1";
 pub const LENS_HOOK_RESPONSE_SCHEMA_VERSION: &str = "lens.hook_response.v1";
@@ -427,6 +430,7 @@ pub fn handle_lifecycle_hook(
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn parse_event(
     hook: LensLifecycleHook,
     input: &str,
@@ -478,6 +482,7 @@ fn parse_event(
     })
 }
 
+#[allow(clippy::result_large_err)]
 fn native_hook_event(
     hook: LensLifecycleHook,
     value: Value,
@@ -682,6 +687,10 @@ fn session_start(event: LensHookEvent) -> LensHookResponse {
         }
         Err(error) => push_error(&mut response, "session_start_failed", error),
     }
+    match root_for_event(&event).and_then(|root| turn_health(&root, &event)) {
+        Ok(health) => apply_turn_health(&mut response, &health),
+        Err(error) => push_error(&mut response, "session_start_health_failed", error),
+    }
     response
 }
 
@@ -692,7 +701,10 @@ fn context_injection(event: LensHookEvent) -> LensHookResponse {
             response.health = health_status_from_turn(&health);
             response.diagnostics = diagnostics_from_turn(&health);
             response.context = context_from_turn(&health);
-            response.data = Some(json!({ "action_context": health.action_context }));
+            response.data = Some(json!({
+                "action_context": health.action_context,
+                "health": health,
+            }));
         }
         Err(error) => push_error(&mut response, "context_failed", error),
     }
@@ -711,6 +723,10 @@ fn pre_tool(event: LensHookEvent) -> LensHookResponse {
                 .actions
                 .push(action("record_turn_event", "ok", None));
             response.data = Some(json!({ "turn": envelope.data }));
+            match root_for_event(&event).and_then(|root| turn_health(&root, &event)) {
+                Ok(health) => apply_turn_health(&mut response, &health),
+                Err(error) => push_error(&mut response, "pre_tool_health_failed", error),
+            }
         }
         Err(error) => push_error(&mut response, "pre_tool_record_failed", error),
     }
@@ -750,6 +766,24 @@ fn post_tool(event: LensHookEvent) -> LensHookResponse {
                 Ok(None) => {}
                 Err(error) => push_error(&mut response, "raw_output_record_failed", error),
             }
+            match root_for_event(&event)
+                .and_then(|root| record_lsp_diagnostics(&root, &envelope.data.files))
+            {
+                Ok(count) if count > 0 => response.actions.push(action(
+                    "lsp_diagnostics",
+                    "ok",
+                    Some(format!("{count} collected")),
+                )),
+                Ok(_) => {}
+                Err(error) => response.warnings.push(LensMessage::warning(
+                    "lsp_diagnostics_failed",
+                    error.to_string(),
+                )),
+            }
+            match root_for_event(&event).and_then(|root| turn_health(&root, &event)) {
+                Ok(health) => apply_turn_health(&mut response, &health),
+                Err(error) => push_error(&mut response, "post_tool_health_failed", error),
+            }
         }
         Err(error) => push_error(&mut response, "post_tool_failed", error),
     }
@@ -768,6 +802,10 @@ fn turn_start(event: LensHookEvent) -> LensHookResponse {
                 .actions
                 .push(action("record_turn_event", "ok", None));
             response.data = Some(json!({ "turn": envelope.data }));
+            match root_for_event(&event).and_then(|root| turn_health(&root, &event)) {
+                Ok(health) => apply_turn_health(&mut response, &health),
+                Err(error) => push_error(&mut response, "turn_start_health_failed", error),
+            }
         }
         Err(error) => push_error(&mut response, "turn_start_failed", error),
     }
@@ -801,11 +839,7 @@ fn turn_end(event: LensHookEvent) -> LensHookResponse {
         Err(error) => push_error(&mut response, "turn_end_record_failed", error),
     }
     match root_for_event(&event).and_then(|root| turn_health(&root, &event)) {
-        Ok(health) => {
-            response.health = health_status_from_turn(&health);
-            response.diagnostics = diagnostics_from_turn(&health);
-            merge_data(&mut response, "health", json!(health));
-        }
+        Ok(health) => apply_turn_health(&mut response, &health),
         Err(error) => push_error(&mut response, "turn_end_health_failed", error),
     }
     response
@@ -885,13 +919,23 @@ fn record_raw_output(
     }
     let root = root_for_event(event)?;
     let mut store = LensStore::open_for_project(&root)?;
+    let source = DiagnosticSource::Other("hook_output".to_string());
+    let scope = DiagnosticScope::command(tool_scope_key(tool));
+    let diagnostics = if should_parse_tool_output(&tool.name) {
+        super::checks::diagnostics_from_output_lines(
+            &root,
+            &tool.name,
+            source.clone(),
+            scope.clone(),
+            raw,
+        )
+    } else {
+        Vec::new()
+    };
     let result = store.record_diagnostic_snapshot(DiagnosticSnapshotInput {
-        source: DiagnosticSource::Other("hook_raw".to_string()),
-        scope: DiagnosticScope::command(format!(
-            "{}:{}:{}",
-            event.session.id, event.turn.id, tool.name
-        )),
-        diagnostics: Vec::new(),
+        source,
+        scope,
+        diagnostics,
         raw_output: Some(raw.to_string()),
         raw_output_max_bytes: tool.raw_output_max_bytes,
         metadata: DiagnosticSnapshotMetadata {
@@ -901,6 +945,146 @@ fn record_raw_output(
         },
     })?;
     Ok(result.raw_output)
+}
+
+fn should_parse_tool_output(tool_name: &str) -> bool {
+    matches!(
+        tool_name.to_ascii_lowercase().as_str(),
+        "bash"
+            | "shell"
+            | "sh"
+            | "zsh"
+            | "terminal"
+            | "run_command"
+            | "exec_command"
+            | "write_stdin"
+    )
+}
+
+fn tool_scope_key(tool: &LensHookTool) -> String {
+    let command = tool.input.as_ref().and_then(|input| {
+        ["cmd", "command"]
+            .into_iter()
+            .find_map(|key| input.get(key).and_then(Value::as_str))
+    });
+    match command {
+        Some(command) if !command.trim().is_empty() => {
+            format!("{}:{}", tool.name, command.trim())
+        }
+        _ => tool.name.clone(),
+    }
+}
+
+fn record_lsp_diagnostics(
+    root: &Path,
+    files: &[LensTouchedFile],
+) -> Result<usize, Box<dyn std::error::Error>> {
+    const MAX_LSP_FILES_PER_HOOK: usize = 3;
+    const LSP_INITIALIZE_WAIT: Duration = Duration::from_millis(1500);
+    const LSP_DIAGNOSTIC_WAIT: Duration = Duration::from_millis(700);
+
+    let mut store = LensStore::open_for_project(root)?;
+    let mut pool = LspSessionPool::new();
+    let mut collected = 0;
+    let mut seen = std::collections::BTreeSet::new();
+    for file in files
+        .iter()
+        .filter(|file| is_lsp_diagnostic_candidate(file) && !file.ignored && !file.generated)
+        .take(MAX_LSP_FILES_PER_HOOK)
+    {
+        if !seen.insert(file.path.clone()) {
+            continue;
+        }
+        let abs_path = root.join(&file.path);
+        if !abs_path.is_file() {
+            continue;
+        }
+        let Some(probe) = probe_for_file(&abs_path) else {
+            continue;
+        };
+        if !probe.available {
+            continue;
+        }
+        let diagnostics = pool.with_session_with_initialize_timeout(
+            &probe,
+            &abs_path,
+            root,
+            Some(LSP_INITIALIZE_WAIT),
+            |client| client.collect_diagnostics_with_timeout(&abs_path, LSP_DIAGNOSTIC_WAIT),
+        )?;
+        let diagnostics = diagnostics
+            .into_iter()
+            .filter_map(|diagnostic| lsp_diagnostic(&file.path, diagnostic))
+            .collect::<Vec<_>>();
+        collected += diagnostics.len();
+        store.record_diagnostic_snapshot(DiagnosticSnapshotInput {
+            source: DiagnosticSource::Lsp,
+            scope: DiagnosticScope::file(file.path.clone()),
+            diagnostics,
+            raw_output: None,
+            raw_output_max_bytes: None,
+            metadata: DiagnosticSnapshotMetadata::default(),
+        })?;
+    }
+    Ok(collected)
+}
+
+fn is_lsp_diagnostic_candidate(file: &LensTouchedFile) -> bool {
+    matches!(
+        file.operation.as_str(),
+        "add" | "create" | "edit" | "modify" | "move" | "rename" | "write"
+    )
+}
+
+fn lsp_diagnostic(rel_path: &str, diagnostic: Value) -> Option<Diagnostic> {
+    let message = diagnostic.get("message")?.as_str()?.trim().to_string();
+    if message.is_empty() {
+        return None;
+    }
+    let start_line = diagnostic
+        .pointer("/range/start/line")
+        .and_then(Value::as_i64)
+        .map(|line| line + 1);
+    let end_line = diagnostic
+        .pointer("/range/end/line")
+        .and_then(Value::as_i64)
+        .map(|line| line + 1)
+        .or(start_line);
+    let severity = match diagnostic.get("severity").and_then(Value::as_i64) {
+        Some(1) => DiagnosticSeverity::Error,
+        Some(3) => DiagnosticSeverity::Info,
+        Some(4) => DiagnosticSeverity::Hint,
+        _ => DiagnosticSeverity::Warning,
+    };
+    let code = diagnostic.get("code").and_then(|code| {
+        code.as_str()
+            .map(str::to_string)
+            .or_else(|| code.as_i64().map(|value| value.to_string()))
+    });
+    let source = diagnostic
+        .get("source")
+        .and_then(Value::as_str)
+        .unwrap_or("lsp");
+    let fingerprint = crate::apply_patch::sha1_hex(
+        format!("lsp:{source}:{rel_path}:{start_line:?}:{code:?}:{message}").as_bytes(),
+    );
+    Some(Diagnostic {
+        source: DiagnosticSource::Lsp,
+        scope: DiagnosticScope::file(rel_path),
+        severity,
+        code,
+        message,
+        rel_path: Some(rel_path.to_string()),
+        start_line,
+        end_line,
+        fingerprint,
+        content_hash: None,
+        raw_output_id: None,
+        snapshot_id: None,
+        first_seen_at: None,
+        last_seen_at: None,
+        resolved_at: None,
+    })
 }
 
 fn turn_event(
@@ -974,6 +1158,17 @@ fn diagnostics_from_turn(health: &TurnHealthData) -> LensHookDiagnosticsSummary 
         warnings: health.summary.diagnostics.warnings,
         info: health.summary.diagnostics.info,
         hints: health.summary.diagnostics.hints,
+    }
+}
+
+fn apply_turn_health(response: &mut LensHookResponse, health: &TurnHealthData) {
+    response.health = health_status_from_turn(health);
+    response.diagnostics = diagnostics_from_turn(health);
+    merge_data(response, "health", json!(health));
+    if health.status.is_warning_or_worse() {
+        response.status = LensResponseStatus::Warning;
+        response.decision.outcome = LensHookDecisionOutcome::Warn;
+        response.decision.reason = "health_requires_attention".to_string();
     }
 }
 
@@ -1129,6 +1324,7 @@ fn checks_ran(checks: Option<&LensChecksData>) -> bool {
 
 fn turn_health_status_str(status: &TurnHealthStatus) -> &'static str {
     match status {
+        TurnHealthStatus::Pending => "pending",
         TurnHealthStatus::Clean => "clean",
         TurnHealthStatus::Warning => "warning",
         TurnHealthStatus::Error => "error",
@@ -1260,5 +1456,47 @@ mod tests {
 
         assert_eq!(native["continue"], true);
         assert!(native.get("hookSpecificOutput").is_none());
+    }
+
+    #[test]
+    fn lsp_diagnostic_maps_protocol_shape_to_lens_diagnostic() {
+        let diagnostic = lsp_diagnostic(
+            "src/main.rs",
+            json!({
+                "range": {"start": {"line": 4}, "end": {"line": 6}},
+                "severity": 1,
+                "code": "E0425",
+                "source": "rust-analyzer",
+                "message": "cannot find value"
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(diagnostic.source, DiagnosticSource::Lsp);
+        assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
+        assert_eq!(diagnostic.rel_path.as_deref(), Some("src/main.rs"));
+        assert_eq!(diagnostic.start_line, Some(5));
+        assert_eq!(diagnostic.end_line, Some(7));
+        assert_eq!(diagnostic.code.as_deref(), Some("E0425"));
+        assert_eq!(diagnostic.message, "cannot find value");
+    }
+
+    #[test]
+    fn lsp_candidates_only_include_write_like_touches() {
+        let mut file = LensTouchedFile {
+            path: "src/main.rs".to_string(),
+            operation: "read".to_string(),
+            start_line: None,
+            end_line: None,
+            tool: "Read".to_string(),
+            source: super::super::types::LensTouchedFileSource::StructuredEvent,
+            explicit: true,
+            ignored: false,
+            generated: false,
+        };
+
+        assert!(!is_lsp_diagnostic_candidate(&file));
+        file.operation = "modify".to_string();
+        assert!(is_lsp_diagnostic_candidate(&file));
     }
 }

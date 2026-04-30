@@ -90,6 +90,14 @@ impl LspClient {
     }
 
     pub fn initialize(&mut self, probe: &LspServerProbe) -> Result<()> {
+        self.initialize_with_timeout(probe, RESPONSE_WAIT)
+    }
+
+    pub fn initialize_with_timeout(
+        &mut self,
+        probe: &LspServerProbe,
+        timeout: Duration,
+    ) -> Result<()> {
         let root = probe.root.as_deref().unwrap_or_else(|| Path::new("."));
         let result = self.request(
             "initialize",
@@ -111,7 +119,7 @@ impl LspClient {
                 },
                 "clientInfo": { "name": "ct", "version": env!("CARGO_PKG_VERSION") }
             }),
-            RESPONSE_WAIT,
+            timeout,
         )?;
         if result.get("capabilities").is_none() {
             bail!("LSP initialize returned an invalid response");
@@ -207,9 +215,17 @@ impl LspClient {
     }
 
     pub fn collect_diagnostics(&mut self, path: &Path) -> Result<Vec<Value>> {
+        self.collect_diagnostics_with_timeout(path, DIAGNOSTICS_WAIT)
+    }
+
+    pub fn collect_diagnostics_with_timeout(
+        &mut self,
+        path: &Path,
+        timeout: Duration,
+    ) -> Result<Vec<Value>> {
         let uri = file_uri(path)?;
         let mut diagnostics = Vec::new();
-        while let Ok(message) = self.rx.recv_timeout(DIAGNOSTICS_WAIT) {
+        while let Ok(message) = self.rx.recv_timeout(timeout) {
             let message = message.map_err(|error| anyhow!(error))?;
             if message.get("method").and_then(Value::as_str)
                 != Some("textDocument/publishDiagnostics")
