@@ -4,6 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import applyPatchExtension from "./index.ts";
+import {
+	convertTools,
+	mapFreeformEvents,
+	parseSSE,
+} from "./freeform-codex.ts";
 
 const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 
@@ -287,3 +292,124 @@ describe("apply_patch Codex tool policy", () => {
 		expect(handler?.({ toolName: "read" }, ctx)).toBeUndefined();
 	});
 });
+
+async function collect<T>(iterable: AsyncIterable<T>): Promise<T[]> {
+	const items: T[] = [];
+	for await (const item of iterable) items.push(item);
+	return items;
+}
+
+describe("apply_patch Codex freeform provider", () => {
+	it("converts only apply_patch custom tool stream events", async () => {
+		const events = [
+			{
+				type: "response.output_item.added",
+				item: { id: "apply", type: "custom_tool_call", name: "apply_patch", input: "" },
+			},
+			{
+				type: "response.output_item.added",
+				item: { id: "other", type: "custom_tool_call", name: "other_tool", input: "" },
+			},
+			{
+				type: "response.custom_tool_call_input.delta",
+				item_id: "other",
+				delta: "do-not-convert",
+			},
+			{
+				type: "response.custom_tool_call_input.delta",
+				item_id: "apply",
+				delta: "*** Begin Patch\n",
+			},
+			{
+				type: "response.custom_tool_call_input.done",
+				item_id: "other",
+				input: "do-not-convert",
+			},
+			{
+				type: "response.custom_tool_call_input.done",
+				item_id: "apply",
+			},
+			{
+				type: "response.output_item.done",
+				item: { id: "other", type: "custom_tool_call", name: "other_tool", input: "raw" },
+			},
+			{
+				type: "response.output_item.done",
+				item: { id: "apply", type: "custom_tool_call", name: "apply_patch" },
+			},
+		];
+
+		const mapped = await collect(mapFreeformEvents(toAsync(events), "apply_patch"));
+
+		expect(mapped[0]).toMatchObject({
+			type: "response.output_item.added",
+			item: { id: "apply", type: "function_call", arguments: "" },
+		});
+		expect(mapped[2]).toBe(events[2]);
+		expect(mapped[3]).toMatchObject({
+			type: "response.function_call_arguments.delta",
+			delta: "{\"input\":\"*** Begin Patch\\n",
+		});
+		expect(mapped[4]).toBe(events[4]);
+		expect(mapped[5]).toEqual({
+			type: "response.function_call_arguments.delta",
+			delta: "\"}",
+		});
+		expect(mapped.at(-2)).toMatchObject({
+			type: "response.function_call_arguments.done",
+			arguments: JSON.stringify({ input: "*** Begin Patch\n" }),
+		});
+		expect(mapped.at(-1)).toMatchObject({
+			type: "response.output_item.done",
+			item: {
+				id: "apply",
+				type: "function_call",
+				arguments: JSON.stringify({ input: "*** Begin Patch\n" }),
+			},
+		});
+	});
+
+	it("converts apply_patch tools to Codex custom grammar tools", () => {
+		const tools = convertTools(
+			[
+				{ name: "read", description: "Read", parameters: { type: "object" } },
+				{ name: "apply_patch", description: "JSON wrapper", parameters: { type: "object" } },
+			] as any,
+			{
+				toolName: "apply_patch",
+				description: "Freeform apply_patch",
+				grammar: "start: /.+/",
+			},
+		);
+
+		expect(tools[0]).toMatchObject({ type: "function", name: "read" });
+		expect(tools[1]).toEqual({
+			type: "custom",
+			name: "apply_patch",
+			description: "Freeform apply_patch",
+			format: { type: "grammar", syntax: "lark", definition: "start: /.+/" },
+		});
+	});
+
+	it("parses CRLF SSE frames and flushes a final frame without a blank line", async () => {
+		const encoder = new TextEncoder();
+		const response = new Response(
+			new ReadableStream({
+				start(controller) {
+					controller.enqueue(encoder.encode("data: {\"type\":\"first\"}\r\n\r\n"));
+					controller.enqueue(encoder.encode("data: {\"type\":\"second\"}"));
+					controller.close();
+				},
+			}),
+		);
+
+		await expect(collect(parseSSE(response))).resolves.toEqual([
+			{ type: "first" },
+			{ type: "second" },
+		]);
+	});
+});
+
+async function* toAsync<T>(items: T[]): AsyncIterable<T> {
+	for (const item of items) yield item;
+}

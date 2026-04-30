@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -19,16 +20,41 @@ import type { BundledLanguage, BundledTheme } from "shiki";
 import { Type } from "typebox";
 
 import { nf, title } from "../shared/ct-render.ts";
+import { runCommand as runExternalCommand } from "../shared/ct-runner.ts";
 import {
   resolveInlineLanguageForPath,
   resolveShikiLanguageForPath,
 } from "../shared/path-language";
+import { registerApplyPatchFreeformProvider } from "./freeform-codex.ts";
 
 const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const ANSI_SGR_PATTERN = /\x1b\[([0-9;]*)m/g;
 const ANSI_RESET = "\x1b[0m";
 
 const APPLY_PATCH_USAGE_ENTRY = "apply_patch_usage";
+const APPLY_PATCH_TOOL_NAME = "apply_patch";
+
+const APPLY_PATCH_GRAMMAR = String.raw`start: begin_patch hunk+ end_patch
+begin_patch: "*** Begin Patch" LF
+end_patch: "*** End Patch" LF?
+
+hunk: add_hunk | delete_hunk | update_hunk | update_scope_hunk
+add_hunk: "*** Add File: " filename LF add_line+
+delete_hunk: "*** Delete File: " filename LF
+update_hunk: "*** Update File: " filename LF change_move? change?
+update_scope_hunk: "*** Update Scope: " filename LF scope_change+
+
+filename: /(.+)/
+add_line: "+" /(.*)/ LF -> line
+
+change_move: "*** Move to: " filename LF
+change: (change_context | change_line)+ eof_line?
+change_context: ("@@" | "@@ " /(.+)/) LF
+scope_change: "@@ " /(.+)/ LF change_line+ eof_line?
+change_line: ("+" | "-" | " ") /(.*)/ LF
+eof_line: "*** End of File" LF
+
+%import common.LF`;
 
 const APPLY_PATCH_PROMPT_APPENDIX = `## apply_patch
 
@@ -128,6 +154,8 @@ type ApplyPatchConfig = {
 
 const APPLY_PATCH_TOOL_DESCRIPTION =
   "Edit files using apply_patch. Use '*** Update Scope' when it is the shortest clear way to target an existing symbol; use '*** Update File' when plain text context is clearer.";
+const APPLY_PATCH_FREEFORM_TOOL_DESCRIPTION =
+  "Use the `apply_patch` tool to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON.";
 
 const DEFAULT_CONFIG: ApplyPatchConfig = {
   maxDiffLines: 160,
@@ -154,7 +182,6 @@ const CONFIG_PATH = join(
 
 function loadConfig(): ApplyPatchConfig {
   try {
-    if (!existsSync(CONFIG_PATH)) return DEFAULT_CONFIG;
     const parsed = JSON.parse(
       readFileSync(CONFIG_PATH, "utf8"),
     ) as Partial<ApplyPatchConfig>;
@@ -294,7 +321,6 @@ type ApplyPatchRenderState = {
   livePreview?: LivePatchPreviewState;
   renderedLiveResult?: boolean;
   resultRendered?: boolean;
-  lastResultDiffKey?: string;
   previewWorker?: PreviewWorker;
   previewInput?: string;
   previewDiff?: string;
@@ -318,10 +344,7 @@ const SHIKI_MAX_CHARS = 80_000;
 const SHIKI_CACHE_LIMIT = 64;
 const SHIKI_BACKGROUND_PATTERN = /\x1b\[(?:48;2;\d+;\d+;\d+|48;5;\d+|49)m/g;
 const PREVIEW_THROTTLE_MS = 200;
-
-function streamingPreviewEnabled(): boolean {
-  return true;
-}
+const COMPLETED_PATCH_INPUT_LIMIT = 128;
 
 function editVerb(state: "success" | "pending" | "error", kind: ApplyPatchEditKind): string {
   if (kind === "semantic") {
@@ -854,6 +877,7 @@ type HighlightedFileSource = {
 
 function readNormalizedTextFile(path: string): string | undefined {
   try {
+    if (statSync(path).size > SHIKI_MAX_CHARS) return undefined;
     return readFileSync(path, "utf8").replace(/\r\n?/g, "\n");
   } catch {
     return undefined;
@@ -1481,7 +1505,21 @@ function arraysEqual(a: string[], b: string[]): boolean {
 }
 
 function patchInputKey(input: string): string {
-  return input.replace(/\r\n?/g, "\n").trimEnd();
+  const normalized = input.replace(/\r\n?/g, "\n").trimEnd();
+  return normalized
+    ? createHash("sha256").update(normalized).digest("base64url")
+    : "";
+}
+
+function rememberCompletedPatchInput(keys: Set<string>, key: string): void {
+  if (!key) return;
+  keys.delete(key);
+  keys.add(key);
+  while (keys.size > COMPLETED_PATCH_INPUT_LIMIT) {
+    const oldest = keys.values().next().value;
+    if (oldest === undefined) break;
+    keys.delete(oldest);
+  }
 }
 
 function formatTarget(
@@ -1752,7 +1790,10 @@ async function runApplyPatchPreview(
 ): Promise<ApplyPatchPreviewResponse | undefined> {
   const args = ["apply-patch", "preview", "--cwd", cwd];
   if (partial) args.push("--partial");
-  const { stdout } = await runCommand("ct", args, cwd, signal, input);
+  const { stdout } = await runExternalCommand("ct", args, cwd, {
+    signal,
+    input,
+  });
   return parsePreviewResponse(stdout);
 }
 
@@ -2039,82 +2080,6 @@ function makeResult(
   };
 }
 
-function runCommand(
-  command: string,
-  args: string[],
-  cwd: string,
-  signal?: AbortSignal,
-  input?: string,
-): Promise<{ stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    let stdinError: NodeJS.ErrnoException | undefined;
-    const resolveOnce = (value: { stdout: string; stderr: string }) => {
-      if (settled) return;
-      settled = true;
-      resolve(value);
-    };
-    const rejectOnce = (error: Error) => {
-      if (settled) return;
-      settled = true;
-      reject(error);
-    };
-    const child = spawn(command, args, {
-      cwd,
-      env: process.env,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-
-    const stdoutChunks: Buffer[] = [];
-    const stderrChunks: Buffer[] = [];
-
-    child.stdout.on("data", (chunk) => stdoutChunks.push(Buffer.from(chunk)));
-    child.stderr.on("data", (chunk) => stderrChunks.push(Buffer.from(chunk)));
-    child.stdin.on("error", (error) => {
-      stdinError = error as NodeJS.ErrnoException;
-      if (
-        stdinError.code === "EPIPE" ||
-        stdinError.code === "ERR_STREAM_DESTROYED"
-      ) {
-        return;
-      }
-      rejectOnce(stdinError);
-    });
-    child.on("error", (error) => {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        rejectOnce(new Error(`${command} not found on PATH`));
-        return;
-      }
-      rejectOnce(error instanceof Error ? error : new Error(String(error)));
-    });
-
-    const onAbort = () => child.kill();
-    signal?.addEventListener("abort", onAbort, { once: true });
-
-    if (input === undefined) {
-      child.stdin.end();
-    } else {
-      child.stdin.end(input);
-    }
-
-    child.on("close", (exitCode) => {
-      signal?.removeEventListener("abort", onAbort);
-      const stdout = Buffer.concat(stdoutChunks).toString("utf8");
-      const stderr = Buffer.concat(stderrChunks).toString("utf8");
-      if (exitCode === 0) {
-        resolveOnce({ stdout, stderr });
-        return;
-      }
-      const stdinMessage = stdinError ? `: ${stdinError.message}` : "";
-      rejectOnce(
-        new Error(
-          `${command} ${args.join(" ")} failed with exit code ${exitCode ?? 1}${trimOutput(stderr) ? `: ${trimOutput(stderr)}` : stdinMessage}`,
-        ),
-      );
-    });
-  });
-}
-
 function runApplyPatch(
   cwd: string,
   input: string,
@@ -2123,7 +2088,7 @@ function runApplyPatch(
 ) {
   const args = ["apply-patch", "--cwd", cwd];
   if (dryRun) args.push("--dry-run");
-  return runCommand("ct", args, cwd, signal, input);
+  return runExternalCommand("ct", args, cwd, { signal, input });
 }
 
 function enforceToolPolicy(pi: ExtensionAPI, config: ApplyPatchConfig): void {
@@ -2134,8 +2099,8 @@ function enforceToolPolicy(pi: ExtensionAPI, config: ApplyPatchConfig): void {
     (toolName) => toolName !== "edit" && toolName !== "write",
   );
 
-  if (!next.includes("apply_patch")) {
-    next.push("apply_patch");
+  if (!next.includes(APPLY_PATCH_TOOL_NAME)) {
+    next.push(APPLY_PATCH_TOOL_NAME);
   }
 
   if (!arraysEqual(active, next)) {
@@ -2149,7 +2114,7 @@ function applyToolAvailability(
 ): void {
   if (!config.registerTool || config.activeByDefault) return;
   const active = pi.getActiveTools();
-  const next = active.filter((toolName) => toolName !== "apply_patch");
+  const next = active.filter((toolName) => toolName !== APPLY_PATCH_TOOL_NAME);
   if (!arraysEqual(active, next)) pi.setActiveTools(next);
 }
 
@@ -2164,6 +2129,12 @@ function formatConfig(config: ApplyPatchConfig): string {
 }
 
 export default function applyPatchExtension(pi: ExtensionAPI) {
+  registerApplyPatchFreeformProvider(pi, {
+    toolName: APPLY_PATCH_TOOL_NAME,
+    description: APPLY_PATCH_FREEFORM_TOOL_DESCRIPTION,
+    grammar: APPLY_PATCH_GRAMMAR,
+  });
+
   let config = loadConfig();
   const executingPatchInputs = new Set<string>();
   const completedPatchInputs = new Set<string>();
@@ -2181,8 +2152,8 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
       return true;
     });
 
-    if (codexModel && config.registerTool && !next.includes("apply_patch")) {
-      next = [...next, "apply_patch"];
+    if (codexModel && config.registerTool && !next.includes(APPLY_PATCH_TOOL_NAME)) {
+      next = [...next, APPLY_PATCH_TOOL_NAME];
     }
 
     if (!codexModel && toolsRemovedForCodex.size > 0) {
@@ -2272,8 +2243,8 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
   if (!config.registerTool) return;
 
   pi.registerTool({
-    name: "apply_patch",
-    label: "apply_patch",
+    name: APPLY_PATCH_TOOL_NAME,
+    label: APPLY_PATCH_TOOL_NAME,
     description: APPLY_PATCH_TOOL_DESCRIPTION,
     ...(config.promptMetadata && config.promptSnippet
       ? { promptSnippet: APPLY_PATCH_TOOL_DESCRIPTION }
@@ -2306,10 +2277,12 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
                 label,
                 undefined,
                 context.expanded,
-              state.previewRows,
-              config.maxDiffLines,
-              state.previewSemantic ? "semantic" : editKindFromFiles(state.previewFiles),
-            ),
+                state.previewRows,
+                config.maxDiffLines,
+                state.previewSemantic
+                  ? "semantic"
+                  : editKindFromFiles(state.previewFiles),
+              ),
             )
           : undefined;
       if (context.executionStarted) {
@@ -2331,13 +2304,11 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 
       if (!context.argsComplete) {
         state.livePreview = parseLivePatchPreview(input, state.livePreview);
-        if (streamingPreviewEnabled() && inputKey && input.includes("\n")) {
+        if (inputKey && input.includes("\n")) {
           state.previewInput = input;
           state.previewSemantic = semanticInput;
           startPreviewWorker(context.cwd, state, context.invalidate);
           schedulePreviewWorkerUpdate(state, context.invalidate);
-        } else if (!streamingPreviewEnabled()) {
-          stopPreviewWorker(state);
         }
         if (state.previewRows && state.previewRows.length > 0) {
           return new ApplyPatchDiffView(
@@ -2431,7 +2402,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
         details?.filesChanged ?? details?.operations ?? files.length;
       const highlightedRows = details?.highlightedDiffRows;
       const scopedRows =
-        details?.diff && details.previewChanges
+        details?.diff && details.previewChanges?.length
           ? parseUnifiedDiffWithScopes(details.diff, details.previewChanges)
           : undefined;
       const displayRows = mergeScopedDiffRows(highlightedRows, scopedRows);
@@ -2458,9 +2429,6 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
         }
         if (details?.stage === "apply") {
           if (count > 0) {
-            state.lastResultDiffKey = details.diff
-              ? ["diff", expanded, diffLineLimit, details.diff].join("\0")
-              : undefined;
             return renderApplyPatchBox(
               theme,
               details.diff,
@@ -2508,13 +2476,6 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
       }
 
       if (config.renderDiff && details?.diff && details.diff.length > 0) {
-        const resultDiffKey = [
-          "diff",
-          expanded,
-          diffLineLimit,
-          details.diff,
-        ].join("\0");
-        state.lastResultDiffKey = resultDiffKey;
         if (count > 0) {
           return renderApplyPatchBox(
             theme,
@@ -2572,9 +2533,9 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
         const progress = parsePatchInputProgress(input);
         const shouldDryRun =
           config.validateBeforeApply || config.syntaxHighlight;
-      let dryRun: { stdout: string; stderr: string } | undefined;
-      let previewDiff = "";
-      let previewChanges: ApplyPatchPreviewChange[] = [];
+        let dryRun: { stdout: string; stderr: string } | undefined;
+        let previewDiff = "";
+        let previewChanges: ApplyPatchPreviewChange[] = [];
 
         if (shouldDryRun) {
           if (config.validateBeforeApply) {
@@ -2607,16 +2568,22 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
           dryRun = dryRunResult;
         }
 
-        if (config.richRender && config.renderDiff && !dryRun) {
-          const preview = await runApplyPatchPreview(ctx.cwd, input, signal).catch(
-            () => undefined,
-        );
-        if (preview?.status === "valid" && preview.diff) {
-          previewDiff = preview.diff.trim();
-          previewChanges = preview.changes ?? [];
-        } else if (preview?.status === "invalid" && preview.error) {
-          return errorResult(preview.error, { stage: "validate" });
-        }
+        if (
+          config.richRender &&
+          config.renderDiff &&
+          (!dryRun || semanticInput)
+        ) {
+          const preview = await runApplyPatchPreview(
+            ctx.cwd,
+            input,
+            signal,
+          ).catch(() => undefined);
+          if (preview?.status === "valid" && preview.diff) {
+            previewDiff = preview.diff.trim();
+            previewChanges = preview.changes ?? [];
+          } else if (preview?.status === "invalid" && preview.error) {
+            return errorResult(preview.error, { stage: "validate" });
+          }
         }
 
         if (signal?.aborted) {
@@ -2709,15 +2676,15 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
             filesChanged,
             operations: progress.totalOperations,
             semantic: semanticInput,
-          ...(config.richRender && config.renderDiff
-            ? { diff, highlightedDiffRows, previewChanges }
-            : {}),
+            ...(config.richRender && config.renderDiff
+              ? { diff, highlightedDiffRows, previewChanges }
+              : {}),
             fileDiffs: progress.files,
           },
         );
       } finally {
         executingPatchInputs.delete(inputKey);
-        completedPatchInputs.add(inputKey);
+        rememberCompletedPatchInput(completedPatchInputs, inputKey);
       }
     },
   } as any);

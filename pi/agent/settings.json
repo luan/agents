@@ -8,19 +8,14 @@
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-5.5",
   "defaultThinkingLevel": "high",
-  "skills": [
-    "../.codex/skills"
-  ],
+  "skills": ["../.codex/skills"],
   "packages": [
     "npm:pi-subagents",
     "npm:@ifi/oh-pi-themes",
     "npm:context-mode",
     "npm:@dreki-gg/pi-context7"
   ],
-  "extensions": [
-    "-extensions/team-mode/index.ts",
-    "extensions/freeform-apply-patch/index.ts"
-  ],
+  "extensions": ["-extensions/team-mode/index.ts"],
   "enabledModels": [
     "openai-codex/gpt-5.5",
     "openai-codex/gpt-5.4",

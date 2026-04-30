@@ -48,7 +48,7 @@ enabled = true
 enabled = true
 
 [plugins."gt@agents"]
-enabled = true
+enabled = false
 
 [shell_environment_policy]
 inherit = "core"

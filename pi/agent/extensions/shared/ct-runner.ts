@@ -26,6 +26,7 @@ export function runCommand(
 	const options = isRunCommandOptions(signalOrOptions) ? signalOrOptions : { signal: signalOrOptions, input };
 	return new Promise((resolve, reject) => {
 		let settled = false;
+		let stdinError: NodeJS.ErrnoException | undefined;
 		const rejectOnce = (error: Error) => {
 			if (settled) return;
 			settled = true;
@@ -56,8 +57,9 @@ export function runCommand(
 			rejectOnce(error);
 		});
 		child.stdin.on("error", (error) => {
-			if ((error as NodeJS.ErrnoException).code === "EPIPE") return;
-			rejectOnce(error);
+			stdinError = error as NodeJS.ErrnoException;
+			if (stdinError.code === "EPIPE" || stdinError.code === "ERR_STREAM_DESTROYED") return;
+			rejectOnce(stdinError);
 		});
 
 		const onAbort = () => child.kill();
@@ -77,9 +79,10 @@ export function runCommand(
 				resolveOnce({ stdout, stderr, exitCode: exitCode ?? 0 });
 				return;
 			}
+			const stdinMessage = stdinError ? `: ${stdinError.message}` : "";
 			rejectOnce(
 				new Error(
-					`${formatCommand(command, args)} failed with exit code ${exitCode ?? 1}${stderr.trim() ? `: ${stderr.trim()}` : ""}`,
+					`${formatCommand(command, args)} failed with exit code ${exitCode ?? 1}${stderr.trim() ? `: ${stderr.trim()}` : stdinMessage}`,
 				),
 			);
 		});
