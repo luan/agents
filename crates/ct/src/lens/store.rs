@@ -1471,15 +1471,11 @@ fn tool_phase(phase: &LensToolEventPhase) -> &'static str {
 fn touched_source(source: &LensTouchedFileSource) -> &'static str {
     match source {
         LensTouchedFileSource::StructuredEvent => "structured_event",
-        LensTouchedFileSource::GitStatus => "git_status",
     }
 }
 
-fn parse_touched_source(source: &str) -> LensTouchedFileSource {
-    match source {
-        "git_status" => LensTouchedFileSource::GitStatus,
-        _ => LensTouchedFileSource::StructuredEvent,
-    }
+fn parse_touched_source(_source: &str) -> LensTouchedFileSource {
+    LensTouchedFileSource::StructuredEvent
 }
 
 fn cleanup_status(status: CleanupRunStatus) -> &'static str {
