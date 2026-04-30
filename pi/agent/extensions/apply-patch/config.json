@@ -13,7 +13,5 @@
   "activeByDefault": true,
   "promptMetadata": true,
   "promptSnippet": true,
-  "promptGuidelines": false,
-  "codexExecRegister": true,
-  "codexExecActiveByDefault": true
+  "promptGuidelines": false
 }
