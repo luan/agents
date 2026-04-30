@@ -4,6 +4,6 @@ Vendored from [`jordyvandomselaar/pi-openai-compaction`](https://github.com/jord
 
 Local notes:
 
-- Kept as a Pi auto-discovered local extension under `pi/agent/extensions/openai-native-compaction/`.
+- Kept as a submodule of the local `codex-native` Pi extension under `pi/agent/extensions/codex-native/compaction/`.
 - Settings use the upstream `openaiNativeCompaction` key and `PI_OPENAI_NATIVE_COMPACTION_` environment overrides.
 - Local edits keep debug artifact failures fail-open and use portable temporary paths in tests.

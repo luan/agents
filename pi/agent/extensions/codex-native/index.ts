@@ -6,6 +6,7 @@ import {
 	rewriteNativeWebSearchTool,
 	supportsNativeImageGeneration,
 } from "./native-tools.ts";
+import registerOpenAINativeCompaction from "./compaction/index.ts";
 import { buildCodexSystemPrompt, extractPiPromptSkills, type PromptSkill } from "./prompt.ts";
 
 function isCodexModel(model: ExtensionContext["model"] | undefined): boolean {
@@ -21,6 +22,7 @@ function arraysEqual(a: string[], b: string[]): boolean {
 export default function codexNativeExtension(pi: ExtensionAPI) {
 	let promptSkills: PromptSkill[] = [];
 
+	registerOpenAINativeCompaction(pi);
 	pi.registerTool(createImageGenerationTool());
 
 	const applyToolPolicy = (ctx?: ExtensionContext) => {
