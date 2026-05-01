@@ -1,3 +1,4 @@
+import { closeOpenAICodexWebSocketSessions } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import registerOpenAINativeCompaction from "./compaction/index.ts";
 import {
@@ -50,6 +51,10 @@ export default function codexNativeExtension(pi: ExtensionAPI) {
 
 	pi.on("model_select", (_event, ctx) => {
 		applyToolPolicy(ctx);
+	});
+
+	pi.on("session_shutdown", () => {
+		closeOpenAICodexWebSocketSessions();
 	});
 
 	pi.on("before_agent_start", (event, ctx) => {
