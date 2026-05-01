@@ -181,6 +181,12 @@ pub struct LensHookContextInjection {
     pub content: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub severity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub requires_followup: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -525,8 +531,16 @@ fn native_hook_event(
         .and_then(|output| serde_json::to_string(output).ok());
     let known_files = tool_name
         .as_deref()
-        .zip(tool_input.as_ref())
-        .map(|(tool, input)| native_known_files(tool, input))
+        .map(|tool| {
+            let mut files = tool_input
+                .as_ref()
+                .map(|input| native_known_files(tool, input))
+                .unwrap_or_default();
+            if let Some(output) = tool_output.as_ref() {
+                files.extend(native_known_files_from_output(output));
+            }
+            dedup_touched_inputs(files)
+        })
         .unwrap_or_default();
 
     Ok(LensHookEvent {
@@ -588,6 +602,12 @@ fn native_tool_status(hook: LensLifecycleHook, output: Option<&Value>) -> Option
 
 fn native_known_files(tool_name: &str, input: &Value) -> Vec<LensTouchedFileInput> {
     let operation = native_file_operation(tool_name);
+    if let Some(patch) = native_patch_text(input) {
+        let files = native_patch_touched_files(patch);
+        if !files.is_empty() {
+            return files;
+        }
+    }
     let start_line = i64_field(input, &["start_line", "startLine", "line", "offset"]);
     let end_line = i64_field(input, &["end_line", "endLine"]).or_else(|| {
         let start = start_line?;
@@ -616,6 +636,84 @@ fn native_known_files(tool_name: &str, input: &Value) -> Vec<LensTouchedFileInpu
         }
     }
     files
+}
+
+fn native_patch_text(input: &Value) -> Option<&str> {
+    if input
+        .as_str()
+        .is_some_and(|text| text.contains("*** Begin Patch"))
+    {
+        return input.as_str();
+    }
+    ["input", "patch", "body", "content", "cmd", "command"]
+        .iter()
+        .find_map(|field| {
+            input
+                .get(*field)
+                .and_then(Value::as_str)
+                .filter(|text| text.contains("*** Begin Patch"))
+        })
+}
+
+fn native_patch_touched_files(patch: &str) -> Vec<LensTouchedFileInput> {
+    let mut files = Vec::new();
+    for line in patch.lines().map(str::trim) {
+        if let Some(path) = line.strip_prefix("*** Add File: ") {
+            files.push(touched_input(path.to_string(), "create", None, None));
+        } else if let Some(path) = line.strip_prefix("*** Update File: ") {
+            files.push(touched_input(path.to_string(), "edit", None, None));
+        } else if let Some(path) = line.strip_prefix("*** Delete File: ") {
+            files.push(touched_input(path.to_string(), "delete", None, None));
+        } else if let Some(path) = line.strip_prefix("*** Replace All In File: ") {
+            files.push(touched_input(path.to_string(), "edit", None, None));
+        } else if let Some(path) = line.strip_prefix("*** Update Scope: ") {
+            files.push(touched_input(path.to_string(), "edit", None, None));
+        } else if let Some(spec) = line.strip_prefix("*** Move File: ") {
+            let (_, destination) = spec.split_once(" -> ").unwrap_or(("", spec));
+            files.push(touched_input(destination.to_string(), "move", None, None));
+        }
+    }
+    dedup_touched_inputs(files)
+}
+
+fn native_known_files_from_output(output: &Value) -> Vec<LensTouchedFileInput> {
+    let Some(changes) = output.get("changes").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let mut files = Vec::new();
+    for (path, metadata) in changes {
+        let operation = metadata
+            .get("type")
+            .or_else(|| metadata.get("kind"))
+            .and_then(Value::as_str)
+            .map(native_change_operation)
+            .unwrap_or("modify");
+        files.push(touched_input(path.to_string(), operation, None, None));
+    }
+    dedup_touched_inputs(files)
+}
+
+fn native_change_operation(kind: &str) -> &'static str {
+    match kind.to_ascii_lowercase().as_str() {
+        "add" | "create" | "write" => "create",
+        "delete" | "remove" => "delete",
+        "move" | "rename" => "move",
+        "update" | "edit" => "edit",
+        _ => "modify",
+    }
+}
+
+fn dedup_touched_inputs(files: Vec<LensTouchedFileInput>) -> Vec<LensTouchedFileInput> {
+    let mut deduped = Vec::new();
+    for file in files {
+        let duplicate = deduped
+            .iter()
+            .any(|existing: &LensTouchedFileInput| existing.path == file.path);
+        if !duplicate {
+            deduped.push(file);
+        }
+    }
+    deduped
 }
 
 fn native_file_operation(tool_name: &str) -> &'static str {
@@ -824,6 +922,8 @@ fn turn_end(event: LensHookEvent) -> LensHookResponse {
                 .push(action("record_turn_event", "ok", None));
             if checks_ran(envelope.data.checks.as_ref()) {
                 response.actions.push(action("checks", "ok", None));
+            }
+            if checks_need_attention(envelope.data.checks.as_ref()) {
                 response.status = LensResponseStatus::Warning;
             }
             response.warnings.extend(envelope.warnings.clone());
@@ -1168,16 +1268,22 @@ fn apply_turn_end_report(response: &mut LensHookResponse, health: &TurnHealthDat
     let Some(report) = super::health::session_issue_report_text(health) else {
         return;
     };
+    let fingerprint = issue_report_fingerprint(health);
     response.context = LensHookContextInjection {
         inject: true,
         content: report.clone(),
         state: Some(turn_health_status_str(&health.status).to_string()),
+        severity: Some(turn_health_status_str(&health.status).to_string()),
+        fingerprint: Some(fingerprint.clone()),
+        requires_followup: true,
     };
     merge_data(
         response,
         "report",
         json!({
             "status": turn_health_status_str(&health.status),
+            "fingerprint": fingerprint,
+            "requires_followup": true,
             "issue_count": health.issues.len(),
             "issues": health.issues,
             "text": report,
@@ -1188,6 +1294,20 @@ fn apply_turn_end_report(response: &mut LensHookResponse, health: &TurnHealthDat
 fn root_for_event(event: &LensHookEvent) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let cwd = PathBuf::from(&event.cwd);
     Ok(project_root(&cwd).unwrap_or_else(|| canonical_or_self(&cwd)))
+}
+
+fn issue_report_fingerprint(health: &TurnHealthData) -> String {
+    let mut parts = health
+        .issues
+        .iter()
+        .map(|issue| issue.fingerprint.as_str())
+        .collect::<Vec<_>>();
+    parts.sort_unstable();
+    crate::apply_patch::sha1_hex(parts.join("\n").as_bytes())
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 fn project_root(cwd: &Path) -> Option<PathBuf> {
@@ -1230,6 +1350,9 @@ fn base_response(
             inject: false,
             content: String::new(),
             state: None,
+            severity: None,
+            fingerprint: None,
+            requires_followup: false,
         },
         diagnostics: LensHookDiagnosticsSummary::default(),
         health: LensHookHealthStatus::default(),
@@ -1308,6 +1431,15 @@ fn checks_ran(checks: Option<&LensChecksData>) -> bool {
     checks.is_some_and(|checks| !checks.runs.is_empty())
 }
 
+fn checks_need_attention(checks: Option<&LensChecksData>) -> bool {
+    checks.is_some_and(|checks| {
+        checks
+            .runs
+            .iter()
+            .any(|run| run.status != "passed" || run.diagnostic_count > 0 || run.message.is_some())
+    })
+}
+
 fn turn_health_status_str(status: &TurnHealthStatus) -> &'static str {
     match status {
         TurnHealthStatus::Clean => "clean",
@@ -1362,6 +1494,79 @@ mod tests {
         assert_eq!(event.known_files[0].operation, "read");
         assert_eq!(event.known_files[0].start_line, Some(3));
         assert_eq!(event.known_files[0].end_line, Some(6));
+    }
+
+    #[test]
+    fn native_codex_apply_patch_input_records_patch_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = json!({
+            "session_id": "session-1",
+            "cwd": temp.path().display().to_string(),
+            "hook_event_name": "PostToolUse",
+            "tool_name": "apply_patch",
+            "tool_input": "*** Begin Patch\n*** Update File: probe.ts\n@@\n+const broken: = ;\n*** End Patch\n",
+            "tool_response": {
+                "stdout": "Success. Updated the following files:\nM probe.ts\n"
+            }
+        });
+
+        let event =
+            parse_event(LensLifecycleHook::PostTool, &input.to_string(), temp.path()).unwrap();
+
+        assert_eq!(event.known_files.len(), 1);
+        assert_eq!(event.known_files[0].path, "probe.ts");
+        assert_eq!(event.known_files[0].operation, "edit");
+    }
+
+    #[test]
+    fn native_codex_apply_patch_command_field_records_patch_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = json!({
+            "session_id": "session-1",
+            "cwd": temp.path().display().to_string(),
+            "hook_event_name": "PostToolUse",
+            "tool_name": "apply_patch",
+            "tool_input": {
+                "cmd": "*** Begin Patch\n*** Update File: probe.ts\n@@\n+const broken: = ;\n*** End Patch\n"
+            },
+            "tool_response": {
+                "output": "Success. Updated the following files:\nM probe.ts\n"
+            }
+        });
+
+        let event =
+            parse_event(LensLifecycleHook::PostTool, &input.to_string(), temp.path()).unwrap();
+
+        assert_eq!(event.known_files.len(), 1);
+        assert_eq!(event.known_files[0].path, "probe.ts");
+        assert_eq!(event.known_files[0].operation, "edit");
+    }
+
+    #[test]
+    fn native_codex_apply_patch_output_records_change_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = json!({
+            "session_id": "session-1",
+            "cwd": temp.path().display().to_string(),
+            "hook_event_name": "PostToolUse",
+            "tool_name": "apply_patch",
+            "tool_input": {},
+            "tool_response": {
+                "changes": {
+                    "/tmp/repo/probe.ts": {
+                        "type": "update",
+                        "unified_diff": "@@ -1 +1,2 @@\n export const ok = 1;\n+const broken: = ;\n"
+                    }
+                }
+            }
+        });
+
+        let event =
+            parse_event(LensLifecycleHook::PostTool, &input.to_string(), temp.path()).unwrap();
+
+        assert_eq!(event.known_files.len(), 1);
+        assert_eq!(event.known_files[0].path, "/tmp/repo/probe.ts");
+        assert_eq!(event.known_files[0].operation, "edit");
     }
 
     #[test]
@@ -1591,5 +1796,56 @@ mod tests {
         );
         assert_eq!(response.health.status, "errors");
         assert!(response.context.content.contains("fixture failed"));
+        assert!(response.context.requires_followup);
+        assert_eq!(response.context.severity.as_deref(), Some("errors"));
+        assert!(response.context.fingerprint.is_some());
+        assert_eq!(
+            response.data.as_ref().unwrap()["report"]["requires_followup"],
+            true
+        );
+        assert!(
+            response.data.as_ref().unwrap()["report"]["fingerprint"]
+                .as_str()
+                .is_some_and(|fingerprint| !fingerprint.is_empty())
+        );
+    }
+
+    #[test]
+    fn turn_end_stays_clean_when_configured_checks_pass() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("main.rs"), "fn main() {}\n").unwrap();
+        std::fs::create_dir_all(temp.path().join(".ct")).unwrap();
+        std::fs::write(temp.path().join("check.sh"), "#!/bin/sh\necho ok\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let script = temp.path().join("check.sh");
+            let mut perms = std::fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(script, perms).unwrap();
+        }
+        std::fs::write(
+            temp.path().join(".ct/lens.json"),
+            r#"{"checks":{"fixture":{"command":"./check.sh","automatic":true}}}"#,
+        )
+        .unwrap();
+        let input = json!({
+            "schema_version": LENS_HOOK_EVENT_SCHEMA_VERSION,
+            "host": {"name": "pi", "kind": "extension"},
+            "session": {"id": "s"},
+            "cwd": temp.path().display().to_string(),
+            "turn": {"id": "t"},
+            "event": "turn_end",
+            "tool": {"name": "agent", "status": "success"},
+            "known_files": [{"path": "main.rs", "operation": "modify"}],
+            "policy": {}
+        });
+
+        let response =
+            handle_lifecycle_hook(LensLifecycleHook::TurnEnd, &input.to_string(), temp.path());
+
+        assert_eq!(response.status, LensResponseStatus::Ok);
+        assert_eq!(response.health.status, "clean");
+        assert!(!response.context.inject);
     }
 }

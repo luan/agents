@@ -188,7 +188,7 @@ fn apply_built_in_defaults(root: &Path, policy: &mut LensPolicy) {
         policy.checks.insert(
             "biome-check".to_string(),
             LensCheckConfig {
-                command: "biome ci .".to_string(),
+                command: "bunx biome lint .".to_string(),
                 scope: "workspace".to_string(),
                 automatic: true,
                 timeout_ms: default_check_timeout_ms(),
@@ -410,7 +410,7 @@ mod tests {
         );
 
         let biome = with.policy.checks.get("biome-check").unwrap();
-        assert_eq!(biome.command, "biome ci .");
+        assert_eq!(biome.command, "bunx biome lint .");
         assert!(biome.automatic);
     }
 

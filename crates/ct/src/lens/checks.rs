@@ -916,7 +916,7 @@ mod tests {
             .iter()
             .find(|check| check.name == "biome-check")
             .unwrap();
-        assert_eq!(biome.command, "biome ci .");
+        assert_eq!(biome.command, "bunx biome lint .");
         assert!(biome.automatic);
     }
 

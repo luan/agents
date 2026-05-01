@@ -1,5 +1,5 @@
 {
-  "lastChangelogVersion": "0.70.6",
+  "lastChangelogVersion": "0.71.0",
   "steeringMode": "all",
   "autoUpdate": true,
   "transport": "auto",
@@ -19,7 +19,7 @@
   "extensions": [
     "-extensions/team-mode/index.ts",
     "-extensions/pi-web-access/index.ts",
-    "-extensions/lens/index.ts"
+    "extensions/lens/index.ts"
   ],
   "enabledModels": [
     "openai-codex/gpt-5.5",

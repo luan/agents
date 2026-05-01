@@ -3,7 +3,8 @@ import type { Plugin } from "@opencode-ai/plugin";
 
 export const id = "agents-lens";
 
-export const server: Plugin = async ({ directory }) => {
+export const server: Plugin = async ({ client, directory }) => {
+  const queuedReports = new Set<string>();
   const hook = (name: string, payload: any) =>
     runLensHook(name, payload, directory);
 
@@ -21,10 +22,11 @@ export const server: Plugin = async ({ directory }) => {
       if (event.type === "session.idle") {
         const sessionID = event.properties?.sessionID;
         if (sessionID) {
-          await hook(
+          const response = await hook(
             "lens-turn-end",
             basePayload(directory, sessionID, "Stop"),
           );
+          await queueFollowup(client, directory, sessionID, response, queuedReports);
           await hook(
             "lens-agent-end",
             basePayload(directory, sessionID, "Stop"),
@@ -68,14 +70,57 @@ function basePayload(cwd: string, sessionID: string, hookEventName: string) {
 }
 
 async function runLensHook(name: string, payload: any, cwd: string) {
-  await new Promise((resolve) => {
+  const stdout = await new Promise<string>((resolve) => {
+    let output = "";
     const child = spawn("ct", ["hook", name], {
       cwd,
       env: { ...process.env, CT_LENS_HOST: "opencode" },
-      stdio: ["pipe", "ignore", "ignore"],
+      stdio: ["pipe", "pipe", "ignore"],
     });
-    child.on("error", resolve);
-    child.on("close", resolve);
+    child.stdout.on("data", (chunk) => {
+      output += chunk.toString();
+    });
+    child.on("error", () => resolve(""));
+    child.on("close", () => resolve(output));
     child.stdin.end(JSON.stringify(payload));
+  });
+  try {
+    return JSON.parse(stdout);
+  } catch {
+    return undefined;
+  }
+}
+
+async function queueFollowup(
+  client: any,
+  directory: string,
+  sessionID: string,
+  response: any,
+  queuedReports: Set<string>,
+) {
+  const context = response?.context;
+  if (context?.requires_followup !== true || context?.inject !== true) return;
+  const content = typeof context.content === "string" ? context.content.trim() : "";
+  if (!content) return;
+  const fingerprint = typeof context.fingerprint === "string" ? context.fingerprint : content;
+  if (queuedReports.has(fingerprint)) return;
+  queuedReports.add(fingerprint);
+  await client.session.promptAsync({
+    path: { id: sessionID },
+    query: { directory },
+    body: {
+      parts: [
+        {
+          type: "text",
+          text: content,
+          synthetic: true,
+          metadata: {
+            source: "lens",
+            fingerprint,
+            severity: context.severity,
+          },
+        },
+      ],
+    },
   });
 }

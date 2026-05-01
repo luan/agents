@@ -133,13 +133,16 @@ fn diagnostics(action: LensDiagnosticsAction) -> Result<(), Box<dyn std::error::
             if json {
                 print_json(&LensEnvelope::ok(data))?;
             } else {
-                println!("{} diagnostics recorded", data.diagnostic_count);
+                println!("{} diagnostics", data.diagnostic_count);
                 println!(
                     "deltas: {} new, {} resolved, {} unchanged",
                     data.deltas.new.len(),
                     data.deltas.resolved.len(),
                     data.deltas.unchanged.len()
                 );
+                for diagnostic in &data.diagnostics {
+                    println!("{}", format_diagnostic(diagnostic));
+                }
             }
         }
         LensDiagnosticsAction::Record {
@@ -313,4 +316,41 @@ fn health(
 fn print_json<T: Serialize>(value: &T) -> Result<(), Box<dyn std::error::Error>> {
     println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
+}
+
+fn format_diagnostic(diagnostic: &Diagnostic) -> String {
+    let severity = match diagnostic.severity {
+        DiagnosticSeverity::Error => "error",
+        DiagnosticSeverity::Warning => "warning",
+        DiagnosticSeverity::Info => "info",
+        DiagnosticSeverity::Hint => "hint",
+    };
+    let source = match &diagnostic.source {
+        DiagnosticSource::Lsp => "lsp".to_string(),
+        DiagnosticSource::AstGrep => "ast_grep".to_string(),
+        DiagnosticSource::TreeSitter => "tree_sitter".to_string(),
+        DiagnosticSource::Secrets => "secrets".to_string(),
+        DiagnosticSource::Security => "security".to_string(),
+        DiagnosticSource::Formatter => "formatter".to_string(),
+        DiagnosticSource::Autofix => "autofix".to_string(),
+        DiagnosticSource::Test => "test".to_string(),
+        DiagnosticSource::Other(value) => value.clone(),
+    };
+    let location = diagnostic
+        .rel_path
+        .as_ref()
+        .map(|path| match diagnostic.start_line {
+            Some(line) => format!("{path}:{line}"),
+            None => path.clone(),
+        })
+        .unwrap_or_else(|| format!("{}:{}", diagnostic.scope.kind, diagnostic.scope.key));
+    let code = diagnostic
+        .code
+        .as_ref()
+        .map(|code| format!(" [{code}]"))
+        .unwrap_or_default();
+    format!(
+        "- {severity} {source}{code} {location}: {}",
+        diagnostic.message
+    )
 }

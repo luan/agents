@@ -289,11 +289,20 @@ fn session_diagnostics(
     store: &LensStore,
     changed_paths: &BTreeSet<String>,
 ) -> Result<Vec<Diagnostic>, Box<dyn std::error::Error>> {
-    let mut diagnostics = Vec::new();
-    for path in changed_paths {
-        diagnostics.extend(store.list_diagnostics(Some(path))?);
+    if changed_paths.is_empty() {
+        return Ok(Vec::new());
     }
-    Ok(diagnostics)
+    Ok(store
+        .list_diagnostics(None)?
+        .into_iter()
+        .filter(|diagnostic| {
+            diagnostic.rel_path.is_none()
+                || diagnostic
+                    .rel_path
+                    .as_ref()
+                    .is_some_and(|path| changed_paths.contains(path))
+        })
+        .collect())
 }
 
 fn session_deltas(
@@ -301,10 +310,23 @@ fn session_deltas(
     changed_paths: &BTreeSet<String>,
 ) -> Result<DiagnosticDeltaSet, Box<dyn std::error::Error>> {
     let mut deltas = store.list_diagnostics_data(None, true)?.deltas;
-    retain_deltas_for_paths(&mut deltas.new, changed_paths);
+    retain_deltas_for_paths_or_workspace(&mut deltas.new, changed_paths);
     retain_deltas_for_paths(&mut deltas.resolved, changed_paths);
     retain_deltas_for_paths(&mut deltas.unchanged, changed_paths);
     Ok(deltas)
+}
+
+fn retain_deltas_for_paths_or_workspace(
+    diagnostics: &mut Vec<Diagnostic>,
+    changed_paths: &BTreeSet<String>,
+) {
+    diagnostics.retain(|diagnostic| {
+        diagnostic.rel_path.is_none()
+            || diagnostic
+                .rel_path
+                .as_ref()
+                .is_some_and(|path| changed_paths.contains(path))
+    });
 }
 
 fn retain_deltas_for_paths(diagnostics: &mut Vec<Diagnostic>, changed_paths: &BTreeSet<String>) {
@@ -362,9 +384,12 @@ fn diagnostic_issues(diagnostics: &[Diagnostic]) -> Vec<SessionDiagnosticIssue> 
                 DiagnosticSeverity::Error | DiagnosticSeverity::Warning
             )
         })
-        .filter_map(|diagnostic| {
-            let path = diagnostic.rel_path.clone()?;
-            Some(SessionDiagnosticIssue {
+        .map(|diagnostic| {
+            let path = diagnostic
+                .rel_path
+                .clone()
+                .unwrap_or_else(|| format!("{}:{}", diagnostic.scope.kind, diagnostic.scope.key));
+            SessionDiagnosticIssue {
                 source: diagnostic_source_name(&diagnostic.source),
                 severity: diagnostic.severity.clone(),
                 path: path.clone(),
@@ -373,7 +398,7 @@ fn diagnostic_issues(diagnostics: &[Diagnostic]) -> Vec<SessionDiagnosticIssue> 
                 code: diagnostic.code.clone(),
                 fingerprint: diagnostic.fingerprint.clone(),
                 fix_instruction: fix_instruction(diagnostic, &path),
-            })
+            }
         })
         .collect()
 }
@@ -414,9 +439,8 @@ fn session_issue_report_lines(data: &TurnHealthData) -> Vec<String> {
             lines.push(format!("  fix: {fix}"));
         }
     }
-    lines.push(
-        "Fix the listed files or inspect with `ct lens diagnostics list --all --json`.".to_string(),
-    );
+    lines
+        .push("Fix the listed files or inspect with `ct lens diagnostics list --all`.".to_string());
     lines
 }
 
