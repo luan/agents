@@ -1,4 +1,4 @@
-import type { AskState, ViewState } from "../types.ts";
+import type { AskState, ViewState } from "../types";
 
 export function navigateView(): ViewState {
 	return { kind: "navigate" };

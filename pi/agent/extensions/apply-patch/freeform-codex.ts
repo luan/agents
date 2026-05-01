@@ -929,7 +929,10 @@ async function processWebSocketStream(
 		onStart();
 		stream.push({ type: "start", partial: output });
 		await processResponsesStream(
-			mapFreeformEvents(captureNativeActivities(mapCodexEvents(parseWebSocket(socket, options?.signal)), activityOptions), applyPatch.toolName) as AsyncIterable<never>,
+			mapFreeformEvents(
+				captureNativeActivities(mapCodexEvents(parseWebSocket(socket, options?.signal)), activityOptions),
+				applyPatch.toolName,
+			) as AsyncIterable<never>,
 			output,
 			stream,
 			model,
@@ -937,9 +940,11 @@ async function processWebSocketStream(
 		if (options?.signal?.aborted) {
 			keepConnection = false;
 		} else if (useCachedContext && entry && output.responseId) {
-			const responseItems = convertFreeformResponsesMessages(model, { messages: [output] } as any, applyPatch.toolName).filter(
-				(item: any) => item.type !== "function_call_output" && item.type !== "custom_tool_call_output",
-			);
+			const responseItems = convertFreeformResponsesMessages(
+				model,
+				{ messages: [output] } as any,
+				applyPatch.toolName,
+			).filter((item: any) => item.type !== "function_call_output" && item.type !== "custom_tool_call_output");
 			entry.continuation = {
 				lastRequestBody: fullBody,
 				lastResponseId: output.responseId,

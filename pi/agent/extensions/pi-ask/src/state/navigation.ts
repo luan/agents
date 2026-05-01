@@ -1,7 +1,7 @@
-import { clamp } from "../math.ts";
-import type { AskState } from "../types.ts";
-import { getCurrentQuestion, getRenderableOptions, isSubmitTab } from "./selectors.ts";
-import { isEditingView, navigateView, submitView } from "./view.ts";
+import { clamp } from "../math";
+import type { AskState } from "../types";
+import { getCurrentQuestion, getRenderableOptions, isSubmitTab } from "./selectors";
+import { isEditingView, navigateView, submitView } from "./view";
 
 const SUBMIT_ACTION_COUNT = 3;
 

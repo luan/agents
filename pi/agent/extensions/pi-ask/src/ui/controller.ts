@@ -1,9 +1,9 @@
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Editor, type EditorTheme } from "@mariozechner/pi-tui";
-import { createInitialState } from "../state/create.ts";
-import { getEditorDraft, saveEditorDraft, submitEditorDraft, syncStateToSelection } from "../state/editor.ts";
-import { toAskResult } from "../state/result.ts";
-import { getCurrentOption, getCurrentQuestion, isSubmitTab } from "../state/selectors.ts";
+import { createInitialState } from "../state/create";
+import { getEditorDraft, saveEditorDraft, submitEditorDraft, syncStateToSelection } from "../state/editor";
+import { toAskResult } from "../state/result";
+import { getCurrentOption, getCurrentQuestion, isSubmitTab } from "../state/selectors";
 import {
 	applyNumberShortcut,
 	cancelFlow,
@@ -14,13 +14,13 @@ import {
 	moveOption,
 	moveTab,
 	toggleCurrentMultiOption,
-} from "../state/transitions.ts";
-import { isEditingView } from "../state/view.ts";
-import type { AskParams, AskResult, AskState } from "../types.ts";
-import { createAskAutocompleteProvider } from "./autocomplete.ts";
-import type { AskInputCommand } from "./input.ts";
-import { getInputCommand } from "./input.ts";
-import { renderAskScreen } from "./render.ts";
+} from "../state/transitions";
+import { isEditingView } from "../state/view";
+import type { AskParams, AskResult, AskState } from "../types";
+import { createAskAutocompleteProvider } from "./autocomplete";
+import type { AskInputCommand } from "./input";
+import { getInputCommand } from "./input";
+import { renderAskScreen } from "./render";
 
 type CustomCallback = Parameters<ExtensionContext["ui"]["custom"]>[0];
 type CustomCallbackArgs = CustomCallback extends (...args: infer T) => unknown ? T : never;

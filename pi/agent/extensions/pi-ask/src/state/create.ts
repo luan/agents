@@ -1,6 +1,6 @@
-import type { AskParams } from "../types.ts";
-import { normalizeQuestions } from "./normalize.ts";
-import { createInitialState as createBaseState } from "./transitions.ts";
+import type { AskParams } from "../types";
+import { normalizeQuestions } from "./normalize";
+import { createInitialState as createBaseState } from "./transitions";
 
 export function createInitialState(params: AskParams) {
 	return createBaseState({

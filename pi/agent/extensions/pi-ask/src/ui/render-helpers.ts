@@ -1,9 +1,9 @@
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
-import { NO_PREVIEW_TEXT } from "../constants.ts";
-import { clamp } from "../math.ts";
-import { wrapText } from "../text.ts";
-import { UI_DIMENSIONS, UI_TEXT } from "./constants.ts";
+import { NO_PREVIEW_TEXT } from "../constants";
+import { clamp } from "../math";
+import { wrapText } from "../text";
+import { UI_DIMENSIONS, UI_TEXT } from "./constants";
 
 type Theme = ExtensionContext["ui"]["theme"];
 type ThemeColor = "accent" | "muted" | "text" | "dim" | "success" | "warning" | "syntaxString";

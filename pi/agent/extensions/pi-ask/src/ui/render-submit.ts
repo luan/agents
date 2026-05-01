@@ -1,9 +1,9 @@
 import { truncateToWidth } from "@mariozechner/pi-tui";
-import type { AskState } from "../types.ts";
-import { UI_TEXT } from "./constants.ts";
-import { mergeColumns, pushSavedNote, pushWrappedText } from "./render-helpers.ts";
-import type { Theme } from "./render-types.ts";
-import { buildReviewScreenModel } from "./view-models/review.ts";
+import type { AskState } from "../types";
+import { UI_TEXT } from "./constants";
+import { mergeColumns, pushSavedNote, pushWrappedText } from "./render-helpers";
+import type { Theme } from "./render-types";
+import { buildReviewScreenModel } from "./view-models/review";
 
 export function renderSubmitScreen(lines: string[], state: AskState, theme: Theme, width: number) {
 	const model = buildReviewScreenModel(state, width);

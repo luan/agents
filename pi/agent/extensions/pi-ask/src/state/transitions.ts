@@ -1,4 +1,4 @@
-import type { AskAction, AskState } from "../types.ts";
+import type { AskAction, AskState } from "../types";
 import {
 	emptyAnswer,
 	isAnswerAnswered,
@@ -8,14 +8,14 @@ import {
 	saveQuestionNote,
 	setSingleSelection,
 	toggleSelection,
-} from "./answers.ts";
+} from "./answers";
 import {
 	cancelFlow as cancelFlowBase,
 	createInitialState as createInitialStateBase,
 	dismissFlow as dismissFlowBase,
 	moveOption as moveOptionBase,
 	moveTab as moveTabBase,
-} from "./navigation.ts";
+} from "./navigation";
 import {
 	getAnswer,
 	getCurrentOption,
@@ -23,8 +23,8 @@ import {
 	getQuestionById,
 	getRenderableOptions,
 	isSubmitTab,
-} from "./selectors.ts";
-import { inputView, navigateView, optionNoteView, questionNoteView, submitView } from "./view.ts";
+} from "./selectors";
+import { inputView, navigateView, optionNoteView, questionNoteView, submitView } from "./view";
 
 const SUBMIT_ACTION_COUNT = 3;
 

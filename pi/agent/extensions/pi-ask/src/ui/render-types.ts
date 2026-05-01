@@ -1,7 +1,7 @@
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { Editor } from "@mariozechner/pi-tui";
-import type { getAnswer, getCurrentQuestion, getRenderableOptions } from "../state/selectors.ts";
-import type { AskDisplayOption, AskState } from "../types.ts";
+import type { getAnswer, getCurrentQuestion, getRenderableOptions } from "../state/selectors";
+import type { AskDisplayOption, AskState } from "../types";
 
 export type Theme = ExtensionContext["ui"]["theme"];
 

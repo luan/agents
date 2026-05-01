@@ -1,11 +1,11 @@
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Text, truncateToWidth } from "@mariozechner/pi-tui";
-import { renderResultText } from "./result.ts";
-import { createInitialState } from "./state/create.ts";
-import { collectValidationIssues } from "./state/normalize.ts";
-import { summarizeResult, toAskResult } from "./state/result.ts";
-import type { AskParams, AskQuestionInput, AskResult, AskValidationIssue } from "./types.ts";
-import { UI_DIMENSIONS } from "./ui/constants.ts";
+import { renderResultText } from "./result";
+import { createInitialState } from "./state/create";
+import { collectValidationIssues } from "./state/normalize";
+import { summarizeResult, toAskResult } from "./state/result";
+import type { AskParams, AskQuestionInput, AskResult, AskValidationIssue } from "./types";
+import { UI_DIMENSIONS } from "./ui/constants";
 
 export const ASK_TOOL_DESCRIPTION =
 	"Interactive clarification tool for cases where the next step depends on user preferences, missing requirements, or choosing between multiple valid directions. Ask a short structured interview, collect normalized answers, and continue using those answers explicitly instead of guessing. Supports single-select, multi-select, and preview-pane questions. Always include a machine-readable `value` for every option. Use `preview` only when every option includes `preview` text; descriptions alone are not enough.";

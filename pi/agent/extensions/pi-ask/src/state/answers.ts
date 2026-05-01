@@ -1,4 +1,4 @@
-import type { AskDisplayOption, AskResultAnswer, AskSelectedOption, AskStateAnswer } from "../types.ts";
+import type { AskDisplayOption, AskResultAnswer, AskSelectedOption, AskStateAnswer } from "../types";
 
 export interface ExtraOptionNote {
 	label: string;

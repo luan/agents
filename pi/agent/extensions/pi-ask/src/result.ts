@@ -1,6 +1,6 @@
-import { CANCELLED_RESULT_TEXT, ELABORATED_RESULT_TEXT, SUBMITTED_RESULT_TEXT } from "./constants.ts";
-import { formatElaborationLines, formatResultLines } from "./result-format.ts";
-import type { AskResult } from "./types.ts";
+import { CANCELLED_RESULT_TEXT, ELABORATED_RESULT_TEXT, SUBMITTED_RESULT_TEXT } from "./constants";
+import { formatElaborationLines, formatResultLines } from "./result-format";
+import type { AskResult } from "./types";
 
 export function renderResultText(result: AskResult): string {
 	if (result.error) {

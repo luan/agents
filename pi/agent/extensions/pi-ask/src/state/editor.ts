@@ -1,4 +1,4 @@
-import type { AskState } from "../types.ts";
+import type { AskState } from "../types";
 import {
 	getAnswer,
 	getCurrentOption,
@@ -6,9 +6,9 @@ import {
 	getOptionNote,
 	getQuestionNote,
 	isSubmitTab,
-} from "./selectors.ts";
-import { enterInputMode, saveCustomAnswer, saveNote, submitCustomAnswer } from "./transitions.ts";
-import { isEditingView } from "./view.ts";
+} from "./selectors";
+import { enterInputMode, saveCustomAnswer, saveNote, submitCustomAnswer } from "./transitions";
+import { isEditingView } from "./view";
 
 export function getEditorDraft(state: AskState): string {
 	if (state.view.kind === "input") {

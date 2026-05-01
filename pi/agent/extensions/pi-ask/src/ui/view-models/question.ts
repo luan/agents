@@ -1,4 +1,4 @@
-import { isOptionSelected } from "../../state/answers.ts";
+import { isOptionSelected } from "../../state/answers";
 import {
 	getAnswer,
 	getOptionNote,
@@ -6,10 +6,10 @@ import {
 	isInputOpenForQuestion,
 	isOptionNoteOpen,
 	isQuestionNoteOpen,
-} from "../../state/selectors.ts";
-import type { AskDisplayOption } from "../../types.ts";
-import { UI_DIMENSIONS, UI_TEXT } from "../constants.ts";
-import type { QuestionRenderContext } from "../render-types.ts";
+} from "../../state/selectors";
+import type { AskDisplayOption } from "../../types";
+import { UI_DIMENSIONS, UI_TEXT } from "../constants";
+import type { QuestionRenderContext } from "../render-types";
 
 export type QuestionNoteModel = { kind: "editor"; placeholder: string } | { kind: "saved"; text: string };
 

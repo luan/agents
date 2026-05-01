@@ -1,5 +1,5 @@
 import { Key, matchesKey } from "@mariozechner/pi-tui";
-import type { AskState } from "../types.ts";
+import type { AskState } from "../types";
 
 const DIGIT_PATTERN = /^[1-9]$/;
 

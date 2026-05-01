@@ -1,9 +1,9 @@
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
-import { getCurrentQuestion, isQuestionAnswered, isSubmitTab } from "../state/selectors.ts";
-import { wrapText } from "../text.ts";
-import type { AskState } from "../types.ts";
-import { renderFooterText } from "./render-helpers.ts";
-import type { Theme } from "./render-types.ts";
+import { getCurrentQuestion, isQuestionAnswered, isSubmitTab } from "../state/selectors";
+import { wrapText } from "../text";
+import type { AskState } from "../types";
+import { renderFooterText } from "./render-helpers";
+import type { Theme } from "./render-types";
 
 export function renderFrameHeader(args: { lines: string[]; state: AskState; theme: Theme; width: number }) {
 	const { lines, state, theme, width } = args;
