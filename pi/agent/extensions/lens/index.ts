@@ -100,6 +100,54 @@ export async function runLensHookCommand(
 	}
 }
 
+export async function hasActiveLensDiagnostics(
+	cwd: string,
+	options: { signal?: AbortSignal; runner?: CommandRunner } = {},
+): Promise<boolean | undefined> {
+	try {
+		const result = await (options.runner ?? runCommand)(
+			"ct",
+			["lens", "diagnostics", "list", "--all", "--json"],
+			cwd,
+			{
+				signal: options.signal,
+				allowNonZero: true,
+			},
+		);
+		const parsed = JSON.parse(result.stdout);
+		const count =
+			typeof parsed?.data?.diagnostic_count === "number"
+				? parsed.data.diagnostic_count
+				: Array.isArray(parsed?.data?.diagnostics)
+					? parsed.data.diagnostics.length
+					: undefined;
+		return typeof count === "number" ? count > 0 : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+export async function suppressStaleLensDiagnosticMessage(
+	message: any,
+	cwd: string,
+	options: { signal?: AbortSignal; runner?: CommandRunner } = {},
+) {
+	if (message?.role !== "custom" || message.customType !== "lens-diagnostics") return undefined;
+	const active = await hasActiveLensDiagnostics(cwd, options);
+	if (active !== false) return undefined;
+	return {
+		message: {
+			...message,
+			content: "Lens diagnostics are clean; stale diagnostic report suppressed.",
+			display: false,
+			details: {
+				...(message.details ?? {}),
+				suppressedAsStale: true,
+			},
+		},
+	};
+}
+
 type CtHookCommandResult = {
 	stdout: string;
 	stderr: string;
@@ -278,10 +326,26 @@ export default function lensExtension(pi: ExtensionAPI) {
 		await ignoreStaleCtx(async () => {
 			activeTurnIndex = Number.isFinite(event.turnIndex) ? event.turnIndex : activeTurnIndex;
 			activeTurnId = `turn-${agentSeq}-${activeTurnIndex}`;
-			const response = await runHook("lens-turn-end", eventFor(ctx, "turn_end"), safeCwd(ctx), safeSignal(ctx));
+			let response = await runHook("lens-turn-end", eventFor(ctx, "turn_end"), safeCwd(ctx), safeSignal(ctx));
+			if (response?.context?.inject === true) {
+				const active = await hasActiveLensDiagnostics(safeCwd(ctx), { signal: safeSignal(ctx) });
+				if (active === false) {
+					response = {
+						...response,
+						status: "ok",
+						context: { ...response.context, inject: false, content: "" },
+					};
+				}
+			}
 			applyLensUi(ctx, response);
 			if (response?.context?.inject !== true) queueState.lastQueuedFingerprint = undefined;
 			queueLensContext(pi, ctx, response, queueState);
+		});
+	});
+
+	pi.on("message_end", async (event, ctx) => {
+		return ignoreStaleCtx(async () => {
+			return suppressStaleLensDiagnosticMessage(event.message, safeCwd(ctx), { signal: safeSignal(ctx) });
 		});
 	});
 
