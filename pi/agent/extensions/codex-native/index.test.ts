@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { normalizeCodexWebSocketError as normalizeCodexWebSocketErrorMessage } from "./index.ts";
+import { isCodexWebSocketError, normalizeCodexWebSocketError as normalizeCodexWebSocketErrorMessage } from "./index.ts";
 import {
 	getOpenAICodexLatestImagePath,
 	rewriteNativeImageGenerationTool,
@@ -100,4 +100,17 @@ test("normalizes generic Codex websocket failures for auto-retry", () => {
 			provider: "anthropic",
 		} as never),
 	).toBeUndefined();
+	expect(isCodexWebSocketError(base as never)).toBe(true);
+	expect(
+		isCodexWebSocketError({
+			...base,
+			errorMessage: "WebSocket connection error after 418s (0s since last event, 4868 events)",
+		} as never),
+	).toBe(true);
+	expect(
+		isCodexWebSocketError({
+			...base,
+			errorMessage: "rate limit",
+		} as never),
+	).toBe(false);
 });
