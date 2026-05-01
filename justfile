@@ -77,7 +77,6 @@ install:
     claude mcp remove -s user sym 2>/dev/null || true
     claude mcp remove -s user lens 2>/dev/null || true
     claude mcp add -s user fff -- $HOME/.local/bin/fff-mcp
-    claude mcp add -s user lens ct mcp lens
 
 completions:
     mkdir -p "{{ home }}/.config/fish/completions"

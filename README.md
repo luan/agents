@@ -27,11 +27,10 @@ Shared configuration is the default. Tool-specific folders (`claude/`, `codex/`,
 `ct` is the primary tool installed from `crates/ct/`. It provides:
 
 - `ct source` — read-only source search, navigation, graph, and scoped diff
-- `ct lens` — edit-safety state, diagnostics, cleanup, and turn health
+- `ct lens` — hook-driven diagnostics, session health, and local inspection commands
 - `ct vault` — blueprint artifact management (create, read, list, archive, commit)
 - `ct repo` — repository identity, branch context, references, cochanges, and churn
 - `ct apply-patch` — raw patch apply plus apply_patch telemetry and drafts
-- `ct mcp lens` — default MCP server; vault/source are CLI-only via `ct vault` and `ct source`
 - `ct hook` — run harness hooks, including notifications and Lens lifecycle hooks
 - `ct shell completion` — shell completions
 - `ct tui usage-bar` — terminal UI helpers

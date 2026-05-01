@@ -5,6 +5,7 @@ import {
 	filesFromTool,
 	filesFromToolAndResult,
 	default as lensExtension,
+	queueLensContext,
 	runLensHookCommand,
 } from "./index.ts";
 
@@ -206,5 +207,75 @@ describe("Lens hook-only Pi extension", () => {
 		expect(status.lens).toContain("warnings");
 		expect(status.lens).toContain("lsp 0 err/1 warn");
 		expect(widgets["lens-health"]?.[0]).toContain("warnings");
+	});
+
+	it("queues injected turn-end reports as follow-up custom messages", () => {
+		const sent: any[] = [];
+		const queued = queueLensContext(
+			{
+				sendMessage: (message: unknown, options: unknown) => {
+					sent.push({ message, options });
+				},
+			},
+			{ isIdle: () => false },
+			{
+				context: {
+					inject: true,
+					content: "Lens session diagnostics: fix this",
+					fingerprint: "abc123",
+					severity: "errors",
+					requires_followup: true,
+				},
+			},
+		);
+
+		expect(queued).toBe(true);
+		expect(sent).toEqual([
+			{
+				message: {
+					customType: "lens-diagnostics",
+					content: [{ type: "text", text: "Lens session diagnostics: fix this" }],
+					display: true,
+					details: {
+						fingerprint: "abc123",
+						severity: "errors",
+						requiresFollowup: true,
+					},
+				},
+				options: { deliverAs: "followUp", triggerTurn: true },
+			},
+		]);
+	});
+
+	it("does not queue messages for non-injected hook responses", () => {
+		const sent: any[] = [];
+		const queued = queueLensContext(
+			{
+				sendMessage: (message: unknown, options: unknown) => {
+					sent.push({ message, options });
+				},
+			},
+			{ isIdle: () => false },
+			{ context: { inject: false, content: "clean" } },
+		);
+
+		expect(queued).toBe(false);
+		expect(sent).toEqual([]);
+	});
+
+	it("does not queue the same injected report repeatedly", () => {
+		const sent: any[] = [];
+		const state = {};
+		const pi = {
+			sendMessage: (message: unknown, options: unknown) => {
+				sent.push({ message, options });
+			},
+		};
+		const ctx = { isIdle: () => false };
+		const response = { context: { inject: true, content: "Lens session diagnostics: same issue" } };
+
+		expect(queueLensContext(pi, ctx, response, state)).toBe(true);
+		expect(queueLensContext(pi, ctx, response, state)).toBe(false);
+		expect(sent).toHaveLength(1);
 	});
 });

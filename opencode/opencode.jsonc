@@ -22,11 +22,6 @@
 			"command": ["bunx", "-y", "@upstash/context7-mcp"],
 			"environment": {}
 		},
-		"lens": {
-			"type": "local",
-			"command": ["ct", "mcp", "lens"],
-			"environment": {}
-		},
 		"fff": {
 			"type": "local",
 			"command": ["fff-mcp"],
