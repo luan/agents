@@ -1,9 +1,9 @@
-import { getCurrentQuestion, getRenderableOptions, isSubmitTab } from "../state/selectors.ts";
-import type { AskState } from "../types.ts";
-import { renderFrameFooter, renderFrameHeader } from "./render-frame.ts";
-import { renderQuestionScreen } from "./render-question.ts";
-import { renderSubmitScreen } from "./render-submit.ts";
-import type { QuestionRenderContext, Theme } from "./render-types.ts";
+import { getCurrentQuestion, getRenderableOptions, isSubmitTab } from "../state/selectors";
+import type { AskState } from "../types";
+import { renderFrameFooter, renderFrameHeader } from "./render-frame";
+import { renderQuestionScreen } from "./render-question";
+import { renderSubmitScreen } from "./render-submit";
+import type { QuestionRenderContext, Theme } from "./render-types";
 
 export function renderAskScreen(args: {
 	state: AskState;

@@ -1,6 +1,6 @@
-import { ELABORATED_SUMMARY } from "./constants.ts";
-import { isCustomOnlyAnswer } from "./state/answers.ts";
-import type { AskResult } from "./types.ts";
+import { ELABORATED_SUMMARY } from "./constants";
+import { isCustomOnlyAnswer } from "./state/answers";
+import type { AskResult } from "./types";
 
 export function formatResultLines(result: AskResult, options: { mode: "summary" | "render" }): string[] {
 	const lines: string[] = [];

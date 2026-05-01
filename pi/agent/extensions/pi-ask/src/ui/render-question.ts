@@ -1,5 +1,5 @@
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
-import { UI_DIMENSIONS } from "./constants.ts";
+import { UI_DIMENSIONS } from "./constants";
 import {
 	measurePreviewLeftWidth,
 	mergeColumns,
@@ -7,9 +7,9 @@ import {
 	pushWrappedText,
 	renderEditorBlock,
 	renderPreviewPaneContent,
-} from "./render-helpers.ts";
-import type { QuestionRenderContext, Theme } from "./render-types.ts";
-import { buildQuestionScreenModel, type OptionDetailModel, type OptionRowModel } from "./view-models/question.ts";
+} from "./render-helpers";
+import type { QuestionRenderContext, Theme } from "./render-types";
+import { buildQuestionScreenModel, type OptionDetailModel, type OptionRowModel } from "./view-models/question";
 
 export function renderQuestionScreen(context: QuestionRenderContext) {
 	const { lines, question, theme, width } = context;

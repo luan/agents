@@ -8,10 +8,10 @@ import {
 	renderAskToolResult,
 	successfulResponse,
 	validateParams,
-} from "./ask-tool-helpers.ts";
-import { AskParamsSchema } from "./schema.ts";
-import type { AskParams } from "./types.ts";
-import { runAskFlow } from "./ui/controller.ts";
+} from "./ask-tool-helpers";
+import { AskParamsSchema } from "./schema";
+import type { AskParams } from "./types";
+import { runAskFlow } from "./ui/controller";
 
 export function registerAskTool(pi: ExtensionAPI) {
 	pi.registerTool({

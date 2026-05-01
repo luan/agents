@@ -1,4 +1,4 @@
-import type { AskOption, AskParams, AskQuestion, AskQuestionInput, AskValidationIssue } from "../types.ts";
+import type { AskOption, AskParams, AskQuestion, AskQuestionInput, AskValidationIssue } from "../types";
 
 interface IssueCollector {
 	add: (path: string, message: string) => void;

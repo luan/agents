@@ -2,10 +2,11 @@ import type { AssistantMessage } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { runCommand } from "../shared/ct-runner";
 import { ensureConfigExists, loadConfig, type PolishedTuiConfig } from "./config";
+import { installEditorComposition } from "./editor";
 import { emptyFooterState, type FooterRenderState, renderFooter } from "./footer";
 import { readGitStatus } from "./git";
 import { readRuntimeInfo } from "./runtime";
-import { installEditorComposition, patchUserMessageComponent } from "./ui";
+import { patchUserMessageComponent } from "./transcript";
 import { detectUsageProvider, fetchUsageForProvider, USAGE_REFRESH_INTERVAL, type UsageSnapshot } from "./usage";
 
 type UsageTotals = { input: number; output: number; cost: number };

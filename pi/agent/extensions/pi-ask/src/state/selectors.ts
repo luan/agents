@@ -1,6 +1,6 @@
-import { OTHER_OPTION_LABEL, OTHER_OPTION_VALUE } from "../constants.ts";
-import type { AskDisplayOption, AskQuestion, AskState, AskStateAnswer } from "../types.ts";
-import { isAnswerAnswered } from "./answers.ts";
+import { OTHER_OPTION_LABEL, OTHER_OPTION_VALUE } from "../constants";
+import type { AskDisplayOption, AskQuestion, AskState, AskStateAnswer } from "../types";
+import { isAnswerAnswered } from "./answers";
 
 const CUSTOM_OPTION: AskDisplayOption = {
 	value: OTHER_OPTION_VALUE,

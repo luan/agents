@@ -1,5 +1,5 @@
-import { CANCELLED_SUMMARY, ELABORATED_SUMMARY, ELABORATION_INSTRUCTION, SUBMITTED_SUMMARY } from "../constants.ts";
-import { formatElaborationLines, formatResultLines } from "../result-format.ts";
+import { CANCELLED_SUMMARY, ELABORATED_SUMMARY, ELABORATION_INSTRUCTION, SUBMITTED_SUMMARY } from "../constants";
+import { formatElaborationLines, formatResultLines } from "../result-format";
 import type {
 	AskContinuationPayload,
 	AskElaborationPayload,
@@ -7,7 +7,7 @@ import type {
 	AskResultAnswer,
 	AskState,
 	AskStateAnswer,
-} from "../types.ts";
+} from "../types";
 import {
 	cloneResultAnswer,
 	getExtraOptionNotes,
@@ -18,8 +18,8 @@ import {
 	isResultAnswerCommitted,
 	isResultAnswerEmpty,
 	serializeAnswer,
-} from "./answers.ts";
-import { getQuestionOptionByValue } from "./selectors.ts";
+} from "./answers";
+import { getQuestionOptionByValue } from "./selectors";
 
 export type ReviewAnswer = AskResult["answers"][string] & {
 	extraOptionNotes?: Array<{
