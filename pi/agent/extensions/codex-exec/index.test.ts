@@ -182,6 +182,39 @@ test("extension marks nonzero exec results as errors for red status dots", () =>
 	for (const handler of handlers.get("session_shutdown") ?? []) handler();
 });
 
+test("extension truncates oversized non-exec tool results before session history", () => {
+	type Handler = (event?: any) => any;
+	const handlers = new Map<string, Handler[]>();
+	const pi = {
+		registerTool() {},
+		getActiveTools: () => [],
+		setActiveTools() {},
+		on: (event: string, handler: Handler) => {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+		},
+	} as any;
+	codexExecExtension(pi);
+
+	const toolResultHandlers = handlers.get("tool_result") ?? [];
+	const output = `${"head\n"}${"x".repeat(200000)}${"\ntail"}`;
+	const results = toolResultHandlers.map((handler) =>
+		handler({
+			toolName: "read",
+			content: [{ type: "text", text: output }],
+			details: undefined,
+			isError: false,
+		}),
+	);
+
+	const patch = results.find((result) => result?.content);
+	const text = patch.content[0].text;
+	expect(text).toStartWith("Total output lines: 3\n\nhead\n");
+	expect(text).toContain("tokens truncated");
+	expect(text).toContain("\ntail");
+	expect(text.length).toBeLessThan(41_000);
+	for (const handler of handlers.get("session_shutdown") ?? []) handler();
+});
+
 test("exec session manager runs short non-interactive commands", async () => {
 	const sessions = createExecSessionManager({ defaultExecYieldTimeMs: 5000 });
 	try {
@@ -189,6 +222,41 @@ test("exec session manager runs short non-interactive commands", async () => {
 		expect(result.output).toBe("codex-exec");
 		expect(result.exit_code).toBe(0);
 		expect(result.session_id).toBeUndefined();
+	} finally {
+		sessions.shutdown();
+	}
+});
+
+test("exec session manager uses Codex-style middle truncation", async () => {
+	const sessions = createExecSessionManager({ defaultExecYieldTimeMs: 5000 });
+	try {
+		const result = await sessions.exec(
+			{ cmd: "node -e \"process.stdout.write('x'.repeat(200000))\"", yield_time_ms: 5000 },
+			process.cwd(),
+		);
+		expect(result.output_truncated).toBe(true);
+		expect(result.output).toStartWith("Total output lines: 1\n\n");
+		expect(result.output).toContain("tokens truncated");
+		expect(result.output.length).toBeLessThan(41_000);
+		expect(result.original_token_count).toBe(50000);
+		expect("full_output_path" in result).toBe(false);
+	} finally {
+		sessions.shutdown();
+	}
+});
+
+test("exec session manager keeps head and tail when truncating many output lines", async () => {
+	const sessions = createExecSessionManager({ defaultExecYieldTimeMs: 5000 });
+	try {
+		const result = await sessions.exec(
+			{ cmd: "node -e \"for (let i = 0; i < 12000; i++) console.log('line ' + i)\"", yield_time_ms: 5000 },
+			process.cwd(),
+		);
+		expect(result.output_truncated).toBe(true);
+		expect(result.output).toContain("Total output lines: 12000");
+		expect(result.output).toContain("line 0\n");
+		expect(result.output).toContain("line 11999");
+		expect(result.output).not.toContain("line 6000\n");
 	} finally {
 		sessions.shutdown();
 	}
@@ -208,11 +276,17 @@ test("exec session manager preserves ANSI SGR color output", async () => {
 	}
 });
 
-test("exec session manager enables color output for non-tty commands", async () => {
+test("exec session manager uses Codex-style non-color environment", async () => {
 	const sessions = createExecSessionManager({ defaultExecYieldTimeMs: 5000 });
 	try {
-		const result = await sessions.exec({ cmd: 'printf %s "$FORCE_COLOR"', yield_time_ms: 5000 }, process.cwd());
-		expect(result.output).toBe("1");
+		const result = await sessions.exec(
+			{
+				cmd: '[ -z "$FORCE_COLOR" ] && fc=unset || fc="$FORCE_COLOR"; printf "%s|%s|%s" "$NO_COLOR" "$TERM" "$fc"',
+				yield_time_ms: 5000,
+			},
+			process.cwd(),
+		);
+		expect(result.output).toBe("1|dumb|unset");
 		expect(result.exit_code).toBe(0);
 	} finally {
 		sessions.shutdown();
