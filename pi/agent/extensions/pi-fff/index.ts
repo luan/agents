@@ -561,7 +561,10 @@ export default function fffExtension(pi: ExtensionAPI) {
 	let activeCwd = process.cwd();
 
 	// Mode resolution: flag > env > default
-	let currentMode: FffMode = (pi.getFlag("fff-mode") as FffMode) ?? (process.env.PI_FFF_MODE as FffMode) ?? "override";
+	let currentMode =
+		(pi.getFlag("fff-mode") as FffMode | undefined) ??
+		(process.env.PI_FFF_MODE as FffMode | undefined) ??
+		"tools-and-ui";
 
 	const toolNames = resolveToolNames(currentMode);
 	registerExplorationTool(toolNames.grep, (args) => {
@@ -609,14 +612,7 @@ export default function fffExtension(pi: ExtensionAPI) {
 		return currentMode !== "tools-only";
 	}
 
-	async function ensureFinder(cwd: string): Promise<FileFinder> {
-		if (finder && !finder.isDestroyed && finderCwd === cwd) return finder;
-		if (finder && !finder.isDestroyed) {
-			finder.destroy();
-			finder = null;
-			finderCwd = null;
-		}
-
+	async function createFinder(cwd: string): Promise<FileFinder> {
 		const { FileFinder } = await loadFffNodeModule();
 		const result = FileFinder.create({
 			basePath: cwd,
@@ -627,9 +623,21 @@ export default function fffExtension(pi: ExtensionAPI) {
 
 		if (!result.ok) throw new Error(`Failed to create FFF file finder: ${result.error}`);
 
-		finder = result.value;
+		const nextFinder = result.value;
+		await nextFinder.waitForScan(15000);
+		return nextFinder;
+	}
+
+	async function ensureFinder(cwd: string): Promise<FileFinder> {
+		if (finder && !finder.isDestroyed && finderCwd === cwd) return finder;
+		if (finder && !finder.isDestroyed) {
+			finder.destroy();
+			finder = null;
+			finderCwd = null;
+		}
+
+		finder = await createFinder(cwd);
 		finderCwd = cwd;
-		await finder.waitForScan(15000);
 		return finder;
 	}
 
@@ -699,7 +707,6 @@ export default function fffExtension(pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		try {
 			activeCwd = ctx.cwd;
-			await ensureFinder(activeCwd);
 			applyEditorMode(ctx);
 		} catch (e: unknown) {
 			ctx.ui.notify(`FFF init failed: ${e instanceof Error ? e.message : String(e)}`, "error");
