@@ -4,9 +4,11 @@ import {
 	applyLensUi,
 	filesFromTool,
 	filesFromToolAndResult,
+	hasActiveLensDiagnostics,
 	default as lensExtension,
 	queueLensContext,
 	runLensHookCommand,
+	suppressStaleLensDiagnosticMessage,
 } from "./index.ts";
 
 const hookEvent = {
@@ -56,6 +58,26 @@ describe("Lens hook runner", () => {
 		expect(response.data.stdout).toBe("not json");
 		expect(response.data.stderr).toBe("bad output");
 		expect(response.data.exitCode).toBe(2);
+	});
+
+	it("detects whether the current Lens diagnostic snapshot still has active issues", async () => {
+		const clean = await hasActiveLensDiagnostics("/tmp", {
+			runner: async () => ({
+				stdout: JSON.stringify({ data: { diagnostic_count: 0, diagnostics: [] } }),
+				stderr: "",
+				exitCode: 0,
+			}),
+		});
+		const dirty = await hasActiveLensDiagnostics("/tmp", {
+			runner: async () => ({
+				stdout: JSON.stringify({ data: { diagnostic_count: 1, diagnostics: [{}] } }),
+				stderr: "",
+				exitCode: 0,
+			}),
+		});
+
+		expect(clean).toBe(false);
+		expect(dirty).toBe(true);
 	});
 });
 
@@ -176,6 +198,7 @@ describe("Lens hook-only Pi extension", () => {
 			"tool_call",
 			"tool_result",
 			"turn_end",
+			"message_end",
 			"agent_end",
 		]);
 		expect(tools).toEqual([]);
@@ -277,5 +300,30 @@ describe("Lens hook-only Pi extension", () => {
 		expect(queueLensContext(pi, ctx, response, state)).toBe(true);
 		expect(queueLensContext(pi, ctx, response, state)).toBe(false);
 		expect(sent).toHaveLength(1);
+	});
+
+	it("suppresses stale queued diagnostic custom messages once diagnostics are clean", async () => {
+		const result = await suppressStaleLensDiagnosticMessage(
+			{
+				role: "custom",
+				customType: "lens-diagnostics",
+				content: "Lens session diagnostics: stale",
+				display: true,
+				details: { fingerprint: "old" },
+				timestamp: Date.now(),
+			},
+			"/tmp",
+			{
+				runner: async () => ({
+					stdout: JSON.stringify({ data: { diagnostic_count: 0, diagnostics: [] } }),
+					stderr: "",
+					exitCode: 0,
+				}),
+			},
+		);
+
+		expect(result?.message.content).toBe("Lens diagnostics are clean; stale diagnostic report suppressed.");
+		expect(result?.message.display).toBe(false);
+		expect(result?.message.details.suppressedAsStale).toBe(true);
 	});
 });
