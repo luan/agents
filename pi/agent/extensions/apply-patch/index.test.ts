@@ -153,6 +153,32 @@ describe("apply_patch streaming renderer", () => {
 		tool.renderCall({ input: patchInput }, theme, renderContext(cwd, state, { argsComplete: true }));
 	});
 
+	it("renders patch intent before the diff", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "apply-patch-intent-render-"));
+		const tool = registerApplyPatchTool();
+		const state: Record<string, unknown> = {};
+
+		const result = tool.renderResult(
+			{
+				content: [{ type: "text", text: "M sample.js" }],
+				details: {
+					stage: "done",
+					filesChanged: 1,
+					fileDiffs: [{ path: "sample.js", operation: "update", added: 1, removed: 1 }],
+					diff: resolvedDiff,
+					intent: "Make the summary wording shorter.",
+				},
+			},
+			{ expanded: true, isPartial: false },
+			theme,
+			renderContext(cwd, state, { executionStarted: true }),
+		);
+
+		const text = renderText(result);
+		expect(text).toContain("Intent: Make the summary wording shorter.");
+		expect(text.indexOf("Intent:")).toBeLessThan(text.indexOf("• Edited sample.js"));
+	});
+
 	it("renders semantic hunks as separate semantic editing blocks", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "apply-patch-semantic-render-"));
 		writeFileSync(

@@ -21,9 +21,10 @@ const ANSI_RESET = "\x1b[0m";
 const APPLY_PATCH_USAGE_ENTRY = "apply_patch_usage";
 const APPLY_PATCH_TOOL_NAME = "apply_patch";
 
-const APPLY_PATCH_GRAMMAR = `start: begin_patch hunk+ end_patch
+const APPLY_PATCH_GRAMMAR = `start: begin_patch intent? hunk+ end_patch
 begin_patch: "*** Begin Patch" LF
 end_patch: "*** End Patch" LF?
+intent: "*** Intent: " intent_text LF
 
 hunk: add_hunk | delete_hunk | update_hunk | move_hunk | replace_all_hunk | update_scope_hunk
 add_hunk: "*** Add File: " filename LF add_line+
@@ -35,6 +36,7 @@ update_scope_hunk: "*** Update Scope: " filename LF scope_change+
 
 filename: /(.+)/
 move_spec: /(.+) -> (.+)/
+intent_text: /(.+)/
 add_line: "+" /(.*)/ LF -> line
 
 change_move: "*** Move to: " filename LF
@@ -53,6 +55,7 @@ const APPLY_PATCH_PROMPT_APPENDIX = `## apply_patch
 Use the \`apply_patch\` tool for all file edits. The patch payload format is:
 
 *** Begin Patch
+*** Intent: Briefly describe why this change is being made.
 *** Update Scope: path/to/existing-file.txt
 @@ function renderSummary
 -old line inside that scope
@@ -79,6 +82,9 @@ Use the \`apply_patch\` tool for all file edits. The patch payload format is:
 
 Rules:
 - Include exactly one Begin Patch / End Patch envelope.
+- Include one \`*** Intent: ...\` line immediately after Begin Patch for
+  non-trivial edits. Keep it under 100 words; this is a soft limit, not
+  enforced. Omit it only for trivial/no-op test patches.
 - Prefix all new file contents and added lines with '+'.
 - Use \`*** Update Scope\` when it is the shortest clear way to target an
   existing function, class, type, top-level constant/variable, struct, enum,
@@ -110,6 +116,7 @@ type ApplyPatchProgressFile = {
 
 type ApplyPatchRenderDetails = {
 	stage?: "validate" | "apply" | "done";
+	intent?: string;
 	diff?: string;
 	highlightedDiffRows?: ParsedDiffLine[];
 	filesChanged?: number;
@@ -155,9 +162,9 @@ type ApplyPatchConfig = {
 };
 
 const APPLY_PATCH_TOOL_DESCRIPTION =
-	"Edit files using apply_patch. Use '*** Update Scope' when it is the shortest clear way to target an existing symbol; use '*** Update File' when plain text context is clearer.";
+	"Edit files using apply_patch. Include '*** Intent: ...' after Begin Patch for non-trivial edits. Use '*** Update Scope' when it is the shortest clear way to target an existing symbol; use '*** Update File' when plain text context is clearer.";
 const APPLY_PATCH_FREEFORM_TOOL_DESCRIPTION =
-	"Use the `apply_patch` tool to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON.";
+	"Use the `apply_patch` tool to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON. Include `*** Intent: ...` after Begin Patch for non-trivial edits.";
 
 const DEFAULT_CONFIG: ApplyPatchConfig = {
 	maxDiffLines: 160,
@@ -241,6 +248,7 @@ type ParsedDiffLine = {
 type LivePatchPreviewState = {
 	input: string;
 	carry: string;
+	intent?: string;
 	totalOperations: number;
 	files: ApplyPatchProgressFile[];
 	rows: ParsedDiffLine[];
@@ -351,6 +359,7 @@ class ApplyPatchDiffView {
 		private rows?: ParsedDiffLine[],
 		private maxDiffRows?: number,
 		private editKind: ApplyPatchEditKind = "raw",
+		private intent?: string,
 	) {}
 
 	invalidate() {}
@@ -394,7 +403,7 @@ class ApplyPatchDiffView {
 							this.editKind,
 						);
 			this.renderedDiffCache = { key: cacheKey, lines: diffLines };
-			return diffLines;
+			return prependIntentLine(diffLines, this.intent, this.theme, safeWidth);
 		}
 
 		if (hasVisibleText(this.diff)) {
@@ -411,7 +420,7 @@ class ApplyPatchDiffView {
 						? this.renderedDiffCache.lines
 						: renderCollapsedDiffPreview(this.diff, this.files, this.theme, safeWidth, undefined, this.config);
 				this.renderedDiffCache = { key: cacheKey, lines: diffLines };
-				return diffLines;
+				return prependIntentLine(diffLines, this.intent, this.theme, safeWidth);
 			}
 			const fileVerb = editVerb(this.state, this.editKind);
 			const cacheKey = [
@@ -439,7 +448,7 @@ class ApplyPatchDiffView {
 							this.editKind,
 						);
 			this.renderedDiffCache = { key: cacheKey, lines: diffLines };
-			return diffLines;
+			return prependIntentLine(diffLines, this.intent, this.theme, safeWidth);
 		}
 
 		const bodyLines = this.fallbackBody.split("\n");
@@ -455,7 +464,13 @@ class ApplyPatchDiffView {
 			const styledLine = fallbackRole ? this.theme.fg(fallbackRole, line) : line;
 			return line.length === 0 ? [""] : wrapTextWithAnsi(styledLine, safeWidth);
 		});
-		return [paintLine(this.renderHeader(safeWidth)), paintLine(""), ...contentLines.map((line) => paintLine(line))];
+		const intentLines = formatIntentLines(this.intent, this.theme, safeWidth).map((line) => paintLine(line));
+		return [
+			paintLine(this.renderHeader(safeWidth)),
+			...(intentLines.length > 0 ? intentLines : []),
+			paintLine(""),
+			...contentLines.map((line) => paintLine(line)),
+		];
 	}
 
 	private renderHeader(width: number): string {
@@ -1001,6 +1016,20 @@ function paintDiffRow(line: string, width: number, background: string | undefine
 	return `${background}${keepBackgroundAcrossResets(padded, background)}${ANSI_RESET}`;
 }
 
+function formatIntentLines(intent: string | undefined, theme: ThemeLike, width: number): string[] {
+	const normalized = intent?.replace(/\s+/g, " ").trim();
+	if (!normalized) return [];
+	const prefix = `${theme.fg("muted", "Intent:")} `;
+	return wrapTextWithAnsi(`${prefix}${theme.fg("toolTitle", normalized)}`, width).map((line) =>
+		truncateToWidth(line, width, "", true),
+	);
+}
+
+function prependIntentLine(lines: string[], intent: string | undefined, theme: ThemeLike, width: number): string[] {
+	const intentLines = formatIntentLines(intent, theme, width).map((line) => paintDiffRow(line, width, undefined));
+	return intentLines.length > 0 ? [...intentLines, paintDiffRow("", width, undefined), ...lines] : lines;
+}
+
 function diffLineNumberWidth(rows: ParsedDiffLine[]): number {
 	const maxLineNumber = rows.reduce((max, row) => Math.max(max, row.oldLine ?? 0, row.newLine ?? 0), 0);
 	return Math.max(2, String(maxLineNumber).length);
@@ -1350,6 +1379,7 @@ function renderApplyPatchBox(
 	expanded = false,
 	rows?: ParsedDiffLine[],
 	maxDiffRows?: number,
+	intent?: string,
 ): ApplyPatchDiffView {
 	const target = files.length === 1 ? compactTarget(files[0]) : `${count} files`;
 	const summary = renderPatchSummary(theme, files, count, { showDone: true });
@@ -1366,6 +1396,7 @@ function renderApplyPatchBox(
 		rows,
 		maxDiffRows,
 		editKindFromFiles(files),
+		intent,
 	);
 }
 
@@ -1489,6 +1520,18 @@ function createLivePatchPreviewState(): LivePatchPreviewState {
 		rows: [],
 		newLine: null,
 	};
+}
+
+function extractPatchIntent(input: string): string | undefined {
+	for (const line of input.replace(/\r\n?/g, "\n").split("\n")) {
+		if (line.trim() === "*** Begin Patch" || line.trim().length === 0) continue;
+		if (line.startsWith("*** Intent: ")) {
+			const intent = line.slice("*** Intent: ".length).replace(/\s+/g, " ").trim();
+			return intent || undefined;
+		}
+		return undefined;
+	}
+	return undefined;
 }
 
 function parseLivePatchPreview(input: string, previous: LivePatchPreviewState | undefined): LivePatchPreviewState {
@@ -1697,6 +1740,10 @@ function startLivePatchFile(
 }
 
 function ingestLivePatchLine(state: LivePatchPreviewState, line: string): void {
+	if (line.startsWith("*** Intent: ")) {
+		state.intent = line.slice("*** Intent: ".length).replace(/\s+/g, " ").trim() || undefined;
+		return;
+	}
 	if (line.startsWith("*** Add File: ")) {
 		startLivePatchFile(state, "add", line.slice("*** Add File: ".length).trim());
 		return;
@@ -1980,6 +2027,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 			config.promptMetadata && config.promptGuidelines && config.enforce
 				? [
 						"Use apply_patch for every file edit.",
+						"Include one *** Intent: ... line immediately after Begin Patch for non-trivial edits; keep it under 100 words as a soft limit.",
 						"Use *** Update Scope when it is the shortest clear way to target an existing code symbol; use *** Update File when plain text context is clearer.",
 					]
 				: [],
@@ -1989,6 +2037,10 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 		renderCall(args, theme, context) {
 			if (!config.richRender) return new Text(title(theme, nf.apply, "apply_patch"), 0, 0);
 			const state = context.state as ApplyPatchRenderState;
+			const input = typeof args?.input === "string" ? args.input : "";
+			const inputKey = patchInputKey(input);
+			const semanticInput = isSemanticPatchInput(input);
+			const intent = extractPatchIntent(input);
 			const renderCachedPreview = (label: string) =>
 				state.previewRows && state.previewRows.length > 0
 					? new LivePreviewUntilResult(
@@ -2006,6 +2058,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 								state.previewRows,
 								config.maxDiffLines,
 								state.previewSemantic ? "semantic" : editKindFromFiles(state.previewFiles),
+								intent ?? state.livePreview?.intent,
 							),
 						)
 					: undefined;
@@ -2014,9 +2067,6 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 				return renderCachedPreview("Patching") ?? new Text("", 0, 0);
 			}
 
-			const input = typeof args?.input === "string" ? args.input : "";
-			const inputKey = patchInputKey(input);
-			const semanticInput = isSemanticPatchInput(input);
 			if (inputKey && (executingPatchInputs.has(inputKey) || completedPatchInputs.has(inputKey))) {
 				stopPreviewWorker(state);
 				return renderCachedPreview("Patching") ?? new Text("", 0, 0);
@@ -2044,6 +2094,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 						state.previewRows,
 						config.maxDiffLines,
 						semanticInput ? "semantic" : editKindFromFiles(state.previewFiles),
+						intent ?? state.livePreview.intent,
 					);
 				}
 				if (state.livePreview.rows.length > 0) {
@@ -2060,6 +2111,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 						state.livePreview.rows,
 						config.maxDiffLines,
 						semanticInput ? "semantic" : editKindFromFiles(state.livePreview.files),
+						intent ?? state.livePreview.intent,
 					);
 				}
 				if (state.livePreview.files.length > 0) {
@@ -2111,6 +2163,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 			}
 
 			const details = result.details as ApplyPatchRenderDetails | undefined;
+			const intent = details?.intent;
 			const textBlock = result.content.find((block) => block.type === "text");
 			const baseText = textBlock?.type === "text" ? textBlock.text : "";
 			const files = markFilesSemantic(details?.fileDiffs ?? details?.files ?? [], details?.semantic ?? false);
@@ -2140,6 +2193,12 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 						config,
 						"pending",
 						"Validating",
+						undefined,
+						false,
+						undefined,
+						undefined,
+						"raw",
+						intent,
 					);
 				}
 				if (details?.stage === "apply") {
@@ -2155,6 +2214,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 							expanded,
 							scopedRows,
 							diffLineLimit,
+							intent,
 						);
 					}
 					return new ApplyPatchDiffView(
@@ -2165,6 +2225,12 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 						config,
 						"pending",
 						"Patching",
+						undefined,
+						false,
+						undefined,
+						undefined,
+						editKindFromFiles(files),
+						intent,
 					);
 				}
 				return new ApplyPatchDiffView(
@@ -2175,11 +2241,31 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 					config,
 					"pending",
 					"Patching",
+					undefined,
+					false,
+					undefined,
+					undefined,
+					editKindFromFiles(files),
+					intent,
 				);
 			}
 
 			if (baseText.startsWith("Error:")) {
-				return new ApplyPatchDiffView("patch", files, baseText, theme, config, "error", "Patch failed");
+				return new ApplyPatchDiffView(
+					"patch",
+					files,
+					baseText,
+					theme,
+					config,
+					"error",
+					"Patch failed",
+					undefined,
+					false,
+					undefined,
+					undefined,
+					editKindFromFiles(files),
+					intent,
+				);
 			}
 
 			if (config.renderDiff && details?.diff && details.diff.length > 0) {
@@ -2195,6 +2281,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 						expanded,
 						displayRows,
 						diffLineLimit,
+						intent,
 					);
 				}
 				return renderApplyPatchBox(
@@ -2208,14 +2295,43 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 					expanded,
 					displayRows,
 					diffLineLimit,
+					intent,
 				);
 			}
 
 			if (baseText) {
-				return new ApplyPatchDiffView("patch", files, baseText, theme, config);
+				return new ApplyPatchDiffView(
+					"patch",
+					files,
+					baseText,
+					theme,
+					config,
+					"success",
+					undefined,
+					undefined,
+					false,
+					undefined,
+					undefined,
+					editKindFromFiles(files),
+					intent,
+				);
 			}
 
-			return new ApplyPatchDiffView("patch", files, theme.fg("muted", "(no output)"), theme, config);
+			return new ApplyPatchDiffView(
+				"patch",
+				files,
+				theme.fg("muted", "(no output)"),
+				theme,
+				config,
+				"success",
+				undefined,
+				undefined,
+				false,
+				undefined,
+				undefined,
+				editKindFromFiles(files),
+				intent,
+			);
 		},
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			enforceToolPolicy(pi, config);
@@ -2223,6 +2339,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 			const input = typeof params.input === "string" ? params.input : "";
 			const inputKey = patchInputKey(input);
 			const semanticInput = isSemanticPatchInput(input);
+			const intent = extractPatchIntent(input);
 			executingPatchInputs.add(inputKey);
 			completedPatchInputs.delete(inputKey);
 
@@ -2246,6 +2363,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 								operations: progress.totalOperations,
 								files: progress.files,
 								semantic: semanticInput,
+								intent,
 							},
 						});
 					}
@@ -2255,7 +2373,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 						return { error: message } as const;
 					});
 					if ("error" in dryRunResult) {
-						return errorResult(dryRunResult.error, { stage: "validate" });
+						return errorResult(dryRunResult.error, { stage: "validate", intent });
 					}
 					dryRun = dryRunResult;
 				}
@@ -2266,7 +2384,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 						previewDiff = preview.diff.trim();
 						previewChanges = preview.changes ?? [];
 					} else if (preview?.status === "invalid" && preview.error) {
-						return errorResult(preview.error, { stage: "validate" });
+						return errorResult(preview.error, { stage: "validate", intent });
 					}
 				}
 
@@ -2286,6 +2404,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 						operations: progress.totalOperations,
 						files: progress.files,
 						semantic: semanticInput,
+						intent,
 						...(config.richRender && config.renderDiff
 							? { diff: dryRun?.stdout ?? previewDiff, previewChanges }
 							: {}),
@@ -2300,6 +2419,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 					return errorResult(applied.error, {
 						stage: "apply",
 						semantic: semanticInput,
+						intent,
 						...(dryRun ? { diff: dryRun.stdout } : {}),
 					});
 				}
@@ -2349,6 +2469,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 					filesChanged,
 					operations: progress.totalOperations,
 					semantic: semanticInput,
+					intent,
 					...(config.richRender && config.renderDiff ? { diff, highlightedDiffRows, previewChanges } : {}),
 					fileDiffs: progress.files,
 				});

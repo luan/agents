@@ -7,9 +7,10 @@
 //!
 //! The official Lark grammar for the apply-patch format is:
 //!
-//! start: begin_patch hunk+ end_patch
+//! start: begin_patch intent? hunk+ end_patch
 //! begin_patch: "*** Begin Patch" LF
 //! end_patch: "*** End Patch" LF?
+//! intent: "*** Intent: " intent_text LF
 //!
 //! hunk: add_hunk | delete_hunk | update_hunk | move_hunk | replace_all_hunk | update_scope_hunk
 //! add_hunk: "*** Add File: " filename LF add_line+
@@ -19,6 +20,7 @@
 //! replace_all_hunk: "*** Replace All In File: " filename LF "*** Expect Replacements: " int LF replace_line+
 //! update_scope_hunk: "*** Update Scope: " filename LF scope_change+
 //! filename: /(.+)/
+//! intent_text: /(.+)/
 //! add_line: "+" /(.+)/ LF -> line
 //!
 //! change_move: "*** Move to: " filename LF
@@ -34,6 +36,7 @@ use std::path::PathBuf;
 
 const BEGIN_PATCH_MARKER: &str = "*** Begin Patch";
 const END_PATCH_MARKER: &str = "*** End Patch";
+const INTENT_MARKER: &str = "*** Intent: ";
 const ADD_FILE_MARKER: &str = "*** Add File: ";
 const DELETE_FILE_MARKER: &str = "*** Delete File: ";
 const UPDATE_FILE_MARKER: &str = "*** Update File: ";
@@ -190,10 +193,11 @@ pub fn parse_patch(patch: &str) -> Result<Vec<Hunk>, ParseError> {
 fn parse_patch_text(patch: &str) -> Result<Vec<Hunk>, ParseError> {
     let lines: Vec<&str> = patch.trim().lines().collect();
     let (_patch_lines, hunk_lines) = check_patch_boundaries_strict(&lines)?;
+    let (hunk_lines, line_number_offset) = strip_optional_intent(hunk_lines);
 
     let mut hunks: Vec<Hunk> = Vec::new();
     let mut remaining_lines = hunk_lines;
-    let mut line_number = 2;
+    let mut line_number = 2 + line_number_offset;
     while !remaining_lines.is_empty() {
         let (hunk, hunk_lines) =
             parse_one_hunk(remaining_lines, line_number).map_err(|e| annotate(e, &lines))?;
@@ -202,6 +206,13 @@ fn parse_patch_text(patch: &str) -> Result<Vec<Hunk>, ParseError> {
         remaining_lines = &remaining_lines[hunk_lines..]
     }
     Ok(hunks)
+}
+
+fn strip_optional_intent<'a>(hunk_lines: &'a [&'a str]) -> (&'a [&'a str], usize) {
+    match hunk_lines.first().map(|line| line.trim()) {
+        Some(line) if line.starts_with(INTENT_MARKER) => (&hunk_lines[1..], 1),
+        _ => (hunk_lines, 0),
+    }
 }
 
 /// Attach a snippet of the patch body around the failing line to a hunk
@@ -808,6 +819,7 @@ mod tests {
         assert_eq!(
             parse_patch_text(
                 "*** Begin Patch\n\
+                 *** Intent: Explain why this patch exists.\n\
                  *** Add File: path/add.py\n\
                  +abc\n\
                  +def\n\
