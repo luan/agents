@@ -420,3 +420,589 @@ pub fn run_usage_bar(width: usize) -> Result<(), Box<dyn std::error::Error>> {
     }
     Ok(())
 }
+
+pub fn run_usage_bars(width: usize, sidebar: bool) -> Result<(), Box<dyn std::error::Error>> {
+    poll_usage_sources();
+    let requests = collect_usage_bar_requests(width);
+    if sidebar {
+        for line in render_sidebar_usage_bars(&requests, width) {
+            println!("{line}");
+        }
+        return Ok(());
+    }
+    for (i, req) in requests.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        for line in usage_bars::render(req) {
+            println!("{line}");
+        }
+    }
+    Ok(())
+}
+
+fn poll_usage_sources() {
+    if should_poll(&codex_log(), std::time::Duration::from_secs(120)) {
+        let _ = poll_codex_usage();
+    }
+    if should_poll(&copilot_log(), std::time::Duration::from_secs(300)) {
+        let _ = poll_copilot_usage();
+    }
+}
+
+fn should_poll(path: &std::path::Path, interval: std::time::Duration) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return true;
+    };
+    let Ok(modified) = meta.modified() else {
+        return true;
+    };
+    modified.elapsed().map_or(true, |age| age >= interval)
+}
+
+const FIVE_HOURS: i64 = 5 * 3600;
+const SEVEN_DAYS: i64 = 7 * 24 * 3600;
+const THIRTY_DAYS: i64 = 30 * 24 * 3600;
+
+const CLAUDE_GLYPH: &str = "\u{e861}";
+const CODEX_GLYPH: &str = "\u{e7cf}";
+const COPILOT_GLYPH: &str = "\u{f113}";
+
+#[derive(Clone, Copy)]
+struct DualSample {
+    ts: i64,
+    p_pct: f64,
+    p_reset: i64,
+    s_pct: f64,
+    s_reset: i64,
+}
+
+#[derive(Clone, Copy)]
+struct SimpleSample {
+    ts: i64,
+    pct: f64,
+    reset: i64,
+}
+
+fn collect_usage_bar_requests(width: usize) -> Vec<usage_bars::RenderRequest> {
+    let mut out = Vec::new();
+
+    let claude_samples = load_dual_sqlite(&claude_usage_db());
+    if !claude_samples.is_empty() {
+        out.push(usage_bars::RenderRequest {
+            provider_label: CLAUDE_GLYPH.to_string(),
+            provider_color: Some("d87b4a".to_string()),
+            windows: dual_peak_windows(&claude_samples),
+            width,
+        });
+    }
+
+    let copilot_samples = load_simple(&copilot_log());
+    if let Some(last) = copilot_samples.last() {
+        out.push(usage_bars::RenderRequest {
+            provider_label: COPILOT_GLYPH.to_string(),
+            provider_color: Some("cba6f7".to_string()),
+            windows: vec![usage_bars::Window {
+                label: "mo".to_string(),
+                used_percent: last.pct,
+                window_secs: THIRTY_DAYS,
+                reset_secs: last.reset - now_ts(),
+            }],
+            width,
+        });
+    }
+
+    let codex_samples = load_dual_tsv(&codex_log());
+    if let Some(last) = codex_samples.last() {
+        out.push(usage_bars::RenderRequest {
+            provider_label: CODEX_GLYPH.to_string(),
+            provider_color: Some("74c7ec".to_string()),
+            windows: vec![
+                usage_bars::Window {
+                    label: "5h".to_string(),
+                    used_percent: last.p_pct,
+                    window_secs: FIVE_HOURS,
+                    reset_secs: last.p_reset - now_ts(),
+                },
+                usage_bars::Window {
+                    label: "7d".to_string(),
+                    used_percent: last.s_pct,
+                    window_secs: SEVEN_DAYS,
+                    reset_secs: last.s_reset - now_ts(),
+                },
+            ],
+            width,
+        });
+    }
+
+    out
+}
+
+fn home() -> std::path::PathBuf {
+    dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."))
+}
+
+fn claude_usage_db() -> std::path::PathBuf {
+    home().join(".local/state/claude-statusline/usage.db")
+}
+
+fn copilot_log() -> std::path::PathBuf {
+    std::env::temp_dir().join("copilot-usage-log.tsv")
+}
+
+fn codex_log() -> std::path::PathBuf {
+    std::env::temp_dir().join("codex-usage-log.tsv")
+}
+
+fn now_ts() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn dual_peak_windows(samples: &[DualSample]) -> Vec<usage_bars::Window> {
+    let now = now_ts();
+    let p_reset = samples.iter().map(|s| s.p_reset).max().unwrap_or(0);
+    let s_reset = samples.iter().map(|s| s.s_reset).max().unwrap_or(0);
+    let p_pct = samples
+        .iter()
+        .filter(|s| s.p_reset == p_reset && s.ts >= p_reset - FIVE_HOURS)
+        .map(|s| s.p_pct)
+        .fold(0.0_f64, f64::max);
+    let s_pct = samples
+        .iter()
+        .filter(|s| s.s_reset == s_reset && s.ts >= s_reset - SEVEN_DAYS)
+        .map(|s| s.s_pct)
+        .fold(0.0_f64, f64::max);
+    vec![
+        usage_bars::Window {
+            label: "5h".to_string(),
+            used_percent: p_pct,
+            window_secs: FIVE_HOURS,
+            reset_secs: p_reset - now,
+        },
+        usage_bars::Window {
+            label: "7d".to_string(),
+            used_percent: s_pct,
+            window_secs: SEVEN_DAYS,
+            reset_secs: s_reset - now,
+        },
+    ]
+}
+
+fn load_dual_sqlite(path: &std::path::Path) -> Vec<DualSample> {
+    use rusqlite::{Connection, OpenFlags};
+
+    if !path.exists() {
+        return Vec::new();
+    }
+    let Ok(conn) = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) else {
+        return Vec::new();
+    };
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT ts, fh_used, fh_reset, sd_used, sd_reset FROM usage_samples ORDER BY ts ASC",
+    ) else {
+        return Vec::new();
+    };
+    let Ok(rows) = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, i64>(4)?,
+        ))
+    }) else {
+        return Vec::new();
+    };
+
+    const SANE_MAX_TS: i64 = 4_102_444_800;
+    rows.flatten()
+        .filter_map(|(ts, fh_used, fh_reset, sd_used, sd_reset)| {
+            ((0..SANE_MAX_TS).contains(&fh_reset) && (0..SANE_MAX_TS).contains(&sd_reset))
+                .then_some(DualSample {
+                    ts,
+                    p_pct: fh_used as f64,
+                    p_reset: fh_reset,
+                    s_pct: sd_used as f64,
+                    s_reset: sd_reset,
+                })
+        })
+        .collect()
+}
+
+fn load_dual_tsv(path: &std::path::Path) -> Vec<DualSample> {
+    let data = std::fs::read_to_string(path).unwrap_or_default();
+    let mut out = Vec::new();
+    for line in data.lines() {
+        let mut it = line.split('\t');
+        let (Some(t), Some(pp), Some(pr), Some(sp), Some(sr)) =
+            (it.next(), it.next(), it.next(), it.next(), it.next())
+        else {
+            continue;
+        };
+        let (Ok(ts), Ok(p_pct), Ok(p_reset), Ok(s_pct), Ok(s_reset)) = (
+            t.parse::<i64>(),
+            pp.parse::<f64>(),
+            pr.parse::<i64>(),
+            sp.parse::<f64>(),
+            sr.parse::<i64>(),
+        ) else {
+            continue;
+        };
+        const SANE_MAX_TS: i64 = 4_102_444_800;
+        if !(0..SANE_MAX_TS).contains(&p_reset) || !(0..SANE_MAX_TS).contains(&s_reset) {
+            continue;
+        }
+        out.push(DualSample {
+            ts,
+            p_pct,
+            p_reset,
+            s_pct,
+            s_reset,
+        });
+    }
+    out
+}
+
+fn load_simple(path: &std::path::Path) -> Vec<SimpleSample> {
+    let data = std::fs::read_to_string(path).unwrap_or_default();
+    let mut out = Vec::new();
+    for line in data.lines() {
+        let mut it = line.split('\t');
+        let (Some(t), Some(p), Some(r)) = (it.next(), it.next(), it.next()) else {
+            continue;
+        };
+        let (Ok(ts), Ok(pct), Ok(reset)) = (t.parse::<i64>(), p.parse::<f64>(), r.parse::<i64>())
+        else {
+            continue;
+        };
+        out.push(SimpleSample { ts, pct, reset });
+    }
+    out.sort_by_key(|s| s.ts);
+    out
+}
+
+fn poll_codex_usage() -> Option<()> {
+    let token = codex_token()?;
+    let body = fetch_usage("https://chatgpt.com/backend-api/wham/usage", &token, &[])?;
+    let json: serde_json::Value = serde_json::from_str(&body).ok()?;
+    let rate = json.get("rate_limit")?;
+    let prim = rate.get("primary_window")?;
+    let sec = rate.get("secondary_window")?;
+    let prim_pct = prim.get("used_percent")?.as_f64()?;
+    let prim_reset = prim.get("reset_at")?.as_i64()?;
+    let sec_pct = sec.get("used_percent")?.as_f64()?;
+    let sec_reset = sec.get("reset_at")?.as_i64()?;
+    append_snapshot(
+        &codex_log(),
+        &format!(
+            "{}\t{}\t{}\t{}\t{}\n",
+            now_ts(),
+            prim_pct,
+            prim_reset,
+            sec_pct,
+            sec_reset,
+        ),
+    )
+}
+
+fn poll_copilot_usage() -> Option<()> {
+    let token = gh_token()?;
+    let body = fetch_usage(
+        "https://api.github.com/copilot_internal/user",
+        &token,
+        &[
+            "Editor-Version: vscode/1.85".to_string(),
+            "User-Agent: GithubCopilot/1.155".to_string(),
+        ],
+    )?;
+    let json: serde_json::Value = serde_json::from_str(&body).ok()?;
+    let prem = json.get("quota_snapshots")?.get("premium_interactions")?;
+    let pct_remaining = prem.get("percent_remaining")?.as_f64()?;
+    let used = 100.0 - pct_remaining;
+    let reset_date = json.get("quota_reset_date")?.as_str()?;
+    let reset_ts = parse_reset_date(reset_date)?;
+    append_snapshot(
+        &copilot_log(),
+        &format!("{}\t{}\t{}\n", now_ts(), used, reset_ts),
+    )
+}
+
+fn codex_token() -> Option<String> {
+    let raw = std::fs::read_to_string(home().join(".codex/auth.json")).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    json.get("tokens")?
+        .get("access_token")?
+        .as_str()
+        .map(String::from)
+}
+
+fn gh_token() -> Option<String> {
+    let out = std::process::Command::new("gh")
+        .args(["auth", "token"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let token = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    (!token.is_empty()).then_some(token)
+}
+
+fn fetch_usage(endpoint: &str, token: &str, extra_headers: &[String]) -> Option<String> {
+    let mut args = vec![
+        "-sS".to_string(),
+        "--max-time".to_string(),
+        "10".to_string(),
+        "-H".to_string(),
+        format!("Authorization: Bearer {token}"),
+    ];
+    for h in extra_headers {
+        args.push("-H".to_string());
+        args.push(h.clone());
+    }
+    args.push(endpoint.to_string());
+    let out = std::process::Command::new("curl")
+        .args(args)
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8(out.stdout).ok()
+}
+
+fn append_snapshot(path: &std::path::Path, line: &str) -> Option<()> {
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    std::fs::write(path, format!("{existing}{line}")).ok()
+}
+
+fn parse_reset_date(s: &str) -> Option<i64> {
+    let d = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()?;
+    Some(d.and_hms_opt(0, 0, 0)?.and_utc().timestamp())
+}
+
+type Rgb = (u8, u8, u8);
+
+const RGB_DIM: Rgb = (0x6c, 0x70, 0x86);
+const RGB_GREEN: Rgb = (0xa6, 0xe3, 0xa1);
+const RGB_ORANGE: Rgb = (0xfa, 0xb3, 0x87);
+const RGB_RED: Rgb = (0xef, 0x44, 0x44);
+const RGB_TRACK: Rgb = (0x3a, 0x3d, 0x4e);
+
+fn render_sidebar_usage_bars(reqs: &[usage_bars::RenderRequest], width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let now = now_ts();
+    for req in reqs {
+        let provider = parse_hex_rgb(req.provider_color.as_deref()).unwrap_or((0xa0, 0xa8, 0xc0));
+        for window in &req.windows {
+            let remaining = window.reset_secs.max(0);
+            let display = if req.provider_label == COPILOT_GLYPH {
+                format!("{} ", req.provider_label)
+            } else {
+                format!("{} {}", req.provider_label, window.label)
+            };
+            lines.push(render_sidebar_stats(
+                &display, provider, window, remaining, width,
+            ));
+            lines.push(render_sidebar_bar(provider, window, remaining, width));
+        }
+    }
+    let _ = now;
+    lines
+}
+
+fn render_sidebar_stats(
+    display: &str,
+    provider: Rgb,
+    window: &usage_bars::Window,
+    remaining: i64,
+    width: usize,
+) -> String {
+    let remaining_pct = (100.0 - window.used_percent).clamp(0.0, 100.0);
+    let pct_txt = format!("{}%", remaining_pct.round() as i64);
+    let burn = quota_rgb(window.used_percent, remaining, window.window_secs, provider);
+    let pace = pace_balance_secs_ct(window.used_percent, remaining, window.window_secs);
+    let pace_txt = pace.map(fmt_pace_ct).unwrap_or_default();
+    let reset_txt = if remaining > 0 {
+        format!("↺{}", fmt_reset_ct(remaining))
+    } else {
+        String::new()
+    };
+
+    let left_plain = format!(" {display}  {pct_txt}");
+    let right_plain = if pace_txt.is_empty() {
+        format!("{reset_txt} ")
+    } else {
+        format!("{pace_txt} {reset_txt} ")
+    };
+    let pad = width.saturating_sub(plain_width(&left_plain) + plain_width(&right_plain));
+
+    let mut out = String::new();
+    out.push(' ');
+    out.push_str(&fg(provider, display));
+    out.push_str("  ");
+    out.push_str(&fg(burn, &pct_txt));
+    out.push_str(&" ".repeat(pad));
+    if let Some(p) = pace {
+        out.push_str(&fg(
+            pace_rgb(p, window.window_secs, provider),
+            &fmt_pace_ct(p),
+        ));
+        out.push(' ');
+    }
+    out.push_str(&fg(RGB_DIM, &reset_txt));
+    out.push(' ');
+    out
+}
+
+fn render_sidebar_bar(
+    provider: Rgb,
+    window: &usage_bars::Window,
+    remaining: i64,
+    width: usize,
+) -> String {
+    let inner = width.saturating_sub(2);
+    let elapsed_pct = if window.window_secs > 0 {
+        ((window.window_secs - remaining) as f64 / window.window_secs as f64) * 100.0
+    } else {
+        0.0
+    };
+    let remaining_pct = (100.0 - window.used_percent).clamp(0.0, 100.0);
+    let remaining_cells = ((remaining_pct / 100.0) * inner as f64)
+        .round()
+        .clamp(0.0, inner as f64) as usize;
+    let tick_cell = ((100.0 - elapsed_pct).clamp(0.0, 100.0) / 100.0 * inner as f64)
+        .round()
+        .clamp(0.0, inner.saturating_sub(1) as f64) as usize;
+    let deficit = window.used_percent - elapsed_pct;
+    let tick = if deficit <= 0.0 {
+        RGB_GREEN
+    } else if deficit < 3.0 {
+        RGB_ORANGE
+    } else {
+        RGB_RED
+    };
+    let fill = quota_rgb(window.used_percent, remaining, window.window_secs, provider);
+
+    let mut out = String::from(" ");
+    for i in 0..inner {
+        let color = if i == tick_cell {
+            tick
+        } else if i < remaining_cells {
+            fill
+        } else {
+            RGB_TRACK
+        };
+        let ch = if i == tick_cell {
+            "│"
+        } else if i < remaining_cells {
+            "▓"
+        } else {
+            "░"
+        };
+        out.push_str(&fg(color, ch));
+    }
+    out.push(' ');
+    out
+}
+
+fn plain_width(s: &str) -> usize {
+    s.chars().count()
+}
+
+fn parse_hex_rgb(hex: Option<&str>) -> Option<Rgb> {
+    let h = hex?.trim().trim_start_matches('#');
+    if h.len() != 6 {
+        return None;
+    }
+    Some((
+        u8::from_str_radix(&h[0..2], 16).ok()?,
+        u8::from_str_radix(&h[2..4], 16).ok()?,
+        u8::from_str_radix(&h[4..6], 16).ok()?,
+    ))
+}
+
+fn quota_rgb(used: f64, remaining: i64, window: i64, provider: Rgb) -> Rgb {
+    if window <= 0 || remaining <= 0 {
+        return urgency_tint_rgb(provider, (used / 100.0).clamp(0.0, 1.0) as f32);
+    }
+    let elapsed_pct = ((window - remaining) as f64 / window as f64) * 100.0;
+    let ratio = if elapsed_pct > 0.0 {
+        used / elapsed_pct
+    } else if used > 0.0 {
+        f64::INFINITY
+    } else {
+        1.0
+    };
+    urgency_tint_rgb(provider, ((ratio - 1.0) / 0.5).clamp(0.0, 1.0) as f32)
+}
+
+fn pace_rgb(secs: i64, window: i64, provider: Rgb) -> Rgb {
+    if secs >= 0 {
+        return provider;
+    }
+    let pct = secs.unsigned_abs() as f64 / window as f64 * 100.0;
+    urgency_tint_rgb(provider, (pct / 15.0).clamp(0.0, 1.0) as f32)
+}
+
+fn urgency_tint_rgb(provider: Rgb, urgency: f32) -> Rgb {
+    let u = urgency.clamp(0.0, 1.0);
+    let red_end = blend_rgb(RGB_RED, provider, 0.25);
+    if u < 0.5 {
+        blend_rgb(provider, RGB_ORANGE, u * 2.0 * 0.75)
+    } else {
+        let mid = blend_rgb(provider, RGB_ORANGE, 0.75);
+        blend_rgb(mid, red_end, (u - 0.5) * 2.0)
+    }
+}
+
+fn blend_rgb(a: Rgb, b: Rgb, t: f32) -> Rgb {
+    let mix = |x: u8, y: u8| ((x as f32) * (1.0 - t) + (y as f32) * t).round() as u8;
+    (mix(a.0, b.0), mix(a.1, b.1), mix(a.2, b.2))
+}
+
+fn pace_balance_secs_ct(used: f64, remaining: i64, window: i64) -> Option<i64> {
+    let elapsed = window - remaining;
+    if elapsed < 60 {
+        return None;
+    }
+    let bal_pct = (100.0 - used) - (remaining as f64 / window as f64) * 100.0;
+    Some((bal_pct * window as f64 / 100.0) as i64)
+}
+
+fn fmt_reset_ct(secs: i64) -> String {
+    let a = secs.max(0);
+    if a >= 86400 {
+        format!("{}d{}h", a / 86400, (a % 86400) / 3600)
+    } else if a >= 3600 {
+        format!("{}h{:02}m", a / 3600, (a % 3600) / 60)
+    } else {
+        format!("{}m", a / 60)
+    }
+}
+
+fn fmt_pace_ct(secs: i64) -> String {
+    let a = secs.unsigned_abs();
+    let sign = if secs >= 0 { '+' } else { '-' };
+    let txt = if a >= 86400 {
+        format!("{}d{}h", a / 86400, (a % 86400) / 3600)
+    } else if a >= 3600 {
+        format!("{}h{:02}m", a / 3600, (a % 3600) / 60)
+    } else {
+        format!("{}m", a / 60)
+    };
+    format!("{sign}{txt}")
+}
+
+fn fg(rgb: Rgb, text: &str) -> String {
+    format!("\x1b[38;2;{};{};{}m{text}\x1b[39m", rgb.0, rgb.1, rgb.2)
+}
