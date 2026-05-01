@@ -2,7 +2,7 @@ approval_policy = "never"
 model = "gpt-5.5"
 model_auto_compact_token_limit = 9000000
 model_context_window = 1000000
-model_reasoning_effort = "high"
+model_reasoning_effort = "medium"
 personality = "pragmatic"
 plan_mode_reasoning_effort = "high"
 sandbox_mode = "danger-full-access"
@@ -29,13 +29,7 @@ home_last_prompted_at = 1776895160
 [plugins."github@openai-curated"]
 enabled = true
 
-[plugins."context7@claude-plugins-official"]
-enabled = true
-
 [plugins."computer-use@openai-bundled"]
-enabled = true
-
-[plugins."browser-use@openai-bundled"]
 enabled = true
 
 [plugins."documents@openai-primary-runtime"]
@@ -49,6 +43,9 @@ enabled = true
 
 [plugins."gt@agents"]
 enabled = false
+
+[plugins."browser-use@openai-bundled"]
+enabled = true
 
 [shell_environment_policy]
 inherit = "core"
@@ -77,6 +74,25 @@ last_revision = "c33cb8c66508d5cb2443414432de74d42614835c"
 source_type = "git"
 source = "https://github.com/max-sixty/worktrunk.git"
 
+[marketplaces.openai-bundled]
+last_updated = "2026-04-30T23:23:30Z"
+source_type = "local"
+source = "/Users/luan/.codex/.tmp/bundled-marketplaces/openai-bundled"
+
+[mcp_servers.source]
+command = "ct"
+args = ["mcp", "source"]
+
+[mcp_servers.source.tools.show]
+approval_mode = "approve"
+
+[mcp_servers.lens]
+command = "ct"
+args = ["mcp", "lens"]
+
+[mcp_servers.vault]
+command = "ct"
+args = ["mcp", "vault"]
 
 [mcp_servers.fff]
 command = "fff-mcp"
@@ -101,4 +117,10 @@ trust_level = "trusted"
 trust_level = "trusted"
 
 [projects."/Users/luan.santos/src"]
+trust_level = "trusted"
+
+[projects."/Users/luan/src/sifty"]
+trust_level = "trusted"
+
+[projects."/Users/luan/src/agents"]
 trust_level = "trusted"
