@@ -103,25 +103,8 @@ fn ring_terminal_bell() {
 
 fn set_tmux_attention(session: &str) {
     let _ = Command::new("tmux")
-        .args(["set-option", "-t", session, "@attention", "1"])
+        .args(["set-option", "-g", "@attention_target", session])
         .output();
-
-    // Get the actual active client session (not the session that fired the notification)
-    let client_session = Command::new("tmux")
-        .args(["list-clients", "-F", "#{client_session}"])
-        .output()
-        .ok()
-        .and_then(|o| {
-            let s = String::from_utf8_lossy(&o.stdout);
-            let first = s.lines().next()?.trim().to_string();
-            if first.is_empty() { None } else { Some(first) }
-        });
-
-    if let Some(active) = client_session {
-        let home = std::env::var("HOME").unwrap_or_default();
-        let bin = format!("{home}/.config/tmux/scripts/tmux-session");
-        let _ = Command::new(&bin).args(["update", &active]).output();
-    }
 }
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
