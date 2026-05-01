@@ -1,3 +1,4 @@
+import type { AssistantMessage } from "@mariozechner/pi-ai";
 import { closeOpenAICodexWebSocketSessions } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import registerOpenAINativeCompaction from "./compaction/index.ts";
@@ -18,6 +19,13 @@ function isCodexModel(model: ExtensionContext["model"] | undefined): boolean {
 
 function arraysEqual(a: string[], b: string[]): boolean {
 	return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+export function normalizeCodexWebSocketError(message: AssistantMessage): AssistantMessage | undefined {
+	if (message.provider !== "openai-codex") return undefined;
+	if (message.stopReason !== "error") return undefined;
+	if (message.errorMessage !== "WebSocket error") return undefined;
+	return { ...message, errorMessage: "WebSocket connection error" };
 }
 
 export default function codexNativeExtension(pi: ExtensionAPI) {
@@ -55,6 +63,12 @@ export default function codexNativeExtension(pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", () => {
 		closeOpenAICodexWebSocketSessions();
+	});
+
+	pi.on("message_end", (event) => {
+		if (event.message.role !== "assistant") return;
+		const message = normalizeCodexWebSocketError(event.message);
+		if (message) return { message };
 	});
 
 	pi.on("before_agent_start", (event, ctx) => {

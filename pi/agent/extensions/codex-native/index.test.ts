@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { normalizeCodexWebSocketError as normalizeCodexWebSocketErrorMessage } from "./index.ts";
 import {
 	getOpenAICodexLatestImagePath,
 	rewriteNativeImageGenerationTool,
@@ -70,4 +71,33 @@ test("saves generated images under workspace .pi directory and mirrors latest", 
 	expect(saved.latestRelativePath).toBe(".pi/openai-codex-images/latest.png");
 	expect(await readFile(saved.absolutePath, "utf8")).toBe("fake-png");
 	expect(await readFile(getOpenAICodexLatestImagePath(root), "utf8")).toBe("fake-png");
+});
+
+test("normalizes generic Codex websocket failures for auto-retry", () => {
+	const base = {
+		role: "assistant",
+		content: [],
+		api: "openai-codex-responses",
+		provider: "openai-codex",
+		model: "gpt-5.5",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "error",
+		errorMessage: "WebSocket error",
+		timestamp: Date.now(),
+	} as const;
+
+	expect(normalizeCodexWebSocketErrorMessage(base as never)?.errorMessage).toBe("WebSocket connection error");
+	expect(
+		normalizeCodexWebSocketErrorMessage({
+			...base,
+			provider: "anthropic",
+		} as never),
+	).toBeUndefined();
 });
