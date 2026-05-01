@@ -5,7 +5,7 @@ import path from "node:path";
 
 import fffExtension from "./index";
 
-function createHarness() {
+function createHarness(mode: string | null = "override") {
 	const tools: any[] = [];
 	const handlers: Record<string, any> = {};
 	fffExtension({
@@ -14,8 +14,8 @@ function createHarness() {
 		},
 		registerCommand() {},
 		registerFlag() {},
-		getFlag() {
-			return undefined;
+		getFlag(name: string) {
+			return name === "fff-mode" && mode !== null ? mode : undefined;
 		},
 		on(name: string, handler: any) {
 			handlers[name] = handler;
@@ -51,6 +51,13 @@ const theme = {
 };
 
 describe("pi-fff rendering", () => {
+	test("default mode leaves built-in grep tools unshadowed", () => {
+		const { tools } = createHarness(null);
+
+		expect(tools.find((tool) => tool.name === "grep")).toBeUndefined();
+		expect(tools.find((tool) => tool.name === "ffgrep")).toBeDefined();
+	});
+
 	test("search tools self-render without the default success shell", () => {
 		const tools = createTools();
 
@@ -171,6 +178,7 @@ describe("pi-fff rendering", () => {
 		const { handlers, tools } = createHarness();
 		try {
 			await handlers.session_start({}, { cwd, ui: { notify() {}, setEditorComponent() {} } });
+			expect(existsSync(runtimeDir)).toBe(false);
 
 			const grep = tools.find((tool) => tool.name === "grep");
 			const result = await grep.execute(
