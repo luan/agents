@@ -15,6 +15,9 @@ export interface RenderOutputBlockOptions {
 }
 
 const DEFAULT_OUTPUT_MAX_LINES = 5;
+const COMMAND_DISPLAY_MAX_CHARS = 180;
+const COMMAND_PREVIEW_MAX_CHARS = 100;
+const OUTPUT_LINE_DISPLAY_MAX_CHARS = 220;
 
 export function renderExecCommandCall(
 	command: string,
@@ -152,7 +155,7 @@ function renderCommandText(
 	elapsedMs?: number,
 ): string {
 	const verb = state === "running" ? "Running" : "Ran";
-	const displayCommand = shortenCommand(stripShellWrapper(command), 500);
+	const displayCommand = shortenCommand(stripShellWrapper(command), COMMAND_DISPLAY_MAX_CHARS);
 	return appendElapsed(
 		`${renderStatusMarker("•", state, theme, failed)} ${theme.bold(verb)} ${highlightShellCommand(displayCommand, theme)}`,
 		state,
@@ -194,7 +197,7 @@ function renderStatusMarker(
 
 function styleOutputLine(line: string, theme: Pick<RenderTheme, "fg">): string {
 	if (/\u001b\[[0-?]*[ -/]*[@-~]/.test(line)) return line;
-	return theme.fg("dim", line);
+	return theme.fg("dim", shortenLine(line, OUTPUT_LINE_DISPLAY_MAX_CHARS));
 }
 
 function shortenCommand(command: string, max = 100): string {
@@ -203,11 +206,16 @@ function shortenCommand(command: string, max = 100): string {
 	return `${trimmed.slice(0, max - 3)}...`;
 }
 
+function shortenLine(line: string, max: number): string {
+	if (line.length <= max) return line;
+	return `${line.slice(0, max - 3)}...`;
+}
+
 function formatCommandPreview(command: string | undefined): string | undefined {
 	if (!command) return undefined;
 	const singleLine = command.replace(/\s+/g, " ").trim();
 	if (singleLine.length === 0) return undefined;
-	return shortenCommand(stripShellWrapper(singleLine), 80);
+	return shortenCommand(stripShellWrapper(singleLine), COMMAND_PREVIEW_MAX_CHARS);
 }
 
 function stripShellWrapper(command: string): string {

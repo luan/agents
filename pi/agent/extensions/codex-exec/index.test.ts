@@ -41,6 +41,12 @@ test("exec command call unwraps simple shell wrappers before rendering", () => {
 	);
 });
 
+test("exec command call limits very long command lines", () => {
+	const rendered = renderExecCommandCall(`printf ${"x".repeat(300)}`, "done", testTheme);
+	expect(rendered).toEndWith("...");
+	expect(rendered).not.toContain("x".repeat(200));
+});
+
 test("write stdin call uses unwrapped command previews", () => {
 	const rendered = renderWriteStdinCall(3, "", `bash -lc 'git status --short'`, testTheme);
 	expect(rendered).toBe(
@@ -66,6 +72,16 @@ test("exec command call renders failed status as a red dot", () => {
 test("output block keeps a vertical gutter and preserves ANSI color", () => {
 	const rendered = renderOutputBlock("plain\n\u001b[32m✓ green\u001b[0m\n", testTheme);
 	expect(rendered).toBe(`<dim>  ├ </dim><dim>plain</dim>\n<dim>  └ </dim>\u001b[32m✓ green\u001b[0m`);
+});
+
+test("output block preserves plain line spacing", () => {
+	const rendered = renderOutputBlock("  indented  ", testTheme);
+	expect(rendered).toBe("<dim>  └ </dim><dim>  indented  </dim>");
+});
+
+test("output block limits very long plain lines", () => {
+	const rendered = renderOutputBlock("x".repeat(300), testTheme);
+	expect(rendered).toBe(`<dim>  └ </dim><dim>${"x".repeat(217)}...</dim>`);
 });
 
 test("output block collapses large output in the middle", () => {
