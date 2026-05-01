@@ -825,6 +825,70 @@ describe("apply_patch Codex freeform provider", () => {
 			lastPreviousResponseId: "resp_1",
 		});
 	});
+
+	it("reports generic websocket failures as retryable connection errors", async () => {
+		class MockWebSocket {
+			private listeners = new Map<string, Set<(event: unknown) => void>>();
+
+			constructor(_url: string, _protocols?: string | string[] | { headers?: Record<string, string> }) {
+				queueMicrotask(() => this.dispatch("open", {}));
+			}
+
+			addEventListener(type: string, listener: (event: unknown) => void): void {
+				let listeners = this.listeners.get(type);
+				if (!listeners) {
+					listeners = new Set();
+					this.listeners.set(type, listeners);
+				}
+				listeners.add(listener);
+			}
+
+			removeEventListener(type: string, listener: (event: unknown) => void): void {
+				this.listeners.get(type)?.delete(listener);
+			}
+
+			send(_data: string): void {
+				queueMicrotask(() => this.dispatch("error", {}));
+			}
+
+			close(): void {}
+
+			private dispatch(type: string, event: unknown): void {
+				for (const listener of this.listeners.get(type) ?? []) listener(event);
+			}
+		}
+
+		globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+
+		let streamSimple: any;
+		registerApplyPatchFreeformProvider(
+			{
+				registerProvider: (_name: string, provider: any) => {
+					streamSimple = provider.streamSimple;
+				},
+				on: () => {},
+				registerMessageRenderer: () => {},
+			} as any,
+			{ toolName: "apply_patch", description: "Apply patch", grammar: "start: /.+/" },
+		);
+
+		const result = await streamSimple(
+			{
+				id: "gpt-5.5",
+				provider: "openai-codex",
+				api: "openai-codex-responses",
+				baseUrl: "https://chatgpt.com/backend-api",
+				headers: {},
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			},
+			{ messages: [{ role: "user", content: "Make a patch", timestamp: 1 }] },
+			{ apiKey: mockCodexToken(), sessionId: "session-error", transport: "websocket-cached" },
+		).result();
+
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toBe("WebSocket connection error");
+	});
 });
 
 async function* toAsync<T>(items: T[]): AsyncIterable<T> {

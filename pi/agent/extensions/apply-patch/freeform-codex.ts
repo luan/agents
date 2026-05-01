@@ -753,7 +753,7 @@ function extractWebSocketError(event: unknown): Error {
 		const message = (event as { message?: unknown }).message;
 		if (typeof message === "string" && message.length > 0) return new Error(message);
 	}
-	return new Error("WebSocket error");
+	return new Error("WebSocket connection error");
 }
 
 function extractWebSocketCloseError(event: unknown): Error {
