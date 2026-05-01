@@ -5,40 +5,59 @@ fn terminal_app() -> String {
     std::env::var("CT_TERMINAL").unwrap_or_else(|_| "WezTerm".to_string())
 }
 
-/// Returns true if the given app name is currently the frontmost application.
-pub fn is_app_focused(app_name: &str) -> bool {
+fn frontmost_app_name() -> Option<String> {
     let front = Command::new("lsappinfo")
         .args(["front"])
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok());
+        .and_then(|o| String::from_utf8(o.stdout).ok())?;
 
-    let front_handle = match front {
-        Some(h) => h.trim().to_string(),
-        None => return false,
-    };
+    let front_handle = front.trim();
+    if front_handle.is_empty() {
+        return None;
+    }
 
     Command::new("lsappinfo")
-        .args(["info", "-only", "name", &front_handle])
+        .args(["info", "-only", "name", front_handle])
         .output()
         .ok()
         .filter(|o| o.status.success())
         .and_then(|o| String::from_utf8(o.stdout).ok())
-        .and_then(|output| parse_lsappinfo_name(&output).map(|n| n == app_name))
-        .unwrap_or(false)
+        .and_then(|output| parse_lsappinfo_name(&output).map(ToString::to_string))
+}
+
+/// Returns true if the given app name is currently the frontmost application.
+pub fn is_app_focused(app_name: &str) -> bool {
+    frontmost_app_name().is_some_and(|name| name == app_name)
+}
+
+fn is_terminal_focused() -> bool {
+    let Some(name) = frontmost_app_name() else {
+        return false;
+    };
+    if std::env::var("CT_TERMINAL").is_ok() {
+        return is_app_focused(&terminal_app());
+    }
+    matches!(
+        name.as_str(),
+        "WezTerm" | "Ghostty" | "Terminal" | "iTerm2" | "Alacritty" | "kitty"
+    )
 }
 
 /// Parse the app name from lsappinfo output like: `"name"="Ghostty"`
+/// or the display-name-only shape: `"LSDisplayName"="Ghostty"`.
 pub fn parse_lsappinfo_name(output: &str) -> Option<&str> {
     for line in output.lines() {
         let trimmed = line.trim();
-        // Look for "name"="value" pattern (quoted value only)
-        if let Some(rest) = trimmed.strip_prefix("\"name\"=")
-            && let Some(quoted) = rest.trim().strip_prefix('"')
-            && let Some(end) = quoted.find('"')
-        {
-            return Some(&quoted[..end]);
+        for key in ["\"name\"=", "\"LSDisplayName\"="] {
+            // Look for key="value" pattern (quoted value only)
+            if let Some(rest) = trimmed.strip_prefix(key)
+                && let Some(quoted) = rest.trim().strip_prefix('"')
+                && let Some(end) = quoted.find('"')
+            {
+                return Some(&quoted[..end]);
+            }
         }
     }
     None
@@ -72,6 +91,29 @@ pub fn is_session_active(session: &str) -> bool {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim() == session)
         .unwrap_or(false)
+}
+
+/// Returns true when the source tmux pane is the active pane in an attached session.
+/// `TMUX_PANE` is set by tmux and inherited by extension-launched `ct notify`.
+fn is_source_pane_active() -> bool {
+    let Ok(pane) = std::env::var("TMUX_PANE") else {
+        return false;
+    };
+
+    let out = Command::new("tmux")
+        .args([
+            "display-message",
+            "-p",
+            "-t",
+            &pane,
+            "#{pane_active}:#{session_attached}",
+        ])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok());
+
+    matches!(out.as_deref().map(str::trim), Some("1:1"))
 }
 
 fn home_dir() -> Option<std::path::PathBuf> {
@@ -179,12 +221,9 @@ pub fn notify(
     sound: &str,
     icon_path: Option<&str>,
 ) -> Result<(), String> {
-    let terminal_focused = is_app_focused(&terminal_app());
+    let terminal_focused = is_terminal_focused();
 
-    if terminal_focused
-        && let Some(sess) = session
-        && is_session_active(sess)
-    {
+    if terminal_focused && is_source_pane_active() {
         return Ok(());
     }
 
@@ -223,6 +262,12 @@ mod tests {
 LSAppInfoItem 0x600003744540 "com.mitchellh.ghostty" (Ghostty)
 "name"="Ghostty" "pid"=1234
 "#;
+        assert_eq!(parse_lsappinfo_name(output), Some("Ghostty"));
+    }
+
+    #[test]
+    fn parse_lsappinfo_name_extracts_display_name() {
+        let output = r#""LSDisplayName"="Ghostty""#;
         assert_eq!(parse_lsappinfo_name(output), Some("Ghostty"));
     }
 

@@ -1,6 +1,7 @@
 import { basename } from "node:path";
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { type Component, type TUI, truncateToWidth } from "@mariozechner/pi-tui";
 import { runCommand } from "../shared/ct-runner.ts";
 import { renderLensCompactStatus, renderLensWidgetLines } from "../shared/lens-ui.ts";
 
@@ -26,6 +27,7 @@ type ToolFile = {
 };
 
 type CommandRunner = typeof runCommand;
+type ThemeLike = { fg(color: "muted", text: string): string };
 
 type QueuedLensIssue = {
 	source?: string;
@@ -36,15 +38,54 @@ type QueuedLensIssue = {
 	fingerprint?: string;
 };
 
+class LensWidget implements Component {
+	private lines: string[] = [];
+	private cachedWidth?: number;
+	private cachedLines?: string[];
+
+	constructor(private readonly tui: TUI) {}
+
+	setLines(lines: string[]) {
+		this.lines = lines;
+		this.invalidate();
+		this.tui.requestRender();
+	}
+
+	render(width: number): string[] {
+		if (this.cachedWidth === width && this.cachedLines) return this.cachedLines;
+		this.cachedWidth = width;
+		this.cachedLines = this.lines.map((line) => truncateToWidth(line, width));
+		return this.cachedLines;
+	}
+
+	invalidate() {
+		this.cachedWidth = undefined;
+		this.cachedLines = undefined;
+	}
+}
+
+let lensWidget: LensWidget | undefined;
+let lensWidgetRegistered = false;
+
 function isStaleCtxError(error: unknown) {
 	return (error instanceof Error ? error.message : String(error)).includes("ctx is stale");
+}
+
+function ensureLensWidget(ctx: any) {
+	if (lensWidgetRegistered) return;
+	lensWidgetRegistered = true;
+	ctx.ui.setWidget("lens-health", (tui: TUI, _theme: ThemeLike) => {
+		lensWidget = new LensWidget(tui);
+		return lensWidget;
+	});
 }
 
 export function applyLensUi(ctx: any, response: unknown) {
 	try {
 		if (!ctx?.hasUI) return;
 		ctx.ui.setStatus("lens", renderLensCompactStatus(response, { ansi: true }));
-		ctx.ui.setWidget("lens-health", renderLensWidgetLines(response, false, { ansi: true }));
+		ensureLensWidget(ctx);
+		lensWidget?.setLines(renderLensWidgetLines(response, false, { ansi: true }));
 	} catch (error) {
 		if (!isStaleCtxError(error)) throw error;
 	}
@@ -438,6 +479,11 @@ export default function lensExtension(pi: ExtensionAPI) {
 			const response = await runHook("lens-agent-end", eventFor(ctx, "agent_end"), safeCwd(ctx), safeSignal(ctx));
 			applyLensUi(ctx, response);
 		});
+	});
+
+	pi.on("session_shutdown", async () => {
+		lensWidget = undefined;
+		lensWidgetRegistered = false;
 	});
 }
 
