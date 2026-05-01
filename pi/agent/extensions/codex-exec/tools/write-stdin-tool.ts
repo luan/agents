@@ -19,18 +19,12 @@ const WRITE_STDIN_PARAMETERS = Type.Object({
 			description: "How long to wait (in milliseconds) for output before yielding.",
 		}),
 	),
-	max_output_tokens: Type.Optional(
-		Type.Number({
-			description: "Maximum number of tokens to return. Excess output will be truncated.",
-		}),
-	),
 });
 
 interface WriteStdinParams {
 	session_id: number;
 	chars?: string;
 	yield_time_ms?: number;
-	max_output_tokens?: number;
 }
 
 interface FormattedExecTranscript {
@@ -113,15 +107,10 @@ function parseWriteStdinParams(params: unknown): WriteStdinParams {
 	const chars = "chars" in params && typeof params.chars === "string" ? params.chars : undefined;
 	const yield_time_ms =
 		"yield_time_ms" in params && typeof params.yield_time_ms === "number" ? params.yield_time_ms : undefined;
-	const max_output_tokens =
-		"max_output_tokens" in params && typeof params.max_output_tokens === "number"
-			? params.max_output_tokens
-			: undefined;
 	return {
 		session_id: params.session_id,
 		chars,
 		yield_time_ms,
-		max_output_tokens,
 	};
 }
 

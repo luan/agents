@@ -4,6 +4,12 @@ import { resolve } from "node:path";
 import type { Readable } from "node:stream";
 import * as pty from "node-pty";
 import { CODEX_FALLBACK_SHELL, getCodexRuntimeShell, isFishShell } from "../adapter/runtime-shell.ts";
+import {
+	approxTokenCount,
+	capHeadTail,
+	formattedTruncateText,
+	UNIFIED_EXEC_OUTPUT_MAX_BYTES,
+} from "./output-truncation.ts";
 
 export interface UnifiedExecResult {
 	chunk_id: string;
@@ -21,7 +27,6 @@ export interface ExecCommandInput {
 	shell?: string;
 	tty?: boolean;
 	yield_time_ms?: number;
-	max_output_tokens?: number;
 	login?: boolean;
 }
 
@@ -29,13 +34,13 @@ export interface WriteStdinInput {
 	session_id: number;
 	chars?: string;
 	yield_time_ms?: number;
-	max_output_tokens?: number;
 }
 
 interface BaseExecSession {
 	id: number;
 	command: string;
 	buffer: string;
+	pendingBuffer: string;
 	emittedBuffer: string;
 	exitCode: number | null | undefined;
 	listeners: Set<() => void>;
@@ -78,13 +83,12 @@ export interface ExecSessionManagerOptions {
 
 const DEFAULT_EXEC_YIELD_TIME_MS = 120_000;
 const DEFAULT_WRITE_YIELD_TIME_MS = 250;
-const DEFAULT_MAX_OUTPUT_TOKENS = 10_000;
 const MIN_YIELD_TIME_MS = 250;
 const MIN_NON_INTERACTIVE_EXEC_YIELD_TIME_MS = 120_000;
 const MIN_EMPTY_WRITE_YIELD_TIME_MS = 30_000;
 const MAX_YIELD_TIME_MS = 120_000;
 const MAX_COMMAND_HISTORY = 256;
-const DEFAULT_MAX_SESSION_BUFFER_CHARS = 256 * 1024 * 1024;
+const DEFAULT_MAX_SESSION_BUFFER_CHARS = UNIFIED_EXEC_OUTPUT_MAX_BYTES;
 
 function resolveWorkdir(baseCwd: string, workdir?: string): string {
 	if (!workdir) return baseCwd;
@@ -139,7 +143,7 @@ function resolveExecution(
 	command: string,
 ): { shell: string; command: string; env: NodeJS.ProcessEnv } {
 	const shell = resolveShell(requestedShell);
-	const env = withColorEnvironment({ ...process.env });
+	const env = withUnifiedExecEnvironment({ ...process.env });
 	if (!shouldSyncBashEnv(requestedShell, shell)) {
 		return { shell, command, env };
 	}
@@ -151,15 +155,21 @@ function resolveExecution(
 	};
 }
 
-function withColorEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-	if (env.NO_COLOR === undefined) {
-		env.FORCE_COLOR ??= "1";
-		env.CLICOLOR ??= "1";
-		if (!env.TERM || env.TERM === "dumb") {
-			env.TERM = "xterm-256color";
-		}
-		env.COLORTERM ??= "truecolor";
-	}
+function withUnifiedExecEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+	Object.assign(env, {
+		NO_COLOR: "1",
+		TERM: "dumb",
+		LANG: "C.UTF-8",
+		LC_CTYPE: "C.UTF-8",
+		LC_ALL: "C.UTF-8",
+		COLORTERM: "",
+		PAGER: "cat",
+		GIT_PAGER: "cat",
+		GH_PAGER: "cat",
+		CODEX_CI: "1",
+	});
+	delete env.FORCE_COLOR;
+	delete env.CLICOLOR;
 	return env;
 }
 
@@ -192,10 +202,6 @@ function clampWriteYieldTime(
 		return value;
 	}
 	return Math.min(MAX_YIELD_TIME_MS, Math.max(minEmptyWriteYieldTimeMs, value));
-}
-
-function maxCharsForTokens(maxOutputTokens = DEFAULT_MAX_OUTPUT_TOKENS): number {
-	return Math.max(256, maxOutputTokens * 4);
 }
 
 function stripTerminalControlSequences(text: string, preserveCsi = false, preserveSgr = false): string {
@@ -371,33 +377,21 @@ function generateChunkId(): string {
 	return randomBytes(3).toString("hex");
 }
 
-function consumeOutput(
-	session: ExecSession,
-	maxOutputTokens?: number,
-): {
+function consumeOutput(session: ExecSession): {
 	output: string;
 	original_token_count?: number;
 	output_truncated?: boolean;
 } {
-	const text =
-		session.kind === "pty"
-			? computePtyDelta(session.emittedBuffer, session.buffer)
-			: session.buffer.slice(session.emittedBuffer.length);
+	const text = session.pendingBuffer;
+	session.pendingBuffer = "";
 	session.emittedBuffer = session.buffer;
 	if (text.length === 0) {
 		return { output: "" };
 	}
 
-	const maxChars = maxCharsForTokens(maxOutputTokens);
-	const originalTokenCount = Math.ceil(text.length / 4);
-	if (text.length <= maxChars) {
-		return { output: text, original_token_count: originalTokenCount };
-	}
-
 	return {
-		output: text.slice(-maxChars),
-		original_token_count: originalTokenCount,
-		output_truncated: true,
+		...formattedTruncateText(text),
+		original_token_count: approxTokenCount(text),
 	};
 }
 
@@ -459,10 +453,20 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 
 	function appendOutput(session: ExecSession, text: string): void {
 		if (text.length === 0) return;
-		session.buffer =
-			session.kind === "pty" ? applyTerminalOutput(session, text) : `${session.buffer}${normalizePipeOutput(text)}`;
+		const previous = session.buffer;
+		if (session.kind === "pty") {
+			session.buffer = applyTerminalOutput(session, text);
+			session.pendingBuffer = capHeadTail(
+				`${session.pendingBuffer}${computePtyDelta(previous, session.buffer)}`,
+				UNIFIED_EXEC_OUTPUT_MAX_BYTES,
+			);
+		} else {
+			const normalized = normalizePipeOutput(text);
+			session.buffer = `${session.buffer}${normalized}`;
+			session.pendingBuffer = capHeadTail(`${session.pendingBuffer}${normalized}`, UNIFIED_EXEC_OUTPUT_MAX_BYTES);
+		}
 		if (session.buffer.length > maxSessionBufferChars) {
-			session.buffer = session.buffer.slice(-maxSessionBufferChars);
+			session.buffer = capHeadTail(session.buffer, maxSessionBufferChars);
 			session.emittedBuffer = "";
 		}
 		notify(session);
@@ -494,8 +498,8 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		});
 	}
 
-	function makeResult(session: ExecSession, waitMs: number, maxOutputTokens?: number): UnifiedExecResult {
-		const consumed = consumeOutput(session, maxOutputTokens);
+	function makeResult(session: ExecSession, waitMs: number): UnifiedExecResult {
+		const consumed = consumeOutput(session);
 		const result: UnifiedExecResult = {
 			chunk_id: generateChunkId(),
 			wall_time_seconds: waitMs / 1000,
@@ -539,6 +543,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			command: input.cmd,
 			child,
 			buffer: "",
+			pendingBuffer: "",
 			emittedBuffer: "",
 			exitCode: undefined,
 			listeners: new Set(),
@@ -593,6 +598,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			command: input.cmd,
 			child,
 			buffer: "",
+			pendingBuffer: "",
 			emittedBuffer: "",
 			exitCode: undefined,
 			listeners: new Set(),
@@ -646,7 +652,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 					minNonInteractiveExecYieldTimeMs,
 				),
 			);
-			return makeResult(session, waitedMs, input.max_output_tokens);
+			return makeResult(session, waitedMs);
 		},
 		write: async (input) => {
 			const session = sessions.get(input.session_id);
@@ -675,7 +681,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 							),
 						)
 					: 0;
-			return makeResult(session, waitedMs, input.max_output_tokens);
+			return makeResult(session, waitedMs);
 		},
 		hasSession: (sessionId) => sessions.has(sessionId),
 		getSessionCommand: (sessionId) => sessions.get(sessionId)?.command ?? commandHistory.get(sessionId),

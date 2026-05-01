@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-age
 import { createExecCommandTracker } from "./tools/exec-command-state.ts";
 import { registerExecCommandTool } from "./tools/exec-command-tool.ts";
 import { createExecSessionManager } from "./tools/exec-session-manager.ts";
+import { formattedTruncateText } from "./tools/output-truncation.ts";
 import { registerWriteStdinTool } from "./tools/write-stdin-tool.ts";
 
 function isCodexModel(model: ExtensionContext["model"] | undefined): boolean {
@@ -25,6 +26,20 @@ function isToolCallOnlyAssistantMessage(message: unknown): boolean {
 	return message.content.every(
 		(item) => typeof item === "object" && item !== null && "type" in item && item.type === "toolCall",
 	);
+}
+
+function truncateTextToolResultContent(content: unknown): unknown[] | undefined {
+	if (!Array.isArray(content)) return undefined;
+	let changed = false;
+	const next = content.map((item) => {
+		if (!item || typeof item !== "object" || !("type" in item) || item.type !== "text") return item;
+		if (!("text" in item) || typeof item.text !== "string") return item;
+		const truncated = formattedTruncateText(item.text);
+		if (!truncated.output_truncated) return item;
+		changed = true;
+		return { ...item, text: truncated.output };
+	});
+	return changed ? next : undefined;
 }
 
 export default function codexExecExtension(pi: ExtensionAPI) {
@@ -82,13 +97,21 @@ export default function codexExecExtension(pi: ExtensionAPI) {
 		if (event.toolName === "exec_command") tracker.recordEnd(event.toolCallId);
 	});
 	pi.on("tool_result", (event) => {
-		if (event.toolName !== "exec_command" && event.toolName !== "write_stdin") return;
-		const details = event.details;
-		if (!details || typeof details !== "object" || !("exit_code" in details)) return;
-		const exitCode = (details as { exit_code?: unknown }).exit_code;
-		if (typeof exitCode === "number" && exitCode !== 0) {
-			return { isError: true };
+		const content = truncateTextToolResultContent(event.content);
+		const patch: { content?: unknown[]; isError?: boolean } = {};
+		if (content) patch.content = content;
+
+		if (event.toolName === "exec_command" || event.toolName === "write_stdin") {
+			const details = event.details;
+			if (details && typeof details === "object" && "exit_code" in details) {
+				const exitCode = (details as { exit_code?: unknown }).exit_code;
+				if (typeof exitCode === "number" && exitCode !== 0) {
+					patch.isError = true;
+				}
+			}
 		}
+
+		return Object.keys(patch).length > 0 ? patch : undefined;
 	});
 	pi.on("session_shutdown", () => {
 		tracker.clear();

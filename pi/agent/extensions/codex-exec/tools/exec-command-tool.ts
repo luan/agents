@@ -29,11 +29,6 @@ const EXEC_COMMAND_PARAMETERS = Type.Object({
 			description: "How long to wait in milliseconds for output before yielding.",
 		}),
 	),
-	max_output_tokens: Type.Optional(
-		Type.Number({
-			description: "Maximum number of tokens to return. Excess output will be truncated.",
-		}),
-	),
 	login: Type.Optional(
 		Type.Boolean({
 			description: "Whether to run the shell with -l/-i semantics. Defaults to true.",
@@ -47,7 +42,6 @@ interface ExecCommandParams {
 	shell?: string;
 	tty?: boolean;
 	yield_time_ms?: number;
-	max_output_tokens?: number;
 	login?: boolean;
 }
 
@@ -88,10 +82,6 @@ function parseExecCommandParams(params: unknown): ExecCommandParams {
 		tty: "tty" in params && typeof params.tty === "boolean" ? params.tty : undefined,
 		yield_time_ms:
 			"yield_time_ms" in params && typeof params.yield_time_ms === "number" ? params.yield_time_ms : undefined,
-		max_output_tokens:
-			"max_output_tokens" in params && typeof params.max_output_tokens === "number"
-				? params.max_output_tokens
-				: undefined,
 		login: "login" in params && typeof params.login === "boolean" ? params.login : undefined,
 	};
 }
