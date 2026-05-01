@@ -1,11 +1,26 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { convertTools, mapFreeformEvents, parseSSE } from "./freeform-codex.ts";
+import {
+	closeOpenAICodexWebSocketSessions,
+	convertTools,
+	getOpenAICodexWebSocketDebugStats,
+	mapFreeformEvents,
+	parseSSE,
+	registerApplyPatchFreeformProvider,
+	resetOpenAICodexWebSocketDebugStats,
+} from "./freeform-codex.ts";
 import applyPatchExtension from "./index.ts";
 
 const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
+const originalWebSocket = globalThis.WebSocket;
+
+afterEach(() => {
+	globalThis.WebSocket = originalWebSocket;
+	closeOpenAICodexWebSocketSessions();
+	resetOpenAICodexWebSocketDebugStats();
+});
 
 const resolvedDiff = `--- a/sample.js
 +++ b/sample.js
@@ -543,8 +558,159 @@ describe("apply_patch Codex freeform provider", () => {
 
 		await expect(collect(parseSSE(response))).resolves.toEqual([{ type: "first" }, { type: "second" }]);
 	});
+
+	it("sends only response input deltas in websocket-cached mode", async () => {
+		const sentBodies: any[] = [];
+		const responses = [
+			{ responseId: "resp_1", messageId: "msg_1", text: "Hello" },
+			{ responseId: "resp_2", messageId: "msg_2", text: "Done" },
+		];
+
+		class MockWebSocket {
+			static OPEN = 1;
+			readyState = MockWebSocket.OPEN;
+			private listeners = new Map<string, Set<(event: unknown) => void>>();
+
+			constructor(_url: string, _protocols?: string | string[] | { headers?: Record<string, string> }) {
+				queueMicrotask(() => this.dispatch("open", {}));
+			}
+
+			addEventListener(type: string, listener: (event: unknown) => void): void {
+				let listeners = this.listeners.get(type);
+				if (!listeners) {
+					listeners = new Set();
+					this.listeners.set(type, listeners);
+				}
+				listeners.add(listener);
+			}
+
+			removeEventListener(type: string, listener: (event: unknown) => void): void {
+				this.listeners.get(type)?.delete(listener);
+			}
+
+			send(data: string): void {
+				sentBodies.push(JSON.parse(data));
+				const response = responses.shift();
+				if (!response) throw new Error("unexpected websocket request");
+				const events = [
+					{ type: "response.created", response: { id: response.responseId } },
+					{
+						type: "response.output_item.added",
+						item: {
+							type: "message",
+							id: response.messageId,
+							role: "assistant",
+							status: "in_progress",
+							content: [],
+						},
+					},
+					{ type: "response.content_part.added", part: { type: "output_text", text: "" } },
+					{ type: "response.output_text.delta", delta: response.text },
+					{
+						type: "response.output_item.done",
+						item: {
+							type: "message",
+							id: response.messageId,
+							role: "assistant",
+							status: "completed",
+							content: [{ type: "output_text", text: response.text }],
+						},
+					},
+					{
+						type: "response.completed",
+						response: {
+							id: response.responseId,
+							status: "completed",
+							usage: {
+								input_tokens: 5,
+								output_tokens: 3,
+								total_tokens: 8,
+								input_tokens_details: { cached_tokens: 0 },
+							},
+						},
+					},
+				];
+				queueMicrotask(() => {
+					for (const event of events) this.dispatch("message", { data: JSON.stringify(event) });
+				});
+			}
+
+			close(): void {
+				this.readyState = 3;
+			}
+
+			private dispatch(type: string, event: unknown): void {
+				for (const listener of this.listeners.get(type) ?? []) listener(event);
+			}
+		}
+
+		globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+
+		let streamSimple: any;
+		registerApplyPatchFreeformProvider(
+			{
+				registerProvider: (_name: string, provider: any) => {
+					streamSimple = provider.streamSimple;
+				},
+				on: () => {},
+				registerMessageRenderer: () => {},
+			} as any,
+			{ toolName: "apply_patch", description: "Apply patch", grammar: "start: /.+/" },
+		);
+
+		const model = {
+			id: "gpt-5.5",
+			provider: "openai-codex",
+			api: "openai-codex-responses",
+			baseUrl: "https://chatgpt.com/backend-api",
+			headers: {},
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		};
+		const apiKey = mockCodexToken();
+		const firstContext = {
+			systemPrompt: "You are helpful.",
+			messages: [{ role: "user", content: "Say hello", timestamp: 1 }],
+		};
+		const first = await streamSimple(model, firstContext, {
+			apiKey,
+			sessionId: "session-1",
+			transport: "websocket-cached",
+		}).result();
+		await streamSimple(
+			model,
+			{
+				systemPrompt: "You are helpful.",
+				messages: [...firstContext.messages, first, { role: "user", content: "Now finish", timestamp: 2 }],
+			},
+			{ apiKey, sessionId: "session-1", transport: "websocket-cached" },
+		).result();
+
+		expect(sentBodies).toHaveLength(2);
+		expect(sentBodies[0].previous_response_id).toBeUndefined();
+		expect(sentBodies[0].input).toEqual([{ role: "user", content: [{ type: "input_text", text: "Say hello" }] }]);
+		expect(sentBodies[1].previous_response_id).toBe("resp_1");
+		expect(sentBodies[1].input).toEqual([{ role: "user", content: [{ type: "input_text", text: "Now finish" }] }]);
+		expect(getOpenAICodexWebSocketDebugStats("session-1")).toMatchObject({
+			requests: 2,
+			connectionsCreated: 1,
+			connectionsReused: 1,
+			cachedContextRequests: 2,
+			fullContextRequests: 1,
+			deltaRequests: 1,
+			lastDeltaInputItems: 1,
+			lastPreviousResponseId: "resp_1",
+		});
+	});
 });
 
 async function* toAsync<T>(items: T[]): AsyncIterable<T> {
 	for (const item of items) yield item;
+}
+
+function mockCodexToken(): string {
+	const payload = Buffer.from(
+		JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acct_test" } }),
+	).toString("base64url");
+	return `header.${payload}.signature`;
 }
