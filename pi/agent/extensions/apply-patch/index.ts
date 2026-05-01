@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync, statSync, writeFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -128,6 +128,11 @@ type ApplyPatchRenderDetails = {
 	semantic?: boolean;
 };
 
+type ApplyPatchIntentSummary = {
+	intent: string;
+	files: ApplyPatchProgressFile[];
+};
+
 type ToolResult = {
 	content: { type: "text"; text: string }[];
 	details: Record<string, unknown>;
@@ -227,10 +232,6 @@ function loadConfig(): ApplyPatchConfig {
 	} catch {
 		return DEFAULT_CONFIG;
 	}
-}
-
-function saveConfig(config: ApplyPatchConfig): void {
-	writeFileSync(CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`);
 }
 
 type DiffLineKind = "add" | "remove" | "context" | "hunk";
@@ -451,7 +452,8 @@ class ApplyPatchDiffView {
 			return prependIntentLine(diffLines, this.intent, this.theme, safeWidth);
 		}
 
-		const bodyLines = this.fallbackBody.split("\n");
+		const fallbackBody = this.state === "error" ? this.fallbackBody.replace(ANSI_PATTERN, "") : this.fallbackBody;
+		const bodyLines = fallbackBody.split("\n");
 		while (bodyLines.length > 0 && bodyLines[0].trim() === "") {
 			bodyLines.shift();
 		}
@@ -1903,8 +1905,105 @@ function isCodexModel(model: ModelLike | undefined): boolean {
 	return provider.includes("codex") || id.includes("codex");
 }
 
-function formatConfig(config: ApplyPatchConfig): string {
-	return `apply_patch diff: unified (max ${config.maxDiffLines} lines, syntax ${config.syntaxHighlight ? "on" : "off"}, rich render ${config.richRender ? "on" : "off"}, render diff ${config.renderDiff ? "on" : "off"}, enforce ${config.enforce ? "on" : "off"}, validate ${config.validateBeforeApply ? "on" : "off"}, tool ${config.registerTool ? "on" : "off"}, active ${config.activeByDefault ? "on" : "off"}, prompt snippet ${config.promptSnippet ? "on" : "off"}, prompt guidelines ${config.promptGuidelines ? "on" : "off"})`;
+function isApplyPatchToolName(toolName: unknown): boolean {
+	return (
+		toolName === APPLY_PATCH_TOOL_NAME ||
+		(typeof toolName === "string" && toolName.endsWith(`.${APPLY_PATCH_TOOL_NAME}`))
+	);
+}
+
+function asApplyPatchProgressFiles(value: unknown): ApplyPatchProgressFile[] {
+	if (!Array.isArray(value)) return [];
+	return value
+		.filter((file): file is Record<string, unknown> => typeof file === "object" && file !== null)
+		.filter((file) => typeof file.path === "string")
+		.map((file) => ({
+			path: file.path as string,
+			moveTo: typeof file.moveTo === "string" ? file.moveTo : undefined,
+			operation:
+				file.operation === "add" || file.operation === "delete" || file.operation === "update"
+					? file.operation
+					: "update",
+			added: typeof file.added === "number" ? file.added : 0,
+			removed: typeof file.removed === "number" ? file.removed : 0,
+			done: typeof file.done === "boolean" ? file.done : undefined,
+			semantic: typeof file.semantic === "boolean" ? file.semantic : undefined,
+		}));
+}
+
+function intentSummaryFromToolResult(toolResult: unknown): ApplyPatchIntentSummary | undefined {
+	const result = toolResult as
+		| { toolName?: unknown; details?: Record<string, unknown>; isError?: boolean }
+		| undefined;
+	if (!result || result.isError || !isApplyPatchToolName(result.toolName)) return undefined;
+	const intent = typeof result.details?.intent === "string" ? result.details.intent.trim() : "";
+	if (!intent) return undefined;
+	return {
+		intent,
+		files: asApplyPatchProgressFiles(result.details?.fileDiffs),
+	};
+}
+
+function collectApplyPatchIntentsFromToolResults(toolResults: unknown[]): ApplyPatchIntentSummary[] {
+	return toolResults.flatMap((toolResult) => {
+		const summary = intentSummaryFromToolResult(toolResult);
+		return summary ? [summary] : [];
+	});
+}
+
+function collectApplyPatchIntentsFromEntries(entries: unknown[]): ApplyPatchIntentSummary[] {
+	const results: ApplyPatchIntentSummary[] = [];
+	for (const entry of entries) {
+		const message = (entry as { message?: unknown }).message as { role?: string } | undefined;
+		if (message?.role !== "toolResult") continue;
+		const summary = intentSummaryFromToolResult(message);
+		if (summary) results.push(summary);
+	}
+	return results;
+}
+
+function collectLastTurnApplyPatchIntentsFromEntries(entries: unknown[]): ApplyPatchIntentSummary[] {
+	const toolResults: unknown[] = [];
+	for (let index = entries.length - 1; index >= 0; index -= 1) {
+		const message = (entries[index] as { message?: unknown }).message as { role?: string } | undefined;
+		if (!message) continue;
+		if (message.role === "toolResult") {
+			toolResults.unshift(message);
+			continue;
+		}
+		if (message.role === "assistant") break;
+		if (toolResults.length > 0) break;
+	}
+	return collectApplyPatchIntentsFromToolResults(toolResults);
+}
+
+function formatPatchIntentStat(files: ApplyPatchProgressFile[]): string {
+	if (files.length === 0) return "";
+	const added = files.reduce((sum, file) => sum + file.added, 0);
+	const removed = files.reduce((sum, file) => sum + file.removed, 0);
+	const fileLabel = files.length === 1 ? (files[0].moveTo ?? files[0].path) : `${files.length} files`;
+	return ` — ${fileLabel} (+${added} -${removed})`;
+}
+
+function formatPatchIntentList(
+	scope: "session" | "turn",
+	intents: ApplyPatchIntentSummary[],
+	showStat: boolean,
+): string {
+	if (intents.length === 0) return `No apply_patch intents found for the current ${scope}.`;
+	return intents.map((item) => `- ${item.intent}${showStat ? formatPatchIntentStat(item.files) : ""}`).join("\n");
+}
+
+function parseApplyPatchIntentsCommand(args: string): { scope: "session" | "turn"; showStat: boolean } | undefined {
+	const parts = args
+		.split(/\s+/)
+		.map((part) => part.trim())
+		.filter(Boolean);
+	const showStat = parts.includes("--stat");
+	const rest = parts.filter((part) => part !== "--stat");
+	if (rest.length === 0) return { scope: "turn", showStat };
+	if (rest.length === 1 && (rest[0] === "session" || rest[0] === "turn")) return { scope: rest[0], showStat };
+	return undefined;
 }
 
 export default function applyPatchExtension(pi: ExtensionAPI) {
@@ -1914,10 +2013,11 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 		grammar: APPLY_PATCH_GRAMMAR,
 	});
 
-	let config = loadConfig();
+	const config = loadConfig();
 	const executingPatchInputs = new Set<string>();
 	const completedPatchInputs = new Set<string>();
 	const toolsRemovedForCodex = new Set<string>();
+	let lastTurnPatchIntents: ApplyPatchIntentSummary[] = [];
 
 	const applyCodexToolPolicy = (ctx?: ExtensionContext) => {
 		if (!ctx) return;
@@ -1955,6 +2055,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 	const resetSessionState = (_event?: unknown, ctx?: ExtensionContext) => {
 		executingPatchInputs.clear();
 		completedPatchInputs.clear();
+		lastTurnPatchIntents = [];
 		applyToolAvailability(pi, config);
 		enforceToolPolicy(pi, config);
 		applyCodexToolPolicy(ctx);
@@ -1966,6 +2067,9 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 		applyToolAvailability(pi, config);
 		enforceToolPolicy(pi, config);
 		applyCodexToolPolicy(ctx);
+	});
+	pi.on("turn_end", (event) => {
+		lastTurnPatchIntents = collectApplyPatchIntentsFromToolResults(event.toolResults);
 	});
 
 	pi.on("before_agent_start", (event, ctx) => {
@@ -1995,24 +2099,24 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 		}
 	});
 
-	pi.registerCommand("apply-patch-diff", {
-		description: "Configure apply_patch unified diff rendering",
+	pi.registerCommand("apply-patch-intents", {
+		description: "Show apply_patch intents for the last turn or current session",
 		handler: async (args, ctx) => {
-			const value = args.trim();
-			if (!value) {
-				ctx.ui.notify(formatConfig(config), "info");
+			const parsed = parseApplyPatchIntentsCommand(args);
+			if (!parsed) {
+				ctx.ui.notify("Usage: /apply-patch-intents [turn|session] [--stat]", "error");
 				return;
 			}
 
-			const maxLines = Number.parseInt(value, 10);
-			if (!Number.isFinite(maxLines) || maxLines < 1) {
-				ctx.ui.notify("Usage: /apply-patch-diff [maxDiffLines]", "error");
-				return;
-			}
+			const entries = (ctx.sessionManager.getBranch?.() ?? ctx.sessionManager.getEntries?.() ?? []) as unknown[];
+			const intents =
+				parsed.scope === "session"
+					? collectApplyPatchIntentsFromEntries(entries)
+					: lastTurnPatchIntents.length > 0
+						? lastTurnPatchIntents
+						: collectLastTurnApplyPatchIntentsFromEntries(entries);
 
-			config = { ...config, maxDiffLines: maxLines };
-			saveConfig(config);
-			ctx.ui.notify(formatConfig(config), "info");
+			ctx.ui.notify(formatPatchIntentList(parsed.scope, intents, parsed.showStat), "info");
 		},
 	});
 

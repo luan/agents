@@ -69,6 +69,26 @@ function registerApplyPatchTool(): any {
 	return tool;
 }
 
+function registerApplyPatchCommands() {
+	const commands = new Map<string, any>();
+	const handlers = new Map<string, (...args: any[]) => any>();
+	const pi = {
+		on: (name: string, handler: (...args: any[]) => any) => {
+			handlers.set(name, handler);
+		},
+		registerCommand: (name: string, definition: any) => {
+			commands.set(name, definition);
+		},
+		registerTool: () => {},
+		getActiveTools: () => ["apply_patch"],
+		setActiveTools: () => {},
+		appendEntry: () => {},
+		events: { emit: () => {} },
+	};
+	applyPatchExtension(pi as any);
+	return { commands, handlers };
+}
+
 function renderContext(cwd: string, state: Record<string, unknown>, overrides: Record<string, unknown> = {}) {
 	return {
 		args: {},
@@ -390,6 +410,109 @@ describe("apply_patch streaming renderer", () => {
 		expect(lines.every((line) => line.length <= 72)).toBe(true);
 		expect(lines.join("\n")).toContain("widen the context");
 		expect(lines.join("\n")).toContain("pins to candidate");
+	});
+
+	it("strips nested ANSI diff backgrounds from apply failure text", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "apply-patch-error-ansi-render-"));
+		const tool = registerApplyPatchTool();
+		const state: Record<string, unknown> = {};
+		const ansiError = [
+			"Error: context not found",
+			'\u001b[48;2;20;53;31m+import { readFileSync, statSync } from "node:fs";\u001b[0m',
+			"\u001b[48;2;59;29;36m-function saveConfig(config: ApplyPatchConfig): void {\u001b[0m",
+		].join("\n");
+
+		const rendered = tool.renderResult(
+			{
+				content: [{ type: "text", text: ansiError }],
+				details: { stage: "apply" },
+			},
+			{ expanded: false, isPartial: false },
+			theme,
+			renderContext(cwd, state, { executionStarted: true }),
+		);
+		const rawText = rendered.render(120).join("\n");
+		expect(rawText).not.toContain("\u001b[48;2;20;53;31m");
+		expect(rawText).not.toContain("\u001b[48;2;59;29;36m");
+		expect(renderText(rendered)).toContain('+import { readFileSync, statSync } from "node:fs";');
+		expect(renderText(rendered)).toContain("-function saveConfig(config: ApplyPatchConfig): void {");
+	});
+});
+
+describe("apply_patch intent command", () => {
+	it("registers /apply-patch-intents and removes /apply-patch-diff", () => {
+		const { commands } = registerApplyPatchCommands();
+
+		expect(commands.has("apply-patch-intents")).toBe(true);
+		expect(commands.has("apply-patch-diff")).toBe(false);
+	});
+
+	it("shows session intents with optional stats", async () => {
+		const { commands } = registerApplyPatchCommands();
+		const notifications: string[] = [];
+		const entries = [
+			{
+				message: {
+					role: "toolResult",
+					toolName: "apply_patch",
+					isError: false,
+					details: {
+						intent: "Make the summary wording shorter.",
+						fileDiffs: [{ path: "sample.js", operation: "update", added: 1, removed: 1 }],
+					},
+				},
+			},
+			{
+				message: {
+					role: "toolResult",
+					toolName: "functions.apply_patch",
+					isError: false,
+					details: {
+						intent: "Add command tests.",
+						fileDiffs: [
+							{ path: "index.test.ts", operation: "update", added: 12, removed: 0 },
+							{ path: "index.ts", operation: "update", added: 3, removed: 1 },
+						],
+					},
+				},
+			},
+		];
+
+		await commands.get("apply-patch-intents").handler("session --stat", {
+			sessionManager: { getBranch: () => entries },
+			ui: { notify: (message: string) => notifications.push(message) },
+		});
+
+		expect(notifications[0]).toBe(
+			["- Make the summary wording shorter. — sample.js (+1 -1)", "- Add command tests. — 2 files (+15 -1)"].join(
+				"\n",
+			),
+		);
+	});
+
+	it("shows last turn intents from the turn_end event", async () => {
+		const { commands, handlers } = registerApplyPatchCommands();
+		const notifications: string[] = [];
+
+		handlers.get("turn_end")?.({
+			toolResults: [
+				{
+					toolName: "apply_patch",
+					isError: false,
+					details: {
+						intent: "Update runtime behavior.",
+						fileDiffs: [{ path: "index.ts", operation: "update", added: 2, removed: 1 }],
+					},
+				},
+			],
+		});
+
+		await commands.get("apply-patch-intents").handler("turn", {
+			sessionManager: { getBranch: () => [] },
+			ui: { notify: (message: string) => notifications.push(message) },
+		});
+
+		expect(notifications[0]).toBe("- Update runtime behavior.");
 	});
 });
 
