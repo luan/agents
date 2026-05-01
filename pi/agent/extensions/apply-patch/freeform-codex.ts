@@ -21,6 +21,7 @@ const CODEX_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex", "opencode"]
 const CODEX_RESPONSE_STATUSES = new Set(["completed", "incomplete", "failed", "cancelled", "queued", "in_progress"]);
 const OPENAI_BETA_RESPONSES_WEBSOCKETS = "responses_websockets=2026-02-06";
 const SESSION_WEBSOCKET_CACHE_TTL_MS = 5 * 60 * 1000;
+const WEBSOCKET_FAILURE_FALLBACK_THRESHOLD = 3;
 
 type RequestBody = Record<string, any> & {
 	input?: any[];
@@ -86,6 +87,8 @@ export function registerApplyPatchFreeformProvider(pi: ExtensionAPI, options: Ap
 	if (typeof pi.registerProvider !== "function") return;
 	const pendingActivities: PendingActivity[] = [];
 	let pendingFlushTimer: ReturnType<typeof setTimeout> | undefined;
+	let consecutiveWebSocketFailures = 0;
+	let forceSseForSession = false;
 
 	const flushPendingMessages = () => {
 		pendingFlushTimer = undefined;
@@ -135,8 +138,18 @@ export function registerApplyPatchFreeformProvider(pi: ExtensionAPI, options: Ap
 		api: "openai-codex-responses",
 		streamSimple: (model, context, streamOptions) =>
 			streamFreeformCodexResponses(model, context, options, streamOptions, {
+				forceSse: forceSseForSession,
 				onImageSaved: (savedImage, imageData) => pendingActivities.push({ kind: "image", savedImage, imageData }),
 				onWebSearchCaptured: (search) => pendingActivities.push({ kind: "web-search", search }),
+				onStreamSuccess: () => {
+					consecutiveWebSocketFailures = 0;
+				},
+				onWebSocketFailure: () => {
+					consecutiveWebSocketFailures++;
+					if (consecutiveWebSocketFailures >= WEBSOCKET_FAILURE_FALLBACK_THRESHOLD) {
+						forceSseForSession = true;
+					}
+				},
 			}),
 	});
 
@@ -148,6 +161,8 @@ export function registerApplyPatchFreeformProvider(pi: ExtensionAPI, options: Ap
 		if (pendingFlushTimer) clearTimeout(pendingFlushTimer);
 		pendingFlushTimer = undefined;
 		pendingActivities.length = 0;
+		consecutiveWebSocketFailures = 0;
+		forceSseForSession = false;
 	});
 	pi.on("context", async (event) => ({
 		messages: event.messages.filter(
@@ -173,8 +188,11 @@ function streamFreeformCodexResponses(
 	applyPatch: ApplyPatchFreeformOptions,
 	options?: SimpleStreamOptions,
 	deps: {
+		forceSse?: boolean;
 		onImageSaved?: (savedImage: SavedGeneratedImage, imageData: { data: string; mimeType: string }) => void;
 		onWebSearchCaptured?: (search: SurfacedWebSearch) => void;
+		onStreamSuccess?: () => void;
+		onWebSocketFailure?: (error: Error) => void;
 	} = {},
 ) {
 	const stream = new AssistantMessageEventStream();
@@ -189,7 +207,10 @@ function streamFreeformCodexResponses(
 			const nextBody = await options?.onPayload?.(body, model);
 			if (nextBody !== undefined) body = nextBody;
 			const accountId = extractAccountId(apiKey);
-			const transport = (options as any)?.transport || "sse";
+			const requestedTransport = (options as any)?.transport || "sse";
+			const transport = deps.forceSse && requestedTransport !== "sse" ? "sse" : requestedTransport;
+			const effectiveOptions =
+				transport === requestedTransport ? options : ({ ...options, transport } as SimpleStreamOptions | undefined);
 			const requestId = options?.sessionId || createCodexRequestId();
 			const sseHeaders = buildSSEHeaders(model.headers, options?.headers, accountId, apiKey, options?.sessionId);
 			const websocketHeaders = buildWebSocketHeaders(model.headers, options?.headers, accountId, apiKey, requestId);
@@ -214,7 +235,7 @@ function streamFreeformCodexResponses(
 						() => {
 							websocketStarted = true;
 						},
-						options,
+						effectiveOptions,
 					);
 					if (options?.signal?.aborted) throw new Error("Request was aborted");
 					stream.push({
@@ -222,6 +243,7 @@ function streamFreeformCodexResponses(
 						reason: output.stopReason as any,
 						message: output,
 					});
+					deps.onStreamSuccess?.();
 					stream.end();
 					return;
 				} catch (error) {
@@ -260,11 +282,15 @@ function streamFreeformCodexResponses(
 				reason: output.stopReason as any,
 				message: output,
 			});
+			deps.onStreamSuccess?.();
 			stream.end();
 		} catch (error) {
 			for (const block of output.content) delete (block as any).partialJson;
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = error instanceof Error ? error.message : String(error);
+			if (output.stopReason === "error" && output.errorMessage.startsWith("WebSocket")) {
+				deps.onWebSocketFailure?.(error instanceof Error ? error : new Error(String(error)));
+			}
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
 		}

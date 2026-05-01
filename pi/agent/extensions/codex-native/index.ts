@@ -28,6 +28,15 @@ export function normalizeCodexWebSocketError(message: AssistantMessage): Assista
 	return { ...message, errorMessage: "WebSocket connection error" };
 }
 
+export function isCodexWebSocketError(message: AssistantMessage): boolean {
+	return (
+		message.provider === "openai-codex" &&
+		message.stopReason === "error" &&
+		(message.errorMessage === "WebSocket error" ||
+			message.errorMessage?.startsWith("WebSocket connection error") === true)
+	);
+}
+
 export default function codexNativeExtension(pi: ExtensionAPI) {
 	registerOpenAINativeCompaction(pi);
 	pi.registerTool(createImageGenerationTool());
@@ -70,6 +79,10 @@ export default function codexNativeExtension(pi: ExtensionAPI) {
 		const message = normalizeCodexWebSocketError(event.message);
 		if (message) return { message };
 	});
+
+	pi.on("context", (event) => ({
+		messages: event.messages.filter((message) => message.role !== "assistant" || !isCodexWebSocketError(message)),
+	}));
 
 	pi.on("before_agent_start", (event, ctx) => {
 		applyToolPolicy(ctx);

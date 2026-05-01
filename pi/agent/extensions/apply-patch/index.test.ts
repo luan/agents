@@ -891,6 +891,129 @@ describe("apply_patch Codex freeform provider", () => {
 			/^WebSocket connection error after \d+s \(\d+s since last event, 0 events\)$/,
 		);
 	});
+
+	it("falls back to SSE after repeated websocket failures", async () => {
+		let websocketConstructs = 0;
+		let fetchCalls = 0;
+		const originalFetch = globalThis.fetch;
+
+		class MockWebSocket {
+			private listeners = new Map<string, Set<(event: unknown) => void>>();
+
+			constructor(_url: string, _protocols?: string | string[] | { headers?: Record<string, string> }) {
+				websocketConstructs++;
+				queueMicrotask(() => this.dispatch("open", {}));
+			}
+
+			addEventListener(type: string, listener: (event: unknown) => void): void {
+				let listeners = this.listeners.get(type);
+				if (!listeners) {
+					listeners = new Set();
+					this.listeners.set(type, listeners);
+				}
+				listeners.add(listener);
+			}
+
+			removeEventListener(type: string, listener: (event: unknown) => void): void {
+				this.listeners.get(type)?.delete(listener);
+			}
+
+			send(_data: string): void {
+				queueMicrotask(() => this.dispatch("error", {}));
+			}
+
+			close(): void {}
+
+			private dispatch(type: string, event: unknown): void {
+				for (const listener of this.listeners.get(type) ?? []) listener(event);
+			}
+		}
+
+		globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+		globalThis.fetch = (async () => {
+			fetchCalls++;
+			const encoder = new TextEncoder();
+			const events = [
+				{ type: "response.created", response: { id: "resp_sse" } },
+				{
+					type: "response.output_item.added",
+					item: { type: "message", id: "msg_sse", role: "assistant", status: "in_progress", content: [] },
+				},
+				{ type: "response.content_part.added", part: { type: "output_text", text: "" } },
+				{ type: "response.output_text.delta", delta: "Recovered" },
+				{
+					type: "response.output_item.done",
+					item: {
+						type: "message",
+						id: "msg_sse",
+						role: "assistant",
+						status: "completed",
+						content: [{ type: "output_text", text: "Recovered" }],
+					},
+				},
+				{
+					type: "response.completed",
+					response: {
+						id: "resp_sse",
+						status: "completed",
+						usage: {
+							input_tokens: 1,
+							output_tokens: 1,
+							total_tokens: 2,
+							input_tokens_details: { cached_tokens: 0 },
+						},
+					},
+				},
+			];
+			return new Response(
+				new ReadableStream({
+					start(controller) {
+						for (const event of events) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+						controller.close();
+					},
+				}),
+				{ status: 200 },
+			);
+		}) as typeof fetch;
+
+		try {
+			let streamSimple: any;
+			registerApplyPatchFreeformProvider(
+				{
+					registerProvider: (_name: string, provider: any) => {
+						streamSimple = provider.streamSimple;
+					},
+					on: () => {},
+					registerMessageRenderer: () => {},
+				} as any,
+				{ toolName: "apply_patch", description: "Apply patch", grammar: "start: /.+/" },
+			);
+
+			const model = {
+				id: "gpt-5.5",
+				provider: "openai-codex",
+				api: "openai-codex-responses",
+				baseUrl: "https://chatgpt.com/backend-api",
+				headers: {},
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			};
+			const context = { messages: [{ role: "user", content: "Make a patch", timestamp: 1 }] };
+			const options = { apiKey: mockCodexToken(), sessionId: "session-fallback", transport: "websocket-cached" };
+
+			for (let index = 0; index < 3; index++) {
+				const result = await streamSimple(model, context, options).result();
+				expect(result.stopReason).toBe("error");
+			}
+			const recovered = await streamSimple(model, context, options).result();
+
+			expect(recovered.stopReason).toBe("stop");
+			expect(websocketConstructs).toBe(3);
+			expect(fetchCalls).toBe(1);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
 });
 
 async function* toAsync<T>(items: T[]): AsyncIterable<T> {
