@@ -61,23 +61,34 @@ describe("Lens hook runner", () => {
 	});
 
 	it("detects whether the current Lens diagnostic snapshot still has active issues", async () => {
+		const calls: string[][] = [];
 		const clean = await hasActiveLensDiagnostics("/tmp", {
-			runner: async () => ({
-				stdout: JSON.stringify({ data: { diagnostic_count: 0, diagnostics: [] } }),
-				stderr: "",
-				exitCode: 0,
-			}),
+			runner: async (_cmd, args) => {
+				calls.push(args);
+				return {
+					stdout: JSON.stringify({ data: { diagnostic_count: 0, diagnostics: [] } }),
+					stderr: "",
+					exitCode: 0,
+				};
+			},
 		});
 		const dirty = await hasActiveLensDiagnostics("/tmp", {
-			runner: async () => ({
-				stdout: JSON.stringify({ data: { diagnostic_count: 1, diagnostics: [{}] } }),
-				stderr: "",
-				exitCode: 0,
-			}),
+			runner: async (_cmd, args) => {
+				calls.push(args);
+				return {
+					stdout: JSON.stringify({ data: { diagnostic_count: 1, diagnostics: [{}] } }),
+					stderr: "",
+					exitCode: 0,
+				};
+			},
 		});
 
 		expect(clean).toBe(false);
 		expect(dirty).toBe(true);
+		expect(calls).toEqual([
+			["lens", "diagnostics", "list", "--json"],
+			["lens", "diagnostics", "list", "--json"],
+		]);
 	});
 });
 
@@ -263,9 +274,55 @@ describe("Lens hook-only Pi extension", () => {
 						fingerprint: "abc123",
 						severity: "errors",
 						requiresFollowup: true,
+						reportIssues: [],
 					},
 				},
 				options: { deliverAs: "followUp", triggerTurn: true },
+			},
+		]);
+	});
+
+	it("stores structured issue identities on queued diagnostic reports", () => {
+		const sent: any[] = [];
+		const queued = queueLensContext(
+			{
+				sendMessage: (message: unknown, options: unknown) => {
+					sent.push({ message, options });
+				},
+			},
+			{ isIdle: () => false },
+			{
+				context: {
+					inject: true,
+					content: "Lens session diagnostics: fix this",
+					fingerprint: "abc123",
+				},
+				data: {
+					report: {
+						issues: [
+							{
+								source: "lsp",
+								path: "src/current.rs",
+								line: 10,
+								message: "current type error",
+								code: "E0308",
+								fingerprint: "issue-fingerprint",
+							},
+						],
+					},
+				},
+			},
+		);
+
+		expect(queued).toBe(true);
+		expect(sent[0].message.details.reportIssues).toEqual([
+			{
+				source: "lsp",
+				path: "src/current.rs",
+				line: 10,
+				message: "current type error",
+				code: "E0308",
+				fingerprint: "issue-fingerprint",
 			},
 		]);
 	});
@@ -322,8 +379,113 @@ describe("Lens hook-only Pi extension", () => {
 			},
 		);
 
-		expect(result?.message.content).toBe("Lens diagnostics are clean; stale diagnostic report suppressed.");
+		expect(result?.message.content).toEqual([]);
 		expect(result?.message.display).toBe(false);
 		expect(result?.message.details.suppressedAsStale).toBe(true);
+	});
+
+	it("suppresses stale queued diagnostic reports when only unrelated diagnostics remain", async () => {
+		const result = await suppressStaleLensDiagnosticMessage(
+			{
+				role: "custom",
+				customType: "lens-diagnostics",
+				content: [
+					{
+						type: "text",
+						text: [
+							"Lens session diagnostics: 1 issue(s) across 1 edited file(s)",
+							"- lsp/error src/old.rs:10 [E0308]: old type error",
+						].join("\n"),
+					},
+				],
+				display: true,
+				details: {
+					fingerprint: "old",
+					reportIssues: [
+						{
+							source: "lsp",
+							path: "src/old.rs",
+							line: 10,
+							code: "E0308",
+							message: "old type error",
+							fingerprint: "old-issue",
+						},
+					],
+				},
+				timestamp: Date.now(),
+			},
+			"/tmp",
+			{
+				runner: async () => ({
+					stdout: JSON.stringify({
+						data: {
+							diagnostic_count: 1,
+							diagnostics: [
+								{
+									source: "lsp",
+									rel_path: "src/other.rs",
+									code: "unused",
+									message: "unrelated warning",
+								},
+							],
+						},
+					}),
+					stderr: "",
+					exitCode: 0,
+				}),
+			},
+		);
+
+		expect(result?.message.content).toEqual([]);
+		expect(result?.message.details.suppressedAsStale).toBe(true);
+	});
+
+	it("keeps queued diagnostic reports when a listed issue is still active", async () => {
+		const result = await suppressStaleLensDiagnosticMessage(
+			{
+				role: "custom",
+				customType: "lens-diagnostics",
+				content: "Lens session diagnostics: 1 issue(s)\n- lsp/error src/current.rs:10 [E0308]: current type error",
+				display: true,
+				details: {
+					fingerprint: "current",
+					reportIssues: [
+						{
+							source: "lsp",
+							path: "src/current.rs",
+							line: 10,
+							code: "E0308",
+							message: "current type error",
+							fingerprint: "current-issue",
+						},
+					],
+				},
+				timestamp: Date.now(),
+			},
+			"/tmp",
+			{
+				runner: async () => ({
+					stdout: JSON.stringify({
+						data: {
+							diagnostic_count: 1,
+							diagnostics: [
+								{
+									source: "lsp",
+									rel_path: "src/current.rs",
+									start_line: 10,
+									code: "E0308",
+									message: "current type error",
+									fingerprint: "current-issue",
+								},
+							],
+						},
+					}),
+					stderr: "",
+					exitCode: 0,
+				}),
+			},
+		);
+
+		expect(result).toBeUndefined();
 	});
 });

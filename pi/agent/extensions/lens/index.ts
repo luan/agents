@@ -27,6 +27,15 @@ type ToolFile = {
 
 type CommandRunner = typeof runCommand;
 
+type QueuedLensIssue = {
+	source?: string;
+	path?: string;
+	line?: number;
+	message?: string;
+	code?: string;
+	fingerprint?: string;
+};
+
 function isStaleCtxError(error: unknown) {
 	return (error instanceof Error ? error.message : String(error)).includes("ctx is stale");
 }
@@ -56,6 +65,7 @@ export function queueLensContext(pi: any, ctx: any, response: any, state: { last
 				fingerprint,
 				severity: stringValue(response?.context?.severity),
 				requiresFollowup: response?.context?.requires_followup === true,
+				reportIssues: reportIssuesFromResponse(response),
 			},
 		},
 		lensDeliveryOptions(ctx),
@@ -74,6 +84,23 @@ function lensDeliveryOptions(ctx: any) {
 
 function stringValue(value: unknown): string | undefined {
 	return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function reportIssuesFromResponse(response: any): QueuedLensIssue[] {
+	const issues = Array.isArray(response?.data?.report?.issues) ? response.data.report.issues : [];
+	return issues.map(reportIssue).filter((issue): issue is QueuedLensIssue => issue !== undefined);
+}
+
+function reportIssue(issue: any): QueuedLensIssue | undefined {
+	const out: QueuedLensIssue = {
+		source: stringValue(issue?.source),
+		path: stringValue(issue?.path),
+		message: stringValue(issue?.message),
+		code: stringValue(issue?.code),
+		fingerprint: stringValue(issue?.fingerprint),
+	};
+	if (typeof issue?.line === "number") out.line = issue.line;
+	return Object.values(out).some((value) => value !== undefined) ? out : undefined;
 }
 
 export async function runLensHookCommand(
@@ -104,24 +131,21 @@ export async function hasActiveLensDiagnostics(
 	cwd: string,
 	options: { signal?: AbortSignal; runner?: CommandRunner } = {},
 ): Promise<boolean | undefined> {
+	const diagnostics = await listActiveLensDiagnostics(cwd, options);
+	return Array.isArray(diagnostics) ? diagnostics.length > 0 : undefined;
+}
+
+export async function listActiveLensDiagnostics(
+	cwd: string,
+	options: { signal?: AbortSignal; runner?: CommandRunner } = {},
+): Promise<any[] | undefined> {
 	try {
-		const result = await (options.runner ?? runCommand)(
-			"ct",
-			["lens", "diagnostics", "list", "--all", "--json"],
-			cwd,
-			{
-				signal: options.signal,
-				allowNonZero: true,
-			},
-		);
+		const result = await (options.runner ?? runCommand)("ct", ["lens", "diagnostics", "list", "--json"], cwd, {
+			signal: options.signal,
+			allowNonZero: true,
+		});
 		const parsed = JSON.parse(result.stdout);
-		const count =
-			typeof parsed?.data?.diagnostic_count === "number"
-				? parsed.data.diagnostic_count
-				: Array.isArray(parsed?.data?.diagnostics)
-					? parsed.data.diagnostics.length
-					: undefined;
-		return typeof count === "number" ? count > 0 : undefined;
+		return Array.isArray(parsed?.data?.diagnostics) ? parsed.data.diagnostics : undefined;
 	} catch {
 		return undefined;
 	}
@@ -133,12 +157,12 @@ export async function suppressStaleLensDiagnosticMessage(
 	options: { signal?: AbortSignal; runner?: CommandRunner } = {},
 ) {
 	if (message?.role !== "custom" || message.customType !== "lens-diagnostics") return undefined;
-	const active = await hasActiveLensDiagnostics(cwd, options);
-	if (active !== false) return undefined;
+	const active = await listActiveLensDiagnostics(cwd, options);
+	if (!active || reportStillMatchesActiveDiagnostics(message, active)) return undefined;
 	return {
 		message: {
 			...message,
-			content: "Lens diagnostics are clean; stale diagnostic report suppressed.",
+			content: [],
 			display: false,
 			details: {
 				...(message.details ?? {}),
@@ -146,6 +170,66 @@ export async function suppressStaleLensDiagnosticMessage(
 			},
 		},
 	};
+}
+
+function reportStillMatchesActiveDiagnostics(message: any, active: any[]) {
+	if (active.length === 0) return false;
+	const structuredIssues = Array.isArray(message?.details?.reportIssues)
+		? message.details.reportIssues
+				.map(reportIssue)
+				.filter((issue: QueuedLensIssue | undefined) => issue !== undefined)
+		: [];
+	if (structuredIssues.length > 0) {
+		return structuredIssues.some((issue: QueuedLensIssue) =>
+			active.some((diagnostic) => diagnosticMatchesQueuedIssue(diagnostic, issue)),
+		);
+	}
+	const report = messageText(message);
+	const reportIssues = report
+		.split("\n")
+		.map((line) => line.trim())
+		.filter((line) => line.startsWith("- "));
+	if (reportIssues.length === 0) return true;
+	return reportIssues.some((line) => active.some((diagnostic) => diagnosticMatchesReportLine(diagnostic, line)));
+}
+
+function diagnosticMatchesReportLine(diagnostic: any, line: string) {
+	const path = typeof diagnostic?.rel_path === "string" ? diagnostic.rel_path : undefined;
+	if (!path || !line.includes(path)) return false;
+	const message = typeof diagnostic?.message === "string" ? diagnostic.message : undefined;
+	const code = typeof diagnostic?.code === "string" ? diagnostic.code : undefined;
+	return (message && line.includes(message)) || (code && line.includes(`[${code}]`));
+}
+
+function diagnosticMatchesQueuedIssue(diagnostic: any, issue: QueuedLensIssue) {
+	if (issue.fingerprint) return diagnostic?.fingerprint === issue.fingerprint;
+	if (issue.path && diagnostic?.rel_path !== issue.path) return false;
+	if (issue.code && diagnostic?.code !== issue.code) return false;
+	if (issue.message && diagnostic?.message !== issue.message) return false;
+	if (typeof issue.line === "number" && diagnostic?.start_line !== issue.line) return false;
+	if (issue.source && diagnosticSourceName(diagnostic?.source) !== issue.source) return false;
+	return true;
+}
+
+function diagnosticSourceName(source: unknown) {
+	if (typeof source === "string") return source;
+	if (source && typeof source === "object") {
+		const entries = Object.entries(source);
+		if (entries.length === 1) {
+			const [key, value] = entries[0]!;
+			return typeof value === "string" ? `${key}:${value}` : key;
+		}
+	}
+	return undefined;
+}
+
+function messageText(message: any) {
+	const content = message?.content;
+	if (typeof content === "string") return content;
+	if (Array.isArray(content)) {
+		return content.map((item) => (item?.type === "text" && typeof item.text === "string" ? item.text : "")).join("");
+	}
+	return "";
 }
 
 type CtHookCommandResult = {

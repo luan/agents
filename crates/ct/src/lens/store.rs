@@ -447,6 +447,11 @@ impl LensStore {
             )?;
         }
         tx.commit()?;
+        for file in files {
+            if file.operation != "delete" {
+                let _ = self.ensure_file_row(Path::new(&file.path));
+            }
+        }
         Ok(())
     }
 
@@ -669,6 +674,7 @@ impl LensStore {
              FROM diagnostics d
              LEFT JOIN files f ON f.id = d.file_id
              WHERE d.project_id=?1 AND d.resolved_at IS NULL AND (?2 IS NULL OR f.rel_path=?2)
+                AND (d.content_hash IS NULL OR f.hash IS NULL OR d.content_hash = f.hash)
              ORDER BY f.rel_path, d.start_line, d.severity, d.message",
         )?;
         let rows = stmt.query_map(params![self.project_id, rel_path], diagnostic_from_row)?;
@@ -900,6 +906,7 @@ impl LensStore {
              FROM diagnostics d
              LEFT JOIN files f ON f.id = d.file_id
              WHERE d.project_id=?1 {resolved_filter} AND (?2 IS NULL OR f.rel_path=?2)
+                AND (d.content_hash IS NULL OR f.hash IS NULL OR d.content_hash = f.hash)
              ORDER BY f.rel_path, d.start_line, d.severity, d.message"
         );
         let mut stmt = self.conn.prepare(&sql)?;
@@ -1848,6 +1855,78 @@ mod tests {
                 .diagnostic_count,
             1
         );
+    }
+
+    #[test]
+    fn content_scoped_diagnostics_are_hidden_after_file_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("main.rs"), "fn main() {}\n").unwrap();
+        let original_hash = sha1_hex(&std::fs::read(temp.path().join("main.rs")).unwrap());
+        let mut store = LensStore::open_in_memory_for_tests(temp.path()).unwrap();
+        store
+            .record_diagnostic_snapshot(DiagnosticSnapshotInput {
+                source: DiagnosticSource::Lsp,
+                scope: DiagnosticScope::file("main.rs"),
+                diagnostics: vec![Diagnostic {
+                    source: DiagnosticSource::Lsp,
+                    scope: DiagnosticScope::file("main.rs"),
+                    severity: DiagnosticSeverity::Error,
+                    code: None,
+                    message: "old error".to_string(),
+                    rel_path: Some("main.rs".to_string()),
+                    start_line: Some(1),
+                    end_line: Some(1),
+                    fingerprint: "old".to_string(),
+                    content_hash: Some(original_hash),
+                    raw_output_id: None,
+                    snapshot_id: None,
+                    first_seen_at: None,
+                    last_seen_at: None,
+                    resolved_at: None,
+                }],
+                raw_output: None,
+                raw_output_max_bytes: None,
+                metadata: Default::default(),
+            })
+            .unwrap();
+        assert_eq!(store.list_diagnostics(None).unwrap().len(), 1);
+
+        std::fs::write(
+            temp.path().join("main.rs"),
+            "fn main() { println!(\"ok\"); }\n",
+        )
+        .unwrap();
+        let event = LensTurnEvent {
+            schema_version: "lens.turn_event.v1".to_string(),
+            session: "session".to_string(),
+            turn: "turn".to_string(),
+            host: "test".to_string(),
+            cwd: temp.path().display().to_string(),
+            tool: "apply_patch".to_string(),
+            event: super::super::types::LensTurnEventKind::ToolEnd,
+            phase: LensToolEventPhase::PostTool,
+            status: Some("success".to_string()),
+            files: Vec::new(),
+            policy: Default::default(),
+        };
+        store
+            .record_turn_event(
+                &event,
+                &[LensTouchedFile {
+                    path: "main.rs".to_string(),
+                    operation: "edit".to_string(),
+                    start_line: None,
+                    end_line: None,
+                    tool: "apply_patch".to_string(),
+                    source: LensTouchedFileSource::StructuredEvent,
+                    explicit: true,
+                    ignored: false,
+                    generated: false,
+                }],
+            )
+            .unwrap();
+
+        assert!(store.list_diagnostics(None).unwrap().is_empty());
     }
 
     #[test]

@@ -1105,9 +1105,14 @@ fn record_lsp_diagnostics(
             Some(LSP_INITIALIZE_WAIT),
             |client| client.collect_diagnostics_with_timeout(&abs_path, LSP_DIAGNOSTIC_WAIT),
         )?;
+        let content_hash = file_content_hash(&abs_path);
         let diagnostics = diagnostics
             .into_iter()
             .filter_map(|diagnostic| lsp_diagnostic(&file.path, diagnostic))
+            .map(|mut diagnostic| {
+                diagnostic.content_hash = content_hash.clone();
+                diagnostic
+            })
             .collect::<Vec<_>>();
         collected += diagnostics.len();
         store.record_diagnostic_snapshot(DiagnosticSnapshotInput {
@@ -1120,6 +1125,12 @@ fn record_lsp_diagnostics(
         })?;
     }
     Ok(collected)
+}
+
+fn file_content_hash(path: &Path) -> Option<String> {
+    std::fs::read(path)
+        .ok()
+        .map(|content| crate::apply_patch::sha1_hex(&content))
 }
 
 fn is_lsp_diagnostic_candidate(file: &LensTouchedFile) -> bool {
