@@ -227,6 +227,13 @@ pub enum TuiAction {
         #[arg(long, default_value_t = 80, help = "Terminal width in cells")]
         width: usize,
     },
+    #[command(about = "Render subscription usage bars for all local providers")]
+    UsageBars {
+        #[arg(long, default_value_t = 80, help = "Terminal width in cells")]
+        width: usize,
+        #[arg(long, help = "Render the tmux mux-sidebar layout")]
+        sidebar: bool,
+    },
 }
 
 #[derive(Subcommand)]

@@ -33,7 +33,7 @@ Shared configuration is the default. Tool-specific folders (`claude/`, `codex/`,
 - `ct apply-patch` — raw patch apply plus apply_patch telemetry and drafts
 - `ct hook` — run harness hooks, including notifications and Lens lifecycle hooks
 - `ct shell completion` — shell completions
-- `ct tui usage-bar` — terminal UI helpers
+- `ct tui usage-bar` / `ct tui usage-bars` — terminal UI helpers
 - `ct dev` — developer/internal helpers; raw backends live under `ct dev debug`
 
 ## Setup

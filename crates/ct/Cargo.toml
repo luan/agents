@@ -13,6 +13,7 @@ path = "src/opencode.rs"
 
 [dependencies]
 anyhow = "^1"
+chrono = "^0.4"
 clap = { version = "^4", features = ["derive"] }
 clap_complete = "^4"
 dirs = "^6"
