@@ -1971,8 +1971,7 @@ function collectLastTurnApplyPatchIntentsFromEntries(entries: unknown[]): ApplyP
 			toolResults.unshift(message);
 			continue;
 		}
-		if (message.role === "assistant") break;
-		if (toolResults.length > 0) break;
+		if (message.role === "user") break;
 	}
 	return collectApplyPatchIntentsFromToolResults(toolResults);
 }
@@ -2068,8 +2067,11 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 		enforceToolPolicy(pi, config);
 		applyCodexToolPolicy(ctx);
 	});
+	pi.on("agent_start", () => {
+		lastTurnPatchIntents = [];
+	});
 	pi.on("turn_end", (event) => {
-		lastTurnPatchIntents = collectApplyPatchIntentsFromToolResults(event.toolResults);
+		lastTurnPatchIntents.push(...collectApplyPatchIntentsFromToolResults(event.toolResults));
 	});
 
 	pi.on("before_agent_start", (event, ctx) => {

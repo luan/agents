@@ -514,6 +514,61 @@ describe("apply_patch intent command", () => {
 
 		expect(notifications[0]).toBe("- Update runtime behavior.");
 	});
+
+	it("keeps last turn intents when a final assistant turn has no tool results", async () => {
+		const { commands, handlers } = registerApplyPatchCommands();
+		const notifications: string[] = [];
+
+		handlers.get("agent_start")?.({});
+		handlers.get("turn_end")?.({
+			toolResults: [
+				{
+					toolName: "apply_patch",
+					isError: false,
+					details: {
+						intent: "Update runtime behavior.",
+						fileDiffs: [{ path: "index.ts", operation: "update", added: 2, removed: 1 }],
+					},
+				},
+			],
+		});
+		handlers.get("turn_end")?.({ toolResults: [] });
+
+		await commands.get("apply-patch-intents").handler("turn", {
+			sessionManager: { getBranch: () => [] },
+			ui: { notify: (message: string) => notifications.push(message) },
+		});
+
+		expect(notifications[0]).toBe("- Update runtime behavior.");
+	});
+
+	it("finds last turn intents in branch entries before the final assistant message", async () => {
+		const { commands } = registerApplyPatchCommands();
+		const notifications: string[] = [];
+		const entries = [
+			{ message: { role: "user" } },
+			{ message: { role: "assistant" } },
+			{
+				message: {
+					role: "toolResult",
+					toolName: "apply_patch",
+					isError: false,
+					details: {
+						intent: "Update runtime behavior.",
+						fileDiffs: [{ path: "index.ts", operation: "update", added: 2, removed: 1 }],
+					},
+				},
+			},
+			{ message: { role: "assistant" } },
+		];
+
+		await commands.get("apply-patch-intents").handler("turn", {
+			sessionManager: { getBranch: () => entries },
+			ui: { notify: (message: string) => notifications.push(message) },
+		});
+
+		expect(notifications[0]).toBe("- Update runtime behavior.");
+	});
 });
 
 describe("apply_patch Codex tool policy", () => {
