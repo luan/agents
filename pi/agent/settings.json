@@ -1,5 +1,5 @@
 {
-  "lastChangelogVersion": "0.71.0",
+  "lastChangelogVersion": "0.71.1",
   "steeringMode": "all",
   "autoUpdate": true,
   "transport": "auto",
@@ -14,7 +14,8 @@
   "packages": [
     "npm:@ifi/oh-pi-themes",
     "npm:@dreki-gg/pi-context7",
-    "npm:@tintinweb/pi-subagents"
+    "npm:@tintinweb/pi-subagents",
+    "npm:@sting8k/pi-vcc"
   ],
   "extensions": [
     "-extensions/team-mode/index.ts",
