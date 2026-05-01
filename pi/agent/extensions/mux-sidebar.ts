@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
@@ -26,6 +27,7 @@ type RuntimeState = {
 	activity?: string;
 	asking: boolean;
 	lastActivityAtMs: number;
+	phase: "idle" | "working" | "asking";
 };
 
 function stateDir(): string {
@@ -87,6 +89,7 @@ export default function muxSidebarExtension(pi: ExtensionAPI) {
 	const runtime: RuntimeState = {
 		asking: false,
 		lastActivityAtMs: Date.now(),
+		phase: "idle",
 	};
 
 	let latestCtx: ExtensionContext | undefined;
@@ -124,17 +127,46 @@ export default function muxSidebarExtension(pi: ExtensionAPI) {
 		}
 	};
 
+	const notify = (notificationType: "idle_prompt" | "elicitation_dialog", message: string) => {
+		const child = spawn("ct", ["notify"], {
+			stdio: ["pipe", "ignore", "ignore"],
+			detached: true,
+		});
+		child.on("error", () => {});
+		child.stdin?.end(
+			`${JSON.stringify({
+				title: sessionName(pi) ?? "Pi",
+				message,
+				notification_type: notificationType,
+			})}\n`,
+		);
+		child.unref();
+	};
+
 	const markWorking = (ctx: ExtensionContext, activity = "Thinking…") => {
 		runtime.activity = activity;
 		runtime.asking = false;
 		runtime.lastActivityAtMs = Date.now();
+		runtime.phase = "working";
 		writeState(ctx);
 	};
 
-	const markIdle = (ctx: ExtensionContext) => {
+	const markAsking = (ctx: ExtensionContext) => {
+		const shouldNotify = runtime.phase !== "asking";
+		runtime.activity = "Asking…";
+		runtime.asking = true;
+		runtime.phase = "asking";
+		writeState(ctx);
+		if (shouldNotify) notify("elicitation_dialog", "Pi has a question for you");
+	};
+
+	const markIdle = (ctx: ExtensionContext, options: { notify?: boolean } = {}) => {
+		const shouldNotify = options.notify && runtime.phase !== "idle";
 		runtime.activity = undefined;
 		runtime.asking = false;
+		runtime.phase = "idle";
 		writeState(ctx);
+		if (shouldNotify) notify("idle_prompt", "Pi is idle and waiting for your input");
 	};
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -146,12 +178,18 @@ export default function muxSidebarExtension(pi: ExtensionAPI) {
 	pi.on("agent_start", async (_event, ctx) => markWorking(ctx, "Thinking…"));
 	pi.on("turn_start", async (_event, ctx) => markWorking(ctx, "Thinking…"));
 	pi.on("message_update", async (_event, ctx) => markWorking(ctx, "Writing…"));
-	pi.on("tool_execution_start", async (_event, ctx) => markWorking(ctx, "Working…"));
+	pi.on("tool_execution_start", async (event, ctx) => {
+		if (event.toolName === "ask_user") {
+			markAsking(ctx);
+		} else {
+			markWorking(ctx, "Working…");
+		}
+	});
 	pi.on("tool_execution_end", async (_event, ctx) => markWorking(ctx, "Thinking…"));
 	pi.on("message_end", async (_event, ctx) => writeState(ctx));
 	pi.on("model_select", async (_event, ctx) => writeState(ctx));
 	pi.on("session_compact", async (_event, ctx) => writeState(ctx));
-	pi.on("agent_end", async (_event, ctx) => markIdle(ctx));
+	pi.on("agent_end", async (_event, ctx) => markIdle(ctx, { notify: true }));
 
 	pi.on("session_shutdown", async () => {
 		if (heartbeat) {

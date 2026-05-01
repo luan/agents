@@ -211,21 +211,25 @@ describe("Lens hook-only Pi extension", () => {
 			"turn_end",
 			"message_end",
 			"agent_end",
+			"session_shutdown",
 		]);
 		expect(tools).toEqual([]);
 	});
 
 	it("applies hook response envelopes to the HUD", () => {
 		const status: Record<string, string> = {};
-		const widgets: Record<string, string[]> = {};
+		const widgets: Record<string, { render(width: number): string[] }> = {};
 		const ctx = {
 			hasUI: true,
 			ui: {
 				setStatus: (key: string, value: string) => {
 					status[key] = value;
 				},
-				setWidget: (key: string, value: string[]) => {
-					widgets[key] = value;
+				setWidget: (
+					key: string,
+					factory: (tui: unknown, theme: unknown) => { render(width: number): string[] },
+				) => {
+					widgets[key] = factory({ requestRender: () => {} }, { fg: (_color: string, text: string) => text });
 				},
 			},
 		};
@@ -240,7 +244,7 @@ describe("Lens hook-only Pi extension", () => {
 
 		expect(status.lens).toContain("warnings");
 		expect(status.lens).toContain("lsp 0 err/1 warn");
-		expect(widgets["lens-health"]?.[0]).toContain("warnings");
+		expect(widgets["lens-health"]?.render(120)[0]).toContain("warnings");
 	});
 
 	it("queues injected turn-end reports as follow-up custom messages", () => {
