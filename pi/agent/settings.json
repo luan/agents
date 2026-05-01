@@ -2,7 +2,7 @@
   "lastChangelogVersion": "0.71.1",
   "steeringMode": "all",
   "autoUpdate": true,
-  "transport": "auto",
+  "transport": "websocket-cached",
   "doubleEscapeAction": "tree",
   "treeFilterMode": "default",
   "defaultProvider": "openai-codex",
