@@ -756,6 +756,14 @@ function extractWebSocketError(event: unknown): Error {
 	return new Error("WebSocket connection error");
 }
 
+function annotateWebSocketError(error: Error, startMs: number, lastEventMs: number, messageCount: number): Error {
+	const elapsedSeconds = Math.round((Date.now() - startMs) / 1000);
+	const idleSeconds = Math.round((Date.now() - lastEventMs) / 1000);
+	return new Error(
+		`${error.message} after ${elapsedSeconds}s (${idleSeconds}s since last event, ${messageCount} events)`,
+	);
+}
+
 function extractWebSocketCloseError(event: unknown): Error {
 	if (event && typeof event === "object") {
 		const code = "code" in event ? (event as { code?: unknown }).code : undefined;
@@ -787,6 +795,9 @@ async function* parseWebSocket(socket: WebSocketLike, signal?: AbortSignal): Asy
 	let done = false;
 	let failed: Error | null = null;
 	let sawCompletion = false;
+	const startMs = Date.now();
+	let lastEventMs = startMs;
+	let messageCount = 0;
 	const wake = () => {
 		if (!pending) return;
 		const resolve = pending;
@@ -805,18 +816,22 @@ async function* parseWebSocket(socket: WebSocketLike, signal?: AbortSignal): Asy
 					sawCompletion = true;
 					done = true;
 				}
+				lastEventMs = Date.now();
+				messageCount++;
 				queue.push(parsed);
 				wake();
 			} catch {}
 		})();
 	};
 	const onError: WebSocketListener = (event) => {
-		failed = extractWebSocketError(event);
+		failed = annotateWebSocketError(extractWebSocketError(event), startMs, lastEventMs, messageCount);
 		done = true;
 		wake();
 	};
 	const onClose: WebSocketListener = (event) => {
-		if (!sawCompletion && !failed) failed = extractWebSocketCloseError(event);
+		if (!sawCompletion && !failed) {
+			failed = annotateWebSocketError(extractWebSocketCloseError(event), startMs, lastEventMs, messageCount);
+		}
 		done = true;
 		wake();
 	};

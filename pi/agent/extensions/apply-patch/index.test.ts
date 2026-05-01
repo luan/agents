@@ -887,7 +887,9 @@ describe("apply_patch Codex freeform provider", () => {
 		).result();
 
 		expect(result.stopReason).toBe("error");
-		expect(result.errorMessage).toBe("WebSocket connection error");
+		expect(result.errorMessage).toMatch(
+			/^WebSocket connection error after \d+s \(\d+s since last event, 0 events\)$/,
+		);
 	});
 });
 
