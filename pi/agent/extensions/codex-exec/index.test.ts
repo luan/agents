@@ -182,6 +182,50 @@ test("extension marks nonzero exec results as errors for red status dots", () =>
 	for (const handler of handlers.get("session_shutdown") ?? []) handler();
 });
 
+test("extension disables bash for Codex models and blocks direct bash calls", () => {
+	type Handler = (event?: any, ctx?: any) => any;
+	const handlers = new Map<string, Handler[]>();
+	let activeTools = ["read", "bash"];
+	const setActiveToolsCalls: string[][] = [];
+	const pi = {
+		registerTool() {},
+		getActiveTools: () => activeTools,
+		getAllTools: () => [{ name: "read" }, { name: "bash" }, { name: "exec_command" }, { name: "write_stdin" }],
+		setActiveTools: (next: string[]) => {
+			activeTools = next;
+			setActiveToolsCalls.push(next);
+		},
+		on: (event: string, handler: Handler) => {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+		},
+	} as any;
+	codexExecExtension(pi);
+
+	for (const handler of handlers.get("session_start") ?? []) {
+		handler(undefined, { model: { provider: "openai", id: "codex-mini-latest" } });
+	}
+
+	expect(activeTools).toEqual(["read", "exec_command", "write_stdin"]);
+	expect(setActiveToolsCalls).toContainEqual(["read", "exec_command", "write_stdin"]);
+
+	const block = handlers
+		.get("tool_call")
+		?.map((handler) => handler({ toolName: "bash" }, { model: { provider: "openai", id: "codex-mini-latest" } }))
+		.find((result) => result?.block);
+
+	expect(block).toEqual({
+		block: true,
+		reason: "bash is disabled for Codex models. Use exec_command instead.",
+	});
+
+	for (const handler of handlers.get("model_select") ?? []) {
+		handler(undefined, { model: { provider: "anthropic", id: "claude-sonnet" } });
+	}
+
+	expect(activeTools).toEqual(["read", "bash"]);
+	for (const handler of handlers.get("session_shutdown") ?? []) handler();
+});
+
 test("extension truncates oversized non-exec tool results before session history", () => {
 	type Handler = (event?: any) => any;
 	const handlers = new Map<string, Handler[]>();

@@ -45,6 +45,7 @@ function truncateTextToolResultContent(content: unknown): unknown[] | undefined 
 export default function codexExecExtension(pi: ExtensionAPI) {
 	const tracker = createExecCommandTracker();
 	const sessions = createExecSessionManager();
+	const toolsRemovedForCodex = new Set<string>();
 
 	registerExecCommandTool(pi, tracker, sessions);
 	registerWriteStdinTool(pi, sessions);
@@ -56,12 +57,29 @@ export default function codexExecExtension(pi: ExtensionAPI) {
 		const codex = isCodexModel(ctx.model);
 		let next = active;
 		if (codex) {
-			next = [...next];
+			next = active.filter((toolName) => {
+				if (toolName === "bash") {
+					toolsRemovedForCodex.add(toolName);
+					return false;
+				}
+				return true;
+			});
 			for (const toolName of ["exec_command", "write_stdin"]) {
 				if (!next.includes(toolName)) next.push(toolName);
 			}
 		} else {
 			next = active.filter((toolName) => toolName !== "exec_command" && toolName !== "write_stdin");
+			if (toolsRemovedForCodex.size > 0) {
+				const registeredTools = new Set(
+					((pi as any).getAllTools?.() ?? []).map((tool: { name?: string }) => tool.name),
+				);
+				for (const toolName of toolsRemovedForCodex) {
+					if ((!registeredTools.size || registeredTools.has(toolName)) && !next.includes(toolName)) {
+						next.push(toolName);
+					}
+				}
+				toolsRemovedForCodex.clear();
+			}
 		}
 		if (!arraysEqual(active, next)) pi.setActiveTools(next);
 	};
@@ -79,6 +97,14 @@ export default function codexExecExtension(pi: ExtensionAPI) {
 	});
 	pi.on("before_agent_start", (_event, ctx) => {
 		applyToolPolicy(ctx);
+	});
+	pi.on("tool_call", (event, ctx) => {
+		if (event.toolName === "bash" && isCodexModel(ctx?.model)) {
+			return {
+				block: true,
+				reason: "bash is disabled for Codex models. Use exec_command instead.",
+			};
+		}
 	});
 	pi.on("message_start", (event) => {
 		if (event.message.role === "toolResult") return;
