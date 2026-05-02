@@ -215,12 +215,25 @@ export async function suppressStaleLensDiagnosticMessage(
 	};
 }
 
-export function suppressInactiveDiagnosticInjection(response: any, active: boolean | undefined) {
-	if (response?.context?.inject !== true || active === true) return response;
+export function suppressInactiveDiagnosticInjection(response: any, active: any[] | boolean | undefined) {
+	if (response?.context?.inject !== true) return response;
+	if (active === true) return response;
+	if (Array.isArray(active) && reportStillMatchesActiveDiagnostics(diagnosticMessageFromResponse(response), active)) {
+		return response;
+	}
 	return {
 		...response,
 		status: "ok",
 		context: { ...response.context, inject: false, content: "" },
+	};
+}
+
+function diagnosticMessageFromResponse(response: any) {
+	return {
+		content: [{ type: "text", text: typeof response?.context?.content === "string" ? response.context.content : "" }],
+		details: {
+			reportIssues: reportIssuesFromResponse(response),
+		},
 	};
 }
 
@@ -464,7 +477,7 @@ export default function lensExtension(pi: ExtensionAPI) {
 			activeTurnId = `turn-${agentSeq}-${activeTurnIndex}`;
 			let response = await runHook("lens-turn-end", eventFor(ctx, "turn_end"), safeCwd(ctx), safeSignal(ctx));
 			if (response?.context?.inject === true) {
-				const active = await hasActiveLensDiagnostics(safeCwd(ctx), { signal: safeSignal(ctx) });
+				const active = await listActiveLensDiagnostics(safeCwd(ctx), { signal: safeSignal(ctx) });
 				response = suppressInactiveDiagnosticInjection(response, active);
 			}
 			applyLensUi(ctx, response);

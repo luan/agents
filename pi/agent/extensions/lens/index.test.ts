@@ -368,6 +368,58 @@ describe("Lens hook-only Pi extension", () => {
 		expect(suppressInactiveDiagnosticInjection(response, true)).toBe(response);
 	});
 
+	it("suppresses queued diagnostic reports when active diagnostics are unrelated", () => {
+		const response = {
+			status: "warning",
+			context: {
+				inject: true,
+				content: [
+					"Lens session diagnostics: 1 issue(s) across 1 edited file(s)",
+					"- lsp/error src/old.rs:10 [E0583]: old type error",
+				].join("\n"),
+			},
+			data: {
+				report: {
+					issues: [
+						{
+							source: "lsp",
+							path: "src/old.rs",
+							line: 10,
+							code: "E0583",
+							message: "old type error",
+							fingerprint: "old-issue",
+						},
+					],
+				},
+			},
+		};
+
+		expect(
+			suppressInactiveDiagnosticInjection(response, [
+				{
+					source: "lsp",
+					rel_path: "src/current.rs",
+					start_line: 12,
+					code: "E0308",
+					message: "current type error",
+					fingerprint: "current-issue",
+				},
+			]).context.inject,
+		).toBe(false);
+		expect(
+			suppressInactiveDiagnosticInjection(response, [
+				{
+					source: "lsp",
+					rel_path: "src/old.rs",
+					start_line: 10,
+					code: "E0583",
+					message: "old type error",
+					fingerprint: "old-issue",
+				},
+			]),
+		).toBe(response);
+	});
+
 	it("does not queue the same injected report repeatedly", () => {
 		const sent: any[] = [];
 		const state = {};
