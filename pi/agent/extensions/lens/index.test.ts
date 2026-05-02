@@ -8,6 +8,7 @@ import {
 	default as lensExtension,
 	queueLensContext,
 	runLensHookCommand,
+	suppressInactiveDiagnosticInjection,
 	suppressStaleLensDiagnosticMessage,
 } from "./index.ts";
 
@@ -347,6 +348,26 @@ describe("Lens hook-only Pi extension", () => {
 		expect(sent).toEqual([]);
 	});
 
+	it("fails closed before queueing diagnostics when freshness is unknown", () => {
+		const response = {
+			status: "warning",
+			context: {
+				inject: true,
+				content: "Lens session diagnostics: stale",
+			},
+		};
+
+		expect(suppressInactiveDiagnosticInjection(response, undefined)).toEqual({
+			status: "ok",
+			context: {
+				inject: false,
+				content: "",
+			},
+		});
+		expect(suppressInactiveDiagnosticInjection(response, false).context.inject).toBe(false);
+		expect(suppressInactiveDiagnosticInjection(response, true)).toBe(response);
+	});
+
 	it("does not queue the same injected report repeatedly", () => {
 		const sent: any[] = [];
 		const state = {};
@@ -370,7 +391,7 @@ describe("Lens hook-only Pi extension", () => {
 				customType: "lens-diagnostics",
 				content: "Lens session diagnostics: stale",
 				display: true,
-				details: { fingerprint: "old" },
+				details: { fingerprint: "old", requiresFollowup: true },
 				timestamp: Date.now(),
 			},
 			"/tmp",
@@ -385,6 +406,7 @@ describe("Lens hook-only Pi extension", () => {
 
 		expect(result?.message.content).toEqual([]);
 		expect(result?.message.display).toBe(false);
+		expect(result?.message.details.requiresFollowup).toBe(false);
 		expect(result?.message.details.suppressedAsStale).toBe(true);
 	});
 
@@ -441,6 +463,8 @@ describe("Lens hook-only Pi extension", () => {
 		);
 
 		expect(result?.message.content).toEqual([]);
+		expect(result?.message.details.requiresFollowup).toBe(false);
+		expect(result?.message.details.reportIssues).toEqual([]);
 		expect(result?.message.details.suppressedAsStale).toBe(true);
 	});
 
