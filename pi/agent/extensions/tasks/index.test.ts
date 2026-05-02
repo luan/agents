@@ -1,6 +1,37 @@
 import { describe, expect, test } from "bun:test";
+import { visibleWidth } from "@mariozechner/pi-tui";
 
-import tasksExtension, { buildTaskCommand } from "./index";
+import tasksExtension, { buildTaskCommand, renderHudLines, renderTaskResult } from "./index";
+
+const task = {
+	id: "PG4W2K4Q03",
+	title: "Smoke test task tools",
+	body: "Verify the task HUD and renderers.",
+	status: "open",
+	created_at: 1,
+	updated_at: 2,
+};
+
+const theme = {
+	fg(_role: string, text: string) {
+		return text;
+	},
+	bold(text: string) {
+		return `**${text}**`;
+	},
+};
+
+function createText() {
+	let value = "";
+	return {
+		setText(next: string) {
+			value = next;
+		},
+		render() {
+			return value.split("\n");
+		},
+	};
+}
 
 describe("tasks extension", () => {
 	test("builds ct task commands with json output", () => {
@@ -22,7 +53,7 @@ describe("tasks extension", () => {
 		]);
 	});
 
-	test("registers task tools that shell out to ct", async () => {
+	test("registers task tools that shell out to ct and return parsed details", async () => {
 		const calls: string[][] = [];
 		const tools: any[] = [];
 		tasksExtension(
@@ -35,7 +66,7 @@ describe("tasks extension", () => {
 			{
 				runCommand: async (command: string, args: string[]) => {
 					calls.push([command, ...args]);
-					return { stdout: '{"ok":true}', stderr: "", exitCode: 0 };
+					return { stdout: JSON.stringify({ task }), stderr: "", exitCode: 0 };
 				},
 			},
 		);
@@ -44,7 +75,8 @@ describe("tasks extension", () => {
 		expect(add).toBeTruthy();
 		const result = await add.execute("call-1", { title: "Persist task" }, undefined);
 		expect(calls).toEqual([["ct", "task", "add", "Persist task", "--json"]]);
-		expect(result.content[0].text).toBe('{"ok":true}');
+		expect(result.content[0].text).toBe(JSON.stringify({ task }));
+		expect(result.details.task.id).toBe(task.id);
 		expect(tools.map((tool) => tool.name).sort()).toEqual([
 			"task_add",
 			"task_delete",
@@ -52,5 +84,123 @@ describe("tasks extension", () => {
 			"task_show",
 			"task_update",
 		]);
+	});
+
+	test("renders a compact HUD for active tasks", () => {
+		const lines = renderHudLines(
+			[
+				task,
+				{ ...task, id: "DONE123ABC", title: "Done task", status: "done" },
+				{ ...task, id: "CANCEL123A", title: "Canceled task", status: "canceled" },
+			],
+			theme as any,
+			32,
+		);
+		expect(lines.every((line) => visibleWidth(line) <= 32)).toBe(true);
+		expect(lines.join("\n")).toContain("Tasks 1");
+		expect(lines.join("\n")).toContain("PG4W2K4Q03");
+		expect(lines.join("\n")).toContain("Smoke test");
+		expect(lines.join("\n")).not.toContain("Done task");
+
+		const empty = renderHudLines([], theme as any, 100);
+		expect(empty.join("\n")).toContain("none open");
+	});
+
+	test("refreshes the HUD on session start and after mutations", async () => {
+		const calls: string[][] = [];
+		const handlers: Record<string, any> = {};
+		let widgetText = "";
+		const tools: any[] = [];
+		const ctx = {
+			cwd: "/tmp/project",
+			ui: {
+				setWidget(_id: string, factory: any) {
+					const component = factory({}, theme);
+					widgetText = component.render(120).join("\n");
+				},
+			},
+		};
+
+		tasksExtension(
+			{
+				registerTool(tool: any) {
+					tools.push(tool);
+				},
+				on(name: string, handler: any) {
+					handlers[name] = handler;
+				},
+			} as any,
+			{
+				runCommand: async (command: string, args: string[]) => {
+					calls.push([command, ...args]);
+					if (args[1] === "list") return { stdout: JSON.stringify({ tasks: [task] }), stderr: "", exitCode: 0 };
+					return { stdout: JSON.stringify({ task }), stderr: "", exitCode: 0 };
+				},
+			},
+		);
+
+		await handlers.session_start({}, ctx);
+		expect(widgetText).toContain("PG4W2K4Q03");
+
+		const update = tools.find((tool) => tool.name === "task_update");
+		await update.execute("call-2", { id: "PG4", status: "done" }, undefined, undefined, ctx);
+		expect(calls.map((call) => call.slice(1, 3))).toContainEqual(["task", "update"]);
+		expect(calls.map((call) => call.slice(1, 3))).toContainEqual(["task", "list"]);
+		expect(calls).toContainEqual(["ct", "task", "list", "--all", "--json"]);
+		expect(widgetText).toContain("Smoke test task tools");
+	});
+
+	test("renders task calls and results without dumping raw JSON", () => {
+		const tools: any[] = [];
+		tasksExtension(
+			{
+				registerTool(tool: any) {
+					tools.push(tool);
+				},
+				on() {},
+			} as any,
+			{
+				runCommand: async () => ({ stdout: JSON.stringify({ task }), stderr: "", exitCode: 0 }),
+			},
+		);
+
+		const add = tools.find((tool) => tool.name === "task_add");
+		const callText = add.renderCall({ title: "Make HUD nice" }, theme).render(120).join("\n");
+		expect(callText).toContain("Add task");
+		expect(callText).toContain("Make HUD nice");
+
+		const resultText = add.renderResult({ details: { action: "add", task } }, {}, theme, {
+			lastComponent: createText(),
+		});
+		const rendered = resultText.render(120).join("\n");
+		expect(rendered).toContain("Task added");
+		expect(rendered).toContain("PG4W2K4Q03");
+		expect(rendered).not.toContain('{"task"');
+
+		expect(renderTaskResult({ action: "list", args: [], tasks: [task] }, theme as any)).toContain("Tasks (1)");
+	});
+
+	test("task renderer output is width-safe", () => {
+		const longTask = {
+			...task,
+			title: "A very long task title that should never break the terminal layout even in narrow panes",
+			body: "A very long body that should be safely truncated by the custom component renderer.",
+		};
+		const tools: any[] = [];
+		tasksExtension(
+			{
+				registerTool(tool: any) {
+					tools.push(tool);
+				},
+				on() {},
+			} as any,
+			{
+				runCommand: async () => ({ stdout: JSON.stringify({ task: longTask }), stderr: "", exitCode: 0 }),
+			},
+		);
+
+		const show = tools.find((tool) => tool.name === "task_show");
+		const component = show.renderResult({ details: { action: "show", task: longTask } }, {}, theme, {});
+		expect(component.render(30).every((line: string) => visibleWidth(line) <= 30)).toBe(true);
 	});
 });

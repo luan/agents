@@ -4,6 +4,7 @@
 2. Comments for WHY / edge cases / surprises only.
 3. Use `ct source` for lookup and code exploration.
 4. All tests pass before committing. You own every failure you can see.
+5. After changing `ct`, run `just install` so the live `ct` binary matches the repo.
 ## Repo Purpose
 
 This repo is the central hub for local agent configuration. The checked-in

@@ -1,4 +1,8 @@
 {
   "enabled": true,
-  "command": "ct"
+  "command": "ct",
+  "hud": {
+    "enabled": true,
+    "maxTasks": 6
+  }
 }
