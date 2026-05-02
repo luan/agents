@@ -102,7 +102,7 @@
     "linear@claude-plugins-official": false,
     "notion@claude-plugins-official": false,
     "worktrunk@worktrunk": true,
-    "gt@local": false
+    "gt@local": true
   },
   "extraKnownMarketplaces": {
     "claude-plugins-official": {

@@ -63,14 +63,14 @@ status_line = ["run-state", "model-with-reasoning", "current-dir", "git-branch",
 queue = "alt-enter"
 
 [marketplaces.claude-plugins-official]
-last_updated = "2026-05-01T00:59:09Z"
-last_revision = "0742692199b49af5c6c33cd68ee674fb2e679d50"
+last_updated = "2026-05-01T22:52:18Z"
+last_revision = "b392f51899343f35a203260a4b344803de236d13"
 source_type = "git"
 source = "https://github.com/anthropics/claude-plugins-official.git"
 
 [marketplaces.worktrunk]
-last_updated = "2026-05-01T00:59:16Z"
-last_revision = "c33cb8c66508d5cb2443414432de74d42614835c"
+last_updated = "2026-05-01T22:52:23Z"
+last_revision = "4fcb0cfa5bdd97ad05226cf9a77be5002d4d675d"
 source_type = "git"
 source = "https://github.com/max-sixty/worktrunk.git"
 
@@ -79,20 +79,9 @@ last_updated = "2026-04-30T23:23:30Z"
 source_type = "local"
 source = "/Users/luan/.codex/.tmp/bundled-marketplaces/openai-bundled"
 
-[mcp_servers.source]
-command = "ct"
-args = ["mcp", "source"]
-
-[mcp_servers.source.tools.show]
-approval_mode = "approve"
-
 [mcp_servers.lens]
 command = "ct"
 args = ["mcp", "lens"]
-
-[mcp_servers.vault]
-command = "ct"
-args = ["mcp", "vault"]
 
 [mcp_servers.fff]
 command = "fff-mcp"
