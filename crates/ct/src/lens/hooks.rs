@@ -324,9 +324,7 @@ fn native_hook_response(hook: LensLifecycleHook, response: &LensHookResponse) ->
         );
     }
 
-    if let Some(message) = native_system_message(response) {
-        payload.insert("systemMessage".to_string(), Value::String(message));
-    }
+    let mut system_message = native_system_message(response);
 
     match hook {
         LensLifecycleHook::PreTool => {
@@ -373,19 +371,21 @@ fn native_hook_response(hook: LensLifecycleHook, response: &LensHookResponse) ->
             }
         }
         LensLifecycleHook::TurnEnd => {
-            if let Some(context) = native_additional_context(response) {
-                payload.insert(
-                    "hookSpecificOutput".to_string(),
-                    json!({
-                        "hookEventName": "Stop",
-                        "additionalContext": context,
-                    }),
-                );
+            // Stop hook schema rejects hookSpecificOutput; surface diagnostic
+            // context as systemMessage so the user still sees it.
+            if system_message.is_none()
+                && let Some(context) = native_additional_context(response)
+            {
+                system_message = Some(context);
             }
         }
         LensLifecycleHook::TurnStart
         | LensLifecycleHook::AgentEnd
         | LensLifecycleHook::SessionShutdown => {}
+    }
+
+    if let Some(message) = system_message {
+        payload.insert("systemMessage".to_string(), Value::String(message));
     }
 
     Value::Object(payload)
@@ -1753,6 +1753,64 @@ mod tests {
             response.data.unwrap()["report"]
                 .to_string()
                 .contains("formatting differs")
+        );
+    }
+
+    #[test]
+    fn native_turn_end_response_uses_system_message_not_hook_specific_output() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("main.rs"), "fn main() {}\n").unwrap();
+        let mut store = LensStore::open_for_project(temp.path()).unwrap();
+        store
+            .record_diagnostics(&[Diagnostic {
+                source: DiagnosticSource::Formatter,
+                scope: DiagnosticScope::file("main.rs"),
+                severity: DiagnosticSeverity::Warning,
+                code: Some("fmt".to_string()),
+                message: "formatting differs".to_string(),
+                rel_path: Some("main.rs".to_string()),
+                start_line: Some(1),
+                end_line: Some(1),
+                fingerprint: "fmt-main".to_string(),
+                content_hash: None,
+                raw_output_id: None,
+                snapshot_id: None,
+                first_seen_at: None,
+                last_seen_at: None,
+                resolved_at: None,
+            }])
+            .unwrap();
+        let input = json!({
+            "schema_version": LENS_HOOK_EVENT_SCHEMA_VERSION,
+            "host": {"name": "claude-code", "kind": "extension"},
+            "session": {"id": "s"},
+            "cwd": temp.path().display().to_string(),
+            "turn": {"id": "t"},
+            "event": "turn_end",
+            "tool": {"name": "agent", "status": "success"},
+            "known_files": [{"path": "main.rs", "operation": "modify"}],
+            "policy": {}
+        });
+
+        let response =
+            handle_lifecycle_hook(LensLifecycleHook::TurnEnd, &input.to_string(), temp.path());
+        assert!(
+            response.context.inject,
+            "precondition: response should request context injection"
+        );
+        let native = native_hook_response(LensLifecycleHook::TurnEnd, &response);
+
+        assert!(
+            native.get("hookSpecificOutput").is_none(),
+            "Stop hook output must not contain hookSpecificOutput: {native}"
+        );
+        let system_message = native
+            .get("systemMessage")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        assert!(
+            system_message.contains("Lens session diagnostics"),
+            "expected diagnostic summary in systemMessage, got: {system_message}"
         );
     }
 
