@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { getSupportedThinkingLevels } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { getAgentDir } from "@mariozechner/pi-coding-agent";
 import type { AutocompleteItem } from "@mariozechner/pi-tui";
@@ -32,6 +33,10 @@ function saveMap(map: Record<string, Level>): void {
 	writeFileSync(effortPath(), `${JSON.stringify(map, null, 2)}\n`);
 }
 
+function supportedLevels(ctx: ExtensionContext): readonly Level[] {
+	return ctx.model ? (getSupportedThinkingLevels(ctx.model) as Level[]) : LEVELS;
+}
+
 export default function effortExtension(pi: ExtensionAPI) {
 	let map = loadMap();
 
@@ -53,11 +58,13 @@ export default function effortExtension(pi: ExtensionAPI) {
 
 	pi.registerCommand("effort", {
 		description: "Set thinking effort for the current model and persist to effort.json",
-		getArgumentCompletions: (prefix: string): AutocompleteItem[] | null => {
-			const items = LEVELS.filter((l) => l.startsWith(prefix)).map((l) => ({
-				value: l,
-				label: l,
-			}));
+		getArgumentCompletions: (prefix: string, ctx: ExtensionContext): AutocompleteItem[] | null => {
+			const items = supportedLevels(ctx)
+				.filter((l) => l.startsWith(prefix))
+				.map((l) => ({
+					value: l,
+					label: l,
+				}));
 			return items.length > 0 ? items : null;
 		},
 		handler: async (args, ctx) => {
@@ -77,6 +84,11 @@ export default function effortExtension(pi: ExtensionAPI) {
 				return;
 			}
 			const level = arg as Level;
+			const supported = supportedLevels(ctx);
+			if (!supported.includes(level)) {
+				ctx.ui.notify(`Level "${level}" is not supported by ${id}. Supported: ${supported.join(", ")}`, "error");
+				return;
+			}
 			// Reload from disk before mutating so concurrent hand-edits aren't clobbered.
 			const fresh = loadMap();
 			fresh[id] = level;
