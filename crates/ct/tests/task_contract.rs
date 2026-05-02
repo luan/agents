@@ -1,0 +1,156 @@
+use std::fs;
+use std::path::Path;
+use std::process::Command as StdCommand;
+
+use assert_cmd::Command;
+use predicates::prelude::*;
+use tempfile::TempDir;
+
+fn project_dir() -> TempDir {
+    let dir = tempfile::tempdir().expect("project dir");
+    run_git(dir.path(), &["init", "--initial-branch=main"]);
+    dir
+}
+
+fn run_git(cwd: &Path, args: &[&str]) {
+    let status = StdCommand::new("git")
+        .current_dir(cwd)
+        .args(args)
+        .env("GIT_AUTHOR_NAME", "ct-test")
+        .env("GIT_AUTHOR_EMAIL", "ct-test@example.com")
+        .env("GIT_COMMITTER_NAME", "ct-test")
+        .env("GIT_COMMITTER_EMAIL", "ct-test@example.com")
+        .status()
+        .unwrap_or_else(|e| panic!("git {args:?} failed: {e}"));
+    assert!(status.success(), "git {args:?} exited {status}");
+}
+
+fn ct_cmd(project: &Path, state: &Path) -> Command {
+    let mut cmd = Command::cargo_bin("ct").expect("ct binary");
+    cmd.current_dir(project).env("XDG_STATE_HOME", state);
+    cmd
+}
+
+#[test]
+fn task_lifecycle_persists_and_supports_json() {
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+
+    let add = ct_cmd(project.path(), state.path())
+        .args([
+            "task",
+            "add",
+            "Write task docs",
+            "--body",
+            "Explain the persisted task workflow",
+            "--json",
+        ])
+        .assert()
+        .success();
+    let add_stdout = String::from_utf8(add.get_output().stdout.clone()).expect("utf8");
+    let add_json: serde_json::Value = serde_json::from_str(&add_stdout).expect("add json");
+    let id = add_json["task"]["id"].as_str().expect("id").to_string();
+    assert!(
+        id.chars()
+            .all(|c| "0123456789ABCDEFGHJKMNPQRSTVWXYZ".contains(c))
+    );
+    assert!(id.chars().any(|c| c.is_ascii_alphabetic()));
+    assert_eq!(add_json["task"]["status"], "open");
+
+    ct_cmd(project.path(), state.path())
+        .args(["task", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(&id))
+        .stdout(predicate::str::contains("Write task docs"));
+
+    let prefix = &id[..4];
+    let update = ct_cmd(project.path(), state.path())
+        .args([
+            "task",
+            "update",
+            prefix,
+            "--status",
+            "done",
+            "--title",
+            "Document task tools",
+            "--json",
+        ])
+        .assert()
+        .success();
+    let update_json: serde_json::Value =
+        serde_json::from_slice(&update.get_output().stdout).expect("update json");
+    assert_eq!(update_json["task"]["id"], id);
+    assert_eq!(update_json["task"]["status"], "done");
+    assert_eq!(update_json["task"]["title"], "Document task tools");
+
+    let show = ct_cmd(project.path(), state.path())
+        .args(["task", "show", prefix, "--json"])
+        .assert()
+        .success();
+    let show_json: serde_json::Value =
+        serde_json::from_slice(&show.get_output().stdout).expect("show json");
+    assert_eq!(show_json["task"]["id"], id);
+    assert_eq!(
+        show_json["task"]["body"],
+        "Explain the persisted task workflow"
+    );
+
+    ct_cmd(project.path(), state.path())
+        .args(["task", "delete", prefix, "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"deleted\""));
+
+    ct_cmd(project.path(), state.path())
+        .args(["task", "show", &id, "--json"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no task matches"));
+}
+
+#[test]
+fn task_prefix_lookup_rejects_ambiguous_prefixes() {
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+    let db_dir = state.path().join("ct/projects/manual");
+    fs::create_dir_all(&db_dir).expect("db dir");
+
+    ct_cmd(project.path(), state.path())
+        .args(["task", "add", "seed"])
+        .assert()
+        .success();
+
+    let db_path = fs::read_dir(state.path().join("ct/projects"))
+        .expect("projects dir")
+        .filter_map(Result::ok)
+        .find_map(|entry| {
+            let path = entry.path().join("tasks").join("tasks.sqlite");
+            path.exists().then_some(path)
+        })
+        .expect("tasks sqlite");
+
+    let conn = rusqlite::Connection::open(db_path).expect("open db");
+    conn.execute(
+        "INSERT INTO tasks (id, title, body, status, created_at, updated_at) VALUES (?1, ?2, '', 'open', 1, 1)",
+        ("ABCDEF12", "first"),
+    )
+    .expect("insert first");
+    conn.execute(
+        "INSERT INTO tasks (id, title, body, status, created_at, updated_at) VALUES (?1, ?2, '', 'open', 2, 2)",
+        ("ABCDEFFF", "second"),
+    )
+    .expect("insert second");
+
+    ct_cmd(project.path(), state.path())
+        .args(["task", "show", "ABCD"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("ambiguous task id prefix"));
+
+    ct_cmd(project.path(), state.path())
+        .args(["task", "show", "ABCDEF1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("first"));
+}

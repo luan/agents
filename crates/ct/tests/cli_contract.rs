@@ -1412,6 +1412,7 @@ fn top_level_help_exposes_only_canonical_public_domains() {
         "lens",
         "vault",
         "repo",
+        "task",
         "apply-patch",
         "mcp",
         "hook",

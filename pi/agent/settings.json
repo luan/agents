@@ -20,7 +20,8 @@
   "extensions": [
     "-extensions/team-mode/index.ts",
     "-extensions/pi-web-access/index.ts",
-    "extensions/lens/index.ts"
+    "extensions/lens/index.ts",
+    "extensions/tasks/index.ts"
   ],
   "enabledModels": [
     "openai-codex/gpt-5.5",

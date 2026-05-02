@@ -13,6 +13,7 @@ mod notify;
 mod phases;
 mod refs;
 mod slug;
+mod task;
 mod vault;
 
 use clap::{CommandFactory, Parser};
@@ -153,6 +154,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Some(cli::Command::Vault { action }) => dispatch_vault(action),
         Some(cli::Command::Repo { action }) => cli::run_repo(action),
+        Some(cli::Command::Task { action }) => task::run_task(action),
         Some(cli::Command::Notify) => notify::run(),
         Some(cli::Command::Source { action }) => cli::run_source(action),
         Some(cli::Command::Lens { action }) => cli::run_lens(action),
