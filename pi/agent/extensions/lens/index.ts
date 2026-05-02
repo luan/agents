@@ -207,9 +207,20 @@ export async function suppressStaleLensDiagnosticMessage(
 			display: false,
 			details: {
 				...(message.details ?? {}),
+				requiresFollowup: false,
+				reportIssues: [],
 				suppressedAsStale: true,
 			},
 		},
+	};
+}
+
+export function suppressInactiveDiagnosticInjection(response: any, active: boolean | undefined) {
+	if (response?.context?.inject !== true || active === true) return response;
+	return {
+		...response,
+		status: "ok",
+		context: { ...response.context, inject: false, content: "" },
 	};
 }
 
@@ -454,13 +465,7 @@ export default function lensExtension(pi: ExtensionAPI) {
 			let response = await runHook("lens-turn-end", eventFor(ctx, "turn_end"), safeCwd(ctx), safeSignal(ctx));
 			if (response?.context?.inject === true) {
 				const active = await hasActiveLensDiagnostics(safeCwd(ctx), { signal: safeSignal(ctx) });
-				if (active === false) {
-					response = {
-						...response,
-						status: "ok",
-						context: { ...response.context, inject: false, content: "" },
-					};
-				}
+				response = suppressInactiveDiagnosticInjection(response, active);
 			}
 			applyLensUi(ctx, response);
 			if (response?.context?.inject !== true) queueState.lastQueuedFingerprint = undefined;
