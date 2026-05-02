@@ -36,6 +36,15 @@ Shared configuration is the default. Tool-specific folders (`claude/`, `codex/`,
 - `ct tui usage-bar` / `ct tui usage-bars` — terminal UI helpers
 - `ct dev` — developer/internal helpers; raw backends live under `ct dev debug`
 
+Configure `ct tui usage-bars` provider visibility and order in `~/.config/ct/config.toml`:
+
+```toml
+[usage_bars]
+providers = ["claude", "copilot", "codex"]
+```
+
+Use `ct tui usage-bars --sidebar --watch` for a live sidebar; it rereads the config on every redraw.
+
 ## Setup
 
 ```sh

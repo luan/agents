@@ -498,6 +498,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "toml",
  "tree-sitter",
  "tree-sitter-bash",
  "tree-sitter-c",

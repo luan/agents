@@ -233,6 +233,14 @@ pub enum TuiAction {
         width: usize,
         #[arg(long, help = "Render the tmux mux-sidebar layout")]
         sidebar: bool,
+        #[arg(long, help = "Continuously redraw and reload config changes")]
+        watch: bool,
+        #[arg(
+            long,
+            default_value_t = 1000,
+            help = "Watch redraw interval in milliseconds"
+        )]
+        interval_ms: u64,
     },
 }
 

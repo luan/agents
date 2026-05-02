@@ -421,31 +421,71 @@ pub fn run_usage_bar(width: usize) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-pub fn run_usage_bars(width: usize, sidebar: bool) -> Result<(), Box<dyn std::error::Error>> {
-    poll_usage_sources();
-    let requests = collect_usage_bar_requests(width);
-    if sidebar {
-        for line in render_sidebar_usage_bars(&requests, width) {
-            println!("{line}");
-        }
-        return Ok(());
+pub fn run_usage_bars(
+    width: usize,
+    sidebar: bool,
+    watch: bool,
+    interval_ms: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if watch {
+        return watch_usage_bars(width, sidebar, interval_ms);
     }
-    for (i, req) in requests.iter().enumerate() {
-        if i > 0 {
-            println!();
-        }
-        for line in usage_bars::render(req) {
-            println!("{line}");
-        }
+    for line in render_usage_bars_once(width, sidebar)? {
+        println!("{line}");
     }
     Ok(())
 }
 
-fn poll_usage_sources() {
-    if should_poll(&codex_log(), std::time::Duration::from_secs(120)) {
+fn watch_usage_bars(
+    width: usize,
+    sidebar: bool,
+    interval_ms: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write;
+
+    let interval = std::time::Duration::from_millis(interval_ms.max(100));
+    let mut stdout = std::io::stdout();
+    loop {
+        let lines = render_usage_bars_once(width, sidebar)
+            .unwrap_or_else(|err| vec![format!("usage-bars: {err}")]);
+        write!(stdout, "\x1b[H\x1b[2J")?;
+        for line in lines {
+            writeln!(stdout, "{line}")?;
+        }
+        stdout.flush()?;
+        std::thread::sleep(interval);
+    }
+}
+
+fn render_usage_bars_once(
+    width: usize,
+    sidebar: bool,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let providers = configured_usage_providers()?;
+    poll_usage_sources(&providers);
+    let requests = collect_usage_bar_requests(width, &providers);
+    if sidebar {
+        return Ok(render_sidebar_usage_bars(&requests, width));
+    }
+    let mut lines = Vec::new();
+    for (i, req) in requests.iter().enumerate() {
+        if i > 0 {
+            lines.push(String::new());
+        }
+        lines.extend(usage_bars::render(req));
+    }
+    Ok(lines)
+}
+
+fn poll_usage_sources(providers: &[UsageProvider]) {
+    if providers.contains(&UsageProvider::Codex)
+        && should_poll(&codex_log(), std::time::Duration::from_secs(120))
+    {
         let _ = poll_codex_usage();
     }
-    if should_poll(&copilot_log(), std::time::Duration::from_secs(300)) {
+    if providers.contains(&UsageProvider::Copilot)
+        && should_poll(&copilot_log(), std::time::Duration::from_secs(300))
+    {
         let _ = poll_copilot_usage();
     }
 }
@@ -468,6 +508,99 @@ const CLAUDE_GLYPH: &str = "\u{e861}";
 const CODEX_GLYPH: &str = "\u{e7cf}";
 const COPILOT_GLYPH: &str = "\u{f113}";
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum UsageProvider {
+    Claude,
+    Copilot,
+    Codex,
+}
+
+impl UsageProvider {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "claude" => Some(Self::Claude),
+            "copilot" => Some(Self::Copilot),
+            "codex" => Some(Self::Codex),
+            _ => None,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Copilot => "copilot",
+            Self::Codex => "codex",
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct CtConfig {
+    #[serde(alias = "usage-bars")]
+    usage_bars: Option<UsageBarsConfig>,
+}
+
+#[derive(serde::Deserialize)]
+struct UsageBarsConfig {
+    providers: Option<Vec<String>>,
+}
+
+fn configured_usage_providers() -> Result<Vec<UsageProvider>, Box<dyn std::error::Error>> {
+    let path = ct_config_path();
+    if !path.is_file() {
+        return Ok(default_usage_providers());
+    }
+    let contents = std::fs::read_to_string(&path)?;
+    parse_usage_providers_config(&contents).map_err(|e| format!("{}: {e}", path.display()).into())
+}
+
+fn default_usage_providers() -> Vec<UsageProvider> {
+    vec![
+        UsageProvider::Claude,
+        UsageProvider::Copilot,
+        UsageProvider::Codex,
+    ]
+}
+
+fn ct_config_path() -> std::path::PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| home().join(".config"))
+        .join("ct/config.toml")
+}
+
+fn parse_usage_providers_config(
+    contents: &str,
+) -> Result<Vec<UsageProvider>, Box<dyn std::error::Error>> {
+    let config: CtConfig = toml::from_str(contents)?;
+    let Some(usage_bars) = config.usage_bars else {
+        return Ok(default_usage_providers());
+    };
+    let Some(provider_names) = usage_bars.providers else {
+        return Ok(default_usage_providers());
+    };
+
+    let mut providers = Vec::new();
+    for provider_name in provider_names {
+        let Some(provider) = UsageProvider::parse(&provider_name) else {
+            let valid = default_usage_providers()
+                .iter()
+                .map(|provider| provider.name())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "unknown usage_bars provider `{provider_name}`; expected one of: {valid}"
+            )
+            .into());
+        };
+        if providers.contains(&provider) {
+            return Err(format!("duplicate usage_bars provider `{provider_name}`").into());
+        }
+        providers.push(provider);
+    }
+    Ok(providers)
+}
+
 #[derive(Clone, Copy)]
 struct DualSample {
     ts: i64,
@@ -484,55 +617,66 @@ struct SimpleSample {
     reset: i64,
 }
 
-fn collect_usage_bar_requests(width: usize) -> Vec<usage_bars::RenderRequest> {
+fn collect_usage_bar_requests(
+    width: usize,
+    providers: &[UsageProvider],
+) -> Vec<usage_bars::RenderRequest> {
     let mut out = Vec::new();
 
-    let claude_samples = load_dual_sqlite(&claude_usage_db());
-    if !claude_samples.is_empty() {
-        out.push(usage_bars::RenderRequest {
-            provider_label: CLAUDE_GLYPH.to_string(),
-            provider_color: Some("d87b4a".to_string()),
-            windows: dual_peak_windows(&claude_samples),
-            width,
-        });
-    }
-
-    let copilot_samples = load_simple(&copilot_log());
-    if let Some(last) = copilot_samples.last() {
-        out.push(usage_bars::RenderRequest {
-            provider_label: COPILOT_GLYPH.to_string(),
-            provider_color: Some("cba6f7".to_string()),
-            windows: vec![usage_bars::Window {
-                label: "mo".to_string(),
-                used_percent: last.pct,
-                window_secs: THIRTY_DAYS,
-                reset_secs: last.reset - now_ts(),
-            }],
-            width,
-        });
-    }
-
-    let codex_samples = load_dual_tsv(&codex_log());
-    if let Some(last) = codex_samples.last() {
-        out.push(usage_bars::RenderRequest {
-            provider_label: CODEX_GLYPH.to_string(),
-            provider_color: Some("74c7ec".to_string()),
-            windows: vec![
-                usage_bars::Window {
-                    label: "5h".to_string(),
-                    used_percent: last.p_pct,
-                    window_secs: FIVE_HOURS,
-                    reset_secs: last.p_reset - now_ts(),
-                },
-                usage_bars::Window {
-                    label: "7d".to_string(),
-                    used_percent: last.s_pct,
-                    window_secs: SEVEN_DAYS,
-                    reset_secs: last.s_reset - now_ts(),
-                },
-            ],
-            width,
-        });
+    for provider in providers {
+        match provider {
+            UsageProvider::Claude => {
+                let claude_samples = load_dual_sqlite(&claude_usage_db());
+                if !claude_samples.is_empty() {
+                    out.push(usage_bars::RenderRequest {
+                        provider_label: CLAUDE_GLYPH.to_string(),
+                        provider_color: Some("d87b4a".to_string()),
+                        windows: dual_peak_windows(&claude_samples),
+                        width,
+                    });
+                }
+            }
+            UsageProvider::Copilot => {
+                let copilot_samples = load_simple(&copilot_log());
+                if let Some(last) = copilot_samples.last() {
+                    out.push(usage_bars::RenderRequest {
+                        provider_label: COPILOT_GLYPH.to_string(),
+                        provider_color: Some("cba6f7".to_string()),
+                        windows: vec![usage_bars::Window {
+                            label: "mo".to_string(),
+                            used_percent: last.pct,
+                            window_secs: THIRTY_DAYS,
+                            reset_secs: last.reset - now_ts(),
+                        }],
+                        width,
+                    });
+                }
+            }
+            UsageProvider::Codex => {
+                let codex_samples = load_dual_tsv(&codex_log());
+                if let Some(last) = codex_samples.last() {
+                    out.push(usage_bars::RenderRequest {
+                        provider_label: CODEX_GLYPH.to_string(),
+                        provider_color: Some("74c7ec".to_string()),
+                        windows: vec![
+                            usage_bars::Window {
+                                label: "5h".to_string(),
+                                used_percent: last.p_pct,
+                                window_secs: FIVE_HOURS,
+                                reset_secs: last.p_reset - now_ts(),
+                            },
+                            usage_bars::Window {
+                                label: "7d".to_string(),
+                                used_percent: last.s_pct,
+                                window_secs: SEVEN_DAYS,
+                                reset_secs: last.s_reset - now_ts(),
+                            },
+                        ],
+                        width,
+                    });
+                }
+            }
+        }
     }
 
     out
@@ -1005,4 +1149,55 @@ fn fmt_pace_ct(secs: i64) -> String {
 
 fn fg(rgb: Rgb, text: &str) -> String {
     format!("\x1b[38;2;{};{};{}m{text}\x1b[39m", rgb.0, rgb.1, rgb.2)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn usage_provider_config_defaults_when_absent() {
+        assert_eq!(
+            parse_usage_providers_config("").unwrap(),
+            vec![
+                UsageProvider::Claude,
+                UsageProvider::Copilot,
+                UsageProvider::Codex
+            ]
+        );
+    }
+
+    #[test]
+    fn usage_provider_config_controls_order_and_visibility() {
+        assert_eq!(
+            parse_usage_providers_config("[usage_bars]\nproviders = [\"codex\", \"claude\"]\n")
+                .unwrap(),
+            vec![UsageProvider::Codex, UsageProvider::Claude]
+        );
+    }
+
+    #[test]
+    fn usage_provider_config_accepts_hyphenated_table() {
+        assert_eq!(
+            parse_usage_providers_config("[usage-bars]\nproviders = [\"copilot\"]\n").unwrap(),
+            vec![UsageProvider::Copilot]
+        );
+    }
+
+    #[test]
+    fn usage_provider_config_rejects_unknown_provider() {
+        let err = parse_usage_providers_config("[usage_bars]\nproviders = [\"cursor\"]\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown usage_bars provider `cursor`"));
+    }
+
+    #[test]
+    fn usage_provider_config_rejects_duplicate_provider() {
+        let err =
+            parse_usage_providers_config("[usage_bars]\nproviders = [\"codex\", \"codex\"]\n")
+                .unwrap_err()
+                .to_string();
+        assert!(err.contains("duplicate usage_bars provider `codex`"));
+    }
 }
