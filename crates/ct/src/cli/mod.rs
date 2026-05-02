@@ -17,7 +17,7 @@ mod tui;
 pub use apply_patch::run_apply_patch;
 pub use args::{
     ApplyPatchArgs, DevAction, LensAction, McpAction, RepoAction, ShellAction, SourceAction,
-    TuiAction, VaultAction, parse_kind_filter,
+    TaskAction, TuiAction, VaultAction, parse_kind_filter,
 };
 pub use artifact::{
     ArtifactCreateArgs, run_vault_archive, run_vault_comments, run_vault_create, run_vault_list,
@@ -62,6 +62,12 @@ pub enum Command {
     Repo {
         #[command(subcommand)]
         action: RepoAction,
+    },
+
+    #[command(about = "Project task storage")]
+    Task {
+        #[command(subcommand)]
+        action: TaskAction,
     },
 
     #[command(about = "Apply patches and inspect apply_patch telemetry")]

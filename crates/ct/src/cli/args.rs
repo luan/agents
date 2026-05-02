@@ -132,6 +132,61 @@ pub enum ApplyPatchDraftAction {
 }
 
 #[derive(Subcommand)]
+pub enum TaskAction {
+    #[command(about = "Create a project task")]
+    Add {
+        #[arg(help = "Task title")]
+        title: String,
+        #[arg(short, long, help = "Task body/details")]
+        body: Option<String>,
+        #[arg(long, default_value = "open", help = "Task status")]
+        status: String,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+    },
+
+    #[command(about = "List project tasks")]
+    List {
+        #[arg(long, help = "Filter by status")]
+        status: Option<String>,
+        #[arg(long, help = "Include all statuses")]
+        all: bool,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+    },
+
+    #[command(about = "Show one task by ID or unique prefix")]
+    Show {
+        #[arg(help = "Task ID or unique prefix")]
+        id: String,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+    },
+
+    #[command(about = "Update one task by ID or unique prefix")]
+    Update {
+        #[arg(help = "Task ID or unique prefix")]
+        id: String,
+        #[arg(long, help = "New title")]
+        title: Option<String>,
+        #[arg(long, help = "New body/details")]
+        body: Option<String>,
+        #[arg(long, help = "New status")]
+        status: Option<String>,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+    },
+
+    #[command(about = "Delete one task by ID or unique prefix")]
+    Delete {
+        #[arg(help = "Task ID or unique prefix")]
+        id: String,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum RepoAction {
     #[command(about = "Print detected project identity")]
     Project,
