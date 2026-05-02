@@ -232,6 +232,16 @@ function exitEditingView(state: AskState): AskState {
 }
 
 function advanceToNextTab(state: AskState): AskState {
+	if (state.questions.length === 1) {
+		return {
+			...state,
+			activeSubmitActionIndex: 0,
+			completed: true,
+			mode: "submit",
+			view: submitView(),
+		};
+	}
+
 	const nextTab = Math.min(state.activeTabIndex + 1, state.questions.length);
 	return {
 		...state,

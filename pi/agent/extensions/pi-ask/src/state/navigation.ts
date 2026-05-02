@@ -21,6 +21,10 @@ export function createInitialState(params: { title?: string; questions: AskState
 }
 
 export function moveTab(state: AskState, delta: number): AskState {
+	if (state.questions.length <= 1) {
+		return state;
+	}
+
 	const normalizedDelta = delta < 0 ? -1 : 1;
 	const totalTabs = state.questions.length + 1;
 	const activeTabIndex = (state.activeTabIndex + normalizedDelta + totalTabs) % totalTabs;

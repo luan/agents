@@ -67,7 +67,7 @@ export function renderAskToolCall(args: unknown, theme: ToolTheme) {
 	const labels = Array.isArray(params.questions)
 		? params.questions.map((question: AskQuestionInput, index) => question.label || `Q${index + 1}`).join(", ")
 		: "";
-	let text = theme.fg("toolTitle", theme.bold("ask_user "));
+	let text = theme.fg("toolTitle", theme.bold("Ask User "));
 	text += theme.fg("muted", `${params.questions?.length ?? 0} question(s)`);
 	if (labels) {
 		text += theme.fg("dim", ` (${truncateToWidth(labels, UI_DIMENSIONS.callLabelTruncateWidth)})`);
@@ -82,19 +82,36 @@ export function renderAskToolResult(
 	},
 	_options: unknown,
 	theme: ToolTheme,
+	context?: { lastComponent?: unknown },
 ) {
+	const textComponent = context?.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
 	const details = result.details;
 	if (!details) {
 		const text = result.content[0];
-		return new Text(text?.type === "text" ? (text.text ?? "") : "", 0, 0);
+		textComponent.setText(text?.type === "text" ? (text.text ?? "") : "");
+		return textComponent;
 	}
 	if (details.error) {
-		return new Text(theme.fg("warning", "Invalid input"), 0, 0);
+		textComponent.setText(theme.fg("warning", "Invalid input"));
+		return textComponent;
 	}
 	if (details.cancelled) {
-		return new Text(theme.fg("warning", "Cancelled"), 0, 0);
+		textComponent.setText(theme.fg("warning", "Cancelled"));
+		return textComponent;
 	}
-	return new Text(renderResultText(details), 0, 0);
+	textComponent.setText(renderResultBlock(details, theme));
+	return textComponent;
+}
+
+function renderResultBlock(result: AskResult, theme: ToolTheme): string {
+	const body = renderResultText(result).split("\n");
+	const title = result.mode === "elaborate" ? "Ask User — Elaboration" : "Ask User";
+	const lines = [theme.fg("toolTitle", theme.bold(title))];
+	for (const [index, line] of body.entries()) {
+		const prefix = index === body.length - 1 ? "  └ " : "  ├ ";
+		lines.push(`${theme.fg("dim", prefix)}${line}`);
+	}
+	return lines.join("\n");
 }
 
 function errorResultDetails(params: AskParams, issues: AskValidationIssue[]): AskResult {
