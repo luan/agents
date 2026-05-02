@@ -17,6 +17,7 @@ export function registerAskTool(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "ask_user",
 		label: "Ask User",
+		renderShell: "self",
 		description: ASK_TOOL_DESCRIPTION,
 		promptSnippet:
 			"Clarify ambiguous or preference-sensitive decisions with a short interactive interview before proceeding",

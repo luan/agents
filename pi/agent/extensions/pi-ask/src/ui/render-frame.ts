@@ -14,8 +14,10 @@ export function renderFrameHeader(args: { lines: string[]; state: AskState; them
 		add(` ${theme.fg("accent", theme.bold(state.title))}`);
 		add();
 	}
-	add(renderTabs(state, theme, width));
-	add();
+	if (state.questions.length > 1) {
+		add(renderTabs(state, theme, width));
+		add();
+	}
 }
 
 export function renderFrameFooter(args: { lines: string[]; state: AskState; theme: Theme; width: number }) {
@@ -149,7 +151,12 @@ function renderFooter(state: AskState, width: number): string[] {
 		footer = renderFooterText("submit");
 	} else {
 		const question = getCurrentQuestion(state);
-		footer = renderFooterText(question?.type === "multi" ? "multi" : "default");
+		const singleQuestion = state.questions.length <= 1;
+		if (singleQuestion) {
+			footer = renderFooterText(question?.type === "multi" ? "singleMulti" : "singleDefault");
+		} else {
+			footer = renderFooterText(question?.type === "multi" ? "multi" : "default");
+		}
 	}
 	return wrapDelimitedFooterHints(footer, width);
 }

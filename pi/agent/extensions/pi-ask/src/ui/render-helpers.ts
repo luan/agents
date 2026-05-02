@@ -287,7 +287,9 @@ export function pushSavedNote(args: {
 	pushWrappedText(lines, note, width, theme, "muted", prefix, continuationPrefix);
 }
 
-export function renderFooterText(mode: "input" | "note" | "submit" | "multi" | "default") {
+export function renderFooterText(
+	mode: "input" | "note" | "submit" | "multi" | "default" | "singleMulti" | "singleDefault",
+) {
 	switch (mode) {
 		case "input":
 			return UI_TEXT.footerInput;
@@ -297,6 +299,10 @@ export function renderFooterText(mode: "input" | "note" | "submit" | "multi" | "
 			return UI_TEXT.footerSubmit;
 		case "multi":
 			return UI_TEXT.footerMulti;
+		case "singleMulti":
+			return UI_TEXT.footerSingleMulti;
+		case "singleDefault":
+			return UI_TEXT.footerSingleDefault;
 		default:
 			return UI_TEXT.footerDefault;
 	}

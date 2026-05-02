@@ -25,7 +25,7 @@ export function getInputCommand(state: AskState, data: string, editingText = "")
 	}
 
 	if (state.view.kind === "input" || state.view.kind === "note") {
-		return getEditingInputCommand(data, editingText);
+		return getEditingInputCommand(data, editingText, state.view.kind === "input");
 	}
 
 	return getNavigationInputCommand(data);
@@ -43,7 +43,7 @@ export function formatKeybindingLabel(key: string): string {
 		.join("+");
 }
 
-function getEditingInputCommand(data: string, editingText: string): AskInputCommand {
+function getEditingInputCommand(data: string, editingText: string, enableVimNavigation: boolean): AskInputCommand {
 	if (matchesKey(data, Key.escape)) {
 		return { kind: "editClose" };
 	}
@@ -54,10 +54,10 @@ function getEditingInputCommand(data: string, editingText: string): AskInputComm
 		if (matchesKey(data, Key.shift("tab")) || matchesKey(data, Key.left)) {
 			return { kind: "editMoveTab", delta: -1 };
 		}
-		if (matchesKey(data, Key.up) || matchesKey(data, Key.ctrl("p"))) {
+		if (matchesKey(data, Key.up) || matchesKey(data, Key.ctrl("p")) || (enableVimNavigation && data === "k")) {
 			return { kind: "editMoveOption", delta: -1 };
 		}
-		if (matchesKey(data, Key.down) || matchesKey(data, Key.ctrl("n"))) {
+		if (matchesKey(data, Key.down) || matchesKey(data, Key.ctrl("n")) || (enableVimNavigation && data === "j")) {
 			return { kind: "editMoveOption", delta: 1 };
 		}
 	}
@@ -71,10 +71,10 @@ function getNavigationInputCommand(data: string): AskInputCommand {
 	if (matchesKey(data, Key.shift("tab")) || matchesKey(data, Key.left)) {
 		return { kind: "moveTab", delta: -1 };
 	}
-	if (matchesKey(data, Key.up) || matchesKey(data, Key.ctrl("p"))) {
+	if (matchesKey(data, Key.up) || matchesKey(data, Key.ctrl("p")) || data === "k") {
 		return { kind: "moveOption", delta: -1 };
 	}
-	if (matchesKey(data, Key.down) || matchesKey(data, Key.ctrl("n"))) {
+	if (matchesKey(data, Key.down) || matchesKey(data, Key.ctrl("n")) || data === "j") {
 		return { kind: "moveOption", delta: 1 };
 	}
 	if (matchesKey(data, Key.space)) {

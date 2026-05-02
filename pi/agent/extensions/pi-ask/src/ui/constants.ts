@@ -20,8 +20,10 @@ export const UI_TEXT = {
 	footerInput: " Enter submit · Esc close",
 	footerNote: " Enter save · Esc close",
 	footerSubmit: " 1..3 hotkeys · ↑↓ select · Enter confirm · Esc cancel",
-	footerMulti: " ⇆ tab · ↑↓ select · Space toggle · Enter continue · N/Shift+N note · Esc dismiss",
-	footerDefault: " ⇆ tab · ↑↓ select · Enter confirm · N/Shift+N note · Esc dismiss",
+	footerMulti: " ⇆ tab · ↑↓/j/k select · Space toggle · Enter continue · N/Shift+N note · Esc dismiss",
+	footerDefault: " ⇆ tab · ↑↓/j/k select · Enter confirm · N/Shift+N note · Esc dismiss",
+	footerSingleMulti: " ↑↓/j/k select · Space toggle · Enter submit · N/Shift+N note · Esc dismiss",
+	footerSingleDefault: " ↑↓/j/k select · Enter submit · N/Shift+N note · Esc dismiss",
 	editorPlaceholderInput: "Type answer...",
 	editorPlaceholderNote: "Add a note...",
 } as const;
