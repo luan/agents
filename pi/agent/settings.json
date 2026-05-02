@@ -1,5 +1,5 @@
 {
-  "lastChangelogVersion": "0.72.0",
+  "lastChangelogVersion": "0.72.1",
   "steeringMode": "all",
   "autoUpdate": true,
   "transport": "auto",
@@ -27,7 +27,7 @@
     "openai-codex/gpt-5.4",
     "openai-codex/gpt-5.4-mini"
   ],
-  "theme": "tokyo-night",
+  "theme": "catppuccin-mocha",
   "hideThinkingBlock": false,
   "editorPaddingX": 0,
   "terminal": {
