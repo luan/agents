@@ -27,6 +27,18 @@ const theme = {
 	},
 };
 
+const markedTheme = {
+	fg(role: string, text: string) {
+		return `<${role}>${text}</${role}>`;
+	},
+	bold(text: string) {
+		return `**${text}**`;
+	},
+	strikethrough(text: string) {
+		return `~~${text}~~`;
+	},
+};
+
 function createText() {
 	let value = "";
 	return {
@@ -135,6 +147,23 @@ describe("tasks extension", () => {
 
 		const empty = renderHudLines([], theme as any, 100);
 		expect(empty).toEqual([]);
+	});
+
+	test("styles current and other session assignments differently", () => {
+		const lines = renderHudLines(
+			[
+				{ ...task, title: "Current work", assigned_to: "session:current" },
+				{ ...task, id: "OTHER1", title: "Other work", assigned_to: "session:other", assigned_label: "Other" },
+			],
+			markedTheme as any,
+			160,
+			6,
+			{ currentAssignment: "session:current", currentLabel: "Me" },
+		).join("\n");
+
+		expect(lines).toContain("<accent>@</accent><dim>Me</dim>");
+		expect(lines).toContain("<muted>Other work</muted>");
+		expect(lines).toContain("<dim> @Other</dim>");
 	});
 
 	test("refreshes the HUD on session start and after mutations", async () => {
