@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { visibleWidth } from "@mariozechner/pi-tui";
 
 import tasksExtension, { buildTaskCommand, renderHudLines, renderTaskResult } from "./index";
@@ -176,6 +179,49 @@ describe("tasks extension", () => {
 		expect(calls.map((call) => call.slice(1, 3))).toContainEqual(["task", "list"]);
 		expect(calls).toContainEqual(["ct", "task", "list", "--all", "--json"]);
 		expect(widgetText).toContain("Smoke test task tools");
+	});
+
+	test("renders names for assigned sessions from session files", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-task-session-name-"));
+		const sessionId = "2026-05-03T10-00-00-000Z_named-session";
+		writeFileSync(
+			join(dir, `${sessionId}.jsonl`),
+			[
+				JSON.stringify({ type: "session", id: "named-session" }),
+				JSON.stringify({ type: "session_info", name: "Other Work" }),
+				"",
+			].join("\n"),
+		);
+		const handlers: Record<string, any> = {};
+		let widgetText = "";
+		tasksExtension(
+			{
+				registerTool() {},
+				on(name: string, handler: any) {
+					handlers[name] = handler;
+				},
+			} as any,
+			{
+				runCommand: async () => ({
+					stdout: JSON.stringify({ tasks: [{ ...task, assigned_to: `session:${sessionId}` }] }),
+					stderr: "",
+					exitCode: 0,
+				}),
+			},
+		);
+
+		await handlers.session_start(undefined, {
+			cwd: "/tmp/project",
+			sessionManager: { getSessionFile: () => join(dir, "current.jsonl") },
+			ui: {
+				setWidget(_id: string, factory: any) {
+					widgetText = factory({}, theme).render(120).join("\n");
+				},
+			},
+		});
+
+		expect(widgetText).toContain("@Other Work");
+		expect(widgetText).not.toContain(sessionId);
 	});
 
 	test("reminds the current session about assigned unfinished tasks at turn end", async () => {
