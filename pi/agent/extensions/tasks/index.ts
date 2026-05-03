@@ -560,13 +560,18 @@ function isActiveTask(task: TaskRecord): boolean {
 	return !isComplete(task) && !isCanceled(task);
 }
 
-function assignedTaskReminder(tasks: TaskRecord[], assignedTo: string): string | undefined {
+function assignedTaskReminder(
+	tasks: TaskRecord[],
+	assignedTo: string,
+	display: AssignmentDisplayContext = {},
+): string | undefined {
 	const assigned = sortTasksForDisplay(
 		tasks.filter((task) => isActiveTask(task) && task.assigned_to === assignedTo),
 	).slice(0, 8);
 	if (assigned.length === 0) return undefined;
+	const label = assignmentLabel({ ...assigned[0], assigned_to: assignedTo }, display) ?? assignedTo;
 	const lines = [
-		`You have ${assigned.length} assigned task${assigned.length === 1 ? "" : "s"} still open for ${assignedTo}:`,
+		`You have ${assigned.length} assigned task${assigned.length === 1 ? "" : "s"} still open for @${label}:`,
 		...assigned.map((task) => `- ${task.id} [${task.status}] ${task.title}`),
 		"",
 		"Update status with task_update when you start or finish work.",
@@ -592,7 +597,7 @@ async function remindAssignedTasks(
 	}
 	if (state.lastReminderFingerprint === fingerprint) return;
 	state.lastReminderFingerprint = fingerprint;
-	const reminder = assignedTaskReminder(tasks, assignedTo);
+	const reminder = assignedTaskReminder(tasks, assignedTo, assignmentDisplayContext(pi, ctx, tasks));
 	if (!reminder) return;
 	pi.sendMessage(
 		{

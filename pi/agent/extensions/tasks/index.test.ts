@@ -225,6 +225,8 @@ describe("tasks extension", () => {
 	});
 
 	test("reminds the current session about assigned unfinished tasks at turn end", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-task-current-name-"));
+		writeFileSync(join(dir, "test-session.jsonl"), `${JSON.stringify({ type: "session_info", name: "Tasks" })}\n`);
 		const handlers: Record<string, any> = {};
 		const sent: any[] = [];
 		tasksExtension(
@@ -263,12 +265,14 @@ describe("tasks extension", () => {
 			{
 				cwd: "/tmp/project",
 				signal: undefined,
-				sessionManager: { getSessionFile: () => "/tmp/test-session.jsonl" },
+				sessionManager: { getSessionFile: () => join(dir, "test-session.jsonl") },
 				ui: { notify() {} },
 			},
 		);
 
 		expect(sent).toHaveLength(1);
+		expect(sent[0].message.content[0].text).toContain("for @Tasks:");
+		expect(sent[0].message.content[0].text).not.toContain("session:test-session");
 		expect(sent[0].message.content[0].text).toContain("Smoke test task tools");
 		expect(sent[0].message.content[0].text).not.toContain("Done assigned");
 		expect(sent[0].options).toEqual({ deliverAs: "followUp", triggerTurn: true });
@@ -278,7 +282,7 @@ describe("tasks extension", () => {
 			{
 				cwd: "/tmp/project",
 				signal: undefined,
-				sessionManager: { getSessionFile: () => "/tmp/test-session.jsonl" },
+				sessionManager: { getSessionFile: () => join(dir, "test-session.jsonl") },
 				ui: { notify() {} },
 			},
 		);
