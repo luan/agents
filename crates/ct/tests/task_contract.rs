@@ -219,6 +219,66 @@ fn task_blocked_by_is_a_simple_id_array() {
 }
 
 #[test]
+fn task_epic_metadata_persists_updates_and_clears() {
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+
+    let add = ct_cmd(project.path(), state.path())
+        .args([
+            "task",
+            "add",
+            "Build board",
+            "--epic-id",
+            "task-board",
+            "--epic-title",
+            "Task Board",
+            "--json",
+        ])
+        .assert()
+        .success();
+    let add_json: serde_json::Value =
+        serde_json::from_slice(&add.get_output().stdout).expect("add json");
+    let id = add_json["task"]["id"].as_str().expect("id");
+    assert_eq!(add_json["task"]["epic_id"], "task-board");
+    assert_eq!(add_json["task"]["epic_title"], "Task Board");
+
+    let update = ct_cmd(project.path(), state.path())
+        .args([
+            "task",
+            "update",
+            id,
+            "--epic-id",
+            "task-board-v2",
+            "--epic-title",
+            "Task Board V2",
+            "--json",
+        ])
+        .assert()
+        .success();
+    let update_json: serde_json::Value =
+        serde_json::from_slice(&update.get_output().stdout).expect("update json");
+    assert_eq!(update_json["task"]["epic_id"], "task-board-v2");
+    assert_eq!(update_json["task"]["epic_title"], "Task Board V2");
+
+    let list = ct_cmd(project.path(), state.path())
+        .args(["task", "list", "--all", "--json"])
+        .assert()
+        .success();
+    let list_json: serde_json::Value =
+        serde_json::from_slice(&list.get_output().stdout).expect("list json");
+    assert_eq!(list_json["tasks"][0]["epic_id"], "task-board-v2");
+
+    let clear = ct_cmd(project.path(), state.path())
+        .args(["task", "update", id, "--clear-epic", "--json"])
+        .assert()
+        .success();
+    let clear_json: serde_json::Value =
+        serde_json::from_slice(&clear.get_output().stdout).expect("clear json");
+    assert!(clear_json["task"]["epic_id"].is_null());
+    assert!(clear_json["task"]["epic_title"].is_null());
+}
+
+#[test]
 fn task_list_sorts_ready_tasks_before_blocked_then_by_priority() {
     let project = project_dir();
     let state = tempfile::tempdir().expect("state dir");

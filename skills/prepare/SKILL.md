@@ -9,7 +9,7 @@ user-invocable: true
 
 Turn an approved blueprints vault `spec` into executable persisted `ct` tasks using vertical slices (tracer bullets). This skill answers **how should we break this into work?**
 
-For small specs, create one task per executable slice. For large specs, create a parent coordination task plus linked child tasks: the parent task is the roadmap, and each child task is an independently executable vertical slice.
+For every spec, publish all generated tasks under one epic umbrella. Use a stable `epic_id` derived from the spec stem/topic and a human-readable `epic_title` from the spec title. For small specs, create one task per executable slice under that epic. For large specs, create a parent coordination task plus linked child tasks under the same epic: the parent task is the roadmap, and each child task is an independently executable vertical slice.
 
 The blueprints vault remains canonical for product intent. Use `ct vault` to read specs and related docs. Use `ct task` / task tools to publish executable work. Do not write plan artifacts into the repo or vault unless explicitly asked.
 
@@ -33,6 +33,7 @@ Guardrail: Use tasks for execution structure; do not create vault plan files.
 
 - Product intent is captured in `spec` artifacts.
 - Execution structure is captured in persisted tasks, not vault `plan` artifacts.
+- Spec-level umbrella grouping is captured with task epic metadata (`epic_id`, `epic_title`), not blockers.
 - Use task blockers to encode dependencies.
 - Include the source spec stem/title in every task body.
 - Use wiki-links to connect tasks back to relevant vault artifacts.
@@ -108,7 +109,7 @@ Task priority:
 
 For large specs, create the parent task first, then create child tasks. Publish child tasks in dependency order (blockers first) so blocker IDs are available. Use task blockers (`blocked_by`) for child dependencies. Do not use blockers merely to point every child at the parent task; parent-child linkage belongs in the body.
 
-Use `task_add` or `ct task add`. Do not create vault plan artifacts.
+Use `task_add` or `ct task add`. Every task you create for the spec MUST include the same `epic_id` and `epic_title`. Do not create vault plan artifacts.
 
 <parent-task-template>
 Source spec: [[spec-stem]]

@@ -31,6 +31,9 @@ export type PolishedTuiConfig = {
 		cost: ColorSpec;
 		separator: ColorSpec;
 	};
+	compact: {
+		minTerminalRows: number;
+	};
 };
 
 export const configPath = join(getAgentDir(), "tui.json");
@@ -110,6 +113,9 @@ export const defaultConfig: PolishedTuiConfig = {
 		cost: "success",
 		separator: "borderMuted",
 	},
+	compact: {
+		minTerminalRows: 28,
+	},
 };
 
 function isHexColor(value: string): boolean {
@@ -160,6 +166,10 @@ export function loadConfig(): PolishedTuiConfig {
 			colors: {
 				...defaultConfig.colors,
 				...(parsed.colors ?? {}),
+			},
+			compact: {
+				...defaultConfig.compact,
+				...(parsed.compact ?? {}),
 			},
 		};
 	} catch {

@@ -166,6 +166,7 @@ export function renderFooter(
 	cwd: string,
 	theme: Theme,
 	width: number,
+	options: { minimal?: boolean } = {},
 ): string[] {
 	const dim = (s: string) => theme.fg("dim", s);
 	const sep = ` ${dim(">")} `;
@@ -206,6 +207,11 @@ export function renderFooter(
 	if (state.hasCost) rightParts.push(theme.fg("success", state.costLabel));
 	const rightBlock = rightParts.join(" ");
 	const rightWidth = visibleWidth(rightBlock);
+
+	if (options.minimal) {
+		const minimal = wrapFooterSegments([modelBlock, ctxBlock], width, sep)[0] ?? modelBlock;
+		return [truncateToWidth(minimal, width)];
+	}
 
 	const lines = wrapFooterSegments([locationBlock, modelBlock, ctxBlock], width, sep);
 
