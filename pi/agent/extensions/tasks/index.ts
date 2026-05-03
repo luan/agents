@@ -167,33 +167,35 @@ async function updateTaskHud(
 	config: Config,
 ): Promise<void> {
 	const tasks = await loadHudTasks(ctx.cwd, command, runCommand, ctx.signal);
-	ctx.ui.setWidget(widgetId, (_tui, theme) => ({
-		render: (width: number) => renderHudLines(tasks, theme, width, config.hud.maxTasks),
-		invalidate() {},
-	}));
+	ctx.ui.setWidget(
+		widgetId,
+		(_tui, theme) => ({
+			render: (width: number) => renderHudLines(tasks, theme, width, config.hud.maxTasks),
+			invalidate() {},
+		}),
+		{ placement: "aboveEditor" },
+	);
 }
 
 function statusGlyph(status: string): string {
 	switch (status) {
 		case "done":
+		case "completed":
 			return "✓";
-		case "blocked":
-			return "!";
 		case "in_progress":
-			return "●";
+			return "◼";
 		case "canceled":
 			return "×";
 		default:
-			return "○";
+			return "◻";
 	}
 }
 
 function statusColor(status: string): string {
 	switch (status) {
 		case "done":
+		case "completed":
 			return "success";
-		case "blocked":
-			return "warning";
 		case "canceled":
 			return "muted";
 		case "in_progress":
@@ -208,34 +210,60 @@ function compact(value: string, max = 90): string {
 	return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }
 
-function formatTaskLine(task: TaskRecord, theme: Theme, width: number): string {
-	const blocked = (task.blocked_by?.length ?? 0) > 0;
+function isComplete(task: TaskRecord): boolean {
+	return task.status === "done" || task.status === "completed";
+}
+
+function isCanceled(task: TaskRecord): boolean {
+	return task.status === "canceled";
+}
+
+function strikethrough(theme: Theme, text: string): string {
+	const maybeTheme = theme as Theme & { strikethrough?: (value: string) => string };
+	return typeof maybeTheme.strikethrough === "function" ? maybeTheme.strikethrough(text) : text;
+}
+
+function openBlockers(task: TaskRecord, byId: Map<string, TaskRecord>): string[] {
+	return (task.blocked_by ?? []).filter((id) => {
+		const blocker = byId.get(id);
+		return !blocker || !isComplete(blocker);
+	});
+}
+
+function formatTaskLine(task: TaskRecord, theme: Theme, width: number, byId: Map<string, TaskRecord>): string {
+	const blockers = openBlockers(task, byId);
 	const glyph = theme.fg(statusColor(task.status), statusGlyph(task.status));
-	const id = theme.fg("accent", task.id);
-	const status = theme.fg(
-		blocked ? "warning" : "muted",
-		blocked ? `blocked:${task.blocked_by!.join(",")}` : task.status,
-	);
-	const title = theme.fg("text", compact(task.title, Math.max(20, width - 28)));
-	return truncateToWidth(`${glyph} ${id} ${status} ${title}`, width);
+	const id = theme.fg("dim", `#${task.id}`);
+	const title = isComplete(task)
+		? theme.fg("dim", strikethrough(theme, `#${task.id} ${compact(task.title, Math.max(20, width - 18))}`))
+		: theme.fg("text", compact(task.title, Math.max(20, width - 18)));
+	const suffix =
+		blockers.length > 0 ? theme.fg("dim", ` › blocked by ${blockers.map((id) => `#${id}`).join(", ")}`) : "";
+	if (isComplete(task)) return truncateToWidth(`  ${glyph} ${title}${suffix}`, width);
+	return truncateToWidth(`  ${glyph} ${id} ${title}${suffix}`, width);
 }
 
 export function renderHudLines(tasks: TaskRecord[], theme: Theme, width: number, maxTasks = 6): string[] {
-	const active = tasks.filter((task) => task.status !== "done" && task.status !== "canceled");
-	if (active.length === 0) {
-		return [truncateToWidth(`${theme.fg("accent", "Tasks")} ${theme.fg("dim", "none open")}`, width)];
-	}
-	const shown = active.slice(0, maxTasks);
-	const hidden = active.length - shown.length;
-	const blockedCount = active.filter((task) => (task.blocked_by?.length ?? 0) > 0).length;
+	const visibleTasks = tasks.filter((task) => !isCanceled(task));
+	if (visibleTasks.length === 0) return [];
+	const byId = new Map(visibleTasks.map((task) => [task.id, task]));
+	const completed = visibleTasks.filter(isComplete);
+	const inProgress = visibleTasks.filter((task) => task.status === "in_progress");
+	const open = visibleTasks.filter((task) => !isComplete(task) && task.status !== "in_progress");
+	const parts: string[] = [];
+	if (completed.length > 0) parts.push(`${completed.length} done`);
+	if (inProgress.length > 0) parts.push(`${inProgress.length} in progress`);
+	if (open.length > 0) parts.push(`${open.length} open`);
+	const shown = visibleTasks.slice(0, maxTasks);
+	const hidden = visibleTasks.length - shown.length;
 	const lines = [
 		truncateToWidth(
-			`${theme.fg("accent", theme.bold(`Tasks ${active.length}`))} ${theme.fg("dim", `${active.length - blockedCount} ready · ${blockedCount} blocked`)}`,
+			`${theme.fg("accent", "●")} ${theme.fg("accent", `${visibleTasks.length} tasks (${parts.join(", ")})`)}`,
 			width,
 		),
-		...shown.map((task) => formatTaskLine(task, theme, width)),
+		...shown.map((task) => formatTaskLine(task, theme, width, byId)),
 	];
-	if (hidden > 0) lines.push(truncateToWidth(theme.fg("dim", `… ${hidden} more`), width));
+	if (hidden > 0) lines.push(truncateToWidth(theme.fg("dim", `    … and ${hidden} more`), width));
 	return lines;
 }
 
@@ -269,8 +297,10 @@ function renderCallText(action: TaskCommand, args: Record<string, unknown>, them
 function renderTaskBlock(title: string, task: TaskRecord, theme: Theme): string {
 	return [
 		theme.fg("toolTitle", theme.bold(title)),
-		`  ${theme.fg(statusColor(task.status), statusGlyph(task.status))} ${theme.fg("accent", task.id)} ${theme.fg("muted", task.status)} ${theme.fg("text", task.title)}`,
-		...(task.blocked_by?.length ? [`  ${theme.fg("warning", `blocked by ${task.blocked_by.join(", ")}`)}`] : []),
+		`  ${theme.fg(statusColor(task.status), statusGlyph(task.status))} ${theme.fg("dim", `#${task.id}`)} ${theme.fg("text", task.title)}`,
+		...(task.blocked_by?.length
+			? [`  ${theme.fg("dim", `› blocked by ${task.blocked_by.map((id) => `#${id}`).join(", ")}`)}`]
+			: []),
 		...(task.body ? [`  ${theme.fg("dim", compact(task.body, 120))}`] : []),
 	].join("\n");
 }
@@ -278,12 +308,11 @@ function renderTaskBlock(title: string, task: TaskRecord, theme: Theme): string 
 function renderTaskList(tasks: TaskRecord[], theme: Theme): string {
 	if (tasks.length === 0) return `${theme.fg("toolTitle", theme.bold("Tasks"))}\n  ${theme.fg("dim", "No tasks")}`;
 	const lines = [theme.fg("toolTitle", theme.bold(`Tasks (${tasks.length})`))];
+	const byId = new Map(tasks.map((task) => [task.id, task]));
 	for (const task of tasks.slice(0, 12)) {
-		lines.push(
-			`  ${theme.fg(statusColor(task.status), statusGlyph(task.status))} ${theme.fg("accent", task.id)} ${theme.fg("muted", task.status)}${task.blocked_by?.length ? theme.fg("warning", ` ← ${task.blocked_by.join(",")}`) : ""} ${theme.fg("text", compact(task.title, 96))}`,
-		);
+		lines.push(formatTaskLine(task, theme, 140, byId));
 	}
-	if (tasks.length > 12) lines.push(theme.fg("dim", `  … ${tasks.length - 12} more`));
+	if (tasks.length > 12) lines.push(theme.fg("dim", `    … and ${tasks.length - 12} more`));
 	return lines.join("\n");
 }
 

@@ -19,6 +19,9 @@ const theme = {
 	bold(text: string) {
 		return `**${text}**`;
 	},
+	strikethrough(text: string) {
+		return `~~${text}~~`;
+	},
 };
 
 function createText() {
@@ -105,17 +108,18 @@ describe("tasks extension", () => {
 				{ ...task, id: "CANCEL123A", title: "Canceled task", status: "canceled" },
 			],
 			theme as any,
-			32,
+			80,
 		);
-		expect(lines.every((line) => visibleWidth(line) <= 32)).toBe(true);
-		expect(lines.join("\n")).toContain("Tasks 2");
-		expect(lines.join("\n")).toContain("blocked");
-		expect(lines.join("\n")).toContain("PG4W2K4Q03");
+		expect(lines.every((line) => visibleWidth(line) <= 80)).toBe(true);
+		expect(lines.join("\n")).toContain("3 tasks");
+		expect(lines.join("\n")).toContain("1 done");
+		expect(lines.join("\n")).toContain("#PG4W2K4Q03");
+		expect(lines.join("\n")).toContain("› blocked by #PG4");
 		expect(lines.join("\n")).toContain("Smoke test");
-		expect(lines.join("\n")).not.toContain("Done task");
+		expect(lines.join("\n")).toContain("Done task");
 
 		const empty = renderHudLines([], theme as any, 100);
-		expect(empty.join("\n")).toContain("none open");
+		expect(empty).toEqual([]);
 	});
 
 	test("refreshes the HUD on session start and after mutations", async () => {
@@ -186,12 +190,12 @@ describe("tasks extension", () => {
 		});
 		const rendered = resultText.render(120).join("\n");
 		expect(rendered).toContain("Task added");
-		expect(rendered).toContain("PG4W2K4Q03");
+		expect(rendered).toContain("#PG4W2K4Q03");
 		expect(rendered).not.toContain('{"task"');
 
 		expect(
 			renderTaskResult({ action: "show", args: [], task: { ...task, blocked_by: ["abc"] } }, theme as any),
-		).toContain("blocked by abc");
+		).toContain("blocked by #abc");
 		expect(renderTaskResult({ action: "list", args: [], tasks: [task] }, theme as any)).toContain("Tasks (1)");
 	});
 
