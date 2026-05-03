@@ -1,4 +1,4 @@
 {
-  "overrideDefaultCompaction": false,
+  "overrideDefaultCompaction": true,
   "debug": false
 }

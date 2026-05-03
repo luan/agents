@@ -101,11 +101,12 @@ const defaultConfig: Config = {
 	},
 };
 
+const stashHudWidgetId = "prompt-storage-stash";
 let db: DatabaseSync | undefined;
 const historyRefreshes = new Map<string, Promise<void>>();
 const wrappedFactory = Symbol.for("prompt-storage.editorFactoryWrapped");
 let stashHud: StashHudWidget | undefined;
-let stashHudLines = ["Prompt stash: empty"];
+let stashHudLines: string[] = [];
 let restackTimer: ReturnType<typeof setTimeout> | undefined;
 
 function loadConfig(): Config {
@@ -308,21 +309,30 @@ async function listStashes(cwd?: string): Promise<PromptItem[]> {
 async function updateStashHud(ctx: ExtensionContext): Promise<void> {
 	const stashes = await listStashes(ctx.cwd);
 	if (stashes.length === 0) {
-		setStashHudLines(["Prompt stash: empty"]);
+		clearStashHud(ctx);
 		return;
 	}
-	setStashHudLines([
+	const lines = [
 		`Prompt stash (${stashes.length})`,
 		...stashes.map((stash) => {
 			const cwd = relative(homedir(), stash.cwd) || stash.cwd;
 			return `• ${preview(stash.text, 96)}  ${dateLabel(stash.timestamp)}  ${cwd}`;
 		}),
-	]);
+	];
+	setStashHudLines(lines);
+	if (!stashHud) installStashHud(ctx);
 }
 
 function setStashHudLines(lines: string[]): void {
 	stashHudLines = lines;
 	stashHud?.setLines(lines);
+}
+
+function clearStashHud(ctx: ExtensionContext): void {
+	stashHudLines = [];
+	if (!stashHud) return;
+	stashHud = undefined;
+	ctx.ui.setWidget(stashHudWidgetId, undefined);
 }
 
 function currentSessionPrompts(ctx: ExtensionContext, config: Config): PromptItem[] {
@@ -669,13 +679,21 @@ function runEditorAction(ctx: ExtensionContext, action: () => Promise<void>): vo
 }
 
 function installStashHud(ctx: ExtensionContext): void {
-	ctx.ui.setWidget("prompt-storage-stash", (tui, theme) => {
+	if (stashHudLines.length === 0) {
+		clearStashHud(ctx);
+		return;
+	}
+	ctx.ui.setWidget(stashHudWidgetId, (tui, theme) => {
 		stashHud = new StashHudWidget(tui, theme);
 		return stashHud;
 	});
 }
 
 function restackStashHud(ctx: ExtensionContext): void {
+	if (stashHudLines.length === 0) {
+		clearStashHud(ctx);
+		return;
+	}
 	if (restackTimer) clearTimeout(restackTimer);
 	restackTimer = setTimeout(() => {
 		restackTimer = undefined;
@@ -723,7 +741,6 @@ export default function promptStorage(pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		installEditorShortcuts(ctx, config);
-		installStashHud(ctx);
 		await updateStashHud(ctx);
 		restackStashHud(ctx);
 		refreshProjectHistorySoon(ctx.cwd, config);

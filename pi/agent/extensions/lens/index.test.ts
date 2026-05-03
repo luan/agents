@@ -247,6 +247,44 @@ describe("Lens hook-only Pi extension", () => {
 		expect(widgets["lens-health"]?.render(120)[0]).toContain("warnings");
 	});
 
+	it("Lens status and widget switch between hidden and full as terminal rows change", () => {
+		const originalRows = process.stdout.rows;
+		Object.defineProperty(process.stdout, "rows", { configurable: true, value: 20 });
+		const status: Record<string, string | undefined> = {};
+		const widgets: Record<string, { render(width: number): string[] }> = {};
+		try {
+			applyLensUi(
+				{
+					hasUI: true,
+					ui: {
+						setStatus: (key: string, value: string | undefined) => {
+							status[key] = value;
+						},
+						setWidget: (
+							key: string,
+							factory: (tui: unknown, theme: unknown) => { render(width: number): string[] },
+						) => {
+							widgets[key] = factory(
+								{ requestRender: () => {} },
+								{ fg: (_color: string, text: string) => text },
+							);
+						},
+					},
+				},
+				{ status: "warning", data: { status: "warnings" } },
+			);
+			expect(status.lens).toBeUndefined();
+			expect(widgets["lens-health"]?.render(120)).toEqual([]);
+
+			Object.defineProperty(process.stdout, "rows", { configurable: true, value: 40 });
+			process.emit("SIGWINCH");
+			expect(status.lens).toContain("warnings");
+			expect(widgets["lens-health"]?.render(120)[0]).toContain("warnings");
+		} finally {
+			Object.defineProperty(process.stdout, "rows", { configurable: true, value: originalRows });
+		}
+	});
+
 	it("fails closed before queueing diagnostics when freshness is unknown", () => {
 		const response = {
 			status: "warning",

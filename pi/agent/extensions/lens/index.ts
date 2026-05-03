@@ -7,6 +7,7 @@ import { renderLensCompactStatus, renderLensWidgetLines } from "../shared/lens-u
 
 const HOOK_EVENT_SCHEMA = "lens.hook_event.v1";
 const RAW_OUTPUT_MAX_BYTES = 256 * 1024;
+const MIN_TERMINAL_ROWS_FOR_LENS_UI = 28;
 type LensHookEventName =
 	| "session_start"
 	| "context_injection"
@@ -52,6 +53,7 @@ class LensWidget implements Component {
 	}
 
 	render(width: number): string[] {
+		if (!hasEnoughRowsForLensUi()) return [];
 		if (this.cachedWidth === width && this.cachedLines) return this.cachedLines;
 		this.cachedWidth = width;
 		this.cachedLines = this.lines.map((line) => truncateToWidth(line, width));
@@ -65,27 +67,65 @@ class LensWidget implements Component {
 }
 
 let lensWidget: LensWidget | undefined;
+let lensWidgetCtx: any;
 let lensWidgetRegistered = false;
+let lastLensUi: { ctx: any; response: unknown } | undefined;
+let resizeHandlerRegistered = false;
 
 function isStaleCtxError(error: unknown) {
 	return (error instanceof Error ? error.message : String(error)).includes("ctx is stale");
 }
 
+function terminalRows(): number | undefined {
+	const rows = process.stdout?.rows;
+	return typeof rows === "number" && Number.isFinite(rows) ? rows : undefined;
+}
+
+function hasEnoughRowsForLensUi(): boolean {
+	const rows = terminalRows();
+	return rows === undefined || rows >= MIN_TERMINAL_ROWS_FOR_LENS_UI;
+}
+
 function ensureLensWidget(ctx: any) {
-	if (lensWidgetRegistered) return;
+	if (lensWidgetRegistered && lensWidget && lensWidgetCtx === ctx) return;
 	lensWidgetRegistered = true;
+	lensWidgetCtx = ctx;
 	ctx.ui.setWidget("lens-health", (tui: TUI, _theme: ThemeLike) => {
 		lensWidget = new LensWidget(tui);
 		return lensWidget;
 	});
 }
 
+function syncLensUiForTerminal() {
+	const latest = lastLensUi;
+	if (!latest?.ctx?.hasUI) return;
+	try {
+		if (!hasEnoughRowsForLensUi()) {
+			latest.ctx.ui.setStatus("lens", undefined);
+			lensWidget?.setLines([]);
+			return;
+		}
+		latest.ctx.ui.setStatus("lens", renderLensCompactStatus(latest.response, { ansi: true }));
+		ensureLensWidget(latest.ctx);
+		lensWidget?.setLines(renderLensWidgetLines(latest.response, false, { ansi: true }));
+	} catch (error) {
+		if (!isStaleCtxError(error)) throw error;
+	}
+}
+
+function ensureResizeHandler() {
+	if (resizeHandlerRegistered) return;
+	resizeHandlerRegistered = true;
+	process.on("SIGWINCH", syncLensUiForTerminal);
+}
+
 export function applyLensUi(ctx: any, response: unknown) {
 	try {
 		if (!ctx?.hasUI) return;
-		ctx.ui.setStatus("lens", renderLensCompactStatus(response, { ansi: true }));
+		lastLensUi = { ctx, response };
+		ensureResizeHandler();
 		ensureLensWidget(ctx);
-		lensWidget?.setLines(renderLensWidgetLines(response, false, { ansi: true }));
+		syncLensUiForTerminal();
 	} catch (error) {
 		if (!isStaleCtxError(error)) throw error;
 	}

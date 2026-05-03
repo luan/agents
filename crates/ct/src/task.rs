@@ -23,6 +23,8 @@ struct Task {
     priority: i64,
     assigned_to: Option<String>,
     assigned_label: Option<String>,
+    epic_id: Option<String>,
+    epic_title: Option<String>,
     blocked_by: Vec<String>,
     created_at: i64,
     updated_at: i64,
@@ -53,6 +55,8 @@ pub fn run_task(action: TaskAction) -> Result<(), Box<dyn std::error::Error>> {
             priority,
             assigned_to,
             assigned_label,
+            epic_id,
+            epic_title,
             blocked_by,
             json,
         } => {
@@ -63,6 +67,8 @@ pub fn run_task(action: TaskAction) -> Result<(), Box<dyn std::error::Error>> {
                 priority,
                 assigned_to: assigned_to.as_deref(),
                 assigned_label: assigned_label.as_deref(),
+                epic_id: epic_id.as_deref(),
+                epic_title: epic_title.as_deref(),
                 blocked_by: &blocked_by,
             })?)?;
             print_task(&task, json)?;
@@ -93,6 +99,9 @@ pub fn run_task(action: TaskAction) -> Result<(), Box<dyn std::error::Error>> {
             assigned_to,
             assigned_label,
             clear_assignee,
+            epic_id,
+            epic_title,
+            clear_epic,
             blocked_by,
             clear_blockers,
             json,
@@ -107,6 +116,9 @@ pub fn run_task(action: TaskAction) -> Result<(), Box<dyn std::error::Error>> {
                     assigned_to: assigned_to.as_deref(),
                     assigned_label: assigned_label.as_deref(),
                     clear_assignee,
+                    epic_id: epic_id.as_deref(),
+                    epic_title: epic_title.as_deref(),
+                    clear_epic,
                     blocked_by: &blocked_by,
                     clear_blockers,
                 },
@@ -139,6 +151,8 @@ struct TaskNew<'a> {
     priority: i64,
     assigned_to: Option<&'a str>,
     assigned_label: Option<&'a str>,
+    epic_id: Option<&'a str>,
+    epic_title: Option<&'a str>,
     blocked_by: &'a [String],
 }
 
@@ -150,6 +164,9 @@ struct TaskUpdate<'a> {
     assigned_to: Option<&'a str>,
     assigned_label: Option<&'a str>,
     clear_assignee: bool,
+    epic_id: Option<&'a str>,
+    epic_title: Option<&'a str>,
+    clear_epic: bool,
     blocked_by: &'a [String],
     clear_blockers: bool,
 }
@@ -172,6 +189,8 @@ impl TaskStore {
                 priority INTEGER NOT NULL DEFAULT 0,
                 assigned_to TEXT,
                 assigned_label TEXT,
+                epic_id TEXT,
+                epic_title TEXT,
                 blocked_by TEXT NOT NULL DEFAULT '[]',
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
@@ -182,6 +201,8 @@ impl TaskStore {
         ensure_priority_column(&conn)?;
         ensure_assigned_to_column(&conn)?;
         ensure_assigned_label_column(&conn)?;
+        ensure_epic_id_column(&conn)?;
+        ensure_epic_title_column(&conn)?;
         Ok(Self { conn })
     }
 
@@ -190,12 +211,14 @@ impl TaskStore {
         validate_status(new_task.status)?;
         let assigned_to = normalize_assignment(new_task.assigned_to)?;
         let assigned_label = normalize_assignment(new_task.assigned_label)?;
+        let epic_id = normalize_epic(new_task.epic_id)?;
+        let epic_title = normalize_epic(new_task.epic_title)?;
         let now = now_ms();
         let id = self.new_id()?;
         let blockers = self.resolve_blockers(new_task.blocked_by, Some(&id))?;
         let blockers_json = serde_json::to_string(&blockers)?;
         self.conn.execute(
-            "INSERT INTO tasks (id, title, body, status, priority, assigned_to, assigned_label, blocked_by, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
+            "INSERT INTO tasks (id, title, body, status, priority, assigned_to, assigned_label, epic_id, epic_title, blocked_by, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
             params![
                 id,
                 new_task.title.trim(),
@@ -204,6 +227,8 @@ impl TaskStore {
                 new_task.priority,
                 assigned_to,
                 assigned_label,
+                epic_id,
+                epic_title,
                 blockers_json,
                 now
             ],
@@ -223,24 +248,24 @@ impl TaskStore {
         let assigned_to = normalize_assignment(assigned_to)?;
         match (status, assigned_to.as_deref(), all) {
             (Some(status), Some(assigned_to), _) => self.query_tasks(
-                "SELECT id, title, body, status, priority, assigned_to, assigned_label, blocked_by, created_at, updated_at FROM tasks WHERE status = ?1 AND assigned_to = ?2 ORDER BY updated_at DESC",
+                "SELECT id, title, body, status, priority, assigned_to, assigned_label, epic_id, epic_title, blocked_by, created_at, updated_at FROM tasks WHERE status = ?1 AND assigned_to = ?2 ORDER BY updated_at DESC",
                 &[status, assigned_to],
             ),
             (Some(status), None, _) => self.query_tasks(
-                "SELECT id, title, body, status, priority, assigned_to, assigned_label, blocked_by, created_at, updated_at FROM tasks WHERE status = ?1 ORDER BY updated_at DESC",
+                "SELECT id, title, body, status, priority, assigned_to, assigned_label, epic_id, epic_title, blocked_by, created_at, updated_at FROM tasks WHERE status = ?1 ORDER BY updated_at DESC",
                 &[status],
             ),
             (None, Some(assigned_to), _) => self.query_tasks(
-                "SELECT id, title, body, status, priority, assigned_to, assigned_label, blocked_by, created_at, updated_at FROM tasks WHERE assigned_to = ?1 ORDER BY updated_at DESC",
+                "SELECT id, title, body, status, priority, assigned_to, assigned_label, epic_id, epic_title, blocked_by, created_at, updated_at FROM tasks WHERE assigned_to = ?1 ORDER BY updated_at DESC",
                 &[assigned_to],
             ),
             (None, None, true) => self.query_tasks(
-                "SELECT id, title, body, status, priority, assigned_to, assigned_label, blocked_by, created_at, updated_at FROM tasks ORDER BY updated_at DESC",
+                "SELECT id, title, body, status, priority, assigned_to, assigned_label, epic_id, epic_title, blocked_by, created_at, updated_at FROM tasks ORDER BY updated_at DESC",
                 &[],
             ),
             (None, None, false) => {
                 let mut stmt = self.conn.prepare(
-                    "SELECT id, title, body, status, priority, assigned_to, assigned_label, blocked_by, created_at, updated_at FROM tasks WHERE status IN ('open', 'in_progress', 'blocked', 'todo') ORDER BY updated_at DESC",
+                    "SELECT id, title, body, status, priority, assigned_to, assigned_label, epic_id, epic_title, blocked_by, created_at, updated_at FROM tasks WHERE status IN ('open', 'in_progress', 'blocked', 'todo') ORDER BY updated_at DESC",
                 )?;
                 let rows = stmt.query_map([], row_task)?;
                 sort_tasks(rows.collect::<std::result::Result<Vec<_>, _>>()?)
@@ -261,6 +286,9 @@ impl TaskStore {
             && update.assigned_to.is_none()
             && update.assigned_label.is_none()
             && !update.clear_assignee
+            && update.epic_id.is_none()
+            && update.epic_title.is_none()
+            && !update.clear_epic
             && update.blocked_by.is_empty()
             && !update.clear_blockers
         {
@@ -274,6 +302,8 @@ impl TaskStore {
         }
         let assigned_to = normalize_assignment(update.assigned_to)?;
         let assigned_label = normalize_assignment(update.assigned_label)?;
+        let epic_id = normalize_epic(update.epic_id)?;
+        let epic_title = normalize_epic(update.epic_title)?;
         let id = self.resolve_id(id_prefix)?;
         let existing = self.get_exact(&id)?;
         let blockers = if update.clear_blockers {
@@ -285,7 +315,7 @@ impl TaskStore {
         };
         let blockers_json = serde_json::to_string(&blockers)?;
         self.conn.execute(
-            "UPDATE tasks SET title = ?1, body = ?2, status = ?3, priority = ?4, assigned_to = ?5, assigned_label = ?6, blocked_by = ?7, updated_at = ?8 WHERE id = ?9",
+            "UPDATE tasks SET title = ?1, body = ?2, status = ?3, priority = ?4, assigned_to = ?5, assigned_label = ?6, epic_id = ?7, epic_title = ?8, blocked_by = ?9, updated_at = ?10 WHERE id = ?11",
             params![
                 update.title.unwrap_or(&existing.title).trim(),
                 update.body.unwrap_or(&existing.body),
@@ -293,6 +323,8 @@ impl TaskStore {
                 update.priority.unwrap_or(existing.priority),
                 if update.clear_assignee { None } else { assigned_to.or(existing.assigned_to) },
                 if update.clear_assignee { None } else { assigned_label.or(existing.assigned_label) },
+                if update.clear_epic { None } else { epic_id.or(existing.epic_id) },
+                if update.clear_epic { None } else { epic_title.or(existing.epic_title) },
                 blockers_json,
                 now_ms(),
                 id
@@ -330,7 +362,7 @@ impl TaskStore {
     fn get_exact(&self, id: &str) -> Result<Task> {
         self.conn
             .query_row(
-                "SELECT id, title, body, status, priority, assigned_to, assigned_label, blocked_by, created_at, updated_at FROM tasks WHERE id = ?1",
+                "SELECT id, title, body, status, priority, assigned_to, assigned_label, epic_id, epic_title, blocked_by, created_at, updated_at FROM tasks WHERE id = ?1",
                 [id],
                 row_task,
             )
@@ -422,7 +454,7 @@ impl TaskStore {
 }
 
 fn row_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
-    let blocked_by_json: String = row.get(7)?;
+    let blocked_by_json: String = row.get(9)?;
     let blocked_by = serde_json::from_str(&blocked_by_json).unwrap_or_default();
     Ok(Task {
         id: row.get(0)?,
@@ -432,9 +464,11 @@ fn row_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
         priority: row.get(4)?,
         assigned_to: row.get(5)?,
         assigned_label: row.get(6)?,
+        epic_id: row.get(7)?,
+        epic_title: row.get(8)?,
         blocked_by,
-        created_at: row.get(8)?,
-        updated_at: row.get(9)?,
+        created_at: row.get(10)?,
+        updated_at: row.get(11)?,
     })
 }
 
@@ -519,6 +553,32 @@ fn ensure_assigned_label_column(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn ensure_epic_id_column(conn: &Connection) -> Result<()> {
+    let has_column = conn
+        .prepare("PRAGMA table_info(tasks)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .iter()
+        .any(|column| column == "epic_id");
+    if !has_column {
+        conn.execute("ALTER TABLE tasks ADD COLUMN epic_id TEXT", [])?;
+    }
+    Ok(())
+}
+
+fn ensure_epic_title_column(conn: &Connection) -> Result<()> {
+    let has_column = conn
+        .prepare("PRAGMA table_info(tasks)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .iter()
+        .any(|column| column == "epic_title");
+    if !has_column {
+        conn.execute("ALTER TABLE tasks ADD COLUMN epic_title TEXT", [])?;
+    }
+    Ok(())
+}
+
 fn validate_title(title: &str) -> Result<()> {
     if title.trim().is_empty() {
         bail!("task title must not be empty");
@@ -543,6 +603,17 @@ fn normalize_assignment(value: Option<&str>) -> Result<Option<String>> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         bail!("assignment must not be empty");
+    }
+    Ok(Some(trimmed.to_string()))
+}
+
+fn normalize_epic(value: Option<&str>) -> Result<Option<String>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        bail!("epic metadata must not be empty");
     }
     Ok(Some(trimmed.to_string()))
 }
@@ -680,5 +751,45 @@ mod tests {
     fn invalid_prefix_characters_fail() {
         let error = normalize_id("oil").unwrap_err().to_string();
         assert!(error.contains("Crockford"));
+    }
+
+    #[test]
+    fn epic_columns_are_added_to_existing_task_tables() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tasks (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                body TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL,
+                priority INTEGER NOT NULL DEFAULT 0,
+                assigned_to TEXT,
+                assigned_label TEXT,
+                blocked_by TEXT NOT NULL DEFAULT '[]',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );",
+        )
+        .unwrap();
+
+        ensure_epic_id_column(&conn).unwrap();
+        ensure_epic_title_column(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO tasks (id, title, body, status, blocked_by, created_at, updated_at)
+             VALUES ('abc123', 'Old task', '', 'open', '[]', 1, 1)",
+            [],
+        )
+        .unwrap();
+
+        let task = conn
+            .query_row(
+                "SELECT id, title, body, status, priority, assigned_to, assigned_label, epic_id, epic_title, blocked_by, created_at, updated_at FROM tasks WHERE id = 'abc123'",
+                [],
+                row_task,
+            )
+            .unwrap();
+        assert_eq!(task.title, "Old task");
+        assert!(task.epic_id.is_none());
+        assert!(task.epic_title.is_none());
     }
 }

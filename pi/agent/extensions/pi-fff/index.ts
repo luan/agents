@@ -675,11 +675,14 @@ export default function fffExtension(pi: ExtensionAPI) {
 
 	function applyEditorMode(ctx: {
 		ui: {
+			getEditorComponent?: () => ((tui: any, theme: any, keybindings: any) => any) | undefined;
 			setEditorComponent: (factory: ((tui: any, theme: any, keybindings: any) => any) | undefined) => void;
 		};
 	}) {
 		if (!shouldEnableMentions()) {
 			ctx.ui.setEditorComponent(undefined);
+		} else if (ctx.ui.getEditorComponent?.()) {
+			return;
 		} else {
 			ctx.ui.setEditorComponent(
 				(tui: any, theme: any, keybindings: any) => new FffEditor(tui, theme, keybindings, getMentionItems),

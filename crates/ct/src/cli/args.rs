@@ -147,6 +147,10 @@ pub enum TaskAction {
         assigned_to: Option<String>,
         #[arg(long = "assigned-label", hide = true)]
         assigned_label: Option<String>,
+        #[arg(long = "epic-id", help = "Stable epic/group identifier")]
+        epic_id: Option<String>,
+        #[arg(long = "epic-title", help = "Human-readable epic/group title")]
+        epic_title: Option<String>,
         #[arg(long = "blocked-by", help = "Task ID/prefix that blocks this task")]
         blocked_by: Vec<String>,
         #[arg(long, help = "Output JSON")]
@@ -191,6 +195,12 @@ pub enum TaskAction {
         assigned_label: Option<String>,
         #[arg(long, help = "Remove assignee")]
         clear_assignee: bool,
+        #[arg(long = "epic-id", help = "Stable epic/group identifier")]
+        epic_id: Option<String>,
+        #[arg(long = "epic-title", help = "Human-readable epic/group title")]
+        epic_title: Option<String>,
+        #[arg(long, help = "Remove epic/group metadata")]
+        clear_epic: bool,
         #[arg(
             long = "blocked-by",
             help = "Replace blockers with these task IDs/prefixes"

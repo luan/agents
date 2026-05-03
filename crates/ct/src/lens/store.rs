@@ -302,11 +302,13 @@ impl LensStore {
             )
             .into());
         }
-        if current < SCHEMA_VERSION {
-            if current > 0 && current < 9 {
-                reset_schema_for_v9(&conn)?;
-            }
+        if current > 0 && current < 9 {
+            reset_schema_for_v9(&conn)?;
+        }
+        if current <= SCHEMA_VERSION {
             conn.execute_batch(SCHEMA)?;
+        }
+        if current < SCHEMA_VERSION {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         }
         let now = now_ms();
@@ -1618,6 +1620,38 @@ mod tests {
             assert!(exists.is_none(), "{table} should be dropped by v9 reset");
         }
         assert_eq!(store.counts().unwrap().diagnostics, 0);
+    }
+
+    #[test]
+    fn current_version_schema_self_heals_missing_tables() {
+        let temp = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE projects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                root TEXT NOT NULL UNIQUE,
+                vcs_id TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            PRAGMA user_version = 9;",
+        )
+        .unwrap();
+
+        let store = LensStore::init(conn, temp.path()).unwrap();
+
+        let raw_outputs: Option<String> = store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='raw_outputs'",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()
+            })
+            .unwrap();
+        assert_eq!(raw_outputs.as_deref(), Some("raw_outputs"));
+        assert_eq!(store.counts().unwrap().raw_outputs, 0);
     }
 
     #[test]

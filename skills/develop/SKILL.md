@@ -37,6 +37,7 @@ Guardrail: Do not broaden scope; every code change must trace to the selected ta
 ## Rules
 
 - Implement exactly the selected task's acceptance criteria.
+- Immediately after loading the selected task and before editing files, claim it with `status=in_progress` and `assigned_to=current`. Do not defer claiming until after implementation starts.
 - Read the linked source spec or parent task named in the task body.
 - Read relevant vault domain and decision artifacts before changing code.
 - If the task is ambiguous, too large, stale, or contradicts the spec, stop and ask. Do not silently rewrite scope.
@@ -63,6 +64,14 @@ Then read:
 - relevant vault decision docs
 
 If blockers are unresolved or the task lacks acceptance criteria, stop.
+
+Then claim the task:
+
+```text
+task_update(<task-id>, status="in_progress", assigned_to="current")
+```
+
+If claiming fails, stop before editing files.
 
 ## Step 2: Confirm execution target
 

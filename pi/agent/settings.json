@@ -18,8 +18,8 @@
     "npm:@sting8k/pi-vcc"
   ],
   "extensions": [
-    "-extensions/team-mode/index.ts",
     "-extensions/pi-web-access/index.ts",
+    "extensions/pi-vim/index.ts",
     "extensions/lens/index.ts",
     "extensions/tasks/index.ts"
   ],
@@ -29,7 +29,7 @@
     "openai-codex/gpt-5.4-mini"
   ],
   "theme": "catppuccin-mocha",
-  "hideThinkingBlock": false,
+  "hideThinkingBlock": true,
   "editorPaddingX": 0,
   "terminal": {
     "clearOnShrink": false,

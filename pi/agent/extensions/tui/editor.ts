@@ -10,6 +10,7 @@ type AutocompleteEditorInternals = {
 };
 
 type TransformableEditor = AutocompleteEditorInternals & {
+	getMode?: () => string;
 	transformEditorLine?: (line: string) => string;
 };
 
@@ -24,11 +25,19 @@ export function setEditorTheme(uiTheme: Theme): void {
 	patchState.currentUiTheme = uiTheme;
 }
 
+function terminalRows(): number | undefined {
+	const rows = process.stdout?.rows;
+	return typeof rows === "number" && Number.isFinite(rows) ? rows : undefined;
+}
+
 function renderPolishedEditor(
 	editor: TransformableEditor,
 	width: number,
 	renderBase: (width: number) => string[],
+	minTerminalRows: number,
 ): string[] {
+	const rows = terminalRows();
+	if (rows !== undefined && rows < minTerminalRows) return renderBase(width);
 	const uiTheme = patchState.currentUiTheme;
 	if (!uiTheme) return renderBase(width);
 
@@ -56,13 +65,15 @@ function renderPolishedEditor(
 			? (line: string) => editor.transformEditorLine?.(line) ?? line
 			: (line: string) => line;
 	const editorLines = editorFrame.slice(1, -1).map(transformEditorLine);
-	const rail = `${uiTheme.fg("accent", "┃")}${ANSI_RESET}${uiTheme.bg("customMessageBg", " ")}`;
+	const mode = typeof editor.getMode === "function" ? editor.getMode() : undefined;
+	const railColor = mode === "insert" ? "success" : mode === "visual" ? "accent" : "syntaxFunction";
+	const rail = `${uiTheme.fg(railColor, "┃")}${ANSI_RESET}${uiTheme.bg("customMessageBg", " ")}`;
 	const lines = ["", ...editorLines, ""];
 
 	return [...lines.map((line) => `${rail}${fillBackgroundLine(uiTheme, line, innerWidth)}`), ...autocompleteLines];
 }
 
-export function installEditorComposition(uiTheme: Theme): void {
+export function installEditorComposition(uiTheme: Theme, minTerminalRows = 28): void {
 	setEditorTheme(uiTheme);
 
 	// Patch the shared base editor instead of replacing the active editor so
@@ -73,9 +84,13 @@ export function installEditorComposition(uiTheme: Theme): void {
 	const originalRender =
 		(prototype[CUSTOM_EDITOR_ORIGINAL_RENDER] as ((this: CustomEditor, width: number) => string[]) | undefined) ??
 		prototype.render;
-	if (prototype[CUSTOM_EDITOR_ORIGINAL_RENDER]) return;
-	prototype[CUSTOM_EDITOR_ORIGINAL_RENDER] = prototype.render;
+	prototype[CUSTOM_EDITOR_ORIGINAL_RENDER] ??= prototype.render;
 	prototype.render = function (this: CustomEditor, width: number): string[] {
-		return renderPolishedEditor(this as unknown as TransformableEditor, width, (w) => originalRender.call(this, w));
+		return renderPolishedEditor(
+			this as unknown as TransformableEditor,
+			width,
+			(w) => originalRender.call(this, w),
+			minTerminalRows,
+		);
 	};
 }

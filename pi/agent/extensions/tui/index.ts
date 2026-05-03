@@ -2,6 +2,7 @@ import type { AssistantMessage } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { runCommand } from "../shared/ct-runner";
 import { ensureConfigExists, loadConfig, type PolishedTuiConfig } from "./config";
+import { installFocusCursor } from "./cursor-focus";
 import { installEditorComposition } from "./editor";
 import { emptyFooterState, type FooterRenderState, renderFooter } from "./footer";
 import { readGitStatus } from "./git";
@@ -89,6 +90,16 @@ export default function (pi: ExtensionAPI) {
 
 	const refresh = () => {
 		if (!disposed) requestFooterRender?.();
+	};
+
+	const terminalRows = (): number | undefined => {
+		const rows = process.stdout?.rows;
+		return typeof rows === "number" && Number.isFinite(rows) ? rows : undefined;
+	};
+
+	const isCompactTerminal = () => {
+		const rows = terminalRows();
+		return rows !== undefined && rows < currentConfig.compact.minTerminalRows;
 	};
 
 	const usageBarKey = (width: number): string =>
@@ -277,6 +288,7 @@ export default function (pi: ExtensionAPI) {
 
 		ctx.ui.setFooter((tui, theme, footerData) => {
 			requestFooterRender = () => tui.requestRender();
+			const disposeFocusCursor = installFocusCursor(pi, ctx, tui);
 			const unsubscribeBranch = footerData.onBranchChange(() => {
 				scheduleProjectRefresh(ctx, generation);
 				tui.requestRender();
@@ -289,12 +301,14 @@ export default function (pi: ExtensionAPI) {
 
 			return {
 				dispose: () => {
+					disposeFocusCursor();
 					unsubscribeBranch();
 					requestFooterRender = undefined;
 					stopRefreshTimer();
 				},
 				invalidate() {},
 				render(width: number): string[] {
+					if (isCompactTerminal()) return renderFooter(state, currentConfig, cwd, theme, width, { minimal: true });
 					ensureUsageBarLines(width);
 					return renderFooter(state, currentConfig, cwd, theme, width);
 				},
@@ -304,7 +318,7 @@ export default function (pi: ExtensionAPI) {
 
 	const installEditor = (ctx: ExtensionContext) => {
 		syncStateIfCurrent(ctx);
-		installEditorComposition(ctx.ui.theme);
+		installEditorComposition(ctx.ui.theme, currentConfig.compact.minTerminalRows);
 	};
 
 	const installUi = (ctx: ExtensionContext) => {

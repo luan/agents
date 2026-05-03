@@ -62,9 +62,13 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		refresh();
 		setTimeout(() => {
-			refresh();
-			ensureTranscriptHighlight(skillNames);
-			if (ctx.hasUI) installEditorHighlight(ctx.ui, skillNames);
+			try {
+				refresh();
+				ensureTranscriptHighlight(skillNames);
+				if (ctx.hasUI) installEditorHighlight(ctx.ui, skillNames);
+			} catch (error) {
+				if (!(error instanceof Error) || !error.message.includes("ctx is stale")) throw error;
+			}
 		}, 0);
 		if (!ctx.hasUI) return;
 		const ui = ctx.ui as typeof ctx.ui & { [AUTOCOMPLETE_INSTALLED]?: true };
