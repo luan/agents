@@ -145,6 +145,8 @@ pub enum TaskAction {
         priority: i64,
         #[arg(long = "assigned-to", help = "Session/user this task is assigned to")]
         assigned_to: Option<String>,
+        #[arg(long = "assigned-label", hide = true)]
+        assigned_label: Option<String>,
         #[arg(long = "blocked-by", help = "Task ID/prefix that blocks this task")]
         blocked_by: Vec<String>,
         #[arg(long, help = "Output JSON")]
@@ -185,6 +187,8 @@ pub enum TaskAction {
         priority: Option<i64>,
         #[arg(long = "assigned-to", help = "Assign to this session/user")]
         assigned_to: Option<String>,
+        #[arg(long = "assigned-label", hide = true)]
+        assigned_label: Option<String>,
         #[arg(long, help = "Remove assignee")]
         clear_assignee: bool,
         #[arg(

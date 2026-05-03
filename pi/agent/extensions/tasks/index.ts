@@ -29,6 +29,7 @@ interface TaskRecord {
 	status: string;
 	priority?: number;
 	assigned_to?: string | null;
+	assigned_label?: string | null;
 	blocked_by?: string[];
 	created_at: number;
 	updated_at: number;
@@ -91,6 +92,7 @@ export function buildTaskCommand(action: TaskCommand, params: Record<string, unk
 			pushOption(args, "--status", params.status);
 			pushOption(args, "--priority", params.priority);
 			pushOption(args, "--assigned-to", params.assigned_to);
+			pushOption(args, "--assigned-label", params.assigned_label);
 			pushRepeatedOption(args, "--blocked-by", params.blocked_by);
 			break;
 		case "list":
@@ -109,6 +111,7 @@ export function buildTaskCommand(action: TaskCommand, params: Record<string, unk
 			pushOption(args, "--status", params.status);
 			pushOption(args, "--priority", params.priority);
 			pushOption(args, "--assigned-to", params.assigned_to);
+			pushOption(args, "--assigned-label", params.assigned_label);
 			if (params.clear_assignee === true) args.push("--clear-assignee");
 			pushRepeatedOption(args, "--blocked-by", params.blocked_by);
 			if (params.clear_blockers === true) args.push("--clear-blockers");
@@ -156,10 +159,31 @@ function sessionAssignment(ctx?: ExtensionContext): string | undefined {
 	return undefined;
 }
 
-function normalizeTaskParams(params: Record<string, unknown>, ctx?: ExtensionContext): Record<string, unknown> {
+function sessionName(pi?: ExtensionAPI, ctx?: ExtensionContext): string | undefined {
+	try {
+		const fromPi = (
+			pi as (ExtensionAPI & { getSessionName?: () => string | undefined }) | undefined
+		)?.getSessionName?.();
+		if (typeof fromPi === "string" && fromPi.trim()) return fromPi.trim();
+	} catch {}
+	try {
+		const fromCtx = (
+			ctx as (ExtensionContext & { sessionManager?: { getSessionName?: () => string | undefined } }) | undefined
+		)?.sessionManager?.getSessionName?.();
+		if (typeof fromCtx === "string" && fromCtx.trim()) return fromCtx.trim();
+	} catch {}
+	return undefined;
+}
+
+function normalizeTaskParams(
+	params: Record<string, unknown>,
+	ctx?: ExtensionContext,
+	pi?: ExtensionAPI,
+): Record<string, unknown> {
 	if (params.assigned_to !== "current") return params;
 	const assignedTo = sessionAssignment(ctx);
-	return assignedTo ? { ...params, assigned_to: assignedTo } : params;
+	if (!assignedTo) return params;
+	return { ...params, assigned_to: assignedTo, assigned_label: sessionName(pi, ctx) };
 }
 
 async function executeTask(
@@ -169,15 +193,16 @@ async function executeTask(
 	action: TaskCommand,
 	params: Record<string, unknown>,
 	config: Config,
+	pi?: ExtensionAPI,
 	ctx?: ExtensionContext,
 	signal?: AbortSignal,
 ) {
-	const args = buildTaskCommand(action, normalizeTaskParams(params, ctx));
+	const args = buildTaskCommand(action, normalizeTaskParams(params, ctx, pi));
 	const result = await runCommand(command, args, cwd, signal);
 	const text = result.stdout.trim() || result.stderr.trim();
 	const details = parseTaskPayload(text, action, args);
 	if (ctx && config.hud.enabled && (action === "add" || action === "update" || action === "delete")) {
-		await updateTaskHud(ctx, command, runCommand, config).catch((error) => {
+		await updateTaskHud(ctx, pi, command, runCommand, config).catch((error) => {
 			ctx.ui.notify?.(
 				`Task HUD refresh failed: ${error instanceof Error ? error.message : String(error)}`,
 				"warning",
@@ -195,15 +220,17 @@ async function loadHudTasks(cwd: string, command: string, runCommand: typeof def
 
 async function updateTaskHud(
 	ctx: ExtensionContext,
+	pi: ExtensionAPI | undefined,
 	command: string,
 	runCommand: typeof defaultRunCommand,
 	config: Config,
 ): Promise<void> {
 	const tasks = await loadHudTasks(ctx.cwd, command, runCommand, ctx.signal);
+	const display = assignmentDisplayContext(pi, ctx);
 	ctx.ui.setWidget(
 		widgetId,
 		(_tui, theme) => ({
-			render: (width: number) => renderHudLines(tasks, theme, width, config.hud.maxTasks),
+			render: (width: number) => renderHudLines(tasks, theme, width, config.hud.maxTasks, display),
 			invalidate() {},
 		}),
 		{ placement: "aboveEditor" },
@@ -283,12 +310,37 @@ function sortTasksForDisplay(tasks: TaskRecord[]): TaskRecord[] {
 	});
 }
 
-function formatTaskLine(task: TaskRecord, theme: Theme, width: number, byId: Map<string, TaskRecord>): string {
+type AssignmentDisplayContext = { currentAssignment?: string; currentLabel?: string };
+
+function assignmentDisplayContext(pi?: ExtensionAPI, ctx?: ExtensionContext): AssignmentDisplayContext {
+	return {
+		currentAssignment: sessionAssignment(ctx),
+		currentLabel: sessionName(pi, ctx),
+	};
+}
+
+function assignmentLabel(task: TaskRecord, display: AssignmentDisplayContext = {}): string | undefined {
+	const assignedTo = task.assigned_to;
+	if (!assignedTo) return undefined;
+	if (assignedTo === display.currentAssignment && display.currentLabel) return display.currentLabel;
+	if (task.assigned_label) return task.assigned_label;
+	if (assignedTo.startsWith("session:")) return assignedTo.slice("session:".length);
+	return assignedTo;
+}
+
+function formatTaskLine(
+	task: TaskRecord,
+	theme: Theme,
+	width: number,
+	byId: Map<string, TaskRecord>,
+	display: AssignmentDisplayContext = {},
+): string {
 	const blockers = openBlockers(task, byId);
 	const glyph = theme.fg(statusColor(task.status), statusGlyph(task.status));
 	const id = theme.fg("accent", theme.bold(task.id.padEnd(4)));
 	const blockerText = blockers.join(", ");
-	const assignee = task.assigned_to ? theme.fg("dim", ` @${compact(task.assigned_to, 28)}`) : "";
+	const label = assignmentLabel(task, display);
+	const assignee = label ? theme.fg("dim", ` @${compact(label, 28)}`) : "";
 	const title = isComplete(task)
 		? theme.fg("dim", strikethrough(theme, `${task.id.padEnd(4)} ${compact(task.title, Math.max(20, width - 18))}`))
 		: theme.fg("text", compact(task.title, Math.max(20, width - 18)));
@@ -297,7 +349,13 @@ function formatTaskLine(task: TaskRecord, theme: Theme, width: number, byId: Map
 	return truncateToWidth(`  ${glyph} ${id} ${title}${assignee}${suffix}`, width);
 }
 
-export function renderHudLines(tasks: TaskRecord[], theme: Theme, width: number, maxTasks = 6): string[] {
+export function renderHudLines(
+	tasks: TaskRecord[],
+	theme: Theme,
+	width: number,
+	maxTasks = 6,
+	display: AssignmentDisplayContext = {},
+): string[] {
 	const visibleTasks = sortTasksForDisplay(tasks.filter((task) => !isCanceled(task)));
 	if (visibleTasks.length === 0) return [];
 	const byId = new Map(visibleTasks.map((task) => [task.id, task]));
@@ -315,7 +373,7 @@ export function renderHudLines(tasks: TaskRecord[], theme: Theme, width: number,
 			`${theme.fg("accent", "●")} ${theme.fg("accent", `${visibleTasks.length} tasks (${parts.join(", ")})`)}`,
 			width,
 		),
-		...shown.map((task) => formatTaskLine(task, theme, width, byId)),
+		...shown.map((task) => formatTaskLine(task, theme, width, byId, display)),
 	];
 	if (hidden > 0) lines.push(truncateToWidth(theme.fg("dim", `    … and ${hidden} more`), width));
 	return lines;
@@ -349,10 +407,11 @@ function renderCallText(action: TaskCommand, args: Record<string, unknown>, them
 }
 
 function renderTaskBlock(title: string, task: TaskRecord, theme: Theme): string {
+	const label = assignmentLabel(task);
 	return [
 		theme.fg("toolTitle", theme.bold(title)),
 		`  ${theme.fg(statusColor(task.status), statusGlyph(task.status))} ${theme.fg("accent", theme.bold(task.id.padEnd(4)))} ${theme.fg("text", task.title)}`,
-		...(task.assigned_to ? [`  ${theme.fg("dim", `@${task.assigned_to}`)}`] : []),
+		...(label ? [`  ${theme.fg("dim", `@${label}`)}`] : []),
 		...(task.blocked_by?.length ? [`  ${theme.fg("dim", `› blocked by ${task.blocked_by.join(", ")}`)}`] : []),
 		...(task.body ? [`  ${theme.fg("dim", compact(task.body, 120))}`] : []),
 	].join("\n");
@@ -413,6 +472,7 @@ function makeTaskTool(
 	command: string,
 	runCommand: typeof defaultRunCommand,
 	config: Config,
+	pi: ExtensionAPI,
 	getCwd: () => string,
 ) {
 	return {
@@ -437,7 +497,7 @@ function makeTaskTool(
 			signal?: AbortSignal,
 			_onUpdate?: unknown,
 			ctx?: ExtensionContext,
-		) => executeTask(command, runCommand, getCwd(), action, params, config, ctx, signal),
+		) => executeTask(command, runCommand, getCwd(), action, params, config, pi, ctx, signal),
 	};
 }
 
@@ -498,11 +558,11 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 	let cwd = process.cwd();
 	const reminderState: { lastReminderFingerprint?: string } = {};
 	const getCwd = () => cwd;
-	const common = (action: TaskCommand) => makeTaskTool(action, config.command, runCommand, config, getCwd);
+	const common = (action: TaskCommand) => makeTaskTool(action, config.command, runCommand, config, pi, getCwd);
 
 	pi.on("session_start", async (_event, ctx) => {
 		cwd = ctx.cwd;
-		if (config.hud.enabled) await updateTaskHud(ctx, config.command, runCommand, config);
+		if (config.hud.enabled) await updateTaskHud(ctx, pi, config.command, runCommand, config);
 	});
 
 	pi.on("turn_end", async (_event, ctx) => {

@@ -109,12 +109,14 @@ describe("tasks extension", () => {
 		const lines = renderHudLines(
 			[
 				{ ...task, id: "BLOCKED123", title: "Blocked task", priority: 100, blocked_by: ["PG4W2K4Q03"] },
-				{ ...task, priority: 1 },
+				{ ...task, priority: 1, assigned_to: "session:test-session" },
 				{ ...task, id: "DONE123ABC", title: "Done task", status: "done" },
 				{ ...task, id: "CANCEL123A", title: "Canceled task", status: "canceled" },
 			],
 			theme as any,
 			80,
+			6,
+			{ currentAssignment: "session:test-session", currentLabel: "Named Session" },
 		);
 		expect(lines.every((line) => visibleWidth(line) <= 80)).toBe(true);
 		expect(lines.join("\n")).toContain("3 tasks");
@@ -122,6 +124,7 @@ describe("tasks extension", () => {
 		expect(lines.join("\n")).toContain("PG4W2K4Q03");
 		expect(lines.join("\n")).toContain("› blocked by PG4W2K4Q03");
 		expect(lines.join("\n")).toContain("Smoke test");
+		expect(lines.join("\n")).toContain("@Named Session");
 		expect(lines.join("\n")).toContain("Done task");
 		expect(lines.findIndex((line) => line.includes("Smoke test"))).toBeLessThan(
 			lines.findIndex((line) => line.includes("Blocked task")),
