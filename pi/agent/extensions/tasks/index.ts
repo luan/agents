@@ -293,10 +293,10 @@ export function renderTaskResult(details: TaskDetails | undefined, theme: Theme)
 }
 
 class TaskText implements Component {
-	constructor(private text: string) {}
+	constructor(private text = "") {}
 
-	setText(text: string): void {
-		this.text = text;
+	setText(text: unknown): void {
+		this.text = typeof text === "string" ? text : "";
 	}
 
 	render(width: number): string[] {
