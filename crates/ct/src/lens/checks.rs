@@ -578,6 +578,7 @@ fn path_line_diagnostic(
         _ => return None,
     };
     let rel_path = normalize_output_diagnostic_path(root, &rel_path)?;
+    let content_hash = output_diagnostic_content_hash(root, &rel_path);
     let fingerprint = crate::apply_patch::sha1_hex(
         format!("tool:{name}:{rel_path:?}:{start_line:?}:{message}").as_bytes(),
     );
@@ -591,13 +592,19 @@ fn path_line_diagnostic(
         start_line: Some(start_line),
         end_line: Some(start_line),
         fingerprint,
-        content_hash: None,
+        content_hash,
         raw_output_id: None,
         snapshot_id: None,
         first_seen_at: None,
         last_seen_at: None,
         resolved_at: None,
     })
+}
+
+fn output_diagnostic_content_hash(root: &Path, rel_path: &str) -> Option<String> {
+    std::fs::read(root.join(rel_path))
+        .ok()
+        .map(|content| crate::apply_patch::sha1_hex(&content))
 }
 
 fn parse_explicit_output_severity(value: &str) -> Option<DiagnosticSeverity> {
@@ -976,6 +983,7 @@ mod tests {
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].rel_path.as_deref(), Some("main.rs"));
         assert_eq!(diagnostics[0].message, "real warning");
+        assert!(diagnostics[0].content_hash.is_some());
     }
 
     #[test]

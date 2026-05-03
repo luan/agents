@@ -87,8 +87,8 @@ describe("Lens hook runner", () => {
 		expect(clean).toBe(false);
 		expect(dirty).toBe(true);
 		expect(calls).toEqual([
-			["lens", "diagnostics", "list", "--json"],
-			["lens", "diagnostics", "list", "--json"],
+			["lens", "diagnostics", "list", "--json", "--all"],
+			["lens", "diagnostics", "list", "--json", "--all"],
 		]);
 	});
 });
@@ -517,6 +517,36 @@ describe("Lens hook-only Pi extension", () => {
 		expect(result?.message.content).toEqual([]);
 		expect(result?.message.details.requiresFollowup).toBe(false);
 		expect(result?.message.details.reportIssues).toEqual([]);
+		expect(result?.message.details.suppressedAsStale).toBe(true);
+	});
+
+	it("suppresses unparseable queued diagnostic reports instead of matching any active diagnostic", async () => {
+		const result = await suppressStaleLensDiagnosticMessage(
+			{
+				role: "custom",
+				customType: "lens-diagnostics",
+				content: "Lens session diagnostics: stale summary without issue lines",
+				display: true,
+				details: { fingerprint: "old", requiresFollowup: true },
+				timestamp: Date.now(),
+			},
+			"/tmp",
+			{
+				runner: async () => ({
+					stdout: JSON.stringify({
+						data: {
+							diagnostic_count: 1,
+							diagnostics: [{ rel_path: "src/other.rs", code: "E0308", message: "current type error" }],
+						},
+					}),
+					stderr: "",
+					exitCode: 0,
+				}),
+			},
+		);
+
+		expect(result?.message.display).toBe(false);
+		expect(result?.message.details.requiresFollowup).toBe(false);
 		expect(result?.message.details.suppressedAsStale).toBe(true);
 	});
 
