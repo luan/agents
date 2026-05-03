@@ -217,3 +217,77 @@ fn task_blocked_by_is_a_simple_id_array() {
         .success()
         .stdout(predicate::str::contains("\"blocked_by\": []"));
 }
+
+#[test]
+fn task_list_sorts_ready_tasks_before_blocked_then_by_priority() {
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+
+    let blocker = ct_cmd(project.path(), state.path())
+        .args(["task", "add", "Ready blocker", "--priority", "0", "--json"])
+        .assert()
+        .success();
+    let blocker_json: serde_json::Value =
+        serde_json::from_slice(&blocker.get_output().stdout).expect("blocker json");
+    let blocker_id = blocker_json["task"]["id"].as_str().expect("blocker id");
+
+    ct_cmd(project.path(), state.path())
+        .args([
+            "task",
+            "add",
+            "Blocked high priority",
+            "--priority",
+            "100",
+            "--blocked-by",
+            blocker_id,
+            "--json",
+        ])
+        .assert()
+        .success();
+    ct_cmd(project.path(), state.path())
+        .args([
+            "task",
+            "add",
+            "Ready low priority",
+            "--priority",
+            "1",
+            "--json",
+        ])
+        .assert()
+        .success();
+    ct_cmd(project.path(), state.path())
+        .args([
+            "task",
+            "add",
+            "Ready high priority",
+            "--priority",
+            "5",
+            "--json",
+        ])
+        .assert()
+        .success();
+
+    let list = ct_cmd(project.path(), state.path())
+        .args(["task", "list", "--json"])
+        .assert()
+        .success();
+    let list_json: serde_json::Value =
+        serde_json::from_slice(&list.get_output().stdout).expect("list json");
+    let titles = list_json["tasks"]
+        .as_array()
+        .expect("tasks")
+        .iter()
+        .map(|task| task["title"].as_str().expect("title"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        titles,
+        vec![
+            "Ready high priority",
+            "Ready low priority",
+            "Ready blocker",
+            "Blocked high priority",
+        ]
+    );
+    assert_eq!(list_json["tasks"][0]["priority"], 5);
+}

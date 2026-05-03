@@ -141,6 +141,8 @@ pub enum TaskAction {
         body: Option<String>,
         #[arg(long, default_value = "open", help = "Task status")]
         status: String,
+        #[arg(long, default_value_t = 0, help = "Task priority; higher shows first")]
+        priority: i64,
         #[arg(long = "blocked-by", help = "Task ID/prefix that blocks this task")]
         blocked_by: Vec<String>,
         #[arg(long, help = "Output JSON")]
@@ -175,6 +177,8 @@ pub enum TaskAction {
         body: Option<String>,
         #[arg(long, help = "New status")]
         status: Option<String>,
+        #[arg(long, help = "New priority; higher shows first")]
+        priority: Option<i64>,
         #[arg(
             long = "blocked-by",
             help = "Replace blockers with these task IDs/prefixes"
