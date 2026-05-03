@@ -8,6 +8,17 @@ user-invocable: true
 
 Create distinctive, production-grade interfaces that avoid the generic "AI slop" aesthetic.
 
+## Agentic loop
+
+1. **Intake** — Restate the requested outcome, inputs, constraints, and stop conditions. If the request is ambiguous or unsafe, ask before acting.
+2. **Discover** — Gather the minimum evidence needed: user context, repo/vault state, relevant files, commands, docs, or external state. Prefer direct source/tool evidence over memory.
+3. **Decide** — Choose the smallest valid path for `frontend-design`. Name assumptions, blockers, and what is explicitly out of scope before side effects.
+4. **Execute** — Create a distinctive UI by understanding product intent, choosing a strong visual direction, implementing, and checking polish.
+5. **Verify** — Check the result against the request and this skill's rules using concrete evidence: tests, command output, diffs, links, artifacts, or reviewed findings.
+6. **Close** — Provide only the concrete handoff the next actor needs: changed paths/artifacts/findings, verification status, remaining blockers, and the next command/action.
+
+Guardrail: Avoid generic layouts and banned patterns; make deliberate visual choices.
+
 ## Workflow
 
 1. **Detect stack**: Read `package.json`/equivalent, check existing component patterns, match project conventions. Greenfield → ask user or infer.

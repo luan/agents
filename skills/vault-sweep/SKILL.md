@@ -17,6 +17,17 @@ Holistic vault maintenance. Cross-references the blueprints vault against codeba
 
 Analytical counterpart to `/archive` (which operates on individual artifacts). Vault sweep surveys the whole project, classifies everything, and proposes. Nothing executes until approved.
 
+## Agentic loop
+
+1. **Intake** — Restate the requested outcome, inputs, constraints, and stop conditions. If the request is ambiguous or unsafe, ask before acting.
+2. **Discover** — Gather the minimum evidence needed: user context, repo/vault state, relevant files, commands, docs, or external state. Prefer direct source/tool evidence over memory.
+3. **Decide** — Choose the smallest valid path for `vault-sweep`. Name assumptions, blockers, and what is explicitly out of scope before side effects.
+4. **Execute** — Audit the blueprints vault for consumed, stale, inconsistent, or missing artifacts and act only on approved maintenance.
+5. **Verify** — Check the result against the request and this skill's rules using concrete evidence: tests, command output, diffs, links, artifacts, or reviewed findings.
+6. **Close** — Provide only the concrete handoff the next actor needs: changed paths/artifacts/findings, verification status, remaining blockers, and the next command/action.
+
+Guardrail: Preserve content and evidence before archival or cleanup.
+
 ## Arguments
 
 - `--execute` — skip the approval gate, execute the plan immediately
@@ -39,7 +50,7 @@ Parse the JSON arrays into a combined working list. The enriched JSON includes `
 topic → [{kind: "spec", name: "...", created: "...", source: "..."}, {kind: "plan", ...}, ...]
 ```
 
-This grouping ensures related artifacts get classified and archived together. If the vault is empty or `ct` is not installed, report and stop.
+This grouping ensures related artifacts get classified and archived together. If the vault is empty or `ct` is not installed, state the blocker and stop.
 
 ## Phase 2: Cross-reference
 
@@ -85,7 +96,7 @@ Map cross-reference results onto individual artifacts:
 | **Future** | Topic is FUTURE, no code | Leave alone |
 | **Living** | Continuously updated docs (triage lists, needs-triage) | Leave alone |
 
-Group consumed artifacts by feature area for the final report. One line per feature area is more useful than listing every artifact individually.
+Group consumed artifacts by feature area for the final handoff. One line per feature area is more useful than listing every artifact individually.
 
 ## Phase 4: Doc audit
 
@@ -153,7 +164,7 @@ format, a rendering pipeline, a macro attribute reference, a theme system with 2
 configuration points — these all earn docs. Don't be conservative; the user will
 cut proposals that don't make sense.
 
-For each candidate, report:
+For each candidate, include:
 - System name and module path
 - LOC and stability evidence (from the data above)
 - What the doc would cover
@@ -208,7 +219,7 @@ Use batch mode for efficiency:
 ct <type> archive --batch <file1> <file2> ...
 ```
 
-Group by artifact type (all specs together, all plans together, etc.). Each batch produces a single commit. Report progress by feature area ("Archived 22 Entity/World artifacts").
+Group by artifact type (all specs together, all docs together, etc.). Each batch produces a single commit. Show progress by feature area ("Archived 22 Entity/World artifacts").
 
 Preview first with `--dry-run` if the batch is large (>20 artifacts).
 
@@ -277,6 +288,6 @@ Run `ct vault check` and review the output. Broken links fall into categories:
 
 Only fix links in active (non-archived) artifacts. Don't chase links inside archived files.
 
-### 7f. Final report
+### 7f. Final handoff
 
-Report summary: N artifacts archived, N docs updated, N docs created, N docs archived, N links fixed.
+Summary: N artifacts archived, N docs updated, N docs created, N docs archived, N links fixed.

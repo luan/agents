@@ -12,6 +12,17 @@ user-invocable: true
 
 Move consumed blueprint artifacts to `archive/` and store their content as git notes for long-term retrieval.
 
+## Agentic loop
+
+1. **Intake** — Restate the requested outcome, inputs, constraints, and stop conditions. If the request is ambiguous or unsafe, ask before acting.
+2. **Discover** — Gather the minimum evidence needed: user context, repo/vault state, relevant files, commands, docs, or external state. Prefer direct source/tool evidence over memory.
+3. **Decide** — Choose the smallest valid path for `archive`. Name assumptions, blockers, and what is explicitly out of scope before side effects.
+4. **Execute** — Identify consumed artifacts, preserve their content, archive only confirmed items, and verify notes/links remain recoverable.
+5. **Verify** — Check the result against the request and this skill's rules using concrete evidence: tests, command output, diffs, links, artifacts, or reviewed findings.
+6. **Close** — Provide only the concrete handoff the next actor needs: changed paths/artifacts/findings, verification status, remaining blockers, and the next command/action.
+
+Guardrail: Archive only artifacts whose consumption evidence is concrete; preserve content in git notes before moving anything.
+
 ## Arguments
 
 - `<slug-or-path>` — file path or slug substring to match
@@ -39,7 +50,7 @@ Search for matching artifact across types (or filtered by `-t <type>`):
 fd "<slug>" ~/blueprints/ --type f --extension md --exclude archive
 ```
 
-If exactly one match → archive it. Multiple matches → present choices. No match → report and stop.
+If exactly one match → archive it. Multiple matches → present choices. No match → state no match and stop.
 
 ### Archive
 
@@ -54,4 +65,4 @@ ct vault archive --batch <f1> <f2> <f3>               # one commit for all
 ct vault archive --dry-run --batch <f1> <f2>          # preview, no writes
 ```
 
-Report what was archived.
+Output what was archived.

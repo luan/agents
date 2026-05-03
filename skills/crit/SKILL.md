@@ -23,6 +23,17 @@ Fast adversarial review: cleanup pre-pass (reuse / quality / efficiency), then 2
 
 **NEVER review inline.** Always dispatch subagents via the Agent tool.
 
+## Agentic loop
+
+1. **Intake** — Restate the requested outcome, inputs, constraints, and stop conditions. If the request is ambiguous or unsafe, ask before acting.
+2. **Discover** — Gather the minimum evidence needed: user context, repo/vault state, relevant files, commands, docs, or external state. Prefer direct source/tool evidence over memory.
+3. **Decide** — Choose the smallest valid path for `crit`. Name assumptions, blockers, and what is explicitly out of scope before side effects.
+4. **Execute** — Perform a fast adversarial review that finds material risks without doing implementation work.
+5. **Verify** — Check the result against the request and this skill's rules using concrete evidence: tests, command output, diffs, links, artifacts, or reviewed findings.
+6. **Close** — Provide only the concrete handoff the next actor needs: changed paths/artifacts/findings, verification status, remaining blockers, and the next command/action.
+
+Guardrail: Find defects with file/line evidence; avoid style-only noise.
+
 ## Step 1: Scope
 
 Resolve BASE: `gh stack view --json 2>/dev/null | jq -r '.trunk // empty' || gt parent 2>/dev/null || gt trunk 2>/dev/null || git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/||'`. Args override.
@@ -188,7 +199,7 @@ Store the review via `ct vault create -t review --topic "Review: <branch>"`, edi
 `--auto critical|high|medium|all` → auto-fix at or above the given severity.
 No `--auto` → ask: Fix all / Fix critical+high / Fix critical only / Skip.
 
-Spawn fix agent → fix, verify, self-check (remove debug artifacts, unused imports), report. Single pass — no re-review loop (use `/superreview --loop` for iterative fixing).
+Spawn fix agent → fix, verify, self-check (remove debug artifacts, unused imports), hand off changed paths and verification. Single pass — no re-review loop (use `/superreview --loop` for iterative fixing).
 
 ## Step 7: Summary
 

@@ -10,6 +10,17 @@ disable-model-invocation: true
 
 Register a project in the local subdomain routing system (`https://<project>.localhost` via Caddy + dnsmasq).
 
+## Agentic loop
+
+1. **Intake** — Restate the requested outcome, inputs, constraints, and stop conditions. If the request is ambiguous or unsafe, ask before acting.
+2. **Discover** — Gather the minimum evidence needed: user context, repo/vault state, relevant files, commands, docs, or external state. Prefer direct source/tool evidence over memory.
+3. **Decide** — Choose the smallest valid path for `bootstrap-caddy`. Name assumptions, blockers, and what is explicitly out of scope before side effects.
+4. **Execute** — Register local routing by choosing a safe port, updating project config, adding Caddy config, and proving the route works.
+5. **Verify** — Check the result against the request and this skill's rules using concrete evidence: tests, command output, diffs, links, artifacts, or reviewed findings.
+6. **Close** — Provide only the concrete handoff the next actor needs: changed paths/artifacts/findings, verification status, remaining blockers, and the next command/action.
+
+Guardrail: No route is done until the registry, project dev server, Caddy config, and reload check agree.
+
 ## Step 1: Parse arguments
 
 First word = project name. Optional second = port override. Empty → AskUserQuestion (don't infer from context).
@@ -30,7 +41,7 @@ Read `$HOME/.config/dev-routing/ports.json`:
 {"nextPort": 5200, "projects": {"name": 5200, ...}}
 ```
 
-Project already exists → report `https://<project>.localhost → localhost:<port>` and stop.
+Project already exists → output `https://<project>.localhost → localhost:<port>` and stop.
 
 ## Step 4: Assign port
 
@@ -52,7 +63,7 @@ Write `$HOME/.config/dev-routing/sites/<project>.caddy`:
 
 ## Step 7: Configure project dev server
 
-Skip if `$HOME/src/<project>` doesn't exist — just report port for later.
+Skip if `$HOME/src/<project>` doesn't exist — just output the port for later.
 
 If exists:
 
@@ -68,7 +79,7 @@ Bun auto-loads `.env` — no extra setup needed.
 caddy reload --config $HOME/.config/dev-routing/Caddyfile 2>&1 || caddy start --config $HOME/.config/dev-routing/Caddyfile 2>&1
 ```
 
-## Step 9: Report
+## Step 9: Handoff
 
 - **Dev URL:** `https://<project>.localhost`
 - **Backend port:** `<port>`

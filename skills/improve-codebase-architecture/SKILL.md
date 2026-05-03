@@ -8,6 +8,17 @@ user-invocable: true
 
 Surface architectural friction and propose **deepening opportunities** — refactors that turn shallow modules into deep ones. The aim is testability and AI-navigability.
 
+## Agentic loop
+
+1. **Intake** — Restate the requested outcome, inputs, constraints, and stop conditions. If the request is ambiguous or unsafe, ask before acting.
+2. **Discover** — Gather the minimum evidence needed: user context, repo/vault state, relevant files, commands, docs, or external state. Prefer direct source/tool evidence over memory.
+3. **Decide** — Choose the smallest valid path for `improve-codebase-architecture`. Name assumptions, blockers, and what is explicitly out of scope before side effects.
+4. **Execute** — Use vault context and code evidence to identify concrete architecture-deepening opportunities.
+5. **Verify** — Check the result against the request and this skill's rules using concrete evidence: tests, command output, diffs, links, artifacts, or reviewed findings.
+6. **Close** — Provide only the concrete handoff the next actor needs: changed paths/artifacts/findings, verification status, remaining blockers, and the next command/action.
+
+Guardrail: Recommend changes only when they improve boundaries, language, or cohesion with evidence.
+
 ## Glossary
 
 Use these terms exactly in every suggestion. Consistent language is the point — don't drift into "component," "service," "API," or "boundary." Full definitions in [LANGUAGE.md](LANGUAGE.md).
@@ -70,3 +81,7 @@ Side effects happen inline as decisions crystallize:
 - **Sharpening a fuzzy term during the conversation?** Update the relevant vault domain doc right there.
 - **User rejects the candidate with a load-bearing reason?** Offer a vault decision doc, framed as: _"Want me to record this as a decision doc so future architecture reviews don't re-suggest it?"_ Only offer when the reason would actually be needed by a future explorer to avoid re-suggesting the same thing — skip ephemeral reasons ("not worth it right now") and self-evident ones. See [VAULT-DECISION-DOC-FORMAT.md](../grill-with-docs/VAULT-DECISION-DOC-FORMAT.md).
 - **Want to explore alternative interfaces for the deepened module?** See [INTERFACE-DESIGN.md](INTERFACE-DESIGN.md).
+
+### 4. Follow-up tasks
+
+If the user asks for executable follow-up work, create persisted tasks with `ct task`; do not add planning files to the repo or vault unless explicitly asked.

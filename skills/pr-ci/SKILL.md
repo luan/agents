@@ -26,6 +26,17 @@ Fix failed GitHub Actions checks.
 
 **Safety: never rebases. Push requires confirmation (unless `--auto`).**
 
+## Agentic loop
+
+1. **Intake** — Restate the requested outcome, inputs, constraints, and stop conditions. If the request is ambiguous or unsafe, ask before acting.
+2. **Discover** — Gather the minimum evidence needed: user context, repo/vault state, relevant files, commands, docs, or external state. Prefer direct source/tool evidence over memory.
+3. **Decide** — Choose the smallest valid path for `pr-ci`. Name assumptions, blockers, and what is explicitly out of scope before side effects.
+4. **Execute** — Fetch failing checks, reproduce or inspect the failure, fix the cause, and verify the CI-relevant command.
+5. **Verify** — Check the result against the request and this skill's rules using concrete evidence: tests, command output, diffs, links, artifacts, or reviewed findings.
+6. **Close** — Provide only the concrete handoff the next actor needs: changed paths/artifacts/findings, verification status, remaining blockers, and the next command/action.
+
+Guardrail: Fix the failure, not just the symptom in logs.
+
 ## Steps
 
 1. **Detect PR**: `gh pr view --json number -q '.number'` or ask user
