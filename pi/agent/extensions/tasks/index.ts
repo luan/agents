@@ -442,7 +442,7 @@ export function renderHudLines(
 	const hidden = visibleTasks.length - shown.length;
 	const lines = [
 		truncateToWidth(
-			`${theme.fg("accent", "●")} ${theme.fg("accent", `${visibleTasks.length} tasks (${parts.join(", ")})`)}`,
+			`${theme.fg("accent", "●")} ${theme.fg("toolTitle", `${visibleTasks.length} tasks`)} ${theme.fg("muted", `(${parts.join(", ")})`)}`,
 			width,
 		),
 		...shown.map((task) => formatTaskLine(task, theme, width, byId, display)),
