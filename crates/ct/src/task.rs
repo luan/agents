@@ -20,6 +20,7 @@ struct Task {
     title: String,
     body: String,
     status: String,
+    priority: i64,
     blocked_by: Vec<String>,
     created_at: i64,
     updated_at: i64,
@@ -47,6 +48,7 @@ pub fn run_task(action: TaskAction) -> Result<(), Box<dyn std::error::Error>> {
             title,
             body,
             status,
+            priority,
             blocked_by,
             json,
         } => {
@@ -54,6 +56,7 @@ pub fn run_task(action: TaskAction) -> Result<(), Box<dyn std::error::Error>> {
                 &title,
                 body.as_deref().unwrap_or(""),
                 &status,
+                priority,
                 &blocked_by,
             )?)?;
             print_task(&task, json)?;
@@ -71,17 +74,21 @@ pub fn run_task(action: TaskAction) -> Result<(), Box<dyn std::error::Error>> {
             title,
             body,
             status,
+            priority,
             blocked_by,
             clear_blockers,
             json,
         } => {
             let task = store.display_task(store.update(
                 &id,
-                title.as_deref(),
-                body.as_deref(),
-                status.as_deref(),
-                &blocked_by,
-                clear_blockers,
+                TaskUpdate {
+                    title: title.as_deref(),
+                    body: body.as_deref(),
+                    status: status.as_deref(),
+                    priority,
+                    blocked_by: &blocked_by,
+                    clear_blockers,
+                },
             )?)?;
             print_task(&task, json)?;
         }
@@ -104,6 +111,15 @@ struct TaskStore {
     conn: Connection,
 }
 
+struct TaskUpdate<'a> {
+    title: Option<&'a str>,
+    body: Option<&'a str>,
+    status: Option<&'a str>,
+    priority: Option<i64>,
+    blocked_by: &'a [String],
+    clear_blockers: bool,
+}
+
 impl TaskStore {
     fn open(cwd: PathBuf) -> Result<Self> {
         let root = project_root(&cwd);
@@ -119,6 +135,7 @@ impl TaskStore {
                 title TEXT NOT NULL,
                 body TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL,
+                priority INTEGER NOT NULL DEFAULT 0,
                 blocked_by TEXT NOT NULL DEFAULT '[]',
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
@@ -126,10 +143,18 @@ impl TaskStore {
              CREATE INDEX IF NOT EXISTS idx_tasks_status_updated ON tasks(status, updated_at DESC);",
         )?;
         ensure_blocked_by_column(&conn)?;
+        ensure_priority_column(&conn)?;
         Ok(Self { conn })
     }
 
-    fn add(&self, title: &str, body: &str, status: &str, blocked_by: &[String]) -> Result<Task> {
+    fn add(
+        &self,
+        title: &str,
+        body: &str,
+        status: &str,
+        priority: i64,
+        blocked_by: &[String],
+    ) -> Result<Task> {
         validate_title(title)?;
         validate_status(status)?;
         let now = now_ms();
@@ -137,8 +162,8 @@ impl TaskStore {
         let blockers = self.resolve_blockers(blocked_by, Some(&id))?;
         let blockers_json = serde_json::to_string(&blockers)?;
         self.conn.execute(
-            "INSERT INTO tasks (id, title, body, status, blocked_by, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
-            params![id, title.trim(), body, status, blockers_json, now],
+            "INSERT INTO tasks (id, title, body, status, priority, blocked_by, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+            params![id, title.trim(), body, status, priority, blockers_json, now],
         )?;
         self.get_exact(&id)
     }
@@ -147,22 +172,21 @@ impl TaskStore {
         if let Some(status) = status {
             validate_status(status)?;
             return self.query_tasks(
-                "SELECT id, title, body, status, blocked_by, created_at, updated_at FROM tasks WHERE status = ?1 ORDER BY updated_at DESC",
+                "SELECT id, title, body, status, priority, blocked_by, created_at, updated_at FROM tasks WHERE status = ?1 ORDER BY updated_at DESC",
                 &[status],
             );
         }
         if all {
             return self.query_tasks(
-                "SELECT id, title, body, status, blocked_by, created_at, updated_at FROM tasks ORDER BY updated_at DESC",
+                "SELECT id, title, body, status, priority, blocked_by, created_at, updated_at FROM tasks ORDER BY updated_at DESC",
                 &[],
             );
         }
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, body, status, blocked_by, created_at, updated_at FROM tasks WHERE status IN ('open', 'in_progress', 'blocked', 'todo') ORDER BY updated_at DESC",
+            "SELECT id, title, body, status, priority, blocked_by, created_at, updated_at FROM tasks WHERE status IN ('open', 'in_progress', 'blocked', 'todo') ORDER BY updated_at DESC",
         )?;
         let rows = stmt.query_map([], row_task)?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(Into::into)
+        sort_tasks(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
     fn show(&self, id_prefix: &str) -> Result<Task> {
@@ -170,45 +194,39 @@ impl TaskStore {
         self.get_exact(&id)
     }
 
-    fn update(
-        &self,
-        id_prefix: &str,
-        title: Option<&str>,
-        body: Option<&str>,
-        status: Option<&str>,
-        blocked_by: &[String],
-        clear_blockers: bool,
-    ) -> Result<Task> {
-        if title.is_none()
-            && body.is_none()
-            && status.is_none()
-            && blocked_by.is_empty()
-            && !clear_blockers
+    fn update(&self, id_prefix: &str, update: TaskUpdate<'_>) -> Result<Task> {
+        if update.title.is_none()
+            && update.body.is_none()
+            && update.status.is_none()
+            && update.priority.is_none()
+            && update.blocked_by.is_empty()
+            && !update.clear_blockers
         {
             bail!("nothing to update");
         }
-        if let Some(title) = title {
+        if let Some(title) = update.title {
             validate_title(title)?;
         }
-        if let Some(status) = status {
+        if let Some(status) = update.status {
             validate_status(status)?;
         }
         let id = self.resolve_id(id_prefix)?;
         let existing = self.get_exact(&id)?;
-        let blockers = if clear_blockers {
+        let blockers = if update.clear_blockers {
             Vec::new()
-        } else if blocked_by.is_empty() {
+        } else if update.blocked_by.is_empty() {
             existing.blocked_by.clone()
         } else {
-            self.resolve_blockers(blocked_by, Some(&id))?
+            self.resolve_blockers(update.blocked_by, Some(&id))?
         };
         let blockers_json = serde_json::to_string(&blockers)?;
         self.conn.execute(
-            "UPDATE tasks SET title = ?1, body = ?2, status = ?3, blocked_by = ?4, updated_at = ?5 WHERE id = ?6",
+            "UPDATE tasks SET title = ?1, body = ?2, status = ?3, priority = ?4, blocked_by = ?5, updated_at = ?6 WHERE id = ?7",
             params![
-                title.unwrap_or(&existing.title).trim(),
-                body.unwrap_or(&existing.body),
-                status.unwrap_or(&existing.status),
+                update.title.unwrap_or(&existing.title).trim(),
+                update.body.unwrap_or(&existing.body),
+                update.status.unwrap_or(&existing.status),
+                update.priority.unwrap_or(existing.priority),
                 blockers_json,
                 now_ms(),
                 id
@@ -246,7 +264,7 @@ impl TaskStore {
     fn get_exact(&self, id: &str) -> Result<Task> {
         self.conn
             .query_row(
-                "SELECT id, title, body, status, blocked_by, created_at, updated_at FROM tasks WHERE id = ?1",
+                "SELECT id, title, body, status, priority, blocked_by, created_at, updated_at FROM tasks WHERE id = ?1",
                 [id],
                 row_task,
             )
@@ -257,8 +275,7 @@ impl TaskStore {
     fn query_tasks(&self, sql: &str, params: &[&str]) -> Result<Vec<Task>> {
         let mut stmt = self.conn.prepare(sql)?;
         let rows = stmt.query_map(params_from_iter(params.iter()), row_task)?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(Into::into)
+        sort_tasks(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
     fn new_id(&self) -> Result<String> {
@@ -339,16 +356,40 @@ impl TaskStore {
 }
 
 fn row_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
-    let blocked_by_json: String = row.get(4)?;
+    let blocked_by_json: String = row.get(5)?;
     let blocked_by = serde_json::from_str(&blocked_by_json).unwrap_or_default();
     Ok(Task {
         id: row.get(0)?,
         title: row.get(1)?,
         body: row.get(2)?,
         status: row.get(3)?,
+        priority: row.get(4)?,
         blocked_by,
-        created_at: row.get(5)?,
-        updated_at: row.get(6)?,
+        created_at: row.get(6)?,
+        updated_at: row.get(7)?,
+    })
+}
+
+fn sort_tasks(mut tasks: Vec<Task>) -> Result<Vec<Task>> {
+    let statuses = tasks
+        .iter()
+        .map(|task| (task.id.clone(), task.status.clone()))
+        .collect::<std::collections::HashMap<_, _>>();
+    tasks.sort_by(|left, right| {
+        has_open_blockers(left, &statuses)
+            .cmp(&has_open_blockers(right, &statuses))
+            .then_with(|| right.priority.cmp(&left.priority))
+            .then_with(|| right.updated_at.cmp(&left.updated_at))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    Ok(tasks)
+}
+
+fn has_open_blockers(task: &Task, statuses: &std::collections::HashMap<String, String>) -> bool {
+    task.blocked_by.iter().any(|id| {
+        statuses
+            .get(id)
+            .is_none_or(|status| status != "done" && status != "completed")
     })
 }
 
@@ -362,6 +403,22 @@ fn ensure_blocked_by_column(conn: &Connection) -> Result<()> {
     if !has_column {
         conn.execute(
             "ALTER TABLE tasks ADD COLUMN blocked_by TEXT NOT NULL DEFAULT '[]'",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
+fn ensure_priority_column(conn: &Connection) -> Result<()> {
+    let has_column = conn
+        .prepare("PRAGMA table_info(tasks)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .iter()
+        .any(|column| column == "priority");
+    if !has_column {
+        conn.execute(
+            "ALTER TABLE tasks ADD COLUMN priority INTEGER NOT NULL DEFAULT 0",
             [],
         )?;
     }

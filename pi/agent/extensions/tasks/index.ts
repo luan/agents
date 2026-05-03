@@ -27,6 +27,7 @@ interface TaskRecord {
 	title: string;
 	body: string;
 	status: string;
+	priority?: number;
 	blocked_by?: string[];
 	created_at: number;
 	updated_at: number;
@@ -67,6 +68,10 @@ function loadConfig(): Config {
 }
 
 function pushOption(args: string[], name: string, value: unknown): void {
+	if (typeof value === "number" && Number.isFinite(value)) {
+		args.push(name, String(value));
+		return;
+	}
 	if (typeof value !== "string" || value.length === 0) return;
 	args.push(name, value);
 }
@@ -83,6 +88,7 @@ export function buildTaskCommand(action: TaskCommand, params: Record<string, unk
 			args.push(String(params.title ?? ""));
 			pushOption(args, "--body", params.body);
 			pushOption(args, "--status", params.status);
+			pushOption(args, "--priority", params.priority);
 			pushRepeatedOption(args, "--blocked-by", params.blocked_by);
 			break;
 		case "list":
@@ -98,6 +104,7 @@ export function buildTaskCommand(action: TaskCommand, params: Record<string, unk
 			pushOption(args, "--title", params.title);
 			pushOption(args, "--body", params.body);
 			pushOption(args, "--status", params.status);
+			pushOption(args, "--priority", params.priority);
 			pushRepeatedOption(args, "--blocked-by", params.blocked_by);
 			if (params.clear_blockers === true) args.push("--clear-blockers");
 			break;
@@ -230,21 +237,41 @@ function openBlockers(task: TaskRecord, byId: Map<string, TaskRecord>): string[]
 	});
 }
 
+function hasOpenBlockers(task: TaskRecord, byId: Map<string, TaskRecord>): boolean {
+	return openBlockers(task, byId).length > 0;
+}
+
+function priority(task: TaskRecord): number {
+	return typeof task.priority === "number" ? task.priority : 0;
+}
+
+function sortTasksForDisplay(tasks: TaskRecord[]): TaskRecord[] {
+	const byId = new Map(tasks.map((task) => [task.id, task]));
+	return [...tasks].sort((left, right) => {
+		const leftBlocked = hasOpenBlockers(left, byId);
+		const rightBlocked = hasOpenBlockers(right, byId);
+		if (leftBlocked !== rightBlocked) return leftBlocked ? 1 : -1;
+		const priorityDelta = priority(right) - priority(left);
+		if (priorityDelta !== 0) return priorityDelta;
+		return right.updated_at - left.updated_at || left.id.localeCompare(right.id);
+	});
+}
+
 function formatTaskLine(task: TaskRecord, theme: Theme, width: number, byId: Map<string, TaskRecord>): string {
 	const blockers = openBlockers(task, byId);
 	const glyph = theme.fg(statusColor(task.status), statusGlyph(task.status));
-	const id = theme.fg("dim", `#${task.id}`);
+	const id = theme.fg("accent", theme.bold(task.id.padEnd(4)));
+	const blockerText = blockers.join(", ");
 	const title = isComplete(task)
-		? theme.fg("dim", strikethrough(theme, `#${task.id} ${compact(task.title, Math.max(20, width - 18))}`))
+		? theme.fg("dim", strikethrough(theme, `${task.id.padEnd(4)} ${compact(task.title, Math.max(20, width - 18))}`))
 		: theme.fg("text", compact(task.title, Math.max(20, width - 18)));
-	const suffix =
-		blockers.length > 0 ? theme.fg("dim", ` › blocked by ${blockers.map((id) => `#${id}`).join(", ")}`) : "";
+	const suffix = blockers.length > 0 ? theme.fg("dim", ` › blocked by ${blockerText}`) : "";
 	if (isComplete(task)) return truncateToWidth(`  ${glyph} ${title}${suffix}`, width);
 	return truncateToWidth(`  ${glyph} ${id} ${title}${suffix}`, width);
 }
 
 export function renderHudLines(tasks: TaskRecord[], theme: Theme, width: number, maxTasks = 6): string[] {
-	const visibleTasks = tasks.filter((task) => !isCanceled(task));
+	const visibleTasks = sortTasksForDisplay(tasks.filter((task) => !isCanceled(task)));
 	if (visibleTasks.length === 0) return [];
 	const byId = new Map(visibleTasks.map((task) => [task.id, task]));
 	const completed = visibleTasks.filter(isComplete);
@@ -297,10 +324,8 @@ function renderCallText(action: TaskCommand, args: Record<string, unknown>, them
 function renderTaskBlock(title: string, task: TaskRecord, theme: Theme): string {
 	return [
 		theme.fg("toolTitle", theme.bold(title)),
-		`  ${theme.fg(statusColor(task.status), statusGlyph(task.status))} ${theme.fg("dim", `#${task.id}`)} ${theme.fg("text", task.title)}`,
-		...(task.blocked_by?.length
-			? [`  ${theme.fg("dim", `› blocked by ${task.blocked_by.map((id) => `#${id}`).join(", ")}`)}`]
-			: []),
+		`  ${theme.fg(statusColor(task.status), statusGlyph(task.status))} ${theme.fg("accent", theme.bold(task.id.padEnd(4)))} ${theme.fg("text", task.title)}`,
+		...(task.blocked_by?.length ? [`  ${theme.fg("dim", `› blocked by ${task.blocked_by.join(", ")}`)}`] : []),
 		...(task.body ? [`  ${theme.fg("dim", compact(task.body, 120))}`] : []),
 	].join("\n");
 }
@@ -308,8 +333,9 @@ function renderTaskBlock(title: string, task: TaskRecord, theme: Theme): string 
 function renderTaskList(tasks: TaskRecord[], theme: Theme): string {
 	if (tasks.length === 0) return `${theme.fg("toolTitle", theme.bold("Tasks"))}\n  ${theme.fg("dim", "No tasks")}`;
 	const lines = [theme.fg("toolTitle", theme.bold(`Tasks (${tasks.length})`))];
-	const byId = new Map(tasks.map((task) => [task.id, task]));
-	for (const task of tasks.slice(0, 12)) {
+	const sortedTasks = sortTasksForDisplay(tasks);
+	const byId = new Map(sortedTasks.map((task) => [task.id, task]));
+	for (const task of sortedTasks.slice(0, 12)) {
 		lines.push(formatTaskLine(task, theme, 140, byId));
 	}
 	if (tasks.length > 12) lines.push(theme.fg("dim", `    … and ${tasks.length - 12} more`));
@@ -411,6 +437,7 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 			title: Type.String({ description: "Task title" }),
 			body: Type.Optional(Type.String({ description: "Task details/body" })),
 			status: Type.Optional(Type.String({ description: "Task status (default: open)" })),
+			priority: Type.Optional(Type.Number({ description: "Task priority; higher shows first" })),
 			blocked_by: Type.Optional(
 				Type.Array(Type.String(), { description: "Task IDs/prefixes that block this task" }),
 			),
@@ -451,6 +478,7 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 			title: Type.Optional(Type.String({ description: "New title" })),
 			body: Type.Optional(Type.String({ description: "New details/body" })),
 			status: Type.Optional(Type.String({ description: "New status" })),
+			priority: Type.Optional(Type.Number({ description: "New priority; higher shows first" })),
 			blocked_by: Type.Optional(
 				Type.Array(Type.String(), { description: "Replace blockers with these task IDs/prefixes" }),
 			),

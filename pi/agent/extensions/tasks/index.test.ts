@@ -46,12 +46,14 @@ describe("tasks extension", () => {
 			"details",
 			"--json",
 		]);
-		expect(buildTaskCommand("update", { id: "ABC", status: "done" })).toEqual([
+		expect(buildTaskCommand("update", { id: "ABC", status: "done", priority: 3 })).toEqual([
 			"task",
 			"update",
 			"ABC",
 			"--status",
 			"done",
+			"--priority",
+			"3",
 			"--json",
 		]);
 		expect(buildTaskCommand("add", { title: "Render DAG", blocked_by: ["abc", "def"] })).toEqual([
@@ -102,8 +104,8 @@ describe("tasks extension", () => {
 	test("renders a compact HUD for active tasks", () => {
 		const lines = renderHudLines(
 			[
-				task,
-				{ ...task, id: "BLOCKED123", title: "Blocked task", blocked_by: ["PG4"] },
+				{ ...task, id: "BLOCKED123", title: "Blocked task", priority: 100, blocked_by: ["PG4W2K4Q03"] },
+				{ ...task, priority: 1 },
 				{ ...task, id: "DONE123ABC", title: "Done task", status: "done" },
 				{ ...task, id: "CANCEL123A", title: "Canceled task", status: "canceled" },
 			],
@@ -113,10 +115,13 @@ describe("tasks extension", () => {
 		expect(lines.every((line) => visibleWidth(line) <= 80)).toBe(true);
 		expect(lines.join("\n")).toContain("3 tasks");
 		expect(lines.join("\n")).toContain("1 done");
-		expect(lines.join("\n")).toContain("#PG4W2K4Q03");
-		expect(lines.join("\n")).toContain("› blocked by #PG4");
+		expect(lines.join("\n")).toContain("PG4W2K4Q03");
+		expect(lines.join("\n")).toContain("› blocked by PG4W2K4Q03");
 		expect(lines.join("\n")).toContain("Smoke test");
 		expect(lines.join("\n")).toContain("Done task");
+		expect(lines.findIndex((line) => line.includes("Smoke test"))).toBeLessThan(
+			lines.findIndex((line) => line.includes("Blocked task")),
+		);
 
 		const empty = renderHudLines([], theme as any, 100);
 		expect(empty).toEqual([]);
@@ -190,12 +195,12 @@ describe("tasks extension", () => {
 		});
 		const rendered = resultText.render(120).join("\n");
 		expect(rendered).toContain("Task added");
-		expect(rendered).toContain("#PG4W2K4Q03");
+		expect(rendered).toContain("PG4W2K4Q03");
 		expect(rendered).not.toContain('{"task"');
 
 		expect(
 			renderTaskResult({ action: "show", args: [], task: { ...task, blocked_by: ["abc"] } }, theme as any),
-		).toContain("blocked by #abc");
+		).toContain("blocked by abc");
 		expect(renderTaskResult({ action: "list", args: [], tasks: [task] }, theme as any)).toContain("Tasks (1)");
 	});
 
