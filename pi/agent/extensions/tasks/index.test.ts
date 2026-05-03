@@ -51,6 +51,16 @@ describe("tasks extension", () => {
 			"done",
 			"--json",
 		]);
+		expect(buildTaskCommand("add", { title: "Render DAG", blocked_by: ["abc", "def"] })).toEqual([
+			"task",
+			"add",
+			"Render DAG",
+			"--blocked-by",
+			"abc",
+			"--blocked-by",
+			"def",
+			"--json",
+		]);
 	});
 
 	test("registers task tools that shell out to ct and return parsed details", async () => {
@@ -90,6 +100,7 @@ describe("tasks extension", () => {
 		const lines = renderHudLines(
 			[
 				task,
+				{ ...task, id: "BLOCKED123", title: "Blocked task", blocked_by: ["PG4"] },
 				{ ...task, id: "DONE123ABC", title: "Done task", status: "done" },
 				{ ...task, id: "CANCEL123A", title: "Canceled task", status: "canceled" },
 			],
@@ -97,7 +108,8 @@ describe("tasks extension", () => {
 			32,
 		);
 		expect(lines.every((line) => visibleWidth(line) <= 32)).toBe(true);
-		expect(lines.join("\n")).toContain("Tasks 1");
+		expect(lines.join("\n")).toContain("Tasks 2");
+		expect(lines.join("\n")).toContain("blocked");
 		expect(lines.join("\n")).toContain("PG4W2K4Q03");
 		expect(lines.join("\n")).toContain("Smoke test");
 		expect(lines.join("\n")).not.toContain("Done task");
@@ -177,6 +189,9 @@ describe("tasks extension", () => {
 		expect(rendered).toContain("PG4W2K4Q03");
 		expect(rendered).not.toContain('{"task"');
 
+		expect(
+			renderTaskResult({ action: "show", args: [], task: { ...task, blocked_by: ["abc"] } }, theme as any),
+		).toContain("blocked by abc");
 		expect(renderTaskResult({ action: "list", args: [], tasks: [task] }, theme as any)).toContain("Tasks (1)");
 	});
 

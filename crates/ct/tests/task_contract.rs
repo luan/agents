@@ -157,3 +157,63 @@ fn task_prefix_lookup_rejects_ambiguous_prefixes() {
         .stdout(predicate::str::contains("first"))
         .stdout(predicate::str::contains("abcdef1"));
 }
+
+#[test]
+fn task_blocked_by_is_a_simple_id_array() {
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+
+    let blocker = ct_cmd(project.path(), state.path())
+        .args(["task", "add", "Implement API", "--json"])
+        .assert()
+        .success();
+    let blocker_json: serde_json::Value =
+        serde_json::from_slice(&blocker.get_output().stdout).expect("blocker json");
+    let blocker_id = blocker_json["task"]["id"].as_str().expect("blocker id");
+
+    let blocked = ct_cmd(project.path(), state.path())
+        .args([
+            "task",
+            "add",
+            "Render DAG",
+            "--blocked-by",
+            blocker_id,
+            "--json",
+        ])
+        .assert()
+        .success();
+    let blocked_json: serde_json::Value =
+        serde_json::from_slice(&blocked.get_output().stdout).expect("blocked json");
+    assert_eq!(
+        blocked_json["task"]["blocked_by"]
+            .as_array()
+            .expect("blocked_by")
+            .len(),
+        1
+    );
+
+    let list = ct_cmd(project.path(), state.path())
+        .args(["task", "list", "--all", "--json"])
+        .assert()
+        .success();
+    let list_json: serde_json::Value =
+        serde_json::from_slice(&list.get_output().stdout).expect("list json");
+    let tasks = list_json["tasks"].as_array().expect("tasks");
+    let displayed_blocker = tasks
+        .iter()
+        .find(|task| task["title"] == "Implement API")
+        .and_then(|task| task["id"].as_str())
+        .expect("displayed blocker");
+    let displayed_blocked = tasks
+        .iter()
+        .find(|task| task["title"] == "Render DAG")
+        .expect("displayed blocked");
+    assert_eq!(displayed_blocked["blocked_by"][0], displayed_blocker);
+
+    let blocked_id = displayed_blocked["id"].as_str().expect("blocked id");
+    ct_cmd(project.path(), state.path())
+        .args(["task", "update", blocked_id, "--clear-blockers", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"blocked_by\": []"));
+}

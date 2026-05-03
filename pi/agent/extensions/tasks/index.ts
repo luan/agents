@@ -27,6 +27,7 @@ interface TaskRecord {
 	title: string;
 	body: string;
 	status: string;
+	blocked_by?: string[];
 	created_at: number;
 	updated_at: number;
 }
@@ -70,6 +71,11 @@ function pushOption(args: string[], name: string, value: unknown): void {
 	args.push(name, value);
 }
 
+function pushRepeatedOption(args: string[], name: string, value: unknown): void {
+	if (!Array.isArray(value)) return;
+	for (const item of value) pushOption(args, name, item);
+}
+
 export function buildTaskCommand(action: TaskCommand, params: Record<string, unknown>): string[] {
 	const args = ["task", action];
 	switch (action) {
@@ -77,6 +83,7 @@ export function buildTaskCommand(action: TaskCommand, params: Record<string, unk
 			args.push(String(params.title ?? ""));
 			pushOption(args, "--body", params.body);
 			pushOption(args, "--status", params.status);
+			pushRepeatedOption(args, "--blocked-by", params.blocked_by);
 			break;
 		case "list":
 			pushOption(args, "--status", params.status);
@@ -91,6 +98,8 @@ export function buildTaskCommand(action: TaskCommand, params: Record<string, unk
 			pushOption(args, "--title", params.title);
 			pushOption(args, "--body", params.body);
 			pushOption(args, "--status", params.status);
+			pushRepeatedOption(args, "--blocked-by", params.blocked_by);
+			if (params.clear_blockers === true) args.push("--clear-blockers");
 			break;
 	}
 	args.push("--json");
@@ -200,9 +209,13 @@ function compact(value: string, max = 90): string {
 }
 
 function formatTaskLine(task: TaskRecord, theme: Theme, width: number): string {
+	const blocked = (task.blocked_by?.length ?? 0) > 0;
 	const glyph = theme.fg(statusColor(task.status), statusGlyph(task.status));
 	const id = theme.fg("accent", task.id);
-	const status = theme.fg("muted", task.status);
+	const status = theme.fg(
+		blocked ? "warning" : "muted",
+		blocked ? `blocked:${task.blocked_by!.join(",")}` : task.status,
+	);
 	const title = theme.fg("text", compact(task.title, Math.max(20, width - 28)));
 	return truncateToWidth(`${glyph} ${id} ${status} ${title}`, width);
 }
@@ -214,9 +227,10 @@ export function renderHudLines(tasks: TaskRecord[], theme: Theme, width: number,
 	}
 	const shown = active.slice(0, maxTasks);
 	const hidden = active.length - shown.length;
+	const blockedCount = active.filter((task) => (task.blocked_by?.length ?? 0) > 0).length;
 	const lines = [
 		truncateToWidth(
-			`${theme.fg("accent", theme.bold(`Tasks ${active.length}`))} ${theme.fg("dim", "persisted project work")}`,
+			`${theme.fg("accent", theme.bold(`Tasks ${active.length}`))} ${theme.fg("dim", `${active.length - blockedCount} ready · ${blockedCount} blocked`)}`,
 			width,
 		),
 		...shown.map((task) => formatTaskLine(task, theme, width)),
@@ -256,6 +270,7 @@ function renderTaskBlock(title: string, task: TaskRecord, theme: Theme): string 
 	return [
 		theme.fg("toolTitle", theme.bold(title)),
 		`  ${theme.fg(statusColor(task.status), statusGlyph(task.status))} ${theme.fg("accent", task.id)} ${theme.fg("muted", task.status)} ${theme.fg("text", task.title)}`,
+		...(task.blocked_by?.length ? [`  ${theme.fg("warning", `blocked by ${task.blocked_by.join(", ")}`)}`] : []),
 		...(task.body ? [`  ${theme.fg("dim", compact(task.body, 120))}`] : []),
 	].join("\n");
 }
@@ -265,7 +280,7 @@ function renderTaskList(tasks: TaskRecord[], theme: Theme): string {
 	const lines = [theme.fg("toolTitle", theme.bold(`Tasks (${tasks.length})`))];
 	for (const task of tasks.slice(0, 12)) {
 		lines.push(
-			`  ${theme.fg(statusColor(task.status), statusGlyph(task.status))} ${theme.fg("accent", task.id)} ${theme.fg("muted", task.status)} ${theme.fg("text", compact(task.title, 96))}`,
+			`  ${theme.fg(statusColor(task.status), statusGlyph(task.status))} ${theme.fg("accent", task.id)} ${theme.fg("muted", task.status)}${task.blocked_by?.length ? theme.fg("warning", ` ← ${task.blocked_by.join(",")}`) : ""} ${theme.fg("text", compact(task.title, 96))}`,
 		);
 	}
 	if (tasks.length > 12) lines.push(theme.fg("dim", `  … ${tasks.length - 12} more`));
@@ -367,6 +382,9 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 			title: Type.String({ description: "Task title" }),
 			body: Type.Optional(Type.String({ description: "Task details/body" })),
 			status: Type.Optional(Type.String({ description: "Task status (default: open)" })),
+			blocked_by: Type.Optional(
+				Type.Array(Type.String(), { description: "Task IDs/prefixes that block this task" }),
+			),
 		}),
 	});
 
@@ -404,6 +422,10 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 			title: Type.Optional(Type.String({ description: "New title" })),
 			body: Type.Optional(Type.String({ description: "New details/body" })),
 			status: Type.Optional(Type.String({ description: "New status" })),
+			blocked_by: Type.Optional(
+				Type.Array(Type.String(), { description: "Replace blockers with these task IDs/prefixes" }),
+			),
+			clear_blockers: Type.Optional(Type.Boolean({ description: "Remove all blockers" })),
 		}),
 	});
 

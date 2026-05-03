@@ -141,6 +141,8 @@ pub enum TaskAction {
         body: Option<String>,
         #[arg(long, default_value = "open", help = "Task status")]
         status: String,
+        #[arg(long = "blocked-by", help = "Task ID/prefix that blocks this task")]
+        blocked_by: Vec<String>,
         #[arg(long, help = "Output JSON")]
         json: bool,
     },
@@ -173,6 +175,13 @@ pub enum TaskAction {
         body: Option<String>,
         #[arg(long, help = "New status")]
         status: Option<String>,
+        #[arg(
+            long = "blocked-by",
+            help = "Replace blockers with these task IDs/prefixes"
+        )]
+        blocked_by: Vec<String>,
+        #[arg(long, help = "Remove all blockers")]
+        clear_blockers: bool,
         #[arg(long, help = "Output JSON")]
         json: bool,
     },
