@@ -52,9 +52,9 @@ fn task_lifecycle_persists_and_supports_json() {
     let id = add_json["task"]["id"].as_str().expect("id").to_string();
     assert!(
         id.chars()
-            .all(|c| "0123456789ABCDEFGHJKMNPQRSTVWXYZ".contains(c))
+            .all(|c| "0123456789abcdefghjkmnpqrstvwxyz".contains(c))
     );
-    assert!(id.chars().any(|c| c.is_ascii_alphabetic()));
+    assert_eq!(id.len(), 1, "single task displays minimum unique prefix");
     assert_eq!(add_json["task"]["status"], "open");
 
     ct_cmd(project.path(), state.path())
@@ -64,7 +64,7 @@ fn task_lifecycle_persists_and_supports_json() {
         .stdout(predicate::str::contains(&id))
         .stdout(predicate::str::contains("Write task docs"));
 
-    let prefix = &id[..4];
+    let prefix = id.as_str();
     let update = ct_cmd(project.path(), state.path())
         .args([
             "task",
@@ -143,14 +143,17 @@ fn task_prefix_lookup_rejects_ambiguous_prefixes() {
     .expect("insert second");
 
     ct_cmd(project.path(), state.path())
-        .args(["task", "show", "ABCD"])
+        .args(["task", "show", "abcd"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("ambiguous task id prefix"));
+        .stderr(predicate::str::contains("ambiguous task id prefix"))
+        .stderr(predicate::str::contains("abcdef1  open  first"))
+        .stderr(predicate::str::contains("abcdeff  open  second"));
 
     ct_cmd(project.path(), state.path())
-        .args(["task", "show", "ABCDEF1"])
+        .args(["task", "show", "abcdef1"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("first"));
+        .stdout(predicate::str::contains("first"))
+        .stdout(predicate::str::contains("abcdef1"));
 }
