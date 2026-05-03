@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -226,7 +226,7 @@ async function updateTaskHud(
 	config: Config,
 ): Promise<void> {
 	const tasks = await loadHudTasks(ctx.cwd, command, runCommand, ctx.signal);
-	const display = assignmentDisplayContext(pi, ctx);
+	const display = assignmentDisplayContext(pi, ctx, tasks);
 	ctx.ui.setWidget(
 		widgetId,
 		(_tui, theme) => ({
@@ -310,12 +310,65 @@ function sortTasksForDisplay(tasks: TaskRecord[]): TaskRecord[] {
 	});
 }
 
-type AssignmentDisplayContext = { currentAssignment?: string; currentLabel?: string };
+type AssignmentDisplayContext = {
+	currentAssignment?: string;
+	currentLabel?: string;
+	labels?: Map<string, string>;
+};
 
-function assignmentDisplayContext(pi?: ExtensionAPI, ctx?: ExtensionContext): AssignmentDisplayContext {
+function sessionFile(ctx?: ExtensionContext): string | undefined {
+	return (
+		ctx as (ExtensionContext & { sessionManager?: { getSessionFile?: () => string | undefined } }) | undefined
+	)?.sessionManager?.getSessionFile?.();
+}
+
+function sessionIdFromAssignment(assignedTo: string): string | undefined {
+	return assignedTo.startsWith("session:") ? assignedTo.slice("session:".length) : undefined;
+}
+
+function sessionNameFromFile(path: string): string | undefined {
+	try {
+		let name: string | undefined;
+		for (const line of readFileSync(path, "utf8").split("\n")) {
+			if (!line.includes('"session_info"')) continue;
+			const entry = JSON.parse(line) as { type?: string; name?: unknown };
+			if (entry.type === "session_info" && typeof entry.name === "string" && entry.name.trim()) {
+				name = entry.name.trim();
+			}
+		}
+		return name;
+	} catch {
+		return undefined;
+	}
+}
+
+function sessionNameForAssignment(ctx: ExtensionContext | undefined, assignedTo: string): string | undefined {
+	const id = sessionIdFromAssignment(assignedTo);
+	const currentFile = sessionFile(ctx);
+	if (!id || !currentFile) return undefined;
+	const path = join(dirname(currentFile), `${id}.jsonl`);
+	return existsSync(path) ? sessionNameFromFile(path) : undefined;
+}
+
+function assignmentDisplayContext(
+	pi?: ExtensionAPI,
+	ctx?: ExtensionContext,
+	tasks: TaskRecord[] = [],
+): AssignmentDisplayContext {
+	const currentAssignment = sessionAssignment(ctx);
+	const currentLabel = sessionName(pi, ctx);
+	const labels = new Map<string, string>();
+	if (currentAssignment && currentLabel) labels.set(currentAssignment, currentLabel);
+	for (const task of tasks) {
+		const assignedTo = task.assigned_to;
+		if (!assignedTo || labels.has(assignedTo)) continue;
+		const label = sessionNameForAssignment(ctx, assignedTo);
+		if (label) labels.set(assignedTo, label);
+	}
 	return {
-		currentAssignment: sessionAssignment(ctx),
-		currentLabel: sessionName(pi, ctx),
+		currentAssignment,
+		currentLabel,
+		labels,
 	};
 }
 
@@ -323,6 +376,8 @@ function assignmentLabel(task: TaskRecord, display: AssignmentDisplayContext = {
 	const assignedTo = task.assigned_to;
 	if (!assignedTo) return undefined;
 	if (assignedTo === display.currentAssignment && display.currentLabel) return display.currentLabel;
+	const label = display.labels?.get(assignedTo);
+	if (label) return label;
 	if (task.assigned_label) return task.assigned_label;
 	if (assignedTo.startsWith("session:")) return assignedTo.slice("session:".length);
 	return assignedTo;
