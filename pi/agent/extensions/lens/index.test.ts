@@ -6,7 +6,6 @@ import {
 	filesFromToolAndResult,
 	hasActiveLensDiagnostics,
 	default as lensExtension,
-	queueLensContext,
 	runLensHookCommand,
 	suppressInactiveDiagnosticInjection,
 	suppressStaleLensDiagnosticMessage,
@@ -248,129 +247,6 @@ describe("Lens hook-only Pi extension", () => {
 		expect(widgets["lens-health"]?.render(120)[0]).toContain("warnings");
 	});
 
-	it("queues injected turn-end reports as follow-up custom messages", () => {
-		const sent: any[] = [];
-		const queued = queueLensContext(
-			{
-				sendMessage: (message: unknown, options: unknown) => {
-					sent.push({ message, options });
-				},
-			},
-			{ isIdle: () => false },
-			{
-				context: {
-					inject: true,
-					content: "Lens session diagnostics: fix this",
-					fingerprint: "abc123",
-					severity: "errors",
-					requires_followup: true,
-				},
-			},
-		);
-
-		expect(queued).toBe(true);
-		expect(sent).toEqual([
-			{
-				message: {
-					customType: "lens-diagnostics",
-					content: [{ type: "text", text: "Lens session diagnostics: fix this" }],
-					display: true,
-					details: {
-						fingerprint: "abc123",
-						severity: "errors",
-						requiresFollowup: true,
-						reportIssues: [],
-					},
-				},
-				options: { deliverAs: "followUp", triggerTurn: true },
-			},
-		]);
-	});
-
-	it("stores structured issue identities on queued diagnostic reports", () => {
-		const sent: any[] = [];
-		const queued = queueLensContext(
-			{
-				sendMessage: (message: unknown, options: unknown) => {
-					sent.push({ message, options });
-				},
-			},
-			{ isIdle: () => false },
-			{
-				context: {
-					inject: true,
-					content: "Lens session diagnostics: fix this",
-					fingerprint: "abc123",
-				},
-				data: {
-					report: {
-						issues: [
-							{
-								source: "lsp",
-								path: "src/current.rs",
-								line: 10,
-								message: "current type error",
-								code: "E0308",
-								fingerprint: "issue-fingerprint",
-							},
-						],
-					},
-				},
-			},
-		);
-
-		expect(queued).toBe(true);
-		expect(sent[0].message.details.reportIssues).toEqual([
-			{
-				source: "lsp",
-				path: "src/current.rs",
-				line: 10,
-				message: "current type error",
-				code: "E0308",
-				fingerprint: "issue-fingerprint",
-			},
-		]);
-	});
-
-	it("does not queue messages for non-injected hook responses", () => {
-		const sent: any[] = [];
-		const queued = queueLensContext(
-			{
-				sendMessage: (message: unknown, options: unknown) => {
-					sent.push({ message, options });
-				},
-			},
-			{ isIdle: () => false },
-			{ context: { inject: false, content: "clean" } },
-		);
-
-		expect(queued).toBe(false);
-		expect(sent).toEqual([]);
-	});
-
-	it("does not trigger a follow-up turn for injected reports that do not require follow-up", () => {
-		const sent: any[] = [];
-		const queued = queueLensContext(
-			{
-				sendMessage: (message: unknown, options: unknown) => {
-					sent.push({ message, options });
-				},
-			},
-			{ isIdle: () => false },
-			{
-				context: {
-					inject: true,
-					content: "Lens session diagnostics: display only",
-					requires_followup: false,
-				},
-			},
-		);
-
-		expect(queued).toBe(true);
-		expect(sent[0].message.details.requiresFollowup).toBe(false);
-		expect(sent[0].options).toBeUndefined();
-	});
-
 	it("fails closed before queueing diagnostics when freshness is unknown", () => {
 		const response = {
 			status: "warning",
@@ -441,22 +317,6 @@ describe("Lens hook-only Pi extension", () => {
 				},
 			]),
 		).toBe(response);
-	});
-
-	it("does not queue the same injected report repeatedly", () => {
-		const sent: any[] = [];
-		const state = {};
-		const pi = {
-			sendMessage: (message: unknown, options: unknown) => {
-				sent.push({ message, options });
-			},
-		};
-		const ctx = { isIdle: () => false };
-		const response = { context: { inject: true, content: "Lens session diagnostics: same issue" } };
-
-		expect(queueLensContext(pi, ctx, response, state)).toBe(true);
-		expect(queueLensContext(pi, ctx, response, state)).toBe(false);
-		expect(sent).toHaveLength(1);
 	});
 
 	it("suppresses stale queued diagnostic custom messages once diagnostics are clean", async () => {

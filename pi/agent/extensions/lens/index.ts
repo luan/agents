@@ -91,40 +91,6 @@ export function applyLensUi(ctx: any, response: unknown) {
 	}
 }
 
-export function queueLensContext(pi: any, ctx: any, response: any, state: { lastQueuedFingerprint?: string } = {}) {
-	const content = response?.context?.inject === true ? response.context.content : undefined;
-	if (typeof content !== "string" || content.trim().length === 0) return false;
-	const fingerprint = stringValue(response?.context?.fingerprint) ?? content;
-	if (state.lastQueuedFingerprint === fingerprint) return false;
-	state.lastQueuedFingerprint = fingerprint;
-	const requiresFollowup = response?.context?.requires_followup === true;
-	pi.sendMessage(
-		{
-			customType: "lens-diagnostics",
-			content: [{ type: "text", text: content }],
-			display: true,
-			details: {
-				fingerprint,
-				severity: stringValue(response?.context?.severity),
-				requiresFollowup,
-				reportIssues: reportIssuesFromResponse(response),
-			},
-		},
-		lensDeliveryOptions(ctx, requiresFollowup),
-	);
-	return true;
-}
-
-function lensDeliveryOptions(ctx: any, requiresFollowup: boolean) {
-	if (!requiresFollowup) return undefined;
-	try {
-		if (typeof ctx?.isIdle === "function" && ctx.isIdle()) return undefined;
-	} catch (error) {
-		if (!isStaleCtxError(error)) throw error;
-	}
-	return { deliverAs: "followUp", triggerTurn: true };
-}
-
 function stringValue(value: unknown): string | undefined {
 	return typeof value === "string" && value.length > 0 ? value : undefined;
 }
@@ -346,7 +312,6 @@ export default function lensExtension(pi: ExtensionAPI) {
 	let agentSeq = 0;
 	let activeTurnIndex = 0;
 	let activeTurnId = "turn-0-0";
-	const queueState: { lastQueuedFingerprint?: string } = {};
 
 	const safeCwd = (ctx: any) => {
 		try {
@@ -405,7 +370,6 @@ export default function lensExtension(pi: ExtensionAPI) {
 			agentSeq = 0;
 			activeTurnIndex = 0;
 			activeTurnId = "turn-0-0";
-			queueState.lastQueuedFingerprint = undefined;
 			const response = await runHook("lens-session-start", eventFor(ctx, "session_start"), safeCwd(ctx));
 			applyLensUi(ctx, response);
 		});
@@ -488,8 +452,6 @@ export default function lensExtension(pi: ExtensionAPI) {
 				response = suppressInactiveDiagnosticInjection(response, active);
 			}
 			applyLensUi(ctx, response);
-			if (response?.context?.inject !== true) queueState.lastQueuedFingerprint = undefined;
-			queueLensContext(pi, ctx, response, queueState);
 		});
 	});
 
