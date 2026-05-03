@@ -6,7 +6,18 @@ user-invocable: true
 
 # Test-Driven Development
 
-This is the mandatory implementation discipline for `/develop`, not a lifecycle skill. Use it while executing a specific vault `plan` artifact or diagnosing a bug with a clear regression seam. Do not use it to define product scope or split work; `/spec` and `/prepare` own that.
+This is the mandatory implementation discipline for `/develop`, not a lifecycle skill. Use it while executing a specific persisted `ct` task or diagnosing a bug with a clear regression seam. Do not use it to define product scope or split work; `/spec` and `/prepare` own that.
+
+## Agentic loop
+
+1. **Intake** — Restate the requested outcome, inputs, constraints, and stop conditions. If the request is ambiguous or unsafe, ask before acting.
+2. **Discover** — Gather the minimum evidence needed: user context, repo/vault state, relevant files, commands, docs, or external state. Prefer direct source/tool evidence over memory.
+3. **Decide** — Choose the smallest valid path for `tdd`. Name assumptions, blockers, and what is explicitly out of scope before side effects.
+4. **Execute** — Drive one behavior through red-green-refactor cycles at a stable seam.
+5. **Verify** — Check the result against the request and this skill's rules using concrete evidence: tests, command output, diffs, links, artifacts, or reviewed findings.
+6. **Close** — Provide only the concrete handoff the next actor needs: changed paths/artifacts/findings, verification status, remaining blockers, and the next command/action.
+
+Guardrail: No production change without a failing test or explicit safe-test exception.
 
 ## Philosophy
 
@@ -51,13 +62,13 @@ When exploring the codebase, search/read relevant blueprints vault domain and de
 
 Before writing code for the selected behavior:
 
-- [ ] Read the selected plan/spec context when available
+- [ ] Read the selected task/spec context when available
 - [ ] Confirm what public interface or behavior seam is being exercised
-- [ ] Confirm which behaviors matter most if the plan does not already say
+- [ ] Confirm which behaviors matter most if the task does not already say
 - [ ] Identify opportunities for [deep modules](deep-modules.md) (small interface, deep implementation)
 - [ ] Design interfaces for [testability](interface-design.md)
 - [ ] List the behaviors to test (not implementation steps)
-- [ ] Get user approval on the plan, unless the selected vault plan is already approved or the caller passed `--auto`
+- [ ] Get user approval on the behavior list unless the selected task already has clear acceptance criteria or the caller passed `--auto`
 
 Ask: "What should the public interface look like? Which behaviors are most important to test?"
 

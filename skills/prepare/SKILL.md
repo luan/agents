@@ -1,17 +1,28 @@
 ---
 name: prepare
-description: "Turn an approved vault spec into executable plan artifacts: slices, dependencies, criteria, verification."
+description: "Turn an approved vault spec into executable ct tasks: slices, dependencies, criteria, verification."
 argument-hint: "<spec-stem-or-topic> [--auto]"
 user-invocable: true
 ---
 
 # Prepare
 
-Turn an approved blueprints vault `spec` into executable vault `plan` artifacts using vertical slices (tracer bullets). This skill answers **how should we break this into work?**
+Turn an approved blueprints vault `spec` into executable persisted `ct` tasks using vertical slices (tracer bullets). This skill answers **how should we break this into work?**
 
-For small specs, create one plan per executable slice. For large specs, create a parent plan plus linked child plans: the parent plan is the roadmap, and each child plan is an independently executable vertical slice.
+For small specs, create one task per executable slice. For large specs, create a parent coordination task plus linked child tasks: the parent task is the roadmap, and each child task is an independently executable vertical slice.
 
-The blueprints vault is canonical. Use `ct vault`.
+The blueprints vault remains canonical for product intent. Use `ct vault` to read specs and related docs. Use `ct task` / task tools to publish executable work. Do not write plan artifacts into the repo or vault unless explicitly asked.
+
+## Agentic loop
+
+1. **Intake** — Restate the requested outcome, inputs, constraints, and stop conditions. If the request is ambiguous or unsafe, ask before acting.
+2. **Discover** — Gather the minimum evidence needed: user context, repo/vault state, relevant files, commands, docs, or external state. Prefer direct source/tool evidence over memory.
+3. **Decide** — Choose the smallest valid path for `prepare`. Name assumptions, blockers, and what is explicitly out of scope before side effects.
+4. **Execute** — Turn an approved spec into executable vertical-slice tasks with blockers, criteria, and verification.
+5. **Verify** — Check the result against the request and this skill's rules using concrete evidence: tests, command output, diffs, links, artifacts, or reviewed findings.
+6. **Close** — Provide only the concrete handoff the next actor needs: changed paths/artifacts/findings, verification status, remaining blockers, and the next command/action.
+
+Guardrail: Use tasks for execution structure; do not create vault plan files.
 
 ## Arguments
 
@@ -21,10 +32,10 @@ The blueprints vault is canonical. Use `ct vault`.
 ## Vault conventions
 
 - Product intent is captured in `spec` artifacts.
-- Implementation roadmaps, issues, tickets, and vertical slices are `plan` artifacts.
-- Draft plan artifacts start with the `stage/needs-triage` tag. Published child plans from an approved breakdown should use `stage/ready-for-agent` for AFK slices and `stage/ready-for-human` for HITL slices.
-- Use `source: [[stem]]` when creating a plan artifact from an existing parent spec or plan.
-- Use wiki-links to connect related vault artifacts.
+- Execution structure is captured in persisted tasks, not vault `plan` artifacts.
+- Use task blockers to encode dependencies.
+- Include the source spec stem/title in every task body.
+- Use wiki-links to connect tasks back to relevant vault artifacts.
 
 ## Process
 
@@ -40,9 +51,9 @@ Search/read relevant vault domain and decision artifacts so slice titles and des
 
 Explore the codebase enough to identify natural vertical seams, likely public interfaces, test seams, migration needs, and sequencing constraints. This is planning research, not implementation.
 
-### 3. Draft vertical slices
+### 3. Draft vertical tasks
 
-Break the spec into **tracer bullet** plan artifacts. Each artifact is a thin vertical slice that cuts through ALL integration layers end-to-end, NOT a horizontal slice of one layer.
+Break the spec into **tracer bullet** tasks. Each task is a thin vertical slice that cuts through ALL integration layers end-to-end, NOT a horizontal slice of one layer.
 
 Slices may be 'HITL' or 'AFK'. HITL slices require human interaction, such as an architectural decision or a design review. AFK slices can be implemented and merged without human interaction. Prefer AFK over HITL where possible.
 
@@ -52,18 +63,18 @@ Slices may be 'HITL' or 'AFK'. HITL slices require human interaction, such as an
 - Prefer many thin slices over few thick ones
 </vertical-slice-rules>
 
-### 4. Choose artifact shape
+### 4. Choose task shape
 
-Choose the smallest artifact hierarchy that keeps execution clear:
+Choose the smallest task hierarchy that keeps execution clear:
 
-- **Small spec**: 1-3 slices, limited dependencies, one agent can hold the full plan in context → create only child slice plans sourced directly from the spec.
-- **Large spec**: 4+ slices, multiple milestones, cross-cutting dependencies, or work that spans several subsystems → create a parent plan sourced from the spec, then create child slice plans sourced from the parent plan.
+- **Small spec**: 1-3 slices, limited dependencies, one agent can hold the full structure in context → create only child slice tasks sourced directly from the spec.
+- **Large spec**: 4+ slices, multiple milestones, cross-cutting dependencies, or work that spans several subsystems → create a parent coordination task sourced from the spec, then create child slice tasks blocked by other child tasks as needed.
 
-The parent plan is not directly implemented by `/develop`. It coordinates the work and links to child plans. Each child plan must remain independently executable by `/develop`.
+The parent task is not directly implemented by `/develop`. It coordinates the work and links to child tasks. Each child task must remain independently executable by `/develop`.
 
 ### 5. Quiz the user
 
-Present the proposed artifact shape and breakdown. For large specs, show the parent plan title plus child slices. For each child slice, show:
+Present the proposed task shape and breakdown. For large specs, show the parent task title plus child slices. For each child slice, show:
 
 - **Title**: short descriptive name
 - **Type**: HITL / AFK
@@ -79,83 +90,93 @@ Ask the user:
 
 Iterate until the user approves the breakdown. If `--auto` is set, skip this checkpoint only when the breakdown is straightforward and all slices can be made AFK or clearly labeled HITL.
 
-### 6. Publish the plan artifacts to the vault
+### 6. Publish tasks
 
-For each approved slice, create a new `plan` artifact in the blueprints vault. Use the child plan template below as the artifact body. Apply the state tag that matches execution status: AFK child plans get `stage/ready-for-agent`, HITL child plans get `stage/ready-for-human`, and parent roadmaps get `stage/needs-triage`.
+For each approved slice, create a persisted task. Use the child task template below as the task body.
 
-For large specs, create and commit the parent plan first, then create child plans with `source: [[parent-plan-stem]]`. Publish child artifacts in dependency order (blockers first) so you can reference real wiki-links in the "Blocked by" field.
+Task statuses:
 
-Create with `ct vault create`, edit the returned path, then `ct vault commit <path>`.
+- Parent coordination tasks: `open`
+- AFK child tasks: `open`
+- HITL child tasks: `open` and explicitly labeled `Type: HITL` in the body
 
-<parent-plan-template>
-## Parent
+Task priority:
 
-A wiki-link to the source spec.
+- Parent coordination task: slightly lower than ready child work unless it is the only task.
+- First unblocked AFK slice: highest priority.
+- Later or blocked slices: descending priority.
 
-## Implementation roadmap
+For large specs, create the parent task first, then create child tasks. Publish child tasks in dependency order (blockers first) so blocker IDs are available. Use task blockers (`blocked_by`) for child dependencies. Do not use blockers merely to point every child at the parent task; parent-child linkage belongs in the body.
+
+Use `task_add` or `ct task add`. Do not create vault plan artifacts.
+
+<parent-task-template>
+Source spec: [[spec-stem]]
+
+Type: Parent coordination
 
 A concise description of how the spec is decomposed and why this shape fits the work.
 
-## Child plans
+Child tasks
 
-- [[child-plan-1]] — AFK/HITL — blocked by none
-- [[child-plan-2]] — AFK/HITL — blocked by [[child-plan-1]]
+- TASK-ID — AFK/HITL — blocked by none
+- TASK-ID — AFK/HITL — blocked by TASK-ID
 
-## Dependency graph
+Dependency graph
 
-A simple Mermaid graph or bullet list showing child plan ordering.
+A simple Mermaid graph or bullet list showing child task ordering.
 
-## Coordination notes
+Coordination notes
 
 - Cross-slice constraints, shared vocabulary, migrations, or rollout order.
-- What must remain consistent across child plans.
+- What must remain consistent across child tasks.
 
-## Done when
+Done when
 
-- All child plans are complete and verified.
+- All child tasks are complete and verified.
 - Spec-level acceptance is satisfied end-to-end.
 
-</parent-plan-template>
+</parent-task-template>
 
-<child-plan-template>
-## Parent
+<child-task-template>
+Source spec: [[spec-stem]]
 
-A wiki-link to the parent plan for large specs, or the source spec for small specs.
+Parent task: TASK-ID for large specs, or None for small specs.
 
-## What to build
+Type: AFK/HITL
 
 A concise description of this vertical slice. Describe the end-to-end behavior, not layer-by-layer implementation.
 
-## Implementation notes
+Implementation notes
 
 - Likely modules/interfaces involved, phrased as guidance rather than brittle line-by-line instructions.
 - Important constraints from the spec and vault decision docs.
 - Test seams or migration concerns.
 
-## Acceptance criteria
+Acceptance criteria
 
 - [ ] Criterion 1
 - [ ] Criterion 2
 - [ ] Criterion 3
 
-## Blocked by
+Blocked by
 
-- A wiki-link to the blocking plan artifact (if any)
+- Blocking task IDs/titles, if any.
 
 Or "None - can start immediately" if no blockers.
 
-## Verification
+Verification
 
 - Focused tests/checks this slice should pass.
 - Broader build/test command if known.
 
-## Out of scope
+Out of scope
 
-- Adjacent work from the spec that belongs to another plan artifact.
+- Adjacent work from the spec that belongs to another task.
 
-</child-plan-template>
+</child-task-template>
 
-Do NOT archive or modify any parent artifact unless the user explicitly asks.
+Do NOT archive or modify any vault artifact unless the user explicitly asks.
 
 ## Output
 
@@ -164,8 +185,8 @@ Return:
 ```text
 Prepared: <spec title>
 Spec: <spec-stem>
-Plans:
-- <parent-plan-stem> — parent roadmap — child plans: <N>   # only for large specs
-- <plan-stem> — <title> — <AFK/HITL> — blocked by <none/list>
-Next: /develop <first-ready-afk-plan-stem>
+Tasks:
+- <parent-task-id> — parent coordination — child tasks: <N>   # only for large specs
+- <task-id> — <title> — <AFK/HITL> — blocked by <none/list>
+Next: /develop <first-ready-afk-task-id>
 ```

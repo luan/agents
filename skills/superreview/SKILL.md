@@ -19,9 +19,20 @@ allowed-tools:
 
 # Superreview
 
-5-7 parallel perspective specialists with lane boundaries, shared concern tags, and a rigorous aggregation pipeline. Always runs cleanup pre-pass (reuse / quality / efficiency). Auto-detects spec/plan for coherence review.
+5-7 parallel perspective specialists with lane boundaries, shared concern tags, and a rigorous aggregation pipeline. Always runs cleanup pre-pass (reuse / quality / efficiency). Auto-detects source spec/task context for coherence review.
 
 **NEVER review inline.** Always dispatch subagents via the Agent tool.
+
+## Agentic loop
+
+1. **Intake** — Restate the requested outcome, inputs, constraints, and stop conditions. If the request is ambiguous or unsafe, ask before acting.
+2. **Discover** — Gather the minimum evidence needed: user context, repo/vault state, relevant files, commands, docs, or external state. Prefer direct source/tool evidence over memory.
+3. **Decide** — Choose the smallest valid path for `superreview`. Name assumptions, blockers, and what is explicitly out of scope before side effects.
+4. **Execute** — Run a deep multi-lane adversarial review and synthesize material findings with evidence.
+5. **Verify** — Check the result against the request and this skill's rules using concrete evidence: tests, command output, diffs, links, artifacts, or reviewed findings.
+6. **Close** — Provide only the concrete handoff the next actor needs: changed paths/artifacts/findings, verification status, remaining blockers, and the next command/action.
+
+Guardrail: Optimize for high-signal risks; avoid generic review filler.
 
 ## Arguments
 
@@ -94,14 +105,14 @@ Output: table with File:Line | Issue | Fix. Brief summary.
 
 `ct repo context --base $BASE --stat --cochanges` → diff-stat, changed-files, log, cochanges.
 
-**Auto-detect spec/plan** for coherence review:
+**Auto-detect spec/task** for coherence review:
 ```bash
 BRANCH_SLUG=$(git branch --show-current | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/-*$//')
 PROJECT=$(git rev-parse --show-toplevel)
 SPEC_FILE=$(ct vault search "$BRANCH_SLUG" --project "$PROJECT" --type spec 2>/dev/null | head -1)
-PLAN_FILE=$(ct vault search "$BRANCH_SLUG" --project "$PROJECT" --type plan 2>/dev/null | head -1)
+TASK_CONTEXT=$(ct task list --all --json 2>/dev/null | jq -r --arg slug "$BRANCH_SLUG" '.tasks[]? | select((.title|ascii_downcase|gsub("[^a-z0-9]"; "-")|contains($slug)) or (.body|ascii_downcase|contains($slug))) | "\(.id) \(.title)"' | head -5)
 ```
-Set `$HAS_SPEC` = true if found. Read spec content for coherence reviewer. If spec found, run `ct vault comments <file>` — if non-empty, include as "Prior review annotations on the spec" in the coherence reviewer's prompt.
+Set `$HAS_SPEC` = true if found. Read spec content for coherence reviewer. If spec found, run `ct vault comments <file>` — if non-empty, include as "Prior review annotations on the spec" in the coherence reviewer's prompt. If matching task context is found, include task IDs, titles, status, blockers, and acceptance criteria in the coherence reviewer's prompt.
 
 **Detect primary language** from changed file extensions. Set `$LANG` if one dominates.
 
@@ -189,7 +200,7 @@ Determine fix scope from `--auto`:
 - `--auto all` → fix everything including nits
 - No `--auto` → ask user what to fix
 
-Spawn fix agent with FIX items → fix, verify, self-check, report.
+Spawn fix agent with FIX items → fix, verify, self-check, hand off changed paths and verification.
 
 **`--loop`:** Re-run Step 3 after fixes. Track fixed issues by (file, description). Max 4 iterations — unless `--auto all` which has no cap. Exit when zero findings remain, user stops, or cap hit.
 
