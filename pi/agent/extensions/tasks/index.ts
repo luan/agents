@@ -400,6 +400,12 @@ function formatAssignee(task: TaskRecord, theme: Theme, display: AssignmentDispl
 	return theme.fg("dim", ` @${compact(label, 28)}`);
 }
 
+function formatTaskId(id: string, theme: Theme): string {
+	const padded = id.padEnd(4);
+	const visible = id.length > 0 ? `${theme.fg("text", id.slice(0, -1))}${theme.fg("accent", id.slice(-1))}` : "";
+	return theme.bold(`${visible}${" ".repeat(Math.max(0, padded.length - id.length))}`);
+}
+
 function formatTaskLine(
 	task: TaskRecord,
 	theme: Theme,
@@ -409,7 +415,7 @@ function formatTaskLine(
 ): string {
 	const blockers = openBlockers(task, byId);
 	const glyph = theme.fg(statusColor(task.status), statusGlyph(task.status));
-	const id = theme.fg("accent", theme.bold(task.id.padEnd(4)));
+	const id = formatTaskId(task.id, theme);
 	const blockerText = blockers.join(", ");
 	const assignee = formatAssignee(task, theme, display);
 	const titleColor = isAssignedToOtherSession(task, display) ? "muted" : "text";
