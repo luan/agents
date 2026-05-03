@@ -4,13 +4,14 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
+use getrandom::fill as fill_random;
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use serde::Serialize;
-use sha1::{Digest, Sha1};
 
 use crate::cli::TaskAction;
 
-const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+const CROCKFORD: &[u8; 32] = b"0123456789abcdefghjkmnpqrstvwxyz";
+const ID_LENGTH: usize = 6;
 const VALID_STATUSES: [&str; 6] = ["open", "in_progress", "blocked", "todo", "done", "canceled"];
 
 #[derive(Debug, Serialize)]
@@ -47,15 +48,16 @@ pub fn run_task(action: TaskAction) -> Result<(), Box<dyn std::error::Error>> {
             status,
             json,
         } => {
-            let task = store.add(&title, body.as_deref().unwrap_or(""), &status)?;
+            let task =
+                store.display_task(store.add(&title, body.as_deref().unwrap_or(""), &status)?)?;
             print_task(&task, json)?;
         }
         TaskAction::List { status, all, json } => {
-            let tasks = store.list(status.as_deref(), all)?;
+            let tasks = store.display_tasks(store.list(status.as_deref(), all)?)?;
             print_tasks(&tasks, json)?;
         }
         TaskAction::Show { id, json } => {
-            let task = store.show(&id)?;
+            let task = store.display_task(store.show(&id)?)?;
             print_task(&task, json)?;
         }
         TaskAction::Update {
@@ -65,7 +67,12 @@ pub fn run_task(action: TaskAction) -> Result<(), Box<dyn std::error::Error>> {
             status,
             json,
         } => {
-            let task = store.update(&id, title.as_deref(), body.as_deref(), status.as_deref())?;
+            let task = store.display_task(store.update(
+                &id,
+                title.as_deref(),
+                body.as_deref(),
+                status.as_deref(),
+            )?)?;
             print_task(&task, json)?;
         }
         TaskAction::Delete { id, json } => {
@@ -182,23 +189,27 @@ impl TaskStore {
 
     fn delete(&self, id_prefix: &str) -> Result<String> {
         let id = self.resolve_id(id_prefix)?;
+        let display_id = min_prefix(&id, &self.all_ids()?);
         self.conn
             .execute("DELETE FROM tasks WHERE id = ?1", [&id])?;
-        Ok(id)
+        Ok(display_id)
     }
 
     fn resolve_id(&self, prefix: &str) -> Result<String> {
         let normalized = normalize_id(prefix)?;
         let mut stmt = self
             .conn
-            .prepare("SELECT id FROM tasks WHERE id LIKE ?1 ORDER BY id LIMIT 2")?;
+            .prepare("SELECT id FROM tasks WHERE id LIKE ?1 ORDER BY id")?;
         let matches = stmt
             .query_map([format!("{normalized}%")], |row| row.get::<_, String>(0))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         match matches.as_slice() {
             [] => bail!("no task matches id prefix {prefix:?}"),
             [id] => Ok(id.clone()),
-            _ => bail!("ambiguous task id prefix {prefix:?}"),
+            _ => bail!(
+                "ambiguous task id prefix {prefix:?} — did you mean:\n{}",
+                self.ambiguous_matches(&matches)?
+            ),
         }
     }
 
@@ -235,6 +246,42 @@ impl TaskStore {
         }
         bail!("could not allocate unique task id")
     }
+
+    fn all_ids(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare("SELECT id FROM tasks ORDER BY id")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    fn display_task(&self, mut task: Task) -> Result<Task> {
+        let all_ids = self.all_ids()?;
+        task.id = min_prefix(&task.id, &all_ids);
+        Ok(task)
+    }
+
+    fn display_tasks(&self, tasks: Vec<Task>) -> Result<Vec<Task>> {
+        let all_ids = self.all_ids()?;
+        Ok(tasks
+            .into_iter()
+            .map(|mut task| {
+                task.id = min_prefix(&task.id, &all_ids);
+                task
+            })
+            .collect())
+    }
+
+    fn ambiguous_matches(&self, ids: &[String]) -> Result<String> {
+        let mut lines = Vec::with_capacity(ids.len());
+        for id in ids {
+            let short = min_prefix(id, ids);
+            match self.get_exact(id) {
+                Ok(task) => lines.push(format!("  {short}  {}  {}", task.status, task.title)),
+                Err(_) => lines.push(format!("  {short}")),
+            }
+        }
+        Ok(lines.join("\n"))
+    }
 }
 
 fn row_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
@@ -266,34 +313,50 @@ fn validate_status(status: &str) -> Result<()> {
 }
 
 fn normalize_id(id: &str) -> Result<String> {
-    let normalized = id.trim().to_ascii_uppercase();
+    let normalized = id.trim().to_ascii_lowercase();
     if normalized.is_empty() {
         bail!("task id prefix must not be empty");
     }
     if !normalized
         .chars()
-        .all(|c| "0123456789ABCDEFGHJKMNPQRSTVWXYZ".contains(c))
+        .all(|c| "0123456789abcdefghjkmnpqrstvwxyz".contains(c))
     {
         bail!("task id prefix must use Crockford Base32 characters");
     }
     Ok(normalized)
 }
 
-fn generate_id(attempt: u32) -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let seed = format!(
-        "{now}:{}:{attempt}:{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    );
-    let digest = Sha1::digest(seed.as_bytes());
-    let mut out = String::with_capacity(10);
-    out.push(CROCKFORD[10 + usize::from(digest[0] % 22)] as char);
-    for byte in digest.iter().skip(1).take(9) {
-        out.push(CROCKFORD[usize::from(byte & 31)] as char);
+fn min_prefix(id: &str, all_ids: &[String]) -> String {
+    let normalized = id.to_ascii_lowercase();
+    let normalized_ids = all_ids
+        .iter()
+        .map(|id| id.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    for length in 1..normalized.len() {
+        let prefix = &normalized[..length];
+        if normalized_ids
+            .iter()
+            .all(|other| other == &normalized || !other.starts_with(prefix))
+        {
+            return prefix.to_string();
+        }
+    }
+    normalized
+}
+
+fn generate_id(_attempt: u32) -> String {
+    let mut bytes = [0_u8; ID_LENGTH];
+    if fill_random(&mut bytes).is_err() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let fallback = now.to_le_bytes();
+        bytes.copy_from_slice(&fallback[..ID_LENGTH]);
+    }
+    let mut out = String::with_capacity(ID_LENGTH);
+    for byte in bytes {
+        out.push(CROCKFORD[usize::from(byte) % CROCKFORD.len()] as char);
     }
     out
 }
@@ -360,12 +423,22 @@ mod tests {
     #[test]
     fn generated_ids_are_crockford_base32() {
         let id = generate_id(0);
-        assert_eq!(id.len(), 10);
+        assert_eq!(id.len(), 6);
         assert!(
             id.chars()
-                .all(|c| "0123456789ABCDEFGHJKMNPQRSTVWXYZ".contains(c))
+                .all(|c| "0123456789abcdefghjkmnpqrstvwxyz".contains(c))
         );
-        assert!(id.chars().any(|c| c.is_ascii_alphabetic()));
+    }
+
+    #[test]
+    fn min_prefix_uses_shortest_unique_prefix() {
+        let ids = vec![
+            "abc123".to_string(),
+            "abd456".to_string(),
+            "xyz789".to_string(),
+        ];
+        assert_eq!(min_prefix("abc123", &ids), "abc");
+        assert_eq!(min_prefix("xyz789", &ids), "x");
     }
 
     #[test]
