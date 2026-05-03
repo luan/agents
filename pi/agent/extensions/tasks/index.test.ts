@@ -164,7 +164,7 @@ describe("tasks extension", () => {
 		expect(lines).toContain("<success> @Me</success>");
 		expect(lines).toContain("<muted>Other work</muted>");
 		expect(lines).toContain("<dim> @Other</dim>");
-		expect(lines).toContain("<accent>●</accent> <toolTitle>2 tasks</toolTitle> <muted>(");
+		expect(lines).toContain("<mdHeading>●</mdHeading> <mdHeading>2 tasks</mdHeading> <muted>(");
 	});
 
 	test("refreshes the HUD on session start and after mutations", async () => {
