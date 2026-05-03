@@ -181,10 +181,15 @@ export async function listActiveLensDiagnostics(
 	options: { signal?: AbortSignal; runner?: CommandRunner } = {},
 ): Promise<any[] | undefined> {
 	try {
-		const result = await (options.runner ?? runCommand)("ct", ["lens", "diagnostics", "list", "--json"], cwd, {
-			signal: options.signal,
-			allowNonZero: true,
-		});
+		const result = await (options.runner ?? runCommand)(
+			"ct",
+			["lens", "diagnostics", "list", "--json", "--all"],
+			cwd,
+			{
+				signal: options.signal,
+				allowNonZero: true,
+			},
+		);
 		const parsed = JSON.parse(result.stdout);
 		return Array.isArray(parsed?.data?.diagnostics) ? parsed.data.diagnostics : undefined;
 	} catch {
@@ -254,7 +259,7 @@ function reportStillMatchesActiveDiagnostics(message: any, active: any[]) {
 		.split("\n")
 		.map((line) => line.trim())
 		.filter((line) => line.startsWith("- "));
-	if (reportIssues.length === 0) return true;
+	if (reportIssues.length === 0) return false;
 	return reportIssues.some((line) => active.some((diagnostic) => diagnosticMatchesReportLine(diagnostic, line)));
 }
 
