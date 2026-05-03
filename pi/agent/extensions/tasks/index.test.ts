@@ -161,7 +161,7 @@ describe("tasks extension", () => {
 			{ currentAssignment: "session:current", currentLabel: "Me" },
 		).join("\n");
 
-		expect(lines).toContain("<accent>@</accent><dim>Me</dim>");
+		expect(lines).toContain("<success> @Me</success>");
 		expect(lines).toContain("<muted>Other work</muted>");
 		expect(lines).toContain("<dim> @Other</dim>");
 	});

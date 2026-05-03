@@ -395,7 +395,7 @@ function formatAssignee(task: TaskRecord, theme: Theme, display: AssignmentDispl
 	const label = assignmentLabel(task, display);
 	if (!label) return "";
 	if (isAssignedToCurrentSession(task, display)) {
-		return ` ${theme.fg("accent", "@")}${theme.fg("dim", compact(label, 28))}`;
+		return theme.fg("success", ` @${compact(label, 28)}`);
 	}
 	return theme.fg("dim", ` @${compact(label, 28)}`);
 }
