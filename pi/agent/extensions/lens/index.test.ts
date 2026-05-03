@@ -348,6 +348,29 @@ describe("Lens hook-only Pi extension", () => {
 		expect(sent).toEqual([]);
 	});
 
+	it("does not trigger a follow-up turn for injected reports that do not require follow-up", () => {
+		const sent: any[] = [];
+		const queued = queueLensContext(
+			{
+				sendMessage: (message: unknown, options: unknown) => {
+					sent.push({ message, options });
+				},
+			},
+			{ isIdle: () => false },
+			{
+				context: {
+					inject: true,
+					content: "Lens session diagnostics: display only",
+					requires_followup: false,
+				},
+			},
+		);
+
+		expect(queued).toBe(true);
+		expect(sent[0].message.details.requiresFollowup).toBe(false);
+		expect(sent[0].options).toBeUndefined();
+	});
+
 	it("fails closed before queueing diagnostics when freshness is unknown", () => {
 		const response = {
 			status: "warning",
