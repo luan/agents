@@ -97,6 +97,7 @@ export function queueLensContext(pi: any, ctx: any, response: any, state: { last
 	const fingerprint = stringValue(response?.context?.fingerprint) ?? content;
 	if (state.lastQueuedFingerprint === fingerprint) return false;
 	state.lastQueuedFingerprint = fingerprint;
+	const requiresFollowup = response?.context?.requires_followup === true;
 	pi.sendMessage(
 		{
 			customType: "lens-diagnostics",
@@ -105,16 +106,17 @@ export function queueLensContext(pi: any, ctx: any, response: any, state: { last
 			details: {
 				fingerprint,
 				severity: stringValue(response?.context?.severity),
-				requiresFollowup: response?.context?.requires_followup === true,
+				requiresFollowup,
 				reportIssues: reportIssuesFromResponse(response),
 			},
 		},
-		lensDeliveryOptions(ctx),
+		lensDeliveryOptions(ctx, requiresFollowup),
 	);
 	return true;
 }
 
-function lensDeliveryOptions(ctx: any) {
+function lensDeliveryOptions(ctx: any, requiresFollowup: boolean) {
+	if (!requiresFollowup) return undefined;
 	try {
 		if (typeof ctx?.isIdle === "function" && ctx.isIdle()) return undefined;
 	} catch (error) {
