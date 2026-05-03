@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { ExtensionAPI, ExtensionContext, Theme } from "@mariozechner/pi-coding-agent";
@@ -28,6 +28,7 @@ interface TaskRecord {
 	body: string;
 	status: string;
 	priority?: number;
+	assigned_to?: string | null;
 	blocked_by?: string[];
 	created_at: number;
 	updated_at: number;
@@ -89,10 +90,12 @@ export function buildTaskCommand(action: TaskCommand, params: Record<string, unk
 			pushOption(args, "--body", params.body);
 			pushOption(args, "--status", params.status);
 			pushOption(args, "--priority", params.priority);
+			pushOption(args, "--assigned-to", params.assigned_to);
 			pushRepeatedOption(args, "--blocked-by", params.blocked_by);
 			break;
 		case "list":
 			pushOption(args, "--status", params.status);
+			pushOption(args, "--assigned-to", params.assigned_to);
 			if (params.all === true) args.push("--all");
 			break;
 		case "show":
@@ -105,6 +108,8 @@ export function buildTaskCommand(action: TaskCommand, params: Record<string, unk
 			pushOption(args, "--body", params.body);
 			pushOption(args, "--status", params.status);
 			pushOption(args, "--priority", params.priority);
+			pushOption(args, "--assigned-to", params.assigned_to);
+			if (params.clear_assignee === true) args.push("--clear-assignee");
 			pushRepeatedOption(args, "--blocked-by", params.blocked_by);
 			if (params.clear_blockers === true) args.push("--clear-blockers");
 			break;
@@ -136,6 +141,27 @@ function textResult(text: string, details: TaskDetails) {
 	return { content: [{ type: "text" as const, text }], details };
 }
 
+function sessionAssignment(ctx?: ExtensionContext): string | undefined {
+	const anyCtx = ctx as
+		| (ExtensionContext & {
+				sessionId?: string;
+				session?: { id?: string };
+				sessionManager?: { getSessionFile?: () => string | undefined };
+		  })
+		| undefined;
+	const direct = anyCtx?.sessionId ?? anyCtx?.session?.id;
+	if (typeof direct === "string" && direct.length > 0) return `session:${direct}`;
+	const file = anyCtx?.sessionManager?.getSessionFile?.();
+	if (typeof file === "string" && file.length > 0) return `session:${basename(file).replace(/\.jsonl$/, "")}`;
+	return undefined;
+}
+
+function normalizeTaskParams(params: Record<string, unknown>, ctx?: ExtensionContext): Record<string, unknown> {
+	if (params.assigned_to !== "current") return params;
+	const assignedTo = sessionAssignment(ctx);
+	return assignedTo ? { ...params, assigned_to: assignedTo } : params;
+}
+
 async function executeTask(
 	command: string,
 	runCommand: typeof defaultRunCommand,
@@ -146,7 +172,7 @@ async function executeTask(
 	ctx?: ExtensionContext,
 	signal?: AbortSignal,
 ) {
-	const args = buildTaskCommand(action, params);
+	const args = buildTaskCommand(action, normalizeTaskParams(params, ctx));
 	const result = await runCommand(command, args, cwd, signal);
 	const text = result.stdout.trim() || result.stderr.trim();
 	const details = parseTaskPayload(text, action, args);
@@ -262,12 +288,13 @@ function formatTaskLine(task: TaskRecord, theme: Theme, width: number, byId: Map
 	const glyph = theme.fg(statusColor(task.status), statusGlyph(task.status));
 	const id = theme.fg("accent", theme.bold(task.id.padEnd(4)));
 	const blockerText = blockers.join(", ");
+	const assignee = task.assigned_to ? theme.fg("dim", ` @${compact(task.assigned_to, 28)}`) : "";
 	const title = isComplete(task)
 		? theme.fg("dim", strikethrough(theme, `${task.id.padEnd(4)} ${compact(task.title, Math.max(20, width - 18))}`))
 		: theme.fg("text", compact(task.title, Math.max(20, width - 18)));
 	const suffix = blockers.length > 0 ? theme.fg("dim", ` › blocked by ${blockerText}`) : "";
 	if (isComplete(task)) return truncateToWidth(`  ${glyph} ${title}${suffix}`, width);
-	return truncateToWidth(`  ${glyph} ${id} ${title}${suffix}`, width);
+	return truncateToWidth(`  ${glyph} ${id} ${title}${assignee}${suffix}`, width);
 }
 
 export function renderHudLines(tasks: TaskRecord[], theme: Theme, width: number, maxTasks = 6): string[] {
@@ -325,6 +352,7 @@ function renderTaskBlock(title: string, task: TaskRecord, theme: Theme): string 
 	return [
 		theme.fg("toolTitle", theme.bold(title)),
 		`  ${theme.fg(statusColor(task.status), statusGlyph(task.status))} ${theme.fg("accent", theme.bold(task.id.padEnd(4)))} ${theme.fg("text", task.title)}`,
+		...(task.assigned_to ? [`  ${theme.fg("dim", `@${task.assigned_to}`)}`] : []),
 		...(task.blocked_by?.length ? [`  ${theme.fg("dim", `› blocked by ${task.blocked_by.join(", ")}`)}`] : []),
 		...(task.body ? [`  ${theme.fg("dim", compact(task.body, 120))}`] : []),
 	].join("\n");
@@ -413,18 +441,74 @@ function makeTaskTool(
 	};
 }
 
+function isActiveTask(task: TaskRecord): boolean {
+	return !isComplete(task) && !isCanceled(task);
+}
+
+function assignedTaskReminder(tasks: TaskRecord[], assignedTo: string): string | undefined {
+	const assigned = sortTasksForDisplay(
+		tasks.filter((task) => isActiveTask(task) && task.assigned_to === assignedTo),
+	).slice(0, 8);
+	if (assigned.length === 0) return undefined;
+	const lines = [
+		`You have ${assigned.length} assigned task${assigned.length === 1 ? "" : "s"} still open for ${assignedTo}:`,
+		...assigned.map((task) => `- ${task.id} [${task.status}] ${task.title}`),
+		"",
+		"Update status with task_update when you start or finish work.",
+	];
+	return lines.join("\n");
+}
+
+async function remindAssignedTasks(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	command: string,
+	runCommand: typeof defaultRunCommand,
+	state: { lastReminderFingerprint?: string },
+): Promise<void> {
+	const assignedTo = sessionAssignment(ctx);
+	if (!assignedTo) return;
+	const tasks = await loadHudTasks(ctx.cwd, command, runCommand, ctx.signal);
+	const assigned = tasks.filter((task) => isActiveTask(task) && task.assigned_to === assignedTo);
+	const fingerprint = assigned.map((task) => `${task.id}:${task.status}:${task.updated_at}`).join("|");
+	if (fingerprint.length === 0) {
+		state.lastReminderFingerprint = undefined;
+		return;
+	}
+	if (state.lastReminderFingerprint === fingerprint) return;
+	state.lastReminderFingerprint = fingerprint;
+	const reminder = assignedTaskReminder(tasks, assignedTo);
+	if (!reminder) return;
+	pi.sendMessage(
+		{
+			customType: "task-reminder",
+			content: [{ type: "text", text: reminder }],
+			display: true,
+			details: { assignedTo },
+		},
+		{ deliverAs: "followUp", triggerTurn: true },
+	);
+}
+
 export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) {
 	const config = loadConfig();
 	if (!config.enabled) return;
 
 	const runCommand = runtime.runCommand ?? defaultRunCommand;
 	let cwd = process.cwd();
+	const reminderState: { lastReminderFingerprint?: string } = {};
 	const getCwd = () => cwd;
 	const common = (action: TaskCommand) => makeTaskTool(action, config.command, runCommand, config, getCwd);
 
 	pi.on("session_start", async (_event, ctx) => {
 		cwd = ctx.cwd;
 		if (config.hud.enabled) await updateTaskHud(ctx, config.command, runCommand, config);
+	});
+
+	pi.on("turn_end", async (_event, ctx) => {
+		await remindAssignedTasks(pi, ctx, config.command, runCommand, reminderState).catch((error) => {
+			ctx.ui.notify?.(`Task reminder failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
+		});
 	});
 
 	pi.registerTool({
@@ -438,6 +522,7 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 			body: Type.Optional(Type.String({ description: "Task details/body" })),
 			status: Type.Optional(Type.String({ description: "Task status (default: open)" })),
 			priority: Type.Optional(Type.Number({ description: "Task priority; higher shows first" })),
+			assigned_to: Type.Optional(Type.String({ description: "Session/user assignment, or 'current'" })),
 			blocked_by: Type.Optional(
 				Type.Array(Type.String(), { description: "Task IDs/prefixes that block this task" }),
 			),
@@ -452,6 +537,7 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 		promptSnippet: "List persisted project tasks",
 		parameters: Type.Object({
 			status: Type.Optional(Type.String({ description: "Filter by status" })),
+			assigned_to: Type.Optional(Type.String({ description: "Filter by assignee/session, or 'current'" })),
 			all: Type.Optional(Type.Boolean({ description: "Include completed/canceled tasks" })),
 		}),
 	});
@@ -479,6 +565,8 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 			body: Type.Optional(Type.String({ description: "New details/body" })),
 			status: Type.Optional(Type.String({ description: "New status" })),
 			priority: Type.Optional(Type.Number({ description: "New priority; higher shows first" })),
+			assigned_to: Type.Optional(Type.String({ description: "Assign to this session/user, or 'current'" })),
+			clear_assignee: Type.Optional(Type.Boolean({ description: "Remove assignee" })),
 			blocked_by: Type.Optional(
 				Type.Array(Type.String(), { description: "Replace blockers with these task IDs/prefixes" }),
 			),

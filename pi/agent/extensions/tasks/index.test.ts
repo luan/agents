@@ -56,10 +56,14 @@ describe("tasks extension", () => {
 			"3",
 			"--json",
 		]);
-		expect(buildTaskCommand("add", { title: "Render DAG", blocked_by: ["abc", "def"] })).toEqual([
+		expect(
+			buildTaskCommand("add", { title: "Render DAG", assigned_to: "session:abc", blocked_by: ["abc", "def"] }),
+		).toEqual([
 			"task",
 			"add",
 			"Render DAG",
+			"--assigned-to",
+			"session:abc",
 			"--blocked-by",
 			"abc",
 			"--blocked-by",
@@ -169,6 +173,67 @@ describe("tasks extension", () => {
 		expect(calls.map((call) => call.slice(1, 3))).toContainEqual(["task", "list"]);
 		expect(calls).toContainEqual(["ct", "task", "list", "--all", "--json"]);
 		expect(widgetText).toContain("Smoke test task tools");
+	});
+
+	test("reminds the current session about assigned unfinished tasks at turn end", async () => {
+		const handlers: Record<string, any> = {};
+		const sent: any[] = [];
+		tasksExtension(
+			{
+				registerTool() {},
+				on(name: string, handler: any) {
+					handlers[name] = handler;
+				},
+				sendMessage(message: any, options: any) {
+					sent.push({ message, options });
+				},
+			} as any,
+			{
+				runCommand: async () => ({
+					stdout: JSON.stringify({
+						tasks: [
+							{ ...task, assigned_to: "session:test-session", status: "open" },
+							{
+								...task,
+								id: "DONE1",
+								title: "Done assigned",
+								assigned_to: "session:test-session",
+								status: "done",
+							},
+							{ ...task, id: "OTHER1", title: "Other session", assigned_to: "session:other", status: "open" },
+						],
+					}),
+					stderr: "",
+					exitCode: 0,
+				}),
+			},
+		);
+
+		await handlers.turn_end(
+			{},
+			{
+				cwd: "/tmp/project",
+				signal: undefined,
+				sessionManager: { getSessionFile: () => "/tmp/test-session.jsonl" },
+				ui: { notify() {} },
+			},
+		);
+
+		expect(sent).toHaveLength(1);
+		expect(sent[0].message.content[0].text).toContain("Smoke test task tools");
+		expect(sent[0].message.content[0].text).not.toContain("Done assigned");
+		expect(sent[0].options).toEqual({ deliverAs: "followUp", triggerTurn: true });
+
+		await handlers.turn_end(
+			{},
+			{
+				cwd: "/tmp/project",
+				signal: undefined,
+				sessionManager: { getSessionFile: () => "/tmp/test-session.jsonl" },
+				ui: { notify() {} },
+			},
+		);
+		expect(sent).toHaveLength(1);
 	});
 
 	test("renders task calls and results without dumping raw JSON", () => {

@@ -143,6 +143,8 @@ pub enum TaskAction {
         status: String,
         #[arg(long, default_value_t = 0, help = "Task priority; higher shows first")]
         priority: i64,
+        #[arg(long = "assigned-to", help = "Session/user this task is assigned to")]
+        assigned_to: Option<String>,
         #[arg(long = "blocked-by", help = "Task ID/prefix that blocks this task")]
         blocked_by: Vec<String>,
         #[arg(long, help = "Output JSON")]
@@ -153,6 +155,8 @@ pub enum TaskAction {
     List {
         #[arg(long, help = "Filter by status")]
         status: Option<String>,
+        #[arg(long = "assigned-to", help = "Filter by assignee/session")]
+        assigned_to: Option<String>,
         #[arg(long, help = "Include all statuses")]
         all: bool,
         #[arg(long, help = "Output JSON")]
@@ -179,6 +183,10 @@ pub enum TaskAction {
         status: Option<String>,
         #[arg(long, help = "New priority; higher shows first")]
         priority: Option<i64>,
+        #[arg(long = "assigned-to", help = "Assign to this session/user")]
+        assigned_to: Option<String>,
+        #[arg(long, help = "Remove assignee")]
+        clear_assignee: bool,
         #[arg(
             long = "blocked-by",
             help = "Replace blockers with these task IDs/prefixes"
