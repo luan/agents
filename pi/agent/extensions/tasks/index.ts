@@ -383,6 +383,23 @@ function assignmentLabel(task: TaskRecord, display: AssignmentDisplayContext = {
 	return assignedTo;
 }
 
+function isAssignedToCurrentSession(task: TaskRecord, display: AssignmentDisplayContext): boolean {
+	return Boolean(task.assigned_to && task.assigned_to === display.currentAssignment);
+}
+
+function isAssignedToOtherSession(task: TaskRecord, display: AssignmentDisplayContext): boolean {
+	return Boolean(task.assigned_to && display.currentAssignment && task.assigned_to !== display.currentAssignment);
+}
+
+function formatAssignee(task: TaskRecord, theme: Theme, display: AssignmentDisplayContext): string {
+	const label = assignmentLabel(task, display);
+	if (!label) return "";
+	if (isAssignedToCurrentSession(task, display)) {
+		return ` ${theme.fg("accent", "@")}${theme.fg("dim", compact(label, 28))}`;
+	}
+	return theme.fg("dim", ` @${compact(label, 28)}`);
+}
+
 function formatTaskLine(
 	task: TaskRecord,
 	theme: Theme,
@@ -394,11 +411,11 @@ function formatTaskLine(
 	const glyph = theme.fg(statusColor(task.status), statusGlyph(task.status));
 	const id = theme.fg("accent", theme.bold(task.id.padEnd(4)));
 	const blockerText = blockers.join(", ");
-	const label = assignmentLabel(task, display);
-	const assignee = label ? theme.fg("dim", ` @${compact(label, 28)}`) : "";
+	const assignee = formatAssignee(task, theme, display);
+	const titleColor = isAssignedToOtherSession(task, display) ? "muted" : "text";
 	const title = isComplete(task)
 		? theme.fg("dim", strikethrough(theme, `${task.id.padEnd(4)} ${compact(task.title, Math.max(20, width - 18))}`))
-		: theme.fg("text", compact(task.title, Math.max(20, width - 18)));
+		: theme.fg(titleColor, compact(task.title, Math.max(20, width - 18)));
 	const suffix = blockers.length > 0 ? theme.fg("dim", ` › blocked by ${blockerText}`) : "";
 	if (isComplete(task)) return truncateToWidth(`  ${glyph} ${title}${suffix}`, width);
 	return truncateToWidth(`  ${glyph} ${id} ${title}${assignee}${suffix}`, width);
