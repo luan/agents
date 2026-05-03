@@ -21,6 +21,7 @@ struct Task {
     body: String,
     status: String,
     priority: i64,
+    assigned_to: Option<String>,
     blocked_by: Vec<String>,
     created_at: i64,
     updated_at: i64,
@@ -49,6 +50,7 @@ pub fn run_task(action: TaskAction) -> Result<(), Box<dyn std::error::Error>> {
             body,
             status,
             priority,
+            assigned_to,
             blocked_by,
             json,
         } => {
@@ -57,12 +59,22 @@ pub fn run_task(action: TaskAction) -> Result<(), Box<dyn std::error::Error>> {
                 body.as_deref().unwrap_or(""),
                 &status,
                 priority,
+                assigned_to.as_deref(),
                 &blocked_by,
             )?)?;
             print_task(&task, json)?;
         }
-        TaskAction::List { status, all, json } => {
-            let tasks = store.display_tasks(store.list(status.as_deref(), all)?)?;
+        TaskAction::List {
+            status,
+            assigned_to,
+            all,
+            json,
+        } => {
+            let tasks = store.display_tasks(store.list(
+                status.as_deref(),
+                assigned_to.as_deref(),
+                all,
+            )?)?;
             print_tasks(&tasks, json)?;
         }
         TaskAction::Show { id, json } => {
@@ -75,6 +87,8 @@ pub fn run_task(action: TaskAction) -> Result<(), Box<dyn std::error::Error>> {
             body,
             status,
             priority,
+            assigned_to,
+            clear_assignee,
             blocked_by,
             clear_blockers,
             json,
@@ -86,6 +100,8 @@ pub fn run_task(action: TaskAction) -> Result<(), Box<dyn std::error::Error>> {
                     body: body.as_deref(),
                     status: status.as_deref(),
                     priority,
+                    assigned_to: assigned_to.as_deref(),
+                    clear_assignee,
                     blocked_by: &blocked_by,
                     clear_blockers,
                 },
@@ -116,6 +132,8 @@ struct TaskUpdate<'a> {
     body: Option<&'a str>,
     status: Option<&'a str>,
     priority: Option<i64>,
+    assigned_to: Option<&'a str>,
+    clear_assignee: bool,
     blocked_by: &'a [String],
     clear_blockers: bool,
 }
@@ -136,6 +154,7 @@ impl TaskStore {
                 body TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL,
                 priority INTEGER NOT NULL DEFAULT 0,
+                assigned_to TEXT,
                 blocked_by TEXT NOT NULL DEFAULT '[]',
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
@@ -144,6 +163,7 @@ impl TaskStore {
         )?;
         ensure_blocked_by_column(&conn)?;
         ensure_priority_column(&conn)?;
+        ensure_assigned_to_column(&conn)?;
         Ok(Self { conn })
     }
 
@@ -153,40 +173,58 @@ impl TaskStore {
         body: &str,
         status: &str,
         priority: i64,
+        assigned_to: Option<&str>,
         blocked_by: &[String],
     ) -> Result<Task> {
         validate_title(title)?;
         validate_status(status)?;
+        let assigned_to = normalize_assignment(assigned_to)?;
         let now = now_ms();
         let id = self.new_id()?;
         let blockers = self.resolve_blockers(blocked_by, Some(&id))?;
         let blockers_json = serde_json::to_string(&blockers)?;
         self.conn.execute(
-            "INSERT INTO tasks (id, title, body, status, priority, blocked_by, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
-            params![id, title.trim(), body, status, priority, blockers_json, now],
+            "INSERT INTO tasks (id, title, body, status, priority, assigned_to, blocked_by, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+            params![id, title.trim(), body, status, priority, assigned_to, blockers_json, now],
         )?;
         self.get_exact(&id)
     }
 
-    fn list(&self, status: Option<&str>, all: bool) -> Result<Vec<Task>> {
+    fn list(
+        &self,
+        status: Option<&str>,
+        assigned_to: Option<&str>,
+        all: bool,
+    ) -> Result<Vec<Task>> {
         if let Some(status) = status {
             validate_status(status)?;
-            return self.query_tasks(
-                "SELECT id, title, body, status, priority, blocked_by, created_at, updated_at FROM tasks WHERE status = ?1 ORDER BY updated_at DESC",
+        }
+        let assigned_to = normalize_assignment(assigned_to)?;
+        match (status, assigned_to.as_deref(), all) {
+            (Some(status), Some(assigned_to), _) => self.query_tasks(
+                "SELECT id, title, body, status, priority, assigned_to, blocked_by, created_at, updated_at FROM tasks WHERE status = ?1 AND assigned_to = ?2 ORDER BY updated_at DESC",
+                &[status, assigned_to],
+            ),
+            (Some(status), None, _) => self.query_tasks(
+                "SELECT id, title, body, status, priority, assigned_to, blocked_by, created_at, updated_at FROM tasks WHERE status = ?1 ORDER BY updated_at DESC",
                 &[status],
-            );
-        }
-        if all {
-            return self.query_tasks(
-                "SELECT id, title, body, status, priority, blocked_by, created_at, updated_at FROM tasks ORDER BY updated_at DESC",
+            ),
+            (None, Some(assigned_to), _) => self.query_tasks(
+                "SELECT id, title, body, status, priority, assigned_to, blocked_by, created_at, updated_at FROM tasks WHERE assigned_to = ?1 ORDER BY updated_at DESC",
+                &[assigned_to],
+            ),
+            (None, None, true) => self.query_tasks(
+                "SELECT id, title, body, status, priority, assigned_to, blocked_by, created_at, updated_at FROM tasks ORDER BY updated_at DESC",
                 &[],
-            );
+            ),
+            (None, None, false) => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, title, body, status, priority, assigned_to, blocked_by, created_at, updated_at FROM tasks WHERE status IN ('open', 'in_progress', 'blocked', 'todo') ORDER BY updated_at DESC",
+                )?;
+                let rows = stmt.query_map([], row_task)?;
+                sort_tasks(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+            }
         }
-        let mut stmt = self.conn.prepare(
-            "SELECT id, title, body, status, priority, blocked_by, created_at, updated_at FROM tasks WHERE status IN ('open', 'in_progress', 'blocked', 'todo') ORDER BY updated_at DESC",
-        )?;
-        let rows = stmt.query_map([], row_task)?;
-        sort_tasks(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
     fn show(&self, id_prefix: &str) -> Result<Task> {
@@ -199,6 +237,8 @@ impl TaskStore {
             && update.body.is_none()
             && update.status.is_none()
             && update.priority.is_none()
+            && update.assigned_to.is_none()
+            && !update.clear_assignee
             && update.blocked_by.is_empty()
             && !update.clear_blockers
         {
@@ -210,6 +250,7 @@ impl TaskStore {
         if let Some(status) = update.status {
             validate_status(status)?;
         }
+        let assigned_to = normalize_assignment(update.assigned_to)?;
         let id = self.resolve_id(id_prefix)?;
         let existing = self.get_exact(&id)?;
         let blockers = if update.clear_blockers {
@@ -221,12 +262,13 @@ impl TaskStore {
         };
         let blockers_json = serde_json::to_string(&blockers)?;
         self.conn.execute(
-            "UPDATE tasks SET title = ?1, body = ?2, status = ?3, priority = ?4, blocked_by = ?5, updated_at = ?6 WHERE id = ?7",
+            "UPDATE tasks SET title = ?1, body = ?2, status = ?3, priority = ?4, assigned_to = ?5, blocked_by = ?6, updated_at = ?7 WHERE id = ?8",
             params![
                 update.title.unwrap_or(&existing.title).trim(),
                 update.body.unwrap_or(&existing.body),
                 update.status.unwrap_or(&existing.status),
                 update.priority.unwrap_or(existing.priority),
+                if update.clear_assignee { None } else { assigned_to.or(existing.assigned_to) },
                 blockers_json,
                 now_ms(),
                 id
@@ -264,7 +306,7 @@ impl TaskStore {
     fn get_exact(&self, id: &str) -> Result<Task> {
         self.conn
             .query_row(
-                "SELECT id, title, body, status, priority, blocked_by, created_at, updated_at FROM tasks WHERE id = ?1",
+                "SELECT id, title, body, status, priority, assigned_to, blocked_by, created_at, updated_at FROM tasks WHERE id = ?1",
                 [id],
                 row_task,
             )
@@ -356,7 +398,7 @@ impl TaskStore {
 }
 
 fn row_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
-    let blocked_by_json: String = row.get(5)?;
+    let blocked_by_json: String = row.get(6)?;
     let blocked_by = serde_json::from_str(&blocked_by_json).unwrap_or_default();
     Ok(Task {
         id: row.get(0)?,
@@ -364,9 +406,10 @@ fn row_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
         body: row.get(2)?,
         status: row.get(3)?,
         priority: row.get(4)?,
+        assigned_to: row.get(5)?,
         blocked_by,
-        created_at: row.get(6)?,
-        updated_at: row.get(7)?,
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
     })
 }
 
@@ -425,6 +468,19 @@ fn ensure_priority_column(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn ensure_assigned_to_column(conn: &Connection) -> Result<()> {
+    let has_column = conn
+        .prepare("PRAGMA table_info(tasks)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .iter()
+        .any(|column| column == "assigned_to");
+    if !has_column {
+        conn.execute("ALTER TABLE tasks ADD COLUMN assigned_to TEXT", [])?;
+    }
+    Ok(())
+}
+
 fn validate_title(title: &str) -> Result<()> {
     if title.trim().is_empty() {
         bail!("task title must not be empty");
@@ -440,6 +496,17 @@ fn validate_status(status: &str) -> Result<()> {
         "invalid task status {status:?}; expected one of {}",
         VALID_STATUSES.join(", ")
     )
+}
+
+fn normalize_assignment(value: Option<&str>) -> Result<Option<String>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        bail!("assignment must not be empty");
+    }
+    Ok(Some(trimmed.to_string()))
 }
 
 fn normalize_id(id: &str) -> Result<String> {

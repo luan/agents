@@ -291,3 +291,53 @@ fn task_list_sorts_ready_tasks_before_blocked_then_by_priority() {
     );
     assert_eq!(list_json["tasks"][0]["priority"], 5);
 }
+
+#[test]
+fn task_assignment_filters_and_clears() {
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+
+    let assigned = ct_cmd(project.path(), state.path())
+        .args([
+            "task",
+            "add",
+            "Assigned work",
+            "--assigned-to",
+            "session:abc",
+            "--json",
+        ])
+        .assert()
+        .success();
+    let assigned_json: serde_json::Value =
+        serde_json::from_slice(&assigned.get_output().stdout).expect("assigned json");
+    let id = assigned_json["task"]["id"].as_str().expect("assigned id");
+    assert_eq!(assigned_json["task"]["assigned_to"], "session:abc");
+
+    ct_cmd(project.path(), state.path())
+        .args(["task", "add", "Other work", "--json"])
+        .assert()
+        .success();
+
+    let filtered = ct_cmd(project.path(), state.path())
+        .args([
+            "task",
+            "list",
+            "--assigned-to",
+            "session:abc",
+            "--all",
+            "--json",
+        ])
+        .assert()
+        .success();
+    let filtered_json: serde_json::Value =
+        serde_json::from_slice(&filtered.get_output().stdout).expect("filtered json");
+    let tasks = filtered_json["tasks"].as_array().expect("tasks");
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0]["title"], "Assigned work");
+
+    ct_cmd(project.path(), state.path())
+        .args(["task", "update", id, "--clear-assignee", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"assigned_to\": null"));
+}
