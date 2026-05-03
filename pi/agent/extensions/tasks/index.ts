@@ -402,7 +402,8 @@ function formatAssignee(task: TaskRecord, theme: Theme, display: AssignmentDispl
 
 function formatTaskId(id: string, theme: Theme): string {
 	const padded = id.padEnd(4);
-	const visible = id.length > 0 ? `${theme.fg("text", id.slice(0, -1))}${theme.fg("accent", id.slice(-1))}` : "";
+	const visible =
+		id.length > 0 ? `${theme.fg("syntaxPunctuation", id.slice(0, -1))}${theme.fg("accent", id.slice(-1))}` : "";
 	return theme.bold(`${visible}${" ".repeat(Math.max(0, padded.length - id.length))}`);
 }
 
