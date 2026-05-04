@@ -33,8 +33,8 @@ function saveMap(map: Record<string, Level>): void {
 	writeFileSync(effortPath(), `${JSON.stringify(map, null, 2)}\n`);
 }
 
-function supportedLevels(ctx: ExtensionContext): readonly Level[] {
-	return ctx.model ? (getSupportedThinkingLevels(ctx.model) as Level[]) : LEVELS;
+function supportedLevels(ctx?: ExtensionContext): readonly Level[] {
+	return ctx?.model ? (getSupportedThinkingLevels(ctx.model) as Level[]) : LEVELS;
 }
 
 export default function effortExtension(pi: ExtensionAPI) {
@@ -58,7 +58,7 @@ export default function effortExtension(pi: ExtensionAPI) {
 
 	pi.registerCommand("effort", {
 		description: "Set thinking effort for the current model and persist to effort.json",
-		getArgumentCompletions: (prefix: string, ctx: ExtensionContext): AutocompleteItem[] | null => {
+		getArgumentCompletions: (prefix: string, ctx?: ExtensionContext): AutocompleteItem[] | null => {
 			const items = supportedLevels(ctx)
 				.filter((l) => l.startsWith(prefix))
 				.map((l) => ({
