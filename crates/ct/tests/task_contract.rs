@@ -219,6 +219,40 @@ fn task_blocked_by_is_a_simple_id_array() {
 }
 
 #[test]
+fn task_blockers_reject_cycles_and_referenced_deletes() {
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+
+    let first = ct_cmd(project.path(), state.path())
+        .args(["task", "add", "First", "--json"])
+        .assert()
+        .success();
+    let first_json: serde_json::Value =
+        serde_json::from_slice(&first.get_output().stdout).expect("first json");
+    let first_id = first_json["task"]["id"].as_str().expect("first id");
+
+    let second = ct_cmd(project.path(), state.path())
+        .args(["task", "add", "Second", "--blocked-by", first_id, "--json"])
+        .assert()
+        .success();
+    let second_json: serde_json::Value =
+        serde_json::from_slice(&second.get_output().stdout).expect("second json");
+    let second_id = second_json["task"]["id"].as_str().expect("second id");
+
+    ct_cmd(project.path(), state.path())
+        .args(["task", "update", first_id, "--blocked-by", second_id])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cycle"));
+
+    ct_cmd(project.path(), state.path())
+        .args(["task", "delete", first_id])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot delete task"));
+}
+
+#[test]
 fn task_epic_metadata_persists_updates_and_clears() {
     let project = project_dir();
     let state = tempfile::tempdir().expect("state dir");
@@ -353,6 +387,46 @@ fn task_list_sorts_ready_tasks_before_blocked_then_by_priority() {
 }
 
 #[test]
+fn task_list_uses_full_blocker_statuses_for_default_active_view() {
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+
+    let blocker = ct_cmd(project.path(), state.path())
+        .args(["task", "add", "Done blocker", "--json"])
+        .assert()
+        .success();
+    let blocker_json: serde_json::Value =
+        serde_json::from_slice(&blocker.get_output().stdout).expect("blocker json");
+    let blocker_id = blocker_json["task"]["id"].as_str().expect("blocker id");
+
+    ct_cmd(project.path(), state.path())
+        .args(["task", "update", blocker_id, "--status", "done"])
+        .assert()
+        .success();
+    ct_cmd(project.path(), state.path())
+        .args([
+            "task",
+            "add",
+            "Ready because blocker is done",
+            "--blocked-by",
+            blocker_id,
+            "--json",
+        ])
+        .assert()
+        .success();
+
+    let list = ct_cmd(project.path(), state.path())
+        .args(["task", "list", "--json"])
+        .assert()
+        .success();
+    let list_json: serde_json::Value =
+        serde_json::from_slice(&list.get_output().stdout).expect("list json");
+    let tasks = list_json["tasks"].as_array().expect("tasks");
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0]["title"], "Ready because blocker is done");
+}
+
+#[test]
 fn task_assignment_filters_and_clears() {
     let project = project_dir();
     let state = tempfile::tempdir().expect("state dir");
@@ -394,6 +468,23 @@ fn task_assignment_filters_and_clears() {
     let tasks = filtered_json["tasks"].as_array().expect("tasks");
     assert_eq!(tasks.len(), 1);
     assert_eq!(tasks[0]["title"], "Assigned work");
+
+    ct_cmd(project.path(), state.path())
+        .args(["task", "update", id, "--status", "done"])
+        .assert()
+        .success();
+    let active_filtered = ct_cmd(project.path(), state.path())
+        .args(["task", "list", "--assigned-to", "session:abc", "--json"])
+        .assert()
+        .success();
+    let active_filtered_json: serde_json::Value =
+        serde_json::from_slice(&active_filtered.get_output().stdout).expect("active filtered json");
+    assert!(
+        active_filtered_json["tasks"]
+            .as_array()
+            .expect("tasks")
+            .is_empty()
+    );
 
     ct_cmd(project.path(), state.path())
         .args(["task", "update", id, "--clear-assignee", "--json"])

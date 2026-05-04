@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -13,6 +14,7 @@ use crate::cli::TaskAction;
 const CROCKFORD: &[u8; 32] = b"0123456789abcdefghjkmnpqrstvwxyz";
 const ID_LENGTH: usize = 6;
 const VALID_STATUSES: [&str; 6] = ["open", "in_progress", "blocked", "todo", "done", "canceled"];
+const TASK_SELECT_COLUMNS: &str = "id, title, body, status, priority, assigned_to, assigned_label, epic_id, epic_title, blocked_by, created_at, updated_at";
 
 #[derive(Debug, Serialize)]
 struct Task {
@@ -197,12 +199,7 @@ impl TaskStore {
              );
              CREATE INDEX IF NOT EXISTS idx_tasks_status_updated ON tasks(status, updated_at DESC);",
         )?;
-        ensure_blocked_by_column(&conn)?;
-        ensure_priority_column(&conn)?;
-        ensure_assigned_to_column(&conn)?;
-        ensure_assigned_label_column(&conn)?;
-        ensure_epic_id_column(&conn)?;
-        ensure_epic_title_column(&conn)?;
+        ensure_task_columns(&conn)?;
         Ok(Self { conn })
     }
 
@@ -248,27 +245,38 @@ impl TaskStore {
         let assigned_to = normalize_assignment(assigned_to)?;
         match (status, assigned_to.as_deref(), all) {
             (Some(status), Some(assigned_to), _) => self.query_tasks(
-                "SELECT id, title, body, status, priority, assigned_to, assigned_label, epic_id, epic_title, blocked_by, created_at, updated_at FROM tasks WHERE status = ?1 AND assigned_to = ?2 ORDER BY updated_at DESC",
+                &format!(
+                    "SELECT {TASK_SELECT_COLUMNS} FROM tasks WHERE status = ?1 AND assigned_to = ?2 ORDER BY updated_at DESC"
+                ),
                 &[status, assigned_to],
             ),
             (Some(status), None, _) => self.query_tasks(
-                "SELECT id, title, body, status, priority, assigned_to, assigned_label, epic_id, epic_title, blocked_by, created_at, updated_at FROM tasks WHERE status = ?1 ORDER BY updated_at DESC",
+                &format!("SELECT {TASK_SELECT_COLUMNS} FROM tasks WHERE status = ?1 ORDER BY updated_at DESC"),
                 &[status],
             ),
-            (None, Some(assigned_to), _) => self.query_tasks(
-                "SELECT id, title, body, status, priority, assigned_to, assigned_label, epic_id, epic_title, blocked_by, created_at, updated_at FROM tasks WHERE assigned_to = ?1 ORDER BY updated_at DESC",
+            (None, Some(assigned_to), false) => {
+                let tasks = self.query_tasks(
+                    &format!("SELECT {TASK_SELECT_COLUMNS} FROM tasks WHERE assigned_to = ?1 ORDER BY updated_at DESC"),
+                    &[assigned_to],
+                )?;
+                Ok(tasks.into_iter().filter(is_active_task).collect())
+            }
+            (None, Some(assigned_to), true) => self.query_tasks(
+                &format!("SELECT {TASK_SELECT_COLUMNS} FROM tasks WHERE assigned_to = ?1 ORDER BY updated_at DESC"),
                 &[assigned_to],
             ),
             (None, None, true) => self.query_tasks(
-                "SELECT id, title, body, status, priority, assigned_to, assigned_label, epic_id, epic_title, blocked_by, created_at, updated_at FROM tasks ORDER BY updated_at DESC",
+                &format!("SELECT {TASK_SELECT_COLUMNS} FROM tasks ORDER BY updated_at DESC"),
                 &[],
             ),
             (None, None, false) => {
-                let mut stmt = self.conn.prepare(
-                    "SELECT id, title, body, status, priority, assigned_to, assigned_label, epic_id, epic_title, blocked_by, created_at, updated_at FROM tasks WHERE status IN ('open', 'in_progress', 'blocked', 'todo') ORDER BY updated_at DESC",
-                )?;
+                let sql = format!("SELECT {TASK_SELECT_COLUMNS} FROM tasks ORDER BY updated_at DESC");
+                let mut stmt = self.conn.prepare(&sql)?;
                 let rows = stmt.query_map([], row_task)?;
-                sort_tasks(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+                Ok(sort_tasks(rows.collect::<std::result::Result<Vec<_>, _>>()?)?
+                    .into_iter()
+                    .filter(is_active_task)
+                    .collect())
             }
         }
     }
@@ -335,7 +343,20 @@ impl TaskStore {
 
     fn delete(&self, id_prefix: &str) -> Result<String> {
         let id = self.resolve_id(id_prefix)?;
-        let display_id = min_prefix(&id, &self.all_ids()?);
+        let all_ids = self.all_ids()?;
+        let display_id = min_prefix(&id, &all_ids);
+        let referenced_by = self.tasks_blocked_by(&id)?;
+        if !referenced_by.is_empty() {
+            let prefixes = shortest_prefixes(&all_ids);
+            bail!(
+                "cannot delete task {display_id}; blocked by {}",
+                referenced_by
+                    .iter()
+                    .map(|task_id| display_prefix(task_id, &prefixes))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
         self.conn
             .execute("DELETE FROM tasks WHERE id = ?1", [&id])?;
         Ok(display_id)
@@ -362,7 +383,7 @@ impl TaskStore {
     fn get_exact(&self, id: &str) -> Result<Task> {
         self.conn
             .query_row(
-                "SELECT id, title, body, status, priority, assigned_to, assigned_label, epic_id, epic_title, blocked_by, created_at, updated_at FROM tasks WHERE id = ?1",
+                &format!("SELECT {TASK_SELECT_COLUMNS} FROM tasks WHERE id = ?1"),
                 [id],
                 row_task,
             )
@@ -401,26 +422,28 @@ impl TaskStore {
 
     fn display_task(&self, mut task: Task) -> Result<Task> {
         let all_ids = self.all_ids()?;
+        let prefixes = shortest_prefixes(&all_ids);
         task.blocked_by = task
             .blocked_by
             .iter()
-            .map(|id| min_prefix(id, &all_ids))
+            .map(|id| display_prefix(id, &prefixes))
             .collect();
-        task.id = min_prefix(&task.id, &all_ids);
+        task.id = display_prefix(&task.id, &prefixes);
         Ok(task)
     }
 
     fn display_tasks(&self, tasks: Vec<Task>) -> Result<Vec<Task>> {
         let all_ids = self.all_ids()?;
+        let prefixes = shortest_prefixes(&all_ids);
         Ok(tasks
             .into_iter()
             .map(|mut task| {
                 task.blocked_by = task
                     .blocked_by
                     .iter()
-                    .map(|id| min_prefix(id, &all_ids))
+                    .map(|id| display_prefix(id, &prefixes))
                     .collect();
-                task.id = min_prefix(&task.id, &all_ids);
+                task.id = display_prefix(&task.id, &prefixes);
                 task
             })
             .collect())
@@ -437,7 +460,52 @@ impl TaskStore {
                 resolved.push(id);
             }
         }
+        if let Some(self_id) = self_id {
+            self.ensure_no_blocker_cycle(self_id, &resolved)?;
+        }
         Ok(resolved)
+    }
+
+    fn tasks_blocked_by(&self, blocker_id: &str) -> Result<Vec<String>> {
+        let tasks = self.query_tasks(
+            &format!("SELECT {TASK_SELECT_COLUMNS} FROM tasks ORDER BY id"),
+            &[],
+        )?;
+        Ok(tasks
+            .into_iter()
+            .filter(|task| task.blocked_by.iter().any(|id| id == blocker_id))
+            .map(|task| task.id)
+            .collect())
+    }
+
+    fn blocker_graph(&self) -> Result<HashMap<String, Vec<String>>> {
+        let tasks = self.query_tasks(
+            &format!("SELECT {TASK_SELECT_COLUMNS} FROM tasks ORDER BY id"),
+            &[],
+        )?;
+        Ok(tasks
+            .into_iter()
+            .map(|task| (task.id, task.blocked_by))
+            .collect())
+    }
+
+    fn ensure_no_blocker_cycle(&self, self_id: &str, blockers: &[String]) -> Result<()> {
+        let mut graph = self.blocker_graph()?;
+        graph.insert(self_id.to_string(), blockers.to_vec());
+        let mut stack = blockers.to_vec();
+        let mut seen = HashSet::new();
+        while let Some(id) = stack.pop() {
+            if id == self_id {
+                bail!("task blockers cannot create a cycle");
+            }
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            if let Some(next) = graph.get(&id) {
+                stack.extend(next.iter().cloned());
+            }
+        }
+        Ok(())
     }
 
     fn ambiguous_matches(&self, ids: &[String]) -> Result<String> {
@@ -455,7 +523,9 @@ impl TaskStore {
 
 fn row_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
     let blocked_by_json: String = row.get(9)?;
-    let blocked_by = serde_json::from_str(&blocked_by_json).unwrap_or_default();
+    let blocked_by = serde_json::from_str(&blocked_by_json).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(9, rusqlite::types::Type::Text, Box::new(error))
+    })?;
     Ok(Task {
         id: row.get(0)?,
         title: row.get(1)?,
@@ -470,6 +540,13 @@ fn row_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
         created_at: row.get(10)?,
         updated_at: row.get(11)?,
     })
+}
+
+fn is_active_task(task: &Task) -> bool {
+    matches!(
+        task.status.as_str(),
+        "open" | "in_progress" | "blocked" | "todo"
+    )
 }
 
 fn sort_tasks(mut tasks: Vec<Task>) -> Result<Vec<Task>> {
@@ -495,86 +572,34 @@ fn has_open_blockers(task: &Task, statuses: &std::collections::HashMap<String, S
     })
 }
 
-fn ensure_blocked_by_column(conn: &Connection) -> Result<()> {
-    let has_column = conn
+fn ensure_task_columns(conn: &Connection) -> Result<()> {
+    let existing = conn
         .prepare("PRAGMA table_info(tasks)")?
         .query_map([], |row| row.get::<_, String>(1))?
-        .collect::<std::result::Result<Vec<_>, _>>()?
-        .iter()
-        .any(|column| column == "blocked_by");
-    if !has_column {
-        conn.execute(
+        .collect::<std::result::Result<HashSet<_>, _>>()?;
+    for (column, sql) in [
+        (
+            "blocked_by",
             "ALTER TABLE tasks ADD COLUMN blocked_by TEXT NOT NULL DEFAULT '[]'",
-            [],
-        )?;
-    }
-    Ok(())
-}
-
-fn ensure_priority_column(conn: &Connection) -> Result<()> {
-    let has_column = conn
-        .prepare("PRAGMA table_info(tasks)")?
-        .query_map([], |row| row.get::<_, String>(1))?
-        .collect::<std::result::Result<Vec<_>, _>>()?
-        .iter()
-        .any(|column| column == "priority");
-    if !has_column {
-        conn.execute(
+        ),
+        (
+            "priority",
             "ALTER TABLE tasks ADD COLUMN priority INTEGER NOT NULL DEFAULT 0",
-            [],
-        )?;
-    }
-    Ok(())
-}
-
-fn ensure_assigned_to_column(conn: &Connection) -> Result<()> {
-    let has_column = conn
-        .prepare("PRAGMA table_info(tasks)")?
-        .query_map([], |row| row.get::<_, String>(1))?
-        .collect::<std::result::Result<Vec<_>, _>>()?
-        .iter()
-        .any(|column| column == "assigned_to");
-    if !has_column {
-        conn.execute("ALTER TABLE tasks ADD COLUMN assigned_to TEXT", [])?;
-    }
-    Ok(())
-}
-
-fn ensure_assigned_label_column(conn: &Connection) -> Result<()> {
-    let has_column = conn
-        .prepare("PRAGMA table_info(tasks)")?
-        .query_map([], |row| row.get::<_, String>(1))?
-        .collect::<std::result::Result<Vec<_>, _>>()?
-        .iter()
-        .any(|column| column == "assigned_label");
-    if !has_column {
-        conn.execute("ALTER TABLE tasks ADD COLUMN assigned_label TEXT", [])?;
-    }
-    Ok(())
-}
-
-fn ensure_epic_id_column(conn: &Connection) -> Result<()> {
-    let has_column = conn
-        .prepare("PRAGMA table_info(tasks)")?
-        .query_map([], |row| row.get::<_, String>(1))?
-        .collect::<std::result::Result<Vec<_>, _>>()?
-        .iter()
-        .any(|column| column == "epic_id");
-    if !has_column {
-        conn.execute("ALTER TABLE tasks ADD COLUMN epic_id TEXT", [])?;
-    }
-    Ok(())
-}
-
-fn ensure_epic_title_column(conn: &Connection) -> Result<()> {
-    let has_column = conn
-        .prepare("PRAGMA table_info(tasks)")?
-        .query_map([], |row| row.get::<_, String>(1))?
-        .collect::<std::result::Result<Vec<_>, _>>()?
-        .iter()
-        .any(|column| column == "epic_title");
-    if !has_column {
-        conn.execute("ALTER TABLE tasks ADD COLUMN epic_title TEXT", [])?;
+        ),
+        (
+            "assigned_to",
+            "ALTER TABLE tasks ADD COLUMN assigned_to TEXT",
+        ),
+        (
+            "assigned_label",
+            "ALTER TABLE tasks ADD COLUMN assigned_label TEXT",
+        ),
+        ("epic_id", "ALTER TABLE tasks ADD COLUMN epic_id TEXT"),
+        ("epic_title", "ALTER TABLE tasks ADD COLUMN epic_title TEXT"),
+    ] {
+        if !existing.contains(column) {
+            conn.execute(sql, [])?;
+        }
     }
     Ok(())
 }
@@ -648,6 +673,19 @@ fn min_prefix(id: &str, all_ids: &[String]) -> String {
         }
     }
     normalized
+}
+
+fn shortest_prefixes(ids: &[String]) -> HashMap<String, String> {
+    ids.iter()
+        .map(|id| (id.clone(), min_prefix(id, ids)))
+        .collect()
+}
+
+fn display_prefix(id: &str, prefixes: &HashMap<String, String>) -> String {
+    prefixes
+        .get(id)
+        .cloned()
+        .unwrap_or_else(|| id.to_ascii_lowercase())
 }
 
 fn generate_id(_attempt: u32) -> String {
@@ -772,8 +810,7 @@ mod tests {
         )
         .unwrap();
 
-        ensure_epic_id_column(&conn).unwrap();
-        ensure_epic_title_column(&conn).unwrap();
+        ensure_task_columns(&conn).unwrap();
         conn.execute(
             "INSERT INTO tasks (id, title, body, status, blocked_by, created_at, updated_at)
              VALUES ('abc123', 'Old task', '', 'open', '[]', 1, 1)",
