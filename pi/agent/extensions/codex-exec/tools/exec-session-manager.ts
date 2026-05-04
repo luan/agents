@@ -1,4 +1,4 @@
-import { type ChildProcessByStdio, spawn } from "node:child_process";
+import { type ChildProcessByStdio, execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { resolve } from "node:path";
 import type { Readable } from "node:stream";
@@ -410,6 +410,92 @@ function registerAbortHandler(signal: AbortSignal | undefined, onAbort: () => vo
 	return () => signal.removeEventListener("abort", abortListener);
 }
 
+interface ProcessInfo {
+	pid: number;
+	ppid: number;
+	pgid: number;
+}
+
+function listProcesses(): ProcessInfo[] {
+	try {
+		return execFileSync("ps", ["-axo", "pid=,ppid=,pgid=,command="], {
+			encoding: "utf8",
+		})
+			.split("\n")
+			.map((line): ProcessInfo | undefined => {
+				const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+/);
+				if (!match) return undefined;
+				return {
+					pid: Number(match[1]),
+					ppid: Number(match[2]),
+					pgid: Number(match[3]),
+				};
+			})
+			.filter((process): process is ProcessInfo => process !== undefined);
+	} catch {
+		return [];
+	}
+}
+
+function collectDescendantPids(rootPid: number): number[] {
+	const childrenByParent = new Map<number, number[]>();
+	for (const process of listProcesses()) {
+		const children = childrenByParent.get(process.ppid) ?? [];
+		children.push(process.pid);
+		childrenByParent.set(process.ppid, children);
+	}
+
+	const descendants: number[] = [];
+	const pending = [...(childrenByParent.get(rootPid) ?? [])];
+	while (pending.length > 0) {
+		const pid = pending.pop();
+		if (pid === undefined) continue;
+		descendants.push(pid);
+		pending.push(...(childrenByParent.get(pid) ?? []));
+	}
+	return descendants;
+}
+
+function killPid(pid: number, signal: NodeJS.Signals): void {
+	try {
+		process.kill(pid, signal);
+	} catch {
+		// Process already exited or is not signalable by this user.
+	}
+}
+
+function terminateProcessTree(rootPid: number | undefined, includeRootProcessGroup: boolean, force = false): void {
+	if (rootPid === undefined || rootPid <= 0) return;
+	const descendants = collectDescendantPids(rootPid);
+	const targets = [...descendants.reverse(), rootPid];
+	for (const pid of targets) {
+		killPid(pid, "SIGTERM");
+	}
+	if (includeRootProcessGroup) {
+		killPid(-rootPid, "SIGTERM");
+	}
+
+	if (force) {
+		for (const pid of targets) {
+			killPid(pid, "SIGKILL");
+		}
+		if (includeRootProcessGroup) {
+			killPid(-rootPid, "SIGKILL");
+		}
+		return;
+	}
+
+	const killTimer = setTimeout(() => {
+		for (const pid of targets) {
+			killPid(pid, "SIGKILL");
+		}
+		if (includeRootProcessGroup) {
+			killPid(-rootPid, "SIGKILL");
+		}
+	}, 500);
+	killTimer.unref?.();
+}
+
 export function createExecSessionManager(options: ExecSessionManagerOptions = {}): ExecSessionManager {
 	let nextSessionId = 1;
 	const sessions = new Map<number, ExecSession>();
@@ -535,6 +621,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			cwd: workdir,
 			stdio: [input.tty ? "pipe" : "ignore", "pipe", "pipe"],
 			env: execution.env,
+			detached: true,
 		});
 
 		const session: PipeExecSession = {
@@ -568,7 +655,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 
 		registerAbortHandler(signal, () => {
 			if (session.exitCode === undefined) {
-				child.kill("SIGTERM");
+				terminateProcessTree(child.pid, true);
 			}
 		});
 
@@ -620,7 +707,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 
 		registerAbortHandler(signal, () => {
 			if (session.exitCode === undefined) {
-				child.kill();
+				terminateProcessTree(child.pid, false);
 			}
 		});
 
@@ -695,9 +782,9 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 					continue;
 				}
 				if (session.kind === "pty") {
-					session.child.kill();
+					terminateProcessTree(session.child.pid, false, true);
 				} else {
-					session.child.kill("SIGTERM");
+					terminateProcessTree(session.child.pid, true, true);
 				}
 			}
 			sessions.clear();
