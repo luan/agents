@@ -12,6 +12,7 @@ const FOCUS_IN = "\x1b[I";
 const FOCUS_OUT = "\x1b[O";
 const STEADY_BEAM_CURSOR = "\x1b[6 q";
 const RESET_CURSOR_STYLE = "\x1b[0 q";
+const SHOW_CURSOR = "\x1b[?25h";
 const TMUX_PANE = process.env.TMUX_PANE;
 const HOOK_ID = process.pid;
 const STATE_DIR = join(tmpdir(), "agents-pi-tmux-focus-cursor");
@@ -116,6 +117,7 @@ export function installFocusCursor(pi: ExtensionAPI, ctx: ExtensionContext, tui:
 	return () => {
 		unsubscribe();
 		void uninstallTmuxHooks();
-		write(tui, DISABLE_FOCUS_EVENTS + RESET_CURSOR_STYLE);
+		tui.setShowHardwareCursor(true);
+		write(tui, DISABLE_FOCUS_EVENTS + RESET_CURSOR_STYLE + SHOW_CURSOR);
 	};
 }
