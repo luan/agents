@@ -1,6 +1,6 @@
 import type { AssistantMessage } from "@mariozechner/pi-ai";
-import { closeOpenAICodexWebSocketSessions } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { closeOpenAICodexWebSocketSessions } from "../apply-patch/freeform-codex.ts";
 import registerOpenAINativeCompaction from "./compaction/index.ts";
 import {
 	createImageGenerationTool,
