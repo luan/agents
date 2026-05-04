@@ -1,67 +1,67 @@
 ---
 name: commit
-description: 'Create conventional commits from current repository changes. Use when the user asks to commit, amend, fixup, squash, save changes, or write a commit message.'
-user-invocable: true
-context: fork
-agent: general-purpose
-model: haiku
-allowed-tools:
-  - "Bash(git status)"
-  - "Bash(git diff:*)"
-  - "Bash(git log:*)"
-  - "Bash(git add:*)"
-  - "Bash(git commit:*)"
-  - "Bash(git notes:*)"
-  - "Bash(git branch:*)"
-  - "Bash(git rev-parse:*)"
-  - "Bash(ct task show:*)"
-  - "Bash(ct task update:*)"
-  - Read
-  - Glob
-  - Grep
+description: Use when changes should be committed with a clear conventional message, including standard commits, amend, fixup, or squash flows
 ---
 
 # Commit
 
-Create conventional commits explaining WHY changes were made. Never ask for confirmation — analyze, compose, execute.
+Create high-signal, conventional commits that explain intent.
 
-## Context
+## Preconditions
 
-Status: !`git status -sb 2>/dev/null`
-Staged diff: !`git diff --cached --stat 2>/dev/null`
-Recent commits: !`git log --oneline -5 2>/dev/null`
+- You are on the intended branch.
+- Files to include are staged, or you explicitly decide how to stage.
 
-Workers never commit — they lack branch context for meaningful messages.
+## Commit Message Rules
 
-## Flow
+- Format: `type(scope): description`
+- Types: `feat`, `fix`, `perf`, `docs`, `test`, `style`, `build`, `ci`, `chore`, `revert`
+- Description: imperative mood, lowercase start, no trailing period, <= 72 chars
+- Scope: optional, but include when it clarifies ownership
+- Body (optional): explain why and impact, not line-by-line mechanics
 
-1. **Analyze**: review context above. Nothing staged → read `git diff`. Staged → read `git diff --cached`.
+## Core Flow
 
-2. **Message**: `type(scope): description` — max 72 chars, lowercase, imperative, no period. Types: feat|fix|perf|docs|test|style|build|ci|chore|revert. Scope = primary area, omit if global. Body (after blank line, 72-char wrap) explains motivation, not mechanics. Active task → append `(task-<id>)`.
+1. Inspect state:
+   - `git status -sb`
+   - `git diff --cached --stat`
+   - If nothing staged, inspect `git diff --stat`
+2. If nothing is staged:
+   - Ask whether to stage all, tracked-only, or selective hunks.
+   - Stage with `git add -A`, `git add -u`, or `git add -p`.
+3. Build message from staged diff and recent branch context.
+4. Commit:
 
-3. **Execute** via HEREDOC:
-   ```bash
-   git commit -m "$(cat <<'EOF'
-   type(scope): description
-   EOF
-   )"
-   ```
+```bash
+git commit -m "$(cat <<'EOF'
+type(scope): description
 
-4. **Post-commit**: if the commit message references `(task-<id>)`, verify the task exists with `ct task show <id> --json` and mark it done with `ct task update <id> --status done` only when the committed diff satisfies that task's acceptance criteria. Skip silently if `ct` is unavailable.
+Optional body wrapping near 72 characters.
+EOF
+)"
+```
 
-## Hook Failures
+5. Verify:
+   - `git status -sb`
+   - `git log --oneline -3`
 
-- **Hooks modify files** (formatters): stage + amend (`git add -u && git commit --amend --no-edit`). Safe because the commit landed; amend just folds in formatter changes.
-- **Hooks reject commit** (lint/test failures): show error, explain, suggest fix. Create a NEW commit after fix — the original never landed, so `--amend` would corrupt the previous commit.
+## Hook Failure Handling
 
-## Special Ops
+If commit fails because hooks reject (`lint/test/typecheck` failure):
+- Show the failure.
+- Fix issue.
+- Create a new commit (do not amend, because commit did not land).
 
-- **Amend**: analyze previous commit + new changes, update message if scope changed. `--no-edit` only when purpose unchanged.
-- **Fixup** (`--fixup=<SHA>`): targets a specific earlier commit. User rebases later.
-- **Squash**: unify message around primary purpose, not a changelog.
+If commit succeeds but hooks mutate files (auto-formatters):
+- Stage changes: `git add -u`
+- Amend safely: `git commit --amend --no-edit`
 
-## Edge Cases
+## Special Operations
 
-- Nothing staged + `--auto` → `git add -u`. Otherwise ask what to stage.
-- Multiple unrelated changes → suggest `/split-commit`.
-- Clean tree → "No changes to commit"
+- Amend: `git commit --amend` (or `--no-edit` when intent unchanged)
+- Fixup: `git commit --fixup=<sha>` for later autosquash
+- Squash: use interactive rebase and rewrite one coherent message
+
+## Escalate to Split Commit
+
+If staged changes contain unrelated concerns, stop and use `split-commit` instead of forcing one mixed commit.
