@@ -313,6 +313,106 @@ fn task_epic_metadata_persists_updates_and_clears() {
 }
 
 #[test]
+fn task_parent_metadata_persists_clears_and_blocks_parent_delete() {
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+
+    let parent = ct_cmd(project.path(), state.path())
+        .args(["task", "add", "Parent", "--json"])
+        .assert()
+        .success();
+    let parent_json: serde_json::Value =
+        serde_json::from_slice(&parent.get_output().stdout).expect("parent json");
+    let parent_id = parent_json["task"]["id"].as_str().expect("parent id");
+
+    let child = ct_cmd(project.path(), state.path())
+        .args(["task", "add", "Child", "--parent-id", parent_id, "--json"])
+        .assert()
+        .success();
+    let child_json: serde_json::Value =
+        serde_json::from_slice(&child.get_output().stdout).expect("child json");
+    let child_id = child_json["task"]["id"].as_str().expect("child id");
+    let parent_ref = child_json["task"]["parent_id"]
+        .as_str()
+        .expect("parent ref");
+    assert!(parent_ref.starts_with(parent_id));
+
+    ct_cmd(project.path(), state.path())
+        .args(["task", "delete", parent_ref])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("parent of"));
+
+    ct_cmd(project.path(), state.path())
+        .args(["task", "update", parent_ref, "--parent-id", child_id])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "dependencies cannot create a cycle",
+        ));
+
+    ct_cmd(project.path(), state.path())
+        .args(["task", "update", child_id, "--blocked-by", parent_ref])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "dependencies cannot create a cycle",
+        ));
+
+    ct_cmd(project.path(), state.path())
+        .args(["task", "update", child_id, "--clear-parent", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"parent_id\": null"));
+}
+
+#[test]
+fn task_blocked_status_is_rejected_and_existing_rows_migrate_to_open() {
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+
+    ct_cmd(project.path(), state.path())
+        .args(["task", "add", "Invalid blocked", "--status", "blocked"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid task status"));
+
+    ct_cmd(project.path(), state.path())
+        .args(["task", "add", "Seed"])
+        .assert()
+        .success();
+    let db_path = fs::read_dir(state.path().join("ct/projects"))
+        .expect("projects dir")
+        .filter_map(Result::ok)
+        .find_map(|entry| {
+            let path = entry.path().join("tasks").join("tasks.sqlite");
+            path.exists().then_some(path)
+        })
+        .expect("tasks sqlite");
+    let conn = rusqlite::Connection::open(db_path).expect("open db");
+    conn.execute(
+        "INSERT INTO tasks (id, title, body, status, created_at, updated_at) VALUES (?1, ?2, '', 'blocked', 1, 1)",
+        ("ABCDEF", "old blocked"),
+    )
+    .expect("insert old blocked");
+    drop(conn);
+
+    let list = ct_cmd(project.path(), state.path())
+        .args(["task", "list", "--all", "--json"])
+        .assert()
+        .success();
+    let list_json: serde_json::Value =
+        serde_json::from_slice(&list.get_output().stdout).expect("list json");
+    let old = list_json["tasks"]
+        .as_array()
+        .expect("tasks")
+        .iter()
+        .find(|task| task["title"] == "old blocked")
+        .expect("old blocked");
+    assert_eq!(old["status"], "open");
+}
+
+#[test]
 fn task_list_sorts_ready_tasks_before_blocked_then_by_priority() {
     let project = project_dir();
     let state = tempfile::tempdir().expect("state dir");
@@ -468,9 +568,10 @@ fn task_assignment_filters_and_clears() {
     let tasks = filtered_json["tasks"].as_array().expect("tasks");
     assert_eq!(tasks.len(), 1);
     assert_eq!(tasks[0]["title"], "Assigned work");
+    let filtered_id = tasks[0]["id"].as_str().expect("filtered assigned id");
 
     ct_cmd(project.path(), state.path())
-        .args(["task", "update", id, "--status", "done"])
+        .args(["task", "update", filtered_id, "--status", "done"])
         .assert()
         .success();
     let active_filtered = ct_cmd(project.path(), state.path())

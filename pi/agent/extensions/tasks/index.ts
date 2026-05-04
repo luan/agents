@@ -2,8 +2,20 @@ import { readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { ExtensionAPI, ExtensionContext, Theme, ThemeColor } from "@mariozechner/pi-coding-agent";
-import { type Component, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@mariozechner/pi-tui";
+import {
+	type ExtensionAPI,
+	type ExtensionContext,
+	type Theme,
+	type ThemeColor,
+	ToolExecutionComponent,
+} from "@mariozechner/pi-coding-agent";
+import {
+	type Component,
+	matchesKey,
+	truncateToWidth as truncateAnsiToWidth,
+	visibleWidth,
+	wrapTextWithAnsi,
+} from "@mariozechner/pi-tui";
 import { Type } from "typebox";
 import { runCommand as defaultRunCommand } from "../shared/ct-runner";
 import { hasEnoughTerminalRows } from "../shared/terminal";
@@ -26,6 +38,15 @@ interface Runtime {
 	runCommand?: typeof defaultRunCommand;
 }
 
+interface GuardState {
+	progressSerial: number;
+	lastGuardFingerprint?: string;
+	lastGuardProgressSerial?: number;
+	pending?: TaskGuardDecision;
+	pauseResponses: number;
+	lastUserText?: string;
+}
+
 interface TaskRecord {
 	id: string;
 	title: string;
@@ -36,6 +57,7 @@ interface TaskRecord {
 	assigned_label?: string | null;
 	epic_id?: string | null;
 	epic_title?: string | null;
+	parent_id?: string | null;
 	blocked_by?: string[];
 	created_at: number;
 	updated_at: number;
@@ -72,8 +94,30 @@ interface TaskBoardKeybindings {
 const extensionDir = dirname(fileURLToPath(import.meta.url));
 const configPath = join(extensionDir, "config.json");
 const widgetId = "project-tasks";
+const taskHudFlashMs = 5000;
+const taskHudPulseFrameMs = 160;
+const silentTaskToolNames = new Set(["task_add", "task_list", "task_show", "task_update", "task_delete"]);
+const silentTaskToolPatchKey = Symbol.for("agents.tasks.silent-tool-render-patch");
 let activeTaskBoard: { close: () => void } | undefined;
 let taskHudKanbanHidden = false;
+let taskHudPulseTimer: ReturnType<typeof setInterval> | undefined;
+let requestTaskHudRender: (() => void) | undefined;
+let taskHudWidget: TaskHudWidget | undefined;
+let taskHudWidgetCtx: ExtensionContext | undefined;
+let latestTaskHudState: TaskHudState | undefined;
+
+interface TaskHudFlash {
+	startedAt: number;
+	until: number;
+}
+
+const taskHudFlashes = new Map<string, TaskHudFlash>();
+
+interface TaskHudState {
+	tasks: TaskRecord[];
+	display: AssignmentDisplayContext;
+	config: Config;
+}
 
 const defaultConfig: Config = {
 	enabled: true,
@@ -119,10 +163,6 @@ function loadConfig(): Config {
 	}
 }
 
-function hasEnoughRows(minRows: number): boolean {
-	return hasEnoughTerminalRows(minRows);
-}
-
 function pushOption(args: string[], name: string, value: unknown): void {
 	if (typeof value === "number" && Number.isFinite(value)) {
 		args.push(name, String(value));
@@ -149,6 +189,7 @@ export function buildTaskCommand(action: TaskCommand, params: Record<string, unk
 			pushOption(args, "--assigned-label", params.assigned_label);
 			pushOption(args, "--epic-id", params.epic_id);
 			pushOption(args, "--epic-title", params.epic_title);
+			pushOption(args, "--parent-id", params.parent_id);
 			pushRepeatedOption(args, "--blocked-by", params.blocked_by);
 			break;
 		case "list":
@@ -172,6 +213,8 @@ export function buildTaskCommand(action: TaskCommand, params: Record<string, unk
 			pushOption(args, "--epic-id", params.epic_id);
 			pushOption(args, "--epic-title", params.epic_title);
 			if (params.clear_epic === true) args.push("--clear-epic");
+			pushOption(args, "--parent-id", params.parent_id);
+			if (params.clear_parent === true) args.push("--clear-parent");
 			pushRepeatedOption(args, "--blocked-by", params.blocked_by);
 			if (params.clear_blockers === true) args.push("--clear-blockers");
 			break;
@@ -201,6 +244,37 @@ function parseTaskPayload(text: string, action: TaskCommand, args: string[]): Ta
 
 function textResult(text: string, details: TaskDetails) {
 	return { content: [{ type: "text" as const, text }], details };
+}
+
+function flashTaskHud(task?: TaskRecord): void {
+	if (!task?.id) return;
+	const now = Date.now();
+	taskHudFlashes.set(task.id, { startedAt: now, until: now + taskHudFlashMs });
+	ensureTaskHudPulseTimer();
+}
+
+function activeTaskHudFlashes(now = Date.now()): Map<string, TaskHudFlash> {
+	const active = new Map<string, TaskHudFlash>();
+	for (const [id, flash] of taskHudFlashes) {
+		if (flash.until > now) {
+			active.set(id, flash);
+			continue;
+		}
+		taskHudFlashes.delete(id);
+	}
+	return active;
+}
+
+function ensureTaskHudPulseTimer(): void {
+	if (taskHudPulseTimer) return;
+	taskHudPulseTimer = setInterval(() => {
+		activeTaskHudFlashes();
+		requestTaskHudRender?.();
+		if (taskHudFlashes.size > 0) return;
+		if (taskHudPulseTimer) clearInterval(taskHudPulseTimer);
+		taskHudPulseTimer = undefined;
+	}, taskHudPulseFrameMs);
+	taskHudPulseTimer.unref?.();
 }
 
 function sessionAssignment(ctx?: ExtensionContext): string | undefined {
@@ -268,6 +342,7 @@ async function executeTask(
 	const result = await runCommand(command, args, cwd, signal);
 	const text = result.stdout.trim() || result.stderr.trim();
 	const details = parseTaskPayload(text, action, args);
+	if (action === "add" || action === "update") flashTaskHud(details.task);
 	if (ctx && config.hud.enabled && (action === "add" || action === "update" || action === "delete")) {
 		await updateTaskHud(ctx, pi, command, runCommand, config).catch((error) => {
 			ctx.ui.notify?.(
@@ -285,28 +360,58 @@ async function loadHudTasks(cwd: string, command: string, runCommand: typeof def
 	return parsed.tasks ?? [];
 }
 
+class TaskHudWidget implements Component {
+	constructor(
+		private readonly tui: { requestRender?: () => void },
+		private readonly theme: Theme,
+		private state?: TaskHudState,
+	) {}
+
+	setState(state: TaskHudState): void {
+		this.state = state;
+		this.tui.requestRender?.();
+	}
+
+	render(width: number): string[] {
+		const state = this.state;
+		if (!state || !hasEnoughTerminalRows(state.config.hud.minTerminalRows)) return [];
+		return renderHudLines(state.tasks, this.theme, width, state.config.hud.maxTasks, state.display, {
+			hideKanban: taskHudKanbanHidden,
+			flashTasks: activeTaskHudFlashes(),
+		});
+	}
+
+	invalidate() {}
+}
+
+function ensureTaskHudWidget(ctx: ExtensionContext): void {
+	if (taskHudWidget && taskHudWidgetCtx === ctx) return;
+	taskHudWidgetCtx = ctx;
+	ctx.ui.setWidget(
+		widgetId,
+		(tui, theme) => {
+			requestTaskHudRender = typeof tui.requestRender === "function" ? () => tui.requestRender() : undefined;
+			taskHudWidget = new TaskHudWidget(tui, theme, latestTaskHudState);
+			return taskHudWidget;
+		},
+		{ placement: "aboveEditor" },
+	);
+}
+
 async function updateTaskHud(
 	ctx: ExtensionContext,
 	pi: ExtensionAPI | undefined,
 	command: string,
 	runCommand: typeof defaultRunCommand,
 	config: Config,
+	signal: AbortSignal | false | undefined = ctx.signal,
 ): Promise<void> {
-	const tasks = await loadHudTasks(ctx.cwd, command, runCommand, ctx.signal);
+	const tasks = await loadHudTasks(ctx.cwd, command, runCommand, signal || undefined);
 	const display = assignmentDisplayContext(pi, ctx, tasks);
-	ctx.ui.setWidget(
-		widgetId,
-		(_tui, theme) => ({
-			render: (width: number) =>
-				hasEnoughRows(config.hud.minTerminalRows)
-					? renderHudLines(tasks, theme, width, config.hud.maxTasks, display, {
-							hideKanban: taskHudKanbanHidden,
-						})
-					: [],
-			invalidate() {},
-		}),
-		{ placement: "aboveEditor" },
-	);
+	const state = { tasks, display, config };
+	latestTaskHudState = state;
+	ensureTaskHudWidget(ctx);
+	taskHudWidget?.setState(state);
 }
 
 async function showTaskBoard(
@@ -409,13 +514,6 @@ function isCanceled(task: TaskRecord): boolean {
 	return task.status === "canceled";
 }
 
-function strikethrough(theme: Theme, text: string): string {
-	const maybeTheme = theme as Theme & {
-		strikethrough?: (value: string) => string;
-	};
-	return typeof maybeTheme.strikethrough === "function" ? maybeTheme.strikethrough(text) : text;
-}
-
 function openBlockers(task: TaskRecord, byId: Map<string, TaskRecord>): string[] {
 	return (task.blocked_by ?? []).filter((id) => {
 		const blocker = byId.get(id);
@@ -427,15 +525,28 @@ function hasOpenBlockers(task: TaskRecord, byId: Map<string, TaskRecord>): boole
 	return openBlockers(task, byId).length > 0;
 }
 
+function hasOpenDependencies(
+	task: TaskRecord,
+	byId: Map<string, TaskRecord>,
+	children: Map<string, TaskRecord[]>,
+): boolean {
+	return hasOpenBlockers(task, byId) || activeChildren(task, children).length > 0;
+}
+
 function priority(task: TaskRecord): number {
 	return typeof task.priority === "number" ? task.priority : 0;
 }
 
-function sortTasksForDisplay(tasks: TaskRecord[], blockersById?: Map<string, TaskRecord>): TaskRecord[] {
+function sortTasksForDisplay(
+	tasks: TaskRecord[],
+	blockersById?: Map<string, TaskRecord>,
+	childrenByParent?: Map<string, TaskRecord[]>,
+): TaskRecord[] {
 	const byId = blockersById ?? new Map(tasks.map((task) => [task.id, task]));
+	const children = childrenByParent ?? taskChildren([...byId.values()]);
 	return [...tasks].sort((left, right) => {
-		const leftBlocked = hasOpenBlockers(left, byId);
-		const rightBlocked = hasOpenBlockers(right, byId);
+		const leftBlocked = hasOpenDependencies(left, byId, children);
+		const rightBlocked = hasOpenDependencies(right, byId, children);
 		if (leftBlocked !== rightBlocked) return leftBlocked ? 1 : -1;
 		const priorityDelta = priority(right) - priority(left);
 		if (priorityDelta !== 0) return priorityDelta;
@@ -461,21 +572,24 @@ function isBoardReady(task: TaskRecord): boolean {
 export function buildTaskBoardColumns(tasks: TaskRecord[]): TaskBoardColumn[] {
 	const byId = new Map(tasks.map((task) => [task.id, task]));
 	const active = tasks.filter((task) => !isCanceled(task));
+	const children = taskChildren(active);
 	return [
 		{
 			id: "ready",
 			label: "Ready",
 			tasks: sortTasksForDisplay(
-				active.filter((task) => isBoardReady(task) && !hasOpenBlockers(task, byId)),
+				active.filter((task) => isBoardReady(task) && !hasOpenDependencies(task, byId, children)),
 				byId,
+				children,
 			),
 		},
 		{
 			id: "blocked",
 			label: "Blocked",
 			tasks: sortTasksForDisplay(
-				active.filter((task) => isBoardReady(task) && hasOpenBlockers(task, byId)),
+				active.filter((task) => isBoardReady(task) && hasOpenDependencies(task, byId, children)),
 				byId,
+				children,
 			),
 		},
 		{
@@ -484,12 +598,13 @@ export function buildTaskBoardColumns(tasks: TaskRecord[]): TaskBoardColumn[] {
 			tasks: sortTasksForDisplay(
 				active.filter((task) => task.status === "in_progress"),
 				byId,
+				children,
 			),
 		},
 		{
 			id: "done",
 			label: "Done",
-			tasks: sortTasksForDisplay(active.filter(isComplete), byId),
+			tasks: sortTasksForDisplay(active.filter(isComplete), byId, children),
 		},
 	];
 }
@@ -519,8 +634,12 @@ function formatBoardTime(timestamp: number): string {
 	return new Date(timestamp).toLocaleString();
 }
 
+function truncateLine(text: string, width: number): string {
+	return truncateAnsiToWidth(text, width, "…");
+}
+
 function padToVisibleWidth(text: string, width: number): string {
-	const truncated = truncateToWidth(text, width);
+	const truncated = truncateLine(text, width);
 	return `${truncated}${" ".repeat(Math.max(0, width - visibleWidth(truncated)))}`;
 }
 
@@ -569,7 +688,7 @@ function taskBoardHelp(bindings: TaskBoardKeybindings): string {
 function borderLine(theme: Theme, width: number, left: string, fill: string, right: string, title = ""): string {
 	const label = title ? ` ${title} ` : "";
 	const fillCount = Math.max(0, width - 2 - visibleWidth(label));
-	return truncateToWidth(theme.fg("borderAccent", `${left}${label}${fill.repeat(fillCount)}${right}`), width);
+	return truncateLine(theme.fg("borderAccent", `${left}${label}${fill.repeat(fillCount)}${right}`), width);
 }
 
 function boxedTaskBoard(theme: Theme, width: number, lines: string[]): string[] {
@@ -579,10 +698,7 @@ function boxedTaskBoard(theme: Theme, width: number, lines: string[]): string[] 
 		borderLine(theme, safeWidth, "╭", "─", "╮", "Tasks"),
 		...lines.map((line) => {
 			const inner = padToVisibleWidth(line, innerWidth);
-			return truncateToWidth(
-				`${theme.fg("borderAccent", "│")} ${inner} ${theme.fg("borderAccent", "│")}`,
-				safeWidth,
-			);
+			return truncateLine(`${theme.fg("borderAccent", "│")} ${inner} ${theme.fg("borderAccent", "│")}`, safeWidth);
 		}),
 		borderLine(theme, safeWidth, "╰", "─", "╯"),
 	];
@@ -624,6 +740,165 @@ function shelfEmptyLine(width: number): string {
 	return " ".repeat(Math.max(0, width));
 }
 
+interface HudEpicGroup {
+	key: string;
+	label: string;
+	tasks: TaskRecord[];
+	hasCurrentAssignment: boolean;
+	maxPriority: number;
+	updatedAt: number;
+}
+
+function hudEpicKey(task: TaskRecord): string {
+	return task.epic_id?.trim() || "";
+}
+
+function hudEpicLabel(task: TaskRecord): string {
+	return task.epic_title?.trim() || task.epic_id?.trim() || "No epic";
+}
+
+function hudEpicGroups(tasks: TaskRecord[], display: AssignmentDisplayContext): HudEpicGroup[] {
+	const groups = new Map<string, HudEpicGroup>();
+	for (const task of tasks) {
+		const key = hudEpicKey(task);
+		const existing = groups.get(key);
+		if (existing) {
+			existing.tasks.push(task);
+			existing.hasCurrentAssignment ||= isAssignedToCurrentSession(task, display);
+			existing.maxPriority = Math.max(existing.maxPriority, priority(task));
+			existing.updatedAt = Math.max(existing.updatedAt, task.updated_at);
+			continue;
+		}
+		groups.set(key, {
+			key,
+			label: hudEpicLabel(task),
+			tasks: [task],
+			hasCurrentAssignment: isAssignedToCurrentSession(task, display),
+			maxPriority: priority(task),
+			updatedAt: task.updated_at,
+		});
+	}
+	return [...groups.values()].sort((left, right) => {
+		if (left.key === "" && right.key !== "") return -1;
+		if (right.key === "" && left.key !== "") return 1;
+		if (left.hasCurrentAssignment !== right.hasCurrentAssignment) return left.hasCurrentAssignment ? -1 : 1;
+		const priorityDelta = right.maxPriority - left.maxPriority;
+		if (priorityDelta !== 0) return priorityDelta;
+		return right.updatedAt - left.updatedAt || left.label.localeCompare(right.label);
+	});
+}
+
+function renderHudEpicHeader(label: string, theme: Theme, width: number): string {
+	return padToVisibleWidth(theme.fg("toolTitle", compact(label, Math.max(8, width - 2))), width);
+}
+
+function renderPersistentBackground(text: string, theme: Theme, background: "selectedBg"): string {
+	const marker = "__PI_TASK_BG_MARKER__";
+	const wrappedMarker = theme.bg(background, marker);
+	const markerIndex = wrappedMarker.indexOf(marker);
+	if (markerIndex === -1) return theme.bg(background, text);
+
+	const prefix = wrappedMarker.slice(0, markerIndex);
+	const suffix = wrappedMarker.slice(markerIndex + marker.length);
+	return renderPersistentAnsiBackground(text, prefix, suffix);
+}
+
+function renderPersistentAnsiBackground(text: string, prefix: string, suffix: string): string {
+	const reopenedText = text.split("\x1b[0m").join(`\x1b[0m${prefix}`);
+	return `${prefix}${reopenedText}${suffix}`;
+}
+
+interface Rgb {
+	r: number;
+	g: number;
+	b: number;
+}
+
+function xterm256Rgb(index: number): Rgb | undefined {
+	if (index < 0 || index > 255) return undefined;
+	const system = [
+		[0, 0, 0],
+		[128, 0, 0],
+		[0, 128, 0],
+		[128, 128, 0],
+		[0, 0, 128],
+		[128, 0, 128],
+		[0, 128, 128],
+		[192, 192, 192],
+		[128, 128, 128],
+		[255, 0, 0],
+		[0, 255, 0],
+		[255, 255, 0],
+		[0, 0, 255],
+		[255, 0, 255],
+		[0, 255, 255],
+		[255, 255, 255],
+	][index];
+	if (system) return { r: system[0] ?? 0, g: system[1] ?? 0, b: system[2] ?? 0 };
+	if (index >= 232) {
+		const level = 8 + (index - 232) * 10;
+		return { r: level, g: level, b: level };
+	}
+	const value = index - 16;
+	const levels = [0, 95, 135, 175, 215, 255];
+	return {
+		r: levels[Math.floor(value / 36)] ?? 0,
+		g: levels[Math.floor((value % 36) / 6)] ?? 0,
+		b: levels[value % 6] ?? 0,
+	};
+}
+
+function parseBackgroundRgb(ansi: string | undefined): Rgb | undefined {
+	const truecolor = ansi?.match(/\x1b\[[0-9;]*48;2;([0-9]+);([0-9]+);([0-9]+)m/);
+	if (truecolor) {
+		return {
+			r: Number(truecolor[1]),
+			g: Number(truecolor[2]),
+			b: Number(truecolor[3]),
+		};
+	}
+	const indexed = ansi?.match(/\x1b\[[0-9;]*48;5;([0-9]+)m/);
+	return indexed ? xterm256Rgb(Number(indexed[1])) : undefined;
+}
+
+function themeBackgroundAnsi(theme: Theme, background: "selectedBg"): string | undefined {
+	const direct = (theme as Theme & { getBgAnsi?: (color: "selectedBg") => string }).getBgAnsi?.(background);
+	if (direct) return direct;
+	const marker = "__PI_TASK_BG_MARKER__";
+	const wrappedMarker = theme.bg(background, marker);
+	const markerIndex = wrappedMarker.indexOf(marker);
+	return markerIndex > 0 ? wrappedMarker.slice(0, markerIndex) : undefined;
+}
+
+function taskHudFlashOpacity(flash: TaskHudFlash | undefined, now: number): number {
+	if (!flash) return 1;
+	const elapsed = Math.max(0, now - flash.startedAt);
+	const remaining = Math.max(0, flash.until - now);
+	const fade = Math.min(1, remaining / 600);
+	const wave = (Math.sin((elapsed / 900) * Math.PI * 2 - Math.PI / 2) + 1) / 2;
+	return Math.max(0, Math.min(1, (0.18 + wave * 0.45) * fade));
+}
+
+function opacityBackgroundAnsi(theme: Theme, opacity: number): string | undefined {
+	const rgb = parseBackgroundRgb(themeBackgroundAnsi(theme, "selectedBg"));
+	if (!rgb) return undefined;
+	const blend = (value: number) => Math.round(value * opacity);
+	return `\x1b[48;2;${blend(rgb.r)};${blend(rgb.g)};${blend(rgb.b)}m`;
+}
+
+function renderTaskHudFlashBackground(
+	line: string,
+	theme: Theme,
+	flash: TaskHudFlash | undefined,
+	now: number,
+): string {
+	if (!flash) return renderPersistentBackground(line, theme, "selectedBg");
+	const prefix = opacityBackgroundAnsi(theme, taskHudFlashOpacity(flash, now));
+	return prefix
+		? renderPersistentAnsiBackground(line, prefix, "\x1b[49m")
+		: renderPersistentBackground(line, theme, "selectedBg");
+}
+
 function boardColumn(columns: TaskBoardColumn[], id: TaskBoardColumn["id"]): TaskBoardColumn {
 	const column = columns.find((candidate) => candidate.id === id);
 	if (!column) throw new Error(`Missing task board column: ${id}`);
@@ -639,11 +914,11 @@ function withDoneRecencyOrder(column: TaskBoardColumn): TaskBoardColumn {
 	};
 }
 
-function taskHudSummary(tasks: TaskRecord[], columns: Record<TaskBoardColumn["id"], TaskBoardColumn>): string[] {
+function taskHudSummary(columns: Record<TaskBoardColumn["id"], TaskBoardColumn>): string[] {
 	const parts: string[] = [];
 	if (columns.ready.tasks.length > 0) parts.push(`${columns.ready.tasks.length} ready`);
 	if (columns.blocked.tasks.length > 0) parts.push(`${columns.blocked.tasks.length} blocked`);
-	const done = tasks.filter(isComplete).length;
+	const done = columns.done.tasks.length;
 	if (done > 0) parts.push(`${done} done`);
 	if (columns.in_progress.tasks.length > 0) parts.push(`${columns.in_progress.tasks.length} in progress`);
 	return parts;
@@ -669,6 +944,9 @@ function renderHudTaskCard(
 	width: number,
 	byId: Map<string, TaskRecord>,
 	display: AssignmentDisplayContext,
+	flashTaskIds: ReadonlySet<string> = new Set(),
+	flashTasks: ReadonlyMap<string, TaskHudFlash> = new Map(),
+	now = Date.now(),
 ): string {
 	const blockers = openBlockers(task, byId);
 	const assignee = formatAssignee(task, theme, display);
@@ -678,7 +956,9 @@ function renderHudTaskCard(
 	].join("");
 	const titleColor = column.id === "done" || isAssignedToOtherSession(task, display) ? "dim" : "text";
 	const card = `${theme.fg(statusColor(task.status), statusGlyph(task.status))} ${formatTaskId(task.id, theme)} ${theme.fg(titleColor, compact(task.title, Math.max(8, width - 16)))}${assignee}${theme.fg("dim", meta)}`;
-	return padToVisibleWidth(` ${padToVisibleWidth(card, width)}`, width + 2);
+	const line = padToVisibleWidth(` ${padToVisibleWidth(card, width)}`, width + 2);
+	const flash = flashTasks.get(task.id);
+	return flash || flashTaskIds.has(task.id) ? renderTaskHudFlashBackground(line, theme, flash, now) : line;
 }
 
 function renderHudSection(
@@ -688,15 +968,32 @@ function renderHudSection(
 	rows: number,
 	byId: Map<string, TaskRecord>,
 	display: AssignmentDisplayContext,
+	flashTaskIds: ReadonlySet<string> = new Set(),
+	flashTasks: ReadonlyMap<string, TaskHudFlash> = new Map(),
+	now = Date.now(),
 ): string[] {
 	const hidden = Math.max(0, column.tasks.length - rows);
 	const lines = [shelfHeader(theme, column, width, hidden)];
 	const cardWidth = Math.max(1, width - 2);
-	for (let row = 0; row < rows; row++) {
-		const task = column.tasks[row];
-		lines.push(task ? renderHudTaskCard(task, column, theme, cardWidth, byId, display) : shelfEmptyLine(width));
+	const visibleTasks = hudEpicGroups(column.tasks, display)
+		.flatMap((group) => group.tasks)
+		.slice(0, rows);
+	for (const group of hudEpicGroups(visibleTasks, display)) {
+		lines.push(renderHudEpicHeader(group.label, theme, width));
+		for (const task of group.tasks) {
+			lines.push(renderHudTaskCard(task, column, theme, cardWidth, byId, display, flashTaskIds, flashTasks, now));
+		}
+	}
+	if (visibleTasks.length === 0) {
+		lines.push(shelfEmptyLine(width));
 	}
 	return lines;
+}
+
+function isVisibleHudTask(task: TaskRecord, display: AssignmentDisplayContext): boolean {
+	if (isCanceled(task)) return false;
+	if (!isComplete(task)) return true;
+	return isAssignedToCurrentSession(task, display);
 }
 
 function detailLines(task: TaskRecord, tasks: TaskRecord[], theme: Theme, width: number): string[] {
@@ -709,11 +1006,12 @@ function detailLines(task: TaskRecord, tasks: TaskRecord[], theme: Theme, width:
 		"",
 		`${theme.fg("dim", "Status:")} ${task.status}   ${theme.fg("dim", "Priority:")} ${priority(task)}   ${theme.fg("dim", "Assignee:")} ${assignee}`,
 		`${theme.fg("dim", "Blockers:")} ${(task.blocked_by ?? []).join(", ") || "none"}`,
+		`${theme.fg("dim", "Parent:")} ${task.parent_id ?? "none"}`,
 		`${theme.fg("dim", "Blocks:")} ${blocked.join(", ") || "none"}`,
 		`Created: ${formatBoardTime(task.created_at)}   Updated: ${formatBoardTime(task.updated_at)}`,
 		...(task.body.trim() ? ["", task.body.trim()] : []),
 	];
-	return raw.flatMap((line) => wrapTextWithAnsi(line, width)).map((line) => truncateToWidth(line, width));
+	return raw.flatMap((line) => wrapTextWithAnsi(line, width)).map((line) => truncateLine(line, width));
 }
 
 export function renderTaskBoardLines(
@@ -730,7 +1028,7 @@ export function renderTaskBoardLines(
 	const widths = splitWidths(innerWidth, columns.length);
 	const maxRows = Math.max(1, ...columns.map((column) => column.tasks.length));
 	const lines = [
-		truncateToWidth(`${theme.fg("mdHeading", "Tasks")} ${theme.fg("dim", taskBoardHelp(bindings))}`, innerWidth),
+		truncateLine(`${theme.fg("mdHeading", "Tasks")} ${theme.fg("dim", taskBoardHelp(bindings))}`, innerWidth),
 		"",
 		fitCells(
 			columns.map((column, index) => {
@@ -751,7 +1049,11 @@ export function renderTaskBoardLines(
 					const assignee = assignmentLabel(task);
 					const label = `${marker} ${statusGlyph(task.status)} ${task.id} ${compact(task.title, Math.max(12, widths[columnIndex] - 12))}${assignee ? ` @${compact(assignee, 14)}` : ""}`;
 					return columnIndex === clamped.column && row === clamped.row
-						? theme.bg("selectedBg", theme.fg("text", label))
+						? renderPersistentBackground(
+								padToVisibleWidth(theme.fg("text", label), widths[columnIndex]),
+								theme,
+								"selectedBg",
+							)
 						: theme.fg("text", label);
 				}),
 				widths,
@@ -759,19 +1061,19 @@ export function renderTaskBoardLines(
 		);
 	}
 	lines.push("");
-	lines.push(truncateToWidth(theme.fg("borderMuted", "─".repeat(innerWidth)), innerWidth));
+	lines.push(truncateLine(theme.fg("borderMuted", "─".repeat(innerWidth)), innerWidth));
 	lines.push(theme.fg("mdHeading", "Details"));
 	lines.push("");
 	const task = selectedTask(columns, clamped);
 	if (task) {
 		lines.push(...detailLines(task, tasks, theme, innerWidth));
 	} else {
-		lines.push(truncateToWidth(theme.fg("dim", "No task selected"), innerWidth));
+		lines.push(truncateLine(theme.fg("dim", "No task selected"), innerWidth));
 	}
 	return boxedTaskBoard(
 		theme,
 		safeWidth,
-		lines.map((line) => truncateToWidth(line, innerWidth)),
+		lines.map((line) => truncateLine(line, innerWidth)),
 	);
 }
 
@@ -879,7 +1181,7 @@ export class TaskBoardOverlay implements Component {
 		const task = this.currentTask();
 		if (!task) return;
 		const byId = new Map(this.tasks.map((item) => [item.id, item]));
-		if (hasOpenBlockers(task, byId)) return;
+		if (hasOpenDependencies(task, byId, taskChildren(this.tasks))) return;
 		const nextStatus = task.status === "in_progress" ? "done" : isComplete(task) ? "open" : "in_progress";
 		this.updateSelected({ status: nextStatus });
 	}
@@ -978,7 +1280,7 @@ export class TaskBoardOverlay implements Component {
 		const prefix: string[] = [];
 		if (this.confirmingDeleteId) {
 			prefix.push(
-				truncateToWidth(this.options.theme.fg("warning", `Confirm delete ${this.confirmingDeleteId}? y/N`), width),
+				truncateLine(this.options.theme.fg("warning", `Confirm delete ${this.confirmingDeleteId}? y/N`), width),
 			);
 		}
 		return [...prefix, ...lines];
@@ -991,7 +1293,12 @@ type AssignmentDisplayContext = {
 	currentAssignment?: string;
 	currentLabel?: string;
 	labels?: Map<string, string>;
+	sessionPrefixes?: Map<string, string>;
 };
+
+function isMutatingTaskAction(action: TaskCommand): boolean {
+	return action === "add" || action === "update" || action === "delete";
+}
 
 function sessionFile(ctx?: ExtensionContext): string | undefined {
 	return (
@@ -1007,6 +1314,36 @@ function sessionIdFromAssignment(assignedTo: string): string | undefined {
 	if (!assignedTo.startsWith("session:")) return undefined;
 	const id = assignedTo.slice("session:".length);
 	return /^[A-Za-z0-9_.:-]+$/.test(id) ? id : undefined;
+}
+
+function sessionDisplaySeed(assignedTo: string): string | undefined {
+	const id = sessionIdFromAssignment(assignedTo);
+	if (!id) return undefined;
+	const uuid = id.match(/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/)?.[0];
+	return uuid ? uuid.replace(/-/g, "").toLowerCase() : id;
+}
+
+function shortestSessionPrefixes(assignments: string[]): Map<string, string> {
+	const seeds = new Map<string, string>();
+	for (const assignment of new Set(assignments)) {
+		const seed = sessionDisplaySeed(assignment);
+		if (seed) seeds.set(assignment, seed);
+	}
+	const result = new Map<string, string>();
+	for (const [assignment, seed] of seeds) {
+		let length = Math.min(seed.length, 4);
+		while (
+			length < seed.length &&
+			[...seeds].some(
+				([otherAssignment, otherSeed]) =>
+					otherAssignment !== assignment && otherSeed.startsWith(seed.slice(0, length)),
+			)
+		) {
+			length++;
+		}
+		result.set(assignment, seed.slice(0, length));
+	}
+	return result;
 }
 
 function sessionNameFromFile(path: string): string | undefined {
@@ -1043,10 +1380,14 @@ function assignmentDisplayContext(
 	const currentAssignment = sessionAssignment(ctx);
 	const currentLabel = sessionName(pi, ctx);
 	const labels = new Map<string, string>();
+	const assignments = new Set<string>();
+	if (currentAssignment) assignments.add(currentAssignment);
 	if (currentAssignment && currentLabel) labels.set(currentAssignment, currentLabel);
 	for (const task of tasks) {
 		const assignedTo = task.assigned_to;
-		if (!assignedTo || labels.has(assignedTo)) continue;
+		if (!assignedTo) continue;
+		assignments.add(assignedTo);
+		if (labels.has(assignedTo)) continue;
 		const label = sessionNameForAssignment(ctx, assignedTo);
 		if (label) labels.set(assignedTo, label);
 	}
@@ -1054,6 +1395,7 @@ function assignmentDisplayContext(
 		currentAssignment,
 		currentLabel,
 		labels,
+		sessionPrefixes: shortestSessionPrefixes([...assignments]),
 	};
 }
 
@@ -1064,6 +1406,10 @@ function assignmentLabel(task: TaskRecord, display: AssignmentDisplayContext = {
 	const label = display.labels?.get(assignedTo);
 	if (label) return label;
 	if (task.assigned_label) return task.assigned_label;
+	const prefix = display.sessionPrefixes?.get(assignedTo);
+	if (prefix) return prefix;
+	const seed = sessionDisplaySeed(assignedTo);
+	if (seed) return seed.slice(0, Math.min(seed.length, 4));
 	if (assignedTo.startsWith("session:")) return assignedTo.slice("session:".length);
 	return assignedTo;
 }
@@ -1092,55 +1438,44 @@ function formatTaskId(id: string, theme: Theme): string {
 	return `${visible}${" ".repeat(Math.max(0, padded.length - id.length))}`;
 }
 
-function formatTaskLine(
-	task: TaskRecord,
-	theme: Theme,
-	width: number,
-	byId: Map<string, TaskRecord>,
-	display: AssignmentDisplayContext = {},
-): string {
-	const blockers = openBlockers(task, byId);
-	const glyph = theme.fg(statusColor(task.status), statusGlyph(task.status));
-	const id = formatTaskId(task.id, theme);
-	const blockerText = blockers.join(", ");
-	const assignee = formatAssignee(task, theme, display);
-	const titleColor = isAssignedToOtherSession(task, display) ? "muted" : "text";
-	const title = isComplete(task)
-		? theme.fg("dim", strikethrough(theme, `${task.id.padEnd(4)} ${compact(task.title, Math.max(20, width - 18))}`))
-		: theme.fg(titleColor, compact(task.title, Math.max(20, width - 18)));
-	const suffix = blockers.length > 0 ? theme.fg("dim", ` › blocked by ${blockerText}`) : "";
-	if (isComplete(task)) return truncateToWidth(`  ${glyph} ${title}${suffix}`, width);
-	return truncateToWidth(`  ${glyph} ${id} ${title}${assignee}${suffix}`, width);
-}
-
 export function renderHudLines(
 	tasks: TaskRecord[],
 	theme: Theme,
 	width: number,
 	maxTasks = 6,
 	display: AssignmentDisplayContext = {},
-	options: { hideKanban?: boolean } = {},
+	options: {
+		hideKanban?: boolean;
+		flashTaskIds?: ReadonlySet<string>;
+		flashTasks?: ReadonlyMap<string, TaskHudFlash>;
+		now?: number;
+	} = {},
 ): string[] {
-	const visibleTasks = tasks.filter((task) => !isCanceled(task));
+	const hudTasks = tasks.filter((task) => !isCanceled(task));
+	const visibleTasks = hudTasks.filter((task) => isVisibleHudTask(task, display));
 	if (visibleTasks.length === 0) return [];
-	const columns = buildTaskBoardColumns(visibleTasks);
+	const columns = buildTaskBoardColumns(hudTasks);
+	const doneColumn = boardColumn(columns, "done");
 	const hudColumns = {
 		ready: boardColumn(columns, "ready"),
 		blocked: boardColumn(columns, "blocked"),
 		in_progress: boardColumn(columns, "in_progress"),
-		done: withDoneRecencyOrder(boardColumn(columns, "done")),
+		done: withDoneRecencyOrder({
+			...doneColumn,
+			tasks: doneColumn.tasks.filter((task) => isAssignedToCurrentSession(task, display)),
+		}),
 	};
 	const shownColumns = [hudColumns.ready, hudColumns.in_progress, hudColumns.done];
 	const widths = splitWidths(width, shownColumns.length);
-	const parts = taskHudSummary(visibleTasks, hudColumns);
-	const lines = [
-		truncateToWidth(
-			`${theme.fg("mdHeading", "●")} ${theme.fg("mdHeading", `${visibleTasks.length} tasks`)} ${theme.fg("muted", `(${parts.join(", ")})`)}`,
-			width,
-		),
-	];
-	if (options.hideKanban) return lines;
-	const byId = new Map(visibleTasks.map((item) => [item.id, item]));
+	const parts = taskHudSummary(hudColumns);
+	const summaryLine = truncateLine(
+		`${theme.fg("mdHeading", "●")} ${theme.fg("mdHeading", `${visibleTasks.length} tasks`)} ${theme.fg("muted", `(${parts.join(", ")})`)}`,
+		width,
+	);
+	if (options.hideKanban) return [summaryLine];
+	const lines: string[] = [];
+	const byId = new Map(hudTasks.map((item) => [item.id, item]));
+	const now = options.now ?? Date.now();
 	const renderedColumns = [
 		[
 			...renderHudSection(
@@ -1150,6 +1485,9 @@ export function renderHudLines(
 				hudColumnRows(hudColumns.ready, maxTasks),
 				byId,
 				display,
+				options.flashTaskIds,
+				options.flashTasks,
+				now,
 			),
 			...(hudColumns.blocked.tasks.length > 0
 				? renderHudSection(
@@ -1159,6 +1497,9 @@ export function renderHudLines(
 						hudColumnRows(hudColumns.blocked, maxTasks),
 						byId,
 						display,
+						options.flashTaskIds,
+						options.flashTasks,
+						now,
 					)
 				: []),
 		],
@@ -1169,6 +1510,9 @@ export function renderHudLines(
 			hudColumnRows(hudColumns.in_progress, maxTasks),
 			byId,
 			display,
+			options.flashTaskIds,
+			options.flashTasks,
+			now,
 		),
 		renderHudSection(
 			hudColumns.done,
@@ -1177,6 +1521,9 @@ export function renderHudLines(
 			hudColumnRows(hudColumns.done, maxTasks),
 			byId,
 			display,
+			options.flashTaskIds,
+			options.flashTasks,
+			now,
 		),
 	];
 	const height = Math.max(...renderedColumns.map((column) => column.length));
@@ -1188,96 +1535,18 @@ export function renderHudLines(
 			),
 		);
 	}
-	return lines.map((line) => truncateToWidth(line, width));
+	return lines.map((line) => truncateLine(line, width));
 }
 
-function actionLabel(action: TaskCommand): string {
-	switch (action) {
-		case "add":
-			return "Add task";
-		case "list":
-			return "List tasks";
-		case "show":
-			return "Show task";
-		case "update":
-			return "Update task";
-		case "delete":
-			return "Delete task";
-	}
-}
-
-function renderCallText(action: TaskCommand, args: Record<string, unknown>, theme: Theme): string {
-	const target =
-		typeof args.title === "string"
-			? args.title
-			: typeof args.id === "string"
-				? args.id
-				: typeof args.status === "string"
-					? args.status
-					: "project";
-	return `${theme.fg("toolTitle", theme.bold(actionLabel(action)))} ${theme.fg("accent", compact(target, 64))}`;
-}
-
-function renderTaskBlock(title: string, task: TaskRecord, theme: Theme): string {
-	const label = assignmentLabel(task);
-	return [
-		theme.fg("toolTitle", theme.bold(title)),
-		`  ${theme.fg(statusColor(task.status), statusGlyph(task.status))} ${theme.fg("accent", theme.bold(task.id.padEnd(4)))} ${theme.fg("text", task.title)}`,
-		...(label ? [`  ${theme.fg("dim", `@${label}`)}`] : []),
-		...(task.blocked_by?.length ? [`  ${theme.fg("dim", `› blocked by ${task.blocked_by.join(", ")}`)}`] : []),
-		...(task.body ? [`  ${theme.fg("dim", compact(task.body, 120))}`] : []),
-	].join("\n");
-}
-
-function renderTaskList(tasks: TaskRecord[], theme: Theme): string {
-	if (tasks.length === 0) return `${theme.fg("toolTitle", theme.bold("Tasks"))}\n  ${theme.fg("dim", "No tasks")}`;
-	const lines = [theme.fg("toolTitle", theme.bold(`Tasks (${tasks.length})`))];
-	const sortedTasks = sortTasksForDisplay(tasks);
-	const byId = new Map(sortedTasks.map((task) => [task.id, task]));
-	for (const task of sortedTasks.slice(0, 12)) {
-		lines.push(formatTaskLine(task, theme, 140, byId));
-	}
-	if (tasks.length > 12) lines.push(theme.fg("dim", `    … and ${tasks.length - 12} more`));
-	return lines.join("\n");
-}
-
-export function renderTaskResult(details: TaskDetails | undefined, theme: Theme): string {
-	if (!details) return theme.fg("dim", "Task result unavailable");
-	switch (details.action) {
-		case "add":
-			return details.task
-				? renderTaskBlock("Task added", details.task, theme)
-				: theme.fg("toolTitle", theme.bold("Task added"));
-		case "show":
-			return details.task ? renderTaskBlock("Task", details.task, theme) : theme.fg("warning", "Task not found");
-		case "update":
-			return details.task
-				? renderTaskBlock("Task updated", details.task, theme)
-				: theme.fg("toolTitle", theme.bold("Task updated"));
-		case "delete":
-			return `${theme.fg("toolTitle", theme.bold("Task deleted"))}\n  ${theme.fg("accent", details.deleted ?? "unknown")}`;
-		case "list":
-			return renderTaskList(details.tasks ?? [], theme);
-	}
-}
-
-class TaskText implements Component {
-	constructor(private text = "") {}
-
-	setText(text: unknown): void {
-		this.text = typeof text === "string" ? text : "";
-	}
-
-	render(width: number): string[] {
-		return this.text.split("\n").map((line) => truncateToWidth(line, width));
+class EmptyTaskRender implements Component {
+	render(): string[] {
+		return [];
 	}
 
 	invalidate(): void {}
 }
 
-function taskText(context: { lastComponent?: unknown } | undefined): TaskText {
-	return context?.lastComponent instanceof TaskText ? context.lastComponent : new TaskText("");
-}
+const emptyTaskRender = new EmptyTaskRender();
 
 function makeTaskTool(
 	action: TaskCommand,
@@ -1286,96 +1555,379 @@ function makeTaskTool(
 	config: Config,
 	pi: ExtensionAPI,
 	getCwd: () => string,
+	onProgress?: () => void,
 ) {
 	return {
-		renderCall(args: Record<string, unknown>, theme: Theme, context?: { lastComponent?: unknown }) {
-			const text = taskText(context);
-			text.setText(renderCallText(action, args ?? {}, theme));
-			return text;
+		renderShell: "self" as const,
+		renderCall() {
+			return emptyTaskRender;
 		},
-		renderResult(
-			result: { details?: unknown },
-			_options: unknown,
-			theme: Theme,
-			context: { lastComponent?: unknown },
-		) {
-			const text = taskText(context);
-			text.setText(renderTaskResult(result.details as TaskDetails | undefined, theme));
-			return text;
+		renderResult() {
+			return emptyTaskRender;
 		},
-		execute: (
+		execute: async (
 			_toolCallId: string,
 			params: Record<string, unknown>,
 			signal?: AbortSignal,
 			_onUpdate?: unknown,
 			ctx?: ExtensionContext,
-		) => executeTask(command, runCommand, getCwd(), action, params, config, pi, ctx, signal),
+		) => {
+			const result = await executeTask(command, runCommand, getCwd(), action, params, config, pi, ctx, signal);
+			if (isMutatingTaskAction(action)) onProgress?.();
+			return result;
+		},
 	};
+}
+
+function installSilentTaskToolRenderPatch(): void {
+	const prototype = ToolExecutionComponent.prototype as typeof ToolExecutionComponent.prototype & {
+		[silentTaskToolPatchKey]?: boolean;
+		render(width: number): string[];
+	};
+	if (prototype[silentTaskToolPatchKey]) return;
+	const originalRender = prototype.render;
+	prototype.render = function renderSilentTaskTool(width: number): string[] {
+		if (silentTaskToolNames.has((this as { toolName?: string }).toolName ?? "")) return [];
+		return originalRender.call(this, width);
+	};
+	prototype[silentTaskToolPatchKey] = true;
 }
 
 function isActiveTask(task: TaskRecord): boolean {
 	return !isComplete(task) && !isCanceled(task);
 }
 
-function assignedTaskReminder(
-	tasks: TaskRecord[],
-	assignedTo: string,
-	display: AssignmentDisplayContext = {},
-): string | undefined {
-	const assigned = sortTasksForDisplay(
-		tasks.filter((task) => isActiveTask(task) && task.assigned_to === assignedTo),
-	).slice(0, 8);
-	if (assigned.length === 0) return undefined;
-	const label = assignmentLabel({ ...assigned[0], assigned_to: assignedTo }, display) ?? assignedTo;
-	const lines = [
-		`You have ${assigned.length} assigned task${assigned.length === 1 ? "" : "s"} still open for @${label}:`,
-		...assigned.map((task) => `- ${task.id} [${task.status}] ${task.title}`),
-		"",
-		"Update status with task_update when you start or finish work.",
-	];
-	return lines.join("\n");
+type TaskGuardActionKind = "continue" | "start" | "claim" | "fix_dependency" | "close_parent";
+
+interface TaskGuardAction {
+	kind: TaskGuardActionKind;
+	task: TaskRecord;
+	source?: TaskRecord;
+	invalidBlocker?: string;
 }
 
-async function remindAssignedTasks(
+interface TaskGuardDecision {
+	kind: "continue" | "escalate";
+	fingerprint: string;
+	action: TaskGuardAction;
+	content: string;
+}
+
+function taskChildren(tasks: TaskRecord[]): Map<string, TaskRecord[]> {
+	const children = new Map<string, TaskRecord[]>();
+	for (const task of tasks) {
+		const parentId = task.parent_id;
+		if (!parentId) continue;
+		const list = children.get(parentId) ?? [];
+		list.push(task);
+		children.set(parentId, list);
+	}
+	return children;
+}
+
+function activeChildren(task: TaskRecord, children: Map<string, TaskRecord[]>): TaskRecord[] {
+	return (children.get(task.id) ?? []).filter(isActiveTask);
+}
+
+function unresolvedBlockers(task: TaskRecord, byId: Map<string, TaskRecord>): Array<TaskRecord | string> {
+	return (task.blocked_by ?? []).flatMap((id) => {
+		const blocker = byId.get(id);
+		if (!blocker) return [id];
+		return isComplete(blocker) ? [] : [blocker];
+	});
+}
+
+function hasUnresolvedDependencies(
+	task: TaskRecord,
+	byId: Map<string, TaskRecord>,
+	children: Map<string, TaskRecord[]>,
+): boolean {
+	return unresolvedBlockers(task, byId).length > 0 || activeChildren(task, children).length > 0;
+}
+
+function isReadyForWork(task: TaskRecord, byId: Map<string, TaskRecord>, children: Map<string, TaskRecord[]>): boolean {
+	return isActiveTask(task) && task.status !== "in_progress" && !hasUnresolvedDependencies(task, byId, children);
+}
+
+function isAssignedTo(assignment: string, task: TaskRecord): boolean {
+	return task.assigned_to === assignment;
+}
+
+function isUnassigned(task: TaskRecord): boolean {
+	return !task.assigned_to;
+}
+
+function sortedActive(tasks: TaskRecord[], byId: Map<string, TaskRecord>): TaskRecord[] {
+	return sortTasksForDisplay(tasks.filter(isActiveTask), byId);
+}
+
+function selectDependencyAction(
+	task: TaskRecord,
+	assignedTo: string,
+	byId: Map<string, TaskRecord>,
+	children: Map<string, TaskRecord[]>,
+	seen = new Set<string>(),
+): TaskGuardAction | undefined {
+	if (!seen.add(task.id)) return undefined;
+	for (const dependency of [...unresolvedBlockers(task, byId), ...activeChildren(task, children)]) {
+		if (typeof dependency === "string") {
+			return { kind: "fix_dependency", task, invalidBlocker: dependency };
+		}
+		if (isCanceled(dependency)) {
+			return { kind: "fix_dependency", task, invalidBlocker: dependency.id };
+		}
+		if (isAssignedTo(assignedTo, dependency)) {
+			if (dependency.status === "in_progress") return { kind: "continue", task: dependency, source: task };
+			const nested = selectDependencyAction(dependency, assignedTo, byId, children, seen);
+			if (nested) return nested;
+			if (isReadyForWork(dependency, byId, children)) return { kind: "start", task: dependency, source: task };
+			continue;
+		}
+		if (isUnassigned(dependency)) {
+			const nested = selectDependencyAction(dependency, assignedTo, byId, children, seen);
+			if (nested) return nested;
+			if (isReadyForWork(dependency, byId, children)) return { kind: "claim", task: dependency, source: task };
+		}
+	}
+	return undefined;
+}
+
+function selectGuardAction(tasks: TaskRecord[], assignedTo: string): TaskGuardAction | undefined {
+	const byId = new Map(tasks.map((task) => [task.id, task]));
+	const children = taskChildren(tasks);
+	const assigned = sortedActive(
+		tasks.filter((task) => isAssignedTo(assignedTo, task)),
+		byId,
+	);
+	if (assigned.length === 0) return undefined;
+	for (const task of assigned) {
+		const action = selectDependencyAction(task, assignedTo, byId, children);
+		if (action) return action;
+	}
+	const inProgress = assigned.find(
+		(task) => task.status === "in_progress" && !hasUnresolvedDependencies(task, byId, children),
+	);
+	if (inProgress) return { kind: "continue", task: inProgress };
+	const assignedReady = assigned.find(
+		(task) => isReadyForWork(task, byId, children) && (children.get(task.id)?.length ?? 0) === 0,
+	);
+	if (assignedReady) return { kind: "start", task: assignedReady };
+	const epicIds = new Set(assigned.map((task) => task.epic_id).filter((id): id is string => Boolean(id)));
+	const sameEpicReady = sortedActive(
+		tasks.filter(
+			(task) =>
+				isUnassigned(task) && task.epic_id && epicIds.has(task.epic_id) && isReadyForWork(task, byId, children),
+		),
+		byId,
+	)[0];
+	if (sameEpicReady) return { kind: "claim", task: sameEpicReady };
+	const parentToClose = assigned.find(
+		(task) => (children.get(task.id)?.length ?? 0) > 0 && !hasUnresolvedDependencies(task, byId, children),
+	);
+	if (parentToClose) return { kind: "close_parent", task: parentToClose };
+	return undefined;
+}
+
+function guardFingerprint(tasks: TaskRecord[], action: TaskGuardAction, assignedTo: string): string {
+	const activeAssigned = tasks
+		.filter((task) => isActiveTask(task) && task.assigned_to === assignedTo)
+		.map((task) => `${task.id}:${task.status}:${task.updated_at}:${(task.blocked_by ?? []).join(",")}`)
+		.sort()
+		.join("|");
+	return `${action.kind}:${action.task.id}:${action.invalidBlocker ?? ""}:${activeAssigned}`;
+}
+
+function guardInstruction(action: TaskGuardAction): string {
+	const source = action.source ? ` to unblock ${action.source.id}` : "";
+	switch (action.kind) {
+		case "continue":
+			return `Continue in-progress task ${action.task.id}${source}: ${action.task.title}`;
+		case "start":
+			return `Start assigned task ${action.task.id}${source}: ${action.task.title}. First mark it in_progress with task_update.`;
+		case "claim":
+			return `Task ${action.task.id}${source} has been assigned to this session: ${action.task.title}. First mark it in_progress with task_update.`;
+		case "fix_dependency":
+			return `Task ${action.task.id} has invalid blocker ${action.invalidBlocker}. Fix blocked_by or choose a replacement blocker before ending.`;
+		case "close_parent":
+			return `All child tasks for parent ${action.task.id} are terminal. Verify acceptance and mark the parent done.`;
+	}
+}
+
+function guardContent(action: TaskGuardAction): string {
+	return [
+		"Task guard: work remains for this session.",
+		"",
+		guardInstruction(action),
+		"",
+		"Do not summarize or stop. Continue now.",
+	].join("\n");
+}
+
+function escalationContent(action: TaskGuardAction): string {
+	return [
+		"Task guard stalled.",
+		"",
+		`Work remains: ${action.task.id} [${action.task.status}] ${action.task.title}`,
+		`Required next action: ${guardInstruction(action)}`,
+	].join("\n");
+}
+
+async function evaluateTaskGuard(
+	ctx: ExtensionContext,
+	command: string,
+	runCommand: typeof defaultRunCommand,
+	state: GuardState,
+): Promise<TaskGuardDecision | undefined> {
+	const assignedTo = sessionAssignment(ctx);
+	if (!assignedTo) return undefined;
+	const tasks = await loadHudTasks(ctx.cwd, command, runCommand, ctx.signal);
+	const action = selectGuardAction(tasks, assignedTo);
+	if (!action) {
+		state.lastGuardFingerprint = undefined;
+		state.lastGuardProgressSerial = undefined;
+		return undefined;
+	}
+	const fingerprint = guardFingerprint(tasks, action, assignedTo);
+	const stalled = state.lastGuardFingerprint === fingerprint && state.lastGuardProgressSerial === state.progressSerial;
+	return {
+		kind: stalled ? "escalate" : "continue",
+		fingerprint,
+		action,
+		content: stalled ? escalationContent(action) : guardContent(action),
+	};
+}
+
+async function autoAssignGuardTask(
+	decision: TaskGuardDecision,
+	ctx: ExtensionContext,
+	pi: ExtensionAPI,
+	command: string,
+	runCommand: typeof defaultRunCommand,
+	state: GuardState,
+	config: Config,
+): Promise<TaskGuardDecision | undefined> {
+	if (decision.kind !== "continue" || decision.action.kind !== "claim") return decision;
+	const freshDecision = await evaluateTaskGuard(ctx, command, runCommand, state);
+	if (!freshDecision || freshDecision.kind !== "continue") return freshDecision;
+	if (freshDecision.action.kind !== "claim") return freshDecision;
+	if (freshDecision.action.task.id !== decision.action.task.id) return freshDecision;
+	await runCommand(
+		command,
+		buildTaskCommand(
+			"update",
+			normalizeTaskParams({ id: freshDecision.action.task.id, assigned_to: "current" }, ctx, pi),
+		),
+		ctx.cwd,
+		ctx.signal,
+	);
+	state.progressSerial++;
+	if (config.hud.enabled) await updateTaskHud(ctx, pi, command, runCommand, config).catch(() => {});
+	return freshDecision;
+}
+
+async function sendTaskGuard(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 	command: string,
 	runCommand: typeof defaultRunCommand,
-	state: { lastReminderFingerprint?: string },
+	state: GuardState,
+	config: Config,
 ): Promise<void> {
-	const assignedTo = sessionAssignment(ctx);
-	if (!assignedTo) return;
-	const tasks = await loadHudTasks(ctx.cwd, command, runCommand, ctx.signal);
-	const assigned = tasks.filter((task) => isActiveTask(task) && task.assigned_to === assignedTo);
-	const fingerprint = assigned.map((task) => `${task.id}:${task.status}:${task.updated_at}`).join("|");
-	if (fingerprint.length === 0) {
-		state.lastReminderFingerprint = undefined;
+	const pending = state.pending;
+	state.pending = undefined;
+	if (!pending || pending.kind !== "continue") return;
+	let decision: TaskGuardDecision | undefined;
+	try {
+		decision = await autoAssignGuardTask(pending, ctx, pi, command, runCommand, state, config);
+	} catch (error) {
+		pi.sendMessage(
+			{
+				customType: "task-guard",
+				content: [
+					{
+						type: "text",
+						text: `Task guard could not assign work: ${error instanceof Error ? error.message : String(error)}`,
+					},
+				],
+				display: true,
+				details: { error: true },
+			},
+			{ deliverAs: "followUp" },
+		);
 		return;
 	}
-	if (state.lastReminderFingerprint === fingerprint) return;
-	state.lastReminderFingerprint = fingerprint;
-	const reminder = assignedTaskReminder(tasks, assignedTo, assignmentDisplayContext(pi, ctx, tasks));
-	if (!reminder) return;
+	if (!decision) return;
+	state.lastGuardFingerprint = decision.fingerprint;
+	state.lastGuardProgressSerial = state.progressSerial;
 	pi.sendMessage(
 		{
-			customType: "task-reminder",
-			content: [{ type: "text", text: reminder }],
-			display: true,
-			details: { assignedTo },
+			customType: "task-guard",
+			content: [{ type: "text", text: decision.content }],
+			display: false,
+			details: { action: decision.action.kind, taskId: decision.action.task.id },
 		},
 		{ deliverAs: "followUp", triggerTurn: true },
+	);
+	state.lastUserText = undefined;
+}
+
+function messageText(message: { content?: unknown }): string {
+	const content = message.content;
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.map((item) => (item && typeof item === "object" && "text" in item ? String(item.text ?? "") : ""))
+		.join("");
+}
+
+function messageHasToolCall(message: { content?: unknown }): boolean {
+	return (
+		Array.isArray(message.content) &&
+		message.content.some(
+			(item) => item && typeof item === "object" && (item as { type?: string }).type === "toolCall",
+		)
+	);
+}
+
+function pausesGuard(text: string): boolean {
+	return /\b(pause|stop|hold|disable)\s+(the\s+)?task guard\b|\btask guard\s+(pause|stop|off|disable)\b/i.test(text);
+}
+
+function shouldKeepAnswerVisible(lastUserText: string | undefined): boolean {
+	if (!lastUserText) return false;
+	return (
+		/\?/.test(lastUserText) ||
+		/^(how|what|why|when|where|who|is|are|can|could|should|do|does|did)\b/i.test(lastUserText.trim())
+	);
+}
+
+function shouldHidePrematureStopAnswer(text: string, lastUserText: string | undefined): boolean {
+	if (shouldKeepAnswerVisible(lastUserText)) return false;
+	return /^(done|complete|completed|finished|ok|okay|all set|that's it)[.!…\s]*$/i.test(text.trim());
+}
+
+function fileChangingResult(result: unknown): boolean {
+	const details = (result as { details?: { filesChanged?: unknown; fileDiffs?: unknown } } | undefined)?.details;
+	return (
+		(typeof details?.filesChanged === "number" && details.filesChanged > 0) ||
+		(Array.isArray(details?.fileDiffs) && details.fileDiffs.length > 0)
 	);
 }
 
 export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) {
 	const config = loadConfig();
 	if (!config.enabled) return;
+	installSilentTaskToolRenderPatch();
 
 	const runCommand = runtime.runCommand ?? defaultRunCommand;
 	let cwd = process.cwd();
-	const reminderState: { lastReminderFingerprint?: string } = {};
+	const guardState: GuardState = { progressSerial: 0, pauseResponses: 0 };
 	const getCwd = () => cwd;
-	const common = (action: TaskCommand) => makeTaskTool(action, config.command, runCommand, config, pi, getCwd);
+	const markProgress = () => {
+		guardState.progressSerial++;
+	};
+	const common = (action: TaskCommand) =>
+		makeTaskTool(action, config.command, runCommand, config, pi, getCwd, markProgress);
 
 	pi.on("session_start", async (_event, ctx) => {
 		cwd = ctx.cwd;
@@ -1389,9 +1941,66 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 		}
 	});
 
+	pi.on("session_shutdown", async () => {
+		if (taskHudPulseTimer) clearInterval(taskHudPulseTimer);
+		taskHudPulseTimer = undefined;
+		taskHudWidget = undefined;
+		taskHudWidgetCtx = undefined;
+		latestTaskHudState = undefined;
+		requestTaskHudRender = undefined;
+		taskHudFlashes.clear();
+	});
+
+	pi.on("tool_execution_end", (event) => {
+		if (fileChangingResult((event as { result?: unknown }).result)) markProgress();
+	});
+
+	pi.on("message_end", async (event, ctx) => {
+		const message = (event as { message?: { role?: string; content?: unknown } }).message;
+		if (message?.role === "user") {
+			const text = messageText(message);
+			guardState.lastUserText = text;
+			if (pausesGuard(text)) guardState.pauseResponses = 1;
+			return undefined;
+		}
+		if (message?.role !== "assistant" || messageHasToolCall(message) || !messageText(message).trim()) {
+			return undefined;
+		}
+		if (guardState.pauseResponses > 0) {
+			guardState.pauseResponses--;
+			guardState.pending = undefined;
+			return undefined;
+		}
+		let decision: TaskGuardDecision | undefined;
+		try {
+			decision = await evaluateTaskGuard(ctx, config.command, runCommand, guardState);
+		} catch (error) {
+			guardState.pending = undefined;
+			ctx.ui.notify?.(`Task guard failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
+			return undefined;
+		}
+		guardState.pending = decision;
+		if (!decision) return undefined;
+		if (decision.kind === "escalate") {
+			return {
+				message: {
+					...message,
+					content: [{ type: "text", text: decision.content }],
+				},
+			};
+		}
+		if (!shouldHidePrematureStopAnswer(messageText(message), guardState.lastUserText)) return undefined;
+		return {
+			message: {
+				...message,
+				content: [],
+			},
+		};
+	});
+
 	pi.on("turn_end", async (_event, ctx) => {
-		await remindAssignedTasks(pi, ctx, config.command, runCommand, reminderState).catch((error) => {
-			ctx.ui.notify?.(`Task reminder failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
+		await sendTaskGuard(pi, ctx, config.command, runCommand, guardState, config).catch((error) => {
+			ctx.ui.notify?.(`Task guard failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
 		});
 	});
 
@@ -1431,6 +2040,7 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 			assigned_to: Type.Optional(Type.String({ description: "Session/user assignment, or 'current'" })),
 			epic_id: Type.Optional(Type.String({ description: "Stable epic/group identifier" })),
 			epic_title: Type.Optional(Type.String({ description: "Human-readable epic/group title" })),
+			parent_id: Type.Optional(Type.String({ description: "Parent/coordinator task ID or prefix" })),
 			blocked_by: Type.Optional(
 				Type.Array(Type.String(), {
 					description: "Task IDs/prefixes that block this task",
@@ -1488,6 +2098,8 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 			epic_id: Type.Optional(Type.String({ description: "New stable epic/group identifier" })),
 			epic_title: Type.Optional(Type.String({ description: "New human-readable epic/group title" })),
 			clear_epic: Type.Optional(Type.Boolean({ description: "Remove epic/group metadata" })),
+			parent_id: Type.Optional(Type.String({ description: "New parent/coordinator task ID or prefix" })),
+			clear_parent: Type.Optional(Type.Boolean({ description: "Remove parent task" })),
 			blocked_by: Type.Optional(
 				Type.Array(Type.String(), {
 					description: "Replace blockers with these task IDs/prefixes",

@@ -151,6 +151,8 @@ pub enum TaskAction {
         epic_id: Option<String>,
         #[arg(long = "epic-title", help = "Human-readable epic/group title")]
         epic_title: Option<String>,
+        #[arg(long = "parent-id", help = "Parent/coordinator task ID/prefix")]
+        parent_id: Option<String>,
         #[arg(long = "blocked-by", help = "Task ID/prefix that blocks this task")]
         blocked_by: Vec<String>,
         #[arg(long, help = "Output JSON")]
@@ -201,6 +203,10 @@ pub enum TaskAction {
         epic_title: Option<String>,
         #[arg(long, help = "Remove epic/group metadata")]
         clear_epic: bool,
+        #[arg(long = "parent-id", help = "Parent/coordinator task ID/prefix")]
+        parent_id: Option<String>,
+        #[arg(long, help = "Remove parent task")]
+        clear_parent: bool,
         #[arg(
             long = "blocked-by",
             help = "Replace blockers with these task IDs/prefixes"
