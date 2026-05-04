@@ -1,6 +1,7 @@
 import type { AssistantMessage } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { runCommand } from "../shared/ct-runner";
+import { terminalRows } from "../shared/terminal";
 import { ensureConfigExists, loadConfig, type PolishedTuiConfig } from "./config";
 import { installFocusCursor } from "./cursor-focus";
 import { installEditorComposition } from "./editor";
@@ -90,11 +91,6 @@ export default function (pi: ExtensionAPI) {
 
 	const refresh = () => {
 		if (!disposed) requestFooterRender?.();
-	};
-
-	const terminalRows = (): number | undefined => {
-		const rows = process.stdout?.rows;
-		return typeof rows === "number" && Number.isFinite(rows) ? rows : undefined;
 	};
 
 	const isCompactTerminal = () => {

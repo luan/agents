@@ -4,6 +4,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { type Component, type TUI, truncateToWidth } from "@mariozechner/pi-tui";
 import { runCommand } from "../shared/ct-runner.ts";
 import { renderLensCompactStatus, renderLensWidgetLines } from "../shared/lens-ui.ts";
+import { hasEnoughTerminalRows } from "../shared/terminal.ts";
 
 const HOOK_EVENT_SCHEMA = "lens.hook_event.v1";
 const RAW_OUTPUT_MAX_BYTES = 256 * 1024;
@@ -76,14 +77,8 @@ function isStaleCtxError(error: unknown) {
 	return (error instanceof Error ? error.message : String(error)).includes("ctx is stale");
 }
 
-function terminalRows(): number | undefined {
-	const rows = process.stdout?.rows;
-	return typeof rows === "number" && Number.isFinite(rows) ? rows : undefined;
-}
-
 function hasEnoughRowsForLensUi(): boolean {
-	const rows = terminalRows();
-	return rows === undefined || rows >= MIN_TERMINAL_ROWS_FOR_LENS_UI;
+	return hasEnoughTerminalRows(MIN_TERMINAL_ROWS_FOR_LENS_UI);
 }
 
 function ensureLensWidget(ctx: any) {
