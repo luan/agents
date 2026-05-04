@@ -1,89 +1,93 @@
 ---
 name: split-commit
-description: 'Repackage branch changes into clean vertical commits that remain reviewable and tested. Use when the user asks to split, rearrange, or clean up multiple commits; use commit for single commits.'
-argument-hint: "[base-branch] [--test='command'] [--auto]"
-user-invocable: true
-allowed-tools:
-  - Bash
+description: Use when a branch has multiple messy commits that must be repackaged into clean, testable vertical commits before review or merge
 ---
 
 # Split Commit
 
-Repackage branch changes into clean vertical commits. Each commit compiles + passes tests independently.
+Repackage branch changes into clean vertical commits. Each commit should compile and pass tests independently.
+
+## Inputs
+
+- `base-branch` (optional): branch to compare against; default to upstream trunk (`main`/`master`) if not provided.
+- `test-command` (optional): explicit verification command to run per commit.
 
 ## Phase 1: Analyze
 
-Parse: `<base-branch>`, optional `--test='command'`. If no base-branch arg, resolve at runtime: `gh stack view --json 2>/dev/null | jq -r '.trunk // empty' || gt parent 2>/dev/null || gt trunk 2>/dev/null || git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/||'`.
+1. Resolve base branch.
+2. Run noop check:
+   - `git log --oneline <base>..HEAD | wc -l`
+   - If result is `0` or `1`, stop and report: no repackaging needed.
+3. Gather scope:
+   - `git diff --stat <base>..HEAD`
+   - `git diff <base>..HEAD`
+4. Build a commit plan ordered foundational -> feature -> cleanup.
+5. If useful, dispatch one `explorer` subagent to propose grouping/dependency order.
+6. Present the plan to the user and ask for approval before rewriting commits.
 
-**Noop check** — `git log --oneline <base>..HEAD | wc -l`. If ≤1 → stop: "Nothing to repackage — use /commit."
+Required plan output format:
 
-Dispatch analysis subagent (general-purpose):
-
-```
-Analyze changes for repackaging into clean vertical commits.
-Base branch: <base-branch>
-
-Steps:
-1. `git log --oneline <base>..HEAD | wc -l` + `git diff --stat <base>..HEAD | tail -40`
-2. Full diff: `git diff <base>..HEAD` — Explore subagent for large diffs
-3. Trace cross-file deps, group vertically, order: foundational → features → cleanup
-4. For shared files, note which hunks belong where
-
-Auto-detect test commands from justfile/Makefile/package.json/Cargo.toml. Use --test if provided.
-
-Cross-file dep rules:
-- File A imports B → same commit or B earlier
-- Config/lock files go with the feature introducing the dep
-- New types/interfaces go with first consumer
-
-Output:
+```text
 TEST_COMMANDS: <detected or provided>
 COMMIT_PLAN:
-1. `type(scope): message` — Files: <list>, Partial: <hunks>, Deps: <justification>, Rationale: <why>
-DEPENDENCY_NOTES: <hunk splitting, ordering constraints>
+1. type(scope): message
+   Files: <list>
+   Partial hunks: <if any>
+   Deps: <cross-file dependency notes>
+   Rationale: <why this boundary>
+DEPENDENCY_NOTES: <ordering constraints and split risks>
 ```
-
-`--auto` → proceed directly. Otherwise → present plan via AskUserQuestion: commit count, test commands, each commit + key files. "Proceed?"
 
 ## Phase 2: Execute
 
-Collapse into unstaged changes:
+After approval, collapse branch commits into unstaged changes:
 
 ```bash
-git reset --soft <base> && git reset HEAD
+git reset --soft <base>
+git reset HEAD
 ```
 
-Dispatch a **single execution subagent** (model="sonnet") for ALL commits:
+Then execute plan sequentially:
 
-```
-Create <total> commits from unstaged changes.
-Commit plan: <full plan from analysis>
-Test commands: <test-commands>
+1. Stage files/hunks for commit `N` (`git add <file>` and `git add -p` for partials).
+2. Run tests for commit `N`:
+   - Prefer provided `test-command`.
+   - Otherwise use project default (`just`, `make test`, `npm test`, `pytest`, `cargo test`, etc.).
+3. If tests fail due to missing dependency, stage the missing dependency and retry once.
+4. If still failing, stop and report the exact commit number and error.
+5. Commit with planned message.
 
-Per commit:
-1. `git-surgeon hunks` — list available hunks
-2. Stage target hunks: whole files → all hunks; partial → `git-surgeon show <id>`, stage matching
-3. Run tests. FAIL → find missing dep, stage, retry once. Still failing → STOP with commit number + error.
-4. `git commit -m "<message>"`
+If execution is complex, dispatch one `worker` subagent for the full sequence (not one subagent per commit) so context stays consistent.
 
-After last commit: `git diff --stat` — state remaining unstaged.
-```
+## Recovery Rules
 
-**On failure**: spawn fix subagent, then re-invoke execution subagent for remaining commits only.
+- If commit `N` fails, preserve commits `1..N-1`; do not restart from scratch.
+- Apply targeted fix, then continue from remaining commits.
+- Do not rewrite already-good commits unless explicitly requested.
 
-Verify after all commits:
+## Final Verification
+
+Run:
 
 ```bash
-git status          # should be clean
-git log --oneline <base>..HEAD   # N clean commits
+git status
+git log --oneline <base>..HEAD
+git diff --stat
 ```
 
-Dirty tree → cleanup subagent: stage remaining, test, commit as `chore: clean up remaining`. Still fails → state the blocker.
+Expected:
+
+- Working tree clean.
+- Commit history matches approved plan (or documented deviations).
+- No unintended unstaged leftovers.
+
+If leftovers remain and belong to this effort, either:
+- include them in a final `chore: clean up remaining` commit, or
+- stop and ask user whether to keep or discard.
 
 ## Key Rules
 
-- **No tasks** — pure git operation, one-shot
-- **Two subagents** — analysis + execution (fix subagent only on failure)
-- **git-surgeon always** — hunk-level precision for partial file staging
-- **Every commit compiles** — broken history is worse than plan deviation
-- **Plan > rigidity** — test failures from missing deps override grouping
+- Ask for approval after analysis, before history rewrite.
+- Keep commit history bisectable: every commit should build and test.
+- Prefer precise hunk staging over broad staging.
+- Let dependency correctness override an overly rigid grouping plan.
