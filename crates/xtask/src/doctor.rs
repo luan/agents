@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 
-const REQUIRED: &[&str] = &["just", "cargo", "npm", "codex", "claude", "opencode"];
+const REQUIRED: &[&str] = &["just", "cargo", "npm", "codex", "claude"];
 const OPTIONAL: &[&str] = &["ct", "wt"];
 
 pub fn run() -> Result<()> {
@@ -117,7 +117,6 @@ fn check_repo_symlinks() -> Result<()> {
     let probes: &[&[&str]] = &[
         &["claude", "CLAUDE.md"],
         &["codex", "AGENTS.md"],
-        &["opencode", "AGENTS.md"],
         &["pi", "AGENTS.md"],
     ];
     let mut bad: Vec<(PathBuf, String)> = Vec::new();

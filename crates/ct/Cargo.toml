@@ -7,10 +7,6 @@ edition = "2024"
 name = "ct"
 path = "src/main.rs"
 
-[[bin]]
-name = "opencode"
-path = "src/opencode.rs"
-
 [dependencies]
 anyhow = "^1"
 chrono = "^0.4"

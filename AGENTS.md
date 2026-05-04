@@ -10,7 +10,7 @@
 
 This repo is the central hub for local agent configuration. The checked-in
 root `AGENTS.md` is only for working on this repo. The global instruction file
-linked into Claude, Codex, OpenCode, and Pi is generated as `GLOBAL_AGENTS.md`
+linked into Claude, Codex, and Pi is generated as `GLOBAL_AGENTS.md`
 and is intentionally gitignored.
 
 ## Portability Rules
@@ -26,7 +26,7 @@ and is intentionally gitignored.
   install local Codex plugins, stow links, install `ct`, register MCP servers,
   and validate.
 - Shared configuration is the default. Tool-specific files belong under
-  `claude/`, `codex/`, `opencode/`, or `pi/` only when the tool requires a
+  `claude/`, `codex/`, or `pi/` only when the tool requires a
   different schema, filename, or runtime registration mechanism.
 
 ## Hook Rules

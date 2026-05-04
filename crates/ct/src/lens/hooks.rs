@@ -303,7 +303,7 @@ fn should_emit_native_hook_response(input: &str) -> bool {
 
     matches!(
         std::env::var("CT_LENS_HOST").as_deref(),
-        Ok("claude-code") | Ok("codex") | Ok("opencode")
+        Ok("claude-code") | Ok("codex")
     )
 }
 

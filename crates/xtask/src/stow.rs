@@ -14,7 +14,6 @@ pub enum Mode {
 const TARGETS: &[(&str, &[&str])] = &[
     ("claude", &[".claude"]),
     ("codex", &[".codex"]),
-    ("opencode", &[".config", "opencode"]),
     ("pi", &[".pi"]),
     ("skills", &[".claude", "skills"]),
 ];
@@ -22,7 +21,7 @@ const TARGETS: &[(&str, &[&str])] = &[
 const AGENTS_HOME: &[&str] = &[".agents"];
 const LEGACY_AGENTS_HOME_ENTRIES: &[&str] = &["rules", "skills"];
 
-const LEGACY_BIN_LINKS: &[&str] = &["agents-hook", "opencode"];
+const LEGACY_BIN_LINKS: &[&str] = &["agents-hook"];
 
 pub fn run(mode: Mode) -> Result<()> {
     let root = crate::repo_root();
