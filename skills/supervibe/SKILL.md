@@ -1,6 +1,6 @@
 ---
 name: supervibe
-description: "Legacy multi-phase autonomous development over chunks. Redesign pending."
+description: 'Run the legacy multi-phase autonomous workflow over independent chunks. Use when the user explicitly asks for supervibe or a capped legacy autonomous pipeline.'
 allowed-tools: Bash, Read, Glob, Grep, Skill
 argument-hint: "<goal> [--max-iterations N]"
 user-invocable: true
@@ -9,17 +9,6 @@ user-invocable: true
 # Super Vibe
 
 Break a goal into independent chunks informed by the spec, run each as a vibe cycle. Structured sequence, not a blind retry loop.
-
-## Agentic loop
-
-1. **Intake** — Restate the requested outcome, inputs, constraints, and stop conditions. If the request is ambiguous or unsafe, ask before acting.
-2. **Discover** — Gather the minimum evidence needed: user context, repo/vault state, relevant files, commands, docs, or external state. Prefer direct source/tool evidence over memory.
-3. **Decide** — Choose the smallest valid path for `supervibe`. Name assumptions, blockers, and what is explicitly out of scope before side effects.
-4. **Execute** — Run the legacy autonomous pipeline only within hard caps, chunking work and stopping at verification or blockers.
-5. **Verify** — Check the result against the request and this skill's rules using concrete evidence: tests, command output, diffs, links, artifacts, or reviewed findings.
-6. **Close** — Provide only the concrete handoff the next actor needs: changed paths/artifacts/findings, verification status, remaining blockers, and the next command/action.
-
-Guardrail: Respect legacy limits; do not sprawl.
 
 ## Arguments
 

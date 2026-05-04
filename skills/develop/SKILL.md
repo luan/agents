@@ -1,6 +1,6 @@
 ---
 name: develop
-description: "Execute one approved ct task, satisfy acceptance criteria, verify, and stop."
+description: 'Execute one approved persisted ct task and verify acceptance criteria. Use when the user asks to implement or develop a specific task ID or selected ct task.'
 argument-hint: "<task-id-or-prefix> [--auto]"
 user-invocable: true
 allowed-tools:
@@ -16,17 +16,6 @@ allowed-tools:
 Execute one approved persisted `ct` task. This skill answers **make this task true**. It does not plan, split, rescope, or invent adjacent work.
 
 Use `/prepare` when a spec still needs executable tasks. If the user passes a `spec`, stop and ask to run `/prepare <spec-stem>` first.
-
-## Agentic loop
-
-1. **Intake** — Restate the requested outcome, inputs, constraints, and stop conditions. If the request is ambiguous or unsafe, ask before acting.
-2. **Discover** — Gather the minimum evidence needed: user context, repo/vault state, relevant files, commands, docs, or external state. Prefer direct source/tool evidence over memory.
-3. **Decide** — Choose the smallest valid path for `develop`. Name assumptions, blockers, and what is explicitly out of scope before side effects.
-4. **Execute** — Execute one approved task end-to-end against acceptance criteria, verify it, and stop.
-5. **Verify** — Check the result against the request and this skill's rules using concrete evidence: tests, command output, diffs, links, artifacts, or reviewed findings.
-6. **Close** — Provide only the concrete handoff the next actor needs: changed paths/artifacts/findings, verification status, remaining blockers, and the next command/action.
-
-Guardrail: Do not broaden scope; every code change must trace to the selected task.
 
 ## Arguments
 

@@ -1,23 +1,12 @@
 ---
 name: tdd
-description: "TDD implementation discipline: red-green-refactor for a selected behavior or regression seam."
+description: 'Apply test-driven development with red-green-refactor cycles for a selected behavior or regression seam. Use when implementing a task that requires TDD discipline or a bug needs a durable regression test.'
 user-invocable: true
 ---
 
 # Test-Driven Development
 
 This is the mandatory implementation discipline for `/develop`, not a lifecycle skill. Use it while executing a specific persisted `ct` task or diagnosing a bug with a clear regression seam. Do not use it to define product scope or split work; `/spec` and `/prepare` own that.
-
-## Agentic loop
-
-1. **Intake** — Restate the requested outcome, inputs, constraints, and stop conditions. If the request is ambiguous or unsafe, ask before acting.
-2. **Discover** — Gather the minimum evidence needed: user context, repo/vault state, relevant files, commands, docs, or external state. Prefer direct source/tool evidence over memory.
-3. **Decide** — Choose the smallest valid path for `tdd`. Name assumptions, blockers, and what is explicitly out of scope before side effects.
-4. **Execute** — Drive one behavior through red-green-refactor cycles at a stable seam.
-5. **Verify** — Check the result against the request and this skill's rules using concrete evidence: tests, command output, diffs, links, artifacts, or reviewed findings.
-6. **Close** — Provide only the concrete handoff the next actor needs: changed paths/artifacts/findings, verification status, remaining blockers, and the next command/action.
-
-Guardrail: No production change without a failing test or explicit safe-test exception.
 
 ## Philosophy
 

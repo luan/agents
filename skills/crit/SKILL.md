@@ -1,6 +1,6 @@
 ---
 name: crit
-description: "Quick adversarial review of local changes or branch diffs. Use /superreview for deep review."
+description: 'Run a quick adversarial review of local changes or branch diffs. Use when the user asks for a fast review, critique, or sanity check; use superreview for deep review.'
 argument-hint: "[base..head | file-list | PR#] [--auto critical|high|medium|all]"
 user-invocable: true
 allowed-tools:
@@ -22,17 +22,6 @@ allowed-tools:
 Fast adversarial review: cleanup pre-pass (reuse / quality / efficiency), then 2 parallel reviewers — one for correctness/security, one adversarial. Covers the highest-value dimensions without the overhead of 5-7 specialists.
 
 **NEVER review inline.** Always dispatch subagents via the Agent tool.
-
-## Agentic loop
-
-1. **Intake** — Restate the requested outcome, inputs, constraints, and stop conditions. If the request is ambiguous or unsafe, ask before acting.
-2. **Discover** — Gather the minimum evidence needed: user context, repo/vault state, relevant files, commands, docs, or external state. Prefer direct source/tool evidence over memory.
-3. **Decide** — Choose the smallest valid path for `crit`. Name assumptions, blockers, and what is explicitly out of scope before side effects.
-4. **Execute** — Perform a fast adversarial review that finds material risks without doing implementation work.
-5. **Verify** — Check the result against the request and this skill's rules using concrete evidence: tests, command output, diffs, links, artifacts, or reviewed findings.
-6. **Close** — Provide only the concrete handoff the next actor needs: changed paths/artifacts/findings, verification status, remaining blockers, and the next command/action.
-
-Guardrail: Find defects with file/line evidence; avoid style-only noise.
 
 ## Step 1: Scope
 

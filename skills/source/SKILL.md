@@ -1,22 +1,11 @@
 ---
 name: source
-description: "Canonical code navigator for symbols, refs, callers/callees, implementations, and symbol diffs."
+description: 'Navigate code by symbol, references, callers, callees, implementations, and diffs via ct source. Use when the user asks where code lives, how it is called, or what changed around a symbol.'
 ---
 
 # source — code navigation
 
 **Default path:** use `ct source <cmd>`. Text output is concise by default; add `--json` only when a machine-readable result is useful.
-
-## Agentic loop
-
-1. **Intake** — Restate the requested outcome, inputs, constraints, and stop conditions. If the request is ambiguous or unsafe, ask before acting.
-2. **Discover** — Gather the minimum evidence needed: user context, repo/vault state, relevant files, commands, docs, or external state. Prefer direct source/tool evidence over memory.
-3. **Decide** — Choose the smallest valid path for `source`. Name assumptions, blockers, and what is explicitly out of scope before side effects.
-4. **Execute** — Answer code navigation questions with canonical symbol/source lookups and concrete references.
-5. **Verify** — Check the result against the request and this skill's rules using concrete evidence: tests, command output, diffs, links, artifacts, or reviewed findings.
-6. **Close** — Provide only the concrete handoff the next actor needs: changed paths/artifacts/findings, verification status, remaining blockers, and the next command/action.
-
-Guardrail: Prefer precise source evidence over guesses.
 
 ## Default loop
 

@@ -1,6 +1,6 @@
 ---
 name: bootstrap-web
-description: "Bootstrap a new web project with the preferred stack."
+description: 'Bootstrap a new SvelteKit web project with the preferred stack. Use when starting a new web app or product prototype from scratch.'
 argument-hint: "<project-name> [description] [--auto]"
 user-invocable: true
 disable-model-invocation: true
@@ -9,17 +9,6 @@ disable-model-invocation: true
 # Bootstrap Web
 
 Scaffold a new SvelteKit web app. Researches current ecosystem state before scaffolding — stale templates break on install.
-
-## Agentic loop
-
-1. **Intake** — Restate the requested outcome, inputs, constraints, and stop conditions. If the request is ambiguous or unsafe, ask before acting.
-2. **Discover** — Gather the minimum evidence needed: user context, repo/vault state, relevant files, commands, docs, or external state. Prefer direct source/tool evidence over memory.
-3. **Decide** — Choose the smallest valid path for `bootstrap-web`. Name assumptions, blockers, and what is explicitly out of scope before side effects.
-4. **Execute** — Turn a product idea into a scaffolded web project with the repo-preferred stack, routed locally, and passing quality gates.
-5. **Verify** — Check the result against the request and this skill's rules using concrete evidence: tests, command output, diffs, links, artifacts, or reviewed findings.
-6. **Close** — Provide only the concrete handoff the next actor needs: changed paths/artifacts/findings, verification status, remaining blockers, and the next command/action.
-
-Guardrail: Do not invent stack choices; use the fixed stack and pause for design decisions that affect UX.
 
 ## Arguments
 

@@ -1,6 +1,6 @@
 ---
 name: archive
-description: "Archive consumed blueprint artifacts and preserve content in git notes."
+description: 'Archive consumed blueprint artifacts and preserve content in git notes. Use when blueprint artifacts are implemented, obsolete, or ready to move into archive/ without losing history.'
 argument-hint: "[<slug-or-path>] [--type <spec|plan|review|report>]"
 allowed-tools:
   - Bash
@@ -11,17 +11,6 @@ user-invocable: true
 # Archive
 
 Move consumed blueprint artifacts to `archive/` and store their content as git notes for long-term retrieval.
-
-## Agentic loop
-
-1. **Intake** — Restate the requested outcome, inputs, constraints, and stop conditions. If the request is ambiguous or unsafe, ask before acting.
-2. **Discover** — Gather the minimum evidence needed: user context, repo/vault state, relevant files, commands, docs, or external state. Prefer direct source/tool evidence over memory.
-3. **Decide** — Choose the smallest valid path for `archive`. Name assumptions, blockers, and what is explicitly out of scope before side effects.
-4. **Execute** — Identify consumed artifacts, preserve their content, archive only confirmed items, and verify notes/links remain recoverable.
-5. **Verify** — Check the result against the request and this skill's rules using concrete evidence: tests, command output, diffs, links, artifacts, or reviewed findings.
-6. **Close** — Provide only the concrete handoff the next actor needs: changed paths/artifacts/findings, verification status, remaining blockers, and the next command/action.
-
-Guardrail: Archive only artifacts whose consumption evidence is concrete; preserve content in git notes before moving anything.
 
 ## Arguments
 

@@ -1,6 +1,6 @@
 ---
 name: commit
-description: "Commit, save changes, conventional commit, amend, fixup, or squash."
+description: 'Create conventional commits from current repository changes. Use when the user asks to commit, amend, fixup, squash, save changes, or write a commit message.'
 user-invocable: true
 context: fork
 agent: general-purpose
@@ -24,17 +24,6 @@ allowed-tools:
 # Commit
 
 Create conventional commits explaining WHY changes were made. Never ask for confirmation — analyze, compose, execute.
-
-## Agentic loop
-
-1. **Intake** — Restate the requested outcome, inputs, constraints, and stop conditions. If the request is ambiguous or unsafe, ask before acting.
-2. **Discover** — Gather the minimum evidence needed: user context, repo/vault state, relevant files, commands, docs, or external state. Prefer direct source/tool evidence over memory.
-3. **Decide** — Choose the smallest valid path for `commit`. Name assumptions, blockers, and what is explicitly out of scope before side effects.
-4. **Execute** — Convert the current diff into the requested commit operation with clean scope, verified state, and a useful message.
-5. **Verify** — Check the result against the request and this skill's rules using concrete evidence: tests, command output, diffs, links, artifacts, or reviewed findings.
-6. **Close** — Provide only the concrete handoff the next actor needs: changed paths/artifacts/findings, verification status, remaining blockers, and the next command/action.
-
-Guardrail: Never commit hidden unrelated changes; inspect before staging.
 
 ## Context
 

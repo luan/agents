@@ -1,6 +1,6 @@
 ---
 name: pr-comments
-description: "Fix unresolved PR review comments."
+description: 'Fix unresolved pull request review comments locally. Use when the user asks to address PR comments, review threads, or requested changes.'
 argument-hint: "[--auto]"
 user-invocable: true
 disable-model-invocation: false
@@ -21,17 +21,6 @@ allowed-tools:
 Fix unresolved review comments from a PR.
 
 **Safety: never replies to or resolves threads — only fetches and fixes locally. Push requires confirmation (unless `--auto`). `--auto` auto-resolves bot comments only (not human comments).**
-
-## Agentic loop
-
-1. **Intake** — Restate the requested outcome, inputs, constraints, and stop conditions. If the request is ambiguous or unsafe, ask before acting.
-2. **Discover** — Gather the minimum evidence needed: user context, repo/vault state, relevant files, commands, docs, or external state. Prefer direct source/tool evidence over memory.
-3. **Decide** — Choose the smallest valid path for `pr-comments`. Name assumptions, blockers, and what is explicitly out of scope before side effects.
-4. **Execute** — Fetch unresolved review comments, map each to code, apply required fixes, and verify the thread is addressed.
-5. **Verify** — Check the result against the request and this skill's rules using concrete evidence: tests, command output, diffs, links, artifacts, or reviewed findings.
-6. **Close** — Provide only the concrete handoff the next actor needs: changed paths/artifacts/findings, verification status, remaining blockers, and the next command/action.
-
-Guardrail: Do not mark a comment addressed unless the diff directly satisfies it.
 
 ## Steps
 

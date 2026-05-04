@@ -1,6 +1,6 @@
 ---
 name: grill-with-docs
-description: Grill a plan against vault domain/decision docs; sharpen terminology and update vault docs inline.
+description: 'Challenge a plan against vault domain and decision docs, then update vault docs inline when approved. Use when the user asks to grill a plan with documented project context.'
 user-invocable: true
 disable-model-invocation: true
 ---
@@ -10,17 +10,6 @@ Interview me relentlessly about every aspect of this plan until we reach a share
 Ask the questions one at a time, waiting for feedback on each question before continuing.
 
 If a question can be answered by exploring the codebase, explore the codebase instead.
-
-## Agentic loop
-
-1. **Intake** — Restate the requested outcome, inputs, constraints, and stop conditions. If the request is ambiguous or unsafe, ask before acting.
-2. **Discover** — Gather the minimum evidence needed: user context, repo/vault state, relevant files, commands, docs, or external state. Prefer direct source/tool evidence over memory.
-3. **Decide** — Choose the smallest valid path for `grill-with-docs`. Name assumptions, blockers, and what is explicitly out of scope before side effects.
-4. **Execute** — Interrogate a plan against vault docs, correct vocabulary/assumptions, and update docs only where explicitly supported.
-5. **Verify** — Check the result against the request and this skill's rules using concrete evidence: tests, command output, diffs, links, artifacts, or reviewed findings.
-6. **Close** — Provide only the concrete handoff the next actor needs: changed paths/artifacts/findings, verification status, remaining blockers, and the next command/action.
-
-Guardrail: Docs are evidence; do not let a plan drift from recorded domain/decision language.
 
 ## Domain awareness
 

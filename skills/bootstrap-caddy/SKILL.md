@@ -1,6 +1,6 @@
 ---
 name: bootstrap-caddy
-description: "Register a project in the local dev routing system."
+description: 'Register a project in the local dev routing system. Use when a project needs a https://<project>.localhost route through Caddy and dnsmasq.'
 argument-hint: "<project-name> [port]"
 user-invocable: true
 disable-model-invocation: true
@@ -9,17 +9,6 @@ disable-model-invocation: true
 # Bootstrap Caddy
 
 Register a project in the local subdomain routing system (`https://<project>.localhost` via Caddy + dnsmasq).
-
-## Agentic loop
-
-1. **Intake** — Restate the requested outcome, inputs, constraints, and stop conditions. If the request is ambiguous or unsafe, ask before acting.
-2. **Discover** — Gather the minimum evidence needed: user context, repo/vault state, relevant files, commands, docs, or external state. Prefer direct source/tool evidence over memory.
-3. **Decide** — Choose the smallest valid path for `bootstrap-caddy`. Name assumptions, blockers, and what is explicitly out of scope before side effects.
-4. **Execute** — Register local routing by choosing a safe port, updating project config, adding Caddy config, and proving the route works.
-5. **Verify** — Check the result against the request and this skill's rules using concrete evidence: tests, command output, diffs, links, artifacts, or reviewed findings.
-6. **Close** — Provide only the concrete handoff the next actor needs: changed paths/artifacts/findings, verification status, remaining blockers, and the next command/action.
-
-Guardrail: No route is done until the registry, project dev server, Caddy config, and reload check agree.
 
 ## Step 1: Parse arguments
 
