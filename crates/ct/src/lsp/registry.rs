@@ -445,7 +445,7 @@ mod tests {
     use super::SERVERS;
 
     #[test]
-    fn registry_covers_opencode_builtin_lsp_servers() {
+    fn registry_covers_common_lsp_servers() {
         let ids = SERVERS.iter().map(|server| server.id).collect::<Vec<_>>();
         for expected in [
             "astro",

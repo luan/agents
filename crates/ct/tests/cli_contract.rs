@@ -1309,7 +1309,7 @@ fn lens_hook_reports_json_errors_for_malformed_and_unknown_schema() {
 
     let bad_schema = serde_json::json!({
         "schema_version": "lens.hook_event.v0",
-        "host": {"name": "opencode", "kind": "non_pi"},
+        "host": {"name": "codex", "kind": "non_pi"},
         "session": {"id": "s"},
         "cwd": project.path().to_string_lossy(),
         "turn": {"id": "t"},

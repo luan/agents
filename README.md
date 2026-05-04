@@ -1,10 +1,10 @@
 # agents
 
-Central configuration hub for Claude, Codex, OpenCode, and Pi.
+Central configuration hub for Claude, Codex, and Pi.
 
 ## Philosophy
 
-Shared configuration is the default. Tool-specific folders (`claude/`, `codex/`, `opencode/`, `pi/`) exist only when a tool requires a different schema, filename, or runtime registration. See `docs/exceptions.md`.
+Shared configuration is the default. Tool-specific folders (`claude/`, `codex/`, `pi/`) exist only when a tool requires a different schema, filename, or runtime registration. See `docs/exceptions.md`.
 
 ## Layout
 
@@ -58,7 +58,7 @@ The repo is designed to be the agents home itself. Clone it directly to
 checkout. The setup task migrates the old managed `~/.agents/rules` and
 `~/.agents/skills` symlinks when they are still owned by this repo.
 
-Prerequisites: `just`, `cargo`, `npm`, `claude`, `codex`, `opencode`.
+Prerequisites: `just`, `cargo`, `npm`, `claude`, `codex`.
 
 On Windows, `cargo xtask doctor` additionally verifies that symlinks work
 (requires Developer Mode) and that the repo's tracked symlinks were

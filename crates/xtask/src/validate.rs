@@ -17,7 +17,6 @@ pub fn run() -> Result<()> {
     let global_agents = root.join("GLOBAL_AGENTS.md");
     assert_symlink(&root.join("claude/CLAUDE.md"), &global_agents)?;
     assert_symlink(&root.join("codex/AGENTS.md"), &global_agents)?;
-    assert_symlink(&root.join("opencode/AGENTS.md"), &global_agents)?;
     assert_symlink(&root.join("pi/AGENTS.md"), &global_agents)?;
     assert_symlink(
         &root.join("claude/local-plugins/plugins/gt"),
@@ -78,7 +77,6 @@ fn assert_no_checkout_paths(root: &Path) -> Result<()> {
         root.join("scripts"),
         root.join("bin"),
         root.join("claude"),
-        root.join("opencode"),
         root.join("pi"),
         root.join("plugins"),
     ];

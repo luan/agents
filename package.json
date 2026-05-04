@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "check": "biome check --write --error-on-warnings . && bun run test:codex-native && bun run test:compaction && bun run test:lens && bun run test:skill-dollar",
-		"test": "bun run test:codex-native && bun run test:compaction && bun run test:lens && bun run test:skill-dollar",
+    "test": "bun run test:codex-native && bun run test:compaction && bun run test:lens && bun run test:skill-dollar",
     "typecheck": "tsgo --noEmit --pretty false --project tsconfig.typecheck.json",
     "test:lens": "bun test pi/agent/extensions/lens/index.test.ts pi/agent/extensions/shared/lens-ui.test.ts",
     "test:skill-dollar": "bun test pi/agent/extensions/skill-dollar/index.test.ts",
@@ -30,9 +30,8 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.13",
-    "@opencode-ai/plugin": "^1.14.28",
-    "@typescript/native-preview": "7.0.0-dev.20260501.1",
     "@types/node": "^25.6.0",
+    "@typescript/native-preview": "7.0.0-dev.20260501.1",
     "husky": "^9.1.7",
     "shx": "^0.4.0"
   }
