@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -13,8 +12,8 @@ use crate::cli::TaskAction;
 
 const CROCKFORD: &[u8; 32] = b"0123456789abcdefghjkmnpqrstvwxyz";
 const ID_LENGTH: usize = 6;
-const VALID_STATUSES: [&str; 6] = ["open", "in_progress", "blocked", "todo", "done", "canceled"];
-const TASK_SELECT_COLUMNS: &str = "id, title, body, status, priority, assigned_to, assigned_label, epic_id, epic_title, blocked_by, created_at, updated_at";
+const VALID_STATUSES: [&str; 5] = ["open", "in_progress", "todo", "done", "canceled"];
+const TASK_SELECT_COLUMNS: &str = "id, title, body, status, priority, assigned_to, assigned_label, epic_id, epic_title, parent_id, blocked_by, created_at, updated_at";
 
 #[derive(Debug, Serialize)]
 struct Task {
@@ -27,6 +26,7 @@ struct Task {
     assigned_label: Option<String>,
     epic_id: Option<String>,
     epic_title: Option<String>,
+    parent_id: Option<String>,
     blocked_by: Vec<String>,
     created_at: i64,
     updated_at: i64,
@@ -59,6 +59,7 @@ pub fn run_task(action: TaskAction) -> Result<(), Box<dyn std::error::Error>> {
             assigned_label,
             epic_id,
             epic_title,
+            parent_id,
             blocked_by,
             json,
         } => {
@@ -71,6 +72,7 @@ pub fn run_task(action: TaskAction) -> Result<(), Box<dyn std::error::Error>> {
                 assigned_label: assigned_label.as_deref(),
                 epic_id: epic_id.as_deref(),
                 epic_title: epic_title.as_deref(),
+                parent_id: parent_id.as_deref(),
                 blocked_by: &blocked_by,
             })?)?;
             print_task(&task, json)?;
@@ -104,6 +106,8 @@ pub fn run_task(action: TaskAction) -> Result<(), Box<dyn std::error::Error>> {
             epic_id,
             epic_title,
             clear_epic,
+            parent_id,
+            clear_parent,
             blocked_by,
             clear_blockers,
             json,
@@ -121,6 +125,8 @@ pub fn run_task(action: TaskAction) -> Result<(), Box<dyn std::error::Error>> {
                     epic_id: epic_id.as_deref(),
                     epic_title: epic_title.as_deref(),
                     clear_epic,
+                    parent_id: parent_id.as_deref(),
+                    clear_parent,
                     blocked_by: &blocked_by,
                     clear_blockers,
                 },
@@ -155,6 +161,7 @@ struct TaskNew<'a> {
     assigned_label: Option<&'a str>,
     epic_id: Option<&'a str>,
     epic_title: Option<&'a str>,
+    parent_id: Option<&'a str>,
     blocked_by: &'a [String],
 }
 
@@ -169,14 +176,15 @@ struct TaskUpdate<'a> {
     epic_id: Option<&'a str>,
     epic_title: Option<&'a str>,
     clear_epic: bool,
+    parent_id: Option<&'a str>,
+    clear_parent: bool,
     blocked_by: &'a [String],
     clear_blockers: bool,
 }
 
 impl TaskStore {
     fn open(cwd: PathBuf) -> Result<Self> {
-        let root = project_root(&cwd);
-        let dir = crate::lens::paths::project_state_dir(&root)
+        let dir = crate::lens::paths::project_state_dir(&cwd)
             .map_err(|error| anyhow!("{error}"))?
             .join("tasks");
         fs::create_dir_all(&dir)?;
@@ -193,6 +201,7 @@ impl TaskStore {
                 assigned_label TEXT,
                 epic_id TEXT,
                 epic_title TEXT,
+                parent_id TEXT,
                 blocked_by TEXT NOT NULL DEFAULT '[]',
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
@@ -204,18 +213,24 @@ impl TaskStore {
     }
 
     fn add(&self, new_task: TaskNew<'_>) -> Result<Task> {
+        self.with_immediate_tx(|| self.add_inner(new_task))
+    }
+
+    fn add_inner(&self, new_task: TaskNew<'_>) -> Result<Task> {
         validate_title(new_task.title)?;
         validate_status(new_task.status)?;
         let assigned_to = normalize_assignment(new_task.assigned_to)?;
         let assigned_label = normalize_assignment(new_task.assigned_label)?;
         let epic_id = normalize_epic(new_task.epic_id)?;
         let epic_title = normalize_epic(new_task.epic_title)?;
+        let parent_id = self.resolve_optional_parent(new_task.parent_id, None)?;
         let now = now_ms();
         let id = self.new_id()?;
         let blockers = self.resolve_blockers(new_task.blocked_by, Some(&id))?;
+        self.ensure_no_dependency_cycle(&id, &blockers, parent_id.as_deref())?;
         let blockers_json = serde_json::to_string(&blockers)?;
         self.conn.execute(
-            "INSERT INTO tasks (id, title, body, status, priority, assigned_to, assigned_label, epic_id, epic_title, blocked_by, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
+            "INSERT INTO tasks (id, title, body, status, priority, assigned_to, assigned_label, epic_id, epic_title, parent_id, blocked_by, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
             params![
                 id,
                 new_task.title.trim(),
@@ -226,6 +241,7 @@ impl TaskStore {
                 assigned_label,
                 epic_id,
                 epic_title,
+                parent_id,
                 blockers_json,
                 now
             ],
@@ -287,6 +303,10 @@ impl TaskStore {
     }
 
     fn update(&self, id_prefix: &str, update: TaskUpdate<'_>) -> Result<Task> {
+        self.with_immediate_tx(|| self.update_inner(id_prefix, update))
+    }
+
+    fn update_inner(&self, id_prefix: &str, update: TaskUpdate<'_>) -> Result<Task> {
         if update.title.is_none()
             && update.body.is_none()
             && update.status.is_none()
@@ -297,6 +317,8 @@ impl TaskStore {
             && update.epic_id.is_none()
             && update.epic_title.is_none()
             && !update.clear_epic
+            && update.parent_id.is_none()
+            && !update.clear_parent
             && update.blocked_by.is_empty()
             && !update.clear_blockers
         {
@@ -314,6 +336,7 @@ impl TaskStore {
         let epic_title = normalize_epic(update.epic_title)?;
         let id = self.resolve_id(id_prefix)?;
         let existing = self.get_exact(&id)?;
+        let parent_id = self.resolve_optional_parent(update.parent_id, Some(&id))?;
         let blockers = if update.clear_blockers {
             Vec::new()
         } else if update.blocked_by.is_empty() {
@@ -321,9 +344,15 @@ impl TaskStore {
         } else {
             self.resolve_blockers(update.blocked_by, Some(&id))?
         };
+        let final_parent_id = if update.clear_parent {
+            None
+        } else {
+            parent_id.or(existing.parent_id.clone())
+        };
+        self.ensure_no_dependency_cycle(&id, &blockers, final_parent_id.as_deref())?;
         let blockers_json = serde_json::to_string(&blockers)?;
         self.conn.execute(
-            "UPDATE tasks SET title = ?1, body = ?2, status = ?3, priority = ?4, assigned_to = ?5, assigned_label = ?6, epic_id = ?7, epic_title = ?8, blocked_by = ?9, updated_at = ?10 WHERE id = ?11",
+            "UPDATE tasks SET title = ?1, body = ?2, status = ?3, priority = ?4, assigned_to = ?5, assigned_label = ?6, epic_id = ?7, epic_title = ?8, parent_id = ?9, blocked_by = ?10, updated_at = ?11 WHERE id = ?12",
             params![
                 update.title.unwrap_or(&existing.title).trim(),
                 update.body.unwrap_or(&existing.body),
@@ -333,6 +362,7 @@ impl TaskStore {
                 if update.clear_assignee { None } else { assigned_label.or(existing.assigned_label) },
                 if update.clear_epic { None } else { epic_id.or(existing.epic_id) },
                 if update.clear_epic { None } else { epic_title.or(existing.epic_title) },
+                final_parent_id,
                 blockers_json,
                 now_ms(),
                 id
@@ -342,6 +372,10 @@ impl TaskStore {
     }
 
     fn delete(&self, id_prefix: &str) -> Result<String> {
+        self.with_immediate_tx(|| self.delete_inner(id_prefix))
+    }
+
+    fn delete_inner(&self, id_prefix: &str) -> Result<String> {
         let id = self.resolve_id(id_prefix)?;
         let all_ids = self.all_ids()?;
         let display_id = min_prefix(&id, &all_ids);
@@ -357,9 +391,35 @@ impl TaskStore {
                     .join(", ")
             );
         }
+        let children = self.tasks_with_parent(&id)?;
+        if !children.is_empty() {
+            let prefixes = shortest_prefixes(&all_ids);
+            bail!(
+                "cannot delete task {display_id}; parent of {}",
+                children
+                    .iter()
+                    .map(|task_id| display_prefix(task_id, &prefixes))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
         self.conn
             .execute("DELETE FROM tasks WHERE id = ?1", [&id])?;
         Ok(display_id)
+    }
+
+    fn with_immediate_tx<T>(&self, work: impl FnOnce() -> Result<T>) -> Result<T> {
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        match work() {
+            Ok(value) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok(value)
+            }
+            Err(error) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
     }
 
     fn resolve_id(&self, prefix: &str) -> Result<String> {
@@ -428,6 +488,10 @@ impl TaskStore {
             .iter()
             .map(|id| display_prefix(id, &prefixes))
             .collect();
+        task.parent_id = task
+            .parent_id
+            .as_deref()
+            .map(|id| display_prefix(id, &prefixes));
         task.id = display_prefix(&task.id, &prefixes);
         Ok(task)
     }
@@ -443,6 +507,10 @@ impl TaskStore {
                     .iter()
                     .map(|id| display_prefix(id, &prefixes))
                     .collect();
+                task.parent_id = task
+                    .parent_id
+                    .as_deref()
+                    .map(|id| display_prefix(id, &prefixes));
                 task.id = display_prefix(&task.id, &prefixes);
                 task
             })
@@ -460,9 +528,6 @@ impl TaskStore {
                 resolved.push(id);
             }
         }
-        if let Some(self_id) = self_id {
-            self.ensure_no_blocker_cycle(self_id, &resolved)?;
-        }
         Ok(resolved)
     }
 
@@ -478,25 +543,88 @@ impl TaskStore {
             .collect())
     }
 
-    fn blocker_graph(&self) -> Result<HashMap<String, Vec<String>>> {
+    fn tasks_with_parent(&self, parent_id: &str) -> Result<Vec<String>> {
+        let tasks = self.query_tasks(
+            &format!("SELECT {TASK_SELECT_COLUMNS} FROM tasks WHERE parent_id = ?1 ORDER BY id"),
+            &[parent_id],
+        )?;
+        Ok(tasks.into_iter().map(|task| task.id).collect())
+    }
+
+    fn resolve_optional_parent(
+        &self,
+        parent: Option<&str>,
+        self_id: Option<&str>,
+    ) -> Result<Option<String>> {
+        let Some(parent) = parent else {
+            return Ok(None);
+        };
+        let parent_id = self.resolve_id(parent)?;
+        if Some(parent_id.as_str()) == self_id {
+            bail!("task cannot be its own parent");
+        }
+        Ok(Some(parent_id))
+    }
+
+    fn dependency_graph(
+        &self,
+        self_id: &str,
+        blockers: &[String],
+        parent_id: Option<&str>,
+    ) -> Result<HashMap<String, Vec<String>>> {
         let tasks = self.query_tasks(
             &format!("SELECT {TASK_SELECT_COLUMNS} FROM tasks ORDER BY id"),
             &[],
         )?;
-        Ok(tasks
-            .into_iter()
-            .map(|task| (task.id, task.blocked_by))
-            .collect())
+        let mut graph: HashMap<String, Vec<String>> = HashMap::new();
+        let mut has_self = false;
+        for task in tasks {
+            has_self |= task.id == self_id;
+            let task_blockers = if task.id == self_id {
+                blockers.to_vec()
+            } else {
+                task.blocked_by.clone()
+            };
+            graph
+                .entry(task.id.clone())
+                .or_default()
+                .extend(task_blockers);
+            let task_parent = if task.id == self_id {
+                parent_id.map(str::to_string)
+            } else {
+                task.parent_id.clone()
+            };
+            if let Some(parent_id) = task_parent {
+                graph.entry(parent_id).or_default().push(task.id);
+            }
+        }
+        if !has_self {
+            graph
+                .entry(self_id.to_string())
+                .or_default()
+                .extend(blockers.iter().cloned());
+            if let Some(parent_id) = parent_id {
+                graph
+                    .entry(parent_id.to_string())
+                    .or_default()
+                    .push(self_id.to_string());
+            }
+        }
+        Ok(graph)
     }
 
-    fn ensure_no_blocker_cycle(&self, self_id: &str, blockers: &[String]) -> Result<()> {
-        let mut graph = self.blocker_graph()?;
-        graph.insert(self_id.to_string(), blockers.to_vec());
-        let mut stack = blockers.to_vec();
+    fn ensure_no_dependency_cycle(
+        &self,
+        self_id: &str,
+        blockers: &[String],
+        parent_id: Option<&str>,
+    ) -> Result<()> {
+        let graph = self.dependency_graph(self_id, blockers, parent_id)?;
+        let mut stack = graph.get(self_id).cloned().unwrap_or_default();
         let mut seen = HashSet::new();
         while let Some(id) = stack.pop() {
             if id == self_id {
-                bail!("task blockers cannot create a cycle");
+                bail!("task dependencies cannot create a cycle");
             }
             if !seen.insert(id.clone()) {
                 continue;
@@ -522,9 +650,9 @@ impl TaskStore {
 }
 
 fn row_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
-    let blocked_by_json: String = row.get(9)?;
+    let blocked_by_json: String = row.get(10)?;
     let blocked_by = serde_json::from_str(&blocked_by_json).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(9, rusqlite::types::Type::Text, Box::new(error))
+        rusqlite::Error::FromSqlConversionFailure(10, rusqlite::types::Type::Text, Box::new(error))
     })?;
     Ok(Task {
         id: row.get(0)?,
@@ -536,17 +664,15 @@ fn row_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
         assigned_label: row.get(6)?,
         epic_id: row.get(7)?,
         epic_title: row.get(8)?,
+        parent_id: row.get(9)?,
         blocked_by,
-        created_at: row.get(10)?,
-        updated_at: row.get(11)?,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
     })
 }
 
 fn is_active_task(task: &Task) -> bool {
-    matches!(
-        task.status.as_str(),
-        "open" | "in_progress" | "blocked" | "todo"
-    )
+    is_active_status(&task.status)
 }
 
 fn sort_tasks(mut tasks: Vec<Task>) -> Result<Vec<Task>> {
@@ -554,14 +680,42 @@ fn sort_tasks(mut tasks: Vec<Task>) -> Result<Vec<Task>> {
         .iter()
         .map(|task| (task.id.clone(), task.status.clone()))
         .collect::<std::collections::HashMap<_, _>>();
+    let mut children_by_parent = HashMap::<String, Vec<String>>::new();
+    for task in &tasks {
+        if let Some(parent_id) = &task.parent_id {
+            children_by_parent
+                .entry(parent_id.clone())
+                .or_default()
+                .push(task.id.clone());
+        }
+    }
     tasks.sort_by(|left, right| {
-        has_open_blockers(left, &statuses)
-            .cmp(&has_open_blockers(right, &statuses))
+        has_open_dependencies(left, &statuses, &children_by_parent)
+            .cmp(&has_open_dependencies(
+                right,
+                &statuses,
+                &children_by_parent,
+            ))
             .then_with(|| right.priority.cmp(&left.priority))
             .then_with(|| right.updated_at.cmp(&left.updated_at))
             .then_with(|| left.id.cmp(&right.id))
     });
     Ok(tasks)
+}
+
+fn has_open_dependencies(
+    task: &Task,
+    statuses: &std::collections::HashMap<String, String>,
+    children_by_parent: &HashMap<String, Vec<String>>,
+) -> bool {
+    has_open_blockers(task, statuses)
+        || children_by_parent.get(&task.id).is_some_and(|children| {
+            children.iter().any(|id| {
+                statuses
+                    .get(id)
+                    .is_some_and(|status| is_active_status(status))
+            })
+        })
 }
 
 fn has_open_blockers(task: &Task, statuses: &std::collections::HashMap<String, String>) -> bool {
@@ -570,6 +724,10 @@ fn has_open_blockers(task: &Task, statuses: &std::collections::HashMap<String, S
             .get(id)
             .is_none_or(|status| status != "done" && status != "completed")
     })
+}
+
+fn is_active_status(status: &str) -> bool {
+    matches!(status, "open" | "in_progress" | "todo")
 }
 
 fn ensure_task_columns(conn: &Connection) -> Result<()> {
@@ -596,11 +754,16 @@ fn ensure_task_columns(conn: &Connection) -> Result<()> {
         ),
         ("epic_id", "ALTER TABLE tasks ADD COLUMN epic_id TEXT"),
         ("epic_title", "ALTER TABLE tasks ADD COLUMN epic_title TEXT"),
+        ("parent_id", "ALTER TABLE tasks ADD COLUMN parent_id TEXT"),
     ] {
         if !existing.contains(column) {
             conn.execute(sql, [])?;
         }
     }
+    conn.execute(
+        "UPDATE tasks SET status = 'open' WHERE status = 'blocked'",
+        [],
+    )?;
     Ok(())
 }
 
@@ -650,7 +813,7 @@ fn normalize_id(id: &str) -> Result<String> {
     }
     if !normalized
         .chars()
-        .all(|c| "0123456789abcdefghjkmnpqrstvwxyz".contains(c))
+        .all(|c| c.is_ascii() && CROCKFORD.contains(&(c as u8)))
     {
         bail!("task id prefix must use Crockford Base32 characters");
     }
@@ -703,22 +866,6 @@ fn generate_id(_attempt: u32) -> String {
         out.push(CROCKFORD[usize::from(byte) % CROCKFORD.len()] as char);
     }
     out
-}
-
-fn project_root(cwd: &Path) -> PathBuf {
-    let output = Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .current_dir(cwd)
-        .output();
-    if let Ok(output) = output
-        && output.status.success()
-    {
-        let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !text.is_empty() {
-            return PathBuf::from(text);
-        }
-    }
-    cwd.to_path_buf()
 }
 
 fn now_ms() -> i64 {
@@ -792,7 +939,7 @@ mod tests {
     }
 
     #[test]
-    fn epic_columns_are_added_to_existing_task_tables() {
+    fn metadata_columns_are_added_to_existing_task_tables_and_blocked_migrates() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE tasks (
@@ -820,7 +967,7 @@ mod tests {
 
         let task = conn
             .query_row(
-                "SELECT id, title, body, status, priority, assigned_to, assigned_label, epic_id, epic_title, blocked_by, created_at, updated_at FROM tasks WHERE id = 'abc123'",
+                "SELECT id, title, body, status, priority, assigned_to, assigned_label, epic_id, epic_title, parent_id, blocked_by, created_at, updated_at FROM tasks WHERE id = 'abc123'",
                 [],
                 row_task,
             )
@@ -828,5 +975,20 @@ mod tests {
         assert_eq!(task.title, "Old task");
         assert!(task.epic_id.is_none());
         assert!(task.epic_title.is_none());
+        assert!(task.parent_id.is_none());
+
+        conn.execute(
+            "INSERT INTO tasks (id, title, body, status, blocked_by, created_at, updated_at)
+             VALUES ('def456', 'Blocked task', '', 'blocked', '[]', 1, 1)",
+            [],
+        )
+        .unwrap();
+        ensure_task_columns(&conn).unwrap();
+        let status: String = conn
+            .query_row("SELECT status FROM tasks WHERE id = 'def456'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(status, "open");
     }
 }
