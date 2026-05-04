@@ -2,7 +2,7 @@
   "claude-opus-4-7": "xhigh",
   "claude-sonnet-4-6": "high",
   "claude-haiku-4-5": "high",
-  "gpt-5.5": "medium",
+  "gpt-5.5": "xhigh",
   "gpt-5.4": "high",
   "gpt-5.4-mini": "high"
 }
