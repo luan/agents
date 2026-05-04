@@ -15,7 +15,7 @@ user-invocable: true
 
 Holistic vault maintenance. Cross-references the blueprints vault against codebase reality to produce a structured maintenance plan: what to archive, what docs are stale, what stable systems deserve new reference docs.
 
-Analytical counterpart to `/archive` (which operates on individual artifacts). Vault sweep surveys the whole project, classifies everything, and proposes. Nothing executes until approved.
+Analytical counterpart to `$archive` (which operates on individual artifacts). Vault sweep surveys the whole project, classifies everything, and proposes. Nothing executes until approved.
 
 ## Arguments
 

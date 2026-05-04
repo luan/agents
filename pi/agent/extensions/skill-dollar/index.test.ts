@@ -3,7 +3,7 @@ import type { AutocompleteProvider, EditorComponent } from "@mariozechner/pi-tui
 import { findMentionAtCursor, wrapProvider } from "./autocomplete";
 import { installEditorHighlight } from "./editor";
 import { colorize } from "./highlight";
-import { buildItems, stripFrontmatter } from "./skills";
+import { buildItems, rewriteSlashSkillReferences, stripFrontmatter } from "./skills";
 
 describe("skill-dollar highlighting", () => {
 	test("highlights known dollar and slash skill references", () => {
@@ -75,5 +75,15 @@ describe("skill-dollar skills", () => {
 	test("strips yaml frontmatter", () => {
 		expect(stripFrontmatter("---\nname: tdd\n---\nbody")).toBe("body");
 		expect(stripFrontmatter("body")).toBe("body");
+	});
+
+	test("rewrites slash skill references without touching paths", () => {
+		const skills = ["develop", "prepare"];
+		expect(
+			rewriteSlashSkillReferences(
+				"Use `/develop`, then suggest /prepare <spec>. Keep ~/blueprints/foo/archive/ unchanged.",
+				skills,
+			),
+		).toBe("Use `$develop`, then suggest $prepare <spec>. Keep ~/blueprints/foo/archive/ unchanged.");
 	});
 });

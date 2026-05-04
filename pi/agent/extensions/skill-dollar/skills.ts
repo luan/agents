@@ -30,3 +30,11 @@ export function stripFrontmatter(text: string): string {
 	const after = text.indexOf("\n", end + 4);
 	return after === -1 ? "" : text.slice(after + 1);
 }
+
+export function rewriteSlashSkillReferences(text: string, skills: Iterable<string>): string {
+	const names = [...skills].filter(Boolean).sort((a, b) => b.length - a.length);
+	if (names.length === 0 || !text.includes("/")) return text;
+	const escaped = names.map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+	const pattern = new RegExp(`(?<![\\w$~.])\\/(${escaped.join("|")})(?=(?:\\s|\`|[.,;:)<]|$))`, "g");
+	return text.replace(pattern, (_match, name: string) => `$${name}`);
+}

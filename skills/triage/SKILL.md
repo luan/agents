@@ -37,7 +37,7 @@ State transitions: an untriaged artifact normally gets `stage/needs-triage` firs
 
 ## Invocation
 
-The maintainer invokes `/triage` and describes what they want in natural language. Interpret the request and act. Examples:
+The maintainer invokes `$triage` and describes what they want in natural language. Interpret the request and act. Examples:
 
 - "Show me anything that needs my attention"
 - "Let's look at the quote-cache PRD"
@@ -62,7 +62,7 @@ Show counts and a one-line summary per artifact. Let the maintainer pick.
 
 3. **Reproduce (bugs only).** Before any grilling, attempt reproduction: read the reporter's steps, trace the relevant code, run tests or commands. State what happened — successful repro with code path, failed repro, or insufficient detail (a strong `needs-info` signal). A confirmed repro makes a much stronger agent brief.
 
-4. **Grill (if needed).** If the artifact needs fleshing out, run a `/grill-with-docs` session.
+4. **Grill (if needed).** If the artifact needs fleshing out, run a `$grill-with-docs` session.
 
 5. **Apply the outcome:**
    - `stage/ready-for-agent` — append an agent brief section to the artifact.

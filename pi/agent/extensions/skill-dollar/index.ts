@@ -3,7 +3,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { AutocompleteItem } from "@mariozechner/pi-tui";
 import { patchDollarAutocompleteTrigger, wrapProvider } from "./autocomplete";
 import { installEditorHighlight } from "./editor";
-import { buildItems, collectSkills, stripFrontmatter } from "./skills";
+import { buildItems, collectSkills, rewriteSlashSkillReferences, stripFrontmatter } from "./skills";
 import { ensureTranscriptHighlight } from "./transcript";
 
 const DOLLAR_RE = /(?<![\w$])\$([a-zA-Z][\w-]*)/g;
@@ -47,7 +47,10 @@ export default function (pi: ExtensionAPI) {
 		const blocks: string[] = [];
 		for (const [name, path] of referenced) {
 			try {
-				const body = stripFrontmatter(await readFile(path, "utf8"));
+				const body = rewriteSlashSkillReferences(
+					stripFrontmatter(await readFile(path, "utf8")),
+					state.skills.keys(),
+				);
 				blocks.push(`<skill name="${name}" path="${path}">\n${body}\n</skill>`);
 			} catch {
 				// Skills can be removed between discovery and prompt handling.

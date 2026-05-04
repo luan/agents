@@ -52,7 +52,7 @@ Without `--auto`, AskUserQuestion:
 2. **Color direction** — warm/cool, muted/vibrant, monochrome/colorful
 3. **Typography** — serif, sans, mono, mixed; formal vs casual
 
-Use answers to select Google Fonts, build OKLCH palette, shape layout per `/frontend-design`.
+Use answers to select Google Fonts, build OKLCH palette, shape layout per `$frontend-design`.
 
 ## Scaffold
 

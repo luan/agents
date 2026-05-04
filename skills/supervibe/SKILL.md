@@ -67,4 +67,4 @@ If max iterations hit before completion, state what remains.
 
 - Chunk fails → record it, continue to next chunk. Failed chunks are included in the final handoff.
 - Max iterations hit → stop, state accomplished vs remaining.
-- All chunks fail → stop, suggest `/diagnose` or manual investigation.
+- All chunks fail → stop, suggest `$diagnose` or manual investigation.

@@ -13,7 +13,7 @@ user-invocable: true
 
 # Spec
 
-Create a PRD-style blueprints vault `spec` artifact. This skill answers **what are we building and why?** It does not produce implementation plans; use `/prepare` after the spec is approved.
+Create a PRD-style blueprints vault `spec` artifact. This skill answers **what are we building and why?** It does not produce implementation plans; use `$prepare` after the spec is approved.
 
 The blueprints vault is canonical. Use `ct vault`. New specs start with the `stage/needs-triage` tag.
 
@@ -114,7 +114,7 @@ The desired target behavior from the user's perspective. Present tense. Include 
 - [[related-artifact]]
 ```
 
-Do not include an implementation plan, phase list, task breakdown, or file-by-file instructions. Those belong in `/prepare`.
+Do not include an implementation plan, phase list, task breakdown, or file-by-file instructions. Those belong in `$prepare`.
 
 ### 5. Review with the user
 
@@ -145,5 +145,5 @@ Return:
 ```text
 Spec: <topic>
 Spec file: <path-or-stem>
-Next: /prepare <spec-stem>
+Next: $prepare <spec-stem>
 ```

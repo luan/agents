@@ -15,7 +15,7 @@ allowed-tools:
 
 Execute one approved persisted `ct` task. This skill answers **make this task true**. It does not plan, split, rescope, or invent adjacent work.
 
-Use `/prepare` when a spec still needs executable tasks. If the user passes a `spec`, stop and ask to run `/prepare <spec-stem>` first.
+Use `$prepare` when a spec still needs executable tasks. If the user passes a `spec`, stop and ask to run `$prepare <spec-stem>` first.
 
 ## Arguments
 
@@ -30,9 +30,9 @@ Use `/prepare` when a spec still needs executable tasks. If the user passes a `s
 - Read the linked source spec or parent task named in the task body.
 - Read relevant vault domain and decision artifacts before changing code.
 - If the task is ambiguous, too large, stale, or contradicts the spec, stop and ask. Do not silently rewrite scope.
-- If the task needs to be split or corrected, suggest `/prepare` and explain the issue.
+- If the task needs to be split or corrected, suggest `$prepare` and explain the issue.
 - Prefer direct implementation in the main thread. Use subagents only for focused research or review, not independent scope ownership.
-- Use the `/tdd` discipline for implementation. TDD is mandatory for `/develop`, not an option.
+- Use the `$tdd` discipline for implementation. TDD is mandatory for `$develop`, not an option.
 
 ## Step 1: Load context
 
@@ -128,5 +128,5 @@ Developed: <task title>
 Verification: <commands and pass/fail>
 Acceptance criteria: <satisfied/blocked summary>
 Files changed: <paths>
-Next: /crit, then /commit
+Next: $crit, then $commit
 ```

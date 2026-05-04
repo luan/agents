@@ -16,7 +16,7 @@ Legacy full pipeline (spec → prepare → develop → review → commit) from a
 - `--no-review` — skip review stage
 - `--dry-run` — spec only, stop before develop
 
-No prompt → tell user: `/vibe <what to build>`, stop.
+No prompt → tell user: `$vibe <what to build>`, stop.
 
 ## Pipeline
 
@@ -38,7 +38,7 @@ Verify the spec exists and has content. Immediately proceed to prepare.
 
 Output `[2/M] Prepare`.
 
-If `--dry-run` → stop here. Output the spec file path and suggest `/prepare <spec-stem>`.
+If `--dry-run` → stop here. Output the spec file path and suggest `$prepare <spec-stem>`.
 
 ```
 Skill("prepare", args="<spec-file-path-or-stem> --auto")
