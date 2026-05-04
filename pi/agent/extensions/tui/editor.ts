@@ -1,5 +1,6 @@
 import { CustomEditor, type Theme } from "@mariozechner/pi-coding-agent";
 import type { Component } from "@mariozechner/pi-tui";
+import { terminalRows } from "../shared/terminal";
 import { ANSI_RESET, fillBackgroundLine } from "./render-lines";
 
 const CUSTOM_EDITOR_ORIGINAL_RENDER = Symbol.for("agents.polishedTui.customEditorOriginalRender");
@@ -23,11 +24,6 @@ const patchState = globalPatchState.__agentsPolishedTuiState;
 
 export function setEditorTheme(uiTheme: Theme): void {
 	patchState.currentUiTheme = uiTheme;
-}
-
-function terminalRows(): number | undefined {
-	const rows = process.stdout?.rows;
-	return typeof rows === "number" && Number.isFinite(rows) ? rows : undefined;
 }
 
 function renderPolishedEditor(
