@@ -1,8 +1,45 @@
 use std::path::Path;
 use std::process::Command;
 
+const DEFAULT_TERMINAL_APP: &str = "Ghostty";
+
 fn terminal_app() -> String {
-    std::env::var("CT_TERMINAL").unwrap_or_else(|_| "WezTerm".to_string())
+    terminal_app_from_env(|key| std::env::var(key).ok())
+}
+
+fn terminal_app_from_env(get: impl Fn(&str) -> Option<String>) -> String {
+    if let Some(terminal) = get("CT_TERMINAL").filter(|value| !value.trim().is_empty()) {
+        return terminal;
+    }
+
+    let term_program = get("TERM_PROGRAM");
+    if get("GHOSTTY_RESOURCES_DIR").is_some()
+        || get("TERM")
+            .as_deref()
+            .is_some_and(|term| term.contains("ghostty"))
+        || term_program
+            .as_deref()
+            .is_some_and(|program| program.eq_ignore_ascii_case("ghostty"))
+    {
+        return "Ghostty".to_string();
+    }
+
+    if get("WEZTERM_EXECUTABLE").is_some()
+        || term_program
+            .as_deref()
+            .is_some_and(|program| program.eq_ignore_ascii_case("wezterm"))
+    {
+        return "WezTerm".to_string();
+    }
+
+    if term_program
+        .as_deref()
+        .is_some_and(|program| program == "Apple_Terminal")
+    {
+        return "Terminal".to_string();
+    }
+
+    DEFAULT_TERMINAL_APP.to_string()
 }
 
 fn frontmost_app_name() -> Option<String> {
@@ -294,6 +331,48 @@ LSAppInfoItem 0x600003744540 "com.mitchellh.ghostty" (Ghostty)
         assert!(cmd.contains("claude-my-session"));
         assert!(cmd.contains("switch-client"));
         assert!(cmd.contains("open -a '"));
+    }
+
+    fn env_value(vars: &[(&str, &str)], key: &str) -> Option<String> {
+        vars.iter()
+            .find(|(name, _)| *name == key)
+            .map(|(_, value)| (*value).to_string())
+    }
+
+    #[test]
+    fn terminal_app_defaults_to_ghostty() {
+        assert_eq!(terminal_app_from_env(|_| None), "Ghostty");
+    }
+
+    #[test]
+    fn terminal_app_prefers_explicit_override() {
+        assert_eq!(
+            terminal_app_from_env(|key| env_value(&[("CT_TERMINAL", "WezTerm")], key)),
+            "WezTerm"
+        );
+    }
+
+    #[test]
+    fn terminal_app_detects_source_ghostty_env() {
+        assert_eq!(
+            terminal_app_from_env(|key| env_value(&[("TERM", "xterm-ghostty")], key)),
+            "Ghostty"
+        );
+        assert_eq!(
+            terminal_app_from_env(|key| env_value(&[("GHOSTTY_RESOURCES_DIR", "/app")], key)),
+            "Ghostty"
+        );
+    }
+
+    #[test]
+    fn terminal_app_detects_source_wezterm_env() {
+        assert_eq!(
+            terminal_app_from_env(|key| env_value(
+                &[("WEZTERM_EXECUTABLE", "/Applications/WezTerm.app")],
+                key
+            )),
+            "WezTerm"
+        );
     }
 
     #[test]
