@@ -7,7 +7,7 @@
   "treeFilterMode": "default",
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-5.5",
-  "defaultThinkingLevel": "xhigh",
+  "defaultThinkingLevel": "medium",
   "skills": [
     "../.codex/skills"
   ],
@@ -29,7 +29,7 @@
     "openai-codex/gpt-5.4-mini"
   ],
   "theme": "catppuccin-mocha",
-  "hideThinkingBlock": true,
+  "hideThinkingBlock": false,
   "editorPaddingX": 0,
   "terminal": {
     "clearOnShrink": false,
