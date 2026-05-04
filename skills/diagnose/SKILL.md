@@ -1,6 +1,6 @@
 ---
 name: diagnose
-description: "Disciplined bug/perf diagnosis: reproduce, minimize, hypothesize, instrument, fix, regression-test."
+description: 'Diagnose hard bugs or performance issues with reproduction, minimization, instrumentation, fixes, and regression tests. Use when the user asks to debug, investigate failures, or find root cause.'
 user-invocable: true
 ---
 
@@ -9,17 +9,6 @@ user-invocable: true
 A discipline for hard bugs. Skip phases only when explicitly justified.
 
 When exploring the codebase, search/read relevant blueprints vault domain and decision artifacts first to get a clear mental model of the relevant modules. If no relevant vault docs exist, proceed silently.
-
-## Agentic loop
-
-1. **Intake** — Restate the requested outcome, inputs, constraints, and stop conditions. If the request is ambiguous or unsafe, ask before acting.
-2. **Discover** — Gather the minimum evidence needed: user context, repo/vault state, relevant files, commands, docs, or external state. Prefer direct source/tool evidence over memory.
-3. **Decide** — Choose the smallest valid path for `diagnose`. Name assumptions, blockers, and what is explicitly out of scope before side effects.
-4. **Execute** — Build a feedback loop, reproduce the issue, isolate cause, fix the smallest seam, and lock it with a regression check.
-5. **Verify** — Check the result against the request and this skill's rules using concrete evidence: tests, command output, diffs, links, artifacts, or reviewed findings.
-6. **Close** — Provide only the concrete handoff the next actor needs: changed paths/artifacts/findings, verification status, remaining blockers, and the next command/action.
-
-Guardrail: Never fix from vibes; reproduction or strong instrumentation comes first.
 
 ## Phase 1 — Build a feedback loop
 

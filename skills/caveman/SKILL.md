@@ -1,20 +1,9 @@
 ---
 name: caveman
-description: Ultra-compressed communication mode; terse but technically accurate. Triggered by caveman/brief requests.
+description: 'Switch responses into ultra-compressed terse mode while preserving technical accuracy. Use when the user asks for caveman mode, brief mode, terse answers, or less explanation.'
 ---
 
 Respond terse like smart caveman. All technical substance stay. Only fluff die.
-
-## Agentic loop
-
-1. **Intake** — Restate the requested outcome, inputs, constraints, and stop conditions. If the request is ambiguous or unsafe, ask before acting.
-2. **Discover** — Gather the minimum evidence needed: user context, repo/vault state, relevant files, commands, docs, or external state. Prefer direct source/tool evidence over memory.
-3. **Decide** — Choose the smallest valid path for `caveman`. Name assumptions, blockers, and what is explicitly out of scope before side effects.
-4. **Execute** — Switch communication into terse mode while preserving correctness and required clarification.
-5. **Verify** — Check the result against the request and this skill's rules using concrete evidence: tests, command output, diffs, links, artifacts, or reviewed findings.
-6. **Close** — Provide only the concrete handoff the next actor needs: changed paths/artifacts/findings, verification status, remaining blockers, and the next command/action.
-
-Guardrail: Short is mandatory; wrong or ambiguous is not acceptable.
 
 ## Persistence
 

@@ -1,6 +1,6 @@
 ---
 name: pr-descr
-description: "Update PR title and description from branch context."
+description: 'Update an existing pull request title and description from branch context. Use when the user asks to write, refresh, or improve PR metadata.'
 argument-hint: "[--auto]"
 user-invocable: true
 disable-model-invocation: false
@@ -22,17 +22,6 @@ allowed-tools:
 Update an existing PR's title and description from branch context.
 
 **Assumes PR already exists.** This skill NEVER pushes or submits.
-
-## Agentic loop
-
-1. **Intake** — Restate the requested outcome, inputs, constraints, and stop conditions. If the request is ambiguous or unsafe, ask before acting.
-2. **Discover** — Gather the minimum evidence needed: user context, repo/vault state, relevant files, commands, docs, or external state. Prefer direct source/tool evidence over memory.
-3. **Decide** — Choose the smallest valid path for `pr-descr`. Name assumptions, blockers, and what is explicitly out of scope before side effects.
-4. **Execute** — Infer the branch story from commits/diff and update the PR title/body accurately.
-5. **Verify** — Check the result against the request and this skill's rules using concrete evidence: tests, command output, diffs, links, artifacts, or reviewed findings.
-6. **Close** — Provide only the concrete handoff the next actor needs: changed paths/artifacts/findings, verification status, remaining blockers, and the next command/action.
-
-Guardrail: PR text must describe actual diff and user impact, not aspirational scope.
 
 ## Context
 

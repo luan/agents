@@ -1,6 +1,6 @@
 ---
 name: vault-sweep
-description: "Comprehensive blueprints vault maintenance: archive consumed artifacts, audit staleness, propose missing docs."
+description: 'Audit the blueprints vault for consumed artifacts, stale docs, and missing reference docs. Use when the user asks for vault maintenance, cleanup, staleness review, or archival recommendations.'
 argument-hint: "[--execute] [--docs-only] [--no-gap-analysis]"
 allowed-tools:
   - Agent
@@ -16,17 +16,6 @@ user-invocable: true
 Holistic vault maintenance. Cross-references the blueprints vault against codebase reality to produce a structured maintenance plan: what to archive, what docs are stale, what stable systems deserve new reference docs.
 
 Analytical counterpart to `/archive` (which operates on individual artifacts). Vault sweep surveys the whole project, classifies everything, and proposes. Nothing executes until approved.
-
-## Agentic loop
-
-1. **Intake** — Restate the requested outcome, inputs, constraints, and stop conditions. If the request is ambiguous or unsafe, ask before acting.
-2. **Discover** — Gather the minimum evidence needed: user context, repo/vault state, relevant files, commands, docs, or external state. Prefer direct source/tool evidence over memory.
-3. **Decide** — Choose the smallest valid path for `vault-sweep`. Name assumptions, blockers, and what is explicitly out of scope before side effects.
-4. **Execute** — Audit the blueprints vault for consumed, stale, inconsistent, or missing artifacts and act only on approved maintenance.
-5. **Verify** — Check the result against the request and this skill's rules using concrete evidence: tests, command output, diffs, links, artifacts, or reviewed findings.
-6. **Close** — Provide only the concrete handoff the next actor needs: changed paths/artifacts/findings, verification status, remaining blockers, and the next command/action.
-
-Guardrail: Preserve content and evidence before archival or cleanup.
 
 ## Arguments
 

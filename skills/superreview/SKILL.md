@@ -1,6 +1,6 @@
 ---
 name: superreview
-description: "Deep adversarial review with 5-7 specialist lanes for high-stakes or complex changes."
+description: 'Run a deep adversarial review with 5-7 specialist lanes and synthesized findings. Use when the user asks for a high-stakes, exhaustive, or multi-perspective review.'
 argument-hint: "[base..head | file-list | PR#] [--auto critical|high|medium|all] [--loop]"
 user-invocable: true
 allowed-tools:
@@ -22,17 +22,6 @@ allowed-tools:
 5-7 parallel perspective specialists with lane boundaries, shared concern tags, and a rigorous aggregation pipeline. Always runs cleanup pre-pass (reuse / quality / efficiency). Auto-detects source spec/task context for coherence review.
 
 **NEVER review inline.** Always dispatch subagents via the Agent tool.
-
-## Agentic loop
-
-1. **Intake** — Restate the requested outcome, inputs, constraints, and stop conditions. If the request is ambiguous or unsafe, ask before acting.
-2. **Discover** — Gather the minimum evidence needed: user context, repo/vault state, relevant files, commands, docs, or external state. Prefer direct source/tool evidence over memory.
-3. **Decide** — Choose the smallest valid path for `superreview`. Name assumptions, blockers, and what is explicitly out of scope before side effects.
-4. **Execute** — Run a deep multi-lane adversarial review and synthesize material findings with evidence.
-5. **Verify** — Check the result against the request and this skill's rules using concrete evidence: tests, command output, diffs, links, artifacts, or reviewed findings.
-6. **Close** — Provide only the concrete handoff the next actor needs: changed paths/artifacts/findings, verification status, remaining blockers, and the next command/action.
-
-Guardrail: Optimize for high-signal risks; avoid generic review filler.
 
 ## Arguments
 

@@ -1,18 +1,7 @@
 ---
 name: playwriter
-description: Automate the user's existing Chrome via Playwriter/Playwright for JS-heavy or logged-in sites.
+description: "Automate the user's existing Chrome session with Playwriter/Playwright for browser-grounded work. Use when the user needs logged-in, JavaScript-heavy, or live-site inspection and automation."
 ---
-
-## Agentic loop
-
-1. **Intake** — Restate the requested outcome, inputs, constraints, and stop conditions. If the request is ambiguous or unsafe, ask before acting.
-2. **Discover** — Gather the minimum evidence needed: user context, repo/vault state, relevant files, commands, docs, or external state. Prefer direct source/tool evidence over memory.
-3. **Decide** — Choose the smallest valid path for `playwriter`. Name assumptions, blockers, and what is explicitly out of scope before side effects.
-4. **Execute** — Use the existing Chrome session to inspect or automate a live site safely and gather browser-grounded evidence.
-5. **Verify** — Check the result against the request and this skill's rules using concrete evidence: tests, command output, diffs, links, artifacts, or reviewed findings.
-6. **Close** — Provide only the concrete handoff the next actor needs: changed paths/artifacts/findings, verification status, remaining blockers, and the next command/action.
-
-Guardrail: Read the docs first; avoid blind browser automation.
 
 ## REQUIRED: Read Full Documentation First
 

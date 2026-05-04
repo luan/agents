@@ -1,6 +1,6 @@
 ---
 name: split-commit
-description: "Repackage a branch into clean, tested, vertical commits. For single commits use /commit."
+description: 'Repackage branch changes into clean vertical commits that remain reviewable and tested. Use when the user asks to split, rearrange, or clean up multiple commits; use commit for single commits.'
 argument-hint: "[base-branch] [--test='command'] [--auto]"
 user-invocable: true
 allowed-tools:
@@ -10,17 +10,6 @@ allowed-tools:
 # Split Commit
 
 Repackage branch changes into clean vertical commits. Each commit compiles + passes tests independently.
-
-## Agentic loop
-
-1. **Intake** — Restate the requested outcome, inputs, constraints, and stop conditions. If the request is ambiguous or unsafe, ask before acting.
-2. **Discover** — Gather the minimum evidence needed: user context, repo/vault state, relevant files, commands, docs, or external state. Prefer direct source/tool evidence over memory.
-3. **Decide** — Choose the smallest valid path for `split-commit`. Name assumptions, blockers, and what is explicitly out of scope before side effects.
-4. **Execute** — Repackage an existing branch into clean vertical commits while keeping behavior verified.
-5. **Verify** — Check the result against the request and this skill's rules using concrete evidence: tests, command output, diffs, links, artifacts, or reviewed findings.
-6. **Close** — Provide only the concrete handoff the next actor needs: changed paths/artifacts/findings, verification status, remaining blockers, and the next command/action.
-
-Guardrail: Each commit should be coherent, reviewable, and buildable where practical.
 
 ## Phase 1: Analyze
 

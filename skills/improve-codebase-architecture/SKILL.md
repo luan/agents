@@ -1,23 +1,12 @@
 ---
 name: improve-codebase-architecture
-description: Find architecture deepening/refactor opportunities using vault domain and decision artifacts.
+description: 'Find architecture-deepening refactor opportunities grounded in vault docs and code evidence. Use when the user asks to improve codebase architecture, module boundaries, cohesion, or AI navigability.'
 user-invocable: true
 ---
 
 # Improve Codebase Architecture
 
 Surface architectural friction and propose **deepening opportunities** — refactors that turn shallow modules into deep ones. The aim is testability and AI-navigability.
-
-## Agentic loop
-
-1. **Intake** — Restate the requested outcome, inputs, constraints, and stop conditions. If the request is ambiguous or unsafe, ask before acting.
-2. **Discover** — Gather the minimum evidence needed: user context, repo/vault state, relevant files, commands, docs, or external state. Prefer direct source/tool evidence over memory.
-3. **Decide** — Choose the smallest valid path for `improve-codebase-architecture`. Name assumptions, blockers, and what is explicitly out of scope before side effects.
-4. **Execute** — Use vault context and code evidence to identify concrete architecture-deepening opportunities.
-5. **Verify** — Check the result against the request and this skill's rules using concrete evidence: tests, command output, diffs, links, artifacts, or reviewed findings.
-6. **Close** — Provide only the concrete handoff the next actor needs: changed paths/artifacts/findings, verification status, remaining blockers, and the next command/action.
-
-Guardrail: Recommend changes only when they improve boundaries, language, or cohesion with evidence.
 
 ## Glossary
 
