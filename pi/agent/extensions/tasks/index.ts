@@ -1,11 +1,12 @@
-import { existsSync, readFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { readFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { ExtensionAPI, ExtensionContext, Theme, ThemeColor } from "@mariozechner/pi-coding-agent";
 import { type Component, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@mariozechner/pi-tui";
 import { Type } from "typebox";
 import { runCommand as defaultRunCommand } from "../shared/ct-runner";
+import { hasEnoughTerminalRows } from "../shared/terminal";
 
 type TaskCommand = "add" | "list" | "show" | "update" | "delete";
 
@@ -81,7 +82,7 @@ const defaultConfig: Config = {
 		enabled: true,
 		maxTasks: 6,
 		minTerminalRows: 28,
-		toggleShortcut: "ctrl+i",
+		toggleShortcut: "alt+t",
 	},
 	keybindings: {
 		toggle: "alt+t",
@@ -118,14 +119,8 @@ function loadConfig(): Config {
 	}
 }
 
-function terminalRows(): number | undefined {
-	const rows = process.stdout?.rows;
-	return typeof rows === "number" && Number.isFinite(rows) ? rows : undefined;
-}
-
 function hasEnoughRows(minRows: number): boolean {
-	const rows = terminalRows();
-	return rows === undefined || rows >= minRows;
+	return hasEnoughTerminalRows(minRows);
 }
 
 function pushOption(args: string[], name: string, value: unknown): void {
@@ -810,6 +805,10 @@ export class TaskBoardOverlay implements Component {
 		return this.pendingMutation ?? this.pendingReload ?? Promise.resolve();
 	}
 
+	private isBusy(): boolean {
+		return Boolean(this.pendingMutation ?? this.pendingReload);
+	}
+
 	private setSelection(next: TaskBoardSelection): void {
 		this.boardSelection = clampSelection(buildTaskBoardColumns(this.tasks), next);
 	}
@@ -930,6 +929,7 @@ export class TaskBoardOverlay implements Component {
 			this.moveRow(1);
 			return;
 		}
+		if (this.isBusy()) return;
 		if (matchesAnyKey(data, bindings.assignCurrent)) {
 			this.updateSelected({ assigned_to: "current" });
 			return;
@@ -1004,7 +1004,9 @@ function sessionFile(ctx?: ExtensionContext): string | undefined {
 }
 
 function sessionIdFromAssignment(assignedTo: string): string | undefined {
-	return assignedTo.startsWith("session:") ? assignedTo.slice("session:".length) : undefined;
+	if (!assignedTo.startsWith("session:")) return undefined;
+	const id = assignedTo.slice("session:".length);
+	return /^[A-Za-z0-9_.:-]+$/.test(id) ? id : undefined;
 }
 
 function sessionNameFromFile(path: string): string | undefined {
@@ -1027,8 +1029,10 @@ function sessionNameForAssignment(ctx: ExtensionContext | undefined, assignedTo:
 	const id = sessionIdFromAssignment(assignedTo);
 	const currentFile = sessionFile(ctx);
 	if (!id || !currentFile) return undefined;
-	const path = join(dirname(currentFile), `${id}.jsonl`);
-	return existsSync(path) ? sessionNameFromFile(path) : undefined;
+	const sessionDir = resolve(dirname(currentFile));
+	const path = resolve(join(sessionDir, `${id}.jsonl`));
+	if (!path.startsWith(`${sessionDir}/`)) return undefined;
+	return sessionNameFromFile(path);
 }
 
 function assignmentDisplayContext(
@@ -1375,7 +1379,14 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 
 	pi.on("session_start", async (_event, ctx) => {
 		cwd = ctx.cwd;
-		if (config.hud.enabled) await updateTaskHud(ctx, pi, config.command, runCommand, config);
+		if (config.hud.enabled) {
+			await updateTaskHud(ctx, pi, config.command, runCommand, config).catch((error) => {
+				ctx.ui.notify?.(
+					`Task HUD refresh failed: ${error instanceof Error ? error.message : String(error)}`,
+					"warning",
+				);
+			});
+		}
 	});
 
 	pi.on("turn_end", async (_event, ctx) => {
@@ -1384,9 +1395,9 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 		});
 	});
 
-	pi.registerShortcut?.(config.keybindings.toggle, {
+	pi.registerCommand?.("tasks", {
 		description: "Open project task board",
-		handler: async (ctx: ExtensionContext) => {
+		handler: async (_args: string, ctx: ExtensionContext) => {
 			await showTaskBoard(ctx, pi, config.command, runCommand, config).catch((error) => {
 				ctx.ui.notify?.(`Task board failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
 			});

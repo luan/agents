@@ -252,6 +252,29 @@ describe("tasks extension", () => {
 		expect(calls.at(-1)).toEqual({ action: "update", params: { id: "PG4W2K4Q03", status: "open" } });
 	});
 
+	test("task board ignores mutating keys while a mutation is pending", async () => {
+		let resolveMutation: ((tasks: (typeof task)[]) => void) | undefined;
+		const calls: Array<{ action: string; params: Record<string, unknown> }> = [];
+		const board = new TaskBoardOverlay({
+			tasks: [task],
+			theme: theme as any,
+			onClose: () => {},
+			onReload: async () => [task],
+			onMutate: async (action, params) => {
+				calls.push({ action, params });
+				return new Promise((resolve) => {
+					resolveMutation = resolve;
+				});
+			},
+		});
+
+		board.handleInput("+");
+		board.handleInput("+");
+		expect(calls).toHaveLength(1);
+		resolveMutation?.([task]);
+		await board.waitForIdle();
+	});
+
 	test("task board keeps selection on reprioritized task after resort", async () => {
 		const board = new TaskBoardOverlay({
 			tasks: [
@@ -321,8 +344,8 @@ describe("tasks extension", () => {
 		expect(calls).toEqual([{ action: "delete", params: { id: "PG4W2K4Q03" } }]);
 	});
 
-	test("alt+t opens task board overlay and reloads from ct", async () => {
-		const shortcuts = new Map<string, any>();
+	test("/tasks opens task board overlay and reloads from ct", async () => {
+		const commands = new Map<string, any>();
 		let customOptions: any;
 		let overlayText = "";
 		const calls: string[][] = [];
@@ -330,8 +353,8 @@ describe("tasks extension", () => {
 			{
 				registerTool() {},
 				on() {},
-				registerShortcut(key: string, definition: any) {
-					shortcuts.set(key, definition);
+				registerCommand(name: string, definition: any) {
+					commands.set(name, definition);
 				},
 			} as any,
 			{
@@ -342,7 +365,7 @@ describe("tasks extension", () => {
 			},
 		);
 
-		await shortcuts.get("alt+t").handler({
+		await commands.get("tasks").handler("", {
 			cwd: "/tmp/project",
 			ui: {
 				custom(factory: any, options: any) {
@@ -362,16 +385,16 @@ describe("tasks extension", () => {
 		expect(calls).toContainEqual(["ct", "task", "list", "--all", "--json"]);
 	});
 
-	test("alt+t toggles an open task board closed", async () => {
-		const shortcuts = new Map<string, any>();
+	test("/tasks toggles an open task board closed", async () => {
+		const commands = new Map<string, any>();
 		let closeOverlay: (() => void) | undefined;
 		let closed = false;
 		tasksExtension(
 			{
 				registerTool() {},
 				on() {},
-				registerShortcut(key: string, definition: any) {
-					shortcuts.set(key, definition);
+				registerCommand(name: string, definition: any) {
+					commands.set(name, definition);
 				},
 			} as any,
 			{
@@ -395,16 +418,16 @@ describe("tasks extension", () => {
 			},
 		};
 
-		const opened = shortcuts.get("alt+t").handler(ctx);
+		const opened = commands.get("tasks").handler("", ctx);
 		await Promise.resolve();
 		await Promise.resolve();
-		await shortcuts.get("alt+t").handler(ctx);
+		await commands.get("tasks").handler("", ctx);
 		await opened;
 
 		expect(closed).toBe(true);
 	});
 
-	test("ctrl+i toggles only the task HUD Kanban", async () => {
+	test("alt+t toggles only the task HUD Kanban", async () => {
 		const shortcuts = new Map<string, any>();
 		let widget: { render(width: number): string[] } | undefined;
 		let listCalls = 0;
@@ -432,17 +455,17 @@ describe("tasks extension", () => {
 			},
 		};
 
-		await shortcuts.get("ctrl+i").handler(ctx);
+		await shortcuts.get("alt+t").handler(ctx);
 		expect(widget?.render(120).join("\n")).toContain("1 tasks");
 		expect(widget?.render(120).join("\n")).not.toContain("Ready (1)");
-		await shortcuts.get("ctrl+i").handler(ctx);
+		await shortcuts.get("alt+t").handler(ctx);
 		expect(widget?.render(120).join("\n")).toContain("1 tasks");
 		expect(widget?.render(120).join("\n")).toContain("Ready (1)");
 		expect(listCalls).toBe(2);
 	});
 
-	test("alt+t task board mutations shell out through ct and refresh HUD", async () => {
-		const shortcuts = new Map<string, any>();
+	test("/tasks task board mutations shell out through ct and refresh HUD", async () => {
+		const commands = new Map<string, any>();
 		const calls: string[][] = [];
 		let component: any;
 		let widgetText = "";
@@ -451,8 +474,8 @@ describe("tasks extension", () => {
 				registerTool() {},
 				on() {},
 				getSessionName: () => "Current Session",
-				registerShortcut(key: string, definition: any) {
-					shortcuts.set(key, definition);
+				registerCommand(name: string, definition: any) {
+					commands.set(name, definition);
 				},
 			} as any,
 			{
@@ -473,7 +496,7 @@ describe("tasks extension", () => {
 			},
 		);
 
-		await shortcuts.get("alt+t").handler({
+		await commands.get("tasks").handler("", {
 			cwd: "/tmp/project",
 			sessionId: "current",
 			ui: {
@@ -793,6 +816,39 @@ describe("tasks extension", () => {
 
 		expect(widgetText).toContain("@Other Work");
 		expect(widgetText).not.toContain(sessionId);
+	});
+
+	test("does not resolve assigned session labels outside the session directory", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-task-session-name-"));
+		const handlers: Record<string, any> = {};
+		let widgetText = "";
+		tasksExtension(
+			{
+				registerTool() {},
+				on(name: string, handler: any) {
+					handlers[name] = handler;
+				},
+			} as any,
+			{
+				runCommand: async () => ({
+					stdout: JSON.stringify({ tasks: [{ ...task, assigned_to: "session:../secret" }] }),
+					stderr: "",
+					exitCode: 0,
+				}),
+			},
+		);
+
+		await handlers.session_start(undefined, {
+			cwd: "/tmp/project",
+			sessionManager: { getSessionFile: () => join(dir, "current.jsonl") },
+			ui: {
+				setWidget(_id: string, factory: any) {
+					widgetText = factory({}, theme).render(220).join("\n");
+				},
+			},
+		});
+
+		expect(widgetText).toContain("@../secret");
 	});
 
 	test("reminds the current session about assigned unfinished tasks at turn end", async () => {
