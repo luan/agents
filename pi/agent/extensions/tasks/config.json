@@ -5,7 +5,7 @@
     "enabled": true,
     "maxTasks": 6,
     "minTerminalRows": 28,
-    "toggleShortcut": "ctrl+i"
+		"toggleShortcut": "alt+t"
   },
   "keybindings": {
     "toggle": "alt+t",
