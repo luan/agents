@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { execSync } from "node:child_process";
 import codexExecExtension from "./index.ts";
 import {
 	formatElapsedTime,
@@ -16,6 +17,23 @@ const testTheme: RenderTheme = {
 	fg: (role, text) => `<${role}>${text}</${role}>`,
 	bold: (text) => `<bold>${text}</bold>`,
 };
+
+function shellQuote(value: string): string {
+	return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+function processList(): string {
+	return execSync("ps -axo pid,ppid,pgid,stat,command", { encoding: "utf8" });
+}
+
+async function waitForProcessListToExclude(marker: string): Promise<void> {
+	const deadline = Date.now() + 3000;
+	while (Date.now() < deadline) {
+		if (!processList().includes(marker)) return;
+		await Bun.sleep(100);
+	}
+	expect(processList()).not.toContain(marker);
+}
 
 test("exec command call renders Codex-style inline syntax-highlighted commands", () => {
 	const rendered = renderExecCommandCall(
@@ -163,6 +181,47 @@ test("write stdin renderer self-renders without the default success shell", () =
 		expect(rendered).not.toContain("Exit code: 0");
 	} finally {
 		sessions.shutdown();
+	}
+});
+
+test("shutdown terminates descendant processes that escaped the shell process group", async () => {
+	const marker = `codex-exec-shutdown-descendant-${process.pid}-${Date.now()}`;
+	const sessions = createExecSessionManager({ defaultExecYieldTimeMs: 250 });
+	const childCode = [
+		"import signal,time",
+		"signal.signal(signal.SIGTERM, signal.SIG_IGN)",
+		"signal.signal(signal.SIGHUP, signal.SIG_IGN)",
+		"time.sleep(30)",
+	].join("; ");
+	const parentCode = [
+		"import subprocess,time",
+		`p=subprocess.Popen(["python3","-c",${JSON.stringify(childCode)},${JSON.stringify(`${marker}-child`)}], start_new_session=True)`,
+		'print("child="+str(p.pid), flush=True)',
+		"time.sleep(30)",
+	].join("; ");
+
+	try {
+		const result = await sessions.exec(
+			{
+				cmd: `python3 -c ${shellQuote(parentCode)} ${shellQuote(`${marker}-parent`)}`,
+				yield_time_ms: 250,
+			},
+			process.cwd(),
+		);
+		expect(result.session_id).toBeDefined();
+		expect(result.output).toContain("child=");
+		expect(processList()).toContain(`${marker}-child`);
+
+		sessions.shutdown();
+
+		await waitForProcessListToExclude(marker);
+	} finally {
+		sessions.shutdown();
+		try {
+			execSync(`pkill -KILL -f ${shellQuote(marker)}`);
+		} catch {
+			// Process already exited.
+		}
 	}
 });
 
