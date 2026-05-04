@@ -390,6 +390,52 @@ describe("tasks extension", () => {
 		expect(calls).toEqual([{ action: "delete", params: { id: "PG4W2K4Q03" } }]);
 	});
 
+	test("task board shows mutation failures without throwing raw runner errors", async () => {
+		const board = new TaskBoardOverlay({
+			tasks: [task],
+			theme: theme as any,
+			onClose: () => {},
+			onReload: async () => [task],
+			onMutate: async () => {
+				throw new Error(
+					"ct task delete vf --json failed with exit code 1: Error: cannot delete task vf; blocked by mg",
+				);
+			},
+		});
+
+		board.handleInput("D");
+		board.handleInput("y");
+		await board.waitForIdle();
+
+		const rendered = board.render(100).join("\n");
+		expect(rendered).toContain("Delete failed: cannot delete task vf; blocked by mg");
+		expect(rendered).not.toContain("ct task delete");
+	});
+
+	test("task board blocks deleting tasks with dependents before shelling out", async () => {
+		const calls: unknown[] = [];
+		const board = new TaskBoardOverlay({
+			tasks: [
+				{ ...task, id: "vf" },
+				{ ...task, id: "mg", blocked_by: ["vf"] },
+			],
+			theme: theme as any,
+			onClose: () => {},
+			onReload: async () => [],
+			onMutate: async (_action, params) => {
+				calls.push(params);
+				return [];
+			},
+		});
+
+		board.handleInput("D");
+		board.handleInput("y");
+		await board.waitForIdle();
+
+		expect(calls).toEqual([]);
+		expect(board.render(100).join("\n")).toContain("Delete failed: cannot delete task vf; blocked by mg");
+	});
+
 	test("/tasks opens task board overlay and reloads from ct", async () => {
 		const commands = new Map<string, any>();
 		let customOptions: any;
