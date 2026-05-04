@@ -1083,6 +1083,7 @@ export class TaskBoardOverlay implements Component {
 	private pendingReload?: Promise<void>;
 	private pendingMutation?: Promise<void>;
 	private confirmingDeleteId?: string;
+	private errorMessage?: string;
 
 	constructor(
 		private readonly options: {
@@ -1138,11 +1139,15 @@ export class TaskBoardOverlay implements Component {
 
 	private reload(): void {
 		const taskId = this.currentTask()?.id;
+		this.errorMessage = undefined;
 		this.pendingReload = this.options
 			.onReload()
 			.then((tasks) => {
 				this.tasks = tasks;
 				this.preserveSelection(taskId);
+			})
+			.catch((error) => {
+				this.errorMessage = taskBoardErrorMessage("Reload failed", error);
 			})
 			.finally(() => {
 				this.pendingReload = undefined;
@@ -1157,11 +1162,15 @@ export class TaskBoardOverlay implements Component {
 	private mutate(action: "update" | "delete", params: Record<string, unknown>): void {
 		if (!this.options.onMutate) return;
 		const taskId = action === "delete" ? undefined : this.currentTask()?.id;
+		this.errorMessage = undefined;
 		this.pendingMutation = this.options
 			.onMutate(action, params)
 			.then((tasks) => {
 				this.tasks = tasks;
 				this.preserveSelection(taskId);
+			})
+			.catch((error) => {
+				this.errorMessage = taskBoardErrorMessage(`${action === "delete" ? "Delete" : "Update"} failed`, error);
 			})
 			.finally(() => {
 				this.pendingMutation = undefined;
@@ -1195,6 +1204,13 @@ export class TaskBoardOverlay implements Component {
 
 	private deleteConfirmed(): void {
 		if (!this.confirmingDeleteId) return;
+		const dependencyMessage = taskDeleteDependencyMessage(this.confirmingDeleteId, this.tasks);
+		if (dependencyMessage) {
+			this.errorMessage = dependencyMessage;
+			this.confirmingDeleteId = undefined;
+			this.options.onChange?.();
+			return;
+		}
 		this.mutate("delete", { id: this.confirmingDeleteId });
 	}
 
@@ -1283,10 +1299,30 @@ export class TaskBoardOverlay implements Component {
 				truncateLine(this.options.theme.fg("warning", `Confirm delete ${this.confirmingDeleteId}? y/N`), width),
 			);
 		}
+		if (this.errorMessage) {
+			prefix.push(truncateLine(this.options.theme.fg("warning", this.errorMessage), width));
+		}
 		return [...prefix, ...lines];
 	}
 
 	invalidate(): void {}
+}
+
+function taskBoardErrorMessage(prefix: string, error: unknown): string {
+	const raw = error instanceof Error ? error.message : String(error);
+	const message = raw
+		.replace(/^.+ failed with exit code \d+: /, "")
+		.replace(/^Error:\s*/, "")
+		.trim();
+	return `${prefix}: ${message || raw}`;
+}
+
+function taskDeleteDependencyMessage(taskId: string, tasks: TaskRecord[]): string | undefined {
+	const blocked = tasks.filter((task) => task.blocked_by?.includes(taskId)).map((task) => task.id);
+	if (blocked.length > 0) return `Delete failed: cannot delete task ${taskId}; blocked by ${blocked.join(", ")}`;
+	const children = tasks.filter((task) => task.parent_id === taskId).map((task) => task.id);
+	if (children.length > 0) return `Delete failed: cannot delete task ${taskId}; parent of ${children.join(", ")}`;
+	return undefined;
 }
 
 type AssignmentDisplayContext = {
