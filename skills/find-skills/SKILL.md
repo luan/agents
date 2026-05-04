@@ -129,7 +129,7 @@ If no relevant skills exist:
 
 1. Acknowledge that no existing skill was found
 2. Offer to help with the task directly using your general capabilities
-3. Suggest `/write-a-skill` if they want to create their own skill
+3. Suggest `$write-a-skill` if they want to create their own skill
 
 Example:
 
@@ -137,5 +137,5 @@ Example:
 I searched for skills related to "xyz" but didn't find any matches.
 I can still help you with this task directly! Would you like me to proceed?
 
-If this is something you do often, use `/write-a-skill` to create a project-specific skill.
+If this is something you do often, use `$write-a-skill` to create a project-specific skill.
 ```

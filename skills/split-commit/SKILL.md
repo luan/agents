@@ -25,7 +25,7 @@ Repackage branch changes into clean vertical commits. Each commit should compile
 5. If useful, dispatch one `explorer` subagent to propose grouping/dependency order.
 6. Present the plan to the user and ask for approval before rewriting commits.
 
-Required plan output format:
+**Noop check** — `git log --oneline <base>..HEAD | wc -l`. If ≤1 → stop: "Nothing to repackage — use $commit."
 
 ```text
 TEST_COMMANDS: <detected or provided>

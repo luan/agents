@@ -188,8 +188,8 @@ Store the review via `ct vault create -t review --topic "Review: <branch>"`, edi
 `--auto critical|high|medium|all` → auto-fix at or above the given severity.
 No `--auto` → ask: Fix all / Fix critical+high / Fix critical only / Skip.
 
-Spawn fix agent → fix, verify, self-check (remove debug artifacts, unused imports), hand off changed paths and verification. Single pass — no re-review loop (use `/superreview --loop` for iterative fixing).
+Spawn fix agent → fix, verify, self-check (remove debug artifacts, unused imports), hand off changed paths and verification. Single pass — no re-review loop (use `$superreview --loop` for iterative fixing).
 
 ## Step 7: Summary
 
-Output: Fixes Applied, Ignored, Remaining. Suggest `/superreview` if the user wants deeper analysis.
+Output: Fixes Applied, Ignored, Remaining. Suggest `$superreview` if the user wants deeper analysis.

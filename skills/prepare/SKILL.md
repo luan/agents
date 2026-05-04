@@ -33,7 +33,7 @@ The blueprints vault remains canonical for product intent. Use `ct vault` to rea
 
 Work from the approved spec in the conversation, or find it by vault stem/title/topic with vault search/list/read operations. Read the full artifact body, inline comments, and directly linked related artifacts when needed.
 
-If the spec is unapproved and `--auto` is not set, stop and send the user back to `/spec` refinement. With `--auto`, proceed only when the spec has enough user stories or acceptance intent to split safely. Always stop if the spec is ambiguous or missing core acceptance intent.
+If the spec is unapproved and `--auto` is not set, stop and send the user back to `$spec` refinement. With `--auto`, proceed only when the spec has enough user stories or acceptance intent to split safely. Always stop if the spec is ambiguous or missing core acceptance intent.
 
 ### 2. Explore implementation shape
 
@@ -60,7 +60,7 @@ Choose the smallest task hierarchy that keeps execution clear:
 - **Small spec**: 1-3 slices, limited dependencies, one agent can hold the full structure in context → create only child slice tasks sourced directly from the spec.
 - **Large spec**: 4+ slices, multiple milestones, cross-cutting dependencies, or work that spans several subsystems → create a parent coordination task sourced from the spec, then create child slice tasks blocked by other child tasks as needed.
 
-The parent task is not directly implemented by `/develop`. It coordinates the work and links to child tasks. Each child task must remain independently executable by `/develop`.
+The parent task is not directly implemented by `$develop`. It coordinates the work and links to child tasks. Each child task must remain independently executable by `$develop`.
 
 ### 5. Quiz the user
 
@@ -178,5 +178,5 @@ Spec: <spec-stem>
 Tasks:
 - <parent-task-id> — parent coordination — child tasks: <N>   # only for large specs
 - <task-id> — <title> — <AFK/HITL> — blocked by <none/list>
-Next: /develop <first-ready-afk-task-id>
+Next: $develop <first-ready-afk-task-id>
 ```

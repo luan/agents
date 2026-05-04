@@ -6,7 +6,7 @@ user-invocable: true
 
 # Test-Driven Development
 
-This is the mandatory implementation discipline for `/develop`, not a lifecycle skill. Use it while executing a specific persisted `ct` task or diagnosing a bug with a clear regression seam. Do not use it to define product scope or split work; `/spec` and `/prepare` own that.
+This is the mandatory implementation discipline for `$develop`, not a lifecycle skill. Use it while executing a specific persisted `ct` task or diagnosing a bug with a clear regression seam. Do not use it to define product scope or split work; `$spec` and `$prepare` own that.
 
 ## Philosophy
 

@@ -58,7 +58,7 @@ If diff is large, use `--stat` first and read key files.
 
 ## Step 3: Generate Title and Body
 
-**Title**: conventional commit per /commit skill — `type(scope): description`. Max 72 chars — GitHub truncates longer titles in list views.
+**Title**: conventional commit per $commit skill — `type(scope): description`. Max 72 chars — GitHub truncates longer titles in list views.
 
 **Body**: Follow the repo's PR template if one exists — fill each section from the diff. Otherwise, if recent merged PRs share a consistent format, match it. Fallback: 1-3 sentences explaining WHY with high-level HOW. Don't restate what's obvious from the diff.
 
