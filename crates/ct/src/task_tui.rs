@@ -1,9 +1,17 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    io,
+};
 
 use anyhow::Result;
+use crossterm::{
+    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
+    execute,
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+};
 use ratatui::{
     Terminal,
-    backend::TestBackend,
+    backend::{CrosstermBackend, TestBackend},
     buffer::Cell,
     layout::Rect,
     prelude::Widget,
@@ -38,6 +46,9 @@ pub(crate) fn print_task_tui(
     if let Some(input) = input {
         state.handle_input(tasks, input);
     }
+    if !json && input.is_none() {
+        return run_interactive_task_tui(tasks, state);
+    }
     let lines = render_task_tui_lines_with_state(tasks, width, height, &state);
     if json {
         println!(
@@ -53,6 +64,63 @@ pub(crate) fn print_task_tui(
         }
     }
     Ok(())
+}
+
+fn run_interactive_task_tui(tasks: &[Task], mut state: TaskTuiState) -> Result<()> {
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
+    let result = run_interactive_loop(&mut terminal, tasks, &mut state);
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    terminal.show_cursor()?;
+    result
+}
+
+fn run_interactive_loop(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    tasks: &[Task],
+    state: &mut TaskTuiState,
+) -> Result<()> {
+    loop {
+        terminal.draw(|frame| render_task_tui(frame.area(), frame.buffer_mut(), tasks, state))?;
+        if let Event::Key(key) = event::read()?
+            && handle_interactive_key(state, tasks, key)
+        {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn handle_interactive_key(state: &mut TaskTuiState, tasks: &[Task], key: KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => true,
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => true,
+        KeyCode::Down | KeyCode::Right => {
+            state.handle_input(tasks, "j");
+            false
+        }
+        KeyCode::Up | KeyCode::Left => {
+            state.handle_input(tasks, "k");
+            false
+        }
+        KeyCode::Home => {
+            state.handle_input(tasks, "g");
+            false
+        }
+        KeyCode::End => {
+            state.handle_input(tasks, "G");
+            false
+        }
+        KeyCode::Char(ch) => {
+            let input = ch.to_string();
+            state.handle_input(tasks, &input);
+            false
+        }
+        _ => false,
+    }
 }
 
 impl TaskTuiState {
@@ -664,5 +732,38 @@ mod tests {
         .join("\n");
         assert!(strip_ansi(&rendered).contains("› ★ task1 Task 1"));
         assert!(rendered.contains("\x1b["));
+    }
+
+    #[test]
+    fn task_tui_interactive_keys_move_and_quit() {
+        let tasks: Vec<Task> = (0..3)
+            .map(|index| {
+                task(
+                    &format!("task{index}"),
+                    &format!("Task {index}"),
+                    "open",
+                    "feature",
+                )
+            })
+            .collect();
+        let mut state = TaskTuiState::with_selection(&tasks, Some("task0"));
+
+        assert!(!handle_interactive_key(
+            &mut state,
+            &tasks,
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+        ));
+        assert_eq!(state.selected_task_id.as_deref(), Some("task1"));
+        assert!(!handle_interactive_key(
+            &mut state,
+            &tasks,
+            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE),
+        ));
+        assert_eq!(state.selected_task_id.as_deref(), Some("task0"));
+        assert!(handle_interactive_key(
+            &mut state,
+            &tasks,
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
+        ));
     }
 }
