@@ -9,6 +9,7 @@ import {
 	successfulResponse,
 	validateParams,
 } from "./ask-tool-helpers";
+import { updateMuxAskState } from "./mux-state";
 import { AskParamsSchema } from "./schema";
 import type { AskParams } from "./types";
 import { runAskFlow } from "./ui/controller";
@@ -23,7 +24,8 @@ export function registerAskTool(pi: ExtensionAPI) {
 			"Clarify ambiguous or preference-sensitive decisions with a short interactive interview before proceeding",
 		promptGuidelines: [...ASK_TOOL_PROMPT_GUIDELINES],
 		parameters: AskParamsSchema,
-		execute: executeAskTool,
+		execute: (toolCallId, params, signal, onUpdate, ctx) =>
+			executeAskTool(pi, toolCallId, params as AskParams, signal, onUpdate, ctx),
 		renderCall: renderAskToolCall,
 		renderResult: renderAskToolResult,
 	});
@@ -32,6 +34,7 @@ export function registerAskTool(pi: ExtensionAPI) {
 interface ExecuteContext extends Pick<ExtensionContext, "cwd" | "hasUI"> {}
 
 async function executeAskTool(
+	pi: ExtensionAPI,
 	_toolCallId: string,
 	params: AskParams,
 	_signal: AbortSignal | undefined,
@@ -45,6 +48,13 @@ async function executeAskTool(
 	if (!ctx.hasUI) {
 		return nonInteractiveResponse(validation.state);
 	}
-	const result = await runAskFlow(ctx as never, params);
-	return successfulResponse(result);
+	pi.events.emit("pi-ask:waiting:start", undefined);
+	updateMuxAskState({ activity: "Waiting", asking: true }, ctx.cwd);
+	try {
+		const result = await runAskFlow(ctx as never, params);
+		return successfulResponse(result);
+	} finally {
+		updateMuxAskState({ activity: "Working…", asking: false }, ctx.cwd);
+		pi.events.emit("pi-ask:waiting:end", undefined);
+	}
 }
