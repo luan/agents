@@ -4,6 +4,7 @@ use anyhow::Result;
 use ratatui::{
     Terminal,
     backend::TestBackend,
+    buffer::Cell,
     layout::Rect,
     prelude::Widget,
     style::{Color, Modifier, Style},
@@ -84,8 +85,10 @@ impl TaskTuiState {
             .and_then(|id| order.iter().position(|candidate| candidate == id))
             .unwrap_or(0);
         let next = match input {
-            "j" | "down" | "\u{1b}[B" => current.saturating_add(1).min(order.len() - 1),
-            "k" | "up" | "\u{1b}[A" => current.saturating_sub(1),
+            "j" | "l" | "right" | "down" | "\u{1b}[C" | "\u{1b}[B" => {
+                current.saturating_add(1).min(order.len() - 1)
+            }
+            "k" | "h" | "left" | "up" | "\u{1b}[D" | "\u{1b}[A" => current.saturating_sub(1),
             "g" | "home" => 0,
             "G" | "end" => order.len() - 1,
             _ => current,
@@ -114,8 +117,89 @@ fn render_task_tui_lines_with_state(
         .buffer()
         .content
         .chunks(width as usize)
-        .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+        .map(render_ansi_row)
         .collect()
+}
+
+fn render_ansi_row(row: &[Cell]) -> String {
+    let mut output = String::new();
+    let mut current_style: Option<(Color, Color, Modifier)> = None;
+    for cell in row {
+        let next_style = (cell.fg, cell.bg, cell.modifier);
+        let is_plain = next_style == (Color::Reset, Color::Reset, Modifier::empty());
+        if is_plain && current_style.is_some() {
+            output.push_str("\x1b[0m");
+            current_style = None;
+        } else if !is_plain && current_style != Some(next_style) {
+            if current_style.is_some() {
+                output.push_str("\x1b[0m");
+            }
+            output.push_str(&cell_style_ansi(cell));
+            current_style = Some(next_style);
+        }
+        output.push_str(cell.symbol());
+    }
+    if current_style.is_some() {
+        output.push_str("\x1b[0m");
+    }
+    output
+}
+
+fn cell_style_ansi(cell: &Cell) -> String {
+    let mut codes: Vec<String> = Vec::new();
+    if let Some(code) = color_ansi(cell.fg, false) {
+        codes.push(code);
+    }
+    if let Some(code) = color_ansi(cell.bg, true) {
+        codes.push(code);
+    }
+    if cell.modifier.contains(Modifier::BOLD) {
+        codes.push("1".to_string());
+    }
+    if cell.modifier.contains(Modifier::ITALIC) {
+        codes.push("3".to_string());
+    }
+    if cell.modifier.contains(Modifier::UNDERLINED) {
+        codes.push("4".to_string());
+    }
+    if codes.is_empty() {
+        String::new()
+    } else {
+        format!("\x1b[{}m", codes.join(";"))
+    }
+}
+
+fn color_ansi(color: Color, background: bool) -> Option<String> {
+    let base = if background { 40 } else { 30 };
+    let bright_base = if background { 100 } else { 90 };
+    let code = match color {
+        Color::Reset => return None,
+        Color::Black => base,
+        Color::Red => base + 1,
+        Color::Green => base + 2,
+        Color::Yellow => base + 3,
+        Color::Blue => base + 4,
+        Color::Magenta => base + 5,
+        Color::Cyan => base + 6,
+        Color::Gray => base + 7,
+        Color::DarkGray => bright_base,
+        Color::LightRed => bright_base + 1,
+        Color::LightGreen => bright_base + 2,
+        Color::LightYellow => bright_base + 3,
+        Color::LightBlue => bright_base + 4,
+        Color::LightMagenta => bright_base + 5,
+        Color::LightCyan => bright_base + 6,
+        Color::White => bright_base + 7,
+        Color::Rgb(red, green, blue) => {
+            let layer = if background { 48 } else { 38 };
+            return Some(format!("{layer};2;{red};{green};{blue}"));
+        }
+        Color::Indexed(index) => {
+            let layer = if background { 48 } else { 38 };
+            return Some(format!("{layer};5;{index}"));
+        }
+    };
+    Some(code.to_string())
 }
 
 fn render_task_tui(
@@ -141,12 +225,28 @@ fn render_task_tui(
         return;
     }
 
-    let lines = render_groups(&groups, state);
-    Paragraph::new(lines).render(inner, buffer);
+    let (lines, selected_row) = render_groups(&groups, state);
+    let scroll = selected_row
+        .and_then(|row| {
+            let visible_height = inner.height.saturating_sub(1) as usize;
+            if visible_height > 0 && row >= visible_height {
+                Some((row - visible_height + 1) as u16)
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default();
+    Paragraph::new(lines)
+        .scroll((scroll, 0))
+        .render(inner, buffer);
 }
 
-fn render_groups(groups: &[TaskGroup], state: &TaskTuiState) -> Vec<Line<'static>> {
+fn render_groups(
+    groups: &[TaskGroup],
+    state: &TaskTuiState,
+) -> (Vec<Line<'static>>, Option<usize>) {
     let mut lines = Vec::new();
+    let mut selected_row = None;
     for (index, group) in groups.iter().enumerate() {
         if index > 0 {
             lines.push(Line::from(""));
@@ -177,6 +277,9 @@ fn render_groups(groups: &[TaskGroup], state: &TaskTuiState) -> Vec<Line<'static
                 Style::default().fg(lane.color),
             )));
             for task in &lane.tasks {
+                if state.selected_task_id.as_deref() == Some(task.id.as_str()) {
+                    selected_row = Some(lines.len());
+                }
                 lines.push(task_line(
                     task,
                     state.selected_task_id.as_deref() == Some(task.id.as_str()),
@@ -184,7 +287,7 @@ fn render_groups(groups: &[TaskGroup], state: &TaskTuiState) -> Vec<Line<'static
             }
         }
     }
-    lines
+    (lines, selected_row)
 }
 
 fn task_line(task: &Task, selected: bool) -> Line<'static> {
@@ -200,11 +303,21 @@ fn task_line(task: &Task, selected: bool) -> Line<'static> {
         .or(task.assigned_to.as_ref())
         .map(|label| format!(" @{label}"))
         .unwrap_or_default();
-    Line::from(vec![
+    let line = Line::from(vec![
         Span::raw(format!("  {marker} ")),
         Span::styled(type_icon(task), Style::default().fg(type_color(task))),
         Span::raw(format!(" {} {}{}{}", task.id, task.title, labels, assignee)),
-    ])
+    ]);
+    if selected {
+        line.style(
+            Style::default()
+                .fg(Color::White)
+                .bg(Color::Blue)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        line
+    }
 }
 
 #[derive(Debug)]
@@ -437,9 +550,26 @@ mod tests {
         }
     }
 
+    fn strip_ansi(input: &str) -> String {
+        let mut output = String::new();
+        let mut chars = input.chars();
+        while let Some(ch) = chars.next() {
+            if ch == '\u{1b}' {
+                for escaped in chars.by_ref() {
+                    if escaped.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            } else {
+                output.push(ch);
+            }
+        }
+        output
+    }
+
     #[test]
     fn task_tui_renders_empty_state() {
-        let lines = render_task_tui_lines(&[], 40, 8).join("\n");
+        let lines = strip_ansi(&render_task_tui_lines(&[], 40, 8).join("\n"));
         assert!(lines.contains("Tasks"));
         assert!(lines.contains("No tasks"));
     }
@@ -456,7 +586,9 @@ mod tests {
         bug.epic_id = Some("ratatui-overlay".to_string());
         bug.priority = 5;
 
-        let lines = render_task_tui_lines(&[epic, feature, bug], 80, 16).join("\n");
+        let rendered = render_task_tui_lines(&[epic, feature, bug], 80, 16).join("\n");
+        let lines = strip_ansi(&rendered);
+        assert!(rendered.contains("\x1b["));
         assert!(lines.contains("Epic: Ratatui Overlay"));
         assert!(lines.contains("ratatui-overlay"));
         assert!(lines.contains("Rejected (1)"));
@@ -476,8 +608,10 @@ mod tests {
         let mut blocked = task("block", "Blocked", "open", "feature");
         blocked.blocked_by = vec!["work".to_string()];
 
-        let lines = render_task_tui_lines(&[ready, in_review, in_progress, done, blocked], 52, 18)
-            .join("\n");
+        let lines = strip_ansi(
+            &render_task_tui_lines(&[ready, in_review, in_progress, done, blocked], 52, 18)
+                .join("\n"),
+        );
         assert!(lines.contains("No Epic"));
         assert!(lines.contains("Ready (1)"));
         assert!(lines.contains("Blocked (1)"));
@@ -496,5 +630,39 @@ mod tests {
 
         let state = TaskTuiState::new(&[low, high]);
         assert_eq!(state.selected_task_id.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn task_tui_input_moves_selection_and_scrolls_to_it() {
+        let mut tasks: Vec<Task> = (0..10)
+            .map(|index| {
+                task(
+                    &format!("task{index}"),
+                    &format!("Task {index}"),
+                    "open",
+                    "feature",
+                )
+            })
+            .collect();
+        tasks[9].priority = 100;
+        let mut state = TaskTuiState::with_selection(&tasks, Some("task0"));
+        state.handle_input(&tasks, "l");
+        assert_eq!(state.selected_task_id.as_deref(), Some("task1"));
+        state.handle_input(&tasks, "h");
+        assert_eq!(state.selected_task_id.as_deref(), Some("task0"));
+        state.handle_input(&tasks, "j");
+        assert_eq!(state.selected_task_id.as_deref(), Some("task1"));
+
+        let rendered = render_task_tui_lines_with_state(
+            &tasks,
+            60,
+            6,
+            &TaskTuiState {
+                selected_task_id: Some("task1".to_string()),
+            },
+        )
+        .join("\n");
+        assert!(strip_ansi(&rendered).contains("› ★ task1 Task 1"));
+        assert!(rendered.contains("\x1b["));
     }
 }
