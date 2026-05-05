@@ -1738,11 +1738,11 @@ class RustTaskBoardOverlay implements Component {
 		}
 		if (this.pendingMutation) return;
 		if (matchesAnyKey(data, bindings.left) || matchesAnyKey(data, bindings.up)) {
-			this.refresh(data === "k" || data === "\x1b[A" ? "k" : data);
+			this.refresh("k");
 			return;
 		}
 		if (matchesAnyKey(data, bindings.right) || matchesAnyKey(data, bindings.down)) {
-			this.refresh(data === "j" || data === "\x1b[B" ? "j" : data);
+			this.refresh("j");
 			return;
 		}
 		if (matchesAnyKey(data, bindings.reload)) {
