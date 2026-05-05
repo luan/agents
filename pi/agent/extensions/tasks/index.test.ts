@@ -647,10 +647,10 @@ describe("tasks extension", () => {
 
 		await shortcuts.get("alt+t").handler(ctx);
 		expect(widget?.render(120).join("\n")).toContain("1 tasks");
-		expect(widget?.render(120).join("\n")).not.toContain("Ready (1)");
+		expect(widget?.render(120).join("\n")).not.toContain("PG4W2K4Q03");
 		await shortcuts.get("alt+t").handler(ctx);
 		expect(widget?.render(120).join("\n")).not.toContain("1 tasks");
-		expect(widget?.render(120).join("\n")).toContain("Ready (1)");
+		expect(widget?.render(120).join("\n")).toContain("PG4W2K4Q03");
 		expect(listCalls).toBe(2);
 	});
 
@@ -845,29 +845,33 @@ describe("tasks extension", () => {
 		]);
 	});
 
-	test("renders a full HUD for active tasks", () => {
+	test("renders a compact HUD for active tasks", () => {
 		const lines = renderHudLines(
 			[
 				{ ...task, id: "BLOCKED123", title: "Blocked task", priority: 100, blocked_by: ["PG4W2K4Q03"] },
 				{ ...task, priority: 1, assigned_to: "session:test-session" },
-				{ ...task, id: "DONE123ABC", title: "Done task", status: "done", assigned_to: "session:test-session" },
+				{
+					...task,
+					id: "DONE123ABC",
+					title: "Done task",
+					status: "done",
+					assigned_to: "session:test-session",
+					updated_at: 1_000,
+				},
 				{ ...task, id: "CANCEL123A", title: "Canceled task", status: "canceled" },
 			],
 			theme as any,
 			120,
 			6,
 			{ currentAssignment: "session:test-session", currentLabel: "Named Session" },
+			{ now: 1_000 },
 		);
 		expect(lines.every((line) => visibleWidth(line) <= 120)).toBe(true);
 		expect(lines.join("\n")).not.toContain("● 3 tasks");
 		expect(lines.join("\n")).toContain("PG4W2K4Q03");
-		expect(lines.join("\n")).toContain("Ready (1)");
-		expect(lines.join("\n")).toContain("Blocked (1)");
-		expect(lines.join("\n")).toContain("Done (1)");
-		expect(lines.join("\n")).toContain(" Ready");
-		expect(lines.join("\n")).toContain(" Blocked");
-		expect(lines.join("\n")).not.toContain(" In Progress (0)");
-		expect(lines.join("\n")).toContain(" Done");
+		expect(lines.join("\n")).toContain("←1");
+		expect(lines.join("\n")).not.toContain("Ready (1)");
+		expect(lines.join("\n")).not.toContain("Done (1)");
 		expect(lines.join("\n")).toContain("Smoke test");
 		expect(lines.join("\n")).toContain("Done task");
 
@@ -883,7 +887,7 @@ describe("tasks extension", () => {
 			{ currentAssignment: "session:test-session", currentLabel: "Named Session" },
 			{ hideKanban: true },
 		).join("\n");
-		expect(compact).toContain("3 tasks");
+		expect(compact).toContain("2 tasks");
 		expect(compact).toContain("1 done");
 
 		const empty = renderHudLines([], theme as any, 100);
@@ -907,7 +911,7 @@ describe("tasks extension", () => {
 		expect(lines).toContain("<mdLink>\x1b[3m@Other\x1b[23m</mdLink>");
 		expect(lines).not.toContain("<mdHeading>●</mdHeading> <mdHeading>2 tasks</mdHeading> <muted>(");
 		expect(lines).toContain("<syntaxPunctuation>OTHER</syntaxPunctuation><syntaxType>1</syntaxType>");
-		expect(lines).toContain("<mdLink> Ready");
+		expect(lines).toContain("<mdHeading>No Epic:");
 		expect(lines).not.toContain("<warning> In Progress (0)");
 		expect(lines).not.toContain(" Done (0)");
 		expect(lines).not.toContain("**<syntaxPunctuation>OTHER");
@@ -951,13 +955,21 @@ describe("tasks extension", () => {
 		const lines = renderHudLines(
 			[
 				{ ...task, id: "OTHERDONE", title: "Other done", status: "done", assigned_to: "session:other" },
-				{ ...task, id: "CURDONE", title: "Current done", status: "done", assigned_to: "session:current" },
+				{
+					...task,
+					id: "CURDONE",
+					title: "Current done",
+					status: "done",
+					assigned_to: "session:current",
+					updated_at: 1_000,
+				},
 				{ ...task, id: "READY", title: "Ready", blocked_by: ["OTHERDONE"] },
 			],
 			theme as any,
 			140,
 			6,
 			{ currentAssignment: "session:current", currentLabel: "Current" },
+			{ now: 1_000 },
 		).join("\n");
 
 		expect(lines).not.toContain("2 tasks");
@@ -967,7 +979,7 @@ describe("tasks extension", () => {
 		expect(lines).not.toContain("Blocked (1)");
 	});
 
-	test("task HUD shows epic section headers ordered by priority with ungrouped last", () => {
+	test("task HUD shows only current-session epics plus ungrouped work", () => {
 		const lines = renderHudLines(
 			[
 				{ ...task, id: "EHIGH", type: "epic", title: "High Epic", epic_id: "high", priority: 100 },
@@ -999,11 +1011,48 @@ describe("tasks extension", () => {
 
 		expect(lines).toContain("No Epic");
 		expect(lines).toContain("Current Epic");
-		expect(lines).toContain("High Epic");
-		expect(lines.indexOf("High Epic")).toBeLessThan(lines.indexOf("Current Epic"));
+		expect(lines).not.toContain("High Epic");
 		expect(lines.indexOf("Current Epic")).toBeLessThan(lines.indexOf("No Epic"));
 		expect(lines).toContain("0/1 [");
 		expect(lines.match(/No Epic:/g)?.length).toBe(1);
+	});
+
+	test("task HUD shows flat epic list when current session has no active epic", () => {
+		const lines = renderHudLines(
+			[
+				{ ...task, id: "EHIGH", type: "epic", title: "High Epic", epic_id: "high", priority: 100 },
+				{ ...task, id: "ELOW", type: "epic", title: "Low Epic", epic_id: "low", priority: 2 },
+				{ ...task, id: "HIGHWORK", title: "High epic task", epic_id: "high", priority: 100 },
+				{ ...task, id: "LOWWORK", title: "Low epic task", epic_id: "low", priority: 2 },
+				{ ...task, id: "NOEPIC", title: "Ungrouped task", priority: 0 },
+			],
+			theme as any,
+			180,
+			6,
+			{ currentAssignment: "session:current", currentLabel: "Current" },
+		).join("\n");
+
+		expect(lines.indexOf("High Epic")).toBeLessThan(lines.indexOf("Low Epic"));
+		expect(lines).toContain("No Epic:");
+		expect(lines).toContain("NOEPIC");
+		expect(lines).not.toContain("HIGHWORK");
+		expect(lines).not.toContain("LOWWORK");
+	});
+
+	test("task HUD summarizes completed-only epics", () => {
+		const lines = renderHudLines(
+			[
+				{ ...task, id: "EDONE", type: "epic", title: "Completed Epic", epic_id: "done-epic", priority: 100 },
+				{ ...task, id: "DONEA", title: "Done A", epic_id: "done-epic", status: "done" },
+				{ ...task, id: "DONEB", title: "Done B", epic_id: "done-epic", status: "done" },
+			],
+			theme as any,
+			160,
+		).join("\n");
+
+		expect(lines).toContain("✓ Completed Epic");
+		expect(lines).toContain("2 done");
+		expect(lines).not.toContain("DONEA");
 	});
 
 	test("task HUD highlights flashed task cards with background", () => {
@@ -1057,28 +1106,36 @@ describe("tasks extension", () => {
 		expect(peak).toContain("Pulsing task");
 	});
 
-	test("task HUD caps current-session done tasks to five in recency order", () => {
+	test("task HUD limits done tasks to the past hour", () => {
 		const lines = renderHudLines(
-			Array.from({ length: 7 }, (_, index) => ({
-				...task,
-				id: `DONE${index}`,
-				title: `Done ${index}`,
-				status: "done",
-				assigned_to: "session:current",
-				updated_at: index,
-			})),
+			[
+				{ ...task, id: "READY", title: "Ready task" },
+				{
+					...task,
+					id: "RECENT",
+					title: "Recent done",
+					status: "done",
+					assigned_to: "session:current",
+					updated_at: 3_000,
+				},
+				{
+					...task,
+					id: "OLD",
+					title: "Old done",
+					status: "done",
+					assigned_to: "session:current",
+					updated_at: 1_000,
+				},
+			],
 			theme as any,
 			160,
 			6,
 			{ currentAssignment: "session:current" },
+			{ now: 3_000 + 60 * 60 * 1000 },
 		).join("\n");
 
-		expect(lines).toContain("Done 6");
-		expect(lines).toContain("Done 2");
-		expect(lines).not.toContain("Done 1");
-		expect(lines).not.toContain("Done 0");
-		expect(lines).toContain("Done (7 – 2 hidden)");
-		expect(lines).not.toContain("… and 2 more");
+		expect(lines).toContain("Recent done");
+		expect(lines).not.toContain("Old done");
 	});
 
 	test("refreshes the HUD on session start and after mutations", async () => {
