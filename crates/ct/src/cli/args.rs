@@ -250,6 +250,20 @@ pub enum TaskAction {
         json: bool,
     },
 
+    #[command(about = "Render the ratatui task overlay model")]
+    Tui {
+        #[arg(long, default_value_t = 100, help = "Render width")]
+        width: u16,
+        #[arg(long, default_value_t = 30, help = "Render height")]
+        height: u16,
+        #[arg(long = "selected-task-id", help = "Currently selected task id")]
+        selected_task_id: Option<String>,
+        #[arg(long, help = "Overlay key input to apply before rendering")]
+        input: Option<String>,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+    },
+
     #[command(about = "Delete one task by ID or unique prefix")]
     Delete {
         #[arg(help = "Task ID or unique prefix")]
