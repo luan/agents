@@ -6,7 +6,11 @@ user-invocable: true
 allowed-tools:
   - "Bash(git checkout:*)"
   - "Bash(git branch:*)"
+  - "Bash(git config:*)"
   - "Bash(git rev-parse:*)"
+  - "Bash(gt create:*)"
+  - "Bash(gs branch create:*)"
+  - "Bash(gs bc:*)"
   - TaskUpdate
   - TaskGet
   - Skill
@@ -14,16 +18,22 @@ allowed-tools:
 
 # Start
 
-Create branch.
+Create a branch with the repository's configured Git strategy.
 
 ## Steps
 
-1. Parse args: first = branch name
-2. Normalize: prefix with !`echo "${GIT_USERNAME:-$(whoami)}"/` if not already present
-3. Create branch (detect stack tool for current branch):
-   - gt plugin loaded → `Skill(gt:gt, "create <branch-name>")`
-   - Otherwise → `git-spice branch create <branch-name>` – git-spice automatically prepends the prefix, so use only the branch name here.
-4. Output branch. If `--auto` was NOT passed, suggest `$spec` or `$develop`. If `--auto` was passed, output nothing — no handoff, no suggestions. The caller is an orchestrator that will handle next steps; any output text risks the model ending its turn prematurely.
+1. Parse args: first = branch name.
+2. Read strategy: `git config --get agents.git-tool 2>/dev/null || true`.
+3. Normalize branch name: prefix with !`echo "${GIT_USERNAME:-$(whoami)}"/` if not already present, except when the selected tool's configured branch prefix will add it.
+4. Create branch based on `agents.git-tool`:
+   - `graphite` → `gt create <branch-name>`
+   - `git-spice` → `gs branch create <branch-name>`; `gs bc <branch-name>` is the matching shorthand and may be used when brevity matters.
+   - `main`, `none`, unset, or invalid → `git checkout -b <branch-name>`
+5. Output branch. If `--auto` was NOT passed, suggest `$spec` or `$develop`. If `--auto` was passed, output nothing — no handoff, no suggestions. The caller is an orchestrator that will handle next steps; any output text risks the model ending its turn prematurely.
+
+## Boundary
+
+This skill chooses the branch creation command only. It does not decide whether editing is allowed. Trunk edit and shell gating belongs to the git-tool extension, and users may also create branches manually outside Pi.
 
 ## Error Handling
 
