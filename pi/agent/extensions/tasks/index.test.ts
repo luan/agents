@@ -82,6 +82,7 @@ describe("tasks extension", () => {
 		const tasks = [
 			{ ...task, id: "DONE", status: "done", title: "Finished" },
 			{ ...task, id: "ACTIVE", status: "in_progress", title: "Active" },
+			{ ...task, id: "REVIEW", status: "in_review", type: "feature", title: "Review" },
 			{ ...task, id: "READY", status: "todo", title: "Ready todo", priority: 1 },
 			{ ...task, id: "BLOCK", title: "Blocked by active", blocked_by: ["ACTIVE"] },
 			{ ...task, id: "UNBLOCK", title: "Unblocked by done", blocked_by: ["DONE"], priority: 5 },
@@ -89,11 +90,31 @@ describe("tasks extension", () => {
 		];
 
 		const columns = buildTaskBoardColumns(tasks);
-		expect(columns.map((column) => column.label)).toEqual(["Ready", "Blocked", "In Progress", "Done"]);
+		expect(columns.map((column) => column.label)).toEqual(["Ready", "Blocked", "In Progress", "In Review", "Done"]);
 		expect(columns[0].tasks.map((item) => item.id)).toEqual(["UNBLOCK", "READY"]);
 		expect(columns[1].tasks.map((item) => item.id)).toEqual(["BLOCK"]);
 		expect(columns[2].tasks.map((item) => item.id)).toEqual(["ACTIVE"]);
-		expect(columns[3].tasks.map((item) => item.id)).toEqual(["DONE"]);
+		expect(columns[3].tasks.map((item) => item.id)).toEqual(["REVIEW"]);
+		expect(columns[4].tasks.map((item) => item.id)).toEqual(["DONE"]);
+	});
+
+	test("treats blocked in-review tasks as blocked instead of ready", () => {
+		const tasks = [
+			{ ...task, id: "BLOCKER", status: "in_progress", title: "Blocking task" },
+			{
+				...task,
+				id: "REVIEW",
+				status: "in_review",
+				type: "bug",
+				title: "Needs review after blocker",
+				blocked_by: ["BLOCKER"],
+			},
+		];
+
+		const columns = buildTaskBoardColumns(tasks);
+		expect(columns.find((column) => column.id === "ready")?.tasks).toEqual([]);
+		expect(columns.find((column) => column.id === "blocked")?.tasks.map((item) => item.id)).toEqual(["REVIEW"]);
+		expect(columns.find((column) => column.id === "in_review")?.tasks).toEqual([]);
 	});
 
 	test("treats active child tasks as parent blockers", () => {
@@ -136,6 +157,7 @@ describe("tasks extension", () => {
 				priority: 10,
 			},
 			{ ...task, id: "READY1", type: "feature", title: "Ready child", epic_id: "git-tool" },
+			{ ...task, id: "REVIEW1", type: "feature", title: "Review child", status: "in_review", epic_id: "git-tool" },
 			{ ...task, id: "DONE1", type: "bug", title: "Done child", status: "done", epic_id: "git-tool" },
 			{ ...task, id: "REJ1", type: "bug", title: "Rejected child", status: "rejected", epic_id: "git-tool" },
 			{ ...task, id: "NOEPIC", type: "chore", title: "Ungrouped child" },
@@ -145,9 +167,10 @@ describe("tasks extension", () => {
 		expect(lines).toContain("Epic:");
 		expect(lines).toContain("Configurable Pi Git Tool Strategy");
 		expect(lines).toContain("<success>git-tool</success>");
-		expect(lines).toContain("1/3");
+		expect(lines).toContain("1/4");
 		expect(lines).toContain("<error> Rejected (1)</error>");
 		expect(lines).toContain("<mdLink> Ready (1)</mdLink>");
+		expect(lines).toContain("<accent> In Review (1)</accent>");
 		expect(lines).toContain("<success> Done (1)</success>");
 		expect(lines).toContain("No Epic:");
 		expect(lines).not.toContain("In Progress (0)");
@@ -296,6 +319,7 @@ describe("tasks extension", () => {
 		expect(calls.at(-1)).toEqual({ action: "update", params: { id: "PG4W2K4Q03", status: "done" } });
 
 		const done = makeBoard({ status: "done" });
+		done.handleInput("l");
 		done.handleInput("l");
 		done.handleInput("l");
 		done.handleInput("l");
@@ -909,6 +933,7 @@ describe("tasks extension", () => {
 					assigned_to: "session:test-session",
 					updated_at: 1_000,
 				},
+				{ ...task, id: "REVIEW123", title: "Review task", type: "feature", status: "in_review" },
 				{ ...task, id: "CANCEL123A", title: "Canceled task", status: "canceled" },
 			],
 			theme as any,
@@ -922,14 +947,17 @@ describe("tasks extension", () => {
 		expect(lines.join("\n")).toContain("PG4W2K4Q03");
 		expect(lines.join("\n")).toContain("←1");
 		expect(lines.join("\n")).toContain("Ready (1)");
+		expect(lines.join("\n")).toContain("In Review (1)");
 		expect(lines.join("\n")).toContain("Done (1)");
 		expect(lines.join("\n")).toContain("Smoke test");
+		expect(lines.join("\n")).toContain("Review task");
 		expect(lines.join("\n")).toContain("Done task");
 
 		const compact = renderHudLines(
 			[
 				{ ...task, id: "BLOCKED123", title: "Blocked task", priority: 100, blocked_by: ["PG4W2K4Q03"] },
 				{ ...task, priority: 1, assigned_to: "session:test-session" },
+				{ ...task, id: "REVIEW123", title: "Review task", type: "feature", status: "in_review" },
 				{ ...task, id: "DONE123ABC", title: "Done task", status: "done", assigned_to: "session:test-session" },
 			],
 			theme as any,
@@ -938,7 +966,8 @@ describe("tasks extension", () => {
 			{ currentAssignment: "session:test-session", currentLabel: "Named Session" },
 			{ hideKanban: true },
 		).join("\n");
-		expect(compact).toContain("2 tasks");
+		expect(compact).toContain("3 tasks");
+		expect(compact).toContain("1 in review");
 		expect(compact).toContain("1 done");
 
 		const empty = renderHudLines([], theme as any, 100);
