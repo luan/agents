@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    io,
+    io::{self, BufRead, Write},
 };
 
 use anyhow::Result;
@@ -19,7 +19,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::task::Task;
 
@@ -30,6 +30,22 @@ pub(crate) struct TaskTuiState {
 
 #[derive(Debug, Serialize)]
 struct TaskTuiEnvelope {
+    lines: Vec<String>,
+    selected_task_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TaskTuiEmbedRequest {
+    request_id: u64,
+    width: u16,
+    height: u16,
+    input: Option<String>,
+    tasks: Option<Vec<Task>>,
+}
+
+#[derive(Debug, Serialize)]
+struct TaskTuiEmbedResponse {
+    request_id: u64,
     lines: Vec<String>,
     selected_task_id: Option<String>,
 }
@@ -62,6 +78,36 @@ pub(crate) fn print_task_tui(
         for line in lines {
             println!("{line}");
         }
+    }
+    Ok(())
+}
+
+pub(crate) fn run_task_tui_embed(initial_tasks: &[Task]) -> Result<()> {
+    let stdin = io::stdin();
+    let mut stdout = io::stdout().lock();
+    let mut tasks = initial_tasks.to_vec();
+    let mut state = TaskTuiState::new(&tasks);
+    for line in stdin.lock().lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let request: TaskTuiEmbedRequest = serde_json::from_str(&line)?;
+        if let Some(next_tasks) = request.tasks {
+            tasks = next_tasks;
+            state = TaskTuiState::with_selection(&tasks, state.selected_task_id.as_deref());
+        }
+        if let Some(input) = request.input.as_deref() {
+            state.handle_input(&tasks, input);
+        }
+        let response = TaskTuiEmbedResponse {
+            request_id: request.request_id,
+            lines: render_task_tui_lines_with_state(&tasks, request.width, request.height, &state),
+            selected_task_id: state.selected_task_id.clone(),
+        };
+        serde_json::to_writer(&mut stdout, &response)?;
+        stdout.write_all(b"\n")?;
+        stdout.flush()?;
     }
     Ok(())
 }

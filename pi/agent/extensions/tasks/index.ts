@@ -1,5 +1,7 @@
+import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
+import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -464,18 +466,33 @@ async function showTaskBoard(
 					done();
 				};
 				activeTaskBoard = { close };
-				const board = new TaskBoardOverlay({
-					tasks,
-					theme,
-					keybindings: config.keybindings,
-					onClose: close,
-					onReload: load,
-					onMutate: async (action, params) => {
-						await executeTask(command, runCommand, ctx.cwd, action, params, config, pi, ctx, ctx.signal);
-						return load();
-					},
-					onChange: () => tui.requestRender(),
-				});
+				const useRustOverlay = runCommand === defaultRunCommand;
+				const board = useRustOverlay
+					? new RatatuiTaskBoardOverlay({
+							tasks,
+							theme,
+							keybindings: config.keybindings,
+							command,
+							cwd: ctx.cwd,
+							onClose: close,
+							onMutate: async (action, params) => {
+								await executeTask(command, runCommand, ctx.cwd, action, params, config, pi, ctx, ctx.signal);
+								return load();
+							},
+							onChange: () => tui.requestRender(),
+						})
+					: new TaskBoardOverlay({
+							tasks,
+							theme,
+							keybindings: config.keybindings,
+							onClose: close,
+							onReload: load,
+							onMutate: async (action, params) => {
+								await executeTask(command, runCommand, ctx.cwd, action, params, config, pi, ctx, ctx.signal);
+								return load();
+							},
+							onChange: () => tui.requestRender(),
+						});
 				return {
 					render: (width: number) => board.render(width),
 					handleInput: (data: string) => {
@@ -1801,6 +1818,183 @@ export function renderHudLines(
 		);
 	}
 	return lines.map((line) => truncateLine(line, width));
+}
+
+interface RatatuiTaskTuiResponse {
+	request_id: number;
+	lines?: string[];
+	selected_task_id?: string | null;
+}
+
+class RatatuiTaskBoardOverlay implements Component {
+	private tasks: TaskRecord[];
+	private selectedTaskId?: string;
+	private lines: string[] = [];
+	private requestId = 0;
+	private pending = new Map<number, Promise<void>>();
+	private resolvePending = new Map<number, () => void>();
+	private pendingMutation?: Promise<void>;
+	private child?: ChildProcessWithoutNullStreams;
+	private errorMessage?: string;
+
+	constructor(
+		private readonly options: {
+			tasks: TaskRecord[];
+			theme: Theme;
+			keybindings?: TaskBoardKeybindings;
+			command: string;
+			cwd: string;
+			onClose: () => void;
+			onMutate?: (action: "update" | "delete", params: Record<string, unknown>) => Promise<TaskRecord[]>;
+			onChange?: () => void;
+		},
+	) {
+		this.tasks = options.tasks;
+		this.lines = [options.theme.fg("dim", "Loading task TUI…")];
+		this.start();
+		this.send({ tasks: this.tasks });
+	}
+
+	waitForIdle(): Promise<void> {
+		return Promise.all([...this.pending.values(), this.pendingMutation].filter(Boolean)).then(() => {});
+	}
+
+	render(width: number): string[] {
+		const lines = this.errorMessage ? [...this.lines, this.options.theme.fg("error", this.errorMessage)] : this.lines;
+		return lines.map((line) => truncateLine(line, Math.max(20, width)));
+	}
+
+	handleInput(data: string): void {
+		const bindings = this.options.keybindings ?? defaultConfig.keybindings;
+		if (matchesAnyKey(data, bindings.close)) {
+			this.close();
+			this.options.onClose();
+			return;
+		}
+		if (this.pendingMutation) return;
+		if (matchesAnyKey(data, bindings.left) || matchesAnyKey(data, bindings.up)) {
+			this.send({ input: "k" });
+			return;
+		}
+		if (matchesAnyKey(data, bindings.right) || matchesAnyKey(data, bindings.down)) {
+			this.send({ input: "j" });
+			return;
+		}
+		const task = this.currentTask();
+		if (!task) return;
+		if (matchesAnyKey(data, bindings.assignCurrent)) {
+			this.mutate("update", { id: task.id, assigned_to: "current" });
+			return;
+		}
+		if (matchesAnyKey(data, bindings.clearAssignee)) {
+			this.mutate("update", { id: task.id, clear_assignee: true });
+			return;
+		}
+		if (matchesAnyKey(data, bindings.priorityUp)) {
+			this.mutate("update", { id: task.id, priority: priority(task) + 1 });
+			return;
+		}
+		if (matchesAnyKey(data, bindings.priorityDown)) {
+			this.mutate("update", { id: task.id, priority: priority(task) - 1 });
+			return;
+		}
+		if (matchesAnyKey(data, bindings.done)) {
+			this.mutate("update", { id: task.id, status: doneKeyStatus(task) });
+			return;
+		}
+		if (matchesAnyKey(data, bindings.cancel)) {
+			this.mutate("update", { id: task.id, status: "canceled" });
+			return;
+		}
+		if (matchesAnyKey(data, bindings.cycleStatus)) {
+			const byId = new Map(this.tasks.map((item) => [item.id, item]));
+			if (!hasOpenDependencies(task, byId, taskChildren(this.tasks))) {
+				this.mutate("update", { id: task.id, status: nextCycledStatus(task) });
+			}
+			return;
+		}
+		if (matchesAnyKey(data, bindings.reload)) this.send({ tasks: this.tasks });
+	}
+
+	invalidate(): void {}
+
+	private start(): void {
+		this.child = spawn(this.options.command, ["task", "tui", "--embed"], {
+			cwd: this.options.cwd,
+			env: process.env,
+			stdio: ["pipe", "pipe", "pipe"],
+		});
+		createInterface({ input: this.child.stdout }).on("line", (line) => this.handleBridgeLine(line));
+		this.child.stderr.on("data", (chunk) => {
+			const text = Buffer.from(chunk).toString("utf8").trim();
+			if (text) this.errorMessage = text;
+			this.options.onChange?.();
+		});
+		this.child.on("error", (error) => {
+			this.errorMessage = error.message;
+			this.options.onChange?.();
+		});
+	}
+
+	private send(payload: { input?: string; tasks?: TaskRecord[] }): void {
+		const child = this.child;
+		if (!child || child.killed) return;
+		const requestId = ++this.requestId;
+		const promise = new Promise<void>((resolve) => this.resolvePending.set(requestId, resolve));
+		this.pending.set(requestId, promise);
+		const request = {
+			request_id: requestId,
+			width: 120,
+			height: 40,
+			...payload,
+		};
+		child.stdin.write(`${JSON.stringify(request)}\n`, (error) => {
+			if (error) {
+				this.errorMessage = error.message;
+				this.resolveRequest(requestId);
+				this.options.onChange?.();
+			}
+		});
+	}
+
+	private handleBridgeLine(line: string): void {
+		const payload = JSON.parse(line) as RatatuiTaskTuiResponse;
+		if (payload.lines) this.lines = payload.lines;
+		this.selectedTaskId = payload.selected_task_id ?? undefined;
+		this.resolveRequest(payload.request_id);
+		this.options.onChange?.();
+	}
+
+	private resolveRequest(requestId: number): void {
+		this.resolvePending.get(requestId)?.();
+		this.resolvePending.delete(requestId);
+		this.pending.delete(requestId);
+	}
+
+	private currentTask(): TaskRecord | undefined {
+		return this.tasks.find((task) => task.id === this.selectedTaskId) ?? this.tasks.find((task) => !isCanceled(task));
+	}
+
+	private mutate(action: "update" | "delete", params: Record<string, unknown>): void {
+		if (!this.options.onMutate) return;
+		this.pendingMutation = this.options
+			.onMutate(action, params)
+			.then((tasks) => {
+				this.tasks = tasks;
+				this.send({ tasks });
+			})
+			.catch((error) => {
+				this.errorMessage = taskBoardErrorMessage(`${action === "delete" ? "Delete" : "Update"} failed`, error);
+			})
+			.finally(() => {
+				this.pendingMutation = undefined;
+				this.options.onChange?.();
+			});
+	}
+
+	private close(): void {
+		this.child?.kill();
+	}
 }
 
 class EmptyTaskRender implements Component {
