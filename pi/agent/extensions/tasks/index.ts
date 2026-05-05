@@ -503,34 +503,6 @@ async function showTaskBoard(
 	if (config.hud.enabled) await updateTaskHud(ctx, pi, command, runCommand, config).catch(() => {});
 }
 
-function statusGlyph(status: string): string {
-	switch (status) {
-		case "done":
-		case "completed":
-			return "✓";
-		case "in_progress":
-			return "◼";
-		case "canceled":
-			return "×";
-		default:
-			return "◻";
-	}
-}
-
-function statusColor(status: string): ThemeColor {
-	switch (status) {
-		case "done":
-		case "completed":
-			return "success";
-		case "canceled":
-			return "muted";
-		case "in_progress":
-			return "accent";
-		default:
-			return "dim";
-	}
-}
-
 function compact(value: string, max = 90): string {
 	const text = value.replace(/\s+/g, " ").trim();
 	return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
@@ -792,10 +764,6 @@ function shelfHeader(theme: Theme, column: TaskBoardColumn, width: number, hidde
 	return padToVisibleWidth(title, width);
 }
 
-function shelfEmptyLine(width: number): string {
-	return " ".repeat(Math.max(0, width));
-}
-
 function isEpicTask(task: TaskRecord): boolean {
 	return task.type === "epic";
 }
@@ -864,58 +832,6 @@ function renderEpicBoardHeader(group: TaskBoardGroup, theme: Theme, width: numbe
 		`${theme.fg("mdHeading", prefix)} ${theme.fg("toolTitle", compact(group.label, titleWidth))}${label}${theme.fg("dim", suffixStart)}${progressBar(theme, group.done, group.total, barWidth)}${theme.fg("dim", suffixEnd)}`,
 		width,
 	);
-}
-
-interface HudEpicGroup {
-	key: string;
-	label: string;
-	tasks: TaskRecord[];
-	hasCurrentAssignment: boolean;
-	maxPriority: number;
-	updatedAt: number;
-}
-
-function hudEpicKey(task: TaskRecord): string {
-	return task.epic_id?.trim() || "";
-}
-
-function hudEpicLabel(task: TaskRecord): string {
-	return task.epic_title?.trim() || task.epic_id?.trim() || "No epic";
-}
-
-function hudEpicGroups(tasks: TaskRecord[], display: AssignmentDisplayContext): HudEpicGroup[] {
-	const groups = new Map<string, HudEpicGroup>();
-	for (const task of tasks) {
-		const key = hudEpicKey(task);
-		const existing = groups.get(key);
-		if (existing) {
-			existing.tasks.push(task);
-			existing.hasCurrentAssignment ||= isAssignedToCurrentSession(task, display);
-			existing.maxPriority = Math.max(existing.maxPriority, priority(task));
-			existing.updatedAt = Math.max(existing.updatedAt, task.updated_at);
-			continue;
-		}
-		groups.set(key, {
-			key,
-			label: hudEpicLabel(task),
-			tasks: [task],
-			hasCurrentAssignment: isAssignedToCurrentSession(task, display),
-			maxPriority: priority(task),
-			updatedAt: task.updated_at,
-		});
-	}
-	return [...groups.values()].sort((left, right) => {
-		if (left.key === "" && right.key !== "") return -1;
-		if (right.key === "" && left.key !== "") return 1;
-		if (left.hasCurrentAssignment !== right.hasCurrentAssignment) return left.hasCurrentAssignment ? -1 : 1;
-		const priorityDelta = right.maxPriority - left.maxPriority;
-		if (priorityDelta !== 0) return priorityDelta;
-		return right.updatedAt - left.updatedAt || left.label.localeCompare(right.label);
-	});
-}
-
-function renderHudEpicHeader(label: string, theme: Theme, width: number): string {
-	return padToVisibleWidth(theme.fg("toolTitle", compact(label, Math.max(8, width - 2))), width);
 }
 
 function renderPersistentBackground(text: string, theme: Theme, background: "selectedBg"): string {
