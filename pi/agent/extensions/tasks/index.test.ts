@@ -125,6 +125,34 @@ describe("tasks extension", () => {
 		expect(lines.join("\n")).toContain("Priority: 7");
 	});
 
+	test("renders per-epic task boards with hidden empty sections and progress", () => {
+		const tasks = [
+			{
+				...task,
+				id: "EPIC1",
+				type: "epic",
+				title: "Configurable Pi Git Tool Strategy",
+				epic_id: "git-tool",
+				priority: 10,
+			},
+			{ ...task, id: "READY1", type: "feature", title: "Ready child", epic_id: "git-tool" },
+			{ ...task, id: "DONE1", type: "bug", title: "Done child", status: "done", epic_id: "git-tool" },
+			{ ...task, id: "REJ1", type: "bug", title: "Rejected child", status: "rejected", epic_id: "git-tool" },
+			{ ...task, id: "NOEPIC", type: "chore", title: "Ungrouped child" },
+		];
+
+		const lines = renderTaskBoardLines(tasks, markedTheme as any, 220).join("\n");
+		expect(lines).toContain("Epic:");
+		expect(lines).toContain("Configurable Pi Git Tool Strategy");
+		expect(lines).toContain("<success>git-tool</success>");
+		expect(lines).toContain("1/3");
+		expect(lines).toContain("<error> Rejected (1)</error>");
+		expect(lines).toContain("<mdLink> Ready (1)</mdLink>");
+		expect(lines).toContain("<success> Done (1)</success>");
+		expect(lines).toContain("No Epic:");
+		expect(lines).not.toContain("In Progress (0)");
+	});
+
 	test("task board handles navigation, reload, and close keys", async () => {
 		let closed = false;
 		let reloads = 0;
@@ -276,6 +304,50 @@ describe("tasks extension", () => {
 		expect(calls.at(-1)).toEqual({ action: "update", params: { id: "PG4W2K4Q03", status: "open" } });
 	});
 
+	test("task board cycles feature and bug tasks through review lifecycle", async () => {
+		const calls: Record<string, unknown>[] = [];
+		const makeBoard = (selectedTask: Record<string, unknown>) =>
+			new TaskBoardOverlay({
+				tasks: [{ ...task, ...selectedTask }],
+				theme: theme as any,
+				onClose: () => {},
+				onReload: async () => [{ ...task, ...selectedTask }],
+				onMutate: async (_action, params) => {
+					calls.push(params);
+					return [{ ...task, ...selectedTask }];
+				},
+			});
+
+		for (const selectedTask of [
+			{ type: "feature", status: "open", expected: "in_progress" },
+			{ type: "feature", status: "in_progress", expected: "in_review" },
+			{ type: "bug", status: "rejected", expected: "in_progress" },
+		]) {
+			const board = makeBoard(selectedTask);
+			if (selectedTask.status === "in_progress") {
+				board.handleInput("l");
+				board.handleInput("l");
+			}
+			board.handleInput(" ");
+			await board.waitForIdle();
+			expect(calls.at(-1)).toEqual({ id: "PG4W2K4Q03", status: selectedTask.expected });
+		}
+
+		const featureDoneKey = makeBoard({ type: "feature", status: "in_progress" });
+		featureDoneKey.handleInput("l");
+		featureDoneKey.handleInput("l");
+		featureDoneKey.handleInput("d");
+		await featureDoneKey.waitForIdle();
+		expect(calls.at(-1)).toEqual({ id: "PG4W2K4Q03", status: "in_review" });
+
+		const choreDoneKey = makeBoard({ type: "chore", status: "in_progress" });
+		choreDoneKey.handleInput("l");
+		choreDoneKey.handleInput("l");
+		choreDoneKey.handleInput("d");
+		await choreDoneKey.waitForIdle();
+		expect(calls.at(-1)).toEqual({ id: "PG4W2K4Q03", status: "done" });
+	});
+
 	test("task board ignores mutating keys while a mutation is pending", async () => {
 		let resolveMutation: ((tasks: (typeof task)[]) => void) | undefined;
 		const calls: Array<{ action: string; params: Record<string, unknown> }> = [];
@@ -321,7 +393,7 @@ describe("tasks extension", () => {
 		board.handleInput("\x1bk");
 		await board.waitForIdle();
 		expect(board.selection()).toEqual({ column: 0, row: 0 });
-		expect(board.render(100).join("\n")).toContain("› ◻ MID");
+		expect(board.render(100).join("\n")).toContain("›  MID");
 	});
 
 	test("task board does not space-cycle unresolved blocked tasks", async () => {
@@ -519,6 +591,32 @@ describe("tasks extension", () => {
 		expect(closed).toBe(true);
 	});
 
+	test("/accept and /reject shell out through shared ct review transitions", async () => {
+		const calls: string[][] = [];
+		const commands = new Map<string, any>();
+		tasksExtension(
+			{
+				registerCommand(name: string, command: any) {
+					commands.set(name, command);
+				},
+				registerTool() {},
+				on() {},
+			} as any,
+			{
+				runCommand: async (command: string, args: string[]) => {
+					calls.push([command, ...args]);
+					return { stdout: JSON.stringify({ task }), stderr: "", exitCode: 0 };
+				},
+			},
+		);
+
+		await commands.get("accept").handler("ABC", { cwd: "/repo", ui: {} });
+		await commands.get("reject").handler("ABC needs tests", { cwd: "/repo", ui: {} });
+
+		expect(calls).toContainEqual(["ct", "task", "accept", "ABC", "--json"]);
+		expect(calls).toContainEqual(["ct", "task", "reject", "ABC", "needs", "tests", "--json"]);
+	});
+
 	test("alt+t toggles only the task HUD Kanban", async () => {
 		const shortcuts = new Map<string, any>();
 		let widget: { render(width: number): string[] } | undefined;
@@ -628,22 +726,49 @@ describe("tasks extension", () => {
 	});
 
 	test("builds ct task commands with json output", () => {
-		expect(buildTaskCommand("add", { title: "Fix bug", body: "details" })).toEqual([
+		expect(buildTaskCommand("add", { title: "Fix bug", type: "bug", body: "details", labels: ["setup"] })).toEqual([
 			"task",
 			"add",
 			"Fix bug",
+			"--type",
+			"bug",
 			"--body",
 			"details",
+			"--label",
+			"setup",
 			"--json",
 		]);
-		expect(buildTaskCommand("update", { id: "ABC", status: "done", priority: 3 })).toEqual([
+		expect(buildTaskCommand("list", { type: "feature", label: "setup", epic_id: "task-board", all: true })).toEqual([
+			"task",
+			"list",
+			"--type",
+			"feature",
+			"--label",
+			"setup",
+			"--epic-id",
+			"task-board",
+			"--all",
+			"--json",
+		]);
+		expect(buildTaskCommand("update", { id: "ABC", type: "feature", status: "done", priority: 3 })).toEqual([
 			"task",
 			"update",
 			"ABC",
+			"--type",
+			"feature",
 			"--status",
 			"done",
 			"--priority",
 			"3",
+			"--json",
+		]);
+		expect(buildTaskCommand("accept", { id: "ABC" })).toEqual(["task", "accept", "ABC", "--json"]);
+		expect(buildTaskCommand("reject", { id: "ABC", note: "needs tests" })).toEqual([
+			"task",
+			"reject",
+			"ABC",
+			"needs",
+			"tests",
 			"--json",
 		]);
 		expect(
@@ -710,9 +835,11 @@ describe("tasks extension", () => {
 		expect(result.content[0].text).toBe(JSON.stringify({ task }));
 		expect(result.details.task.id).toBe(task.id);
 		expect(tools.map((tool) => tool.name).sort()).toEqual([
+			"task_accept",
 			"task_add",
 			"task_delete",
 			"task_list",
+			"task_reject",
 			"task_show",
 			"task_update",
 		]);
@@ -739,7 +866,7 @@ describe("tasks extension", () => {
 		expect(lines.join("\n")).toContain("Done (1)");
 		expect(lines.join("\n")).toContain(" Ready");
 		expect(lines.join("\n")).toContain(" Blocked");
-		expect(lines.join("\n")).toContain(" In Progress");
+		expect(lines.join("\n")).not.toContain(" In Progress (0)");
 		expect(lines.join("\n")).toContain(" Done");
 		expect(lines.join("\n")).toContain("Smoke test");
 		expect(lines.join("\n")).toContain("Done task");
@@ -775,15 +902,49 @@ describe("tasks extension", () => {
 			{ currentAssignment: "session:current", currentLabel: "Me" },
 		).join("\n");
 
-		expect(lines).toContain("<success> @Me");
+		expect(lines).toContain("<success>\x1b[3mself\x1b[23m</success>");
 		expect(lines).toContain("<dim>Other work</dim>");
-		expect(lines).toContain("<dim> @Other</dim>");
+		expect(lines).toContain("<mdLink>\x1b[3m@Other\x1b[23m</mdLink>");
 		expect(lines).not.toContain("<mdHeading>●</mdHeading> <mdHeading>2 tasks</mdHeading> <muted>(");
 		expect(lines).toContain("<syntaxPunctuation>OTHER</syntaxPunctuation><syntaxType>1</syntaxType>");
 		expect(lines).toContain("<mdLink> Ready");
-		expect(lines).toContain("<success> In Progress");
-		expect(lines).toContain("<dim> Done");
+		expect(lines).not.toContain("<warning> In Progress (0)");
+		expect(lines).not.toContain(" Done (0)");
 		expect(lines).not.toContain("**<syntaxPunctuation>OTHER");
+	});
+
+	test("task rows render type icons labels assignees and hide priorities", () => {
+		const lines = renderHudLines(
+			[
+				{
+					...task,
+					type: "feature",
+					labels: ["setup", "agent-ui"],
+					priority: 100,
+					assigned_to: "session:current",
+				},
+				{
+					...task,
+					id: "BUG1",
+					type: "bug",
+					title: "Other bug",
+					assigned_to: "session:other",
+					assigned_label: "Other",
+				},
+			],
+			markedTheme as any,
+			1000,
+			6,
+			{ currentAssignment: "session:current", currentLabel: "Me" },
+		).join("\n");
+
+		expect(lines).toContain("<warning></warning>");
+		expect(lines).toContain("<error></error>");
+		expect(lines).toContain("<success>\x1b[3msetup\x1b[23m</success>");
+		expect(lines).toContain("<success>\x1b[3mself\x1b[23m</success>");
+		expect(lines).toContain("<mdLink>\x1b[3m@Other\x1b[23m</mdLink>");
+		expect(lines).not.toContain("p100");
+		expect(lines).not.toContain("◻");
 	});
 
 	test("task HUD shows only current-session done tasks", () => {
@@ -806,9 +967,11 @@ describe("tasks extension", () => {
 		expect(lines).not.toContain("Blocked (1)");
 	});
 
-	test("task HUD shows epic group headers ordered by current session then priority with ungrouped first", () => {
+	test("task HUD shows epic section headers ordered by priority with ungrouped last", () => {
 		const lines = renderHudLines(
 			[
+				{ ...task, id: "EHIGH", type: "epic", title: "High Epic", epic_id: "high", priority: 100 },
+				{ ...task, id: "ECURRENT", type: "epic", title: "Current Epic", epic_id: "current", priority: 2 },
 				{
 					...task,
 					id: "CURREPIC",
@@ -834,11 +997,13 @@ describe("tasks extension", () => {
 			{ currentAssignment: "session:current", currentLabel: "Current" },
 		).join("\n");
 
-		expect(lines).toContain("No epic");
+		expect(lines).toContain("No Epic");
 		expect(lines).toContain("Current Epic");
 		expect(lines).toContain("High Epic");
-		expect(lines.indexOf("No epic")).toBeLessThan(lines.indexOf("Current Epic"));
-		expect(lines.indexOf("Current Epic")).toBeLessThan(lines.indexOf("High Epic"));
+		expect(lines.indexOf("High Epic")).toBeLessThan(lines.indexOf("Current Epic"));
+		expect(lines.indexOf("Current Epic")).toBeLessThan(lines.indexOf("No Epic"));
+		expect(lines).toContain("0/1 [");
+		expect(lines.match(/No Epic:/g)?.length).toBe(1);
 	});
 
 	test("task HUD highlights flashed task cards with background", () => {
