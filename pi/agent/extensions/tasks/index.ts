@@ -20,7 +20,7 @@ import { Type } from "typebox";
 import { runCommand as defaultRunCommand } from "../shared/ct-runner";
 import { hasEnoughTerminalRows } from "../shared/terminal";
 
-type TaskCommand = "add" | "list" | "show" | "update" | "delete";
+type TaskCommand = "add" | "list" | "show" | "update" | "delete" | "accept" | "reject";
 
 interface Config {
 	enabled: boolean;
@@ -52,6 +52,8 @@ interface TaskRecord {
 	title: string;
 	body: string;
 	status: string;
+	type?: string;
+	labels?: string[];
 	priority?: number;
 	assigned_to?: string | null;
 	assigned_label?: string | null;
@@ -96,7 +98,15 @@ const configPath = join(extensionDir, "config.json");
 const widgetId = "project-tasks";
 const taskHudFlashMs = 5000;
 const taskHudPulseFrameMs = 160;
-const silentTaskToolNames = new Set(["task_add", "task_list", "task_show", "task_update", "task_delete"]);
+const silentTaskToolNames = new Set([
+	"task_add",
+	"task_list",
+	"task_show",
+	"task_update",
+	"task_delete",
+	"task_accept",
+	"task_reject",
+]);
 const silentTaskToolPatchKey = Symbol.for("agents.tasks.silent-tool-render-patch");
 let activeTaskBoard: { close: () => void } | undefined;
 let taskHudKanbanHidden = false;
@@ -182,6 +192,7 @@ export function buildTaskCommand(action: TaskCommand, params: Record<string, unk
 	switch (action) {
 		case "add":
 			args.push(String(params.title ?? ""));
+			pushOption(args, "--type", params.type);
 			pushOption(args, "--body", params.body);
 			pushOption(args, "--status", params.status);
 			pushOption(args, "--priority", params.priority);
@@ -189,20 +200,33 @@ export function buildTaskCommand(action: TaskCommand, params: Record<string, unk
 			pushOption(args, "--assigned-label", params.assigned_label);
 			pushOption(args, "--epic-id", params.epic_id);
 			pushOption(args, "--epic-title", params.epic_title);
+			pushRepeatedOption(args, "--label", params.labels);
 			pushOption(args, "--parent-id", params.parent_id);
 			pushRepeatedOption(args, "--blocked-by", params.blocked_by);
 			break;
 		case "list":
 			pushOption(args, "--status", params.status);
+			pushOption(args, "--type", params.type);
+			pushOption(args, "--label", params.label);
+			pushOption(args, "--epic-id", params.epic_id);
 			pushOption(args, "--assigned-to", params.assigned_to);
 			if (params.all === true) args.push("--all");
 			break;
 		case "show":
 		case "delete":
+		case "accept":
 			args.push(String(params.id ?? ""));
+			break;
+		case "reject":
+			args.push(String(params.id ?? ""));
+			for (const part of String(params.note ?? "")
+				.split(/\s+/)
+				.filter(Boolean))
+				args.push(part);
 			break;
 		case "update":
 			args.push(String(params.id ?? ""));
+			pushOption(args, "--type", params.type);
 			pushOption(args, "--title", params.title);
 			pushOption(args, "--body", params.body);
 			pushOption(args, "--status", params.status);
@@ -212,6 +236,7 @@ export function buildTaskCommand(action: TaskCommand, params: Record<string, unk
 			if (params.clear_assignee === true) args.push("--clear-assignee");
 			pushOption(args, "--epic-id", params.epic_id);
 			pushOption(args, "--epic-title", params.epic_title);
+			pushRepeatedOption(args, "--label", params.labels);
 			if (params.clear_epic === true) args.push("--clear-epic");
 			pushOption(args, "--parent-id", params.parent_id);
 			if (params.clear_parent === true) args.push("--clear-parent");
@@ -342,8 +367,13 @@ async function executeTask(
 	const result = await runCommand(command, args, cwd, signal);
 	const text = result.stdout.trim() || result.stderr.trim();
 	const details = parseTaskPayload(text, action, args);
-	if (action === "add" || action === "update") flashTaskHud(details.task);
-	if (ctx && config.hud.enabled && (action === "add" || action === "update" || action === "delete")) {
+	if (action === "add" || action === "update" || action === "accept" || action === "reject")
+		flashTaskHud(details.task);
+	if (
+		ctx &&
+		config.hud.enabled &&
+		(action === "add" || action === "update" || action === "delete" || action === "accept" || action === "reject")
+	) {
 		await updateTaskHud(ctx, pi, command, runCommand, config).catch((error) => {
 			ctx.ui.notify?.(
 				`Task HUD refresh failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -555,9 +585,20 @@ function sortTasksForDisplay(
 }
 
 export interface TaskBoardColumn {
-	id: "ready" | "blocked" | "in_progress" | "done";
+	id: "rejected" | "ready" | "blocked" | "in_progress" | "done";
 	label: string;
 	tasks: TaskRecord[];
+}
+
+interface TaskBoardGroup {
+	key: string;
+	label: string;
+	epicLabel?: string;
+	tasks: TaskRecord[];
+	priority: number;
+	updatedAt: number;
+	done: number;
+	total: number;
 }
 
 export interface TaskBoardSelection {
@@ -571,14 +612,21 @@ function isBoardReady(task: TaskRecord): boolean {
 
 export function buildTaskBoardColumns(tasks: TaskRecord[]): TaskBoardColumn[] {
 	const byId = new Map(tasks.map((task) => [task.id, task]));
-	const active = tasks.filter((task) => !isCanceled(task));
+	const active = tasks.filter((task) => !isCanceled(task) && task.type !== "epic");
 	const children = taskChildren(active);
-	return [
+	const rejected = sortTasksForDisplay(
+		active.filter((task) => task.status === "rejected" && !hasOpenDependencies(task, byId, children)),
+		byId,
+		children,
+	);
+	const columns: TaskBoardColumn[] = [
 		{
 			id: "ready",
 			label: "Ready",
 			tasks: sortTasksForDisplay(
-				active.filter((task) => isBoardReady(task) && !hasOpenDependencies(task, byId, children)),
+				active.filter(
+					(task) => isBoardReady(task) && task.status !== "rejected" && !hasOpenDependencies(task, byId, children),
+				),
 				byId,
 				children,
 			),
@@ -607,6 +655,10 @@ export function buildTaskBoardColumns(tasks: TaskRecord[]): TaskBoardColumn[] {
 			tasks: sortTasksForDisplay(active.filter(isComplete), byId, children),
 		},
 	];
+	if (rejected.length > 0) {
+		columns.unshift({ id: "rejected", label: "Rejected", tasks: rejected });
+	}
+	return columns;
 }
 
 function clampSelection(columns: TaskBoardColumn[], selection: TaskBoardSelection): TaskBoardSelection {
@@ -706,19 +758,23 @@ function boxedTaskBoard(theme: Theme, width: number, lines: string[]): string[] 
 
 function columnColor(column: TaskBoardColumn): ThemeColor {
 	switch (column.id) {
+		case "rejected":
+			return "error";
 		case "ready":
 			return "mdLink";
 		case "blocked":
-			return "warning";
+			return "muted";
 		case "in_progress":
-			return "success";
+			return "warning";
 		case "done":
-			return "dim";
+			return "success";
 	}
 }
 
 function columnIcon(column: TaskBoardColumn): string {
 	switch (column.id) {
+		case "rejected":
+			return "";
 		case "ready":
 			return "";
 		case "blocked":
@@ -738,6 +794,76 @@ function shelfHeader(theme: Theme, column: TaskBoardColumn, width: number, hidde
 
 function shelfEmptyLine(width: number): string {
 	return " ".repeat(Math.max(0, width));
+}
+
+function isEpicTask(task: TaskRecord): boolean {
+	return task.type === "epic";
+}
+
+function taskEpicKey(task: TaskRecord): string {
+	return task.epic_id?.trim() || "";
+}
+
+function buildTaskBoardGroups(tasks: TaskRecord[]): TaskBoardGroup[] {
+	const epicByLabel = new Map<string, TaskRecord>();
+	for (const task of tasks) {
+		if (!isEpicTask(task)) continue;
+		const label = taskEpicKey(task);
+		if (label) epicByLabel.set(label, task);
+	}
+	const grouped = new Map<string, TaskRecord[]>();
+	for (const task of tasks.filter((candidate) => !isEpicTask(candidate))) {
+		const label = taskEpicKey(task);
+		const key = label ? (epicByLabel.has(label) ? label : `unknown:${label}`) : "";
+		grouped.set(key, [...(grouped.get(key) ?? []), task]);
+	}
+	const groups = [...grouped.entries()]
+		.map(([key, groupTasks]) => {
+			const label = key.startsWith("unknown:") ? key.slice("unknown:".length) : key;
+			const epic = label ? epicByLabel.get(label) : undefined;
+			const progressTasks = groupTasks.filter((task) => !isCanceled(task));
+			return {
+				key,
+				label: epic?.title ?? (label ? `Unknown Epic: ${label}` : "No Epic"),
+				epicLabel: label || undefined,
+				tasks: groupTasks,
+				priority: epic ? priority(epic) : Math.max(0, ...groupTasks.map(priority)),
+				updatedAt: Math.max(epic?.updated_at ?? 0, ...groupTasks.map((task) => task.updated_at)),
+				done: progressTasks.filter(isComplete).length,
+				total: progressTasks.length,
+			};
+		})
+		.filter((group) => group.tasks.length > 0);
+	return groups.sort((left, right) => {
+		if (left.key === "" && right.key !== "") return 1;
+		if (right.key === "" && left.key !== "") return -1;
+		const priorityDelta = right.priority - left.priority;
+		if (priorityDelta !== 0) return priorityDelta;
+		return (
+			right.updatedAt - left.updatedAt ||
+			(left.epicLabel ?? left.label).localeCompare(right.epicLabel ?? right.label)
+		);
+	});
+}
+
+function progressBar(theme: Theme, done: number, total: number, width: number): string {
+	const ratio = total === 0 ? 0 : Math.max(0, Math.min(1, done / total));
+	const filled = Math.round(width * ratio);
+	return `${theme.fg("accent", "─".repeat(filled))}${theme.fg("dim", "─".repeat(Math.max(0, width - filled)))}`;
+}
+
+function renderEpicBoardHeader(group: TaskBoardGroup, theme: Theme, width: number): string {
+	const prefix = group.key === "" ? "No Epic:" : "Epic:";
+	const suffixStart = ` – ${group.done}/${group.total} [`;
+	const suffixEnd = "]";
+	const label = group.epicLabel ? ` ${theme.fg("success", group.epicLabel)}` : "";
+	const staticWidth = visibleWidth(`${prefix}  ${suffixStart}${suffixEnd}`) + visibleWidth(label);
+	const barWidth = Math.max(5, Math.min(20, Math.max(5, width - staticWidth - 8)));
+	const titleWidth = Math.max(4, width - staticWidth - barWidth - 1);
+	return truncateLine(
+		`${theme.fg("mdHeading", prefix)} ${theme.fg("toolTitle", compact(group.label, titleWidth))}${label}${theme.fg("dim", suffixStart)}${progressBar(theme, group.done, group.total, barWidth)}${theme.fg("dim", suffixEnd)}`,
+		width,
+	);
 }
 
 interface HudEpicGroup {
@@ -916,6 +1042,7 @@ function withDoneRecencyOrder(column: TaskBoardColumn): TaskBoardColumn {
 
 function taskHudSummary(columns: Record<TaskBoardColumn["id"], TaskBoardColumn>): string[] {
 	const parts: string[] = [];
+	if (columns.rejected?.tasks.length > 0) parts.push(`${columns.rejected.tasks.length} rejected`);
 	if (columns.ready.tasks.length > 0) parts.push(`${columns.ready.tasks.length} ready`);
 	if (columns.blocked.tasks.length > 0) parts.push(`${columns.blocked.tasks.length} blocked`);
 	const done = columns.done.tasks.length;
@@ -926,6 +1053,8 @@ function taskHudSummary(columns: Record<TaskBoardColumn["id"], TaskBoardColumn>)
 
 function hudColumnRows(column: TaskBoardColumn, maxTasks: number): number {
 	switch (column.id) {
+		case "rejected":
+			return Math.max(1, Math.min(3, column.tasks.length));
 		case "ready":
 			return Math.max(1, Math.min(3, column.tasks.length));
 		case "blocked":
@@ -950,12 +1079,11 @@ function renderHudTaskCard(
 ): string {
 	const blockers = openBlockers(task, byId);
 	const assignee = formatAssignee(task, theme, display);
-	const meta = [
-		priority(task) !== 0 ? ` p${priority(task)}` : "",
-		blockers.length > 0 ? ` ←${blockers.length}` : "",
-	].join("");
+	const labels = formatTaskLabels(task, theme);
+	const meta = blockers.length > 0 ? ` ←${blockers.length}` : "";
 	const titleColor = column.id === "done" || isAssignedToOtherSession(task, display) ? "dim" : "text";
-	const card = `${theme.fg(statusColor(task.status), statusGlyph(task.status))} ${formatTaskId(task.id, theme)} ${theme.fg(titleColor, compact(task.title, Math.max(8, width - 16)))}${assignee}${theme.fg("dim", meta)}`;
+	const fixedWidth = visibleWidth(`${typeIcon(task)}  ${task.id} ${labels}${assignee}${meta}`) + 4;
+	const card = `${theme.fg(typeColor(task), typeIcon(task))} ${formatTaskId(task.id, theme)} ${theme.fg(titleColor, compact(task.title, Math.max(8, width - fixedWidth)))}${labels}${assignee}${theme.fg("dim", meta)}`;
 	const line = padToVisibleWidth(` ${padToVisibleWidth(card, width)}`, width + 2);
 	const flash = flashTasks.get(task.id);
 	return flash || flashTaskIds.has(task.id) ? renderTaskHudFlashBackground(line, theme, flash, now) : line;
@@ -972,20 +1100,12 @@ function renderHudSection(
 	flashTasks: ReadonlyMap<string, TaskHudFlash> = new Map(),
 	now = Date.now(),
 ): string[] {
+	if (column.tasks.length === 0) return [];
 	const hidden = Math.max(0, column.tasks.length - rows);
 	const lines = [shelfHeader(theme, column, width, hidden)];
 	const cardWidth = Math.max(1, width - 2);
-	const visibleTasks = hudEpicGroups(column.tasks, display)
-		.flatMap((group) => group.tasks)
-		.slice(0, rows);
-	for (const group of hudEpicGroups(visibleTasks, display)) {
-		lines.push(renderHudEpicHeader(group.label, theme, width));
-		for (const task of group.tasks) {
-			lines.push(renderHudTaskCard(task, column, theme, cardWidth, byId, display, flashTaskIds, flashTasks, now));
-		}
-	}
-	if (visibleTasks.length === 0) {
-		lines.push(shelfEmptyLine(width));
+	for (const task of column.tasks.slice(0, rows)) {
+		lines.push(renderHudTaskCard(task, column, theme, cardWidth, byId, display, flashTaskIds, flashTasks, now));
 	}
 	return lines;
 }
@@ -1014,6 +1134,17 @@ function detailLines(task: TaskRecord, tasks: TaskRecord[], theme: Theme, width:
 	return raw.flatMap((line) => wrapTextWithAnsi(line, width)).map((line) => truncateLine(line, width));
 }
 
+function renderBoardTaskRow(task: TaskRecord, theme: Theme, width: number, selected: boolean): string {
+	const marker = selected ? "›" : " ";
+	const assignee = assignmentLabel(task);
+	const labels = formatTaskLabels(task, theme);
+	const assigneeText = assignee ? ` ${theme.fg("mdLink", italic(`@${assignee}`))}` : "";
+	const label = `${marker} ${theme.fg(typeColor(task), typeIcon(task))} ${task.id} ${compact(task.title, Math.max(12, width - visibleWidth(`${task.id}${labels}${assigneeText}`) - 6))}${labels}${assigneeText}`;
+	return selected
+		? renderPersistentBackground(padToVisibleWidth(theme.fg("text", label), width), theme, "selectedBg")
+		: theme.fg("text", label);
+}
+
 export function renderTaskBoardLines(
 	tasks: TaskRecord[],
 	theme: Theme,
@@ -1025,41 +1156,62 @@ export function renderTaskBoardLines(
 	const innerWidth = Math.max(1, safeWidth - 4);
 	const columns = buildTaskBoardColumns(tasks);
 	const clamped = clampSelection(columns, selection);
-	const widths = splitWidths(innerWidth, columns.length);
-	const maxRows = Math.max(1, ...columns.map((column) => column.tasks.length));
 	const lines = [
 		truncateLine(`${theme.fg("mdHeading", "Tasks")} ${theme.fg("dim", taskBoardHelp(bindings))}`, innerWidth),
 		"",
-		fitCells(
-			columns.map((column, index) => {
-				const label = `${column.label} (${column.tasks.length})`;
-				return index === clamped.column ? theme.fg("mdHeading", label) : theme.fg("toolTitle", label);
-			}),
-			widths,
-		),
-		theme.fg("borderMuted", "─".repeat(innerWidth)),
 	];
-	for (let row = 0; row < maxRows; row++) {
-		lines.push(
-			fitCells(
-				columns.map((column, columnIndex) => {
-					const task = column.tasks[row];
-					if (!task) return "";
-					const marker = columnIndex === clamped.column && row === clamped.row ? "›" : " ";
-					const assignee = assignmentLabel(task);
-					const label = `${marker} ${statusGlyph(task.status)} ${task.id} ${compact(task.title, Math.max(12, widths[columnIndex] - 12))}${assignee ? ` @${compact(assignee, 14)}` : ""}`;
-					return columnIndex === clamped.column && row === clamped.row
-						? renderPersistentBackground(
-								padToVisibleWidth(theme.fg("text", label), widths[columnIndex]),
-								theme,
-								"selectedBg",
-							)
-						: theme.fg("text", label);
+	for (const group of buildTaskBoardGroups(tasks)) {
+		const groupColumns = buildTaskBoardColumns(group.tasks);
+		const leftLane = (["rejected", "ready", "blocked"] as const).flatMap((id) => {
+			const column = groupColumns.find((candidate) => candidate.id === id) ?? { id, label: "Rejected", tasks: [] };
+			if (column.tasks.length === 0) return [];
+			return [
+				theme.fg(columnColor(column), `${columnIcon(column)} ${column.label} (${column.tasks.length})`),
+				...column.tasks.map((task) => {
+					const globalSelection = selectionForTask(columns, task.id);
+					return renderBoardTaskRow(
+						task,
+						theme,
+						Math.max(1, Math.floor(innerWidth / 3) - 2),
+						globalSelection?.column === clamped.column && globalSelection.row === clamped.row,
+					);
 				}),
-				widths,
-			),
-		);
+			];
+		});
+		const lanes = [
+			leftLane,
+			...(["in_progress", "done"] as const).map((id) => {
+				const column = boardColumn(groupColumns, id);
+				if (column.tasks.length === 0) return [];
+				return [
+					theme.fg(columnColor(column), `${columnIcon(column)} ${column.label} (${column.tasks.length})`),
+					...column.tasks.map((task) => {
+						const globalSelection = selectionForTask(columns, task.id);
+						return renderBoardTaskRow(
+							task,
+							theme,
+							Math.max(1, Math.floor(innerWidth / 3) - 2),
+							globalSelection?.column === clamped.column && globalSelection.row === clamped.row,
+						);
+					}),
+				];
+			}),
+		].filter((lane) => lane.length > 0);
+		if (lanes.length === 0) continue;
+		lines.push(renderEpicBoardHeader(group, theme, innerWidth));
+		const widths = splitWidths(innerWidth, lanes.length);
+		const height = Math.max(...lanes.map((lane) => lane.length));
+		for (let row = 0; row < height; row++) {
+			lines.push(
+				fitCells(
+					lanes.map((lane, index) => lane[row] ?? " ".repeat(widths[index] ?? 0)),
+					widths,
+				),
+			);
+		}
+		lines.push(theme.fg("borderMuted", "─".repeat(innerWidth)));
 	}
+	if (lines.length === 2) lines.push(truncateLine(theme.fg("dim", "No tasks"), innerWidth));
 	lines.push("");
 	lines.push(truncateLine(theme.fg("borderMuted", "─".repeat(innerWidth)), innerWidth));
 	lines.push(theme.fg("mdHeading", "Details"));
@@ -1191,7 +1343,7 @@ export class TaskBoardOverlay implements Component {
 		if (!task) return;
 		const byId = new Map(this.tasks.map((item) => [item.id, item]));
 		if (hasOpenDependencies(task, byId, taskChildren(this.tasks))) return;
-		const nextStatus = task.status === "in_progress" ? "done" : isComplete(task) ? "open" : "in_progress";
+		const nextStatus = nextCycledStatus(task);
 		this.updateSelected({ status: nextStatus });
 	}
 
@@ -1267,7 +1419,8 @@ export class TaskBoardOverlay implements Component {
 			return;
 		}
 		if (matchesAnyKey(data, bindings.done)) {
-			this.updateSelected({ status: "done" });
+			const task = this.currentTask();
+			if (task) this.updateSelected({ status: doneKeyStatus(task) });
 			return;
 		}
 		if (matchesAnyKey(data, bindings.cancel)) {
@@ -1333,7 +1486,7 @@ type AssignmentDisplayContext = {
 };
 
 function isMutatingTaskAction(action: TaskCommand): boolean {
-	return action === "add" || action === "update" || action === "delete";
+	return action === "add" || action === "update" || action === "delete" || action === "accept" || action === "reject";
 }
 
 function sessionFile(ctx?: ExtensionContext): string | undefined {
@@ -1462,9 +1615,45 @@ function formatAssignee(task: TaskRecord, theme: Theme, display: AssignmentDispl
 	const label = assignmentLabel(task, display);
 	if (!label) return "";
 	if (isAssignedToCurrentSession(task, display)) {
-		return theme.fg("success", ` @${compact(label, 28)}`);
+		return ` ${theme.fg("success", italic("self"))}`;
 	}
-	return theme.fg("dim", ` @${compact(label, 28)}`);
+	return ` ${theme.fg("mdLink", italic(`@${label}`))}`;
+}
+
+function italic(text: string): string {
+	return `\x1b[3m${text}\x1b[23m`;
+}
+
+function typeIcon(task: TaskRecord): string {
+	switch (task.type) {
+		case "feature":
+			return "";
+		case "bug":
+			return "";
+		case "epic":
+			return "";
+		default:
+			return "";
+	}
+}
+
+function typeColor(task: TaskRecord): ThemeColor {
+	switch (task.type) {
+		case "feature":
+			return "warning";
+		case "bug":
+			return "error";
+		case "epic":
+			return "accent";
+		default:
+			return "muted";
+	}
+}
+
+function formatTaskLabels(task: TaskRecord, theme: Theme): string {
+	const labels = task.labels ?? [];
+	if (labels.length === 0) return "";
+	return ` ${labels.map((label) => theme.fg("success", italic(label))).join(" ")}`;
 }
 
 function formatTaskId(id: string, theme: Theme): string {
@@ -1493,6 +1682,11 @@ export function renderHudLines(
 	const columns = buildTaskBoardColumns(hudTasks);
 	const doneColumn = boardColumn(columns, "done");
 	const hudColumns = {
+		rejected: columns.find((column) => column.id === "rejected") ?? {
+			id: "rejected" as const,
+			label: "Rejected",
+			tasks: [],
+		},
 		ready: boardColumn(columns, "ready"),
 		blocked: boardColumn(columns, "blocked"),
 		in_progress: boardColumn(columns, "in_progress"),
@@ -1512,64 +1706,96 @@ export function renderHudLines(
 	const lines: string[] = [];
 	const byId = new Map(hudTasks.map((item) => [item.id, item]));
 	const now = options.now ?? Date.now();
-	const renderedColumns = [
-		[
-			...renderHudSection(
-				hudColumns.ready,
+	for (const group of buildTaskBoardGroups(hudTasks)) {
+		const groupColumns = buildTaskBoardColumns(group.tasks);
+		const groupDoneColumn = boardColumn(groupColumns, "done");
+		const groupHudColumns = {
+			rejected: groupColumns.find((column) => column.id === "rejected") ?? {
+				id: "rejected" as const,
+				label: "Rejected",
+				tasks: [],
+			},
+			ready: boardColumn(groupColumns, "ready"),
+			blocked: boardColumn(groupColumns, "blocked"),
+			in_progress: boardColumn(groupColumns, "in_progress"),
+			done: withDoneRecencyOrder({
+				...groupDoneColumn,
+				tasks: groupDoneColumn.tasks.filter((task) => isAssignedToCurrentSession(task, display)),
+			}),
+		};
+		const renderedColumns = [
+			[
+				...renderHudSection(
+					groupHudColumns.rejected,
+					theme,
+					widths[0] ?? width,
+					hudColumnRows(groupHudColumns.rejected, maxTasks),
+					byId,
+					display,
+					options.flashTaskIds,
+					options.flashTasks,
+					now,
+				),
+				...renderHudSection(
+					groupHudColumns.ready,
+					theme,
+					widths[0] ?? width,
+					hudColumnRows(groupHudColumns.ready, maxTasks),
+					byId,
+					display,
+					options.flashTaskIds,
+					options.flashTasks,
+					now,
+				),
+				...(groupHudColumns.blocked.tasks.length > 0
+					? renderHudSection(
+							groupHudColumns.blocked,
+							theme,
+							widths[0] ?? width,
+							hudColumnRows(groupHudColumns.blocked, maxTasks),
+							byId,
+							display,
+							options.flashTaskIds,
+							options.flashTasks,
+							now,
+						)
+					: []),
+			],
+			renderHudSection(
+				groupHudColumns.in_progress,
 				theme,
-				widths[0] ?? width,
-				hudColumnRows(hudColumns.ready, maxTasks),
+				widths[1] ?? width,
+				hudColumnRows(groupHudColumns.in_progress, maxTasks),
 				byId,
 				display,
 				options.flashTaskIds,
 				options.flashTasks,
 				now,
 			),
-			...(hudColumns.blocked.tasks.length > 0
-				? renderHudSection(
-						hudColumns.blocked,
-						theme,
-						widths[0] ?? width,
-						hudColumnRows(hudColumns.blocked, maxTasks),
-						byId,
-						display,
-						options.flashTaskIds,
-						options.flashTasks,
-						now,
-					)
-				: []),
-		],
-		renderHudSection(
-			hudColumns.in_progress,
-			theme,
-			widths[1] ?? width,
-			hudColumnRows(hudColumns.in_progress, maxTasks),
-			byId,
-			display,
-			options.flashTaskIds,
-			options.flashTasks,
-			now,
-		),
-		renderHudSection(
-			hudColumns.done,
-			theme,
-			widths[2] ?? width,
-			hudColumnRows(hudColumns.done, maxTasks),
-			byId,
-			display,
-			options.flashTaskIds,
-			options.flashTasks,
-			now,
-		),
-	];
-	const height = Math.max(...renderedColumns.map((column) => column.length));
-	for (let row = 0; row < height; row++) {
-		lines.push(
-			fitCells(
-				renderedColumns.map((column, index) => column[row] ?? " ".repeat(widths[index] ?? 0)),
-				widths,
+			renderHudSection(
+				groupHudColumns.done,
+				theme,
+				widths[2] ?? width,
+				hudColumnRows(groupHudColumns.done, maxTasks),
+				byId,
+				display,
+				options.flashTaskIds,
+				options.flashTasks,
+				now,
 			),
-		);
+		];
+		if (renderedColumns.every((column) => column.length === 0)) continue;
+		if (lines.length > 0) lines.push(theme.fg("borderMuted", "─".repeat(width)));
+		lines.push(renderEpicBoardHeader(group, theme, width));
+		const height = Math.max(...renderedColumns.map((column) => column.length));
+		for (let row = 0; row < height; row++) {
+			lines.push(
+				fitCells(
+					renderedColumns.map((column, index) => column[row] ?? " ".repeat(widths[index] ?? 0)),
+					widths,
+				),
+			);
+		}
 	}
 	return lines.map((line) => truncateLine(line, width));
 }
@@ -1682,7 +1908,30 @@ function hasUnresolvedDependencies(
 }
 
 function isReadyForWork(task: TaskRecord, byId: Map<string, TaskRecord>, children: Map<string, TaskRecord[]>): boolean {
-	return isActiveTask(task) && task.status !== "in_progress" && !hasUnresolvedDependencies(task, byId, children);
+	return (
+		isActiveTask(task) &&
+		task.status !== "in_progress" &&
+		task.status !== "in_review" &&
+		!hasUnresolvedDependencies(task, byId, children)
+	);
+}
+
+function hasReviewLifecycle(task: TaskRecord): boolean {
+	return task.type === "feature" || task.type === "bug";
+}
+
+function nextCycledStatus(task: TaskRecord): string {
+	if (hasReviewLifecycle(task)) {
+		if (task.status === "rejected") return "in_progress";
+		if (task.status === "in_progress") return "in_review";
+		if (task.status === "in_review") return "open";
+		return "in_progress";
+	}
+	return task.status === "in_progress" ? "done" : isComplete(task) ? "open" : "in_progress";
+}
+
+function doneKeyStatus(task: TaskRecord): string {
+	return hasReviewLifecycle(task) ? "in_review" : "done";
 }
 
 function isAssignedTo(assignment: string, task: TaskRecord): boolean {
@@ -1695,6 +1944,23 @@ function isUnassigned(task: TaskRecord): boolean {
 
 function sortedActive(tasks: TaskRecord[], byId: Map<string, TaskRecord>): TaskRecord[] {
 	return sortTasksForDisplay(tasks.filter(isActiveTask), byId);
+}
+
+function sortedGuardTasks(tasks: TaskRecord[], byId: Map<string, TaskRecord>): TaskRecord[] {
+	return sortedActive(tasks, byId).sort((left, right) => guardStatusRank(left) - guardStatusRank(right));
+}
+
+function guardStatusRank(task: TaskRecord): number {
+	switch (task.status) {
+		case "in_progress":
+			return 0;
+		case "rejected":
+			return 1;
+		case "in_review":
+			return 3;
+		default:
+			return 2;
+	}
 }
 
 function selectDependencyAction(
@@ -1731,7 +1997,7 @@ function selectDependencyAction(
 function selectGuardAction(tasks: TaskRecord[], assignedTo: string): TaskGuardAction | undefined {
 	const byId = new Map(tasks.map((task) => [task.id, task]));
 	const children = taskChildren(tasks);
-	const assigned = sortedActive(
+	const assigned = sortedGuardTasks(
 		tasks.filter((task) => isAssignedTo(assignedTo, task)),
 		byId,
 	);
@@ -1749,7 +2015,7 @@ function selectGuardAction(tasks: TaskRecord[], assignedTo: string): TaskGuardAc
 	);
 	if (assignedReady) return { kind: "start", task: assignedReady };
 	const epicIds = new Set(assigned.map((task) => task.epic_id).filter((id): id is string => Boolean(id)));
-	const sameEpicReady = sortedActive(
+	const sameEpicReady = sortedGuardTasks(
 		tasks.filter(
 			(task) =>
 				isUnassigned(task) && task.epic_id && epicIds.has(task.epic_id) && isReadyForWork(task, byId, children),
@@ -2049,6 +2315,50 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 		},
 	});
 
+	pi.registerCommand?.("accept", {
+		description: "Accept an in-review task",
+		handler: async (args: string, ctx: ExtensionContext) => {
+			const id = args.trim();
+			if (!id) {
+				ctx.ui.notify?.("Usage: /accept <task-id>", "warning");
+				return;
+			}
+			await executeTask(config.command, runCommand, ctx.cwd, "accept", { id }, config, pi, ctx, ctx.signal).catch(
+				(error) => {
+					ctx.ui.notify?.(
+						`Task accept failed: ${error instanceof Error ? error.message : String(error)}`,
+						"warning",
+					);
+				},
+			);
+		},
+	});
+
+	pi.registerCommand?.("reject", {
+		description: "Reject an in-review task with a note",
+		handler: async (args: string, ctx: ExtensionContext) => {
+			const [id, ...noteParts] = args.trim().split(/\s+/).filter(Boolean);
+			const note = noteParts.join(" ");
+			if (!id || !note) {
+				ctx.ui.notify?.("Usage: /reject <task-id> <note...>", "warning");
+				return;
+			}
+			await executeTask(
+				config.command,
+				runCommand,
+				ctx.cwd,
+				"reject",
+				{ id, note },
+				config,
+				pi,
+				ctx,
+				ctx.signal,
+			).catch((error) => {
+				ctx.ui.notify?.(`Task reject failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
+			});
+		},
+	});
+
 	pi.registerShortcut?.(config.hud.toggleShortcut, {
 		description: "Toggle project task HUD Kanban",
 		handler: async (ctx: ExtensionContext) => {
@@ -2070,12 +2380,14 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 		promptSnippet: "Create a persisted project task",
 		parameters: Type.Object({
 			title: Type.String({ description: "Task title" }),
+			type: Type.String({ description: "Task type: epic, feature, bug, or chore" }),
 			body: Type.Optional(Type.String({ description: "Task details/body" })),
 			status: Type.Optional(Type.String({ description: "Task status (default: open)" })),
 			priority: Type.Optional(Type.Number({ description: "Task priority; higher shows first" })),
 			assigned_to: Type.Optional(Type.String({ description: "Session/user assignment, or 'current'" })),
 			epic_id: Type.Optional(Type.String({ description: "Stable epic/group identifier" })),
 			epic_title: Type.Optional(Type.String({ description: "Human-readable epic/group title" })),
+			labels: Type.Optional(Type.Array(Type.String(), { description: "Task label tokens" })),
 			parent_id: Type.Optional(Type.String({ description: "Parent/coordinator task ID or prefix" })),
 			blocked_by: Type.Optional(
 				Type.Array(Type.String(), {
@@ -2093,6 +2405,9 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 		promptSnippet: "List persisted project tasks",
 		parameters: Type.Object({
 			status: Type.Optional(Type.String({ description: "Filter by status" })),
+			type: Type.Optional(Type.String({ description: "Filter by task type" })),
+			label: Type.Optional(Type.String({ description: "Filter by task label" })),
+			epic_id: Type.Optional(Type.String({ description: "Filter by epic/group identifier" })),
 			assigned_to: Type.Optional(
 				Type.String({
 					description: "Filter by assignee/session, or 'current'",
@@ -2114,6 +2429,29 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 	});
 
 	pi.registerTool({
+		...common("accept"),
+		name: "task_accept",
+		label: "Accept Task",
+		description: "Accept an in-review feature or bug task via ct task accept.",
+		promptSnippet: "Accept an in-review task",
+		parameters: Type.Object({
+			id: Type.String({ description: "Task ID or unique prefix" }),
+		}),
+	});
+
+	pi.registerTool({
+		...common("reject"),
+		name: "task_reject",
+		label: "Reject Task",
+		description: "Reject an in-review feature or bug task via ct task reject.",
+		promptSnippet: "Reject an in-review task",
+		parameters: Type.Object({
+			id: Type.String({ description: "Task ID or unique prefix" }),
+			note: Type.String({ description: "Required rejection note" }),
+		}),
+	});
+
+	pi.registerTool({
 		...common("update"),
 		name: "task_update",
 		label: "Update Task",
@@ -2121,6 +2459,7 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 		promptSnippet: "Update a persisted project task",
 		parameters: Type.Object({
 			id: Type.String({ description: "Task ID or unique prefix" }),
+			type: Type.Optional(Type.String({ description: "New task type: epic, feature, bug, or chore" })),
 			title: Type.Optional(Type.String({ description: "New title" })),
 			body: Type.Optional(Type.String({ description: "New details/body" })),
 			status: Type.Optional(Type.String({ description: "New status" })),
@@ -2133,6 +2472,9 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 			clear_assignee: Type.Optional(Type.Boolean({ description: "Remove assignee" })),
 			epic_id: Type.Optional(Type.String({ description: "New stable epic/group identifier" })),
 			epic_title: Type.Optional(Type.String({ description: "New human-readable epic/group title" })),
+			labels: Type.Optional(
+				Type.Array(Type.String(), { description: "Replace labels with these task label tokens" }),
+			),
 			clear_epic: Type.Optional(Type.Boolean({ description: "Remove epic/group metadata" })),
 			parent_id: Type.Optional(Type.String({ description: "New parent/coordinator task ID or prefix" })),
 			clear_parent: Type.Optional(Type.Boolean({ description: "Remove parent task" })),
