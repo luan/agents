@@ -574,7 +574,7 @@ function sortTasksForDisplay(
 }
 
 export interface TaskBoardColumn {
-	id: "rejected" | "ready" | "blocked" | "in_progress" | "done";
+	id: "rejected" | "ready" | "blocked" | "in_progress" | "in_review" | "done";
 	label: string;
 	tasks: TaskRecord[];
 }
@@ -596,7 +596,11 @@ export interface TaskBoardSelection {
 }
 
 function isBoardReady(task: TaskRecord): boolean {
-	return !isComplete(task) && !isCanceled(task) && task.status !== "in_progress";
+	return !isComplete(task) && !isCanceled(task) && task.status !== "in_progress" && task.status !== "in_review";
+}
+
+function isBoardActive(task: TaskRecord): boolean {
+	return !isComplete(task) && !isCanceled(task);
 }
 
 export function buildTaskBoardColumns(tasks: TaskRecord[]): TaskBoardColumn[] {
@@ -624,7 +628,7 @@ export function buildTaskBoardColumns(tasks: TaskRecord[]): TaskBoardColumn[] {
 			id: "blocked",
 			label: "Blocked",
 			tasks: sortTasksForDisplay(
-				active.filter((task) => isBoardReady(task) && hasOpenDependencies(task, byId, children)),
+				active.filter((task) => isBoardActive(task) && hasOpenDependencies(task, byId, children)),
 				byId,
 				children,
 			),
@@ -633,7 +637,16 @@ export function buildTaskBoardColumns(tasks: TaskRecord[]): TaskBoardColumn[] {
 			id: "in_progress",
 			label: "In Progress",
 			tasks: sortTasksForDisplay(
-				active.filter((task) => task.status === "in_progress"),
+				active.filter((task) => task.status === "in_progress" && !hasOpenDependencies(task, byId, children)),
+				byId,
+				children,
+			),
+		},
+		{
+			id: "in_review",
+			label: "In Review",
+			tasks: sortTasksForDisplay(
+				active.filter((task) => task.status === "in_review" && !hasOpenDependencies(task, byId, children)),
 				byId,
 				children,
 			),
@@ -755,6 +768,8 @@ function columnColor(column: TaskBoardColumn): ThemeColor {
 			return "muted";
 		case "in_progress":
 			return "warning";
+		case "in_review":
+			return "accent";
 		case "done":
 			return "success";
 	}
@@ -770,6 +785,8 @@ function columnIcon(column: TaskBoardColumn): string {
 			return "";
 		case "in_progress":
 			return "";
+		case "in_review":
+			return "";
 		case "done":
 			return "";
 	}
@@ -975,6 +992,7 @@ function taskHudSummary(columns: Record<TaskBoardColumn["id"], TaskBoardColumn>)
 	const done = columns.done.tasks.length;
 	if (done > 0) parts.push(`${done} done`);
 	if (columns.in_progress.tasks.length > 0) parts.push(`${columns.in_progress.tasks.length} in progress`);
+	if (columns.in_review.tasks.length > 0) parts.push(`${columns.in_review.tasks.length} in review`);
 	return parts;
 }
 
@@ -992,6 +1010,7 @@ function hudColumnRows(column: TaskBoardColumn, maxTasks: number): number {
 		case "blocked":
 			return Math.max(1, Math.min(2, column.tasks.length));
 		case "in_progress":
+		case "in_review":
 			return Math.max(1, Math.min(maxTasks, column.tasks.length));
 		case "done":
 			return Math.max(1, Math.min(5, column.tasks.length));
@@ -1106,7 +1125,7 @@ export function renderTaskBoardLines(
 		});
 		const lanes = [
 			leftLane,
-			...(["in_progress", "done"] as const).map((id) => {
+			...(["in_progress", "in_review", "done"] as const).map((id) => {
 				const column = boardColumn(groupColumns, id);
 				if (column.tasks.length === 0) return [];
 				return [
@@ -1648,6 +1667,7 @@ function renderColumnarHudGroup(
 		ready: boardColumn(groupColumns, "ready"),
 		blocked: boardColumn(groupColumns, "blocked"),
 		in_progress: boardColumn(groupColumns, "in_progress"),
+		in_review: boardColumn(groupColumns, "in_review"),
 		done: withDoneRecencyOrder(groupDoneColumn),
 	};
 	const widths = splitWidths(width, 3);
@@ -1689,17 +1709,30 @@ function renderColumnarHudGroup(
 					)
 				: []),
 		],
-		renderHudSection(
-			groupHudColumns.in_progress,
-			theme,
-			widths[1] ?? width,
-			hudColumnRows(groupHudColumns.in_progress, maxTasks),
-			byId,
-			display,
-			flashTaskIds,
-			flashTasks,
-			now,
-		),
+		[
+			...renderHudSection(
+				groupHudColumns.in_progress,
+				theme,
+				widths[1] ?? width,
+				hudColumnRows(groupHudColumns.in_progress, maxTasks),
+				byId,
+				display,
+				flashTaskIds,
+				flashTasks,
+				now,
+			),
+			...renderHudSection(
+				groupHudColumns.in_review,
+				theme,
+				widths[1] ?? width,
+				hudColumnRows(groupHudColumns.in_review, maxTasks),
+				byId,
+				display,
+				flashTaskIds,
+				flashTasks,
+				now,
+			),
+		],
 		renderHudSection(
 			groupHudColumns.done,
 			theme,
@@ -1757,6 +1790,7 @@ export function renderHudLines(
 		ready: boardColumn(columns, "ready"),
 		blocked: boardColumn(columns, "blocked"),
 		in_progress: boardColumn(columns, "in_progress"),
+		in_review: boardColumn(columns, "in_review"),
 		done: withDoneRecencyOrder({
 			...doneColumn,
 			tasks: doneColumn.tasks.filter((task) => isAssignedToCurrentSession(task, display)),
