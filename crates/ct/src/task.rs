@@ -24,24 +24,24 @@ const VALID_STATUSES: [&str; 7] = [
 const VALID_TASK_TYPES: [&str; 4] = ["epic", "feature", "bug", "chore"];
 const TASK_SELECT_COLUMNS: &str = "id, title, body, status, priority, assigned_to, assigned_label, epic_id, epic_title, parent_id, blocked_by, task_type, labels, created_at, updated_at";
 
-#[derive(Debug, Serialize)]
-struct Task {
-    id: String,
-    title: String,
-    body: String,
-    status: String,
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct Task {
+    pub(crate) id: String,
+    pub(crate) title: String,
+    pub(crate) body: String,
+    pub(crate) status: String,
     #[serde(rename = "type")]
-    task_type: String,
-    labels: Vec<String>,
-    priority: i64,
-    assigned_to: Option<String>,
-    assigned_label: Option<String>,
-    epic_id: Option<String>,
-    epic_title: Option<String>,
-    parent_id: Option<String>,
-    blocked_by: Vec<String>,
-    created_at: i64,
-    updated_at: i64,
+    pub(crate) task_type: String,
+    pub(crate) labels: Vec<String>,
+    pub(crate) priority: i64,
+    pub(crate) assigned_to: Option<String>,
+    pub(crate) assigned_label: Option<String>,
+    pub(crate) epic_id: Option<String>,
+    pub(crate) epic_title: Option<String>,
+    pub(crate) parent_id: Option<String>,
+    pub(crate) blocked_by: Vec<String>,
+    pub(crate) created_at: i64,
+    pub(crate) updated_at: i64,
 }
 
 #[derive(Serialize)]
