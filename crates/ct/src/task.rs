@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, anyhow, bail};
 use getrandom::fill as fill_random;
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::cli::TaskAction;
 
@@ -24,7 +24,7 @@ const VALID_STATUSES: [&str; 7] = [
 const VALID_TASK_TYPES: [&str; 4] = ["epic", "feature", "bug", "chore"];
 const TASK_SELECT_COLUMNS: &str = "id, title, body, status, priority, assigned_to, assigned_label, epic_id, epic_title, parent_id, blocked_by, task_type, labels, created_at, updated_at";
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct Task {
     pub(crate) id: String,
     pub(crate) title: String,
@@ -183,9 +183,14 @@ pub fn run_task(action: TaskAction) -> Result<(), Box<dyn std::error::Error>> {
             height,
             selected_task_id,
             input,
+            embed,
             json,
         } => {
             let tasks = store.display_tasks(store.list(None, None, None, None, None, true)?)?;
+            if embed {
+                crate::task_tui::run_task_tui_embed(&tasks)?;
+                return Ok(());
+            }
             crate::task_tui::print_task_tui(
                 &tasks,
                 width,

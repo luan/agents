@@ -260,6 +260,8 @@ pub enum TaskAction {
         selected_task_id: Option<String>,
         #[arg(long, help = "Overlay key input to apply before rendering")]
         input: Option<String>,
+        #[arg(long, help = "Run newline-delimited JSON embedding protocol")]
+        embed: bool,
         #[arg(long, help = "Output JSON")]
         json: bool,
     },
