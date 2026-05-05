@@ -209,7 +209,12 @@ test("shutdown terminates descendant processes that escaped the shell process gr
 			process.cwd(),
 		);
 		expect(result.session_id).toBeDefined();
-		expect(result.output).toContain("child=");
+		let output = result.output;
+		for (let attempt = 0; !output.includes("child=") && attempt < 12; attempt += 1) {
+			const poll = await sessions.write({ session_id: result.session_id!, yield_time_ms: 250 });
+			output += poll.output;
+		}
+		expect(output).toContain("child=");
 		expect(processList()).toContain(`${marker}-child`);
 
 		sessions.shutdown();

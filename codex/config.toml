@@ -63,14 +63,14 @@ status_line = ["run-state", "model-with-reasoning", "current-dir", "git-branch",
 queue = "alt-enter"
 
 [marketplaces.claude-plugins-official]
-last_updated = "2026-05-01T22:52:18Z"
-last_revision = "b392f51899343f35a203260a4b344803de236d13"
+last_updated = "2026-05-04T20:25:03Z"
+last_revision = "ac45fdae4b7af187b5624599ab054090dedadd94"
 source_type = "git"
 source = "https://github.com/anthropics/claude-plugins-official.git"
 
 [marketplaces.worktrunk]
-last_updated = "2026-05-01T22:52:23Z"
-last_revision = "4fcb0cfa5bdd97ad05226cf9a77be5002d4d675d"
+last_updated = "2026-05-04T20:25:07Z"
+last_revision = "c82236e0345b4a2e232a52ba9a04971bad66accd"
 source_type = "git"
 source = "https://github.com/max-sixty/worktrunk.git"
 
