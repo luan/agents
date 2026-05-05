@@ -12,8 +12,17 @@ use crate::cli::TaskAction;
 
 const CROCKFORD: &[u8; 32] = b"0123456789abcdefghjkmnpqrstvwxyz";
 const ID_LENGTH: usize = 6;
-const VALID_STATUSES: [&str; 5] = ["open", "in_progress", "todo", "done", "canceled"];
-const TASK_SELECT_COLUMNS: &str = "id, title, body, status, priority, assigned_to, assigned_label, epic_id, epic_title, parent_id, blocked_by, created_at, updated_at";
+const VALID_STATUSES: [&str; 7] = [
+    "open",
+    "in_progress",
+    "todo",
+    "in_review",
+    "rejected",
+    "done",
+    "canceled",
+];
+const VALID_TASK_TYPES: [&str; 4] = ["epic", "feature", "bug", "chore"];
+const TASK_SELECT_COLUMNS: &str = "id, title, body, status, priority, assigned_to, assigned_label, epic_id, epic_title, parent_id, blocked_by, task_type, labels, created_at, updated_at";
 
 #[derive(Debug, Serialize)]
 struct Task {
@@ -21,6 +30,9 @@ struct Task {
     title: String,
     body: String,
     status: String,
+    #[serde(rename = "type")]
+    task_type: String,
+    labels: Vec<String>,
     priority: i64,
     assigned_to: Option<String>,
     assigned_label: Option<String>,
@@ -52,6 +64,7 @@ pub fn run_task(action: TaskAction) -> Result<(), Box<dyn std::error::Error>> {
     match action {
         TaskAction::Add {
             title,
+            task_type,
             body,
             status,
             priority,
@@ -59,12 +72,14 @@ pub fn run_task(action: TaskAction) -> Result<(), Box<dyn std::error::Error>> {
             assigned_label,
             epic_id,
             epic_title,
+            labels,
             parent_id,
             blocked_by,
             json,
         } => {
             let task = store.display_task(store.add(TaskNew {
                 title: &title,
+                task_type: task_type.as_deref(),
                 body: body.as_deref().unwrap_or(""),
                 status: &status,
                 priority,
@@ -72,6 +87,7 @@ pub fn run_task(action: TaskAction) -> Result<(), Box<dyn std::error::Error>> {
                 assigned_label: assigned_label.as_deref(),
                 epic_id: epic_id.as_deref(),
                 epic_title: epic_title.as_deref(),
+                labels: &labels,
                 parent_id: parent_id.as_deref(),
                 blocked_by: &blocked_by,
             })?)?;
@@ -79,12 +95,18 @@ pub fn run_task(action: TaskAction) -> Result<(), Box<dyn std::error::Error>> {
         }
         TaskAction::List {
             status,
+            task_type,
+            label,
+            epic_id,
             assigned_to,
             all,
             json,
         } => {
             let tasks = store.display_tasks(store.list(
                 status.as_deref(),
+                task_type.as_deref(),
+                label.as_deref(),
+                epic_id.as_deref(),
                 assigned_to.as_deref(),
                 all,
             )?)?;
@@ -96,6 +118,7 @@ pub fn run_task(action: TaskAction) -> Result<(), Box<dyn std::error::Error>> {
         }
         TaskAction::Update {
             id,
+            task_type,
             title,
             body,
             status,
@@ -105,6 +128,7 @@ pub fn run_task(action: TaskAction) -> Result<(), Box<dyn std::error::Error>> {
             clear_assignee,
             epic_id,
             epic_title,
+            labels,
             clear_epic,
             parent_id,
             clear_parent,
@@ -116,6 +140,7 @@ pub fn run_task(action: TaskAction) -> Result<(), Box<dyn std::error::Error>> {
                 &id,
                 TaskUpdate {
                     title: title.as_deref(),
+                    task_type: task_type.as_deref(),
                     body: body.as_deref(),
                     status: status.as_deref(),
                     priority,
@@ -124,6 +149,7 @@ pub fn run_task(action: TaskAction) -> Result<(), Box<dyn std::error::Error>> {
                     clear_assignee,
                     epic_id: epic_id.as_deref(),
                     epic_title: epic_title.as_deref(),
+                    labels: &labels,
                     clear_epic,
                     parent_id: parent_id.as_deref(),
                     clear_parent,
@@ -144,6 +170,14 @@ pub fn run_task(action: TaskAction) -> Result<(), Box<dyn std::error::Error>> {
                 println!("Deleted {deleted}");
             }
         }
+        TaskAction::Accept { id, json } => {
+            let task = store.display_task(store.accept(&id)?)?;
+            print_task(&task, json)?;
+        }
+        TaskAction::Reject { id, note, json } => {
+            let task = store.display_task(store.reject(&id, &note.join(" "))?)?;
+            print_task(&task, json)?;
+        }
     }
     Ok(())
 }
@@ -154,6 +188,7 @@ struct TaskStore {
 
 struct TaskNew<'a> {
     title: &'a str,
+    task_type: Option<&'a str>,
     body: &'a str,
     status: &'a str,
     priority: i64,
@@ -161,12 +196,14 @@ struct TaskNew<'a> {
     assigned_label: Option<&'a str>,
     epic_id: Option<&'a str>,
     epic_title: Option<&'a str>,
+    labels: &'a [String],
     parent_id: Option<&'a str>,
     blocked_by: &'a [String],
 }
 
 struct TaskUpdate<'a> {
     title: Option<&'a str>,
+    task_type: Option<&'a str>,
     body: Option<&'a str>,
     status: Option<&'a str>,
     priority: Option<i64>,
@@ -175,6 +212,7 @@ struct TaskUpdate<'a> {
     clear_assignee: bool,
     epic_id: Option<&'a str>,
     epic_title: Option<&'a str>,
+    labels: &'a [String],
     clear_epic: bool,
     parent_id: Option<&'a str>,
     clear_parent: bool,
@@ -203,6 +241,8 @@ impl TaskStore {
                 epic_title TEXT,
                 parent_id TEXT,
                 blocked_by TEXT NOT NULL DEFAULT '[]',
+                task_type TEXT NOT NULL DEFAULT 'chore',
+                labels TEXT NOT NULL DEFAULT '[]',
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
              );
@@ -218,7 +258,9 @@ impl TaskStore {
 
     fn add_inner(&self, new_task: TaskNew<'_>) -> Result<Task> {
         validate_title(new_task.title)?;
-        validate_status(new_task.status)?;
+        let task_type = normalize_required_task_type(new_task.task_type)?;
+        validate_status_for_type(new_task.status, &task_type)?;
+        let labels = normalize_labels(new_task.labels)?;
         let assigned_to = normalize_assignment(new_task.assigned_to)?;
         let assigned_label = normalize_assignment(new_task.assigned_label)?;
         let epic_id = normalize_epic(new_task.epic_id)?;
@@ -226,11 +268,19 @@ impl TaskStore {
         let parent_id = self.resolve_optional_parent(new_task.parent_id, None)?;
         let now = now_ms();
         let id = self.new_id()?;
+        self.validate_epic_contract(
+            &id,
+            &task_type,
+            epic_id.as_deref(),
+            parent_id.as_deref(),
+            true,
+        )?;
         let blockers = self.resolve_blockers(new_task.blocked_by, Some(&id))?;
         self.ensure_no_dependency_cycle(&id, &blockers, parent_id.as_deref())?;
         let blockers_json = serde_json::to_string(&blockers)?;
+        let labels_json = serde_json::to_string(&labels)?;
         self.conn.execute(
-            "INSERT INTO tasks (id, title, body, status, priority, assigned_to, assigned_label, epic_id, epic_title, parent_id, blocked_by, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
+            "INSERT INTO tasks (id, title, body, status, priority, assigned_to, assigned_label, epic_id, epic_title, parent_id, blocked_by, task_type, labels, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)",
             params![
                 id,
                 new_task.title.trim(),
@@ -243,6 +293,8 @@ impl TaskStore {
                 epic_title,
                 parent_id,
                 blockers_json,
+                task_type,
+                labels_json,
                 now
             ],
         )?;
@@ -252,14 +304,20 @@ impl TaskStore {
     fn list(
         &self,
         status: Option<&str>,
+        task_type: Option<&str>,
+        label: Option<&str>,
+        epic_id: Option<&str>,
         assigned_to: Option<&str>,
         all: bool,
     ) -> Result<Vec<Task>> {
         if let Some(status) = status {
             validate_status(status)?;
         }
+        let task_type = normalize_optional_task_type(task_type)?;
+        let label = normalize_label_filter(label)?;
+        let epic_id = normalize_epic(epic_id)?;
         let assigned_to = normalize_assignment(assigned_to)?;
-        match (status, assigned_to.as_deref(), all) {
+        let tasks = match (status, assigned_to.as_deref(), all) {
             (Some(status), Some(assigned_to), _) => self.query_tasks(
                 &format!(
                     "SELECT {TASK_SELECT_COLUMNS} FROM tasks WHERE status = ?1 AND assigned_to = ?2 ORDER BY updated_at DESC"
@@ -294,7 +352,25 @@ impl TaskStore {
                     .filter(is_active_task)
                     .collect())
             }
-        }
+        }?;
+        Ok(tasks
+            .into_iter()
+            .filter(|task| {
+                task_type
+                    .as_deref()
+                    .is_none_or(|value| task.task_type == value)
+            })
+            .filter(|task| {
+                label
+                    .as_deref()
+                    .is_none_or(|value| task.labels.iter().any(|candidate| candidate == value))
+            })
+            .filter(|task| {
+                epic_id
+                    .as_deref()
+                    .is_none_or(|value| task.epic_id.as_deref() == Some(value))
+            })
+            .collect())
     }
 
     fn show(&self, id_prefix: &str) -> Result<Task> {
@@ -308,6 +384,7 @@ impl TaskStore {
 
     fn update_inner(&self, id_prefix: &str, update: TaskUpdate<'_>) -> Result<Task> {
         if update.title.is_none()
+            && update.task_type.is_none()
             && update.body.is_none()
             && update.status.is_none()
             && update.priority.is_none()
@@ -316,6 +393,7 @@ impl TaskStore {
             && !update.clear_assignee
             && update.epic_id.is_none()
             && update.epic_title.is_none()
+            && update.labels.is_empty()
             && !update.clear_epic
             && update.parent_id.is_none()
             && !update.clear_parent
@@ -330,12 +408,21 @@ impl TaskStore {
         if let Some(status) = update.status {
             validate_status(status)?;
         }
+        let task_type = normalize_optional_task_type(update.task_type)?;
+        let labels = if update.labels.is_empty() {
+            None
+        } else {
+            Some(normalize_labels(update.labels)?)
+        };
         let assigned_to = normalize_assignment(update.assigned_to)?;
         let assigned_label = normalize_assignment(update.assigned_label)?;
         let epic_id = normalize_epic(update.epic_id)?;
         let epic_title = normalize_epic(update.epic_title)?;
         let id = self.resolve_id(id_prefix)?;
         let existing = self.get_exact(&id)?;
+        let final_task_type = task_type.unwrap_or(existing.task_type);
+        let final_status = update.status.unwrap_or(&existing.status);
+        validate_status_for_type(final_status, &final_task_type)?;
         let parent_id = self.resolve_optional_parent(update.parent_id, Some(&id))?;
         let blockers = if update.clear_blockers {
             Vec::new()
@@ -349,26 +436,74 @@ impl TaskStore {
         } else {
             parent_id.or(existing.parent_id.clone())
         };
+        let final_epic_id = if update.clear_epic {
+            None
+        } else {
+            epic_id.or(existing.epic_id.clone())
+        };
+        self.validate_epic_contract(
+            &id,
+            &final_task_type,
+            final_epic_id.as_deref(),
+            final_parent_id.as_deref(),
+            update.epic_id.is_some() || update.task_type.is_some() || update.clear_epic,
+        )?;
         self.ensure_no_dependency_cycle(&id, &blockers, final_parent_id.as_deref())?;
         let blockers_json = serde_json::to_string(&blockers)?;
+        let final_labels = labels.unwrap_or_else(|| existing.labels.clone());
+        let labels_json = serde_json::to_string(&final_labels)?;
         self.conn.execute(
-            "UPDATE tasks SET title = ?1, body = ?2, status = ?3, priority = ?4, assigned_to = ?5, assigned_label = ?6, epic_id = ?7, epic_title = ?8, parent_id = ?9, blocked_by = ?10, updated_at = ?11 WHERE id = ?12",
+            "UPDATE tasks SET title = ?1, body = ?2, status = ?3, priority = ?4, assigned_to = ?5, assigned_label = ?6, epic_id = ?7, epic_title = ?8, parent_id = ?9, blocked_by = ?10, task_type = ?11, labels = ?12, updated_at = ?13 WHERE id = ?14",
             params![
                 update.title.unwrap_or(&existing.title).trim(),
                 update.body.unwrap_or(&existing.body),
-                update.status.unwrap_or(&existing.status),
+                final_status,
                 update.priority.unwrap_or(existing.priority),
                 if update.clear_assignee { None } else { assigned_to.or(existing.assigned_to) },
                 if update.clear_assignee { None } else { assigned_label.or(existing.assigned_label) },
-                if update.clear_epic { None } else { epic_id.or(existing.epic_id) },
+                final_epic_id,
                 if update.clear_epic { None } else { epic_title.or(existing.epic_title) },
                 final_parent_id,
                 blockers_json,
+                final_task_type,
+                labels_json,
                 now_ms(),
                 id
             ],
         )?;
         self.get_exact(&id)
+    }
+
+    fn accept(&self, id_prefix: &str) -> Result<Task> {
+        self.with_immediate_tx(|| {
+            let id = self.resolve_id(id_prefix)?;
+            let task = self.get_exact(&id)?;
+            ensure_review_task_in_review(&task)?;
+            self.conn.execute(
+                "UPDATE tasks SET status = 'done', updated_at = ?1 WHERE id = ?2",
+                params![now_ms(), id],
+            )?;
+            self.get_exact(&id)
+        })
+    }
+
+    fn reject(&self, id_prefix: &str, note: &str) -> Result<Task> {
+        let note = note.trim();
+        if note.is_empty() {
+            bail!("rejection note must not be empty");
+        }
+        self.with_immediate_tx(|| {
+            let id = self.resolve_id(id_prefix)?;
+            let task = self.get_exact(&id)?;
+            ensure_review_task_in_review(&task)?;
+            let now = now_ms();
+            let body = append_rejection_note(&task.body, note, now);
+            self.conn.execute(
+                "UPDATE tasks SET status = 'rejected', body = ?1, updated_at = ?2 WHERE id = ?3",
+                params![body, now, id],
+            )?;
+            self.get_exact(&id)
+        })
     }
 
     fn delete(&self, id_prefix: &str) -> Result<String> {
@@ -551,6 +686,59 @@ impl TaskStore {
         Ok(tasks.into_iter().map(|task| task.id).collect())
     }
 
+    fn validate_epic_contract(
+        &self,
+        task_id: &str,
+        task_type: &str,
+        epic_id: Option<&str>,
+        parent_id: Option<&str>,
+        enforce_child_reference: bool,
+    ) -> Result<()> {
+        match task_type {
+            "epic" => {
+                if parent_id.is_some() {
+                    bail!("epic tasks cannot have a parent");
+                }
+                let Some(label) = epic_id else {
+                    bail!("epic tasks require --epic-id");
+                };
+                validate_epic_label(label)?;
+                let duplicate: Option<String> = self
+                    .conn
+                    .query_row(
+                        "SELECT id FROM tasks WHERE task_type = 'epic' AND epic_id = ?1 AND id != ?2 LIMIT 1",
+                        params![label, task_id],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                if duplicate.is_some() {
+                    bail!("epic task with label {label:?} already exists");
+                }
+            }
+            _ => {
+                if let Some(label) = epic_id {
+                    validate_epic_label(label)?;
+                    if enforce_child_reference && !self.epic_label_exists(label, task_id)? {
+                        bail!("no epic task has label {label:?}");
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn epic_label_exists(&self, label: &str, self_id: &str) -> Result<bool> {
+        let found: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT id FROM tasks WHERE task_type = 'epic' AND epic_id = ?1 AND id != ?2 LIMIT 1",
+                params![label, self_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(found.is_some())
+    }
+
     fn resolve_optional_parent(
         &self,
         parent: Option<&str>,
@@ -654,11 +842,18 @@ fn row_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
     let blocked_by = serde_json::from_str(&blocked_by_json).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(10, rusqlite::types::Type::Text, Box::new(error))
     })?;
+    let task_type: String = row.get(11)?;
+    let labels_json: String = row.get(12)?;
+    let labels = serde_json::from_str(&labels_json).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(12, rusqlite::types::Type::Text, Box::new(error))
+    })?;
     Ok(Task {
         id: row.get(0)?,
         title: row.get(1)?,
         body: row.get(2)?,
         status: row.get(3)?,
+        task_type,
+        labels,
         priority: row.get(4)?,
         assigned_to: row.get(5)?,
         assigned_label: row.get(6)?,
@@ -666,8 +861,8 @@ fn row_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
         epic_title: row.get(8)?,
         parent_id: row.get(9)?,
         blocked_by,
-        created_at: row.get(11)?,
-        updated_at: row.get(12)?,
+        created_at: row.get(13)?,
+        updated_at: row.get(14)?,
     })
 }
 
@@ -727,7 +922,10 @@ fn has_open_blockers(task: &Task, statuses: &std::collections::HashMap<String, S
 }
 
 fn is_active_status(status: &str) -> bool {
-    matches!(status, "open" | "in_progress" | "todo")
+    matches!(
+        status,
+        "open" | "in_progress" | "todo" | "in_review" | "rejected"
+    )
 }
 
 fn ensure_task_columns(conn: &Connection) -> Result<()> {
@@ -755,6 +953,14 @@ fn ensure_task_columns(conn: &Connection) -> Result<()> {
         ("epic_id", "ALTER TABLE tasks ADD COLUMN epic_id TEXT"),
         ("epic_title", "ALTER TABLE tasks ADD COLUMN epic_title TEXT"),
         ("parent_id", "ALTER TABLE tasks ADD COLUMN parent_id TEXT"),
+        (
+            "task_type",
+            "ALTER TABLE tasks ADD COLUMN task_type TEXT NOT NULL DEFAULT 'chore'",
+        ),
+        (
+            "labels",
+            "ALTER TABLE tasks ADD COLUMN labels TEXT NOT NULL DEFAULT '[]'",
+        ),
     ] {
         if !existing.contains(column) {
             conn.execute(sql, [])?;
@@ -782,6 +988,108 @@ fn validate_status(status: &str) -> Result<()> {
         "invalid task status {status:?}; expected one of {}",
         VALID_STATUSES.join(", ")
     )
+}
+
+fn validate_status_for_type(status: &str, task_type: &str) -> Result<()> {
+    validate_status(status)?;
+    if matches!(status, "in_review" | "rejected") && !matches!(task_type, "feature" | "bug") {
+        bail!("status {status} is only valid for feature or bug tasks");
+    }
+    Ok(())
+}
+
+fn ensure_review_task_in_review(task: &Task) -> Result<()> {
+    if !matches!(task.task_type.as_str(), "feature" | "bug") {
+        bail!("task must be a feature or bug");
+    }
+    if task.status != "in_review" {
+        bail!("task must be in_review");
+    }
+    Ok(())
+}
+
+fn append_rejection_note(body: &str, note: &str, timestamp_ms: i64) -> String {
+    let trimmed_body = body.trim_end();
+    let entry = format!("- {timestamp_ms}: {}", note.trim());
+    if trimmed_body.contains("\n## Rejection notes\n") || trimmed_body == "## Rejection notes" {
+        format!("{trimmed_body}\n{entry}")
+    } else if trimmed_body.is_empty() {
+        format!("## Rejection notes\n\n{entry}")
+    } else {
+        format!("{trimmed_body}\n\n## Rejection notes\n\n{entry}")
+    }
+}
+
+fn validate_task_type(task_type: &str) -> Result<()> {
+    if VALID_TASK_TYPES.contains(&task_type) {
+        return Ok(());
+    }
+    bail!(
+        "invalid task type {task_type:?}; expected one of {}",
+        VALID_TASK_TYPES.join(", ")
+    )
+}
+
+fn normalize_required_task_type(value: Option<&str>) -> Result<String> {
+    let Some(value) = value else {
+        bail!("task type is required; pass --type epic, feature, bug, or chore");
+    };
+    let normalized = value.trim();
+    validate_task_type(normalized)?;
+    Ok(normalized.to_string())
+}
+
+fn normalize_optional_task_type(value: Option<&str>) -> Result<Option<String>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let normalized = value.trim();
+    validate_task_type(normalized)?;
+    Ok(Some(normalized.to_string()))
+}
+
+fn validate_label(value: &str) -> Result<()> {
+    let valid = !value.is_empty()
+        && !value.starts_with('-')
+        && !value.ends_with('-')
+        && value
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && !value.contains("--");
+    if valid {
+        return Ok(());
+    }
+    bail!("invalid task label {value:?}; expected a kebab-case token")
+}
+
+fn normalize_labels(labels: &[String]) -> Result<Vec<String>> {
+    let mut normalized = Vec::new();
+    for label in labels {
+        let label = label.trim();
+        validate_label(label)?;
+        if !normalized.iter().any(|existing| existing == label) {
+            normalized.push(label.to_string());
+        }
+    }
+    Ok(normalized)
+}
+
+fn validate_epic_label(value: &str) -> Result<()> {
+    validate_label(value).with_context(|| "invalid epic label")?;
+    let length = value.chars().count();
+    if !(2..=32).contains(&length) {
+        bail!("invalid epic label {value:?}; expected 2 to 32 characters");
+    }
+    Ok(())
+}
+
+fn normalize_label_filter(label: Option<&str>) -> Result<Option<String>> {
+    let Some(label) = label else {
+        return Ok(None);
+    };
+    let label = label.trim();
+    validate_label(label)?;
+    Ok(Some(label.to_string()))
 }
 
 fn normalize_assignment(value: Option<&str>) -> Result<Option<String>> {
@@ -967,12 +1275,14 @@ mod tests {
 
         let task = conn
             .query_row(
-                "SELECT id, title, body, status, priority, assigned_to, assigned_label, epic_id, epic_title, parent_id, blocked_by, created_at, updated_at FROM tasks WHERE id = 'abc123'",
+                &format!("SELECT {TASK_SELECT_COLUMNS} FROM tasks WHERE id = 'abc123'"),
                 [],
                 row_task,
             )
             .unwrap();
         assert_eq!(task.title, "Old task");
+        assert_eq!(task.task_type, "chore");
+        assert!(task.labels.is_empty());
         assert!(task.epic_id.is_none());
         assert!(task.epic_title.is_none());
         assert!(task.parent_id.is_none());

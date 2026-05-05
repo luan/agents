@@ -41,6 +41,8 @@ fn task_lifecycle_persists_and_supports_json() {
             "task",
             "add",
             "Write task docs",
+            "--type",
+            "chore",
             "--body",
             "Explain the persisted task workflow",
             "--json",
@@ -56,6 +58,11 @@ fn task_lifecycle_persists_and_supports_json() {
     );
     assert_eq!(id.len(), 1, "single task displays minimum unique prefix");
     assert_eq!(add_json["task"]["status"], "open");
+    assert_eq!(add_json["task"]["type"], "chore");
+    assert_eq!(
+        add_json["task"]["labels"].as_array().expect("labels").len(),
+        0
+    );
 
     ct_cmd(project.path(), state.path())
         .args(["task", "list"])
@@ -110,6 +117,486 @@ fn task_lifecycle_persists_and_supports_json() {
 }
 
 #[test]
+fn task_type_and_labels_persist_update_and_filter() {
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+
+    ct_cmd(project.path(), state.path())
+        .args(["task", "add", "Missing type"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("task type is required"));
+
+    ct_cmd(project.path(), state.path())
+        .args(["task", "add", "Bad type", "--type", "story"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid task type"));
+
+    ct_cmd(project.path(), state.path())
+        .args([
+            "task",
+            "add",
+            "Bad label",
+            "--type",
+            "feature",
+            "--label",
+            "Not Kebab",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid task label"));
+
+    ct_cmd(project.path(), state.path())
+        .args([
+            "task",
+            "add",
+            "Task board epic",
+            "--type",
+            "epic",
+            "--epic-id",
+            "task-board",
+        ])
+        .assert()
+        .success();
+    ct_cmd(project.path(), state.path())
+        .args([
+            "task",
+            "add",
+            "Other epic",
+            "--type",
+            "epic",
+            "--epic-id",
+            "other-epic",
+        ])
+        .assert()
+        .success();
+
+    let add = ct_cmd(project.path(), state.path())
+        .args([
+            "task",
+            "add",
+            "Implement labels",
+            "--type",
+            "feature",
+            "--label",
+            "setup",
+            "--label",
+            "agent-ui",
+            "--label",
+            "setup",
+            "--epic-id",
+            "task-board",
+            "--json",
+        ])
+        .assert()
+        .success();
+    let add_json: serde_json::Value =
+        serde_json::from_slice(&add.get_output().stdout).expect("add json");
+    let id = add_json["task"]["id"].as_str().expect("id");
+    assert_eq!(add_json["task"]["type"], "feature");
+    assert_eq!(
+        add_json["task"]["labels"],
+        serde_json::json!(["setup", "agent-ui"])
+    );
+
+    let update = ct_cmd(project.path(), state.path())
+        .args([
+            "task",
+            "update",
+            id,
+            "--type",
+            "bug",
+            "--label",
+            "regression",
+            "--json",
+        ])
+        .assert()
+        .success();
+    let update_json: serde_json::Value =
+        serde_json::from_slice(&update.get_output().stdout).expect("update json");
+    assert_eq!(update_json["task"]["type"], "bug");
+    assert_eq!(
+        update_json["task"]["labels"],
+        serde_json::json!(["regression"])
+    );
+
+    ct_cmd(project.path(), state.path())
+        .args([
+            "task",
+            "add",
+            "Other feature",
+            "--type",
+            "feature",
+            "--label",
+            "regression",
+            "--epic-id",
+            "other-epic",
+            "--json",
+        ])
+        .assert()
+        .success();
+
+    let filtered = ct_cmd(project.path(), state.path())
+        .args([
+            "task",
+            "list",
+            "--all",
+            "--type",
+            "bug",
+            "--label",
+            "regression",
+            "--epic-id",
+            "task-board",
+            "--json",
+        ])
+        .assert()
+        .success();
+    let filtered_json: serde_json::Value =
+        serde_json::from_slice(&filtered.get_output().stdout).expect("filtered json");
+    let tasks = filtered_json["tasks"].as_array().expect("tasks");
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0]["title"], "Implement labels");
+}
+
+#[test]
+fn task_legacy_rows_without_type_or_labels_display_as_chores() {
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+
+    ct_cmd(project.path(), state.path())
+        .args(["task", "add", "Seed", "--type", "chore"])
+        .assert()
+        .success();
+    let db_path = fs::read_dir(state.path().join("ct/projects"))
+        .expect("projects dir")
+        .filter_map(Result::ok)
+        .find_map(|entry| {
+            let path = entry.path().join("tasks").join("tasks.sqlite");
+            path.exists().then_some(path)
+        })
+        .expect("tasks sqlite");
+    let conn = rusqlite::Connection::open(db_path).expect("open db");
+    conn.execute("ALTER TABLE tasks RENAME TO tasks_new", [])
+        .expect("rename table");
+    conn.execute(
+        "CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            body TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL,
+            priority INTEGER NOT NULL DEFAULT 0,
+            assigned_to TEXT,
+            assigned_label TEXT,
+            epic_id TEXT,
+            epic_title TEXT,
+            parent_id TEXT,
+            blocked_by TEXT NOT NULL DEFAULT '[]',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )",
+        [],
+    )
+    .expect("create legacy table");
+    conn.execute(
+        "INSERT INTO tasks (id, title, body, status, created_at, updated_at) VALUES (?1, ?2, '', 'open', 1, 1)",
+        ("ABCDEF", "legacy task"),
+    )
+    .expect("insert legacy");
+    drop(conn);
+
+    let list = ct_cmd(project.path(), state.path())
+        .args(["task", "list", "--all", "--json"])
+        .assert()
+        .success();
+    let list_json: serde_json::Value =
+        serde_json::from_slice(&list.get_output().stdout).expect("list json");
+    let legacy = list_json["tasks"]
+        .as_array()
+        .expect("tasks")
+        .iter()
+        .find(|task| task["title"] == "legacy task")
+        .expect("legacy task");
+    assert_eq!(legacy["type"], "chore");
+    assert_eq!(legacy["labels"], serde_json::json!([]));
+}
+
+#[test]
+fn task_epic_labels_are_required_unique_and_validate_membership() {
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+
+    ct_cmd(project.path(), state.path())
+        .args(["task", "add", "Epic without label", "--type", "epic"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("epic tasks require --epic-id"));
+
+    ct_cmd(project.path(), state.path())
+        .args([
+            "task",
+            "add",
+            "Bad epic label",
+            "--type",
+            "epic",
+            "--epic-id",
+            "Not Kebab",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid epic label"));
+
+    let epic = ct_cmd(project.path(), state.path())
+        .args([
+            "task",
+            "add",
+            "Task Board",
+            "--type",
+            "epic",
+            "--epic-id",
+            "task-board",
+            "--json",
+        ])
+        .assert()
+        .success();
+    let epic_json: serde_json::Value =
+        serde_json::from_slice(&epic.get_output().stdout).expect("epic json");
+    let epic_id = epic_json["task"]["id"].as_str().expect("epic id");
+
+    ct_cmd(project.path(), state.path())
+        .args([
+            "task",
+            "add",
+            "Duplicate Epic",
+            "--type",
+            "epic",
+            "--epic-id",
+            "task-board",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already exists"));
+
+    ct_cmd(project.path(), state.path())
+        .args([
+            "task",
+            "add",
+            "Orphan child",
+            "--type",
+            "feature",
+            "--epic-id",
+            "missing-epic",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no epic task has label"));
+
+    ct_cmd(project.path(), state.path())
+        .args([
+            "task",
+            "add",
+            "Feature child",
+            "--type",
+            "feature",
+            "--epic-id",
+            "task-board",
+            "--json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"epic_id\": \"task-board\""));
+
+    let parent = ct_cmd(project.path(), state.path())
+        .args(["task", "add", "Parent", "--type", "chore", "--json"])
+        .assert()
+        .success();
+    let parent_json: serde_json::Value =
+        serde_json::from_slice(&parent.get_output().stdout).expect("parent json");
+    let parent_id = parent_json["task"]["id"].as_str().expect("parent id");
+    ct_cmd(project.path(), state.path())
+        .args(["task", "update", epic_id, "--parent-id", parent_id])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("epic tasks cannot have a parent"));
+}
+
+#[test]
+fn task_legacy_orphan_epic_references_remain_listable() {
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+
+    ct_cmd(project.path(), state.path())
+        .args(["task", "add", "Seed", "--type", "chore"])
+        .assert()
+        .success();
+    let db_path = fs::read_dir(state.path().join("ct/projects"))
+        .expect("projects dir")
+        .filter_map(Result::ok)
+        .find_map(|entry| {
+            let path = entry.path().join("tasks").join("tasks.sqlite");
+            path.exists().then_some(path)
+        })
+        .expect("tasks sqlite");
+    let conn = rusqlite::Connection::open(db_path).expect("open db");
+    conn.execute(
+        "INSERT INTO tasks (id, title, body, status, task_type, epic_id, labels, created_at, updated_at) VALUES (?1, ?2, '', 'open', 'feature', 'missing-epic', '[]', 1, 1)",
+        ("ABCDEF", "legacy orphan"),
+    )
+    .expect("insert orphan");
+    drop(conn);
+
+    let list = ct_cmd(project.path(), state.path())
+        .args(["task", "list", "--all", "--json"])
+        .assert()
+        .success();
+    let list_json: serde_json::Value =
+        serde_json::from_slice(&list.get_output().stdout).expect("list json");
+    let orphan = list_json["tasks"]
+        .as_array()
+        .expect("tasks")
+        .iter()
+        .find(|task| task["title"] == "legacy orphan")
+        .expect("legacy orphan");
+    assert_eq!(orphan["epic_id"], "missing-epic");
+}
+
+#[test]
+fn task_review_statuses_and_accept_reject_are_feature_bug_only() {
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+
+    ct_cmd(project.path(), state.path())
+        .args([
+            "task",
+            "add",
+            "Review epic",
+            "--type",
+            "epic",
+            "--epic-id",
+            "review",
+        ])
+        .assert()
+        .success();
+
+    ct_cmd(project.path(), state.path())
+        .args([
+            "task",
+            "add",
+            "Reviewable feature",
+            "--type",
+            "feature",
+            "--epic-id",
+            "review",
+            "--status",
+            "in_review",
+            "--json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"status\": \"in_review\""));
+
+    let bug = ct_cmd(project.path(), state.path())
+        .args([
+            "task",
+            "add",
+            "Reviewable bug",
+            "--type",
+            "bug",
+            "--epic-id",
+            "review",
+            "--status",
+            "in_review",
+            "--json",
+        ])
+        .assert()
+        .success();
+    let bug_json: serde_json::Value =
+        serde_json::from_slice(&bug.get_output().stdout).expect("bug json");
+    let bug_id = bug_json["task"]["id"].as_str().expect("bug id");
+
+    ct_cmd(project.path(), state.path())
+        .args([
+            "task",
+            "add",
+            "Chore cannot review",
+            "--type",
+            "chore",
+            "--status",
+            "in_review",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "status in_review is only valid for feature or bug tasks",
+        ));
+
+    let reject = ct_cmd(project.path(), state.path())
+        .args(["task", "reject", bug_id, "needs", "tests", "--json"])
+        .assert()
+        .success();
+    let reject_json: serde_json::Value =
+        serde_json::from_slice(&reject.get_output().stdout).expect("reject json");
+    assert_eq!(reject_json["task"]["status"], "rejected");
+    assert!(
+        reject_json["task"]["body"]
+            .as_str()
+            .expect("body")
+            .contains("## Rejection notes")
+    );
+    assert!(
+        reject_json["task"]["body"]
+            .as_str()
+            .expect("body")
+            .contains("needs tests")
+    );
+
+    ct_cmd(project.path(), state.path())
+        .args(["task", "accept", bug_id])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("must be in_review"));
+
+    ct_cmd(project.path(), state.path())
+        .args(["task", "update", bug_id, "--status", "in_review"])
+        .assert()
+        .success();
+    ct_cmd(project.path(), state.path())
+        .args(["task", "accept", bug_id, "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"status\": \"done\""));
+}
+
+#[test]
+fn task_rejected_status_is_active() {
+    let project = project_dir();
+    let state = tempfile::tempdir().expect("state dir");
+
+    ct_cmd(project.path(), state.path())
+        .args([
+            "task",
+            "add",
+            "Rejected bug",
+            "--type",
+            "bug",
+            "--status",
+            "rejected",
+            "--json",
+        ])
+        .assert()
+        .success();
+
+    let list = ct_cmd(project.path(), state.path())
+        .args(["task", "list", "--json"])
+        .assert()
+        .success();
+    let list_json: serde_json::Value =
+        serde_json::from_slice(&list.get_output().stdout).expect("list json");
+    assert_eq!(list_json["tasks"].as_array().expect("tasks").len(), 1);
+    assert_eq!(list_json["tasks"][0]["title"], "Rejected bug");
+}
+
+#[test]
 fn task_prefix_lookup_rejects_ambiguous_prefixes() {
     let project = project_dir();
     let state = tempfile::tempdir().expect("state dir");
@@ -117,7 +604,7 @@ fn task_prefix_lookup_rejects_ambiguous_prefixes() {
     fs::create_dir_all(&db_dir).expect("db dir");
 
     ct_cmd(project.path(), state.path())
-        .args(["task", "add", "seed"])
+        .args(["task", "add", "seed", "--type", "chore"])
         .assert()
         .success();
 
@@ -164,7 +651,14 @@ fn task_blocked_by_is_a_simple_id_array() {
     let state = tempfile::tempdir().expect("state dir");
 
     let blocker = ct_cmd(project.path(), state.path())
-        .args(["task", "add", "Implement API", "--json"])
+        .args([
+            "task",
+            "add",
+            "Implement API",
+            "--type",
+            "feature",
+            "--json",
+        ])
         .assert()
         .success();
     let blocker_json: serde_json::Value =
@@ -176,6 +670,8 @@ fn task_blocked_by_is_a_simple_id_array() {
             "task",
             "add",
             "Render DAG",
+            "--type",
+            "feature",
             "--blocked-by",
             blocker_id,
             "--json",
@@ -224,7 +720,7 @@ fn task_blockers_reject_cycles_and_referenced_deletes() {
     let state = tempfile::tempdir().expect("state dir");
 
     let first = ct_cmd(project.path(), state.path())
-        .args(["task", "add", "First", "--json"])
+        .args(["task", "add", "First", "--type", "chore", "--json"])
         .assert()
         .success();
     let first_json: serde_json::Value =
@@ -232,7 +728,16 @@ fn task_blockers_reject_cycles_and_referenced_deletes() {
     let first_id = first_json["task"]["id"].as_str().expect("first id");
 
     let second = ct_cmd(project.path(), state.path())
-        .args(["task", "add", "Second", "--blocked-by", first_id, "--json"])
+        .args([
+            "task",
+            "add",
+            "Second",
+            "--type",
+            "chore",
+            "--blocked-by",
+            first_id,
+            "--json",
+        ])
         .assert()
         .success();
     let second_json: serde_json::Value =
@@ -257,11 +762,38 @@ fn task_epic_metadata_persists_updates_and_clears() {
     let project = project_dir();
     let state = tempfile::tempdir().expect("state dir");
 
+    ct_cmd(project.path(), state.path())
+        .args([
+            "task",
+            "add",
+            "Task Board Epic",
+            "--type",
+            "epic",
+            "--epic-id",
+            "task-board",
+        ])
+        .assert()
+        .success();
+    ct_cmd(project.path(), state.path())
+        .args([
+            "task",
+            "add",
+            "Task Board V2 Epic",
+            "--type",
+            "epic",
+            "--epic-id",
+            "task-board-v2",
+        ])
+        .assert()
+        .success();
+
     let add = ct_cmd(project.path(), state.path())
         .args([
             "task",
             "add",
             "Build board",
+            "--type",
+            "chore",
             "--epic-id",
             "task-board",
             "--epic-title",
@@ -318,7 +850,7 @@ fn task_parent_metadata_persists_clears_and_blocks_parent_delete() {
     let state = tempfile::tempdir().expect("state dir");
 
     let parent = ct_cmd(project.path(), state.path())
-        .args(["task", "add", "Parent", "--json"])
+        .args(["task", "add", "Parent", "--type", "chore", "--json"])
         .assert()
         .success();
     let parent_json: serde_json::Value =
@@ -326,7 +858,16 @@ fn task_parent_metadata_persists_clears_and_blocks_parent_delete() {
     let parent_id = parent_json["task"]["id"].as_str().expect("parent id");
 
     let child = ct_cmd(project.path(), state.path())
-        .args(["task", "add", "Child", "--parent-id", parent_id, "--json"])
+        .args([
+            "task",
+            "add",
+            "Child",
+            "--type",
+            "chore",
+            "--parent-id",
+            parent_id,
+            "--json",
+        ])
         .assert()
         .success();
     let child_json: serde_json::Value =
@@ -372,13 +913,21 @@ fn task_blocked_status_is_rejected_and_existing_rows_migrate_to_open() {
     let state = tempfile::tempdir().expect("state dir");
 
     ct_cmd(project.path(), state.path())
-        .args(["task", "add", "Invalid blocked", "--status", "blocked"])
+        .args([
+            "task",
+            "add",
+            "Invalid blocked",
+            "--type",
+            "chore",
+            "--status",
+            "blocked",
+        ])
         .assert()
         .failure()
         .stderr(predicate::str::contains("invalid task status"));
 
     ct_cmd(project.path(), state.path())
-        .args(["task", "add", "Seed"])
+        .args(["task", "add", "Seed", "--type", "chore"])
         .assert()
         .success();
     let db_path = fs::read_dir(state.path().join("ct/projects"))
@@ -418,7 +967,16 @@ fn task_list_sorts_ready_tasks_before_blocked_then_by_priority() {
     let state = tempfile::tempdir().expect("state dir");
 
     let blocker = ct_cmd(project.path(), state.path())
-        .args(["task", "add", "Ready blocker", "--priority", "0", "--json"])
+        .args([
+            "task",
+            "add",
+            "Ready blocker",
+            "--type",
+            "chore",
+            "--priority",
+            "0",
+            "--json",
+        ])
         .assert()
         .success();
     let blocker_json: serde_json::Value =
@@ -430,6 +988,8 @@ fn task_list_sorts_ready_tasks_before_blocked_then_by_priority() {
             "task",
             "add",
             "Blocked high priority",
+            "--type",
+            "chore",
             "--priority",
             "100",
             "--blocked-by",
@@ -443,6 +1003,8 @@ fn task_list_sorts_ready_tasks_before_blocked_then_by_priority() {
             "task",
             "add",
             "Ready low priority",
+            "--type",
+            "chore",
             "--priority",
             "1",
             "--json",
@@ -454,6 +1016,8 @@ fn task_list_sorts_ready_tasks_before_blocked_then_by_priority() {
             "task",
             "add",
             "Ready high priority",
+            "--type",
+            "chore",
             "--priority",
             "5",
             "--json",
@@ -492,7 +1056,7 @@ fn task_list_uses_full_blocker_statuses_for_default_active_view() {
     let state = tempfile::tempdir().expect("state dir");
 
     let blocker = ct_cmd(project.path(), state.path())
-        .args(["task", "add", "Done blocker", "--json"])
+        .args(["task", "add", "Done blocker", "--type", "chore", "--json"])
         .assert()
         .success();
     let blocker_json: serde_json::Value =
@@ -508,6 +1072,8 @@ fn task_list_uses_full_blocker_statuses_for_default_active_view() {
             "task",
             "add",
             "Ready because blocker is done",
+            "--type",
+            "chore",
             "--blocked-by",
             blocker_id,
             "--json",
@@ -536,6 +1102,8 @@ fn task_assignment_filters_and_clears() {
             "task",
             "add",
             "Assigned work",
+            "--type",
+            "chore",
             "--assigned-to",
             "session:abc",
             "--json",
@@ -548,7 +1116,7 @@ fn task_assignment_filters_and_clears() {
     assert_eq!(assigned_json["task"]["assigned_to"], "session:abc");
 
     ct_cmd(project.path(), state.path())
-        .args(["task", "add", "Other work", "--json"])
+        .args(["task", "add", "Other work", "--type", "chore", "--json"])
         .assert()
         .success();
 
