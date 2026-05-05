@@ -549,7 +549,7 @@ describe("tasks extension", () => {
 		expect(calls).toContainEqual(["ct", "task", "list", "--all", "--json"]);
 	});
 
-	test("/tasks embedded ratatui overlay preserves ANSI and maps h/l to navigation", async () => {
+	test("/tasks overlay navigation is local and does not shell out per key", async () => {
 		const commands = new Map<string, any>();
 		const calls: string[][] = [];
 		let component: any;
@@ -564,18 +564,16 @@ describe("tasks extension", () => {
 			{
 				runCommand: async (command: string, args: string[]) => {
 					calls.push([command, ...args]);
-					if (args[1] === "tui") {
-						const input = args[args.indexOf("--input") + 1];
-						return {
-							stdout: JSON.stringify({
-								lines: [`\x1b[36;1mTasks\x1b[0m`, input ? `input:${input}` : "input:none"],
-								selected_task_id: input === "j" ? "NEXT" : "PG4W2K4Q03",
-							}),
-							stderr: "",
-							exitCode: 0,
-						};
-					}
-					return { stdout: JSON.stringify({ tasks: [task] }), stderr: "", exitCode: 0 };
+					return {
+						stdout: JSON.stringify({
+							tasks: [
+								{ ...task, id: "AAA", priority: 2 },
+								{ ...task, id: "BBB", priority: 1 },
+							],
+						}),
+						stderr: "",
+						exitCode: 0,
+					};
 				},
 			},
 		);
@@ -589,29 +587,17 @@ describe("tasks extension", () => {
 				},
 			},
 		});
+		const before = component.render(160).join("\n");
+		const callsBeforeNavigation = calls.length;
+		component.handleInput("j");
+		component.handleInput("k");
 		await component.waitForIdle();
-		expect(component.render(80).join("\n")).toContain("\x1b[36;1mTasks\x1b[0m");
+		const after = component.render(160).join("\n");
 
-		component.handleInput("l");
-		await component.waitForIdle();
-		component.handleInput("h");
-		await component.waitForIdle();
-
-		expect(calls).toContainEqual([
-			"ct",
-			"task",
-			"tui",
-			"--width",
-			"120",
-			"--height",
-			"40",
-			"--selected-task-id",
-			"PG4W2K4Q03",
-			"--input",
-			"j",
-			"--json",
-		]);
-		expect(calls.some((call) => call.includes("--input") && call.includes("k"))).toBe(true);
+		expect(before).toContain("AAA");
+		expect(after).toContain("AAA");
+		expect(calls.length).toBe(callsBeforeNavigation);
+		expect(calls.some((call) => call.includes("tui"))).toBe(false);
 	});
 
 	test("/tasks toggles an open task board closed", async () => {
