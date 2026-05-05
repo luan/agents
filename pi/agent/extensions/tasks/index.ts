@@ -961,6 +961,26 @@ function taskHudSummary(columns: Record<TaskBoardColumn["id"], TaskBoardColumn>)
 	return parts;
 }
 
+function shelfHeader(theme: Theme, column: TaskBoardColumn, width: number, hidden = 0): string {
+	const count = hidden > 0 ? `${column.tasks.length} – ${hidden} hidden` : `${column.tasks.length}`;
+	const title = theme.fg(columnColor(column), `${columnIcon(column)} ${column.label} (${count})`);
+	return padToVisibleWidth(title, width);
+}
+
+function hudColumnRows(column: TaskBoardColumn, maxTasks: number): number {
+	switch (column.id) {
+		case "rejected":
+		case "ready":
+			return Math.max(1, Math.min(3, column.tasks.length));
+		case "blocked":
+			return Math.max(1, Math.min(2, column.tasks.length));
+		case "in_progress":
+			return Math.max(1, Math.min(maxTasks, column.tasks.length));
+		case "done":
+			return Math.max(1, Math.min(5, column.tasks.length));
+	}
+}
+
 function renderHudTaskCard(
 	task: TaskRecord,
 	column: TaskBoardColumn,
@@ -982,6 +1002,27 @@ function renderHudTaskCard(
 	const line = padToVisibleWidth(` ${padToVisibleWidth(card, width)}`, width + 2);
 	const flash = flashTasks.get(task.id);
 	return flash || flashTaskIds.has(task.id) ? renderTaskHudFlashBackground(line, theme, flash, now) : line;
+}
+
+function renderHudSection(
+	column: TaskBoardColumn,
+	theme: Theme,
+	width: number,
+	rows: number,
+	byId: Map<string, TaskRecord>,
+	display: AssignmentDisplayContext,
+	flashTaskIds: ReadonlySet<string> = new Set(),
+	flashTasks: ReadonlyMap<string, TaskHudFlash> = new Map(),
+	now = Date.now(),
+): string[] {
+	if (column.tasks.length === 0) return [];
+	const hidden = Math.max(0, column.tasks.length - rows);
+	const lines = [shelfHeader(theme, column, width, hidden)];
+	const cardWidth = Math.max(1, width - 2);
+	for (const task of column.tasks.slice(0, rows)) {
+		lines.push(renderHudTaskCard(task, column, theme, cardWidth, byId, display, flashTaskIds, flashTasks, now));
+	}
+	return lines;
 }
 
 function detailLines(task: TaskRecord, tasks: TaskRecord[], theme: Theme, width: number): string[] {
@@ -1541,14 +1582,6 @@ function isActiveCurrentSessionEpicTask(task: TaskRecord, display: AssignmentDis
 	return isAssignedToCurrentSession(task, display) && !isComplete(task) && !isCanceled(task) && task.type !== "epic";
 }
 
-function hudColumnForTask(task: TaskRecord, byId: Map<string, TaskRecord>): TaskBoardColumn {
-	if (isComplete(task)) return { id: "done", label: "Done", tasks: [] };
-	if (hasOpenBlockers(task, byId)) return { id: "blocked", label: "Blocked", tasks: [] };
-	if (task.status === "rejected") return { id: "rejected", label: "Rejected", tasks: [] };
-	if (task.status === "in_progress") return { id: "in_progress", label: "In Progress", tasks: [] };
-	return { id: "ready", label: "Ready", tasks: [] };
-}
-
 function renderHudEpicSummary(group: TaskBoardGroup, theme: Theme, width: number): string {
 	const label = group.epicLabel ? ` ${theme.fg("success", group.epicLabel)}` : "";
 	const marker = group.total > 0 && group.done === group.total ? theme.fg("success", "✓") : theme.fg("dim", "○");
@@ -1556,10 +1589,11 @@ function renderHudEpicSummary(group: TaskBoardGroup, theme: Theme, width: number
 	return truncateLine(`${marker} ${theme.fg("toolTitle", group.label)}${label}${theme.fg("dim", completed)}`, width);
 }
 
-function renderCompactHudGroup(
+function renderColumnarHudGroup(
 	group: TaskBoardGroup,
 	theme: Theme,
 	width: number,
+	maxTasks: number,
 	byId: Map<string, TaskRecord>,
 	display: AssignmentDisplayContext,
 	now: number,
@@ -1579,24 +1613,98 @@ function renderCompactHudGroup(
 		];
 	}
 	if (visibleTasks.length === 0) return [];
-	const lines = [renderEpicBoardHeader(group, theme, width)];
-	for (const task of visibleTasks.slice(0, 4)) {
-		lines.push(
-			renderHudTaskCard(
-				task,
-				hudColumnForTask(task, byId),
+	const scopedGroup: TaskBoardGroup = {
+		...group,
+		tasks: visibleTasks,
+		done: visibleTasks.filter(isComplete).length,
+		total: visibleTasks.length,
+	};
+	const visibleTasksForColumns = visibleTasks.map((task) => ({ ...task, blocked_by: openBlockers(task, byId) }));
+	const groupColumns = buildTaskBoardColumns(visibleTasksForColumns);
+	const groupDoneColumn = boardColumn(groupColumns, "done");
+	const groupHudColumns = {
+		rejected: groupColumns.find((column) => column.id === "rejected") ?? {
+			id: "rejected" as const,
+			label: "Rejected",
+			tasks: [],
+		},
+		ready: boardColumn(groupColumns, "ready"),
+		blocked: boardColumn(groupColumns, "blocked"),
+		in_progress: boardColumn(groupColumns, "in_progress"),
+		done: withDoneRecencyOrder(groupDoneColumn),
+	};
+	const widths = splitWidths(width, 3);
+	const renderedColumns = [
+		[
+			...renderHudSection(
+				groupHudColumns.rejected,
 				theme,
-				Math.max(1, width - 2),
+				widths[0] ?? width,
+				hudColumnRows(groupHudColumns.rejected, maxTasks),
 				byId,
 				display,
 				flashTaskIds,
 				flashTasks,
 				now,
 			),
+			...renderHudSection(
+				groupHudColumns.ready,
+				theme,
+				widths[0] ?? width,
+				hudColumnRows(groupHudColumns.ready, maxTasks),
+				byId,
+				display,
+				flashTaskIds,
+				flashTasks,
+				now,
+			),
+			...(groupHudColumns.blocked.tasks.length > 0
+				? renderHudSection(
+						groupHudColumns.blocked,
+						theme,
+						widths[0] ?? width,
+						hudColumnRows(groupHudColumns.blocked, maxTasks),
+						byId,
+						display,
+						flashTaskIds,
+						flashTasks,
+						now,
+					)
+				: []),
+		],
+		renderHudSection(
+			groupHudColumns.in_progress,
+			theme,
+			widths[1] ?? width,
+			hudColumnRows(groupHudColumns.in_progress, maxTasks),
+			byId,
+			display,
+			flashTaskIds,
+			flashTasks,
+			now,
+		),
+		renderHudSection(
+			groupHudColumns.done,
+			theme,
+			widths[2] ?? width,
+			hudColumnRows(groupHudColumns.done, maxTasks),
+			byId,
+			display,
+			flashTaskIds,
+			flashTasks,
+			now,
+		),
+	];
+	if (renderedColumns.every((column) => column.length === 0)) return [];
+	const lines = [renderEpicBoardHeader(scopedGroup, theme, width)];
+	const height = Math.max(...renderedColumns.map((column) => column.length));
+	for (let row = 0; row < height; row++) {
+		lines.push(
+			fitCells(
+				renderedColumns.map((column, index) => column[row] ?? " ".repeat(widths[index] ?? 0)),
+				widths,
+			),
 		);
-	}
-	if (visibleTasks.length > 4) {
-		lines.push(theme.fg("dim", `… ${visibleTasks.length - 4} more`));
 	}
 	return lines;
 }
@@ -1605,7 +1713,7 @@ export function renderHudLines(
 	tasks: TaskRecord[],
 	theme: Theme,
 	width: number,
-	_maxTasks = 6,
+	maxTasks = 6,
 	display: AssignmentDisplayContext = {},
 	options: {
 		hideKanban?: boolean;
@@ -1661,10 +1769,11 @@ export function renderHudLines(
 		if (noEpicGroup) {
 			if (lines.length > 0) lines.push(theme.fg("borderMuted", "─".repeat(width)));
 			lines.push(
-				...renderCompactHudGroup(
+				...renderColumnarHudGroup(
 					noEpicGroup,
 					theme,
 					width,
+					maxTasks,
 					byId,
 					display,
 					now,
@@ -1678,7 +1787,17 @@ export function renderHudLines(
 	for (const group of groups.filter((group) => activeEpicKeys.has(group.key) || group.key === "")) {
 		if (lines.length > 0) lines.push(theme.fg("borderMuted", "─".repeat(width)));
 		lines.push(
-			...renderCompactHudGroup(group, theme, width, byId, display, now, options.flashTaskIds, options.flashTasks),
+			...renderColumnarHudGroup(
+				group,
+				theme,
+				width,
+				maxTasks,
+				byId,
+				display,
+				now,
+				options.flashTaskIds,
+				options.flashTasks,
+			),
 		);
 	}
 	return lines.map((line) => truncateLine(line, width));
