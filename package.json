@@ -2,11 +2,13 @@
   "name": "agents",
   "private": true,
   "scripts": {
-    "check": "biome check --write --error-on-warnings . && bun run test:codex-native && bun run test:compaction && bun run test:lens && bun run test:skill-dollar",
-    "test": "bun run test:codex-native && bun run test:compaction && bun run test:lens && bun run test:skill-dollar",
+    "check": "biome check --write --error-on-warnings . && bun run test:codex-native && bun run test:compaction && bun run test:lens && bun run test:skill-dollar && bun run test:git-tool && bun run test:skills",
+    "test": "bun run test:codex-native && bun run test:compaction && bun run test:lens && bun run test:skill-dollar && bun run test:git-tool && bun run test:skills",
     "typecheck": "tsgo --noEmit --pretty false --project tsconfig.typecheck.json",
     "test:lens": "bun test pi/agent/extensions/lens/index.test.ts pi/agent/extensions/shared/lens-ui.test.ts",
     "test:skill-dollar": "bun test pi/agent/extensions/skill-dollar/index.test.ts",
+    "test:git-tool": "bun test pi/agent/extensions/git-tool/index.test.ts",
+    "test:skills": "bun test skills/start.test.ts",
     "test:codex-native": "bun test pi/agent/extensions/apply-patch/index.test.ts pi/agent/extensions/codex-native/index.test.ts pi/agent/extensions/codex-exec/index.test.ts pi/agent/extensions/disable-ls.test.ts",
     "test:compaction": "bun test pi/agent/extensions/codex-native/compaction/src/unit.test.ts pi/agent/extensions/codex-native/compaction/src/validation.test.ts",
     "prepare": "husky"
