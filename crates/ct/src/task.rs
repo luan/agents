@@ -178,6 +178,23 @@ pub fn run_task(action: TaskAction) -> Result<(), Box<dyn std::error::Error>> {
             let task = store.display_task(store.reject(&id, &note.join(" "))?)?;
             print_task(&task, json)?;
         }
+        TaskAction::Tui {
+            width,
+            height,
+            selected_task_id,
+            input,
+            json,
+        } => {
+            let tasks = store.display_tasks(store.list(None, None, None, None, None, true)?)?;
+            crate::task_tui::print_task_tui(
+                &tasks,
+                width,
+                height,
+                selected_task_id.as_deref(),
+                input.as_deref(),
+                json,
+            )?;
+        }
     }
     Ok(())
 }

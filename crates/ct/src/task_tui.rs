@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use anyhow::Result;
 use ratatui::{
     Terminal,
     backend::TestBackend,
@@ -9,6 +10,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
 };
+use serde::Serialize;
 
 use crate::task::Task;
 
@@ -17,19 +19,95 @@ pub(crate) struct TaskTuiState {
     selected_task_id: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+struct TaskTuiEnvelope {
+    lines: Vec<String>,
+    selected_task_id: Option<String>,
+}
+
+pub(crate) fn print_task_tui(
+    tasks: &[Task],
+    width: u16,
+    height: u16,
+    selected_task_id: Option<&str>,
+    input: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let mut state = TaskTuiState::with_selection(tasks, selected_task_id);
+    if let Some(input) = input {
+        state.handle_input(tasks, input);
+    }
+    let lines = render_task_tui_lines_with_state(tasks, width, height, &state);
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&TaskTuiEnvelope {
+                lines,
+                selected_task_id: state.selected_task_id,
+            })?
+        );
+    } else {
+        for line in lines {
+            println!("{line}");
+        }
+    }
+    Ok(())
+}
+
 impl TaskTuiState {
     pub(crate) fn new(tasks: &[Task]) -> Self {
         Self {
             selected_task_id: first_selectable_task(tasks).map(|task| task.id.clone()),
         }
     }
+
+    fn with_selection(tasks: &[Task], selected_task_id: Option<&str>) -> Self {
+        let ids: HashSet<&str> = tasks.iter().map(|task| task.id.as_str()).collect();
+        if let Some(id) = selected_task_id.filter(|id| ids.contains(id)) {
+            Self {
+                selected_task_id: Some(id.to_string()),
+            }
+        } else {
+            Self::new(tasks)
+        }
+    }
+
+    fn handle_input(&mut self, tasks: &[Task], input: &str) {
+        let order = selectable_task_ids(tasks);
+        if order.is_empty() {
+            self.selected_task_id = None;
+            return;
+        }
+        let current = self
+            .selected_task_id
+            .as_deref()
+            .and_then(|id| order.iter().position(|candidate| candidate == id))
+            .unwrap_or(0);
+        let next = match input {
+            "j" | "down" | "\u{1b}[B" => current.saturating_add(1).min(order.len() - 1),
+            "k" | "up" | "\u{1b}[A" => current.saturating_sub(1),
+            "g" | "home" => 0,
+            "G" | "end" => order.len() - 1,
+            _ => current,
+        };
+        self.selected_task_id = Some(order[next].clone());
+    }
 }
 
 pub(crate) fn render_task_tui_lines(tasks: &[Task], width: u16, height: u16) -> Vec<String> {
-    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test backend");
     let state = TaskTuiState::new(tasks);
+    render_task_tui_lines_with_state(tasks, width, height, &state)
+}
+
+fn render_task_tui_lines_with_state(
+    tasks: &[Task],
+    width: u16,
+    height: u16,
+    state: &TaskTuiState,
+) -> Vec<String> {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test backend");
     terminal
-        .draw(|frame| render_task_tui(frame.area(), frame.buffer_mut(), tasks, &state))
+        .draw(|frame| render_task_tui(frame.area(), frame.buffer_mut(), tasks, state))
         .expect("render task tui");
     terminal
         .backend()
@@ -300,12 +378,17 @@ fn blocked_task_ids(tasks: &[Task]) -> HashSet<String> {
 }
 
 fn first_selectable_task(tasks: &[Task]) -> Option<&Task> {
+    let first_id = selectable_task_ids(tasks).into_iter().next()?;
+    tasks.iter().find(|task| task.id == first_id)
+}
+
+fn selectable_task_ids(tasks: &[Task]) -> Vec<String> {
     task_groups(tasks)
         .into_iter()
         .flat_map(|group| group.lanes.into_iter())
         .flat_map(|lane| lane.tasks.into_iter())
-        .next()
-        .and_then(|selected| tasks.iter().find(|task| task.id == selected.id))
+        .map(|task| task.id)
+        .collect()
 }
 
 fn is_done(task: &Task) -> bool {
