@@ -27,7 +27,7 @@ type RuntimeState = {
 	activity?: string;
 	asking: boolean;
 	lastActivityAtMs: number;
-	phase: "idle" | "working" | "asking";
+	phase: "idle" | "working" | "waiting";
 };
 
 function stateDir(): string {
@@ -80,6 +80,10 @@ function sessionName(pi: ExtensionAPI): string | undefined {
 	} catch {
 		return undefined;
 	}
+}
+
+function isAskUserTool(toolName: string): boolean {
+	return toolName === "ask_user" || toolName.endsWith(".ask_user");
 }
 
 export default function muxSidebarExtension(pi: ExtensionAPI) {
@@ -143,20 +147,31 @@ export default function muxSidebarExtension(pi: ExtensionAPI) {
 		child.unref();
 	};
 
+	const syncSidebar = () => {
+		const child = spawn("mux", ["sidebar", "sync"], {
+			stdio: "ignore",
+			detached: true,
+		});
+		child.on("error", () => {});
+		child.unref();
+	};
+
 	const markWorking = (ctx: ExtensionContext, activity = "Thinking…") => {
 		runtime.activity = activity;
 		runtime.asking = false;
 		runtime.lastActivityAtMs = Date.now();
 		runtime.phase = "working";
 		writeState(ctx);
+		syncSidebar();
 	};
 
-	const markAsking = (ctx: ExtensionContext) => {
-		const shouldNotify = runtime.phase !== "asking";
-		runtime.activity = "Asking…";
+	const markWaiting = (ctx: ExtensionContext) => {
+		const shouldNotify = runtime.phase !== "waiting";
+		runtime.activity = "Waiting";
 		runtime.asking = true;
-		runtime.phase = "asking";
+		runtime.phase = "waiting";
 		writeState(ctx);
+		syncSidebar();
 		if (shouldNotify) notify("elicitation_dialog", "Pi has a question for you");
 	};
 
@@ -166,6 +181,7 @@ export default function muxSidebarExtension(pi: ExtensionAPI) {
 		runtime.asking = false;
 		runtime.phase = "idle";
 		writeState(ctx);
+		syncSidebar();
 		if (shouldNotify) notify("idle_prompt", "Pi is idle and waiting for your input");
 	};
 
@@ -179,8 +195,8 @@ export default function muxSidebarExtension(pi: ExtensionAPI) {
 	pi.on("turn_start", async (_event, ctx) => markWorking(ctx, "Thinking…"));
 	pi.on("message_update", async (_event, ctx) => markWorking(ctx, "Writing…"));
 	pi.on("tool_execution_start", async (event, ctx) => {
-		if (event.toolName === "ask_user") {
-			markAsking(ctx);
+		if (isAskUserTool(event.toolName)) {
+			markWaiting(ctx);
 		} else {
 			markWorking(ctx, "Working…");
 		}
@@ -190,6 +206,12 @@ export default function muxSidebarExtension(pi: ExtensionAPI) {
 	pi.on("model_select", async (_event, ctx) => writeState(ctx));
 	pi.on("session_compact", async (_event, ctx) => writeState(ctx));
 	pi.on("agent_end", async (_event, ctx) => markIdle(ctx, { notify: true }));
+	pi.events.on("pi-ask:waiting:start", () => {
+		if (latestCtx) markWaiting(latestCtx);
+	});
+	pi.events.on("pi-ask:waiting:end", () => {
+		if (latestCtx) markWorking(latestCtx, "Thinking…");
+	});
 
 	pi.on("session_shutdown", async () => {
 		if (heartbeat) {
