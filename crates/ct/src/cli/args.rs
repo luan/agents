@@ -137,6 +137,8 @@ pub enum TaskAction {
     Add {
         #[arg(help = "Task title")]
         title: String,
+        #[arg(long = "type", help = "Task type: epic, feature, bug, or chore")]
+        task_type: Option<String>,
         #[arg(short, long, help = "Task body/details")]
         body: Option<String>,
         #[arg(long, default_value = "open", help = "Task status")]
@@ -151,6 +153,8 @@ pub enum TaskAction {
         epic_id: Option<String>,
         #[arg(long = "epic-title", help = "Human-readable epic/group title")]
         epic_title: Option<String>,
+        #[arg(long = "label", help = "Task label token")]
+        labels: Vec<String>,
         #[arg(long = "parent-id", help = "Parent/coordinator task ID/prefix")]
         parent_id: Option<String>,
         #[arg(long = "blocked-by", help = "Task ID/prefix that blocks this task")]
@@ -163,6 +167,12 @@ pub enum TaskAction {
     List {
         #[arg(long, help = "Filter by status")]
         status: Option<String>,
+        #[arg(long = "type", help = "Filter by task type")]
+        task_type: Option<String>,
+        #[arg(long = "label", help = "Filter by task label")]
+        label: Option<String>,
+        #[arg(long = "epic-id", help = "Filter by epic label/id")]
+        epic_id: Option<String>,
         #[arg(long = "assigned-to", help = "Filter by assignee/session")]
         assigned_to: Option<String>,
         #[arg(long, help = "Include all statuses")]
@@ -183,6 +193,8 @@ pub enum TaskAction {
     Update {
         #[arg(help = "Task ID or unique prefix")]
         id: String,
+        #[arg(long = "type", help = "New task type: epic, feature, bug, or chore")]
+        task_type: Option<String>,
         #[arg(long, help = "New title")]
         title: Option<String>,
         #[arg(long, help = "New body/details")]
@@ -201,6 +213,8 @@ pub enum TaskAction {
         epic_id: Option<String>,
         #[arg(long = "epic-title", help = "Human-readable epic/group title")]
         epic_title: Option<String>,
+        #[arg(long = "label", help = "Replace labels with this task label")]
+        labels: Vec<String>,
         #[arg(long, help = "Remove epic/group metadata")]
         clear_epic: bool,
         #[arg(long = "parent-id", help = "Parent/coordinator task ID/prefix")]
@@ -214,6 +228,24 @@ pub enum TaskAction {
         blocked_by: Vec<String>,
         #[arg(long, help = "Remove all blockers")]
         clear_blockers: bool,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+    },
+
+    #[command(about = "Accept an in-review feature or bug task")]
+    Accept {
+        #[arg(help = "Task ID or unique prefix")]
+        id: String,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+    },
+
+    #[command(about = "Reject an in-review feature or bug task")]
+    Reject {
+        #[arg(help = "Task ID or unique prefix")]
+        id: String,
+        #[arg(required = true, num_args = 1.., help = "Rejection note")]
+        note: Vec<String>,
         #[arg(long, help = "Output JSON")]
         json: bool,
     },
