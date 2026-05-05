@@ -896,7 +896,7 @@ describe("tasks extension", () => {
 		]);
 	});
 
-	test("renders a compact HUD for active tasks", () => {
+	test("renders a scoped columnar HUD for active tasks", () => {
 		const lines = renderHudLines(
 			[
 				{ ...task, id: "BLOCKED123", title: "Blocked task", priority: 100, blocked_by: ["PG4W2K4Q03"] },
@@ -921,8 +921,8 @@ describe("tasks extension", () => {
 		expect(lines.join("\n")).not.toContain("● 3 tasks");
 		expect(lines.join("\n")).toContain("PG4W2K4Q03");
 		expect(lines.join("\n")).toContain("←1");
-		expect(lines.join("\n")).not.toContain("Ready (1)");
-		expect(lines.join("\n")).not.toContain("Done (1)");
+		expect(lines.join("\n")).toContain("Ready (1)");
+		expect(lines.join("\n")).toContain("Done (1)");
 		expect(lines.join("\n")).toContain("Smoke test");
 		expect(lines.join("\n")).toContain("Done task");
 
