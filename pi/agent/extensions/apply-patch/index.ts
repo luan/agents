@@ -1653,10 +1653,12 @@ function startPreviewWorker(cwd: string, state: ApplyPatchRenderState, invalidat
 	state.previewWorker = worker;
 
 	worker.child.stdout.on("data", (chunk) => {
+		if (worker.stopped) return;
 		worker.stdoutBuffer += Buffer.from(chunk).toString("utf8");
 		const lines = worker.stdoutBuffer.split("\n");
 		worker.stdoutBuffer = lines.pop() ?? "";
 		for (const line of lines) {
+			if (worker.stopped) return;
 			if (!line.trim()) continue;
 			worker.pending = false;
 			try {
@@ -1665,6 +1667,7 @@ function startPreviewWorker(cwd: string, state: ApplyPatchRenderState, invalidat
 				state.previewError = error instanceof Error ? error.message : String(error);
 			}
 		}
+		if (worker.stopped) return;
 		invalidate();
 		schedulePreviewWorkerUpdate(state, invalidate);
 	});
@@ -2143,6 +2146,10 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 		renderCall(args, theme, context) {
 			if (!config.richRender) return new Text(title(theme, nf.apply, "apply_patch"), 0, 0);
 			const state = context.state as ApplyPatchRenderState;
+			if (!context.isPartial || state.resultRendered) {
+				stopPreviewWorker(state);
+				return new Text("", 0, 0);
+			}
 			const input = typeof args?.input === "string" ? args.input : "";
 			const inputKey = patchInputKey(input);
 			const semanticInput = isSemanticPatchInput(input);
