@@ -2615,10 +2615,20 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 			body: Type.Optional(Type.String({ description: "Task details/body" })),
 			status: Type.Optional(Type.String({ description: "Task status (default: open)" })),
 			priority: Type.Optional(Type.Number({ description: "Task priority; higher shows first" })),
-			assigned_to: Type.Optional(Type.String({ description: "Session/user assignment, or 'current'" })),
+			assigned_to: Type.Optional(
+				Type.String({
+					description:
+						"Session/user assignment, or 'current'. Use 'current' when you are creating this task to work on it now.",
+				}),
+			),
 			epic_id: Type.Optional(Type.String({ description: "Stable epic/group identifier" })),
 			epic_title: Type.Optional(Type.String({ description: "Human-readable epic/group title" })),
-			labels: Type.Optional(Type.Array(Type.String(), { description: "Task label tokens" })),
+			labels: Type.Optional(
+				Type.Array(Type.String(), {
+					description:
+						"Optional cross-cutting filter tokens only. Do not add labels already obvious from project, epic, title, type, or parent.",
+				}),
+			),
 			parent_id: Type.Optional(Type.String({ description: "Parent/coordinator task ID or prefix" })),
 			blocked_by: Type.Optional(
 				Type.Array(Type.String(), {
@@ -2697,14 +2707,18 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 			priority: Type.Optional(Type.Number({ description: "New priority; higher shows first" })),
 			assigned_to: Type.Optional(
 				Type.String({
-					description: "Assign to this session/user, or 'current'",
+					description:
+						"Assign to this session/user, or 'current'. Set this before editing when you are working the task now.",
 				}),
 			),
 			clear_assignee: Type.Optional(Type.Boolean({ description: "Remove assignee" })),
 			epic_id: Type.Optional(Type.String({ description: "New stable epic/group identifier" })),
 			epic_title: Type.Optional(Type.String({ description: "New human-readable epic/group title" })),
 			labels: Type.Optional(
-				Type.Array(Type.String(), { description: "Replace labels with these task label tokens" }),
+				Type.Array(Type.String(), {
+					description:
+						"Replace labels with optional cross-cutting filter tokens only; omit redundant project/epic/title/type/parent labels.",
+				}),
 			),
 			clear_epic: Type.Optional(Type.Boolean({ description: "Remove epic/group metadata" })),
 			parent_id: Type.Optional(Type.String({ description: "New parent/coordinator task ID or prefix" })),
