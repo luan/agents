@@ -7,6 +7,8 @@
 5. When `--auto` is used with a skill, do not ask questions, perform the most comprehensive action set.
 6. NEVER discard unrelated changes.
 7. Task discipline: if you create or select a task and then execute it in the same session, immediately mark it `in_progress` and assign it to the current session before editing files. Leave tasks open/unassigned only when you are handing them off for future work.
+8. Task labels are optional metadata, not a required field. Use labels only for useful cross-cutting filters that are not already obvious from the project, epic, title, type, or parent. Do not add redundant project-name labels.
+9. When creating tasks you intend to work on immediately, create them already assigned to the current session and/or immediately update them to `in_progress` before editing.
 
 ## Shared Rules
 
