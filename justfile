@@ -43,7 +43,7 @@ doctor:
 validate: render-agents
     cd "{{ repo }}" && cargo xtask validate
 
-setup: node-deps-install pi-node-modules-link doctor link worktrunk-install claude-plugins-install install validate
+setup: node-deps-install pi-node-modules-link doctor link worktrunk-install install validate
 
 node-deps-install:
     cd "{{ repo }}" && bun install
@@ -55,18 +55,10 @@ worktrunk-install:
     # The `wt` binary backs the worktrunk claude plugin. `cargo install`
     # rebuilds even when the version is unchanged, so skip when `wt` is
     # already on PATH. To upgrade, run `cargo install worktrunk --force`.
-    @command -v wt >/dev/null 2>&1 || cargo install worktrunk --locked
+    @command -v wt >/dev/null 2>&1 || cargo bininstall worktrunk --locked
 
 codex-plugins-install:
     cd "{{ repo }}" && cargo xtask codex-plugins-install
-
-claude-plugins-install:
-    # worktrunk: marketplace is auto-registered from claude/settings.json's
-    # extraKnownMarketplaces once `link` ran; settings.json also enables
-    # worktrunk@worktrunk, so claude breaks on startup if it isn't installed.
-    # `claude plugin install` is idempotent (no-op when already installed).
-    claude plugin install worktrunk@worktrunk
-    # Keep the local `agents` marketplace disabled until its schema is updated.
 
 install:
     curl -L https://dmtrkovalenko.dev/install-fff-mcp.sh | bash
