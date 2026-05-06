@@ -1560,7 +1560,7 @@ function formatAssignee(task: TaskRecord, theme: Theme, display: AssignmentDispl
 	const label = assignmentLabel(task, display);
 	if (!label) return "";
 	if (isAssignedToCurrentSession(task, display)) {
-		return ` ${theme.fg("success", italic("self"))}`;
+		return ` ${theme.fg("muted", italic("self"))}`;
 	}
 	return ` ${theme.fg("mdLink", italic(`@${label}`))}`;
 }
@@ -1598,7 +1598,7 @@ function typeColor(task: TaskRecord): ThemeColor {
 function formatTaskLabels(task: TaskRecord, theme: Theme): string {
 	const labels = task.labels ?? [];
 	if (labels.length === 0) return "";
-	return ` ${labels.map((label) => theme.fg("success", italic(label))).join(" ")}`;
+	return ` ${labels.map((label) => theme.fg("syntaxString", italic(label))).join(", ")}`;
 }
 
 function formatTaskId(id: string, theme: Theme): string {

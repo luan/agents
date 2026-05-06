@@ -986,7 +986,7 @@ describe("tasks extension", () => {
 			{ currentAssignment: "session:current", currentLabel: "Me" },
 		).join("\n");
 
-		expect(lines).toContain("<success>\x1b[3mself\x1b[23m</success>");
+		expect(lines).toContain("<muted>\x1b[3mself\x1b[23m</muted>");
 		expect(lines).toContain("<dim>Other work</dim>");
 		expect(lines).toContain("<mdLink>\x1b[3m@Other\x1b[23m</mdLink>");
 		expect(lines).not.toContain("<mdHeading>●</mdHeading> <mdHeading>2 tasks</mdHeading> <muted>(");
@@ -1024,8 +1024,10 @@ describe("tasks extension", () => {
 
 		expect(lines).toContain("<warning></warning>");
 		expect(lines).toContain("<error></error>");
-		expect(lines).toContain("<success>\x1b[3msetup\x1b[23m</success>");
-		expect(lines).toContain("<success>\x1b[3mself\x1b[23m</success>");
+		expect(lines).toContain(
+			"<syntaxString>\x1b[3msetup\x1b[23m</syntaxString>, <syntaxString>\x1b[3magent-ui\x1b[23m</syntaxString>",
+		);
+		expect(lines).toContain("<muted>\x1b[3mself\x1b[23m</muted>");
 		expect(lines).toContain("<mdLink>\x1b[3m@Other\x1b[23m</mdLink>");
 		expect(lines).not.toContain("p100");
 		expect(lines).not.toContain("◻");
