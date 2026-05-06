@@ -125,6 +125,7 @@
   "autoDreamEnabled": true,
   "showThinkingSummaries": true,
   "skipDangerousModePermissionPrompt": true,
+  "theme": "dark",
   "verbose": true,
   "preferredNotifChannel": "notifications_disabled",
   "teammateMode": "in-process",
