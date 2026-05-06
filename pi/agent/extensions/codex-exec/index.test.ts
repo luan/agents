@@ -82,6 +82,32 @@ test("running terminal calls show elapsed time", () => {
 	);
 });
 
+test("yielded background exec calls do not keep scheduling elapsed redraws", () => {
+	let tool: any;
+	const tracker = createExecCommandTracker();
+	const sessions = createExecSessionManager();
+	try {
+		registerExecCommandTool({ registerTool: (definition: any) => (tool = definition) } as any, tracker, sessions);
+		tracker.recordStart("call", "sleep 60");
+		tracker.recordPersistentSession("call", 7);
+
+		const state: { elapsedTimer?: ReturnType<typeof setTimeout> } = {};
+		tool.renderCall({ cmd: "sleep 60" }, testTheme, {
+			toolCallId: "call",
+			state,
+			isPartial: false,
+			invalidate: () => {
+				throw new Error("final background row should not schedule redraws");
+			},
+		});
+
+		expect(state.elapsedTimer).toBeUndefined();
+	} finally {
+		tracker.clear();
+		sessions.shutdown();
+	}
+});
+
 test("exec command call renders failed status as a red dot", () => {
 	const rendered = renderExecCommandCall("false", "done", testTheme, true);
 	expect(rendered).toBe(`<error>•</error> <bold>Ran</bold> <syntaxFunction>false</syntaxFunction>`);

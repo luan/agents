@@ -131,7 +131,7 @@ const renderExecCommandCallWithOptionalContext: any = (
 	tracker.registerRenderContext(context?.toolCallId, context?.invalidate ?? (() => {}));
 	const renderInfo = tracker.getRenderInfo(context?.toolCallId, command);
 	const failed = context?.isError === true;
-	scheduleElapsedInvalidation(context, renderInfo.status === "running");
+	scheduleElapsedInvalidation(context, renderInfo.status === "running" && context?.isPartial === true);
 	if (renderInfo.hidden) {
 		return new Text("", 0, 0);
 	}

@@ -214,6 +214,52 @@ describe("apply_patch streaming renderer", () => {
 		expect(text.indexOf("Intent:")).toBeLessThan(text.indexOf("• Edited sample.js"));
 	});
 
+	it("keeps completed call renderers hidden on later invalidations", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "apply-patch-completed-render-"));
+		const tool = registerApplyPatchTool();
+		const state: Record<string, unknown> = { resultRendered: true };
+		const patchInput = `*** Begin Patch
+*** Update File: sample.js
+@@
+-old
++new
+*** End Patch
+`;
+
+		const rendered = tool.renderCall(
+			{ input: patchInput },
+			theme,
+			renderContext(cwd, state, { argsComplete: false }),
+		);
+
+		expect(renderText(rendered)).toBe("");
+		expect(state.livePreview).toBeUndefined();
+	});
+
+	it("does not render historical patch calls while final results are attached", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "apply-patch-history-render-"));
+		const tool = registerApplyPatchTool();
+		const state: Record<string, unknown> = {};
+		const patchInput = `*** Begin Patch
+*** Update File: sample.js
+@@
+-old
++new
+*** End Patch
+`;
+
+		const initial = tool.renderCall({ input: patchInput }, theme, renderContext(cwd, state, { argsComplete: false }));
+		expect(renderText(initial)).toContain("new");
+
+		const finalizing = tool.renderCall(
+			{ input: patchInput },
+			theme,
+			renderContext(cwd, state, { argsComplete: false, isPartial: false }),
+		);
+
+		expect(renderText(finalizing)).toBe("");
+	});
+
 	it("renders semantic hunks as separate semantic editing blocks", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "apply-patch-semantic-render-"));
 		writeFileSync(
