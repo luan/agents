@@ -47,6 +47,9 @@ enabled = false
 [plugins."browser-use@openai-bundled"]
 enabled = true
 
+[plugins."slack@openai-curated"]
+enabled = true
+
 [shell_environment_policy]
 inherit = "core"
 
@@ -63,21 +66,26 @@ status_line = ["run-state", "model-with-reasoning", "current-dir", "git-branch",
 queue = "alt-enter"
 
 [marketplaces.claude-plugins-official]
-last_updated = "2026-05-06T05:46:57Z"
-last_revision = "06f52cd3ac3e47ecb45228a86183ea2a86e9d6ff"
+last_updated = "2026-05-07T18:21:20Z"
+last_revision = "84d2d12cd9d190ca879b8da95f783d0d7506bc3b"
 source_type = "git"
 source = "https://github.com/anthropics/claude-plugins-official.git"
 
 [marketplaces.worktrunk]
-last_updated = "2026-05-06T05:47:01Z"
-last_revision = "431fc68a6a0d39d78ac338e231ccc45605ec1a40"
+last_updated = "2026-05-07T18:21:26Z"
+last_revision = "2f8807eb368a6528303ce2fedb2765b848683973"
 source_type = "git"
 source = "https://github.com/max-sixty/worktrunk.git"
 
 [marketplaces.openai-bundled]
-last_updated = "2026-04-30T23:23:30Z"
+last_updated = "2026-05-07T18:20:41Z"
 source_type = "local"
-source = "/Users/luan/.codex/.tmp/bundled-marketplaces/openai-bundled"
+source = "/Users/luan.santos/.codex/.tmp/bundled-marketplaces/openai-bundled"
+
+[marketplaces.openai-primary-runtime]
+last_updated = "2026-05-07T18:21:01Z"
+source_type = "local"
+source = "/Users/luan.santos/.cache/codex-runtimes/codex-primary-runtime/plugins/openai-primary-runtime"
 
 [mcp_servers.lens]
 command = "ct"
@@ -112,4 +120,7 @@ trust_level = "trusted"
 trust_level = "trusted"
 
 [projects."/Users/luan/src/agents"]
+trust_level = "trusted"
+
+[projects."/Users/luan.santos/src/arc"]
 trust_level = "trusted"
