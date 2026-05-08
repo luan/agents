@@ -35,3 +35,6 @@ plugins/*_violations.jsonl
 plugins/install-counts-cache.json
 *.local.*
 /pi/agent/.extmgr-cache
+/pi/agent/mcp-cache.json
+/pi/agent/mcp-oauth/
+/pi/agent/mcp-onboarding.json

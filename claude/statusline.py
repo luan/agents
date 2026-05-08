@@ -229,7 +229,6 @@ _STATE_DIR = Path(
     os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state")
 ) / "claude-statusline"
 USAGE_DB = str(_STATE_DIR / "usage.db")
-OVERAGE_JSON_LEGACY = str(_STATE_DIR / "overage.json")
 MAX_DB_BYTES = 10 * 1024 * 1024
 
 _SCHEMA = """
@@ -303,89 +302,7 @@ def _db():
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA busy_timeout=3000")
     conn.executescript(_SCHEMA)
-    _migrate_schema(conn)
-    _migrate_json(conn)
     return conn
-
-
-def _migrate_schema(conn):
-    """Add columns introduced after the initial schema. Idempotent."""
-    adds = [
-        ("events", "ctx_size INTEGER"),
-        ("events", "output_tokens INTEGER"),
-        ("events", "cache_read_tokens INTEGER"),
-        ("events", "cache_creation_tokens INTEGER"),
-        ("events", "total_input_tokens INTEGER"),
-        ("events", "total_output_tokens INTEGER"),
-        ("events", "exceeds_200k INTEGER"),
-        ("events", "api_duration_ms INTEGER"),
-        ("events", "lines_added INTEGER"),
-        ("events", "lines_removed INTEGER"),
-        ("sessions", "last_capped INTEGER NOT NULL DEFAULT 0"),
-        ("sessions", "model_id TEXT"),
-        ("sessions", "project_dir TEXT"),
-        ("sessions", "git_worktree TEXT"),
-        ("sessions", "output_style TEXT"),
-        ("sessions", "transcript_path TEXT"),
-    ]
-    for tbl, col in adds:
-        try:
-            conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col}")
-        except sqlite3.OperationalError:
-            pass  # column already exists
-
-
-def _migrate_json(conn):
-    """One-shot import of overage.json if present. Renames to .migrated after."""
-    src = Path(OVERAGE_JSON_LEGACY)
-    if not src.exists():
-        return
-    try:
-        state = json.loads(src.read_text())
-    except (OSError, ValueError):
-        return
-    now = int(time.time())
-    for sid, sess in (state.get("sessions") or {}).items():
-        if isinstance(sess, dict):
-            last_cost = float(sess.get("last_cost", 0))
-            overage = float(sess.get("overage", 0))
-        else:
-            last_cost = float(sess or 0)
-            overage = 0.0
-        conn.execute(
-            """INSERT OR IGNORE INTO sessions(sid, first_seen, last_seen, last_cost, total_cost, total_overage)
-               VALUES(?,?,?,?,?,?)""",
-            (sid, now, now, last_cost, last_cost, overage),
-        )
-    for kind, reset_key in (("5h", "window_5h_reset"), ("7d", "window_7d_reset")):
-        reset = int(state.get(reset_key) or 0)
-        overage = float(state.get(f"overage_{kind}") or 0)
-        if overage > 0:
-            conn.execute(
-                """INSERT OR IGNORE INTO windows(kind, reset_ts, overage) VALUES(?,?,?)""",
-                (kind, reset, overage),
-            )
-    month_key = state.get("month")
-    month_overage = float(state.get("overage_month") or 0)
-    if month_key and month_overage > 0:
-        try:
-            month_reset = int(datetime.strptime(month_key + "-01", "%Y-%m-%d").timestamp())
-            conn.execute(
-                """INSERT OR IGNORE INTO windows(kind, reset_ts, overage) VALUES(?,?,?)""",
-                ("month", month_reset, month_overage),
-            )
-        except ValueError:
-            pass
-    total_overage = float(state.get("overage_total") or 0)
-    if total_overage > 0:
-        conn.execute(
-            """INSERT OR IGNORE INTO windows(kind, reset_ts, overage) VALUES(?,?,?)""",
-            ("total", 0, total_overage),
-        )
-    try:
-        src.rename(str(src) + ".migrated")
-    except OSError:
-        pass
 
 
 def _db_footprint():

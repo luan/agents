@@ -55,8 +55,7 @@ just ct-install     # rebuild and reinstall ct + register MCP servers
 
 The repo is designed to be the agents home itself. Clone it directly to
 `~/.agents`, or clone it elsewhere and let `just setup` link `~/.agents` to the
-checkout. The setup task migrates the old managed `~/.agents/rules` and
-`~/.agents/skills` symlinks when they are still owned by this repo.
+checkout.
 
 Prerequisites: `just`, `cargo`, `npm`, `claude`, `codex`.
 

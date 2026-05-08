@@ -10,7 +10,6 @@ web_search = "live"
 
 [features]
 codex_hooks = true
-external_migration = false
 image_generation = true
 memories = true
 multi_agent = true
@@ -19,12 +18,6 @@ multi_agent = true
 hide_full_access_warning = true
 hide_rate_limit_model_nudge = true
 fast_default_opt_out = true
-
-[notice.external_config_migration_prompts]
-home_last_prompted_at = 1776895160
-
-[notice.model_migrations]
-"gpt-5.2" = "gpt-5.2-codex"
 
 [plugins."github@openai-curated"]
 enabled = true
