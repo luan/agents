@@ -618,6 +618,11 @@ export default function fffExtension(pi: ExtensionAPI) {
 			basePath: cwd,
 			frecencyDbPath,
 			historyDbPath,
+			// Pi is a long-lived TUI process; keep FFF as an on-demand query engine
+			// instead of leaving native watcher/content-index background threads alive.
+			disableWatch: true,
+			disableContentIndexing: true,
+			disableMmapCache: true,
 			aiMode: true,
 		});
 
