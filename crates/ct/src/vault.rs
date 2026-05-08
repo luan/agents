@@ -423,7 +423,7 @@ mod tests {
         fs::create_dir_all(&tmp).unwrap();
 
         let plan = seed(&tmp, "myproj", ArtifactKind::Plan, "20260411-auth-flow");
-        let _ = seed(&tmp, "myproj", ArtifactKind::Spec, "20260411-ui-theme");
+        let _ = seed(&tmp, "myproj", ArtifactKind::Research, "20260411-ui-theme");
 
         with_blueprints_dir(&tmp, || {
             // Pass project path that project_name() resolves to "myproj".

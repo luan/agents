@@ -2,12 +2,6 @@
 name: vault-sweep
 description: 'Audit the blueprints vault for consumed artifacts, stale docs, and missing reference docs. Use when the user asks for vault maintenance, cleanup, staleness review, or archival recommendations.'
 argument-hint: "[--execute] [--docs-only] [--no-gap-analysis]"
-allowed-tools:
-  - Agent
-  - Bash
-  - Read
-  - Glob
-  - Grep
 user-invocable: true
 ---
 
@@ -33,10 +27,10 @@ PROJECT_NAME=$(ct repo project)
 ct vault list --json
 ```
 
-Parse the JSON arrays into a combined working list. The enriched JSON includes `title`, `created`, `source`, and `tags` per artifact. Group artifacts by **topic** — the `title` field is the topic slug. Use `source` links to connect related artifacts (a plan's source points to its spec). Build a topic map:
+Parse the JSON arrays into a combined working list. The enriched JSON includes `title`, `created`, `source`, and `tags` per artifact. Group artifacts by **topic** — the `title` field is the topic slug. Use `source` links to connect related artifacts (a plan's source points to its research). Build a topic map:
 
 ```
-topic → [{kind: "spec", name: "...", created: "...", source: "..."}, {kind: "plan", ...}, ...]
+topic → [{kind: "research", name: "...", created: "...", source: "..."}, {kind: "plan", ...}, ...]
 ```
 
 This grouping ensures related artifacts get classified and archived together. If the vault is empty or `ct` is not installed, state the blocker and stop.
@@ -65,7 +59,7 @@ For each topic, determine:
 Topics to classify:
 <topic list with artifact counts>
 
-Output each topic as one of:
+Classify each topic as one of:
 - MERGED — fully landed on main, no open branches
 - IN-PROGRESS — partial code or open branch exists
 - FUTURE — design-only, no corresponding code
@@ -167,14 +161,14 @@ The bar: would a developer reach for this doc repeatedly? Err on the side of pro
 
 ## Phase 6: Present plan
 
-Output a structured maintenance plan with these sections:
+Present a structured maintenance plan with these sections:
 
 **Archive candidates** — grouped by feature area:
 
 | Feature Area | Types Present | Count |
 |---|---|---|
-| Entity/World stack | spec ×2, plan ×2, review ×3, report ×2 | 9 |
-| Animation system | spec, plan, review ×2 | 4 |
+| Entity/World stack | research ×2, plan ×2, doc ×3, doc ×2 | 9 |
+| Animation system | research, plan, doc ×2 | 4 |
 | **Total** | | **N** |
 
 **Doc actions** — existing docs with classification and staleness score:
@@ -208,7 +202,7 @@ Use batch mode for efficiency:
 ct <type> archive --batch <file1> <file2> ...
 ```
 
-Group by artifact type (all specs together, all docs together, etc.). Each batch produces a single commit. Show progress by feature area ("Archived 22 Entity/World artifacts").
+Group by artifact type (all research together, all docs together, etc.). Each batch produces a single commit. Show progress by feature area ("Archived 22 Entity/World artifacts").
 
 Preview first with `--dry-run` if the batch is large (>20 artifacts).
 
@@ -237,7 +231,7 @@ Each new doc is a **research and writing task**, not a copy-paste from archived 
 ```
 Write a reference doc for <system> in <project-root>.
 
-Read the actual source code — do NOT summarize archived specs or plans. The doc
+Read the actual source code — do NOT summarize archived research or plans. The doc
 must describe the system as it exists today.
 
 Structure:
@@ -252,7 +246,7 @@ Structure:
 Quality bar: a developer who has never seen this codebase can read this doc and
 understand the system well enough to make their first change without asking someone.
 
-Output the doc body only (no frontmatter — ct adds that).
+Return the doc body only (no frontmatter — ct adds that).
 ```
 
 Store with a clean topic name (no timestamps for docs). Scaffold with `ct vault create -t doc`, edit the body, then `ct vault commit <path>`.
@@ -272,7 +266,7 @@ Run `ct vault check` and review the output. Broken links fall into categories:
 |---|---|
 | Links to archived artifacts | Leave — Obsidian resolves across archive/ |
 | Links to renamed files | Update the link to the new stem |
-| Forward references to unwritten specs | Leave — they'll resolve when created |
+| Forward references to unwritten research | Leave — they'll resolve when created |
 | Stale cross-references | Remove the link |
 
 Only fix links in active (non-archived) artifacts. Don't chase links inside archived files.

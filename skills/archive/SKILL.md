@@ -1,10 +1,7 @@
 ---
 name: archive
 description: 'Archive consumed blueprint artifacts and preserve content in git notes. Use when blueprint artifacts are implemented, obsolete, or ready to move into archive/ without losing history.'
-argument-hint: "[<slug-or-path>] [--type <spec|plan|review|report>]"
-allowed-tools:
-  - Bash
-  - Glob
+argument-hint: "[<slug-or-path>] [--type <research|plan|doc>]"
 user-invocable: true
 ---
 
@@ -15,7 +12,7 @@ Move consumed blueprint artifacts to `archive/` and store their content as git n
 ## Arguments
 
 - `<slug-or-path>` — file path or slug substring to match
-- `--type <spec|plan|review|report>` — restrict search to one artifact type (optional)
+- `--type <research|plan|doc>` — restrict search to one artifact type (optional)
 - No arguments → list active artifacts across all types, let user pick
 
 ## Workflow
@@ -54,4 +51,4 @@ ct vault archive --batch <f1> <f2> <f3>               # one commit for all
 ct vault archive --dry-run --batch <f1> <f2>          # preview, no writes
 ```
 
-Output what was archived.
+State what was archived.

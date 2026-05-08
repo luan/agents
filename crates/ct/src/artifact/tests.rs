@@ -1,7 +1,6 @@
 use super::archive::{archive, cmd_archive};
 use super::crud::{
-    Comment, CreateOpts, cmd_retag, create, parse_comments, read, resolve_artifact_path,
-    resolve_stem_universal,
+    CreateOpts, cmd_retag, create, read, resolve_artifact_path, resolve_stem_universal,
 };
 use super::listing::{list_archived_artifacts, list_artifacts};
 use super::{
@@ -83,12 +82,12 @@ fn universal_resolve_picks_highest_priority_kind() {
     let tmp = std::env::temp_dir().join(format!("ct-univ-prio-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
 
-    let _spec = create_artifact_file(&tmp, "myproj", ArtifactKind::Spec, "widget");
+    let _research = create_artifact_file(&tmp, "myproj", ArtifactKind::Research, "widget");
     let doc = create_artifact_file(&tmp, "myproj", ArtifactKind::Doc, "widget");
 
     with_blueprints_dir(&tmp, || {
         let result = resolve_stem_universal("widget").expect("resolve widget");
-        assert_eq!(result, doc, "Doc should take priority over Spec");
+        assert_eq!(result, doc, "Doc should take priority over Research");
     });
     std::fs::remove_dir_all(&tmp).ok();
 }
@@ -108,28 +107,13 @@ fn universal_resolve_single_match() {
 }
 
 #[test]
-fn universal_resolve_report_over_plan() {
-    let tmp = std::env::temp_dir().join(format!("ct-univ-rp-{}", std::process::id()));
-    std::fs::create_dir_all(&tmp).unwrap();
-
-    let _plan = create_artifact_file(&tmp, "myproj", ArtifactKind::Plan, "auth");
-    let report = create_artifact_file(&tmp, "myproj", ArtifactKind::Report, "auth");
-
-    with_blueprints_dir(&tmp, || {
-        let result = resolve_stem_universal("auth").expect("resolve auth");
-        assert_eq!(result, report, "Report should take priority over Plan");
-    });
-    std::fs::remove_dir_all(&tmp).ok();
-}
-
-#[test]
 fn frontmatter_full_all_fields() {
     let content = "\
 ---
 topic: \"My Widget\"
 project: myproj
 created: 2026-01-15T10:30:00Z
-source: \"[[some-spec]]\"
+source: \"[[some-research]]\"
 tags:
   - type/plan
   - domain/combat
@@ -143,7 +127,7 @@ author: \"Luan\"
     assert_eq!(title, "My Widget");
     assert_eq!(project, "myproj");
     assert_eq!(created.as_deref(), Some("2026-01-15T10:30:00Z"));
-    assert_eq!(source.as_deref(), Some("some-spec"));
+    assert_eq!(source.as_deref(), Some("some-research"));
     assert_eq!(
         tags,
         vec!["type/plan", "domain/combat", "stage/implementing"]
@@ -191,11 +175,11 @@ fn frontmatter_full_source_wiki_link_brackets() {
 ---
 topic: Linked
 project: p
-source: \"[[my-source-spec]]\"
+source: \"[[my-source-research]]\"
 ---
 ";
     let (_, _, _, source, _, _) = extract_frontmatter_full_from_str(content);
-    assert_eq!(source.as_deref(), Some("my-source-spec"));
+    assert_eq!(source.as_deref(), Some("my-source-research"));
 }
 
 #[test]
@@ -224,54 +208,6 @@ fn frontmatter_full_falls_back_to_h1() {
     assert!(author.is_none());
 }
 
-#[test]
-fn parse_comments_with_highlight() {
-    let comments = parse_comments("==foo==<!--bar-->");
-    assert_eq!(comments.len(), 1);
-    assert_eq!(comments[0].line, 1);
-    assert_eq!(comments[0].highlight.as_deref(), Some("foo"));
-    assert_eq!(comments[0].text, "bar");
-}
-
-#[test]
-fn parse_comments_without_highlight() {
-    let comments = parse_comments("<!--bar-->");
-    assert_eq!(comments.len(), 1);
-    assert_eq!(comments[0].line, 1);
-    assert_eq!(comments[0].highlight, None);
-    assert_eq!(comments[0].text, "bar");
-}
-
-#[test]
-fn parse_comments_multiple_on_one_line() {
-    let comments = parse_comments("<!--a--> <!--b-->");
-    assert_eq!(comments.len(), 2);
-    assert_eq!(comments[0].line, 1);
-    assert_eq!(comments[0].text, "a");
-    assert_eq!(comments[1].line, 1);
-    assert_eq!(comments[1].text, "b");
-}
-
-#[test]
-fn parse_comments_no_comments() {
-    let comments = parse_comments("just text");
-    assert!(comments.is_empty());
-}
-
-#[test]
-fn parse_comments_highlight_without_comment() {
-    let comments = parse_comments("==foo==");
-    assert!(comments.is_empty());
-}
-
-#[test]
-fn parse_comments_on_later_line() {
-    let comments = parse_comments("line1\nline2\n<!--here-->");
-    assert_eq!(comments.len(), 1);
-    assert_eq!(comments[0].line, 3);
-    assert_eq!(comments[0].text, "here");
-}
-
 fn with_blueprints_dir<F: FnOnce()>(tmp: &std::path::Path, f: F) {
     let _guard = CT_BLUEPRINTS_ENV_LOCK
         .lock()
@@ -289,7 +225,7 @@ fn with_blueprints_dir<F: FnOnce()>(tmp: &std::path::Path, f: F) {
 }
 
 #[test]
-fn dive_create_routes_to_dive_folder_with_spec_tag() {
+fn dive_create_routes_to_dive_folder_with_research_tag() {
     let tmp = std::env::temp_dir().join(format!("ct-dive-create-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
 
@@ -298,7 +234,7 @@ fn dive_create_routes_to_dive_folder_with_spec_tag() {
 
     with_blueprints_dir(&tmp, || {
         let _ = create(CreateOpts {
-            kind: ArtifactKind::Spec,
+            kind: ArtifactKind::Research,
             topic: "Sub Topic A",
             project: project.to_str().unwrap(),
             slug_override: Some("hub-sub-topic-a"),
@@ -308,7 +244,7 @@ fn dive_create_routes_to_dive_folder_with_spec_tag() {
         });
 
         let dive_dir = tmp.join("myproj").join("dive");
-        let spec_dir = tmp.join("myproj").join("spec");
+        let research_dir = tmp.join("myproj").join("research");
 
         let dive_files: Vec<_> = fs::read_dir(&dive_dir)
             .expect("dive/ directory must exist")
@@ -317,18 +253,21 @@ fn dive_create_routes_to_dive_folder_with_spec_tag() {
             .collect();
         assert_eq!(dive_files.len(), 1, "exactly one file in dive/");
 
-        let spec_has_files = fs::read_dir(&spec_dir)
+        let research_has_files = fs::read_dir(&research_dir)
             .map(|d| {
                 d.flatten()
                     .any(|e| e.path().extension().and_then(|x| x.to_str()) == Some("md"))
             })
             .unwrap_or(false);
-        assert!(!spec_has_files, "spec/ must not contain the dive file");
+        assert!(
+            !research_has_files,
+            "research/ must not contain the dive file"
+        );
 
         let content = fs::read_to_string(dive_files[0].path()).unwrap();
         assert!(
-            content.contains("type/spec"),
-            "dive file must have type/spec tag"
+            content.contains("type/research"),
+            "dive file must have type/research tag"
         );
         assert!(
             content.contains("source: \"[[20260411-hub]]\""),
@@ -347,9 +286,13 @@ fn include_dives_flag_toggles_list_visibility() {
     let tmp = std::env::temp_dir().join(format!("ct-dive-list-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
 
-    let spec_dir = tmp.join("myproj").join("spec");
-    std::fs::create_dir_all(&spec_dir).unwrap();
-    std::fs::write(spec_dir.join("20260411-hub.md"), "---\ntopic: Hub\n---\n").unwrap();
+    let research_dir = tmp.join("myproj").join("research");
+    std::fs::create_dir_all(&research_dir).unwrap();
+    std::fs::write(
+        research_dir.join("20260411-hub.md"),
+        "---\ntopic: Hub\n---\n",
+    )
+    .unwrap();
 
     let dive_dir = tmp.join("myproj").join("dive");
     std::fs::create_dir_all(&dive_dir).unwrap();
@@ -360,7 +303,7 @@ fn include_dives_flag_toggles_list_visibility() {
     .unwrap();
 
     with_blueprints_dir(&tmp, || {
-        let without = list_artifacts(ArtifactKind::Spec, false);
+        let without = list_artifacts(ArtifactKind::Research, false);
         assert_eq!(
             without.len(),
             1,
@@ -371,11 +314,11 @@ fn include_dives_flag_toggles_list_visibility() {
                 .path
                 .to_string_lossy()
                 .replace('\\', "/")
-                .contains("spec/"),
-            "should be the spec hub"
+                .contains("research/"),
+            "should be the research hub"
         );
 
-        let with_dives = list_artifacts(ArtifactKind::Spec, true);
+        let with_dives = list_artifacts(ArtifactKind::Research, true);
         assert_eq!(
             with_dives.len(),
             2,
@@ -386,7 +329,7 @@ fn include_dives_flag_toggles_list_visibility() {
 }
 
 #[test]
-fn archive_dive_lands_in_archive_dive_not_archive_spec() {
+fn archive_dive_lands_in_archive_dive_not_archive_research() {
     let tmp = std::env::temp_dir().join(format!("ct-dive-archive-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
 
@@ -396,7 +339,7 @@ fn archive_dive_lands_in_archive_dive_not_archive_spec() {
     std::fs::write(&dive_file, "---\ntopic: Sub\n---\n").unwrap();
 
     with_blueprints_dir(&tmp, || {
-        let _ = cmd_archive(ArtifactKind::Spec, dive_file.to_str().unwrap(), false);
+        let _ = cmd_archive(ArtifactKind::Research, dive_file.to_str().unwrap(), false);
 
         let expected = tmp
             .join("myproj")
@@ -406,21 +349,21 @@ fn archive_dive_lands_in_archive_dive_not_archive_spec() {
         let wrong = tmp
             .join("myproj")
             .join("archive")
-            .join("spec")
+            .join("research")
             .join("20260411-hub-sub.md");
 
         assert!(expected.exists(), "archived dive must be at archive/dive/");
         assert!(
             !wrong.exists(),
-            "archived dive must NOT be at archive/spec/"
+            "archived dive must NOT be at archive/research/"
         );
     });
     std::fs::remove_dir_all(&tmp).ok();
 }
 
 #[test]
-fn dive_rejected_on_non_spec_kinds() {
-    let tmp = std::env::temp_dir().join(format!("ct-dive-nonspec-{}", std::process::id()));
+fn dive_rejected_on_non_research_kinds() {
+    let tmp = std::env::temp_dir().join(format!("ct-dive-nonresearch-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
 
     let project = tmp.join("myproj");
@@ -438,11 +381,11 @@ fn dive_rejected_on_non_spec_kinds() {
         });
         assert!(
             result.is_err(),
-            "create with dive=true on a non-Spec kind must return Err"
+            "create with dive=true on a non-Research kind must return Err"
         );
         let msg = result.unwrap_err().to_string();
         assert!(
-            msg.contains("dive is only valid for spec artifacts"),
+            msg.contains("dive is only valid for research artifacts"),
             "error message must mention dive restriction; got: {msg}"
         );
     });
@@ -459,7 +402,7 @@ fn dive_requires_source() {
 
     with_blueprints_dir(&tmp, || {
         let result = create(CreateOpts {
-            kind: ArtifactKind::Spec,
+            kind: ArtifactKind::Research,
             topic: "Orphan Dive",
             project: project.to_str().unwrap(),
             slug_override: None,
@@ -492,11 +435,15 @@ fn archived_dive_is_listable() {
         let dive_dir = tmp.join("myproj").join("dive");
         std::fs::create_dir_all(&dive_dir).unwrap();
         let dive_file = dive_dir.join("20260411-hub-sub.md");
-        std::fs::write(&dive_file, "---\ntopic: Sub\ntags:\n  - type/spec\n---\n").unwrap();
+        std::fs::write(
+            &dive_file,
+            "---\ntopic: Sub\ntags:\n  - type/research\n---\n",
+        )
+        .unwrap();
 
-        let _ = cmd_archive(ArtifactKind::Spec, dive_file.to_str().unwrap(), false);
+        let _ = cmd_archive(ArtifactKind::Research, dive_file.to_str().unwrap(), false);
 
-        let archived = list_archived_artifacts(ArtifactKind::Spec);
+        let archived = list_archived_artifacts(ArtifactKind::Research);
         assert!(
             archived.iter().any(|a| a
                 .path
@@ -524,7 +471,7 @@ fn resolve_artifact_path_finds_dive_by_bare_stem() {
     std::fs::write(&dive_file, "---\ntopic: Detail\n---\n").unwrap();
 
     with_blueprints_dir(&tmp, || {
-        let resolved = resolve_artifact_path("20260411-hub-detail", ArtifactKind::Spec)
+        let resolved = resolve_artifact_path("20260411-hub-detail", ArtifactKind::Research)
             .expect("resolve dive stem");
         assert!(
             resolved
@@ -674,7 +621,7 @@ fn retag_fixes_wrong_auto_derived_tags() {
     std::fs::create_dir_all(&docs_dir).unwrap();
 
     let file = docs_dir.join("widget.md");
-    let content = "---\ntopic: Widget Guide\ntags:\n  - type/spec\n  - project/wrong\n  - domain/ui\n---\n# Widget\n";
+    let content = "---\ntopic: Widget Guide\ntags:\n  - type/research\n  - project/wrong\n  - domain/ui\n---\n# Widget\n";
     std::fs::write(&file, content).unwrap();
 
     with_blueprints_dir(&tmp, || {
@@ -694,7 +641,7 @@ fn retag_fixes_wrong_auto_derived_tags() {
             "non-auto-derived tags should be preserved; got:\n{result}"
         );
         assert!(
-            !result.contains("  - type/spec"),
+            !result.contains("  - type/research"),
             "old type tag should be removed; got:\n{result}"
         );
         assert!(
@@ -735,20 +682,19 @@ fn read_returns_structured_frontmatter_and_body() {
     let file = tmp.join("sample.md");
     std::fs::write(
         &file,
-        "---\ntopic: My Topic\nauthor: me\ncreated: 2026-04-16\nsource: \"[[ref]]\"\ntags:\n  - type/spec\n  - domain/x\n---\nbody line 1\n<!--todo-->\n",
+        "---\ntopic: My Topic\nauthor: me\ncreated: 2026-04-16\nsource: \"[[ref]]\"\ntags:\n  - type/research\n  - domain/x\n---\nbody line 1\n<!--todo-->\n",
     )
     .unwrap();
 
     let outcome = read(&file).expect("read ok");
     assert_eq!(outcome.path, file);
     assert_eq!(outcome.body, "body line 1\n<!--todo-->\n");
-    assert_eq!(outcome.comments.len(), 1, "one inline comment");
     let fm = outcome.frontmatter.expect("frontmatter present");
     assert_eq!(fm.topic.as_deref(), Some("My Topic"));
     assert_eq!(fm.author.as_deref(), Some("me"));
     assert_eq!(fm.created.as_deref(), Some("2026-04-16"));
     assert_eq!(fm.source.as_deref(), Some("ref"));
-    assert_eq!(fm.tags, vec!["type/spec", "domain/x"]);
+    assert_eq!(fm.tags, vec!["type/research", "domain/x"]);
 
     std::fs::remove_dir_all(&tmp).ok();
 }
@@ -793,20 +739,20 @@ fn archive_core_moves_file_and_returns_destination() {
     let tmp = std::env::temp_dir().join(format!("ct-archive-core-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
 
-    let spec_dir = tmp.join("myproj").join("spec");
-    std::fs::create_dir_all(&spec_dir).unwrap();
-    let spec_file = spec_dir.join("20260411-target.md");
-    std::fs::write(&spec_file, "---\ntopic: T\n---\n").unwrap();
+    let research_dir = tmp.join("myproj").join("research");
+    std::fs::create_dir_all(&research_dir).unwrap();
+    let research_file = research_dir.join("20260411-target.md");
+    std::fs::write(&research_file, "---\ntopic: T\n---\n").unwrap();
 
     with_blueprints_dir(&tmp, || {
-        let _ = archive(ArtifactKind::Spec, &spec_file);
+        let _ = archive(ArtifactKind::Research, &research_file);
         let expected = tmp
             .join("myproj")
             .join("archive")
-            .join("spec")
+            .join("research")
             .join("20260411-target.md");
-        assert!(expected.exists(), "file moved to archive/spec/");
-        assert!(!spec_file.exists(), "source file removed");
+        assert!(expected.exists(), "file moved to archive/research/");
+        assert!(!research_file.exists(), "source file removed");
     });
     std::fs::remove_dir_all(&tmp).ok();
 }
@@ -879,7 +825,7 @@ fn resolve_artifact_path_rejects_path_traversal() {
     let tmp = std::env::temp_dir().join(format!("ct-sec-artpath-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
     with_blueprints_dir(&tmp, || {
-        let err = resolve_artifact_path("../../../etc/passwd", ArtifactKind::Spec)
+        let err = resolve_artifact_path("../../../etc/passwd", ArtifactKind::Research)
             .expect_err("path traversal must be rejected");
         assert!(
             matches!(err, ResolveError::NotFound(_)),
@@ -897,7 +843,7 @@ fn create_sanitizes_slug_override_with_path_separator() {
     std::fs::create_dir_all(&project).unwrap();
     with_blueprints_dir(&tmp, || {
         let outcome = create(CreateOpts {
-            kind: ArtifactKind::Spec,
+            kind: ArtifactKind::Research,
             topic: "Harmless Topic",
             project: project.to_str().unwrap(),
             slug_override: Some("../evil"),
@@ -910,19 +856,19 @@ fn create_sanitizes_slug_override_with_path_separator() {
             Ok(_) | Err(CtError::Sync(_)) => {}
             Err(e) => panic!("unexpected error variant: {e:?}"),
         }
-        let spec_dir = tmp.join("myproj").join("spec");
-        let files: Vec<PathBuf> = fs::read_dir(&spec_dir)
+        let research_dir = tmp.join("myproj").join("research");
+        let files: Vec<PathBuf> = fs::read_dir(&research_dir)
             .map(|d| d.flatten().map(|e| e.path()).collect())
             .unwrap_or_default();
         assert!(
             !files.is_empty(),
             "sanitized slug should have produced a file under {}",
-            spec_dir.display()
+            research_dir.display()
         );
         for path in &files {
             assert!(
-                path.starts_with(&spec_dir),
-                "file escaped project/spec: {}",
+                path.starts_with(&research_dir),
+                "file escaped project/research: {}",
                 path.display()
             );
             let fname = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
@@ -944,7 +890,7 @@ fn create_rejects_whitespace_slug_override() {
     std::fs::create_dir_all(&project).unwrap();
     with_blueprints_dir(&tmp, || {
         let outcome = create(CreateOpts {
-            kind: ArtifactKind::Spec,
+            kind: ArtifactKind::Research,
             topic: "Topic",
             project: project.to_str().unwrap(),
             slug_override: Some("   "),
@@ -1004,6 +950,3 @@ fn create_rejects_duplicate_same_hour() {
     });
     std::fs::remove_dir_all(&tmp).ok();
 }
-
-// Unused-variable guard
-fn _use(_: &Comment) {}

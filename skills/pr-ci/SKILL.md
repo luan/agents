@@ -3,21 +3,6 @@ name: pr-ci
 description: 'Fix failing GitHub Actions or CI checks on a pull request. Use when the user asks to inspect, reproduce, or repair failing PR CI.'
 argument-hint: "[--auto]"
 user-invocable: true
-allowed-tools:
-  - "Bash(gh pr view:*)"
-  - "Bash(gh pr checks:*)"
-  - "Bash(gh pr list:*)"
-  - "Bash(gh run view:*)"
-  - "Bash(gh run list:*)"
-  - "Bash(gh repo view:*)"
-  - "Bash(git branch --show-current)"
-  - "Bash(git add:*)"
-  - "Bash(git commit:*)"
-  - "Bash(git push:*)"
-  - Skill
-  - Read
-  - Glob
-  - Grep
 ---
 
 # PR GHA Fixer

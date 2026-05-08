@@ -7,7 +7,7 @@
   "treeFilterMode": "default",
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-5.5",
-  "defaultThinkingLevel": "medium",
+  "defaultThinkingLevel": "high",
   "skills": [
     "../.codex/skills"
   ],
@@ -15,9 +15,11 @@
     "npm:@ifi/oh-pi-themes",
     "npm:@dreki-gg/pi-context7",
     "npm:@tintinweb/pi-subagents",
-    "npm:@sting8k/pi-vcc"
+    "npm:@sting8k/pi-vcc",
+    "npm:@plannotator/pi-extension"
   ],
   "extensions": [
+    "extensions/plannotator-events/index.ts",
     "-extensions/pi-web-access/index.ts",
     "extensions/pi-vim/index.ts",
     "extensions/lens/index.ts",

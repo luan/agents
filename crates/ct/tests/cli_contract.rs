@@ -65,7 +65,7 @@ fn project_dir() -> TempDir {
 }
 
 #[test]
-fn spec_create_prints_absolute_path_then_newline() {
+fn research_create_prints_absolute_path_then_newline() {
     let (bp, _remote) = setup_blueprints();
     let project = project_dir();
 
@@ -74,7 +74,7 @@ fn spec_create_prints_absolute_path_then_newline() {
             "vault",
             "create",
             "-t",
-            "spec",
+            "research",
             "--topic",
             "test-contract",
             "--project",
@@ -126,7 +126,7 @@ fn plan_create_with_source_includes_wiki_link() {
             "--topic",
             "child",
             "--source",
-            "my-spec-stem",
+            "my-research-stem",
             "--project",
             &project.path().to_string_lossy(),
         ])
@@ -138,7 +138,7 @@ fn plan_create_with_source_includes_wiki_link() {
     let content = fs::read_to_string(path_str).expect("read created file");
 
     assert!(
-        content.contains("source: \"[[my-spec-stem]]\""),
+        content.contains("source: \"[[my-research-stem]]\""),
         "frontmatter must wiki-link the source, got:\n{content}"
     );
 }
@@ -153,7 +153,7 @@ fn create_writes_frontmatter_only_body() {
             "vault",
             "create",
             "-t",
-            "spec",
+            "research",
             "--topic",
             "no-body-here",
             "--project",
@@ -169,7 +169,7 @@ fn create_writes_frontmatter_only_body() {
     let content = fs::read_to_string(path_str).expect("read created file");
 
     // Frontmatter only: file opens with `---\n`, has exactly one closing
-    // `---\n` delimiter, and nothing after. (The literal spec regex
+    // `---\n` delimiter, and nothing after. (The literal research regex
     // `^---\n[^-]*\n---\n$` rejects real frontmatter — `created: 2026-04-16`
     // and tag lines contain `-` — so we encode the underlying intent.)
     assert!(
@@ -452,7 +452,7 @@ fn lens_health_and_final_outputs_are_schema_versioned() {
         .env("XDG_CONFIG_HOME", state.path())
         .args([
             "lens",
-            "report",
+            "doc",
             "--session",
             "health-cli",
             "--turn",
@@ -588,7 +588,7 @@ fn lens_warning_context_stays_clear_and_report_uses_canonical_source_actions() {
         .env("XDG_STATE_HOME", state.path())
         .args([
             "lens",
-            "report",
+            "doc",
             "--session",
             "warn-cli",
             "--turn",
@@ -1165,7 +1165,7 @@ fn lens_pre_tool_hook_omits_claude_permission_allow_for_codex() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
     let value: serde_json::Value = serde_json::from_str(&stdout).expect("hook json");
     assert_eq!(value["continue"], true);
-    assert!(value.get("hookSpecificOutput").is_none());
+    assert!(value.get("hookResearchificOutput").is_none());
 }
 
 #[test]
@@ -1695,7 +1695,7 @@ fn source_diff_scopes_git_diff_to_symbol() {
 }
 
 #[test]
-fn vault_and_source_mcp_servers_are_removed_from_help() {
+fn source_mcp_server_is_removed_but_vault_mcp_is_available() {
     let (bp, _remote) = setup_blueprints();
 
     ct_cmd(bp.path())
@@ -1706,15 +1706,16 @@ fn vault_and_source_mcp_servers_are_removed_from_help() {
     ct_cmd(bp.path())
         .args(["mcp", "vault", "--help"])
         .assert()
-        .failure();
+        .success()
+        .stdout(predicate::str::contains("Serve the vault MCP over stdio"));
 
     ct_cmd(bp.path())
         .args(["mcp", "--help"])
         .assert()
         .success()
         .stdout(predicate::str::contains("lens"))
+        .stdout(predicate::str::contains("vault"))
         .stdout(predicate::str::contains("source").not())
-        .stdout(predicate::str::contains("vault").not())
         .stdout(predicate::str::contains("apply-patch").not())
         .stdout(predicate::str::contains("sym").not())
         .stdout(predicate::str::contains("ast").not())

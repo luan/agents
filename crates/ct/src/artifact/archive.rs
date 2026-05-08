@@ -9,10 +9,10 @@ use super::{
     ArtifactKind, CtError, SyncError, blueprints_dir, commit_and_push, commit_and_push_paths, fatal,
 };
 
-/// Detect the source subfolder (spec/, dive/, plan/, etc.) from a vault path.
+/// Detect the source subfolder (research/, dive/, plan/, etc.) from a vault path.
 /// Falls back to `kind.dir_name()` if the subfolder isn't recognized.
 fn detect_subfolder(path: &Path, bp: &Path, kind: ArtifactKind) -> String {
-    const VALID_SUBFOLDERS: &[&str] = &["spec", "dive", "plan", "review", "report", "docs"];
+    const VALID_SUBFOLDERS: &[&str] = &["research", "dive", "plan", "docs"];
     path.strip_prefix(bp)
         .ok()
         .and_then(|rel| rel.components().nth(1)) // skip project component
@@ -42,9 +42,7 @@ fn archive_single(
     if let Some(ref gd) = git_dir {
         let notes_ref = match kind {
             ArtifactKind::Plan => "plans",
-            ArtifactKind::Spec => "specs",
-            ArtifactKind::Review => "reviews",
-            ArtifactKind::Report => "reports",
+            ArtifactKind::Research => "research",
             ArtifactKind::Doc => "docs",
         };
         let _ = process::Command::new("git")

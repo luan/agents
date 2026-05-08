@@ -88,10 +88,6 @@ fn dispatch_vault(action: cli::VaultAction) -> Result<(), Box<dyn std::error::Er
             let kind = cli::parse_kind_filter(&kind);
             cli::run_vault_prune(kind, days, dry_run, project, json)
         }
-        cli::VaultAction::Comments { kind, file, json } => {
-            let kind = cli::parse_kind_filter(&kind);
-            cli::run_vault_comments(kind, file, json)
-        }
         cli::VaultAction::Rename {
             kind,
             old,
@@ -166,6 +162,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             cli::McpAction::Ast => mcp::run_ast_server(),
             cli::McpAction::Lens => mcp::run_lens_server(),
             cli::McpAction::Lsp => mcp::run_lsp_server(),
+            cli::McpAction::Vault => mcp::run_vault_server(),
         },
         Some(cli::Command::Hook { name }) => Ok(hook::run_hook(&name)?),
         Some(cli::Command::ApplyPatch(args)) => cli::run_apply_patch(args),

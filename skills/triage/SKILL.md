@@ -1,6 +1,6 @@
 ---
 name: triage
-description: 'Triage vault specs and tasks with category and stage metadata. Use when the user asks to classify, prioritize, tag, or prepare vault work for agents or humans.'
+description: 'Triage vault research artifacts and tasks with category and stage metadata. Use when the user asks to classify, prioritize, tag, or prepare vault work for agents or humans.'
 user-invocable: true
 ---
 
@@ -8,7 +8,7 @@ user-invocable: true
 
 Move blueprints vault artifacts through a small state machine of triage roles.
 
-The blueprints vault is canonical. Use `ct vault`.
+The blueprints vault is canonical. Use `vault_*` tools when available; fall back to `ct vault` only when no tool covers the operation.
 
 Every triage note, agent brief, or decision note written to a vault artifact **must** start with this disclaimer:
 

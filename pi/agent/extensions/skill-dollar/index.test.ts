@@ -78,12 +78,12 @@ describe("skill-dollar skills", () => {
 	});
 
 	test("rewrites slash skill references without touching paths", () => {
-		const skills = ["develop", "prepare"];
+		const skills = ["implement", "plan"];
 		expect(
 			rewriteSlashSkillReferences(
-				"Use `/develop`, then suggest /prepare <spec>. Keep ~/blueprints/foo/archive/ unchanged.",
+				"Use `/implement`, then suggest /plan <research>. Keep ~/blueprints/foo/archive/ unchanged.",
 				skills,
 			),
-		).toBe("Use `$develop`, then suggest $prepare <spec>. Keep ~/blueprints/foo/archive/ unchanged.");
+		).toBe("Use `$implement`, then suggest $plan <research>. Keep ~/blueprints/foo/archive/ unchanged.");
 	});
 });

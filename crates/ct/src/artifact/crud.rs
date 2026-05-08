@@ -47,9 +47,9 @@ pub fn create(opts: CreateOpts<'_>) -> Result<CreateOutcome, CtError> {
         user_tags,
         dive,
     } = opts;
-    if dive && kind != ArtifactKind::Spec {
+    if dive && kind != ArtifactKind::Research {
         return Err(CtError::Validation(
-            "dive is only valid for spec artifacts".to_string(),
+            "dive is only valid for research artifacts".to_string(),
         ));
     }
     if dive && source.is_none() {
@@ -96,7 +96,7 @@ pub fn create(opts: CreateOpts<'_>) -> Result<CreateOutcome, CtError> {
 
     let bp = blueprints_dir();
     let proj_name_for_dir = project_name(project);
-    let dir = if dive && kind == ArtifactKind::Spec {
+    let dir = if dive && kind == ArtifactKind::Research {
         bp.join(&proj_name_for_dir).join("dive")
     } else {
         artifact_dir(project, kind)
@@ -197,7 +197,7 @@ pub fn resolve_artifact_path(file_arg: &str, kind: ArtifactKind) -> Result<PathB
             .map_err(|_| ResolveError::NotFound(file_arg.to_string()));
     }
 
-    // Bare stem — scan all projects (include dive/ for Spec).
+    // Bare stem — scan all projects (include dive/ for Research).
     let stem = p.file_stem().unwrap_or(p.as_os_str());
     let query_slug = stem.to_str().map(strip_date_prefix);
     let mut matches = Vec::new();
@@ -207,7 +207,7 @@ pub fn resolve_artifact_path(file_arg: &str, kind: ArtifactKind) -> Result<PathB
             if !entry.path().is_dir() {
                 continue;
             }
-            let scan_dirs: Vec<PathBuf> = if kind == ArtifactKind::Spec {
+            let scan_dirs: Vec<PathBuf> = if kind == ArtifactKind::Research {
                 vec![entry.path().join(kind_dir), entry.path().join("dive")]
             } else {
                 vec![entry.path().join(kind_dir)]
@@ -279,7 +279,7 @@ pub fn resolve_optional_kind(
 }
 
 /// Resolve a bare stem across ALL artifact kinds in priority order:
-/// Doc > Report > Review > Plan > Spec.
+/// Doc > Plan > Research.
 pub fn resolve_stem_universal(stem: &str) -> Result<PathBuf, ResolveError> {
     let p = Path::new(stem);
     if p.exists() {
@@ -394,10 +394,9 @@ pub struct ReadOutcome {
     pub path: PathBuf,
     pub frontmatter: Option<Frontmatter>,
     pub body: String,
-    pub comments: Vec<Comment>,
 }
 
-/// Read an artifact file and parse its frontmatter + body + inline comments.
+/// Read an artifact file and parse its frontmatter + body.
 pub fn read(path: &Path) -> Result<ReadOutcome, CtError> {
     let content = fs::read_to_string(path)?;
     let (yaml, body) = parse_frontmatter(&content);
@@ -411,12 +410,10 @@ pub fn read(path: &Path) -> Result<ReadOutcome, CtError> {
             tags,
         }
     });
-    let comments = parse_comments(body);
     Ok(ReadOutcome {
         path: path.to_path_buf(),
         frontmatter,
         body: body.to_string(),
-        comments,
     })
 }
 
@@ -671,116 +668,4 @@ pub fn cmd_retag(kind: ArtifactKind, file_arg: &str) -> Result<(), SyncError> {
     commit_and_push(rel, &format!("retag({proj_name}): {stem}"))?;
 
     Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Inline comment extraction
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Comment {
-    pub line: usize,
-    pub highlight: Option<String>,
-    #[serde(rename = "comment")]
-    pub text: String,
-}
-
-/// Extract all single-line HTML comments from a markdown body.
-pub fn parse_comments(body: &str) -> Vec<Comment> {
-    let mut out = Vec::new();
-    for (idx, line) in body.lines().enumerate() {
-        let line_no = idx + 1;
-        let mut rest = line;
-        while let Some(start) = rest.find("<!--") {
-            let before = &rest[..start];
-            let after_open = &rest[start + 4..];
-            let Some(end) = after_open.find("-->") else {
-                break;
-            };
-            let comment_text = after_open[..end].trim().to_string();
-
-            let highlight = extract_highlight(before);
-
-            out.push(Comment {
-                line: line_no,
-                highlight,
-                text: comment_text,
-            });
-
-            rest = &after_open[end + 3..];
-        }
-    }
-    out
-}
-
-/// Look for a trailing `==...==` in the text immediately before a comment marker.
-fn extract_highlight(before: &str) -> Option<String> {
-    let trimmed = before.trim_end();
-    if !trimmed.ends_with("==") {
-        return None;
-    }
-    let inner = &trimmed[..trimmed.len() - 2];
-    let start = inner.rfind("==")?;
-    let text = &inner[start + 2..];
-    if text.is_empty() {
-        return None;
-    }
-    Some(text.to_string())
-}
-
-/// Count how many lines the frontmatter occupies (including delimiters).
-fn frontmatter_line_count(content: &str) -> usize {
-    match parse_frontmatter(content) {
-        (None, _) => 0,
-        (Some(yaml), _) => yaml.lines().count() + 2,
-    }
-}
-
-pub fn cmd_comments(file_path: &str, kind: ArtifactKind, json: bool) {
-    let resolved = match resolve_artifact_path(file_path, kind) {
-        Ok(p) => p,
-        Err(e) => fatal(&e.to_string()),
-    };
-    let content = fs::read_to_string(&resolved)
-        .unwrap_or_else(|e| fatal(&format!("cannot read {}: {e}", resolved.display())));
-
-    let fm_lines = frontmatter_line_count(&content);
-    let (_, body) = parse_frontmatter(&content);
-    let mut comments = parse_comments(body);
-
-    let file_display = resolved
-        .file_name()
-        .unwrap_or(resolved.as_os_str())
-        .to_string_lossy();
-
-    for c in &mut comments {
-        c.line += fm_lines;
-    }
-
-    if json {
-        #[derive(serde::Serialize)]
-        struct JsonComment<'a> {
-            file: &'a str,
-            #[serde(flatten)]
-            comment: &'a Comment,
-        }
-        let entries: Vec<_> = comments
-            .iter()
-            .map(|c| JsonComment {
-                file: &file_display,
-                comment: c,
-            })
-            .collect();
-        println!(
-            "{}",
-            serde_json::to_string(&entries).unwrap_or_else(|e| fatal(&format!("json: {e}")))
-        );
-    } else {
-        for c in &comments {
-            match &c.highlight {
-                Some(h) => println!("{file_display}:{}: [{h}] {}", c.line, c.text),
-                None => println!("{file_display}:{}: {}", c.line, c.text),
-            }
-        }
-    }
 }

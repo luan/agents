@@ -242,26 +242,6 @@ pub fn run_vault_read(
 }
 
 // ---------------------------------------------------------------------------
-// Comments
-// ---------------------------------------------------------------------------
-
-pub fn run_vault_comments(
-    kind: Option<ArtifactKind>,
-    file: String,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let (path, resolved_kind) = match artifact::resolve_optional_kind(&file, kind) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
-    };
-    artifact::cmd_comments(&path.to_string_lossy(), resolved_kind, json);
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
 // Archive
 // ---------------------------------------------------------------------------
 
@@ -437,7 +417,7 @@ fn prune_kind(
         }
 
         let mut scan_dirs = vec![dir_entry.path().join(kind_dir)];
-        if kind == ArtifactKind::Spec {
+        if kind == ArtifactKind::Research {
             scan_dirs.push(dir_entry.path().join("dive"));
         }
         for artifact_dir in scan_dirs {

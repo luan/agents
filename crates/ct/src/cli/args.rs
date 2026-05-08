@@ -17,8 +17,8 @@ pub fn parse_kind_filter(s: &str) -> Option<ArtifactKind> {
     }
 }
 
-const KIND_VALUES: [&str; 6] = ["all", "spec", "plan", "review", "report", "doc"];
-const KIND_VALUES_NO_ALL: [&str; 5] = ["spec", "plan", "review", "report", "doc"];
+const KIND_VALUES: [&str; 4] = ["all", "research", "plan", "doc"];
+const KIND_VALUES_NO_ALL: [&str; 3] = ["research", "plan", "doc"];
 
 #[derive(Args)]
 pub struct ApplyPatchArgs {
@@ -447,6 +447,9 @@ pub enum McpAction {
 
     #[command(hide = true, about = "Serve the lsp MCP over stdio")]
     Lsp,
+
+    #[command(about = "Serve the vault MCP over stdio")]
+    Vault,
 }
 
 #[derive(Subcommand)]
@@ -881,7 +884,7 @@ pub enum VaultAction {
         #[arg(long, help = "Show archived artifacts instead of active")]
         archived: bool,
 
-        #[arg(long, help = "Include dive/ files (spec only)")]
+        #[arg(long, help = "Include dive/ files (research only)")]
         include_dives: bool,
     },
 
@@ -910,7 +913,7 @@ pub enum VaultAction {
 
         #[arg(
             long,
-            help = "Route to dive/ instead of spec/ (requires --source; spec only)"
+            help = "Route to dive/ instead of research/ (requires --source; research only)"
         )]
         dive: bool,
 
@@ -966,18 +969,6 @@ pub enum VaultAction {
         project: Option<String>,
 
         #[arg(long, help = "Output JSON")]
-        json: bool,
-    },
-
-    #[command(about = "Extract inline HTML comments from an artifact")]
-    Comments {
-        #[arg(short = 't', long = "type", default_value = "all", value_parser = KIND_VALUES, help = "Restrict resolution to this artifact type")]
-        kind: String,
-
-        #[arg(help = "File path or stem")]
-        file: String,
-
-        #[arg(long, help = "Output as JSON")]
         json: bool,
     },
 
