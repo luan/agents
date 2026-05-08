@@ -3,17 +3,6 @@ name: start
 description: 'Create a new branch using the repo-preferred stack tool. Use when the user asks to start work, create a branch, switch to a new task branch, or begin an issue.'
 argument-hint: "<branch-name> [--auto]"
 user-invocable: true
-allowed-tools:
-  - "Bash(git checkout:*)"
-  - "Bash(git branch:*)"
-  - "Bash(git config:*)"
-  - "Bash(git rev-parse:*)"
-  - "Bash(gt create:*)"
-  - "Bash(gs branch create:*)"
-  - "Bash(gs bc:*)"
-  - TaskUpdate
-  - TaskGet
-  - Skill
 ---
 
 # Start
@@ -29,7 +18,7 @@ Create a branch with the repository's configured Git strategy.
    - `graphite` → `gt create <branch-name>`
    - `git-spice` → `gs branch create <branch-name>`; `gs bc <branch-name>` is the matching shorthand and may be used when brevity matters.
    - `main`, `none`, unset, or invalid → `git checkout -b <branch-name>`
-5. Output branch. If `--auto` was NOT passed, suggest `$spec` or `$develop`. If `--auto` was passed, output nothing — no handoff, no suggestions. The caller is an orchestrator that will handle next steps; any output text risks the model ending its turn prematurely.
+5. State the branch. If `--auto` was NOT passed, suggest `$research` or `$implement`. If `--auto` was passed, output nothing — no handoff, no suggestions. The caller is an orchestrator that will handle next steps; any output text risks the model ending its turn prematurely.
 
 ## Boundary
 

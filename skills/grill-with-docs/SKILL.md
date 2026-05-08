@@ -1,56 +1,34 @@
 ---
 name: grill-with-docs
-description: 'Challenge a plan against vault domain and decision docs, then update vault docs inline when approved. Use when the user asks to grill a plan with documented project context.'
+description: "Challenge a plan against vault domain and decision docs, then update vault docs inline when approved. Use when the user asks to grill a plan with documented project context."
 user-invocable: true
 disable-model-invocation: true
 ---
 
-Interview me relentlessly about every aspect of this plan until we reach a shared understanding. Walk down each branch of the design tree, resolving dependencies between decisions one-by-one. For each question, provide your recommended answer.
+# Grill With Docs
 
-Ask the questions one at a time, waiting for feedback on each question before continuing.
+Interrogate the plan against existing project vocabulary, decisions, and code reality. Ask in small batches and give a recommended answer for each question.
 
-If a question can be answered by exploring the codebase, explore the codebase instead.
+## Gather context
 
-## Domain awareness
+Before questioning, read relevant vault artifacts with `vault_*` tools:
 
-During codebase exploration, also search/read relevant blueprints vault artifacts:
+- domain docs for vocabulary and boundaries
+- decision docs and research artifacts for recorded choices
+- related plans for historical implementation intent
 
-- Domain docs that define project vocabulary and context boundaries.
-- Decision docs/specs that record architectural choices for the touched area.
-- Related specs/plans that capture active or historical product intent.
+If a question can be answered by code exploration, inspect the code instead of asking.
 
-Use `ct vault`. Create or update vault artifacts lazily — only when you have a resolved term or decision to record.
+## Questioning style
 
-## During the session
+- Challenge terms that conflict with vault language.
+- Replace vague language with precise candidate terms.
+- Use concrete scenarios to test boundaries and edge cases.
+- Check code when the user claims current behavior.
+- Keep each batch small enough for the user to answer carefully.
 
-### Challenge against the glossary
+## Updating docs
 
-When the user uses a term that conflicts with existing vault domain language, call it out immediately. "The vault domain doc defines 'cancellation' as X, but you seem to mean Y — which is it?"
+When a domain term is resolved, update the relevant vault domain doc immediately using [VAULT-DOMAIN-DOC-FORMAT.md](./VAULT-DOMAIN-DOC-FORMAT.md). Capture concepts meaningful to domain experts; do not couple domain docs to implementation details.
 
-### Sharpen fuzzy language
-
-When the user uses vague or overloaded terms, propose a precise canonical term. "You're saying 'account' — do you mean the Customer or the User? Those are different things."
-
-### Discuss concrete scenarios
-
-When domain relationships are being discussed, stress-test them with specific scenarios. Invent scenarios that probe edge cases and force the user to be precise about the boundaries between concepts.
-
-### Cross-reference with code
-
-When the user states how something works, check whether the code agrees. If you find a contradiction, surface it: "Your code cancels entire Orders, but you just said partial cancellation is possible — which is right?"
-
-### Update vault domain docs inline
-
-When a term is resolved, update the relevant vault domain doc right there. Don't batch these up — capture them as they happen. Use the format in [VAULT-DOMAIN-DOC-FORMAT.md](./VAULT-DOMAIN-DOC-FORMAT.md).
-
-Don't couple domain docs to implementation details. Only include terms that are meaningful to domain experts.
-
-### Offer decision docs sparingly
-
-Only offer to create a decision doc when all three are true:
-
-1. **Hard to reverse** — the cost of changing your mind later is meaningful
-2. **Surprising without context** — a future reader will wonder "why did they do it this way?"
-3. **The result of a real trade-off** — there were genuine alternatives and you picked one for specific reasons
-
-If any of the three is missing, skip the decision doc. Use the format in [VAULT-DECISION-DOC-FORMAT.md](./VAULT-DECISION-DOC-FORMAT.md).
+Offer a decision doc only when the decision is hard to reverse, surprising without context, and the result of a real trade-off. Use [VAULT-DECISION-DOC-FORMAT.md](./VAULT-DECISION-DOC-FORMAT.md).

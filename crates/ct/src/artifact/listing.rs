@@ -43,14 +43,14 @@ fn list_artifacts_filtered(
         if archived {
             let archive_dir = proj_path.join("archive").join(kind.dir_name());
             collect_artifacts(&bp, &archive_dir, &proj_name, &mut artifacts);
-            if kind == ArtifactKind::Spec {
+            if kind == ArtifactKind::Research {
                 let archive_dive_dir = proj_path.join("archive").join("dive");
                 collect_artifacts(&bp, &archive_dive_dir, &proj_name, &mut artifacts);
             }
         } else {
             let kind_dir = proj_path.join(kind.dir_name());
             collect_artifacts(&bp, &kind_dir, &proj_name, &mut artifacts);
-            if include_dives && kind == ArtifactKind::Spec {
+            if include_dives && kind == ArtifactKind::Research {
                 let dive_dir = proj_path.join("dive");
                 collect_artifacts(&bp, &dive_dir, &proj_name, &mut artifacts);
             }

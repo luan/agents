@@ -20,8 +20,8 @@ pub use args::{
     TaskAction, TuiAction, VaultAction, parse_kind_filter,
 };
 pub use artifact::{
-    ArtifactCreateArgs, run_vault_archive, run_vault_comments, run_vault_create, run_vault_list,
-    run_vault_prune, run_vault_read, run_vault_rename, run_vault_retag,
+    ArtifactCreateArgs, run_vault_archive, run_vault_create, run_vault_list, run_vault_prune,
+    run_vault_read, run_vault_rename, run_vault_retag,
 };
 pub use dev::run_dev;
 pub use lens::run_lens;

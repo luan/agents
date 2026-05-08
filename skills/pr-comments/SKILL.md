@@ -4,16 +4,6 @@ description: 'Fix unresolved pull request review comments locally. Use when the 
 argument-hint: "[--auto]"
 user-invocable: true
 disable-model-invocation: false
-allowed-tools:
-  - "Bash(*fetch_threads.py *)"
-  - "Bash(gh pr view *)"
-  - "Bash(gh pr list *)"
-  - "Bash(git add *)"
-  - "Bash(git push:*)"
-  - Skill
-  - Read
-  - Glob
-  - Grep
 ---
 
 # PR Comments Fixer

@@ -3,20 +3,6 @@ name: crit
 description: 'Run an adversarial review of local changes, branch diffs, or PRs. Use when the user asks for review, critique, sanity check, or requested-changes prep.'
 argument-hint: "[base..head | file-list | PR#] [--auto critical|high|medium|all] [--loop]"
 user-invocable: true
-allowed-tools:
-  - Agent
-  - Read
-  - Glob
-  - Grep
-  - "Bash(git diff:*)"
-  - "Bash(git branch:*)"
-  - "Bash(git log:*)"
-  - "Bash(git status:*)"
-  - "Bash(git symbolic-ref:*)"
-  - "Bash(ct repo:*)"
-  - "Bash(ct task:*)"
-  - "Bash(gt:*)"
-  - "Bash(gh pr:*)"
 ---
 
 # Crit
@@ -76,7 +62,7 @@ Spawn all reviewers in ONE message. Pass raw diffs and context, not summaries. E
 Append this protocol to every reviewer prompt:
 
 ```
-## Output Protocol
+## Response Protocol
 Return a table: Severity | File:Line | Finding | Recommendation | Confidence
 Severity: critical | high | medium | nit
 Confidence: confirmed | likely | needs-check
@@ -163,7 +149,7 @@ You are a tests/operations reviewer and devil's advocate. Try to break the chang
 4. **Mandatory verification:** Read source at every finding's file:line ±20 lines. Classify each as Confirmed / False positive / Pre-existing / Uncertain. Remove false positives. Downgrade pre-existing issues unless the diff worsens them.
 5. **Prune aggressively:** If you cannot explain the concrete failure mode, drop it.
 
-Output directly in chat. Do **not** create a vault review, report, note, file, or canvas.
+Respond directly in chat. Do **not** create a vault artifact, note, file, or canvas.
 
 Use this format:
 
@@ -208,4 +194,4 @@ If `--loop` is present, re-run Step 3 after fixes. Track fixed issues by file + 
 
 ## Step 6: Summary
 
-Output: Fixes Applied, Ignored, Remaining, Verification Run.
+Respond with: Fixes Applied, Ignored, Remaining, Verification Run.

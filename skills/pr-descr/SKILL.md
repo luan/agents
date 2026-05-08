@@ -4,17 +4,6 @@ description: 'Update an existing pull request title and description from branch 
 argument-hint: "[--auto]"
 user-invocable: true
 disable-model-invocation: false
-allowed-tools:
-  - "Bash(git status:*)"
-  - "Bash(git diff:*)"
-  - "Bash(git log:*)"
-  - "Bash(git branch:*)"
-  - "Bash(git show:*)"
-  - "Bash(gh pr view:*)"
-  - "Bash(gh pr edit:*)"
-  - "Bash(gh pr list:*)"
-  - "Bash(cat *PULL_REQUEST_TEMPLATE*)"
-  - Read
 ---
 
 # PR Description

@@ -10,6 +10,7 @@ mod ast;
 mod lens;
 mod lsp;
 mod sym;
+mod vault;
 
 // ---------------------------------------------------------------------------
 // Shared error mapping + resolution helpers used by every sub-server.
@@ -78,6 +79,10 @@ pub fn run_lens_server() -> Result<(), Box<dyn std::error::Error>> {
 
 pub fn run_lsp_server() -> Result<(), Box<dyn std::error::Error>> {
     serve_stdio(lsp::LspMcpServer::new())
+}
+
+pub fn run_vault_server() -> Result<(), Box<dyn std::error::Error>> {
+    serve_stdio(vault::VaultMcpServer::new())
 }
 
 /// Drive a server struct through rmcp's stdio transport until shutdown.

@@ -16,8 +16,8 @@ pub(crate) static CT_BLUEPRINTS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mute
 
 pub use archive::{archive, cmd_archive, cmd_archive_batch};
 pub use crud::{
-    CreateOpts, cmd_comments, cmd_read_resolved, cmd_rename, cmd_retag, create, read,
-    resolve_artifact_path, resolve_optional_kind, resolve_stem_universal,
+    CreateOpts, cmd_read_resolved, cmd_rename, cmd_retag, create, read, resolve_artifact_path,
+    resolve_optional_kind, resolve_stem_universal,
 };
 pub use listing::{list_archived_artifacts, list_artifacts};
 
@@ -40,28 +40,22 @@ pub(crate) fn home_dir() -> String {
 #[serde(rename_all = "lowercase")]
 pub enum ArtifactKind {
     Plan,
-    Spec,
-    Review,
-    Report,
+    Research,
     Doc,
 }
 
-/// Priority order for universal stem resolution: Doc > Report > Review > Plan > Spec.
-pub const ALL_KINDS: [ArtifactKind; 5] = [
+/// Priority order for universal stem resolution: Doc > Plan > Research.
+pub const ALL_KINDS: [ArtifactKind; 3] = [
     ArtifactKind::Doc,
-    ArtifactKind::Report,
-    ArtifactKind::Review,
     ArtifactKind::Plan,
-    ArtifactKind::Spec,
+    ArtifactKind::Research,
 ];
 
 impl ArtifactKind {
     pub fn dir_name(self) -> &'static str {
         match self {
             Self::Plan => "plan",
-            Self::Spec => "spec",
-            Self::Review => "review",
-            Self::Report => "report",
+            Self::Research => "research",
             Self::Doc => "docs",
         }
     }
@@ -74,9 +68,7 @@ impl ArtifactKind {
     pub fn commit_name(self) -> &'static str {
         match self {
             Self::Plan => "plan",
-            Self::Spec => "spec",
-            Self::Review => "review",
-            Self::Report => "report",
+            Self::Research => "research",
             Self::Doc => "doc",
         }
     }
@@ -267,13 +259,13 @@ pub fn artifact_dir(project_path: &str, kind: ArtifactKind) -> PathBuf {
 }
 
 /// Infer the artifact kind from the directory just above the file
-/// (e.g. `<project>/spec/foo.md` → `Spec`). Returns None when the
-/// containing directory is `dive/` (still a Spec) or unrecognized.
+/// (e.g. `<project>/research/foo.md` → `Research`). Returns None when the
+/// containing directory is `dive/` (still a Research) or unrecognized.
 pub fn infer_kind_from_path(path: &Path) -> Option<ArtifactKind> {
     let parent = path.parent()?;
     let name = parent.file_name()?.to_str()?;
     if name == "dive" {
-        return Some(ArtifactKind::Spec);
+        return Some(ArtifactKind::Research);
     }
     ArtifactKind::from_dir_name(name)
 }
@@ -889,7 +881,7 @@ pub fn commit_edits(path_arg: &str, message: Option<&str>) -> Result<CommitOutco
 }
 
 /// Default commit message of the form `<kind>(<project>): edit <slug>` derived
-/// from a vault-relative path like `myproj/spec/20260416-10-foo.md`.
+/// from a vault-relative path like `myproj/research/20260416-10-foo.md`.
 fn default_edit_message(rel_path: &Path) -> String {
     let components: Vec<&str> = rel_path
         .components()

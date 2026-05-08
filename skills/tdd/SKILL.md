@@ -6,8 +6,6 @@ user-invocable: true
 
 # Test-Driven Development
 
-This is the mandatory implementation discipline for `$develop`, not a lifecycle skill. Use it while executing a specific persisted `ct` task or diagnosing a bug with a clear regression seam. Do not use it to define product scope or split work; `$spec` and `$prepare` own that.
-
 ## Philosophy
 
 **Core principle**: Tests should verify behavior through public interfaces, not implementation details. Code can change entirely; tests shouldn't.
@@ -51,7 +49,7 @@ When exploring the codebase, search/read relevant blueprints vault domain and de
 
 Before writing code for the selected behavior:
 
-- [ ] Read the selected task/spec context when available
+- [ ] Read the selected task or research context when available
 - [ ] Confirm what public interface or behavior seam is being exercised
 - [ ] Confirm which behaviors matter most if the task does not already say
 - [ ] Identify opportunities for [deep modules](deep-modules.md) (small interface, deep implementation)
