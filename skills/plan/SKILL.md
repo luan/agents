@@ -23,16 +23,21 @@ Turn approved research into an implementation plan and executable tasks. The pla
 
 2. **Explore implementation shape**
    - Inspect enough code to identify vertical seams, public interfaces, likely test seams, migrations, and sequencing constraints.
+   - Prefer repo-relative paths and stable symbol/module names in notes. Do not put checkout-specific absolute paths into plans or task proposals.
    - Keep this at planning depth; do not implement.
 
 3. **Draft the plan artifact**
    - Create or update a vault plan artifact linked to the research.
-   - Keep it concise: implementation direction, sequencing, major risks, and pointers to the task set.
+   - Include the actual plan: implementation direction, file/module references, sequencing, major risks, verification strategy, and pointers to the task set.
+   - Add a compact structural visual when it reduces review cycles: Mermaid for sequence/state/task dependency flow, Graphviz for module architecture or migration dependencies, or a referenced local image/SVG for UI/visual parity work.
    - Do not duplicate task-level details; each task owns its acceptance criteria, verification, and narrow implementation notes.
 
 4. **Draft tasks**
    - Create a temporary proposal outside the repo before publishing tasks.
-   - Include epic id/title, task titles, AFK vs HITL/review-gated classification, blockers, acceptance criteria, verification, and out-of-scope notes.
+   - Include source research and plan artifact paths, epic id/title, task titles, AFK vs HITL/review-gated classification, blockers, acceptance criteria, verification, and out-of-scope notes.
+   - Shape tasks as vertical slices that each land a user- or reviewer-visible capability. Avoid tiny file-by-file microtasks and broad phase buckets.
+   - Add a final HITL/review-gated task when the outcome needs manual parity review, visual acceptance, migration signoff, or other human judgment.
+   - Use repo-relative paths only; no checkout-specific absolute paths in the plan artifact or proposal.
    - Do not create tasks until the proposal is approved or `--auto` legitimately skips the gate.
 
 5. **Gate when needed**
@@ -52,6 +57,7 @@ Turn approved research into an implementation plan and executable tasks. The pla
 - Each task is independently verifiable.
 - Prefer many small AFK tasks over broad phase tasks.
 - Mark HITL only when human judgment or interaction is genuinely required.
+- For visual or parity work, include a HITL acceptance task that opens the relevant artifact, screenshot, or demo in Plannotator.
 
 ## Completion
 

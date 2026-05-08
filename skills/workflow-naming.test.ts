@@ -27,7 +27,7 @@ describe("research plan implement workflows", () => {
 
 	test("research does not ask for approval after Plannotator approval", () => {
 		const body = skill("research");
-		expect(body).toContain("ask only targeted clarification questions");
+		expect(body).toContain("targeted clarification questions");
 		expect(body).toContain("do not frame these as approval");
 		expect(body).toContain("A handled approved Plannotator gate is sufficient approval to continue");
 		expect(body).toContain("do not ask the user for another approval afterward");
@@ -44,6 +44,16 @@ describe("research plan implement workflows", () => {
 		expect(body).toContain("Plannotator annotations must arrive through the gate result");
 	});
 
+	test("research uses visual review aids without extra approval churn", () => {
+		const body = skill("research");
+		expect(body).toContain("add a lightweight visual section for Plannotator review");
+		expect(body).toContain("Mermaid for flows/sequences/state");
+		expect(body).toContain("Graphviz for architecture/dependency maps");
+		expect(body).toContain("local SVG/PNG image references");
+		expect(body).toContain("ask at most one compact batch");
+		expect(body).toContain("Prefer a concrete default recommendation plus a small choice set");
+	});
+
 	test("workflow skills do not use vault comments as a feedback channel", () => {
 		expect(skill("research")).not.toContain("inline comments");
 		expect(skill("plan")).not.toContain("inline comments");
@@ -57,6 +67,17 @@ describe("research plan implement workflows", () => {
 		expect(body).toContain("Do not create tasks until the proposal is approved");
 		expect(body).toContain("vault_plannotator_gate");
 		expect(body.indexOf("vault_plannotator_gate")).toBeLessThan(body.indexOf("Publish"));
+	});
+
+	test("plan requires real artifacts, visual structure, and vertical task slices", () => {
+		const body = skill("plan");
+		expect(body).toContain("Include the actual plan");
+		expect(body).toContain("file/module references");
+		expect(body).toContain("Add a compact structural visual");
+		expect(body).toContain("source research and plan artifact paths");
+		expect(body).toContain("Avoid tiny file-by-file microtasks and broad phase buckets");
+		expect(body).toContain("Add a final HITL/review-gated task");
+		expect(body).toContain("Use repo-relative paths only");
 	});
 
 	test("implement preserves TDD first and skips optional review gates with auto", () => {
