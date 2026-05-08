@@ -1,7 +1,7 @@
 ---
 name: crit
-description: 'Run a quick adversarial review of local changes or branch diffs. Use when the user asks for a fast review, critique, or sanity check; use superreview for deep review.'
-argument-hint: "[base..head | file-list | PR#] [--auto critical|high|medium|all]"
+description: 'Run an adversarial review of local changes, branch diffs, or PRs. Use when the user asks for review, critique, sanity check, or requested-changes prep.'
+argument-hint: "[base..head | file-list | PR#] [--auto critical|high|medium|all] [--loop]"
 user-invocable: true
 allowed-tools:
   - Agent
@@ -9,23 +9,37 @@ allowed-tools:
   - Glob
   - Grep
   - "Bash(git diff:*)"
+  - "Bash(git branch:*)"
   - "Bash(git log:*)"
   - "Bash(git status:*)"
+  - "Bash(git symbolic-ref:*)"
   - "Bash(ct repo:*)"
-  - "Bash(ct vault:*)"
+  - "Bash(ct task:*)"
+  - "Bash(gt:*)"
   - "Bash(gh pr:*)"
-  - "Bash(gh api:*)"
 ---
 
 # Crit
 
-Fast adversarial review: cleanup pre-pass (reuse / quality / efficiency), then 2 parallel reviewers — one for correctness/security, one adversarial. Covers the highest-value dimensions without the overhead of 5-7 specialists.
+Adversarial review with enough context to catch real defects, without generating vault reports or running a committee. Prefer fewer, confirmed findings over broad speculation.
 
 **NEVER review inline.** Always dispatch subagents via the Agent tool.
 
+## Arguments
+
+- `[base..head | file-list | PR#]` — diff source. Default: branch diff vs parent/trunk.
+- `--auto critical|high|medium|all` — fix findings at or above the selected severity.
+- `--loop` — after auto-fixes, re-run one review pass. Max 3 loops; stop when no fixable findings remain.
+
 ## Step 1: Scope
 
-Resolve BASE: `gh stack view --json 2>/dev/null | jq -r '.trunk // empty' || gt parent 2>/dev/null || gt trunk 2>/dev/null || git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/||'`. Args override.
+Resolve BASE:
+```bash
+gt parent
+gt trunk
+git symbolic-ref --short refs/remotes/origin/HEAD
+```
+Use the first command that returns a ref. Args override.
 
 | Input        | Diff source                       |
 | ------------ | --------------------------------- |
@@ -34,67 +48,42 @@ Resolve BASE: `gh stack view --json 2>/dev/null | jq -r '.trunk // empty' || gt 
 | file list    | `git diff HEAD -- <files>` + read |
 | `#123`       | `gh pr diff 123`                  |
 
-**Bugfix detection:** If commit messages contain "fix"/"bugfix"/"hotfix", classify files as production vs test. ALL test-only → verdict **FAIL** with Critical: "Bugfix contains no production code changes."
-
-## Step 2: Cleanup Pre-pass
-
-**ALWAYS run** unless `#<PR>` input. Spawn 3 agents in ONE message, each with the full diff. Wait for all three, aggregate findings, and apply each fix directly. Skip false positives without arguing, then proceed to Step 3.
-
-### Agent A — Code Reuse
-
+For local diffs, also run:
+```bash
+ct repo context --base $BASE --stat --cochanges
 ```
-You are reviewing a diff for missed opportunities to reuse existing code.
+Use it for changed files, recent commits, diff-stat, and likely related files. Fetch PR title/body/labels with `gh pr view` if available.
 
-## Focus
-1. **Existing utilities and helpers**: search utility directories, shared modules, and files adjacent to the changed ones. Flag any new function that duplicates existing functionality — name the existing function to use instead.
-2. **Inline logic that could use an existing utility**: hand-rolled string manipulation, manual path handling, custom environment checks, ad-hoc type guards.
+**Large diffs (>3000 lines):** Truncate any file with >200 changed lines to first 50 + last 50 diff lines, but tell reviewers which files were truncated and require them to read those files in full before making claims.
 
-Output: table with File:Line | Issue | Replacement. Brief summary.
-```
+**Bugfix detection:** If commit messages or PR title contain "fix"/"bugfix"/"hotfix", classify files as production vs test. ALL test-only → verdict **FAIL** with Critical: "Bugfix contains no production code changes."
 
-### Agent B — Code Quality
+## Step 2: Optional Product/Task Context
 
-```
-You are reviewing a diff for hacky patterns.
+Do this once; do not turn it into a report-writing exercise.
 
-## Focus
-1. **Redundant state**: duplicates existing state, cached values that could be derived, observers/effects that could be direct calls.
-2. **Parameter sprawl**: new parameters added instead of generalizing or restructuring existing ones.
-3. **Copy-paste with slight variation**: near-duplicate blocks that should unify behind a shared abstraction.
-4. **Leaky abstractions**: internal details exposed, existing abstraction boundaries broken.
-5. **Stringly-typed code**: raw strings where constants, enums (string unions), or branded types already exist.
-6. **Unnecessary JSX nesting**: wrapper Boxes/elements that add no layout value — check if inner component props (flexShrink, alignItems, etc.) already provide the needed behavior.
-7. **Unnecessary comments**: comments explaining WHAT, narrating the change, or referencing the task/caller — keep only non-obvious WHY.
-
-Output: table with File:Line | Issue | Fix. Brief summary.
+```bash
+git branch --show-current
+ct task list --all
 ```
 
-### Agent C — Efficiency
+If a task clearly matches the branch, PR title, or user-provided topic, include its ID, status, blockers, and acceptance criteria in reviewer prompts. If no task context exists, continue.
+
+## Step 3: Dispatch Reviewers
+
+Spawn all reviewers in ONE message. Pass raw diffs and context, not summaries. Each reviewer must return only actionable findings and must not write files.
+
+Append this protocol to every reviewer prompt:
 
 ```
-You are reviewing a diff for efficiency problems.
-
-## Focus
-1. **Unnecessary work**: redundant computations, repeated file reads, duplicate network/API calls, N+1 patterns.
-2. **Missed concurrency**: independent operations run sequentially when they could run in parallel.
-3. **Hot-path bloat**: new blocking work added to startup or per-request/per-render hot paths.
-4. **Recurring no-op updates**: state/store updates inside polling loops, intervals, or event handlers that fire unconditionally — add a change-detection guard. If a wrapper takes an updater/reducer callback, verify it honors same-reference returns so callers' early-return no-ops aren't silently defeated.
-5. **Unnecessary existence checks**: pre-checking file/resource existence before operating (TOCTOU) — operate directly and handle the error.
-6. **Memory**: unbounded data structures, missing cleanup, event listener leaks.
-7. **Overly broad operations**: reading entire files when only a portion is needed, loading all items when filtering for one.
-
-Output: table with File:Line | Issue | Fix. Brief summary.
+## Output Protocol
+Return a table: Severity | File:Line | Finding | Recommendation | Confidence
+Severity: critical | high | medium | nit
+Confidence: confirmed | likely | needs-check
+Only include issues caused or exposed by this diff.
+Do not include style preferences, generic best practices, or pre-existing issues unless the diff makes them worse.
+Tag cross-cutting findings as [shared:<category>].
 ```
-
-## Step 3: Context
-
-`ct repo context --base $BASE --stat` → diff-stat, changed-files, log. Fetch PR context via `gh pr view` if available.
-
-## Step 4: Dispatch 2 Reviewers
-
-Spawn both in ONE message. Pass raw diffs, not summaries.
-
-**Large diffs (>3000 lines):** Truncate files with >200 lines of diff to first 50 + last 50 lines.
 
 ### Reviewer 1 — Correctness & Security
 
@@ -102,94 +91,121 @@ Spawn both in ONE message. Pass raw diffs, not summaries.
 You are an adversarial correctness and security reviewer.
 
 ## Gather Context
-1. Run: `ct repo context --base {base_ref} --format json`
-2. Read all changed files from the output
-3. If `truncated_files` is non-empty, `Read` those files in full
-
-## Assumption Verification (do this BEFORE reviewing)
-
-1. **Boundary semantics**: When code branches on a field from an external system, verify what it actually represents by reading the source definition.
-2. **Value correctness across boundaries**: Trace every value crossing a system boundary from producer to consumer. Check tuple/struct destructuring.
-3. **Error fallback safety**: Is the default safe? Silent fallback to production URL or permissive auth can be worse than crashing.
-4. **Completeness of external interactions**: Paginated/batched APIs — verify all pages handled.
-5. **Existing pattern divergence**: Flag reimplementations of existing utilities.
-6. **Multi-driver/adapter symmetry**: Verify patterns applied consistently across all changed files.
+1. Use the provided raw diff as the source of truth.
+2. Run `ct repo context --base {base_ref} --format json` for supplemental repository context.
+3. For local/file-list diffs, read changed files from the raw diff even if `ct repo context` disagrees.
+4. If `truncated_files` is non-empty, read those files in full.
 
 ## Focus
-- Edge cases (empty, null, overflow, concurrent access)
-- Invalid states, race conditions, resource leaks
-- Silent failures, swallowed errors, dangerous fallbacks
-- Off-by-one, logic inversions
+- Edge cases: empty, null, overflow, invalid state, concurrent access
+- Boundary semantics: verify what external fields actually mean at the source definition
+- Values crossing boundaries: trace producer → consumer, including tuple/struct destructuring
+- Dangerous fallbacks: permissive auth, production URLs, swallowed errors, silent defaults
+- External interactions: pagination, batching, retries, partial failure, rate limits
 - Injection, auth/authz gaps, data exposure
-- Missing tests for new/changed behavior
-- Error type conflation (catch-all handlers losing specificity)
+- Error type conflation that loses specificity
 - Input validation gaps
-
-Classify each finding:
-- FIX: correctness bugs, security issues, test gaps
-- IGNORE: style, subjective, out-of-scope tech debt
-
-Tier: critical | notable | nitpick
-
-Output: table with Tier | Disposition | File:Line | Issue | Suggestion
-Then brief summary.
+- Missing tests for changed behavior that can regress
 ```
 
-### Reviewer 2 — Devil's Advocate
+### Reviewer 2 — Design, Reuse & Maintainability
 
 ```
-You are an adversarial devil's advocate reviewer. Try to break everything.
+You are a design and maintainability reviewer. Find the smallest real improvements that reduce future bugs.
 
 ## Gather Context
-1. Run: `ct repo context --base {base_ref} --format json`
-2. Read all changed files from the output
-3. If `truncated_files` is non-empty, `Read` those files in full
+1. Use the provided raw diff as the source of truth.
+2. Run `ct repo context --base {base_ref} --format json` for supplemental repository context.
+3. For local/file-list diffs, read changed files from the raw diff even if `ct repo context` disagrees.
+4. Search adjacent modules, utility directories, and shared packages before claiming duplication.
+5. Read related cochanged files when `cochanges` are provided.
 
 ## Focus
-- **Failure modes**: What happens when dependencies fail?
-- **Bad assumptions**: What does this code assume that might not hold?
-- **Silent contract changes**: When behavior changes, check all callers.
-- **Race conditions**: Trace full execution paths for async/concurrent code.
-- **Adversarial input**: Malformed, enormous, deeply nested, special chars.
-- **Premise check**: Does the fix actually fix the stated problem?
-- **Approach risks**: Solving the right problem?
-- **Assumption inversion**: What does each filter/guard INCORRECTLY exclude?
-- **Silent data loss**: Operations suppressed during certain states.
-- **Over-engineering**: Abstractions with <3 call sites, "might need it later" scaffolding.
-- **Architecture**: Incomplete refactors, coupling, unnecessary indirection.
-- **Performance**: O(n^2) loops, unbounded growth, N+1 queries, hot-path waste.
-
-Classify each finding:
-- FIX: correctness bugs, security issues, test gaps
-- IGNORE: style, subjective, out-of-scope tech debt
-
-Tier: critical | notable | nitpick
-
-Output: table with Tier | Disposition | File:Line | Issue | Suggestion
-Then brief summary.
+- Existing helpers/utilities that should be reused instead of duplicating logic
+- Incomplete refactors, leaky abstractions, broken module boundaries
+- Copy-paste with slight variation that should unify behind an existing abstraction
+- Parameter sprawl or redundant state instead of derived state
+- Stringly-typed code where project constants/types already exist
+- Over-engineering: scaffolding, abstractions with too few real call sites, "might need it later"
+- Unnecessary comments explaining WHAT instead of non-obvious WHY
+- Approach fitness: simpler alternative, goal mismatch, or solving the wrong problem
 ```
 
-## Step 5: Consolidate
+### Reviewer 3 — Tests, Operations & Devil's Advocate
 
-1. **Validate**: Spot-check 1-2 claims per reviewer. Read actual code at file:line. Prune false positives aggressively.
-2. **Deduplicate**: Same issue → highest severity.
-3. **Consensus**: Critical from either reviewer survives. Non-critical flagged by both → keep. Flagged by one → keep if confirmed by spot-check, otherwise IGNORE.
+```
+You are a tests/operations reviewer and devil's advocate. Try to break the change in production.
 
-Output `# Review Summary`:
+## Gather Context
+1. Use the provided raw diff as the source of truth.
+2. Run `ct repo context --base {base_ref} --format json` for supplemental repository context.
+3. For local/file-list diffs, read changed files from the raw diff even if `ct repo context` disagrees.
+4. Read changed tests and production files together.
+5. If PR/task context exists, compare the diff against stated acceptance criteria.
 
-- **FIX table**: Tier | File:Line | Finding | Recommendation
-- **IGNORE** section (collapsed): findings below threshold
-- **Verdict**: PASS (no FIX items) | CHANGES_REQUESTED (any FIX) | FAIL (any Critical)
+## Focus
+- Missing or weak tests for critical behavior, regressions, migrations, and failure paths
+- Test assertions that only prove implementation details or snapshots, not behavior
+- Dependency failures, bad network responses, empty data, malformed/adversarial input
+- Race conditions across async/concurrent paths
+- Silent contract changes: check callers when behavior changes
+- Performance: N+1 queries, O(n²), unbounded growth, hot-path blocking work
+- Operational risk: logging sensitive data, poor diagnostics, unsafe rollout/migration behavior
+- Premise check: does the fix actually fix the stated problem?
+- Assumption inversion: what does each guard/filter incorrectly exclude?
+```
 
-Store the review via `ct vault create -t review --topic "Review: <branch>"`, edit the scaffold with the findings body, then `ct vault commit <path>`.
+## Step 4: Aggregate and Verify
 
-## Step 6: Fix
+1. **Approach assessment:** Rate the diff: Sound | Minor Concerns | Significant Concerns | Alternative Recommended. Consider goal alignment, premise, simpler alternatives, and scope.
+2. **Deduplicate:** Same root cause → one finding with affected facets/files.
+3. **Consensus:** Critical/high from any reviewer survives after verification. Medium/nit survives only if confirmed or shared by 2+ reviewers.
+4. **Mandatory verification:** Read source at every finding's file:line ±20 lines. Classify each as Confirmed / False positive / Pre-existing / Uncertain. Remove false positives. Downgrade pre-existing issues unless the diff worsens them.
+5. **Prune aggressively:** If you cannot explain the concrete failure mode, drop it.
 
-`--auto critical|high|medium|all` → auto-fix at or above the given severity.
+Output directly in chat. Do **not** create a vault review, report, note, file, or canvas.
+
+Use this format:
+
+```
+# Review Summary
+
+Approach: <rating> — <one sentence>
+Verification: <confirmed N, removed N, uncertain N>
+
+## Fix Required
+| Severity | File:Line | Finding | Recommendation |
+
+## Nits / Optional
+| File:Line | Finding | Recommendation |
+
+## Ignored
+- <brief false-positive or out-of-scope summary, collapsed>
+
+Verdict: PASS | CHANGES_REQUESTED | FAIL
+```
+
+Verdict rules:
+- **PASS**: no confirmed required fixes.
+- **CHANGES_REQUESTED**: any confirmed high/medium required fix.
+- **FAIL**: any confirmed critical issue, including bugfix-with-tests-only.
+
+## Step 5: Fix
+
+Skip this step when there are no confirmed fixable findings.
+
+`--auto critical|high|medium|all` → auto-fix at or above the selected severity:
+- `critical`: critical only
+- `high`: critical + high
+- `medium`: critical + high + medium
+- `all`: everything, including nits
+
 No `--auto` → ask: Fix all / Fix critical+high / Fix critical only / Skip.
 
-Spawn fix agent → fix, verify, self-check (remove debug artifacts, unused imports), hand off changed paths and verification. Single pass — no re-review loop (use `$superreview --loop` for iterative fixing).
+Spawn one fix agent with only confirmed FIX items. It must fix, verify, self-check for debug artifacts and unused imports, and report changed paths plus verification.
 
-## Step 7: Summary
+If `--loop` is present, re-run Step 3 after fixes. Track fixed issues by file + description. Stop after no fixable findings remain, user stops, or 3 loops.
 
-Output: Fixes Applied, Ignored, Remaining. Suggest `$superreview` if the user wants deeper analysis.
+## Step 6: Summary
+
+Output: Fixes Applied, Ignored, Remaining, Verification Run.
