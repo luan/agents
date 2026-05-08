@@ -17,7 +17,7 @@ pub fn run() -> Result<()> {
     let global_agents = root.join("GLOBAL_AGENTS.md");
     assert_symlink(&root.join("claude/CLAUDE.md"), &global_agents)?;
     assert_symlink(&root.join("codex/AGENTS.md"), &global_agents)?;
-    assert_symlink(&root.join("pi/AGENTS.md"), &global_agents)?;
+    assert_symlink(&root.join("pi/agent/AGENTS.md"), &global_agents)?;
     assert_symlink(
         &root.join("claude/local-plugins/plugins/gt"),
         &root.join("plugins/gt"),
@@ -136,5 +136,9 @@ fn assert_no_checkout_paths(root: &Path) -> Result<()> {
 
 fn is_checkout_path_scan_excluded(path: &Path) -> bool {
     // Pi runtime state includes checkout-local cwd/session paths and is gitignored.
-    path.ends_with("pi/agent/sessions") || path.ends_with("pi/agent/run-history.jsonl")
+    path.ends_with("pi/agent/sessions")
+        || path.ends_with("pi/agent/run-history.jsonl")
+        || path.ends_with("pi/agent/mcp-cache.json")
+        || path.ends_with("pi/agent/mcp-oauth")
+        || path.ends_with("pi/agent/mcp-onboarding.json")
 }

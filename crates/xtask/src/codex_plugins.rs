@@ -140,16 +140,13 @@ fn install_plugin(
     fs::create_dir_all(&parent).with_context(|| format!("mkdir -p {}", parent.display()))?;
 
     let tmp = parent.join(format!(".{}.tmp", file_name(&target)?));
-    let backup = parent.join(format!(".{}.old", file_name(&target)?));
 
     let _ = fs::remove_dir_all(&tmp);
     copy_tree(&source_path, &tmp)?;
-    let _ = fs::remove_dir_all(&backup);
     if target.exists() || fs::symlink_metadata(&target).is_ok() {
-        fs::rename(&target, &backup).with_context(|| format!("backup {}", target.display()))?;
+        remove_path(&target).with_context(|| format!("remove {}", target.display()))?;
     }
     fs::rename(&tmp, &target).with_context(|| format!("install {}", target.display()))?;
-    let _ = fs::remove_dir_all(&backup);
 
     println!(
         "installed {}@{} {} -> {}",
@@ -159,6 +156,15 @@ fn install_plugin(
         target.display()
     );
     Ok(())
+}
+
+fn remove_path(path: &Path) -> std::io::Result<()> {
+    let meta = fs::symlink_metadata(path)?;
+    if meta.is_dir() && !meta.file_type().is_symlink() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    }
 }
 
 fn manifest_path(plugin_root: &Path) -> Result<PathBuf> {

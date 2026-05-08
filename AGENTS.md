@@ -6,6 +6,7 @@
 4. All tests pass before committing. You own every failure you can see.
 5. After changing `ct`, run `just install` so the live `ct` binary matches the repo.
 6. Task discipline: if you create or select a task and then execute it in the same session, immediately mark it `in_progress` and assign it to the current session before editing files. Leave tasks open/unassigned only when you are handing them off for future work.
+
 ## Repo Purpose
 
 This repo is the central hub for local agent configuration. The checked-in

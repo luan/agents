@@ -1,6 +1,7 @@
 import type { AssistantMessage } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { closeOpenAICodexWebSocketSessions } from "../apply-patch/freeform-codex.ts";
+import registerCodexAppsBridge from "./codex-apps.ts";
 import registerOpenAINativeCompaction from "./compaction/index.ts";
 import {
 	createImageGenerationTool,
@@ -37,8 +38,9 @@ export function isCodexWebSocketError(message: AssistantMessage): boolean {
 	);
 }
 
-export default function codexNativeExtension(pi: ExtensionAPI) {
+export default async function codexNativeExtension(pi: ExtensionAPI) {
 	registerOpenAINativeCompaction(pi);
+	await registerCodexAppsBridge(pi);
 	pi.registerTool(createImageGenerationTool());
 
 	const applyToolPolicy = (ctx?: ExtensionContext) => {

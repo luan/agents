@@ -1632,10 +1632,165 @@ describe("tasks extension", () => {
 			{ message: { role: "assistant", content: [{ type: "text", text: "Done again." }] } },
 			ctx,
 		);
+		await handlers.turn_end({}, ctx);
+
+		expect(replacement).toBeUndefined();
+		expect(sent).toHaveLength(2);
+		expect(sent[1].message.display).toBe(true);
+		expect(sent[1].message.content[0].text).toContain("Task guard stalled");
+		expect(sent[1].message.content[0].text).toContain("Required next action");
+	});
+
+	test("task guard keeps answers visible when escalation follows a user question", async () => {
+		const handlers: Record<string, any> = {};
+		const sent: any[] = [];
+		tasksExtension(
+			{
+				registerTool() {},
+				on(name: string, handler: any) {
+					handlers[name] = handler;
+				},
+				sendMessage(message: any, options: any) {
+					sent.push({ message, options });
+				},
+			} as any,
+			{
+				runCommand: async () => ({
+					stdout: JSON.stringify({
+						tasks: [
+							{ ...task, id: "t", title: "Still open", status: "open", assigned_to: "session:test-session" },
+						],
+					}),
+					stderr: "",
+					exitCode: 0,
+				}),
+			},
+		);
+		const ctx = {
+			cwd: "/tmp/project",
+			sessionId: "test-session",
+			signal: undefined,
+			ui: { notify() {} },
+		};
+
+		await handlers.message_end({ message: { role: "assistant", content: [{ type: "text", text: "Done." }] } }, ctx);
+		await handlers.turn_end({}, ctx);
+		await handlers.message_end(
+			{ message: { role: "user", content: [{ type: "text", text: "what happened?" }] } },
+			ctx,
+		);
+		const replacement = await handlers.message_end(
+			{ message: { role: "assistant", content: [{ type: "text", text: "The task guard stalled." }] } },
+			ctx,
+		);
 
 		expect(sent).toHaveLength(1);
-		expect(replacement.message.content[0].text).toContain("Task guard stalled");
-		expect(replacement.message.content[0].text).toContain("Required next action");
+		expect(replacement).toBeUndefined();
+	});
+
+	test("task guard stops auto-triggering after 3 turn ends on the same task", async () => {
+		const handlers: Record<string, any> = {};
+		const sent: any[] = [];
+		tasksExtension(
+			{
+				registerTool() {},
+				on(name: string, handler: any) {
+					handlers[name] = handler;
+				},
+				sendMessage(message: any, options: any) {
+					sent.push({ message, options });
+				},
+			} as any,
+			{
+				runCommand: async () => ({
+					stdout: JSON.stringify({
+						tasks: [
+							{
+								...task,
+								id: "t",
+								title: "Long-running task",
+								status: "in_progress",
+								assigned_to: "session:test-session",
+							},
+						],
+					}),
+					stderr: "",
+					exitCode: 0,
+				}),
+			},
+		);
+		const ctx = {
+			cwd: "/tmp/project",
+			sessionId: "test-session",
+			signal: undefined,
+			ui: { notify() {} },
+		};
+
+		for (let i = 0; i < 4; i++) {
+			handlers.tool_execution_end({ result: { details: { filesChanged: 1 } } });
+			await handlers.message_end(
+				{ message: { role: "assistant", content: [{ type: "text", text: `Progress ${i}` }] } },
+				ctx,
+			);
+			await handlers.turn_end({}, ctx);
+		}
+
+		expect(sent).toHaveLength(4);
+		expect(sent.slice(0, 3).map((item) => item.options)).toEqual([
+			{ deliverAs: "followUp", triggerTurn: true },
+			{ deliverAs: "followUp", triggerTurn: true },
+			{ deliverAs: "followUp", triggerTurn: true },
+		]);
+		expect(sent[3].options).toEqual({ deliverAs: "followUp" });
+		expect(sent[3].message.display).toBe(true);
+		expect(sent[3].message.content[0].text).toContain("automatic continuation paused");
+	});
+
+	test("task guard does not clobber arbitrary user-directed answers", async () => {
+		const handlers: Record<string, any> = {};
+		const sent: any[] = [];
+		tasksExtension(
+			{
+				registerTool() {},
+				on(name: string, handler: any) {
+					handlers[name] = handler;
+				},
+				sendMessage(message: any, options: any) {
+					sent.push({ message, options });
+				},
+			} as any,
+			{
+				runCommand: async () => ({
+					stdout: JSON.stringify({
+						tasks: [
+							{ ...task, id: "t", title: "Still open", status: "open", assigned_to: "session:test-session" },
+						],
+					}),
+					stderr: "",
+					exitCode: 0,
+				}),
+			},
+		);
+		const ctx = {
+			cwd: "/tmp/project",
+			sessionId: "test-session",
+			signal: undefined,
+			ui: { notify() {} },
+		};
+
+		await handlers.message_end(
+			{ message: { role: "user", content: [{ type: "text", text: "task guard is breaking everything" }] } },
+			ctx,
+		);
+		const replacement = await handlers.message_end(
+			{ message: { role: "assistant", content: [{ type: "text", text: "I'll fix the guard." }] } },
+			ctx,
+		);
+		await handlers.turn_end({}, ctx);
+
+		expect(replacement).toBeUndefined();
+		expect(sent).toHaveLength(1);
+		expect(sent[0].message.display).toBe(false);
 	});
 
 	test("task guard assigns unassigned blockers before continuing", async () => {

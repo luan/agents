@@ -19,17 +19,10 @@ const TARGETS: &[(&str, &[&str])] = &[
 ];
 
 const AGENTS_HOME: &[&str] = &[".agents"];
-const LEGACY_AGENTS_HOME_ENTRIES: &[&str] = &["rules", "skills"];
-
-const LEGACY_BIN_LINKS: &[&str] = &["agents-hook"];
 
 pub fn run(mode: Mode) -> Result<()> {
     let root = crate::repo_root();
     let home = dirs::home_dir().context("cannot determine HOME")?;
-
-    if mode != Mode::DryRun {
-        cleanup_legacy_bin_links(&root, &home);
-    }
 
     let mut errors: usize = 0;
     let agents_home = target_from_segments(&home, AGENTS_HOME);
@@ -132,13 +125,6 @@ fn act_agents_home_link(root: &Path, target: &Path) -> Result<()> {
                 eprintln!("  = {} (repo checkout)", target.display());
                 return Ok(());
             }
-            if is_legacy_agents_home(root, target)? {
-                fs::remove_dir_all(target)
-                    .with_context(|| format!("remove legacy {}", target.display()))?;
-                create_symlink(root, target)?;
-                eprintln!("  + {} -> {}", target.display(), root.display());
-                return Ok(());
-            }
             bail!(
                 "{} already exists and is not this repo checkout (refusing to clobber)",
                 target.display()
@@ -172,14 +158,6 @@ fn act_agents_home_dry_run(root: &Path, target: &Path) -> Result<()> {
         Ok(meta) if meta.is_dir() => {
             if same_canonical_path(root, target)? {
                 eprintln!("  = {} (repo checkout)", target.display());
-                return Ok(());
-            }
-            if is_legacy_agents_home(root, target)? {
-                eprintln!(
-                    "  + would replace legacy {} with symlink to {}",
-                    target.display(),
-                    root.display()
-                );
                 return Ok(());
             }
             bail!(
@@ -217,10 +195,6 @@ fn act_agents_home_unlink(root: &Path, target: &Path) -> Result<()> {
         Ok(meta) if meta.is_dir() => {
             if same_canonical_path(root, target)? {
                 eprintln!("  skip {} (repo checkout)", target.display());
-            } else if is_legacy_agents_home(root, target)? {
-                fs::remove_dir_all(target)
-                    .with_context(|| format!("remove legacy {}", target.display()))?;
-                eprintln!("  - {} (legacy)", target.display());
             } else {
                 eprintln!("  skip {} (not owned by this repo)", target.display());
             }
@@ -248,50 +222,6 @@ fn bail_foreign_symlink(root: &Path, target: &Path) -> Result<()> {
             .unwrap_or_else(|| "<broken>".to_string()),
         root_canon.display(),
     )
-}
-
-fn is_legacy_agents_home(root: &Path, target: &Path) -> Result<bool> {
-    let entries = fs::read_dir(target)
-        .with_context(|| format!("read_dir {}", target.display()))?
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .with_context(|| format!("read_dir entries {}", target.display()))?;
-    if entries.is_empty() {
-        return Ok(true);
-    }
-    for entry in entries {
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else {
-            return Ok(false);
-        };
-        if !LEGACY_AGENTS_HOME_ENTRIES.contains(&name) {
-            return Ok(false);
-        }
-        if !is_owned_legacy_tree(&root.join(name), &entry.path())? {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
-fn is_owned_legacy_tree(source: &Path, target: &Path) -> Result<bool> {
-    let meta = match fs::symlink_metadata(target) {
-        Ok(m) => m,
-        Err(_) => return Ok(false),
-    };
-    if meta.file_type().is_symlink() {
-        return same_canonical_path(source, target);
-    }
-    if !meta.is_dir() || !source.is_dir() {
-        return Ok(false);
-    }
-    for entry in fs::read_dir(target).with_context(|| format!("read_dir {}", target.display()))? {
-        let entry = entry?;
-        let source_child = source.join(entry.file_name());
-        if !is_owned_legacy_tree(&source_child, &entry.path())? {
-            return Ok(false);
-        }
-    }
-    Ok(true)
 }
 
 fn iter_children(source: &Path) -> Result<Vec<PathBuf>> {
@@ -482,32 +412,4 @@ fn create_symlink(source: &Path, target: &Path) -> Result<()> {
             source.display()
         )
     })
-}
-
-fn cleanup_legacy_bin_links(root: &Path, home: &Path) {
-    let bin_dir = home.join("bin");
-    let repo_bin: PathBuf = root.join("bin");
-    for name in LEGACY_BIN_LINKS {
-        let link = bin_dir.join(name);
-        let meta = match fs::symlink_metadata(&link) {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        if !meta.file_type().is_symlink() {
-            continue;
-        }
-        match fs::canonicalize(&link) {
-            Ok(resolved) => {
-                if let Ok(canon_repo) = fs::canonicalize(&repo_bin)
-                    && resolved.starts_with(&canon_repo)
-                {
-                    eprintln!("- unlink legacy {}", link.display());
-                    let _ = fs::remove_file(&link);
-                }
-            }
-            Err(_) => {
-                let _ = fs::remove_file(&link);
-            }
-        }
-    }
 }

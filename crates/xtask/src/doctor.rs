@@ -117,7 +117,7 @@ fn check_repo_symlinks() -> Result<()> {
     let probes: &[&[&str]] = &[
         &["claude", "CLAUDE.md"],
         &["codex", "AGENTS.md"],
-        &["pi", "AGENTS.md"],
+        &["pi", "agent", "AGENTS.md"],
     ];
     let mut bad: Vec<(PathBuf, String)> = Vec::new();
     for parts in probes {

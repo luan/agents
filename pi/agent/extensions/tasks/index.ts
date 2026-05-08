@@ -44,6 +44,8 @@ interface GuardState {
 	progressSerial: number;
 	lastGuardFingerprint?: string;
 	lastGuardProgressSerial?: number;
+	autoLoopTaskId?: string;
+	autoLoopTurns: number;
 	pending?: TaskGuardDecision;
 	pauseResponses: number;
 	lastUserText?: string;
@@ -2305,6 +2307,14 @@ function escalationContent(action: TaskGuardAction): string {
 	].join("\n");
 }
 
+function cappedGuardContent(action: TaskGuardAction): string {
+	return [
+		"Task guard: automatic continuation paused after 3 turns on the same task.",
+		"",
+		guardInstruction(action),
+	].join("\n");
+}
+
 async function evaluateTaskGuard(
 	ctx: ExtensionContext,
 	command: string,
@@ -2318,6 +2328,8 @@ async function evaluateTaskGuard(
 	if (!action) {
 		state.lastGuardFingerprint = undefined;
 		state.lastGuardProgressSerial = undefined;
+		state.autoLoopTaskId = undefined;
+		state.autoLoopTurns = 0;
 		return undefined;
 	}
 	const fingerprint = guardFingerprint(tasks, action, assignedTo);
@@ -2368,7 +2380,22 @@ async function sendTaskGuard(
 ): Promise<void> {
 	const pending = state.pending;
 	state.pending = undefined;
-	if (!pending || pending.kind !== "continue") return;
+	if (!pending) return;
+	if (pending.kind === "escalate") {
+		state.lastGuardFingerprint = pending.fingerprint;
+		state.lastGuardProgressSerial = state.progressSerial;
+		pi.sendMessage(
+			{
+				customType: "task-guard",
+				content: [{ type: "text", text: pending.content }],
+				display: true,
+				details: { action: pending.action.kind, taskId: pending.action.task.id },
+			},
+			{ deliverAs: "followUp" },
+		);
+		state.lastUserText = undefined;
+		return;
+	}
 	let decision: TaskGuardDecision | undefined;
 	try {
 		decision = await autoAssignGuardTask(pending, ctx, pi, command, runCommand, state, config);
@@ -2392,14 +2419,18 @@ async function sendTaskGuard(
 	if (!decision) return;
 	state.lastGuardFingerprint = decision.fingerprint;
 	state.lastGuardProgressSerial = state.progressSerial;
+	const loopTaskId = decision.action.task.id;
+	state.autoLoopTurns = state.autoLoopTaskId === loopTaskId ? state.autoLoopTurns + 1 : 1;
+	state.autoLoopTaskId = loopTaskId;
+	const autoContinue = state.autoLoopTurns <= 3;
 	pi.sendMessage(
 		{
 			customType: "task-guard",
-			content: [{ type: "text", text: decision.content }],
-			display: false,
+			content: [{ type: "text", text: autoContinue ? decision.content : cappedGuardContent(decision.action) }],
+			display: !autoContinue,
 			details: { action: decision.action.kind, taskId: decision.action.task.id },
 		},
-		{ deliverAs: "followUp", triggerTurn: true },
+		autoContinue ? { deliverAs: "followUp", triggerTurn: true } : { deliverAs: "followUp" },
 	);
 	state.lastUserText = undefined;
 }
@@ -2454,7 +2485,7 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 
 	const runCommand = runtime.runCommand ?? defaultRunCommand;
 	let cwd = process.cwd();
-	const guardState: GuardState = { progressSerial: 0, pauseResponses: 0 };
+	const guardState: GuardState = { progressSerial: 0, autoLoopTurns: 0, pauseResponses: 0 };
 	const getCwd = () => cwd;
 	const markProgress = () => {
 		guardState.progressSerial++;
@@ -2515,12 +2546,7 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 		guardState.pending = decision;
 		if (!decision) return undefined;
 		if (decision.kind === "escalate") {
-			return {
-				message: {
-					...message,
-					content: [{ type: "text", text: decision.content }],
-				},
-			};
+			return undefined;
 		}
 		if (!shouldHidePrematureStopAnswer(messageText(message), guardState.lastUserText)) return undefined;
 		return {

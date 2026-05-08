@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { activeCodexAppsToolNames, discoverCodexAppsTools } from "./codex-apps.ts";
 import { isCodexWebSocketError, normalizeCodexWebSocketError as normalizeCodexWebSocketErrorMessage } from "./index.ts";
 import {
 	getOpenAICodexLatestImagePath,
@@ -113,4 +114,84 @@ test("normalizes generic Codex websocket failures for auto-retry", () => {
 			errorMessage: "rate limit",
 		} as never),
 	).toBe(false);
+});
+
+test("discovers Codex app tools from Codex cache", async () => {
+	const root = await mkdtemp(join(tmpdir(), "codex-apps-test-"));
+	await mkdir(root, { recursive: true });
+	await Bun.write(
+		join(root, "tools.json"),
+		JSON.stringify({
+			tools: [
+				{
+					tool: {
+						name: "slack_slack_read_channel",
+						title: "slack_read_channel",
+						description: "Reads messages.",
+						inputSchema: {
+							type: "object",
+							properties: { channel_id: { type: "string" } },
+							required: ["channel_id"],
+						},
+						annotations: { readOnlyHint: true },
+						_meta: {
+							connector_id: "asdk_app_slack",
+							connector_name: "Slack",
+							connector_description: "Slack app",
+							link_id: "link_slack",
+							_codex_apps: { resource_uri: "/asdk_app_slack/link_slack/slack_read_channel" },
+						},
+					},
+				},
+			],
+		}),
+	);
+
+	const tools = await discoverCodexAppsTools(root);
+	expect(tools).toHaveLength(1);
+	expect(tools[0]?.piToolName).toBe("codex_apps_slack_slack_read_channel");
+	expect(tools[0]?.connectorName).toBe("Slack");
+	expect(tools[0]?.readOnly).toBe(true);
+});
+
+test("activates read-only Codex app tools by default and respects explicit toggles", () => {
+	const tools = [
+		{
+			key: "slack:read",
+			piToolName: "codex_apps_slack_read",
+			mcpToolName: "slack_read",
+			title: "read",
+			description: "read",
+			inputSchema: {},
+			connectorId: "slack",
+			connectorName: "Slack",
+			connectorDescription: "",
+			readOnly: true,
+			destructive: false,
+			openWorld: true,
+		},
+		{
+			key: "slack:send",
+			piToolName: "codex_apps_slack_send",
+			mcpToolName: "slack_send",
+			title: "send",
+			description: "send",
+			inputSchema: {},
+			connectorId: "slack",
+			connectorName: "Slack",
+			connectorDescription: "",
+			readOnly: false,
+			destructive: true,
+			openWorld: true,
+		},
+	];
+
+	expect(activeCodexAppsToolNames(tools, { enabled: true }, ["read"])).toEqual(["read", "codex_apps_slack_read"]);
+	expect(activeCodexAppsToolNames(tools, { enabled: true, enabledToolKeys: ["slack:send"] }, ["read"])).toEqual([
+		"read",
+		"codex_apps_slack_send",
+	]);
+	expect(activeCodexAppsToolNames(tools, { enabled: false, enabledToolKeys: ["slack:send"] }, ["read"])).toEqual([
+		"read",
+	]);
 });
