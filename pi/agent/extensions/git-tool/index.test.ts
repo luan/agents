@@ -13,7 +13,7 @@ import gitToolExtension, {
 
 type Handler = (...args: any[]) => unknown;
 
-function createPi(configValue: string | undefined, currentBranch = "feature", trunkBranch = "main") {
+function createPi(configValue: string | undefined) {
 	const handlers = new Map<string, Handler[]>();
 	const pi = {
 		on: (event: string, handler: Handler) => {
@@ -22,9 +22,7 @@ function createPi(configValue: string | undefined, currentBranch = "feature", tr
 	};
 
 	gitToolExtension(pi as any, {
-		readCurrentBranch: () => currentBranch,
 		readGitToolConfig: () => configValue,
-		readTrunkBranch: () => trunkBranch,
 	});
 
 	return { handlers };
@@ -153,7 +151,7 @@ describe("Git-Spice skills", () => {
 	});
 });
 
-describe("git-tool trunk side-effect gate", () => {
+describe("git-tool tool-call handling", () => {
 	test.each([
 		"apply_patch",
 		"functions.apply_patch",
@@ -162,121 +160,8 @@ describe("git-tool trunk side-effect gate", () => {
 		"exec_command",
 		"bash",
 		"functions.exec_command",
-	])("blocks %s on trunk in Graphite mode", (toolName) => {
-		expect(
-			gitToolToolCallBlock(toolCall(toolName), { mode: "graphite", currentBranch: "main", trunkBranch: "main" }),
-		).toEqual({
-			block: true,
-			reason: expect.stringContaining("agents.git-tool=graphite"),
-		});
-	});
-
-	test("blocks side-effect tools on trunk in Git-Spice mode", () => {
-		expect(
-			gitToolToolCallBlock(toolCall("apply_patch"), {
-				mode: "git-spice",
-				currentBranch: "main",
-				trunkBranch: "main",
-			}),
-		).toEqual({
-			block: true,
-			reason: expect.stringContaining("agents.git-tool=git-spice"),
-		});
-	});
-
-	test("allows side-effect tools on non-trunk branches", () => {
-		expect(
-			gitToolToolCallBlock(toolCall("apply_patch"), {
-				mode: "graphite",
-				currentBranch: "feature",
-				trunkBranch: "main",
-			}),
-		).toBeUndefined();
-	});
-
-	test("allows side-effect tools while detached during stack operations", () => {
-		expect(
-			gitToolToolCallBlock(toolCall("apply_patch"), {
-				mode: "graphite",
-				currentBranch: "(detached)",
-				trunkBranch: "main",
-			}),
-		).toBeUndefined();
-	});
-
-	test.each(["main", "none"] as const)("does not activate in %s mode", (mode) => {
-		expect(
-			gitToolToolCallBlock(toolCall("apply_patch"), { mode, currentBranch: "main", trunkBranch: "main" }),
-		).toBeUndefined();
-	});
-
-	test("allows safe read-only git inspection shell commands on trunk", () => {
-		for (const command of [
-			"git status",
-			"git branch --show-current",
-			"git rev-parse --show-toplevel",
-			"git symbolic-ref --short HEAD",
-			"git config --get agents.git-tool",
-			"gt trunk",
-			"gs trunk -n",
-		]) {
-			expect(
-				gitToolToolCallBlock(toolCall("exec_command", command), {
-					mode: command.startsWith("gs ") ? "git-spice" : "graphite",
-					currentBranch: "main",
-					trunkBranch: "main",
-				}),
-			).toBeUndefined();
-		}
-	});
-
-	test("allows trunk query commands before branch state is known", () => {
-		expect(gitToolToolCallBlock(toolCall("exec_command", "gt trunk"), { mode: "graphite" })).toBeUndefined();
-		expect(gitToolToolCallBlock(toolCall("exec_command", "gs trunk -n"), { mode: "git-spice" })).toBeUndefined();
-	});
-
-	test("allows configured tool branch creation commands on trunk", () => {
-		expect(
-			gitToolToolCallBlock(toolCall("exec_command", "gt create luan/feature"), {
-				mode: "graphite",
-				currentBranch: "main",
-				trunkBranch: "main",
-			}),
-		).toBeUndefined();
-		expect(
-			gitToolToolCallBlock(toolCall("exec_command", "gs branch create luan/feature"), {
-				mode: "git-spice",
-				currentBranch: "main",
-				trunkBranch: "main",
-			}),
-		).toBeUndefined();
-		expect(
-			gitToolToolCallBlock(toolCall("exec_command", "gs bc luan/feature"), {
-				mode: "git-spice",
-				currentBranch: "main",
-				trunkBranch: "main",
-			}),
-		).toBeUndefined();
-	});
-
-	test("blocks shell commands that are not whitelisted on trunk", () => {
-		expect(
-			gitToolToolCallBlock(toolCall("exec_command", "git push"), {
-				mode: "graphite",
-				currentBranch: "main",
-				trunkBranch: "main",
-			}),
-		).toEqual({
-			block: true,
-			reason: expect.stringContaining("Start a stack branch first"),
-		});
-	});
-
-	test("fails closed when the selected tool cannot report trunk state", () => {
-		expect(gitToolToolCallBlock(toolCall("apply_patch"), { mode: "git-spice" })).toEqual({
-			block: true,
-			reason: expect.stringContaining("Could not verify the Git-Spice trunk branch"),
-		});
+	])("allows %s", (toolName) => {
+		expect(gitToolToolCallBlock(toolCall(toolName))).toBeUndefined();
 	});
 });
 
@@ -326,13 +211,10 @@ describe("git-tool extension", () => {
 		expect(handlers.get("before_agent_start")?.[0]?.({ systemPrompt: "base" }, {})).toBeUndefined();
 	});
 
-	test("blocks trunk tool calls through the extension handler", () => {
-		const { handlers } = createPi("graphite", "main", "main");
+	test("allows tool calls through the extension handler", () => {
+		const { handlers } = createPi("graphite");
 
-		expect(handlers.get("tool_call")?.[0]?.(toolCall("apply_patch"), {})).toEqual({
-			block: true,
-			reason: expect.stringContaining("Start a stack branch first"),
-		});
+		expect(handlers.get("tool_call")?.[0]?.(toolCall("apply_patch"), {})).toBeUndefined();
 	});
 });
 
