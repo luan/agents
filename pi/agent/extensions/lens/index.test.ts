@@ -285,6 +285,27 @@ describe("Lens hook-only Pi extension", () => {
 		}
 	});
 
+	it("ignores stale ctx errors from resize events after session replacement", () => {
+		let stale = false;
+		const ctx = {
+			get hasUI() {
+				if (stale) throw new Error("This extension ctx is stale after session replacement or reload.");
+				return true;
+			},
+			ui: {
+				setStatus: () => {},
+				setWidget: (_key: string, factory: (tui: unknown, theme: unknown) => unknown) => {
+					factory({ requestRender: () => {} }, { fg: (_color: string, text: string) => text });
+				},
+			},
+		};
+
+		applyLensUi(ctx, { status: "ok", data: { status: "ok" } });
+
+		stale = true;
+		expect(() => process.emit("SIGWINCH")).not.toThrow();
+	});
+
 	it("fails closed before queueing diagnostics when freshness is unknown", () => {
 		const response = {
 			status: "warning",

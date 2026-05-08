@@ -93,8 +93,8 @@ function ensureLensWidget(ctx: any) {
 
 function syncLensUiForTerminal() {
 	const latest = lastLensUi;
-	if (!latest?.ctx?.hasUI) return;
 	try {
+		if (!latest?.ctx?.hasUI) return;
 		if (!hasEnoughRowsForLensUi()) {
 			latest.ctx.ui.setStatus("lens", undefined);
 			lensWidget?.setLines([]);
@@ -105,6 +105,7 @@ function syncLensUiForTerminal() {
 		lensWidget?.setLines(renderLensWidgetLines(latest.response, false, { ansi: true }));
 	} catch (error) {
 		if (!isStaleCtxError(error)) throw error;
+		if (lastLensUi === latest) lastLensUi = undefined;
 	}
 }
 
