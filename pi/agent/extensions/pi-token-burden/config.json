@@ -1,0 +1,3 @@
+{
+  "disabledTools": ["ls", "grab", "find"]
+}

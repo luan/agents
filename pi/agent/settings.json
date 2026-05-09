@@ -8,19 +8,18 @@
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-5.5",
   "defaultThinkingLevel": "high",
-  "skills": [
-    "../.codex/skills"
-  ],
+  "skills": ["../.codex/skills"],
   "packages": [
     "npm:@ifi/oh-pi-themes",
     "npm:@dreki-gg/pi-context7",
     "npm:@tintinweb/pi-subagents",
-    "npm:@sting8k/pi-vcc",
-    "npm:@plannotator/pi-extension"
+    "npm:@plannotator/pi-extension",
+    "npm:@xl0/show-sysprompt"
   ],
   "extensions": [
     "extensions/plannotator-events/index.ts",
-    "-extensions/pi-web-access/index.ts",
+    "extensions/codex-native/index.ts",
+    "extensions/pi-token-burden/index.ts",
     "extensions/pi-vim/index.ts",
     "extensions/lens/index.ts",
     "extensions/tasks/index.ts"

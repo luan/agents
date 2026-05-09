@@ -9,8 +9,6 @@
  *   • bash  — colored exit status, stderr highlighting
  *   • ls    — tree-view directory listing with file-type icons
  *
- * Read exploration grouping is shared with pi-fff search tools.
- *
  * Architecture:
  *   1. Wrap SDK factory tools (createReadTool, createBashTool, etc.)
  *   2. Delegate to original execute() — no behavior changes

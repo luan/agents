@@ -55,21 +55,19 @@ worktrunk-install:
     # The `wt` binary backs the worktrunk claude plugin. `cargo install`
     # rebuilds even when the version is unchanged, so skip when `wt` is
     # already on PATH. To upgrade, run `cargo install worktrunk --force`.
-    @command -v wt >/dev/null 2>&1 || cargo bininstall worktrunk --locked
 
 codex-plugins-install:
     cd "{{ repo }}" && cargo xtask codex-plugins-install
 
 install:
-    curl -L https://dmtrkovalenko.dev/install-fff-mcp.sh | bash
+    @command -v wt >/dev/null 2>&1 || cargo binstall worktrunk --locked
+    @command -v git-surgeon >/dev/null 2>&1 || cargo binstall git-surgeon --locked
     cargo install --path "{{ repo }}/crates/ct"
-    claude mcp remove -s user fff 2>/dev/null || true
     claude mcp remove -s user vault 2>/dev/null || true
     claude mcp remove -s user source 2>/dev/null || true
     claude mcp remove -s user apply-patch 2>/dev/null || true
     claude mcp remove -s user sym 2>/dev/null || true
     claude mcp remove -s user lens 2>/dev/null || true
-    claude mcp add -s user fff -- $HOME/.local/bin/fff-mcp
 
 completions:
     mkdir -p "{{ home }}/.config/fish/completions"
