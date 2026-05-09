@@ -1,4 +1,4 @@
-import type { AssistantMessageEventStream } from "@mariozechner/pi-ai";
+import type { AssistantMessageEventStream } from "@earendil-works/pi-ai";
 import {
 	type Api,
 	type AssistantMessage,
@@ -7,7 +7,7 @@ import {
 	type Model,
 	type Tool,
 	type Usage,
-} from "@mariozechner/pi-ai";
+} from "@earendil-works/pi-ai";
 import type {
 	Tool as OpenAITool,
 	ResponseCreateParamsStreaming,

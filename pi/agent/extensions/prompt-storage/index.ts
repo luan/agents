@@ -13,7 +13,7 @@ import {
 	type KeybindingsManager,
 	SessionManager,
 	type Theme,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import {
 	type Component,
 	Container,
@@ -28,7 +28,7 @@ import {
 	Text,
 	type TUI,
 	truncateToWidth,
-} from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-tui";
 
 type PromptKind = "stash" | "history";
 type PickerAction = "apply" | "pop" | "drop";

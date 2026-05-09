@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createExecCommandTracker } from "./tools/exec-command-state.ts";
 import { registerExecCommandTool } from "./tools/exec-command-tool.ts";
 import { createExecSessionManager } from "./tools/exec-session-manager.ts";

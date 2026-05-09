@@ -1,5 +1,5 @@
-import { type Theme, UserMessageComponent } from "@mariozechner/pi-coding-agent";
-import { Container, visibleWidth } from "@mariozechner/pi-tui";
+import { type Theme, UserMessageComponent } from "@earendil-works/pi-coding-agent";
+import { Container, visibleWidth } from "@earendil-works/pi-tui";
 import { ANSI_RESET, fillBackgroundLine } from "./render-lines";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";

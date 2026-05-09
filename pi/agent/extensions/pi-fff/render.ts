@@ -1,5 +1,5 @@
 import path from "node:path";
-import { Text } from "@mariozechner/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
 import { type ExplorationAction, isExplorationHidden, renderExplorationCall } from "../shared/exploration-rendering";
 
 export function getResultText(result: { content?: { type: string; text?: string }[] }): string {

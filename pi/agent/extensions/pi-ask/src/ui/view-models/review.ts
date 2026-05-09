@@ -1,4 +1,4 @@
-import { visibleWidth } from "@mariozechner/pi-tui";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { SUBMIT_CHOICES } from "../../constants";
 import { isCustomOnlyAnswer } from "../../state/answers";
 import { type ReviewAnswer, shouldRenderAnswersIndividually, toReviewAnswer } from "../../state/result";

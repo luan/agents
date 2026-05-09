@@ -1,4 +1,4 @@
-import { truncateToWidth } from "@mariozechner/pi-tui";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { AskState } from "../types";
 import { UI_TEXT } from "./constants";
 import { mergeColumns, pushSavedNote, pushWrappedText } from "./render-helpers";

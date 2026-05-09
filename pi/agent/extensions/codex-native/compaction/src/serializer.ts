@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type {
 	Api,
 	AssistantMessage,
@@ -11,8 +11,8 @@ import type {
 	ToolCall,
 	ToolResultMessage,
 	UserMessage,
-} from "@mariozechner/pi-ai";
-import { type CompactionPreparation, convertToLlm } from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-ai";
+import { type CompactionPreparation, convertToLlm } from "@earendil-works/pi-coding-agent";
 import type { ResponsesCompatibleRequestPayload } from "./runtime";
 
 export const COMPACTION_SERIALIZER_STRATEGY = "local-same-model-responses-serializer" as const;

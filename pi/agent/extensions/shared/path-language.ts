@@ -1,6 +1,6 @@
 import { basename, extname } from "node:path";
 
-import { getLanguageFromPath } from "@mariozechner/pi-coding-agent";
+import { getLanguageFromPath } from "@earendil-works/pi-coding-agent";
 import type { BundledLanguage } from "shiki";
 
 const PATH_LANGUAGE_CANDIDATES: Record<string, string[]> = {

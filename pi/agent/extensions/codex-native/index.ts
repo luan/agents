@@ -1,5 +1,5 @@
-import type { AssistantMessage } from "@mariozechner/pi-ai";
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { closeOpenAICodexWebSocketSessions } from "../apply-patch/freeform-codex.ts";
 import registerCodexAppsBridge from "./codex-apps.ts";
 import registerOpenAINativeCompaction from "./compaction/index.ts";

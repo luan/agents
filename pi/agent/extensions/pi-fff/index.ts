@@ -6,9 +6,9 @@
  */
 
 import type { GrepMode, MixedItem } from "@ff-labs/fff-node";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { DEFAULT_MAX_BYTES, formatSize, truncateHead } from "@mariozechner/pi-coding-agent";
-import { type AutocompleteItem, Text } from "@mariozechner/pi-tui";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_MAX_BYTES, formatSize, truncateHead } from "@earendil-works/pi-coding-agent";
+import { type AutocompleteItem, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { registerExplorationEventHandlers, registerExplorationTool } from "../shared/exploration-rendering";
 import { FffClient } from "./fff-client";

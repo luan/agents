@@ -1,5 +1,5 @@
-import { CustomEditor } from "@mariozechner/pi-coding-agent";
-import type { AutocompleteItem, AutocompleteProvider } from "@mariozechner/pi-tui";
+import { CustomEditor } from "@earendil-works/pi-coding-agent";
+import type { AutocompleteItem, AutocompleteProvider } from "@earendil-works/pi-tui";
 
 function extractAtPrefix(textBeforeCursor: string): string | null {
 	const match = textBeforeCursor.match(/(?:^|[ \t])(@(?:"[^"]*|[^\s]*))$/);

@@ -1,5 +1,5 @@
-import { CustomEditor, type KeybindingsManager } from "@mariozechner/pi-coding-agent";
-import type { EditorComponent, EditorTheme, TUI } from "@mariozechner/pi-tui";
+import { CustomEditor, type KeybindingsManager } from "@earendil-works/pi-coding-agent";
+import type { EditorComponent, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import { colorize } from "./highlight";
 
 type EditorFactory = (tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) => EditorComponent;

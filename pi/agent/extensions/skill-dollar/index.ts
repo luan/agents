@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import type { AutocompleteItem } from "@mariozechner/pi-tui";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { patchDollarAutocompleteTrigger, wrapProvider } from "./autocomplete";
 import { installEditorHighlight } from "./editor";
 import { buildItems, collectSkills, rewriteSlashSkillReferences, stripFrontmatter } from "./skills";

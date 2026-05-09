@@ -1,4 +1,4 @@
-import { Text } from "@mariozechner/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
 
 type RenderContext = { lastComponent?: { setText(value: string): void } };
 type RenderTheme = {

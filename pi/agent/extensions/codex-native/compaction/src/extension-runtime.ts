@@ -3,7 +3,7 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 	SessionBeforeCompactEvent,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import { executeNativeCompaction } from "./compact-client";
 import { writeDebugArtifact } from "./debug";
 import { resolveLatestNativeCompactionEntry } from "./details-store";

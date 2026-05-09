@@ -1,5 +1,5 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Container, Text } from "@mariozechner/pi-tui";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Container, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { renderExecCommandCall, renderGroupedExecCommandCall, renderOutputBlock } from "./codex-rendering.ts";
 import type { ExecCommandTracker } from "./exec-command-state.ts";

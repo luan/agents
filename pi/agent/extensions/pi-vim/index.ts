@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 
-import { CustomEditor, type ExtensionAPI, type ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { CURSOR_MARKER, Key, matchesKey, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import { CustomEditor, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { CURSOR_MARKER, Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import {
 	type ClipboardMirrorPolicy,
 	DEFAULT_CLIPBOARD_MIRROR_POLICY,
@@ -228,7 +228,7 @@ function isClipboardEnvironmentFailure(error: unknown): boolean {
 	return error instanceof ClipboardSpawnError || isNodeSpawnErrno(error);
 }
 
-const PI_CODING_AGENT_MODULE_URL = import.meta.resolve("@mariozechner/pi-coding-agent");
+const PI_CODING_AGENT_MODULE_URL = import.meta.resolve("@earendil-works/pi-coding-agent");
 const CLIPBOARD_HELPER_SOURCE = `
 import { copyToClipboard } from ${JSON.stringify(PI_CODING_AGENT_MODULE_URL)};
 

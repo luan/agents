@@ -1,7 +1,7 @@
 import { promises as fsPromises, readFileSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
-import type { ExtensionContext, ToolDefinition } from "@mariozechner/pi-coding-agent";
-import { Box, Container, Image, Spacer, Text } from "@mariozechner/pi-tui";
+import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { Box, Container, Image, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 export const WEB_SEARCH_ACTIVITY_MESSAGE_TYPE = "codex-web-search-activity";
