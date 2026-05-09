@@ -18,11 +18,11 @@ describe("research plan implement workflows", () => {
 
 	test("research requires a Plannotator gate before vault commit even with auto", () => {
 		const body = skill("research");
-		expect(body).toContain("vault_plannotator_gate");
+		expect(body).toContain('vault_review(op="gate")');
 		expect(body).toContain("the Plannotator gate is still required");
 		expect(body).toContain("do not set a short timeout for research gates");
 		expect(body).toContain("Never commit before the research gate");
-		expect(body.indexOf("vault_plannotator_gate")).toBeLessThan(body.indexOf("vault_commit"));
+		expect(body.indexOf('vault_review(op="gate")')).toBeLessThan(body.indexOf('vault_write(op="commit")'));
 	});
 
 	test("research does not ask for approval after Plannotator approval", () => {
@@ -39,7 +39,7 @@ describe("research plan implement workflows", () => {
 		expect(body).toContain("treat it as a Plannotator/tool failure");
 		expect(body).toContain("Ask whether to retry the Plannotator gate or pause");
 		expect(body).toContain("do not ask the user to approve the research conversationally");
-		expect(body).toContain("Keep `vault_commit` blocked until a handled approved tool result exists");
+		expect(body).toContain('Keep `vault_write(op="commit")` blocked until a handled approved tool result exists');
 		expect(body).toContain("Do not try to recover Plannotator feedback through separate artifact comment extraction");
 		expect(body).toContain("Plannotator annotations must arrive through the gate result");
 	});
@@ -65,8 +65,8 @@ describe("research plan implement workflows", () => {
 		expect(body).toContain("Draft the plan artifact");
 		expect(body).toContain("Draft tasks");
 		expect(body).toContain("Do not create tasks until the proposal is approved");
-		expect(body).toContain("vault_plannotator_gate");
-		expect(body.indexOf("vault_plannotator_gate")).toBeLessThan(body.indexOf("Publish"));
+		expect(body).toContain('vault_review(op="gate")');
+		expect(body.indexOf('vault_review(op="gate")')).toBeLessThan(body.indexOf("Publish"));
 	});
 
 	test("plan requires real artifacts, visual structure, and vertical task slices", () => {
@@ -84,8 +84,8 @@ describe("research plan implement workflows", () => {
 		const body = skill("implement");
 		expect(body).toContain("TDD loop");
 		expect(body).toContain("Run it and confirm it fails for the expected reason");
-		expect(body).toContain("vault_plannotator_gate(gateType=\"tests\")");
-		expect(body).toContain("vault_plannotator_review(diffType=\"uncommitted\")");
+		expect(body).toContain('vault_review(op="gate", gateType="tests")');
+		expect(body).toContain('vault_review(op="code", diffType="uncommitted")');
 		expect(body.indexOf("TDD loop")).toBeLessThan(body.indexOf("Optional review gates"));
 	});
 });

@@ -41,12 +41,12 @@ Turn approved research into an implementation plan and executable tasks. The pla
    - Do not create tasks until the proposal is approved or `--auto` legitimately skips the gate.
 
 5. **Gate when needed**
-   - If not `--auto`, run `vault_plannotator_gate` on the proposal with `gateType="plan"`.
+   - If not `--auto`, run `vault_review(op="gate")` on the proposal with `gateType="plan"`.
    - If denied with feedback, revise the plan/proposal and re-gate.
    - If closed/unavailable/timed out/no approval, stop before creating tasks.
 
 6. **Publish**
-   - Commit the plan artifact with `vault_commit`.
+   - Commit the plan artifact with `vault_write(op="commit")`.
    - Use task primitives to create one epic umbrella and independently executable vertical-slice tasks.
    - Use blockers only for real dependencies.
    - Add links between the plan artifact and the task set.

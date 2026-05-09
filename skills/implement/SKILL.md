@@ -36,8 +36,8 @@ Make one selected task true. Do not plan, split, rescope, or pull in adjacent cl
    - Repeat per criterion.
 
 4. **Optional review gates**
-   - For risky/ambiguous tests, optionally gate a short test-review markdown with `vault_plannotator_gate(gateType="tests")` unless `--auto`.
-   - After verification, optionally run `vault_plannotator_review(diffType="uncommitted")` unless `--auto`.
+   - For risky/ambiguous tests, optionally gate a short test-review markdown with `vault_review(op="gate", gateType="tests")` unless `--auto`.
+   - After verification, optionally run `vault_review(op="code", diffType="uncommitted")` unless `--auto`.
    - On denial, fix, re-run verification, and re-gate.
 
 5. **Verify and finish**
