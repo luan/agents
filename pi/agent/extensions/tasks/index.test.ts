@@ -1526,8 +1526,8 @@ describe("tasks extension", () => {
 		expect(sent[0].message.customType).toBe("task-guard");
 		expect(sent[0].message.display).toBe(true);
 		expect(sent[0].message.content[0].text).toContain("Task nudge");
-		expect(sent[0].message.content[0].text).toContain("Consider starting assigned task t");
-		expect(sent[0].options).toEqual({ deliverAs: "followUp" });
+		expect(sent[0].message.content[0].text).toContain("Start assigned task t");
+		expect(sent[0].options).toEqual({ deliverAs: "followUp", triggerTurn: true });
 	});
 
 	test("task guard keeps imperative answers visible while continuing", async () => {
@@ -1572,6 +1572,7 @@ describe("tasks extension", () => {
 		expect(replacement).toBeUndefined();
 		expect(sent).toHaveLength(1);
 		expect(sent[0].message.display).toBe(true);
+		expect(sent[0].options).toEqual({ deliverAs: "followUp" });
 	});
 
 	test("task guard keeps answers visible when evaluation fails", async () => {
@@ -1656,7 +1657,11 @@ describe("tasks extension", () => {
 		expect(sent).toHaveLength(2);
 		expect(sent[1].message.display).toBe(true);
 		expect(sent[1].message.content[0].text).toContain("Task nudge");
-		expect(sent[1].message.content[0].text).toContain("Consider starting assigned task t");
+		expect(sent[1].message.content[0].text).toContain("Start assigned task t");
+		expect(sent.map((item) => item.options)).toEqual([
+			{ deliverAs: "followUp", triggerTurn: true },
+			{ deliverAs: "followUp", triggerTurn: true },
+		]);
 	});
 
 	test("task guard keeps answers visible when escalation follows a user question", async () => {
@@ -1701,12 +1706,14 @@ describe("tasks extension", () => {
 			{ message: { role: "assistant", content: [{ type: "text", text: "The task guard stalled." }] } },
 			ctx,
 		);
+		await handlers.turn_end({}, ctx);
 
-		expect(sent).toHaveLength(1);
+		expect(sent).toHaveLength(2);
+		expect(sent[1].options).toEqual({ deliverAs: "followUp" });
 		expect(replacement).toBeUndefined();
 	});
 
-	test("task guard never auto-triggers continuation turns", async () => {
+	test("task guard auto-triggers continuation turns after progress", async () => {
 		const handlers: Record<string, any> = {};
 		const sent: any[] = [];
 		tasksExtension(
@@ -1755,13 +1762,67 @@ describe("tasks extension", () => {
 
 		expect(sent).toHaveLength(4);
 		expect(sent.map((item) => item.options)).toEqual([
-			{ deliverAs: "followUp" },
-			{ deliverAs: "followUp" },
-			{ deliverAs: "followUp" },
-			{ deliverAs: "followUp" },
+			{ deliverAs: "followUp", triggerTurn: true },
+			{ deliverAs: "followUp", triggerTurn: true },
+			{ deliverAs: "followUp", triggerTurn: true },
+			{ deliverAs: "followUp", triggerTurn: true },
 		]);
 		expect(sent.every((item) => item.message.display === true)).toBe(true);
 		expect(sent[3].message.content[0].text).toContain("Task nudge");
+	});
+
+	test("task guard stops auto-triggering repeated nudges without progress", async () => {
+		const handlers: Record<string, any> = {};
+		const sent: any[] = [];
+		tasksExtension(
+			{
+				registerTool() {},
+				on(name: string, handler: any) {
+					handlers[name] = handler;
+				},
+				sendMessage(message: any, options: any) {
+					sent.push({ message, options });
+				},
+			} as any,
+			{
+				runCommand: async () => ({
+					stdout: JSON.stringify({
+						tasks: [
+							{
+								...task,
+								id: "t",
+								title: "Long-running task",
+								status: "in_progress",
+								assigned_to: "session:test-session",
+							},
+						],
+					}),
+					stderr: "",
+					exitCode: 0,
+				}),
+			},
+		);
+		const ctx = {
+			cwd: "/tmp/project",
+			sessionId: "test-session",
+			signal: undefined,
+			ui: { notify() {} },
+		};
+
+		for (let i = 0; i < 3; i++) {
+			await handlers.message_end(
+				{ message: { role: "assistant", content: [{ type: "text", text: `No progress ${i}` }] } },
+				ctx,
+			);
+			await handlers.turn_end({}, ctx);
+		}
+
+		expect(sent).toHaveLength(3);
+		expect(sent.map((item) => item.options)).toEqual([
+			{ deliverAs: "followUp", triggerTurn: true },
+			{ deliverAs: "followUp", triggerTurn: true },
+			{ deliverAs: "followUp" },
+		]);
 	});
 
 	test("task guard does not clobber arbitrary user-directed answers", async () => {
@@ -1809,6 +1870,7 @@ describe("tasks extension", () => {
 		expect(replacement).toBeUndefined();
 		expect(sent).toHaveLength(1);
 		expect(sent[0].message.display).toBe(true);
+		expect(sent[0].options).toEqual({ deliverAs: "followUp" });
 	});
 
 	test("task guard nudges about unassigned blockers without assigning", async () => {
@@ -1868,7 +1930,7 @@ describe("tasks extension", () => {
 		await handlers.turn_end({}, ctx);
 
 		expect(calls).toEqual([["ct", "task", "list", "--all", "--json"]]);
-		expect(sent[0].message.content[0].text).toContain("Consider claiming task b to unblock a");
+		expect(sent[0].message.content[0].text).toContain("Claim task b to unblock a");
 		expect(sent[0].message.display).toBe(true);
 	});
 
