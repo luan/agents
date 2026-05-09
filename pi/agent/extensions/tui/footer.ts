@@ -5,9 +5,25 @@ import { emptyGitStatus, type GitStatusSummary } from "./git";
 import type { RuntimeInfo } from "./runtime";
 import type { UsageSnapshot } from "./usage";
 
-const BAR_FILLED = "━";
-const BAR_EMPTY = "─";
-const CTX_GAUGE_WIDTH = 12;
+const MIN_CONTEXT_BAR_WIDTH = 12;
+const CHARACTERS_PER_TOKEN = 4;
+const IMAGE_TOKEN_ESTIMATE = 1200;
+const CONTEXT_BAR_USED = "━";
+const CONTEXT_BAR_FREE = "─";
+
+const CONTEXT_SEGMENTS = [
+	{ key: "system", color: "#A6E3A1", legend: "s" },
+	{ key: "prompt", color: "#F38BA8", legend: "p" },
+	{ key: "assistant", color: "#89DCEB", legend: "a" },
+	{ key: "thinking", color: "#CBA6F7", legend: "r" },
+	{ key: "tools", color: "#F9E2AF", legend: "x" },
+] as const;
+
+export type ContextSegmentKey = (typeof CONTEXT_SEGMENTS)[number]["key"];
+export type ContextSegments = Readonly<Record<ContextSegmentKey, number>>;
+export type WritableContextSegments = Record<ContextSegmentKey, number>;
+export type ContextSlice = Readonly<{ key: ContextSegmentKey; tokens: number }>;
+export type ContextBreakdown = Readonly<{ segments: ContextSegments; slices: readonly ContextSlice[] }>;
 
 export type FooterRenderState = GitStatusSummary & {
 	modelLabel: string;
@@ -16,6 +32,11 @@ export type FooterRenderState = GitStatusSummary & {
 	contextPercent: number | null;
 	contextUsed: number;
 	contextTotal: number;
+	contextSegments: ContextSegments;
+	contextSlices: readonly ContextSlice[];
+	contextPulseSliceIndexes: readonly number[];
+	contextPulseFrame: number;
+	contextUsageEstimated: boolean;
 	tokenLabel: string;
 	costLabel: string;
 	hasTokens: boolean;
@@ -25,6 +46,16 @@ export type FooterRenderState = GitStatusSummary & {
 	usageLines?: string[];
 };
 
+export function emptyContextSegments(): WritableContextSegments {
+	return {
+		system: 0,
+		prompt: 0,
+		assistant: 0,
+		thinking: 0,
+		tools: 0,
+	};
+}
+
 export function emptyFooterState(): FooterRenderState {
 	return {
 		modelLabel: "no-model",
@@ -33,6 +64,11 @@ export function emptyFooterState(): FooterRenderState {
 		contextPercent: null,
 		contextUsed: 0,
 		contextTotal: 0,
+		contextSegments: emptyContextSegments(),
+		contextSlices: [],
+		contextPulseSliceIndexes: [],
+		contextPulseFrame: 0,
+		contextUsageEstimated: false,
 		tokenLabel: "↑0 ↓0",
 		costLabel: "$0.00",
 		hasTokens: false,
@@ -68,6 +104,377 @@ function fitFooterSegment(width: number, variants: string[]): string {
 	return truncateToWidth(variants[variants.length - 1] || "", safeWidth);
 }
 
+function estimateTextTokens(text: string): number {
+	return Math.ceil(text.length / CHARACTERS_PER_TOKEN);
+}
+
+function contentRecords(content: unknown): readonly Record<string, unknown>[] {
+	return Array.isArray(content)
+		? content.filter((part): part is Record<string, unknown> => !!part && typeof part === "object")
+		: [];
+}
+
+function textFromContent(content: unknown): string {
+	if (typeof content === "string") return content;
+	return contentRecords(content)
+		.map((part) => (part.type === "text" && typeof part.text === "string" ? part.text : ""))
+		.join("");
+}
+
+function imageCount(content: unknown): number {
+	return contentRecords(content).filter((part) => part.type === "image").length;
+}
+
+function estimateContentTokens(content: unknown): number {
+	return estimateTextTokens(textFromContent(content)) + imageCount(content) * IMAGE_TOKEN_ESTIMATE;
+}
+
+function estimateToolCallTokens(part: Record<string, unknown>): number {
+	const name = typeof part.name === "string" ? part.name : "";
+	const input = JSON.stringify(part.arguments ?? {});
+	return estimateTextTokens(`${name}${input}`);
+}
+
+function addContextSlice(slices: ContextSlice[], key: ContextSegmentKey, tokens: number): void {
+	if (tokens <= 0) return;
+	const last = slices[slices.length - 1];
+	if (last?.key === key) {
+		slices[slices.length - 1] = { key, tokens: last.tokens + tokens };
+		return;
+	}
+	slices.push({ key, tokens });
+}
+
+function addContextTokens(
+	segments: WritableContextSegments,
+	slices: ContextSlice[],
+	key: ContextSegmentKey,
+	tokens: number,
+): void {
+	if (tokens <= 0) return;
+	segments[key] += tokens;
+	addContextSlice(slices, key, tokens);
+}
+
+function addAssistantTokens(segments: WritableContextSegments, slices: ContextSlice[], content: unknown): void {
+	for (const part of contentRecords(content)) {
+		if (part.type === "text" && typeof part.text === "string") {
+			addContextTokens(segments, slices, "assistant", estimateTextTokens(part.text));
+		}
+		if (part.type === "thinking" && typeof part.thinking === "string") {
+			addContextTokens(segments, slices, "thinking", estimateTextTokens(part.thinking));
+		}
+		if (part.type === "toolCall") {
+			addContextTokens(segments, slices, "assistant", estimateToolCallTokens(part));
+		}
+	}
+}
+
+export function estimateContextBreakdown(messages: readonly unknown[], systemPrompt: string): ContextBreakdown {
+	const segments = emptyContextSegments();
+	const slices: ContextSlice[] = [];
+	addContextTokens(segments, slices, "system", estimateTextTokens(systemPrompt));
+
+	for (const message of messages) {
+		if (!message || typeof message !== "object") continue;
+		const record = message as Record<string, unknown>;
+
+		if (record.role === "user" || record.role === "custom") {
+			addContextTokens(segments, slices, "prompt", estimateContentTokens(record.content));
+		} else if (record.role === "assistant") {
+			addAssistantTokens(segments, slices, record.content);
+		} else if (record.role === "toolResult") {
+			addContextTokens(segments, slices, "tools", estimateContentTokens(record.content));
+		} else if (record.role === "bashExecution") {
+			addContextTokens(
+				segments,
+				slices,
+				"tools",
+				estimateTextTokens(`${record.command ?? ""}${record.output ?? ""}`),
+			);
+		} else if (record.role === "branchSummary" || record.role === "compactionSummary") {
+			addContextTokens(segments, slices, "system", estimateTextTokens(String(record.summary ?? "")));
+		}
+	}
+
+	return { segments, slices };
+}
+
+export function estimateContextSegments(messages: readonly unknown[], systemPrompt: string): ContextSegments {
+	return estimateContextBreakdown(messages, systemPrompt).segments;
+}
+
+function segmentTotal(segments: ContextSegments): number {
+	return CONTEXT_SEGMENTS.reduce((total, segment) => total + segments[segment.key], 0);
+}
+
+function allocateProportionally(values: readonly number[], columns: number): number[] {
+	if (columns <= 0) return values.map(() => 0);
+
+	const total = values.reduce((sum, value) => sum + value, 0);
+	if (total <= 0) return values.map(() => 0);
+
+	const rawColumns = values.map((value) => (value / total) * columns);
+	const allocatedColumns = rawColumns.map(Math.floor);
+	let remainingColumns = columns - allocatedColumns.reduce((sum, value) => sum + value, 0);
+	const largestRemainders = rawColumns
+		.map((value, index) => ({ index, remainder: value - Math.floor(value) }))
+		.sort((left, right) => right.remainder - left.remainder);
+
+	for (let index = 0; index < largestRemainders.length && remainingColumns > 0; index++, remainingColumns--) {
+		const slot = largestRemainders[index];
+		if (slot) allocatedColumns[slot.index] = (allocatedColumns[slot.index] ?? 0) + 1;
+	}
+
+	return allocatedColumns;
+}
+
+export function scaleContextSegmentsToUsage(segments: ContextSegments, usedTokens: number): ContextSegments {
+	const total = segmentTotal(segments);
+	if (usedTokens <= 0) return emptyContextSegments();
+	if (total <= 0) {
+		return {
+			...emptyContextSegments(),
+			prompt: Math.round(usedTokens),
+		};
+	}
+
+	const values = CONTEXT_SEGMENTS.map((segment) => segments[segment.key]);
+	const allocated = allocateProportionally(values, Math.round(usedTokens));
+	const scaled = emptyContextSegments();
+	for (const [index, segment] of CONTEXT_SEGMENTS.entries()) {
+		scaled[segment.key] = allocated[index] ?? 0;
+	}
+	return scaled;
+}
+
+export function scaleContextSlicesToUsage(
+	slices: readonly ContextSlice[],
+	usedTokens: number,
+): readonly ContextSlice[] {
+	if (usedTokens <= 0) return [];
+	const total = slices.reduce((sum, slice) => sum + slice.tokens, 0);
+	if (total <= 0) return [{ key: "prompt", tokens: Math.round(usedTokens) }];
+
+	const allocated = allocateProportionally(
+		slices.map((slice) => slice.tokens),
+		Math.round(usedTokens),
+	);
+	const scaled: ContextSlice[] = [];
+	for (const [index, slice] of slices.entries()) {
+		addContextSlice(scaled, slice.key, allocated[index] ?? 0);
+	}
+	return scaled;
+}
+
+function allocateBarColumns(values: readonly number[], width: number, usedSegmentCount: number): number[] {
+	const visibleUsedSegments = Array.from({ length: usedSegmentCount }, (_, index) => index).filter(
+		(index) => (values[index] ?? 0) > 0,
+	);
+
+	if (visibleUsedSegments.length === 0 || visibleUsedSegments.length >= width) {
+		return allocateProportionally(values, width);
+	}
+
+	const minimumColumns = Array.from({ length: values.length }, () => 0);
+	for (const index of visibleUsedSegments) {
+		minimumColumns[index] = 1;
+	}
+
+	const remainingColumns = allocateProportionally(values, width - visibleUsedSegments.length);
+	return minimumColumns.map((minimum, index) => minimum + (remainingColumns[index] ?? 0));
+}
+
+function contextSegmentColor(key: ContextSegmentKey): string {
+	return CONTEXT_SEGMENTS.find((segment) => segment.key === key)?.color ?? "muted";
+}
+
+function hexToRgb(hex: string): [number, number, number] | undefined {
+	const match = hex.match(/^#([0-9a-fA-F]{6})$/);
+	if (!match) return undefined;
+	const value = Number.parseInt(match[1] ?? "", 16);
+	return [(value >> 16) & 0xff, (value >> 8) & 0xff, value & 0xff];
+}
+
+function rgbFg([red, green, blue]: [number, number, number], text: string): string {
+	return `\x1b[38;2;${red};${green};${blue}m${text}\x1b[39m`;
+}
+
+function ansi256ToRgb(index: number): [number, number, number] | undefined {
+	if (index < 0 || index > 255) return undefined;
+	const basic: [number, number, number][] = [
+		[0, 0, 0],
+		[128, 0, 0],
+		[0, 128, 0],
+		[128, 128, 0],
+		[0, 0, 128],
+		[128, 0, 128],
+		[0, 128, 128],
+		[192, 192, 192],
+		[128, 128, 128],
+		[255, 0, 0],
+		[0, 255, 0],
+		[255, 255, 0],
+		[0, 0, 255],
+		[255, 0, 255],
+		[0, 255, 255],
+		[255, 255, 255],
+	];
+	if (index < 16) return basic[index];
+	if (index < 232) {
+		const cubeIndex = index - 16;
+		const channel = (value: number) => (value === 0 ? 0 : 55 + value * 40);
+		return [channel(Math.floor(cubeIndex / 36)), channel(Math.floor((cubeIndex % 36) / 6)), channel(cubeIndex % 6)];
+	}
+	const gray = 8 + (index - 232) * 10;
+	return [gray, gray, gray];
+}
+
+function basicAnsiToRgb(code: number): [number, number, number] | undefined {
+	const normal: Record<number, [number, number, number]> = {
+		30: [0, 0, 0],
+		31: [128, 0, 0],
+		32: [0, 128, 0],
+		33: [128, 128, 0],
+		34: [0, 0, 128],
+		35: [128, 0, 128],
+		36: [0, 128, 128],
+		37: [192, 192, 192],
+		90: [128, 128, 128],
+		91: [255, 0, 0],
+		92: [0, 255, 0],
+		93: [255, 255, 0],
+		94: [0, 0, 255],
+		95: [255, 0, 255],
+		96: [0, 255, 255],
+		97: [255, 255, 255],
+	};
+	return normal[code];
+}
+
+function darkenRgb([red, green, blue]: [number, number, number]): [number, number, number] {
+	const factor = 0.68;
+	return [Math.round(red * factor), Math.round(green * factor), Math.round(blue * factor)];
+}
+
+function themeFgAnsi(theme: Theme, color: ThemeColor): string | undefined {
+	const withGetter = theme as Theme & { getFgAnsi?: (color: ThemeColor) => string };
+	if (withGetter.getFgAnsi) return withGetter.getFgAnsi(color);
+
+	const sample = theme.fg(color, "x");
+	const marker = sample.indexOf("x");
+	return marker >= 0 ? sample.slice(0, marker) : undefined;
+}
+
+function colorFg(theme: Theme, color: string, text: string): string {
+	const rgb = hexToRgb(color);
+	if (rgb) return rgbFg(rgb, text);
+	return theme.fg(color as ThemeColor, text);
+}
+
+function colorFgAnsi(theme: Theme, color: string): string | undefined {
+	const rgb = hexToRgb(color);
+	if (rgb) {
+		const [red, green, blue] = rgb;
+		return `\x1b[38;2;${red};${green};${blue}m`;
+	}
+	return themeFgAnsi(theme, color as ThemeColor);
+}
+
+function darkenFgAnsi(ansi: string | undefined): string | undefined {
+	if (!ansi) return undefined;
+	const truecolor = ansi.match(/\x1b\[38;2;(\d+);(\d+);(\d+)m/);
+	const color256 = ansi.match(/\x1b\[38;5;(\d+)m/);
+	const basic = ansi.match(/\x1b\[(\d+)m/);
+	const rgb = truecolor
+		? ([Number(truecolor[1]), Number(truecolor[2]), Number(truecolor[3])] as [number, number, number])
+		: color256
+			? ansi256ToRgb(Number(color256[1]))
+			: basic
+				? basicAnsiToRgb(Number(basic[1]))
+				: undefined;
+	if (!rgb) return undefined;
+
+	const [red, green, blue] = darkenRgb(rgb);
+	return `\x1b[38;2;${red};${green};${blue}m`;
+}
+
+function dimColorFg(theme: Theme, color: string, text: string): string {
+	const darkAnsi = darkenFgAnsi(colorFgAnsi(theme, color));
+	return darkAnsi ? `${darkAnsi}${text}\x1b[39m` : colorFg(theme, color, text);
+}
+
+function renderContextSliceSegment(
+	state: FooterRenderState,
+	theme: Theme,
+	slice: ContextSlice,
+	index: number,
+	width: number,
+): string {
+	if (width <= 0) return "";
+
+	const color = contextSegmentColor(slice.key);
+	const text = CONTEXT_BAR_USED.repeat(width);
+	const pulsing = state.contextPulseSliceIndexes.includes(index);
+	if (pulsing && state.contextPulseFrame % 2 === 1) {
+		return colorFg(theme, color, text);
+	}
+	return dimColorFg(theme, color, text);
+}
+
+function renderSegmentedContextBar(state: FooterRenderState, theme: Theme, width: number): string {
+	const slices =
+		state.contextSlices.length > 0
+			? state.contextSlices
+			: CONTEXT_SEGMENTS.map((segment) => ({ key: segment.key, tokens: state.contextSegments[segment.key] })).filter(
+					(slice) => slice.tokens > 0,
+				);
+	const values = [...slices.map((slice) => slice.tokens), Math.max(0, state.contextTotal - state.contextUsed)];
+	const columns = allocateBarColumns(values, width, slices.length);
+	const usedSegments = slices
+		.map((slice, index) => renderContextSliceSegment(state, theme, slice, index, columns[index] ?? 0))
+		.join("");
+	const freeWidth = columns[slices.length] ?? 0;
+	return usedSegments + theme.fg("dim", CONTEXT_BAR_FREE.repeat(freeWidth));
+}
+
+function renderContextBar(state: FooterRenderState, theme: Theme, width: number, suffix: string): string | undefined {
+	const safeWidth = Math.max(1, width);
+	const legend = CONTEXT_SEGMENTS.map((segment) => colorFg(theme, segment.color, segment.legend)).join(" ");
+	const prefix = `${theme.fg("dim", "ctx [")}${legend}${theme.fg("dim", "] ")}`;
+	const barWidth = safeWidth - visibleWidth(prefix) - visibleWidth(suffix);
+	if (barWidth < MIN_CONTEXT_BAR_WIDTH) return undefined;
+	return prefix + renderSegmentedContextBar(state, theme, barWidth) + suffix;
+}
+
+function contextHealthColor(state: FooterRenderState): ThemeColor {
+	const percent =
+		state.contextPercent === null && state.contextTotal > 0
+			? (Math.max(0, state.contextUsed) / state.contextTotal) * 100
+			: (state.contextPercent ?? 0);
+	if (percent >= 90) return "error";
+	if (percent >= 70) return "warning";
+	if (percent >= 50) return "accent";
+	return "success";
+}
+
+function renderContextBarVariants(state: FooterRenderState, theme: Theme, width: number): string[] {
+	const safeWidth = Math.max(1, width);
+	if (state.contextTotal <= 0) return [truncateToWidth(theme.fg("dim", "ctx no model"), safeWidth, "")];
+	const usedTokens = Math.max(0, state.contextUsed);
+	const percent =
+		state.contextPercent === null && state.contextTotal > 0
+			? (usedTokens / state.contextTotal) * 100
+			: state.contextPercent;
+	const prefix = state.contextUsageEstimated ? "~" : "";
+	const percentText = percent === null ? "?" : `${prefix}${percent.toFixed(1)}%`;
+	const totalText = `${prefix}${formatTokenCount(usedTokens)}/${formatTokenCount(state.contextTotal)}`;
+	const statusColor = contextHealthColor(state);
+	return [` ${theme.fg(statusColor, `${percentText} ${totalText}`)}`, ` ${theme.fg(statusColor, percentText)}`, ""]
+		.map((suffix) => renderContextBar(state, theme, safeWidth, suffix))
+		.filter((line): line is string => line !== undefined);
+}
+
 function wrapFooterSegments(segments: string[], width: number, sep: string): string[] {
 	const safeWidth = Math.max(1, width);
 	const lines: string[] = [];
@@ -92,31 +499,39 @@ function wrapFooterSegments(segments: string[], width: number, sep: string): str
 	return lines;
 }
 
-function renderContextGauge(
+function appendContextGauge(
+	lines: string[],
 	state: FooterRenderState,
 	theme: Theme,
-	options: { barWidth: number; includeCounts: boolean },
-): string {
-	const barWidth = Math.max(4, options.barWidth);
-	const rawPercent = state.contextPercent ?? 0;
-	const clamped = Math.max(0, Math.min(100, rawPercent));
-	const filled = Math.round((clamped / 100) * barWidth);
-	const empty = barWidth - filled;
+	width: number,
+	sep: string,
+	options: { reserveRightWidth?: number; singleLine?: boolean; allowFallback?: boolean } = {},
+): string[] {
+	const safeWidth = Math.max(1, width);
+	const nextLines = [...lines];
+	const rightReserve = Math.max(0, options.reserveRightWidth ?? 0);
+	const lastIdx = nextLines.length - 1;
+	const lastLine = nextLines[lastIdx] ?? "";
+	const sepWidth = lastLine ? visibleWidth(sep) : 0;
+	const sameLineWidth = safeWidth - visibleWidth(lastLine) - sepWidth - rightReserve;
+	const sameLineGauge = renderContextBarVariants(state, theme, sameLineWidth)[0];
 
-	let color: ThemeColor;
-	if (clamped >= 90) color = "error";
-	else if (clamped >= 70) color = "warning";
-	else if (clamped >= 50) color = "accent";
-	else color = "success";
+	if (sameLineGauge) {
+		const prefix = lastLine ? lastLine + sep : "";
+		if (lastIdx >= 0) nextLines[lastIdx] = prefix + sameLineGauge;
+		else nextLines.push(sameLineGauge);
+		return nextLines;
+	}
 
-	const bar = theme.fg(color, BAR_FILLED.repeat(filled)) + theme.fg("dim", BAR_EMPTY.repeat(empty));
-	const pctValue = state.contextPercent === null ? "?" : `${Math.round(rawPercent)}%`;
-	const counts =
-		!options.includeCounts || !state.contextTotal
-			? ""
-			: ` ${formatTokenCount(state.contextUsed)}/${formatTokenCount(state.contextTotal)}`;
+	if (options.singleLine) return nextLines;
 
-	return `${theme.fg("dim", "ctx ") + bar} ${theme.fg("dim", pctValue + counts)}`;
+	const ownLineWidth = safeWidth - rightReserve;
+	const ownLineGauge =
+		renderContextBarVariants(state, theme, ownLineWidth)[0] ??
+		(options.allowFallback === false ? undefined : truncateToWidth(theme.fg("dim", "ctx"), ownLineWidth, ""));
+	if (!ownLineGauge) return nextLines;
+	nextLines.push(ownLineGauge);
+	return nextLines;
 }
 
 function getRuntimeColorToken(runtime: RuntimeInfo | undefined): ThemeColor {
@@ -191,17 +606,6 @@ export function renderFooter(
 			: plainModelStr;
 	const modelBlock = fitFooterSegment(width, modelStr === plainModelStr ? [plainModelStr] : [modelStr, plainModelStr]);
 
-	const ctxBlock = fitFooterSegment(width, [
-		renderContextGauge(state, theme, {
-			barWidth: CTX_GAUGE_WIDTH,
-			includeCounts: true,
-		}),
-		renderContextGauge(state, theme, { barWidth: 10, includeCounts: false }),
-		renderContextGauge(state, theme, { barWidth: 8, includeCounts: false }),
-		renderContextGauge(state, theme, { barWidth: 6, includeCounts: false }),
-		renderContextGauge(state, theme, { barWidth: 4, includeCounts: false }),
-	]);
-
 	const rightParts: string[] = [];
 	if (state.hasTokens) rightParts.push(theme.fg("muted", state.tokenLabel));
 	if (state.hasCost) rightParts.push(theme.fg("success", state.costLabel));
@@ -209,11 +613,27 @@ export function renderFooter(
 	const rightWidth = visibleWidth(rightBlock);
 
 	if (options.minimal) {
-		const minimal = wrapFooterSegments([modelBlock, ctxBlock], width, sep)[0] ?? modelBlock;
+		const minimalLines = appendContextGauge([modelBlock], state, theme, width, sep, { singleLine: true });
+		const minimal = minimalLines[0] ?? modelBlock;
 		return [truncateToWidth(minimal, width)];
 	}
 
-	const lines = wrapFooterSegments([locationBlock, modelBlock, ctxBlock], width, sep);
+	let lines = wrapFooterSegments([locationBlock, modelBlock], width, sep);
+
+	if (rightBlock) {
+		const withRightReserve = appendContextGauge(lines, state, theme, width, sep, {
+			reserveRightWidth: rightWidth + 1,
+			allowFallback: false,
+		});
+		const ctxLine = withRightReserve[withRightReserve.length - 1] ?? "";
+		if (withRightReserve.join("\n") !== lines.join("\n") && visibleWidth(ctxLine) + 1 + rightWidth <= width) {
+			lines = withRightReserve;
+		} else {
+			lines = appendContextGauge(lines, state, theme, width, sep);
+		}
+	} else {
+		lines = appendContextGauge(lines, state, theme, width, sep);
+	}
 
 	if (rightBlock) {
 		const lastIdx = lines.length - 1;

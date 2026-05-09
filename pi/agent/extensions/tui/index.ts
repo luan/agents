@@ -1,11 +1,18 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { buildSessionContext, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { runCommand } from "../shared/ct-runner";
 import { terminalRows } from "../shared/terminal";
 import { ensureConfigExists, loadConfig, type PolishedTuiConfig } from "./config";
 import { installFocusCursor } from "./cursor-focus";
 import { installEditorComposition } from "./editor";
-import { emptyFooterState, type FooterRenderState, renderFooter } from "./footer";
+import {
+	emptyFooterState,
+	estimateContextBreakdown,
+	type FooterRenderState,
+	renderFooter,
+	scaleContextSegmentsToUsage,
+	scaleContextSlicesToUsage,
+} from "./footer";
 import { readGitStatus } from "./git";
 import { readRuntimeInfo } from "./runtime";
 import { patchUserMessageComponent } from "./transcript";
@@ -17,6 +24,9 @@ type UsageBarCache = {
 	key: string;
 	lines: string[];
 };
+
+const CONTEXT_PULSE_INTERVAL_MS = 320;
+const CONTEXT_PULSE_DURATION_MS = 1200;
 
 function formatCount(value: number): string {
 	if (value < 1000) return `${value}`;
@@ -82,6 +92,8 @@ export default function (pi: ExtensionAPI) {
 	let refreshTimer: ReturnType<typeof setInterval> | null = null;
 	let usageBarCache: UsageBarCache | null = null;
 	let usageBarPendingKey: string | null = null;
+	let contextPulseTimer: ReturnType<typeof setInterval> | null = null;
+	const contextPulseDeadlines = new Map<number, number>();
 	let disposed = false;
 	let uiGeneration = 0;
 
@@ -91,6 +103,57 @@ export default function (pi: ExtensionAPI) {
 
 	const refresh = () => {
 		if (!disposed) requestFooterRender?.();
+	};
+
+	const stopContextPulse = () => {
+		if (contextPulseTimer) {
+			clearInterval(contextPulseTimer);
+			contextPulseTimer = null;
+		}
+		state.contextPulseSliceIndexes = [];
+		state.contextPulseFrame = 0;
+		contextPulseDeadlines.clear();
+	};
+
+	const activePulseIndexes = () => {
+		const now = Date.now();
+		for (const [index, deadline] of contextPulseDeadlines) {
+			if (deadline <= now || index >= state.contextSlices.length) contextPulseDeadlines.delete(index);
+		}
+		return [...contextPulseDeadlines.keys()].sort((a: number, b: number) => a - b);
+	};
+
+	const pulseContextSliceIndexes = (indexes: readonly number[]) => {
+		if (indexes.length === 0) return;
+		const deadline = Date.now() + CONTEXT_PULSE_DURATION_MS;
+		for (const index of indexes) {
+			if (index >= 0 && index < state.contextSlices.length) contextPulseDeadlines.set(index, deadline);
+		}
+		state.contextPulseSliceIndexes = activePulseIndexes();
+		if (contextPulseTimer) return;
+
+		contextPulseTimer = setInterval(() => {
+			if (disposed) {
+				stopContextPulse();
+				refresh();
+				return;
+			}
+			state.contextPulseSliceIndexes = activePulseIndexes();
+			if (state.contextPulseSliceIndexes.length === 0) {
+				stopContextPulse();
+				refresh();
+				return;
+			}
+			state.contextPulseFrame++;
+			refresh();
+		}, CONTEXT_PULSE_INTERVAL_MS);
+	};
+
+	const pulseLastContextSlicesForMessage = (message: unknown) => {
+		const pulseSliceCount = estimateContextBreakdown([message], "").slices.length;
+		if (pulseSliceCount <= 0) return;
+		const start = Math.max(0, state.contextSlices.length - pulseSliceCount);
+		pulseContextSliceIndexes(Array.from({ length: state.contextSlices.length - start }, (_, index) => start + index));
 	};
 
 	const isCompactTerminal = () => {
@@ -159,28 +222,54 @@ export default function (pi: ExtensionAPI) {
 			});
 	};
 
-	const syncState = (ctx: ExtensionContext) => {
+	const syncState = (ctx: ExtensionContext, activeMessage?: unknown) => {
 		const totals = getUsageTotals(ctx);
 		const usage = ctx.getContextUsage();
 		const contextWindow = ctx.model?.contextWindow ?? usage?.contextWindow ?? 0;
+		const measuredContextTokens = typeof usage?.tokens === "number" && usage.tokens > 0 ? usage.tokens : undefined;
+		const contextMessages = buildSessionContext(
+			ctx.sessionManager.getEntries(),
+			ctx.sessionManager.getLeafId(),
+		).messages;
+		const rawContext = estimateContextBreakdown(
+			activeMessage ? [...contextMessages, activeMessage] : contextMessages,
+			ctx.getSystemPrompt(),
+		);
+		const rawContextSegments = rawContext.segments;
+		const estimatedContextTokens = Object.values(rawContextSegments).reduce((total, value) => total + value, 0);
+		const storedContextUsed =
+			measuredContextTokens ??
+			(usage && contextWindow > 0 && usage.percent !== null
+				? Math.round((usage.percent / 100) * contextWindow)
+				: estimatedContextTokens);
+		const contextUsed =
+			activeMessage && measuredContextTokens !== undefined
+				? Math.max(measuredContextTokens, estimatedContextTokens)
+				: storedContextUsed;
+		const scaledSlices = scaleContextSlicesToUsage(rawContext.slices, contextUsed);
 
 		state.modelLabel = ctx.model?.name ?? "no-model";
 		state.providerLabel = formatProviderLabel(ctx.model?.provider);
 		state.thinkingLevel = ctx.model?.reasoning ? pi.getThinkingLevel() : undefined;
-		state.contextPercent = usage?.percent ?? null;
+		state.contextPercent = usage?.percent ?? (contextWindow > 0 ? (contextUsed / contextWindow) * 100 : null);
 		state.contextTotal = contextWindow;
-		state.contextUsed =
-			usage && contextWindow > 0 && usage.percent !== null ? Math.round((usage.percent / 100) * contextWindow) : 0;
+		state.contextUsed = contextUsed;
+		state.contextSegments = scaleContextSegmentsToUsage(rawContextSegments, contextUsed);
+		state.contextSlices = scaledSlices;
+		if (activeMessage && scaledSlices.length > 0) {
+			pulseLastContextSlicesForMessage(activeMessage);
+		}
+		state.contextUsageEstimated = measuredContextTokens === undefined;
 		state.tokenLabel = `↑${formatCount(totals.input)} ↓${formatCount(totals.output)}`;
 		state.costLabel = `$${totals.cost.toFixed(2)}`;
 		state.hasTokens = totals.input > 0 || totals.output > 0;
 		state.hasCost = totals.cost > 0;
 	};
 
-	const syncStateIfCurrent = (ctx: ExtensionContext) => {
+	const syncStateIfCurrent = (ctx: ExtensionContext, activeMessage?: unknown) => {
 		if (disposed) return false;
 		try {
-			syncState(ctx);
+			syncState(ctx, activeMessage);
 			return true;
 		} catch (error) {
 			if (isStaleCtxError(error)) return false;
@@ -301,6 +390,7 @@ export default function (pi: ExtensionAPI) {
 					unsubscribeBranch();
 					requestFooterRender = undefined;
 					stopRefreshTimer();
+					stopContextPulse();
 				},
 				invalidate() {},
 				render(width: number): string[] {
@@ -338,6 +428,7 @@ export default function (pi: ExtensionAPI) {
 		uiGeneration++;
 		requestFooterRender = undefined;
 		stopRefreshTimer();
+		stopContextPulse();
 	});
 
 	pi.on("agent_start", async (_event, ctx) => {
@@ -360,9 +451,15 @@ export default function (pi: ExtensionAPI) {
 		refresh();
 	});
 
-	pi.on("message_end", async (_event, ctx) => {
+	pi.on("message_end", async (event, ctx) => {
 		if (!syncStateIfCurrent(ctx)) return;
+		pulseLastContextSlicesForMessage(event.message);
 		scheduleProjectRefresh(ctx);
+		refresh();
+	});
+
+	pi.on("message_update", async (event, ctx) => {
+		if (!syncStateIfCurrent(ctx, event.message)) return;
 		refresh();
 	});
 
