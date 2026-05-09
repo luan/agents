@@ -92,10 +92,12 @@ type ToolResult = {
 
 type ThemeLike = {
 	fg(color: string, text: string): string;
-	bg?(color: "toolSuccessBg" | "toolPendingBg" | "toolErrorBg", text: string): string;
-	getBgAnsi?(color: "toolSuccessBg" | "toolPendingBg" | "toolErrorBg"): string;
+	bg?(color: ToolPanelBg, text: string): string;
+	getBgAnsi?(color: ToolPanelBg): string;
 	bold(text: string): string;
 };
+
+type ToolPanelBg = "toolSuccessBg" | "toolPendingBg" | "toolErrorBg";
 
 type CollapsedPreviewMode = "hidden" | "digest";
 type ApplyPatchEditKind = "raw" | "semantic";
@@ -312,14 +314,7 @@ class ApplyPatchDiffView {
 		const safeWidth = Math.max(24, width);
 		const bgToken =
 			this.state === "error" ? "toolErrorBg" : this.state === "pending" ? "toolPendingBg" : "toolSuccessBg";
-		const bgAnsi = this.theme.getBgAnsi?.(bgToken);
-		const paintLine = (line: string) => {
-			const padded = truncateToWidth(line, safeWidth, "", true);
-			if (bgAnsi) {
-				return `${bgAnsi}${keepBackgroundAcrossResets(padded, bgAnsi)}${ANSI_RESET}`;
-			}
-			return this.theme.bg ? this.theme.bg(bgToken, padded) : padded;
-		};
+		const paintLine = (line: string) => paintPanelRow(line, safeWidth, this.theme, bgToken);
 
 		if (this.rows && this.rows.length > 0) {
 			const fileVerb = editVerb(this.state, this.editKind);
@@ -404,12 +399,21 @@ class ApplyPatchDiffView {
 			bodyLines.pop();
 		}
 		const content = bodyLines.length > 0 ? bodyLines : [this.theme.fg("muted", "(no diff)")];
-		const fallbackRole = this.state === "error" ? "error" : this.state === "pending" ? "warning" : undefined;
+		const intentLines = formatIntentLines(this.intent, this.theme, safeWidth).map((line) => paintLine(line));
+		if (this.state === "error") {
+			return [
+				paintLine(this.renderHeader(safeWidth)),
+				...(intentLines.length > 0 ? intentLines : []),
+				paintLine(""),
+				...renderFailureDiagnosticRows(content, this.theme, safeWidth, bgToken),
+			];
+		}
+
+		const fallbackRole = this.state === "pending" ? "warning" : undefined;
 		const contentLines = content.flatMap((line) => {
 			const styledLine = fallbackRole ? this.theme.fg(fallbackRole, line) : line;
 			return line.length === 0 ? [""] : wrapTextWithAnsi(styledLine, safeWidth);
 		});
-		const intentLines = formatIntentLines(this.intent, this.theme, safeWidth).map((line) => paintLine(line));
 		return [
 			paintLine(this.renderHeader(safeWidth)),
 			...(intentLines.length > 0 ? intentLines : []),
@@ -959,6 +963,42 @@ function paintDiffRow(line: string, width: number, background: string | undefine
 	const padded = truncateToWidth(line, width, "", true);
 	if (!background) return padded;
 	return `${background}${keepBackgroundAcrossResets(padded, background)}${ANSI_RESET}`;
+}
+
+function paintPanelRow(line: string, width: number, theme: ThemeLike, background: ToolPanelBg): string {
+	const padded = truncateToWidth(line, width, "", true);
+	const backgroundAnsi = theme.getBgAnsi?.(background);
+	if (backgroundAnsi) return `${backgroundAnsi}${keepBackgroundAcrossResets(padded, backgroundAnsi)}${ANSI_RESET}`;
+	return theme.bg ? theme.bg(background, padded) : padded;
+}
+
+function styleFailureDiagnosticLine(line: string, index: number, theme: ThemeLike): string {
+	const normalized = line.replace(/\t/g, "  ");
+	if (index === 0 && normalized.startsWith("Error:")) return theme.fg("error", normalized);
+	if (
+		normalized.startsWith("file state ") ||
+		normalized.startsWith("available files:") ||
+		normalized.startsWith("suggested anchors:") ||
+		normalized.startsWith("this file's mtime ")
+	) {
+		return theme.fg("muted", normalized);
+	}
+	const sourceLine = normalized.match(/^(\d+:)(.*)$/);
+	if (sourceLine) return `${theme.fg("dim", sourceLine[1] ?? "")}${sourceLine[2] ?? ""}`;
+	return normalized;
+}
+
+function renderFailureDiagnosticRows(
+	lines: string[],
+	theme: ThemeLike,
+	width: number,
+	background: ToolPanelBg,
+): string[] {
+	return lines.flatMap((line, index) => {
+		if (line.length === 0) return [];
+		const styledLine = styleFailureDiagnosticLine(line, index, theme);
+		return wrapTextWithAnsi(styledLine, width).map((row) => paintPanelRow(row, width, theme, background));
+	});
 }
 
 function formatIntentLines(intent: string | undefined, theme: ThemeLike, width: number): string[] {

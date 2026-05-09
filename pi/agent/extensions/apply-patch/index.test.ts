@@ -484,6 +484,50 @@ describe("apply_patch streaming renderer", () => {
 		expect(renderText(rendered)).toContain('+import { readFileSync, statSync } from "node:fs";');
 		expect(renderText(rendered)).toContain("-function saveConfig(config: ApplyPatchConfig): void {");
 	});
+
+	it("renders failed context diagnostics on a coherent error panel", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "apply-patch-error-context-render-"));
+		const tool = registerApplyPatchTool();
+		const state: Record<string, unknown> = {};
+		const toolErrorBg = "\u001b[48;2;80;0;0m";
+		const errorFg = "\u001b[31m";
+		const bgTheme = {
+			...theme,
+			fg: (color: string, text: string) => (color === "error" ? `${errorFg}${text}\u001b[0m` : text),
+			getBgAnsi: (color: string) => (color === "toolErrorBg" ? toolErrorBg : undefined),
+		};
+		const contextError = [
+			'Error: context not found in /repo/footer.ts at chunk #3: first expected line was "function wrapFooterSegments(segments: string[], width: number, sep: string): string[] {"',
+			"file state (closest match: line 71 at edit distance 0):",
+			"63: function fitFooterSegment(width: number, variants: string[]): string {",
+			"64: \tconst safeWidth = Math.max(1, width);",
+			"",
+			"65: \tfor (const variant of variants) {",
+			"",
+			"66: \t\tif (visibleWidth(variant) <= safeWidth) return variant;",
+		].join("\n");
+
+		const rendered = tool.renderResult(
+			{
+				content: [{ type: "text", text: contextError }],
+				details: { stage: "apply" },
+			},
+			{ expanded: false, isPartial: false },
+			bgTheme,
+			renderContext(cwd, state, { executionStarted: true }),
+		);
+		const rawLines = rendered.render(120);
+		const sourceLine = rawLines.find((line) => stripAnsi(line).includes("64:   const safeWidth"));
+
+		expect(rawLines.every((line) => line.includes(toolErrorBg))).toBe(true);
+		expect(rawLines.join("\n")).toContain(`${errorFg}Error: context not found`);
+		expect(sourceLine).toBeDefined();
+		expect(sourceLine).not.toContain(errorFg);
+		expect(rawLines.join("\n")).not.toContain("\t");
+		expect(stripAnsi(rawLines.join("\n"))).toContain("64:   const safeWidth = Math.max(1, width);");
+		const fileStateIndex = rawLines.findIndex((line) => stripAnsi(line).includes("file state"));
+		expect(rawLines.slice(fileStateIndex + 1).every((line) => stripAnsi(line).trim().length > 0)).toBe(true);
+	});
 });
 
 describe("apply_patch intent command", () => {
