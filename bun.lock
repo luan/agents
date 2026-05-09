@@ -4,12 +4,13 @@
   "workspaces": {
     "": {
       "dependencies": {
-        "@ff-labs/fff-node": "0.6.4",
+        "@ff-labs/fff-node": "0.7.2",
         "@mariozechner/pi-ai": "^0.72.0",
         "@mariozechner/pi-coding-agent": "^0.72.0",
         "@mariozechner/pi-tui": "^0.72.0",
         "@mozilla/readability": "^0.5.0",
         "@shikijs/cli": "^4.0.2",
+        "gpt-tokenizer": "^3.4.0",
         "linkedom": "^0.16.0",
         "node-pty": "^1.1.0",
         "p-limit": "^6.1.0",
@@ -126,23 +127,23 @@
 
     "@borewit/text-codec": ["@borewit/text-codec@0.2.2", "", {}, "sha512-DDaRehssg1aNrH4+2hnj1B7vnUGEjU6OIlyRdkMd0aUdIUvKXrJfXsy8LVtXAy7DRvYVluWbMspsRhz2lcW0mQ=="],
 
-    "@ff-labs/fff-bin-darwin-arm64": ["@ff-labs/fff-bin-darwin-arm64@0.6.4", "", { "os": "darwin", "cpu": "arm64" }, "sha512-IiLrUeVL+6oeHlzyBGp6ACrb4j7vl66/GXtkoSASVtXJGt5J3IH9m9OvQTwwBxrQtPSgb0tI7TvdYPX0RGH9Qg=="],
+    "@ff-labs/fff-bin-darwin-arm64": ["@ff-labs/fff-bin-darwin-arm64@0.7.2", "", { "os": "darwin", "cpu": "arm64" }, "sha512-RfOAZE6SxwtCyU48q4mflKYwG10GkhLYEhRNlKKCY1ve9DwbdV1FBiNNihsTYlkHOLvy+Wml3ESAIOdTb0Nd7w=="],
 
-    "@ff-labs/fff-bin-darwin-x64": ["@ff-labs/fff-bin-darwin-x64@0.6.4", "", { "os": "darwin", "cpu": "x64" }, "sha512-COd27jhKVKIsLT3krQ2DrOkgMYJ5jPSnRLrbarwtYe5jVbayKR6N4wUhtGF3VXWnNoYTNstq2uBYcHphOp5AkQ=="],
+    "@ff-labs/fff-bin-darwin-x64": ["@ff-labs/fff-bin-darwin-x64@0.7.2", "", { "os": "darwin", "cpu": "x64" }, "sha512-41I/GeoRn5p4Fd4h5eCtz7E+T9EizyaU9ygHk53ZG3BRlyW3GRxCBC1B3wThL0kICW/u0zucNrxHTr4CjzHcCA=="],
 
-    "@ff-labs/fff-bin-linux-arm64-gnu": ["@ff-labs/fff-bin-linux-arm64-gnu@0.6.4", "", { "os": "linux", "cpu": "arm64" }, "sha512-E2UWCgpBwCPWaupHnn7RAmHjyCyEmKwruaMyigTjI2tg6gXYvoAIjNR+TGsKkTqGl0B1BmP0sD8Uh65K5koxTQ=="],
+    "@ff-labs/fff-bin-linux-arm64-gnu": ["@ff-labs/fff-bin-linux-arm64-gnu@0.7.2", "", { "os": "linux", "cpu": "arm64" }, "sha512-3fOPWxG95gVrUueipKjHLIc8NBzDVwH5buoAwg94KdY1Jr8yz0ffGpQ55gOyb2mghMDNOGdy+PLrdA5tJ2j2uQ=="],
 
-    "@ff-labs/fff-bin-linux-arm64-musl": ["@ff-labs/fff-bin-linux-arm64-musl@0.6.4", "", { "os": "linux", "cpu": "arm64" }, "sha512-t9K3NzYkBxK2UYp6Xy7Lac/RAL+cWa+78HcRNI693k0U9c6G65J2/cVn5SVOiJ1EcnEnC3MCuPsCEmj/9d3Pqw=="],
+    "@ff-labs/fff-bin-linux-arm64-musl": ["@ff-labs/fff-bin-linux-arm64-musl@0.7.2", "", { "os": "linux", "cpu": "arm64" }, "sha512-efoiSy2k2xqPK0XhIR8yCGVo0WySt8DVWPG053tZ6hrjcmm7ciukACsB5eDIk+JMxsSib9ZKnUpAHvqNH3j43A=="],
 
-    "@ff-labs/fff-bin-linux-x64-gnu": ["@ff-labs/fff-bin-linux-x64-gnu@0.6.4", "", { "os": "linux", "cpu": "x64" }, "sha512-tNSYpZok9HpXZoAlTEWbJF0ZQtZKZNmpyU2WfVRa3WhsPZ/ej+YUuPEPI83OYRqxy4F0OVtGYCqj7dos/AVSLg=="],
+    "@ff-labs/fff-bin-linux-x64-gnu": ["@ff-labs/fff-bin-linux-x64-gnu@0.7.2", "", { "os": "linux", "cpu": "x64" }, "sha512-qw/K9r3YJ4mrNoDzQXYvhfi8q5sIz2lNWzClAIjEMeoUO/tyvIWuiaQnHjHFunYvlj6N4MpogMclJ4J41PNGMQ=="],
 
-    "@ff-labs/fff-bin-linux-x64-musl": ["@ff-labs/fff-bin-linux-x64-musl@0.6.4", "", { "os": "linux", "cpu": "x64" }, "sha512-GHJhJ3P7cGth4F0VTyoe3maFQT0cW+RbMm7R5XKkNZZW2rNtR+4jo+neAU4gchYH6jv7ajCB5HQdNBcou8zxKA=="],
+    "@ff-labs/fff-bin-linux-x64-musl": ["@ff-labs/fff-bin-linux-x64-musl@0.7.2", "", { "os": "linux", "cpu": "x64" }, "sha512-kIp4BXX1oXVzHgBGD7ejpgDGNgCmooxZKob3frcn9dPkXoi0mUnbQfBTOHB4Fix64DwqIatGoj3HJ8EpPQEN1A=="],
 
-    "@ff-labs/fff-bin-win32-arm64": ["@ff-labs/fff-bin-win32-arm64@0.6.4", "", { "os": "win32", "cpu": "arm64" }, "sha512-+wmwbeoAvkce2ZduY1FSjzMnmE4LNJDpXa1q++mTz+/LsUvjPBl1dSchvXxuyLzKAqhigHpJ1k9Xull0iIDUjQ=="],
+    "@ff-labs/fff-bin-win32-arm64": ["@ff-labs/fff-bin-win32-arm64@0.7.2", "", { "os": "win32", "cpu": "arm64" }, "sha512-ShQpZRF6TfhI1mUaSLI4NJ2sE2cZwhMmWnKoNfJtp+5lTJuVGchmSIEJR9HrXnKn0zx37sQpggMDYmxGZ5pLxw=="],
 
-    "@ff-labs/fff-bin-win32-x64": ["@ff-labs/fff-bin-win32-x64@0.6.4", "", { "os": "win32", "cpu": "x64" }, "sha512-OOEXudgFtkXS5iF+6JoawCMpK76xg0NodUhsc2bhTKXJP8DjfQhU/ARpxoPFiX7uwAy1/xaPjbaT5dfP16TaCg=="],
+    "@ff-labs/fff-bin-win32-x64": ["@ff-labs/fff-bin-win32-x64@0.7.2", "", { "os": "win32", "cpu": "x64" }, "sha512-cYQVdtvTS612M2o+kV7cZlL6pFVXRCsSmPCAj3ReIn6s8H0e6V/FZbPnddOrTY/6ryb+IAr4q1SXiXF6jiFSEQ=="],
 
-    "@ff-labs/fff-node": ["@ff-labs/fff-node@0.6.4", "", { "dependencies": { "ffi-rs": "^1.0.0" }, "optionalDependencies": { "@ff-labs/fff-bin-darwin-arm64": "0.6.4", "@ff-labs/fff-bin-darwin-x64": "0.6.4", "@ff-labs/fff-bin-linux-arm64-gnu": "0.6.4", "@ff-labs/fff-bin-linux-arm64-musl": "0.6.4", "@ff-labs/fff-bin-linux-x64-gnu": "0.6.4", "@ff-labs/fff-bin-linux-x64-musl": "0.6.4", "@ff-labs/fff-bin-win32-arm64": "0.6.4", "@ff-labs/fff-bin-win32-x64": "0.6.4" }, "os": [ "linux", "win32", "darwin", ], "cpu": [ "x64", "arm64", ] }, "sha512-iC9H2cTxxEhOpGkx9sZaAo4ADX/m+gU+RzvpgB89KNOeDhjtJ6AxedT3YkgV1ZAWHHvBAVDALXwNKI81Ygk7Xg=="],
+    "@ff-labs/fff-node": ["@ff-labs/fff-node@0.7.2", "", { "dependencies": { "ffi-rs": "^1.0.0" }, "optionalDependencies": { "@ff-labs/fff-bin-darwin-arm64": "0.7.2", "@ff-labs/fff-bin-darwin-x64": "0.7.2", "@ff-labs/fff-bin-linux-arm64-gnu": "0.7.2", "@ff-labs/fff-bin-linux-arm64-musl": "0.7.2", "@ff-labs/fff-bin-linux-x64-gnu": "0.7.2", "@ff-labs/fff-bin-linux-x64-musl": "0.7.2", "@ff-labs/fff-bin-win32-arm64": "0.7.2", "@ff-labs/fff-bin-win32-x64": "0.7.2" }, "os": [ "linux", "win32", "darwin", ], "cpu": [ "x64", "arm64", ] }, "sha512-fiTkBCUqx6RWDRpDFmmckIMa3+HmGc3p/t9NUmlQljmOGZTrtZ1yPF770PRqUWEXgcd+siduPSEnon2B2iTCmw=="],
 
     "@google/genai": ["@google/genai@1.50.1", "", { "dependencies": { "google-auth-library": "^10.3.0", "p-retry": "^4.6.2", "protobufjs": "^7.5.4", "ws": "^8.18.0" }, "peerDependencies": { "@modelcontextprotocol/sdk": "^1.25.2" }, "optionalPeers": ["@modelcontextprotocol/sdk"] }, "sha512-YbkX7H9+1Pt8wOt7DDREy8XSoiL6fRDzZQRyaVBarFf8MR3zHGqVdvM4cLbDXqPhxqvegZShgfxb8kw9C7YhAQ=="],
 
@@ -527,6 +528,8 @@
     "google-auth-library": ["google-auth-library@10.6.2", "", { "dependencies": { "base64-js": "^1.3.0", "ecdsa-sig-formatter": "^1.0.11", "gaxios": "^7.1.4", "gcp-metadata": "8.1.2", "google-logging-utils": "1.1.3", "jws": "^4.0.0" } }, "sha512-e27Z6EThmVNNvtYASwQxose/G57rkRuaRbQyxM2bvYLLX/GqWZ5chWq2EBoUchJbCc57eC9ArzO5wMsEmWftCw=="],
 
     "google-logging-utils": ["google-logging-utils@1.1.3", "", {}, "sha512-eAmLkjDjAFCVXg7A1unxHsLf961m6y17QFqXqAXGj/gVkKFrEICfStRfwUlGNfeCEjNRa32JEWOUTlYXPyyKvA=="],
+
+    "gpt-tokenizer": ["gpt-tokenizer@3.4.0", "", {}, "sha512-wxFLnhIXTDjYebd9A9pGl3e31ZpSypbpIJSOswbgop5jLte/AsZVDvjlbEuVFlsqZixVKqbcoNmRlFDf6pz/UQ=="],
 
     "graceful-fs": ["graceful-fs@4.2.11", "", {}, "sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ=="],
 
