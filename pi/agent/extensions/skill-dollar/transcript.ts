@@ -1,4 +1,4 @@
-import { UserMessageComponent } from "@mariozechner/pi-coding-agent";
+import { UserMessageComponent } from "@earendil-works/pi-coding-agent";
 import { colorize } from "./highlight";
 
 const RENDER_WRAPPED = Symbol.for("skill-dollar.userMessageWrapped");

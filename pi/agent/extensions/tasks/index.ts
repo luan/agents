@@ -10,14 +10,14 @@ import {
 	type Theme,
 	type ThemeColor,
 	ToolExecutionComponent,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import {
 	type Component,
 	matchesKey,
 	truncateToWidth as truncateAnsiToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
-} from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { runCommand as defaultRunCommand } from "../shared/ct-runner";
 import { hasEnoughTerminalRows } from "../shared/terminal";

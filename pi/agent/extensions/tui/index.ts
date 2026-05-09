@@ -1,5 +1,5 @@
-import type { AssistantMessage } from "@mariozechner/pi-ai";
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { runCommand } from "../shared/ct-runner";
 import { terminalRows } from "../shared/terminal";
 import { ensureConfigExists, loadConfig, type PolishedTuiConfig } from "./config";

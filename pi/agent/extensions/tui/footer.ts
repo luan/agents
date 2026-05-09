@@ -1,5 +1,5 @@
-import type { Theme, ThemeColor } from "@mariozechner/pi-coding-agent";
-import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { PolishedTuiConfig } from "./config";
 import { emptyGitStatus, type GitStatusSummary } from "./git";
 import type { RuntimeInfo } from "./runtime";

@@ -4,8 +4,8 @@ import { readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { type ExtensionAPI, type ExtensionContext, highlightCode, keyHint } from "@mariozechner/pi-coding-agent";
-import { Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@mariozechner/pi-tui";
+import { type ExtensionAPI, type ExtensionContext, highlightCode, keyHint } from "@earendil-works/pi-coding-agent";
+import { Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { BundledLanguage, BundledTheme } from "shiki";
 import { Type } from "typebox";
 

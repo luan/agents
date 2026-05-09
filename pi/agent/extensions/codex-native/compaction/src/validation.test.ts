@@ -80,7 +80,7 @@ let serializerImportCounter = 0;
 let timestampCounter = 0;
 
 function registerPiCodingAgentMock(): void {
-	mock.module("@mariozechner/pi-coding-agent", () => ({
+	mock.module("@earendil-works/pi-coding-agent", () => ({
 		convertToLlm: (messages: Array<Record<string, unknown>>) =>
 			messages
 				.map((message) => {

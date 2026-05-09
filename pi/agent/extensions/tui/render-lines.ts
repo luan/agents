@@ -1,5 +1,5 @@
-import type { Theme } from "@mariozechner/pi-coding-agent";
-import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import type { Theme } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 const ESCAPE_PATTERN = "\\x1B";
 const RESET_ANSI = new RegExp(`${ESCAPE_PATTERN}\\[0m`, "g");

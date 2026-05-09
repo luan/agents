@@ -18,7 +18,7 @@ const baseModel = {
 let serializerImportCounter = 0;
 
 async function loadSerializerModule() {
-	mock.module("@mariozechner/pi-coding-agent", () => ({
+	mock.module("@earendil-works/pi-coding-agent", () => ({
 		convertToLlm: (messages: unknown[]) => messages,
 	}));
 	return import(`./serializer.ts?unit=${serializerImportCounter++}`);

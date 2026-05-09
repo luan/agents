@@ -1,4 +1,4 @@
-import type { CompactionEntry, CompactionResult, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { CompactionEntry, CompactionResult, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 export const EXTENSION_ID = "openai-native-compaction";
 export const EXTENSION_SETTINGS_KEY = "openaiNativeCompaction";

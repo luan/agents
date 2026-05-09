@@ -1,7 +1,7 @@
 import { basename } from "node:path";
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { type Component, type TUI, truncateToWidth } from "@mariozechner/pi-tui";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { type Component, type TUI, truncateToWidth } from "@earendil-works/pi-tui";
 import { runCommand } from "../shared/ct-runner.ts";
 import { renderLensCompactStatus, renderLensWidgetLines } from "../shared/lens-ui.ts";
 import { hasEnoughTerminalRows } from "../shared/terminal.ts";

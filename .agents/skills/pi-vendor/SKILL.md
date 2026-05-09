@@ -55,7 +55,7 @@ rg '^import|from "\.|from '\''\.' <installed-package>
 
 - Read the installed package `dependencies` and `peerDependencies`.
 - Add only runtime dependencies that the vendored code imports and this repo does not already provide.
-- Keep Pi packages (`@mariozechner/pi-coding-agent`, `@mariozechner/pi-tui`, `@mariozechner/pi-ai`, `typebox`) aligned with existing repo versions unless the vendored package requires a newer compatible range.
+- Keep Pi packages (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui`, `@earendil-works/pi-ai`, `typebox`) aligned with existing repo versions unless the vendored package requires a newer compatible range.
 - Do not add dev-only tooling from the vendored package.
 - Update the root `package.json`; update the lockfile only by running the package manager after the manifest edit.
 

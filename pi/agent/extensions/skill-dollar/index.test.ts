@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { AutocompleteProvider, EditorComponent } from "@mariozechner/pi-tui";
+import type { AutocompleteProvider, EditorComponent } from "@earendil-works/pi-tui";
 import { findMentionAtCursor, wrapProvider } from "./autocomplete";
 import { installEditorHighlight } from "./editor";
 import { colorize } from "./highlight";

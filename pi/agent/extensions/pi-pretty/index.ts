@@ -20,7 +20,7 @@
 import * as childProcess from "node:child_process";
 import { basename, extname, isAbsolute, relative, resolve } from "node:path";
 
-import type { ImageContent, TextContent } from "@mariozechner/pi-ai";
+import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type {
 	AgentToolResult,
 	AgentToolUpdateCallback,
@@ -28,8 +28,8 @@ import type {
 	ExtensionContext,
 	LsToolInput,
 	ReadToolInput,
-} from "@mariozechner/pi-coding-agent";
-import { getCapabilities, setCapabilities } from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-coding-agent";
+import { getCapabilities, setCapabilities } from "@earendil-works/pi-tui";
 
 import {
 	isExplorationHidden,
@@ -531,11 +531,11 @@ export default function piPrettyExtension(pi: PiPrettyApi, deps?: PiPrettyDeps):
 		TextComponent = deps.TextComponent;
 	} else {
 		try {
-			sdk = require("@mariozechner/pi-coding-agent");
+			sdk = require("@earendil-works/pi-coding-agent");
 			createReadTool = sdk.createReadToolDefinition ?? sdk.createReadTool;
 			createBashTool = sdk.createBashToolDefinition ?? sdk.createBashTool;
 			createLsTool = sdk.createLsToolDefinition ?? sdk.createLsTool;
-			TextComponent = require("@mariozechner/pi-tui").Text;
+			TextComponent = require("@earendil-works/pi-tui").Text;
 		} catch {
 			return;
 		}

@@ -1,4 +1,4 @@
-import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { getCurrentQuestion, isQuestionAnswered, isSubmitTab } from "../state/selectors";
 import { wrapText } from "../text";
 import type { AskState } from "../types";
