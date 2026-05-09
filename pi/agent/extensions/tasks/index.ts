@@ -111,6 +111,7 @@ const silentTaskToolNames = new Set([
 	"task_accept",
 	"task_reject",
 ]);
+const maxGuardAutoTurnsWithoutProgress = 2;
 const silentTaskToolPatchKey = Symbol.for("agents.tasks.silent-tool-render-patch");
 let activeTaskBoard: { close: () => void } | undefined;
 let taskHudExpandedEpicKey: string | null | undefined;
@@ -2310,24 +2311,44 @@ function guardInstruction(action: TaskGuardAction): string {
 		case "continue":
 			return `Continue in-progress task ${action.task.id}${source}: ${action.task.title}`;
 		case "start":
-			return `Consider starting assigned task ${action.task.id}${source}: ${action.task.title}.`;
+			return `Start assigned task ${action.task.id}${source}: ${action.task.title}.`;
 		case "claim":
-			return `Consider claiming task ${action.task.id}${source}: ${action.task.title}.`;
+			return `Claim task ${action.task.id}${source}: ${action.task.title}.`;
 		case "fix_dependency":
-			return `Task ${action.task.id} has invalid blocker ${action.invalidBlocker}. Consider fixing blocked_by or choosing a replacement blocker.`;
+			return `Fix invalid blocker ${action.invalidBlocker} on task ${action.task.id}: update blocked_by or choose a replacement blocker.`;
 		case "close_parent":
-			return `All child tasks for parent ${action.task.id} are terminal. Consider verifying acceptance and marking the parent done.`;
+			return `Verify acceptance for parent ${action.task.id} and mark it done; all child tasks are terminal.`;
 	}
 }
 
 function guardContent(action: TaskGuardAction): string {
 	return [
-		"Task nudge: work remains for this session.",
+		"Task nudge: this session has a ready next step.",
 		"",
 		`Suggested next step: ${guardInstruction(action)}`,
 		"",
-		"You can continue, switch tasks, or ignore this nudge.",
+		"Continue with tools when this matches the user's direction; otherwise switch tasks or dismiss this nudge.",
 	].join("\n");
+}
+
+function userTextAllowsGuardAutoTurn(text: string | undefined): boolean {
+	if (!text) return true;
+	if (pausesGuard(text)) return false;
+	if (/\btask[- ]guard\b|\bguard\b/i.test(text)) return false;
+	if (/[?]\s*$/.test(text)) return false;
+	if (/^\s*(why|what|when|where|who|how|do|does|did|can|could|should|would|is|are)\b/i.test(text)) return false;
+	return /\b(assign|assigned|implement|continue|start|work|proceed|resume|finish|complete|fix)\b/i.test(text);
+}
+
+function shouldTriggerGuardTurn(state: GuardState, decision: TaskGuardDecision): boolean {
+	if (!userTextAllowsGuardAutoTurn(state.lastUserText)) return false;
+	if (state.autoLoopTaskId !== decision.action.task.id || state.lastGuardProgressSerial !== state.progressSerial) {
+		state.autoLoopTaskId = decision.action.task.id;
+		state.autoLoopTurns = 0;
+	}
+	if (state.autoLoopTurns >= maxGuardAutoTurnsWithoutProgress) return false;
+	state.autoLoopTurns++;
+	return true;
 }
 
 async function evaluateTaskGuard(
@@ -2360,6 +2381,7 @@ async function sendTaskGuard(pi: ExtensionAPI, state: GuardState): Promise<void>
 	if (!pending) return;
 	const decision: TaskGuardDecision | undefined = pending;
 	if (!decision) return;
+	const triggerTurn = shouldTriggerGuardTurn(state, decision);
 	state.lastGuardFingerprint = decision.fingerprint;
 	state.lastGuardProgressSerial = state.progressSerial;
 	pi.sendMessage(
@@ -2369,7 +2391,7 @@ async function sendTaskGuard(pi: ExtensionAPI, state: GuardState): Promise<void>
 			display: true,
 			details: { action: decision.action.kind, taskId: decision.action.task.id },
 		},
-		{ deliverAs: "followUp" },
+		triggerTurn ? { deliverAs: "followUp", triggerTurn: true } : { deliverAs: "followUp" },
 	);
 	state.lastUserText = undefined;
 }
