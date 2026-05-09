@@ -918,21 +918,20 @@ describe("tasks extension", () => {
 			},
 		);
 
-		const add = tools.find((tool) => tool.name === "task_add");
-		expect(add).toBeTruthy();
-		const result = await add.execute("call-1", { title: "Persist task" }, undefined);
-		expect(calls).toEqual([["ct", "task", "add", "Persist task", "--json"]]);
+		const write = tools.find((tool) => tool.name === "task_write");
+		const read = tools.find((tool) => tool.name === "task_read");
+		expect(write).toBeTruthy();
+		expect(read).toBeTruthy();
+		const result = await write.execute("call-1", { op: "add", title: "Persist task" }, undefined);
+		await read.execute("call-2", { mode: "show", id: "PG4" }, undefined);
+		expect(calls).toEqual([
+			["ct", "task", "add", "Persist task", "--json"],
+			["ct", "task", "show", "PG4", "--json"],
+		]);
 		expect(result.content[0].text).toBe(JSON.stringify({ task }));
 		expect(result.details.task.id).toBe(task.id);
-		expect(tools.map((tool) => tool.name).sort()).toEqual([
-			"task_accept",
-			"task_add",
-			"task_delete",
-			"task_list",
-			"task_reject",
-			"task_show",
-			"task_update",
-		]);
+		expect(tools.map((tool) => tool.name).sort()).toEqual(["task_read", "task_write"]);
+		expect(Object.keys(write.parameters.properties).sort()).toEqual(["clear", "data", "id", "note", "op", "title"]);
 	});
 
 	test("renders a scoped columnar HUD for active tasks", () => {
@@ -1288,8 +1287,14 @@ describe("tasks extension", () => {
 		expect(widgetText).toContain("PG4W2K4Q03");
 		expect(widgetRegistrations).toBe(1);
 
-		const update = tools.find((tool) => tool.name === "task_update");
-		await update.execute("call-2", { id: "PG4", title: "Updated smoke test task tools" }, undefined, undefined, ctx);
+		const write = tools.find((tool) => tool.name === "task_write");
+		await write.execute(
+			"call-2",
+			{ op: "update", id: "PG4", data: { title: "Updated smoke test task tools" } },
+			undefined,
+			undefined,
+			ctx,
+		);
 		expect(calls.map((call) => call.slice(1, 3))).toContainEqual(["task", "update"]);
 		expect(calls.map((call) => call.slice(1, 3))).toContainEqual(["task", "list"]);
 		expect(calls).toContainEqual(["ct", "task", "list", "--all", "--json"]);
@@ -1315,16 +1320,22 @@ describe("tasks extension", () => {
 			},
 		);
 
-		const update = tools.find((tool) => tool.name === "task_update");
-		await update.execute("call-2", { id: "PG4", status: "in_progress" }, undefined, undefined, {
-			cwd: "/tmp/project",
-			ui: {
-				setWidget(_id: string, factory: any) {
-					widgetText = factory({}, markedTheme).render(1000).join("\n");
+		const write = tools.find((tool) => tool.name === "task_write");
+		await write.execute(
+			"call-2",
+			{ op: "update", id: "PG4", data: { status: "in_progress" } },
+			undefined,
+			undefined,
+			{
+				cwd: "/tmp/project",
+				ui: {
+					setWidget(_id: string, factory: any) {
+						widgetText = factory({}, markedTheme).render(1000).join("\n");
+					},
+					notify() {},
 				},
-				notify() {},
 			},
-		});
+		);
 
 		expect(widgetText).toContain("<selectedBg>");
 		expect(widgetText).toContain("Smoke test");
@@ -1934,6 +1945,64 @@ describe("tasks extension", () => {
 		expect(sent[0].message.display).toBe(true);
 	});
 
+	test("task guard does not suggest claiming epic container tasks", async () => {
+		const handlers: Record<string, any> = {};
+		const sent: any[] = [];
+		tasksExtension(
+			{
+				registerTool() {},
+				on(name: string, handler: any) {
+					handlers[name] = handler;
+				},
+				sendMessage(message: any, options: any) {
+					sent.push({ message, options });
+				},
+			} as any,
+			{
+				runCommand: async () => ({
+					stdout: JSON.stringify({
+						tasks: [
+							{
+								...task,
+								id: "t",
+								type: "bug",
+								title: "Concrete task in review",
+								status: "in_review",
+								assigned_to: "session:test-session",
+								epic_id: "codex-provider",
+							},
+							{
+								...task,
+								id: "4",
+								type: "epic",
+								title: "Codex provider fork",
+								status: "open",
+								assigned_to: undefined,
+								epic_id: "codex-provider",
+							},
+						],
+					}),
+					stderr: "",
+					exitCode: 0,
+				}),
+			},
+		);
+		const ctx = {
+			cwd: "/tmp/project",
+			sessionId: "test-session",
+			signal: undefined,
+			ui: {
+				setWidget() {},
+				notify() {},
+			},
+		};
+
+		await handlers.message_end({ message: { role: "assistant", content: [{ type: "text", text: "Done." }] } }, ctx);
+		await handlers.turn_end({}, ctx);
+
+		expect(sent).toEqual([]);
+	});
+
 	test("task tools render no call or result UI", () => {
 		const tools: any[] = [];
 		tasksExtension(
@@ -1948,15 +2017,15 @@ describe("tasks extension", () => {
 			},
 		);
 
-		const add = tools.find((tool) => tool.name === "task_add");
-		expect(add.renderCall({ title: "Make HUD nice" }, theme).render(120)).toEqual([]);
-		expect(add.renderResult({ details: { action: "add", task } }, {}, theme, {}).render(120)).toEqual([]);
+		const write = tools.find((tool) => tool.name === "task_write");
+		expect(write.renderCall({ op: "add", title: "Make HUD nice" }, theme).render(120)).toEqual([]);
+		expect(write.renderResult({ details: { action: "add", task } }, {}, theme, {}).render(120)).toEqual([]);
 		const row = new ToolExecutionComponent(
-			"task_add",
+			"task_write",
 			"call-1",
-			{ title: "Make HUD nice" },
+			{ op: "add", title: "Make HUD nice" },
 			{},
-			add,
+			write,
 			{ requestRender() {} } as any,
 			"/tmp/project",
 		);
