@@ -5,22 +5,32 @@
  * @-mention autocomplete suggestions in the interactive editor.
  */
 
-import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import type { FileFinder, GrepCursor, GrepMode, GrepResult, MixedItem, SearchResult } from "@ff-labs/fff-node";
+import type { GrepMode, MixedItem } from "@ff-labs/fff-node";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { CustomEditor, DEFAULT_MAX_BYTES, formatSize, truncateHead } from "@mariozechner/pi-coding-agent";
-import { type AutocompleteItem, type AutocompleteProvider, Text } from "@mariozechner/pi-tui";
+import { DEFAULT_MAX_BYTES, formatSize, truncateHead } from "@mariozechner/pi-coding-agent";
+import { type AutocompleteItem, Text } from "@mariozechner/pi-tui";
 import { Type } from "typebox";
+import { registerExplorationEventHandlers, registerExplorationTool } from "../shared/exploration-rendering";
+import { FffClient } from "./fff-client";
 import {
-	type ExplorationAction,
-	isExplorationHidden,
-	registerExplorationEventHandlers,
-	registerExplorationTool,
-	renderExplorationCall,
-} from "../shared/exploration-rendering";
+	CursorStore,
+	formatFindOutput,
+	formatGrepOutput,
+	normalizeConstraintExpression,
+	normalizePathConstraint,
+} from "./fff-format";
+import { buildAtCompletionValue, FffEditor } from "./mention-provider";
+import {
+	findAction,
+	getResultText,
+	limitRenderedLines,
+	renderExploreCall,
+	renderFindOutputLines,
+	renderGrepOutputLines,
+	renderGutterBlock,
+	searchAction,
+	shouldHideSearchResult,
+} from "./render";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -28,11 +38,7 @@ import {
 
 const DEFAULT_GREP_LIMIT = 100;
 const DEFAULT_FIND_LIMIT = 200;
-const GREP_MAX_LINE_LENGTH = 500;
 const MENTION_MAX_RESULTS = 20;
-const RUNTIME_CACHE_VERSION = "v1";
-
-type FffNodeModule = typeof import("@ff-labs/fff-node");
 
 type FffMode = "tools-and-ui" | "tools-only" | "override";
 
@@ -59,505 +65,13 @@ function resolveToolNames(mode: FffMode): ToolNames {
 	return mode === "override" ? OVERRIDE_TOOL_NAMES : FFF_TOOL_NAMES;
 }
 
-// ---------------------------------------------------------------------------
-// Safe native runtime loading
-// ---------------------------------------------------------------------------
-
-interface PackageJson {
-	name?: string;
-	version?: string;
-	optionalDependencies?: Record<string, string>;
-}
-
-const extensionDir = path.dirname(fileURLToPath(import.meta.url));
-let fffNodeModulePromise: Promise<FffNodeModule> | null = null;
-
-function packageSegments(packageName: string): string[] {
-	return packageName.split("/");
-}
-
-function packageDir(nodeModulesDir: string, packageName: string): string {
-	return path.join(nodeModulesDir, ...packageSegments(packageName));
-}
-
-function readPackageJson(packageRoot: string): PackageJson {
-	return JSON.parse(readFileSync(path.join(packageRoot, "package.json"), "utf8")) as PackageJson;
-}
-
-function findSourceNodeModules(): string {
-	let dir = extensionDir;
-	while (true) {
-		const candidate = path.join(dir, "node_modules", "@ff-labs", "fff-node", "package.json");
-		if (existsSync(candidate)) return path.join(dir, "node_modules");
-
-		const parent = path.dirname(dir);
-		if (parent === dir) break;
-		dir = parent;
-	}
-	throw new Error("Could not find @ff-labs/fff-node in extension node_modules");
-}
-
-function runtimeCacheBase(): string {
-	return (
-		process.env.PI_FFF_RUNTIME_DIR ??
-		path.join(process.env.XDG_CACHE_HOME ?? path.join(os.homedir(), ".cache"), "pi-fff", "runtime")
-	);
-}
-
-function runtimeKey(fffPackage: PackageJson, ffiPackage: PackageJson): string {
-	return [
-		`${fffPackage.name ?? "fff-node"}@${fffPackage.version ?? "unknown"}`,
-		`${ffiPackage.name ?? "ffi-rs"}@${ffiPackage.version ?? "unknown"}`,
-		`${process.platform}-${process.arch}`,
-		RUNTIME_CACHE_VERSION,
-	]
-		.join("_")
-		.replace(/[^a-zA-Z0-9._-]+/g, "_");
-}
-
-function copyPackage(sourceNodeModules: string, targetNodeModules: string, packageName: string): void {
-	const source = packageDir(sourceNodeModules, packageName);
-	if (!existsSync(path.join(source, "package.json"))) return;
-
-	const target = packageDir(targetNodeModules, packageName);
-	mkdirSync(path.dirname(target), { recursive: true });
-	cpSync(source, target, {
-		recursive: true,
-		dereference: false,
-		errorOnExist: false,
-		force: false,
-	});
-}
-
-function copyInstalledOptionalDependencies(
-	sourceNodeModules: string,
-	targetNodeModules: string,
-	packageJson: PackageJson,
-): void {
-	for (const packageName of Object.keys(packageJson.optionalDependencies ?? {})) {
-		copyPackage(sourceNodeModules, targetNodeModules, packageName);
-	}
-}
-
-function ensureSafeFffRuntime(): string {
-	const sourceNodeModules = findSourceNodeModules();
-	const fffPackage = readPackageJson(packageDir(sourceNodeModules, "@ff-labs/fff-node"));
-	const ffiPackage = readPackageJson(packageDir(sourceNodeModules, "ffi-rs"));
-	const runtimeRoot = path.join(runtimeCacheBase(), runtimeKey(fffPackage, ffiPackage));
-	const markerPath = path.join(runtimeRoot, ".ready.json");
-
-	if (existsSync(markerPath)) return runtimeRoot;
-
-	const tmpRoot = `${runtimeRoot}.tmp-${process.pid}-${Date.now()}`;
-	rmSync(tmpRoot, { recursive: true, force: true });
-	mkdirSync(path.join(tmpRoot, "node_modules"), { recursive: true });
-
-	try {
-		const targetNodeModules = path.join(tmpRoot, "node_modules");
-		copyPackage(sourceNodeModules, targetNodeModules, "@ff-labs/fff-node");
-		copyPackage(sourceNodeModules, targetNodeModules, "ffi-rs");
-		copyInstalledOptionalDependencies(sourceNodeModules, targetNodeModules, fffPackage);
-		copyInstalledOptionalDependencies(sourceNodeModules, targetNodeModules, ffiPackage);
-
-		const entry = path.join(targetNodeModules, "@ff-labs", "fff-node", "dist", "src", "index.js");
-		if (!existsSync(entry)) throw new Error(`Missing staged @ff-labs/fff-node entrypoint: ${entry}`);
-
-		mkdirSync(path.dirname(runtimeRoot), { recursive: true });
-		writeFileSync(
-			path.join(tmpRoot, ".ready.json"),
-			JSON.stringify(
-				{
-					fffNode: fffPackage.version,
-					ffiRs: ffiPackage.version,
-					platform: process.platform,
-					arch: process.arch,
-					cacheVersion: RUNTIME_CACHE_VERSION,
-				},
-				null,
-				2,
-			),
-		);
-		rmSync(runtimeRoot, { recursive: true, force: true });
-		renameSync(tmpRoot, runtimeRoot);
-		return runtimeRoot;
-	} catch (error) {
-		rmSync(tmpRoot, { recursive: true, force: true });
-		throw error;
-	}
-}
-
-async function loadFffNodeModule(): Promise<FffNodeModule> {
-	if (!fffNodeModulePromise) {
-		const runtimeRoot = ensureSafeFffRuntime();
-		const entry = path.join(runtimeRoot, "node_modules", "@ff-labs", "fff-node", "dist", "src", "index.js");
-		fffNodeModulePromise = import(pathToFileURL(entry).href) as Promise<FffNodeModule>;
-	}
-	return fffNodeModulePromise;
-}
-
-// ---------------------------------------------------------------------------
-// Cursor store — simple bounded Map for pagination cursors
-// ---------------------------------------------------------------------------
-
-const cursorCache = new Map<string, GrepCursor>();
-let cursorCounter = 0;
-
-function storeCursor(cursor: GrepCursor): string {
-	const id = `fff_c${++cursorCounter}`;
-	cursorCache.set(id, cursor);
-	if (cursorCache.size > 200) {
-		const first = cursorCache.keys().next().value;
-		if (first) cursorCache.delete(first);
-	}
-	return id;
-}
-
-function getCursor(id: string): GrepCursor | undefined {
-	return cursorCache.get(id);
-}
-
-// ---------------------------------------------------------------------------
-// Output formatting helpers
-// ---------------------------------------------------------------------------
-
-function truncateLine(line: string, max = GREP_MAX_LINE_LENGTH): string {
-	const trimmed = line.trim();
-	return trimmed.length <= max ? trimmed : `${trimmed.slice(0, max)}...`;
-}
-
-function formatGrepOutput(result: GrepResult, limit: number): string {
-	const items = result.items.slice(0, limit);
-	if (items.length === 0) return "No matches found";
-
-	const lines: string[] = [];
-	let currentFile = "";
-
-	for (const match of items) {
-		if (match.relativePath !== currentFile) {
-			currentFile = match.relativePath;
-			if (lines.length > 0) lines.push("");
-		}
-
-		match.contextBefore?.forEach((line: string, i: number) => {
-			lines.push(
-				`${match.relativePath}-${match.lineNumber - match.contextBefore!.length + i}- ${truncateLine(line)}`,
-			);
-		});
-
-		lines.push(`${match.relativePath}:${match.lineNumber}: ${truncateLine(match.lineContent)}`);
-
-		match.contextAfter?.forEach((line: string, i: number) => {
-			lines.push(`${match.relativePath}-${match.lineNumber + 1 + i}- ${truncateLine(line)}`);
-		});
-	}
-
-	return lines.join("\n");
-}
-
-function formatFindOutput(result: SearchResult, limit: number): string {
-	const items = result.items.slice(0, limit);
-	return items.length === 0
-		? "No files found matching pattern"
-		: items.map((i: { relativePath: string }) => i.relativePath).join("\n");
-}
-
-function getResultText(result: { content?: { type: string; text?: string }[] }): string {
-	return result.content?.find((c) => c.type === "text")?.text?.trim() ?? "";
-}
-
-function searchAction(query: string, path: string): ExplorationAction {
-	return {
-		kind: "search",
-		title: "Search",
-		body: path && path !== "." ? `${query} in ${path}` : query,
-	};
-}
-
-function findAction(query: string, path: string): ExplorationAction {
-	return {
-		kind: "find",
-		title: "Find",
-		body: path && path !== "." ? `${query} in ${path}` : query,
-	};
-}
-
-function renderExploreCall(action: ExplorationAction, theme: any, context: any): Text {
-	const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-	text.setText(renderExplorationCall(action, theme, context));
-	return text;
-}
-
-function shouldHideSearchResult(options: { expanded?: boolean }, context: any): boolean {
-	return !context?.isError && (!options.expanded || isExplorationHidden(context?.toolCallId));
-}
-
-function renderGutterBlock(lines: string[], theme: any): string {
-	const body = lines.length > 0 ? lines : [theme.fg("muted", "(no output)")];
-	return body
-		.map((line, index) => {
-			const prefix = index === body.length - 1 ? "  └ " : index === 0 ? "  ├ " : "  │ ";
-			return `${theme.fg("dim", prefix)}${line}`;
-		})
-		.join("\n");
-}
-
-function limitRenderedLines(lines: string[], options: { expanded?: boolean }, maxLines: number, theme: any): string[] {
-	if (options.expanded || lines.length <= maxLines) return lines;
-	return [...lines.slice(0, maxLines), theme.fg("muted", `... (${lines.length - maxLines} more lines)`)];
-}
-
-function isNoticeLine(line: string): boolean {
-	const trimmed = line.trim();
-	return trimmed.startsWith("[") && trimmed.endsWith("]");
-}
-
-function renderFindOutputLines(output: string, theme: any): string[] {
-	if (!output || output === "No files found matching pattern") {
-		return [theme.fg("muted", "No files found matching pattern")];
-	}
-
-	const groups = new Map<string, string[]>();
-	const notices: string[] = [];
-	for (const rawLine of output.split("\n")) {
-		const line = rawLine.trim();
-		if (!line) continue;
-		if (isNoticeLine(line)) {
-			notices.push(theme.fg("muted", line));
-			continue;
-		}
-		const dir = path.posix.dirname(line);
-		const file = path.posix.basename(line);
-		const key = dir === "." ? "." : dir;
-		const files = groups.get(key) ?? [];
-		files.push(file);
-		groups.set(key, files);
-	}
-
-	const lines: string[] = [];
-	for (const [dir, files] of groups) {
-		if (lines.length > 0) lines.push("");
-		const label = dir === "." ? "./" : `${dir}/`;
-		lines.push(theme.fg("accent", label));
-		files.forEach((file, index) => {
-			const branch = index === files.length - 1 ? "└ " : "├ ";
-			lines.push(`  ${theme.fg("dim", branch)}${theme.fg("toolOutput", file)}`);
-		});
-	}
-	if (notices.length > 0) {
-		if (lines.length > 0) lines.push("");
-		lines.push(...notices);
-	}
-	return lines;
-}
-
-type HighlightMode = "literal" | "regex";
-
-function renderGrepOutputLines(
-	output: string,
-	patterns: string[],
-	theme: any,
-	mode: HighlightMode = "literal",
-): string[] {
-	if (!output || output === "No matches found") {
-		return [theme.fg("muted", "No matches found")];
-	}
-
-	const lines: string[] = [];
-	let currentFile = "";
-	for (const rawLine of output.split("\n")) {
-		const line = rawLine.trimEnd();
-		if (!line) {
-			lines.push("");
-			continue;
-		}
-		if (isNoticeLine(line)) {
-			lines.push(theme.fg("muted", line));
-			continue;
-		}
-
-		const match = line.match(/^(.+?)([:-])(\d+)\2\s?(.*)$/);
-		if (!match) {
-			lines.push(theme.fg("toolOutput", line));
-			continue;
-		}
-
-		const [, file, separator, lineNumber, content] = match;
-		if (file !== currentFile) {
-			if (currentFile) lines.push("");
-			lines.push(theme.fg("accent", file));
-			currentFile = file;
-		}
-
-		const paddedLineNumber = lineNumber.padStart(4, " ");
-		const lineNumberText = theme.fg(separator === ":" ? "success" : "muted", paddedLineNumber);
-		const body = highlightPatterns(content, patterns, theme, mode);
-		lines.push(`  ${lineNumberText} ${theme.fg("dim", "│")} ${body}`);
-	}
-	return lines;
-}
-
-function highlightPatterns(text: string, patterns: string[], theme: any, mode: HighlightMode): string {
-	const usablePatterns = patterns.filter((pattern) => pattern.length > 0);
-	if (usablePatterns.length === 0) return theme.fg("toolOutput", text);
-
-	try {
-		const regex =
-			mode === "regex"
-				? new RegExp(usablePatterns.join("|"), "gi")
-				: new RegExp(
-						usablePatterns
-							.sort((a, b) => b.length - a.length)
-							.map(escapeRegex)
-							.join("|"),
-						"gi",
-					);
-		let lastIndex = 0;
-		let highlighted = "";
-		for (const match of text.matchAll(regex)) {
-			const index = match.index ?? 0;
-			if (match[0].length === 0) continue;
-			highlighted += theme.fg("toolOutput", text.slice(lastIndex, index));
-			highlighted += theme.bold(theme.fg("warning", match[0]));
-			lastIndex = index + match[0].length;
-		}
-		highlighted += theme.fg("toolOutput", text.slice(lastIndex));
-		return highlighted;
-	} catch {
-		return theme.fg("toolOutput", text);
-	}
-}
-
-function escapeRegex(value: string): string {
-	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function toFffPath(value: string): string {
-	return value.split(path.sep).join("/");
-}
-
-function normalizePathConstraint(rawPath: string | undefined, cwd: string): string | undefined {
-	const trimmed = rawPath?.trim();
-	if (!trimmed) return undefined;
-
-	const absolutePath = path.isAbsolute(trimmed) ? trimmed : path.join(cwd, trimmed);
-	const relativePath = path.isAbsolute(trimmed) ? path.relative(cwd, absolutePath) : trimmed;
-
-	if (!relativePath.startsWith("..") && !path.isAbsolute(relativePath) && existsSync(absolutePath)) {
-		const normalized = toFffPath(relativePath);
-		return statSync(absolutePath).isDirectory() && !normalized.endsWith("/") ? `${normalized}/` : normalized;
-	}
-
-	return toFffPath(trimmed);
-}
-
-function normalizeConstraintExpression(rawConstraints: string | undefined, cwd: string): string | undefined {
-	const trimmed = rawConstraints?.trim();
-	if (!trimmed) return undefined;
-
-	return trimmed
-		.split(/\s+/)
-		.map((constraint) => {
-			const negated = constraint.startsWith("!");
-			const value = negated ? constraint.slice(1) : constraint;
-			const normalized = normalizePathConstraint(value, cwd) ?? value;
-			return negated ? `!${normalized}` : normalized;
-		})
-		.join(" ");
-}
-
-// ---------------------------------------------------------------------------
-// Mention autocomplete helpers
-// ---------------------------------------------------------------------------
-
-function extractAtPrefix(textBeforeCursor: string): string | null {
-	const match = textBeforeCursor.match(/(?:^|[ \t])(@(?:"[^"]*|[^\s]*))$/);
-	return match?.[1] ?? null;
-}
-
-function buildAtCompletionValue(path: string): string {
-	return path.includes(" ") ? `@"${path}"` : `@${path}`;
-}
-
-function createFffMentionProvider(
-	getItems: (query: string, signal: AbortSignal) => Promise<AutocompleteItem[]>,
-): AutocompleteProvider {
-	return {
-		async getSuggestions(lines, cursorLine, cursorCol, options) {
-			const currentLine = lines[cursorLine] || "";
-			const prefix = extractAtPrefix(currentLine.slice(0, cursorCol));
-			if (!prefix || options.signal.aborted) return null;
-
-			const query = prefix.startsWith('@"') ? prefix.slice(2) : prefix.slice(1);
-			const items = await getItems(query, options.signal);
-			return options.signal.aborted || items.length === 0 ? null : { items, prefix };
-		},
-		applyCompletion(_lines, cursorLine, cursorCol, item, prefix) {
-			const currentLine = _lines[cursorLine] || "";
-			const before = currentLine.slice(0, cursorCol - prefix.length);
-			const after = currentLine.slice(cursorCol);
-			const newLine = before + item.value + after;
-			const newCursorCol = cursorCol - prefix.length + item.value.length;
-			return {
-				lines: [..._lines.slice(0, cursorLine), newLine, ..._lines.slice(cursorLine + 1)],
-				cursorLine,
-				cursorCol: newCursorCol,
-			};
-		},
-	};
-}
-
-// Simple editor wrapper that injects FFF @-mention autocomplete alongside base provider
-class FffEditor extends CustomEditor {
-	private baseProvider: AutocompleteProvider | undefined;
-	private getMentionItems: (query: string, signal: AbortSignal) => Promise<AutocompleteItem[]>;
-
-	constructor(
-		tui: any,
-		theme: any,
-		keybindings: any,
-		getMentionItems: (query: string, signal: AbortSignal) => Promise<AutocompleteItem[]>,
-	) {
-		super(tui, theme, keybindings);
-		this.getMentionItems = getMentionItems;
-	}
-
-	override setAutocompleteProvider(provider: AutocompleteProvider): void {
-		this.baseProvider = provider;
-		// Create composite provider that handles @-mentions and falls back to base
-		const mentionProvider = createFffMentionProvider(this.getMentionItems);
-		const compositeProvider: AutocompleteProvider = {
-			getSuggestions: async (lines, cursorLine, cursorCol, options) => {
-				// Try @-mention first
-				const mentionResult = await mentionProvider.getSuggestions(lines, cursorLine, cursorCol, options);
-				if (mentionResult) return mentionResult;
-				// Fall back to base provider
-				return this.baseProvider?.getSuggestions(lines, cursorLine, cursorCol, options) ?? null;
-			},
-			applyCompletion: (lines, cursorLine, cursorCol, item, prefix) => {
-				// Let mention provider handle @ completions, base provider for others
-				if (prefix?.startsWith("@")) {
-					return mentionProvider.applyCompletion!(lines, cursorLine, cursorCol, item, prefix);
-				}
-				return (
-					this.baseProvider?.applyCompletion?.(lines, cursorLine, cursorCol, item, prefix) ?? {
-						lines,
-						cursorLine,
-						cursorCol,
-					}
-				);
-			},
-		};
-		super.setAutocompleteProvider(compositeProvider);
-	}
-}
+const cursorStore = new CursorStore();
 
 // ---------------------------------------------------------------------------
 // Extension
 // ---------------------------------------------------------------------------
 
 export default function fffExtension(pi: ExtensionAPI) {
-	let finder: FileFinder | null = null;
-	let finderCwd: string | null = null;
 	let activeCwd = process.cwd();
 
 	// Mode resolution: flag > env > default
@@ -599,6 +113,7 @@ export default function fffExtension(pi: ExtensionAPI) {
 		(pi.getFlag("fff-frecency-db") as string | undefined) ?? process.env.FFF_FRECENCY_DB ?? undefined;
 	const historyDbPath =
 		(pi.getFlag("fff-history-db") as string | undefined) ?? process.env.FFF_HISTORY_DB ?? undefined;
+	const fff = new FffClient({ frecencyDbPath, historyDbPath });
 
 	function getMode(): FffMode {
 		return currentMode;
@@ -612,51 +127,9 @@ export default function fffExtension(pi: ExtensionAPI) {
 		return currentMode !== "tools-only";
 	}
 
-	async function createFinder(cwd: string): Promise<FileFinder> {
-		const { FileFinder } = await loadFffNodeModule();
-		const result = FileFinder.create({
-			basePath: cwd,
-			frecencyDbPath,
-			historyDbPath,
-			// Pi is a long-lived TUI process; keep FFF as an on-demand query engine
-			// instead of leaving native watcher/content-index background threads alive.
-			disableWatch: true,
-			disableContentIndexing: true,
-			disableMmapCache: true,
-			aiMode: true,
-		});
-
-		if (!result.ok) throw new Error(`Failed to create FFF file finder: ${result.error}`);
-
-		const nextFinder = result.value;
-		await nextFinder.waitForScan(15000);
-		return nextFinder;
-	}
-
-	async function ensureFinder(cwd: string): Promise<FileFinder> {
-		if (finder && !finder.isDestroyed && finderCwd === cwd) return finder;
-		if (finder && !finder.isDestroyed) {
-			finder.destroy();
-			finder = null;
-			finderCwd = null;
-		}
-
-		finder = await createFinder(cwd);
-		finderCwd = cwd;
-		return finder;
-	}
-
-	function destroyFinder() {
-		if (finder && !finder.isDestroyed) {
-			finder.destroy();
-			finder = null;
-			finderCwd = null;
-		}
-	}
-
 	async function getMentionItems(query: string, signal: AbortSignal): Promise<AutocompleteItem[]> {
 		if (signal.aborted) return [];
-		const f = await ensureFinder(activeCwd);
+		const f = await fff.ensure(activeCwd);
 		if (signal.aborted) return [];
 
 		const result = f.mixedSearch(query, { pageSize: MENTION_MAX_RESULTS });
@@ -722,7 +195,7 @@ export default function fffExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async () => {
-		destroyFinder();
+		fff.destroy();
 	});
 
 	// --- grep tool ---
@@ -775,7 +248,7 @@ export default function fffExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, params, signal) {
 			if (signal?.aborted) throw new Error("Operation aborted");
 
-			const f = await ensureFinder(activeCwd);
+			const f = await fff.ensure(activeCwd);
 			const effectiveLimit = Math.max(1, params.limit ?? DEFAULT_GREP_LIMIT);
 			const pathConstraint = normalizePathConstraint(params.path, activeCwd);
 			const query = pathConstraint ? `${pathConstraint} ${params.pattern}` : params.pattern;
@@ -785,7 +258,7 @@ export default function fffExtension(pi: ExtensionAPI) {
 				mode,
 				smartCase: true,
 				maxMatchesPerFile: Math.min(effectiveLimit, 50),
-				cursor: (params.cursor ? getCursor(params.cursor) : null) ?? null,
+				cursor: (params.cursor ? cursorStore.get(params.cursor) : null) ?? null,
 				beforeContext: params.context ?? 0,
 				afterContext: params.context ?? 0,
 			});
@@ -805,7 +278,7 @@ export default function fffExtension(pi: ExtensionAPI) {
 			if (truncation.truncated) notices.push(`${formatSize(DEFAULT_MAX_BYTES)} limit reached`);
 			if (result.regexFallbackError) notices.push(`Regex failed: ${result.regexFallbackError}, used literal match`);
 			if (result.nextCursor)
-				notices.push(`More results available. Use cursor="${storeCursor(result.nextCursor)}" to continue`);
+				notices.push(`More results available. Use cursor="${cursorStore.store(result.nextCursor)}" to continue`);
 
 			if (notices.length > 0) output += `\n\n[${notices.join(". ")}]`;
 
@@ -887,7 +360,7 @@ export default function fffExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, params, signal) {
 			if (signal?.aborted) throw new Error("Operation aborted");
 
-			const f = await ensureFinder(activeCwd);
+			const f = await fff.ensure(activeCwd);
 			const effectiveLimit = Math.max(1, params.limit ?? DEFAULT_FIND_LIMIT);
 			const query = params.path ? `${params.path} ${params.pattern}` : params.pattern;
 
@@ -990,7 +463,7 @@ export default function fffExtension(pi: ExtensionAPI) {
 			if (signal?.aborted) throw new Error("Operation aborted");
 			if (!params.patterns?.length) throw new Error("patterns array must have at least 1 element");
 
-			const f = await ensureFinder(activeCwd);
+			const f = await fff.ensure(activeCwd);
 			const effectiveLimit = Math.max(1, params.limit ?? DEFAULT_GREP_LIMIT);
 
 			const grepResult = f.multiGrep({
@@ -998,7 +471,7 @@ export default function fffExtension(pi: ExtensionAPI) {
 				constraints: normalizeConstraintExpression(params.constraints, activeCwd),
 				maxMatchesPerFile: Math.min(effectiveLimit, 50),
 				smartCase: true,
-				cursor: (params.cursor ? getCursor(params.cursor) : null) ?? null,
+				cursor: (params.cursor ? cursorStore.get(params.cursor) : null) ?? null,
 				beforeContext: params.context ?? 0,
 				afterContext: params.context ?? 0,
 			});
@@ -1017,7 +490,7 @@ export default function fffExtension(pi: ExtensionAPI) {
 				notices.push(`${effectiveLimit} matches limit reached. Use limit=${effectiveLimit * 2} for more`);
 			if (truncation.truncated) notices.push(`${formatSize(DEFAULT_MAX_BYTES)} limit reached`);
 			if (result.nextCursor)
-				notices.push(`More results available. Use cursor="${storeCursor(result.nextCursor)}" to continue`);
+				notices.push(`More results available. Use cursor="${cursorStore.store(result.nextCursor)}" to continue`);
 
 			if (notices.length > 0) output += `\n\n[${notices.join(". ")}]`;
 
@@ -1098,7 +571,8 @@ export default function fffExtension(pi: ExtensionAPI) {
 	pi.registerCommand("fff-health", {
 		description: "Show FFF file finder health and status",
 		handler: async (_args, ctx) => {
-			if (!finder || finder.isDestroyed) {
+			const finder = fff.currentFinder;
+			if (!finder) {
 				ctx.ui.notify("FFF not initialized", "warning");
 				return;
 			}
@@ -1133,7 +607,8 @@ export default function fffExtension(pi: ExtensionAPI) {
 	pi.registerCommand("fff-rescan", {
 		description: "Trigger FFF to rescan files",
 		handler: async (_args, ctx) => {
-			if (!finder || finder.isDestroyed) {
+			const finder = fff.currentFinder;
+			if (!finder) {
 				ctx.ui.notify("FFF not initialized", "warning");
 				return;
 			}
