@@ -3,7 +3,7 @@ name: pr-comments
 description: 'Fix unresolved pull request review comments locally. Use when the user asks to address PR comments, review threads, or requested changes.'
 argument-hint: "[--auto]"
 user-invocable: true
-disable-model-invocation: false
+disable-model-invocation: true
 ---
 
 # PR Comments Fixer

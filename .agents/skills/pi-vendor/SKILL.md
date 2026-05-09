@@ -1,6 +1,7 @@
 ---
 name: pi-vendor
 description: Vendor an installed Pi extension into this repo's pi/agent/extensions/ tree and move only required runtime dependencies into the repo package.json. Use when asked to vendor, inline, localize, fork, or customize an installed Pi extension/package for this agents repo.
+disable-model-invocation: true
 ---
 
 # Pi Vendor
