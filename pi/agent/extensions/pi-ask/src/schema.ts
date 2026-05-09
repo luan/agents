@@ -3,22 +3,22 @@ import { Type } from "typebox";
 export const AskOptionSchema = Type.Object({
 	value: Type.Optional(
 		Type.String({
-			description: "Required machine-readable value returned for this option in the result",
+			description: "Required answer key",
 		}),
 	),
 	label: Type.Optional(
 		Type.String({
-			description: "Required short visible option label shown in the list",
+			description: "Required visible label",
 		}),
 	),
 	description: Type.Optional(
 		Type.String({
-			description: "Optional one-line explanation to help the user choose",
+			description: "Optional hint",
 		}),
 	),
 	preview: Type.Optional(
 		Type.String({
-			description: "Optional preview content shown in the dedicated preview pane for preview questions",
+			description: "Required for preview questions",
 		}),
 	),
 });
@@ -26,42 +26,41 @@ export const AskOptionSchema = Type.Object({
 export const AskQuestionSchema = Type.Object({
 	id: Type.Optional(
 		Type.String({
-			description: "Required stable question identifier used as the key in returned answers",
+			description: "Answer key",
 		}),
 	),
 	label: Type.Optional(
 		Type.String({
-			description: "Short tab label, e.g. Goal, Audience, Tone, Scope",
+			description: "Short tab label",
 		}),
 	),
 	prompt: Type.Optional(
 		Type.String({
-			description: "Required direct question shown to the user; ask about one decision at a time",
+			description: "Direct question",
 		}),
 	),
 	type: Type.Optional(
 		Type.String({
-			description:
-				"Question type: use `single` by default. Use `preview` only when every option includes `preview` text for the dedicated preview pane; descriptions alone are not enough.",
+			description: "single (default), multi, or preview; preview needs option.preview",
 		}),
 	),
 	required: Type.Optional(
 		Type.Boolean({
-			description: "Advisory only; marks the question as important but never blocks submission",
+			description: "Advisory only",
 		}),
 	),
 	options: Type.Array(AskOptionSchema, {
-		description: "Answer options; prefer 2-4 clear choices when possible",
+		description: "2-4 options preferred; every option needs value+label",
 	}),
 });
 
 export const AskParamsSchema = Type.Object({
 	title: Type.Optional(
 		Type.String({
-			description: "Optional short title shown above the clarification flow, e.g. README direction",
+			description: "Optional flow title",
 		}),
 	),
 	questions: Type.Array(AskQuestionSchema, {
-		description: "Questions to ask in the interactive clarification flow",
+		description: "1-3 focused questions",
 	}),
 });

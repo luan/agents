@@ -129,10 +129,6 @@ export function registerWriteStdinTool(pi: ExtensionAPI, sessions: ExecSessionMa
 		description: "Writes characters to an existing unified exec session and returns recent output.",
 		renderShell: "self",
 		promptSnippet: "Write to an exec session.",
-		promptGuidelines: [
-			"Use empty `chars` only to poll a running exec session.",
-			"When polling with empty `chars`, wait meaningfully between polls and do not repeatedly poll by reflex.",
-		],
 		parameters: WRITE_STDIN_PARAMETERS,
 		async execute(_toolCallId, params) {
 			const typed = parseWriteStdinParams(params);

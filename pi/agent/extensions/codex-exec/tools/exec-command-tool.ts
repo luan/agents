@@ -193,8 +193,6 @@ export function registerExecCommandTool(
 		promptSnippet: "Run a command.",
 		promptGuidelines: [
 			"Use exec_command for search, listing files, and local text-file reads.",
-			"Prefer rg or rg --files when possible.",
-			"Omit `yield_time_ms` unless you specifically need an early background session; non-interactive commands wait up to two minutes by default.",
 			"Keep tty disabled unless the command truly needs interactive terminal behavior.",
 		],
 		parameters: EXEC_COMMAND_PARAMETERS,
