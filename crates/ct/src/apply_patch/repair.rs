@@ -3,6 +3,7 @@ use std::path::Path;
 use serde::Serialize;
 
 use super::draft;
+use super::draft_store::{NewPatchDraft, PatchCandidate, PatchDraftChunk, PatchDraftStore};
 use super::telemetry::diagnostics::{FailureDiagnostic, FailureDiagnosticInput};
 use super::{
     AnchorAttempt, ApplyFailure, ApplyPatchError, CallRecord, FileCallEntry, Fingerprint,
@@ -37,7 +38,6 @@ pub fn failure_kind(error: &ApplyPatchError) -> &'static str {
         ApplyPatchError::AmbiguousContext { .. } => "ambiguous_context",
         ApplyPatchError::LineRangeMismatch { .. } => "line_range_mismatch",
         ApplyPatchError::ReplacementCountMismatch { .. } => "replacement_count_mismatch",
-        ApplyPatchError::AnchorShadowsFirstContext { .. } => "anchor_shadows_first_context",
         ApplyPatchError::DuplicateUpdate(_) => "duplicate_update",
         ApplyPatchError::DeleteIsDirectory(_) => "delete_is_directory",
         ApplyPatchError::TargetIsDirectory(_) => "target_is_directory",
@@ -192,7 +192,7 @@ fn create_or_link_draft(
             chunk.status = "blocked".to_string();
             chunk.error_kind = Some(kind.to_string());
             chunk.error_message = Some(error.to_string());
-            crate::lens::PatchDraftChunk {
+            PatchDraftChunk {
                 chunk_index: chunk.chunk_index,
                 file_path: chunk.file_path,
                 change_type: chunk.change_type,
@@ -207,11 +207,11 @@ fn create_or_link_draft(
         })
         .collect::<Vec<_>>();
     let candidates = draft_candidates(error);
-    let Ok(mut store) = crate::lens::LensStore::open_for_project(&root) else {
+    let Ok(mut store) = PatchDraftStore::open_for_project(&root) else {
         return false;
     };
     store
-        .create_patch_draft(crate::lens::store::NewPatchDraft {
+        .create_patch_draft(NewPatchDraft {
             id: patch_id,
             cwd: &root.to_string_lossy(),
             session_id: None,
@@ -224,7 +224,7 @@ fn create_or_link_draft(
         .is_ok()
 }
 
-fn draft_candidates(error: &ApplyPatchError) -> Vec<crate::lens::PatchCandidate> {
+fn draft_candidates(error: &ApplyPatchError) -> Vec<PatchCandidate> {
     let ApplyPatchError::AmbiguousContext {
         chunk,
         candidates,
@@ -243,7 +243,7 @@ fn draft_candidates(error: &ApplyPatchError) -> Vec<crate::lens::PatchCandidate>
                 .and_then(|hint| hint.split("  ").next())
                 .map(str::to_string);
             let anchors = anchor.iter().cloned().collect::<Vec<_>>();
-            crate::lens::PatchCandidate {
+            PatchCandidate {
                 chunk_index: *chunk as i64,
                 line: *line as i64,
                 suggested_anchor: anchor,
@@ -273,9 +273,6 @@ pub fn anchors_for_failure(error: &ApplyPatchError, attempts: &[AnchorAttempt]) 
             for anchor in change_contexts {
                 push_unique(&mut anchors, format!("@@ {anchor}"));
             }
-        }
-        ApplyPatchError::AnchorShadowsFirstContext { anchor, .. } => {
-            push_unique(&mut anchors, format!("@@ {anchor}"));
         }
         _ => {}
     }

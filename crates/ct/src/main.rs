@@ -6,13 +6,13 @@ mod cli;
 mod cochanges;
 mod gitcontext;
 mod hook;
-pub mod lens;
 mod lsp;
 mod mcp;
 mod notify;
 mod phases;
 mod refs;
 mod slug;
+mod state;
 mod task;
 #[allow(dead_code)]
 mod task_tui;
@@ -155,12 +155,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(cli::Command::Task { action }) => task::run_task(action),
         Some(cli::Command::Notify) => notify::run(),
         Some(cli::Command::Source { action }) => cli::run_source(action),
-        Some(cli::Command::Lens { action }) => cli::run_lens(action),
         Some(cli::Command::Mcp { action }) => match action {
             cli::McpAction::ApplyPatch => mcp::run_apply_patch_server(),
             cli::McpAction::Sym => mcp::run_sym_server(),
             cli::McpAction::Ast => mcp::run_ast_server(),
-            cli::McpAction::Lens => mcp::run_lens_server(),
             cli::McpAction::Lsp => mcp::run_lsp_server(),
             cli::McpAction::Vault => mcp::run_vault_server(),
         },

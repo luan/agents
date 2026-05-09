@@ -1,8 +1,10 @@
 use std::io::IsTerminal;
 use std::io::Read;
 
+use crate::apply_patch::draft_store::{
+    NewPatchDraft, PatchCandidate, PatchDraftChunk, PatchDraftStore, PatchRepairSymbol,
+};
 use crate::cli::args::ApplyPatchDraftAction;
-use crate::lens::{PatchCandidate, PatchDraftChunk, PatchRepairSymbol};
 
 pub fn run_draft(action: ApplyPatchDraftAction) -> Result<(), Box<dyn std::error::Error>> {
     match action {
@@ -77,8 +79,8 @@ fn create(cwd: Option<String>, json: bool) -> Result<(), Box<dyn std::error::Err
         }
     }
 
-    let mut store = crate::lens::LensStore::open_for_project(&root)?;
-    let summary = store.create_patch_draft(crate::lens::store::NewPatchDraft {
+    let mut store = PatchDraftStore::open_for_project(&root)?;
+    let summary = store.create_patch_draft(NewPatchDraft {
         id: &patch_id,
         cwd: &root.to_string_lossy(),
         session_id: None,
@@ -107,7 +109,7 @@ fn create(cwd: Option<String>, json: bool) -> Result<(), Box<dyn std::error::Err
 
 fn status(patch_id: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let root = std::env::current_dir()?;
-    let store = crate::lens::LensStore::open_for_project(&root)?;
+    let store = PatchDraftStore::open_for_project(&root)?;
     let out = match store.patch_draft_status(patch_id)? {
         Some(summary) => serde_json::json!({
             "patch_id": summary.id,
@@ -133,7 +135,7 @@ fn show(
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let root = std::env::current_dir()?;
-    let store = crate::lens::LensStore::open_for_project(&root)?;
+    let store = PatchDraftStore::open_for_project(&root)?;
     let chunks = select_chunk(store.patch_draft_chunks(patch_id)?, chunk);
     let candidates = select_candidate(store.patch_draft_candidates(patch_id)?, chunk);
     let body = if chunk.is_none() {
@@ -160,7 +162,7 @@ fn amend(
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let root = std::env::current_dir()?;
-    let store = crate::lens::LensStore::open_for_project(&root)?;
+    let store = PatchDraftStore::open_for_project(&root)?;
     let Some(body) = store.patch_draft_body(patch_id)? else {
         return print_out(
             json,
@@ -193,8 +195,8 @@ fn amend(
             chunk.error_message = error_message.clone();
         }
     }
-    let mut store = crate::lens::LensStore::open_for_project(&root)?;
-    let summary = store.create_patch_draft(crate::lens::store::NewPatchDraft {
+    let mut store = PatchDraftStore::open_for_project(&root)?;
+    let summary = store.create_patch_draft(NewPatchDraft {
         id: &new_patch_id,
         cwd: &root.to_string_lossy(),
         session_id: None,
@@ -222,7 +224,7 @@ fn amend(
 
 fn apply(patch_id: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let root = std::env::current_dir()?;
-    let mut store = crate::lens::LensStore::open_for_project(&root)?;
+    let store = PatchDraftStore::open_for_project(&root)?;
     let Some(body) = store.patch_draft_body(patch_id)? else {
         return print_out(
             json,
@@ -230,18 +232,15 @@ fn apply(patch_id: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
         );
     };
     match crate::apply_patch::apply(&body, &root, false) {
-        Ok(outcome) => {
-            store.record_applied_changes(None, "ct_apply_patch_draft", &outcome.changes)?;
-            print_out(
-                json,
-                &serde_json::json!({
-                    "patch_id": patch_id,
-                    "applied": true,
-                    "status": "applied",
-                    "changes": outcome.changes
-                }),
-            )
-        }
+        Ok(outcome) => print_out(
+            json,
+            &serde_json::json!({
+                "patch_id": patch_id,
+                "applied": true,
+                "status": "applied",
+                "changes": outcome.changes
+            }),
+        ),
         Err(failure) => print_out(
             json,
             &serde_json::json!({
@@ -258,7 +257,7 @@ fn apply(patch_id: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
 
 fn discard(patch_id: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let root = std::env::current_dir()?;
-    let store = crate::lens::LensStore::open_for_project(&root)?;
+    let store = PatchDraftStore::open_for_project(&root)?;
     let discarded = store.discard_patch_draft(patch_id)?;
     print_out(
         json,
