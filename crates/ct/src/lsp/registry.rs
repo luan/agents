@@ -391,16 +391,6 @@ pub fn probe_for_file(path: &Path) -> Option<LspServerProbe> {
     })
 }
 
-pub fn probe_for_server_root(server: LspServerDefinition, root: &Path) -> LspServerProbe {
-    let command = find_command(root, &server);
-    LspServerProbe {
-        available: command.is_some(),
-        server,
-        root: Some(root.to_path_buf()),
-        command,
-    }
-}
-
 fn find_command(root: &Path, server: &LspServerDefinition) -> Option<PathBuf> {
     for command in server.commands {
         let local = root.join("node_modules").join(".bin").join(command);

@@ -9,7 +9,6 @@ sandbox_mode = "danger-full-access"
 web_search = "live"
 
 [features]
-codex_hooks = true
 image_generation = true
 memories = true
 multi_agent = true
@@ -81,10 +80,6 @@ source = "/Users/luan/.codex/.tmp/bundled-marketplaces/openai-bundled"
 last_updated = "2026-05-07T18:21:01Z"
 source_type = "local"
 source = "/Users/luan.santos/.cache/codex-runtimes/codex-primary-runtime/plugins/openai-primary-runtime"
-
-[mcp_servers.lens]
-command = "ct"
-args = ["mcp", "lens"]
 
 [projects."~/src/agents"]
 trust_level = "trusted"

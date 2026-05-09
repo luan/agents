@@ -7,7 +7,6 @@ use crate::artifact::{self, CtError, ResolveError};
 
 mod apply_patch;
 mod ast;
-mod lens;
 mod lsp;
 mod sym;
 mod vault;
@@ -71,10 +70,6 @@ pub fn run_sym_server() -> Result<(), Box<dyn std::error::Error>> {
 
 pub fn run_ast_server() -> Result<(), Box<dyn std::error::Error>> {
     serve_stdio(ast::AstMcpServer::new())
-}
-
-pub fn run_lens_server() -> Result<(), Box<dyn std::error::Error>> {
-    serve_stdio(lens::LensMcpServer::new())
 }
 
 pub fn run_lsp_server() -> Result<(), Box<dyn std::error::Error>> {

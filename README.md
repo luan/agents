@@ -15,9 +15,8 @@ Shared configuration is the default. Tool-specific folders (`claude/`, `codex/`,
 | `AGENTS.md` | Repo-local guidance for working on this hub |
 | `rules/` | Available as `~/.agents/rules` when this repo is cloned or linked to `~/.agents` |
 | `skills/` | Available as `~/.agents/skills`; also linked to `~/.claude/skills` |
-| `hooks/` | Python hook integrations (tool-specific formats) |
 | `plugins/` | Shared plugin sources; tool folders link here |
-| `crates/ct/` | `ct` Rust CLI — source, lens, vault, repo, hooks, MCP, apply-patch |
+| `crates/ct/` | `ct` Rust CLI — source, vault, repo, MCP, apply-patch |
 | `crates/sym/` | Tree-sitter symbol indexer (library + `sym` binary) |
 | `crates/xtask/` | Task automation invoked via `cargo xtask <cmd>` |
 | `docs/` | Permanent reference docs (architecture, exceptions) |
@@ -27,11 +26,9 @@ Shared configuration is the default. Tool-specific folders (`claude/`, `codex/`,
 `ct` is the primary tool installed from `crates/ct/`. It provides:
 
 - `ct source` — read-only source search, navigation, graph, and scoped diff
-- `ct lens` — hook-driven diagnostics, session health, and local inspection commands
 - `ct vault` — blueprint artifact management (create, read, list, archive, commit)
 - `ct repo` — repository identity, branch context, references, cochanges, and churn
 - `ct apply-patch` — raw patch apply plus apply_patch telemetry and drafts
-- `ct hook` — run harness hooks, including notifications and Lens lifecycle hooks
 - `ct shell completion` — shell completions
 - `ct tui usage-bar` / `ct tui usage-bars` — terminal UI helpers
 - `ct dev` — developer/internal helpers; raw backends live under `ct dev debug`

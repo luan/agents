@@ -21,7 +21,6 @@
     "extensions/codex-native/index.ts",
     "extensions/pi-token-burden/index.ts",
     "extensions/pi-vim/index.ts",
-    "extensions/lens/index.ts",
     "extensions/tasks/index.ts"
   ],
   "enabledModels": [

@@ -773,7 +773,7 @@ def main():
     agent = data.get("agent")
     quota = data.get("rate_limits") or {}
 
-    # Bridge context % to hooks via per-session temp file
+    # Bridge context % via per-session temp file.
     sid = data.get("session_id", "")
     if sid:
         try:

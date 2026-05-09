@@ -16,23 +16,13 @@ and is intentionally gitignored.
 
 ## Portability Rules
 
-- Do not commit checkout-specific absolute paths in config, hooks, docs,
-  rules, or scripts.
+- Do not commit checkout-specific absolute paths in config, docs, rules, or
+  scripts.
   Use `~`, `$HOME`, a Stow-managed path, or a stable command installed by
   `just setup`.
-- Hook commands should go through `ct hook <name>`. Keep hook behavior
-  in Rust when practical so configs are cross-platform and independent of
-  where this repo is cloned.
 - `just setup` must be idempotent and converge the live machine state: render,
   install local Codex plugins, stow links, install `ct`, register MCP servers,
   and validate.
 - Shared configuration is the default. Tool-specific files belong under
   `claude/`, `codex/`, or `pi/` only when the tool requires a
   different schema, filename, or runtime registration mechanism.
-
-## Hook Rules
-
-- Keep hook registrations minimal; config files should reference stable `ct`
-  commands rather than repo checkout paths.
-- If a hook is shared conceptually but tool schemas differ, document that in
-  `docs/exceptions.md` and keep the script body shared where practical.

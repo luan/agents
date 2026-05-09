@@ -7,7 +7,6 @@
   },
   "keywords": ["graphite", "git", "stacked-prs", "branches", "pull-requests"],
   "skills": "./skills/",
-  "hooks": "./hooks.json",
   "interface": {
     "displayName": "Graphite",
     "shortDescription": "Stacked branch and PR workflow guidance for gt.",

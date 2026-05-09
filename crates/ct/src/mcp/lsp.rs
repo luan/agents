@@ -112,10 +112,7 @@ impl LspMcpServer {
         json_success(&request_success_json(&input, &path, &probe, output))
     }
 
-    #[tool(
-        name = "diagnostics",
-        description = "Collect LSP diagnostics and store them in ct lens."
-    )]
+    #[tool(name = "diagnostics", description = "Collect LSP diagnostics.")]
     async fn diagnostics(
         &self,
         Parameters(input): Parameters<DiagnosticsIn>,
@@ -160,33 +157,11 @@ impl LspMcpServer {
             Err(_) => run_one_shot_diagnostics(&probe, &path)
                 .map_err(|error| ErrorData::internal_error(error.to_string(), None))?,
         };
-        let lens_diagnostics = lsp_diagnostics_for_store(&path, &diagnostics)?;
-        let mut store = crate::lens::LensStore::open_for_project(&root)
-            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-        store
-            .record_diagnostic_snapshot(crate::lens::DiagnosticSnapshotInput {
-                source: crate::lens::DiagnosticSource::Lsp,
-                scope: crate::lens::DiagnosticScope::file(
-                    lens_diagnostics
-                        .first()
-                        .and_then(|diagnostic| diagnostic.rel_path.clone())
-                        .unwrap_or_else(|| path.display().to_string()),
-                ),
-                diagnostics: lens_diagnostics.clone(),
-                raw_output: Some(
-                    serde_json::to_string(&diagnostics)
-                        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?,
-                ),
-                raw_output_max_bytes: None,
-                metadata: crate::lens::DiagnosticSnapshotMetadata::default(),
-            })
-            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
         json_success(&json!({
             "filePath": path,
             "server": probe,
             "diagnostics": diagnostics,
             "resultCount": diagnostics.len(),
-            "recordedDiagnostics": lens_diagnostics.len(),
             "failureKind": null
         }))
     }
@@ -238,74 +213,6 @@ fn request_success_json(
         "resultCount": output.result_count,
         "failureKind": null
     })
-}
-
-fn lsp_diagnostics_for_store(
-    path: &std::path::Path,
-    diagnostics: &[serde_json::Value],
-) -> Result<Vec<crate::lens::Diagnostic>, ErrorData> {
-    let cwd = std::env::current_dir()
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-    let rel_path = path
-        .strip_prefix(&cwd)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .to_string();
-    Ok(diagnostics
-        .iter()
-        .map(|diagnostic| {
-            let range = diagnostic.get("range");
-            let start_line = range
-                .and_then(|range| range.get("start"))
-                .and_then(|start| start.get("line"))
-                .and_then(serde_json::Value::as_i64)
-                .map(|line| line + 1);
-            let end_line = range
-                .and_then(|range| range.get("end"))
-                .and_then(|end| end.get("line"))
-                .and_then(serde_json::Value::as_i64)
-                .map(|line| line + 1);
-            let message = diagnostic
-                .get("message")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("LSP diagnostic")
-                .to_string();
-            let code = diagnostic.get("code").map(|code| match code {
-                serde_json::Value::String(value) => value.clone(),
-                other => other.to_string(),
-            });
-            let severity = match diagnostic
-                .get("severity")
-                .and_then(serde_json::Value::as_i64)
-                .unwrap_or(2)
-            {
-                1 => crate::lens::DiagnosticSeverity::Error,
-                3 => crate::lens::DiagnosticSeverity::Info,
-                4 => crate::lens::DiagnosticSeverity::Hint,
-                _ => crate::lens::DiagnosticSeverity::Warning,
-            };
-            let fingerprint = crate::apply_patch::sha1_hex(
-                format!("{rel_path}:{start_line:?}:{end_line:?}:{code:?}:{message}").as_bytes(),
-            );
-            crate::lens::Diagnostic {
-                source: crate::lens::DiagnosticSource::Lsp,
-                scope: crate::lens::DiagnosticScope::file(rel_path.clone()),
-                severity,
-                code,
-                message,
-                rel_path: Some(rel_path.clone()),
-                start_line,
-                end_line,
-                fingerprint,
-                content_hash: None,
-                raw_output_id: None,
-                snapshot_id: None,
-                first_seen_at: None,
-                last_seen_at: None,
-                resolved_at: None,
-            }
-        })
-        .collect())
 }
 
 #[tool_handler(router = self.tool_router)]
