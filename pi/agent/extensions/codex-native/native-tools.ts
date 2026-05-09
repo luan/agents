@@ -6,6 +6,7 @@ import { Type } from "typebox";
 
 export const WEB_SEARCH_ACTIVITY_MESSAGE_TYPE = "codex-web-search-activity";
 export const IMAGE_SAVE_DISPLAY_MESSAGE_TYPE = "codex-image-generation-display";
+export const WEB_SEARCH_TOOL_NAME = "web_search";
 export const IMAGE_GENERATION_TOOL_NAME = "image_generation";
 
 const OPENAI_CODEX_IMAGE_DIR = ".pi/openai-codex-images";
@@ -272,8 +273,55 @@ export function buildWebSearchActivityMessage(searches: SurfacedWebSearch[]): st
 		.join("\n\n");
 }
 
-export function buildWebSearchSummaryText(searches: SurfacedWebSearch[]): string {
-	return searches.length === 1 ? "Searched the web once" : `Searched the web ${searches.length} times`;
+function webSearchQueryText(search: SurfacedWebSearch): string {
+	return search.queries.length > 0 ? search.queries.join(", ") : (search.query ?? "web");
+}
+
+function webSearchSources(searches: SurfacedWebSearch[]): Array<{ title?: string; url: string }> {
+	const seen = new Set<string>();
+	const sources: Array<{ title?: string; url: string }> = [];
+	for (const search of searches) {
+		for (const source of search.sources) {
+			if (seen.has(source.url)) continue;
+			seen.add(source.url);
+			sources.push(source);
+		}
+	}
+	return sources;
+}
+
+function webSearchSourceLabel(source: { title?: string; url: string }): string {
+	const title = source.title?.trim();
+	if (title) return title;
+	try {
+		return new URL(source.url).hostname.replace(/^www\./, "");
+	} catch {
+		return source.url;
+	}
+}
+
+function shortenWebSearchSourceLabel(label: string): string {
+	return label.length <= 48 ? label : `${label.slice(0, 45)}...`;
+}
+
+function renderWebSearchResultSummary(searches: SurfacedWebSearch[], theme: any): string | undefined {
+	const sources = webSearchSources(searches);
+	if (sources.length === 0) return undefined;
+	const countLabel = sources.length === 1 ? "1 result" : `${sources.length} results`;
+	const visibleLabels = sources.slice(0, 5).map((source) => shortenWebSearchSourceLabel(webSearchSourceLabel(source)));
+	const hiddenCount = sources.length - visibleLabels.length;
+	const labelsText = hiddenCount > 0 ? `${visibleLabels.join(", ")}, +${hiddenCount} more` : visibleLabels.join(", ");
+	return `${theme.fg("accent", `${countLabel}:`)} ${theme.fg("muted", labelsText)}`;
+}
+
+function renderWebSearchActivity(searches: SurfacedWebSearch[], theme: any): string {
+	const marker = theme.fg("success", "•");
+	const effectiveSearches = searches.length > 0 ? searches : [{ callId: "", queries: [], sources: [] }];
+	const queryText = effectiveSearches.map(webSearchQueryText).join("; ");
+	const resultSummary = renderWebSearchResultSummary(searches, theme);
+	let text = `${marker} ${theme.bold("Web Searched")} ${theme.fg("muted", queryText)}`;
+	if (resultSummary) text += `${theme.fg("dim", " · ")}${resultSummary}`;
+	return text;
 }
 
 export function createImageGenerationTool(): ToolDefinition<any> {
@@ -297,6 +345,36 @@ export function createImageGenerationTool(): ToolDefinition<any> {
 		},
 		renderCall(_args, theme) {
 			return new Text(theme.fg("toolTitle", theme.bold(IMAGE_GENERATION_TOOL_NAME)), 0, 0);
+		},
+		renderResult(result, { expanded }, theme) {
+			if (!expanded) return new Container();
+			const text = result.content.find((item) => item.type === "text")?.text ?? "(no output)";
+			return new Text(theme.fg("dim", text), 0, 0);
+		},
+	};
+}
+
+export function createWebSearchTool(): ToolDefinition<any> {
+	return {
+		name: WEB_SEARCH_TOOL_NAME,
+		label: WEB_SEARCH_TOOL_NAME,
+		description:
+			"Search the web for sources relevant to the current task. Use it when you need up-to-date information, external references, or broader context beyond the workspace.",
+		promptSnippet:
+			"Search the web for sources relevant to the current task. Use it when you need up-to-date information, external references, or broader context beyond the workspace.",
+		parameters: Type.Unsafe<Record<string, never>>({
+			type: "object",
+			additionalProperties: false,
+		}),
+		prepareArguments: () => ({}),
+		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+			if (!supportsNativeWebSearch(ctx.model)) {
+				throw new Error("web_search is only available with openai-codex models");
+			}
+			throw new Error("web_search is a native openai-codex provider tool and should not execute locally");
+		},
+		renderCall(_args, theme) {
+			return new Text(theme.fg("toolTitle", theme.bold(WEB_SEARCH_TOOL_NAME)), 0, 0);
 		},
 		renderResult(result, { expanded }, theme) {
 			if (!expanded) return new Container();
@@ -343,12 +421,11 @@ export function renderWebSearchMessage(
 	options: { expanded?: boolean },
 	theme: any,
 ) {
-	const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
 	const searches = message.details?.searches ?? [];
-	box.addChild(new Text(theme.fg("customMessageLabel", theme.bold(buildWebSearchSummaryText(searches))), 0, 0));
+	let text = renderWebSearchActivity(searches, theme);
 	if (options.expanded) {
 		const content = typeof message.content === "string" ? message.content : "";
-		box.addChild(new Text(`\n${theme.fg("customMessageText", content)}`, 0, 0));
+		if (content.trim()) text += `\n${theme.fg("dim", content)}`;
 	}
-	return box;
+	return new Text(text, 0, 0);
 }

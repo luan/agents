@@ -1,16 +1,18 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { closeOpenAICodexWebSocketSessions } from "../apply-patch/freeform-codex.ts";
-import registerCodexAppsBridge from "./codex-apps.ts";
-import registerOpenAINativeCompaction from "./compaction/index.ts";
+import { closeOpenAICodexWebSocketSessions } from "../apply-patch/freeform-codex";
+import registerCodexAppsBridge from "./codex-apps";
+import registerOpenAINativeCompaction from "./compaction/index";
 import {
 	createImageGenerationTool,
+	createWebSearchTool,
 	IMAGE_GENERATION_TOOL_NAME,
 	rewriteNativeImageGenerationTool,
 	rewriteNativeWebSearchTool,
 	supportsNativeImageGeneration,
-} from "./native-tools.ts";
-import { buildCodexSystemPrompt } from "./prompt.ts";
+	supportsNativeWebSearch,
+	WEB_SEARCH_TOOL_NAME,
+} from "./native-tools";
 
 function isCodexModel(model: ExtensionContext["model"] | undefined): boolean {
 	const provider = model?.provider?.toLowerCase() ?? "";
@@ -42,6 +44,7 @@ export default async function codexNativeExtension(pi: ExtensionAPI) {
 	registerOpenAINativeCompaction(pi);
 	await registerCodexAppsBridge(pi);
 	pi.registerTool(createImageGenerationTool());
+	pi.registerTool(createWebSearchTool());
 
 	const applyToolPolicy = (ctx?: ExtensionContext) => {
 		if (!ctx) return;
@@ -49,8 +52,16 @@ export default async function codexNativeExtension(pi: ExtensionAPI) {
 		const codexModel = isCodexModel(ctx.model);
 		let next = active;
 
+		if (supportsNativeWebSearch(ctx.model) && !next.includes(WEB_SEARCH_TOOL_NAME)) {
+			next = [...next, WEB_SEARCH_TOOL_NAME];
+		}
+
 		if (codexModel && supportsNativeImageGeneration(ctx.model) && !next.includes(IMAGE_GENERATION_TOOL_NAME)) {
 			next = [...next, IMAGE_GENERATION_TOOL_NAME];
+		}
+
+		if (!supportsNativeWebSearch(ctx.model) && next.includes(WEB_SEARCH_TOOL_NAME)) {
+			next = next.filter((toolName) => toolName !== WEB_SEARCH_TOOL_NAME);
 		}
 
 		if (!codexModel && next.includes(IMAGE_GENERATION_TOOL_NAME)) {
@@ -86,11 +97,8 @@ export default async function codexNativeExtension(pi: ExtensionAPI) {
 		messages: event.messages.filter((message) => message.role !== "assistant" || !isCodexWebSocketError(message)),
 	}));
 
-	pi.on("before_agent_start", (event, ctx) => {
+	pi.on("before_agent_start", (_event, ctx) => {
 		applyToolPolicy(ctx);
-		if (!isCodexModel(ctx.model)) return;
-		const systemPrompt = buildCodexSystemPrompt(event.systemPrompt);
-		if (systemPrompt !== event.systemPrompt) return { systemPrompt };
 	});
 
 	pi.on("before_provider_request", async (event, ctx) =>
