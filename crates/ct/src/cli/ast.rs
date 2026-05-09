@@ -185,37 +185,8 @@ pub(crate) fn sg_replace_apply(
         return Ok(());
     }
     let patch = patch.unwrap();
-    let patch_id = crate::apply_patch::sha1_hex(patch.as_bytes());
-    let chunks = crate::apply_patch::draft::chunk_plan(&patch)?
-        .into_iter()
-        .map(|chunk| crate::lens::PatchDraftChunk {
-            chunk_index: chunk.chunk_index,
-            file_path: chunk.file_path,
-            change_type: chunk.change_type,
-            status: "applicable".to_string(),
-            old_start: chunk.old_start,
-            old_end: chunk.old_end,
-            new_start: chunk.new_start,
-            new_end: chunk.new_end,
-            error_kind: None,
-            error_message: None,
-        })
-        .collect::<Vec<_>>();
     crate::apply_patch::apply(&patch, &root, true).map_err(|failure| failure.error.to_string())?;
-    let mut store = crate::lens::LensStore::open_for_project(&root)?;
-    store.create_patch_draft(crate::lens::store::NewPatchDraft {
-        id: &patch_id,
-        cwd: &root.to_string_lossy(),
-        session_id: None,
-        status: "applicable",
-        patch_sha: &patch_id,
-        body: &patch,
-        chunks: &chunks,
-        candidates: &[],
-    })?;
-    let outcome = crate::apply_patch::apply(&patch, &root, false)
-        .map_err(|failure| failure.error.to_string())?;
-    store.record_applied_changes(None, "ct_ast_replace", &outcome.changes)?;
+    crate::apply_patch::apply(&patch, &root, false).map_err(|failure| failure.error.to_string())?;
     Ok(())
 }
 

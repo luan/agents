@@ -10,10 +10,8 @@ pub fn run() -> Result<()> {
     let root = crate::repo_root();
     assert_fresh_agents(&root)?;
     assert_no_checkout_paths(&root)?;
-    validate_json(&root.join("codex/hooks.json"))?;
     validate_json(&root.join("plugins/marketplace.json"))?;
     validate_json(&root.join("plugins/gt/.codex-plugin/plugin.json"))?;
-    validate_json(&root.join("plugins/gt/hooks.json"))?;
     let global_agents = root.join("GLOBAL_AGENTS.md");
     assert_symlink(&root.join("claude/CLAUDE.md"), &global_agents)?;
     assert_symlink(&root.join("codex/AGENTS.md"), &global_agents)?;
@@ -73,7 +71,6 @@ fn assert_no_checkout_paths(root: &Path) -> Result<()> {
         root.join("docs"),
         root.join("rules"),
         root.join("codex"),
-        root.join("hooks"),
         root.join("scripts"),
         root.join("bin"),
         root.join("claude"),

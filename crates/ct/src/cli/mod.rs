@@ -5,7 +5,6 @@ mod args;
 mod artifact;
 pub(crate) mod ast;
 mod dev;
-mod lens;
 mod lsp;
 mod patch;
 mod repo;
@@ -16,15 +15,14 @@ mod tui;
 
 pub use apply_patch::run_apply_patch;
 pub use args::{
-    ApplyPatchArgs, DevAction, LensAction, McpAction, RepoAction, ShellAction, SourceAction,
-    TaskAction, TuiAction, VaultAction, parse_kind_filter,
+    ApplyPatchArgs, DevAction, McpAction, RepoAction, ShellAction, SourceAction, TaskAction,
+    TuiAction, VaultAction, parse_kind_filter,
 };
 pub use artifact::{
     ArtifactCreateArgs, run_vault_archive, run_vault_create, run_vault_list, run_vault_prune,
     run_vault_read, run_vault_rename, run_vault_retag,
 };
 pub use dev::run_dev;
-pub use lens::run_lens;
 pub use repo::run_repo;
 pub use shell::run_shell;
 pub use source::run_source;
@@ -44,12 +42,6 @@ pub enum Command {
     Source {
         #[command(subcommand)]
         action: SourceAction,
-    },
-
-    #[command(about = "Lens code intelligence and edit-safety state")]
-    Lens {
-        #[command(subcommand)]
-        action: LensAction,
     },
 
     #[command(visible_alias = "v", about = "Vault operations")]
@@ -82,7 +74,7 @@ pub enum Command {
     #[command(about = "Run a harness hook")]
     Hook {
         #[arg(
-            help = "Hook name: apply-patch-remind, source-remind, notify, gt-session-start, gt-validate-git, lens-turn-event, rtk-rewrite"
+            help = "Hook name: apply-patch-remind, source-remind, notify, gt-session-start, gt-validate-git, rtk-rewrite"
         )]
         name: String,
     },

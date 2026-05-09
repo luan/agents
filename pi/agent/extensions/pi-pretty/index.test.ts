@@ -93,7 +93,7 @@ describe("pi-pretty read rendering", () => {
 	test("read calls under the working directory render as relative paths", () => {
 		const read = createTools().find((tool) => tool.name === "read");
 		const text = createText();
-		const path = `${process.cwd()}/crates/ct/src/lens/store.rs`;
+		const path = `${process.cwd()}/crates/ct/src/apply_patch/draft_store.rs`;
 
 		read.renderCall({ path, offset: 1440, limit: 90 }, theme, {
 			lastComponent: text,
@@ -102,21 +102,21 @@ describe("pi-pretty read rendering", () => {
 			invalidate() {},
 		});
 
-		expect(text.getText()).toContain("└ Read crates/ct/src/lens/store.rs lines 1440-1529");
+		expect(text.getText()).toContain("└ Read crates/ct/src/apply_patch/draft_store.rs lines 1440-1529");
 	});
 
 	test("relative read paths are resolved before display", () => {
 		const read = createTools().find((tool) => tool.name === "read");
 		const text = createText();
 
-		read.renderCall({ path: "./crates/ct/../ct/src/lens/store.rs" }, theme, {
+		read.renderCall({ path: "./crates/ct/../ct/src/apply_patch/draft_store.rs" }, theme, {
 			lastComponent: text,
 			isPartial: false,
 			isError: false,
 			invalidate() {},
 		});
 
-		expect(text.getText()).toContain("└ Read crates/ct/src/lens/store.rs all lines");
+		expect(text.getText()).toContain("└ Read crates/ct/src/apply_patch/draft_store.rs all lines");
 	});
 
 	test("read results stay collapsed even when expanded", () => {

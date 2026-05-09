@@ -12,15 +12,6 @@ const APPLY_PATCH_CONTEXT: &str = "File-edit tool: use `apply_patch` when the ho
 const SOURCE_CONTEXT: &str = "This project exposes canonical source navigation through `ct source`. Prefer source search/show/outline/refs/impact/trace/impls/investigate/diff before falling back to grep/find or broad file reads.";
 
 pub fn run_hook(name: &str) -> Result<()> {
-    if crate::lens::LensLifecycleHook::from_command(name).is_some() {
-        let code = crate::lens::run_lifecycle_hook(name)
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-        if code != 0 {
-            std::process::exit(code);
-        }
-        return Ok(());
-    }
-
     match name {
         "source-remind" => source_remind(),
         "notify" => crate::notify::run().map_err(|error| anyhow::anyhow!(error.to_string())),
@@ -28,9 +19,8 @@ pub fn run_hook(name: &str) -> Result<()> {
         "rtk-rewrite" => rtk_rewrite(),
         "gt-session-start" => gt_session_start(),
         "gt-validate-git" => gt_validate_git(),
-        "lens-turn-event" => lens_turn_event(),
         other => anyhow::bail!(
-            "unknown hook {other:?} (supported: apply-patch-remind, source-remind, notify, gt-session-start, gt-validate-git, lens-agent-end, lens-context, lens-context-injection, lens-post-tool, lens-pre-tool, lens-session-shutdown, lens-session-start, lens-turn-end, lens-turn-event, lens-turn-start, rtk-rewrite)"
+            "unknown hook {other:?} (supported: apply-patch-remind, source-remind, notify, gt-session-start, gt-validate-git, rtk-rewrite)"
         ),
     }
 }
@@ -69,24 +59,6 @@ fn emit_session_context(context: &str) -> Result<()> {
             }
         }))?
     );
-    Ok(())
-}
-
-fn lens_turn_event() -> Result<()> {
-    let mut input = String::new();
-    io::stdin().read_to_string(&mut input)?;
-    if input.trim().is_empty() {
-        return Ok(());
-    }
-    let event: crate::lens::LensTurnEvent =
-        serde_json::from_str(&input).context("lens turn hook input must be normalized JSON")?;
-    let cwd = std::env::current_dir()?;
-    let envelope = crate::lens::record_turn_event_envelope(&cwd, event)
-        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    println!("{}", serde_json::to_string(&envelope)?);
-    if matches!(envelope.status, crate::lens::LensResponseStatus::Error) {
-        std::process::exit(2);
-    }
     Ok(())
 }
 

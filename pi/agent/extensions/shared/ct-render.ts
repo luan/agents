@@ -11,7 +11,6 @@ export const nf = {
 	warn: "",
 	error: "",
 	ast: "",
-	lens: "󰛩",
 	lsp: "󰒓",
 	guard: "󰌾",
 	read: "",

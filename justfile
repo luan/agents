@@ -43,18 +43,13 @@ doctor:
 validate: render-agents
     cd "{{ repo }}" && cargo xtask validate
 
-setup: node-deps-install pi-node-modules-link doctor link worktrunk-install install validate
+setup: node-deps-install pi-node-modules-link doctor link install validate
 
 node-deps-install:
     cd "{{ repo }}" && bun install
 
 pi-node-modules-link:
     ln -sfn ../../node_modules "{{ repo }}/pi/agent/node_modules"
-
-worktrunk-install:
-    # The `wt` binary backs the worktrunk claude plugin. `cargo install`
-    # rebuilds even when the version is unchanged, so skip when `wt` is
-    # already on PATH. To upgrade, run `cargo install worktrunk --force`.
 
 codex-plugins-install:
     cd "{{ repo }}" && cargo xtask codex-plugins-install
@@ -67,7 +62,6 @@ install:
     claude mcp remove -s user source 2>/dev/null || true
     claude mcp remove -s user apply-patch 2>/dev/null || true
     claude mcp remove -s user sym 2>/dev/null || true
-    claude mcp remove -s user lens 2>/dev/null || true
 
 completions:
     mkdir -p "{{ home }}/.config/fish/completions"

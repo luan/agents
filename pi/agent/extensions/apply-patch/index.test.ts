@@ -438,9 +438,9 @@ describe("apply_patch streaming renderer", () => {
 		const tool = registerApplyPatchTool();
 		const state: Record<string, unknown> = {};
 		const longError = [
-			"Error: ambiguous context in pi/agent/extensions/lens/index.ts at chunk #0 — matched 6 location(s) at lines [268, 297, 312, 335, 344, 351]; widen the context or use a more specific @@ anchor",
+			"Error: ambiguous context in pi/agent/extensions/widget/index.ts at chunk #0 — matched 6 location(s) at lines [268, 297, 312, 335, 344, 351]; widen the context or use a more specific @@ anchor",
 			"suggested anchors:",
-			"  @@ function eventFor(ctx: any, event: LensHookEventName, extra: Record<string, unknown> = {}) {  →  pins to candidate at line 268 (anchor at line 240)",
+			"  @@ function eventFor(ctx: any, event: WidgetHookEventName, extra: Record<string, unknown> = {}) {  →  pins to candidate at line 268 (anchor at line 240)",
 		].join("\n");
 
 		const rendered = tool.renderResult(
@@ -785,6 +785,7 @@ describe("apply_patch Codex freeform provider", () => {
 
 	it("sends only response input deltas in websocket-cached mode", async () => {
 		const sentBodies: any[] = [];
+		let closeCalls = 0;
 		const responses = [
 			{ responseId: "resp_1", messageId: "msg_1", text: "Hello" },
 			{ responseId: "resp_2", messageId: "msg_2", text: "Done" },
@@ -860,6 +861,7 @@ describe("apply_patch Codex freeform provider", () => {
 			}
 
 			close(): void {
+				closeCalls++;
 				this.readyState = 3;
 			}
 
@@ -871,12 +873,15 @@ describe("apply_patch Codex freeform provider", () => {
 		globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
 
 		let streamSimple: any;
+		const handlers = new Map<string, (() => void)[]>();
 		registerApplyPatchFreeformProvider(
 			{
 				registerProvider: (_name: string, provider: any) => {
 					streamSimple = provider.streamSimple;
 				},
-				on: () => {},
+				on: (event: string, handler: () => void) => {
+					handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+				},
 				registerMessageRenderer: () => {},
 			} as any,
 			{ toolName: "apply_patch", description: "Apply patch", grammar: "start: /.+/" },
@@ -925,6 +930,9 @@ describe("apply_patch Codex freeform provider", () => {
 			lastDeltaInputItems: 1,
 			lastPreviousResponseId: "resp_1",
 		});
+
+		for (const handler of handlers.get("session_shutdown") ?? []) handler();
+		expect(closeCalls).toBeGreaterThan(0);
 	});
 
 	it("reports generic websocket failures as retryable connection errors", async () => {
@@ -949,7 +957,12 @@ describe("apply_patch Codex freeform provider", () => {
 			}
 
 			send(_data: string): void {
-				queueMicrotask(() => this.dispatch("error", {}));
+				queueMicrotask(() => {
+					this.dispatch("message", {
+						data: JSON.stringify({ type: "response.created", response: { id: "resp_error" } }),
+					});
+					queueMicrotask(() => this.dispatch("error", {}));
+				});
 			}
 
 			close(): void {}
@@ -989,11 +1002,11 @@ describe("apply_patch Codex freeform provider", () => {
 
 		expect(result.stopReason).toBe("error");
 		expect(result.errorMessage).toMatch(
-			/^WebSocket connection error after \d+s \(\d+s since last event, 0 events\)$/,
+			/^WebSocket connection error after \d+s \(\d+s since last event, 1 events\)$/,
 		);
 	});
 
-	it("falls back to SSE after repeated websocket failures", async () => {
+	it("falls back to SSE after a websocket streaming failure", async () => {
 		let websocketConstructs = 0;
 		let fetchCalls = 0;
 		const originalFetch = globalThis.fetch;
@@ -1020,7 +1033,12 @@ describe("apply_patch Codex freeform provider", () => {
 			}
 
 			send(_data: string): void {
-				queueMicrotask(() => this.dispatch("error", {}));
+				queueMicrotask(() => {
+					this.dispatch("message", {
+						data: JSON.stringify({ type: "response.created", response: { id: "resp_error" } }),
+					});
+					queueMicrotask(() => this.dispatch("error", {}));
+				});
 			}
 
 			close(): void {}
@@ -1102,15 +1120,147 @@ describe("apply_patch Codex freeform provider", () => {
 			const context = { messages: [{ role: "user", content: "Make a patch", timestamp: 1 }] };
 			const options = { apiKey: mockCodexToken(), sessionId: "session-fallback", transport: "websocket-cached" };
 
-			for (let index = 0; index < 3; index++) {
-				const result = await streamSimple(model, context, options).result();
-				expect(result.stopReason).toBe("error");
-			}
+			const failed = await streamSimple(model, context, options).result();
+			expect(failed.stopReason).toBe("error");
 			const recovered = await streamSimple(model, context, options).result();
 
 			expect(recovered.stopReason).toBe("stop");
-			expect(websocketConstructs).toBe(3);
+			expect(websocketConstructs).toBe(1);
 			expect(fetchCalls).toBe(1);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	it("falls back to SSE with diagnostics when websocket setup closes before response events", async () => {
+		let websocketConstructs = 0;
+		let fetchCalls = 0;
+		const originalFetch = globalThis.fetch;
+
+		class MockWebSocket {
+			private listeners = new Map<string, Set<(event: unknown) => void>>();
+
+			constructor(_url: string, _protocols?: string | string[] | { headers?: Record<string, string> }) {
+				websocketConstructs++;
+				queueMicrotask(() => this.dispatch("open", {}));
+			}
+
+			addEventListener(type: string, listener: (event: unknown) => void): void {
+				let listeners = this.listeners.get(type);
+				if (!listeners) {
+					listeners = new Set();
+					this.listeners.set(type, listeners);
+				}
+				listeners.add(listener);
+			}
+
+			removeEventListener(type: string, listener: (event: unknown) => void): void {
+				this.listeners.get(type)?.delete(listener);
+			}
+
+			send(_data: string): void {
+				queueMicrotask(() => this.dispatch("close", { code: 1009, wasClean: false }));
+			}
+
+			close(): void {}
+
+			private dispatch(type: string, event: unknown): void {
+				for (const listener of this.listeners.get(type) ?? []) listener(event);
+			}
+		}
+
+		globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+		globalThis.fetch = (async () => {
+			fetchCalls++;
+			const encoder = new TextEncoder();
+			const events = [
+				{ type: "response.created", response: { id: "resp_sse" } },
+				{
+					type: "response.output_item.added",
+					item: { type: "message", id: "msg_sse", role: "assistant", status: "in_progress", content: [] },
+				},
+				{ type: "response.content_part.added", part: { type: "output_text", text: "" } },
+				{ type: "response.output_text.delta", delta: "Recovered" },
+				{
+					type: "response.output_item.done",
+					item: {
+						type: "message",
+						id: "msg_sse",
+						role: "assistant",
+						status: "completed",
+						content: [{ type: "output_text", text: "Recovered" }],
+					},
+				},
+				{
+					type: "response.completed",
+					response: {
+						id: "resp_sse",
+						status: "completed",
+						usage: {
+							input_tokens: 1,
+							output_tokens: 1,
+							total_tokens: 2,
+							input_tokens_details: { cached_tokens: 0 },
+						},
+					},
+				},
+			];
+			return new Response(
+				new ReadableStream({
+					start(controller) {
+						for (const event of events) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+						controller.close();
+					},
+				}),
+				{ status: 200 },
+			);
+		}) as typeof fetch;
+
+		try {
+			let streamSimple: any;
+			registerApplyPatchFreeformProvider(
+				{
+					registerProvider: (_name: string, provider: any) => {
+						streamSimple = provider.streamSimple;
+					},
+					on: () => {},
+					registerMessageRenderer: () => {},
+				} as any,
+				{ toolName: "apply_patch", description: "Apply patch", grammar: "start: /.+/" },
+			);
+
+			const result = await streamSimple(
+				{
+					id: "gpt-5.5",
+					provider: "openai-codex",
+					api: "openai-codex-responses",
+					baseUrl: "https://chatgpt.com/backend-api",
+					headers: {},
+					input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				},
+				{ messages: [{ role: "user", content: "Make a patch", timestamp: 1 }] },
+				{ apiKey: mockCodexToken(), sessionId: "session-setup-fallback", transport: "websocket-cached" },
+			).result();
+
+			expect(result.stopReason).toBe("stop");
+			expect(result.content[0].text).toBe("Recovered");
+			expect(websocketConstructs).toBe(1);
+			expect(fetchCalls).toBe(1);
+			expect(result.diagnostics?.[0]).toMatchObject({
+				type: "provider_transport_failure",
+				details: {
+					configuredTransport: "websocket-cached",
+					fallbackTransport: "sse",
+					eventsEmitted: false,
+					phase: "before_message_stream_start",
+				},
+			});
+			expect(getOpenAICodexWebSocketDebugStats("session-setup-fallback")).toMatchObject({
+				websocketFailures: 1,
+				sseFallbacks: 1,
+				websocketFallbackActive: true,
+			});
 		} finally {
 			globalThis.fetch = originalFetch;
 		}
