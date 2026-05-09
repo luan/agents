@@ -3,6 +3,7 @@ name: pr-ci
 description: 'Fix failing GitHub Actions or CI checks on a pull request. Use when the user asks to inspect, reproduce, or repair failing PR CI.'
 argument-hint: "[--auto]"
 user-invocable: true
+disable-model-invocation: true
 ---
 
 # PR GHA Fixer
