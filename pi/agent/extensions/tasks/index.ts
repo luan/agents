@@ -113,7 +113,7 @@ const silentTaskToolNames = new Set([
 ]);
 const silentTaskToolPatchKey = Symbol.for("agents.tasks.silent-tool-render-patch");
 let activeTaskBoard: { close: () => void } | undefined;
-let taskHudKanbanHidden = false;
+let taskHudExpandedEpicKey: string | null | undefined;
 let taskHudPulseTimer: ReturnType<typeof setInterval> | undefined;
 let requestTaskHudRender: (() => void) | undefined;
 let taskHudWidget: TaskHudWidget | undefined;
@@ -410,7 +410,8 @@ class TaskHudWidget implements Component {
 		const state = this.state;
 		if (!state || !hasEnoughTerminalRows(state.config.hud.minTerminalRows)) return [];
 		return renderHudLines(state.tasks, this.theme, width, state.config.hud.maxTasks, state.display, {
-			hideKanban: taskHudKanbanHidden,
+			hideKanban: taskHudExpandedEpicKey === null,
+			expandedEpicKey: taskHudExpandedEpicKey ?? undefined,
 			flashTasks: activeTaskHudFlashes(),
 		});
 	}
@@ -442,10 +443,35 @@ async function updateTaskHud(
 ): Promise<void> {
 	const tasks = await loadHudTasks(ctx.cwd, command, runCommand, signal || undefined);
 	const display = assignmentDisplayContext(pi, ctx, tasks);
+	const visibleKeys = visibleHudEpicKeys(tasks);
+	if (
+		taskHudExpandedEpicKey === undefined ||
+		(taskHudExpandedEpicKey !== null && !visibleKeys.includes(taskHudExpandedEpicKey))
+	) {
+		taskHudExpandedEpicKey = visibleKeys[0] ?? null;
+	}
 	const state = { tasks, display, config };
 	latestTaskHudState = state;
 	ensureTaskHudWidget(ctx);
 	taskHudWidget?.setState(state);
+}
+
+function visibleHudEpicKeys(tasks: TaskRecord[]): string[] {
+	return buildTaskBoardGroups(tasks.filter((task) => !isCanceled(task))).map((group) => group.key);
+}
+
+function cycleTaskHudExpandedEpic(tasks: TaskRecord[]): void {
+	const keys = visibleHudEpicKeys(tasks);
+	if (keys.length === 0) {
+		taskHudExpandedEpicKey = null;
+		return;
+	}
+	if (taskHudExpandedEpicKey === null) {
+		taskHudExpandedEpicKey = keys[0];
+		return;
+	}
+	const index = keys.indexOf(taskHudExpandedEpicKey);
+	taskHudExpandedEpicKey = index >= 0 && index < keys.length - 1 ? keys[index + 1] : null;
 }
 
 async function showTaskBoard(
@@ -607,7 +633,7 @@ function isBoardActive(task: TaskRecord): boolean {
 
 export function buildTaskBoardColumns(tasks: TaskRecord[]): TaskBoardColumn[] {
 	const byId = new Map(tasks.map((task) => [task.id, task]));
-	const active = tasks.filter((task) => !isCanceled(task) && task.type !== "epic");
+	const active = tasks.filter((task) => !isCanceled(task) && task.type !== "epic" && hasEpicMetadata(task));
 	const children = taskChildren(active);
 	const rejected = sortTasksForDisplay(
 		active.filter((task) => task.status === "rejected" && !hasOpenDependencies(task, byId, children)),
@@ -802,6 +828,10 @@ function taskEpicKey(task: TaskRecord): string {
 	return task.epic_id?.trim() || "";
 }
 
+function hasEpicMetadata(task: TaskRecord): boolean {
+	return taskEpicKey(task).length > 0;
+}
+
 function buildTaskBoardGroups(tasks: TaskRecord[]): TaskBoardGroup[] {
 	const epicByLabel = new Map<string, TaskRecord>();
 	for (const task of tasks) {
@@ -810,9 +840,9 @@ function buildTaskBoardGroups(tasks: TaskRecord[]): TaskBoardGroup[] {
 		if (label) epicByLabel.set(label, task);
 	}
 	const grouped = new Map<string, TaskRecord[]>();
-	for (const task of tasks.filter((candidate) => !isEpicTask(candidate))) {
+	for (const task of tasks.filter((candidate) => !isEpicTask(candidate) && hasEpicMetadata(candidate))) {
 		const label = taskEpicKey(task);
-		const key = label ? (epicByLabel.has(label) ? label : `unknown:${label}`) : "";
+		const key = epicByLabel.has(label) ? label : `unknown:${label}`;
 		grouped.set(key, [...(grouped.get(key) ?? []), task]);
 	}
 	const groups = [...grouped.entries()]
@@ -822,8 +852,8 @@ function buildTaskBoardGroups(tasks: TaskRecord[]): TaskBoardGroup[] {
 			const progressTasks = groupTasks.filter((task) => !isCanceled(task));
 			return {
 				key,
-				label: epic?.title ?? (label ? `Unknown Epic: ${label}` : "No Epic"),
-				epicLabel: label || undefined,
+				label: epic?.title ?? `Unknown Epic: ${label}`,
+				epicLabel: label,
 				tasks: groupTasks,
 				priority: epic ? priority(epic) : Math.max(0, ...groupTasks.map(priority)),
 				updatedAt: Math.max(epic?.updated_at ?? 0, ...groupTasks.map((task) => task.updated_at)),
@@ -833,8 +863,6 @@ function buildTaskBoardGroups(tasks: TaskRecord[]): TaskBoardGroup[] {
 		})
 		.filter((group) => group.tasks.length > 0);
 	return groups.sort((left, right) => {
-		if (left.key === "" && right.key !== "") return 1;
-		if (right.key === "" && left.key !== "") return -1;
 		const priorityDelta = right.priority - left.priority;
 		if (priorityDelta !== 0) return priorityDelta;
 		return (
@@ -851,7 +879,7 @@ function progressBar(theme: Theme, done: number, total: number, width: number): 
 }
 
 function renderEpicBoardHeader(group: TaskBoardGroup, theme: Theme, width: number): string {
-	const prefix = group.key === "" ? "No Epic:" : "Epic:";
+	const prefix = "Epic:";
 	const suffixStart = ` – ${group.done}/${group.total} [`;
 	const suffixEnd = "]";
 	const label = group.epicLabel ? ` ${theme.fg("success", group.epicLabel)}` : "";
@@ -1769,6 +1797,7 @@ export function renderHudLines(
 	display: AssignmentDisplayContext = {},
 	options: {
 		hideKanban?: boolean;
+		expandedEpicKey?: string;
 		flashTaskIds?: ReadonlySet<string>;
 		flashTasks?: ReadonlyMap<string, TaskHudFlash>;
 		now?: number;
@@ -1777,7 +1806,9 @@ export function renderHudLines(
 	const hudTasks = tasks.filter((task) => !isCanceled(task));
 	const now = options.now ?? Date.now();
 	const visibleTasks = hudTasks.filter(
-		(task) => !isComplete(task) || (isAssignedToCurrentSession(task, display) && isRecentlyComplete(task, now)),
+		(task) =>
+			task.type !== "epic" &&
+			(!isComplete(task) || (isAssignedToCurrentSession(task, display) && isRecentlyComplete(task, now))),
 	);
 	const groups = buildTaskBoardGroups(hudTasks);
 	if (visibleTasks.length === 0 && groups.length === 0) return [];
@@ -1806,6 +1837,24 @@ export function renderHudLines(
 	if (options.hideKanban) return [summaryLine];
 	const lines: string[] = [];
 	const byId = new Map(hudTasks.map((item) => [item.id, item]));
+	if (options.expandedEpicKey) {
+		const group = groups.find((candidate) => candidate.key === options.expandedEpicKey);
+		if (!group) return [summaryLine];
+		lines.push(
+			...renderColumnarHudGroup(
+				group,
+				theme,
+				width,
+				maxTasks,
+				byId,
+				display,
+				now,
+				options.flashTaskIds,
+				options.flashTasks,
+			),
+		);
+		return (lines.length > 0 ? lines : [summaryLine]).map((line) => truncateLine(line, width));
+	}
 	const activeEpicKeys = new Set(
 		hudTasks
 			.filter((task) => taskEpicKey(task) && isActiveCurrentSessionEpicTask(task, display))
@@ -1814,30 +1863,13 @@ export function renderHudLines(
 				return groups.some((group) => group.key === label) ? label : `unknown:${label}`;
 			}),
 	);
-	const noEpicGroup = groups.find((group) => group.key === "");
 	if (activeEpicKeys.size === 0) {
-		for (const group of groups.filter((group) => group.key !== "")) {
+		for (const group of groups) {
 			lines.push(renderHudEpicSummary(group, theme, width));
-		}
-		if (noEpicGroup) {
-			if (lines.length > 0) lines.push(theme.fg("borderMuted", "─".repeat(width)));
-			lines.push(
-				...renderColumnarHudGroup(
-					noEpicGroup,
-					theme,
-					width,
-					maxTasks,
-					byId,
-					display,
-					now,
-					options.flashTaskIds,
-					options.flashTasks,
-				),
-			);
 		}
 		return lines.map((line) => truncateLine(line, width));
 	}
-	for (const group of groups.filter((group) => activeEpicKeys.has(group.key) || group.key === "")) {
+	for (const group of groups.filter((group) => activeEpicKeys.has(group.key))) {
 		if (lines.length > 0) lines.push(theme.fg("borderMuted", "─".repeat(width)));
 		lines.push(
 			...renderColumnarHudGroup(
@@ -2278,40 +2310,23 @@ function guardInstruction(action: TaskGuardAction): string {
 		case "continue":
 			return `Continue in-progress task ${action.task.id}${source}: ${action.task.title}`;
 		case "start":
-			return `Start assigned task ${action.task.id}${source}: ${action.task.title}. First mark it in_progress with task_update.`;
+			return `Consider starting assigned task ${action.task.id}${source}: ${action.task.title}.`;
 		case "claim":
-			return `Task ${action.task.id}${source} has been assigned to this session: ${action.task.title}. First mark it in_progress with task_update.`;
+			return `Consider claiming task ${action.task.id}${source}: ${action.task.title}.`;
 		case "fix_dependency":
-			return `Task ${action.task.id} has invalid blocker ${action.invalidBlocker}. Fix blocked_by or choose a replacement blocker before ending.`;
+			return `Task ${action.task.id} has invalid blocker ${action.invalidBlocker}. Consider fixing blocked_by or choosing a replacement blocker.`;
 		case "close_parent":
-			return `All child tasks for parent ${action.task.id} are terminal. Verify acceptance and mark the parent done.`;
+			return `All child tasks for parent ${action.task.id} are terminal. Consider verifying acceptance and marking the parent done.`;
 	}
 }
 
 function guardContent(action: TaskGuardAction): string {
 	return [
-		"Task guard: work remains for this session.",
+		"Task nudge: work remains for this session.",
 		"",
-		guardInstruction(action),
+		`Suggested next step: ${guardInstruction(action)}`,
 		"",
-		"Do not summarize or stop. Continue now.",
-	].join("\n");
-}
-
-function escalationContent(action: TaskGuardAction): string {
-	return [
-		"Task guard stalled.",
-		"",
-		`Work remains: ${action.task.id} [${action.task.status}] ${action.task.title}`,
-		`Required next action: ${guardInstruction(action)}`,
-	].join("\n");
-}
-
-function cappedGuardContent(action: TaskGuardAction): string {
-	return [
-		"Task guard: automatic continuation paused after 3 turns on the same task.",
-		"",
-		guardInstruction(action),
+		"You can continue, switch tasks, or ignore this nudge.",
 	].join("\n");
 }
 
@@ -2328,109 +2343,33 @@ async function evaluateTaskGuard(
 	if (!action) {
 		state.lastGuardFingerprint = undefined;
 		state.lastGuardProgressSerial = undefined;
-		state.autoLoopTaskId = undefined;
-		state.autoLoopTurns = 0;
 		return undefined;
 	}
 	const fingerprint = guardFingerprint(tasks, action, assignedTo);
-	const stalled = state.lastGuardFingerprint === fingerprint && state.lastGuardProgressSerial === state.progressSerial;
 	return {
-		kind: stalled ? "escalate" : "continue",
+		kind: "continue",
 		fingerprint,
 		action,
-		content: stalled ? escalationContent(action) : guardContent(action),
+		content: guardContent(action),
 	};
 }
 
-async function autoAssignGuardTask(
-	decision: TaskGuardDecision,
-	ctx: ExtensionContext,
-	pi: ExtensionAPI,
-	command: string,
-	runCommand: typeof defaultRunCommand,
-	state: GuardState,
-	config: Config,
-): Promise<TaskGuardDecision | undefined> {
-	if (decision.kind !== "continue" || decision.action.kind !== "claim") return decision;
-	const freshDecision = await evaluateTaskGuard(ctx, command, runCommand, state);
-	if (!freshDecision || freshDecision.kind !== "continue") return freshDecision;
-	if (freshDecision.action.kind !== "claim") return freshDecision;
-	if (freshDecision.action.task.id !== decision.action.task.id) return freshDecision;
-	await runCommand(
-		command,
-		buildTaskCommand(
-			"update",
-			normalizeTaskParams({ id: freshDecision.action.task.id, assigned_to: "current" }, ctx, pi),
-		),
-		ctx.cwd,
-		ctx.signal,
-	);
-	state.progressSerial++;
-	if (config.hud.enabled) await updateTaskHud(ctx, pi, command, runCommand, config).catch(() => {});
-	return freshDecision;
-}
-
-async function sendTaskGuard(
-	pi: ExtensionAPI,
-	ctx: ExtensionContext,
-	command: string,
-	runCommand: typeof defaultRunCommand,
-	state: GuardState,
-	config: Config,
-): Promise<void> {
+async function sendTaskGuard(pi: ExtensionAPI, state: GuardState): Promise<void> {
 	const pending = state.pending;
 	state.pending = undefined;
 	if (!pending) return;
-	if (pending.kind === "escalate") {
-		state.lastGuardFingerprint = pending.fingerprint;
-		state.lastGuardProgressSerial = state.progressSerial;
-		pi.sendMessage(
-			{
-				customType: "task-guard",
-				content: [{ type: "text", text: pending.content }],
-				display: true,
-				details: { action: pending.action.kind, taskId: pending.action.task.id },
-			},
-			{ deliverAs: "followUp" },
-		);
-		state.lastUserText = undefined;
-		return;
-	}
-	let decision: TaskGuardDecision | undefined;
-	try {
-		decision = await autoAssignGuardTask(pending, ctx, pi, command, runCommand, state, config);
-	} catch (error) {
-		pi.sendMessage(
-			{
-				customType: "task-guard",
-				content: [
-					{
-						type: "text",
-						text: `Task guard could not assign work: ${error instanceof Error ? error.message : String(error)}`,
-					},
-				],
-				display: true,
-				details: { error: true },
-			},
-			{ deliverAs: "followUp" },
-		);
-		return;
-	}
+	const decision: TaskGuardDecision | undefined = pending;
 	if (!decision) return;
 	state.lastGuardFingerprint = decision.fingerprint;
 	state.lastGuardProgressSerial = state.progressSerial;
-	const loopTaskId = decision.action.task.id;
-	state.autoLoopTurns = state.autoLoopTaskId === loopTaskId ? state.autoLoopTurns + 1 : 1;
-	state.autoLoopTaskId = loopTaskId;
-	const autoContinue = state.autoLoopTurns <= 3;
 	pi.sendMessage(
 		{
 			customType: "task-guard",
-			content: [{ type: "text", text: autoContinue ? decision.content : cappedGuardContent(decision.action) }],
-			display: !autoContinue,
+			content: [{ type: "text", text: decision.content }],
+			display: true,
 			details: { action: decision.action.kind, taskId: decision.action.task.id },
 		},
-		autoContinue ? { deliverAs: "followUp", triggerTurn: true } : { deliverAs: "followUp" },
+		{ deliverAs: "followUp" },
 	);
 	state.lastUserText = undefined;
 }
@@ -2457,19 +2396,6 @@ function pausesGuard(text: string): boolean {
 	return /\b(pause|stop|hold|disable)\s+(the\s+)?task guard\b|\btask guard\s+(pause|stop|off|disable)\b/i.test(text);
 }
 
-function shouldKeepAnswerVisible(lastUserText: string | undefined): boolean {
-	if (!lastUserText) return false;
-	return (
-		/\?/.test(lastUserText) ||
-		/^(how|what|why|when|where|who|is|are|can|could|should|do|does|did)\b/i.test(lastUserText.trim())
-	);
-}
-
-function shouldHidePrematureStopAnswer(text: string, lastUserText: string | undefined): boolean {
-	if (shouldKeepAnswerVisible(lastUserText)) return false;
-	return /^(done|complete|completed|finished|ok|okay|all set|that's it)[.!…\s]*$/i.test(text.trim());
-}
-
 function fileChangingResult(result: unknown): boolean {
 	const details = (result as { details?: { filesChanged?: unknown; fileDiffs?: unknown } } | undefined)?.details;
 	return (
@@ -2482,6 +2408,7 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 	const config = loadConfig();
 	if (!config.enabled) return;
 	installSilentTaskToolRenderPatch();
+	taskHudExpandedEpicKey = undefined;
 
 	const runCommand = runtime.runCommand ?? defaultRunCommand;
 	let cwd = process.cwd();
@@ -2512,6 +2439,7 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 		taskHudWidgetCtx = undefined;
 		latestTaskHudState = undefined;
 		requestTaskHudRender = undefined;
+		taskHudExpandedEpicKey = undefined;
 		taskHudFlashes.clear();
 	});
 
@@ -2544,21 +2472,11 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 			return undefined;
 		}
 		guardState.pending = decision;
-		if (!decision) return undefined;
-		if (decision.kind === "escalate") {
-			return undefined;
-		}
-		if (!shouldHidePrematureStopAnswer(messageText(message), guardState.lastUserText)) return undefined;
-		return {
-			message: {
-				...message,
-				content: [],
-			},
-		};
+		return undefined;
 	});
 
 	pi.on("turn_end", async (_event, ctx) => {
-		await sendTaskGuard(pi, ctx, config.command, runCommand, guardState, config).catch((error) => {
+		await sendTaskGuard(pi, guardState).catch((error) => {
 			ctx.ui.notify?.(`Task guard failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
 		});
 	});
@@ -2617,9 +2535,12 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 	});
 
 	pi.registerShortcut?.(config.hud.toggleShortcut, {
-		description: "Toggle project task HUD Kanban",
+		description: "Cycle project task HUD compact/epic view",
 		handler: async (ctx: ExtensionContext) => {
-			taskHudKanbanHidden = !taskHudKanbanHidden;
+			const tasks =
+				latestTaskHudState?.tasks ??
+				(await loadHudTasks(ctx.cwd, config.command, runCommand, ctx.signal).catch(() => []));
+			cycleTaskHudExpandedEpic(tasks);
 			await updateTaskHud(ctx, pi, config.command, runCommand, config).catch((error) => {
 				ctx.ui.notify?.(
 					`Task HUD refresh failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -2647,7 +2568,9 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 						"Session/user assignment, or 'current'. Use 'current' when you are creating this task to work on it now.",
 				}),
 			),
-			epic_id: Type.Optional(Type.String({ description: "Stable epic/group identifier" })),
+			epic_id: Type.Optional(
+				Type.String({ description: "Stable epic/group identifier; required for non-epic tasks" }),
+			),
 			epic_title: Type.Optional(Type.String({ description: "Human-readable epic/group title" })),
 			labels: Type.Optional(
 				Type.Array(Type.String(), {
@@ -2738,7 +2661,9 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 				}),
 			),
 			clear_assignee: Type.Optional(Type.Boolean({ description: "Remove assignee" })),
-			epic_id: Type.Optional(Type.String({ description: "New stable epic/group identifier" })),
+			epic_id: Type.Optional(
+				Type.String({ description: "New stable epic/group identifier; required for non-epic tasks" }),
+			),
 			epic_title: Type.Optional(Type.String({ description: "New human-readable epic/group title" })),
 			labels: Type.Optional(
 				Type.Array(Type.String(), {
@@ -2746,7 +2671,9 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 						"Replace labels with optional cross-cutting filter tokens only; omit redundant project/epic/title/type/parent labels.",
 				}),
 			),
-			clear_epic: Type.Optional(Type.Boolean({ description: "Remove epic/group metadata" })),
+			clear_epic: Type.Optional(
+				Type.Boolean({ description: "Remove epic/group metadata; only valid for epic tasks" }),
+			),
 			parent_id: Type.Optional(Type.String({ description: "New parent/coordinator task ID or prefix" })),
 			clear_parent: Type.Optional(Type.Boolean({ description: "Remove parent task" })),
 			blocked_by: Type.Optional(

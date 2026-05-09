@@ -18,6 +18,8 @@ const task = {
 	title: "Smoke test task tools",
 	body: "Verify the task HUD and renderers.",
 	status: "open",
+	epic_id: "test-epic",
+	epic_title: "Test Epic",
 	created_at: 1,
 	updated_at: 2,
 };
@@ -160,7 +162,7 @@ describe("tasks extension", () => {
 			{ ...task, id: "REVIEW1", type: "feature", title: "Review child", status: "in_review", epic_id: "git-tool" },
 			{ ...task, id: "DONE1", type: "bug", title: "Done child", status: "done", epic_id: "git-tool" },
 			{ ...task, id: "REJ1", type: "bug", title: "Rejected child", status: "rejected", epic_id: "git-tool" },
-			{ ...task, id: "NOEPIC", type: "chore", title: "Ungrouped child" },
+			{ ...task, id: "NOEPIC", type: "chore", title: "Ungrouped child", epic_id: undefined, epic_title: undefined },
 		];
 
 		const lines = renderTaskBoardLines(tasks, markedTheme as any, 220).join("\n");
@@ -172,7 +174,8 @@ describe("tasks extension", () => {
 		expect(lines).toContain("<mdLink> Ready (1)</mdLink>");
 		expect(lines).toContain("<accent> In Review (1)</accent>");
 		expect(lines).toContain("<success> Done (1)</success>");
-		expect(lines).toContain("No Epic:");
+		expect(lines).not.toContain("No Epic:");
+		expect(lines).not.toContain("Ungrouped child");
 		expect(lines).not.toContain("In Progress (0)");
 	});
 
@@ -692,10 +695,16 @@ describe("tasks extension", () => {
 		expect(calls).toContainEqual(["ct", "task", "reject", "ABC", "needs", "tests", "--json"]);
 	});
 
-	test("alt+t toggles only the task HUD Kanban", async () => {
+	test("alt+t cycles compact and visible task HUD epics", async () => {
 		const shortcuts = new Map<string, any>();
 		let widget: { render(width: number): string[] } | undefined;
 		let listCalls = 0;
+		const tasks = [
+			{ ...task, id: "EA", type: "epic", title: "Epic A", epic_id: "a", priority: 10 },
+			{ ...task, id: "TA", title: "Task A", epic_id: "a", priority: 10 },
+			{ ...task, id: "EB", type: "epic", title: "Epic B", epic_id: "b", priority: 1 },
+			{ ...task, id: "TB", title: "Task B", epic_id: "b", priority: 1 },
+		];
 		tasksExtension(
 			{
 				registerTool() {},
@@ -707,7 +716,7 @@ describe("tasks extension", () => {
 			{
 				runCommand: async () => {
 					listCalls++;
-					return { stdout: JSON.stringify({ tasks: [task] }), stderr: "", exitCode: 0 };
+					return { stdout: JSON.stringify({ tasks }), stderr: "", exitCode: 0 };
 				},
 			},
 		);
@@ -721,12 +730,18 @@ describe("tasks extension", () => {
 		};
 
 		await shortcuts.get("alt+t").handler(ctx);
-		expect(widget?.render(120).join("\n")).toContain("1 tasks");
-		expect(widget?.render(120).join("\n")).not.toContain("PG4W2K4Q03");
+		expect(widget?.render(120).join("\n")).toContain("2 tasks");
+		expect(widget?.render(120).join("\n")).not.toContain("Task A");
 		await shortcuts.get("alt+t").handler(ctx);
-		expect(widget?.render(120).join("\n")).not.toContain("1 tasks");
-		expect(widget?.render(120).join("\n")).toContain("PG4W2K4Q03");
-		expect(listCalls).toBe(2);
+		expect(widget?.render(120).join("\n")).toContain("Task A");
+		expect(widget?.render(120).join("\n")).not.toContain("Task B");
+		await shortcuts.get("alt+t").handler(ctx);
+		expect(widget?.render(120).join("\n")).toContain("Task B");
+		expect(widget?.render(120).join("\n")).not.toContain("Task A");
+		await shortcuts.get("alt+t").handler(ctx);
+		expect(widget?.render(120).join("\n")).toContain("2 tasks");
+		expect(widget?.render(120).join("\n")).not.toContain("Task A");
+		expect(listCalls).toBe(4);
 	});
 
 	test("/tasks task board mutations shell out through ct and refresh HUD", async () => {
@@ -984,6 +999,7 @@ describe("tasks extension", () => {
 			1000,
 			6,
 			{ currentAssignment: "session:current", currentLabel: "Me" },
+			{ expandedEpicKey: "unknown:test-epic" },
 		).join("\n");
 
 		expect(lines).toContain("<muted>\x1b[3mself\x1b[23m</muted>");
@@ -991,7 +1007,7 @@ describe("tasks extension", () => {
 		expect(lines).toContain("<mdLink>\x1b[3m@Other\x1b[23m</mdLink>");
 		expect(lines).not.toContain("<mdHeading>●</mdHeading> <mdHeading>2 tasks</mdHeading> <muted>(");
 		expect(lines).toContain("<syntaxPunctuation>OTHER</syntaxPunctuation><syntaxType>1</syntaxType>");
-		expect(lines).toContain("<mdHeading>No Epic:");
+		expect(lines).toContain("<mdHeading>Epic:");
 		expect(lines).not.toContain("<warning> In Progress (0)");
 		expect(lines).not.toContain(" Done (0)");
 		expect(lines).not.toContain("**<syntaxPunctuation>OTHER");
@@ -1051,7 +1067,7 @@ describe("tasks extension", () => {
 			140,
 			6,
 			{ currentAssignment: "session:current", currentLabel: "Current" },
-			{ now: 1_000 },
+			{ now: 1_000, expandedEpicKey: "unknown:test-epic" },
 		).join("\n");
 
 		expect(lines).not.toContain("2 tasks");
@@ -1083,7 +1099,7 @@ describe("tasks extension", () => {
 					epic_title: "High Epic",
 					priority: 100,
 				},
-				{ ...task, id: "NOEPIC", title: "Ungrouped task", priority: 0 },
+				{ ...task, id: "NOEPIC", title: "Ungrouped task", priority: 0, epic_id: undefined, epic_title: undefined },
 			],
 			theme as any,
 			180,
@@ -1091,12 +1107,11 @@ describe("tasks extension", () => {
 			{ currentAssignment: "session:current", currentLabel: "Current" },
 		).join("\n");
 
-		expect(lines).toContain("No Epic");
 		expect(lines).toContain("Current Epic");
 		expect(lines).not.toContain("High Epic");
-		expect(lines.indexOf("Current Epic")).toBeLessThan(lines.indexOf("No Epic"));
+		expect(lines).not.toContain("Ungrouped task");
 		expect(lines).toContain("0/1 [");
-		expect(lines.match(/No Epic:/g)?.length).toBe(1);
+		expect(lines).not.toContain("No Epic:");
 	});
 
 	test("task HUD shows flat epic list when current session has no active epic", () => {
@@ -1106,7 +1121,7 @@ describe("tasks extension", () => {
 				{ ...task, id: "ELOW", type: "epic", title: "Low Epic", epic_id: "low", priority: 2 },
 				{ ...task, id: "HIGHWORK", title: "High epic task", epic_id: "high", priority: 100 },
 				{ ...task, id: "LOWWORK", title: "Low epic task", epic_id: "low", priority: 2 },
-				{ ...task, id: "NOEPIC", title: "Ungrouped task", priority: 0 },
+				{ ...task, id: "NOEPIC", title: "Ungrouped task", priority: 0, epic_id: undefined, epic_title: undefined },
 			],
 			theme as any,
 			180,
@@ -1115,8 +1130,8 @@ describe("tasks extension", () => {
 		).join("\n");
 
 		expect(lines.indexOf("High Epic")).toBeLessThan(lines.indexOf("Low Epic"));
-		expect(lines).toContain("No Epic:");
-		expect(lines).toContain("NOEPIC");
+		expect(lines).not.toContain("No Epic:");
+		expect(lines).not.toContain("NOEPIC");
 		expect(lines).not.toContain("HIGHWORK");
 		expect(lines).not.toContain("LOWWORK");
 	});
@@ -1150,7 +1165,7 @@ describe("tasks extension", () => {
 			66,
 			6,
 			{},
-			{ flashTaskIds: new Set(["FLASH"]) },
+			{ flashTaskIds: new Set(["FLASH"]), expandedEpicKey: "unknown:test-epic" },
 		).join("\n");
 
 		expect(lines).toContain("…");
@@ -1168,6 +1183,7 @@ describe("tasks extension", () => {
 			{
 				flashTasks: new Map([["PULSE", { startedAt: 1000, until: 6000 }]]),
 				now: 1000,
+				expandedEpicKey: "unknown:test-epic",
 			},
 		).join("\n");
 		const peak = renderHudLines(
@@ -1179,6 +1195,7 @@ describe("tasks extension", () => {
 			{
 				flashTasks: new Map([["PULSE", { startedAt: 1000, until: 6000 }]]),
 				now: 1450,
+				expandedEpicKey: "unknown:test-epic",
 			},
 		).join("\n");
 
@@ -1213,7 +1230,7 @@ describe("tasks extension", () => {
 			160,
 			6,
 			{ currentAssignment: "session:current" },
-			{ now: 3_000 + 60 * 60 * 1000 },
+			{ now: 3_000 + 60 * 60 * 1000, expandedEpicKey: "unknown:test-epic" },
 		).join("\n");
 
 		expect(lines).toContain("Recent done");
@@ -1466,7 +1483,7 @@ describe("tasks extension", () => {
 		expect(widgetText).toContain("@../secret");
 	});
 
-	test("task guard hides premature stop and triggers hidden continuation", async () => {
+	test("task guard keeps answers visible and sends a soft visible nudge", async () => {
 		const handlers: Record<string, any> = {};
 		const sent: any[] = [];
 		tasksExtension(
@@ -1504,12 +1521,13 @@ describe("tasks extension", () => {
 		);
 		await handlers.turn_end({}, ctx);
 
-		expect(replacement.message.content).toEqual([]);
+		expect(replacement).toBeUndefined();
 		expect(sent).toHaveLength(1);
 		expect(sent[0].message.customType).toBe("task-guard");
-		expect(sent[0].message.display).toBe(false);
-		expect(sent[0].message.content[0].text).toContain("Start assigned task t");
-		expect(sent[0].options).toEqual({ deliverAs: "followUp", triggerTurn: true });
+		expect(sent[0].message.display).toBe(true);
+		expect(sent[0].message.content[0].text).toContain("Task nudge");
+		expect(sent[0].message.content[0].text).toContain("Consider starting assigned task t");
+		expect(sent[0].options).toEqual({ deliverAs: "followUp" });
 	});
 
 	test("task guard keeps imperative answers visible while continuing", async () => {
@@ -1553,7 +1571,7 @@ describe("tasks extension", () => {
 
 		expect(replacement).toBeUndefined();
 		expect(sent).toHaveLength(1);
-		expect(sent[0].message.display).toBe(false);
+		expect(sent[0].message.display).toBe(true);
 	});
 
 	test("task guard keeps answers visible when evaluation fails", async () => {
@@ -1591,7 +1609,7 @@ describe("tasks extension", () => {
 		expect(notifications[0]).toContain("Task guard failed");
 	});
 
-	test("task guard escalates after one retry without progress", async () => {
+	test("task guard repeats a soft nudge without escalating", async () => {
 		const handlers: Record<string, any> = {};
 		const sent: any[] = [];
 		tasksExtension(
@@ -1637,8 +1655,8 @@ describe("tasks extension", () => {
 		expect(replacement).toBeUndefined();
 		expect(sent).toHaveLength(2);
 		expect(sent[1].message.display).toBe(true);
-		expect(sent[1].message.content[0].text).toContain("Task guard stalled");
-		expect(sent[1].message.content[0].text).toContain("Required next action");
+		expect(sent[1].message.content[0].text).toContain("Task nudge");
+		expect(sent[1].message.content[0].text).toContain("Consider starting assigned task t");
 	});
 
 	test("task guard keeps answers visible when escalation follows a user question", async () => {
@@ -1688,7 +1706,7 @@ describe("tasks extension", () => {
 		expect(replacement).toBeUndefined();
 	});
 
-	test("task guard stops auto-triggering after 3 turn ends on the same task", async () => {
+	test("task guard never auto-triggers continuation turns", async () => {
 		const handlers: Record<string, any> = {};
 		const sent: any[] = [];
 		tasksExtension(
@@ -1736,14 +1754,14 @@ describe("tasks extension", () => {
 		}
 
 		expect(sent).toHaveLength(4);
-		expect(sent.slice(0, 3).map((item) => item.options)).toEqual([
-			{ deliverAs: "followUp", triggerTurn: true },
-			{ deliverAs: "followUp", triggerTurn: true },
-			{ deliverAs: "followUp", triggerTurn: true },
+		expect(sent.map((item) => item.options)).toEqual([
+			{ deliverAs: "followUp" },
+			{ deliverAs: "followUp" },
+			{ deliverAs: "followUp" },
+			{ deliverAs: "followUp" },
 		]);
-		expect(sent[3].options).toEqual({ deliverAs: "followUp" });
-		expect(sent[3].message.display).toBe(true);
-		expect(sent[3].message.content[0].text).toContain("automatic continuation paused");
+		expect(sent.every((item) => item.message.display === true)).toBe(true);
+		expect(sent[3].message.content[0].text).toContain("Task nudge");
 	});
 
 	test("task guard does not clobber arbitrary user-directed answers", async () => {
@@ -1790,10 +1808,10 @@ describe("tasks extension", () => {
 
 		expect(replacement).toBeUndefined();
 		expect(sent).toHaveLength(1);
-		expect(sent[0].message.display).toBe(false);
+		expect(sent[0].message.display).toBe(true);
 	});
 
-	test("task guard assigns unassigned blockers before continuing", async () => {
+	test("task guard nudges about unassigned blockers without assigning", async () => {
 		const handlers: Record<string, any> = {};
 		const sent: any[] = [];
 		const calls: string[][] = [];
@@ -1849,9 +1867,9 @@ describe("tasks extension", () => {
 		await handlers.message_end({ message: { role: "assistant", content: [{ type: "text", text: "Done." }] } }, ctx);
 		await handlers.turn_end({}, ctx);
 
-		expect(calls).toContainEqual(["ct", "task", "update", "b", "--assigned-to", "session:test-session", "--json"]);
-		expect(sent[0].message.content[0].text).toContain("Task b to unblock a has been assigned");
-		expect(sent[0].message.display).toBe(false);
+		expect(calls).toEqual([["ct", "task", "list", "--all", "--json"]]);
+		expect(sent[0].message.content[0].text).toContain("Consider claiming task b to unblock a");
+		expect(sent[0].message.display).toBe(true);
 	});
 
 	test("task tools render no call or result UI", () => {

@@ -177,7 +177,8 @@ impl TaskTuiState {
     }
 
     fn with_selection(tasks: &[Task], selected_task_id: Option<&str>) -> Self {
-        let ids: HashSet<&str> = tasks.iter().map(|task| task.id.as_str()).collect();
+        let selectable = selectable_task_ids(tasks);
+        let ids: HashSet<&str> = selectable.iter().map(String::as_str).collect();
         if let Some(id) = selected_task_id.filter(|id| ids.contains(id)) {
             Self {
                 selected_task_id: Some(id.to_string()),
@@ -458,13 +459,18 @@ fn task_groups(tasks: &[Task]) -> Vec<TaskGroup> {
         .filter(|task| task.task_type == "epic")
         .filter_map(|task| task.epic_id.as_deref().map(|label| (label, task)))
         .collect();
-    let mut grouped: HashMap<Option<String>, Vec<Task>> = HashMap::new();
+    let mut grouped: HashMap<String, Vec<Task>> = HashMap::new();
     for task in tasks
         .iter()
         .filter(|task| task.task_type != "epic" && task.status != "canceled")
+        .filter(|task| {
+            task.epic_id
+                .as_deref()
+                .is_some_and(|label| !label.trim().is_empty())
+        })
     {
         grouped
-            .entry(task.epic_id.clone())
+            .entry(task.epic_id.clone().unwrap_or_default())
             .or_default()
             .push(task.clone());
     }
@@ -473,15 +479,11 @@ fn task_groups(tasks: &[Task]) -> Vec<TaskGroup> {
     let by_id: HashMap<&str, &Task> = tasks.iter().map(|task| (task.id.as_str(), task)).collect();
     let mut groups: Vec<TaskGroup> = grouped
         .into_iter()
-        .map(|(label, group_tasks)| {
-            let label_text = label.unwrap_or_default();
+        .map(|(label_text, group_tasks)| {
             let epic = epics.get(label_text.as_str()).copied();
-            let title = if label_text.is_empty() {
-                "No Epic".to_string()
-            } else {
-                epic.map(|task| task.title.clone())
-                    .unwrap_or_else(|| format!("Unknown Epic: {label_text}"))
-            };
+            let title = epic
+                .map(|task| task.title.clone())
+                .unwrap_or_else(|| format!("Unknown Epic: {label_text}"));
             let total = group_tasks.len();
             let done = group_tasks.iter().filter(|task| is_done(task)).count();
             let priority = epic.map(|task| task.priority).unwrap_or_else(|| {
@@ -510,9 +512,6 @@ fn task_groups(tasks: &[Task]) -> Vec<TaskGroup> {
         })
         .collect();
     groups.sort_by(|left, right| {
-        if left.label.is_empty() != right.label.is_empty() {
-            return left.label.is_empty().cmp(&right.label.is_empty());
-        }
         right
             .priority
             .cmp(&left.priority)
@@ -655,7 +654,7 @@ mod tests {
             priority: 0,
             assigned_to: None,
             assigned_label: None,
-            epic_id: None,
+            epic_id: (task_type != "epic").then(|| "test-epic".to_string()),
             epic_title: None,
             parent_id: None,
             blocked_by: Vec::new(),
@@ -726,7 +725,7 @@ mod tests {
             &render_task_tui_lines(&[ready, in_review, in_progress, done, blocked], 52, 18)
                 .join("\n"),
         );
-        assert!(lines.contains("No Epic"));
+        assert!(lines.contains("Unknown Epic: test-epic"));
         assert!(lines.contains("Ready (1)"));
         assert!(lines.contains("Blocked (1)"));
         assert!(lines.contains("In Progress (1)"));
