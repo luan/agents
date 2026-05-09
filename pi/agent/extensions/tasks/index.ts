@@ -102,16 +102,8 @@ const configPath = join(extensionDir, "config.json");
 const widgetId = "project-tasks";
 const taskHudFlashMs = 5000;
 const taskHudPulseFrameMs = 160;
-const silentTaskToolNames = new Set([
-	"task_add",
-	"task_list",
-	"task_show",
-	"task_update",
-	"task_delete",
-	"task_accept",
-	"task_reject",
-]);
 const maxGuardAutoTurnsWithoutProgress = 2;
+const silentTaskToolNames = new Set(["task_read", "task_write"]);
 const silentTaskToolPatchKey = Symbol.for("agents.tasks.silent-tool-render-patch");
 let activeTaskBoard: { close: () => void } | undefined;
 let taskHudExpandedEpicKey: string | null | undefined;
@@ -2076,14 +2068,57 @@ class EmptyTaskRender implements Component {
 
 const emptyTaskRender = new EmptyTaskRender();
 
-function makeTaskTool(
-	action: TaskCommand,
+const taskReadActions = new Set<TaskCommand>(["list", "show"]);
+const taskWriteActions = new Set<TaskCommand>(["add", "update", "delete", "accept", "reject"]);
+
+function taskReadAction(params: Record<string, unknown>): TaskCommand {
+	const mode = String(params.mode ?? (params.id ? "show" : "list"));
+	if (!taskReadActions.has(mode as TaskCommand)) throw new Error("task_read mode must be 'list' or 'show'");
+	if (mode === "show" && typeof params.id !== "string") throw new Error("task_read mode 'show' requires id");
+	return mode as TaskCommand;
+}
+
+function taskWriteAction(params: Record<string, unknown>): TaskCommand {
+	const op = String(params.op ?? "");
+	if (!taskWriteActions.has(op as TaskCommand)) {
+		throw new Error("task_write op must be add, update, delete, accept, or reject");
+	}
+	const data = objectParam(params.data);
+	if (op === "add" && typeof params.title !== "string" && typeof data.title !== "string") {
+		throw new Error("task_write op 'add' requires title");
+	}
+	if (op !== "add" && typeof params.id !== "string") throw new Error(`task_write op '${op}' requires id`);
+	if (op === "reject" && typeof params.note !== "string") throw new Error("task_write op 'reject' requires note");
+	return op as TaskCommand;
+}
+
+function objectParam(value: unknown): Record<string, unknown> {
+	return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function normalizeTaskWriteParams(params: Record<string, unknown>): Record<string, unknown> {
+	const data = objectParam(params.data);
+	const clear = new Set(Array.isArray(params.clear) ? params.clear.filter((item) => typeof item === "string") : []);
+	return {
+		...data,
+		...params,
+		title: params.title ?? data.title,
+		clear_assignee: params.clear_assignee === true || clear.has("assignee"),
+		clear_epic: params.clear_epic === true || clear.has("epic"),
+		clear_parent: params.clear_parent === true || clear.has("parent"),
+		clear_blockers: params.clear_blockers === true || clear.has("blockers"),
+	};
+}
+
+function makeCombinedTaskTool(
+	resolveAction: (params: Record<string, unknown>) => TaskCommand,
 	command: string,
 	runCommand: typeof defaultRunCommand,
 	config: Config,
 	pi: ExtensionAPI,
 	getCwd: () => string,
 	onProgress?: () => void,
+	normalizeParams: (params: Record<string, unknown>) => Record<string, unknown> = (params) => params,
 ) {
 	return {
 		renderShell: "self" as const,
@@ -2100,7 +2135,18 @@ function makeTaskTool(
 			_onUpdate?: unknown,
 			ctx?: ExtensionContext,
 		) => {
-			const result = await executeTask(command, runCommand, getCwd(), action, params, config, pi, ctx, signal);
+			const action = resolveAction(params);
+			const result = await executeTask(
+				command,
+				runCommand,
+				getCwd(),
+				action,
+				normalizeParams(params),
+				config,
+				pi,
+				ctx,
+				signal,
+			);
 			if (isMutatingTaskAction(action)) onProgress?.();
 			return result;
 		},
@@ -2208,6 +2254,10 @@ function isUnassigned(task: TaskRecord): boolean {
 	return !task.assigned_to;
 }
 
+function isGuardWorkTask(task: TaskRecord): boolean {
+	return task.type !== "epic";
+}
+
 function sortedActive(tasks: TaskRecord[], byId: Map<string, TaskRecord>): TaskRecord[] {
 	return sortTasksForDisplay(tasks.filter(isActiveTask), byId);
 }
@@ -2245,16 +2295,22 @@ function selectDependencyAction(
 			return { kind: "fix_dependency", task, invalidBlocker: dependency.id };
 		}
 		if (isAssignedTo(assignedTo, dependency)) {
-			if (dependency.status === "in_progress") return { kind: "continue", task: dependency, source: task };
+			if (isGuardWorkTask(dependency) && dependency.status === "in_progress") {
+				return { kind: "continue", task: dependency, source: task };
+			}
 			const nested = selectDependencyAction(dependency, assignedTo, byId, children, seen);
 			if (nested) return nested;
-			if (isReadyForWork(dependency, byId, children)) return { kind: "start", task: dependency, source: task };
+			if (isGuardWorkTask(dependency) && isReadyForWork(dependency, byId, children)) {
+				return { kind: "start", task: dependency, source: task };
+			}
 			continue;
 		}
 		if (isUnassigned(dependency)) {
 			const nested = selectDependencyAction(dependency, assignedTo, byId, children, seen);
 			if (nested) return nested;
-			if (isReadyForWork(dependency, byId, children)) return { kind: "claim", task: dependency, source: task };
+			if (isGuardWorkTask(dependency) && isReadyForWork(dependency, byId, children)) {
+				return { kind: "claim", task: dependency, source: task };
+			}
 		}
 	}
 	return undefined;
@@ -2273,18 +2329,24 @@ function selectGuardAction(tasks: TaskRecord[], assignedTo: string): TaskGuardAc
 		if (action) return action;
 	}
 	const inProgress = assigned.find(
-		(task) => task.status === "in_progress" && !hasUnresolvedDependencies(task, byId, children),
+		(task) =>
+			isGuardWorkTask(task) && task.status === "in_progress" && !hasUnresolvedDependencies(task, byId, children),
 	);
 	if (inProgress) return { kind: "continue", task: inProgress };
 	const assignedReady = assigned.find(
-		(task) => isReadyForWork(task, byId, children) && (children.get(task.id)?.length ?? 0) === 0,
+		(task) =>
+			isGuardWorkTask(task) && isReadyForWork(task, byId, children) && (children.get(task.id)?.length ?? 0) === 0,
 	);
 	if (assignedReady) return { kind: "start", task: assignedReady };
 	const epicIds = new Set(assigned.map((task) => task.epic_id).filter((id): id is string => Boolean(id)));
 	const sameEpicReady = sortedGuardTasks(
 		tasks.filter(
 			(task) =>
-				isUnassigned(task) && task.epic_id && epicIds.has(task.epic_id) && isReadyForWork(task, byId, children),
+				isGuardWorkTask(task) &&
+				isUnassigned(task) &&
+				task.epic_id &&
+				epicIds.has(task.epic_id) &&
+				isReadyForWork(task, byId, children),
 		),
 		byId,
 	)[0];
@@ -2439,8 +2501,6 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 	const markProgress = () => {
 		guardState.progressSerial++;
 	};
-	const common = (action: TaskCommand) =>
-		makeTaskTool(action, config.command, runCommand, config, pi, getCwd, markProgress);
 
 	pi.on("session_start", async (_event, ctx) => {
 		cwd = ctx.cwd;
@@ -2573,148 +2633,50 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 	});
 
 	pi.registerTool({
-		...common("add"),
-		name: "task_add",
-		label: "Add Task",
-		description: "Create a persisted project task via ct task add.",
-		promptSnippet: "Create a persisted project task",
+		...makeCombinedTaskTool(taskReadAction, config.command, runCommand, config, pi, getCwd, markProgress),
+		name: "task_read",
+		label: "Read Tasks",
+		description: "List/show project tasks.",
+		promptSnippet: "Read project tasks",
 		parameters: Type.Object({
-			title: Type.String({ description: "Task title" }),
-			type: Type.String({ description: "Task type: epic, feature, bug, or chore" }),
-			body: Type.Optional(Type.String({ description: "Task details/body" })),
-			status: Type.Optional(Type.String({ description: "Task status (default: open)" })),
-			priority: Type.Optional(Type.Number({ description: "Task priority; higher shows first" })),
-			assigned_to: Type.Optional(
-				Type.String({
-					description:
-						"Session/user assignment, or 'current'. Use 'current' when you are creating this task to work on it now.",
-				}),
-			),
-			epic_id: Type.Optional(
-				Type.String({ description: "Stable epic/group identifier; required for non-epic tasks" }),
-			),
-			epic_title: Type.Optional(Type.String({ description: "Human-readable epic/group title" })),
-			labels: Type.Optional(
-				Type.Array(Type.String(), {
-					description:
-						"Optional cross-cutting filter tokens only. Do not add labels already obvious from project, epic, title, type, or parent.",
-				}),
-			),
-			parent_id: Type.Optional(Type.String({ description: "Parent/coordinator task ID or prefix" })),
-			blocked_by: Type.Optional(
-				Type.Array(Type.String(), {
-					description: "Task IDs/prefixes that block this task",
-				}),
-			),
-		}),
-	});
-
-	pi.registerTool({
-		...common("list"),
-		name: "task_list",
-		label: "List Tasks",
-		description: "List persisted project tasks via ct task list.",
-		promptSnippet: "List persisted project tasks",
-		parameters: Type.Object({
-			status: Type.Optional(Type.String({ description: "Filter by status" })),
-			type: Type.Optional(Type.String({ description: "Filter by task type" })),
-			label: Type.Optional(Type.String({ description: "Filter by task label" })),
-			epic_id: Type.Optional(Type.String({ description: "Filter by epic/group identifier" })),
-			assigned_to: Type.Optional(
-				Type.String({
-					description: "Filter by assignee/session, or 'current'",
-				}),
-			),
+			mode: Type.Optional(Type.String({ description: "'list' or 'show'. Defaults to list unless id is provided." })),
+			id: Type.Optional(Type.String({ description: "Task ID/prefix for show" })),
+			status: Type.Optional(Type.String({ description: "List filter" })),
+			type: Type.Optional(Type.String({ description: "List filter" })),
+			label: Type.Optional(Type.String({ description: "List filter" })),
+			epic_id: Type.Optional(Type.String({ description: "List filter" })),
+			assigned_to: Type.Optional(Type.String({ description: "List filter, or 'current'" })),
 			all: Type.Optional(Type.Boolean({ description: "Include completed/canceled tasks" })),
 		}),
 	});
 
 	pi.registerTool({
-		...common("show"),
-		name: "task_show",
-		label: "Show Task",
-		description: "Show one persisted project task by ID or unique prefix.",
-		promptSnippet: "Show a persisted project task",
+		...makeCombinedTaskTool(
+			taskWriteAction,
+			config.command,
+			runCommand,
+			config,
+			pi,
+			getCwd,
+			markProgress,
+			normalizeTaskWriteParams,
+		),
+		name: "task_write",
+		label: "Write Tasks",
+		description:
+			"Add/update/delete/accept/reject tasks. Put fields in data: type, body, status, priority, assigned_to ('current' ok), epic_id, epic_title, labels, parent_id, blocked_by. Use clear for assignee/epic/parent/blockers.",
+		promptSnippet: "Write project tasks",
 		parameters: Type.Object({
-			id: Type.String({ description: "Task ID or unique prefix" }),
-		}),
-	});
-
-	pi.registerTool({
-		...common("accept"),
-		name: "task_accept",
-		label: "Accept Task",
-		description: "Accept an in-review feature or bug task via ct task accept.",
-		promptSnippet: "Accept an in-review task",
-		parameters: Type.Object({
-			id: Type.String({ description: "Task ID or unique prefix" }),
-		}),
-	});
-
-	pi.registerTool({
-		...common("reject"),
-		name: "task_reject",
-		label: "Reject Task",
-		description: "Reject an in-review feature or bug task via ct task reject.",
-		promptSnippet: "Reject an in-review task",
-		parameters: Type.Object({
-			id: Type.String({ description: "Task ID or unique prefix" }),
-			note: Type.String({ description: "Required rejection note" }),
-		}),
-	});
-
-	pi.registerTool({
-		...common("update"),
-		name: "task_update",
-		label: "Update Task",
-		description: "Update a persisted project task by ID or unique prefix.",
-		promptSnippet: "Update a persisted project task",
-		parameters: Type.Object({
-			id: Type.String({ description: "Task ID or unique prefix" }),
-			type: Type.Optional(Type.String({ description: "New task type: epic, feature, bug, or chore" })),
-			title: Type.Optional(Type.String({ description: "New title" })),
-			body: Type.Optional(Type.String({ description: "New details/body" })),
-			status: Type.Optional(Type.String({ description: "New status" })),
-			priority: Type.Optional(Type.Number({ description: "New priority; higher shows first" })),
-			assigned_to: Type.Optional(
-				Type.String({
-					description:
-						"Assign to this session/user, or 'current'. Set this before editing when you are working the task now.",
+			op: Type.String({ description: "add, update, delete, accept, or reject" }),
+			id: Type.Optional(Type.String({ description: "Task ID/prefix; required except add" })),
+			title: Type.Optional(Type.String({ description: "Add title shorthand" })),
+			data: Type.Optional(
+				Type.Record(Type.String(), Type.Unknown(), {
+					description: "Add/update fields, e.g. status/priority/assigned_to/epic_id/labels/blocked_by",
 				}),
 			),
-			clear_assignee: Type.Optional(Type.Boolean({ description: "Remove assignee" })),
-			epic_id: Type.Optional(
-				Type.String({ description: "New stable epic/group identifier; required for non-epic tasks" }),
-			),
-			epic_title: Type.Optional(Type.String({ description: "New human-readable epic/group title" })),
-			labels: Type.Optional(
-				Type.Array(Type.String(), {
-					description:
-						"Replace labels with optional cross-cutting filter tokens only; omit redundant project/epic/title/type/parent labels.",
-				}),
-			),
-			clear_epic: Type.Optional(
-				Type.Boolean({ description: "Remove epic/group metadata; only valid for epic tasks" }),
-			),
-			parent_id: Type.Optional(Type.String({ description: "New parent/coordinator task ID or prefix" })),
-			clear_parent: Type.Optional(Type.Boolean({ description: "Remove parent task" })),
-			blocked_by: Type.Optional(
-				Type.Array(Type.String(), {
-					description: "Replace blockers with these task IDs/prefixes",
-				}),
-			),
-			clear_blockers: Type.Optional(Type.Boolean({ description: "Remove all blockers" })),
-		}),
-	});
-
-	pi.registerTool({
-		...common("delete"),
-		name: "task_delete",
-		label: "Delete Task",
-		description: "Delete a persisted project task by ID or unique prefix.",
-		promptSnippet: "Delete a persisted project task",
-		parameters: Type.Object({
-			id: Type.String({ description: "Task ID or unique prefix" }),
+			clear: Type.Optional(Type.Array(Type.String(), { description: "assignee, epic, parent, blockers" })),
+			note: Type.Optional(Type.String({ description: "Reject note" })),
 		}),
 	});
 }
