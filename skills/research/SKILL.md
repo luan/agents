@@ -38,15 +38,15 @@ Create or revise a canonical vault research artifact. Answer **what are we build
 4. **Review**
    - Before the gate, ask at most one compact batch of targeted clarification questions about unresolved scope, stories, terminology, or decisions; do not frame these as approval.
    - Do not ask questions that code/vault exploration can answer. Prefer a concrete default recommendation plus a small choice set.
-   - Then run `vault_plannotator_gate` on the actual vault file with `gateType="research"`. Use the normal long human-review timeout; do not set a short timeout for research gates.
+   - Then run `vault_review(op="gate")` on the actual vault file with `gateType="research"`. Use the normal long human-review timeout; do not set a short timeout for research gates.
    - A handled approved Plannotator gate is sufficient approval to continue; do not ask the user for another approval afterward.
    - If denied with feedback, treat it as content feedback: revise the same file and re-gate.
-   - If unavailable, timed out, closed without result, or otherwise failed closed, treat it as a Plannotator/tool failure, not a content approval failure. Ask whether to retry the Plannotator gate or pause; do not ask the user to approve the research conversationally. Keep `vault_commit` blocked until a handled approved tool result exists.
+   - If unavailable, timed out, closed without result, or otherwise failed closed, treat it as a Plannotator/tool failure, not a content approval failure. Ask whether to retry the Plannotator gate or pause; do not ask the user to approve the research conversationally. Keep `vault_write(op="commit")` blocked until a handled approved tool result exists.
    - Do not try to recover Plannotator feedback through separate artifact comment extraction. Plannotator annotations must arrive through the gate result; if they do not, retry or pause.
 
 5. **Commit**
    - Record compact approval metadata only: gate type, approved, timestamp, target, saved path/review id when available.
-   - Call `vault_commit` only after approval. Never commit before the research gate, including with `--auto`.
+   - Call `vault_write(op="commit")` only after approval. Never commit before the research gate, including with `--auto`.
 
 ## Completion
 

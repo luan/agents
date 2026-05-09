@@ -69,23 +69,13 @@ describe("vault extension registration", () => {
 	test("registers vault and Plannotator bridge tools", () => {
 		const { pi, tools } = fakePi();
 		vaultExtension(pi);
-		expect(tools.map((tool) => tool.name).sort()).toEqual([
-			"vault_commit",
-			"vault_create",
-			"vault_list",
-			"vault_plannotator_gate",
-			"vault_plannotator_review",
-			"vault_read",
-			"vault_related",
-			"vault_search",
-			"vault_status",
-		]);
+		expect(tools.map((tool) => tool.name).sort()).toEqual(["vault_read", "vault_review", "vault_write"]);
 	});
 
 	test("renders like native silent tools", () => {
 		const { pi, tools } = fakePi();
 		vaultExtension(pi);
-		const tool = tools.find((candidate) => candidate.name === "vault_search");
+		const tool = tools.find((candidate) => candidate.name === "vault_read");
 		expect(tool.renderShell).toBe("self");
 		expect(tool.renderCall().render()).toEqual([]);
 		expect(tool.renderResult().render()).toEqual([]);

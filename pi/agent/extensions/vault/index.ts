@@ -265,175 +265,130 @@ function commonTool() {
 	};
 }
 
-export default function vaultExtension(pi: ExtensionAPI) {
-	pi.registerTool({
-		...commonTool(),
-		name: "vault_search",
-		label: "Vault Search",
-		description: "Search blueprints vault artifacts via ct vault search.",
-		parameters: Type.Object({
-			query: Type.String({ description: "Search query" }),
-			type: Type.Optional(Type.String({ description: "Artifact type: all, research, plan, doc" })),
-			archive: Type.Optional(Type.Boolean({ description: "Include archived artifacts" })),
-			allProjects: Type.Optional(Type.Boolean({ description: "Search all projects" })),
-			limit: Type.Optional(Type.Number({ description: "Maximum results to return" })),
-		}),
-		async execute(_id, params: Record<string, unknown>, signal, _onUpdate, ctx) {
+type VaultReadOp = "search" | "list" | "read" | "related" | "status";
+type VaultWriteOp = "create" | "commit";
+type VaultReviewOp = "gate" | "code";
+
+function vaultReadArgs(params: Record<string, unknown>): string[] {
+	const op = String(params.op ?? (params.query ? "search" : params.target ? "read" : "list")) as VaultReadOp;
+	switch (op) {
+		case "search": {
 			const args = ["search", String(params.query ?? "")];
 			args.push(...kindArgs(params.type as ArtifactType | undefined));
 			if (params.archive) args.push("--archive");
-			if (!params.allProjects) {
-				// `ct vault search` defaults to all projects unless project is specified; leave broad for now.
-			}
-			return runVaultJson(ctx.cwd, args, signal);
-		},
-	});
-
-	pi.registerTool({
-		...commonTool(),
-		name: "vault_list",
-		label: "Vault List",
-		description: "List blueprints vault artifacts via ct vault list.",
-		parameters: Type.Object({
-			type: Type.Optional(Type.String({ description: "Artifact type: all, research, plan, doc" })),
-			allProjects: Type.Optional(Type.Boolean({ description: "Show artifacts from all projects" })),
-			includeArchived: Type.Optional(Type.Boolean({ description: "Show archived artifacts" })),
-			includeDives: Type.Optional(Type.Boolean({ description: "Include dive files" })),
-		}),
-		async execute(_id, params: Record<string, unknown>, signal, _onUpdate, ctx) {
+			return args;
+		}
+		case "list": {
 			const args = ["list", ...kindArgs(params.type as ArtifactType | undefined)];
 			if (params.allProjects) args.push("--all");
 			if (params.includeArchived) args.push("--archived");
 			if (params.includeDives) args.push("--include-dives");
-			return runVaultJson(ctx.cwd, args, signal);
-		},
-	});
+			return args;
+		}
+		case "read":
+			return ["read", ...kindArgs(params.type as ArtifactType | undefined), String(params.target ?? "")];
+		case "related": {
+			const args = ["related", String(params.target ?? "")];
+			if (params.archive) args.push("--archive");
+			return args;
+		}
+		case "status":
+			return ["status"];
+		default:
+			throw new Error("vault_read op must be search, list, read, related, or status");
+	}
+}
 
+function vaultWriteArgs(params: Record<string, unknown>): string[] {
+	const op = String(params.op ?? "") as VaultWriteOp;
+	switch (op) {
+		case "create":
+			return buildVaultCreateArgs({
+				type: params.type as ConcreteArtifactType,
+				topic: String(params.topic ?? ""),
+				tags: params.tags as string[] | undefined,
+				source: params.source as string | undefined,
+				dive: params.dive as boolean | undefined,
+			});
+		case "commit":
+			return buildVaultCommitArgs({
+				path: String(params.path ?? ""),
+				message: params.message as string | undefined,
+			});
+		default:
+			throw new Error("vault_write op must be create or commit");
+	}
+}
+
+export default function vaultExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		...commonTool(),
 		name: "vault_read",
 		label: "Vault Read",
-		description: "Read a blueprints vault artifact via ct vault read.",
-		parameters: Type.Object({
-			stemOrPath: Type.String({ description: "Artifact stem or path" }),
-			type: Type.Optional(Type.String({ description: "Artifact type: all, research, plan, doc" })),
-		}),
-		async execute(_id, params: Record<string, unknown>, signal, _onUpdate, ctx) {
-			return runVaultJson(
-				ctx.cwd,
-				["read", ...kindArgs(params.type as ArtifactType | undefined), String(params.stemOrPath)],
-				signal,
-			);
-		},
-	});
-
-	pi.registerTool({
-		...commonTool(),
-		name: "vault_related",
-		label: "Vault Related",
-		description: "Find related blueprints vault artifacts by topic overlap.",
-		parameters: Type.Object({
-			topicOrStem: Type.String({ description: "Topic or artifact stem" }),
-			archive: Type.Optional(Type.Boolean({ description: "Include archived artifacts" })),
-		}),
-		async execute(_id, params: Record<string, unknown>, signal, _onUpdate, ctx) {
-			const args = ["related", String(params.topicOrStem)];
-			if (params.archive) args.push("--archive");
-			return runVaultJson(ctx.cwd, args, signal);
-		},
-	});
-
-	pi.registerTool({
-		...commonTool(),
-		name: "vault_status",
-		label: "Vault Status",
-		description: "Show blueprints vault status.",
-		parameters: Type.Object({}),
-		async execute(_id, _params, signal, _onUpdate, ctx) {
-			return runVaultJson(ctx.cwd, ["status"], signal);
-		},
-	});
-
-	pi.registerTool({
-		...commonTool(),
-		name: "vault_create",
-		label: "Vault Create",
-		description: "Create a new blueprints vault artifact shell and return its path.",
-		parameters: Type.Object({
-			type: Type.String({ description: "Artifact type: research, plan, doc" }),
-			topic: Type.String({ description: "Artifact topic" }),
-			tags: Type.Optional(Type.Array(Type.String(), { description: "Additional tags" })),
-			source: Type.Optional(Type.String({ description: "Source artifact stem" })),
-			dive: Type.Optional(Type.Boolean({ description: "Create a research dive" })),
-		}),
-		async execute(_id, params: Record<string, unknown>, signal, _onUpdate, ctx) {
-			return runVaultJson(
-				ctx.cwd,
-				buildVaultCreateArgs({
-					type: params.type as ConcreteArtifactType,
-					topic: String(params.topic),
-					tags: params.tags as string[] | undefined,
-					source: params.source as string | undefined,
-					dive: params.dive as boolean | undefined,
-				}),
-				signal,
-			);
-		},
-	});
-
-	pi.registerTool({
-		...commonTool(),
-		name: "vault_commit",
-		label: "Vault Commit",
-		description: "Commit and push edits to a blueprints vault artifact.",
-		parameters: Type.Object({
-			path: Type.String({ description: "Vault artifact path" }),
-			message: Type.Optional(Type.String({ description: "Optional commit message" })),
-		}),
-		async execute(_id, params: Record<string, unknown>, signal, _onUpdate, ctx) {
-			return runVaultJson(
-				ctx.cwd,
-				buildVaultCommitArgs({ path: String(params.path), message: params.message as string | undefined }),
-				signal,
-			);
-		},
-	});
-
-	pi.registerTool({
-		...commonTool(),
-		name: "vault_plannotator_gate",
-		label: "Vault Plannotator Gate",
-		description: "Open a blocking Plannotator gate for a markdown/vault artifact. Fails closed unless approved.",
-		parameters: Type.Object({
-			targetPath: Type.String({ description: "Markdown/vault artifact path to gate" }),
-			gateType: Type.String({ description: "Gate type: research, plan, tests, docs, custom" }),
-			title: Type.Optional(Type.String({ description: "Optional review title" })),
-			instructions: Type.Optional(Type.String({ description: "Optional reviewer instructions" })),
-			timeoutMs: Type.Optional(Type.Number({ description: "Timeout in milliseconds; defaults to 1 hour" })),
-		}),
-		async execute(_id, params: Record<string, unknown>) {
-			return runPlannotatorGate(pi, {
-				targetPath: String(params.targetPath),
-				gateType: params.gateType as GateType,
-				title: params.title as string | undefined,
-				instructions: params.instructions as string | undefined,
-				timeoutMs: params.timeoutMs as number | undefined,
-			});
-		},
-	});
-
-	pi.registerTool({
-		...commonTool(),
-		name: "vault_plannotator_review",
-		label: "Vault Plannotator Review",
 		description:
-			"Open a blocking Plannotator code review for the current worktree or PR. Fails closed unless approved.",
+			"Read/search/list vault artifacts. op: search(query), list, read(target), related(target), status. type: all/research/plan/doc.",
 		parameters: Type.Object({
-			diffType: Type.Optional(Type.String({ description: "Diff type: uncommitted, staged, lastCommit, branch" })),
-			prUrl: Type.Optional(Type.String({ description: "Optional pull request URL" })),
-			timeoutMs: Type.Optional(Type.Number({ description: "Timeout in milliseconds; defaults to 1 hour" })),
+			op: Type.Optional(Type.String({ description: "search, list, read, related, or status" })),
+			query: Type.Optional(Type.String({ description: "Search query" })),
+			target: Type.Optional(Type.String({ description: "Artifact stem/path or topic" })),
+			type: Type.Optional(Type.String({ description: "all, research, plan, doc" })),
+			archive: Type.Optional(Type.Boolean({ description: "Include archived results" })),
+			allProjects: Type.Optional(Type.Boolean({ description: "List across projects" })),
+			includeArchived: Type.Optional(Type.Boolean({ description: "List archived" })),
+			includeDives: Type.Optional(Type.Boolean({ description: "List dives" })),
+		}),
+		async execute(_id, params: Record<string, unknown>, signal, _onUpdate, ctx) {
+			return runVaultJson(ctx.cwd, vaultReadArgs(params), signal);
+		},
+	});
+
+	pi.registerTool({
+		...commonTool(),
+		name: "vault_write",
+		label: "Vault Write",
+		description: "Create or commit vault artifacts. op: create(type, topic) or commit(path).",
+		parameters: Type.Object({
+			op: Type.String({ description: "create or commit" }),
+			type: Type.Optional(Type.String({ description: "research, plan, doc" })),
+			topic: Type.Optional(Type.String({ description: "Create topic" })),
+			path: Type.Optional(Type.String({ description: "Commit path" })),
+			message: Type.Optional(Type.String({ description: "Commit message" })),
+			tags: Type.Optional(Type.Array(Type.String(), { description: "Create tags" })),
+			source: Type.Optional(Type.String({ description: "Create source stem" })),
+			dive: Type.Optional(Type.Boolean({ description: "Create research dive" })),
+		}),
+		async execute(_id, params: Record<string, unknown>, signal, _onUpdate, ctx) {
+			return runVaultJson(ctx.cwd, vaultWriteArgs(params), signal);
+		},
+	});
+
+	pi.registerTool({
+		...commonTool(),
+		name: "vault_review",
+		label: "Vault Review",
+		description: "Blocking Plannotator review. op: gate(targetPath, gateType) or code(diffType/prUrl). Fails closed.",
+		parameters: Type.Object({
+			op: Type.String({ description: "gate or code" }),
+			targetPath: Type.Optional(Type.String({ description: "Gate file path" })),
+			gateType: Type.Optional(Type.String({ description: "research, plan, tests, docs, custom" })),
+			diffType: Type.Optional(Type.String({ description: "uncommitted, staged, lastCommit, branch" })),
+			prUrl: Type.Optional(Type.String({ description: "PR URL" })),
+			title: Type.Optional(Type.String({ description: "Gate title" })),
+			instructions: Type.Optional(Type.String({ description: "Gate instructions" })),
+			timeoutMs: Type.Optional(Type.Number({ description: "Timeout ms; default 1h" })),
 		}),
 		async execute(_id, params: Record<string, unknown>, _signal, _onUpdate, ctx) {
+			const op = String(params.op ?? "") as VaultReviewOp;
+			if (op === "gate") {
+				return runPlannotatorGate(pi, {
+					targetPath: String(params.targetPath ?? ""),
+					gateType: params.gateType as GateType,
+					title: params.title as string | undefined,
+					instructions: params.instructions as string | undefined,
+					timeoutMs: params.timeoutMs as number | undefined,
+				});
+			}
+			if (op !== "code") throw new Error("vault_review op must be gate or code");
 			return runPlannotatorReview(pi, ctx, {
 				diffType: params.diffType as "uncommitted" | "staged" | "lastCommit" | "branch" | undefined,
 				prUrl: params.prUrl as string | undefined,
