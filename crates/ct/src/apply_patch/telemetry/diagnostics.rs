@@ -25,6 +25,8 @@ pub struct FailureDiagnostic {
     pub patch_id: String,
     pub patch_sha: String,
     pub failure_kind: String,
+    pub actionability: String,
+    pub next_action: String,
     pub fingerprint: String,
     pub occurrence_count: i64,
     pub novelty: String,
@@ -127,6 +129,8 @@ impl Telemetry {
             patch_id: input.patch_id.clone(),
             patch_sha: input.patch_sha.clone(),
             failure_kind: input.failure_kind.clone(),
+            actionability: actionability_for_kind(&input.failure_kind).to_string(),
+            next_action: next_action_for_kind(&input.failure_kind).to_string(),
             fingerprint,
             occurrence_count,
             novelty,
@@ -198,9 +202,10 @@ pub fn render_report(report: &FailureReport) -> String {
     out.push_str("recent:\n");
     for diagnostic in &report.diagnostics {
         out.push_str(&format!(
-            "- {} {} patch={} telemetry={} occurrences={}\n",
+            "- {} {} actionability={} patch={} telemetry={} occurrences={}\n",
             diagnostic.diagnostic_id,
             diagnostic.failure_kind,
+            diagnostic.actionability,
             diagnostic.patch_id,
             diagnostic.telemetry_id,
             diagnostic.occurrence_count
@@ -223,6 +228,13 @@ pub fn render_report(report: &FailureReport) -> String {
         if let Some(hint) = action_hint(diagnostic) {
             out.push_str(&format!("  fix: {hint}\n"));
         }
+        if let Some(subcause) = context_not_found_subcause(diagnostic) {
+            out.push_str(&format!("  subcause: {subcause}\n"));
+        }
+        out.push_str(&format!(
+            "  next action: {}\n",
+            repair_next_action(diagnostic)
+        ));
         out.push_str(&format!(
             "  draft: ct apply-patch draft show {}\n",
             diagnostic.patch_id
@@ -246,9 +258,11 @@ pub fn render_report(report: &FailureReport) -> String {
 
 pub fn render_diagnostic(diagnostic: &FailureDiagnostic) -> String {
     let mut out = format!(
-        "apply-patch diagnostic {}\nkind: {}\npatch: {}\ntelemetry: {}\nfingerprint: {}\noccurrences: {} ({})\n",
+        "apply-patch diagnostic {}\nkind: {}\nactionability: {}\nnext action: {}\npatch: {}\ntelemetry: {}\nfingerprint: {}\noccurrences: {} ({})\n",
         diagnostic.diagnostic_id,
         diagnostic.failure_kind,
+        diagnostic.actionability,
+        repair_next_action(diagnostic),
         diagnostic.patch_id,
         diagnostic.telemetry_id,
         diagnostic.fingerprint,
@@ -270,10 +284,17 @@ pub fn render_diagnostic(diagnostic: &FailureDiagnostic) -> String {
     if let Some(closest) = closest_match_summary(&diagnostic.message) {
         out.push_str(&format!("closest: {closest}\n"));
     }
+    if let Some(subcause) = context_not_found_subcause(diagnostic) {
+        out.push_str(&format!("subcause: {subcause}\n"));
+    }
     out.push_str(&format!("message: {}\n", diagnostic.message));
     if let Some(hint) = action_hint(diagnostic) {
         out.push_str(&format!("fix: {hint}\n"));
     }
+    out.push_str(&format!(
+        "next action: {}\n",
+        repair_next_action(diagnostic)
+    ));
     out.push_str(&format!(
         "draft: ct apply-patch draft show {}\n",
         diagnostic.patch_id
@@ -299,6 +320,7 @@ fn failure_fingerprint(
 
 fn render_summary(diagnostics: &[FailureDiagnostic]) -> String {
     let mut by_kind = BTreeMap::new();
+    let mut by_actionability = BTreeMap::new();
     let mut by_file = BTreeMap::new();
     let mut bare_anchor_count = 0usize;
     let mut suggested_anchor_count = 0usize;
@@ -307,6 +329,9 @@ fn render_summary(diagnostics: &[FailureDiagnostic]) -> String {
     for diagnostic in diagnostics {
         *by_kind
             .entry(diagnostic.failure_kind.as_str())
+            .or_insert(0usize) += 1;
+        *by_actionability
+            .entry(diagnostic.actionability.as_str())
             .or_insert(0usize) += 1;
         for file in &diagnostic.files {
             *by_file.entry(file.as_str()).or_insert(0usize) += 1;
@@ -324,6 +349,10 @@ fn render_summary(diagnostics: &[FailureDiagnostic]) -> String {
     out.push_str(&format!(
         "  failure kinds: {}\n",
         render_counts(&by_kind, 5)
+    ));
+    out.push_str(&format!(
+        "  actionability: {}\n",
+        render_actionability_counts(&by_actionability)
     ));
     if !by_file.is_empty() {
         out.push_str(&format!("  top files: {}\n", render_counts(&by_file, 5)));
@@ -359,6 +388,22 @@ fn render_counts(counts: &BTreeMap<&str, usize>, limit: usize) -> String {
         .into_iter()
         .take(limit)
         .map(|(name, count)| format!("{name}={count}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn render_actionability_counts(counts: &BTreeMap<&str, usize>) -> String {
+    const ORDER: [&str; 6] = [
+        "safe-to-apply-candidate",
+        "retry-with-repair",
+        "malformed-patch",
+        "guardrail-conflict",
+        "internal/io",
+        "unknown",
+    ];
+    ORDER
+        .into_iter()
+        .filter_map(|name| counts.get(name).map(|count| format!("{name}={count}")))
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -410,6 +455,107 @@ fn action_hint(diagnostic: &FailureDiagnostic) -> Option<String> {
         );
     }
     None
+}
+
+fn repair_next_action(diagnostic: &FailureDiagnostic) -> &str {
+    if let Some(subcause) = context_not_found_subcause(diagnostic) {
+        return context_subcause_next_action(subcause);
+    }
+    &diagnostic.next_action
+}
+
+fn context_not_found_subcause(diagnostic: &FailureDiagnostic) -> Option<&'static str> {
+    if diagnostic.failure_kind != "context_not_found" {
+        return None;
+    }
+    if diagnostic.message.contains("mtime changed")
+        || diagnostic.message.contains("since apply_patch last saw it")
+    {
+        return Some("stale-read");
+    }
+    if diagnostic.message.contains("available files:")
+        || diagnostic.message.contains("No such file")
+        || diagnostic.message.contains("renamed")
+    {
+        return Some("likely-wrong-path");
+    }
+    if closest_match_summary(&diagnostic.message).is_some() {
+        return Some("nearby-moved-line");
+    }
+    if has_bare_anchor(&diagnostic.anchors) {
+        return Some("insufficient-anchor");
+    }
+    if diagnostic_chunk(&diagnostic.message).is_some_and(|chunk| chunk > 0) {
+        return Some("hunk-order-or-cursor");
+    }
+    Some("true-missing-content")
+}
+
+fn context_subcause_next_action(subcause: &str) -> &'static str {
+    match subcause {
+        "stale-read" => "re-read the file and regenerate the patch",
+        "likely-wrong-path" => "verify the file path or re-read the renamed target",
+        "nearby-moved-line" => "refresh context near the closest match or use a line range",
+        "insufficient-anchor" => "add a stable @@ anchor or use Update Scope",
+        "hunk-order-or-cursor" => "reorder or split hunks so each hunk follows file order",
+        "true-missing-content" => "verify the target content still exists before retrying",
+        _ => "refresh context or add a stable anchor before retrying",
+    }
+}
+
+fn actionability_for_kind(kind: &str) -> &'static str {
+    match kind {
+        "anchor_shadows" | "anchor_shadows_first_context" => "safe-to-apply-candidate",
+        "context_not_found" | "ambiguous_context" => "retry-with-repair",
+        "parse"
+        | "parse_envelope"
+        | "parse_empty_update"
+        | "parse_unknown_hunk_header"
+        | "add_missing_plus"
+        | "unprefixed_line"
+        | "missing_chunk_header"
+        | "empty_update"
+        | "unknown_hunk_header" => "malformed-patch",
+        "add_target_exists"
+        | "move_target_exists"
+        | "duplicate_update"
+        | "line_range_mismatch"
+        | "replacement_count_mismatch"
+        | "delete_is_directory"
+        | "target_is_directory"
+        | "read_only_target" => "guardrail-conflict",
+        "io" | "rollback_failed" => "internal/io",
+        _ => "unknown",
+    }
+}
+
+fn next_action_for_kind(kind: &str) -> &'static str {
+    match kind {
+        "add_target_exists" => {
+            return "delete the existing file first or convert the hunk to Update File";
+        }
+        "move_target_exists" => {
+            return "delete or rename the destination first, then retry the move";
+        }
+        "duplicate_update" => return "combine updates for the same file into one Update File hunk",
+        "line_range_mismatch" => return "re-read the target lines or remove the stale line range",
+        "replacement_count_mismatch" => {
+            return "set Expect Replacements to the observed count or narrow the match";
+        }
+        _ => {}
+    }
+    match actionability_for_kind(kind) {
+        "safe-to-apply-candidate" => {
+            "retry with the latest apply-patch; this pattern may now apply safely"
+        }
+        "retry-with-repair" => "refresh context or add a stable anchor before retrying",
+        "malformed-patch" => "fix the patch envelope or hunk grammar, then retry",
+        "guardrail-conflict" => {
+            "express replacement intent explicitly or inspect the retained draft"
+        }
+        "internal/io" => "inspect filesystem state and retry after resolving the IO failure",
+        _ => "inspect the diagnostic and regenerate the patch",
+    }
 }
 
 fn normalized_anchor_fingerprint(anchors: &[String], anchors_json: &str) -> String {
@@ -516,6 +662,7 @@ fn diagnostic_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FailureDiagn
     let ts = row.get(0)?;
     let call_id = row.get(1)?;
     let diagnostic_id: String = row.get(2)?;
+    let failure_kind: String = row.get(5)?;
     let anchors_json: String = row.get(10)?;
     let files_json: String = row.get(11)?;
     let candidates_json: String = row.get(12)?;
@@ -526,7 +673,9 @@ fn diagnostic_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FailureDiagn
         diagnostic_id,
         patch_id: row.get(3)?,
         patch_sha: row.get(4)?,
-        failure_kind: row.get(5)?,
+        actionability: actionability_for_kind(&failure_kind).to_string(),
+        next_action: next_action_for_kind(&failure_kind).to_string(),
+        failure_kind,
         fingerprint: row.get(6)?,
         occurrence_count: row.get(7)?,
         novelty: row.get(8)?,
@@ -549,4 +698,155 @@ fn fingerprint_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FailureFing
         first_seen_ts: row.get(6)?,
         last_seen_ts: row.get(7)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn diagnostic(kind: &str) -> FailureDiagnostic {
+        FailureDiagnostic {
+            diagnostic_id: "apd-1".into(),
+            telemetry_id: "apt-call-1".into(),
+            call_id: 1,
+            patch_id: "patch".into(),
+            patch_sha: "sha".into(),
+            failure_kind: kind.into(),
+            actionability: actionability_for_kind(kind).into(),
+            next_action: next_action_for_kind(kind).into(),
+            fingerprint: "fp".into(),
+            occurrence_count: 1,
+            novelty: "novel".into(),
+            message: "context not found in src/lib.rs at chunk #0".into(),
+            anchors: Vec::new(),
+            files: vec!["src/lib.rs".into()],
+            candidates: serde_json::Value::Null,
+            ts: 0,
+        }
+    }
+
+    #[test]
+    fn render_diagnostic_includes_actionability_category_and_next_action() {
+        let out = render_diagnostic(&diagnostic("add_target_exists"));
+
+        assert!(out.contains("actionability: guardrail-conflict"), "{out}");
+        assert!(
+            out.contains("next action: delete the existing file first or convert the hunk"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn render_report_summary_counts_actionability_categories() {
+        let report = FailureReport {
+            diagnostics: vec![
+                diagnostic("context_not_found"),
+                diagnostic("parse_envelope"),
+                diagnostic("add_target_exists"),
+            ],
+            recurring: Vec::new(),
+        };
+
+        let out = render_report(&report);
+
+        assert!(
+            out.contains(
+                "actionability: retry-with-repair=1, malformed-patch=1, guardrail-conflict=1"
+            ),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn context_not_found_diagnostic_renders_detectable_subcause_repairs() {
+        let cases = [
+            (
+                FailureDiagnostic {
+                    message: "context not found in src/lib.rs at chunk #0\nthis file's mtime changed from 1 to 2 since apply_patch last saw it".into(),
+                    ..diagnostic("context_not_found")
+                },
+                "subcause: stale-read",
+                "next action: re-read the file and regenerate the patch",
+            ),
+            (
+                FailureDiagnostic {
+                    anchors: vec!["bare @@".into()],
+                    ..diagnostic("context_not_found")
+                },
+                "subcause: insufficient-anchor",
+                "next action: add a stable @@ anchor or use Update Scope",
+            ),
+            (
+                FailureDiagnostic {
+                    message: "context not found in src/lib.rs at chunk #0: first expected line was \"old\"\nfile state (closest match: line 8 at edit distance 2):\n".into(),
+                    ..diagnostic("context_not_found")
+                },
+                "subcause: nearby-moved-line",
+                "next action: refresh context near the closest match or use a line range",
+            ),
+            (
+                FailureDiagnostic {
+                    message: "context not found in src/lib.rs at chunk #2: first expected line was \"old\"".into(),
+                    ..diagnostic("context_not_found")
+                },
+                "subcause: hunk-order-or-cursor",
+                "next action: reorder or split hunks so each hunk follows file order",
+            ),
+            (
+                FailureDiagnostic {
+                    message: "context not found in missing.rs at chunk #0\navailable files: src/lib.rs, src/main.rs".into(),
+                    ..diagnostic("context_not_found")
+                },
+                "subcause: likely-wrong-path",
+                "next action: verify the file path or re-read the renamed target",
+            ),
+            (
+                diagnostic("context_not_found"),
+                "subcause: true-missing-content",
+                "next action: verify the target content still exists before retrying",
+            ),
+        ];
+
+        for (diagnostic, subcause, action) in cases {
+            let out = render_diagnostic(&diagnostic);
+            assert!(out.contains(subcause), "{out}");
+            assert!(out.contains(action), "{out}");
+        }
+    }
+
+    #[test]
+    fn guardrail_diagnostics_render_conflict_specific_next_actions() {
+        let cases = [
+            (
+                "add_target_exists",
+                "delete the existing file first or convert the hunk to Update File",
+            ),
+            (
+                "move_target_exists",
+                "delete or rename the destination first, then retry the move",
+            ),
+            (
+                "duplicate_update",
+                "combine updates for the same file into one Update File hunk",
+            ),
+            (
+                "line_range_mismatch",
+                "re-read the target lines or remove the stale line range",
+            ),
+            (
+                "replacement_count_mismatch",
+                "set Expect Replacements to the observed count or narrow the match",
+            ),
+        ];
+
+        for (kind, action) in cases {
+            let out = render_diagnostic(&diagnostic(kind));
+            assert!(out.contains("actionability: guardrail-conflict"), "{out}");
+            assert!(out.contains(&format!("next action: {action}")), "{out}");
+            assert!(
+                out.contains("draft: ct apply-patch draft show patch"),
+                "{out}"
+            );
+        }
+    }
 }
