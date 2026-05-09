@@ -41,6 +41,7 @@ interface Runtime {
 }
 
 interface GuardState {
+	enabled: boolean;
 	progressSerial: number;
 	lastGuardFingerprint?: string;
 	lastGuardProgressSerial?: number;
@@ -2440,9 +2441,13 @@ async function evaluateTaskGuard(
 async function sendTaskGuard(pi: ExtensionAPI, state: GuardState): Promise<void> {
 	const pending = state.pending;
 	state.pending = undefined;
-	if (!pending) return;
+	if (!pending || !state.enabled) return;
 	const decision: TaskGuardDecision | undefined = pending;
 	if (!decision) return;
+	if (!userTextAllowsGuardAutoTurn(state.lastUserText)) {
+		state.lastUserText = undefined;
+		return;
+	}
 	const triggerTurn = shouldTriggerGuardTurn(state, decision);
 	state.lastGuardFingerprint = decision.fingerprint;
 	state.lastGuardProgressSerial = state.progressSerial;
@@ -2480,6 +2485,35 @@ function pausesGuard(text: string): boolean {
 	return /\b(pause|stop|hold|disable)\s+(the\s+)?task guard\b|\btask guard\s+(pause|stop|off|disable)\b/i.test(text);
 }
 
+function setTaskGuardEnabled(state: GuardState, enabled: boolean): void {
+	state.enabled = enabled;
+	state.pending = undefined;
+	state.lastUserText = undefined;
+	state.autoLoopTaskId = undefined;
+	state.autoLoopTurns = 0;
+	if (!enabled) state.pauseResponses = 0;
+}
+
+function taskGuardCommandMessage(state: GuardState, args: string): { message: string; type: "info" | "warning" } {
+	const mode = args.trim().toLowerCase();
+	if (!mode || mode === "toggle") {
+		setTaskGuardEnabled(state, !state.enabled);
+		return { message: `Task guard ${state.enabled ? "enabled" : "disabled"} for this session.`, type: "info" };
+	}
+	if (["on", "enable", "enabled"].includes(mode)) {
+		setTaskGuardEnabled(state, true);
+		return { message: "Task guard enabled for this session.", type: "info" };
+	}
+	if (["off", "disable", "disabled"].includes(mode)) {
+		setTaskGuardEnabled(state, false);
+		return { message: "Task guard disabled for this session.", type: "info" };
+	}
+	if (mode === "status") {
+		return { message: `Task guard is ${state.enabled ? "enabled" : "disabled"} for this session.`, type: "info" };
+	}
+	return { message: "Usage: /task-guard [on|off|toggle|status]", type: "warning" };
+}
+
 function fileChangingResult(result: unknown): boolean {
 	const details = (result as { details?: { filesChanged?: unknown; fileDiffs?: unknown } } | undefined)?.details;
 	return (
@@ -2496,7 +2530,7 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 
 	const runCommand = runtime.runCommand ?? defaultRunCommand;
 	let cwd = process.cwd();
-	const guardState: GuardState = { progressSerial: 0, autoLoopTurns: 0, pauseResponses: 0 };
+	const guardState: GuardState = { enabled: true, progressSerial: 0, autoLoopTurns: 0, pauseResponses: 0 };
 	const getCwd = () => cwd;
 	const markProgress = () => {
 		guardState.progressSerial++;
@@ -2504,6 +2538,7 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 
 	pi.on("session_start", async (_event, ctx) => {
 		cwd = ctx.cwd;
+		setTaskGuardEnabled(guardState, true);
 		if (config.hud.enabled) {
 			await updateTaskHud(ctx, pi, config.command, runCommand, config).catch((error) => {
 				ctx.ui.notify?.(
@@ -2537,7 +2572,12 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 			if (pausesGuard(text)) guardState.pauseResponses = 1;
 			return undefined;
 		}
-		if (message?.role !== "assistant" || messageHasToolCall(message) || !messageText(message).trim()) {
+		if (
+			!guardState.enabled ||
+			message?.role !== "assistant" ||
+			messageHasToolCall(message) ||
+			!messageText(message).trim()
+		) {
 			return undefined;
 		}
 		if (guardState.pauseResponses > 0) {
@@ -2569,6 +2609,14 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 			await showTaskBoard(ctx, pi, config.command, runCommand, config).catch((error) => {
 				ctx.ui.notify?.(`Task board failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
 			});
+		},
+	});
+
+	pi.registerCommand?.("task-guard", {
+		description: "Toggle task guard for this session",
+		handler: async (args: string, ctx: ExtensionContext) => {
+			const result = taskGuardCommandMessage(guardState, args);
+			ctx.ui.notify?.(result.message, result.type);
 		},
 	});
 
