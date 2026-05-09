@@ -5,16 +5,25 @@ import { join } from "node:path";
 import { activeCodexAppsToolNames, discoverCodexAppsTools } from "./codex-apps.ts";
 import { isCodexWebSocketError, normalizeCodexWebSocketError as normalizeCodexWebSocketErrorMessage } from "./index.ts";
 import {
+	createWebSearchTool,
 	getOpenAICodexLatestImagePath,
+	renderWebSearchMessage,
 	rewriteNativeImageGenerationTool,
 	rewriteNativeWebSearchTool,
 	saveOpenAICodexGeneratedImage,
+	supportsNativeWebSearch,
+	WEB_SEARCH_TOOL_NAME,
 } from "./native-tools.ts";
 
 const codexModel = {
 	provider: "openai-codex",
 	id: "gpt-5.5",
 	input: ["text", "image"],
+};
+
+const testTheme = {
+	fg: (role: string, text: string) => `<${role}>${text}</${role}>`,
+	bold: (text: string) => `<bold>${text}</bold>`,
 };
 
 test("rewrites Codex web_search function tool to native Responses tool", () => {
@@ -34,6 +43,80 @@ test("rewrites Codex web_search function tool to native Responses tool", () => {
 		search_content_types: ["text", "image"],
 	});
 	expect(rewritten.tools[1]).toEqual(payload.tools[1]);
+});
+
+test("creates native web_search placeholder tool for openai-codex", () => {
+	const tool = createWebSearchTool();
+
+	expect(tool.name).toBe(WEB_SEARCH_TOOL_NAME);
+	expect(tool.label).toBe(WEB_SEARCH_TOOL_NAME);
+	expect(tool.promptSnippet).toBe(tool.description);
+	expect((tool.parameters as { type?: unknown }).type).toBe("object");
+	expect((tool.parameters as { additionalProperties?: unknown }).additionalProperties).toBe(false);
+	expect("properties" in (tool.parameters as object)).toBe(false);
+	expect(tool.prepareArguments?.({ query: "ignored" })).toEqual({});
+	expect(supportsNativeWebSearch(codexModel as never)).toBe(true);
+	expect(supportsNativeWebSearch({ provider: "openai", id: "gpt-5.5" } as never)).toBe(false);
+});
+
+test("renders web search activity as a distinct compact search call", () => {
+	const component = renderWebSearchMessage(
+		{
+			content: "Web search results\nQueries:\n- puppies",
+			details: {
+				searches: [
+					{
+						callId: "search_1",
+						queries: ["puppies"],
+						sources: [
+							{ title: "American Kennel Club", url: "https://www.akc.org/puppies/" },
+							{ title: "Wikipedia", url: "https://en.wikipedia.org/wiki/Puppy" },
+						],
+					},
+				],
+			},
+		},
+		{ expanded: false },
+		testTheme,
+	);
+
+	const rendered = component.render(1000).join("\n").trimEnd();
+	expect(rendered).toBe(
+		"<success>•</success> <bold>Web Searched</bold> <muted>puppies</muted><dim> · </dim><accent>2 results:</accent> <muted>American Kennel Club, Wikipedia</muted>",
+	);
+	expect(rendered).not.toContain("<bold>Explored</bold>");
+	expect(rendered).not.toContain("customMessageBg");
+	expect(rendered).not.toContain("Searched the web once");
+});
+
+test("renders at most five web search result labels when collapsed", () => {
+	const component = renderWebSearchMessage(
+		{
+			content: "",
+			details: {
+				searches: [
+					{
+						callId: "search_1",
+						queries: ["puppies"],
+						sources: [
+							{ title: "One", url: "https://example.com/1" },
+							{ title: "Two", url: "https://example.com/2" },
+							{ title: "Three", url: "https://example.com/3" },
+							{ title: "Four", url: "https://example.com/4" },
+							{ title: "Five", url: "https://example.com/5" },
+							{ title: "Six", url: "https://example.com/6" },
+						],
+					},
+				],
+			},
+		},
+		{ expanded: false },
+		testTheme,
+	);
+
+	const rendered = component.render(1000).join("\n").trimEnd();
+	expect(rendered).toContain("<accent>6 results:</accent> <muted>One, Two, Three, Four, Five, +1 more</muted>");
+	expect(rendered).not.toContain("Six");
 });
 
 test("rewrites image_generation only for image-capable openai-codex models", () => {
