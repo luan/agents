@@ -145,8 +145,7 @@ fn enriched_error_to_tool(
         | ApplyPatchError::LineRangeMismatch { .. }
         | ApplyPatchError::ReplacementCountMismatch { .. }
         | ApplyPatchError::ContextNotFound { .. }
-        | ApplyPatchError::AmbiguousContext { .. }
-        | ApplyPatchError::AnchorShadowsFirstContext { .. } => {
+        | ApplyPatchError::AmbiguousContext { .. } => {
             ErrorData::invalid_params(message, repair_data(repair_block))
         }
         ApplyPatchError::RollbackFailed { .. } => {
@@ -188,11 +187,6 @@ fn enrichable_context(err: &ApplyPatchError) -> Option<(&str, usize, Option<&str
         ApplyPatchError::LineRangeMismatch { path, chunk, .. } => {
             Some((path.as_str(), *chunk, None))
         }
-        ApplyPatchError::AnchorShadowsFirstContext {
-            path,
-            chunk,
-            anchor,
-        } => Some((path.as_str(), *chunk, Some(anchor.as_str()))),
         _ => None,
     }
 }
@@ -412,20 +406,6 @@ Set `dry_run` to true to preview the unified diff without writing."#
                         &patch_sha,
                         &input.patch,
                     );
-                }
-                if !dry_run {
-                    let mut store =
-                        crate::lens::LensStore::open_for_project(&cwd).map_err(|e| {
-                            ErrorData::internal_error(format!("open lens store: {e}"), None)
-                        })?;
-                    store
-                        .record_applied_changes(None, "ct_mcp_apply_patch", &outcome.changes)
-                        .map_err(|e| {
-                            ErrorData::internal_error(
-                                format!("record patch read coverage: {e}"),
-                                None,
-                            )
-                        })?;
                 }
                 let files: Vec<FileChangeOut> =
                     outcome.changes.iter().map(|c| to_out(c, dry_run)).collect();
