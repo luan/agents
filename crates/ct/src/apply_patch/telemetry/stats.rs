@@ -45,12 +45,14 @@ pub fn run_all_projects(days: i64) -> Result<String, TelemetryError> {
         return Ok("(no telemetry data — no project databases found)".into());
     }
 
-    let mut reports = Vec::new();
+    let mut projects = Vec::new();
     for name in names {
         let tel = Telemetry::open(&name)?;
-        reports.push(run(&tel, &name, days)?);
+        let cutoff = now_ms() - days * 86_400_000;
+        let summary = summarize(&tel, cutoff)?;
+        projects.push((name, summary));
     }
-    Ok(reports.join("\n---\n\n"))
+    Ok(render_all_projects(days, projects))
 }
 
 fn projects_root() -> Result<PathBuf, TelemetryError> {
@@ -59,6 +61,7 @@ fn projects_root() -> Result<PathBuf, TelemetryError> {
     Ok(base.join("ct").join("projects"))
 }
 
+#[derive(Clone)]
 struct Summary {
     total_calls: i64,
     successes: i64,
@@ -69,6 +72,7 @@ struct Summary {
     threshold_met: bool,
 }
 
+#[derive(Clone)]
 struct AnchorRow {
     file_path: String,
     anchor_text: Option<String>,
@@ -252,6 +256,77 @@ fn summarize(tel: &Telemetry, cutoff: i64) -> Result<Summary, TelemetryError> {
 fn render(project_name: &str, days: i64, s: &Summary) -> String {
     let mut out = String::new();
     out.push_str(&format!("project: {project_name}  (last {days} days)\n"));
+    render_summary_body(&mut out, s);
+    out
+}
+
+fn render_all_projects(days: i64, projects: Vec<(String, Summary)>) -> String {
+    let mut named = Vec::new();
+    let mut sandbox = Vec::new();
+    for (name, summary) in &projects {
+        if is_sandbox_project(name) {
+            sandbox.push(summary);
+        } else {
+            named.push(summary);
+        }
+    }
+
+    let mut reports = Vec::new();
+    reports.push(render_cohort("named projects", days, named.as_slice()));
+    reports.push(render_cohort(
+        "_tmp*/sandbox projects",
+        days,
+        sandbox.as_slice(),
+    ));
+    reports.extend(
+        projects
+            .iter()
+            .map(|(name, summary)| render(name, days, summary)),
+    );
+    reports.join("\n---\n\n")
+}
+
+fn is_sandbox_project(name: &str) -> bool {
+    name.starts_with("_tmp") || name == "_"
+}
+
+fn render_cohort(label: &str, days: i64, summaries: &[&Summary]) -> String {
+    let summary = combine_summaries(summaries);
+    let mut out = String::new();
+    out.push_str(&format!("cohort: {label}  (last {days} days)\n"));
+    out.push_str(&format!("  projects: {}\n", summaries.len()));
+    render_summary_body(&mut out, &summary);
+    out
+}
+
+fn combine_summaries(summaries: &[&Summary]) -> Summary {
+    let mut error_counts: HashMap<String, i64> = HashMap::new();
+    let mut combined = Summary {
+        total_calls: 0,
+        successes: 0,
+        errors: 0,
+        error_kinds: Vec::new(),
+        top_anchors: Vec::new(),
+        transitions: 0,
+        threshold_met: false,
+    };
+    for summary in summaries {
+        combined.total_calls += summary.total_calls;
+        combined.successes += summary.successes;
+        combined.errors += summary.errors;
+        combined.transitions += summary.transitions;
+        for (kind, count) in &summary.error_kinds {
+            *error_counts.entry(kind.clone()).or_default() += count;
+        }
+    }
+    let mut error_kinds: Vec<(String, i64)> = error_counts.into_iter().collect();
+    error_kinds.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    combined.error_kinds = error_kinds;
+    combined.threshold_met = combined.transitions >= 20;
+    combined
+}
+
+fn render_summary_body(out: &mut String, s: &Summary) {
     let rate = if s.total_calls > 0 {
         (s.successes as f64 * 100.0 / s.total_calls as f64).round() as i64
     } else {
@@ -271,6 +346,16 @@ fn render(project_name: &str, days: i64, s: &Summary) -> String {
             .map(|(k, n)| format!("{k} ({n})"))
             .collect();
         out.push_str(&format!("  error kinds: {}\n", parts.join(", ")));
+    }
+    let category_counts = error_category_counts(&s.error_kinds);
+    if category_counts.is_empty() {
+        out.push_str("  error categories: (none)\n");
+    } else {
+        let parts: Vec<String> = category_counts
+            .iter()
+            .map(|(category, count)| format!("{category} ({count})"))
+            .collect();
+        out.push_str(&format!("  error categories: {}\n", parts.join(", ")));
     }
 
     if s.top_anchors.is_empty() {
@@ -298,7 +383,52 @@ fn render(project_name: &str, days: i64, s: &Summary) -> String {
         "  transitions observed: {} ({status})\n",
         s.transitions
     ));
-    out
+}
+
+fn error_category_counts(error_kinds: &[(String, i64)]) -> Vec<(&'static str, i64)> {
+    const ORDER: [&str; 5] = [
+        "matcher/recoverable",
+        "parser/malformed",
+        "guardrail/conflict",
+        "filesystem/internal",
+        "unknown",
+    ];
+    let mut counts: HashMap<&'static str, i64> = HashMap::new();
+    for (kind, count) in error_kinds {
+        *counts.entry(error_category(kind)).or_default() += count;
+    }
+    ORDER
+        .into_iter()
+        .filter_map(|category| counts.get(category).map(|count| (category, *count)))
+        .collect()
+}
+
+fn error_category(kind: &str) -> &'static str {
+    match kind {
+        "context_not_found"
+        | "ambiguous_context"
+        | "anchor_shadows"
+        | "anchor_shadows_first_context" => "matcher/recoverable",
+        "parse"
+        | "parse_envelope"
+        | "parse_empty_update"
+        | "parse_unknown_hunk_header"
+        | "add_missing_plus"
+        | "unprefixed_line"
+        | "missing_chunk_header"
+        | "empty_update"
+        | "unknown_hunk_header" => "parser/malformed",
+        "add_target_exists"
+        | "move_target_exists"
+        | "duplicate_update"
+        | "line_range_mismatch"
+        | "replacement_count_mismatch"
+        | "delete_is_directory"
+        | "target_is_directory"
+        | "read_only_target" => "guardrail/conflict",
+        "io" | "rollback_failed" => "filesystem/internal",
+        _ => "unknown",
+    }
 }
 
 fn now_ms() -> i64 {
@@ -430,5 +560,62 @@ mod tests {
         seed_call(&t, "success", None);
         let out = run(&t, "test", 30).unwrap();
         assert!(out.contains("transitions observed: 1"), "report was: {out}");
+    }
+
+    #[test]
+    fn all_projects_report_starts_with_named_and_sandbox_cohorts() {
+        let named = Summary {
+            total_calls: 4,
+            successes: 2,
+            errors: 2,
+            error_kinds: vec![
+                ("context_not_found".into(), 1),
+                ("add_target_exists".into(), 1),
+            ],
+            top_anchors: Vec::new(),
+            transitions: 0,
+            threshold_met: false,
+        };
+        let sandbox = Summary {
+            total_calls: 1,
+            successes: 0,
+            errors: 1,
+            error_kinds: vec![("parse_envelope".into(), 1)],
+            top_anchors: Vec::new(),
+            transitions: 0,
+            threshold_met: false,
+        };
+
+        let out = render_all_projects(
+            30,
+            vec![
+                ("agents".to_string(), named),
+                ("_tmpabc".to_string(), sandbox),
+            ],
+        );
+
+        let named_idx = out.find("cohort: named projects").unwrap();
+        let sandbox_idx = out.find("cohort: _tmp*/sandbox projects").unwrap();
+        let project_idx = out.find("project: agents").unwrap();
+        assert!(named_idx < sandbox_idx, "report was: {out}");
+        assert!(sandbox_idx < project_idx, "report was: {out}");
+        let named_section = &out[named_idx..sandbox_idx];
+        assert!(
+            named_section.contains("calls: 4   successes: 2 (50%)   errors: 2"),
+            "report was: {out}"
+        );
+        let sandbox_section = &out[sandbox_idx..project_idx];
+        assert!(
+            sandbox_section.contains("calls: 1   successes: 0 (0%)   errors: 1"),
+            "report was: {out}"
+        );
+        assert!(
+            out.contains("error categories: matcher/recoverable (1), guardrail/conflict (1)"),
+            "report was: {out}"
+        );
+        assert!(
+            out.contains("error categories: parser/malformed (1)"),
+            "report was: {out}"
+        );
     }
 }
