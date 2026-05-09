@@ -12,7 +12,7 @@ use super::diff::unified_diff;
 use super::parser::Hunk;
 use super::parser::UpdateFileChunk;
 use super::parser::UpdateScopeChunk;
-use super::parser::parse_patch;
+use super::parser::parse_patch_with_repairs;
 use super::scope::ScopeResolveError;
 use super::seek_sequence::MatchQuality;
 use super::seek_sequence::SeekOutcome;
@@ -24,8 +24,6 @@ pub struct FileChange {
     pub path: String,
     #[serde(rename = "type")]
     pub kind: ChangeType,
-    #[serde(skip)]
-    pub old_hash: Option<String>,
     pub additions: usize,
     pub deletions: usize,
     pub unified_diff: String,
@@ -160,14 +158,6 @@ pub enum ApplyPatchError {
         expected: usize,
         actual: usize,
     },
-    #[error(
-        "in {path} chunk #{chunk}: anchor `@@ {anchor}` also appears as the first context line. The anchor is consumed and the pattern search starts on the line *after* it — drop either the anchor or that first context line."
-    )]
-    AnchorShadowsFirstContext {
-        path: String,
-        chunk: usize,
-        anchor: String,
-    },
     #[error("io error ({path}): {source}")]
     Io {
         path: String,
@@ -225,10 +215,6 @@ enum ChunkFailure {
         end: usize,
         near_miss: Option<String>,
     },
-    AnchorShadowsFirstContext {
-        chunk_index: usize,
-        anchor: String,
-    },
 }
 
 #[derive(Debug)]
@@ -270,8 +256,18 @@ pub fn apply(patch: &str, cwd: &Path, dry_run: bool) -> Result<ApplyOutcome, Box
 }
 
 pub fn plan(patch: &str, cwd: &Path) -> Result<ApplyOutcome, Box<ApplyFailure>> {
-    let hunks =
-        parse_patch(patch).map_err(|e| Box::<ApplyFailure>::from(ApplyPatchError::from(e)))?;
+    let (hunks, parse_repairs) = parse_patch_with_repairs(patch)
+        .map_err(|e| Box::<ApplyFailure>::from(ApplyPatchError::from(e)))?;
+    let mut attempts: Vec<AnchorAttempt> = parse_repairs
+        .iter()
+        .map(|repair| AnchorAttempt {
+            file_path: "<patch>".to_string(),
+            chunk_index: 0,
+            anchor_text: Some(repair.anchor_text.to_string()),
+            success: true,
+            fuzzy_tier: Some(repair.fuzzy_tier.to_string()),
+        })
+        .collect();
     let cwd_canon = cwd.canonicalize().map_err(|source| {
         Box::<ApplyFailure>::from(ApplyPatchError::Io {
             path: cwd.display().to_string(),
@@ -303,7 +299,6 @@ pub fn plan(patch: &str, cwd: &Path) -> Result<ApplyOutcome, Box<ApplyFailure>> 
     // atomic replace.
     let mut pending_deletes: HashSet<PathBuf> = HashSet::new();
     let mut changes = Vec::with_capacity(hunks.len());
-    let mut attempts: Vec<AnchorAttempt> = Vec::new();
     let mut fingerprints: Vec<(String, Fingerprint)> = Vec::new();
     let mut processed_scope_updates: HashSet<PathBuf> = HashSet::new();
 
@@ -336,7 +331,6 @@ pub fn plan(patch: &str, cwd: &Path) -> Result<ApplyOutcome, Box<ApplyFailure>> 
                 changes.push(FileChange {
                     path: rel,
                     kind: ChangeType::Add,
-                    old_hash: None,
                     additions,
                     deletions,
                     unified_diff: diff_text,
@@ -361,7 +355,6 @@ pub fn plan(patch: &str, cwd: &Path) -> Result<ApplyOutcome, Box<ApplyFailure>> 
                 let rel = display_rel(&path);
                 let (original, fp) =
                     read_file(&abs, &rel).map_err(|e| fail(e, &attempts, &fingerprints))?;
-                let old_hash = fp.sha1.clone();
                 fingerprints.push((rel.clone(), fp));
                 let old_line_count = original.lines().count().max(1);
                 let (diff_text, additions, deletions) = unified_diff(&rel, &original, "");
@@ -369,7 +362,6 @@ pub fn plan(patch: &str, cwd: &Path) -> Result<ApplyOutcome, Box<ApplyFailure>> 
                 changes.push(FileChange {
                     path: rel,
                     kind: ChangeType::Delete,
-                    old_hash: Some(old_hash),
                     additions,
                     deletions,
                     unified_diff: diff_text,
@@ -398,7 +390,6 @@ pub fn plan(patch: &str, cwd: &Path) -> Result<ApplyOutcome, Box<ApplyFailure>> 
                 let rel = display_rel(&path);
                 let (original, fp) =
                     read_file(&abs, &rel).map_err(|e| fail(e, &attempts, &fingerprints))?;
-                let old_hash = fp.sha1.clone();
                 fingerprints.push((rel.clone(), fp));
                 let (new_content, fuzzy_hunks, post_apply_regions, line_changes) =
                     derive_new_contents(&original, &chunks, &rel, &mut attempts).map_err(
@@ -425,7 +416,6 @@ pub fn plan(patch: &str, cwd: &Path) -> Result<ApplyOutcome, Box<ApplyFailure>> 
                         changes.push(FileChange {
                             path: rel,
                             kind: ChangeType::Move,
-                            old_hash: Some(old_hash),
                             additions,
                             deletions,
                             unified_diff: diff_text,
@@ -442,7 +432,6 @@ pub fn plan(patch: &str, cwd: &Path) -> Result<ApplyOutcome, Box<ApplyFailure>> 
                         changes.push(FileChange {
                             path: rel,
                             kind: ChangeType::Update,
-                            old_hash: Some(old_hash),
                             additions,
                             deletions,
                             unified_diff: diff_text,
@@ -466,7 +455,6 @@ pub fn plan(patch: &str, cwd: &Path) -> Result<ApplyOutcome, Box<ApplyFailure>> 
                 let rel = display_rel(&path);
                 let (original, fp) =
                     read_file(&abs, &rel).map_err(|e| fail(e, &attempts, &fingerprints))?;
-                let old_hash = fp.sha1.clone();
                 fingerprints.push((rel.clone(), fp));
                 let original_lines = lines_without_trailing_empty(&original);
                 let replacements =
@@ -494,7 +482,6 @@ pub fn plan(patch: &str, cwd: &Path) -> Result<ApplyOutcome, Box<ApplyFailure>> 
                 changes.push(FileChange {
                     path: rel,
                     kind: ChangeType::Update,
-                    old_hash: Some(old_hash),
                     additions,
                     deletions,
                     unified_diff: diff_text,
@@ -514,7 +501,6 @@ pub fn plan(patch: &str, cwd: &Path) -> Result<ApplyOutcome, Box<ApplyFailure>> 
                 let rel = display_rel(&path);
                 let (original, fp) =
                     read_file(&abs, &rel).map_err(|e| fail(e, &attempts, &fingerprints))?;
-                let old_hash = fp.sha1.clone();
                 fingerprints.push((rel.clone(), fp));
                 let chunks = scope_updates
                     .get(&abs)
@@ -527,7 +513,6 @@ pub fn plan(patch: &str, cwd: &Path) -> Result<ApplyOutcome, Box<ApplyFailure>> 
                 changes.push(FileChange {
                     path: rel,
                     kind: ChangeType::Update,
-                    old_hash: Some(old_hash),
                     additions,
                     deletions,
                     unified_diff: diff_text,
@@ -1089,8 +1074,12 @@ fn compute_replacements(
     let mut replacements: Replacements = Vec::new();
     let mut line_index: usize = 0;
     let mut fuzzy_hunks: Vec<HunkFuzzy> = Vec::new();
+    let mut skip_until: usize = 0;
 
     for (chunk_index, chunk) in chunks.iter().enumerate() {
+        if chunk_index < skip_until {
+            continue;
+        }
         let mut chunk_worst = MatchQuality::Exact;
         if let Some((start, end)) = chunk.line_range {
             let start_zero = start.saturating_sub(1);
@@ -1137,30 +1126,14 @@ fn compute_replacements(
         }
         // Walk every stacked anchor in order. Each `@@ <line>` advances the
         // file cursor past its match before the next anchor (or the body
-        // pattern) is searched. The last anchor in the stack is the one
-        // immediately before the body — that's the one used for the
-        // anchor-shadow check.
-        if let Some(last_anchor) = chunk.change_contexts.last()
-            && chunk.old_lines.first() == Some(last_anchor)
-        {
-            // Catch the anchor-shadow footgun *before* seeking: the anchor
-            // consumes its line and the pattern search resumes below, so if
-            // the first pattern line is the same text it will either miss
-            // entirely or (worse) match a later duplicate. Specific error
-            // beats a confusing "context not found".
-            attempts.push(AnchorAttempt {
-                file_path: file_rel.to_string(),
-                chunk_index,
-                anchor_text: Some(last_anchor.clone()),
-                success: false,
-                fuzzy_tier: None,
-            });
-            return Err(ChunkFailure::AnchorShadowsFirstContext {
-                chunk_index,
-                anchor: last_anchor.clone(),
-            });
-        }
-        for ctx_line in &chunk.change_contexts {
+        // pattern) is searched. If the final anchor is also the first body
+        // line, keep the cursor on that anchor so the hunk can replace from
+        // the anchored line itself.
+        let last_anchor_starts_body = chunk
+            .change_contexts
+            .last()
+            .is_some_and(|last_anchor| chunk.old_lines.first() == Some(last_anchor));
+        for (context_index, ctx_line) in chunk.change_contexts.iter().enumerate() {
             match seek_sequence(
                 original_lines,
                 std::slice::from_ref(ctx_line),
@@ -1168,7 +1141,12 @@ fn compute_replacements(
                 false,
             ) {
                 SeekOutcome::Unique { idx, quality } => {
-                    line_index = idx + 1;
+                    let is_last_anchor = context_index + 1 == chunk.change_contexts.len();
+                    line_index = if is_last_anchor && last_anchor_starts_body {
+                        idx
+                    } else {
+                        idx + 1
+                    };
                     chunk_worst = worse_of(chunk_worst, quality);
                     attempts.push(AnchorAttempt {
                         file_path: file_rel.to_string(),
@@ -1278,7 +1256,31 @@ fn compute_replacements(
                 line_index = idx + pattern.len();
                 chunk_worst = worse_of(chunk_worst, quality);
             }
-            SeekOutcome::Ambiguous { matches, .. } => {
+            SeekOutcome::Ambiguous { matches, quality } => {
+                if let Some(plan) = plan_repeated_bare_hunks(
+                    original_lines,
+                    chunks,
+                    chunk_index,
+                    &matches,
+                    quality,
+                    pattern,
+                    new_slice,
+                ) {
+                    attempts.extend((chunk_index..chunk_index + plan.consumed).map(|idx| {
+                        AnchorAttempt {
+                            file_path: file_rel.to_string(),
+                            chunk_index: idx,
+                            anchor_text: None,
+                            success: true,
+                            fuzzy_tier: Some(quality.as_str().to_string()),
+                        }
+                    }));
+                    replacements.extend(plan.replacements);
+                    fuzzy_hunks.extend(plan.fuzzy_hunks);
+                    line_index = plan.next_line_index;
+                    skip_until = chunk_index + plan.consumed;
+                    continue;
+                }
                 attempts.push(AnchorAttempt {
                     file_path: file_rel.to_string(),
                     chunk_index,
@@ -1334,6 +1336,80 @@ fn compute_replacements(
 
     replacements.sort_by_key(|r| r.start);
     Ok((replacements, fuzzy_hunks))
+}
+
+struct RepeatedBareHunkPlan {
+    replacements: Vec<Replacement>,
+    fuzzy_hunks: Vec<HunkFuzzy>,
+    consumed: usize,
+    next_line_index: usize,
+}
+
+fn plan_repeated_bare_hunks(
+    original_lines: &[String],
+    chunks: &[UpdateFileChunk],
+    first_index: usize,
+    matches: &[usize],
+    quality: MatchQuality,
+    pattern: &[String],
+    new_slice: &[String],
+) -> Option<RepeatedBareHunkPlan> {
+    let first = chunks.get(first_index)?;
+    if !is_plain_bare_hunk(first) || pattern.is_empty() {
+        return None;
+    }
+
+    let consumed = chunks[first_index..]
+        .iter()
+        .take_while(|chunk| {
+            is_plain_bare_hunk(chunk)
+                && chunk.old_lines == first.old_lines
+                && chunk.new_lines == first.new_lines
+        })
+        .count();
+    if consumed < 2 || consumed != matches.len() {
+        return None;
+    }
+    if matches
+        .windows(2)
+        .any(|pair| pair[1] < pair[0] + pattern.len())
+    {
+        return None;
+    }
+
+    let replacements = matches
+        .iter()
+        .copied()
+        .take(consumed)
+        .enumerate()
+        .map(|(offset, start)| Replacement {
+            chunk: first_index + offset,
+            start,
+            old: pattern.to_vec(),
+            new: preserve_matched_context(original_lines, start, pattern, new_slice),
+        })
+        .collect::<Vec<_>>();
+    let fuzzy_hunks = if quality == MatchQuality::Exact {
+        Vec::new()
+    } else {
+        (first_index..first_index + consumed)
+            .map(|chunk| HunkFuzzy {
+                chunk,
+                tier: quality,
+            })
+            .collect()
+    };
+    let next_line_index = matches.last().copied().unwrap_or(0) + pattern.len();
+    Some(RepeatedBareHunkPlan {
+        replacements,
+        fuzzy_hunks,
+        consumed,
+        next_line_index,
+    })
+}
+
+fn is_plain_bare_hunk(chunk: &UpdateFileChunk) -> bool {
+    chunk.change_contexts.is_empty() && chunk.line_range.is_none() && !chunk.is_end_of_file
 }
 
 fn derive_new_contents_from_scope_chunks(
@@ -1768,14 +1844,6 @@ fn chunk_failure_to_error(fail: ChunkFailure, path: &str) -> ApplyPatchError {
             end,
             near_miss,
         },
-        ChunkFailure::AnchorShadowsFirstContext {
-            chunk_index,
-            anchor,
-        } => ApplyPatchError::AnchorShadowsFirstContext {
-            path: path.to_string(),
-            chunk: chunk_index,
-            anchor,
-        },
     }
 }
 
@@ -1945,6 +2013,29 @@ mod tests {
         assert_eq!(c.new_content.as_deref(), Some("hi\nworld\n"));
         // Filesystem untouched by plan alone.
         assert!(!tmp.path().join("hello.txt").exists());
+    }
+
+    #[test]
+    fn plan_reports_embedded_envelope_normalization_as_repair_metadata() {
+        let tmp = TempDir::new().unwrap();
+        let patch = concat!(
+            "```patch\n",
+            "*** Begin Patch\n",
+            "*** Add File: hello.txt\n",
+            "+hi\n",
+            "*** End Patch\n",
+            "```\n",
+        );
+
+        let outcome = plan(patch, tmp.path()).unwrap();
+
+        assert_eq!(outcome.changes[0].path, "hello.txt");
+        assert!(outcome.attempts.iter().any(|attempt| {
+            attempt.file_path == "<patch>"
+                && attempt.success
+                && attempt.fuzzy_tier.as_deref() == Some("repair:embedded_envelope")
+                && attempt.anchor_text.as_deref() == Some("unique embedded apply-patch envelope")
+        }));
     }
 
     #[test]
@@ -2251,17 +2342,15 @@ mod tests {
     }
 
     #[test]
-    fn anchor_shadowing_first_context_returns_specific_error() {
+    fn anchor_matching_first_old_line_applies_from_anchor() {
         let tmp = TempDir::new().unwrap();
         fs::write(
             tmp.path().join("m.rs"),
             "fn greet() {\n    println!(\"hi\");\n}\n",
         )
         .unwrap();
-        // The offender: `@@ fn greet() {` followed by ` fn greet() {` as first
-        // context line. Anchor is consumed, then the pattern search tries to
-        // find `fn greet() {` on the next line — fails. Before this check it
-        // surfaced as a confusing "context not found"; now the error names it.
+        // If the anchor is also the first body line, treat the anchor as the
+        // body start instead of consuming it and searching below.
         let patch = concat!(
             "*** Begin Patch\n",
             "*** Update File: m.rs\n",
@@ -2272,14 +2361,11 @@ mod tests {
             " }\n",
             "*** End Patch\n",
         );
-        let err = plan(patch, tmp.path()).unwrap_err().error;
-        match err {
-            ApplyPatchError::AnchorShadowsFirstContext { anchor, chunk, .. } => {
-                assert_eq!(anchor, "fn greet() {");
-                assert_eq!(chunk, 0);
-            }
-            other => panic!("expected AnchorShadowsFirstContext, got: {other:?}"),
-        }
+        let outcome = plan(patch, tmp.path()).unwrap();
+        assert_eq!(
+            outcome.changes[0].new_content.as_deref(),
+            Some("fn greet() {\n    println!(\"hello\");\n}\n")
+        );
     }
 
     #[test]
@@ -2331,6 +2417,106 @@ mod tests {
         match err {
             ApplyPatchError::AmbiguousContext { candidates, .. } => {
                 assert_eq!(candidates, vec![1, 3]);
+            }
+            other => panic!("expected AmbiguousContext, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn repeated_identical_bare_hunks_apply_to_each_occurrence() {
+        // Models often express "change every occurrence" as one bare hunk per
+        // occurrence. If the hunk count exactly matches the remaining matches,
+        // the file order disambiguates the patch safely.
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("widget.ts"),
+            "tool({\n\treturn renderText(ctx, summarizeWidgetResult(result, options.expanded));\n});\n\
+             tool({\n\treturn renderText(ctx, summarizeWidgetResult(result, options.expanded));\n});\n",
+        )
+        .unwrap();
+        let patch = concat!(
+            "*** Begin Patch\n",
+            "*** Update File: widget.ts\n",
+            "@@\n",
+            "-\treturn renderText(ctx, summarizeWidgetResult(result, options.expanded));\n",
+            "+\treturn renderText(ctx, summarizeWidgetResult(result, options.expanded, { ansi: true }));\n",
+            "@@\n",
+            "-\treturn renderText(ctx, summarizeWidgetResult(result, options.expanded));\n",
+            "+\treturn renderText(ctx, summarizeWidgetResult(result, options.expanded, { ansi: true }));\n",
+            "*** End Patch\n",
+        );
+
+        let outcome = plan(patch, tmp.path()).unwrap();
+        assert_eq!(outcome.attempts.len(), 2);
+        assert!(
+            outcome.attempts.iter().all(|attempt| {
+                attempt.anchor_text.is_none()
+                    && attempt.success
+                    && attempt.fuzzy_tier.as_deref() == Some("exact")
+            }),
+            "attempts: {:?}",
+            outcome.attempts
+        );
+        let content = outcome.changes[0].new_content.as_deref().unwrap();
+        assert_eq!(
+            content
+                .matches("summarizeWidgetResult(result, options.expanded, { ansi: true })")
+                .count(),
+            2,
+            "both occurrences should be updated: {content}"
+        );
+        assert!(!content.contains("summarizeWidgetResult(result, options.expanded));"));
+    }
+
+    #[test]
+    fn repeated_bare_hunks_do_not_apply_when_fewer_than_matches() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("code.rs"), "same\nsame\nsame\n").unwrap();
+        let patch = concat!(
+            "*** Begin Patch\n",
+            "*** Update File: code.rs\n",
+            "@@\n",
+            "-same\n",
+            "+changed\n",
+            "@@\n",
+            "-same\n",
+            "+changed\n",
+            "*** End Patch\n",
+        );
+
+        let err = plan(patch, tmp.path()).unwrap_err().error;
+        match err {
+            ApplyPatchError::AmbiguousContext { candidates, .. } => {
+                assert_eq!(candidates, vec![1, 2, 3]);
+            }
+            other => panic!("expected AmbiguousContext, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn repeated_bare_hunks_do_not_apply_overlapping_matches() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("code.rs"), "same\nsame\nsame\n").unwrap();
+        let patch = concat!(
+            "*** Begin Patch\n",
+            "*** Update File: code.rs\n",
+            "@@\n",
+            "-same\n",
+            "-same\n",
+            "+changed\n",
+            "+changed\n",
+            "@@\n",
+            "-same\n",
+            "-same\n",
+            "+changed\n",
+            "+changed\n",
+            "*** End Patch\n",
+        );
+
+        let err = plan(patch, tmp.path()).unwrap_err().error;
+        match err {
+            ApplyPatchError::AmbiguousContext { candidates, .. } => {
+                assert_eq!(candidates, vec![1, 2]);
             }
             other => panic!("expected AmbiguousContext, got: {other:?}"),
         }
@@ -2433,18 +2619,18 @@ mod tests {
         );
     }
 
-    /// Stacked anchor anchor-shadow check uses the *last* anchor (the one
-    /// immediately before the body), not the first.
+    /// Stacked anchors let the final anchor double as the first body line.
     #[test]
-    fn anchor_shadow_check_uses_last_stacked_anchor() {
+    fn stacked_anchor_matching_first_old_line_applies_from_anchor() {
         let tmp = TempDir::new().unwrap();
         fs::write(
             tmp.path().join("m.rs"),
             "mod outer {\n    fn greet() {\n        println!(\"hi\");\n    }\n}\n",
         )
         .unwrap();
-        // Two stacked anchors. The *second* (`fn greet() {`) shadows the
-        // first body line — that's what should be flagged.
+        // Two stacked anchors. The final one (`fn greet() {`) is also the
+        // first body line, so the edit starts there after the outer anchor
+        // has narrowed the search.
         let patch = concat!(
             "*** Begin Patch\n",
             "*** Update File: m.rs\n",
@@ -2456,13 +2642,11 @@ mod tests {
             " }\n",
             "*** End Patch\n",
         );
-        let err = plan(patch, tmp.path()).unwrap_err().error;
-        match err {
-            ApplyPatchError::AnchorShadowsFirstContext { anchor, .. } => {
-                assert_eq!(anchor, "fn greet() {");
-            }
-            other => panic!("expected AnchorShadowsFirstContext, got: {other:?}"),
-        }
+        let outcome = plan(patch, tmp.path()).unwrap();
+        assert_eq!(
+            outcome.changes[0].new_content.as_deref(),
+            Some("mod outer {\n    fn greet() {\n        println!(\"hello\");\n    }\n}\n")
+        );
     }
 
     #[test]
@@ -2501,7 +2685,7 @@ mod tests {
     fn disambiguate_prefers_semantic_parent_over_nearer_statement() {
         let lines: Vec<String> = vec![
             "registerTool({".into(),
-            "\tname: \"vault_create\",".into(),
+            "\tname: \"vault_write\",".into(),
             "\tasync execute() {".into(),
             "\t\tif (dive) args.push(\"--dive\");".into(),
             "\t\tconst result = await runCt(args, ctx.cwd, signal);".into(),
@@ -2520,7 +2704,7 @@ mod tests {
         let hints = disambiguate_candidates(&lines, &[4, 12]);
         assert_eq!(hints.len(), 2);
         assert!(
-            hints[0].contains("@@ \tname: \"vault_create\","),
+            hints[0].contains("@@ \tname: \"vault_write\","),
             "hints: {hints:?}"
         );
         assert!(

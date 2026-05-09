@@ -121,6 +121,12 @@ impl ParseError {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct ParseRepair {
+    pub anchor_text: &'static str,
+    pub fuzzy_tier: &'static str,
+}
+
 use ParseError::*;
 
 #[derive(Debug, PartialEq, Clone)]
@@ -187,7 +193,24 @@ pub struct UpdateScopeChunk {
 }
 
 pub fn parse_patch(patch: &str) -> Result<Vec<Hunk>, ParseError> {
-    parse_patch_text(patch)
+    parse_patch_with_repairs(patch).map(|(hunks, _repairs)| hunks)
+}
+
+pub fn parse_patch_with_repairs(patch: &str) -> Result<(Vec<Hunk>, Vec<ParseRepair>), ParseError> {
+    match parse_patch_text(patch) {
+        Ok(hunks) => Ok((hunks, Vec::new())),
+        Err(original @ InvalidPatchError(_)) => match unique_embedded_patch(patch)? {
+            Some(embedded) => Ok((
+                parse_patch_text(embedded)?,
+                vec![ParseRepair {
+                    anchor_text: "unique embedded apply-patch envelope",
+                    fuzzy_tier: "repair:embedded_envelope",
+                }],
+            )),
+            None => Err(original),
+        },
+        Err(err) => Err(err),
+    }
 }
 
 fn parse_patch_text(patch: &str) -> Result<Vec<Hunk>, ParseError> {
@@ -206,6 +229,30 @@ fn parse_patch_text(patch: &str) -> Result<Vec<Hunk>, ParseError> {
         remaining_lines = &remaining_lines[hunk_lines..]
     }
     Ok(hunks)
+}
+
+fn unique_embedded_patch(patch: &str) -> Result<Option<&str>, ParseError> {
+    let begins: Vec<usize> = patch
+        .match_indices(BEGIN_PATCH_MARKER)
+        .map(|(idx, _)| idx)
+        .collect();
+    let ends: Vec<usize> = patch
+        .match_indices(END_PATCH_MARKER)
+        .map(|(idx, _)| idx)
+        .collect();
+    if begins.len() > 1 || ends.len() > 1 {
+        return Err(InvalidPatchError(
+            "multiple embedded apply-patch envelopes found; pass exactly one patch envelope"
+                .to_string(),
+        ));
+    }
+    let (Some(begin), Some(end)) = (begins.first(), ends.first()) else {
+        return Ok(None);
+    };
+    if end < begin {
+        return Ok(None);
+    }
+    Ok(Some(&patch[*begin..*end + END_PATCH_MARKER.len()]))
 }
 
 fn strip_optional_intent<'a>(hunk_lines: &'a [&'a str]) -> (&'a [&'a str], usize) {
@@ -950,6 +997,55 @@ mod tests {
                     }]
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn parse_patch_accepts_unique_fenced_patch_block() {
+        let patch = "\
+Here is the patch:
+
+```patch
+*** Begin Patch
+*** Add File: fenced.txt
++hello
+*** End Patch
+```
+";
+
+        let hunks = parse_patch(patch).unwrap();
+        assert_eq!(
+            hunks,
+            vec![AddFile {
+                path: PathBuf::from("fenced.txt"),
+                contents: "hello\n".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn parse_patch_rejects_multiple_embedded_patch_blocks_with_targeted_message() {
+        let patch = "\
+```patch
+*** Begin Patch
+*** Add File: one.txt
++one
+*** End Patch
+```
+```patch
+*** Begin Patch
+*** Add File: two.txt
++two
+*** End Patch
+```
+";
+
+        let err = parse_patch(patch).unwrap_err();
+        assert_eq!(err.subkind_str(), "parse_envelope");
+        assert!(
+            err.to_string()
+                .contains("multiple embedded apply-patch envelopes"),
+            "{err}"
         );
     }
 

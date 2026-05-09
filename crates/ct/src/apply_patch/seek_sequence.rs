@@ -29,8 +29,14 @@ impl MatchQuality {
 #[derive(Debug)]
 pub(crate) enum SeekOutcome {
     NotFound,
-    Unique { idx: usize, quality: MatchQuality },
-    Ambiguous { matches: Vec<usize> },
+    Unique {
+        idx: usize,
+        quality: MatchQuality,
+    },
+    Ambiguous {
+        matches: Vec<usize>,
+        quality: MatchQuality,
+    },
 }
 
 /// Find `pattern` in `lines`, starting at or after `start`. Tiers are tried in
@@ -97,8 +103,10 @@ fn classify(hits: Vec<usize>, quality: MatchQuality) -> SeekOutcome {
             quality,
         }
     } else {
-        let _ = quality;
-        SeekOutcome::Ambiguous { matches: hits }
+        SeekOutcome::Ambiguous {
+            matches: hits,
+            quality,
+        }
     }
 }
 
@@ -196,7 +204,7 @@ mod tests {
         let lines = to_vec(&["foo", "bar", "foo", "bar"]);
         let pattern = to_vec(&["foo"]);
         match seek_sequence(&lines, &pattern, 0, false) {
-            SeekOutcome::Ambiguous { matches } => {
+            SeekOutcome::Ambiguous { matches, .. } => {
                 assert_eq!(matches, vec![0, 2]);
             }
             other => panic!("expected ambiguous, got {other:?}"),

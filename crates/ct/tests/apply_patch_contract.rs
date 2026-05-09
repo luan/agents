@@ -569,7 +569,7 @@ fn context_mismatch_reports_near_miss_snippet() {
 }
 
 #[test]
-fn anchor_shadow_rejected_with_specific_error() {
+fn anchor_matching_first_body_line_applies() {
     let sandbox = TempDir::new().unwrap();
     write_seed(&sandbox, "m.rs", "fn greet() {\n    println!(\"hi\");\n}\n");
     let patch = "\
@@ -588,11 +588,11 @@ fn anchor_shadow_rejected_with_specific_error() {
         .arg(sandbox.path())
         .write_stdin(patch)
         .assert()
-        .failure()
-        .stderr(
-            predicate::str::contains("also appears as the first context line")
-                .and(predicate::str::contains("anchor is consumed")),
-        );
+        .success()
+        .stdout(predicate::str::contains("M m.rs"));
+
+    let after = fs::read_to_string(sandbox.path().join("m.rs")).unwrap();
+    assert_eq!(after, "fn greet() {\n    println!(\"hello\");\n}\n");
 }
 
 #[test]
