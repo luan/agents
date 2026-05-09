@@ -1541,7 +1541,63 @@ describe("tasks extension", () => {
 		expect(sent[0].options).toEqual({ deliverAs: "followUp", triggerTurn: true });
 	});
 
-	test("task guard keeps imperative answers visible while continuing", async () => {
+	test("task guard command disables and re-enables nudges for the session", async () => {
+		const handlers: Record<string, any> = {};
+		const commands: Record<string, any> = {};
+		const sent: any[] = [];
+		const notifications: string[] = [];
+		tasksExtension(
+			{
+				registerTool() {},
+				registerCommand(name: string, definition: any) {
+					commands[name] = definition;
+				},
+				on(name: string, handler: any) {
+					handlers[name] = handler;
+				},
+				sendMessage(message: any, options: any) {
+					sent.push({ message, options });
+				},
+			} as any,
+			{
+				runCommand: async () => ({
+					stdout: JSON.stringify({
+						tasks: [
+							{ ...task, id: "t", title: "Continue me", assigned_to: "session:test-session", status: "open" },
+						],
+					}),
+					stderr: "",
+					exitCode: 0,
+				}),
+			},
+		);
+		const ctx = {
+			cwd: "/tmp/project",
+			sessionId: "test-session",
+			signal: undefined,
+			ui: {
+				notify(message: string) {
+					notifications.push(message);
+				},
+			},
+		};
+
+		await commands["task-guard"].handler("off", ctx);
+		await handlers.message_end({ message: { role: "assistant", content: [{ type: "text", text: "Done." }] } }, ctx);
+		await handlers.turn_end({}, ctx);
+		await commands["task-guard"].handler("on", ctx);
+		await handlers.message_end(
+			{ message: { role: "assistant", content: [{ type: "text", text: "Done again." }] } },
+			ctx,
+		);
+		await handlers.turn_end({}, ctx);
+
+		expect(notifications).toEqual(["Task guard disabled for this session.", "Task guard enabled for this session."]);
+		expect(sent).toHaveLength(1);
+		expect(sent[0].message.content[0].text).toContain("Task nudge");
+	});
+
+	test("task guard stays quiet for user-directed status answers", async () => {
 		const handlers: Record<string, any> = {};
 		const sent: any[] = [];
 		tasksExtension(
@@ -1581,9 +1637,7 @@ describe("tasks extension", () => {
 		await handlers.turn_end({}, ctx);
 
 		expect(replacement).toBeUndefined();
-		expect(sent).toHaveLength(1);
-		expect(sent[0].message.display).toBe(true);
-		expect(sent[0].options).toEqual({ deliverAs: "followUp" });
+		expect(sent).toHaveLength(0);
 	});
 
 	test("task guard keeps answers visible when evaluation fails", async () => {
@@ -1675,7 +1729,7 @@ describe("tasks extension", () => {
 		]);
 	});
 
-	test("task guard keeps answers visible when escalation follows a user question", async () => {
+	test("task guard stays quiet when a user question follows a nudge", async () => {
 		const handlers: Record<string, any> = {};
 		const sent: any[] = [];
 		tasksExtension(
@@ -1719,8 +1773,7 @@ describe("tasks extension", () => {
 		);
 		await handlers.turn_end({}, ctx);
 
-		expect(sent).toHaveLength(2);
-		expect(sent[1].options).toEqual({ deliverAs: "followUp" });
+		expect(sent).toHaveLength(1);
 		expect(replacement).toBeUndefined();
 	});
 
@@ -1836,7 +1889,7 @@ describe("tasks extension", () => {
 		]);
 	});
 
-	test("task guard does not clobber arbitrary user-directed answers", async () => {
+	test("task guard stays quiet for arbitrary user-directed answers", async () => {
 		const handlers: Record<string, any> = {};
 		const sent: any[] = [];
 		tasksExtension(
@@ -1879,9 +1932,7 @@ describe("tasks extension", () => {
 		await handlers.turn_end({}, ctx);
 
 		expect(replacement).toBeUndefined();
-		expect(sent).toHaveLength(1);
-		expect(sent[0].message.display).toBe(true);
-		expect(sent[0].options).toEqual({ deliverAs: "followUp" });
+		expect(sent).toHaveLength(0);
 	});
 
 	test("task guard nudges about unassigned blockers without assigning", async () => {
