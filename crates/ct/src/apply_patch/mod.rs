@@ -1,6 +1,7 @@
 mod apply;
 mod diff;
 pub mod draft;
+pub mod draft_store;
 mod parser;
 pub mod preview;
 pub mod repair;

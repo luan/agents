@@ -245,7 +245,7 @@ struct TaskUpdate<'a> {
 
 impl TaskStore {
     fn open(cwd: PathBuf) -> Result<Self> {
-        let dir = crate::lens::paths::project_state_dir(&cwd)
+        let dir = crate::state::project_state_dir(&cwd)
             .map_err(|error| anyhow!("{error}"))?
             .join("tasks");
         fs::create_dir_all(&dir)?;
