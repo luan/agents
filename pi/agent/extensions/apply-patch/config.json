@@ -10,8 +10,5 @@
   "validateBeforeApply": false,
   "recordUsageEntry": false,
   "registerTool": true,
-  "activeByDefault": true,
-  "promptMetadata": true,
-  "promptSnippet": true,
-  "promptGuidelines": false
+  "activeByDefault": true
 }

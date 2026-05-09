@@ -50,54 +50,6 @@ eof_line: "*** End of File" LF
 
 %import common.LF`;
 
-const APPLY_PATCH_PROMPT_APPENDIX = `## apply_patch
-
-Use the \`apply_patch\` tool for all file edits. The patch payload format is:
-
-*** Begin Patch
-*** Intent: Briefly describe why this change is being made.
-*** Update Scope: path/to/existing-file.txt
-@@ function renderSummary
--old line inside that scope
-+new line inside that scope
-*** Update File: path/to/existing-file.txt
-@@
--old line
-+new line
-*** Update File: path/to/existing-file.txt
-@@ lines 10-12
--exact old line 10
-+exact new line 10
-*** Add File: path/to/new-file.txt
-+file contents
-*** Update File: path/to/existing-file.txt
-*** Move to: path/to/new-name.txt
-*** Move File: path/to/old-name.txt -> path/to/new-name.txt
-*** Replace All In File: path/to/existing-file.txt
-*** Expect Replacements: 2
--old repeated line
-+new repeated line
-*** Delete File: path/to/remove.txt
-*** End Patch
-
-Rules:
-- Include exactly one Begin Patch / End Patch envelope.
-- Include one \`*** Intent: ...\` line immediately after Begin Patch for
-  non-trivial edits. Keep it under 100 words; this is a soft limit, not
-  enforced. Omit it only for trivial/no-op test patches.
-- Prefix all new file contents and added lines with '+'.
-- Use \`*** Update Scope\` when it is the shortest clear way to target an
-  existing function, class, type, top-level constant/variable, struct, enum,
-  impl, module, trait, or method.
-- Use \`*** Update File\` freely for cross-scope edits, unsupported languages,
-  moves, top-level data/config, or when plain text context is clearer.
-- For \`Update File\`, use specific \`@@ symbolName\` anchors and 2-3 nearby
-  unchanged context lines when the file is large or repetitive.
-- Use \`@@ lines START-END\` when exact line numbers are safer than repeated
-  context, and keep the old hunk body matching that range exactly.
-- Use \`Replace All In File\` only with \`Expect Replacements\` so bulk edits are
-  guarded against accidental over/under-replacement.`;
-
 const applyPatchToolSchema = Type.Object({
 	input: Type.String({
 		description: "The full apply_patch payload in apply_patch format.",
@@ -161,9 +113,6 @@ type ApplyPatchConfig = {
 	recordUsageEntry: boolean;
 	registerTool: boolean;
 	activeByDefault: boolean;
-	promptMetadata: boolean;
-	promptSnippet: boolean;
-	promptGuidelines: boolean;
 };
 
 const APPLY_PATCH_TOOL_DESCRIPTION =
@@ -184,9 +133,6 @@ const DEFAULT_CONFIG: ApplyPatchConfig = {
 	recordUsageEntry: true,
 	registerTool: true,
 	activeByDefault: true,
-	promptMetadata: true,
-	promptSnippet: true,
-	promptGuidelines: true,
 };
 
 const CONFIG_PATH = join(dirname(fileURLToPath(import.meta.url)), "config.json");
@@ -223,9 +169,6 @@ function loadConfig(): ApplyPatchConfig {
 			registerTool: typeof parsed.registerTool === "boolean" ? parsed.registerTool : DEFAULT_CONFIG.registerTool,
 			activeByDefault:
 				typeof parsed.activeByDefault === "boolean" ? parsed.activeByDefault : DEFAULT_CONFIG.activeByDefault,
-			promptMetadata:
-				typeof parsed.promptMetadata === "boolean" ? parsed.promptMetadata : DEFAULT_CONFIG.promptMetadata,
-			promptSnippet: typeof parsed.promptSnippet === "boolean" ? parsed.promptSnippet : DEFAULT_CONFIG.promptSnippet,
 			promptGuidelines:
 				typeof parsed.promptGuidelines === "boolean" ? parsed.promptGuidelines : DEFAULT_CONFIG.promptGuidelines,
 		};
@@ -1936,7 +1879,11 @@ function asApplyPatchProgressFiles(value: unknown): ApplyPatchProgressFile[] {
 
 function intentSummaryFromToolResult(toolResult: unknown): ApplyPatchIntentSummary | undefined {
 	const result = toolResult as
-		| { toolName?: unknown; details?: Record<string, unknown>; isError?: boolean }
+		| {
+				toolName?: unknown;
+				details?: Record<string, unknown>;
+				isError?: boolean;
+		  }
 		| undefined;
 	if (!result || result.isError || !isApplyPatchToolName(result.toolName)) return undefined;
 	const intent = typeof result.details?.intent === "string" ? result.details.intent.trim() : "";
@@ -2077,15 +2024,11 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 		lastTurnPatchIntents.push(...collectApplyPatchIntentsFromToolResults(event.toolResults));
 	});
 
-	pi.on("before_agent_start", (event, ctx) => {
+	pi.on("before_agent_start", (_event, ctx) => {
 		applyToolAvailability(pi, config);
 		enforceToolPolicy(pi, config);
 		applyCodexToolPolicy(ctx);
 		if (!config.enforce) return;
-		if (event.systemPrompt.includes("## apply_patch")) return;
-		return {
-			systemPrompt: `${event.systemPrompt}\n\n${APPLY_PATCH_PROMPT_APPENDIX}`,
-		};
 	});
 
 	pi.on("tool_call", (event, ctx) => {
@@ -2131,15 +2074,9 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 		name: APPLY_PATCH_TOOL_NAME,
 		label: APPLY_PATCH_TOOL_NAME,
 		description: APPLY_PATCH_TOOL_DESCRIPTION,
-		...(config.promptMetadata && config.promptSnippet ? { promptSnippet: APPLY_PATCH_TOOL_DESCRIPTION } : {}),
-		promptGuidelines:
-			config.promptMetadata && config.promptGuidelines && config.enforce
-				? [
-						"Use apply_patch for every file edit.",
-						"Include one *** Intent: ... line immediately after Begin Patch for non-trivial edits; keep it under 100 words as a soft limit.",
-						"Use *** Update Scope when it is the shortest clear way to target an existing code symbol; use *** Update File when plain text context is clearer.",
-					]
-				: [],
+		promptGuidelines: [
+			"Use `apply_patch` for manual code edits. Do not create or edit files with `cat` or other shell write tricks. Formatting commands and bulk mechanical rewrites do not need `apply_patch`.",
+		],
 		parameters: applyPatchToolSchema,
 		renderShell: "self",
 		executionMode: "sequential",
@@ -2486,7 +2423,10 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 						return { error: message } as const;
 					});
 					if ("error" in dryRunResult) {
-						return errorResult(dryRunResult.error, { stage: "validate", intent });
+						return errorResult(dryRunResult.error, {
+							stage: "validate",
+							intent,
+						});
 					}
 					dryRun = dryRunResult;
 				}

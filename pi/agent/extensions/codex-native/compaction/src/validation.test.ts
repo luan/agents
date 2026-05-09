@@ -403,7 +403,7 @@ async function loadHookHarness(options: HookHarnessOptions = {}): Promise<{
 	const sessionBeforeCompact = handlers.get("session_before_compact");
 	const beforeProviderRequest = handlers.get("before_provider_request");
 	if (!sessionBeforeCompact || !beforeProviderRequest) {
-		throw new Error("Expected openai-native-compaction hooks to register");
+		throw new Error("Expected openai-native-compaction callbacks to register");
 	}
 
 	return {

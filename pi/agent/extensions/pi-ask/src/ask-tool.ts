@@ -1,7 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	ASK_TOOL_DESCRIPTION,
-	ASK_TOOL_PROMPT_GUIDELINES,
 	invalidPayloadResponse,
 	nonInteractiveResponse,
 	renderAskToolCall,
@@ -22,7 +21,6 @@ export function registerAskTool(pi: ExtensionAPI) {
 		description: ASK_TOOL_DESCRIPTION,
 		promptSnippet:
 			"Clarify ambiguous or preference-sensitive decisions with a short interactive interview before proceeding",
-		promptGuidelines: [...ASK_TOOL_PROMPT_GUIDELINES],
 		parameters: AskParamsSchema,
 		execute: (toolCallId, params, signal, onUpdate, ctx) =>
 			executeAskTool(pi, toolCallId, params as AskParams, signal, onUpdate, ctx),

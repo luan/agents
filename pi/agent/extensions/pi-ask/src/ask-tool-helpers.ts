@@ -8,19 +8,7 @@ import type { AskParams, AskQuestionInput, AskResult, AskValidationIssue } from 
 import { UI_DIMENSIONS } from "./ui/constants";
 
 export const ASK_TOOL_DESCRIPTION =
-	"Interactive clarification tool for cases where the next step depends on user preferences, missing requirements, or choosing between multiple valid directions. Ask a short structured interview, collect normalized answers, and continue using those answers explicitly instead of guessing. Supports single-select, multi-select, and preview-pane questions. Always include a machine-readable `value` for every option. Use `preview` only when every option includes `preview` text; descriptions alone are not enough.";
-
-export const ASK_TOOL_PROMPT_GUIDELINES = [
-	"Use this tool before making preference-sensitive decisions about scope, tone, UX, naming, architecture, docs, or implementation direction.",
-	"When multiple valid directions exist, ask 1-3 concise questions instead of committing to one path on your own.",
-	"Prefer one focused decision per question and use short labels with 2-4 clear options.",
-	"Always include a non-empty `value` for every option.",
-	'Use `type: "single"` by default and `type: "multi"` only when several answers can genuinely apply.',
-	'Use `type: "preview"` only when every option includes non-empty `preview` text for the dedicated preview pane. Option descriptions do not satisfy this requirement.',
-	"After clarifying a note or follow-up question, prefer another structured ask_user follow-up if a choice is still needed instead of switching to plain-text multiple choice in chat.",
-	"When prior answers already narrow the branch, bundle the next 2-3 related unresolved decisions into one follow-up ask instead of issuing a long sequence of single-question asks.",
-	"Use one-at-a-time follow-up asks only when the next question materially depends on the previous answer.",
-] as const;
+	"Ask a short interactive clarification when user preference or missing requirements block a decision. Supports single, multi, and preview questions. Options need value+label; preview questions need preview on every option.";
 
 export function validateParams(
 	params: AskParams,
