@@ -10,12 +10,11 @@
     "test:git-tool": "bun test pi/agent/extensions/git-tool/index.test.ts",
     "test:vault": "bun test pi/agent/extensions/plannotator-events/index.test.ts pi/agent/extensions/vault/index.test.ts",
     "test:skills": "bun test skills/start.test.ts skills/workflow-naming.test.ts",
-    "test:codex-native": "bun test pi/agent/extensions/apply-patch/index.test.ts pi/agent/extensions/codex-native/index.test.ts pi/agent/extensions/codex-exec/index.test.ts pi/agent/extensions/disable-ls.test.ts",
+    "test:codex-native": "bun test pi/agent/extensions/apply-patch/index.test.ts pi/agent/extensions/codex-native/index.test.ts pi/agent/extensions/codex-exec/index.test.ts pi/agent/extensions/pi-token-burden/tool-toggles.test.ts pi/agent/extensions/pi-token-burden/report-view.test.ts",
     "test:compaction": "bun test pi/agent/extensions/codex-native/compaction/src/unit.test.ts pi/agent/extensions/codex-native/compaction/src/validation.test.ts",
     "prepare": "husky"
   },
   "dependencies": {
-    "@ff-labs/fff-node": "0.7.2",
     "@earendil-works/pi-agent-core": "^0.74.0",
     "@earendil-works/pi-ai": "^0.74.0",
     "@earendil-works/pi-coding-agent": "^0.74.0",
@@ -24,6 +23,7 @@
     "@shikijs/cli": "^4.0.2",
     "gpt-tokenizer": "^3.4.0",
     "linkedom": "^0.16.0",
+    "mustache": "^4.2.0",
     "node-pty": "^1.1.0",
     "p-limit": "^6.1.0",
     "partial-json": "^0.1.7",
@@ -35,6 +35,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.13",
+    "@types/mustache": "^4.2.6",
     "@types/node": "^25.6.0",
     "@typescript/native-preview": "7.0.0-dev.20260501.1",
     "husky": "^9.1.7",

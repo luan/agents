@@ -73,7 +73,7 @@ export function installEditorComposition(uiTheme: Theme, minTerminalRows = 28): 
 	setEditorTheme(uiTheme);
 
 	// Patch the shared base editor instead of replacing the active editor so
-	// packages like pi-fff can keep their own editor/autocomplete behavior.
+	// Other packages can keep their own editor/autocomplete behavior.
 	const prototype = CustomEditor.prototype as unknown as CustomEditor & {
 		render(width: number): string[];
 	} & Record<symbol, unknown>;
