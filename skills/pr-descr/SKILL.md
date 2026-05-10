@@ -10,7 +10,7 @@ disable-model-invocation: false
 
 Update an existing PR's title and description from branch context.
 
-**Assumes PR already exists.** This skill NEVER pushes or submits.
+**Assumes PR already exists.** NEVER push or submit.
 
 ## Context
 

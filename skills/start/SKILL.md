@@ -18,11 +18,11 @@ Create a branch with the repository's configured Git strategy.
    - `graphite` → `gt create <branch-name>`
    - `git-spice` → `gs branch create <branch-name>`; `gs bc <branch-name>` is the matching shorthand and may be used when brevity matters.
    - `main`, `none`, unset, or invalid → `git checkout -b <branch-name>`
-5. State the branch. If `--auto` was NOT passed, suggest `$research` or `$implement`. If `--auto` was passed, output nothing — no handoff, no suggestions. The caller is an orchestrator that will handle next steps; any output text risks the model ending its turn prematurely.
+5. State the branch when `--auto` was NOT passed. If `--auto` was passed, output nothing — no handoff, no suggestions.
 
 ## Boundary
 
-This skill chooses the branch creation command only. It does not decide whether editing is allowed. Trunk edit and shell gating belongs to the git-tool extension, and users may also create branches manually outside Pi.
+Branch creation command selection only; does not decide whether editing is allowed. Trunk edit and shell gating belongs to the git-tool extension, and users may also create branches manually outside Pi.
 
 ## Error Handling
 

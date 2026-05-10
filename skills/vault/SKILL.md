@@ -7,7 +7,7 @@ user-invocable: true
 
 # Vault CLI
 
-Use this skill for command-line `ct vault` workflows. The Pi `vault_*` tools are self-documenting and do not need this skill.
+Command-line `ct vault` workflows only. The Pi `vault_*` tools are self-documenting and do not need separate CLI guidance.
 
 ## Quick start
 
