@@ -118,9 +118,9 @@ type ApplyPatchConfig = {
 };
 
 const APPLY_PATCH_TOOL_DESCRIPTION =
-	"Edit files using apply_patch. Include '*** Intent: ...' after Begin Patch for non-trivial edits. Use '*** Update Scope' when it is the shortest clear way to target an existing symbol; use '*** Update File' when plain text context is clearer.";
+	"Edit files using apply_patch. Include '*** Intent: ...' after Begin Patch for non-trivial edits. Use '*** Update Scope' when it is the shortest clear way to target an existing symbol; use '*** Update File' when plain text context is clearer. In one Update File section, author ordinary context hunks top-to-bottom because matching is cursor-forward; use '@@ lines A-B' only for explicit original-file ranges.";
 const APPLY_PATCH_FREEFORM_TOOL_DESCRIPTION =
-	"Use the `apply_patch` tool to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON. Include `*** Intent: ...` after Begin Patch for non-trivial edits.";
+	"Use the `apply_patch` tool to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON. Include `*** Intent: ...` after Begin Patch for non-trivial edits. In one Update File section, ordinary context hunks must be top-to-bottom; use `@@ lines A-B` for explicit original-file ranges.";
 
 const DEFAULT_CONFIG: ApplyPatchConfig = {
 	maxDiffLines: 160,
