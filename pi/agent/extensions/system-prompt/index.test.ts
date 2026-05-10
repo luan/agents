@@ -24,9 +24,7 @@ describe("system-prompt Skillful skill rendering", () => {
 
 		expect(prompt).toContain("The following skills provide specialized instructions");
 		expect(prompt).toContain("call `skill({name})`");
-		expect(prompt).toContain("<name>tdd</name>");
-		expect(prompt).toContain("<description>Apply test-driven development</description>");
-		expect(prompt).not.toContain("<location>");
+		expect(prompt).toContain("- tdd: Apply test-driven development");
 		expect(prompt).not.toContain("/skills/tdd/SKILL.md");
 	});
 
@@ -37,7 +35,7 @@ describe("system-prompt Skillful skill rendering", () => {
 		});
 
 		expect(prompt).toContain("read the referenced `SKILL.md` file");
-		expect(prompt).toContain("<location>/skills/tdd/SKILL.md</location>");
+		expect(prompt).toContain("- tdd: Apply test-driven development (/skills/tdd/SKILL.md)");
 	});
 
 	test("omits skills when no loading tool is active", () => {
@@ -47,6 +45,6 @@ describe("system-prompt Skillful skill rendering", () => {
 		});
 
 		expect(prompt).not.toContain("<available_skills>");
-		expect(prompt).not.toContain("<name>tdd</name>");
+		expect(prompt).not.toContain("- tdd: Apply test-driven development");
 	});
 });

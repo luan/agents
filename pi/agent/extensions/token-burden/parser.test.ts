@@ -44,4 +44,38 @@ describe("token-burden system prompt parser", () => {
 
 		expect(parsed.skills[0]?.location).toBe("/skills/tdd/SKILL.md");
 	});
+
+	test("does not treat parenthesized descriptions as locations", () => {
+		const prompt = [
+			"base",
+			"<skills_instructions>",
+			"The following skills provide specialized instructions",
+			"<available_skills>",
+			"- fast: Apply test-driven development (quick mode)",
+			"- local: Load a local skill (/skills/local/SKILL.md)",
+			"</available_skills>",
+			"</skills_instructions>",
+			"",
+			"Current date: 2026-05-10",
+		].join("\n");
+
+		const parsed = parseSystemPrompt(prompt);
+
+		expect(parsed.skills).toEqual([
+			{
+				name: "fast",
+				description: "Apply test-driven development (quick mode)",
+				location: "",
+				chars: expect.any(Number),
+				tokens: expect.any(Number),
+			},
+			{
+				name: "local",
+				description: "Load a local skill",
+				location: "/skills/local/SKILL.md",
+				chars: expect.any(Number),
+				tokens: expect.any(Number),
+			},
+		]);
+	});
 });

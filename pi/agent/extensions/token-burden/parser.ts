@@ -105,14 +105,15 @@ function parseAgentsFiles(contextBlock: string): AgentsFileEntry[] {
 	return files;
 }
 
-/** Parse `<skill>` entries from the `<available_skills>` XML block. */
-function parseSkillEntries(xmlBlock: string, out: SkillEntry[]): void {
+/** Parse legacy `<skill>` entries from the `<available_skills>` block. */
+function parseXmlSkillEntries(skillsBlock: string, out: SkillEntry[]): number {
 	const skillPattern = /<skill>([\s\S]*?)<\/skill>/g;
 	const namePattern = /<name>([\s\S]*?)<\/name>/;
 	const descPattern = /<description>([\s\S]*?)<\/description>/;
 	const locPattern = /<location>([\s\S]*?)<\/location>/;
+	let parsedCount = 0;
 
-	for (const match of xmlBlock.matchAll(skillPattern)) {
+	for (const match of skillsBlock.matchAll(skillPattern)) {
 		const [fullEntry, inner] = match;
 		const name = inner.match(namePattern)?.[1]?.trim() ?? "unknown";
 		const description = inner.match(descPattern)?.[1]?.trim() ?? "";
@@ -125,7 +126,54 @@ function parseSkillEntries(xmlBlock: string, out: SkillEntry[]): void {
 			chars: fullEntry.length,
 			tokens: estimateTokens(fullEntry),
 		});
+		parsedCount++;
 	}
+
+	return parsedCount;
+}
+
+function splitYamlSkillDescription(value: string): { description: string; location: string } {
+	const trimmed = value.trim();
+	const locationMatch = trimmed.match(/\s+\(([^()\n]*\.md[^()\n]*)\)$/i);
+
+	if (!locationMatch) {
+		return { description: trimmed, location: "" };
+	}
+
+	return {
+		description: trimmed.slice(0, locationMatch.index).trim(),
+		location: locationMatch[1].trim(),
+	};
+}
+
+/** Parse `- name: description (optional/path.md)` entries from the skills block. */
+function parseYamlSkillEntries(skillsBlock: string, out: SkillEntry[]): void {
+	const skillPattern = /^-\s+([^:\n]+):\s*(.*?)\s*$/gm;
+
+	for (const match of skillsBlock.matchAll(skillPattern)) {
+		const [fullEntry, rawName, rawDescription] = match;
+		const name = rawName.trim();
+		if (!name) {
+			continue;
+		}
+
+		const { description, location } = splitYamlSkillDescription(rawDescription);
+
+		out.push({
+			name,
+			description,
+			location,
+			chars: fullEntry.length,
+			tokens: estimateTokens(fullEntry),
+		});
+	}
+}
+
+function parseSkillEntries(skillsBlock: string, out: SkillEntry[]): void {
+	if (parseXmlSkillEntries(skillsBlock, out) > 0) {
+		return;
+	}
+	parseYamlSkillEntries(skillsBlock, out);
 }
 
 /** Compute the skills section end index, avoiding nested ternaries. */
@@ -149,7 +197,7 @@ function findSkillsSectionEnd(availableSkillsEnd: number, dateLineIdx: number, p
  * Uses known structural markers emitted by `buildSystemPrompt()`:
  *   - `# Project Context` heading
  *   - `The following skills provide specialized instructions` preamble
- *   - `<available_skills>` / `</available_skills>` XML block
+ *   - `<available_skills>` / `</available_skills>` skill list block
  *   - `Current date:` footer
  */
 export function parseSystemPrompt(prompt: string): ParsedPrompt {
@@ -193,8 +241,8 @@ export function parseSystemPrompt(prompt: string): ParsedPrompt {
 		const skillsSectionText = prompt.slice(skillsSectionStart, skillsSectionEnd);
 
 		if (availableSkillsStart !== -1 && availableSkillsEnd !== -1) {
-			const xmlBlock = prompt.slice(availableSkillsStart, availableSkillsEnd + "</available_skills>".length);
-			parseSkillEntries(xmlBlock, skills);
+			const skillsBlock = prompt.slice(availableSkillsStart, availableSkillsEnd + "</available_skills>".length);
+			parseSkillEntries(skillsBlock, skills);
 		}
 
 		const children = skills.map((s) => ({

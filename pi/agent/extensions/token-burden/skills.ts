@@ -196,18 +196,9 @@ function scanSkillPath(sourcePath: string, skills: RawSkill[], visitedRealPaths:
 // Token estimation for skill prompt entries
 // ---------------------------------------------------------------------------
 
-/**
- * Estimate the token cost of a skill's XML entry in the system prompt.
- */
+/** Estimate the token cost of a skill's list entry in the system prompt. */
 export function estimateSkillPromptTokens(skill: { name: string; description: string; filePath: string }): number {
-	const xml = [
-		"  <skill>",
-		`    <name>${skill.name}</name>`,
-		`    <description>${skill.description}</description>`,
-		`    <location>${skill.filePath}</location>`,
-		"  </skill>",
-	].join("\n");
-	return estimateTokens(xml);
+	return estimateTokens(`- ${skill.name}: ${skill.description} (${skill.filePath})`);
 }
 
 // ---------------------------------------------------------------------------
