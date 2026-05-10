@@ -350,6 +350,28 @@ function partitionTools(tools: ToolSectionData, activeSet: Set<string>): ToolSec
 	return { active, inactive };
 }
 
+function parseToolContent(tool: ToolEntry): unknown {
+	try {
+		return JSON.parse(tool.content) as unknown;
+	} catch {
+		return {
+			name: tool.name,
+			content: tool.content,
+		};
+	}
+}
+
+export function formatToolSectionContent(tools: ToolSectionData): string {
+	return JSON.stringify(
+		{
+			active: tools.active.map(parseToolContent),
+			inactive: tools.inactive.map(parseToolContent),
+		},
+		null,
+		2,
+	);
+}
+
 class BudgetOverlay {
 	private state: OverlayState = {
 		mode: "sections",
@@ -1010,7 +1032,16 @@ class BudgetOverlay {
 	private openSectionInEditor(): void {
 		const items = this.getVisibleItems();
 		const item = items[this.state.selectedIndex];
-		if (!item?.content) {
+		if (!item) {
+			return;
+		}
+
+		if (item.tools) {
+			this.openJsonContentInEditor(item.label, formatToolSectionContent(item.tools));
+			return;
+		}
+
+		if (!item.content) {
 			return;
 		}
 
