@@ -1,7 +1,7 @@
 import { UserMessageComponent } from "@earendil-works/pi-coding-agent";
 import { colorize } from "./highlight";
 
-const RENDER_WRAPPED = Symbol.for("skill-dollar.userMessageWrapped");
+const RENDER_WRAPPED = Symbol.for("skillful.userMessageWrapped");
 
 export function ensureTranscriptHighlight(getSkillNames: () => Set<string>): void {
 	const proto = UserMessageComponent.prototype as unknown as {

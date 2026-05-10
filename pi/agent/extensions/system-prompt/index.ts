@@ -15,7 +15,7 @@ export default async function systemPromptExtension(pi: ExtensionAPI) {
 	});
 }
 
-function buildSystemPrompt(original: string, options: BuildSystemPromptOptions): string {
+export function buildSystemPrompt(original: string, options: BuildSystemPromptOptions): string {
 	const {
 		customPrompt,
 		selectedTools,
@@ -42,6 +42,7 @@ function buildSystemPrompt(original: string, options: BuildSystemPromptOptions):
 	const hasFind = tools.includes("find");
 	const hasLs = tools.includes("ls");
 	const hasRead = tools.includes("read");
+	const hasSkillTool = tools.includes("skill");
 
 	const readmePath = original.match(/- Main documentation: (.+)/)?.[1] || null;
 	const docsPath = original.match(/- Additional docs: (.+)/)?.[1] || null;
@@ -57,11 +58,13 @@ function buildSystemPrompt(original: string, options: BuildSystemPromptOptions):
 		docsPath: docsPath ?? "null",
 		examplesPath: examplesPath ?? "null",
 		hasContextFiles: contextFiles.length > 0,
-		includeSkills: hasRead && visibleSkills.length > 0,
+		includeSkills: (hasSkillTool || hasRead) && visibleSkills.length > 0,
 		preferDedicatedFileToolsGuideline: hasBash && (hasGrep || hasFind || hasLs),
 		promptGuidelines: uniqueNonEmptyLines(promptGuidelines ?? []),
 		readmePath: readmePath ?? "null",
+		readSkillFallback: !hasSkillTool && hasRead,
 		skills: visibleSkills,
+		skillToolActive: hasSkillTool,
 		useBashFileOpsGuideline: hasBash && !hasGrep && !hasFind && !hasLs,
 	});
 }

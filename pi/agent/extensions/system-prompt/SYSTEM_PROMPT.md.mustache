@@ -95,17 +95,34 @@ Project-specific instructions and guidelines:
 
 <skills_instructions>
 ## Skills
-A skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and file path so you can open the source for full instructions when using a specific skill.
+The following skills provide specialized instructions for specific workflows.
+{{#skillToolActive}}
+A skill is a named instruction set. Below is the list of skills that can be used. Each entry includes a name and description. When a skill applies, call `skill({name})` with the exact skill name instead of reading files directly.
+{{/skillToolActive}}
+{{#readSkillFallback}}
+A skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and file path so you can open the source for full instructions.
+{{/readSkillFallback}}
 ### How to use skills
+{{#skillToolActive}}
+- Discovery: The list below is the set of skills available in this session (name + description).
+- Trigger rules: If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a skill's description shown below, you must call `skill({name})` for that exact skill.
+- Missing/blocked: If a named skill isn't in the list or the skill tool fails, say so briefly and continue with the best fallback.
+- How to use a skill:
+  1) Call `skill({name})` with the exact skill name.
+  2) Follow the returned skill instructions.
+  3) When the skill tool returns cached, the same instructions already loaded in this session branch still apply.
+{{/skillToolActive}}
+{{#readSkillFallback}}
 - Discovery: The list above is the skills available in this session (name + description + location). Skill bodies live on disk at the listed paths.
 - Trigger rules: If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a skill's description shown above, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.
 - Missing/blocked: If a named skill isn't in the list or the path can't be read, say so briefly and continue with the best fallback.
 - How to use a skill (progressive disclosure):
-  1) After deciding to use a skill, open its `SKILL.md`. Read only enough to follow the workflow.
+  1) After deciding to use a skill, read the referenced `SKILL.md` file. Read only enough to follow the workflow.
   2) When `SKILL.md` references relative paths (e.g., `scripts/foo.py`), resolve them relative to the skill directory listed above first, and only consider other paths if needed.
   3) If `SKILL.md` points to extra folders such as `references/`, load only the specific files needed for the request; don't bulk-load everything.
   4) If `scripts/` exist, prefer running or patching them instead of retyping large code blocks.
   5) If `assets/` or templates exist, reuse them instead of recreating from scratch.
+{{/readSkillFallback}}
 - Coordination and sequencing:
   - If multiple skills apply, choose the minimal set that covers the request and state the order you'll use them.
   - Announce which skill(s) you're using and why (one short line). If you skip an obvious skill, say why.
@@ -114,7 +131,9 @@ A skill is a set of local instructions to follow that is stored in a `SKILL.md` 
 <skill>
 <name>{{name}}</name>
 <description>{{description}}</description>
+{{#readSkillFallback}}
 <location>{{filePath}}</location>
+{{/readSkillFallback}}
 </skill>
 {{/skills}}
 </available_skills>

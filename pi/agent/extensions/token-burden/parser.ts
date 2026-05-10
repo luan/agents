@@ -44,6 +44,19 @@ function firstPositive(...values: number[]): number {
 	return min;
 }
 
+function findSkillsPreamble(prompt: string): number {
+	const idx = prompt.indexOf("The following skills provide specialized instructions");
+	if (idx === -1) return -1;
+	const sectionStart = prompt.lastIndexOf("\n<skills_instructions>", idx);
+	return sectionStart === -1 ? idx : sectionStart + 1;
+}
+
+function findMetadataFooter(prompt: string): number {
+	const currentDateTimeIdx = prompt.lastIndexOf("\nCurrent date and time:");
+	if (currentDateTimeIdx !== -1) return currentDateTimeIdx;
+	return prompt.lastIndexOf("\nCurrent date:");
+}
+
 /**
  * Find where the base system prompt ends.
  *
@@ -137,17 +150,17 @@ function findSkillsSectionEnd(availableSkillsEnd: number, dateLineIdx: number, p
  *   - `# Project Context` heading
  *   - `The following skills provide specialized instructions` preamble
  *   - `<available_skills>` / `</available_skills>` XML block
- *   - `Current date and time:` footer
+ *   - `Current date:` footer
  */
 export function parseSystemPrompt(prompt: string): ParsedPrompt {
 	const sections: PromptSection[] = [];
 	const skills: SkillEntry[] = [];
 
 	const projectCtxIdx = prompt.indexOf("\n\n# Project Context\n");
-	const skillsPreambleIdx = prompt.indexOf("\n\nThe following skills provide specialized instructions");
+	const skillsPreambleIdx = findSkillsPreamble(prompt);
 	const availableSkillsStart = prompt.indexOf("<available_skills>");
 	const availableSkillsEnd = prompt.indexOf("</available_skills>");
-	const dateLineIdx = prompt.lastIndexOf("\nCurrent date and time:");
+	const dateLineIdx = findMetadataFooter(prompt);
 
 	// 1. Base system prompt
 	const baseEnd = findBasePromptEnd(prompt, projectCtxIdx, skillsPreambleIdx, dateLineIdx);
