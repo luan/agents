@@ -70,6 +70,52 @@ describe("skill-dollar editor wrapping", () => {
 		const nextEditor = factory?.(undefined as never, undefined as never, undefined as never) as typeof editor;
 		expect(nextEditor.transformEditorLine?.("$tdd")).toBe("before \x1b[36m$tdd\x1b[39m");
 	});
+
+	test("wraps editor render output when line transform is unavailable", () => {
+		const editor: EditorComponent = {
+			render: () => ["use $tdd"],
+			invalidate() {},
+			getText: () => "",
+			setText() {},
+			handleInput() {},
+		};
+		let factory: ((...args: never[]) => EditorComponent) | undefined = () => editor;
+		installEditorHighlight(
+			{
+				getEditorComponent: () => factory as never,
+				setEditorComponent: (next) => {
+					factory = next as never;
+				},
+			},
+			() => new Set(["tdd"]),
+		);
+
+		const nextEditor = factory?.(undefined as never, undefined as never, undefined as never);
+		expect(nextEditor?.render(80)).toEqual(["use \x1b[36m$tdd\x1b[39m"]);
+	});
+
+	test("wraps editors installed after highlight setup", () => {
+		let factory: ((...args: never[]) => EditorComponent) | undefined;
+		const ui = {
+			getEditorComponent: () => factory,
+			setEditorComponent: (next: typeof factory) => {
+				factory = next;
+			},
+		};
+		installEditorHighlight(ui, () => new Set(["tdd"]));
+
+		const editor: EditorComponent = {
+			render: () => ["use $tdd"],
+			invalidate() {},
+			getText: () => "",
+			setText() {},
+			handleInput() {},
+		};
+		ui.setEditorComponent(() => editor);
+
+		const nextEditor = factory?.(undefined as never, undefined as never, undefined as never);
+		expect(nextEditor?.render(80)).toEqual(["use \x1b[36m$tdd\x1b[39m"]);
+	});
 });
 
 describe("skill-dollar skills", () => {
