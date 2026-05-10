@@ -3,7 +3,13 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { patchDollarAutocompleteTrigger, wrapProvider } from "./autocomplete";
 import { installEditorHighlight } from "./editor";
-import { buildItems, collectSkills, rewriteSlashSkillReferences, stripFrontmatter } from "./skills";
+import {
+	buildItems,
+	collectSkills,
+	rewriteDollarSkillCommand,
+	rewriteSlashSkillReferences,
+	stripFrontmatter,
+} from "./skills";
 import { ensureTranscriptHighlight } from "./transcript";
 
 const DOLLAR_RE = /(?<![\w$])\$([a-zA-Z][\w-]*)/g;
@@ -30,6 +36,13 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("resources_discover", () => {
 		refresh();
+	});
+
+	pi.on("input", (event) => {
+		refresh();
+		const text = rewriteDollarSkillCommand(event.text, state.skills.keys());
+		if (text === event.text) return { action: "continue" };
+		return { action: "transform", text };
 	});
 
 	pi.on("before_agent_start", async (event) => {
@@ -62,7 +75,7 @@ export default function (pi: ExtensionAPI) {
 		return { systemPrompt: event.systemPrompt + injection };
 	});
 
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
 		refresh();
 		setTimeout(() => {
 			try {
@@ -75,7 +88,7 @@ export default function (pi: ExtensionAPI) {
 		}, 0);
 		if (!ctx.hasUI) return;
 		const ui = ctx.ui as typeof ctx.ui & { [AUTOCOMPLETE_INSTALLED]?: true };
-		if (ui[AUTOCOMPLETE_INSTALLED]) return;
+		if (ui[AUTOCOMPLETE_INSTALLED] && event.reason !== "reload") return;
 		ui[AUTOCOMPLETE_INSTALLED] = true;
 		ctx.ui.addAutocompleteProvider((current) => wrapProvider(current, currentItems));
 	});

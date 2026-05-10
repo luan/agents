@@ -3,7 +3,8 @@ import type { AutocompleteProvider, EditorComponent } from "@earendil-works/pi-t
 import { findMentionAtCursor, wrapProvider } from "./autocomplete";
 import { installEditorHighlight } from "./editor";
 import { colorize } from "./highlight";
-import { buildItems, rewriteSlashSkillReferences, stripFrontmatter } from "./skills";
+import extension from "./index";
+import { buildItems, rewriteDollarSkillCommand, rewriteSlashSkillReferences, stripFrontmatter } from "./skills";
 
 describe("skill-dollar highlighting", () => {
 	test("highlights known dollar and slash skill references", () => {
@@ -85,5 +86,71 @@ describe("skill-dollar skills", () => {
 				skills,
 			),
 		).toBe("Use `$implement`, then suggest $plan <research>. Keep ~/blueprints/foo/archive/ unchanged.");
+	});
+
+	test("rewrites leading dollar skill shorthand to native skill command", () => {
+		const skills = ["tdd", "crit"];
+		expect(rewriteDollarSkillCommand("$tdd fix this", skills)).toBe("/skill:tdd fix this");
+		expect(rewriteDollarSkillCommand(" $crit", skills)).toBe("/skill:crit");
+		expect(rewriteDollarSkillCommand("please use $tdd", skills)).toBe("please use $tdd");
+		expect(rewriteDollarSkillCommand("$missing fix this", skills)).toBe("$missing fix this");
+	});
+});
+
+describe("skill-dollar extension", () => {
+	test("transforms leading dollar shorthand before pi skill expansion", async () => {
+		const handlers = new Map<string, Array<(event: { text: string }) => unknown>>();
+		const pi = {
+			getCommands: () => [
+				{ source: "skill", name: "skill:tdd", sourceInfo: { path: "/skills/tdd/SKILL.md" } },
+				{ source: "skill", name: "skill:crit", sourceInfo: { path: "/skills/crit/SKILL.md" } },
+			],
+			on: (event: string, handler: (event: { text: string }) => unknown) => {
+				handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+			},
+		};
+
+		extension(pi as never);
+
+		const result = await handlers.get("input")?.[0]?.({ text: "$tdd fix this" });
+		expect(result).toEqual({ action: "transform", text: "/skill:tdd fix this" });
+		expect(await handlers.get("input")?.[0]?.({ text: "please use $tdd" })).toEqual({ action: "continue" });
+	});
+
+	test("reinstalls autocomplete provider after reload", async () => {
+		const ui = {
+			added: 0,
+			addAutocompleteProvider() {
+				this.added += 1;
+			},
+		};
+		const createPi = () => {
+			const handlers = new Map<
+				string,
+				Array<(event: { reason?: string }, ctx: { hasUI: boolean; ui: typeof ui }) => unknown>
+			>();
+			return {
+				handlers,
+				pi: {
+					getCommands: () => [],
+					on: (
+						event: string,
+						handler: (event: { reason?: string }, ctx: { hasUI: boolean; ui: typeof ui }) => unknown,
+					) => {
+						handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+					},
+				},
+			};
+		};
+
+		const first = createPi();
+		extension(first.pi as never);
+		await first.handlers.get("session_start")?.[0]?.({ reason: "startup" }, { hasUI: true, ui });
+
+		const second = createPi();
+		extension(second.pi as never);
+		await second.handlers.get("session_start")?.[0]?.({ reason: "reload" }, { hasUI: true, ui });
+
+		expect(ui.added).toBe(2);
 	});
 });

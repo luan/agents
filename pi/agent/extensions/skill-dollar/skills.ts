@@ -38,3 +38,11 @@ export function rewriteSlashSkillReferences(text: string, skills: Iterable<strin
 	const pattern = new RegExp(`(?<![\\w$~.])\\/(${escaped.join("|")})(?=(?:\\s|\`|[.,;:)<]|$))`, "g");
 	return text.replace(pattern, (_match, name: string) => `$${name}`);
 }
+
+export function rewriteDollarSkillCommand(text: string, skills: Iterable<string>): string {
+	const names = [...skills].filter(Boolean).sort((a, b) => b.length - a.length);
+	if (names.length === 0 || !text.includes("$")) return text;
+	const escaped = names.map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+	const pattern = new RegExp(`^\\s*\\$(${escaped.join("|")})(?= |$)`);
+	return text.replace(pattern, (_match, name: string) => `/skill:${name}`);
+}
