@@ -580,6 +580,41 @@ mod tests {
     }
 
     #[test]
+    fn failure_report_derives_retry_skeleton_from_retained_patch_body() {
+        let t = Telemetry::open_in_memory().unwrap();
+        let patch = concat!(
+            "*** Begin Patch\n",
+            "*** Update File: main.rs\n",
+            "@@\n",
+            "-old();\n",
+            "+new();\n",
+            "*** End Patch\n",
+        );
+        t.record_patch_body("patch-sha", patch).unwrap();
+        let call_id = t.record_call(&sample_call()).unwrap();
+        t.record_failure_diagnostic(&diagnostics::FailureDiagnosticInput {
+            call_id,
+            patch_id: "patch-a".into(),
+            patch_sha: "patch-sha".into(),
+            failure_kind: "ambiguous_context".into(),
+            message: "ambiguous context in main.rs at chunk #0".into(),
+            anchors: vec![
+                "@@ fn chosen()  →  pins to candidate at line 12 (anchor at line 10)".into(),
+            ],
+            files: vec!["main.rs".into()],
+            candidates: serde_json::Value::Null,
+        })
+        .unwrap();
+
+        let report = t.failure_report(10).unwrap();
+        let rendered = diagnostics::render_report(&report);
+        assert!(rendered.contains("retry hunk suggestion:"), "{rendered}");
+        assert!(rendered.contains("@@ fn chosen()"), "{rendered}");
+        assert!(rendered.contains("-old();"), "{rendered}");
+        assert!(rendered.contains("+new();"), "{rendered}");
+    }
+
+    #[test]
     fn sha1_hex_known_answer() {
         assert_eq!(sha1_hex(b""), "da39a3ee5e6b4b0d3255bfef95601890afd80709");
         assert_eq!(sha1_hex(b"abc"), "a9993e364706816aba3e25717850c26c9cd0d89d");
