@@ -64,7 +64,7 @@ The description is **the only thing your agent sees** when deciding which skill 
 
 **Goal**: Give your agent just enough info to know:
 
-1. What capability this skill provides
+1. What capability the skill provides
 2. When/why to trigger it (specific keywords, contexts, file types)
 
 **Format**:
