@@ -3,6 +3,8 @@ use std::collections::BTreeMap;
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
+use crate::apply_patch::parser::{Hunk, parse_patch};
+
 use super::{Telemetry, TelemetryError, now_ms, sha1_hex};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,6 +37,8 @@ pub struct FailureDiagnostic {
     pub files: Vec<String>,
     pub candidates: serde_json::Value,
     pub ts: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_skeleton: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,6 +143,7 @@ impl Telemetry {
             files: input.files.clone(),
             candidates: input.candidates.clone(),
             ts,
+            retry_skeleton: None,
         })
     }
 
@@ -148,10 +153,12 @@ impl Telemetry {
     ) -> Result<Option<FailureDiagnostic>, TelemetryError> {
         Ok(self.with_conn(|conn| {
             conn.query_row(
-                "SELECT ts, call_id, diagnostic_id, patch_id, patch_sha, failure_kind, fingerprint,
-                        occurrence_count, novelty, message, anchors_json, files_json, candidates_json
-                 FROM failure_diagnostics
-                 WHERE diagnostic_id = ?1",
+                "SELECT d.ts, d.call_id, d.diagnostic_id, d.patch_id, d.patch_sha, d.failure_kind, d.fingerprint,
+                        d.occurrence_count, d.novelty, d.message, d.anchors_json, d.files_json, d.candidates_json,
+                        p.body
+                 FROM failure_diagnostics d
+                 LEFT JOIN patch_bodies p ON p.patch_sha = d.patch_sha
+                 WHERE d.diagnostic_id = ?1",
                 params![diagnostic_id],
                 diagnostic_from_row,
             )
@@ -163,10 +170,12 @@ impl Telemetry {
         let limit = limit.max(1) as i64;
         let diagnostics = self.with_conn(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT ts, call_id, diagnostic_id, patch_id, patch_sha, failure_kind, fingerprint,
-                        occurrence_count, novelty, message, anchors_json, files_json, candidates_json
-                 FROM failure_diagnostics
-                 ORDER BY ts DESC, id DESC
+                "SELECT d.ts, d.call_id, d.diagnostic_id, d.patch_id, d.patch_sha, d.failure_kind, d.fingerprint,
+                        d.occurrence_count, d.novelty, d.message, d.anchors_json, d.files_json, d.candidates_json,
+                        p.body
+                 FROM failure_diagnostics d
+                 LEFT JOIN patch_bodies p ON p.patch_sha = d.patch_sha
+                 ORDER BY d.ts DESC, d.id DESC
                  LIMIT ?1",
             )?;
             stmt.query_map(params![limit], diagnostic_from_row)?
@@ -227,6 +236,9 @@ pub fn render_report(report: &FailureReport) -> String {
         }
         if let Some(hint) = action_hint(diagnostic) {
             out.push_str(&format!("  fix: {hint}\n"));
+        }
+        if let Some(skeleton) = &diagnostic.retry_skeleton {
+            out.push_str(&indent_retry_skeleton(skeleton, "  "));
         }
         if let Some(subcause) = context_not_found_subcause(diagnostic) {
             out.push_str(&format!("  subcause: {subcause}\n"));
@@ -290,6 +302,12 @@ pub fn render_diagnostic(diagnostic: &FailureDiagnostic) -> String {
     out.push_str(&format!("message: {}\n", diagnostic.message));
     if let Some(hint) = action_hint(diagnostic) {
         out.push_str(&format!("fix: {hint}\n"));
+    }
+    if let Some(skeleton) = &diagnostic.retry_skeleton {
+        out.push_str(skeleton);
+        if !skeleton.ends_with('\n') {
+            out.push('\n');
+        }
     }
     out.push_str(&format!(
         "next action: {}\n",
@@ -454,6 +472,146 @@ fn action_hint(diagnostic: &FailureDiagnostic) -> Option<String> {
                 .to_string(),
         );
     }
+    None
+}
+
+fn indent_retry_skeleton(skeleton: &str, indent: &str) -> String {
+    skeleton
+        .lines()
+        .map(|line| format!("{indent}{line}\n"))
+        .collect()
+}
+
+fn retry_skeleton_for_diagnostic(
+    diagnostic: &FailureDiagnostic,
+    patch_body: &str,
+) -> Option<String> {
+    if patch_body.trim().is_empty() {
+        return None;
+    }
+    let file = diagnostic.files.first()?;
+    let chunk_index = diagnostic_chunk(&diagnostic.message).unwrap_or(0);
+    let chunk = patch_update_chunk(patch_body, file, chunk_index)?;
+    let anchor = retry_anchor_for_diagnostic(diagnostic, &chunk)?;
+
+    let mut out = String::from("retry hunk suggestion:\n");
+    out.push_str(&format!("*** Update File: {file}\n"));
+    out.push_str(&anchor);
+    out.push('\n');
+    for line in chunk.body_lines {
+        out.push_str(&line);
+        out.push('\n');
+    }
+    Some(out)
+}
+
+struct PatchChunkBody {
+    old_len: usize,
+    body_lines: Vec<String>,
+}
+
+fn patch_update_chunk(patch_body: &str, file: &str, chunk_index: usize) -> Option<PatchChunkBody> {
+    let hunks = parse_patch(patch_body).ok()?;
+    let mut current = 0usize;
+    for hunk in hunks {
+        let Hunk::UpdateFile { path, chunks, .. } = hunk else {
+            continue;
+        };
+        if path.to_string_lossy() != file {
+            continue;
+        }
+        for chunk in chunks {
+            if current == chunk_index {
+                return Some(PatchChunkBody {
+                    old_len: chunk.old_lines.len(),
+                    body_lines: render_update_chunk_body(&chunk.old_lines, &chunk.new_lines),
+                });
+            }
+            current += 1;
+        }
+    }
+    None
+}
+
+fn render_update_chunk_body(old_lines: &[String], new_lines: &[String]) -> Vec<String> {
+    let equal_pairs = lcs_equal_pairs(old_lines, new_lines);
+    let mut lines = Vec::new();
+    let mut old_cursor = 0usize;
+    let mut new_cursor = 0usize;
+    for (old_idx, new_idx) in equal_pairs {
+        while old_cursor < old_idx {
+            lines.push(format!("-{}", old_lines[old_cursor]));
+            old_cursor += 1;
+        }
+        while new_cursor < new_idx {
+            lines.push(format!("+{}", new_lines[new_cursor]));
+            new_cursor += 1;
+        }
+        lines.push(format!(" {}", old_lines[old_idx]));
+        old_cursor = old_idx + 1;
+        new_cursor = new_idx + 1;
+    }
+    while old_cursor < old_lines.len() {
+        lines.push(format!("-{}", old_lines[old_cursor]));
+        old_cursor += 1;
+    }
+    while new_cursor < new_lines.len() {
+        lines.push(format!("+{}", new_lines[new_cursor]));
+        new_cursor += 1;
+    }
+    lines
+}
+
+fn lcs_equal_pairs(old: &[String], new: &[String]) -> Vec<(usize, usize)> {
+    let mut dp = vec![vec![0_usize; new.len() + 1]; old.len() + 1];
+    for old_idx in (0..old.len()).rev() {
+        for new_idx in (0..new.len()).rev() {
+            dp[old_idx][new_idx] = if old[old_idx] == new[new_idx] {
+                dp[old_idx + 1][new_idx + 1] + 1
+            } else {
+                dp[old_idx + 1][new_idx].max(dp[old_idx][new_idx + 1])
+            };
+        }
+    }
+
+    let mut pairs = Vec::new();
+    let mut old_idx = 0;
+    let mut new_idx = 0;
+    while old_idx < old.len() && new_idx < new.len() {
+        if old[old_idx] == new[new_idx] {
+            pairs.push((old_idx, new_idx));
+            old_idx += 1;
+            new_idx += 1;
+        } else if dp[old_idx + 1][new_idx] >= dp[old_idx][new_idx + 1] {
+            old_idx += 1;
+        } else {
+            new_idx += 1;
+        }
+    }
+    pairs
+}
+
+fn retry_anchor_for_diagnostic(
+    diagnostic: &FailureDiagnostic,
+    chunk: &PatchChunkBody,
+) -> Option<String> {
+    if diagnostic.failure_kind == "ambiguous_context" {
+        return diagnostic.anchors.iter().find_map(|anchor| {
+            anchor
+                .split_once("  ")
+                .map(|(candidate, _)| candidate)
+                .filter(|candidate| candidate.starts_with("@@ "))
+                .map(str::to_string)
+        });
+    }
+
+    if diagnostic.failure_kind == "context_not_found"
+        && let Some((line, 0)) = closest_match_line_and_distance(&diagnostic.message)
+    {
+        let end = line + chunk.old_len.saturating_sub(1);
+        return Some(format!("@@ lines {line}-{end}"));
+    }
+
     None
 }
 
@@ -629,6 +787,27 @@ fn closest_match_summary(message: &str) -> Option<String> {
     })
 }
 
+fn closest_match_line_and_distance(message: &str) -> Option<(usize, usize)> {
+    let marker = "closest match: line ";
+    let start = message.find(marker)? + marker.len();
+    let rest = &message[start..];
+    let line = rest
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .parse()
+        .ok()?;
+    let distance_marker = "edit distance ";
+    let distance_start = rest.find(distance_marker)? + distance_marker.len();
+    let distance = rest[distance_start..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .parse()
+        .ok()?;
+    Some((line, distance))
+}
+
 fn parse_debug_string(input: &str) -> Option<String> {
     let mut chars = input.chars();
     if chars.next()? != '"' {
@@ -666,7 +845,7 @@ fn diagnostic_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FailureDiagn
     let anchors_json: String = row.get(10)?;
     let files_json: String = row.get(11)?;
     let candidates_json: String = row.get(12)?;
-    Ok(FailureDiagnostic {
+    let mut diagnostic = FailureDiagnostic {
         ts,
         call_id,
         telemetry_id: format!("apt-call-{call_id}"),
@@ -683,7 +862,13 @@ fn diagnostic_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FailureDiagn
         anchors: serde_json::from_str(&anchors_json).unwrap_or_default(),
         files: serde_json::from_str(&files_json).unwrap_or_default(),
         candidates: serde_json::from_str(&candidates_json).unwrap_or(serde_json::Value::Null),
-    })
+        retry_skeleton: None,
+    };
+    let patch_body: Option<String> = row.get(13)?;
+    if let Some(patch_body) = patch_body.as_deref() {
+        diagnostic.retry_skeleton = retry_skeleton_for_diagnostic(&diagnostic, patch_body);
+    }
+    Ok(diagnostic)
 }
 
 fn fingerprint_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FailureFingerprintSummary> {
@@ -722,6 +907,7 @@ mod tests {
             files: vec!["src/lib.rs".into()],
             candidates: serde_json::Value::Null,
             ts: 0,
+            retry_skeleton: None,
         }
     }
 
@@ -848,5 +1034,72 @@ mod tests {
                 "{out}"
             );
         }
+    }
+
+    #[test]
+    fn retry_skeleton_replaces_ambiguous_hunk_anchor_with_suggested_anchor() {
+        let diagnostic = FailureDiagnostic {
+            failure_kind: "ambiguous_context".into(),
+            message: "ambiguous context in src/lib.rs at chunk #0".into(),
+            files: vec!["src/lib.rs".into()],
+            anchors: vec![
+                "@@ fn selected()  →  pins to candidate at line 10 (anchor at line 8)".into(),
+                "bare @@".into(),
+            ],
+            ..diagnostic("ambiguous_context")
+        };
+        let patch = concat!(
+            "*** Begin Patch\n",
+            "*** Update File: src/lib.rs\n",
+            "@@\n",
+            "-    old();\n",
+            "+    new();\n",
+            "*** End Patch\n",
+        );
+
+        let skeleton = retry_skeleton_for_diagnostic(&diagnostic, patch).unwrap();
+        assert!(skeleton.contains("retry hunk suggestion:"), "{skeleton}");
+        assert!(
+            skeleton.contains("*** Update File: src/lib.rs"),
+            "{skeleton}"
+        );
+        assert!(skeleton.contains("@@ fn selected()"), "{skeleton}");
+        assert!(skeleton.contains("-    old();"), "{skeleton}");
+        assert!(skeleton.contains("+    new();"), "{skeleton}");
+    }
+
+    #[test]
+    fn retry_skeleton_is_omitted_without_patch_body_or_candidate_anchor() {
+        let diagnostic = FailureDiagnostic {
+            failure_kind: "ambiguous_context".into(),
+            files: vec!["src/lib.rs".into()],
+            anchors: vec!["bare @@".into()],
+            ..diagnostic("ambiguous_context")
+        };
+
+        assert!(retry_skeleton_for_diagnostic(&diagnostic, "").is_none());
+    }
+
+    #[test]
+    fn retry_skeleton_uses_line_range_for_exact_closest_context_match() {
+        let diagnostic = FailureDiagnostic {
+            failure_kind: "context_not_found".into(),
+            message: "context not found in src/lib.rs at chunk #0: first expected line was \"    old();\" (closest match: line 42, edit distance 0)".into(),
+            files: vec!["src/lib.rs".into()],
+            ..diagnostic("context_not_found")
+        };
+        let patch = concat!(
+            "*** Begin Patch\n",
+            "*** Update File: src/lib.rs\n",
+            "@@ stale_anchor\n",
+            "-    old();\n",
+            "+    new();\n",
+            "*** End Patch\n",
+        );
+
+        let skeleton = retry_skeleton_for_diagnostic(&diagnostic, patch).unwrap();
+        assert!(skeleton.contains("@@ lines 42-42"), "{skeleton}");
+        assert!(skeleton.contains("-    old();"), "{skeleton}");
+        assert!(skeleton.contains("+    new();"), "{skeleton}");
     }
 }
