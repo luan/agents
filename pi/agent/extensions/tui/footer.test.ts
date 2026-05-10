@@ -136,6 +136,70 @@ describe("renderFooter", () => {
 		expect(assistantIndex).toBeGreaterThan(toolsIndex);
 	});
 
+	test("keeps the visual context bar proportional when many slices are visible", () => {
+		const keys = ["prompt", "assistant", "tools", "thinking"] as const;
+		const contextSlices = Array.from({ length: 80 }, (_, index) => ({
+			key: keys[index % keys.length],
+			tokens: 1012.5,
+		}));
+		const lines = renderFooter(
+			state({
+				contextPercent: 29.6,
+				contextUsed: 81_000,
+				contextTotal: 272_000,
+				contextSlices,
+			}),
+			config,
+			"/tmp/p",
+			theme,
+			160,
+		);
+
+		const ctxLine = lines.find((line) => stripAnsi(line).includes("29.6% 81k/272k")) ?? "";
+		const plain = stripAnsi(ctxLine);
+		const usedColumns = [...plain].filter((char) => char === "━").length;
+		const freeColumns = [...plain].filter((char) => char === "─").length;
+		const visualPercent = (usedColumns / (usedColumns + freeColumns)) * 100;
+
+		expect(visualPercent).toBeGreaterThanOrEqual(28);
+		expect(visualPercent).toBeLessThanOrEqual(32);
+	});
+
+	test("keeps non-prompt segment colors visible when dense slices are compacted", () => {
+		const contextSlices = [
+			...Array.from({ length: 50 }, () => ({ key: "prompt" as const, tokens: 1000 })),
+			...Array.from({ length: 10 }, () => ({ key: "assistant" as const, tokens: 1000 })),
+			...Array.from({ length: 10 }, () => ({ key: "thinking" as const, tokens: 1000 })),
+			...Array.from({ length: 10 }, () => ({ key: "tools" as const, tokens: 1000 })),
+		];
+		const lines = renderFooter(
+			state({
+				contextPercent: 29.6,
+				contextUsed: 81_000,
+				contextTotal: 272_000,
+				contextSegments: {
+					system: 0,
+					prompt: 51_000,
+					assistant: 10_000,
+					thinking: 10_000,
+					tools: 10_000,
+				},
+				contextSlices,
+			}),
+			config,
+			"/tmp/p",
+			theme,
+			160,
+		);
+
+		const ctxLine = lines.find((line) => stripAnsi(line).includes("29.6% 81k/272k")) ?? "";
+
+		expect(ctxLine).toContain("\x1b[38;2;165;95;114m━");
+		expect(ctxLine).toContain("\x1b[38;2;93;150;160m━");
+		expect(ctxLine).toContain("\x1b[38;2;138;113;168m━");
+		expect(ctxLine).toContain("\x1b[38;2;169;154;119m━");
+	});
+
 	test("renders the context legend with matching colors", () => {
 		const lines = renderFooter(state(), config, "/tmp/p", theme, 80);
 		const ctxLine = lines.find((line) => stripAnsi(line).includes("ctx [s p a r x] ")) ?? "";
