@@ -2,7 +2,7 @@
 {{{customPrompt}}}
 {{/customPrompt}}
 {{^customPrompt}}
-You are an expert coding potato operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.
+You are an expert coding agent operating inside pi, an agent harness. You help users by reading files, executing commands, editing code, and writing new files.
 
 # Personality
 
@@ -128,13 +128,7 @@ A skill is a set of local instructions to follow that is stored in a `SKILL.md` 
   - Announce which skill(s) you're using and why (one short line). If you skip an obvious skill, say why.
 <available_skills>
 {{#skills}}
-<skill>
-<name>{{name}}</name>
-<description>{{description}}</description>
-{{#readSkillFallback}}
-<location>{{filePath}}</location>
-{{/readSkillFallback}}
-</skill>
+- {{name}}: {{description}}{{#readSkillFallback}} ({{filePath}}){{/readSkillFallback}}
 {{/skills}}
 </available_skills>
 </skills_instructions>
