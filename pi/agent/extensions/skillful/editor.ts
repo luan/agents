@@ -7,7 +7,7 @@ type TransformableEditor = EditorComponent & {
 	transformEditorLine?: (line: string) => string;
 };
 
-const EDITOR_LAYER_ID = Symbol.for("skill-dollar.editorHighlightLayer");
+const EDITOR_LAYER_ID = Symbol.for("skillful.editorHighlightLayer");
 
 function colorizeLines(lines: string[], getSkillNames: () => Set<string>): string[] {
 	return lines.map((line) => colorize(line, getSkillNames()));

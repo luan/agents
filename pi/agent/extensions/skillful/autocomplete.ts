@@ -2,7 +2,7 @@ import { CustomEditor } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem, AutocompleteProvider } from "@earendil-works/pi-tui";
 
 const MENTION_AT_CURSOR_RE = /(?:^|\s)\$([a-zA-Z0-9\-_]*)$/;
-const INPUT_TRIGGER_PATCHED = Symbol.for("skill-dollar.inputTriggerPatched");
+const INPUT_TRIGGER_PATCHED = Symbol.for("skillful.inputTriggerPatched");
 
 function isPrintable(data: string): boolean {
 	return data.length === 1 && data.charCodeAt(0) >= 32;
