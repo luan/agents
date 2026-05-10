@@ -81,6 +81,12 @@ impl<'a> Extractor<'a> {
     }
 
     fn node_to_symbol(&self, node: Node<'_>, parent: &str, depth: usize) -> Option<Symbol> {
+        if matches!(self.language, "javascript" | "typescript" | "tsx")
+            && let Some(symbol) = self.js_test_wrapper_symbol(node, parent, depth)
+        {
+            return Some(symbol);
+        }
+
         let (kind, name_node) = self.classify_node(node)?;
         let name = node_text(self.source, name_node)?;
         let signature = self.extract_signature(node, &kind);
@@ -98,6 +104,34 @@ impl<'a> Extractor<'a> {
             parent: parent.to_string(),
             depth,
             signature,
+            language: self.language.to_string(),
+        })
+    }
+
+    fn js_test_wrapper_symbol(&self, node: Node<'_>, parent: &str, depth: usize) -> Option<Symbol> {
+        if node.kind() != "call_expression" {
+            return None;
+        }
+        let function = node.child_by_field_name("function")?;
+        let wrapper = extract_call_name(self.source, function)?;
+        if !matches!(wrapper.as_str(), "describe" | "it" | "test") {
+            return None;
+        }
+        let arguments = node.child_by_field_name("arguments")?;
+        let label = first_string_argument(self.source, arguments)?;
+        let start = node.start_position();
+        let end = node.end_position();
+        Some(Symbol {
+            name: format!("{wrapper}:{label}"),
+            kind: "test".to_string(),
+            file: self.file_path.to_string(),
+            start_line: start.row + 1,
+            end_line: end.row + 1,
+            start_col: start.column,
+            end_col: end.column,
+            parent: parent.to_string(),
+            depth,
+            signature: String::new(),
             language: self.language.to_string(),
         })
     }
@@ -665,6 +699,13 @@ impl<'a> Extractor<'a> {
         if let Some(reference) = self.extract_call_ref(node, "call_expression", "function") {
             refs.push(reference);
         }
+        if node.kind() == "macro_invocation" {
+            refs.extend(extract_rust_macro_call_refs(
+                self.source,
+                node,
+                self.language,
+            ));
+        }
         if node.kind() == "impl_item"
             && let Some(trait_node) = node.child_by_field_name("trait")
             && let Some(reference) = self.implements_ref(trait_node, node.start_position().row + 1)
@@ -895,6 +936,33 @@ fn node_text(source: &[u8], node: Node<'_>) -> Option<String> {
     node.utf8_text(source).ok().map(ToOwned::to_owned)
 }
 
+fn first_string_argument(source: &[u8], arguments: Node<'_>) -> Option<String> {
+    let count = arguments.named_child_count();
+    for index in 0..count {
+        let child = arguments.named_child(index)?;
+        if matches!(child.kind(), "string" | "template_string")
+            && let Some(label) = string_literal_value(source, child)
+        {
+            return Some(label);
+        }
+    }
+    None
+}
+
+fn string_literal_value(source: &[u8], node: Node<'_>) -> Option<String> {
+    let text = node_text(source, node)?;
+    let trimmed = text.trim();
+    if trimmed.len() < 2 {
+        return None;
+    }
+    let mut chars = trimmed.chars();
+    let quote = chars.next()?;
+    if !matches!(quote, '\'' | '"' | '`') || !trimmed.ends_with(quote) {
+        return None;
+    }
+    Some(trimmed[quote.len_utf8()..trimmed.len() - quote.len_utf8()].to_string())
+}
+
 fn trimmed_node_text(source: &[u8], node: Node<'_>, trim_chars: &str) -> Option<String> {
     node_text(source, node).map(|text| text.trim_matches(|c| trim_chars.contains(c)).to_string())
 }
@@ -945,6 +1013,91 @@ fn find_child_by_kind<'tree>(node: Node<'tree>, kind: &str) -> Option<Node<'tree
         }
     }
     None
+}
+
+fn extract_rust_macro_call_refs(source: &[u8], node: Node<'_>, language: &str) -> Vec<Ref> {
+    let Some(text) = node_text(source, node) else {
+        return Vec::new();
+    };
+    let Some((_, body)) = text.split_once('!') else {
+        return Vec::new();
+    };
+
+    let mut refs = Vec::new();
+    let mut chars = body.char_indices().peekable();
+    while let Some((offset, ch)) = chars.next() {
+        if !(ch == '_' || ch.is_ascii_alphabetic()) {
+            continue;
+        }
+        let start = offset;
+        let mut end = offset + ch.len_utf8();
+        while let Some((next_offset, next)) = chars.peek().copied() {
+            if next == '_' || next.is_ascii_alphanumeric() {
+                chars.next();
+                end = next_offset + next.len_utf8();
+            } else {
+                break;
+            }
+        }
+
+        let rest = &body[end..];
+        if !rest.trim_start().starts_with('(') {
+            continue;
+        }
+        let name = &body[start..end];
+        if is_rust_keyword_or_builtin(name) {
+            continue;
+        }
+        refs.push(Ref {
+            name: name.to_string(),
+            line: node.start_position().row
+                + 1
+                + body[..start].bytes().filter(|byte| *byte == b'\n').count(),
+            language: language.to_string(),
+            kind: REF_KIND_CALL.to_string(),
+        });
+    }
+    refs
+}
+
+fn is_rust_keyword_or_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "as" | "break"
+            | "const"
+            | "continue"
+            | "crate"
+            | "else"
+            | "enum"
+            | "extern"
+            | "false"
+            | "fn"
+            | "for"
+            | "if"
+            | "impl"
+            | "in"
+            | "let"
+            | "loop"
+            | "match"
+            | "mod"
+            | "move"
+            | "mut"
+            | "pub"
+            | "ref"
+            | "return"
+            | "self"
+            | "Self"
+            | "static"
+            | "struct"
+            | "super"
+            | "trait"
+            | "true"
+            | "type"
+            | "unsafe"
+            | "use"
+            | "where"
+            | "while"
+    )
 }
 
 fn collect_go_embedded_types(source: &[u8], node: Node<'_>, refs: &mut Vec<Ref>, language: &str) {

@@ -308,7 +308,6 @@ fn top_level_help_exposes_only_canonical_public_domains() {
     let help = String::from_utf8(assert.get_output().stdout.clone()).expect("help utf8");
 
     for canonical in [
-        "source",
         "vault",
         "repo",
         "task",
@@ -324,265 +323,9 @@ fn top_level_help_exposes_only_canonical_public_domains() {
             "help should contain {canonical}:\n{help}"
         );
     }
-}
-
-#[test]
-fn source_search_routes_symbol_text_and_path_modes() {
-    let (bp, _remote) = setup_blueprints();
-    let project = project_dir();
-    fs::create_dir_all(project.path().join("src")).expect("create src");
-    fs::write(
-        project.path().join("src/lib.rs"),
-        "pub fn source_target() -> &'static str {\n    \"needle text\"\n}\n",
-    )
-    .expect("write source");
-
-    let symbol = ct_cmd(bp.path())
-        .current_dir(project.path())
-        .args([
-            "source",
-            "search",
-            "--json",
-            "--mode",
-            "symbol",
-            "source_target",
-        ])
-        .assert()
-        .success();
-    let value: serde_json::Value =
-        serde_json::from_slice(&symbol.get_output().stdout).expect("symbol json");
-    assert_eq!(value["mode"], "symbol");
-    assert_eq!(value["read_only"], true);
-    assert!(value["result_count"].as_u64().unwrap_or(0) >= 1);
     assert!(
-        value["results"][0]["name"]
-            .as_str()
-            .unwrap_or("")
-            .contains("source_target")
-    );
-
-    let text = ct_cmd(bp.path())
-        .current_dir(project.path())
-        .args([
-            "source",
-            "search",
-            "--json",
-            "--mode",
-            "text",
-            "needle text",
-        ])
-        .assert()
-        .success();
-    let value: serde_json::Value =
-        serde_json::from_slice(&text.get_output().stdout).expect("text json");
-    assert_eq!(value["mode"], "text");
-    assert_eq!(value["results"][0]["rel_path"], "src/lib.rs");
-
-    let path = ct_cmd(bp.path())
-        .current_dir(project.path())
-        .args(["source", "search", "--json", "--mode", "path", "lib.rs"])
-        .assert()
-        .success();
-    let value: serde_json::Value =
-        serde_json::from_slice(&path.get_output().stdout).expect("path json");
-    assert_eq!(value["mode"], "path");
-    assert_eq!(value["results"][0]["path"], "src/lib.rs");
-}
-
-#[test]
-fn source_search_routes_structural_mode_when_ast_grep_is_available() {
-    if StdCommand::new("sg").arg("--version").status().is_err() {
-        return;
-    }
-
-    let (bp, _remote) = setup_blueprints();
-    let project = project_dir();
-    fs::create_dir_all(project.path().join("src")).expect("create src");
-    fs::write(
-        project.path().join("src/lib.rs"),
-        "pub fn structural_target() -> i32 {\n    42\n}\n",
-    )
-    .expect("write source");
-
-    let assert = ct_cmd(bp.path())
-        .current_dir(project.path())
-        .args([
-            "source",
-            "search",
-            "--json",
-            "--mode",
-            "structural",
-            "--lang",
-            "rust",
-            "--pattern",
-            "pub fn $NAME() -> i32 { $$BODY }",
-            "--path",
-            "src/lib.rs",
-        ])
-        .assert()
-        .success();
-    let value: serde_json::Value =
-        serde_json::from_slice(&assert.get_output().stdout).expect("structural json");
-    assert_eq!(value["mode"], "structural");
-    assert_eq!(value["match_count"].as_u64().unwrap_or(0), 1);
-    assert!(value["matches"].is_array());
-}
-
-#[test]
-fn source_show_and_outline_are_read_only_without_lens_read_tracking() {
-    let (bp, _remote) = setup_blueprints();
-    let project = project_dir();
-    let state = tempfile::tempdir().expect("state dir");
-    fs::create_dir_all(project.path().join("src")).expect("create src");
-    fs::write(
-        project.path().join("src/lib.rs"),
-        "pub fn nav_target() -> i32 {\n    7\n}\n",
-    )
-    .expect("write source");
-
-    ct_cmd(bp.path())
-        .current_dir(project.path())
-        .env("XDG_STATE_HOME", state.path())
-        .args(["source", "show", "--json", "src/lib.rs:L1-L2"])
-        .assert()
-        .failure()
-        .stderr(predicates::str::contains(
-            "source show only resolves symbols; use read for source lines",
-        ));
-
-    ct_cmd(bp.path())
-        .current_dir(project.path())
-        .env("XDG_STATE_HOME", state.path())
-        .args(["source", "show", "--json", "src/lib.rs"])
-        .assert()
-        .failure()
-        .stderr(predicates::str::contains(
-            "source show only resolves symbols; use source outline or read for files",
-        ));
-
-    let symbol = ct_cmd(bp.path())
-        .current_dir(project.path())
-        .env("XDG_STATE_HOME", state.path())
-        .args(["source", "show", "--json", "nav_target"])
-        .assert()
-        .success();
-    let value: serde_json::Value =
-        serde_json::from_slice(&symbol.get_output().stdout).expect("show symbol json");
-    assert_eq!(value["results"][0]["kind"], "symbol");
-    assert_eq!(value["results"][0]["results"][0]["name"], "nav_target");
-    assert_eq!(value["results"][0]["results"][0]["start_line"], 1);
-
-    let outline = ct_cmd(bp.path())
-        .current_dir(project.path())
-        .env("XDG_STATE_HOME", state.path())
-        .args(["source", "outline", "--json", "src/lib.rs"])
-        .assert()
-        .success();
-    let value: serde_json::Value =
-        serde_json::from_slice(&outline.get_output().stdout).expect("outline json");
-    assert_eq!(value["operation"], "outline");
-    assert_eq!(value["read_only"], true);
-    assert!(value["symbol_count"].as_u64().unwrap_or(0) >= 1);
-    assert_eq!(value["symbols"][0]["name"], "nav_target");
-}
-
-#[test]
-fn source_graph_and_investigation_commands_route_to_read_only_sym_internals() {
-    let (bp, _remote) = setup_blueprints();
-    let project = project_dir();
-    fs::create_dir_all(project.path().join("src")).expect("create src");
-    fs::write(
-        project.path().join("src/lib.rs"),
-        "pub trait Service { fn run(&self) -> i32; }\n\
-         pub struct Worker;\n\
-         impl Service for Worker { fn run(&self) -> i32 { helper() } }\n\
-         pub fn helper() -> i32 { 1 }\n\
-         pub fn caller() -> i32 { helper() }\n",
-    )
-    .expect("write source");
-
-    let refs = ct_cmd(bp.path())
-        .current_dir(project.path())
-        .args(["source", "refs", "--json", "helper"])
-        .assert()
-        .success();
-    let value: serde_json::Value =
-        serde_json::from_slice(&refs.get_output().stdout).expect("refs json");
-    assert_eq!(value["operation"], "refs");
-    assert_eq!(value["read_only"], true);
-    assert!(value["result_count"].as_u64().unwrap_or(0) >= 1);
-
-    let trace = ct_cmd(bp.path())
-        .current_dir(project.path())
-        .args(["source", "trace", "--json", "caller"])
-        .assert()
-        .success();
-    let value: serde_json::Value =
-        serde_json::from_slice(&trace.get_output().stdout).expect("trace json");
-    assert_eq!(value["operation"], "trace");
-    assert_eq!(value["results"][0]["callee"], "helper");
-
-    let impls = ct_cmd(bp.path())
-        .current_dir(project.path())
-        .args(["source", "impls", "--json", "Service"])
-        .assert()
-        .success();
-    let value: serde_json::Value =
-        serde_json::from_slice(&impls.get_output().stdout).expect("impls json");
-    assert_eq!(value["operation"], "impls");
-    assert_eq!(value["read_only"], true);
-    assert!(value["result_count"].as_u64().unwrap_or(0) >= 1);
-
-    let investigation = ct_cmd(bp.path())
-        .current_dir(project.path())
-        .args(["source", "investigate", "--json", "helper"])
-        .assert()
-        .success();
-    let value: serde_json::Value =
-        serde_json::from_slice(&investigation.get_output().stdout).expect("investigate json");
-    assert_eq!(value["operation"], "investigate");
-    assert_eq!(value["results"][0]["results"]["kind"], "function");
-}
-
-#[test]
-fn source_diff_scopes_git_diff_to_symbol() {
-    let (bp, _remote) = setup_blueprints();
-    let project = project_dir();
-    run_git(project.path(), &["init", "--initial-branch=main"]);
-    run_git(project.path(), &["config", "user.name", "ct-test"]);
-    run_git(
-        project.path(),
-        &["config", "user.email", "ct-test@example.com"],
-    );
-    run_git(project.path(), &["config", "commit.gpgsign", "false"]);
-    fs::create_dir_all(project.path().join("src")).expect("create src");
-    fs::write(
-        project.path().join("src/lib.rs"),
-        "pub fn helper() -> i32 {\n    1\n}\n\npub fn untouched() -> i32 {\n    0\n}\n",
-    )
-    .expect("write source");
-    run_git(project.path(), &["add", "src/lib.rs"]);
-    run_git(project.path(), &["commit", "-m", "init"]);
-    fs::write(
-        project.path().join("src/lib.rs"),
-        "pub fn helper() -> i32 {\n    2\n}\n\npub fn untouched() -> i32 {\n    0\n}\n",
-    )
-    .expect("modify source");
-
-    let diff = ct_cmd(bp.path())
-        .current_dir(project.path())
-        .args(["source", "diff", "--json", "helper"])
-        .assert()
-        .success();
-    let value: serde_json::Value =
-        serde_json::from_slice(&diff.get_output().stdout).expect("diff json");
-    assert_eq!(value["operation"], "diff");
-    assert_eq!(value["read_only"], true);
-    assert!(
-        value["result"]["content"]
-            .as_str()
-            .unwrap_or("")
-            .contains("+    2")
+        !help.contains("source"),
+        "source navigation lives in the sym binary:\n{help}"
     );
 }
 
@@ -592,6 +335,11 @@ fn source_mcp_server_is_removed_but_vault_mcp_is_available() {
 
     ct_cmd(bp.path())
         .args(["mcp", "source", "--help"])
+        .assert()
+        .failure();
+
+    ct_cmd(bp.path())
+        .args(["mcp", "sym", "--help"])
         .assert()
         .failure();
 

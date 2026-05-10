@@ -103,6 +103,7 @@ pub struct RefResult {
     pub rel_path: String,
     pub line: usize,
     pub name: String,
+    pub kind: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -120,6 +121,7 @@ pub struct ImpactResult {
     pub file: String,
     pub rel_path: String,
     pub line: usize,
+    pub kind: String,
     pub depth: usize,
 }
 
@@ -130,6 +132,7 @@ pub struct TraceResult {
     pub file: String,
     pub rel_path: String,
     pub line: usize,
+    pub kind: String,
     pub depth: usize,
 }
 
@@ -743,7 +746,7 @@ impl Store {
         if kinds.is_empty() {
             let mut stmt = self.conn.prepare(
                 r#"
-                SELECT f.path, f.rel_path, r.line, r.name
+                SELECT f.path, f.rel_path, r.line, r.name, r.kind
                 FROM refs r
                 JOIN files f ON r.file_id = f.id
                 WHERE r.name = ?1
@@ -757,6 +760,7 @@ impl Store {
                     rel_path: row.get(1)?,
                     line: row.get::<_, i64>(2)? as usize,
                     name: row.get(3)?,
+                    kind: row.get(4)?,
                 })
             })?;
             return Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?);
@@ -765,7 +769,7 @@ impl Store {
         let placeholders = vec!["?"; kinds.len()].join(", ");
         let sql = format!(
             r#"
-            SELECT f.path, f.rel_path, r.line, r.name
+            SELECT f.path, f.rel_path, r.line, r.name, r.kind
             FROM refs r
             JOIN files f ON r.file_id = f.id
             WHERE r.name = ? AND r.kind IN ({placeholders})
@@ -785,6 +789,28 @@ impl Store {
                 rel_path: row.get(1)?,
                 line: row.get::<_, i64>(2)? as usize,
                 name: row.get(3)?,
+                kind: row.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    pub fn all_references(&self) -> Result<Vec<RefResult>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT f.path, f.rel_path, r.line, r.name, r.kind
+            FROM refs r
+            JOIN files f ON r.file_id = f.id
+            ORDER BY f.rel_path, r.line
+            "#,
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(RefResult {
+                file: row.get(0)?,
+                rel_path: row.get(1)?,
+                line: row.get::<_, i64>(2)? as usize,
+                name: row.get(3)?,
+                kind: row.get(4)?,
             })
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
@@ -915,6 +941,7 @@ impl Store {
                         file: reference.file,
                         rel_path: reference.rel_path,
                         line: reference.line,
+                        kind: reference.kind,
                         depth: current_depth,
                     });
                     next_symbols.push(caller);
@@ -970,6 +997,7 @@ impl Store {
                         file: edge.file,
                         rel_path: edge.rel_path,
                         line: edge.line,
+                        kind: edge.kind,
                         depth: current_depth,
                     });
                     next_symbols.extend(self.resolve_symbols(&edge.callee)?);
@@ -1309,7 +1337,7 @@ impl Store {
         let placeholders = vec!["?"; kinds.len()].join(", ");
         let sql = format!(
             r#"
-            SELECT r.name, f.path, f.rel_path, r.line
+            SELECT r.name, f.path, f.rel_path, r.line, r.kind
             FROM refs r
             JOIN files f ON r.file_id = f.id
             WHERE f.path = ? AND r.line >= ? AND r.line <= ?
@@ -1330,6 +1358,7 @@ impl Store {
                 file: row.get(1)?,
                 rel_path: row.get(2)?,
                 line: row.get::<_, i64>(3)? as usize,
+                kind: row.get(4)?,
             })
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
@@ -1362,6 +1391,7 @@ struct TraceEdge {
     file: String,
     rel_path: String,
     line: usize,
+    kind: String,
 }
 
 #[derive(Debug, Clone)]

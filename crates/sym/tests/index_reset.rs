@@ -25,6 +25,8 @@ fn index_reset_replaces_invalid_existing_db() -> Result<()> {
         .args([
             "--db",
             db_path.to_string_lossy().as_ref(),
+            "--format",
+            "text",
             "index",
             ".",
             "--reset",

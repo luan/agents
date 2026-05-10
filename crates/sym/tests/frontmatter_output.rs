@@ -105,6 +105,7 @@ where
     S: AsRef<std::ffi::OsStr>,
 {
     let output = Command::new(env!("CARGO_BIN_EXE_sym"))
+        .args(["--format", "text"])
         .args(args)
         .current_dir(cwd)
         .output()?;

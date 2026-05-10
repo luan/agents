@@ -1,14 +1,15 @@
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::bail;
 use clap::{Args, Subcommand, ValueEnum};
 use serde::Serialize;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::context;
 use crate::diff;
 use crate::graph;
-use crate::hook;
 use crate::impls;
 use crate::indexer;
 use crate::investigate;
@@ -27,11 +28,26 @@ pub struct SymArgs {
     #[arg(short = 'd', long)]
     pub db: Option<PathBuf>,
 
-    #[arg(long, default_value_t = false)]
-    pub json: bool,
+    #[arg(long, value_enum)]
+    pub format: Option<OutputFormatArg>,
 
     #[command(subcommand)]
     pub command: Command,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub enum OutputFormatArg {
+    Text,
+    Ai,
+}
+
+impl From<OutputFormatArg> for output::OutputFormat {
+    fn from(value: OutputFormatArg) -> Self {
+        match value {
+            OutputFormatArg::Text => output::OutputFormat::Text,
+            OutputFormatArg::Ai => output::OutputFormat::Ai,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -87,6 +103,56 @@ pub enum Command {
 
         #[arg(long = "exclude")]
         excludes: Vec<String>,
+    },
+
+    #[command(about = "Show indexed source statistics")]
+    Stats,
+
+    #[command(about = "Map indexed files and symbols at increasing detail levels")]
+    Map {
+        #[arg(
+            long,
+            default_value_t = 2,
+            value_parser = clap::value_parser!(u8).range(1..=3)
+        )]
+        level: u8,
+
+        #[arg(short = 'n', long, default_value_t = 100)]
+        limit: usize,
+    },
+
+    #[command(about = "Friendly symbol query with fuzzy prefix matching")]
+    Query {
+        query: Vec<String>,
+
+        #[arg(short = 'n', long, default_value_t = 20)]
+        limit: usize,
+
+        #[arg(short = 'k', long)]
+        kind: Option<String>,
+
+        #[arg(short = 'l', long)]
+        lang: Option<String>,
+
+        #[arg(short = 'e', long, default_value_t = false)]
+        exact: bool,
+
+        #[arg(long = "path")]
+        path_filters: Vec<String>,
+
+        #[arg(long = "exclude")]
+        excludes: Vec<String>,
+    },
+
+    #[command(about = "Inspect symbols defined in a file")]
+    Inspect {
+        file: PathBuf,
+
+        #[arg(short = 's', long, default_value_t = false)]
+        signatures: bool,
+
+        #[arg(long, default_value_t = false)]
+        names: bool,
     },
 
     #[command(about = "Show symbols defined in a file")]
@@ -171,6 +237,37 @@ pub enum Command {
         limit: usize,
     },
 
+    #[command(about = "Find direct callers of symbols")]
+    Callers {
+        targets: Vec<String>,
+
+        #[arg(short = 'n', long, default_value_t = 20)]
+        limit: usize,
+
+        #[arg(short = 'C', long = "context", default_value_t = 1)]
+        context: usize,
+
+        #[arg(long = "path")]
+        path_filters: Vec<String>,
+
+        #[arg(long = "exclude")]
+        excludes: Vec<String>,
+    },
+
+    #[command(about = "Find direct callees from symbols")]
+    Callees {
+        targets: Vec<String>,
+
+        #[arg(short = 'n', long, default_value_t = 20)]
+        limit: usize,
+
+        #[arg(long = "path")]
+        path_filters: Vec<String>,
+
+        #[arg(long = "exclude")]
+        excludes: Vec<String>,
+    },
+
     #[command(about = "Find transitive callers of a symbol")]
     Impact {
         targets: Vec<String>,
@@ -234,6 +331,71 @@ pub enum Command {
         stdin: bool,
     },
 
+    #[command(about = "Find types used by a symbol signature")]
+    Types {
+        targets: Vec<String>,
+
+        #[arg(short = 'n', long, default_value_t = 20)]
+        limit: usize,
+
+        #[arg(long = "path")]
+        path_filters: Vec<String>,
+
+        #[arg(long = "exclude")]
+        excludes: Vec<String>,
+    },
+
+    #[command(about = "Show field schema for structs/classes")]
+    Schema {
+        targets: Vec<String>,
+
+        #[arg(short = 'n', long, default_value_t = 20)]
+        limit: usize,
+    },
+
+    #[command(about = "Find tests that reference symbols")]
+    Tests {
+        targets: Vec<String>,
+
+        #[arg(short = 'n', long, default_value_t = 50)]
+        limit: usize,
+
+        #[arg(long = "path")]
+        path_filters: Vec<String>,
+
+        #[arg(long = "exclude")]
+        excludes: Vec<String>,
+    },
+
+    #[command(about = "Find production dependencies called by a test")]
+    TestDeps {
+        target: String,
+
+        #[arg(short = 'n', long, default_value_t = 50)]
+        limit: usize,
+
+        #[arg(long = "path")]
+        path_filters: Vec<String>,
+
+        #[arg(long = "exclude")]
+        excludes: Vec<String>,
+    },
+
+    #[command(about = "Report production symbols with no indexed test references")]
+    Untested {
+        #[arg(short = 'n', long, default_value_t = 50)]
+        limit: usize,
+
+        #[arg(short = 'l', long)]
+        lang: Option<String>,
+
+        #[arg(long = "path")]
+        path_filters: Vec<String>,
+
+        #[arg(long = "exclude")]
+        excludes: Vec<String>,
+    },
+
     #[command(about = "Bundled context: source, callers, conformance, and file imports")]
     Context {
         targets: Vec<String>,
@@ -270,70 +432,8 @@ pub enum Command {
         stat: bool,
     },
 
-    #[command(about = "Agent-integration hooks (nudge, remind, install)")]
-    Hook {
-        #[command(subcommand)]
-        command: HookCommand,
-    },
-
     #[command(about = "Print sym version information")]
     Version,
-}
-
-#[derive(Subcommand, Debug)]
-pub enum HookCommand {
-    #[command(about = "Suggest a sym equivalent when an agent is about to grep")]
-    Nudge {
-        #[arg(long, default_value = "claude-code")]
-        format: String,
-
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        command: Vec<String>,
-    },
-
-    #[command(about = "Print a short reminder block an agent can inject as context")]
-    Remind {
-        #[arg(long, default_value = "text")]
-        format: String,
-    },
-
-    #[command(about = "Install sym hooks into the given agent")]
-    Install {
-        #[arg(value_enum)]
-        agent: HookAgent,
-
-        #[arg(long, default_value = "user")]
-        scope: String,
-
-        #[arg(long, default_value_t = false)]
-        dry_run: bool,
-    },
-
-    #[command(about = "Remove sym hooks from the given agent")]
-    Uninstall {
-        #[arg(value_enum)]
-        agent: HookAgent,
-
-        #[arg(long, default_value = "user")]
-        scope: String,
-
-        #[arg(long, default_value_t = false)]
-        dry_run: bool,
-    },
-}
-
-#[derive(Copy, Clone, Debug, ValueEnum)]
-pub enum HookAgent {
-    #[value(name = "claude-code")]
-    ClaudeCode,
-}
-
-impl HookAgent {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            HookAgent::ClaudeCode => "claude-code",
-        }
-    }
 }
 
 pub fn run_index(path: &Path, force: bool, reset: bool, ignore: &[String]) -> anyhow::Result<()> {
@@ -345,14 +445,33 @@ pub fn run_index(path: &Path, force: bool, reset: bool, ignore: &[String]) -> an
     let stats = indexer::index(
         &root,
         &indexer::IndexOptions {
-            db_path: Some(db_path),
+            db_path: Some(db_path.clone()),
             cli_ignore_patterns: ignore.to_vec(),
             force,
         },
     )?;
 
-    if output::json_enabled() {
-        return output::write_json(&stats);
+    if output::structured_enabled() {
+        let store = crate::store::Store::open(&db_path)?;
+        let repo_stats = store.repo_stats()?;
+        return output::write_structured(&json!({
+            "operation": "index",
+            "repo_root": repo_stats.path,
+            "db_path": db_path,
+            "cache_dir": crate::repo::sym_dir()?,
+            "force": force,
+            "reset": reset,
+            "ignore_patterns": ignore,
+            "files_indexed": stats.files_indexed,
+            "files_skipped": stats.files_skipped,
+            "symbols_found": stats.symbols_found,
+            "stale_removed": stats.stale_removed,
+            "file_count": repo_stats.file_count,
+            "symbol_count": repo_stats.symbol_count,
+            "languages": repo_stats.languages,
+            "available": true,
+            "read_only": true,
+        }));
     }
 
     println!(
@@ -364,6 +483,78 @@ pub fn run_index(path: &Path, force: bool, reset: bool, ignore: &[String]) -> an
         println!("Ignore patterns: {}", stats.ignore_patterns.join(", "));
     }
 
+    Ok(())
+}
+
+pub fn run_stats() -> anyhow::Result<()> {
+    let cwd = std::env::current_dir()?;
+    let stats = ls::repo_stats(&cwd)?;
+    if output::structured_enabled() {
+        return output::write_structured(&json!({
+            "operation": "stats",
+            "repo": stats.path,
+            "file_count": stats.file_count,
+            "symbol_count": stats.symbol_count,
+            "languages": stats.languages,
+            "available": true,
+            "read_only": true,
+        }));
+    }
+    println!(
+        "stats: {} file(s), {} symbol(s)",
+        stats.file_count, stats.symbol_count
+    );
+    println!("repo: {}", stats.path);
+    for (language, count) in stats.languages {
+        println!("{language}: {count}");
+    }
+    Ok(())
+}
+
+pub fn run_map(level: u8, limit: usize) -> anyhow::Result<()> {
+    let cwd = std::env::current_dir()?;
+    let level = level.clamp(1, 3);
+    let store = crate::resolve::open_store(&cwd)?;
+    let overview = store.structure(limit.max(1))?;
+    let mut files = Vec::new();
+    if level >= 2 {
+        for file in store.all_files(None)?.into_iter().take(limit.max(1)) {
+            let symbols = store.file_outline(Path::new(&file.path))?;
+            let mut row = json!({
+                "path": file.rel_path,
+                "language": file.language,
+                "symbol_count": symbols.len(),
+            });
+            if level >= 3 {
+                row["symbols"] = serde_json::to_value(symbols)?;
+            }
+            files.push(row);
+        }
+    }
+    if output::structured_enabled() {
+        return output::write_structured(&json!({
+            "operation": "map",
+            "level": level,
+            "limit": limit,
+            "overview": overview,
+            "files": files,
+            "file_count": files.len(),
+            "available": true,
+            "read_only": true,
+        }));
+    }
+    println!(
+        "map level {level}: {} file(s), {} symbol(s)",
+        overview.files, overview.symbols
+    );
+    for file in files {
+        println!(
+            "{} [{}] {} symbol(s)",
+            file["path"].as_str().unwrap_or("?"),
+            file["language"].as_str().unwrap_or(""),
+            file["symbol_count"].as_u64().unwrap_or(0)
+        );
+    }
     Ok(())
 }
 
@@ -399,6 +590,22 @@ pub fn run_search(args: &SearchArgs<'_>) -> anyhow::Result<()> {
         )?;
         if results.is_empty() {
             bail!("no results found for '{query}'");
+        }
+
+        if output::structured_enabled() {
+            return output::write_structured(&json!({
+                "operation": "search",
+                "mode": "text",
+                "query": query,
+                "lang": args.lang,
+                "paths": args.path_filters,
+                "excludes": args.excludes,
+                "limit": args.limit,
+                "result_count": results.len(),
+                "results": results,
+                "available": true,
+                "read_only": true,
+            }));
         }
 
         let mut content = String::new();
@@ -438,6 +645,22 @@ pub fn run_search(args: &SearchArgs<'_>) -> anyhow::Result<()> {
         bail!("no results found for '{query}'");
     }
 
+    if output::structured_enabled() {
+        return output::write_structured(&json!({
+            "operation": "search",
+            "mode": "symbol",
+            "query": query,
+            "lang": args.lang,
+            "paths": args.path_filters,
+            "excludes": args.excludes,
+            "limit": args.limit,
+            "result_count": results.len(),
+            "results": results,
+            "available": true,
+            "read_only": true,
+        }));
+    }
+
     let mut content = String::new();
     for result in &results {
         content.push_str(&format!(
@@ -456,7 +679,74 @@ pub fn run_search(args: &SearchArgs<'_>) -> anyhow::Result<()> {
     )
 }
 
+pub struct QueryArgs<'a> {
+    pub query: &'a [String],
+    pub limit: usize,
+    pub kind: Option<&'a str>,
+    pub lang: Option<&'a str>,
+    pub exact: bool,
+    pub path_filters: &'a [String],
+    pub excludes: &'a [String],
+}
+
+pub fn run_query(args: &QueryArgs<'_>) -> anyhow::Result<()> {
+    let query = args.query.join(" ");
+    if query.trim().is_empty() {
+        bail!("query cannot be empty");
+    }
+    let root = std::env::current_dir()?;
+    let results = search::search_symbols(
+        &root,
+        &query,
+        &search::SymbolSearchOptions {
+            kind: args.kind,
+            lang: args.lang,
+            limit: args.limit,
+            exact: args.exact,
+            ignore_case: false,
+            includes: args.path_filters,
+            excludes: args.excludes,
+        },
+    )?;
+    if output::structured_enabled() {
+        return output::write_structured(&json!({
+            "operation": "query",
+            "mode": "symbol",
+            "query": query,
+            "fuzzy": !args.exact,
+            "lang": args.lang,
+            "paths": args.path_filters,
+            "excludes": args.excludes,
+            "limit": args.limit,
+            "result_count": results.len(),
+            "results": results,
+            "available": true,
+            "read_only": true,
+        }));
+    }
+    for result in results {
+        println!(
+            "{}:{} {} {}",
+            result.rel_path, result.start_line, result.kind, result.name
+        );
+    }
+    Ok(())
+}
+
 pub fn run_outline(file: &Path, signatures: bool, names: bool) -> anyhow::Result<()> {
+    run_outline_operation("outline", file, signatures, names)
+}
+
+pub fn run_inspect(file: &Path, signatures: bool, names: bool) -> anyhow::Result<()> {
+    run_outline_operation("inspect", file, signatures, names)
+}
+
+fn run_outline_operation(
+    operation: &str,
+    file: &Path,
+    signatures: bool,
+    names: bool,
+) -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
     let symbols = outline::file_outline(&cwd, file)?;
     if names {
@@ -467,8 +757,17 @@ pub fn run_outline(file: &Path, signatures: bool, names: bool) -> anyhow::Result
                 names_out.push(symbol.name);
             }
         }
-        if output::json_enabled() {
-            return output::write_json(&names_out);
+        if output::structured_enabled() {
+            return output::write_structured(&json!({
+                "operation": operation,
+                "file": file,
+                "signatures": signatures,
+                "names_only": true,
+                "symbol_count": names_out.len(),
+                "results": names_out,
+                "available": true,
+                "read_only": true,
+            }));
         }
         for name in names_out {
             println!("{name}");
@@ -476,8 +775,18 @@ pub fn run_outline(file: &Path, signatures: bool, names: bool) -> anyhow::Result
         return Ok(());
     }
 
-    if output::json_enabled() {
-        return output::write_json(&symbols);
+    if output::structured_enabled() {
+        return output::write_structured(&json!({
+            "operation": operation,
+            "file": file,
+            "signatures": signatures,
+            "names_only": false,
+            "symbol_count": symbols.len(),
+            "symbols": symbols.clone(),
+            "results": symbols,
+            "available": true,
+            "read_only": true,
+        }));
     }
 
     let rel_file = file.display().to_string();
@@ -516,14 +825,14 @@ pub fn run_show(targets: &[String], context: usize, all: bool, stdin: bool) -> a
     let cwd = std::env::current_dir()?;
     let targets = multisym::collect_symbols(targets, stdin)?;
 
-    if output::json_enabled() {
+    if output::structured_enabled() {
         let mut rendered = Vec::new();
-        for target in targets {
-            if looks_like_file_target(&target) {
-                let (path, range) = parse_file_target(&target);
+        for target in &targets {
+            if looks_like_file_target(target) {
+                let (path, range) = parse_file_target(target);
                 let Some(range) = range else {
                     anyhow::bail!(
-                        "source show does not accept bare file paths: {target}. Use file:line-line, outline, or a file reader instead"
+                        "sym show does not accept bare file paths: {target}. Use file:line-line, outline, or a file reader instead"
                     );
                 };
                 let lines = show::show_file(Path::new(&path), Some(range), context)?;
@@ -533,7 +842,7 @@ pub fn run_show(targets: &[String], context: usize, all: bool, stdin: bool) -> a
                     "results": lines,
                 }));
             } else {
-                let shown = show::show_symbol(&cwd, &target, context, all)?;
+                let shown = show::show_symbol(&cwd, target, context, all)?;
                 rendered.push(json!({
                     "target": target,
                     "kind": "symbol",
@@ -541,7 +850,16 @@ pub fn run_show(targets: &[String], context: usize, all: bool, stdin: bool) -> a
                 }));
             }
         }
-        return output::write_json(&rendered);
+        return output::write_structured(&json!({
+            "operation": "show",
+            "targets": targets,
+            "all": all,
+            "context": context,
+            "result_count": rendered.len(),
+            "results": rendered,
+            "available": true,
+            "read_only": true,
+        }));
     }
 
     for (index, target) in targets.iter().enumerate() {
@@ -550,7 +868,7 @@ pub fn run_show(targets: &[String], context: usize, all: bool, stdin: bool) -> a
             let (path, range) = parse_file_target(target);
             let Some(range) = range else {
                 anyhow::bail!(
-                    "source show does not accept bare file paths: {target}. Use file:line-line, outline, or a file reader instead"
+                    "sym show does not accept bare file paths: {target}. Use file:line-line, outline, or a file reader instead"
                 );
             };
             let lines = show::show_file(Path::new(&path), Some(range), context)?;
@@ -574,8 +892,8 @@ pub fn run_show(targets: &[String], context: usize, all: bool, stdin: bool) -> a
 pub fn run_ls(path: Option<&Path>, repos: bool, stats: bool, depth: usize) -> anyhow::Result<()> {
     if repos {
         let repos = ls::list_repos()?;
-        if output::json_enabled() {
-            return output::write_json(&repos);
+        if output::structured_enabled() {
+            return output::write_structured(&repos);
         }
         if repos.is_empty() {
             return Ok(());
@@ -609,8 +927,8 @@ pub fn run_ls(path: Option<&Path>, repos: bool, stats: bool, depth: usize) -> an
 
     let path = path.unwrap_or_else(|| Path::new("."));
     let tree = ls::tree(path, depth)?;
-    if output::json_enabled() {
-        return output::write_json(&tree);
+    if output::structured_enabled() {
+        return output::write_structured(&tree);
     }
     print!("{}", crate::walker::print_tree(&tree));
     Ok(())
@@ -654,18 +972,31 @@ pub fn run_refs(args: &RefsArgs<'_>) -> anyhow::Result<()> {
         includes.push(fragment.to_string());
     }
 
-    if output::json_enabled() {
+    if output::structured_enabled() {
         let mut grouped = Vec::new();
-        for target in targets {
+        for target in &targets {
             if importers {
                 let results =
-                    graph::find_importers(&cwd, &target, depth, limit, &includes, excludes)?;
+                    graph::find_importers(&cwd, target, depth, limit, &includes, excludes)?;
+                let results = results
+                    .into_iter()
+                    .map(|row| {
+                        json!({
+                            "file": row.file,
+                            "rel_path": row.rel_path,
+                            "import": row.import,
+                            "depth": row.depth,
+                            "evidence": import_path_evidence(),
+                            "confidence": "medium",
+                        })
+                    })
+                    .collect::<Vec<_>>();
                 grouped.push(TargetResult {
-                    target,
+                    target: target.clone(),
                     results: json!(results),
                 });
             } else {
-                let results = graph::find_references(&cwd, &target, limit, &includes, excludes)?;
+                let results = graph::find_references(&cwd, target, limit, &includes, excludes)?;
                 let enriched = results
                     .into_iter()
                     .map(|row| {
@@ -680,16 +1011,33 @@ pub fn run_refs(args: &RefsArgs<'_>) -> anyhow::Result<()> {
                             "file": row.file,
                             "line": row.line,
                             "context": ctx_lines,
+                            "reference_kind": row.kind,
+                            "evidence": reference_evidence(&row.kind),
+                            "confidence": reference_confidence(&row.kind),
                         })
                     })
                     .collect::<Vec<_>>();
                 grouped.push(TargetResult {
-                    target,
+                    target: target.clone(),
                     results: json!(enriched),
                 });
             }
         }
-        return output::write_json(&grouped);
+        return output::write_structured(&json!({
+            "operation": "refs",
+            "targets": targets,
+            "importers": importers,
+            "depth": depth,
+            "limit": limit,
+            "context": context,
+            "paths": path_filters,
+            "excludes": excludes,
+            "file": file,
+            "result_count": nested_result_count(&grouped),
+            "results": grouped,
+            "available": true,
+            "read_only": true,
+        }));
     }
 
     for (target_index, target) in targets.iter().enumerate() {
@@ -764,8 +1112,8 @@ pub fn run_importers(target: &str, depth: usize, limit: usize) -> anyhow::Result
     if results.is_empty() {
         bail!("no importers found for '{target}'");
     }
-    if output::json_enabled() {
-        return output::write_json(&results);
+    if output::structured_enabled() {
+        return output::write_structured(&results);
     }
     let mut content = String::new();
     for result in &results {
@@ -778,6 +1126,153 @@ pub fn run_importers(target: &str, depth: usize, limit: usize) -> anyhow::Result
         ],
         &content,
     )
+}
+
+pub fn run_callers(
+    targets: &[String],
+    limit: usize,
+    context: usize,
+    path_filters: &[String],
+    excludes: &[String],
+) -> anyhow::Result<()> {
+    if targets.is_empty() {
+        bail!("callers requires at least one target");
+    }
+    let cwd = std::env::current_dir()?;
+    let store = crate::resolve::open_store(&cwd)?;
+    let fetch_limit = crate::pathfilters::widen_path_filter_limit(
+        limit,
+        !path_filters.is_empty() || !excludes.is_empty(),
+    )
+    .max(1);
+    let mut rows = Vec::new();
+    for target in targets {
+        for reference in
+            store.find_references(target, fetch_limit, &[crate::symbols::REF_KIND_CALL])?
+        {
+            if !crate::pathfilters::include_path(
+                Path::new(&reference.rel_path),
+                path_filters,
+                excludes,
+            ) {
+                continue;
+            }
+            let caller = store
+                .enclosing_symbol_detail(&reference.file, reference.line)?
+                .map(|symbol| symbol.name)
+                .unwrap_or_else(|| "<top-level>".to_string());
+            let (ctx_lines, _) = source_context::read_source_context(
+                Path::new(&reference.file),
+                reference.line,
+                context,
+            );
+            rows.push(json!({
+                "target": target,
+                "caller": caller,
+                "callee": reference.name,
+                "file": reference.file,
+                "rel_path": reference.rel_path,
+                "line": reference.line,
+                "context": ctx_lines,
+                "reference_kind": reference.kind,
+                "evidence": parsed_call_evidence(),
+                "confidence": "high",
+            }));
+            if limit > 0 && rows.len() >= limit {
+                break;
+            }
+        }
+        if limit > 0 && rows.len() >= limit {
+            break;
+        }
+    }
+    if output::structured_enabled() {
+        return output::write_structured(&json!({
+            "operation": "callers",
+            "targets": targets,
+            "limit": limit,
+            "context": context,
+            "paths": path_filters,
+            "excludes": excludes,
+            "result_count": rows.len(),
+            "results": rows,
+            "available": true,
+            "read_only": true,
+        }));
+    }
+    println!("callers: {} result(s)", rows.len());
+    for row in rows {
+        println!("{}", source_hit_line(&row));
+    }
+    Ok(())
+}
+
+pub fn run_callees(
+    targets: &[String],
+    limit: usize,
+    path_filters: &[String],
+    excludes: &[String],
+) -> anyhow::Result<()> {
+    if targets.is_empty() {
+        bail!("callees requires at least one target");
+    }
+    let cwd = std::env::current_dir()?;
+    let fetch_limit = crate::pathfilters::widen_path_filter_limit(
+        limit,
+        !path_filters.is_empty() || !excludes.is_empty(),
+    )
+    .max(1);
+    let mut rows = Vec::new();
+    for target in targets {
+        for edge in graph::find_trace(
+            &cwd,
+            strip_symbol_hint(target),
+            1,
+            fetch_limit,
+            &[crate::symbols::REF_KIND_CALL],
+        )? {
+            if !crate::pathfilters::include_path(Path::new(&edge.rel_path), path_filters, excludes)
+            {
+                continue;
+            }
+            rows.push(json!({
+                "target": target,
+                "caller": edge.caller,
+                "callee": edge.callee,
+                "file": edge.file,
+                "rel_path": edge.rel_path,
+                "line": edge.line,
+                "depth": edge.depth,
+                "reference_kind": edge.kind,
+                "evidence": reference_evidence(&edge.kind),
+                "confidence": reference_confidence(&edge.kind),
+            }));
+            if limit > 0 && rows.len() >= limit {
+                break;
+            }
+        }
+        if limit > 0 && rows.len() >= limit {
+            break;
+        }
+    }
+    if output::structured_enabled() {
+        return output::write_structured(&json!({
+            "operation": "callees",
+            "targets": targets,
+            "limit": limit,
+            "paths": path_filters,
+            "excludes": excludes,
+            "result_count": rows.len(),
+            "results": rows,
+            "available": true,
+            "read_only": true,
+        }));
+    }
+    println!("callees: {} result(s)", rows.len());
+    for row in rows {
+        println!("{}", source_hit_line(&row));
+    }
+    Ok(())
 }
 
 pub fn run_impact(
@@ -816,7 +1311,7 @@ pub fn run_impact(
         bail!("no callers found");
     }
 
-    if output::json_enabled() {
+    if output::structured_enabled() {
         let results = merged
             .into_iter()
             .map(|row| {
@@ -833,10 +1328,29 @@ pub fn run_impact(
                     "line": row.line,
                     "hit_symbols": hits,
                     "context": ctx_lines,
+                    "reference_kind": row.kind,
+                    "evidence": reference_evidence(&row.kind),
+                    "confidence": reference_confidence(&row.kind),
                 })
             })
             .collect::<Vec<_>>();
-        return output::write_json(&results);
+        return output::write_structured(&json!({
+            "operation": "impact",
+            "targets": source_map
+                .values()
+                .flatten()
+                .cloned()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            "depth": depth,
+            "limit": limit,
+            "context": context,
+            "result_count": results.len(),
+            "results": results,
+            "available": true,
+            "read_only": true,
+        }));
     }
 
     let max_depth = merged.iter().map(|row| row.depth).max().unwrap_or(0);
@@ -927,7 +1441,7 @@ pub fn run_trace(
         bail!("no outgoing calls found");
     }
 
-    if output::json_enabled() {
+    if output::structured_enabled() {
         let results = merged
             .into_iter()
             .map(|row| {
@@ -941,10 +1455,29 @@ pub fn run_trace(
                     "rel_path": row.rel_path,
                     "line": row.line,
                     "hit_symbols": hits,
+                    "reference_kind": row.kind,
+                    "evidence": reference_evidence(&row.kind),
+                    "confidence": reference_confidence(&row.kind),
                 })
             })
             .collect::<Vec<_>>();
-        return output::write_json(&results);
+        return output::write_structured(&json!({
+            "operation": "trace",
+            "targets": source_map
+                .values()
+                .flatten()
+                .cloned()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            "depth": depth,
+            "limit": limit,
+            "kinds": kinds.join(","),
+            "result_count": results.len(),
+            "results": results,
+            "available": true,
+            "read_only": true,
+        }));
     }
 
     for row in merged {
@@ -1013,6 +1546,28 @@ pub fn run_impls(args: &ImplsArgs<'_>) -> anyhow::Result<()> {
             println!("No implements edges found for '{of}'.");
             return Ok(());
         }
+        if output::structured_enabled() {
+            let payload = json!({
+                "direction": "implements",
+                "target": of,
+                "results": results,
+            });
+            return output::write_structured(&json!({
+                "operation": "impls",
+                "targets": targets,
+                "of": of,
+                "lang": lang,
+                "limit": limit,
+                "paths": path_filters,
+                "excludes": excludes,
+                "resolved": resolved,
+                "unresolved": unresolved,
+                "result_count": impls_result_count(&payload),
+                "results": payload,
+                "available": true,
+                "read_only": true,
+            }));
+        }
         let mut content = String::new();
         for result in &results {
             let tag = if result.resolved { "" } else { " (external)" };
@@ -1034,13 +1589,33 @@ pub fn run_impls(args: &ImplsArgs<'_>) -> anyhow::Result<()> {
 
     let targets = multisym::collect_symbols(targets, stdin)?;
 
-    if output::json_enabled() {
+    if output::structured_enabled() {
         let mut grouped = Vec::new();
-        for target in targets {
-            let results = impls::find_implementors(&cwd, &target, &opts)?;
-            grouped.push(TargetResult { target, results });
+        for target in &targets {
+            let results = impls::find_implementors(&cwd, target, &opts)?;
+            grouped.push(TargetResult {
+                target: target.clone(),
+                results,
+            });
         }
-        return output::write_json(&grouped);
+        return output::write_structured(&json!({
+            "operation": "impls",
+            "targets": targets,
+            "of": of,
+            "lang": lang,
+            "limit": limit,
+            "paths": path_filters,
+            "excludes": excludes,
+            "resolved": resolved,
+            "unresolved": unresolved,
+            "result_count": nested_result_count(&grouped),
+            "results": {
+                "direction": "implementors",
+                "results": grouped,
+            },
+            "available": true,
+            "read_only": true,
+        }));
     }
 
     for (index, target) in targets.iter().enumerate() {
@@ -1071,11 +1646,408 @@ pub fn run_impls(args: &ImplsArgs<'_>) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub fn run_types(
+    targets: &[String],
+    limit: usize,
+    path_filters: &[String],
+    excludes: &[String],
+) -> anyhow::Result<()> {
+    if targets.is_empty() {
+        bail!("types requires at least one target");
+    }
+    let cwd = std::env::current_dir()?;
+    let store = crate::resolve::open_store(&cwd)?;
+    let mut grouped = Vec::new();
+    for target in targets {
+        let resolved = crate::resolve::resolve_symbol(&cwd, target)?;
+        let symbol = resolved.symbol;
+        let mut types = Vec::new();
+        for name in extract_type_names(&symbol.signature) {
+            let mut definitions = store.search_symbols(&name, "", "", true, false, 0)?;
+            definitions.retain(|definition| {
+                is_type_kind(&definition.kind)
+                    && crate::pathfilters::include_path(
+                        Path::new(&definition.rel_path),
+                        path_filters,
+                        excludes,
+                    )
+            });
+            if limit > 0 && definitions.len() > limit {
+                definitions.truncate(limit);
+            }
+            types.push(json!({
+                "name": name,
+                "definitions": definitions,
+            }));
+        }
+        grouped.push(json!({
+            "target": target,
+            "symbol": symbol,
+            "types": types,
+        }));
+    }
+    if output::structured_enabled() {
+        return output::write_structured(&json!({
+            "operation": "types",
+            "targets": targets,
+            "limit": limit,
+            "paths": path_filters,
+            "excludes": excludes,
+            "result_count": grouped.len(),
+            "results": grouped,
+            "available": true,
+            "read_only": true,
+        }));
+    }
+    println!("types: {} target(s)", grouped.len());
+    Ok(())
+}
+
+pub fn run_schema(targets: &[String], limit: usize) -> anyhow::Result<()> {
+    if targets.is_empty() {
+        bail!("schema requires at least one target");
+    }
+    let cwd = std::env::current_dir()?;
+    let store = crate::resolve::open_store(&cwd)?;
+    let mut rows = Vec::new();
+    for target in targets {
+        let mut matches = store.search_symbols(target, "", "", true, false, 0)?;
+        matches.retain(|symbol| is_type_kind(&symbol.kind));
+        if limit > 0 && matches.len() > limit {
+            matches.truncate(limit);
+        }
+        for symbol in matches {
+            let source = read_symbol_source(&symbol.file, symbol.start_line, symbol.end_line);
+            let fields = extract_schema_fields(&symbol.language, &symbol.kind, &source);
+            rows.push(json!({
+                "target": target,
+                "name": symbol.name,
+                "kind": symbol.kind,
+                "language": symbol.language,
+                "file": symbol.file,
+                "rel_path": symbol.rel_path,
+                "line": symbol.start_line,
+                "fields": fields,
+            }));
+        }
+    }
+    if output::structured_enabled() {
+        return output::write_structured(&json!({
+            "operation": "schema",
+            "targets": targets,
+            "limit": limit,
+            "result_count": rows.len(),
+            "results": rows,
+            "available": true,
+            "read_only": true,
+        }));
+    }
+    println!("schema: {} type(s)", rows.len());
+    Ok(())
+}
+
+pub fn run_tests(
+    targets: &[String],
+    limit: usize,
+    path_filters: &[String],
+    excludes: &[String],
+) -> anyhow::Result<()> {
+    if targets.is_empty() {
+        bail!("tests requires at least one target");
+    }
+    let cwd = std::env::current_dir()?;
+    let store = crate::resolve::open_store(&cwd)?;
+    let mut grouped = Vec::new();
+    for target in targets {
+        let fetch_limit = crate::pathfilters::widen_path_filter_limit(
+            limit,
+            !path_filters.is_empty() || !excludes.is_empty(),
+        )
+        .max(1);
+        let mut rows = Vec::new();
+        for reference in store.find_references(strip_symbol_hint(target), fetch_limit, &[])? {
+            let Some(test_symbol) = enclosing_test_symbol(&store, &reference.file, reference.line)?
+            else {
+                continue;
+            };
+            if !crate::pathfilters::include_path(
+                Path::new(&reference.rel_path),
+                path_filters,
+                excludes,
+            ) {
+                continue;
+            }
+            rows.push(json!({
+                "target": target,
+                "test": test_symbol.name,
+                "test_kind": test_symbol.kind,
+                "file": reference.file,
+                "rel_path": reference.rel_path,
+                "line": reference.line,
+                "reference": reference.name,
+                "reference_kind": reference.kind,
+                "heuristic": test_heuristic_reason(&test_symbol),
+                "evidence": test_reference_evidence(&test_symbol, &reference.kind),
+                "confidence": test_reference_confidence(&test_symbol, &reference.kind),
+            }));
+            if limit > 0 && rows.len() >= limit {
+                break;
+            }
+        }
+        grouped.push(json!({ "target": target, "results": rows }));
+    }
+    if output::structured_enabled() {
+        return output::write_structured(&json!({
+            "operation": "tests",
+            "targets": targets,
+            "limit": limit,
+            "paths": path_filters,
+            "excludes": excludes,
+            "heuristics": test_heuristics(),
+            "limitations": test_heuristic_limitations(),
+            "result_count": nested_value_result_count(&grouped),
+            "results": grouped,
+            "available": true,
+            "read_only": true,
+        }));
+    }
+    println!("tests: {} result(s)", nested_value_result_count(&grouped));
+    Ok(())
+}
+
+pub fn run_test_deps(
+    target: &str,
+    limit: usize,
+    path_filters: &[String],
+    excludes: &[String],
+) -> anyhow::Result<()> {
+    if target.trim().is_empty() {
+        bail!("test-deps target cannot be empty");
+    }
+    let cwd = std::env::current_dir()?;
+    let store = crate::resolve::open_store(&cwd)?;
+    let resolved = match crate::resolve::resolve_symbol(&cwd, target) {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            let rows = virtual_test_dependencies(&store, target, limit, path_filters, excludes)?;
+            if rows.is_empty() {
+                return Err(error);
+            }
+            if output::structured_enabled() {
+                return output::write_structured(&json!({
+                    "operation": "test-deps",
+                    "target": target,
+                    "limit": limit,
+                    "paths": path_filters,
+                    "excludes": excludes,
+                    "heuristics": test_heuristics(),
+                    "limitations": test_heuristic_limitations(),
+                    "symbol": {
+                        "name": target,
+                        "kind": "test",
+                    },
+                    "is_test": true,
+                    "result_count": rows.len(),
+                    "results": rows,
+                    "available": true,
+                    "read_only": true,
+                }));
+            }
+            println!("test-deps: {} result(s)", rows.len());
+            return Ok(());
+        }
+    };
+    let test_symbol = resolved.symbol;
+    let is_test = is_test_symbol(&test_symbol);
+    let fetch_limit = crate::pathfilters::widen_path_filter_limit(
+        limit,
+        !path_filters.is_empty() || !excludes.is_empty(),
+    )
+    .max(1);
+    let trace = graph::find_trace(
+        &cwd,
+        strip_symbol_hint(target),
+        1,
+        fetch_limit,
+        &[crate::symbols::REF_KIND_CALL],
+    )?;
+    let mut rows = Vec::new();
+    for edge in trace {
+        let mut definitions = store.search_symbols(&edge.callee, "", "", true, false, 0)?;
+        definitions.retain(|symbol| {
+            is_production_symbol(symbol)
+                && crate::pathfilters::include_path(
+                    Path::new(&symbol.rel_path),
+                    path_filters,
+                    excludes,
+                )
+        });
+        if definitions.is_empty() {
+            continue;
+        }
+        rows.push(json!({
+            "test": target,
+            "dependency": edge.callee,
+            "call_file": edge.file,
+            "call_rel_path": edge.rel_path,
+            "call_line": edge.line,
+            "definitions": definitions,
+            "evidence": parsed_call_evidence(),
+            "confidence": "high",
+        }));
+        if limit > 0 && rows.len() >= limit {
+            break;
+        }
+    }
+    if output::structured_enabled() {
+        return output::write_structured(&json!({
+            "operation": "test-deps",
+            "target": target,
+            "limit": limit,
+            "paths": path_filters,
+            "excludes": excludes,
+            "heuristics": test_heuristics(),
+            "limitations": test_heuristic_limitations(),
+            "symbol": test_symbol,
+            "is_test": is_test,
+            "result_count": rows.len(),
+            "results": rows,
+            "available": true,
+            "read_only": true,
+        }));
+    }
+    println!("test-deps: {} result(s)", rows.len());
+    Ok(())
+}
+
+pub fn run_untested(
+    limit: usize,
+    lang: Option<&str>,
+    path_filters: &[String],
+    excludes: &[String],
+) -> anyhow::Result<()> {
+    let cwd = std::env::current_dir()?;
+    let store = crate::resolve::open_store(&cwd)?;
+    let references = store.all_references()?;
+    let mut reference_counts = BTreeMap::<String, usize>::new();
+    let mut test_reference_counts = BTreeMap::<String, usize>::new();
+    for reference in &references {
+        *reference_counts.entry(reference.name.clone()).or_default() += 1;
+        if enclosing_test_symbol(&store, &reference.file, reference.line)?.is_some() {
+            *test_reference_counts
+                .entry(reference.name.clone())
+                .or_default() += 1;
+        }
+    }
+
+    let mut rows = Vec::new();
+    for symbol in store.search_symbols("", "", lang.unwrap_or(""), false, false, 0)? {
+        if !is_assessable_production_symbol(&symbol)
+            || !crate::pathfilters::include_path(
+                Path::new(&symbol.rel_path),
+                path_filters,
+                excludes,
+            )
+        {
+            continue;
+        }
+        let reference_count = reference_counts.get(&symbol.name).copied().unwrap_or(0);
+        let test_reference_count = test_reference_counts
+            .get(&symbol.name)
+            .copied()
+            .unwrap_or(0);
+        if test_reference_count > 0 {
+            continue;
+        }
+        let rank = crate::untested::rank(&symbol, reference_count, test_reference_count);
+        rows.push(json!({
+            "symbol": symbol,
+            "reference_count": reference_count,
+            "test_reference_count": test_reference_count,
+            "rank_score": rank.score,
+            "rank_reason": rank.reason,
+            "rank_inputs": {
+                "exported": rank.exported,
+                "reference_count": reference_count,
+                "fan_in": reference_count,
+                "test_reference_count": test_reference_count,
+            },
+            "rank_source": "cached_index_aggregates",
+            "reason": "no indexed test references",
+            "evidence": evidence(
+                "no_indexed_test_reference",
+                "medium",
+                "negative test-reference scan over indexed refs",
+            ),
+            "confidence": "medium",
+        }));
+    }
+    rows.sort_by(|a, b| {
+        let a_score = a.get("rank_score").and_then(Value::as_i64).unwrap_or(0);
+        let b_score = b.get("rank_score").and_then(Value::as_i64).unwrap_or(0);
+        let a_refs = a
+            .get("rank_inputs")
+            .and_then(|inputs| inputs.get("reference_count"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let b_refs = b
+            .get("rank_inputs")
+            .and_then(|inputs| inputs.get("reference_count"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let a_exported = a
+            .get("rank_inputs")
+            .and_then(|inputs| inputs.get("exported"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let b_exported = b
+            .get("rank_inputs")
+            .and_then(|inputs| inputs.get("exported"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        b_score
+            .cmp(&a_score)
+            .then_with(|| b_exported.cmp(&a_exported))
+            .then_with(|| b_refs.cmp(&a_refs))
+            .then_with(|| {
+                let a_name = a["symbol"]
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let b_name = b["symbol"]
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                a_name.cmp(b_name)
+            })
+    });
+    if limit > 0 && rows.len() > limit {
+        rows.truncate(limit);
+    }
+    if output::structured_enabled() {
+        return output::write_structured(&json!({
+            "operation": "untested",
+            "limit": limit,
+            "lang": lang,
+            "paths": path_filters,
+            "excludes": excludes,
+            "heuristics": test_heuristics(),
+            "limitations": test_heuristic_limitations(),
+            "result_count": rows.len(),
+            "results": rows,
+            "available": true,
+            "read_only": true,
+        }));
+    }
+    println!("untested: {} result(s)", rows.len());
+    Ok(())
+}
+
 pub fn run_context(targets: &[String], callers: usize, stdin: bool) -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
     let targets = multisym::collect_symbols(targets, stdin)?;
 
-    if output::json_enabled() {
+    if output::structured_enabled() {
         let mut grouped = Vec::new();
         for target in targets {
             let result = context::symbol_context(&cwd, &target, callers)?;
@@ -1084,7 +2056,7 @@ pub fn run_context(targets: &[String], callers: usize, stdin: bool) -> anyhow::R
                 results: result,
             });
         }
-        return output::write_json(&grouped);
+        return output::write_structured(&grouped);
     }
 
     for (index, target) in targets.iter().enumerate() {
@@ -1134,16 +2106,23 @@ pub fn run_investigate(targets: &[String], stdin: bool) -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
     let targets = multisym::collect_symbols(targets, stdin)?;
 
-    if output::json_enabled() {
+    if output::structured_enabled() {
         let mut grouped = Vec::new();
-        for target in targets {
-            let result = investigate::investigate(&cwd, &target)?;
+        for target in &targets {
+            let result = investigate::investigate(&cwd, target)?;
             grouped.push(TargetResult {
-                target,
+                target: target.clone(),
                 results: result,
             });
         }
-        return output::write_json(&grouped);
+        return output::write_structured(&json!({
+            "operation": "investigate",
+            "targets": targets,
+            "result_count": grouped.len(),
+            "results": grouped,
+            "available": true,
+            "read_only": true,
+        }));
     }
 
     for (index, target) in targets.iter().enumerate() {
@@ -1225,8 +2204,8 @@ pub fn run_structure(limit: usize) -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
     let result = structure::analyze(&cwd, limit)?;
 
-    if output::json_enabled() {
-        return output::write_json(&result);
+    if output::structured_enabled() {
+        return output::write_structured(&result);
     }
 
     println!(
@@ -1285,8 +2264,16 @@ pub fn run_structure(limit: usize) -> anyhow::Result<()> {
 pub fn run_diff(target: &str, base: &str, stat: bool) -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
     let result = diff::symbol_diff(&cwd, target, base, stat)?;
-    if output::json_enabled() {
-        return output::write_json(&result);
+    if output::structured_enabled() {
+        return output::write_structured(&json!({
+            "operation": "diff",
+            "target": target,
+            "base": base,
+            "stat": stat,
+            "result": result,
+            "available": true,
+            "read_only": true,
+        }));
     }
     if result.content.is_empty() {
         eprintln!(
@@ -1303,53 +2290,9 @@ pub fn run_diff(target: &str, base: &str, stat: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn run_hook(command: HookCommand) -> anyhow::Result<()> {
-    match command {
-        HookCommand::Nudge { format, command } => {
-            let (fields, tool_name) = hook::read_nudge_input(&command)?;
-            let field_refs = fields.iter().map(String::as_str).collect::<Vec<_>>();
-            let suggestion = hook::detect_search_command(&field_refs, &tool_name);
-            let output = hook::emit_nudge(&format, &field_refs, &suggestion)?;
-            if !output.stdout.is_empty() {
-                print!("{}", output.stdout);
-            }
-            if !output.stderr.is_empty() {
-                eprint!("{}", output.stderr);
-            }
-            Ok(())
-        }
-        HookCommand::Remind { format } => {
-            print!("{}", hook::emit_remind(&format)?);
-            Ok(())
-        }
-        HookCommand::Install {
-            agent,
-            scope,
-            dry_run,
-        } => {
-            print!(
-                "{}",
-                hook::run_hook_install(agent.as_str(), &scope, dry_run, false)?
-            );
-            Ok(())
-        }
-        HookCommand::Uninstall {
-            agent,
-            scope,
-            dry_run,
-        } => {
-            print!(
-                "{}",
-                hook::run_hook_install(agent.as_str(), &scope, dry_run, true)?
-            );
-            Ok(())
-        }
-    }
-}
-
 pub fn run_version() -> anyhow::Result<()> {
-    if output::json_enabled() {
-        return output::write_json(&version::display_version());
+    if output::structured_enabled() {
+        return output::write_structured(&version::display_version());
     }
     println!("{}", version::display_version());
     Ok(())
@@ -1362,11 +2305,543 @@ fn parse_kinds(raw: &str) -> Vec<&str> {
         .collect()
 }
 
+fn nested_result_count<T: Serialize>(grouped: &[TargetResult<T>]) -> usize {
+    grouped
+        .iter()
+        .filter_map(|group| serde_json::to_value(&group.results).ok())
+        .filter_map(|value| value.as_array().map(Vec::len))
+        .sum()
+}
+
+fn nested_value_result_count(grouped: &[Value]) -> usize {
+    grouped
+        .iter()
+        .filter_map(|group| group.get("results").and_then(Value::as_array))
+        .map(Vec::len)
+        .sum()
+}
+
+fn impls_result_count(value: &Value) -> usize {
+    if let Some(results) = value.get("results").and_then(Value::as_array) {
+        if results.iter().all(|item| item.get("results").is_some()) {
+            return nested_value_result_count(results);
+        }
+        return results.len();
+    }
+    0
+}
+
+fn source_hit_line(item: &Value) -> String {
+    let rel = item
+        .get("rel_path")
+        .and_then(Value::as_str)
+        .or_else(|| item.get("file").and_then(Value::as_str))
+        .unwrap_or("?");
+    let line = item
+        .get("line")
+        .or_else(|| item.get("start_line"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let primary = item
+        .get("caller")
+        .or_else(|| item.get("callee"))
+        .or_else(|| item.get("name"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if primary.is_empty() {
+        format!("{rel}:{line}")
+    } else {
+        format!("{rel}:{line} {primary}")
+    }
+}
+
+fn is_type_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "class" | "struct" | "interface" | "trait" | "enum" | "protocol" | "type"
+    )
+}
+
+fn is_assessable_symbol_kind(kind: &str) -> bool {
+    matches!(kind, "function" | "method")
+}
+
+fn is_test_file(rel_path: &str, language: &str) -> bool {
+    let normalized = rel_path.replace('\\', "/");
+    let file_name = normalized.rsplit('/').next().unwrap_or(&normalized);
+    let stem = file_name
+        .rsplit_once('.')
+        .map(|(stem, _)| stem)
+        .unwrap_or(file_name);
+    normalized
+        .split('/')
+        .any(|part| matches!(part, "test" | "tests" | "__tests__" | "spec"))
+        || stem.starts_with("test_")
+        || stem.ends_with("_test")
+        || file_name.contains(".test.")
+        || file_name.contains(".spec.")
+        || (language == "rust" && normalized.starts_with("tests/"))
+}
+
+fn is_test_symbol_name(name: &str) -> bool {
+    name.starts_with("test_")
+        || name.ends_with("_test")
+        || name.starts_with("it_")
+        || name.starts_with("should_")
+}
+
+fn has_rust_test_attr(file: &str, start_line: usize) -> bool {
+    let Ok(contents) = fs::read_to_string(file) else {
+        return false;
+    };
+    let lines = contents.lines().collect::<Vec<_>>();
+    if start_line == 0 || start_line > lines.len() {
+        return false;
+    }
+    let start = start_line.saturating_sub(4).max(1);
+    lines[start - 1..start_line - 1]
+        .iter()
+        .map(|line| line.trim())
+        .any(|line| {
+            line == "#[test]"
+                || line.starts_with("#[tokio::test")
+                || line.starts_with("#[async_std::test")
+                || line.starts_with("#[rstest")
+        })
+}
+
+fn is_test_symbol(symbol: &crate::store::SymbolResult) -> bool {
+    is_test_file(&symbol.rel_path, &symbol.language)
+        || is_test_symbol_name(&symbol.name)
+        || (symbol.language == "rust" && has_rust_test_attr(&symbol.file, symbol.start_line))
+}
+
+fn is_production_symbol(symbol: &crate::store::SymbolResult) -> bool {
+    !is_test_file(&symbol.rel_path, &symbol.language) && !is_test_symbol(symbol)
+}
+
+fn is_assessable_production_symbol(symbol: &crate::store::SymbolResult) -> bool {
+    is_assessable_symbol_kind(&symbol.kind) && is_production_symbol(symbol)
+}
+
+fn enclosing_test_symbol(
+    store: &crate::store::Store,
+    file: &str,
+    line: usize,
+) -> anyhow::Result<Option<crate::store::SymbolResult>> {
+    let file_record = store
+        .all_files(None)?
+        .into_iter()
+        .find(|row| row.path == file);
+    if let Some(file_record) = file_record.as_ref()
+        && is_test_file(&file_record.rel_path, &file_record.language)
+        && let Some((name, start_line)) = test_wrapper_name(file, line)
+    {
+        return Ok(Some(crate::store::SymbolResult {
+            name,
+            kind: "test".to_string(),
+            parent: String::new(),
+            language: file_record.language.clone(),
+            rel_path: file_record.rel_path.clone(),
+            file: file_record.path.clone(),
+            start_line,
+            end_line: line,
+            depth: 0,
+            signature: String::new(),
+        }));
+    }
+
+    if let Some(symbol) = store.enclosing_symbol_detail(file, line)? {
+        if is_test_symbol(&symbol) {
+            return Ok(Some(symbol));
+        }
+        return Ok(None);
+    }
+
+    let outline = store.file_outline(Path::new(file))?;
+    Ok(outline
+        .into_iter()
+        .find(|symbol| is_test_file(&symbol.rel_path, &symbol.language)))
+}
+
+fn test_heuristic_reason(symbol: &crate::store::SymbolResult) -> &'static str {
+    if symbol.kind == "test" {
+        "test-wrapper"
+    } else if is_test_file(&symbol.rel_path, &symbol.language) {
+        "test-file-path"
+    } else if is_test_symbol_name(&symbol.name) {
+        "test-symbol-name"
+    } else if symbol.language == "rust" && has_rust_test_attr(&symbol.file, symbol.start_line) {
+        "rust-test-attribute"
+    } else {
+        "unknown"
+    }
+}
+
+fn test_evidence_kind(symbol: &crate::store::SymbolResult) -> &'static str {
+    if symbol.kind == "test" {
+        "test_wrapper_convention"
+    } else if symbol.language == "rust" && has_rust_test_attr(&symbol.file, symbol.start_line) {
+        "rust_test_attribute"
+    } else if is_test_symbol_name(&symbol.name) {
+        "test_symbol_convention"
+    } else if is_test_file(&symbol.rel_path, &symbol.language) {
+        "test_file_convention"
+    } else {
+        "unknown"
+    }
+}
+
+fn test_heuristics() -> Vec<&'static str> {
+    vec![
+        "path components named test, tests, __tests__, or spec",
+        "file stems starting with test_ or ending with _test",
+        "file names containing .test. or .spec.",
+        "symbol names starting with test_, it_, or should_, or ending with _test",
+        "Rust #[test], #[tokio::test], #[async_std::test], and #[rstest] attributes",
+        "Jest/Vitest describe, it, and test wrapper names in recognized test files",
+    ]
+}
+
+fn test_heuristic_limitations() -> Vec<&'static str> {
+    vec![
+        "dynamic dispatch, macro-generated tests, and framework-specific decorators may be missed",
+        "simple Rust macro invocation bodies are scanned for direct call syntax, not fully expanded",
+        "coverage means an indexed test reference or call, not executed runtime coverage",
+        "name/path conventions can produce false positives in non-test helpers",
+    ]
+}
+
+fn evidence(kind: &str, confidence: &str, source: &str) -> Value {
+    json!({
+        "kind": kind,
+        "confidence": confidence,
+        "source": source,
+    })
+}
+
+fn parsed_call_evidence() -> Value {
+    evidence(
+        "parsed_call_edge",
+        "high",
+        "tree-sitter reference extracted as call",
+    )
+}
+
+fn import_path_evidence() -> Value {
+    evidence(
+        "import_path_match",
+        "medium",
+        "import path matched indexed target path",
+    )
+}
+
+fn reference_evidence(kind: &str) -> Value {
+    match kind {
+        crate::symbols::REF_KIND_CALL => parsed_call_evidence(),
+        crate::symbols::REF_KIND_IMPLEMENTS => evidence(
+            "parsed_conformance_edge",
+            "high",
+            "tree-sitter reference extracted as implements",
+        ),
+        crate::symbols::REF_KIND_USE => evidence(
+            "lexical_reference",
+            "medium",
+            "tree-sitter reference extracted as use",
+        ),
+        _ => evidence("unknown", "low", "unclassified indexed reference"),
+    }
+}
+
+fn reference_confidence(kind: &str) -> &'static str {
+    match kind {
+        crate::symbols::REF_KIND_CALL | crate::symbols::REF_KIND_IMPLEMENTS => "high",
+        crate::symbols::REF_KIND_USE => "medium",
+        _ => "low",
+    }
+}
+
+fn test_reference_evidence(symbol: &crate::store::SymbolResult, reference_kind: &str) -> Value {
+    let mut value = reference_evidence(reference_kind);
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "test_classifier".to_string(),
+            json!(test_evidence_kind(symbol)),
+        );
+    }
+    value
+}
+
+fn test_reference_confidence(
+    symbol: &crate::store::SymbolResult,
+    reference_kind: &str,
+) -> &'static str {
+    match (test_evidence_kind(symbol), reference_kind) {
+        ("rust_test_attribute", crate::symbols::REF_KIND_CALL) => "high",
+        ("test_symbol_convention", crate::symbols::REF_KIND_CALL) => "high",
+        ("test_file_convention", crate::symbols::REF_KIND_CALL) => "medium",
+        ("test_wrapper_convention", crate::symbols::REF_KIND_CALL) => "medium",
+        _ => reference_confidence(reference_kind),
+    }
+}
+
+fn test_wrapper_name(file: &str, line: usize) -> Option<(String, usize)> {
+    let contents = fs::read_to_string(file).ok()?;
+    let lines = contents.lines().collect::<Vec<_>>();
+    let end = line.min(lines.len());
+    for index in (0..end).rev() {
+        if let Some(wrapper) = test_wrapper_name_at(lines[index], index + 1) {
+            return Some(wrapper);
+        }
+    }
+    None
+}
+
+fn test_wrapper_name_at(line: &str, line_no: usize) -> Option<(String, usize)> {
+    let trimmed = line.trim_start();
+    for prefix in ["it", "test", "describe"] {
+        let Some(rest) = trimmed.strip_prefix(prefix) else {
+            continue;
+        };
+        if !rest.trim_start().starts_with('(') {
+            continue;
+        }
+        if let Some(label) = first_quoted_argument(rest) {
+            return Some((format!("{prefix}:{label}"), line_no));
+        }
+    }
+    None
+}
+
+fn first_quoted_argument(value: &str) -> Option<String> {
+    let mut chars = value.chars();
+    let quote = chars.find(|ch| *ch == '\'' || *ch == '"')?;
+    let mut label = String::new();
+    for ch in chars {
+        if ch == quote {
+            return Some(label);
+        }
+        label.push(ch);
+    }
+    None
+}
+
+fn virtual_test_dependencies(
+    store: &crate::store::Store,
+    target: &str,
+    limit: usize,
+    path_filters: &[String],
+    excludes: &[String],
+) -> anyhow::Result<Vec<Value>> {
+    let mut symbols = store.search_symbols("", "", "", false, false, 0)?;
+    symbols.retain(|symbol| {
+        is_assessable_production_symbol(symbol)
+            && crate::pathfilters::include_path(Path::new(&symbol.rel_path), path_filters, excludes)
+    });
+    let mut rows = Vec::new();
+    let mut seen = BTreeSet::new();
+    for file in store.all_files(None)? {
+        if !is_test_file(&file.rel_path, &file.language) {
+            continue;
+        }
+        let Ok(contents) = fs::read_to_string(&file.path) else {
+            continue;
+        };
+        let lines = contents.lines().collect::<Vec<_>>();
+        for (index, line) in lines.iter().enumerate() {
+            let Some((name, _)) = test_wrapper_name_at(line, index + 1) else {
+                continue;
+            };
+            if name != target {
+                continue;
+            }
+            let block = test_wrapper_block(&lines, index);
+            for symbol in &symbols {
+                if !block.contains(&format!("{}(", symbol.name)) {
+                    continue;
+                }
+                let key = format!("{}:{}", file.path, symbol.name);
+                if !seen.insert(key) {
+                    continue;
+                }
+                rows.push(json!({
+                    "test": target,
+                    "dependency": symbol.name,
+                    "call_file": file.path,
+                    "call_rel_path": file.rel_path,
+                    "call_line": index + 1,
+                    "definitions": [symbol],
+                    "evidence": evidence(
+                        "test_wrapper_convention",
+                        "medium",
+                        "Jest/Vitest wrapper body lexical scan",
+                    ),
+                    "confidence": "medium",
+                }));
+                if limit > 0 && rows.len() >= limit {
+                    return Ok(rows);
+                }
+            }
+        }
+    }
+    Ok(rows)
+}
+
+fn test_wrapper_block(lines: &[&str], start: usize) -> String {
+    let mut block = String::new();
+    for line in &lines[start..] {
+        block.push_str(line);
+        block.push('\n');
+        let trimmed = line.trim();
+        if trimmed == "});" || trimmed == "})" || trimmed == "});;" {
+            break;
+        }
+    }
+    block
+}
+
+fn extract_type_names(signature: &str) -> Vec<String> {
+    const EXCLUDED: &[&str] = &[
+        "Self", "self", "str", "String", "bool", "char", "usize", "isize", "u8", "u16", "u32",
+        "u64", "u128", "i8", "i16", "i32", "i64", "i128", "f32", "f64", "Option", "Result", "Vec",
+        "Box", "HashMap", "BTreeMap", "HashSet", "BTreeSet",
+    ];
+    let mut names = BTreeSet::new();
+    let mut current = String::new();
+    for ch in signature.chars().chain(std::iter::once(' ')) {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == ':' {
+            current.push(ch);
+            continue;
+        }
+        let token = current.trim_matches(':');
+        if !token.is_empty() {
+            let name = token.rsplit("::").next().unwrap_or(token);
+            if name
+                .chars()
+                .next()
+                .is_some_and(|first| first.is_ascii_uppercase())
+                && !EXCLUDED.contains(&name)
+            {
+                names.insert(name.to_string());
+            }
+        }
+        current.clear();
+    }
+    names.into_iter().collect()
+}
+
+fn read_symbol_source(file: &str, start_line: usize, end_line: usize) -> String {
+    let Ok(contents) = fs::read_to_string(file) else {
+        return String::new();
+    };
+    contents
+        .lines()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            let line_no = index + 1;
+            (line_no >= start_line && line_no <= end_line).then_some(line)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn extract_schema_fields(language: &str, kind: &str, source: &str) -> Vec<Value> {
+    match language {
+        "rust" if kind == "struct" => extract_rust_struct_fields(source),
+        "python" if kind == "class" => extract_python_init_fields(source),
+        _ => Vec::new(),
+    }
+}
+
+fn extract_rust_struct_fields(source: &str) -> Vec<Value> {
+    let Some(start) = source.find('{') else {
+        return Vec::new();
+    };
+    let Some(end) = source.rfind('}') else {
+        return Vec::new();
+    };
+    if end <= start {
+        return Vec::new();
+    }
+    source[start + 1..end]
+        .split(',')
+        .filter_map(|field| {
+            let field = field.trim();
+            let (name, ty) = field.split_once(':')?;
+            let name = name
+                .split_whitespace()
+                .rfind(|part| *part != "pub")
+                .unwrap_or("")
+                .trim();
+            let ty = ty.trim();
+            if name.is_empty() || ty.is_empty() {
+                return None;
+            }
+            Some(json!({ "name": name, "type": ty }))
+        })
+        .collect()
+}
+
+fn extract_python_init_fields(source: &str) -> Vec<Value> {
+    let mut annotations = BTreeMap::new();
+    for line in source.lines().map(str::trim) {
+        if !line.starts_with("def __init__") {
+            continue;
+        }
+        let Some(start) = line.find('(') else {
+            continue;
+        };
+        let Some(end) = line[start + 1..].find(')') else {
+            continue;
+        };
+        let params = &line[start + 1..start + 1 + end];
+        for param in params.split(',').map(str::trim) {
+            let Some((name, ty)) = param.split_once(':') else {
+                continue;
+            };
+            let name = name.trim();
+            if name == "self" || name.is_empty() {
+                continue;
+            }
+            annotations.insert(
+                name.to_string(),
+                ty.split('=').next().unwrap_or("").trim().to_string(),
+            );
+        }
+    }
+
+    let mut fields = Vec::new();
+    let mut seen = BTreeSet::new();
+    for line in source.lines().map(str::trim) {
+        let Some(rest) = line.strip_prefix("self.") else {
+            continue;
+        };
+        let Some((name, _)) = rest.split_once('=') else {
+            continue;
+        };
+        let name = name.trim();
+        if name.is_empty() || !seen.insert(name.to_string()) {
+            continue;
+        }
+        let ty = annotations
+            .get(name)
+            .filter(|ty| !ty.is_empty())
+            .map(String::as_str)
+            .unwrap_or("unknown");
+        fields.push(json!({ "name": name, "type": ty }));
+    }
+    fields
+}
+
 fn strip_symbol_hint(target: &str) -> &str {
-    target
-        .rsplit_once(':')
-        .map(|(_, symbol)| symbol)
-        .unwrap_or(target)
+    let Some((prefix, symbol)) = target.rsplit_once(':') else {
+        return target;
+    };
+    if looks_like_plain_file(prefix) || prefix.contains('/') || prefix.contains('\\') {
+        symbol
+    } else {
+        target
+    }
 }
 
 fn looks_like_file_target(target: &str) -> bool {

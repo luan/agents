@@ -9,14 +9,13 @@ mod lsp;
 mod patch;
 mod repo;
 mod shell;
-pub(crate) mod source;
 mod tool;
 mod tui;
 
 pub use apply_patch::run_apply_patch;
 pub use args::{
-    ApplyPatchArgs, DevAction, McpAction, RepoAction, ShellAction, SourceAction, TaskAction,
-    TuiAction, VaultAction, parse_kind_filter,
+    ApplyPatchArgs, DevAction, McpAction, RepoAction, ShellAction, TaskAction, TuiAction,
+    VaultAction, parse_kind_filter,
 };
 pub use artifact::{
     ArtifactCreateArgs, run_vault_archive, run_vault_create, run_vault_list, run_vault_prune,
@@ -25,7 +24,6 @@ pub use artifact::{
 pub use dev::run_dev;
 pub use repo::run_repo;
 pub use shell::run_shell;
-pub use source::run_source;
 pub use tui::run_tui;
 
 #[derive(Parser)]
@@ -38,12 +36,6 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    #[command(about = "Read-only source code search and navigation")]
-    Source {
-        #[command(subcommand)]
-        action: SourceAction,
-    },
-
     #[command(visible_alias = "v", about = "Vault operations")]
     Vault {
         #[command(subcommand)]
@@ -74,7 +66,7 @@ pub enum Command {
     #[command(about = "Run a harness hook")]
     Hook {
         #[arg(
-            help = "Hook name: apply-patch-remind, source-remind, notify, gt-session-start, gt-validate-git, rtk-rewrite"
+            help = "Hook name: apply-patch-remind, notify, gt-session-start, gt-validate-git, rtk-rewrite"
         )]
         name: String,
     },

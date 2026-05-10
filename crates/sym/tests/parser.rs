@@ -1,7 +1,7 @@
 use anyhow::Result;
 
 use sym::parser::parse_source;
-use sym::symbols::{ParseResult, REF_KIND_IMPLEMENTS, REF_KIND_USE};
+use sym::symbols::{ParseResult, REF_KIND_CALL, REF_KIND_IMPLEMENTS, REF_KIND_USE};
 
 #[test]
 fn parses_go_functions_methods_imports_refs_and_signature() -> Result<()> {
@@ -205,6 +205,49 @@ enum Status {
     let ready = assert_has_symbol(&result, "Ready", "variant");
     assert_eq!(ready.parent, "Status");
     assert_has_symbol(&result, "Failed", "variant");
+
+    Ok(())
+}
+
+#[test]
+fn parses_rust_calls_inside_macro_invocations() -> Result<()> {
+    let source = br#"fn macro_only(left: i32, right: i32) -> i32 {
+    left + right
+}
+
+fn test_macro_only() {
+    assert_eq!(macro_only(1, 2), 3);
+}
+"#;
+    let result = parse_source(source, "test.rs", "rust")?;
+
+    assert_has_ref(&result, "macro_only", REF_KIND_CALL);
+
+    Ok(())
+}
+
+#[test]
+fn parses_javascript_test_wrappers_as_test_symbols() -> Result<()> {
+    let source = br#"import { describe, it, test, expect } from 'vitest';
+import { add } from './math';
+
+describe('math', () => {
+  it('adds numbers', () => {
+    expect(add(1, 2)).toBe(3);
+  });
+
+  test(`adds again`, () => {
+    const sum = add(2, 3);
+    expect(sum).toBe(5);
+  });
+});
+"#;
+    let result = parse_source(source, "math.test.ts", "typescript")?;
+
+    assert_has_symbol(&result, "describe:math", "test");
+    assert_has_symbol(&result, "it:adds numbers", "test");
+    assert_has_symbol(&result, "test:adds again", "test");
+    assert_has_ref(&result, "add", REF_KIND_CALL);
 
     Ok(())
 }
