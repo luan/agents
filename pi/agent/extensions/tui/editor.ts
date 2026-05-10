@@ -21,20 +21,43 @@ const globalPatchState = globalThis as typeof globalThis & {
 };
 globalPatchState.__agentsPolishedTuiState ??= {};
 const patchState = globalPatchState.__agentsPolishedTuiState;
+let cachedSkillNames: string[] = [];
 
 export function setEditorTheme(uiTheme: Theme): void {
 	patchState.currentUiTheme = uiTheme;
 }
 
-function renderPolishedEditor(
+export function setCachedSkillNames(names: readonly string[]): void {
+	cachedSkillNames = [...new Set(names.filter(Boolean))].sort();
+}
+
+export function setCachedSkillNamesForTest(names: readonly string[]): void {
+	setCachedSkillNames(names);
+}
+
+function truncateVisible(text: string, maxWidth: number): string {
+	if (maxWidth <= 0) return "";
+	if ([...text].length <= maxWidth) return text;
+	if (maxWidth === 1) return "…";
+	return `${[...text].slice(0, maxWidth - 1).join("")}…`;
+}
+
+function cachedSkillsSegment(innerWidth: number, uiTheme: Theme): string {
+	if (cachedSkillNames.length === 0) return "";
+	const label = truncateVisible(`skills: ${cachedSkillNames.join(", ")}`, innerWidth);
+	return uiTheme.fg("dim", label);
+}
+
+export function renderPolishedEditorForTest(
 	editor: TransformableEditor,
 	width: number,
 	renderBase: (width: number) => string[],
 	minTerminalRows: number,
+	uiThemeOverride?: Theme,
 ): string[] {
 	const rows = terminalRows();
 	if (rows !== undefined && rows < minTerminalRows) return renderBase(width);
-	const uiTheme = patchState.currentUiTheme;
+	const uiTheme = uiThemeOverride ?? patchState.currentUiTheme;
 	if (!uiTheme) return renderBase(width);
 
 	const innerWidth = Math.max(1, width - 2);
@@ -64,7 +87,7 @@ function renderPolishedEditor(
 	const mode = typeof editor.getMode === "function" ? editor.getMode() : undefined;
 	const railColor = mode === "insert" ? "success" : mode === "visual" ? "accent" : "syntaxFunction";
 	const rail = `${uiTheme.fg(railColor, "┃")}${ANSI_RESET}${uiTheme.bg("customMessageBg", " ")}`;
-	const lines = ["", ...editorLines, ""];
+	const lines = ["", ...editorLines, cachedSkillsSegment(innerWidth, uiTheme)];
 
 	return [...lines.map((line) => `${rail}${fillBackgroundLine(uiTheme, line, innerWidth)}`), ...autocompleteLines];
 }
@@ -82,7 +105,7 @@ export function installEditorComposition(uiTheme: Theme, minTerminalRows = 28): 
 		prototype.render;
 	prototype[CUSTOM_EDITOR_ORIGINAL_RENDER] ??= prototype.render;
 	prototype.render = function (this: CustomEditor, width: number): string[] {
-		return renderPolishedEditor(
+		return renderPolishedEditorForTest(
 			this as unknown as TransformableEditor,
 			width,
 			(w) => originalRender.call(this, w),

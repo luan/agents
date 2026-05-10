@@ -5,7 +5,7 @@
     "check": "biome check --write --error-on-warnings . && bun run test:codex-native && bun run test:compaction && bun run test:skillful && bun run test:system-prompt && bun run test:git-tool && bun run test:vault && bun run test:skills",
     "test": "bun run test:codex-native && bun run test:compaction && bun run test:skillful && bun run test:system-prompt && bun run test:git-tool && bun run test:vault && bun run test:skills",
     "typecheck": "tsgo --noEmit --pretty false --project tsconfig.typecheck.json",
-    "test:skillful": "bun test pi/agent/extensions/skillful/index.test.ts",
+    "test:skillful": "bun test pi/agent/extensions/skillful/index.test.ts pi/agent/extensions/tui/editor.test.ts",
     "test:system-prompt": "bun test pi/agent/extensions/system-prompt/index.test.ts pi/agent/extensions/token-burden/parser.test.ts",
     "test:git-tool": "bun test pi/agent/extensions/git-tool/index.test.ts",
     "test:vault": "bun test pi/agent/extensions/plannotator-events/index.test.ts pi/agent/extensions/vault/index.test.ts",
