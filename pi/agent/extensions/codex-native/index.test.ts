@@ -3,7 +3,11 @@ import { mkdir, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { activeCodexAppsToolNames, discoverCodexAppsTools } from "./codex-apps.ts";
-import { isCodexWebSocketError, normalizeCodexWebSocketError as normalizeCodexWebSocketErrorMessage } from "./index.ts";
+import {
+	isCodexWebSocketError,
+	normalizeCodexWebSocketError as normalizeCodexWebSocketErrorMessage,
+	normalizeLegacyFunctionCallIds,
+} from "./index.ts";
 import {
 	createWebSearchTool,
 	getOpenAICodexLatestImagePath,
@@ -14,6 +18,7 @@ import {
 	supportsNativeWebSearch,
 	WEB_SEARCH_TOOL_NAME,
 } from "./native-tools.ts";
+import { convertResponsesMessages } from "./openai-responses-shared.ts";
 
 const codexModel = {
 	provider: "openai-codex",
@@ -25,6 +30,72 @@ const testTheme = {
 	fg: (role: string, text: string) => `<${role}>${text}</${role}>`,
 	bold: (text: string) => `<bold>${text}</bold>`,
 };
+
+test("normalizes legacy function call item ids at the provider-request boundary", () => {
+	const payload = {
+		input: [
+			{ type: "function_call", id: "ctc_0ae3fabeb0423f2e016a00c39c449c81919eab6c5ebf693f2e", call_id: "call_1" },
+			{ type: "function_call", id: "fc_valid", call_id: "call_2" },
+			{
+				type: "custom_tool_call",
+				id: "fc_ctc_0ae3fabeb0423f2e016a00c39c449c81919eab6c5ebf693f2e",
+				call_id: "call_3",
+			},
+			{ type: "custom_tool_call", id: "ctc_custom", call_id: "call_4" },
+		],
+	};
+
+	const rewritten = normalizeLegacyFunctionCallIds(payload) as typeof payload;
+	expect(rewritten.input[0]?.id.startsWith("fc_")).toBe(true);
+	expect(rewritten.input[0]?.id.startsWith("ctc_")).toBe(false);
+	expect(rewritten.input[1]?.id).toBe("fc_valid");
+	expect(rewritten.input[2]?.id.startsWith("ctc_")).toBe(true);
+	expect(rewritten.input[2]?.id.startsWith("fc_")).toBe(false);
+	expect(rewritten.input[3]?.id).toBe("ctc_custom");
+});
+
+test("normalizes legacy Codex custom tool call item ids for Responses replay", () => {
+	const messages = convertResponsesMessages(
+		{ ...codexModel, api: "openai-codex-responses" } as never,
+		{
+			messages: [
+				{
+					role: "assistant",
+					api: "openai-codex-responses",
+					provider: "openai-codex",
+					model: "gpt-5.5",
+					content: [
+						{
+							type: "toolCall",
+							id: "call_apply_patch|ctc_0ae3fabeb0423f2e016a00c39c449c81919eab6c5ebf693f2e",
+							name: "apply_patch",
+							arguments: { input: "*** Begin Patch\n*** End Patch" },
+						},
+					],
+					stopReason: "toolUse",
+					timestamp: Date.now(),
+				},
+				{
+					role: "toolResult",
+					toolCallId: "call_apply_patch|ctc_0ae3fabeb0423f2e016a00c39c449c81919eab6c5ebf693f2e",
+					toolName: "apply_patch",
+					content: [{ type: "text", text: "ok" }],
+					isError: false,
+					timestamp: Date.now(),
+				},
+			],
+			systemPrompt: "",
+			tools: [],
+		} as never,
+		new Set(["openai-codex"]),
+	) as any[];
+
+	const call = messages.find((item) => item.type === "function_call");
+	expect(call.id.startsWith("fc_")).toBe(true);
+	expect(call.id.startsWith("ctc_")).toBe(false);
+	expect(call.call_id).toBe("call_apply_patch");
+	expect(call.id.length).toBeLessThanOrEqual(64);
+});
 
 test("rewrites Codex web_search function tool to native Responses tool", () => {
 	const payload = {

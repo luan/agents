@@ -24,6 +24,46 @@ function arraysEqual(a: string[], b: string[]): boolean {
 	return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
+function normalizeResponsesIdPart(part: string): string {
+	const sanitized = part.replace(/[^a-zA-Z0-9_-]/g, "_");
+	const normalized = sanitized.length > 64 ? sanitized.slice(0, 64) : sanitized;
+	return normalized.replace(/_+$/, "");
+}
+
+function normalizeFunctionCallItemId(id: string): string {
+	const normalized = normalizeResponsesIdPart(id);
+	return normalized.startsWith("fc_") ? normalized : normalizeResponsesIdPart(`fc_${normalized}`);
+}
+
+function normalizeCustomToolCallItemId(id: string): string {
+	const withoutFunctionPrefix = id.startsWith("fc_ctc_") ? id.slice("fc_".length) : id;
+	const normalized = normalizeResponsesIdPart(withoutFunctionPrefix);
+	return normalized.startsWith("ctc_") ? normalized : normalizeResponsesIdPart(`ctc_${normalized}`);
+}
+
+export function normalizeLegacyFunctionCallIds(payload: unknown): unknown {
+	if (!payload || typeof payload !== "object") return payload;
+	const input = (payload as { input?: unknown }).input;
+	if (!Array.isArray(input)) return payload;
+
+	let changed = false;
+	const nextInput = input.map((item) => {
+		if (!item || typeof item !== "object" || Array.isArray(item)) return item;
+		const record = item as { type?: unknown; id?: unknown };
+		if (record.type === "function_call" && typeof record.id === "string" && !record.id.startsWith("fc_")) {
+			changed = true;
+			return { ...record, id: normalizeFunctionCallItemId(record.id) };
+		}
+		if (record.type === "custom_tool_call" && typeof record.id === "string" && !record.id.startsWith("ctc_")) {
+			changed = true;
+			return { ...record, id: normalizeCustomToolCallItemId(record.id) };
+		}
+		return item;
+	});
+
+	return changed ? { ...(payload as object), input: nextInput } : payload;
+}
+
 export function normalizeCodexWebSocketError(message: AssistantMessage): AssistantMessage | undefined {
 	if (message.provider !== "openai-codex") return undefined;
 	if (message.stopReason !== "error") return undefined;
@@ -102,6 +142,8 @@ export default async function codexNativeExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("before_provider_request", async (event, ctx) =>
-		rewriteNativeImageGenerationTool(rewriteNativeWebSearchTool(event.payload, ctx.model), ctx.model),
+		normalizeLegacyFunctionCallIds(
+			rewriteNativeImageGenerationTool(rewriteNativeWebSearchTool(event.payload, ctx.model), ctx.model),
+		),
 	);
 }
