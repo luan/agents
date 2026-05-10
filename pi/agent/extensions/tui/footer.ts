@@ -267,22 +267,30 @@ export function scaleContextSlicesToUsage(
 	return scaled;
 }
 
-function allocateBarColumns(values: readonly number[], width: number, usedSegmentCount: number): number[] {
-	const visibleUsedSegments = Array.from({ length: usedSegmentCount }, (_, index) => index).filter(
-		(index) => (values[index] ?? 0) > 0,
-	);
+function allocateUsedBarColumns(values: readonly number[], width: number): number[] {
+	const visibleUsedSegments = values.map((value, index) => ({ value, index })).filter(({ value }) => value > 0);
 
 	if (visibleUsedSegments.length === 0 || visibleUsedSegments.length >= width) {
 		return allocateProportionally(values, width);
 	}
 
 	const minimumColumns = Array.from({ length: values.length }, () => 0);
-	for (const index of visibleUsedSegments) {
+	for (const { index } of visibleUsedSegments) {
 		minimumColumns[index] = 1;
 	}
 
 	const remainingColumns = allocateProportionally(values, width - visibleUsedSegments.length);
 	return minimumColumns.map((minimum, index) => minimum + (remainingColumns[index] ?? 0));
+}
+
+function allocateBarColumns(values: readonly number[], width: number, usedSegmentCount: number): number[] {
+	const usedValues = values.slice(0, usedSegmentCount);
+	const freeValues = values.slice(usedSegmentCount);
+	const usedTotal = usedValues.reduce((sum, value) => sum + value, 0);
+	const freeTotal = freeValues.reduce((sum, value) => sum + value, 0);
+	const [usedWidth = 0, freeWidth = 0] = allocateProportionally([usedTotal, freeTotal], width);
+
+	return [...allocateUsedBarColumns(usedValues, usedWidth), ...allocateProportionally(freeValues, freeWidth)];
 }
 
 function contextSegmentColor(key: ContextSegmentKey): string {
@@ -410,29 +418,69 @@ function renderContextSliceSegment(
 	slice: ContextSlice,
 	index: number,
 	width: number,
+	pulsingEnabled = true,
 ): string {
 	if (width <= 0) return "";
 
 	const color = contextSegmentColor(slice.key);
 	const text = CONTEXT_BAR_USED.repeat(width);
-	const pulsing = state.contextPulseSliceIndexes.includes(index);
+	const pulsing = pulsingEnabled && state.contextPulseSliceIndexes.includes(index);
 	if (pulsing && state.contextPulseFrame % 2 === 1) {
 		return colorFg(theme, color, text);
 	}
 	return dimColorFg(theme, color, text);
 }
 
+function contextSlicesForState(state: FooterRenderState): readonly ContextSlice[] {
+	return state.contextSlices.length > 0
+		? state.contextSlices
+		: CONTEXT_SEGMENTS.map((segment) => ({ key: segment.key, tokens: state.contextSegments[segment.key] })).filter(
+				(slice) => slice.tokens > 0,
+			);
+}
+
+function aggregateSlicesBySegment(slices: readonly ContextSlice[]): ContextSegments {
+	const segments = emptyContextSegments();
+	for (const slice of slices) {
+		segments[slice.key] += slice.tokens;
+	}
+	return segments;
+}
+
+function slicesFromSegments(segments: ContextSegments): readonly ContextSlice[] {
+	return CONTEXT_SEGMENTS.map((segment) => ({ key: segment.key, tokens: segments[segment.key] })).filter(
+		(slice) => slice.tokens > 0,
+	);
+}
+
+function compactDenseContextSlices(state: FooterRenderState, slices: readonly ContextSlice[]): readonly ContextSlice[] {
+	const usedTokens = slices.reduce((sum, slice) => sum + slice.tokens, 0);
+	const sourceSegments =
+		segmentTotal(state.contextSegments) > 0 ? state.contextSegments : aggregateSlicesBySegment(slices);
+	return slicesFromSegments(scaleContextSegmentsToUsage(sourceSegments, usedTokens));
+}
+
+function selectContextBarSlices(
+	state: FooterRenderState,
+	width: number,
+): { slices: readonly ContextSlice[]; pulsingEnabled: boolean } {
+	const slices = contextSlicesForState(state);
+	const freeTokens = Math.max(0, state.contextTotal - state.contextUsed);
+	const usedTokens = slices.reduce((sum, slice) => sum + slice.tokens, 0);
+	const [usedWidth = 0] = allocateProportionally([usedTokens, freeTokens], width);
+	const visibleSliceCount = slices.filter((slice) => slice.tokens > 0).length;
+	if (usedWidth > 0 && visibleSliceCount > usedWidth) {
+		return { slices: compactDenseContextSlices(state, slices), pulsingEnabled: false };
+	}
+	return { slices, pulsingEnabled: true };
+}
+
 function renderSegmentedContextBar(state: FooterRenderState, theme: Theme, width: number): string {
-	const slices =
-		state.contextSlices.length > 0
-			? state.contextSlices
-			: CONTEXT_SEGMENTS.map((segment) => ({ key: segment.key, tokens: state.contextSegments[segment.key] })).filter(
-					(slice) => slice.tokens > 0,
-				);
+	const { slices, pulsingEnabled } = selectContextBarSlices(state, width);
 	const values = [...slices.map((slice) => slice.tokens), Math.max(0, state.contextTotal - state.contextUsed)];
 	const columns = allocateBarColumns(values, width, slices.length);
 	const usedSegments = slices
-		.map((slice, index) => renderContextSliceSegment(state, theme, slice, index, columns[index] ?? 0))
+		.map((slice, index) => renderContextSliceSegment(state, theme, slice, index, columns[index] ?? 0, pulsingEnabled))
 		.join("");
 	const freeWidth = columns[slices.length] ?? 0;
 	return usedSegments + theme.fg("dim", CONTEXT_BAR_FREE.repeat(freeWidth));
