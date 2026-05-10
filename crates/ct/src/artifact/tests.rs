@@ -735,6 +735,96 @@ fn create_returns_outcome_with_populated_fields() {
 }
 
 #[test]
+fn design_and_structure_are_first_class_artifacts() {
+    let tmp = std::env::temp_dir().join(format!("ct-qrdspi-kinds-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+
+    let project = tmp.join("myproj");
+    std::fs::create_dir_all(&project).unwrap();
+
+    with_blueprints_dir(&tmp, || {
+        let design_result = create(CreateOpts {
+            kind: ArtifactKind::Design,
+            topic: "Widget Direction",
+            project: project.to_str().unwrap(),
+            slug_override: Some("widget-direction"),
+            source: None,
+            user_tags: &[],
+            dive: false,
+        });
+        let structure_result = create(CreateOpts {
+            kind: ArtifactKind::Structure,
+            topic: "Widget Outline",
+            project: project.to_str().unwrap(),
+            slug_override: Some("widget-outline"),
+            source: None,
+            user_tags: &[],
+            dive: false,
+        });
+
+        assert!(
+            matches!(design_result, Ok(_) | Err(CtError::Sync(_))),
+            "unexpected design create result: {design_result:?}"
+        );
+        assert!(
+            matches!(structure_result, Ok(_) | Err(CtError::Sync(_))),
+            "unexpected structure create result: {structure_result:?}"
+        );
+
+        let design_path = fs::read_dir(tmp.join("myproj").join("design"))
+            .expect("design/ exists")
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| p.extension().and_then(|e| e.to_str()) == Some("md"))
+            .expect("design file exists");
+        let structure_path = fs::read_dir(tmp.join("myproj").join("structure"))
+            .expect("structure/ exists")
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| p.extension().and_then(|e| e.to_str()) == Some("md"))
+            .expect("structure file exists");
+
+        assert!(
+            design_path
+                .to_string_lossy()
+                .replace('\\', "/")
+                .contains("/design/"),
+            "design path should use design/: {}",
+            design_path.display()
+        );
+        assert!(
+            structure_path
+                .to_string_lossy()
+                .replace('\\', "/")
+                .contains("/structure/"),
+            "structure path should use structure/: {}",
+            structure_path.display()
+        );
+        assert!(
+            fs::read_to_string(&design_path)
+                .unwrap()
+                .contains("type/design")
+        );
+        assert!(
+            fs::read_to_string(&structure_path)
+                .unwrap()
+                .contains("type/structure")
+        );
+        assert_eq!(list_artifacts(ArtifactKind::Design, false).len(), 1);
+        assert_eq!(list_artifacts(ArtifactKind::Structure, false).len(), 1);
+        assert_eq!(
+            resolve_artifact_path("widget-direction", ArtifactKind::Design).unwrap(),
+            design_path
+        );
+        assert_eq!(
+            resolve_artifact_path("widget-outline", ArtifactKind::Structure).unwrap(),
+            structure_path
+        );
+    });
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
 fn archive_core_moves_file_and_returns_destination() {
     let tmp = std::env::temp_dir().join(format!("ct-archive-core-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();

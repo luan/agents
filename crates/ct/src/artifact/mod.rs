@@ -39,14 +39,18 @@ pub(crate) fn home_dir() -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ArtifactKind {
+    Design,
     Plan,
     Research,
+    Structure,
     Doc,
 }
 
-/// Priority order for universal stem resolution: Doc > Plan > Research.
-pub const ALL_KINDS: [ArtifactKind; 3] = [
+/// Priority order for universal stem resolution.
+pub const ALL_KINDS: [ArtifactKind; 5] = [
     ArtifactKind::Doc,
+    ArtifactKind::Design,
+    ArtifactKind::Structure,
     ArtifactKind::Plan,
     ArtifactKind::Research,
 ];
@@ -54,8 +58,10 @@ pub const ALL_KINDS: [ArtifactKind; 3] = [
 impl ArtifactKind {
     pub fn dir_name(self) -> &'static str {
         match self {
+            Self::Design => "design",
             Self::Plan => "plan",
             Self::Research => "research",
+            Self::Structure => "structure",
             Self::Doc => "docs",
         }
     }
@@ -67,8 +73,10 @@ impl ArtifactKind {
     /// Singular name used in commit messages ("doc" not "docs").
     pub fn commit_name(self) -> &'static str {
         match self {
+            Self::Design => "design",
             Self::Plan => "plan",
             Self::Research => "research",
+            Self::Structure => "structure",
             Self::Doc => "doc",
         }
     }

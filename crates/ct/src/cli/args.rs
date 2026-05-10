@@ -14,8 +14,8 @@ pub fn parse_kind_filter(s: &str) -> Option<ArtifactKind> {
     }
 }
 
-const KIND_VALUES: [&str; 4] = ["all", "research", "plan", "doc"];
-const KIND_VALUES_NO_ALL: [&str; 3] = ["research", "plan", "doc"];
+const KIND_VALUES: [&str; 6] = ["all", "research", "design", "structure", "plan", "doc"];
+const KIND_VALUES_NO_ALL: [&str; 5] = ["research", "design", "structure", "plan", "doc"];
 
 #[derive(Args)]
 pub struct ApplyPatchArgs {

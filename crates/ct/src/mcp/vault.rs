@@ -99,11 +99,15 @@ impl VaultMcpServer {
 fn parse_kind(value: Option<&str>) -> Result<Option<ArtifactKind>, ErrorData> {
     match value.unwrap_or("all") {
         "all" => Ok(None),
+        "design" => Ok(Some(ArtifactKind::Design)),
         "plan" => Ok(Some(ArtifactKind::Plan)),
         "research" => Ok(Some(ArtifactKind::Research)),
+        "structure" => Ok(Some(ArtifactKind::Structure)),
         "doc" | "docs" => Ok(Some(ArtifactKind::Doc)),
         other => Err(ErrorData::invalid_params(
-            format!("invalid artifact type {other:?}; expected all, research, plan, or doc"),
+            format!(
+                "invalid artifact type {other:?}; expected all, research, design, structure, plan, or doc"
+            ),
             None,
         )),
     }
