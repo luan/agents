@@ -21,6 +21,7 @@
     "@mozilla/readability": "^0.5.0",
     "@shikijs/cli": "^4.0.2",
     "gpt-tokenizer": "^3.4.0",
+    "highlight.js": "^10.7.3",
     "linkedom": "^0.16.0",
     "mustache": "^4.2.0",
     "node-pty": "^1.1.0",
