@@ -418,7 +418,15 @@ function buildRequestBody(
 	return body;
 }
 
-function convertFreeformResponsesMessages(model: Model<any>, context: Context, toolName: string) {
+function normalizeCustomToolCallItemId(id: string | undefined): string | undefined {
+	if (!id) return undefined;
+	const withoutFunctionPrefix = id.startsWith("fc_ctc_") ? id.slice("fc_".length) : id;
+	const sanitized = withoutFunctionPrefix.replace(/[^a-zA-Z0-9_-]/g, "_");
+	const normalized = (sanitized.startsWith("ctc_") ? sanitized : `ctc_${sanitized}`).replace(/_+$/, "");
+	return normalized.length > 64 ? normalized.slice(0, 64) : normalized;
+}
+
+export function convertFreeformResponsesMessages(model: Model<any>, context: Context, toolName: string) {
 	const messages = convertResponsesMessages(model, context, CODEX_TOOL_CALL_PROVIDERS, { includeSystemPrompt: false });
 	const applyPatchCallIds = new Set<string>();
 	return messages.map((item: any) => {
@@ -430,7 +438,7 @@ function convertFreeformResponsesMessages(model: Model<any>, context: Context, t
 			} catch {}
 			return {
 				type: "custom_tool_call",
-				id: item.id,
+				id: normalizeCustomToolCallItemId(item.id),
 				call_id: item.call_id,
 				name: item.name,
 				input,
