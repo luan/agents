@@ -2,6 +2,9 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { initTheme } from "@earendil-works/pi-coding-agent";
+import hljs from "highlight.js";
+import { resolveInlineLanguageForPath } from "../shared/path-language";
 import {
 	closeOpenAICodexWebSocketSessions,
 	convertFreeformResponsesMessages,
@@ -213,6 +216,91 @@ describe("apply_patch streaming renderer", () => {
 		const text = renderText(result);
 		expect(text).toContain("Intent: Make the summary wording shorter.");
 		expect(text.indexOf("Intent:")).toBeLessThan(text.indexOf("• Edited sample.js"));
+	});
+
+	it("registers WGSL grammar for inline diff rendering", () => {
+		expect(resolveInlineLanguageForPath("crates/majinterm/src/shaders/terminal_background.wgsl")).toBe("wgsl");
+		expect(hljs.getLanguage("wgsl")).toBeDefined();
+
+		const highlighted = hljs.highlight("@vertex\nfn vs_main() -> vec4<f32> {\n  return vec4<f32>(1.0);\n}", {
+			language: "wgsl",
+			ignoreIllegals: true,
+		}).value;
+
+		expect(highlighted).toContain('class="hljs-attr">@vertex</span>');
+		expect(highlighted).toContain('class="hljs-keyword">fn</span>');
+		expect(highlighted).toContain('class="hljs-type">vec4</span>');
+	});
+
+	it("renders live WGSL patch previews without falling back to an unknown language", () => {
+		initTheme("dark");
+		const cwd = mkdtempSync(join(tmpdir(), "apply-patch-wgsl-render-"));
+		const tool = registerApplyPatchTool();
+		const state: Record<string, unknown> = {};
+		const patchInput = `*** Begin Patch
+*** Add File: shader.wgsl
++@vertex
++fn vs_main() -> vec4<f32> {
++  return vec4<f32>(1.0);
++}
+*** End Patch
+`;
+
+		const rendered = tool.renderCall(
+			{ input: patchInput },
+			theme,
+			renderContext(cwd, state, { argsComplete: false }),
+		);
+		const raw = rendered.render(140).join("\n");
+		const text = stripAnsi(raw);
+
+		expect(text).toContain("@vertex");
+		expect(text).toContain("fn vs_main() -> vec4<f32>");
+		expect(raw).toMatch(/\x1b\[[0-9;]*m@vertex\x1b\[[0-9;]*m/);
+		expect(raw).toMatch(/\x1b\[[0-9;]*mfn\x1b\[[0-9;]*m vs_main/);
+	});
+
+	it("renders final WGSL diff rows with inline syntax highlighting", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "apply-patch-wgsl-final-render-"));
+		const tool = registerApplyPatchTool();
+		const state: Record<string, unknown> = {};
+		const diff = `--- a/shader.wgsl
++++ b/shader.wgsl
+@@ -0,0 +1,2 @@
++fn vs_main() -> vec4<f32> {
++  return vec4<f32>(1.0);
+`;
+
+		const rendered = tool.renderResult(
+			{
+				content: [{ type: "text", text: "A shader.wgsl" }],
+				details: {
+					stage: "done",
+					filesChanged: 1,
+					fileDiffs: [{ path: "shader.wgsl", operation: "add", added: 2, removed: 0 }],
+					diff,
+					highlightedDiffRows: [
+						{ kind: "hunk", oldLine: null, newLine: null, content: "@@ -0,0 +1,2 @@", path: "shader.wgsl" },
+						{
+							kind: "add",
+							oldLine: null,
+							newLine: 1,
+							content: "fn vs_main() -> vec4<f32> {",
+							path: "shader.wgsl",
+						},
+						{ kind: "add", oldLine: null, newLine: 2, content: "  return vec4<f32>(1.0);", path: "shader.wgsl" },
+					],
+				},
+			},
+			{ expanded: true, isPartial: false },
+			theme,
+			renderContext(cwd, state, { executionStarted: true }),
+		);
+		const raw = rendered.render(140).join("\n");
+		const text = stripAnsi(raw);
+
+		expect(text).toContain("fn vs_main() -> vec4<f32>");
+		expect(raw).toMatch(/\x1b\[[0-9;]*mfn\x1b\[[0-9;]*m vs_main/);
 	});
 
 	it("keeps completed call renderers hidden on later invalidations", () => {

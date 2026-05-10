@@ -12,6 +12,7 @@ import { Type } from "typebox";
 import { nf, title } from "../shared/ct-render.ts";
 import { runCommand as runExternalCommand } from "../shared/ct-runner.ts";
 import { resolveInlineLanguageForPath, resolveShikiLanguageForPath } from "../shared/path-language";
+import { highlightWgslAnsi, registerWgslHighlightLanguage } from "../shared/wgsl-highlight.ts";
 import { registerApplyPatchFreeformProvider } from "./freeform-codex.ts";
 
 const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
@@ -20,6 +21,8 @@ const ANSI_RESET = "\x1b[0m";
 
 const APPLY_PATCH_USAGE_ENTRY = "apply_patch_usage";
 const APPLY_PATCH_TOOL_NAME = "apply_patch";
+
+registerWgslHighlightLanguage();
 
 const APPLY_PATCH_GRAMMAR = `start: begin_patch intent? hunk+ end_patch
 begin_patch: "*** Begin Patch" LF
@@ -942,6 +945,7 @@ function highlightDiffContent(content: string, path: string | undefined): string
 	const normalized = content.replace(/\t/g, "  ");
 	const language = languageForPath(path);
 	if (!language || normalized.length === 0) return normalized;
+	if (language === "wgsl") return highlightWgslAnsi(normalized)[0] ?? normalized;
 	try {
 		return highlightCode(normalized, language)[0] ?? normalized;
 	} catch {
