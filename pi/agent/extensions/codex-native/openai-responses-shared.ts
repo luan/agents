@@ -302,6 +302,11 @@ export function convertResponsesMessages<TApi extends Api>(
 		const normalized = `fc_${shortHash(itemId)}`;
 		return normalized.length > 64 ? normalized.slice(0, 64) : normalized;
 	};
+	const normalizeResponsesFunctionCallItemId = (itemId: string | undefined) => {
+		if (!itemId) return undefined;
+		const normalizedItemId = normalizeIdPart(itemId);
+		return normalizedItemId.startsWith("fc_") ? normalizedItemId : normalizeIdPart(`fc_${normalizedItemId}`);
+	};
 	const normalizeToolCallId = (
 		id: string,
 		_targetModel: Model<TApi>,
@@ -382,7 +387,7 @@ export function convertResponsesMessages<TApi extends Api>(
 					assistantBlockIndex++;
 				} else if (block.type === "toolCall") {
 					const [callId, itemIdRaw] = block.id.split("|");
-					let itemId: string | undefined = itemIdRaw;
+					let itemId = normalizeResponsesFunctionCallItemId(itemIdRaw);
 					if (isDifferentModel && itemId?.startsWith("fc_")) itemId = undefined;
 					output.push({
 						type: "function_call",

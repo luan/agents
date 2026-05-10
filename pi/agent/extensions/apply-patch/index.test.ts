@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	closeOpenAICodexWebSocketSessions,
+	convertFreeformResponsesMessages,
 	convertTools,
 	getOpenAICodexWebSocketDebugStats,
 	mapFreeformEvents,
@@ -651,6 +652,45 @@ async function collect<T>(iterable: AsyncIterable<T>): Promise<T[]> {
 }
 
 describe("apply_patch Codex freeform provider", () => {
+	it("replays legacy apply_patch calls as Codex custom tool calls with ctc ids", () => {
+		const messages = convertFreeformResponsesMessages(
+			{
+				id: "gpt-5.5",
+				provider: "openai-codex",
+				api: "openai-codex-responses",
+				input: ["text"],
+			} as any,
+			{
+				messages: [
+					{
+						role: "assistant",
+						api: "openai-codex-responses",
+						provider: "openai-codex",
+						model: "gpt-5.5",
+						content: [
+							{
+								type: "toolCall",
+								id: "call_apply_patch|ctc_0ae3fabeb0423f2e016a00c39c449c81919eab6c5ebf693f2e",
+								name: "apply_patch",
+								arguments: { input: "*** Begin Patch\n*** End Patch" },
+							},
+						],
+						stopReason: "toolUse",
+						timestamp: 1,
+					},
+				],
+				systemPrompt: "",
+				tools: [],
+			} as any,
+			"apply_patch",
+		) as any[];
+
+		const call = messages.find((item) => item.type === "custom_tool_call");
+		expect(call.id.startsWith("ctc_")).toBe(true);
+		expect(call.id.startsWith("fc_")).toBe(false);
+		expect(call.call_id).toBe("call_apply_patch");
+	});
+
 	it("converts only apply_patch custom tool stream events", async () => {
 		const events = [
 			{

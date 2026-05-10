@@ -170,6 +170,37 @@ test("serializer sanitizes unpaired surrogates in instructions and message conte
 	expect(JSON.stringify(inputOnly)).not.toContain("\\udc00");
 });
 
+test("serializer normalizes legacy custom tool call item ids for function-call replay", async () => {
+	const { serializeMessagesToResponsesInput } = await loadSerializerModule();
+	const input = serializeMessagesToResponsesInput(
+		baseModel as never,
+		[
+			{
+				role: "assistant",
+				provider: baseModel.provider,
+				api: baseModel.api,
+				model: baseModel.id,
+				stopReason: "toolUse",
+				content: [
+					{
+						type: "toolCall",
+						id: "call_apply_patch|ctc_0ae3fabeb0423f2e016a00c39c449c81919eab6c5ebf693f2e",
+						name: "apply_patch",
+						arguments: { input: "*** Begin Patch\n*** End Patch" },
+					},
+				],
+				timestamp: 1,
+			},
+		] as never,
+	);
+
+	const call = input.find((item) => item.type === "function_call") as { id: string; call_id: string };
+	expect(call.id.startsWith("fc_")).toBe(true);
+	expect(call.id.startsWith("ctc_")).toBe(false);
+	expect(call.id.length).toBeLessThanOrEqual(64);
+	expect(call.call_id).toBe("call_apply_patch");
+});
+
 test("serializer preserves assistant image generation call blocks", async () => {
 	const { serializeMessagesToResponsesInput } = await loadSerializerModule();
 	const input = serializeMessagesToResponsesInput(

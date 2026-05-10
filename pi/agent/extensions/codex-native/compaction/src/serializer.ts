@@ -119,6 +119,18 @@ function sanitizeSurrogates(text: string): string {
 	return text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "");
 }
 
+function normalizeIdPart(part: string): string {
+	const sanitized = part.replace(/[^a-zA-Z0-9_-]/g, "_");
+	const normalized = sanitized.length > 64 ? sanitized.slice(0, 64) : sanitized;
+	return normalized.replace(/_+$/, "");
+}
+
+function normalizeResponsesFunctionCallItemId(itemId: string | undefined): string | undefined {
+	if (!itemId) return undefined;
+	const normalizedItemId = normalizeIdPart(itemId);
+	return normalizedItemId.startsWith("fc_") ? normalizedItemId : normalizeIdPart(`fc_${normalizedItemId}`);
+}
+
 export function collectCompactionWindowMessages(preparation: CompactionPreparation): AgentMessage[] {
 	return [...preparation.messagesToSummarize, ...preparation.turnPrefixMessages];
 }
@@ -402,7 +414,7 @@ function serializeAssistantMessage(message: AssistantMessage, messageIndex: numb
 			const [callId, rawItemId] = block.id.split("|");
 			items.push({
 				type: "function_call",
-				id: rawItemId,
+				id: normalizeResponsesFunctionCallItemId(rawItemId),
 				call_id: callId,
 				name: block.name,
 				arguments: JSON.stringify(block.arguments),
