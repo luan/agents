@@ -1,0 +1,95 @@
+import { describe, expect, test } from "bun:test";
+import { visibleWidth } from "@earendil-works/pi-tui";
+import { renderPolishedEditorForTest, setCachedSkillNamesForTest } from "./editor";
+import extension from "./index";
+
+const ANSI_PATTERN = /\x1b\[[0-9;]*m/g;
+const theme = {
+	fg: (color: string, text: string) => `\x1b[${color === "dim" ? 2 : 37}m${text}\x1b[39m`,
+	bg: (_color: string, text: string) => text,
+} as any;
+
+function stripAnsi(line: string): string {
+	return line.replace(ANSI_PATTERN, "");
+}
+
+function editor(overrides: Record<string, unknown> = {}) {
+	return {
+		transformEditorLine: (line: string) => line,
+		...overrides,
+	};
+}
+
+describe("polished TUI editor cached skills", () => {
+	test("renders no cached skills metadata when cache is empty", () => {
+		setCachedSkillNamesForTest([]);
+		const lines = renderPolishedEditorForTest(editor(), 40, () => ["> hello", ""], 28, theme);
+
+		expect(stripAnsi(lines.at(-1) ?? "")).not.toContain("skills:");
+		expect(lines.every((line) => visibleWidth(line) <= 40)).toBe(true);
+	});
+
+	test("renders cached skills on the bottom editor row", () => {
+		setCachedSkillNamesForTest(["question", "research"]);
+		const lines = renderPolishedEditorForTest(editor(), 50, () => ["> hello", ""], 28, theme);
+
+		expect(stripAnsi(lines.at(-1) ?? "")).toContain("skills: question, research");
+		expect(lines.every((line) => visibleWidth(line) <= 50)).toBe(true);
+	});
+
+	test("truncates long cached skills metadata width-safely", () => {
+		setCachedSkillNamesForTest(["question", "research", "structure", "implement"]);
+		const lines = renderPolishedEditorForTest(editor(), 24, () => ["> hello", ""], 28, theme);
+		const bottom = lines.at(-1) ?? "";
+
+		expect(stripAnsi(bottom)).toContain("skills:");
+		expect(stripAnsi(bottom)).toContain("…");
+		expect(visibleWidth(bottom)).toBeLessThanOrEqual(24);
+	});
+
+	test("keeps autocomplete lines after the editor frame", () => {
+		setCachedSkillNamesForTest(["question"]);
+		const lines = renderPolishedEditorForTest(
+			editor({
+				isShowingAutocomplete: () => true,
+				autocompleteList: { render: () => ["$question"] },
+			}),
+			50,
+			() => ["> $q", "", "$question"],
+			28,
+			theme,
+		);
+
+		expect(stripAnsi(lines.at(-2) ?? "")).toContain("skills: question");
+		expect(stripAnsi(lines.at(-1) ?? "")).toBe("$question");
+	});
+
+	test("extension updates cached skills from skillful cache events and clears on shutdown", async () => {
+		const handlers = new Map<string, Array<(event: unknown, ctx: unknown) => unknown>>();
+		const eventHandlers = new Map<string, (data: unknown) => void>();
+		const pi = {
+			getThinkingLevel: () => "medium",
+			on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => {
+				handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+			},
+			events: {
+				on: (channel: string, handler: (data: unknown) => void) => {
+					eventHandlers.set(channel, handler);
+					return () => eventHandlers.delete(channel);
+				},
+			},
+		};
+
+		extension(pi as never);
+		eventHandlers.get("skillful:cache")?.({ names: ["research"] });
+		expect(
+			stripAnsi(renderPolishedEditorForTest(editor(), 50, () => ["> hello", ""], 28, theme).at(-1) ?? ""),
+		).toContain("skills: research");
+
+		await handlers.get("session_shutdown")?.[0]?.({}, {});
+		expect(
+			stripAnsi(renderPolishedEditorForTest(editor(), 50, () => ["> hello", ""], 28, theme).at(-1) ?? ""),
+		).not.toContain("skills:");
+		expect(eventHandlers.has("skillful:cache")).toBe(false);
+	});
+});

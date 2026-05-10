@@ -4,7 +4,7 @@ import { runCommand } from "../shared/ct-runner";
 import { terminalRows } from "../shared/terminal";
 import { ensureConfigExists, loadConfig, type PolishedTuiConfig } from "./config";
 import { installFocusCursor } from "./cursor-focus";
-import { installEditorComposition } from "./editor";
+import { installEditorComposition, setCachedSkillNames } from "./editor";
 import {
 	emptyFooterState,
 	estimateContextBreakdown,
@@ -96,6 +96,7 @@ export default function (pi: ExtensionAPI) {
 	const contextPulseDeadlines = new Map<number, number>();
 	let disposed = false;
 	let uiGeneration = 0;
+	let unsubscribeSkillfulCache: (() => void) | undefined;
 
 	const isStaleCtxError = (error: unknown) =>
 		(error instanceof Error ? error.message : String(error)).includes("ctx is stale");
@@ -427,6 +428,9 @@ export default function (pi: ExtensionAPI) {
 		disposed = true;
 		uiGeneration++;
 		requestFooterRender = undefined;
+		unsubscribeSkillfulCache?.();
+		unsubscribeSkillfulCache = undefined;
+		setCachedSkillNames([]);
 		stopRefreshTimer();
 		stopContextPulse();
 	});
@@ -472,6 +476,15 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_compact", async (_event, ctx) => {
 		if (!syncStateIfCurrent(ctx)) return;
 		scheduleProjectRefresh(ctx);
+		refresh();
+	});
+
+	unsubscribeSkillfulCache = pi.events.on("skillful:cache", (data) => {
+		const names =
+			data && typeof data === "object" && Array.isArray((data as { names?: unknown }).names)
+				? (data as { names: unknown[] }).names.filter((name): name is string => typeof name === "string")
+				: [];
+		setCachedSkillNames(names);
 		refresh();
 	});
 }
