@@ -1,9 +1,7 @@
 /**
- * pi-pretty — Pretty terminal output for pi built-in tools.
+ * pretty — Pretty terminal output for pi built-in tools.
  *
- * @module pi-pretty
- * @see https://github.com/buddingnewinsights/pi-pretty
- *
+ * @module pretty
  * Enhances:
  *   • read  — compact Explore-row rendering
  *   • bash  — colored exit status, stderr highlighting

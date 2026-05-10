@@ -1015,7 +1015,7 @@ class BudgetOverlay {
 		}
 
 		const slug = sanitizeLabel(item.label);
-		const tempPath = join(tmpdir(), `pi-token-burden-${slug}-${randomUUID().slice(0, 8)}.md`);
+		const tempPath = join(tmpdir(), `token-burden-${slug}-${randomUUID().slice(0, 8)}.md`);
 
 		const header = isReadOnlySection(item.label) ? "<!-- Read-only view. Edits here have no effect. -->\n\n" : "";
 
@@ -1044,7 +1044,7 @@ class BudgetOverlay {
 	}
 
 	private openJsonContentInEditor(label: string, content: string): void {
-		const tempPath = join(tmpdir(), `pi-token-burden-${sanitizeLabel(label)}-${randomUUID().slice(0, 8)}.json`);
+		const tempPath = join(tmpdir(), `token-burden-${sanitizeLabel(label)}-${randomUUID().slice(0, 8)}.json`);
 		writeFileSync(tempPath, content, "utf8");
 		this.launchEditor(tempPath);
 	}
