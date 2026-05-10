@@ -10,15 +10,12 @@ import {
 	DynamicBorder,
 	type ExtensionAPI,
 	type ExtensionContext,
-	type KeybindingsManager,
 	SessionManager,
 	type Theme,
 } from "@earendil-works/pi-coding-agent";
 import {
 	type Component,
 	Container,
-	type EditorComponent,
-	type EditorTheme,
 	type Focusable,
 	fuzzyMatch,
 	Input,
@@ -29,16 +26,13 @@ import {
 	type TUI,
 	truncateToWidth,
 } from "@earendil-works/pi-tui";
+import { type EditorFactory, type EditorUi, installEditorLayer } from "../shared/editor-composition";
 
 type PromptKind = "stash" | "history";
 type PickerAction = "apply" | "pop" | "drop";
 type ShortcutKey = Parameters<ExtensionAPI["registerShortcut"]>[0];
-type EditorFactory = (tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) => EditorComponent;
 
-type EditorUi = {
-	getEditorComponent?: () => EditorFactory | undefined;
-	setEditorComponent: (factory: EditorFactory | undefined) => void;
-};
+const EDITOR_LAYER_ID = Symbol.for("prompt-storage.editorShortcutLayer");
 
 interface Config {
 	enabled: boolean;
@@ -104,7 +98,6 @@ const defaultConfig: Config = {
 const stashHudWidgetId = "prompt-storage-stash";
 let db: DatabaseSync | undefined;
 const historyRefreshes = new Map<string, Promise<void>>();
-const wrappedFactory = Symbol.for("prompt-storage.editorFactoryWrapped");
 let stashHud: StashHudWidget | undefined;
 let stashHudLines: string[] = [];
 let restackTimer: ReturnType<typeof setTimeout> | undefined;
@@ -705,12 +698,7 @@ function restackStashHud(ctx: ExtensionContext): void {
 	}, 0);
 }
 
-function installEditorShortcuts(ctx: ExtensionContext, config: Config): void {
-	const ui = ctx.ui as unknown as EditorUi;
-	if (typeof ui.getEditorComponent !== "function") return;
-	const previous = ui.getEditorComponent();
-	if (previous && (previous as unknown as Record<symbol, boolean>)[wrappedFactory]) return;
-
+function wrapEditorFactory(previous: EditorFactory | undefined, ctx: ExtensionContext, config: Config): EditorFactory {
 	const wrapped: EditorFactory = (tui, theme, keybindings) => {
 		const editor = previous?.(tui, theme, keybindings) ?? new CustomEditor(tui, theme, keybindings);
 		const previousHandleInput = editor.handleInput?.bind(editor);
@@ -731,8 +719,13 @@ function installEditorShortcuts(ctx: ExtensionContext, config: Config): void {
 		};
 		return editor;
 	};
-	(wrapped as unknown as Record<symbol, boolean>)[wrappedFactory] = true;
-	ui.setEditorComponent(wrapped);
+	return wrapped;
+}
+
+function installEditorShortcuts(ctx: ExtensionContext, config: Config): void {
+	installEditorLayer(ctx.ui as unknown as EditorUi, EDITOR_LAYER_ID, (factory) =>
+		wrapEditorFactory(factory, ctx, config),
+	);
 }
 
 export default function promptStorage(pi: ExtensionAPI) {
