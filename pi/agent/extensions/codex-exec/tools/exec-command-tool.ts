@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Container, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { renderExecCommandCall, renderGroupedExecCommandCall, renderOutputBlock } from "./codex-rendering.ts";
@@ -43,6 +43,10 @@ interface ExecCommandParams {
 	tty?: boolean;
 	yield_time_ms?: number;
 	login?: boolean;
+}
+
+interface ExecCommandToolOptions {
+	rewriteCommand?: (command: string, ctx: ExtensionContext) => Promise<string> | string;
 }
 
 function prepareExecCommandArguments(args: unknown): ExecCommandParams {
@@ -136,8 +140,15 @@ const renderExecCommandCallWithOptionalContext: any = (
 		return new Text("", 0, 0);
 	}
 	const text = renderInfo.actionGroups
-		? renderGroupedExecCommandCall(renderInfo.actionGroups, renderInfo.status, theme, failed, renderInfo.elapsedMs)
-		: renderExecCommandCall(command, renderInfo.status, theme, failed, renderInfo.elapsedMs);
+		? renderGroupedExecCommandCall(
+				renderInfo.actionGroups,
+				renderInfo.status,
+				theme,
+				failed,
+				renderInfo.elapsedMs,
+				renderInfo.rtkWrapped,
+			)
+		: renderExecCommandCall(command, renderInfo.status, theme, failed, renderInfo.elapsedMs, renderInfo.rtkWrapped);
 	return new Text(text, 0, 0);
 };
 
@@ -184,6 +195,7 @@ export function registerExecCommandTool(
 	pi: ExtensionAPI,
 	tracker: ExecCommandTracker,
 	sessions: ExecSessionManager,
+	options: ExecCommandToolOptions = {},
 ): void {
 	pi.registerTool({
 		name: "exec_command",
@@ -202,7 +214,11 @@ export function registerExecCommandTool(
 				throw new Error("exec_command aborted");
 			}
 			const typedParams = parseExecCommandParams(params);
-			const result = await sessions.exec(typedParams, ctx.cwd, signal);
+			const command = options.rewriteCommand ? await options.rewriteCommand(typedParams.cmd, ctx) : typedParams.cmd;
+			if (command !== typedParams.cmd) {
+				tracker.recordRtkWrapped(toolCallId);
+			}
+			const result = await sessions.exec({ ...typedParams, cmd: command }, ctx.cwd, signal);
 			if (result.session_id !== undefined) {
 				tracker.recordPersistentSession(toolCallId, result.session_id);
 			}

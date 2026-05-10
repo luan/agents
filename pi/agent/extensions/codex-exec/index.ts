@@ -3,6 +3,7 @@ import { createExecCommandTracker } from "./tools/exec-command-state.ts";
 import { registerExecCommandTool } from "./tools/exec-command-tool.ts";
 import { createExecSessionManager } from "./tools/exec-session-manager.ts";
 import { formattedTruncateText } from "./tools/output-truncation.ts";
+import { computeRtkRewriteDecision, type RtkWrapperState } from "./tools/rtk-wrapper.ts";
 import { registerWriteStdinTool } from "./tools/write-stdin-tool.ts";
 
 function isCodexModel(model: ExtensionContext["model"] | undefined): boolean {
@@ -42,14 +43,52 @@ function truncateTextToolResultContent(content: unknown): unknown[] | undefined 
 	return changed ? next : undefined;
 }
 
+function parseRtkToggleArgument(args: string): boolean | undefined | "invalid" {
+	const arg = args.trim().toLowerCase();
+	if (!arg) return undefined;
+	if (arg === "on" || arg === "true" || arg === "enable" || arg === "enabled") return true;
+	if (arg === "off" || arg === "false" || arg === "disable" || arg === "disabled") return false;
+	return "invalid";
+}
+
 export default function codexExecExtension(pi: ExtensionAPI) {
 	const tracker = createExecCommandTracker();
 	const sessions = createExecSessionManager();
 	const toolsRemovedForCodex = new Set<string>();
+	const rtk: RtkWrapperState = { enabled: true };
+	const rtkWarningsShown = new Set<string>();
 
-	registerExecCommandTool(pi, tracker, sessions);
+	registerExecCommandTool(pi, tracker, sessions, {
+		rewriteCommand: async (command, ctx) => {
+			const decision = await computeRtkRewriteDecision(pi, command, rtk.enabled);
+			if (decision.warning && ctx.hasUI && !rtkWarningsShown.has(decision.warning)) {
+				rtkWarningsShown.add(decision.warning);
+				ctx.ui.notify(`RTK rewrite skipped: ${decision.warning}`, "warning");
+			}
+			return decision.changed ? decision.rewrittenCommand : command;
+		},
+	});
 	registerWriteStdinTool(pi, sessions);
 	sessions.onSessionExit((sessionId) => tracker.recordSessionFinished(sessionId));
+
+	pi.registerCommand("rtk", {
+		description: "Toggle RTK command wrapping for exec_command calls",
+		getArgumentCompletions: (prefix) => {
+			const items = ["on", "off"]
+				.filter((value) => value.startsWith(prefix.trim().toLowerCase()))
+				.map((value) => ({ value, label: value }));
+			return items.length > 0 ? items : null;
+		},
+		handler: async (args, ctx) => {
+			const parsed = parseRtkToggleArgument(args);
+			if (parsed === "invalid") {
+				ctx.ui.notify("Usage: /rtk [on|off]", "error");
+				return;
+			}
+			rtk.enabled = parsed ?? !rtk.enabled;
+			ctx.ui.notify(`RTK wrapping ${rtk.enabled ? "enabled" : "disabled"}.`, "info");
+		},
+	});
 
 	const applyToolPolicy = (ctx?: ExtensionContext) => {
 		if (!ctx) return;

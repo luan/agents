@@ -7,6 +7,7 @@ export interface ExecCommandRenderInfo {
 	status: ExecCommandStatus;
 	actionGroups?: ShellAction[][];
 	elapsedMs?: number;
+	rtkWrapped?: boolean;
 }
 
 interface ExecEntry {
@@ -16,6 +17,7 @@ interface ExecEntry {
 	status: ExecCommandStatus;
 	hidden: boolean;
 	startedAtMs: number;
+	rtkWrapped: boolean;
 	groupId?: number;
 	invalidate?: () => void;
 }
@@ -31,6 +33,7 @@ export interface ExecCommandTracker {
 	getRenderInfo(toolCallId: string | undefined, command: string): ExecCommandRenderInfo;
 	registerRenderContext(toolCallId: string | undefined, invalidate: () => void): void;
 	recordStart(toolCallId: string, command: string): void;
+	recordRtkWrapped(toolCallId: string): void;
 	recordPersistentSession(toolCallId: string, sessionId: number): void;
 	recordEnd(toolCallId: string): void;
 	recordSessionFinished(sessionId: number): void;
@@ -107,6 +110,7 @@ export function createExecCommandTracker(): ExecCommandTracker {
 					hidden: true,
 					status: entry.status,
 					elapsedMs: getElapsedMs([entry]),
+					rtkWrapped: entry.rtkWrapped,
 				};
 			}
 
@@ -117,6 +121,7 @@ export function createExecCommandTracker(): ExecCommandTracker {
 					status: entry.status,
 					actionGroups: entry.summary.maskAsExplored ? [entry.summary.actions] : undefined,
 					elapsedMs: getElapsedMs([entry]),
+					rtkWrapped: entry.rtkWrapped,
 				};
 			}
 
@@ -128,6 +133,7 @@ export function createExecCommandTracker(): ExecCommandTracker {
 				status: entries.some((groupEntry) => groupEntry.status === "running") ? "running" : "done",
 				actionGroups: entries.map((groupEntry) => groupEntry.summary.actions),
 				elapsedMs: getElapsedMs(entries),
+				rtkWrapped: entries.some((groupEntry) => groupEntry.rtkWrapped),
 			};
 		},
 		registerRenderContext(toolCallId, invalidate) {
@@ -148,6 +154,7 @@ export function createExecCommandTracker(): ExecCommandTracker {
 				status: "running",
 				hidden: false,
 				startedAtMs: Date.now(),
+				rtkWrapped: false,
 			};
 			entriesByToolCallId.set(toolCallId, entry);
 
@@ -178,6 +185,13 @@ export function createExecCommandTracker(): ExecCommandTracker {
 			group.entryIds.push(toolCallId);
 			group.visibleEntryId = toolCallId;
 			entry.groupId = group.id;
+		},
+		recordRtkWrapped(toolCallId) {
+			const entry = entriesByToolCallId.get(toolCallId);
+			if (!entry || entry.rtkWrapped) return;
+			entry.rtkWrapped = true;
+			const group = getGroupForEntry(entry);
+			invalidateToolCall(group?.visibleEntryId ?? entry.toolCallId);
 		},
 		recordPersistentSession(toolCallId, sessionId) {
 			sessionBackedToolCallIds.add(toolCallId);

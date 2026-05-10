@@ -11,6 +11,7 @@ import {
 import { createExecCommandTracker } from "./tools/exec-command-state.ts";
 import { registerExecCommandTool } from "./tools/exec-command-tool.ts";
 import { createExecSessionManager } from "./tools/exec-session-manager.ts";
+import { computeRtkRewriteDecision, parseRtkExecutablePath } from "./tools/rtk-wrapper.ts";
 import { registerWriteStdinTool } from "./tools/write-stdin-tool.ts";
 
 const testTheme: RenderTheme = {
@@ -111,6 +112,13 @@ test("yielded background exec calls do not keep scheduling elapsed redraws", () 
 test("exec command call renders failed status as a red dot", () => {
 	const rendered = renderExecCommandCall("false", "done", testTheme, true);
 	expect(rendered).toBe(`<error>•</error> <bold>Ran</bold> <syntaxFunction>false</syntaxFunction>`);
+});
+
+test("exec command call can show an RTK routing marker", () => {
+	const rendered = renderExecCommandCall("cargo test", "done", testTheme, false, undefined, true);
+	expect(rendered).toBe(
+		`<success>•</success> <bold>Ran</bold> <syntaxFunction>cargo</syntaxFunction> test<dim> · </dim><mdLink>\x1b[3mvia rtk\x1b[23m</mdLink>`,
+	);
 });
 
 test("output block keeps a vertical gutter and preserves ANSI color", () => {
@@ -261,6 +269,7 @@ test("extension marks nonzero exec results as errors for red status dots", () =>
 	const handlers = new Map<string, Handler[]>();
 	const pi = {
 		registerTool() {},
+		registerCommand() {},
 		getActiveTools: () => [],
 		setActiveTools() {},
 		on: (event: string, handler: Handler) => {
@@ -295,6 +304,7 @@ test("extension disables bash for Codex models and blocks direct bash calls", ()
 	const setActiveToolsCalls: string[][] = [];
 	const pi = {
 		registerTool() {},
+		registerCommand() {},
 		getActiveTools: () => activeTools,
 		getAllTools: () => [{ name: "read" }, { name: "bash" }, { name: "exec_command" }, { name: "write_stdin" }],
 		setActiveTools: (next: string[]) => {
@@ -332,11 +342,159 @@ test("extension disables bash for Codex models and blocks direct bash calls", ()
 	for (const handler of handlers.get("session_shutdown") ?? []) handler();
 });
 
+test("rtk command toggles default-on exec command wrapping", async () => {
+	type Handler = (event?: any, ctx?: any) => any;
+	const commands = new Map<string, any>();
+	const handlers = new Map<string, Handler[]>();
+	let tool: any;
+	const execCalls: Array<{ command: string; args: string[] }> = [];
+	const notifications: Array<{ message: string; type?: string }> = [];
+	const pi = {
+		registerTool: (definition: any) => {
+			if (definition.name === "exec_command") tool = definition;
+		},
+		registerCommand: (name: string, command: any) => commands.set(name, command),
+		getActiveTools: () => [],
+		setActiveTools() {},
+		exec: async (command: string, args: string[]) => {
+			execCalls.push({ command, args });
+			if (command === "which") return { code: 0, stdout: "/usr/local/bin/rtk\n", stderr: "" };
+			return { code: 3, stdout: "printf rtk-wrapped\n", stderr: "" };
+		},
+		on: (event: string, handler: Handler) => {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+		},
+	} as any;
+	codexExecExtension(pi);
+
+	const ctx = {
+		hasUI: true,
+		ui: {
+			notify: (message: string, type?: string) => notifications.push({ message, type }),
+		},
+		cwd: process.cwd(),
+	};
+	const rtkCommand = commands.get("rtk");
+	expect(rtkCommand).toBeDefined();
+	expect(await rtkCommand.getArgumentCompletions("o")).toEqual([
+		{ value: "on", label: "on" },
+		{ value: "off", label: "off" },
+	]);
+
+	const enabled = await tool.execute(
+		"call-enabled",
+		{ cmd: "printf original", yield_time_ms: 5000 },
+		undefined,
+		undefined,
+		ctx,
+	);
+
+	expect(enabled.details.output).toBe("rtk-wrapped");
+	expect(enabled.content[0].text).toContain("Command: printf original");
+	expect(enabled.content[0].text).not.toContain("printf rtk-wrapped");
+	expect(execCalls).toEqual([
+		{ command: "which", args: ["rtk"] },
+		{ command: "/usr/local/bin/rtk", args: ["rewrite", "printf original"] },
+	]);
+	expect(notifications.some((notice) => notice.message.startsWith("RTK rewrite:"))).toBe(false);
+
+	for (const handler of handlers.get("tool_execution_start") ?? []) {
+		handler({
+			toolName: "exec_command",
+			toolCallId: "call-render",
+			args: { cmd: "printf original" },
+		});
+	}
+	await tool.execute("call-render", { cmd: "printf original", yield_time_ms: 5000 }, undefined, undefined, ctx);
+	for (const handler of handlers.get("tool_execution_end") ?? []) {
+		handler({ toolName: "exec_command", toolCallId: "call-render" });
+	}
+	const renderedCall = tool
+		.renderCall({ cmd: "printf original" }, testTheme, {
+			toolCallId: "call-render",
+			state: {},
+			isPartial: false,
+			invalidate() {},
+		})
+		.render(200)
+		.join("\n");
+	expect(renderedCall).toContain("<mdLink>\x1b[3mvia rtk\x1b[23m</mdLink>");
+	expect(renderedCall).not.toContain("printf rtk-wrapped");
+
+	await rtkCommand.handler("off", ctx);
+	const off = await tool.execute("call-off", { cmd: "printf off", yield_time_ms: 5000 }, undefined, undefined, ctx);
+	expect(off.details.output).toBe("off");
+	expect(notifications).toContainEqual({ message: "RTK wrapping disabled.", type: "info" });
+
+	await rtkCommand.handler("on", ctx);
+	expect(notifications).toContainEqual({ message: "RTK wrapping enabled.", type: "info" });
+
+	for (const handler of handlers.get("session_shutdown") ?? []) handler();
+});
+
+test("rtk wrapping updates legacy command argument aliases", async () => {
+	type Handler = (event?: any, ctx?: any) => any;
+	const commands = new Map<string, any>();
+	const handlers = new Map<string, Handler[]>();
+	let tool: any;
+	const pi = {
+		registerTool: (definition: any) => {
+			if (definition.name === "exec_command") tool = definition;
+		},
+		registerCommand: (name: string, command: any) => commands.set(name, command),
+		getActiveTools: () => [],
+		setActiveTools() {},
+		exec: async (command: string) => {
+			if (command === "which") return { code: 0, stdout: "/usr/local/bin/rtk\n", stderr: "" };
+			return { code: 0, stdout: "printf alias-wrapped\n", stderr: "" };
+		},
+		on: (event: string, handler: Handler) => {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+		},
+	} as any;
+	codexExecExtension(pi);
+
+	const ctx = { hasUI: false, ui: { notify() {} }, cwd: process.cwd() };
+	const prepared = tool.prepareArguments({ command: "printf alias-original", yield_time_ms: 5000 });
+	const result = await tool.execute("call-alias", prepared, undefined, undefined, ctx);
+
+	expect(result.details.output).toBe("alias-wrapped");
+	expect(result.content[0].text).toContain("Command: printf alias-original");
+
+	for (const handler of handlers.get("session_shutdown") ?? []) handler();
+});
+
+test("rtk helper parses executable paths", () => {
+	expect(parseRtkExecutablePath("'rtk path'\n")).toBe("rtk path");
+});
+
+test("rtk rewrite routes rg commands through rtk rg instead of rtk grep", async () => {
+	const execCalls: string[] = [];
+	const pi = {
+		exec: async (command: string) => {
+			execCalls.push(command);
+			return { code: 3, stdout: "rtk grep --files\n", stderr: "" };
+		},
+	} as any;
+
+	const decision = await computeRtkRewriteDecision(pi, "pwd && rg --files -g '!*node_modules*' | head -200", true);
+
+	expect(decision.changed).toBe(true);
+	expect(decision.rewrittenCommand).toBe("pwd && rtk rg --files -g '!*node_modules*' | head -200");
+	expect(execCalls).toEqual([]);
+
+	const searchDecision = await computeRtkRewriteDecision(pi, "rg -g '*.ts' registerCommand pi/agent/extensions", true);
+	expect(searchDecision.changed).toBe(true);
+	expect(searchDecision.rewrittenCommand).toBe("rtk rg -g '*.ts' registerCommand pi/agent/extensions");
+	expect(execCalls).toEqual([]);
+});
+
 test("extension truncates oversized non-exec tool results before session history", () => {
 	type Handler = (event?: any) => any;
 	const handlers = new Map<string, Handler[]>();
 	const pi = {
 		registerTool() {},
+		registerCommand() {},
 		getActiveTools: () => [],
 		setActiveTools() {},
 		on: (event: string, handler: Handler) => {
