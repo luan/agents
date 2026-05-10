@@ -25,11 +25,12 @@ export function renderExecCommandCall(
 	theme: RenderTheme,
 	failed = false,
 	elapsedMs?: number,
+	rtkWrapped = false,
 ): string {
 	const summary = summarizeShellCommand(command);
 	return summary.maskAsExplored
-		? renderExplorationText([summary.actions], state, theme, failed, elapsedMs)
-		: renderCommandText(command, state, theme, failed, elapsedMs);
+		? renderExplorationText([summary.actions], state, theme, failed, elapsedMs, rtkWrapped)
+		: renderCommandText(command, state, theme, failed, elapsedMs, rtkWrapped);
 }
 
 export function renderGroupedExecCommandCall(
@@ -38,8 +39,9 @@ export function renderGroupedExecCommandCall(
 	theme: RenderTheme,
 	failed = false,
 	elapsedMs?: number,
+	rtkWrapped = false,
 ): string {
-	return renderExplorationText(actionGroups, state, theme, failed, elapsedMs);
+	return renderExplorationText(actionGroups, state, theme, failed, elapsedMs, rtkWrapped);
 }
 
 export function renderWriteStdinCall(
@@ -130,10 +132,11 @@ function renderExplorationText(
 	theme: RenderTheme,
 	failed: boolean,
 	elapsedMs?: number,
+	rtkWrapped = false,
 ): string {
 	const header = state === "running" ? "Exploring" : "Explored";
 	let text = appendElapsed(
-		`${renderStatusMarker("•", state, theme, failed)} ${theme.bold(header)}`,
+		appendRtkMarker(`${renderStatusMarker("•", state, theme, failed)} ${theme.bold(header)}`, theme, rtkWrapped),
 		state,
 		theme,
 		elapsedMs,
@@ -153,15 +156,28 @@ function renderCommandText(
 	theme: RenderTheme,
 	failed: boolean,
 	elapsedMs?: number,
+	rtkWrapped = false,
 ): string {
 	const verb = state === "running" ? "Running" : "Ran";
 	const displayCommand = shortenCommand(stripShellWrapper(command), COMMAND_DISPLAY_MAX_CHARS);
 	return appendElapsed(
-		`${renderStatusMarker("•", state, theme, failed)} ${theme.bold(verb)} ${highlightShellCommand(displayCommand, theme)}`,
+		appendRtkMarker(
+			`${renderStatusMarker("•", state, theme, failed)} ${theme.bold(verb)} ${highlightShellCommand(displayCommand, theme)}`,
+			theme,
+			rtkWrapped,
+		),
 		state,
 		theme,
 		elapsedMs,
 	);
+}
+
+function appendRtkMarker(text: string, theme: Pick<RenderTheme, "fg">, rtkWrapped: boolean): string {
+	return rtkWrapped ? `${text}${theme.fg("dim", " · ")}${theme.fg("mdLink", italic("via rtk"))}` : text;
+}
+
+function italic(text: string): string {
+	return `\x1b[3m${text}\x1b[23m`;
 }
 
 function appendElapsed(
