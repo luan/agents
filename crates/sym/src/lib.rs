@@ -2,7 +2,6 @@ pub mod cli;
 pub mod context;
 pub mod diff;
 pub mod graph;
-pub mod hook;
 pub mod impls;
 pub mod indexer;
 pub mod investigate;
@@ -21,11 +20,12 @@ pub mod source_context;
 pub mod store;
 pub mod structure;
 pub mod symbols;
+pub mod untested;
 pub mod version;
 pub mod walker;
 
 pub fn run(args: cli::SymArgs) -> anyhow::Result<()> {
-    output::set_json_enabled(args.json);
+    output::set_format(args.format.unwrap_or_else(output::default_format).into());
 
     if let Some(db) = &args.db {
         // CLI entrypoint runs before any parallel work begins, so this process-wide
@@ -64,6 +64,30 @@ pub fn run(args: cli::SymArgs) -> anyhow::Result<()> {
             path_filters: &path_filters,
             excludes: &excludes,
         }),
+        cli::Command::Stats => cli::run_stats(),
+        cli::Command::Map { level, limit } => cli::run_map(level, limit),
+        cli::Command::Query {
+            query,
+            limit,
+            kind,
+            lang,
+            exact,
+            path_filters,
+            excludes,
+        } => cli::run_query(&cli::QueryArgs {
+            query: &query,
+            limit,
+            kind: kind.as_deref(),
+            lang: lang.as_deref(),
+            exact,
+            path_filters: &path_filters,
+            excludes: &excludes,
+        }),
+        cli::Command::Inspect {
+            file,
+            signatures,
+            names,
+        } => cli::run_inspect(&file, signatures, names),
         cli::Command::Outline {
             file,
             signatures,
@@ -109,6 +133,19 @@ pub fn run(args: cli::SymArgs) -> anyhow::Result<()> {
             depth,
             limit,
         } => cli::run_importers(&target, depth, limit),
+        cli::Command::Callers {
+            targets,
+            limit,
+            context,
+            path_filters,
+            excludes,
+        } => cli::run_callers(&targets, limit, context, &path_filters, &excludes),
+        cli::Command::Callees {
+            targets,
+            limit,
+            path_filters,
+            excludes,
+        } => cli::run_callees(&targets, limit, &path_filters, &excludes),
         cli::Command::Impact {
             targets,
             depth,
@@ -144,6 +181,31 @@ pub fn run(args: cli::SymArgs) -> anyhow::Result<()> {
             unresolved,
             stdin,
         }),
+        cli::Command::Types {
+            targets,
+            limit,
+            path_filters,
+            excludes,
+        } => cli::run_types(&targets, limit, &path_filters, &excludes),
+        cli::Command::Schema { targets, limit } => cli::run_schema(&targets, limit),
+        cli::Command::Tests {
+            targets,
+            limit,
+            path_filters,
+            excludes,
+        } => cli::run_tests(&targets, limit, &path_filters, &excludes),
+        cli::Command::TestDeps {
+            target,
+            limit,
+            path_filters,
+            excludes,
+        } => cli::run_test_deps(&target, limit, &path_filters, &excludes),
+        cli::Command::Untested {
+            limit,
+            lang,
+            path_filters,
+            excludes,
+        } => cli::run_untested(limit, lang.as_deref(), &path_filters, &excludes),
         cli::Command::Context {
             targets,
             callers,
@@ -152,7 +214,6 @@ pub fn run(args: cli::SymArgs) -> anyhow::Result<()> {
         cli::Command::Investigate { targets, stdin } => cli::run_investigate(&targets, stdin),
         cli::Command::Structure { limit } => cli::run_structure(limit),
         cli::Command::Diff { target, base, stat } => cli::run_diff(&target, &base, stat),
-        cli::Command::Hook { command } => cli::run_hook(command),
         cli::Command::Version => cli::run_version(),
     }
 }

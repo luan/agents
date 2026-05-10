@@ -2,7 +2,7 @@
 
 1. Delete dead code completely. No commented-out code, shims, or "just in case."
 2. Comments for WHY / edge cases / surprises only.
-3. Use `ct source` for lookup and code exploration.
+3. Use `sym` for source navigation and code exploration. Prefer `sym search`, `sym show`, `sym outline`, `sym refs`, `sym callers`, `sym callees`, `sym impact`, `sym trace`, `sym impls`, `sym tests`, and `sym untested` before grep/find or broad reads. Use `sym --format ai <cmd>` when you need compact evidence for an agent report.
 4. All tests pass before committing. You own every failure you can see.
 5. After changing `ct`, run `just install` so the live `ct` binary matches the repo.
 6. Task discipline: if you create or select a task and then execute it in the same session, immediately mark it `in_progress` and assign it to the current session before editing files. Leave tasks open/unassigned only when you are handing them off for future work.

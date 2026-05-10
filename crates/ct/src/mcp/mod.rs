@@ -8,7 +8,6 @@ use crate::artifact::{self, CtError, ResolveError};
 mod apply_patch;
 mod ast;
 mod lsp;
-mod sym;
 mod vault;
 
 // ---------------------------------------------------------------------------
@@ -61,11 +60,6 @@ pub(crate) fn project_input_to_name(input: Option<String>) -> Result<String, Err
 /// Run the apply_patch MCP server over stdio.
 pub fn run_apply_patch_server() -> Result<(), Box<dyn std::error::Error>> {
     serve_stdio(apply_patch::ApplyPatchMcpServer::new())
-}
-
-/// Run the sym MCP server over stdio.
-pub fn run_sym_server() -> Result<(), Box<dyn std::error::Error>> {
-    serve_stdio(sym::SymMcpServer::new())
 }
 
 pub fn run_ast_server() -> Result<(), Box<dyn std::error::Error>> {

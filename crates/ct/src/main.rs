@@ -154,10 +154,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(cli::Command::Repo { action }) => cli::run_repo(action),
         Some(cli::Command::Task { action }) => task::run_task(action),
         Some(cli::Command::Notify) => notify::run(),
-        Some(cli::Command::Source { action }) => cli::run_source(action),
         Some(cli::Command::Mcp { action }) => match action {
             cli::McpAction::ApplyPatch => mcp::run_apply_patch_server(),
-            cli::McpAction::Sym => mcp::run_sym_server(),
             cli::McpAction::Ast => mcp::run_ast_server(),
             cli::McpAction::Lsp => mcp::run_lsp_server(),
             cli::McpAction::Vault => mcp::run_vault_server(),
