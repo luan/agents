@@ -9,7 +9,7 @@
     "test:git-tool": "bun test pi/agent/extensions/git-tool/index.test.ts",
     "test:vault": "bun test pi/agent/extensions/plannotator-events/index.test.ts pi/agent/extensions/vault/index.test.ts",
     "test:skills": "bun test skills/start.test.ts skills/workflow-naming.test.ts",
-    "test:codex-native": "bun test pi/agent/extensions/apply-patch/index.test.ts pi/agent/extensions/codex-native/index.test.ts pi/agent/extensions/codex-exec/index.test.ts pi/agent/extensions/pi-token-burden/tool-toggles.test.ts pi/agent/extensions/pi-token-burden/report-view.test.ts",
+    "test:codex-native": "bun test pi/agent/extensions/apply-patch/index.test.ts pi/agent/extensions/codex-native/index.test.ts pi/agent/extensions/codex-exec/index.test.ts pi/agent/extensions/token-burden/tool-toggles.test.ts pi/agent/extensions/token-burden/report-view.test.ts",
     "test:compaction": "bun test pi/agent/extensions/codex-native/compaction/src/unit.test.ts pi/agent/extensions/codex-native/compaction/src/validation.test.ts",
     "prepare": "husky"
   },

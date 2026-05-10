@@ -46,13 +46,13 @@ async function executeAskTool(
 	if (!ctx.hasUI) {
 		return nonInteractiveResponse(validation.state);
 	}
-	pi.events.emit("pi-ask:waiting:start", undefined);
+	pi.events.emit("ask:waiting:start", undefined);
 	updateMuxAskState({ activity: "Waiting", asking: true }, ctx.cwd);
 	try {
 		const result = await runAskFlow(ctx as never, params);
 		return successfulResponse(result);
 	} finally {
 		updateMuxAskState({ activity: "Working…", asking: false }, ctx.cwd);
-		pi.events.emit("pi-ask:waiting:end", undefined);
+		pi.events.emit("ask:waiting:end", undefined);
 	}
 }

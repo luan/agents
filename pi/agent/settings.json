@@ -19,8 +19,8 @@
   "extensions": [
     "extensions/plannotator-events/index.ts",
     "extensions/codex-native/index.ts",
-    "extensions/pi-token-burden/index.ts",
-    "extensions/pi-vim/index.ts",
+    "extensions/token-burden/index.ts",
+    "extensions/vim/index.ts",
     "extensions/tasks/index.ts"
   ],
   "enabledModels": [

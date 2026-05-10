@@ -206,10 +206,10 @@ export default function muxSidebarExtension(pi: ExtensionAPI) {
 	pi.on("model_select", async (_event, ctx) => writeState(ctx));
 	pi.on("session_compact", async (_event, ctx) => writeState(ctx));
 	pi.on("agent_end", async (_event, ctx) => markIdle(ctx, { notify: true }));
-	pi.events.on("pi-ask:waiting:start", () => {
+	pi.events.on("ask:waiting:start", () => {
 		if (latestCtx) markWaiting(latestCtx);
 	});
-	pi.events.on("pi-ask:waiting:end", () => {
+	pi.events.on("ask:waiting:end", () => {
 		if (latestCtx) markWorking(latestCtx, "Thinking…");
 	});
 

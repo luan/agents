@@ -60,7 +60,7 @@ function createTools() {
 	return tools;
 }
 
-describe("pi-pretty read rendering", () => {
+describe("pretty read rendering", () => {
 	test("read calls render as compact exploration with a capitalized title", () => {
 		const read = createTools().find((tool) => tool.name === "read");
 		const text = createText();
