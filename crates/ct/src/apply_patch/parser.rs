@@ -143,8 +143,10 @@ pub enum Hunk {
         path: PathBuf,
         move_path: Option<PathBuf>,
 
-        /// Chunks should be in order, i.e. the `change_context` of one chunk
-        /// should occur later in the file than the previous chunk.
+        /// Context chunks are matched cursor-forward, so ordinary `@@`
+        /// chunks must be authored in file order. Use `@@ lines A-B` for an
+        /// explicit original-file line range when location matters more than
+        /// cursor-forward context matching.
         chunks: Vec<UpdateFileChunk>,
     },
     ReplaceAll {
@@ -170,7 +172,9 @@ pub struct UpdateFileChunk {
     /// (consumed but not stored). Empty vec means "no anchor — use the body
     /// pattern alone".
     pub change_contexts: Vec<String>,
-    /// Optional 1-based inclusive target from `@@ lines A-B`.
+    /// Optional 1-based inclusive target from `@@ lines A-B`. Line-ranged
+    /// chunks still match the original file contents and must not overlap any
+    /// other replacement in the same `Update File` section.
     pub line_range: Option<(usize, usize)>,
 
     /// A contiguous block of lines that should be replaced with `new_lines`.

@@ -154,6 +154,7 @@ pub fn error_kind(error: &ApplyPatchError) -> &'static str {
         ApplyPatchError::AmbiguousContext { .. } => "ambiguous_context",
         ApplyPatchError::LineRangeMismatch { .. } => "line_range_mismatch",
         ApplyPatchError::ReplacementCountMismatch { .. } => "replacement_count_mismatch",
+        ApplyPatchError::OverlappingReplacements { .. } => "overlapping_replacements",
         ApplyPatchError::DuplicateUpdate(_) => "duplicate_update",
         ApplyPatchError::DeleteIsDirectory(_) => "delete_is_directory",
         ApplyPatchError::TargetIsDirectory(_) => "target_is_directory",

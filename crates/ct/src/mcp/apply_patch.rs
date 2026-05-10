@@ -144,6 +144,7 @@ fn enriched_error_to_tool(
         | ApplyPatchError::MoveTargetExists(_)
         | ApplyPatchError::LineRangeMismatch { .. }
         | ApplyPatchError::ReplacementCountMismatch { .. }
+        | ApplyPatchError::OverlappingReplacements { .. }
         | ApplyPatchError::ContextNotFound { .. }
         | ApplyPatchError::AmbiguousContext { .. } => {
             ErrorData::invalid_params(message, repair_data(repair_block))
@@ -316,7 +317,7 @@ impl ApplyPatchMcpServer {
 impl ApplyPatchMcpServer {
     #[tool(
         name = "apply_patch",
-        description = r#"Apply a patch (envelope format) to files. The primary file-edit tool — prefer it over Edit/Write for every change, single-file or multi-file. A single envelope can add, update, delete, or move many files at once. No line numbers: `@@` is a section marker, not a position.
+        description = r#"Apply a patch (envelope format) to files. The primary file-edit tool — prefer it over Edit/Write for every change, single-file or multi-file. A single envelope can add, update, delete, or move many files at once. Prefer context over line numbers: bare `@@` is a section marker, while `@@ lines A-B` pins a hunk to an explicit original-file line range.
 
 Envelope shape:
 
@@ -330,7 +331,7 @@ Each file section starts with one of three headers:
 *** Delete File: <path>   — remove an existing file. Nothing follows.
 *** Update File: <path>   — patch an existing file in place (optionally with a rename).
 
-`*** Update File:` may be immediately followed by `*** Move to: <new path>` to rename. Then one or more hunks, each introduced by `@@` (bare, or followed by an anchor line). Within a hunk each line is prefixed with ` ` (context), `-` (removed), or `+` (added).
+`*** Update File:` may be immediately followed by `*** Move to: <new path>` to rename. Then one or more hunks, each introduced by `@@` (bare, followed by an anchor line, or `@@ lines A-B`). Within a hunk each line is prefixed with ` ` (context), `-` (removed), or `+` (added).
 
 Anchors — the anchor line is *consumed* and the pattern search resumes on the line *after* it. So:
 - Don't repeat the anchor text as your first ` ` context line. That's the most common shape error and the tool rejects it explicitly.
@@ -342,6 +343,8 @@ Anchors — the anchor line is *consumed* and the pattern search resumes on the 
       @@     fn run(&self) {
       -        return;
       +        return 42;
+- Author ordinary context hunks top-to-bottom within a single `Update File`. Matching is cursor-forward: after one hunk lands, later context searches start below it. If an edit must target an earlier location, reorder the hunks or use `@@ lines A-B`.
+- Use `@@ lines A-B` sparingly for exact original-file ranges. The body must match those inclusive lines, and line-ranged hunks must not overlap any other hunk in the same `Update File`.
 
 Context: include *as little as makes the hunk unique* — often 1-2 lines, and zero when the `-` line alone is distinctive (a unique string, a fully qualified name, a rare function signature). Generic lines (`    return;`, `}`, bare `None`) almost always need at least one neighbor for disambiguation. If the hunk matches multiple locations the patch is rejected with every candidate line number; add one line above or below until only one remains, or pin with a `@@ <unique line>` anchor. Wider context isn't safer — it just gives concurrent edits more surface to drift against.
 

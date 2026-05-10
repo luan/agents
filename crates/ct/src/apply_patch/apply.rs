@@ -158,6 +158,18 @@ pub enum ApplyPatchError {
         expected: usize,
         actual: usize,
     },
+    #[error(
+        "overlapping replacements in {path}: chunk #{first_chunk} lines {first_start}-{first_end} overlaps chunk #{second_chunk} lines {second_start}-{second_end}; split or combine hunks so each original line is targeted once"
+    )]
+    OverlappingReplacements {
+        path: String,
+        first_chunk: usize,
+        first_start: usize,
+        first_end: usize,
+        second_chunk: usize,
+        second_start: usize,
+        second_end: usize,
+    },
     #[error("io error ({path}): {source}")]
     Io {
         path: String,
@@ -214,6 +226,14 @@ enum ChunkFailure {
         start: usize,
         end: usize,
         near_miss: Option<String>,
+    },
+    OverlappingReplacements {
+        first_chunk: usize,
+        first_start: usize,
+        first_end: usize,
+        second_chunk: usize,
+        second_start: usize,
+        second_end: usize,
     },
 }
 
@@ -1133,6 +1153,7 @@ fn compute_replacements(
             .change_contexts
             .last()
             .is_some_and(|last_anchor| chunk.old_lines.first() == Some(last_anchor));
+        let mut resolved_by_anchor_body = false;
         for (context_index, ctx_line) in chunk.change_contexts.iter().enumerate() {
             match seek_sequence(
                 original_lines,
@@ -1156,7 +1177,53 @@ fn compute_replacements(
                         fuzzy_tier: Some(quality.as_str().to_string()),
                     });
                 }
-                SeekOutcome::Ambiguous { matches, .. } => {
+                SeekOutcome::Ambiguous { matches, quality } => {
+                    let is_last_anchor = context_index + 1 == chunk.change_contexts.len();
+                    if is_last_anchor
+                        && let Some(resolved) = resolve_ambiguous_anchor_with_body(
+                            original_lines,
+                            &matches,
+                            quality,
+                            chunk,
+                            last_anchor_starts_body,
+                        )
+                    {
+                        chunk_worst = worse_of(chunk_worst, resolved.quality);
+                        replacements.push(Replacement {
+                            chunk: chunk_index,
+                            start: resolved.start,
+                            old: resolved.pattern,
+                            new: preserve_matched_context(
+                                original_lines,
+                                resolved.start,
+                                &chunk.old_lines,
+                                &chunk.new_lines,
+                            ),
+                        });
+                        line_index = resolved.start + chunk.old_lines.len();
+                        attempts.push(AnchorAttempt {
+                            file_path: file_rel.to_string(),
+                            chunk_index,
+                            anchor_text: Some(ctx_line.clone()),
+                            success: true,
+                            fuzzy_tier: Some(resolved.quality.as_str().to_string()),
+                        });
+                        attempts.push(AnchorAttempt {
+                            file_path: file_rel.to_string(),
+                            chunk_index,
+                            anchor_text: chunk.change_contexts.last().cloned(),
+                            success: true,
+                            fuzzy_tier: Some(chunk_worst.as_str().to_string()),
+                        });
+                        if chunk_worst != MatchQuality::Exact {
+                            fuzzy_hunks.push(HunkFuzzy {
+                                chunk: chunk_index,
+                                tier: chunk_worst,
+                            });
+                        }
+                        resolved_by_anchor_body = true;
+                        break;
+                    }
                     attempts.push(AnchorAttempt {
                         file_path: file_rel.to_string(),
                         chunk_index,
@@ -1193,6 +1260,9 @@ fn compute_replacements(
                     });
                 }
             }
+        }
+        if resolved_by_anchor_body {
+            continue;
         }
 
         if chunk.old_lines.is_empty() {
@@ -1335,7 +1405,102 @@ fn compute_replacements(
     }
 
     replacements.sort_by_key(|r| r.start);
+    validate_non_overlapping_replacements(&replacements)?;
     Ok((replacements, fuzzy_hunks))
+}
+
+fn validate_non_overlapping_replacements(replacements: &[Replacement]) -> Result<(), ChunkFailure> {
+    let mut previous: Option<&Replacement> = None;
+    for replacement in replacements {
+        let Some(prev) = previous else {
+            if replacement.old_len() > 0 {
+                previous = Some(replacement);
+            }
+            continue;
+        };
+
+        if replacement.start < prev.start + prev.old_len() {
+            let (first_start, first_end) = replacement_line_span(prev);
+            let (second_start, second_end) = replacement_line_span(replacement);
+            return Err(ChunkFailure::OverlappingReplacements {
+                first_chunk: prev.chunk,
+                first_start,
+                first_end,
+                second_chunk: replacement.chunk,
+                second_start,
+                second_end,
+            });
+        }
+        if replacement.old_len() > 0 {
+            previous = Some(replacement);
+        }
+    }
+    Ok(())
+}
+
+fn replacement_line_span(replacement: &Replacement) -> (usize, usize) {
+    let start = replacement.start + 1;
+    let end = if replacement.old_len() == 0 {
+        start
+    } else {
+        replacement.start + replacement.old_len()
+    };
+    (start, end)
+}
+
+struct ResolvedAnchorBody {
+    start: usize,
+    pattern: Vec<String>,
+    quality: MatchQuality,
+}
+
+fn resolve_ambiguous_anchor_with_body(
+    original_lines: &[String],
+    anchor_matches: &[usize],
+    anchor_quality: MatchQuality,
+    chunk: &UpdateFileChunk,
+    last_anchor_starts_body: bool,
+) -> Option<ResolvedAnchorBody> {
+    if chunk.old_lines.is_empty() {
+        return None;
+    }
+
+    let mut resolved: Option<ResolvedAnchorBody> = None;
+    for (match_index, &anchor_start) in anchor_matches.iter().enumerate() {
+        let body_start = if last_anchor_starts_body {
+            anchor_start
+        } else {
+            anchor_start + 1
+        };
+        let body_end = anchor_matches
+            .get(match_index + 1)
+            .copied()
+            .unwrap_or(original_lines.len());
+        if body_start > body_end {
+            continue;
+        }
+
+        let candidate_lines = &original_lines[..body_end];
+        let outcome = seek_sequence(
+            candidate_lines,
+            &chunk.old_lines,
+            body_start,
+            chunk.is_end_of_file,
+        );
+        let SeekOutcome::Unique { idx, quality } = outcome else {
+            continue;
+        };
+        let candidate = ResolvedAnchorBody {
+            start: idx,
+            pattern: chunk.old_lines.clone(),
+            quality: worse_of(anchor_quality, quality),
+        };
+        if resolved.replace(candidate).is_some() {
+            return None;
+        }
+    }
+
+    resolved
 }
 
 struct RepeatedBareHunkPlan {
@@ -1741,6 +1906,12 @@ fn near_miss_snippet(
             idx + 1,
             dist,
         ));
+        if idx < cursor {
+            out.push_str(&format!(
+                "; before current search cursor line {} — context hunks are resolved cursor-forward; reorder them top-to-bottom or use '@@ lines A-B' for explicit line ranges",
+                cursor + 1
+            ));
+        }
     }
     out.push_str(":\n");
     for (offset, line) in original_lines[start..end].iter().enumerate() {
@@ -1843,6 +2014,22 @@ fn chunk_failure_to_error(fail: ChunkFailure, path: &str) -> ApplyPatchError {
             start,
             end,
             near_miss,
+        },
+        ChunkFailure::OverlappingReplacements {
+            first_chunk,
+            first_start,
+            first_end,
+            second_chunk,
+            second_start,
+            second_end,
+        } => ApplyPatchError::OverlappingReplacements {
+            path: path.to_string(),
+            first_chunk,
+            first_start,
+            first_end,
+            second_chunk,
+            second_start,
+            second_end,
         },
     }
 }
@@ -2333,6 +2520,25 @@ mod tests {
     }
 
     #[test]
+    fn near_miss_hints_when_context_is_before_current_cursor() {
+        let lines: Vec<String> = ["early target", "middle", "late target"]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        let hint = near_miss_snippet(&lines, 2, Some("early target")).unwrap();
+        assert!(hint.contains("closest match: line 1"), "{hint}");
+        assert!(
+            hint.contains("before current search cursor line 3"),
+            "{hint}"
+        );
+        assert!(
+            hint.contains("context hunks are resolved cursor-forward"),
+            "{hint}"
+        );
+        assert!(hint.contains("use '@@ lines A-B'"), "{hint}");
+    }
+
+    #[test]
     fn near_miss_falls_back_to_cursor_when_no_close_match() {
         let lines: Vec<String> = (0..10).map(|i| format!("unrelated line {i}")).collect();
         let hint = near_miss_snippet(&lines, 5, Some("totally different content here")).unwrap();
@@ -2523,6 +2729,77 @@ mod tests {
     }
 
     #[test]
+    fn out_of_order_hunk_error_suggests_reordering() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("code.rs"),
+            "fn early() {\n    old();\n}\nfn late() {\n    old();\n}\n",
+        )
+        .unwrap();
+        let patch = concat!(
+            "*** Begin Patch\n",
+            "*** Update File: code.rs\n",
+            "@@ fn late() {\n",
+            "-    old();\n",
+            "+    new_late();\n",
+            "@@ fn early() {\n",
+            "-    old();\n",
+            "+    new_early();\n",
+            "*** End Patch\n",
+        );
+
+        let err = plan(patch, tmp.path()).unwrap_err().error.to_string();
+        assert!(
+            err.contains("before current search cursor"),
+            "expected cursor-order hint, got: {err}"
+        );
+        assert!(
+            err.contains("context hunks are resolved cursor-forward"),
+            "{err}"
+        );
+        assert!(err.contains("reorder them top-to-bottom"), "{err}");
+        assert!(err.contains("@@ lines A-B"), "{err}");
+    }
+
+    #[test]
+    fn overlapping_line_range_hunks_are_rejected() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("code.rs"), "a\nb\nc\nd\n").unwrap();
+        let patch = concat!(
+            "*** Begin Patch\n",
+            "*** Update File: code.rs\n",
+            "@@ lines 2-3\n",
+            "-b\n",
+            "-c\n",
+            "+bc\n",
+            "@@ lines 3-4\n",
+            "-c\n",
+            "-d\n",
+            "+cd\n",
+            "*** End Patch\n",
+        );
+
+        let err = plan(patch, tmp.path()).unwrap_err().error;
+        match err {
+            ApplyPatchError::OverlappingReplacements {
+                first_chunk,
+                first_start,
+                first_end,
+                second_chunk,
+                second_start,
+                second_end,
+                ..
+            } => {
+                assert_eq!(first_chunk, 0);
+                assert_eq!((first_start, first_end), (2, 3));
+                assert_eq!(second_chunk, 1);
+                assert_eq!((second_start, second_end), (3, 4));
+            }
+            other => panic!("expected OverlappingReplacements, got: {other:?}"),
+        }
+    }
+
+    #[test]
     fn single_context_line_resolves_ambiguity() {
         // Neither `    return;` nor `pub fn two() {` alone is unique, but the
         // pair is — one context line is enough to pin the edit.
@@ -2586,6 +2863,136 @@ mod tests {
             content.contains("impl Foo {\n    fn run(&self) {\n        return;\n"),
             "Foo::run must stay untouched, got: {content}",
         );
+    }
+
+    #[test]
+    fn ambiguous_final_anchor_uses_body_to_pick_unique_candidate() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("code.rs"),
+            "section one {\n    marker();\n    keep();\n}\n\
+             section two {\n    marker();\n    target();\n}\n",
+        )
+        .unwrap();
+        let patch = concat!(
+            "*** Begin Patch\n",
+            "*** Update File: code.rs\n",
+            "@@ marker();\n",
+            "-    target();\n",
+            "+    changed();\n",
+            "*** End Patch\n",
+        );
+
+        let outcome = plan(patch, tmp.path()).unwrap();
+        assert_eq!(
+            outcome.attempts.len(),
+            2,
+            "attempts: {:?}",
+            outcome.attempts
+        );
+        assert!(
+            outcome.attempts.iter().all(|attempt| {
+                attempt.success
+                    && attempt.anchor_text.as_deref() == Some("marker();")
+                    && attempt.fuzzy_tier.as_deref() == Some("trim")
+            }),
+            "compound match should record successful anchor attempts with fuzzy tier: {:?}",
+            outcome.attempts
+        );
+        let content = outcome.changes[0].new_content.as_deref().unwrap();
+        assert!(
+            content.contains("section one {\n    marker();\n    keep();\n}"),
+            "first marker block must remain unchanged, got: {content}",
+        );
+        assert!(
+            content.contains("section two {\n    marker();\n    changed();\n}"),
+            "second marker block should change, got: {content}",
+        );
+    }
+
+    #[test]
+    fn ambiguous_final_anchor_stays_ambiguous_when_body_matches_multiple_candidates() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("code.rs"),
+            "section one {\n    marker();\n    target();\n}\n\
+             section two {\n    marker();\n    target();\n}\n",
+        )
+        .unwrap();
+        let patch = concat!(
+            "*** Begin Patch\n",
+            "*** Update File: code.rs\n",
+            "@@ marker();\n",
+            "-    target();\n",
+            "+    changed();\n",
+            "*** End Patch\n",
+        );
+
+        let err = plan(patch, tmp.path()).unwrap_err().error;
+        match err {
+            ApplyPatchError::AmbiguousContext { candidates, .. } => {
+                assert_eq!(candidates, vec![2, 6]);
+            }
+            other => panic!("expected AmbiguousContext, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ambiguous_final_anchor_matching_first_old_line_applies_from_anchor() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("code.rs"),
+            "fn same() {\n    keep();\n}\nfn same() {\n    target();\n}\n",
+        )
+        .unwrap();
+        let patch = concat!(
+            "*** Begin Patch\n",
+            "*** Update File: code.rs\n",
+            "@@ fn same() {\n",
+            " fn same() {\n",
+            "-    target();\n",
+            "+    changed();\n",
+            " }\n",
+            "*** End Patch\n",
+        );
+
+        let outcome = plan(patch, tmp.path()).unwrap();
+        assert_eq!(
+            outcome.changes[0].new_content.as_deref(),
+            Some("fn same() {\n    keep();\n}\nfn same() {\n    changed();\n}\n")
+        );
+    }
+
+    #[test]
+    fn earlier_stacked_anchor_ambiguity_remains_rejected() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("code.rs"),
+            "mod repeated {\n    fn first() {\n        keep();\n    }\n}\n\
+             mod repeated {\n    fn second() {\n        target();\n    }\n}\n",
+        )
+        .unwrap();
+        let patch = concat!(
+            "*** Begin Patch\n",
+            "*** Update File: code.rs\n",
+            "@@ mod repeated {\n",
+            "@@ fn second() {\n",
+            "-        target();\n",
+            "+        changed();\n",
+            "*** End Patch\n",
+        );
+
+        let err = plan(patch, tmp.path()).unwrap_err().error;
+        match err {
+            ApplyPatchError::AmbiguousContext {
+                chunk: 0,
+                candidates,
+                ..
+            } => {
+                assert_eq!(candidates, vec![1, 6]);
+            }
+            other => panic!("expected AmbiguousContext, got: {other:?}"),
+        }
     }
 
     /// AmbiguousContext on a generic body line surfaces a suggested anchor
