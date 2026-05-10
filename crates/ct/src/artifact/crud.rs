@@ -57,6 +57,7 @@ pub fn create(opts: CreateOpts<'_>) -> Result<CreateOutcome, CtError> {
             "dive requires source (a dive without a hub link is meaningless)".to_string(),
         ));
     }
+    validate_artifact_kind_tags(kind, user_tags)?;
     for tag in user_tags {
         validate_tag(tag)?;
     }
@@ -162,6 +163,34 @@ pub fn create(opts: CreateOpts<'_>) -> Result<CreateOutcome, CtError> {
         kind,
         pushed,
     })
+}
+
+fn validate_artifact_kind_tags(kind: ArtifactKind, user_tags: &[String]) -> Result<(), CtError> {
+    let expected_type = kind.dir_name();
+    for tag in user_tags {
+        if let Some(actual_type) = tag.strip_prefix("type/")
+            && actual_type != expected_type
+        {
+            return Err(CtError::Validation(format!(
+                "conflicting artifact type tag {tag:?}; create this artifact with --type {actual_type}"
+            )));
+        }
+        match (kind, tag.as_str()) {
+            (ArtifactKind::Plan, "stage/structure") => {
+                return Err(CtError::Validation(
+                    "stage/structure belongs to structure artifacts; use --type structure"
+                        .to_string(),
+                ));
+            }
+            (ArtifactKind::Plan, "stage/design") => {
+                return Err(CtError::Validation(
+                    "stage/design belongs to design artifacts; use --type design".to_string(),
+                ));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
