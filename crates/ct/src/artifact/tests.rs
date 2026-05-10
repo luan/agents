@@ -825,6 +825,66 @@ fn design_and_structure_are_first_class_artifacts() {
 }
 
 #[test]
+fn create_rejects_plan_tagged_as_structure_stage() {
+    let tmp = std::env::temp_dir().join(format!("ct-qrdspi-stage-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let project = tmp.join("myproj");
+    std::fs::create_dir_all(&project).unwrap();
+
+    with_blueprints_dir(&tmp, || {
+        let result = create(CreateOpts {
+            kind: ArtifactKind::Plan,
+            topic: "Widget Structure",
+            project: project.to_str().unwrap(),
+            slug_override: Some("widget-structure"),
+            source: None,
+            user_tags: &["stage/structure".to_string()],
+            dive: false,
+        });
+
+        assert!(
+            matches!(result, Err(CtError::Validation(ref message)) if message.contains("--type structure")),
+            "expected structure type guidance, got {result:?}"
+        );
+        assert!(
+            !tmp.join("myproj").join("plan").exists(),
+            "stale structure workflow should not create a plan artifact"
+        );
+    });
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
+fn create_rejects_conflicting_type_tags() {
+    let tmp = std::env::temp_dir().join(format!("ct-qrdspi-type-tag-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let project = tmp.join("myproj");
+    std::fs::create_dir_all(&project).unwrap();
+
+    with_blueprints_dir(&tmp, || {
+        let result = create(CreateOpts {
+            kind: ArtifactKind::Plan,
+            topic: "Widget Design",
+            project: project.to_str().unwrap(),
+            slug_override: Some("widget-design"),
+            source: None,
+            user_tags: &["type/design".to_string()],
+            dive: false,
+        });
+
+        assert!(
+            matches!(result, Err(CtError::Validation(ref message)) if message.contains("--type design")),
+            "expected design type guidance, got {result:?}"
+        );
+        assert!(
+            !tmp.join("myproj").join("plan").exists(),
+            "conflicting type tag should not create a plan artifact"
+        );
+    });
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
 fn archive_core_moves_file_and_returns_destination() {
     let tmp = std::env::temp_dir().join(format!("ct-archive-core-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
