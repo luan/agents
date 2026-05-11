@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-	formatToolSectionContent,
+	formatToolSectionMarkdown,
 	isBackKey,
 	isForwardKey,
 	isNavigateDownKey,
@@ -29,16 +29,34 @@ describe("token burden vim key bindings", () => {
 });
 
 describe("token burden tools overlay", () => {
-	test("formats active and inactive tool definitions as a grouped JSON view", () => {
-		const content = formatToolSectionContent({
-			active: [{ name: "bash", chars: 20, tokens: 10, content: '{"name":"bash"}' }],
-			inactive: [{ name: "find", chars: 20, tokens: 10, content: '{"name":"find"}' }],
+	test("formats active and inactive tool definitions as markdown", () => {
+		const content = formatToolSectionMarkdown({
+			active: [
+				{
+					name: "bash",
+					chars: 20,
+					tokens: 10,
+					content: '{"name":"bash","description":"Run a shell command","parameters":{"type":"object"}}',
+				},
+			],
+			inactive: [
+				{
+					name: "find",
+					chars: 20,
+					tokens: 10,
+					content: '{"name":"find","description":"Find text","parameters":{"type":"object"}}',
+				},
+			],
 		});
 
-		expect(JSON.parse(content)).toEqual({
-			active: [{ name: "bash" }],
-			inactive: [{ name: "find" }],
-		});
+		expect(content).toContain("# Tool definitions");
+		expect(content).toContain("## Active tools");
+		expect(content).toContain("### bash");
+		expect(content).toContain("Run a shell command");
+		expect(content).toContain("#### Parameters");
+		expect(content).toContain('"type": "object"');
+		expect(content).toContain("## Inactive tools");
+		expect(content).toContain("### find");
 	});
 
 	test("opens the whole tool section from the top-level view", async () => {
@@ -81,8 +99,22 @@ describe("token burden tools overlay", () => {
 							chars: 20,
 							tokens: 10,
 							tools: {
-								active: [{ name: "bash", chars: 20, tokens: 10, content: '{"name":"bash"}' }],
-								inactive: [{ name: "find", chars: 20, tokens: 10, content: '{"name":"find"}' }],
+								active: [
+									{
+										name: "bash",
+										chars: 20,
+										tokens: 10,
+										content: '{"name":"bash","description":"Run a shell command"}',
+									},
+								],
+								inactive: [
+									{
+										name: "find",
+										chars: 20,
+										tokens: 10,
+										content: '{"name":"find","description":"Find text"}',
+									},
+								],
 							},
 							children: [{ label: "bash", chars: 20, tokens: 10, content: '{"name":"bash"}' }],
 						},
@@ -93,11 +125,13 @@ describe("token burden tools overlay", () => {
 			);
 
 			const openedPath = readFileSync(openedPathFile, "utf8");
-			expect(openedPath.endsWith(".json")).toBe(true);
-			expect(JSON.parse(readFileSync(openedPath, "utf8"))).toEqual({
-				active: [{ name: "bash" }],
-				inactive: [{ name: "find" }],
-			});
+			expect(openedPath.endsWith(".md")).toBe(true);
+			const openedContent = readFileSync(openedPath, "utf8");
+			expect(openedContent).toContain("# Tool definitions");
+			expect(openedContent).toContain("### bash");
+			expect(openedContent).toContain("Run a shell command");
+			expect(openedContent).toContain("### find");
+			expect(openedContent).toContain("Find text");
 		} finally {
 			if (oldEditor === undefined) {
 				delete process.env.EDITOR;
