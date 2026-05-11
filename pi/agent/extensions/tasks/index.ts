@@ -125,6 +125,7 @@ interface TaskHudState {
 	tasks: TaskRecord[];
 	display: AssignmentDisplayContext;
 	config: Config;
+	taskGuardEnabled: boolean;
 }
 
 const defaultConfig: Config = {
@@ -407,6 +408,7 @@ class TaskHudWidget implements Component {
 			hideKanban: taskHudExpandedEpicKey === null,
 			expandedEpicKey: taskHudExpandedEpicKey ?? undefined,
 			flashTasks: activeTaskHudFlashes(),
+			taskGuardEnabled: state.taskGuardEnabled,
 		});
 	}
 
@@ -433,6 +435,7 @@ async function updateTaskHud(
 	command: string,
 	runCommand: typeof defaultRunCommand,
 	config: Config,
+	taskGuardEnabled = latestTaskHudState?.taskGuardEnabled ?? false,
 	signal: AbortSignal | false | undefined = ctx.signal,
 ): Promise<void> {
 	const tasks = await loadHudTasks(ctx.cwd, command, runCommand, signal || undefined);
@@ -444,7 +447,7 @@ async function updateTaskHud(
 	) {
 		taskHudExpandedEpicKey = visibleKeys[0] ?? null;
 	}
-	const state = { tasks, display, config };
+	const state = { tasks, display, config, taskGuardEnabled };
 	latestTaskHudState = state;
 	ensureTaskHudWidget(ctx);
 	taskHudWidget?.setState(state);
@@ -1018,6 +1021,10 @@ function taskHudSummary(columns: Record<TaskBoardColumn["id"], TaskBoardColumn>)
 	if (columns.in_progress.tasks.length > 0) parts.push(`${columns.in_progress.tasks.length} in progress`);
 	if (columns.in_review.tasks.length > 0) parts.push(`${columns.in_review.tasks.length} in review`);
 	return parts;
+}
+
+function taskGuardHudLine(theme: Theme, width: number): string {
+	return truncateLine(`${theme.fg("accent", "󰌾")} ${theme.fg("warning", "Task guard on")}`, width);
 }
 
 function shelfHeader(theme: Theme, column: TaskBoardColumn, width: number, hidden = 0): string {
@@ -1795,17 +1802,19 @@ export function renderHudLines(
 		flashTaskIds?: ReadonlySet<string>;
 		flashTasks?: ReadonlyMap<string, TaskHudFlash>;
 		now?: number;
+		taskGuardEnabled?: boolean;
 	} = {},
 ): string[] {
 	const hudTasks = tasks.filter((task) => !isCanceled(task));
 	const now = options.now ?? Date.now();
+	const guardLines = options.taskGuardEnabled ? [taskGuardHudLine(theme, width)] : [];
 	const visibleTasks = hudTasks.filter(
 		(task) =>
 			task.type !== "epic" &&
 			(!isComplete(task) || (isAssignedToCurrentSession(task, display) && isRecentlyComplete(task, now))),
 	);
 	const groups = buildTaskBoardGroups(hudTasks);
-	if (visibleTasks.length === 0 && groups.length === 0) return [];
+	if (visibleTasks.length === 0 && groups.length === 0) return guardLines;
 	const columns = buildTaskBoardColumns(hudTasks);
 	const doneColumn = boardColumn(columns, "done");
 	const hudColumns = {
@@ -1828,12 +1837,12 @@ export function renderHudLines(
 		`${theme.fg("mdHeading", "●")} ${theme.fg("mdHeading", `${visibleTasks.length} tasks`)} ${theme.fg("muted", `(${parts.join(", ")})`)}`,
 		width,
 	);
-	if (options.hideKanban) return [summaryLine];
+	if (options.hideKanban) return [...guardLines, summaryLine];
 	const lines: string[] = [];
 	const byId = new Map(hudTasks.map((item) => [item.id, item]));
 	if (options.expandedEpicKey) {
 		const group = groups.find((candidate) => candidate.key === options.expandedEpicKey);
-		if (!group) return [summaryLine];
+		if (!group) return [...guardLines, summaryLine];
 		lines.push(
 			...renderColumnarHudGroup(
 				group,
@@ -1847,7 +1856,7 @@ export function renderHudLines(
 				options.flashTasks,
 			),
 		);
-		return (lines.length > 0 ? lines : [summaryLine]).map((line) => truncateLine(line, width));
+		return [...guardLines, ...(lines.length > 0 ? lines : [summaryLine])].map((line) => truncateLine(line, width));
 	}
 	const activeEpicKeys = new Set(
 		hudTasks
@@ -1861,7 +1870,7 @@ export function renderHudLines(
 		for (const group of groups) {
 			lines.push(renderHudEpicSummary(group, theme, width));
 		}
-		return lines.map((line) => truncateLine(line, width));
+		return [...guardLines, ...lines].map((line) => truncateLine(line, width));
 	}
 	for (const group of groups.filter((group) => activeEpicKeys.has(group.key))) {
 		if (lines.length > 0) lines.push(theme.fg("borderMuted", "─".repeat(width)));
@@ -1879,7 +1888,7 @@ export function renderHudLines(
 			),
 		);
 	}
-	return lines.map((line) => truncateLine(line, width));
+	return [...guardLines, ...lines].map((line) => truncateLine(line, width));
 }
 
 interface RatatuiTaskTuiResponse {
@@ -2492,26 +2501,30 @@ function setTaskGuardEnabled(state: GuardState, enabled: boolean): void {
 	state.autoLoopTaskId = undefined;
 	state.autoLoopTurns = 0;
 	if (!enabled) state.pauseResponses = 0;
+	if (latestTaskHudState) {
+		latestTaskHudState = { ...latestTaskHudState, taskGuardEnabled: enabled };
+		taskHudWidget?.setState(latestTaskHudState);
+		requestTaskHudRender?.();
+	}
 }
 
 function taskGuardCommandMessage(state: GuardState, args: string): { message: string; type: "info" | "warning" } {
 	const mode = args.trim().toLowerCase();
-	if (!mode || mode === "toggle") {
-		setTaskGuardEnabled(state, !state.enabled);
-		return { message: `Task guard ${state.enabled ? "enabled" : "disabled"} for this session.`, type: "info" };
+	if (!mode || mode === "status") {
+		return {
+			message: `Task guard is ${state.enabled ? "enabled" : "disabled"} for this session. Use /task-guard [on/off] to change it.`,
+			type: "info",
+		};
 	}
-	if (["on", "enable", "enabled"].includes(mode)) {
+	if (mode === "on") {
 		setTaskGuardEnabled(state, true);
 		return { message: "Task guard enabled for this session.", type: "info" };
 	}
-	if (["off", "disable", "disabled"].includes(mode)) {
+	if (mode === "off") {
 		setTaskGuardEnabled(state, false);
 		return { message: "Task guard disabled for this session.", type: "info" };
 	}
-	if (mode === "status") {
-		return { message: `Task guard is ${state.enabled ? "enabled" : "disabled"} for this session.`, type: "info" };
-	}
-	return { message: "Usage: /task-guard [on|off|toggle|status]", type: "warning" };
+	return { message: "Usage: /task-guard [on|off|status]", type: "warning" };
 }
 
 function fileChangingResult(result: unknown): boolean {
@@ -2530,7 +2543,7 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 
 	const runCommand = runtime.runCommand ?? defaultRunCommand;
 	let cwd = process.cwd();
-	const guardState: GuardState = { enabled: true, progressSerial: 0, autoLoopTurns: 0, pauseResponses: 0 };
+	const guardState: GuardState = { enabled: false, progressSerial: 0, autoLoopTurns: 0, pauseResponses: 0 };
 	const getCwd = () => cwd;
 	const markProgress = () => {
 		guardState.progressSerial++;
@@ -2538,9 +2551,9 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 
 	pi.on("session_start", async (_event, ctx) => {
 		cwd = ctx.cwd;
-		setTaskGuardEnabled(guardState, true);
+		setTaskGuardEnabled(guardState, false);
 		if (config.hud.enabled) {
-			await updateTaskHud(ctx, pi, config.command, runCommand, config).catch((error) => {
+			await updateTaskHud(ctx, pi, config.command, runCommand, config, guardState.enabled).catch((error) => {
 				ctx.ui.notify?.(
 					`Task HUD refresh failed: ${error instanceof Error ? error.message : String(error)}`,
 					"warning",
@@ -2613,7 +2626,7 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 	});
 
 	pi.registerCommand?.("task-guard", {
-		description: "Toggle task guard for this session",
+		description: "Show task guard status; use [on/off] to change it",
 		handler: async (args: string, ctx: ExtensionContext) => {
 			const result = taskGuardCommandMessage(guardState, args);
 			ctx.ui.notify?.(result.message, result.type);
