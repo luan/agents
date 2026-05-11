@@ -32,6 +32,7 @@ export interface ExecCommandTracker {
 	getState(command: string): ExecCommandStatus;
 	getRenderInfo(toolCallId: string | undefined, command: string): ExecCommandRenderInfo;
 	registerRenderContext(toolCallId: string | undefined, invalidate: () => void): void;
+	ensurePlannedExploration(toolCallId: string | undefined, command: string): void;
 	recordStart(toolCallId: string, command: string): void;
 	recordRtkWrapped(toolCallId: string): void;
 	recordPersistentSession(toolCallId: string, sessionId: number): void;
@@ -72,11 +73,6 @@ export function createExecCommandTracker(): ExecCommandTracker {
 	function getGroupForEntry(entry: ExecEntry | undefined): ExecGroup | undefined {
 		if (!entry?.groupId) return undefined;
 		return groupsById.get(entry.groupId);
-	}
-
-	function getVisibleEntry(group: ExecGroup | undefined): ExecEntry | undefined {
-		if (!group) return undefined;
-		return entriesByToolCallId.get(group.visibleEntryId);
 	}
 
 	function getElapsedMs(entries: ExecEntry[]): number | undefined {
@@ -142,7 +138,54 @@ export function createExecCommandTracker(): ExecCommandTracker {
 			if (!entry) return;
 			entry.invalidate = invalidate;
 		},
+		ensurePlannedExploration(toolCallId, command) {
+			if (!toolCallId || entriesByToolCallId.has(toolCallId)) return;
+			const summary = summarizeShellCommand(command);
+			if (!summary.maskAsExplored) return;
+
+			const entry: ExecEntry = {
+				toolCallId,
+				command,
+				summary,
+				status: "running",
+				hidden: false,
+				startedAtMs: Date.now(),
+				rtkWrapped: false,
+			};
+			entriesByToolCallId.set(toolCallId, entry);
+
+			let group = activeExplorationGroupId ? groupsById.get(activeExplorationGroupId) : undefined;
+			if (!group) {
+				group = {
+					id: nextGroupId++,
+					entryIds: [toolCallId],
+					visibleEntryId: toolCallId,
+				};
+				groupsById.set(group.id, group);
+				activeExplorationGroupId = group.id;
+				entry.groupId = group.id;
+				return;
+			}
+
+			group.entryIds.push(toolCallId);
+			entry.hidden = true;
+			entry.groupId = group.id;
+			invalidateToolCall(group.visibleEntryId);
+		},
 		recordStart(toolCallId, command) {
+			const existing = entriesByToolCallId.get(toolCallId);
+			if (existing) {
+				commandByToolCallId.set(toolCallId, command);
+				incrementCommand(command);
+				existing.command = command;
+				existing.summary = summarizeShellCommand(command);
+				existing.status = "running";
+				existing.startedAtMs = Date.now();
+				const group = getGroupForEntry(existing);
+				invalidateToolCall(group?.visibleEntryId ?? toolCallId);
+				return;
+			}
+
 			commandByToolCallId.set(toolCallId, command);
 			incrementCommand(command);
 
@@ -176,15 +219,10 @@ export function createExecCommandTracker(): ExecCommandTracker {
 				return;
 			}
 
-			const previousVisibleEntry = getVisibleEntry(group);
-			if (previousVisibleEntry) {
-				previousVisibleEntry.hidden = true;
-				invalidateToolCall(previousVisibleEntry.toolCallId);
-			}
-
 			group.entryIds.push(toolCallId);
-			group.visibleEntryId = toolCallId;
+			entry.hidden = true;
 			entry.groupId = group.id;
+			invalidateToolCall(group.visibleEntryId);
 		},
 		recordRtkWrapped(toolCallId) {
 			const entry = entriesByToolCallId.get(toolCallId);

@@ -1,10 +1,13 @@
 import { expect, test } from "bun:test";
 import { execSync } from "node:child_process";
+import { ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
+import { Container } from "@earendil-works/pi-tui";
 import codexExecExtension from "./index.ts";
 import {
 	formatElapsedTime,
 	type RenderTheme,
 	renderExecCommandCall,
+	renderGroupedExecCommandCall,
 	renderOutputBlock,
 	renderWriteStdinCall,
 } from "./tools/codex-rendering.ts";
@@ -56,7 +59,7 @@ test("exec command call renders Codex-style inline syntax-highlighted commands",
 test("exec command call unwraps simple shell wrappers before rendering", () => {
 	const rendered = renderExecCommandCall(`bash -lc 'git status --short'`, "running", testTheme);
 	expect(rendered).toBe(
-		`<dim>•</dim> <bold>Running</bold> <syntaxFunction>git</syntaxFunction> status <syntaxKeyword>--short</syntaxKeyword>`,
+		`<dim>⠋</dim> <bold>Running</bold> <syntaxFunction>git</syntaxFunction> status <syntaxKeyword>--short</syntaxKeyword>`,
 	);
 });
 
@@ -75,12 +78,128 @@ test("write stdin call uses unwrapped command previews", () => {
 
 test("running terminal calls show elapsed time", () => {
 	expect(formatElapsedTime(65_400)).toBe("1m 05s");
-	expect(renderExecCommandCall("sleep 60", "running", testTheme, false, 65_400)).toBe(
-		`<dim>•</dim> <bold>Running</bold> <syntaxFunction>sleep</syntaxFunction> 60<dim> · 1m 05s</dim>`,
+	const firstFrame = renderExecCommandCall("sleep 60", "running", testTheme, false, 0);
+	const secondFrame = renderExecCommandCall("sleep 60", "running", testTheme, false, 120);
+	expect(firstFrame).not.toBe(secondFrame);
+	expect(renderExecCommandCall("sleep 60", "running", testTheme, false, 65_400)).toContain(
+		`<bold>Running</bold> <syntaxFunction>sleep</syntaxFunction> 60<dim> · 1m 05s</dim>`,
 	);
 	expect(renderWriteStdinCall(3, "", "sleep 60", testTheme, "running", false, 65_400)).toBe(
 		`<dim>• </dim><bold>Waiting for background terminal</bold><dim> · 1m 05s</dim><dim> · </dim><muted>sleep 60</muted>`,
 	);
+});
+
+test("grouped exploration rows use a one-line in-flight placeholder", () => {
+	const actionGroups = [[{ kind: "read", title: "Read", body: "a.ts" }]] as any;
+	const running = renderGroupedExecCommandCall(actionGroups, "running", testTheme, false, 0);
+	const done = renderGroupedExecCommandCall(actionGroups, "done", testTheme, false, 120);
+
+	expect(running).toBe("<dim>⠋</dim> <bold>Exploring</bold>");
+	expect(running).not.toContain("a.ts");
+	expect(done).toContain("<success>•</success> <bold>Explored</bold>");
+	expect(done).toContain("<accent>Read</accent>");
+});
+
+test("exploration grouping keeps the first row as the visible anchor", () => {
+	let tool: any;
+	const tracker = createExecCommandTracker();
+	const sessions = createExecSessionManager();
+	try {
+		registerExecCommandTool({ registerTool: (definition: any) => (tool = definition) } as any, tracker, sessions);
+
+		tracker.recordStart("call-1", "sed -n '1,20p' pi/agent/extensions/codex-exec/index.ts");
+		tracker.recordStart("call-2", "sed -n '1,20p' pi/agent/extensions/codex-exec/tools/exec-command-tool.ts");
+
+		const firstRow = tool
+			.renderCall({ cmd: "sed -n '1,20p' pi/agent/extensions/codex-exec/index.ts" }, testTheme, {
+				toolCallId: "call-1",
+				state: {},
+				isPartial: true,
+				invalidate() {},
+			})
+			.render(200)
+			.join("\n");
+		const secondRow = tool
+			.renderCall({ cmd: "sed -n '1,20p' pi/agent/extensions/codex-exec/tools/exec-command-tool.ts" }, testTheme, {
+				toolCallId: "call-2",
+				state: {},
+				isPartial: true,
+				invalidate() {},
+			})
+			.render(200)
+			.join("\n");
+
+		expect(firstRow).toContain("<bold>Exploring</bold>");
+		expect(firstRow).not.toContain("index.ts");
+		expect(firstRow).not.toContain("exec-command-tool.ts");
+		expect(secondRow).toBe("");
+	} finally {
+		tracker.clear();
+		sessions.shutdown();
+	}
+});
+
+test("exploration grouping hides later placeholders before execution starts", () => {
+	let tool: any;
+	const tracker = createExecCommandTracker();
+	const sessions = createExecSessionManager();
+	try {
+		registerExecCommandTool({ registerTool: (definition: any) => (tool = definition) } as any, tracker, sessions);
+
+		const firstRow = tool
+			.renderCall({ cmd: "sed -n '1,20p' pi/agent/extensions/codex-exec/index.ts" }, testTheme, {
+				toolCallId: "call-1",
+				state: {},
+				isPartial: true,
+				invalidate() {},
+			})
+			.render(200)
+			.join("\n");
+		const secondRow = tool
+			.renderCall({ cmd: "sed -n '1,20p' pi/agent/extensions/codex-exec/tools/exec-command-tool.ts" }, testTheme, {
+				toolCallId: "call-2",
+				state: {},
+				isPartial: true,
+				invalidate() {},
+			})
+			.render(200)
+			.join("\n");
+
+		expect(firstRow).toContain("<bold>Exploring</bold>");
+		expect(secondRow).toBe("");
+	} finally {
+		tracker.clear();
+		sessions.shutdown();
+	}
+});
+
+test("exploration grouping does not append a single command output preview", () => {
+	let tool: any;
+	const tracker = createExecCommandTracker();
+	const sessions = createExecSessionManager();
+	try {
+		registerExecCommandTool({ registerTool: (definition: any) => (tool = definition) } as any, tracker, sessions);
+
+		tracker.recordStart("call-1", "sed -n '1,20p' pi/agent/extensions/codex-exec/index.ts");
+		const resultRow = tool.renderResult(
+			{
+				content: [{ type: "text", text: "fallback" }],
+				details: { output: "arbitrary file preview\n", exit_code: 0 },
+			},
+			{ expanded: false, isPartial: false },
+			testTheme,
+			{
+				toolCallId: "call-1",
+				args: { cmd: "sed -n '1,20p' pi/agent/extensions/codex-exec/index.ts" },
+				state: {},
+			},
+		);
+
+		expect(resultRow.render(200)).toEqual([]);
+	} finally {
+		tracker.clear();
+		sessions.shutdown();
+	}
 });
 
 test("yielded background exec calls do not keep scheduling elapsed redraws", () => {
@@ -193,6 +312,104 @@ test("exec renderers self-render without the default success shell", () => {
 	} finally {
 		sessions.shutdown();
 	}
+});
+
+test("extension hides empty self-rendered tool rows", () => {
+	type Handler = () => void;
+	const handlers = new Map<string, Handler[]>();
+	codexExecExtension({
+		registerTool() {},
+		registerCommand() {},
+		getActiveTools: () => [],
+		setActiveTools() {},
+		on: (event: string, handler: Handler) => {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+		},
+	} as any);
+
+	const hiddenTool = {
+		renderShell: "self",
+		renderCall() {
+			return new Container();
+		},
+		renderResult() {
+			return new Container();
+		},
+	};
+	const component = new ToolExecutionComponent(
+		"hidden",
+		"call-hidden",
+		{},
+		{},
+		hiddenTool as any,
+		{ requestRender() {} } as any,
+		process.cwd(),
+	);
+
+	expect(component.render(80)).toEqual([]);
+	for (const handler of handlers.get("session_shutdown") ?? []) handler();
+});
+
+test("exec command streams partial output while the process is still running", async () => {
+	let tool: any;
+	const tracker = createExecCommandTracker();
+	const sessions = createExecSessionManager({ minNonInteractiveExecYieldTimeMs: 50 });
+	try {
+		registerExecCommandTool({ registerTool: (definition: any) => (tool = definition) } as any, tracker, sessions);
+		const updates: any[] = [];
+		const result = await tool.execute(
+			"call-stream",
+			{ cmd: "printf first; sleep 0.25; printf second", yield_time_ms: 5000 },
+			undefined,
+			(update: any) => updates.push(update),
+			{ cwd: process.cwd() },
+		);
+
+		expect(result.details.output).toBe("firstsecond");
+		expect(updates.some((update) => update.details?.output?.includes("first"))).toBe(true);
+		expect(updates.some((update) => update.details?.session_id !== undefined)).toBe(true);
+	} finally {
+		tracker.clear();
+		sessions.shutdown();
+	}
+});
+
+test("exec command suppresses partial output streaming for exploration commands", async () => {
+	let tool: any;
+	const tracker = createExecCommandTracker();
+	let receivedUpdateCallback = false;
+	const sessions = {
+		exec: async (_input: unknown, _cwd: string, _signal?: AbortSignal, onUpdate?: unknown) => {
+			receivedUpdateCallback = typeof onUpdate === "function";
+			return {
+				chunk_id: "explore",
+				wall_time_seconds: 0,
+				output: "content",
+				exit_code: 0,
+			};
+		},
+		write: async () => {
+			throw new Error("unexpected write");
+		},
+		hasSession: () => false,
+		getSessionCommand: () => undefined,
+		onSessionExit: () => () => {},
+		shutdown() {},
+	};
+	registerExecCommandTool({ registerTool: (definition: any) => (tool = definition) } as any, tracker, sessions as any);
+
+	await tool.execute(
+		"call-explore-stream",
+		{ cmd: "sed -n '1,80p' pi/agent/extensions/codex-exec/index.ts", yield_time_ms: 5000 },
+		undefined,
+		() => {
+			throw new Error("exploration command should not stream partial output");
+		},
+		{ cwd: process.cwd() },
+	);
+
+	expect(receivedUpdateCallback).toBe(false);
+	tracker.clear();
 });
 
 test("write stdin renderer self-renders without the default success shell", () => {

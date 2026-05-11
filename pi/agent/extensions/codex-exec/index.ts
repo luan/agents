@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionContext, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 import { createExecCommandTracker } from "./tools/exec-command-state.ts";
 import { registerExecCommandTool } from "./tools/exec-command-tool.ts";
 import { createExecSessionManager } from "./tools/exec-session-manager.ts";
@@ -14,6 +14,35 @@ function isCodexModel(model: ExtensionContext["model"] | undefined): boolean {
 
 function arraysEqual(a: string[], b: string[]): boolean {
 	return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+const EMPTY_SELF_SHELL_ROW_PATCH = Symbol.for("agents.codex-exec.empty-self-shell-row-patch");
+const ANSI_PATTERN =
+	/\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\u001b\\)|P[^\u001b]*(?:\u001b\\)|_[^\u001b]*(?:\u001b\\)|\^[^\u001b]*(?:\u001b\\))/g;
+
+interface ToolExecutionPrototype {
+	render(width: number): string[];
+	getRenderShell?(): "default" | "self";
+	hasRendererDefinition?(): boolean;
+	[EMPTY_SELF_SHELL_ROW_PATCH]?: true;
+}
+
+function hasVisibleLineContent(lines: string[]): boolean {
+	return lines.some((line) => line.replace(ANSI_PATTERN, "").trim().length > 0);
+}
+
+function installEmptySelfShellRowPatch(): void {
+	const proto = ToolExecutionComponent.prototype as ToolExecutionPrototype;
+	if (proto[EMPTY_SELF_SHELL_ROW_PATCH]) return;
+	const originalRender = proto.render;
+	proto.render = function renderWithoutEmptySelfShellRows(this: ToolExecutionPrototype, width: number): string[] {
+		const lines = originalRender.call(this, width);
+		if (this.getRenderShell?.() === "self" && this.hasRendererDefinition?.() && !hasVisibleLineContent(lines)) {
+			return [];
+		}
+		return lines;
+	};
+	proto[EMPTY_SELF_SHELL_ROW_PATCH] = true;
 }
 
 function getCommandArg(args: unknown): string | undefined {
@@ -52,6 +81,7 @@ function parseRtkToggleArgument(args: string): boolean | undefined | "invalid" {
 }
 
 export default function codexExecExtension(pi: ExtensionAPI) {
+	installEmptySelfShellRowPatch();
 	const tracker = createExecCommandTracker();
 	const sessions = createExecSessionManager();
 	const toolsRemovedForCodex = new Set<string>();
