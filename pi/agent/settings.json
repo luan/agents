@@ -19,7 +19,6 @@
   "extensions": [
     "extensions/plannotator-events/index.ts",
     "extensions/codex-native/index.ts",
-    "extensions/dynamic-tools/index.ts",
     "extensions/token-burden/index.ts",
     "extensions/vim/index.ts",
     "extensions/tasks/index.ts"
