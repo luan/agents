@@ -33,7 +33,7 @@ jobs:
         shell: bash
         run: |
           set -eu
-          for p in claude/CLAUDE.md codex/AGENTS.md opencode/AGENTS.md pi/AGENTS.md; do
+          for p in claude/CLAUDE.md claude/hooks codex/AGENTS.md pi/agent/AGENTS.md; do
             test -L "$p" || { echo "::error::$p is not a symlink — core.symlinks=true was not honoured"; exit 1; }
           done
 
@@ -44,7 +44,7 @@ jobs:
       # Stubs satisfy `cargo xtask doctor`'s PATH check. xtask itself never
       # invokes these (only the `just claude-plugins-install` / `just ct-install`
       # recipes do), so a no-op stub is sufficient for xtask coverage.
-      - name: Stub external tools (codex, claude, opencode)
+      - name: Stub external tools (codex, claude)
         shell: bash
         run: |
           set -eu
@@ -52,7 +52,7 @@ jobs:
           mkdir -p "$stubs_dir"
           ext=""
           if [ "${{ runner.os }}" = "Windows" ]; then ext=".exe"; fi
-          for t in codex claude opencode; do
+          for t in codex claude; do
             f="$stubs_dir/${t}${ext}"
             printf '%s\n%s\n' '#!/bin/sh' 'exit 0' > "$f"
             chmod +x "$f"
@@ -95,7 +95,7 @@ jobs:
 
       - name: scenario 1 — clean target dirs
         shell: bash
-        run: rm -rf "$HOME/.claude" "$HOME/.codex" "$HOME/.config/opencode" "$HOME/.pi" "$HOME/.agents"
+        run: rm -rf "$HOME/.claude" "$HOME/.codex" "$HOME/.pi" "$HOME/.agents"
 
       - name: scenario 1 — xtask link-dry-run on clean home
         run: cargo xtask link-dry-run
@@ -119,11 +119,6 @@ jobs:
             "$HOME/.claude/local-plugins" \
             "$HOME/.codex/AGENTS.md" \
             "$HOME/.codex/config.toml" \
-            "$HOME/.codex/hooks.json" \
-            "$HOME/.config/opencode/AGENTS.md" \
-            "$HOME/.config/opencode/opencode.jsonc" \
-            "$HOME/.config/opencode/profiles" \
-            "$HOME/.pi/AGENTS.md" \
             "$HOME/.pi/agent" \
             "$HOME/.claude/skills/commit"; do
             test -L "$p" || { echo "::error::missing symlink: $p"; exit 1; }
@@ -164,7 +159,7 @@ jobs:
         shell: bash
         run: |
           set -eu
-          rm -rf "$HOME/.claude" "$HOME/.codex" "$HOME/.config/opencode" "$HOME/.pi" "$HOME/.agents"
+          rm -rf "$HOME/.claude" "$HOME/.codex" "$HOME/.pi" "$HOME/.agents"
           mkdir -p "$HOME/.agents"
           node -e 'require("fs").symlinkSync(process.argv[1], process.argv[2], "dir")' \
             "$GITHUB_WORKSPACE/rules" "$HOME/.agents/rules"
@@ -181,7 +176,7 @@ jobs:
         shell: bash
         run: |
           set -eu
-          rm -rf "$HOME/.claude" "$HOME/.codex" "$HOME/.config/opencode" "$HOME/.pi" "$HOME/.agents"
+          rm -rf "$HOME/.claude" "$HOME/.codex" "$HOME/.pi" "$HOME/.agents"
           mkdir -p "$HOME/.claude"
           printf '%s' '{"sentinel":"user-data-must-not-be-clobbered"}' > "$HOME/.claude/settings.json"
 
@@ -210,7 +205,7 @@ jobs:
         shell: bash
         run: |
           set -eu
-          rm -rf "$HOME/.claude" "$HOME/.codex" "$HOME/.config/opencode" "$HOME/.pi" "$HOME/.agents"
+          rm -rf "$HOME/.claude" "$HOME/.codex" "$HOME/.pi" "$HOME/.agents"
           mkdir -p "$HOME/.claude"
           printf '%s' '{"sentinel":"foreign-symlink-target"}' > "$HOME/foreign-settings.json"
           node -e 'require("fs").symlinkSync(process.argv[1], process.argv[2], "file")' \
@@ -244,7 +239,7 @@ jobs:
         shell: bash
         run: |
           set -eu
-          rm -rf "$HOME/.claude" "$HOME/.codex" "$HOME/.config/opencode" "$HOME/.pi" "$HOME/.agents"
+          rm -rf "$HOME/.claude" "$HOME/.codex" "$HOME/.pi" "$HOME/.agents"
           mkdir -p "$HOME/.pi/agent"
           echo "preexisting userdata" > "$HOME/.pi/agent/runtime.txt"
 
@@ -279,7 +274,7 @@ jobs:
 
       - name: scenario 4 — clean home for validate
         shell: bash
-        run: rm -rf "$HOME/.claude" "$HOME/.codex" "$HOME/.config/opencode" "$HOME/.pi" "$HOME/.agents"
+        run: rm -rf "$HOME/.claude" "$HOME/.codex" "$HOME/.pi" "$HOME/.agents"
 
       # validate runs: render-agents freshness, JSON validity, in-repo symlink
       # asserts, stow dry-run, and `cargo test --workspace`. Enforced on all
