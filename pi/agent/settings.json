@@ -13,8 +13,7 @@
     "npm:@ifi/oh-pi-themes",
     "npm:@dreki-gg/pi-context7",
     "npm:@tintinweb/pi-subagents",
-    "npm:@plannotator/pi-extension",
-    "npm:@xl0/show-sysprompt"
+    "npm:@plannotator/pi-extension"
   ],
   "extensions": [
     "extensions/plannotator-events/index.ts",
