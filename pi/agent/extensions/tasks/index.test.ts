@@ -1302,6 +1302,52 @@ describe("tasks extension", () => {
 		expect(widgetText).toContain("Updated smoke");
 	});
 
+	test("task HUD shows when task guard is on", async () => {
+		const handlers: Record<string, any> = {};
+		const commands: Record<string, any> = {};
+		let widgetText = "";
+		let widget: { render(width: number): string[] } | undefined;
+		const ctx = {
+			cwd: "/tmp/project",
+			sessionId: "test-session",
+			ui: {
+				setWidget(_id: string, factory: any) {
+					widget = factory(
+						{
+							requestRender() {
+								widgetText = widget?.render(120).join("\n") ?? "";
+							},
+						},
+						theme,
+					);
+					widgetText = widget?.render(120).join("\n") ?? "";
+				},
+				notify() {},
+			},
+		};
+
+		tasksExtension(
+			{
+				registerTool() {},
+				registerCommand(name: string, definition: any) {
+					commands[name] = definition;
+				},
+				on(name: string, handler: any) {
+					handlers[name] = handler;
+				},
+			} as any,
+			{
+				runCommand: async () => ({ stdout: JSON.stringify({ tasks: [task] }), stderr: "", exitCode: 0 }),
+			},
+		);
+
+		await handlers.session_start({}, ctx);
+		expect(widgetText).not.toContain("Task guard on");
+
+		await commands["task-guard"].handler("on", ctx);
+		expect(widgetText).toContain("Task guard on");
+	});
+
 	test("task mutations flash the changed task in the HUD", async () => {
 		const tools: any[] = [];
 		let widgetText = "";
@@ -1496,10 +1542,14 @@ describe("tasks extension", () => {
 
 	test("task guard keeps answers visible and sends a soft visible nudge", async () => {
 		const handlers: Record<string, any> = {};
+		const commands: Record<string, any> = {};
 		const sent: any[] = [];
 		tasksExtension(
 			{
 				registerTool() {},
+				registerCommand(name: string, definition: any) {
+					commands[name] = definition;
+				},
 				on(name: string, handler: any) {
 					handlers[name] = handler;
 				},
@@ -1526,6 +1576,7 @@ describe("tasks extension", () => {
 			ui: { notify() {} },
 		};
 
+		await commands["task-guard"].handler("on", ctx);
 		const replacement = await handlers.message_end(
 			{ message: { role: "assistant", content: [{ type: "text", text: "Done." }] } },
 			ctx,
@@ -1597,6 +1648,66 @@ describe("tasks extension", () => {
 		expect(sent[0].message.content[0].text).toContain("Task nudge");
 	});
 
+	test("task guard defaults off and bare command reports status without toggling", async () => {
+		const handlers: Record<string, any> = {};
+		const commands: Record<string, any> = {};
+		const sent: any[] = [];
+		const notifications: string[] = [];
+		tasksExtension(
+			{
+				registerTool() {},
+				registerCommand(name: string, definition: any) {
+					commands[name] = definition;
+				},
+				on(name: string, handler: any) {
+					handlers[name] = handler;
+				},
+				sendMessage(message: any, options: any) {
+					sent.push({ message, options });
+				},
+			} as any,
+			{
+				runCommand: async () => ({
+					stdout: JSON.stringify({
+						tasks: [
+							{ ...task, id: "t", title: "Continue me", assigned_to: "session:test-session", status: "open" },
+						],
+					}),
+					stderr: "",
+					exitCode: 0,
+				}),
+			},
+		);
+		const ctx = {
+			cwd: "/tmp/project",
+			sessionId: "test-session",
+			signal: undefined,
+			ui: {
+				notify(message: string) {
+					notifications.push(message);
+				},
+			},
+		};
+
+		await handlers.message_end({ message: { role: "assistant", content: [{ type: "text", text: "Done." }] } }, ctx);
+		await handlers.turn_end({}, ctx);
+		await commands["task-guard"].handler("", ctx);
+		await commands["task-guard"].handler("toggle", ctx);
+		await commands["task-guard"].handler("status", ctx);
+		await handlers.message_end(
+			{ message: { role: "assistant", content: [{ type: "text", text: "Done again." }] } },
+			ctx,
+		);
+		await handlers.turn_end({}, ctx);
+
+		expect(sent).toEqual([]);
+		expect(notifications).toEqual([
+			"Task guard is disabled for this session. Use /task-guard [on/off] to change it.",
+			"Usage: /task-guard [on|off|status]",
+			"Task guard is disabled for this session. Use /task-guard [on/off] to change it.",
+		]);
+	});
+
 	test("task guard stays quiet for user-directed status answers", async () => {
 		const handlers: Record<string, any> = {};
 		const sent: any[] = [];
@@ -1642,10 +1753,14 @@ describe("tasks extension", () => {
 
 	test("task guard keeps answers visible when evaluation fails", async () => {
 		const handlers: Record<string, any> = {};
+		const commands: Record<string, any> = {};
 		const notifications: string[] = [];
 		tasksExtension(
 			{
 				registerTool() {},
+				registerCommand(name: string, definition: any) {
+					commands[name] = definition;
+				},
 				on(name: string, handler: any) {
 					handlers[name] = handler;
 				},
@@ -1656,31 +1771,37 @@ describe("tasks extension", () => {
 				},
 			},
 		);
-
-		const replacement = await handlers.message_end(
-			{ message: { role: "assistant", content: [{ type: "text", text: "Done." }] } },
-			{
-				cwd: "/tmp/project",
-				sessionId: "test-session",
-				signal: undefined,
-				ui: {
-					notify(message: string) {
-						notifications.push(message);
-					},
+		const ctx = {
+			cwd: "/tmp/project",
+			sessionId: "test-session",
+			signal: undefined,
+			ui: {
+				notify(message: string) {
+					notifications.push(message);
 				},
 			},
+		};
+
+		await commands["task-guard"].handler("on", ctx);
+		const replacement = await handlers.message_end(
+			{ message: { role: "assistant", content: [{ type: "text", text: "Done." }] } },
+			ctx,
 		);
 
 		expect(replacement).toBeUndefined();
-		expect(notifications[0]).toContain("Task guard failed");
+		expect(notifications.at(-1)).toContain("Task guard failed");
 	});
 
 	test("task guard repeats a soft nudge without escalating", async () => {
 		const handlers: Record<string, any> = {};
+		const commands: Record<string, any> = {};
 		const sent: any[] = [];
 		tasksExtension(
 			{
 				registerTool() {},
+				registerCommand(name: string, definition: any) {
+					commands[name] = definition;
+				},
 				on(name: string, handler: any) {
 					handlers[name] = handler;
 				},
@@ -1710,6 +1831,7 @@ describe("tasks extension", () => {
 			},
 		};
 
+		await commands["task-guard"].handler("on", ctx);
 		await handlers.message_end({ message: { role: "assistant", content: [{ type: "text", text: "Done." }] } }, ctx);
 		await handlers.turn_end({}, ctx);
 		const replacement = await handlers.message_end(
@@ -1731,10 +1853,14 @@ describe("tasks extension", () => {
 
 	test("task guard stays quiet when a user question follows a nudge", async () => {
 		const handlers: Record<string, any> = {};
+		const commands: Record<string, any> = {};
 		const sent: any[] = [];
 		tasksExtension(
 			{
 				registerTool() {},
+				registerCommand(name: string, definition: any) {
+					commands[name] = definition;
+				},
 				on(name: string, handler: any) {
 					handlers[name] = handler;
 				},
@@ -1761,6 +1887,7 @@ describe("tasks extension", () => {
 			ui: { notify() {} },
 		};
 
+		await commands["task-guard"].handler("on", ctx);
 		await handlers.message_end({ message: { role: "assistant", content: [{ type: "text", text: "Done." }] } }, ctx);
 		await handlers.turn_end({}, ctx);
 		await handlers.message_end(
@@ -1779,10 +1906,14 @@ describe("tasks extension", () => {
 
 	test("task guard auto-triggers continuation turns after progress", async () => {
 		const handlers: Record<string, any> = {};
+		const commands: Record<string, any> = {};
 		const sent: any[] = [];
 		tasksExtension(
 			{
 				registerTool() {},
+				registerCommand(name: string, definition: any) {
+					commands[name] = definition;
+				},
 				on(name: string, handler: any) {
 					handlers[name] = handler;
 				},
@@ -1815,6 +1946,7 @@ describe("tasks extension", () => {
 			ui: { notify() {} },
 		};
 
+		await commands["task-guard"].handler("on", ctx);
 		for (let i = 0; i < 4; i++) {
 			handlers.tool_execution_end({ result: { details: { filesChanged: 1 } } });
 			await handlers.message_end(
@@ -1837,10 +1969,14 @@ describe("tasks extension", () => {
 
 	test("task guard stops auto-triggering repeated nudges without progress", async () => {
 		const handlers: Record<string, any> = {};
+		const commands: Record<string, any> = {};
 		const sent: any[] = [];
 		tasksExtension(
 			{
 				registerTool() {},
+				registerCommand(name: string, definition: any) {
+					commands[name] = definition;
+				},
 				on(name: string, handler: any) {
 					handlers[name] = handler;
 				},
@@ -1873,6 +2009,7 @@ describe("tasks extension", () => {
 			ui: { notify() {} },
 		};
 
+		await commands["task-guard"].handler("on", ctx);
 		for (let i = 0; i < 3; i++) {
 			await handlers.message_end(
 				{ message: { role: "assistant", content: [{ type: "text", text: `No progress ${i}` }] } },
@@ -1937,11 +2074,15 @@ describe("tasks extension", () => {
 
 	test("task guard nudges about unassigned blockers without assigning", async () => {
 		const handlers: Record<string, any> = {};
+		const commands: Record<string, any> = {};
 		const sent: any[] = [];
 		const calls: string[][] = [];
 		tasksExtension(
 			{
 				registerTool() {},
+				registerCommand(name: string, definition: any) {
+					commands[name] = definition;
+				},
 				on(name: string, handler: any) {
 					handlers[name] = handler;
 				},
@@ -1988,6 +2129,7 @@ describe("tasks extension", () => {
 			},
 		};
 
+		await commands["task-guard"].handler("on", ctx);
 		await handlers.message_end({ message: { role: "assistant", content: [{ type: "text", text: "Done." }] } }, ctx);
 		await handlers.turn_end({}, ctx);
 
@@ -1998,10 +2140,14 @@ describe("tasks extension", () => {
 
 	test("task guard does not suggest claiming epic container tasks", async () => {
 		const handlers: Record<string, any> = {};
+		const commands: Record<string, any> = {};
 		const sent: any[] = [];
 		tasksExtension(
 			{
 				registerTool() {},
+				registerCommand(name: string, definition: any) {
+					commands[name] = definition;
+				},
 				on(name: string, handler: any) {
 					handlers[name] = handler;
 				},
@@ -2048,6 +2194,7 @@ describe("tasks extension", () => {
 			},
 		};
 
+		await commands["task-guard"].handler("on", ctx);
 		await handlers.message_end({ message: { role: "assistant", content: [{ type: "text", text: "Done." }] } }, ctx);
 		await handlers.turn_end({}, ctx);
 
