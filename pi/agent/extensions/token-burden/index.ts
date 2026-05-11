@@ -35,7 +35,7 @@ function getAgentDir(): string {
 }
 
 const extension: ExtensionFactory = (pi) => {
-	const toolToggles = createToolToggleController(pi, loadToolToggleConfig(CONFIG_PATH).disabledTools);
+	const toolToggles = createToolToggleController(pi, loadToolToggleConfig(CONFIG_PATH).disabledTools, CONFIG_PATH);
 	toolToggles.install();
 
 	pi.registerCommand("token-burden", {
