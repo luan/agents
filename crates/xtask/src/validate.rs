@@ -20,6 +20,7 @@ pub fn run() -> Result<()> {
         &root.join("claude/local-plugins/plugins/gt"),
         &root.join("plugins/gt"),
     )?;
+    assert_symlink(&root.join("claude/hooks"), &root.join("hooks/claude"))?;
     stow::run(stow::Mode::DryRun).context("stow dry-run")?;
     Ok(())
 }
