@@ -361,15 +361,60 @@ function parseToolContent(tool: ToolEntry): unknown {
 	}
 }
 
-export function formatToolSectionContent(tools: ToolSectionData): string {
-	return JSON.stringify(
-		{
-			active: tools.active.map(parseToolContent),
-			inactive: tools.inactive.map(parseToolContent),
-		},
-		null,
-		2,
-	);
+function objectValue(value: unknown, key: string): unknown {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return undefined;
+	}
+	return (value as Record<string, unknown>)[key];
+}
+
+function markdownCodeBlock(language: string, content: string): string {
+	let fence = "```";
+	while (content.includes(fence)) {
+		fence += "`";
+	}
+	return `${fence}${language}\n${content}\n${fence}`;
+}
+
+function formatToolMarkdown(tool: ToolEntry): string {
+	const parsed = parseToolContent(tool);
+	const description = objectValue(parsed, "description");
+	const parameters = objectValue(parsed, "parameters");
+	const lines = [`### ${tool.name}`, "", `- Tokens: ${fmt(tool.tokens)}`, `- Characters: ${fmt(tool.chars)}`];
+
+	if (typeof description === "string" && description.trim()) {
+		lines.push("", description.trim());
+	}
+
+	if (parameters !== undefined) {
+		lines.push("", "#### Parameters", "", markdownCodeBlock("json", JSON.stringify(parameters, null, 2)));
+	} else if (typeof parsed === "object") {
+		lines.push("", "#### Definition", "", markdownCodeBlock("json", JSON.stringify(parsed, null, 2)));
+	} else {
+		lines.push("", "#### Definition", "", markdownCodeBlock("text", tool.content));
+	}
+
+	return lines.join("\n");
+}
+
+export function formatToolSectionMarkdown(tools: ToolSectionData): string {
+	const sections = ["# Tool definitions", "", "## Active tools", ""];
+
+	if (tools.active.length === 0) {
+		sections.push("_No active tools._");
+	} else {
+		sections.push(tools.active.map(formatToolMarkdown).join("\n\n"));
+	}
+
+	sections.push("", "## Inactive tools", "");
+
+	if (tools.inactive.length === 0) {
+		sections.push("_No inactive tools._");
+	} else {
+		sections.push(tools.inactive.map(formatToolMarkdown).join("\n\n"));
+	}
+
+	return `${sections.join("\n")}\n`;
 }
 
 class BudgetOverlay {
@@ -1037,7 +1082,7 @@ class BudgetOverlay {
 		}
 
 		if (item.tools) {
-			this.openJsonContentInEditor(item.label, formatToolSectionContent(item.tools));
+			this.openMarkdownContentInEditor(item.label, formatToolSectionMarkdown(item.tools));
 			return;
 		}
 
@@ -1076,6 +1121,12 @@ class BudgetOverlay {
 
 	private openJsonContentInEditor(label: string, content: string): void {
 		const tempPath = join(tmpdir(), `token-burden-${sanitizeLabel(label)}-${randomUUID().slice(0, 8)}.json`);
+		writeFileSync(tempPath, content, "utf8");
+		this.launchEditor(tempPath);
+	}
+
+	private openMarkdownContentInEditor(label: string, content: string): void {
+		const tempPath = join(tmpdir(), `token-burden-${sanitizeLabel(label)}-${randomUUID().slice(0, 8)}.md`);
 		writeFileSync(tempPath, content, "utf8");
 		this.launchEditor(tempPath);
 	}
