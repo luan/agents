@@ -148,6 +148,8 @@ describe("Git-Spice skills", () => {
 		expect(submit).toContain("gs stack submit");
 		expect(submit).toContain("gs ss");
 		expect(submit).toContain("update existing Change Requests");
+		expect(submit).toContain("Skill(pr-descr)");
+		expect(submit).toContain("update-only and create modes");
 	});
 });
 
@@ -182,6 +184,8 @@ describe("Graphite skills", () => {
 		expect(submit).toContain("name: submit");
 		expect(submit).toContain("gt ss -u");
 		expect(submit).toContain("Default is `gt ss -u`");
+		expect(submit).toContain("Skill(pr-descr)");
+		expect(submit).toContain("This applies to `gt ss -u`, `gt submit`, and `gt ss`");
 		expect(submit).not.toContain("name: gt-submit");
 	});
 
