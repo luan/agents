@@ -26,12 +26,12 @@ Publish tactical handoff when direction and structure are settled enough: a plan
 2. **Confirm structure**
    - Use the structure artifact when one exists.
    - If context already contains enough shape, include a compact inline structure note and proceed.
-   - If structure is missing or risky, create or update a structure artifact and gate it with `vault_review(op="gate", gateType="custom")`.
+   - If structure is missing or risky, create or update a structure artifact and gate it with `vault_review(op="gate", gateType="custom")` using the artifact's real absolute local filesystem path as `targetPath`.
 
 3. **Draft the plan artifact**
    - Create/update a vault plan artifact linked to source research and plan artifact paths plus design/structure paths when available.
    - Include the tactical publication: chosen direction, file/module references, sequencing, risks, verification strategy, inline structure note when used, and task-set pointers.
-   - Use repo-relative paths only. Do not include checkout-specific absolute paths.
+   - Use repo-relative paths only inside artifact content. Do not include checkout-specific absolute paths in the plan body. This does not apply to `vault_review.targetPath`, which must be an absolute local path for Plannotator.
 
 4. **Draft tasks**
    - Draft a temporary proposal before publishing task records.
@@ -42,7 +42,8 @@ Publish tactical handoff when direction and structure are settled enough: a plan
    - Do not create tasks until the proposal is approved or `--auto` legitimately skips the gate.
 
 5. **Gate when needed**
-   - If not `--auto`, run `vault_review(op="gate")` with `gateType="plan"` on the proposal.
+   - If not `--auto`, resolve the proposal artifact to its real absolute local filesystem path and run `vault_review(op="gate")` with `gateType="plan"` on that absolute `targetPath`. Do not pass vault stems, wiki-link targets, repo-relative paths, or artifact-link paths as `targetPath`.
+   - In the gate `instructions`, name the exact absolute file being reviewed and state whether Plannotator is reviewing a plan artifact or a temporary proposal.
    - If denied, revise the plan/proposal and re-gate.
    - If closed, unavailable, timed out, or unapproved, stop before creating tasks.
 

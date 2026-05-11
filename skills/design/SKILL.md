@@ -41,7 +41,9 @@ Produce a compact review brief: where the solution is going, which decisions mat
    - If the design needs more than 5 decisions, merge details under broader decisions or defer implementation-level choices out of the artifact.
 
 4. **Review**
-   - Unless `--auto` is clearly safe, run `vault_review(op="gate", gateType="custom")` with a title that says "Design Discussion".
+   - Unless `--auto` is clearly safe, resolve the design artifact to its real absolute local filesystem path and run `vault_review(op="gate", gateType="custom")` with that absolute `targetPath` and a title that says "Design Discussion".
+   - Do not pass vault stems, wiki-link targets, repo-relative paths, or artifact-link paths as `targetPath`.
+   - In the gate `instructions`, name the exact absolute file being reviewed and state that it is a design discussion.
    - If denied, revise the same artifact and re-gate.
    - Commit only after approval with `vault_write(op="commit")`.
 

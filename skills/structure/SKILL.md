@@ -37,7 +37,9 @@ Produce a short Structure Outline: how the work is shaped, not every task.
      - risks or unknowns that change ordering
 
 4. **Review**
-   - Unless `--auto` is clearly safe, run `vault_review(op="gate", gateType="custom")` with a title that says "Structure Outline".
+   - Unless `--auto` is clearly safe, resolve the structure artifact to its real absolute local filesystem path and run `vault_review(op="gate", gateType="custom")` with that absolute `targetPath` and a title that says "Structure Outline".
+   - Do not pass vault stems, wiki-link targets, repo-relative paths, or artifact-link paths as `targetPath`.
+   - In the gate `instructions`, name the exact absolute file being reviewed and state that it is a structure outline.
    - If denied, revise the same artifact and re-gate.
    - Commit only after approval with `vault_write(op="commit")`.
 
