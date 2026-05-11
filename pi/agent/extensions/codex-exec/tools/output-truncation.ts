@@ -1,4 +1,5 @@
 export const DEFAULT_MAX_OUTPUT_TOKENS = 10_000;
+export const DEFAULT_MAX_OUTPUT_LINE_CHARS = 400;
 export const UNIFIED_EXEC_OUTPUT_MAX_BYTES = 1024 * 1024;
 
 export function approxTokenCount(text: string): number {
@@ -41,12 +42,44 @@ function truncateMiddleWithTokenBudget(text: string, maxTokens: number): string 
 	return `${prefix}…${removedTokens} tokens truncated…${suffix}`;
 }
 
+function truncateLineMiddle(line: string, maxChars: number): string {
+	if (line.length <= maxChars) return line;
+	let marker = `…${line.length - maxChars} chars truncated…`;
+	marker = `…${line.length - Math.max(0, maxChars - marker.length)} chars truncated…`;
+	const budget = Math.max(0, maxChars - marker.length);
+	const headBudget = Math.ceil(budget / 2);
+	const tailBudget = Math.floor(budget / 2);
+	return `${line.slice(0, headBudget)}${marker}${line.slice(line.length - tailBudget)}`;
+}
+
+export function truncateLongLines(
+	text: string,
+	maxChars = DEFAULT_MAX_OUTPUT_LINE_CHARS,
+): { output: string; output_truncated?: boolean } {
+	let changed = false;
+	const output = text
+		.split("\n")
+		.map((line) => {
+			const truncated = truncateLineMiddle(line, maxChars);
+			if (truncated !== line) changed = true;
+			return truncated;
+		})
+		.join("\n");
+	return changed ? { output, output_truncated: true } : { output };
+}
+
 export function formattedTruncateText(text: string): { output: string; output_truncated?: boolean } {
-	if (Buffer.byteLength(text, "utf8") <= DEFAULT_MAX_OUTPUT_TOKENS * 4) {
-		return { output: text };
+	const limitedLines = truncateLongLines(text);
+	const output = limitedLines.output;
+	if (!limitedLines.output_truncated && Buffer.byteLength(output, "utf8") <= DEFAULT_MAX_OUTPUT_TOKENS * 4) {
+		return { output };
 	}
+	const truncated =
+		Buffer.byteLength(output, "utf8") > DEFAULT_MAX_OUTPUT_TOKENS * 4
+			? truncateMiddleWithTokenBudget(output, DEFAULT_MAX_OUTPUT_TOKENS)
+			: output;
 	return {
-		output: `Total output lines: ${lineCount(text)}\n\n${truncateMiddleWithTokenBudget(text, DEFAULT_MAX_OUTPUT_TOKENS)}`,
+		output: `Total output lines: ${lineCount(text)}\n\n${truncateLongLines(truncated).output}`,
 		output_truncated: true,
 	};
 }

@@ -16,6 +16,19 @@ const baseOptions = {
 };
 
 describe("system-prompt Skillful skill rendering", () => {
+	test("search guidance prefers line-safe rg without exposing implicit RTK rewrites", () => {
+		const prompt = buildSystemPrompt("base", {
+			...baseOptions,
+			selectedTools: ["exec_command"],
+		});
+
+		expect(prompt).toContain("avoid `grep`, `grep -R`, and `find`");
+		expect(prompt).toContain("rg -n -M 400 --max-columns-preview");
+		expect(prompt).toContain("`head` limits line count, not line length");
+		expect(prompt).not.toContain("RTK");
+		expect(prompt).not.toContain("rtk grep");
+	});
+
 	test("skill tool active lists skills by name and description only", () => {
 		const prompt = buildSystemPrompt("base", {
 			...baseOptions,

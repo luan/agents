@@ -468,38 +468,133 @@ test("rtk helper parses executable paths", () => {
 	expect(parseRtkExecutablePath("'rtk path'\n")).toBe("rtk path");
 });
 
-test("rtk rewrite routes rg commands through rtk rg instead of rtk grep", async () => {
-	const execCalls: string[] = [];
+test("rtk rewrite is allowed to rewrite rg commands", async () => {
+	const execCalls: Array<{ command: string; args?: string[] }> = [];
 	const pi = {
-		exec: async (command: string) => {
-			execCalls.push(command);
-			return { code: 3, stdout: "rtk grep --files\n", stderr: "" };
+		exec: async (command: string, args?: string[]) => {
+			execCalls.push({ command, args });
+			if (command === "which") return { code: 0, stdout: "/usr/local/bin/rtk\n", stderr: "" };
+			return { code: 0, stdout: "rtk grep --files\n", stderr: "" };
 		},
 	} as any;
 
 	const decision = await computeRtkRewriteDecision(pi, "pwd && rg --files -g '!*node_modules*' | head -200", true);
 
 	expect(decision.changed).toBe(true);
-	expect(decision.rewrittenCommand).toBe("pwd && rtk rg --files -g '!*node_modules*' | head -200");
-	expect(execCalls).toEqual([]);
-
-	const searchDecision = await computeRtkRewriteDecision(pi, "rg -g '*.ts' registerCommand pi/agent/extensions", true);
-	expect(searchDecision.changed).toBe(true);
-	expect(searchDecision.rewrittenCommand).toBe("rtk rg -g '*.ts' registerCommand pi/agent/extensions");
-	expect(execCalls).toEqual([]);
+	expect(decision.rewrittenCommand).toBe("rtk grep --files");
+	expect(execCalls).toEqual([
+		{ command: "which", args: ["rtk"] },
+		{
+			command: "/usr/local/bin/rtk",
+			args: ["rewrite", "pwd && rg --files -g '!*node_modules*' | head -200"],
+		},
+	]);
 });
 
-test("rtk rg wrapping preserves shell-expanded path globs", async () => {
+test("rtk grep rewrite of rg uses raw rg immediately", async () => {
+	let tool: any;
 	const pi = {
-		exec: async () => {
-			throw new Error("rg wrapping should not call rtk rewrite");
+		registerTool: (definition: any) => {
+			if (definition.name === "exec_command") tool = definition;
+		},
+	} as any;
+	const tracker = createExecCommandTracker();
+	const executedCommands: string[] = [];
+	const sessions = {
+		exec: async (input: { cmd: string }) => {
+			executedCommands.push(input.cmd);
+			return {
+				chunk_id: "ok",
+				wall_time_seconds: 0,
+				output: "pi/agent/extensions/codex-exec/tools/rtk-wrapper.ts\n",
+				exit_code: 0,
+			};
+		},
+		write: async () => {
+			throw new Error("unexpected write");
+		},
+		hasSession: () => false,
+		getSessionCommand: () => undefined,
+		onSessionExit: () => () => {},
+		shutdown() {},
+	};
+	registerExecCommandTool(pi, tracker, sessions as any, {
+		rewriteCommand: () => "pwd && rtk grep --files",
+	});
+
+	const result = await tool.execute(
+		"call-rg-fallback",
+		{ cmd: "rg --files pi/agent/extensions/codex-exec/tools/rtk-wrapper.ts" },
+		undefined,
+		undefined,
+		{ cwd: process.cwd() },
+	);
+
+	expect(executedCommands).toEqual(["rg --files pi/agent/extensions/codex-exec/tools/rtk-wrapper.ts"]);
+	expect(result.details.output).toContain("rtk-wrapper.ts");
+	expect(result.isError).toBe(false);
+});
+
+test("rtk grep rewrite of raw-only rg modes uses raw rg immediately", async () => {
+	let tool: any;
+	const pi = {
+		registerTool: (definition: any) => {
+			if (definition.name === "exec_command") tool = definition;
+		},
+	} as any;
+	const tracker = createExecCommandTracker();
+	const executedCommands: string[] = [];
+	const sessions = {
+		exec: async (input: { cmd: string }) => {
+			executedCommands.push(input.cmd);
+			return {
+				chunk_id: "rg",
+				wall_time_seconds: 0,
+				output: "ripgrep 15.1.0\n",
+				exit_code: 0,
+			};
+		},
+		write: async () => {
+			throw new Error("unexpected write");
+		},
+		hasSession: () => false,
+		getSessionCommand: () => undefined,
+		onSessionExit: () => () => {},
+		shutdown() {},
+	};
+	registerExecCommandTool(pi, tracker, sessions as any, {
+		rewriteCommand: () => "rtk grep --version",
+	});
+
+	const result = await tool.execute("call-rg-version", { cmd: "rg --version" }, undefined, undefined, {
+		cwd: process.cwd(),
+	});
+
+	expect(executedCommands).toEqual(["rg --version"]);
+	expect(result.details.output).toContain("ripgrep");
+	expect(result.isError).toBe(false);
+});
+
+test("rtk rewrite preserves returned shell-expanded path globs", async () => {
+	const original = `rg -n "pub fn draw|fn draw" src/font/sprite/draw/*.zig`;
+	const rewritten = `rtk rg -n "pub fn draw|fn draw" src/font/sprite/draw/*.zig`;
+	const execCalls: Array<{ command: string; args?: string[] }> = [];
+	const pi = {
+		exec: async (command: string, args?: string[]) => {
+			execCalls.push({ command, args });
+			if (command === "which") return { code: 0, stdout: "/usr/local/bin/rtk\n", stderr: "" };
+			return { code: 0, stdout: `${rewritten}\n`, stderr: "" };
 		},
 	} as any;
 
-	const decision = await computeRtkRewriteDecision(pi, `rg -n "pub fn draw|fn draw" src/font/sprite/draw/*.zig`, true);
+	const decision = await computeRtkRewriteDecision(pi, original, true);
 
 	expect(decision.changed).toBe(true);
-	expect(decision.rewrittenCommand).toBe(`rtk rg -n "pub fn draw|fn draw" src/font/sprite/draw/*.zig`);
+	expect(decision.rewrittenCommand).toBe(rewritten);
+	expect(execCalls).toEqual([
+		{ command: "which", args: ["rtk"] },
+		{ command: "/usr/local/bin/rtk", args: ["rewrite", original] },
+	]);
 });
 
 test("extension truncates oversized non-exec tool results before session history", () => {
@@ -530,9 +625,10 @@ test("extension truncates oversized non-exec tool results before session history
 	const patch = results.find((result) => result?.content);
 	const text = patch.content[0].text;
 	expect(text).toStartWith("Total output lines: 3\n\nhead\n");
-	expect(text).toContain("tokens truncated");
+	expect(text).toContain("chars truncated");
 	expect(text).toContain("\ntail");
 	expect(text.length).toBeLessThan(41_000);
+	expect(text.split("\n").every((line: string) => line.length <= 430)).toBe(true);
 	for (const handler of handlers.get("session_shutdown") ?? []) handler();
 });
 
@@ -557,8 +653,9 @@ test("exec session manager uses Codex-style middle truncation", async () => {
 		);
 		expect(result.output_truncated).toBe(true);
 		expect(result.output).toStartWith("Total output lines: 1\n\n");
-		expect(result.output).toContain("tokens truncated");
+		expect(result.output).toContain("chars truncated");
 		expect(result.output.length).toBeLessThan(41_000);
+		expect(result.output.split("\n").every((line) => line.length <= 430)).toBe(true);
 		expect(result.original_token_count).toBe(50000);
 		expect("full_output_path" in result).toBe(false);
 	} finally {

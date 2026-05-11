@@ -4,6 +4,7 @@ import { Type } from "typebox";
 import { renderExecCommandCall, renderGroupedExecCommandCall, renderOutputBlock } from "./codex-rendering.ts";
 import type { ExecCommandTracker } from "./exec-command-state.ts";
 import type { ExecSessionManager, UnifiedExecResult } from "./exec-session-manager.ts";
+import { commandHasRipgrepSegment, isRtkGrepCommand } from "./rtk-wrapper.ts";
 import { formatUnifiedExecResult } from "./unified-exec-format.ts";
 
 const EXEC_COMMAND_PARAMETERS = Type.Object({
@@ -96,6 +97,14 @@ function isUnifiedExecResult(details: unknown): details is UnifiedExecResult {
 
 function createEmptyResultComponent(): Container {
 	return new Container();
+}
+
+function shouldUseRawRipgrep(originalCommand: string, rewrittenCommand: string): boolean {
+	return (
+		originalCommand !== rewrittenCommand &&
+		commandHasRipgrepSegment(originalCommand) &&
+		isRtkGrepCommand(rewrittenCommand)
+	);
 }
 
 interface ExecCommandRenderContextLike {
@@ -205,6 +214,8 @@ export function registerExecCommandTool(
 		promptSnippet: "Run a command.",
 		promptGuidelines: [
 			"Use exec_command for search, listing files, and local text-file reads.",
+			"Prefer `rg`/`rg --files` over `grep`/`find`; for broad searches use `rg -n -M 400 --max-columns-preview` plus globs like `--glob '!*.map'`.",
+			"Use `rtk grep -m 100 -l 400` when compact search output is useful, but fall back to raw `rg -M 400 --max-columns-preview` if RTK search wrappers fail.",
 			"Keep tty disabled unless the command truly needs interactive terminal behavior.",
 		],
 		parameters: EXEC_COMMAND_PARAMETERS,
@@ -214,7 +225,10 @@ export function registerExecCommandTool(
 				throw new Error("exec_command aborted");
 			}
 			const typedParams = parseExecCommandParams(params);
-			const command = options.rewriteCommand ? await options.rewriteCommand(typedParams.cmd, ctx) : typedParams.cmd;
+			const rewrittenCommand = options.rewriteCommand
+				? await options.rewriteCommand(typedParams.cmd, ctx)
+				: typedParams.cmd;
+			const command = shouldUseRawRipgrep(typedParams.cmd, rewrittenCommand) ? typedParams.cmd : rewrittenCommand;
 			if (command !== typedParams.cmd) {
 				tracker.recordRtkWrapped(toolCallId);
 			}
