@@ -3,7 +3,8 @@
  *
  * @module pretty
  * Enhances:
- *   • read  — compact Explore-row rendering
+ *   • read       — compact Explore-row rendering for text files
+ *   • view_image — image-only file viewer with inline terminal preview
  *   • bash  — colored exit status, stderr highlighting
  *   • ls    — tree-view directory listing with file-type icons
  *
@@ -13,8 +14,9 @@
  *   3. Attach metadata in result.details for custom renderCall/renderResult
  */
 
-import * as childProcess from "node:child_process";
-import { basename, extname, isAbsolute, relative, resolve } from "node:path";
+import { open as openFile } from "node:fs/promises";
+import { basename, dirname, extname, isAbsolute, relative, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type {
@@ -25,7 +27,8 @@ import type {
 	LsToolInput,
 	ReadToolInput,
 } from "@earendil-works/pi-coding-agent";
-import { getCapabilities, setCapabilities } from "@earendil-works/pi-tui";
+import { Container, getCapabilities, Image, Spacer } from "@earendil-works/pi-tui";
+import { Type } from "typebox";
 
 import {
 	isExplorationHidden,
@@ -33,6 +36,7 @@ import {
 	registerExplorationTool,
 	renderExplorationCall,
 } from "../shared/exploration-rendering";
+import { configureImageCapabilities } from "../shared/image-capabilities";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -139,82 +143,6 @@ function termW(): number {
 
 function rule(w: number): string {
 	return `${FG_RULE}${"─".repeat(w)}${RST}`;
-}
-
-type NativeImageProtocol = "kitty" | "iterm2";
-
-let _imageCapabilitiesConfigured = false;
-let _tmuxClientTermCache: string | null | undefined;
-
-function isTmuxSession(): boolean {
-	return !!process.env.TMUX || /^(tmux|screen)/.test(process.env.TERM ?? "");
-}
-
-function normalizeTerminalName(term: string): string {
-	const t = term.toLowerCase();
-	if (t.includes("kitty")) return "kitty";
-	if (t.includes("ghostty")) return "ghostty";
-	if (t.includes("wezterm")) return "WezTerm";
-	if (t.includes("iterm")) return "iTerm.app";
-	if (t.includes("mintty")) return "mintty";
-	return term;
-}
-
-function readTmuxClientTerm(): string | null {
-	if (!isTmuxSession()) return null;
-	if (_tmuxClientTermCache !== undefined) return _tmuxClientTermCache;
-	try {
-		const term = childProcess
-			.execFileSync("tmux", ["display-message", "-p", "#{client_termname}"], {
-				encoding: "utf8",
-				stdio: ["ignore", "pipe", "ignore"],
-				timeout: 200,
-			})
-			.trim();
-		_tmuxClientTermCache = term ? normalizeTerminalName(term) : null;
-	} catch {
-		_tmuxClientTermCache = null;
-	}
-	return _tmuxClientTermCache;
-}
-
-function detectTmuxImageProtocol(): NativeImageProtocol | null {
-	const forced = (process.env.PRETTY_IMAGE_PROTOCOL ?? "").toLowerCase();
-	if (forced === "kitty" || forced === "iterm2") return forced;
-	if (forced === "none") return null;
-
-	if (process.env.LC_TERMINAL === "iTerm2") return "iterm2";
-	if (process.env.GHOSTTY_RESOURCES_DIR || process.env.KITTY_WINDOW_ID || process.env.KITTY_PID) return "kitty";
-	if (process.env.WEZTERM_EXECUTABLE || process.env.WEZTERM_CONFIG_DIR || process.env.WEZTERM_CONFIG_FILE)
-		return "kitty";
-
-	const termProgram = process.env.TERM_PROGRAM ?? "";
-	const term =
-		termProgram && termProgram !== "tmux" && termProgram !== "screen"
-			? normalizeTerminalName(termProgram)
-			: (readTmuxClientTerm() ?? normalizeTerminalName(process.env.TERM ?? ""));
-	if (term === "ghostty" || term === "kitty") return "kitty";
-	if (term === "WezTerm") return "kitty";
-	if (term === "iTerm.app" || term === "mintty") return "iterm2";
-	return null;
-}
-
-function configureImageCapabilities(): void {
-	if (_imageCapabilitiesConfigured) return;
-	_imageCapabilitiesConfigured = true;
-
-	const capabilities = getCapabilities();
-	if (capabilities.images) return;
-	if (isTmuxSession()) return;
-
-	const protocol = detectTmuxImageProtocol();
-	if (!protocol) return;
-
-	setCapabilities({
-		...capabilities,
-		images: protocol,
-		trueColor: capabilities.trueColor || process.env.COLORTERM === "truecolor" || process.env.COLORTERM === "24bit",
-	});
 }
 
 // ---------------------------------------------------------------------------
@@ -399,10 +327,12 @@ type TextComponentLike = {
 	setText(value: string): void;
 	getText?: () => string;
 };
+type ComponentLike = TextComponentLike | Container;
 type TextComponentCtor = new (text?: string, x?: number, y?: number) => TextComponentLike;
 type ThemeLike = BgTheme & FgTheme & { bold: (text: string) => string };
 type RenderContextLike<TState extends Record<string, string | undefined> = Record<string, string | undefined>> = {
-	lastComponent?: TextComponentLike;
+	args?: unknown;
+	lastComponent?: ComponentLike;
 	state: TState;
 	expanded: boolean;
 	showImages?: boolean;
@@ -418,13 +348,25 @@ type ToolExecutor<TParams, TDetails = unknown> = (
 	onUpdate?: AgentToolUpdateCallback<TDetails | undefined>,
 	ctx?: ExtensionContext,
 ) => Promise<ToolResultLike<TDetails>>;
-type ToolFactory<TParams, TDetails = unknown> = (cwd: string) => {
+type ToolDefinitionLike<TParams, TDetails = unknown> = {
 	name?: string;
 	description?: string;
 	label?: string;
+	promptSnippet?: string;
 	parameters?: unknown;
 	execute: ToolExecutor<TParams, TDetails>;
+	renderCall?: (args: TParams, theme: ThemeLike, ctx: RenderContextLike) => ComponentLike;
+	renderResult?: (
+		result: ToolResultLike<TDetails>,
+		options: unknown,
+		theme: ThemeLike,
+		ctx: RenderContextLike,
+	) => ComponentLike;
 };
+type ToolFactory<TParams, TDetails = unknown> = (
+	cwd: string,
+	options?: unknown,
+) => ToolDefinitionLike<TParams, TDetails>;
 type PiPrettySdk = {
 	createReadToolDefinition?: ToolFactory<ReadToolInput>;
 	createReadTool?: ToolFactory<ReadToolInput>;
@@ -438,6 +380,7 @@ type PiPrettyApi = {
 	on?: (event: string, handler: (event: any) => void) => void;
 };
 type ReadParams = ReadToolInput;
+type ViewImageParams = { path: string };
 type BashParams = BashToolInput;
 type LsParams = LsToolInput;
 type RenderDetails =
@@ -451,6 +394,10 @@ type RenderDetails =
 
 function isTextContent(content: ToolContent): content is ToolTextContent {
 	return content.type === "text";
+}
+
+function isImageContent(content: ToolContent): content is ImageContent {
+	return content.type === "image";
 }
 
 function getTextContent(result: ToolResultLike): string {
@@ -493,6 +440,153 @@ function readDisplayPath(cwd: string, filePath: string | undefined): string {
 function readRenderAction(cwd: string, args: { path?: string; offset?: unknown; limit?: unknown }) {
 	const path = readDisplayPath(cwd, args.path);
 	return { kind: "read" as const, body: `${path} ${readLineRange(args)}` };
+}
+
+function viewImageDisplayPath(cwd: string, args: { path?: string }) {
+	return readDisplayPath(cwd, args.path);
+}
+
+async function detectSupportedImageMimeType(filePath: string): Promise<string | null> {
+	const handle = await openFile(filePath, "r");
+	try {
+		const buffer = Buffer.alloc(12);
+		const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+		if (
+			bytesRead >= 8 &&
+			buffer[0] === 0x89 &&
+			buffer[1] === 0x50 &&
+			buffer[2] === 0x4e &&
+			buffer[3] === 0x47 &&
+			buffer[4] === 0x0d &&
+			buffer[5] === 0x0a &&
+			buffer[6] === 0x1a &&
+			buffer[7] === 0x0a
+		) {
+			return "image/png";
+		}
+		if (bytesRead >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+			return "image/jpeg";
+		}
+		if (
+			bytesRead >= 6 &&
+			buffer[0] === 0x47 &&
+			buffer[1] === 0x49 &&
+			buffer[2] === 0x46 &&
+			buffer[3] === 0x38 &&
+			(buffer[4] === 0x37 || buffer[4] === 0x39) &&
+			buffer[5] === 0x61
+		) {
+			return "image/gif";
+		}
+		if (
+			bytesRead >= 12 &&
+			buffer[0] === 0x52 &&
+			buffer[1] === 0x49 &&
+			buffer[2] === 0x46 &&
+			buffer[3] === 0x46 &&
+			buffer[8] === 0x57 &&
+			buffer[9] === 0x45 &&
+			buffer[10] === 0x42 &&
+			buffer[11] === 0x50
+		) {
+			return "image/webp";
+		}
+		return null;
+	} finally {
+		await handle.close();
+	}
+}
+
+async function imageMimeTypeForExistingPath(filePath: string): Promise<string | null> {
+	return detectSupportedImageMimeType(filePath);
+}
+
+async function convertImageForKittyPreview(content: ImageContent): Promise<ImageContent> {
+	if (getCapabilities().images !== "kitty" || content.mimeType === "image/png" || !content.data || !content.mimeType) {
+		return content;
+	}
+
+	try {
+		const packageEntry = require.resolve("@earendil-works/pi-coding-agent");
+		const converterUrl = pathToFileURL(resolve(dirname(packageEntry), "utils/image-convert.js")).href;
+		const { convertToPng } = (await import(converterUrl)) as {
+			convertToPng?: (data: string, mimeType: string) => Promise<{ data: string; mimeType: string } | null>;
+		};
+		const converted = await convertToPng?.(content.data, content.mimeType);
+		return converted ? { ...content, data: converted.data, mimeType: converted.mimeType } : content;
+	} catch {
+		return content;
+	}
+}
+
+async function convertResultImagesForKittyPreview(result: ToolResultLike): Promise<ToolResultLike> {
+	if (getCapabilities().images !== "kitty") return result;
+
+	let changed = false;
+	const content = await Promise.all(
+		(result.content ?? []).map(async (item) => {
+			if (!isImageContent(item)) return item;
+			const converted = await convertImageForKittyPreview(item);
+			if (converted !== item) changed = true;
+			return converted;
+		}),
+	);
+
+	return changed ? { ...result, content } : result;
+}
+
+function createTextComponent(
+	TextComponent: TextComponentCtor,
+	ctx: RenderContextLike,
+	initialText = "",
+): TextComponentLike {
+	return "setText" in (ctx.lastComponent ?? {})
+		? (ctx.lastComponent as TextComponentLike)
+		: new TextComponent(initialText, 0, 0);
+}
+
+function renderViewImageResult(
+	result: ToolResultLike,
+	theme: ThemeLike,
+	ctx: RenderContextLike,
+	TextComponent: TextComponentCtor,
+): ComponentLike {
+	if (ctx.isError) {
+		const text = createTextComponent(TextComponent, ctx);
+		text.setText(theme.fg("error", getTextContent(result) || "Error"));
+		return text;
+	}
+
+	const imageBlocks = result.content?.filter(isImageContent) ?? [];
+	const supportsImages = Boolean(getCapabilities().images);
+	if (!supportsImages || imageBlocks.length === 0) {
+		const text = createTextComponent(TextComponent, ctx);
+		text.setText(getTextContent(result));
+		return text;
+	}
+
+	if (ctx.showImages) {
+		const text = createTextComponent(TextComponent, ctx);
+		text.setText("");
+		return text;
+	}
+
+	const container = new Container();
+	let hasContent = false;
+	for (const image of imageBlocks) {
+		if (!image.data || !image.mimeType) continue;
+		if (hasContent) container.addChild(new Spacer(1));
+		container.addChild(
+			new Image(
+				image.data,
+				image.mimeType,
+				{ fallbackColor: (text) => theme.fg("toolOutput", text) },
+				{ maxWidthCells: Number.MAX_SAFE_INTEGER },
+			),
+		);
+		hasContent = true;
+	}
+	return container;
 }
 
 // ---------------------------------------------------------------------------
@@ -539,6 +633,10 @@ export default function piPrettyExtension(pi: PiPrettyApi, deps?: PiPrettyDeps):
 	if (!createReadTool || !TextComponent) return;
 
 	const cwd = process.cwd();
+	const viewImageParameters = Type.Object({
+		path: Type.String({ description: "Path to the image file to view (relative or absolute)" }),
+	});
+
 	registerExplorationTool("read", (args) => {
 		const path = args && typeof args === "object" && "path" in args && typeof args.path === "string" ? args.path : "";
 		return readRenderAction(cwd, {
@@ -554,10 +652,14 @@ export default function piPrettyExtension(pi: PiPrettyApi, deps?: PiPrettyDeps):
 	// ===================================================================
 
 	const origRead = createReadTool(cwd);
+	const origImageRead = createReadTool(cwd);
 
 	pi.registerTool({
 		...origRead,
 		name: "read",
+		description:
+			"Read the contents of a text file. Does not support images; use view_image for jpg, png, gif, or webp files. Output is truncated for large files. Use offset/limit to continue.",
+		promptSnippet: "Read text file contents",
 		renderShell: "self",
 
 		async execute(
@@ -567,17 +669,23 @@ export default function piPrettyExtension(pi: PiPrettyApi, deps?: PiPrettyDeps):
 			upd: AgentToolUpdateCallback<unknown> | undefined,
 			ctx: ExtensionContext,
 		) {
+			if (typeof params.path === "string") {
+				const mimeType = await imageMimeTypeForExistingPath(resolve(cwd, params.path)).catch(() => null);
+				if (mimeType) {
+					throw new Error(`read only supports text files. Use view_image for ${params.path} (${mimeType}).`);
+				}
+			}
 			return (await origRead.execute(tid, params, sig, upd, ctx)) as ToolResultLike;
 		},
 
 		renderCall(args: ReadParams, theme: ThemeLike, ctx: RenderContextLike) {
-			const text = ctx.lastComponent ?? new TextComponent("", 0, 0);
+			const text = createTextComponent(TextComponent, ctx);
 			text.setText(renderExplorationCall(readRenderAction(cwd, args), theme, ctx));
 			return text;
 		},
 
 		renderResult(result: ToolResultLike, _opt: unknown, theme: ThemeLike, ctx: RenderContextLike) {
-			const text = ctx.lastComponent ?? new TextComponent("", 0, 0);
+			const text = createTextComponent(TextComponent, ctx);
 
 			if (isExplorationHidden(ctx.toolCallId)) {
 				text.setText("");
@@ -591,6 +699,49 @@ export default function piPrettyExtension(pi: PiPrettyApi, deps?: PiPrettyDeps):
 
 			text.setText("");
 			return text;
+		},
+	});
+
+	// ===================================================================
+	// view_image — image-only read with forced inline preview
+	// ===================================================================
+
+	pi.registerTool({
+		...origImageRead,
+		name: "view_image",
+		label: "view_image",
+		description: "View a local image from the filesystem",
+		promptSnippet: "View image file",
+		parameters: viewImageParameters,
+		renderShell: "self",
+
+		async execute(
+			tid: string,
+			params: ViewImageParams,
+			sig: AbortSignal | undefined,
+			upd: AgentToolUpdateCallback<unknown> | undefined,
+			ctx: ExtensionContext,
+		) {
+			const mimeType = await imageMimeTypeForExistingPath(resolve(cwd, params.path));
+			if (!mimeType) {
+				throw new Error(
+					`view_image only supports jpg, png, gif, and webp image files. Use read for ${params.path}.`,
+				);
+			}
+			const result = (await origImageRead.execute(tid, { path: params.path }, sig, upd, ctx)) as ToolResultLike;
+			return convertResultImagesForKittyPreview(result);
+		},
+
+		renderCall(args: ViewImageParams, theme: ThemeLike, ctx: RenderContextLike) {
+			const text = createTextComponent(TextComponent, ctx);
+			text.setText(
+				`${theme.fg("toolTitle", theme.bold("Viewed image"))} ${theme.fg("dim", "─")} ${theme.fg("dim", viewImageDisplayPath(cwd, args))}`,
+			);
+			return text;
+		},
+
+		renderResult(result: ToolResultLike, _opt: unknown, theme: ThemeLike, ctx: RenderContextLike) {
+			return renderViewImageResult(result, theme, ctx, TextComponent);
 		},
 	});
 
@@ -637,7 +788,7 @@ export default function piPrettyExtension(pi: PiPrettyApi, deps?: PiPrettyDeps):
 			renderCall(args: BashParams, theme: ThemeLike, ctx: RenderContextLike) {
 				resolveBaseBackground(theme);
 				const cmd = args.command ?? "";
-				const text = ctx.lastComponent ?? new TextComponent("", 0, 0);
+				const text = createTextComponent(TextComponent, ctx);
 				const timeout = args.timeout ? ` ${theme.fg("muted", `(${args.timeout}s timeout)`)}` : "";
 				text.setText(
 					fillToolBackground(
@@ -649,7 +800,7 @@ export default function piPrettyExtension(pi: PiPrettyApi, deps?: PiPrettyDeps):
 
 			renderResult(result: ToolResultLike, _opt: unknown, theme: ThemeLike, ctx: RenderContextLike) {
 				resolveBaseBackground(theme);
-				const text = ctx.lastComponent ?? new TextComponent("", 0, 0);
+				const text = createTextComponent(TextComponent, ctx);
 
 				if (ctx.isError) {
 					text.setText(renderToolError(getTextContent(result) || "Error", theme));
@@ -727,7 +878,7 @@ export default function piPrettyExtension(pi: PiPrettyApi, deps?: PiPrettyDeps):
 			renderCall(args: LsParams, theme: ThemeLike, ctx: RenderContextLike) {
 				resolveBaseBackground(theme);
 				const fp = args.path ?? ".";
-				const text = ctx.lastComponent ?? new TextComponent("", 0, 0);
+				const text = createTextComponent(TextComponent, ctx);
 				text.setText(
 					fillToolBackground(`${theme.fg("toolTitle", theme.bold("ls"))} ${theme.fg("accent", sp(fp))}`),
 				);
@@ -736,7 +887,7 @@ export default function piPrettyExtension(pi: PiPrettyApi, deps?: PiPrettyDeps):
 
 			renderResult(result: ToolResultLike, _opt: unknown, theme: ThemeLike, ctx: RenderContextLike) {
 				resolveBaseBackground(theme);
-				const text = ctx.lastComponent ?? new TextComponent("", 0, 0);
+				const text = createTextComponent(TextComponent, ctx);
 
 				if (ctx.isError) {
 					text.setText(renderToolError(getTextContent(result) || "Error", theme));
