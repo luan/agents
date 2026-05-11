@@ -1,5 +1,4 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { joinCommandTokens, normalizeTokens, shellSplit } from "../shell/tokenize.ts";
 
 type ExecResultLike = {
 	code: number;
@@ -25,6 +24,12 @@ export type RtkRewriteDecision = {
 export interface RtkWrapperState {
 	enabled: boolean;
 }
+
+type ShellTokenSpan = {
+	value: string;
+	start: number;
+	end: number;
+};
 
 const RTK_REWRITE_TIMEOUT_MS = 3000;
 const RTK_RESOLVE_TIMEOUT_MS = 1000;
@@ -111,34 +116,171 @@ function ripgrepCommandIndex(tokens: string[]): number | undefined {
 	return name === "rg" || name === "ripgrep" ? index : undefined;
 }
 
+function pushToken(tokens: ShellTokenSpan[], value: string, start: number | undefined, end: number): void {
+	if (value.length === 0 || start === undefined) return;
+	tokens.push({ value, start, end });
+}
+
+function shellSplitWithSpans(input: string): ShellTokenSpan[] {
+	const tokens: ShellTokenSpan[] = [];
+	let current = "";
+	let tokenStart: number | undefined;
+	let tokenEnd = 0;
+	let quote: "'" | '"' | undefined;
+	let escaping = false;
+
+	const beginToken = (index: number) => {
+		tokenStart ??= index;
+	};
+	const flushCurrent = () => {
+		pushToken(tokens, current, tokenStart, tokenEnd);
+		current = "";
+		tokenStart = undefined;
+	};
+
+	for (let index = 0; index < input.length; index++) {
+		const char = input[index] ?? "";
+		const next = input[index + 1] ?? "";
+
+		if (escaping) {
+			beginToken(index - 1);
+			current += char;
+			tokenEnd = index + 1;
+			escaping = false;
+			continue;
+		}
+
+		if (char === "\\") {
+			if (!quote) {
+				beginToken(index);
+				tokenEnd = index + 1;
+				escaping = true;
+				continue;
+			}
+			if (quote === '"') {
+				if (next === "\\" || next === '"' || next === "$" || next === "`") {
+					beginToken(index);
+					tokenEnd = index + 1;
+					escaping = true;
+					continue;
+				}
+				beginToken(index);
+				current += char;
+				tokenEnd = index + 1;
+				continue;
+			}
+		}
+
+		if (quote) {
+			beginToken(index);
+			tokenEnd = index + 1;
+			if (char === quote) {
+				quote = undefined;
+			} else {
+				current += char;
+			}
+			continue;
+		}
+
+		if (char === "'" || char === '"') {
+			beginToken(index);
+			tokenEnd = index + 1;
+			quote = char;
+			continue;
+		}
+
+		if (char === "&" && next === "&") {
+			flushCurrent();
+			tokens.push({ value: "&&", start: index, end: index + 2 });
+			index += 1;
+			continue;
+		}
+		if (char === "|" && next === "|") {
+			flushCurrent();
+			tokens.push({ value: "||", start: index, end: index + 2 });
+			index += 1;
+			continue;
+		}
+		if (char === "|" && next === "&") {
+			flushCurrent();
+			tokens.push({ value: "|&", start: index, end: index + 2 });
+			index += 1;
+			continue;
+		}
+		if (char === "|" || char === ";") {
+			flushCurrent();
+			tokens.push({ value: char, start: index, end: index + 1 });
+			continue;
+		}
+
+		if (/\s/.test(char)) {
+			flushCurrent();
+			continue;
+		}
+
+		beginToken(index);
+		current += char;
+		tokenEnd = index + 1;
+	}
+
+	if (escaping) {
+		current += "\\";
+		tokenEnd = input.length;
+	}
+	flushCurrent();
+	return tokens;
+}
+
+function simpleShellScript(tokens: ShellTokenSpan[]): string | undefined {
+	if (tokens.length !== 3) return undefined;
+	const shell = commandName(tokens[0]?.value ?? "");
+	if (shell !== "bash" && shell !== "zsh" && shell !== "sh") return undefined;
+	const flag = tokens[1]?.value;
+	if (flag !== "-c" && flag !== "-lc") return undefined;
+	return tokens[2]?.value;
+}
+
 function rewriteRipgrepSegments(command: string): string | undefined {
-	const tokens = normalizeTokens(shellSplit(command));
+	const tokens = shellSplitWithSpans(command);
+	if (tokens.length === 0) return undefined;
+	const shellScript = simpleShellScript(tokens);
+	if (shellScript) return rewriteRipgrepSegments(shellScript);
+
 	let changed = false;
-	const next: string[] = [];
-	let segment: string[] = [];
+	let rewritten = "";
+	let cursor = 0;
+	let segment: ShellTokenSpan[] = [];
 
 	const flush = () => {
 		if (segment.length === 0) return;
-		const rgIndex = ripgrepCommandIndex(segment);
+		const rgIndex = ripgrepCommandIndex(segment.map((token) => token.value));
 		if (rgIndex !== undefined) {
-			next.push(...segment.slice(0, rgIndex), "rtk", "rg", ...segment.slice(rgIndex + 1));
+			const rgToken = segment[rgIndex]!;
+			rewritten += command.slice(cursor, rgToken.start);
+			rewritten += "rtk rg";
+			cursor = rgToken.end;
 			changed = true;
-		} else {
-			next.push(...segment);
 		}
 		segment = [];
 	};
 
 	for (const token of tokens) {
-		if (token === "&&" || token === "||" || token === "|" || token === ";") {
+		if (
+			token.value === "&&" ||
+			token.value === "||" ||
+			token.value === "|" ||
+			token.value === "|&" ||
+			token.value === ";"
+		) {
 			flush();
-			next.push(token);
 			continue;
 		}
 		segment.push(token);
 	}
 	flush();
-	return changed ? joinCommandTokens(next) : undefined;
+	if (!changed) return undefined;
+	rewritten += command.slice(cursor);
+	return rewritten;
 }
 
 function splitTopLevelPipe(command: string): { left: string; separator: "|" | "|&"; right: string } | undefined {
