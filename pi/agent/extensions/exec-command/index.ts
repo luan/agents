@@ -1,5 +1,4 @@
 import { type ExtensionAPI, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
-import { loadDynamicToolsConfig, shouldTerminateForDynamicTools } from "../dynamic-tools/core.ts";
 import { createExecCommandTracker } from "./tools/exec-command-state.ts";
 import { registerExecCommandTool } from "./tools/exec-command-tool.ts";
 import { createExecSessionManager } from "./tools/exec-session-manager.ts";
@@ -100,17 +99,6 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 				ctx.ui.notify(`RTK rewrite skipped: ${decision.warning}`, "warning");
 			}
 			return decision.changed ? decision.rewrittenCommand : command;
-		},
-		onResult: (params, result) => {
-			if (
-				shouldTerminateForDynamicTools(
-					loadDynamicToolsConfig(),
-					{ toolName: "exec_command", input: params as unknown as Record<string, unknown>, result },
-					pi.getActiveTools(),
-				)
-			) {
-				return { terminate: true };
-			}
 		},
 	});
 	registerWriteStdinTool(pi, sessions);
