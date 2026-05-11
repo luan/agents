@@ -283,6 +283,39 @@ function rewriteRipgrepSegments(command: string): string | undefined {
 	return rewritten;
 }
 
+export function commandHasRipgrepSegment(command: string): boolean {
+	return rewriteRipgrepSegments(command) !== undefined;
+}
+
+export function isRtkGrepCommand(command: string): boolean {
+	const tokens = shellSplitWithSpans(command);
+	const shellScript = simpleShellScript(tokens);
+	if (shellScript) return isRtkGrepCommand(shellScript);
+	let segment: string[] = [];
+	const flush = () => {
+		const index = commandIndex(segment);
+		if (index === undefined) return false;
+		const executable = commandName(segment[index] ?? "");
+		return executable === "rtk" && segment[index + 1] === "grep";
+	};
+
+	for (const token of tokens) {
+		if (
+			token.value === "&&" ||
+			token.value === "||" ||
+			token.value === "|" ||
+			token.value === "|&" ||
+			token.value === ";"
+		) {
+			if (flush()) return true;
+			segment = [];
+			continue;
+		}
+		segment.push(token.value);
+	}
+	return flush();
+}
+
 function splitTopLevelPipe(command: string): { left: string; separator: "|" | "|&"; right: string } | undefined {
 	let quote: '"' | "'" | "`" | undefined;
 	let escaped = false;
@@ -357,15 +390,6 @@ export async function computeRtkRewriteDecision(
 	}
 	if (isAlreadyRtk(command)) {
 		return { changed: false, originalCommand: command, rewrittenCommand: command, reason: "already_rtk" };
-	}
-	const rtkRgCommand = rewriteRipgrepSegments(command);
-	if (rtkRgCommand) {
-		return {
-			changed: true,
-			originalCommand: command,
-			rewrittenCommand: rtkRgCommand,
-			reason: "ok",
-		};
 	}
 
 	try {
