@@ -6,8 +6,8 @@ import {
 	buildWebSearchActivityMessage,
 	extractWebSearch,
 	IMAGE_SAVE_DISPLAY_MESSAGE_TYPE,
-	renderImageGenerationMessage,
-	renderWebSearchMessage,
+	markGeneratedImageDisplayed,
+	registerNativeActivityMessageRenderers,
 	type SavedGeneratedImage,
 	type SurfacedWebSearch,
 	saveOpenAICodexGeneratedImage,
@@ -227,12 +227,7 @@ export function registerApplyPatchFreeformProvider(pi: ExtensionAPI, options: Ap
 				),
 		),
 	}));
-	pi.registerMessageRenderer(IMAGE_SAVE_DISPLAY_MESSAGE_TYPE, (message, renderOptions, theme) =>
-		renderImageGenerationMessage(message as any, renderOptions, theme),
-	);
-	pi.registerMessageRenderer(WEB_SEARCH_ACTIVITY_MESSAGE_TYPE, (message, renderOptions, theme) =>
-		renderWebSearchMessage(message as any, renderOptions, theme),
-	);
+	registerNativeActivityMessageRenderers(pi);
 }
 
 function streamFreeformCodexResponses(
@@ -670,6 +665,7 @@ async function* captureNativeActivities(
 						revisedPrompt:
 							typeof event.item.revised_prompt === "string" ? event.item.revised_prompt : options.requestPrompt,
 					});
+					markGeneratedImageDisplayed(responseId, callId);
 					options.onImageSaved?.(savedImage, {
 						data: result,
 						mimeType: `image/${savedImage.outputFormat}`,

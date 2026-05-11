@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setCapabilities } from "@earendil-works/pi-tui";
 import { activeCodexAppsToolNames, discoverCodexAppsTools } from "./codex-apps.ts";
 import {
 	isCodexWebSocketError,
@@ -11,9 +12,11 @@ import {
 import {
 	createWebSearchTool,
 	getOpenAICodexLatestImagePath,
+	renderImageGenerationMessage,
 	renderWebSearchMessage,
 	rewriteNativeImageGenerationTool,
 	rewriteNativeWebSearchTool,
+	saveGeneratedImagesFromAssistantMessage,
 	saveOpenAICodexGeneratedImage,
 	supportsNativeWebSearch,
 	WEB_SEARCH_TOOL_NAME,
@@ -96,6 +99,8 @@ test("normalizes legacy Codex custom tool call item ids for Responses replay", (
 	expect(call.call_id).toBe("call_apply_patch");
 	expect(call.id.length).toBeLessThanOrEqual(64);
 });
+
+const PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
 
 test("rewrites Codex web_search function tool to native Responses tool", () => {
 	const payload = {
@@ -226,6 +231,67 @@ test("saves generated images under workspace .pi directory and mirrors latest", 
 	expect(saved.latestRelativePath).toBe(".pi/openai-codex-images/latest.png");
 	expect(await readFile(saved.absolutePath, "utf8")).toBe("fake-png");
 	expect(await readFile(getOpenAICodexLatestImagePath(root), "utf8")).toBe("fake-png");
+});
+
+test("saves native image_generation assistant blocks for display", async () => {
+	const root = await mkdtemp(join(tmpdir(), "codex-native-image-block-test-"));
+	await mkdir(join(root, ".git"));
+	const message = {
+		role: "assistant",
+		responseId: "resp_image_block",
+		content: [
+			{
+				type: "image_generation_call",
+				item: {
+					type: "image_generation_call",
+					id: "ig_image_block",
+					status: "completed",
+					result: PNG_BASE64,
+					output_format: "png",
+					revised_prompt: "a moon dog",
+				},
+			},
+		],
+	};
+
+	const saved = await saveGeneratedImagesFromAssistantMessage(root, message);
+	expect(saved).toHaveLength(1);
+	expect(saved[0]?.relativePath).toContain(".pi/openai-codex-images/");
+	expect(saved[0]?.latestRelativePath).toBe(".pi/openai-codex-images/latest.png");
+	expect(await readFile(getOpenAICodexLatestImagePath(root), "base64")).toBe(PNG_BASE64);
+
+	const duplicate = await saveGeneratedImagesFromAssistantMessage(root, message);
+	expect(duplicate).toHaveLength(0);
+});
+
+test("renders generated images as compact activity with inline preview", async () => {
+	const root = await mkdtemp(join(tmpdir(), "codex-native-render-image-test-"));
+	await mkdir(join(root, ".git"));
+	const saved = await saveOpenAICodexGeneratedImage(root, {
+		responseId: "resp_render_image",
+		callId: "ig_render_image",
+		result: PNG_BASE64,
+		outputFormat: "png",
+		revisedPrompt: "a moon dog",
+	});
+
+	setCapabilities({ images: "iterm2", trueColor: true, hyperlinks: true });
+	try {
+		const component = renderImageGenerationMessage(
+			{ content: "", details: { savedImages: [saved] } },
+			{ expanded: true },
+			testTheme,
+		);
+		const rendered = component.render(1000).join("\n");
+		expect(rendered).toContain("<success>•</success> <bold>Generated image</bold>");
+		expect(rendered).toContain("<accent>Prompt</accent> <muted>a moon dog</muted>");
+		expect(rendered).toContain("\x1b]1337;File=");
+		expect(rendered).toContain("width=998");
+		expect(rendered).not.toContain("[image_generation]");
+		expect(rendered).not.toContain("customMessageBg");
+	} finally {
+		setCapabilities({ images: null, trueColor: false, hyperlinks: false });
+	}
 });
 
 test("normalizes generic Codex websocket failures for auto-retry", () => {
