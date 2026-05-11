@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, anyhow, bail};
 use getrandom::fill as fill_random;
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::cli::TaskAction;
 
@@ -23,25 +23,26 @@ const VALID_STATUSES: [&str; 7] = [
 ];
 const VALID_TASK_TYPES: [&str; 4] = ["epic", "feature", "bug", "chore"];
 const TASK_SELECT_COLUMNS: &str = "id, title, body, status, priority, assigned_to, assigned_label, epic_id, epic_title, parent_id, blocked_by, task_type, labels, created_at, updated_at";
+const DONE_TASK_RETENTION_MS: i64 = 6 * 60 * 60 * 1000;
 
-#[derive(Debug, Serialize)]
-struct Task {
-    id: String,
-    title: String,
-    body: String,
-    status: String,
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(crate) struct Task {
+    pub(crate) id: String,
+    pub(crate) title: String,
+    pub(crate) body: String,
+    pub(crate) status: String,
     #[serde(rename = "type")]
-    task_type: String,
-    labels: Vec<String>,
-    priority: i64,
-    assigned_to: Option<String>,
-    assigned_label: Option<String>,
-    epic_id: Option<String>,
-    epic_title: Option<String>,
-    parent_id: Option<String>,
-    blocked_by: Vec<String>,
-    created_at: i64,
-    updated_at: i64,
+    pub(crate) task_type: String,
+    pub(crate) labels: Vec<String>,
+    pub(crate) priority: i64,
+    pub(crate) assigned_to: Option<String>,
+    pub(crate) assigned_label: Option<String>,
+    pub(crate) epic_id: Option<String>,
+    pub(crate) epic_title: Option<String>,
+    pub(crate) parent_id: Option<String>,
+    pub(crate) blocked_by: Vec<String>,
+    pub(crate) created_at: i64,
+    pub(crate) updated_at: i64,
 }
 
 #[derive(Serialize)]
@@ -178,6 +179,28 @@ pub fn run_task(action: TaskAction) -> Result<(), Box<dyn std::error::Error>> {
             let task = store.display_task(store.reject(&id, &note.join(" "))?)?;
             print_task(&task, json)?;
         }
+        TaskAction::Tui {
+            width,
+            height,
+            selected_task_id,
+            input,
+            embed,
+            json,
+        } => {
+            let tasks = store.display_tasks(store.list(None, None, None, None, None, true)?)?;
+            if embed {
+                crate::task_tui::run_task_tui_embed(&tasks)?;
+                return Ok(());
+            }
+            crate::task_tui::print_task_tui(
+                &tasks,
+                width,
+                height,
+                selected_task_id.as_deref(),
+                input.as_deref(),
+                json,
+            )?;
+        }
     }
     Ok(())
 }
@@ -249,7 +272,9 @@ impl TaskStore {
              CREATE INDEX IF NOT EXISTS idx_tasks_status_updated ON tasks(status, updated_at DESC);",
         )?;
         ensure_task_columns(&conn)?;
-        Ok(Self { conn })
+        let store = Self { conn };
+        store.cleanup_loaded_tasks()?;
+        Ok(store)
     }
 
     fn add(&self, new_task: TaskNew<'_>) -> Result<Task> {
@@ -446,7 +471,7 @@ impl TaskStore {
             &final_task_type,
             final_epic_id.as_deref(),
             final_parent_id.as_deref(),
-            update.epic_id.is_some() || update.task_type.is_some() || update.clear_epic,
+            true,
         )?;
         self.ensure_no_dependency_cycle(&id, &blockers, final_parent_id.as_deref())?;
         let blockers_json = serde_json::to_string(&blockers)?;
@@ -514,6 +539,7 @@ impl TaskStore {
         let id = self.resolve_id(id_prefix)?;
         let all_ids = self.all_ids()?;
         let display_id = min_prefix(&id, &all_ids);
+        let parent_id = self.get_exact(&id)?.parent_id;
         let referenced_by = self.tasks_blocked_by(&id)?;
         if !referenced_by.is_empty() {
             let prefixes = shortest_prefixes(&all_ids);
@@ -540,6 +566,9 @@ impl TaskStore {
         }
         self.conn
             .execute("DELETE FROM tasks WHERE id = ?1", [&id])?;
+        if let Some(parent_id) = parent_id {
+            self.prune_empty_parent_chain(&parent_id)?;
+        }
         Ok(display_id)
     }
 
@@ -686,6 +715,93 @@ impl TaskStore {
         Ok(tasks.into_iter().map(|task| task.id).collect())
     }
 
+    fn cleanup_loaded_tasks(&self) -> Result<()> {
+        self.with_immediate_tx(|| {
+            let cutoff = now_ms().saturating_sub(DONE_TASK_RETENTION_MS);
+            let mut parent_ids = self.parent_ids_matching(
+                "task_type != 'epic' AND (epic_id IS NULL OR trim(epic_id) = '')",
+                &[],
+            )?;
+            parent_ids.extend(self.parent_ids_matching("status = 'done' AND updated_at < ?1", &[&cutoff])?);
+            self.conn.execute(
+                "DELETE FROM tasks WHERE task_type != 'epic' AND (epic_id IS NULL OR trim(epic_id) = '')",
+                [],
+            )?;
+            self.conn.execute(
+                "DELETE FROM tasks WHERE status = 'done' AND updated_at < ?1",
+                [cutoff],
+            )?;
+            self.remove_dangling_references()?;
+            for parent_id in parent_ids {
+                self.prune_empty_parent_chain(&parent_id)?;
+            }
+            Ok(())
+        })
+    }
+
+    fn parent_ids_matching(
+        &self,
+        predicate: &str,
+        params: &[&dyn rusqlite::ToSql],
+    ) -> Result<Vec<String>> {
+        let sql = format!(
+            "SELECT DISTINCT parent_id FROM tasks WHERE parent_id IS NOT NULL AND {predicate}"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params, |row| row.get::<_, String>(0))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    fn prune_empty_parent_chain(&self, parent_id: &str) -> Result<()> {
+        let mut current = Some(parent_id.to_string());
+        while let Some(id) = current {
+            let Some(parent) = self.get_optional_exact(&id)? else {
+                break;
+            };
+            if !self.tasks_with_parent(&id)?.is_empty() || !self.tasks_blocked_by(&id)?.is_empty() {
+                break;
+            }
+            current = parent.parent_id.clone();
+            self.conn
+                .execute("DELETE FROM tasks WHERE id = ?1", [&id])?;
+        }
+        Ok(())
+    }
+
+    fn get_optional_exact(&self, id: &str) -> Result<Option<Task>> {
+        self.conn
+            .query_row(
+                &format!("SELECT {TASK_SELECT_COLUMNS} FROM tasks WHERE id = ?1"),
+                [id],
+                row_task,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    fn remove_dangling_references(&self) -> Result<()> {
+        let existing_ids = self.all_ids()?.into_iter().collect::<HashSet<_>>();
+        let tasks = self.query_tasks(
+            &format!("SELECT {TASK_SELECT_COLUMNS} FROM tasks ORDER BY id"),
+            &[],
+        )?;
+        for task in tasks {
+            let parent_id = task.parent_id.filter(|id| existing_ids.contains(id));
+            let blocked_by = task
+                .blocked_by
+                .into_iter()
+                .filter(|id| existing_ids.contains(id))
+                .collect::<Vec<_>>();
+            let blocked_by_json = serde_json::to_string(&blocked_by)?;
+            self.conn.execute(
+                "UPDATE tasks SET parent_id = ?1, blocked_by = ?2 WHERE id = ?3",
+                params![parent_id, blocked_by_json, task.id],
+            )?;
+        }
+        Ok(())
+    }
+
     fn validate_epic_contract(
         &self,
         task_id: &str,
@@ -716,11 +832,12 @@ impl TaskStore {
                 }
             }
             _ => {
-                if let Some(label) = epic_id {
-                    validate_epic_label(label)?;
-                    if enforce_child_reference && !self.epic_label_exists(label, task_id)? {
-                        bail!("no epic task has label {label:?}");
-                    }
+                let Some(label) = epic_id else {
+                    bail!("non-epic tasks require --epic-id");
+                };
+                validate_epic_label(label)?;
+                if enforce_child_reference && !self.epic_label_exists(label, task_id)? {
+                    bail!("no epic task has label {label:?}");
                 }
             }
         }

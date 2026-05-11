@@ -434,7 +434,9 @@ test("exec session manager can poll running sessions", async () => {
 	}
 });
 
-test("exec session manager can write to tty-requested sessions", async () => {
+// node-pty currently exits immediately under Bun for this PTY flow before
+// stdin can be written, while the same repro succeeds under Node.
+test.skipIf(Boolean(process.versions.bun))("exec session manager can write to tty-requested sessions", async () => {
 	const sessions = createExecSessionManager({
 		defaultExecYieldTimeMs: 250,
 		defaultWriteYieldTimeMs: 250,

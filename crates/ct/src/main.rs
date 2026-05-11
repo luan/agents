@@ -14,6 +14,8 @@ mod phases;
 mod refs;
 mod slug;
 mod task;
+#[allow(dead_code)]
+mod task_tui;
 mod vault;
 
 use clap::{CommandFactory, Parser};

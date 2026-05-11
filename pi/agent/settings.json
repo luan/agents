@@ -1,26 +1,27 @@
 {
-  "lastChangelogVersion": "0.73.0",
+  "lastChangelogVersion": "0.74.0",
   "steeringMode": "all",
   "autoUpdate": true,
-  "transport": "auto",
+  "transport": "sse",
   "doubleEscapeAction": "tree",
   "treeFilterMode": "default",
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-5.5",
-  "defaultThinkingLevel": "medium",
+  "defaultThinkingLevel": "high",
   "skills": [
     "../.codex/skills"
   ],
   "packages": [
     "npm:@ifi/oh-pi-themes",
     "npm:@dreki-gg/pi-context7",
-    "npm:@tintinweb/pi-subagents",
-    "npm:@sting8k/pi-vcc"
+    "npm:@plannotator/pi-extension"
   ],
   "extensions": [
-    "-extensions/pi-web-access/index.ts",
-    "extensions/pi-vim/index.ts",
-    "extensions/lens/index.ts",
+    "extensions/plannotator-events/index.ts",
+    "extensions/codex-native/index.ts",
+    "extensions/dynamic-tools/index.ts",
+    "extensions/token-burden/index.ts",
+    "extensions/vim/index.ts",
     "extensions/tasks/index.ts"
   ],
   "enabledModels": [

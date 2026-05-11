@@ -1,5 +1,7 @@
+import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
+import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -39,9 +41,12 @@ interface Runtime {
 }
 
 interface GuardState {
+	enabled: boolean;
 	progressSerial: number;
 	lastGuardFingerprint?: string;
 	lastGuardProgressSerial?: number;
+	autoLoopTaskId?: string;
+	autoLoopTurns: number;
 	pending?: TaskGuardDecision;
 	pauseResponses: number;
 	lastUserText?: string;
@@ -98,18 +103,11 @@ const configPath = join(extensionDir, "config.json");
 const widgetId = "project-tasks";
 const taskHudFlashMs = 5000;
 const taskHudPulseFrameMs = 160;
-const silentTaskToolNames = new Set([
-	"task_add",
-	"task_list",
-	"task_show",
-	"task_update",
-	"task_delete",
-	"task_accept",
-	"task_reject",
-]);
+const maxGuardAutoTurnsWithoutProgress = 2;
+const silentTaskToolNames = new Set(["task_read", "task_write"]);
 const silentTaskToolPatchKey = Symbol.for("agents.tasks.silent-tool-render-patch");
 let activeTaskBoard: { close: () => void } | undefined;
-let taskHudKanbanHidden = false;
+let taskHudExpandedEpicKey: string | null | undefined;
 let taskHudPulseTimer: ReturnType<typeof setInterval> | undefined;
 let requestTaskHudRender: (() => void) | undefined;
 let taskHudWidget: TaskHudWidget | undefined;
@@ -127,6 +125,7 @@ interface TaskHudState {
 	tasks: TaskRecord[];
 	display: AssignmentDisplayContext;
 	config: Config;
+	taskGuardEnabled: boolean;
 }
 
 const defaultConfig: Config = {
@@ -406,8 +405,10 @@ class TaskHudWidget implements Component {
 		const state = this.state;
 		if (!state || !hasEnoughTerminalRows(state.config.hud.minTerminalRows)) return [];
 		return renderHudLines(state.tasks, this.theme, width, state.config.hud.maxTasks, state.display, {
-			hideKanban: taskHudKanbanHidden,
+			hideKanban: taskHudExpandedEpicKey === null,
+			expandedEpicKey: taskHudExpandedEpicKey ?? undefined,
 			flashTasks: activeTaskHudFlashes(),
+			taskGuardEnabled: state.taskGuardEnabled,
 		});
 	}
 
@@ -434,14 +435,40 @@ async function updateTaskHud(
 	command: string,
 	runCommand: typeof defaultRunCommand,
 	config: Config,
+	taskGuardEnabled = latestTaskHudState?.taskGuardEnabled ?? false,
 	signal: AbortSignal | false | undefined = ctx.signal,
 ): Promise<void> {
 	const tasks = await loadHudTasks(ctx.cwd, command, runCommand, signal || undefined);
 	const display = assignmentDisplayContext(pi, ctx, tasks);
-	const state = { tasks, display, config };
+	const visibleKeys = visibleHudEpicKeys(tasks);
+	if (
+		taskHudExpandedEpicKey === undefined ||
+		(taskHudExpandedEpicKey !== null && !visibleKeys.includes(taskHudExpandedEpicKey))
+	) {
+		taskHudExpandedEpicKey = visibleKeys[0] ?? null;
+	}
+	const state = { tasks, display, config, taskGuardEnabled };
 	latestTaskHudState = state;
 	ensureTaskHudWidget(ctx);
 	taskHudWidget?.setState(state);
+}
+
+function visibleHudEpicKeys(tasks: TaskRecord[]): string[] {
+	return buildTaskBoardGroups(tasks.filter((task) => !isCanceled(task))).map((group) => group.key);
+}
+
+function cycleTaskHudExpandedEpic(tasks: TaskRecord[]): void {
+	const keys = visibleHudEpicKeys(tasks);
+	if (keys.length === 0) {
+		taskHudExpandedEpicKey = null;
+		return;
+	}
+	if (taskHudExpandedEpicKey === null) {
+		taskHudExpandedEpicKey = keys[0];
+		return;
+	}
+	const index = keys.indexOf(taskHudExpandedEpicKey);
+	taskHudExpandedEpicKey = index >= 0 && index < keys.length - 1 ? keys[index + 1] : null;
 }
 
 async function showTaskBoard(
@@ -464,18 +491,33 @@ async function showTaskBoard(
 					done();
 				};
 				activeTaskBoard = { close };
-				const board = new TaskBoardOverlay({
-					tasks,
-					theme,
-					keybindings: config.keybindings,
-					onClose: close,
-					onReload: load,
-					onMutate: async (action, params) => {
-						await executeTask(command, runCommand, ctx.cwd, action, params, config, pi, ctx, ctx.signal);
-						return load();
-					},
-					onChange: () => tui.requestRender(),
-				});
+				const useRustOverlay = runCommand === defaultRunCommand;
+				const board = useRustOverlay
+					? new RatatuiTaskBoardOverlay({
+							tasks,
+							theme,
+							keybindings: config.keybindings,
+							command,
+							cwd: ctx.cwd,
+							onClose: close,
+							onMutate: async (action, params) => {
+								await executeTask(command, runCommand, ctx.cwd, action, params, config, pi, ctx, ctx.signal);
+								return load();
+							},
+							onChange: () => tui.requestRender(),
+						})
+					: new TaskBoardOverlay({
+							tasks,
+							theme,
+							keybindings: config.keybindings,
+							onClose: close,
+							onReload: load,
+							onMutate: async (action, params) => {
+								await executeTask(command, runCommand, ctx.cwd, action, params, config, pi, ctx, ctx.signal);
+								return load();
+							},
+							onChange: () => tui.requestRender(),
+						});
 				return {
 					render: (width: number) => board.render(width),
 					handleInput: (data: string) => {
@@ -557,7 +599,7 @@ function sortTasksForDisplay(
 }
 
 export interface TaskBoardColumn {
-	id: "rejected" | "ready" | "blocked" | "in_progress" | "done";
+	id: "rejected" | "ready" | "blocked" | "in_progress" | "in_review" | "done";
 	label: string;
 	tasks: TaskRecord[];
 }
@@ -579,12 +621,16 @@ export interface TaskBoardSelection {
 }
 
 function isBoardReady(task: TaskRecord): boolean {
-	return !isComplete(task) && !isCanceled(task) && task.status !== "in_progress";
+	return !isComplete(task) && !isCanceled(task) && task.status !== "in_progress" && task.status !== "in_review";
+}
+
+function isBoardActive(task: TaskRecord): boolean {
+	return !isComplete(task) && !isCanceled(task);
 }
 
 export function buildTaskBoardColumns(tasks: TaskRecord[]): TaskBoardColumn[] {
 	const byId = new Map(tasks.map((task) => [task.id, task]));
-	const active = tasks.filter((task) => !isCanceled(task) && task.type !== "epic");
+	const active = tasks.filter((task) => !isCanceled(task) && task.type !== "epic" && hasEpicMetadata(task));
 	const children = taskChildren(active);
 	const rejected = sortTasksForDisplay(
 		active.filter((task) => task.status === "rejected" && !hasOpenDependencies(task, byId, children)),
@@ -607,7 +653,7 @@ export function buildTaskBoardColumns(tasks: TaskRecord[]): TaskBoardColumn[] {
 			id: "blocked",
 			label: "Blocked",
 			tasks: sortTasksForDisplay(
-				active.filter((task) => isBoardReady(task) && hasOpenDependencies(task, byId, children)),
+				active.filter((task) => isBoardActive(task) && hasOpenDependencies(task, byId, children)),
 				byId,
 				children,
 			),
@@ -616,7 +662,16 @@ export function buildTaskBoardColumns(tasks: TaskRecord[]): TaskBoardColumn[] {
 			id: "in_progress",
 			label: "In Progress",
 			tasks: sortTasksForDisplay(
-				active.filter((task) => task.status === "in_progress"),
+				active.filter((task) => task.status === "in_progress" && !hasOpenDependencies(task, byId, children)),
+				byId,
+				children,
+			),
+		},
+		{
+			id: "in_review",
+			label: "In Review",
+			tasks: sortTasksForDisplay(
+				active.filter((task) => task.status === "in_review" && !hasOpenDependencies(task, byId, children)),
 				byId,
 				children,
 			),
@@ -738,6 +793,8 @@ function columnColor(column: TaskBoardColumn): ThemeColor {
 			return "muted";
 		case "in_progress":
 			return "warning";
+		case "in_review":
+			return "accent";
 		case "done":
 			return "success";
 	}
@@ -753,15 +810,11 @@ function columnIcon(column: TaskBoardColumn): string {
 			return "";
 		case "in_progress":
 			return "";
+		case "in_review":
+			return "";
 		case "done":
 			return "";
 	}
-}
-
-function shelfHeader(theme: Theme, column: TaskBoardColumn, width: number, hidden = 0): string {
-	const count = hidden > 0 ? `${column.tasks.length} – ${hidden} hidden` : `${column.tasks.length}`;
-	const title = theme.fg(columnColor(column), `${columnIcon(column)} ${column.label} (${count})`);
-	return padToVisibleWidth(title, width);
 }
 
 function isEpicTask(task: TaskRecord): boolean {
@@ -772,6 +825,10 @@ function taskEpicKey(task: TaskRecord): string {
 	return task.epic_id?.trim() || "";
 }
 
+function hasEpicMetadata(task: TaskRecord): boolean {
+	return taskEpicKey(task).length > 0;
+}
+
 function buildTaskBoardGroups(tasks: TaskRecord[]): TaskBoardGroup[] {
 	const epicByLabel = new Map<string, TaskRecord>();
 	for (const task of tasks) {
@@ -780,9 +837,9 @@ function buildTaskBoardGroups(tasks: TaskRecord[]): TaskBoardGroup[] {
 		if (label) epicByLabel.set(label, task);
 	}
 	const grouped = new Map<string, TaskRecord[]>();
-	for (const task of tasks.filter((candidate) => !isEpicTask(candidate))) {
+	for (const task of tasks.filter((candidate) => !isEpicTask(candidate) && hasEpicMetadata(candidate))) {
 		const label = taskEpicKey(task);
-		const key = label ? (epicByLabel.has(label) ? label : `unknown:${label}`) : "";
+		const key = epicByLabel.has(label) ? label : `unknown:${label}`;
 		grouped.set(key, [...(grouped.get(key) ?? []), task]);
 	}
 	const groups = [...grouped.entries()]
@@ -792,8 +849,8 @@ function buildTaskBoardGroups(tasks: TaskRecord[]): TaskBoardGroup[] {
 			const progressTasks = groupTasks.filter((task) => !isCanceled(task));
 			return {
 				key,
-				label: epic?.title ?? (label ? `Unknown Epic: ${label}` : "No Epic"),
-				epicLabel: label || undefined,
+				label: epic?.title ?? `Unknown Epic: ${label}`,
+				epicLabel: label,
 				tasks: groupTasks,
 				priority: epic ? priority(epic) : Math.max(0, ...groupTasks.map(priority)),
 				updatedAt: Math.max(epic?.updated_at ?? 0, ...groupTasks.map((task) => task.updated_at)),
@@ -803,8 +860,6 @@ function buildTaskBoardGroups(tasks: TaskRecord[]): TaskBoardGroup[] {
 		})
 		.filter((group) => group.tasks.length > 0);
 	return groups.sort((left, right) => {
-		if (left.key === "" && right.key !== "") return 1;
-		if (right.key === "" && left.key !== "") return -1;
 		const priorityDelta = right.priority - left.priority;
 		if (priorityDelta !== 0) return priorityDelta;
 		return (
@@ -821,7 +876,7 @@ function progressBar(theme: Theme, done: number, total: number, width: number): 
 }
 
 function renderEpicBoardHeader(group: TaskBoardGroup, theme: Theme, width: number): string {
-	const prefix = group.key === "" ? "No Epic:" : "Epic:";
+	const prefix = "Epic:";
 	const suffixStart = ` – ${group.done}/${group.total} [`;
 	const suffixEnd = "]";
 	const label = group.epicLabel ? ` ${theme.fg("success", group.epicLabel)}` : "";
@@ -964,18 +1019,29 @@ function taskHudSummary(columns: Record<TaskBoardColumn["id"], TaskBoardColumn>)
 	const done = columns.done.tasks.length;
 	if (done > 0) parts.push(`${done} done`);
 	if (columns.in_progress.tasks.length > 0) parts.push(`${columns.in_progress.tasks.length} in progress`);
+	if (columns.in_review.tasks.length > 0) parts.push(`${columns.in_review.tasks.length} in review`);
 	return parts;
+}
+
+function taskGuardHudLine(theme: Theme, width: number): string {
+	return truncateLine(`${theme.fg("accent", "󰌾")} ${theme.fg("warning", "Task guard on")}`, width);
+}
+
+function shelfHeader(theme: Theme, column: TaskBoardColumn, width: number, hidden = 0): string {
+	const count = hidden > 0 ? `${column.tasks.length} – ${hidden} hidden` : `${column.tasks.length}`;
+	const title = theme.fg(columnColor(column), `${columnIcon(column)} ${column.label} (${count})`);
+	return padToVisibleWidth(title, width);
 }
 
 function hudColumnRows(column: TaskBoardColumn, maxTasks: number): number {
 	switch (column.id) {
 		case "rejected":
-			return Math.max(1, Math.min(3, column.tasks.length));
 		case "ready":
 			return Math.max(1, Math.min(3, column.tasks.length));
 		case "blocked":
 			return Math.max(1, Math.min(2, column.tasks.length));
 		case "in_progress":
+		case "in_review":
 			return Math.max(1, Math.min(maxTasks, column.tasks.length));
 		case "done":
 			return Math.max(1, Math.min(5, column.tasks.length));
@@ -1024,12 +1090,6 @@ function renderHudSection(
 		lines.push(renderHudTaskCard(task, column, theme, cardWidth, byId, display, flashTaskIds, flashTasks, now));
 	}
 	return lines;
-}
-
-function isVisibleHudTask(task: TaskRecord, display: AssignmentDisplayContext): boolean {
-	if (isCanceled(task)) return false;
-	if (!isComplete(task)) return true;
-	return isAssignedToCurrentSession(task, display);
 }
 
 function detailLines(task: TaskRecord, tasks: TaskRecord[], theme: Theme, width: number): string[] {
@@ -1096,7 +1156,7 @@ export function renderTaskBoardLines(
 		});
 		const lanes = [
 			leftLane,
-			...(["in_progress", "done"] as const).map((id) => {
+			...(["in_progress", "in_review", "done"] as const).map((id) => {
 				const column = boardColumn(groupColumns, id);
 				if (column.tasks.length === 0) return [];
 				return [
@@ -1531,7 +1591,7 @@ function formatAssignee(task: TaskRecord, theme: Theme, display: AssignmentDispl
 	const label = assignmentLabel(task, display);
 	if (!label) return "";
 	if (isAssignedToCurrentSession(task, display)) {
-		return ` ${theme.fg("success", italic("self"))}`;
+		return ` ${theme.fg("muted", italic("self"))}`;
 	}
 	return ` ${theme.fg("mdLink", italic(`@${label}`))}`;
 }
@@ -1569,7 +1629,7 @@ function typeColor(task: TaskRecord): ThemeColor {
 function formatTaskLabels(task: TaskRecord, theme: Theme): string {
 	const labels = task.labels ?? [];
 	if (labels.length === 0) return "";
-	return ` ${labels.map((label) => theme.fg("success", italic(label))).join(" ")}`;
+	return ` ${labels.map((label) => theme.fg("syntaxString", italic(label))).join(", ")}`;
 }
 
 function formatTaskId(id: string, theme: Theme): string {
@@ -1577,6 +1637,157 @@ function formatTaskId(id: string, theme: Theme): string {
 	const visible =
 		id.length > 0 ? `${theme.fg("syntaxPunctuation", id.slice(0, -1))}${theme.fg("syntaxType", id.slice(-1))}` : "";
 	return `${visible}${" ".repeat(Math.max(0, padded.length - id.length))}`;
+}
+
+const HUD_DONE_WINDOW_MS = 60 * 60 * 1000;
+
+function isRecentlyComplete(task: TaskRecord, now: number): boolean {
+	return isComplete(task) && now - task.updated_at <= HUD_DONE_WINDOW_MS;
+}
+
+function isActiveCurrentSessionEpicTask(task: TaskRecord, display: AssignmentDisplayContext): boolean {
+	return isAssignedToCurrentSession(task, display) && !isComplete(task) && !isCanceled(task) && task.type !== "epic";
+}
+
+function renderHudEpicSummary(group: TaskBoardGroup, theme: Theme, width: number): string {
+	const label = group.epicLabel ? ` ${theme.fg("success", group.epicLabel)}` : "";
+	const marker = group.total > 0 && group.done === group.total ? theme.fg("success", "✓") : theme.fg("dim", "○");
+	const completed = group.done > 0 ? ` · ${group.done} done` : "";
+	return truncateLine(`${marker} ${theme.fg("toolTitle", group.label)}${label}${theme.fg("dim", completed)}`, width);
+}
+
+function renderColumnarHudGroup(
+	group: TaskBoardGroup,
+	theme: Theme,
+	width: number,
+	maxTasks: number,
+	byId: Map<string, TaskRecord>,
+	display: AssignmentDisplayContext,
+	now: number,
+	flashTaskIds?: ReadonlySet<string>,
+	flashTasks?: ReadonlyMap<string, TaskHudFlash>,
+): string[] {
+	const groupTasks = group.tasks.filter((task) => !isCanceled(task));
+	const visibleTasks = groupTasks.filter(
+		(task) => !isComplete(task) || (isAssignedToCurrentSession(task, display) && isRecentlyComplete(task, now)),
+	);
+	if (visibleTasks.length === 0 && groupTasks.length > 0 && groupTasks.every(isComplete)) {
+		return [
+			truncateLine(
+				`${theme.fg("success", "✓")} ${theme.fg("toolTitle", group.label)} ${theme.fg("dim", `${groupTasks.length} completed`)}`,
+				width,
+			),
+		];
+	}
+	if (visibleTasks.length === 0) return [];
+	const scopedGroup: TaskBoardGroup = {
+		...group,
+		tasks: visibleTasks,
+		done: visibleTasks.filter(isComplete).length,
+		total: visibleTasks.length,
+	};
+	const visibleTasksForColumns = visibleTasks.map((task) => ({ ...task, blocked_by: openBlockers(task, byId) }));
+	const groupColumns = buildTaskBoardColumns(visibleTasksForColumns);
+	const groupDoneColumn = boardColumn(groupColumns, "done");
+	const groupHudColumns = {
+		rejected: groupColumns.find((column) => column.id === "rejected") ?? {
+			id: "rejected" as const,
+			label: "Rejected",
+			tasks: [],
+		},
+		ready: boardColumn(groupColumns, "ready"),
+		blocked: boardColumn(groupColumns, "blocked"),
+		in_progress: boardColumn(groupColumns, "in_progress"),
+		in_review: boardColumn(groupColumns, "in_review"),
+		done: withDoneRecencyOrder(groupDoneColumn),
+	};
+	const widths = splitWidths(width, 3);
+	const renderedColumns = [
+		[
+			...renderHudSection(
+				groupHudColumns.rejected,
+				theme,
+				widths[0] ?? width,
+				hudColumnRows(groupHudColumns.rejected, maxTasks),
+				byId,
+				display,
+				flashTaskIds,
+				flashTasks,
+				now,
+			),
+			...renderHudSection(
+				groupHudColumns.ready,
+				theme,
+				widths[0] ?? width,
+				hudColumnRows(groupHudColumns.ready, maxTasks),
+				byId,
+				display,
+				flashTaskIds,
+				flashTasks,
+				now,
+			),
+			...(groupHudColumns.blocked.tasks.length > 0
+				? renderHudSection(
+						groupHudColumns.blocked,
+						theme,
+						widths[0] ?? width,
+						hudColumnRows(groupHudColumns.blocked, maxTasks),
+						byId,
+						display,
+						flashTaskIds,
+						flashTasks,
+						now,
+					)
+				: []),
+		],
+		[
+			...renderHudSection(
+				groupHudColumns.in_progress,
+				theme,
+				widths[1] ?? width,
+				hudColumnRows(groupHudColumns.in_progress, maxTasks),
+				byId,
+				display,
+				flashTaskIds,
+				flashTasks,
+				now,
+			),
+			...renderHudSection(
+				groupHudColumns.in_review,
+				theme,
+				widths[1] ?? width,
+				hudColumnRows(groupHudColumns.in_review, maxTasks),
+				byId,
+				display,
+				flashTaskIds,
+				flashTasks,
+				now,
+			),
+		],
+		renderHudSection(
+			groupHudColumns.done,
+			theme,
+			widths[2] ?? width,
+			hudColumnRows(groupHudColumns.done, maxTasks),
+			byId,
+			display,
+			flashTaskIds,
+			flashTasks,
+			now,
+		),
+	];
+	if (renderedColumns.every((column) => column.length === 0)) return [];
+	const lines = [renderEpicBoardHeader(scopedGroup, theme, width)];
+	const height = Math.max(...renderedColumns.map((column) => column.length));
+	for (let row = 0; row < height; row++) {
+		lines.push(
+			fitCells(
+				renderedColumns.map((column, index) => column[row] ?? " ".repeat(widths[index] ?? 0)),
+				widths,
+			),
+		);
+	}
+	return lines;
 }
 
 export function renderHudLines(
@@ -1587,14 +1798,23 @@ export function renderHudLines(
 	display: AssignmentDisplayContext = {},
 	options: {
 		hideKanban?: boolean;
+		expandedEpicKey?: string;
 		flashTaskIds?: ReadonlySet<string>;
 		flashTasks?: ReadonlyMap<string, TaskHudFlash>;
 		now?: number;
+		taskGuardEnabled?: boolean;
 	} = {},
 ): string[] {
 	const hudTasks = tasks.filter((task) => !isCanceled(task));
-	const visibleTasks = hudTasks.filter((task) => isVisibleHudTask(task, display));
-	if (visibleTasks.length === 0) return [];
+	const now = options.now ?? Date.now();
+	const guardLines = options.taskGuardEnabled ? [taskGuardHudLine(theme, width)] : [];
+	const visibleTasks = hudTasks.filter(
+		(task) =>
+			task.type !== "epic" &&
+			(!isComplete(task) || (isAssignedToCurrentSession(task, display) && isRecentlyComplete(task, now))),
+	);
+	const groups = buildTaskBoardGroups(hudTasks);
+	if (visibleTasks.length === 0 && groups.length === 0) return guardLines;
 	const columns = buildTaskBoardColumns(hudTasks);
 	const doneColumn = boardColumn(columns, "done");
 	const hudColumns = {
@@ -1606,114 +1826,246 @@ export function renderHudLines(
 		ready: boardColumn(columns, "ready"),
 		blocked: boardColumn(columns, "blocked"),
 		in_progress: boardColumn(columns, "in_progress"),
+		in_review: boardColumn(columns, "in_review"),
 		done: withDoneRecencyOrder({
 			...doneColumn,
 			tasks: doneColumn.tasks.filter((task) => isAssignedToCurrentSession(task, display)),
 		}),
 	};
-	const shownColumns = [hudColumns.ready, hudColumns.in_progress, hudColumns.done];
-	const widths = splitWidths(width, shownColumns.length);
 	const parts = taskHudSummary(hudColumns);
 	const summaryLine = truncateLine(
 		`${theme.fg("mdHeading", "●")} ${theme.fg("mdHeading", `${visibleTasks.length} tasks`)} ${theme.fg("muted", `(${parts.join(", ")})`)}`,
 		width,
 	);
-	if (options.hideKanban) return [summaryLine];
+	if (options.hideKanban) return [...guardLines, summaryLine];
 	const lines: string[] = [];
 	const byId = new Map(hudTasks.map((item) => [item.id, item]));
-	const now = options.now ?? Date.now();
-	for (const group of buildTaskBoardGroups(hudTasks)) {
-		const groupColumns = buildTaskBoardColumns(group.tasks);
-		const groupDoneColumn = boardColumn(groupColumns, "done");
-		const groupHudColumns = {
-			rejected: groupColumns.find((column) => column.id === "rejected") ?? {
-				id: "rejected" as const,
-				label: "Rejected",
-				tasks: [],
-			},
-			ready: boardColumn(groupColumns, "ready"),
-			blocked: boardColumn(groupColumns, "blocked"),
-			in_progress: boardColumn(groupColumns, "in_progress"),
-			done: withDoneRecencyOrder({
-				...groupDoneColumn,
-				tasks: groupDoneColumn.tasks.filter((task) => isAssignedToCurrentSession(task, display)),
-			}),
-		};
-		const renderedColumns = [
-			[
-				...renderHudSection(
-					groupHudColumns.rejected,
-					theme,
-					widths[0] ?? width,
-					hudColumnRows(groupHudColumns.rejected, maxTasks),
-					byId,
-					display,
-					options.flashTaskIds,
-					options.flashTasks,
-					now,
-				),
-				...renderHudSection(
-					groupHudColumns.ready,
-					theme,
-					widths[0] ?? width,
-					hudColumnRows(groupHudColumns.ready, maxTasks),
-					byId,
-					display,
-					options.flashTaskIds,
-					options.flashTasks,
-					now,
-				),
-				...(groupHudColumns.blocked.tasks.length > 0
-					? renderHudSection(
-							groupHudColumns.blocked,
-							theme,
-							widths[0] ?? width,
-							hudColumnRows(groupHudColumns.blocked, maxTasks),
-							byId,
-							display,
-							options.flashTaskIds,
-							options.flashTasks,
-							now,
-						)
-					: []),
-			],
-			renderHudSection(
-				groupHudColumns.in_progress,
+	if (options.expandedEpicKey) {
+		const group = groups.find((candidate) => candidate.key === options.expandedEpicKey);
+		if (!group) return [...guardLines, summaryLine];
+		lines.push(
+			...renderColumnarHudGroup(
+				group,
 				theme,
-				widths[1] ?? width,
-				hudColumnRows(groupHudColumns.in_progress, maxTasks),
+				width,
+				maxTasks,
 				byId,
 				display,
+				now,
 				options.flashTaskIds,
 				options.flashTasks,
-				now,
 			),
-			renderHudSection(
-				groupHudColumns.done,
-				theme,
-				widths[2] ?? width,
-				hudColumnRows(groupHudColumns.done, maxTasks),
-				byId,
-				display,
-				options.flashTaskIds,
-				options.flashTasks,
-				now,
-			),
-		];
-		if (renderedColumns.every((column) => column.length === 0)) continue;
-		if (lines.length > 0) lines.push(theme.fg("borderMuted", "─".repeat(width)));
-		lines.push(renderEpicBoardHeader(group, theme, width));
-		const height = Math.max(...renderedColumns.map((column) => column.length));
-		for (let row = 0; row < height; row++) {
-			lines.push(
-				fitCells(
-					renderedColumns.map((column, index) => column[row] ?? " ".repeat(widths[index] ?? 0)),
-					widths,
-				),
-			);
-		}
+		);
+		return [...guardLines, ...(lines.length > 0 ? lines : [summaryLine])].map((line) => truncateLine(line, width));
 	}
-	return lines.map((line) => truncateLine(line, width));
+	const activeEpicKeys = new Set(
+		hudTasks
+			.filter((task) => taskEpicKey(task) && isActiveCurrentSessionEpicTask(task, display))
+			.map((task) => {
+				const label = taskEpicKey(task);
+				return groups.some((group) => group.key === label) ? label : `unknown:${label}`;
+			}),
+	);
+	if (activeEpicKeys.size === 0) {
+		for (const group of groups) {
+			lines.push(renderHudEpicSummary(group, theme, width));
+		}
+		return [...guardLines, ...lines].map((line) => truncateLine(line, width));
+	}
+	for (const group of groups.filter((group) => activeEpicKeys.has(group.key))) {
+		if (lines.length > 0) lines.push(theme.fg("borderMuted", "─".repeat(width)));
+		lines.push(
+			...renderColumnarHudGroup(
+				group,
+				theme,
+				width,
+				maxTasks,
+				byId,
+				display,
+				now,
+				options.flashTaskIds,
+				options.flashTasks,
+			),
+		);
+	}
+	return [...guardLines, ...lines].map((line) => truncateLine(line, width));
+}
+
+interface RatatuiTaskTuiResponse {
+	request_id: number;
+	lines?: string[];
+	selected_task_id?: string | null;
+}
+
+class RatatuiTaskBoardOverlay implements Component {
+	private tasks: TaskRecord[];
+	private selectedTaskId?: string;
+	private lines: string[] = [];
+	private requestId = 0;
+	private pending = new Map<number, Promise<void>>();
+	private resolvePending = new Map<number, () => void>();
+	private pendingMutation?: Promise<void>;
+	private child?: ChildProcessWithoutNullStreams;
+	private errorMessage?: string;
+
+	constructor(
+		private readonly options: {
+			tasks: TaskRecord[];
+			theme: Theme;
+			keybindings?: TaskBoardKeybindings;
+			command: string;
+			cwd: string;
+			onClose: () => void;
+			onMutate?: (action: "update" | "delete", params: Record<string, unknown>) => Promise<TaskRecord[]>;
+			onChange?: () => void;
+		},
+	) {
+		this.tasks = options.tasks;
+		this.lines = [options.theme.fg("dim", "Loading task TUI…")];
+		this.start();
+		this.send({ tasks: this.tasks });
+	}
+
+	waitForIdle(): Promise<void> {
+		return Promise.all([...this.pending.values(), this.pendingMutation].filter(Boolean)).then(() => {});
+	}
+
+	render(width: number): string[] {
+		const lines = this.errorMessage ? [...this.lines, this.options.theme.fg("error", this.errorMessage)] : this.lines;
+		return lines.map((line) => truncateLine(line, Math.max(20, width)));
+	}
+
+	handleInput(data: string): void {
+		const bindings = this.options.keybindings ?? defaultConfig.keybindings;
+		if (matchesAnyKey(data, bindings.close)) {
+			this.close();
+			this.options.onClose();
+			return;
+		}
+		if (this.pendingMutation) return;
+		if (matchesAnyKey(data, bindings.left) || matchesAnyKey(data, bindings.up)) {
+			this.send({ input: "k" });
+			return;
+		}
+		if (matchesAnyKey(data, bindings.right) || matchesAnyKey(data, bindings.down)) {
+			this.send({ input: "j" });
+			return;
+		}
+		const task = this.currentTask();
+		if (!task) return;
+		if (matchesAnyKey(data, bindings.assignCurrent)) {
+			this.mutate("update", { id: task.id, assigned_to: "current" });
+			return;
+		}
+		if (matchesAnyKey(data, bindings.clearAssignee)) {
+			this.mutate("update", { id: task.id, clear_assignee: true });
+			return;
+		}
+		if (matchesAnyKey(data, bindings.priorityUp)) {
+			this.mutate("update", { id: task.id, priority: priority(task) + 1 });
+			return;
+		}
+		if (matchesAnyKey(data, bindings.priorityDown)) {
+			this.mutate("update", { id: task.id, priority: priority(task) - 1 });
+			return;
+		}
+		if (matchesAnyKey(data, bindings.done)) {
+			this.mutate("update", { id: task.id, status: doneKeyStatus(task) });
+			return;
+		}
+		if (matchesAnyKey(data, bindings.cancel)) {
+			this.mutate("update", { id: task.id, status: "canceled" });
+			return;
+		}
+		if (matchesAnyKey(data, bindings.cycleStatus)) {
+			const byId = new Map(this.tasks.map((item) => [item.id, item]));
+			if (!hasOpenDependencies(task, byId, taskChildren(this.tasks))) {
+				this.mutate("update", { id: task.id, status: nextCycledStatus(task) });
+			}
+			return;
+		}
+		if (matchesAnyKey(data, bindings.reload)) this.send({ tasks: this.tasks });
+	}
+
+	invalidate(): void {}
+
+	private start(): void {
+		this.child = spawn(this.options.command, ["task", "tui", "--embed"], {
+			cwd: this.options.cwd,
+			env: process.env,
+			stdio: ["pipe", "pipe", "pipe"],
+		});
+		createInterface({ input: this.child.stdout }).on("line", (line) => this.handleBridgeLine(line));
+		this.child.stderr.on("data", (chunk) => {
+			const text = Buffer.from(chunk).toString("utf8").trim();
+			if (text) this.errorMessage = text;
+			this.options.onChange?.();
+		});
+		this.child.on("error", (error) => {
+			this.errorMessage = error.message;
+			this.options.onChange?.();
+		});
+	}
+
+	private send(payload: { input?: string; tasks?: TaskRecord[] }): void {
+		const child = this.child;
+		if (!child || child.killed) return;
+		const requestId = ++this.requestId;
+		const promise = new Promise<void>((resolve) => this.resolvePending.set(requestId, resolve));
+		this.pending.set(requestId, promise);
+		const request = {
+			request_id: requestId,
+			width: 120,
+			height: 40,
+			...payload,
+		};
+		child.stdin.write(`${JSON.stringify(request)}\n`, (error) => {
+			if (error) {
+				this.errorMessage = error.message;
+				this.resolveRequest(requestId);
+				this.options.onChange?.();
+			}
+		});
+	}
+
+	private handleBridgeLine(line: string): void {
+		const payload = JSON.parse(line) as RatatuiTaskTuiResponse;
+		if (payload.lines) this.lines = payload.lines;
+		this.selectedTaskId = payload.selected_task_id ?? undefined;
+		this.resolveRequest(payload.request_id);
+		this.options.onChange?.();
+	}
+
+	private resolveRequest(requestId: number): void {
+		this.resolvePending.get(requestId)?.();
+		this.resolvePending.delete(requestId);
+		this.pending.delete(requestId);
+	}
+
+	private currentTask(): TaskRecord | undefined {
+		return this.tasks.find((task) => task.id === this.selectedTaskId) ?? this.tasks.find((task) => !isCanceled(task));
+	}
+
+	private mutate(action: "update" | "delete", params: Record<string, unknown>): void {
+		if (!this.options.onMutate) return;
+		this.pendingMutation = this.options
+			.onMutate(action, params)
+			.then((tasks) => {
+				this.tasks = tasks;
+				this.send({ tasks });
+			})
+			.catch((error) => {
+				this.errorMessage = taskBoardErrorMessage(`${action === "delete" ? "Delete" : "Update"} failed`, error);
+			})
+			.finally(() => {
+				this.pendingMutation = undefined;
+				this.options.onChange?.();
+			});
+	}
+
+	private close(): void {
+		this.child?.kill();
+	}
 }
 
 class EmptyTaskRender implements Component {
@@ -1726,14 +2078,57 @@ class EmptyTaskRender implements Component {
 
 const emptyTaskRender = new EmptyTaskRender();
 
-function makeTaskTool(
-	action: TaskCommand,
+const taskReadActions = new Set<TaskCommand>(["list", "show"]);
+const taskWriteActions = new Set<TaskCommand>(["add", "update", "delete", "accept", "reject"]);
+
+function taskReadAction(params: Record<string, unknown>): TaskCommand {
+	const mode = String(params.mode ?? (params.id ? "show" : "list"));
+	if (!taskReadActions.has(mode as TaskCommand)) throw new Error("task_read mode must be 'list' or 'show'");
+	if (mode === "show" && typeof params.id !== "string") throw new Error("task_read mode 'show' requires id");
+	return mode as TaskCommand;
+}
+
+function taskWriteAction(params: Record<string, unknown>): TaskCommand {
+	const op = String(params.op ?? "");
+	if (!taskWriteActions.has(op as TaskCommand)) {
+		throw new Error("task_write op must be add, update, delete, accept, or reject");
+	}
+	const data = objectParam(params.data);
+	if (op === "add" && typeof params.title !== "string" && typeof data.title !== "string") {
+		throw new Error("task_write op 'add' requires title");
+	}
+	if (op !== "add" && typeof params.id !== "string") throw new Error(`task_write op '${op}' requires id`);
+	if (op === "reject" && typeof params.note !== "string") throw new Error("task_write op 'reject' requires note");
+	return op as TaskCommand;
+}
+
+function objectParam(value: unknown): Record<string, unknown> {
+	return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function normalizeTaskWriteParams(params: Record<string, unknown>): Record<string, unknown> {
+	const data = objectParam(params.data);
+	const clear = new Set(Array.isArray(params.clear) ? params.clear.filter((item) => typeof item === "string") : []);
+	return {
+		...data,
+		...params,
+		title: params.title ?? data.title,
+		clear_assignee: params.clear_assignee === true || clear.has("assignee"),
+		clear_epic: params.clear_epic === true || clear.has("epic"),
+		clear_parent: params.clear_parent === true || clear.has("parent"),
+		clear_blockers: params.clear_blockers === true || clear.has("blockers"),
+	};
+}
+
+function makeCombinedTaskTool(
+	resolveAction: (params: Record<string, unknown>) => TaskCommand,
 	command: string,
 	runCommand: typeof defaultRunCommand,
 	config: Config,
 	pi: ExtensionAPI,
 	getCwd: () => string,
 	onProgress?: () => void,
+	normalizeParams: (params: Record<string, unknown>) => Record<string, unknown> = (params) => params,
 ) {
 	return {
 		renderShell: "self" as const,
@@ -1750,7 +2145,18 @@ function makeTaskTool(
 			_onUpdate?: unknown,
 			ctx?: ExtensionContext,
 		) => {
-			const result = await executeTask(command, runCommand, getCwd(), action, params, config, pi, ctx, signal);
+			const action = resolveAction(params);
+			const result = await executeTask(
+				command,
+				runCommand,
+				getCwd(),
+				action,
+				normalizeParams(params),
+				config,
+				pi,
+				ctx,
+				signal,
+			);
 			if (isMutatingTaskAction(action)) onProgress?.();
 			return result;
 		},
@@ -1858,6 +2264,10 @@ function isUnassigned(task: TaskRecord): boolean {
 	return !task.assigned_to;
 }
 
+function isGuardWorkTask(task: TaskRecord): boolean {
+	return task.type !== "epic";
+}
+
 function sortedActive(tasks: TaskRecord[], byId: Map<string, TaskRecord>): TaskRecord[] {
 	return sortTasksForDisplay(tasks.filter(isActiveTask), byId);
 }
@@ -1895,16 +2305,22 @@ function selectDependencyAction(
 			return { kind: "fix_dependency", task, invalidBlocker: dependency.id };
 		}
 		if (isAssignedTo(assignedTo, dependency)) {
-			if (dependency.status === "in_progress") return { kind: "continue", task: dependency, source: task };
+			if (isGuardWorkTask(dependency) && dependency.status === "in_progress") {
+				return { kind: "continue", task: dependency, source: task };
+			}
 			const nested = selectDependencyAction(dependency, assignedTo, byId, children, seen);
 			if (nested) return nested;
-			if (isReadyForWork(dependency, byId, children)) return { kind: "start", task: dependency, source: task };
+			if (isGuardWorkTask(dependency) && isReadyForWork(dependency, byId, children)) {
+				return { kind: "start", task: dependency, source: task };
+			}
 			continue;
 		}
 		if (isUnassigned(dependency)) {
 			const nested = selectDependencyAction(dependency, assignedTo, byId, children, seen);
 			if (nested) return nested;
-			if (isReadyForWork(dependency, byId, children)) return { kind: "claim", task: dependency, source: task };
+			if (isGuardWorkTask(dependency) && isReadyForWork(dependency, byId, children)) {
+				return { kind: "claim", task: dependency, source: task };
+			}
 		}
 	}
 	return undefined;
@@ -1923,18 +2339,24 @@ function selectGuardAction(tasks: TaskRecord[], assignedTo: string): TaskGuardAc
 		if (action) return action;
 	}
 	const inProgress = assigned.find(
-		(task) => task.status === "in_progress" && !hasUnresolvedDependencies(task, byId, children),
+		(task) =>
+			isGuardWorkTask(task) && task.status === "in_progress" && !hasUnresolvedDependencies(task, byId, children),
 	);
 	if (inProgress) return { kind: "continue", task: inProgress };
 	const assignedReady = assigned.find(
-		(task) => isReadyForWork(task, byId, children) && (children.get(task.id)?.length ?? 0) === 0,
+		(task) =>
+			isGuardWorkTask(task) && isReadyForWork(task, byId, children) && (children.get(task.id)?.length ?? 0) === 0,
 	);
 	if (assignedReady) return { kind: "start", task: assignedReady };
 	const epicIds = new Set(assigned.map((task) => task.epic_id).filter((id): id is string => Boolean(id)));
 	const sameEpicReady = sortedGuardTasks(
 		tasks.filter(
 			(task) =>
-				isUnassigned(task) && task.epic_id && epicIds.has(task.epic_id) && isReadyForWork(task, byId, children),
+				isGuardWorkTask(task) &&
+				isUnassigned(task) &&
+				task.epic_id &&
+				epicIds.has(task.epic_id) &&
+				isReadyForWork(task, byId, children),
 		),
 		byId,
 	)[0];
@@ -1961,33 +2383,44 @@ function guardInstruction(action: TaskGuardAction): string {
 		case "continue":
 			return `Continue in-progress task ${action.task.id}${source}: ${action.task.title}`;
 		case "start":
-			return `Start assigned task ${action.task.id}${source}: ${action.task.title}. First mark it in_progress with task_update.`;
+			return `Start assigned task ${action.task.id}${source}: ${action.task.title}.`;
 		case "claim":
-			return `Task ${action.task.id}${source} has been assigned to this session: ${action.task.title}. First mark it in_progress with task_update.`;
+			return `Claim task ${action.task.id}${source}: ${action.task.title}.`;
 		case "fix_dependency":
-			return `Task ${action.task.id} has invalid blocker ${action.invalidBlocker}. Fix blocked_by or choose a replacement blocker before ending.`;
+			return `Fix invalid blocker ${action.invalidBlocker} on task ${action.task.id}: update blocked_by or choose a replacement blocker.`;
 		case "close_parent":
-			return `All child tasks for parent ${action.task.id} are terminal. Verify acceptance and mark the parent done.`;
+			return `Verify acceptance for parent ${action.task.id} and mark it done; all child tasks are terminal.`;
 	}
 }
 
 function guardContent(action: TaskGuardAction): string {
 	return [
-		"Task guard: work remains for this session.",
+		"Task nudge: this session has a ready next step.",
 		"",
-		guardInstruction(action),
+		`Suggested next step: ${guardInstruction(action)}`,
 		"",
-		"Do not summarize or stop. Continue now.",
+		"Continue with tools when this matches the user's direction; otherwise switch tasks or dismiss this nudge.",
 	].join("\n");
 }
 
-function escalationContent(action: TaskGuardAction): string {
-	return [
-		"Task guard stalled.",
-		"",
-		`Work remains: ${action.task.id} [${action.task.status}] ${action.task.title}`,
-		`Required next action: ${guardInstruction(action)}`,
-	].join("\n");
+function userTextAllowsGuardAutoTurn(text: string | undefined): boolean {
+	if (!text) return true;
+	if (pausesGuard(text)) return false;
+	if (/\btask[- ]guard\b|\bguard\b/i.test(text)) return false;
+	if (/[?]\s*$/.test(text)) return false;
+	if (/^\s*(why|what|when|where|who|how|do|does|did|can|could|should|would|is|are)\b/i.test(text)) return false;
+	return /\b(assign|assigned|implement|continue|start|work|proceed|resume|finish|complete|fix)\b/i.test(text);
+}
+
+function shouldTriggerGuardTurn(state: GuardState, decision: TaskGuardDecision): boolean {
+	if (!userTextAllowsGuardAutoTurn(state.lastUserText)) return false;
+	if (state.autoLoopTaskId !== decision.action.task.id || state.lastGuardProgressSerial !== state.progressSerial) {
+		state.autoLoopTaskId = decision.action.task.id;
+		state.autoLoopTurns = 0;
+	}
+	if (state.autoLoopTurns >= maxGuardAutoTurnsWithoutProgress) return false;
+	state.autoLoopTurns++;
+	return true;
 }
 
 async function evaluateTaskGuard(
@@ -2006,85 +2439,35 @@ async function evaluateTaskGuard(
 		return undefined;
 	}
 	const fingerprint = guardFingerprint(tasks, action, assignedTo);
-	const stalled = state.lastGuardFingerprint === fingerprint && state.lastGuardProgressSerial === state.progressSerial;
 	return {
-		kind: stalled ? "escalate" : "continue",
+		kind: "continue",
 		fingerprint,
 		action,
-		content: stalled ? escalationContent(action) : guardContent(action),
+		content: guardContent(action),
 	};
 }
 
-async function autoAssignGuardTask(
-	decision: TaskGuardDecision,
-	ctx: ExtensionContext,
-	pi: ExtensionAPI,
-	command: string,
-	runCommand: typeof defaultRunCommand,
-	state: GuardState,
-	config: Config,
-): Promise<TaskGuardDecision | undefined> {
-	if (decision.kind !== "continue" || decision.action.kind !== "claim") return decision;
-	const freshDecision = await evaluateTaskGuard(ctx, command, runCommand, state);
-	if (!freshDecision || freshDecision.kind !== "continue") return freshDecision;
-	if (freshDecision.action.kind !== "claim") return freshDecision;
-	if (freshDecision.action.task.id !== decision.action.task.id) return freshDecision;
-	await runCommand(
-		command,
-		buildTaskCommand(
-			"update",
-			normalizeTaskParams({ id: freshDecision.action.task.id, assigned_to: "current" }, ctx, pi),
-		),
-		ctx.cwd,
-		ctx.signal,
-	);
-	state.progressSerial++;
-	if (config.hud.enabled) await updateTaskHud(ctx, pi, command, runCommand, config).catch(() => {});
-	return freshDecision;
-}
-
-async function sendTaskGuard(
-	pi: ExtensionAPI,
-	ctx: ExtensionContext,
-	command: string,
-	runCommand: typeof defaultRunCommand,
-	state: GuardState,
-	config: Config,
-): Promise<void> {
+async function sendTaskGuard(pi: ExtensionAPI, state: GuardState): Promise<void> {
 	const pending = state.pending;
 	state.pending = undefined;
-	if (!pending || pending.kind !== "continue") return;
-	let decision: TaskGuardDecision | undefined;
-	try {
-		decision = await autoAssignGuardTask(pending, ctx, pi, command, runCommand, state, config);
-	} catch (error) {
-		pi.sendMessage(
-			{
-				customType: "task-guard",
-				content: [
-					{
-						type: "text",
-						text: `Task guard could not assign work: ${error instanceof Error ? error.message : String(error)}`,
-					},
-				],
-				display: true,
-				details: { error: true },
-			},
-			{ deliverAs: "followUp" },
-		);
+	if (!pending || !state.enabled) return;
+	const decision: TaskGuardDecision | undefined = pending;
+	if (!decision) return;
+	if (!userTextAllowsGuardAutoTurn(state.lastUserText)) {
+		state.lastUserText = undefined;
 		return;
 	}
-	if (!decision) return;
+	const triggerTurn = shouldTriggerGuardTurn(state, decision);
 	state.lastGuardFingerprint = decision.fingerprint;
 	state.lastGuardProgressSerial = state.progressSerial;
 	pi.sendMessage(
 		{
 			customType: "task-guard",
 			content: [{ type: "text", text: decision.content }],
-			display: false,
+			display: true,
 			details: { action: decision.action.kind, taskId: decision.action.task.id },
 		},
-		{ deliverAs: "followUp", triggerTurn: true },
+		triggerTurn ? { deliverAs: "followUp", triggerTurn: true } : { deliverAs: "followUp" },
 	);
 	state.lastUserText = undefined;
 }
@@ -2111,17 +2494,37 @@ function pausesGuard(text: string): boolean {
 	return /\b(pause|stop|hold|disable)\s+(the\s+)?task guard\b|\btask guard\s+(pause|stop|off|disable)\b/i.test(text);
 }
 
-function shouldKeepAnswerVisible(lastUserText: string | undefined): boolean {
-	if (!lastUserText) return false;
-	return (
-		/\?/.test(lastUserText) ||
-		/^(how|what|why|when|where|who|is|are|can|could|should|do|does|did)\b/i.test(lastUserText.trim())
-	);
+function setTaskGuardEnabled(state: GuardState, enabled: boolean): void {
+	state.enabled = enabled;
+	state.pending = undefined;
+	state.lastUserText = undefined;
+	state.autoLoopTaskId = undefined;
+	state.autoLoopTurns = 0;
+	if (!enabled) state.pauseResponses = 0;
+	if (latestTaskHudState) {
+		latestTaskHudState = { ...latestTaskHudState, taskGuardEnabled: enabled };
+		taskHudWidget?.setState(latestTaskHudState);
+		requestTaskHudRender?.();
+	}
 }
 
-function shouldHidePrematureStopAnswer(text: string, lastUserText: string | undefined): boolean {
-	if (shouldKeepAnswerVisible(lastUserText)) return false;
-	return /^(done|complete|completed|finished|ok|okay|all set|that's it)[.!…\s]*$/i.test(text.trim());
+function taskGuardCommandMessage(state: GuardState, args: string): { message: string; type: "info" | "warning" } {
+	const mode = args.trim().toLowerCase();
+	if (!mode || mode === "status") {
+		return {
+			message: `Task guard is ${state.enabled ? "enabled" : "disabled"} for this session. Use /task-guard [on/off] to change it.`,
+			type: "info",
+		};
+	}
+	if (mode === "on") {
+		setTaskGuardEnabled(state, true);
+		return { message: "Task guard enabled for this session.", type: "info" };
+	}
+	if (mode === "off") {
+		setTaskGuardEnabled(state, false);
+		return { message: "Task guard disabled for this session.", type: "info" };
+	}
+	return { message: "Usage: /task-guard [on|off|status]", type: "warning" };
 }
 
 function fileChangingResult(result: unknown): boolean {
@@ -2136,21 +2539,21 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 	const config = loadConfig();
 	if (!config.enabled) return;
 	installSilentTaskToolRenderPatch();
+	taskHudExpandedEpicKey = undefined;
 
 	const runCommand = runtime.runCommand ?? defaultRunCommand;
 	let cwd = process.cwd();
-	const guardState: GuardState = { progressSerial: 0, pauseResponses: 0 };
+	const guardState: GuardState = { enabled: false, progressSerial: 0, autoLoopTurns: 0, pauseResponses: 0 };
 	const getCwd = () => cwd;
 	const markProgress = () => {
 		guardState.progressSerial++;
 	};
-	const common = (action: TaskCommand) =>
-		makeTaskTool(action, config.command, runCommand, config, pi, getCwd, markProgress);
 
 	pi.on("session_start", async (_event, ctx) => {
 		cwd = ctx.cwd;
+		setTaskGuardEnabled(guardState, false);
 		if (config.hud.enabled) {
-			await updateTaskHud(ctx, pi, config.command, runCommand, config).catch((error) => {
+			await updateTaskHud(ctx, pi, config.command, runCommand, config, guardState.enabled).catch((error) => {
 				ctx.ui.notify?.(
 					`Task HUD refresh failed: ${error instanceof Error ? error.message : String(error)}`,
 					"warning",
@@ -2166,6 +2569,7 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 		taskHudWidgetCtx = undefined;
 		latestTaskHudState = undefined;
 		requestTaskHudRender = undefined;
+		taskHudExpandedEpicKey = undefined;
 		taskHudFlashes.clear();
 	});
 
@@ -2181,7 +2585,12 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 			if (pausesGuard(text)) guardState.pauseResponses = 1;
 			return undefined;
 		}
-		if (message?.role !== "assistant" || messageHasToolCall(message) || !messageText(message).trim()) {
+		if (
+			!guardState.enabled ||
+			message?.role !== "assistant" ||
+			messageHasToolCall(message) ||
+			!messageText(message).trim()
+		) {
 			return undefined;
 		}
 		if (guardState.pauseResponses > 0) {
@@ -2198,26 +2607,11 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 			return undefined;
 		}
 		guardState.pending = decision;
-		if (!decision) return undefined;
-		if (decision.kind === "escalate") {
-			return {
-				message: {
-					...message,
-					content: [{ type: "text", text: decision.content }],
-				},
-			};
-		}
-		if (!shouldHidePrematureStopAnswer(messageText(message), guardState.lastUserText)) return undefined;
-		return {
-			message: {
-				...message,
-				content: [],
-			},
-		};
+		return undefined;
 	});
 
 	pi.on("turn_end", async (_event, ctx) => {
-		await sendTaskGuard(pi, ctx, config.command, runCommand, guardState, config).catch((error) => {
+		await sendTaskGuard(pi, guardState).catch((error) => {
 			ctx.ui.notify?.(`Task guard failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
 		});
 	});
@@ -2228,6 +2622,14 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 			await showTaskBoard(ctx, pi, config.command, runCommand, config).catch((error) => {
 				ctx.ui.notify?.(`Task board failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
 			});
+		},
+	});
+
+	pi.registerCommand?.("task-guard", {
+		description: "Show task guard status; use [on/off] to change it",
+		handler: async (args: string, ctx: ExtensionContext) => {
+			const result = taskGuardCommandMessage(guardState, args);
+			ctx.ui.notify?.(result.message, result.type);
 		},
 	});
 
@@ -2276,9 +2678,12 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 	});
 
 	pi.registerShortcut?.(config.hud.toggleShortcut, {
-		description: "Toggle project task HUD Kanban",
+		description: "Cycle project task HUD compact/epic view",
 		handler: async (ctx: ExtensionContext) => {
-			taskHudKanbanHidden = !taskHudKanbanHidden;
+			const tasks =
+				latestTaskHudState?.tasks ??
+				(await loadHudTasks(ctx.cwd, config.command, runCommand, ctx.signal).catch(() => []));
+			cycleTaskHudExpandedEpic(tasks);
 			await updateTaskHud(ctx, pi, config.command, runCommand, config).catch((error) => {
 				ctx.ui.notify?.(
 					`Task HUD refresh failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -2289,128 +2694,50 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 	});
 
 	pi.registerTool({
-		...common("add"),
-		name: "task_add",
-		label: "Add Task",
-		description: "Create a persisted project task via ct task add.",
-		promptSnippet: "Create a persisted project task",
+		...makeCombinedTaskTool(taskReadAction, config.command, runCommand, config, pi, getCwd, markProgress),
+		name: "task_read",
+		label: "Read Tasks",
+		description: "List/show project tasks.",
+		promptSnippet: "Read project tasks",
 		parameters: Type.Object({
-			title: Type.String({ description: "Task title" }),
-			type: Type.String({ description: "Task type: epic, feature, bug, or chore" }),
-			body: Type.Optional(Type.String({ description: "Task details/body" })),
-			status: Type.Optional(Type.String({ description: "Task status (default: open)" })),
-			priority: Type.Optional(Type.Number({ description: "Task priority; higher shows first" })),
-			assigned_to: Type.Optional(Type.String({ description: "Session/user assignment, or 'current'" })),
-			epic_id: Type.Optional(Type.String({ description: "Stable epic/group identifier" })),
-			epic_title: Type.Optional(Type.String({ description: "Human-readable epic/group title" })),
-			labels: Type.Optional(Type.Array(Type.String(), { description: "Task label tokens" })),
-			parent_id: Type.Optional(Type.String({ description: "Parent/coordinator task ID or prefix" })),
-			blocked_by: Type.Optional(
-				Type.Array(Type.String(), {
-					description: "Task IDs/prefixes that block this task",
-				}),
-			),
-		}),
-	});
-
-	pi.registerTool({
-		...common("list"),
-		name: "task_list",
-		label: "List Tasks",
-		description: "List persisted project tasks via ct task list.",
-		promptSnippet: "List persisted project tasks",
-		parameters: Type.Object({
-			status: Type.Optional(Type.String({ description: "Filter by status" })),
-			type: Type.Optional(Type.String({ description: "Filter by task type" })),
-			label: Type.Optional(Type.String({ description: "Filter by task label" })),
-			epic_id: Type.Optional(Type.String({ description: "Filter by epic/group identifier" })),
-			assigned_to: Type.Optional(
-				Type.String({
-					description: "Filter by assignee/session, or 'current'",
-				}),
-			),
+			mode: Type.Optional(Type.String({ description: "'list' or 'show'. Defaults to list unless id is provided." })),
+			id: Type.Optional(Type.String({ description: "Task ID/prefix for show" })),
+			status: Type.Optional(Type.String({ description: "List filter" })),
+			type: Type.Optional(Type.String({ description: "List filter" })),
+			label: Type.Optional(Type.String({ description: "List filter" })),
+			epic_id: Type.Optional(Type.String({ description: "List filter" })),
+			assigned_to: Type.Optional(Type.String({ description: "List filter, or 'current'" })),
 			all: Type.Optional(Type.Boolean({ description: "Include completed/canceled tasks" })),
 		}),
 	});
 
 	pi.registerTool({
-		...common("show"),
-		name: "task_show",
-		label: "Show Task",
-		description: "Show one persisted project task by ID or unique prefix.",
-		promptSnippet: "Show a persisted project task",
+		...makeCombinedTaskTool(
+			taskWriteAction,
+			config.command,
+			runCommand,
+			config,
+			pi,
+			getCwd,
+			markProgress,
+			normalizeTaskWriteParams,
+		),
+		name: "task_write",
+		label: "Write Tasks",
+		description:
+			"Add/update/delete/accept/reject tasks. Put fields in data: type, body, status, priority, assigned_to ('current' ok), epic_id, epic_title, labels, parent_id, blocked_by. Use clear for assignee/epic/parent/blockers.",
+		promptSnippet: "Write project tasks",
 		parameters: Type.Object({
-			id: Type.String({ description: "Task ID or unique prefix" }),
-		}),
-	});
-
-	pi.registerTool({
-		...common("accept"),
-		name: "task_accept",
-		label: "Accept Task",
-		description: "Accept an in-review feature or bug task via ct task accept.",
-		promptSnippet: "Accept an in-review task",
-		parameters: Type.Object({
-			id: Type.String({ description: "Task ID or unique prefix" }),
-		}),
-	});
-
-	pi.registerTool({
-		...common("reject"),
-		name: "task_reject",
-		label: "Reject Task",
-		description: "Reject an in-review feature or bug task via ct task reject.",
-		promptSnippet: "Reject an in-review task",
-		parameters: Type.Object({
-			id: Type.String({ description: "Task ID or unique prefix" }),
-			note: Type.String({ description: "Required rejection note" }),
-		}),
-	});
-
-	pi.registerTool({
-		...common("update"),
-		name: "task_update",
-		label: "Update Task",
-		description: "Update a persisted project task by ID or unique prefix.",
-		promptSnippet: "Update a persisted project task",
-		parameters: Type.Object({
-			id: Type.String({ description: "Task ID or unique prefix" }),
-			type: Type.Optional(Type.String({ description: "New task type: epic, feature, bug, or chore" })),
-			title: Type.Optional(Type.String({ description: "New title" })),
-			body: Type.Optional(Type.String({ description: "New details/body" })),
-			status: Type.Optional(Type.String({ description: "New status" })),
-			priority: Type.Optional(Type.Number({ description: "New priority; higher shows first" })),
-			assigned_to: Type.Optional(
-				Type.String({
-					description: "Assign to this session/user, or 'current'",
+			op: Type.String({ description: "add, update, delete, accept, or reject" }),
+			id: Type.Optional(Type.String({ description: "Task ID/prefix; required except add" })),
+			title: Type.Optional(Type.String({ description: "Add title shorthand" })),
+			data: Type.Optional(
+				Type.Record(Type.String(), Type.Unknown(), {
+					description: "Add/update fields, e.g. status/priority/assigned_to/epic_id/labels/blocked_by",
 				}),
 			),
-			clear_assignee: Type.Optional(Type.Boolean({ description: "Remove assignee" })),
-			epic_id: Type.Optional(Type.String({ description: "New stable epic/group identifier" })),
-			epic_title: Type.Optional(Type.String({ description: "New human-readable epic/group title" })),
-			labels: Type.Optional(
-				Type.Array(Type.String(), { description: "Replace labels with these task label tokens" }),
-			),
-			clear_epic: Type.Optional(Type.Boolean({ description: "Remove epic/group metadata" })),
-			parent_id: Type.Optional(Type.String({ description: "New parent/coordinator task ID or prefix" })),
-			clear_parent: Type.Optional(Type.Boolean({ description: "Remove parent task" })),
-			blocked_by: Type.Optional(
-				Type.Array(Type.String(), {
-					description: "Replace blockers with these task IDs/prefixes",
-				}),
-			),
-			clear_blockers: Type.Optional(Type.Boolean({ description: "Remove all blockers" })),
-		}),
-	});
-
-	pi.registerTool({
-		...common("delete"),
-		name: "task_delete",
-		label: "Delete Task",
-		description: "Delete a persisted project task by ID or unique prefix.",
-		promptSnippet: "Delete a persisted project task",
-		parameters: Type.Object({
-			id: Type.String({ description: "Task ID or unique prefix" }),
+			clear: Type.Optional(Type.Array(Type.String(), { description: "assignee, epic, parent, blockers" })),
+			note: Type.Optional(Type.String({ description: "Reject note" })),
 		}),
 	});
 }

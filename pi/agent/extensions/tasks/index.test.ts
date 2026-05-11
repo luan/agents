@@ -18,6 +18,8 @@ const task = {
 	title: "Smoke test task tools",
 	body: "Verify the task HUD and renderers.",
 	status: "open",
+	epic_id: "test-epic",
+	epic_title: "Test Epic",
 	created_at: 1,
 	updated_at: 2,
 };
@@ -82,6 +84,7 @@ describe("tasks extension", () => {
 		const tasks = [
 			{ ...task, id: "DONE", status: "done", title: "Finished" },
 			{ ...task, id: "ACTIVE", status: "in_progress", title: "Active" },
+			{ ...task, id: "REVIEW", status: "in_review", type: "feature", title: "Review" },
 			{ ...task, id: "READY", status: "todo", title: "Ready todo", priority: 1 },
 			{ ...task, id: "BLOCK", title: "Blocked by active", blocked_by: ["ACTIVE"] },
 			{ ...task, id: "UNBLOCK", title: "Unblocked by done", blocked_by: ["DONE"], priority: 5 },
@@ -89,11 +92,31 @@ describe("tasks extension", () => {
 		];
 
 		const columns = buildTaskBoardColumns(tasks);
-		expect(columns.map((column) => column.label)).toEqual(["Ready", "Blocked", "In Progress", "Done"]);
+		expect(columns.map((column) => column.label)).toEqual(["Ready", "Blocked", "In Progress", "In Review", "Done"]);
 		expect(columns[0].tasks.map((item) => item.id)).toEqual(["UNBLOCK", "READY"]);
 		expect(columns[1].tasks.map((item) => item.id)).toEqual(["BLOCK"]);
 		expect(columns[2].tasks.map((item) => item.id)).toEqual(["ACTIVE"]);
-		expect(columns[3].tasks.map((item) => item.id)).toEqual(["DONE"]);
+		expect(columns[3].tasks.map((item) => item.id)).toEqual(["REVIEW"]);
+		expect(columns[4].tasks.map((item) => item.id)).toEqual(["DONE"]);
+	});
+
+	test("treats blocked in-review tasks as blocked instead of ready", () => {
+		const tasks = [
+			{ ...task, id: "BLOCKER", status: "in_progress", title: "Blocking task" },
+			{
+				...task,
+				id: "REVIEW",
+				status: "in_review",
+				type: "bug",
+				title: "Needs review after blocker",
+				blocked_by: ["BLOCKER"],
+			},
+		];
+
+		const columns = buildTaskBoardColumns(tasks);
+		expect(columns.find((column) => column.id === "ready")?.tasks).toEqual([]);
+		expect(columns.find((column) => column.id === "blocked")?.tasks.map((item) => item.id)).toEqual(["REVIEW"]);
+		expect(columns.find((column) => column.id === "in_review")?.tasks).toEqual([]);
 	});
 
 	test("treats active child tasks as parent blockers", () => {
@@ -136,20 +159,23 @@ describe("tasks extension", () => {
 				priority: 10,
 			},
 			{ ...task, id: "READY1", type: "feature", title: "Ready child", epic_id: "git-tool" },
+			{ ...task, id: "REVIEW1", type: "feature", title: "Review child", status: "in_review", epic_id: "git-tool" },
 			{ ...task, id: "DONE1", type: "bug", title: "Done child", status: "done", epic_id: "git-tool" },
 			{ ...task, id: "REJ1", type: "bug", title: "Rejected child", status: "rejected", epic_id: "git-tool" },
-			{ ...task, id: "NOEPIC", type: "chore", title: "Ungrouped child" },
+			{ ...task, id: "NOEPIC", type: "chore", title: "Ungrouped child", epic_id: undefined, epic_title: undefined },
 		];
 
 		const lines = renderTaskBoardLines(tasks, markedTheme as any, 220).join("\n");
 		expect(lines).toContain("Epic:");
 		expect(lines).toContain("Configurable Pi Git Tool Strategy");
 		expect(lines).toContain("<success>git-tool</success>");
-		expect(lines).toContain("1/3");
+		expect(lines).toContain("1/4");
 		expect(lines).toContain("<error> Rejected (1)</error>");
 		expect(lines).toContain("<mdLink> Ready (1)</mdLink>");
+		expect(lines).toContain("<accent> In Review (1)</accent>");
 		expect(lines).toContain("<success> Done (1)</success>");
-		expect(lines).toContain("No Epic:");
+		expect(lines).not.toContain("No Epic:");
+		expect(lines).not.toContain("Ungrouped child");
 		expect(lines).not.toContain("In Progress (0)");
 	});
 
@@ -296,6 +322,7 @@ describe("tasks extension", () => {
 		expect(calls.at(-1)).toEqual({ action: "update", params: { id: "PG4W2K4Q03", status: "done" } });
 
 		const done = makeBoard({ status: "done" });
+		done.handleInput("l");
 		done.handleInput("l");
 		done.handleInput("l");
 		done.handleInput("l");
@@ -549,6 +576,57 @@ describe("tasks extension", () => {
 		expect(calls).toContainEqual(["ct", "task", "list", "--all", "--json"]);
 	});
 
+	test("/tasks overlay navigation is local and does not shell out per key", async () => {
+		const commands = new Map<string, any>();
+		const calls: string[][] = [];
+		let component: any;
+		tasksExtension(
+			{
+				registerTool() {},
+				on() {},
+				registerCommand(name: string, definition: any) {
+					commands.set(name, definition);
+				},
+			} as any,
+			{
+				runCommand: async (command: string, args: string[]) => {
+					calls.push([command, ...args]);
+					return {
+						stdout: JSON.stringify({
+							tasks: [
+								{ ...task, id: "AAA", priority: 2 },
+								{ ...task, id: "BBB", priority: 1 },
+							],
+						}),
+						stderr: "",
+						exitCode: 0,
+					};
+				},
+			},
+		);
+
+		await commands.get("tasks").handler("", {
+			cwd: "/tmp/project",
+			ui: {
+				custom(factory: any) {
+					component = factory({ requestRender() {} }, theme, {}, () => {});
+					return Promise.resolve();
+				},
+			},
+		});
+		const before = component.render(160).join("\n");
+		const callsBeforeNavigation = calls.length;
+		component.handleInput("j");
+		component.handleInput("k");
+		await component.waitForIdle();
+		const after = component.render(160).join("\n");
+
+		expect(before).toContain("AAA");
+		expect(after).toContain("AAA");
+		expect(calls.length).toBe(callsBeforeNavigation);
+		expect(calls.some((call) => call.includes("tui"))).toBe(false);
+	});
+
 	test("/tasks toggles an open task board closed", async () => {
 		const commands = new Map<string, any>();
 		let closeOverlay: (() => void) | undefined;
@@ -617,10 +695,16 @@ describe("tasks extension", () => {
 		expect(calls).toContainEqual(["ct", "task", "reject", "ABC", "needs", "tests", "--json"]);
 	});
 
-	test("alt+t toggles only the task HUD Kanban", async () => {
+	test("alt+t cycles compact and visible task HUD epics", async () => {
 		const shortcuts = new Map<string, any>();
 		let widget: { render(width: number): string[] } | undefined;
 		let listCalls = 0;
+		const tasks = [
+			{ ...task, id: "EA", type: "epic", title: "Epic A", epic_id: "a", priority: 10 },
+			{ ...task, id: "TA", title: "Task A", epic_id: "a", priority: 10 },
+			{ ...task, id: "EB", type: "epic", title: "Epic B", epic_id: "b", priority: 1 },
+			{ ...task, id: "TB", title: "Task B", epic_id: "b", priority: 1 },
+		];
 		tasksExtension(
 			{
 				registerTool() {},
@@ -632,7 +716,7 @@ describe("tasks extension", () => {
 			{
 				runCommand: async () => {
 					listCalls++;
-					return { stdout: JSON.stringify({ tasks: [task] }), stderr: "", exitCode: 0 };
+					return { stdout: JSON.stringify({ tasks }), stderr: "", exitCode: 0 };
 				},
 			},
 		);
@@ -646,12 +730,18 @@ describe("tasks extension", () => {
 		};
 
 		await shortcuts.get("alt+t").handler(ctx);
-		expect(widget?.render(120).join("\n")).toContain("1 tasks");
-		expect(widget?.render(120).join("\n")).not.toContain("Ready (1)");
+		expect(widget?.render(120).join("\n")).toContain("2 tasks");
+		expect(widget?.render(120).join("\n")).not.toContain("Task A");
 		await shortcuts.get("alt+t").handler(ctx);
-		expect(widget?.render(120).join("\n")).not.toContain("1 tasks");
-		expect(widget?.render(120).join("\n")).toContain("Ready (1)");
-		expect(listCalls).toBe(2);
+		expect(widget?.render(120).join("\n")).toContain("Task A");
+		expect(widget?.render(120).join("\n")).not.toContain("Task B");
+		await shortcuts.get("alt+t").handler(ctx);
+		expect(widget?.render(120).join("\n")).toContain("Task B");
+		expect(widget?.render(120).join("\n")).not.toContain("Task A");
+		await shortcuts.get("alt+t").handler(ctx);
+		expect(widget?.render(120).join("\n")).toContain("2 tasks");
+		expect(widget?.render(120).join("\n")).not.toContain("Task A");
+		expect(listCalls).toBe(4);
 	});
 
 	test("/tasks task board mutations shell out through ct and refresh HUD", async () => {
@@ -828,53 +918,60 @@ describe("tasks extension", () => {
 			},
 		);
 
-		const add = tools.find((tool) => tool.name === "task_add");
-		expect(add).toBeTruthy();
-		const result = await add.execute("call-1", { title: "Persist task" }, undefined);
-		expect(calls).toEqual([["ct", "task", "add", "Persist task", "--json"]]);
+		const write = tools.find((tool) => tool.name === "task_write");
+		const read = tools.find((tool) => tool.name === "task_read");
+		expect(write).toBeTruthy();
+		expect(read).toBeTruthy();
+		const result = await write.execute("call-1", { op: "add", title: "Persist task" }, undefined);
+		await read.execute("call-2", { mode: "show", id: "PG4" }, undefined);
+		expect(calls).toEqual([
+			["ct", "task", "add", "Persist task", "--json"],
+			["ct", "task", "show", "PG4", "--json"],
+		]);
 		expect(result.content[0].text).toBe(JSON.stringify({ task }));
 		expect(result.details.task.id).toBe(task.id);
-		expect(tools.map((tool) => tool.name).sort()).toEqual([
-			"task_accept",
-			"task_add",
-			"task_delete",
-			"task_list",
-			"task_reject",
-			"task_show",
-			"task_update",
-		]);
+		expect(tools.map((tool) => tool.name).sort()).toEqual(["task_read", "task_write"]);
+		expect(Object.keys(write.parameters.properties).sort()).toEqual(["clear", "data", "id", "note", "op", "title"]);
 	});
 
-	test("renders a full HUD for active tasks", () => {
+	test("renders a scoped columnar HUD for active tasks", () => {
 		const lines = renderHudLines(
 			[
 				{ ...task, id: "BLOCKED123", title: "Blocked task", priority: 100, blocked_by: ["PG4W2K4Q03"] },
 				{ ...task, priority: 1, assigned_to: "session:test-session" },
-				{ ...task, id: "DONE123ABC", title: "Done task", status: "done", assigned_to: "session:test-session" },
+				{
+					...task,
+					id: "DONE123ABC",
+					title: "Done task",
+					status: "done",
+					assigned_to: "session:test-session",
+					updated_at: 1_000,
+				},
+				{ ...task, id: "REVIEW123", title: "Review task", type: "feature", status: "in_review" },
 				{ ...task, id: "CANCEL123A", title: "Canceled task", status: "canceled" },
 			],
 			theme as any,
 			120,
 			6,
 			{ currentAssignment: "session:test-session", currentLabel: "Named Session" },
+			{ now: 1_000 },
 		);
 		expect(lines.every((line) => visibleWidth(line) <= 120)).toBe(true);
 		expect(lines.join("\n")).not.toContain("● 3 tasks");
 		expect(lines.join("\n")).toContain("PG4W2K4Q03");
+		expect(lines.join("\n")).toContain("←1");
 		expect(lines.join("\n")).toContain("Ready (1)");
-		expect(lines.join("\n")).toContain("Blocked (1)");
+		expect(lines.join("\n")).toContain("In Review (1)");
 		expect(lines.join("\n")).toContain("Done (1)");
-		expect(lines.join("\n")).toContain(" Ready");
-		expect(lines.join("\n")).toContain(" Blocked");
-		expect(lines.join("\n")).not.toContain(" In Progress (0)");
-		expect(lines.join("\n")).toContain(" Done");
 		expect(lines.join("\n")).toContain("Smoke test");
+		expect(lines.join("\n")).toContain("Review task");
 		expect(lines.join("\n")).toContain("Done task");
 
 		const compact = renderHudLines(
 			[
 				{ ...task, id: "BLOCKED123", title: "Blocked task", priority: 100, blocked_by: ["PG4W2K4Q03"] },
 				{ ...task, priority: 1, assigned_to: "session:test-session" },
+				{ ...task, id: "REVIEW123", title: "Review task", type: "feature", status: "in_review" },
 				{ ...task, id: "DONE123ABC", title: "Done task", status: "done", assigned_to: "session:test-session" },
 			],
 			theme as any,
@@ -884,6 +981,7 @@ describe("tasks extension", () => {
 			{ hideKanban: true },
 		).join("\n");
 		expect(compact).toContain("3 tasks");
+		expect(compact).toContain("1 in review");
 		expect(compact).toContain("1 done");
 
 		const empty = renderHudLines([], theme as any, 100);
@@ -900,14 +998,15 @@ describe("tasks extension", () => {
 			1000,
 			6,
 			{ currentAssignment: "session:current", currentLabel: "Me" },
+			{ expandedEpicKey: "unknown:test-epic" },
 		).join("\n");
 
-		expect(lines).toContain("<success>\x1b[3mself\x1b[23m</success>");
+		expect(lines).toContain("<muted>\x1b[3mself\x1b[23m</muted>");
 		expect(lines).toContain("<dim>Other work</dim>");
 		expect(lines).toContain("<mdLink>\x1b[3m@Other\x1b[23m</mdLink>");
 		expect(lines).not.toContain("<mdHeading>●</mdHeading> <mdHeading>2 tasks</mdHeading> <muted>(");
 		expect(lines).toContain("<syntaxPunctuation>OTHER</syntaxPunctuation><syntaxType>1</syntaxType>");
-		expect(lines).toContain("<mdLink> Ready");
+		expect(lines).toContain("<mdHeading>Epic:");
 		expect(lines).not.toContain("<warning> In Progress (0)");
 		expect(lines).not.toContain(" Done (0)");
 		expect(lines).not.toContain("**<syntaxPunctuation>OTHER");
@@ -940,8 +1039,10 @@ describe("tasks extension", () => {
 
 		expect(lines).toContain("<warning></warning>");
 		expect(lines).toContain("<error></error>");
-		expect(lines).toContain("<success>\x1b[3msetup\x1b[23m</success>");
-		expect(lines).toContain("<success>\x1b[3mself\x1b[23m</success>");
+		expect(lines).toContain(
+			"<syntaxString>\x1b[3msetup\x1b[23m</syntaxString>, <syntaxString>\x1b[3magent-ui\x1b[23m</syntaxString>",
+		);
+		expect(lines).toContain("<muted>\x1b[3mself\x1b[23m</muted>");
 		expect(lines).toContain("<mdLink>\x1b[3m@Other\x1b[23m</mdLink>");
 		expect(lines).not.toContain("p100");
 		expect(lines).not.toContain("◻");
@@ -951,13 +1052,21 @@ describe("tasks extension", () => {
 		const lines = renderHudLines(
 			[
 				{ ...task, id: "OTHERDONE", title: "Other done", status: "done", assigned_to: "session:other" },
-				{ ...task, id: "CURDONE", title: "Current done", status: "done", assigned_to: "session:current" },
+				{
+					...task,
+					id: "CURDONE",
+					title: "Current done",
+					status: "done",
+					assigned_to: "session:current",
+					updated_at: 1_000,
+				},
 				{ ...task, id: "READY", title: "Ready", blocked_by: ["OTHERDONE"] },
 			],
 			theme as any,
 			140,
 			6,
 			{ currentAssignment: "session:current", currentLabel: "Current" },
+			{ now: 1_000, expandedEpicKey: "unknown:test-epic" },
 		).join("\n");
 
 		expect(lines).not.toContain("2 tasks");
@@ -967,7 +1076,7 @@ describe("tasks extension", () => {
 		expect(lines).not.toContain("Blocked (1)");
 	});
 
-	test("task HUD shows epic section headers ordered by priority with ungrouped last", () => {
+	test("task HUD shows only current-session epics plus ungrouped work", () => {
 		const lines = renderHudLines(
 			[
 				{ ...task, id: "EHIGH", type: "epic", title: "High Epic", epic_id: "high", priority: 100 },
@@ -989,7 +1098,7 @@ describe("tasks extension", () => {
 					epic_title: "High Epic",
 					priority: 100,
 				},
-				{ ...task, id: "NOEPIC", title: "Ungrouped task", priority: 0 },
+				{ ...task, id: "NOEPIC", title: "Ungrouped task", priority: 0, epic_id: undefined, epic_title: undefined },
 			],
 			theme as any,
 			180,
@@ -997,13 +1106,49 @@ describe("tasks extension", () => {
 			{ currentAssignment: "session:current", currentLabel: "Current" },
 		).join("\n");
 
-		expect(lines).toContain("No Epic");
 		expect(lines).toContain("Current Epic");
-		expect(lines).toContain("High Epic");
-		expect(lines.indexOf("High Epic")).toBeLessThan(lines.indexOf("Current Epic"));
-		expect(lines.indexOf("Current Epic")).toBeLessThan(lines.indexOf("No Epic"));
+		expect(lines).not.toContain("High Epic");
+		expect(lines).not.toContain("Ungrouped task");
 		expect(lines).toContain("0/1 [");
-		expect(lines.match(/No Epic:/g)?.length).toBe(1);
+		expect(lines).not.toContain("No Epic:");
+	});
+
+	test("task HUD shows flat epic list when current session has no active epic", () => {
+		const lines = renderHudLines(
+			[
+				{ ...task, id: "EHIGH", type: "epic", title: "High Epic", epic_id: "high", priority: 100 },
+				{ ...task, id: "ELOW", type: "epic", title: "Low Epic", epic_id: "low", priority: 2 },
+				{ ...task, id: "HIGHWORK", title: "High epic task", epic_id: "high", priority: 100 },
+				{ ...task, id: "LOWWORK", title: "Low epic task", epic_id: "low", priority: 2 },
+				{ ...task, id: "NOEPIC", title: "Ungrouped task", priority: 0, epic_id: undefined, epic_title: undefined },
+			],
+			theme as any,
+			180,
+			6,
+			{ currentAssignment: "session:current", currentLabel: "Current" },
+		).join("\n");
+
+		expect(lines.indexOf("High Epic")).toBeLessThan(lines.indexOf("Low Epic"));
+		expect(lines).not.toContain("No Epic:");
+		expect(lines).not.toContain("NOEPIC");
+		expect(lines).not.toContain("HIGHWORK");
+		expect(lines).not.toContain("LOWWORK");
+	});
+
+	test("task HUD summarizes completed-only epics", () => {
+		const lines = renderHudLines(
+			[
+				{ ...task, id: "EDONE", type: "epic", title: "Completed Epic", epic_id: "done-epic", priority: 100 },
+				{ ...task, id: "DONEA", title: "Done A", epic_id: "done-epic", status: "done" },
+				{ ...task, id: "DONEB", title: "Done B", epic_id: "done-epic", status: "done" },
+			],
+			theme as any,
+			160,
+		).join("\n");
+
+		expect(lines).toContain("✓ Completed Epic");
+		expect(lines).toContain("2 done");
+		expect(lines).not.toContain("DONEA");
 	});
 
 	test("task HUD highlights flashed task cards with background", () => {
@@ -1019,7 +1164,7 @@ describe("tasks extension", () => {
 			66,
 			6,
 			{},
-			{ flashTaskIds: new Set(["FLASH"]) },
+			{ flashTaskIds: new Set(["FLASH"]), expandedEpicKey: "unknown:test-epic" },
 		).join("\n");
 
 		expect(lines).toContain("…");
@@ -1037,6 +1182,7 @@ describe("tasks extension", () => {
 			{
 				flashTasks: new Map([["PULSE", { startedAt: 1000, until: 6000 }]]),
 				now: 1000,
+				expandedEpicKey: "unknown:test-epic",
 			},
 		).join("\n");
 		const peak = renderHudLines(
@@ -1048,6 +1194,7 @@ describe("tasks extension", () => {
 			{
 				flashTasks: new Map([["PULSE", { startedAt: 1000, until: 6000 }]]),
 				now: 1450,
+				expandedEpicKey: "unknown:test-epic",
 			},
 		).join("\n");
 
@@ -1057,28 +1204,36 @@ describe("tasks extension", () => {
 		expect(peak).toContain("Pulsing task");
 	});
 
-	test("task HUD caps current-session done tasks to five in recency order", () => {
+	test("task HUD limits done tasks to the past hour", () => {
 		const lines = renderHudLines(
-			Array.from({ length: 7 }, (_, index) => ({
-				...task,
-				id: `DONE${index}`,
-				title: `Done ${index}`,
-				status: "done",
-				assigned_to: "session:current",
-				updated_at: index,
-			})),
+			[
+				{ ...task, id: "READY", title: "Ready task" },
+				{
+					...task,
+					id: "RECENT",
+					title: "Recent done",
+					status: "done",
+					assigned_to: "session:current",
+					updated_at: 3_000,
+				},
+				{
+					...task,
+					id: "OLD",
+					title: "Old done",
+					status: "done",
+					assigned_to: "session:current",
+					updated_at: 1_000,
+				},
+			],
 			theme as any,
 			160,
 			6,
 			{ currentAssignment: "session:current" },
+			{ now: 3_000 + 60 * 60 * 1000, expandedEpicKey: "unknown:test-epic" },
 		).join("\n");
 
-		expect(lines).toContain("Done 6");
-		expect(lines).toContain("Done 2");
-		expect(lines).not.toContain("Done 1");
-		expect(lines).not.toContain("Done 0");
-		expect(lines).toContain("Done (7 – 2 hidden)");
-		expect(lines).not.toContain("… and 2 more");
+		expect(lines).toContain("Recent done");
+		expect(lines).not.toContain("Old done");
 	});
 
 	test("refreshes the HUD on session start and after mutations", async () => {
@@ -1132,13 +1287,65 @@ describe("tasks extension", () => {
 		expect(widgetText).toContain("PG4W2K4Q03");
 		expect(widgetRegistrations).toBe(1);
 
-		const update = tools.find((tool) => tool.name === "task_update");
-		await update.execute("call-2", { id: "PG4", title: "Updated smoke test task tools" }, undefined, undefined, ctx);
+		const write = tools.find((tool) => tool.name === "task_write");
+		await write.execute(
+			"call-2",
+			{ op: "update", id: "PG4", data: { title: "Updated smoke test task tools" } },
+			undefined,
+			undefined,
+			ctx,
+		);
 		expect(calls.map((call) => call.slice(1, 3))).toContainEqual(["task", "update"]);
 		expect(calls.map((call) => call.slice(1, 3))).toContainEqual(["task", "list"]);
 		expect(calls).toContainEqual(["ct", "task", "list", "--all", "--json"]);
 		expect(widgetRegistrations).toBe(1);
 		expect(widgetText).toContain("Updated smoke");
+	});
+
+	test("task HUD shows when task guard is on", async () => {
+		const handlers: Record<string, any> = {};
+		const commands: Record<string, any> = {};
+		let widgetText = "";
+		let widget: { render(width: number): string[] } | undefined;
+		const ctx = {
+			cwd: "/tmp/project",
+			sessionId: "test-session",
+			ui: {
+				setWidget(_id: string, factory: any) {
+					widget = factory(
+						{
+							requestRender() {
+								widgetText = widget?.render(120).join("\n") ?? "";
+							},
+						},
+						theme,
+					);
+					widgetText = widget?.render(120).join("\n") ?? "";
+				},
+				notify() {},
+			},
+		};
+
+		tasksExtension(
+			{
+				registerTool() {},
+				registerCommand(name: string, definition: any) {
+					commands[name] = definition;
+				},
+				on(name: string, handler: any) {
+					handlers[name] = handler;
+				},
+			} as any,
+			{
+				runCommand: async () => ({ stdout: JSON.stringify({ tasks: [task] }), stderr: "", exitCode: 0 }),
+			},
+		);
+
+		await handlers.session_start({}, ctx);
+		expect(widgetText).not.toContain("Task guard on");
+
+		await commands["task-guard"].handler("on", ctx);
+		expect(widgetText).toContain("Task guard on");
 	});
 
 	test("task mutations flash the changed task in the HUD", async () => {
@@ -1159,16 +1366,22 @@ describe("tasks extension", () => {
 			},
 		);
 
-		const update = tools.find((tool) => tool.name === "task_update");
-		await update.execute("call-2", { id: "PG4", status: "in_progress" }, undefined, undefined, {
-			cwd: "/tmp/project",
-			ui: {
-				setWidget(_id: string, factory: any) {
-					widgetText = factory({}, markedTheme).render(1000).join("\n");
+		const write = tools.find((tool) => tool.name === "task_write");
+		await write.execute(
+			"call-2",
+			{ op: "update", id: "PG4", data: { status: "in_progress" } },
+			undefined,
+			undefined,
+			{
+				cwd: "/tmp/project",
+				ui: {
+					setWidget(_id: string, factory: any) {
+						widgetText = factory({}, markedTheme).render(1000).join("\n");
+					},
+					notify() {},
 				},
-				notify() {},
 			},
-		});
+		);
 
 		expect(widgetText).toContain("<selectedBg>");
 		expect(widgetText).toContain("Smoke test");
@@ -1327,12 +1540,16 @@ describe("tasks extension", () => {
 		expect(widgetText).toContain("@../secret");
 	});
 
-	test("task guard hides premature stop and triggers hidden continuation", async () => {
+	test("task guard keeps answers visible and sends a soft visible nudge", async () => {
 		const handlers: Record<string, any> = {};
+		const commands: Record<string, any> = {};
 		const sent: any[] = [];
 		tasksExtension(
 			{
 				registerTool() {},
+				registerCommand(name: string, definition: any) {
+					commands[name] = definition;
+				},
 				on(name: string, handler: any) {
 					handlers[name] = handler;
 				},
@@ -1359,21 +1576,139 @@ describe("tasks extension", () => {
 			ui: { notify() {} },
 		};
 
+		await commands["task-guard"].handler("on", ctx);
 		const replacement = await handlers.message_end(
 			{ message: { role: "assistant", content: [{ type: "text", text: "Done." }] } },
 			ctx,
 		);
 		await handlers.turn_end({}, ctx);
 
-		expect(replacement.message.content).toEqual([]);
+		expect(replacement).toBeUndefined();
 		expect(sent).toHaveLength(1);
 		expect(sent[0].message.customType).toBe("task-guard");
-		expect(sent[0].message.display).toBe(false);
+		expect(sent[0].message.display).toBe(true);
+		expect(sent[0].message.content[0].text).toContain("Task nudge");
 		expect(sent[0].message.content[0].text).toContain("Start assigned task t");
 		expect(sent[0].options).toEqual({ deliverAs: "followUp", triggerTurn: true });
 	});
 
-	test("task guard keeps imperative answers visible while continuing", async () => {
+	test("task guard command disables and re-enables nudges for the session", async () => {
+		const handlers: Record<string, any> = {};
+		const commands: Record<string, any> = {};
+		const sent: any[] = [];
+		const notifications: string[] = [];
+		tasksExtension(
+			{
+				registerTool() {},
+				registerCommand(name: string, definition: any) {
+					commands[name] = definition;
+				},
+				on(name: string, handler: any) {
+					handlers[name] = handler;
+				},
+				sendMessage(message: any, options: any) {
+					sent.push({ message, options });
+				},
+			} as any,
+			{
+				runCommand: async () => ({
+					stdout: JSON.stringify({
+						tasks: [
+							{ ...task, id: "t", title: "Continue me", assigned_to: "session:test-session", status: "open" },
+						],
+					}),
+					stderr: "",
+					exitCode: 0,
+				}),
+			},
+		);
+		const ctx = {
+			cwd: "/tmp/project",
+			sessionId: "test-session",
+			signal: undefined,
+			ui: {
+				notify(message: string) {
+					notifications.push(message);
+				},
+			},
+		};
+
+		await commands["task-guard"].handler("off", ctx);
+		await handlers.message_end({ message: { role: "assistant", content: [{ type: "text", text: "Done." }] } }, ctx);
+		await handlers.turn_end({}, ctx);
+		await commands["task-guard"].handler("on", ctx);
+		await handlers.message_end(
+			{ message: { role: "assistant", content: [{ type: "text", text: "Done again." }] } },
+			ctx,
+		);
+		await handlers.turn_end({}, ctx);
+
+		expect(notifications).toEqual(["Task guard disabled for this session.", "Task guard enabled for this session."]);
+		expect(sent).toHaveLength(1);
+		expect(sent[0].message.content[0].text).toContain("Task nudge");
+	});
+
+	test("task guard defaults off and bare command reports status without toggling", async () => {
+		const handlers: Record<string, any> = {};
+		const commands: Record<string, any> = {};
+		const sent: any[] = [];
+		const notifications: string[] = [];
+		tasksExtension(
+			{
+				registerTool() {},
+				registerCommand(name: string, definition: any) {
+					commands[name] = definition;
+				},
+				on(name: string, handler: any) {
+					handlers[name] = handler;
+				},
+				sendMessage(message: any, options: any) {
+					sent.push({ message, options });
+				},
+			} as any,
+			{
+				runCommand: async () => ({
+					stdout: JSON.stringify({
+						tasks: [
+							{ ...task, id: "t", title: "Continue me", assigned_to: "session:test-session", status: "open" },
+						],
+					}),
+					stderr: "",
+					exitCode: 0,
+				}),
+			},
+		);
+		const ctx = {
+			cwd: "/tmp/project",
+			sessionId: "test-session",
+			signal: undefined,
+			ui: {
+				notify(message: string) {
+					notifications.push(message);
+				},
+			},
+		};
+
+		await handlers.message_end({ message: { role: "assistant", content: [{ type: "text", text: "Done." }] } }, ctx);
+		await handlers.turn_end({}, ctx);
+		await commands["task-guard"].handler("", ctx);
+		await commands["task-guard"].handler("toggle", ctx);
+		await commands["task-guard"].handler("status", ctx);
+		await handlers.message_end(
+			{ message: { role: "assistant", content: [{ type: "text", text: "Done again." }] } },
+			ctx,
+		);
+		await handlers.turn_end({}, ctx);
+
+		expect(sent).toEqual([]);
+		expect(notifications).toEqual([
+			"Task guard is disabled for this session. Use /task-guard [on/off] to change it.",
+			"Usage: /task-guard [on|off|status]",
+			"Task guard is disabled for this session. Use /task-guard [on/off] to change it.",
+		]);
+	});
+
+	test("task guard stays quiet for user-directed status answers", async () => {
 		const handlers: Record<string, any> = {};
 		const sent: any[] = [];
 		tasksExtension(
@@ -1413,16 +1748,19 @@ describe("tasks extension", () => {
 		await handlers.turn_end({}, ctx);
 
 		expect(replacement).toBeUndefined();
-		expect(sent).toHaveLength(1);
-		expect(sent[0].message.display).toBe(false);
+		expect(sent).toHaveLength(0);
 	});
 
 	test("task guard keeps answers visible when evaluation fails", async () => {
 		const handlers: Record<string, any> = {};
+		const commands: Record<string, any> = {};
 		const notifications: string[] = [];
 		tasksExtension(
 			{
 				registerTool() {},
+				registerCommand(name: string, definition: any) {
+					commands[name] = definition;
+				},
 				on(name: string, handler: any) {
 					handlers[name] = handler;
 				},
@@ -1433,31 +1771,37 @@ describe("tasks extension", () => {
 				},
 			},
 		);
-
-		const replacement = await handlers.message_end(
-			{ message: { role: "assistant", content: [{ type: "text", text: "Done." }] } },
-			{
-				cwd: "/tmp/project",
-				sessionId: "test-session",
-				signal: undefined,
-				ui: {
-					notify(message: string) {
-						notifications.push(message);
-					},
+		const ctx = {
+			cwd: "/tmp/project",
+			sessionId: "test-session",
+			signal: undefined,
+			ui: {
+				notify(message: string) {
+					notifications.push(message);
 				},
 			},
+		};
+
+		await commands["task-guard"].handler("on", ctx);
+		const replacement = await handlers.message_end(
+			{ message: { role: "assistant", content: [{ type: "text", text: "Done." }] } },
+			ctx,
 		);
 
 		expect(replacement).toBeUndefined();
-		expect(notifications[0]).toContain("Task guard failed");
+		expect(notifications.at(-1)).toContain("Task guard failed");
 	});
 
-	test("task guard escalates after one retry without progress", async () => {
+	test("task guard repeats a soft nudge without escalating", async () => {
 		const handlers: Record<string, any> = {};
+		const commands: Record<string, any> = {};
 		const sent: any[] = [];
 		tasksExtension(
 			{
 				registerTool() {},
+				registerCommand(name: string, definition: any) {
+					commands[name] = definition;
+				},
 				on(name: string, handler: any) {
 					handlers[name] = handler;
 				},
@@ -1487,25 +1831,258 @@ describe("tasks extension", () => {
 			},
 		};
 
+		await commands["task-guard"].handler("on", ctx);
 		await handlers.message_end({ message: { role: "assistant", content: [{ type: "text", text: "Done." }] } }, ctx);
 		await handlers.turn_end({}, ctx);
 		const replacement = await handlers.message_end(
 			{ message: { role: "assistant", content: [{ type: "text", text: "Done again." }] } },
 			ctx,
 		);
+		await handlers.turn_end({}, ctx);
 
-		expect(sent).toHaveLength(1);
-		expect(replacement.message.content[0].text).toContain("Task guard stalled");
-		expect(replacement.message.content[0].text).toContain("Required next action");
+		expect(replacement).toBeUndefined();
+		expect(sent).toHaveLength(2);
+		expect(sent[1].message.display).toBe(true);
+		expect(sent[1].message.content[0].text).toContain("Task nudge");
+		expect(sent[1].message.content[0].text).toContain("Start assigned task t");
+		expect(sent.map((item) => item.options)).toEqual([
+			{ deliverAs: "followUp", triggerTurn: true },
+			{ deliverAs: "followUp", triggerTurn: true },
+		]);
 	});
 
-	test("task guard assigns unassigned blockers before continuing", async () => {
+	test("task guard stays quiet when a user question follows a nudge", async () => {
 		const handlers: Record<string, any> = {};
+		const commands: Record<string, any> = {};
+		const sent: any[] = [];
+		tasksExtension(
+			{
+				registerTool() {},
+				registerCommand(name: string, definition: any) {
+					commands[name] = definition;
+				},
+				on(name: string, handler: any) {
+					handlers[name] = handler;
+				},
+				sendMessage(message: any, options: any) {
+					sent.push({ message, options });
+				},
+			} as any,
+			{
+				runCommand: async () => ({
+					stdout: JSON.stringify({
+						tasks: [
+							{ ...task, id: "t", title: "Still open", status: "open", assigned_to: "session:test-session" },
+						],
+					}),
+					stderr: "",
+					exitCode: 0,
+				}),
+			},
+		);
+		const ctx = {
+			cwd: "/tmp/project",
+			sessionId: "test-session",
+			signal: undefined,
+			ui: { notify() {} },
+		};
+
+		await commands["task-guard"].handler("on", ctx);
+		await handlers.message_end({ message: { role: "assistant", content: [{ type: "text", text: "Done." }] } }, ctx);
+		await handlers.turn_end({}, ctx);
+		await handlers.message_end(
+			{ message: { role: "user", content: [{ type: "text", text: "what happened?" }] } },
+			ctx,
+		);
+		const replacement = await handlers.message_end(
+			{ message: { role: "assistant", content: [{ type: "text", text: "The task guard stalled." }] } },
+			ctx,
+		);
+		await handlers.turn_end({}, ctx);
+
+		expect(sent).toHaveLength(1);
+		expect(replacement).toBeUndefined();
+	});
+
+	test("task guard auto-triggers continuation turns after progress", async () => {
+		const handlers: Record<string, any> = {};
+		const commands: Record<string, any> = {};
+		const sent: any[] = [];
+		tasksExtension(
+			{
+				registerTool() {},
+				registerCommand(name: string, definition: any) {
+					commands[name] = definition;
+				},
+				on(name: string, handler: any) {
+					handlers[name] = handler;
+				},
+				sendMessage(message: any, options: any) {
+					sent.push({ message, options });
+				},
+			} as any,
+			{
+				runCommand: async () => ({
+					stdout: JSON.stringify({
+						tasks: [
+							{
+								...task,
+								id: "t",
+								title: "Long-running task",
+								status: "in_progress",
+								assigned_to: "session:test-session",
+							},
+						],
+					}),
+					stderr: "",
+					exitCode: 0,
+				}),
+			},
+		);
+		const ctx = {
+			cwd: "/tmp/project",
+			sessionId: "test-session",
+			signal: undefined,
+			ui: { notify() {} },
+		};
+
+		await commands["task-guard"].handler("on", ctx);
+		for (let i = 0; i < 4; i++) {
+			handlers.tool_execution_end({ result: { details: { filesChanged: 1 } } });
+			await handlers.message_end(
+				{ message: { role: "assistant", content: [{ type: "text", text: `Progress ${i}` }] } },
+				ctx,
+			);
+			await handlers.turn_end({}, ctx);
+		}
+
+		expect(sent).toHaveLength(4);
+		expect(sent.map((item) => item.options)).toEqual([
+			{ deliverAs: "followUp", triggerTurn: true },
+			{ deliverAs: "followUp", triggerTurn: true },
+			{ deliverAs: "followUp", triggerTurn: true },
+			{ deliverAs: "followUp", triggerTurn: true },
+		]);
+		expect(sent.every((item) => item.message.display === true)).toBe(true);
+		expect(sent[3].message.content[0].text).toContain("Task nudge");
+	});
+
+	test("task guard stops auto-triggering repeated nudges without progress", async () => {
+		const handlers: Record<string, any> = {};
+		const commands: Record<string, any> = {};
+		const sent: any[] = [];
+		tasksExtension(
+			{
+				registerTool() {},
+				registerCommand(name: string, definition: any) {
+					commands[name] = definition;
+				},
+				on(name: string, handler: any) {
+					handlers[name] = handler;
+				},
+				sendMessage(message: any, options: any) {
+					sent.push({ message, options });
+				},
+			} as any,
+			{
+				runCommand: async () => ({
+					stdout: JSON.stringify({
+						tasks: [
+							{
+								...task,
+								id: "t",
+								title: "Long-running task",
+								status: "in_progress",
+								assigned_to: "session:test-session",
+							},
+						],
+					}),
+					stderr: "",
+					exitCode: 0,
+				}),
+			},
+		);
+		const ctx = {
+			cwd: "/tmp/project",
+			sessionId: "test-session",
+			signal: undefined,
+			ui: { notify() {} },
+		};
+
+		await commands["task-guard"].handler("on", ctx);
+		for (let i = 0; i < 3; i++) {
+			await handlers.message_end(
+				{ message: { role: "assistant", content: [{ type: "text", text: `No progress ${i}` }] } },
+				ctx,
+			);
+			await handlers.turn_end({}, ctx);
+		}
+
+		expect(sent).toHaveLength(3);
+		expect(sent.map((item) => item.options)).toEqual([
+			{ deliverAs: "followUp", triggerTurn: true },
+			{ deliverAs: "followUp", triggerTurn: true },
+			{ deliverAs: "followUp" },
+		]);
+	});
+
+	test("task guard stays quiet for arbitrary user-directed answers", async () => {
+		const handlers: Record<string, any> = {};
+		const sent: any[] = [];
+		tasksExtension(
+			{
+				registerTool() {},
+				on(name: string, handler: any) {
+					handlers[name] = handler;
+				},
+				sendMessage(message: any, options: any) {
+					sent.push({ message, options });
+				},
+			} as any,
+			{
+				runCommand: async () => ({
+					stdout: JSON.stringify({
+						tasks: [
+							{ ...task, id: "t", title: "Still open", status: "open", assigned_to: "session:test-session" },
+						],
+					}),
+					stderr: "",
+					exitCode: 0,
+				}),
+			},
+		);
+		const ctx = {
+			cwd: "/tmp/project",
+			sessionId: "test-session",
+			signal: undefined,
+			ui: { notify() {} },
+		};
+
+		await handlers.message_end(
+			{ message: { role: "user", content: [{ type: "text", text: "task guard is breaking everything" }] } },
+			ctx,
+		);
+		const replacement = await handlers.message_end(
+			{ message: { role: "assistant", content: [{ type: "text", text: "I'll fix the guard." }] } },
+			ctx,
+		);
+		await handlers.turn_end({}, ctx);
+
+		expect(replacement).toBeUndefined();
+		expect(sent).toHaveLength(0);
+	});
+
+	test("task guard nudges about unassigned blockers without assigning", async () => {
+		const handlers: Record<string, any> = {};
+		const commands: Record<string, any> = {};
 		const sent: any[] = [];
 		const calls: string[][] = [];
 		tasksExtension(
 			{
 				registerTool() {},
+				registerCommand(name: string, definition: any) {
+					commands[name] = definition;
+				},
 				on(name: string, handler: any) {
 					handlers[name] = handler;
 				},
@@ -1552,12 +2129,76 @@ describe("tasks extension", () => {
 			},
 		};
 
+		await commands["task-guard"].handler("on", ctx);
 		await handlers.message_end({ message: { role: "assistant", content: [{ type: "text", text: "Done." }] } }, ctx);
 		await handlers.turn_end({}, ctx);
 
-		expect(calls).toContainEqual(["ct", "task", "update", "b", "--assigned-to", "session:test-session", "--json"]);
-		expect(sent[0].message.content[0].text).toContain("Task b to unblock a has been assigned");
-		expect(sent[0].message.display).toBe(false);
+		expect(calls).toEqual([["ct", "task", "list", "--all", "--json"]]);
+		expect(sent[0].message.content[0].text).toContain("Claim task b to unblock a");
+		expect(sent[0].message.display).toBe(true);
+	});
+
+	test("task guard does not suggest claiming epic container tasks", async () => {
+		const handlers: Record<string, any> = {};
+		const commands: Record<string, any> = {};
+		const sent: any[] = [];
+		tasksExtension(
+			{
+				registerTool() {},
+				registerCommand(name: string, definition: any) {
+					commands[name] = definition;
+				},
+				on(name: string, handler: any) {
+					handlers[name] = handler;
+				},
+				sendMessage(message: any, options: any) {
+					sent.push({ message, options });
+				},
+			} as any,
+			{
+				runCommand: async () => ({
+					stdout: JSON.stringify({
+						tasks: [
+							{
+								...task,
+								id: "t",
+								type: "bug",
+								title: "Concrete task in review",
+								status: "in_review",
+								assigned_to: "session:test-session",
+								epic_id: "codex-provider",
+							},
+							{
+								...task,
+								id: "4",
+								type: "epic",
+								title: "Codex provider fork",
+								status: "open",
+								assigned_to: undefined,
+								epic_id: "codex-provider",
+							},
+						],
+					}),
+					stderr: "",
+					exitCode: 0,
+				}),
+			},
+		);
+		const ctx = {
+			cwd: "/tmp/project",
+			sessionId: "test-session",
+			signal: undefined,
+			ui: {
+				setWidget() {},
+				notify() {},
+			},
+		};
+
+		await commands["task-guard"].handler("on", ctx);
+		await handlers.message_end({ message: { role: "assistant", content: [{ type: "text", text: "Done." }] } }, ctx);
+		await handlers.turn_end({}, ctx);
+
+		expect(sent).toEqual([]);
 	});
 
 	test("task tools render no call or result UI", () => {
@@ -1574,15 +2215,15 @@ describe("tasks extension", () => {
 			},
 		);
 
-		const add = tools.find((tool) => tool.name === "task_add");
-		expect(add.renderCall({ title: "Make HUD nice" }, theme).render(120)).toEqual([]);
-		expect(add.renderResult({ details: { action: "add", task } }, {}, theme, {}).render(120)).toEqual([]);
+		const write = tools.find((tool) => tool.name === "task_write");
+		expect(write.renderCall({ op: "add", title: "Make HUD nice" }, theme).render(120)).toEqual([]);
+		expect(write.renderResult({ details: { action: "add", task } }, {}, theme, {}).render(120)).toEqual([]);
 		const row = new ToolExecutionComponent(
-			"task_add",
+			"task_write",
 			"call-1",
-			{ title: "Make HUD nice" },
+			{ op: "add", title: "Make HUD nice" },
 			{},
-			add,
+			write,
 			{ requestRender() {} } as any,
 			"/tmp/project",
 		);
