@@ -12,6 +12,7 @@ import {
 	type ExtensionContext,
 	SessionManager,
 	type Theme,
+	type ThemeColor,
 } from "@earendil-works/pi-coding-agent";
 import {
 	type Component,
@@ -193,8 +194,8 @@ function isSlashCommand(text: string): boolean {
 	return text.trimStart().startsWith("/");
 }
 
-function buildSearchText(text: string, cwd: string, sessionName?: string): string {
-	return `${text}\n${cwd}\n${sessionName ?? ""}`.toLowerCase();
+function buildSearchText(text: string, sessionName?: string): string {
+	return `${text}\n${sessionName ?? ""}`.toLowerCase();
 }
 
 function dateLabel(timestamp: number): string {
@@ -213,8 +214,62 @@ function errorMessage(error: unknown): string {
 function sourceLabel(item: PromptItem): string {
 	if (item.kind === "stash") return preview(item.text, 48);
 	if (item.sessionName?.trim()) return item.sessionName.trim();
-	if (item.sessionPath) return item.sessionPath.split(/[\\/]/).pop() ?? "session";
-	return "session";
+	return "History";
+}
+
+function searchTokens(query: string): string[] {
+	return query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+}
+
+function fuzzyIndexes(token: string, text: string): number[] | undefined {
+	const textLower = text.toLowerCase();
+	const indexes: number[] = [];
+	let searchFrom = 0;
+	for (;;) {
+		const exactIndex = textLower.indexOf(token, searchFrom);
+		if (exactIndex === -1) break;
+		for (let index = exactIndex; index < exactIndex + token.length; index++) indexes.push(index);
+		searchFrom = exactIndex + Math.max(1, token.length);
+	}
+	if (indexes.length > 0) return indexes;
+
+	let queryIndex = 0;
+	for (let textIndex = 0; textIndex < textLower.length && queryIndex < token.length; textIndex++) {
+		if (textLower[textIndex] === token[queryIndex]) {
+			indexes.push(textIndex);
+			queryIndex++;
+		}
+	}
+	return queryIndex === token.length ? indexes : undefined;
+}
+
+function queryMatchIndexes(text: string, query: string): Set<number> {
+	const indexes = new Set<number>();
+	for (const token of searchTokens(query)) {
+		const tokenIndexes = fuzzyIndexes(token, text);
+		if (!tokenIndexes) continue;
+		for (const index of tokenIndexes) indexes.add(index);
+	}
+	return indexes;
+}
+
+function highlightSearchText(text: string, query: string, theme: Theme, baseColor: ThemeColor): string {
+	const indexes = queryMatchIndexes(text, query);
+	if (indexes.size === 0) return theme.fg(baseColor, text);
+
+	let rendered = "";
+	let runStart = 0;
+	let runHighlighted = indexes.has(0);
+	for (let index = 1; index <= text.length; index++) {
+		const highlighted = index < text.length && indexes.has(index);
+		if (highlighted === runHighlighted && index < text.length) continue;
+
+		const segment = text.slice(runStart, index);
+		rendered += runHighlighted ? theme.fg("warning", theme.bold(segment)) : theme.fg(baseColor, segment);
+		runStart = index;
+		runHighlighted = highlighted;
+	}
+	return rendered;
 }
 
 class StashHudWidget implements Component {
@@ -254,7 +309,28 @@ class StashHudWidget implements Component {
 }
 
 function makeItemSearchText(item: Omit<PromptItem, "searchText">): string {
-	return buildSearchText(item.text, item.cwd, item.sessionName);
+	return buildSearchText(item.text, item.sessionName);
+}
+
+function searchableFields(item: PromptItem): string[] {
+	const fields = [item.text];
+	if (item.sessionName?.trim()) fields.push(item.sessionName.trim());
+	return fields;
+}
+
+function itemMatchScore(item: PromptItem, tokens: string[]): number | undefined {
+	let totalScore = 0;
+	for (const token of tokens) {
+		let bestScore: number | undefined;
+		for (const field of searchableFields(item)) {
+			const match = fuzzyMatch(token, field);
+			if (!match.matches) continue;
+			bestScore = bestScore === undefined ? match.score : Math.min(bestScore, match.score);
+		}
+		if (bestScore === undefined) return undefined;
+		totalScore += bestScore;
+	}
+	return totalScore;
 }
 
 function rowString(row: Record<string, unknown>, key: string): string {
@@ -397,7 +473,7 @@ async function refreshProjectHistoryIndex(
 					session.name ?? null,
 					timestampMs(message.timestamp, timestampMs(entry.timestamp, modifiedMs)),
 					hasImages(message.content) ? 1 : 0,
-					buildSearchText(text, session.cwd, session.name),
+					buildSearchText(text, session.name),
 				);
 			}
 			database
@@ -442,7 +518,7 @@ async function listHistory(ctx: ExtensionContext, config: Config): Promise<Promp
 				sessionPath: rowString(record, "session_path"),
 				sessionName: rowString(record, "session_name") || undefined,
 				hasImages: rowNumber(record, "has_images") === 1,
-				searchText: rowString(record, "search_text"),
+				searchText: buildSearchText(rowString(record, "text"), rowString(record, "session_name") || undefined),
 			};
 		});
 	const merged = new Map<string, PromptItem>();
@@ -454,9 +530,14 @@ async function listHistory(ctx: ExtensionContext, config: Config): Promise<Promp
 }
 
 function filterItems(items: PromptItem[], query: string, limit: number): PromptItem[] {
-	const tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+	const tokens = searchTokens(query);
 	if (tokens.length === 0) return items.slice(0, limit);
-	return items.filter((item) => tokens.every((token) => fuzzyMatch(token, item.searchText).matches)).slice(0, limit);
+	return items
+		.map((item) => ({ item, score: itemMatchScore(item, tokens) }))
+		.filter((result): result is { item: PromptItem; score: number } => result.score !== undefined)
+		.sort((a, b) => a.score - b.score || b.item.timestamp - a.item.timestamp)
+		.map((result) => result.item)
+		.slice(0, limit);
 }
 
 class PromptPicker extends Container implements Focusable {
@@ -480,7 +561,7 @@ class PromptPicker extends Container implements Focusable {
 		this.searchInput.onEscape = () => this.done(null);
 		this.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
 		this.addChild(new Text(theme.fg("accent", theme.bold(` ${title} `)), 0, 0));
-		this.addChild(new Text(theme.fg("dim", "Type to fuzzy-filter prompt text, cwd, or session name"), 0, 0));
+		this.addChild(new Text(theme.fg("dim", "Type to fuzzy-filter prompt text or session name"), 0, 0));
 		this.addChild(new Spacer(1));
 		this.addChild(this.searchInput);
 		this.addChild(new Spacer(1));
@@ -566,11 +647,14 @@ class PromptPicker extends Container implements Focusable {
 
 	private formatLine(item: PromptItem, index: number): string {
 		const selected = index === this.selected;
+		const query = this.searchInput.getValue();
 		const pointer = selected ? this.theme.fg("accent", "❯ ") : "  ";
-		const source = selected ? this.theme.fg("accent", sourceLabel(item)) : this.theme.fg("muted", sourceLabel(item));
-		const text = selected
-			? this.theme.fg("text", preview(item.text, 78))
-			: this.theme.fg("dim", preview(item.text, 78));
+		const sourceColor = selected ? "accent" : "muted";
+		const source =
+			item.kind === "history" && !item.sessionName?.trim()
+				? this.theme.fg(sourceColor, sourceLabel(item))
+				: highlightSearchText(sourceLabel(item), query, this.theme, sourceColor);
+		const text = highlightSearchText(preview(item.text, 78), query, this.theme, selected ? "text" : "dim");
 		const img = item.hasImages ? this.theme.fg("warning", " 🖼") : "";
 		const cwd = this.theme.fg("dim", relative(homedir(), item.cwd) || item.cwd);
 		const prompt = item.kind === "stash" ? "" : ` ${text}`;
