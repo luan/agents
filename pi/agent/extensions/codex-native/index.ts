@@ -1,16 +1,21 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { closeOpenAICodexWebSocketSessions } from "../apply-patch/freeform-codex";
+import { configureImageCapabilities } from "../shared/image-capabilities";
 import registerCodexAppsBridge from "./codex-apps";
 import registerOpenAINativeCompaction from "./compaction/index";
 import {
 	createImageGenerationTool,
 	createWebSearchTool,
 	IMAGE_GENERATION_TOOL_NAME,
+	IMAGE_SAVE_DISPLAY_MESSAGE_TYPE,
+	registerNativeActivityMessageRenderers,
 	rewriteNativeImageGenerationTool,
 	rewriteNativeWebSearchTool,
+	saveGeneratedImagesFromAssistantMessage,
 	supportsNativeImageGeneration,
 	supportsNativeWebSearch,
+	WEB_SEARCH_ACTIVITY_MESSAGE_TYPE,
 	WEB_SEARCH_TOOL_NAME,
 } from "./native-tools";
 
@@ -81,10 +86,12 @@ export function isCodexWebSocketError(message: AssistantMessage): boolean {
 }
 
 export default async function codexNativeExtension(pi: ExtensionAPI) {
+	configureImageCapabilities();
 	registerOpenAINativeCompaction(pi);
 	await registerCodexAppsBridge(pi);
 	pi.registerTool(createImageGenerationTool());
 	pi.registerTool(createWebSearchTool());
+	registerNativeActivityMessageRenderers(pi);
 
 	const applyToolPolicy = (ctx?: ExtensionContext) => {
 		if (!ctx) return;
@@ -127,14 +134,32 @@ export default async function codexNativeExtension(pi: ExtensionAPI) {
 		closeOpenAICodexWebSocketSessions();
 	});
 
-	pi.on("message_end", (event) => {
+	pi.on("message_end", async (event, ctx) => {
 		if (event.message.role !== "assistant") return;
 		const message = normalizeCodexWebSocketError(event.message);
+		const savedImages = await saveGeneratedImagesFromAssistantMessage(ctx.cwd, message ?? event.message);
+		for (const savedImage of savedImages) {
+			pi.sendMessage(
+				{
+					customType: IMAGE_SAVE_DISPLAY_MESSAGE_TYPE,
+					content: [{ type: "text", text: savedImage.latestRelativePath }],
+					display: true,
+					details: { savedImages: [savedImage] },
+				},
+				{ triggerTurn: false },
+			);
+		}
 		if (message) return { message };
 	});
 
 	pi.on("context", (event) => ({
-		messages: event.messages.filter((message) => message.role !== "assistant" || !isCodexWebSocketError(message)),
+		messages: event.messages.filter(
+			(message) =>
+				(message.role !== "custom" ||
+					(message.customType !== WEB_SEARCH_ACTIVITY_MESSAGE_TYPE &&
+						message.customType !== IMAGE_SAVE_DISPLAY_MESSAGE_TYPE)) &&
+				(message.role !== "assistant" || !isCodexWebSocketError(message)),
+		),
 	}));
 
 	pi.on("before_agent_start", (_event, ctx) => {

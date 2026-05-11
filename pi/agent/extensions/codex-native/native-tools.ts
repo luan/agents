@@ -1,7 +1,7 @@
 import { promises as fsPromises, readFileSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
-import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { Box, Container, Image, Spacer, Text } from "@earendil-works/pi-tui";
+import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { Container, Image, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 export const WEB_SEARCH_ACTIVITY_MESSAGE_TYPE = "codex-web-search-activity";
@@ -44,6 +44,38 @@ export type SurfacedWebSearch = {
 type ImageDisplayMessageDetails = {
 	savedImages: SavedGeneratedImage[];
 };
+
+type ImageGenerationCallItem = {
+	type: "image_generation_call";
+	id: string;
+	status?: string;
+	result: string | null;
+	output_format?: string;
+	revised_prompt?: string;
+};
+
+type GeneratedImageForDisplay = {
+	callId: string;
+	result: string;
+	outputFormat?: string;
+	revisedPrompt?: string;
+	responseId?: string;
+};
+
+const displayedGeneratedImageKeys = new Set<string>();
+const registeredRendererApis = new WeakSet<ExtensionAPI>();
+
+function generatedImageKey(responseId: string | undefined, callId: string): string {
+	return `${responseId ?? ""}:${callId}`;
+}
+
+export function markGeneratedImageDisplayed(responseId: string | undefined, callId: string): void {
+	displayedGeneratedImageKeys.add(generatedImageKey(responseId, callId));
+}
+
+export function wasGeneratedImageDisplayed(responseId: string | undefined, callId: string): boolean {
+	return displayedGeneratedImageKeys.has(generatedImageKey(responseId, callId));
+}
 
 function isOpenAICodexModel(model: ExtensionContext["model"]): boolean {
 	return (model?.provider ?? "").toLowerCase() === "openai-codex";
@@ -211,6 +243,68 @@ export function buildGeneratedImageDisplayText(
 	return lines.join("\n");
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return !!value && typeof value === "object";
+}
+
+function sanitizeImageGenerationCallItem(item: unknown): ImageGenerationCallItem | undefined {
+	if (!isRecord(item)) return undefined;
+	if (item.type !== "image_generation_call") return undefined;
+	if (typeof item.id !== "string" || item.id.length === 0) return undefined;
+	if (!(typeof item.result === "string" || item.result === null)) return undefined;
+	return {
+		type: "image_generation_call",
+		id: item.id,
+		...(typeof item.status === "string" ? { status: item.status } : {}),
+		result: item.result,
+		...(typeof item.output_format === "string" ? { output_format: item.output_format } : {}),
+		...(typeof item.revised_prompt === "string" ? { revised_prompt: item.revised_prompt } : {}),
+	};
+}
+
+function extractGeneratedImageCalls(message: unknown): GeneratedImageForDisplay[] {
+	if (!isRecord(message) || !Array.isArray(message.content)) return [];
+	const responseId = typeof message.responseId === "string" ? message.responseId : undefined;
+	const images: GeneratedImageForDisplay[] = [];
+	for (const block of message.content) {
+		if (!isRecord(block) || block.type !== "image_generation_call") continue;
+		const item = sanitizeImageGenerationCallItem(block.item);
+		if (!item?.result) continue;
+		images.push({
+			callId: item.id,
+			result: item.result,
+			responseId,
+			...(item.output_format ? { outputFormat: item.output_format } : {}),
+			...(item.revised_prompt ? { revisedPrompt: item.revised_prompt } : {}),
+		});
+	}
+	return images;
+}
+
+export async function saveGeneratedImagesFromAssistantMessage(
+	cwd: string,
+	message: unknown,
+): Promise<SavedGeneratedImage[]> {
+	const savedImages: SavedGeneratedImage[] = [];
+	for (const image of extractGeneratedImageCalls(message)) {
+		if (wasGeneratedImageDisplayed(image.responseId, image.callId)) continue;
+		try {
+			const savedImage = await saveOpenAICodexGeneratedImage(cwd, {
+				responseId: image.responseId,
+				callId: image.callId,
+				result: image.result,
+				outputFormat: image.outputFormat,
+				revisedPrompt: image.revisedPrompt,
+			});
+			markGeneratedImageDisplayed(image.responseId, image.callId);
+			savedImages.push(savedImage);
+		} catch {
+			// Rendering generated images is best-effort; the assistant message should still complete normally.
+		}
+	}
+	return savedImages;
+}
+
 function stringArray(value: unknown): string[] {
 	return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
@@ -328,6 +422,7 @@ export function createImageGenerationTool(): ToolDefinition<any> {
 	return {
 		name: IMAGE_GENERATION_TOOL_NAME,
 		label: IMAGE_GENERATION_TOOL_NAME,
+		renderShell: "self",
 		description:
 			"Generate an image with native OpenAI Codex image_generation. Outputs are saved under `.pi/openai-codex-images/` and mirrored to `latest.png`.",
 		promptSnippet:
@@ -343,8 +438,12 @@ export function createImageGenerationTool(): ToolDefinition<any> {
 			}
 			throw new Error("image_generation is a native openai-codex provider tool and should not execute locally");
 		},
-		renderCall(_args, theme) {
-			return new Text(theme.fg("toolTitle", theme.bold(IMAGE_GENERATION_TOOL_NAME)), 0, 0);
+		renderCall(_args, theme, context) {
+			const text = (context?.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+			const running = context?.isPartial !== false;
+			const marker = theme.fg(running ? "dim" : "success", "•");
+			text.setText(`${marker} ${theme.bold(running ? "Generating image" : "Generated image")}`);
+			return text;
 		},
 		renderResult(result, { expanded }, theme) {
 			if (!expanded) return new Container();
@@ -384,36 +483,77 @@ export function createWebSearchTool(): ToolDefinition<any> {
 	};
 }
 
+function shortenPrompt(prompt: string, max = 96): string {
+	const singleLine = prompt.replace(/\s+/g, " ").trim();
+	if (singleLine.length <= max) return singleLine;
+	return `${singleLine.slice(0, max - 3)}...`;
+}
+
+function renderGeneratedImageActivity(
+	savedImage: SavedGeneratedImage,
+	options: { expanded?: boolean },
+	theme: any,
+): string {
+	const marker = theme.fg("success", "•");
+	const latest = theme.fg("muted", savedImage.latestRelativePath);
+	let text = `${marker} ${theme.bold("Generated image")}${theme.fg("dim", " · ")}${latest}`;
+	if (!options.expanded) return text;
+
+	const details: string[] = [];
+	if (savedImage.revisedPrompt) {
+		details.push(
+			`${theme.fg("accent", "Prompt")} ${theme.fg("muted", shortenPrompt(savedImage.revisedPrompt, 140))}`,
+		);
+	}
+	details.push(`${theme.fg("accent", "File")} ${theme.fg("muted", savedImage.relativePath)}`);
+	details.push(`${theme.fg("accent", "Latest")} ${theme.fg("muted", savedImage.latestRelativePath)}`);
+
+	for (const [index, detail] of details.entries()) {
+		const prefix = index === details.length - 1 ? "  └ " : "  ├ ";
+		text += `\n${theme.fg("dim", prefix)}${detail}`;
+	}
+	return text;
+}
+
 export function renderImageGenerationMessage(
 	message: { content: unknown; details?: ImageDisplayMessageDetails },
 	options: { expanded?: boolean },
 	theme: any,
 ) {
-	const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
 	const savedImage = message.details?.savedImages?.[0];
-	box.addChild(new Text(theme.fg("customMessageLabel", theme.bold("[image_generation]")), 0, 0));
+	const container = new Container();
 	if (savedImage) {
-		box.addChild(
-			new Text(`\n${theme.fg("customMessageText", buildGeneratedImageDisplayText(savedImage, options))}`, 0, 0),
-		);
+		container.addChild(new Text(renderGeneratedImageActivity(savedImage, options, theme), 0, 0));
 		try {
 			const data = readFileSync(savedImage.absolutePath).toString("base64");
-			box.addChild(new Spacer(1));
-			box.addChild(
+			container.addChild(new Spacer(1));
+			container.addChild(
 				new Image(
 					data,
 					`image/${savedImage.outputFormat}`,
 					{
-						fallbackColor: (text: string) => theme.fg("customMessageText", text),
+						fallbackColor: (text: string) => theme.fg("toolOutput", text),
 					},
-					{ maxWidthCells: 60 },
+					{ maxWidthCells: Number.MAX_SAFE_INTEGER },
 				),
 			);
 		} catch {
 			// Image previews are best-effort; the saved file path above is the durable output.
 		}
+		return container;
 	}
-	return box;
+	return new Text(`${theme.fg("success", "•")} ${theme.bold("Generated image")}`, 0, 0);
+}
+
+export function registerNativeActivityMessageRenderers(pi: ExtensionAPI): void {
+	if (registeredRendererApis.has(pi)) return;
+	registeredRendererApis.add(pi);
+	pi.registerMessageRenderer(IMAGE_SAVE_DISPLAY_MESSAGE_TYPE, (message, renderOptions, theme) =>
+		renderImageGenerationMessage(message as any, renderOptions, theme),
+	);
+	pi.registerMessageRenderer(WEB_SEARCH_ACTIVITY_MESSAGE_TYPE, (message, renderOptions, theme) =>
+		renderWebSearchMessage(message as any, renderOptions, theme),
+	);
 }
 
 export function renderWebSearchMessage(
