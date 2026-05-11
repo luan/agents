@@ -134,5 +134,25 @@ A skill is a set of local instructions to follow that is stored in a `SKILL.md` 
 </skills_instructions>
 {{/includeSkills}}
 
-Current date: {{date}}
-Current working directory: {{cwd}}
+<environment_context>
+{{#environmentContext.hasSingleEnvironment}}
+  <cwd>{{environmentContext.singleEnvironment.cwd}}</cwd>
+  <shell>{{environmentContext.singleEnvironment.shell}}</shell>
+{{/environmentContext.hasSingleEnvironment}}
+{{#environmentContext.hasMultipleEnvironments}}
+  <environments>
+{{#environmentContext.environments}}
+    <environment id="{{id}}">
+      <cwd>{{cwd}}</cwd>
+      <shell>{{shell}}</shell>
+    </environment>
+{{/environmentContext.environments}}
+  </environments>
+{{/environmentContext.hasMultipleEnvironments}}
+{{#environmentContext.currentDate}}
+  <current_date>{{environmentContext.currentDate}}</current_date>
+{{/environmentContext.currentDate}}
+{{#environmentContext.timezone}}
+  <timezone>{{environmentContext.timezone}}</timezone>
+{{/environmentContext.timezone}}
+</environment_context>

@@ -16,6 +16,50 @@ const baseOptions = {
 };
 
 describe("system-prompt Skillful skill rendering", () => {
+	test("renders environment metadata as structured environment context", () => {
+		const prompt = buildSystemPrompt("base", {
+			...baseOptions,
+			now: new Date(2026, 4, 10),
+			environmentContext: {
+				shell: "zsh",
+				timezone: "America/New_York",
+			},
+		});
+
+		expect(prompt).toContain(`<environment_context>
+  <cwd>/repo</cwd>
+  <shell>zsh</shell>
+  <current_date>2026-05-10</current_date>
+  <timezone>America/New_York</timezone>
+</environment_context>`);
+	});
+
+	test("renders multiple environments with XML escaping", () => {
+		const prompt = buildSystemPrompt("base", {
+			...baseOptions,
+			now: new Date(2026, 4, 10),
+			environmentContext: {
+				environments: [
+					{ id: "local", cwd: "/repo & one", shell: "zsh" },
+					{ id: `remote"two`, cwd: "/srv/<app>", shell: "bash" },
+				],
+				timezone: "Etc/UTC",
+			},
+		});
+
+		expect(prompt).toContain(`<environments>
+    <environment id="local">
+      <cwd>/repo &amp; one</cwd>
+      <shell>zsh</shell>
+    </environment>
+    <environment id="remote&quot;two">
+      <cwd>/srv/&lt;app&gt;</cwd>
+      <shell>bash</shell>
+    </environment>
+  </environments>`);
+		expect(prompt).toContain("<timezone>Etc/UTC</timezone>");
+	});
+
 	test("search guidance prefers line-safe rg without exposing implicit RTK rewrites", () => {
 		const prompt = buildSystemPrompt("base", {
 			...baseOptions,

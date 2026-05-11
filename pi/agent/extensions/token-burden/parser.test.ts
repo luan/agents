@@ -45,6 +45,25 @@ describe("token-burden system prompt parser", () => {
 		expect(parsed.skills[0]?.location).toBe("/skills/tdd/SKILL.md");
 	});
 
+	test("detects structured environment context as metadata footer", () => {
+		const prompt = buildSystemPrompt("base", {
+			cwd: "/repo",
+			selectedTools: [],
+			environmentContext: {
+				shell: "zsh",
+				timezone: "Etc/UTC",
+			},
+			now: new Date(2026, 4, 10),
+		});
+
+		const parsed = parseSystemPrompt(prompt);
+		const metadata = parsed.sections.find((section) => section.label === "Metadata (environment context)");
+
+		expect(metadata?.content).toStartWith("<environment_context>");
+		expect(metadata?.content).toContain("<cwd>/repo</cwd>");
+		expect(metadata?.content).toContain("<shell>zsh</shell>");
+	});
+
 	test("does not treat parenthesized descriptions as locations", () => {
 		const prompt = [
 			"base",
