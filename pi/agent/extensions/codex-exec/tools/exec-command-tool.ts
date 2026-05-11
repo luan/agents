@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Container, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { summarizeShellCommand } from "../shell/summary.ts";
 import { renderExecCommandCall, renderGroupedExecCommandCall, renderOutputBlock } from "./codex-rendering.ts";
 import type { ExecCommandTracker } from "./exec-command-state.ts";
 import type { ExecSessionManager, UnifiedExecResult } from "./exec-session-manager.ts";
@@ -112,10 +113,13 @@ interface ExecCommandRenderContextLike {
 	invalidate?: () => void;
 	args?: unknown;
 	isError?: boolean;
+	isPartial?: boolean;
 	state?: {
 		elapsedTimer?: ReturnType<typeof setTimeout>;
 	};
 }
+
+const RUNNING_INVALIDATION_MS = 120;
 
 function scheduleElapsedInvalidation(context: ExecCommandRenderContextLike | undefined, running: boolean): void {
 	const state = context?.state;
@@ -131,7 +135,7 @@ function scheduleElapsedInvalidation(context: ExecCommandRenderContextLike | und
 	state.elapsedTimer = setTimeout(() => {
 		state.elapsedTimer = undefined;
 		context.invalidate?.();
-	}, 1000);
+	}, RUNNING_INVALIDATION_MS);
 }
 
 const renderExecCommandCallWithOptionalContext: any = (
@@ -141,10 +145,15 @@ const renderExecCommandCallWithOptionalContext: any = (
 	tracker: ExecCommandTracker,
 ) => {
 	const command = typeof args.cmd === "string" ? args.cmd : "";
+	tracker.ensurePlannedExploration(context?.toolCallId, command);
 	tracker.registerRenderContext(context?.toolCallId, context?.invalidate ?? (() => {}));
 	const renderInfo = tracker.getRenderInfo(context?.toolCallId, command);
 	const failed = context?.isError === true;
-	scheduleElapsedInvalidation(context, renderInfo.status === "running" && context?.isPartial === true);
+	const isExplorationRow = renderInfo.actionGroups !== undefined;
+	scheduleElapsedInvalidation(
+		context,
+		!isExplorationRow && renderInfo.status === "running" && context?.isPartial === true,
+	);
 	if (renderInfo.hidden) {
 		return new Text("", 0, 0);
 	}
@@ -179,7 +188,8 @@ const renderExecCommandResultWithOptionalContext: any = (
 		context && "args" in context && context.args && typeof (context as any).args.cmd === "string"
 			? (context as any).args.cmd
 			: undefined;
-	if (tracker.getRenderInfo(context?.toolCallId, command ?? "").hidden) {
+	const renderInfo = tracker.getRenderInfo(context?.toolCallId, command ?? "");
+	if (renderInfo.hidden || renderInfo.actionGroups !== undefined) {
 		return createEmptyResultComponent();
 	}
 
@@ -220,7 +230,7 @@ export function registerExecCommandTool(
 		],
 		parameters: EXEC_COMMAND_PARAMETERS,
 		prepareArguments: prepareExecCommandArguments,
-		async execute(toolCallId, params, signal, _onUpdate, ctx) {
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			if (signal?.aborted) {
 				throw new Error("exec_command aborted");
 			}
@@ -232,7 +242,25 @@ export function registerExecCommandTool(
 			if (command !== typedParams.cmd) {
 				tracker.recordRtkWrapped(toolCallId);
 			}
-			const result = await sessions.exec({ ...typedParams, cmd: command }, ctx.cwd, signal);
+			const streamPartialOutput = !summarizeShellCommand(command).maskAsExplored;
+			const result = await sessions.exec(
+				{ ...typedParams, cmd: command },
+				ctx.cwd,
+				signal,
+				streamPartialOutput
+					? (partial) => {
+							onUpdate?.({
+								content: [
+									{
+										type: "text",
+										text: formatUnifiedExecResult(partial, typedParams.cmd),
+									},
+								],
+								details: partial,
+							});
+						}
+					: undefined,
+			);
 			if (result.session_id !== undefined) {
 				tracker.recordPersistentSession(toolCallId, result.session_id);
 			}

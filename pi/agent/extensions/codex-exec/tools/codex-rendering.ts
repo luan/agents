@@ -18,6 +18,8 @@ const DEFAULT_OUTPUT_MAX_LINES = 5;
 const COMMAND_DISPLAY_MAX_CHARS = 180;
 const COMMAND_PREVIEW_MAX_CHARS = 100;
 const OUTPUT_LINE_DISPLAY_MAX_CHARS = 220;
+const RUNNING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const RUNNING_FRAME_MS = 120;
 
 export function renderExecCommandCall(
 	command: string,
@@ -130,17 +132,19 @@ function renderExplorationText(
 	actionGroups: ShellAction[][],
 	state: ExecCommandStatus,
 	theme: RenderTheme,
-	failed: boolean,
+	_failed: boolean,
 	elapsedMs?: number,
 	rtkWrapped = false,
 ): string {
-	const header = state === "running" ? "Exploring" : "Explored";
-	let text = appendElapsed(
-		appendRtkMarker(`${renderStatusMarker("•", state, theme, failed)} ${theme.bold(header)}`, theme, rtkWrapped),
-		state,
-		theme,
-		elapsedMs,
-	);
+	if (state === "running") {
+		return appendRtkMarker(
+			`${theme.fg("dim", runningMarker(elapsedMs))} ${theme.bold("Exploring")}`,
+			theme,
+			rtkWrapped,
+		);
+	}
+
+	let text = appendRtkMarker(`${theme.fg("success", "•")} ${theme.bold("Explored")}`, theme, rtkWrapped);
 
 	for (const [index, line] of coalesceReadGroups(actionGroups).map(formatActionLine).entries()) {
 		const prefix = index === 0 ? "  └ " : "    ";
@@ -159,10 +163,11 @@ function renderCommandText(
 	rtkWrapped = false,
 ): string {
 	const verb = state === "running" ? "Running" : "Ran";
+	const marker = state === "running" ? runningMarker(elapsedMs) : "•";
 	const displayCommand = shortenCommand(stripShellWrapper(command), COMMAND_DISPLAY_MAX_CHARS);
 	return appendElapsed(
 		appendRtkMarker(
-			`${renderStatusMarker("•", state, theme, failed)} ${theme.bold(verb)} ${highlightShellCommand(displayCommand, theme)}`,
+			`${renderStatusMarker(marker, state, theme, failed)} ${theme.bold(verb)} ${highlightShellCommand(displayCommand, theme)}`,
 			theme,
 			rtkWrapped,
 		),
@@ -209,6 +214,11 @@ function renderStatusMarker(
 ): string {
 	if (state === "running") return theme.fg("dim", marker);
 	return theme.fg(failed ? "error" : "success", marker);
+}
+
+function runningMarker(elapsedMs: number | undefined): string {
+	if (elapsedMs === undefined) return RUNNING_FRAMES[0]!;
+	return RUNNING_FRAMES[Math.floor(elapsedMs / RUNNING_FRAME_MS) % RUNNING_FRAMES.length]!;
 }
 
 function styleOutputLine(line: string, theme: Pick<RenderTheme, "fg">): string {

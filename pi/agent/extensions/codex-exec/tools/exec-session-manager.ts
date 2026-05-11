@@ -36,6 +36,8 @@ export interface WriteStdinInput {
 	yield_time_ms?: number;
 }
 
+export type ExecSessionUpdateCallback = (result: UnifiedExecResult) => void;
+
 interface BaseExecSession {
 	id: number;
 	command: string;
@@ -65,7 +67,12 @@ interface PtyExecSession extends BaseExecSession {
 type ExecSession = PipeExecSession | PtyExecSession;
 
 export interface ExecSessionManager {
-	exec(input: ExecCommandInput, cwd: string, signal?: AbortSignal): Promise<UnifiedExecResult>;
+	exec(
+		input: ExecCommandInput,
+		cwd: string,
+		signal?: AbortSignal,
+		onUpdate?: ExecSessionUpdateCallback,
+	): Promise<UnifiedExecResult>;
 	write(input: WriteStdinInput): Promise<UnifiedExecResult>;
 	hasSession(sessionId: number): boolean;
 	getSessionCommand(sessionId: number): string | undefined;
@@ -608,6 +615,54 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		return result;
 	}
 
+	function makeSnapshot(session: ExecSession, startedAtMs: number): UnifiedExecResult {
+		const truncated = formattedTruncateText(session.buffer);
+		const result: UnifiedExecResult = {
+			chunk_id: generateChunkId(),
+			wall_time_seconds: (Date.now() - startedAtMs) / 1000,
+			output: truncated.output,
+		};
+		if (truncated.output_truncated) {
+			result.output_truncated = true;
+			result.original_token_count = approxTokenCount(session.buffer);
+		}
+		if (session.exitCode === undefined || session.exitCode === null) {
+			result.session_id = session.id;
+		} else {
+			result.exit_code = session.exitCode;
+		}
+		return result;
+	}
+
+	function streamSessionUpdates(
+		session: ExecSession,
+		onUpdate: ExecSessionUpdateCallback | undefined,
+	): (() => void) | undefined {
+		if (!onUpdate) return undefined;
+		const startedAtMs = Date.now();
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		let disposed = false;
+		let lastOutput: string | undefined;
+		const emit = () => {
+			timer = undefined;
+			if (disposed) return;
+			const snapshot = makeSnapshot(session, startedAtMs);
+			if (snapshot.output === lastOutput && snapshot.exit_code === undefined) return;
+			lastOutput = snapshot.output;
+			onUpdate(snapshot);
+		};
+		const schedule = () => {
+			if (timer || disposed) return;
+			timer = setTimeout(emit, 80);
+		};
+		session.listeners.add(schedule);
+		return () => {
+			disposed = true;
+			if (timer) clearTimeout(timer);
+			session.listeners.delete(schedule);
+		};
+	}
+
 	function createPipeSession(
 		input: ExecCommandInput,
 		workdir: string,
@@ -715,7 +770,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 	}
 
 	return {
-		exec: async (input, cwd, signal) => {
+		exec: async (input, cwd, signal, onUpdate) => {
 			const shell = resolveShell(input.shell);
 			const workdir = resolveWorkdir(cwd, input.workdir);
 			const session = input.tty
@@ -729,17 +784,22 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 				: createPipeSession(input, workdir, shell, signal);
 			sessions.set(session.id, session);
 			rememberCommand(session.id, session.command);
+			const stopStreaming = streamSessionUpdates(session, onUpdate);
 
-			const waitedMs = await waitForExitOrTimeout(
-				session,
-				clampExecYieldTime(
-					input.yield_time_ms,
-					defaultExecYieldTimeMs,
-					session.interactive,
-					minNonInteractiveExecYieldTimeMs,
-				),
-			);
-			return makeResult(session, waitedMs);
+			try {
+				const waitedMs = await waitForExitOrTimeout(
+					session,
+					clampExecYieldTime(
+						input.yield_time_ms,
+						defaultExecYieldTimeMs,
+						session.interactive,
+						minNonInteractiveExecYieldTimeMs,
+					),
+				);
+				return makeResult(session, waitedMs);
+			} finally {
+				stopStreaming?.();
+			}
 		},
 		write: async (input) => {
 			const session = sessions.get(input.session_id);
