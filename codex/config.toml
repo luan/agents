@@ -69,14 +69,14 @@ status_line = [
 queue = "alt-enter"
 
 [marketplaces.claude-plugins-official]
-last_updated = "2026-05-09T18:32:11Z"
-last_revision = "76b35e91d1c99c090b1a08dade53bcc5e352c1b2"
+last_updated = "2026-05-11T03:36:57Z"
+last_revision = "00679aef889efe36bb0389f81d70b6229a2013ee"
 source_type = "git"
 source = "https://github.com/anthropics/claude-plugins-official.git"
 
 [marketplaces.worktrunk]
-last_updated = "2026-05-09T18:32:21Z"
-last_revision = "881b14d3ab08658812c91bcf02a52aed9d88d327"
+last_updated = "2026-05-11T03:37:01Z"
+last_revision = "978b23c2b2b2a68996df1b1c74ee8b4985c28c62"
 source_type = "git"
 source = "https://github.com/max-sixty/worktrunk.git"
 

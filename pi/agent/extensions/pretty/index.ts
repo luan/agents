@@ -634,7 +634,9 @@ export default function piPrettyExtension(pi: PiPrettyApi, deps?: PiPrettyDeps):
 
 	const cwd = process.cwd();
 	const viewImageParameters = Type.Object({
-		path: Type.String({ description: "Path to the image file to view (relative or absolute)" }),
+		path: Type.String({
+			description: "Path to the image file to view (relative or absolute)",
+		}),
 	});
 
 	registerExplorationTool("read", (args) => {
@@ -710,7 +712,7 @@ export default function piPrettyExtension(pi: PiPrettyApi, deps?: PiPrettyDeps):
 		...origImageRead,
 		name: "view_image",
 		label: "view_image",
-		description: "View a local image from the filesystem",
+		description: "Read/view a local image from the filesystem",
 		promptSnippet: "View image file",
 		parameters: viewImageParameters,
 		renderShell: "self",

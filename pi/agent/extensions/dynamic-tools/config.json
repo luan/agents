@@ -1,0 +1,47 @@
+{
+  "roots": [],
+  "rules": [
+    {
+      "id": "exec-command-tty-write-stdin",
+      "from": "exec_command",
+      "to": [
+        "write_stdin"
+      ],
+      "enabled": true,
+      "when": {
+        "input": [
+          {
+            "path": "tty",
+            "equals": true
+          }
+        ],
+        "result": [
+          {
+            "path": "session_id",
+            "exists": true
+          }
+        ]
+      },
+      "freshRun": true,
+      "continuation": "Continue the previous interactive terminal task. Use write_stdin with session_id {{result.session_id}}; do not start a replacement exec_command for that session."
+    },
+    {
+      "id": "Agent-get_subagent_result-steer_subagent",
+      "from": "Agent",
+      "to": [
+        "get_subagent_result",
+        "steer_subagent"
+      ],
+      "enabled": true,
+      "when": {
+        "input": [
+          {
+            "path": "run_in_background",
+            "truthy": true
+          }
+        ]
+      },
+      "freshRun": false
+    }
+  ]
+}
