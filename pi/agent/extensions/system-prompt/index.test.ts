@@ -24,6 +24,7 @@ describe("system-prompt Skillful skill rendering", () => {
 
 		expect(prompt).toContain("The following skills provide specialized instructions");
 		expect(prompt).toContain("call `skill({name})`");
+		expect(prompt).toContain('matching `<skill name="...">` block is already in context');
 		expect(prompt).toContain("- tdd: Apply test-driven development");
 		expect(prompt).not.toContain("/skills/tdd/SKILL.md");
 	});
