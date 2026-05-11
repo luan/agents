@@ -863,6 +863,47 @@ test("rtk grep rewrite of raw-only rg modes uses raw rg immediately", async () =
 	expect(result.isError).toBe(false);
 });
 
+test("non-rtk safety rewrites do not render a via rtk marker", async () => {
+	let tool: any;
+	const pi = {
+		registerTool: (definition: any) => {
+			if (definition.name === "exec_command") tool = definition;
+		},
+	} as any;
+	const tracker = createExecCommandTracker();
+	const sessions = {
+		exec: async () => ({
+			chunk_id: "git",
+			wall_time_seconds: 0,
+			output: "",
+			exit_code: 0,
+		}),
+		write: async () => {
+			throw new Error("unexpected write");
+		},
+		hasSession: () => false,
+		getSessionCommand: () => undefined,
+		onSessionExit: () => () => {},
+		shutdown() {},
+	};
+	registerExecCommandTool(pi, tracker, sessions as any, {
+		rewriteCommand: () => ({ command: "GIT_OPTIONAL_LOCKS=0 git status --short", rtkWrapped: false }),
+	});
+
+	await tool.execute("call-git-safety", { cmd: "git status --short" }, undefined, undefined, { cwd: process.cwd() });
+
+	const renderedCall = tool
+		.renderCall({ cmd: "git status --short" }, testTheme, {
+			toolCallId: "call-git-safety",
+			state: {},
+			isPartial: false,
+			invalidate() {},
+		})
+		.render(200)
+		.join("\n");
+	expect(renderedCall).not.toContain("via rtk");
+});
+
 test("rtk rewrite preserves returned shell-expanded path globs", async () => {
 	const original = `rg -n "pub fn draw|fn draw" src/font/sprite/draw/*.zig`;
 	const rewritten = `rtk rg -n "pub fn draw|fn draw" src/font/sprite/draw/*.zig`;
@@ -883,6 +924,114 @@ test("rtk rewrite preserves returned shell-expanded path globs", async () => {
 		{ command: "which", args: ["rtk"] },
 		{ command: "/usr/local/bin/rtk", args: ["rewrite", original] },
 	]);
+});
+
+test("rtk rewrite adds optional-lock suppression to git commands without invoking rtk", async () => {
+	const execCalls: Array<{ command: string; args?: string[] }> = [];
+	const pi = {
+		exec: async (command: string, args?: string[]) => {
+			execCalls.push({ command, args });
+			return { code: 0, stdout: "rtk git status --short\n", stderr: "" };
+		},
+	} as any;
+
+	const decision = await computeRtkRewriteDecision(pi, "git status --short", true);
+
+	expect(decision.changed).toBe(true);
+	expect(decision.rewrittenCommand).toBe("GIT_OPTIONAL_LOCKS=0 git status --short");
+	expect(execCalls).toEqual([]);
+});
+
+test("rtk rewrite does not wrap git write commands", async () => {
+	const execCalls: Array<{ command: string; args?: string[] }> = [];
+	const pi = {
+		exec: async (command: string, args?: string[]) => {
+			execCalls.push({ command, args });
+			return { code: 0, stdout: "rtk git add file.txt\n", stderr: "" };
+		},
+	} as any;
+
+	const decision = await computeRtkRewriteDecision(pi, "git add file.txt", true);
+
+	expect(decision.changed).toBe(true);
+	expect(decision.rewrittenCommand).toBe("GIT_OPTIONAL_LOCKS=0 git add file.txt");
+	expect(execCalls).toEqual([]);
+});
+
+test("rtk rewrite applies git optional-lock suppression across shell segments", async () => {
+	const pi = {
+		exec: async () => {
+			throw new Error("rtk should not be invoked for git commands");
+		},
+	} as any;
+
+	const decision = await computeRtkRewriteDecision(pi, "git add file.txt && git status -sb", true);
+
+	expect(decision.changed).toBe(true);
+	expect(decision.rewrittenCommand).toBe(
+		"GIT_OPTIONAL_LOCKS=0 git add file.txt && GIT_OPTIONAL_LOCKS=0 git status -sb",
+	);
+});
+
+test("rtk rewrite applies git optional-lock suppression inside shell scripts", async () => {
+	const pi = {
+		exec: async () => {
+			throw new Error("rtk should not be invoked for git commands");
+		},
+	} as any;
+
+	const decision = await computeRtkRewriteDecision(pi, "bash -lc 'git status --short'", true);
+
+	expect(decision.changed).toBe(true);
+	expect(decision.rewrittenCommand).toBe("bash -lc 'GIT_OPTIONAL_LOCKS=0 git status --short'");
+});
+
+test("rtk rewrite suppresses optional locks for explicit rtk git commands", async () => {
+	const pi = {
+		exec: async () => {
+			throw new Error("rtk rewrite should not be invoked for explicit rtk commands");
+		},
+	} as any;
+
+	const decision = await computeRtkRewriteDecision(pi, "rtk git status -sb", true);
+
+	expect(decision.changed).toBe(true);
+	expect(decision.rewrittenCommand).toBe("GIT_OPTIONAL_LOCKS=0 rtk git status -sb");
+});
+
+test("rtk rewrite leaves already-protected git commands raw", async () => {
+	const execCalls: Array<{ command: string; args?: string[] }> = [];
+	const pi = {
+		exec: async (command: string, args?: string[]) => {
+			execCalls.push({ command, args });
+			return { code: 0, stdout: "rtk git status --short\n", stderr: "" };
+		},
+	} as any;
+
+	const decision = await computeRtkRewriteDecision(pi, "GIT_OPTIONAL_LOCKS=0 git status --short", true);
+
+	expect(decision.changed).toBe(false);
+	expect(decision.rewrittenCommand).toBe("GIT_OPTIONAL_LOCKS=0 git status --short");
+	expect(execCalls).toEqual([]);
+});
+
+test("rtk rewrite does not wrap graphite or gh commands", async () => {
+	const execCalls: Array<{ command: string; args?: string[] }> = [];
+	const pi = {
+		exec: async (command: string, args?: string[]) => {
+			execCalls.push({ command, args });
+			return { code: 0, stdout: "rtk gt up\n", stderr: "" };
+		},
+	} as any;
+
+	const graphite = await computeRtkRewriteDecision(pi, "gt up", true);
+	const github = await computeRtkRewriteDecision(pi, "gh pr view", true);
+
+	expect(graphite.changed).toBe(false);
+	expect(graphite.rewrittenCommand).toBe("gt up");
+	expect(github.changed).toBe(false);
+	expect(github.rewrittenCommand).toBe("gh pr view");
+	expect(execCalls).toEqual([]);
 });
 
 test("extension truncates oversized non-exec tool results before session history", () => {

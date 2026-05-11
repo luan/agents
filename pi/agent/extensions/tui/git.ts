@@ -3,6 +3,10 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
+function gitNoOptionalLocksEnv(): NodeJS.ProcessEnv {
+	return { ...process.env, GIT_OPTIONAL_LOCKS: "0" };
+}
+
 export type GitStatusSummary = {
 	branch?: string;
 	dirty: boolean;
@@ -88,9 +92,13 @@ export function parseGitStatusPorcelain(stdoutText: string, hasStash: boolean): 
 export async function readGitStatus(cwd: string): Promise<GitStatusSummary> {
 	try {
 		const [{ stdout: statusStdout }, stashResult] = await Promise.all([
-			execFileAsync("git", ["status", "--porcelain=2", "--branch"], { cwd }),
+			execFileAsync("git", ["status", "--porcelain=2", "--branch"], {
+				cwd,
+				env: gitNoOptionalLocksEnv(),
+			}),
 			execFileAsync("git", ["rev-parse", "--verify", "--quiet", "refs/stash"], {
 				cwd,
+				env: gitNoOptionalLocksEnv(),
 			}).catch(() => ({ stdout: "" })),
 		]);
 		const stdoutText = typeof statusStdout === "string" ? statusStdout : String(statusStdout);

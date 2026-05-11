@@ -47,8 +47,10 @@ interface ExecCommandParams {
 	login?: boolean;
 }
 
+type ExecCommandRewrite = string | { command: string; rtkWrapped?: boolean };
+
 interface ExecCommandToolOptions {
-	rewriteCommand?: (command: string, ctx: ExtensionContext) => Promise<string> | string;
+	rewriteCommand?: (command: string, ctx: ExtensionContext) => Promise<ExecCommandRewrite> | ExecCommandRewrite;
 	onResult?: (
 		params: ExecCommandParams,
 		result: UnifiedExecResult,
@@ -240,11 +242,11 @@ export function registerExecCommandTool(
 				throw new Error("exec_command aborted");
 			}
 			const typedParams = parseExecCommandParams(params);
-			const rewrittenCommand = options.rewriteCommand
-				? await options.rewriteCommand(typedParams.cmd, ctx)
-				: typedParams.cmd;
+			const rewrite = options.rewriteCommand ? await options.rewriteCommand(typedParams.cmd, ctx) : typedParams.cmd;
+			const rewrittenCommand = typeof rewrite === "string" ? rewrite : rewrite.command;
 			const command = shouldUseRawRipgrep(typedParams.cmd, rewrittenCommand) ? typedParams.cmd : rewrittenCommand;
-			if (command !== typedParams.cmd) {
+			const rtkWrapped = typeof rewrite === "string" ? command !== typedParams.cmd : rewrite.rtkWrapped === true;
+			if (rtkWrapped) {
 				tracker.recordRtkWrapped(toolCallId);
 			}
 			const streamPartialOutput = !summarizeShellCommand(command).maskAsExplored;

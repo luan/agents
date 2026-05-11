@@ -98,7 +98,10 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 				rtkWarningsShown.add(decision.warning);
 				ctx.ui.notify(`RTK rewrite skipped: ${decision.warning}`, "warning");
 			}
-			return decision.changed ? decision.rewrittenCommand : command;
+			return {
+				command: decision.changed ? decision.rewrittenCommand : command,
+				rtkWrapped: decision.usedRtk === true,
+			};
 		},
 	});
 	registerWriteStdinTool(pi, sessions);

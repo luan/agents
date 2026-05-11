@@ -18,6 +18,7 @@ export type RtkRewriteDecision = {
 	originalCommand: string;
 	rewrittenCommand: string;
 	reason: "disabled" | "empty" | "already_rtk" | "no_match" | "ok";
+	usedRtk?: boolean;
 	warning?: string;
 };
 
@@ -107,6 +108,30 @@ function commandIndex(tokens: string[]): number | undefined {
 
 function commandName(token: string): string {
 	return token.replace(/\\/g, "/").split("/").pop() ?? token;
+}
+
+function isGitCommandName(name: string): boolean {
+	return name === "git";
+}
+
+function isRtkGitSegment(segment: string[]): boolean {
+	const index = commandIndex(segment);
+	if (index === undefined) return false;
+	const executable = commandName(segment[index] ?? "");
+	return executable === "rtk" && segment[index + 1] === "git";
+}
+
+function isGitSegment(segment: string[]): boolean {
+	const index = commandIndex(segment);
+	if (index === undefined) return false;
+	return isGitCommandName(commandName(segment[index] ?? ""));
+}
+
+function isGitFamilySegment(segment: string[]): boolean {
+	const index = commandIndex(segment);
+	if (index === undefined) return false;
+	const executable = commandName(segment[index] ?? "");
+	return executable === "git" || executable === "gt" || executable === "gh" || isRtkGitSegment(segment);
 }
 
 function ripgrepCommandIndex(tokens: string[]): number | undefined {
@@ -238,6 +263,91 @@ function simpleShellScript(tokens: ShellTokenSpan[]): string | undefined {
 	const flag = tokens[1]?.value;
 	if (flag !== "-c" && flag !== "-lc") return undefined;
 	return tokens[2]?.value;
+}
+
+function shellQuote(value: string): string {
+	return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function segmentHasOptionalLocksAssignment(segment: ShellTokenSpan[]): boolean {
+	return segment.some((token) => token.value.startsWith("GIT_OPTIONAL_LOCKS="));
+}
+
+function applyGitOptionalLockSafetyFixups(command: string): string {
+	const tokens = shellSplitWithSpans(command);
+	if (tokens.length === 0) return command;
+	const shellScript = simpleShellScript(tokens);
+	if (shellScript) {
+		const fixedScript = applyGitOptionalLockSafetyFixups(shellScript);
+		if (fixedScript === shellScript) return command;
+		const scriptToken = tokens[2]!;
+		return `${command.slice(0, scriptToken.start)}${shellQuote(fixedScript)}${command.slice(scriptToken.end)}`;
+	}
+
+	let changed = false;
+	let rewritten = "";
+	let cursor = 0;
+	let segment: ShellTokenSpan[] = [];
+
+	const flush = () => {
+		if (segment.length === 0) return;
+		const values = segment.map((token) => token.value);
+		if ((isGitSegment(values) || isRtkGitSegment(values)) && !segmentHasOptionalLocksAssignment(segment)) {
+			rewritten += command.slice(cursor, segment[0]!.start);
+			rewritten += "GIT_OPTIONAL_LOCKS=0 ";
+			cursor = segment[0]!.start;
+			changed = true;
+		}
+		segment = [];
+	};
+
+	for (const token of tokens) {
+		if (
+			token.value === "&&" ||
+			token.value === "||" ||
+			token.value === "|" ||
+			token.value === "|&" ||
+			token.value === ";"
+		) {
+			flush();
+			continue;
+		}
+		segment.push(token);
+	}
+	flush();
+	if (!changed) return command;
+	rewritten += command.slice(cursor);
+	return rewritten;
+}
+
+function commandHasGitFamilySegment(command: string): boolean {
+	const tokens = shellSplitWithSpans(command);
+	if (tokens.length === 0) return false;
+	const shellScript = simpleShellScript(tokens);
+	if (shellScript) return commandHasGitFamilySegment(shellScript);
+	let segment: string[] = [];
+
+	const flush = () => {
+		if (segment.length === 0) return false;
+		const hasGit = isGitFamilySegment(segment);
+		segment = [];
+		return hasGit;
+	};
+
+	for (const token of tokens) {
+		if (
+			token.value === "&&" ||
+			token.value === "||" ||
+			token.value === "|" ||
+			token.value === "|&" ||
+			token.value === ";"
+		) {
+			if (flush()) return true;
+			continue;
+		}
+		segment.push(token.value);
+	}
+	return flush();
 }
 
 function rewriteRipgrepSegments(command: string): string | undefined {
@@ -388,6 +498,19 @@ export async function computeRtkRewriteDecision(
 	if (!command.trim()) {
 		return { changed: false, originalCommand: command, rewrittenCommand: command, reason: "empty" };
 	}
+	const gitSafeCommand = applyGitOptionalLockSafetyFixups(command);
+	if (gitSafeCommand !== command) {
+		return {
+			changed: true,
+			originalCommand: command,
+			rewrittenCommand: gitSafeCommand,
+			reason: "ok",
+			usedRtk: false,
+		};
+	}
+	if (commandHasGitFamilySegment(command)) {
+		return { changed: false, originalCommand: command, rewrittenCommand: command, reason: "no_match" };
+	}
 	if (isAlreadyRtk(command)) {
 		return { changed: false, originalCommand: command, rewrittenCommand: command, reason: "already_rtk" };
 	}
@@ -446,6 +569,7 @@ export async function computeRtkRewriteDecision(
 			originalCommand: command,
 			rewrittenCommand: applyRewrittenCommandShellSafetyFixups(rewritten),
 			reason: "ok",
+			usedRtk: true,
 			warning: resolution.warning,
 		};
 	} catch (error) {
