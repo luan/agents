@@ -12,6 +12,12 @@ import {
 	wrapLegendParts,
 } from "./report-view";
 
+const ANSI_PATTERN = /\x1b\[[0-9;]*m/g;
+
+function stripAnsi(text: string): string {
+	return text.replace(ANSI_PATTERN, "");
+}
+
 describe("token burden vim key bindings", () => {
 	test("maps vim movement keys to existing overlay actions", () => {
 		expect(isNavigateUpKey("k")).toBe(true);
@@ -47,6 +53,178 @@ describe("token burden stacked legend", () => {
 		for (const row of rows) {
 			expect(row.length).toBeLessThanOrEqual(45);
 		}
+	});
+
+	test("renders combined burden plus session bars", async () => {
+		let rendered = "";
+		const ctx = {
+			ui: {
+				custom: async (factory: any) => {
+					const component = factory({ requestRender() {}, stop() {}, start() {} }, {}, {}, () => {});
+					rendered = stripAnsi(component.render(80).join("\n"));
+				},
+			},
+		};
+
+		await showReport(
+			{
+				totalChars: 200,
+				totalTokens: 100,
+				skills: [],
+				sections: [
+					{ label: "Base prompt", chars: 80, tokens: 40 },
+					{ label: "Tool definitions (1)", chars: 120, tokens: 60 },
+				],
+			},
+			1000,
+			ctx as any,
+			[],
+			undefined,
+			undefined,
+			undefined,
+			{
+				tokens: 50,
+				estimated: false,
+				categories: [
+					{ label: "User prompts", tokens: 20 },
+					{ label: "Assistant", tokens: 30 },
+				],
+			},
+		);
+
+		expect(rendered).toContain("Burden + session: 150 / 1,000 tokens");
+		expect(rendered).toContain("Burden + session by category");
+		expect(rendered).toContain("User 13.3%");
+		expect(rendered).toContain("Assistant 20.0%");
+	});
+
+	test("sorts combined categories by token share descending", async () => {
+		let rendered = "";
+		const ctx = {
+			ui: {
+				custom: async (factory: any) => {
+					const component = factory({ requestRender() {}, stop() {}, start() {} }, {}, {}, () => {});
+					rendered = stripAnsi(component.render(120).join("\n"));
+				},
+			},
+		};
+
+		await showReport(
+			{
+				totalChars: 250,
+				totalTokens: 250,
+				skills: [],
+				sections: [
+					{ label: "Base prompt", chars: 50, tokens: 50 },
+					{ label: "Tool definitions (1)", chars: 200, tokens: 200 },
+				],
+			},
+			1000,
+			ctx as any,
+			[],
+			undefined,
+			undefined,
+			undefined,
+			{
+				tokens: 250,
+				estimated: false,
+				categories: [
+					{ label: "Tool result: read", tokens: 150 },
+					{ label: "Assistant", tokens: 100 },
+				],
+			},
+		);
+
+		const legendStart = rendered.indexOf("Tool defs 40.0%");
+		const readIndex = rendered.indexOf("read 30.0%");
+		const assistantIndex = rendered.indexOf("Assistant 20.0%");
+		const baseIndex = rendered.indexOf("Base 10.0%");
+
+		expect(legendStart).toBeGreaterThanOrEqual(0);
+		expect(readIndex).toBeGreaterThan(legendStart);
+		expect(assistantIndex).toBeGreaterThan(readIndex);
+		expect(baseIndex).toBeGreaterThan(assistantIndex);
+	});
+
+	test("rotates colors across adjacent session categories", async () => {
+		let rendered = "";
+		const ctx = {
+			ui: {
+				custom: async (factory: any) => {
+					const component = factory({ requestRender() {}, stop() {}, start() {} }, {}, {}, () => {});
+					rendered = component.render(120).join("\n");
+				},
+			},
+		};
+
+		await showReport(
+			{
+				totalChars: 100,
+				totalTokens: 50,
+				skills: [],
+				sections: [{ label: "Base prompt", chars: 100, tokens: 50 }],
+			},
+			1000,
+			ctx as any,
+			[],
+			undefined,
+			undefined,
+			undefined,
+			{
+				tokens: 60,
+				estimated: false,
+				categories: [
+					{ label: "Tool result: exec_command(rg)", tokens: 30 },
+					{ label: "Tool result: exec_command(bun)", tokens: 30 },
+					{ label: "Tool result: read", tokens: 30 },
+				],
+			},
+		);
+
+		const execColor = rendered.match(/\x1b\[([0-9;]+)m■\x1b\[0m exec:rg/)?.[1];
+		const bunColor = rendered.match(/\x1b\[([0-9;]+)m■\x1b\[0m exec:bun/)?.[1];
+		const readColor = rendered.match(/\x1b\[([0-9;]+)m■\x1b\[0m read/)?.[1];
+
+		expect(execColor).toBeDefined();
+		expect(bunColor).toBeDefined();
+		expect(readColor).toBeDefined();
+		expect(execColor).not.toBe(readColor);
+		expect(new Set([execColor, bunColor, readColor]).size).toBe(3);
+	});
+
+	test("renders readable compact labels for exec_command buckets", async () => {
+		let rendered = "";
+		const ctx = {
+			ui: {
+				custom: async (factory: any) => {
+					const component = factory({ requestRender() {}, stop() {}, start() {} }, {}, {}, () => {});
+					rendered = stripAnsi(component.render(120).join("\n"));
+				},
+			},
+		};
+
+		await showReport(
+			{
+				totalChars: 100,
+				totalTokens: 50,
+				skills: [],
+				sections: [{ label: "Base prompt", chars: 100, tokens: 50 }],
+			},
+			1000,
+			ctx as any,
+			[],
+			undefined,
+			undefined,
+			undefined,
+			{
+				tokens: 20,
+				estimated: false,
+				categories: [{ label: "Tool result: exec_command(rg)", tokens: 20 }],
+			},
+		);
+
+		expect(rendered).toContain("exec:rg");
+		expect(rendered).not.toContain("exec_command(…");
 	});
 });
 

@@ -10,7 +10,15 @@ import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tu
 import type { BasePromptTraceResult, TraceBucket, TraceLineEvidence } from "./base-trace/index.js";
 import { TraceCache } from "./base-trace/index.js";
 import { DisableMode } from "./enums.js";
-import type { ParsedPrompt, SkillInfo, SkillToggleResult, TableItem, ToolEntry, ToolSectionData } from "./types.js";
+import type {
+	ParsedPrompt,
+	SessionUsageData,
+	SkillInfo,
+	SkillToggleResult,
+	TableItem,
+	ToolEntry,
+	ToolSectionData,
+} from "./types.js";
 import { buildBarSegments, fuzzyFilter } from "./utils.js";
 
 // ---------------------------------------------------------------------------
@@ -27,6 +35,24 @@ const SECTION_COLORS = [
 	"38;2;254;188;56", // orange — Skills
 	"38;2;178;129;214", // purple — extra sections
 	"2", // dim — Metadata (always last)
+];
+
+const SESSION_COLORS = {
+	prompt: "38;2;243;139;168",
+	assistant: "38;2;137;220;235",
+	thinking: "38;2;203;166;247",
+	tools: "38;2;249;226;175",
+} as const;
+
+const SESSION_COLOR_PALETTE = [
+	SESSION_COLORS.prompt,
+	SESSION_COLORS.assistant,
+	SESSION_COLORS.thinking,
+	SESSION_COLORS.tools,
+	"38;2;166;227;161",
+	"38;2;250;179;135",
+	"38;2;180;190;254",
+	"38;2;137;180;250",
 ];
 
 /** Rainbow dot colors for scroll indicator. */
@@ -77,6 +103,26 @@ function rainbowDots(filled: number, total: number): string {
 }
 
 function shortenLabel(label: string): string {
+	if (label.startsWith("Tool definitions")) {
+		return "Tool defs";
+	}
+	if (label.startsWith("Tool result:")) {
+		const toolLabel = label.slice("Tool result:".length).trim();
+		const execMatch = toolLabel.match(/^exec_command\((.*)\)$/);
+		if (execMatch?.[1]) {
+			return truncateToWidth(`exec:${execMatch[1]}`, 18, "…");
+		}
+		return truncateToWidth(toolLabel, 18, "…");
+	}
+	if (label.startsWith("User")) {
+		return "User";
+	}
+	if (label.startsWith("Assistant")) {
+		return "Assistant";
+	}
+	if (label.startsWith("Thinking")) {
+		return "Thinking";
+	}
 	if (label.startsWith("AGENTS")) {
 		return "AGENTS";
 	}
@@ -220,6 +266,7 @@ function renderContextWindowBar(
 	lines: string[],
 	parsed: ParsedPrompt,
 	contextWindow: number,
+	sessionUsage: SessionUsageData | undefined,
 	innerW: number,
 	row: (content: string) => string,
 	emptyRow: () => string,
@@ -235,9 +282,75 @@ function renderContextWindowBar(
 	const bar = `${sgr("36", "█".repeat(filled))}${dim("░".repeat(empty))}`;
 	lines.push(row(bar));
 
+	if (sessionUsage && sessionUsage.tokens > 0) {
+		lines.push(emptyRow());
+		renderCombinedContextWindowBar(lines, parsed, sessionUsage, contextWindow, innerW, row);
+	}
+
 	lines.push(emptyRow());
 	lines.push(divider());
 	lines.push(emptyRow());
+}
+
+function proportionalColumns(values: readonly number[], columns: number): number[] {
+	if (columns <= 0) {
+		return values.map(() => 0);
+	}
+
+	const total = values.reduce((sum, value) => sum + value, 0);
+	if (total <= 0) {
+		return values.map(() => 0);
+	}
+
+	const rawColumns = values.map((value) => (value / total) * columns);
+	const allocated = rawColumns.map(Math.floor);
+	let remaining = columns - allocated.reduce((sum, value) => sum + value, 0);
+	const largestRemainders = rawColumns
+		.map((value, index) => ({ index, remainder: value - Math.floor(value) }))
+		.sort((left, right) => right.remainder - left.remainder);
+
+	for (let index = 0; index < largestRemainders.length && remaining > 0; index++, remaining--) {
+		const slot = largestRemainders[index];
+		if (slot) {
+			allocated[slot.index] = (allocated[slot.index] ?? 0) + 1;
+		}
+	}
+
+	return allocated;
+}
+
+function renderCombinedContextWindowBar(
+	lines: string[],
+	parsed: ParsedPrompt,
+	sessionUsage: SessionUsageData,
+	contextWindow: number,
+	innerW: number,
+	row: (content: string) => string,
+): void {
+	const totalTokens = parsed.totalTokens + sessionUsage.tokens;
+	const pct = (totalTokens / contextWindow) * 100;
+	const sessionPrefix = sessionUsage.estimated ? "~" : "";
+	const label = `Burden + session: ${fmt(totalTokens)} / ${fmt(contextWindow)} tokens (${pct.toFixed(1)}%; burden ${fmt(parsed.totalTokens)} + session ${sessionPrefix}${fmt(sessionUsage.tokens)})`;
+	lines.push(row(label));
+
+	const barWidth = innerW - 4;
+	const freeTokens = Math.max(0, contextWindow - totalTokens);
+	const [burdenWidth = 0, sessionWidth = 0, freeWidth = 0] = proportionalColumns(
+		[parsed.totalTokens, sessionUsage.tokens, freeTokens],
+		barWidth,
+	);
+	const bar = [
+		sgr("36", "█".repeat(burdenWidth)),
+		sgr(SESSION_COLORS.prompt, "▓".repeat(sessionWidth)),
+		dim("░".repeat(freeWidth)),
+	].join("");
+	lines.push(row(bar));
+}
+
+interface BarCategory {
+	label: string;
+	tokens: number;
+	color: string;
 }
 
 function renderStackedBar(
@@ -246,32 +359,112 @@ function renderStackedBar(
 	innerW: number,
 	row: (content: string) => string,
 ): void {
+	renderStackedCategories(lines, burdenCategories(parsed), parsed.totalTokens, innerW, row);
+}
+
+function burdenCategories(parsed: ParsedPrompt): BarCategory[] {
+	return parsed.sections.map((section, index) => ({
+		label: section.label,
+		tokens: section.tokens,
+		color: SECTION_COLORS[Math.min(index, SECTION_COLORS.length - 1)] ?? "2",
+	}));
+}
+
+function sessionCategoryColor(label: string): string {
+	if (label.startsWith("Assistant")) {
+		return SESSION_COLORS.assistant;
+	}
+	if (label.startsWith("Thinking")) {
+		return SESSION_COLORS.thinking;
+	}
+	if (label.startsWith("Tool")) {
+		return SESSION_COLORS.tools;
+	}
+	return SESSION_COLORS.prompt;
+}
+
+function distinctSessionCategoryColor(label: string, index: number, previousColor: string | undefined): string {
+	const preferred = sessionCategoryColor(label);
+	if (index === 0 && preferred !== previousColor) {
+		return preferred;
+	}
+
+	const preferredIndex = SESSION_COLOR_PALETTE.indexOf(preferred);
+	const startIndex = preferredIndex === -1 ? index : preferredIndex + index;
+	for (let offset = 0; offset < SESSION_COLOR_PALETTE.length; offset++) {
+		const color = SESSION_COLOR_PALETTE[(startIndex + offset) % SESSION_COLOR_PALETTE.length];
+		if (color !== previousColor) {
+			return color;
+		}
+	}
+
+	return preferred;
+}
+
+function combinedCategories(parsed: ParsedPrompt, sessionUsage: SessionUsageData): BarCategory[] {
+	const categories = burdenCategories(parsed);
+	let previousColor = categories.at(-1)?.color;
+
+	for (const [index, category] of sessionUsage.categories.entries()) {
+		const color = distinctSessionCategoryColor(category.label, index, previousColor);
+		categories.push({
+			label: category.label,
+			tokens: category.tokens,
+			color,
+		});
+		previousColor = color;
+	}
+
+	return categories.filter((category) => category.tokens > 0).toSorted((left, right) => right.tokens - left.tokens);
+}
+
+function renderStackedCategories(
+	lines: string[],
+	categories: BarCategory[],
+	totalTokens: number,
+	innerW: number,
+	row: (content: string) => string,
+): void {
 	const barWidth = innerW - 4;
 	const segments = buildBarSegments(
-		parsed.sections.map((s) => ({ label: s.label, tokens: s.tokens })),
+		categories.map((category) => ({ label: category.label, tokens: category.tokens })),
 		barWidth,
 	);
 
 	// Stacked bar
 	let bar = "";
 	for (let i = 0; i < segments.length; i++) {
-		const colorIdx = Math.min(i, SECTION_COLORS.length - 1);
-		bar += sgr(SECTION_COLORS[colorIdx], "█".repeat(segments[i].width));
+		const category = categories[i];
+		bar += sgr(category?.color ?? "2", "█".repeat(segments[i].width));
 	}
 	lines.push(row(bar));
 
 	// Legend
 	const legendParts: string[] = [];
 	for (let i = 0; i < segments.length; i++) {
-		const colorIdx = Math.min(i, SECTION_COLORS.length - 1);
-		const section = parsed.sections[i];
-		const pct = parsed.totalTokens > 0 ? ((section.tokens / parsed.totalTokens) * 100).toFixed(1) : "0.0";
-		const shortLabel = shortenLabel(section.label);
-		legendParts.push(`${sgr(SECTION_COLORS[colorIdx], "■")} ${shortLabel} ${pct}%`);
+		const category = categories[i];
+		if (!category) {
+			continue;
+		}
+		const pct = totalTokens > 0 ? ((category.tokens / totalTokens) * 100).toFixed(1) : "0.0";
+		const shortLabel = shortenLabel(category.label);
+		legendParts.push(`${sgr(category.color, "■")} ${shortLabel} ${pct}%`);
 	}
 	for (const legendLine of wrapLegendParts(legendParts, innerW - 1)) {
 		lines.push(row(legendLine));
 	}
+}
+
+function renderCombinedStackedBar(
+	lines: string[],
+	parsed: ParsedPrompt,
+	sessionUsage: SessionUsageData,
+	innerW: number,
+	row: (content: string) => string,
+): void {
+	const totalTokens = parsed.totalTokens + sessionUsage.tokens;
+	lines.push(row(dim("Burden + session by category")));
+	renderStackedCategories(lines, combinedCategories(parsed, sessionUsage), totalTokens, innerW, row);
 }
 
 export function wrapLegendParts(parts: string[], maxWidth: number): string[] {
@@ -469,6 +662,7 @@ class BudgetOverlay {
 	private originalTotalTokens: number;
 	private adjustedTotalTokens: number;
 	private contextWindow: number | undefined;
+	private sessionUsage: SessionUsageData | undefined;
 	private readonly discoveredSkills: SkillInfo[];
 	private readonly tui: TUI;
 	private done: (value: null) => void;
@@ -484,6 +678,7 @@ class BudgetOverlay {
 		tui: TUI,
 		parsed: ParsedPrompt,
 		contextWindow: number | undefined,
+		sessionUsage: SessionUsageData | undefined,
 		discoveredSkills: SkillInfo[],
 		done: (value: null) => void,
 		onToggleResult?: (result: SkillToggleResult) => boolean,
@@ -499,6 +694,7 @@ class BudgetOverlay {
 		this.originalTotalTokens = parsed.totalTokens;
 		this.adjustedTotalTokens = parsed.totalTokens;
 		this.contextWindow = contextWindow;
+		this.sessionUsage = sessionUsage;
 		this.discoveredSkills = discoveredSkills;
 		this.tableItems = buildTableItems(parsed);
 		this.done = done;
@@ -1697,12 +1893,25 @@ class BudgetOverlay {
 
 		// Zone 1: Context window usage bar
 		if (this.contextWindow) {
-			renderContextWindowBar(lines, this.parsed, this.contextWindow, innerW, row, emptyRow, divider);
+			renderContextWindowBar(
+				lines,
+				this.parsed,
+				this.contextWindow,
+				this.sessionUsage,
+				innerW,
+				row,
+				emptyRow,
+				divider,
+			);
 		}
 
 		// Zone 2: Stacked section bar
 		renderStackedBar(lines, this.parsed, innerW, row);
 		lines.push(emptyRow());
+		if (this.sessionUsage && this.sessionUsage.tokens > 0) {
+			renderCombinedStackedBar(lines, this.parsed, this.sessionUsage, innerW, row);
+			lines.push(emptyRow());
+		}
 		lines.push(divider());
 
 		// Zone 3: Interactive table, skill toggle, or trace
@@ -1827,6 +2036,7 @@ export async function showReport(
 	onToggleResult?: (result: SkillToggleResult) => boolean,
 	onRunTrace?: () => Promise<BasePromptTraceResult>,
 	onToolToggle?: ToolToggleHandler,
+	sessionUsage?: SessionUsageData,
 ): Promise<void> {
 	await ctx.ui.custom<null>(
 		(tui, _theme, _kb, done) => {
@@ -1834,6 +2044,7 @@ export async function showReport(
 				tui,
 				parsed,
 				contextWindow,
+				sessionUsage,
 				discoveredSkills ?? [],
 				done,
 				onToggleResult,
