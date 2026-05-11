@@ -9,6 +9,7 @@ import {
 	isNavigateDownKey,
 	isNavigateUpKey,
 	showReport,
+	wrapLegendParts,
 } from "./report-view";
 
 describe("token burden vim key bindings", () => {
@@ -25,6 +26,27 @@ describe("token burden vim key bindings", () => {
 		expect(isNavigateDownKey("d")).toBe(false);
 		expect(isForwardKey("f")).toBe(false);
 		expect(isBackKey("b")).toBe(false);
+	});
+});
+
+describe("token burden stacked legend", () => {
+	test("wraps legend parts within the available row width", () => {
+		const parts = [
+			"■ Base 17.2%",
+			"■ SYSTEM 0.0%",
+			"■ AGENTS 9.4%",
+			"■ Skills 11.9%",
+			"■ Meta 0.2%",
+			"■ Tools 61.2%",
+		];
+
+		const rows = wrapLegendParts(parts, 45);
+
+		expect(rows.length).toBeGreaterThan(1);
+		expect(rows.join("  ")).toBe(parts.join("  "));
+		for (const row of rows) {
+			expect(row.length).toBeLessThanOrEqual(45);
+		}
 	});
 });
 
@@ -51,12 +73,12 @@ describe("token burden tools overlay", () => {
 
 		expect(content).toContain("# Tool definitions");
 		expect(content).toContain("## Active tools");
-		expect(content).toContain("### bash");
+		expect(content).toContain("### bash (10 tokens)");
 		expect(content).toContain("Run a shell command");
 		expect(content).toContain("#### Parameters");
 		expect(content).toContain('"type": "object"');
 		expect(content).toContain("## Inactive tools");
-		expect(content).toContain("### find");
+		expect(content).toContain("### find (10 tokens)");
 	});
 
 	test("opens the whole tool section from the top-level view", async () => {
@@ -128,10 +150,89 @@ describe("token burden tools overlay", () => {
 			expect(openedPath.endsWith(".md")).toBe(true);
 			const openedContent = readFileSync(openedPath, "utf8");
 			expect(openedContent).toContain("# Tool definitions");
-			expect(openedContent).toContain("### bash");
+			expect(openedContent).toContain("### bash (10 tokens)");
 			expect(openedContent).toContain("Run a shell command");
-			expect(openedContent).toContain("### find");
+			expect(openedContent).toContain("### find (10 tokens)");
 			expect(openedContent).toContain("Find text");
+		} finally {
+			if (oldEditor === undefined) {
+				delete process.env.EDITOR;
+			} else {
+				process.env.EDITOR = oldEditor;
+			}
+			if (oldVisual === undefined) {
+				delete process.env.VISUAL;
+			} else {
+				process.env.VISUAL = oldVisual;
+			}
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("opens the selected tool as markdown with token cost in the title", async () => {
+		const tmp = mkdtempSync(join(tmpdir(), "token-burden-view-tool-"));
+		const editorScript = join(tmp, "editor.cjs");
+		const openedPathFile = join(tmp, "opened-path");
+		const oldEditor = process.env.EDITOR;
+		const oldVisual = process.env.VISUAL;
+
+		writeFileSync(
+			editorScript,
+			[
+				"const { writeFileSync } = require('node:fs');",
+				`writeFileSync(${JSON.stringify(openedPathFile)}, process.argv.at(-1));`,
+			].join("\n"),
+			"utf8",
+		);
+
+		try {
+			delete process.env.VISUAL;
+			process.env.EDITOR = `${process.execPath} ${editorScript}`;
+
+			const ctx = {
+				ui: {
+					custom: async (factory: any) => {
+						const component = factory({ requestRender() {}, stop() {}, start() {} }, {}, {}, () => {});
+						component.handleInput("l");
+						component.handleInput("e");
+					},
+				},
+			};
+
+			await showReport(
+				{
+					totalChars: 20,
+					totalTokens: 10,
+					skills: [],
+					sections: [
+						{
+							label: "Tool definitions (1 active, 1 total)",
+							chars: 20,
+							tokens: 10,
+							tools: {
+								active: [
+									{
+										name: "bash",
+										chars: 20,
+										tokens: 10,
+										content: '{"name":"bash","description":"Run a shell command"}',
+									},
+								],
+								inactive: [],
+							},
+							children: [{ label: "bash", chars: 20, tokens: 10, content: '{"name":"bash"}' }],
+						},
+					],
+				},
+				100,
+				ctx as any,
+			);
+
+			const openedPath = readFileSync(openedPathFile, "utf8");
+			expect(openedPath.endsWith(".md")).toBe(true);
+			const openedContent = readFileSync(openedPath, "utf8");
+			expect(openedContent).toContain("## bash (10 tokens)");
+			expect(openedContent).toContain("Run a shell command");
 		} finally {
 			if (oldEditor === undefined) {
 				delete process.env.EDITOR;

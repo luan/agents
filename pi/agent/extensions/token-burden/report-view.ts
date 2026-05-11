@@ -269,7 +269,30 @@ function renderStackedBar(
 		const shortLabel = shortenLabel(section.label);
 		legendParts.push(`${sgr(SECTION_COLORS[colorIdx], "■")} ${shortLabel} ${pct}%`);
 	}
-	lines.push(row(legendParts.join("  ")));
+	for (const legendLine of wrapLegendParts(legendParts, innerW - 1)) {
+		lines.push(row(legendLine));
+	}
+}
+
+export function wrapLegendParts(parts: string[], maxWidth: number): string[] {
+	const rows: string[] = [];
+	let current = "";
+
+	for (const part of parts) {
+		const candidate = current ? `${current}  ${part}` : part;
+		if (current && visibleWidth(candidate) > maxWidth) {
+			rows.push(current);
+			current = part;
+		} else {
+			current = candidate;
+		}
+	}
+
+	if (current) {
+		rows.push(current);
+	}
+
+	return rows;
 }
 
 function renderTableRow(item: TableItem, isSelected: boolean, innerW: number): string {
@@ -319,6 +342,7 @@ interface OverlayState {
 interface ToolsRow {
 	kind: "active-tool" | "inactive-header" | "inactive-tool";
 	label: string;
+	chars?: number;
 	tokens?: number;
 	content?: string;
 }
@@ -376,11 +400,16 @@ function markdownCodeBlock(language: string, content: string): string {
 	return `${fence}${language}\n${content}\n${fence}`;
 }
 
-function formatToolMarkdown(tool: ToolEntry): string {
+function formatTokenCount(tokens: number): string {
+	return `${fmt(tokens)} ${tokens === 1 ? "token" : "tokens"}`;
+}
+
+function formatToolMarkdown(tool: ToolEntry, headingLevel = 3): string {
 	const parsed = parseToolContent(tool);
 	const description = objectValue(parsed, "description");
 	const parameters = objectValue(parsed, "parameters");
-	const lines = [`### ${tool.name}`, "", `- Tokens: ${fmt(tool.tokens)}`, `- Characters: ${fmt(tool.chars)}`];
+	const heading = `${"#".repeat(headingLevel)} ${tool.name} (${formatTokenCount(tool.tokens)})`;
+	const lines = [heading, "", `- Tokens: ${fmt(tool.tokens)}`, `- Characters: ${fmt(tool.chars)}`];
 
 	if (typeof description === "string" && description.trim()) {
 		lines.push("", description.trim());
@@ -403,7 +432,7 @@ export function formatToolSectionMarkdown(tools: ToolSectionData): string {
 	if (tools.active.length === 0) {
 		sections.push("_No active tools._");
 	} else {
-		sections.push(tools.active.map(formatToolMarkdown).join("\n\n"));
+		sections.push(tools.active.map((tool) => formatToolMarkdown(tool)).join("\n\n"));
 	}
 
 	sections.push("", "## Inactive tools", "");
@@ -411,7 +440,7 @@ export function formatToolSectionMarkdown(tools: ToolSectionData): string {
 	if (tools.inactive.length === 0) {
 		sections.push("_No inactive tools._");
 	} else {
-		sections.push(tools.inactive.map(formatToolMarkdown).join("\n\n"));
+		sections.push(tools.inactive.map((tool) => formatToolMarkdown(tool)).join("\n\n"));
 	}
 
 	return `${sections.join("\n")}\n`;
@@ -738,6 +767,7 @@ class BudgetOverlay {
 		const rows: ToolsRow[] = this.getVisibleTools().map((tool) => ({
 			kind: "active-tool",
 			label: tool.name,
+			chars: tool.chars,
 			tokens: tool.tokens,
 			content: tool.content,
 		}));
@@ -755,6 +785,7 @@ class BudgetOverlay {
 					...inactive.map((tool) => ({
 						kind: "inactive-tool" as const,
 						label: tool.name,
+						chars: tool.chars,
 						tokens: tool.tokens,
 						content: tool.content,
 					})),
@@ -1071,7 +1102,18 @@ class BudgetOverlay {
 			return;
 		}
 
-		this.openJsonContentInEditor(tool.label, tool.content);
+		this.openMarkdownContentInEditor(
+			tool.label,
+			formatToolMarkdown(
+				{
+					name: tool.label,
+					chars: tool.chars ?? tool.content.length,
+					tokens: tool.tokens ?? 0,
+					content: tool.content,
+				},
+				2,
+			),
+		);
 	}
 
 	private openSectionInEditor(): void {
