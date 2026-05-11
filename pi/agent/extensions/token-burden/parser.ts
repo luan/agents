@@ -6,7 +6,7 @@
  *   2. Optional SYSTEM.md / APPEND_SYSTEM.md content
  *   3. Project Context (AGENTS.md files, each under `## <path>`)
  *   4. Skills preamble + <available_skills> block
- *   5. Date/time + cwd metadata
+ *   5. Environment context metadata
  */
 
 import { encode } from "gpt-tokenizer/encoding/o200k_base";
@@ -52,6 +52,8 @@ function findSkillsPreamble(prompt: string): number {
 }
 
 function findMetadataFooter(prompt: string): number {
+	const environmentContextIdx = prompt.lastIndexOf("\n<environment_context>");
+	if (environmentContextIdx !== -1) return environmentContextIdx;
 	const currentDateTimeIdx = prompt.lastIndexOf("\nCurrent date and time:");
 	if (currentDateTimeIdx !== -1) return currentDateTimeIdx;
 	return prompt.lastIndexOf("\nCurrent date:");
@@ -198,7 +200,7 @@ function findSkillsSectionEnd(availableSkillsEnd: number, dateLineIdx: number, p
  *   - `# Project Context` heading
  *   - `The following skills provide specialized instructions` preamble
  *   - `<available_skills>` / `</available_skills>` skill list block
- *   - `Current date:` footer
+ *   - `<environment_context>` metadata footer
  */
 export function parseSystemPrompt(prompt: string): ParsedPrompt {
 	const sections: PromptSection[] = [];
@@ -260,7 +262,7 @@ export function parseSystemPrompt(prompt: string): ParsedPrompt {
 	// 4. Metadata footer
 	if (dateLineIdx !== -1) {
 		const metaText = prompt.slice(dateLineIdx + 1);
-		sections.push(measure("Metadata (date/time, cwd)", metaText));
+		sections.push(measure("Metadata (environment context)", metaText));
 	}
 
 	// 5. Detect SYSTEM.md / APPEND_SYSTEM.md gap

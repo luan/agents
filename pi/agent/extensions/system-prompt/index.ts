@@ -4,6 +4,39 @@ import Mustache, { type TemplateSpans } from "mustache";
 
 const SYSTEM_PROMPT_TEMPLATE = readFileSync(new URL("./SYSTEM_PROMPT.md.mustache", import.meta.url), "utf8").trimEnd();
 
+type EnvironmentContextEnvironment = {
+	id?: string;
+	cwd: string;
+	shell?: string;
+};
+
+type EnvironmentContextOptions = {
+	environments?: EnvironmentContextEnvironment[];
+	currentDate?: string | null;
+	timezone?: string | null;
+	shell?: string;
+};
+
+type EnvironmentContextEnvironmentView = {
+	id: string;
+	cwd: string;
+	shell: string;
+};
+
+type EnvironmentContextView = {
+	hasSingleEnvironment: boolean;
+	singleEnvironment: EnvironmentContextEnvironmentView | null;
+	hasMultipleEnvironments: boolean;
+	environments: EnvironmentContextEnvironmentView[];
+	currentDate: string | null;
+	timezone: string | null;
+};
+
+type SystemPromptBuildOptions = BuildSystemPromptOptions & {
+	environmentContext?: EnvironmentContextOptions;
+	now?: Date;
+};
+
 export default async function systemPromptExtension(pi: ExtensionAPI) {
 	pi.on("before_agent_start", (event, ctx) => {
 		return {
@@ -15,7 +48,7 @@ export default async function systemPromptExtension(pi: ExtensionAPI) {
 	});
 }
 
-export function buildSystemPrompt(original: string, options: BuildSystemPromptOptions): string {
+export function buildSystemPrompt(original: string, options: SystemPromptBuildOptions): string {
 	const {
 		customPrompt,
 		selectedTools,
@@ -27,11 +60,8 @@ export function buildSystemPrompt(original: string, options: BuildSystemPromptOp
 	} = options;
 	const promptCwd = cwd.replace(/\\/g, "/");
 
-	const now = new Date();
-	const year = now.getFullYear();
-	const month = String(now.getMonth() + 1).padStart(2, "0");
-	const day = String(now.getDate()).padStart(2, "0");
-	const date = `${year}-${month}-${day}`;
+	const now = options.now ?? new Date();
+	const date = formatDate(now);
 
 	const contextFiles = providedContextFiles ?? [];
 	const skills = providedSkills ?? [];
@@ -53,9 +83,18 @@ export function buildSystemPrompt(original: string, options: BuildSystemPromptOp
 		appendSystemPrompt: appendSystemPrompt || null,
 		contextFiles,
 		customPrompt: customPrompt || null,
-		cwd: promptCwd,
-		date,
 		docsPath: docsPath ?? "null",
+		environmentContext: buildEnvironmentContextView({
+			currentDate: date,
+			timezone: currentTimezone(),
+			...options.environmentContext,
+			environments: options.environmentContext?.environments ?? [
+				{
+					cwd: promptCwd,
+					shell: options.environmentContext?.shell ?? defaultShellName(),
+				},
+			],
+		}),
 		examplesPath: examplesPath ?? "null",
 		hasContextFiles: contextFiles.length > 0,
 		includeSkills: (hasSkillTool || hasRead) && visibleSkills.length > 0,
@@ -67,6 +106,43 @@ export function buildSystemPrompt(original: string, options: BuildSystemPromptOp
 		skillToolActive: hasSkillTool,
 		useBashFileOpsGuideline: hasBash && !hasGrep && !hasFind && !hasLs,
 	});
+}
+
+function formatDate(date: Date): string {
+	const year = date.getFullYear();
+	const month = String(date.getMonth() + 1).padStart(2, "0");
+	const day = String(date.getDate()).padStart(2, "0");
+
+	return `${year}-${month}-${day}`;
+}
+
+function currentTimezone(): string | null {
+	return Intl.DateTimeFormat().resolvedOptions().timeZone || null;
+}
+
+function defaultShellName(): string {
+	const shell = process.env.SHELL || process.env.ComSpec || "unknown";
+	const parts = shell.split(/[\\/]/).filter(Boolean);
+
+	return parts.at(-1) ?? shell;
+}
+
+function buildEnvironmentContextView(context: EnvironmentContextOptions): EnvironmentContextView {
+	const defaultShell = context.shell ?? defaultShellName();
+	const environments = (context.environments ?? []).map((environment) => ({
+		id: environment.id ?? "",
+		cwd: environment.cwd,
+		shell: environment.shell ?? defaultShell,
+	}));
+
+	return {
+		hasSingleEnvironment: environments.length === 1,
+		singleEnvironment: environments.length === 1 ? environments[0] : null,
+		hasMultipleEnvironments: environments.length > 1,
+		environments,
+		currentDate: context.currentDate || null,
+		timezone: context.timezone || null,
+	};
 }
 
 function uniqueNonEmptyLines(lines: string[]): string[] {
