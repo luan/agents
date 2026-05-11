@@ -18,6 +18,12 @@ type ToolApi = {
 	on(event: string, handler: Handler): void;
 };
 
+type PromptOptions = {
+	selectedTools?: string[];
+	toolSnippets?: Record<string, string>;
+	promptGuidelines?: string[];
+};
+
 export const DEFAULT_DISABLED_TOOLS = ["ls", "grab", "find"];
 
 function arraysEqual(a: string[], b: string[]): boolean {
@@ -66,6 +72,55 @@ function matchesToolName(candidate: string, target: string): boolean {
 	return candidateParts.some((part) => targetParts.includes(part));
 }
 
+function bulletToolName(line: string): string | undefined {
+	const trimmed = line.trim();
+	const content = trimmed.startsWith("- ") ? trimmed.slice(2).trim() : trimmed;
+	const toolLine = content.match(/^([\w.-]+):/);
+	if (toolLine?.[1]) return normalizeToolName(toolLine[1]);
+
+	const useLine = content.match(/^Use `?([\w.-]+)`?\b/);
+	if (useLine?.[1]) return normalizeToolName(useLine[1]);
+
+	const callLine = content.match(/^Call `?([\w.-]+)`?\b/);
+	if (callLine?.[1]) return normalizeToolName(callLine[1]);
+
+	return undefined;
+}
+
+export function filterDisabledToolPromptLines(prompt: string, isDisabled: (toolName: string) => boolean): string {
+	return prompt
+		.split("\n")
+		.filter((line) => {
+			const toolName = bulletToolName(line);
+			return !toolName || !isDisabled(toolName);
+		})
+		.join("\n");
+}
+
+export function removeDisabledToolsFromPromptOptions(
+	options: PromptOptions | undefined,
+	isDisabled: (toolName: string) => boolean,
+): void {
+	if (!options) return;
+
+	if (Array.isArray(options.selectedTools)) {
+		options.selectedTools = options.selectedTools.filter((toolName) => !isDisabled(toolName));
+	}
+
+	if (options.toolSnippets) {
+		for (const toolName of Object.keys(options.toolSnippets)) {
+			if (isDisabled(toolName)) delete options.toolSnippets[toolName];
+		}
+	}
+
+	if (Array.isArray(options.promptGuidelines)) {
+		options.promptGuidelines = options.promptGuidelines.filter((line) => {
+			const toolName = bulletToolName(line);
+			return !toolName || !isDisabled(toolName);
+		});
+	}
+}
+
 export function createToolToggleController(pi: ToolApi, initiallyDisabledTools: string[], configPath?: string) {
 	const disabledTools = new Set(normalizeToolNames(initiallyDisabledTools));
 
@@ -75,9 +130,6 @@ export function createToolToggleController(pi: ToolApi, initiallyDisabledTools: 
 
 	const isDisabled = (toolName: string) =>
 		toolNameParts(toolName.toLowerCase()).some((part) => disabledTools.has(part));
-
-	const isActive = (toolName: string) =>
-		pi.getActiveTools().some((activeToolName) => matchesToolName(activeToolName, toolName));
 
 	const removeDisabledTools = () => {
 		const active = pi.getActiveTools();
@@ -114,12 +166,19 @@ export function createToolToggleController(pi: ToolApi, initiallyDisabledTools: 
 
 	const install = () => {
 		pi.on("session_start", removeDisabledTools);
+		pi.on("resources_discover", removeDisabledTools);
 		pi.on("session_tree", removeDisabledTools);
 		pi.on("model_select", removeDisabledTools);
-		pi.on("before_agent_start", removeDisabledTools);
+		pi.on("before_agent_start", (event) => {
+			removeDisabledTools();
+			removeDisabledToolsFromPromptOptions(event.systemPromptOptions, isDisabled);
+			if (typeof event.systemPrompt !== "string") return;
+			const systemPrompt = filterDisabledToolPromptLines(event.systemPrompt, isDisabled);
+			if (systemPrompt !== event.systemPrompt) return { systemPrompt };
+		});
 		pi.on("tool_call", (event) => {
 			const toolName = normalizeToolName(event.toolName);
-			if (!toolName || !isDisabled(toolName) || isActive(toolName)) return;
+			if (!toolName || !isDisabled(toolName)) return;
 			return {
 				block: true,
 				reason: `${toolName} is disabled by the token-burden extension. Toggle it on from /token-burden if needed.`,
