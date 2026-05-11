@@ -1,3 +1,6 @@
+import { existsSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, isAbsolute, join, normalize, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
@@ -159,6 +162,47 @@ function requireHandled<T>(response: PlannotatorResponse<T>, gateType: string, t
 	return { ok: true as const, result: response.result };
 }
 
+function blueprintsDir() {
+	return process.env.CT_BLUEPRINTS_DIR || join(homedir(), "blueprints");
+}
+
+function resolveExistingPath(candidates: string[]) {
+	for (const candidate of candidates) {
+		if (existsSync(candidate)) return realpathSync(candidate);
+	}
+	return undefined;
+}
+
+function resolvePlannotatorTargetPath(targetPath: string, cwd?: string) {
+	const rawTarget = targetPath.trim();
+	if (!rawTarget) {
+		return { ok: false as const, target: "<empty>", reason: "targetPath is required" };
+	}
+
+	if (rawTarget.startsWith("~/")) {
+		return { ok: true as const, path: normalize(join(homedir(), rawTarget.slice(2))) };
+	}
+	if (isAbsolute(rawTarget)) {
+		return { ok: true as const, path: normalize(rawTarget) };
+	}
+
+	const candidates = [];
+	if (cwd) candidates.push(resolve(cwd, rawTarget));
+	const vaultRoot = blueprintsDir();
+	candidates.push(resolve(vaultRoot, rawTarget));
+	if (cwd) candidates.push(resolve(vaultRoot, basename(cwd), rawTarget));
+	if (rawTarget.startsWith("blueprints/")) candidates.push(resolve(homedir(), rawTarget));
+
+	const resolved = resolveExistingPath(candidates);
+	if (resolved) return { ok: true as const, path: resolved };
+
+	return {
+		ok: false as const,
+		target: rawTarget,
+		reason: "relative targetPath could not be resolved to an existing local file",
+	};
+}
+
 export async function runPlannotatorGate(
 	pi: ExtensionAPI,
 	params: {
@@ -167,14 +211,25 @@ export async function runPlannotatorGate(
 		title?: string;
 		instructions?: string;
 		timeoutMs?: number;
+		cwd?: string;
 	},
 ) {
+	const targetPath = resolvePlannotatorTargetPath(params.targetPath, params.cwd);
+	if (!targetPath.ok) {
+		return textResult(
+			`Plannotator ${params.gateType} gate failed closed for ${targetPath.target}: ${targetPath.reason}`,
+			{
+				...failClosedDetails(params.gateType, targetPath.target, false, { reason: targetPath.reason }),
+			},
+		);
+	}
+
 	const timeoutMs = params.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 	const response = await emitPlannotator<AnnotationResult>(
 		pi,
 		"annotate",
 		{
-			filePath: params.targetPath,
+			filePath: targetPath.path,
 			gate: true,
 			mode: "annotate",
 			title: params.title,
@@ -182,14 +237,14 @@ export async function runPlannotatorGate(
 		},
 		timeoutMs,
 	);
-	const handled = requireHandled(response, params.gateType, params.targetPath);
+	const handled = requireHandled(response, params.gateType, targetPath.path);
 	if (!handled.ok) return textResult(handled.text, handled.details);
 
 	const result = handled.result;
 	if (!result.approved || result.exit) {
 		const reason = result.exit ? "review session closed" : result.feedback || "not approved";
-		return textResult(`Plannotator ${params.gateType} gate denied for ${params.targetPath}: ${reason}`, {
-			...failClosedDetails(params.gateType, params.targetPath, false, {
+		return textResult(`Plannotator ${params.gateType} gate denied for ${targetPath.path}: ${reason}`, {
+			...failClosedDetails(params.gateType, targetPath.path, false, {
 				feedback: result.feedback,
 				exit: result.exit,
 				savedPath: result.savedPath,
@@ -197,8 +252,8 @@ export async function runPlannotatorGate(
 		});
 	}
 
-	return textResult(`Plannotator ${params.gateType} gate approved for ${params.targetPath}.`, {
-		...failClosedDetails(params.gateType, params.targetPath, true, { savedPath: result.savedPath }),
+	return textResult(`Plannotator ${params.gateType} gate approved for ${targetPath.path}.`, {
+		...failClosedDetails(params.gateType, targetPath.path, true, { savedPath: result.savedPath }),
 	});
 }
 
@@ -369,7 +424,11 @@ export default function vaultExtension(pi: ExtensionAPI) {
 		description: "Blocking Plannotator review. op: gate(targetPath, gateType) or code(diffType/prUrl). Fails closed.",
 		parameters: Type.Object({
 			op: Type.String({ description: "gate or code" }),
-			targetPath: Type.Optional(Type.String({ description: "Gate file path" })),
+			targetPath: Type.Optional(
+				Type.String({
+					description: "Gate file path; relative paths are resolved from cwd and the blueprints vault",
+				}),
+			),
 			gateType: Type.Optional(Type.String({ description: "research, plan, tests, docs, custom" })),
 			diffType: Type.Optional(Type.String({ description: "uncommitted, staged, lastCommit, branch" })),
 			prUrl: Type.Optional(Type.String({ description: "PR URL" })),
@@ -386,6 +445,7 @@ export default function vaultExtension(pi: ExtensionAPI) {
 					title: params.title as string | undefined,
 					instructions: params.instructions as string | undefined,
 					timeoutMs: params.timeoutMs as number | undefined,
+					cwd: ctx.cwd,
 				});
 			}
 			if (op !== "code") throw new Error("vault_review op must be gate or code");

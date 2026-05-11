@@ -37,6 +37,8 @@ Make one selected task true. Do not plan, split, rescope, or pull in adjacent cl
 
 4. **Optional review gates**
    - For risky/ambiguous tests, optionally gate a short test-review markdown with `vault_review(op="gate", gateType="tests")` unless `--auto`.
+   - For any `vault_review(op="gate")` call, first resolve the markdown under review to its real absolute local filesystem path and pass that as `targetPath`. Do not pass vault stems, wiki-link targets, repo-relative paths, or artifact-link paths as `targetPath`.
+   - In the gate `instructions`, name the exact absolute file being reviewed and state the review purpose.
    - After verification, optionally run `vault_review(op="code", diffType="uncommitted")` unless `--auto`.
    - On denial, fix, re-run verification, and re-gate.
 

@@ -40,7 +40,9 @@ Create a vault research artifact that preserves user context but contains only f
 4. **Review**
    - Before the gate, ask at most one compact batch of targeted clarification questions about unresolved evidence gaps; do not frame these as approval.
    - Do not ask questions that code/vault exploration can answer. Prefer a concrete default recommendation plus a small choice set when a human choice is necessary.
-   - Run `vault_review(op="gate")` with `gateType="research"` on the artifact. Use the normal long human-review timeout; do not set a short timeout for research gates.
+   - Resolve the artifact to its real absolute local filesystem path before the gate. For vault artifacts, use the `~/blueprints/.../*.md` path returned by the vault tool or a fresh `ct vault read`, expanding `~` before calling the tool. Do not pass vault stems, wiki-link targets, repo-relative paths, or artifact-link paths as `targetPath`.
+   - Run `vault_review(op="gate")` with `gateType="research"` on that absolute `targetPath`. Use the normal long human-review timeout; do not set a short timeout for research gates.
+   - In the gate `instructions`, name the exact absolute file being reviewed and state the artifact type/purpose so Plannotator is not left to infer whether it is research, a plan, or a fixture.
    - A handled approved Plannotator gate is sufficient approval to continue; do not ask the user for another approval afterward.
    - If denied with feedback, treat it as content feedback: revise and re-gate.
    - If unavailable, timed out, closed without result, or otherwise failed closed, treat it as a Plannotator/tool failure. Ask whether to retry the Plannotator gate or pause; do not ask the user to approve the research conversationally.

@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import vaultExtension, {
 	buildVaultCommitArgs,
 	buildVaultCreateArgs,
@@ -90,7 +93,7 @@ describe("Plannotator gate bridge", () => {
 			request.respond({ status: "handled", result: { approved: true } });
 		});
 		await runPlannotatorGate(pi, {
-			targetPath: "research.md",
+			targetPath: "/repo/research.md",
 			gateType: "research",
 			timeoutMs: 50,
 		});
@@ -105,12 +108,12 @@ describe("Plannotator gate bridge", () => {
 			respond = request.respond;
 		});
 		const first = runPlannotatorGate(pi, {
-			targetPath: "research.md",
+			targetPath: "/repo/research.md",
 			gateType: "research",
 			timeoutMs: 50,
 		});
 		const second = runPlannotatorGate(pi, {
-			targetPath: "research.md",
+			targetPath: "/repo/research.md",
 			gateType: "research",
 			timeoutMs: 50,
 		});
@@ -124,7 +127,7 @@ describe("Plannotator gate bridge", () => {
 			request.respond({ status: "handled", result: { approved: true, savedPath: "/tmp/saved.md" } });
 		});
 		const result = await runPlannotatorGate(pi, {
-			targetPath: "research.md",
+			targetPath: "/repo/research.md",
 			gateType: "research",
 			timeoutMs: 50,
 		});
@@ -137,7 +140,7 @@ describe("Plannotator gate bridge", () => {
 			request.respond({ status: "handled", result: { approved: false, feedback: "needs edits" } });
 		});
 		const result = await runPlannotatorGate(pi, {
-			targetPath: "research.md",
+			targetPath: "/repo/research.md",
 			gateType: "research",
 			timeoutMs: 50,
 		});
@@ -148,7 +151,7 @@ describe("Plannotator gate bridge", () => {
 	test("fails closed when unavailable", async () => {
 		const { pi } = fakePi();
 		const result = await runPlannotatorGate(pi, {
-			targetPath: "research.md",
+			targetPath: "/repo/research.md",
 			gateType: "research",
 			timeoutMs: 50,
 		});
@@ -159,7 +162,7 @@ describe("Plannotator gate bridge", () => {
 	test("fails closed on timeout", async () => {
 		const { pi } = fakePi(() => {});
 		const result = await runPlannotatorGate(pi, {
-			targetPath: "research.md",
+			targetPath: "/repo/research.md",
 			gateType: "research",
 			timeoutMs: 1,
 		});
@@ -172,12 +175,60 @@ describe("Plannotator gate bridge", () => {
 			request.respond({ status: "handled", result: { exit: true } });
 		});
 		const result = await runPlannotatorGate(pi, {
-			targetPath: "research.md",
+			targetPath: "/repo/research.md",
 			gateType: "research",
 			timeoutMs: 50,
 		});
 		expect(result.details?.approved).toBe(false);
 		expect(result.content[0].text).toContain("closed");
+	});
+
+	test("fails closed before opening Plannotator for relative target paths", async () => {
+		let emits = 0;
+		const { pi } = fakePi(() => {
+			emits += 1;
+		});
+		const result = await runPlannotatorGate(pi, {
+			targetPath: "research.md",
+			gateType: "research",
+			timeoutMs: 50,
+		});
+		expect(emits).toBe(0);
+		expect(result.details?.approved).toBe(false);
+		expect(result.content[0].text).toContain("could not be resolved");
+	});
+
+	test("resolves project-relative vault target paths before opening Plannotator", async () => {
+		const previousBlueprintsDir = process.env.CT_BLUEPRINTS_DIR;
+		const blueprints = mkdtempSync(join(tmpdir(), "plannotator-vault-"));
+		const artifactDir = join(blueprints, "majin", "research");
+		const artifactPath = join(artifactDir, "20260511-renderer.md");
+		mkdirSync(artifactDir, { recursive: true });
+		writeFileSync(artifactPath, "# Renderer research\n");
+
+		try {
+			process.env.CT_BLUEPRINTS_DIR = blueprints;
+			let reviewedPath = "";
+			const { pi } = fakePi((request) => {
+				reviewedPath = request.payload.filePath;
+				request.respond({ status: "handled", result: { approved: true } });
+			});
+			const result = await runPlannotatorGate(pi, {
+				targetPath: "majin/research/20260511-renderer.md",
+				gateType: "research",
+				timeoutMs: 50,
+			});
+			expect(result.details?.approved).toBe(true);
+			expect(reviewedPath).toBe(realpathSync(artifactPath));
+			expect(result.details?.target).toBe(realpathSync(artifactPath));
+		} finally {
+			if (previousBlueprintsDir === undefined) {
+				delete process.env.CT_BLUEPRINTS_DIR;
+			} else {
+				process.env.CT_BLUEPRINTS_DIR = previousBlueprintsDir;
+			}
+			rmSync(blueprints, { recursive: true, force: true });
+		}
 	});
 });
 
