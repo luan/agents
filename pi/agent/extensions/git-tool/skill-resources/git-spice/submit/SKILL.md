@@ -39,7 +39,7 @@ Default is update-only. `--update-only` is used to update existing Change Reques
    # or gs ss -u 2>&1
    ```
 
-3. PR/CR descriptions for create modes only:
-   - When creating new Change Requests, run `Skill(pr-descr)` for each newly created GitHub PR when the repository host is GitHub.
-   - Skip PR description work for update-only mode because existing Change Requests already have descriptions.
+3. Refresh PR/CR descriptions for every submitted GitHub PR:
+   - After Git-Spice has created or updated Change Requests, run `Skill(pr-descr)` for each affected GitHub PR so the title and body match the final branch diff.
+   - This applies to update-only and create modes; existing Change Requests may still have stale descriptions.
 4. Report created or updated Change Request URLs.

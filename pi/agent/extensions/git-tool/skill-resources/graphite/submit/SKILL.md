@@ -38,7 +38,7 @@ Default is `gt ss -u` (stack, update-only). This avoids accidentally creating PR
    # or gt submit / gt ss when explicitly requested
    ```
 
-3. PR descriptions for create modes only:
-   - When using `gt ss` or creating a new single PR with `gt submit`, run `Skill(pr-descr)` for each newly created PR.
-   - Skip PR description work for `gt ss -u` because existing PRs already have descriptions.
+3. Refresh PR descriptions for every submitted PR:
+   - After Graphite has created or updated PRs, run `Skill(pr-descr)` for each affected PR so the title and body match the final branch diff.
+   - This applies to `gt ss -u`, `gt submit`, and `gt ss`; update-only PRs may still have stale descriptions.
 4. Report Graphite URLs (`app.graphite.com/...`) for updated PRs. Do not report GitHub URLs as the primary result.
