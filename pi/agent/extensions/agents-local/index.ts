@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, parse, resolve } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { BuildSystemPromptOptions, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const LOCAL_CONTEXT_FILENAMES = ["AGENTS.local.md", "CLAUDE.local.md"] as const;
 const SECTION_TITLE = "Local Project Context";
@@ -50,6 +50,14 @@ function formatLocalContext(files: LocalContextFile[]): string {
 	return [`# ${SECTION_TITLE}`, "Pi loaded these untracked local-only context files.", ...sections].join("\n\n");
 }
 
+function addLocalContextFiles(options: BuildSystemPromptOptions, files: LocalContextFile[]): void {
+	const existing = options.contextFiles ?? [];
+	const existingPaths = new Set(existing.map((file) => resolve(file.path)));
+	const localFiles = files.filter((file) => !existingPaths.has(resolve(file.path)));
+
+	options.contextFiles = [...existing, ...localFiles];
+}
+
 function relativeLabel(ctx: ExtensionContext, path: string): string {
 	const cwd = resolve(ctx.cwd);
 	const full = resolve(path);
@@ -62,6 +70,8 @@ export default function agentsLocalExtension(pi: ExtensionAPI) {
 	pi.on("before_agent_start", async (event, ctx) => {
 		const files = loadLocalContextFiles(ctx.cwd);
 		if (files.length === 0) return;
+
+		addLocalContextFiles(event.systemPromptOptions, files);
 
 		return {
 			systemPrompt: `${event.systemPrompt}\n\n${formatLocalContext(files)}`,
