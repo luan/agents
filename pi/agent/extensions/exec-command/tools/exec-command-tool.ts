@@ -2,8 +2,8 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Container, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { summarizeShellCommand } from "../shell/summary.ts";
-import { renderExecCommandCall, renderGroupedExecCommandCall, renderOutputBlock } from "./codex-rendering.ts";
 import type { ExecCommandTracker } from "./exec-command-state.ts";
+import { renderExecCommandCall, renderGroupedExecCommandCall, renderOutputBlock } from "./exec-rendering.ts";
 import type { ExecSessionManager, UnifiedExecResult } from "./exec-session-manager.ts";
 import { commandHasRipgrepSegment, isRtkGrepCommand } from "./rtk-wrapper.ts";
 import { formatUnifiedExecResult } from "./unified-exec-format.ts";
@@ -49,6 +49,11 @@ interface ExecCommandParams {
 
 interface ExecCommandToolOptions {
 	rewriteCommand?: (command: string, ctx: ExtensionContext) => Promise<string> | string;
+	onResult?: (
+		params: ExecCommandParams,
+		result: UnifiedExecResult,
+		ctx: ExtensionContext,
+	) => { terminate?: boolean } | undefined;
 }
 
 function prepareExecCommandArguments(args: unknown): ExecCommandParams {
@@ -264,6 +269,7 @@ export function registerExecCommandTool(
 			if (result.session_id !== undefined) {
 				tracker.recordPersistentSession(toolCallId, result.session_id);
 			}
+			const resultOptions = options.onResult?.(typedParams, result, ctx);
 			return {
 				content: [
 					{
@@ -273,6 +279,7 @@ export function registerExecCommandTool(
 				],
 				details: result,
 				isError: result.exit_code !== undefined && result.exit_code !== 0,
+				terminate: resultOptions?.terminate,
 			};
 		},
 		renderCall: ((

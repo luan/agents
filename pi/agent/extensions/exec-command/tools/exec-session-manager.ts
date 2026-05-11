@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { resolve } from "node:path";
 import type { Readable } from "node:stream";
 import * as pty from "node-pty";
-import { CODEX_FALLBACK_SHELL, getCodexRuntimeShell, isFishShell } from "../adapter/runtime-shell.ts";
+import { DEFAULT_EXEC_SHELL, isFishShell, resolveRuntimeShell } from "../adapter/runtime-shell.ts";
 import {
 	approxTokenCount,
 	capHeadTail,
@@ -75,6 +75,7 @@ export interface ExecSessionManager {
 	): Promise<UnifiedExecResult>;
 	write(input: WriteStdinInput): Promise<UnifiedExecResult>;
 	hasSession(sessionId: number): boolean;
+	hasOpenInteractiveSession(): boolean;
 	getSessionCommand(sessionId: number): string | undefined;
 	onSessionExit(listener: (sessionId: number, command: string) => void): () => void;
 	shutdown(): void;
@@ -103,7 +104,7 @@ function resolveWorkdir(baseCwd: string, workdir?: string): string {
 }
 
 function resolveShell(shell?: string): string {
-	return getCodexRuntimeShell(shell || process.env.SHELL);
+	return resolveRuntimeShell(shell || process.env.SHELL);
 }
 
 const BASH_SYNC_ENV_KEYS = [
@@ -131,13 +132,13 @@ function shellEscape(value: string): string {
 }
 
 function shouldSyncBashEnv(requestedShell: string | undefined, effectiveShell: string): boolean {
-	return effectiveShell === CODEX_FALLBACK_SHELL && isFishShell(requestedShell || process.env.SHELL);
+	return effectiveShell === DEFAULT_EXEC_SHELL && isFishShell(requestedShell || process.env.SHELL);
 }
 
 function buildSyncedBashCommand(command: string, env: NodeJS.ProcessEnv): string {
 	const assignments: string[] = [];
 	for (const key of BASH_SYNC_ENV_KEYS) {
-		const value = key === "SHELL" ? CODEX_FALLBACK_SHELL : env[key];
+		const value = key === "SHELL" ? DEFAULT_EXEC_SHELL : env[key];
 		if (typeof value !== "string") continue;
 		assignments.push(`export ${key}=${shellEscape(value)}`);
 	}
@@ -154,7 +155,7 @@ function resolveExecution(
 	if (!shouldSyncBashEnv(requestedShell, shell)) {
 		return { shell, command, env };
 	}
-	env.SHELL = CODEX_FALLBACK_SHELL;
+	env.SHELL = DEFAULT_EXEC_SHELL;
 	return {
 		shell,
 		command: buildSyncedBashCommand(command, env),
@@ -831,6 +832,10 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			return makeResult(session, waitedMs);
 		},
 		hasSession: (sessionId) => sessions.has(sessionId),
+		hasOpenInteractiveSession: () =>
+			Array.from(sessions.values()).some(
+				(session) => session.interactive && (session.exitCode === undefined || session.exitCode === null),
+			),
 		getSessionCommand: (sessionId) => sessions.get(sessionId)?.command ?? commandHistory.get(sessionId),
 		onSessionExit: (listener) => {
 			exitListeners.add(listener);

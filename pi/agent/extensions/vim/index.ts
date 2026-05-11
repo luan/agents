@@ -104,6 +104,42 @@ type CursorShapeTuiCandidate = {
 	getShowHardwareCursor?: unknown;
 };
 
+type CursorVisibilityTuiCandidate = {
+	terminal?: {
+		showCursor?: unknown;
+		hideCursor?: unknown;
+	};
+};
+
+export function installStableHardwareCursorVisibility(tui: unknown): CursorShapeCleanup | null {
+	if (typeof tui !== "object" || tui === null) return null;
+
+	const candidate = tui as CursorVisibilityTuiCandidate;
+	const terminal = candidate.terminal;
+	if (typeof terminal !== "object" || terminal === null) return null;
+
+	const showCursor = terminal.showCursor;
+	const hideCursor = terminal.hideCursor;
+	if (typeof showCursor !== "function" || typeof hideCursor !== "function") return null;
+
+	let visible = false;
+	terminal.showCursor = function (this: typeof terminal) {
+		if (visible) return;
+		visible = true;
+		showCursor.call(this);
+	};
+	terminal.hideCursor = function (this: typeof terminal) {
+		if (!visible) return;
+		visible = false;
+		hideCursor.call(this);
+	};
+
+	return () => {
+		terminal.showCursor = showCursor;
+		terminal.hideCursor = hideCursor;
+	};
+}
+
 function getCursorShapeRuntime(tui: unknown): CursorShapeRuntime | null {
 	if (typeof tui !== "object" || tui === null) return null;
 
@@ -142,6 +178,7 @@ function enableCursorShapeSupport(tui: unknown): CursorShapeCleanup | null {
 	if (!runtime) return null;
 
 	const previousShowHardwareCursor = runtime.getShowHardwareCursor?.();
+	const stableCursorCleanup = installStableHardwareCursorVisibility(tui);
 	runtime.setShowHardwareCursor(true);
 
 	return () => {
@@ -149,6 +186,7 @@ function enableCursorShapeSupport(tui: unknown): CursorShapeCleanup | null {
 		if (previousShowHardwareCursor !== undefined) {
 			runtime.setShowHardwareCursor(previousShowHardwareCursor);
 		}
+		stableCursorCleanup?.();
 	};
 }
 
@@ -546,6 +584,7 @@ export class ModalEditor extends CustomEditor {
 		super(tui, theme, kb);
 		this.cursorShapeRuntime = getCursorShapeRuntime(tui);
 		this.labelColorizers = labelColorizers ?? null;
+		this.syncCursorShapeForState();
 	}
 
 	// Test seams
@@ -893,141 +932,146 @@ export class ModalEditor extends CustomEditor {
 	}
 
 	handleInput(data: string): void {
+		const shouldSyncCursorShape = Boolean(this.cursorShapeRuntime);
 		this.ensureOnChangeHook();
 
-		if (this.pendingExCommand !== null) {
-			const normalized = this.normalizePendingExCommandInput(data);
-			if (normalized === null) return;
-			data = normalized;
-		} else if (this.mode !== "insert") {
-			if (this.discardingBracketedPasteInNormalMode) {
-				if (this.isEscapeLikeInput(data)) {
-					if (this.pendingEscWhileDiscardingBracketedPasteInNormalMode) {
-						this.pendingEscWhileDiscardingBracketedPasteInNormalMode = false;
-						this.discardingBracketedPasteInNormalMode = false;
-						this.clearPendingState();
-						return;
-					} else {
-						this.pendingEscWhileDiscardingBracketedPasteInNormalMode = true;
-						this.clearPendingState();
-						return;
-					}
-				} else if (this.pendingEscWhileDiscardingBracketedPasteInNormalMode) {
-					if (data.startsWith(BRACKETED_PASTE_END_TAIL)) {
-						this.pendingEscWhileDiscardingBracketedPasteInNormalMode = false;
-						this.discardingBracketedPasteInNormalMode = false;
-						data = data.slice(BRACKETED_PASTE_END_TAIL.length);
-						if (data.length === 0) {
+		try {
+			if (this.pendingExCommand !== null) {
+				const normalized = this.normalizePendingExCommandInput(data);
+				if (normalized === null) return;
+				data = normalized;
+			} else if (this.mode !== "insert") {
+				if (this.discardingBracketedPasteInNormalMode) {
+					if (this.isEscapeLikeInput(data)) {
+						if (this.pendingEscWhileDiscardingBracketedPasteInNormalMode) {
+							this.pendingEscWhileDiscardingBracketedPasteInNormalMode = false;
+							this.discardingBracketedPasteInNormalMode = false;
+							this.clearPendingState();
+							return;
+						} else {
+							this.pendingEscWhileDiscardingBracketedPasteInNormalMode = true;
 							this.clearPendingState();
 							return;
 						}
-					} else {
-						this.pendingEscWhileDiscardingBracketedPasteInNormalMode = false;
+					} else if (this.pendingEscWhileDiscardingBracketedPasteInNormalMode) {
+						if (data.startsWith(BRACKETED_PASTE_END_TAIL)) {
+							this.pendingEscWhileDiscardingBracketedPasteInNormalMode = false;
+							this.discardingBracketedPasteInNormalMode = false;
+							data = data.slice(BRACKETED_PASTE_END_TAIL.length);
+							if (data.length === 0) {
+								this.clearPendingState();
+								return;
+							}
+						} else {
+							this.pendingEscWhileDiscardingBracketedPasteInNormalMode = false;
+						}
 					}
 				}
+
+				const { filtered, stripped } = this.stripBracketedPasteInNormalMode(data);
+				if (stripped) {
+					this.clearPendingState();
+				}
+				if (filtered === null) return;
+				data = filtered;
 			}
 
-			const { filtered, stripped } = this.stripBracketedPasteInNormalMode(data);
-			if (stripped) {
-				this.clearPendingState();
-			}
-			if (filtered === null) return;
-			data = filtered;
-		}
-
-		if (this.isEscapeLikeInput(data)) {
-			this.handleEscape();
-			return;
-		}
-
-		if (this.mode === "insert") {
-			// Shift+Alt+A: go to end of line (like Esc -> A but stay in insert)
-			if (matchesKey(data, Key.shiftAlt("a")) || data === "\x1bA") {
-				super.handleInput(CTRL_E);
-				return;
-			}
-			// Shift+Alt+I: go to start of line (like Esc -> I but stay in insert)
-			if (matchesKey(data, Key.shiftAlt("i")) || data === "\x1bI") {
-				super.handleInput(CTRL_A);
-				return;
-			}
-			// Alt+o: open new line below (stay in insert mode)
-			if (matchesKey(data, Key.alt("o")) || data === "\x1bo") {
-				this.openLineBelow();
-				return;
-			}
-			// Alt+Shift+o: open new line above (stay in insert mode)
-			// \x1bO is the legacy sequence for Alt+Shift+O (VT100 SS3 prefix in non-Kitty terminals)
-			if (matchesKey(data, Key.shiftAlt("o")) || data === "\x1bO") {
-				this.openLineAbove();
-				return;
-			}
-			super.handleInput(data);
-			return;
-		}
-
-		if (this.pendingReplace) {
-			this.pendingReplace = false;
-			if (!this.isPrintableInput(data)) {
-				this.prefixCount = "";
-				this.operatorCount = "";
+			if (this.isEscapeLikeInput(data)) {
+				this.handleEscape();
 				return;
 			}
 
-			const count = this.takeTotalCount(1);
-			const cursor = this.getCursor();
-			const line = this.getLines()[cursor.line] ?? "";
-			const range = this.getGraphemeRangeAtCol(line, cursor.col, count);
-			if (!range) return;
+			if (this.mode === "insert") {
+				// Shift+Alt+A: go to end of line (like Esc -> A but stay in insert)
+				if (matchesKey(data, Key.shiftAlt("a")) || data === "\x1bA") {
+					super.handleInput(CTRL_E);
+					return;
+				}
+				// Shift+Alt+I: go to start of line (like Esc -> I but stay in insert)
+				if (matchesKey(data, Key.shiftAlt("i")) || data === "\x1bI") {
+					super.handleInput(CTRL_A);
+					return;
+				}
+				// Alt+o: open new line below (stay in insert mode)
+				if (matchesKey(data, Key.alt("o")) || data === "\x1bo") {
+					this.openLineBelow();
+					return;
+				}
+				// Alt+Shift+o: open new line above (stay in insert mode)
+				// \x1bO is the legacy sequence for Alt+Shift+O (VT100 SS3 prefix in non-Kitty terminals)
+				if (matchesKey(data, Key.shiftAlt("o")) || data === "\x1bO") {
+					this.openLineAbove();
+					return;
+				}
+				super.handleInput(data);
+				return;
+			}
 
-			const before = line.slice(0, range.start);
-			const after = line.slice(range.end);
-			const replacement = data.repeat(count);
-			const lineStartAbs = this.getAbsoluteIndex(cursor.line, 0);
-			const text = this.getText();
-			const newText =
-				text.slice(0, lineStartAbs) + before + replacement + after + text.slice(lineStartAbs + line.length);
-			const newCursorAbs = lineStartAbs + before.length + data.length * (count - 1);
-			this.replaceTextInBuffer(newText, newCursorAbs);
-			return;
+			if (this.pendingReplace) {
+				this.pendingReplace = false;
+				if (!this.isPrintableInput(data)) {
+					this.prefixCount = "";
+					this.operatorCount = "";
+					return;
+				}
+
+				const count = this.takeTotalCount(1);
+				const cursor = this.getCursor();
+				const line = this.getLines()[cursor.line] ?? "";
+				const range = this.getGraphemeRangeAtCol(line, cursor.col, count);
+				if (!range) return;
+
+				const before = line.slice(0, range.start);
+				const after = line.slice(range.end);
+				const replacement = data.repeat(count);
+				const lineStartAbs = this.getAbsoluteIndex(cursor.line, 0);
+				const text = this.getText();
+				const newText =
+					text.slice(0, lineStartAbs) + before + replacement + after + text.slice(lineStartAbs + line.length);
+				const newCursorAbs = lineStartAbs + before.length + data.length * (count - 1);
+				this.replaceTextInBuffer(newText, newCursorAbs);
+				return;
+			}
+
+			if (this.pendingExCommand !== null) {
+				this.handlePendingExCommand(data);
+				return;
+			}
+
+			if (this.pendingTextObject) {
+				this.handlePendingTextObject(data);
+				return;
+			}
+
+			if (this.pendingMotion) {
+				this.handlePendingMotion(data);
+				return;
+			}
+
+			if (this.pendingOperator === "d") {
+				this.handlePendingDelete(data);
+				return;
+			}
+
+			if (this.pendingOperator === "c") {
+				this.handlePendingChange(data);
+				return;
+			}
+
+			if (this.pendingOperator === "y") {
+				this.handlePendingYank(data);
+				return;
+			}
+
+			if (this.mode === "visual") {
+				this.handleVisualMode(data);
+				return;
+			}
+
+			this.handleNormalMode(data);
+		} finally {
+			if (shouldSyncCursorShape) this.syncCursorShapeForState();
 		}
-
-		if (this.pendingExCommand !== null) {
-			this.handlePendingExCommand(data);
-			return;
-		}
-
-		if (this.pendingTextObject) {
-			this.handlePendingTextObject(data);
-			return;
-		}
-
-		if (this.pendingMotion) {
-			this.handlePendingMotion(data);
-			return;
-		}
-
-		if (this.pendingOperator === "d") {
-			this.handlePendingDelete(data);
-			return;
-		}
-
-		if (this.pendingOperator === "c") {
-			this.handlePendingChange(data);
-			return;
-		}
-
-		if (this.pendingOperator === "y") {
-			this.handlePendingYank(data);
-			return;
-		}
-
-		if (this.mode === "visual") {
-			this.handleVisualMode(data);
-			return;
-		}
-
-		this.handleNormalMode(data);
 	}
 
 	private clearUnderlyingPasteStateIfActive(): void {
@@ -2954,11 +2998,9 @@ export class ModalEditor extends CustomEditor {
 		return this.mode === "insert" && this.pendingExCommand === null ? INSERT_CURSOR_SHAPE : BLOCK_CURSOR_SHAPE;
 	}
 
-	private hasPromptCursorMarker(lines: string[]): boolean {
-		return lines.some((line) => line.includes(CURSOR_MARKER));
-	}
-
 	private stripSoftwareCursorWhenHardwareCursorIsUsed(lines: string[]): void {
+		if (this.cursorShapeRuntime?.getShowHardwareCursor?.() === false) return;
+
 		for (let i = lines.length - 1; i >= 0; i--) {
 			const line = lines[i];
 			if (!line?.includes(CURSOR_MARKER)) continue;
@@ -2968,16 +3010,13 @@ export class ModalEditor extends CustomEditor {
 		}
 	}
 
-	private syncCursorShapeForRender(lines: string[]): void {
+	private syncCursorShapeForState(): void {
 		if (!this.cursorShapeRuntime) return;
-		if (!this.hasPromptCursorMarker(lines)) return;
 
 		if (this.cursorShapeRuntime.getShowHardwareCursor?.() === false) {
 			this.lastCursorShapeSequence = null;
 			return;
 		}
-
-		this.stripSoftwareCursorWhenHardwareCursorIsUsed(lines);
 
 		const sequence = this.getDesiredCursorShapeSequence();
 		if (sequence === this.lastCursorShapeSequence) return;
@@ -3036,7 +3075,7 @@ export class ModalEditor extends CustomEditor {
 
 	render(width: number): string[] {
 		const lines = super.render(width);
-		this.syncCursorShapeForRender(lines);
+		this.stripSoftwareCursorWhenHardwareCursorIsUsed(lines);
 		this.applyVisualSelectionHighlight(lines);
 		if (lines.length === 0) return lines;
 

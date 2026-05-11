@@ -1,4 +1,5 @@
-import { type ExtensionAPI, type ExtensionContext, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
+import { loadDynamicToolsConfig, shouldTerminateForDynamicTools } from "../dynamic-tools/core.ts";
 import { createExecCommandTracker } from "./tools/exec-command-state.ts";
 import { registerExecCommandTool } from "./tools/exec-command-tool.ts";
 import { createExecSessionManager } from "./tools/exec-session-manager.ts";
@@ -6,17 +7,11 @@ import { formattedTruncateText } from "./tools/output-truncation.ts";
 import { computeRtkRewriteDecision, type RtkWrapperState } from "./tools/rtk-wrapper.ts";
 import { registerWriteStdinTool } from "./tools/write-stdin-tool.ts";
 
-function isCodexModel(model: ExtensionContext["model"] | undefined): boolean {
-	const provider = model?.provider?.toLowerCase() ?? "";
-	const id = model?.id?.toLowerCase() ?? "";
-	return provider.includes("codex") || id.includes("codex");
-}
-
 function arraysEqual(a: string[], b: string[]): boolean {
 	return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
-const EMPTY_SELF_SHELL_ROW_PATCH = Symbol.for("agents.codex-exec.empty-self-shell-row-patch");
+const EMPTY_SELF_SHELL_ROW_PATCH = Symbol.for("agents.exec-command.empty-self-shell-row-patch");
 const ANSI_PATTERN =
 	/\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\u001b\\)|P[^\u001b]*(?:\u001b\\)|_[^\u001b]*(?:\u001b\\)|\^[^\u001b]*(?:\u001b\\))/g;
 
@@ -80,13 +75,22 @@ function parseRtkToggleArgument(args: string): boolean | undefined | "invalid" {
 	return "invalid";
 }
 
-export default function codexExecExtension(pi: ExtensionAPI) {
+export default function execCommandExtension(pi: ExtensionAPI) {
 	installEmptySelfShellRowPatch();
 	const tracker = createExecCommandTracker();
 	const sessions = createExecSessionManager();
-	const toolsRemovedForCodex = new Set<string>();
 	const rtk: RtkWrapperState = { enabled: true };
 	const rtkWarningsShown = new Set<string>();
+	let shuttingDown = false;
+
+	const syncToolPolicy = () => {
+		if (shuttingDown) return;
+		const active = pi.getActiveTools();
+		const next = active.filter((toolName) => toolName !== "bash");
+		if (!next.includes("exec_command")) next.push("exec_command");
+		if (!next.includes("write_stdin")) next.push("write_stdin");
+		if (!arraysEqual(active, next)) pi.setActiveTools(next);
+	};
 
 	registerExecCommandTool(pi, tracker, sessions, {
 		rewriteCommand: async (command, ctx) => {
@@ -97,9 +101,22 @@ export default function codexExecExtension(pi: ExtensionAPI) {
 			}
 			return decision.changed ? decision.rewrittenCommand : command;
 		},
+		onResult: (params, result) => {
+			if (
+				shouldTerminateForDynamicTools(
+					loadDynamicToolsConfig(),
+					{ toolName: "exec_command", input: params as unknown as Record<string, unknown>, result },
+					pi.getActiveTools(),
+				)
+			) {
+				return { terminate: true };
+			}
+		},
 	});
 	registerWriteStdinTool(pi, sessions);
-	sessions.onSessionExit((sessionId) => tracker.recordSessionFinished(sessionId));
+	sessions.onSessionExit((sessionId) => {
+		tracker.recordSessionFinished(sessionId);
+	});
 
 	pi.registerCommand("rtk", {
 		description: "Toggle RTK command wrapping for exec_command calls",
@@ -120,58 +137,32 @@ export default function codexExecExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	const applyToolPolicy = (ctx?: ExtensionContext) => {
-		if (!ctx) return;
-		const active = pi.getActiveTools();
-		const codex = isCodexModel(ctx.model);
-		let next = active;
-		if (codex) {
-			next = active.filter((toolName) => {
-				if (toolName === "bash") {
-					toolsRemovedForCodex.add(toolName);
-					return false;
-				}
-				return true;
-			});
-			for (const toolName of ["exec_command", "write_stdin"]) {
-				if (!next.includes(toolName)) next.push(toolName);
-			}
-		} else {
-			next = active.filter((toolName) => toolName !== "exec_command" && toolName !== "write_stdin");
-			if (toolsRemovedForCodex.size > 0) {
-				const registeredTools = new Set(
-					((pi as any).getAllTools?.() ?? []).map((tool: { name?: string }) => tool.name),
-				);
-				for (const toolName of toolsRemovedForCodex) {
-					if ((!registeredTools.size || registeredTools.has(toolName)) && !next.includes(toolName)) {
-						next.push(toolName);
-					}
-				}
-				toolsRemovedForCodex.clear();
-			}
-		}
-		if (!arraysEqual(active, next)) pi.setActiveTools(next);
-	};
-
-	pi.on("session_start", (_event, ctx) => {
+	pi.on("session_start", () => {
+		shuttingDown = false;
 		tracker.clear();
-		applyToolPolicy(ctx);
+		syncToolPolicy();
 	});
-	pi.on("session_tree", (_event, ctx) => {
+	pi.on("session_tree", () => {
 		tracker.clear();
-		applyToolPolicy(ctx);
+		syncToolPolicy();
 	});
-	pi.on("model_select", (_event, ctx) => {
-		applyToolPolicy(ctx);
+	pi.on("model_select", () => {
+		syncToolPolicy();
 	});
-	pi.on("before_agent_start", (_event, ctx) => {
-		applyToolPolicy(ctx);
+	pi.on("before_agent_start", () => {
+		syncToolPolicy();
 	});
-	pi.on("tool_call", (event, ctx) => {
-		if (event.toolName === "bash" && isCodexModel(ctx?.model)) {
+	pi.on("tool_call", (event) => {
+		if (event.toolName === "bash") {
 			return {
 				block: true,
-				reason: "bash is disabled for Codex models. Use exec_command instead.",
+				reason: "bash is disabled. Use exec_command instead.",
+			};
+		}
+		if (event.toolName === "write_stdin" && !sessions.hasOpenInteractiveSession()) {
+			return {
+				block: true,
+				reason: "write_stdin is disabled until exec_command opens a running TTY session.",
 			};
 		}
 	});
@@ -209,6 +200,7 @@ export default function codexExecExtension(pi: ExtensionAPI) {
 		return Object.keys(patch).length > 0 ? patch : undefined;
 	});
 	pi.on("session_shutdown", () => {
+		shuttingDown = true;
 		tracker.clear();
 		sessions.shutdown();
 	});

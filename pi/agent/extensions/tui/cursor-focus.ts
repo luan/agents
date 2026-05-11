@@ -10,8 +10,6 @@ const ENABLE_FOCUS_EVENTS = "\x1b[?1004h";
 const DISABLE_FOCUS_EVENTS = "\x1b[?1004l";
 const FOCUS_IN = "\x1b[I";
 const FOCUS_OUT = "\x1b[O";
-const STEADY_BEAM_CURSOR = "\x1b[6 q";
-const RESET_CURSOR_STYLE = "\x1b[0 q";
 const SHOW_CURSOR = "\x1b[?25h";
 const TMUX_PANE = process.env.TMUX_PANE;
 const HOOK_ID = process.pid;
@@ -26,7 +24,6 @@ function write(tui: TUI, data: string): void {
 }
 
 function applyFocusedCursor(tui: TUI): void {
-	write(tui, STEADY_BEAM_CURSOR);
 	tui.setShowHardwareCursor(true);
 }
 
@@ -118,6 +115,6 @@ export function installFocusCursor(pi: ExtensionAPI, ctx: ExtensionContext, tui:
 		unsubscribe();
 		void uninstallTmuxHooks();
 		tui.setShowHardwareCursor(true);
-		write(tui, DISABLE_FOCUS_EVENTS + RESET_CURSOR_STYLE + SHOW_CURSOR);
+		write(tui, DISABLE_FOCUS_EVENTS + SHOW_CURSOR);
 	};
 }

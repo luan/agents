@@ -2,7 +2,9 @@ import { expect, test } from "bun:test";
 import { execSync } from "node:child_process";
 import { ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 import { Container } from "@earendil-works/pi-tui";
-import codexExecExtension from "./index.ts";
+import execCommandExtension from "./index.ts";
+import { createExecCommandTracker } from "./tools/exec-command-state.ts";
+import { registerExecCommandTool } from "./tools/exec-command-tool.ts";
 import {
 	formatElapsedTime,
 	type RenderTheme,
@@ -10,9 +12,7 @@ import {
 	renderGroupedExecCommandCall,
 	renderOutputBlock,
 	renderWriteStdinCall,
-} from "./tools/codex-rendering.ts";
-import { createExecCommandTracker } from "./tools/exec-command-state.ts";
-import { registerExecCommandTool } from "./tools/exec-command-tool.ts";
+} from "./tools/exec-rendering.ts";
 import { createExecSessionManager } from "./tools/exec-session-manager.ts";
 import { computeRtkRewriteDecision, parseRtkExecutablePath } from "./tools/rtk-wrapper.ts";
 import { registerWriteStdinTool } from "./tools/write-stdin-tool.ts";
@@ -39,7 +39,7 @@ async function waitForProcessListToExclude(marker: string): Promise<void> {
 	expect(processList()).not.toContain(marker);
 }
 
-test("exec command call renders Codex-style inline syntax-highlighted commands", () => {
+test("exec command call renders inline syntax-highlighted commands", () => {
 	const rendered = renderExecCommandCall(
 		`git diff --stat luan/pbt...luan/pbt-fixes && gh pr edit 57220 --title "fix(sync): resolve PBT convergence failures"`,
 		"done",
@@ -107,11 +107,11 @@ test("exploration grouping keeps the first row as the visible anchor", () => {
 	try {
 		registerExecCommandTool({ registerTool: (definition: any) => (tool = definition) } as any, tracker, sessions);
 
-		tracker.recordStart("call-1", "sed -n '1,20p' pi/agent/extensions/codex-exec/index.ts");
-		tracker.recordStart("call-2", "sed -n '1,20p' pi/agent/extensions/codex-exec/tools/exec-command-tool.ts");
+		tracker.recordStart("call-1", "sed -n '1,20p' pi/agent/extensions/exec-command/index.ts");
+		tracker.recordStart("call-2", "sed -n '1,20p' pi/agent/extensions/exec-command/tools/exec-command-tool.ts");
 
 		const firstRow = tool
-			.renderCall({ cmd: "sed -n '1,20p' pi/agent/extensions/codex-exec/index.ts" }, testTheme, {
+			.renderCall({ cmd: "sed -n '1,20p' pi/agent/extensions/exec-command/index.ts" }, testTheme, {
 				toolCallId: "call-1",
 				state: {},
 				isPartial: true,
@@ -120,7 +120,7 @@ test("exploration grouping keeps the first row as the visible anchor", () => {
 			.render(200)
 			.join("\n");
 		const secondRow = tool
-			.renderCall({ cmd: "sed -n '1,20p' pi/agent/extensions/codex-exec/tools/exec-command-tool.ts" }, testTheme, {
+			.renderCall({ cmd: "sed -n '1,20p' pi/agent/extensions/exec-command/tools/exec-command-tool.ts" }, testTheme, {
 				toolCallId: "call-2",
 				state: {},
 				isPartial: true,
@@ -147,7 +147,7 @@ test("exploration grouping hides later placeholders before execution starts", ()
 		registerExecCommandTool({ registerTool: (definition: any) => (tool = definition) } as any, tracker, sessions);
 
 		const firstRow = tool
-			.renderCall({ cmd: "sed -n '1,20p' pi/agent/extensions/codex-exec/index.ts" }, testTheme, {
+			.renderCall({ cmd: "sed -n '1,20p' pi/agent/extensions/exec-command/index.ts" }, testTheme, {
 				toolCallId: "call-1",
 				state: {},
 				isPartial: true,
@@ -156,7 +156,7 @@ test("exploration grouping hides later placeholders before execution starts", ()
 			.render(200)
 			.join("\n");
 		const secondRow = tool
-			.renderCall({ cmd: "sed -n '1,20p' pi/agent/extensions/codex-exec/tools/exec-command-tool.ts" }, testTheme, {
+			.renderCall({ cmd: "sed -n '1,20p' pi/agent/extensions/exec-command/tools/exec-command-tool.ts" }, testTheme, {
 				toolCallId: "call-2",
 				state: {},
 				isPartial: true,
@@ -180,7 +180,7 @@ test("exploration grouping does not append a single command output preview", () 
 	try {
 		registerExecCommandTool({ registerTool: (definition: any) => (tool = definition) } as any, tracker, sessions);
 
-		tracker.recordStart("call-1", "sed -n '1,20p' pi/agent/extensions/codex-exec/index.ts");
+		tracker.recordStart("call-1", "sed -n '1,20p' pi/agent/extensions/exec-command/index.ts");
 		const resultRow = tool.renderResult(
 			{
 				content: [{ type: "text", text: "fallback" }],
@@ -190,7 +190,7 @@ test("exploration grouping does not append a single command output preview", () 
 			testTheme,
 			{
 				toolCallId: "call-1",
-				args: { cmd: "sed -n '1,20p' pi/agent/extensions/codex-exec/index.ts" },
+				args: { cmd: "sed -n '1,20p' pi/agent/extensions/exec-command/index.ts" },
 				state: {},
 			},
 		);
@@ -317,7 +317,7 @@ test("exec renderers self-render without the default success shell", () => {
 test("extension hides empty self-rendered tool rows", () => {
 	type Handler = () => void;
 	const handlers = new Map<string, Handler[]>();
-	codexExecExtension({
+	execCommandExtension({
 		registerTool() {},
 		registerCommand() {},
 		getActiveTools: () => [],
@@ -400,7 +400,7 @@ test("exec command suppresses partial output streaming for exploration commands"
 
 	await tool.execute(
 		"call-explore-stream",
-		{ cmd: "sed -n '1,80p' pi/agent/extensions/codex-exec/index.ts", yield_time_ms: 5000 },
+		{ cmd: "sed -n '1,80p' pi/agent/extensions/exec-command/index.ts", yield_time_ms: 5000 },
 		undefined,
 		() => {
 			throw new Error("exploration command should not stream partial output");
@@ -436,7 +436,7 @@ test("write stdin renderer self-renders without the default success shell", () =
 });
 
 test("shutdown terminates descendant processes that escaped the shell process group", async () => {
-	const marker = `codex-exec-shutdown-descendant-${process.pid}-${Date.now()}`;
+	const marker = `exec-command-shutdown-descendant-${process.pid}-${Date.now()}`;
 	const sessions = createExecSessionManager({ defaultExecYieldTimeMs: 250 });
 	const childCode = [
 		"import signal,time",
@@ -493,7 +493,7 @@ test("extension marks nonzero exec results as errors for red status dots", () =>
 			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
 		},
 	} as any;
-	codexExecExtension(pi);
+	execCommandExtension(pi);
 
 	const toolResultHandlers = handlers.get("tool_result") ?? [];
 	const nonzero = toolResultHandlers.map((handler) =>
@@ -514,7 +514,7 @@ test("extension marks nonzero exec results as errors for red status dots", () =>
 	for (const handler of handlers.get("session_shutdown") ?? []) handler();
 });
 
-test("extension disables bash for Codex models and blocks direct bash calls", () => {
+test("extension disables bash and activates exec_command plus write_stdin for every model", () => {
 	type Handler = (event?: any, ctx?: any) => any;
 	const handlers = new Map<string, Handler[]>();
 	let activeTools = ["read", "bash"];
@@ -532,10 +532,10 @@ test("extension disables bash for Codex models and blocks direct bash calls", ()
 			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
 		},
 	} as any;
-	codexExecExtension(pi);
+	execCommandExtension(pi);
 
 	for (const handler of handlers.get("session_start") ?? []) {
-		handler(undefined, { model: { provider: "openai", id: "codex-mini-latest" } });
+		handler(undefined, { model: { provider: "anthropic", id: "claude-sonnet" } });
 	}
 
 	expect(activeTools).toEqual(["read", "exec_command", "write_stdin"]);
@@ -543,20 +543,91 @@ test("extension disables bash for Codex models and blocks direct bash calls", ()
 
 	const block = handlers
 		.get("tool_call")
-		?.map((handler) => handler({ toolName: "bash" }, { model: { provider: "openai", id: "codex-mini-latest" } }))
+		?.map((handler) => handler({ toolName: "bash" }, { model: { provider: "anthropic", id: "claude-sonnet" } }))
 		.find((result) => result?.block);
 
 	expect(block).toEqual({
 		block: true,
-		reason: "bash is disabled for Codex models. Use exec_command instead.",
+		reason: "bash is disabled. Use exec_command instead.",
+	});
+	const writeBlock = handlers
+		.get("tool_call")
+		?.map((handler) =>
+			handler({ toolName: "write_stdin" }, { model: { provider: "anthropic", id: "claude-sonnet" } }),
+		)
+		.find((result) => result?.block);
+	expect(writeBlock).toEqual({
+		block: true,
+		reason: "write_stdin is disabled until exec_command opens a running TTY session.",
 	});
 
 	for (const handler of handlers.get("model_select") ?? []) {
 		handler(undefined, { model: { provider: "anthropic", id: "claude-sonnet" } });
 	}
 
-	expect(activeTools).toEqual(["read", "bash"]);
+	expect(activeTools).toEqual(["read", "exec_command", "write_stdin"]);
 	for (const handler of handlers.get("session_shutdown") ?? []) handler();
+});
+
+test("exec_command keeps write_stdin active across non-interactive and tty runs", async () => {
+	type Handler = (event?: any, ctx?: any) => any;
+	const handlers = new Map<string, Handler[]>();
+	const commands = new Map<string, any>();
+	let activeTools = ["read", "bash"];
+	let execTool: any;
+	const pi = {
+		registerTool: (definition: any) => {
+			if (definition.name === "exec_command") execTool = definition;
+		},
+		registerCommand: (name: string, command: any) => commands.set(name, command),
+		getActiveTools: () => activeTools,
+		getAllTools: () => [{ name: "read" }, { name: "bash" }, { name: "exec_command" }, { name: "write_stdin" }],
+		setActiveTools: (next: string[]) => {
+			activeTools = next;
+		},
+		on: (event: string, handler: Handler) => {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+		},
+	} as any;
+	execCommandExtension(pi);
+
+	const ctx = {
+		cwd: process.cwd(),
+		hasUI: false,
+		model: { provider: "anthropic", id: "claude-sonnet" },
+		ui: { notify() {} },
+	};
+	for (const handler of handlers.get("session_start") ?? []) {
+		handler(undefined, ctx);
+	}
+	try {
+		await commands.get("rtk").handler("off", ctx);
+
+		expect(activeTools).toEqual(["read", "exec_command", "write_stdin"]);
+		const nonTty = await execTool.execute(
+			"call-non-tty",
+			{ cmd: "sleep 0.5; printf done", yield_time_ms: 250 },
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(nonTty.details.session_id).toBeNumber();
+		expect(nonTty.terminate).toBeUndefined();
+		expect(activeTools).toEqual(["read", "exec_command", "write_stdin"]);
+
+		const tty = await execTool.execute(
+			"call-tty",
+			{ cmd: 'read line; printf "got:$line"', tty: true, yield_time_ms: 250 },
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(tty.details.session_id).toBeNumber();
+		expect(tty.terminate).toBeUndefined();
+		expect(activeTools).toEqual(["read", "exec_command", "write_stdin"]);
+	} finally {
+		for (const handler of handlers.get("session_shutdown") ?? []) handler();
+	}
 });
 
 test("rtk command toggles default-on exec command wrapping", async () => {
@@ -582,7 +653,7 @@ test("rtk command toggles default-on exec command wrapping", async () => {
 			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
 		},
 	} as any;
-	codexExecExtension(pi);
+	execCommandExtension(pi);
 
 	const ctx = {
 		hasUI: true,
@@ -669,7 +740,7 @@ test("rtk wrapping updates legacy command argument aliases", async () => {
 			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
 		},
 	} as any;
-	codexExecExtension(pi);
+	execCommandExtension(pi);
 
 	const ctx = { hasUI: false, ui: { notify() {} }, cwd: process.cwd() };
 	const prepared = tool.prepareArguments({ command: "printf alias-original", yield_time_ms: 5000 });
@@ -723,7 +794,7 @@ test("rtk grep rewrite of rg uses raw rg immediately", async () => {
 			return {
 				chunk_id: "ok",
 				wall_time_seconds: 0,
-				output: "pi/agent/extensions/codex-exec/tools/rtk-wrapper.ts\n",
+				output: "pi/agent/extensions/exec-command/tools/rtk-wrapper.ts\n",
 				exit_code: 0,
 			};
 		},
@@ -741,13 +812,13 @@ test("rtk grep rewrite of rg uses raw rg immediately", async () => {
 
 	const result = await tool.execute(
 		"call-rg-fallback",
-		{ cmd: "rg --files pi/agent/extensions/codex-exec/tools/rtk-wrapper.ts" },
+		{ cmd: "rg --files pi/agent/extensions/exec-command/tools/rtk-wrapper.ts" },
 		undefined,
 		undefined,
 		{ cwd: process.cwd() },
 	);
 
-	expect(executedCommands).toEqual(["rg --files pi/agent/extensions/codex-exec/tools/rtk-wrapper.ts"]);
+	expect(executedCommands).toEqual(["rg --files pi/agent/extensions/exec-command/tools/rtk-wrapper.ts"]);
 	expect(result.details.output).toContain("rtk-wrapper.ts");
 	expect(result.isError).toBe(false);
 });
@@ -826,7 +897,7 @@ test("extension truncates oversized non-exec tool results before session history
 			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
 		},
 	} as any;
-	codexExecExtension(pi);
+	execCommandExtension(pi);
 
 	const toolResultHandlers = handlers.get("tool_result") ?? [];
 	const output = `${"head\n"}${"x".repeat(200000)}${"\ntail"}`;
@@ -852,8 +923,8 @@ test("extension truncates oversized non-exec tool results before session history
 test("exec session manager runs short non-interactive commands", async () => {
 	const sessions = createExecSessionManager({ defaultExecYieldTimeMs: 5000 });
 	try {
-		const result = await sessions.exec({ cmd: "printf codex-exec", yield_time_ms: 5000 }, process.cwd());
-		expect(result.output).toBe("codex-exec");
+		const result = await sessions.exec({ cmd: "printf exec-command", yield_time_ms: 5000 }, process.cwd());
+		expect(result.output).toBe("exec-command");
 		expect(result.exit_code).toBe(0);
 		expect(result.session_id).toBeUndefined();
 	} finally {
@@ -861,7 +932,7 @@ test("exec session manager runs short non-interactive commands", async () => {
 	}
 });
 
-test("exec session manager uses Codex-style middle truncation", async () => {
+test("exec session manager uses middle truncation", async () => {
 	const sessions = createExecSessionManager({ defaultExecYieldTimeMs: 5000 });
 	try {
 		const result = await sessions.exec(
@@ -911,7 +982,7 @@ test("exec session manager preserves ANSI SGR color output", async () => {
 	}
 });
 
-test("exec session manager uses Codex-style non-color environment", async () => {
+test("exec session manager uses a non-color environment", async () => {
 	const sessions = createExecSessionManager({ defaultExecYieldTimeMs: 5000 });
 	try {
 		const result = await sessions.exec(
