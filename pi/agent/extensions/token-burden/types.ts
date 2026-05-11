@@ -36,6 +36,17 @@ export interface ToolSectionData {
 	inactive: ToolEntry[];
 }
 
+export interface SessionUsageCategory {
+	label: string;
+	tokens: number;
+}
+
+export interface SessionUsageData {
+	tokens: number;
+	estimated: boolean;
+	categories: SessionUsageCategory[];
+}
+
 export interface PromptSection {
 	label: string;
 	chars: number;
