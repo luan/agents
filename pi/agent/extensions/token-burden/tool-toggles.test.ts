@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { createToolToggleController } from "./tool-toggles";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createToolToggleController, loadToolToggleConfig } from "./tool-toggles";
 
 type Handler = (...args: any[]) => unknown;
 
-function createPi(activeTools: string[]) {
+function createPi(activeTools: string[], disabledTools = ["ls", "grab", "find"], configPath?: string) {
 	const handlers = new Map<string, Handler[]>();
 	const setActiveToolsCalls: string[][] = [];
 	const pi = {
@@ -17,7 +20,7 @@ function createPi(activeTools: string[]) {
 		},
 	};
 
-	const controller = createToolToggleController(pi, ["ls", "grab", "find"]);
+	const controller = createToolToggleController(pi, disabledTools, configPath);
 	controller.install();
 
 	return { controller, handlers, setActiveToolsCalls, getActiveTools: () => activeTools };
@@ -69,5 +72,25 @@ describe("token-burden tool toggles", () => {
 			block: true,
 			reason: "exec_command is disabled by the token-burden extension. Toggle it on from /token-burden if needed.",
 		});
+	});
+
+	test("persists disabled tool changes to config", () => {
+		const configPath = join(mkdtempSync(join(tmpdir(), "token-burden-tools-")), "config.json");
+		writeFileSync(configPath, `${JSON.stringify({ disabledTools: ["find"] })}\n`, "utf8");
+		const pi = createPi(["read", "exec_command"], loadToolToggleConfig(configPath).disabledTools, configPath);
+
+		pi.controller.setToolActive("functions.find", true);
+		pi.controller.setToolActive("exec_command", false);
+
+		expect(JSON.parse(readFileSync(configPath, "utf8"))).toEqual({
+			disabledTools: ["exec_command"],
+		});
+	});
+
+	test("loads an explicitly empty disabled tool list without restoring defaults", () => {
+		const configPath = join(mkdtempSync(join(tmpdir(), "token-burden-tools-")), "config.json");
+		writeFileSync(configPath, `${JSON.stringify({ disabledTools: [] })}\n`, "utf8");
+
+		expect(loadToolToggleConfig(configPath)).toEqual({ disabledTools: [] });
 	});
 });
