@@ -23,6 +23,7 @@ No test infrastructure in project? Note it, proceed without tests.
 - **Happy-path-only** — bugs live at boundaries
 - **Coverage padding** — executes without asserting
 - **No-assertion smoke** — constructs object, asserts nothing
+- **Nonexistent-feature absence** — don't assert that unrelated, deleted, or never-implemented behavior is absent. Test only behavior that exists in the current contract.
 
 ## What to Test
 
