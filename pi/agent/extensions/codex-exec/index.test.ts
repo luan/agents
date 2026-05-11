@@ -489,6 +489,19 @@ test("rtk rewrite routes rg commands through rtk rg instead of rtk grep", async 
 	expect(execCalls).toEqual([]);
 });
 
+test("rtk rg wrapping preserves shell-expanded path globs", async () => {
+	const pi = {
+		exec: async () => {
+			throw new Error("rg wrapping should not call rtk rewrite");
+		},
+	} as any;
+
+	const decision = await computeRtkRewriteDecision(pi, `rg -n "pub fn draw|fn draw" src/font/sprite/draw/*.zig`, true);
+
+	expect(decision.changed).toBe(true);
+	expect(decision.rewrittenCommand).toBe(`rtk rg -n "pub fn draw|fn draw" src/font/sprite/draw/*.zig`);
+});
+
 test("extension truncates oversized non-exec tool results before session history", () => {
 	type Handler = (event?: any) => any;
 	const handlers = new Map<string, Handler[]>();
