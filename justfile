@@ -58,6 +58,7 @@ install:
     @command -v wt >/dev/null 2>&1 || cargo binstall worktrunk --locked
     @command -v git-surgeon >/dev/null 2>&1 || cargo binstall git-surgeon --locked
     cargo install --path "{{ repo }}/crates/ct"
+    cargo install --path "{{ repo }}/crates/sym"
     claude mcp remove -s user vault 2>/dev/null || true
     claude mcp remove -s user source 2>/dev/null || true
     claude mcp remove -s user apply-patch 2>/dev/null || true
