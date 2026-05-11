@@ -38,3 +38,5 @@ plugins/install-counts-cache.json
 /pi/agent/mcp-cache.json
 /pi/agent/mcp-oauth/
 /pi/agent/mcp-onboarding.json
+/.pi/openai-codex-images
+/pi/agent/codex-tools.json
