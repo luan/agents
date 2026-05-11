@@ -426,6 +426,250 @@ describe("token burden tools overlay", () => {
 		}
 	});
 
+	test("renders tool toggle states with skill-style icons", async () => {
+		let rendered = "";
+		const ctx = {
+			ui: {
+				custom: async (factory: any) => {
+					const component = factory({ requestRender() {} }, {}, {}, () => {});
+					component.handleInput("l");
+					rendered = stripAnsi(component.render(80).join("\n"));
+				},
+			},
+		};
+
+		await showReport(
+			{
+				totalChars: 20,
+				totalTokens: 10,
+				skills: [],
+				sections: [
+					{
+						label: "Tool definitions (1 active, 2 total)",
+						chars: 20,
+						tokens: 10,
+						tools: {
+							active: [{ name: "bash", chars: 20, tokens: 10, content: '{"name":"bash"}' }],
+							inactive: [{ name: "find", chars: 20, tokens: 10, content: '{"name":"find"}' }],
+						},
+						children: [{ label: "bash", chars: 20, tokens: 10, content: '{"name":"bash"}' }],
+						drillable: true,
+					} as any,
+				],
+			},
+			100,
+			ctx as any,
+		);
+
+		expect(rendered).toContain("▸ ●  bash");
+		expect(rendered).toContain("· ○  find");
+		expect(rendered).toContain("● on  ◐ mixed group  ○ disabled");
+		expect(rendered).not.toContain("Inactive (");
+	});
+
+	test("groups Codex Apps tools by app with aggregate toggle state", async () => {
+		let rendered = "";
+		const ctx = {
+			ui: {
+				custom: async (factory: any) => {
+					const component = factory({ requestRender() {} }, {}, {}, () => {});
+					component.handleInput("l");
+					rendered = stripAnsi(component.render(100).join("\n"));
+				},
+			},
+		};
+
+		await showReport(
+			{
+				totalChars: 60,
+				totalTokens: 30,
+				skills: [],
+				sections: [
+					{
+						label: "Tool definitions (2 active, 4 total)",
+						chars: 60,
+						tokens: 30,
+						tools: {
+							active: [
+								{ name: "bash", chars: 20, tokens: 10, content: '{"name":"bash"}' },
+								{
+									name: "codex_apps_github_list_repositories",
+									chars: 20,
+									tokens: 10,
+									content:
+										'{"name":"codex_apps_github_list_repositories","description":"List repositories.\\n\\nCodex app: GitHub."}',
+								},
+							],
+							inactive: [
+								{
+									name: "codex_apps_github_create_issue",
+									chars: 20,
+									tokens: 10,
+									content:
+										'{"name":"codex_apps_github_create_issue","description":"Create an issue.\\n\\nCodex app: GitHub."}',
+								},
+								{
+									name: "codex_apps_slack_slack_read_channel",
+									chars: 20,
+									tokens: 10,
+									content:
+										'{"name":"codex_apps_slack_slack_read_channel","description":"Read a channel.\\n\\nCodex app: Slack."}',
+								},
+							],
+						},
+						children: [],
+						drillable: true,
+					} as any,
+				],
+			},
+			100,
+			ctx as any,
+		);
+
+		expect(rendered).toContain("· ◐  ▾ Codex Apps / GitHub");
+		expect(rendered).toContain("1/2 on");
+		expect(rendered).toContain("·   ○  create_issue");
+		expect(rendered).toContain("·   ●  list_repositories");
+		expect(rendered).toContain("· ○  ▾ Codex Apps / Slack");
+		expect(rendered).toContain("·   ○  read_channel");
+		expect(rendered).not.toContain("codex_apps_github");
+		expect(rendered).not.toContain("codex_apps_slack");
+	});
+
+	test("collapses and expands Codex Apps groups with enter", async () => {
+		let collapsed = "";
+		let expanded = "";
+		const ctx = {
+			ui: {
+				custom: async (factory: any) => {
+					const component = factory({ requestRender() {} }, {}, {}, () => {});
+					component.handleInput("l");
+					component.handleInput("l");
+					collapsed = stripAnsi(component.render(100).join("\n"));
+					component.handleInput("l");
+					expanded = stripAnsi(component.render(100).join("\n"));
+				},
+			},
+		};
+
+		await showReport(
+			{
+				totalChars: 40,
+				totalTokens: 20,
+				skills: [],
+				sections: [
+					{
+						label: "Tool definitions (1 active, 2 total)",
+						chars: 20,
+						tokens: 10,
+						tools: {
+							active: [
+								{
+									name: "codex_apps_github_list_repositories",
+									chars: 20,
+									tokens: 10,
+									content:
+										'{"name":"codex_apps_github_list_repositories","description":"List repositories.\\n\\nCodex app: GitHub."}',
+								},
+							],
+							inactive: [
+								{
+									name: "codex_apps_github_create_issue",
+									chars: 20,
+									tokens: 10,
+									content:
+										'{"name":"codex_apps_github_create_issue","description":"Create an issue.\\n\\nCodex app: GitHub."}',
+								},
+							],
+						},
+						children: [],
+						drillable: true,
+					} as any,
+				],
+			},
+			100,
+			ctx as any,
+		);
+
+		expect(collapsed).toContain("▸ ◐  ▸ Codex Apps / GitHub");
+		expect(collapsed).not.toContain("create_issue");
+		expect(collapsed).not.toContain("list_repositories");
+		expect(expanded).toContain("▸ ◐  ▾ Codex Apps / GitHub");
+		expect(expanded).toContain("·   ○  create_issue");
+		expect(expanded).toContain("·   ●  list_repositories");
+	});
+
+	test("toggles a Codex Apps group by applying the target state to tools in that app", async () => {
+		const calls: Array<{ toolName: string; enabled: boolean }> = [];
+		let activeToolNames = ["codex_apps_github_list_repositories"];
+		let renderedAfterToggle = "";
+		const ctx = {
+			ui: {
+				custom: async (factory: any) => {
+					const component = factory({ requestRender() {} }, {}, {}, () => {});
+					component.handleInput("l");
+					component.handleInput(" ");
+					renderedAfterToggle = stripAnsi(component.render(100).join("\n"));
+				},
+			},
+		};
+
+		await showReport(
+			{
+				totalChars: 40,
+				totalTokens: 20,
+				skills: [],
+				sections: [
+					{
+						label: "Tool definitions (1 active, 2 total)",
+						chars: 20,
+						tokens: 10,
+						tools: {
+							active: [
+								{
+									name: "codex_apps_github_list_repositories",
+									chars: 20,
+									tokens: 10,
+									content:
+										'{"name":"codex_apps_github_list_repositories","description":"List repositories.\\n\\nCodex app: GitHub."}',
+								},
+							],
+							inactive: [
+								{
+									name: "codex_apps_github_create_issue",
+									chars: 20,
+									tokens: 10,
+									content:
+										'{"name":"codex_apps_github_create_issue","description":"Create an issue.\\n\\nCodex app: GitHub."}',
+								},
+							],
+						},
+						children: [],
+						drillable: true,
+					} as any,
+				],
+			},
+			100,
+			ctx as any,
+			[],
+			undefined,
+			undefined,
+			(toolName, enabled) => {
+				calls.push({ toolName, enabled });
+				activeToolNames = enabled
+					? [...new Set([...activeToolNames, toolName])]
+					: activeToolNames.filter((name) => name !== toolName);
+				return { applied: true, activeToolNames };
+			},
+		);
+
+		expect(calls).toEqual([{ toolName: "codex_apps_github_create_issue", enabled: true }]);
+		expect(renderedAfterToggle).toContain("▸ ●  ▾ Codex Apps / GitHub");
+		expect(renderedAfterToggle).toContain("2/2 on");
+		expect(renderedAfterToggle).toContain("·   ●  create_issue");
+		expect(renderedAfterToggle).toContain("·   ●  list_repositories");
+	});
+
 	test("toggles the selected active tool through the supplied handler", async () => {
 		const calls: Array<{ toolName: string; enabled: boolean }> = [];
 		let renderedAfterToggle = "";
@@ -471,7 +715,10 @@ describe("token burden tools overlay", () => {
 		);
 
 		expect(calls).toEqual([{ toolName: "bash", enabled: false }]);
-		expect(renderedAfterToggle).toContain("Active (0)");
-		expect(renderedAfterToggle).toContain("Inactive (2");
+		const stripped = stripAnsi(renderedAfterToggle);
+		expect(stripped).toContain("▸ ○  bash");
+		expect(stripped).toContain("· ○  find");
+		expect(stripped).not.toContain("Active (0)");
+		expect(stripped).not.toContain("Inactive (2");
 	});
 });

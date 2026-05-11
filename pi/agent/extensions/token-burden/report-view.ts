@@ -524,7 +524,7 @@ interface OverlayState {
 	searchQuery: string;
 	drilldownSection: TableItem | null;
 	toolsSection: TableItem | null;
-	toolsInactiveExpanded: boolean;
+	collapsedToolGroups: Set<string>;
 	pendingChanges: Map<string, DisableMode>;
 	confirmingDiscard: boolean;
 	traceResult: BasePromptTraceResult | null;
@@ -532,13 +532,30 @@ interface OverlayState {
 	traceDrilldownBucket: TraceBucket | null;
 }
 
-interface ToolsRow {
-	kind: "active-tool" | "inactive-header" | "inactive-tool";
+interface ToolRow {
+	kind: "tool";
 	label: string;
+	toolName: string;
+	enabled: boolean;
+	indented?: boolean;
 	chars?: number;
 	tokens?: number;
 	content?: string;
 }
+
+interface ToolGroupRow {
+	kind: "group";
+	label: string;
+	groupKey: string;
+	state: "enabled" | "disabled" | "mixed";
+	tools: ToolRow[];
+	tokens: number;
+	activeCount: number;
+	totalCount: number;
+	collapsed: boolean;
+}
+
+type ToolsRow = ToolRow | ToolGroupRow;
 
 export type ToolToggleHandler = (
 	toolName: string,
@@ -583,6 +600,52 @@ function objectValue(value: unknown, key: string): unknown {
 		return undefined;
 	}
 	return (value as Record<string, unknown>)[key];
+}
+
+function humanizeIdentifier(value: string): string {
+	return value
+		.split(/[_\s-]+/)
+		.filter(Boolean)
+		.map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`)
+		.join(" ");
+}
+
+function slugIdentifier(value: string): string {
+	return value
+		.toLowerCase()
+		.replaceAll(/[^a-z0-9]+/g, "_")
+		.replaceAll(/^_+|_+$/g, "");
+}
+
+interface CodexAppToolInfo {
+	appLabel: string;
+	displayName: string;
+}
+
+function codexAppToolInfo(tool: ToolEntry): CodexAppToolInfo | undefined {
+	const prefix = "codex_apps_";
+	if (!tool.name.startsWith(prefix)) {
+		return undefined;
+	}
+
+	const parsed = parseToolContent(tool);
+	const description = objectValue(parsed, "description");
+	const descriptionApp =
+		typeof description === "string" ? description.match(/(?:^|\n)Codex app:\s*([^\n.]+)\./i)?.[1]?.trim() : "";
+	const rawName = tool.name.slice(prefix.length);
+	const fallbackApp = rawName.split("_").at(0) ?? "app";
+	const appLabel = descriptionApp || humanizeIdentifier(fallbackApp);
+	const appSlug = slugIdentifier(appLabel || fallbackApp);
+
+	let displayName = rawName;
+	while (appSlug && displayName.startsWith(`${appSlug}_`)) {
+		displayName = displayName.slice(appSlug.length + 1);
+	}
+
+	return {
+		appLabel,
+		displayName: displayName || rawName,
+	};
 }
 
 function markdownCodeBlock(language: string, content: string): string {
@@ -648,7 +711,7 @@ class BudgetOverlay {
 		searchQuery: "",
 		drilldownSection: null,
 		toolsSection: null,
-		toolsInactiveExpanded: false,
+		collapsedToolGroups: new Set(),
 		pendingChanges: new Map(),
 		confirmingDiscard: false,
 		traceResult: null,
@@ -883,7 +946,6 @@ class BudgetOverlay {
 		if (selected.tools) {
 			this.state.mode = "tools";
 			this.state.toolsSection = selected;
-			this.state.toolsInactiveExpanded = false;
 			this.state.selectedIndex = 0;
 			this.state.scrollOffset = 0;
 			this.state.searchActive = false;
@@ -916,7 +978,6 @@ class BudgetOverlay {
 		if (isBackKey(data)) {
 			this.state.mode = "sections";
 			this.state.toolsSection = null;
-			this.state.toolsInactiveExpanded = false;
 			this.state.selectedIndex = 0;
 			this.state.scrollOffset = 0;
 			this.invalidate();
@@ -933,15 +994,22 @@ class BudgetOverlay {
 			return;
 		}
 
-		if (isToggleKey(data)) {
+		if (isForwardKey(data)) {
 			const row = this.getToolsRows()[this.state.selectedIndex];
-			if (row?.kind === "inactive-header") {
-				this.state.toolsInactiveExpanded = !this.state.toolsInactiveExpanded;
-				this.invalidate();
-			} else if (row?.kind === "active-tool") {
-				this.toggleTool(row.label, false);
-			} else if (row?.kind === "inactive-tool") {
-				this.toggleTool(row.label, true);
+			if (row?.kind === "group") {
+				this.toggleToolGroupCollapsed(row);
+			} else if (row) {
+				this.toggleTool(row.toolName, !row.enabled);
+			}
+			return;
+		}
+
+		if (data === " ") {
+			const row = this.getToolsRows()[this.state.selectedIndex];
+			if (row?.kind === "group") {
+				this.toggleToolGroup(row);
+			} else if (row) {
+				this.toggleTool(row.toolName, !row.enabled);
 			}
 			return;
 		}
@@ -951,45 +1019,68 @@ class BudgetOverlay {
 		}
 	}
 
-	private getVisibleTools(): ToolEntry[] {
-		return (this.state.toolsSection?.tools?.active ?? []).toSorted((a, b) => b.tokens - a.tokens);
-	}
-
-	private getInactiveTools(): ToolEntry[] {
-		return (this.state.toolsSection?.tools?.inactive ?? []).toSorted((a, b) => b.tokens - a.tokens);
-	}
-
 	private getToolsRows(): ToolsRow[] {
-		const rows: ToolsRow[] = this.getVisibleTools().map((tool) => ({
-			kind: "active-tool",
-			label: tool.name,
-			chars: tool.chars,
-			tokens: tool.tokens,
-			content: tool.content,
-		}));
-
-		const inactive = this.getInactiveTools();
-		if (inactive.length > 0) {
-			const inactiveTokens = inactive.reduce((sum, tool) => sum + tool.tokens, 0);
-			rows.push({
-				kind: "inactive-header",
-				label: `Inactive (${String(inactive.length)}, +${fmt(inactiveTokens)} tok if enabled)`,
-			});
-
-			if (this.state.toolsInactiveExpanded) {
-				rows.push(
-					...inactive.map((tool) => ({
-						kind: "inactive-tool" as const,
-						label: tool.name,
-						chars: tool.chars,
-						tokens: tool.tokens,
-						content: tool.content,
-					})),
-				);
-			}
+		const tools = this.state.toolsSection?.tools;
+		if (!tools) {
+			return [];
 		}
 
-		return rows;
+		const entries = [
+			...tools.active.map((tool) => ({ tool, enabled: true })),
+			...tools.inactive.map((tool) => ({ tool, enabled: false })),
+		].map(({ tool, enabled }) => {
+			const info = codexAppToolInfo(tool);
+			const row: ToolRow = {
+				kind: "tool",
+				label: info?.displayName ?? tool.name,
+				toolName: tool.name,
+				enabled,
+				chars: tool.chars,
+				tokens: tool.tokens,
+				content: tool.content,
+			};
+			return { row, info };
+		});
+
+		const regularRows: ToolRow[] = [];
+		const codexGroups = new Map<string, ToolRow[]>();
+
+		for (const { row: toolRow, info } of entries) {
+			if (!info) {
+				regularRows.push(toolRow);
+				continue;
+			}
+			codexGroups.set(info.appLabel, [...(codexGroups.get(info.appLabel) ?? []), toolRow]);
+		}
+
+		const sortedRegularRows = regularRows.toSorted((left, right) => {
+			const tokenDelta = (right.tokens ?? 0) - (left.tokens ?? 0);
+			return tokenDelta !== 0 ? tokenDelta : left.label.localeCompare(right.label);
+		});
+
+		const groupRows: ToolsRow[] = [...codexGroups.entries()]
+			.toSorted(([leftLabel], [rightLabel]) => leftLabel.localeCompare(rightLabel))
+			.flatMap(([appLabel, rows]) => {
+				const sortedRows = rows
+					.toSorted((left, right) => left.label.localeCompare(right.label))
+					.map((row) => ({ ...row, indented: true }));
+				const activeCount = sortedRows.filter((row) => row.enabled).length;
+				const state = activeCount === 0 ? "disabled" : activeCount === sortedRows.length ? "enabled" : "mixed";
+				const header: ToolGroupRow = {
+					kind: "group",
+					label: `Codex Apps / ${appLabel}`,
+					groupKey: appLabel,
+					state,
+					tools: sortedRows,
+					tokens: sortedRows.reduce((sum, row) => sum + (row.enabled ? (row.tokens ?? 0) : 0), 0),
+					activeCount,
+					totalCount: sortedRows.length,
+					collapsed: this.state.collapsedToolGroups.has(appLabel),
+				};
+				return header.collapsed ? [header] : [header, ...sortedRows];
+			});
+
+		return [...sortedRegularRows, ...groupRows];
 	}
 
 	private toggleTool(toolName: string, enabled: boolean): void {
@@ -1000,6 +1091,38 @@ class BudgetOverlay {
 
 		this.applyActiveToolNames(result.activeToolNames);
 		this.invalidate();
+	}
+
+	private toggleToolGroupCollapsed(row: ToolGroupRow): void {
+		if (row.collapsed) {
+			this.state.collapsedToolGroups.delete(row.groupKey);
+		} else {
+			this.state.collapsedToolGroups.add(row.groupKey);
+		}
+		const rowCount = this.getToolsRows().length;
+		this.state.selectedIndex = Math.min(this.state.selectedIndex, Math.max(0, rowCount - 1));
+		this.state.scrollOffset = Math.min(this.state.scrollOffset, Math.max(0, rowCount - MAX_VISIBLE_ROWS));
+		this.invalidate();
+	}
+
+	private toggleToolGroup(row: ToolGroupRow): void {
+		const enabled = row.state !== "enabled";
+		let activeToolNames: string[] | undefined;
+
+		for (const tool of row.tools) {
+			if (tool.enabled === enabled) {
+				continue;
+			}
+			const result = this.onToolToggle?.(tool.toolName, enabled);
+			if (result?.applied) {
+				activeToolNames = result.activeToolNames;
+			}
+		}
+
+		if (activeToolNames) {
+			this.applyActiveToolNames(activeToolNames);
+			this.invalidate();
+		}
 	}
 
 	private applyActiveToolNames(activeToolNames: string[]): void {
@@ -1294,15 +1417,15 @@ class BudgetOverlay {
 
 	private openSelectedToolInEditor(): void {
 		const tool = this.getToolsRows()[this.state.selectedIndex];
-		if (!tool?.content) {
+		if (tool?.kind !== "tool" || !tool.content) {
 			return;
 		}
 
 		this.openMarkdownContentInEditor(
-			tool.label,
+			tool.toolName,
 			formatToolMarkdown(
 				{
-					name: tool.label,
+					name: tool.toolName,
 					chars: tool.chars ?? tool.content.length,
 					tokens: tool.tokens ?? 0,
 					content: tool.content,
@@ -1821,14 +1944,10 @@ class BudgetOverlay {
 		lines.push(row(breadcrumb));
 		lines.push(emptyRow());
 
-		const activeTools = this.getVisibleTools();
 		const rows = this.getToolsRows();
 
-		lines.push(row(bold(`Active (${String(activeTools.length)})`)));
-		lines.push(emptyRow());
-
 		if (rows.length === 0) {
-			lines.push(centerRow(dim(italic("No active tools"))));
+			lines.push(centerRow(dim(italic("No tools"))));
 			lines.push(emptyRow());
 			return;
 		}
@@ -1839,30 +1958,50 @@ class BudgetOverlay {
 		for (let i = startIdx; i < endIdx; i++) {
 			const tool = rows[i];
 			const isSelected = i === this.state.selectedIndex;
-			if (tool.kind === "inactive-header") {
-				const prefix = isSelected ? sgr("36", "▸") : dim("·");
-				const label = isSelected ? bold(sgr("36", tool.label)) : dim(tool.label);
-				lines.push(row(`${prefix} ${label}`));
+			const prefix = isSelected ? sgr("36", "▸") : dim("·");
+
+			if (tool.kind === "group") {
+				let statusIcon: string;
+				if (tool.state === "enabled") {
+					statusIcon = sgr("32", "●");
+				} else if (tool.state === "mixed") {
+					statusIcon = sgr("33", "◐");
+				} else {
+					statusIcon = sgr("31", "○");
+				}
+				const groupLabel = `${tool.collapsed ? "▸" : "▾"} ${tool.label}`;
+				const nameStr = isSelected ? bold(sgr("36", groupLabel)) : groupLabel;
+				const tokenStr = `${tool.activeCount}/${tool.totalCount} on   ${fmt(tool.tokens)} tok`;
+				const suffixWidth = visibleWidth(tokenStr);
+				const prefixWidth = 5;
+				const nameMaxWidth = innerW - prefixWidth - suffixWidth - 4;
+				const truncatedName = truncateToWidth(nameStr, nameMaxWidth, "…");
+				const nameWidth = visibleWidth(truncatedName);
+				const gap = Math.max(1, innerW - prefixWidth - nameWidth - suffixWidth - 3);
+
+				const content = `${prefix} ${statusIcon}  ${truncatedName}${" ".repeat(gap)}${dim(tokenStr)}`;
+				lines.push(row(content));
 				continue;
 			}
 
-			const prefix = isSelected ? sgr("36", "▸") : dim("·");
+			const statusIcon = tool.enabled ? sgr("32", "●") : sgr("31", "○");
 			const nameStr = isSelected ? bold(sgr("36", tool.label)) : tool.label;
-			const tokenStr =
-				tool.kind === "inactive-tool" ? `+${fmt(tool.tokens ?? 0)} tok if enabled` : `${fmt(tool.tokens ?? 0)} tok`;
+			const tokenStr = `${fmt(tool.tokens ?? 0)} tok`;
+			const indent = tool.indented ? "  " : "";
 
 			const suffixWidth = visibleWidth(tokenStr);
-			const prefixWidth = 2;
+			const prefixWidth = 5 + visibleWidth(indent);
 			const nameMaxWidth = innerW - prefixWidth - suffixWidth - 4;
 			const truncatedName = truncateToWidth(nameStr, nameMaxWidth, "…");
 			const nameWidth = visibleWidth(truncatedName);
 			const gap = Math.max(1, innerW - prefixWidth - nameWidth - suffixWidth - 3);
 
-			const content = `${prefix} ${truncatedName}${" ".repeat(gap)}${dim(tokenStr)}`;
+			const content = `${prefix} ${indent}${statusIcon}  ${truncatedName}${" ".repeat(gap)}${dim(tokenStr)}`;
 			lines.push(row(content));
 		}
 
 		lines.push(emptyRow());
+		lines.push(row(dim(`${sgr("32", "●")} on  ${sgr("33", "◐")} mixed group  ${sgr("31", "○")} disabled`)));
 
 		if (rows.length > MAX_VISIBLE_ROWS) {
 			const progress = Math.round(((this.state.selectedIndex + 1) / rows.length) * 10);
@@ -1934,8 +2073,11 @@ class BudgetOverlay {
 			hints = `${italic("↑↓/jk")} navigate  ${italic("enter/l")} cycle state  ${italic("e")} edit  ${italic("/")} search  ${italic("ctrl+s")} save  ${italic("esc/h/q")} back`;
 		} else if (this.state.mode === "tools") {
 			const selectedTool = this.getToolsRows()[this.state.selectedIndex];
-			const viewHint = selectedTool?.content ? `  ${italic("e")} view` : "";
-			hints = `${italic("↑↓/jk")} navigate  ${italic("enter/l")} toggle${viewHint}  ${italic("esc/h/q")} back`;
+			const viewHint = selectedTool?.kind === "tool" && selectedTool.content ? `  ${italic("e")} view` : "";
+			hints =
+				selectedTool?.kind === "group"
+					? `${italic("↑↓/jk")} navigate  ${italic("enter/l")} collapse  ${italic("space")} toggle group  ${italic("esc/h/q")} back`
+					: `${italic("↑↓/jk")} navigate  ${italic("enter/l/space")} toggle${viewHint}  ${italic("esc/h/q")} back`;
 		} else if (this.state.mode === "trace") {
 			hints = `${italic("↑↓/jk")} navigate  ${italic("enter/l")} details  ${italic("e")} open  ${italic("r")} refresh  ${italic("esc/h/q")} back`;
 		} else if (this.state.mode === "trace-drilldown") {
