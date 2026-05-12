@@ -90,7 +90,7 @@ const mergeFileLines = (prev: string, fresh: string): string => {
 	const cap = (set: Set<string>, limit: number) => {
 		const arr = [...set];
 		if (arr.length <= limit) return arr.join(", ");
-		return arr.slice(0, limit).join(", ") + ` (+${arr.length - limit} more)`;
+		return `${arr.slice(0, limit).join(", ")} (+${arr.length - limit} more)`;
 	};
 
 	const lines: string[] = [];
@@ -104,7 +104,7 @@ const mergeFileLines = (prev: string, fresh: string): string => {
 const mergeBriefTranscript = (prev: string, fresh: string): string => {
 	if (!prev) return fresh;
 	if (!fresh) return prev;
-	return prev + "\n\n" + fresh;
+	return `${prev}\n\n${fresh}`;
 };
 
 const mergePrevious = (prev: string, fresh: string): string => {
