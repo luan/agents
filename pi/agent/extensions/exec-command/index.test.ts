@@ -379,11 +379,13 @@ test("user bash executions render with shared exec command styling", () => {
 	component.appendOutput("hello\n");
 	component.setComplete(0, false);
 
-	const rendered = stripAnsi(component.render(80).join("\n"));
+	const raw = component.render(80).join("\n");
+	const rendered = stripAnsi(raw);
 	expect(rendered).toContain("You ran");
 	expect(rendered).toContain("echo hello");
 	expect(rendered).toContain("  └ hello");
 	expect(rendered).not.toContain("$ echo hello");
+	expect(raw).toContain("\x1b[");
 });
 
 test("exec result renderer truncates output by rendered width", () => {
