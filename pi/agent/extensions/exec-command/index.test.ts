@@ -240,9 +240,35 @@ test("exec command call can show an RTK routing marker", () => {
 	);
 });
 
-test("output block keeps a vertical gutter and preserves ANSI color", () => {
+test("line-safe rg summaries do not display numeric limits as the query", () => {
+	const rendered = renderExecCommandCall(
+		`rg -n -M 400 --max-columns-preview "struct SyncPersistenceUtilities|class SyncPersistenceUtilities"`,
+		"done",
+		testTheme,
+	);
+	expect(rendered).toContain("<bold>Explored</bold>");
+	expect(rendered).toContain(
+		"<accent>Search</accent> <muted>struct SyncPersistenceUtilities|class SyncPersistenceUtilities</muted>",
+	);
+	expect(rendered).not.toContain("<muted>400");
+});
+
+test("compact rtk grep summaries do not display output limits as the query", () => {
+	const rendered = renderExecCommandCall(
+		`rtk grep -m 100 -l 400 "struct SyncPersistenceUtilities|class SyncPersistenceUtilities" src`,
+		"done",
+		testTheme,
+	);
+	expect(rendered).toContain("<bold>Explored</bold>");
+	expect(rendered).toContain(
+		"<accent>Search</accent> <muted>struct SyncPersistenceUtilities|class SyncPersistenceUtilities in src</muted>",
+	);
+	expect(rendered).not.toContain("<muted>400");
+});
+
+test("output block uses Codex-like prefixes and preserves ANSI color", () => {
 	const rendered = renderOutputBlock("plain\n\u001b[32m✓ green\u001b[0m\n", testTheme);
-	expect(rendered).toBe(`<dim>  ├ </dim><dim>plain</dim>\n<dim>  └ </dim>\u001b[32m✓ green\u001b[0m`);
+	expect(rendered).toBe(`<dim>  └ </dim><dim>plain</dim>\n<dim>    </dim>\u001b[32m✓ green\u001b[0m`);
 });
 
 test("output block preserves plain line spacing", () => {
@@ -255,6 +281,17 @@ test("output block limits very long plain lines", () => {
 	expect(rendered).toBe(`<dim>  └ </dim><dim>${"x".repeat(217)}...</dim>`);
 });
 
+test("output block truncates by displayed rows for long URL-like lines", () => {
+	const longUrl = "https://example.test/api/v1/projects/alpha-team/releases/2026-02-17/builds/1234567890";
+	const rendered = renderOutputBlock(`${longUrl}\ntail`, testTheme, undefined, {
+		maxLines: 2,
+		width: 32,
+	});
+
+	expect(rendered).toContain("… +");
+	expect(rendered).toContain("tail");
+});
+
 test("output block collapses large output in the middle", () => {
 	const rendered = renderOutputBlock(
 		Array.from({ length: 8 }, (_, index) => `line ${index + 1}`).join("\n"),
@@ -265,11 +302,11 @@ test("output block collapses large output in the middle", () => {
 
 	expect(rendered).toBe(
 		[
-			"<dim>  ├ </dim><dim>line 1</dim>",
-			"<dim>  │ </dim><dim>line 2</dim>",
-			"<dim>  │ </dim><dim>… +4 lines</dim>",
-			"<dim>  │ </dim><dim>line 7</dim>",
-			"<dim>  └ </dim><dim>line 8</dim>",
+			"<dim>  └ </dim><dim>line 1</dim>",
+			"<dim>    </dim><dim>line 2</dim>",
+			"<dim>    </dim><dim>… +4 lines</dim>",
+			"<dim>    </dim><dim>line 7</dim>",
+			"<dim>    </dim><dim>line 8</dim>",
 		].join("\n"),
 	);
 });
@@ -281,7 +318,7 @@ test("output block marks token-truncated output at the top", () => {
 	});
 
 	expect(rendered).toBe(
-		"<dim>  ├ </dim><dim>… output truncated above (original ~1234 tokens)</dim>\n<dim>  └ </dim><dim>tail</dim>",
+		"<dim>  └ </dim><dim>… output truncated above (original ~1234 tokens)</dim>\n<dim>    </dim><dim>tail</dim>",
 	);
 });
 
@@ -306,9 +343,40 @@ test("exec renderers self-render without the default success shell", () => {
 			{ toolCallId: "call", args: { cmd: "printf visible" } },
 		);
 		const rendered = component.render(120).join("\n");
-		expect(rendered).toContain("<dim>  ├ </dim><dim>visible output</dim>");
-		expect(rendered).toContain("<dim>  └ </dim><dim>next line</dim>");
+		expect(rendered).toContain("<dim>  └ </dim><dim>visible output</dim>");
+		expect(rendered).toContain("<dim>    </dim><dim>next line</dim>");
 		expect(rendered).not.toContain("Exit code: 0");
+	} finally {
+		sessions.shutdown();
+	}
+});
+
+test("exec result renderer truncates output by rendered width", () => {
+	let tool: any;
+	const sessions = createExecSessionManager();
+	try {
+		registerExecCommandTool(
+			{ registerTool: (definition: any) => (tool = definition) } as any,
+			createExecCommandTracker(),
+			sessions,
+		);
+
+		const longUrl = `https://example.test/${"very-long-segment/".repeat(20)}`;
+		const rendered = tool
+			.renderResult(
+				{
+					content: [{ type: "text", text: "fallback" }],
+					details: { output: `${longUrl}\ntail`, exit_code: 0 },
+				},
+				{ expanded: false, isPartial: false },
+				testTheme,
+				{ toolCallId: "call", args: { cmd: "printf long" }, state: {} },
+			)
+			.render(32)
+			.join("\n");
+
+		expect(rendered).toContain("… +");
+		expect(rendered).toContain("tail");
 	} finally {
 		sessions.shutdown();
 	}
@@ -556,10 +624,7 @@ test("extension disables bash and activates exec_command plus write_stdin for ev
 			handler({ toolName: "write_stdin" }, { model: { provider: "anthropic", id: "claude-sonnet" } }),
 		)
 		.find((result) => result?.block);
-	expect(writeBlock).toEqual({
-		block: true,
-		reason: "write_stdin is disabled until exec_command opens a running TTY session.",
-	});
+	expect(writeBlock).toBeUndefined();
 
 	for (const handler of handlers.get("model_select") ?? []) {
 		handler(undefined, { model: { provider: "anthropic", id: "claude-sonnet" } });
