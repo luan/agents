@@ -41,6 +41,7 @@ interface BashExecutionPrototype {
 	contentContainer: { clear(): void; addChild(child: unknown): void };
 	[USER_BASH_RENDER_PATCH]?: true;
 	updateDisplay(): void;
+	render(width: number): string[];
 }
 
 function ansiForRole(role: string): string {
@@ -90,6 +91,9 @@ function installEmptySelfShellRowPatch(): void {
 function installUserBashRenderPatch(): void {
 	const proto = BashExecutionComponent.prototype as BashExecutionPrototype;
 	if (proto[USER_BASH_RENDER_PATCH]) return;
+	proto.render = function renderUserBashWithoutFrame(this: BashExecutionPrototype, width: number): string[] {
+		return this.contentContainer.render(width);
+	};
 	proto.updateDisplay = function updateUserBashDisplay(this: BashExecutionPrototype): void {
 		const output = this.outputLines.join("\n");
 		const running = this.status === "running";
