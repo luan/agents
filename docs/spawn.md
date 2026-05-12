@@ -6,7 +6,7 @@ product workflow, task classification, lens selection, or agent behavior policy.
 
 ## Active surfaces
 
-- Extension: `pi/agent/extensions/spawn.ts`
+- Extension: `pi/agent/extensions/spawn/index.ts`
 - Command: `/spawn`
 - Tools:
   - `spawn_lane`
@@ -127,10 +127,23 @@ prefix lines.
 - Non-Pi runtimes normalize to root relation because there is no Pi child
   session to link.
 
+## Slash command
+
+```text
+/spawn help
+/spawn shell --placement split-pane --split-direction horizontal
+/spawn command --placement new-window -- npm run dev
+/spawn direct child Inspect docs/spawn.md
+/spawn context child Continue the current investigation
+/spawn list
+/spawn map
+/spawn status
+```
+
 ## Boundary for future agentic extensions
 
 A higher-level agentic Pi extension can compose on top of spawn, but should keep
-its own policy outside `spawn.ts`.
+its own policy outside `spawn/index.ts`.
 
 Good division:
 
@@ -148,7 +161,7 @@ After changing spawn or its docs, run:
 ```bash
 cd /path/to/agents
 git diff --check
-node --check pi/agent/extensions/spawn.ts
-node --check pi/agent/extensions/cockpit-nav.ts
+node --check pi/agent/extensions/spawn/index.ts
+node --check pi/agent/extensions/spawn/cockpit-nav.ts
 bun run typecheck
 ```

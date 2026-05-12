@@ -29,7 +29,7 @@ const longestCommonDirPrefix = (paths: string[]): string => {
 		i++;
 	}
 	if (i < 2) return ""; // require at least /a/b common
-	return split[0].slice(0, i).join("/") + "/";
+	return `${split[0].slice(0, i).join("/")}/`;
 };
 
 const trimPaths = (set: Set<string>, prefix: string): Set<string> => {

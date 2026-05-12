@@ -1,4 +1,4 @@
-import { type ExtensionAPI, type ExtensionContext, keyText } from "@earendil-works/pi-coding-agent";
+import { type ExtensionContext, keyText } from "@earendil-works/pi-coding-agent";
 import { type Component, type Focusable, getKeybindings, Input } from "@earendil-works/pi-tui";
 
 export type NavResult<T> = { action: "value"; value: T } | { action: "back" } | { action: "cancel" };
@@ -116,5 +116,3 @@ export async function navInput(ctx: ExtensionContext, title: string): Promise<Na
 export async function navOptionalInput(ctx: ExtensionContext, title: string): Promise<NavResult<string>> {
 	return ctx.ui.custom<NavResult<string>>((_tui, theme, _kb, done) => new NavInputComponent(title, theme, done, true));
 }
-
-export default function cockpitNav(_pi: ExtensionAPI) {}

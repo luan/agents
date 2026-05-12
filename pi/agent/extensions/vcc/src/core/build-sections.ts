@@ -51,7 +51,7 @@ const formatFileActivity = (blocks: NormalizedBlock[]): string[] => {
 	const cap = (set: Set<string>, limit: number) => {
 		const arr = [...set];
 		if (arr.length <= limit) return arr.join(", ");
-		return arr.slice(0, limit).join(", ") + ` (+${arr.length - limit} more)`;
+		return `${arr.slice(0, limit).join(", ")} (+${arr.length - limit} more)`;
 	};
 	if (act.modified.size > 0) lines.push(`Modified: ${cap(act.modified, 10)}`);
 	if (act.created.size > 0) lines.push(`Created: ${cap(act.created, 10)}`);

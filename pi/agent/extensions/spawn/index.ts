@@ -14,10 +14,47 @@ import {
 	serializeConversation,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { shellQuote, shellSplit } from "../exec-command/shell/tokenize.ts";
 import { navInput, navOptionalInput, navSelect } from "./cockpit-nav.ts";
 
 const CONTEXT_RECENT_TOKEN_BUDGET = 8_000;
 const SPAWN_ENTRY_TYPE = "spawn-lane";
+const SPAWN_USAGE =
+	"Usage: /spawn direct|context|empty [child|root] ...; /spawn shell|bash ...; /spawn command|run ... -- <command>; /spawn list|map|status|help";
+
+const SPAWN_HELP = `# /spawn help
+
+Spawn opens an execution lane. It only controls runtime, payload, topology, tmux placement, cwd, and prompt transfer.
+
+## Common commands
+
+\`\`\`text
+/spawn
+/spawn direct child Inspect docs/spawn.md
+/spawn context child Continue the current investigation
+/spawn shell --placement split-pane --split-direction horizontal
+/spawn command --placement new-window -- npm run dev
+/spawn list
+/spawn map
+/spawn status
+\`\`\`
+
+## Runtimes
+
+- \`pi\`: create a Pi lane. Supports \`direct\`, \`context\`, and \`empty\` payloads.
+- \`shell\`: open a fresh login shell. Uses \`empty\` payload.
+- \`command\`: run a command and keep the pane open after exit. Uses \`empty\` payload.
+
+## Options
+
+- \`--placement new-window|split-pane|new-session\`
+- \`--split-direction horizontal|vertical\`
+- \`--split-size-percent 10..90\`
+- \`--cwd <path>\`
+- \`--name <lane-name>\`
+- \`--target-session-path <session.jsonl>\`
+- \`--target-mux-session <tmux-session>\`
+- \`--mux auto|tmux|none\``;
 
 const SYSTEM_PROMPT = `You are a context transfer assistant. Given a conversation history and the user's goal for a spawned session, generate a focused prompt that is self-contained and actionable.
 
@@ -262,7 +299,7 @@ async function generateContextTransferDraft(
 }
 
 function tokenizeArgs(args: string): string[] {
-	return [...args.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)].map((match) => match[1] ?? match[2] ?? match[3] ?? "");
+	return shellSplit(args);
 }
 
 function splitCommandTail(args: string): { head: string; commandTail: string } {
@@ -279,10 +316,22 @@ function parsePayload(value: string | undefined): SpawnPayload | undefined {
 	return undefined;
 }
 
+function parsePayloadOrThrow(value: string | undefined, label: string): SpawnPayload {
+	const parsed = parsePayload(value);
+	if (!parsed) throw new Error(`Unsupported ${label}: ${value || "(missing)"}`);
+	return parsed;
+}
+
 function parseRelation(value: string | undefined): SpawnRelation | undefined {
 	if (value === "root" || value === "new") return "root";
 	if (value === "child") return "child";
 	return undefined;
+}
+
+function parseRelationOrThrow(value: string | undefined, label: string): SpawnRelation {
+	const parsed = parseRelation(value);
+	if (!parsed) throw new Error(`Unsupported ${label}: ${value || "(missing)"}`);
+	return parsed;
 }
 
 function parsePlacement(value: string | undefined): SpawnPlacement | undefined {
@@ -292,10 +341,22 @@ function parsePlacement(value: string | undefined): SpawnPlacement | undefined {
 	return undefined;
 }
 
+function parsePlacementOrThrow(value: string | undefined, label: string): SpawnPlacement {
+	const parsed = parsePlacement(value);
+	if (!parsed) throw new Error(`Unsupported ${label}: ${value || "(missing)"}`);
+	return parsed;
+}
+
 function parseSplitDirection(value: string | undefined): SpawnSplitDirection | undefined {
 	if (value === "horizontal" || value === "h") return "horizontal";
 	if (value === "vertical" || value === "v") return "vertical";
 	return undefined;
+}
+
+function parseSplitDirectionOrThrow(value: string | undefined, label: string): SpawnSplitDirection {
+	const parsed = parseSplitDirection(value);
+	if (!parsed) throw new Error(`Unsupported ${label}: ${value || "(missing)"}`);
+	return parsed;
 }
 
 function parseSplitSizePercent(value: unknown): number | undefined {
@@ -328,6 +389,12 @@ function parseRuntimeOrThrow(value: string | undefined, label: string): SpawnRun
 function parseMux(value: string | undefined): SpawnMux | undefined {
 	if (value === "auto" || value === "tmux" || value === "none") return value;
 	return undefined;
+}
+
+function parseMuxOrThrow(value: string | undefined, label: string): SpawnMux {
+	const parsed = parseMux(value);
+	if (!parsed) throw new Error(`Unsupported ${label}: ${value || "(missing)"}`);
+	return parsed;
 }
 
 function inferWindowName(goal: string): string {
@@ -736,10 +803,6 @@ async function buildSpawnPayload(
 	const edited = request.reviewPrompt && ctx.hasUI ? await ctx.ui.editor("Edit spawned context prompt", draft) : draft;
 	if (edited === undefined) throw new Error("Spawn cancelled");
 	return { prompt: edited, promptGoal: goal };
-}
-
-function shellQuote(value: string): string {
-	return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
 function piSpawnCommand(sessionPath: string, promptPath: string): string {
@@ -1266,7 +1329,7 @@ function spawnedName(parent: string, child: string): string {
 	const lane = readSessionJsonLines(parent)
 		.filter((entry) => entry.type === "custom" && entry.customType === SPAWN_ENTRY_TYPE)
 		.map((entry) => entry.data ?? {})
-		.find((data) => data.child?.sessionPath === child || data.child?.sessionPath === child);
+		.find((data) => data.child?.sessionPath === child);
 	return lane?.child?.name || lane?.goal || "";
 }
 
@@ -1363,6 +1426,10 @@ function sendCustom(pi: ExtensionAPI, customType: string, content: string) {
 async function handleSpawnCommand(pi: ExtensionAPI, args: string, ctx: SpawnCommandContext) {
 	const trimmed = args.trim();
 	const [subcommand] = tokenizeArgs(trimmed);
+	if (subcommand === "help" || subcommand === "--help" || subcommand === "-h") {
+		sendCustom(pi, "spawn-help", SPAWN_HELP);
+		return;
+	}
 	if (subcommand === "list") {
 		sendCustom(pi, "spawn-list", formatSpawnLaneEntries(spawnLaneEntries(ctx)));
 		return;
@@ -1382,10 +1449,7 @@ async function handleSpawnCommand(pi: ExtensionAPI, args: string, ctx: SpawnComm
 	}
 
 	if (!trimmed && !ctx.hasUI) {
-		ctx.ui.notify(
-			"Usage: /spawn direct|context|empty [child|root] ...; /spawn shell|bash ...; /spawn command|run ... -- <command>; /spawn list|map|status",
-			"warning",
-		);
+		ctx.ui.notify(SPAWN_USAGE, "warning");
 		return;
 	}
 
@@ -1407,29 +1471,21 @@ async function handleSpawnCommand(pi: ExtensionAPI, args: string, ctx: SpawnComm
 }
 
 function toolRequest(params: NormalizedToolParams, ctx: ExtensionContext): Partial<SpawnRequest> {
-	const runtime = params.runtime
-		? parseRuntimeOrThrow(params.runtime.toLowerCase(), "runtime")
-		: params.command
-			? "command"
-			: params.payload === "direct" || params.payload === "context"
-				? "pi"
-				: "shell";
-	const payload =
-		parsePayload(params.payload?.toLowerCase()) ??
-		(runtime === "shell" || runtime === "command" ? "empty" : "direct");
-	const relation =
-		parseRelation(params.relation?.toLowerCase()) ??
-		(runtime === "shell" || runtime === "command" ? "root" : "child");
-	const placement = parsePlacement(params.placement?.toLowerCase()) ?? "new-window";
-	const splitDirection = parseSplitDirection(params.splitDirection?.toLowerCase());
+	const runtime = params.runtime ? parseRuntimeOrThrow(params.runtime.toLowerCase(), "runtime") : undefined;
+	const payload = params.payload ? parsePayloadOrThrow(params.payload.toLowerCase(), "payload") : undefined;
+	const relation = params.relation ? parseRelationOrThrow(params.relation.toLowerCase(), "relation") : undefined;
+	const placement = params.placement ? parsePlacementOrThrow(params.placement.toLowerCase(), "placement") : undefined;
+	const splitDirection = params.splitDirection
+		? parseSplitDirectionOrThrow(params.splitDirection.toLowerCase(), "splitDirection")
+		: undefined;
 	const splitSizePercent = parseSplitSizePercent(params.splitSizePercent);
-	const mux = parseMux(params.mux?.toLowerCase()) ?? "auto";
+	const mux = params.mux ? parseMuxOrThrow(params.mux.toLowerCase(), "mux") : undefined;
 	const prompt = params.prompt ?? "";
 	const command = params.command?.trim() || undefined;
 	const goal = params.goal || prompt || command || "";
 	return normalizeSpawnRequest(
 		{
-			runtime,
+			runtime: runtime ?? (command ? "command" : undefined),
 			payload,
 			relation,
 			placement,
@@ -1449,6 +1505,33 @@ function toolRequest(params: NormalizedToolParams, ctx: ExtensionContext): Parti
 		ctx,
 	);
 }
+
+const runtimeParam = Type.Union([Type.Literal("pi"), Type.Literal("shell"), Type.Literal("command")], {
+	description: "pi, shell, or command. Defaults to shell unless payload or command implies a runtime.",
+});
+
+const payloadParam = Type.Union([Type.Literal("empty"), Type.Literal("direct"), Type.Literal("context")], {
+	description: "empty, direct, or context. Defaults to empty for shell/command and direct for pi.",
+});
+
+const relationParam = Type.Union([Type.Literal("child"), Type.Literal("root")], {
+	description: "child or root. Defaults to root for shell/command and child for pi.",
+});
+
+const placementParam = Type.Union(
+	[Type.Literal("new-window"), Type.Literal("split-pane"), Type.Literal("new-session")],
+	{
+		description: "new-window, split-pane, or new-session. Tools should usually use new-window or split-pane.",
+	},
+);
+
+const splitDirectionParam = Type.Union([Type.Literal("horizontal"), Type.Literal("vertical")], {
+	description: "horizontal or vertical for split-pane placement.",
+});
+
+const muxParam = Type.Union([Type.Literal("auto"), Type.Literal("tmux"), Type.Literal("none")], {
+	description: "auto, tmux, or none. Defaults to auto.",
+});
 
 const SPAWN_TOOL_NAMES = ["spawn_lane", "spawn_list", "spawn_map"];
 
@@ -1471,28 +1554,11 @@ function registerSpawnSurface(pi: ExtensionAPI) {
 		].join(" "),
 		promptSnippet: "Spawn a lane",
 		parameters: Type.Object({
-			runtime: Type.Optional(
-				Type.String({
-					description: "pi, shell, or command. Defaults to shell unless payload or command implies a runtime.",
-				}),
-			),
-			payload: Type.Optional(
-				Type.String({
-					description: "empty, direct, or context. Defaults to empty for shell/command and direct for pi.",
-				}),
-			),
-			relation: Type.Optional(
-				Type.String({ description: "child or root. Defaults to root for shell/command and child for pi." }),
-			),
-			placement: Type.Optional(
-				Type.String({
-					description:
-						"new-window, split-pane, or new-session. Tools should usually use new-window or split-pane.",
-				}),
-			),
-			splitDirection: Type.Optional(
-				Type.String({ description: "horizontal or vertical for split-pane placement." }),
-			),
+			runtime: Type.Optional(runtimeParam),
+			payload: Type.Optional(payloadParam),
+			relation: Type.Optional(relationParam),
+			placement: Type.Optional(placementParam),
+			splitDirection: Type.Optional(splitDirectionParam),
 			splitSizePercent: Type.Optional(
 				Type.Number({
 					description:
@@ -1510,7 +1576,7 @@ function registerSpawnSurface(pi: ExtensionAPI) {
 					description: "Target mux/tmux session or workspace for placement outside the current mux session.",
 				}),
 			),
-			mux: Type.Optional(Type.String({ description: "auto, tmux, or none. Defaults to auto." })),
+			mux: Type.Optional(muxParam),
 			command: Type.Optional(Type.String({ description: "Command to run when runtime='command'." })),
 			prompt: Type.Optional(
 				Type.String({
@@ -1558,7 +1624,7 @@ function registerSpawnSurface(pi: ExtensionAPI) {
 
 	pi.registerCommand("spawn", {
 		description:
-			"Spawn an execution lane. Usage: /spawn direct|context|empty [child|root] ...; /spawn shell|bash ...; /spawn command|run ... -- <command>; /spawn list|map|status",
+			"Spawn an execution lane. Usage: /spawn direct|context|empty [child|root] ...; /spawn shell|bash ...; /spawn command|run ... -- <command>; /spawn list|map|status|help",
 		handler: async (args, ctx) => {
 			await handleSpawnCommand(pi, args, ctx as SpawnCommandContext);
 		},
