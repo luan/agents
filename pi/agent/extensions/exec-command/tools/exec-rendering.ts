@@ -12,6 +12,7 @@ export interface RenderOutputBlockOptions {
 	maxLines?: number;
 	truncatedAbove?: boolean;
 	originalTokenCount?: number;
+	width?: number;
 }
 
 const DEFAULT_OUTPUT_MAX_LINES = 5;
@@ -97,8 +98,7 @@ export function renderOutputBlock(
 	if (footer) lines.push(footer);
 	return lines
 		.map((line, index) => {
-			const isLast = index === lines.length - 1;
-			const prefix = isLast ? "  └ " : index === 0 ? "  ├ " : "  │ ";
+			const prefix = index === 0 ? "  └ " : "    ";
 			return `${theme.fg("dim", prefix)}${styleOutputLine(line, theme)}`;
 		})
 		.join("\n");
@@ -107,7 +107,9 @@ export function renderOutputBlock(
 function limitOutputLines(lines: string[], options: RenderOutputBlockOptions): string[] {
 	if (options.expanded) return lines;
 	const maxLines = options.maxLines ?? DEFAULT_OUTPUT_MAX_LINES;
-	if (maxLines <= 0 || lines.length <= maxLines) return lines;
+	if (maxLines <= 0) return lines;
+	if (options.width !== undefined) return limitOutputRows(lines, maxLines, options.width);
+	if (lines.length <= maxLines) return lines;
 	if (maxLines === 1) return [formatOmittedLines(lines.length)];
 
 	const visibleLines = maxLines - 1;
@@ -117,8 +119,49 @@ function limitOutputLines(lines: string[], options: RenderOutputBlockOptions): s
 	return [...lines.slice(0, headCount), formatOmittedLines(omitted), ...lines.slice(lines.length - tailCount)];
 }
 
+function limitOutputRows(lines: string[], maxRows: number, width: number): string[] {
+	const safeWidth = Math.max(1, width);
+	const rowCounts = lines.map((line) => outputLineRows(line, safeWidth));
+	const totalRows = rowCounts.reduce((sum, rows) => sum + rows, 0);
+	if (totalRows <= maxRows) return lines;
+	if (maxRows === 1) return [formatOmittedLines(lines.length)];
+
+	const ellipsisRows = outputLineRows(formatOmittedLines(lines.length), safeWidth);
+	if (ellipsisRows >= maxRows) return [formatOmittedLines(lines.length)];
+
+	const availableRows = maxRows - ellipsisRows;
+	const headBudget = Math.floor(availableRows / 2);
+	const tailBudget = availableRows - headBudget;
+	let headEnd = 0;
+	let headRows = 0;
+	while (headEnd < lines.length && headRows + rowCounts[headEnd]! <= headBudget) {
+		headRows += rowCounts[headEnd]!;
+		headEnd += 1;
+	}
+
+	let tailStart = lines.length;
+	let tailRows = 0;
+	while (tailStart > headEnd && tailRows + rowCounts[tailStart - 1]! <= tailBudget) {
+		tailStart -= 1;
+		tailRows += rowCounts[tailStart]!;
+	}
+
+	const omitted = lines.length - headEnd - (lines.length - tailStart);
+	return [...lines.slice(0, headEnd), formatOmittedLines(omitted), ...lines.slice(tailStart)];
+}
+
+function outputLineRows(line: string, width: number): number {
+	const prefixWidth = 4;
+	const contentWidth = stripAnsi(line).length;
+	return Math.max(1, Math.ceil((prefixWidth + contentWidth) / width));
+}
+
 function formatOmittedLines(omitted: number): string {
 	return `… +${omitted} lines`;
+}
+
+function stripAnsi(value: string): string {
+	return value.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
 }
 
 function formatTruncatedAboveLine(originalTokenCount: number | undefined): string {

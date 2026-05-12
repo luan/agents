@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Container, Text } from "@earendil-works/pi-tui";
+import { type Component, Container, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { summarizeShellCommand } from "../shell/summary.ts";
 import type { ExecCommandTracker } from "./exec-command-state.ts";
@@ -107,6 +107,28 @@ function createEmptyResultComponent(): Container {
 	return new Container();
 }
 
+class OutputBlockComponent implements Component {
+	constructor(
+		private readonly output: string,
+		private readonly theme: { fg(role: string, text: string): string },
+		private readonly footer: string | undefined,
+		private readonly options: { expanded: boolean; truncatedAbove?: boolean; originalTokenCount?: number },
+	) {}
+
+	invalidate() {}
+
+	render(width: number): string[] {
+		return new Text(
+			renderOutputBlock(this.output, this.theme, this.footer, {
+				...this.options,
+				width,
+			}),
+			0,
+			0,
+		).render(width);
+	}
+}
+
 function shouldUseRawRipgrep(originalCommand: string, rewrittenCommand: string): boolean {
 	return (
 		originalCommand !== rewrittenCommand &&
@@ -209,12 +231,11 @@ const renderExecCommandResultWithOptionalContext: any = (
 			: details?.exit_code !== undefined && details.exit_code !== 0
 				? theme.fg("muted", `Exit code: ${details.exit_code}`)
 				: undefined;
-	const text = renderOutputBlock(output ?? "", theme, footer, {
+	return new OutputBlockComponent(output ?? "", theme, footer, {
 		expanded: options.expanded,
 		truncatedAbove: details?.output_truncated,
 		originalTokenCount: details?.original_token_count,
 	});
-	return new Text(text, 0, 0);
 };
 
 export function registerExecCommandTool(
@@ -232,7 +253,6 @@ export function registerExecCommandTool(
 		promptGuidelines: [
 			"Use exec_command for search, listing files, and local text-file reads.",
 			"Prefer `rg`/`rg --files` over `grep`/`find`; for broad searches use `rg -n -M 400 --max-columns-preview` plus globs like `--glob '!*.map'`.",
-			"Use `rtk grep -m 100 -l 400` when compact search output is useful, but fall back to raw `rg -M 400 --max-columns-preview` if RTK search wrappers fail.",
 			"Keep tty disabled unless the command truly needs interactive terminal behavior.",
 		],
 		parameters: EXEC_COMMAND_PARAMETERS,
