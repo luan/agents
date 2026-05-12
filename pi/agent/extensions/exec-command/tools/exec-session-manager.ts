@@ -75,7 +75,6 @@ export interface ExecSessionManager {
 	): Promise<UnifiedExecResult>;
 	write(input: WriteStdinInput): Promise<UnifiedExecResult>;
 	hasSession(sessionId: number): boolean;
-	hasOpenInteractiveSession(): boolean;
 	getSessionCommand(sessionId: number): string | undefined;
 	onSessionExit(listener: (sessionId: number, command: string) => void): () => void;
 	shutdown(): void;
@@ -832,10 +831,6 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			return makeResult(session, waitedMs);
 		},
 		hasSession: (sessionId) => sessions.has(sessionId),
-		hasOpenInteractiveSession: () =>
-			Array.from(sessions.values()).some(
-				(session) => session.interactive && (session.exitCode === undefined || session.exitCode === null),
-			),
 		getSessionCommand: (sessionId) => sessions.get(sessionId)?.command ?? commandHistory.get(sessionId),
 		onSessionExit: (listener) => {
 			exitListeners.add(listener);
