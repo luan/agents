@@ -385,6 +385,7 @@ test("user bash executions render with shared exec command styling", () => {
 	expect(rendered).toContain("echo hello");
 	expect(rendered).toContain("  └ hello");
 	expect(rendered).not.toContain("$ echo hello");
+	expect(rendered).not.toContain("─");
 	expect(raw).toContain("\x1b[");
 });
 
