@@ -16,9 +16,10 @@ const EMPTY_SELF_SHELL_ROW_PATCH = Symbol.for("agents.exec-command.empty-self-sh
 const USER_BASH_RENDER_PATCH = Symbol.for("agents.exec-command.user-bash-render-patch");
 const ANSI_PATTERN =
 	/\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\u001b\\)|P[^\u001b]*(?:\u001b\\)|_[^\u001b]*(?:\u001b\\)|\^[^\u001b]*(?:\u001b\\))/g;
+const ANSI_RESET = "\x1b[0m";
 const USER_BASH_RENDER_THEME: RenderTheme = {
-	fg: (_role, text) => text,
-	bold: (text) => text,
+	fg: (role, text) => `${ansiForRole(role)}${text}${ANSI_RESET}`,
+	bold: (text) => `\x1b[1m${text}\x1b[22m`,
 };
 
 interface ToolExecutionPrototype {
@@ -40,6 +41,32 @@ interface BashExecutionPrototype {
 	contentContainer: { clear(): void; addChild(child: unknown): void };
 	[USER_BASH_RENDER_PATCH]?: true;
 	updateDisplay(): void;
+}
+
+function ansiForRole(role: string): string {
+	switch (role) {
+		case "success":
+			return "\x1b[32m";
+		case "error":
+			return "\x1b[31m";
+		case "dim":
+			return "\x1b[2m";
+		case "muted":
+			return "\x1b[38;5;244m";
+		case "syntaxFunction":
+			return "\x1b[38;2;220;220;170m";
+		case "syntaxKeyword":
+			return "\x1b[38;2;86;156;214m";
+		case "syntaxString":
+			return "\x1b[38;2;206;145;120m";
+		case "syntaxNumber":
+			return "\x1b[38;2;181;206;168m";
+		case "syntaxOperator":
+		case "syntaxPunctuation":
+			return "\x1b[38;2;212;212;212m";
+		default:
+			return "";
+	}
 }
 
 function hasVisibleLineContent(lines: string[]): boolean {
