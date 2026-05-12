@@ -1,6 +1,8 @@
-import { type ExtensionAPI, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
+import { BashExecutionComponent, type ExtensionAPI, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { createExecCommandTracker } from "./tools/exec-command-state.ts";
 import { registerExecCommandTool } from "./tools/exec-command-tool.ts";
+import { type RenderTheme, renderOutputBlock, renderUserExecCommandCall } from "./tools/exec-rendering.ts";
 import { createExecSessionManager } from "./tools/exec-session-manager.ts";
 import { formattedTruncateText } from "./tools/output-truncation.ts";
 import { computeRtkRewriteDecision, type RtkWrapperState } from "./tools/rtk-wrapper.ts";
@@ -11,14 +13,33 @@ function arraysEqual(a: string[], b: string[]): boolean {
 }
 
 const EMPTY_SELF_SHELL_ROW_PATCH = Symbol.for("agents.exec-command.empty-self-shell-row-patch");
+const USER_BASH_RENDER_PATCH = Symbol.for("agents.exec-command.user-bash-render-patch");
 const ANSI_PATTERN =
 	/\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\u001b\\)|P[^\u001b]*(?:\u001b\\)|_[^\u001b]*(?:\u001b\\)|\^[^\u001b]*(?:\u001b\\))/g;
+const USER_BASH_RENDER_THEME: RenderTheme = {
+	fg: (_role, text) => text,
+	bold: (text) => text,
+};
 
 interface ToolExecutionPrototype {
 	render(width: number): string[];
 	getRenderShell?(): "default" | "self";
 	hasRendererDefinition?(): boolean;
 	[EMPTY_SELF_SHELL_ROW_PATCH]?: true;
+}
+
+interface BashExecutionPrototype {
+	command: string;
+	outputLines: string[];
+	status: "running" | "complete" | "cancelled" | "error";
+	exitCode?: number;
+	loader?: unknown;
+	truncationResult?: { truncated?: boolean; content?: string };
+	fullOutputPath?: string;
+	expanded: boolean;
+	contentContainer: { clear(): void; addChild(child: unknown): void };
+	[USER_BASH_RENDER_PATCH]?: true;
+	updateDisplay(): void;
 }
 
 function hasVisibleLineContent(lines: string[]): boolean {
@@ -37,6 +58,47 @@ function installEmptySelfShellRowPatch(): void {
 		return lines;
 	};
 	proto[EMPTY_SELF_SHELL_ROW_PATCH] = true;
+}
+
+function installUserBashRenderPatch(): void {
+	const proto = BashExecutionComponent.prototype as BashExecutionPrototype;
+	if (proto[USER_BASH_RENDER_PATCH]) return;
+	proto.updateDisplay = function updateUserBashDisplay(this: BashExecutionPrototype): void {
+		const output = this.outputLines.join("\n");
+		const running = this.status === "running";
+		const failed = this.status === "error" || this.status === "cancelled";
+		this.contentContainer.clear();
+		this.contentContainer.addChild(
+			new Text(
+				renderUserExecCommandCall(this.command, running ? "running" : "done", USER_BASH_RENDER_THEME, failed),
+				1,
+				0,
+			),
+		);
+
+		if (output.length > 0 || !running) {
+			const footerParts: string[] = [];
+			if (this.status === "cancelled") footerParts.push("(cancelled)");
+			if (this.status === "error") footerParts.push(`(exit ${this.exitCode})`);
+			if ((this.truncationResult?.truncated || this.fullOutputPath) && this.fullOutputPath) {
+				footerParts.push(`Output truncated. Full output: ${this.fullOutputPath}`);
+			}
+			this.contentContainer.addChild(
+				new Text(
+					`\n${renderOutputBlock(output, USER_BASH_RENDER_THEME, footerParts.join("\n") || undefined, {
+						expanded: this.expanded,
+						maxLines: 20,
+						truncatedAbove: this.truncationResult?.truncated,
+					})}`,
+					1,
+					0,
+				),
+			);
+		}
+
+		if (running && this.loader) this.contentContainer.addChild(this.loader);
+	};
+	proto[USER_BASH_RENDER_PATCH] = true;
 }
 
 function getCommandArg(args: unknown): string | undefined {
@@ -76,6 +138,7 @@ function parseRtkToggleArgument(args: string): boolean | undefined | "invalid" {
 
 export default function execCommandExtension(pi: ExtensionAPI) {
 	installEmptySelfShellRowPatch();
+	installUserBashRenderPatch();
 	const tracker = createExecCommandTracker();
 	const sessions = createExecSessionManager();
 	const rtk: RtkWrapperState = { enabled: true };

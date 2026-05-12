@@ -1,6 +1,6 @@
 import { beforeAll, expect, test } from "bun:test";
 import { execSync } from "node:child_process";
-import { initTheme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
+import { BashExecutionComponent, initTheme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 import { Container } from "@earendil-works/pi-tui";
 import execCommandExtension from "./index.ts";
 import { createExecCommandTracker } from "./tools/exec-command-state.ts";
@@ -364,6 +364,26 @@ test("exec renderers self-render without the default success shell", () => {
 	} finally {
 		sessions.shutdown();
 	}
+});
+
+test("user bash executions render with shared exec command styling", () => {
+	execCommandExtension({
+		registerTool() {},
+		registerCommand() {},
+		getActiveTools: () => [],
+		setActiveTools() {},
+		on() {},
+	} as any);
+
+	const component = new BashExecutionComponent("echo hello", { requestRender() {} } as any);
+	component.appendOutput("hello\n");
+	component.setComplete(0, false);
+
+	const rendered = stripAnsi(component.render(80).join("\n"));
+	expect(rendered).toContain("You ran");
+	expect(rendered).toContain("echo hello");
+	expect(rendered).toContain("  └ hello");
+	expect(rendered).not.toContain("$ echo hello");
 });
 
 test("exec result renderer truncates output by rendered width", () => {
