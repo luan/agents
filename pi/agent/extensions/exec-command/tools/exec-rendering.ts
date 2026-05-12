@@ -17,7 +17,8 @@ export interface RenderOutputBlockOptions {
 }
 
 const DEFAULT_OUTPUT_MAX_LINES = 5;
-const COMMAND_DISPLAY_MAX_CHARS = 180;
+const COMMAND_DISPLAY_WRAP_CHARS = 180;
+const COMMAND_DISPLAY_MAX_LINES = 4;
 const COMMAND_PREVIEW_MAX_CHARS = 100;
 const OUTPUT_LINE_DISPLAY_MAX_CHARS = 220;
 const RUNNING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -208,10 +209,10 @@ function renderCommandText(
 ): string {
 	const verb = state === "running" ? "Running" : "Ran";
 	const marker = state === "running" ? runningMarker(elapsedMs) : "•";
-	const displayCommand = shortenCommand(stripShellWrapper(command), COMMAND_DISPLAY_MAX_CHARS);
-	return appendElapsed(
+	const [firstLine = "", ...continuationLines] = wrapCommandForDisplay(stripShellWrapper(command));
+	let text = appendElapsed(
 		appendRtkMarker(
-			`${renderStatusMarker(marker, state, theme, failed)} ${theme.bold(verb)} ${highlightShellCommand(displayCommand, theme)}`,
+			`${renderStatusMarker(marker, state, theme, failed)} ${theme.bold(verb)} ${highlightShellCommand(firstLine, theme)}`,
 			theme,
 			rtkWrapped,
 		),
@@ -219,6 +220,10 @@ function renderCommandText(
 		theme,
 		elapsedMs,
 	);
+	for (const line of continuationLines) {
+		text += `\n${theme.fg("dim", "    ")}${highlightShellCommand(line, theme)}`;
+	}
+	return text;
 }
 
 function appendRtkMarker(text: string, theme: Pick<RenderTheme, "fg">, rtkWrapped: boolean): string {
@@ -274,6 +279,32 @@ function shortenCommand(command: string, max = 100): string {
 	const trimmed = command.trim();
 	if (trimmed.length <= max) return trimmed;
 	return `${trimmed.slice(0, max - 3)}...`;
+}
+
+function wrapCommandForDisplay(command: string): string[] {
+	const trimmed = command.trim();
+	if (trimmed.length <= COMMAND_DISPLAY_WRAP_CHARS) return [trimmed];
+
+	const lines: string[] = [];
+	let remaining = trimmed;
+	while (remaining.length > 0 && lines.length < COMMAND_DISPLAY_MAX_LINES) {
+		if (remaining.length <= COMMAND_DISPLAY_WRAP_CHARS) {
+			lines.push(remaining);
+			remaining = "";
+			break;
+		}
+		const slice = remaining.slice(0, COMMAND_DISPLAY_WRAP_CHARS + 1);
+		const whitespaceIndex = slice.lastIndexOf(" ");
+		const splitIndex =
+			whitespaceIndex >= Math.floor(COMMAND_DISPLAY_WRAP_CHARS / 2) ? whitespaceIndex : COMMAND_DISPLAY_WRAP_CHARS;
+		lines.push(remaining.slice(0, splitIndex).trimEnd());
+		remaining = remaining.slice(splitIndex).trimStart();
+	}
+	if (remaining.length > 0) {
+		const lastIndex = lines.length - 1;
+		lines[lastIndex] = `${lines[lastIndex]!.slice(0, COMMAND_DISPLAY_WRAP_CHARS - 3)}...`;
+	}
+	return lines;
 }
 
 function shortenLine(line: string, max: number): string {
