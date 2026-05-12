@@ -38,6 +38,19 @@ export function renderExecCommandCall(
 		: renderCommandText(command, state, theme, failed, elapsedMs, rtkWrapped);
 }
 
+export function renderUserExecCommandCall(
+	command: string,
+	state: ExecCommandStatus,
+	theme: RenderTheme,
+	failed = false,
+	elapsedMs?: number,
+): string {
+	return renderCommandText(command, state, theme, failed, elapsedMs, false, {
+		done: "You ran",
+		running: "You are running",
+	});
+}
+
 export function renderGroupedExecCommandCall(
 	actionGroups: ShellAction[][],
 	state: ExecCommandStatus,
@@ -206,8 +219,9 @@ function renderCommandText(
 	failed: boolean,
 	elapsedMs?: number,
 	rtkWrapped = false,
+	labels: { done: string; running: string } = { done: "Ran", running: "Running" },
 ): string {
-	const verb = state === "running" ? "Running" : "Ran";
+	const verb = state === "running" ? labels.running : labels.done;
 	const marker = state === "running" ? runningMarker(elapsedMs) : "•";
 	const [firstLine = "", ...continuationLines] = wrapCommandForDisplay(stripShellWrapper(command));
 	let text = appendElapsed(
