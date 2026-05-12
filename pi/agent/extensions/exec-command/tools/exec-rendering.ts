@@ -1,3 +1,4 @@
+import { keyHint } from "@earendil-works/pi-coding-agent";
 import { type ShellAction, summarizeShellCommand } from "../shell/summary.ts";
 import { shellSplit } from "../shell/tokenize.ts";
 import type { ExecCommandStatus } from "./exec-command-state.ts";
@@ -157,7 +158,7 @@ function outputLineRows(line: string, width: number): number {
 }
 
 function formatOmittedLines(omitted: number): string {
-	return `… +${omitted} lines`;
+	return `… +${omitted} lines (${keyHint("app.tools.expand", "transcript")})`;
 }
 
 function stripAnsi(value: string): string {
