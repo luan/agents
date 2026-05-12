@@ -71,9 +71,9 @@ test("exec command call unwraps simple shell wrappers before rendering", () => {
 	);
 });
 
-test("exec command call limits very long command lines", () => {
+test("exec command call wraps very long command lines", () => {
 	const rendered = renderExecCommandCall(`printf ${"x".repeat(300)}`, "done", testTheme);
-	expect(rendered).toEndWith("...");
+	expect(rendered).toContain("\n<dim>    </dim>");
 	expect(rendered).not.toContain("x".repeat(200));
 });
 
@@ -82,6 +82,12 @@ test("write stdin call uses unwrapped command previews", () => {
 	expect(rendered).toBe(
 		`<success>• </success><bold>Waited for background terminal</bold><dim> · </dim><muted>git status --short</muted>`,
 	);
+});
+
+test("write stdin call keeps long command previews compact", () => {
+	const rendered = renderWriteStdinCall(3, "", `printf ${"x".repeat(300)}`, testTheme);
+	expect(rendered).toEndWith("...</muted>");
+	expect(rendered).not.toContain("\n<dim>    </dim>");
 });
 
 test("running terminal calls show elapsed time", () => {
