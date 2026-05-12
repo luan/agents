@@ -1,6 +1,6 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 import { execSync } from "node:child_process";
-import { ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
+import { initTheme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 import { Container } from "@earendil-works/pi-tui";
 import execCommandExtension from "./index.ts";
 import { createExecCommandTracker } from "./tools/exec-command-state.ts";
@@ -21,6 +21,14 @@ const testTheme: RenderTheme = {
 	fg: (role, text) => `<${role}>${text}</${role}>`,
 	bold: (text) => `<bold>${text}</bold>`,
 };
+
+function stripAnsi(text: string): string {
+	return text.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
+}
+
+beforeAll(() => {
+	initTheme("dark");
+});
 
 function shellQuote(value: string): string {
 	return `'${value.replace(/'/g, `'"'"'`)}'`;
@@ -300,15 +308,16 @@ test("output block collapses large output in the middle", () => {
 		{ maxLines: 5 },
 	);
 
-	expect(rendered).toBe(
+	expect(stripAnsi(rendered)).toBe(
 		[
 			"<dim>  └ </dim><dim>line 1</dim>",
 			"<dim>    </dim><dim>line 2</dim>",
-			"<dim>    </dim><dim>… +4 lines</dim>",
+			"<dim>    </dim>… +4 lines ( transcript)",
 			"<dim>    </dim><dim>line 7</dim>",
 			"<dim>    </dim><dim>line 8</dim>",
 		].join("\n"),
 	);
+	expect(rendered).toContain("\x1b[");
 });
 
 test("output block marks token-truncated output at the top", () => {
