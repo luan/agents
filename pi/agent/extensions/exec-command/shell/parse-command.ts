@@ -303,6 +303,8 @@ function summarizeMainTokens(mainCommand: string[]): ParsedShellCommand {
 			"--type-not",
 			"-m",
 			"--max-count",
+			"-M",
+			"--max-columns",
 			"-A",
 			"-B",
 			"-C",
@@ -335,6 +337,11 @@ function summarizeMainTokens(mainCommand: string[]): ParsedShellCommand {
 				path: path ? shortDisplayPath(path) : undefined,
 			};
 		}
+		return { kind: "unknown", command: joinCommandTokens(mainCommand) };
+	}
+	if (head === "rtk") {
+		const [subcommand, ...subtail] = tail;
+		if (subcommand === "grep") return parseRtkGrep(mainCommand, subtail);
 		return { kind: "unknown", command: joinCommandTokens(mainCommand) };
 	}
 	if (head === "fd") {
@@ -482,6 +489,42 @@ function parseGrepLike(mainCommand: string[], args: string[]): ParsedShellComman
 		command: joinCommandTokens(mainCommand),
 		query,
 		path: operands[pathIndex] ? shortDisplayPath(operands[pathIndex]!) : undefined,
+	};
+}
+
+function parseRtkGrep(mainCommand: string[], args: string[]): ParsedShellCommand {
+	const trimmed = trimAtConnector(args);
+	const operands: string[] = [];
+	let afterDoubleDash = false;
+	for (let index = 0; index < trimmed.length; index++) {
+		const arg = trimmed[index]!;
+		if (afterDoubleDash) {
+			operands.push(arg);
+			continue;
+		}
+		if (arg === "--") {
+			afterDoubleDash = true;
+			continue;
+		}
+		if (
+			arg === "-m" ||
+			arg === "--max" ||
+			arg === "-l" ||
+			arg === "--max-len" ||
+			arg === "-t" ||
+			arg === "--file-type"
+		) {
+			index += 1;
+			continue;
+		}
+		if (arg.startsWith("-")) continue;
+		operands.push(arg);
+	}
+	return {
+		kind: "search",
+		command: joinCommandTokens(mainCommand),
+		query: operands[0],
+		path: operands[1] ? shortDisplayPath(operands[1]!) : undefined,
 	};
 }
 
