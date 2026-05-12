@@ -150,12 +150,6 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 				reason: "bash is disabled. Use exec_command instead.",
 			};
 		}
-		if (event.toolName === "write_stdin" && !sessions.hasOpenInteractiveSession()) {
-			return {
-				block: true,
-				reason: "write_stdin is disabled until exec_command opens a running TTY session.",
-			};
-		}
 	});
 	pi.on("message_start", (event) => {
 		if (event.message.role === "toolResult") return;
