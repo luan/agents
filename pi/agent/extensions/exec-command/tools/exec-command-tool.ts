@@ -3,7 +3,12 @@ import { type Component, Container, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { summarizeShellCommand } from "../shell/summary.ts";
 import type { ExecCommandTracker } from "./exec-command-state.ts";
-import { renderExecCommandCall, renderGroupedExecCommandCall, renderOutputBlock } from "./exec-rendering.ts";
+import {
+	renderBackgroundTerminalHudLine,
+	renderExecCommandCall,
+	renderGroupedExecCommandCall,
+	renderOutputBlock,
+} from "./exec-rendering.ts";
 import type { ExecSessionManager, UnifiedExecResult } from "./exec-session-manager.ts";
 import { commandHasRipgrepSegment, isRtkGrepCommand } from "./rtk-wrapper.ts";
 import { formatUnifiedExecResult } from "./unified-exec-format.ts";
@@ -172,6 +177,7 @@ const renderExecCommandCallWithOptionalContext: any = (
 	theme: { fg(role: string, text: string): string; bold(text: string): string },
 	context: ExecCommandRenderContextLike | undefined,
 	tracker: ExecCommandTracker,
+	sessions: ExecSessionManager,
 ) => {
 	const command = typeof args.cmd === "string" ? args.cmd : "";
 	tracker.ensurePlannedExploration(context?.toolCallId, command);
@@ -179,12 +185,26 @@ const renderExecCommandCallWithOptionalContext: any = (
 	const renderInfo = tracker.getRenderInfo(context?.toolCallId, command);
 	const failed = context?.isError === true;
 	const isExplorationRow = renderInfo.actionGroups !== undefined;
-	scheduleElapsedInvalidation(
-		context,
-		!isExplorationRow && renderInfo.status === "running" && context?.isPartial === true,
-	);
+	scheduleElapsedInvalidation(context, !isExplorationRow && renderInfo.status === "running");
 	if (renderInfo.hidden) {
 		return new Text("", 0, 0);
+	}
+	const snapshot = renderInfo.sessionId !== undefined ? sessions.getSessionSnapshot(renderInfo.sessionId) : undefined;
+	if (snapshot?.running) {
+		return {
+			invalidate() {},
+			render(width: number) {
+				return [
+					renderBackgroundTerminalHudLine(
+						snapshot.command,
+						snapshot.output,
+						theme,
+						renderInfo.elapsedMs ?? 0,
+						width,
+					),
+				];
+			},
+		};
 	}
 	const text = renderInfo.actionGroups
 		? renderGroupedExecCommandCall(
@@ -208,6 +228,7 @@ const renderExecCommandResultWithOptionalContext: any = (
 	theme: { fg(role: string, text: string): string },
 	context: ExecCommandRenderContextLike | undefined,
 	tracker: ExecCommandTracker,
+	sessions: ExecSessionManager,
 ) => {
 	if (options.isPartial) {
 		return createEmptyResultComponent();
@@ -223,6 +244,9 @@ const renderExecCommandResultWithOptionalContext: any = (
 	}
 
 	const details = isUnifiedExecResult(result.details) ? result.details : undefined;
+	if (details?.session_id !== undefined && sessions.getSessionSnapshot(details.session_id)?.running === true) {
+		return createEmptyResultComponent();
+	}
 	const content = result.content.find((item) => item.type === "text");
 	const output = details?.output ?? (content?.type === "text" ? content.text : "");
 	const footer =
@@ -311,7 +335,7 @@ export function registerExecCommandTool(
 				bold(text: string): string;
 			},
 			context?: ExecCommandRenderContextLike,
-		) => renderExecCommandCallWithOptionalContext(args, theme, context, tracker)) as any,
+		) => renderExecCommandCallWithOptionalContext(args, theme, context, tracker, sessions)) as any,
 		renderResult: ((
 			result: {
 				content: Array<{ type: string; text?: string }>;
@@ -320,6 +344,6 @@ export function registerExecCommandTool(
 			options: { expanded: boolean; isPartial: boolean },
 			theme: { fg(role: string, text: string): string },
 			context?: ExecCommandRenderContextLike,
-		) => renderExecCommandResultWithOptionalContext(result, options, theme, context, tracker)) as any,
+		) => renderExecCommandResultWithOptionalContext(result, options, theme, context, tracker, sessions)) as any,
 	});
 }

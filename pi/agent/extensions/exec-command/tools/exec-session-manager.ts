@@ -21,6 +21,13 @@ export interface UnifiedExecResult {
 	output_truncated?: boolean;
 }
 
+export interface ExecSessionSnapshot {
+	command: string;
+	output: string;
+	running: boolean;
+	exitCode?: number;
+}
+
 export interface ExecCommandInput {
 	cmd: string;
 	workdir?: string;
@@ -76,6 +83,7 @@ export interface ExecSessionManager {
 	write(input: WriteStdinInput): Promise<UnifiedExecResult>;
 	hasSession(sessionId: number): boolean;
 	getSessionCommand(sessionId: number): string | undefined;
+	getSessionSnapshot(sessionId: number): ExecSessionSnapshot | undefined;
 	onSessionExit(listener: (sessionId: number, command: string) => void): () => void;
 	shutdown(): void;
 }
@@ -832,6 +840,17 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		},
 		hasSession: (sessionId) => sessions.has(sessionId),
 		getSessionCommand: (sessionId) => sessions.get(sessionId)?.command ?? commandHistory.get(sessionId),
+		getSessionSnapshot: (sessionId) => {
+			const session = sessions.get(sessionId);
+			if (!session) return undefined;
+			const running = session.exitCode === undefined || session.exitCode === null;
+			return {
+				command: session.command,
+				output: session.buffer,
+				running,
+				exitCode: running ? undefined : (session.exitCode ?? 0),
+			};
+		},
 		onSessionExit: (listener) => {
 			exitListeners.add(listener);
 			return () => exitListeners.delete(listener);
