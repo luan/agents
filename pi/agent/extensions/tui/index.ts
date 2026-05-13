@@ -3,7 +3,7 @@ import { buildSessionContext, type ExtensionAPI, type ExtensionContext } from "@
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { runCommand } from "../shared/ct-runner";
 import { terminalRows } from "../shared/terminal";
-import { ensureConfigExists, loadConfig, type PolishedTuiConfig } from "./config";
+import { ensureConfigExists, loadConfig, type PolishedTuiConfig, saveConfig } from "./config";
 import { installFocusCursor } from "./cursor-focus";
 import {
 	advanceWorkingAnimationFrame,
@@ -104,7 +104,7 @@ export default function (pi: ExtensionAPI) {
 	let refreshTimer: ReturnType<typeof setInterval> | null = null;
 	let usageBarCache: UsageBarCache | null = null;
 	let usageBarPendingKey: string | null = null;
-	let usageBarsVisible = true;
+	let usageBarsVisible = currentConfig.usageBars.visible;
 	let contextPulseTimer: ReturnType<typeof setInterval> | null = null;
 	let workingAnimationTimer: ReturnType<typeof setInterval> | null = null;
 	const contextPulseDeadlines = new Map<number, number>();
@@ -483,6 +483,7 @@ export default function (pi: ExtensionAPI) {
 	const installUi = (ctx: ExtensionContext) => {
 		ensureConfigExists();
 		currentConfig = loadConfig();
+		usageBarsVisible = currentConfig.usageBars.visible;
 		patchUserMessageComponent(ctx.ui.theme);
 		ctx.ui.setWorkingVisible(false);
 		installFooter(ctx);
@@ -508,6 +509,19 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			usageBarsVisible = mode === "toggle" ? !usageBarsVisible : mode === "on";
+			currentConfig = {
+				...currentConfig,
+				usageBars: {
+					...currentConfig.usageBars,
+					visible: usageBarsVisible,
+				},
+			};
+			try {
+				saveConfig(currentConfig);
+			} catch {
+				ctx.ui.notify("Failed to save usage-bars setting", "error");
+				return;
+			}
 			if (usageBarsVisible && ctx.model?.provider) fetchUsage(ctx.model.provider);
 			ctx.ui.notify(`usage-bars ${usageBarsVisible ? "on" : "off"}`, "info");
 			refresh();
