@@ -25,7 +25,6 @@ import {
 } from "./footer";
 import { readGitStatus } from "./git";
 import { readRuntimeInfo } from "./runtime";
-import { patchUserMessageComponent } from "./transcript";
 import { detectUsageProvider, fetchUsageForProvider, USAGE_REFRESH_INTERVAL, type UsageSnapshot } from "./usage";
 
 type UsageTotals = { input: number; output: number; cost: number };
@@ -517,7 +516,6 @@ export default function (pi: ExtensionAPI) {
 		ensureConfigExists();
 		currentConfig = loadConfig();
 		usageBarsVisible = currentConfig.usageBars.visible;
-		patchUserMessageComponent(ctx.ui.theme);
 		ctx.ui.setWorkingVisible(false);
 		installFooter(ctx);
 		installEditor(ctx);
