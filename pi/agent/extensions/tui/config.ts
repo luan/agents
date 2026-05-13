@@ -34,6 +34,9 @@ export type PolishedTuiConfig = {
 	compact: {
 		minTerminalRows: number;
 	};
+	usageBars: {
+		visible: boolean;
+	};
 };
 
 export const configPath = join(getAgentDir(), "tui.json");
@@ -116,6 +119,9 @@ export const defaultConfig: PolishedTuiConfig = {
 	compact: {
 		minTerminalRows: 28,
 	},
+	usageBars: {
+		visible: true,
+	},
 };
 
 function isHexColor(value: string): boolean {
@@ -171,8 +177,16 @@ export function loadConfig(): PolishedTuiConfig {
 				...defaultConfig.compact,
 				...(parsed.compact ?? {}),
 			},
+			usageBars: {
+				...defaultConfig.usageBars,
+				...(parsed.usageBars ?? {}),
+			},
 		};
 	} catch {
 		return defaultConfig;
 	}
+}
+
+export function saveConfig(config: PolishedTuiConfig): void {
+	writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
 }
