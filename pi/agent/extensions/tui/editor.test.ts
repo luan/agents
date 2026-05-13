@@ -1,12 +1,17 @@
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { renderPolishedEditorForTest, setCachedSkillNamesForTest } from "./editor";
+import { renderPolishedEditorForTest, setCachedSkillNamesForTest, setWorkingAnimationForTest } from "./editor";
 import extension from "./index";
 
 const ANSI_PATTERN = /\x1b\[[0-9;]*m/g;
 const theme = {
 	fg: (color: string, text: string) => `\x1b[${color === "dim" ? 2 : 37}m${text}\x1b[39m`,
 	bg: (_color: string, text: string) => text,
+} as any;
+const rgbTheme = {
+	fg: (_color: string, text: string) => `\x1b[38;2;100;50;200m${text}\x1b[39m`,
+	bg: (_color: string, text: string) => text,
+	getFgAnsi: () => "\x1b[38;2;100;50;200m",
 } as any;
 
 function stripAnsi(line: string): string {
@@ -21,6 +26,10 @@ function editor(overrides: Record<string, unknown> = {}) {
 }
 
 describe("polished TUI editor cached skills", () => {
+	beforeEach(() => {
+		setWorkingAnimationForTest(false, 0);
+	});
+
 	test("renders no cached skills metadata when cache is empty", () => {
 		setCachedSkillNamesForTest([]);
 		const lines = renderPolishedEditorForTest(editor(), 40, () => ["> hello", ""], 28, theme);
@@ -91,5 +100,46 @@ describe("polished TUI editor cached skills", () => {
 			stripAnsi(renderPolishedEditorForTest(editor(), 50, () => ["> hello", ""], 28, theme).at(-1) ?? ""),
 		).not.toContain("skills:");
 		expect(eventHandlers.has("skillful:cache")).toBe(false);
+	});
+
+	test("renders animated working text on the first editor row", () => {
+		setCachedSkillNamesForTest([]);
+		setWorkingAnimationForTest(true, 3);
+
+		const lines = renderPolishedEditorForTest(
+			editor({ getMode: () => "insert" }),
+			40,
+			() => ["> hello", ""],
+			28,
+			rgbTheme,
+		);
+
+		expect(stripAnsi(lines[0] ?? "")).toContain("Working");
+		expect(lines.every((line) => visibleWidth(line) <= 40)).toBe(true);
+	});
+
+	test("pulses the rail background from the mode color while working", () => {
+		setCachedSkillNamesForTest([]);
+		setWorkingAnimationForTest(true, 0);
+		const dark = renderPolishedEditorForTest(
+			editor({ getMode: () => "insert" }),
+			40,
+			() => ["> hello", ""],
+			28,
+			rgbTheme,
+		)[0];
+
+		setWorkingAnimationForTest(true, 13);
+		const bright = renderPolishedEditorForTest(
+			editor({ getMode: () => "insert" }),
+			40,
+			() => ["> hello", ""],
+			28,
+			rgbTheme,
+		)[0];
+
+		expect(dark).toContain("\x1b[48;2;18;9;36m");
+		expect(bright).toContain("\x1b[48;2;121;60;241m");
+		expect(dark).not.toBe(bright);
 	});
 });
