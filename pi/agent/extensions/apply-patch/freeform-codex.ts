@@ -23,6 +23,7 @@ const OPENAI_BETA_RESPONSES_WEBSOCKETS = "responses_websockets=2026-02-06";
 const SESSION_WEBSOCKET_CACHE_TTL_MS = 5 * 60 * 1000;
 const WEBSOCKET_FAILURE_FALLBACK_THRESHOLD = 3;
 const WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE = 1009;
+const HTTP_ERROR_BODY_MAX_CHARS = 1000;
 
 type RequestBody = Record<string, any> & {
 	input?: any[];
@@ -321,7 +322,7 @@ function streamFreeformCodexResponses(
 				signal: options?.signal,
 			});
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
-			if (!response.ok) throw new Error(await response.text());
+			if (!response.ok) throw await createCodexHttpError(response);
 			if (!response.body) throw new Error("No response body");
 
 			stream.push({ type: "start", partial: output });
@@ -574,6 +575,29 @@ class CodexApiError extends Error {
 		this.payload = options?.payload;
 		this.cause = options?.cause;
 	}
+}
+
+async function createCodexHttpError(response: Response): Promise<CodexApiError> {
+	const status = [response.status, response.statusText].filter(Boolean).join(" ");
+	let body: string;
+	try {
+		body = (await response.text()).trim();
+	} catch (error) {
+		const detail = formatThrownValue(error);
+		return new CodexApiError(`Codex SSE request failed: HTTP ${status}: failed to read error body: ${detail}`, {
+			code: String(response.status),
+			payload: { status: response.status, statusText: response.statusText },
+			cause: error,
+		});
+	}
+
+	const truncatedBody =
+		body.length > HTTP_ERROR_BODY_MAX_CHARS ? `${body.slice(0, HTTP_ERROR_BODY_MAX_CHARS)}...` : body;
+	const detail = truncatedBody || "empty response body";
+	return new CodexApiError(`Codex SSE request failed: HTTP ${status}: ${detail}`, {
+		code: String(response.status),
+		payload: { status: response.status, statusText: response.statusText },
+	});
 }
 
 class CodexProtocolError extends Error {
