@@ -5,6 +5,7 @@ import {
 	ToolExecutionComponent,
 } from "@earendil-works/pi-coding-agent";
 import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { setOrderedAboveEditorWidget } from "../shared/ordered-widgets";
 import { createExecCommandTracker } from "./tools/exec-command-state.ts";
 import { registerExecCommandTool } from "./tools/exec-command-tool.ts";
 import {
@@ -335,7 +336,8 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 	function registerOrRefreshBackgroundTerminalWidget() {
 		if (!statusUi?.setWidget) return;
 		if (!backgroundTerminalWidgetRegistered) {
-			statusUi.setWidget(
+			setOrderedAboveEditorWidget(
+				statusUi as { setWidget: NonNullable<BackgroundTerminalStatusUi["setWidget"]> },
 				BACKGROUND_TERMINAL_STATUS_KEY,
 				(tui, theme) => {
 					backgroundTerminalWidgetTui = tui;
@@ -347,7 +349,6 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 						},
 					};
 				},
-				{ placement: "aboveEditor" },
 			);
 			backgroundTerminalWidgetRegistered = true;
 		} else {
@@ -368,7 +369,11 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 			backgroundTerminalWidgetTimer = undefined;
 		}
 		if (backgroundTerminalWidgetRegistered) {
-			statusUi?.setWidget?.(BACKGROUND_TERMINAL_STATUS_KEY, undefined);
+			setOrderedAboveEditorWidget(
+				statusUi as { setWidget: NonNullable<BackgroundTerminalStatusUi["setWidget"]> },
+				BACKGROUND_TERMINAL_STATUS_KEY,
+				undefined,
+			);
 		}
 		backgroundTerminalWidgetRegistered = false;
 		backgroundTerminalWidgetTui = undefined;

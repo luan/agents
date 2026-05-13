@@ -28,6 +28,7 @@ import {
 	truncateToWidth,
 } from "@earendil-works/pi-tui";
 import { type EditorFactory, type EditorUi, installEditorLayer } from "../shared/editor-composition";
+import { setOrderedAboveEditorWidget } from "../shared/ordered-widgets";
 
 type PromptKind = "stash" | "history";
 type PickerAction = "apply" | "pop" | "drop";
@@ -401,7 +402,7 @@ function clearStashHud(ctx: ExtensionContext): void {
 	stashHudLines = [];
 	if (!stashHud) return;
 	stashHud = undefined;
-	ctx.ui.setWidget(stashHudWidgetId, undefined);
+	setOrderedAboveEditorWidget(ctx, stashHudWidgetId, undefined);
 }
 
 function currentSessionPrompts(ctx: ExtensionContext, config: Config): PromptItem[] {
@@ -760,7 +761,7 @@ function installStashHud(ctx: ExtensionContext): void {
 		clearStashHud(ctx);
 		return;
 	}
-	ctx.ui.setWidget(stashHudWidgetId, (tui, theme) => {
+	setOrderedAboveEditorWidget(ctx, stashHudWidgetId, (tui, theme) => {
 		stashHud = new StashHudWidget(tui, theme);
 		return stashHud;
 	});
