@@ -815,6 +815,17 @@ test("write stdin hides still-running empty background terminal polls from trans
 		registerWriteStdinTool({ registerTool: (definition: any) => (tool = definition) } as any, sessions);
 
 		expect(tool.renderCall({ session_id: 3 }, testTheme, { isPartial: false }).render(120)).toEqual([]);
+		const waitState: { elapsedTimer?: ReturnType<typeof setTimeout>; startedAtMs?: number } = {};
+		expect(
+			tool
+				.renderCall({ session_id: 3 }, testTheme, {
+					isPartial: true,
+					state: waitState,
+					invalidate() {},
+				})
+				.render(120),
+		).toEqual([]);
+		expect(waitState.elapsedTimer).toBeUndefined();
 		expect(
 			tool
 				.renderResult(
@@ -876,25 +887,11 @@ test("write stdin result renderer parses stdin capability from formatted transcr
 	}
 });
 
-test("write stdin renders animated in-flight wait and interaction rows", () => {
+test("write stdin renders animated in-flight interaction rows", () => {
 	let tool: any;
 	const sessions = createExecSessionManager();
 	try {
 		registerWriteStdinTool({ registerTool: (definition: any) => (tool = definition) } as any, sessions);
-
-		const waitState: { elapsedTimer?: ReturnType<typeof setTimeout>; startedAtMs?: number } = {};
-		const waitRow = tool
-			.renderCall({ session_id: 3 }, testTheme, {
-				isPartial: true,
-				state: waitState,
-				invalidate() {},
-			})
-			.render(120)
-			.join("\n");
-		expect(waitRow).toContain("<bold>background terminal</bold>");
-		expect(waitRow).toContain("<muted>(no output)</muted>");
-		expect(waitState.elapsedTimer).toBeDefined();
-		if (waitState.elapsedTimer) clearTimeout(waitState.elapsedTimer);
 
 		const interactionState: { elapsedTimer?: ReturnType<typeof setTimeout>; startedAtMs?: number } = {};
 		const interactionRow = tool
