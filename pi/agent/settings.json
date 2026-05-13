@@ -2,7 +2,7 @@
   "lastChangelogVersion": "0.74.0",
   "steeringMode": "all",
   "autoUpdate": true,
-  "transport": "sse",
+  "transport": "auto",
   "doubleEscapeAction": "tree",
   "treeFilterMode": "default",
   "defaultProvider": "openai-codex",

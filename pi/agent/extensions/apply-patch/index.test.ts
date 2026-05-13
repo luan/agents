@@ -955,6 +955,47 @@ describe("apply_patch Codex freeform provider", () => {
 		await expect(collect(parseSSE(response))).resolves.toEqual([{ type: "first" }, { type: "second" }]);
 	});
 
+	it("reports SSE HTTP failures with status when the response body is empty", async () => {
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = (async () =>
+			new Response("", { status: 500, statusText: "Internal Server Error" })) as typeof fetch;
+
+		try {
+			let streamSimple: any;
+			registerApplyPatchFreeformProvider(
+				{
+					registerProvider: (_name: string, provider: any) => {
+						streamSimple = provider.streamSimple;
+					},
+					on: () => {},
+					registerMessageRenderer: () => {},
+				} as any,
+				{ toolName: "apply_patch", description: "Apply patch", grammar: "start: /.+/" },
+			);
+
+			const result = await streamSimple(
+				{
+					id: "gpt-5.5",
+					provider: "openai-codex",
+					api: "openai-codex-responses",
+					baseUrl: "https://chatgpt.com/backend-api",
+					headers: {},
+					input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				},
+				{ messages: [{ role: "user", content: "Make a patch", timestamp: 1 }] },
+				{ apiKey: mockCodexToken(), sessionId: "session-sse-error", transport: "sse" },
+			).result();
+
+			expect(result.stopReason).toBe("error");
+			expect(result.errorMessage).toBe(
+				"Codex SSE request failed: HTTP 500 Internal Server Error: empty response body",
+			);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
 	it("sends only response input deltas in websocket-cached mode", async () => {
 		const sentBodies: any[] = [];
 		let closeCalls = 0;
