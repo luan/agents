@@ -1,12 +1,29 @@
-import { BashExecutionComponent, type ExtensionAPI, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import {
+	BashExecutionComponent,
+	type ExtensionAPI,
+	type ExtensionContext,
+	ToolExecutionComponent,
+} from "@earendil-works/pi-coding-agent";
+import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { createExecCommandTracker } from "./tools/exec-command-state.ts";
 import { registerExecCommandTool } from "./tools/exec-command-tool.ts";
-import { type RenderTheme, renderOutputBlock, renderUserExecCommandCall } from "./tools/exec-rendering.ts";
-import { createExecSessionManager } from "./tools/exec-session-manager.ts";
+import {
+	backgroundTerminalAnimatedLabel,
+	backgroundTerminalPulseMarker,
+	formatElapsedTime,
+	formatStdinCapability,
+	lastOutputLine,
+	outputLineCount,
+	type RenderTheme,
+	renderExecCommandCall,
+	renderOutputBlock,
+	renderUserExecCommandCall,
+} from "./tools/exec-rendering.ts";
+import { createExecSessionManager, type ExecSessionRecord } from "./tools/exec-session-manager.ts";
 import { formattedTruncateText } from "./tools/output-truncation.ts";
 import { computeRtkRewriteDecision, type RtkWrapperState } from "./tools/rtk-wrapper.ts";
 import { registerWriteStdinTool } from "./tools/write-stdin-tool.ts";
+import { BackgroundTerminalOverlay } from "./ui/background-terminal-overlay.ts";
 
 function arraysEqual(a: string[], b: string[]): boolean {
 	return a.length === b.length && a.every((value, index) => value === b[index]);
@@ -167,6 +184,39 @@ function parseRtkToggleArgument(args: string): boolean | undefined | "invalid" {
 	return "invalid";
 }
 
+function parseStopSessionId(args: string): number | undefined | "invalid" {
+	const value = args.trim().replace(/^#/, "");
+	if (!value) return undefined;
+	if (!/^\d+$/.test(value)) return "invalid";
+	const id = Number(value);
+	return Number.isSafeInteger(id) && id > 0 ? id : "invalid";
+}
+
+const BACKGROUND_TERMINAL_STATUS_KEY = "background-terminals";
+const BACKGROUND_TERMINAL_FINISHED_MESSAGE = "background-terminal-finished";
+const BACKGROUND_TERMINAL_HUD_FRAME_MS = 80;
+
+interface BackgroundTerminalStatusUi {
+	setStatus(key: string, text: string | undefined): void;
+	setWidget?(
+		key: string,
+		content:
+			| undefined
+			| ((
+					tui: { requestRender(): void },
+					theme: RenderTheme,
+			  ) => { render(width: number): string[]; invalidate(): void }),
+		options?: { placement?: "aboveEditor" | "belowEditor" },
+	): void;
+}
+
+interface BackgroundTerminalFinishedDetails {
+	sessionId: number;
+	command: string;
+	output: string;
+	exitCode?: number;
+}
+
 export default function execCommandExtension(pi: ExtensionAPI) {
 	installEmptySelfShellRowPatch();
 	installUserBashRenderPatch();
@@ -175,6 +225,33 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 	const rtk: RtkWrapperState = { enabled: true };
 	const rtkWarningsShown = new Set<string>();
 	let shuttingDown = false;
+	let statusUi: BackgroundTerminalStatusUi | undefined;
+	let lastBackgroundTerminalStatus: string | undefined;
+	let backgroundTerminalWidgetRegistered = false;
+	let backgroundTerminalWidgetTui: { requestRender(): void } | undefined;
+	let backgroundTerminalWidgetTimer: ReturnType<typeof setInterval> | undefined;
+	const completionMessageSessionIds = new Set<number>();
+
+	(pi as any).registerMessageRenderer?.(
+		BACKGROUND_TERMINAL_FINISHED_MESSAGE,
+		(
+			message: { details?: BackgroundTerminalFinishedDetails },
+			{ expanded }: { expanded: boolean },
+			theme: RenderTheme,
+		) => {
+			const details = message.details;
+			if (!details) return undefined;
+			const failed = details.exitCode !== undefined && details.exitCode !== 0;
+			const line = renderExecCommandCall(details.command, "done", theme, failed);
+			const output = `\n${renderOutputBlock(
+				details.output,
+				theme,
+				failed ? theme.fg("muted", `Exit code: ${details.exitCode}`) : undefined,
+				{ expanded },
+			)}`;
+			return new Text(`${line}${output}`, 0, 0);
+		},
+	);
 
 	const syncToolPolicy = () => {
 		if (shuttingDown) return;
@@ -183,6 +260,133 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 		if (!next.includes("exec_command")) next.push("exec_command");
 		if (!next.includes("write_stdin")) next.push("write_stdin");
 		if (!arraysEqual(active, next)) pi.setActiveTools(next);
+	};
+
+	const updateBackgroundTerminalStatus = () => {
+		if (!statusUi) return;
+		const records = sessions.listSessions();
+		const runningRecords = records.filter((record) => record.running);
+		const nextStatus =
+			records.length === 0
+				? undefined
+				: (() => {
+						const runningCount = records.filter((record) => record.running).length;
+						const ttyCount = records.filter((record) => record.stdinOpen).length;
+						const terminalNoun = `background terminal${records.length === 1 ? "" : "s"}`;
+						return `${records.length} ${terminalNoun} · ${runningCount} running${
+							ttyCount > 0 ? ` · ${ttyCount} tty` : ""
+						}`;
+					})();
+		if (nextStatus !== lastBackgroundTerminalStatus) {
+			statusUi.setStatus(BACKGROUND_TERMINAL_STATUS_KEY, nextStatus);
+			lastBackgroundTerminalStatus = nextStatus;
+		}
+
+		if (runningRecords.length === 0) {
+			clearBackgroundTerminalWidget();
+		} else {
+			registerOrRefreshBackgroundTerminalWidget();
+		}
+	};
+
+	const renderBackgroundTerminalWidget = (theme: RenderTheme, width: number): string[] => {
+		const runningRecords = sessions.listSessions().filter((record) => record.running);
+		if (runningRecords.length === 0) return [];
+		const lines = runningRecords
+			.slice(0, 4)
+			.map((record) => renderBackgroundTerminalWidgetLine(record, theme, width));
+		const omitted = runningRecords.length - lines.length;
+		if (omitted > 0) {
+			lines.push(theme.fg("dim", `… ${omitted} more background terminal${omitted === 1 ? "" : "s"}`));
+		}
+		return lines;
+	};
+
+	const renderBackgroundTerminalWidgetLine = (
+		record: ExecSessionRecord,
+		theme: RenderTheme,
+		width: number,
+	): string => {
+		const elapsedMs = Date.now() - record.startedAtMs;
+		const elapsed = formatElapsedTime(elapsedMs);
+		const prefix = `${backgroundTerminalPulseMarker(theme, elapsedMs)} ${backgroundTerminalAnimatedLabel(theme, elapsedMs)} ${theme.fg(
+			"muted",
+			`#${record.id}`,
+		)}`;
+		const tty = record.stdinOpen
+			? `${theme.fg("dim", " · ")}${theme.fg("mdLink", formatStdinCapability(record.stdinOpen))}`
+			: "";
+		const lines = outputLineCount(record.output);
+		const outputSummary = lines > 0 ? `(${lines} ${lines === 1 ? "line" : "lines"})` : "(no output)";
+		const lastLine = lastOutputLine(record.output)
+			?.replace(/[\x00-\x1f\x7f]/g, " ")
+			.trim();
+		const command = record.command.replace(/[\x00-\x1f\x7f]/g, " ").trim();
+		const last = lastLine ? `${theme.fg("dim", " · ")}${theme.fg("dim", lastLine)}` : "";
+		const fixed = `${prefix}${theme.fg("dim", " · ")}${theme.fg("dim", elapsed)}${tty}${theme.fg(
+			"dim",
+			" · ",
+		)}${theme.fg("muted", outputSummary)}${last}${theme.fg("dim", " · ")}`;
+		const commandWidth = Math.max(8, width - visibleWidth(fixed));
+		const text = `${fixed}${theme.fg("muted", truncateToWidth(command, commandWidth, "..."))}`;
+		return visibleWidth(text) > width ? truncateToWidth(text, width, "...") : text;
+	};
+
+	function registerOrRefreshBackgroundTerminalWidget() {
+		if (!statusUi?.setWidget) return;
+		if (!backgroundTerminalWidgetRegistered) {
+			statusUi.setWidget(
+				BACKGROUND_TERMINAL_STATUS_KEY,
+				(tui, theme) => {
+					backgroundTerminalWidgetTui = tui;
+					return {
+						render: (width) => renderBackgroundTerminalWidget(theme, width),
+						invalidate: () => {
+							backgroundTerminalWidgetRegistered = false;
+							backgroundTerminalWidgetTui = undefined;
+						},
+					};
+				},
+				{ placement: "aboveEditor" },
+			);
+			backgroundTerminalWidgetRegistered = true;
+		} else {
+			backgroundTerminalWidgetTui?.requestRender();
+		}
+		if (!backgroundTerminalWidgetTimer) {
+			backgroundTerminalWidgetTimer = setInterval(
+				() => backgroundTerminalWidgetTui?.requestRender(),
+				BACKGROUND_TERMINAL_HUD_FRAME_MS,
+			);
+			backgroundTerminalWidgetTimer.unref?.();
+		}
+	}
+
+	function clearBackgroundTerminalWidget() {
+		if (backgroundTerminalWidgetTimer) {
+			clearInterval(backgroundTerminalWidgetTimer);
+			backgroundTerminalWidgetTimer = undefined;
+		}
+		if (backgroundTerminalWidgetRegistered) {
+			statusUi?.setWidget?.(BACKGROUND_TERMINAL_STATUS_KEY, undefined);
+		}
+		backgroundTerminalWidgetRegistered = false;
+		backgroundTerminalWidgetTui = undefined;
+	}
+
+	const setBackgroundTerminalStatusUi = (ctx: ExtensionContext | undefined) => {
+		if (ctx?.hasUI === false) return;
+		const ui = ctx?.ui as BackgroundTerminalStatusUi | undefined;
+		if (!ui?.setStatus) return;
+		statusUi = ui;
+		updateBackgroundTerminalStatus();
+	};
+
+	const clearBackgroundTerminalStatus = () => {
+		clearBackgroundTerminalWidget();
+		statusUi?.setStatus(BACKGROUND_TERMINAL_STATUS_KEY, undefined);
+		statusUi = undefined;
+		lastBackgroundTerminalStatus = undefined;
 	};
 
 	registerExecCommandTool(pi, tracker, sessions, {
@@ -197,11 +401,32 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 				rtkWrapped: decision.usedRtk === true,
 			};
 		},
+		onResult: (_input, result) => {
+			if (result.session_id !== undefined) completionMessageSessionIds.add(result.session_id);
+		},
 	});
 	registerWriteStdinTool(pi, sessions);
-	sessions.onSessionExit((sessionId) => {
+	sessions.onSessionExit((sessionId, command) => {
+		const snapshot = sessions.getSessionSnapshot(sessionId);
 		tracker.recordSessionFinished(sessionId);
+		if (!completionMessageSessionIds.delete(sessionId)) return;
+		if (!snapshot) return;
+		(pi as any).sendMessage?.(
+			{
+				customType: BACKGROUND_TERMINAL_FINISHED_MESSAGE,
+				content: "",
+				display: true,
+				details: {
+					sessionId,
+					command,
+					output: snapshot?.output ?? "",
+					exitCode: snapshot?.exitCode,
+				},
+			},
+			{ triggerTurn: false },
+		);
 	});
+	sessions.onSessionUpdate(updateBackgroundTerminalStatus);
 
 	pi.registerCommand("rtk", {
 		description: "Toggle RTK command wrapping for exec_command calls",
@@ -222,13 +447,69 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.on("session_start", () => {
+	pi.registerCommand("ps", {
+		description: "list background terminals",
+		handler: async (_args, ctx) => {
+			await ctx.ui.custom<undefined>(
+				(tui, theme, _keybindings, done) => {
+					return new BackgroundTerminalOverlay(sessions, tui, theme, done);
+				},
+				{
+					overlay: true,
+					overlayOptions: { anchor: "center", width: "90%", minWidth: 60 },
+				},
+			);
+		},
+	});
+
+	pi.registerCommand("stop", {
+		description: "stop all background terminals",
+		getArgumentCompletions: (prefix) => {
+			const value = prefix.trim().replace(/^#/, "");
+			const items = sessions
+				.listSessions()
+				.filter((session) => String(session.id).startsWith(value))
+				.map((session) => ({
+					value: String(session.id),
+					label: `#${session.id}`,
+					description: session.command,
+				}));
+			return items.length > 0 ? items : null;
+		},
+		handler: async (args, ctx) => {
+			setBackgroundTerminalStatusUi(ctx);
+			const sessionId = parseStopSessionId(args);
+			if (sessionId === "invalid") {
+				ctx.ui.notify("Usage: /stop [id]", "warning");
+				return;
+			}
+			if (sessionId === undefined) {
+				const stopped = sessions.stopAllSessions();
+				const terminalNoun = `background terminal${stopped === 1 ? "" : "s"}`;
+				ctx.ui.notify(
+					stopped === 0 ? "No background terminals to stop." : `Stopped ${stopped} ${terminalNoun}.`,
+					"info",
+				);
+				return;
+			}
+			if (!sessions.stopSession(sessionId)) {
+				ctx.ui.notify(`No background terminal with id ${sessionId}.`, "warning");
+				return;
+			}
+			ctx.ui.notify(`Stopped background terminal #${sessionId}.`, "info");
+		},
+	});
+
+	pi.on("session_start", (_event, ctx) => {
 		shuttingDown = false;
+		setBackgroundTerminalStatusUi(ctx);
 		tracker.clear();
+		completionMessageSessionIds.clear();
 		syncToolPolicy();
 	});
 	pi.on("session_tree", () => {
 		tracker.clear();
+		completionMessageSessionIds.clear();
 		syncToolPolicy();
 	});
 	pi.on("model_select", () => {
@@ -250,7 +531,8 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 		if (isToolCallOnlyAssistantMessage(event.message)) return;
 		tracker.resetExplorationGroup();
 	});
-	pi.on("tool_execution_start", (event) => {
+	pi.on("tool_execution_start", (event, ctx) => {
+		setBackgroundTerminalStatusUi(ctx);
 		if (event.toolName !== "exec_command") {
 			tracker.resetExplorationGroup();
 			return;
@@ -280,6 +562,8 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 	});
 	pi.on("session_shutdown", () => {
 		shuttingDown = true;
+		completionMessageSessionIds.clear();
+		clearBackgroundTerminalStatus();
 		tracker.clear();
 		sessions.shutdown();
 	});

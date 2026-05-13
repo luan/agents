@@ -17,6 +17,7 @@ export interface UnifiedExecResult {
 	output: string;
 	exit_code?: number;
 	session_id?: number;
+	stdin_open?: boolean;
 	original_token_count?: number;
 	output_truncated?: boolean;
 }
@@ -26,6 +27,17 @@ export interface ExecSessionSnapshot {
 	output: string;
 	running: boolean;
 	exitCode?: number;
+	stdinOpen?: boolean;
+}
+
+export interface ExecSessionRecord {
+	id: number;
+	command: string;
+	output: string;
+	running: boolean;
+	exitCode?: number;
+	stdinOpen: boolean;
+	startedAtMs: number;
 }
 
 export interface ExecCommandInput {
@@ -54,6 +66,7 @@ interface BaseExecSession {
 	exitCode: number | null | undefined;
 	listeners: Set<() => void>;
 	interactive: boolean;
+	startedAtMs: number;
 }
 
 interface PipeExecSession extends BaseExecSession {
@@ -84,7 +97,11 @@ export interface ExecSessionManager {
 	hasSession(sessionId: number): boolean;
 	getSessionCommand(sessionId: number): string | undefined;
 	getSessionSnapshot(sessionId: number): ExecSessionSnapshot | undefined;
+	listSessions(): ExecSessionRecord[];
+	stopSession(sessionId: number): boolean;
+	stopAllSessions(): number;
 	onSessionExit(listener: (sessionId: number, command: string) => void): () => void;
+	onSessionUpdate(listener: () => void): () => void;
 	shutdown(): void;
 }
 
@@ -516,6 +533,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 	const sessions = new Map<number, ExecSession>();
 	const commandHistory = new Map<number, string>();
 	const exitListeners = new Set<(sessionId: number, command: string) => void>();
+	const updateListeners = new Set<() => void>();
 	const defaultExecYieldTimeMs = options.defaultExecYieldTimeMs ?? DEFAULT_EXEC_YIELD_TIME_MS;
 	const defaultWriteYieldTimeMs = options.defaultWriteYieldTimeMs ?? DEFAULT_WRITE_YIELD_TIME_MS;
 	const minNonInteractiveExecYieldTimeMs = Math.min(
@@ -542,6 +560,47 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 	function notify(session: ExecSession): void {
 		for (const listener of session.listeners) {
 			listener();
+		}
+		notifySessionUpdate();
+	}
+
+	function notifySessionUpdate(): void {
+		for (const listener of updateListeners) {
+			listener();
+		}
+	}
+
+	function isRunning(session: ExecSession): boolean {
+		return session.exitCode === undefined || session.exitCode === null;
+	}
+
+	function toRecord(session: ExecSession): ExecSessionRecord {
+		const running = isRunning(session);
+		return {
+			id: session.id,
+			command: session.command,
+			output: session.buffer,
+			running,
+			exitCode: running ? undefined : (session.exitCode ?? 0),
+			stdinOpen: session.interactive,
+			startedAtMs: session.startedAtMs,
+		};
+	}
+
+	function deleteSession(sessionId: number): boolean {
+		const deleted = sessions.delete(sessionId);
+		if (deleted) {
+			notifySessionUpdate();
+		}
+		return deleted;
+	}
+
+	function terminateSession(session: ExecSession): void {
+		if (!isRunning(session)) return;
+		if (session.kind === "pty") {
+			terminateProcessTree(session.child.pid, false, true);
+		} else {
+			terminateProcessTree(session.child.pid, true, true);
 		}
 	}
 
@@ -614,10 +673,11 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		}
 		if (session.exitCode === undefined || session.exitCode === null) {
 			result.session_id = session.id;
+			result.stdin_open = session.interactive;
 		} else {
 			result.exit_code = session.exitCode;
 			if (session.emittedBuffer === session.buffer) {
-				sessions.delete(session.id);
+				deleteSession(session.id);
 			}
 		}
 		return result;
@@ -636,6 +696,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		}
 		if (session.exitCode === undefined || session.exitCode === null) {
 			result.session_id = session.id;
+			result.stdin_open = session.interactive;
 		} else {
 			result.exit_code = session.exitCode;
 		}
@@ -698,6 +759,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			exitCode: undefined,
 			listeners: new Set(),
 			interactive: Boolean(input.tty),
+			startedAtMs: Date.now(),
 		};
 
 		child.stdout.on("data", (data: Buffer) => {
@@ -753,6 +815,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			exitCode: undefined,
 			listeners: new Set(),
 			interactive: true,
+			startedAtMs: Date.now(),
 			terminalCommitted: "",
 			terminalLine: [],
 			terminalCursor: 0,
@@ -792,6 +855,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 				: createPipeSession(input, workdir, shell, signal);
 			sessions.set(session.id, session);
 			rememberCommand(session.id, session.command);
+			notifySessionUpdate();
 			const stopStreaming = streamSessionUpdates(session, onUpdate);
 
 			try {
@@ -843,31 +907,53 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		getSessionSnapshot: (sessionId) => {
 			const session = sessions.get(sessionId);
 			if (!session) return undefined;
-			const running = session.exitCode === undefined || session.exitCode === null;
+			const running = isRunning(session);
 			return {
 				command: session.command,
 				output: session.buffer,
 				running,
 				exitCode: running ? undefined : (session.exitCode ?? 0),
+				stdinOpen: running ? session.interactive : undefined,
 			};
+		},
+		listSessions: () => Array.from(sessions.values(), toRecord),
+		stopSession: (sessionId) => {
+			const session = sessions.get(sessionId);
+			if (!session) return false;
+			terminateSession(session);
+			return deleteSession(sessionId);
+		},
+		stopAllSessions: () => {
+			const sessionIds = Array.from(sessions.keys());
+			for (const sessionId of sessionIds) {
+				const session = sessions.get(sessionId);
+				if (!session) continue;
+				terminateSession(session);
+				sessions.delete(sessionId);
+			}
+			if (sessionIds.length > 0) {
+				notifySessionUpdate();
+			}
+			return sessionIds.length;
 		},
 		onSessionExit: (listener) => {
 			exitListeners.add(listener);
 			return () => exitListeners.delete(listener);
 		},
+		onSessionUpdate: (listener) => {
+			updateListeners.add(listener);
+			return () => updateListeners.delete(listener);
+		},
 		shutdown: () => {
 			for (const session of sessions.values()) {
-				if (session.exitCode !== undefined) {
-					continue;
-				}
-				if (session.kind === "pty") {
-					terminateProcessTree(session.child.pid, false, true);
-				} else {
-					terminateProcessTree(session.child.pid, true, true);
-				}
+				terminateSession(session);
 			}
+			const hadSessions = sessions.size > 0;
 			sessions.clear();
 			commandHistory.clear();
+			if (hadSessions) {
+				notifySessionUpdate();
+			}
 		},
 	};
 }

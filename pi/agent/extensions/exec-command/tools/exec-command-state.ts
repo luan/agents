@@ -267,7 +267,6 @@ export function createExecCommandTracker(): ExecCommandTracker {
 			if (!entry) return;
 			decrementCommand(entry.command);
 			entry.status = "done";
-			entry.sessionId = undefined;
 			sessionBackedToolCallIds.delete(toolCallId);
 			const group = getGroupForEntry(entry);
 			invalidateToolCall(group?.visibleEntryId ?? entry.toolCallId);

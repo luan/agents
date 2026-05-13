@@ -1,7 +1,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Container, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { renderBackgroundTerminalHudLine, renderOutputBlock, renderWriteStdinCall } from "./exec-rendering.ts";
+import {
+	formatStdinCapability,
+	renderBackgroundTerminalHudLine,
+	renderOutputBlock,
+	renderWriteStdinCall,
+} from "./exec-rendering.ts";
 import type { ExecSessionManager, UnifiedExecResult } from "./exec-session-manager.ts";
 import { formatUnifiedExecResult } from "./unified-exec-format.ts";
 
@@ -31,6 +36,7 @@ interface FormattedExecTranscript {
 	output: string;
 	sessionId?: number;
 	exitCode?: number;
+	stdinOpen?: boolean;
 	originalTokenCount?: number;
 	outputTruncated?: boolean;
 }
@@ -41,10 +47,13 @@ function parseFormattedExecTranscript(text: string): FormattedExecTranscript {
 	const output = markerIndex !== -1 ? text.slice(markerIndex + marker.length) : text;
 	const sessionMatch = text.match(/Process running with session ID (\d+)/);
 	const exitCodeMatch = text.match(/Process exited with code (-?\d+)/);
+	const stdinMatch = text.match(/Stdin: (open|closed)/);
+	const ttyMatch = text.match(/TTY: yes/);
 	return {
 		output,
 		sessionId: sessionMatch ? Number(sessionMatch[1]) : undefined,
 		exitCode: exitCodeMatch ? Number(exitCodeMatch[1]) : undefined,
+		stdinOpen: ttyMatch ? true : stdinMatch ? stdinMatch[1] === "open" : undefined,
 	};
 }
 
@@ -90,6 +99,7 @@ function getResultState(result: {
 			output: details.output,
 			sessionId: details.session_id,
 			exitCode: details.exit_code,
+			stdinOpen: details.stdin_open,
 			originalTokenCount: details.original_token_count,
 			outputTruncated: details.output_truncated,
 		};
@@ -206,11 +216,21 @@ export function registerWriteStdinTool(pi: ExtensionAPI, sessions: ExecSessionMa
 				return {
 					invalidate() {},
 					render(width: number) {
-						return [renderBackgroundTerminalHudLine(command, output, theme, currentElapsedMs ?? 0, width)];
+						return [
+							renderBackgroundTerminalHudLine(
+								command,
+								output,
+								theme,
+								currentElapsedMs ?? 0,
+								width,
+								snapshot?.stdinOpen,
+							),
+						];
 					},
 				};
 			}
 			const input = typeof args.chars === "string" ? args.chars : undefined;
+			const snapshot = typeof sessionId === "number" ? sessions.getSessionSnapshot(sessionId) : undefined;
 			const command = typeof sessionId === "number" ? sessions.getSessionCommand(sessionId) : undefined;
 			return new Text(
 				renderWriteStdinCall(
@@ -221,6 +241,7 @@ export function registerWriteStdinTool(pi: ExtensionAPI, sessions: ExecSessionMa
 					running ? "running" : "done",
 					context?.isError === true,
 					currentElapsedMs,
+					snapshot?.stdinOpen,
 				),
 				0,
 				0,
@@ -235,7 +256,11 @@ export function registerWriteStdinTool(pi: ExtensionAPI, sessions: ExecSessionMa
 			const output = renderTerminalText(state.output);
 			const footer =
 				state.sessionId !== undefined
-					? theme.fg("accent", `Session ${state.sessionId} still running`)
+					? `${theme.fg("accent", `Session ${state.sessionId} still running`)}${
+							state.stdinOpen
+								? `${theme.fg("dim", " · ")}${theme.fg("mdLink", formatStdinCapability(true))}`
+								: ""
+						}`
 					: state.exitCode !== undefined && state.exitCode !== 0
 						? theme.fg("muted", `Exit code: ${state.exitCode}`)
 						: undefined;
