@@ -6,6 +6,8 @@ import execCommandExtension from "./index.ts";
 import { createExecCommandTracker } from "./tools/exec-command-state.ts";
 import { registerExecCommandTool } from "./tools/exec-command-tool.ts";
 import {
+	backgroundTerminalAnimatedLabel,
+	backgroundTerminalPulseMarker,
 	formatElapsedTime,
 	type RenderTheme,
 	renderBackgroundTerminalHudLine,
@@ -16,11 +18,19 @@ import {
 } from "./tools/exec-rendering.ts";
 import { createExecSessionManager } from "./tools/exec-session-manager.ts";
 import { computeRtkRewriteDecision, parseRtkExecutablePath } from "./tools/rtk-wrapper.ts";
+import { formatUnifiedExecResult } from "./tools/unified-exec-format.ts";
 import { registerWriteStdinTool } from "./tools/write-stdin-tool.ts";
+import { BackgroundTerminalOverlay } from "./ui/background-terminal-overlay.ts";
 
 const testTheme: RenderTheme = {
 	fg: (role, text) => `<${role}>${text}</${role}>`,
 	bold: (text) => `<bold>${text}</bold>`,
+};
+
+const rgbTestTheme = {
+	fg: (_role: string, text: string) => text,
+	bold: (text: string) => text,
+	getFgAnsi: (role: string) => (role === "accent" ? "\x1b[38;2;100;120;200m" : "\x1b[38;2;255;255;255m"),
 };
 
 function stripAnsi(text: string): string {
@@ -114,8 +124,183 @@ test("background terminal HUD summarizes command, output size, and last line", (
 	);
 
 	expect(rendered).toBe(
-		"<dim>⠸</dim> <bold>Waiting for background terminal</bold><dim> · </dim><muted>just sync-proptest mock 1 --skip-triage</muted><dim> · </dim><muted>(3 lines)</muted><dim> · </dim><dim>last line</dim>",
+		"<accent>●</accent> <bold>background terminal</bold><dim> · </dim><dim>0s</dim><dim> · </dim><muted>(3 lines)</muted><dim> · </dim><dim>last line</dim><dim> · </dim><muted>just sync-proptest mock 1 --skip-triage</muted>",
 	);
+});
+
+test("background terminal pulse marker uses smooth RGB intensity like Working", () => {
+	const dark = backgroundTerminalPulseMarker(rgbTestTheme, 0);
+	const bright = backgroundTerminalPulseMarker(rgbTestTheme, 600);
+
+	expect(stripAnsi(dark)).toBe("●");
+	expect(stripAnsi(bright)).toBe("●");
+	expect(dark).toContain("\x1b[38;2;45;54;90m");
+	expect(bright).toContain("\x1b[38;2;145;174;255m");
+});
+
+test("background terminal HUD label uses Working-style trickle animation", () => {
+	const early = backgroundTerminalAnimatedLabel(rgbTestTheme, 0);
+	const later = backgroundTerminalAnimatedLabel(rgbTestTheme, 240);
+
+	expect(stripAnsi(early)).toBe("background terminal");
+	expect(stripAnsi(later)).toBe("background terminal");
+	expect(early).not.toBe(later);
+	expect(later).toContain("\x1b[38;2;155;186;255m");
+});
+
+test("background terminal HUD shows stdin capability when available", () => {
+	const rendered = renderBackgroundTerminalHudLine("node repl.js", "", testTheme, 0, 120, true);
+
+	expect(rendered).toContain("<mdLink>tty</mdLink>");
+	expect(rendered).not.toContain("stdin");
+});
+
+test("unified exec format hides non-tty stdin and labels tty sessions", () => {
+	const rendered = formatUnifiedExecResult({
+		chunk_id: "chunk",
+		wall_time_seconds: 0.25,
+		output: "",
+		session_id: 7,
+		stdin_open: false,
+	});
+
+	expect(rendered).toContain("Process running with session ID 7");
+	expect(rendered).not.toContain("Stdin:");
+
+	const ttyRendered = formatUnifiedExecResult({
+		chunk_id: "chunk",
+		wall_time_seconds: 0.25,
+		output: "",
+		session_id: 8,
+		stdin_open: true,
+	});
+	expect(ttyRendered).toContain("TTY: yes");
+});
+
+test("background terminal overlay renders empty and visible session rows", () => {
+	let records: any[] = [];
+	const listeners: Array<() => void> = [];
+	let renderRequests = 0;
+	let doneCalls = 0;
+	const plainTheme = { fg: (_role: string, text: string) => text, bold: (text: string) => text };
+	const overlay = new BackgroundTerminalOverlay(
+		{
+			listSessions: () => records,
+			onSessionUpdate: (listener) => {
+				listeners.push(listener);
+				return () => listeners.splice(listeners.indexOf(listener), 1);
+			},
+		} as any,
+		{ terminal: { rows: 20 }, requestRender: () => renderRequests++ } as any,
+		plainTheme,
+		() => doneCalls++,
+	);
+
+	expect(overlay.render(100).join("\n")).toContain("No background terminals");
+
+	records = [
+		{
+			id: 3,
+			command: "node repl.js",
+			output: "first\nlast line\n",
+			running: true,
+			stdinOpen: true,
+		},
+		{
+			id: 4,
+			command: `printf ${"x".repeat(160)}`,
+			output: "",
+			running: false,
+			exitCode: 7,
+			stdinOpen: false,
+		},
+	];
+	listeners[0]?.();
+	const rendered = overlay.render(80).join("\n");
+
+	expect(renderRequests).toBe(1);
+	expect(rendered).toContain("background terminals");
+	expect(rendered).toContain("#3");
+	expect(rendered).toContain("running");
+	expect(rendered).toContain("tty");
+	expect(rendered).toContain("node repl.js");
+	expect(rendered).toContain("last: last line");
+	expect(rendered).toContain("#4");
+	expect(rendered).toContain("exited 7");
+	expect(rendered).not.toContain("stdin closed");
+	expect(rendered).not.toContain("x".repeat(80));
+
+	overlay.handleInput("q");
+	expect(doneCalls).toBe(1);
+	listeners[0]?.();
+	expect(renderRequests).toBe(1);
+});
+
+test("background terminal overlay supports vim navigation, attach, and kill", () => {
+	let records: any[] = [
+		{
+			id: 3,
+			command: "sleep 60",
+			output: "tick 1\n",
+			running: true,
+			stdinOpen: false,
+		},
+		{
+			id: 4,
+			command: "node repl.js",
+			output: "ready\nprompt\n",
+			running: true,
+			stdinOpen: true,
+		},
+	];
+	const listeners: Array<() => void> = [];
+	const killed: number[] = [];
+	let renderRequests = 0;
+	const plainTheme = { fg: (_role: string, text: string) => text, bold: (text: string) => text };
+	const overlay = new BackgroundTerminalOverlay(
+		{
+			listSessions: () => records,
+			stopSession: (sessionId: number) => {
+				killed.push(sessionId);
+				records = records.filter((record) => record.id !== sessionId);
+				for (const listener of listeners) listener();
+				return true;
+			},
+			onSessionUpdate: (listener) => {
+				listeners.push(listener);
+				return () => listeners.splice(listeners.indexOf(listener), 1);
+			},
+		} as any,
+		{ terminal: { rows: 18 }, requestRender: () => renderRequests++ } as any,
+		plainTheme,
+		() => {},
+	);
+
+	expect(overlay.render(100).join("\n")).toContain("> #3");
+
+	overlay.handleInput("j");
+	expect(overlay.render(100).join("\n")).toContain("> #4");
+
+	overlay.handleInput("l");
+	let rendered = overlay.render(100).join("\n");
+	expect(rendered).toContain("background terminal #4 attached");
+	expect(rendered).toContain("prompt");
+
+	records = [{ ...records[1], output: "ready\nprompt\nnext\n" }];
+	listeners[0]?.();
+	rendered = overlay.render(100).join("\n");
+	expect(renderRequests).toBeGreaterThan(0);
+	expect(rendered).toContain("next");
+
+	overlay.handleInput("h");
+	expect(overlay.render(100).join("\n")).toContain("> #4");
+
+	overlay.handleInput("x");
+	rendered = overlay.render(100).join("\n");
+	expect(killed).toEqual([4]);
+	expect(rendered).toContain("Killed background terminal #4");
+	expect(rendered).toContain("No background terminals");
+	expect(rendered).not.toContain("node repl.js");
 });
 
 test("grouped exploration rows use a one-line in-flight placeholder", () => {
@@ -231,7 +416,7 @@ test("exploration grouping does not append a single command output preview", () 
 	}
 });
 
-test("yielded background exec calls render an animated terminal HUD", () => {
+test("yielded background exec calls render a static spawned row", () => {
 	let tool: any;
 	const tracker = createExecCommandTracker();
 	const sessions = {
@@ -271,12 +456,24 @@ test("yielded background exec calls render an animated terminal HUD", () => {
 			.render(120)
 			.join("\n");
 
-		expect(row).toContain("<bold>Waiting for background terminal</bold>");
-		expect(row).toContain("<muted>sleep 60</muted>");
-		expect(row).toContain("<muted>(2 lines)</muted>");
-		expect(row).toContain("<dim>last</dim>");
-		expect(state.elapsedTimer).toBeDefined();
-		if (state.elapsedTimer) clearTimeout(state.elapsedTimer);
+		expect(row).toContain("<bold>Spawned background terminal</bold>");
+		expect(row).toContain("<syntaxFunction>sleep</syntaxFunction> 60");
+		expect(row).not.toContain("Waiting for background terminal");
+		expect(state.elapsedTimer).toBeUndefined();
+
+		tracker.recordSessionFinished(7);
+		const finishedRow = tool
+			.renderCall({ cmd: "sleep 60" }, testTheme, {
+				toolCallId: "call",
+				state: {},
+				isPartial: false,
+				invalidate() {},
+			})
+			.render(120)
+			.join("\n");
+
+		expect(finishedRow).toContain("<bold>Spawned background terminal</bold>");
+		expect(finishedRow).not.toContain("<bold>Ran</bold>");
 	} finally {
 		tracker.clear();
 		sessions.shutdown();
@@ -461,6 +658,35 @@ test("exec result renderer truncates output by rendered width", () => {
 	}
 });
 
+test("exec result renderer hides yielded background-terminal session details", () => {
+	let tool: any;
+	const sessions = createExecSessionManager();
+	try {
+		registerExecCommandTool(
+			{ registerTool: (definition: any) => (tool = definition) } as any,
+			createExecCommandTracker(),
+			sessions,
+		);
+
+		const rendered = tool
+			.renderResult(
+				{
+					content: [{ type: "text", text: "fallback" }],
+					details: { output: "partial\n", session_id: 9, stdin_open: false },
+				},
+				{ expanded: false, isPartial: false },
+				testTheme,
+				{ toolCallId: "call", args: { cmd: "sleep 60" }, state: {} },
+			)
+			.render(120)
+			.join("\n");
+
+		expect(rendered).toBe("");
+	} finally {
+		sessions.shutdown();
+	}
+});
+
 test("extension hides empty self-rendered tool rows", () => {
 	type Handler = () => void;
 	const handlers = new Map<string, Handler[]>();
@@ -612,6 +838,44 @@ test("write stdin hides still-running empty background terminal polls from trans
 	}
 });
 
+test("write stdin result renderer parses stdin capability from formatted transcripts", () => {
+	let tool: any;
+	const sessions = createExecSessionManager();
+	try {
+		registerWriteStdinTool({ registerTool: (definition: any) => (tool = definition) } as any, sessions);
+
+		const rendered = tool
+			.renderResult(
+				{
+					content: [
+						{
+							type: "text",
+							text: [
+								"Chunk ID: chunk",
+								"Wall time: 0.2500 seconds",
+								"Process running with session ID 3",
+								"Stdin: open",
+								"Output:",
+								"hello",
+							].join("\n"),
+						},
+					],
+				},
+				{ expanded: false, isPartial: false },
+				testTheme,
+				{ args: { session_id: 3, chars: "\u0003" } },
+			)
+			.render(120)
+			.join("\n");
+
+		expect(rendered).toContain("Session 3 still running");
+		expect(rendered).toContain("<mdLink>tty</mdLink>");
+		expect(rendered).not.toContain("stdin open");
+	} finally {
+		sessions.shutdown();
+	}
+});
+
 test("write stdin renders animated in-flight wait and interaction rows", () => {
 	let tool: any;
 	const sessions = createExecSessionManager();
@@ -627,7 +891,7 @@ test("write stdin renders animated in-flight wait and interaction rows", () => {
 			})
 			.render(120)
 			.join("\n");
-		expect(waitRow).toContain("<bold>Waiting for background terminal</bold>");
+		expect(waitRow).toContain("<bold>background terminal</bold>");
 		expect(waitRow).toContain("<muted>(no output)</muted>");
 		expect(waitState.elapsedTimer).toBeDefined();
 		if (waitState.elapsedTimer) clearTimeout(waitState.elapsedTimer);
@@ -726,6 +990,490 @@ test("extension marks nonzero exec results as errors for red status dots", () =>
 	expect(nonzero).toContainEqual({ isError: true });
 	expect(zero.every((result) => result === undefined)).toBe(true);
 	for (const handler of handlers.get("session_shutdown") ?? []) handler();
+});
+
+test("extension status shows background terminal and stdin-open counts", async () => {
+	type Handler = (event?: any, ctx?: any) => any;
+	const handlers = new Map<string, Handler[]>();
+	let execTool: any;
+	const statusCalls: Array<{ key: string; text: string | undefined }> = [];
+	const widgetCalls: Array<{ key: string; content: any; options?: any }> = [];
+	let widgetText = "";
+	let activeTools = ["read", "bash"];
+	const pi = {
+		registerTool: (definition: any) => {
+			if (definition.name === "exec_command") execTool = definition;
+		},
+		registerCommand() {},
+		getActiveTools: () => activeTools,
+		setActiveTools: (next: string[]) => {
+			activeTools = next;
+		},
+		on: (event: string, handler: Handler) => {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+		},
+		exec: async () => ({ code: 1, stdout: "", stderr: "" }),
+	} as any;
+	execCommandExtension(pi);
+
+	const ctx = {
+		hasUI: true,
+		ui: {
+			setStatus: (key: string, text: string | undefined) => statusCalls.push({ key, text }),
+			setWidget: (key: string, content: any, options?: any) => {
+				widgetCalls.push({ key, content, options });
+				if (typeof content === "function") {
+					const component = content(
+						{ requestRender() {} },
+						{ fg: (_role: string, text: string) => text, bold: (text: string) => text },
+					);
+					widgetText = component.render(120).join("\n");
+				}
+			},
+			notify() {},
+		},
+		cwd: process.cwd(),
+	};
+
+	for (const handler of handlers.get("session_start") ?? []) handler(undefined, ctx);
+
+	try {
+		const result = await execTool.execute(
+			"call-status",
+			{ cmd: "sleep 1; printf done", yield_time_ms: 250 },
+			undefined,
+			undefined,
+			ctx,
+		);
+
+		expect(result.details.session_id).toBeNumber();
+		expect(statusCalls.at(-1)).toEqual({
+			key: "background-terminals",
+			text: "1 background terminal · 1 running",
+		});
+		expect(widgetCalls.at(-1)?.key).toBe("background-terminals");
+		expect(widgetCalls.at(-1)?.options).toEqual({ placement: "aboveEditor" });
+		expect(widgetText).toContain("background terminal");
+		expect(widgetText).toContain("sleep 1; printf done");
+		expect(widgetText).not.toContain("stdin closed");
+		expect(widgetText).toContain("(no output)");
+		expect(widgetText).toContain("0s");
+
+		await Bun.sleep(1200);
+		expect(statusCalls.at(-1)).toEqual({
+			key: "background-terminals",
+			text: "1 background terminal · 0 running",
+		});
+		expect(widgetCalls.at(-1)).toEqual({ key: "background-terminals", content: undefined, options: undefined });
+	} finally {
+		for (const handler of handlers.get("session_shutdown") ?? []) handler(undefined, ctx);
+	}
+
+	expect(statusCalls.at(-1)).toEqual({ key: "background-terminals", text: undefined });
+	expect(widgetCalls.at(-1)).toEqual({ key: "background-terminals", content: undefined, options: undefined });
+});
+
+test("extension status counts stdin-open tty sessions", async () => {
+	type Handler = (event?: any, ctx?: any) => any;
+	const handlers = new Map<string, Handler[]>();
+	let execTool: any;
+	const statusCalls: Array<{ key: string; text: string | undefined }> = [];
+	let activeTools = ["read", "bash"];
+	const pi = {
+		registerTool: (definition: any) => {
+			if (definition.name === "exec_command") execTool = definition;
+		},
+		registerCommand() {},
+		getActiveTools: () => activeTools,
+		setActiveTools: (next: string[]) => {
+			activeTools = next;
+		},
+		on: (event: string, handler: Handler) => {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+		},
+		exec: async () => ({ code: 1, stdout: "", stderr: "" }),
+	} as any;
+	execCommandExtension(pi);
+
+	const ctx = {
+		hasUI: true,
+		ui: {
+			setStatus: (key: string, text: string | undefined) => statusCalls.push({ key, text }),
+			notify() {},
+		},
+		cwd: process.cwd(),
+	};
+
+	for (const handler of handlers.get("session_start") ?? []) handler(undefined, ctx);
+
+	try {
+		const result = await execTool.execute(
+			"call-status-tty",
+			{ cmd: 'read line; printf "got:$line"', tty: true, yield_time_ms: 250 },
+			undefined,
+			undefined,
+			ctx,
+		);
+
+		expect(result.details.session_id).toBeNumber();
+		expect(statusCalls.at(-1)).toEqual({
+			key: "background-terminals",
+			text: "1 background terminal · 1 running · 1 tty",
+		});
+	} finally {
+		for (const handler of handlers.get("session_shutdown") ?? []) handler(undefined, ctx);
+	}
+});
+
+test("extension HUD keeps line count and last output visible before long commands", async () => {
+	type Handler = (event?: any, ctx?: any) => any;
+	const handlers = new Map<string, Handler[]>();
+	let execTool: any;
+	let widgetText = "";
+	const longCommand = `printf 'first line\\nlast visible line\\n'; sleep 1; printf '${"x".repeat(120)}'`;
+	const pi = {
+		registerTool: (definition: any) => {
+			if (definition.name === "exec_command") execTool = definition;
+		},
+		registerCommand() {},
+		registerMessageRenderer() {},
+		sendMessage() {},
+		getActiveTools: () => [],
+		setActiveTools() {},
+		on: (event: string, handler: Handler) => {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+		},
+		exec: async () => ({ code: 1, stdout: "", stderr: "" }),
+	} as any;
+	execCommandExtension(pi);
+
+	const ctx = {
+		hasUI: true,
+		ui: {
+			setStatus() {},
+			setWidget(_key: string, content: any) {
+				if (typeof content === "function") {
+					let component: any;
+					const rerender = () => {
+						widgetText = component.render(80).join("\n");
+					};
+					component = content(
+						{ requestRender: rerender },
+						{ fg: (_role: string, text: string) => text, bold: (text: string) => text },
+					);
+					rerender();
+				}
+			},
+			notify() {},
+		},
+		cwd: process.cwd(),
+	};
+	for (const handler of handlers.get("session_start") ?? []) handler(undefined, ctx);
+
+	try {
+		await execTool.execute("call-hud-output", { cmd: longCommand, yield_time_ms: 250 }, undefined, undefined, ctx);
+
+		expect(widgetText).toContain("●");
+		expect(widgetText).toContain("(2 lines)");
+		expect(widgetText).toContain("last visible line");
+	} finally {
+		for (const handler of handlers.get("session_shutdown") ?? []) handler(undefined, ctx);
+	}
+});
+
+test("extension appends a new completion message when a background terminal exits", async () => {
+	type Handler = (event?: any, ctx?: any) => any;
+	const handlers = new Map<string, Handler[]>();
+	let execTool: any;
+	let renderer: any;
+	const sentMessages: Array<{ message: any; options: any }> = [];
+	const pi = {
+		registerTool: (definition: any) => {
+			if (definition.name === "exec_command") execTool = definition;
+		},
+		registerCommand() {},
+		registerMessageRenderer: (_customType: string, registered: any) => {
+			renderer = registered;
+		},
+		sendMessage: (message: any, options: any) => {
+			sentMessages.push({ message, options });
+		},
+		getActiveTools: () => [],
+		setActiveTools() {},
+		on: (event: string, handler: Handler) => {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+		},
+		exec: async () => ({ code: 1, stdout: "", stderr: "" }),
+	} as any;
+	execCommandExtension(pi);
+
+	const ctx = {
+		hasUI: true,
+		ui: { setStatus() {}, notify() {} },
+		cwd: process.cwd(),
+	};
+	for (const handler of handlers.get("session_start") ?? []) handler(undefined, ctx);
+
+	try {
+		const result = await execTool.execute(
+			"call-finished-message",
+			{ cmd: "sleep 0.3; printf done", yield_time_ms: 250 },
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(result.details.session_id).toBeNumber();
+
+		await Bun.sleep(500);
+
+		expect(sentMessages).toHaveLength(1);
+		expect(sentMessages[0]?.options).toEqual({ triggerTurn: false });
+		expect(sentMessages[0]?.message.display).toBe(true);
+		expect(sentMessages[0]?.message.content).toBe("");
+		expect(sentMessages[0]?.message.details.output).toBe("done");
+
+		const rendered = renderer(sentMessages[0]!.message, { expanded: false }, testTheme).render(120).join("\n");
+		expect(rendered).toContain("<bold>Ran</bold>");
+		expect(rendered).toContain("sleep");
+		expect(rendered).toContain("done");
+		expect(rendered).not.toContain("Session ");
+	} finally {
+		for (const handler of handlers.get("session_shutdown") ?? []) handler(undefined, ctx);
+	}
+});
+
+test("ps command opens a background terminal overlay", async () => {
+	type Handler = (event?: any, ctx?: any) => any;
+	const handlers = new Map<string, Handler[]>();
+	const commands = new Map<string, any>();
+	let customOptions: any;
+	let overlayText = "";
+	let setFocusCalls = 0;
+	const pi = {
+		registerTool() {},
+		registerCommand: (name: string, command: any) => commands.set(name, command),
+		getActiveTools: () => [],
+		setActiveTools() {},
+		on: (event: string, handler: Handler) => {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+		},
+	} as any;
+	execCommandExtension(pi);
+
+	await commands.get("ps").handler("", {
+		hasUI: true,
+		ui: {
+			custom(factory: any, options: any) {
+				customOptions = options;
+				const component = factory(
+					{ terminal: { rows: 20 }, requestRender() {}, setFocus: () => setFocusCalls++ },
+					{ fg: (_role: string, text: string) => text, bold: (text: string) => text },
+					{},
+					() => {},
+				);
+				overlayText = component.render(100).join("\n");
+				return Promise.resolve();
+			},
+		},
+	});
+
+	expect(commands.get("ps").description).toBe("list background terminals");
+	expect(customOptions.overlay).toBe(true);
+	expect(customOptions.overlayOptions.width).toBe("90%");
+	expect(customOptions.overlayOptions.minWidth).toBe(60);
+	expect(setFocusCalls).toBe(0);
+	expect(overlayText).toContain("background terminals");
+	expect(overlayText).toContain("No background terminals");
+	for (const handler of handlers.get("session_shutdown") ?? []) handler();
+});
+
+test("stop command stops one background terminal and completes visible ids", async () => {
+	type Handler = (event?: any, ctx?: any) => any;
+	const handlers = new Map<string, Handler[]>();
+	const commands = new Map<string, any>();
+	let execTool: any;
+	let writeTool: any;
+	const notifications: Array<{ message: string; type?: string }> = [];
+	const pi = {
+		registerTool: (definition: any) => {
+			if (definition.name === "exec_command") execTool = definition;
+			if (definition.name === "write_stdin") writeTool = definition;
+		},
+		registerCommand: (name: string, command: any) => commands.set(name, command),
+		getActiveTools: () => [],
+		setActiveTools() {},
+		on: (event: string, handler: Handler) => {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+		},
+		exec: async () => ({ code: 1, stdout: "", stderr: "" }),
+	} as any;
+	execCommandExtension(pi);
+
+	const ctx = {
+		hasUI: true,
+		ui: {
+			setStatus() {},
+			notify: (message: string, type?: string) => notifications.push({ message, type }),
+		},
+		cwd: process.cwd(),
+	};
+	for (const handler of handlers.get("session_start") ?? []) handler(undefined, ctx);
+
+	try {
+		const first = await execTool.execute(
+			"call-stop-1",
+			{ cmd: "sleep 60", yield_time_ms: 250 },
+			undefined,
+			undefined,
+			ctx,
+		);
+		const second = await execTool.execute(
+			"call-stop-2",
+			{ cmd: "sleep 60", yield_time_ms: 250 },
+			undefined,
+			undefined,
+			ctx,
+		);
+		const firstId = first.details.session_id;
+		const secondId = second.details.session_id;
+		expect(firstId).toBeNumber();
+		expect(secondId).toBeNumber();
+
+		expect(await commands.get("stop").getArgumentCompletions("")).toEqual([
+			{ value: String(firstId), label: `#${firstId}`, description: "sleep 60" },
+			{ value: String(secondId), label: `#${secondId}`, description: "sleep 60" },
+		]);
+
+		await commands.get("stop").handler(String(firstId), ctx);
+
+		expect(notifications).toContainEqual({ message: `Stopped background terminal #${firstId}.`, type: "info" });
+		await expect(
+			writeTool.execute(
+				"write-stopped",
+				{ session_id: firstId, chars: "", yield_time_ms: 250 },
+				undefined,
+				undefined,
+				ctx,
+			),
+		).rejects.toThrow(`Unknown process id ${firstId}`);
+		const pollSecond = await writeTool.execute(
+			"write-running",
+			{ session_id: secondId, chars: "", yield_time_ms: 250 },
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(pollSecond.details.session_id).toBe(secondId);
+	} finally {
+		for (const handler of handlers.get("session_shutdown") ?? []) handler(undefined, ctx);
+	}
+});
+
+test("stop command warns for invalid ids without stopping sessions", async () => {
+	type Handler = (event?: any, ctx?: any) => any;
+	const handlers = new Map<string, Handler[]>();
+	const commands = new Map<string, any>();
+	let execTool: any;
+	let writeTool: any;
+	const notifications: Array<{ message: string; type?: string }> = [];
+	const pi = {
+		registerTool: (definition: any) => {
+			if (definition.name === "exec_command") execTool = definition;
+			if (definition.name === "write_stdin") writeTool = definition;
+		},
+		registerCommand: (name: string, command: any) => commands.set(name, command),
+		getActiveTools: () => [],
+		setActiveTools() {},
+		on: (event: string, handler: Handler) => {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+		},
+		exec: async () => ({ code: 1, stdout: "", stderr: "" }),
+	} as any;
+	execCommandExtension(pi);
+
+	const ctx = {
+		hasUI: true,
+		ui: {
+			setStatus() {},
+			notify: (message: string, type?: string) => notifications.push({ message, type }),
+		},
+		cwd: process.cwd(),
+	};
+	for (const handler of handlers.get("session_start") ?? []) handler(undefined, ctx);
+
+	try {
+		const result = await execTool.execute(
+			"call-invalid-stop",
+			{ cmd: "sleep 60", yield_time_ms: 250 },
+			undefined,
+			undefined,
+			ctx,
+		);
+		const sessionId = result.details.session_id;
+		expect(sessionId).toBeNumber();
+
+		await commands.get("stop").handler("999999", ctx);
+		await commands.get("stop").handler("not-a-number", ctx);
+
+		expect(notifications).toContainEqual({ message: "No background terminal with id 999999.", type: "warning" });
+		expect(notifications).toContainEqual({ message: "Usage: /stop [id]", type: "warning" });
+		const poll = await writeTool.execute(
+			"write-after-invalid-stop",
+			{ session_id: sessionId, chars: "", yield_time_ms: 250 },
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(poll.details.session_id).toBe(sessionId);
+	} finally {
+		for (const handler of handlers.get("session_shutdown") ?? []) handler(undefined, ctx);
+	}
+});
+
+test("stop command without arguments stops all background terminals and clears status", async () => {
+	type Handler = (event?: any, ctx?: any) => any;
+	const handlers = new Map<string, Handler[]>();
+	const commands = new Map<string, any>();
+	let execTool: any;
+	const notifications: Array<{ message: string; type?: string }> = [];
+	const statusCalls: Array<{ key: string; text: string | undefined }> = [];
+	const pi = {
+		registerTool: (definition: any) => {
+			if (definition.name === "exec_command") execTool = definition;
+		},
+		registerCommand: (name: string, command: any) => commands.set(name, command),
+		getActiveTools: () => [],
+		setActiveTools() {},
+		on: (event: string, handler: Handler) => {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+		},
+		exec: async () => ({ code: 1, stdout: "", stderr: "" }),
+	} as any;
+	execCommandExtension(pi);
+
+	const ctx = {
+		hasUI: true,
+		ui: {
+			setStatus: (key: string, text: string | undefined) => statusCalls.push({ key, text }),
+			notify: (message: string, type?: string) => notifications.push({ message, type }),
+		},
+		cwd: process.cwd(),
+	};
+	for (const handler of handlers.get("session_start") ?? []) handler(undefined, ctx);
+
+	try {
+		await execTool.execute("call-stop-all-1", { cmd: "sleep 60", yield_time_ms: 250 }, undefined, undefined, ctx);
+		await execTool.execute("call-stop-all-2", { cmd: "sleep 60", yield_time_ms: 250 }, undefined, undefined, ctx);
+		expect(statusCalls.at(-1)?.text).toBe("2 background terminals · 2 running");
+
+		await commands.get("stop").handler("", ctx);
+
+		expect(notifications).toContainEqual({ message: "Stopped 2 background terminals.", type: "info" });
+		expect(statusCalls.at(-1)).toEqual({ key: "background-terminals", text: undefined });
+		expect(await commands.get("stop").getArgumentCompletions("")).toBeNull();
+	} finally {
+		for (const handler of handlers.get("session_shutdown") ?? []) handler(undefined, ctx);
+	}
 });
 
 test("extension disables bash and activates exec_command plus write_stdin for every model", () => {
@@ -1355,6 +2103,148 @@ test("exec session manager uses a non-color environment", async () => {
 		expect(result.output).toBe("1|dumb|unset");
 		expect(result.exit_code).toBe(0);
 	} finally {
+		sessions.shutdown();
+	}
+});
+
+test("exec session manager lists running and exited-unread sessions with stdin capability", async () => {
+	const sessions = createExecSessionManager({
+		defaultExecYieldTimeMs: 250,
+		defaultWriteYieldTimeMs: 250,
+		minNonInteractiveExecYieldTimeMs: 250,
+		minEmptyWriteYieldTimeMs: 250,
+	});
+	try {
+		const first = await sessions.exec({ cmd: "sleep 1; printf done", yield_time_ms: 250 }, process.cwd());
+		expect(first.session_id).toBeNumber();
+
+		expect(sessions.listSessions()).toEqual([
+			{
+				id: first.session_id!,
+				command: "sleep 1; printf done",
+				output: "",
+				running: true,
+				exitCode: undefined,
+				stdinOpen: false,
+				startedAtMs: expect.any(Number),
+			},
+		]);
+
+		await Bun.sleep(1200);
+
+		expect(sessions.listSessions()).toEqual([
+			{
+				id: first.session_id!,
+				command: "sleep 1; printf done",
+				output: "done",
+				running: false,
+				exitCode: 0,
+				stdinOpen: false,
+				startedAtMs: expect.any(Number),
+			},
+		]);
+
+		const final = await sessions.write({ session_id: first.session_id!, chars: "", yield_time_ms: 250 });
+		expect(final.output).toBe("done");
+		expect(final.exit_code).toBe(0);
+		expect(sessions.listSessions()).toEqual([]);
+	} finally {
+		sessions.shutdown();
+	}
+});
+
+test("exec session manager includes stdin capability in running results and snapshots", async () => {
+	const sessions = createExecSessionManager({
+		defaultExecYieldTimeMs: 250,
+		defaultWriteYieldTimeMs: 250,
+		minNonInteractiveExecYieldTimeMs: 250,
+		minEmptyWriteYieldTimeMs: 250,
+	});
+	try {
+		const nonInteractive = await sessions.exec({ cmd: "sleep 1", yield_time_ms: 250 }, process.cwd());
+		expect(nonInteractive.session_id).toBeNumber();
+		expect(nonInteractive.stdin_open).toBe(false);
+		expect(sessions.getSessionSnapshot(nonInteractive.session_id!)?.stdinOpen).toBe(false);
+
+		const interactive = await sessions.exec(
+			{ cmd: 'read line; printf "got:$line"', tty: true, yield_time_ms: 250 },
+			process.cwd(),
+		);
+		expect(interactive.session_id).toBeNumber();
+		expect(interactive.stdin_open).toBe(true);
+		expect(sessions.getSessionSnapshot(interactive.session_id!)?.stdinOpen).toBe(true);
+	} finally {
+		sessions.shutdown();
+	}
+});
+
+test("exec session manager marks tty-requested sessions as stdin open", async () => {
+	const sessions = createExecSessionManager({
+		defaultExecYieldTimeMs: 250,
+		defaultWriteYieldTimeMs: 250,
+		minNonInteractiveExecYieldTimeMs: 250,
+		minEmptyWriteYieldTimeMs: 250,
+	});
+	try {
+		const first = await sessions.exec(
+			{ cmd: 'read line; printf "got:$line"', tty: true, yield_time_ms: 250 },
+			process.cwd(),
+		);
+		expect(first.session_id).toBeNumber();
+
+		expect(sessions.listSessions()[0]).toMatchObject({
+			id: first.session_id!,
+			command: 'read line; printf "got:$line"',
+			running: true,
+			stdinOpen: true,
+		});
+	} finally {
+		sessions.shutdown();
+	}
+});
+
+test("exec session manager stops one session without clearing other sessions or history", async () => {
+	const sessions = createExecSessionManager({
+		defaultExecYieldTimeMs: 250,
+		minNonInteractiveExecYieldTimeMs: 250,
+	});
+	try {
+		const first = await sessions.exec({ cmd: "sleep 60", yield_time_ms: 250 }, process.cwd());
+		const second = await sessions.exec({ cmd: "sleep 60", yield_time_ms: 250 }, process.cwd());
+		expect(first.session_id).toBeNumber();
+		expect(second.session_id).toBeNumber();
+
+		expect(sessions.stopSession(first.session_id!)).toBe(true);
+		expect(sessions.stopSession(999_999)).toBe(false);
+		expect(sessions.listSessions().map((session) => session.id)).toEqual([second.session_id!]);
+		expect(sessions.getSessionCommand(first.session_id!)).toBe("sleep 60");
+		expect(sessions.getSessionCommand(second.session_id!)).toBe("sleep 60");
+	} finally {
+		sessions.shutdown();
+	}
+});
+
+test("exec session manager stops all sessions and notifies subscribers", async () => {
+	const sessions = createExecSessionManager({
+		defaultExecYieldTimeMs: 250,
+		minNonInteractiveExecYieldTimeMs: 250,
+	});
+	const updates: number[] = [];
+	const unsubscribe = sessions.onSessionUpdate(() => updates.push(sessions.listSessions().length));
+	try {
+		const first = await sessions.exec({ cmd: "sleep 60", yield_time_ms: 250 }, process.cwd());
+		const second = await sessions.exec({ cmd: "sleep 60", yield_time_ms: 250 }, process.cwd());
+		expect(first.session_id).toBeNumber();
+		expect(second.session_id).toBeNumber();
+		expect(sessions.listSessions()).toHaveLength(2);
+
+		expect(sessions.stopAllSessions()).toBe(2);
+		expect(sessions.listSessions()).toEqual([]);
+		expect(updates).toContain(1);
+		expect(updates).toContain(2);
+		expect(updates.at(-1)).toBe(0);
+	} finally {
+		unsubscribe();
 		sessions.shutdown();
 	}
 });

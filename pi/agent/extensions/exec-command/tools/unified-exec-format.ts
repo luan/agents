@@ -16,6 +16,9 @@ export function formatUnifiedExecResult(result: UnifiedExecResult, command?: str
 	}
 	if (result.session_id !== undefined) {
 		sections.push(`Process running with session ID ${result.session_id}`);
+		if (result.stdin_open) {
+			sections.push("TTY: yes");
+		}
 	}
 	if (result.original_token_count !== undefined) {
 		sections.push(`Original token count: ${result.original_token_count}`);

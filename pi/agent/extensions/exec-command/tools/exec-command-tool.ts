@@ -4,10 +4,10 @@ import { Type } from "typebox";
 import { summarizeShellCommand } from "../shell/summary.ts";
 import type { ExecCommandTracker } from "./exec-command-state.ts";
 import {
-	renderBackgroundTerminalHudLine,
 	renderExecCommandCall,
 	renderGroupedExecCommandCall,
 	renderOutputBlock,
+	renderSpawnedBackgroundTerminalCall,
 } from "./exec-rendering.ts";
 import type { ExecSessionManager, UnifiedExecResult } from "./exec-session-manager.ts";
 import { commandHasRipgrepSegment, isRtkGrepCommand } from "./rtk-wrapper.ts";
@@ -185,26 +185,14 @@ const renderExecCommandCallWithOptionalContext: any = (
 	const renderInfo = tracker.getRenderInfo(context?.toolCallId, command);
 	const failed = context?.isError === true;
 	const isExplorationRow = renderInfo.actionGroups !== undefined;
-	scheduleElapsedInvalidation(context, !isExplorationRow && renderInfo.status === "running");
+	const snapshot = renderInfo.sessionId !== undefined ? sessions.getSessionSnapshot(renderInfo.sessionId) : undefined;
+	scheduleElapsedInvalidation(context, !snapshot?.running && !isExplorationRow && renderInfo.status === "running");
 	if (renderInfo.hidden) {
 		return new Text("", 0, 0);
 	}
-	const snapshot = renderInfo.sessionId !== undefined ? sessions.getSessionSnapshot(renderInfo.sessionId) : undefined;
-	if (snapshot?.running) {
-		return {
-			invalidate() {},
-			render(width: number) {
-				return [
-					renderBackgroundTerminalHudLine(
-						snapshot.command,
-						snapshot.output,
-						theme,
-						renderInfo.elapsedMs ?? 0,
-						width,
-					),
-				];
-			},
-		};
+	if (renderInfo.sessionId !== undefined) {
+		const sessionCommand = snapshot?.command ?? sessions.getSessionCommand(renderInfo.sessionId) ?? command;
+		return new Text(renderSpawnedBackgroundTerminalCall(sessionCommand, theme, renderInfo.rtkWrapped), 0, 0);
 	}
 	const text = renderInfo.actionGroups
 		? renderGroupedExecCommandCall(
@@ -228,7 +216,7 @@ const renderExecCommandResultWithOptionalContext: any = (
 	theme: { fg(role: string, text: string): string },
 	context: ExecCommandRenderContextLike | undefined,
 	tracker: ExecCommandTracker,
-	sessions: ExecSessionManager,
+	_sessions: ExecSessionManager,
 ) => {
 	if (options.isPartial) {
 		return createEmptyResultComponent();
@@ -244,17 +232,15 @@ const renderExecCommandResultWithOptionalContext: any = (
 	}
 
 	const details = isUnifiedExecResult(result.details) ? result.details : undefined;
-	if (details?.session_id !== undefined && sessions.getSessionSnapshot(details.session_id)?.running === true) {
+	if (details?.session_id !== undefined) {
 		return createEmptyResultComponent();
 	}
 	const content = result.content.find((item) => item.type === "text");
 	const output = details?.output ?? (content?.type === "text" ? content.text : "");
 	const footer =
-		details?.session_id !== undefined
-			? theme.fg("accent", `Session ${details.session_id} still running`)
-			: details?.exit_code !== undefined && details.exit_code !== 0
-				? theme.fg("muted", `Exit code: ${details.exit_code}`)
-				: undefined;
+		details?.exit_code !== undefined && details.exit_code !== 0
+			? theme.fg("muted", `Exit code: ${details.exit_code}`)
+			: undefined;
 	return new OutputBlockComponent(output ?? "", theme, footer, {
 		expanded: options.expanded,
 		truncatedAbove: details?.output_truncated,

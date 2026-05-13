@@ -23,6 +23,15 @@ const COMMAND_PREVIEW_MAX_CHARS = 100;
 const OUTPUT_LINE_DISPLAY_MAX_CHARS = 220;
 const RUNNING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const RUNNING_FRAME_MS = 120;
+const BACKGROUND_PULSE_MS = 1200;
+const BACKGROUND_PULSE_LO = 0.45;
+const BACKGROUND_PULSE_HI = 1.45;
+const BACKGROUND_LABEL = "background terminal";
+const BACKGROUND_LABEL_SHINE_WIDTH = 3;
+const BACKGROUND_LABEL_PERCOLATION_MS = 80;
+const RGB_FALLBACK: Rgb = [0xff, 0xff, 0xff];
+
+type Rgb = [number, number, number];
 
 export function renderExecCommandCall(
 	command: string,
@@ -36,6 +45,13 @@ export function renderExecCommandCall(
 	return summary.maskAsExplored
 		? renderExplorationText([summary.actions], state, theme, failed, elapsedMs, rtkWrapped)
 		: renderCommandText(command, state, theme, failed, elapsedMs, rtkWrapped);
+}
+
+export function renderSpawnedBackgroundTerminalCall(command: string, theme: RenderTheme, rtkWrapped = false): string {
+	return renderCommandText(command, "done", theme, false, undefined, rtkWrapped, {
+		done: "Spawned background terminal",
+		running: "Spawning background terminal",
+	});
 }
 
 export function renderUserExecCommandCall(
@@ -70,6 +86,7 @@ export function renderWriteStdinCall(
 	state: ExecCommandStatus = "done",
 	failed = false,
 	elapsedMs?: number,
+	stdinOpen?: boolean,
 ): string {
 	const interacted = typeof input === "string" && input.length > 0;
 	const marker = state === "running" ? `${runningMarker(elapsedMs)} ` : interacted ? "↳ " : "• ";
@@ -95,6 +112,9 @@ export function renderWriteStdinCall(
 	if (!commandPreview) {
 		text += `${theme.fg("dim", " ")}${theme.fg("muted", `#${sessionId}`)}`;
 	}
+	if (stdinOpen) {
+		text += `${theme.fg("dim", " · ")}${theme.fg("mdLink", formatStdinCapability(stdinOpen))}`;
+	}
 	return text;
 }
 
@@ -104,6 +124,7 @@ export function renderBackgroundTerminalHudLine(
 	theme: RenderTheme,
 	elapsedMs: number,
 	width = 120,
+	stdinOpen?: boolean,
 ): string {
 	const lineCount = outputLineCount(output);
 	const outputSummary =
@@ -122,20 +143,31 @@ export function renderBackgroundTerminalHudLine(
 	);
 	const fixedVisibleLength =
 		2 +
-		"Waiting for background terminal".length +
+		"background terminal".length +
+		" · ".length +
+		formatElapsedTime(elapsedMs).length +
 		" · ".length +
 		commandPreview.length +
 		" · ".length +
 		outputSummary.count.length +
+		(stdinOpen ? " · ".length + formatStdinCapability(stdinOpen).length : 0) +
 		(outputSummary.lastLine ? " · ".length : 0);
 	const lastLineMax = Math.max(12, width - fixedVisibleLength);
-	let text = `${theme.fg("dim", runningMarker(elapsedMs))} ${theme.bold("Waiting for background terminal")}`;
-	text += `${theme.fg("dim", " · ")}${theme.fg("muted", commandPreview)}`;
+	let text = `${backgroundTerminalPulseMarker(theme, elapsedMs)} ${backgroundTerminalAnimatedLabel(theme, elapsedMs)}`;
+	text += `${theme.fg("dim", " · ")}${theme.fg("dim", formatElapsedTime(elapsedMs))}`;
+	if (stdinOpen) {
+		text += `${theme.fg("dim", " · ")}${theme.fg("mdLink", formatStdinCapability(stdinOpen))}`;
+	}
 	text += `${theme.fg("dim", " · ")}${theme.fg("muted", outputSummary.count)}`;
 	if (outputSummary.lastLine) {
 		text += `${theme.fg("dim", " · ")}${theme.fg("dim", shortenLine(stripAnsi(outputSummary.lastLine), lastLineMax))}`;
 	}
+	text += `${theme.fg("dim", " · ")}${theme.fg("muted", commandPreview)}`;
 	return text;
+}
+
+export function formatStdinCapability(stdinOpen: boolean): string {
+	return stdinOpen ? "tty" : "";
 }
 
 export function renderOutputBlock(
@@ -219,12 +251,12 @@ function stripAnsi(value: string): string {
 	return value.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
 }
 
-function outputLineCount(output: string): number {
+export function outputLineCount(output: string): number {
 	if (output.length === 0) return 0;
 	return output.replace(/\n$/, "").split("\n").length;
 }
 
-function lastOutputLine(output: string): string | undefined {
+export function lastOutputLine(output: string): string | undefined {
 	if (output.length === 0) return undefined;
 	const lines = output.replace(/\n$/, "").split("\n");
 	return lines[lines.length - 1];
@@ -330,9 +362,105 @@ function renderStatusMarker(
 	return theme.fg(failed ? "error" : "success", marker);
 }
 
-function runningMarker(elapsedMs: number | undefined): string {
+export function runningMarker(elapsedMs: number | undefined): string {
 	if (elapsedMs === undefined) return RUNNING_FRAMES[0]!;
 	return RUNNING_FRAMES[Math.floor(elapsedMs / RUNNING_FRAME_MS) % RUNNING_FRAMES.length]!;
+}
+
+export function backgroundTerminalPulseMarker(theme: Pick<RenderTheme, "fg">, elapsedMs: number | undefined): string {
+	const baseAnsi = colorAnsi(theme, "accent");
+	if (!baseAnsi) return theme.fg("accent", "●");
+	const color = scaleRgb(
+		colorRgb(theme, "accent"),
+		triangleWave(elapsedMs ?? 0, BACKGROUND_PULSE_MS, BACKGROUND_PULSE_LO, BACKGROUND_PULSE_HI),
+	);
+	return `${rgbFg(color)}●\x1b[39m`;
+}
+
+export function backgroundTerminalAnimatedLabel(theme: RenderTheme, elapsedMs: number | undefined): string {
+	const baseAnsi = colorAnsi(theme, "accent");
+	if (!baseAnsi) return theme.bold(BACKGROUND_LABEL);
+	const base = scaleRgb(colorRgb(theme, "accent"), 0.55);
+	const shine = scaleRgb(colorRgb(theme, "accent"), 1.55);
+	const chars = [...BACKGROUND_LABEL];
+	const step = Math.floor((elapsedMs ?? 0) / BACKGROUND_LABEL_PERCOLATION_MS);
+	const cycle = chars.length + BACKGROUND_LABEL_SHINE_WIDTH;
+	const pos = step % cycle;
+	return `${chars
+		.map((ch, index) => {
+			const inShine = index >= pos - BACKGROUND_LABEL_SHINE_WIDTH && index < pos;
+			return `${rgbFg(inShine ? shine : base)}${ch}`;
+		})
+		.join("")}\x1b[39m`;
+}
+
+function triangleWave(elapsedMs: number, periodMs: number, lo: number, hi: number): number {
+	const t = (elapsedMs % periodMs) / periodMs;
+	const tri = 1 - Math.abs(2 * t - 1);
+	return lo + tri * (hi - lo);
+}
+
+function ansi256ToRgb(code: number): Rgb {
+	if (code < 16) {
+		const base: Rgb[] = [
+			[0, 0, 0],
+			[128, 0, 0],
+			[0, 128, 0],
+			[128, 128, 0],
+			[0, 0, 128],
+			[128, 0, 128],
+			[0, 128, 128],
+			[192, 192, 192],
+			[128, 128, 128],
+			[255, 0, 0],
+			[0, 255, 0],
+			[255, 255, 0],
+			[0, 0, 255],
+			[255, 0, 255],
+			[0, 255, 255],
+			[255, 255, 255],
+		];
+		return base[code] ?? RGB_FALLBACK;
+	}
+	if (code >= 16 && code <= 231) {
+		const n = code - 16;
+		const r = Math.floor(n / 36);
+		const g = Math.floor((n % 36) / 6);
+		const b = n % 6;
+		const scale = (value: number) => (value === 0 ? 0 : 55 + value * 40);
+		return [scale(r), scale(g), scale(b)];
+	}
+	const gray = 8 + (code - 232) * 10;
+	return [gray, gray, gray];
+}
+
+function colorAnsi(theme: Pick<RenderTheme, "fg">, color: string): string | undefined {
+	const withGetter = theme as Pick<RenderTheme, "fg"> & { getFgAnsi?: (color: string) => string };
+	if (withGetter.getFgAnsi) return withGetter.getFgAnsi(color);
+	const sample = theme.fg(color, "x");
+	const marker = sample.indexOf("x");
+	const ansi = marker >= 0 ? sample.slice(0, marker) : undefined;
+	return ansi?.includes("\x1b[38;") ? ansi : undefined;
+}
+
+function colorRgb(theme: Pick<RenderTheme, "fg">, color: string): Rgb {
+	const ansi = colorAnsi(theme, color);
+	const truecolor = ansi?.match(/\x1b\[38;2;(\d+);(\d+);(\d+)m/);
+	if (truecolor) return [Number(truecolor[1]), Number(truecolor[2]), Number(truecolor[3])];
+
+	const color256 = ansi?.match(/\x1b\[38;5;(\d+)m/);
+	if (color256) return ansi256ToRgb(Number(color256[1]));
+
+	return RGB_FALLBACK;
+}
+
+function scaleRgb([r, g, b]: Rgb, factor: number): Rgb {
+	const scale = (value: number) => Math.round(Math.max(0, Math.min(255, value * factor)));
+	return [scale(r), scale(g), scale(b)];
+}
+
+function rgbFg([r, g, b]: Rgb): string {
+	return `\x1b[38;2;${r};${g};${b}m`;
 }
 
 function styleOutputLine(line: string, theme: Pick<RenderTheme, "fg">): string {
