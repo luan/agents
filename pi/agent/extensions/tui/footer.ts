@@ -623,6 +623,63 @@ function renderBranchSegment(theme: Theme, state: FooterRenderState, config: Pol
 	return str;
 }
 
+export function renderEditorTopStatus(
+	state: FooterRenderState,
+	config: PolishedTuiConfig,
+	cwd: string,
+	theme: Theme,
+	width: number,
+): string {
+	const dim = (s: string) => theme.fg("dim", s);
+	const sep = ` ${dim(">")} `;
+	const cwdLabel = theme.fg("accent", formatCwdLabel(cwd, config.icons.cwd));
+	const branchLabel = renderBranchSegment(theme, state, config);
+	const runtimeLabel = renderRuntimeSegment(theme, state.runtime);
+	const modelLabel = theme.fg("muted", state.modelLabel);
+	const thinkingLabel =
+		state.thinkingLevel && state.thinkingLevel !== "off" ? theme.fg("accent", state.thinkingLevel) : "";
+
+	const safeWidth = Math.max(1, width);
+	const fitted = fitFooterSegment(
+		Math.max(1, safeWidth - 1),
+		[
+			[cwdLabel, branchLabel, runtimeLabel, modelLabel, thinkingLabel].filter(Boolean).join(sep),
+			[cwdLabel, branchLabel, modelLabel, thinkingLabel].filter(Boolean).join(sep),
+			[branchLabel, modelLabel, thinkingLabel].filter(Boolean).join(sep),
+			[modelLabel, thinkingLabel].filter(Boolean).join(sep),
+			modelLabel,
+		].filter(Boolean),
+	);
+	return safeWidth > 1 ? `${fitted} ` : fitted;
+}
+
+export function renderEditorContextStatus(state: FooterRenderState, theme: Theme, width: number): string {
+	const safeWidth = Math.max(1, width);
+	if (state.contextTotal <= 0) return truncateToWidth(theme.fg("dim", "ctx no model"), safeWidth, "");
+
+	const usedTokens = Math.max(0, state.contextUsed);
+	const percent =
+		state.contextPercent === null && state.contextTotal > 0
+			? (usedTokens / state.contextTotal) * 100
+			: state.contextPercent;
+	const prefix = state.contextUsageEstimated ? "~" : "";
+	const percentText = percent === null ? "?" : `${prefix}${percent.toFixed(1)}%`;
+	const totalText = `${prefix}${formatTokenCount(usedTokens)}/${formatTokenCount(state.contextTotal)}`;
+	const statusColor = contextHealthColor(state);
+	const metricParts = [
+		theme.fg(statusColor, `${percentText} ${totalText}`),
+		state.hasTokens ? theme.fg("muted", state.tokenLabel) : "",
+		state.hasCost ? theme.fg("success", state.costLabel) : "",
+	].filter(Boolean);
+	const suffix = ` ${metricParts.join(" ")}`;
+
+	return (
+		renderContextBar(state, theme, safeWidth, suffix) ??
+		renderContextBar(state, theme, safeWidth, ` ${theme.fg(statusColor, percentText)}`) ??
+		truncateToWidth(theme.fg("dim", "ctx"), safeWidth, "")
+	);
+}
+
 export function renderFooter(
 	state: FooterRenderState,
 	config: PolishedTuiConfig,

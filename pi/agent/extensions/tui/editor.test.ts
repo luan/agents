@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { renderPolishedEditorForTest, setCachedSkillNamesForTest, setWorkingAnimationForTest } from "./editor";
+import {
+	renderPolishedEditorForTest,
+	setCachedSkillNamesForTest,
+	setEditorChromeProvider,
+	setWorkingAnimationForTest,
+} from "./editor";
 import extension from "./index";
 
 const ANSI_PATTERN = /\x1b\[[0-9;]*m/g;
@@ -28,6 +33,7 @@ function editor(overrides: Record<string, unknown> = {}) {
 describe("polished TUI editor cached skills", () => {
 	beforeEach(() => {
 		setWorkingAnimationForTest(false, 0);
+		setEditorChromeProvider(undefined);
 	});
 
 	test("renders no cached skills metadata when cache is empty", () => {
@@ -87,6 +93,7 @@ describe("polished TUI editor cached skills", () => {
 					return () => eventHandlers.delete(channel);
 				},
 			},
+			registerCommand: () => {},
 		};
 
 		extension(pi as never);
@@ -114,7 +121,23 @@ describe("polished TUI editor cached skills", () => {
 			rgbTheme,
 		);
 
-		expect(stripAnsi(lines[0] ?? "")).toContain("Working");
+		expect(stripAnsi(lines[0] ?? "")).toContain("Working…");
+		expect(lines.every((line) => visibleWidth(line) <= 40)).toBe(true);
+	});
+
+	test("right-aligns editor chrome status on the first row", () => {
+		setCachedSkillNamesForTest([]);
+		setEditorChromeProvider(() => ({ topRight: "status" }));
+
+		const lines = renderPolishedEditorForTest(
+			editor({ getMode: () => "normal" }),
+			40,
+			() => ["> hello", ""],
+			28,
+			theme,
+		);
+
+		expect(stripAnsi(lines[0] ?? "")).toEndWith("status");
 		expect(lines.every((line) => visibleWidth(line) <= 40)).toBe(true);
 	});
 

@@ -1,5 +1,6 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { buildSessionContext, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { runCommand } from "../shared/ct-runner";
 import { terminalRows } from "../shared/terminal";
 import { ensureConfigExists, loadConfig, type PolishedTuiConfig } from "./config";
@@ -8,13 +9,15 @@ import {
 	advanceWorkingAnimationFrame,
 	installEditorComposition,
 	setCachedSkillNames,
+	setEditorChromeProvider,
 	setWorkingAnimationState,
 } from "./editor";
 import {
 	emptyFooterState,
 	estimateContextBreakdown,
 	type FooterRenderState,
-	renderFooter,
+	renderEditorContextStatus,
+	renderEditorTopStatus,
 	scaleContextSegmentsToUsage,
 	scaleContextSlicesToUsage,
 } from "./footer";
@@ -84,6 +87,10 @@ function getUsageTotals(ctx: ExtensionContext): UsageTotals {
 	return { input, output, cost };
 }
 
+function truncateUsageLine(line: string, width: number): string {
+	return line ? truncateToWidth(line, Math.max(1, width), "") : "";
+}
+
 export default function (pi: ExtensionAPI) {
 	const state: FooterRenderState = emptyFooterState();
 	const usageCache = new Map<string, UsageSnapshot>();
@@ -97,6 +104,7 @@ export default function (pi: ExtensionAPI) {
 	let refreshTimer: ReturnType<typeof setInterval> | null = null;
 	let usageBarCache: UsageBarCache | null = null;
 	let usageBarPendingKey: string | null = null;
+	let usageBarsVisible = true;
 	let contextPulseTimer: ReturnType<typeof setInterval> | null = null;
 	let workingAnimationTimer: ReturnType<typeof setInterval> | null = null;
 	const contextPulseDeadlines = new Map<number, number>();
@@ -227,6 +235,37 @@ export default function (pi: ExtensionAPI) {
 				state.usageLines = undefined;
 				refresh();
 			});
+	};
+
+	const renderEditorTopChrome = (
+		width: number,
+		theme: Parameters<typeof renderEditorContextStatus>[1],
+		cwd: string,
+	) => {
+		const safeWidth = Math.max(1, width);
+		let usageLine = "";
+		if (usageBarsVisible) {
+			const usageWidth = Math.max(20, Math.min(56, Math.floor(safeWidth * 0.36)));
+			ensureUsageBarLines(usageWidth);
+			usageLine = truncateUsageLine(state.usageLines?.[0] ?? "", usageWidth);
+		}
+
+		const gapWidth = usageLine ? 2 : 0;
+		let statusWidth = safeWidth - visibleWidth(usageLine) - gapWidth;
+		if (statusWidth < 24) {
+			usageLine = "";
+			statusWidth = safeWidth;
+		}
+		const topStatus = renderEditorTopStatus(state, currentConfig, cwd, theme, statusWidth);
+		return [usageLine, topStatus].filter(Boolean).join("  ");
+	};
+
+	const renderEditorBottomStatus = (width: number, theme: Parameters<typeof renderEditorContextStatus>[1]) => {
+		const safeWidth = Math.max(1, width);
+		const contextWidth = Math.min(Math.floor(safeWidth * 0.5), safeWidth);
+		const parts: string[] = [];
+		if (contextWidth >= 12) parts.push(renderEditorContextStatus(state, theme, contextWidth));
+		return parts.join("  ");
 	};
 
 	const syncState = (ctx: ExtensionContext, activeMessage?: unknown) => {
@@ -392,10 +431,9 @@ export default function (pi: ExtensionAPI) {
 
 	const installFooter = (ctx: ExtensionContext) => {
 		const generation = uiGeneration;
-		const cwd = ctx.cwd;
 		syncStateIfCurrent(ctx);
 
-		ctx.ui.setFooter((tui, theme, footerData) => {
+		ctx.ui.setFooter((tui, _theme, footerData) => {
 			requestFooterRender = () => tui.requestRender();
 			const disposeFocusCursor = installFocusCursor(pi, ctx, tui);
 			const unsubscribeBranch = footerData.onBranchChange(() => {
@@ -417,10 +455,8 @@ export default function (pi: ExtensionAPI) {
 					stopContextPulse();
 				},
 				invalidate() {},
-				render(width: number): string[] {
-					if (isCompactTerminal()) return renderFooter(state, currentConfig, cwd, theme, width, { minimal: true });
-					ensureUsageBarLines(width);
-					return renderFooter(state, currentConfig, cwd, theme, width);
+				render(): string[] {
+					return [];
 				},
 			};
 		});
@@ -428,6 +464,19 @@ export default function (pi: ExtensionAPI) {
 
 	const installEditor = (ctx: ExtensionContext) => {
 		syncStateIfCurrent(ctx);
+		const cwd = ctx.cwd;
+		setEditorChromeProvider((width, theme, options) => {
+			const bottomWidth = Math.max(1, width - options.modeReserve);
+			if (isCompactTerminal()) {
+				return {
+					topRight: renderEditorTopChrome(width, theme, cwd),
+				};
+			}
+			return {
+				topRight: renderEditorTopChrome(width, theme, cwd),
+				bottomRight: renderEditorBottomStatus(bottomWidth, theme),
+			};
+		});
 		installEditorComposition(ctx.ui.theme, currentConfig.compact.minTerminalRows);
 	};
 
@@ -442,6 +491,29 @@ export default function (pi: ExtensionAPI) {
 		refresh();
 	};
 
+	pi.registerCommand("usage-bars", {
+		description: "Show or hide provider usage bars in the editor status row",
+		getArgumentCompletions: (prefix: string) =>
+			["on", "off", "toggle"]
+				.filter((value) => value.startsWith(prefix.trim().toLowerCase()))
+				.map((value) => ({ value, label: value })),
+		handler: async (args, ctx) => {
+			const mode = args.trim().toLowerCase();
+			if (!mode) {
+				ctx.ui.notify(`usage-bars ${usageBarsVisible ? "on" : "off"}`, "info");
+				return;
+			}
+			if (mode !== "on" && mode !== "off" && mode !== "toggle") {
+				ctx.ui.notify("Usage: /usage-bars [on|off]", "error");
+				return;
+			}
+			usageBarsVisible = mode === "toggle" ? !usageBarsVisible : mode === "on";
+			if (usageBarsVisible && ctx.model?.provider) fetchUsage(ctx.model.provider);
+			ctx.ui.notify(`usage-bars ${usageBarsVisible ? "on" : "off"}`, "info");
+			refresh();
+		},
+	});
+
 	pi.on("session_start", async (_event, ctx) => {
 		disposed = false;
 		uiGeneration++;
@@ -455,6 +527,7 @@ export default function (pi: ExtensionAPI) {
 		unsubscribeSkillfulCache?.();
 		unsubscribeSkillfulCache = undefined;
 		setCachedSkillNames([]);
+		setEditorChromeProvider(undefined);
 		setWorkingAnimationState(false, 0);
 		stopRefreshTimer();
 		stopContextPulse();

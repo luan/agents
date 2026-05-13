@@ -1,5 +1,5 @@
 import { CustomEditor, type Theme } from "@earendil-works/pi-coding-agent";
-import { type Component, truncateToWidth } from "@earendil-works/pi-tui";
+import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { terminalRows } from "../shared/terminal";
 import { ANSI_RESET, fillBackgroundLine } from "./render-lines";
 
@@ -14,6 +14,13 @@ type TransformableEditor = AutocompleteEditorInternals & {
 	getMode?: () => string;
 	transformEditorLine?: (line: string) => string;
 };
+
+type EditorChrome = {
+	topRight?: string;
+	bottomRight?: string;
+};
+
+type EditorChromeProvider = (width: number, theme: Theme, options: { modeReserve: number }) => EditorChrome;
 
 type UiPatchState = { currentUiTheme?: Theme };
 const globalPatchState = globalThis as typeof globalThis & {
@@ -30,8 +37,11 @@ const WORKING_SHINE_WIDTH = 3;
 const WORKING_PERCOLATION_MS = 80;
 const RAIL_PULSE_MS = 2000;
 const RGB_FALLBACK: Rgb = [0xff, 0xff, 0xff];
+const EDITOR_BG_DARKEN = 0.78;
+const MODE_LABEL_RESERVE = 9;
 
 type Rgb = [number, number, number];
+let editorChromeProvider: EditorChromeProvider | undefined;
 
 export function setEditorTheme(uiTheme: Theme): void {
 	patchState.currentUiTheme = uiTheme;
@@ -56,6 +66,10 @@ export function advanceWorkingAnimationFrame(): void {
 
 export function setWorkingAnimationForTest(active: boolean, frame = 0): void {
 	setWorkingAnimationState(active, frame);
+}
+
+export function setEditorChromeProvider(provider: EditorChromeProvider | undefined): void {
+	editorChromeProvider = provider;
 }
 
 function truncateVisible(text: string, maxWidth: number): string {
@@ -163,13 +177,23 @@ function renderWorkingWord(uiTheme: Theme, color: string, frame: number): string
 function workingHeaderSegment(innerWidth: number, uiTheme: Theme, color: string): string {
 	if (!workingActive) return "";
 	const label = renderWorkingWord(uiTheme, color, workingFrame);
-	return truncateToWidth(`${label}${ANSI_RESET}`, innerWidth, "");
+	return truncateToWidth(`${label}${rgbFg(scaleRgb(colorRgb(uiTheme, color), 0.85))}…${ANSI_RESET}`, innerWidth, "");
 }
 
 function cachedSkillsSegment(innerWidth: number, uiTheme: Theme): string {
 	if (cachedSkillNames.length === 0) return "";
 	const label = truncateVisible(`skills: ${cachedSkillNames.join(", ")}`, innerWidth);
 	return uiTheme.fg("dim", label);
+}
+
+function composeLeftRight(left: string, right: string | undefined, width: number): string {
+	if (!right) return truncateToWidth(left, width, "");
+	if (!left) return " ".repeat(Math.max(0, width - visibleWidth(right))) + truncateToWidth(right, width, "");
+
+	const maxRightWidth = Math.max(0, width - visibleWidth(left) - 1);
+	const fittedRight = truncateToWidth(right, maxRightWidth, "");
+	const gap = Math.max(1, width - visibleWidth(left) - visibleWidth(fittedRight));
+	return truncateToWidth(left, width, "") + " ".repeat(gap) + fittedRight;
 }
 
 export function renderPolishedEditorForTest(
@@ -210,16 +234,23 @@ export function renderPolishedEditorForTest(
 	const editorLines = editorFrame.slice(1, -1).map(transformEditorLine);
 	const mode = typeof editor.getMode === "function" ? editor.getMode() : undefined;
 	const railColor = modeColor(mode);
+	const modeReserve = typeof editor.getMode === "function" ? MODE_LABEL_RESERVE : 0;
+	const statusWidth = Math.max(1, innerWidth - modeReserve);
+	const chrome = editorChromeProvider?.(innerWidth, uiTheme, { modeReserve }) ?? {};
 	const railPulseFactor = workingActive ? triangleWave(workingFrame, RAIL_PULSE_MS, 0.18, 1.25) : 0;
 	const railBg = workingActive ? rgbBg(scaleRgb(colorRgb(uiTheme, railColor), railPulseFactor)) : "";
-	const rail = `${railBg}${uiTheme.fg(railColor as never, "┃")}\x1b[49m${ANSI_RESET}${uiTheme.bg("customMessageBg", " ")}`;
+	const railGap = fillBackgroundLine(uiTheme, "", 1, { darken: EDITOR_BG_DARKEN });
+	const rail = `${railBg}${uiTheme.fg(railColor as never, "┃")}\x1b[49m${ANSI_RESET}${railGap}`;
 	const lines = [
-		workingHeaderSegment(innerWidth, uiTheme, railColor),
+		composeLeftRight(workingHeaderSegment(innerWidth, uiTheme, railColor), chrome.topRight, innerWidth),
 		...editorLines,
-		cachedSkillsSegment(innerWidth, uiTheme),
+		composeLeftRight(cachedSkillsSegment(statusWidth, uiTheme), chrome.bottomRight, statusWidth),
 	];
 
-	return [...lines.map((line) => `${rail}${fillBackgroundLine(uiTheme, line, innerWidth)}`), ...autocompleteLines];
+	return [
+		...lines.map((line) => `${rail}${fillBackgroundLine(uiTheme, line, innerWidth, { darken: EDITOR_BG_DARKEN })}`),
+		...autocompleteLines,
+	];
 }
 
 export function installEditorComposition(uiTheme: Theme, minTerminalRows = 28): void {
