@@ -20,6 +20,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { runCommand as defaultRunCommand } from "../shared/ct-runner";
+import { setOrderedAboveEditorWidget } from "../shared/ordered-widgets";
 import { hasEnoughTerminalRows } from "../shared/terminal";
 
 type TaskCommand = "add" | "list" | "show" | "update" | "delete" | "accept" | "reject";
@@ -417,16 +418,13 @@ class TaskHudWidget implements Component {
 
 function ensureTaskHudWidget(ctx: ExtensionContext): void {
 	if (taskHudWidget && taskHudWidgetCtx === ctx) return;
+	taskHudWidget = undefined;
 	taskHudWidgetCtx = ctx;
-	ctx.ui.setWidget(
-		widgetId,
-		(tui, theme) => {
-			requestTaskHudRender = typeof tui.requestRender === "function" ? () => tui.requestRender() : undefined;
-			taskHudWidget = new TaskHudWidget(tui, theme, latestTaskHudState);
-			return taskHudWidget;
-		},
-		{ placement: "aboveEditor" },
-	);
+	setOrderedAboveEditorWidget(ctx, widgetId, (tui, theme) => {
+		requestTaskHudRender = typeof tui.requestRender === "function" ? () => tui.requestRender() : undefined;
+		taskHudWidget = new TaskHudWidget(tui, theme, latestTaskHudState);
+		return taskHudWidget;
+	});
 }
 
 async function updateTaskHud(
@@ -437,8 +435,9 @@ async function updateTaskHud(
 	config: Config,
 	taskGuardEnabled = latestTaskHudState?.taskGuardEnabled ?? false,
 	signal: AbortSignal | false | undefined = ctx.signal,
+	preloadedTasks?: TaskRecord[],
 ): Promise<void> {
-	const tasks = await loadHudTasks(ctx.cwd, command, runCommand, signal || undefined);
+	const tasks = preloadedTasks ?? (await loadHudTasks(ctx.cwd, command, runCommand, signal || undefined));
 	const display = assignmentDisplayContext(pi, ctx, tasks);
 	const visibleKeys = visibleHudEpicKeys(tasks);
 	if (
@@ -2540,6 +2539,10 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 	if (!config.enabled) return;
 	installSilentTaskToolRenderPatch();
 	taskHudExpandedEpicKey = undefined;
+	taskHudWidget = undefined;
+	taskHudWidgetCtx = undefined;
+	latestTaskHudState = undefined;
+	requestTaskHudRender = undefined;
 
 	const runCommand = runtime.runCommand ?? defaultRunCommand;
 	let cwd = process.cwd();
@@ -2681,15 +2684,17 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 		description: "Cycle project task HUD compact/epic view",
 		handler: async (ctx: ExtensionContext) => {
 			const tasks =
-				latestTaskHudState?.tasks ??
+				(taskHudWidgetCtx === ctx ? latestTaskHudState?.tasks : undefined) ??
 				(await loadHudTasks(ctx.cwd, config.command, runCommand, ctx.signal).catch(() => []));
 			cycleTaskHudExpandedEpic(tasks);
-			await updateTaskHud(ctx, pi, config.command, runCommand, config).catch((error) => {
-				ctx.ui.notify?.(
-					`Task HUD refresh failed: ${error instanceof Error ? error.message : String(error)}`,
-					"warning",
-				);
-			});
+			await updateTaskHud(ctx, pi, config.command, runCommand, config, undefined, ctx.signal, tasks).catch(
+				(error) => {
+					ctx.ui.notify?.(
+						`Task HUD refresh failed: ${error instanceof Error ? error.message : String(error)}`,
+						"warning",
+					);
+				},
+			);
 		},
 	});
 

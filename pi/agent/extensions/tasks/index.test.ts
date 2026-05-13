@@ -741,7 +741,7 @@ describe("tasks extension", () => {
 		await shortcuts.get("alt+t").handler(ctx);
 		expect(widget?.render(120).join("\n")).toContain("2 tasks");
 		expect(widget?.render(120).join("\n")).not.toContain("Task A");
-		expect(listCalls).toBe(4);
+		expect(listCalls).toBe(1);
 	});
 
 	test("/tasks task board mutations shell out through ct and refresh HUD", async () => {
