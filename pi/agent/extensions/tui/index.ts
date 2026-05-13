@@ -4,7 +4,12 @@ import { runCommand } from "../shared/ct-runner";
 import { terminalRows } from "../shared/terminal";
 import { ensureConfigExists, loadConfig, type PolishedTuiConfig } from "./config";
 import { installFocusCursor } from "./cursor-focus";
-import { installEditorComposition, setCachedSkillNames } from "./editor";
+import {
+	advanceWorkingAnimationFrame,
+	installEditorComposition,
+	setCachedSkillNames,
+	setWorkingAnimationState,
+} from "./editor";
 import {
 	emptyFooterState,
 	estimateContextBreakdown,
@@ -93,6 +98,7 @@ export default function (pi: ExtensionAPI) {
 	let usageBarCache: UsageBarCache | null = null;
 	let usageBarPendingKey: string | null = null;
 	let contextPulseTimer: ReturnType<typeof setInterval> | null = null;
+	let workingAnimationTimer: ReturnType<typeof setInterval> | null = null;
 	const contextPulseDeadlines = new Map<number, number>();
 	let disposed = false;
 	let uiGeneration = 0;
@@ -309,6 +315,23 @@ export default function (pi: ExtensionAPI) {
 		}
 	};
 
+	const stopWorkingAnimation = () => {
+		if (workingAnimationTimer) {
+			clearInterval(workingAnimationTimer);
+			workingAnimationTimer = null;
+		}
+	};
+
+	const startWorkingAnimation = () => {
+		setWorkingAnimationState(true, 0);
+		stopWorkingAnimation();
+		workingAnimationTimer = setInterval(() => {
+			advanceWorkingAnimationFrame();
+			refresh();
+		}, 80);
+		refresh();
+	};
+
 	const applyUsageResult = (provider: string, snapshot: UsageSnapshot) => {
 		if (disposed) return;
 		if (activeProvider !== provider) return;
@@ -412,6 +435,7 @@ export default function (pi: ExtensionAPI) {
 		ensureConfigExists();
 		currentConfig = loadConfig();
 		patchUserMessageComponent(ctx.ui.theme);
+		ctx.ui.setWorkingVisible(false);
 		installFooter(ctx);
 		installEditor(ctx);
 		scheduleProjectRefresh(ctx);
@@ -431,17 +455,21 @@ export default function (pi: ExtensionAPI) {
 		unsubscribeSkillfulCache?.();
 		unsubscribeSkillfulCache = undefined;
 		setCachedSkillNames([]);
+		setWorkingAnimationState(false, 0);
 		stopRefreshTimer();
 		stopContextPulse();
+		stopWorkingAnimation();
 	});
 
 	pi.on("agent_start", async (_event, ctx) => {
 		if (!syncStateIfCurrent(ctx)) return;
-		refresh();
+		startWorkingAnimation();
 	});
 
 	pi.on("agent_end", async (_event, ctx) => {
 		if (!syncStateIfCurrent(ctx)) return;
+		setWorkingAnimationState(false, 0);
+		stopWorkingAnimation();
 		scheduleProjectRefresh(ctx);
 		refresh();
 	});

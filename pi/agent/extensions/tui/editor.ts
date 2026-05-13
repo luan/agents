@@ -1,5 +1,5 @@
 import { CustomEditor, type Theme } from "@earendil-works/pi-coding-agent";
-import type { Component } from "@earendil-works/pi-tui";
+import { type Component, truncateToWidth } from "@earendil-works/pi-tui";
 import { terminalRows } from "../shared/terminal";
 import { ANSI_RESET, fillBackgroundLine } from "./render-lines";
 
@@ -22,6 +22,16 @@ const globalPatchState = globalThis as typeof globalThis & {
 globalPatchState.__agentsPolishedTuiState ??= {};
 const patchState = globalPatchState.__agentsPolishedTuiState;
 let cachedSkillNames: string[] = [];
+let workingActive = false;
+let workingFrame = 0;
+
+const WORKING_WORD = "Working";
+const WORKING_SHINE_WIDTH = 3;
+const WORKING_PERCOLATION_MS = 80;
+const RAIL_PULSE_MS = 2000;
+const RGB_FALLBACK: Rgb = [0xff, 0xff, 0xff];
+
+type Rgb = [number, number, number];
 
 export function setEditorTheme(uiTheme: Theme): void {
 	patchState.currentUiTheme = uiTheme;
@@ -35,11 +45,125 @@ export function setCachedSkillNamesForTest(names: readonly string[]): void {
 	setCachedSkillNames(names);
 }
 
+export function setWorkingAnimationState(active: boolean, frame = workingFrame): void {
+	workingActive = active;
+	workingFrame = frame;
+}
+
+export function advanceWorkingAnimationFrame(): void {
+	workingFrame++;
+}
+
+export function setWorkingAnimationForTest(active: boolean, frame = 0): void {
+	setWorkingAnimationState(active, frame);
+}
+
 function truncateVisible(text: string, maxWidth: number): string {
 	if (maxWidth <= 0) return "";
 	if ([...text].length <= maxWidth) return text;
 	if (maxWidth === 1) return "…";
 	return `${[...text].slice(0, maxWidth - 1).join("")}…`;
+}
+
+function ansi256ToRgb(code: number): Rgb {
+	if (code < 16) {
+		const base: Rgb[] = [
+			[0, 0, 0],
+			[128, 0, 0],
+			[0, 128, 0],
+			[128, 128, 0],
+			[0, 0, 128],
+			[128, 0, 128],
+			[0, 128, 128],
+			[192, 192, 192],
+			[128, 128, 128],
+			[255, 0, 0],
+			[0, 255, 0],
+			[255, 255, 0],
+			[0, 0, 255],
+			[255, 0, 255],
+			[0, 255, 255],
+			[255, 255, 255],
+		];
+		return base[code] ?? RGB_FALLBACK;
+	}
+	if (code >= 16 && code <= 231) {
+		const n = code - 16;
+		const r = Math.floor(n / 36);
+		const g = Math.floor((n % 36) / 6);
+		const b = n % 6;
+		const scale = (value: number) => (value === 0 ? 0 : 55 + value * 40);
+		return [scale(r), scale(g), scale(b)];
+	}
+	const gray = 8 + (code - 232) * 10;
+	return [gray, gray, gray];
+}
+
+function colorAnsi(uiTheme: Theme, color: string): string | undefined {
+	const withGetter = uiTheme as Theme & { getFgAnsi?: (color: string) => string };
+	if (withGetter.getFgAnsi) return withGetter.getFgAnsi(color);
+	const sample = uiTheme.fg(color as never, "x");
+	const marker = sample.indexOf("x");
+	return marker >= 0 ? sample.slice(0, marker) : undefined;
+}
+
+function colorRgb(uiTheme: Theme, color: string): Rgb {
+	const ansi = colorAnsi(uiTheme, color);
+	const truecolor = ansi?.match(/\x1b\[38;2;(\d+);(\d+);(\d+)m/);
+	if (truecolor) return [Number(truecolor[1]), Number(truecolor[2]), Number(truecolor[3])];
+
+	const color256 = ansi?.match(/\x1b\[38;5;(\d+)m/);
+	if (color256) return ansi256ToRgb(Number(color256[1]));
+
+	return RGB_FALLBACK;
+}
+
+function scaleRgb([r, g, b]: Rgb, factor: number): Rgb {
+	const scale = (value: number) => Math.round(Math.max(0, Math.min(255, value * factor)));
+	return [scale(r), scale(g), scale(b)];
+}
+
+function rgbFg([r, g, b]: Rgb): string {
+	return `\x1b[38;2;${r};${g};${b}m`;
+}
+
+function rgbBg([r, g, b]: Rgb): string {
+	return `\x1b[48;2;${r};${g};${b}m`;
+}
+
+function triangleWave(frame: number, periodMs: number, lo: number, hi: number): number {
+	const elapsedMs = frame * WORKING_PERCOLATION_MS;
+	const t = (elapsedMs % periodMs) / periodMs;
+	const tri = 1 - Math.abs(2 * t - 1);
+	return lo + tri * (hi - lo);
+}
+
+function modeColor(mode: string | undefined): string {
+	if (mode === "insert") return "success";
+	if (mode === "visual") return "accent";
+	return "syntaxFunction";
+}
+
+function renderWorkingWord(uiTheme: Theme, color: string, frame: number): string {
+	const base = scaleRgb(colorRgb(uiTheme, color), 0.55);
+	const shine = scaleRgb(colorRgb(uiTheme, color), 1.55);
+	const step = Math.floor((frame * WORKING_PERCOLATION_MS) / WORKING_PERCOLATION_MS);
+	const chars = [...WORKING_WORD];
+	const cycle = chars.length + WORKING_SHINE_WIDTH;
+	const pos = step % cycle;
+
+	return chars
+		.map((ch, index) => {
+			const inShine = index >= pos - WORKING_SHINE_WIDTH && index < pos;
+			return `${rgbFg(inShine ? shine : base)}${ch}`;
+		})
+		.join("");
+}
+
+function workingHeaderSegment(innerWidth: number, uiTheme: Theme, color: string): string {
+	if (!workingActive) return "";
+	const label = renderWorkingWord(uiTheme, color, workingFrame);
+	return truncateToWidth(`${label}${ANSI_RESET}`, innerWidth, "");
 }
 
 function cachedSkillsSegment(innerWidth: number, uiTheme: Theme): string {
@@ -85,9 +209,15 @@ export function renderPolishedEditorForTest(
 			: (line: string) => line;
 	const editorLines = editorFrame.slice(1, -1).map(transformEditorLine);
 	const mode = typeof editor.getMode === "function" ? editor.getMode() : undefined;
-	const railColor = mode === "insert" ? "success" : mode === "visual" ? "accent" : "syntaxFunction";
-	const rail = `${uiTheme.fg(railColor, "┃")}${ANSI_RESET}${uiTheme.bg("customMessageBg", " ")}`;
-	const lines = ["", ...editorLines, cachedSkillsSegment(innerWidth, uiTheme)];
+	const railColor = modeColor(mode);
+	const railPulseFactor = workingActive ? triangleWave(workingFrame, RAIL_PULSE_MS, 0.18, 1.25) : 0;
+	const railBg = workingActive ? rgbBg(scaleRgb(colorRgb(uiTheme, railColor), railPulseFactor)) : "";
+	const rail = `${railBg}${uiTheme.fg(railColor as never, "┃")}\x1b[49m${ANSI_RESET}${uiTheme.bg("customMessageBg", " ")}`;
+	const lines = [
+		workingHeaderSegment(innerWidth, uiTheme, railColor),
+		...editorLines,
+		cachedSkillsSegment(innerWidth, uiTheme),
+	];
 
 	return [...lines.map((line) => `${rail}${fillBackgroundLine(uiTheme, line, innerWidth)}`), ...autocompleteLines];
 }
