@@ -113,7 +113,7 @@ export function buildOwnCut(branchEntries: any[]): OwnCutResult {
 		// firstKeptEntryId="" is a sentinel: pi-core's buildSessionContext won't match it
 		// (so 0 kept from pre-compaction), and next buildOwnCut triggers orphan recovery.
 		const hasUser = liveMessages.some((m) => m.message.role === "user");
-		if (!hasUser) return { ok: false, reason: "no_user_message" };
+		if (!hasUser && !hasPriorCompaction) return { ok: false, reason: "no_user_message" };
 		return {
 			ok: true,
 			messages: liveMessages.map((e) => e.message),
