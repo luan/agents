@@ -1,3 +1,4 @@
+import { spawn as spawnProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { mkdtemp, writeFile } from "node:fs/promises";
@@ -15,6 +16,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { shellQuote, shellSplit } from "../exec-command/shell/tokenize.ts";
+import { resolveLaneBackend, TmuxLanePlacement, ZellijLanePlacement } from "../shared/lane-placement.ts";
 import { navInput, navOptionalInput, navSelect } from "./cockpit-nav.ts";
 
 const CONTEXT_RECENT_TOKEN_BUDGET = 8_000;
@@ -24,7 +26,7 @@ const SPAWN_USAGE =
 
 const SPAWN_HELP = `# /spawn help
 
-Spawn opens an execution lane. It only controls runtime, payload, topology, tmux placement, cwd, and prompt transfer.
+Spawn opens an execution lane. It only controls runtime, payload, topology, mux placement, cwd, and prompt transfer.
 
 ## Common commands
 
@@ -47,14 +49,15 @@ Spawn opens an execution lane. It only controls runtime, payload, topology, tmux
 
 ## Options
 
-- \`--placement new-window|split-pane|new-session\`
+- \`--placement new-window|split-pane|hidden|new-session\`
 - \`--split-direction horizontal|vertical\`
 - \`--split-size-percent 10..90\`
 - \`--cwd <path>\`
 - \`--name <lane-name>\`
 - \`--target-session-path <session.jsonl>\`
-- \`--target-mux-session <tmux-session>\`
-- \`--mux auto|tmux|none\``;
+- \`--target-mux-workspace <workspace>\`
+- \`--target-mux-session <tmux-session>\` (legacy alias)
+- \`--mux auto|tmux|zellij|pty|none\` (\`pty\` is a hidden zellij-session alias)`;
 
 const SYSTEM_PROMPT = `You are a context transfer assistant. Given a conversation history and the user's goal for a spawned session, generate a focused prompt that is self-contained and actionable.
 
@@ -72,12 +75,12 @@ Do not add or infer a category, mode, lens, or prefix line. Do not include gener
 
 type SpawnPayload = "empty" | "direct" | "context";
 type SpawnRelation = "root" | "child";
-type SpawnPlacement = "new-session" | "new-window" | "split-pane";
+type SpawnPlacement = "new-session" | "new-window" | "split-pane" | "hidden";
 type SpawnSplitDirection = "horizontal" | "vertical";
 type SpawnRuntime = "pi" | "shell" | "command";
-type SpawnMux = "auto" | "tmux" | "none";
+type SpawnMux = "auto" | "tmux" | "zellij" | "pty" | "none";
 type ResolvedSpawnRuntime = "pi" | "shell" | "command";
-type ResolvedSpawnMux = "tmux" | "none";
+type ResolvedSpawnMux = "tmux" | "zellij" | "none";
 
 type PiSessionRef = {
 	sessionPath: string;
@@ -93,9 +96,22 @@ type MuxPlacementRef = {
 		windowId?: string;
 		windowName?: string;
 		paneId?: string;
-		placement: "new-window" | "split-pane";
+		placement: Exclude<SpawnPlacement, "new-session">;
 		splitDirection?: SpawnSplitDirection;
 		splitSizePercent?: number;
+	};
+	zellij?: {
+		session?: string;
+		tabId?: string;
+		tabName?: string;
+		paneId?: string;
+		placement: Exclude<SpawnPlacement, "new-session">;
+		sessionOwned?: boolean;
+	};
+	pty?: {
+		pid?: number;
+		name: string;
+		placement: Exclude<SpawnPlacement, "new-session">;
 	};
 };
 
@@ -119,6 +135,7 @@ type SpawnRequest = {
 	splitSizePercent?: number;
 	targetSessionPath?: string;
 	targetMuxSession?: string;
+	targetMuxWorkspace?: string;
 	command?: string;
 	prompt: string;
 	goal: string;
@@ -137,6 +154,7 @@ type SpawnResult = {
 	splitSizePercent?: number;
 	targetSessionPath?: string;
 	targetMuxSession?: string;
+	targetMuxWorkspace?: string;
 	mux: ResolvedSpawnMux;
 	parent?: PiSessionRef;
 	child: SpawnLaneRef;
@@ -171,6 +189,7 @@ type NormalizedToolParams = {
 	splitSizePercent?: number | string;
 	targetSessionPath?: string;
 	targetMuxSession?: string;
+	targetMuxWorkspace?: string;
 	runtime?: string;
 	mux?: string;
 	command?: string;
@@ -334,10 +353,11 @@ function parseRelationOrThrow(value: string | undefined, label: string): SpawnRe
 	return parsed;
 }
 
-function parsePlacement(value: string | undefined): SpawnPlacement | undefined {
+export function parsePlacement(value: string | undefined): SpawnPlacement | undefined {
 	if (value === "new-session" || value === "same" || value === "same-tab" || value === "session") return "new-session";
 	if (value === "new-window" || value === "window" || value === "tmux") return "new-window";
 	if (value === "split-pane" || value === "split" || value === "pane") return "split-pane";
+	if (value === "hidden" || value === "background") return "hidden";
 	return undefined;
 }
 
@@ -386,8 +406,10 @@ function parseRuntimeOrThrow(value: string | undefined, label: string): SpawnRun
 	return parsed;
 }
 
-function parseMux(value: string | undefined): SpawnMux | undefined {
+export function parseMux(value: string | undefined): SpawnMux | undefined {
 	if (value === "auto" || value === "tmux" || value === "none") return value;
+	if (value === "zellij") return "zellij";
+	if (value === "pty" || value === "no-mux") return "pty";
 	return undefined;
 }
 
@@ -426,10 +448,11 @@ function normalizeSpawnRequest(input: Partial<SpawnRequest>, ctx: ExtensionConte
 	let relation = input.relation ?? (runtime === "shell" || runtime === "command" ? "root" : "child");
 	if (runtime === "shell" || runtime === "command") relation = "root";
 	if (relation === "child" && cwd !== currentCwd && !targetSessionPath) relation = "root";
-	const placement = input.placement ?? "new-window";
 	const mux = input.mux ?? "auto";
+	const placement = input.placement ?? (mux === "pty" ? "hidden" : "new-window");
 	const splitSizePercent = validateSplitSizePercent(input.splitSizePercent);
 	const targetMuxSession = input.targetMuxSession?.trim() || undefined;
+	const targetMuxWorkspace = input.targetMuxWorkspace?.trim() || undefined;
 	const command = input.command?.trim() || undefined;
 	const prompt = input.prompt ?? "";
 	const goal = input.goal || prompt || command || `${runtime} spawn`;
@@ -446,6 +469,7 @@ function normalizeSpawnRequest(input: Partial<SpawnRequest>, ctx: ExtensionConte
 		splitSizePercent,
 		targetSessionPath,
 		targetMuxSession,
+		targetMuxWorkspace,
 		command,
 		prompt,
 		goal,
@@ -468,6 +492,7 @@ function parseSpawnRequest(args: string, ctx: ExtensionContext): SpawnRequest | 
 	let splitSizePercent: number | undefined;
 	let targetSessionPath: string | undefined;
 	let targetMuxSession: string | undefined;
+	let targetMuxWorkspace: string | undefined;
 	let mux: SpawnMux | undefined;
 	let command: string | undefined;
 	let cwd = ctx.cwd;
@@ -531,6 +556,10 @@ function parseSpawnRequest(args: string, ctx: ExtensionContext): SpawnRequest | 
 			targetMuxSession = tokens[++index] ?? targetMuxSession;
 			continue;
 		}
+		if (token === "--target-mux-workspace" || token === "--targetMuxWorkspace" || token === "--mux-workspace") {
+			targetMuxWorkspace = tokens[++index] ?? targetMuxWorkspace;
+			continue;
+		}
 		if (token === "--runtime") {
 			runtime = parseRuntimeOrThrow(tokens[++index]?.toLowerCase(), "runtime");
 			if (runtime === "shell" || runtime === "command") payload = payload ?? "empty";
@@ -579,6 +608,7 @@ function parseSpawnRequest(args: string, ctx: ExtensionContext): SpawnRequest | 
 			splitSizePercent,
 			targetSessionPath,
 			targetMuxSession,
+			targetMuxWorkspace,
 			mux,
 			cwd,
 			name,
@@ -601,6 +631,7 @@ async function promptSpawnRequest(ctx: ExtensionContext): Promise<SpawnRequest |
 	let splitSizePercent: number | undefined;
 	let targetSessionPath: string | undefined;
 	let targetMuxSession: string | undefined;
+	let targetMuxWorkspace: string | undefined;
 	let cwd = ctx.cwd;
 	let prompt = "";
 	let command = "";
@@ -613,6 +644,7 @@ async function promptSpawnRequest(ctx: ExtensionContext): Promise<SpawnRequest |
 		splitSizePercent = undefined;
 		targetSessionPath = undefined;
 		targetMuxSession = undefined;
+		targetMuxWorkspace = undefined;
 		cwd = ctx.cwd;
 		prompt = "";
 		command = "";
@@ -639,16 +671,20 @@ async function promptSpawnRequest(ctx: ExtensionContext): Promise<SpawnRequest |
 		}
 
 		const placementOptions =
-			runtime === "pi" ? ["new window", "split pane", "new session"] : ["new window", "split pane"];
+			runtime === "pi"
+				? ["new window", "split pane", "hidden", "new session"]
+				: ["new window", "split pane", "hidden"];
 		const placementResult = await navSelect(ctx, "Placement", placementOptions);
 		if (placementResult.action === "back") continue;
 		if (placementResult.action === "cancel") return undefined;
 		placement =
 			placementResult.value === "new session"
 				? "new-session"
-				: placementResult.value === "split pane"
-					? "split-pane"
-					: "new-window";
+				: placementResult.value === "hidden"
+					? "hidden"
+					: placementResult.value === "split pane"
+						? "split-pane"
+						: "new-window";
 
 		if (placement === "split-pane") {
 			const directionResult = await navSelect(ctx, "Split direction", ["default", "horizontal", "vertical"]);
@@ -678,10 +714,10 @@ async function promptSpawnRequest(ctx: ExtensionContext): Promise<SpawnRequest |
 			if (muxTargetResult.action === "back") continue;
 			if (muxTargetResult.action === "cancel") return undefined;
 			if (muxTargetResult.value === "enter target mux session") {
-				const input = await navInput(ctx, "Target mux session");
+				const input = await navInput(ctx, "Target mux workspace");
 				if (input.action === "back") continue;
 				if (input.action === "cancel") return undefined;
-				targetMuxSession = input.value;
+				targetMuxWorkspace = input.value;
 			}
 		}
 
@@ -746,6 +782,7 @@ async function promptSpawnRequest(ctx: ExtensionContext): Promise<SpawnRequest |
 			splitSizePercent,
 			targetSessionPath,
 			targetMuxSession,
+			targetMuxWorkspace,
 			cwd,
 			command,
 			prompt,
@@ -811,18 +848,39 @@ function piSpawnCommand(sessionPath: string, promptPath: string): string {
 		: `bash -lc ${shellQuote('pi --session "$1"')} pi-spawn ${shellQuote(sessionPath)}`;
 }
 
-function shellSpawnCommand(): string {
-	return `bash -lc ${shellQuote('exec "$' + '{SHELL:-bash}" -l')}`;
+function shellSpawnCommand(options: { keepOpen?: boolean } = {}): string {
+	const keepOpen = options.keepOpen ?? true;
+	const script = keepOpen ? 'exec "$' + '{SHELL:-bash}" -l' : '"$' + '{SHELL:-bash}" -l';
+	return `bash -lc ${shellQuote(script)}`;
 }
 
-function commandSpawnCommand(command: string): string {
+function commandSpawnCommand(command: string, options: { keepOpen?: boolean } = {}): string {
+	const keepOpen = options.keepOpen ?? true;
 	const script = [
 		command,
 		"status=$?",
 		"printf '\\n[spawn command exited with %s]\\n' \"$status\"",
-		'exec "$' + '{SHELL:-bash}" -l',
+		keepOpen ? 'exec "$' + '{SHELL:-bash}" -l' : 'exit "$status"',
 	].join("\n");
 	return `bash -lc ${shellQuote(script)}`;
+}
+
+export function zellijSessionCleanupCommand(command: string, doneFile: string): string {
+	const script = [command, "status=$?", `touch ${shellQuote(doneFile)}`, 'exit "$status"'].join("\n");
+	return `bash -lc ${shellQuote(script)}`;
+}
+
+function watchZellijSessionCleanup(session: string, doneFile: string): void {
+	const script = [
+		`while [ ! -e ${shellQuote(doneFile)} ]; do sleep 1; done`,
+		`zellij delete-session --force ${shellQuote(session)} >/dev/null 2>&1 || true`,
+		`rm -f ${shellQuote(doneFile)}`,
+	].join("; ");
+	const watcher = spawnProcess("/bin/sh", ["-lc", script], {
+		detached: true,
+		stdio: "ignore",
+	});
+	watcher.unref();
 }
 
 async function writePromptArtifact(request: SpawnRequest, prompt: string): Promise<string> {
@@ -898,6 +956,7 @@ class PiRuntimeAdapter {
 					splitSizePercent: request.splitSizePercent,
 					targetSessionPath: request.targetSessionPath,
 					targetMuxSession: request.targetMuxSession,
+					targetMuxWorkspace: request.targetMuxWorkspace,
 					mux: "none",
 					parent,
 					child: {
@@ -950,100 +1009,96 @@ class TmuxMuxAdapter {
 		return result.code === 0;
 	}
 
-	async targetSession(pi: ExtensionAPI, request: SpawnRequest): Promise<string> {
-		return request.targetMuxSession || (await this.tmux(pi, ["display-message", "-p", "#S"]));
-	}
-
-	async nextWindowTarget(pi: ExtensionAPI, session: string): Promise<string> {
-		const [baseIndexOutput, windowsOutput] = await Promise.all([
-			this.tmux(pi, ["show-options", "-gv", "-t", session, "base-index"]).catch(() => "0"),
-			this.tmux(pi, ["list-windows", "-t", session, "-F", "#{window_index}"]),
-		]);
-		const baseIndex = Number.parseInt(baseIndexOutput.trim(), 10);
-		const used = new Set(
-			windowsOutput
-				.split("\n")
-				.map((line) => Number.parseInt(line.trim(), 10))
-				.filter((index) => Number.isFinite(index)),
-		);
-		let index = Number.isFinite(baseIndex) ? baseIndex : 0;
-		while (used.has(index)) index += 1;
-		return `${session}:${index}`;
-	}
-
-	splitDirectionArgs(request: SpawnRequest): string[] {
-		if (request.splitDirection === "horizontal") return ["-h"];
-		if (request.splitDirection === "vertical") return ["-v"];
-		return [];
-	}
-
-	splitSizeArgs(request: SpawnRequest): string[] {
-		return request.splitSizePercent === undefined ? [] : ["-p", String(request.splitSizePercent)];
-	}
-
 	async place(pi: ExtensionAPI, request: SpawnRequest, command: string): Promise<MuxPlacementRef> {
-		const session = await this.targetSession(pi, request);
-		if (request.placement === "new-window") {
-			const target = await this.nextWindowTarget(pi, session);
-			const paneId = await this.tmux(pi, [
-				"new-window",
-				"-P",
-				"-F",
-				"#{pane_id}",
-				"-t",
-				target,
-				"-n",
-				request.name,
-				"-c",
-				request.cwd,
-				command,
-			]);
-			return {
-				mux: "tmux",
-				tmux: { session, windowId: target, windowName: request.name, paneId, placement: "new-window" },
-			};
-		}
-
-		const currentWindow = request.targetMuxSession
-			? `${session}:`
-			: await this.tmux(pi, ["display-message", "-p", "#S:#I"]).catch(() => session);
-		const targetArgs = request.targetMuxSession ? ["-t", currentWindow] : [];
-		const paneId = await this.tmux(pi, [
-			"split-window",
-			...this.splitDirectionArgs(request),
-			...this.splitSizeArgs(request),
-			"-P",
-			"-F",
-			"#{pane_id}",
-			...targetArgs,
-			"-c",
-			request.cwd,
+		const placement = await new TmuxLanePlacement({ exec: (args) => this.tmux(pi, args) }).place({
+			placement: request.placement,
+			cwd: request.cwd,
+			name: request.name,
 			command,
-		]);
+			targetWorkspace: targetMuxWorkspace(request),
+			splitDirection: request.splitDirection,
+			splitSizePercent: request.splitSizePercent,
+		});
 		return {
 			mux: "tmux",
-			tmux: {
-				session,
-				windowId: currentWindow,
-				windowName: request.name,
-				paneId,
-				placement: "split-pane",
-				splitDirection: request.splitDirection,
-				splitSizePercent: request.splitSizePercent,
-			},
+			tmux: placement.tmux,
 		};
 	}
 }
 
+class ZellijMuxAdapter {
+	readonly id = "zellij" as const;
+
+	async zellij(pi: ExtensionAPI, args: string[]) {
+		const result = await pi.exec("zellij", args, { timeout: 10_000 });
+		if (result.code !== 0)
+			throw new Error(result.stderr.trim() || result.stdout.trim() || `zellij ${args.join(" ")} failed`);
+		return result.stdout.trim();
+	}
+
+	async available(pi: ExtensionAPI): Promise<boolean> {
+		if (currentMuxBackend() === "zellij") return true;
+		const result = await pi.exec("zellij", ["--version"], { timeout: 2_000 });
+		return result.code === 0;
+	}
+
+	async place(pi: ExtensionAPI, request: SpawnRequest, command: string): Promise<MuxPlacementRef> {
+		const placement = await new ZellijLanePlacement({ exec: (args) => this.zellij(pi, args) }).place({
+			placement: request.placement,
+			cwd: request.cwd,
+			name: request.name,
+			command,
+			targetWorkspace: targetMuxWorkspace(request),
+			splitDirection: request.splitDirection,
+			splitSizePercent: request.splitSizePercent,
+		});
+		return { mux: "zellij", zellij: placement.zellij };
+	}
+}
+
+function targetMuxWorkspace(request: SpawnRequest): string | undefined {
+	return request.targetMuxWorkspace || request.targetMuxSession;
+}
+
+function ownedPtyAliasZellijSession(request: SpawnRequest, mux: ResolvedSpawnMux): string | undefined {
+	if (request.mux !== "pty" || mux !== "zellij" || request.placement !== "hidden") return undefined;
+	if (targetMuxWorkspace(request)) return undefined;
+	return request.name;
+}
+
+async function zellijCleanupDoneFile(session: string): Promise<string> {
+	const dir = await mkdtemp(join(tmpdir(), "pi-spawn-zellij-cleanup-"));
+	return join(dir, `${session}.done`);
+}
+
+function currentMuxBackend(): "tmux" | "zellij" | undefined {
+	if (process.env.TMUX && process.env.TMUX_PANE) return "tmux";
+	if (process.env.ZELLIJ || process.env.ZELLIJ_SESSION_NAME || process.env.ZELLIJ_PANE_ID) return "zellij";
+	return undefined;
+}
+
+async function placeMux(
+	pi: ExtensionAPI,
+	mux: ResolvedSpawnMux,
+	request: SpawnRequest,
+	command: string,
+): Promise<MuxPlacementRef> {
+	if (mux === "tmux") return new TmuxMuxAdapter().place(pi, request, command);
+	if (mux === "zellij") return new ZellijMuxAdapter().place(pi, request, command);
+	return { mux: "none" };
+}
+
 async function detectCapabilities(pi: ExtensionAPI): Promise<SpawnCapabilities> {
 	const hasTmux = await new TmuxMuxAdapter().available(pi);
+	const hasZellij = await new ZellijMuxAdapter().available(pi);
 	return {
 		runtimes: { pi: true, shell: true, command: true },
-		muxes: { none: true, tmux: hasTmux },
+		muxes: { none: true, tmux: hasTmux, zellij: hasZellij },
 		placements: {
 			"new-session": true,
-			"new-window": hasTmux,
-			"split-pane": hasTmux,
+			"new-window": true,
+			"split-pane": true,
+			hidden: true,
 		},
 	};
 }
@@ -1056,19 +1111,24 @@ function resolveRuntime(request: SpawnRequest, capabilities: SpawnCapabilities):
 	return runtime;
 }
 
-function resolveMux(
+async function resolveMux(
 	request: SpawnRequest,
 	runtime: ResolvedSpawnRuntime,
 	capabilities: SpawnCapabilities,
-): ResolvedSpawnMux {
+): Promise<ResolvedSpawnMux> {
 	if (runtime !== "pi" && request.placement === "new-session")
-		throw new Error(`${runtime} runtime requires new-window or split-pane placement`);
+		throw new Error(`${runtime} runtime requires new-window, split-pane, or hidden placement`);
 	if (request.placement === "new-session") return "none";
-	const mux = request.mux === "auto" ? "tmux" : request.mux;
-	if (mux !== "tmux") throw new Error(`${request.placement} placement requires a multiplexer`);
-	if (!capabilities.muxes.tmux)
-		throw new Error(`${request.placement} placement requires tmux, but tmux is unavailable`);
-	return "tmux";
+	if (request.mux === "pty" && request.placement !== "hidden")
+		throw new Error("mux='pty' is a hidden zellij-session alias; use placement='hidden'");
+	const mux = await resolveLaneBackend({
+		requested: request.mux,
+		currentBackend: currentMuxBackend(),
+		tmuxAvailable: async () => capabilities.muxes.tmux,
+		zellijAvailable: async () => capabilities.muxes.zellij,
+	});
+	if (mux === "none") throw new Error(`${request.placement} placement requires tmux or zellij`);
+	return mux;
 }
 
 function validateRuntimeRequest(request: SpawnRequest, runtime: ResolvedSpawnRuntime) {
@@ -1100,7 +1160,7 @@ async function spawn(
 	const request = normalizeSpawnRequest(input, ctx);
 	const capabilities = await detectCapabilities(pi);
 	const runtime = resolveRuntime(request, capabilities);
-	const mux = resolveMux(request, runtime, capabilities);
+	const mux = await resolveMux(request, runtime, capabilities);
 	validateRuntimeRequest(request, runtime);
 	if (!capabilities.placements[request.placement]) throw new Error(`${request.placement} placement is unavailable`);
 
@@ -1128,6 +1188,7 @@ async function spawn(
 			splitSizePercent: request.splitSizePercent,
 			targetSessionPath: request.targetSessionPath,
 			targetMuxSession: request.targetMuxSession,
+			targetMuxWorkspace: request.targetMuxWorkspace,
 			mux,
 			parent,
 			child: {
@@ -1155,8 +1216,21 @@ async function spawn(
 
 	if (runtime !== "pi") {
 		const child: SpawnLaneRef = { runtime, cwd: request.cwd, name: request.name, command: request.command };
-		const processCommand = runtime === "shell" ? shellSpawnCommand() : commandSpawnCommand(request.command || "");
-		const muxRef = await new TmuxMuxAdapter().place(pi, request, processCommand);
+		const cleanupSession = ownedPtyAliasZellijSession(request, mux);
+		const cleanupDoneFile = cleanupSession ? await zellijCleanupDoneFile(cleanupSession) : undefined;
+		const processCommand =
+			runtime === "shell"
+				? shellSpawnCommand({ keepOpen: cleanupSession === undefined })
+				: commandSpawnCommand(request.command || "", { keepOpen: cleanupSession === undefined });
+		const placedCommand =
+			cleanupSession && cleanupDoneFile
+				? zellijSessionCleanupCommand(processCommand, cleanupDoneFile)
+				: processCommand;
+		const muxRef = await placeMux(pi, mux, request, placedCommand);
+		if (cleanupSession && cleanupDoneFile) {
+			const actualCleanupSession = muxRef.zellij?.session ?? cleanupSession;
+			watchZellijSessionCleanup(actualCleanupSession, cleanupDoneFile);
+		}
 		const result: SpawnResult = {
 			id: laneId,
 			runtime,
@@ -1167,6 +1241,7 @@ async function spawn(
 			splitSizePercent: request.splitSizePercent,
 			targetSessionPath: undefined,
 			targetMuxSession: request.targetMuxSession,
+			targetMuxWorkspace: request.targetMuxWorkspace,
 			mux,
 			parent: undefined,
 			child,
@@ -1189,7 +1264,19 @@ async function spawn(
 		cwd: child.cwd,
 		name: child.name,
 	};
-	const muxRef = await new TmuxMuxAdapter().place(pi, request, piSpawnCommand(child.sessionPath, promptPath));
+	const cleanupSession = ownedPtyAliasZellijSession(request, mux);
+	const piCommand = piSpawnCommand(child.sessionPath, promptPath);
+	const cleanupDoneFile = cleanupSession ? await zellijCleanupDoneFile(cleanupSession) : undefined;
+	const muxRef = await placeMux(
+		pi,
+		mux,
+		request,
+		cleanupSession && cleanupDoneFile ? zellijSessionCleanupCommand(piCommand, cleanupDoneFile) : piCommand,
+	);
+	if (cleanupSession && cleanupDoneFile) {
+		const actualCleanupSession = muxRef.zellij?.session ?? cleanupSession;
+		watchZellijSessionCleanup(actualCleanupSession, cleanupDoneFile);
+	}
 	const result: SpawnResult = {
 		id: laneId,
 		runtime,
@@ -1200,6 +1287,7 @@ async function spawn(
 		splitSizePercent: request.splitSizePercent,
 		targetSessionPath: request.targetSessionPath,
 		targetMuxSession: request.targetMuxSession,
+		targetMuxWorkspace: request.targetMuxWorkspace,
 		mux,
 		parent,
 		child: lane,
@@ -1220,7 +1308,10 @@ function isSpawnLaneEntry(value: unknown): value is SpawnLaneEntry {
 		(entry.runtime === "pi" || entry.runtime === "shell" || entry.runtime === "command") &&
 		(entry.relation === "root" || entry.relation === "child") &&
 		(entry.payload === "empty" || entry.payload === "direct" || entry.payload === "context") &&
-		(entry.placement === "new-session" || entry.placement === "new-window" || entry.placement === "split-pane") &&
+		(entry.placement === "new-session" ||
+			entry.placement === "new-window" ||
+			entry.placement === "split-pane" ||
+			entry.placement === "hidden") &&
 		typeof entry.child === "object" &&
 		typeof entry.createdAt === "number"
 	);
@@ -1236,13 +1327,15 @@ function spawnLaneEntries(ctx: ExtensionContext): SpawnLaneEntry[] {
 		.sort((a, b) => b.createdAt - a.createdAt);
 }
 
-function formatSpawnLaneEntries(entries: SpawnLaneEntry[]): string {
+export function formatSpawnLaneEntries(entries: SpawnLaneEntry[]): string {
 	if (entries.length === 0) return "No spawned lanes recorded in this session.";
 
 	return entries
 		.map((entry, index) => {
 			const created = new Date(entry.createdAt).toLocaleString();
 			const tmuxRef = entry.implementation?.mux?.tmux;
+			const zellijRef = entry.implementation?.mux?.zellij;
+			const ptyRef = entry.implementation?.mux?.pty;
 			return [
 				`## ${index + 1}. ${entry.child.name}`,
 				`- ID: ${entry.id}`,
@@ -1254,6 +1347,7 @@ function formatSpawnLaneEntries(entries: SpawnLaneEntry[]): string {
 				entry.splitSizePercent !== undefined ? `- Split size: ${entry.splitSizePercent}%` : undefined,
 				entry.targetSessionPath ? `- Target parent session: ${entry.targetSessionPath}` : undefined,
 				entry.targetMuxSession ? `- Target mux session: ${entry.targetMuxSession}` : undefined,
+				entry.targetMuxWorkspace ? `- Target mux workspace: ${entry.targetMuxWorkspace}` : undefined,
 				`- Mux: ${entry.mux}`,
 				`- Goal: ${entry.goal || "(none)"}`,
 				entry.command ? `- Command: ${entry.command}` : undefined,
@@ -1262,6 +1356,10 @@ function formatSpawnLaneEntries(entries: SpawnLaneEntry[]): string {
 				entry.promptPath ? `- Prompt: ${entry.promptPath}` : undefined,
 				tmuxRef?.paneId ? `- Pane: ${tmuxRef.paneId}` : undefined,
 				tmuxRef?.windowId ? `- Window: ${tmuxRef.windowId}` : undefined,
+				zellijRef?.session ? `- Zellij session: ${zellijRef.session}` : undefined,
+				zellijRef?.tabId ? `- Zellij tab: ${zellijRef.tabId}` : undefined,
+				zellijRef?.paneId ? `- Zellij pane: ${zellijRef.paneId}` : undefined,
+				ptyRef?.pid ? `- PTY pid: ${ptyRef.pid}` : undefined,
 				`- Cwd: ${entry.child.cwd}`,
 				`- Created: ${created}`,
 			]
@@ -1359,7 +1457,7 @@ function subagentCount(path: string): number {
 	}, 0);
 }
 
-function formatSpawnMap(ctx: ExtensionContext): string {
+export function formatSpawnMap(ctx: ExtensionContext): string {
 	const C = { accent: "\x1b[38;2;203;166;247m", muted: "\x1b[38;2;88;91;112m", R: "\x1b[0m" };
 	const current = ctx.sessionManager.getSessionFile?.() ?? "";
 	if (!current) return "No persisted session file; spawn map is unavailable.";
@@ -1398,8 +1496,10 @@ function formatSpawnMap(ctx: ExtensionContext): string {
 	return lines.join("\n");
 }
 
-function spawnResultText(result: SpawnResult): string {
+export function spawnResultText(result: SpawnResult): string {
 	const tmuxRef = result.implementation?.mux?.tmux;
+	const zellijRef = result.implementation?.mux?.zellij;
+	const ptyRef = result.implementation?.mux?.pty;
 	return [
 		`Spawned ${result.runtime === "pi" ? result.payload : result.runtime} ${result.relation} lane: ${result.child.name}`,
 		result.child.sessionPath ? `Session: ${result.child.sessionPath}` : undefined,
@@ -1410,10 +1510,15 @@ function spawnResultText(result: SpawnResult): string {
 		result.splitDirection ? `Split direction: ${result.splitDirection}` : undefined,
 		result.splitSizePercent !== undefined ? `Split size: ${result.splitSizePercent}%` : undefined,
 		result.targetMuxSession ? `Target mux session: ${result.targetMuxSession}` : undefined,
+		result.targetMuxWorkspace ? `Target mux workspace: ${result.targetMuxWorkspace}` : undefined,
 		result.command ? `Command: ${result.command}` : undefined,
 		result.promptPath ? `Prompt: ${result.promptPath}` : undefined,
 		tmuxRef?.paneId ? `Pane: ${tmuxRef.paneId}` : undefined,
 		tmuxRef?.windowId ? `Window: ${tmuxRef.windowId}` : undefined,
+		zellijRef?.session ? `Zellij session: ${zellijRef.session}` : undefined,
+		zellijRef?.tabId ? `Zellij tab: ${zellijRef.tabId}` : undefined,
+		zellijRef?.paneId ? `Zellij pane: ${zellijRef.paneId}` : undefined,
+		ptyRef?.pid ? `PTY pid: ${ptyRef.pid}` : undefined,
 	]
 		.filter(Boolean)
 		.join("\n");
@@ -1470,7 +1575,7 @@ async function handleSpawnCommand(pi: ExtensionAPI, args: string, ctx: SpawnComm
 	}
 }
 
-function toolRequest(params: NormalizedToolParams, ctx: ExtensionContext): Partial<SpawnRequest> {
+export function toolRequest(params: NormalizedToolParams, ctx: ExtensionContext): Partial<SpawnRequest> {
 	const runtime = params.runtime ? parseRuntimeOrThrow(params.runtime.toLowerCase(), "runtime") : undefined;
 	const payload = params.payload ? parsePayloadOrThrow(params.payload.toLowerCase(), "payload") : undefined;
 	const relation = params.relation ? parseRelationOrThrow(params.relation.toLowerCase(), "relation") : undefined;
@@ -1493,6 +1598,7 @@ function toolRequest(params: NormalizedToolParams, ctx: ExtensionContext): Parti
 			splitSizePercent,
 			targetSessionPath: params.targetSessionPath ? resolve(ctx.cwd, params.targetSessionPath) : undefined,
 			targetMuxSession: params.targetMuxSession,
+			targetMuxWorkspace: params.targetMuxWorkspace,
 			mux,
 			command,
 			cwd: params.cwd ? resolve(ctx.cwd, params.cwd) : ctx.cwd,
@@ -1519,9 +1625,10 @@ const relationParam = Type.Union([Type.Literal("child"), Type.Literal("root")], 
 });
 
 const placementParam = Type.Union(
-	[Type.Literal("new-window"), Type.Literal("split-pane"), Type.Literal("new-session")],
+	[Type.Literal("new-window"), Type.Literal("split-pane"), Type.Literal("new-session"), Type.Literal("hidden")],
 	{
-		description: "new-window, split-pane, or new-session. Tools should usually use new-window or split-pane.",
+		description:
+			"new-window, split-pane, hidden, or new-session. Tools should usually use new-window, split-pane, or hidden.",
 	},
 );
 
@@ -1529,9 +1636,12 @@ const splitDirectionParam = Type.Union([Type.Literal("horizontal"), Type.Literal
 	description: "horizontal or vertical for split-pane placement.",
 });
 
-const muxParam = Type.Union([Type.Literal("auto"), Type.Literal("tmux"), Type.Literal("none")], {
-	description: "auto, tmux, or none. Defaults to auto.",
-});
+const muxParam = Type.Union(
+	[Type.Literal("auto"), Type.Literal("tmux"), Type.Literal("zellij"), Type.Literal("pty"), Type.Literal("none")],
+	{
+		description: "auto, tmux, zellij, pty, or none. pty is a hidden zellij-session alias. Defaults to auto.",
+	},
+);
 
 const SPAWN_TOOL_NAMES = ["spawn_lane", "spawn_list", "spawn_map"];
 
@@ -1546,11 +1656,11 @@ function registerSpawnSurface(pi: ExtensionAPI) {
 		name: "spawn_lane",
 		label: "Spawn lane",
 		description: [
-			"Spawn an execution lane without raw tmux. Use runtime='pi' for agent lanes, runtime='shell' for a fresh shell, or runtime='command' with command for a process lane.",
+			"Spawn an execution lane without raw tmux or zellij commands. Use runtime='pi' for agent lanes, runtime='shell' for a fresh shell, or runtime='command' with command for a process lane.",
 			"For Pi lanes, use payload='direct' for a self-contained bounded task; payload='context' when the new lane needs current conversation context; payload='empty' for a blank lane.",
-			"Use placement='new-window' for durable parallel work, placement='split-pane' for quick parallel iteration, and placement='new-session' only from /spawn because tools cannot replace the active session.",
-			"For split panes, use splitDirection='horizontal' or 'vertical' and optional splitSizePercent=10..90, e.g. 30 for a 30% split.",
-			"Use cwd for a target repo/project. Use relation='root' for unrelated or cross-project lanes unless targetSessionPath explicitly names the parent session for relation='child'. Use targetMuxSession to place the lane in another tmux session/workspace.",
+			"Use placement='new-window' for durable parallel work, placement='split-pane' for quick parallel iteration, placement='hidden' for a background lane, and placement='new-session' only from /spawn because tools cannot replace the active session.",
+			"For split panes, use splitDirection='horizontal' or 'vertical' and optional splitSizePercent=10..90, e.g. 30 for a 30% split. Use mux='auto', 'tmux', or 'zellij'; mux='pty' is a hidden zellij-session alias.",
+			"Use cwd for a target repo/project. Use relation='root' for unrelated or cross-project lanes unless targetSessionPath explicitly names the parent session for relation='child'. Use targetMuxWorkspace to place the lane in another mux workspace; targetMuxSession is accepted as a legacy alias.",
 		].join(" "),
 		promptSnippet: "Spawn a lane",
 		parameters: Type.Object({
@@ -1562,7 +1672,7 @@ function registerSpawnSurface(pi: ExtensionAPI) {
 			splitSizePercent: Type.Optional(
 				Type.Number({
 					description:
-						"Optional split size percent for split-pane placement, integer 10-90. For tmux this maps to split-window -p.",
+						"Optional split size percent for split-pane placement, integer 10-90. For tmux this maps to split-window -p; zellij receives split direction only.",
 				}),
 			),
 			targetSessionPath: Type.Optional(
@@ -1573,7 +1683,12 @@ function registerSpawnSurface(pi: ExtensionAPI) {
 			),
 			targetMuxSession: Type.Optional(
 				Type.String({
-					description: "Target mux/tmux session or workspace for placement outside the current mux session.",
+					description: "Legacy alias for targetMuxWorkspace.",
+				}),
+			),
+			targetMuxWorkspace: Type.Optional(
+				Type.String({
+					description: "Target mux workspace/session for placement outside the current mux workspace.",
 				}),
 			),
 			mux: Type.Optional(muxParam),
@@ -1591,7 +1706,7 @@ function registerSpawnSurface(pi: ExtensionAPI) {
 			const request = toolRequest(params as NormalizedToolParams, ctx);
 			if (request.placement === "new-session")
 				throw new Error(
-					"spawn_lane placement='new-session' requires the /spawn command; use new-window or split-pane from tools.",
+					"spawn_lane placement='new-session' requires the /spawn command; use new-window, split-pane, or hidden from tools.",
 				);
 			const result = await spawn(pi, request, ctx, signal);
 			return { content: [{ type: "text", text: spawnResultText(result) }], details: result };

@@ -94,6 +94,11 @@ export interface AgentRecord {
 	lifetimeUsage: LifetimeUsage;
 	/** Number of times this agent's session has compacted. Initialized to 0 at spawn. */
 	compactionCount: number;
+	/** Visual identity for full-session mosaic panes. */
+	mosaicIdentity?: {
+		label: string;
+		color: string;
+	};
 }
 
 /** Details attached to custom notification messages for visual rendering. */

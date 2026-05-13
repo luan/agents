@@ -9,8 +9,9 @@ import { buildParentContext } from "./context.js";
 import { DEFAULT_AGENTS } from "./default-agents.js";
 import { detectEnv } from "./env.js";
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "./memory.js";
-import { launchMosaicTarget } from "./multiplexer.js";
+import { launchMosaicTarget, type MultiplexerTarget } from "./multiplexer.js";
 import { mosaicCommandForSession, resolveOwner } from "./mux.js";
+import { listActive } from "./mux-heartbeat.js";
 import { buildAgentPrompt, type PromptExtras } from "./prompts.js";
 import { preloadSkills } from "./skill-loader.js";
 import type { AgentConfig, IsolationMode, SubagentType, ThinkingLevel } from "./types.js";
@@ -31,6 +32,7 @@ export interface FullSessionLaunchOptions {
 
 export interface FullSessionLaunchResult {
 	id: string;
+	laneId: string;
 	sessionFile: string;
 	paneId: string;
 	windowId: string;
@@ -38,9 +40,19 @@ export interface FullSessionLaunchResult {
 	windowName: string;
 	cwd: string;
 	worktree?: { path: string; branch: string };
+	placement?: MultiplexerTarget["placement"];
+	mosaicIdentity: MosaicAgentIdentity;
 }
 
 const BOOTSTRAP_DIR = join(tmpdir(), "mosaic-bootstrap");
+const MOSAIC_AGENT_COLORS = ["f38ba8", "fab387", "f9e2af", "eba0ac", "e78284", "ff9e64", "ffc777", "ff757f"];
+let lastMosaicAgentIndex = 0;
+
+export interface MosaicAgentIdentity {
+	label: string;
+	name: string;
+	color: string;
+}
 
 export async function launchFullSessionAgent(
 	pi: ExtensionAPI,
@@ -101,31 +113,42 @@ export async function launchFullSessionAgent(
 	const sessionFile = sm.getSessionFile();
 	if (!sessionFile) throw new Error("Failed to create mosaic agent session.");
 
-	const bootstrapFile = writeBootstrapFile({
-		agentId: id,
-		agentType: options.type,
-		description: options.description,
-		prompt,
-		systemPrompt,
-		builtinToolNames: toolNames,
-		extensions,
-		disallowedTools: agentConfig.disallowedTools,
-	});
-
 	const selfPane = process.env.TMUX_PANE;
 	const ownerPane = selfPane ?? process.env.ZELLIJ_PANE_ID ?? "mosaic";
+	const owner = resolveOwner(ownerPane);
 	const windowName = buildWindowName(options.description);
-	const spawned = launchMosaicTarget({
+	const mosaicIdentity = assignMosaicAgentIdentity(owner, options.description, options.type);
+	const bootstrapFile = writeBootstrapFile(
+		buildBootstrapPayload({
+			agentId: id,
+			agentType: options.type,
+			description: options.description,
+			prompt,
+			systemPrompt,
+			builtinToolNames: toolNames,
+			extensions,
+			disallowedTools: agentConfig.disallowedTools,
+			mosaicIdentity,
+		}),
+	);
+
+	const spawned = await launchMosaicTarget({
 		command: buildCommand(sessionFile, options.model, options.thinkingLevel),
 		cwd: effectiveCwd,
-		owner: resolveOwner(ownerPane),
+		owner,
 		name: windowName,
 		agentId: id,
-		extraEnv: { MOSAIC_BOOTSTRAP_FILE: bootstrapFile },
+		extraEnv: {
+			MOSAIC_BOOTSTRAP_FILE: bootstrapFile,
+			MOSAIC_AGENT_LABEL: mosaicIdentity.label,
+			MOSAIC_AGENT_NAME: mosaicIdentity.name,
+			MOSAIC_AGENT_COLOR: mosaicIdentity.color,
+		},
 	});
 
 	return {
 		id,
+		laneId: id,
 		sessionFile,
 		paneId: spawned.paneId,
 		windowId: spawned.windowId ?? "",
@@ -133,7 +156,25 @@ export async function launchFullSessionAgent(
 		windowName,
 		cwd: effectiveCwd,
 		worktree,
+		placement: spawned.placement,
+		mosaicIdentity,
 	};
+}
+
+export interface FullSessionBootstrapPayload {
+	agentId: string;
+	agentType: SubagentType;
+	description: string;
+	prompt: string;
+	systemPrompt: string;
+	builtinToolNames: string[];
+	extensions: true | string[] | false;
+	disallowedTools?: string[];
+	mosaicIdentity?: MosaicAgentIdentity;
+}
+
+export function buildBootstrapPayload(payload: FullSessionBootstrapPayload): FullSessionBootstrapPayload {
+	return payload;
 }
 
 function writeBootstrapFile(payload: unknown): string {
@@ -161,4 +202,37 @@ function buildWindowName(description: string): string {
 			.replace(/\s+/g, " ")
 			.trim() || "agent";
 	return `mc: ${label}`.slice(0, 80);
+}
+
+function cleanIdentityPart(value: string | undefined): string | undefined {
+	const text = value
+		?.replace(/[\x00-\x1f\x7f]/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+	return text || undefined;
+}
+
+function nextMosaicAgentIndex(owner: string): number {
+	const activeMax = Math.max(
+		0,
+		...listActive()
+			.filter((entry) => entry.owner === owner)
+			.map((entry) => {
+				const match = entry.mosaicAgentLabel?.match(/^A(\d+)$/);
+				return match ? Number(match[1]) : 0;
+			}),
+	);
+	lastMosaicAgentIndex = Math.max(lastMosaicAgentIndex, activeMax);
+	lastMosaicAgentIndex++;
+	return lastMosaicAgentIndex;
+}
+
+function assignMosaicAgentIdentity(owner: string, description: string, type: SubagentType): MosaicAgentIdentity {
+	const index = nextMosaicAgentIndex(owner);
+	const name = cleanIdentityPart(description) ?? cleanIdentityPart(type) ?? "agent";
+	return {
+		label: `A${index}`,
+		name,
+		color: MOSAIC_AGENT_COLORS[(index - 1) % MOSAIC_AGENT_COLORS.length]!,
+	};
 }

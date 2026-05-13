@@ -87,6 +87,7 @@ function formatLifetimeTokens(o: { lifetimeUsage: LifetimeUsage }): string {
 
 interface FullSessionAgentRecord {
 	id: string;
+	laneId?: string;
 	type: SubagentType;
 	description: string;
 	sessionFile: string;
@@ -100,6 +101,8 @@ interface FullSessionAgentRecord {
 	error?: string;
 	maxTurns?: number;
 	worktree?: { path: string; branch: string };
+	placement?: unknown;
+	mosaicIdentity?: { label: string; color: string };
 }
 
 interface SessionTranscriptSnapshot {
@@ -664,6 +667,7 @@ export default function (pi: ExtensionAPI) {
 				: fullSession.result ||
 					(status === "error" ? fullSession.error || "mosaic target failed" : "idle in mosaic target");
 			agentActivity.set(id, activity);
+			const mosaicIdentity = resolveMosaicWidgetIdentity(live, fullSession);
 			records.push({
 				id,
 				type: fullSession.type,
@@ -677,9 +681,44 @@ export default function (pi: ExtensionAPI) {
 				worktree: fullSession.worktree,
 				lifetimeUsage: activity.lifetimeUsage,
 				compactionCount: 0,
+				mosaicIdentity,
 			});
 		}
 		return records;
+	}
+
+	function resolveMosaicWidgetIdentity(
+		live: muxHeartbeat.Heartbeat | undefined,
+		fullSession: FullSessionAgentRecord,
+	): AgentRecord["mosaicIdentity"] {
+		const label = live?.mosaicAgentLabel ?? fullSession.mosaicIdentity?.label;
+		const color = mosaicIdentityColor(label) ?? live?.mosaicAgentColor ?? fullSession.mosaicIdentity?.color;
+		if (!label || !color) return undefined;
+		return { label, color };
+	}
+
+	function mosaicIdentityColor(label: string | undefined): string | undefined {
+		const match = label?.match(/^A(\d+)$/);
+		if (!match) return undefined;
+		const index = Number(match[1]);
+		if (!Number.isFinite(index) || index <= 0) return undefined;
+		const colors = ["f38ba8", "fab387", "f9e2af", "eba0ac", "e78284", "ff9e64", "ffc777", "ff757f"];
+		return colors[(index - 1) % colors.length];
+	}
+
+	function cleanupFullSessionAgentPane(agentId: string, live?: muxHeartbeat.Heartbeat): void {
+		const target = live ?? muxHeartbeat.listActive().find((entry) => entry.agentId === agentId);
+		if (target) {
+			try {
+				killTarget(target);
+			} catch {
+				/* Pane may already be gone; cleanup should be idempotent. */
+			}
+		}
+		fullSessionAgents.delete(agentId);
+		agentActivity.delete(agentId);
+		widget.markFinished(agentId);
+		widget.update();
 	}
 
 	// Expose manager via Symbol.for() global registry for cross-package access.
@@ -1236,6 +1275,7 @@ Guidelines:
 						});
 						fullSessionAgents.set(launched.id, {
 							id: launched.id,
+							laneId: launched.laneId,
 							type: subagentType,
 							description: params.description,
 							sessionFile: launched.sessionFile,
@@ -1246,6 +1286,8 @@ Guidelines:
 							status: "running",
 							maxTurns: effectiveMaxTurns,
 							worktree: launched.worktree,
+							placement: launched.placement,
+							mosaicIdentity: launched.mosaicIdentity,
 						});
 						agentActivity.set(launched.id, {
 							activeTools: new Map(),
@@ -1488,6 +1530,9 @@ Guidelines:
 						}
 						if (params.verbose && transcript.conversation) {
 							output += `\n\n--- Agent Conversation ---\n${transcript.conversation}`;
+						}
+						if (status !== "running" && status !== "open") {
+							cleanupFullSessionAgentPane(params.agent_id, live);
 						}
 						return textResult(output);
 					}

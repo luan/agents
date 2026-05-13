@@ -4,6 +4,7 @@ import {
 	renderPolishedEditorForTest,
 	setCachedSkillNamesForTest,
 	setEditorChromeProvider,
+	setEditorSessionIdentityProvider,
 	setWorkingAnimationForTest,
 } from "./editor";
 import extension from "./index";
@@ -34,6 +35,7 @@ describe("polished TUI editor cached skills", () => {
 	beforeEach(() => {
 		setWorkingAnimationForTest(false, 0);
 		setEditorChromeProvider(undefined);
+		setEditorSessionIdentityProvider(undefined);
 	});
 
 	test("renders no cached skills metadata when cache is empty", () => {
@@ -123,6 +125,58 @@ describe("polished TUI editor cached skills", () => {
 
 		expect(stripAnsi(lines[0] ?? "")).toContain("Working…");
 		expect(lines.every((line) => visibleWidth(line) <= 40)).toBe(true);
+	});
+
+	test("renders session identity before animated working text", () => {
+		setCachedSkillNamesForTest([]);
+		setWorkingAnimationForTest(true, 3);
+		setEditorSessionIdentityProvider(() => ({ name: "Spawn mosaic refactor" }));
+
+		const lines = renderPolishedEditorForTest(
+			editor({ getMode: () => "insert" }),
+			48,
+			() => ["> hello", ""],
+			28,
+			rgbTheme,
+		);
+
+		expect(stripAnsi(lines[0] ?? "")).toContain("Spawn mosaic refactor · Working…");
+		expect(lines.every((line) => visibleWidth(line) <= 48)).toBe(true);
+	});
+
+	test("truncates long session identity before working status", () => {
+		setCachedSkillNamesForTest([]);
+		setWorkingAnimationForTest(true, 3);
+		setEditorSessionIdentityProvider(() => ({ name: "A very long named session that should shrink first" }));
+
+		const lines = renderPolishedEditorForTest(
+			editor({ getMode: () => "insert" }),
+			34,
+			() => ["> hello", ""],
+			28,
+			rgbTheme,
+		);
+
+		expect(stripAnsi(lines[0] ?? "")).toContain("… · Working…");
+		expect(lines.every((line) => visibleWidth(line) <= 34)).toBe(true);
+	});
+
+	test("renders mosaic label and secondary rail color", () => {
+		setCachedSkillNamesForTest([]);
+		setEditorSessionIdentityProvider(() => ({ label: "A2", name: "Tests", color: "74c7ec" }));
+
+		const lines = renderPolishedEditorForTest(
+			editor({ getMode: () => "normal" }),
+			32,
+			() => ["> hello", ""],
+			28,
+			theme,
+		);
+
+		expect(stripAnsi(lines[0] ?? "")).toStartWith("▐▌ A2 Tests");
+		expect(lines[0]).toContain("\x1b[38;2;116;199;236m▐");
+		expect(lines[0]).toContain("\x1b[38;2;72;123;146mA2 Tests");
+		expect(lines.every((line) => visibleWidth(line) <= 32)).toBe(true);
 	});
 
 	test("right-aligns editor chrome status on the first row", () => {

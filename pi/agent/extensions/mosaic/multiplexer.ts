@@ -3,9 +3,16 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+	type LanePlacementRequest,
+	TmuxLanePlacement,
+	type TmuxLanePlacementRef,
+	ZellijLanePlacement,
+	type ZellijLanePlacementRef,
+} from "../shared/lane-placement.js";
 import type { Heartbeat } from "./mux-heartbeat.js";
 import { listActive } from "./mux-heartbeat.js";
-import { spawnInCurrentSessionWindow } from "./mux-swap.js";
+import { resolveShell } from "./mux-swap.js";
 
 export type MultiplexerBackend = "tmux" | "zellij";
 
@@ -19,6 +26,7 @@ export interface MultiplexerTarget {
 	zellijTabId?: string;
 	zellijTabName?: string;
 	zellijSessionOwned?: boolean;
+	placement?: TmuxLanePlacementRef | ZellijLanePlacementRef;
 }
 
 export interface LaunchOptions {
@@ -31,6 +39,15 @@ export interface LaunchOptions {
 }
 
 const READY_DIR = join(tmpdir(), "mosaic-ready");
+
+interface LaunchDependencies {
+	backend?: () => MultiplexerBackend;
+	tmuxPlace?: (request: LanePlacementRequest) => Promise<TmuxLanePlacementRef>;
+	zellijPlace?: (request: LanePlacementRequest) => Promise<ZellijLanePlacementRef>;
+	listActive?: () => Heartbeat[];
+	waitForReadyFile?: (path: string, timeoutMs: number) => void;
+	execFileSync?: typeof execFileSync;
+}
 
 export function getMultiplexerBackend(): MultiplexerBackend | undefined {
 	if (process.env.TMUX && process.env.TMUX_PANE) return "tmux";
@@ -75,25 +92,12 @@ export function currentMultiplexerTarget(): Partial<MultiplexerTarget> {
 	return {};
 }
 
-export function launchMosaicTarget(options: LaunchOptions): MultiplexerTarget {
-	const backend = requireMultiplexerBackend();
-	if (backend === "tmux") {
-		const spawned = spawnInCurrentSessionWindow(
-			options.command,
-			options.cwd,
-			options.owner,
-			options.name,
-			options.extraEnv ?? {},
-		);
-		return {
-			backend,
-			paneId: spawned.paneId,
-			windowId: spawned.windowId,
-			windowName: options.name,
-			tmuxSession: spawned.tmuxSession,
-		};
-	}
-	return launchZellijTarget(options);
+export async function launchMosaicTarget(
+	options: LaunchOptions,
+	dependencies: LaunchDependencies = {},
+): Promise<MultiplexerTarget> {
+	const backend = dependencies.backend?.() ?? requireMultiplexerBackend();
+	return backend === "tmux" ? launchTmuxTarget(options, dependencies) : launchZellijTarget(options, dependencies);
 }
 
 export function focusTarget(target: Heartbeat): void {
@@ -162,53 +166,129 @@ export function sendMessageToTarget(target: Heartbeat, message: string): void {
 	}
 }
 
-function launchZellijTarget(options: LaunchOptions): MultiplexerTarget {
+async function launchTmuxTarget(options: LaunchOptions, dependencies: LaunchDependencies): Promise<MultiplexerTarget> {
+	const pane = process.env.TMUX_PANE;
+	if (!pane) throw new Error("not in tmux");
+	const liveBeforeLaunch = (dependencies.listActive ?? listActive)();
+	const placementPlan = mosaicSplitPlacement(options, liveBeforeLaunch, pane);
+	const { readyFile, env } = prepareLaunchEnvironment(options, { includeShell: true });
+	const placement = await (dependencies.tmuxPlace ?? defaultTmuxPlace)({
+		placement: "split-pane",
+		cwd: options.cwd,
+		name: options.name,
+		command: options.command,
+		env,
+		targetPane: placementPlan.targetPane,
+		splitDirection: placementPlan.splitDirection,
+	});
+	waitForLaunchReady(readyFile, dependencies);
+	const live = (dependencies.listActive ?? listActive)().find((entry) => entry.agentId === options.agentId);
+	return {
+		backend: "tmux",
+		paneId: live?.paneId ?? placement.tmux.paneId ?? "",
+		windowId: live?.windowId ?? placement.tmux.windowId,
+		windowName: live?.windowName ?? options.name,
+		tmuxSession: live?.tmuxSession ?? placement.tmux.session,
+		placement,
+	};
+}
+
+async function defaultTmuxPlace(request: LanePlacementRequest): Promise<TmuxLanePlacementRef> {
+	return new TmuxLanePlacement({
+		exec: async (args) =>
+			execFileSync("tmux", args, {
+				encoding: "utf8",
+			}).trim(),
+	}).place(request);
+}
+
+async function launchZellijTarget(
+	options: LaunchOptions,
+	dependencies: LaunchDependencies,
+): Promise<MultiplexerTarget> {
 	const insideZellij = Boolean(process.env.ZELLIJ || process.env.ZELLIJ_SESSION_NAME || process.env.ZELLIJ_PANE_ID);
 	const zellijSession = insideZellij ? process.env.ZELLIJ_SESSION_NAME : `mosaic-${options.agentId}`;
-	if (!insideZellij) execFileSync("zellij", ["attach", "--create-background", zellijSession]);
-	mkdirSync(READY_DIR, { recursive: true });
-	const readyFile = join(READY_DIR, randomUUID());
-	const env = {
-		MOSAIC_OWNER: options.owner,
-		MOSAIC_READY_FILE: readyFile,
-		...(insideZellij ? {} : { MOSAIC_ZELLIJ_SESSION_OWNED: "1" }),
-		...(options.extraEnv ?? {}),
-	};
-	const shellCommand = `${formatEnv(env)} exec ${options.command}`;
-	const tabId = execFileSync(
-		"zellij",
-		[
-			...(zellijSession ? ["--session", zellijSession] : []),
-			"action",
-			"new-tab",
-			"--name",
-			options.name,
-			"--cwd",
-			options.cwd,
-			"--",
-			"sh",
-			"-lc",
-			shellCommand,
-		],
-		{ encoding: "utf8" },
-	).trim();
-
-	waitForReadyFile(readyFile, 5000);
-	try {
-		rmSync(readyFile, { force: true });
-	} catch {}
-
-	const live = listActive().find((entry) => entry.agentId === options.agentId);
+	const { readyFile, env } = prepareLaunchEnvironment(options, {
+		sessionOwned: !insideZellij,
+	});
+	const liveBeforeLaunch = (dependencies.listActive ?? listActive)();
+	const placementPlan = insideZellij
+		? mosaicSplitPlacement(options, liveBeforeLaunch, normalizeZellijPaneId(process.env.ZELLIJ_PANE_ID))
+		: undefined;
+	const placement = await (dependencies.zellijPlace ?? defaultZellijPlace)({
+		placement: insideZellij ? "split-pane" : "hidden",
+		cwd: options.cwd,
+		name: options.name,
+		command: options.command,
+		env,
+		targetWorkspace: zellijSession,
+		targetPane: placementPlan?.targetPane,
+		splitDirection: placementPlan?.splitDirection,
+	});
+	waitForLaunchReady(readyFile, dependencies);
+	const live = (dependencies.listActive ?? listActive)().find((entry) => entry.agentId === options.agentId);
 	return {
 		backend: "zellij",
-		paneId: live?.paneId ?? "",
-		windowId: tabId,
-		windowName: options.name,
-		zellijSession,
-		zellijTabId: tabId,
-		zellijTabName: options.name,
-		zellijSessionOwned: !insideZellij,
+		paneId: live?.paneId ?? placement.zellij.paneId ?? "",
+		windowId: live?.windowId ?? placement.zellij.tabId,
+		windowName: live?.windowName ?? options.name,
+		zellijSession: live?.zellijSession ?? placement.zellij.session ?? zellijSession,
+		zellijTabId: live?.zellijTabId ?? placement.zellij.tabId,
+		zellijTabName: live?.zellijTabName ?? placement.zellij.tabName ?? options.name,
+		zellijSessionOwned: live?.zellijSessionOwned ?? placement.zellij.sessionOwned ?? !insideZellij,
+		placement,
 	};
+}
+
+async function defaultZellijPlace(request: LanePlacementRequest): Promise<ZellijLanePlacementRef> {
+	return new ZellijLanePlacement({
+		exec: async (args) =>
+			execFileSync("zellij", args, {
+				encoding: "utf8",
+			}).trim(),
+	}).place(request);
+}
+
+function mosaicSplitPlacement(
+	options: LaunchOptions,
+	live: Heartbeat[],
+	defaultPane: string | undefined,
+): { targetPane?: string; splitDirection: "horizontal" | "vertical" } {
+	const firstAgent = live
+		.filter((entry) => entry.agentId && entry.owner === options.owner && entry.paneId)
+		.sort((a, b) => paneSortKey(a.paneId) - paneSortKey(b.paneId))[0];
+	if (firstAgent?.paneId) return { targetPane: firstAgent.paneId, splitDirection: "vertical" };
+	return { targetPane: defaultPane, splitDirection: "horizontal" };
+}
+
+function paneSortKey(paneId: string): number {
+	const match = paneId.match(/\d+/);
+	return match ? Number.parseInt(match[0], 10) : Number.MAX_SAFE_INTEGER;
+}
+
+function prepareLaunchEnvironment(
+	options: LaunchOptions,
+	config: { includeShell?: boolean; sessionOwned?: boolean },
+): { readyFile: string; env: Record<string, string> } {
+	mkdirSync(READY_DIR, { recursive: true });
+	const readyFile = join(READY_DIR, randomUUID());
+	return {
+		readyFile,
+		env: {
+			MOSAIC_OWNER: options.owner,
+			MOSAIC_READY_FILE: readyFile,
+			...(config.includeShell ? { MOSAIC_SHELL: resolveShell() } : {}),
+			...(config.sessionOwned ? { MOSAIC_ZELLIJ_SESSION_OWNED: "1" } : {}),
+			...(options.extraEnv ?? {}),
+		},
+	};
+}
+
+function waitForLaunchReady(path: string, dependencies: LaunchDependencies): void {
+	(dependencies.waitForReadyFile ?? waitForReadyFile)(path, 5000);
+	try {
+		rmSync(path, { force: true });
+	} catch {}
 }
 
 function zellijActionArgs(target: Heartbeat, ...args: string[]): string[] {
@@ -248,16 +328,6 @@ function readCurrentZellijTabInfo(): { id?: string; name?: string } | undefined 
 function normalizeZellijPaneId(paneId: string | undefined): string | undefined {
 	if (!paneId) return undefined;
 	return paneId.startsWith("terminal_") || paneId.startsWith("plugin_") ? paneId : `terminal_${paneId}`;
-}
-
-function formatEnv(env: Record<string, string>): string {
-	return Object.entries(env)
-		.map(([key, value]) => `${key}=${shellQuote(value)}`)
-		.join(" ");
-}
-
-function shellQuote(value: string): string {
-	return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 function waitForReadyFile(path: string, timeoutMs: number): void {

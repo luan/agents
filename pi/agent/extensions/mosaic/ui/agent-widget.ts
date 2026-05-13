@@ -187,6 +187,37 @@ export function describeActivity(activeTools: Map<string, string>, responseText?
 	return "thinking…";
 }
 
+type Rgb = [number, number, number];
+
+function parseHexRgb(color: string): Rgb | undefined {
+	const match = color.match(/^#?([0-9a-fA-F]{6})$/);
+	if (!match) return undefined;
+	const hex = match[1]!;
+	return [
+		Number.parseInt(hex.slice(0, 2), 16),
+		Number.parseInt(hex.slice(2, 4), 16),
+		Number.parseInt(hex.slice(4, 6), 16),
+	];
+}
+
+function fgColor(theme: Theme, color: string, text: string): string {
+	const rgb = parseHexRgb(color);
+	if (rgb) return `\x1b[38;2;${rgb[0]};${rgb[1]};${rgb[2]}m${text}\x1b[39m`;
+	try {
+		return theme.fg(color, text);
+	} catch {
+		return theme.fg("accent", text);
+	}
+}
+
+export function renderMosaicHudIdentityPrefix(
+	identity: AgentRecord["mosaicIdentity"] | undefined,
+	theme: Theme,
+): string {
+	if (!identity) return "";
+	return `${fgColor(theme, identity.color, "▐▌")} ${fgColor(theme, identity.color, identity.label)} `;
+}
+
 // ---- Widget manager ----
 
 export class AgentWidget {
@@ -268,6 +299,7 @@ export class AgentWidget {
 			startedAt: number;
 			completedAt?: number;
 			error?: string;
+			mosaicIdentity?: AgentRecord["mosaicIdentity"];
 		},
 		theme: Theme,
 	): string {
@@ -303,7 +335,11 @@ export class AgentWidget {
 		parts.push(duration);
 
 		const modeTag = modeLabel ? ` ${theme.fg("dim", `(${modeLabel})`)}` : "";
-		return `${icon} ${theme.fg("dim", name)}${modeTag}  ${theme.fg("dim", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", parts.join(" · "))}${statusText}`;
+		return `${icon} ${this.renderMosaicHudIdentity(a, theme)}${theme.fg("dim", name)}${modeTag}  ${theme.fg("dim", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", parts.join(" · "))}${statusText}`;
+	}
+
+	private renderMosaicHudIdentity(a: { mosaicIdentity?: AgentRecord["mosaicIdentity"] }, theme: Theme): string {
+		return renderMosaicHudIdentityPrefix(a.mosaicIdentity, theme);
 	}
 
 	/**
@@ -364,7 +400,7 @@ export class AgentWidget {
 			runningLines.push([
 				truncate(
 					theme.fg("dim", "├─") +
-						` ${theme.fg("accent", frame)} ${theme.bold(name)}${modeTag}  ${theme.fg("muted", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", statsText)}`,
+						` ${this.renderMosaicHudIdentity(a, theme)}${theme.fg("accent", frame)} ${theme.bold(name)}${modeTag}  ${theme.fg("muted", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", statsText)}`,
 				),
 				truncate(theme.fg("dim", "│  ") + theme.fg("dim", `  ⎿  ${activity}`)),
 			]);

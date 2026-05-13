@@ -43,6 +43,12 @@ export interface Heartbeat {
 	agentType?: string;
 	/** Full-session subagent description, when known. */
 	agentDescription?: string;
+	/** Short mosaic visual label assigned by the parent session, e.g. A1. */
+	mosaicAgentLabel?: string;
+	/** Sticky mosaic visual name assigned by the parent session. */
+	mosaicAgentName?: string;
+	/** Hex color token for the mosaic secondary rail. */
+	mosaicAgentColor?: string;
 }
 
 const DIR = join(homedir(), ".mosaic", "heartbeats");
@@ -175,6 +181,9 @@ function readEntry(full: string): Heartbeat | undefined {
 				agentId: typeof data.agentId === "string" ? data.agentId : undefined,
 				agentType: typeof data.agentType === "string" ? data.agentType : undefined,
 				agentDescription: typeof data.agentDescription === "string" ? data.agentDescription : undefined,
+				mosaicAgentLabel: typeof data.mosaicAgentLabel === "string" ? data.mosaicAgentLabel : undefined,
+				mosaicAgentName: typeof data.mosaicAgentName === "string" ? data.mosaicAgentName : undefined,
+				mosaicAgentColor: typeof data.mosaicAgentColor === "string" ? data.mosaicAgentColor : undefined,
 			};
 		}
 	} catch {
