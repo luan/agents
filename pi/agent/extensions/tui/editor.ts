@@ -22,6 +22,12 @@ type EditorChrome = {
 
 type EditorChromeProvider = (width: number, theme: Theme, options: { modeReserve: number }) => EditorChrome;
 
+export interface EditorSessionIdentity {
+	label?: string;
+	name?: string;
+	color?: string;
+}
+
 type UiPatchState = { currentUiTheme?: Theme };
 const globalPatchState = globalThis as typeof globalThis & {
 	__agentsPolishedTuiState?: UiPatchState;
@@ -31,6 +37,7 @@ const patchState = globalPatchState.__agentsPolishedTuiState;
 let cachedSkillNames: string[] = [];
 let workingActive = false;
 let workingFrame = 0;
+let editorSessionIdentityProvider: (() => EditorSessionIdentity | undefined) | undefined;
 
 const WORKING_WORD = "Working";
 const WORKING_SHINE_WIDTH = 3;
@@ -70,6 +77,12 @@ export function setWorkingAnimationForTest(active: boolean, frame = 0): void {
 
 export function setEditorChromeProvider(provider: EditorChromeProvider | undefined): void {
 	editorChromeProvider = provider;
+}
+
+export function setEditorSessionIdentityProvider(
+	provider: (() => EditorSessionIdentity | undefined) | undefined,
+): void {
+	editorSessionIdentityProvider = provider;
 }
 
 function truncateVisible(text: string, maxWidth: number): string {
@@ -145,6 +158,23 @@ function rgbBg([r, g, b]: Rgb): string {
 	return `\x1b[48;2;${r};${g};${b}m`;
 }
 
+function parseHexRgb(color: string): Rgb | undefined {
+	const match = color.match(/^#?([0-9a-fA-F]{6})$/);
+	if (!match) return undefined;
+	const hex = match[1]!;
+	return [
+		Number.parseInt(hex.slice(0, 2), 16),
+		Number.parseInt(hex.slice(2, 4), 16),
+		Number.parseInt(hex.slice(4, 6), 16),
+	];
+}
+
+function identityRailGlyph(uiTheme: Theme, color: string): string {
+	const rgb = parseHexRgb(color);
+	if (rgb) return `${rgbFg(rgb)}▐${ANSI_RESET}`;
+	return uiTheme.fg(color as never, "▐");
+}
+
 function triangleWave(frame: number, periodMs: number, lo: number, hi: number): number {
 	const elapsedMs = frame * WORKING_PERCOLATION_MS;
 	const t = (elapsedMs % periodMs) / periodMs;
@@ -174,10 +204,50 @@ function renderWorkingWord(uiTheme: Theme, color: string, frame: number): string
 		.join("");
 }
 
-function workingHeaderSegment(innerWidth: number, uiTheme: Theme, color: string): string {
+function workingHeaderSegment(uiTheme: Theme, color: string): string {
 	if (!workingActive) return "";
 	const label = renderWorkingWord(uiTheme, color, workingFrame);
-	return truncateToWidth(`${label}${rgbFg(scaleRgb(colorRgb(uiTheme, color), 0.85))}…${ANSI_RESET}`, innerWidth, "");
+	return `${label}${rgbFg(scaleRgb(colorRgb(uiTheme, color), 0.85))}…${ANSI_RESET}`;
+}
+
+function cleanIdentityPart(value: string | undefined): string | undefined {
+	const text = value
+		?.replace(/[\x00-\x1f\x7f]/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+	return text || undefined;
+}
+
+function sessionIdentityText(identity: EditorSessionIdentity | undefined): string | undefined {
+	const label = cleanIdentityPart(identity?.label);
+	const name = cleanIdentityPart(identity?.name);
+	if (label && name) return `${label} ${name}`;
+	return label ?? name;
+}
+
+function renderIdentityText(uiTheme: Theme, identity: string, identityColor: string | undefined): string {
+	if (!identityColor) return uiTheme.fg("dim", identity);
+	const rgb = parseHexRgb(identityColor) ?? colorRgb(uiTheme, identityColor);
+	return `${rgbFg(scaleRgb(rgb, 0.62))}${identity}${ANSI_RESET}`;
+}
+
+function headerLeftSegment(
+	width: number,
+	uiTheme: Theme,
+	color: string,
+	identity: string | undefined,
+	identityColor: string | undefined,
+): string {
+	const working = workingHeaderSegment(uiTheme, color);
+	if (identity && working) {
+		const delimiter = uiTheme.fg("dim", " · ");
+		const identityWidth = width - visibleWidth(working) - visibleWidth(delimiter);
+		if (identityWidth <= 0) return truncateToWidth(working, width, "");
+		const fittedIdentity = renderIdentityText(uiTheme, truncateVisible(identity, identityWidth), identityColor);
+		return truncateToWidth(`${fittedIdentity}${delimiter}${working}`, width, "");
+	}
+	if (identity) return renderIdentityText(uiTheme, truncateVisible(identity, width), identityColor);
+	return truncateToWidth(working, width, "");
 }
 
 function cachedSkillsSegment(innerWidth: number, uiTheme: Theme): string {
@@ -208,7 +278,11 @@ export function renderPolishedEditorForTest(
 	const uiTheme = uiThemeOverride ?? patchState.currentUiTheme;
 	if (!uiTheme) return renderBase(width);
 
-	const innerWidth = Math.max(1, width - 2);
+	const identity = editorSessionIdentityProvider?.();
+	const identityText = sessionIdentityText(identity);
+	const secondaryRailColor = cleanIdentityPart(identity?.color);
+	const railWidth = 2 + (secondaryRailColor ? 1 : 0);
+	const innerWidth = Math.max(1, width - railWidth);
 	const rendered = renderBase(innerWidth);
 	const isShowingAutocomplete =
 		typeof editor.isShowingAutocomplete === "function" ? Boolean(editor.isShowingAutocomplete()) : false;
@@ -240,9 +314,15 @@ export function renderPolishedEditorForTest(
 	const railPulseFactor = workingActive ? triangleWave(workingFrame, RAIL_PULSE_MS, 0.18, 1.25) : 0;
 	const railBg = workingActive ? rgbBg(scaleRgb(colorRgb(uiTheme, railColor), railPulseFactor)) : "";
 	const railGap = fillBackgroundLine(uiTheme, "", 1, { darken: EDITOR_BG_DARKEN });
-	const rail = `${railBg}${uiTheme.fg(railColor as never, "┃")}\x1b[49m${ANSI_RESET}${railGap}`;
+	const secondaryRail = secondaryRailColor ? `${identityRailGlyph(uiTheme, secondaryRailColor)}${ANSI_RESET}` : "";
+	const mainRailGlyph = secondaryRailColor ? "▌" : "┃";
+	const rail = `${secondaryRail}${railBg}${uiTheme.fg(railColor as never, mainRailGlyph)}\x1b[49m${ANSI_RESET}${railGap}`;
 	const lines = [
-		composeLeftRight(workingHeaderSegment(innerWidth, uiTheme, railColor), chrome.topRight, innerWidth),
+		composeLeftRight(
+			headerLeftSegment(innerWidth, uiTheme, railColor, identityText, secondaryRailColor),
+			chrome.topRight,
+			innerWidth,
+		),
 		...editorLines,
 		composeLeftRight(cachedSkillsSegment(statusWidth, uiTheme), chrome.bottomRight, statusWidth),
 	];

@@ -1,8 +1,9 @@
 # Spawn extension direction
 
 `spawn` is the neutral execution-lane primitive. It owns runtime selection,
-session topology, tmux placement, and prompt transfer only. It must not own
-product workflow, task classification, lens selection, or agent behavior policy.
+session topology, multiplexer placement, and prompt transfer only. It must not
+own product workflow, task classification, lens selection, or agent behavior
+policy.
 
 ## Active surfaces
 
@@ -24,15 +25,16 @@ Spawn requests are described by transport/topology fields:
 - `runtime`: `pi`, `shell`, or `command`
 - `payload`: `empty`, `direct`, or `context`
 - `relation`: `root` or `child`
-- `placement`: `new-session`, `new-window`, or `split-pane`
-- `mux`: `tmux`, `none`, or `auto`
+- `placement`: `new-session`, `new-window`, `split-pane`, or `hidden`
+- `mux`: `auto`, `tmux`, `zellij`, `pty`, or `none`
 - `cwd`
 - `name`
 - `goal`
 - `prompt`
 - `command`
 - optional split controls: `splitDirection`, `splitSizePercent`
-- optional targets: `targetSessionPath`, `targetMuxSession`
+- optional targets: `targetSessionPath`, `targetMuxWorkspace`
+- legacy target alias: `targetMuxSession`
 
 These fields say what runs, where the lane opens, how it is parented when it is
 a Pi session, and what initial text it receives. They do not say what kind of
@@ -52,9 +54,10 @@ relationships.
 
 ### `shell`
 
-Opens a fresh login shell in the requested tmux placement and working directory.
+Opens a fresh login shell in the requested placement and working directory.
 Shell lanes do not create Pi session files, prompt artifacts, or Pi child
-relationships.
+relationships. `new-window`, `split-pane`, and `hidden` placements use the
+resolved mux backend.
 
 Examples:
 
@@ -65,10 +68,10 @@ Examples:
 
 ### `command`
 
-Runs a command in the requested tmux placement and working directory. Command
-lanes do not create Pi session files, prompt artifacts, or Pi child
-relationships. The pane stays open after the command exits so the output remains
-inspectable.
+Runs a command in the requested placement and working directory. Command lanes
+do not create Pi session files, prompt artifacts, or Pi child relationships.
+Visible tmux/zellij placements keep the pane open after the command exits so the
+output remains inspectable.
 
 Examples:
 
@@ -122,10 +125,37 @@ prefix lines.
   explicitly supplies the parent for `child`.
 - `new-session` is interactive `/spawn` only, because tools cannot replace the
   active Pi session.
-- `new-window` and `split-pane` are tmux-backed placements.
-- `targetMuxSession` lets a lane open in another tmux session/workspace.
+- `new-window` opens a visible tmux window or zellij tab.
+- `split-pane` opens a visible tmux pane or zellij pane.
+- `hidden` opens a background lane:
+  - tmux: detached tmux session
+  - zellij: background zellij session/tab
+  - `mux=pty` / `mux=no-mux`: compatibility aliases for a hidden zellij
+    session; zellij is required
+- `targetMuxWorkspace` lets a lane open in another tmux session or zellij
+  session/workspace.
+- `targetMuxSession` remains accepted as a legacy alias for
+  `targetMuxWorkspace`.
 - Non-Pi runtimes normalize to root relation because there is no Pi child
   session to link.
+
+## Mux backend behavior
+
+`mux=auto` chooses the best available lane backend:
+
+1. current tmux session, when running inside tmux
+2. current zellij session, when running inside zellij
+3. tmux, when available
+4. zellij, when available
+
+Use `mux=tmux` or `mux=zellij` to require a specific multiplexer. Use `mux=pty`
+or `mux=no-mux` as a compatibility spelling for `placement=hidden` backed by a
+zellij background session. `mux=pty` requires zellij and does not start a local
+node-pty process. Owned `mux=pty` sessions self-delete when their launched
+process exits; explicit `targetMuxWorkspace` sessions are treated as
+user-owned/shared and are not auto-deleted. `mux=none` is only valid for
+`new-session`, because `new-window`, `split-pane`, and `hidden` need a placement
+backend.
 
 ## Slash command
 
@@ -133,6 +163,7 @@ prefix lines.
 /spawn help
 /spawn shell --placement split-pane --split-direction horizontal
 /spawn command --placement new-window -- npm run dev
+/spawn command --placement hidden --mux pty -- npm test
 /spawn direct child Inspect docs/spawn.md
 /spawn context child Continue the current investigation
 /spawn list
@@ -142,8 +173,8 @@ prefix lines.
 
 ## Boundary for future agentic extensions
 
-A higher-level agentic Pi extension can compose on top of spawn, but should keep
-its own policy outside `spawn/index.ts`.
+Higher-level agentic Pi extensions can compose on top of the same placement
+core, but should keep their own policy outside `spawn/index.ts`.
 
 Good division:
 
@@ -151,10 +182,18 @@ Good division:
   prompt content
 - spawn extension: open lanes, transfer context, record lane metadata, and show
   the lane tree
+- mosaic extension: own full-session agent lifecycle, bootstrap payloads,
+  heartbeats, result retrieval, and steering; delegate terminal placement only.
+  Mosaic background agents default to a right-side split for the first agent;
+  later agents split below the first agent pane to form a right-hand agent
+  column beside the main pane.
 
 This keeps the primitive short, reusable, testable, and safe to call from tools.
 
 ## Verification
+
+Compatibility smoke evidence is tracked in
+[`docs/spawn-compatibility-smoke.md`](spawn-compatibility-smoke.md).
 
 After changing spawn or its docs, run:
 
@@ -162,6 +201,7 @@ After changing spawn or its docs, run:
 cd /path/to/agents
 git diff --check
 node --check pi/agent/extensions/spawn/index.ts
-node --check pi/agent/extensions/spawn/cockpit-nav.ts
+node --check pi/agent/extensions/shared/lane-placement.ts
+node --check pi/agent/extensions/mosaic/multiplexer.ts
 bun run typecheck
 ```

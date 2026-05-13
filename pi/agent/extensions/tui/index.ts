@@ -7,9 +7,11 @@ import { ensureConfigExists, loadConfig, type PolishedTuiConfig, saveConfig } fr
 import { installFocusCursor } from "./cursor-focus";
 import {
 	advanceWorkingAnimationFrame,
+	type EditorSessionIdentity,
 	installEditorComposition,
 	setCachedSkillNames,
 	setEditorChromeProvider,
+	setEditorSessionIdentityProvider,
 	setWorkingAnimationState,
 } from "./editor";
 import {
@@ -35,6 +37,31 @@ type UsageBarCache = {
 
 const CONTEXT_PULSE_INTERVAL_MS = 320;
 const CONTEXT_PULSE_DURATION_MS = 1200;
+const MOSAIC_IDENTITY_COLORS = ["f38ba8", "fab387", "f9e2af", "eba0ac", "e78284", "ff9e64", "ffc777", "ff757f"];
+
+function cleanIdentityPart(value: string | undefined): string | undefined {
+	const text = value
+		?.replace(/[\x00-\x1f\x7f]/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+	return text || undefined;
+}
+
+function readMosaicIdentityEnv(): EditorSessionIdentity | undefined {
+	const label = cleanIdentityPart(process.env.MOSAIC_AGENT_LABEL);
+	const name = cleanIdentityPart(process.env.MOSAIC_AGENT_NAME);
+	const color = mosaicIdentityColor(label) ?? cleanIdentityPart(process.env.MOSAIC_AGENT_COLOR);
+	if (!label && !name && !color) return undefined;
+	return { label, name, color };
+}
+
+function mosaicIdentityColor(label: string | undefined): string | undefined {
+	const match = label?.match(/^A(\d+)$/);
+	if (!match) return undefined;
+	const index = Number(match[1]);
+	if (!Number.isFinite(index) || index <= 0) return undefined;
+	return MOSAIC_IDENTITY_COLORS[(index - 1) % MOSAIC_IDENTITY_COLORS.length];
+}
 
 function formatCount(value: number): string {
 	if (value < 1000) return `${value}`;
@@ -465,6 +492,12 @@ export default function (pi: ExtensionAPI) {
 	const installEditor = (ctx: ExtensionContext) => {
 		syncStateIfCurrent(ctx);
 		const cwd = ctx.cwd;
+		const mosaicIdentity = readMosaicIdentityEnv();
+		setEditorSessionIdentityProvider(() => {
+			const name = cleanIdentityPart(ctx.sessionManager.getSessionName()) ?? mosaicIdentity?.name;
+			if (mosaicIdentity) return { ...mosaicIdentity, name };
+			return name ? { name } : undefined;
+		});
 		setEditorChromeProvider((width, theme, options) => {
 			const bottomWidth = Math.max(1, width - options.modeReserve);
 			if (isCompactTerminal()) {
@@ -542,6 +575,7 @@ export default function (pi: ExtensionAPI) {
 		unsubscribeSkillfulCache = undefined;
 		setCachedSkillNames([]);
 		setEditorChromeProvider(undefined);
+		setEditorSessionIdentityProvider(undefined);
 		setWorkingAnimationState(false, 0);
 		stopRefreshTimer();
 		stopContextPulse();

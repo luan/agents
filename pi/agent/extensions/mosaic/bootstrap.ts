@@ -10,6 +10,11 @@ export interface MosaicBootstrapPayload {
 	builtinToolNames: string[];
 	extensions: true | string[] | false;
 	disallowedTools?: string[];
+	mosaicIdentity?: {
+		label: string;
+		name: string;
+		color: string;
+	};
 }
 
 let bootstrap: MosaicBootstrapPayload | undefined;
@@ -22,6 +27,9 @@ export function getMosaicBootstrapMetadata() {
 				agentId: bootstrap.agentId,
 				agentType: bootstrap.agentType,
 				agentDescription: bootstrap.description,
+				mosaicAgentLabel: bootstrap.mosaicIdentity?.label,
+				mosaicAgentName: bootstrap.mosaicIdentity?.name,
+				mosaicAgentColor: bootstrap.mosaicIdentity?.color,
 			}
 		: {};
 }
@@ -74,6 +82,7 @@ function loadBootstrap(): void {
 				disallowedTools: Array.isArray(parsed.disallowedTools)
 					? parsed.disallowedTools.filter((name): name is string => typeof name === "string")
 					: undefined,
+				mosaicIdentity: normalizeMosaicIdentity(parsed.mosaicIdentity),
 			};
 		}
 	} catch {
@@ -83,6 +92,19 @@ function loadBootstrap(): void {
 			unlinkSync(path);
 		} catch {}
 	}
+}
+
+function normalizeMosaicIdentity(value: unknown): MosaicBootstrapPayload["mosaicIdentity"] {
+	if (!value || typeof value !== "object") return undefined;
+	const raw = value as { label?: unknown; name?: unknown; color?: unknown };
+	if (typeof raw.label !== "string" || typeof raw.name !== "string" || typeof raw.color !== "string") {
+		return undefined;
+	}
+	const label = raw.label.trim();
+	const name = raw.name.trim();
+	const color = raw.color.trim();
+	if (!label || !name || !color) return undefined;
+	return { label, name, color };
 }
 
 function normalizeExtensions(value: unknown): true | string[] | false {
