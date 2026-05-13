@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Container, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { renderOutputBlock, renderWriteStdinCall } from "./exec-rendering.ts";
+import { renderBackgroundTerminalHudLine, renderOutputBlock, renderWriteStdinCall } from "./exec-rendering.ts";
 import type { ExecSessionManager, UnifiedExecResult } from "./exec-session-manager.ts";
 import { formatUnifiedExecResult } from "./unified-exec-format.ts";
 
@@ -122,6 +122,53 @@ function createEmptyResultComponent(): Container {
 	return new Container();
 }
 
+const BACKGROUND_TERMINAL_HUD_FRAME_MS = 120;
+
+interface RenderContextLike {
+	args?: unknown;
+	isError?: boolean;
+	isPartial?: boolean;
+	invalidate?: () => void;
+	state?: {
+		elapsedTimer?: ReturnType<typeof setTimeout>;
+		startedAtMs?: number;
+	};
+}
+
+function isEmptyPoll(params: { chars?: string } | Record<string, unknown> | undefined): boolean {
+	if (!params || !("chars" in params)) return true;
+	return typeof params.chars !== "string" || params.chars.length === 0;
+}
+
+function isEmptyPollRenderContext(context: RenderContextLike | undefined): boolean {
+	if (!context?.args || typeof context.args !== "object") return false;
+	return isEmptyPoll(context.args as Record<string, unknown>);
+}
+
+function elapsedMs(context: RenderContextLike | undefined, running: boolean): number | undefined {
+	const state = context?.state;
+	if (!running || !state) return undefined;
+	state.startedAtMs ??= Date.now();
+	return Date.now() - state.startedAtMs;
+}
+
+function scheduleRunningInvalidation(context: RenderContextLike | undefined, running: boolean): void {
+	const state = context?.state;
+	if (!state) return;
+	if (!running) {
+		if (state.elapsedTimer) {
+			clearTimeout(state.elapsedTimer);
+			state.elapsedTimer = undefined;
+		}
+		return;
+	}
+	if (state.elapsedTimer || !context?.invalidate) return;
+	state.elapsedTimer = setTimeout(() => {
+		state.elapsedTimer = undefined;
+		context.invalidate?.();
+	}, BACKGROUND_TERMINAL_HUD_FRAME_MS);
+}
+
 export function registerWriteStdinTool(pi: ExtensionAPI, sessions: ExecSessionManager): void {
 	pi.registerTool({
 		name: "write_stdin",
@@ -148,6 +195,21 @@ export function registerWriteStdinTool(pi: ExtensionAPI, sessions: ExecSessionMa
 		},
 		renderCall(args, theme, context) {
 			const sessionId = typeof args.session_id === "number" ? args.session_id : "?";
+			const running = context?.isPartial === true;
+			scheduleRunningInvalidation(context, running);
+			const currentElapsedMs = elapsedMs(context, running);
+			if (isEmptyPoll(args)) {
+				if (!running || typeof sessionId !== "number") return createEmptyResultComponent();
+				const snapshot = sessions.getSessionSnapshot(sessionId);
+				const command = snapshot?.command ?? sessions.getSessionCommand(sessionId);
+				const output = snapshot?.output ?? "";
+				return {
+					invalidate() {},
+					render(width: number) {
+						return [renderBackgroundTerminalHudLine(command, output, theme, currentElapsedMs ?? 0, width)];
+					},
+				};
+			}
 			const input = typeof args.chars === "string" ? args.chars : undefined;
 			const command = typeof sessionId === "number" ? sessions.getSessionCommand(sessionId) : undefined;
 			return new Text(
@@ -156,16 +218,20 @@ export function registerWriteStdinTool(pi: ExtensionAPI, sessions: ExecSessionMa
 					input,
 					command,
 					theme,
-					context?.isPartial ? "running" : "done",
+					running ? "running" : "done",
 					context?.isError === true,
+					currentElapsedMs,
 				),
 				0,
 				0,
 			);
 		},
-		renderResult(result, { expanded, isPartial }, theme) {
+		renderResult(result, { expanded, isPartial }, theme, context?: RenderContextLike) {
 			if (isPartial) return createEmptyResultComponent();
 			const state = getResultState(result);
+			if (isEmptyPollRenderContext(context) && state.sessionId !== undefined) {
+				return createEmptyResultComponent();
+			}
 			const output = renderTerminalText(state.output);
 			const footer =
 				state.sessionId !== undefined

@@ -8,6 +8,7 @@ import { registerExecCommandTool } from "./tools/exec-command-tool.ts";
 import {
 	formatElapsedTime,
 	type RenderTheme,
+	renderBackgroundTerminalHudLine,
 	renderExecCommandCall,
 	renderGroupedExecCommandCall,
 	renderOutputBlock,
@@ -99,7 +100,21 @@ test("running terminal calls show elapsed time", () => {
 		`<bold>Running</bold> <syntaxFunction>sleep</syntaxFunction> 60<dim> · 1m 05s</dim>`,
 	);
 	expect(renderWriteStdinCall(3, "", "sleep 60", testTheme, "running", false, 65_400)).toBe(
-		`<dim>• </dim><bold>Waiting for background terminal</bold><dim> · 1m 05s</dim><dim> · </dim><muted>sleep 60</muted>`,
+		`<dim>⠴ </dim><bold>Waiting for background terminal</bold><dim> · 1m 05s</dim><dim> · </dim><muted>sleep 60</muted>`,
+	);
+});
+
+test("background terminal HUD summarizes command, output size, and last line", () => {
+	const rendered = renderBackgroundTerminalHudLine(
+		"just sync-proptest mock 1 --skip-triage",
+		"first\nmiddle\nlast line\n",
+		testTheme,
+		360,
+		120,
+	);
+
+	expect(rendered).toBe(
+		"<dim>⠸</dim> <bold>Waiting for background terminal</bold><dim> · </dim><muted>just sync-proptest mock 1 --skip-triage</muted><dim> · </dim><muted>(3 lines)</muted><dim> · </dim><dim>last line</dim>",
 	);
 });
 
@@ -216,26 +231,52 @@ test("exploration grouping does not append a single command output preview", () 
 	}
 });
 
-test("yielded background exec calls do not keep scheduling elapsed redraws", () => {
+test("yielded background exec calls render an animated terminal HUD", () => {
 	let tool: any;
 	const tracker = createExecCommandTracker();
-	const sessions = createExecSessionManager();
+	const sessions = {
+		exec: async () => {
+			throw new Error("unexpected exec");
+		},
+		write: async () => {
+			throw new Error("unexpected write");
+		},
+		hasSession: () => true,
+		getSessionCommand: () => "sleep 60",
+		getSessionSnapshot: () => ({
+			command: "sleep 60",
+			output: "first\nlast\n",
+			running: true,
+		}),
+		onSessionExit: () => () => {},
+		shutdown() {},
+	};
 	try {
-		registerExecCommandTool({ registerTool: (definition: any) => (tool = definition) } as any, tracker, sessions);
+		registerExecCommandTool(
+			{ registerTool: (definition: any) => (tool = definition) } as any,
+			tracker,
+			sessions as any,
+		);
 		tracker.recordStart("call", "sleep 60");
 		tracker.recordPersistentSession("call", 7);
 
 		const state: { elapsedTimer?: ReturnType<typeof setTimeout> } = {};
-		tool.renderCall({ cmd: "sleep 60" }, testTheme, {
-			toolCallId: "call",
-			state,
-			isPartial: false,
-			invalidate: () => {
-				throw new Error("final background row should not schedule redraws");
-			},
-		});
+		const row = tool
+			.renderCall({ cmd: "sleep 60" }, testTheme, {
+				toolCallId: "call",
+				state,
+				isPartial: false,
+				invalidate() {},
+			})
+			.render(120)
+			.join("\n");
 
-		expect(state.elapsedTimer).toBeUndefined();
+		expect(row).toContain("<bold>Waiting for background terminal</bold>");
+		expect(row).toContain("<muted>sleep 60</muted>");
+		expect(row).toContain("<muted>(2 lines)</muted>");
+		expect(row).toContain("<dim>last</dim>");
+		expect(state.elapsedTimer).toBeDefined();
+		if (state.elapsedTimer) clearTimeout(state.elapsedTimer);
 	} finally {
 		tracker.clear();
 		sessions.shutdown();
@@ -536,6 +577,73 @@ test("write stdin renderer self-renders without the default success shell", () =
 		const rendered = component.render(120).join("\n");
 		expect(rendered).toContain("<dim>  └ </dim><dim>poll output</dim>");
 		expect(rendered).not.toContain("Exit code: 0");
+	} finally {
+		sessions.shutdown();
+	}
+});
+
+test("write stdin hides still-running empty background terminal polls from transcript", () => {
+	let tool: any;
+	const sessions = createExecSessionManager();
+	try {
+		registerWriteStdinTool({ registerTool: (definition: any) => (tool = definition) } as any, sessions);
+
+		expect(tool.renderCall({ session_id: 3 }, testTheme, { isPartial: false }).render(120)).toEqual([]);
+		expect(
+			tool
+				.renderResult(
+					{
+						content: [{ type: "text", text: "" }],
+						details: { output: "still running\n", session_id: 3 },
+					},
+					{ expanded: false, isPartial: false },
+					testTheme,
+					{ args: { session_id: 3 } },
+				)
+				.render(120),
+		).toEqual([]);
+
+		const interacted = tool
+			.renderCall({ session_id: 3, chars: "\u0003" }, testTheme, { isPartial: false })
+			.render(120);
+		expect(interacted.join("\n")).toContain("<bold>Interacted with background terminal</bold>");
+	} finally {
+		sessions.shutdown();
+	}
+});
+
+test("write stdin renders animated in-flight wait and interaction rows", () => {
+	let tool: any;
+	const sessions = createExecSessionManager();
+	try {
+		registerWriteStdinTool({ registerTool: (definition: any) => (tool = definition) } as any, sessions);
+
+		const waitState: { elapsedTimer?: ReturnType<typeof setTimeout>; startedAtMs?: number } = {};
+		const waitRow = tool
+			.renderCall({ session_id: 3 }, testTheme, {
+				isPartial: true,
+				state: waitState,
+				invalidate() {},
+			})
+			.render(120)
+			.join("\n");
+		expect(waitRow).toContain("<bold>Waiting for background terminal</bold>");
+		expect(waitRow).toContain("<muted>(no output)</muted>");
+		expect(waitState.elapsedTimer).toBeDefined();
+		if (waitState.elapsedTimer) clearTimeout(waitState.elapsedTimer);
+
+		const interactionState: { elapsedTimer?: ReturnType<typeof setTimeout>; startedAtMs?: number } = {};
+		const interactionRow = tool
+			.renderCall({ session_id: 3, chars: "\u0003" }, testTheme, {
+				isPartial: true,
+				state: interactionState,
+				invalidate() {},
+			})
+			.render(120)
+			.join("\n");
+		expect(interactionRow).toContain("<bold>Interacting with background terminal</bold>");
+		expect(interactionState.elapsedTimer).toBeDefined();
+		if (interactionState.elapsedTimer) clearTimeout(interactionState.elapsedTimer);
 	} finally {
 		sessions.shutdown();
 	}

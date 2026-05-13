@@ -72,7 +72,7 @@ export function renderWriteStdinCall(
 	elapsedMs?: number,
 ): string {
 	const interacted = typeof input === "string" && input.length > 0;
-	const marker = interacted ? "↳ " : "• ";
+	const marker = state === "running" ? `${runningMarker(elapsedMs)} ` : interacted ? "↳ " : "• ";
 	const title =
 		state === "running"
 			? interacted
@@ -94,6 +94,46 @@ export function renderWriteStdinCall(
 	// Keep the session fallback only when we do not have a stable command display.
 	if (!commandPreview) {
 		text += `${theme.fg("dim", " ")}${theme.fg("muted", `#${sessionId}`)}`;
+	}
+	return text;
+}
+
+export function renderBackgroundTerminalHudLine(
+	command: string | undefined,
+	output: string,
+	theme: RenderTheme,
+	elapsedMs: number,
+	width = 120,
+): string {
+	const lineCount = outputLineCount(output);
+	const outputSummary =
+		lineCount > 0
+			? {
+					count: `(${lineCount} ${lineCount === 1 ? "line" : "lines"})`,
+					lastLine: lastOutputLine(output),
+				}
+			: {
+					count: "(no output)",
+					lastLine: undefined,
+				};
+	const commandPreview = shortenCommand(
+		formatCommandPreview(command) ?? `#background`,
+		Math.max(16, Math.floor(width * 0.4)),
+	);
+	const fixedVisibleLength =
+		2 +
+		"Waiting for background terminal".length +
+		" · ".length +
+		commandPreview.length +
+		" · ".length +
+		outputSummary.count.length +
+		(outputSummary.lastLine ? " · ".length : 0);
+	const lastLineMax = Math.max(12, width - fixedVisibleLength);
+	let text = `${theme.fg("dim", runningMarker(elapsedMs))} ${theme.bold("Waiting for background terminal")}`;
+	text += `${theme.fg("dim", " · ")}${theme.fg("muted", commandPreview)}`;
+	text += `${theme.fg("dim", " · ")}${theme.fg("muted", outputSummary.count)}`;
+	if (outputSummary.lastLine) {
+		text += `${theme.fg("dim", " · ")}${theme.fg("dim", shortenLine(stripAnsi(outputSummary.lastLine), lastLineMax))}`;
 	}
 	return text;
 }
@@ -177,6 +217,17 @@ function formatOmittedLines(omitted: number): string {
 
 function stripAnsi(value: string): string {
 	return value.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
+}
+
+function outputLineCount(output: string): number {
+	if (output.length === 0) return 0;
+	return output.replace(/\n$/, "").split("\n").length;
+}
+
+function lastOutputLine(output: string): string | undefined {
+	if (output.length === 0) return undefined;
+	const lines = output.replace(/\n$/, "").split("\n");
+	return lines[lines.length - 1];
 }
 
 function formatTruncatedAboveLine(originalTokenCount: number | undefined): string {

@@ -8,6 +8,7 @@ export interface ExecCommandRenderInfo {
 	actionGroups?: ShellAction[][];
 	elapsedMs?: number;
 	rtkWrapped?: boolean;
+	sessionId?: number;
 }
 
 interface ExecEntry {
@@ -18,6 +19,7 @@ interface ExecEntry {
 	hidden: boolean;
 	startedAtMs: number;
 	rtkWrapped: boolean;
+	sessionId?: number;
 	groupId?: number;
 	invalidate?: () => void;
 }
@@ -107,6 +109,7 @@ export function createExecCommandTracker(): ExecCommandTracker {
 					status: entry.status,
 					elapsedMs: getElapsedMs([entry]),
 					rtkWrapped: entry.rtkWrapped,
+					sessionId: entry.sessionId,
 				};
 			}
 
@@ -118,6 +121,7 @@ export function createExecCommandTracker(): ExecCommandTracker {
 					actionGroups: entry.summary.maskAsExplored ? [entry.summary.actions] : undefined,
 					elapsedMs: getElapsedMs([entry]),
 					rtkWrapped: entry.rtkWrapped,
+					sessionId: entry.sessionId,
 				};
 			}
 
@@ -237,6 +241,7 @@ export function createExecCommandTracker(): ExecCommandTracker {
 			const entry = entriesByToolCallId.get(toolCallId);
 			if (!entry) return;
 			entry.status = "running";
+			entry.sessionId = sessionId;
 			const group = getGroupForEntry(entry);
 			invalidateToolCall(group?.visibleEntryId ?? entry.toolCallId);
 		},
@@ -262,6 +267,7 @@ export function createExecCommandTracker(): ExecCommandTracker {
 			if (!entry) return;
 			decrementCommand(entry.command);
 			entry.status = "done";
+			entry.sessionId = undefined;
 			sessionBackedToolCallIds.delete(toolCallId);
 			const group = getGroupForEntry(entry);
 			invalidateToolCall(group?.visibleEntryId ?? entry.toolCallId);
