@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { getLastCompactionStats, VCC_COMPACT_INSTRUCTION } from "../hooks/before-compact";
+import { buildOwnCut, getLastCompactionStats, REASON_MESSAGES, VCC_COMPACT_INSTRUCTION } from "../hooks/before-compact";
 
 const formatTokens = (n: number): string => {
 	if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
@@ -10,6 +10,12 @@ export const registerVccCommand = (pi: ExtensionAPI) => {
 	pi.registerCommand("vcc", {
 		description: "Compact conversation with vcc structured summary",
 		handler: async (_args, ctx) => {
+			const ownCut = buildOwnCut(ctx.sessionManager.getBranch() as any[]);
+			if (!ownCut.ok) {
+				ctx.ui.notify(REASON_MESSAGES[ownCut.reason], "warning");
+				return;
+			}
+
 			ctx.compact({
 				customInstructions: VCC_COMPACT_INSTRUCTION,
 				onComplete: () => {

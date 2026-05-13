@@ -130,7 +130,7 @@ export function buildOwnCut(branchEntries: any[]): OwnCutResult {
 	};
 }
 
-const REASON_MESSAGES: Record<OwnCutCancelReason, string> = {
+export const REASON_MESSAGES: Record<OwnCutCancelReason, string> = {
 	no_live_messages: "vcc: Nothing to compact (no live messages)",
 	too_few_live_messages: "vcc: Too few messages to compact",
 	no_user_message: "vcc: Cannot compact - no user message found",
