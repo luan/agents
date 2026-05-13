@@ -1,12 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Container, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import {
-	formatStdinCapability,
-	renderBackgroundTerminalHudLine,
-	renderOutputBlock,
-	renderWriteStdinCall,
-} from "./exec-rendering.ts";
+import { formatStdinCapability, renderOutputBlock, renderWriteStdinCall } from "./exec-rendering.ts";
 import type { ExecSessionManager, UnifiedExecResult } from "./exec-session-manager.ts";
 import { formatUnifiedExecResult } from "./unified-exec-format.ts";
 
@@ -206,29 +201,11 @@ export function registerWriteStdinTool(pi: ExtensionAPI, sessions: ExecSessionMa
 		renderCall(args, theme, context) {
 			const sessionId = typeof args.session_id === "number" ? args.session_id : "?";
 			const running = context?.isPartial === true;
+			if (isEmptyPoll(args)) {
+				return createEmptyResultComponent();
+			}
 			scheduleRunningInvalidation(context, running);
 			const currentElapsedMs = elapsedMs(context, running);
-			if (isEmptyPoll(args)) {
-				if (!running || typeof sessionId !== "number") return createEmptyResultComponent();
-				const snapshot = sessions.getSessionSnapshot(sessionId);
-				const command = snapshot?.command ?? sessions.getSessionCommand(sessionId);
-				const output = snapshot?.output ?? "";
-				return {
-					invalidate() {},
-					render(width: number) {
-						return [
-							renderBackgroundTerminalHudLine(
-								command,
-								output,
-								theme,
-								currentElapsedMs ?? 0,
-								width,
-								snapshot?.stdinOpen,
-							),
-						];
-					},
-				};
-			}
 			const input = typeof args.chars === "string" ? args.chars : undefined;
 			const snapshot = typeof sessionId === "number" ? sessions.getSessionSnapshot(sessionId) : undefined;
 			const command = typeof sessionId === "number" ? sessions.getSessionCommand(sessionId) : undefined;
