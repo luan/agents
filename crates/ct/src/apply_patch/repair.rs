@@ -265,11 +265,12 @@ fn draft_candidates(error: &ApplyPatchError) -> Vec<PatchCandidate> {
         .iter()
         .enumerate()
         .map(|(idx, line)| {
-            let anchor = disambiguation_hints
-                .get(idx)
-                .and_then(|hint| hint.split("  ").next())
-                .map(str::to_string);
-            let anchors = anchor.iter().cloned().collect::<Vec<_>>();
+            let hint = disambiguation_hints.get(idx).map(String::as_str);
+            let anchor = hint.and_then(clean_anchor_from_hint).map(str::to_string);
+            let mut anchors = anchor.iter().cloned().collect::<Vec<_>>();
+            if let Some(line_range) = hint.and_then(line_range_from_hint) {
+                anchors.push(line_range);
+            }
             PatchCandidate {
                 chunk_index: *chunk as i64,
                 line: *line as i64,
@@ -286,6 +287,23 @@ fn draft_candidates(error: &ApplyPatchError) -> Vec<PatchCandidate> {
             }
         })
         .collect()
+}
+
+fn clean_anchor_from_hint(hint: &str) -> Option<&str> {
+    hint.split("  →  ")
+        .next()
+        .filter(|anchor| anchor.starts_with("@@ ") && !anchor.starts_with("@@ lines "))
+}
+
+fn line_range_from_hint(hint: &str) -> Option<String> {
+    let start = hint.find("@@ lines ")?;
+    let rest = &hint[start..];
+    let range = rest
+        .trim_start_matches("@@ lines ")
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit() || *ch == '-')
+        .collect::<String>();
+    (!range.is_empty()).then(|| format!("@@ lines {range}"))
 }
 
 pub fn anchors_for_failure(error: &ApplyPatchError, attempts: &[AnchorAttempt]) -> Vec<String> {
