@@ -1,6 +1,5 @@
 import { CustomEditor, type Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { terminalRows } from "../shared/terminal";
 import { ANSI_RESET, fillBackgroundLine } from "./render-lines";
 
 const CUSTOM_EDITOR_ORIGINAL_RENDER = Symbol.for("agents.polishedTui.customEditorOriginalRender");
@@ -149,6 +148,8 @@ function colorAnsi(uiTheme: Theme, color: string): string | undefined {
 }
 
 function colorRgb(uiTheme: Theme, color: string): Rgb {
+	const hex = parseHexRgb(color);
+	if (hex) return hex;
 	const ansi = colorAnsi(uiTheme, color);
 	const truecolor = ansi?.match(/\x1b\[38;2;(\d+);(\d+);(\d+)m/);
 	if (truecolor) return [Number(truecolor[1]), Number(truecolor[2]), Number(truecolor[3])];
@@ -172,6 +173,12 @@ function rgbBg([r, g, b]: Rgb): string {
 	return `\x1b[48;2;${r};${g};${b}m`;
 }
 
+function colorFg(uiTheme: Theme, color: string, text: string): string {
+	const rgb = parseHexRgb(color);
+	if (rgb) return `${rgbFg(rgb)}${text}\x1b[39m`;
+	return uiTheme.fg(color as never, text);
+}
+
 function parseHexRgb(color: string): Rgb | undefined {
 	const match = color.match(/^#?([0-9a-fA-F]{6})$/);
 	if (!match) return undefined;
@@ -181,12 +188,6 @@ function parseHexRgb(color: string): Rgb | undefined {
 		Number.parseInt(hex.slice(2, 4), 16),
 		Number.parseInt(hex.slice(4, 6), 16),
 	];
-}
-
-function identityRailGlyph(uiTheme: Theme, color: string): string {
-	const rgb = parseHexRgb(color);
-	if (rgb) return `${rgbFg(rgb)}▐${ANSI_RESET}`;
-	return uiTheme.fg(color as never, "▐");
 }
 
 function triangleWave(frame: number, periodMs: number, lo: number, hi: number): number {
@@ -200,6 +201,11 @@ function modeColor(mode: string | undefined): string {
 	if (mode === "insert") return "success";
 	if (mode === "visual") return "accent";
 	return "syntaxFunction";
+}
+
+function railColorForMode(mode: string | undefined, identityColor: string | undefined): string {
+	if (mode === "normal" && identityColor) return identityColor;
+	return modeColor(mode);
 }
 
 function renderWorkingWord(uiTheme: Theme, color: string, frame: number): string {
@@ -284,17 +290,17 @@ export function renderPolishedEditorForTest(
 	editor: TransformableEditor,
 	width: number,
 	renderBase: (width: number) => string[],
-	minTerminalRows: number,
 	uiThemeOverride?: Theme,
 ): string[] {
-	const rows = terminalRows();
-	if (rows !== undefined && rows < minTerminalRows) return renderBase(width);
 	const uiTheme = uiThemeOverride ?? patchState.currentUiTheme;
 	if (!uiTheme) return renderBase(width);
 
 	const identity = getEditorSessionIdentity();
 	const identityText = sessionIdentityText(identity);
-	const secondaryRailColor = cleanIdentityPart(identity?.color);
+	const identityColor = cleanIdentityPart(identity?.color);
+	const mode = typeof editor.getMode === "function" ? editor.getMode() : undefined;
+	const railColor = railColorForMode(mode, identityColor);
+	const secondaryRailColor = identityColor && railColor !== identityColor ? identityColor : undefined;
 	const railWidth = 2 + (secondaryRailColor ? 1 : 0);
 	const innerWidth = Math.max(1, width - railWidth);
 	const rendered = renderBase(innerWidth);
@@ -320,20 +326,18 @@ export function renderPolishedEditorForTest(
 			? (line: string) => editor.transformEditorLine?.(line) ?? line
 			: (line: string) => line;
 	const editorLines = editorFrame.slice(1, -1).map(transformEditorLine);
-	const mode = typeof editor.getMode === "function" ? editor.getMode() : undefined;
-	const railColor = modeColor(mode);
 	const modeReserve = typeof editor.getMode === "function" ? MODE_LABEL_RESERVE : 0;
 	const statusWidth = Math.max(1, innerWidth - modeReserve);
 	const chrome = editorChromeProvider?.(innerWidth, uiTheme, { modeReserve }) ?? {};
 	const railPulseFactor = workingActive ? triangleWave(workingFrame, RAIL_PULSE_MS, 0.18, 1.25) : 0;
 	const railBg = workingActive ? rgbBg(scaleRgb(colorRgb(uiTheme, railColor), railPulseFactor)) : "";
 	const railGap = fillBackgroundLine(uiTheme, "", 1, { darken: EDITOR_BG_DARKEN });
-	const secondaryRail = secondaryRailColor ? `${identityRailGlyph(uiTheme, secondaryRailColor)}${ANSI_RESET}` : "";
+	const secondaryRail = secondaryRailColor ? `${colorFg(uiTheme, secondaryRailColor, "▐")}${ANSI_RESET}` : "";
 	const mainRailGlyph = secondaryRailColor ? "▌" : "┃";
-	const rail = `${secondaryRail}${railBg}${uiTheme.fg(railColor as never, mainRailGlyph)}\x1b[49m${ANSI_RESET}${railGap}`;
+	const rail = `${secondaryRail}${railBg}${colorFg(uiTheme, railColor, mainRailGlyph)}\x1b[49m${ANSI_RESET}${railGap}`;
 	const lines = [
 		composeLeftRight(
-			headerLeftSegment(innerWidth, uiTheme, railColor, identityText, secondaryRailColor),
+			headerLeftSegment(innerWidth, uiTheme, railColor, identityText, identityColor),
 			chrome.topRight,
 			innerWidth,
 		),
@@ -347,7 +351,7 @@ export function renderPolishedEditorForTest(
 	];
 }
 
-export function installEditorComposition(uiTheme: Theme, minTerminalRows = 28): void {
+export function installEditorComposition(uiTheme: Theme): void {
 	setEditorTheme(uiTheme);
 
 	// Patch the shared base editor instead of replacing the active editor so
@@ -360,11 +364,8 @@ export function installEditorComposition(uiTheme: Theme, minTerminalRows = 28): 
 		prototype.render;
 	prototype[CUSTOM_EDITOR_ORIGINAL_RENDER] ??= prototype.render;
 	prototype.render = function (this: CustomEditor, width: number): string[] {
-		return renderPolishedEditorForTest(
-			this as unknown as TransformableEditor,
-			width,
-			(w) => originalRender.call(this, w),
-			minTerminalRows,
+		return renderPolishedEditorForTest(this as unknown as TransformableEditor, width, (w) =>
+			originalRender.call(this, w),
 		);
 	};
 }

@@ -25,12 +25,10 @@ import { buildParentContext, extractText } from "./context.js";
 import { DEFAULT_AGENTS } from "./default-agents.js";
 import { detectEnv } from "./env.js";
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "./memory.js";
+import { isMosaicOrchestrationToolName } from "./orchestration-tools.js";
 import { buildAgentPrompt, type PromptExtras } from "./prompts.js";
 import { preloadSkills } from "./skill-loader.js";
 import type { SubagentType, ThinkingLevel } from "./types.js";
-
-/** Names of tools registered by this extension that subagents must NOT inherit. */
-const EXCLUDED_TOOL_NAMES = ["Agent", "get_subagent_result", "steer_subagent"];
 
 /** Default max turns. undefined = unlimited (no turn limit). */
 let defaultMaxTurns: number | undefined;
@@ -297,7 +295,7 @@ export async function runAgent(
 	if (extensions !== false) {
 		const builtinToolNameSet = new Set(toolNames);
 		const activeTools = session.getActiveToolNames().filter((t) => {
-			if (EXCLUDED_TOOL_NAMES.includes(t)) return false;
+			if (isMosaicOrchestrationToolName(t)) return false;
 			if (disallowedSet?.has(t)) return false;
 			if (builtinToolNameSet.has(t)) return true;
 			if (Array.isArray(extensions)) {

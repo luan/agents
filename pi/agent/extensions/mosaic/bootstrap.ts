@@ -1,5 +1,6 @@
 import { readFileSync, unlinkSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { isMosaicOrchestrationToolName } from "./orchestration-tools.js";
 
 export interface MosaicBootstrapPayload {
 	agentId: string;
@@ -116,10 +117,9 @@ function normalizeExtensions(value: unknown): true | string[] | false {
 function applyActiveTools(pi: ExtensionAPI, payload: MosaicBootstrapPayload): void {
 	const builtin = new Set(payload.builtinToolNames);
 	const disallowed = new Set(payload.disallowedTools ?? []);
-	const excluded = new Set(["Agent", "get_subagent_result", "steer_subagent"]);
 	const allToolNames = pi.getAllTools().map((tool) => tool.name);
 	const next = allToolNames.filter((toolName) => {
-		if (excluded.has(toolName) || disallowed.has(toolName)) return false;
+		if (isMosaicOrchestrationToolName(toolName) || disallowed.has(toolName)) return false;
 		if (builtin.has(toolName)) return true;
 		if (payload.extensions === false) return false;
 		if (Array.isArray(payload.extensions)) {

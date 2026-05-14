@@ -1049,6 +1049,7 @@ class ZellijMuxAdapter {
 			name: request.name,
 			command,
 			targetWorkspace: targetMuxWorkspace(request),
+			restoreFocusPane: process.env.ZELLIJ_PANE_ID,
 			splitDirection: request.splitDirection,
 			splitSizePercent: request.splitSizePercent,
 		});

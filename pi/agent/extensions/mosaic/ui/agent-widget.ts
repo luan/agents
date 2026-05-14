@@ -5,7 +5,7 @@
  * Uses the callback form of setWidget for themed rendering.
  */
 
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { AgentManager } from "../agent-manager.js";
 import { getConfig } from "../agent-types.js";
 import type { AgentRecord, SubagentType } from "../types.js";
@@ -18,6 +18,9 @@ const MAX_WIDGET_LINES = 12;
 
 /** Braille spinner frames for animated running indicator. */
 export const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+const WIDGET_PULSE_MS = 2000;
+const WIDGET_FRAME_MS = 80;
 
 /** Statuses that indicate an error/non-success outcome (used for linger behavior and icon rendering). */
 export const ERROR_STATUSES = new Set(["error", "aborted", "steered", "stopped"]);
@@ -210,12 +213,48 @@ function fgColor(theme: Theme, color: string, text: string): string {
 	}
 }
 
+function rgbFg([r, g, b]: Rgb): string {
+	return `\x1b[38;2;${r};${g};${b}m`;
+}
+
+function rgbBg([r, g, b]: Rgb): string {
+	return `\x1b[48;2;${r};${g};${b}m`;
+}
+
+function scaleRgb([r, g, b]: Rgb, factor: number): Rgb {
+	const scale = (value: number) => Math.round(Math.max(0, Math.min(255, value * factor)));
+	return [scale(r), scale(g), scale(b)];
+}
+
+function triangleWave(frame: number, periodMs: number, lo: number, hi: number): number {
+	const elapsedMs = frame * WIDGET_FRAME_MS;
+	const t = (elapsedMs % periodMs) / periodMs;
+	const tri = 1 - Math.abs(2 * t - 1);
+	return lo + tri * (hi - lo);
+}
+
 export function renderMosaicHudIdentityPrefix(
 	identity: AgentRecord["mosaicIdentity"] | undefined,
 	theme: Theme,
+	pulseFrame?: number,
 ): string {
 	if (!identity) return "";
-	return `${fgColor(theme, identity.color, "▐▌")} ${fgColor(theme, identity.color, identity.label)} `;
+	const rgb = parseHexRgb(identity.color);
+	const rail =
+		rgb && pulseFrame !== undefined
+			? `${rgbBg(scaleRgb(rgb, triangleWave(pulseFrame, WIDGET_PULSE_MS, 0.18, 1.25)))}${rgbFg(rgb)}▐▌\x1b[49m\x1b[39m`
+			: fgColor(theme, identity.color, "▐▌");
+	return `${rail} ${fgColor(theme, identity.color, identity.label)} `;
+}
+
+function appendRightStatus(line: string, statusIcon: string, width: number): string {
+	if (width <= 0) return "";
+	const iconWidth = visibleWidth(statusIcon);
+	if (iconWidth >= width) return truncateToWidth(statusIcon, width);
+	const available = Math.max(0, width - iconWidth - 1);
+	const base = truncateToWidth(line, available);
+	const gap = Math.max(1, width - visibleWidth(base) - iconWidth);
+	return `${base}${" ".repeat(gap)}${statusIcon}`;
 }
 
 // ---- Widget manager ----
@@ -302,7 +341,7 @@ export class AgentWidget {
 			mosaicIdentity?: AgentRecord["mosaicIdentity"];
 		},
 		theme: Theme,
-	): string {
+	): { line: string; statusIcon: string } {
 		const name = getDisplayName(a.type);
 		const modeLabel = getPromptModeLabel(a.type);
 		const duration = formatMs((a.completedAt ?? Date.now()) - a.startedAt);
@@ -335,11 +374,18 @@ export class AgentWidget {
 		parts.push(duration);
 
 		const modeTag = modeLabel ? ` ${theme.fg("dim", `(${modeLabel})`)}` : "";
-		return `${icon} ${this.renderMosaicHudIdentity(a, theme)}${theme.fg("dim", name)}${modeTag}  ${theme.fg("dim", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", parts.join(" · "))}${statusText}`;
+		return {
+			line: `${this.renderMosaicHudIdentity(a, theme)}${theme.fg("dim", name)}${modeTag}  ${theme.fg("dim", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", parts.join(" · "))}${statusText}`,
+			statusIcon: icon,
+		};
 	}
 
-	private renderMosaicHudIdentity(a: { mosaicIdentity?: AgentRecord["mosaicIdentity"] }, theme: Theme): string {
-		return renderMosaicHudIdentityPrefix(a.mosaicIdentity, theme);
+	private renderMosaicHudIdentity(
+		a: { mosaicIdentity?: AgentRecord["mosaicIdentity"] },
+		theme: Theme,
+		pulseFrame?: number,
+	): string {
+		return renderMosaicHudIdentityPrefix(a.mosaicIdentity, theme, pulseFrame);
 	}
 
 	/**
@@ -372,7 +418,8 @@ export class AgentWidget {
 
 		const finishedLines: string[] = [];
 		for (const a of finished) {
-			finishedLines.push(truncate(`${theme.fg("dim", "├─")} ${this.renderFinishedLine(a, theme)}`));
+			const { line, statusIcon } = this.renderFinishedLine(a, theme);
+			finishedLines.push(appendRightStatus(`${theme.fg("dim", "├─")} ${line}`, statusIcon, w));
 		}
 
 		const runningLines: string[][] = []; // each entry is [header, activity]
@@ -400,7 +447,7 @@ export class AgentWidget {
 			runningLines.push([
 				truncate(
 					theme.fg("dim", "├─") +
-						` ${this.renderMosaicHudIdentity(a, theme)}${theme.fg("accent", frame)} ${theme.bold(name)}${modeTag}  ${theme.fg("muted", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", statsText)}`,
+						` ${this.renderMosaicHudIdentity(a, theme, this.widgetFrame)}${theme.fg("accent", frame)} ${theme.bold(name)}${modeTag}  ${theme.fg("muted", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", statsText)}`,
 				),
 				truncate(theme.fg("dim", "│  ") + theme.fg("dim", `  ⎿  ${activity}`)),
 			]);

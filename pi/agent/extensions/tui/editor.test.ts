@@ -40,7 +40,7 @@ describe("polished TUI editor cached skills", () => {
 
 	test("renders no cached skills metadata when cache is empty", () => {
 		setCachedSkillNamesForTest([]);
-		const lines = renderPolishedEditorForTest(editor(), 40, () => ["> hello", ""], 28, theme);
+		const lines = renderPolishedEditorForTest(editor(), 40, () => ["> hello", ""], theme);
 
 		expect(stripAnsi(lines.at(-1) ?? "")).not.toContain("skills:");
 		expect(lines.every((line) => visibleWidth(line) <= 40)).toBe(true);
@@ -48,7 +48,7 @@ describe("polished TUI editor cached skills", () => {
 
 	test("renders cached skills on the bottom editor row", () => {
 		setCachedSkillNamesForTest(["question", "research"]);
-		const lines = renderPolishedEditorForTest(editor(), 50, () => ["> hello", ""], 28, theme);
+		const lines = renderPolishedEditorForTest(editor(), 50, () => ["> hello", ""], theme);
 
 		expect(stripAnsi(lines.at(-1) ?? "")).toContain("skills: question, research");
 		expect(lines.every((line) => visibleWidth(line) <= 50)).toBe(true);
@@ -56,7 +56,7 @@ describe("polished TUI editor cached skills", () => {
 
 	test("truncates long cached skills metadata width-safely", () => {
 		setCachedSkillNamesForTest(["question", "research", "structure", "implement"]);
-		const lines = renderPolishedEditorForTest(editor(), 24, () => ["> hello", ""], 28, theme);
+		const lines = renderPolishedEditorForTest(editor(), 24, () => ["> hello", ""], theme);
 		const bottom = lines.at(-1) ?? "";
 
 		expect(stripAnsi(bottom)).toContain("skills:");
@@ -73,7 +73,6 @@ describe("polished TUI editor cached skills", () => {
 			}),
 			50,
 			() => ["> $q", "", "$question"],
-			28,
 			theme,
 		);
 
@@ -100,13 +99,13 @@ describe("polished TUI editor cached skills", () => {
 
 		extension(pi as never);
 		eventHandlers.get("skillful:cache")?.({ names: ["research"] });
-		expect(
-			stripAnsi(renderPolishedEditorForTest(editor(), 50, () => ["> hello", ""], 28, theme).at(-1) ?? ""),
-		).toContain("skills: research");
+		expect(stripAnsi(renderPolishedEditorForTest(editor(), 50, () => ["> hello", ""], theme).at(-1) ?? "")).toContain(
+			"skills: research",
+		);
 
 		await handlers.get("session_shutdown")?.[0]?.({}, {});
 		expect(
-			stripAnsi(renderPolishedEditorForTest(editor(), 50, () => ["> hello", ""], 28, theme).at(-1) ?? ""),
+			stripAnsi(renderPolishedEditorForTest(editor(), 50, () => ["> hello", ""], theme).at(-1) ?? ""),
 		).not.toContain("skills:");
 		expect(eventHandlers.has("skillful:cache")).toBe(false);
 	});
@@ -119,7 +118,6 @@ describe("polished TUI editor cached skills", () => {
 			editor({ getMode: () => "insert" }),
 			40,
 			() => ["> hello", ""],
-			28,
 			rgbTheme,
 		);
 
@@ -136,7 +134,6 @@ describe("polished TUI editor cached skills", () => {
 			editor({ getMode: () => "insert" }),
 			48,
 			() => ["> hello", ""],
-			28,
 			rgbTheme,
 		);
 
@@ -154,7 +151,6 @@ describe("polished TUI editor cached skills", () => {
 			editor({ getMode: () => "insert" }),
 			40,
 			() => ["> hello", ""],
-			28,
 			rgbTheme,
 		);
 
@@ -171,7 +167,6 @@ describe("polished TUI editor cached skills", () => {
 			editor({ getMode: () => "insert" }),
 			34,
 			() => ["> hello", ""],
-			28,
 			rgbTheme,
 		);
 
@@ -179,20 +174,27 @@ describe("polished TUI editor cached skills", () => {
 		expect(lines.every((line) => visibleWidth(line) <= 34)).toBe(true);
 	});
 
-	test("renders mosaic label and secondary rail color", () => {
+	test("renders mosaic label and secondary rail color outside normal mode", () => {
 		setCachedSkillNamesForTest([]);
 		setEditorSessionIdentityProvider(() => ({ label: "A2", name: "Tests", color: "74c7ec" }));
 
-		const lines = renderPolishedEditorForTest(
-			editor({ getMode: () => "normal" }),
-			32,
-			() => ["> hello", ""],
-			28,
-			theme,
-		);
+		const lines = renderPolishedEditorForTest(editor({ getMode: () => "insert" }), 32, () => ["> hello", ""], theme);
 
 		expect(stripAnsi(lines[0] ?? "")).toStartWith("▐▌ A2 Tests");
 		expect(lines[0]).toContain("\x1b[38;2;116;199;236m▐");
+		expect(lines[0]).toContain("\x1b[38;2;72;123;146mA2 Tests");
+		expect(lines.every((line) => visibleWidth(line) <= 32)).toBe(true);
+	});
+
+	test("uses mosaic color as the normal-mode rail without an extra identity rail", () => {
+		setCachedSkillNamesForTest([]);
+		setEditorSessionIdentityProvider(() => ({ label: "A2", name: "Tests", color: "74c7ec" }));
+
+		const lines = renderPolishedEditorForTest(editor({ getMode: () => "normal" }), 32, () => ["> hello", ""], theme);
+
+		expect(stripAnsi(lines[0] ?? "")).toStartWith("┃ A2 Tests");
+		expect(stripAnsi(lines[0] ?? "")).not.toStartWith("▐▌");
+		expect(lines[0]).toContain("\x1b[38;2;116;199;236m┃");
 		expect(lines[0]).toContain("\x1b[38;2;72;123;146mA2 Tests");
 		expect(lines.every((line) => visibleWidth(line) <= 32)).toBe(true);
 	});
@@ -201,13 +203,7 @@ describe("polished TUI editor cached skills", () => {
 		setCachedSkillNamesForTest([]);
 		setEditorChromeProvider(() => ({ topRight: "status" }));
 
-		const lines = renderPolishedEditorForTest(
-			editor({ getMode: () => "normal" }),
-			40,
-			() => ["> hello", ""],
-			28,
-			theme,
-		);
+		const lines = renderPolishedEditorForTest(editor({ getMode: () => "normal" }), 40, () => ["> hello", ""], theme);
 
 		expect(stripAnsi(lines[0] ?? "")).toEndWith("status");
 		expect(lines.every((line) => visibleWidth(line) <= 40)).toBe(true);
@@ -220,7 +216,6 @@ describe("polished TUI editor cached skills", () => {
 			editor({ getMode: () => "insert" }),
 			40,
 			() => ["> hello", ""],
-			28,
 			rgbTheme,
 		)[0];
 
@@ -229,7 +224,6 @@ describe("polished TUI editor cached skills", () => {
 			editor({ getMode: () => "insert" }),
 			40,
 			() => ["> hello", ""],
-			28,
 			rgbTheme,
 		)[0];
 
