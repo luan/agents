@@ -251,14 +251,18 @@ impl ApplyPatchMcpServer {
 Envelope shape:
 
 *** Begin Patch
+[optional *** Intent: ... and/or *** Environment ID: ... preamble]
 [ one or more file sections ]
 *** End Patch
 
-Each file section starts with one of three headers:
+Each file section starts with one of these headers:
 
 *** Add File: <path>      — create a new file. Every following line is a + line (the initial contents).
 *** Delete File: <path>   — remove an existing file. Nothing follows.
 *** Update File: <path>   — patch an existing file in place (optionally with a rename).
+*** Move File: <old> -> <new> — rename without an update body.
+*** Replace All In File: <path> — guarded whole-file replacement, followed by `*** Expect Replacements: N`.
+*** Update Scope: <path> — semantic update targeted by a single `@@ <scope locator>` marker.
 
 `*** Update File:` may be immediately followed by `*** Move to: <new path>` to rename. Then one or more hunks, each introduced by `@@` (bare, followed by an anchor line, or `@@ lines A-B`). Within a hunk each line is prefixed with ` ` (context), `-` (removed), or `+` (added).
 
@@ -293,7 +297,7 @@ Example combining all operations:
 Rules:
 - Paths can be relative (joined with cwd) or absolute.
 - Include a header (Add/Delete/Update) for each file section. New-file lines are prefixed with `+`.
-- Don't issue two `*** Update File:` sections for the same path — combine into one section with multiple hunks.
+- Multiple plain `*** Update File:` sections for the same path are normalized into one update, then the normal ordering and overlap checks apply.
 - To atomically replace a file, put a `*** Delete File:` before the `*** Add File:` (or `*** Move to:`) for the same path in the same envelope.
 
 On context mismatch the error returns a numbered window of the current file state, so you can regenerate the patch without having to re-read the file.
