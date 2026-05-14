@@ -285,7 +285,7 @@ describe("mosaic full-session placement", () => {
 		});
 	});
 
-	test("tmux steering enters insert mode before pasting the message", () => {
+	test("tmux steering enters insert mode before typing the literal message", () => {
 		const calls: Array<{ file: string; args: string[] }> = [];
 		sendMessageToTarget(
 			{
@@ -305,14 +305,13 @@ describe("mosaic full-session placement", () => {
 		);
 
 		expect(calls.map((call) => [call.file, call.args[0]])).toEqual([
-			["tmux", "set-buffer"],
 			["tmux", "send-keys"],
-			["tmux", "paste-buffer"],
 			["tmux", "send-keys"],
-			["tmux", "delete-buffer"],
+			["tmux", "send-keys"],
 		]);
-		expect(calls[1]?.args).toEqual(["send-keys", "-t", "%target", "Escape", "i"]);
-		expect(calls[2]?.args).toEqual(["paste-buffer", "-b", calls[0]?.args[2], "-t", "%target"]);
+		expect(calls[0]?.args).toEqual(["send-keys", "-t", "%target", "Escape", "i"]);
+		expect(calls[1]?.args).toEqual(["send-keys", "-t", "%target", "-l", "--", "review only the diff"]);
+		expect(calls[2]?.args).toEqual(["send-keys", "-t", "%target", "Enter"]);
 	});
 
 	test("zellij steering enters insert mode before writing the message", () => {

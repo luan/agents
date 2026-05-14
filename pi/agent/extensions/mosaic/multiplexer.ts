@@ -164,17 +164,9 @@ export function sendMessageToTarget(
 		exec("zellij", zellijActionArgs(target, "write-chars", "--pane-id", target.paneId, "\r"));
 		return;
 	}
-	const bufferName = `mosaic-${randomUUID()}`;
-	exec("tmux", ["set-buffer", "-b", bufferName, message]);
-	try {
-		exec("tmux", ["send-keys", "-t", target.paneId, "Escape", "i"]);
-		exec("tmux", ["paste-buffer", "-b", bufferName, "-t", target.paneId]);
-		exec("tmux", ["send-keys", "-t", target.paneId, "Enter"]);
-	} finally {
-		try {
-			exec("tmux", ["delete-buffer", "-b", bufferName], { stdio: "ignore" });
-		} catch {}
-	}
+	exec("tmux", ["send-keys", "-t", target.paneId, "Escape", "i"]);
+	exec("tmux", ["send-keys", "-t", target.paneId, "-l", "--", message]);
+	exec("tmux", ["send-keys", "-t", target.paneId, "Enter"]);
 }
 
 async function launchTmuxTarget(options: LaunchOptions, dependencies: LaunchDependencies): Promise<MultiplexerTarget> {
