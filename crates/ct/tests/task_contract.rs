@@ -320,7 +320,7 @@ fn task_non_epic_creates_require_epic_metadata() {
 }
 
 #[test]
-fn task_load_cleanup_deletes_unepic_and_expired_done_tasks() {
+fn task_load_cleanup_keeps_unepic_and_deletes_expired_done_tasks() {
     let project = project_dir();
     let state = tempfile::tempdir().expect("state dir");
     seed_epic(project.path(), state.path());
@@ -389,7 +389,7 @@ fn task_load_cleanup_deletes_unepic_and_expired_done_tasks() {
         .collect::<Vec<_>>();
     assert!(titles.contains(&"Active with epic"));
     assert!(!titles.contains(&"Expired done"));
-    assert!(!titles.contains(&"legacy no epic"));
+    assert!(titles.contains(&"legacy no epic"));
 
     ct_cmd(project.path(), state.path())
         .args(["task", "show", active_id])
@@ -509,7 +509,7 @@ fn task_epic_labels_are_required_unique_and_validate_membership() {
         .success();
     let epic_json: serde_json::Value =
         serde_json::from_slice(&epic.get_output().stdout).expect("epic json");
-    let epic_id = epic_json["task"]["id"].as_str().expect("epic id");
+    assert!(epic_json["task"]["id"].as_str().is_some());
 
     ct_cmd(project.path(), state.path())
         .args([
@@ -569,9 +569,24 @@ fn task_epic_labels_are_required_unique_and_validate_membership() {
         .success();
     let parent_json: serde_json::Value =
         serde_json::from_slice(&parent.get_output().stdout).expect("parent json");
-    let parent_id = parent_json["task"]["id"].as_str().expect("parent id");
+    assert!(parent_json["task"]["id"].as_str().is_some());
+    let db_path = tasks_db_path(state.path());
+    let conn = rusqlite::Connection::open(db_path).expect("open db");
+    let epic_id: String = conn
+        .query_row(
+            "SELECT id FROM tasks WHERE title = 'Task Board'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("stored epic id");
+    let parent_id: String = conn
+        .query_row("SELECT id FROM tasks WHERE title = 'Parent'", [], |row| {
+            row.get(0)
+        })
+        .expect("stored parent id");
+    drop(conn);
     ct_cmd(project.path(), state.path())
-        .args(["task", "update", epic_id, "--parent-id", parent_id])
+        .args(["task", "update", &epic_id, "--parent-id", &parent_id])
         .assert()
         .failure()
         .stderr(predicate::str::contains("epic tasks cannot have a parent"));

@@ -14,6 +14,7 @@ mod refs;
 mod slug;
 mod state;
 mod task;
+mod task_board;
 #[allow(dead_code)]
 mod task_tui;
 mod vault;

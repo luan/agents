@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     io::{self, BufRead, Write},
 };
 
@@ -22,6 +22,7 @@ use ratatui::{
 use serde::{Deserialize, Serialize};
 
 use crate::task::Task;
+use crate::task_board::{TicketBoardLaneId, project_ticket_board};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TaskTuiState {
@@ -30,8 +31,10 @@ pub(crate) struct TaskTuiState {
 
 #[derive(Debug, Serialize)]
 struct TaskTuiEnvelope {
+    tasks: Vec<Task>,
     lines: Vec<String>,
     selected_task_id: Option<String>,
+    board: crate::task_board::TicketBoardProjection,
 }
 
 #[derive(Debug, Deserialize)]
@@ -70,8 +73,10 @@ pub(crate) fn print_task_tui(
         println!(
             "{}",
             serde_json::to_string_pretty(&TaskTuiEnvelope {
+                tasks: tasks.to_vec(),
                 lines,
                 selected_task_id: state.selected_task_id,
+                board: project_ticket_board(tasks),
             })?
         );
     } else {
@@ -454,153 +459,38 @@ struct TaskLane {
 }
 
 fn task_groups(tasks: &[Task]) -> Vec<TaskGroup> {
-    let epics: HashMap<&str, &Task> = tasks
-        .iter()
-        .filter(|task| task.task_type == "epic")
-        .filter_map(|task| task.epic_id.as_deref().map(|label| (label, task)))
-        .collect();
-    let mut grouped: HashMap<String, Vec<Task>> = HashMap::new();
-    for task in tasks
-        .iter()
-        .filter(|task| task.task_type != "epic" && task.status != "canceled")
-        .filter(|task| {
-            task.epic_id
-                .as_deref()
-                .is_some_and(|label| !label.trim().is_empty())
-        })
-    {
-        grouped
-            .entry(task.epic_id.clone().unwrap_or_default())
-            .or_default()
-            .push(task.clone());
-    }
-
-    let blocked_ids = blocked_task_ids(tasks);
-    let by_id: HashMap<&str, &Task> = tasks.iter().map(|task| (task.id.as_str(), task)).collect();
-    let mut groups: Vec<TaskGroup> = grouped
+    project_ticket_board(tasks)
+        .boards
         .into_iter()
-        .map(|(label_text, group_tasks)| {
-            let epic = epics.get(label_text.as_str()).copied();
-            let title = epic
-                .map(|task| task.title.clone())
-                .unwrap_or_else(|| format!("Unknown Epic: {label_text}"));
-            let total = group_tasks.len();
-            let done = group_tasks.iter().filter(|task| is_done(task)).count();
-            let priority = epic.map(|task| task.priority).unwrap_or_else(|| {
-                group_tasks
-                    .iter()
-                    .map(|task| task.priority)
-                    .max()
-                    .unwrap_or_default()
-            });
-            let updated_at = epic.map(|task| task.updated_at).unwrap_or_else(|| {
-                group_tasks
-                    .iter()
-                    .map(|task| task.updated_at)
-                    .max()
-                    .unwrap_or_default()
-            });
-            TaskGroup {
-                title,
-                label: label_text,
-                priority,
-                updated_at,
-                done,
-                total,
-                lanes: lanes(group_tasks, &blocked_ids, &by_id),
-            }
+        .map(|board| TaskGroup {
+            title: board.title,
+            label: board.key,
+            priority: board.priority,
+            updated_at: board.updated_at,
+            done: board.done,
+            total: board.total,
+            lanes: board
+                .lanes
+                .into_iter()
+                .map(|lane| TaskLane {
+                    title: lane.title,
+                    color: lane_color(lane.id),
+                    tasks: lane.tickets.into_iter().map(|ticket| ticket.task).collect(),
+                })
+                .collect(),
         })
-        .collect();
-    groups.sort_by(|left, right| {
-        right
-            .priority
-            .cmp(&left.priority)
-            .then_with(|| right.updated_at.cmp(&left.updated_at))
-            .then_with(|| left.label.cmp(&right.label))
-    });
-    groups
-}
-
-fn lanes(
-    tasks: Vec<Task>,
-    blocked_ids: &HashSet<String>,
-    by_id: &HashMap<&str, &Task>,
-) -> Vec<TaskLane> {
-    let mut rejected = Vec::new();
-    let mut ready = Vec::new();
-    let mut blocked = Vec::new();
-    let mut in_progress = Vec::new();
-    let mut in_review = Vec::new();
-    let mut done = Vec::new();
-    let mut sorted = tasks;
-    sorted.sort_by(|left, right| {
-        right
-            .priority
-            .cmp(&left.priority)
-            .then_with(|| right.updated_at.cmp(&left.updated_at))
-            .then_with(|| left.id.cmp(&right.id))
-    });
-    for task in sorted {
-        if blocked_ids.contains(&task.id)
-            || task
-                .blocked_by
-                .iter()
-                .any(|id| by_id.get(id.as_str()).is_some_and(|task| !is_done(task)))
-        {
-            blocked.push(task);
-        } else if task.status == "rejected" {
-            rejected.push(task);
-        } else if task.status == "in_progress" {
-            in_progress.push(task);
-        } else if task.status == "in_review" {
-            in_review.push(task);
-        } else if is_done(&task) {
-            done.push(task);
-        } else {
-            ready.push(task);
-        }
-    }
-    vec![
-        TaskLane {
-            title: "Rejected",
-            color: Color::Red,
-            tasks: rejected,
-        },
-        TaskLane {
-            title: "Ready",
-            color: Color::Blue,
-            tasks: ready,
-        },
-        TaskLane {
-            title: "Blocked",
-            color: Color::DarkGray,
-            tasks: blocked,
-        },
-        TaskLane {
-            title: "In Progress",
-            color: Color::Yellow,
-            tasks: in_progress,
-        },
-        TaskLane {
-            title: "In Review",
-            color: Color::Magenta,
-            tasks: in_review,
-        },
-        TaskLane {
-            title: "Done",
-            color: Color::Green,
-            tasks: done,
-        },
-    ]
-}
-
-fn blocked_task_ids(tasks: &[Task]) -> HashSet<String> {
-    tasks
-        .iter()
-        .filter(|task| task.parent_id.is_some())
-        .filter(|task| !is_done(task) && task.status != "canceled")
-        .filter_map(|task| task.parent_id.clone())
         .collect()
+}
+
+fn lane_color(lane: TicketBoardLaneId) -> Color {
+    match lane {
+        TicketBoardLaneId::Rejected => Color::Red,
+        TicketBoardLaneId::Ready => Color::Blue,
+        TicketBoardLaneId::Blocked => Color::DarkGray,
+        TicketBoardLaneId::InProgress => Color::Yellow,
+        TicketBoardLaneId::InReview => Color::Magenta,
+        TicketBoardLaneId::Done => Color::Green,
+    }
 }
 
 fn first_selectable_task(tasks: &[Task]) -> Option<&Task> {

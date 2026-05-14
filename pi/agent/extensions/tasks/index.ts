@@ -71,6 +71,41 @@ interface TaskRecord {
 	updated_at: number;
 }
 
+type TicketBoardLaneId = "rejected" | "ready" | "blocked" | "in_progress" | "in_review" | "done";
+type BlockedReasonKind = "open_blocker" | "missing_blocker" | "canceled_blocker" | "active_child";
+
+interface TicketBoardProjection {
+	boards: TicketBoardProjectionGroup[];
+}
+
+interface TicketBoardProjectionGroup {
+	key: string;
+	title: string;
+	epic_label?: string | null;
+	priority: number;
+	updated_at: number;
+	done: number;
+	total: number;
+	lanes: TicketBoardProjectionLane[];
+}
+
+interface TicketBoardProjectionLane {
+	id: TicketBoardLaneId;
+	title: string;
+	tickets: TicketBoardProjectionTicket[];
+}
+
+interface TicketBoardProjectionTicket {
+	task: TaskRecord;
+	lane: TicketBoardLaneId;
+	blocked_reasons?: Array<{ kind: BlockedReasonKind; task_id: string; title?: string | null }>;
+}
+
+interface TaskSnapshot {
+	tasks: TaskRecord[];
+	board?: TicketBoardProjection;
+}
+
 interface TaskDetails {
 	action: TaskCommand;
 	args: string[];
@@ -124,6 +159,7 @@ const taskHudFlashes = new Map<string, TaskHudFlash>();
 
 interface TaskHudState {
 	tasks: TaskRecord[];
+	board?: TicketBoardProjection;
 	display: AssignmentDisplayContext;
 	config: Config;
 	taskGuardEnabled: boolean;
@@ -384,10 +420,25 @@ async function executeTask(
 	return textResult(text, details);
 }
 
+async function loadTaskSnapshot(
+	cwd: string,
+	command: string,
+	runCommand: typeof defaultRunCommand,
+	signal?: AbortSignal,
+): Promise<TaskSnapshot> {
+	const result = await runCommand(command, ["task", "tui", "--json"], cwd, signal);
+	const parsed = JSON.parse(result.stdout || "{}") as { tasks?: TaskRecord[]; board?: TicketBoardProjection };
+	return { tasks: parsed.tasks ?? tasksFromProjection(parsed.board), board: parsed.board };
+}
+
 async function loadHudTasks(cwd: string, command: string, runCommand: typeof defaultRunCommand, signal?: AbortSignal) {
-	const result = await runCommand(command, ["task", "list", "--all", "--json"], cwd, signal);
-	const parsed = JSON.parse(result.stdout || "{}") as { tasks?: TaskRecord[] };
-	return parsed.tasks ?? [];
+	return (await loadTaskSnapshot(cwd, command, runCommand, signal)).tasks;
+}
+
+function tasksFromProjection(board: TicketBoardProjection | undefined): TaskRecord[] {
+	return (
+		board?.boards.flatMap((group) => group.lanes.flatMap((lane) => lane.tickets.map((ticket) => ticket.task))) ?? []
+	);
 }
 
 class TaskHudWidget implements Component {
@@ -406,6 +457,7 @@ class TaskHudWidget implements Component {
 		const state = this.state;
 		if (!state || !hasEnoughTerminalRows(state.config.hud.minTerminalRows)) return [];
 		return renderHudLines(state.tasks, this.theme, width, state.config.hud.maxTasks, state.display, {
+			board: state.board,
 			hideKanban: taskHudExpandedEpicKey === null,
 			expandedEpicKey: taskHudExpandedEpicKey ?? undefined,
 			flashTasks: activeTaskHudFlashes(),
@@ -437,23 +489,29 @@ async function updateTaskHud(
 	signal: AbortSignal | false | undefined = ctx.signal,
 	preloadedTasks?: TaskRecord[],
 ): Promise<void> {
-	const tasks = preloadedTasks ?? (await loadHudTasks(ctx.cwd, command, runCommand, signal || undefined));
+	const snapshot = preloadedTasks
+		? { tasks: preloadedTasks }
+		: await loadTaskSnapshot(ctx.cwd, command, runCommand, signal || undefined);
+	const tasks = snapshot.tasks;
 	const display = assignmentDisplayContext(pi, ctx, tasks);
-	const visibleKeys = visibleHudEpicKeys(tasks);
+	const visibleKeys = visibleHudEpicKeys(tasks, snapshot.board);
 	if (
 		taskHudExpandedEpicKey === undefined ||
 		(taskHudExpandedEpicKey !== null && !visibleKeys.includes(taskHudExpandedEpicKey))
 	) {
 		taskHudExpandedEpicKey = visibleKeys[0] ?? null;
 	}
-	const state = { tasks, display, config, taskGuardEnabled };
+	const state = { tasks, board: snapshot.board, display, config, taskGuardEnabled };
 	latestTaskHudState = state;
 	ensureTaskHudWidget(ctx);
 	taskHudWidget?.setState(state);
 }
 
-function visibleHudEpicKeys(tasks: TaskRecord[]): string[] {
-	return buildTaskBoardGroups(tasks.filter((task) => !isCanceled(task))).map((group) => group.key);
+function visibleHudEpicKeys(tasks: TaskRecord[], board?: TicketBoardProjection): string[] {
+	return buildTaskBoardGroups(
+		tasks.filter((task) => !isCanceled(task)),
+		board,
+	).map((group) => group.key);
 }
 
 function cycleTaskHudExpandedEpic(tasks: TaskRecord[]): void {
@@ -828,7 +886,8 @@ function hasEpicMetadata(task: TaskRecord): boolean {
 	return taskEpicKey(task).length > 0;
 }
 
-function buildTaskBoardGroups(tasks: TaskRecord[]): TaskBoardGroup[] {
+function buildTaskBoardGroups(tasks: TaskRecord[], board?: TicketBoardProjection): TaskBoardGroup[] {
+	if (board) return board.boards.map(taskBoardGroupFromProjection);
 	const epicByLabel = new Map<string, TaskRecord>();
 	for (const task of tasks) {
 		if (!isEpicTask(task)) continue;
@@ -866,6 +925,19 @@ function buildTaskBoardGroups(tasks: TaskRecord[]): TaskBoardGroup[] {
 			(left.epicLabel ?? left.label).localeCompare(right.epicLabel ?? right.label)
 		);
 	});
+}
+
+function taskBoardGroupFromProjection(group: TicketBoardProjectionGroup): TaskBoardGroup {
+	return {
+		key: group.key,
+		label: group.title,
+		epicLabel: group.epic_label ?? undefined,
+		tasks: group.lanes.flatMap((lane) => lane.tickets.map((ticket) => ticket.task)),
+		priority: group.priority,
+		updatedAt: group.updated_at,
+		done: group.done,
+		total: group.total,
+	};
 }
 
 function progressBar(theme: Theme, done: number, total: number, width: number): string {
@@ -1798,6 +1870,7 @@ export function renderHudLines(
 	options: {
 		hideKanban?: boolean;
 		expandedEpicKey?: string;
+		board?: TicketBoardProjection;
 		flashTaskIds?: ReadonlySet<string>;
 		flashTasks?: ReadonlyMap<string, TaskHudFlash>;
 		now?: number;
@@ -1812,7 +1885,7 @@ export function renderHudLines(
 			task.type !== "epic" &&
 			(!isComplete(task) || (isAssignedToCurrentSession(task, display) && isRecentlyComplete(task, now))),
 	);
-	const groups = buildTaskBoardGroups(hudTasks);
+	const groups = buildTaskBoardGroups(hudTasks, options.board);
 	if (visibleTasks.length === 0 && groups.length === 0) return guardLines;
 	const columns = buildTaskBoardColumns(hudTasks);
 	const doneColumn = boardColumn(columns, "done");
@@ -2538,6 +2611,7 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 	const config = loadConfig();
 	if (!config.enabled) return;
 	installSilentTaskToolRenderPatch();
+	activeTaskBoard = undefined;
 	taskHudExpandedEpicKey = undefined;
 	taskHudWidget = undefined;
 	taskHudWidgetCtx = undefined;
