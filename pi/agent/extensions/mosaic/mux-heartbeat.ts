@@ -37,7 +37,7 @@ export interface Heartbeat {
 	label?: string;
 	/** Path of the session this one was forked from, if any. */
 	parentSessionFile?: string;
-	/** Full-session subagent id, when this pane was launched by the Agent tool. */
+	/** Full-session subagent id, when this pane was launched by mosaic. */
 	agentId?: string;
 	/** Full-session subagent type, when known. */
 	agentType?: string;

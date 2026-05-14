@@ -72,7 +72,7 @@ export interface AgentRecord {
 	promise?: Promise<string>;
 	groupId?: string;
 	joinMode?: JoinMode;
-	/** Set when result was already consumed via get_subagent_result — suppresses completion notification. */
+	/** Set when result was already consumed — suppresses completion notification. */
 	resultConsumed?: boolean;
 	/** Steering messages queued before the session was ready. */
 	pendingSteers?: string[];
@@ -80,7 +80,7 @@ export interface AgentRecord {
 	worktree?: { path: string; branch: string };
 	/** Worktree cleanup result after agent completion. */
 	worktreeResult?: { hasChanges: boolean; branch?: string };
-	/** The tool_use_id from the original Agent tool call. */
+	/** The tool_use_id from the original spawn call. */
 	toolCallId?: string;
 	/** Path to the streaming output transcript file. */
 	outputFile?: string;
@@ -141,7 +141,7 @@ export interface ScheduledSubagent {
 	/** Computed at create time for interval/once. */
 	intervalMs?: number;
 
-	// spawn params (subset of Agent tool params; no inherit_context, no resume)
+	// spawn params (no inherit_context, no resume)
 	subagent_type: SubagentType;
 	prompt: string;
 	model?: string;

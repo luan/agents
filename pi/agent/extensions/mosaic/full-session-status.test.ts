@@ -57,6 +57,19 @@ describe("resolveFullSessionAgentStatus", () => {
 		expect(resolved.status).toBe("completed");
 		expect(resolved.completedAt).toBe(1234);
 	});
+
+	test("revives a transient stopped status when heartbeat appears before terminal output", () => {
+		const resolved = resolveFullSessionAgentStatus({
+			currentStatus: "stopped",
+			live: { busy: true },
+			transcript: { hasAssistantMessage: false },
+			now: 1234,
+		});
+
+		expect(resolved.status).toBe("running");
+		expect(resolved.completedAt).toBeUndefined();
+		expect(resolved.activityText).toBe("running in mosaic target");
+	});
 });
 
 describe("isTerminalAssistantMessage", () => {

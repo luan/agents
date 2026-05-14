@@ -16,11 +16,9 @@ import { getLifetimeTotal, getSessionContextPercent, type LifetimeUsage, type Se
 /** Maximum number of rendered lines before overflow collapse kicks in. */
 const MAX_WIDGET_LINES = 12;
 
-/** Braille spinner frames for animated running indicator. */
-export const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-
 const WIDGET_PULSE_MS = 2000;
 const WIDGET_FRAME_MS = 80;
+const MOSAIC_IDENTITY_GLYPHS = ["•", "·", "∙", "●", "○", "◦"];
 
 /** Statuses that indicate an error/non-success outcome (used for linger behavior and icon rendering). */
 export const ERROR_STATUSES = new Set(["error", "aborted", "steered", "stopped"]);
@@ -66,7 +64,7 @@ export interface AgentActivity {
 	lifetimeUsage: LifetimeUsage;
 }
 
-/** Metadata attached to Agent tool results for custom rendering. */
+/** Metadata attached to mosaic tool results for custom rendering. */
 export interface AgentDetails {
 	displayName: string;
 	description: string;
@@ -217,10 +215,6 @@ function rgbFg([r, g, b]: Rgb): string {
 	return `\x1b[38;2;${r};${g};${b}m`;
 }
 
-function rgbBg([r, g, b]: Rgb): string {
-	return `\x1b[48;2;${r};${g};${b}m`;
-}
-
 function scaleRgb([r, g, b]: Rgb, factor: number): Rgb {
 	const scale = (value: number) => Math.round(Math.max(0, Math.min(255, value * factor)));
 	return [scale(r), scale(g), scale(b)];
@@ -240,11 +234,12 @@ export function renderMosaicHudIdentityPrefix(
 ): string {
 	if (!identity) return "";
 	const rgb = parseHexRgb(identity.color);
-	const rail =
+	const glyph = pulseFrame === undefined ? "●" : MOSAIC_IDENTITY_GLYPHS[pulseFrame % MOSAIC_IDENTITY_GLYPHS.length]!;
+	const marker =
 		rgb && pulseFrame !== undefined
-			? `${rgbBg(scaleRgb(rgb, triangleWave(pulseFrame, WIDGET_PULSE_MS, 0.18, 1.25)))}${rgbFg(rgb)}▐▌\x1b[49m\x1b[39m`
-			: fgColor(theme, identity.color, "▐▌");
-	return `${rail} ${fgColor(theme, identity.color, identity.label)} `;
+			? `${rgbFg(scaleRgb(rgb, triangleWave(pulseFrame, WIDGET_PULSE_MS, 0.45, 1.25)))}${glyph}\x1b[39m`
+			: fgColor(theme, identity.color, glyph);
+	return `${marker} ${fgColor(theme, identity.color, identity.label)} `;
 }
 
 function appendRightStatus(line: string, statusIcon: string, width: number): string {
@@ -267,6 +262,7 @@ export class AgentWidget {
 	private finishedTurnAge = new Map<string, number>();
 	/** How many extra turns errors/aborted agents linger (completed agents clear after 1 turn). */
 	private static readonly ERROR_LINGER_TURNS = 2;
+	private static readonly EXIT_LINGER_MS = 5000;
 
 	/** Whether the widget callback is currently registered with the TUI. */
 	private widgetRegistered = false;
@@ -310,13 +306,23 @@ export class AgentWidget {
 	ensureTimer() {
 		if (!this.widgetInterval) {
 			this.widgetInterval = setInterval(() => this.update(), 80);
+			this.widgetInterval.unref?.();
 		}
 	}
 
 	/** Check if a finished agent should still be shown in the widget. */
-	private shouldShowFinished(agentId: string, status: string): boolean {
-		const age = this.finishedTurnAge.get(agentId) ?? 0;
-		const maxAge = ERROR_STATUSES.has(status) ? AgentWidget.ERROR_LINGER_TURNS : 1;
+	private shouldShowFinished(agent: {
+		id: string;
+		status: string;
+		completedAt?: number;
+		mosaicIdentity?: AgentRecord["mosaicIdentity"];
+	}): boolean {
+		if (agent.mosaicIdentity && agent.status === "completed") return true;
+		if (agent.status === "stopped" && agent.completedAt != null) {
+			return Date.now() - agent.completedAt < AgentWidget.EXIT_LINGER_MS;
+		}
+		const age = this.finishedTurnAge.get(agent.id) ?? 0;
+		const maxAge = ERROR_STATUSES.has(agent.status) ? AgentWidget.ERROR_LINGER_TURNS : 1;
 		return age < maxAge;
 	}
 
@@ -397,8 +403,7 @@ export class AgentWidget {
 		const running = allAgents.filter((a) => a.status === "running");
 		const queued = allAgents.filter((a) => a.status === "queued");
 		const finished = allAgents.filter(
-			(a) =>
-				a.status !== "running" && a.status !== "queued" && a.completedAt && this.shouldShowFinished(a.id, a.status),
+			(a) => a.status !== "running" && a.status !== "queued" && a.completedAt && this.shouldShowFinished(a),
 		);
 
 		const hasActive = running.length > 0 || queued.length > 0;
@@ -411,7 +416,6 @@ export class AgentWidget {
 		const truncate = (line: string) => truncateToWidth(line, w);
 		const headingColor = hasActive ? "accent" : "dim";
 		const headingIcon = hasActive ? "●" : "○";
-		const frame = SPINNER[this.widgetFrame % SPINNER.length];
 
 		// Build sections separately for overflow-aware assembly.
 		// Each running agent = 2 lines (header + activity), finished = 1 line, queued = 1 line.
@@ -447,7 +451,7 @@ export class AgentWidget {
 			runningLines.push([
 				truncate(
 					theme.fg("dim", "├─") +
-						` ${this.renderMosaicHudIdentity(a, theme, this.widgetFrame)}${theme.fg("accent", frame)} ${theme.bold(name)}${modeTag}  ${theme.fg("muted", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", statsText)}`,
+						` ${this.renderMosaicHudIdentity(a, theme, this.widgetFrame)}${theme.bold(name)}${modeTag}  ${theme.fg("muted", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", statsText)}`,
 				),
 				truncate(theme.fg("dim", "│  ") + theme.fg("dim", `  ⎿  ${activity}`)),
 			]);
@@ -549,7 +553,7 @@ export class AgentWidget {
 				runningCount++;
 			} else if (a.status === "queued") {
 				queuedCount++;
-			} else if (a.completedAt && this.shouldShowFinished(a.id, a.status)) {
+			} else if (a.completedAt && this.shouldShowFinished(a)) {
 				hasFinished = true;
 			}
 		}

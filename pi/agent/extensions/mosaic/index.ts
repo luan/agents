@@ -2,55 +2,38 @@
  * mosaic — A pi extension providing Claude Code-style autonomous sub-agents.
  *
  * Tools:
- *   Agent             — LLM-callable: spawn a sub-agent
- *   get_subagent_result  — LLM-callable: check background agent status/result
- *   steer_subagent       — LLM-callable: send a steering message to a running agent
+ *   spawn_agent      — LLM-callable: spawn a named mosaic agent
+ *   send_message     — LLM-callable: queue a message for an agent
+ *   followup_task    — LLM-callable: queue work and trigger an agent turn
+ *   wait_agent       — LLM-callable: wait for a mailbox/status update
  *
  * Commands:
  *   /agents                 — Interactive agent management menu
  */
 
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import {
-	defineTool,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
 	type ExtensionContext,
 	getAgentDir,
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { Type } from "typebox";
 import { AgentManager } from "./agent-manager.js";
-import {
-	getAgentConversation,
-	getDefaultMaxTurns,
-	getGraceTurns,
-	normalizeMaxTurns,
-	setDefaultMaxTurns,
-	setGraceTurns,
-	steerAgent,
-} from "./agent-runner.js";
-import {
-	BUILTIN_TOOL_NAMES,
-	getAgentConfig,
-	getAllTypes,
-	getAvailableTypes,
-	getDefaultAgentNames,
-	getUserAgentNames,
-	registerAgents,
-	resolveType,
-} from "./agent-types.js";
-import { registerMosaicBootstrap } from "./bootstrap.js";
+import { getDefaultMaxTurns, getGraceTurns, setDefaultMaxTurns, setGraceTurns } from "./agent-runner.js";
+import { BUILTIN_TOOL_NAMES, getAgentConfig, getAllTypes, registerAgents, resolveType } from "./agent-types.js";
+import { isMosaicChildSession, registerMosaicBootstrap } from "./bootstrap.js";
 import { registerRpcHandlers } from "./cross-extension-rpc.js";
 import { loadCustomAgents } from "./custom-agents.js";
 import { launchFullSessionAgent } from "./full-session-agent.js";
 import { isTerminalAssistantMessage, resolveFullSessionAgentStatus } from "./full-session-status.js";
 import { GroupJoinManager } from "./group-join.js";
-import { resolveAgentInvocationConfig } from "./invocation-config.js";
+import { MosaicMessageServer, type MosaicMessageTransport, startMosaicMessageTransport } from "./message-server.js";
 import { type ModelRegistry, resolveModel } from "./model-resolver.js";
-import { killTarget, sendMessageToTarget } from "./multiplexer.js";
-import { hasMultiplexer, registerMosaicMux } from "./mux.js";
+import { currentMultiplexerTarget, killTarget } from "./multiplexer.js";
+import { hasMultiplexer, registerMosaicMux, resolveOwner } from "./mux.js";
 import * as muxHeartbeat from "./mux-heartbeat.js";
 import { SubagentScheduler } from "./schedule.js";
 import { resolveStorePath, ScheduleStore } from "./schedule-store.js";
@@ -58,33 +41,19 @@ import { applyAndEmitLoaded, type SubagentsSettings, saveAndEmitChanged } from "
 import type { AgentConfig, AgentRecord, JoinMode, NotificationDetails, SubagentType } from "./types.js";
 import {
 	type AgentActivity,
-	type AgentDetails,
 	AgentWidget,
-	describeActivity,
 	formatDuration,
 	formatMs,
 	formatTokens,
 	formatTurns,
 	getDisplayName,
-	getPromptModeLabel,
-	SPINNER,
 	type UICtx,
 } from "./ui/agent-widget.js";
 import { showSchedulesMenu } from "./ui/schedule-menu.js";
-import { addUsage, getLifetimeTotal, getSessionContextPercent, type LifetimeUsage } from "./usage.js";
+import { getLifetimeTotal, getSessionContextPercent } from "./usage.js";
+import { createMosaicV2Tools, isMosaicV2ToolsEnabled } from "./v2-tools.js";
 
 // ---- Shared helpers ----
-
-/** Tool execute return value for a text response. */
-function textResult(msg: string, details?: AgentDetails) {
-	return { content: [{ type: "text" as const, text: msg }], details: details as any };
-}
-
-/** Format an agent's lifetime token total, or "" when zero. */
-function formatLifetimeTokens(o: { lifetimeUsage: LifetimeUsage }): string {
-	const t = getLifetimeTotal(o.lifetimeUsage);
-	return t > 0 ? formatTokens(t) : "";
-}
 
 interface FullSessionAgentRecord {
 	id: string;
@@ -104,6 +73,49 @@ interface FullSessionAgentRecord {
 	worktree?: { path: string; branch: string };
 	placement?: unknown;
 	mosaicIdentity?: { label: string; color: string };
+}
+
+interface MosaicProcessState {
+	protocolVersion: number;
+	fullSessionAgents: Map<string, FullSessionAgentRecord>;
+	messageServer: MosaicMessageServer;
+	messageTransport?: Promise<MosaicMessageTransport>;
+}
+
+const PROCESS_STATE_KEY = Symbol.for("mosaic:process-state");
+const MOSAIC_NATIVE_PROTOCOL_VERSION = 3;
+
+function getMosaicProcessState(): MosaicProcessState {
+	const global = globalThis as typeof globalThis & { [PROCESS_STATE_KEY]?: MosaicProcessState };
+	const existing = global[PROCESS_STATE_KEY];
+	if (!existing) {
+		global[PROCESS_STATE_KEY] = createMosaicProcessState();
+		return global[PROCESS_STATE_KEY];
+	}
+	if (existing.protocolVersion !== MOSAIC_NATIVE_PROTOCOL_VERSION) {
+		existing.messageTransport?.then((transport) => transport.close().catch(() => {})).catch(() => {});
+		global[PROCESS_STATE_KEY] = {
+			...createMosaicProcessState(),
+			fullSessionAgents: existing.fullSessionAgents,
+		};
+	}
+	return global[PROCESS_STATE_KEY];
+}
+
+function createMosaicProcessState(): MosaicProcessState {
+	return {
+		protocolVersion: MOSAIC_NATIVE_PROTOCOL_VERSION,
+		fullSessionAgents: new Map(),
+		messageServer: new MosaicMessageServer(),
+	};
+}
+
+export function __getMosaicProcessStateForTest(): MosaicProcessState {
+	return getMosaicProcessState();
+}
+
+export function __resetMosaicProcessStateForTest(): void {
+	delete (globalThis as typeof globalThis & { [PROCESS_STATE_KEY]?: MosaicProcessState })[PROCESS_STATE_KEY];
 }
 
 interface SessionTranscriptSnapshot {
@@ -164,6 +176,14 @@ function readSessionTranscriptSnapshot(sessionFile: string, verbose: boolean): S
 	};
 }
 
+function readSessionStartedAt(sessionFile: string): number | undefined {
+	for (const entry of readSessionJsonl(sessionFile)) {
+		const timestamp = parseSessionEntryTimestamp(entry?.timestamp);
+		if (timestamp != null) return timestamp;
+	}
+	return undefined;
+}
+
 function parseSessionEntryTimestamp(timestamp: unknown): number | undefined {
 	if (typeof timestamp !== "string") return undefined;
 	const parsed = Date.parse(timestamp);
@@ -203,56 +223,6 @@ function sessionMessageText(content: unknown): string {
 		.join("\n");
 }
 
-/**
- * Create an AgentActivity state and spawn callbacks for tracking tool usage.
- * Used by both foreground and background paths to avoid duplication.
- */
-function createActivityTracker(maxTurns?: number, onStreamUpdate?: () => void) {
-	const state: AgentActivity = {
-		activeTools: new Map(),
-		toolUses: 0,
-		turnCount: 1,
-		maxTurns,
-		responseText: "",
-		session: undefined,
-		lifetimeUsage: { input: 0, output: 0, cacheWrite: 0 },
-	};
-
-	const callbacks = {
-		onToolActivity: (activity: { type: "start" | "end"; toolName: string }) => {
-			if (activity.type === "start") {
-				state.activeTools.set(`${activity.toolName}_${Date.now()}`, activity.toolName);
-			} else {
-				for (const [key, name] of state.activeTools) {
-					if (name === activity.toolName) {
-						state.activeTools.delete(key);
-						break;
-					}
-				}
-				state.toolUses++;
-			}
-			onStreamUpdate?.();
-		},
-		onTextDelta: (_delta: string, fullText: string) => {
-			state.responseText = fullText;
-			onStreamUpdate?.();
-		},
-		onTurnEnd: (turnCount: number) => {
-			state.turnCount = turnCount;
-			onStreamUpdate?.();
-		},
-		onSessionCreated: (session: any) => {
-			state.session = session;
-		},
-		onAssistantUsage: (usage: { input: number; output: number; cacheWrite: number }) => {
-			addUsage(state.lifetimeUsage, usage);
-			onStreamUpdate?.();
-		},
-	};
-
-	return { state, callbacks };
-}
-
 /** Human-readable status label for agent completion. */
 function getStatusLabel(status: string, error?: string): string {
 	switch (status) {
@@ -266,20 +236,6 @@ function getStatusLabel(status: string, error?: string): string {
 			return "Stopped";
 		default:
 			return "Done";
-	}
-}
-
-/** Parenthetical status note for completed agent result text. */
-function getStatusNote(status: string): string {
-	switch (status) {
-		case "aborted":
-			return " (aborted — max turns exceeded, output may be incomplete)";
-		case "steered":
-			return " (wrapped up — reached turn limit)";
-		case "stopped":
-			return " (stopped by user)";
-		default:
-			return "";
 	}
 }
 
@@ -299,7 +255,7 @@ function formatTaskNotification(record: AgentRecord, resultMaxLen: number): stri
 
 	const resultPreview = record.result
 		? record.result.length > resultMaxLen
-			? `${record.result.slice(0, resultMaxLen)}\n...(truncated, use get_subagent_result for full output)`
+			? `${record.result.slice(0, resultMaxLen)}\n...(truncated)`
 			: record.result
 		: "No output.";
 
@@ -316,36 +272,6 @@ function formatTaskNotification(record: AgentRecord, resultMaxLen: number): stri
 	]
 		.filter(Boolean)
 		.join("\n");
-}
-
-/** Build AgentDetails from a base + record-specific fields. */
-function buildDetails(
-	base: Pick<AgentDetails, "displayName" | "description" | "subagentType" | "modelName" | "tags">,
-	record: {
-		toolUses: number;
-		startedAt: number;
-		completedAt?: number;
-		status: string;
-		error?: string;
-		id?: string;
-		session?: any;
-		lifetimeUsage: LifetimeUsage;
-	},
-	activity?: AgentActivity,
-	overrides?: Partial<AgentDetails>,
-): AgentDetails {
-	return {
-		...base,
-		toolUses: record.toolUses,
-		tokens: formatLifetimeTokens(record),
-		turnCount: activity?.turnCount,
-		maxTurns: activity?.maxTurns,
-		durationMs: (record.completedAt ?? Date.now()) - record.startedAt,
-		status: record.status as AgentDetails["status"],
-		agentId: record.id,
-		error: record.error,
-		...overrides,
-	};
 }
 
 /** Build notification details for the custom message renderer. */
@@ -436,7 +362,7 @@ export default function (pi: ExtensionAPI) {
 	const agentActivity = new Map<string, AgentActivity>();
 
 	// ---- Cancellable pending notifications ----
-	// Holds notifications briefly so get_subagent_result can cancel them
+	// Holds notifications briefly so callers can consume results before a nudge.
 	// before they reach pi.sendMessage (fire-and-forget).
 	const pendingNudges = new Map<string, ReturnType<typeof setTimeout>>();
 	const NUDGE_HOLD_MS = 200;
@@ -519,7 +445,7 @@ export default function (pi: ExtensionAPI) {
 			pi.sendMessage<NotificationDetails>(
 				{
 					customType: "subagent-notification",
-					content: `Background agent group completed: ${label}\n\n${notifications}\n\nUse get_subagent_result for full output.`,
+					content: `Background agent group completed: ${label}\n\n${notifications}`,
 					display: true,
 					details,
 				},
@@ -576,7 +502,7 @@ export default function (pi: ExtensionAPI) {
 				completedAt: record.completedAt,
 			});
 
-			// Skip notification if result was already consumed via get_subagent_result
+			// Skip notification if result was already consumed by a caller.
 			if (record.resultConsumed) {
 				agentActivity.delete(record.id);
 				widget.markFinished(record.id);
@@ -620,9 +546,242 @@ export default function (pi: ExtensionAPI) {
 			});
 		},
 	);
-	const fullSessionAgents = new Map<string, FullSessionAgentRecord>();
+	const processState = getMosaicProcessState();
+	const fullSessionAgents = processState.fullSessionAgents;
+	const messageServer = processState.messageServer;
+
+	function ensureMessageTransport(): Promise<MosaicMessageTransport> {
+		processState.messageTransport ??= startMosaicMessageTransport(messageServer).catch((error) => {
+			processState.messageTransport = undefined;
+			throw error;
+		});
+		return processState.messageTransport;
+	}
+
+	function currentMosaicOwner(): string | undefined {
+		const pane = currentMultiplexerTarget().paneId ?? process.env.TMUX_PANE ?? process.env.ZELLIJ_PANE_ID;
+		return pane ? resolveOwner(pane) : undefined;
+	}
+
+	function recoverFullSessionAgentsFromHeartbeats(): void {
+		if (isMosaicChildSession()) return;
+		const owner = currentMosaicOwner();
+		if (!owner) return;
+		for (const live of muxHeartbeat.listActive()) {
+			if (!live.agentId || live.owner !== owner || fullSessionAgents.has(live.agentId)) continue;
+			const description = live.agentDescription ?? live.mosaicAgentName ?? live.label ?? live.agentId;
+			fullSessionAgents.set(live.agentId, {
+				id: live.agentId,
+				laneId: live.agentId,
+				type: live.agentType ?? "general-purpose",
+				description,
+				sessionFile: live.sessionFile,
+				paneId: live.paneId,
+				windowId: live.windowId ?? live.zellijTabId ?? "",
+				windowName: live.windowName ?? live.zellijTabName ?? description,
+				startedAt: readSessionStartedAt(live.sessionFile) ?? Date.now(),
+				status: "running",
+				mosaicIdentity:
+					live.mosaicAgentLabel && live.mosaicAgentColor
+						? { label: live.mosaicAgentLabel, color: live.mosaicAgentColor }
+						: undefined,
+			});
+			agentActivity.set(live.agentId, {
+				activeTools: new Map(),
+				toolUses: 0,
+				turnCount: 1,
+				responseText: "recovered from live mosaic pane",
+				session: undefined,
+				lifetimeUsage: { input: 0, output: 0, cacheWrite: 0 },
+			});
+		}
+	}
+
+	function resolveFullSessionTarget(target: string): string | undefined {
+		if (fullSessionAgents.has(target)) return target;
+		for (const [id, agent] of fullSessionAgents) {
+			if (agent.description === target) return id;
+		}
+		return undefined;
+	}
+
+	function listNativeAndRecoveredAgents(input: { pathPrefix?: string }) {
+		recoverFullSessionAgentsFromHeartbeats();
+		const nativeAgents = messageServer.listAgents();
+		const nativeIds = new Set(nativeAgents.map((agent) => agent.agentId));
+		const recovered = [...fullSessionAgents.values()]
+			.filter((agent) => !nativeIds.has(agent.id))
+			.map((agent) => ({
+				agentId: agent.id,
+				taskName: agent.description,
+				type: agent.type,
+				description: agent.description,
+				connected: false,
+				closed: false,
+				status: agent.status === "error" ? "error" : agent.status === "stopped" ? "disconnected" : agent.status,
+				lastSeq: messageServer.currentSeq,
+				createdAt: agent.startedAt,
+				updatedAt: agent.completedAt ?? agent.startedAt,
+			}));
+		const agents = [...nativeAgents, ...recovered];
+		return input.pathPrefix ? agents.filter((agent) => agent.taskName?.startsWith(input.pathPrefix!)) : agents;
+	}
+
+	function refreshFullSessionHud(ui?: UICtx): void {
+		if (ui) widget.setUICtx(ui);
+		if (isMosaicChildSession()) {
+			widget.dispose();
+			return;
+		}
+		recoverFullSessionAgentsFromHeartbeats();
+		if (fullSessionAgents.size === 0) return;
+		widget.ensureTimer();
+		widget.update();
+	}
+
+	async function spawnV2FullSessionAgent(input: {
+		taskName: string;
+		message: string;
+		agentType?: string;
+		model?: string;
+		thinking?: string;
+		isolation?: "worktree";
+	}) {
+		if (!currentCtx) throw new Error("No active session");
+		if (!hasMultiplexer()) throw new Error("mosaic requires tmux or an active zellij session");
+		const rawType = input.agentType ?? "general-purpose";
+		const subagentType = resolveType(rawType) ?? "general-purpose";
+		const customConfig = getAgentConfig(subagentType);
+		let model: unknown;
+		if (input.model) {
+			const resolved = resolveModel(input.model, currentCtx.modelRegistry as ModelRegistry);
+			if (typeof resolved === "string") throw new Error(resolved);
+			model = resolved;
+		}
+		const plannedId = randomUUID().slice(0, 17);
+		const transport = await ensureMessageTransport();
+		const startedAt = Date.now();
+		const connection = messageServer.registerAgent({
+			agentId: plannedId,
+			taskName: input.taskName,
+			type: subagentType,
+			description: input.taskName,
+		});
+		let launched: Awaited<ReturnType<typeof launchFullSessionAgent>>;
+		try {
+			launched = await launchFullSessionAgent(pi, currentCtx, {
+				id: plannedId,
+				type: subagentType,
+				description: input.taskName,
+				prompt: input.message,
+				model: model as any,
+				thinkingLevel: input.thinking as any,
+				isolation: input.isolation,
+				agentConfig: customConfig,
+				messageEndpoint: transport.endpoint,
+				messageToken: connection.token,
+			});
+		} catch (error) {
+			messageServer.removeAgent(plannedId);
+			throw error;
+		}
+		fullSessionAgents.set(launched.id, {
+			id: launched.id,
+			laneId: launched.laneId,
+			type: subagentType,
+			description: input.taskName,
+			sessionFile: launched.sessionFile,
+			paneId: launched.paneId,
+			windowId: launched.windowId,
+			windowName: launched.windowName,
+			startedAt,
+			status: "running",
+			worktree: launched.worktree,
+			placement: launched.placement,
+			mosaicIdentity: launched.mosaicIdentity,
+		});
+		agentActivity.set(launched.id, {
+			activeTools: new Map(),
+			toolUses: 0,
+			turnCount: 1,
+			responseText: "starting mosaic target",
+			session: undefined,
+			lifetimeUsage: { input: 0, output: 0, cacheWrite: 0 },
+		});
+		refreshFullSessionHud((currentCtx as { ui?: UICtx }).ui);
+		pi.events.emit("subagents:created", {
+			id: launched.id,
+			type: subagentType,
+			description: input.taskName,
+			isBackground: true,
+			sessionFile: launched.sessionFile,
+			paneId: launched.paneId,
+			windowId: launched.windowId,
+			windowName: launched.windowName,
+		});
+		return { agentId: launched.id, taskName: input.taskName, seq: messageServer.currentSeq };
+	}
+
+	if (isMosaicV2ToolsEnabled()) {
+		for (const tool of createMosaicV2Tools({
+			onToolContext: (toolCtx) => {
+				const ui = (toolCtx as { ui?: UICtx } | undefined)?.ui;
+				if (ui) {
+					widget.setUICtx(ui);
+					widget.onTurnStart();
+					refreshFullSessionHud(ui);
+				}
+			},
+			spawnAgent: spawnV2FullSessionAgent,
+			sendMessage: async (input) => {
+				try {
+					return messageServer.enqueueMessage(input.target, {
+						body: input.message,
+						triggerTurn: input.triggerTurn,
+					});
+				} catch (error) {
+					if (resolveFullSessionTarget(input.target)) {
+						throw new Error(
+							`agent is visible after reload but its native mailbox is not attached: ${input.target}`,
+							{ cause: error },
+						);
+					}
+					throw error;
+				}
+			},
+			waitAgent: async (input) =>
+				messageServer.waitForUpdate({
+					afterSeq: input.afterSeq ?? messageServer.currentSeq,
+					timeoutMs: input.timeoutMs,
+				}),
+			listAgents: async (input) => listNativeAndRecoveredAgents(input),
+			closeAgent: async (input) => {
+				try {
+					const update = messageServer.closeAgent(input.target);
+					const live = muxHeartbeat.listActive().find((entry) => entry.agentId === update.agentId);
+					if (live) cleanupFullSessionAgentPane(update.agentId, live);
+					return update;
+				} catch (error) {
+					const recoveredId = resolveFullSessionTarget(input.target);
+					if (!recoveredId) throw error;
+					cleanupFullSessionAgentPane(recoveredId);
+					return {
+						type: "agent_update",
+						seq: messageServer.currentSeq,
+						agentId: recoveredId,
+						status: "closed",
+						createdAt: Date.now(),
+					};
+				}
+			},
+		})) {
+			pi.registerTool(tool);
+		}
+	}
 
 	function listFullSessionWidgetAgents(): AgentRecord[] {
+		if (isMosaicChildSession()) return [];
+		recoverFullSessionAgentsFromHeartbeats();
 		const liveByAgentId = new Map(
 			muxHeartbeat
 				.listActive()
@@ -765,6 +924,7 @@ export default function (pi: ExtensionAPI) {
 	// Capture ctx from session_start for RPC spawn handler + start the scheduler.
 	pi.on("session_start", async (_event, ctx) => {
 		currentCtx = ctx;
+		refreshFullSessionHud(ctx.ui as UICtx);
 		manager.clearCompleted();
 		if (isSchedulingEnabled() && !scheduler.isActive()) startScheduler(ctx);
 	});
@@ -816,8 +976,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	// Master switch for the schedule subagent feature. Defaults to enabled.
-	// Read once at extension init (before tool registration) so the Agent tool's
-	// param schema reflects the persisted setting. Runtime toggles via /agents
+	// Read once at extension init so runtime toggles via /agents
 	// → Settings short-circuit the menu entry + the execute-time addJob path
 	// immediately, but the schema-level removal only takes effect on next
 	// extension load (next pi session). Documented in CHANGELOG/README.
@@ -878,31 +1037,6 @@ export default function (pi: ExtensionAPI) {
 		widget.onTurnStart();
 	});
 
-	/** Build the full type list text dynamically from the unified registry. */
-	const buildTypeListText = () => {
-		const defaultNames = getDefaultAgentNames();
-		const userNames = getUserAgentNames();
-
-		const defaultDescs = defaultNames.map((name) => {
-			const cfg = getAgentConfig(name);
-			const modelSuffix = cfg?.model ? ` (${getModelLabelFromConfig(cfg.model)})` : "";
-			return `- ${name}: ${cfg?.description ?? name}${modelSuffix}`;
-		});
-
-		const customDescs = userNames.map((name) => {
-			const cfg = getAgentConfig(name);
-			return `- ${name}: ${cfg?.description ?? name}`;
-		});
-
-		return [
-			"Default agents:",
-			...defaultDescs,
-			...(customDescs.length > 0 ? ["", "Custom agents:", ...customDescs] : []),
-			"",
-			`Custom agents can be defined in .pi/agents/<name>.md (project) or ${getAgentDir()}/agents/<name>.md (global) — they are picked up automatically. Project-level agents override global ones. Creating a .md file with the same name as a default agent overrides it.`,
-		].join("\n");
-	};
-
 	/** Derive a short model label from a model string. */
 	function getModelLabelFromConfig(model: string): string {
 		// Strip provider prefix (e.g. "anthropic/claude-sonnet-4-6" → "claude-sonnet-4-6")
@@ -910,8 +1044,6 @@ export default function (pi: ExtensionAPI) {
 		// Strip trailing date suffix (e.g. "claude-haiku-4-5-20251001" → "claude-haiku-4-5")
 		return name.replace(/-\d{8}$/, "");
 	}
-
-	const typeListText = buildTypeListText();
 
 	// Apply persisted settings on startup and emit `subagents:settings_loaded`.
 	// Global + project merged; missing → defaults; corrupt file emits a warning
@@ -925,792 +1057,6 @@ export default function (pi: ExtensionAPI) {
 			setSchedulingEnabled,
 		},
 		(event, payload) => pi.events.emit(event, payload),
-	);
-
-	// ---- Agent tool ----
-
-	// Schedule param + its guideline are gated on `schedulingEnabled` (read once
-	// at registration; flipping the setting later requires next pi session for
-	// the schema to update). Defining the shape once and spreading it via Partial
-	// preserves Type.Object's inference when present and produces a
-	// `schedule`-free schema when absent — zero LLM-context cost in disabled mode.
-	const scheduleParamShape = {
-		schedule: Type.Optional(
-			Type.String({
-				description:
-					"Opt-in only — fire later instead of now. Omit to run immediately (the default, almost always correct). " +
-					'Formats: 6-field cron ("0 0 9 * * 1" = 9am Mon), interval ("5m"/"1h"), one-shot ("+10m" or ISO). ' +
-					"Forces run_in_background; incompatible with inherit_context and resume. Returns job ID.",
-			}),
-		),
-	};
-	const scheduleParam: Partial<typeof scheduleParamShape> = isSchedulingEnabled() ? scheduleParamShape : {};
-
-	const scheduleGuideline = isSchedulingEnabled()
-		? `\n- Use \`schedule\` only when the user explicitly asked for scheduled / recurring / delayed execution (e.g. "every Monday", "in an hour"). Don't auto-schedule from vague intent like "monitor X" — run once now or ask.`
-		: "";
-
-	pi.registerTool(
-		defineTool({
-			name: "Agent",
-			label: "Agent",
-			description: `Launch a new agent to handle complex, multi-step tasks autonomously.
-
-The Agent tool launches specialized agents that autonomously handle complex tasks. Each agent type has specific capabilities and tools available to it.
-
-Available agent types:
-${typeListText}
-
-Guidelines:
-- For parallel work, use run_in_background: true on each agent. Foreground calls run sequentially — only one executes at a time.
-- Use Explore for codebase searches and code understanding.
-- Use Plan for architecture and implementation planning.
-- Use general-purpose for complex tasks that need file editing.
-- Provide clear, detailed prompts so the agent can work autonomously.
-- Agent results are returned as text — summarize them for the user.
-- Use run_in_background for work you don't need immediately. You will be notified when it completes.
-- Use resume with an agent ID to continue a previous agent's work.
-- Use steer_subagent to send mid-run messages to a running background agent.
-- Use model to specify a different model (as "provider/modelId", or fuzzy e.g. "haiku", "sonnet").
-- Use thinking to control extended thinking level.
-- Use inherit_context if the agent needs the parent conversation history.
-- Use isolation: "worktree" to run the agent in an isolated git worktree (safe parallel file modifications).${scheduleGuideline}`,
-			parameters: Type.Object({
-				prompt: Type.String({
-					description: "The task for the agent to perform.",
-				}),
-				description: Type.String({
-					description: "A short (3-5 word) description of the task (shown in UI).",
-				}),
-				subagent_type: Type.String({
-					description: `The type of specialized agent to use. Available types: ${getAvailableTypes().join(", ")}. Custom agents from .pi/agents/*.md (project) or ${getAgentDir()}/agents/*.md (global) are also available.`,
-				}),
-				model: Type.Optional(
-					Type.String({
-						description:
-							'Optional model override. Accepts "provider/modelId" or fuzzy name (e.g. "haiku", "sonnet"). Omit to use the agent type\'s default.',
-					}),
-				),
-				thinking: Type.Optional(
-					Type.String({
-						description: "Thinking level: off, minimal, low, medium, high, xhigh. Overrides agent default.",
-					}),
-				),
-				max_turns: Type.Optional(
-					Type.Number({
-						description: "Maximum number of agentic turns before stopping. Omit for unlimited (default).",
-						minimum: 1,
-					}),
-				),
-				run_in_background: Type.Optional(
-					Type.Boolean({
-						description:
-							"Set to true to run in background. Returns agent ID immediately. You will be notified on completion.",
-					}),
-				),
-				resume: Type.Optional(
-					Type.String({
-						description: "Optional agent ID to resume from. Continues from previous context.",
-					}),
-				),
-				isolated: Type.Optional(
-					Type.Boolean({
-						description: "If true, agent gets no extension/MCP tools — only built-in tools.",
-					}),
-				),
-				inherit_context: Type.Optional(
-					Type.Boolean({
-						description: "If true, fork parent conversation into the agent. Default: false (fresh context).",
-					}),
-				),
-				isolation: Type.Optional(
-					Type.Literal("worktree", {
-						description:
-							'Set to "worktree" to run the agent in a temporary git worktree (isolated copy of the repo). Changes are saved to a branch on completion.',
-					}),
-				),
-				...scheduleParam,
-			}),
-
-			// ---- Custom rendering: Claude Code style ----
-
-			renderShell: "self" as const,
-
-			renderCall(args, theme) {
-				const displayName = args.subagent_type ? getDisplayName(args.subagent_type) : "Agent";
-				const desc = args.description ?? "";
-				return new Text(
-					theme.fg("toolTitle", theme.bold(displayName)) +
-						(desc ? theme.fg("dim", " · ") + theme.fg("muted", desc) : ""),
-					0,
-					0,
-				);
-			},
-
-			renderResult(result, { expanded, isPartial }, theme) {
-				const details = result.details as AgentDetails | undefined;
-				if (!details) {
-					const text = result.content[0]?.type === "text" ? result.content[0].text : "";
-					return new Text(text, 0, 0);
-				}
-
-				// Helper: build "haiku · thinking: high · ⟳5≤30 · 3 tool uses · 33.8k tokens" stats string
-				const stats = (d: AgentDetails) => {
-					const parts: string[] = [];
-					if (d.modelName) parts.push(d.modelName);
-					if (d.tags) parts.push(...d.tags);
-					if (d.turnCount != null && d.turnCount > 0) {
-						parts.push(formatTurns(d.turnCount, d.maxTurns));
-					}
-					if (d.toolUses > 0) parts.push(`${d.toolUses} tool use${d.toolUses === 1 ? "" : "s"}`);
-					if (d.tokens) parts.push(d.tokens);
-					return parts.map((p) => theme.fg("dim", p)).join(` ${theme.fg("dim", "·")} `);
-				};
-
-				// ---- While running (streaming) ----
-				if (isPartial || details.status === "running") {
-					const frame = SPINNER[details.spinnerFrame ?? 0];
-					const s = stats(details);
-					let line = theme.fg("accent", frame) + (s ? ` ${s}` : "");
-					line += `\n${theme.fg("dim", `  ⎿  ${details.activity ?? "thinking…"}`)}`;
-					return new Text(line, 0, 0);
-				}
-
-				// ---- Background agent launched ----
-				if (details.status === "background") {
-					return new Text(theme.fg("dim", `  ⎿  Running in background (ID: ${details.agentId})`), 0, 0);
-				}
-
-				// ---- Completed / Steered ----
-				if (details.status === "completed" || details.status === "steered") {
-					const duration = formatMs(details.durationMs);
-					const isSteered = details.status === "steered";
-					const icon = isSteered ? theme.fg("warning", "✓") : theme.fg("success", "✓");
-					const s = stats(details);
-					let line = icon + (s ? ` ${s}` : "");
-					line += ` ${theme.fg("dim", "·")} ${theme.fg("dim", duration)}`;
-
-					if (expanded) {
-						const resultText = result.content[0]?.type === "text" ? result.content[0].text : "";
-						if (resultText) {
-							const lines = resultText.split("\n").slice(0, 50);
-							for (const l of lines) {
-								line += `\n${theme.fg("dim", `  ${l}`)}`;
-							}
-							if (resultText.split("\n").length > 50) {
-								line += `\n${theme.fg("muted", "  ... (use get_subagent_result with verbose for full output)")}`;
-							}
-						}
-					} else {
-						const doneText = isSteered ? "Wrapped up (turn limit)" : "Done";
-						line += `\n${theme.fg("dim", `  ⎿  ${doneText}`)}`;
-					}
-					return new Text(line, 0, 0);
-				}
-
-				// ---- Stopped (user-initiated abort) ----
-				if (details.status === "stopped") {
-					const s = stats(details);
-					let line = theme.fg("dim", "■") + (s ? ` ${s}` : "");
-					line += `\n${theme.fg("dim", "  ⎿  Stopped")}`;
-					return new Text(line, 0, 0);
-				}
-
-				// ---- Error / Aborted (hard max_turns) ----
-				const s = stats(details);
-				let line = theme.fg("error", "✗") + (s ? ` ${s}` : "");
-
-				if (details.status === "error") {
-					line += `\n${theme.fg("error", `  ⎿  Error: ${details.error ?? "unknown"}`)}`;
-				} else {
-					line += `\n${theme.fg("warning", "  ⎿  Aborted (max turns exceeded)")}`;
-				}
-
-				return new Text(line, 0, 0);
-			},
-
-			// ---- Execute ----
-
-			execute: async (_toolCallId, params, signal, onUpdate, ctx) => {
-				// Ensure we have UI context for widget rendering
-				widget.setUICtx(ctx.ui as UICtx);
-
-				// Reload custom agents so new .pi/agents/*.md files are picked up without restart
-				reloadCustomAgents();
-
-				const rawType = params.subagent_type as SubagentType;
-				const resolved = resolveType(rawType);
-				const subagentType = resolved ?? "general-purpose";
-				const fellBack = resolved === undefined;
-
-				const displayName = getDisplayName(subagentType);
-
-				// Get agent config (if any)
-				const customConfig = getAgentConfig(subagentType);
-
-				const resolvedConfig = resolveAgentInvocationConfig(customConfig, params);
-
-				// Resolve model from agent config first; tool-call params only fill gaps.
-				let model = ctx.model;
-				if (resolvedConfig.modelInput) {
-					const resolved = resolveModel(resolvedConfig.modelInput, ctx.modelRegistry);
-					if (typeof resolved === "string") {
-						if (resolvedConfig.modelFromParams) return textResult(resolved);
-						// config-specified: silent fallback to parent
-					} else {
-						model = resolved;
-					}
-				}
-
-				const thinking = resolvedConfig.thinking;
-				const inheritContext = resolvedConfig.inheritContext;
-				const runInBackground = resolvedConfig.runInBackground;
-				const isolated = resolvedConfig.isolated;
-				const isolation = resolvedConfig.isolation;
-
-				// Build display tags for non-default config
-				const parentModelId = ctx.model?.id;
-				const effectiveModelId = model?.id;
-				const agentModelName =
-					effectiveModelId && effectiveModelId !== parentModelId
-						? (model?.name ?? effectiveModelId).replace(/^Claude\s+/i, "").toLowerCase()
-						: undefined;
-				const agentTags: string[] = [];
-				const modeLabel = getPromptModeLabel(subagentType);
-				if (modeLabel) agentTags.push(modeLabel);
-				if (thinking) agentTags.push(`thinking: ${thinking}`);
-				if (isolated) agentTags.push("isolated");
-				if (isolation === "worktree") agentTags.push("worktree");
-				const effectiveMaxTurns = normalizeMaxTurns(resolvedConfig.maxTurns ?? getDefaultMaxTurns());
-				// Shared base fields for all AgentDetails in this call
-				const detailBase = {
-					displayName,
-					description: params.description,
-					subagentType,
-					modelName: agentModelName,
-					tags: agentTags.length > 0 ? agentTags : undefined,
-				};
-
-				// ---- Schedule: register a job, don't spawn now ----
-				if (params.schedule) {
-					if (!isSchedulingEnabled()) {
-						return textResult(
-							"Scheduling is disabled in this project. Enable via /agents → Settings → Scheduling.",
-						);
-					}
-					if (params.resume) {
-						return textResult("Cannot combine `schedule` with `resume` — schedules create fresh agents.");
-					}
-					if (params.inherit_context) {
-						return textResult(
-							"Cannot combine `schedule` with `inherit_context` — there is no parent conversation at fire time.",
-						);
-					}
-					if (params.run_in_background === false) {
-						return textResult(
-							"Cannot combine `schedule` with `run_in_background: false` — scheduled jobs always run in background.",
-						);
-					}
-					if (!scheduler.isActive()) {
-						return textResult(
-							"Scheduler is not active in this session yet. Try again after the session has fully started.",
-						);
-					}
-					try {
-						const job = scheduler.addJob({
-							name: params.description as string,
-							description: params.description as string,
-							schedule: params.schedule as string,
-							subagent_type: subagentType,
-							prompt: params.prompt as string,
-							model: params.model as string | undefined,
-							thinking: thinking,
-							max_turns: effectiveMaxTurns,
-							isolated: isolated,
-							isolation: isolation,
-						});
-						const next = scheduler.getNextRun(job.id);
-						return textResult(
-							`Scheduled "${job.name}" (id: ${job.id}, type: ${job.scheduleType}). ` +
-								`Next run: ${next ?? "(unknown)"}. ` +
-								`Manage via /agents → Scheduled jobs.`,
-						);
-					} catch (err) {
-						return textResult(err instanceof Error ? err.message : String(err));
-					}
-				}
-
-				// Resume existing agent
-				if (params.resume) {
-					const existing = manager.getRecord(params.resume);
-					if (!existing) {
-						return textResult(`Agent not found: "${params.resume}". It may have been cleaned up.`);
-					}
-					if (!existing.session) {
-						return textResult(`Agent "${params.resume}" has no active session to resume.`);
-					}
-					const record = await manager.resume(params.resume, params.prompt, signal);
-					if (!record) {
-						return textResult(`Failed to resume agent "${params.resume}".`);
-					}
-					return textResult(
-						record.result?.trim() || record.error?.trim() || "No output.",
-						buildDetails(detailBase, record),
-					);
-				}
-
-				// Background execution
-				if (runInBackground) {
-					try {
-						if (!hasMultiplexer()) {
-							return textResult(
-								"Cannot run a background agent: mosaic requires tmux or an active zellij session.",
-							);
-						}
-						const launched = await launchFullSessionAgent(pi, ctx, {
-							type: subagentType,
-							description: params.description,
-							prompt: params.prompt,
-							model,
-							thinkingLevel: thinking,
-							maxTurns: effectiveMaxTurns,
-							isolated,
-							inheritContext,
-							isolation,
-							agentConfig: customConfig,
-						});
-						fullSessionAgents.set(launched.id, {
-							id: launched.id,
-							laneId: launched.laneId,
-							type: subagentType,
-							description: params.description,
-							sessionFile: launched.sessionFile,
-							paneId: launched.paneId,
-							windowId: launched.windowId,
-							windowName: launched.windowName,
-							startedAt: Date.now(),
-							status: "running",
-							maxTurns: effectiveMaxTurns,
-							worktree: launched.worktree,
-							placement: launched.placement,
-							mosaicIdentity: launched.mosaicIdentity,
-						});
-						agentActivity.set(launched.id, {
-							activeTools: new Map(),
-							toolUses: 0,
-							turnCount: 1,
-							maxTurns: effectiveMaxTurns,
-							responseText: "starting mosaic target",
-							session: undefined,
-							lifetimeUsage: { input: 0, output: 0, cacheWrite: 0 },
-						});
-						widget.ensureTimer();
-						widget.update();
-
-						pi.events.emit("subagents:created", {
-							id: launched.id,
-							type: subagentType,
-							description: params.description,
-							isBackground: true,
-							sessionFile: launched.sessionFile,
-							paneId: launched.paneId,
-							windowId: launched.windowId,
-							windowName: launched.windowName,
-						});
-
-						return textResult(
-							`Agent started as a full mosaic target.\n` +
-								`Agent ID: ${launched.id}\n` +
-								`Type: ${displayName}\n` +
-								`Description: ${params.description}\n` +
-								`Session: ${launched.sessionFile}\n` +
-								`Window: ${launched.windowName} (${launched.windowId})\n` +
-								`Pane: ${launched.paneId}\n` +
-								(launched.worktree
-									? `Worktree: ${launched.worktree.path}\nBranch: ${launched.worktree.branch}\n`
-									: "") +
-								`\nUse the multiplexer UI or /mosaic to inspect it. Do not duplicate this agent's work.`,
-							{
-								...detailBase,
-								toolUses: 0,
-								tokens: "",
-								durationMs: 0,
-								status: "background" as const,
-								agentId: launched.id,
-							},
-						);
-					} catch (err) {
-						return textResult(err instanceof Error ? err.message : String(err));
-					}
-				}
-
-				// Foreground (synchronous) execution — stream progress via onUpdate
-				let spinnerFrame = 0;
-				const startedAt = Date.now();
-				let fgId: string | undefined;
-
-				const streamUpdate = () => {
-					const details: AgentDetails = {
-						...detailBase,
-						toolUses: fgState.toolUses,
-						tokens: formatLifetimeTokens(fgState),
-						turnCount: fgState.turnCount,
-						maxTurns: fgState.maxTurns,
-						durationMs: Date.now() - startedAt,
-						status: "running",
-						activity: describeActivity(fgState.activeTools, fgState.responseText),
-						spinnerFrame: spinnerFrame % SPINNER.length,
-					};
-					onUpdate?.({
-						content: [{ type: "text", text: `${fgState.toolUses} tool uses...` }],
-						details: details as any,
-					});
-				};
-
-				const { state: fgState, callbacks: fgCallbacks } = createActivityTracker(effectiveMaxTurns, streamUpdate);
-
-				// Wire session creation to register in widget
-				const origOnSession = fgCallbacks.onSessionCreated;
-				fgCallbacks.onSessionCreated = (session: any) => {
-					origOnSession(session);
-					for (const a of manager.listAgents()) {
-						if (a.session === session) {
-							fgId = a.id;
-							agentActivity.set(a.id, fgState);
-							widget.ensureTimer();
-							break;
-						}
-					}
-				};
-
-				// Animate spinner at ~80ms (smooth rotation through 10 braille frames)
-				const spinnerInterval = setInterval(() => {
-					spinnerFrame++;
-					streamUpdate();
-				}, 80);
-
-				streamUpdate();
-
-				let record: AgentRecord;
-				try {
-					record = await manager.spawnAndWait(pi, ctx, subagentType, params.prompt, {
-						description: params.description,
-						model,
-						maxTurns: effectiveMaxTurns,
-						isolated,
-						inheritContext,
-						thinkingLevel: thinking,
-						isolation,
-						signal,
-						...fgCallbacks,
-					});
-				} catch (err) {
-					clearInterval(spinnerInterval);
-					return textResult(err instanceof Error ? err.message : String(err));
-				}
-
-				clearInterval(spinnerInterval);
-
-				// Clean up foreground agent from widget
-				if (fgId) {
-					agentActivity.delete(fgId);
-					widget.markFinished(fgId);
-				}
-
-				// Get final token count
-				const tokenText = formatLifetimeTokens(fgState);
-
-				const details = buildDetails(detailBase, record, fgState, { tokens: tokenText });
-
-				const fallbackNote = fellBack ? `Note: Unknown agent type "${rawType}" — using general-purpose.\n\n` : "";
-
-				if (record.status === "error") {
-					return textResult(`${fallbackNote}Agent failed: ${record.error}`, details);
-				}
-
-				const durationMs = (record.completedAt ?? Date.now()) - record.startedAt;
-				const statsParts = [`${record.toolUses} tool uses`];
-				if (tokenText) statsParts.push(tokenText);
-				return textResult(
-					`${fallbackNote}Agent completed in ${formatMs(durationMs)} (${statsParts.join(", ")})${getStatusNote(record.status)}.\n\n` +
-						(record.result?.trim() || "No output."),
-					details,
-				);
-			},
-		}),
-	);
-
-	// ---- get_subagent_result tool ----
-
-	pi.registerTool(
-		defineTool({
-			name: "get_subagent_result",
-			label: "Get Agent Result",
-			description:
-				"Check status and retrieve results from a background agent. Use the agent ID returned by Agent with run_in_background.",
-			parameters: Type.Object({
-				agent_id: Type.String({
-					description: "The agent ID to check.",
-				}),
-				wait: Type.Optional(
-					Type.Boolean({
-						description: "If true, wait for the agent to complete before returning. Default: false.",
-					}),
-				),
-				verbose: Type.Optional(
-					Type.Boolean({
-						description:
-							"If true, include the agent's full conversation (messages + tool calls). Default: false.",
-					}),
-				),
-			}),
-			renderShell: "self" as const,
-			renderCall(args, theme) {
-				return new Text(
-					theme.fg("toolTitle", theme.bold("Get Agent Result")) +
-						theme.fg("dim", " · ") +
-						theme.fg("muted", String(args.agent_id ?? "")),
-					0,
-					0,
-				);
-			},
-			renderResult(result, { isPartial }, theme) {
-				if (isPartial) return new Text(theme.fg("dim", "Loading\u2026"), 0, 0);
-				const text = result.content[0]?.type === "text" ? result.content[0].text : "";
-				const statusMatch = text.match(/Status:\s*(\w+)/);
-				const status = statusMatch?.[1] ?? "";
-				const isStopped = status === "stopped" || status === "closed";
-				const isError = text.startsWith("Agent not found") || status === "error";
-				const isRunning = status === "running" || status === "open";
-				const marker = theme.fg(isRunning || isStopped ? "dim" : isError ? "error" : "success", "\u2022");
-				const label = isRunning ? "running" : isError ? "not found" : isStopped ? "stopped" : status || "done";
-				return new Text(
-					`${marker} ${theme.bold("Get Agent Result")}${theme.fg("dim", " \u00b7 ")}${theme.fg("muted", label)}`,
-					0,
-					0,
-				);
-			},
-			execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
-				const record = manager.getRecord(params.agent_id);
-				if (!record) {
-					const live = muxHeartbeat.listActive().find((entry) => entry.agentId === params.agent_id);
-					const fullSession = fullSessionAgents.get(params.agent_id);
-					if (live || fullSession) {
-						const sessionFile = live?.sessionFile ?? fullSession?.sessionFile ?? "";
-						const transcript = sessionFile
-							? readSessionTranscriptSnapshot(sessionFile, Boolean(params.verbose))
-							: { hasAssistantMessage: false };
-						const resolved = fullSession
-							? resolveFullSessionAgentStatus({
-									currentStatus: fullSession.status,
-									live: live ? { busy: live.busy } : undefined,
-									transcript,
-									now: Date.now(),
-								})
-							: undefined;
-						const status =
-							resolved?.status ??
-							(live?.busy
-								? "running"
-								: transcript.hasAssistantMessage
-									? transcript.error
-										? "error"
-										: "completed"
-									: live
-										? "open"
-										: "closed");
-						if (fullSession) {
-							fullSession.status = resolved?.status ?? fullSession.status;
-							fullSession.result = resolved?.result;
-							fullSession.error = resolved?.error;
-							if (status === "running") {
-								fullSession.completedAt = undefined;
-							} else {
-								fullSession.completedAt ??= resolved?.completedAt ?? transcript.assistantTimestamp;
-							}
-						}
-						let output =
-							`Agent: ${params.agent_id}\n` +
-							`Type: ${live?.agentType ?? fullSession?.type ?? "unknown"} | Status: ${status}\n` +
-							`Description: ${live?.agentDescription ?? fullSession?.description ?? live?.label ?? "(unnamed)"}\n` +
-							`Session: ${sessionFile}\n` +
-							(live?.windowId || fullSession?.windowId
-								? `Window: ${live?.windowName ?? fullSession?.windowName ?? "(unnamed)"} (${live?.windowId ?? fullSession?.windowId})\n`
-								: "") +
-							`Pane: ${live?.paneId ?? fullSession?.paneId ?? "(unknown)"}\n\n`;
-						if (status === "running" || status === "open") {
-							output +=
-								"This is a full mosaic target. Use the multiplexer UI or /mosaic to inspect it directly.";
-						} else {
-							output +=
-								transcript.result?.trim() ||
-								(transcript.error
-									? `Error: ${transcript.error}`
-									: resolved?.error
-										? `Stopped: ${resolved.error}`
-										: "No assistant output found in the session transcript.");
-						}
-						if (params.verbose && transcript.conversation) {
-							output += `\n\n--- Agent Conversation ---\n${transcript.conversation}`;
-						}
-						if (status !== "running" && status !== "open") {
-							cleanupFullSessionAgentPane(params.agent_id, live);
-						}
-						return textResult(output);
-					}
-					return textResult(`Agent not found: "${params.agent_id}". It may have been cleaned up.`);
-				}
-
-				// Wait for completion if requested.
-				// Pre-mark resultConsumed BEFORE awaiting: onComplete fires inside .then()
-				// (attached earlier at spawn time) and always runs before this await resumes.
-				// Setting the flag here prevents a redundant follow-up notification.
-				if (params.wait && record.status === "running" && record.promise) {
-					record.resultConsumed = true;
-					cancelNudge(params.agent_id);
-					await record.promise;
-				}
-
-				const displayName = getDisplayName(record.type);
-				const duration = formatDuration(record.startedAt, record.completedAt);
-				const tokens = formatLifetimeTokens(record);
-				const contextPercent = getSessionContextPercent(record.session);
-				const statsParts = [`Tool uses: ${record.toolUses}`];
-				if (tokens) statsParts.push(tokens);
-				if (contextPercent !== null) statsParts.push(`Context: ${Math.round(contextPercent)}%`);
-				if (record.compactionCount) statsParts.push(`Compactions: ${record.compactionCount}`);
-				statsParts.push(`Duration: ${duration}`);
-
-				let output =
-					`Agent: ${record.id}\n` +
-					`Type: ${displayName} | Status: ${record.status} | ${statsParts.join(" | ")}\n` +
-					`Description: ${record.description}\n\n`;
-
-				if (record.status === "running") {
-					output += "Agent is still running. Use wait: true or check back later.";
-				} else if (record.status === "error") {
-					output += `Error: ${record.error}`;
-				} else {
-					output += record.result?.trim() || "No output.";
-				}
-
-				// Mark result as consumed — suppresses the completion notification
-				if (record.status !== "running" && record.status !== "queued") {
-					record.resultConsumed = true;
-					cancelNudge(params.agent_id);
-				}
-
-				// Verbose: include full conversation
-				if (params.verbose && record.session) {
-					const conversation = getAgentConversation(record.session);
-					if (conversation) {
-						output += `\n\n--- Agent Conversation ---\n${conversation}`;
-					}
-				}
-
-				return textResult(output);
-			},
-		}),
-	);
-
-	// ---- steer_subagent tool ----
-
-	pi.registerTool(
-		defineTool({
-			name: "steer_subagent",
-			label: "Steer Agent",
-			description:
-				"Send a steering message to a running agent. The message will interrupt the agent after its current tool execution " +
-				"and be injected into its conversation, allowing you to redirect its work mid-run. Only works on running agents.",
-			parameters: Type.Object({
-				agent_id: Type.String({
-					description: "The agent ID to steer (must be currently running).",
-				}),
-				message: Type.String({
-					description:
-						"The steering message to send. This will appear as a user message in the agent's conversation.",
-				}),
-			}),
-			renderShell: "self" as const,
-			renderCall(args, theme) {
-				const msg = typeof args.message === "string" ? args.message : "";
-				const preview = msg.length > 0 ? msg.slice(0, 60) + (msg.length > 60 ? "\u2026" : "") : "";
-				return new Text(
-					theme.fg("toolTitle", theme.bold("Steer Agent")) +
-						theme.fg("dim", " · ") +
-						theme.fg("muted", String(args.agent_id ?? "")) +
-						(preview ? theme.fg("dim", " · ") + theme.fg("muted", preview) : ""),
-					0,
-					0,
-				);
-			},
-			renderResult(result, { isPartial }, theme) {
-				if (isPartial) return new Text(theme.fg("dim", "Steering\u2026"), 0, 0);
-				const text = result.content[0]?.type === "text" ? result.content[0].text : "";
-				const isError =
-					text.startsWith("Failed") || text.startsWith("Agent not found") || text.startsWith('Agent "');
-				const marker = theme.fg(isError ? "error" : "success", "\u2022");
-				return new Text(
-					`${marker} ${theme.bold("Steer Agent")}${theme.fg("dim", " \u00b7 ")}${theme.fg("muted", isError ? "failed" : "sent")}`,
-					0,
-					0,
-				);
-			},
-			execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
-				const record = manager.getRecord(params.agent_id);
-				if (!record) {
-					const live = muxHeartbeat.listActive().find((entry) => entry.agentId === params.agent_id);
-					if (live) {
-						try {
-							sendMessageToTarget(live, params.message);
-							pi.events.emit("subagents:steered", { id: params.agent_id, message: params.message });
-							return textResult(
-								`Steering message sent to full mosaic window${live.windowName ? ` (${live.windowName})` : ""}. ` +
-									`If the child session is idle this will run as its next prompt; if it is busy, Pi will handle it like interactive steering/follow-up input.`,
-							);
-						} catch (err) {
-							return textResult(
-								`Failed to send steering message to mosaic window: ${err instanceof Error ? err.message : String(err)}`,
-							);
-						}
-					}
-					return textResult(`Agent not found: "${params.agent_id}". It may have been cleaned up.`);
-				}
-				if (record.status !== "running") {
-					return textResult(
-						`Agent "${params.agent_id}" is not running (status: ${record.status}). Cannot steer a non-running agent.`,
-					);
-				}
-				if (!record.session) {
-					// Session not ready yet — queue the steer for delivery once initialized
-					if (!record.pendingSteers) record.pendingSteers = [];
-					record.pendingSteers.push(params.message);
-					pi.events.emit("subagents:steered", { id: record.id, message: params.message });
-					return textResult(
-						`Steering message queued for agent ${record.id}. It will be delivered once the session initializes.`,
-					);
-				}
-
-				try {
-					await steerAgent(record.session, params.message);
-					pi.events.emit("subagents:steered", { id: record.id, message: params.message });
-					const tokens = formatLifetimeTokens(record);
-					const contextPercent = getSessionContextPercent(record.session);
-					const stateParts: string[] = [];
-					if (tokens) stateParts.push(tokens);
-					stateParts.push(`${record.toolUses} tool ${record.toolUses === 1 ? "use" : "uses"}`);
-					if (contextPercent !== null) stateParts.push(`context ${Math.round(contextPercent)}% full`);
-					if (record.compactionCount)
-						stateParts.push(`${record.compactionCount} compaction${record.compactionCount === 1 ? "" : "s"}`);
-					return textResult(
-						`Steering message sent to agent ${record.id}. The agent will process it after its current tool execution.\n` +
-							`Current state: ${stateParts.join(" · ")}`,
-					);
-				} catch (err) {
-					return textResult(`Failed to steer agent: ${err instanceof Error ? err.message : String(err)}`);
-				}
-			},
-		}),
 	);
 
 	// ---- /agents interactive menu ----
@@ -2335,8 +1681,8 @@ ${systemPrompt}
 			}
 		} else if (choice.startsWith("Scheduling")) {
 			const val = await ctx.ui.select("Schedule subagent feature", [
-				"enabled — Agent tool accepts a `schedule` param; /agents → Scheduled jobs visible",
-				"disabled — `schedule` removed from Agent tool spec (no LLM-context cost); menu hidden",
+				"enabled — /agents → Scheduled jobs visible",
+				"disabled — scheduled jobs menu hidden",
 			]);
 			if (val) {
 				const enabled = val.startsWith("enabled");
