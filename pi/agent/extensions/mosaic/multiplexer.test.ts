@@ -16,6 +16,7 @@ describe("mosaic full-session placement", () => {
 		process.env.MOSAIC_SHELL = "/bin/zsh";
 		let placementRequest: LanePlacementRequest | undefined;
 		let readyPath = "";
+		let readyTimeoutMs = 0;
 		let listCalls = 0;
 
 		const launched = await launchMosaicTarget(
@@ -42,8 +43,9 @@ describe("mosaic full-session placement", () => {
 						},
 					} satisfies TmuxLanePlacementRef;
 				},
-				waitForReadyFile: (path) => {
+				waitForReadyFile: (path, timeoutMs) => {
 					readyPath = path;
+					readyTimeoutMs = timeoutMs;
 				},
 				listActive: () => {
 					listCalls++;
@@ -82,6 +84,7 @@ describe("mosaic full-session placement", () => {
 			MOSAIC_SHELL: "/bin/zsh",
 			MOSAIC_BOOTSTRAP_FILE: "/tmp/bootstrap.json",
 		});
+		expect(readyTimeoutMs).toBe(30_000);
 		expect(launched).toMatchObject({
 			backend: "tmux",
 			paneId: "%live",

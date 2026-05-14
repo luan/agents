@@ -45,6 +45,7 @@ import { registerMosaicBootstrap } from "./bootstrap.js";
 import { registerRpcHandlers } from "./cross-extension-rpc.js";
 import { loadCustomAgents } from "./custom-agents.js";
 import { launchFullSessionAgent } from "./full-session-agent.js";
+import { isTerminalAssistantMessage, resolveFullSessionAgentStatus } from "./full-session-status.js";
 import { GroupJoinManager } from "./group-join.js";
 import { resolveAgentInvocationConfig } from "./invocation-config.js";
 import { type ModelRegistry, resolveModel } from "./model-resolver.js";
@@ -95,7 +96,7 @@ interface FullSessionAgentRecord {
 	windowId: string;
 	windowName: string;
 	startedAt: number;
-	status: "running" | "completed" | "error";
+	status: "running" | "completed" | "error" | "stopped";
 	completedAt?: number;
 	result?: string;
 	error?: string;
@@ -138,10 +139,13 @@ function readSessionTranscriptSnapshot(sessionFile: string, verbose: boolean): S
 			continue;
 		}
 		if (msg.role === "assistant") {
-			hasAssistantMessage = true;
-			assistantTimestamp = parseSessionEntryTimestamp(entry.timestamp) ?? assistantTimestamp;
 			const text = sessionMessageText(msg.content);
-			if (text.trim()) {
+			const isTerminal = isTerminalAssistantMessage(msg);
+			if (isTerminal) {
+				hasAssistantMessage = true;
+				assistantTimestamp = parseSessionEntryTimestamp(entry.timestamp) ?? assistantTimestamp;
+			}
+			if (text.trim() && isTerminal) {
 				lastAssistantText = text.trim();
 				if (verbose) conversation.push(`[Assistant]: ${lastAssistantText}`);
 			}
@@ -641,14 +645,19 @@ export default function (pi: ExtensionAPI) {
 				} satisfies AgentActivity);
 			const transcript = readSessionTranscriptSnapshot(fullSession.sessionFile, false);
 			let status: FullSessionAgentRecord["status"] = fullSession.status;
-			if (live?.busy) {
-				status = "running";
+			const resolved = resolveFullSessionAgentStatus({
+				currentStatus: fullSession.status,
+				live: live ? { busy: live.busy } : undefined,
+				transcript,
+				now: Date.now(),
+			});
+			status = resolved.status;
+			fullSession.result = resolved.result;
+			fullSession.error = resolved.error;
+			if (status === "running") {
 				fullSession.completedAt = undefined;
-			} else if (transcript.hasAssistantMessage) {
-				status = transcript.error ? "error" : "completed";
-				fullSession.result = transcript.result;
-				fullSession.error = transcript.error;
-				fullSession.completedAt ??= transcript.assistantTimestamp ?? Date.now();
+			} else {
+				fullSession.completedAt ??= resolved.completedAt ?? Date.now();
 			}
 			if (fullSession.status !== status && status !== "running") {
 				widget.markFinished(id);
@@ -662,10 +671,7 @@ export default function (pi: ExtensionAPI) {
 				}
 			}
 			activity.maxTurns = fullSession.maxTurns;
-			activity.responseText = live?.busy
-				? "running in mosaic target"
-				: fullSession.result ||
-					(status === "error" ? fullSession.error || "mosaic target failed" : "idle in mosaic target");
+			activity.responseText = resolved.activityText;
 			agentActivity.set(id, activity);
 			const mosaicIdentity = resolveMosaicWidgetIdentity(live, fullSession);
 			records.push({
@@ -1473,10 +1479,11 @@ Guidelines:
 				const text = result.content[0]?.type === "text" ? result.content[0].text : "";
 				const statusMatch = text.match(/Status:\s*(\w+)/);
 				const status = statusMatch?.[1] ?? "";
+				const isStopped = status === "stopped" || status === "closed";
 				const isError = text.startsWith("Agent not found") || status === "error";
-				const isRunning = status === "running";
-				const marker = theme.fg(isRunning ? "dim" : isError ? "error" : "success", "\u2022");
-				const label = isRunning ? "running" : isError ? "not found" : status || "done";
+				const isRunning = status === "running" || status === "open";
+				const marker = theme.fg(isRunning || isStopped ? "dim" : isError ? "error" : "success", "\u2022");
+				const label = isRunning ? "running" : isError ? "not found" : isStopped ? "stopped" : status || "done";
 				return new Text(
 					`${marker} ${theme.bold("Get Agent Result")}${theme.fg("dim", " \u00b7 ")}${theme.fg("muted", label)}`,
 					0,
@@ -1493,21 +1500,34 @@ Guidelines:
 						const transcript = sessionFile
 							? readSessionTranscriptSnapshot(sessionFile, Boolean(params.verbose))
 							: { hasAssistantMessage: false };
-						const status = live?.busy
-							? "running"
-							: transcript.hasAssistantMessage
-								? transcript.error
-									? "error"
-									: "completed"
-								: live
-									? "open"
-									: (fullSession?.status ?? "closed");
+						const resolved = fullSession
+							? resolveFullSessionAgentStatus({
+									currentStatus: fullSession.status,
+									live: live ? { busy: live.busy } : undefined,
+									transcript,
+									now: Date.now(),
+								})
+							: undefined;
+						const status =
+							resolved?.status ??
+							(live?.busy
+								? "running"
+								: transcript.hasAssistantMessage
+									? transcript.error
+										? "error"
+										: "completed"
+									: live
+										? "open"
+										: "closed");
 						if (fullSession) {
-							fullSession.status =
-								status === "error" ? "error" : status === "completed" ? "completed" : "running";
-							fullSession.result = transcript.result;
-							fullSession.error = transcript.error;
-							fullSession.completedAt ??= transcript.assistantTimestamp;
+							fullSession.status = resolved?.status ?? fullSession.status;
+							fullSession.result = resolved?.result;
+							fullSession.error = resolved?.error;
+							if (status === "running") {
+								fullSession.completedAt = undefined;
+							} else {
+								fullSession.completedAt ??= resolved?.completedAt ?? transcript.assistantTimestamp;
+							}
 						}
 						let output =
 							`Agent: ${params.agent_id}\n` +
@@ -1526,7 +1546,9 @@ Guidelines:
 								transcript.result?.trim() ||
 								(transcript.error
 									? `Error: ${transcript.error}`
-									: "No assistant output found in the session transcript.");
+									: resolved?.error
+										? `Stopped: ${resolved.error}`
+										: "No assistant output found in the session transcript.");
 						}
 						if (params.verbose && transcript.conversation) {
 							output += `\n\n--- Agent Conversation ---\n${transcript.conversation}`;

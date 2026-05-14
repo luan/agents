@@ -39,6 +39,7 @@ export interface LaunchOptions {
 }
 
 const READY_DIR = join(tmpdir(), "mosaic-ready");
+const LAUNCH_READY_TIMEOUT_MS = 30_000;
 
 interface LaunchDependencies {
 	backend?: () => MultiplexerBackend;
@@ -285,7 +286,7 @@ function prepareLaunchEnvironment(
 }
 
 function waitForLaunchReady(path: string, dependencies: LaunchDependencies): void {
-	(dependencies.waitForReadyFile ?? waitForReadyFile)(path, 5000);
+	(dependencies.waitForReadyFile ?? waitForReadyFile)(path, LAUNCH_READY_TIMEOUT_MS);
 	try {
 		rmSync(path, { force: true });
 	} catch {}
@@ -336,7 +337,7 @@ function waitForReadyFile(path: string, timeoutMs: number): void {
 		if (existsSync(path)) return;
 		sleepMs(10);
 	}
-	throw new Error("Timed out waiting for zellij mosaic tab to start.");
+	throw new Error("Timed out waiting for mosaic target to start.");
 }
 
 function sleepMs(ms: number): void {
