@@ -10,9 +10,10 @@ use rmcp::schemars::{self, JsonSchema};
 use rmcp::{ServerHandler, tool, tool_handler, tool_router};
 use serde::Deserialize;
 
+#[cfg(test)]
+use crate::apply_patch::Fingerprint;
 use crate::apply_patch::{
-    self, AnchorAttempt, ApplyFailure, ApplyOutcome, ApplyPatchError, CallRecord, ChangeType,
-    FileCallEntry, FileChange, Fingerprint, HunkFuzzy, HunkRegion, LineChange,
+    self, ApplyFailure, ApplyPatchError, ChangeType, FileChange, HunkFuzzy, HunkRegion, LineChange,
     MAX_PATCH_SIZE_BYTES, Telemetry, enrich, sha1_hex,
 };
 
@@ -23,78 +24,6 @@ use crate::apply_patch::{
 /// Stable failure-kind label shared by MCP telemetry and repair diagnostics.
 fn classify_error(err: &ApplyPatchError) -> &'static str {
     apply_patch::failure_kind(err)
-}
-
-fn build_file_entries_from_changes(
-    changes: &[FileChange],
-    attempts: &[AnchorAttempt],
-    fingerprints: &[(String, Fingerprint)],
-) -> Vec<FileCallEntry> {
-    changes
-        .iter()
-        .map(|c| {
-            let chunk_count = attempts.iter().filter(|a| a.file_path == c.path).count();
-            let fuzzy_tier_used = c.fuzzy_hunks.first().map(|h| h.tier.as_str().to_string());
-            let file_sha1 = fingerprints
-                .iter()
-                .find(|(p, _)| p == &c.path)
-                .map(|(_, fp)| fp.sha1.clone());
-            FileCallEntry {
-                path: c.path.clone(),
-                chunk_count,
-                fuzzy_tier_used,
-                file_sha1,
-            }
-        })
-        .collect()
-}
-
-fn fingerprints_to_json(fps: &[(String, Fingerprint)]) -> String {
-    let map: serde_json::Map<String, serde_json::Value> = fps
-        .iter()
-        .map(|(p, fp)| {
-            (
-                p.clone(),
-                serde_json::json!({ "mtime_ns": fp.mtime_ns, "sha1": fp.sha1 }),
-            )
-        })
-        .collect();
-    serde_json::to_string(&serde_json::Value::Object(map)).unwrap_or_else(|_| "{}".to_string())
-}
-
-fn record_success(
-    tel: &Telemetry,
-    outcome: &ApplyOutcome,
-    duration_us: u64,
-    patch_sha: &str,
-    patch_body: &str,
-) {
-    if let Err(e) = tel.record_patch_body(patch_sha, patch_body) {
-        eprintln!("apply-patch telemetry: {e}");
-    }
-    let files =
-        build_file_entries_from_changes(&outcome.changes, &outcome.attempts, &outcome.fingerprints);
-    let record = CallRecord {
-        outcome: "success".into(),
-        error_kind: None,
-        files,
-        duration_us,
-        patch_sha: patch_sha.to_string(),
-        fingerprints_json: fingerprints_to_json(&outcome.fingerprints),
-    };
-    match tel.record_call(&record) {
-        Ok(call_id) => {
-            if let Err(e) = tel.record_anchor_attempts(call_id, &outcome.attempts) {
-                eprintln!("apply-patch telemetry: {e}");
-            }
-            for (path, fp) in &outcome.fingerprints {
-                if let Err(e) = tel.upsert_fingerprint(path, fp) {
-                    eprintln!("apply-patch telemetry: {e}");
-                }
-            }
-        }
-        Err(e) => eprintln!("apply-patch telemetry: {e}"),
-    }
 }
 
 fn enrich_failure_message(tel: &Telemetry, failure: &ApplyFailure, cwd: &Path) -> Option<String> {
@@ -401,14 +330,16 @@ Set `dry_run` to true to preview the unified diff without writing."#
 
         match apply_patch::apply(&input.patch, &cwd, dry_run) {
             Ok(outcome) => {
-                if let Some(tel) = tel.as_ref() {
-                    record_success(
+                if let Some(tel) = tel.as_ref()
+                    && let Err(e) = apply_patch::repair::record_success(
                         tel,
                         &outcome,
                         start.elapsed().as_micros() as u64,
                         &patch_sha,
                         &input.patch,
-                    );
+                    )
+                {
+                    eprintln!("apply-patch telemetry: {e}");
                 }
                 let files: Vec<FileChangeOut> =
                     outcome.changes.iter().map(|c| to_out(c, dry_run)).collect();

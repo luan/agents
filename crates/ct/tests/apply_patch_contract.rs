@@ -7,6 +7,8 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 use std::fs;
+use std::path::Path;
+use std::sync::OnceLock;
 use tempfile::TempDir;
 
 fn write_seed(dir: &TempDir, rel: &str, content: &str) {
@@ -18,7 +20,14 @@ fn write_seed(dir: &TempDir, rel: &str, content: &str) {
 }
 
 fn ct() -> Command {
-    Command::cargo_bin("ct").unwrap()
+    let mut command = Command::cargo_bin("ct").unwrap();
+    command.env("XDG_DATA_HOME", test_xdg_home());
+    command
+}
+
+fn test_xdg_home() -> &'static Path {
+    static XDG_HOME: OnceLock<TempDir> = OnceLock::new();
+    XDG_HOME.get_or_init(|| TempDir::new().unwrap()).path()
 }
 
 #[test]
@@ -42,6 +51,42 @@ fn add_creates_file() {
 
     let written = fs::read_to_string(sandbox.path().join("new.txt")).unwrap();
     assert_eq!(written, "line1\nline2\n");
+}
+
+#[test]
+fn raw_cli_records_success_telemetry() {
+    let sandbox = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let patch = "\
+*** Begin Patch
+*** Add File: new.txt
++line1
+*** End Patch
+";
+
+    let mut apply = Command::cargo_bin("ct").unwrap();
+    apply
+        .arg("apply-patch")
+        .arg("--cwd")
+        .arg(sandbox.path())
+        .env("XDG_DATA_HOME", state.path())
+        .write_stdin(patch)
+        .assert()
+        .success();
+
+    let mut stats = Command::cargo_bin("ct").unwrap();
+    stats
+        .arg("apply-patch")
+        .arg("stats")
+        .arg("--all-projects")
+        .env("XDG_DATA_HOME", state.path())
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("calls: 1")
+                .and(predicate::str::contains("successes: 1 (100%)"))
+                .and(predicate::str::contains("errors: 0")),
+        );
 }
 
 #[test]

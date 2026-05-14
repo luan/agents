@@ -6,8 +6,8 @@ use super::draft;
 use super::draft_store::{NewPatchDraft, PatchCandidate, PatchDraftChunk, PatchDraftStore};
 use super::telemetry::diagnostics::{FailureDiagnostic, FailureDiagnosticInput};
 use super::{
-    AnchorAttempt, ApplyFailure, ApplyPatchError, CallRecord, FileCallEntry, Fingerprint,
-    Telemetry, sha1_hex,
+    AnchorAttempt, ApplyFailure, ApplyOutcome, ApplyPatchError, CallRecord, FileCallEntry,
+    FileChange, Fingerprint, Telemetry, sha1_hex,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -103,6 +103,32 @@ pub fn handle_failure(
         },
         diagnostic,
     }
+}
+
+pub fn record_success(
+    tel: &Telemetry,
+    outcome: &ApplyOutcome,
+    duration_us: u64,
+    patch_sha: &str,
+    patch_body: &str,
+) -> Result<(), super::telemetry::TelemetryError> {
+    tel.record_patch_body(patch_sha, patch_body)?;
+    let files =
+        build_file_entries_from_changes(&outcome.changes, &outcome.attempts, &outcome.fingerprints);
+    let record = CallRecord {
+        outcome: "success".into(),
+        error_kind: None,
+        files,
+        duration_us,
+        patch_sha: patch_sha.to_string(),
+        fingerprints_json: fingerprints_to_json(&outcome.fingerprints),
+    };
+    let call_id = tel.record_call(&record)?;
+    tel.record_anchor_attempts(call_id, &outcome.attempts)?;
+    for (path, fp) in &outcome.fingerprints {
+        tel.upsert_fingerprint(path, fp)?;
+    }
+    Ok(())
 }
 
 impl RepairBlock {
@@ -342,6 +368,36 @@ fn build_file_entries_from_attempts(
                 path,
                 chunk_count,
                 fuzzy_tier_used: None,
+                file_sha1,
+            }
+        })
+        .collect()
+}
+
+fn build_file_entries_from_changes(
+    changes: &[FileChange],
+    attempts: &[AnchorAttempt],
+    fingerprints: &[(String, Fingerprint)],
+) -> Vec<FileCallEntry> {
+    changes
+        .iter()
+        .map(|change| {
+            let chunk_count = attempts
+                .iter()
+                .filter(|attempt| attempt.file_path == change.path)
+                .count();
+            let fuzzy_tier_used = change
+                .fuzzy_hunks
+                .first()
+                .map(|hunk| hunk.tier.as_str().to_string());
+            let file_sha1 = fingerprints
+                .iter()
+                .find(|(path, _)| path == &change.path)
+                .map(|(_, fp)| fp.sha1.clone());
+            FileCallEntry {
+                path: change.path.clone(),
+                chunk_count,
+                fuzzy_tier_used,
                 file_sha1,
             }
         })
