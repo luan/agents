@@ -294,14 +294,14 @@ pub fn plan(patch: &str, cwd: &Path) -> Result<ApplyOutcome, Box<ApplyFailure>> 
             source,
         })
     })?;
+    let hunks =
+        normalize_duplicate_update_hunks(hunks, &cwd_canon).map_err(Box::<ApplyFailure>::from)?;
     let scope_updates = collect_scope_update_chunks(&hunks, &cwd_canon)?;
 
-    // Detect duplicate concrete updates. Multiple `*** Update Scope:` sections
-    // for one path are deliberately batched below, but mixing those with a
-    // whole-file Update would otherwise produce two independent write plans.
-    // Independent plans would both read the original and the second write would
-    // silently overwrite the first — reject up front and ask the caller to
-    // combine hunks.
+    // Detect conflicting concrete update modes. Multiple plain UpdateFile
+    // sections for one path are normalized above; multiple UpdateScope sections
+    // are deliberately batched below. Mixing whole-file Update/ReplaceAll with
+    // another concrete update mode would still create independent write plans.
     let mut seen_updates: HashSet<PathBuf> = HashSet::new();
     for hunk in &hunks {
         if let Hunk::UpdateFile { path, .. } | Hunk::ReplaceAll { path, .. } = hunk {
@@ -551,6 +551,55 @@ pub fn plan(patch: &str, cwd: &Path) -> Result<ApplyOutcome, Box<ApplyFailure>> 
         attempts,
         fingerprints,
     })
+}
+
+fn normalize_duplicate_update_hunks(
+    hunks: Vec<Hunk>,
+    cwd_canon: &Path,
+) -> Result<Vec<Hunk>, ApplyPatchError> {
+    let mut normalized = Vec::with_capacity(hunks.len());
+    let mut update_by_path: HashMap<PathBuf, usize> = HashMap::new();
+
+    for hunk in hunks {
+        match hunk {
+            Hunk::UpdateFile {
+                path,
+                move_path,
+                chunks,
+            } => {
+                let abs = resolve_path(cwd_canon, &path)?;
+                let rel = display_rel(&path);
+                if let Some(existing_index) = update_by_path.get(&abs).copied() {
+                    if move_path.is_some() {
+                        return Err(ApplyPatchError::DuplicateUpdate(rel));
+                    }
+                    match &mut normalized[existing_index] {
+                        Hunk::UpdateFile {
+                            move_path: existing_move_path,
+                            chunks: existing_chunks,
+                            ..
+                        } => {
+                            if existing_move_path.is_some() {
+                                return Err(ApplyPatchError::DuplicateUpdate(rel));
+                            }
+                            existing_chunks.extend(chunks);
+                        }
+                        _ => unreachable!("update_by_path only points at UpdateFile hunks"),
+                    }
+                } else {
+                    update_by_path.insert(abs, normalized.len());
+                    normalized.push(Hunk::UpdateFile {
+                        path,
+                        move_path,
+                        chunks,
+                    });
+                }
+            }
+            other => normalized.push(other),
+        }
+    }
+
+    Ok(normalized)
 }
 
 fn collect_scope_update_chunks(
@@ -2797,6 +2846,49 @@ mod tests {
             }
             other => panic!("expected OverlappingReplacements, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn duplicate_update_with_move_is_rejected() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("code.rs"), "a\nb\n").unwrap();
+        let patch = concat!(
+            "*** Begin Patch\n",
+            "*** Update File: code.rs\n",
+            "*** Move to: moved.rs\n",
+            "@@\n",
+            "-a\n",
+            "+A\n",
+            "*** Update File: code.rs\n",
+            "@@\n",
+            "-b\n",
+            "+B\n",
+            "*** End Patch\n",
+        );
+
+        let err = plan(patch, tmp.path()).unwrap_err().error;
+        assert!(matches!(err, ApplyPatchError::DuplicateUpdate(path) if path == "code.rs"));
+    }
+
+    #[test]
+    fn update_and_replace_all_for_same_path_are_rejected() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("code.rs"), "a\nb\n").unwrap();
+        let patch = concat!(
+            "*** Begin Patch\n",
+            "*** Update File: code.rs\n",
+            "@@\n",
+            "-a\n",
+            "+A\n",
+            "*** Replace All In File: code.rs\n",
+            "*** Expect Replacements: 1\n",
+            "-b\n",
+            "+B\n",
+            "*** End Patch\n",
+        );
+
+        let err = plan(patch, tmp.path()).unwrap_err().error;
+        assert!(matches!(err, ApplyPatchError::DuplicateUpdate(path) if path == "code.rs"));
     }
 
     #[test]

@@ -280,24 +280,21 @@ fn add_existing_file_rejected() {
 }
 
 #[test]
-fn duplicate_update_rejected() {
+fn duplicate_update_sections_are_normalized() {
     let sandbox = TempDir::new().unwrap();
-    write_seed(&sandbox, "foo.rs", "a\nb\nc\n");
+    write_seed(&sandbox, "foo.rs", "a\nb\nc\nd\n");
 
     let patch = "\
 *** Begin Patch
 *** Update File: foo.rs
 @@
- a
 -b
 +B
- c
 *** Update File: foo.rs
 @@
- a
- B
 -c
 +C
+ d
 *** End Patch
 ";
 
@@ -306,13 +303,11 @@ fn duplicate_update_rejected() {
         .arg(sandbox.path())
         .write_stdin(patch)
         .assert()
-        .failure()
-        .stderr(predicate::str::contains(
-            "multiple updates target the same path",
-        ));
+        .success()
+        .stdout(predicate::str::contains("M foo.rs"));
 
     let after = fs::read_to_string(sandbox.path().join("foo.rs")).unwrap();
-    assert_eq!(after, "a\nb\nc\n");
+    assert_eq!(after, "a\nB\nC\nd\n");
 }
 
 #[test]
