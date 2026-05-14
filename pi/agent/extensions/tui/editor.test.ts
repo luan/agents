@@ -144,6 +144,24 @@ describe("polished TUI editor cached skills", () => {
 		expect(lines.every((line) => visibleWidth(line) <= 48)).toBe(true);
 	});
 
+	test("ignores stale session identity providers during render", () => {
+		setCachedSkillNamesForTest([]);
+		setEditorSessionIdentityProvider(() => {
+			throw new Error("This extension ctx is stale after session replacement or reload.");
+		});
+
+		const lines = renderPolishedEditorForTest(
+			editor({ getMode: () => "insert" }),
+			40,
+			() => ["> hello", ""],
+			28,
+			rgbTheme,
+		);
+
+		expect(stripAnsi(lines[0] ?? "")).not.toContain("This extension ctx is stale");
+		expect(lines.every((line) => visibleWidth(line) <= 40)).toBe(true);
+	});
+
 	test("truncates long session identity before working status", () => {
 		setCachedSkillNamesForTest([]);
 		setWorkingAnimationForTest(true, 3);

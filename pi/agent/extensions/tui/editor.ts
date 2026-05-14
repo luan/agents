@@ -85,6 +85,20 @@ export function setEditorSessionIdentityProvider(
 	editorSessionIdentityProvider = provider;
 }
 
+function isStaleCtxError(error: unknown): boolean {
+	return (error instanceof Error ? error.message : String(error)).includes("ctx is stale");
+}
+
+function getEditorSessionIdentity(): EditorSessionIdentity | undefined {
+	try {
+		return editorSessionIdentityProvider?.();
+	} catch (error) {
+		if (!isStaleCtxError(error)) throw error;
+		editorSessionIdentityProvider = undefined;
+		return undefined;
+	}
+}
+
 function truncateVisible(text: string, maxWidth: number): string {
 	if (maxWidth <= 0) return "";
 	if ([...text].length <= maxWidth) return text;
@@ -278,7 +292,7 @@ export function renderPolishedEditorForTest(
 	const uiTheme = uiThemeOverride ?? patchState.currentUiTheme;
 	if (!uiTheme) return renderBase(width);
 
-	const identity = editorSessionIdentityProvider?.();
+	const identity = getEditorSessionIdentity();
 	const identityText = sessionIdentityText(identity);
 	const secondaryRailColor = cleanIdentityPart(identity?.color);
 	const railWidth = 2 + (secondaryRailColor ? 1 : 0);

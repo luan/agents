@@ -137,6 +137,7 @@ export default function (pi: ExtensionAPI) {
 	let disposed = false;
 	let uiGeneration = 0;
 	let unsubscribeSkillfulCache: (() => void) | undefined;
+	let editorSessionIdentity: EditorSessionIdentity | undefined;
 
 	const isStaleCtxError = (error: unknown) =>
 		(error instanceof Error ? error.message : String(error)).includes("ctx is stale");
@@ -295,6 +296,10 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	const syncState = (ctx: ExtensionContext, activeMessage?: unknown) => {
+		const mosaicIdentity = readMosaicIdentityEnv();
+		const name = cleanIdentityPart(ctx.sessionManager.getSessionName()) ?? mosaicIdentity?.name;
+		editorSessionIdentity = mosaicIdentity ? { ...mosaicIdentity, name } : name ? { name } : undefined;
+
 		const totals = getUsageTotals(ctx);
 		const usage = ctx.getContextUsage();
 		const contextWindow = ctx.model?.contextWindow ?? usage?.contextWindow ?? 0;
@@ -491,12 +496,7 @@ export default function (pi: ExtensionAPI) {
 	const installEditor = (ctx: ExtensionContext) => {
 		syncStateIfCurrent(ctx);
 		const cwd = ctx.cwd;
-		const mosaicIdentity = readMosaicIdentityEnv();
-		setEditorSessionIdentityProvider(() => {
-			const name = cleanIdentityPart(ctx.sessionManager.getSessionName()) ?? mosaicIdentity?.name;
-			if (mosaicIdentity) return { ...mosaicIdentity, name };
-			return name ? { name } : undefined;
-		});
+		setEditorSessionIdentityProvider(() => editorSessionIdentity);
 		setEditorChromeProvider((width, theme, options) => {
 			const bottomWidth = Math.max(1, width - options.modeReserve);
 			if (isCompactTerminal()) {
@@ -574,6 +574,7 @@ export default function (pi: ExtensionAPI) {
 		setCachedSkillNames([]);
 		setEditorChromeProvider(undefined);
 		setEditorSessionIdentityProvider(undefined);
+		editorSessionIdentity = undefined;
 		setWorkingAnimationState(false, 0);
 		stopRefreshTimer();
 		stopContextPulse();
