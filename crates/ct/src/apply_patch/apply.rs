@@ -200,7 +200,7 @@ fn format_disambiguation(hints: &[String]) -> String {
     if hints.is_empty() {
         return String::new();
     }
-    let mut out = String::from("\nsuggested anchors:");
+    let mut out = String::from("\nsuggested repairs:");
     for h in hints {
         out.push_str("\n  ");
         out.push_str(h);
@@ -2143,10 +2143,19 @@ fn disambiguate_candidates(original_lines: &[String], candidates: &[usize]) -> V
             // 1-based line numbers in the hint match what the user sees in
             // their editor and what the candidates list reports.
             hints.push(format!(
-                "@@ {}  →  pins to candidate at line {} (anchor at line {})",
+                "@@ {}  →  pins to candidate at line {} (anchor at line {}); or retry with `@@ lines {}-{}`",
                 line.trim_end(),
                 cand + 1,
-                idx + 1
+                idx + 1,
+                cand + 1,
+                cand + 1
+            ));
+        } else {
+            hints.push(format!(
+                "@@ lines {}-{}  →  pins to candidate at line {}",
+                cand + 1,
+                cand + 1,
+                cand + 1
             ));
         }
     }
@@ -3111,10 +3120,14 @@ mod tests {
         let err = plan(patch, tmp.path()).unwrap_err().error;
         let msg = err.to_string();
         assert!(msg.contains("ambiguous context"), "msg: {msg}");
-        assert!(msg.contains("suggested anchors:"), "msg: {msg}");
+        assert!(msg.contains("suggested repairs:"), "msg: {msg}");
         assert!(
             msg.contains("@@ pub fn alpha()") || msg.contains("@@ pub fn beta()"),
             "expected at least one structural anchor suggestion, got: {msg}"
+        );
+        assert!(
+            msg.contains("@@ lines 2-2") || msg.contains("@@ lines 5-5"),
+            "expected a line-range repair suggestion, got: {msg}"
         );
     }
 
