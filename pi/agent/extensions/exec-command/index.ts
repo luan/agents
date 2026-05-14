@@ -4,22 +4,17 @@ import {
 	type ExtensionContext,
 	ToolExecutionComponent,
 } from "@earendil-works/pi-coding-agent";
-import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
 import { setOrderedAboveEditorWidget } from "../shared/ordered-widgets";
+import {
+	type RenderTheme,
+	rawCommandToExecCell,
+	renderBackgroundTerminalHud,
+	renderExecCell,
+	renderExecCellComponent,
+} from "./tools/exec-cell-presentation.ts";
 import { createExecCommandTracker } from "./tools/exec-command-state.ts";
 import { registerExecCommandTool } from "./tools/exec-command-tool.ts";
-import {
-	backgroundTerminalAnimatedLabel,
-	backgroundTerminalPulseMarker,
-	formatElapsedTime,
-	formatStdinCapability,
-	lastOutputLine,
-	outputLineCount,
-	type RenderTheme,
-	renderExecCommandCall,
-	renderOutputBlock,
-	renderUserExecCommandCall,
-} from "./tools/exec-rendering.ts";
 import { createExecSessionManager, type ExecSessionRecord } from "./tools/exec-session-manager.ts";
 import { formattedTruncateText } from "./tools/output-truncation.ts";
 import { computeRtkRewriteDecision, type RtkWrapperState } from "./tools/rtk-wrapper.ts";
@@ -119,7 +114,15 @@ function installUserBashRenderPatch(): void {
 		this.contentContainer.clear();
 		this.contentContainer.addChild(
 			new Text(
-				renderUserExecCommandCall(this.command, running ? "running" : "done", USER_BASH_RENDER_THEME, failed),
+				renderExecCell(
+					{
+						kind: "user-command",
+						status: running ? "running" : "done",
+						command: this.command,
+						failed,
+					},
+					{ theme: USER_BASH_RENDER_THEME, part: "header" },
+				),
 				1,
 				0,
 			),
@@ -134,11 +137,22 @@ function installUserBashRenderPatch(): void {
 			}
 			this.contentContainer.addChild(
 				new Text(
-					`\n${renderOutputBlock(output, USER_BASH_RENDER_THEME, footerParts.join("\n") || undefined, {
-						expanded: this.expanded,
-						maxLines: 20,
-						truncatedAbove: this.truncationResult?.truncated,
-					})}`,
+					`\n${renderExecCell(
+						{
+							kind: "user-command",
+							status: running ? "running" : "done",
+							outputBlock: {
+								output,
+								footer: footerParts.join("\n") || undefined,
+								options: {
+									expanded: this.expanded,
+									maxLines: 20,
+									truncatedAbove: this.truncationResult?.truncated,
+								},
+							},
+						},
+						{ theme: USER_BASH_RENDER_THEME, part: "output" },
+					)}`,
 					1,
 					0,
 				),
@@ -243,14 +257,19 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 			const details = message.details;
 			if (!details) return undefined;
 			const failed = details.exitCode !== undefined && details.exitCode !== 0;
-			const line = renderExecCommandCall(details.command, "done", theme, failed);
-			const output = `\n${renderOutputBlock(
-				details.output,
-				theme,
-				failed ? theme.fg("muted", `Exit code: ${details.exitCode}`) : undefined,
-				{ expanded },
-			)}`;
-			return new Text(`${line}${output}`, 0, 0);
+			return renderExecCellComponent(
+				rawCommandToExecCell({
+					command: details.command,
+					status: "done",
+					failed,
+					outputBlock: {
+						output: details.output,
+						footer: failed ? theme.fg("muted", `Exit code: ${details.exitCode}`) : undefined,
+						options: { expanded },
+					},
+				}),
+				{ theme },
+			);
 		},
 	);
 
@@ -303,35 +322,17 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 		return lines;
 	};
 
-	const renderBackgroundTerminalWidgetLine = (
-		record: ExecSessionRecord,
-		theme: RenderTheme,
-		width: number,
-	): string => {
-		const elapsedMs = Date.now() - record.startedAtMs;
-		const elapsed = formatElapsedTime(elapsedMs);
-		const prefix = `${backgroundTerminalPulseMarker(theme, elapsedMs)} ${backgroundTerminalAnimatedLabel(theme, elapsedMs)} ${theme.fg(
-			"muted",
-			`#${record.id}`,
-		)}`;
-		const tty = record.stdinOpen
-			? `${theme.fg("dim", " · ")}${theme.fg("mdLink", formatStdinCapability(record.stdinOpen))}`
-			: "";
-		const lines = outputLineCount(record.output);
-		const outputSummary = lines > 0 ? `(${lines} ${lines === 1 ? "line" : "lines"})` : "(no output)";
-		const lastLine = lastOutputLine(record.output)
-			?.replace(/[\x00-\x1f\x7f]/g, " ")
-			.trim();
-		const command = record.command.replace(/[\x00-\x1f\x7f]/g, " ").trim();
-		const last = lastLine ? `${theme.fg("dim", " · ")}${theme.fg("dim", lastLine)}` : "";
-		const fixed = `${prefix}${theme.fg("dim", " · ")}${theme.fg("dim", elapsed)}${tty}${theme.fg(
-			"dim",
-			" · ",
-		)}${theme.fg("muted", outputSummary)}${last}${theme.fg("dim", " · ")}`;
-		const commandWidth = Math.max(8, width - visibleWidth(fixed));
-		const text = `${fixed}${theme.fg("muted", truncateToWidth(command, commandWidth, "..."))}`;
-		return visibleWidth(text) > width ? truncateToWidth(text, width, "...") : text;
-	};
+	const renderBackgroundTerminalWidgetLine = (record: ExecSessionRecord, theme: RenderTheme, width: number): string =>
+		renderBackgroundTerminalHud(
+			{
+				id: record.id,
+				command: record.command,
+				output: record.output,
+				startedAtMs: record.startedAtMs,
+				stdinOpen: record.stdinOpen,
+			},
+			{ theme, width },
+		);
 
 	function registerOrRefreshBackgroundTerminalWidget() {
 		if (!statusUi?.setWidget) return;

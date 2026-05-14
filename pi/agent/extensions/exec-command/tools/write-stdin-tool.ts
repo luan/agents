@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Container, Text } from "@earendil-works/pi-tui";
+import { Container } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { formatStdinCapability, renderOutputBlock, renderWriteStdinCall } from "./exec-rendering.ts";
+import { renderExecCellComponent } from "./exec-cell-presentation.ts";
 import type { ExecSessionManager, UnifiedExecResult } from "./exec-session-manager.ts";
 import { formatUnifiedExecResult } from "./unified-exec-format.ts";
 
@@ -209,19 +209,20 @@ export function registerWriteStdinTool(pi: ExtensionAPI, sessions: ExecSessionMa
 			const input = typeof args.chars === "string" ? args.chars : undefined;
 			const snapshot = typeof sessionId === "number" ? sessions.getSessionSnapshot(sessionId) : undefined;
 			const command = typeof sessionId === "number" ? sessions.getSessionCommand(sessionId) : undefined;
-			return new Text(
-				renderWriteStdinCall(
-					sessionId,
-					input,
+			return renderExecCellComponent(
+				{
+					kind: "write-stdin",
+					status: running ? "running" : "done",
 					command,
-					theme,
-					running ? "running" : "done",
-					context?.isError === true,
-					currentElapsedMs,
-					snapshot?.stdinOpen,
-				),
-				0,
-				0,
+					failed: context?.isError === true,
+					elapsedMs: currentElapsedMs,
+					writeStdin: {
+						sessionId,
+						input,
+						stdinOpen: snapshot?.stdinOpen,
+					},
+				},
+				{ theme, part: "header" },
 			);
 		},
 		renderResult(result, { expanded, isPartial }, theme, context?: RenderContextLike) {
@@ -234,19 +235,27 @@ export function registerWriteStdinTool(pi: ExtensionAPI, sessions: ExecSessionMa
 			const footer =
 				state.sessionId !== undefined
 					? `${theme.fg("accent", `Session ${state.sessionId} still running`)}${
-							state.stdinOpen
-								? `${theme.fg("dim", " · ")}${theme.fg("mdLink", formatStdinCapability(true))}`
-								: ""
+							state.stdinOpen ? `${theme.fg("dim", " · ")}${theme.fg("mdLink", "tty")}` : ""
 						}`
 					: state.exitCode !== undefined && state.exitCode !== 0
 						? theme.fg("muted", `Exit code: ${state.exitCode}`)
 						: undefined;
-			const text = renderOutputBlock(output, theme, footer, {
-				expanded,
-				truncatedAbove: state.outputTruncated,
-				originalTokenCount: state.originalTokenCount,
-			});
-			return new Text(text, 0, 0);
+			return renderExecCellComponent(
+				{
+					kind: "write-stdin",
+					status: "done",
+					outputBlock: {
+						output,
+						footer,
+						options: {
+							expanded,
+							truncatedAbove: state.outputTruncated,
+							originalTokenCount: state.originalTokenCount,
+						},
+					},
+				},
+				{ theme, part: "output" },
+			);
 		},
 	});
 }
