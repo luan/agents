@@ -220,7 +220,7 @@ const renderExecCommandResultWithOptionalContext: any = (
 	}
 
 	const details = isUnifiedExecResult(result.details) ? result.details : undefined;
-	if (details?.session_id !== undefined) {
+	if (details?.session_id !== undefined || renderInfo.sessionId !== undefined) {
 		return createEmptyResultComponent();
 	}
 	const content = result.content.find((item) => item.type === "text");

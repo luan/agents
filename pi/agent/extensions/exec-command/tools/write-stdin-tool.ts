@@ -228,7 +228,7 @@ export function registerWriteStdinTool(pi: ExtensionAPI, sessions: ExecSessionMa
 		renderResult(result, { expanded, isPartial }, theme, context?: RenderContextLike) {
 			if (isPartial) return createEmptyResultComponent();
 			const state = getResultState(result);
-			if (isEmptyPollRenderContext(context) && state.sessionId !== undefined) {
+			if (isEmptyPollRenderContext(context)) {
 				return createEmptyResultComponent();
 			}
 			const output = renderTerminalText(state.output);

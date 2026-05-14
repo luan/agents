@@ -897,6 +897,44 @@ test("exec result renderer hides yielded background-terminal session details", (
 	}
 });
 
+test("exec result renderer hides tracker-known background terminal results even when details are omitted", () => {
+	let tool: any;
+	const tracker = createExecCommandTracker();
+	const sessions = createExecSessionManager();
+	try {
+		registerExecCommandTool({ registerTool: (definition: any) => (tool = definition) } as any, tracker, sessions);
+		tracker.recordStart("call", "sleep 60");
+		tracker.recordPersistentSession("call", 9);
+
+		const rendered = tool
+			.renderResult(
+				{
+					content: [
+						{
+							type: "text",
+							text: formatUnifiedExecResult({
+								chunk_id: "abc123",
+								wall_time_seconds: 0.25,
+								output: "partial\n",
+								session_id: 9,
+							}),
+						},
+					],
+				},
+				{ expanded: false, isPartial: false },
+				testTheme,
+				{ toolCallId: "call", args: { cmd: "sleep 60" }, state: {} },
+			)
+			.render(120)
+			.join("\n");
+
+		expect(rendered).toBe("");
+	} finally {
+		tracker.clear();
+		sessions.shutdown();
+	}
+});
+
 test("extension hides empty self-rendered tool rows", () => {
 	type Handler = () => void;
 	const handlers = new Map<string, Handler[]>();
@@ -1444,6 +1482,75 @@ test("extension appends a new completion message when a background terminal exit
 		expect(rendered).toContain("sleep");
 		expect(rendered).toContain("done");
 		expect(rendered).not.toContain("Session ");
+	} finally {
+		for (const handler of handlers.get("session_shutdown") ?? []) handler(undefined, ctx);
+	}
+});
+
+test("extension hides empty poll output after rendering a background terminal completion message", async () => {
+	type Handler = (event?: any, ctx?: any) => any;
+	const handlers = new Map<string, Handler[]>();
+	let execTool: any;
+	let writeStdinTool: any;
+	const sentMessages: Array<{ message: any; options: any }> = [];
+	const pi = {
+		registerTool: (definition: any) => {
+			if (definition.name === "exec_command") execTool = definition;
+			if (definition.name === "write_stdin") writeStdinTool = definition;
+		},
+		registerCommand() {},
+		registerMessageRenderer() {},
+		sendMessage: (message: any, options: any) => {
+			sentMessages.push({ message, options });
+		},
+		getActiveTools: () => [],
+		setActiveTools() {},
+		on: (event: string, handler: Handler) => {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+		},
+		exec: async () => ({ code: 1, stdout: "", stderr: "" }),
+	} as any;
+	execCommandExtension(pi);
+
+	const ctx = {
+		hasUI: true,
+		ui: { setStatus() {}, notify() {} },
+		cwd: process.cwd(),
+	};
+	for (const handler of handlers.get("session_start") ?? []) handler(undefined, ctx);
+
+	try {
+		const spawned = await execTool.execute(
+			"call-duplicated-output",
+			{ cmd: "printf 'alpha\\n'; sleep 0.3; printf 'omega\\n'", yield_time_ms: 250 },
+			undefined,
+			undefined,
+			ctx,
+		);
+		const sessionId = spawned.details.session_id;
+		expect(sessionId).toBeNumber();
+
+		await Bun.sleep(500);
+		expect(sentMessages).toHaveLength(1);
+		expect(sentMessages[0]?.message.details.output).toContain("omega");
+
+		const poll = await writeStdinTool.execute(
+			"poll-duplicated-output",
+			{ session_id: sessionId, chars: "", yield_time_ms: 5000 },
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(poll.details.output).toBe("omega\n");
+
+		const renderedPoll = writeStdinTool
+			.renderResult(poll, { expanded: false, isPartial: false }, testTheme, {
+				args: { session_id: sessionId, chars: "" },
+				state: {},
+			})
+			.render(120)
+			.join("\n");
+		expect(renderedPoll).toBe("");
 	} finally {
 		for (const handler of handlers.get("session_shutdown") ?? []) handler(undefined, ctx);
 	}
