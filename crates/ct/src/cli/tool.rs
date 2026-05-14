@@ -3,6 +3,14 @@ use clap_complete::{Shell, generate};
 
 use super::Cli;
 
+fn apply_patch_telemetry_for(cwd_path: &std::path::Path) -> Option<crate::apply_patch::Telemetry> {
+    let telemetry_root = cwd_path
+        .canonicalize()
+        .unwrap_or_else(|_| cwd_path.to_path_buf());
+    let project_name = crate::artifact::project_name(&telemetry_root.to_string_lossy());
+    crate::apply_patch::Telemetry::open(&project_name).ok()
+}
+
 pub fn run_slug(words: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     if words.is_empty() {
         return Ok(());
@@ -354,9 +362,7 @@ pub fn run_apply_patch_raw(
     let outcome = match crate::apply_patch::apply(&patch, &cwd_path, dry_run) {
         Ok(o) => o,
         Err(failure) => {
-            let telemetry_root = cwd_path.canonicalize().unwrap_or_else(|_| cwd_path.clone());
-            let project_name = crate::artifact::project_name(&telemetry_root.to_string_lossy());
-            let tel = crate::apply_patch::Telemetry::open(&project_name).ok();
+            let tel = apply_patch_telemetry_for(&cwd_path);
             let artifacts = crate::apply_patch::repair::handle_failure(
                 tel.as_ref(),
                 &cwd_path,
@@ -370,6 +376,17 @@ pub fn run_apply_patch_raw(
             std::process::exit(1);
         }
     };
+    if let Some(tel) = apply_patch_telemetry_for(&cwd_path)
+        && let Err(e) = crate::apply_patch::repair::record_success(
+            &tel,
+            &outcome,
+            start.elapsed().as_micros() as u64,
+            &patch_sha,
+            &patch,
+        )
+    {
+        eprintln!("apply-patch telemetry: {e}");
+    }
     let changes = outcome.changes;
 
     if dry_run {
