@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -99,6 +98,7 @@ type ThemeLike = {
 	fg(color: string, text: string): string;
 	bg?(color: ToolPanelBg, text: string): string;
 	getBgAnsi?(color: ToolPanelBg): string;
+	getFgAnsi?(color: string): string;
 	bold(text: string): string;
 };
 
@@ -196,19 +196,6 @@ type ParsedDiffLine = {
 	highlightedContent?: string;
 };
 
-type LivePatchPreviewState = {
-	input: string;
-	carry: string;
-	intent?: string;
-	totalOperations: number;
-	files: ApplyPatchProgressFile[];
-	rows: ParsedDiffLine[];
-	currentFile?: ApplyPatchProgressFile;
-	currentPath?: string;
-	currentOperation?: ApplyPatchProgressFile["operation"];
-	newLine: number | null;
-};
-
 type ApplyPatchPreviewChange = {
 	path?: string;
 	type?: "add" | "update" | "delete" | "move";
@@ -233,31 +220,11 @@ type ApplyPatchPreviewResponse = {
 	error?: string;
 };
 
-type PreviewWorker = {
-	child: ReturnType<typeof spawn>;
-	stdoutBuffer: string;
-	stderr: string;
-	lastSentInput?: string;
-	pending: boolean;
-	timer?: ReturnType<typeof setTimeout>;
-	stopped?: boolean;
-};
-
 type ApplyPatchRenderState = {
-	progressCache?: {
-		key: string;
-		progress: ReturnType<typeof parsePatchInputProgress>;
-	};
-	livePreview?: LivePatchPreviewState;
+	elapsedTimer?: ReturnType<typeof setTimeout>;
+	startedAtMs?: number;
 	renderedLiveResult?: boolean;
 	resultRendered?: boolean;
-	previewWorker?: PreviewWorker;
-	previewInput?: string;
-	previewDiff?: string;
-	previewRows?: ParsedDiffLine[];
-	previewFiles?: ApplyPatchProgressFile[];
-	previewSemantic?: boolean;
-	previewError?: string;
 };
 
 type ModelLike = {
@@ -272,13 +239,17 @@ const SHIKI_THEME = (process.env.APPLY_PATCH_SHIKI_THEME ?? "github-dark") as Bu
 const SHIKI_MAX_CHARS = 80_000;
 const SHIKI_CACHE_LIMIT = 64;
 const SHIKI_BACKGROUND_PATTERN = /\x1b\[(?:48;2;\d+;\d+;\d+|48;5;\d+|49)m/g;
-const PREVIEW_THROTTLE_MS = 200;
 const COMPLETED_PATCH_INPUT_LIMIT = 128;
+const APPLY_PATCH_FRAME_MS = 120;
+const APPLY_PATCH_RUNNING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const APPLY_PATCH_LABEL = "Preparing patch…";
+const APPLY_PATCH_LABEL_SHINE_WIDTH = 3;
+const APPLY_PATCH_LABEL_PERCOLATION_MS = 80;
+type Rgb = [number, number, number];
+const RGB_FALLBACK: Rgb = [0xff, 0xff, 0xff];
 
 function editVerb(state: "success" | "pending" | "error", kind: ApplyPatchEditKind): string {
-	if (kind === "semantic") {
-		return state === "pending" ? "Semantic editing" : "Semantic edited";
-	}
+	void kind;
 	return state === "pending" ? "Editing" : "Edited";
 }
 
@@ -290,6 +261,126 @@ function isSemanticPatchInput(input: string): boolean {
 	return input.includes("*** Update Scope: ");
 }
 const shikiCache = new Map<string, string[]>();
+
+function applyPatchElapsedMs(
+	context: { state?: ApplyPatchRenderState } | undefined,
+	running: boolean,
+): number | undefined {
+	const state = context?.state;
+	if (!running || !state) return undefined;
+	state.startedAtMs ??= Date.now();
+	return Date.now() - state.startedAtMs;
+}
+
+function scheduleApplyPatchInvalidation(
+	context: { state?: ApplyPatchRenderState; invalidate?: () => void } | undefined,
+	running: boolean,
+): void {
+	const state = context?.state;
+	if (!state) return;
+	if (!running) {
+		if (state.elapsedTimer) {
+			clearTimeout(state.elapsedTimer);
+			state.elapsedTimer = undefined;
+		}
+		return;
+	}
+	if (state.elapsedTimer || !context?.invalidate) return;
+	state.elapsedTimer = setTimeout(() => {
+		state.elapsedTimer = undefined;
+		context.invalidate?.();
+	}, APPLY_PATCH_FRAME_MS);
+	state.elapsedTimer.unref?.();
+}
+
+function applyPatchRunningFrame(elapsedMs: number | undefined): string {
+	if (elapsedMs === undefined) return APPLY_PATCH_RUNNING_FRAMES[0]!;
+	return APPLY_PATCH_RUNNING_FRAMES[Math.floor(elapsedMs / APPLY_PATCH_FRAME_MS) % APPLY_PATCH_RUNNING_FRAMES.length]!;
+}
+
+function applyPatchPreparingLabel(theme: ThemeLike, elapsedMs: number | undefined): string {
+	const baseAnsi = colorAnsi(theme, "accent");
+	if (!baseAnsi) return theme.fg("warning", APPLY_PATCH_LABEL);
+	const base = scaleRgb(colorRgb(theme, "accent"), 0.55);
+	const shine = scaleRgb(colorRgb(theme, "accent"), 1.55);
+	const chars = [...APPLY_PATCH_LABEL];
+	const step = Math.floor((elapsedMs ?? 0) / APPLY_PATCH_LABEL_PERCOLATION_MS);
+	const cycle = chars.length + APPLY_PATCH_LABEL_SHINE_WIDTH;
+	const pos = step % cycle;
+	return `${chars
+		.map((ch, index) => {
+			const inShine = index >= pos - APPLY_PATCH_LABEL_SHINE_WIDTH && index < pos;
+			return `${rgbFg(inShine ? shine : base)}${ch}`;
+		})
+		.join("")}\x1b[39m`;
+}
+
+function renderApplyPatchPreparingStatus(theme: ThemeLike, elapsedMs: number | undefined): string {
+	const spinner = theme.fg("dim", applyPatchRunningFrame(elapsedMs));
+	return `${spinner} ${applyPatchPreparingLabel(theme, elapsedMs)}`;
+}
+
+function ansi256ToRgb(code: number): Rgb {
+	if (code < 16) {
+		const base: Rgb[] = [
+			[0, 0, 0],
+			[128, 0, 0],
+			[0, 128, 0],
+			[128, 128, 0],
+			[0, 0, 128],
+			[128, 0, 128],
+			[0, 128, 128],
+			[192, 192, 192],
+			[128, 128, 128],
+			[255, 0, 0],
+			[0, 255, 0],
+			[255, 255, 0],
+			[0, 0, 255],
+			[255, 0, 255],
+			[0, 255, 255],
+			[255, 255, 255],
+		];
+		return base[code] ?? RGB_FALLBACK;
+	}
+	if (code >= 16 && code <= 231) {
+		const n = code - 16;
+		const r = Math.floor(n / 36);
+		const g = Math.floor((n % 36) / 6);
+		const b = n % 6;
+		const scale = (value: number) => (value === 0 ? 0 : 55 + value * 40);
+		return [scale(r), scale(g), scale(b)];
+	}
+	const gray = 8 + (code - 232) * 10;
+	return [gray, gray, gray];
+}
+
+function colorAnsi(theme: Pick<ThemeLike, "fg" | "getFgAnsi">, color: string): string | undefined {
+	if (theme.getFgAnsi) return theme.getFgAnsi(color);
+	const sample = theme.fg(color, "x");
+	const marker = sample.indexOf("x");
+	const ansi = marker >= 0 ? sample.slice(0, marker) : undefined;
+	return ansi?.includes("\x1b[38;") ? ansi : undefined;
+}
+
+function colorRgb(theme: Pick<ThemeLike, "fg" | "getFgAnsi">, color: string): Rgb {
+	const ansi = colorAnsi(theme, color);
+	const truecolor = ansi?.match(/\x1b\[38;2;(\d+);(\d+);(\d+)m/);
+	if (truecolor) return [Number(truecolor[1]), Number(truecolor[2]), Number(truecolor[3])];
+
+	const color256 = ansi?.match(/\x1b\[38;5;(\d+)m/);
+	if (color256) return ansi256ToRgb(Number(color256[1]));
+
+	return RGB_FALLBACK;
+}
+
+function scaleRgb([r, g, b]: Rgb, factor: number): Rgb {
+	const scale = (value: number) => Math.round(Math.max(0, Math.min(255, value * factor)));
+	return [scale(r), scale(g), scale(b)];
+}
+
+function rgbFg([r, g, b]: Rgb): string {
+	return `\x1b[38;2;${r};${g};${b}m`;
+}
 
 class ApplyPatchDiffView {
 	private renderedDiffCache?: {
@@ -395,14 +486,10 @@ class ApplyPatchDiffView {
 			return prependIntentLine(diffLines, this.intent, this.theme, safeWidth);
 		}
 
-		const fallbackBody = this.state === "error" ? this.fallbackBody.replace(ANSI_PATTERN, "") : this.fallbackBody;
-		const bodyLines = fallbackBody.split("\n");
-		while (bodyLines.length > 0 && bodyLines[0].trim() === "") {
-			bodyLines.shift();
-		}
-		while (bodyLines.at(-1)?.trim() === "") {
-			bodyLines.pop();
-		}
+		const bodyLines =
+			this.state === "error" ? summarizePatchFailure(this.fallbackBody) : this.fallbackBody.split("\n");
+		while (bodyLines.length > 0 && bodyLines[0].trim() === "") bodyLines.shift();
+		while (bodyLines.at(-1)?.trim() === "") bodyLines.pop();
 		const content = bodyLines.length > 0 ? bodyLines : [this.theme.fg("muted", "(no diff)")];
 		const intentLines = formatIntentLines(this.intent, this.theme, safeWidth).map((line) => paintLine(line));
 		if (this.state === "error") {
@@ -440,21 +527,6 @@ class ApplyPatchDiffView {
 		const markerColor = this.state === "error" ? "error" : this.state === "pending" ? "warning" : "toolTitle";
 		const title = `${this.theme.fg(markerColor, marker)} ${this.theme.fg("toolTitle", this.theme.bold(verb))} ${this.theme.fg("accent", this.label)}${stats}`;
 		return truncateToWidth(title, width, "…", true);
-	}
-}
-
-class LivePreviewUntilResult {
-	constructor(
-		private state: ApplyPatchRenderState,
-		private preview: ApplyPatchDiffView,
-	) {}
-
-	invalidate() {
-		this.preview.invalidate();
-	}
-
-	render(width: number): string[] {
-		return this.state.resultRendered ? [] : this.preview.render(width);
 	}
 }
 
@@ -994,6 +1066,45 @@ function styleFailureDiagnosticLine(line: string, index: number, theme: ThemeLik
 	return normalized;
 }
 
+function summarizePatchFailure(text: string): string[] {
+	const lines = text
+		.replace(ANSI_PATTERN, "")
+		.replace(/\r\n?/g, "\n")
+		.split("\n")
+		.map((line) => line.trimEnd())
+		.filter((line) => line.trim().length > 0);
+	if (lines.length <= 12) return lines;
+
+	const selected: string[] = [];
+	const add = (line: string | undefined) => {
+		if (line && !selected.includes(line) && selected.length < 12) selected.push(line);
+	};
+
+	add(lines[0]);
+	for (const line of lines.slice(1)) {
+		if (
+			line.startsWith("file state ") ||
+			line.startsWith("available files:") ||
+			line.startsWith("suggested anchors:")
+		) {
+			add(line);
+		}
+	}
+	for (const line of lines.slice(1)) {
+		if (line.includes("@@ lines ") || line.includes("candidate")) add(line);
+	}
+	for (const line of lines.slice(1)) {
+		if (/^\s*\d+:/.test(line)) add(line);
+	}
+	if (selected.length < lines.length || lines.some((line) => !selected.includes(line))) {
+		const omitted = lines.filter((line) => !selected.includes(line)).length;
+		const summary = `… ${omitted} more diagnostic line${omitted === 1 ? "" : "s"} omitted`;
+		if (selected.length >= 12) selected[selected.length - 1] = summary;
+		else add(summary);
+	}
+	return selected;
+}
+
 function renderFailureDiagnosticRows(
 	lines: string[],
 	theme: ThemeLike,
@@ -1047,17 +1158,6 @@ function diffContentForRow(row: ParsedDiffLine): string {
 	return row.highlightedContent ?? highlightDiffContent(row.content, row.path);
 }
 
-function diffBlockStats(rows: ParsedDiffLine[], hunkIndex: number): { added: number; removed: number } {
-	const stats = { added: 0, removed: 0 };
-	for (let index = hunkIndex + 1; index < rows.length; index += 1) {
-		const row = rows[index];
-		if (!row || row.kind === "hunk") break;
-		if (row.kind === "add") stats.added += 1;
-		if (row.kind === "remove") stats.removed += 1;
-	}
-	return stats;
-}
-
 function diffBlockScope(rows: ParsedDiffLine[], hunkIndex: number): ApplyPatchPreviewScope | undefined {
 	for (let index = hunkIndex + 1; index < rows.length; index += 1) {
 		const row = rows[index];
@@ -1067,12 +1167,11 @@ function diffBlockScope(rows: ParsedDiffLine[], hunkIndex: number): ApplyPatchPr
 	return undefined;
 }
 
-function diffScopeRunStats(rows: ParsedDiffLine[], rowIndex: number, key: string): { added: number; removed: number } {
+function diffFileStats(rows: ParsedDiffLine[], path: string | undefined): { added: number; removed: number } {
+	const key = path ?? "patch";
 	const stats = { added: 0, removed: 0 };
-	for (let index = rowIndex; index < rows.length; index += 1) {
-		const row = rows[index];
-		if (!row || row.kind === "hunk") break;
-		if (formatScopeKey(row.path, row.scope) !== key) break;
+	for (const row of rows) {
+		if ((row.path ?? "patch") !== key) continue;
 		if (row.kind === "add") stats.added += 1;
 		if (row.kind === "remove") stats.removed += 1;
 	}
@@ -1081,6 +1180,20 @@ function diffScopeRunStats(rows: ParsedDiffLine[], rowIndex: number, key: string
 
 function formatScopeKey(path: string | undefined, scope: ApplyPatchPreviewScope | undefined): string | undefined {
 	return scope ? `${path ?? ""}:${scope.kind}:${scope.name}:${scope.start_line}-${scope.end_line}` : undefined;
+}
+
+function renderScopeHeader(
+	theme: ThemeLike,
+	scope: ApplyPatchPreviewScope,
+	numberWidth: number,
+	width: number,
+	baseBackground: string | undefined,
+): string {
+	const label = `${" ".repeat(numberWidth)} ${theme.fg("dim", "▾")} ${theme.fg(
+		"muted",
+		`${scope.kind} `,
+	)}${theme.fg("accent", scope.name)}${theme.fg("dim", `:${scope.start_line}-${scope.end_line}`)}`;
+	return paintDiffRow(label, width, baseBackground);
 }
 
 function editBlockHeader(
@@ -1106,6 +1219,7 @@ function renderUnifiedDiffRows(
 	fileVerb = "Edited",
 	editKind: ApplyPatchEditKind = "raw",
 ): string[] {
+	void editKind;
 	const numberWidth = diffLineNumberWidth(rows);
 	const gutterWidth = numberWidth + 3;
 	const codeWidth = Math.max(8, width - gutterWidth);
@@ -1115,9 +1229,18 @@ function renderUnifiedDiffRows(
 	let currentScopeKey: string | undefined;
 
 	for (const [rowIndex, row] of rows.entries()) {
-		if (row.path && row.path !== currentPath) {
-			currentPath = row.path;
+		const rowPath = row.path ?? currentPath ?? "patch";
+		if (rowPath !== currentPath) {
+			if (lines.length > 0) lines.push(paintDiffRow("", width, baseBackground));
+			currentPath = rowPath;
 			currentScopeKey = undefined;
+			lines.push(
+				paintDiffRow(
+					editBlockHeader(theme, fileVerb, rowPath, undefined, diffFileStats(rows, rowPath), "raw"),
+					width,
+					baseBackground,
+				),
+			);
 		}
 
 		const scopeKey = row.scope
@@ -1125,50 +1248,13 @@ function renderUnifiedDiffRows(
 			: undefined;
 		if (scopeKey && scopeKey !== currentScopeKey) {
 			currentScopeKey = scopeKey;
-			const scope = row.scope!;
-			if (editKind === "semantic") {
-				if (lines.length > 0) lines.push(paintDiffRow("", width, baseBackground));
-				lines.push(
-					paintDiffRow(
-						editBlockHeader(
-							theme,
-							fileVerb,
-							row.path ?? currentPath,
-							scope,
-							diffScopeRunStats(rows, rowIndex, scopeKey),
-							editKind,
-						),
-						width,
-						baseBackground,
-					),
-				);
-			} else {
-				const label = `${" ".repeat(numberWidth)} ${theme.fg("dim", "▾")} ${theme.fg(
-					"muted",
-					`${scope.kind} `,
-				)}${theme.fg("accent", scope.name)}${theme.fg("dim", `:${scope.start_line}-${scope.end_line}`)}`;
-				lines.push(paintDiffRow(label, width, baseBackground));
-			}
+			lines.push(renderScopeHeader(theme, row.scope!, numberWidth, width, baseBackground));
 		}
 
 		if (row.kind === "hunk") {
-			if (lines.length > 0) lines.push(paintDiffRow("", width, baseBackground));
 			const blockScope = diffBlockScope(rows, rowIndex);
 			currentScopeKey = formatScopeKey(row.path, blockScope);
-			lines.push(
-				paintDiffRow(
-					editBlockHeader(
-						theme,
-						fileVerb,
-						row.path ?? currentPath,
-						blockScope,
-						diffBlockStats(rows, rowIndex),
-						editKind,
-					),
-					width,
-					baseBackground,
-				),
-			);
+			if (blockScope) lines.push(renderScopeHeader(theme, blockScope, numberWidth, width, baseBackground));
 			continue;
 		}
 
@@ -1201,7 +1287,7 @@ function limitDiffRows(
 		return [
 			paintDiffRow(
 				theme.fg("muted", `Diff hidden (${rows.length} line${rows.length === 1 ? "" : "s"}; `) +
-					keyHint("app.tools.expand", "or click to expand") +
+					keyHint("app.tools.expand", "to expand") +
 					theme.fg("muted", ")"),
 				width,
 				baseBackground,
@@ -1222,7 +1308,7 @@ function limitDiffRows(
 		...head,
 		paintDiffRow(
 			theme.fg("muted", `… ${remaining} more diff line${remaining === 1 ? "" : "s"} (`) +
-				keyHint("app.tools.expand", "or click to expand") +
+				keyHint("app.tools.expand", "to expand") +
 				theme.fg("muted", ")"),
 			width,
 			baseBackground,
@@ -1248,7 +1334,7 @@ function renderNativeDiff(
 		return [
 			paintDiffRow(
 				theme.fg("muted", `Diff hidden (${lineCount} line${lineCount === 1 ? "" : "s"}; `) +
-					keyHint("app.tools.expand", "or click to expand") +
+					keyHint("app.tools.expand", "to expand") +
 					theme.fg("muted", ")"),
 				width,
 				baseBackground,
@@ -1502,17 +1588,6 @@ function parsePatchInputProgress(input: string): {
 	return { totalOperations: files.length, files };
 }
 
-function createLivePatchPreviewState(): LivePatchPreviewState {
-	return {
-		input: "",
-		carry: "",
-		totalOperations: 0,
-		files: [],
-		rows: [],
-		newLine: null,
-	};
-}
-
 function extractPatchIntent(input: string): string | undefined {
 	for (const line of input.replace(/\r\n?/g, "\n").split("\n")) {
 		if (line.trim() === "*** Begin Patch" || line.trim().length === 0) continue;
@@ -1523,35 +1598,6 @@ function extractPatchIntent(input: string): string | undefined {
 		return undefined;
 	}
 	return undefined;
-}
-
-function parseLivePatchPreview(input: string, previous: LivePatchPreviewState | undefined): LivePatchPreviewState {
-	const normalized = input.replace(/\r\n?/g, "\n");
-	const state = previous && normalized.startsWith(previous.input) ? previous : createLivePatchPreviewState();
-	const appended = normalized.slice(state.input.length);
-	state.input = normalized;
-
-	const chunk = state.carry + appended;
-	const lines = chunk.split("\n");
-	state.carry = normalized.endsWith("\n") ? "" : (lines.pop() ?? "");
-	for (const line of lines) {
-		ingestLivePatchLine(state, line);
-	}
-
-	return state;
-}
-
-function filesFromPreviewChanges(changes: ApplyPatchPreviewChange[] | undefined): ApplyPatchProgressFile[] {
-	return (changes ?? [])
-		.filter((change) => typeof change.path === "string" && change.path.length > 0)
-		.map((change) => ({
-			path: change.path as string,
-			moveTo: change.move_path ?? undefined,
-			operation: change.type === "add" ? "add" : change.type === "delete" ? "delete" : "update",
-			added: change.additions ?? 0,
-			removed: change.deletions ?? 0,
-			done: true,
-		}));
 }
 
 function markFilesSemantic(files: ApplyPatchProgressFile[], semantic: boolean): ApplyPatchProgressFile[] {
@@ -1584,250 +1630,6 @@ async function runApplyPatchPreview(
 		input,
 	});
 	return parsePreviewResponse(stdout);
-}
-
-function handlePreviewSnapshot(state: ApplyPatchRenderState, preview: ApplyPatchPreviewResponse | undefined): void {
-	if (preview?.status === "valid" && preview.diff) {
-		if (state.previewDiff !== preview.diff) {
-			state.previewDiff = preview.diff;
-			state.previewRows = parseUnifiedDiffWithScopes(preview.diff, preview.changes);
-			state.previewFiles = markFilesSemantic(
-				filesFromPreviewChanges(preview.changes),
-				state.previewSemantic ?? false,
-			);
-		}
-		state.previewError = undefined;
-		return;
-	}
-	// Keep the last good snapshot through transient partial invalidity. Streaming
-	// input often passes through temporarily invalid states between provider
-	// chunks; clearing here causes flicker and hides useful context.
-	state.previewError = preview?.error;
-}
-
-function stopPreviewWorker(state: ApplyPatchRenderState): void {
-	const worker = state.previewWorker;
-	if (!worker) return;
-	state.previewWorker = undefined;
-	worker.stopped = true;
-	if (worker.timer) {
-		clearTimeout(worker.timer);
-		worker.timer = undefined;
-	}
-	try {
-		worker.child.stdin.write(`${JSON.stringify({ stop: true })}\n`);
-		worker.child.stdin.end();
-	} catch {
-		// Process may already be closed.
-	}
-	setTimeout(() => {
-		if (!worker.child.killed) worker.child.kill();
-	}, 250).unref?.();
-}
-
-function startPreviewWorker(cwd: string, state: ApplyPatchRenderState, invalidate: () => void): PreviewWorker {
-	const existing = state.previewWorker;
-	if (existing && !existing.stopped) return existing;
-
-	const worker: PreviewWorker = {
-		child: spawn("ct", ["apply-patch", "preview", "--cwd", cwd, "--partial", "--watch", "--jsonl"], {
-			cwd,
-			env: process.env,
-			stdio: ["pipe", "pipe", "pipe"],
-		}),
-		stdoutBuffer: "",
-		stderr: "",
-		pending: false,
-	};
-	state.previewWorker = worker;
-
-	worker.child.stdout.on("data", (chunk) => {
-		if (worker.stopped) return;
-		worker.stdoutBuffer += Buffer.from(chunk).toString("utf8");
-		const lines = worker.stdoutBuffer.split("\n");
-		worker.stdoutBuffer = lines.pop() ?? "";
-		for (const line of lines) {
-			if (worker.stopped) return;
-			if (!line.trim()) continue;
-			worker.pending = false;
-			try {
-				handlePreviewSnapshot(state, JSON.parse(line) as ApplyPatchPreviewResponse);
-			} catch (error) {
-				state.previewError = error instanceof Error ? error.message : String(error);
-			}
-		}
-		if (worker.stopped) return;
-		invalidate();
-		schedulePreviewWorkerUpdate(state, invalidate);
-	});
-
-	worker.child.stderr.on("data", (chunk) => {
-		worker.stderr = `${worker.stderr}${Buffer.from(chunk).toString("utf8")}`.slice(-4000);
-	});
-	worker.child.stdin.on("error", (error) => {
-		if (worker.stopped) return;
-		state.previewError = error instanceof Error ? error.message : String(error);
-		invalidate();
-	});
-	worker.child.on("error", (error) => {
-		if (worker.stopped) return;
-		state.previewError =
-			(error as NodeJS.ErrnoException).code === "ENOENT"
-				? "ct not found on PATH"
-				: error instanceof Error
-					? error.message
-					: String(error);
-		invalidate();
-	});
-	worker.child.on("close", (exitCode) => {
-		if (state.previewWorker === worker) state.previewWorker = undefined;
-		if (worker.stopped) return;
-		worker.pending = false;
-		state.previewError =
-			exitCode === 0 ? undefined : trimOutput(worker.stderr) || `ct preview worker exited with ${exitCode ?? 1}`;
-		invalidate();
-	});
-
-	return worker;
-}
-
-function schedulePreviewWorkerUpdate(state: ApplyPatchRenderState, invalidate: () => void): void {
-	const worker = state.previewWorker;
-	if (!worker || worker.stopped || worker.timer || worker.pending) return;
-	worker.timer = setTimeout(() => {
-		worker.timer = undefined;
-		if (worker.stopped || worker.pending) return;
-		const input = state.previewInput;
-		if (!input || input === worker.lastSentInput) return;
-		worker.pending = true;
-		worker.lastSentInput = input;
-		try {
-			worker.child.stdin.write(`${JSON.stringify({ input })}\n`);
-		} catch (error) {
-			worker.pending = false;
-			state.previewError = error instanceof Error ? error.message : String(error);
-			invalidate();
-		}
-	}, PREVIEW_THROTTLE_MS);
-}
-
-function startLivePatchFile(
-	state: LivePatchPreviewState,
-	operation: ApplyPatchProgressFile["operation"],
-	path: string,
-	semantic = false,
-) {
-	if (state.currentFile) state.currentFile.done = true;
-	const file: ApplyPatchProgressFile = {
-		path,
-		operation,
-		added: 0,
-		removed: 0,
-		semantic,
-	};
-	state.files.push(file);
-	state.currentFile = file;
-	state.currentPath = path;
-	state.currentOperation = operation;
-	state.totalOperations += 1;
-	state.newLine = operation === "add" ? 1 : null;
-}
-
-function ingestLivePatchLine(state: LivePatchPreviewState, line: string): void {
-	if (line.startsWith("*** Intent: ")) {
-		state.intent = line.slice("*** Intent: ".length).replace(/\s+/g, " ").trim() || undefined;
-		return;
-	}
-	if (line.startsWith("*** Add File: ")) {
-		startLivePatchFile(state, "add", line.slice("*** Add File: ".length).trim());
-		return;
-	}
-	if (line.startsWith("*** Update File: ")) {
-		startLivePatchFile(state, "update", line.slice("*** Update File: ".length).trim());
-		return;
-	}
-	if (line.startsWith("*** Move File: ")) {
-		const spec = line.slice("*** Move File: ".length).trim();
-		const [from, to] = spec.split(" -> ", 2);
-		startLivePatchFile(state, "update", from?.trim() ?? spec);
-		if (state.currentFile) {
-			state.currentFile.moveTo = to?.trim();
-			state.currentPath = state.currentFile.moveTo;
-		}
-		return;
-	}
-	if (line.startsWith("*** Replace All In File: ")) {
-		startLivePatchFile(state, "update", line.slice("*** Replace All In File: ".length).trim());
-		return;
-	}
-	if (line.startsWith("*** Update Scope: ")) {
-		startLivePatchFile(state, "update", line.slice("*** Update Scope: ".length).trim(), true);
-		return;
-	}
-	if (line.startsWith("*** Delete File: ")) {
-		startLivePatchFile(state, "delete", line.slice("*** Delete File: ".length).trim());
-		if (state.currentFile) state.currentFile.done = true;
-		return;
-	}
-	if (line.startsWith("*** Move to: ")) {
-		if (state.currentFile) {
-			state.currentFile.moveTo = line.slice("*** Move to: ".length).trim();
-			state.currentPath = state.currentFile.moveTo;
-		}
-		return;
-	}
-	if (line === "*** End Patch") {
-		if (state.currentFile) state.currentFile.done = true;
-		state.currentFile = undefined;
-		return;
-	}
-	if (!state.currentFile || !state.currentPath) return;
-	if (line.startsWith("@@")) {
-		state.rows.push({
-			kind: "hunk",
-			oldLine: null,
-			newLine: null,
-			content: line,
-			path: state.currentPath,
-		});
-		state.newLine = state.currentOperation === "add" ? (state.newLine ?? 1) : null;
-		return;
-	}
-	if (line.startsWith("+")) {
-		const newLine = state.newLine;
-		state.rows.push({
-			kind: "add",
-			oldLine: null,
-			newLine,
-			content: line.slice(1),
-			path: state.currentPath,
-		});
-		state.currentFile.added += 1;
-		if (newLine !== null) state.newLine = newLine + 1;
-		return;
-	}
-	if (line.startsWith("-")) {
-		state.rows.push({
-			kind: "remove",
-			oldLine: null,
-			newLine: null,
-			content: line.slice(1),
-			path: state.currentPath,
-		});
-		state.currentFile.removed += 1;
-		return;
-	}
-	if (line.startsWith(" ")) {
-		const newLine = state.newLine;
-		state.rows.push({
-			kind: "context",
-			oldLine: null,
-			newLine,
-			content: line.slice(1),
-			path: state.currentPath,
-		});
-		if (newLine !== null) state.newLine = newLine + 1;
-	}
 }
 
 function parseApplyPatchSummary(stdout: string): number {
@@ -2126,126 +1928,25 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 		parameters: applyPatchToolSchema,
 		renderShell: "self",
 		executionMode: "sequential",
-		renderCall(args, theme, context) {
+		renderCall(_args, theme, context) {
 			if (!config.richRender) return new Text(title(theme, nf.apply, "apply_patch"), 0, 0);
 			const state = context.state as ApplyPatchRenderState;
-			if (!context.isPartial || state.resultRendered) {
-				stopPreviewWorker(state);
+			if (!context.isPartial || state.resultRendered || context.executionStarted) {
+				scheduleApplyPatchInvalidation(
+					context as { state?: ApplyPatchRenderState; invalidate?: () => void },
+					false,
+				);
 				return new Text("", 0, 0);
 			}
-			const input = typeof args?.input === "string" ? args.input : "";
-			const inputKey = patchInputKey(input);
-			const semanticInput = isSemanticPatchInput(input);
-			const intent = extractPatchIntent(input);
-			const renderCachedPreview = (label: string) =>
-				state.previewRows && state.previewRows.length > 0
-					? new LivePreviewUntilResult(
-							state,
-							new ApplyPatchDiffView(
-								"patch",
-								state.previewFiles ?? state.livePreview?.files ?? [],
-								theme.fg("warning", "Applying patch..."),
-								theme,
-								config,
-								"pending",
-								label,
-								undefined,
-								context.expanded,
-								state.previewRows,
-								config.maxDiffLines,
-								state.previewSemantic ? "semantic" : editKindFromFiles(state.previewFiles),
-								intent ?? state.livePreview?.intent,
-							),
-						)
-					: undefined;
-			if (context.executionStarted) {
-				stopPreviewWorker(state);
-				return renderCachedPreview("Patching") ?? new Text("", 0, 0);
-			}
-
-			if (inputKey && (executingPatchInputs.has(inputKey) || completedPatchInputs.has(inputKey))) {
-				stopPreviewWorker(state);
-				return renderCachedPreview("Patching") ?? new Text("", 0, 0);
-			}
-
-			if (!context.argsComplete) {
-				state.livePreview = parseLivePatchPreview(input, state.livePreview);
-				if (inputKey && input.includes("\n")) {
-					state.previewInput = input;
-					state.previewSemantic = semanticInput;
-					startPreviewWorker(context.cwd, state, context.invalidate);
-					schedulePreviewWorkerUpdate(state, context.invalidate);
-				}
-				if (state.previewRows && state.previewRows.length > 0) {
-					return new ApplyPatchDiffView(
-						"patch",
-						state.previewFiles ?? state.livePreview.files,
-						theme.fg("warning", "Streaming patch..."),
-						theme,
-						config,
-						"pending",
-						"Streaming",
-						undefined,
-						context.expanded,
-						state.previewRows,
-						config.maxDiffLines,
-						semanticInput ? "semantic" : editKindFromFiles(state.previewFiles),
-						intent ?? state.livePreview.intent,
-					);
-				}
-				if (state.livePreview.rows.length > 0) {
-					return new ApplyPatchDiffView(
-						"patch",
-						state.livePreview.files,
-						theme.fg("warning", "Streaming patch..."),
-						theme,
-						config,
-						"pending",
-						"Streaming",
-						undefined,
-						context.expanded,
-						state.livePreview.rows,
-						config.maxDiffLines,
-						semanticInput ? "semantic" : editKindFromFiles(state.livePreview.files),
-						intent ?? state.livePreview.intent,
-					);
-				}
-				if (state.livePreview.files.length > 0) {
-					let text = title(theme, nf.apply, "apply_patch", "streaming");
-					text += `\n${state.livePreview.files.map((file) => formatCounterLine(theme, file)).join("\n")}`;
-					return new Text(text, 0, 0);
-				}
-				if (input.trim().length > 0) {
-					const lineCount = input.replace(/\r\n?/g, "\n").split("\n").length;
-					return new Text(
-						`${title(theme, nf.apply, "apply_patch", "streaming")}\n${theme.fg(
-							"muted",
-							`receiving patch (${lineCount} line${lineCount === 1 ? "" : "s"})`,
-						)}`,
-						0,
-						0,
-					);
-				}
-				return new Text(title(theme, nf.apply, "apply_patch", "streaming"), 0, 0);
-			}
-
-			stopPreviewWorker(state);
-			const preview = renderCachedPreview("Patching");
-			if (preview) return preview;
-			const progress =
-				state.progressCache?.key === inputKey ? state.progressCache.progress : parsePatchInputProgress(input);
-			state.progressCache = { key: inputKey, progress };
-			let text = title(theme, nf.apply, "apply_patch");
-			if (progress.totalOperations > 0) {
-				text += theme.fg(
-					"muted",
-					` (${progress.totalOperations} file${progress.totalOperations === 1 ? "" : "s"})`,
-				);
-			}
-			if (progress.files.length > 0) {
-				text += `\n${progress.files.map((file) => formatCounterLine(theme, file)).join("\n")}`;
-			}
-			return new Text(text, 0, 0);
+			scheduleApplyPatchInvalidation(context as { state?: ApplyPatchRenderState; invalidate?: () => void }, true);
+			return new Text(
+				renderApplyPatchPreparingStatus(
+					theme,
+					applyPatchElapsedMs(context as { state?: ApplyPatchRenderState }, true),
+				),
+				0,
+				0,
+			);
 		},
 		renderResult(result, { expanded, isPartial }, theme, context) {
 			if (!config.richRender) {
@@ -2272,12 +1973,9 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 			const displayRows = mergeScopedDiffRows(highlightedRows, scopedRows);
 			const state = context.state as ApplyPatchRenderState;
 			state.resultRendered = true;
-			stopPreviewWorker(state);
+			scheduleApplyPatchInvalidation(context as { state?: ApplyPatchRenderState; invalidate?: () => void }, false);
 			if (isPartial) state.renderedLiveResult = true;
-			const diffLineLimit =
-				isPartial || state.renderedLiveResult || state.livePreview
-					? config.maxDiffLines
-					: config.resumeMaxDiffLines;
+			const diffLineLimit = config.maxDiffLines;
 
 			if (isPartial) {
 				if (details?.stage === "validate") {

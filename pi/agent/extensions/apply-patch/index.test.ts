@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initTheme } from "@earendil-works/pi-coding-agent";
@@ -83,6 +83,11 @@ const theme = {
 	getBgAnsi: () => undefined,
 };
 
+const rgbTheme = {
+	...theme,
+	getFgAnsi: (role: string) => (role === "accent" ? "\x1b[38;2;100;120;200m" : "\x1b[38;2;255;255;255m"),
+};
+
 function stripAnsi(text: string): string {
 	return text.replace(ANSI_PATTERN, "");
 }
@@ -147,30 +152,9 @@ function renderContext(cwd: string, state: Record<string, unknown>, overrides: R
 	};
 }
 
-function delay(ms: number) {
-	return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-describe("apply_patch streaming renderer", () => {
-	it("streams authored diff rows immediately before preview worker line-number upgrade", async () => {
+describe("apply_patch renderer", () => {
+	it("shows only a preparing status while patch input streams", () => {
 		const cwd = mkdtempSync(join(tmpdir(), "apply-patch-render-"));
-		writeFileSync(
-			join(cwd, "sample.js"),
-			[
-				"function renderSummary(summary) {",
-				"const lines = [",
-				"  `total words: $" + "{summary.totalWords}`,",
-				"  `unique words: $" + "{summary.uniqueWords}`,",
-				"  `most common character: $" +
-					'{summary.mostCommonCharacter?.char ?? "(none)"} ($' +
-					"{summary.mostCommonCharacter?.count ?? 0} occurrences)`,",
-				"  `last word: $" + '{summary.lastWord ?? "(none)"}`,',
-				"  ];",
-				"}",
-				"",
-			].join("\n"),
-		);
-
 		const patchInput = `*** Begin Patch
 *** Update File: sample.js
 @@
@@ -182,31 +166,19 @@ describe("apply_patch streaming renderer", () => {
 		const tool = registerApplyPatchTool();
 		const state: Record<string, unknown> = {};
 
-		const first = tool.renderCall({ input: patchInput }, theme, renderContext(cwd, state, { argsComplete: false }));
-		const firstText = renderText(first);
-		expect(firstText).toContain("sample.js");
-		expect(firstText).toContain("occurrences)");
-		expect(firstText).toContain("hits)");
-		expect(firstText).not.toContain("5 -");
-		expect(firstText).not.toContain("5 +");
-
-		await delay(1500);
-
-		const second = tool.renderCall({ input: patchInput }, theme, renderContext(cwd, state, { argsComplete: false }));
-		const secondText = renderText(second);
-
-		expect(secondText).toContain("Editing sample.js (+1 -1)");
-		expect(secondText).toContain("5 -");
-		expect(secondText).toContain("5 +");
-		expect(secondText).toContain("occurrences)");
-		expect(secondText).toContain("hits)");
-
-		const executionStarted = tool.renderCall(
+		const rendered = tool.renderCall(
 			{ input: patchInput },
 			theme,
-			renderContext(cwd, state, { executionStarted: true }),
+			renderContext(cwd, state, { argsComplete: false }),
 		);
-		expect(renderText(executionStarted)).toContain("Editing sample.js (+1 -1)");
+		const text = renderText(rendered);
+		expect(text).toContain("Preparing patch…");
+		expect(text).toContain("⠋");
+		expect(text).not.toContain("apply_patch");
+		expect(text).not.toContain("sample.js");
+		expect(text).not.toContain("occurrences)");
+		expect(text).not.toContain("hits)");
+		if (state.elapsedTimer) clearTimeout(state.elapsedTimer as ReturnType<typeof setTimeout>);
 
 		const result = tool.renderResult(
 			{
@@ -223,9 +195,83 @@ describe("apply_patch streaming renderer", () => {
 			renderContext(cwd, state, { executionStarted: true }),
 		);
 		expect(renderText(result)).toContain("Edited sample.js (+1 -1)");
-		expect(renderText(executionStarted)).toBe("");
 
 		tool.renderCall({ input: patchInput }, theme, renderContext(cwd, state, { argsComplete: true }));
+	});
+
+	it("animates the preparing status with a spinner and Working-style trickle", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "apply-patch-render-animation-"));
+		const tool = registerApplyPatchTool();
+		const state: Record<string, unknown> = {};
+
+		const early = tool
+			.renderCall({ input: "*** Begin Patch\n" }, rgbTheme, renderContext(cwd, state, { argsComplete: false }))
+			.render(120)
+			.join("\n");
+		if (state.elapsedTimer) {
+			clearTimeout(state.elapsedTimer as ReturnType<typeof setTimeout>);
+			state.elapsedTimer = undefined;
+		}
+		state.startedAtMs = Date.now() - 240;
+		const later = tool
+			.renderCall({ input: "*** Begin Patch\n" }, rgbTheme, renderContext(cwd, state, { argsComplete: false }))
+			.render(120)
+			.join("\n");
+		if (state.elapsedTimer) clearTimeout(state.elapsedTimer as ReturnType<typeof setTimeout>);
+
+		expect(stripAnsi(early)).toContain("Preparing patch…");
+		expect(stripAnsi(later)).toContain("Preparing patch…");
+		expect(stripAnsi(early)).not.toContain("apply_patch");
+		expect(stripAnsi(early)).toContain("⠋");
+		expect(stripAnsi(later)).toContain("⠹");
+		expect(early).not.toBe(later);
+		expect(later).toContain("\x1b[38;2;155;186;255m");
+	});
+
+	it("renders final diffs with one edited header per file", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "apply-patch-multifile-render-"));
+		const tool = registerApplyPatchTool();
+		const state: Record<string, unknown> = {};
+		const diff = `--- a/alpha.ts
++++ b/alpha.ts
+@@ -1,4 +1,4 @@
+ export function alpha() {
+-  return 1;
++  return 10;
+ }
+--- a/beta.ts
++++ b/beta.ts
+@@ -1,4 +1,4 @@
+ export function beta() {
+-  return 2;
++  return 20;
+ }
+`;
+
+		const result = tool.renderResult(
+			{
+				content: [{ type: "text", text: "M alpha.ts\nM beta.ts" }],
+				details: {
+					stage: "done",
+					filesChanged: 2,
+					fileDiffs: [
+						{ path: "alpha.ts", operation: "update", added: 1, removed: 1 },
+						{ path: "beta.ts", operation: "update", added: 1, removed: 1 },
+					],
+					diff,
+				},
+			},
+			{ expanded: false, isPartial: false },
+			theme,
+			renderContext(cwd, state),
+		);
+
+		const text = renderText(result);
+		expect(text.match(/Edited alpha\.ts/g)?.length).toBe(1);
+		expect(text.match(/Edited beta\.ts/g)?.length).toBe(1);
+		expect(text).toContain("return 10;");
+		expect(text).toContain("return 20;");
+		expect(text).not.toContain("Diff hidden");
 	});
 
 	it("renders patch intent before the diff", () => {
@@ -287,13 +333,11 @@ describe("apply_patch streaming renderer", () => {
 			theme,
 			renderContext(cwd, state, { argsComplete: false }),
 		);
-		const raw = rendered.render(140).join("\n");
-		const text = stripAnsi(raw);
+		const text = renderText(rendered);
 
-		expect(text).toContain("@vertex");
-		expect(text).toContain("fn vs_main() -> vec4<f32>");
-		expect(raw).toMatch(/\x1b\[[0-9;]*m@vertex\x1b\[[0-9;]*m/);
-		expect(raw).toMatch(/\x1b\[[0-9;]*mfn\x1b\[[0-9;]*m vs_main/);
+		expect(text).toContain("Preparing patch…");
+		expect(text).not.toContain("@vertex");
+		expect(text).not.toContain("fn vs_main() -> vec4<f32>");
 	});
 
 	it("renders final WGSL diff rows with inline syntax highlighting", () => {
@@ -374,7 +418,7 @@ describe("apply_patch streaming renderer", () => {
 `;
 
 		const initial = tool.renderCall({ input: patchInput }, theme, renderContext(cwd, state, { argsComplete: false }));
-		expect(renderText(initial)).toContain("new");
+		expect(renderText(initial)).toContain("Preparing patch…");
 
 		const finalizing = tool.renderCall(
 			{ input: patchInput },
@@ -385,52 +429,10 @@ describe("apply_patch streaming renderer", () => {
 		expect(renderText(finalizing)).toBe("");
 	});
 
-	it("renders semantic hunks as separate semantic editing blocks", async () => {
+	it("renders semantic hunks under one edited header per file", () => {
 		const cwd = mkdtempSync(join(tmpdir(), "apply-patch-semantic-render-"));
-		writeFileSync(
-			join(cwd, "sample.js"),
-			["function alpha() {", "  return 1;", "}", "", "function beta() {", "  return 2;", "}", ""].join("\n"),
-		);
-
-		const patchInput = `*** Begin Patch
-*** Update Scope: sample.js
-@@ function alpha
--  return 1;
-+  return 10;
-*** Update Scope: sample.js
-@@ function beta
--  return 2;
-+  return 20;
-*** End Patch
-`;
-
 		const tool = registerApplyPatchTool();
 		const state: Record<string, unknown> = {};
-		const immediate = tool.renderCall(
-			{ input: patchInput },
-			theme,
-			renderContext(cwd, state, { argsComplete: false }),
-		);
-		const immediateText = renderText(immediate);
-		expect(immediateText).toContain("Semantic editing sample.js");
-		expect(immediateText).toContain("return 10;");
-		expect(immediateText).toContain("return 20;");
-
-		await delay(1500);
-
-		const rendered = tool.renderCall(
-			{ input: patchInput },
-			theme,
-			renderContext(cwd, state, { argsComplete: false }),
-		);
-		const text = renderText(rendered);
-
-		expect(text).toContain("Semantic editing sample.js › function alpha");
-		expect(text).toContain("Semantic editing sample.js › function beta");
-		expect(text.match(/Semantic editing sample\.js/g)?.length).toBe(2);
-		expect(text).toContain("2 +   return 10;");
-		expect(text).toContain("6 +   return 20;");
-
 		const semanticDiff = `--- a/sample.js
 +++ b/sample.js
 @@ -1,7 +1,7 @@
@@ -554,8 +556,9 @@ describe("apply_patch streaming renderer", () => {
 			renderContext(cwd, state, { executionStarted: true }),
 		);
 		const finalText = renderText(final);
-		expect(finalText).toContain("Semantic edited sample.js › function alpha");
-		expect(finalText).toContain("Semantic edited sample.js › function beta");
+		expect(finalText.match(/Edited sample\.js/g)?.length).toBe(1);
+		expect(finalText).toContain("function alpha:1-3");
+		expect(finalText).toContain("function beta:5-7");
 	});
 
 	it("wraps long apply failure text inside the rendered width", () => {
@@ -581,6 +584,37 @@ describe("apply_patch streaming renderer", () => {
 		expect(lines.every((line) => line.length <= 72)).toBe(true);
 		expect(lines.join("\n")).toContain("widen the context");
 		expect(lines.join("\n")).toContain("pins to candidate");
+	});
+
+	it("keeps failed patch diagnostics concise", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "apply-patch-error-concise-render-"));
+		const tool = registerApplyPatchTool();
+		const state: Record<string, unknown> = {};
+		const verboseError = [
+			'Error: context not found in sample.ts at chunk #1: first expected line was "function target() {"',
+			"file state (closest match: line 40 at edit distance 2):",
+			...Array.from({ length: 18 }, (_, index) => `${30 + index}: const filler${index} = ${index};`),
+			"suggested anchors:",
+			"  @@ lines 40-44  → pins to candidate at line 40",
+		].join("\n");
+
+		const rendered = tool.renderResult(
+			{
+				content: [{ type: "text", text: verboseError }],
+				details: { stage: "apply" },
+			},
+			{ expanded: false, isPartial: false },
+			theme,
+			renderContext(cwd, state, { executionStarted: true }),
+		);
+		const text = renderText(rendered, 100);
+
+		expect(text).toContain("Error: context not found");
+		expect(text).toContain("file state (closest match");
+		expect(text).toContain("@@ lines 40-44");
+		expect(text).toContain("diagnostic lines omitted");
+		expect(text).not.toContain("filler17");
+		expect(text.split("\n").length).toBeLessThanOrEqual(16);
 	});
 
 	it("strips nested ANSI diff backgrounds from apply failure text", () => {
