@@ -14,7 +14,10 @@
   "packages": [
     "npm:@ifi/oh-pi-themes",
     "npm:@dreki-gg/pi-context7",
-    "npm:@plannotator/pi-extension"
+    {
+      "source": "npm:@plannotator/pi-extension",
+      "skills": []
+    }
   ],
   "extensions": [
     "extensions/plannotator-events/index.ts",
