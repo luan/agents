@@ -27,6 +27,14 @@ export interface EditorSessionIdentity {
 	color?: string;
 }
 
+export type WorkingTimerSnapshot = {
+	active: boolean;
+	startedAtMs?: number;
+	lastTurnMs?: number;
+	cumulativeMs: number;
+	persistedAtMs: number;
+};
+
 type UiPatchState = { currentUiTheme?: Theme };
 const globalPatchState = globalThis as typeof globalThis & {
 	__agentsPolishedTuiState?: UiPatchState;
@@ -36,6 +44,10 @@ const patchState = globalPatchState.__agentsPolishedTuiState;
 let cachedSkillNames: string[] = [];
 let workingActive = false;
 let workingFrame = 0;
+let workingStartedAtMs: number | undefined;
+let lastWorkingDurationMs: number | undefined;
+let cumulativeWorkingDurationMs = 0;
+let workingNowMsForTest: number | undefined;
 let editorSessionIdentityProvider: (() => EditorSessionIdentity | undefined) | undefined;
 
 const WORKING_WORD = "Working";
@@ -70,7 +82,76 @@ export function advanceWorkingAnimationFrame(): void {
 	workingFrame++;
 }
 
-export function setWorkingAnimationForTest(active: boolean, frame = 0): void {
+export function setWorkingTimerStarted(nowMs = Date.now()): void {
+	workingNowMsForTest = undefined;
+	workingStartedAtMs = nowMs;
+	lastWorkingDurationMs = undefined;
+	setWorkingAnimationState(true, 0);
+}
+
+export function setWorkingTimerStopped(nowMs = Date.now()): void {
+	if (workingStartedAtMs !== undefined) {
+		const durationMs = Math.max(0, nowMs - workingStartedAtMs);
+		lastWorkingDurationMs = durationMs;
+		cumulativeWorkingDurationMs += durationMs;
+	}
+	workingStartedAtMs = undefined;
+	setWorkingAnimationState(false, 0);
+}
+
+export function resetWorkingTimerState(): void {
+	workingStartedAtMs = undefined;
+	lastWorkingDurationMs = undefined;
+	cumulativeWorkingDurationMs = 0;
+	workingNowMsForTest = undefined;
+	setWorkingAnimationState(false, 0);
+}
+
+function finiteNonNegative(value: number | undefined): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+export function getWorkingTimerSnapshot(
+	nowMs = Date.now(),
+	options: { freezeActive?: boolean } = {},
+): WorkingTimerSnapshot {
+	const activeDurationMs = activeWorkingDurationMs();
+	const freezeActive = options.freezeActive && workingActive;
+	return {
+		active: workingActive && !freezeActive,
+		startedAtMs: workingActive && !freezeActive ? workingStartedAtMs : undefined,
+		lastTurnMs: freezeActive ? activeDurationMs : lastWorkingDurationMs,
+		cumulativeMs: cumulativeWorkingDurationMs + (freezeActive ? activeDurationMs : 0),
+		persistedAtMs: nowMs,
+	};
+}
+
+export function restoreWorkingTimerSnapshot(
+	snapshot: WorkingTimerSnapshot | undefined,
+	options: { restoreActive?: boolean } = {},
+): void {
+	if (!snapshot) {
+		resetWorkingTimerState();
+		return;
+	}
+
+	cumulativeWorkingDurationMs = finiteNonNegative(snapshot.cumulativeMs) ?? 0;
+	lastWorkingDurationMs = finiteNonNegative(snapshot.lastTurnMs);
+	workingStartedAtMs = options.restoreActive && snapshot.active ? finiteNonNegative(snapshot.startedAtMs) : undefined;
+	workingNowMsForTest = undefined;
+	setWorkingAnimationState(Boolean(workingStartedAtMs), 0);
+}
+
+export function setWorkingAnimationForTest(
+	active: boolean,
+	frame = 0,
+	timing: { elapsedMs?: number; lastTurnMs?: number; cumulativeMs?: number } = {},
+): void {
+	const nowMs = 1_700_000_000_000;
+	workingNowMsForTest = nowMs;
+	workingStartedAtMs = active ? nowMs - (timing.elapsedMs ?? 0) : undefined;
+	lastWorkingDurationMs = timing.lastTurnMs;
+	cumulativeWorkingDurationMs = timing.cumulativeMs ?? 0;
 	setWorkingAnimationState(active, frame);
 }
 
@@ -224,10 +305,43 @@ function renderWorkingWord(uiTheme: Theme, color: string, frame: number): string
 		.join("");
 }
 
+export function formatWorkingDuration(durationMs: number): string {
+	const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
+	const hours = Math.floor(totalSeconds / 3600);
+	const minutes = Math.floor((totalSeconds % 3600) / 60);
+	const seconds = totalSeconds % 60;
+
+	if (hours > 0) return `${hours}h${minutes}m${seconds}s`;
+	if (minutes > 0) return `${minutes}m${seconds}s`;
+	return `${seconds}s`;
+}
+
+function nowMs(): number {
+	return workingNowMsForTest ?? Date.now();
+}
+
+function activeWorkingDurationMs(): number {
+	if (workingStartedAtMs === undefined) return 0;
+	return Math.max(0, nowMs() - workingStartedAtMs);
+}
+
+function totalWorkingDurationMs(): number {
+	return cumulativeWorkingDurationMs + (workingActive ? activeWorkingDurationMs() : 0);
+}
+
 function workingHeaderSegment(uiTheme: Theme, color: string): string {
-	if (!workingActive) return "";
+	if (!workingActive) {
+		if (lastWorkingDurationMs === undefined) return "";
+		const text = `Last turn: ${formatWorkingDuration(lastWorkingDurationMs)}. Total cumulative: ${formatWorkingDuration(totalWorkingDurationMs())}.`;
+		return `${uiTheme.fg("dim", text)}${ANSI_RESET}`;
+	}
 	const label = renderWorkingWord(uiTheme, color, workingFrame);
-	return `${label}${rgbFg(scaleRgb(colorRgb(uiTheme, color), 0.85))}…${ANSI_RESET}`;
+	const elapsed = activeWorkingDurationMs();
+	const timing = uiTheme.fg(
+		"dim",
+		` ${formatWorkingDuration(elapsed)}. Total cumulative: ${formatWorkingDuration(totalWorkingDurationMs())}.`,
+	);
+	return `${label}${rgbFg(scaleRgb(colorRgb(uiTheme, color), 0.85))}…${timing}${ANSI_RESET}`;
 }
 
 function cleanIdentityPart(value: string | undefined): string | undefined {
