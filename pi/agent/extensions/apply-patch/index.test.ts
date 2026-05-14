@@ -15,15 +15,51 @@ import {
 	registerApplyPatchFreeformProvider,
 	resetOpenAICodexWebSocketDebugStats,
 } from "./freeform-codex.ts";
-import applyPatchExtension from "./index.ts";
+import applyPatchExtension, {
+	APPLY_PATCH_FREEFORM_TOOL_DESCRIPTION,
+	APPLY_PATCH_GRAMMAR,
+	APPLY_PATCH_TOOL_DESCRIPTION,
+} from "./index.ts";
 
 const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const originalWebSocket = globalThis.WebSocket;
+const SUPPORTED_APPLY_PATCH_CONSTRUCTS = [
+	"*** Intent: ",
+	"*** Environment ID: ",
+	"*** Add File: ",
+	"*** Delete File: ",
+	"*** Update File: ",
+	"*** Move File: ",
+	"*** Move to: ",
+	"*** Replace All In File: ",
+	"*** Expect Replacements: ",
+	"*** Update Scope: ",
+	"@@ lines ",
+	"*** End of File",
+] as const;
 
 afterEach(() => {
 	globalThis.WebSocket = originalWebSocket;
 	closeOpenAICodexWebSocketSessions();
 	resetOpenAICodexWebSocketDebugStats();
+});
+
+describe("apply_patch grammar drift guard", () => {
+	it("keeps the freeform grammar aligned with supported parser constructs", () => {
+		for (const construct of SUPPORTED_APPLY_PATCH_CONSTRUCTS) {
+			expect(APPLY_PATCH_GRAMMAR).toContain(construct);
+		}
+		expect(APPLY_PATCH_GRAMMAR).toContain("preamble: (intent | environment_id)+");
+		expect(APPLY_PATCH_GRAMMAR).toContain("move_spec: /(.+) -> (.+)/");
+	});
+
+	it("keeps tool descriptions aligned with advanced repair affordances", () => {
+		for (const description of [APPLY_PATCH_TOOL_DESCRIPTION, APPLY_PATCH_FREEFORM_TOOL_DESCRIPTION]) {
+			expect(description).toContain("*** Intent:");
+			expect(description).toContain("@@ lines A-B");
+		}
+		expect(APPLY_PATCH_TOOL_DESCRIPTION).toContain("*** Update Scope");
+	});
 });
 
 const resolvedDiff = `--- a/sample.js
