@@ -573,7 +573,7 @@ describe("tasks extension", () => {
 		expect(customOptions.overlayOptions.minWidth).toBe(90);
 		expect(overlayText).toContain("Ready");
 		expect(overlayText).toContain("Smoke test task tools");
-		expect(calls).toContainEqual(["ct", "task", "list", "--all", "--json"]);
+		expect(calls).toContainEqual(["ct", "task", "tui", "--json"]);
 	});
 
 	test("/tasks overlay navigation is local and does not shell out per key", async () => {
@@ -624,7 +624,7 @@ describe("tasks extension", () => {
 		expect(before).toContain("AAA");
 		expect(after).toContain("AAA");
 		expect(calls.length).toBe(callsBeforeNavigation);
-		expect(calls.some((call) => call.includes("tui"))).toBe(false);
+		expect(calls.filter((call) => call.join(" ") === "ct task tui --json")).toHaveLength(2);
 	});
 
 	test("/tasks toggles an open task board closed", async () => {
@@ -661,8 +661,7 @@ describe("tasks extension", () => {
 		};
 
 		const opened = commands.get("tasks").handler("", ctx);
-		await Promise.resolve();
-		await Promise.resolve();
+		while (!closeOverlay) await Promise.resolve();
 		await commands.get("tasks").handler("", ctx);
 		await opened;
 
@@ -811,7 +810,7 @@ describe("tasks extension", () => {
 		]);
 		expect(calls).toContainEqual(["ct", "task", "update", "PG4W2K4Q03", "--priority", "1", "--json"]);
 		expect(calls).toContainEqual(["ct", "task", "delete", "PG4W2K4Q03", "--json"]);
-		expect(calls.filter((call) => call.join(" ") === "ct task list --all --json").length).toBeGreaterThan(3);
+		expect(calls.filter((call) => call.join(" ") === "ct task tui --json").length).toBeGreaterThan(3);
 		expect(widgetText).toContain("Smoke test");
 	});
 
@@ -1274,7 +1273,7 @@ describe("tasks extension", () => {
 			{
 				runCommand: async (command: string, args: string[]) => {
 					calls.push([command, ...args]);
-					if (args[1] === "list") {
+					if (args[1] === "tui") {
 						return { stdout: JSON.stringify({ tasks: [currentTask] }), stderr: "", exitCode: 0 };
 					}
 					currentTask = { ...task, title: "Updated smoke test task tools" };
@@ -1296,8 +1295,8 @@ describe("tasks extension", () => {
 			ctx,
 		);
 		expect(calls.map((call) => call.slice(1, 3))).toContainEqual(["task", "update"]);
-		expect(calls.map((call) => call.slice(1, 3))).toContainEqual(["task", "list"]);
-		expect(calls).toContainEqual(["ct", "task", "list", "--all", "--json"]);
+		expect(calls.map((call) => call.slice(1, 3))).toContainEqual(["task", "tui"]);
+		expect(calls).toContainEqual(["ct", "task", "tui", "--json"]);
 		expect(widgetRegistrations).toBe(1);
 		expect(widgetText).toContain("Updated smoke");
 	});
@@ -1360,7 +1359,7 @@ describe("tasks extension", () => {
 			} as any,
 			{
 				runCommand: async (_command: string, args: string[]) => {
-					if (args[1] === "list") return { stdout: JSON.stringify({ tasks: [task] }), stderr: "", exitCode: 0 };
+					if (args[1] === "tui") return { stdout: JSON.stringify({ tasks: [task] }), stderr: "", exitCode: 0 };
 					return { stdout: JSON.stringify({ task }), stderr: "", exitCode: 0 };
 				},
 			},
@@ -2133,7 +2132,7 @@ describe("tasks extension", () => {
 		await handlers.message_end({ message: { role: "assistant", content: [{ type: "text", text: "Done." }] } }, ctx);
 		await handlers.turn_end({}, ctx);
 
-		expect(calls).toEqual([["ct", "task", "list", "--all", "--json"]]);
+		expect(calls).toEqual([["ct", "task", "tui", "--json"]]);
 		expect(sent[0].message.content[0].text).toContain("Claim task b to unblock a");
 		expect(sent[0].message.display).toBe(true);
 	});

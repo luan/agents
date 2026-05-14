@@ -9,6 +9,7 @@ use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use serde::{Deserialize, Serialize};
 
 use crate::cli::TaskAction;
+use crate::task_board::{is_active_status, ticket_board_order};
 
 const CROCKFORD: &[u8; 32] = b"0123456789abcdefghjkmnpqrstvwxyz";
 const ID_LENGTH: usize = 6;
@@ -718,15 +719,8 @@ impl TaskStore {
     fn cleanup_loaded_tasks(&self) -> Result<()> {
         self.with_immediate_tx(|| {
             let cutoff = now_ms().saturating_sub(DONE_TASK_RETENTION_MS);
-            let mut parent_ids = self.parent_ids_matching(
-                "task_type != 'epic' AND (epic_id IS NULL OR trim(epic_id) = '')",
-                &[],
-            )?;
-            parent_ids.extend(self.parent_ids_matching("status = 'done' AND updated_at < ?1", &[&cutoff])?);
-            self.conn.execute(
-                "DELETE FROM tasks WHERE task_type != 'epic' AND (epic_id IS NULL OR trim(epic_id) = '')",
-                [],
-            )?;
+            let parent_ids =
+                self.parent_ids_matching("status = 'done' AND updated_at < ?1", &[&cutoff])?;
             self.conn.execute(
                 "DELETE FROM tasks WHERE status = 'done' AND updated_at < ?1",
                 [cutoff],
@@ -988,61 +982,17 @@ fn is_active_task(task: &Task) -> bool {
 }
 
 fn sort_tasks(mut tasks: Vec<Task>) -> Result<Vec<Task>> {
-    let statuses = tasks
-        .iter()
-        .map(|task| (task.id.clone(), task.status.clone()))
-        .collect::<std::collections::HashMap<_, _>>();
-    let mut children_by_parent = HashMap::<String, Vec<String>>::new();
-    for task in &tasks {
-        if let Some(parent_id) = &task.parent_id {
-            children_by_parent
-                .entry(parent_id.clone())
-                .or_default()
-                .push(task.id.clone());
-        }
-    }
+    let order = ticket_board_order(&tasks);
     tasks.sort_by(|left, right| {
-        has_open_dependencies(left, &statuses, &children_by_parent)
-            .cmp(&has_open_dependencies(
-                right,
-                &statuses,
-                &children_by_parent,
-            ))
-            .then_with(|| right.priority.cmp(&left.priority))
+        order
+            .get(&left.id)
+            .copied()
+            .unwrap_or(usize::MAX)
+            .cmp(&order.get(&right.id).copied().unwrap_or(usize::MAX))
             .then_with(|| right.updated_at.cmp(&left.updated_at))
             .then_with(|| left.id.cmp(&right.id))
     });
     Ok(tasks)
-}
-
-fn has_open_dependencies(
-    task: &Task,
-    statuses: &std::collections::HashMap<String, String>,
-    children_by_parent: &HashMap<String, Vec<String>>,
-) -> bool {
-    has_open_blockers(task, statuses)
-        || children_by_parent.get(&task.id).is_some_and(|children| {
-            children.iter().any(|id| {
-                statuses
-                    .get(id)
-                    .is_some_and(|status| is_active_status(status))
-            })
-        })
-}
-
-fn has_open_blockers(task: &Task, statuses: &std::collections::HashMap<String, String>) -> bool {
-    task.blocked_by.iter().any(|id| {
-        statuses
-            .get(id)
-            .is_none_or(|status| status != "done" && status != "completed")
-    })
-}
-
-fn is_active_status(status: &str) -> bool {
-    matches!(
-        status,
-        "open" | "in_progress" | "todo" | "in_review" | "rejected"
-    )
 }
 
 fn ensure_task_columns(conn: &Connection) -> Result<()> {
