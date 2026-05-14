@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
@@ -18,6 +18,7 @@ import type { AgentConfig, IsolationMode, SubagentType, ThinkingLevel } from "./
 import { createWorktree } from "./worktree.js";
 
 export interface FullSessionLaunchOptions {
+	id?: string;
 	type: SubagentType;
 	description: string;
 	prompt: string;
@@ -28,6 +29,8 @@ export interface FullSessionLaunchOptions {
 	inheritContext?: boolean;
 	isolation?: IsolationMode;
 	agentConfig?: AgentConfig;
+	messageEndpoint?: string;
+	messageToken?: string;
 }
 
 export interface FullSessionLaunchResult {
@@ -59,7 +62,7 @@ export async function launchFullSessionAgent(
 	ctx: ExtensionContext,
 	options: FullSessionLaunchOptions,
 ): Promise<FullSessionLaunchResult> {
-	const id = randomUUID().slice(0, 17);
+	const id = options.id ?? randomUUID().slice(0, 17);
 	let effectiveCwd = ctx.cwd;
 	let worktree: { path: string; branch: string } | undefined;
 	if (options.isolation === "worktree") {
@@ -105,7 +108,8 @@ export async function launchFullSessionAgent(
 	}
 
 	const env = await detectEnv(pi, effectiveCwd);
-	const systemPrompt = buildAgentPrompt(agentConfig, effectiveCwd, env, ctx.getSystemPrompt(), extras);
+	let systemPrompt = buildAgentPrompt(agentConfig, effectiveCwd, env, ctx.getSystemPrompt(), extras);
+	if (options.messageEndpoint) systemPrompt = withMosaicLeaderInstructions(systemPrompt);
 	const prompt = options.inheritContext ? buildParentContext(ctx) + options.prompt : options.prompt;
 
 	const sm = SessionManager.create(effectiveCwd, ctx.sessionManager.getSessionDir());
@@ -129,6 +133,8 @@ export async function launchFullSessionAgent(
 			extensions,
 			disallowedTools: agentConfig.disallowedTools,
 			mosaicIdentity,
+			messageEndpoint: options.messageEndpoint,
+			messageToken: options.messageToken,
 		}),
 	);
 
@@ -138,6 +144,7 @@ export async function launchFullSessionAgent(
 		owner,
 		name: windowName,
 		agentId: id,
+		waitForReady: !options.messageEndpoint,
 		extraEnv: {
 			MOSAIC_BOOTSTRAP_FILE: bootstrapFile,
 			MOSAIC_AGENT_LABEL: mosaicIdentity.label,
@@ -171,16 +178,31 @@ export interface FullSessionBootstrapPayload {
 	extensions: true | string[] | false;
 	disallowedTools?: string[];
 	mosaicIdentity?: MosaicAgentIdentity;
+	messageEndpoint?: string;
+	messageToken?: string;
 }
 
 export function buildBootstrapPayload(payload: FullSessionBootstrapPayload): FullSessionBootstrapPayload {
 	return payload;
 }
 
+export function withMosaicLeaderInstructions(systemPrompt: string): string {
+	return `${systemPrompt}
+
+<mosaic_leader_channel>
+You are a mosaic agent working for a leader session.
+- Use the message_leader tool to send questions, status updates, or cleanup requests to your leader.
+- If the user asks you to ask/tell/contact the leader, call message_leader.
+- Do not use spawn_lane, spawn_list, or spawn_map to find the leader; those tools are unrelated to the mosaic leader channel.
+- Your normal assistant reply is also reported to the leader automatically when your turn completes.
+</mosaic_leader_channel>`;
+}
+
 function writeBootstrapFile(payload: unknown): string {
-	mkdirSync(BOOTSTRAP_DIR, { recursive: true });
+	mkdirSync(BOOTSTRAP_DIR, { recursive: true, mode: 0o700 });
+	chmodSync(BOOTSTRAP_DIR, 0o700);
 	const path = join(BOOTSTRAP_DIR, `${randomUUID()}.json`);
-	writeFileSync(path, JSON.stringify(payload), "utf8");
+	writeFileSync(path, JSON.stringify(payload), { encoding: "utf8", mode: 0o600 });
 	return path;
 }
 

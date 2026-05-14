@@ -44,6 +44,13 @@ export function resolveFullSessionAgentStatus(input: FullSessionStatusInput): Fu
 		};
 	}
 
+	if (currentStatus === "stopped" && live) {
+		return {
+			status: "running",
+			activityText: live.busy ? "running in mosaic target" : "idle in mosaic target",
+		};
+	}
+
 	if (currentStatus !== "running") {
 		return {
 			status: currentStatus,

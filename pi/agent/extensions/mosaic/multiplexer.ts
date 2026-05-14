@@ -36,11 +36,19 @@ export interface LaunchOptions {
 	name: string;
 	agentId: string;
 	extraEnv?: Record<string, string>;
+	waitForReady?: boolean;
 }
 
 const READY_DIR = join(tmpdir(), "mosaic-ready");
 const LAUNCH_READY_TIMEOUT_MS = 30_000;
-const STEERING_INSERT_PRELUDE = "\x1bi";
+const AGENT_ROOT_RESERVATION_TTL_MS = 10_000;
+const agentRootReservations = new Map<string, { paneId: string; createdAt: number }>();
+const ownerLaunchLocks = new Map<string, Promise<void>>();
+
+export function __resetMosaicPlacementForTest(): void {
+	agentRootReservations.clear();
+	ownerLaunchLocks.clear();
+}
 
 interface LaunchDependencies {
 	backend?: () => MultiplexerBackend;
@@ -98,8 +106,10 @@ export async function launchMosaicTarget(
 	options: LaunchOptions,
 	dependencies: LaunchDependencies = {},
 ): Promise<MultiplexerTarget> {
-	const backend = dependencies.backend?.() ?? requireMultiplexerBackend();
-	return backend === "tmux" ? launchTmuxTarget(options, dependencies) : launchZellijTarget(options, dependencies);
+	return withOwnerLaunchLock(options.owner, async () => {
+		const backend = dependencies.backend?.() ?? requireMultiplexerBackend();
+		return backend === "tmux" ? launchTmuxTarget(options, dependencies) : launchZellijTarget(options, dependencies);
+	});
 }
 
 export function focusTarget(target: Heartbeat): void {
@@ -150,29 +160,11 @@ export function killTarget(target: Heartbeat): void {
 	execFileSync("tmux", ["kill-pane", "-t", target.paneId]);
 }
 
-export function sendMessageToTarget(
-	target: Heartbeat,
-	message: string,
-	exec: typeof execFileSync = execFileSync,
-): void {
-	if (target.backend === "zellij") {
-		exec(
-			"zellij",
-			zellijActionArgs(target, "write-chars", "--pane-id", target.paneId, "--", STEERING_INSERT_PRELUDE),
-		);
-		exec("zellij", zellijActionArgs(target, "write-chars", "--pane-id", target.paneId, "--", message));
-		exec("zellij", zellijActionArgs(target, "write-chars", "--pane-id", target.paneId, "\r"));
-		return;
-	}
-	exec("tmux", ["send-keys", "-t", target.paneId, "Escape", "i"]);
-	exec("tmux", ["send-keys", "-t", target.paneId, "-l", "--", message]);
-	exec("tmux", ["send-keys", "-t", target.paneId, "Enter"]);
-}
-
 async function launchTmuxTarget(options: LaunchOptions, dependencies: LaunchDependencies): Promise<MultiplexerTarget> {
 	const pane = process.env.TMUX_PANE;
 	if (!pane) throw new Error("not in tmux");
 	const liveBeforeLaunch = (dependencies.listActive ?? listActive)();
+	const hadAgentRoot = hasAgentRoot(options, liveBeforeLaunch);
 	const placementPlan = mosaicSplitPlacement(options, liveBeforeLaunch, pane);
 	const { readyFile, env } = prepareLaunchEnvironment(options, { includeShell: true });
 	const placement = await (dependencies.tmuxPlace ?? defaultTmuxPlace)({
@@ -185,7 +177,8 @@ async function launchTmuxTarget(options: LaunchOptions, dependencies: LaunchDepe
 		restoreFocusPane: pane,
 		splitDirection: placementPlan.splitDirection,
 	});
-	waitForLaunchReady(readyFile, dependencies);
+	if (!hadAgentRoot && placement.tmux.paneId) reserveAgentRoot(options.owner, placement.tmux.paneId);
+	if (options.waitForReady !== false) waitForLaunchReady(readyFile, dependencies);
 	const live = (dependencies.listActive ?? listActive)().find((entry) => entry.agentId === options.agentId);
 	return {
 		backend: "tmux",
@@ -230,7 +223,10 @@ async function launchZellijTarget(
 		restoreFocusPane: insideZellij ? normalizeZellijPaneId(process.env.ZELLIJ_PANE_ID) : undefined,
 		splitDirection: placementPlan?.splitDirection,
 	});
-	waitForLaunchReady(readyFile, dependencies);
+	if (!hasAgentRoot(options, liveBeforeLaunch) && placement.zellij.paneId) {
+		reserveAgentRoot(options.owner, placement.zellij.paneId);
+	}
+	if (options.waitForReady !== false) waitForLaunchReady(readyFile, dependencies);
 	const live = (dependencies.listActive ?? listActive)().find((entry) => entry.agentId === options.agentId);
 	return {
 		backend: "zellij",
@@ -259,11 +255,63 @@ function mosaicSplitPlacement(
 	live: Heartbeat[],
 	defaultPane: string | undefined,
 ): { targetPane?: string; splitDirection: "horizontal" | "vertical" } {
-	const firstAgent = live
-		.filter((entry) => entry.agentId && entry.owner === options.owner && entry.paneId)
-		.sort((a, b) => paneSortKey(a.paneId) - paneSortKey(b.paneId))[0];
+	const firstAgent = firstActiveAgentForOwner(options.owner, live);
 	if (firstAgent?.paneId) return { targetPane: firstAgent.paneId, splitDirection: "vertical" };
+	const reserved = reservedAgentRoot(options.owner);
+	if (reserved) return { targetPane: reserved, splitDirection: "vertical" };
 	return { targetPane: defaultPane, splitDirection: "horizontal" };
+}
+
+async function withOwnerLaunchLock<T>(owner: string, fn: () => Promise<T>): Promise<T> {
+	const previous = ownerLaunchLocks.get(owner) ?? Promise.resolve();
+	let release!: () => void;
+	const current = previous
+		.catch(() => {})
+		.then(
+			() =>
+				new Promise<void>((resolve) => {
+					release = resolve;
+				}),
+		);
+	ownerLaunchLocks.set(owner, current);
+	await previous.catch(() => {});
+	try {
+		return await fn();
+	} finally {
+		release();
+		if (ownerLaunchLocks.get(owner) === current) ownerLaunchLocks.delete(owner);
+	}
+}
+
+function hasAgentRoot(options: LaunchOptions, live: Heartbeat[]): boolean {
+	const first = firstActiveAgentForOwner(options.owner, live);
+	if (first?.paneId) {
+		reserveAgentRoot(options.owner, first.paneId);
+		return true;
+	}
+	return Boolean(reservedAgentRoot(options.owner));
+}
+
+function firstActiveAgentForOwner(owner: string, live: Heartbeat[]): Heartbeat | undefined {
+	return live
+		.filter((entry) => entry.agentId && entry.owner === owner && entry.paneId)
+		.sort((a, b) => paneSortKey(a.paneId) - paneSortKey(b.paneId))[0];
+}
+
+function reserveAgentRoot(owner: string, paneId: string): void {
+	if (!paneId.trim()) return;
+	if (reservedAgentRoot(owner)) return;
+	agentRootReservations.set(owner, { paneId, createdAt: Date.now() });
+}
+
+function reservedAgentRoot(owner: string): string | undefined {
+	const reservation = agentRootReservations.get(owner);
+	if (!reservation) return undefined;
+	if (Date.now() - reservation.createdAt > AGENT_ROOT_RESERVATION_TTL_MS) {
+		agentRootReservations.delete(owner);
+		return undefined;
+	}
+	return reservation.paneId;
 }
 
 function paneSortKey(paneId: string): number {

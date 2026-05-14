@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { LanePlacementRequest, TmuxLanePlacementRef, ZellijLanePlacementRef } from "../shared/lane-placement";
 import { buildBootstrapPayload } from "./full-session-agent";
-import { launchMosaicTarget, sendMessageToTarget } from "./multiplexer";
+import { __resetMosaicPlacementForTest, launchMosaicTarget } from "./multiplexer";
 
 const ORIGINAL_ENV = { ...process.env };
 
 afterEach(() => {
 	process.env = { ...ORIGINAL_ENV };
+	__resetMosaicPlacementForTest();
 });
 
 describe("mosaic full-session placement", () => {
@@ -104,7 +105,7 @@ describe("mosaic full-session placement", () => {
 		});
 	});
 
-	test("routes later tmux full-session launches below the first agent pane", async () => {
+	test("routes later tmux full-session launches under the first agent pane", async () => {
 		process.env.TMUX = "/tmp/tmux";
 		process.env.TMUX_PANE = "%self";
 		let placementRequest: LanePlacementRequest | undefined;
@@ -153,6 +154,93 @@ describe("mosaic full-session placement", () => {
 			restoreFocusPane: "%self",
 			splitDirection: "vertical",
 		});
+	});
+
+	test("serializes parallel tmux launches so only the first splits from the leader pane", async () => {
+		process.env.TMUX = "/tmp/tmux";
+		process.env.TMUX_PANE = "%self";
+		const placementRequests: LanePlacementRequest[] = [];
+		let nextPane = 10;
+
+		const deps = {
+			backend: () => "tmux" as const,
+			tmuxPlace: async (request: LanePlacementRequest) => {
+				placementRequests.push(request);
+				return {
+					backend: "tmux",
+					tmux: {
+						session: "dev",
+						windowId: "dev:2",
+						paneId: `%${nextPane++}`,
+						placement: "split-pane",
+					},
+				} satisfies TmuxLanePlacementRef;
+			},
+			waitForReadyFile: () => {},
+			listActive: () => [],
+		};
+
+		await Promise.all([
+			launchMosaicTarget(
+				{
+					command: "pi -e mosaic --session /tmp/a.jsonl",
+					cwd: "/repo",
+					owner: "%self",
+					name: "mc: a",
+					agentId: "agent-a",
+					waitForReady: false,
+				},
+				deps,
+			),
+			launchMosaicTarget(
+				{
+					command: "pi -e mosaic --session /tmp/b.jsonl",
+					cwd: "/repo",
+					owner: "%self",
+					name: "mc: b",
+					agentId: "agent-b",
+					waitForReady: false,
+				},
+				deps,
+			),
+		]);
+
+		expect(placementRequests.map((request) => [request.targetPane, request.splitDirection])).toEqual([
+			["%self", "horizontal"],
+			["%10", "vertical"],
+		]);
+	});
+
+	test("can skip old ready-file waiting when native messaging owns readiness", async () => {
+		process.env.TMUX = "/tmp/tmux";
+		process.env.TMUX_PANE = "%self";
+		let waitCalled = false;
+
+		const launched = await launchMosaicTarget(
+			{
+				command: "pi -e mosaic --session /tmp/child.jsonl",
+				cwd: "/repo",
+				owner: "%self",
+				name: "mc: native",
+				agentId: "agent-native",
+				waitForReady: false,
+			},
+			{
+				backend: () => "tmux",
+				tmuxPlace: async () =>
+					({
+						backend: "tmux",
+						tmux: { session: "$dev", windowId: "$dev:2", paneId: "%9", placement: "split-pane" },
+					}) satisfies TmuxLanePlacementRef,
+				waitForReadyFile: () => {
+					waitCalled = true;
+				},
+				listActive: () => [],
+			},
+		);
+
+		expect(waitCalled).toBe(false);
+		expect(launched.paneId).toBe("%9");
 	});
 
 	test("routes active zellij full-session launch through a split pane", async () => {
@@ -283,61 +371,5 @@ describe("mosaic full-session placement", () => {
 			disallowedTools: ["Agent"],
 			mosaicIdentity: { label: "A1", name: "Inspect docs", color: "f38ba8" },
 		});
-	});
-
-	test("tmux steering enters insert mode before typing the literal message", () => {
-		const calls: Array<{ file: string; args: string[] }> = [];
-		sendMessageToTarget(
-			{
-				backend: "tmux",
-				paneId: "%target",
-				sessionFile: "/tmp/session.jsonl",
-				cwd: "/repo",
-				pid: 123,
-				owner: "%self",
-				busy: false,
-			},
-			"review only the diff",
-			((file: string, args: string[]) => {
-				calls.push({ file, args });
-				return "";
-			}) as never,
-		);
-
-		expect(calls.map((call) => [call.file, call.args[0]])).toEqual([
-			["tmux", "send-keys"],
-			["tmux", "send-keys"],
-			["tmux", "send-keys"],
-		]);
-		expect(calls[0]?.args).toEqual(["send-keys", "-t", "%target", "Escape", "i"]);
-		expect(calls[1]?.args).toEqual(["send-keys", "-t", "%target", "-l", "--", "review only the diff"]);
-		expect(calls[2]?.args).toEqual(["send-keys", "-t", "%target", "Enter"]);
-	});
-
-	test("zellij steering enters insert mode before writing the message", () => {
-		const calls: Array<{ file: string; args: string[] }> = [];
-		sendMessageToTarget(
-			{
-				backend: "zellij",
-				paneId: "terminal_2",
-				sessionFile: "/tmp/session.jsonl",
-				cwd: "/repo",
-				pid: 123,
-				owner: "terminal_1",
-				busy: false,
-				zellijSession: "dev",
-			},
-			"review only the diff",
-			((file: string, args: string[]) => {
-				calls.push({ file, args });
-				return "";
-			}) as never,
-		);
-
-		expect(calls).toHaveLength(3);
-		expect(calls[0]?.file).toBe("zellij");
-		expect(calls[0]?.args).toContain("\x1bi");
-		expect(calls[1]?.args).toContain("review only the diff");
-		expect(calls[2]?.args).toContain("\r");
 	});
 });
