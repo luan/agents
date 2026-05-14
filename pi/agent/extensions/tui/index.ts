@@ -7,11 +7,16 @@ import { installFocusCursor } from "./cursor-focus";
 import {
 	advanceWorkingAnimationFrame,
 	type EditorSessionIdentity,
+	getWorkingTimerSnapshot,
 	installEditorComposition,
+	resetWorkingTimerState,
+	restoreWorkingTimerSnapshot,
 	setCachedSkillNames,
 	setEditorChromeProvider,
 	setEditorSessionIdentityProvider,
-	setWorkingAnimationState,
+	setWorkingTimerStarted,
+	setWorkingTimerStopped,
+	type WorkingTimerSnapshot,
 } from "./editor";
 import {
 	emptyFooterState,
@@ -36,6 +41,7 @@ type UsageBarCache = {
 const CONTEXT_PULSE_INTERVAL_MS = 320;
 const CONTEXT_PULSE_DURATION_MS = 1200;
 const MOSAIC_IDENTITY_COLORS = ["f38ba8", "fab387", "f9e2af", "eba0ac", "e78284", "ff9e64", "ffc777", "ff757f"];
+const WORKING_TIMER_ENTRY_TYPE = "tui:working-timer";
 
 function cleanIdentityPart(value: string | undefined): string | undefined {
 	const text = value
@@ -116,6 +122,38 @@ function truncateUsageLine(line: string, width: number): string {
 	return line ? truncateToWidth(line, Math.max(1, width), "") : "";
 }
 
+function persistedWorkingTimerSnapshot(data: unknown): WorkingTimerSnapshot | undefined {
+	if (!data || typeof data !== "object") return undefined;
+	const record = data as Record<string, unknown>;
+	const cumulativeMs =
+		typeof record.cumulativeMs === "number" && Number.isFinite(record.cumulativeMs) ? record.cumulativeMs : 0;
+	const persistedAtMs =
+		typeof record.persistedAtMs === "number" && Number.isFinite(record.persistedAtMs) ? record.persistedAtMs : 0;
+	const startedAtMs =
+		typeof record.startedAtMs === "number" && Number.isFinite(record.startedAtMs) ? record.startedAtMs : undefined;
+	const lastTurnMs =
+		typeof record.lastTurnMs === "number" && Number.isFinite(record.lastTurnMs) ? record.lastTurnMs : undefined;
+	return {
+		active: record.active === true,
+		startedAtMs,
+		lastTurnMs,
+		cumulativeMs: Math.max(0, cumulativeMs),
+		persistedAtMs: Math.max(0, persistedAtMs),
+	};
+}
+
+function latestWorkingTimerSnapshot(entries: readonly unknown[]): WorkingTimerSnapshot | undefined {
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const entry = entries[index];
+		if (!entry || typeof entry !== "object") continue;
+		const record = entry as Record<string, unknown>;
+		if (record.type !== "custom" || record.customType !== WORKING_TIMER_ENTRY_TYPE) continue;
+		const snapshot = persistedWorkingTimerSnapshot(record.data);
+		if (snapshot) return snapshot;
+	}
+	return undefined;
+}
+
 export default function (pi: ExtensionAPI) {
 	const state: FooterRenderState = emptyFooterState();
 	const usageCache = new Map<string, UsageSnapshot>();
@@ -144,6 +182,14 @@ export default function (pi: ExtensionAPI) {
 
 	const refresh = () => {
 		if (!disposed) requestFooterRender?.();
+	};
+
+	const persistWorkingTimer = (options: { freezeActive?: boolean } = {}) => {
+		try {
+			const snapshot = getWorkingTimerSnapshot(Date.now(), options);
+			if (!snapshot.active && snapshot.lastTurnMs === undefined && snapshot.cumulativeMs === 0) return;
+			pi.appendEntry(WORKING_TIMER_ENTRY_TYPE, snapshot);
+		} catch {}
 	};
 
 	const stopContextPulse = () => {
@@ -387,7 +433,7 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	const startWorkingAnimation = () => {
-		setWorkingAnimationState(true, 0);
+		setWorkingTimerStarted();
 		stopWorkingAnimation();
 		workingAnimationTimer = setInterval(() => {
 			advanceWorkingAnimationFrame();
@@ -505,6 +551,10 @@ export default function (pi: ExtensionAPI) {
 		ensureConfigExists();
 		currentConfig = loadConfig();
 		usageBarsVisible = currentConfig.usageBars.visible;
+		const persistedWorkingTimer = latestWorkingTimerSnapshot(ctx.sessionManager.getEntries());
+		restoreWorkingTimerSnapshot(persistedWorkingTimer, {
+			restoreActive: persistedWorkingTimer?.active && !ctx.isIdle(),
+		});
 		ctx.ui.setWorkingVisible(false);
 		installFooter(ctx);
 		installEditor(ctx);
@@ -555,6 +605,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async () => {
+		persistWorkingTimer({ freezeActive: true });
 		disposed = true;
 		uiGeneration++;
 		requestFooterRender = undefined;
@@ -564,7 +615,7 @@ export default function (pi: ExtensionAPI) {
 		setEditorChromeProvider(undefined);
 		setEditorSessionIdentityProvider(undefined);
 		editorSessionIdentity = undefined;
-		setWorkingAnimationState(false, 0);
+		resetWorkingTimerState();
 		stopRefreshTimer();
 		stopContextPulse();
 		stopWorkingAnimation();
@@ -573,11 +624,13 @@ export default function (pi: ExtensionAPI) {
 	pi.on("agent_start", async (_event, ctx) => {
 		if (!syncStateIfCurrent(ctx)) return;
 		startWorkingAnimation();
+		persistWorkingTimer();
 	});
 
 	pi.on("agent_end", async (_event, ctx) => {
 		if (!syncStateIfCurrent(ctx)) return;
-		setWorkingAnimationState(false, 0);
+		setWorkingTimerStopped();
+		persistWorkingTimer();
 		stopWorkingAnimation();
 		scheduleProjectRefresh(ctx);
 		refresh();

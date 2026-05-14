@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import {
+	formatWorkingDuration,
+	getWorkingTimerSnapshot,
 	renderPolishedEditorForTest,
+	restoreWorkingTimerSnapshot,
 	setCachedSkillNamesForTest,
 	setEditorChromeProvider,
 	setEditorSessionIdentityProvider,
@@ -125,6 +128,70 @@ describe("polished TUI editor cached skills", () => {
 		expect(lines.every((line) => visibleWidth(line) <= 40)).toBe(true);
 	});
 
+	test("formats working durations without padding", () => {
+		expect(formatWorkingDuration(32_400)).toBe("32s");
+		expect(formatWorkingDuration(5 * 60_000 + 20_900)).toBe("5m20s");
+		expect(formatWorkingDuration(3 * 3_600_000 + 5 * 60_000 + 20_000)).toBe("3h5m20s");
+	});
+
+	test("renders a dim elapsed timer while working", () => {
+		setCachedSkillNamesForTest([]);
+		setWorkingAnimationForTest(true, 3, {
+			elapsedMs: 32_400,
+			cumulativeMs: 19 * 3_600_000 + 20 * 60_000 + 4_000,
+		});
+
+		const lines = renderPolishedEditorForTest(editor({ getMode: () => "insert" }), 80, () => ["> hello", ""], theme);
+
+		expect(stripAnsi(lines[0] ?? "")).toContain("Working… 32s. Total cumulative: 19h20m36s.");
+		expect(lines[0]).toContain("\x1b[2m 32s. Total cumulative: 19h20m36s.\x1b[39m");
+		expect(lines.every((line) => visibleWidth(line) <= 80)).toBe(true);
+	});
+
+	test("renders last and cumulative working time after work finishes", () => {
+		setCachedSkillNamesForTest([]);
+		setWorkingAnimationForTest(false, 0, {
+			lastTurnMs: 3 * 3_600_000 + 5 * 60_000 + 20_000,
+			cumulativeMs: 19 * 3_600_000 + 20 * 60_000 + 4_000,
+		});
+
+		const lines = renderPolishedEditorForTest(editor({ getMode: () => "insert" }), 80, () => ["> hello", ""], theme);
+
+		expect(stripAnsi(lines[0] ?? "")).toContain("Last turn: 3h5m20s. Total cumulative: 19h20m4s.");
+		expect(lines[0]).toContain("\x1b[2mLast turn: 3h5m20s. Total cumulative: 19h20m4s.\x1b[39m");
+		expect(lines.every((line) => visibleWidth(line) <= 80)).toBe(true);
+	});
+
+	test("restores persisted working time after reload or resume", () => {
+		setCachedSkillNamesForTest([]);
+		setWorkingAnimationForTest(false);
+		restoreWorkingTimerSnapshot({
+			active: false,
+			lastTurnMs: 5 * 60_000 + 20_000,
+			cumulativeMs: 19 * 3_600_000 + 20 * 60_000 + 4_000,
+			persistedAtMs: 1_700_000_000_000,
+		});
+
+		const lines = renderPolishedEditorForTest(editor({ getMode: () => "insert" }), 80, () => ["> hello", ""], theme);
+
+		expect(stripAnsi(lines[0] ?? "")).toContain("Last turn: 5m20s. Total cumulative: 19h20m4s.");
+		expect(lines.every((line) => visibleWidth(line) <= 80)).toBe(true);
+	});
+
+	test("can snapshot active work as completed time for teardown persistence", () => {
+		setWorkingAnimationForTest(true, 0, {
+			elapsedMs: 32_400,
+			cumulativeMs: 19 * 3_600_000 + 20 * 60_000 + 4_000,
+		});
+
+		expect(getWorkingTimerSnapshot(1_700_000_001_000, { freezeActive: true })).toMatchObject({
+			active: false,
+			lastTurnMs: 32_400,
+			cumulativeMs: 19 * 3_600_000 + 20 * 60_000 + 36_400,
+			persistedAtMs: 1_700_000_001_000,
+		});
+	});
+
 	test("renders session identity before animated working text", () => {
 		setCachedSkillNamesForTest([]);
 		setWorkingAnimationForTest(true, 3);
@@ -132,13 +199,13 @@ describe("polished TUI editor cached skills", () => {
 
 		const lines = renderPolishedEditorForTest(
 			editor({ getMode: () => "insert" }),
-			48,
+			80,
 			() => ["> hello", ""],
 			rgbTheme,
 		);
 
 		expect(stripAnsi(lines[0] ?? "")).toContain("Spawn mosaic refactor · Working…");
-		expect(lines.every((line) => visibleWidth(line) <= 48)).toBe(true);
+		expect(lines.every((line) => visibleWidth(line) <= 80)).toBe(true);
 	});
 
 	test("ignores stale session identity providers during render", () => {
@@ -165,13 +232,13 @@ describe("polished TUI editor cached skills", () => {
 
 		const lines = renderPolishedEditorForTest(
 			editor({ getMode: () => "insert" }),
-			34,
+			80,
 			() => ["> hello", ""],
 			rgbTheme,
 		);
 
 		expect(stripAnsi(lines[0] ?? "")).toContain("… · Working…");
-		expect(lines.every((line) => visibleWidth(line) <= 34)).toBe(true);
+		expect(lines.every((line) => visibleWidth(line) <= 80)).toBe(true);
 	});
 
 	test("renders mosaic label and secondary rail color outside normal mode", () => {
