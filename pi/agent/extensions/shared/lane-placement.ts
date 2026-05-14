@@ -41,6 +41,7 @@ export interface LanePlacementRequest {
 	captureWindowId?: boolean;
 	targetWorkspace?: string;
 	targetPane?: string;
+	restoreFocusPane?: string;
 	splitDirection?: LaneSplitDirection;
 	splitSizePercent?: number;
 }
@@ -131,6 +132,9 @@ export class TmuxLanePlacement {
 			};
 		}
 		if (request.placement === "split-pane") {
+			const previousPane =
+				request.restoreFocusPane ??
+				(await this.options.exec(["display-message", "-p", "#{pane_id}"]).catch(() => undefined));
 			const currentWindow = request.targetPane
 				? await this.options
 						.exec(["display-message", "-p", "-t", request.targetPane, "#S:#I"])
@@ -156,6 +160,8 @@ export class TmuxLanePlacement {
 				...tmuxEnvArgs(request.env),
 				request.command,
 			]);
+			await this.equalizeDefaultSplit(request, currentWindow, paneId);
+			await this.restoreFocus(previousPane);
 			return {
 				backend: "tmux",
 				tmux: {
@@ -170,6 +176,67 @@ export class TmuxLanePlacement {
 			};
 		}
 		throw new Error(`Unsupported tmux lane placement: ${request.placement}`);
+	}
+
+	private async restoreFocus(paneId: string | undefined): Promise<void> {
+		const pane = paneId?.trim();
+		if (!pane) return;
+		await this.options.exec(["select-pane", "-t", pane]).catch(() => "");
+	}
+
+	private async equalizeDefaultSplit(
+		request: LanePlacementRequest,
+		windowTarget: string,
+		paneId: string,
+	): Promise<void> {
+		if (request.splitSizePercent !== undefined) return;
+		if (request.splitDirection === "horizontal") {
+			await this.options.exec(["select-layout", "-t", windowTarget, "even-horizontal"]).catch(() => "");
+			return;
+		}
+		if (request.splitDirection !== "vertical") return;
+		await this.equalizePaneColumn(windowTarget, paneId).catch(() => {});
+	}
+
+	private async equalizePaneColumn(windowTarget: string, paneId: string): Promise<void> {
+		const rows = await this.options.exec([
+			"list-panes",
+			"-t",
+			windowTarget,
+			"-F",
+			"#{pane_id}\t#{pane_left}\t#{pane_top}\t#{pane_width}\t#{pane_height}",
+		]);
+		const panes = rows
+			.split("\n")
+			.map((line) => {
+				const [id, left, top, width, height] = line.trim().split("\t");
+				return {
+					id,
+					left: Number.parseInt(left ?? "", 10),
+					top: Number.parseInt(top ?? "", 10),
+					width: Number.parseInt(width ?? "", 10),
+					height: Number.parseInt(height ?? "", 10),
+				};
+			})
+			.filter(
+				(pane): pane is { id: string; left: number; top: number; width: number; height: number } =>
+					Boolean(pane.id) &&
+					Number.isFinite(pane.left) &&
+					Number.isFinite(pane.top) &&
+					Number.isFinite(pane.width) &&
+					Number.isFinite(pane.height),
+			);
+		const targetPane = panes.find((pane) => pane.id === paneId.trim());
+		if (!targetPane) return;
+		const column = panes
+			.filter((pane) => pane.left === targetPane.left && pane.width === targetPane.width)
+			.sort((a, b) => a.top - b.top);
+		if (column.length < 2) return;
+		const height = Math.floor(column.reduce((total, pane) => total + pane.height, 0) / column.length);
+		if (height <= 0) return;
+		for (const pane of column) {
+			await this.options.exec(["resize-pane", "-t", pane.id, "-y", String(height)]);
+		}
 	}
 
 	private async nextWindowTarget(session: string): Promise<string> {
@@ -215,6 +282,7 @@ export class ZellijLanePlacement {
 	async place(request: LanePlacementRequest): Promise<ZellijLanePlacementRef> {
 		const targetWorkspace = request.targetWorkspace?.trim() || undefined;
 		if (request.placement === "split-pane") {
+			const restoreFocusPane = request.restoreFocusPane ?? request.targetPane;
 			if (request.targetPane) {
 				await this.options.exec([
 					...zellijSessionArgs(targetWorkspace),
@@ -238,6 +306,7 @@ export class ZellijLanePlacement {
 				"-lc",
 				commandWithEnv(request.command, request.env),
 			]);
+			await this.restoreFocus(targetWorkspace, restoreFocusPane);
 			return {
 				backend: "zellij",
 				zellij: { session: targetWorkspace, paneId, placement: "split-pane" },
@@ -272,6 +341,11 @@ export class ZellijLanePlacement {
 				sessionOwned: request.placement === "hidden" ? true : undefined,
 			},
 		};
+	}
+
+	private async restoreFocus(session: string | undefined, paneId: string | undefined): Promise<void> {
+		if (!paneId) return;
+		await this.options.exec([...zellijSessionArgs(session), "action", "focus-pane-id", paneId]).catch(() => "");
 	}
 }
 

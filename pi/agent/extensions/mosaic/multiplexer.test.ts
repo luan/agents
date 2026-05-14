@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { LanePlacementRequest, TmuxLanePlacementRef, ZellijLanePlacementRef } from "../shared/lane-placement";
 import { buildBootstrapPayload } from "./full-session-agent";
-import { launchMosaicTarget } from "./multiplexer";
+import { launchMosaicTarget, sendMessageToTarget } from "./multiplexer";
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -76,6 +76,7 @@ describe("mosaic full-session placement", () => {
 			name: "mc: inspect",
 			command: "pi -e mosaic --session /tmp/child.jsonl --model openai/gpt-5",
 			targetPane: "%self",
+			restoreFocusPane: "%self",
 			splitDirection: "horizontal",
 		});
 		expect(placementRequest?.env).toMatchObject({
@@ -149,6 +150,7 @@ describe("mosaic full-session placement", () => {
 		expect(placementRequest).toMatchObject({
 			placement: "split-pane",
 			targetPane: "%10",
+			restoreFocusPane: "%self",
 			splitDirection: "vertical",
 		});
 	});
@@ -190,6 +192,7 @@ describe("mosaic full-session placement", () => {
 			placement: "split-pane",
 			targetWorkspace: "dev",
 			targetPane: "terminal_1",
+			restoreFocusPane: "terminal_1",
 			splitDirection: "horizontal",
 			cwd: "/repo",
 			name: "mc: plan",
@@ -280,5 +283,62 @@ describe("mosaic full-session placement", () => {
 			disallowedTools: ["Agent"],
 			mosaicIdentity: { label: "A1", name: "Inspect docs", color: "f38ba8" },
 		});
+	});
+
+	test("tmux steering enters insert mode before pasting the message", () => {
+		const calls: Array<{ file: string; args: string[] }> = [];
+		sendMessageToTarget(
+			{
+				backend: "tmux",
+				paneId: "%target",
+				sessionFile: "/tmp/session.jsonl",
+				cwd: "/repo",
+				pid: 123,
+				owner: "%self",
+				busy: false,
+			},
+			"review only the diff",
+			((file: string, args: string[]) => {
+				calls.push({ file, args });
+				return "";
+			}) as never,
+		);
+
+		expect(calls.map((call) => [call.file, call.args[0]])).toEqual([
+			["tmux", "set-buffer"],
+			["tmux", "send-keys"],
+			["tmux", "paste-buffer"],
+			["tmux", "send-keys"],
+			["tmux", "delete-buffer"],
+		]);
+		expect(calls[1]?.args).toEqual(["send-keys", "-t", "%target", "Escape", "i"]);
+		expect(calls[2]?.args).toEqual(["paste-buffer", "-b", calls[0]?.args[2], "-t", "%target"]);
+	});
+
+	test("zellij steering enters insert mode before writing the message", () => {
+		const calls: Array<{ file: string; args: string[] }> = [];
+		sendMessageToTarget(
+			{
+				backend: "zellij",
+				paneId: "terminal_2",
+				sessionFile: "/tmp/session.jsonl",
+				cwd: "/repo",
+				pid: 123,
+				owner: "terminal_1",
+				busy: false,
+				zellijSession: "dev",
+			},
+			"review only the diff",
+			((file: string, args: string[]) => {
+				calls.push({ file, args });
+				return "";
+			}) as never,
+		);
+
+		expect(calls).toHaveLength(3);
+		expect(calls[0]?.file).toBe("zellij");
+		expect(calls[0]?.args).toContain("\x1bi");
+		expect(calls[1]?.args).toContain("review only the diff");
+		expect(calls[2]?.args).toContain("\r");
 	});
 });

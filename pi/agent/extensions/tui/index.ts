@@ -2,7 +2,6 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { buildSessionContext, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { runCommand } from "../shared/ct-runner";
-import { terminalRows } from "../shared/terminal";
 import { ensureConfigExists, loadConfig, type PolishedTuiConfig, saveConfig } from "./config";
 import { installFocusCursor } from "./cursor-focus";
 import {
@@ -196,11 +195,6 @@ export default function (pi: ExtensionAPI) {
 		if (pulseSliceCount <= 0) return;
 		const start = Math.max(0, state.contextSlices.length - pulseSliceCount);
 		pulseContextSliceIndexes(Array.from({ length: state.contextSlices.length - start }, (_, index) => start + index));
-	};
-
-	const isCompactTerminal = () => {
-		const rows = terminalRows();
-		return rows !== undefined && rows < currentConfig.compact.minTerminalRows;
 	};
 
 	const usageBarKey = (width: number): string =>
@@ -499,17 +493,12 @@ export default function (pi: ExtensionAPI) {
 		setEditorSessionIdentityProvider(() => editorSessionIdentity);
 		setEditorChromeProvider((width, theme, options) => {
 			const bottomWidth = Math.max(1, width - options.modeReserve);
-			if (isCompactTerminal()) {
-				return {
-					topRight: renderEditorTopChrome(width, theme, cwd),
-				};
-			}
 			return {
 				topRight: renderEditorTopChrome(width, theme, cwd),
 				bottomRight: renderEditorBottomStatus(bottomWidth, theme),
 			};
 		});
-		installEditorComposition(ctx.ui.theme, currentConfig.compact.minTerminalRows);
+		installEditorComposition(ctx.ui.theme);
 	};
 
 	const installUi = (ctx: ExtensionContext) => {

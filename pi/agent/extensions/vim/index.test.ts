@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { CURSOR_MARKER, TUI } from "@earendil-works/pi-tui";
 
-import { installStableHardwareCursorVisibility, ModalEditor } from "./index";
+import { initialModeForEnvironment, installStableHardwareCursorVisibility, ModalEditor } from "./index";
 
 class FakeTerminal {
 	public shown = 0;
@@ -43,6 +43,35 @@ async function flushRender(): Promise<void> {
 }
 
 describe("vim hardware cursor stability", () => {
+	test("starts mosaic agent editors in normal mode", () => {
+		expect(initialModeForEnvironment({ MOSAIC_AGENT_LABEL: "A1" })).toBe("normal");
+		expect(initialModeForEnvironment({ MOSAIC_BOOTSTRAP_FILE: "/tmp/bootstrap.json" })).toBe("normal");
+		expect(initialModeForEnvironment({})).toBe("insert");
+
+		const writes: string[] = [];
+		const editor = new ModalEditor(
+			{
+				terminal: {
+					write(sequence: string) {
+						writes.push(sequence);
+					},
+				},
+				setShowHardwareCursor() {},
+				getShowHardwareCursor() {
+					return true;
+				},
+			} as never,
+			{} as never,
+			{} as never,
+			null,
+			"normal",
+		);
+
+		expect(editor.getMode()).toBe("normal");
+		expect(writes).toContain("\x1b[1 q");
+		expect(writes).not.toContain("\x1b[5 q");
+	});
+
 	test("uses blinking cursor-shape sequences only on state changes, not on redraw", () => {
 		const writes: string[] = [];
 		const editor = new ModalEditor(

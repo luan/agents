@@ -40,6 +40,7 @@ export interface LaunchOptions {
 
 const READY_DIR = join(tmpdir(), "mosaic-ready");
 const LAUNCH_READY_TIMEOUT_MS = 30_000;
+const STEERING_INSERT_PRELUDE = "\x1bi";
 
 interface LaunchDependencies {
 	backend?: () => MultiplexerBackend;
@@ -149,20 +150,29 @@ export function killTarget(target: Heartbeat): void {
 	execFileSync("tmux", ["kill-pane", "-t", target.paneId]);
 }
 
-export function sendMessageToTarget(target: Heartbeat, message: string): void {
+export function sendMessageToTarget(
+	target: Heartbeat,
+	message: string,
+	exec: typeof execFileSync = execFileSync,
+): void {
 	if (target.backend === "zellij") {
-		execFileSync("zellij", zellijActionArgs(target, "write-chars", "--pane-id", target.paneId, "--", message));
-		execFileSync("zellij", zellijActionArgs(target, "write-chars", "--pane-id", target.paneId, "\r"));
+		exec(
+			"zellij",
+			zellijActionArgs(target, "write-chars", "--pane-id", target.paneId, "--", STEERING_INSERT_PRELUDE),
+		);
+		exec("zellij", zellijActionArgs(target, "write-chars", "--pane-id", target.paneId, "--", message));
+		exec("zellij", zellijActionArgs(target, "write-chars", "--pane-id", target.paneId, "\r"));
 		return;
 	}
 	const bufferName = `mosaic-${randomUUID()}`;
-	execFileSync("tmux", ["set-buffer", "-b", bufferName, message]);
+	exec("tmux", ["set-buffer", "-b", bufferName, message]);
 	try {
-		execFileSync("tmux", ["paste-buffer", "-b", bufferName, "-t", target.paneId]);
-		execFileSync("tmux", ["send-keys", "-t", target.paneId, "Enter"]);
+		exec("tmux", ["send-keys", "-t", target.paneId, "Escape", "i"]);
+		exec("tmux", ["paste-buffer", "-b", bufferName, "-t", target.paneId]);
+		exec("tmux", ["send-keys", "-t", target.paneId, "Enter"]);
 	} finally {
 		try {
-			execFileSync("tmux", ["delete-buffer", "-b", bufferName], { stdio: "ignore" });
+			exec("tmux", ["delete-buffer", "-b", bufferName], { stdio: "ignore" });
 		} catch {}
 	}
 }
@@ -180,6 +190,7 @@ async function launchTmuxTarget(options: LaunchOptions, dependencies: LaunchDepe
 		command: options.command,
 		env,
 		targetPane: placementPlan.targetPane,
+		restoreFocusPane: pane,
 		splitDirection: placementPlan.splitDirection,
 	});
 	waitForLaunchReady(readyFile, dependencies);
@@ -224,6 +235,7 @@ async function launchZellijTarget(
 		env,
 		targetWorkspace: zellijSession,
 		targetPane: placementPlan?.targetPane,
+		restoreFocusPane: insideZellij ? normalizeZellijPaneId(process.env.ZELLIJ_PANE_ID) : undefined,
 		splitDirection: placementPlan?.splitDirection,
 	});
 	waitForLaunchReady(readyFile, dependencies);

@@ -113,9 +113,11 @@ describe("lane placement", () => {
 		const tmux = new TmuxLanePlacement({
 			exec: async (args) => {
 				commands.push(args);
+				if (args[0] === "display-message" && args.at(-1) === "#{pane_id}") return "%self";
 				if (args[0] === "display-message" && args.at(-1) === "#S") return "dev";
 				if (args[0] === "display-message" && args.at(-1) === "#S:#I") return "dev:2";
 				if (args[0] === "split-window") return "%43";
+				if (args[0] === "select-pane") return "";
 				throw new Error(`unexpected tmux call: ${args.join(" ")}`);
 			},
 		});
@@ -141,7 +143,7 @@ describe("lane placement", () => {
 				splitSizePercent: 30,
 			},
 		});
-		expect(commands.at(-1)).toEqual([
+		expect(commands.find((args) => args[0] === "split-window")).toEqual([
 			"split-window",
 			"-h",
 			"-p",
@@ -153,16 +155,86 @@ describe("lane placement", () => {
 			"/repo",
 			"echo ok",
 		]);
+		expect(commands.at(-1)).toEqual(["select-pane", "-t", "%self"]);
 	});
 
-	test("places a tmux split against a target pane", async () => {
+	test("equalizes unsized horizontal tmux splits after creation", async () => {
 		const commands: string[][] = [];
 		const tmux = new TmuxLanePlacement({
 			exec: async (args) => {
 				commands.push(args);
+				if (args[0] === "display-message" && args.at(-1) === "#{pane_id}") return "%self";
+				if (args[0] === "display-message" && args.at(-1) === "#S") return "dev";
+				if (args[0] === "display-message" && args.at(-1) === "#S:#I") return "dev:2";
+				if (args[0] === "split-window") return "%43";
+				if (args[0] === "select-layout") return "";
+				if (args[0] === "select-pane") return "";
+				throw new Error(`unexpected tmux call: ${args.join(" ")}`);
+			},
+		});
+
+		await tmux.place({
+			placement: "split-pane",
+			cwd: "/repo",
+			name: "lane",
+			command: "echo ok",
+			splitDirection: "horizontal",
+		});
+
+		expect(commands).toContainEqual(["select-layout", "-t", "dev:2", "even-horizontal"]);
+		expect(commands.at(-1)).toEqual(["select-pane", "-t", "%self"]);
+	});
+
+	test("equalizes same-column tmux panes after an unsized vertical split", async () => {
+		const commands: string[][] = [];
+		const tmux = new TmuxLanePlacement({
+			exec: async (args) => {
+				commands.push(args);
+				if (args[0] === "display-message" && args.at(-1) === "#{pane_id}") return "%self";
+				if (args[0] === "display-message" && args.includes("-t")) return "dev:2";
+				if (args[0] === "display-message" && args.at(-1) === "#S") return "dev";
+				if (args[0] === "split-window") return "%13";
+				if (args[0] === "list-panes") {
+					return [
+						"%10\t0\t0\t158\t59",
+						"%11\t159\t0\t157\t14",
+						"%13\t159\t15\t157\t14",
+						"%12\t159\t30\t157\t29",
+					].join("\n");
+				}
+				if (args[0] === "resize-pane") return "";
+				if (args[0] === "select-pane") return "";
+				throw new Error(`unexpected tmux call: ${args.join(" ")}`);
+			},
+		});
+
+		await tmux.place({
+			placement: "split-pane",
+			cwd: "/repo",
+			name: "lane",
+			command: "echo ok",
+			targetPane: "%11",
+			splitDirection: "vertical",
+		});
+
+		expect(commands.filter((args) => args[0] === "resize-pane")).toEqual([
+			["resize-pane", "-t", "%11", "-y", "19"],
+			["resize-pane", "-t", "%13", "-y", "19"],
+			["resize-pane", "-t", "%12", "-y", "19"],
+		]);
+		expect(commands.at(-1)).toEqual(["select-pane", "-t", "%self"]);
+	});
+
+	test("places a tmux split against a target pane and restores the original pane focus", async () => {
+		const commands: string[][] = [];
+		const tmux = new TmuxLanePlacement({
+			exec: async (args) => {
+				commands.push(args);
+				if (args[0] === "display-message" && args.at(-1) === "#{pane_id}") return "%active";
 				if (args[0] === "display-message" && args.includes("-t")) return "dev:2";
 				if (args[0] === "display-message" && args.at(-1) === "#S") return "dev";
 				if (args[0] === "split-window") return "%44";
+				if (args[0] === "select-pane") return "";
 				throw new Error(`unexpected tmux call: ${args.join(" ")}`);
 			},
 		});
@@ -174,10 +246,11 @@ describe("lane placement", () => {
 			command: "echo ok",
 			targetPane: "%10",
 			splitDirection: "vertical",
+			restoreFocusPane: "%self",
 		});
 
 		expect(placed.tmux.windowId).toBe("dev:2");
-		expect(commands.at(-1)).toEqual([
+		expect(commands.find((args) => args[0] === "split-window")).toEqual([
 			"split-window",
 			"-v",
 			"-P",
@@ -189,6 +262,7 @@ describe("lane placement", () => {
 			"/repo",
 			"echo ok",
 		]);
+		expect(commands.at(-1)).toEqual(["select-pane", "-t", "%self"]);
 	});
 
 	test("normalizes target workspace names before building tmux targets", async () => {
@@ -400,6 +474,34 @@ describe("lane placement", () => {
 		expect(commands[0]).toEqual(["--session", "dev", "action", "focus-pane-id", "terminal_1"]);
 		expect(commands[1]).toContain("new-pane");
 		expect(commands[1]).toContain("right");
+		expect(commands[2]).toEqual(["--session", "dev", "action", "focus-pane-id", "terminal_1"]);
+	});
+
+	test("restores an explicit zellij focus pane after splitting another target", async () => {
+		const commands: string[][] = [];
+		const zellij = new ZellijLanePlacement({
+			exec: async (args) => {
+				commands.push(args);
+				if (args.includes("focus-pane-id")) return "";
+				if (args.includes("new-pane")) return "terminal_8";
+				throw new Error(`unexpected zellij call: ${args.join(" ")}`);
+			},
+		});
+
+		await zellij.place({
+			placement: "split-pane",
+			cwd: "/repo",
+			name: "lane",
+			command: "echo ok",
+			targetWorkspace: "dev",
+			targetPane: "terminal_1",
+			restoreFocusPane: "terminal_self",
+			splitDirection: "horizontal",
+		});
+
+		expect(commands[0]).toEqual(["--session", "dev", "action", "focus-pane-id", "terminal_1"]);
+		expect(commands[1]).toContain("new-pane");
+		expect(commands[2]).toEqual(["--session", "dev", "action", "focus-pane-id", "terminal_self"]);
 	});
 
 	test("places a hidden zellij lane in a background session", async () => {

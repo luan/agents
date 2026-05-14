@@ -111,6 +111,27 @@ type CursorVisibilityTuiCandidate = {
 	};
 };
 
+function cleanEnvPart(value: string | undefined): string | undefined {
+	const text = value
+		?.replace(/[\x00-\x1f\x7f]/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+	return text || undefined;
+}
+
+function hexFg(color: string, text: string): string {
+	const normalized = color.startsWith("#") ? color.slice(1) : color;
+	if (!/^[0-9a-fA-F]{6}$/.test(normalized)) return text;
+	const r = Number.parseInt(normalized.slice(0, 2), 16);
+	const g = Number.parseInt(normalized.slice(2, 4), 16);
+	const b = Number.parseInt(normalized.slice(4, 6), 16);
+	return `\x1b[38;2;${r};${g};${b}m${text}\x1b[39m`;
+}
+
+export function initialModeForEnvironment(env: NodeJS.ProcessEnv = process.env): Mode {
+	return cleanEnvPart(env.MOSAIC_AGENT_LABEL) || cleanEnvPart(env.MOSAIC_BOOTSTRAP_FILE) ? "normal" : "insert";
+}
+
 export function installStableHardwareCursorVisibility(tui: unknown): CursorShapeCleanup | null {
 	if (typeof tui !== "object" || tui === null) return null;
 
@@ -543,7 +564,7 @@ class ClipboardMirror {
 }
 
 export class ModalEditor extends CustomEditor {
-	private mode: Mode = "insert";
+	private mode: Mode;
 	private pendingMotion: PendingMotion = null;
 	private pendingTextObject: TextObjectKind | null = null;
 	private pendingOperator: PendingOperator = null;
@@ -580,8 +601,10 @@ export class ModalEditor extends CustomEditor {
 		theme: CustomEditorConstructorArgs[1],
 		kb: CustomEditorConstructorArgs[2],
 		labelColorizers?: ModeLabelColorizers | null,
+		initialMode: Mode = "insert",
 	) {
 		super(tui, theme, kb);
+		this.mode = initialMode;
 		this.cursorShapeRuntime = getCursorShapeRuntime(tui);
 		this.labelColorizers = labelColorizers ?? null;
 		this.syncCursorShapeForState();
@@ -3139,10 +3162,13 @@ export default function (pi: ExtensionAPI) {
 
 		const t = ctx.ui.theme;
 		const reverseVideo = (s: string) => `\x1b[7m${s}\x1b[27m`;
+		const mosaicAgentColor = cleanEnvPart(process.env.MOSAIC_AGENT_COLOR);
 		const colorizers = t
 			? {
 					insert: (s: string) => t.fg("success", reverseVideo(s)),
-					normal: (s: string) => t.fg("syntaxFunction", reverseVideo(s)),
+					normal: mosaicAgentColor
+						? (s: string) => hexFg(mosaicAgentColor, reverseVideo(s))
+						: (s: string) => t.fg("syntaxFunction", reverseVideo(s)),
 					visual: (s: string) => t.fg("accent", reverseVideo(s)),
 					ex: (s: string) => t.fg("warning", reverseVideo(s)),
 				}
@@ -3150,7 +3176,7 @@ export default function (pi: ExtensionAPI) {
 		ctx.ui.setEditorComponent((tui, theme, kb) => {
 			cursorShapeCleanup?.();
 			cursorShapeCleanup = enableCursorShapeSupport(tui);
-			const editor = new ModalEditor(tui, theme, kb, colorizers);
+			const editor = new ModalEditor(tui, theme, kb, colorizers, initialModeForEnvironment());
 			editor.setClipboardMirrorPolicy(clipboardMirrorPolicy.policy);
 			editor.setQuitFn(() => ctx.shutdown());
 			editor.setNotifyFn((message) => ctx.ui.notify(message, "warning"));

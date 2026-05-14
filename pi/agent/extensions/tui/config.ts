@@ -31,9 +31,6 @@ export type PolishedTuiConfig = {
 		cost: ColorSpec;
 		separator: ColorSpec;
 	};
-	compact: {
-		minTerminalRows: number;
-	};
 	usageBars: {
 		visible: boolean;
 	};
@@ -116,9 +113,6 @@ export const defaultConfig: PolishedTuiConfig = {
 		cost: "success",
 		separator: "borderMuted",
 	},
-	compact: {
-		minTerminalRows: 28,
-	},
 	usageBars: {
 		visible: true,
 	},
@@ -172,10 +166,6 @@ export function loadConfig(): PolishedTuiConfig {
 			colors: {
 				...defaultConfig.colors,
 				...(parsed.colors ?? {}),
-			},
-			compact: {
-				...defaultConfig.compact,
-				...(parsed.compact ?? {}),
 			},
 			usageBars: {
 				...defaultConfig.usageBars,
