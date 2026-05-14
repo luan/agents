@@ -1,7 +1,7 @@
 ---
 name: implement
 description: 'Implement one approved agent task with TDD-first execution and verify acceptance criteria. Use when the user asks to implement specific task ID or selected task.'
-argument-hint: "<task-id-or-prefix> [--auto]"
+argument-hint: "<task-or-epic> [--auto]"
 user-invocable: true
 ---
 
@@ -11,7 +11,7 @@ Make one selected task true. Do not plan, split, rescope, or pull in adjacent cl
 
 ## Arguments
 
-- `<task-id-or-prefix>` — task to execute
+- `<task-or-epic>` — task to execute
 - `--auto` — skip optional confirmations and optional Plannotator review gates; do not skip TDD or verification
 - No argument — list open unblocked tasks and ask the user to choose
 
@@ -20,7 +20,7 @@ Make one selected task true. Do not plan, split, rescope, or pull in adjacent cl
 1. **Load and claim**
    - Read the selected task, parent task, blockers, acceptance criteria, verification, out-of-scope notes, and linked research/docs.
    - Stop if blockers are unresolved or criteria are missing.
-   - Before editing, mark the task `in_progress` and assign it to the current session.
+   - When given no arguments, or if the argument is an epic. Assign all tasks created by this session or all tasks in the pic to the current session.
 
 2. **Confirm scope**
    - Unless `--auto`, briefly state the task, acceptance criteria count, out-of-scope summary, and verification.
