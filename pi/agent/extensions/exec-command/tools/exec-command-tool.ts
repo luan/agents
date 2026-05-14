@@ -1,14 +1,9 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { type Component, Container, Text } from "@earendil-works/pi-tui";
+import { Container } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { summarizeShellCommand } from "../shell/summary.ts";
+import { rawCommandToExecCell, renderExecCellComponent } from "./exec-cell-presentation.ts";
 import type { ExecCommandTracker } from "./exec-command-state.ts";
-import {
-	renderExecCommandCall,
-	renderGroupedExecCommandCall,
-	renderOutputBlock,
-	renderSpawnedBackgroundTerminalCall,
-} from "./exec-rendering.ts";
 import type { ExecSessionManager, UnifiedExecResult } from "./exec-session-manager.ts";
 import { commandHasRipgrepSegment, isRtkGrepCommand } from "./rtk-wrapper.ts";
 import { formatUnifiedExecResult } from "./unified-exec-format.ts";
@@ -112,28 +107,6 @@ function createEmptyResultComponent(): Container {
 	return new Container();
 }
 
-class OutputBlockComponent implements Component {
-	constructor(
-		private readonly output: string,
-		private readonly theme: { fg(role: string, text: string): string },
-		private readonly footer: string | undefined,
-		private readonly options: { expanded: boolean; truncatedAbove?: boolean; originalTokenCount?: number },
-	) {}
-
-	invalidate() {}
-
-	render(width: number): string[] {
-		return new Text(
-			renderOutputBlock(this.output, this.theme, this.footer, {
-				...this.options,
-				width,
-			}),
-			0,
-			0,
-		).render(width);
-	}
-}
-
 function shouldUseRawRipgrep(originalCommand: string, rewrittenCommand: string): boolean {
 	return (
 		originalCommand !== rewrittenCommand &&
@@ -188,23 +161,38 @@ const renderExecCommandCallWithOptionalContext: any = (
 	const snapshot = renderInfo.sessionId !== undefined ? sessions.getSessionSnapshot(renderInfo.sessionId) : undefined;
 	scheduleElapsedInvalidation(context, !snapshot?.running && !isExplorationRow && renderInfo.status === "running");
 	if (renderInfo.hidden) {
-		return new Text("", 0, 0);
+		return createEmptyResultComponent();
 	}
 	if (renderInfo.sessionId !== undefined) {
 		const sessionCommand = snapshot?.command ?? sessions.getSessionCommand(renderInfo.sessionId) ?? command;
-		return new Text(renderSpawnedBackgroundTerminalCall(sessionCommand, theme, renderInfo.rtkWrapped), 0, 0);
+		return renderExecCellComponent(
+			{
+				kind: "spawned-background-terminal",
+				status: "done",
+				command: sessionCommand,
+				rtkWrapped: renderInfo.rtkWrapped,
+			},
+			{ theme, part: "header" },
+		);
 	}
-	const text = renderInfo.actionGroups
-		? renderGroupedExecCommandCall(
-				renderInfo.actionGroups,
-				renderInfo.status,
-				theme,
+	const cell = renderInfo.actionGroups
+		? {
+				kind: "exploration" as const,
+				status: renderInfo.status,
+				command,
+				actionGroups: renderInfo.actionGroups,
 				failed,
-				renderInfo.elapsedMs,
-				renderInfo.rtkWrapped,
-			)
-		: renderExecCommandCall(command, renderInfo.status, theme, failed, renderInfo.elapsedMs, renderInfo.rtkWrapped);
-	return new Text(text, 0, 0);
+				elapsedMs: renderInfo.elapsedMs,
+				rtkWrapped: renderInfo.rtkWrapped,
+			}
+		: rawCommandToExecCell({
+				command,
+				status: renderInfo.status,
+				failed,
+				elapsedMs: renderInfo.elapsedMs,
+				rtkWrapped: renderInfo.rtkWrapped,
+			});
+	return renderExecCellComponent(cell, { theme, part: "header" });
 };
 
 const renderExecCommandResultWithOptionalContext: any = (
@@ -241,11 +229,22 @@ const renderExecCommandResultWithOptionalContext: any = (
 		details?.exit_code !== undefined && details.exit_code !== 0
 			? theme.fg("muted", `Exit code: ${details.exit_code}`)
 			: undefined;
-	return new OutputBlockComponent(output ?? "", theme, footer, {
-		expanded: options.expanded,
-		truncatedAbove: details?.output_truncated,
-		originalTokenCount: details?.original_token_count,
-	});
+	return renderExecCellComponent(
+		rawCommandToExecCell({
+			command: command ?? "",
+			status: renderInfo.status,
+			outputBlock: {
+				output: output ?? "",
+				footer,
+				options: {
+					expanded: options.expanded,
+					truncatedAbove: details?.output_truncated,
+					originalTokenCount: details?.original_token_count,
+				},
+			},
+		}),
+		{ theme, part: "output" },
+	);
 };
 
 export function registerExecCommandTool(

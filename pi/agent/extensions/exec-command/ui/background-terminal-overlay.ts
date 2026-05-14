@@ -1,5 +1,4 @@
 import { type Component, Key, matchesKey, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { formatStdinCapability } from "../tools/exec-rendering.ts";
 import type { ExecSessionManager, ExecSessionRecord } from "../tools/exec-session-manager.ts";
 
 interface OverlayTheme {
@@ -172,9 +171,7 @@ export class BackgroundTerminalOverlay implements Component {
 			? this.theme.fg("accent", "running")
 			: this.theme.fg("muted", `exited ${record.exitCode ?? 0}`);
 		const prefix = `${selected ? this.theme.fg("accent", ">") : " "} #${record.id} `;
-		const tty = record.stdinOpen
-			? `${this.theme.fg("dim", " · ")}${this.theme.fg("mdLink", formatStdinCapability(true))}`
-			: "";
+		const tty = record.stdinOpen ? `${this.theme.fg("dim", " · ")}${this.theme.fg("mdLink", "tty")}` : "";
 		const meta = `${state}${tty}${this.theme.fg("dim", " · ")}`;
 		return truncateToWidth(`${prefix}${meta}${sanitizeLine(record.command)}`, width, "...");
 	}

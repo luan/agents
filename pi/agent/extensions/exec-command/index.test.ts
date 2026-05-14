@@ -3,19 +3,17 @@ import { execSync } from "node:child_process";
 import { BashExecutionComponent, initTheme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 import { Container } from "@earendil-works/pi-tui";
 import execCommandExtension from "./index.ts";
+import type { ShellAction } from "./shell/summary.ts";
+import {
+	type RenderOutputBlockOptions,
+	type RenderTheme,
+	rawCommandToExecCell,
+	renderBackgroundTerminalHud,
+	renderExecCell,
+	renderExecCellComponent,
+} from "./tools/exec-cell-presentation.ts";
 import { createExecCommandTracker } from "./tools/exec-command-state.ts";
 import { registerExecCommandTool } from "./tools/exec-command-tool.ts";
-import {
-	backgroundTerminalAnimatedLabel,
-	backgroundTerminalPulseMarker,
-	formatElapsedTime,
-	type RenderTheme,
-	renderBackgroundTerminalHudLine,
-	renderExecCommandCall,
-	renderGroupedExecCommandCall,
-	renderOutputBlock,
-	renderWriteStdinCall,
-} from "./tools/exec-rendering.ts";
 import { createExecSessionManager } from "./tools/exec-session-manager.ts";
 import { computeRtkRewriteDecision, parseRtkExecutablePath } from "./tools/rtk-wrapper.ts";
 import { formatUnifiedExecResult } from "./tools/unified-exec-format.ts";
@@ -58,6 +56,91 @@ async function waitForProcessListToExclude(marker: string): Promise<void> {
 	expect(processList()).not.toContain(marker);
 }
 
+function renderExecCommandCall(
+	command: string,
+	state: "running" | "done",
+	theme: RenderTheme,
+	failed = false,
+	elapsedMs?: number,
+	rtkWrapped = false,
+): string {
+	return renderExecCell(rawCommandToExecCell({ command, status: state, failed, elapsedMs, rtkWrapped }), {
+		theme,
+		part: "header",
+	});
+}
+
+function renderGroupedExecCommandCall(
+	actionGroups: ShellAction[][],
+	state: "running" | "done",
+	theme: RenderTheme,
+	failed = false,
+	elapsedMs?: number,
+	rtkWrapped = false,
+): string {
+	return renderExecCell(
+		{ kind: "exploration", status: state, actionGroups, failed, elapsedMs, rtkWrapped },
+		{ theme, part: "header" },
+	);
+}
+
+function renderOutputBlock(
+	output: string,
+	theme: Pick<RenderTheme, "fg">,
+	footer?: string,
+	options: RenderOutputBlockOptions = {},
+): string {
+	return renderExecCell(
+		{
+			kind: "command",
+			status: "done",
+			outputBlock: { output, footer, options },
+		},
+		{ theme: theme as RenderTheme, part: "output", expanded: options.expanded, width: options.width },
+	);
+}
+
+function renderSpawnedBackgroundTerminalCall(command: string, theme: RenderTheme, rtkWrapped = false): string {
+	return renderExecCell(
+		{ kind: "spawned-background-terminal", status: "done", command, rtkWrapped },
+		{ theme, part: "header" },
+	);
+}
+
+function renderWriteStdinCall(
+	sessionId: number | string,
+	input: string | undefined,
+	command: string | undefined,
+	theme: RenderTheme,
+	state: "running" | "done" = "done",
+	failed = false,
+	elapsedMs?: number,
+	stdinOpen?: boolean,
+): string {
+	return renderExecCell(
+		{
+			kind: "write-stdin",
+			status: state,
+			command,
+			failed,
+			elapsedMs,
+			writeStdin: { sessionId, input, stdinOpen },
+		},
+		{ theme, part: "header" },
+	);
+}
+
+function renderBackgroundTerminalHudLine(
+	command: string | undefined,
+	output: string,
+	theme: RenderTheme,
+	elapsedMs: number,
+	width = 120,
+	stdinOpen?: boolean,
+): string {
+	return renderBackgroundTerminalHud({ command, output, elapsedMs, stdinOpen }, { theme, width });
+}
+
 test("exec command call renders inline syntax-highlighted commands", () => {
 	const rendered = renderExecCommandCall(
 		`git diff --stat luan/pbt...luan/pbt-fixes && gh pr edit 57220 --title "fix(sync): resolve PBT convergence failures"`,
@@ -73,6 +156,134 @@ test("exec command call renders inline syntax-highlighted commands", () => {
 		`<syntaxOperator>&&</syntaxOperator> <syntaxFunction>gh</syntaxFunction> pr edit 57220 <syntaxKeyword>--title</syntaxKeyword> <syntaxString>"fix(sync): resolve PBT convergence failures"</syntaxString>`,
 	);
 	expect(rendered).not.toContain("\n<dim>  └ ");
+});
+
+test("exec cell facade renders raw command cells with RTK presentation metadata", () => {
+	const cell = rawCommandToExecCell({
+		command: "cargo test",
+		status: "done",
+		rtkWrapped: true,
+	});
+	const rendered = renderExecCell(cell, { theme: testTheme, part: "header" });
+
+	expect(rendered).toBe(renderExecCommandCall("cargo test", "done", testTheme, false, undefined, true));
+});
+
+test("exec cell facade renders exploration rows from an explicit cell model", () => {
+	const rendered = renderExecCell(
+		{
+			kind: "exploration",
+			status: "done",
+			actionGroups: [[{ kind: "search", command: "rg Parser", query: "Parser", path: "src" }]],
+		},
+		{ theme: testTheme, part: "header" },
+	);
+
+	expect(rendered).toBe(
+		renderGroupedExecCommandCall(
+			[[{ kind: "search", command: "rg Parser", query: "Parser", path: "src" }]],
+			"done",
+			testTheme,
+		),
+	);
+});
+
+test("exec cell facade renders combined command header and output block", () => {
+	const rendered = renderExecCell(
+		{
+			kind: "command",
+			status: "done",
+			command: "printf ok",
+			outputBlock: { output: "ok" },
+		},
+		{ theme: testTheme },
+	);
+
+	expect(rendered).toBe(
+		`${renderExecCommandCall("printf ok", "done", testTheme)}\n${renderOutputBlock("ok", testTheme)}`,
+	);
+});
+
+test("exec cell facade renders output components with caller width", () => {
+	const component = renderExecCellComponent(
+		{
+			kind: "command",
+			status: "done",
+			command: "printf ok",
+			outputBlock: {
+				output: "https://example.test/api/v1/projects/alpha-team/releases/2026-02-17/builds/1234567890\ntail",
+				options: { maxLines: 2 },
+			},
+		},
+		{ theme: testTheme, part: "output" },
+	);
+	const rendered = component.render(32).join("\n");
+
+	expect(rendered).toContain("… +");
+	expect(rendered).toContain("tail");
+});
+
+test("exec cell facade renders write_stdin cells and output blocks", () => {
+	const call = renderExecCell(
+		{
+			kind: "write-stdin",
+			status: "running",
+			command: "python repl.py",
+			elapsedMs: 65_400,
+			writeStdin: {
+				sessionId: 3,
+				input: "print(1)\n",
+				stdinOpen: true,
+			},
+		},
+		{ theme: testTheme, part: "header" },
+	);
+	const output = renderExecCell(
+		{
+			kind: "write-stdin",
+			status: "done",
+			outputBlock: {
+				output: "1\n",
+				footer: `${testTheme.fg("accent", "Session 3 still running")}${testTheme.fg("dim", " · ")}${testTheme.fg("mdLink", "tty")}`,
+			},
+		},
+		{ theme: testTheme, part: "output" },
+	);
+
+	expect(call).toBe(
+		renderWriteStdinCall(3, "print(1)\n", "python repl.py", testTheme, "running", false, 65_400, true),
+	);
+	expect(output).toBe(
+		renderOutputBlock(
+			"1\n",
+			testTheme,
+			`${testTheme.fg("accent", "Session 3 still running")}${testTheme.fg("dim", " · ")}${testTheme.fg("mdLink", "tty")}`,
+		),
+	);
+});
+
+test("exec cell facade renders spawned background terminal cells and HUD lines", () => {
+	const spawned = renderExecCell(
+		{
+			kind: "spawned-background-terminal",
+			status: "done",
+			command: "npm run dev",
+			rtkWrapped: true,
+		},
+		{ theme: testTheme, part: "header" },
+	);
+	const hud = renderBackgroundTerminalHud(
+		{
+			command: "npm run dev",
+			output: "ready\n",
+			elapsedMs: 65_000,
+			stdinOpen: true,
+		},
+		{ theme: testTheme, width: 80 },
+	);
+
+	expect(spawned).toBe(renderSpawnedBackgroundTerminalCall("npm run dev", testTheme, true));
+	expect(hud).toBe(renderBackgroundTerminalHudLine("npm run dev", "ready\n", testTheme, 65_000, 80, true));
 });
 
 test("exec command call unwraps simple shell wrappers before rendering", () => {
@@ -102,7 +313,6 @@ test("write stdin call keeps long command previews compact", () => {
 });
 
 test("running terminal calls show elapsed time", () => {
-	expect(formatElapsedTime(65_400)).toBe("1m 05s");
 	const firstFrame = renderExecCommandCall("sleep 60", "running", testTheme, false, 0);
 	const secondFrame = renderExecCommandCall("sleep 60", "running", testTheme, false, 120);
 	expect(firstFrame).not.toBe(secondFrame);
@@ -129,8 +339,8 @@ test("background terminal HUD summarizes command, output size, and last line", (
 });
 
 test("background terminal pulse marker uses smooth RGB intensity like Working", () => {
-	const dark = backgroundTerminalPulseMarker(rgbTestTheme, 0);
-	const bright = backgroundTerminalPulseMarker(rgbTestTheme, 600);
+	const dark = renderBackgroundTerminalHudLine(undefined, "", rgbTestTheme, 0).split(" ")[0] ?? "";
+	const bright = renderBackgroundTerminalHudLine(undefined, "", rgbTestTheme, 600).split(" ")[0] ?? "";
 
 	expect(stripAnsi(dark)).toBe("●");
 	expect(stripAnsi(bright)).toBe("●");
@@ -139,11 +349,11 @@ test("background terminal pulse marker uses smooth RGB intensity like Working", 
 });
 
 test("background terminal HUD label uses Working-style trickle animation", () => {
-	const early = backgroundTerminalAnimatedLabel(rgbTestTheme, 0);
-	const later = backgroundTerminalAnimatedLabel(rgbTestTheme, 240);
+	const early = renderBackgroundTerminalHudLine(undefined, "", rgbTestTheme, 0);
+	const later = renderBackgroundTerminalHudLine(undefined, "", rgbTestTheme, 240);
 
-	expect(stripAnsi(early)).toBe("background terminal");
-	expect(stripAnsi(later)).toBe("background terminal");
+	expect(stripAnsi(early)).toContain("background terminal");
+	expect(stripAnsi(later)).toContain("background terminal");
 	expect(early).not.toBe(later);
 	expect(later).toContain("\x1b[38;2;155;186;255m");
 });
