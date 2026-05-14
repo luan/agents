@@ -9,6 +9,7 @@
 //!
 //! start: begin_patch intent? hunk+ end_patch
 //! begin_patch: "*** Begin Patch" LF
+//! environment_id: "*** Environment ID: " filename LF
 //! end_patch: "*** End Patch" LF?
 //! intent: "*** Intent: " intent_text LF
 //!
@@ -37,6 +38,7 @@ use std::path::PathBuf;
 const BEGIN_PATCH_MARKER: &str = "*** Begin Patch";
 const END_PATCH_MARKER: &str = "*** End Patch";
 const INTENT_MARKER: &str = "*** Intent: ";
+const ENVIRONMENT_ID_MARKER: &str = "*** Environment ID: ";
 const ADD_FILE_MARKER: &str = "*** Add File: ";
 const DELETE_FILE_MARKER: &str = "*** Delete File: ";
 const UPDATE_FILE_MARKER: &str = "*** Update File: ";
@@ -220,7 +222,7 @@ pub fn parse_patch_with_repairs(patch: &str) -> Result<(Vec<Hunk>, Vec<ParseRepa
 fn parse_patch_text(patch: &str) -> Result<Vec<Hunk>, ParseError> {
     let lines: Vec<&str> = patch.trim().lines().collect();
     let (_patch_lines, hunk_lines) = check_patch_boundaries_strict(&lines)?;
-    let (hunk_lines, line_number_offset) = strip_optional_intent(hunk_lines);
+    let (hunk_lines, line_number_offset) = strip_optional_preamble(hunk_lines)?;
 
     let mut hunks: Vec<Hunk> = Vec::new();
     let mut remaining_lines = hunk_lines;
@@ -259,10 +261,36 @@ fn unique_embedded_patch(patch: &str) -> Result<Option<&str>, ParseError> {
     Ok(Some(&patch[*begin..*end + END_PATCH_MARKER.len()]))
 }
 
-fn strip_optional_intent<'a>(hunk_lines: &'a [&'a str]) -> (&'a [&'a str], usize) {
-    match hunk_lines.first().map(|line| line.trim()) {
-        Some(line) if line.starts_with(INTENT_MARKER) => (&hunk_lines[1..], 1),
-        _ => (hunk_lines, 0),
+fn strip_optional_preamble<'a>(
+    mut hunk_lines: &'a [&'a str],
+) -> Result<(&'a [&'a str], usize), ParseError> {
+    let mut consumed = 0;
+    let mut saw_intent = false;
+    let mut saw_environment_id = false;
+    loop {
+        match hunk_lines.first().map(|line| line.trim()) {
+            Some(line) if line.starts_with(INTENT_MARKER) && !saw_intent => {
+                saw_intent = true;
+                consumed += 1;
+                hunk_lines = &hunk_lines[1..];
+            }
+            Some(line)
+                if line.starts_with(ENVIRONMENT_ID_MARKER.trim_end()) && !saw_environment_id =>
+            {
+                saw_environment_id = true;
+                let environment_id = line[ENVIRONMENT_ID_MARKER.trim_end().len()..]
+                    .trim_start_matches(':')
+                    .trim();
+                if environment_id.is_empty() {
+                    return Err(InvalidPatchError(
+                        "apply_patch environment_id cannot be empty".to_string(),
+                    ));
+                }
+                consumed += 1;
+                hunk_lines = &hunk_lines[1..];
+            }
+            _ => return Ok((hunk_lines, consumed)),
+        }
     }
 }
 
@@ -1025,6 +1053,62 @@ Here is the patch:
                 contents: "hello\n".into(),
             }]
         );
+    }
+
+    #[test]
+    fn parse_patch_accepts_heredoc_wrapped_patch_argument() {
+        let patch = "\
+<<'EOF'
+*** Begin Patch
+*** Add File: heredoc.txt
++hello
+*** End Patch
+EOF
+";
+
+        let hunks = parse_patch(patch).unwrap();
+        assert_eq!(
+            hunks,
+            vec![AddFile {
+                path: PathBuf::from("heredoc.txt"),
+                contents: "hello\n".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn parse_patch_accepts_optional_environment_id_preamble() {
+        let patch = "\
+*** Begin Patch
+*** Environment ID: env-local
+*** Add File: env.txt
++hello
+*** End Patch
+";
+
+        let hunks = parse_patch(patch).unwrap();
+        assert_eq!(
+            hunks,
+            vec![AddFile {
+                path: PathBuf::from("env.txt"),
+                contents: "hello\n".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn parse_patch_rejects_empty_environment_id_preamble() {
+        let patch = "\
+*** Begin Patch
+*** Environment ID:   
+*** Add File: env.txt
++hello
+*** End Patch
+";
+
+        let err = parse_patch(patch).unwrap_err();
+        assert_eq!(err.subkind_str(), "parse_envelope");
+        assert!(err.to_string().contains("environment_id cannot be empty"));
     }
 
     #[test]
