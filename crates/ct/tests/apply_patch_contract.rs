@@ -90,6 +90,55 @@ fn raw_cli_records_success_telemetry() {
 }
 
 #[test]
+fn raw_cli_accepts_heredoc_wrapped_patch_argument() {
+    let sandbox = TempDir::new().unwrap();
+    let patch = "\
+<<'EOF'
+*** Begin Patch
+*** Add File: heredoc.txt
++hello
+*** End Patch
+EOF
+";
+
+    ct().arg("apply-patch")
+        .arg("--cwd")
+        .arg(sandbox.path())
+        .write_stdin(patch)
+        .assert()
+        .success();
+
+    assert_eq!(
+        fs::read_to_string(sandbox.path().join("heredoc.txt")).unwrap(),
+        "hello\n"
+    );
+}
+
+#[test]
+fn raw_cli_accepts_environment_id_preamble() {
+    let sandbox = TempDir::new().unwrap();
+    let patch = "\
+*** Begin Patch
+*** Environment ID: env-local
+*** Add File: env.txt
++hello
+*** End Patch
+";
+
+    ct().arg("apply-patch")
+        .arg("--cwd")
+        .arg(sandbox.path())
+        .write_stdin(patch)
+        .assert()
+        .success();
+
+    assert_eq!(
+        fs::read_to_string(sandbox.path().join("env.txt")).unwrap(),
+        "hello\n"
+    );
+}
+
+#[test]
 fn update_applies_hunk() {
     let sandbox = TempDir::new().unwrap();
     write_seed(
