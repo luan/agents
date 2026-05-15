@@ -10,6 +10,7 @@ allowed-tools:
   - "Bash(gt:*)"
   - "Bash(git status)"
   - "Bash(git branch:*)"
+  - "Bash(gh pr view:*)"
   - Skill
 ---
 
@@ -39,6 +40,7 @@ Default is `gt ss -u` (stack, update-only). This avoids accidentally creating PR
    ```
 
 3. Refresh PR descriptions for every submitted PR:
-   - After Graphite has created or updated PRs, run `Skill(pr-descr)` for each affected PR so the title and body match the final branch diff.
+   - After Graphite has created or updated PRs, fetch and read the current title/body for each affected PR with `gh pr view <PR> --json number,title,body,headRefName,url`. This current description is mandatory grounding.
+   - Then run `Skill(pr-descr)` for each affected PR so the title and body match the final branch diff without blindly discarding existing PR context.
    - This applies to `gt ss -u`, `gt submit`, and `gt ss`; update-only PRs may still have stale descriptions.
 4. Report Graphite URLs (`app.graphite.com/...`) for updated PRs. Do not report GitHub URLs as the primary result.

@@ -10,6 +10,7 @@ allowed-tools:
   - "Bash(gs:*)"
   - "Bash(git status)"
   - "Bash(git branch:*)"
+  - "Bash(gh pr view:*)"
   - Skill
 ---
 
@@ -40,6 +41,7 @@ Default is update-only. `--update-only` is used to update existing Change Reques
    ```
 
 3. Refresh PR/CR descriptions for every submitted GitHub PR:
-   - After Git-Spice has created or updated Change Requests, run `Skill(pr-descr)` for each affected GitHub PR so the title and body match the final branch diff.
+   - After Git-Spice has created or updated Change Requests, fetch and read the current title/body for each affected GitHub PR with `gh pr view <PR> --json number,title,body,headRefName,url`. This current description is mandatory grounding.
+   - Then run `Skill(pr-descr)` for each affected GitHub PR so the title and body match the final branch diff without blindly discarding existing PR context.
    - This applies to update-only and create modes; existing Change Requests may still have stale descriptions.
 4. Report created or updated Change Request URLs.
