@@ -1,162 +1,80 @@
 ---
 name: crit
-description: 'Run an adversarial review of local changes, branch diffs, or PRs. Use when the user asks for review, critique, sanity check, or requested-changes prep.'
+description: "Run an adversarial review of local changes, branch diffs, or PRs without inventing work. Use when the user asks for review, critique, sanity check, or requested-changes prep."
 argument-hint: "[base..head | file-list | PR#] [--auto critical|high|medium|all] [--loop]"
 user-invocable: true
 ---
 
 # Crit
 
-Adversarial review with enough context to catch real defects, without generating vault reports or running a committee. Prefer fewer, confirmed findings over broad speculation.
+Adversarial review that catches real defects and can explicitly say the change needs no revision. Prefer one confirmed blocker over many speculative suggestions.
 
-**NEVER review inline.** Always dispatch subagents via the Agent tool.
+**Do not review inline.** Dispatch reviewer subagents, but choose count and split from the diff shape.
 
-## Arguments
+## Inputs
+- `[base..head | file-list | PR#]` - diff source. Default: branch diff vs parent/trunk.
+- `--auto critical|high|medium|all` - fix findings at or above selected severity.
+- `--loop` - after auto-fixes, re-run from simplify. Max 3 loops.
 
-- `[base..head | file-list | PR#]` — diff source. Default: branch diff vs parent/trunk.
-- `--auto critical|high|medium|all` — fix findings at or above the selected severity.
-- `--loop` — after auto-fixes, re-run one review pass. Max 3 loops; stop when no fixable findings remain.
+## 1. Scope and Context
+Resolve BASE with first success unless args override: `gt parent`, `gt trunk`, then `git symbolic-ref --short refs/remotes/origin/HEAD`.
 
-## Step 1: Scope
+Diff sources: none -> `git diff $BASE...HEAD`; `main..HEAD` -> BASE=main; file list -> `git diff HEAD -- <files>` plus reads; `#123` -> `gh pr diff 123`.
 
-Resolve BASE:
-```bash
-gt parent
-gt trunk
-git symbolic-ref --short refs/remotes/origin/HEAD
-```
-Use the first command that returns a ref. Args override.
+For local diffs run `ct repo context --base $BASE --stat --cochanges`. Fetch PR metadata with `gh pr view` if available. Also run `git branch --show-current` and `ct task list --all`; include a matching task's ID, status, blockers, and acceptance criteria.
 
-| Input        | Diff source                       |
-| ------------ | --------------------------------- |
-| (none)       | `git diff $BASE...HEAD`           |
-| `main..HEAD` | BASE=main                         |
-| file list    | `git diff HEAD -- <files>` + read |
-| `#123`       | `gh pr diff 123`                  |
+Large diffs (>3000 lines): truncate any file with >200 changed lines to first 50 plus last 50 diff lines, list truncations, and require reviewers to read those files in full before making claims.
 
-For local diffs, also run:
-```bash
-ct repo context --base $BASE --stat --cochanges
-```
-Use it for changed files, recent commits, diff-stat, and likely related files. Fetch PR title/body/labels with `gh pr view` if available.
+Bugfix guard: if commit messages or PR title contain "fix", "bugfix", or "hotfix", classify production vs test files. If every changed file is test-only, verdict **FAIL** with Critical: "Bugfix contains no production code changes."
 
-**Large diffs (>3000 lines):** Truncate any file with >200 changed lines to first 50 + last 50 diff lines, but tell reviewers which files were truncated and require them to read those files in full before making claims.
+## 2. Simplify First
+Invoke `$simplify` on the same diff before risk review.
 
-**Bugfix detection:** If commit messages or PR title contain "fix"/"bugfix"/"hotfix", classify files as production vs test. ALL test-only → verdict **FAIL** with Critical: "Bugfix contains no production code changes."
+- `$simplify` **PASS**: record it and continue.
+- **SIMPLIFY_RECOMMENDED**: include only confirmed simplification findings in review context.
+- With `--auto medium` or `--auto all`: fix confirmed simplifications first, then refresh the diff.
+- Optional simplification ideas are not requested changes.
 
-## Step 2: Optional Product/Task Context
+## 3. Choose Review Plan
+Write a one-paragraph plan before dispatch: changed areas, risk triggers, reviewer count, and split rationale.
 
-Do this once; do not turn it into a report-writing exercise.
+- **1 reviewer**: <=200 changed lines, one coherent area, no security/auth/data migration/concurrency/public API/runtime behavior risk.
+- **2 reviewers**: 200-1000 lines, one or two areas, or normal production behavior changes. Split correctness/integration vs tests/maintainability.
+- **3 reviewers**: only for >1000 lines, 3+ areas/packages, cross-cutting refactors, security/auth/privacy, persistence/migrations, concurrency/async orchestration, public contracts, performance-sensitive paths, or unclear acceptance criteria.
 
-```bash
-git branch --show-current
-ct task list --all
-```
+Prefer file-cluster split for independent domains. Prefer role split for tightly coupled files. If task/PR acceptance criteria exist, assign one reviewer to verify criteria coverage.
 
-If a task clearly matches the branch, PR title, or user-provided topic, include its ID, status, blockers, and acceptance criteria in reviewer prompts. If no task context exists, continue.
+## 4. Dispatch Reviewers
+Spawn selected reviewers in one message. Pass raw diffs and context, not summaries. Reviewers must not write files. Use only the needed focus blocks from [REVIEWERS.md](REVIEWERS.md).
 
-## Step 3: Dispatch Reviewers
+Append this protocol to every prompt:
 
-Spawn all reviewers in ONE message. Pass raw diffs and context, not summaries. Each reviewer must return only actionable findings and must not write files.
-
-Append this protocol to every reviewer prompt:
-
-```
-## Response Protocol
+```text
 Return a table: Severity | File:Line | Finding | Recommendation | Confidence
 Severity: critical | high | medium | nit
 Confidence: confirmed | likely | needs-check
+A clean review is valid. If there are no concrete findings, return "No findings" plus one sentence explaining why.
 Only include issues caused or exposed by this diff.
 Do not include style preferences, generic best practices, or pre-existing issues unless the diff makes them worse.
+Every finding must state the concrete failure mode and trigger. If you cannot explain what breaks, omit it.
 Tag cross-cutting findings as [shared:<category>].
 ```
 
-### Reviewer 1 — Correctness & Security
+## 5. Aggregate and Verify
+1. Rate approach: Sound | Minor Concerns | Significant Concerns | Alternative Recommended.
+2. Deduplicate by root cause.
+3. Verify every candidate finding by reading source at file:line +/-20 lines. Classify Confirmed, False positive, Pre-existing, or Uncertain.
+4. Keep critical/high after verification. Keep medium/nit only if confirmed and materially worth changing, or shared by 2+ reviewers.
+5. Before requesting changes, ask: would this block merge for a capable teammate; what concrete risk remains if unchanged; is the recommendation smaller/safer?
+6. Drop false positives, preferences, and "could be nicer" items. A PASS with no findings is a successful review.
 
-```
-You are an adversarial correctness and security reviewer.
+Respond directly in chat; do not create a vault artifact, note, file, or canvas.
 
-## Gather Context
-1. Use the provided raw diff as the source of truth.
-2. Run `ct repo context --base {base_ref} --format json` for supplemental repository context.
-3. For local/file-list diffs, read changed files from the raw diff even if `ct repo context` disagrees.
-4. If `truncated_files` is non-empty, read those files in full.
-
-## Focus
-- Edge cases: empty, null, overflow, invalid state, concurrent access
-- Boundary semantics: verify what external fields actually mean at the source definition
-- Values crossing boundaries: trace producer → consumer, including tuple/struct destructuring
-- Dangerous fallbacks: permissive auth, production URLs, swallowed errors, silent defaults
-- External interactions: pagination, batching, retries, partial failure, rate limits
-- Injection, auth/authz gaps, data exposure
-- Error type conflation that loses specificity
-- Input validation gaps
-- Missing tests for changed behavior that can regress
-```
-
-### Reviewer 2 — Design, Reuse & Maintainability
-
-```
-You are a design and maintainability reviewer. Find the smallest real improvements that reduce future bugs.
-
-## Gather Context
-1. Use the provided raw diff as the source of truth.
-2. Run `ct repo context --base {base_ref} --format json` for supplemental repository context.
-3. For local/file-list diffs, read changed files from the raw diff even if `ct repo context` disagrees.
-4. Search adjacent modules, utility directories, and shared packages before claiming duplication.
-5. Read related cochanged files when `cochanges` are provided.
-
-## Focus
-- Existing helpers/utilities that should be reused instead of duplicating logic
-- Incomplete refactors, leaky abstractions, broken module boundaries
-- Copy-paste with slight variation that should unify behind an existing abstraction
-- Parameter sprawl or redundant state instead of derived state
-- Stringly-typed code where project constants/types already exist
-- Over-engineering: scaffolding, abstractions with too few real call sites, "might need it later"
-- Unnecessary comments explaining WHAT instead of non-obvious WHY
-- Approach fitness: simpler alternative, goal mismatch, or solving the wrong problem
-```
-
-### Reviewer 3 — Tests, Operations & Devil's Advocate
-
-```
-You are a tests/operations reviewer and devil's advocate. Try to break the change in production.
-
-## Gather Context
-1. Use the provided raw diff as the source of truth.
-2. Run `ct repo context --base {base_ref} --format json` for supplemental repository context.
-3. For local/file-list diffs, read changed files from the raw diff even if `ct repo context` disagrees.
-4. Read changed tests and production files together.
-5. If PR/task context exists, compare the diff against stated acceptance criteria.
-
-## Focus
-- Missing or weak tests for critical behavior, regressions, migrations, and failure paths
-- Test assertions that only prove implementation details or snapshots, not behavior
-- Dependency failures, bad network responses, empty data, malformed/adversarial input
-- Race conditions across async/concurrent paths
-- Silent contract changes: check callers when behavior changes
-- Performance: N+1 queries, O(n²), unbounded growth, hot-path blocking work
-- Operational risk: logging sensitive data, poor diagnostics, unsafe rollout/migration behavior
-- Premise check: does the fix actually fix the stated problem?
-- Assumption inversion: what does each guard/filter incorrectly exclude?
-```
-
-## Step 4: Aggregate and Verify
-
-1. **Approach assessment:** Rate the diff: Sound | Minor Concerns | Significant Concerns | Alternative Recommended. Consider goal alignment, premise, simpler alternatives, and scope.
-2. **Deduplicate:** Same root cause → one finding with affected facets/files.
-3. **Consensus:** Critical/high from any reviewer survives after verification. Medium/nit survives only if confirmed or shared by 2+ reviewers.
-4. **Mandatory verification:** Read source at every finding's file:line ±20 lines. Classify each as Confirmed / False positive / Pre-existing / Uncertain. Remove false positives. Downgrade pre-existing issues unless the diff worsens them.
-5. **Prune aggressively:** If you cannot explain the concrete failure mode, drop it.
-
-Respond directly in chat. Do **not** create a vault artifact, note, file, or canvas.
-
-Use this format:
-
-```
+```text
 # Review Summary
-
-Approach: <rating> — <one sentence>
+Approach: <rating> - <one sentence>
+Review plan: <reviewer count and split rationale>
+Simplify: PASS | SIMPLIFY_RECOMMENDED | not run (<reason>)
 Verification: <confirmed N, removed N, uncertain N>
 
 ## Fix Required
@@ -171,27 +89,10 @@ Verification: <confirmed N, removed N, uncertain N>
 Verdict: PASS | CHANGES_REQUESTED | FAIL
 ```
 
-Verdict rules:
-- **PASS**: no confirmed required fixes.
-- **CHANGES_REQUESTED**: any confirmed high/medium required fix.
-- **FAIL**: any confirmed critical issue, including bugfix-with-tests-only.
+Verdict rules: **PASS** means no confirmed required fixes; **CHANGES_REQUESTED** means any confirmed high/medium required fix; **FAIL** means any confirmed critical issue, including bugfix-with-tests-only.
 
-## Step 5: Fix
+## 6. Fix
 
-Skip this step when there are no confirmed fixable findings.
+Skip when there are no confirmed fixable findings. `--auto critical|high|medium|all` fixes at or above that severity. Without `--auto`, ask: Fix all / Fix critical+high / Fix critical only / Skip.
 
-`--auto critical|high|medium|all` → auto-fix at or above the selected severity:
-- `critical`: critical only
-- `high`: critical + high
-- `medium`: critical + high + medium
-- `all`: everything, including nits
-
-No `--auto` → ask: Fix all / Fix critical+high / Fix critical only / Skip.
-
-Spawn one fix agent with only confirmed FIX items. It must fix, verify, self-check for debug artifacts and unused imports, and report changed paths plus verification.
-
-If `--loop` is present, re-run Step 3 after fixes. Track fixed issues by file + description. Stop after no fixable findings remain, user stops, or 3 loops.
-
-## Step 6: Summary
-
-Respond with: Fixes Applied, Ignored, Remaining, Verification Run.
+Spawn one fix agent with only confirmed fix items. It must fix, verify, self-check for debug artifacts and unused imports, and report changed paths plus verification. With `--loop`, re-run from Step 2; stop after no fixable findings remain, user stops, or 3 loops.
