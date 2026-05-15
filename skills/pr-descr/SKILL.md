@@ -17,12 +17,14 @@ Update an existing PR's title and description from branch context.
 Log: !`git log --oneline -10 2>/dev/null`
 Status: !`git status -sb 2>/dev/null`
 Template: !`cat .github/PULL_REQUEST_TEMPLATE.md 2>/dev/null`
+Current PR: !`gh pr view --json number,title,body,headRefName,url 2>/dev/null`
 
 ## Step 1: Check State
 
 Resolve at runtime:
 
-- **PR**: `gh pr view --json number,title,body,headRefName -q '{number,title,headRefName}'`. If empty, tell user and stop.
+- **PR**: `gh pr view --json number,title,body,headRefName,url`.
+  If empty, tell user and stop. Always read the returned current title and body before drafting; the current description is mandatory grounding, not optional context.
 - **BASE**: `gh stack view --json 2>/dev/null | jq -r '.trunk // empty' || gt parent 2>/dev/null || gt trunk 2>/dev/null || git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/||' || echo main`
 
 `--auto` → skip edge case questions, assume committed changes only. Without `--auto`:
@@ -49,7 +51,14 @@ If diff is large, use `--stat` first and read key files.
 
 **Title**: conventional commit per $commit skill — `type(scope): description`. Max 72 chars — GitHub truncates longer titles in list views.
 
-**Body**: Follow the repo's PR template if one exists — fill each section from the diff. Otherwise, if recent merged PRs share a consistent format, match it. Fallback: 1-3 sentences explaining WHY with high-level HOW. Don't restate what's obvious from the diff.
+**Body**:
+
+- Start from the current PR body.
+- Preserve intentional user-authored context, links, reviewer guidance, checklists, and non-stale notes.
+- Update stale or missing sections using the repo's PR template if one exists — fill each section from the diff.
+- Otherwise, if recent merged PRs share a consistent format, match it.
+- Fallback: 1-3 sentences explaining WHY with high-level HOW.
+- Don't restate what's obvious from the diff, and don't blindly replace the existing description with a fresh body that ignores current content.
 
 ## Step 4: Preview and Update
 
