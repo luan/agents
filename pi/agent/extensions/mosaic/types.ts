@@ -149,6 +149,7 @@ export interface ScheduledSubagent {
 	max_turns?: number;
 	isolated?: boolean;
 	isolation?: IsolationMode;
+	cwd?: string;
 
 	// state
 	enabled: boolean;

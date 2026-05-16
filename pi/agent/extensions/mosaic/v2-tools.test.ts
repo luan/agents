@@ -57,6 +57,31 @@ describe("createMosaicV2Tools", () => {
 		expect(contexts).toEqual([{ ui: "fake-ui" }]);
 	});
 
+	test("passes spawn cwd through to the mosaic agent launcher", async () => {
+		const spawns: unknown[] = [];
+		const tools = createMosaicV2Tools({
+			...fakeDeps(),
+			spawnAgent: async (input) => {
+				spawns.push(input);
+				return { agentId: "agent-1" };
+			},
+		});
+
+		await tools
+			.find((tool) => tool.name === "spawn_agent")
+			?.execute("1", {
+				task_name: "nested/task",
+				message: "work there",
+				cwd: "packages/app",
+			} as never);
+
+		expect(spawns[0]).toMatchObject({
+			taskName: "nested/task",
+			message: "work there",
+			cwd: "packages/app",
+		});
+	});
+
 	test("wait_agent delegates to mailbox sequence waiting", async () => {
 		const waited: Array<{ afterSeq?: number; timeoutMs?: number }> = [];
 		const tools = createMosaicV2Tools({
