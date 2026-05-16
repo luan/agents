@@ -46,6 +46,8 @@ interface SpawnOptions {
 	bypassQueue?: boolean;
 	/** Isolation mode — "worktree" creates a temp git worktree for the agent. */
 	isolation?: IsolationMode;
+	/** Override working directory for the agent. */
+	cwd?: string;
 	/** Parent abort signal — when aborted, the subagent is also stopped. */
 	signal?: AbortSignal;
 	/** Called on tool start/end with activity info (for streaming progress to UI). */
@@ -142,12 +144,13 @@ export class AgentManager {
 
 	/** Actually start an agent (called immediately or from queue drain). */
 	private startAgent(id: string, record: AgentRecord, { pi, ctx, type, prompt, options }: SpawnArgs) {
+		const baseCwd = options.cwd ?? ctx.cwd;
 		// Worktree isolation: try to create a temporary git worktree. Strict —
 		// fail loud if not possible (no silent fallback to main tree). Done
 		// BEFORE state mutation so a throw doesn't leave the record half-running.
 		let worktreeCwd: string | undefined;
 		if (options.isolation === "worktree") {
-			const wt = createWorktree(ctx.cwd, id);
+			const wt = createWorktree(baseCwd, id);
 			if (!wt) {
 				throw new Error(
 					'Cannot run with isolation: "worktree" — not a git repo, no commits yet, or `git worktree add` failed. ' +
@@ -182,7 +185,7 @@ export class AgentManager {
 			isolated: options.isolated,
 			inheritContext: options.inheritContext,
 			thinkingLevel: options.thinkingLevel,
-			cwd: worktreeCwd,
+			cwd: worktreeCwd ?? options.cwd,
 			signal: record.abortController!.signal,
 			onToolActivity: (activity) => {
 				if (activity.type === "end") record.toolUses++;
@@ -234,7 +237,7 @@ export class AgentManager {
 
 				// Clean up worktree if used
 				if (record.worktree) {
-					const wtResult = cleanupWorktree(ctx.cwd, record.worktree, options.description);
+					const wtResult = cleanupWorktree(baseCwd, record.worktree, options.description);
 					record.worktreeResult = wtResult;
 					if (wtResult.hasChanges && wtResult.branch) {
 						record.result =
@@ -277,7 +280,7 @@ export class AgentManager {
 				// Best-effort worktree cleanup on error
 				if (record.worktree) {
 					try {
-						const wtResult = cleanupWorktree(ctx.cwd, record.worktree, options.description);
+						const wtResult = cleanupWorktree(baseCwd, record.worktree, options.description);
 						record.worktreeResult = wtResult;
 					} catch {
 						/* ignore cleanup errors */

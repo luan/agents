@@ -58,6 +58,7 @@ function formatDetails(j: ScheduledSubagent, scheduler: SubagentScheduler): stri
 		`name:      ${j.name}`,
 		`schedule:  ${j.schedule} (${j.scheduleType})`,
 		`agent:     ${j.subagent_type}`,
+		`cwd:       ${j.cwd ?? "parent session"}`,
 		`prompt:    ${j.prompt.slice(0, 200)}${j.prompt.length > 200 ? "…" : ""}`,
 		`created:   ${j.createdAt}`,
 		`last run:  ${j.lastRun ?? "—"} (${j.lastStatus ?? "—"})`,

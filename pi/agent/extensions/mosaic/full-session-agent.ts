@@ -28,6 +28,7 @@ export interface FullSessionLaunchOptions {
 	isolated?: boolean;
 	inheritContext?: boolean;
 	isolation?: IsolationMode;
+	cwd?: string;
 	agentConfig?: AgentConfig;
 	messageEndpoint?: string;
 	messageToken?: string;
@@ -63,10 +64,10 @@ export async function launchFullSessionAgent(
 	options: FullSessionLaunchOptions,
 ): Promise<FullSessionLaunchResult> {
 	const id = options.id ?? randomUUID().slice(0, 17);
-	let effectiveCwd = ctx.cwd;
+	let effectiveCwd = options.cwd ?? ctx.cwd;
 	let worktree: { path: string; branch: string } | undefined;
 	if (options.isolation === "worktree") {
-		const created = createWorktree(ctx.cwd, id);
+		const created = createWorktree(effectiveCwd, id);
 		if (!created) {
 			throw new Error(
 				'Cannot run with isolation: "worktree" — not a git repo, no commits yet, or `git worktree add` failed. ' +

@@ -27,6 +27,7 @@ import { BUILTIN_TOOL_NAMES, getAgentConfig, getAllTypes, registerAgents, resolv
 import { isMosaicChildSession, registerMosaicBootstrap } from "./bootstrap.js";
 import { registerRpcHandlers } from "./cross-extension-rpc.js";
 import { loadCustomAgents } from "./custom-agents.js";
+import { resolveAgentCwd } from "./cwd.js";
 import { launchFullSessionAgent } from "./full-session-agent.js";
 import { isTerminalAssistantMessage, resolveFullSessionAgentStatus } from "./full-session-status.js";
 import { GroupJoinManager } from "./group-join.js";
@@ -69,6 +70,7 @@ interface FullSessionAgentRecord {
 	paneId: string;
 	windowId: string;
 	windowName: string;
+	cwd?: string;
 	startedAt: number;
 	status: "running" | "completed" | "error" | "stopped";
 	completedAt?: number;
@@ -714,9 +716,11 @@ export default function (pi: ExtensionAPI) {
 		model?: string;
 		thinking?: string;
 		isolation?: "worktree";
+		cwd?: string;
 	}) {
 		if (!currentCtx) throw new Error("No active session");
 		if (!hasMultiplexer()) throw new Error("mosaic requires tmux or an active zellij session");
+		const agentCwd = resolveAgentCwd(input.cwd, currentCtx.cwd);
 		const rawType = input.agentType ?? "general-purpose";
 		const subagentType = resolveType(rawType) ?? "general-purpose";
 		const customConfig = getAgentConfig(subagentType);
@@ -745,6 +749,7 @@ export default function (pi: ExtensionAPI) {
 				model: model as any,
 				thinkingLevel: input.thinking as any,
 				isolation: input.isolation,
+				cwd: agentCwd,
 				agentConfig: customConfig,
 				messageEndpoint: transport.endpoint,
 				messageToken: connection.token,
@@ -762,6 +767,7 @@ export default function (pi: ExtensionAPI) {
 			paneId: launched.paneId,
 			windowId: launched.windowId,
 			windowName: launched.windowName,
+			cwd: launched.cwd,
 			startedAt,
 			status: "running",
 			worktree: launched.worktree,
