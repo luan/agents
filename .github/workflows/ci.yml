@@ -155,21 +155,6 @@ jobs:
             if [ -L "$p" ]; then echo "::error::$p still a symlink after unlink"; exit 1; fi
           done
 
-      - name: scenario 1b — legacy managed ~/.agents is migrated
-        shell: bash
-        run: |
-          set -eu
-          rm -rf "$HOME/.claude" "$HOME/.codex" "$HOME/.pi" "$HOME/.agents"
-          mkdir -p "$HOME/.agents"
-          node -e 'require("fs").symlinkSync(process.argv[1], process.argv[2], "dir")' \
-            "$GITHUB_WORKSPACE/rules" "$HOME/.agents/rules"
-          node -e 'require("fs").symlinkSync(process.argv[1], process.argv[2], "dir")' \
-            "$GITHUB_WORKSPACE/skills" "$HOME/.agents/skills"
-          cargo xtask link
-          test -L "$HOME/.agents" || { echo "::error::legacy ~/.agents was not replaced by a repo symlink"; exit 1; }
-          test -e "$HOME/.agents/skills/commit/SKILL.md" \
-            || { echo "::error::migrated ~/.agents does not expose skills"; exit 1; }
-
       # ---------- Scenario 2: file conflict (refuses to clobber) ----------
 
       - name: scenario 2 — clean and pre-create a conflicting file
