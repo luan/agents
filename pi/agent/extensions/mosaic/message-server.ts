@@ -50,6 +50,7 @@ export interface MosaicAgentLeaderMessage {
 }
 
 export type MosaicControlUpdate = MosaicMailboxMessage | MosaicAgentUpdate | MosaicAgentLeaderMessage;
+export const MOSAIC_AGENT_ACTIVITY_WRITING = "writing";
 
 export interface EnqueueMessageInput {
 	body: string;
@@ -79,6 +80,7 @@ export interface MosaicAgentSnapshot {
 interface AgentState extends MosaicAgentSnapshot {
 	token: string;
 	mailbox: MosaicMailboxMessage[];
+	lastUpdate?: MosaicAgentUpdate;
 }
 
 interface Waiter {
@@ -92,6 +94,8 @@ interface MessageServerOptions {
 	id?: () => string;
 	token?: () => string;
 }
+
+type UpdateListener = (update: MosaicControlUpdate) => void;
 
 export type MosaicTransportRequest =
 	| { id: string; method: "connect"; agentId: string; token: string }
@@ -124,6 +128,7 @@ export class MosaicMessageServer {
 	private readonly taskNameIndex = new Map<string, string>();
 	private readonly updates: MosaicControlUpdate[] = [];
 	private readonly waiters: Waiter[] = [];
+	private readonly updateListeners = new Set<UpdateListener>();
 	private seq = 0;
 
 	constructor(options: MessageServerOptions = {}) {
@@ -244,6 +249,7 @@ export class MosaicMessageServer {
 		const agent = this.requireAgent(agentId);
 		this.assertToken(agent, token);
 		agent.connected = false;
+		if (isTerminalAgentStatus(agent.status)) return this.snapshotAgentUpdate(agent);
 		return this.updateAgent(agent, { status: "disconnected" });
 	}
 
@@ -287,13 +293,39 @@ export class MosaicMessageServer {
 	}
 
 	listAgents(): MosaicAgentSnapshot[] {
-		return [...this.agents.values()].map(({ token: _token, mailbox: _mailbox, ...snapshot }) => ({ ...snapshot }));
+		return [...this.agents.values()].map(
+			({ token: _token, mailbox: _mailbox, lastUpdate: _lastUpdate, ...snapshot }) => ({
+				...snapshot,
+			}),
+		);
+	}
+
+	onUpdate(listener: UpdateListener): () => void {
+		this.updateListeners.add(listener);
+		return () => {
+			this.updateListeners.delete(listener);
+		};
 	}
 
 	private updateAgent(
 		agent: AgentState,
 		input: Pick<MosaicAgentUpdate, "status" | "activity" | "result" | "error">,
 	): MosaicAgentUpdate {
+		if (isTerminalAgentStatus(agent.status) && input.status !== "closed") {
+			return this.snapshotAgentUpdate(agent);
+		}
+		if (isCoalescibleWritingProgress(agent, input)) {
+			const now = this.now();
+			agent.lastUpdate = {
+				...agent.lastUpdate,
+				activity: input.activity,
+				result: input.result,
+				error: input.error,
+				createdAt: now,
+			};
+			agent.updatedAt = now;
+			return this.snapshotAgentUpdate(agent);
+		}
 		const update: MosaicAgentUpdate = {
 			type: "agent_update",
 			seq: this.nextSeq(),
@@ -305,9 +337,22 @@ export class MosaicMessageServer {
 			createdAt: this.now(),
 		};
 		agent.status = update.status;
+		agent.lastUpdate = update;
 		this.recordUpdate(update);
 		this.touch(agent, update.seq, update.createdAt);
 		return update;
+	}
+
+	private snapshotAgentUpdate(agent: AgentState): MosaicAgentUpdate {
+		return (
+			agent.lastUpdate ?? {
+				type: "agent_update",
+				seq: agent.lastSeq,
+				agentId: agent.agentId,
+				status: agent.status,
+				createdAt: agent.updatedAt,
+			}
+		);
 	}
 
 	private recordUpdate(update: MosaicControlUpdate): void {
@@ -319,6 +364,9 @@ export class MosaicMessageServer {
 			if (update.seq <= waiter.afterSeq) continue;
 			this.removeWaiter(waiter);
 			waiter.resolve(update);
+		}
+		for (const listener of [...this.updateListeners]) {
+			listener(update);
 		}
 	}
 
@@ -457,4 +505,20 @@ function closeServer(server: Server): Promise<void> {
 			else resolve();
 		});
 	});
+}
+
+function isTerminalAgentStatus(status: MosaicAgentStatus): boolean {
+	return status === "completed" || status === "error" || status === "closed";
+}
+
+function isCoalescibleWritingProgress(
+	agent: AgentState,
+	input: Pick<MosaicAgentUpdate, "status" | "activity" | "result" | "error">,
+): boolean {
+	return (
+		input.status === "running" &&
+		input.activity === MOSAIC_AGENT_ACTIVITY_WRITING &&
+		agent.lastUpdate?.status === "running" &&
+		agent.lastUpdate.activity === MOSAIC_AGENT_ACTIVITY_WRITING
+	);
 }

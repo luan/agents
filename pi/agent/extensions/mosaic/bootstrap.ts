@@ -3,6 +3,7 @@ import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { deliverMosaicMailboxMessages, MosaicMessageClient } from "./message-client.js";
+import { MOSAIC_AGENT_ACTIVITY_WRITING } from "./message-server.js";
 import { isMosaicOrchestrationToolName } from "./orchestration-tools.js";
 
 export const MOSAIC_LEADER_MESSAGE_TOOL_NAME = "message_leader";
@@ -263,7 +264,7 @@ async function publishAssistantResult(status: "running" | "completed", result: s
 	lastPublishedAssistantText = dedupeKey;
 	await messageClient.recordUpdate({
 		status,
-		activity: status === "running" ? "writing" : undefined,
+		activity: status === "running" ? MOSAIC_AGENT_ACTIVITY_WRITING : undefined,
 		result: text,
 	});
 }
