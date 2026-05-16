@@ -100,6 +100,84 @@ describe("MosaicMessageServer", () => {
 		expect(server.listAgents()[0]).toMatchObject({ status: "completed" });
 	});
 
+	test("ignores stale child progress updates after completion", async () => {
+		const server = new MosaicMessageServer({ now: () => 3750, id: () => "msg-1" });
+		const { token } = server.registerAgent({ agentId: "agent-1", taskName: "reviewer" });
+		server.connectAgent("agent-1", token);
+
+		const completed = server.recordAgentUpdate("agent-1", token, { status: "completed", result: "done" });
+		const afterCompleted = server.currentSeq;
+		const stale = server.recordAgentUpdate("agent-1", token, {
+			status: "running",
+			activity: "writing",
+			result: "done",
+		});
+		const disconnect = server.disconnectAgent("agent-1", token);
+
+		expect(stale).toMatchObject({ seq: completed.seq, status: "completed", result: "done" });
+		expect(disconnect).toMatchObject({ seq: completed.seq, status: "completed", result: "done" });
+		expect(server.currentSeq).toBe(afterCompleted);
+		expect(server.listAgents()[0]).toMatchObject({
+			connected: false,
+			status: "completed",
+			lastSeq: completed.seq,
+		});
+		await expect(server.waitForUpdate({ afterSeq: afterCompleted, timeoutMs: 1 })).resolves.toBeUndefined();
+	});
+
+	test("coalesces repeated writing progress while still emitting completion", async () => {
+		const server = new MosaicMessageServer({ now: () => 3850, id: () => "msg-1" });
+		const { token } = server.registerAgent({ agentId: "agent-1", taskName: "reviewer" });
+		server.connectAgent("agent-1", token);
+
+		const firstWriting = server.recordAgentUpdate("agent-1", token, {
+			status: "running",
+			activity: "writing",
+			result: "M",
+		});
+		const afterFirstWriting = server.currentSeq;
+		const secondWriting = server.recordAgentUpdate("agent-1", token, {
+			status: "running",
+			activity: "writing",
+			result: "MOSAIC",
+		});
+
+		expect(secondWriting).toMatchObject({ seq: firstWriting.seq, status: "running", activity: "writing" });
+		expect(secondWriting.result).toBe("MOSAIC");
+		expect(server.currentSeq).toBe(afterFirstWriting);
+		expect(server.listAgents()[0]).not.toHaveProperty("lastUpdate");
+		await expect(server.waitForUpdate({ afterSeq: afterFirstWriting, timeoutMs: 1 })).resolves.toBeUndefined();
+
+		const completed = server.recordAgentUpdate("agent-1", token, { status: "completed", result: "MOSAIC_DONE" });
+		await expect(server.waitForUpdate({ afterSeq: afterFirstWriting, timeoutMs: 1 })).resolves.toMatchObject({
+			seq: completed.seq,
+			status: "completed",
+			result: "MOSAIC_DONE",
+		});
+	});
+
+	test("notifies listeners only for recorded updates", () => {
+		const server = new MosaicMessageServer({ now: () => 3900, id: () => "msg-1" });
+		const { token } = server.registerAgent({ agentId: "agent-1", taskName: "reviewer" });
+		server.connectAgent("agent-1", token);
+		const updates: unknown[] = [];
+		server.onUpdate((update) => updates.push(update));
+
+		const firstWriting = server.recordAgentUpdate("agent-1", token, {
+			status: "running",
+			activity: "writing",
+			result: "M",
+		});
+		server.recordAgentUpdate("agent-1", token, {
+			status: "running",
+			activity: "writing",
+			result: "MOSAIC",
+		});
+		const completed = server.recordAgentUpdate("agent-1", token, { status: "completed", result: "MOSAIC_DONE" });
+
+		expect(updates).toEqual([firstWriting, completed]);
+	});
+
 	test("closes and disconnects agents with observable update records", () => {
 		const server = new MosaicMessageServer({ now: () => 4000, id: () => "msg-1" });
 		const { token } = server.registerAgent({ agentId: "agent-1", taskName: "reviewer" });

@@ -30,7 +30,12 @@ import { loadCustomAgents } from "./custom-agents.js";
 import { launchFullSessionAgent } from "./full-session-agent.js";
 import { isTerminalAssistantMessage, resolveFullSessionAgentStatus } from "./full-session-status.js";
 import { GroupJoinManager } from "./group-join.js";
-import { MosaicMessageServer, type MosaicMessageTransport, startMosaicMessageTransport } from "./message-server.js";
+import {
+	type MosaicAgentUpdate,
+	MosaicMessageServer,
+	type MosaicMessageTransport,
+	startMosaicMessageTransport,
+} from "./message-server.js";
 import { type ModelRegistry, resolveModel } from "./model-resolver.js";
 import { currentMultiplexerTarget, killTarget } from "./multiplexer.js";
 import { hasMultiplexer, registerMosaicMux, resolveOwner } from "./mux.js";
@@ -70,6 +75,7 @@ interface FullSessionAgentRecord {
 	result?: string;
 	error?: string;
 	maxTurns?: number;
+	resultDelivered?: boolean;
 	worktree?: { path: string; branch: string };
 	placement?: unknown;
 	mosaicIdentity?: { label: string; color: string };
@@ -80,10 +86,11 @@ interface MosaicProcessState {
 	fullSessionAgents: Map<string, FullSessionAgentRecord>;
 	messageServer: MosaicMessageServer;
 	messageTransport?: Promise<MosaicMessageTransport>;
+	messageUpdateUnsubscribe?: () => void;
 }
 
 const PROCESS_STATE_KEY = Symbol.for("mosaic:process-state");
-const MOSAIC_NATIVE_PROTOCOL_VERSION = 3;
+const MOSAIC_NATIVE_PROTOCOL_VERSION = 4;
 
 function getMosaicProcessState(): MosaicProcessState {
 	const global = globalThis as typeof globalThis & { [PROCESS_STATE_KEY]?: MosaicProcessState };
@@ -92,14 +99,19 @@ function getMosaicProcessState(): MosaicProcessState {
 		global[PROCESS_STATE_KEY] = createMosaicProcessState();
 		return global[PROCESS_STATE_KEY];
 	}
-	if (existing.protocolVersion !== MOSAIC_NATIVE_PROTOCOL_VERSION) {
+	if (existing.protocolVersion !== MOSAIC_NATIVE_PROTOCOL_VERSION || !isCompatibleMosaicProcessState(existing)) {
 		existing.messageTransport?.then((transport) => transport.close().catch(() => {})).catch(() => {});
+		existing.messageUpdateUnsubscribe?.();
 		global[PROCESS_STATE_KEY] = {
 			...createMosaicProcessState(),
 			fullSessionAgents: existing.fullSessionAgents,
 		};
 	}
 	return global[PROCESS_STATE_KEY];
+}
+
+function isCompatibleMosaicProcessState(state: MosaicProcessState): boolean {
+	return typeof state.messageServer?.onUpdate === "function";
 }
 
 function createMosaicProcessState(): MosaicProcessState {
@@ -549,6 +561,14 @@ export default function (pi: ExtensionAPI) {
 	const processState = getMosaicProcessState();
 	const fullSessionAgents = processState.fullSessionAgents;
 	const messageServer = processState.messageServer;
+	// Live widget: show running agents above editor.
+	const widget = new AgentWidget(manager, agentActivity, listFullSessionWidgetAgents);
+
+	processState.messageUpdateUnsubscribe?.();
+	processState.messageUpdateUnsubscribe = messageServer.onUpdate((update) => {
+		if (!isNativeCompletionUpdate(update)) return;
+		emitFullSessionCompletion(update);
+	});
 
 	function ensureMessageTransport(): Promise<MosaicMessageTransport> {
 		processState.messageTransport ??= startMosaicMessageTransport(messageServer).catch((error) => {
@@ -556,6 +576,54 @@ export default function (pi: ExtensionAPI) {
 			throw error;
 		});
 		return processState.messageTransport;
+	}
+
+	function isNativeCompletionUpdate(update: unknown): update is MosaicAgentUpdate {
+		if (!update || typeof update !== "object") return false;
+		const candidate = update as MosaicAgentUpdate;
+		return candidate.type === "agent_update" && (candidate.status === "completed" || candidate.status === "error");
+	}
+
+	function emitFullSessionCompletion(update: MosaicAgentUpdate): void {
+		if (isMosaicChildSession()) return;
+		const fullSession = fullSessionAgents.get(update.agentId);
+		if (!fullSession || fullSession.resultDelivered) return;
+
+		fullSession.status = update.status === "error" ? "error" : "completed";
+		fullSession.result = update.result;
+		fullSession.error = update.error;
+		fullSession.completedAt ??= update.createdAt;
+		fullSession.resultDelivered = true;
+
+		const activity = agentActivity.get(update.agentId);
+		const record: AgentRecord = {
+			id: fullSession.id,
+			type: fullSession.type,
+			description: fullSession.description,
+			status: fullSession.status,
+			result: fullSession.result,
+			error: fullSession.error,
+			toolUses: activity?.toolUses ?? 0,
+			startedAt: fullSession.startedAt,
+			completedAt: fullSession.completedAt,
+			worktree: fullSession.worktree,
+			lifetimeUsage: activity?.lifetimeUsage ?? { input: 0, output: 0, cacheWrite: 0 },
+			compactionCount: 0,
+			mosaicIdentity: fullSession.mosaicIdentity,
+		};
+
+		agentActivity.delete(update.agentId);
+		widget.markFinished(update.agentId);
+		pi.sendMessage<NotificationDetails>(
+			{
+				customType: "subagent-notification",
+				content: formatTaskNotification(record, 20_000),
+				display: true,
+				details: buildNotificationDetails(record, 500, activity),
+			},
+			{ deliverAs: "steer", triggerTurn: true },
+		);
+		widget.update();
 	}
 
 	function currentMosaicOwner(): string | undefined {
@@ -954,6 +1022,8 @@ export default function (pi: ExtensionAPI) {
 		unsubSpawnRpc();
 		unsubStopRpc();
 		unsubPingRpc();
+		processState.messageUpdateUnsubscribe?.();
+		processState.messageUpdateUnsubscribe = undefined;
 		currentCtx = undefined;
 		delete (globalThis as any)[MANAGER_KEY];
 		scheduler.stop();
@@ -962,9 +1032,6 @@ export default function (pi: ExtensionAPI) {
 		pendingNudges.clear();
 		manager.dispose();
 	});
-
-	// Live widget: show running agents above editor
-	const widget = new AgentWidget(manager, agentActivity, listFullSessionWidgetAgents);
 
 	// ---- Join mode configuration ----
 	let defaultJoinMode: JoinMode = "smart";
