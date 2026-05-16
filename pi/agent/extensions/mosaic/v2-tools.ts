@@ -22,6 +22,7 @@ export interface MosaicV2ToolDeps {
 		model?: string;
 		thinking?: string;
 		isolation?: "worktree";
+		cwd?: string;
 	}): Promise<unknown>;
 	sendMessage(input: { target: string; message: string; triggerTurn: boolean }): Promise<unknown>;
 	waitAgent(input: { afterSeq?: number; timeoutMs?: number }): Promise<unknown>;
@@ -63,6 +64,11 @@ export function createMosaicV2Tools(deps: MosaicV2ToolDeps) {
 				model: Type.Optional(Type.String({ description: "Optional model." })),
 				thinking: Type.Optional(Type.String({ description: "Thinking level." })),
 				isolation: Type.Optional(Type.Literal("worktree", { description: "Use a worktree." })),
+				cwd: Type.Optional(
+					Type.String({
+						description: "Working directory for the agent. Absolute or relative to the parent session cwd.",
+					}),
+				),
 			}),
 			renderShell: "self" as const,
 			renderCall: () => emptyMosaicRender,
@@ -77,6 +83,7 @@ export function createMosaicV2Tools(deps: MosaicV2ToolDeps) {
 						model: params.model,
 						thinking: params.thinking,
 						isolation: params.isolation,
+						cwd: params.cwd,
 					}),
 				);
 			},
