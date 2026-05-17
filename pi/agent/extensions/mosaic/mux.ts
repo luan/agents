@@ -231,7 +231,6 @@ export function registerMosaicMux(pi: ExtensionAPI) {
 		heartbeat.stop();
 		const sessionFile = ctx.sessionManager.getSessionFile();
 		if (!sessionFile) {
-			ctx.ui.notify("mosaic active", "info");
 			signalReady();
 			return;
 		}
@@ -251,7 +250,6 @@ export function registerMosaicMux(pi: ExtensionAPI) {
 			parentSessionFile,
 			...getMosaicBootstrapMetadata(),
 		});
-		ctx.ui.notify("mosaic active", "info");
 		signalReady();
 	});
 

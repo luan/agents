@@ -2,6 +2,7 @@ import { beforeAll, expect, test } from "bun:test";
 import { execSync } from "node:child_process";
 import { BashExecutionComponent, initTheme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 import { Container } from "@earendil-works/pi-tui";
+import { DEFAULT_EXEC_SHELL, resolveRuntimeShell } from "./adapter/runtime-shell.ts";
 import execCommandExtension from "./index.ts";
 import type { ShellAction } from "./shell/summary.ts";
 import {
@@ -2415,6 +2416,25 @@ test("exec session manager uses a non-color environment", async () => {
 			process.cwd(),
 		);
 		expect(result.output).toBe("1|dumb|unset");
+		expect(result.exit_code).toBe(0);
+	} finally {
+		sessions.shutdown();
+	}
+});
+
+test("exec session manager maps fish to the codex-compatible fallback shell", async () => {
+	expect(resolveRuntimeShell("/opt/homebrew/bin/fish")).toBe(DEFAULT_EXEC_SHELL);
+	if (process.platform === "darwin") {
+		expect(DEFAULT_EXEC_SHELL).toBe("/bin/zsh");
+	}
+
+	const sessions = createExecSessionManager({ defaultExecYieldTimeMs: 5000 });
+	try {
+		const result = await sessions.exec(
+			{ cmd: 'printf "%s" "$SHELL"', shell: "/opt/homebrew/bin/fish", yield_time_ms: 5000 },
+			process.cwd(),
+		);
+		expect(result.output).toBe(DEFAULT_EXEC_SHELL);
 		expect(result.exit_code).toBe(0);
 	} finally {
 		sessions.shutdown();

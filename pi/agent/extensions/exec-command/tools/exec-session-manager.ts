@@ -155,11 +155,11 @@ function shellEscape(value: string): string {
 	return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
-function shouldSyncBashEnv(requestedShell: string | undefined, effectiveShell: string): boolean {
+function shouldSyncFallbackShellEnv(requestedShell: string | undefined, effectiveShell: string): boolean {
 	return effectiveShell === DEFAULT_EXEC_SHELL && isFishShell(requestedShell || process.env.SHELL);
 }
 
-function buildSyncedBashCommand(command: string, env: NodeJS.ProcessEnv): string {
+function buildSyncedFallbackShellCommand(command: string, env: NodeJS.ProcessEnv): string {
 	const assignments: string[] = [];
 	for (const key of BASH_SYNC_ENV_KEYS) {
 		const value = key === "SHELL" ? DEFAULT_EXEC_SHELL : env[key];
@@ -176,13 +176,13 @@ function resolveExecution(
 ): { shell: string; command: string; env: NodeJS.ProcessEnv } {
 	const shell = resolveShell(requestedShell);
 	const env = withUnifiedExecEnvironment({ ...process.env });
-	if (!shouldSyncBashEnv(requestedShell, shell)) {
+	if (!shouldSyncFallbackShellEnv(requestedShell, shell)) {
 		return { shell, command, env };
 	}
 	env.SHELL = DEFAULT_EXEC_SHELL;
 	return {
 		shell,
-		command: buildSyncedBashCommand(command, env),
+		command: buildSyncedFallbackShellCommand(command, env),
 		env,
 	};
 }

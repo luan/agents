@@ -1,7 +1,15 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { LanePlacementRequest, TmuxLanePlacementRef, ZellijLanePlacementRef } from "../shared/lane-placement";
 import { buildBootstrapPayload } from "./full-session-agent";
-import { __resetMosaicPlacementForTest, launchMosaicTarget } from "./multiplexer";
+import {
+	__resetMosaicPlacementForTest,
+	currentMultiplexerTarget,
+	getMultiplexerBackend,
+	launchMosaicTarget,
+} from "./multiplexer";
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -11,6 +19,34 @@ afterEach(() => {
 });
 
 describe("mosaic full-session placement", () => {
+	test("does not treat installed zellij as the current startup target outside a zellij session", () => {
+		delete process.env.TMUX;
+		delete process.env.TMUX_PANE;
+		delete process.env.ZELLIJ;
+		delete process.env.ZELLIJ_SESSION_NAME;
+		delete process.env.ZELLIJ_PANE_ID;
+		const binDir = mkdtempSync(join(tmpdir(), "mosaic-zellij-bin-"));
+		const zellij = join(binDir, "zellij");
+		writeFileSync(
+			zellij,
+			[
+				"#!/bin/sh",
+				'if [ "$1" = "--version" ]; then',
+				'  echo "zellij 0.0.0"',
+				"  exit 0",
+				"fi",
+				'echo "There is no active session!" >&2',
+				"exit 1",
+				"",
+			].join("\n"),
+		);
+		chmodSync(zellij, 0o755);
+		process.env.PATH = `${binDir}:${ORIGINAL_ENV.PATH ?? ""}`;
+
+		expect(getMultiplexerBackend()).toBe("zellij");
+		expect(currentMultiplexerTarget()).toEqual({});
+	});
+
 	test("routes tmux full-session launch through shared placement while preserving ready env and live target metadata", async () => {
 		process.env.TMUX = "/tmp/tmux";
 		process.env.TMUX_PANE = "%self";

@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import type { BuildSystemPromptOptions, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import Mustache, { type TemplateSpans } from "mustache";
+import { resolveRuntimeShell } from "../exec-command/adapter/runtime-shell.ts";
 
 const SYSTEM_PROMPT_TEMPLATE = readFileSync(new URL("./SYSTEM_PROMPT.md.mustache", import.meta.url), "utf8").trimEnd();
 
@@ -121,10 +122,15 @@ function currentTimezone(): string | null {
 }
 
 function defaultShellName(): string {
-	const shell = process.env.SHELL || process.env.ComSpec || "unknown";
-	const parts = shell.split(/[\\/]/).filter(Boolean);
+	return shellDisplayName(process.env.SHELL || process.env.ComSpec);
+}
 
-	return parts.at(-1) ?? shell;
+function shellDisplayName(shell: string | undefined): string {
+	const resolvedShell = resolveRuntimeShell(shell);
+	const displayShell = resolvedShell || "unknown";
+	const parts = displayShell.split(/[\\/]/).filter(Boolean);
+
+	return parts.at(-1) ?? displayShell;
 }
 
 function buildEnvironmentContextView(context: EnvironmentContextOptions): EnvironmentContextView {
@@ -132,7 +138,7 @@ function buildEnvironmentContextView(context: EnvironmentContextOptions): Enviro
 	const environments = (context.environments ?? []).map((environment) => ({
 		id: environment.id ?? "",
 		cwd: environment.cwd,
-		shell: environment.shell ?? defaultShell,
+		shell: shellDisplayName(environment.shell ?? defaultShell),
 	}));
 
 	return {
