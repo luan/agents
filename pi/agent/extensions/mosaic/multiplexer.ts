@@ -61,7 +61,7 @@ interface LaunchDependencies {
 
 export function getMultiplexerBackend(): MultiplexerBackend | undefined {
 	if (process.env.TMUX && process.env.TMUX_PANE) return "tmux";
-	if (process.env.ZELLIJ || process.env.ZELLIJ_SESSION_NAME || process.env.ZELLIJ_PANE_ID) return "zellij";
+	if (inZellij()) return "zellij";
 	if (zellijInstalled()) return "zellij";
 	return undefined;
 }
@@ -87,6 +87,7 @@ export function currentMultiplexerTarget(): Partial<MultiplexerTarget> {
 		};
 	}
 	if (backend === "zellij") {
+		if (!inZellij()) return {};
 		const info = readCurrentZellijTabInfo();
 		return {
 			backend,
@@ -100,6 +101,10 @@ export function currentMultiplexerTarget(): Partial<MultiplexerTarget> {
 		};
 	}
 	return {};
+}
+
+function inZellij(): boolean {
+	return Boolean(process.env.ZELLIJ || process.env.ZELLIJ_SESSION_NAME || process.env.ZELLIJ_PANE_ID);
 }
 
 export async function launchMosaicTarget(

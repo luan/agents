@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { DEFAULT_EXEC_SHELL } from "../exec-command/adapter/runtime-shell";
 import { buildSystemPrompt } from "./index";
 
 const baseOptions = {
@@ -16,6 +17,21 @@ const baseOptions = {
 };
 
 describe("system-prompt Skillful skill rendering", () => {
+	test("renders fish shells as the exec_command fallback shell", () => {
+		const expectedShell = DEFAULT_EXEC_SHELL.split(/[\\/]/).filter(Boolean).at(-1);
+		const prompt = buildSystemPrompt("base", {
+			...baseOptions,
+			now: new Date(2026, 4, 10),
+			environmentContext: {
+				shell: "/opt/homebrew/bin/fish",
+				timezone: "America/New_York",
+			},
+		});
+
+		expect(prompt).toContain(`<shell>${expectedShell}</shell>`);
+		expect(prompt).not.toContain("<shell>fish</shell>");
+	});
+
 	test("renders environment metadata as structured environment context", () => {
 		const prompt = buildSystemPrompt("base", {
 			...baseOptions,
