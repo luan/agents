@@ -30,9 +30,6 @@ pub fn run(mode: Mode) -> Result<()> {
     if let Err(err) = process_agents_home(mode, &root, &agents_home) {
         eprintln!("  error: {err:#}");
         errors += 1;
-        if mode == Mode::Link {
-            bail!("stow operation completed with {errors} package error(s)");
-        }
     }
 
     for (package, segments) in TARGETS {
@@ -47,9 +44,6 @@ pub fn run(mode: Mode) -> Result<()> {
         if let Err(err) = process_package(mode, &source, &target) {
             eprintln!("  error: {err:#}");
             errors += 1;
-            if mode == Mode::Link {
-                break;
-            }
         }
     }
 
@@ -233,6 +227,35 @@ fn iter_children(source: &Path) -> Result<Vec<PathBuf>> {
     Ok(entries.into_iter().map(|e| e.path()).collect())
 }
 
+fn file_contents_match(source: &Path, target: &Path) -> Result<bool> {
+    let source_meta =
+        fs::metadata(source).with_context(|| format!("stat target of {}", source.display()))?;
+    let target_meta =
+        fs::metadata(target).with_context(|| format!("stat target of {}", target.display()))?;
+    if !source_meta.is_file() || !target_meta.is_file() {
+        return Ok(false);
+    }
+    let source_contents = fs::read(source).with_context(|| format!("read {}", source.display()))?;
+    let target_contents = fs::read(target).with_context(|| format!("read {}", target.display()))?;
+    Ok(contents_equivalent(&source_contents, &target_contents))
+}
+
+fn contents_equivalent(a: &[u8], b: &[u8]) -> bool {
+    a == b || trim_one_final_newline(a) == trim_one_final_newline(b)
+}
+
+fn trim_one_final_newline(bytes: &[u8]) -> &[u8] {
+    bytes.strip_suffix(b"\n").unwrap_or(bytes)
+}
+
+fn bail_non_symlink(source: &Path, target: &Path) -> Result<()> {
+    bail!(
+        "{} already exists and is not a symlink, and it differs from {} (merge wanted changes into the repo file or move the live file aside before rerunning setup)",
+        target.display(),
+        source.display()
+    )
+}
+
 fn act_link(source: &Path, target: &Path) -> Result<()> {
     match fs::symlink_metadata(target) {
         Ok(meta) if meta.file_type().is_symlink() => {
@@ -268,10 +291,17 @@ fn act_link(source: &Path, target: &Path) -> Result<()> {
             }
         }
         Ok(_) => {
-            bail!(
-                "{} already exists and is not a symlink (refusing to clobber)",
-                target.display()
-            );
+            if file_contents_match(source, target)? {
+                fs::remove_file(target).with_context(|| format!("remove {}", target.display()))?;
+                create_symlink(source, target)?;
+                eprintln!(
+                    "  ~ {} -> {} (replaced identical file)",
+                    target.display(),
+                    source.display()
+                );
+            } else {
+                bail_non_symlink(source, target)?;
+            }
         }
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
             create_symlink(source, target)?;
@@ -319,7 +349,15 @@ fn act_dry_run(source: &Path, target: &Path) -> Result<()> {
             }
         }
         Ok(_) => {
-            bail!("{} already exists and is not a symlink", target.display());
+            if file_contents_match(source, target)? {
+                eprintln!(
+                    "  ~ would replace identical file {} -> {}",
+                    target.display(),
+                    source.display()
+                );
+            } else {
+                bail_non_symlink(source, target)?;
+            }
         }
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
             eprintln!(
@@ -412,4 +450,74 @@ fn create_symlink(source: &Path, target: &Path) -> Result<()> {
             source.display()
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(unix)]
+    fn link_replaces_identical_regular_file_with_symlink() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let source = dir.path().join("config.toml");
+        let target = dir.path().join("target-config.toml");
+        fs::write(&source, "model = \"gpt-5.5\"\n")?;
+        fs::write(&target, "model = \"gpt-5.5\"\n")?;
+
+        act_link(&source, &target)?;
+
+        let meta = fs::symlink_metadata(&target)?;
+        assert!(meta.file_type().is_symlink());
+        assert_eq!(fs::canonicalize(&source)?, fs::canonicalize(&target)?);
+        Ok(())
+    }
+
+    #[test]
+    fn dry_run_accepts_identical_regular_file() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let source = dir.path().join("settings.json");
+        let target = dir.path().join("target-settings.json");
+        fs::write(&source, "{\"autoUpdate\":true}\n")?;
+        fs::write(&target, "{\"autoUpdate\":true}\n")?;
+
+        act_dry_run(&source, &target)?;
+
+        let meta = fs::symlink_metadata(&target)?;
+        assert!(!meta.file_type().is_symlink());
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn link_replaces_regular_file_that_only_drops_final_newline() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let source = dir.path().join("settings.json");
+        let target = dir.path().join("target-settings.json");
+        fs::write(&source, "{\"autoUpdate\":true}\n")?;
+        fs::write(&target, "{\"autoUpdate\":true}")?;
+
+        act_link(&source, &target)?;
+
+        let meta = fs::symlink_metadata(&target)?;
+        assert!(meta.file_type().is_symlink());
+        assert_eq!(fs::canonicalize(&source)?, fs::canonicalize(&target)?);
+        Ok(())
+    }
+
+    #[test]
+    fn link_rejects_different_regular_file() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let source = dir.path().join("config.toml");
+        let target = dir.path().join("target-config.toml");
+        fs::write(&source, "model = \"gpt-5.5\"\n")?;
+        fs::write(&target, "model = \"gpt-5\"\n")?;
+
+        let err = act_link(&source, &target).expect_err("different file should be rejected");
+
+        assert!(err.to_string().contains("differs from"));
+        let meta = fs::symlink_metadata(&target)?;
+        assert!(!meta.file_type().is_symlink());
+        Ok(())
+    }
 }
