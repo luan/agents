@@ -31,6 +31,20 @@ const hubServer = require("./hub-server.cjs") as {
 		},
 		sessionId: string,
 	) => boolean;
+	tryText: (
+		res: {
+			headersSent?: boolean;
+			writableEnded?: boolean;
+			destroyed?: boolean;
+			destroy?: (error?: Error) => void;
+			writeHead?: (...args: unknown[]) => void;
+			end?: (...args: unknown[]) => void;
+		},
+		status: number,
+		body: string,
+		headers?: Record<string, string>,
+		error?: Error,
+	) => boolean;
 };
 
 describe("plannotator hub environment", () => {
@@ -198,5 +212,25 @@ describe("plannotator hub helpers", () => {
 		expect(hubServer.removeSession(state, "session-a")).toBe(true);
 		expect(state.sessions.size).toBe(0);
 		expect(state.sessionIdsByBackend.size).toBe(0);
+	});
+
+	test("closes an already-started response instead of writing headers again", () => {
+		const error = new Error("socket hang up");
+		const calls: string[] = [];
+		const res = {
+			headersSent: true,
+			writableEnded: false,
+			destroyed: false,
+			writeHead: () => calls.push("writeHead"),
+			end: () => calls.push("end"),
+			destroy: (receivedError?: Error) => {
+				calls.push(receivedError?.message ?? "destroy");
+			},
+		};
+
+		const handled = hubServer.tryText(res, 500, "<h1>boom</h1>", {}, error);
+
+		expect(handled).toBe(false);
+		expect(calls).toEqual(["socket hang up"]);
 	});
 });

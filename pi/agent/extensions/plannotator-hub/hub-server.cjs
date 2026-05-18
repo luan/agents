@@ -52,6 +52,17 @@ function text(res, status, body, headers = {}) {
 	res.end(body);
 }
 
+function tryText(res, status, body, headers = {}, error) {
+	if (res.headersSent || res.writableEnded) {
+		if (!res.destroyed && typeof res.destroy === "function") {
+			res.destroy(error instanceof Error ? error : undefined);
+		}
+		return false;
+	}
+	text(res, status, body, headers);
+	return true;
+}
+
 function escapeHtml(value) {
 	return String(value || "")
 		.replaceAll("&", "&amp;")
@@ -387,7 +398,7 @@ async function startServer() {
 				} catch (error) {
 					if (error instanceof Error && /(ECONNREFUSED|fetch failed|socket hang up)/i.test(error.message)) {
 						removeSession(state, sessionId);
-						text(res, 404, "<h1>Closed Plannotator session</h1>");
+						tryText(res, 404, "<h1>Closed Plannotator session</h1>", {}, error);
 						return;
 					}
 					throw error;
@@ -398,7 +409,7 @@ async function startServer() {
 			text(res, 404, "<h1>Not found</h1>");
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			text(res, 500, `<h1>Plannotator hub error</h1><pre>${escapeHtml(message)}</pre>`);
+			tryText(res, 500, `<h1>Plannotator hub error</h1><pre>${escapeHtml(message)}</pre>`, {}, error);
 		}
 	});
 
@@ -423,4 +434,5 @@ module.exports = {
 	removeSession,
 	renderHubPage,
 	startServer,
+	tryText,
 };
