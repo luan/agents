@@ -2,6 +2,7 @@ import { readFileSync, unlinkSync } from "node:fs";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { BUILTIN_TOOL_NAMES } from "./agent-types.js";
 import { deliverMosaicMailboxMessages, MosaicMessageClient } from "./message-client.js";
 import { MOSAIC_AGENT_ACTIVITY_WRITING } from "./message-server.js";
 import { isMosaicOrchestrationToolName } from "./orchestration-tools.js";
@@ -15,6 +16,8 @@ export interface MosaicBootstrapPayload {
 	prompt: string;
 	systemPrompt: string;
 	builtinToolNames: string[];
+	parentActiveToolNames?: string[];
+	allowedToolNames?: string[];
 	extensions: true | string[] | false;
 	disallowedTools?: string[];
 	mosaicIdentity?: {
@@ -33,6 +36,7 @@ let messageClient: MosaicMessageClient | undefined;
 let messagePoller: ReturnType<typeof setInterval> | undefined;
 let currentAssistantText = "";
 let lastPublishedAssistantText = "";
+let publishedTerminalStatus: "completed" | "error" | undefined;
 let leaderMessageToolRegistered = false;
 
 export function getMosaicBootstrapMetadata() {
@@ -84,6 +88,14 @@ export function registerMosaicBootstrap(pi: ExtensionAPI) {
 		await publishAssistantResult("completed", messageText(message.content));
 	});
 
+	pi.on("agent_end", async (event) => {
+		if (!messageClient || publishedTerminalStatus) return;
+		const update = terminalUpdateFromAgentEnd(event);
+		if (!update) return;
+		await messageClient.recordUpdate(update);
+		publishedTerminalStatus = update.status;
+	});
+
 	pi.on("message_update", async (event) => {
 		const update = (event as { assistantMessageEvent?: { type?: string; delta?: unknown } }).assistantMessageEvent;
 		if (update?.type !== "text_delta" || typeof update.delta !== "string") return;
@@ -96,9 +108,21 @@ export function registerMosaicBootstrap(pi: ExtensionAPI) {
 		lastPublishedAssistantText = "";
 	});
 
-	(pi.on as any)("session_shutdown", () => {
+	(pi.on as any)("session_shutdown", async () => {
 		stopMessagePolling();
-		messageClient?.disconnect().catch(() => {});
+		if (messageClient && !publishedTerminalStatus) {
+			try {
+				await messageClient.recordUpdate({
+					status: "error",
+					error: "mosaic child session shut down before publishing a terminal result",
+					result: currentAssistantText.trim() || undefined,
+				});
+				publishedTerminalStatus = "error";
+			} catch {
+				/* ignore shutdown reporting failures */
+			}
+		}
+		await messageClient?.disconnect().catch(() => {});
 		messageClient = undefined;
 	});
 }
@@ -129,6 +153,12 @@ function loadBootstrap(): void {
 				prompt: parsed.prompt,
 				systemPrompt: parsed.systemPrompt,
 				builtinToolNames: parsed.builtinToolNames.filter((name): name is string => typeof name === "string"),
+				parentActiveToolNames: Array.isArray(parsed.parentActiveToolNames)
+					? parsed.parentActiveToolNames.filter((name): name is string => typeof name === "string")
+					: undefined,
+				allowedToolNames: Array.isArray(parsed.allowedToolNames)
+					? parsed.allowedToolNames.filter((name): name is string => typeof name === "string")
+					: undefined,
 				extensions: normalizeExtensions(parsed.extensions),
 				disallowedTools: Array.isArray(parsed.disallowedTools)
 					? parsed.disallowedTools.filter((name): name is string => typeof name === "string")
@@ -167,13 +197,19 @@ function normalizeExtensions(value: unknown): true | string[] | false {
 }
 
 function applyActiveTools(pi: ExtensionAPI, payload: MosaicBootstrapPayload): void {
-	const builtin = new Set(payload.builtinToolNames);
+	const builtin = new Set(BUILTIN_TOOL_NAMES);
+	const active = new Set(
+		payload.parentActiveToolNames ??
+			(typeof pi.getActiveTools === "function" ? pi.getActiveTools() : payload.builtinToolNames),
+	);
+	const allowed = payload.allowedToolNames ? new Set(payload.allowedToolNames) : undefined;
 	const disallowed = new Set(payload.disallowedTools ?? []);
 	const allToolNames = pi.getAllTools().map((tool) => tool.name);
 	const next = allToolNames.filter((toolName) => {
 		if (isMosaicOrchestrationToolName(toolName) || disallowed.has(toolName)) return false;
 		if (toolName === MOSAIC_LEADER_MESSAGE_TOOL_NAME && payload.messageEndpoint) return true;
-		if (builtin.has(toolName)) return true;
+		if (builtin.has(toolName)) return allowed ? allowed.has(toolName) : active.has(toolName);
+		if (!active.has(toolName)) return false;
 		if (payload.extensions === false) return false;
 		if (Array.isArray(payload.extensions)) {
 			return payload.extensions.some((extension) => toolName.startsWith(extension) || toolName.includes(extension));
@@ -262,11 +298,56 @@ async function publishAssistantResult(status: "running" | "completed", result: s
 	const dedupeKey = `${status}:${text}`;
 	if (!messageClient || !text || dedupeKey === lastPublishedAssistantText) return;
 	lastPublishedAssistantText = dedupeKey;
+	if (status === "completed") publishedTerminalStatus = "completed";
 	await messageClient.recordUpdate({
 		status,
 		activity: status === "running" ? MOSAIC_AGENT_ACTIVITY_WRITING : undefined,
 		result: text,
 	});
+}
+
+function terminalUpdateFromAgentEnd(event: unknown):
+	| {
+			status: "completed" | "error";
+			result?: string;
+			error?: string;
+	  }
+	| undefined {
+	const messages = (event as { messages?: unknown[] } | undefined)?.messages;
+	if (!Array.isArray(messages) || messages.length === 0) {
+		return currentAssistantText.trim()
+			? { status: "completed", result: currentAssistantText.trim() }
+			: {
+					status: "error",
+					error: "mosaic child session ended without a terminal assistant message",
+				};
+	}
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const message = messages[index] as {
+			role?: unknown;
+			content?: unknown;
+			stopReason?: unknown;
+			errorMessage?: unknown;
+		};
+		if (message?.role !== "assistant") continue;
+		const result = messageText(message.content).trim();
+		const stopReason = typeof message.stopReason === "string" ? message.stopReason : undefined;
+		const error = typeof message.errorMessage === "string" ? message.errorMessage.trim() : "";
+		if (stopReason === "error" || stopReason === "aborted" || error) {
+			return {
+				status: "error",
+				error: error || `assistant ended with stopReason=${stopReason}`,
+				result: result || undefined,
+			};
+		}
+		if (result) return { status: "completed", result };
+	}
+	return currentAssistantText.trim()
+		? { status: "completed", result: currentAssistantText.trim() }
+		: {
+				status: "error",
+				error: "mosaic child session ended without a terminal assistant message",
+			};
 }
 
 export function __resetMosaicBootstrapForTest(): void {
@@ -277,5 +358,6 @@ export function __resetMosaicBootstrapForTest(): void {
 	stopMessagePolling();
 	currentAssistantText = "";
 	lastPublishedAssistantText = "";
+	publishedTerminalStatus = undefined;
 	leaderMessageToolRegistered = false;
 }

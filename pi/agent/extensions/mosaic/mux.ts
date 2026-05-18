@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { SessionManager, SessionSelectorComponent } from "@earendil-works/pi-coding-agent";
 
 type SessionManagerLike = {
@@ -53,6 +53,30 @@ function shellQuote(value: string): string {
 
 export function mosaicCommandForSession(sessionPath: string): string {
 	return `pi -e ${shellQuote(SELF)} --session ${shellQuote(sessionPath)}`;
+}
+
+export async function showMosaicSessions(ctx: ExtensionCommandContext): Promise<void> {
+	if (!hasMultiplexer()) {
+		ctx.ui.notify("not in tmux or zellij", "error");
+		return;
+	}
+	const self = currentMultiplexerTarget().paneId;
+	if (!self) {
+		ctx.ui.notify("unable to identify current multiplexer pane", "error");
+		return;
+	}
+	const cwd = ctx.cwd;
+	await ctx.ui.custom<undefined>((tui, theme, _keybindings, done) => {
+		const menu = new MuxMenu({
+			tui,
+			theme,
+			currentPaneId: self,
+			currentCwd: cwd,
+			done,
+		});
+		tui.setFocus(menu);
+		return menu;
+	});
 }
 
 function selectLiveEntry(entry: heartbeat.Heartbeat): void {
@@ -355,33 +379,6 @@ export function registerMosaicMux(pi: ExtensionAPI) {
 				return;
 			}
 			spawnAndSwap(mosaicCommandForSession(picked), cwd, resolveOwner(self), {}, { windowName: "mc: session" });
-		},
-	});
-
-	pi.registerCommand("mosaic", {
-		description: "List and manage backgrounded mosaic sessions",
-		handler: async (_args, ctx) => {
-			if (!hasMultiplexer()) {
-				ctx.ui.notify("not in tmux or zellij", "error");
-				return;
-			}
-			const self = currentMultiplexerTarget().paneId;
-			if (!self) {
-				ctx.ui.notify("unable to identify current multiplexer pane", "error");
-				return;
-			}
-			const cwd = ctx.cwd;
-			await ctx.ui.custom<undefined>((tui, theme, _keybindings, done) => {
-				const menu = new MuxMenu({
-					tui,
-					theme,
-					currentPaneId: self,
-					currentCwd: cwd,
-					done,
-				});
-				tui.setFocus(menu);
-				return menu;
-			});
 		},
 	});
 }

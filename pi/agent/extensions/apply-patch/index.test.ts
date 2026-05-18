@@ -3,6 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initTheme } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import hljs from "highlight.js";
 import { resolveInlineLanguageForPath } from "../shared/path-language";
 import {
@@ -685,6 +686,48 @@ describe("apply_patch renderer", () => {
 		expect(stripAnsi(rawLines.join("\n"))).toContain("64:   const safeWidth = Math.max(1, width);");
 		const fileStateIndex = rawLines.findIndex((line) => stripAnsi(line).includes("file state"));
 		expect(rawLines.slice(fileStateIndex + 1).every((line) => stripAnsi(line).trim().length > 0)).toBe(true);
+	});
+
+	it("strips OSC hyperlinks before final width clamping", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "apply-patch-osc-width-render-"));
+		const tool = registerApplyPatchTool();
+		const state: Record<string, unknown> = {};
+		const linkTheme = {
+			...theme,
+			fg: (_color: string, text: string) => `\x1b]8;;file:///tmp/${text}\x07${text}\x1b]8;;\x07`,
+		};
+		const diff = `--- a/src/agents.wt1/pi/agent/extensions/token-burden/tool-toggles.ts
++++ b/src/agents.wt1/pi/agent/extensions/token-burden/tool-toggles.ts
+@@ -1,3 +1,3 @@
+-const oldValue = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
++const newValue = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+`;
+
+		const rendered = tool.renderResult(
+			{
+				content: [{ type: "text", text: "M token-burden/tool-toggles.ts" }],
+				details: {
+					stage: "done",
+					filesChanged: 1,
+					fileDiffs: [
+						{
+							path: "src/agents.wt1/pi/agent/extensions/token-burden/tool-toggles.ts",
+							operation: "update",
+							added: 1,
+							removed: 1,
+						},
+					],
+					diff,
+				},
+			},
+			{ expanded: false, isPartial: false },
+			linkTheme,
+			renderContext(cwd, state, { executionStarted: true }),
+		);
+
+		const lines = rendered.render(72);
+		expect(lines.every((line) => !line.includes("\x1b]8;;"))).toBe(true);
+		expect(lines.every((line) => visibleWidth(line) <= 72)).toBe(true);
 	});
 });
 

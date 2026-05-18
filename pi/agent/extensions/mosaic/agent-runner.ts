@@ -15,18 +15,22 @@ import {
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import {
+	BUILTIN_TOOL_NAMES,
 	getAgentConfig,
+	getAllowedToolNamesForType,
 	getConfig,
 	getMemoryToolNames,
 	getReadOnlyMemoryToolNames,
-	getToolNamesForType,
 } from "./agent-types.js";
 import { buildParentContext, extractText } from "./context.js";
 import { DEFAULT_AGENTS } from "./default-agents.js";
 import { detectEnv } from "./env.js";
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "./memory.js";
+import { mergeModelPresets, resolveModelPreset } from "./model-presets.js";
+import { resolveDefaultModel } from "./model-resolver.js";
 import { isMosaicOrchestrationToolName } from "./orchestration-tools.js";
 import { buildAgentPrompt, type PromptExtras } from "./prompts.js";
+import { loadSettings } from "./settings.js";
 import { preloadSkills } from "./skill-loader.js";
 import type { SubagentType, ThinkingLevel } from "./types.js";
 
@@ -58,34 +62,6 @@ export function getGraceTurns(): number {
 /** Set the grace turns value (minimum 1). */
 export function setGraceTurns(n: number): void {
 	graceTurns = Math.max(1, n);
-}
-
-/**
- * Try to find the right model for an agent type.
- * Priority: explicit option > config.model > parent model.
- */
-function resolveDefaultModel(
-	parentModel: Model<any> | undefined,
-	registry: { find(provider: string, modelId: string): Model<any> | undefined; getAvailable?(): Model<any>[] },
-	configModel?: string,
-): Model<any> | undefined {
-	if (configModel) {
-		const slashIdx = configModel.indexOf("/");
-		if (slashIdx !== -1) {
-			const provider = configModel.slice(0, slashIdx);
-			const modelId = configModel.slice(slashIdx + 1);
-
-			// Build a set of available model keys for fast lookup
-			const available = registry.getAvailable?.();
-			const availableKeys = available ? new Set(available.map((m: any) => `${m.provider}/${m.id}`)) : undefined;
-			const isAvailable = (p: string, id: string) => !availableKeys || availableKeys.has(`${p}/${id}`);
-
-			const found = registry.find(provider, modelId);
-			if (found && isAvailable(provider, modelId)) return found;
-		}
-	}
-
-	return parentModel;
 }
 
 /** Info about a tool event in the subagent. */
@@ -205,7 +181,10 @@ export async function runAgent(
 		}
 	}
 
-	let toolNames = getToolNamesForType(type);
+	const parentActiveToolNames = new Set(options.pi.getActiveTools());
+	const explicitAllowedToolNames = getAllowedToolNamesForType(type);
+	const selectedToolNames = new Set(explicitAllowedToolNames ?? [...parentActiveToolNames]);
+	let toolNames = BUILTIN_TOOL_NAMES.filter((name) => selectedToolNames.has(name));
 
 	// Persistent memory: detect write capability and branch accordingly.
 	// Account for disallowedTools — a tool in the base set but on the denylist is not truly available.
@@ -218,12 +197,18 @@ export async function runAgent(
 		if (hasWriteTools) {
 			// Read-write memory: add any missing memory tool names (read/write/edit)
 			const extraNames = getMemoryToolNames(existingNames);
-			if (extraNames.length > 0) toolNames = [...toolNames, ...extraNames];
+			if (extraNames.length > 0) {
+				toolNames = [...toolNames, ...extraNames];
+				for (const name of extraNames) selectedToolNames.add(name);
+			}
 			extras.memoryBlock = buildMemoryBlock(agentConfig.name, agentConfig.memory, effectiveCwd);
 		} else {
 			// Read-only memory: only add read tool name, use read-only prompt
 			const extraNames = getReadOnlyMemoryToolNames(existingNames);
-			if (extraNames.length > 0) toolNames = [...toolNames, ...extraNames];
+			if (extraNames.length > 0) {
+				toolNames = [...toolNames, ...extraNames];
+				for (const name of extraNames) selectedToolNames.add(name);
+			}
 			extras.memoryBlock = buildReadOnlyMemoryBlock(agentConfig.name, agentConfig.memory, effectiveCwd);
 		}
 	}
@@ -265,11 +250,17 @@ export async function runAgent(
 	});
 	await loader.reload();
 
-	// Resolve model: explicit option > config.model > parent model
-	const model = options.model ?? resolveDefaultModel(ctx.model, ctx.modelRegistry, agentConfig?.model);
+	const preset = resolveModelPreset(
+		agentConfig?.modelPreset,
+		ctx.modelRegistry,
+		mergeModelPresets(loadSettings(effectiveCwd).modelPresets),
+	);
 
-	// Resolve thinking level: explicit option > agent config > undefined (inherit)
-	const thinkingLevel = options.thinkingLevel ?? agentConfig?.thinking;
+	// Resolve model: explicit option > config.model > config.modelPreset > parent model
+	const model = options.model ?? resolveDefaultModel(preset.model ?? ctx.model, ctx.modelRegistry, agentConfig?.model);
+
+	// Resolve thinking level: explicit option > agent config > config.modelPreset > undefined (inherit)
+	const thinkingLevel = options.thinkingLevel ?? agentConfig?.thinking ?? preset.thinking;
 
 	const sessionOpts: Parameters<typeof createAgentSession>[0] = {
 		cwd: effectiveCwd,
@@ -290,25 +281,23 @@ export async function runAgent(
 	// Build disallowed tools set from agent config
 	const disallowedSet = agentConfig?.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined;
 
-	// Filter active tools: remove our own tools to prevent nesting,
-	// apply extension allowlist if specified, and apply disallowedTools denylist
-	if (extensions !== false) {
-		const builtinToolNameSet = new Set(toolNames);
-		const activeTools = session.getActiveToolNames().filter((t) => {
-			if (isMosaicOrchestrationToolName(t)) return false;
-			if (disallowedSet?.has(t)) return false;
-			if (builtinToolNameSet.has(t)) return true;
-			if (Array.isArray(extensions)) {
-				return extensions.some((ext) => t.startsWith(ext) || t.includes(ext));
-			}
-			return true;
-		});
-		session.setActiveToolsByName(activeTools);
-	} else if (disallowedSet) {
-		// Even with extensions disabled, apply denylist to built-in tools
-		const activeTools = session.getActiveToolNames().filter((t) => !disallowedSet.has(t));
-		session.setActiveToolsByName(activeTools);
-	}
+	// Filter active tools: remove orchestration tools, inherit the parent's active
+	// tool set by default, and let explicit allow/deny rules narrow or override it.
+	const activeTools = session.getActiveToolNames().filter((toolName) => {
+		if (isMosaicOrchestrationToolName(toolName)) return false;
+		if (disallowedSet?.has(toolName)) return false;
+
+		const isBuiltin = BUILTIN_TOOL_NAMES.includes(toolName);
+		if (isBuiltin) return selectedToolNames.has(toolName);
+
+		if (extensions === false) return false;
+		if (Array.isArray(extensions) && !extensions.some((ext) => toolName.startsWith(ext) || toolName.includes(ext))) {
+			return false;
+		}
+
+		return parentActiveToolNames.has(toolName);
+	});
+	session.setActiveToolsByName(activeTools);
 
 	// Bind extensions so that session_start fires and extensions can initialize
 	// (e.g. loading credentials, setting up state). Placed after tool filtering

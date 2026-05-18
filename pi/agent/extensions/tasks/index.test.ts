@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
@@ -1589,6 +1589,151 @@ describe("tasks extension", () => {
 		expect(sent[0].message.content[0].text).toContain("Task nudge");
 		expect(sent[0].message.content[0].text).toContain("Start assigned task t");
 		expect(sent[0].options).toEqual({ deliverAs: "followUp", triggerTurn: true });
+	});
+
+	test("task guard continues when user says the task is not done", async () => {
+		const handlers: Record<string, any> = {};
+		const commands: Record<string, any> = {};
+		const sent: any[] = [];
+		tasksExtension(
+			{
+				registerTool() {},
+				registerCommand(name: string, definition: any) {
+					commands[name] = definition;
+				},
+				on(name: string, handler: any) {
+					handlers[name] = handler;
+				},
+				sendMessage(message: any, options: any) {
+					sent.push({ message, options });
+				},
+			} as any,
+			{
+				runCommand: async () => ({
+					stdout: JSON.stringify({
+						tasks: [
+							{
+								...task,
+								id: "t",
+								title: "Continue me",
+								assigned_to: "session:test-session",
+								status: "in_progress",
+							},
+						],
+					}),
+					stderr: "",
+					exitCode: 0,
+				}),
+			},
+		);
+		const ctx = {
+			cwd: "/tmp/project",
+			sessionId: "test-session",
+			signal: undefined,
+			ui: { notify() {} },
+		};
+
+		await commands["task-guard"].handler("on", ctx);
+		await handlers.message_end(
+			{
+				message: {
+					role: "user",
+					content: [
+						{
+							type: "text",
+							text: "you are not done, i'm not sure why you didn't get a task completion reminder",
+						},
+					],
+				},
+			},
+			ctx,
+		);
+		const replacement = await handlers.message_end(
+			{ message: { role: "assistant", content: [{ type: "text", text: "Continuing task t." }] } },
+			ctx,
+		);
+		await handlers.turn_end({}, ctx);
+
+		expect(replacement).toBeUndefined();
+		expect(sent).toHaveLength(1);
+		expect(sent[0].message.content[0].text).toContain("Continue in-progress task t");
+		expect(sent[0].options).toEqual({ deliverAs: "followUp", triggerTurn: true });
+	});
+
+	test("task guard restores an explicit on preference after extension reload", async () => {
+		const previousStateHome = process.env.XDG_STATE_HOME;
+		const stateHome = mkdtempSync(join(tmpdir(), "pi-task-guard-state-"));
+		process.env.XDG_STATE_HOME = stateHome;
+		try {
+			const sessionFile = join(stateHome, "sessions", "test-session.jsonl");
+			const ctx = {
+				cwd: "/tmp/project",
+				signal: undefined,
+				sessionManager: { getSessionFile: () => sessionFile },
+				ui: { notify() {} },
+			};
+			const runCommand = async () => ({
+				stdout: JSON.stringify({
+					tasks: [
+						{
+							...task,
+							id: "t",
+							title: "Continue me",
+							assigned_to: "session:test-session",
+							status: "in_progress",
+						},
+					],
+				}),
+				stderr: "",
+				exitCode: 0,
+			});
+			const firstCommands: Record<string, any> = {};
+			tasksExtension(
+				{
+					registerTool() {},
+					registerCommand(name: string, definition: any) {
+						firstCommands[name] = definition;
+					},
+					on() {},
+				} as any,
+				{ runCommand },
+			);
+
+			await firstCommands["task-guard"].handler("on", ctx);
+
+			const handlers: Record<string, any> = {};
+			const sent: any[] = [];
+			tasksExtension(
+				{
+					registerTool() {},
+					registerCommand() {},
+					on(name: string, handler: any) {
+						handlers[name] = handler;
+					},
+					sendMessage(message: any, options: any) {
+						sent.push({ message, options });
+					},
+				} as any,
+				{ runCommand },
+			);
+
+			await handlers.session_start({}, ctx);
+			await handlers.message_end(
+				{ message: { role: "assistant", content: [{ type: "text", text: "Continuing." }] } },
+				ctx,
+			);
+			await handlers.turn_end({}, ctx);
+
+			expect(sent).toHaveLength(1);
+			expect(sent[0].message.content[0].text).toContain("Continue in-progress task t");
+		} finally {
+			if (previousStateHome === undefined) {
+				delete process.env.XDG_STATE_HOME;
+			} else {
+				process.env.XDG_STATE_HOME = previousStateHome;
+			}
+			rmSync(stateHome, { recursive: true, force: true });
+		}
 	});
 
 	test("task guard command disables and re-enables nudges for the session", async () => {

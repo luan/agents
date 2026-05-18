@@ -536,7 +536,7 @@ export class AgentWidget {
 			);
 		}
 
-		return lines;
+		return lines.map((line) => truncateToWidth(line, w));
 	}
 
 	/** Force an immediate widget update. */
@@ -638,7 +638,9 @@ export class AgentWidget {
 
 	private listAgents(): AgentRecord[] {
 		const byId = new Map<string, AgentRecord>();
-		for (const agent of this.manager.listAgents()) byId.set(agent.id, agent);
+		for (const agent of this.manager.listAgents()) {
+			if (agent.isBackground) byId.set(agent.id, agent);
+		}
 		for (const agent of this.getExtraAgents()) byId.set(agent.id, agent);
 		return [...byId.values()].sort((a, b) => b.startedAt - a.startedAt);
 	}

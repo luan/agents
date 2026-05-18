@@ -20,18 +20,25 @@ export type MemoryScope = "user" | "project" | "local";
 /** Isolation mode for agent execution. */
 export type IsolationMode = "worktree";
 
+export interface ModelPresetCandidate {
+	model: string;
+	thinking?: ThinkingLevel;
+}
+
 /** Unified agent configuration — used for both default and user-defined agents. */
 export interface AgentConfig {
 	name: string;
 	displayName?: string;
 	description: string;
+	/** Optional exact tool allowlist. Omitted = inherit the parent/default active tools. */
 	builtinToolNames?: string[];
-	/** Tool denylist — these tools are removed even if `builtinToolNames` or extensions include them. */
+	/** Tool denylist — these tools are removed even if the parent defaults or allowlist include them. */
 	disallowedTools?: string[];
 	/** true = inherit all, string[] = only listed, false = none */
 	extensions: true | string[] | false;
 	/** true = inherit all, string[] = only listed, false = none */
 	skills: true | string[] | false;
+	modelPreset?: string;
 	model?: string;
 	thinking?: ThinkingLevel;
 	maxTurns?: number;
@@ -67,6 +74,8 @@ export interface AgentRecord {
 	toolUses: number;
 	startedAt: number;
 	completedAt?: number;
+	/** True for agents intentionally running outside the current inline tool call. */
+	isBackground?: boolean;
 	session?: AgentSession;
 	abortController?: AbortController;
 	promise?: Promise<string>;

@@ -5,7 +5,6 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
-import { BUILTIN_TOOL_NAMES } from "./agent-types.js";
 import type { AgentConfig, MemoryScope, ThinkingLevel } from "./types.js";
 
 /**
@@ -48,30 +47,40 @@ function loadFromDir(dir: string, agents: Map<string, AgentConfig>, source: "pro
 			continue;
 		}
 
-		const { frontmatter: fm, body } = parseFrontmatter<Record<string, unknown>>(content);
-
-		agents.set(name, {
-			name,
-			displayName: str(fm.display_name),
-			description: str(fm.description) ?? name,
-			builtinToolNames: csvList(fm.tools, BUILTIN_TOOL_NAMES),
-			disallowedTools: csvListOptional(fm.disallowed_tools),
-			extensions: inheritField(fm.extensions ?? fm.inherit_extensions),
-			skills: inheritField(fm.skills ?? fm.inherit_skills),
-			model: str(fm.model),
-			thinking: str(fm.thinking) as ThinkingLevel | undefined,
-			maxTurns: nonNegativeInt(fm.max_turns),
-			systemPrompt: body.trim(),
-			promptMode: fm.prompt_mode === "append" ? "append" : "replace",
-			inheritContext: fm.inherit_context != null ? fm.inherit_context === true : undefined,
-			runInBackground: fm.run_in_background != null ? fm.run_in_background === true : undefined,
-			isolated: fm.isolated != null ? fm.isolated === true : undefined,
-			memory: parseMemory(fm.memory),
-			isolation: fm.isolation === "worktree" ? "worktree" : undefined,
-			enabled: fm.enabled !== false, // default true; explicitly false disables
-			source,
-		});
+		agents.set(name, parseAgentMarkdown(name, content, source));
 	}
+}
+
+export function parseAgentMarkdown(
+	name: string,
+	content: string,
+	source: "default" | "project" | "global",
+): AgentConfig {
+	const { frontmatter: fm, body } = parseFrontmatter<Record<string, unknown>>(content);
+
+	return {
+		name,
+		displayName: str(fm.display_name),
+		description: str(fm.description) ?? name,
+		builtinToolNames: parseToolAllowlist(fm.tools),
+		disallowedTools: csvListOptional(fm.disallowed_tools),
+		extensions: inheritField(fm.extensions ?? fm.inherit_extensions),
+		skills: inheritField(fm.skills ?? fm.inherit_skills),
+		modelPreset: str(fm.model_preset),
+		model: str(fm.model),
+		thinking: str(fm.thinking) as ThinkingLevel | undefined,
+		maxTurns: nonNegativeInt(fm.max_turns),
+		systemPrompt: body.trim(),
+		promptMode: fm.prompt_mode === "append" ? "append" : "replace",
+		inheritContext: fm.inherit_context != null ? fm.inherit_context === true : undefined,
+		runInBackground: fm.run_in_background != null ? fm.run_in_background === true : undefined,
+		isolated: fm.isolated != null ? fm.isolated === true : undefined,
+		memory: parseMemory(fm.memory),
+		isolation: fm.isolation === "worktree" ? "worktree" : undefined,
+		enabled: fm.enabled !== false, // default true; explicitly false disables
+		isDefault: source === "default",
+		source,
+	};
 }
 
 // ---- Field parsers ----
@@ -102,12 +111,15 @@ function parseCsvField(val: unknown): string[] | undefined {
 }
 
 /**
- * Parse a comma-separated list field with defaults.
- * omitted → defaults; "none"/empty → []; csv → listed items.
+ * Parse a tool allowlist field.
+ * omitted/"all"/"inherit" → undefined; "none"/empty → []; csv → listed items.
  */
-function csvList(val: unknown, defaults: string[]): string[] {
-	if (val === undefined || val === null) return defaults;
-	return parseCsvField(val) ?? [];
+function parseToolAllowlist(val: unknown): string[] | undefined {
+	if (val === undefined || val === null) return undefined;
+	const s = String(val).trim();
+	if (!s || s === "none") return [];
+	if (s === "all" || s === "inherit") return undefined;
+	return parseCsvField(val);
 }
 
 /**
@@ -134,6 +146,6 @@ function parseMemory(val: unknown): MemoryScope | undefined {
 function inheritField(val: unknown): true | string[] | false {
 	if (val === undefined || val === null || val === true) return true;
 	if (val === false || val === "none") return false;
-	const items = csvList(val, []);
+	const items = parseCsvField(val) ?? [];
 	return items.length > 0 ? items : false;
 }

@@ -16,6 +16,33 @@ describe("mosaic extension registration", () => {
 		expect(tools).toHaveLength(MOSAIC_V2_TOOL_NAMES.length);
 	});
 
+	test("registers /mosaic settings and list subcommands instead of /agents", () => {
+		const commands = new Map<string, any>();
+		registerMosaic(createFakePi({ onCommand: (name, command) => commands.set(name, command) }) as never);
+
+		expect(commands.has("agents")).toBe(false);
+		expect(commands.has("mosaic")).toBe(true);
+		expect(commands.get("mosaic").getArgumentCompletions("")).toEqual([
+			{
+				value: "settings",
+				label: "settings",
+				description: "Configure agents, model defaults, schedules, and mosaic behavior",
+			},
+			{
+				value: "list",
+				label: "list",
+				description: "List and manage backgrounded mosaic sessions",
+			},
+		]);
+		expect(commands.get("mosaic").getArgumentCompletions("s")).toEqual([
+			{
+				value: "settings",
+				label: "settings",
+				description: "Configure agents, model defaults, schedules, and mosaic behavior",
+			},
+		]);
+	});
+
 	test("keeps native message state in a process singleton across hot reloads", () => {
 		const first = __getMosaicProcessStateForTest();
 		first.messageServer.registerAgent({ agentId: "agent-1", taskName: "reload/probe" });
@@ -197,6 +224,7 @@ describe("mosaic extension registration", () => {
 function createFakePi(
 	options: {
 		onTool?: (tool: { name: string }) => void;
+		onCommand?: (name: string, command: any) => void;
 		onEvent?: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => void;
 		onSendMessage?: (message: unknown, options?: unknown) => void;
 		ui?: { setWidget: (name: string, widget: unknown) => void; setStatus: (name: string, status: unknown) => void };
@@ -206,7 +234,9 @@ function createFakePi(
 		ui: options.ui,
 		registerTool: (tool: { name: string }) => options.onTool?.(tool),
 		registerMessageRenderer() {},
-		registerCommand() {},
+		registerCommand(name: string, command: any) {
+			options.onCommand?.(name, command);
+		},
 		on(event: string, handler: (event: unknown, ctx: unknown) => unknown) {
 			options.onEvent?.(event, handler);
 			return () => {};

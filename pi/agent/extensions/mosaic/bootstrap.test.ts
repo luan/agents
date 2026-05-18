@@ -102,6 +102,53 @@ describe("registerMosaicBootstrap native messaging", () => {
 		}
 	});
 
+	test("publishes terminal error from agent_end when no assistant message_end fires", async () => {
+		const server = new MosaicMessageServer({ now: () => 1000, id: () => "msg-1" });
+		const { token } = server.registerAgent({ agentId: "agent-1", taskName: "reviewer" });
+		const transport = await startMosaicMessageTransport(server, { host: "127.0.0.1", port: 0 });
+		try {
+			process.env.MOSAIC_BOOTSTRAP_FILE = writeBootstrap({
+				agentId: "agent-1",
+				agentType: "Explore",
+				description: "Review code",
+				prompt: "Initial prompt",
+				systemPrompt: "System prompt",
+				builtinToolNames: ["read"],
+				extensions: false,
+				messageEndpoint: transport.endpoint,
+				messageToken: token,
+			});
+			const pi = createFakePi();
+			registerMosaicBootstrap(pi as never);
+
+			await pi.handlers.session_start[0]({}, {});
+			const beforeFailure = server.currentSeq;
+
+			await pi.handlers.agent_end[0](
+				{
+					messages: [
+						{
+							role: "assistant",
+							content: [],
+							stopReason: "error",
+							errorMessage: "invalid_function_parameters",
+						},
+					],
+				},
+				{},
+			);
+
+			await expect(server.waitForUpdate({ afterSeq: beforeFailure, timeoutMs: 10 })).resolves.toMatchObject({
+				type: "agent_update",
+				agentId: "agent-1",
+				status: "error",
+				error: "invalid_function_parameters",
+			});
+		} finally {
+			await transport.close();
+		}
+	});
+
 	test("registers a child-only leader message tool and filters recursive lane tools", async () => {
 		const server = new MosaicMessageServer({ now: () => 1000, id: () => "msg-1" });
 		const { token } = server.registerAgent({ agentId: "agent-1", taskName: "reviewer" });

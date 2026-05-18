@@ -18,6 +18,7 @@ import {
 	rewriteNativeWebSearchTool,
 	saveGeneratedImagesFromAssistantMessage,
 	saveOpenAICodexGeneratedImage,
+	supportsNativeImageGeneration,
 	supportsNativeWebSearch,
 	WEB_SEARCH_TOOL_NAME,
 } from "./native-tools.ts";
@@ -26,6 +27,12 @@ import { convertResponsesMessages } from "./openai-responses-shared.ts";
 const codexModel = {
 	provider: "openai-codex",
 	id: "gpt-5.5",
+	input: ["text", "image"],
+};
+
+const codexMiniModel = {
+	provider: "openai-codex",
+	id: "gpt-5.4-mini",
 	input: ["text", "image"],
 };
 
@@ -213,6 +220,19 @@ test("rewrites image_generation only for image-capable openai-codex models", () 
 		input: ["text"],
 	} as never) as typeof payload;
 	expect(textOnly.tools[0]).toEqual(payload.tools[0]);
+});
+
+test("does not enable native image_generation for gpt-5.4-mini", () => {
+	expect(supportsNativeImageGeneration(codexMiniModel as never)).toBe(false);
+	expect(supportsNativeImageGeneration(codexModel as never)).toBe(true);
+
+	const payload = {
+		model: "gpt-5.4-mini",
+		input: [],
+		tools: [{ type: "function", name: "image_generation", parameters: {} }],
+	};
+
+	expect(rewriteNativeImageGenerationTool(payload, codexMiniModel as never)).toEqual(payload);
 });
 
 test("saves generated images under workspace .pi directory and mirrors latest", async () => {

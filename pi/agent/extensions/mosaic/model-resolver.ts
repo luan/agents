@@ -80,3 +80,17 @@ export function resolveModel(input: string, registry: ModelRegistry): any | stri
 		.join("\n");
 	return `Model not found: "${input}".\n\nAvailable models:\n${modelList}`;
 }
+
+export function resolveConfiguredModel(input: string | undefined, registry: ModelRegistry): any | undefined {
+	if (!input) return undefined;
+	const resolved = resolveModel(input, registry);
+	return typeof resolved === "string" ? undefined : resolved;
+}
+
+export function resolveDefaultModel(
+	parentModel: any | undefined,
+	registry: ModelRegistry,
+	configModel?: string,
+): any | undefined {
+	return resolveConfiguredModel(configModel, registry) ?? parentModel;
+}
