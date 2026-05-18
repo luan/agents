@@ -72,12 +72,18 @@ describe("createMosaicV2Tools", () => {
 			?.execute("1", {
 				task_name: "nested/task",
 				message: "work there",
+				model_preset: "fast",
+				mode: "in-process",
+				run_in_background: false,
 				cwd: "packages/app",
 			} as never);
 
 		expect(spawns[0]).toMatchObject({
 			taskName: "nested/task",
 			message: "work there",
+			modelPreset: "fast",
+			mode: "in-process",
+			runInBackground: false,
 			cwd: "packages/app",
 		});
 	});
@@ -119,11 +125,18 @@ describe("createMosaicV2Tools", () => {
 		expect(result?.content[0]?.type === "text" ? result.content[0].text : "").toBe("null");
 	});
 
-	test("renders v2 tools silently so the HUD owns status display", () => {
+	test("renders inline spawn calls in the transcript and leaves background calls to the HUD", () => {
 		const tools = createMosaicV2Tools(fakeDeps());
 		const spawn = tools.find((tool) => tool.name === "spawn_agent");
 
-		expect(spawn?.renderCall?.({ task_name: "mosaic/demo" } as never, theme as never).render(80)).toEqual([]);
+		expect(spawn?.renderCall?.({ task_name: "mosaic/demo" } as never, theme as never).render(80)[0]).toContain(
+			"running inline",
+		);
+		expect(
+			spawn
+				?.renderCall?.({ task_name: "mosaic/background", run_in_background: true } as never, theme as never)
+				.render(80),
+		).toEqual([]);
 		expect(spawn?.renderResult?.({ content: [] } as never, {}, theme as never, {}).render(80)).toEqual([]);
 	});
 });

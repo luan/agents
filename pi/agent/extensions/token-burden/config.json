@@ -93,6 +93,7 @@
     "codex_apps_github_update_issue_comment",
     "codex_apps_github_update_pull_request",
     "codex_apps_github_update_ref",
-    "codex_apps_github_update_review_comment"
+    "codex_apps_github_update_review_comment",
+    "spawn_lane"
   ]
 }

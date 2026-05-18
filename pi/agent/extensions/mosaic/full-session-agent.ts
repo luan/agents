@@ -4,15 +4,24 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, type ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent";
-import { getConfig, getMemoryToolNames, getReadOnlyMemoryToolNames, getToolNamesForType } from "./agent-types.js";
+import {
+	BUILTIN_TOOL_NAMES,
+	getAllowedToolNamesForType,
+	getConfig,
+	getMemoryToolNames,
+	getReadOnlyMemoryToolNames,
+} from "./agent-types.js";
 import { buildParentContext } from "./context.js";
 import { DEFAULT_AGENTS } from "./default-agents.js";
 import { detectEnv } from "./env.js";
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "./memory.js";
+import { mergeModelPresets, resolveModelPreset } from "./model-presets.js";
+import { type ModelRegistry, resolveDefaultModel } from "./model-resolver.js";
 import { launchMosaicTarget, type MultiplexerTarget } from "./multiplexer.js";
 import { mosaicCommandForSession, resolveOwner } from "./mux.js";
 import { listActive } from "./mux-heartbeat.js";
 import { buildAgentPrompt, type PromptExtras } from "./prompts.js";
+import { loadSettings } from "./settings.js";
 import { preloadSkills } from "./skill-loader.js";
 import type { AgentConfig, IsolationMode, SubagentType, ThinkingLevel } from "./types.js";
 import { createWorktree } from "./worktree.js";
@@ -91,7 +100,10 @@ export async function launchFullSessionAgent(
 		if (loaded.length > 0) extras.skillBlocks = loaded;
 	}
 
-	let toolNames = getToolNamesForType(options.type);
+	const parentActiveToolNames = new Set(pi.getActiveTools());
+	const explicitAllowedToolNames = getAllowedToolNamesForType(options.type);
+	const selectedToolNames = new Set(explicitAllowedToolNames ?? [...parentActiveToolNames]);
+	let toolNames = BUILTIN_TOOL_NAMES.filter((name) => selectedToolNames.has(name));
 	if (agentConfig.memory) {
 		const existingNames = new Set(toolNames);
 		const denied = agentConfig.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined;
@@ -99,11 +111,17 @@ export async function launchFullSessionAgent(
 		const hasWriteTools = effectivelyHas("write") || effectivelyHas("edit");
 		if (hasWriteTools) {
 			const extraNames = getMemoryToolNames(existingNames);
-			if (extraNames.length > 0) toolNames = [...toolNames, ...extraNames];
+			if (extraNames.length > 0) {
+				toolNames = [...toolNames, ...extraNames];
+				for (const name of extraNames) selectedToolNames.add(name);
+			}
 			extras.memoryBlock = buildMemoryBlock(agentConfig.name, agentConfig.memory, effectiveCwd);
 		} else {
 			const extraNames = getReadOnlyMemoryToolNames(existingNames);
-			if (extraNames.length > 0) toolNames = [...toolNames, ...extraNames];
+			if (extraNames.length > 0) {
+				toolNames = [...toolNames, ...extraNames];
+				for (const name of extraNames) selectedToolNames.add(name);
+			}
 			extras.memoryBlock = buildReadOnlyMemoryBlock(agentConfig.name, agentConfig.memory, effectiveCwd);
 		}
 	}
@@ -112,6 +130,15 @@ export async function launchFullSessionAgent(
 	let systemPrompt = buildAgentPrompt(agentConfig, effectiveCwd, env, ctx.getSystemPrompt(), extras);
 	if (options.messageEndpoint) systemPrompt = withMosaicLeaderInstructions(systemPrompt);
 	const prompt = options.inheritContext ? buildParentContext(ctx) + options.prompt : options.prompt;
+	const preset = resolveModelPreset(
+		agentConfig.modelPreset,
+		ctx.modelRegistry as ModelRegistry,
+		mergeModelPresets(loadSettings(effectiveCwd).modelPresets),
+	);
+	const launchModel =
+		options.model ??
+		resolveDefaultModel(preset.model ?? ctx.model, ctx.modelRegistry as ModelRegistry, agentConfig.model);
+	const launchThinkingLevel = options.thinkingLevel ?? agentConfig.thinking ?? preset.thinking;
 
 	const sm = SessionManager.create(effectiveCwd, ctx.sessionManager.getSessionDir());
 	sm.newSession({ parentSession: ctx.sessionManager.getSessionFile() });
@@ -131,6 +158,8 @@ export async function launchFullSessionAgent(
 			prompt,
 			systemPrompt,
 			builtinToolNames: toolNames,
+			parentActiveToolNames: [...parentActiveToolNames],
+			allowedToolNames: explicitAllowedToolNames,
 			extensions,
 			disallowedTools: agentConfig.disallowedTools,
 			mosaicIdentity,
@@ -140,7 +169,7 @@ export async function launchFullSessionAgent(
 	);
 
 	const spawned = await launchMosaicTarget({
-		command: buildCommand(sessionFile, options.model, options.thinkingLevel),
+		command: buildCommand(sessionFile, launchModel, launchThinkingLevel),
 		cwd: effectiveCwd,
 		owner,
 		name: windowName,
@@ -176,6 +205,8 @@ export interface FullSessionBootstrapPayload {
 	prompt: string;
 	systemPrompt: string;
 	builtinToolNames: string[];
+	parentActiveToolNames?: string[];
+	allowedToolNames?: string[];
 	extensions: true | string[] | false;
 	disallowedTools?: string[];
 	mosaicIdentity?: MosaicAgentIdentity;

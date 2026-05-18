@@ -1,18 +1,18 @@
 // Persistence for mosaic operational settings.
 // - Global:  ~/.pi/agent/subagents.json (via getAgentDir()) — manual defaults, never written here
-// - Project: <cwd>/.pi/subagents.json — written by /agents → Settings; overrides global on load
+// - Project: <cwd>/.pi/subagents.json — written by /mosaic settings; overrides global on load
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import type { JoinMode } from "./types.js";
+import type { JoinMode, ModelPresetCandidate, ThinkingLevel } from "./types.js";
 
 export interface SubagentsSettings {
 	maxConcurrent?: number;
 	/**
 	 * 0 = unlimited — the extension's single source of truth for that convention:
 	 * `normalizeMaxTurns()` in agent-runner.ts treats 0 → `undefined`, and the
-	 * `/agents` → Settings input prompt explicitly says "0 = unlimited".
+	 * `/mosaic settings` input prompt explicitly says "0 = unlimited".
 	 */
 	defaultMaxTurns?: number;
 	graceTurns?: number;
@@ -21,11 +21,12 @@ export interface SubagentsSettings {
 	 * Master switch for the schedule subagent feature. Defaults to `true`.
 	 * When `false`: the `Agent` tool's `schedule` param + its guideline are
 	 * stripped from the tool spec at registration (zero LLM-context cost), the
-	 * scheduler doesn't bind to the session, and the `/agents → Scheduled jobs`
+	 * scheduler doesn't bind to the session, and the `/mosaic settings → Scheduled jobs`
 	 * menu entry is hidden. Schema-level removal applies at extension load
 	 * (next pi session); runtime menu/runtime-fire short-circuit is immediate.
 	 */
 	schedulingEnabled?: boolean;
+	modelPresets?: Record<string, ModelPresetCandidate[]>;
 }
 
 /** Setter hooks used by applySettings to wire persisted values into in-memory state. */
@@ -48,6 +49,41 @@ const VALID_JOIN_MODES: ReadonlySet<string> = new Set<JoinMode>(["async", "group
 const MAX_CONCURRENT_CEILING = 1024;
 const MAX_TURNS_CEILING = 10_000;
 const GRACE_TURNS_CEILING = 1_000;
+const VALID_THINKING_LEVELS: ReadonlySet<string> = new Set<ThinkingLevel>([
+	"off",
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+]);
+
+function sanitizePresetCandidate(raw: unknown): ModelPresetCandidate | undefined {
+	if (!raw || typeof raw !== "object") return undefined;
+	const record = raw as Record<string, unknown>;
+	const model = typeof record.model === "string" ? record.model.trim() : "";
+	if (!model) return undefined;
+	const thinking =
+		typeof record.thinking === "string" && VALID_THINKING_LEVELS.has(record.thinking)
+			? (record.thinking as ThinkingLevel)
+			: undefined;
+	return thinking ? { model, thinking } : { model };
+}
+
+function sanitizeModelPresets(raw: unknown): Record<string, ModelPresetCandidate[]> | undefined {
+	if (!raw || typeof raw !== "object") return undefined;
+	const out: Record<string, ModelPresetCandidate[]> = {};
+	for (const [name, value] of Object.entries(raw as Record<string, unknown>)) {
+		const presetName = name.trim();
+		if (!presetName || !Array.isArray(value)) continue;
+		const candidates = value
+			.map(sanitizePresetCandidate)
+			.filter((candidate): candidate is ModelPresetCandidate => Boolean(candidate));
+		if (candidates.length === 0) continue;
+		out[presetName] = candidates;
+	}
+	return Object.keys(out).length > 0 ? out : undefined;
+}
 
 /** Drop fields that don't match the expected shape. Silent — garbage becomes absent. */
 function sanitize(raw: unknown): SubagentsSettings {
@@ -81,6 +117,8 @@ function sanitize(raw: unknown): SubagentsSettings {
 	if (typeof r.schedulingEnabled === "boolean") {
 		out.schedulingEnabled = r.schedulingEnabled;
 	}
+	const modelPresets = sanitizeModelPresets(r.modelPresets);
+	if (modelPresets) out.modelPresets = modelPresets;
 	return out;
 }
 
@@ -110,7 +148,17 @@ function readSettingsFile(path: string): SubagentsSettings {
 
 /** Load merged settings: global provides defaults, project overrides. */
 export function loadSettings(cwd: string = process.cwd()): SubagentsSettings {
-	return { ...readSettingsFile(globalPath()), ...readSettingsFile(projectPath(cwd)) };
+	const global = readSettingsFile(globalPath());
+	const project = readSettingsFile(projectPath(cwd));
+	const modelPresets = {
+		...(global.modelPresets ?? {}),
+		...(project.modelPresets ?? {}),
+	};
+	return {
+		...global,
+		...project,
+		...(Object.keys(modelPresets).length > 0 ? { modelPresets } : {}),
+	};
 }
 
 /**

@@ -115,6 +115,7 @@ export class AgentManager {
 			type,
 			description: options.description,
 			status: options.isBackground ? "queued" : "running",
+			isBackground: options.isBackground === true,
 			toolUses: 0,
 			startedAt: Date.now(),
 			abortController,

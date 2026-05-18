@@ -101,20 +101,19 @@ export function getReadOnlyMemoryToolNames(existingToolNames: Set<string>): stri
 	return READONLY_MEMORY_TOOL_NAMES.filter((n) => !existingToolNames.has(n));
 }
 
-/** Get built-in tool names for a type (case-insensitive). */
-export function getToolNamesForType(type: string): string[] {
+/** Get explicit tool allowlist for a type (case-insensitive). */
+export function getAllowedToolNamesForType(type: string): string[] | undefined {
 	const key = resolveKey(type);
 	const raw = key ? agents.get(key) : undefined;
 	const config = raw?.enabled !== false ? raw : undefined;
-	const names = config?.builtinToolNames?.length ? config.builtinToolNames : [...BUILTIN_TOOL_NAMES];
-	return names;
+	return config?.builtinToolNames ? [...config.builtinToolNames] : undefined;
 }
 
 /** Get config for a type (case-insensitive, returns a SubagentTypeConfig-compatible object). Falls back to general-purpose. */
 export function getConfig(type: string): {
 	displayName: string;
 	description: string;
-	builtinToolNames: string[];
+	builtinToolNames?: string[];
 	extensions: true | string[] | false;
 	skills: true | string[] | false;
 	promptMode: "replace" | "append";
@@ -125,7 +124,7 @@ export function getConfig(type: string): {
 		return {
 			displayName: config.displayName ?? config.name,
 			description: config.description,
-			builtinToolNames: config.builtinToolNames ?? BUILTIN_TOOL_NAMES,
+			builtinToolNames: config.builtinToolNames,
 			extensions: config.extensions,
 			skills: config.skills,
 			promptMode: config.promptMode,
@@ -138,7 +137,7 @@ export function getConfig(type: string): {
 		return {
 			displayName: gp.displayName ?? gp.name,
 			description: gp.description,
-			builtinToolNames: gp.builtinToolNames ?? BUILTIN_TOOL_NAMES,
+			builtinToolNames: gp.builtinToolNames,
 			extensions: gp.extensions,
 			skills: gp.skills,
 			promptMode: gp.promptMode,
@@ -149,7 +148,6 @@ export function getConfig(type: string): {
 	return {
 		displayName: "Agent",
 		description: "General-purpose agent for complex, multi-step tasks",
-		builtinToolNames: BUILTIN_TOOL_NAMES,
 		extensions: true,
 		skills: true,
 		promptMode: "append",

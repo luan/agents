@@ -17,6 +17,7 @@ import { registerApplyPatchFreeformProvider } from "./freeform-codex.ts";
 const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const ANSI_SGR_PATTERN = /\x1b\[([0-9;]*)m/g;
 const ANSI_RESET = "\x1b[0m";
+const OSC_SEQUENCE_PATTERN = /\x1b\][^\x07]*(?:\x07|\x1b\\)/g;
 
 const APPLY_PATCH_USAGE_ENTRY = "apply_patch_usage";
 const APPLY_PATCH_TOOL_NAME = "apply_patch";
@@ -408,6 +409,7 @@ class ApplyPatchDiffView {
 
 	render(width: number): string[] {
 		const safeWidth = Math.max(24, width);
+		const safeRows = (lines: string[]) => lines.map((line) => clampRenderedLine(line, safeWidth));
 		const bgToken =
 			this.state === "error" ? "toolErrorBg" : this.state === "pending" ? "toolPendingBg" : "toolSuccessBg";
 		const paintLine = (line: string) => paintPanelRow(line, safeWidth, this.theme, bgToken);
@@ -438,7 +440,7 @@ class ApplyPatchDiffView {
 							this.editKind,
 						);
 			this.renderedDiffCache = { key: cacheKey, lines: diffLines };
-			return prependIntentLine(diffLines, this.intent, this.theme, safeWidth);
+			return safeRows(prependIntentLine(diffLines, this.intent, this.theme, safeWidth));
 		}
 
 		if (hasVisibleText(this.diff)) {
@@ -455,7 +457,7 @@ class ApplyPatchDiffView {
 						? this.renderedDiffCache.lines
 						: renderCollapsedDiffPreview(this.diff, this.files, this.theme, safeWidth, undefined, this.config);
 				this.renderedDiffCache = { key: cacheKey, lines: diffLines };
-				return prependIntentLine(diffLines, this.intent, this.theme, safeWidth);
+				return safeRows(prependIntentLine(diffLines, this.intent, this.theme, safeWidth));
 			}
 			const fileVerb = editVerb(this.state, this.editKind);
 			const cacheKey = [
@@ -483,7 +485,7 @@ class ApplyPatchDiffView {
 							this.editKind,
 						);
 			this.renderedDiffCache = { key: cacheKey, lines: diffLines };
-			return prependIntentLine(diffLines, this.intent, this.theme, safeWidth);
+			return safeRows(prependIntentLine(diffLines, this.intent, this.theme, safeWidth));
 		}
 
 		const bodyLines =
@@ -493,12 +495,12 @@ class ApplyPatchDiffView {
 		const content = bodyLines.length > 0 ? bodyLines : [this.theme.fg("muted", "(no diff)")];
 		const intentLines = formatIntentLines(this.intent, this.theme, safeWidth).map((line) => paintLine(line));
 		if (this.state === "error") {
-			return [
+			return safeRows([
 				paintLine(this.renderHeader(safeWidth)),
 				...(intentLines.length > 0 ? intentLines : []),
 				paintLine(""),
 				...renderFailureDiagnosticRows(content, this.theme, safeWidth, bgToken),
-			];
+			]);
 		}
 
 		const fallbackRole = this.state === "pending" ? "warning" : undefined;
@@ -506,12 +508,12 @@ class ApplyPatchDiffView {
 			const styledLine = fallbackRole ? this.theme.fg(fallbackRole, line) : line;
 			return line.length === 0 ? [""] : wrapTextWithAnsi(styledLine, safeWidth);
 		});
-		return [
+		return safeRows([
 			paintLine(this.renderHeader(safeWidth)),
 			...(intentLines.length > 0 ? intentLines : []),
 			paintLine(""),
 			...contentLines.map((line) => paintLine(line)),
-		];
+		]);
 	}
 
 	private renderHeader(width: number): string {
@@ -1041,6 +1043,10 @@ function paintDiffRow(line: string, width: number, background: string | undefine
 	const padded = truncateToWidth(line, width, "", true);
 	if (!background) return padded;
 	return `${background}${keepBackgroundAcrossResets(padded, background)}${ANSI_RESET}`;
+}
+
+function clampRenderedLine(line: string, width: number): string {
+	return truncateToWidth(line.replace(OSC_SEQUENCE_PATTERN, ""), width, "", true);
 }
 
 function paintPanelRow(line: string, width: number, theme: ThemeLike, background: ToolPanelBg): string {

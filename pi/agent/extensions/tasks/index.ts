@@ -1,5 +1,5 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -1546,6 +1546,48 @@ function sessionFile(ctx?: ExtensionContext): string | undefined {
 	)?.sessionManager?.getSessionFile?.();
 }
 
+function taskGuardStatePath(): string | undefined {
+	const base =
+		process.env.XDG_STATE_HOME ?? (process.env.HOME ? join(process.env.HOME, ".local", "state") : undefined);
+	return base ? join(base, "pi", "task-guard.json") : undefined;
+}
+
+function taskGuardPreferenceKey(ctx?: ExtensionContext): string | undefined {
+	const file = sessionFile(ctx);
+	if (!file) return undefined;
+	const id = basename(file).replace(/\.jsonl$/, "");
+	return id ? `session:${id}` : undefined;
+}
+
+function readTaskGuardPreference(ctx?: ExtensionContext): boolean | undefined {
+	const path = taskGuardStatePath();
+	const key = taskGuardPreferenceKey(ctx);
+	if (!path || !key) return undefined;
+	try {
+		const parsed = JSON.parse(readFileSync(path, "utf8")) as { sessions?: Record<string, unknown> };
+		const value = parsed.sessions?.[key];
+		return typeof value === "boolean" ? value : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function writeTaskGuardPreference(ctx: ExtensionContext, enabled: boolean): void {
+	const path = taskGuardStatePath();
+	const key = taskGuardPreferenceKey(ctx);
+	if (!path || !key) return;
+	try {
+		let parsed: { sessions?: Record<string, boolean> } = {};
+		try {
+			parsed = JSON.parse(readFileSync(path, "utf8")) as { sessions?: Record<string, boolean> };
+		} catch {}
+		const sessions = parsed.sessions && typeof parsed.sessions === "object" ? parsed.sessions : {};
+		sessions[key] = enabled;
+		mkdirSync(dirname(path), { recursive: true });
+		writeFileSync(path, `${JSON.stringify({ ...parsed, sessions }, null, 2)}\n`, "utf8");
+	} catch {}
+}
+
 function sessionIdFromAssignment(assignedTo: string): string | undefined {
 	if (!assignedTo.startsWith("session:")) return undefined;
 	const id = assignedTo.slice("session:".length);
@@ -2481,7 +2523,7 @@ function userTextAllowsGuardAutoTurn(text: string | undefined): boolean {
 	if (/\btask[- ]guard\b|\bguard\b/i.test(text)) return false;
 	if (/[?]\s*$/.test(text)) return false;
 	if (/^\s*(why|what|when|where|who|how|do|does|did|can|could|should|would|is|are)\b/i.test(text)) return false;
-	return /\b(assign|assigned|implement|continue|start|work|proceed|resume|finish|complete|fix)\b/i.test(text);
+	return /\b(assign|assigned|implement|continue|start|work|proceed|resume|finish|complete|done|fix)\b/i.test(text);
 }
 
 function shouldTriggerGuardTurn(state: GuardState, decision: TaskGuardDecision): boolean {
@@ -2628,7 +2670,7 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 
 	pi.on("session_start", async (_event, ctx) => {
 		cwd = ctx.cwd;
-		setTaskGuardEnabled(guardState, false);
+		setTaskGuardEnabled(guardState, readTaskGuardPreference(ctx) ?? false);
 		if (config.hud.enabled) {
 			await updateTaskHud(ctx, pi, config.command, runCommand, config, guardState.enabled).catch((error) => {
 				ctx.ui.notify?.(
@@ -2706,6 +2748,8 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 		description: "Show task guard status; use [on/off] to change it",
 		handler: async (args: string, ctx: ExtensionContext) => {
 			const result = taskGuardCommandMessage(guardState, args);
+			const mode = args.trim().toLowerCase();
+			if (mode === "on" || mode === "off") writeTaskGuardPreference(ctx, guardState.enabled);
 			ctx.ui.notify?.(result.message, result.type);
 		},
 	});

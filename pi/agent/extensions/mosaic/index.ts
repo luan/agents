@@ -8,7 +8,8 @@
  *   wait_agent       — LLM-callable: wait for a mailbox/status update
  *
  * Commands:
- *   /agents                 — Interactive agent management menu
+ *   /mosaic settings        — Interactive agent/model settings menu
+ *   /mosaic list            — List and manage mosaic sessions
  */
 
 import { randomUUID } from "node:crypto";
@@ -19,6 +20,8 @@ import {
 	type ExtensionCommandContext,
 	type ExtensionContext,
 	getAgentDir,
+	ModelSelectorComponent,
+	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { AgentManager } from "./agent-manager.js";
@@ -37,14 +40,28 @@ import {
 	type MosaicMessageTransport,
 	startMosaicMessageTransport,
 } from "./message-server.js";
+import {
+	formatModelPresetCandidates,
+	isDefaultModelPreset,
+	mergeModelPresets,
+	orderedModelPresetNames,
+	resolveModelPreset,
+} from "./model-presets.js";
 import { type ModelRegistry, resolveModel } from "./model-resolver.js";
 import { currentMultiplexerTarget, killTarget } from "./multiplexer.js";
-import { hasMultiplexer, registerMosaicMux, resolveOwner } from "./mux.js";
+import { hasMultiplexer, registerMosaicMux, resolveOwner, showMosaicSessions } from "./mux.js";
 import * as muxHeartbeat from "./mux-heartbeat.js";
 import { SubagentScheduler } from "./schedule.js";
 import { resolveStorePath, ScheduleStore } from "./schedule-store.js";
 import { applyAndEmitLoaded, type SubagentsSettings, saveAndEmitChanged } from "./settings.js";
-import type { AgentConfig, AgentRecord, JoinMode, NotificationDetails, SubagentType } from "./types.js";
+import type {
+	AgentConfig,
+	AgentRecord,
+	JoinMode,
+	ModelPresetCandidate,
+	NotificationDetails,
+	SubagentType,
+} from "./types.js";
 import {
 	type AgentActivity,
 	AgentWidget,
@@ -547,6 +564,10 @@ export default function (pi: ExtensionAPI) {
 				type: record.type,
 				description: record.description,
 			});
+			if (record.isBackground) {
+				widget.ensureTimer();
+				widget.update();
+			}
 		},
 		(record, info) => {
 			// Emit compacted event when agent's session compacts (preserves count on record).
@@ -608,6 +629,7 @@ export default function (pi: ExtensionAPI) {
 			toolUses: activity?.toolUses ?? 0,
 			startedAt: fullSession.startedAt,
 			completedAt: fullSession.completedAt,
+			isBackground: true,
 			worktree: fullSession.worktree,
 			lifetimeUsage: activity?.lifetimeUsage ?? { input: 0, output: 0, cacheWrite: 0 },
 			compactionCount: 0,
@@ -693,8 +715,26 @@ export default function (pi: ExtensionAPI) {
 				createdAt: agent.startedAt,
 				updatedAt: agent.completedAt ?? agent.startedAt,
 			}));
-		const agents = [...nativeAgents, ...recovered];
+		const hidden = manager.listAgents().map((agent) => ({
+			agentId: agent.id,
+			taskName: agent.description,
+			type: agent.type,
+			description: agent.description,
+			connected: true,
+			closed: agent.status === "stopped",
+			status: agent.status,
+			runtime: "in-process",
+			lastSeq: messageServer.currentSeq,
+			createdAt: agent.startedAt,
+			updatedAt: agent.completedAt ?? agent.startedAt,
+		}));
+		const agents = [...nativeAgents, ...recovered, ...hidden];
 		return input.pathPrefix ? agents.filter((agent) => agent.taskName?.startsWith(input.pathPrefix!)) : agents;
+	}
+
+	function resolveInProcessTarget(target: string): string | undefined {
+		if (manager.getRecord(target)) return target;
+		return manager.listAgents().find((agent) => agent.description === target)?.id;
 	}
 
 	function refreshFullSessionHud(ui?: UICtx): void {
@@ -709,27 +749,70 @@ export default function (pi: ExtensionAPI) {
 		widget.update();
 	}
 
-	async function spawnV2FullSessionAgent(input: {
+	interface SpawnV2AgentInput {
 		taskName: string;
 		message: string;
 		agentType?: string;
+		modelPreset?: string;
 		model?: string;
 		thinking?: string;
+		mode?: "full-session" | "in-process";
+		runInBackground?: boolean;
 		isolation?: "worktree";
 		cwd?: string;
-	}) {
-		if (!currentCtx) throw new Error("No active session");
-		if (!hasMultiplexer()) throw new Error("mosaic requires tmux or an active zellij session");
-		const agentCwd = resolveAgentCwd(input.cwd, currentCtx.cwd);
-		const rawType = input.agentType ?? "general-purpose";
+	}
+
+	function resolveV2AgentType(agentType: string | undefined): {
+		subagentType: SubagentType;
+		customConfig: AgentConfig | undefined;
+	} {
+		reloadCustomAgents();
+		const rawType = agentType ?? "general-purpose";
 		const subagentType = resolveType(rawType) ?? "general-purpose";
-		const customConfig = getAgentConfig(subagentType);
-		let model: unknown;
+		return { subagentType, customConfig: getAgentConfig(subagentType) };
+	}
+
+	function resolveV2ExplicitSelection(input: SpawnV2AgentInput): {
+		model?: unknown;
+		thinking?: string;
+	} {
+		if (!currentCtx) throw new Error("No active session");
 		if (input.model) {
 			const resolved = resolveModel(input.model, currentCtx.modelRegistry as ModelRegistry);
 			if (typeof resolved === "string") throw new Error(resolved);
-			model = resolved;
+			return { model: resolved, thinking: input.thinking };
 		}
+		if (input.modelPreset) {
+			const resolved = resolveModelPreset(
+				input.modelPreset,
+				currentCtx.modelRegistry as ModelRegistry,
+				allModelPresets(),
+			);
+			return {
+				model: resolved.model,
+				thinking: input.thinking ?? resolved.thinking,
+			};
+		}
+		return { thinking: input.thinking };
+	}
+
+	async function spawnV2Agent(input: SpawnV2AgentInput) {
+		const { customConfig } = resolveV2AgentType(input.agentType);
+		const mode = input.mode ?? "in-process";
+		if (mode === "full-session") return spawnV2FullSessionAgent(input);
+		return spawnV2InProcessAgent({
+			...input,
+			mode,
+			runInBackground: input.runInBackground ?? customConfig?.runInBackground ?? false,
+		});
+	}
+
+	async function spawnV2FullSessionAgent(input: SpawnV2AgentInput) {
+		if (!currentCtx) throw new Error("No active session");
+		if (!hasMultiplexer()) throw new Error("mosaic requires tmux or an active zellij session");
+		const agentCwd = resolveAgentCwd(input.cwd, currentCtx.cwd);
+		const { subagentType, customConfig } = resolveV2AgentType(input.agentType);
+		const explicit = resolveV2ExplicitSelection(input);
 		const plannedId = randomUUID().slice(0, 17);
 		const transport = await ensureMessageTransport();
 		const startedAt = Date.now();
@@ -746,8 +829,8 @@ export default function (pi: ExtensionAPI) {
 				type: subagentType,
 				description: input.taskName,
 				prompt: input.message,
-				model: model as any,
-				thinkingLevel: input.thinking as any,
+				model: explicit.model as any,
+				thinkingLevel: explicit.thinking as any,
 				isolation: input.isolation,
 				cwd: agentCwd,
 				agentConfig: customConfig,
@@ -796,6 +879,46 @@ export default function (pi: ExtensionAPI) {
 		return { agentId: launched.id, taskName: input.taskName, seq: messageServer.currentSeq };
 	}
 
+	async function spawnV2InProcessAgent(input: SpawnV2AgentInput) {
+		if (!currentCtx) throw new Error("No active session");
+		const agentCwd = resolveAgentCwd(input.cwd, currentCtx.cwd);
+		const { subagentType } = resolveV2AgentType(input.agentType);
+		const explicit = resolveV2ExplicitSelection(input);
+		const options = {
+			description: input.taskName,
+			model: explicit.model as any,
+			thinkingLevel: explicit.thinking as any,
+			isolation: input.isolation,
+			cwd: agentCwd,
+		};
+
+		if (input.runInBackground === false) {
+			const record = await manager.spawnAndWait(pi, currentCtx, subagentType, input.message, options);
+			record.resultConsumed = true;
+			return {
+				agentId: record.id,
+				taskName: input.taskName,
+				runtime: "in-process",
+				background: false,
+				status: record.status,
+				result: record.result,
+				error: record.error,
+			};
+		}
+
+		const id = manager.spawn(pi, currentCtx, subagentType, input.message, { ...options, isBackground: true });
+		pi.events.emit("subagents:created", {
+			id,
+			type: subagentType,
+			description: input.taskName,
+			isBackground: true,
+			runtime: "in-process",
+		});
+		widget.ensureTimer();
+		widget.update();
+		return { agentId: id, taskName: input.taskName, runtime: "in-process", background: true };
+	}
+
 	if (isMosaicV2ToolsEnabled()) {
 		for (const tool of createMosaicV2Tools({
 			onToolContext: (toolCtx) => {
@@ -806,7 +929,7 @@ export default function (pi: ExtensionAPI) {
 					refreshFullSessionHud(ui);
 				}
 			},
-			spawnAgent: spawnV2FullSessionAgent,
+			spawnAgent: spawnV2Agent,
 			sendMessage: async (input) => {
 				try {
 					return messageServer.enqueueMessage(input.target, {
@@ -837,7 +960,18 @@ export default function (pi: ExtensionAPI) {
 					return update;
 				} catch (error) {
 					const recoveredId = resolveFullSessionTarget(input.target);
-					if (!recoveredId) throw error;
+					if (!recoveredId) {
+						const hiddenId = resolveInProcessTarget(input.target);
+						if (!hiddenId) throw error;
+						manager.abort(hiddenId);
+						return {
+							type: "agent_update",
+							seq: messageServer.currentSeq,
+							agentId: hiddenId,
+							status: "closed",
+							createdAt: Date.now(),
+						};
+					}
 					cleanupFullSessionAgentPane(recoveredId);
 					return {
 						type: "agent_update",
@@ -917,6 +1051,7 @@ export default function (pi: ExtensionAPI) {
 				toolUses: activity.toolUses,
 				startedAt: fullSession.startedAt,
 				completedAt: fullSession.completedAt,
+				isBackground: true,
 				worktree: fullSession.worktree,
 				lifetimeUsage: activity.lifetimeUsage,
 				compactionCount: 0,
@@ -1049,7 +1184,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	// Master switch for the schedule subagent feature. Defaults to enabled.
-	// Read once at extension init so runtime toggles via /agents
+	// Read once at extension init so runtime toggles via /mosaic settings
 	// → Settings short-circuit the menu entry + the execute-time addJob path
 	// immediately, but the schema-level removal only takes effect on next
 	// extension load (next pi session). Documented in CHANGELOG/README.
@@ -1118,10 +1253,16 @@ export default function (pi: ExtensionAPI) {
 		return name.replace(/-\d{8}$/, "");
 	}
 
+	let customModelPresets: Record<string, ModelPresetCandidate[]> = {};
+
+	function allModelPresets(): Record<string, ModelPresetCandidate[]> {
+		return mergeModelPresets(customModelPresets);
+	}
+
 	// Apply persisted settings on startup and emit `subagents:settings_loaded`.
 	// Global + project merged; missing → defaults; corrupt file emits a warning
 	// to stderr and falls back to defaults.
-	applyAndEmitLoaded(
+	const loadedSettings = applyAndEmitLoaded(
 		{
 			setMaxConcurrent: (n) => manager.setMaxConcurrent(n),
 			setDefaultMaxTurns,
@@ -1131,8 +1272,9 @@ export default function (pi: ExtensionAPI) {
 		},
 		(event, payload) => pi.events.emit(event, payload),
 	);
+	customModelPresets = loadedSettings.modelPresets ?? {};
 
-	// ---- /agents interactive menu ----
+	// ---- /mosaic settings interactive menu ----
 
 	const projectAgentsDir = () => join(process.cwd(), ".pi", "agents");
 	const personalAgentsDir = () => join(getAgentDir(), "agents");
@@ -1148,13 +1290,400 @@ export default function (pi: ExtensionAPI) {
 
 	function getModelLabel(type: string, registry?: ModelRegistry): string {
 		const cfg = getAgentConfig(type);
-		if (!cfg?.model) return "inherit";
+		if (!cfg) return "inherit";
+		if (cfg.modelPreset) {
+			if (registry) {
+				const resolved = resolveModelPreset(cfg.modelPreset, registry, allModelPresets());
+				if (!resolved.model) return `${cfg.modelPreset} unavailable`;
+			}
+			return cfg.modelPreset;
+		}
+		if (!cfg.model) return "inherit";
 		// If registry provided, check if the model actually resolves
 		if (registry) {
 			const resolved = resolveModel(cfg.model, registry);
-			if (typeof resolved === "string") return "inherit"; // model not available
+			if (typeof resolved === "string") return `custom ${getModelLabelFromConfig(cfg.model)} unavailable`;
 		}
-		return getModelLabelFromConfig(cfg.model);
+		return `custom ${getModelLabelFromConfig(cfg.model)}`;
+	}
+
+	function modelKey(model: { provider: string; id: string }): string {
+		return `${model.provider}/${model.id}`;
+	}
+
+	function scopedModelsFromSettings(ctx: ExtensionCommandContext): Array<{ model: unknown }> {
+		const settings = SettingsManager.create(ctx.cwd, getAgentDir());
+		const patterns = settings.getEnabledModels();
+		if (!patterns?.length) return [];
+
+		const scoped: Array<{ model: unknown }> = [];
+		const seen = new Set<string>();
+		for (const pattern of patterns) {
+			const resolved = resolveModel(pattern, ctx.modelRegistry as ModelRegistry);
+			if (typeof resolved === "string") continue;
+			const key = modelKey(resolved);
+			if (seen.has(key)) continue;
+			seen.add(key);
+			scoped.push({ model: resolved });
+		}
+		return scoped;
+	}
+
+	async function pickAvailableModel(
+		ctx: ExtensionCommandContext,
+		_title: string,
+		currentModelRef?: string,
+	): Promise<string | undefined> {
+		const currentConfigured = currentModelRef
+			? resolveModel(currentModelRef, ctx.modelRegistry as ModelRegistry)
+			: undefined;
+		return ctx.ui.custom<string | undefined>(
+			(tui, _theme, _keybindings, done) => {
+				const selector = new ModelSelectorComponent(
+					tui,
+					typeof currentConfigured === "string" ? ctx.model : ((currentConfigured as any) ?? ctx.model),
+					SettingsManager.inMemory(),
+					ctx.modelRegistry as any,
+					scopedModelsFromSettings(ctx) as any,
+					(model: any) => done(modelKey(model)),
+					() => done(undefined),
+				);
+				tui.setFocus(selector);
+				return selector;
+			},
+			{ overlay: true, overlayOptions: { anchor: "center", width: "90%" } },
+		);
+	}
+
+	async function pickCandidateThinking(
+		ctx: ExtensionCommandContext,
+		title: string,
+		current?: string,
+	): Promise<string | undefined | null> {
+		const options = [`none (current: ${current ?? "none"})`, "off", "minimal", "low", "medium", "high", "xhigh"];
+		const choice = await ctx.ui.select(title, options);
+		if (!choice) return null;
+		return choice.startsWith("none ") ? undefined : choice;
+	}
+
+	function buildAgentMarkdownContent(
+		cfg: AgentConfig,
+		overrides: Partial<Pick<AgentConfig, "modelPreset" | "model" | "thinking">> = {},
+	): string {
+		const hasOverride = (key: keyof typeof overrides) => Object.hasOwn(overrides, key);
+		const modelPreset = hasOverride("modelPreset") ? overrides.modelPreset : cfg.modelPreset;
+		const model = hasOverride("model") ? overrides.model : cfg.model;
+		const thinking = hasOverride("thinking") ? overrides.thinking : cfg.thinking;
+		const fmFields: string[] = [];
+		fmFields.push(`description: ${cfg.description}`);
+		if (cfg.displayName) fmFields.push(`display_name: ${cfg.displayName}`);
+		if (cfg.builtinToolNames) {
+			fmFields.push(`tools: ${cfg.builtinToolNames.length > 0 ? cfg.builtinToolNames.join(", ") : "none"}`);
+		}
+		if (modelPreset) fmFields.push(`model_preset: ${modelPreset}`);
+		if (model) fmFields.push(`model: ${model}`);
+		if (thinking) fmFields.push(`thinking: ${thinking}`);
+		if (cfg.maxTurns) fmFields.push(`max_turns: ${cfg.maxTurns}`);
+		fmFields.push(`prompt_mode: ${cfg.promptMode}`);
+		if (cfg.extensions === false) fmFields.push("extensions: false");
+		else if (Array.isArray(cfg.extensions)) fmFields.push(`extensions: ${cfg.extensions.join(", ")}`);
+		if (cfg.skills === false) fmFields.push("skills: false");
+		else if (Array.isArray(cfg.skills)) fmFields.push(`skills: ${cfg.skills.join(", ")}`);
+		if (cfg.disallowedTools?.length) fmFields.push(`disallowed_tools: ${cfg.disallowedTools.join(", ")}`);
+		if (cfg.inheritContext) fmFields.push("inherit_context: true");
+		if (cfg.runInBackground) fmFields.push("run_in_background: true");
+		if (cfg.isolated) fmFields.push("isolated: true");
+		if (cfg.memory) fmFields.push(`memory: ${cfg.memory}`);
+		if (cfg.isolation) fmFields.push(`isolation: ${cfg.isolation}`);
+		if (cfg.enabled === false) fmFields.push("enabled: false");
+		return `---\n${fmFields.join("\n")}\n---\n\n${cfg.systemPrompt}\n`;
+	}
+
+	async function chooseAgentFileForUpdate(
+		ctx: ExtensionCommandContext,
+		name: string,
+		cfg: AgentConfig,
+		overrides: Partial<Pick<AgentConfig, "modelPreset" | "model" | "thinking">>,
+	): Promise<string | undefined> {
+		const file = findAgentFile(name);
+		if (file) return file.path;
+
+		const location = await ctx.ui.select("Choose location", [
+			"Project (.pi/agents/)",
+			`Personal (${personalAgentsDir()})`,
+		]);
+		if (!location) return undefined;
+
+		const targetDir = location.startsWith("Project") ? projectAgentsDir() : personalAgentsDir();
+		mkdirSync(targetDir, { recursive: true });
+		const targetPath = join(targetDir, `${name}.md`);
+		const { writeFileSync } = await import("node:fs");
+		writeFileSync(targetPath, buildAgentMarkdownContent(cfg, overrides), "utf-8");
+		return targetPath;
+	}
+
+	function updateFrontmatterField(content: string, key: string, value: string | undefined): string {
+		const match = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+		const lines = match ? match[1].split("\n") : [];
+		const body = match ? match[2] : content;
+		const nextLines = lines.filter((line) => !line.match(new RegExp(`^\\s*${key}\\s*:`)));
+		if (value) nextLines.push(`${key}: ${value}`);
+		return `---\n${nextLines.join("\n")}\n---\n${body ? (body.startsWith("\n") ? body : `\n${body}`) : ""}`;
+	}
+
+	async function setAgentFrontmatterField(
+		ctx: ExtensionCommandContext,
+		name: string,
+		cfg: AgentConfig,
+		key: "thinking",
+		value: string | undefined,
+	) {
+		const path = await chooseAgentFileForUpdate(ctx, name, cfg, { [key]: value });
+		if (!path) return;
+
+		const existing = readFileSync(path, "utf-8");
+		const updated = updateFrontmatterField(existing, key, value);
+		const { writeFileSync } = await import("node:fs");
+		writeFileSync(path, updated, "utf-8");
+		reloadCustomAgents();
+		ctx.ui.notify(`${name} ${key} set to ${value ?? "inherit"} (${path})`, "info");
+	}
+
+	async function setAgentModelPreset(
+		ctx: ExtensionCommandContext,
+		name: string,
+		cfg: AgentConfig,
+		presetName: string | undefined,
+	) {
+		const path = await chooseAgentFileForUpdate(ctx, name, cfg, { modelPreset: presetName, model: undefined });
+		if (!path) return;
+
+		const existing = readFileSync(path, "utf-8");
+		let updated = updateFrontmatterField(existing, "model_preset", presetName);
+		updated = updateFrontmatterField(updated, "model", undefined);
+		const { writeFileSync } = await import("node:fs");
+		writeFileSync(path, updated, "utf-8");
+		reloadCustomAgents();
+		ctx.ui.notify(`${name} model preset set to ${presetName ?? "inherit"} (${path})`, "info");
+	}
+
+	async function configureAgentModelPreset(ctx: ExtensionCommandContext, name: string, cfg: AgentConfig) {
+		const presets = allModelPresets();
+		const presetNames = orderedModelPresetNames(customModelPresets);
+		const current = getModelLabel(name, ctx.modelRegistry);
+		const options = [
+			`Inherit parent model (current: ${current})`,
+			...presetNames.map((presetName) => {
+				const source = Object.hasOwn(customModelPresets, presetName) ? "custom" : "default";
+				return `${presetName} [${source}] — ${formatModelPresetCandidates(presets[presetName] ?? [])}`;
+			}),
+		];
+		const choice = await ctx.ui.select(`Model preset for ${name}`, options);
+		if (!choice) return;
+		if (choice.startsWith("Inherit parent model")) {
+			await setAgentModelPreset(ctx, name, cfg, undefined);
+			return;
+		}
+		const presetName = presetNames.find((entry) => choice.startsWith(`${entry} [`));
+		if (!presetName) return;
+		await setAgentModelPreset(ctx, name, cfg, presetName);
+	}
+
+	async function configureAgentThinking(ctx: ExtensionCommandContext, name: string, cfg: AgentConfig) {
+		const current = cfg.thinking ?? (cfg.modelPreset ? "preset" : "inherit");
+		const options = [
+			`Inherit model/default thinking (current: ${current})`,
+			"off",
+			"minimal",
+			"low",
+			"medium",
+			"high",
+			"xhigh",
+		];
+		const choice = await ctx.ui.select(`Thinking for ${name}`, options);
+		if (!choice) return;
+
+		const value = choice.startsWith("Inherit model/default thinking") ? undefined : choice;
+		await setAgentFrontmatterField(ctx, name, cfg, "thinking", value);
+	}
+
+	function customPresetSnapshot(): Record<string, ModelPresetCandidate[]> | undefined {
+		return Object.keys(customModelPresets).length > 0 ? customModelPresets : undefined;
+	}
+
+	function saveModelPresets(
+		ctx: ExtensionCommandContext,
+		next: Record<string, ModelPresetCandidate[]>,
+		message: string,
+	): void {
+		customModelPresets = next;
+		notifyApplied(ctx, message);
+	}
+
+	function savePresetCandidates(
+		ctx: ExtensionCommandContext,
+		name: string,
+		candidates: ModelPresetCandidate[],
+		message: string,
+	): void {
+		saveModelPresets(ctx, { ...customModelPresets, [name]: candidates }, message);
+	}
+
+	async function addPresetCandidate(
+		ctx: ExtensionCommandContext,
+		presetName: string,
+		candidates: ModelPresetCandidate[],
+	): Promise<void> {
+		const model = await pickAvailableModel(ctx, `Candidate model for ${presetName}`);
+		if (!model) return;
+		const thinking = await pickCandidateThinking(ctx, `Thinking for ${presetName} candidate`);
+		if (thinking === null) return;
+		savePresetCandidates(
+			ctx,
+			presetName,
+			[...candidates, thinking ? { model, thinking: thinking as any } : { model }],
+			`Saved model preset ${presetName}`,
+		);
+	}
+
+	async function showPresetCandidateDetail(
+		ctx: ExtensionCommandContext,
+		presetName: string,
+		candidates: ModelPresetCandidate[],
+		index: number,
+	): Promise<void> {
+		const candidate = candidates[index];
+		if (!candidate) return;
+		const options = [
+			`Change model (${candidate.model})`,
+			`Change thinking (${candidate.thinking ?? "none"})`,
+			...(index > 0 ? ["Move earlier"] : []),
+			...(index < candidates.length - 1 ? ["Move later"] : []),
+			...(candidates.length > 1 ? ["Remove candidate"] : []),
+			"Back",
+		];
+		const choice = await ctx.ui.select(`${presetName} candidate ${index + 1}`, options);
+		if (!choice || choice === "Back") return;
+
+		if (choice.startsWith("Change model")) {
+			const model = await pickAvailableModel(ctx, `Candidate model for ${presetName}`, candidate.model);
+			if (!model) return;
+			const next = candidates.map((entry, i) => (i === index ? { ...entry, model } : entry));
+			savePresetCandidates(ctx, presetName, next, `Saved model preset ${presetName}`);
+			return;
+		}
+
+		if (choice.startsWith("Change thinking")) {
+			const thinking = await pickCandidateThinking(ctx, `Thinking for ${presetName} candidate`, candidate.thinking);
+			if (thinking === null) return;
+			const next = candidates.map((entry, i) => {
+				if (i !== index) return entry;
+				return thinking ? { ...entry, thinking: thinking as any } : { model: entry.model };
+			});
+			savePresetCandidates(ctx, presetName, next, `Saved model preset ${presetName}`);
+			return;
+		}
+
+		if (choice === "Move earlier") {
+			const next = [...candidates];
+			[next[index - 1], next[index]] = [next[index]!, next[index - 1]!];
+			savePresetCandidates(ctx, presetName, next, `Saved model preset ${presetName}`);
+			return;
+		}
+
+		if (choice === "Move later") {
+			const next = [...candidates];
+			[next[index], next[index + 1]] = [next[index + 1]!, next[index]!];
+			savePresetCandidates(ctx, presetName, next, `Saved model preset ${presetName}`);
+			return;
+		}
+
+		if (choice === "Remove candidate") {
+			const next = candidates.filter((_, i) => i !== index);
+			savePresetCandidates(ctx, presetName, next, `Saved model preset ${presetName}`);
+		}
+	}
+
+	async function showModelPresetDetail(ctx: ExtensionCommandContext, name: string): Promise<void> {
+		const merged = allModelPresets();
+		const candidates = merged[name];
+		if (!candidates) return;
+		const hasCustomOverride = Object.hasOwn(customModelPresets, name);
+		const isDefaultPreset = isDefaultModelPreset(name);
+		const options = [
+			...candidates.map(
+				(candidate, index) =>
+					`${index + 1}. ${candidate.model}${candidate.thinking ? `:${candidate.thinking}` : ""}`,
+			),
+			"Add candidate",
+			hasCustomOverride ? (isDefaultPreset ? "Reset to default" : "Delete preset") : "Back",
+		];
+		const choice = await ctx.ui.select(`${name} preset`, options);
+		if (!choice || choice === "Back") return;
+
+		if (choice === "Add candidate") {
+			await addPresetCandidate(ctx, name, candidates);
+			return;
+		}
+
+		const candidateIndex = options.indexOf(choice);
+		if (candidateIndex >= 0 && candidateIndex < candidates.length) {
+			await showPresetCandidateDetail(ctx, name, candidates, candidateIndex);
+			return;
+		}
+
+		if (choice === "Reset to default") {
+			const { [name]: _, ...rest } = customModelPresets;
+			saveModelPresets(ctx, rest, `Reset model preset ${name} to default`);
+			return;
+		}
+
+		if (choice === "Delete preset") {
+			const { [name]: _, ...rest } = customModelPresets;
+			saveModelPresets(ctx, rest, `Deleted model preset ${name}`);
+		}
+	}
+
+	async function addModelPreset(ctx: ExtensionCommandContext): Promise<void> {
+		const name = await ctx.ui.input("Preset name");
+		if (!name?.trim()) return;
+		const presetName = name.trim();
+		const model = await pickAvailableModel(ctx, `First candidate for ${presetName}`);
+		if (!model) return;
+		const thinking = await pickCandidateThinking(ctx, `Thinking for ${presetName} candidate`);
+		if (thinking === null) return;
+		savePresetCandidates(
+			ctx,
+			presetName,
+			[thinking ? { model, thinking: thinking as any } : { model }],
+			`Saved model preset ${presetName}`,
+		);
+	}
+
+	async function showModelPresetsMenu(ctx: ExtensionCommandContext): Promise<void> {
+		const merged = allModelPresets();
+		const presetNames = orderedModelPresetNames(customModelPresets);
+		const options = presetNames.map((name) => {
+			const source = Object.hasOwn(customModelPresets, name)
+				? isDefaultModelPreset(name)
+					? "override"
+					: "custom"
+				: "default";
+			return `${name} [${source}] — ${formatModelPresetCandidates(merged[name] ?? [])}`;
+		});
+		options.push("Add preset");
+
+		const choice = await ctx.ui.select("Model presets", options);
+		if (!choice) return;
+		if (choice === "Add preset") {
+			await addModelPreset(ctx);
+			await showModelPresetsMenu(ctx);
+			return;
+		}
+		const presetName = presetNames.find((name) => choice.startsWith(`${name} [`));
+		if (!presetName) return;
+		await showModelPresetDetail(ctx, presetName);
+		await showModelPresetsMenu(ctx);
 	}
 
 	async function showAgentsMenu(ctx: ExtensionCommandContext) {
@@ -1177,6 +1706,8 @@ export default function (pi: ExtensionAPI) {
 			options.push(`Agent types (${allNames.length})`);
 		}
 
+		options.push(`Model presets (${orderedModelPresetNames(customModelPresets).length})`);
+
 		// Scheduled jobs entry (always present when scheduler is active)
 		if (scheduler.isActive()) {
 			const jobCount = scheduler.list().length;
@@ -1198,7 +1729,7 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.notify(noAgentsMsg, "info");
 		}
 
-		const choice = await ctx.ui.select("Agents", options);
+		const choice = await ctx.ui.select("Mosaic Settings", options);
 		if (!choice) return;
 
 		if (choice.startsWith("Running agents (")) {
@@ -1206,6 +1737,9 @@ export default function (pi: ExtensionAPI) {
 			await showAgentsMenu(ctx);
 		} else if (choice.startsWith("Agent types (")) {
 			await showAllAgentsList(ctx);
+			await showAgentsMenu(ctx);
+		} else if (choice.startsWith("Model presets (")) {
+			await showModelPresetsMenu(ctx);
 			await showAgentsMenu(ctx);
 		} else if (choice.startsWith("Scheduled jobs (")) {
 			await showSchedulesMenu(ctx, scheduler);
@@ -1329,28 +1863,34 @@ export default function (pi: ExtensionAPI) {
 		const file = findAgentFile(name);
 		const isDefault = cfg.isDefault === true;
 		const disabled = cfg.enabled === false;
+		const modelOption = `Model preset (${getModelLabel(name, ctx.modelRegistry)})`;
+		const thinkingOption = `Thinking default (${cfg.thinking ?? (cfg.modelPreset ? "preset" : "inherit")})`;
 
 		let menuOptions: string[];
 		if (disabled && file) {
 			// Disabled agent with a file — offer Enable
 			menuOptions = isDefault
-				? ["Enable", "Edit", "Reset to default", "Delete", "Back"]
-				: ["Enable", "Edit", "Delete", "Back"];
+				? [modelOption, thinkingOption, "Enable", "Edit", "Reset to default", "Delete", "Back"]
+				: [modelOption, thinkingOption, "Enable", "Edit", "Delete", "Back"];
 		} else if (isDefault && !file) {
 			// Default agent with no .md override
-			menuOptions = ["Eject (export as .md)", "Disable", "Back"];
+			menuOptions = [modelOption, thinkingOption, "Eject (export as .md)", "Disable", "Back"];
 		} else if (isDefault && file) {
 			// Default agent with .md override (ejected)
-			menuOptions = ["Edit", "Disable", "Reset to default", "Delete", "Back"];
+			menuOptions = [modelOption, thinkingOption, "Edit", "Disable", "Reset to default", "Delete", "Back"];
 		} else {
 			// User-defined agent
-			menuOptions = ["Edit", "Disable", "Delete", "Back"];
+			menuOptions = [modelOption, thinkingOption, "Edit", "Disable", "Delete", "Back"];
 		}
 
 		const choice = await ctx.ui.select(name, menuOptions);
 		if (!choice || choice === "Back") return;
 
-		if (choice === "Edit" && file) {
+		if (choice.startsWith("Model preset")) {
+			await configureAgentModelPreset(ctx, name, cfg);
+		} else if (choice.startsWith("Thinking default")) {
+			await configureAgentThinking(ctx, name, cfg);
+		} else if (choice === "Edit" && file) {
 			const content = readFileSync(file.path, "utf-8");
 			const edited = await ctx.ui.editor(`Edit ${name}`, content);
 			if (edited !== undefined && edited !== content) {
@@ -1407,30 +1947,8 @@ export default function (pi: ExtensionAPI) {
 			if (!overwrite) return;
 		}
 
-		// Build the .md file content
-		const fmFields: string[] = [];
-		fmFields.push(`description: ${cfg.description}`);
-		if (cfg.displayName) fmFields.push(`display_name: ${cfg.displayName}`);
-		fmFields.push(`tools: ${cfg.builtinToolNames?.join(", ") || "all"}`);
-		if (cfg.model) fmFields.push(`model: ${cfg.model}`);
-		if (cfg.thinking) fmFields.push(`thinking: ${cfg.thinking}`);
-		if (cfg.maxTurns) fmFields.push(`max_turns: ${cfg.maxTurns}`);
-		fmFields.push(`prompt_mode: ${cfg.promptMode}`);
-		if (cfg.extensions === false) fmFields.push("extensions: false");
-		else if (Array.isArray(cfg.extensions)) fmFields.push(`extensions: ${cfg.extensions.join(", ")}`);
-		if (cfg.skills === false) fmFields.push("skills: false");
-		else if (Array.isArray(cfg.skills)) fmFields.push(`skills: ${cfg.skills.join(", ")}`);
-		if (cfg.disallowedTools?.length) fmFields.push(`disallowed_tools: ${cfg.disallowedTools.join(", ")}`);
-		if (cfg.inheritContext) fmFields.push("inherit_context: true");
-		if (cfg.runInBackground) fmFields.push("run_in_background: true");
-		if (cfg.isolated) fmFields.push("isolated: true");
-		if (cfg.memory) fmFields.push(`memory: ${cfg.memory}`);
-		if (cfg.isolation) fmFields.push(`isolation: ${cfg.isolation}`);
-
-		const content = `---\n${fmFields.join("\n")}\n---\n\n${cfg.systemPrompt}\n`;
-
 		const { writeFileSync } = await import("node:fs");
-		writeFileSync(targetPath, content, "utf-8");
+		writeFileSync(targetPath, buildAgentMarkdownContent(cfg), "utf-8");
 		reloadCustomAgents();
 		ctx.ui.notify(`Ejected ${name} to ${targetPath}`, "info");
 	}
@@ -1539,8 +2057,9 @@ The file format is a markdown file with YAML frontmatter and a system prompt bod
 \`\`\`markdown
 ---
 description: <one-line description shown in UI>
-tools: <comma-separated built-in tools: read, bash, edit, write, grep, find, ls. Use "none" for no tools. Omit for all tools>
-model: <optional model as "provider/modelId", e.g. "anthropic/claude-haiku-4-5-20251001". Omit to inherit parent model>
+tools: <optional comma-separated exact tool allowlist. Use "none" for no built-in tools. Omit to inherit the parent/default active tools>
+model_preset: <optional preset name such as fast, small, efficient, smart, oracle. Omit to inherit parent model>
+model: <legacy optional explicit model as "provider/modelId" for advanced/manual overrides>
 thinking: <optional thinking level: off, minimal, low, medium, high, xhigh. Omit to inherit>
 max_turns: <optional max agentic turns. 0 or omit for unlimited (default)>
 prompt_mode: <"replace" (body IS the full system prompt) or "append" (body is appended to default prompt). Default: replace>
@@ -1605,37 +2124,28 @@ Write the file using the write tool. Only write the file, nothing else.`;
 		]);
 		if (!toolChoice) return;
 
-		let tools: string;
+		let toolsLine = "";
 		if (toolChoice === "all") {
-			tools = BUILTIN_TOOL_NAMES.join(", ");
+			toolsLine = "";
 		} else if (toolChoice === "none") {
-			tools = "none";
+			toolsLine = "\ntools: none";
 		} else if (toolChoice.startsWith("read-only")) {
-			tools = "read, bash, grep, find, ls";
+			toolsLine = "\ntools: read, bash, grep, find, ls";
 		} else {
 			const customTools = await ctx.ui.input("Tools (comma-separated)", BUILTIN_TOOL_NAMES.join(", "));
 			if (!customTools) return;
-			tools = customTools;
+			toolsLine = `\ntools: ${customTools}`;
 		}
 
-		// 4. Model
-		const modelChoice = await ctx.ui.select("Model", [
+		// 4. Model preset
+		const modelChoice = await ctx.ui.select("Model preset", [
 			"inherit (parent model)",
-			"haiku",
-			"sonnet",
-			"opus",
-			"custom...",
+			...orderedModelPresetNames(customModelPresets),
 		]);
 		if (!modelChoice) return;
 
 		let modelLine = "";
-		if (modelChoice === "haiku") modelLine = "\nmodel: anthropic/claude-haiku-4-5-20251001";
-		else if (modelChoice === "sonnet") modelLine = "\nmodel: anthropic/claude-sonnet-4-6";
-		else if (modelChoice === "opus") modelLine = "\nmodel: anthropic/claude-opus-4-6";
-		else if (modelChoice === "custom...") {
-			const customModel = await ctx.ui.input("Model (provider/modelId)");
-			if (customModel) modelLine = `\nmodel: ${customModel}`;
-		}
+		if (modelChoice !== "inherit (parent model)") modelLine = `\nmodel_preset: ${modelChoice}`;
 
 		// 5. Thinking
 		const thinkingChoice = await ctx.ui.select("Thinking level", [
@@ -1659,7 +2169,7 @@ Write the file using the write tool. Only write the file, nothing else.`;
 		// Build the file
 		const content = `---
 description: ${description}
-tools: ${tools}${modelLine}${thinkingLine}
+${toolsLine}${modelLine}${thinkingLine}
 prompt_mode: replace
 ---
 
@@ -1689,6 +2199,7 @@ ${systemPrompt}
 			graceTurns: getGraceTurns(),
 			defaultJoinMode: getDefaultJoinMode(),
 			schedulingEnabled: isSchedulingEnabled(),
+			modelPresets: customPresetSnapshot(),
 		};
 	}
 
@@ -1754,7 +2265,7 @@ ${systemPrompt}
 			}
 		} else if (choice.startsWith("Scheduling")) {
 			const val = await ctx.ui.select("Schedule subagent feature", [
-				"enabled — /agents → Scheduled jobs visible",
+				"enabled — /mosaic settings → Scheduled jobs visible",
 				"disabled — scheduled jobs menu hidden",
 			]);
 			if (val) {
@@ -1784,10 +2295,37 @@ ${systemPrompt}
 		ctx.ui.notify(message, level);
 	}
 
-	pi.registerCommand("agents", {
-		description: "Manage agents",
-		handler: async (_args, ctx) => {
-			await showAgentsMenu(ctx);
+	const mosaicSubcommands = [
+		{
+			value: "settings",
+			label: "settings",
+			description: "Configure agents, model defaults, schedules, and mosaic behavior",
+		},
+		{
+			value: "list",
+			label: "list",
+			description: "List and manage backgrounded mosaic sessions",
+		},
+	];
+
+	pi.registerCommand("mosaic", {
+		description: "Manage mosaic. Usage: /mosaic settings|list",
+		getArgumentCompletions: (prefix: string) => {
+			const value = prefix.trim().toLowerCase();
+			const items = mosaicSubcommands.filter((item) => item.value.startsWith(value));
+			return items.length > 0 ? items : null;
+		},
+		handler: async (args, ctx) => {
+			const [subcommand] = args.trim().split(/\s+/, 1);
+			if (!subcommand || subcommand === "settings") {
+				await showAgentsMenu(ctx);
+				return;
+			}
+			if (subcommand === "list") {
+				await showMosaicSessions(ctx);
+				return;
+			}
+			ctx.ui.notify("Usage: /mosaic settings|list", "error");
 		},
 	});
 }

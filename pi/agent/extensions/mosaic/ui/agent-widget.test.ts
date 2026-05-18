@@ -112,6 +112,72 @@ describe("mosaic agent widget identity", () => {
 		expect(rendered).toContain("• A1 Agent");
 	});
 
+	test("does not render inline in-process agents in the HUD", () => {
+		const theme: Theme = {
+			fg: (_color, text) => text,
+			bold: (text) => text,
+		};
+		const now = Date.now();
+		const widget = new AgentWidget(
+			{
+				listAgents: () => [
+					{
+						id: "inline-1",
+						type: "general-purpose",
+						description: "Inline probe",
+						status: "running",
+						isBackground: false,
+						toolUses: 0,
+						startedAt: now,
+						lifetimeUsage: { input: 0, output: 0, cacheWrite: 0 },
+						compactionCount: 0,
+					},
+				],
+			} as never,
+			new Map(),
+		);
+
+		const lines = (widget as unknown as { renderWidget(tui: unknown, theme: Theme): string[] }).renderWidget(
+			{ terminal: { columns: 60 } },
+			theme,
+		);
+
+		expect(lines).toEqual([]);
+	});
+
+	test("renders background in-process agents in the HUD", () => {
+		const theme: Theme = {
+			fg: (_color, text) => text,
+			bold: (text) => text,
+		};
+		const now = Date.now();
+		const widget = new AgentWidget(
+			{
+				listAgents: () => [
+					{
+						id: "bg-1",
+						type: "general-purpose",
+						description: "Background probe",
+						status: "running",
+						isBackground: true,
+						toolUses: 0,
+						startedAt: now,
+						lifetimeUsage: { input: 0, output: 0, cacheWrite: 0 },
+						compactionCount: 0,
+					},
+				],
+			} as never,
+			new Map(),
+		);
+
+		const lines = (widget as unknown as { renderWidget(tui: unknown, theme: Theme): string[] }).renderWidget(
+			{ terminal: { columns: 80 } },
+			theme,
+		);
+
+		expect(stripAnsi(lines.join("\n"))).toContain("Background probe");
+	});
+
 	test("keeps completed mosaic agents visible until they are explicitly closed", () => {
 		const theme: Theme = {
 			fg: (_color, text) => text,

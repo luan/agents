@@ -90,7 +90,7 @@ export function supportsNativeWebSearch(model: ExtensionContext["model"]): boole
 }
 
 export function supportsNativeImageGeneration(model: ExtensionContext["model"]): boolean {
-	return isOpenAICodexModel(model) && supportsImageInputs(model);
+	return isOpenAICodexModel(model) && model?.id === "gpt-5.5" && supportsImageInputs(model);
 }
 
 function isFunctionToolNamed(tool: unknown, name: string): tool is FunctionToolPayload {
@@ -429,12 +429,13 @@ export function createImageGenerationTool(): ToolDefinition<any> {
 			"Generate an image with native OpenAI Codex image_generation. Outputs are saved under `.pi/openai-codex-images/` and mirrored to `latest.png`.",
 		parameters: Type.Unsafe<Record<string, never>>({
 			type: "object",
+			properties: {},
 			additionalProperties: false,
 		}),
 		prepareArguments: () => ({}),
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
 			if (!supportsNativeImageGeneration(ctx.model)) {
-				throw new Error("image_generation is only available with image-capable openai-codex models");
+				throw new Error("image_generation is only available with openai-codex gpt-5.5");
 			}
 			throw new Error("image_generation is a native openai-codex provider tool and should not execute locally");
 		},
