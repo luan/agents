@@ -8,6 +8,11 @@
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-5.5",
   "defaultThinkingLevel": "high",
+  "plannotatorHub": {
+    "publicUrl": "http://127.0.0.1:19432",
+    "port": 19432,
+    "bind": "127.0.0.1"
+  },
   "skills": [
     "../.codex/skills"
   ],
@@ -20,6 +25,7 @@
     }
   ],
   "extensions": [
+    "extensions/plannotator-hub/index.ts",
     "extensions/plannotator-events/index.ts",
     "extensions/codex-native/index.ts",
     "extensions/token-burden/index.ts",
