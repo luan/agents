@@ -4,7 +4,7 @@ Date: 2026-05-13
 
 Environment:
 
-- Repository: `/Users/luan.santos/src/agents`
+- Repository: `~/src/agents`
 - tmux: `tmux 3.6a`
 - Active tmux context: session `agents`, pane `%1115`
 - zellij: not installed on this machine
@@ -25,7 +25,7 @@ Request:
   "mux": "tmux",
   "name": "smoke-command-20260513",
   "command": "printf 'spawn command smoke ok\\n'",
-  "cwd": "/Users/luan.santos/src/agents"
+  "cwd": "~/src/agents"
 }
 ```
 
@@ -51,7 +51,7 @@ Request:
   "placement": "new-window",
   "mux": "tmux",
   "name": "smoke-shell-20260513",
-  "cwd": "/Users/luan.santos/src/agents"
+  "cwd": "~/src/agents"
 }
 ```
 
@@ -83,7 +83,7 @@ Request:
   "name": "smoke-direct-20260513",
   "goal": "Spawn direct smoke test",
   "prompt": "Smoke test only. Reply exactly: spawn direct smoke ok",
-  "cwd": "/Users/luan.santos/src/agents"
+  "cwd": "~/src/agents"
 }
 ```
 
