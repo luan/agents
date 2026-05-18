@@ -46,7 +46,8 @@ describe("plannotator hub environment", () => {
 		expect(env.PLANNOTATOR_PORT).toBeUndefined();
 		expect(env.PLANNOTATOR_HUB_PORT).toBe("19432");
 		expect(env.PLANNOTATOR_HUB_SCRIPT).toContain("hub-server.cjs");
-		expect(env.PLANNOTATOR_BROWSER).toContain("browser-shim.cjs");
+		const shimEnvKey = process.platform === "darwin" ? "BROWSER" : "PLANNOTATOR_BROWSER";
+		expect(env[shimEnvKey]).toContain("browser-shim.cjs");
 		expect(env.PLANNOTATOR_HUB_OPEN_BROWSER).toBe("/usr/bin/firefox");
 	});
 
