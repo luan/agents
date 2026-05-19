@@ -8,6 +8,7 @@ import { installEditorHighlight } from "./editor";
 import {
 	buildItems,
 	collectSkills,
+	extractDollarSkillReferences,
 	formatCachedSkillContent,
 	formatReadSkillContent,
 	isSkillfulLoadDetails,
@@ -22,7 +23,6 @@ import {
 } from "./skills";
 import { ensureTranscriptHighlight } from "./transcript";
 
-const DOLLAR_RE = /(?<![\w$])\$([a-zA-Z][\w-]*)/g;
 const AUTOCOMPLETE_INSTALLED = Symbol.for("skillful.autocompleteInstalled");
 
 type SkillState = {
@@ -152,25 +152,8 @@ export default function (pi: ExtensionAPI) {
 		refresh();
 		ensureTranscriptHighlight(skillNames);
 
-		const referenced: string[] = [];
-		const missing: string[] = [];
-		for (const match of event.prompt.matchAll(DOLLAR_RE)) {
-			const name = match[1];
-			if (referenced.includes(name) || missing.includes(name)) continue;
-			if (state.skills.has(name)) referenced.push(name);
-			else missing.push(name);
-		}
-		if (referenced.length === 0 && missing.length === 0) return;
-
-		if (referenced.length === 0) {
-			return {
-				message: {
-					customType: SKILLFUL_CUSTOM_TYPE,
-					content: `Unknown skill${missing.length === 1 ? "" : "s"}: ${missing.map((name) => `$${name}`).join(", ")}`,
-					display: true,
-				},
-			};
-		}
+		const referenced = extractDollarSkillReferences(event.prompt, state.skills.keys());
+		if (referenced.length === 0) return;
 
 		const loads: SkillLoad[] = [];
 		for (const name of referenced) {

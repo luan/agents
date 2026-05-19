@@ -3,6 +3,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 
 const SKILL_PREFIX = "skill:";
+const DOLLAR_SKILL_NAME_RE = /^[a-zA-Z][\w-]*/;
 export const SKILLFUL_CUSTOM_TYPE = "skillful-load";
 export const SKILLFUL_CACHE_EVENT = "skillful:cache";
 
@@ -36,6 +37,84 @@ export function buildItems(skills: Map<string, string>): AutocompleteItem[] {
 		label: `$${name}`,
 		description: "skill",
 	}));
+}
+
+export function extractDollarSkillReferences(text: string, skills: Iterable<string>): string[] {
+	const referenced: string[] = [];
+	for (const { name } of findDollarSkillReferences(text, skills)) {
+		if (!referenced.includes(name)) referenced.push(name);
+	}
+	return referenced;
+}
+
+export function findDollarSkillReferences(
+	text: string,
+	skills: Iterable<string>,
+): Array<{ name: string; start: number; end: number }> {
+	const known = skills instanceof Set ? skills : new Set(skills);
+	const references: Array<{ name: string; start: number; end: number }> = [];
+	let quote: { char: "'" | '"' | "`"; length: number } | undefined;
+
+	for (let index = 0; index < text.length; index += 1) {
+		const char = text[index];
+		if (!char) continue;
+
+		if (quote) {
+			if (quote.char === "`") {
+				if (text.startsWith("`".repeat(quote.length), index)) {
+					index += quote.length - 1;
+					quote = undefined;
+				}
+				continue;
+			}
+			if (char === quote.char && !isEscaped(text, index)) quote = undefined;
+			continue;
+		}
+
+		if (char === "`") {
+			quote = { char, length: backtickRunLength(text, index) };
+			index += quote.length - 1;
+			continue;
+		}
+		if ((char === '"' || char === "'") && isQuoteStart(text, index, char)) {
+			quote = { char, length: 1 };
+			continue;
+		}
+		if (char !== "$" || !isDollarSkillTriggerStart(text, index)) continue;
+
+		const match = text.slice(index + 1).match(DOLLAR_SKILL_NAME_RE);
+		const name = match?.[0];
+		if (!name) continue;
+		if (known.has(name)) references.push({ name, start: index, end: index + name.length + 1 });
+		index += name.length;
+	}
+
+	return references;
+}
+
+function isDollarSkillTriggerStart(text: string, index: number): boolean {
+	return index === 0 || /\s/.test(text[index - 1] ?? "");
+}
+
+function backtickRunLength(text: string, index: number): number {
+	let length = 0;
+	while (text[index + length] === "`") length += 1;
+	return length;
+}
+
+function isQuoteStart(text: string, index: number, quote: "'" | '"'): boolean {
+	if (isEscaped(text, index)) return false;
+	if (quote === "'") {
+		const prev = text[index - 1] ?? "";
+		if (/\w/.test(prev)) return false;
+	}
+	return true;
+}
+
+function isEscaped(text: string, index: number): boolean {
+	let slashCount = 0;
+	for (let pos = index - 1; text[pos] === "\\"; pos -= 1) slashCount += 1;
+	return slashCount % 2 === 1;
 }
 
 export function stripFrontmatter(text: string): string {
