@@ -596,6 +596,12 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		return deleted;
 	}
 
+	function deleteExitedSessions(): void {
+		for (const [sessionId, session] of sessions) {
+			if (!isRunning(session)) sessions.delete(sessionId);
+		}
+	}
+
 	function terminateSession(session: ExecSession): void {
 		if (!isRunning(session)) return;
 		if (session.kind === "pty") {
@@ -859,6 +865,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 						}
 					})()
 				: createPipeSession(input, workdir, shell, signal);
+			deleteExitedSessions();
 			sessions.set(session.id, session);
 			rememberCommand(session.id, session.command);
 			notifySessionUpdate();

@@ -506,8 +506,13 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.on("session_start", (_event, ctx) => {
+	pi.on("session_start", (event, ctx) => {
 		shuttingDown = false;
+		const reason = (event as { reason?: string } | undefined)?.reason;
+		if (reason === "resume" || reason === "new" || reason === "fork") {
+			clearBackgroundTerminalStatus();
+			sessions.shutdown();
+		}
 		setBackgroundTerminalStatusUi(ctx);
 		tracker.clear();
 		completionMessageSessionIds.clear();
