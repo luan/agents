@@ -121,6 +121,7 @@ const MIN_EMPTY_WRITE_YIELD_TIME_MS = 30_000;
 const MAX_YIELD_TIME_MS = 120_000;
 const MAX_COMMAND_HISTORY = 256;
 const DEFAULT_MAX_SESSION_BUFFER_CHARS = UNIFIED_EXEC_OUTPUT_MAX_BYTES;
+const IS_BUN_RUNTIME = typeof process !== "undefined" && typeof process.versions?.bun === "string";
 
 function resolveWorkdir(baseCwd: string, workdir?: string): string {
 	if (!workdir) return baseCwd;
@@ -846,6 +847,11 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			const workdir = resolveWorkdir(cwd, input.workdir);
 			const session = input.tty
 				? (() => {
+						// Bun's node-pty bridge drops stdin-waiting shells immediately with SIGHUP,
+						// which breaks the tty=true contract for write_stdin in tests and local tools.
+						if (IS_BUN_RUNTIME) {
+							return createPipeSession(input, workdir, shell, signal);
+						}
 						try {
 							return createPtySession(input, workdir, shell, signal);
 						} catch {

@@ -23,6 +23,7 @@
   ],
   "extensions": [
     "extensions/plannotator-events/index.ts",
+    "extensions/review-artifacts/index.ts",
     "extensions/codex-native/index.ts",
     "extensions/token-burden/index.ts",
     "extensions/vim/index.ts",
