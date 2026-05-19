@@ -35,7 +35,8 @@ export type WorkingTimerSnapshot = {
 	persistedAtMs: number;
 };
 
-type UiPatchState = { currentUiTheme?: Theme };
+type BottomLeftProvider = (width: number, theme: Theme) => string | undefined;
+type UiPatchState = { currentUiTheme?: Theme; bottomLeftProvider?: BottomLeftProvider };
 const globalPatchState = globalThis as typeof globalThis & {
 	__agentsPolishedTuiState?: UiPatchState;
 };
@@ -63,6 +64,10 @@ let editorChromeProvider: EditorChromeProvider | undefined;
 
 export function setEditorTheme(uiTheme: Theme): void {
 	patchState.currentUiTheme = uiTheme;
+}
+
+export function setEditorBottomLeftProvider(provider: BottomLeftProvider | undefined): void {
+	patchState.bottomLeftProvider = provider;
 }
 
 export function setCachedSkillNames(names: readonly string[]): void {
@@ -456,7 +461,12 @@ export function renderPolishedEditorForTest(
 			innerWidth,
 		),
 		...editorLines,
-		composeLeftRight(cachedSkillsSegment(statusWidth, uiTheme), chrome.bottomRight, statusWidth),
+		composeLeftRight(
+			patchState.bottomLeftProvider?.(Math.floor(statusWidth * 0.46), uiTheme) ??
+				cachedSkillsSegment(statusWidth, uiTheme),
+			chrome.bottomRight,
+			statusWidth,
+		),
 	];
 
 	return [
