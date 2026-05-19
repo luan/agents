@@ -18,18 +18,35 @@
       "source": "npm:@plannotator/pi-extension",
       "skills": []
     },
-    "npm:pi-cache-graph",
-    "npm:context-mode"
+    "npm:pi-cache-graph"
   ],
   "extensions": [
-    "extensions/plannotator-events/index.ts",
-    "extensions/review-artifacts/index.ts",
+    "extensions/agents-local/index.ts",
+    "extensions/apply-patch/index.ts",
+    "extensions/ask/index.ts",
     "extensions/codex-native/index.ts",
-    "extensions/token-burden/index.ts",
-    "extensions/vim/index.ts",
-    "extensions/tasks/index.ts",
+    "extensions/context7/index.ts",
+    "extensions/exec-command/index.ts",
+    "extensions/git-tool/index.ts",
+    "extensions/mosaic/index.ts",
+    "extensions/plannotator-events/index.ts",
+    "extensions/plannotator-hub/index.ts",
+    "extensions/pretty/index.ts",
+    "extensions/prompt-storage/index.ts",
+    "extensions/review-artifacts/index.ts",
+    "extensions/skillful/index.ts",
+    "extensions/spawn/index.ts",
     "extensions/system-prompt/index.ts",
-    "extensions/spawn/index.ts"
+    "extensions/tasks/index.ts",
+    "extensions/token-burden/index.ts",
+    "extensions/tui/index.ts",
+    "extensions/vault/index.ts",
+    "extensions/vcc/index.ts",
+    "extensions/vim/index.ts",
+    "extensions/clear.ts",
+    "extensions/effort.ts",
+    "extensions/loop.ts",
+    "extensions/mux-sidebar.ts"
   ],
   "enabledModels": [
     "openai-codex/gpt-5.5",
