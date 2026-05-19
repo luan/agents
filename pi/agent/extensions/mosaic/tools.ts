@@ -1,9 +1,10 @@
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { highlightTrickle } from "./ui/animation.js";
 
-export const MOSAIC_V2_TOOL_NAMES = [
+export const MOSAIC_TOOL_NAMES = [
 	"spawn_agent",
 	"send_message",
 	"followup_task",
@@ -14,7 +15,7 @@ export const MOSAIC_V2_TOOL_NAMES = [
 
 export const DEFAULT_WAIT_AGENT_TIMEOUT_MS = 60_000;
 
-export interface MosaicV2ToolDeps {
+export interface MosaicToolDeps {
 	onToolContext?(ctx: unknown): void;
 	spawnAgent(input: {
 		taskName: string;
@@ -27,6 +28,7 @@ export interface MosaicV2ToolDeps {
 		runInBackground?: boolean;
 		isolation?: "worktree";
 		cwd?: string;
+		onTextDelta?: (fullText: string) => void;
 	}): Promise<unknown>;
 	sendMessage(input: { target: string; message: string; triggerTurn: boolean }): Promise<unknown>;
 	waitAgent(input: { afterSeq?: number; timeoutMs?: number }): Promise<unknown>;
@@ -34,7 +36,17 @@ export interface MosaicV2ToolDeps {
 	closeAgent(input: { target: string }): Promise<unknown>;
 }
 
-function textResult(value: unknown) {
+interface SpawnAgentRenderDetails {
+	taskName?: string;
+	runtime?: string;
+	background?: boolean;
+	status?: string;
+	result?: string;
+	error?: string;
+	responseText?: string;
+}
+
+function textResult(value: unknown, details?: unknown) {
 	return {
 		content: [
 			{
@@ -42,6 +54,7 @@ function textResult(value: unknown) {
 				text: typeof value === "string" ? value : JSON.stringify(value ?? null),
 			},
 		],
+		details,
 	};
 }
 
@@ -55,8 +68,8 @@ class EmptyMosaicRender implements Component {
 
 const emptyMosaicRender = new EmptyMosaicRender();
 
-const INLINE_SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const INLINE_FRAME_MS = 120;
+const INLINE_OUTPUT_BOX_LINES = 5;
 
 interface InlineRenderState {
 	startedAt?: number;
@@ -68,13 +81,29 @@ class InlineAgentRender implements Component {
 		private readonly taskName: string,
 		private readonly theme: { fg(color: string, text: string): string; bold(text: string): string },
 		private readonly startedAt: number,
+		private readonly running: boolean,
 	) {}
 
 	render(width: number): string[] {
-		const elapsed = Date.now() - this.startedAt;
-		const spinner = INLINE_SPINNER[Math.floor(elapsed / INLINE_FRAME_MS) % INLINE_SPINNER.length]!;
-		const line = `${this.theme.fg("accent", spinner)} ${this.theme.bold("Agent")} ${this.theme.fg("muted", this.taskName)} ${this.theme.fg("dim", "running inline")}`;
+		const title = this.running
+			? highlightTrickle("Agent", this.theme, Date.now() - this.startedAt)
+			: `${this.theme.fg("success", "✓")} Agent`;
+		const state = this.running ? "running inline" : "completed inline";
+		const line = `${title} ${this.theme.fg("muted", this.taskName)} ${this.theme.fg("dim", state)}`;
 		return [truncateToWidth(line, width)];
+	}
+
+	invalidate(): void {}
+}
+
+class InlineAgentOutputRender implements Component {
+	constructor(
+		private readonly output: string,
+		private readonly theme: { fg(color: string, text: string): string; bold(text: string): string },
+	) {}
+
+	render(width: number): string[] {
+		return renderInlineOutputBox(this.output, this.theme, width);
 	}
 
 	invalidate(): void {}
@@ -85,6 +114,27 @@ function shouldRenderInlineSpawn(params: {
 	run_in_background?: boolean;
 }): boolean {
 	return params.mode !== "full-session" && params.run_in_background !== true;
+}
+
+function scheduleRenderInvalidation(
+	context: { state?: InlineRenderState; invalidate?: () => void } | undefined,
+	running: boolean,
+): void {
+	const state = context?.state;
+	if (!state) return;
+	if (!running) {
+		if (state.timer) {
+			clearTimeout(state.timer);
+			state.timer = undefined;
+		}
+		return;
+	}
+	if (state.timer || !context?.invalidate) return;
+	state.timer = setTimeout(() => {
+		state.timer = undefined;
+		context.invalidate?.();
+	}, INLINE_FRAME_MS);
+	if (typeof state.timer.unref === "function") state.timer.unref();
 }
 
 function inlineAgentRender(
@@ -99,17 +149,56 @@ function inlineAgentRender(
 		state = context.state;
 	}
 	state.startedAt ??= Date.now();
-	if (context?.isPartial !== false && context?.invalidate && !state.timer) {
-		state.timer = setTimeout(() => {
-			state.timer = undefined;
-			context.invalidate?.();
-		}, INLINE_FRAME_MS);
-		if (typeof state.timer.unref === "function") state.timer.unref();
-	}
-	return new InlineAgentRender(params.task_name, theme, state.startedAt);
+	const running = context?.isPartial === true;
+	scheduleRenderInvalidation(context, running);
+	return new InlineAgentRender(params.task_name, theme, state.startedAt, running);
 }
 
-export function createMosaicV2Tools(deps: MosaicV2ToolDeps) {
+function getSpawnRenderDetails(result: { details?: unknown }): SpawnAgentRenderDetails | undefined {
+	const details = result.details;
+	if (!details || typeof details !== "object") return undefined;
+	return details as SpawnAgentRenderDetails;
+}
+
+function spawnAgentResultRender(
+	result: { details?: unknown },
+	theme: { fg(color: string, text: string): string; bold(text: string): string },
+): Component {
+	const details = getSpawnRenderDetails(result);
+	if (details?.background !== false || details.runtime !== "in-process") return emptyMosaicRender;
+	return new InlineAgentOutputRender(details.responseText ?? details.result ?? "", theme);
+}
+
+function renderInlineOutputBox(
+	output: string,
+	theme: { fg(color: string, text: string): string },
+	width: number,
+): string[] {
+	const safeWidth = Math.max(10, width);
+	const innerWidth = Math.max(1, safeWidth - 4);
+	const visibleLines = normalizeOutputLines(output).slice(-3);
+	while (visibleLines.length < 3) visibleLines.unshift("");
+	const top = `${theme.fg("dim", "  ┌")}${theme.fg("dim", "─".repeat(innerWidth))}${theme.fg("dim", "┐")}`;
+	const bottom = `${theme.fg("dim", "  └")}${theme.fg("dim", "─".repeat(innerWidth))}${theme.fg("dim", "┘")}`;
+	return [
+		truncateToWidth(top, safeWidth),
+		...visibleLines.map((line) => {
+			const text = line || "(waiting for output)";
+			const truncated = truncateToWidth(text, innerWidth);
+			const padding = Math.max(0, innerWidth - visibleWidth(truncated));
+			return `${theme.fg("dim", "  │")}${theme.fg(line ? "dim" : "muted", truncated)}${" ".repeat(padding)}${theme.fg("dim", "│")}`;
+		}),
+		truncateToWidth(bottom, safeWidth),
+	].slice(0, INLINE_OUTPUT_BOX_LINES);
+}
+
+function normalizeOutputLines(output: string): string[] {
+	const trimmed = output.replace(/\n$/, "");
+	if (!trimmed) return [];
+	return trimmed.split("\n").map((line) => line.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, " "));
+}
+
+export function createMosaicTools(deps: MosaicToolDeps) {
 	return [
 		defineTool({
 			name: "spawn_agent",
@@ -124,7 +213,7 @@ export function createMosaicV2Tools(deps: MosaicV2ToolDeps) {
 				thinking: Type.Optional(Type.String({ description: "Thinking level." })),
 				mode: Type.Optional(
 					Type.Union([Type.Literal("full-session"), Type.Literal("in-process")], {
-						description: "Omit for hidden in-process; full-session opens a visible mosaic target.",
+						description: "Omit for in-process; full-session opens a visible mosaic target.",
 					}),
 				),
 				run_in_background: Type.Optional(
@@ -141,23 +230,33 @@ export function createMosaicV2Tools(deps: MosaicV2ToolDeps) {
 			}),
 			renderShell: "self" as const,
 			renderCall: (params, theme, context) => inlineAgentRender(params, theme, context),
-			renderResult: () => emptyMosaicRender,
-			execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
+			renderResult: (result, _options, theme) => spawnAgentResultRender(result, theme),
+			execute: async (_toolCallId, params, _signal, onUpdate, ctx) => {
 				deps.onToolContext?.(ctx);
-				return textResult(
-					await deps.spawnAgent({
-						taskName: params.task_name,
-						message: params.message,
-						agentType: params.agent_type,
-						modelPreset: params.model_preset,
-						model: params.model,
-						thinking: params.thinking,
-						mode: params.mode,
-						runInBackground: params.run_in_background,
-						isolation: params.isolation,
-						cwd: params.cwd,
-					}),
-				);
+				const result = await deps.spawnAgent({
+					taskName: params.task_name,
+					message: params.message,
+					agentType: params.agent_type,
+					modelPreset: params.model_preset,
+					model: params.model,
+					thinking: params.thinking,
+					mode: params.mode,
+					runInBackground: params.run_in_background,
+					isolation: params.isolation,
+					cwd: params.cwd,
+					onTextDelta: (fullText) => {
+						onUpdate?.(
+							textResult(fullText, {
+								taskName: params.task_name,
+								runtime: "in-process",
+								background: false,
+								status: "running",
+								responseText: fullText,
+							}),
+						);
+					},
+				});
+				return textResult(result, result);
 			},
 		}),
 		defineTool({
@@ -248,8 +347,4 @@ export function createMosaicV2Tools(deps: MosaicV2ToolDeps) {
 			},
 		}),
 	];
-}
-
-export function isMosaicV2ToolsEnabled(): boolean {
-	return process.env.MOSAIC_V2_TOOLS !== "0";
 }

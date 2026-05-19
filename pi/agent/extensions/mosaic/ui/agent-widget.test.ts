@@ -29,7 +29,7 @@ describe("mosaic agent widget identity", () => {
 		expect(rendered).toContain("\x1b[38;2;243;139;168mA1\x1b[39m");
 	});
 
-	test("cycles the mosaic identity dot glyph while pulsing brightness", () => {
+	test("uses highlight trickle instead of cycling the mosaic identity glyph", () => {
 		const theme: Theme = {
 			fg: (_color, text) => text,
 			bold: (text) => text,
@@ -41,11 +41,11 @@ describe("mosaic agent widget identity", () => {
 			stripAnsi(renderMosaicHudIdentityPrefix({ label: "A1", color: "f38ba8" }, theme, frame)).slice(0, 1),
 		);
 
-		expect(dim).toContain("\x1b[38;2;109;63;76m•\x1b[39m");
-		expect(bright).toContain("\x1b[38;2;255;169;205m·\x1b[39m");
-		expect(cycle).toEqual(["•", "·", "∙", "●", "○", "◦"]);
-		expect(stripAnsi(dim)).toBe("• A1 ");
-		expect(stripAnsi(bright)).toBe("· A1 ");
+		expect(dim).toContain("●");
+		expect(bright).toContain("●");
+		expect(cycle).toEqual(["●", "●", "●", "●", "●", "●"]);
+		expect(stripAnsi(dim)).toBe("● A1 ");
+		expect(stripAnsi(bright)).toBe("● A1 ");
 		expect(dim).not.toBe(bright);
 	});
 
@@ -82,7 +82,7 @@ describe("mosaic agent widget identity", () => {
 		expect(visibleWidth(lines[1] ?? "")).toBe(60);
 	});
 
-	test("uses the mosaic dot cycle for running agent motion", () => {
+	test("uses highlight trickle for running agent motion", () => {
 		const theme: Theme = {
 			fg: (_color, text) => text,
 			bold: (text) => text,
@@ -109,7 +109,7 @@ describe("mosaic agent widget identity", () => {
 		);
 		const rendered = stripAnsi(lines.join("\n"));
 
-		expect(rendered).toContain("• A1 Agent");
+		expect(rendered).toContain("● A1 Agent");
 	});
 
 	test("does not render inline in-process agents in the HUD", () => {
@@ -178,12 +178,13 @@ describe("mosaic agent widget identity", () => {
 		expect(stripAnsi(lines.join("\n"))).toContain("Background probe");
 	});
 
-	test("keeps completed mosaic agents visible until they are explicitly closed", () => {
+	test("expires completed mosaic agents by wall clock so idle HUD timers stop", () => {
 		const theme: Theme = {
 			fg: (_color, text) => text,
 			bold: (text) => text,
 		};
-		const now = Date.now();
+		const now = 10_000;
+		Date.now = () => now;
 		const widget = new AgentWidget({ listAgents: () => [] } as never, new Map(), () => [
 			{
 				id: "a1",
@@ -191,21 +192,20 @@ describe("mosaic agent widget identity", () => {
 				description: "Fast ready agent",
 				status: "completed",
 				toolUses: 0,
-				startedAt: now - 1000,
-				completedAt: now,
+				startedAt: now - 10_000,
+				completedAt: now - 6000,
 				lifetimeUsage: { input: 0, output: 0, cacheWrite: 0 },
 				compactionCount: 0,
 				mosaicIdentity: { label: "A1", color: "f38ba8" },
 			},
 		]);
 
-		for (let i = 0; i < 10; i++) widget.onTurnStart();
 		const lines = (widget as unknown as { renderWidget(tui: unknown, theme: Theme): string[] }).renderWidget(
 			{ terminal: { columns: 60 } },
 			theme,
 		);
 
-		expect(stripAnsi(lines.join("\n"))).toContain("Fast ready agent");
+		expect(lines).toEqual([]);
 	});
 
 	test("expires stopped mosaic agents by wall clock when their pane exits", () => {
@@ -236,5 +236,99 @@ describe("mosaic agent widget identity", () => {
 		);
 
 		expect(lines).toEqual([]);
+	});
+
+	test("stops the HUD timer when no active agents remain", () => {
+		const originalSetInterval = globalThis.setInterval;
+		const originalClearInterval = globalThis.clearInterval;
+		const intervals: Array<() => void> = [];
+		const cleared: unknown[] = [];
+		(globalThis as unknown as { setInterval: typeof setInterval }).setInterval = ((fn: () => void) => {
+			intervals.push(fn);
+			return { fake: intervals.length } as unknown as ReturnType<typeof setInterval>;
+		}) as typeof setInterval;
+		(globalThis as unknown as { clearInterval: typeof clearInterval }).clearInterval = ((handle: unknown) => {
+			cleared.push(handle);
+		}) as typeof clearInterval;
+		try {
+			let status = "running";
+			const now = 10_000;
+			Date.now = () => now;
+			const widget = new AgentWidget({ listAgents: () => [] } as never, new Map(), () => [
+				{
+					id: "a1",
+					type: "general-purpose",
+					description: "Fast ready agent",
+					status,
+					toolUses: 0,
+					startedAt: now - 10_000,
+					completedAt: status === "running" ? undefined : now - 6000,
+					lifetimeUsage: { input: 0, output: 0, cacheWrite: 0 },
+					compactionCount: 0,
+					mosaicIdentity: { label: "A1", color: "f38ba8" },
+				},
+			]);
+			widget.setUICtx({
+				setWidget() {},
+				setStatus() {},
+			});
+
+			widget.update();
+			expect(intervals).toHaveLength(1);
+
+			status = "completed";
+			widget.update();
+			expect(cleared).toHaveLength(1);
+		} finally {
+			globalThis.setInterval = originalSetInterval;
+			globalThis.clearInterval = originalClearInterval;
+		}
+	});
+
+	test("does not register the HUD for finished-only agents", () => {
+		const calls: Array<{ key: string; content: unknown }> = [];
+		const now = 10_000;
+		Date.now = () => now;
+		const widget = new AgentWidget({ listAgents: () => [] } as never, new Map(), () => [
+			{
+				id: "a1",
+				type: "general-purpose",
+				description: "Already done",
+				status: "completed",
+				toolUses: 0,
+				startedAt: now - 10_000,
+				completedAt: now,
+				lifetimeUsage: { input: 0, output: 0, cacheWrite: 0 },
+				compactionCount: 0,
+				mosaicIdentity: { label: "A1", color: "f38ba8" },
+			},
+		]);
+		widget.setUICtx({
+			setWidget(key, content) {
+				calls.push({ key, content });
+			},
+			setStatus() {},
+		});
+
+		widget.update();
+
+		expect(calls).toEqual([]);
+	});
+
+	test("dispose is a no-op before widget or status registration", () => {
+		const calls: Array<{ key: string; content: unknown }> = [];
+		const widget = new AgentWidget({ listAgents: () => [] } as never, new Map());
+		widget.setUICtx({
+			setWidget(key, content) {
+				calls.push({ key, content });
+			},
+			setStatus(key, content) {
+				calls.push({ key, content });
+			},
+		});
+
+		widget.dispose();
+
+		expect(calls).toEqual([]);
 	});
 });

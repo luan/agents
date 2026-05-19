@@ -62,7 +62,7 @@ export function parseAgentMarkdown(
 		name,
 		displayName: str(fm.display_name),
 		description: str(fm.description) ?? name,
-		builtinToolNames: parseToolAllowlist(fm.tools),
+		toolNames: parseToolAllowlist(fm.tools),
 		disallowedTools: csvListOptional(fm.disallowed_tools),
 		extensions: inheritField(fm.extensions ?? fm.inherit_extensions),
 		skills: inheritField(fm.skills ?? fm.inherit_skills),
@@ -112,7 +112,7 @@ function parseCsvField(val: unknown): string[] | undefined {
 
 /**
  * Parse a tool allowlist field.
- * omitted/"all"/"inherit" → undefined; "none"/empty → []; csv → listed items.
+ * omitted/"all"/"inherit" -> undefined; "none"/empty -> []; csv -> listed items.
  */
 function parseToolAllowlist(val: unknown): string[] | undefined {
 	if (val === undefined || val === null) return undefined;

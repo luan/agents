@@ -9,8 +9,7 @@ describe("buildBootstrapPayload", () => {
 			description: "Review code",
 			prompt: "review",
 			systemPrompt: "system",
-			builtinToolNames: ["read"],
-			extensions: true,
+			toolNames: ["read"],
 			messageEndpoint: "tcp://127.0.0.1:12345",
 			messageToken: "token-1",
 		});
@@ -24,6 +23,5 @@ describe("buildBootstrapPayload", () => {
 
 		expect(prompt).toContain("message_leader");
 		expect(prompt).toContain("ask/tell/contact the leader");
-		expect(prompt).toContain("Do not use spawn_lane, spawn_list, or spawn_map");
 	});
 });

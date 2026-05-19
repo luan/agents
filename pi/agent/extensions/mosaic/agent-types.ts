@@ -8,9 +8,6 @@
 import { DEFAULT_AGENTS } from "./default-agents.js";
 import type { AgentConfig } from "./types.js";
 
-/** All known built-in tool names. */
-export const BUILTIN_TOOL_NAMES: string[] = ["read", "bash", "edit", "write", "grep", "find", "ls"];
-
 /** Unified runtime registry of all agents (defaults + user-defined). */
 const agents = new Map<string, AgentConfig>();
 
@@ -106,14 +103,14 @@ export function getAllowedToolNamesForType(type: string): string[] | undefined {
 	const key = resolveKey(type);
 	const raw = key ? agents.get(key) : undefined;
 	const config = raw?.enabled !== false ? raw : undefined;
-	return config?.builtinToolNames ? [...config.builtinToolNames] : undefined;
+	return config?.toolNames ? [...config.toolNames] : undefined;
 }
 
 /** Get config for a type (case-insensitive, returns a SubagentTypeConfig-compatible object). Falls back to general-purpose. */
 export function getConfig(type: string): {
 	displayName: string;
 	description: string;
-	builtinToolNames?: string[];
+	toolNames?: string[];
 	extensions: true | string[] | false;
 	skills: true | string[] | false;
 	promptMode: "replace" | "append";
@@ -124,7 +121,7 @@ export function getConfig(type: string): {
 		return {
 			displayName: config.displayName ?? config.name,
 			description: config.description,
-			builtinToolNames: config.builtinToolNames,
+			toolNames: config.toolNames,
 			extensions: config.extensions,
 			skills: config.skills,
 			promptMode: config.promptMode,
@@ -137,7 +134,7 @@ export function getConfig(type: string): {
 		return {
 			displayName: gp.displayName ?? gp.name,
 			description: gp.description,
-			builtinToolNames: gp.builtinToolNames,
+			toolNames: gp.toolNames,
 			extensions: gp.extensions,
 			skills: gp.skills,
 			promptMode: gp.promptMode,

@@ -2,7 +2,6 @@ import { readFileSync, unlinkSync } from "node:fs";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { BUILTIN_TOOL_NAMES } from "./agent-types.js";
 import { deliverMosaicMailboxMessages, MosaicMessageClient } from "./message-client.js";
 import { MOSAIC_AGENT_ACTIVITY_WRITING } from "./message-server.js";
 import { isMosaicOrchestrationToolName } from "./orchestration-tools.js";
@@ -15,10 +14,9 @@ export interface MosaicBootstrapPayload {
 	description: string;
 	prompt: string;
 	systemPrompt: string;
-	builtinToolNames: string[];
+	toolNames: string[];
 	parentActiveToolNames?: string[];
-	allowedToolNames?: string[];
-	extensions: true | string[] | false;
+	selectedToolNames?: string[];
 	disallowedTools?: string[];
 	mosaicIdentity?: {
 		label: string;
@@ -144,7 +142,7 @@ function loadBootstrap(): void {
 			typeof parsed.description === "string" &&
 			typeof parsed.prompt === "string" &&
 			typeof parsed.systemPrompt === "string" &&
-			Array.isArray(parsed.builtinToolNames)
+			Array.isArray(parsed.toolNames)
 		) {
 			bootstrap = {
 				agentId: parsed.agentId,
@@ -152,14 +150,13 @@ function loadBootstrap(): void {
 				description: parsed.description,
 				prompt: parsed.prompt,
 				systemPrompt: parsed.systemPrompt,
-				builtinToolNames: parsed.builtinToolNames.filter((name): name is string => typeof name === "string"),
+				toolNames: parsed.toolNames.filter((name): name is string => typeof name === "string"),
 				parentActiveToolNames: Array.isArray(parsed.parentActiveToolNames)
 					? parsed.parentActiveToolNames.filter((name): name is string => typeof name === "string")
 					: undefined,
-				allowedToolNames: Array.isArray(parsed.allowedToolNames)
-					? parsed.allowedToolNames.filter((name): name is string => typeof name === "string")
+				selectedToolNames: Array.isArray(parsed.selectedToolNames)
+					? parsed.selectedToolNames.filter((name): name is string => typeof name === "string")
 					: undefined,
-				extensions: normalizeExtensions(parsed.extensions),
 				disallowedTools: Array.isArray(parsed.disallowedTools)
 					? parsed.disallowedTools.filter((name): name is string => typeof name === "string")
 					: undefined,
@@ -190,31 +187,18 @@ function normalizeMosaicIdentity(value: unknown): MosaicBootstrapPayload["mosaic
 	return { label, name, color };
 }
 
-function normalizeExtensions(value: unknown): true | string[] | false {
-	if (value === false) return false;
-	if (Array.isArray(value)) return value.filter((name): name is string => typeof name === "string");
-	return true;
-}
-
 function applyActiveTools(pi: ExtensionAPI, payload: MosaicBootstrapPayload): void {
-	const builtin = new Set(BUILTIN_TOOL_NAMES);
-	const active = new Set(
-		payload.parentActiveToolNames ??
-			(typeof pi.getActiveTools === "function" ? pi.getActiveTools() : payload.builtinToolNames),
+	const selected = new Set(
+		payload.selectedToolNames ??
+			payload.parentActiveToolNames ??
+			(typeof pi.getActiveTools === "function" ? pi.getActiveTools() : payload.toolNames),
 	);
-	const allowed = payload.allowedToolNames ? new Set(payload.allowedToolNames) : undefined;
 	const disallowed = new Set(payload.disallowedTools ?? []);
 	const allToolNames = pi.getAllTools().map((tool) => tool.name);
 	const next = allToolNames.filter((toolName) => {
 		if (isMosaicOrchestrationToolName(toolName) || disallowed.has(toolName)) return false;
 		if (toolName === MOSAIC_LEADER_MESSAGE_TOOL_NAME && payload.messageEndpoint) return true;
-		if (builtin.has(toolName)) return allowed ? allowed.has(toolName) : active.has(toolName);
-		if (!active.has(toolName)) return false;
-		if (payload.extensions === false) return false;
-		if (Array.isArray(payload.extensions)) {
-			return payload.extensions.some((extension) => toolName.startsWith(extension) || toolName.includes(extension));
-		}
-		return true;
+		return selected.has(toolName);
 	});
 	pi.setActiveTools(next);
 }

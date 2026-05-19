@@ -28,8 +28,7 @@ describe("registerMosaicBootstrap native messaging", () => {
 				description: "Review code",
 				prompt: "Initial prompt",
 				systemPrompt: "System prompt",
-				builtinToolNames: ["read"],
-				extensions: false,
+				toolNames: ["read"],
 				messageEndpoint: transport.endpoint,
 				messageToken: token,
 			});
@@ -75,8 +74,7 @@ describe("registerMosaicBootstrap native messaging", () => {
 				description: "Review code",
 				prompt: "Initial prompt",
 				systemPrompt: "System prompt",
-				builtinToolNames: ["read"],
-				extensions: false,
+				toolNames: ["read"],
 				messageEndpoint: transport.endpoint,
 				messageToken: token,
 			});
@@ -113,8 +111,7 @@ describe("registerMosaicBootstrap native messaging", () => {
 				description: "Review code",
 				prompt: "Initial prompt",
 				systemPrompt: "System prompt",
-				builtinToolNames: ["read"],
-				extensions: false,
+				toolNames: ["read"],
 				messageEndpoint: transport.endpoint,
 				messageToken: token,
 			});
@@ -149,7 +146,7 @@ describe("registerMosaicBootstrap native messaging", () => {
 		}
 	});
 
-	test("registers a child-only leader message tool and filters recursive lane tools", async () => {
+	test("registers a child-only leader message tool and filters recursive mosaic tools", async () => {
 		const server = new MosaicMessageServer({ now: () => 1000, id: () => "msg-1" });
 		const { token } = server.registerAgent({ agentId: "agent-1", taskName: "reviewer" });
 		const transport = await startMosaicMessageTransport(server, { host: "127.0.0.1", port: 0 });
@@ -160,8 +157,7 @@ describe("registerMosaicBootstrap native messaging", () => {
 				description: "Review code",
 				prompt: "Initial prompt",
 				systemPrompt: "System prompt",
-				builtinToolNames: ["read"],
-				extensions: false,
+				toolNames: ["read", "exec_command", "apply_patch", "skill", "spawn_agent"],
 				messageEndpoint: transport.endpoint,
 				messageToken: token,
 			});
@@ -170,8 +166,13 @@ describe("registerMosaicBootstrap native messaging", () => {
 
 			await pi.handlers.session_start[0]({}, {});
 
-			expect(pi.activeTools).toContain(MOSAIC_LEADER_MESSAGE_TOOL_NAME);
-			expect(pi.activeTools).not.toContain("spawn_map");
+			expect(pi.activeTools).toEqual([
+				"read",
+				"exec_command",
+				"apply_patch",
+				"skill",
+				MOSAIC_LEADER_MESSAGE_TOOL_NAME,
+			]);
 			const before = server.currentSeq;
 			const tool = pi.tools.find((candidate) => candidate.name === MOSAIC_LEADER_MESSAGE_TOOL_NAME);
 			await tool?.execute("tool-1", { message: "please clean up my session" });
@@ -199,7 +200,10 @@ function createFakePi() {
 	const tools: Array<{ name: string; execute?: (toolCallId: string, params: any) => Promise<unknown> }> = [
 		{ name: "read" },
 		{ name: "write" },
-		{ name: "spawn_map" },
+		{ name: "exec_command" },
+		{ name: "apply_patch" },
+		{ name: "skill" },
+		{ name: "spawn_agent" },
 	];
 	return {
 		handlers,

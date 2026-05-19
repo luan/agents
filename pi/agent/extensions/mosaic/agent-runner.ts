@@ -15,7 +15,6 @@ import {
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import {
-	BUILTIN_TOOL_NAMES,
 	getAgentConfig,
 	getAllowedToolNamesForType,
 	getConfig,
@@ -184,7 +183,7 @@ export async function runAgent(
 	const parentActiveToolNames = new Set(options.pi.getActiveTools());
 	const explicitAllowedToolNames = getAllowedToolNamesForType(type);
 	const selectedToolNames = new Set(explicitAllowedToolNames ?? [...parentActiveToolNames]);
-	let toolNames = BUILTIN_TOOL_NAMES.filter((name) => selectedToolNames.has(name));
+	let toolNames = [...selectedToolNames];
 
 	// Persistent memory: detect write capability and branch accordingly.
 	// Account for disallowedTools — a tool in the base set but on the denylist is not truly available.
@@ -286,16 +285,7 @@ export async function runAgent(
 	const activeTools = session.getActiveToolNames().filter((toolName) => {
 		if (isMosaicOrchestrationToolName(toolName)) return false;
 		if (disallowedSet?.has(toolName)) return false;
-
-		const isBuiltin = BUILTIN_TOOL_NAMES.includes(toolName);
-		if (isBuiltin) return selectedToolNames.has(toolName);
-
-		if (extensions === false) return false;
-		if (Array.isArray(extensions) && !extensions.some((ext) => toolName.startsWith(ext) || toolName.includes(ext))) {
-			return false;
-		}
-
-		return parentActiveToolNames.has(toolName);
+		return selectedToolNames.has(toolName);
 	});
 	session.setActiveToolsByName(activeTools);
 
