@@ -30,8 +30,8 @@ export interface AgentConfig {
 	name: string;
 	displayName?: string;
 	description: string;
-	/** Optional exact tool allowlist. Omitted = inherit the parent/default active tools. */
-	builtinToolNames?: string[];
+	/** Optional exact tool allowlist. Omitted = inherit the parent active tools. */
+	toolNames?: string[];
 	/** Tool denylist — these tools are removed even if the parent defaults or allowlist include them. */
 	disallowedTools?: string[];
 	/** true = inherit all, string[] = only listed, false = none */

@@ -1,16 +1,12 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { createMosaicV2Tools, isMosaicV2ToolsEnabled } from "./v2-tools";
+import { describe, expect, test } from "bun:test";
+import { createMosaicTools } from "./tools";
 
-const MOSAIC_V2_DESCRIPTION_BUDGET = 1_000;
-
-afterEach(() => {
-	delete process.env.MOSAIC_V2_TOOLS;
-});
+const MOSAIC_DESCRIPTION_BUDGET = 1_000;
 
 describe("mosaic tool token budget", () => {
-	test("keeps v2 tool descriptions compact", () => {
+	test("keeps tool descriptions compact", () => {
 		const budget = descriptionBudget(
-			createMosaicV2Tools({
+			createMosaicTools({
 				spawnAgent: async () => ({}),
 				sendMessage: async () => ({}),
 				waitAgent: async () => ({}),
@@ -19,18 +15,13 @@ describe("mosaic tool token budget", () => {
 			}),
 		);
 
-		if (budget > MOSAIC_V2_DESCRIPTION_BUDGET) {
+		if (budget > MOSAIC_DESCRIPTION_BUDGET) {
 			throw new Error(
-				`Mosaic v2 tool descriptions use ${budget} characters; budget is ${MOSAIC_V2_DESCRIPTION_BUDGET}. ` +
+				`Mosaic tool descriptions use ${budget} characters; budget is ${MOSAIC_DESCRIPTION_BUDGET}. ` +
 					"Keep model-facing tool text compact and move guidance to docs.",
 			);
 		}
 		expect(budget).toBeGreaterThan(0);
-	});
-
-	test("removes v2 schema cost when the v2 tool gate is disabled", () => {
-		process.env.MOSAIC_V2_TOOLS = "0";
-		expect(isMosaicV2ToolsEnabled()).toBe(false);
 	});
 });
 

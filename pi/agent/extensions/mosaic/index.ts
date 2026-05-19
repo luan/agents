@@ -26,7 +26,7 @@ import {
 import { Text } from "@earendil-works/pi-tui";
 import { AgentManager } from "./agent-manager.js";
 import { getDefaultMaxTurns, getGraceTurns, setDefaultMaxTurns, setGraceTurns } from "./agent-runner.js";
-import { BUILTIN_TOOL_NAMES, getAgentConfig, getAllTypes, registerAgents, resolveType } from "./agent-types.js";
+import { getAgentConfig, getAllTypes, registerAgents, resolveType } from "./agent-types.js";
 import { isMosaicChildSession, registerMosaicBootstrap } from "./bootstrap.js";
 import { registerRpcHandlers } from "./cross-extension-rpc.js";
 import { loadCustomAgents } from "./custom-agents.js";
@@ -54,6 +54,7 @@ import * as muxHeartbeat from "./mux-heartbeat.js";
 import { SubagentScheduler } from "./schedule.js";
 import { resolveStorePath, ScheduleStore } from "./schedule-store.js";
 import { applyAndEmitLoaded, type SubagentsSettings, saveAndEmitChanged } from "./settings.js";
+import { createMosaicTools } from "./tools.js";
 import type {
 	AgentConfig,
 	AgentRecord,
@@ -73,8 +74,7 @@ import {
 	type UICtx,
 } from "./ui/agent-widget.js";
 import { showSchedulesMenu } from "./ui/schedule-menu.js";
-import { getLifetimeTotal, getSessionContextPercent } from "./usage.js";
-import { createMosaicV2Tools, isMosaicV2ToolsEnabled } from "./v2-tools.js";
+import { addUsage, getLifetimeTotal, getSessionContextPercent } from "./usage.js";
 
 // ---- Shared helpers ----
 
@@ -509,9 +509,85 @@ export default function (pi: ExtensionAPI) {
 		};
 	}
 
+	let inProcessSeq = 0;
+	const inProcessUpdates: MosaicAgentUpdate[] = [];
+	const inProcessWaiters: Array<{
+		afterSeq: number;
+		resolve: (update: MosaicAgentUpdate | undefined) => void;
+		timer?: ReturnType<typeof setTimeout>;
+	}> = [];
+
+	function toMosaicAgentStatus(status: AgentRecord["status"]): MosaicAgentUpdate["status"] {
+		switch (status) {
+			case "queued":
+				return "registered";
+			case "running":
+				return "running";
+			case "completed":
+				return "completed";
+			case "stopped":
+				return "closed";
+			default:
+				return "error";
+		}
+	}
+
+	function recordInProcessUpdate(record: AgentRecord): MosaicAgentUpdate {
+		inProcessSeq = Math.max(inProcessSeq, messageServer.currentSeq) + 1;
+		const update: MosaicAgentUpdate = {
+			type: "agent_update",
+			seq: inProcessSeq,
+			agentId: record.id,
+			status: toMosaicAgentStatus(record.status),
+			result: record.result,
+			error: record.error,
+			createdAt: Date.now(),
+		};
+		inProcessUpdates.push(update);
+		if (inProcessUpdates.length > 100) inProcessUpdates.splice(0, inProcessUpdates.length - 100);
+		for (const waiter of [...inProcessWaiters]) {
+			if (update.seq <= waiter.afterSeq) continue;
+			if (waiter.timer) clearTimeout(waiter.timer);
+			inProcessWaiters.splice(inProcessWaiters.indexOf(waiter), 1);
+			waiter.resolve(update);
+		}
+		return update;
+	}
+
+	function waitForInProcessUpdate(input: {
+		afterSeq: number;
+		timeoutMs?: number;
+	}): Promise<MosaicAgentUpdate | undefined> {
+		const existing = inProcessUpdates.find((update) => update.seq > input.afterSeq);
+		if (existing) return Promise.resolve(existing);
+		return new Promise((resolve) => {
+			const waiter: (typeof inProcessWaiters)[number] = {
+				afterSeq: input.afterSeq,
+				resolve,
+			};
+			if (input.timeoutMs != null) {
+				waiter.timer = setTimeout(() => {
+					inProcessWaiters.splice(inProcessWaiters.indexOf(waiter), 1);
+					resolve(undefined);
+				}, input.timeoutMs);
+				waiter.timer.unref?.();
+			}
+			inProcessWaiters.push(waiter);
+		});
+	}
+
+	function waitForAnyAgentUpdate(input: { afterSeq?: number; timeoutMs?: number }): Promise<unknown> {
+		const afterSeq = input.afterSeq ?? Math.max(messageServer.currentSeq, inProcessSeq);
+		return Promise.race([
+			messageServer.waitForUpdate({ afterSeq, timeoutMs: input.timeoutMs }),
+			waitForInProcessUpdate({ afterSeq, timeoutMs: input.timeoutMs }),
+		]);
+	}
+
 	// Background completion: route through group join or send individual nudge
 	const manager = new AgentManager(
 		(record) => {
+			recordInProcessUpdate(record);
 			// Emit lifecycle event based on terminal status
 			const isError = record.status === "error" || record.status === "stopped" || record.status === "aborted";
 			const eventData = buildEventData(record);
@@ -558,6 +634,7 @@ export default function (pi: ExtensionAPI) {
 		},
 		undefined,
 		(record) => {
+			recordInProcessUpdate(record);
 			// Emit started event when agent transitions to running (including from queue)
 			pi.events.emit("subagents:started", {
 				id: record.id,
@@ -715,7 +792,7 @@ export default function (pi: ExtensionAPI) {
 				createdAt: agent.startedAt,
 				updatedAt: agent.completedAt ?? agent.startedAt,
 			}));
-		const hidden = manager.listAgents().map((agent) => ({
+		const inProcess = manager.listAgents().map((agent) => ({
 			agentId: agent.id,
 			taskName: agent.description,
 			type: agent.type,
@@ -728,7 +805,7 @@ export default function (pi: ExtensionAPI) {
 			createdAt: agent.startedAt,
 			updatedAt: agent.completedAt ?? agent.startedAt,
 		}));
-		const agents = [...nativeAgents, ...recovered, ...hidden];
+		const agents = [...nativeAgents, ...recovered, ...inProcess];
 		return input.pathPrefix ? agents.filter((agent) => agent.taskName?.startsWith(input.pathPrefix!)) : agents;
 	}
 
@@ -744,12 +821,10 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 		recoverFullSessionAgentsFromHeartbeats();
-		if (fullSessionAgents.size === 0) return;
-		widget.ensureTimer();
 		widget.update();
 	}
 
-	interface SpawnV2AgentInput {
+	interface SpawnAgentInput {
 		taskName: string;
 		message: string;
 		agentType?: string;
@@ -760,9 +835,10 @@ export default function (pi: ExtensionAPI) {
 		runInBackground?: boolean;
 		isolation?: "worktree";
 		cwd?: string;
+		onTextDelta?: (fullText: string) => void;
 	}
 
-	function resolveV2AgentType(agentType: string | undefined): {
+	function resolveAgentType(agentType: string | undefined): {
 		subagentType: SubagentType;
 		customConfig: AgentConfig | undefined;
 	} {
@@ -772,7 +848,7 @@ export default function (pi: ExtensionAPI) {
 		return { subagentType, customConfig: getAgentConfig(subagentType) };
 	}
 
-	function resolveV2ExplicitSelection(input: SpawnV2AgentInput): {
+	function resolveExplicitSelection(input: SpawnAgentInput): {
 		model?: unknown;
 		thinking?: string;
 	} {
@@ -796,23 +872,23 @@ export default function (pi: ExtensionAPI) {
 		return { thinking: input.thinking };
 	}
 
-	async function spawnV2Agent(input: SpawnV2AgentInput) {
-		const { customConfig } = resolveV2AgentType(input.agentType);
+	async function spawnAgent(input: SpawnAgentInput) {
+		const { customConfig } = resolveAgentType(input.agentType);
 		const mode = input.mode ?? "in-process";
-		if (mode === "full-session") return spawnV2FullSessionAgent(input);
-		return spawnV2InProcessAgent({
+		if (mode === "full-session") return spawnFullSessionAgent(input);
+		return spawnInProcessAgent({
 			...input,
 			mode,
 			runInBackground: input.runInBackground ?? customConfig?.runInBackground ?? false,
 		});
 	}
 
-	async function spawnV2FullSessionAgent(input: SpawnV2AgentInput) {
+	async function spawnFullSessionAgent(input: SpawnAgentInput) {
 		if (!currentCtx) throw new Error("No active session");
 		if (!hasMultiplexer()) throw new Error("mosaic requires tmux or an active zellij session");
 		const agentCwd = resolveAgentCwd(input.cwd, currentCtx.cwd);
-		const { subagentType, customConfig } = resolveV2AgentType(input.agentType);
-		const explicit = resolveV2ExplicitSelection(input);
+		const { subagentType, customConfig } = resolveAgentType(input.agentType);
+		const explicit = resolveExplicitSelection(input);
 		const plannedId = randomUUID().slice(0, 17);
 		const transport = await ensureMessageTransport();
 		const startedAt = Date.now();
@@ -879,11 +955,11 @@ export default function (pi: ExtensionAPI) {
 		return { agentId: launched.id, taskName: input.taskName, seq: messageServer.currentSeq };
 	}
 
-	async function spawnV2InProcessAgent(input: SpawnV2AgentInput) {
+	async function spawnInProcessAgent(input: SpawnAgentInput) {
 		if (!currentCtx) throw new Error("No active session");
 		const agentCwd = resolveAgentCwd(input.cwd, currentCtx.cwd);
-		const { subagentType } = resolveV2AgentType(input.agentType);
-		const explicit = resolveV2ExplicitSelection(input);
+		const { subagentType } = resolveAgentType(input.agentType);
+		const explicit = resolveExplicitSelection(input);
 		const options = {
 			description: input.taskName,
 			model: explicit.model as any,
@@ -893,7 +969,10 @@ export default function (pi: ExtensionAPI) {
 		};
 
 		if (input.runInBackground === false) {
-			const record = await manager.spawnAndWait(pi, currentCtx, subagentType, input.message, options);
+			const record = await manager.spawnAndWait(pi, currentCtx, subagentType, input.message, {
+				...options,
+				onTextDelta: (_delta, fullText) => input.onTextDelta?.(fullText),
+			});
 			record.resultConsumed = true;
 			return {
 				agentId: record.id,
@@ -906,7 +985,44 @@ export default function (pi: ExtensionAPI) {
 			};
 		}
 
-		const id = manager.spawn(pi, currentCtx, subagentType, input.message, { ...options, isBackground: true });
+		const activity: AgentActivity = {
+			activeTools: new Map(),
+			toolUses: 0,
+			turnCount: 0,
+			responseText: "",
+			session: undefined,
+			lifetimeUsage: { input: 0, output: 0, cacheWrite: 0 },
+		};
+		const id = manager.spawn(pi, currentCtx, subagentType, input.message, {
+			...options,
+			isBackground: true,
+			onToolActivity: (toolActivity) => {
+				if (toolActivity.type === "start") {
+					activity.activeTools.set(toolActivity.toolName, toolActivity.toolName);
+				} else {
+					activity.activeTools.delete(toolActivity.toolName);
+					activity.toolUses++;
+				}
+				widget.update();
+			},
+			onTextDelta: (_delta, fullText) => {
+				activity.responseText = fullText;
+				widget.update();
+			},
+			onTurnEnd: (turnCount) => {
+				activity.turnCount = turnCount;
+				widget.update();
+			},
+			onAssistantUsage: (usage) => {
+				addUsage(activity.lifetimeUsage, usage);
+				widget.update();
+			},
+			onSessionCreated: (session) => {
+				activity.session = session;
+				widget.update();
+			},
+		});
+		agentActivity.set(id, activity);
 		pi.events.emit("subagents:created", {
 			id,
 			type: subagentType,
@@ -919,72 +1035,68 @@ export default function (pi: ExtensionAPI) {
 		return { agentId: id, taskName: input.taskName, runtime: "in-process", background: true };
 	}
 
-	if (isMosaicV2ToolsEnabled()) {
-		for (const tool of createMosaicV2Tools({
-			onToolContext: (toolCtx) => {
-				const ui = (toolCtx as { ui?: UICtx } | undefined)?.ui;
-				if (ui) {
-					widget.setUICtx(ui);
-					widget.onTurnStart();
-					refreshFullSessionHud(ui);
+	for (const tool of createMosaicTools({
+		onToolContext: (toolCtx) => {
+			const ui = (toolCtx as { ui?: UICtx } | undefined)?.ui;
+			if (ui) {
+				widget.setUICtx(ui);
+				widget.onTurnStart();
+				refreshFullSessionHud(ui);
+			}
+		},
+		spawnAgent,
+		sendMessage: async (input) => {
+			try {
+				return messageServer.enqueueMessage(input.target, {
+					body: input.message,
+					triggerTurn: input.triggerTurn,
+				});
+			} catch (error) {
+				if (resolveFullSessionTarget(input.target)) {
+					throw new Error(
+						`agent is visible after reload but its native mailbox is not attached: ${input.target}`,
+						{ cause: error },
+					);
 				}
-			},
-			spawnAgent: spawnV2Agent,
-			sendMessage: async (input) => {
-				try {
-					return messageServer.enqueueMessage(input.target, {
-						body: input.message,
-						triggerTurn: input.triggerTurn,
-					});
-				} catch (error) {
-					if (resolveFullSessionTarget(input.target)) {
-						throw new Error(
-							`agent is visible after reload but its native mailbox is not attached: ${input.target}`,
-							{ cause: error },
-						);
-					}
-					throw error;
-				}
-			},
-			waitAgent: async (input) =>
-				messageServer.waitForUpdate({
-					afterSeq: input.afterSeq ?? messageServer.currentSeq,
-					timeoutMs: input.timeoutMs,
-				}),
-			listAgents: async (input) => listNativeAndRecoveredAgents(input),
-			closeAgent: async (input) => {
-				try {
-					const update = messageServer.closeAgent(input.target);
-					const live = muxHeartbeat.listActive().find((entry) => entry.agentId === update.agentId);
-					if (live) cleanupFullSessionAgentPane(update.agentId, live);
-					return update;
-				} catch (error) {
-					const recoveredId = resolveFullSessionTarget(input.target);
-					if (!recoveredId) {
-						const hiddenId = resolveInProcessTarget(input.target);
-						if (!hiddenId) throw error;
-						manager.abort(hiddenId);
-						return {
-							type: "agent_update",
-							seq: messageServer.currentSeq,
-							agentId: hiddenId,
-							status: "closed",
-							createdAt: Date.now(),
-						};
-					}
-					cleanupFullSessionAgentPane(recoveredId);
+				throw error;
+			}
+		},
+		waitAgent: async (input) => waitForAnyAgentUpdate(input),
+		listAgents: async (input) => listNativeAndRecoveredAgents(input),
+		closeAgent: async (input) => {
+			try {
+				const update = messageServer.closeAgent(input.target);
+				const live = muxHeartbeat.listActive().find((entry) => entry.agentId === update.agentId);
+				if (live) cleanupFullSessionAgentPane(update.agentId, live);
+				return update;
+			} catch (error) {
+				const recoveredId = resolveFullSessionTarget(input.target);
+				if (!recoveredId) {
+					const inProcessId = resolveInProcessTarget(input.target);
+					if (!inProcessId) throw error;
+					manager.abort(inProcessId);
+					const record = manager.getRecord(inProcessId);
+					if (record) return recordInProcessUpdate(record);
 					return {
 						type: "agent_update",
-						seq: messageServer.currentSeq,
-						agentId: recoveredId,
+						seq: inProcessSeq,
+						agentId: inProcessId,
 						status: "closed",
 						createdAt: Date.now(),
 					};
 				}
-			},
-		})) {
-			pi.registerTool(tool);
-		}
+				cleanupFullSessionAgentPane(recoveredId);
+				return {
+					type: "agent_update",
+					seq: messageServer.currentSeq,
+					agentId: recoveredId,
+					status: "closed",
+					createdAt: Date.now(),
+				};
+			}
+		},
+	})) {
+		pi.registerTool(tool);
 	}
 
 	function listFullSessionWidgetAgents(): AgentRecord[] {
@@ -1171,6 +1283,7 @@ export default function (pi: ExtensionAPI) {
 		manager.abortAll();
 		for (const timer of pendingNudges.values()) clearTimeout(timer);
 		pendingNudges.clear();
+		widget.dispose();
 		manager.dispose();
 	});
 
@@ -1377,8 +1490,8 @@ export default function (pi: ExtensionAPI) {
 		const fmFields: string[] = [];
 		fmFields.push(`description: ${cfg.description}`);
 		if (cfg.displayName) fmFields.push(`display_name: ${cfg.displayName}`);
-		if (cfg.builtinToolNames) {
-			fmFields.push(`tools: ${cfg.builtinToolNames.length > 0 ? cfg.builtinToolNames.join(", ") : "none"}`);
+		if (cfg.toolNames) {
+			fmFields.push(`tools: ${cfg.toolNames.length > 0 ? cfg.toolNames.join(", ") : "none"}`);
 		}
 		if (modelPreset) fmFields.push(`model_preset: ${modelPreset}`);
 		if (model) fmFields.push(`model: ${model}`);
@@ -2057,7 +2170,7 @@ The file format is a markdown file with YAML frontmatter and a system prompt bod
 \`\`\`markdown
 ---
 description: <one-line description shown in UI>
-tools: <optional comma-separated exact tool allowlist. Use "none" for no built-in tools. Omit to inherit the parent/default active tools>
+tools: <optional comma-separated exact tool allowlist. Use "none" for no tools. Omit to inherit the parent active tools>
 model_preset: <optional preset name such as fast, small, efficient, smart, oracle. Omit to inherit parent model>
 model: <legacy optional explicit model as "provider/modelId" for advanced/manual overrides>
 thinking: <optional thinking level: off, minimal, low, medium, high, xhigh. Omit to inherit>
@@ -2068,7 +2181,7 @@ skills: <true (inherit all), false (none), or comma-separated skill names to pre
 disallowed_tools: <comma-separated tool names to block, even if otherwise available. Omit for none>
 inherit_context: <true to fork parent conversation into agent so it sees chat history. Default: false>
 run_in_background: <true to run in background by default. Default: false>
-isolated: <true for no extension/MCP tools, only built-in tools. Default: false>
+isolated: <true for no extension/MCP tools. Default: false>
 memory: <"user" (global), "project" (per-project), or "local" (gitignored per-project) for persistent memory. Omit for none>
 isolation: <"worktree" to run in isolated git worktree. Omit for normal>
 ---
@@ -2132,7 +2245,7 @@ Write the file using the write tool. Only write the file, nothing else.`;
 		} else if (toolChoice.startsWith("read-only")) {
 			toolsLine = "\ntools: read, bash, grep, find, ls";
 		} else {
-			const customTools = await ctx.ui.input("Tools (comma-separated)", BUILTIN_TOOL_NAMES.join(", "));
+			const customTools = await ctx.ui.input("Tools (comma-separated)", "read, bash, edit, write, grep, find, ls");
 			if (!customTools) return;
 			toolsLine = `\ntools: ${customTools}`;
 		}
@@ -2266,7 +2379,7 @@ ${systemPrompt}
 		} else if (choice.startsWith("Scheduling")) {
 			const val = await ctx.ui.select("Schedule subagent feature", [
 				"enabled — /mosaic settings → Scheduled jobs visible",
-				"disabled — scheduled jobs menu hidden",
+				"disabled — scheduled jobs menu not shown",
 			]);
 			if (val) {
 				const enabled = val.startsWith("enabled");

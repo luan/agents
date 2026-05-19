@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import registerMosaic, { __getMosaicProcessStateForTest, __resetMosaicProcessStateForTest } from "./index";
-import { MOSAIC_V2_TOOL_NAMES } from "./v2-tools";
+import { MOSAIC_TOOL_NAMES } from "./tools";
 
 afterEach(() => {
 	delete process.env.MOSAIC_BOOTSTRAP_FILE;
@@ -8,12 +8,12 @@ afterEach(() => {
 });
 
 describe("mosaic extension registration", () => {
-	test("registers compact v2 tool surface by default", () => {
+	test("registers compact tool surface by default", () => {
 		const tools: Array<{ name: string }> = [];
 		registerMosaic(createFakePi({ onTool: (tool) => tools.push(tool) }) as never);
 
-		expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([...MOSAIC_V2_TOOL_NAMES]));
-		expect(tools).toHaveLength(MOSAIC_V2_TOOL_NAMES.length);
+		expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([...MOSAIC_TOOL_NAMES]));
+		expect(tools).toHaveLength(MOSAIC_TOOL_NAMES.length);
 	});
 
 	test("registers /mosaic settings and list subcommands instead of /agents", () => {
@@ -87,7 +87,7 @@ describe("mosaic extension registration", () => {
 		expect(unsubscribed).toBe(true);
 	});
 
-	test("re-registers the HUD on session start when full-session agents survived reload", async () => {
+	test("does not register the HUD on session start when a stale running full-session agent has no live heartbeat", async () => {
 		const state = __getMosaicProcessStateForTest();
 		state.fullSessionAgents.set("agent-1", {
 			id: "agent-1",
@@ -98,6 +98,47 @@ describe("mosaic extension registration", () => {
 			paneId: "%1",
 			windowId: "@1",
 			windowName: "mc: reload/probe",
+			startedAt: Date.now() - 1000,
+			status: "running",
+			mosaicIdentity: { label: "A1", color: "f38ba8" },
+		});
+		const widgets: unknown[] = [];
+		const handlers: Record<string, Array<(event: unknown, ctx: unknown) => unknown>> = {};
+		const pi = createFakePi({
+			onEvent: (event, handler) => {
+				handlers[event] ??= [];
+				handlers[event].push(handler);
+			},
+			ui: {
+				setWidget: (_name: string, widget: unknown) => widgets.push(widget),
+				setStatus() {},
+			},
+		});
+
+		registerMosaic(pi as never);
+		await handlers.session_start?.at(-1)?.(
+			{},
+			{
+				cwd: "/tmp",
+				ui: pi.ui,
+				sessionManager: { getSessionId: () => undefined },
+			},
+		);
+
+		expect(widgets).toEqual([]);
+	});
+
+	test("does not register the HUD on session start when only completed full-session agents survived reload", async () => {
+		const state = __getMosaicProcessStateForTest();
+		state.fullSessionAgents.set("agent-1", {
+			id: "agent-1",
+			laneId: "agent-1",
+			type: "general-purpose",
+			description: "reload/completed",
+			sessionFile: "/tmp/mosaic-session.jsonl",
+			paneId: "%1",
+			windowId: "@1",
+			windowName: "mc: reload/completed",
 			startedAt: Date.now() - 1000,
 			completedAt: Date.now(),
 			status: "completed",
@@ -126,7 +167,34 @@ describe("mosaic extension registration", () => {
 			},
 		);
 
-		expect(widgets).toContainEqual(expect.any(Function));
+		expect(widgets).toEqual([]);
+	});
+
+	test("does not touch widget UI on idle session start", async () => {
+		const uiCalls: Array<{ method: string; key: string; value: unknown }> = [];
+		const handlers: Record<string, Array<(event: unknown, ctx: unknown) => unknown>> = {};
+		const pi = createFakePi({
+			onEvent: (event, handler) => {
+				handlers[event] ??= [];
+				handlers[event].push(handler);
+			},
+			ui: {
+				setWidget: (key: string, value: unknown) => uiCalls.push({ method: "setWidget", key, value }),
+				setStatus: (key: string, value: unknown) => uiCalls.push({ method: "setStatus", key, value }),
+			},
+		});
+
+		registerMosaic(pi as never);
+		await handlers.session_start?.at(-1)?.(
+			{},
+			{
+				cwd: "/tmp",
+				ui: pi.ui,
+				sessionManager: { getSessionId: () => undefined },
+			},
+		);
+
+		expect(uiCalls).toEqual([]);
 	});
 
 	test("does not render the agents HUD inside a mosaic child session", async () => {
@@ -169,7 +237,7 @@ describe("mosaic extension registration", () => {
 			},
 		);
 
-		expect(widgets).toEqual([undefined]);
+		expect(widgets).toEqual([]);
 	});
 
 	test("delivers native full-session completion as a parent follow-up message", () => {

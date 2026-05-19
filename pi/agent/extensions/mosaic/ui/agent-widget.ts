@@ -1,7 +1,7 @@
 /**
  * agent-widget.ts — Persistent widget showing running/completed agents above the editor.
  *
- * Displays a tree of agents with animated spinners, live stats, and activity descriptions.
+ * Displays a tree of agents with animated labels, live stats, and activity descriptions.
  * Uses the callback form of setWidget for themed rendering.
  */
 
@@ -10,6 +10,7 @@ import type { AgentManager } from "../agent-manager.js";
 import { getConfig } from "../agent-types.js";
 import type { AgentRecord, SubagentType } from "../types.js";
 import { getLifetimeTotal, getSessionContextPercent, type LifetimeUsage, type SessionLike } from "../usage.js";
+import { highlightTrickle, rgbFg, scaleRgb } from "./animation.js";
 
 // ---- Constants ----
 
@@ -18,7 +19,6 @@ const MAX_WIDGET_LINES = 12;
 
 const WIDGET_PULSE_MS = 2000;
 const WIDGET_FRAME_MS = 80;
-const MOSAIC_IDENTITY_GLYPHS = ["•", "·", "∙", "●", "○", "◦"];
 
 /** Statuses that indicate an error/non-success outcome (used for linger behavior and icon rendering). */
 export const ERROR_STATUSES = new Set(["error", "aborted", "steered", "stopped"]);
@@ -50,6 +50,8 @@ export type UICtx = {
 	): void;
 };
 
+type Rgb = [number, number, number];
+
 /** Per-agent live activity state. */
 export interface AgentActivity {
 	activeTools: Map<string, string>;
@@ -75,8 +77,8 @@ export interface AgentDetails {
 	status: "queued" | "running" | "completed" | "steered" | "aborted" | "stopped" | "error" | "background";
 	/** Human-readable description of what the agent is currently doing. */
 	activity?: string;
-	/** Current spinner frame index (for animated running indicator). */
-	spinnerFrame?: number;
+	/** Current animation frame index (for running indicator). */
+	animationFrame?: number;
 	/** Short model name if different from parent (e.g. "haiku", "sonnet"). */
 	modelName?: string;
 	/** Notable config tags (e.g. ["thinking: high", "isolated"]). */
@@ -188,8 +190,6 @@ export function describeActivity(activeTools: Map<string, string>, responseText?
 	return "thinking…";
 }
 
-type Rgb = [number, number, number];
-
 function parseHexRgb(color: string): Rgb | undefined {
 	const match = color.match(/^#?([0-9a-fA-F]{6})$/);
 	if (!match) return undefined;
@@ -211,20 +211,34 @@ function fgColor(theme: Theme, color: string, text: string): string {
 	}
 }
 
-function rgbFg([r, g, b]: Rgb): string {
-	return `\x1b[38;2;${r};${g};${b}m`;
-}
-
-function scaleRgb([r, g, b]: Rgb, factor: number): Rgb {
-	const scale = (value: number) => Math.round(Math.max(0, Math.min(255, value * factor)));
-	return [scale(r), scale(g), scale(b)];
-}
-
-function triangleWave(frame: number, periodMs: number, lo: number, hi: number): number {
-	const elapsedMs = frame * WIDGET_FRAME_MS;
+function triangleWave(elapsedMs: number, periodMs: number, lo: number, hi: number): number {
 	const t = (elapsedMs % periodMs) / periodMs;
 	const tri = 1 - Math.abs(2 * t - 1);
 	return lo + tri * (hi - lo);
+}
+
+function identityPulseFactor(frame: number): number {
+	return triangleWave(frame * WIDGET_FRAME_MS, WIDGET_PULSE_MS, 0.55, 1.2);
+}
+
+function trickleRgb(text: string, rgb: Rgb, elapsedMs: number): string {
+	const base = scaleRgb(rgb, 0.55);
+	const shine = scaleRgb(rgb, 1.55);
+	const chars = [...text];
+	const shineWidth = 3;
+	const step = Math.floor(elapsedMs / 80);
+	const cycle = chars.length + shineWidth;
+	const pos = step % cycle;
+	return `${chars
+		.map((ch, index) => {
+			const inShine = index >= pos - shineWidth && index < pos;
+			return `${rgbFg(inShine ? shine : base)}${ch}`;
+		})
+		.join("")}\x1b[39m`;
+}
+
+function renderRunningName(text: string, theme: Theme, frame: number): string {
+	return highlightTrickle(text, theme, frame * WIDGET_FRAME_MS);
 }
 
 export function renderMosaicHudIdentityPrefix(
@@ -234,12 +248,15 @@ export function renderMosaicHudIdentityPrefix(
 ): string {
 	if (!identity) return "";
 	const rgb = parseHexRgb(identity.color);
-	const glyph = pulseFrame === undefined ? "●" : MOSAIC_IDENTITY_GLYPHS[pulseFrame % MOSAIC_IDENTITY_GLYPHS.length]!;
 	const marker =
 		rgb && pulseFrame !== undefined
-			? `${rgbFg(scaleRgb(rgb, triangleWave(pulseFrame, WIDGET_PULSE_MS, 0.45, 1.25)))}${glyph}\x1b[39m`
-			: fgColor(theme, identity.color, glyph);
-	return `${marker} ${fgColor(theme, identity.color, identity.label)} `;
+			? `${rgbFg(scaleRgb(rgb, identityPulseFactor(pulseFrame)))}●\x1b[39m`
+			: fgColor(theme, identity.color, "●");
+	const label =
+		rgb && pulseFrame !== undefined
+			? trickleRgb(identity.label, rgb, pulseFrame * WIDGET_FRAME_MS)
+			: fgColor(theme, identity.color, identity.label);
+	return `${marker} ${label} `;
 }
 
 function appendRightStatus(line: string, statusIcon: string, width: number): string {
@@ -280,6 +297,12 @@ export class AgentWidget {
 	/** Set the UI context (grabbed from first tool execution). */
 	setUICtx(ctx: UICtx) {
 		if (ctx !== this.uiCtx) {
+			if (this.uiCtx && this.widgetRegistered) {
+				this.uiCtx.setWidget("agents", undefined);
+			}
+			if (this.uiCtx && this.lastStatusText !== undefined) {
+				this.uiCtx.setStatus("subagents", undefined);
+			}
 			// UICtx changed — the widget registered on the old context is gone.
 			// Force re-registration on next update().
 			this.uiCtx = ctx;
@@ -317,7 +340,9 @@ export class AgentWidget {
 		completedAt?: number;
 		mosaicIdentity?: AgentRecord["mosaicIdentity"];
 	}): boolean {
-		if (agent.mosaicIdentity && agent.status === "completed") return true;
+		if (agent.mosaicIdentity && agent.status === "completed") {
+			return agent.completedAt != null && Date.now() - agent.completedAt < AgentWidget.EXIT_LINGER_MS;
+		}
 		if (agent.status === "stopped" && agent.completedAt != null) {
 			return Date.now() - agent.completedAt < AgentWidget.EXIT_LINGER_MS;
 		}
@@ -416,6 +441,9 @@ export class AgentWidget {
 		const truncate = (line: string) => truncateToWidth(line, w);
 		const headingColor = hasActive ? "accent" : "dim";
 		const headingIcon = hasActive ? "●" : "○";
+		const headingText = hasActive
+			? renderRunningName("Agents", theme, this.widgetFrame)
+			: theme.fg(headingColor, "Agents");
 
 		// Build sections separately for overflow-aware assembly.
 		// Each running agent = 2 lines (header + activity), finished = 1 line, queued = 1 line.
@@ -451,7 +479,7 @@ export class AgentWidget {
 			runningLines.push([
 				truncate(
 					theme.fg("dim", "├─") +
-						` ${this.renderMosaicHudIdentity(a, theme, this.widgetFrame)}${theme.bold(name)}${modeTag}  ${theme.fg("muted", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", statsText)}`,
+						` ${this.renderMosaicHudIdentity(a, theme, this.widgetFrame)}${renderRunningName(name, theme, this.widgetFrame)}${modeTag}  ${theme.fg("muted", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", statsText)}`,
 				),
 				truncate(theme.fg("dim", "│  ") + theme.fg("dim", `  ⎿  ${activity}`)),
 			]);
@@ -468,7 +496,7 @@ export class AgentWidget {
 		const maxBody = MAX_WIDGET_LINES - 1; // heading takes 1 line
 		const totalBody = finishedLines.length + runningLines.length * 2 + (queuedLine ? 1 : 0);
 
-		const lines: string[] = [truncate(`${theme.fg(headingColor, headingIcon)} ${theme.fg(headingColor, "Agents")}`)];
+		const lines: string[] = [truncate(`${theme.fg(headingColor, headingIcon)} ${headingText}`)];
 
 		if (totalBody <= maxBody) {
 			// Everything fits — add all lines and fix up connectors for the last item.
@@ -547,20 +575,25 @@ export class AgentWidget {
 		// Lightweight existence checks — full categorization happens in renderWidget()
 		let runningCount = 0;
 		let queuedCount = 0;
-		let hasFinished = false;
 		for (const a of allAgents) {
 			if (a.status === "running") {
 				runningCount++;
 			} else if (a.status === "queued") {
 				queuedCount++;
-			} else if (a.completedAt && this.shouldShowFinished(a)) {
-				hasFinished = true;
 			}
 		}
 		const hasActive = runningCount > 0 || queuedCount > 0;
+		if (hasActive && !this.widgetInterval) {
+			this.ensureTimer();
+		} else if (!hasActive && this.widgetInterval) {
+			clearInterval(this.widgetInterval);
+			this.widgetInterval = undefined;
+		}
 
-		// Nothing to show — clear widget
-		if (!hasActive && !hasFinished) {
+		// Nothing active to show — clear widget. Finished agents can be reported
+		// elsewhere, but they must not keep a render hook attached while the
+		// prompt editor is idle.
+		if (!hasActive) {
 			if (this.widgetRegistered) {
 				this.uiCtx.setWidget("agents", undefined);
 				this.widgetRegistered = false;
@@ -628,8 +661,8 @@ export class AgentWidget {
 			this.widgetInterval = undefined;
 		}
 		if (this.uiCtx) {
-			this.uiCtx.setWidget("agents", undefined);
-			this.uiCtx.setStatus("subagents", undefined);
+			if (this.widgetRegistered) this.uiCtx.setWidget("agents", undefined);
+			if (this.lastStatusText !== undefined) this.uiCtx.setStatus("subagents", undefined);
 		}
 		this.widgetRegistered = false;
 		this.tui = undefined;

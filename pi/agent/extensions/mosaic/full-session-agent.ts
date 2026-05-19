@@ -5,7 +5,6 @@ import { join } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, type ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent";
 import {
-	BUILTIN_TOOL_NAMES,
 	getAllowedToolNamesForType,
 	getConfig,
 	getMemoryToolNames,
@@ -91,7 +90,6 @@ export async function launchFullSessionAgent(
 	if (!agentConfig) throw new Error("No general-purpose agent config is available.");
 
 	const config = getConfig(options.type);
-	const extensions = options.isolated ? false : config.extensions;
 	const skills = options.isolated ? false : config.skills;
 
 	const extras: PromptExtras = {};
@@ -103,7 +101,7 @@ export async function launchFullSessionAgent(
 	const parentActiveToolNames = new Set(pi.getActiveTools());
 	const explicitAllowedToolNames = getAllowedToolNamesForType(options.type);
 	const selectedToolNames = new Set(explicitAllowedToolNames ?? [...parentActiveToolNames]);
-	let toolNames = BUILTIN_TOOL_NAMES.filter((name) => selectedToolNames.has(name));
+	let toolNames = [...selectedToolNames];
 	if (agentConfig.memory) {
 		const existingNames = new Set(toolNames);
 		const denied = agentConfig.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined;
@@ -157,10 +155,9 @@ export async function launchFullSessionAgent(
 			description: options.description,
 			prompt,
 			systemPrompt,
-			builtinToolNames: toolNames,
+			toolNames,
 			parentActiveToolNames: [...parentActiveToolNames],
-			allowedToolNames: explicitAllowedToolNames,
-			extensions,
+			selectedToolNames: [...selectedToolNames],
 			disallowedTools: agentConfig.disallowedTools,
 			mosaicIdentity,
 			messageEndpoint: options.messageEndpoint,
@@ -204,10 +201,9 @@ export interface FullSessionBootstrapPayload {
 	description: string;
 	prompt: string;
 	systemPrompt: string;
-	builtinToolNames: string[];
+	toolNames: string[];
 	parentActiveToolNames?: string[];
-	allowedToolNames?: string[];
-	extensions: true | string[] | false;
+	selectedToolNames?: string[];
 	disallowedTools?: string[];
 	mosaicIdentity?: MosaicAgentIdentity;
 	messageEndpoint?: string;
@@ -225,7 +221,6 @@ export function withMosaicLeaderInstructions(systemPrompt: string): string {
 You are a mosaic agent working for a leader session.
 - Use the message_leader tool to send questions, status updates, or cleanup requests to your leader.
 - If the user asks you to ask/tell/contact the leader, call message_leader.
-- Do not use spawn_lane, spawn_list, or spawn_map to find the leader; those tools are unrelated to the mosaic leader channel.
 - Your normal assistant reply is also reported to the leader automatically when your turn completes.
 </mosaic_leader_channel>`;
 }
