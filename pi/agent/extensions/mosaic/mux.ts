@@ -25,6 +25,10 @@ export function hasMultiplexer(): boolean {
 	return getMultiplexerBackend() !== undefined;
 }
 
+export function shouldPublishMosaicHeartbeat(metadata: ReturnType<typeof getMosaicBootstrapMetadata>): boolean {
+	return Boolean(metadata.agentId);
+}
+
 function currentPaneSession(paneId: string): string | undefined {
 	try {
 		return execFileSync("tmux", ["display-message", "-t", paneId, "-p", "#{session_name}"], {
@@ -253,6 +257,11 @@ export function registerMosaicMux(pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		if (!hasMultiplexer()) return;
 		heartbeat.stop();
+		const metadata = getMosaicBootstrapMetadata();
+		if (!shouldPublishMosaicHeartbeat(metadata)) {
+			signalReady();
+			return;
+		}
 		const sessionFile = ctx.sessionManager.getSessionFile();
 		if (!sessionFile) {
 			signalReady();
@@ -272,7 +281,7 @@ export function registerMosaicMux(pi: ExtensionAPI) {
 			busy: false,
 			label: computeLabel(ctx.sessionManager),
 			parentSessionFile,
-			...getMosaicBootstrapMetadata(),
+			...metadata,
 		});
 		signalReady();
 	});
