@@ -1319,6 +1319,75 @@ test("extension status shows background terminal and stdin-open counts", async (
 	expect(widgetCalls.at(-1)).toEqual({ key: "background-terminals", content: undefined, options: undefined });
 });
 
+test("extension resume clears stale background terminal sessions and HUD state", async () => {
+	type Handler = (event?: any, ctx?: any) => any;
+	const handlers = new Map<string, Handler[]>();
+	let execTool: any;
+	let writeTool: any;
+	const statusCalls: Array<{ key: string; text: string | undefined }> = [];
+	const widgetCalls: Array<{ key: string; content: any; options?: any }> = [];
+	let activeTools = ["read", "bash"];
+	const pi = {
+		registerTool: (definition: any) => {
+			if (definition.name === "exec_command") execTool = definition;
+			if (definition.name === "write_stdin") writeTool = definition;
+		},
+		registerCommand() {},
+		registerMessageRenderer() {},
+		sendMessage() {},
+		getActiveTools: () => activeTools,
+		setActiveTools: (next: string[]) => {
+			activeTools = next;
+		},
+		on: (event: string, handler: Handler) => {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+		},
+		exec: async () => ({ code: 1, stdout: "", stderr: "" }),
+	} as any;
+	execCommandExtension(pi);
+
+	const ctx = {
+		hasUI: true,
+		ui: {
+			setStatus: (key: string, text: string | undefined) => statusCalls.push({ key, text }),
+			setWidget: (key: string, content: any, options?: any) => widgetCalls.push({ key, content, options }),
+			notify() {},
+		},
+		cwd: process.cwd(),
+	};
+
+	for (const handler of handlers.get("session_start") ?? []) handler({ reason: "startup" }, ctx);
+	const result = await execTool.execute(
+		"call-resume-stale-terminal",
+		{ cmd: "sleep 60", yield_time_ms: 250 },
+		undefined,
+		undefined,
+		ctx,
+	);
+	expect(result.details.session_id).toBeNumber();
+	expect(statusCalls.at(-1)).toEqual({
+		key: "background-terminals",
+		text: "1 background terminal · 1 running",
+	});
+	expect(widgetCalls.at(-1)?.key).toBe("background-terminals");
+
+	for (const handler of handlers.get("session_start") ?? []) handler({ reason: "resume" }, ctx);
+
+	expect(statusCalls.at(-1)).toEqual({ key: "background-terminals", text: undefined });
+	expect(widgetCalls.at(-1)).toEqual({ key: "background-terminals", content: undefined, options: undefined });
+	await expect(
+		writeTool.execute(
+			"poll-cleared-stale-terminal",
+			{ session_id: result.details.session_id, chars: "", yield_time_ms: 250 },
+			undefined,
+			undefined,
+			ctx,
+		),
+	).rejects.toThrow(`Unknown process id ${result.details.session_id}`);
+
+	for (const handler of handlers.get("session_shutdown") ?? []) handler(undefined, ctx);
+});
+
 test("extension status counts stdin-open tty sessions", async () => {
 	type Handler = (event?: any, ctx?: any) => any;
 	const handlers = new Map<string, Handler[]>();
@@ -2482,6 +2551,35 @@ test("exec session manager lists running and exited-unread sessions with stdin c
 		expect(final.output).toBe("done");
 		expect(final.exit_code).toBe(0);
 		expect(sessions.listSessions()).toEqual([]);
+	} finally {
+		sessions.shutdown();
+	}
+});
+
+test("exec session manager lazily removes exited sessions when a new session starts", async () => {
+	const sessions = createExecSessionManager({
+		defaultExecYieldTimeMs: 250,
+		defaultWriteYieldTimeMs: 250,
+		minNonInteractiveExecYieldTimeMs: 250,
+		minEmptyWriteYieldTimeMs: 250,
+	});
+	try {
+		const exited = await sessions.exec({ cmd: "sleep 0.4; printf done", yield_time_ms: 250 }, process.cwd());
+		expect(exited.session_id).toBeNumber();
+
+		await Bun.sleep(600);
+
+		expect(sessions.listSessions()).toMatchObject([
+			{
+				id: exited.session_id!,
+				running: false,
+				output: "done",
+			},
+		]);
+
+		const running = await sessions.exec({ cmd: "sleep 1", yield_time_ms: 250 }, process.cwd());
+		expect(running.session_id).toBeNumber();
+		expect(sessions.listSessions().map((session) => session.id)).toEqual([running.session_id!]);
 	} finally {
 		sessions.shutdown();
 	}
