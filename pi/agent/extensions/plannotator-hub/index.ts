@@ -1,11 +1,14 @@
 import { spawn } from "node:child_process";
-import { dirname, resolve } from "node:path";
+import { appendFileSync, closeSync, mkdirSync, openSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
 
 const DEFAULT_HUB_PORT = "19432";
 const DEFAULT_HUB_BIND = "127.0.0.1";
+const DEFAULT_HUB_LOG_FILE = join(homedir(), ".pi", "plannotator-hub.log");
 const DISABLE_ENV = "PLANNOTATOR_HUB_DISABLED";
 const HUB_START_TIMEOUT_MS = 5_000;
 const missing = Symbol("plannotatorHubMissing");
@@ -33,6 +36,20 @@ export function getPlannotatorHubPaths() {
 function defaultPublicUrl(env: NodeJS.ProcessEnv) {
 	const port = env.PLANNOTATOR_HUB_PORT || DEFAULT_HUB_PORT;
 	return `http://127.0.0.1:${port}`;
+}
+
+function logFilePath(env: NodeJS.ProcessEnv) {
+	return env.PLANNOTATOR_HUB_LOG_FILE || DEFAULT_HUB_LOG_FILE;
+}
+
+function logHubSupervisor(env: NodeJS.ProcessEnv, message: string) {
+	const path = logFilePath(env);
+	try {
+		mkdirSync(dirname(path), { recursive: true });
+		appendFileSync(path, `${new Date().toISOString()} [plannotator-hub-supervisor] ${message}\n`);
+	} catch {
+		// Logging failures must never block hub startup.
+	}
 }
 
 function applyBrowserShim(env: NodeJS.ProcessEnv, browserShimPath: string) {
@@ -124,6 +141,7 @@ export function applyPlannotatorHubEnvironment(options: { env?: NodeJS.ProcessEn
 	env.PLANNOTATOR_HUB_PORT = settings.port ?? env.PLANNOTATOR_HUB_PORT ?? DEFAULT_HUB_PORT;
 	env.PLANNOTATOR_HUB_BIND = settings.bind ?? env.PLANNOTATOR_HUB_BIND ?? DEFAULT_HUB_BIND;
 	env.PLANNOTATOR_HUB_PUBLIC_URL = settings.publicUrl ?? env.PLANNOTATOR_HUB_PUBLIC_URL ?? defaultPublicUrl(env);
+	env.PLANNOTATOR_HUB_LOG_FILE = env.PLANNOTATOR_HUB_LOG_FILE ?? DEFAULT_HUB_LOG_FILE;
 	env.PLANNOTATOR_HUB_SCRIPT ||= hubServerPath;
 
 	// The hub owns the fixed public port. Upstream Plannotator must stay on random loopback ports.
@@ -153,25 +171,55 @@ async function isHubHealthy(env: NodeJS.ProcessEnv = process.env) {
 
 function startHubProcess(env: NodeJS.ProcessEnv = process.env) {
 	const scriptPath = env.PLANNOTATOR_HUB_SCRIPT;
-	if (!scriptPath) return;
+	if (!scriptPath) {
+		logHubSupervisor(env, "skipping spawn because PLANNOTATOR_HUB_SCRIPT is unset");
+		return;
+	}
+	const path = logFilePath(env);
+	mkdirSync(dirname(path), { recursive: true });
+	const stdoutFd = openSync(path, "a");
+	const stderrFd = openSync(path, "a");
+	logHubSupervisor(
+		env,
+		`spawning ${process.execPath} ${scriptPath} on ${localHubBaseUrl(env)} with public ${env.PLANNOTATOR_HUB_PUBLIC_URL || defaultPublicUrl(env)}`,
+	);
 	const child = spawn(process.execPath, [scriptPath], {
 		detached: true,
-		stdio: "ignore",
+		stdio: ["ignore", stdoutFd, stderrFd],
 		env,
 	});
-	child.once("error", () => {});
+	closeSync(stdoutFd);
+	closeSync(stderrFd);
+	logHubSupervisor(env, `spawned pid=${child.pid ?? "unknown"}`);
+	child.once("error", (error) => {
+		logHubSupervisor(env, `spawn error: ${error.message}`);
+	});
+	child.once("exit", (code, signal) => {
+		logHubSupervisor(
+			env,
+			`child exit pid=${child.pid ?? "unknown"} code=${code ?? "null"} signal=${signal ?? "null"}`,
+		);
+	});
 	child.unref();
 }
 
 async function ensurePlannotatorHub(env: NodeJS.ProcessEnv = process.env) {
-	if (await isHubHealthy(env)) return;
+	logHubSupervisor(env, `ensure start for ${localHubBaseUrl(env)}`);
+	if (await isHubHealthy(env)) {
+		logHubSupervisor(env, `health check passed for ${localHubBaseUrl(env)}`);
+		return;
+	}
 
 	startHubProcess(env);
 	const deadline = Date.now() + HUB_START_TIMEOUT_MS;
 	while (Date.now() < deadline) {
 		await new Promise((resolve) => setTimeout(resolve, 250));
-		if (await isHubHealthy(env)) return;
+		if (await isHubHealthy(env)) {
+			logHubSupervisor(env, `hub became healthy for ${localHubBaseUrl(env)}`);
+			return;
+		}
 	}
+	logHubSupervisor(env, `hub failed to become healthy within ${HUB_START_TIMEOUT_MS}ms for ${localHubBaseUrl(env)}`);
 }
 
 function setOrDelete(env: NodeJS.ProcessEnv, key: string, value?: string) {
