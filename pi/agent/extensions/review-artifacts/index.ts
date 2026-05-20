@@ -126,6 +126,26 @@ function escapeHtml(value: string): string {
 	return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 }
 
+function fileStem(path: string): string {
+	const ext = extname(path);
+	return ext ? basename(path, ext) : basename(path);
+}
+
+function sanitizeArtifactName(value: string): string {
+	const trimmed = value.trim().toLowerCase();
+	const collapsed = trimmed
+		.replace(/[^a-z0-9._-]+/g, "-")
+		.replace(/-+/g, "-")
+		.replace(/^-|-$/g, "");
+	return collapsed || "review";
+}
+
+function createReviewArtifactPath(label: string): string {
+	const dir = join(REVIEW_ARTIFACT_DIR, `${sanitizeArtifactName(label)}-${randomUUID()}`);
+	mkdirSync(dir, { recursive: true });
+	return join(dir, `${sanitizeArtifactName(label)}.html`);
+}
+
 export function buildImageReviewHtml(
 	targetPath: string,
 	imagePaths: string[],
@@ -136,7 +156,7 @@ export function buildImageReviewHtml(
 ): string {
 	const singleImage = imagePaths.length === 1 && IMAGE_EXTENSIONS.has(extname(targetPath).toLowerCase());
 	const rootPath = singleImage ? dirname(targetPath) : targetPath;
-	const title = options?.title ?? `Image review: ${basename(targetPath)}`;
+	const title = options?.title ?? basename(targetPath);
 	const intro =
 		options?.intro ??
 		"Review the image set below. Use annotations to point out visual regressions, layout issues, or naming mistakes.";
@@ -199,6 +219,7 @@ export function createImageReviewArtifact(
 	options?: {
 		title?: string;
 		intro?: string;
+		artifactName?: string;
 	},
 ): {
 	reviewPath: string;
@@ -221,9 +242,8 @@ export function createImageReviewArtifact(
 		throw new Error(`Image review expects an image file or folder, got: ${targetPath}`);
 	}
 
-	mkdirSync(REVIEW_ARTIFACT_DIR, { recursive: true });
 	const rawHtml = buildImageReviewHtml(targetPath, imagePaths, options);
-	const reviewPath = join(REVIEW_ARTIFACT_DIR, `${basename(targetPath) || "images"}-${randomUUID()}.html`);
+	const reviewPath = createReviewArtifactPath(options?.artifactName ?? basename(targetPath) ?? "images");
 	writeFileSync(reviewPath, rawHtml, "utf-8");
 	return { reviewPath, rawHtml, imagePaths };
 }
@@ -346,8 +366,9 @@ async function openHtmlScreenshotReview(
 	ctx.ui.notify(`Capturing screenshots for ${resolvedPath}...`, "info");
 	const { screenshotDir, screenshotPaths } = await captureHtmlScreenshots(pi, resolvedPath);
 	const screenshotReview = createImageReviewArtifact(screenshotDir, {
-		title: `HTML screenshot review: ${basename(resolvedPath)}`,
+		title: `${basename(resolvedPath)} screenshots`,
 		intro: `Review screenshots captured from ${resolvedPath}. Use annotations to call out rendering, layout, and responsiveness issues.`,
+		artifactName: `${fileStem(resolvedPath)}-screenshots`,
 	});
 	ctx.ui.notify(`Opening screenshot review for ${resolvedPath}...`, "info");
 	const result = await openAnnotationReview(ctx, {

@@ -62,6 +62,7 @@ describe("plannotator hub environment", () => {
 		expect(env.PLANNOTATOR_HUB_SCRIPT).toContain("hub-server.cjs");
 		const shimEnvKey = process.platform === "darwin" ? "BROWSER" : "PLANNOTATOR_BROWSER";
 		expect(env[shimEnvKey]).toContain("browser-shim.cjs");
+		expect(env.PLANNOTATOR_HUB_LOG_FILE).toContain("plannotator-hub.log");
 		expect(env.PLANNOTATOR_HUB_OPEN_BROWSER).toBe("/usr/bin/firefox");
 	});
 
@@ -97,6 +98,7 @@ describe("plannotator hub environment", () => {
 		expect(env.PLANNOTATOR_HUB_PUBLIC_URL).toBe("https://plannotator.noxcraft.dev");
 		expect(env.PLANNOTATOR_HUB_PORT).toBe("19432");
 		expect(env.PLANNOTATOR_HUB_BIND).toBe("127.0.0.1");
+		expect(env.PLANNOTATOR_HUB_LOG_FILE).toContain("plannotator-hub.log");
 	});
 
 	test("settings can disable the hub wiring", () => {

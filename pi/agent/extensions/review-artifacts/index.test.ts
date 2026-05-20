@@ -25,7 +25,7 @@ describe("review artifact helpers", () => {
 	test("builds html image gallery entries", () => {
 		const html = buildImageReviewHtml("/tmp/screens", ["/tmp/screens/a.png", "/tmp/screens/sub/b.jpg"]);
 		expect(html).toContain("<!doctype html>");
-		expect(html).toContain("<h1>Image review: screens</h1>");
+		expect(html).toContain("<h1>screens</h1>");
 		expect(html).toContain("<h2>a.png</h2>");
 		expect(html).toContain("<h2>sub/b.jpg</h2>");
 		expect(html).toContain('<img alt="a.png" src="./api/image?path=%2Ftmp%2Fscreens%2Fa.png"');
@@ -41,6 +41,7 @@ describe("review artifact helpers", () => {
 		expect(imagePaths).toEqual([join(dir, "a.png"), join(nested, "b.jpg")]);
 		const reviewHtml = readFileSync(reviewPath, "utf-8");
 		expect(reviewPath.endsWith(".html")).toBe(true);
+		expect(reviewPath).toMatch(/\/review-images-[^/]+\/review-images-[^/]+\.html$/);
 		expect(reviewHtml).toContain("Image count");
 		expect(reviewHtml).toContain("<h2>nested/b.jpg</h2>");
 		expect(rawHtml).toContain("<h2>a.png</h2>");
@@ -158,9 +159,10 @@ describe("review artifact extension registration", () => {
 		expect(calls).toHaveLength(2);
 		expect(calls[0][1]).toBe(htmlPath);
 		expect(calls[0][8]).toContain("<h1>Mock</h1>");
-		expect(calls[1][1]).toEndWith(".html");
+		expect(calls[1][1]).toContain("/mock-screenshots.html");
 		expect(calls[1][8]).toContain("desktop.png");
 		expect(calls[1][8]).toContain("mobile.png");
+		expect(calls[1][8]).toContain("<h1>mock.html screenshots</h1>");
 		expect(calls[1][9]).toBe(true);
 	});
 
