@@ -9,6 +9,7 @@ type MuxPiState = {
 	paneId: string;
 	pid: number;
 	cwd: string;
+	sessionId?: string;
 	sessionFile?: string;
 	sessionName?: string;
 	provider?: string;
@@ -112,6 +113,7 @@ export default function muxSidebarExtension(pi: ExtensionAPI) {
 				paneId: pane,
 				pid: process.pid,
 				cwd: ctx.cwd,
+				sessionId: ctx.sessionManager.getSessionId(),
 				sessionFile: ctx.sessionManager.getSessionFile() ?? undefined,
 				sessionName: sessionName(pi),
 				provider: ctx.model?.provider,
