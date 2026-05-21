@@ -60,4 +60,4 @@ If no manual validation was performed or reported, write:
 Manual testing not reported.
 ```
 
-Do not replace this with automated command output unless the PR template explicitly asks for automated checks.
+Do not replace this with automated command output or a list of unit/lint/typecheck/build commands.

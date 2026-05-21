@@ -56,17 +56,21 @@ If diff is large, use `--stat` first and read key files.
 - Start from the current PR body.
 - Preserve intentional user-authored context, links, reviewer guidance, checklists, and non-stale notes.
 - Update stale or missing sections using the repo's PR template if one exists, but respect what each section is asking for.
+- If the repo has a PR template, preserve its top-level headings unless the existing PR body has already intentionally changed them.
 - Otherwise, if recent merged PRs share a consistent format, match it.
 - Fallback: 1-3 tight sections with bullets only where they improve scanability.
 - Focus on motivation, user/reviewer impact, and the high-level abstractions or behavior changes that matter for review.
 - Do not list low-level technical changes, touched files, renamed symbols, helper functions, or implementation minutiae that duplicate the diff.
-- Do not create a "what changed" inventory unless the template explicitly requires it; even then, keep it conceptual.
+- Do not create a "what changed" inventory or add a "Changes" section unless the template already has that section; even then, keep it conceptual.
 - Don't blindly replace the existing description with a fresh body that ignores current content.
 
 **Testing / validation sections**:
 
 - Treat "Testing", "QA", "Validation", "Screenshots", and similar template sections as manual verification reports.
-- Do not fill those sections with agent-run command output such as unit tests, lint, typecheck, or build commands unless the template explicitly asks for automated checks.
+- Do not list the tests, checks, or commands the agent ran in these sections.
+- Do not use the phrase "automated testing" or an "Automated" label/heading. It is too generic to be useful.
+- Do not fill those sections with agent-run command output or command inventories such as unit tests, lint, typecheck, or build commands.
+- If the template explicitly asks what tests were run, answer as manual verification only. Use "Manual testing not reported" when there is no manual evidence.
 - Prefer concrete manual evidence: scenario tested, environment, screenshots, screen recordings, or videos when applicable.
 - If manual testing seems necessary and there is no evidence, ask the user what they manually tested before updating the PR.
 - If using `--auto` or the user cannot answer, do not invent coverage. Write "Manual testing not reported" or leave the template's unchecked/manual item unchanged, depending on the template.

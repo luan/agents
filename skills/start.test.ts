@@ -50,3 +50,22 @@ describe("Plannotator-gated skills", () => {
 		expect(body).toContain("This does not apply to `vault_review.targetPath`");
 	});
 });
+
+describe("pr-descr skill", () => {
+	test("keeps testing sections focused on manual verification", () => {
+		const body = skill("pr-descr");
+
+		expect(body).toContain("Do not list the tests, checks, or commands the agent ran");
+		expect(body).toContain("Do not use the phrase \"automated testing\"");
+		expect(body).toContain("Use \"Manual testing not reported\" when there is no manual evidence");
+		expect(body).not.toContain("`Ran:` exact command names");
+		expect(body).not.toContain("unless the template explicitly asks for automated checks");
+	});
+
+	test("preserves template headings instead of adding generic change inventories", () => {
+		const body = skill("pr-descr");
+
+		expect(body).toContain("preserve its top-level headings");
+		expect(body).toContain("Do not create a \"what changed\" inventory or add a \"Changes\" section");
+	});
+});
