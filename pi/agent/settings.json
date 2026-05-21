@@ -1,5 +1,5 @@
 {
-  "lastChangelogVersion": "0.75.3",
+  "lastChangelogVersion": "0.75.4",
   "steeringMode": "all",
   "autoUpdate": true,
   "transport": "auto",
@@ -7,7 +7,7 @@
   "treeFilterMode": "default",
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-5.5",
-  "defaultThinkingLevel": "xhigh",
+  "defaultThinkingLevel": "high",
   "skills": [
     "../.codex/skills"
   ],
