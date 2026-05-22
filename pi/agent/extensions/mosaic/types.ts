@@ -74,6 +74,10 @@ export interface AgentRecord {
 	toolUses: number;
 	startedAt: number;
 	completedAt?: number;
+	/** Display label for the effective model used by this agent. */
+	modelName?: string;
+	/** Effective reasoning effort / thinking level used by this agent. */
+	thinkingLevel?: ThinkingLevel;
 	/** True for agents intentionally running outside the current inline tool call. */
 	isBackground?: boolean;
 	session?: AgentSession;
@@ -118,6 +122,8 @@ export interface NotificationDetails {
 	toolUses: number;
 	turnCount: number;
 	maxTurns?: number;
+	modelName?: string;
+	thinkingLevel?: ThinkingLevel;
 	totalTokens: number;
 	durationMs: number;
 	outputFile?: string;

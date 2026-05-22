@@ -47,7 +47,7 @@ import {
 	orderedModelPresetNames,
 	resolveModelPreset,
 } from "./model-presets.js";
-import { type ModelRegistry, resolveModel } from "./model-resolver.js";
+import { type ModelRegistry, resolveConfiguredModel, resolveModel } from "./model-resolver.js";
 import { currentMultiplexerTarget, killTarget } from "./multiplexer.js";
 import { hasMultiplexer, registerMosaicMux, resolveOwner, showMosaicSessions } from "./mux.js";
 import * as muxHeartbeat from "./mux-heartbeat.js";
@@ -94,6 +94,8 @@ interface FullSessionAgentRecord {
 	result?: string;
 	error?: string;
 	maxTurns?: number;
+	modelName?: string;
+	thinkingLevel?: AgentRecord["thinkingLevel"];
 	resultDelivered?: boolean;
 	worktree?: { path: string; branch: string };
 	placement?: unknown;
@@ -283,6 +285,8 @@ function formatTaskNotification(record: AgentRecord, resultMaxLen: number): stri
 	const contextPercent = getSessionContextPercent(record.session);
 	const ctxXml = contextPercent !== null ? `<context_percent>${Math.round(contextPercent)}</context_percent>` : "";
 	const compactXml = record.compactionCount ? `<compactions>${record.compactionCount}</compactions>` : "";
+	const modelXml = record.modelName ? `<model>${escapeXml(record.modelName)}</model>` : "";
+	const effortXml = record.thinkingLevel ? `<effort>${escapeXml(record.thinkingLevel)}</effort>` : "";
 
 	const resultPreview = record.result
 		? record.result.length > resultMaxLen
@@ -298,7 +302,7 @@ function formatTaskNotification(record: AgentRecord, resultMaxLen: number): stri
 		`<status>${escapeXml(status)}</status>`,
 		`<summary>Agent "${escapeXml(record.description)}" ${record.status}</summary>`,
 		`<result>${escapeXml(resultPreview)}</result>`,
-		`<usage><total_tokens>${totalTokens}</total_tokens><tool_uses>${record.toolUses}</tool_uses>${ctxXml}${compactXml}<duration_ms>${durationMs}</duration_ms></usage>`,
+		`<usage>${modelXml}${effortXml}<total_tokens>${totalTokens}</total_tokens><tool_uses>${record.toolUses}</tool_uses>${ctxXml}${compactXml}<duration_ms>${durationMs}</duration_ms></usage>`,
 		`</task-notification>`,
 	]
 		.filter(Boolean)
@@ -320,6 +324,8 @@ function buildNotificationDetails(
 		toolUses: record.toolUses,
 		turnCount: activity?.turnCount ?? 0,
 		maxTurns: activity?.maxTurns,
+		modelName: record.modelName,
+		thinkingLevel: record.thinkingLevel,
 		totalTokens,
 		durationMs: record.completedAt ? record.completedAt - record.startedAt : 0,
 		outputFile: record.outputFile,
@@ -351,6 +357,8 @@ export default function (pi: ExtensionAPI) {
 
 			// Line 2: stats
 			const parts: string[] = [];
+			if (d.modelName) parts.push(d.modelName);
+			if (d.thinkingLevel) parts.push(`effort ${d.thinkingLevel}`);
 			if (d.turnCount > 0) parts.push(formatTurns(d.turnCount, d.maxTurns));
 			if (d.toolUses > 0) parts.push(`${d.toolUses} tool use${d.toolUses === 1 ? "" : "s"}`);
 			if (d.totalTokens > 0) parts.push(formatTokens(d.totalTokens));
@@ -708,6 +716,8 @@ export default function (pi: ExtensionAPI) {
 			completedAt: fullSession.completedAt,
 			isBackground: true,
 			worktree: fullSession.worktree,
+			modelName: fullSession.modelName,
+			thinkingLevel: fullSession.thinkingLevel,
 			lifetimeUsage: activity?.lifetimeUsage ?? { input: 0, output: 0, cacheWrite: 0 },
 			compactionCount: 0,
 			mosaicIdentity: fullSession.mosaicIdentity,
@@ -835,7 +845,7 @@ export default function (pi: ExtensionAPI) {
 		runInBackground?: boolean;
 		isolation?: "worktree";
 		cwd?: string;
-		onTextDelta?: (fullText: string) => void;
+		onTextDelta?: (fullText: string, metadata?: { modelName?: string; thinkingLevel?: string }) => void;
 	}
 
 	function resolveAgentType(agentType: string | undefined): {
@@ -849,14 +859,14 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function resolveExplicitSelection(input: SpawnAgentInput): {
-		model?: unknown;
-		thinking?: string;
+		model?: any;
+		thinking?: AgentRecord["thinkingLevel"];
 	} {
 		if (!currentCtx) throw new Error("No active session");
 		if (input.model) {
 			const resolved = resolveModel(input.model, currentCtx.modelRegistry as ModelRegistry);
 			if (typeof resolved === "string") throw new Error(resolved);
-			return { model: resolved, thinking: input.thinking };
+			return { model: resolved, thinking: input.thinking as AgentRecord["thinkingLevel"] };
 		}
 		if (input.modelPreset) {
 			const resolved = resolveModelPreset(
@@ -866,10 +876,25 @@ export default function (pi: ExtensionAPI) {
 			);
 			return {
 				model: resolved.model,
-				thinking: input.thinking ?? resolved.thinking,
+				thinking: (input.thinking as AgentRecord["thinkingLevel"] | undefined) ?? resolved.thinking,
 			};
 		}
-		return { thinking: input.thinking };
+		return { thinking: input.thinking as AgentRecord["thinkingLevel"] | undefined };
+	}
+
+	function resolveAgentRunDisplay(
+		customConfig: AgentConfig | undefined,
+		explicit: { model?: any; thinking?: AgentRecord["thinkingLevel"] },
+	): { modelName?: string; thinkingLevel?: AgentRecord["thinkingLevel"] } {
+		if (!currentCtx) throw new Error("No active session");
+		const registry = currentCtx.modelRegistry as ModelRegistry;
+		const preset = resolveModelPreset(customConfig?.modelPreset, registry, allModelPresets());
+		const configuredModel = resolveConfiguredModel(customConfig?.model, registry);
+		const effectiveModel = explicit.model ?? configuredModel ?? preset.model ?? currentCtx.model;
+		return {
+			modelName: modelLabelFromModel(effectiveModel),
+			thinkingLevel: explicit.thinking ?? customConfig?.thinking ?? preset.thinking,
+		};
 	}
 
 	async function spawnAgent(input: SpawnAgentInput) {
@@ -889,6 +914,7 @@ export default function (pi: ExtensionAPI) {
 		const agentCwd = resolveAgentCwd(input.cwd, currentCtx.cwd);
 		const { subagentType, customConfig } = resolveAgentType(input.agentType);
 		const explicit = resolveExplicitSelection(input);
+		const runDisplay = resolveAgentRunDisplay(customConfig, explicit);
 		const plannedId = randomUUID().slice(0, 17);
 		const transport = await ensureMessageTransport();
 		const startedAt = Date.now();
@@ -932,6 +958,8 @@ export default function (pi: ExtensionAPI) {
 			worktree: launched.worktree,
 			placement: launched.placement,
 			mosaicIdentity: launched.mosaicIdentity,
+			modelName: runDisplay.modelName,
+			thinkingLevel: runDisplay.thinkingLevel,
 		});
 		agentActivity.set(launched.id, {
 			activeTools: new Map(),
@@ -958,12 +986,14 @@ export default function (pi: ExtensionAPI) {
 	async function spawnInProcessAgent(input: SpawnAgentInput) {
 		if (!currentCtx) throw new Error("No active session");
 		const agentCwd = resolveAgentCwd(input.cwd, currentCtx.cwd);
-		const { subagentType } = resolveAgentType(input.agentType);
+		const { subagentType, customConfig } = resolveAgentType(input.agentType);
 		const explicit = resolveExplicitSelection(input);
+		const runDisplay = resolveAgentRunDisplay(customConfig, explicit);
 		const options = {
 			description: input.taskName,
+			modelName: runDisplay.modelName,
 			model: explicit.model as any,
-			thinkingLevel: explicit.thinking as any,
+			thinkingLevel: runDisplay.thinkingLevel,
 			isolation: input.isolation,
 			cwd: agentCwd,
 		};
@@ -971,7 +1001,11 @@ export default function (pi: ExtensionAPI) {
 		if (input.runInBackground === false) {
 			const record = await manager.spawnAndWait(pi, currentCtx, subagentType, input.message, {
 				...options,
-				onTextDelta: (_delta, fullText) => input.onTextDelta?.(fullText),
+				onTextDelta: (_delta, fullText) =>
+					input.onTextDelta?.(fullText, {
+						modelName: runDisplay.modelName,
+						thinkingLevel: runDisplay.thinkingLevel,
+					}),
 			});
 			record.resultConsumed = true;
 			return {
@@ -982,6 +1016,8 @@ export default function (pi: ExtensionAPI) {
 				status: record.status,
 				result: record.result,
 				error: record.error,
+				modelName: record.modelName,
+				thinkingLevel: record.thinkingLevel,
 			};
 		}
 
@@ -1165,6 +1201,8 @@ export default function (pi: ExtensionAPI) {
 				completedAt: fullSession.completedAt,
 				isBackground: true,
 				worktree: fullSession.worktree,
+				modelName: fullSession.modelName,
+				thinkingLevel: fullSession.thinkingLevel,
 				lifetimeUsage: activity.lifetimeUsage,
 				compactionCount: 0,
 				mosaicIdentity,
@@ -1364,6 +1402,11 @@ export default function (pi: ExtensionAPI) {
 		const name = model.includes("/") ? model.split("/").pop()! : model;
 		// Strip trailing date suffix (e.g. "claude-haiku-4-5-20251001" → "claude-haiku-4-5")
 		return name.replace(/-\d{8}$/, "");
+	}
+
+	function modelLabelFromModel(model: any): string | undefined {
+		const raw = typeof model?.name === "string" && model.name.trim() ? model.name : model?.id;
+		return typeof raw === "string" && raw.trim() ? getModelLabelFromConfig(raw.trim()) : undefined;
 	}
 
 	let customModelPresets: Record<string, ModelPresetCandidate[]> = {};

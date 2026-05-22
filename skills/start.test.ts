@@ -37,9 +37,9 @@ describe("Plannotator-gated skills", () => {
 			const body = skill(name);
 
 			expect(body).toContain("absolute");
-			expect(body).toContain("targetPath");
 			expect(body).toContain("Do not pass vault stems");
 			expect(body).toContain("exact absolute file");
+			expect(body).toContain("plannotator");
 		});
 	}
 
@@ -47,7 +47,7 @@ describe("Plannotator-gated skills", () => {
 		const body = skill("plan");
 
 		expect(body).toContain("Use repo-relative paths only inside artifact content");
-		expect(body).toContain("This does not apply to `vault_review.targetPath`");
+		expect(body).toContain("Plannotator still needs the real absolute local file path");
 	});
 });
 

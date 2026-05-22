@@ -10,6 +10,8 @@ export interface PromptExtras {
 	memoryBlock?: string;
 	/** Preloaded skill contents to inject. */
 	skillBlocks?: { name: string; content: string }[];
+	/** The immutable task this subagent was spawned to perform. */
+	delegatedTask?: { taskName: string; message: string };
 }
 
 /**
@@ -43,6 +45,9 @@ Platform: ${env.platform}`;
 		for (const skill of extras.skillBlocks) {
 			extraSections.push(`\n# Preloaded Skill: ${skill.name}\n${skill.content}`);
 		}
+	}
+	if (extras?.delegatedTask) {
+		extraSections.push(formatDelegatedTask(extras.delegatedTask));
 	}
 	const extrasSuffix = extraSections.length > 0 ? `\n\n${extraSections.join("\n")}` : "";
 
@@ -91,3 +96,17 @@ const genericBase = `# Role
 You are a general-purpose coding agent for complex, multi-step tasks.
 You have full access to read, write, edit files, and execute commands.
 Do what has been asked; nothing more, nothing less.`;
+
+function formatDelegatedTask(task: { taskName: string; message: string }): string {
+	return `<delegated_task>
+This is the task you were spawned to complete. Treat it as authoritative even after conversation compaction.
+
+<task_name>
+${task.taskName}
+</task_name>
+
+<task_message>
+${task.message}
+</task_message>
+</delegated_task>`;
+}

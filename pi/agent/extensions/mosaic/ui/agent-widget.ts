@@ -129,6 +129,14 @@ export function formatTurns(turnCount: number, maxTurns?: number | null): string
 	return maxTurns != null ? `⟳${turnCount}≤${maxTurns}` : `⟳${turnCount}`;
 }
 
+export function formatAgentModelInfo(
+	agent: { modelName?: string; thinkingLevel?: string },
+	theme: Theme,
+): string | undefined {
+	const parts = [agent.modelName, agent.thinkingLevel ? `effort ${agent.thinkingLevel}` : undefined].filter(Boolean);
+	return parts.length > 0 ? theme.fg("muted", parts.join(" · ")) : undefined;
+}
+
 /** Format milliseconds as human-readable duration. */
 export function formatMs(ms: number): string {
 	return `${(ms / 1000).toFixed(1)}s`;
@@ -370,6 +378,8 @@ export class AgentWidget {
 			completedAt?: number;
 			error?: string;
 			mosaicIdentity?: AgentRecord["mosaicIdentity"];
+			modelName?: string;
+			thinkingLevel?: string;
 		},
 		theme: Theme,
 	): { line: string; statusIcon: string } {
@@ -399,6 +409,8 @@ export class AgentWidget {
 		}
 
 		const parts: string[] = [];
+		const modelInfo = formatAgentModelInfo(a, theme);
+		if (modelInfo) parts.push(modelInfo);
 		const activity = this.agentActivity.get(a.id);
 		if (activity) parts.push(formatTurns(activity.turnCount, activity.maxTurns));
 		if (a.toolUses > 0) parts.push(`${a.toolUses} tool use${a.toolUses === 1 ? "" : "s"}`);
@@ -468,6 +480,8 @@ export class AgentWidget {
 			const tokenText = tokens > 0 ? formatSessionTokens(tokens, contextPercent, theme, a.compactionCount) : "";
 
 			const parts: string[] = [];
+			const modelInfo = formatAgentModelInfo(a, theme);
+			if (modelInfo) parts.push(modelInfo);
 			if (bg) parts.push(formatTurns(bg.turnCount, bg.maxTurns));
 			if (toolUses > 0) parts.push(`${toolUses} tool use${toolUses === 1 ? "" : "s"}`);
 			if (tokenText) parts.push(tokenText);

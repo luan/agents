@@ -26,7 +26,8 @@ Produce a compact review brief: where the solution is going, which decisions mat
    - Avoid implementation sequencing, task decomposition, and file-by-file instructions; they are out of scope for design.
 
 3. **Write the artifact**
-   - Create or update with `vault_write(op="create", type="design", ...)`.
+   - Create new artifacts with `ct vault create -t design --topic "..." --json`; parse the returned `path` and edit that file with `apply_patch`.
+   - For existing artifacts, locate/read them with `ct vault read [-t design] <stem> --json` or `ct vault list -t design --json`, then edit the real file path with `apply_patch`.
    - Keep it reviewable: target 1-2 screenfuls, hard cap around 120 lines, and prefer 3-5 design decisions.
    - Link to research for evidence; do not copy long current-state findings into the design.
    - Include:
@@ -41,11 +42,11 @@ Produce a compact review brief: where the solution is going, which decisions mat
    - If the design needs more than 5 decisions, merge details under broader decisions or defer implementation-level choices out of the artifact.
 
 4. **Review**
-   - Unless `--auto` is clearly safe, resolve the design artifact to its real absolute local filesystem path and run `vault_review(op="gate", gateType="custom")` with that absolute `targetPath` and a title that says "Design Discussion".
-   - Do not pass vault stems, wiki-link targets, repo-relative paths, or artifact-link paths as `targetPath`.
+   - Unless `--auto` is clearly safe, resolve the design artifact to its real absolute local filesystem path and run `plannotator annotate "<absolute-path>" --gate --json`.
+   - Do not pass vault stems, wiki-link targets, repo-relative paths, or artifact-link paths to Plannotator.
    - In the gate `instructions`, name the exact absolute file being reviewed and state that it is a design discussion.
    - If denied, revise the same artifact and re-gate.
-   - Commit only after approval with `vault_write(op="commit")`.
+   - Commit only after approval with `ct vault commit "<absolute-path>" --message "..." --json`.
 
 ## Final response
 

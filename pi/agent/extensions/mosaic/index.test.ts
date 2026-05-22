@@ -264,6 +264,8 @@ describe("mosaic extension registration", () => {
 			windowName: "mc: review/probe",
 			startedAt: 1000,
 			status: "running",
+			modelName: "claude-haiku-4-5",
+			thinkingLevel: "high",
 			mosaicIdentity: { label: "A1", color: "f38ba8" },
 		});
 
@@ -286,6 +288,12 @@ describe("mosaic extension registration", () => {
 			display: true,
 		});
 		expect(sent[0]?.message.content).toContain("FULL_NATIVE_RESULT");
+		expect(sent[0]?.message.content).toContain("<model>claude-haiku-4-5</model>");
+		expect(sent[0]?.message.content).toContain("<effort>high</effort>");
+		expect(sent[0]?.message.details).toMatchObject({
+			modelName: "claude-haiku-4-5",
+			thinkingLevel: "high",
+		});
 	});
 });
 

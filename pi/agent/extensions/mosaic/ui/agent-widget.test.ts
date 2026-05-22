@@ -178,6 +178,35 @@ describe("mosaic agent widget identity", () => {
 		expect(stripAnsi(lines.join("\n"))).toContain("Background probe");
 	});
 
+	test("renders model and effort metadata in the HUD", () => {
+		const theme: Theme = {
+			fg: (_color, text) => text,
+			bold: (text) => text,
+		};
+		const now = Date.now();
+		const widget = new AgentWidget({ listAgents: () => [] } as never, new Map(), () => [
+			{
+				id: "a1",
+				type: "Explore",
+				description: "Inspect scope",
+				status: "running",
+				toolUses: 0,
+				startedAt: now,
+				modelName: "claude-haiku-4-5",
+				thinkingLevel: "high",
+				lifetimeUsage: { input: 0, output: 0, cacheWrite: 0 },
+				compactionCount: 0,
+			},
+		]);
+
+		const lines = (widget as unknown as { renderWidget(tui: unknown, theme: Theme): string[] }).renderWidget(
+			{ terminal: { columns: 100 } },
+			theme,
+		);
+
+		expect(stripAnsi(lines.join("\n"))).toContain("claude-haiku-4-5 · effort high");
+	});
+
 	test("expires completed mosaic agents by wall clock so idle HUD timers stop", () => {
 		const theme: Theme = {
 			fg: (_color, text) => text,

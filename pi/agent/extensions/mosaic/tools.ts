@@ -28,7 +28,7 @@ export interface MosaicToolDeps {
 		runInBackground?: boolean;
 		isolation?: "worktree";
 		cwd?: string;
-		onTextDelta?: (fullText: string) => void;
+		onTextDelta?: (fullText: string, metadata?: { modelName?: string; thinkingLevel?: string }) => void;
 	}): Promise<unknown>;
 	sendMessage(input: { target: string; message: string; triggerTurn: boolean }): Promise<unknown>;
 	waitAgent(input: { afterSeq?: number; timeoutMs?: number }): Promise<unknown>;
@@ -44,6 +44,8 @@ interface SpawnAgentRenderDetails {
 	result?: string;
 	error?: string;
 	responseText?: string;
+	modelName?: string;
+	thinkingLevel?: string;
 }
 
 function textResult(value: unknown, details?: unknown) {
@@ -100,10 +102,14 @@ class InlineAgentOutputRender implements Component {
 	constructor(
 		private readonly output: string,
 		private readonly theme: { fg(color: string, text: string): string; bold(text: string): string },
+		private readonly modelName?: string,
+		private readonly thinkingLevel?: string,
 	) {}
 
 	render(width: number): string[] {
-		return renderInlineOutputBox(this.output, this.theme, width);
+		const meta = formatInlineModelInfo(this.modelName, this.thinkingLevel);
+		const box = renderInlineOutputBox(this.output, this.theme, width);
+		return meta ? [truncateToWidth(this.theme.fg("dim", `  ${meta}`), Math.max(1, width)), ...box] : box;
 	}
 
 	invalidate(): void {}
@@ -166,7 +172,17 @@ function spawnAgentResultRender(
 ): Component {
 	const details = getSpawnRenderDetails(result);
 	if (details?.background !== false || details.runtime !== "in-process") return emptyMosaicRender;
-	return new InlineAgentOutputRender(details.responseText ?? details.result ?? "", theme);
+	return new InlineAgentOutputRender(
+		details.responseText ?? details.result ?? "",
+		theme,
+		details.modelName,
+		details.thinkingLevel,
+	);
+}
+
+function formatInlineModelInfo(modelName: string | undefined, thinkingLevel: string | undefined): string | undefined {
+	const parts = [modelName, thinkingLevel ? `effort ${thinkingLevel}` : undefined].filter(Boolean);
+	return parts.length > 0 ? parts.join(" · ") : undefined;
 }
 
 function renderInlineOutputBox(
@@ -244,7 +260,7 @@ export function createMosaicTools(deps: MosaicToolDeps) {
 					runInBackground: params.run_in_background,
 					isolation: params.isolation,
 					cwd: params.cwd,
-					onTextDelta: (fullText) => {
+					onTextDelta: (fullText, metadata) => {
 						onUpdate?.(
 							textResult(fullText, {
 								taskName: params.task_name,
@@ -252,6 +268,8 @@ export function createMosaicTools(deps: MosaicToolDeps) {
 								background: false,
 								status: "running",
 								responseText: fullText,
+								modelName: metadata?.modelName,
+								thinkingLevel: metadata?.thinkingLevel,
 							}),
 						);
 					},

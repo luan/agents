@@ -21,6 +21,7 @@ import type { Theme } from "./agent-widget.js";
 import {
 	type AgentActivity,
 	describeActivity,
+	formatAgentModelInfo,
 	formatDuration,
 	formatSessionTokens,
 	getDisplayName,
@@ -117,6 +118,8 @@ export class ConversationViewer implements Component {
 		const duration = formatDuration(this.record.startedAt, this.record.completedAt);
 
 		const headerParts: string[] = [duration];
+		const modelInfo = formatAgentModelInfo(this.record, th);
+		if (modelInfo) headerParts.unshift(modelInfo);
 		const toolUses = this.activity?.toolUses ?? this.record.toolUses;
 		if (toolUses > 0) headerParts.unshift(`${toolUses} tool${toolUses === 1 ? "" : "s"}`);
 		const tokens = getLifetimeTotal(this.activity?.lifetimeUsage);

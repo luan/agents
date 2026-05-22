@@ -193,7 +193,10 @@ describe("createMosaicTools", () => {
 		const tools = createMosaicTools({
 			...fakeDeps(),
 			spawnAgent: async (input) => {
-				input.onTextDelta?.("one\ntwo\nthree\nfour");
+				input.onTextDelta?.("one\ntwo\nthree\nfour", {
+					modelName: "GPT-5.3 Codex Spark",
+					thinkingLevel: "low",
+				});
 				return {
 					agentId: "agent-1",
 					taskName: input.taskName,
@@ -201,6 +204,8 @@ describe("createMosaicTools", () => {
 					background: false,
 					status: "completed",
 					result: "final\nline",
+					modelName: "GPT-5.3 Codex Spark",
+					thinkingLevel: "low",
 				};
 			},
 		});
@@ -230,10 +235,12 @@ describe("createMosaicTools", () => {
 			)
 			.render(40);
 
-		expect(streamed).toHaveLength(5);
+		expect(streamed).toHaveLength(6);
+		expect(streamed?.join("\n")).toContain("GPT-5.3 Codex Spark · effort low");
 		expect(streamed?.join("\n")).toContain("two");
 		expect(streamed?.join("\n")).toContain("four");
-		expect(final).toHaveLength(5);
+		expect(final).toHaveLength(6);
+		expect(final?.join("\n")).toContain("GPT-5.3 Codex Spark · effort low");
 		expect(final?.join("\n")).toContain("final");
 		expect(final?.join("\n")).toContain("line");
 	});

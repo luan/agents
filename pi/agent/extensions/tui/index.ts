@@ -173,12 +173,27 @@ export default function (pi: ExtensionAPI) {
 	const contextPulseDeadlines = new Map<number, number>();
 	let disposed = false;
 	let uiGeneration = 0;
+	let activeSessionFile: string | undefined;
 	let unsubscribeSkillfulCache: (() => void) | undefined;
 	let editorSessionIdentity: EditorSessionIdentity | undefined;
 
 	const isStaleCtxError = (error: unknown) =>
 		(error instanceof Error ? error.message : String(error)).includes("ctx is stale");
 	const isCurrent = (generation: number) => !disposed && generation === uiGeneration;
+	const sessionFileFor = (ctx: ExtensionContext): string | undefined => {
+		try {
+			return (ctx as Partial<ExtensionContext>).sessionManager?.getSessionFile?.();
+		} catch (error) {
+			if (isStaleCtxError(error)) return undefined;
+			throw error;
+		}
+	};
+	const isCurrentSessionContext = (ctx: ExtensionContext): boolean => {
+		const sessionFile = sessionFileFor(ctx);
+		return sessionFile !== undefined && sessionFile === activeSessionFile;
+	};
+	const hasSessionManager = (ctx: unknown): boolean =>
+		Boolean((ctx as Partial<ExtensionContext> | undefined)?.sessionManager);
 
 	const refresh = () => {
 		if (!disposed) requestFooterRender?.();
@@ -385,6 +400,7 @@ export default function (pi: ExtensionAPI) {
 
 	const syncStateIfCurrent = (ctx: ExtensionContext, activeMessage?: unknown) => {
 		if (disposed) return false;
+		if (!isCurrentSessionContext(ctx)) return false;
 		try {
 			syncState(ctx, activeMessage);
 			return true;
@@ -599,15 +615,20 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
+		const sessionFile = sessionFileFor(ctx);
+		if (!sessionFile) return;
+		activeSessionFile = sessionFile;
 		disposed = false;
 		uiGeneration++;
 		installUi(ctx);
 	});
 
-	pi.on("session_shutdown", async () => {
+	pi.on("session_shutdown", async (_event, ctx) => {
+		if (hasSessionManager(ctx) && !isCurrentSessionContext(ctx)) return;
 		persistWorkingTimer({ freezeActive: true });
 		disposed = true;
 		uiGeneration++;
+		activeSessionFile = undefined;
 		requestFooterRender = undefined;
 		unsubscribeSkillfulCache?.();
 		unsubscribeSkillfulCache = undefined;

@@ -92,7 +92,7 @@ export async function launchFullSessionAgent(
 	const config = getConfig(options.type);
 	const skills = options.isolated ? false : config.skills;
 
-	const extras: PromptExtras = {};
+	const extras: PromptExtras = { delegatedTask: { taskName: options.description, message: options.prompt } };
 	if (Array.isArray(skills)) {
 		const loaded = preloadSkills(skills, effectiveCwd);
 		if (loaded.length > 0) extras.skillBlocks = loaded;
@@ -127,7 +127,8 @@ export async function launchFullSessionAgent(
 	const env = await detectEnv(pi, effectiveCwd);
 	let systemPrompt = buildAgentPrompt(agentConfig, effectiveCwd, env, ctx.getSystemPrompt(), extras);
 	if (options.messageEndpoint) systemPrompt = withMosaicLeaderInstructions(systemPrompt);
-	const prompt = options.inheritContext ? buildParentContext(ctx) + options.prompt : options.prompt;
+	const parentContext = options.inheritContext ? buildParentContext(ctx) : "";
+	const prompt = parentContext ? `${parentContext}\n\n${options.prompt}` : options.prompt;
 	const preset = resolveModelPreset(
 		agentConfig.modelPreset,
 		ctx.modelRegistry as ModelRegistry,

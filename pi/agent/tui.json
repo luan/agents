@@ -25,9 +25,6 @@
     "cost": "success",
     "separator": "borderMuted"
   },
-  "compact": {
-    "minTerminalRows": 28
-  },
   "usageBars": {
     "visible": false
   }

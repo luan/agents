@@ -72,6 +72,7 @@ export interface ToolActivity {
 export interface RunOptions {
 	/** ExtensionAPI instance — used for pi.exec() instead of execSync. */
 	pi: ExtensionAPI;
+	description?: string;
 	model?: Model<any>;
 	maxTurns?: number;
 	signal?: AbortSignal;
@@ -166,7 +167,7 @@ export async function runAgent(
 	const parentSystemPrompt = ctx.getSystemPrompt();
 
 	// Build prompt extras (memory, skill preloading)
-	const extras: PromptExtras = {};
+	const extras: PromptExtras = { delegatedTask: { taskName: options.description ?? type, message: prompt } };
 
 	// Resolve extensions/skills: isolated overrides to false
 	const extensions = options.isolated ? false : config.extensions;
@@ -360,7 +361,7 @@ export async function runAgent(
 	if (options.inheritContext) {
 		const parentContext = buildParentContext(ctx);
 		if (parentContext) {
-			effectivePrompt = parentContext + prompt;
+			effectivePrompt = `${parentContext}\n\n${prompt}`;
 		}
 	}
 

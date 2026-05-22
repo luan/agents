@@ -32,6 +32,7 @@ interface SpawnArgs {
 
 interface SpawnOptions {
 	description: string;
+	modelName?: string;
 	model?: Model<any>;
 	maxTurns?: number;
 	isolated?: boolean;
@@ -118,6 +119,8 @@ export class AgentManager {
 			isBackground: options.isBackground === true,
 			toolUses: 0,
 			startedAt: Date.now(),
+			modelName: options.modelName ?? modelLabel(options.model),
+			thinkingLevel: options.thinkingLevel,
 			abortController,
 			lifetimeUsage: { input: 0, output: 0, cacheWrite: 0 },
 			compactionCount: 0,
@@ -181,6 +184,7 @@ export class AgentManager {
 
 		const promise = runAgent(ctx, type, prompt, {
 			pi,
+			description: options.description,
 			model: options.model,
 			maxTurns: options.maxTurns,
 			isolated: options.isolated,
@@ -488,4 +492,9 @@ export class AgentManager {
 			/* ignore */
 		}
 	}
+}
+
+function modelLabel(model: Model<any> | undefined): string | undefined {
+	const name = model?.name || model?.id;
+	return typeof name === "string" && name.trim() ? name.trim() : undefined;
 }

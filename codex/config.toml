@@ -75,14 +75,14 @@ status_line = [
 queue = "alt-enter"
 
 [marketplaces.claude-plugins-official]
-last_updated = "2026-05-17T06:06:47Z"
-last_revision = "b5a156b6ecd2f69c418184b7c093930ddabaf9c0"
+last_updated = "2026-05-20T06:06:35Z"
+last_revision = "bef2b9b246e2072d167a71b7a8d65718ec55d2ef"
 source_type = "git"
 source = "https://github.com/anthropics/claude-plugins-official.git"
 
 [marketplaces.worktrunk]
-last_updated = "2026-05-17T06:06:50Z"
-last_revision = "2c675e00f7513fcf4c397b72bbd76f0a17c52d00"
+last_updated = "2026-05-20T06:06:38Z"
+last_revision = "667d0f5869d1d1149d9ab61df4b090865142df28"
 source_type = "git"
 source = "https://github.com/max-sixty/worktrunk.git"
 
@@ -127,6 +127,9 @@ trust_level = "trusted"
 trust_level = "trusted"
 
 [projects."/Users/luan/src/skrl"]
+trust_level = "trusted"
+
+[projects."/Users/luan/src/boo"]
 trust_level = "trusted"
 
 [hooks.state]
