@@ -247,7 +247,7 @@ pub enum TaskAction {
         json: bool,
     },
 
-    #[command(about = "Render the ratatui task overlay model")]
+    #[command(about = "Render the tuirealm task management interface")]
     Tui {
         #[arg(long, default_value_t = 100, help = "Render width")]
         width: u16,

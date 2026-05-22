@@ -17,7 +17,7 @@ dirs = "^6"
 image = "^0.25"
 getrandom = "^0.3"
 regex = "^1"
-ratatui = "^0.29"
+ratatui = "^0.30"
 rmcp = { version = "^1", features = ["server", "macros", "transport-io"] }
 rusqlite = { version = "^0.39", features = ["bundled"] }
 serde = { version = "^1", features = ["derive"] }
@@ -26,8 +26,11 @@ sha1 = "^0.11"
 similar = "^3"
 sym = { path = "../sym" }
 thiserror = "^2"
+tempfile = "^3"
 tokio = { version = "^1", features = ["rt", "macros", "io-std"] }
 toml = "^0.8"
+tuirealm = "4"
+tui-textarea = { package = "tui-textarea-2", version = "0.11" }
 tree-sitter = { workspace = true }
 tree-sitter-bash = { workspace = true }
 tree-sitter-c = { workspace = true }
@@ -50,4 +53,3 @@ usage-bars = { path = "../usage-bars" }
 [dev-dependencies]
 assert_cmd = "^2"
 predicates = "^3"
-tempfile = "^3"

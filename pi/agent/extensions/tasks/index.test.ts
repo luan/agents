@@ -806,7 +806,7 @@ describe("tasks extension", () => {
 			content: [
 				{
 					type: "text",
-					text: "Accepted PG4W2K4Q03: Smoke test task tools\n\nHuman note: do the next thing",
+					text: "Accepted PG4W2K4Q03: Smoke test task tools\n\nHuman note: do the next thing\n\nThis human acceptance has already been recorded. Do not call task accept or update this task to done again.",
 				},
 			],
 			display: true,
@@ -814,7 +814,12 @@ describe("tasks extension", () => {
 		});
 		expect(sent.map((item) => item.message)).toContainEqual({
 			customType: "task-transition",
-			content: [{ type: "text", text: "Rejected PG4W2K4Q03: Smoke test task tools\n\nRejection note: needs tests" }],
+			content: [
+				{
+					type: "text",
+					text: "Rejected PG4W2K4Q03: Smoke test task tools\n\nRejection note: needs tests\n\nThis human rejection has already been recorded. Do not call task reject or update this task to rejected again; treat the note as feedback for the next revision.",
+				},
+			],
 			display: true,
 			details: { action: "reject", taskId: "PG4W2K4Q03", status: "rejected", note: "needs tests" },
 		});
@@ -1015,6 +1020,47 @@ describe("tasks extension", () => {
 		expect(calls).toContainEqual(["ct", "task", "delete", "PG4W2K4Q03", "--json"]);
 		expect(calls.filter((call) => call.join(" ") === "ct task tui --json").length).toBeGreaterThan(3);
 		expect(widgetText).toContain("Smoke test");
+	});
+
+	test("/tasks edit enters embedded TUI edit mode", async () => {
+		const commands = new Map<string, any>();
+		const calls: string[][] = [];
+		let component: any;
+		tasksExtension(
+			{
+				registerTool() {},
+				on() {},
+				registerCommand(name: string, definition: any) {
+					commands.set(name, definition);
+				},
+			} as any,
+			{
+				runCommand: async (command: string, args: string[]) => {
+					calls.push([command, ...args]);
+					return {
+						stdout: JSON.stringify({ tasks: [{ ...task, body: "original body" }] }),
+						stderr: "",
+						exitCode: 0,
+					};
+				},
+			},
+		);
+
+		await commands.get("tasks").handler("", {
+			cwd: "/tmp/project",
+			ui: {
+				custom(factory: any) {
+					component = factory({ requestRender() {} }, theme, {}, () => {});
+					return Promise.resolve();
+				},
+			},
+		});
+
+		component.handleInput("e");
+		await component.waitForIdle();
+
+		expect(calls).toContainEqual(["ct", "task", "tui", "--json"]);
+		expect(calls.some((call) => call[1] === "task" && call[2] === "update")).toBe(false);
 	});
 
 	test("builds ct task commands with json output", () => {

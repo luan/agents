@@ -329,7 +329,11 @@ function publishTaskTransition(
 	const message = taskTransitionMessage(action, task);
 	if (!message) return;
 	const noteLabel = action === "accept" ? "Human note" : "Rejection note";
-	const visibleText = note ? `${message}\n\n${noteLabel}: ${note}` : message;
+	const instruction =
+		action === "accept"
+			? "This human acceptance has already been recorded. Do not call task accept or update this task to done again."
+			: "This human rejection has already been recorded. Do not call task reject or update this task to rejected again; treat the note as feedback for the next revision.";
+	const visibleText = [message, note ? `${noteLabel}: ${note}` : undefined, instruction].filter(Boolean).join("\n\n");
 	ctx.ui.notify?.(message, "info");
 	pi.sendMessage?.(
 		{
@@ -609,6 +613,23 @@ async function showTaskBoard(
 							onReload: load,
 							onMutate: async (action, params) => {
 								await executeTask(command, runCommand, ctx.cwd, action, params, config, pi, ctx, ctx.signal);
+								return load();
+							},
+							onEditBody: async (task) => {
+								const edited = await ctx.ui.editor(`Edit task ${task.id} body`, task.body ?? "");
+								if (edited !== task.body) {
+									await executeTask(
+										command,
+										runCommand,
+										ctx.cwd,
+										"update",
+										{ id: task.id, body: edited },
+										config,
+										pi,
+										ctx,
+										ctx.signal,
+									);
+								}
 								return load();
 							},
 							onChange: () => tui.requestRender(),
@@ -1358,6 +1379,7 @@ export class TaskBoardOverlay implements Component {
 			onClose: () => void;
 			onReload: () => Promise<TaskRecord[]>;
 			onMutate?: (action: "update" | "delete", params: Record<string, unknown>) => Promise<TaskRecord[]>;
+			onEditBody?: (task: TaskRecord) => Promise<TaskRecord[]>;
 			onChange?: () => void;
 			initialTaskId?: string;
 		},
@@ -1517,6 +1539,10 @@ export class TaskBoardOverlay implements Component {
 			return;
 		}
 		if (this.isBusy()) return;
+		if (data === "e") {
+			this.editBody();
+			return;
+		}
 		if (matchesAnyKey(data, bindings.assignCurrent)) {
 			this.updateSelected({ assigned_to: "current" });
 			return;
@@ -1553,6 +1579,24 @@ export class TaskBoardOverlay implements Component {
 			return;
 		}
 		if (matchesAnyKey(data, bindings.reload)) this.reload();
+	}
+
+	private editBody(): void {
+		const task = this.currentTask();
+		if (!task || !this.options.onEditBody) return;
+		this.pendingMutation = this.options
+			.onEditBody(task)
+			.then((tasks) => {
+				this.tasks = tasks;
+				this.boardSelection = selectionForTask(buildTaskBoardColumns(tasks), task.id) ?? this.boardSelection;
+			})
+			.catch((error) => {
+				this.errorMessage = taskBoardErrorMessage("Edit failed", error);
+			})
+			.finally(() => {
+				this.pendingMutation = undefined;
+				this.options.onChange?.();
+			});
 	}
 
 	render(width: number): string[] {
@@ -2079,6 +2123,8 @@ interface RatatuiTaskTuiResponse {
 	request_id: number;
 	lines?: string[];
 	selected_task_id?: string | null;
+	mutation?: { action: "update" | "delete"; params: Record<string, unknown> };
+	editing?: boolean;
 }
 
 class RatatuiTaskBoardOverlay implements Component {
@@ -2091,6 +2137,7 @@ class RatatuiTaskBoardOverlay implements Component {
 	private pendingMutation?: Promise<void>;
 	private child?: ChildProcessWithoutNullStreams;
 	private errorMessage?: string;
+	private editing = false;
 
 	constructor(
 		private readonly options: {
@@ -2123,22 +2170,30 @@ class RatatuiTaskBoardOverlay implements Component {
 
 	handleInput(data: string): void {
 		const bindings = this.options.keybindings ?? defaultConfig.keybindings;
-		if (matchesAnyKey(data, bindings.close)) {
+		if (data === "q" || (matchesAnyKey(data, bindings.close) && data !== "escape")) {
 			this.close();
 			this.options.onClose();
 			return;
 		}
 		if (this.pendingMutation) return;
+		if (this.editing) {
+			this.send({ input: this.ratatuiInput(data) });
+			return;
+		}
 		if (matchesAnyKey(data, bindings.left) || matchesAnyKey(data, bindings.up)) {
-			this.send({ input: "k" });
+			this.send({ input: matchesAnyKey(data, bindings.left) ? "left" : "up" });
 			return;
 		}
 		if (matchesAnyKey(data, bindings.right) || matchesAnyKey(data, bindings.down)) {
-			this.send({ input: "j" });
+			this.send({ input: matchesAnyKey(data, bindings.right) ? "right" : "down" });
 			return;
 		}
 		const task = this.currentTask();
 		if (!task) return;
+		if (data === "e") {
+			this.send({ input: "e" });
+			return;
+		}
 		if (matchesAnyKey(data, bindings.assignCurrent)) {
 			this.mutate("update", { id: task.id, assigned_to: "current" });
 			return;
@@ -2170,7 +2225,11 @@ class RatatuiTaskBoardOverlay implements Component {
 			}
 			return;
 		}
-		if (matchesAnyKey(data, bindings.reload)) this.send({ tasks: this.tasks });
+		if (matchesAnyKey(data, bindings.reload)) {
+			this.send({ tasks: this.tasks });
+			return;
+		}
+		this.send({ input: this.ratatuiInput(data) });
 	}
 
 	invalidate(): void {}
@@ -2219,8 +2278,48 @@ class RatatuiTaskBoardOverlay implements Component {
 		const payload = JSON.parse(line) as RatatuiTaskTuiResponse;
 		if (payload.lines) this.lines = payload.lines;
 		this.selectedTaskId = payload.selected_task_id ?? undefined;
+		this.editing = Boolean(payload.editing);
 		this.resolveRequest(payload.request_id);
 		this.options.onChange?.();
+		if (payload.mutation) this.mutate(payload.mutation.action, payload.mutation.params);
+	}
+
+	private ratatuiInput(data: string): string {
+		return matchesKey(data, "ctrl+g")
+			? "ctrl-g"
+			: matchesKey(data, "ctrl+s")
+				? "ctrl-s"
+				: matchesKey(data, "ctrl+a")
+					? "ctrl-a"
+					: matchesKey(data, "ctrl+e")
+						? "ctrl-e"
+						: matchesKey(data, "ctrl+b")
+							? "ctrl-b"
+							: matchesKey(data, "ctrl+f")
+								? "ctrl-f"
+								: matchesKey(data, "ctrl+d")
+									? "ctrl-d"
+									: matchesKey(data, "ctrl+k")
+										? "ctrl-k"
+										: matchesKey(data, "ctrl+u")
+											? "ctrl-u"
+											: matchesKey(data, "ctrl+p")
+												? "ctrl-p"
+												: matchesKey(data, "ctrl+n")
+													? "ctrl-n"
+													: matchesKey(data, "up")
+														? "up"
+														: matchesKey(data, "down")
+															? "down"
+															: matchesKey(data, "left")
+																? "left"
+																: matchesKey(data, "right")
+																	? "right"
+																	: data === "escape"
+																		? "esc"
+																		: data === "\r"
+																			? "\n"
+																			: data;
 	}
 
 	private resolveRequest(requestId: number): void {
