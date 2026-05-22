@@ -569,6 +569,7 @@ async function showTaskBoard(
 	command: string,
 	runCommand: typeof defaultRunCommand,
 	config: Config,
+	initialTaskId?: string,
 ): Promise<void> {
 	if (activeTaskBoard) {
 		activeTaskBoard.close();
@@ -591,6 +592,7 @@ async function showTaskBoard(
 							keybindings: config.keybindings,
 							command,
 							cwd: ctx.cwd,
+							initialTaskId,
 							onClose: close,
 							onMutate: async (action, params) => {
 								await executeTask(command, runCommand, ctx.cwd, action, params, config, pi, ctx, ctx.signal);
@@ -602,6 +604,7 @@ async function showTaskBoard(
 							tasks,
 							theme,
 							keybindings: config.keybindings,
+							initialTaskId,
 							onClose: close,
 							onReload: load,
 							onMutate: async (action, params) => {
@@ -1356,10 +1359,14 @@ export class TaskBoardOverlay implements Component {
 			onReload: () => Promise<TaskRecord[]>;
 			onMutate?: (action: "update" | "delete", params: Record<string, unknown>) => Promise<TaskRecord[]>;
 			onChange?: () => void;
+			initialTaskId?: string;
 		},
 	) {
 		this.tasks = options.tasks;
-		this.boardSelection = clampSelection(buildTaskBoardColumns(this.tasks), this.boardSelection);
+		const columns = buildTaskBoardColumns(this.tasks);
+		this.boardSelection = options.initialTaskId
+			? (selectionForTask(columns, options.initialTaskId) ?? clampSelection(columns, this.boardSelection))
+			: clampSelection(columns, this.boardSelection);
 	}
 
 	selection(): TaskBoardSelection {
@@ -2092,12 +2099,14 @@ class RatatuiTaskBoardOverlay implements Component {
 			keybindings?: TaskBoardKeybindings;
 			command: string;
 			cwd: string;
+			initialTaskId?: string;
 			onClose: () => void;
 			onMutate?: (action: "update" | "delete", params: Record<string, unknown>) => Promise<TaskRecord[]>;
 			onChange?: () => void;
 		},
 	) {
 		this.tasks = options.tasks;
+		this.selectedTaskId = options.initialTaskId;
 		this.lines = [options.theme.fg("dim", "Loading task TUI…")];
 		this.start();
 		this.send({ tasks: this.tasks });
@@ -2194,6 +2203,7 @@ class RatatuiTaskBoardOverlay implements Component {
 			request_id: requestId,
 			width: 120,
 			height: 40,
+			selected_task_id: this.selectedTaskId,
 			...payload,
 		};
 		child.stdin.write(`${JSON.stringify(request)}\n`, (error) => {
@@ -2875,9 +2885,10 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 	});
 
 	pi.registerCommand?.("tasks", {
-		description: "Open project task board",
-		handler: async (_args: string, ctx: ExtensionContext) => {
-			await showTaskBoard(ctx, pi, config.command, runCommand, config).catch((error) => {
+		description: "Open project task board; pass a task id to focus it",
+		handler: async (args: string, ctx: ExtensionContext) => {
+			const initialTaskId = args.trim().split(/\s+/).filter(Boolean)[0];
+			await showTaskBoard(ctx, pi, config.command, runCommand, config, initialTaskId).catch((error) => {
 				ctx.ui.notify?.(`Task board failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
 			});
 		},

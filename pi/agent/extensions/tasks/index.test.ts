@@ -699,6 +699,67 @@ describe("tasks extension", () => {
 		expect(closed).toBe(true);
 	});
 
+	test("/tasks with an id opens the board focused on that task body", async () => {
+		const calls: string[][] = [];
+		const commands = new Map<string, any>();
+		let overlayText = "";
+		const body = [
+			"Context / problem:",
+			"",
+			"Humans need to inspect this body.",
+			"",
+			"Agent-verifiable acceptance criteria:",
+			"- Shows the full body",
+			"- Does not truncate delivery evidence",
+			"",
+			"Delivery evidence:",
+			"- Commit: abc123",
+		].join("\n");
+		tasksExtension(
+			{
+				registerCommand(name: string, command: any) {
+					commands.set(name, command);
+				},
+				registerTool() {},
+				on() {},
+			} as any,
+			{
+				runCommand: async (command: string, args: string[]) => {
+					calls.push([command, ...args]);
+					return {
+						stdout: JSON.stringify({
+							tasks: [
+								{ ...task, id: "OTHER", title: "Other task", body: "Wrong body" },
+								{ ...task, id: "SPEC", title: "Structured issue", body, priority: 10 },
+							],
+						}),
+						stderr: "",
+						exitCode: 0,
+					};
+				},
+			},
+		);
+
+		await commands.get("tasks").handler("SPEC", {
+			cwd: "/repo",
+			ui: {
+				custom(factory: any) {
+					const component = factory({ requestRender() {} }, markedTheme, {}, () => {});
+					overlayText = component.render(120).join("\n");
+					return Promise.resolve();
+				},
+			},
+		});
+
+		expect(calls).toContainEqual(["ct", "task", "tui", "--json"]);
+		expect(overlayText).toContain("SPEC Structured issue");
+		expect(overlayText).toContain("<dim>Body:</dim>");
+		expect(overlayText).toContain("<mdHeading>Agent-verifiable acceptance criteria:</mdHeading>");
+		expect(overlayText).toContain("<dim>•</dim> Does not truncate delivery evidence");
+		expect(overlayText).toContain("Commit: abc123");
+		expect(overlayText).not.toContain("Wrong body");
+	});
+
 	test("/accept and /reject shell out through shared ct review transitions", async () => {
 		const calls: string[][] = [];
 		const notifications: Array<{ message: string; type?: string }> = [];

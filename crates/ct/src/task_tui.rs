@@ -42,6 +42,7 @@ struct TaskTuiEmbedRequest {
     request_id: u64,
     width: u16,
     height: u16,
+    selected_task_id: Option<String>,
     input: Option<String>,
     tasks: Option<Vec<Task>>,
 }
@@ -101,6 +102,9 @@ pub(crate) fn run_task_tui_embed(initial_tasks: &[Task]) -> Result<()> {
         if let Some(next_tasks) = request.tasks {
             tasks = next_tasks;
             state = TaskTuiState::with_selection(&tasks, state.selected_task_id.as_deref());
+        }
+        if let Some(selected_task_id) = request.selected_task_id.as_deref() {
+            state = TaskTuiState::with_selection(&tasks, Some(selected_task_id));
         }
         if let Some(input) = request.input.as_deref() {
             state.handle_input(&tasks, input);
@@ -345,7 +349,11 @@ fn render_task_tui(
         return;
     }
 
-    let (lines, selected_row) = render_groups(&groups, state);
+    let selected_task = state
+        .selected_task_id
+        .as_deref()
+        .and_then(|id| tasks.iter().find(|task| task.id == id));
+    let (lines, selected_row) = render_groups(&groups, state, selected_task);
     let scroll = selected_row
         .and_then(|row| {
             let visible_height = inner.height.saturating_sub(1) as usize;
@@ -364,6 +372,7 @@ fn render_task_tui(
 fn render_groups(
     groups: &[TaskGroup],
     state: &TaskTuiState,
+    selected_task: Option<&Task>,
 ) -> (Vec<Line<'static>>, Option<usize>) {
     let mut lines = Vec::new();
     let mut selected_row = None;
@@ -407,6 +416,10 @@ fn render_groups(
             }
         }
     }
+    if let Some(task) = selected_task {
+        lines.push(Line::from(""));
+        lines.extend(task_detail_lines(task));
+    }
     (lines, selected_row)
 }
 
@@ -438,6 +451,79 @@ fn task_line(task: &Task, selected: bool) -> Line<'static> {
     } else {
         line
     }
+}
+
+fn task_detail_lines(task: &Task) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "Details",
+            Style::default()
+                .fg(Color::Blue)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(format!(
+            "  Status: {}   Priority: {}",
+            task.status, task.priority
+        )),
+        Line::from(format!(
+            "  Assignee: {}",
+            task.assigned_label
+                .as_ref()
+                .or(task.assigned_to.as_ref())
+                .map(String::as_str)
+                .unwrap_or("none")
+        )),
+        Line::from(format!(
+            "  Blockers: {}",
+            if task.blocked_by.is_empty() {
+                "none".to_string()
+            } else {
+                task.blocked_by.join(", ")
+            }
+        )),
+    ];
+    if !task.body.trim().is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Body:",
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.extend(task_body_lines(&task.body));
+    }
+    lines
+}
+
+fn task_body_lines(body: &str) -> Vec<Line<'static>> {
+    body.trim()
+        .lines()
+        .map(|line| {
+            let trimmed = line.trim_end();
+            if trimmed.is_empty() {
+                Line::from("")
+            } else if is_body_heading(trimmed) {
+                Line::from(Span::styled(
+                    trimmed.trim_start_matches('#').trim().to_string(),
+                    Style::default()
+                        .fg(Color::Blue)
+                        .add_modifier(Modifier::BOLD),
+                ))
+            } else if let Some(item) = trimmed.trim_start().strip_prefix("- ") {
+                Line::from(vec![
+                    Span::styled("  • ", Style::default().fg(Color::DarkGray)),
+                    Span::raw(item.to_string()),
+                ])
+            } else {
+                Line::from(trimmed.to_string())
+            }
+        })
+        .collect()
+}
+
+fn is_body_heading(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.starts_with('#') || (trimmed.ends_with(':') && trimmed.len() <= 80)
 }
 
 #[derive(Debug)]
