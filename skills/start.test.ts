@@ -50,7 +50,6 @@ describe("Plannotator-gated skills", () => {
 		expect(body).toContain("Plannotator still needs the real absolute local file path");
 	});
 });
-
 describe("pr-descr skill", () => {
 	test("keeps testing sections focused on manual verification", () => {
 		const body = skill("pr-descr");
@@ -67,5 +66,38 @@ describe("pr-descr skill", () => {
 
 		expect(body).toContain("preserve its top-level headings");
 		expect(body).toContain("Do not create a \"what changed\" inventory or add a \"Changes\" section");
+	});
+});
+
+describe("flattened workflow skills", () => {
+	test("provides grill, brief, and issues as bundled default workflow skills", () => {
+		expect(skill("grill")).toContain("name: grill");
+		expect(skill("brief")).toContain("name: brief");
+		expect(skill("issues")).toContain("name: issues");
+	});
+
+	test("grill is grounded interview only with no side effects", () => {
+		const body = skill("grill");
+
+		expect(body).toContain("Do not edit files");
+		expect(body).toContain("No task creation");
+		expect(body).toContain("Grill Summary");
+	});
+
+	test("brief requires approved durable vault publication before follow-on work", () => {
+		const body = skill("brief");
+
+		expect(body).toContain("durable vault artifact");
+		expect(body).toContain("plannotator annotate");
+		expect(body).toContain("Do not commit and do not create tasks");
+	});
+
+	test("issues uses structured task bodies and creates tasks only after approval", () => {
+		const body = skill("issues");
+
+		expect(body).toContain("Task records are\ncreated only after the issue proposal is approved");
+		expect(body).toContain("Agent-verifiable acceptance criteria");
+		expect(body).toContain("Human-judgment acceptance criteria");
+		expect(body).toContain("Delivery evidence placeholder");
 	});
 });
