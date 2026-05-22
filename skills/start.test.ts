@@ -117,3 +117,23 @@ describe("QRDSPI defaults", () => {
 		expect(() => skill("vibe")).toThrow();
 	});
 });
+
+describe("implement reviewed delivery", () => {
+	test("requires review, commit skill usage, and in_review handoff", () => {
+		const body = skill("implement");
+
+		expect(body).toContain("plannotator review --git");
+		expect(body).toContain("including with `--auto`");
+		expect(body).toContain("Load/use `$commit`");
+		expect(body).toContain("Move the task to `in_review`");
+	});
+
+	test("does not perform story acceptance or autonomous multi-task looping", () => {
+		const body = skill("implement");
+
+		expect(body).toContain("Do not run autonomous multi-task loops");
+		expect(body).toContain("Never accept/reject feature or bug tasks");
+		expect(body).toContain("Never directly mark feature or bug tasks `done`");
+		expect(body).toContain("human `/accept` performs");
+	});
+});
