@@ -325,6 +325,7 @@ function publishTaskTransition(
 	action: "accept" | "reject",
 	task?: TaskRecord,
 	note?: string,
+	triggerTurn = true,
 ): void {
 	const message = taskTransitionMessage(action, task);
 	if (!message) return;
@@ -342,7 +343,7 @@ function publishTaskTransition(
 			display: true,
 			details: { action, taskId: task?.id, status: task?.status, note },
 		},
-		note ? { deliverAs: "followUp", triggerTurn: true } : { deliverAs: "followUp" },
+		triggerTurn ? { deliverAs: "followUp", triggerTurn: true } : { deliverAs: "followUp" },
 	);
 }
 
@@ -2797,15 +2798,15 @@ async function evaluateTaskGuard(
 	};
 }
 
-async function sendTaskGuard(pi: ExtensionAPI, state: GuardState, force = false): Promise<void> {
+async function sendTaskGuard(pi: ExtensionAPI, state: GuardState, force = false): Promise<boolean> {
 	const pending = state.pending;
 	state.pending = undefined;
-	if (!pending || (!state.enabled && !force)) return;
+	if (!pending || (!state.enabled && !force)) return false;
 	const decision: TaskGuardDecision | undefined = pending;
-	if (!decision) return;
+	if (!decision) return false;
 	if (!userTextAllowsGuardAutoTurn(state.lastUserText)) {
 		state.lastUserText = undefined;
-		return;
+		return false;
 	}
 	const triggerTurn = shouldTriggerGuardTurn(state, decision);
 	state.lastGuardFingerprint = decision.fingerprint;
@@ -2820,6 +2821,7 @@ async function sendTaskGuard(pi: ExtensionAPI, state: GuardState, force = false)
 		triggerTurn ? { deliverAs: "followUp", triggerTurn: true } : { deliverAs: "followUp" },
 	);
 	state.lastUserText = undefined;
+	return triggerTurn;
 }
 
 async function triggerTaskGuardAfterCommand(
@@ -2829,9 +2831,9 @@ async function triggerTaskGuardAfterCommand(
 	runCommand: typeof defaultRunCommand,
 	state: GuardState,
 	task?: TaskRecord,
-): Promise<void> {
+): Promise<boolean> {
 	state.pending = await evaluateTaskGuard(ctx, command, runCommand, state, task?.epic_id);
-	await sendTaskGuard(pi, state, true);
+	return sendTaskGuard(pi, state, true);
 }
 
 function messageText(message: { content?: unknown }): string {
@@ -3013,18 +3015,19 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 				return;
 			}
 			await executeTask(config.command, runCommand, ctx.cwd, "accept", { id }, config, pi, ctx, ctx.signal)
-				.then((result) => {
-					publishTaskTransition(pi, ctx, "accept", result.details.task, note || undefined);
+				.then(async (result) => {
 					markProgress();
-					if (note) return undefined;
-					return triggerTaskGuardAfterCommand(
-						pi,
-						ctx,
-						config.command,
-						runCommand,
-						guardState,
-						result.details.task,
-					);
+					const guardTriggered = note
+						? false
+						: await triggerTaskGuardAfterCommand(
+								pi,
+								ctx,
+								config.command,
+								runCommand,
+								guardState,
+								result.details.task,
+							);
+					publishTaskTransition(pi, ctx, "accept", result.details.task, note || undefined, !guardTriggered);
 				})
 				.catch((error) => {
 					ctx.ui.notify?.(

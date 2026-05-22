@@ -834,6 +834,52 @@ describe("tasks extension", () => {
 		expect(sent.filter((item) => item.message.customType === "task-guard")).toHaveLength(0);
 	});
 
+	test("/accept without a note still triggers the agent turn when no guard continuation is available", async () => {
+		const commands = new Map<string, any>();
+		const sent: any[] = [];
+		tasksExtension(
+			{
+				registerTool() {},
+				registerCommand(name: string, command: any) {
+					commands.set(name, command);
+				},
+				on() {},
+				sendMessage(message: any, options: any) {
+					sent.push({ message, options });
+				},
+			} as any,
+			{
+				runCommand: async (_command: string, args: string[]) => {
+					if (args[1] === "accept") {
+						return {
+							stdout: JSON.stringify({
+								task: { ...task, id: "DONE", title: "Accepted task", type: "feature", status: "done" },
+							}),
+							stderr: "",
+							exitCode: 0,
+						};
+					}
+					return { stdout: JSON.stringify({ tasks: [] }), stderr: "", exitCode: 0 };
+				},
+			},
+		);
+		const ctx = {
+			cwd: "/repo",
+			sessionId: "test-session",
+			signal: undefined,
+			ui: { notify() {}, setWidget() {} },
+		};
+
+		await commands.get("accept").handler("DONE", ctx);
+
+		expect(sent).toContainEqual(
+			expect.objectContaining({
+				message: expect.objectContaining({ customType: "task-transition" }),
+				options: { deliverAs: "followUp", triggerTurn: true },
+			}),
+		);
+	});
+
 	test("/accept triggers continuation for next ready task in the same epic", async () => {
 		const commands = new Map<string, any>();
 		const sent: any[] = [];
