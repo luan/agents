@@ -670,6 +670,7 @@ describe("tasks extension", () => {
 
 	test("/accept and /reject shell out through shared ct review transitions", async () => {
 		const calls: string[][] = [];
+		const notifications: Array<{ message: string; type?: string }> = [];
 		const commands = new Map<string, any>();
 		tasksExtension(
 			{
@@ -682,16 +683,96 @@ describe("tasks extension", () => {
 			{
 				runCommand: async (command: string, args: string[]) => {
 					calls.push([command, ...args]);
-					return { stdout: JSON.stringify({ task }), stderr: "", exitCode: 0 };
+					const status = args[1] === "reject" ? "rejected" : args[1] === "accept" ? "done" : task.status;
+					return { stdout: JSON.stringify({ task: { ...task, status } }), stderr: "", exitCode: 0 };
 				},
 			},
 		);
 
-		await commands.get("accept").handler("ABC", { cwd: "/repo", ui: {} });
-		await commands.get("reject").handler("ABC needs tests", { cwd: "/repo", ui: {} });
+		const ctx = {
+			cwd: "/repo",
+			ui: {
+				notify(message: string, type?: string) {
+					notifications.push({ message, type });
+				},
+				setWidget() {},
+			},
+		};
+		await commands.get("accept").handler("ABC", ctx);
+		await commands.get("reject").handler("ABC needs tests", ctx);
 
 		expect(calls).toContainEqual(["ct", "task", "accept", "ABC", "--json"]);
 		expect(calls).toContainEqual(["ct", "task", "reject", "ABC", "needs", "tests", "--json"]);
+		expect(notifications).toContainEqual({ message: "Accepted PG4W2K4Q03: Smoke test task tools", type: "info" });
+		expect(notifications).toContainEqual({ message: "Rejected PG4W2K4Q03: Smoke test task tools", type: "info" });
+	});
+
+	test("/accept triggers continuation for next ready task in the same epic", async () => {
+		const commands = new Map<string, any>();
+		const sent: any[] = [];
+		tasksExtension(
+			{
+				registerTool() {},
+				registerCommand(name: string, command: any) {
+					commands.set(name, command);
+				},
+				on() {},
+				sendMessage(message: any, options: any) {
+					sent.push({ message, options });
+				},
+			} as any,
+			{
+				runCommand: async (_command: string, args: string[]) => {
+					if (args[1] === "accept") {
+						return {
+							stdout: JSON.stringify({
+								task: {
+									...task,
+									id: "DONE",
+									title: "Delivered task",
+									type: "feature",
+									status: "done",
+									epic_id: "workflow",
+									assigned_to: "session:test-session",
+								},
+							}),
+							stderr: "",
+							exitCode: 0,
+						};
+					}
+					return {
+						stdout: JSON.stringify({
+							tasks: [
+								{
+									...task,
+									id: "DONE",
+									title: "Delivered task",
+									type: "feature",
+									status: "done",
+									epic_id: "workflow",
+									assigned_to: "session:test-session",
+								},
+								{ ...task, id: "NEXT", title: "Next ready task", type: "feature", epic_id: "workflow" },
+							],
+						}),
+						stderr: "",
+						exitCode: 0,
+					};
+				},
+			},
+		);
+		const ctx = {
+			cwd: "/repo",
+			sessionId: "test-session",
+			signal: undefined,
+			ui: { notify() {}, setWidget() {} },
+		};
+
+		await commands.get("accept").handler("DONE", ctx);
+
+		expect(sent).toHaveLength(1);
+		expect(sent[0].message.content[0].text).toContain("Claim task NEXT");
+		expect(sent[0].options).toEqual({ deliverAs: "followUp", triggerTurn: true });
 	});
 
 	test("alt+t cycles compact and visible task HUD epics", async () => {

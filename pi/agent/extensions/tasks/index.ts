@@ -307,6 +307,12 @@ function textResult(text: string, details: TaskDetails) {
 	return { content: [{ type: "text" as const, text }], details };
 }
 
+function taskTransitionMessage(action: "accept" | "reject", task?: TaskRecord): string | undefined {
+	if (!task) return undefined;
+	const verb = action === "accept" ? "Accepted" : "Rejected";
+	return `${verb} ${task.id}: ${task.title}`;
+}
+
 function flashTaskHud(task?: TaskRecord): void {
 	if (!task?.id) return;
 	const now = Date.now();
@@ -2488,14 +2494,18 @@ function selectDependencyAction(
 	return undefined;
 }
 
-function selectGuardAction(tasks: TaskRecord[], assignedTo: string): TaskGuardAction | undefined {
+function selectGuardAction(
+	tasks: TaskRecord[],
+	assignedTo: string,
+	preferredEpicId?: string | null,
+): TaskGuardAction | undefined {
 	const byId = new Map(tasks.map((task) => [task.id, task]));
 	const children = taskChildren(tasks);
 	const assigned = sortedGuardTasks(
 		tasks.filter((task) => isAssignedTo(assignedTo, task)),
 		byId,
 	);
-	if (assigned.length === 0) return undefined;
+	if (assigned.length === 0 && !preferredEpicId) return undefined;
 	for (const task of assigned) {
 		const action = selectDependencyAction(task, assignedTo, byId, children);
 		if (action) return action;
@@ -2511,6 +2521,7 @@ function selectGuardAction(tasks: TaskRecord[], assignedTo: string): TaskGuardAc
 	);
 	if (assignedReady) return { kind: "start", task: assignedReady };
 	const epicIds = new Set(assigned.map((task) => task.epic_id).filter((id): id is string => Boolean(id)));
+	if (preferredEpicId) epicIds.add(preferredEpicId);
 	const sameEpicReady = sortedGuardTasks(
 		tasks.filter(
 			(task) =>
@@ -2590,11 +2601,12 @@ async function evaluateTaskGuard(
 	command: string,
 	runCommand: typeof defaultRunCommand,
 	state: GuardState,
+	preferredEpicId?: string | null,
 ): Promise<TaskGuardDecision | undefined> {
 	const assignedTo = sessionAssignment(ctx);
 	if (!assignedTo) return undefined;
 	const tasks = await loadHudTasks(ctx.cwd, command, runCommand, ctx.signal);
-	const action = selectGuardAction(tasks, assignedTo);
+	const action = selectGuardAction(tasks, assignedTo, preferredEpicId);
 	if (!action) {
 		state.lastGuardFingerprint = undefined;
 		state.lastGuardProgressSerial = undefined;
@@ -2609,10 +2621,10 @@ async function evaluateTaskGuard(
 	};
 }
 
-async function sendTaskGuard(pi: ExtensionAPI, state: GuardState): Promise<void> {
+async function sendTaskGuard(pi: ExtensionAPI, state: GuardState, force = false): Promise<void> {
 	const pending = state.pending;
 	state.pending = undefined;
-	if (!pending || !state.enabled) return;
+	if (!pending || (!state.enabled && !force)) return;
 	const decision: TaskGuardDecision | undefined = pending;
 	if (!decision) return;
 	if (!userTextAllowsGuardAutoTurn(state.lastUserText)) {
@@ -2632,6 +2644,18 @@ async function sendTaskGuard(pi: ExtensionAPI, state: GuardState): Promise<void>
 		triggerTurn ? { deliverAs: "followUp", triggerTurn: true } : { deliverAs: "followUp" },
 	);
 	state.lastUserText = undefined;
+}
+
+async function triggerTaskGuardAfterCommand(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	command: string,
+	runCommand: typeof defaultRunCommand,
+	state: GuardState,
+	task?: TaskRecord,
+): Promise<void> {
+	state.pending = await evaluateTaskGuard(ctx, command, runCommand, state, task?.epic_id);
+	await sendTaskGuard(pi, state, true);
 }
 
 function messageText(message: { content?: unknown }): string {
@@ -2810,14 +2834,26 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 				ctx.ui.notify?.("Usage: /accept <task-id>", "warning");
 				return;
 			}
-			await executeTask(config.command, runCommand, ctx.cwd, "accept", { id }, config, pi, ctx, ctx.signal).catch(
-				(error) => {
+			await executeTask(config.command, runCommand, ctx.cwd, "accept", { id }, config, pi, ctx, ctx.signal)
+				.then((result) => {
+					const message = taskTransitionMessage("accept", result.details.task);
+					if (message) ctx.ui.notify?.(message, "info");
+					markProgress();
+					return triggerTaskGuardAfterCommand(
+						pi,
+						ctx,
+						config.command,
+						runCommand,
+						guardState,
+						result.details.task,
+					);
+				})
+				.catch((error) => {
 					ctx.ui.notify?.(
 						`Task accept failed: ${error instanceof Error ? error.message : String(error)}`,
 						"warning",
 					);
-				},
-			);
+				});
 		},
 	});
 
@@ -2830,19 +2866,26 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 				ctx.ui.notify?.("Usage: /reject <task-id> <note...>", "warning");
 				return;
 			}
-			await executeTask(
-				config.command,
-				runCommand,
-				ctx.cwd,
-				"reject",
-				{ id, note },
-				config,
-				pi,
-				ctx,
-				ctx.signal,
-			).catch((error) => {
-				ctx.ui.notify?.(`Task reject failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
-			});
+			await executeTask(config.command, runCommand, ctx.cwd, "reject", { id, note }, config, pi, ctx, ctx.signal)
+				.then((result) => {
+					const message = taskTransitionMessage("reject", result.details.task);
+					if (message) ctx.ui.notify?.(message, "info");
+					markProgress();
+					return triggerTaskGuardAfterCommand(
+						pi,
+						ctx,
+						config.command,
+						runCommand,
+						guardState,
+						result.details.task,
+					);
+				})
+				.catch((error) => {
+					ctx.ui.notify?.(
+						`Task reject failed: ${error instanceof Error ? error.message : String(error)}`,
+						"warning",
+					);
+				});
 		},
 	});
 
