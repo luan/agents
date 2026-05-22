@@ -37,6 +37,7 @@ export interface ExecCell {
 	failed?: boolean;
 	elapsedMs?: number;
 	rtkWrapped?: boolean;
+	contextGuardWrapped?: boolean;
 	outputBlock?: ExecCellOutputBlock;
 	writeStdin?: {
 		sessionId: number | string;
@@ -51,6 +52,7 @@ export interface RawCommandToExecCellInput {
 	failed?: boolean;
 	elapsedMs?: number;
 	rtkWrapped?: boolean;
+	contextGuardWrapped?: boolean;
 	outputBlock?: ExecCellOutputBlock;
 }
 
@@ -82,6 +84,7 @@ export function rawCommandToExecCell(input: RawCommandToExecCellInput): ExecCell
 			failed: input.failed,
 			elapsedMs: input.elapsedMs,
 			rtkWrapped: input.rtkWrapped,
+			contextGuardWrapped: input.contextGuardWrapped,
 			outputBlock: input.outputBlock,
 		};
 	}
@@ -92,6 +95,7 @@ export function rawCommandToExecCell(input: RawCommandToExecCellInput): ExecCell
 		failed: input.failed,
 		elapsedMs: input.elapsedMs,
 		rtkWrapped: input.rtkWrapped,
+		contextGuardWrapped: input.contextGuardWrapped,
 		outputBlock: input.outputBlock,
 	};
 }
@@ -127,15 +131,29 @@ export function renderBackgroundTerminalHud(
 }
 
 class ExecCellComponent implements Component {
+	private renderedCache?: {
+		width: number;
+		lines: string[];
+	};
+
 	constructor(
 		private readonly cell: ExecCell,
 		private readonly env: RenderExecCellEnv,
 	) {}
 
-	invalidate() {}
+	invalidate() {
+		this.renderedCache = undefined;
+	}
 
 	render(width: number): string[] {
-		return new Text(renderExecCell(this.cell, { ...this.env, width }), 0, 0).render(width);
+		if (this.cell.status !== "running" && this.renderedCache?.width === width) {
+			return this.renderedCache.lines;
+		}
+		const lines = new Text(renderExecCell(this.cell, { ...this.env, width }), 0, 0).render(width);
+		if (this.cell.status !== "running") {
+			this.renderedCache = { width, lines };
+		}
+		return lines;
 	}
 }
 
@@ -180,9 +198,15 @@ function renderExecCellHeader(cell: ExecCell, theme: RenderTheme): string {
 				cell.failed,
 				cell.elapsedMs,
 				cell.rtkWrapped,
+				cell.contextGuardWrapped,
 			);
 		case "spawned-background-terminal":
-			return renderSpawnedBackgroundTerminalCall(cell.command ?? "", theme, cell.rtkWrapped);
+			return renderSpawnedBackgroundTerminalCall(
+				cell.command ?? "",
+				theme,
+				cell.rtkWrapped,
+				cell.contextGuardWrapped,
+			);
 		case "user-command":
 			return renderUserExecCommandCall(cell.command ?? "", cell.status, theme, cell.failed, cell.elapsedMs);
 		case "write-stdin":
@@ -204,6 +228,7 @@ function renderExecCellHeader(cell: ExecCell, theme: RenderTheme): string {
 				cell.failed,
 				cell.elapsedMs,
 				cell.rtkWrapped,
+				cell.contextGuardWrapped,
 			);
 	}
 }

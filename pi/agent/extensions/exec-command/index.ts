@@ -5,6 +5,8 @@ import {
 	ToolExecutionComponent,
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
+import { resolveCoreBin } from "../context-guard/pi/core.ts";
+import { isExecCommandContextGuardEnabled } from "../context-guard/pi/index.ts";
 import { setOrderedAboveEditorWidget } from "../shared/ordered-widgets";
 import {
 	type RenderTheme,
@@ -191,7 +193,7 @@ function truncateTextToolResultContent(content: unknown): unknown[] | undefined 
 	return changed ? next : undefined;
 }
 
-function parseRtkToggleArgument(args: string): boolean | undefined | "invalid" {
+function parseBooleanToggleArgument(args: string): boolean | undefined | "invalid" {
 	const arg = args.trim().toLowerCase();
 	if (!arg) return undefined;
 	if (arg === "on" || arg === "true" || arg === "enable" || arg === "enabled") return true;
@@ -238,6 +240,7 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 	const tracker = createExecCommandTracker();
 	const sessions = createExecSessionManager();
 	const rtk: RtkWrapperState = { enabled: true };
+	const contextGuard = { enabled: true };
 	const rtkWarningsShown = new Set<string>();
 	let shuttingDown = false;
 	let statusUi: BackgroundTerminalStatusUi | undefined;
@@ -410,6 +413,8 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 		onResult: (_input, result) => {
 			if (result.session_id !== undefined) completionMessageSessionIds.add(result.session_id);
 		},
+		contextGuardEnabled: () =>
+			contextGuard.enabled && isExecCommandContextGuardEnabled() && resolveCoreBin() !== null,
 	});
 	registerWriteStdinTool(pi, sessions);
 	sessions.onSessionExit((sessionId, command) => {
@@ -443,13 +448,32 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 			return items.length > 0 ? items : null;
 		},
 		handler: async (args, ctx) => {
-			const parsed = parseRtkToggleArgument(args);
+			const parsed = parseBooleanToggleArgument(args);
 			if (parsed === "invalid") {
 				ctx.ui.notify("Usage: /rtk [on|off]", "error");
 				return;
 			}
 			rtk.enabled = parsed ?? !rtk.enabled;
 			ctx.ui.notify(`RTK wrapping ${rtk.enabled ? "enabled" : "disabled"}.`, "info");
+		},
+	});
+
+	pi.registerCommand("cg-wrap", {
+		description: "Toggle Context Guard wrapping for exec_command calls",
+		getArgumentCompletions: (prefix) => {
+			const items = ["on", "off"]
+				.filter((value) => value.startsWith(prefix.trim().toLowerCase()))
+				.map((value) => ({ value, label: value }));
+			return items.length > 0 ? items : null;
+		},
+		handler: async (args, ctx) => {
+			const parsed = parseBooleanToggleArgument(args);
+			if (parsed === "invalid") {
+				ctx.ui.notify("Usage: /cg-wrap [on|off]", "error");
+				return;
+			}
+			contextGuard.enabled = parsed ?? !contextGuard.enabled;
+			ctx.ui.notify(`Context Guard wrapping ${contextGuard.enabled ? "enabled" : "disabled"}.`, "info");
 		},
 	});
 

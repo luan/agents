@@ -1,6 +1,12 @@
+import { mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Container } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { invokeCore } from "../../context-guard/pi/core.ts";
+import { getPiSessionDir } from "../../context-guard/pi/index.ts";
+import { sessionRecordToolTelemetry } from "../../context-guard/session/core-session.ts";
+import { resolveContentStorePath, resolveSessionDbPath } from "../../context-guard/session/paths.ts";
 import { summarizeShellCommand } from "../shell/summary.ts";
 import { rawCommandToExecCell, renderExecCellComponent } from "./exec-cell-presentation.ts";
 import type { ExecCommandTracker } from "./exec-command-state.ts";
@@ -9,7 +15,13 @@ import { commandHasRipgrepSegment, isRtkGrepCommand } from "./rtk-wrapper.ts";
 import { formatUnifiedExecResult } from "./unified-exec-format.ts";
 
 const EXEC_COMMAND_PARAMETERS = Type.Object({
-	cmd: Type.String({ description: "Shell command to execute." }),
+	mode: Type.Optional(
+		Type.Literal("batch", {
+			description:
+				"Optional special mode. Use 'batch' for context-guard batched command+search; omit for normal shell commands.",
+		}),
+	),
+	cmd: Type.Optional(Type.String({ description: "Shell command to execute." })),
 	workdir: Type.Optional(
 		Type.String({
 			description: "Optional working directory; defaults to the current turn cwd.",
@@ -36,6 +48,41 @@ const EXEC_COMMAND_PARAMETERS = Type.Object({
 			description: "Whether to run the shell with -l/-i semantics. Defaults to true.",
 		}),
 	),
+	timeout: Type.Optional(
+		Type.Number({
+			description:
+				"Optional Context Guard timeout in milliseconds for wrapped commands or mode:'batch'. Ignored for raw PTY execution.",
+		}),
+	),
+	context_guard: Type.Optional(
+		Type.Boolean({
+			description:
+				"Optional per-call override for Context Guard wrapping. Defaults to the global exec-command setting. Rarely needed.",
+		}),
+	),
+	contextGuard: Type.Optional(
+		Type.Boolean({
+			description:
+				"camelCase alias of context_guard. Optional per-call override for Context Guard wrapping. Rarely needed.",
+		}),
+	),
+	commands: Type.Optional(
+		Type.Any({
+			description:
+				"For mode:'batch': commands to execute, as [{label, command}, ...] or a JSON string/array of command strings.",
+		}),
+	),
+	queries: Type.Optional(
+		Type.Any({
+			description:
+				"For mode:'batch': optional search queries to run against the indexed command output. Omit to return raw command sections only.",
+		}),
+	),
+	concurrency: Type.Optional(
+		Type.Number({
+			description: "For mode:'batch': max commands to run in parallel.",
+		}),
+	),
 });
 
 interface ExecCommandParams {
@@ -45,7 +92,28 @@ interface ExecCommandParams {
 	tty?: boolean;
 	yield_time_ms?: number;
 	login?: boolean;
+	timeout?: number;
+	contextGuard?: boolean;
+	foreground?: boolean;
 }
+
+interface ContextGuardBatchCommand {
+	label: string;
+	command: string;
+}
+
+interface ContextGuardBatchParams {
+	mode: "batch";
+	workdir?: string;
+	commands: ContextGuardBatchCommand[];
+	queries?: string[];
+	timeout?: number;
+	concurrency?: number;
+}
+
+type ParsedExecInvocation =
+	| { kind: "command"; params: ExecCommandParams }
+	| { kind: "batch"; params: ContextGuardBatchParams };
 
 type ExecCommandRewrite = string | { command: string; rtkWrapped?: boolean };
 
@@ -56,7 +124,31 @@ interface ExecCommandToolOptions {
 		result: UnifiedExecResult,
 		ctx: ExtensionContext,
 	) => { terminate?: boolean } | undefined;
+	contextGuardEnabled?: () => boolean;
 }
+
+type ContextGuardBatchCoreResult = {
+	label?: string;
+	command?: string;
+	output?: string;
+	summary?: string;
+	exitCode?: number | null;
+};
+
+type ContextGuardBatchCoreDetails = {
+	results?: ContextGuardBatchCoreResult[];
+	commandCount?: number;
+	concurrency?: number;
+	queries?: string[];
+};
+
+type ContextGuardBatchRenderDetails = {
+	contextGuardBatch: true;
+	output: string;
+	commandCount: number;
+	queryCount: number;
+	commandPreview: string;
+};
 
 function prepareExecCommandArguments(args: unknown): ExecCommandParams {
 	if (!args || typeof args !== "object") {
@@ -65,6 +157,14 @@ function prepareExecCommandArguments(args: unknown): ExecCommandParams {
 
 	const record = args as Record<string, unknown>;
 	const prepared: Record<string, unknown> = { ...record };
+	if (
+		typeof prepared.mode !== "string" &&
+		!("cmd" in prepared) &&
+		!("command" in prepared) &&
+		"commands" in prepared
+	) {
+		prepared.mode = "batch";
+	}
 	if (!("cmd" in prepared) && "command" in prepared) {
 		prepared.cmd = prepared.command;
 	}
@@ -75,12 +175,40 @@ function prepareExecCommandArguments(args: unknown): ExecCommandParams {
 			prepared.workdir = prepared.working_directory;
 		}
 	}
+	if (prepared.mode === "batch") {
+		prepared.commands = coerceCommandsArray(prepared.commands);
+		prepared.queries = coerceJsonArray(prepared.queries);
+	}
 	return prepared as unknown as ExecCommandParams;
 }
 
-function parseExecCommandParams(params: unknown): ExecCommandParams {
+function parseExecCommandParams(params: unknown): ParsedExecInvocation {
 	if (!params || typeof params !== "object") {
 		throw new Error("exec_command requires an object parameter");
+	}
+
+	const record = params as Record<string, unknown>;
+	const mode = "mode" in record ? record.mode : undefined;
+	if (mode !== undefined && mode !== "batch" && mode !== "command") {
+		throw new Error("exec_command mode must be 'batch' when provided");
+	}
+
+	if (mode === "batch" || (!("cmd" in record) && Array.isArray(record.commands))) {
+		const commands = normalizeContextGuardBatchCommands(record.commands);
+		if (commands.length === 0) {
+			throw new Error("exec_command mode 'batch' requires a non-empty 'commands' array");
+		}
+		return {
+			kind: "batch",
+			params: {
+				mode: "batch",
+				workdir: typeof record.workdir === "string" ? record.workdir : undefined,
+				commands,
+				queries: normalizeContextGuardQueries(record.queries),
+				timeout: typeof record.timeout === "number" ? record.timeout : undefined,
+				concurrency: typeof record.concurrency === "number" ? record.concurrency : undefined,
+			},
+		};
 	}
 
 	const cmd = "cmd" in params ? params.cmd : undefined;
@@ -89,18 +217,304 @@ function parseExecCommandParams(params: unknown): ExecCommandParams {
 	}
 
 	return {
-		cmd,
-		workdir: "workdir" in params && typeof params.workdir === "string" ? params.workdir : undefined,
-		shell: "shell" in params && typeof params.shell === "string" ? params.shell : undefined,
-		tty: "tty" in params && typeof params.tty === "boolean" ? params.tty : undefined,
-		yield_time_ms:
-			"yield_time_ms" in params && typeof params.yield_time_ms === "number" ? params.yield_time_ms : undefined,
-		login: "login" in params && typeof params.login === "boolean" ? params.login : undefined,
+		kind: "command",
+		params: {
+			cmd,
+			workdir: "workdir" in params && typeof params.workdir === "string" ? params.workdir : undefined,
+			shell: "shell" in params && typeof params.shell === "string" ? params.shell : undefined,
+			tty: "tty" in params && typeof params.tty === "boolean" ? params.tty : undefined,
+			yield_time_ms:
+				"yield_time_ms" in params && typeof params.yield_time_ms === "number" ? params.yield_time_ms : undefined,
+			login: "login" in params && typeof params.login === "boolean" ? params.login : undefined,
+			timeout: "timeout" in params && typeof params.timeout === "number" ? params.timeout : undefined,
+			contextGuard: readContextGuardOverride(record),
+		},
 	};
 }
 
 function isUnifiedExecResult(details: unknown): details is UnifiedExecResult {
 	return typeof details === "object" && details !== null;
+}
+
+function isContextGuardBatchCoreDetails(details: unknown): details is ContextGuardBatchCoreDetails {
+	return typeof details === "object" && details !== null;
+}
+
+function isContextGuardBatchRenderDetails(details: unknown): details is ContextGuardBatchRenderDetails {
+	return (
+		typeof details === "object" &&
+		details !== null &&
+		(details as Record<string, unknown>).contextGuardBatch === true &&
+		typeof (details as Record<string, unknown>).output === "string"
+	);
+}
+
+function readContextGuardOverride(record: Record<string, unknown>): boolean | undefined {
+	if (typeof record.context_guard === "boolean") return record.context_guard;
+	if (typeof record.contextGuard === "boolean") return record.contextGuard;
+	return undefined;
+}
+
+function coerceJsonArray(value: unknown): unknown {
+	if (typeof value === "string") {
+		try {
+			const parsed = JSON.parse(value);
+			if (Array.isArray(parsed)) return parsed;
+		} catch {
+			// ignore
+		}
+	}
+	return value;
+}
+
+function coerceCommandsArray(value: unknown): unknown {
+	const parsed = coerceJsonArray(value);
+	if (!Array.isArray(parsed)) return parsed;
+	return parsed.map((item, index) => (typeof item === "string" ? { label: `cmd_${index + 1}`, command: item } : item));
+}
+
+function normalizeContextGuardBatchCommands(value: unknown): ContextGuardBatchCommand[] {
+	if (!Array.isArray(value)) return [];
+	return value.flatMap((item, index) => {
+		if (typeof item === "string") {
+			return [{ label: `cmd_${index + 1}`, command: item }];
+		}
+		if (
+			item &&
+			typeof item === "object" &&
+			typeof (item as Record<string, unknown>).label === "string" &&
+			typeof (item as Record<string, unknown>).command === "string"
+		) {
+			return [
+				{
+					label: (item as Record<string, string>).label,
+					command: (item as Record<string, string>).command,
+				},
+			];
+		}
+		return [];
+	});
+}
+
+function normalizeContextGuardQueries(value: unknown): string[] {
+	const parsed = coerceJsonArray(value);
+	if (!Array.isArray(parsed)) return [];
+	return parsed.filter((item): item is string => typeof item === "string");
+}
+
+function resolveContextGuardProjectDir(workdir: string | undefined, ctx: ExtensionContext): string {
+	return workdir ?? ctx.cwd;
+}
+
+function resolveContextGuardPaths(projectDir: string): { dbPath: string; sessionDbPath: string } {
+	const sessionsDir = getPiSessionDir();
+	const contentDir = join(dirname(sessionsDir), "content");
+	mkdirSync(contentDir, { recursive: true });
+	return {
+		dbPath: resolveContentStorePath({ projectDir, contentDir }),
+		sessionDbPath: resolveSessionDbPath({ projectDir, sessionsDir }),
+	};
+}
+
+function contextGuardResponseText(response: { content?: Array<{ type?: string; text?: string }> }): string {
+	return (response.content ?? [])
+		.filter((item) => item?.type === "text" && typeof item.text === "string")
+		.map((item) => item.text)
+		.join("\n");
+}
+
+function labelForWrappedCommand(command: string): string {
+	const normalized = command.trim().replace(/\s+/g, " ");
+	return normalized.length <= 80 ? normalized : `${normalized.slice(0, 77)}...`;
+}
+
+function makeWrappedCommandResult(
+	command: string,
+	responseText: string,
+	details: ContextGuardBatchCoreDetails | undefined,
+	responseIsError: boolean,
+) {
+	const first = details?.results?.[0];
+	const output = typeof first?.output === "string" ? first.output : responseText;
+	const exitCode = typeof first?.exitCode === "number" ? first.exitCode : undefined;
+	const unified: UnifiedExecResult = {
+		chunk_id: "context-guard-batch",
+		wall_time_seconds: 0,
+		output,
+		...(exitCode !== undefined ? { exit_code: exitCode } : {}),
+	};
+	return {
+		content: [{ type: "text", text: formatUnifiedExecResult(unified, command) }],
+		details: unified,
+		isError: exitCode !== undefined ? exitCode !== 0 : responseIsError,
+	};
+}
+
+function makeBatchRenderDetails(params: ContextGuardBatchParams, output: string): ContextGuardBatchRenderDetails {
+	const commandPreview =
+		params.commands.length === 1 ? params.commands[0]!.command : `${params.commands.length} batched commands`;
+	return {
+		contextGuardBatch: true,
+		output,
+		commandCount: params.commands.length,
+		queryCount: params.queries?.length ?? 0,
+		commandPreview,
+	};
+}
+
+async function executeContextGuardBatch(
+	params: ContextGuardBatchParams,
+	ctx: ExtensionContext,
+): Promise<{
+	toolName: "exec_command.batch";
+	projectDir: string;
+	sessionDbPath: string;
+	responseText: string;
+	responseIsError: boolean;
+	details: ContextGuardBatchCoreDetails | undefined;
+}> {
+	const projectDir = resolveContextGuardProjectDir(params.workdir, ctx);
+	const { dbPath, sessionDbPath } = resolveContextGuardPaths(projectDir);
+	const response = await invokeCore("batch", {
+		dbPath,
+		commands: params.commands,
+		queries: params.queries,
+		timeout: params.timeout,
+		concurrency: params.concurrency,
+		projectDir,
+	});
+	return {
+		toolName: "exec_command.batch",
+		projectDir,
+		sessionDbPath,
+		responseText: contextGuardResponseText(response),
+		responseIsError: response.isError === true || response.ok === false,
+		details: isContextGuardBatchCoreDetails(response.details) ? response.details : undefined,
+	};
+}
+
+async function executeWrappedCommandWithContextGuard(
+	params: ExecCommandParams,
+	executedCommand: string,
+	ctx: ExtensionContext,
+) {
+	const batch = await executeContextGuardBatch(
+		{
+			mode: "batch",
+			workdir: params.workdir,
+			commands: [{ label: labelForWrappedCommand(params.cmd), command: executedCommand }],
+			timeout: params.timeout,
+		},
+		ctx,
+	);
+	setImmediate(() =>
+		sessionRecordToolTelemetry({
+			sessionDbPath: batch.sessionDbPath,
+			projectDir: batch.projectDir,
+			toolName: batch.toolName,
+			bytesReturned: Buffer.byteLength(batch.responseText),
+		}),
+	);
+	return makeWrappedCommandResult(params.cmd, batch.responseText, batch.details, batch.responseIsError);
+}
+
+async function executeExplicitBatch(params: ContextGuardBatchParams, ctx: ExtensionContext) {
+	const batch = await executeContextGuardBatch(params, ctx);
+	setImmediate(() =>
+		sessionRecordToolTelemetry({
+			sessionDbPath: batch.sessionDbPath,
+			projectDir: batch.projectDir,
+			toolName: batch.toolName,
+			bytesReturned: Buffer.byteLength(batch.responseText),
+		}),
+	);
+	return {
+		content: [{ type: "text", text: batch.responseText }],
+		details: makeBatchRenderDetails(params, batch.responseText),
+		isError: batch.responseIsError,
+	};
+}
+
+function shouldRouteCommandThroughContextGuard(params: ExecCommandParams, options: ExecCommandToolOptions): boolean {
+	if (params.foreground) return false;
+	if (params.tty) return false;
+	if (typeof params.contextGuard === "boolean") return params.contextGuard;
+	return options.contextGuardEnabled?.() ?? false;
+}
+
+function unquoteShellToken(token: string): string {
+	if ((token.startsWith("'") && token.endsWith("'")) || (token.startsWith('"') && token.endsWith('"'))) {
+		return token.slice(1, -1);
+	}
+	return token;
+}
+
+function firstShellToken(value: string): string | undefined {
+	const match = value.match(/^(?:"[^"]*"|'[^']*'|[^\s]+)/);
+	return match ? unquoteShellToken(match[0]!) : undefined;
+}
+
+function stripLeadingShellPrefixes(segment: string): string {
+	let rest = segment.trim().replace(/^\(+\s*/, "");
+	for (;;) {
+		const before = rest;
+		rest = rest.replace(/^(?:time|command|noglob|builtin)\s+/, "");
+		rest = rest.replace(/^env\s+/, "");
+		rest = stripLeadingTimeoutCommand(rest);
+		while (/^[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s]+)\s+/.test(rest)) {
+			rest = rest.replace(/^[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s]+)\s+/, "");
+		}
+		if (rest === before) return rest;
+	}
+}
+
+function stripLeadingTimeoutCommand(segment: string): string {
+	let rest = segment;
+	const first = firstShellToken(rest);
+	if (first !== "timeout" && first !== "gtimeout") return segment;
+	rest = rest.slice(rest.match(/^(?:"[^"]*"|'[^']*'|[^\s]+)/)?.[0]?.length ?? 0).trimStart();
+
+	while (rest.startsWith("-")) {
+		const token = firstShellToken(rest);
+		if (!token) return segment;
+		rest = rest.slice(rest.match(/^(?:"[^"]*"|'[^']*'|[^\s]+)/)?.[0]?.length ?? 0).trimStart();
+		if (token === "-s" || token === "--signal" || token === "-k" || token === "--kill-after") {
+			const valueToken = firstShellToken(rest);
+			if (!valueToken) return segment;
+			rest = rest.slice(rest.match(/^(?:"[^"]*"|'[^']*'|[^\s]+)/)?.[0]?.length ?? 0).trimStart();
+		}
+	}
+
+	const duration = firstShellToken(rest);
+	if (!duration) return segment;
+	rest = rest.slice(rest.match(/^(?:"[^"]*"|'[^']*'|[^\s]+)/)?.[0]?.length ?? 0).trimStart();
+	return rest || segment;
+}
+
+function commandTokenBasename(token: string): string {
+	const withoutPath = token.split("/").pop() ?? token;
+	return withoutPath;
+}
+
+export function commandInvokesPlannotator(command: string): boolean {
+	const segments = command.split(/(?:&&|\|\||[;|\n])/);
+	return segments.some((segment) => {
+		const first = firstShellToken(stripLeadingShellPrefixes(segment));
+		return first !== undefined && commandTokenBasename(first) === "plannotator";
+	});
+}
+
+function forcePlannotatorForeground(params: ExecCommandParams, command: string): ExecCommandParams {
+	if (!commandInvokesPlannotator(params.cmd) && !commandInvokesPlannotator(command)) {
+		return params;
+	}
+	return {
+		...params,
+		tty: false,
+		yield_time_ms: undefined,
+		contextGuard: false,
+		foreground: true,
+	};
 }
 
 function createEmptyResultComponent(): Container {
@@ -124,6 +538,53 @@ interface ExecCommandRenderContextLike {
 	state?: {
 		elapsedTimer?: ReturnType<typeof setTimeout>;
 	};
+}
+
+function renderBatchCallWithOptionalContext(
+	args: unknown,
+	theme: { fg(role: string, text: string): string; bold(text: string): string },
+	context: ExecCommandRenderContextLike | undefined,
+) {
+	if (!args || typeof args !== "object") return null;
+	const record = args as Record<string, unknown>;
+	if (record.mode !== "batch" && !Array.isArray(record.commands)) return null;
+	const commands = normalizeContextGuardBatchCommands(record.commands);
+	const commandPreview = commands.length === 1 ? commands[0]!.command : `${commands.length} batched commands`;
+	return renderExecCellComponent(
+		rawCommandToExecCell({
+			command: commandPreview,
+			status: context?.isPartial ? "running" : "done",
+			contextGuardWrapped: true,
+		}),
+		{ theme, part: "header" },
+	);
+}
+
+function renderBatchResultWithOptionalContext(
+	result: {
+		content: Array<{ type: string; text?: string }>;
+		details?: unknown;
+	},
+	options: { expanded: boolean; isPartial: boolean },
+	theme: { fg(role: string, text: string): string },
+) {
+	if (options.isPartial) {
+		return createEmptyResultComponent();
+	}
+	const details = isContextGuardBatchRenderDetails(result.details) ? result.details : undefined;
+	if (!details) return null;
+	return renderExecCellComponent(
+		rawCommandToExecCell({
+			command: details.commandPreview,
+			status: "done",
+			contextGuardWrapped: true,
+			outputBlock: {
+				output: details.output,
+				options: { expanded: options.expanded },
+			},
+		}),
+		{ theme, part: "output" },
+	);
 }
 
 const RUNNING_INVALIDATION_MS = 120;
@@ -171,6 +632,7 @@ const renderExecCommandCallWithOptionalContext: any = (
 				status: "done",
 				command: sessionCommand,
 				rtkWrapped: renderInfo.rtkWrapped,
+				contextGuardWrapped: renderInfo.contextGuardWrapped,
 			},
 			{ theme, part: "header" },
 		);
@@ -184,6 +646,7 @@ const renderExecCommandCallWithOptionalContext: any = (
 				failed,
 				elapsedMs: renderInfo.elapsedMs,
 				rtkWrapped: renderInfo.rtkWrapped,
+				contextGuardWrapped: renderInfo.contextGuardWrapped,
 			}
 		: rawCommandToExecCell({
 				command,
@@ -191,6 +654,7 @@ const renderExecCommandCallWithOptionalContext: any = (
 				failed,
 				elapsedMs: renderInfo.elapsedMs,
 				rtkWrapped: renderInfo.rtkWrapped,
+				contextGuardWrapped: renderInfo.contextGuardWrapped,
 			});
 	return renderExecCellComponent(cell, { theme, part: "header" });
 };
@@ -233,6 +697,7 @@ const renderExecCommandResultWithOptionalContext: any = (
 		rawCommandToExecCell({
 			command: command ?? "",
 			status: renderInfo.status,
+			contextGuardWrapped: renderInfo.contextGuardWrapped,
 			outputBlock: {
 				output: output ?? "",
 				footer,
@@ -256,11 +721,15 @@ export function registerExecCommandTool(
 	pi.registerTool({
 		name: "exec_command",
 		label: "exec_command",
-		description: "Runs a command in a PTY, returning output or a session ID for ongoing interaction.",
+		description:
+			"Runs a shell command in a PTY, with default Context Guard wrapping for non-interactive commands, plus an explicit batch mode for multi-command research workflows.",
 		renderShell: "self",
-		promptSnippet: "Run a command.",
+		promptSnippet:
+			"Run a command; Context Guard wraps non-interactive exec_command calls by default. Use mode:'batch' for multi-command research.",
 		promptGuidelines: [
 			"Use exec_command for search, listing files, and local text-file reads.",
+			"Context Guard wrapping is enabled by default for non-interactive exec_command calls; use tty=true for true terminal interaction.",
+			"Use exec_command(mode:'batch', commands, queries) for multi-command research that should auto-index and search output.",
 			"Prefer `rg`/`rg --files` over `grep`/`find`; for broad searches use `rg -n -M 400 --max-columns-preview` plus globs like `--glob '!*.map'`.",
 			"Keep tty disabled unless the command truly needs interactive terminal behavior.",
 		],
@@ -270,17 +739,26 @@ export function registerExecCommandTool(
 			if (signal?.aborted) {
 				throw new Error("exec_command aborted");
 			}
-			const typedParams = parseExecCommandParams(params);
+			const invocation = parseExecCommandParams(params);
+			if (invocation.kind === "batch") {
+				return executeExplicitBatch(invocation.params, ctx);
+			}
+			const typedParams = invocation.params;
+			if (shouldRouteCommandThroughContextGuard(typedParams, options)) {
+				tracker.recordContextGuardWrapped(toolCallId);
+				return executeWrappedCommandWithContextGuard(typedParams, typedParams.cmd, ctx);
+			}
 			const rewrite = options.rewriteCommand ? await options.rewriteCommand(typedParams.cmd, ctx) : typedParams.cmd;
 			const rewrittenCommand = typeof rewrite === "string" ? rewrite : rewrite.command;
 			const command = shouldUseRawRipgrep(typedParams.cmd, rewrittenCommand) ? typedParams.cmd : rewrittenCommand;
 			const rtkWrapped = typeof rewrite === "string" ? command !== typedParams.cmd : rewrite.rtkWrapped === true;
+			const executionParams = forcePlannotatorForeground(typedParams, command);
 			if (rtkWrapped) {
 				tracker.recordRtkWrapped(toolCallId);
 			}
 			const streamPartialOutput = !summarizeShellCommand(command).maskAsExplored;
 			const result = await sessions.exec(
-				{ ...typedParams, cmd: command },
+				{ ...executionParams, cmd: command },
 				ctx.cwd,
 				signal,
 				streamPartialOutput
@@ -320,7 +798,9 @@ export function registerExecCommandTool(
 				bold(text: string): string;
 			},
 			context?: ExecCommandRenderContextLike,
-		) => renderExecCommandCallWithOptionalContext(args, theme, context, tracker, sessions)) as any,
+		) =>
+			renderBatchCallWithOptionalContext(args, theme, context) ??
+			renderExecCommandCallWithOptionalContext(args, theme, context, tracker, sessions)) as any,
 		renderResult: ((
 			result: {
 				content: Array<{ type: string; text?: string }>;
@@ -329,6 +809,8 @@ export function registerExecCommandTool(
 			options: { expanded: boolean; isPartial: boolean },
 			theme: { fg(role: string, text: string): string },
 			context?: ExecCommandRenderContextLike,
-		) => renderExecCommandResultWithOptionalContext(result, options, theme, context, tracker, sessions)) as any,
+		) =>
+			renderBatchResultWithOptionalContext(result, options, theme) ??
+			renderExecCommandResultWithOptionalContext(result, options, theme, context, tracker, sessions)) as any,
 	});
 }

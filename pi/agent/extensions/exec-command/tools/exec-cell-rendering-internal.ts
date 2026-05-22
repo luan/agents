@@ -40,15 +40,21 @@ export function renderExecCommandCall(
 	failed = false,
 	elapsedMs?: number,
 	rtkWrapped = false,
+	contextGuardWrapped = false,
 ): string {
 	const summary = summarizeShellCommand(command);
 	return summary.maskAsExplored
-		? renderExplorationText([summary.actions], state, theme, failed, elapsedMs, rtkWrapped)
-		: renderCommandText(command, state, theme, failed, elapsedMs, rtkWrapped);
+		? renderExplorationText([summary.actions], state, theme, failed, elapsedMs, rtkWrapped, contextGuardWrapped)
+		: renderCommandText(command, state, theme, failed, elapsedMs, rtkWrapped, contextGuardWrapped);
 }
 
-export function renderSpawnedBackgroundTerminalCall(command: string, theme: RenderTheme, rtkWrapped = false): string {
-	return renderCommandText(command, "done", theme, false, undefined, rtkWrapped, {
+export function renderSpawnedBackgroundTerminalCall(
+	command: string,
+	theme: RenderTheme,
+	rtkWrapped = false,
+	contextGuardWrapped = false,
+): string {
+	return renderCommandText(command, "done", theme, false, undefined, rtkWrapped, contextGuardWrapped, {
 		done: "Spawned background terminal",
 		running: "Spawning background terminal",
 	});
@@ -61,7 +67,7 @@ export function renderUserExecCommandCall(
 	failed = false,
 	elapsedMs?: number,
 ): string {
-	return renderCommandText(command, state, theme, failed, elapsedMs, false, {
+	return renderCommandText(command, state, theme, failed, elapsedMs, false, false, {
 		done: "You ran",
 		running: "You are running",
 	});
@@ -74,8 +80,9 @@ export function renderGroupedExecCommandCall(
 	failed = false,
 	elapsedMs?: number,
 	rtkWrapped = false,
+	contextGuardWrapped = false,
 ): string {
-	return renderExplorationText(actionGroups, state, theme, failed, elapsedMs, rtkWrapped);
+	return renderExplorationText(actionGroups, state, theme, failed, elapsedMs, rtkWrapped, contextGuardWrapped);
 }
 
 export function renderWriteStdinCall(
@@ -276,16 +283,19 @@ function renderExplorationText(
 	_failed: boolean,
 	elapsedMs?: number,
 	rtkWrapped = false,
+	contextGuardWrapped = false,
 ): string {
 	if (state === "running") {
-		return appendRtkMarker(
-			`${theme.fg("dim", runningMarker(elapsedMs))} ${theme.bold("Exploring")}`,
-			theme,
+		return appendRoutingMarkers(`${theme.fg("dim", runningMarker(elapsedMs))} ${theme.bold("Exploring")}`, theme, {
 			rtkWrapped,
-		);
+			contextGuardWrapped,
+		});
 	}
 
-	let text = appendRtkMarker(`${theme.fg("success", "•")} ${theme.bold("Explored")}`, theme, rtkWrapped);
+	let text = appendRoutingMarkers(`${theme.fg("success", "•")} ${theme.bold("Explored")}`, theme, {
+		rtkWrapped,
+		contextGuardWrapped,
+	});
 
 	for (const [index, line] of coalesceReadGroups(actionGroups).map(formatActionLine).entries()) {
 		const prefix = index === 0 ? "  └ " : "    ";
@@ -302,16 +312,17 @@ function renderCommandText(
 	failed: boolean,
 	elapsedMs?: number,
 	rtkWrapped = false,
+	contextGuardWrapped = false,
 	labels: { done: string; running: string } = { done: "Ran", running: "Running" },
 ): string {
 	const verb = state === "running" ? labels.running : labels.done;
 	const marker = state === "running" ? runningMarker(elapsedMs) : "•";
 	const [firstLine = "", ...continuationLines] = wrapCommandForDisplay(stripShellWrapper(command));
 	let text = appendElapsed(
-		appendRtkMarker(
+		appendRoutingMarkers(
 			`${renderStatusMarker(marker, state, theme, failed)} ${theme.bold(verb)} ${highlightShellCommand(firstLine, theme)}`,
 			theme,
-			rtkWrapped,
+			{ rtkWrapped, contextGuardWrapped },
 		),
 		state,
 		theme,
@@ -323,8 +334,19 @@ function renderCommandText(
 	return text;
 }
 
-function appendRtkMarker(text: string, theme: Pick<RenderTheme, "fg">, rtkWrapped: boolean): string {
-	return rtkWrapped ? `${text}${theme.fg("dim", " · ")}${theme.fg("mdLink", italic("via rtk"))}` : text;
+function appendRoutingMarkers(
+	text: string,
+	theme: Pick<RenderTheme, "fg">,
+	options: { rtkWrapped?: boolean; contextGuardWrapped?: boolean },
+): string {
+	const markers = [
+		options.rtkWrapped ? "via rtk" : undefined,
+		options.contextGuardWrapped ? "via context-guard" : undefined,
+	].filter((marker): marker is string => marker !== undefined);
+	if (markers.length === 0) return text;
+	return `${text}${markers
+		.map((marker) => `${theme.fg("dim", " · ")}${theme.fg("mdLink", italic(marker))}`)
+		.join("")}`;
 }
 
 function italic(text: string): string {

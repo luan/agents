@@ -1,6 +1,7 @@
 {
   "extends": "./tsconfig.json",
   "include": [
+    "pi/agent/extensions/context-guard/**/*.ts",
     "pi/agent/extensions/ask/**/*.ts",
     "pi/agent/extensions/prompt-storage/**/*.ts",
     "pi/agent/extensions/skillful/**/*.ts",

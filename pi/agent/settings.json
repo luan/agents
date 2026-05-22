@@ -27,6 +27,7 @@
     "extensions/ask/index.ts",
     "extensions/codex-native/index.ts",
     "extensions/context7/index.ts",
+    "extensions/context-guard/index.ts",
     "extensions/exec-command/index.ts",
     "extensions/git-tool/index.ts",
     "extensions/mosaic/index.ts",

@@ -1,7 +1,11 @@
 import { beforeAll, expect, test } from "bun:test";
 import { execSync } from "node:child_process";
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { BashExecutionComponent, initTheme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 import { Container } from "@earendil-works/pi-tui";
+import { markExecCommandContextGuardEnabled, resetExecCommandContextGuardEnabled } from "../context-guard/pi/index.ts";
 import { DEFAULT_EXEC_SHELL, resolveRuntimeShell } from "./adapter/runtime-shell.ts";
 import execCommandExtension from "./index.ts";
 import type { ShellAction } from "./shell/summary.ts";
@@ -14,7 +18,7 @@ import {
 	renderExecCellComponent,
 } from "./tools/exec-cell-presentation.ts";
 import { createExecCommandTracker } from "./tools/exec-command-state.ts";
-import { registerExecCommandTool } from "./tools/exec-command-tool.ts";
+import { commandInvokesPlannotator, registerExecCommandTool } from "./tools/exec-command-tool.ts";
 import { createExecSessionManager } from "./tools/exec-session-manager.ts";
 import { computeRtkRewriteDecision, parseRtkExecutablePath } from "./tools/rtk-wrapper.ts";
 import { formatUnifiedExecResult } from "./tools/unified-exec-format.ts";
@@ -64,11 +68,15 @@ function renderExecCommandCall(
 	failed = false,
 	elapsedMs?: number,
 	rtkWrapped = false,
+	contextGuardWrapped = false,
 ): string {
-	return renderExecCell(rawCommandToExecCell({ command, status: state, failed, elapsedMs, rtkWrapped }), {
-		theme,
-		part: "header",
-	});
+	return renderExecCell(
+		rawCommandToExecCell({ command, status: state, failed, elapsedMs, rtkWrapped, contextGuardWrapped }),
+		{
+			theme,
+			part: "header",
+		},
+	);
 }
 
 function renderGroupedExecCommandCall(
@@ -170,6 +178,17 @@ test("exec cell facade renders raw command cells with RTK presentation metadata"
 	expect(rendered).toBe(renderExecCommandCall("cargo test", "done", testTheme, false, undefined, true));
 });
 
+test("exec cell facade renders raw command cells with Context Guard presentation metadata", () => {
+	const cell = rawCommandToExecCell({
+		command: "cargo test",
+		status: "done",
+		contextGuardWrapped: true,
+	});
+	const rendered = renderExecCell(cell, { theme: testTheme, part: "header" });
+
+	expect(rendered).toBe(renderExecCommandCall("cargo test", "done", testTheme, false, undefined, false, true));
+});
+
 test("exec cell facade renders exploration rows from an explicit cell model", () => {
 	const rendered = renderExecCell(
 		{
@@ -222,6 +241,24 @@ test("exec cell facade renders output components with caller width", () => {
 
 	expect(rendered).toContain("… +");
 	expect(rendered).toContain("tail");
+});
+
+test("exec cell facade caches stable component renders by width", () => {
+	const component = renderExecCellComponent(
+		{
+			kind: "command",
+			status: "done",
+			command: "printf 'hello'",
+			outputBlock: { output: "hello" },
+		},
+		{ theme: testTheme },
+	);
+
+	const first = component.render(80);
+	expect(component.render(80)).toBe(first);
+	expect(component.render(72)).not.toBe(first);
+	component.invalidate();
+	expect(component.render(80)).not.toBe(first);
 });
 
 test("exec cell facade renders write_stdin cells and output blocks", () => {
@@ -703,6 +740,13 @@ test("exec command call can show an RTK routing marker", () => {
 	);
 });
 
+test("exec command call can show a Context Guard routing marker", () => {
+	const rendered = renderExecCommandCall("cargo test", "done", testTheme, false, undefined, false, true);
+	expect(rendered).toBe(
+		`<success>•</success> <bold>Ran</bold> <syntaxFunction>cargo</syntaxFunction> test<dim> · </dim><mdLink>\x1b[3mvia context-guard\x1b[23m</mdLink>`,
+	);
+});
+
 test("line-safe rg summaries do not display numeric limits as the query", () => {
 	const rendered = renderExecCommandCall(
 		`rg -n -M 400 --max-columns-preview "struct SyncPersistenceUtilities|class SyncPersistenceUtilities"`,
@@ -1031,6 +1075,65 @@ test("exec command suppresses partial output streaming for exploration commands"
 	);
 
 	expect(receivedUpdateCallback).toBe(false);
+	tracker.clear();
+});
+
+test("exec command recognizes real plannotator shell invocations", () => {
+	expect(commandInvokesPlannotator("plannotator review --git")).toBe(true);
+	expect(commandInvokesPlannotator("PLANNOTATOR_SHARE=disabled plannotator annotate file --gate")).toBe(true);
+	expect(commandInvokesPlannotator("cd /tmp && plannotator annotate gate.html --render-html --gate")).toBe(true);
+	expect(commandInvokesPlannotator("plannotator annotate gate.html --gate | tee result.txt")).toBe(true);
+	expect(commandInvokesPlannotator("timeout 300 plannotator annotate gate.html --gate")).toBe(true);
+	expect(commandInvokesPlannotator("gtimeout -k 10 300 plannotator review --git")).toBe(true);
+	expect(commandInvokesPlannotator("rg -n plannotator skills")).toBe(false);
+	expect(commandInvokesPlannotator("printf '%s\\n' plannotator")).toBe(false);
+});
+
+test("exec command forces plannotator invocations to foreground execution", async () => {
+	let tool: any;
+	const tracker = createExecCommandTracker();
+	let execInput: any;
+	const sessions = {
+		exec: async (input: unknown) => {
+			execInput = input;
+			return {
+				chunk_id: "plannotator",
+				wall_time_seconds: 0,
+				output: "# File Feedback\n",
+				exit_code: 0,
+			};
+		},
+		write: async () => {
+			throw new Error("unexpected write");
+		},
+		hasSession: () => false,
+		getSessionCommand: () => undefined,
+		onSessionExit: () => () => {},
+		shutdown() {},
+	};
+	registerExecCommandTool(
+		{ registerTool: (definition: any) => (tool = definition) } as any,
+		tracker,
+		sessions as any,
+		{ contextGuardEnabled: () => true },
+	);
+
+	const result = await tool.execute(
+		"call-plannotator",
+		{ cmd: "plannotator review --git", tty: true, yield_time_ms: 250 },
+		undefined,
+		undefined,
+		{ cwd: process.cwd() },
+	);
+
+	expect(result.details.session_id).toBeUndefined();
+	expect(execInput).toMatchObject({
+		cmd: "plannotator review --git",
+		tty: false,
+		contextGuard: false,
+		foreground: true,
+	});
+	expect(execInput.yield_time_ms).toBeUndefined();
 	tracker.clear();
 });
 
@@ -2061,6 +2164,115 @@ test("rtk command toggles default-on exec command wrapping", async () => {
 	expect(notifications).toContainEqual({ message: "RTK wrapping enabled.", type: "info" });
 
 	for (const handler of handlers.get("session_shutdown") ?? []) handler();
+});
+
+test("cg-wrap command toggles default-on Context Guard wrapping", async () => {
+	type Handler = (event?: any, ctx?: any) => any;
+	const originalCoreBin = process.env.CONTEXT_GUARD_BIN;
+	const originalSkipLocalBin = process.env.CONTEXT_GUARD_SKIP_LOCAL_BIN;
+	const commands = new Map<string, any>();
+	const handlers = new Map<string, Handler[]>();
+	let tool: any;
+	const notifications: Array<{ message: string; type?: string }> = [];
+	const dir = mkdtempSync(join(tmpdir(), "exec-command-cg-wrap-toggle-"));
+	const coreBin = join(dir, "context-guard-core.js");
+	const logPath = join(dir, "requests.log");
+	writeFileSync(
+		coreBin,
+		[
+			`#!${process.execPath}`,
+			"const fs = require('node:fs');",
+			`const logPath = ${JSON.stringify(logPath)};`,
+			"let input = '';",
+			"process.stdin.setEncoding('utf8');",
+			"process.stdin.on('data', chunk => input += chunk);",
+			"process.stdin.on('end', () => {",
+			"  const request = JSON.parse(input);",
+			"  fs.appendFileSync(logPath, JSON.stringify(request) + '\\n', 'utf8');",
+			"  const text = request.command === 'batch' ? 'ignored' : '{}';",
+			"  process.stdout.write(JSON.stringify({",
+			"    ok: true,",
+			"    content: [{ type: 'text', text }],",
+			"    details: { results: [{ output: 'wrapped from core\\n', summary: 'ok', exitCode: 0 }] }",
+			"  }));",
+			"});",
+			"",
+		].join("\n"),
+		"utf8",
+	);
+	chmodSync(coreBin, 0o755);
+	process.env.CONTEXT_GUARD_BIN = coreBin;
+	delete process.env.CONTEXT_GUARD_SKIP_LOCAL_BIN;
+	markExecCommandContextGuardEnabled();
+
+	const pi = {
+		registerTool: (definition: any) => {
+			if (definition.name === "exec_command") tool = definition;
+		},
+		registerCommand: (name: string, command: any) => commands.set(name, command),
+		getActiveTools: () => [],
+		setActiveTools() {},
+		on: (event: string, handler: Handler) => {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+		},
+	} as any;
+	execCommandExtension(pi);
+
+	const ctx = {
+		hasUI: true,
+		ui: {
+			notify: (message: string, type?: string) => notifications.push({ message, type }),
+		},
+		cwd: process.cwd(),
+	};
+	const toggle = commands.get("cg-wrap");
+	expect(toggle).toBeDefined();
+	expect(await toggle.getArgumentCompletions("o")).toEqual([
+		{ value: "on", label: "on" },
+		{ value: "off", label: "off" },
+	]);
+
+	try {
+		const enabled = await tool.execute("call-cg-enabled", { cmd: "printf raw-disabled" }, undefined, undefined, ctx);
+		expect(enabled.details.output).toBe("wrapped from core\n");
+
+		await toggle.handler("off", ctx);
+		const disabled = await tool.execute("call-cg-disabled", { cmd: "printf raw-enabled" }, undefined, undefined, ctx);
+		expect(disabled.details.output).toBe("raw-enabled");
+		expect(notifications).toContainEqual({ message: "Context Guard wrapping disabled.", type: "info" });
+
+		await toggle.handler("on", ctx);
+		expect(notifications).toContainEqual({ message: "Context Guard wrapping enabled.", type: "info" });
+
+		const reenabled = await tool.execute(
+			"call-cg-reenabled",
+			{ cmd: "printf raw-disabled-again" },
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(reenabled.details.output).toBe("wrapped from core\n");
+
+		const coreRequests = readFileSync(logPath, "utf8")
+			.trim()
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => JSON.parse(line));
+		expect(coreRequests.filter((request) => request.command === "batch")).toHaveLength(2);
+	} finally {
+		if (originalCoreBin === undefined) {
+			delete process.env.CONTEXT_GUARD_BIN;
+		} else {
+			process.env.CONTEXT_GUARD_BIN = originalCoreBin;
+		}
+		if (originalSkipLocalBin === undefined) {
+			delete process.env.CONTEXT_GUARD_SKIP_LOCAL_BIN;
+		} else {
+			process.env.CONTEXT_GUARD_SKIP_LOCAL_BIN = originalSkipLocalBin;
+		}
+		resetExecCommandContextGuardEnabled();
+		for (const handler of handlers.get("session_shutdown") ?? []) handler();
+	}
 });
 
 test("rtk wrapping updates legacy command argument aliases", async () => {
