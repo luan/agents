@@ -933,6 +933,56 @@ describe("tasks extension", () => {
 		expect(Object.keys(write.parameters.properties).sort()).toEqual(["clear", "data", "id", "note", "op", "title"]);
 	});
 
+	test("task_write blocks agent story acceptance while slash accept remains human-owned", async () => {
+		const calls: string[][] = [];
+		const tools: any[] = [];
+		const commands = new Map<string, any>();
+		tasksExtension(
+			{
+				registerTool(tool: any) {
+					tools.push(tool);
+				},
+				registerCommand(name: string, command: any) {
+					commands.set(name, command);
+				},
+				on() {},
+			} as any,
+			{
+				runCommand: async (command: string, args: string[]) => {
+					calls.push([command, ...args]);
+					return {
+						stdout: JSON.stringify({ task: { ...task, type: "feature", status: "in_review" } }),
+						stderr: "",
+						exitCode: 0,
+					};
+				},
+			},
+		);
+
+		const write = tools.find((tool) => tool.name === "task_write");
+		await expect(write.execute("call-accept", { op: "accept", id: "PG4" }, undefined)).rejects.toThrow(
+			"Agents cannot accept tasks",
+		);
+		await expect(
+			write.execute("call-reject", { op: "reject", id: "PG4", note: "needs tests" }, undefined),
+		).rejects.toThrow("Agents cannot reject tasks");
+		await expect(
+			write.execute("call-done", { op: "update", id: "PG4", data: { status: "done" } }, undefined),
+		).rejects.toThrow("Agents cannot mark feature or bug tasks done");
+		await write.execute(
+			"call-chore-done",
+			{ op: "update", id: "CHORE", data: { type: "chore", status: "done" } },
+			undefined,
+		);
+		await commands.get("accept").handler("PG4", { cwd: "/repo", ui: {} });
+
+		expect(calls).toContainEqual(["ct", "task", "show", "PG4", "--json"]);
+		expect(calls).toContainEqual(["ct", "task", "update", "CHORE", "--type", "chore", "--status", "done", "--json"]);
+		expect(calls).toContainEqual(["ct", "task", "accept", "PG4", "--json"]);
+		expect(calls).not.toContainEqual(["ct", "task", "accept", "PG4", "--json", "--from-tool"]);
+		expect(calls).not.toContainEqual(["ct", "task", "update", "PG4", "--status", "done", "--json"]);
+	});
+
 	test("renders a scoped columnar HUD for active tasks", () => {
 		const lines = renderHudLines(
 			[

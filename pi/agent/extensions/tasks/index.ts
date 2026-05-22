@@ -2234,6 +2234,50 @@ function normalizeTaskWriteParams(params: Record<string, unknown>): Record<strin
 	};
 }
 
+function isStoryTaskType(value: unknown): boolean {
+	return value === "feature" || value === "bug";
+}
+
+async function loadTaskForWriteGuard(
+	command: string,
+	runCommand: typeof defaultRunCommand,
+	cwd: string,
+	id: unknown,
+	signal?: AbortSignal,
+): Promise<TaskRecord | undefined> {
+	if (typeof id !== "string" || id.length === 0) return undefined;
+	const result = await runCommand(command, ["task", "show", id, "--json"], cwd, signal);
+	try {
+		return (JSON.parse(result.stdout || "{}") as { task?: TaskRecord }).task;
+	} catch {
+		return undefined;
+	}
+}
+
+async function guardAgentTaskWrite(
+	action: TaskCommand,
+	params: Record<string, unknown>,
+	command: string,
+	runCommand: typeof defaultRunCommand,
+	cwd: string,
+	signal?: AbortSignal,
+): Promise<void> {
+	if (action === "accept")
+		throw new Error("Agents cannot accept tasks; use the human /accept command after delivery.");
+	if (action === "reject")
+		throw new Error("Agents cannot reject tasks; use the human /reject command for story feedback.");
+	if (action !== "update" || params.status !== "done") return;
+	const resolvedType =
+		typeof params.type === "string"
+			? params.type
+			: await loadTaskForWriteGuard(command, runCommand, cwd, params.id, signal).then((task) => task?.type);
+	if (isStoryTaskType(resolvedType)) {
+		throw new Error(
+			"Agents cannot mark feature or bug tasks done; deliver reviewed commits to in_review for human acceptance.",
+		);
+	}
+}
+
 function makeCombinedTaskTool(
 	resolveAction: (params: Record<string, unknown>) => TaskCommand,
 	command: string,
@@ -2260,12 +2304,16 @@ function makeCombinedTaskTool(
 			ctx?: ExtensionContext,
 		) => {
 			const action = resolveAction(params);
+			const normalizedParams = normalizeParams(params);
+			if (resolveAction === taskWriteAction) {
+				await guardAgentTaskWrite(action, normalizedParams, command, runCommand, getCwd(), signal);
+			}
 			const result = await executeTask(
 				command,
 				runCommand,
 				getCwd(),
 				action,
-				normalizeParams(params),
+				normalizedParams,
 				config,
 				pi,
 				ctx,
