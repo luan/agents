@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -361,13 +362,43 @@ fn task_load_cleanup_keeps_unepic_and_deletes_expired_done_tasks() {
         serde_json::from_slice(&old_done.get_output().stdout).expect("done json");
     let old_done_id = old_done_json["task"]["id"].as_str().expect("done id");
 
+    let recent_done = ct_cmd(project.path(), state.path())
+        .args([
+            "task",
+            "add",
+            "Recent done",
+            "--type",
+            "chore",
+            "--epic-id",
+            "test-epic",
+            "--status",
+            "done",
+            "--json",
+        ])
+        .assert()
+        .success();
+    let recent_done_json: serde_json::Value =
+        serde_json::from_slice(&recent_done.get_output().stdout).expect("recent done json");
+    let recent_done_id = recent_done_json["task"]["id"]
+        .as_str()
+        .expect("recent done id");
+
     let db_path = tasks_db_path(state.path());
     let conn = rusqlite::Connection::open(db_path).expect("open db");
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_millis() as i64;
     conn.execute(
         "UPDATE tasks SET updated_at = 1 WHERE id LIKE ?1",
         [format!("{old_done_id}%")],
     )
     .expect("age done task");
+    conn.execute(
+        "UPDATE tasks SET updated_at = ?1 WHERE id LIKE ?2",
+        rusqlite::params![now_ms - 24 * 60 * 60 * 1000, format!("{recent_done_id}%")],
+    )
+    .expect("age recent done task");
     conn.execute(
         "INSERT INTO tasks (id, title, body, status, task_type, labels, created_at, updated_at) VALUES (?1, ?2, '', 'open', 'chore', '[]', 1, 1)",
         ("ABCDEF", "legacy no epic"),
@@ -389,6 +420,7 @@ fn task_load_cleanup_keeps_unepic_and_deletes_expired_done_tasks() {
         .collect::<Vec<_>>();
     assert!(titles.contains(&"Active with epic"));
     assert!(!titles.contains(&"Expired done"));
+    assert!(titles.contains(&"Recent done"));
     assert!(titles.contains(&"legacy no epic"));
 
     ct_cmd(project.path(), state.path())

@@ -24,7 +24,7 @@ const VALID_STATUSES: [&str; 7] = [
 ];
 const VALID_TASK_TYPES: [&str; 4] = ["epic", "feature", "bug", "chore"];
 const TASK_SELECT_COLUMNS: &str = "id, title, body, status, priority, assigned_to, assigned_label, epic_id, epic_title, parent_id, blocked_by, task_type, labels, created_at, updated_at";
-const DONE_TASK_RETENTION_MS: i64 = 6 * 60 * 60 * 1000;
+const DONE_TASK_RETENTION_MS: i64 = 48 * 60 * 60 * 1000;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct Task {
