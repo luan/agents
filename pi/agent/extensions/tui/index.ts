@@ -448,10 +448,26 @@ export default function (pi: ExtensionAPI) {
 		}
 	};
 
-	const startWorkingAnimation = () => {
+	const startWorkingAnimation = (ctx: ExtensionContext) => {
 		setWorkingTimerStarted();
 		stopWorkingAnimation();
 		workingAnimationTimer = setInterval(() => {
+			try {
+				if (disposed || !isCurrentSessionContext(ctx) || ctx.isIdle()) {
+					setWorkingTimerStopped();
+					persistWorkingTimer();
+					stopWorkingAnimation();
+					refresh();
+					return;
+				}
+			} catch (error) {
+				if (isStaleCtxError(error)) {
+					stopWorkingAnimation();
+					refresh();
+					return;
+				}
+				throw error;
+			}
 			advanceWorkingAnimationFrame();
 			refresh();
 		}, 80);
@@ -644,7 +660,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("agent_start", async (_event, ctx) => {
 		if (!syncStateIfCurrent(ctx)) return;
-		startWorkingAnimation();
+		startWorkingAnimation(ctx);
 		persistWorkingTimer();
 	});
 

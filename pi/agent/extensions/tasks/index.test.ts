@@ -1933,7 +1933,7 @@ describe("tasks extension", () => {
 		expect(sent[0].message.display).toBe(true);
 		expect(sent[0].message.content[0].text).toContain("Task nudge");
 		expect(sent[0].message.content[0].text).toContain("Start assigned task t");
-		expect(sent[0].options).toEqual({ deliverAs: "followUp", triggerTurn: true });
+		expect(sent[0].options).toEqual({ deliverAs: "followUp" });
 	});
 
 	test("task guard continues when user says the task is not done", async () => {
@@ -2388,10 +2388,7 @@ describe("tasks extension", () => {
 		expect(sent[1].message.display).toBe(true);
 		expect(sent[1].message.content[0].text).toContain("Task nudge");
 		expect(sent[1].message.content[0].text).toContain("Start assigned task t");
-		expect(sent.map((item) => item.options)).toEqual([
-			{ deliverAs: "followUp", triggerTurn: true },
-			{ deliverAs: "followUp", triggerTurn: true },
-		]);
+		expect(sent.map((item) => item.options)).toEqual([{ deliverAs: "followUp" }, { deliverAs: "followUp" }]);
 	});
 
 	test("task guard stays quiet when a user question follows a nudge", async () => {
@@ -2742,6 +2739,124 @@ describe("tasks extension", () => {
 		await handlers.turn_end({}, ctx);
 
 		expect(sent).toEqual([]);
+	});
+
+	test("task guard stays quiet for next work while an assigned task is awaiting acceptance", async () => {
+		const handlers: Record<string, any> = {};
+		const commands: Record<string, any> = {};
+		const sent: any[] = [];
+		tasksExtension(
+			{
+				registerTool() {},
+				registerCommand(name: string, definition: any) {
+					commands[name] = definition;
+				},
+				on(name: string, handler: any) {
+					handlers[name] = handler;
+				},
+				sendMessage(message: any, options: any) {
+					sent.push({ message, options });
+				},
+			} as any,
+			{
+				runCommand: async () => ({
+					stdout: JSON.stringify({
+						tasks: [
+							{
+								...task,
+								id: "review",
+								type: "feature",
+								title: "Awaiting acceptance",
+								status: "in_review",
+								assigned_to: "session:test-session",
+								epic_id: "boo",
+							},
+							{
+								...task,
+								id: "next",
+								type: "feature",
+								title: "Next task in same epic",
+								status: "open",
+								epic_id: "boo",
+							},
+						],
+					}),
+					stderr: "",
+					exitCode: 0,
+				}),
+			},
+		);
+		const ctx = {
+			cwd: "/tmp/project",
+			sessionId: "test-session",
+			signal: undefined,
+			ui: {
+				setWidget() {},
+				notify() {},
+			},
+		};
+
+		await commands["task-guard"].handler("on", ctx);
+		await handlers.message_end({ message: { role: "assistant", content: [{ type: "text", text: "Done." }] } }, ctx);
+		await handlers.turn_end({}, ctx);
+
+		expect(sent).toEqual([]);
+	});
+
+	test("task guard does not auto-trigger turns for fresh start suggestions", async () => {
+		const handlers: Record<string, any> = {};
+		const commands: Record<string, any> = {};
+		const sent: any[] = [];
+		tasksExtension(
+			{
+				registerTool() {},
+				registerCommand(name: string, definition: any) {
+					commands[name] = definition;
+				},
+				on(name: string, handler: any) {
+					handlers[name] = handler;
+				},
+				sendMessage(message: any, options: any) {
+					sent.push({ message, options });
+				},
+			} as any,
+			{
+				runCommand: async () => ({
+					stdout: JSON.stringify({
+						tasks: [
+							{
+								...task,
+								id: "next",
+								type: "feature",
+								title: "Ready next task",
+								status: "open",
+								assigned_to: "session:test-session",
+							},
+						],
+					}),
+					stderr: "",
+					exitCode: 0,
+				}),
+			},
+		);
+		const ctx = {
+			cwd: "/tmp/project",
+			sessionId: "test-session",
+			signal: undefined,
+			ui: {
+				setWidget() {},
+				notify() {},
+			},
+		};
+
+		await commands["task-guard"].handler("on", ctx);
+		handlers.tool_execution_end({ result: { details: { filesChanged: 1 } } });
+		await handlers.message_end({ message: { role: "assistant", content: [{ type: "text", text: "Done." }] } }, ctx);
+		await handlers.turn_end({}, ctx);
+
+		expect(sent).toHaveLength(1);
+		expect(sent[0].message.content[0].text).toContain("Start assigned task next");
+		expect(sent[0].options).toEqual({ deliverAs: "followUp" });
 	});
 
 	test("task tools render no call or result UI", () => {

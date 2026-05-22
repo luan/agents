@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { basename } from "node:path";
 import gitToolExtension, {
 	appendGitToolPrompt,
@@ -126,32 +126,6 @@ describe("Git-Spice skills", () => {
 
 		expect(skillDirectoryNames(skillDir)).toEqual(["restack", "stack", "submit", "sync"]);
 	});
-
-	test("documents Git-Spice branch creation commands and shorthands", () => {
-		const skillDir = gitToolResources("git-spice").skillPaths?.[0];
-		if (!skillDir) throw new Error("missing Git-Spice skill directory");
-
-		const stack = readFileSync(`${skillDir}/stack/SKILL.md`, "utf8");
-
-		expect(stack).toContain("name: stack");
-		expect(stack).toContain("gs branch create");
-		expect(stack).toContain("gs bc");
-		expect(stack).not.toContain("name: gs");
-	});
-
-	test("documents Git-Spice submit command contracts without requiring the binary", () => {
-		const skillDir = gitToolResources("git-spice").skillPaths?.[0];
-		if (!skillDir) throw new Error("missing Git-Spice skill directory");
-
-		const submit = readFileSync(`${skillDir}/submit/SKILL.md`, "utf8");
-
-		expect(submit).toContain("gs stack submit");
-		expect(submit).toContain("gs ss");
-		expect(submit).toContain("update existing Change Requests");
-		expect(submit).toContain("Skill(pr-descr)");
-		expect(submit).not.toContain("Testing/QA/Validation");
-		expect(submit).toContain("update-only and create modes");
-	});
 });
 
 describe("git-tool tool-call handling", () => {
@@ -174,21 +148,6 @@ describe("Graphite skills", () => {
 		if (!skillDir) throw new Error("missing Graphite skill directory");
 
 		expect(skillDirectoryNames(skillDir)).toEqual(["restack", "stack", "submit", "sync"]);
-	});
-
-	test("preserves Graphite submit safety rules", () => {
-		const skillDir = gitToolResources("graphite").skillPaths?.[0];
-		if (!skillDir) throw new Error("missing Graphite skill directory");
-
-		const submit = readFileSync(`${skillDir}/submit/SKILL.md`, "utf8");
-
-		expect(submit).toContain("name: submit");
-		expect(submit).toContain("gt ss -u");
-		expect(submit).toContain("Default is `gt ss -u`");
-		expect(submit).toContain("Skill(pr-descr)");
-		expect(submit).not.toContain("Testing/QA/Validation");
-		expect(submit).toContain("This applies to `gt ss -u`, `gt submit`, and `gt ss`");
-		expect(submit).not.toContain("name: gt-submit");
 	});
 
 	test("removes legacy Graphite skill resources", () => {

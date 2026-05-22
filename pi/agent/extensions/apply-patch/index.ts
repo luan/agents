@@ -388,6 +388,10 @@ class ApplyPatchDiffView {
 		key: string;
 		lines: string[];
 	};
+	private renderedOutputCache?: {
+		width: number;
+		lines: string[];
+	};
 
 	constructor(
 		private label: string,
@@ -405,10 +409,20 @@ class ApplyPatchDiffView {
 		private intent?: string,
 	) {}
 
-	invalidate() {}
+	invalidate() {
+		this.renderedDiffCache = undefined;
+		this.renderedOutputCache = undefined;
+	}
 
 	render(width: number): string[] {
 		const safeWidth = Math.max(24, width);
+		if (this.renderedOutputCache?.width === safeWidth) return this.renderedOutputCache.lines;
+		const lines = this.renderUncached(safeWidth);
+		this.renderedOutputCache = { width: safeWidth, lines };
+		return lines;
+	}
+
+	private renderUncached(safeWidth: number): string[] {
 		const safeRows = (lines: string[]) => lines.map((line) => clampRenderedLine(line, safeWidth));
 		const bgToken =
 			this.state === "error" ? "toolErrorBg" : this.state === "pending" ? "toolPendingBg" : "toolSuccessBg";

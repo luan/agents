@@ -56,6 +56,83 @@ describe("polished TUI session binding", () => {
 	});
 });
 
+describe("polished TUI working animation", () => {
+	test("self-stops if the session becomes idle before agent_end", async () => {
+		const originalSetInterval = globalThis.setInterval;
+		const originalClearInterval = globalThis.clearInterval;
+		const intervals: Array<() => void> = [];
+		let clearCalls = 0;
+		let renderRequests = 0;
+		let idle = false;
+		const handlers: Record<string, Array<(event: unknown, ctx: any) => unknown>> = {};
+
+		(globalThis as unknown as { setInterval: typeof setInterval }).setInterval = ((fn: () => void) => {
+			intervals.push(fn);
+			return { interval: intervals.length } as unknown as ReturnType<typeof setInterval>;
+		}) as typeof setInterval;
+		(globalThis as unknown as { clearInterval: typeof clearInterval }).clearInterval = (() => {
+			clearCalls++;
+		}) as typeof clearInterval;
+
+		try {
+			const pi = createFakePi({
+				onEvent: (event, handler) => {
+					handlers[event] ??= [];
+					handlers[event].push(handler);
+				},
+			});
+			registerTui(pi as never);
+
+			const ctx = createCtx("/sessions/main.jsonl", {
+				isIdle: () => idle,
+				requestRender: () => renderRequests++,
+			});
+			await handlers.session_start?.at(-1)?.({}, ctx);
+			await handlers.agent_start?.at(-1)?.({}, ctx);
+
+			expect(intervals.length).toBeGreaterThan(0);
+			expect(clearCalls).toBe(0);
+
+			idle = true;
+			intervals.at(-1)!();
+
+			expect(clearCalls).toBe(1);
+			expect(renderRequests).toBeGreaterThan(0);
+		} finally {
+			globalThis.setInterval = originalSetInterval;
+			globalThis.clearInterval = originalClearInterval;
+		}
+	});
+});
+
+function createCtx(
+	sessionFile: string | undefined,
+	options: { modelName?: string; isIdle?: () => boolean; requestRender?: () => void } = {},
+) {
+	return {
+		cwd: "/tmp/project",
+		model: { name: options.modelName ?? "GPT-5", provider: "unknown", contextWindow: 100_000 },
+		modelRegistry: {},
+		ui: {
+			theme: {},
+			setFooter(factory: (tui: { requestRender: () => void }, theme: unknown, footerData: unknown) => unknown) {
+				factory({ requestRender: options.requestRender ?? (() => {}) }, {}, { onBranchChange: () => () => {} });
+			},
+			setWorkingVisible() {},
+		},
+		sessionManager: {
+			getSessionFile: () => sessionFile,
+			getSessionName: () => "main",
+			getEntries: () => [],
+			getLeafId: () => undefined,
+			getBranch: () => [],
+		},
+		getContextUsage: () => undefined,
+		getSystemPrompt: () => "",
+		isIdle: options.isIdle ?? (() => true),
+	};
+}
+
 function createFakePi(options: {
 	onEvent?: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => void;
 }) {

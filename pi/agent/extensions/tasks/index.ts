@@ -2216,7 +2216,11 @@ class RatatuiTaskBoardOverlay implements Component {
 			return;
 		}
 		if (matchesAnyKey(data, bindings.cancel)) {
-			this.mutate("update", { id: task.id, status: "canceled" });
+			this.send({ input: "x" });
+			return;
+		}
+		if (matchesAnyKey(data, bindings.delete)) {
+			this.send({ input: "delete" });
 			return;
 		}
 		if (matchesAnyKey(data, bindings.cycleStatus)) {
@@ -2686,6 +2690,8 @@ function selectGuardAction(
 		(task) => isGuardWorkTask(task) && task.status === "rejected" && !hasUnresolvedDependencies(task, byId, children),
 	);
 	if (rejected) return { kind: "revise", task: rejected };
+	const pendingAcceptance = assigned.some((task) => hasReviewLifecycle(task) && task.status === "in_review");
+	if (pendingAcceptance) return undefined;
 	const assignedReady = assigned.find(
 		(task) =>
 			isGuardWorkTask(task) && isReadyForWork(task, byId, children) && (children.get(task.id)?.length ?? 0) === 0,
@@ -2764,6 +2770,7 @@ function userTextAllowsGuardAutoTurn(text: string | undefined): boolean {
 
 function shouldTriggerGuardTurn(state: GuardState, decision: TaskGuardDecision): boolean {
 	if (!userTextAllowsGuardAutoTurn(state.lastUserText)) return false;
+	if (decision.action.kind !== "continue" && decision.action.kind !== "revise") return false;
 	if (state.autoLoopTaskId !== decision.action.task.id || state.lastGuardProgressSerial !== state.progressSerial) {
 		state.autoLoopTaskId = decision.action.task.id;
 		state.autoLoopTurns = 0;
@@ -2808,7 +2815,7 @@ async function sendTaskGuard(pi: ExtensionAPI, state: GuardState, force = false)
 		state.lastUserText = undefined;
 		return false;
 	}
-	const triggerTurn = shouldTriggerGuardTurn(state, decision);
+	const triggerTurn = force ? true : shouldTriggerGuardTurn(state, decision);
 	state.lastGuardFingerprint = decision.fingerprint;
 	state.lastGuardProgressSerial = state.progressSerial;
 	pi.sendMessage(

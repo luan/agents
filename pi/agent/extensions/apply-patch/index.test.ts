@@ -301,6 +301,32 @@ describe("apply_patch renderer", () => {
 		expect(text.indexOf("Intent:")).toBeLessThan(text.indexOf("• Edited sample.js"));
 	});
 
+	it("caches rendered diff output between identical TUI renders", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "apply-patch-render-cache-"));
+		const tool = registerApplyPatchTool();
+		const state: Record<string, unknown> = {};
+
+		const rendered = tool.renderResult(
+			{
+				content: [{ type: "text", text: "M sample.js" }],
+				details: {
+					stage: "done",
+					filesChanged: 1,
+					fileDiffs: [{ path: "sample.js", operation: "update", added: 1, removed: 1 }],
+					diff: resolvedDiff,
+				},
+			},
+			{ expanded: true, isPartial: false },
+			theme,
+			renderContext(cwd, state, { executionStarted: true }),
+		);
+
+		const first = rendered.render(120);
+		expect(rendered.render(120)).toBe(first);
+		rendered.invalidate();
+		expect(rendered.render(120)).not.toBe(first);
+	});
+
 	it("registers WGSL grammar for inline diff rendering", () => {
 		expect(resolveInlineLanguageForPath("crates/majinterm/src/shaders/terminal_background.wgsl")).toBe("wgsl");
 		expect(hljs.getLanguage("wgsl")).toBeDefined();
