@@ -18,6 +18,9 @@ disable-model-invocation: true
    - SKILL.md with concise instructions
    - Additional reference files if content exceeds 500 lines
    - Utility scripts if deterministic operations needed
+   - Do not create tests that read skill Markdown and assert instruction
+     wording or process policy. Skill text is operator-authored guidance, not an
+     executable contract; intentional edits must not fail tests.
 
 3. **Review with user** - present draft and ask:
    - Does this cover your use cases?
@@ -116,3 +119,4 @@ After drafting, verify:
 - [ ] Consistent terminology
 - [ ] Concrete examples included
 - [ ] References one level deep
+- [ ] No tests assert SKILL.md wording or mutable instruction policy

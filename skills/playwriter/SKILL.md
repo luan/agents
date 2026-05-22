@@ -33,3 +33,12 @@ playwriter -s 1 -e 'await page.goto("https://example.com")'
 **Always use single quotes** for the `-e` argument. Single quotes prevent bash from interpreting `$`, backticks, and backslashes inside your JS code. Use double quotes or backtick template literals for strings inside the JS.
 
 If `playwriter` is not found, use `npx playwriter@latest` or `bunx playwriter@latest`.
+
+## Screenshot discipline
+
+- Keep browser evidence inside Playwriter. Do not use AppleScript,
+  `screencapture`, or browser-window activation unless explicitly requested.
+- If screenshots fail, diagnose Playwriter session/page state and local origin
+  (`localhost` vs `127.0.0.1`) before changing tactics.
+- Verify screenshot files are nonzero and visually inspect them before using
+  them as evidence.

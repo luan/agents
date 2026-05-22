@@ -6,6 +6,9 @@
 4. All tests pass before committing. You own every failure you can see.
 5. After changing `ct`, run `just install` so the live `ct` binary matches the repo.
 6. Task discipline: if you create or select a task and then execute it in the same session, immediately mark it `in_progress` and assign it to the current session before editing files. Leave tasks open/unassigned only when you are handing them off for future work.
+7. Review discipline: never leave a feature/bug task `in_progress` while waiting for human review, Plannotator feedback, code-review approval, or manual-verification approval. Move it to `in_review` before the wait; move it back to `in_progress` only while actively revising.
+8. Plannotator discipline: never run Plannotator in a background terminal. Plannotator review/gate commands must be blocking foreground commands with a normal long human-review timeout, and no other work may continue while they are open.
+9. Do not write tests that assert mutable skill instruction wording, read skill Markdown to enforce process policy, or otherwise make intentional skill edits fail tests. Skill files are operator-authored instructions, not executable contracts.
 
 ## Repo Purpose
 

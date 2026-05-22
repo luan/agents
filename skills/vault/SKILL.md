@@ -61,10 +61,11 @@ ct vault related <stem-or-topic>
 | Disambiguate a stem by type        | `ct vault read -t research <stem>`               |
 | Find adjacent artifacts            | `ct vault related <stem-or-topic>`           |
 | Check vault git and artifact state | `ct vault status`                            |
-
 ## Rules
 
 - Do not assume no document exists after one failed search. Try one synonym or list active artifacts.
 - Do not edit, archive, retag, rename, or commit vault artifacts unless explicitly asked.
 - Do not treat archived artifacts as current unless the user asks for history.
 - Call out conflicts between vault intent, tasks, and code instead of silently choosing one.
+- Prefer JSON output for mutating workflows; do not rely on truncated table
+  identifiers.

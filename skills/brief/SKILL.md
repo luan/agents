@@ -1,6 +1,6 @@
 ---
 name: brief
-description: "Create or revise a compact durable vault brief/PRD from settled intent. Use after `$grill` or equivalent context when the desired behavior, scope, non-goals, acceptance model, risks, and verification strategy are ready for user review."
+description: "Create or revise a compact durable vault brief/PRD from settled intent, optionally using visual review artifacts for UX/workflow clarity. Use after `$grill` or equivalent context when the desired behavior, scope, non-goals, acceptance model, risks, and verification strategy are ready for user review."
 argument-hint: "<topic-or-context>"
 user-invocable: true
 ---
@@ -14,6 +14,7 @@ only after Plannotator approval.
 
 1. **Load settled context**
    - Read the Grill Summary or equivalent conversation context.
+   - Load/use `$vault` before running nontrivial `ct vault` workflows.
    - Read relevant vault docs/briefs/plans and repo docs/code.
    - Stop and ask if behavior, scope, non-goals, or acceptance boundaries are
      still unclear.
@@ -23,10 +24,13 @@ only after Plannotator approval.
      by editing the existing artifact path.
    - Keep repo paths inside the artifact repo-relative; only Plannotator command
      arguments use absolute local paths.
+   - For visual workflows or UX-heavy briefs, use [visual-review.md](visual-review.md).
    - Include:
      - Problem and desired workflow/behavior.
      - Scope and non-goals.
      - Acceptance model split into agent-verifiable and human-judgment criteria.
+     - Evidence model: user-visible surfaces, non-visible setup work, and
+       required visual/manual evidence.
      - Verification strategy.
      - Risks, compatibility, migration, and known open questions.
      - Links to source context.
@@ -41,8 +45,8 @@ only after Plannotator approval.
 
 ## Output
 
-Return the committed brief path, approval status, and the concise seed for
-`$issues`.
+Return the committed brief path, approval status, and any blocking follow-up
+needed to continue in this session.
 
 ## Guardrails
 

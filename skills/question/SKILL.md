@@ -1,6 +1,6 @@
 ---
 name: question
-description: "Grills product or engineering intent against existing docs and code, then seeds QRDSPI context with resolved choices. Use when a request needs vocabulary, scope, edge cases, defaults, or user preferences clarified before research, design, structure, plan, or implementation."
+description: "Grills product or engineering intent against existing docs and code, then records resolved choices for later QRDSPI work. Use when a request needs vocabulary, scope, edge cases, defaults, or user preferences clarified before research, design, structure, plan, or implementation."
 disable-model-invocation: true
 user-invocable: true
 ---
@@ -37,7 +37,7 @@ No-edit, no-implementation phase. Do not call `apply_patch`, create tasks, write
      - decision tree covered
      - blocking open questions only
      - recommended defaults and explicit non-goals
-     - **Context seed for research**: established answers plus factual claims to verify
+     - established answers plus factual claims later work should verify
 
 ## Quality bar
 

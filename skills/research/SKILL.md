@@ -23,7 +23,7 @@ Create a vault research artifact that preserves user context but contains only f
 
 1. **Load context**
    - Search/read vault artifacts: domain docs, decisions, research, design, structure, plans, and related docs.
-   - If an intake summary exists, carry its context seed forward explicitly: preserve resolved user answers, vocabulary, scope boundaries, defaults, and non-goals.
+   - If an intake summary exists, carry its context forward explicitly: preserve resolved user answers, vocabulary, scope boundaries, defaults, and non-goals.
    - Verify code/vault claims from intake; do not relitigate resolved user preferences unless new evidence contradicts them.
 
 2. **Gather factual evidence**
