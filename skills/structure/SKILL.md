@@ -1,6 +1,7 @@
 ---
 name: structure
 description: "Creates or revises a compact QRDSPI Structure Outline artifact that sketches implementation shape without task-level detail. Use when a chosen direction needs module seams, ordering, test seams, or review checkpoints clarified."
+disable-model-invocation: true
 argument-hint: "<topic-or-artifact> [--auto] [--continue]"
 user-invocable: true
 ---

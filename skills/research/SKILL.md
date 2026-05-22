@@ -1,6 +1,7 @@
 ---
 name: research
 description: "Creates or revises a factual QRDSPI research artifact about current system reality: behavior, constraints, code paths, vocabulary, risks, and unknowns. Use when objective evidence is needed before design, structure, planning, or implementation."
+disable-model-invocation: true
 argument-hint: "<topic-or-question-summary> [--auto] [--continue] [--depth medium|high|max]"
 user-invocable: true
 ---

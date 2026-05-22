@@ -1,6 +1,7 @@
 ---
 name: plan
 description: "Publishes a tactical QRDSPI plan artifact and executable task set from settled context. Use when research/design/structure are sufficient to create vertical implementation tasks, blockers, verification, and handoff without reopening solution direction."
+disable-model-invocation: true
 argument-hint: "<topic-or-artifact> [--auto]"
 user-invocable: true
 ---

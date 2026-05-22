@@ -1,6 +1,7 @@
 ---
 name: design
 description: "Creates or revises a compact QRDSPI Design Discussion artifact that chooses the solution direction and records tradeoffs. Use when evidence and user context are sufficient to decide desired behavior, boundaries, and architectural approach."
+disable-model-invocation: true
 argument-hint: "<topic-or-artifact> [--auto] [--continue]"
 user-invocable: true
 ---

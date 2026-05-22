@@ -19,8 +19,8 @@ Shared configuration is the default. Tool-specific folders (`claude/`, `codex/`,
 ## Default delivery workflow
 
 The intended default product-feature workflow is `$grill -> $brief -> $issues -> $implement`.
-QRDSPI skills remain available for expert/manual use, but ordinary delivery should start
-with the flattened bundled skills.
+QRDSPI skills remain available in source for expert/manual use, but are hidden from
+default model invocation. `$vibe` is intentionally deleted rather than kept as a stub.
 | `plugins/` | Shared plugin sources; tool folders link here |
 | `crates/ct/` | `ct` Rust CLI — vault, repo, MCP, apply-patch, and TUI helpers |
 | `crates/sym/` | Canonical source-navigation CLI and Tree-sitter symbol indexer |

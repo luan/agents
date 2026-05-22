@@ -1,6 +1,7 @@
 ---
 name: question
 description: "Grills product or engineering intent against existing docs and code, then seeds QRDSPI context with resolved choices. Use when a request needs vocabulary, scope, edge cases, defaults, or user preferences clarified before research, design, structure, plan, or implementation."
+disable-model-invocation: true
 user-invocable: true
 ---
 

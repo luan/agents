@@ -101,3 +101,19 @@ describe("flattened workflow skills", () => {
 		expect(body).toContain("Delivery evidence placeholder");
 	});
 });
+
+describe("QRDSPI defaults", () => {
+	const qrDspiSkills = ["question", "research", "design", "structure", "plan"] as const;
+
+	for (const name of qrDspiSkills) {
+		test(`${name} is hidden from default model invocation`, () => {
+			const body = skill(name);
+
+			expect(body).toContain("disable-model-invocation: true");
+		});
+	}
+
+	test("vibe is deleted instead of discoverable as an orchestrator", () => {
+		expect(() => skill("vibe")).toThrow();
+	});
+});
