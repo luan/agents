@@ -313,6 +313,35 @@ function taskTransitionMessage(action: "accept" | "reject", task?: TaskRecord): 
 	return `${verb} ${task.id}: ${task.title}`;
 }
 
+function latestRejectionNote(task?: TaskRecord): string | undefined {
+	const notes = String(task?.body ?? "").match(/^- \d+: (.+)$/gm);
+	const latest = notes?.at(-1);
+	return latest?.replace(/^- \d+: /, "").trim() || undefined;
+}
+
+function publishTaskTransition(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	action: "accept" | "reject",
+	task?: TaskRecord,
+	note?: string,
+): void {
+	const message = taskTransitionMessage(action, task);
+	if (!message) return;
+	const noteLabel = action === "accept" ? "Human note" : "Rejection note";
+	const visibleText = note ? `${message}\n\n${noteLabel}: ${note}` : message;
+	ctx.ui.notify?.(message, "info");
+	pi.sendMessage?.(
+		{
+			customType: "task-transition",
+			content: [{ type: "text", text: visibleText }],
+			display: true,
+			details: { action, taskId: task?.id, status: task?.status, note },
+		},
+		note ? { deliverAs: "followUp", triggerTurn: true } : { deliverAs: "followUp" },
+	);
+}
+
 function flashTaskHud(task?: TaskRecord): void {
 	if (!task?.id) return;
 	const now = Date.now();
@@ -1169,6 +1198,34 @@ function renderHudSection(
 	return lines;
 }
 
+function isTaskBodyHeading(line: string): boolean {
+	const trimmed = line.trim();
+	return /^#{1,6}\s+\S/.test(trimmed) || (/^[A-Z][A-Za-z0-9 /-]+:$/.test(trimmed) && trimmed.length <= 80);
+}
+
+function formatTaskBodyHeading(line: string, theme: Theme): string {
+	return theme.fg("mdHeading", line.trim().replace(/^#{1,6}\s+/, ""));
+}
+
+function taskBodyDetailLines(body: string, theme: Theme): string[] {
+	const trimmed = body.trim();
+	if (!trimmed) return [];
+	const lines = [theme.fg("dim", "Body:"), ""];
+	for (const line of trimmed.split(/\r?\n/)) {
+		const clean = line.trimEnd();
+		if (!clean.trim()) {
+			lines.push("");
+		} else if (isTaskBodyHeading(clean)) {
+			lines.push(formatTaskBodyHeading(clean, theme));
+		} else if (/^\s*[-*]\s+/.test(clean)) {
+			lines.push(`  ${theme.fg("dim", "•")} ${clean.replace(/^\s*[-*]\s+/, "")}`);
+		} else {
+			lines.push(clean);
+		}
+	}
+	return lines;
+}
+
 function detailLines(task: TaskRecord, tasks: TaskRecord[], theme: Theme, width: number): string[] {
 	const blocked = tasks
 		.filter((candidate) => (candidate.blocked_by ?? []).includes(task.id))
@@ -1182,7 +1239,7 @@ function detailLines(task: TaskRecord, tasks: TaskRecord[], theme: Theme, width:
 		`${theme.fg("dim", "Parent:")} ${task.parent_id ?? "none"}`,
 		`${theme.fg("dim", "Blocks:")} ${blocked.join(", ") || "none"}`,
 		`Created: ${formatBoardTime(task.created_at)}   Updated: ${formatBoardTime(task.updated_at)}`,
-		...(task.body.trim() ? ["", task.body.trim()] : []),
+		...(task.body.trim() ? ["", ...taskBodyDetailLines(task.body, theme)] : []),
 	];
 	return raw.flatMap((line) => wrapTextWithAnsi(line, width)).map((line) => truncateLine(line, width));
 }
@@ -2349,7 +2406,7 @@ function isActiveTask(task: TaskRecord): boolean {
 	return !isComplete(task) && !isCanceled(task);
 }
 
-type TaskGuardActionKind = "continue" | "start" | "claim" | "fix_dependency" | "close_parent";
+type TaskGuardActionKind = "continue" | "revise" | "start" | "claim" | "fix_dependency" | "close_parent";
 
 interface TaskGuardAction {
 	kind: TaskGuardActionKind;
@@ -2515,6 +2572,10 @@ function selectGuardAction(
 			isGuardWorkTask(task) && task.status === "in_progress" && !hasUnresolvedDependencies(task, byId, children),
 	);
 	if (inProgress) return { kind: "continue", task: inProgress };
+	const rejected = assigned.find(
+		(task) => isGuardWorkTask(task) && task.status === "rejected" && !hasUnresolvedDependencies(task, byId, children),
+	);
+	if (rejected) return { kind: "revise", task: rejected };
 	const assignedReady = assigned.find(
 		(task) =>
 			isGuardWorkTask(task) && isReadyForWork(task, byId, children) && (children.get(task.id)?.length ?? 0) === 0,
@@ -2555,6 +2616,12 @@ function guardInstruction(action: TaskGuardAction): string {
 	switch (action.kind) {
 		case "continue":
 			return `Continue in-progress task ${action.task.id}${source}: ${action.task.title}`;
+		case "revise": {
+			const note = latestRejectionNote(action.task);
+			return note
+				? `Revise rejected task ${action.task.id}${source}: ${action.task.title}.\nRejection note: ${note}`
+				: `Revise rejected task ${action.task.id}${source}: ${action.task.title}.`;
+		}
 		case "start":
 			return `Start assigned task ${action.task.id}${source}: ${action.task.title}.`;
 		case "claim":
@@ -2829,16 +2896,17 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 	pi.registerCommand?.("accept", {
 		description: "Accept an in-review task",
 		handler: async (args: string, ctx: ExtensionContext) => {
-			const id = args.trim();
+			const [id, ...noteParts] = args.trim().split(/\s+/).filter(Boolean);
+			const note = noteParts.join(" ");
 			if (!id) {
-				ctx.ui.notify?.("Usage: /accept <task-id>", "warning");
+				ctx.ui.notify?.("Usage: /accept <task-id> [note...]", "warning");
 				return;
 			}
 			await executeTask(config.command, runCommand, ctx.cwd, "accept", { id }, config, pi, ctx, ctx.signal)
 				.then((result) => {
-					const message = taskTransitionMessage("accept", result.details.task);
-					if (message) ctx.ui.notify?.(message, "info");
+					publishTaskTransition(pi, ctx, "accept", result.details.task, note || undefined);
 					markProgress();
+					if (note) return undefined;
 					return triggerTaskGuardAfterCommand(
 						pi,
 						ctx,
@@ -2868,9 +2936,9 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 			}
 			await executeTask(config.command, runCommand, ctx.cwd, "reject", { id, note }, config, pi, ctx, ctx.signal)
 				.then((result) => {
-					const message = taskTransitionMessage("reject", result.details.task);
-					if (message) ctx.ui.notify?.(message, "info");
+					publishTaskTransition(pi, ctx, "reject", result.details.task, note);
 					markProgress();
+					if (note) return undefined;
 					return triggerTaskGuardAfterCommand(
 						pi,
 						ctx,

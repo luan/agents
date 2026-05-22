@@ -148,6 +148,37 @@ describe("tasks extension", () => {
 		expect(lines.join("\n")).toContain("Priority: 7");
 	});
 
+	test("renders structured task body sections in details", () => {
+		const tasks = [
+			{
+				...task,
+				id: "SPEC",
+				title: "Structured task",
+				body: [
+					"Context / problem:",
+					"",
+					"The body should stay readable.",
+					"",
+					"Agent-verifiable acceptance criteria:",
+					"- Shows body sections",
+					"- Preserves bullet content",
+					"",
+					"Delivery evidence:",
+					"- To be filled after commit",
+				].join("\n"),
+			},
+		];
+
+		const rendered = renderTaskBoardLines(tasks, markedTheme as any, 100).join("\n");
+
+		expect(rendered).toContain("<dim>Body:</dim>");
+		expect(rendered).toContain("<mdHeading>Context / problem:</mdHeading>");
+		expect(rendered).toContain("<mdHeading>Agent-verifiable acceptance criteria:</mdHeading>");
+		expect(rendered).toContain("<dim>•</dim> Shows body sections");
+		expect(rendered).toContain("<mdHeading>Delivery evidence:</mdHeading>");
+		expect(rendered).toContain("To be filled after commit");
+	});
+
 	test("renders per-epic task boards with hidden empty sections and progress", () => {
 		const tasks = [
 			{
@@ -671,6 +702,7 @@ describe("tasks extension", () => {
 	test("/accept and /reject shell out through shared ct review transitions", async () => {
 		const calls: string[][] = [];
 		const notifications: Array<{ message: string; type?: string }> = [];
+		const sent: any[] = [];
 		const commands = new Map<string, any>();
 		tasksExtension(
 			{
@@ -679,6 +711,9 @@ describe("tasks extension", () => {
 				},
 				registerTool() {},
 				on() {},
+				sendMessage(message: any, options: any) {
+					sent.push({ message, options });
+				},
 			} as any,
 			{
 				runCommand: async (command: string, args: string[]) => {
@@ -698,13 +733,39 @@ describe("tasks extension", () => {
 				setWidget() {},
 			},
 		};
-		await commands.get("accept").handler("ABC", ctx);
+		await commands.get("accept").handler("ABC do the next thing", ctx);
 		await commands.get("reject").handler("ABC needs tests", ctx);
 
 		expect(calls).toContainEqual(["ct", "task", "accept", "ABC", "--json"]);
 		expect(calls).toContainEqual(["ct", "task", "reject", "ABC", "needs", "tests", "--json"]);
 		expect(notifications).toContainEqual({ message: "Accepted PG4W2K4Q03: Smoke test task tools", type: "info" });
 		expect(notifications).toContainEqual({ message: "Rejected PG4W2K4Q03: Smoke test task tools", type: "info" });
+		expect(sent.map((item) => item.message)).toContainEqual({
+			customType: "task-transition",
+			content: [
+				{
+					type: "text",
+					text: "Accepted PG4W2K4Q03: Smoke test task tools\n\nHuman note: do the next thing",
+				},
+			],
+			display: true,
+			details: { action: "accept", taskId: "PG4W2K4Q03", status: "done", note: "do the next thing" },
+		});
+		expect(sent.map((item) => item.message)).toContainEqual({
+			customType: "task-transition",
+			content: [{ type: "text", text: "Rejected PG4W2K4Q03: Smoke test task tools\n\nRejection note: needs tests" }],
+			display: true,
+			details: { action: "reject", taskId: "PG4W2K4Q03", status: "rejected", note: "needs tests" },
+		});
+		expect(sent.find((item) => item.message.details.action === "accept")?.options).toEqual({
+			deliverAs: "followUp",
+			triggerTurn: true,
+		});
+		expect(sent.find((item) => item.message.details.action === "reject")?.options).toEqual({
+			deliverAs: "followUp",
+			triggerTurn: true,
+		});
+		expect(sent.filter((item) => item.message.customType === "task-guard")).toHaveLength(0);
 	});
 
 	test("/accept triggers continuation for next ready task in the same epic", async () => {
@@ -770,9 +831,9 @@ describe("tasks extension", () => {
 
 		await commands.get("accept").handler("DONE", ctx);
 
-		expect(sent).toHaveLength(1);
-		expect(sent[0].message.content[0].text).toContain("Claim task NEXT");
-		expect(sent[0].options).toEqual({ deliverAs: "followUp", triggerTurn: true });
+		const taskGuardMessage = sent.find((item) => item.message.customType === "task-guard");
+		expect(taskGuardMessage.message.content[0].text).toContain("Claim task NEXT");
+		expect(taskGuardMessage.options).toEqual({ deliverAs: "followUp", triggerTurn: true });
 	});
 
 	test("alt+t cycles compact and visible task HUD epics", async () => {
@@ -1789,6 +1850,60 @@ describe("tasks extension", () => {
 		expect(sent).toHaveLength(1);
 		expect(sent[0].message.content[0].text).toContain("Continue in-progress task t");
 		expect(sent[0].options).toEqual({ deliverAs: "followUp", triggerTurn: true });
+	});
+
+	test("task guard describes assigned rejected tasks as revision work", async () => {
+		const handlers: Record<string, any> = {};
+		const commands: Record<string, any> = {};
+		const sent: any[] = [];
+		tasksExtension(
+			{
+				registerTool() {},
+				registerCommand(name: string, definition: any) {
+					commands[name] = definition;
+				},
+				on(name: string, handler: any) {
+					handlers[name] = handler;
+				},
+				sendMessage(message: any, options: any) {
+					sent.push({ message, options });
+				},
+			} as any,
+			{
+				runCommand: async () => ({
+					stdout: JSON.stringify({
+						tasks: [
+							{
+								...task,
+								id: "z",
+								title: "Test reject notification flow",
+								type: "bug",
+								assigned_to: "session:test-session",
+								status: "rejected",
+								body: "Task body.\n\n## Rejection notes\n\n- 1000: first note\n- 2000: move both tasks to in review again",
+							},
+						],
+					}),
+					stderr: "",
+					exitCode: 0,
+				}),
+			},
+		);
+		const ctx = {
+			cwd: "/tmp/project",
+			sessionId: "test-session",
+			signal: undefined,
+			ui: { notify() {} },
+		};
+
+		await commands["task-guard"].handler("on", ctx);
+		await handlers.message_end({ message: { role: "assistant", content: [{ type: "text", text: "Done." }] } }, ctx);
+		await handlers.turn_end({}, ctx);
+
+		expect(sent).toHaveLength(1);
+		expect(sent[0].message.content[0].text).toContain("Revise rejected task z");
+		expect(sent[0].message.content[0].text).toContain("Rejection note: move both tasks to in review again");
+		expect(sent[0].message.content[0].text).not.toContain("Start assigned task z");
 	});
 
 	test("task guard restores an explicit on preference after extension reload", async () => {
