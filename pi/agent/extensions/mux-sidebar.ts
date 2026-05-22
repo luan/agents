@@ -99,6 +99,7 @@ export default function muxSidebarExtension(pi: ExtensionAPI) {
 
 	let latestCtx: ExtensionContext | undefined;
 	let heartbeat: ReturnType<typeof setInterval> | undefined;
+	let lastSidebarSyncAtMs = 0;
 
 	const writeState = (ctx = latestCtx) => {
 		try {
@@ -150,6 +151,9 @@ export default function muxSidebarExtension(pi: ExtensionAPI) {
 	};
 
 	const syncSidebar = () => {
+		const now = Date.now();
+		if (now - lastSidebarSyncAtMs < 750) return;
+		lastSidebarSyncAtMs = now;
 		const child = spawn("mux", ["sidebar", "sync"], {
 			stdio: "ignore",
 			detached: true,

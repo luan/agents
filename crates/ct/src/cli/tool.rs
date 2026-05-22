@@ -959,11 +959,13 @@ const RGB_TRACK: Rgb = (0x3a, 0x3d, 0x4e);
 
 fn render_sidebar_usage_bars(reqs: &[usage_bars::RenderRequest], width: usize) -> Vec<String> {
     let mut lines = Vec::new();
-    let now = now_ts();
     for req in reqs {
         let provider = parse_hex_rgb(req.provider_color.as_deref()).unwrap_or((0xa0, 0xa8, 0xc0));
         for window in &req.windows {
             let remaining = window.reset_secs.max(0);
+            if window.reset_secs <= 0 {
+                continue;
+            }
             let display = if req.provider_label == COPILOT_GLYPH {
                 format!("{} ", req.provider_label)
             } else {
@@ -975,7 +977,6 @@ fn render_sidebar_usage_bars(reqs: &[usage_bars::RenderRequest], width: usize) -
             lines.push(render_sidebar_bar(provider, window, remaining, width));
         }
     }
-    let _ = now;
     lines
 }
 
@@ -1141,9 +1142,14 @@ fn pace_balance_secs_ct(used: f64, remaining: i64, window: i64) -> Option<i64> {
 fn fmt_reset_ct(secs: i64) -> String {
     let a = secs.max(0);
     if a >= 86400 {
-        format!("{}d{}h", a / 86400, (a % 86400) / 3600)
+        format!(
+            "{}d{:02}:{:02}",
+            a / 86400,
+            (a % 86400) / 3600,
+            (a % 3600) / 60
+        )
     } else if a >= 3600 {
-        format!("{}h{:02}m", a / 3600, (a % 3600) / 60)
+        format!("{}h{:02}", a / 3600, (a % 3600) / 60)
     } else {
         format!("{}m", a / 60)
     }
@@ -1153,9 +1159,14 @@ fn fmt_pace_ct(secs: i64) -> String {
     let a = secs.unsigned_abs();
     let sign = if secs >= 0 { '+' } else { '-' };
     let txt = if a >= 86400 {
-        format!("{}d{}h", a / 86400, (a % 86400) / 3600)
+        format!(
+            "{}d{:02}:{:02}",
+            a / 86400,
+            (a % 86400) / 3600,
+            (a % 3600) / 60
+        )
     } else if a >= 3600 {
-        format!("{}h{:02}m", a / 3600, (a % 3600) / 60)
+        format!("{}h{:02}", a / 3600, (a % 3600) / 60)
     } else {
         format!("{}m", a / 60)
     };
@@ -1214,5 +1225,43 @@ mod tests {
                 .unwrap_err()
                 .to_string();
         assert!(err.contains("duplicate usage_bars provider `codex`"));
+    }
+
+    #[test]
+    fn sidebar_usage_bars_skip_expired_windows() {
+        let req = usage_bars::RenderRequest {
+            provider_label: CODEX_GLYPH.to_string(),
+            provider_color: Some("74c7ec".to_string()),
+            windows: vec![
+                usage_bars::Window {
+                    label: "5h".to_string(),
+                    used_percent: 0.0,
+                    window_secs: FIVE_HOURS,
+                    reset_secs: -60,
+                },
+                usage_bars::Window {
+                    label: "7d".to_string(),
+                    used_percent: 20.0,
+                    window_secs: SEVEN_DAYS,
+                    reset_secs: 2 * 86400 + 3 * 3600 + 4 * 60,
+                },
+            ],
+            width: 45,
+        };
+
+        let lines = render_sidebar_usage_bars(&[req], 45);
+
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("7d"));
+        assert!(!lines[0].contains("5h"));
+        assert!(lines[0].contains("2d03:04"));
+    }
+
+    #[test]
+    fn sidebar_usage_time_labels_have_minute_granularity() {
+        assert_eq!(fmt_reset_ct(3 * 86400 + 23 * 3600 + 17 * 60), "3d23:17");
+        assert_eq!(fmt_reset_ct(5 * 3600), "5h00");
+        assert_eq!(fmt_reset_ct(59 * 60), "59m");
+        assert_eq!(fmt_pace_ct(-(2 * 86400 + 3 * 3600 + 4 * 60)), "-2d03:04");
     }
 }
