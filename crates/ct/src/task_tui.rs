@@ -40,6 +40,7 @@ pub(crate) struct TaskTuiState {
     view: TaskTuiView,
     editor: Option<TaskEditor>,
     pending_mutation: Option<TaskTuiMutation>,
+    confirming_delete_task_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -158,10 +159,14 @@ pub(crate) fn run_task_tui_embed(initial_tasks: &[Task]) -> Result<()> {
         }
         let request: TaskTuiEmbedRequest = serde_json::from_str(&line)?;
         if let Some(next_tasks) = request.tasks {
-            tasks = next_tasks;
-            state = state.with_refreshed_tasks(&tasks);
+            let previous_tasks = std::mem::replace(&mut tasks, next_tasks);
+            state = state.with_refreshed_tasks(&previous_tasks, &tasks);
         }
-        if let Some(selected_task_id) = request.selected_task_id.as_deref() {
+        if let Some(selected_task_id) = request
+            .selected_task_id
+            .as_deref()
+            .filter(|id| tasks.iter().any(|task| task.id == *id))
+        {
             state = if request.input.is_none()
                 && state.selected_task_id.as_deref() != Some(selected_task_id)
             {
@@ -321,6 +326,7 @@ impl TaskTuiState {
             view: TaskTuiView::Board,
             editor: None,
             pending_mutation: None,
+            confirming_delete_task_id: None,
         }
     }
 
@@ -333,17 +339,34 @@ impl TaskTuiState {
                 view: TaskTuiView::Detail,
                 editor: None,
                 pending_mutation: None,
+                confirming_delete_task_id: None,
             }
         } else {
             Self::new(tasks)
         }
     }
 
-    fn with_refreshed_tasks(&self, tasks: &[Task]) -> Self {
+    fn with_refreshed_tasks(&self, previous_tasks: &[Task], tasks: &[Task]) -> Self {
+        let previous_index = self.selected_index(previous_tasks);
         let mut next = Self::with_selection(tasks, self.selected_task_id.as_deref());
+        if self.selected_task_id.as_deref() != next.selected_task_id.as_deref()
+            && let Some(index) = previous_index
+        {
+            let order = selectable_task_ids(tasks);
+            next.selected_task_id = order
+                .get(index.min(order.len().saturating_sub(1)))
+                .cloned()
+                .or_else(|| first_selectable_task(tasks).map(|task| task.id.clone()));
+            next.view = self.view.clone();
+        }
         next.view = self.view.clone();
         next.editor = self.editor.clone();
         next.pending_mutation = self.pending_mutation.clone();
+        next.confirming_delete_task_id = self
+            .confirming_delete_task_id
+            .as_ref()
+            .filter(|id| tasks.iter().any(|task| task.id == id.as_str()))
+            .cloned();
         next
     }
 
@@ -359,6 +382,11 @@ impl TaskTuiState {
             view: self.view.clone(),
             editor: self.editor.clone(),
             pending_mutation: self.pending_mutation.clone(),
+            confirming_delete_task_id: self
+                .confirming_delete_task_id
+                .as_ref()
+                .filter(|id| tasks.iter().any(|task| task.id == id.as_str()))
+                .cloned(),
         }
     }
 
@@ -369,6 +397,7 @@ impl TaskTuiState {
         let order = selectable_task_ids(tasks);
         if order.is_empty() {
             self.selected_task_id = None;
+            self.confirming_delete_task_id = None;
             return;
         }
         let current = self
@@ -384,20 +413,28 @@ impl TaskTuiState {
             "esc" => {
                 self.view = TaskTuiView::Board;
                 self.editor = None;
+                self.confirming_delete_task_id = None;
                 return;
             }
             "e" => {
                 self.view = TaskTuiView::Edit;
                 self.ensure_editor(tasks);
+                self.confirming_delete_task_id = None;
                 return;
             }
             "enter" | "\n" | "\r" | "o" => {
                 self.view = TaskTuiView::Detail;
+                self.confirming_delete_task_id = None;
                 return;
             }
             "b" | "list" => {
                 self.view = TaskTuiView::Board;
                 self.editor = None;
+                self.confirming_delete_task_id = None;
+                return;
+            }
+            "x" | "delete" => {
+                self.handle_delete_input();
                 return;
             }
             _ => {}
@@ -412,6 +449,32 @@ impl TaskTuiState {
             _ => current,
         };
         self.selected_task_id = Some(order[next].clone());
+        if next != current {
+            self.confirming_delete_task_id = None;
+        }
+    }
+
+    fn handle_delete_input(&mut self) {
+        let Some(id) = self.selected_task_id.clone() else {
+            return;
+        };
+        self.view = TaskTuiView::Board;
+        if self.confirming_delete_task_id.as_deref() == Some(id.as_str()) {
+            self.pending_mutation = Some(TaskTuiMutation {
+                action: "delete",
+                params: serde_json::json!({ "id": id }),
+            });
+            self.confirming_delete_task_id = None;
+            return;
+        }
+        self.confirming_delete_task_id = Some(id);
+    }
+
+    fn selected_index(&self, tasks: &[Task]) -> Option<usize> {
+        let order = selectable_task_ids(tasks);
+        self.selected_task_id
+            .as_deref()
+            .and_then(|id| order.iter().position(|candidate| candidate == id))
     }
 
     fn ensure_editor(&mut self, tasks: &[Task]) {
@@ -1165,6 +1228,7 @@ fn render_task_help(area: Rect, buffer: &mut ratatui::buffer::Buffer) {
         Line::from("  g / G           first / last task"),
         Line::from("  Enter or o      open selected task details"),
         Line::from("  e               edit selected task"),
+        Line::from("  x               delete selected task (press x again to confirm)"),
         Line::from("  b               return to board"),
         Line::from("  ?               show this help"),
         Line::from("  Esc             back to board"),
@@ -1200,7 +1264,24 @@ fn render_task_list(
         )),
     );
     lines.insert(1, Line::from(""));
-    let selected_row = selected_row.map(|row| row + 2);
+    if let Some(id) = state.confirming_delete_task_id.as_deref() {
+        lines.insert(
+            2,
+            Line::from(Span::styled(
+                format!("Delete task {id}? press x again to confirm"),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )),
+        );
+        lines.insert(3, Line::from(""));
+    }
+    let selected_row_offset = if state.confirming_delete_task_id.is_some() {
+        4
+    } else {
+        2
+    };
+    let selected_row = selected_row.map(|row| row + selected_row_offset);
     let scroll = selected_row
         .and_then(|row| {
             let visible_height = inner.height as usize;
@@ -1608,6 +1689,7 @@ mod tests {
                 view: TaskTuiView::Board,
                 editor: None,
                 pending_mutation: None,
+                confirming_delete_task_id: None,
             },
         )
         .join("\n");
@@ -1646,6 +1728,7 @@ mod tests {
                 view: TaskTuiView::Detail,
                 editor: None,
                 pending_mutation: None,
+                confirming_delete_task_id: None,
             },
         )
         .join("\n");
@@ -1787,6 +1870,50 @@ mod tests {
             strip_ansi(&render_task_tui_lines_with_state(&tasks, 80, 12, &state).join("\n"));
         assert!(rendered.contains("Task List"));
         assert!(!rendered.contains("Task b — Second"));
+    }
+
+    #[test]
+    fn task_tui_delete_requires_second_x() {
+        let tasks = vec![task("a", "First", "open", "feature")];
+        let mut state = TaskTuiState::with_selection(&tasks, Some("a"));
+
+        state.handle_input(&tasks, "x");
+
+        assert!(state.pending_mutation.is_none());
+        assert_eq!(state.view, TaskTuiView::Board);
+        let rendered =
+            strip_ansi(&render_task_tui_lines_with_state(&tasks, 80, 12, &state).join("\n"));
+        assert!(rendered.contains("Delete task a? press x again to confirm"));
+
+        state.handle_input(&tasks, "x");
+
+        let mutation = state.pending_mutation.as_ref().expect("delete mutation");
+        assert_eq!(mutation.action, "delete");
+        assert_eq!(mutation.params["id"], "a");
+    }
+
+    #[test]
+    fn task_tui_refresh_after_delete_preserves_cursor_index() {
+        let tasks = vec![
+            task("a", "First", "open", "feature"),
+            task("b", "Second", "open", "feature"),
+            task("c", "Third", "open", "feature"),
+        ];
+        let mut state = TaskTuiState::with_selection(&tasks, Some("b"));
+        state.view = TaskTuiView::Board;
+        state.handle_input(&tasks, "x");
+        state.handle_input(&tasks, "x");
+
+        let remaining = vec![
+            task("a", "First", "open", "feature"),
+            task("c", "Third", "open", "feature"),
+        ];
+        let state = state.with_refreshed_tasks(&tasks, &remaining);
+
+        assert_eq!(state.selected_task_id.as_deref(), Some("c"));
+        let rendered =
+            strip_ansi(&render_task_tui_lines_with_state(&remaining, 80, 12, &state).join("\n"));
+        assert!(rendered.contains("› ★ c Third"));
     }
 
     #[test]

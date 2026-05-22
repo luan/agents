@@ -326,7 +326,7 @@ fn task_load_cleanup_keeps_unepic_and_deletes_expired_done_tasks() {
     let state = tempfile::tempdir().expect("state dir");
     seed_epic(project.path(), state.path());
 
-    let active = ct_cmd(project.path(), state.path())
+    ct_cmd(project.path(), state.path())
         .args([
             "task",
             "add",
@@ -339,9 +339,6 @@ fn task_load_cleanup_keeps_unepic_and_deletes_expired_done_tasks() {
         ])
         .assert()
         .success();
-    let active_json: serde_json::Value =
-        serde_json::from_slice(&active.get_output().stdout).expect("active json");
-    let active_id = active_json["task"]["id"].as_str().expect("active id");
 
     let old_done = ct_cmd(project.path(), state.path())
         .args([
@@ -385,6 +382,13 @@ fn task_load_cleanup_keeps_unepic_and_deletes_expired_done_tasks() {
 
     let db_path = tasks_db_path(state.path());
     let conn = rusqlite::Connection::open(db_path).expect("open db");
+    let active_id: String = conn
+        .query_row(
+            "SELECT id FROM tasks WHERE title = 'Active with epic'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("active full id");
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("time")
@@ -424,7 +428,7 @@ fn task_load_cleanup_keeps_unepic_and_deletes_expired_done_tasks() {
     assert!(titles.contains(&"legacy no epic"));
 
     ct_cmd(project.path(), state.path())
-        .args(["task", "show", active_id])
+        .args(["task", "show", &active_id])
         .assert()
         .success();
 }
