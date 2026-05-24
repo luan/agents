@@ -443,7 +443,7 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 				display: true,
 				details,
 			},
-			{ triggerTurn: false },
+			{ deliverAs: "followUp", triggerTurn: true },
 		);
 	});
 	sessions.onSessionUpdate(updateBackgroundTerminalStatus);

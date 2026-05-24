@@ -1655,7 +1655,7 @@ test("extension appends a new completion message when a background terminal exit
 	);
 
 	expect(sentMessages).toHaveLength(1);
-	expect(sentMessages[0]?.options).toEqual({ triggerTurn: false });
+	expect(sentMessages[0]?.options).toEqual({ deliverAs: "followUp", triggerTurn: true });
 	expect(sentMessages[0]?.message.customType).toBe("exec_command.completed");
 	expect(sentMessages[0]?.message.display).toBe(true);
 	expect(sentMessages[0]?.message.content).toBe("");
