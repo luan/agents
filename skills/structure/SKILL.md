@@ -28,8 +28,8 @@ Produce a short Structure Outline: how the work is shaped, not every task.
    - Do not write task acceptance criteria or implementation minutia.
 
 3. **Write the artifact**
-   - Create new artifacts with `ct vault create -t structure --topic "..." --json`; parse the returned `path` and edit that file with `apply_patch`.
-   - For existing artifacts, locate/read them with `ct vault read [-t structure] <stem> --json` or `ct vault list -t structure --json`, then edit the real file path with `apply_patch`.
+   - Create new artifacts with `vlt create -t structure --topic "..." --json`; parse the returned `path` and edit that file with `apply_patch`.
+   - For existing artifacts, locate/read them with `vlt read [-t structure] <stem> --json` or `vlt list -t structure --json`, then edit the real file path with `apply_patch`.
    - Include:
      - chosen design direction being structured
      - affected seams, summarized
@@ -43,7 +43,7 @@ Produce a short Structure Outline: how the work is shaped, not every task.
    - Do not pass vault stems, wiki-link targets, repo-relative paths, or artifact-link paths to Plannotator.
    - In the gate `instructions`, name the exact absolute file being reviewed and state that it is a structure outline.
    - If denied, revise the same artifact and re-gate.
-   - Commit only after approval with `ct vault commit "<absolute-path>" --message "..." --json`.
+   - Commit only after approval with `vlt commit "<absolute-path>" --message "..." --json`.
 
 ## Final response
 

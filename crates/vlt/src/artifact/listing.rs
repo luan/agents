@@ -12,6 +12,64 @@ pub fn list_archived_artifacts(kind: ArtifactKind) -> Vec<Artifact> {
     list_artifacts_filtered(kind, true, false, None)
 }
 
+pub fn list_all_artifacts(include_dives: bool) -> Vec<Artifact> {
+    list_all_artifacts_filtered(false, include_dives)
+}
+
+pub fn list_all_archived_artifacts() -> Vec<Artifact> {
+    list_all_artifacts_filtered(true, false)
+}
+
+fn list_all_artifacts_filtered(archived: bool, include_dives: bool) -> Vec<Artifact> {
+    let bp = blueprints_dir();
+    let mut artifacts = Vec::new();
+    let Ok(entries) = fs::read_dir(&bp) else {
+        return artifacts;
+    };
+    for entry in entries.flatten() {
+        let proj_path = entry.path();
+        if !proj_path.is_dir() {
+            continue;
+        }
+        let proj_name = proj_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        if proj_name.starts_with('.') {
+            continue;
+        }
+        let root = if archived {
+            proj_path.join("archive")
+        } else {
+            proj_path.clone()
+        };
+        let Ok(kind_dirs) = fs::read_dir(&root) else {
+            continue;
+        };
+        for kind_entry in kind_dirs.flatten() {
+            let dir = kind_entry.path();
+            if !dir.is_dir() {
+                continue;
+            }
+            let name = dir
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            if name.starts_with('.') || (!archived && name == "archive") {
+                continue;
+            }
+            if !include_dives && name == "dive" {
+                continue;
+            }
+            collect_artifacts(&bp, &dir, &proj_name, &mut artifacts);
+        }
+    }
+    artifacts.sort_by_key(|a| std::cmp::Reverse(a.mod_time));
+    artifacts
+}
+
 fn list_artifacts_filtered(
     kind: ArtifactKind,
     archived: bool,

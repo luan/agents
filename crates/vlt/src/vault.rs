@@ -6,7 +6,7 @@ use std::process;
 
 use serde::Serialize;
 
-use crate::artifact::{ALL_KINDS, ArtifactKind, CtError, blueprints_dir, fatal, project_name};
+use crate::artifact::{ArtifactKind, CtError, blueprints_dir, fatal, project_name};
 
 pub fn cmd_project() {
     let toplevel = process::Command::new("git")
@@ -63,12 +63,23 @@ pub fn related(
     let mut seen = HashSet::new();
     let mut hits = Vec::new();
 
-    for kind in ALL_KINDS {
-        let mut dirs_to_scan = vec![proj_dir.join(kind.dir_name())];
-        if include_archive {
-            dirs_to_scan.push(proj_dir.join("archive").join(kind.dir_name()));
-        }
-        for scan_dir in dirs_to_scan {
+    let mut roots = vec![proj_dir.clone()];
+    if include_archive {
+        roots.push(proj_dir.join("archive"));
+    }
+    for root in roots {
+        let Ok(dirs) = fs::read_dir(&root) else {
+            continue;
+        };
+        for dir_entry in dirs.flatten() {
+            let scan_dir = dir_entry.path();
+            if !scan_dir.is_dir() {
+                continue;
+            }
+            let name = scan_dir.file_name().unwrap_or_default().to_string_lossy();
+            if name.starts_with('.') || (!include_archive && name == "archive") {
+                continue;
+            }
             let Ok(entries) = fs::read_dir(&scan_dir) else {
                 continue;
             };
@@ -344,9 +355,19 @@ pub fn status_snapshot() -> VaultStatus {
             {
                 continue;
             }
-            for kind in ALL_KINDS {
-                let kind_dir = proj_dir.join(kind.dir_name());
-                let Ok(entries) = fs::read_dir(&kind_dir) else {
+            let Ok(kind_dirs) = fs::read_dir(&proj_dir) else {
+                continue;
+            };
+            for kind_dir in kind_dirs.flatten() {
+                let path = kind_dir.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                if name.starts_with('.') || name == "archive" {
+                    continue;
+                }
+                let Ok(entries) = fs::read_dir(&path) else {
                     continue;
                 };
                 for entry in entries.flatten() {

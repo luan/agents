@@ -27,12 +27,12 @@ Publish tactical handoff when direction and structure are settled enough: a plan
 2. **Confirm structure**
    - Use the structure artifact when one exists.
    - If context already contains enough shape, include a compact inline structure note and proceed.
-   - If structure is missing or risky, create or update a structure artifact with `ct vault create -t structure --topic "..." --json`, edit it with `apply_patch`, and gate it with `plannotator annotate "<absolute-path>" --gate --json`.
+   - If structure is missing or risky, create or update a structure artifact with `vlt create -t structure --topic "..." --json`, edit it with `apply_patch`, and gate it with `plannotator annotate "<absolute-path>" --gate --json`.
 
 3. **Draft the plan artifact**
    - Create/update a vault plan artifact linked to source research and plan artifact paths plus design/structure paths when available.
    - Include the tactical publication: chosen direction, file/module references, sequencing, risks, verification strategy, inline structure note when used, and task-set pointers.
-   - Use `ct vault create -t plan --topic "..." --json` for new plan artifacts and edit the returned path with `apply_patch`.
+   - Use `vlt create -t plan --topic "..." --json` for new plan artifacts and edit the returned path with `apply_patch`.
    - Use repo-relative paths only inside artifact content. Do not include checkout-specific absolute paths in the plan body. Plannotator still needs the real absolute local file path for review.
 
 4. **Draft tasks**
@@ -50,7 +50,7 @@ Publish tactical handoff when direction and structure are settled enough: a plan
    - If closed, unavailable, timed out, or unapproved, stop before creating tasks.
 
 6. **Publish**
-   - Commit the plan artifact with `ct vault commit "<absolute-path>" --message "..." --json`.
+   - Commit the plan artifact with `vlt commit "<absolute-path>" --message "..." --json`.
    - Create one epic umbrella and independently executable vertical-slice tasks.
    - Use blockers only for real dependencies.
    - Link the plan artifact and task set.

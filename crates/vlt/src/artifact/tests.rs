@@ -1057,7 +1057,7 @@ fn create_rejects_whitespace_slug_override() {
 }
 
 #[test]
-fn create_rejects_duplicate_same_hour() {
+fn create_uses_next_numeric_prefix_for_duplicate_slug() {
     let tmp = std::env::temp_dir().join(format!("ct-sec-dupe-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
     let project = tmp.join("myproj");
@@ -1084,7 +1084,7 @@ fn create_rejects_duplicate_same_hour() {
         };
         assert!(path_exists, "first create should have written the file");
 
-        let second = create(CreateOpts {
+        let _second = create(CreateOpts {
             kind: ArtifactKind::Plan,
             topic: "Some Plan",
             project: project.to_str().unwrap(),
@@ -1093,10 +1093,13 @@ fn create_rejects_duplicate_same_hour() {
             user_tags: &[],
             dive: false,
         });
-        assert!(
-            matches!(second, Err(CtError::Validation(ref m)) if m.contains("already exists")),
-            "second create must error with 'already exists', got {second:?}"
-        );
+        let mut names: Vec<_> = fs::read_dir(tmp.join("myproj").join("plan"))
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["0001-fixed-slug.md", "0002-fixed-slug.md"]);
     });
     std::fs::remove_dir_all(&tmp).ok();
 }

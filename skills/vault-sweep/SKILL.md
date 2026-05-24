@@ -24,7 +24,7 @@ List all active artifacts for the current project using JSON output for reliable
 ```bash
 PROJECT_ROOT=$(git rev-parse --show-toplevel)
 PROJECT_NAME=$(ct repo project)
-ct vault list --json
+vlt list --json
 ```
 
 Parse the JSON arrays into a combined working list. The enriched JSON includes `title`, `created`, `source`, and `tags` per artifact. Group artifacts by **topic** — the `title` field is the topic slug. Use `source` links to connect related artifacts (a plan's source points to its research). Build a topic map:
@@ -101,7 +101,7 @@ This extracts file paths, backtick identifiers, and crate names from the doc bod
 | 0.10 – 0.50 | Likely **Update** — read the doc to identify which sections are stale |
 | > 0.50 | Likely **Archive** — read the doc to confirm wholesale replacement |
 
-**Step 3 — Qualitative review:** Read ALL docs via `ct vault read -t doc <path>`, not just those with high staleness. A doc can score 0.00 staleness while describing an entirely replaced paradigm (e.g., a Dioxus architecture doc where the app migrated to egui — paths resolve because the module names were reused, but the framework context is wrong). The staleness score catches reference drift; qualitative review catches paradigm drift.
+**Step 3 — Qualitative review:** Read ALL docs via `vlt read -t doc <path>`, not just those with high staleness. A doc can score 0.00 staleness while describing an entirely replaced paradigm (e.g., a Dioxus architecture doc where the app migrated to egui — paths resolve because the module names were reused, but the framework context is wrong). The staleness score catches reference drift; qualitative review catches paradigm drift.
 
 Classify each:
 
@@ -192,7 +192,7 @@ Skip straight to Phase 7 if `--execute` was passed.
 
 ## Phase 7: Execute
 
-On approval (or `--execute`). Execute in this order — archival first, then updates, then new docs. Each step may affect wiki-links, so run `ct vault check` only at the end.
+On approval (or `--execute`). Execute in this order — archival first, then updates, then new docs. Each step may affect wiki-links, so run `vlt check` only at the end.
 
 ### 7a. Archive consumed artifacts
 
@@ -209,12 +209,12 @@ Preview first with `--dry-run` if the batch is large (>20 artifacts).
 ### 7b. Archive stale docs
 
 ```bash
-ct vault archive -t doc <path>
+vlt archive -t doc <path>
 ```
 
 ### 7c. Update partially-stale docs
 
-For each doc marked "update": read the current content via `ct vault read -t doc`, research the stale sections against the codebase, and apply targeted edits. Present each update for review unless `--execute` — doc updates require the most judgment.
+For each doc marked "update": read the current content via `vlt read -t doc`, research the stale sections against the codebase, and apply targeted edits. Present each update for review unless `--execute` — doc updates require the most judgment.
 
 Focus on:
 - Renamed types/functions — update references to current names
@@ -249,18 +249,18 @@ understand the system well enough to make their first change without asking some
 Return the doc body only (no frontmatter — ct adds that).
 ```
 
-Store with a clean topic name (no timestamps for docs). Scaffold with `ct vault create -t doc`, edit the body, then `ct vault commit <path>`.
+Store with a clean topic name (no timestamps for docs). Scaffold with `vlt create -t doc`, edit the body, then `vlt commit <path>`.
 
 Link related artifacts after creation:
 
 ```bash
-RELATED=$(ct vault related --project "$PROJECT_ROOT" "<topic>")
+RELATED=$(vlt related --project "$PROJECT_ROOT" "<topic>")
 # If non-empty, append ## Related section with wiki-links
 ```
 
 ### 7e. Fix broken wiki-links
 
-Run `ct vault check` and review the output. Broken links fall into categories:
+Run `vlt check` and review the output. Broken links fall into categories:
 
 | Category | Action |
 |---|---|

@@ -8,7 +8,7 @@ use serde::Serialize;
 
 use super::{
     ALL_KINDS, ArtifactKind, CtError, ResolveError, SyncError, artifact_dir, blueprints_dir,
-    chrono_compact, chrono_rfc3339, commit_and_push, commit_and_push_paths, ensure_in_vault, fatal,
+    chrono_rfc3339, commit_and_push, commit_and_push_paths, ensure_in_vault, fatal,
     parse_frontmatter, parse_frontmatter_fields, parse_yaml_map, project_name, resolve_repo_root,
     strip_date_prefix, validate_tag, yaml_quote,
 };
@@ -57,7 +57,7 @@ pub fn create(opts: CreateOpts<'_>) -> Result<CreateOutcome, CtError> {
             "dive requires source (a dive without a hub link is meaningless)".to_string(),
         ));
     }
-    validate_artifact_kind_tags(kind, user_tags)?;
+    validate_artifact_kind_tags(&kind, user_tags)?;
     for tag in user_tags {
         validate_tag(tag)?;
     }
@@ -88,25 +88,17 @@ pub fn create(opts: CreateOpts<'_>) -> Result<CreateOutcome, CtError> {
         ));
     }
 
-    let filename = if kind == ArtifactKind::Doc {
-        format!("{s}.md")
-    } else {
-        let ts = chrono_compact();
-        format!("{ts}-{s}.md")
-    };
-
     let bp = blueprints_dir();
     let proj_name_for_dir = project_name(project);
     let dir = if dive && kind == ArtifactKind::Research {
         bp.join(&proj_name_for_dir).join("dive")
     } else {
-        artifact_dir(project, kind)
+        artifact_dir(project, kind.clone())
     };
     fs::create_dir_all(&dir)?;
 
+    let filename = format!("{:04}-{s}.md", next_sequence(&dir)?);
     let full_path = dir.join(&filename);
-    // Timestamp prefix is hour-precision — two creates in the same hour with
-    // the same slug produce the same filename, so refuse to clobber.
     if full_path.exists() {
         return Err(CtError::Validation(format!(
             "artifact already exists: {}",
@@ -165,7 +157,29 @@ pub fn create(opts: CreateOpts<'_>) -> Result<CreateOutcome, CtError> {
     })
 }
 
-fn validate_artifact_kind_tags(kind: ArtifactKind, user_tags: &[String]) -> Result<(), CtError> {
+fn next_sequence(dir: &Path) -> Result<u32, CtError> {
+    let mut max_id = 0;
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if stem.len() >= 5
+            && stem.as_bytes()[0..4].iter().all(|b| b.is_ascii_digit())
+            && stem.as_bytes()[4] == b'-'
+            && let Ok(id) = stem[0..4].parse::<u32>()
+        {
+            max_id = max_id.max(id);
+        }
+    }
+    Ok(max_id + 1)
+}
+
+fn validate_artifact_kind_tags(kind: &ArtifactKind, user_tags: &[String]) -> Result<(), CtError> {
     let expected_type = kind.dir_name();
     for tag in user_tags {
         if let Some(actual_type) = tag.strip_prefix("type/")
@@ -294,7 +308,7 @@ pub fn resolve_optional_kind(
 ) -> Result<(PathBuf, ArtifactKind), CtError> {
     match kind {
         Some(k) => {
-            let path = resolve_artifact_path(stem, k)?;
+            let path = resolve_artifact_path(stem, k.clone())?;
             Ok((path, k))
         }
         None => {
@@ -340,11 +354,7 @@ pub fn resolve_stem_universal(stem: &str) -> Result<PathBuf, ResolveError> {
             if !proj_entry.path().is_dir() {
                 continue;
             }
-            for &kind in &ALL_KINDS {
-                let candidate_dir = proj_entry.path().join(kind.dir_name());
-                if !candidate_dir.is_dir() {
-                    continue;
-                }
+            for (kind, candidate_dir) in universal_scan_dirs(&proj_entry.path()) {
                 if let Ok(files) = fs::read_dir(&candidate_dir) {
                     for f in files.flatten() {
                         let fp = f.path();
@@ -352,7 +362,7 @@ pub fn resolve_stem_universal(stem: &str) -> Result<PathBuf, ResolveError> {
                             continue;
                         }
                         if fp.file_stem() == Some(file_stem) {
-                            matches.push((kind, fp));
+                            matches.push((kind.clone(), fp));
                             continue;
                         }
                         if let Some(candidate_stem) = fp.file_stem().and_then(|s| s.to_str()) {
@@ -361,7 +371,7 @@ pub fn resolve_stem_universal(stem: &str) -> Result<PathBuf, ResolveError> {
                             if candidate_slug == stem_str
                                 || query_slug.is_some_and(|qs| qs == candidate_stem)
                             {
-                                fuzzy_matches.push((kind, fp));
+                                fuzzy_matches.push((kind.clone(), fp));
                             }
                         }
                     }
@@ -388,8 +398,8 @@ pub fn resolve_stem_universal(stem: &str) -> Result<PathBuf, ResolveError> {
     // Multiple matches — return highest-priority kind if they span kinds.
     let kinds_seen: HashSet<&str> = resolved.iter().map(|(k, _)| k.dir_name()).collect();
     if kinds_seen.len() > 1 {
-        for &kind in &ALL_KINDS {
-            if let Some(pos) = resolved.iter().position(|(k, _)| *k == kind) {
+        for kind in &ALL_KINDS {
+            if let Some(pos) = resolved.iter().position(|(k, _)| k == kind) {
                 let hit = resolved.remove(pos).1;
                 return ensure_in_vault(&hit).map_err(|_| ResolveError::NotFound(stem.to_string()));
             }
@@ -403,6 +413,41 @@ pub fn resolve_stem_universal(stem: &str) -> Result<PathBuf, ResolveError> {
             .map(|(_, p)| p)
             .collect(),
     ))
+}
+
+fn universal_scan_dirs(project_dir: &Path) -> Vec<(ArtifactKind, PathBuf)> {
+    let mut seen = HashSet::new();
+    let mut dirs = Vec::new();
+    for kind in &ALL_KINDS {
+        let dir = project_dir.join(kind.dir_name());
+        if dir.is_dir() {
+            seen.insert(kind.dir_name().to_string());
+            dirs.push((kind.clone(), dir));
+        }
+    }
+    let dive = project_dir.join("dive");
+    if dive.is_dir() {
+        seen.insert("dive".to_string());
+        dirs.push((ArtifactKind::Research, dive));
+    }
+    let Ok(entries) = fs::read_dir(project_dir) else {
+        return dirs;
+    };
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let name = dir.file_name().unwrap_or_default().to_string_lossy();
+        if name.starts_with('.') || name == "archive" || seen.contains(name.as_ref()) {
+            continue;
+        }
+        if let Some(kind) = ArtifactKind::from_dir_name(&name) {
+            seen.insert(name.to_string());
+            dirs.push((kind, dir));
+        }
+    }
+    dirs
 }
 
 // ---------------------------------------------------------------------------
@@ -484,7 +529,7 @@ pub fn cmd_read_resolved(resolved: &Path, frontmatter_mode: bool) {
 // ---------------------------------------------------------------------------
 
 pub fn cmd_rename(kind: ArtifactKind, old_arg: &str, new_slug: &str) -> Result<(), SyncError> {
-    let old_path = match resolve_artifact_path(old_arg, kind) {
+    let old_path = match resolve_artifact_path(old_arg, kind.clone()) {
         Ok(p) => p,
         Err(e) => fatal(&e.to_string()),
     };
@@ -509,17 +554,13 @@ pub fn cmd_rename(kind: ArtifactKind, old_arg: &str, new_slug: &str) -> Result<(
         .to_string_lossy()
         .to_string();
 
-    // Compute new filename — Doc kind has no timestamp prefix
-    let new_filename = if kind == ArtifactKind::Doc {
-        format!("{new_slug}.md")
+    let new_filename = if old_stem.len() >= 5
+        && old_stem.as_bytes()[0..4].iter().all(|b| b.is_ascii_digit())
+        && old_stem.as_bytes()[4] == b'-'
+    {
+        format!("{}-{new_slug}.md", &old_stem[0..4])
     } else {
-        let stripped = strip_date_prefix(&old_stem);
-        if stripped.len() < old_stem.len() {
-            let prefix = &old_stem[..old_stem.len() - stripped.len()];
-            format!("{prefix}{new_slug}.md")
-        } else {
-            format!("{new_slug}.md")
-        }
+        format!("{new_slug}.md")
     };
 
     let new_path = old_path.parent().unwrap().join(&new_filename);
@@ -614,7 +655,7 @@ pub fn cmd_rename(kind: ArtifactKind, old_arg: &str, new_slug: &str) -> Result<(
 
 pub fn cmd_retag(kind: ArtifactKind, file_arg: &str) -> Result<(), SyncError> {
     let bp = blueprints_dir();
-    let resolved = match resolve_artifact_path(file_arg, kind) {
+    let resolved = match resolve_artifact_path(file_arg, kind.clone()) {
         Ok(p) => p,
         Err(e) => fatal(&e.to_string()),
     };

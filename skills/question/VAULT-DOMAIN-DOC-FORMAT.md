@@ -1,6 +1,6 @@
 # Vault Domain Doc Format
 
-Domain docs live in the blueprints vault as `doc` artifacts. They define project vocabulary, context boundaries, relationships, and known ambiguities. Create or update them through the vault workflow: `ct vault create`, edit, then `ct vault commit`.
+Domain docs live in the blueprints vault as `doc` artifacts. They define project vocabulary, context boundaries, relationships, and known ambiguities. Create or update them through the vault workflow: `vlt create`, edit, then `vlt commit`.
 
 ## Structure
 

@@ -30,7 +30,7 @@ fn archive_single(
     bp: &Path,
     proj_name: &str,
 ) -> Result<PathBuf, String> {
-    let source_subfolder = detect_subfolder(path, bp, kind);
+    let source_subfolder = detect_subfolder(path, bp, kind.clone());
     // Best-effort: store as git note in the current project repo.
     let git_dir = process::Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
@@ -40,13 +40,7 @@ fn archive_single(
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
 
     if let Some(ref gd) = git_dir {
-        let notes_ref = match kind {
-            ArtifactKind::Design => "design",
-            ArtifactKind::Plan => "plans",
-            ArtifactKind::Research => "research",
-            ArtifactKind::Structure => "structure",
-            ArtifactKind::Doc => "docs",
-        };
+        let notes_ref = kind.commit_name();
         let _ = process::Command::new("git")
             .args([
                 "-C",
@@ -137,7 +131,7 @@ pub fn archive(kind: ArtifactKind, path: &Path) -> Result<ArchiveOutcome, CtErro
 
 pub fn cmd_archive(kind: ArtifactKind, file_path: &str, dry_run: bool) -> Result<(), SyncError> {
     let bp = blueprints_dir();
-    let resolved = match resolve_artifact_path(file_path, kind) {
+    let resolved = match resolve_artifact_path(file_path, kind.clone()) {
         Ok(p) => p,
         Err(e) => fatal(&e.to_string()),
     };
@@ -173,7 +167,7 @@ pub fn cmd_archive_batch(
     let validated: Vec<(PathBuf, String)> = file_paths
         .iter()
         .map(|fp| {
-            let resolved = match resolve_artifact_path(fp, kind) {
+            let resolved = match resolve_artifact_path(fp, kind.clone()) {
                 Ok(p) => p,
                 Err(e) => fatal(&e.to_string()),
             };
@@ -201,7 +195,7 @@ pub fn cmd_archive_batch(
 
     if dry_run {
         for (path, _) in &validated {
-            let dest = archive_dest(path, &bp, proj_name, kind);
+            let dest = archive_dest(path, &bp, proj_name, kind.clone());
             println!("Would archive: {} → {}", path.display(), dest.display());
         }
         println!("Total: {} artifacts", validated.len());
@@ -212,7 +206,7 @@ pub fn cmd_archive_batch(
     let mut dests: Vec<PathBuf> = Vec::with_capacity(validated.len());
     let mut batch_err: Option<String> = None;
     for (path, _) in &validated {
-        match archive_single(kind, path, &bp, proj_name) {
+        match archive_single(kind.clone(), path, &bp, proj_name) {
             Ok(dest) => {
                 eprintln!("Archived: {} → {}", path.display(), dest.display());
                 dests.push(dest);

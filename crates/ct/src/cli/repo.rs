@@ -3,7 +3,7 @@ use crate::cli::args::RepoAction;
 pub fn run_repo(action: RepoAction) -> Result<(), Box<dyn std::error::Error>> {
     match action {
         RepoAction::Project => {
-            crate::vault::cmd_project();
+            vlt::vault::cmd_project();
             Ok(())
         }
         RepoAction::Context {

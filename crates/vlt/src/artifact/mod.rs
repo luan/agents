@@ -19,7 +19,9 @@ pub use crud::{
     CreateOpts, cmd_read_resolved, cmd_rename, cmd_retag, create, read, resolve_artifact_path,
     resolve_optional_kind, resolve_stem_universal,
 };
-pub use listing::{list_archived_artifacts, list_artifacts};
+pub use listing::{
+    list_all_archived_artifacts, list_all_artifacts, list_archived_artifacts, list_artifacts,
+};
 
 pub(crate) fn fatal(msg: &str) -> ! {
     eprintln!("artifact: {msg}");
@@ -36,7 +38,7 @@ pub(crate) fn home_dir() -> String {
 // ArtifactKind
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ArtifactKind {
     Design,
@@ -44,6 +46,7 @@ pub enum ArtifactKind {
     Research,
     Structure,
     Doc,
+    Custom(String),
 }
 
 /// Priority order for universal stem resolution.
@@ -56,29 +59,45 @@ pub const ALL_KINDS: [ArtifactKind; 5] = [
 ];
 
 impl ArtifactKind {
-    pub fn dir_name(self) -> &'static str {
+    pub fn dir_name(&self) -> &str {
         match self {
             Self::Design => "design",
             Self::Plan => "plan",
             Self::Research => "research",
             Self::Structure => "structure",
             Self::Doc => "docs",
+            Self::Custom(name) => name,
         }
     }
 
     pub fn from_dir_name(name: &str) -> Option<Self> {
-        ALL_KINDS.iter().copied().find(|k| k.dir_name() == name)
+        match name {
+            "design" => Some(Self::Design),
+            "plan" => Some(Self::Plan),
+            "research" => Some(Self::Research),
+            "structure" => Some(Self::Structure),
+            "doc" | "docs" => Some(Self::Doc),
+            other if validate_type_name(other).is_ok() => Some(Self::Custom(other.to_string())),
+            _ => None,
+        }
     }
 
     /// Singular name used in commit messages ("doc" not "docs").
-    pub fn commit_name(self) -> &'static str {
+    pub fn commit_name(&self) -> &str {
         match self {
             Self::Design => "design",
             Self::Plan => "plan",
             Self::Research => "research",
             Self::Structure => "structure",
             Self::Doc => "doc",
+            Self::Custom(name) => name,
         }
+    }
+}
+
+impl Serialize for ArtifactKind {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.dir_name())
     }
 }
 
@@ -209,7 +228,7 @@ pub fn blueprints_dir() -> PathBuf {
     let dir = blueprints_dir_unchecked();
     if !dir.is_dir() {
         fatal(&format!(
-            "{} does not exist. Run `ct vault init` first.",
+            "{} does not exist. Create the blueprints directory first.",
             dir.display()
         ));
     }
@@ -222,7 +241,7 @@ pub fn blueprints_dir_checked() -> Result<PathBuf, CtError> {
     let dir = blueprints_dir_unchecked();
     if !dir.is_dir() {
         return Err(CtError::Validation(format!(
-            "blueprints directory missing: {}. Run `ct vault init` first.",
+            "blueprints directory missing: {}. Create the blueprints directory first.",
             dir.display()
         )));
     }
@@ -289,9 +308,14 @@ pub fn artifact_dir_with_base(project_path: &str, kind: &str, base: &Path) -> Pa
 // Project paths
 // ---------------------------------------------------------------------------
 
-/// Strip YYYYMMDD-HH- or legacy YYYYMMDD- date prefix from an artifact stem.
-pub fn strip_date_prefix(stem: &str) -> &str {
-    if stem.len() > 12
+/// Strip the stable numeric id or legacy date prefix from an artifact stem.
+pub fn strip_artifact_prefix(stem: &str) -> &str {
+    if stem.len() >= 6
+        && stem.as_bytes()[0..4].iter().all(|b| b.is_ascii_digit())
+        && stem.as_bytes()[4] == b'-'
+    {
+        &stem[5..]
+    } else if stem.len() > 12
         && stem.as_bytes()[..8].iter().all(|b| b.is_ascii_digit())
         && stem.as_bytes()[8] == b'-'
         && stem.as_bytes()[9..11].iter().all(|b| b.is_ascii_digit())
@@ -306,6 +330,10 @@ pub fn strip_date_prefix(stem: &str) -> &str {
     } else {
         stem
     }
+}
+
+pub fn strip_date_prefix(stem: &str) -> &str {
+    strip_artifact_prefix(stem)
 }
 
 /// If `toplevel` is a git worktree, return the main repo root instead.
@@ -418,6 +446,26 @@ pub fn validate_project_name(name: &str) -> Result<(), CtError> {
         if ch == '/' || ch == '\\' || ch == '\0' || ch.is_control() {
             return Err(CtError::Validation(format!(
                 "project name {trimmed:?} contains a path separator or control character"
+            )));
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_type_name(name: &str) -> Result<(), CtError> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(CtError::Validation("artifact type is empty".to_string()));
+    }
+    if trimmed == "all" || trimmed == "archive" || trimmed == "." || trimmed == ".." {
+        return Err(CtError::Validation(format!(
+            "artifact type {trimmed:?} is reserved"
+        )));
+    }
+    for ch in trimmed.chars() {
+        if ch == '/' || ch == '\\' || ch == '\0' || ch.is_control() {
+            return Err(CtError::Validation(format!(
+                "artifact type {trimmed:?} contains a path separator or control character"
             )));
         }
     }
@@ -675,12 +723,6 @@ pub fn chrono_rfc3339() -> String {
         "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
         dt.year, dt.month, dt.day, dt.hours, dt.minutes, dt.seconds
     )
-}
-
-/// Compact date+hour for filenames: YYYYMMDD-HH
-pub fn chrono_compact() -> String {
-    let dt = now_utc();
-    format!("{:04}{:02}{:02}-{:02}", dt.year, dt.month, dt.day, dt.hours)
 }
 
 pub fn format_size(bytes: u64) -> String {

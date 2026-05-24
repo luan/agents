@@ -49,6 +49,7 @@ tree-sitter-scala = { workspace = true }
 tree-sitter-swift = { workspace = true }
 tree-sitter-typescript = { workspace = true }
 usage-bars = { path = "../usage-bars" }
+vlt = { path = "../vlt" }
 
 [dev-dependencies]
 assert_cmd = "^2"

@@ -8,7 +8,7 @@ user-invocable: true
 
 Move blueprints vault artifacts through a small state machine of triage roles.
 
-The blueprints vault is canonical. Use `vault_*` tools when available; fall back to `ct vault` only when no tool covers the operation.
+The blueprints vault is canonical. Use `vault_*` tools when available; fall back to `vlt` only when no tool covers the operation.
 
 Every triage note, agent brief, or decision note written to a vault artifact **must** start with this disclaimer:
 

@@ -22,7 +22,8 @@ The intended default product-feature workflow is `$grill -> $brief -> $issues ->
 QRDSPI skills remain available in source for expert/manual use, but are hidden from
 default model invocation. `$vibe` is intentionally deleted rather than kept as a stub.
 | `plugins/` | Shared plugin sources; tool folders link here |
-| `crates/ct/` | `ct` Rust CLI — vault, repo, MCP, apply-patch, and TUI helpers |
+| `crates/ct/` | `ct` Rust CLI — repo, MCP, apply-patch, and TUI helpers |
+| `crates/vlt/` | `vlt` Rust CLI — blueprints vault artifact management |
 | `crates/sym/` | Canonical source-navigation CLI and Tree-sitter symbol indexer |
 | `crates/xtask/` | Task automation invoked via `cargo xtask <cmd>` |
 | `docs/` | Permanent reference docs (architecture, exceptions) |
@@ -58,7 +59,6 @@ evidence.
 
 `ct` is the primary tool installed from `crates/ct/`. It provides:
 
-- `ct vault` — blueprint artifact management (create, read, list, archive, commit)
 - `ct repo` — repository identity, branch context, references, cochanges, and churn
 - `ct apply-patch` — raw patch apply plus apply_patch telemetry and drafts
 - `ct shell completion` — shell completions
@@ -73,6 +73,13 @@ providers = ["claude", "copilot", "codex"]
 ```
 
 Use `ct tui usage-bars --sidebar --watch` for a live sidebar; it rereads the config on every redraw.
+
+## `vlt` CLI
+
+`vlt` is the standalone blueprints vault CLI for artifact management, project
+context docs, local BM25 search, similarity, wiki-link graph traversal, review,
+and body updates. Normal artifacts use monotonically increasing numeric stems
+such as `0001-topic.md`; creation dates live in frontmatter.
 
 ## Setup
 

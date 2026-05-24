@@ -7,51 +7,69 @@ user-invocable: true
 
 # Brief
 
-Publish the product direction as a durable vault artifact. A brief is accepted
-only after Plannotator approval.
+This skill takes the current conversation context and codebase understanding and produces a "breif" / PRD. Do NOT interview the user — just synthesize what you already know.
 
-## Workflow
+## Process
 
-1. **Load settled context**
-   - Read the Grill Summary or equivalent conversation context.
-   - Load/use `$vault` before running nontrivial `ct vault` workflows.
-   - Read relevant vault docs/briefs/plans and repo docs/code.
-   - Stop and ask if behavior, scope, non-goals, or acceptance boundaries are
-     still unclear.
+1. Load/use `$vault` before running nontrivial `vlt` workflows. Load project language with `vlt context list`, `vlt context check`, and `vlt context show [name]` before drafting terms or scope language.
+2. Explore the repo to understand the current state of the codebase, if you haven't already. Use the project's domain glossary vocabulary throughout the PRD, and respect any ADRs in the area you're touching.
+3. Sketch out the major modules you will need to build or modify to complete the implementation. Actively look for opportunities to extract deep modules that can be tested in isolation.
+   A deep module (as opposed to a shallow module) is one which encapsulates a lot of functionality in a simple, testable interface which rarely changes.
+   Check with the user that these modules match their expectations. Check with the user which modules they want tests written for.
+4. Write the PRD using the template below. Ask for a review gate with `plannotator annotate "<absolute-path>" --gate --json`. Then plublish it to the project vault.
 
-2. **Draft the vault brief**
-   - Create or update a `doc` vault artifact with `ct vault create -t doc` or
-     by editing the existing artifact path.
-   - Keep repo paths inside the artifact repo-relative; only Plannotator command
-     arguments use absolute local paths.
-   - For visual workflows or UX-heavy briefs, use [visual-review.md](visual-review.md).
-   - Include:
-     - Problem and desired workflow/behavior.
-     - Scope and non-goals.
-     - Acceptance model split into agent-verifiable and human-judgment criteria.
-     - Evidence model: user-visible surfaces, non-visible setup work, and
-       required visual/manual evidence.
-     - Verification strategy.
-     - Risks, compatibility, migration, and known open questions.
-     - Links to source context.
+<prd-template>
 
-3. **Gate and publish**
-   - Resolve the artifact to its exact absolute local filesystem path.
-   - Run `plannotator annotate "<absolute-path>" --gate --json`.
-   - If Plannotator is unavailable, denied, or times out without approval, stop.
-     Do not commit and do not create tasks.
-   - After approval, commit with `ct vault commit "<absolute-path>" --message "..."`
-     and report the artifact path.
+## Problem Statement
 
-## Output
+The problem that the user is facing, from the user's perspective.
 
-Return the committed brief path, approval status, and any blocking follow-up
-needed to continue in this session.
+## Solution
 
-## Guardrails
+The solution to the problem, from the user's perspective.
 
-- Do not create task records.
-- Do not skip Plannotator approval unless the user explicitly says this run is
-  only a local draft.
-- Keep the brief compact; do not split into QRDSPI research/design/structure
-  artifacts by default.
+## User Stories
+
+A LONG, numbered list of user stories. Each user story should be in the format of:
+
+1. As an <actor>, I want a <feature>, so that <benefit>
+
+<user-story-example>
+1. As a mobile bank customer, I want to see balance on my accounts, so that I can make better informed decisions about my spending
+</user-story-example>
+
+This list of user stories should be extremely extensive and cover all aspects of the feature.
+
+## Implementation Decisions
+
+A list of implementation decisions that were made. This can include:
+
+- The modules that will be built/modified
+- The interfaces of those modules that will be modified
+- Technical clarifications from the developer
+- Architectural decisions
+- Schema changes
+- API contracts
+- Specific interactions
+
+Do NOT include specific file paths or code snippets. They may end up being outdated very quickly.
+
+Exception: if a prototype produced a snippet that encodes a decision more precisely than prose can (state machine, reducer, schema, type shape), inline it within the relevant decision and note briefly that it came from a prototype. Trim to the decision-rich parts — not a working demo, just the important bits.
+
+## Testing Decisions
+
+A list of testing decisions that were made. Include:
+
+- A description of what makes a good test (only test external behavior, not implementation details)
+- Which modules will be tested
+- Prior art for the tests (i.e. similar types of tests in the codebase)
+
+## Out of Scope
+
+A description of the things that are out of scope for this PRD.
+
+## Further Notes
+
+Any further notes about the feature.
+
+</prd-template>

@@ -1,6 +1,6 @@
 # Vault Decision Doc Format
 
-Decision docs live in the blueprints vault as `doc` artifacts. They record architectural decisions that future agents should not re-litigate without cause. Create or update them through the vault workflow: `ct vault create`, edit, then `ct vault commit`.
+Decision docs live in the blueprints vault as `doc` artifacts. They record architectural decisions that future agents should not re-litigate without cause. Create or update them through the vault workflow: `vlt create`, edit, then `vlt commit`.
 
 ## Template
 

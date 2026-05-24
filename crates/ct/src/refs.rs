@@ -5,7 +5,7 @@ use std::process::Command;
 use regex::Regex;
 use serde::Serialize;
 
-use crate::artifact::{self, ArtifactKind, parse_frontmatter};
+use vlt::artifact::{self, ArtifactKind, parse_frontmatter};
 
 // ---------------------------------------------------------------------------
 // Data types

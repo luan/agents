@@ -20,7 +20,7 @@ test:
     bun run test
 
 build:
-    cd "{{ repo }}" && cargo build --release -p ct
+    cd "{{ repo }}" && cargo build --release -p ct -p vlt
 
 render-agents:
     cd "{{ repo }}" && cargo xtask render-agents
@@ -58,6 +58,7 @@ install:
     @command -v wt >/dev/null 2>&1 || cargo binstall worktrunk --locked
     @command -v git-surgeon >/dev/null 2>&1 || cargo binstall git-surgeon --locked
     cargo install --path "{{ repo }}/crates/ct"
+    cargo install --path "{{ repo }}/crates/vlt"
     cargo install --path "{{ repo }}/crates/sym"
     claude mcp remove -s user vault 2>/dev/null || true
     claude mcp remove -s user source 2>/dev/null || true

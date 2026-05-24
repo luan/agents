@@ -1,15 +1,18 @@
 use std::path::PathBuf;
 
+use rmcp::ServiceExt;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ErrorData};
 use rmcp::schemars::{self, JsonSchema};
+use rmcp::transport::stdio;
 use rmcp::{ServerHandler, tool, tool_handler, tool_router};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::artifact::{self, ALL_KINDS, Artifact, ArtifactKind};
-use crate::vault::{self as vault_core, SearchFilters};
+use crate::artifact::{self, Artifact, ArtifactKind};
+use crate::graph;
+use crate::vault::{self as vault_core};
 
 use super::{ct_error_to_tool, json_success};
 
@@ -38,6 +41,20 @@ struct SearchIn {
     project: Option<String>,
     #[serde(default)]
     archived: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct SimilarIn {
+    stem_or_path: String,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    project: Option<String>,
+    #[serde(default)]
+    archived: Option<bool>,
+    #[serde(default)]
+    limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -83,6 +100,31 @@ struct CommitIn {
     message: Option<String>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct LinkIn {
+    from: String,
+    to: String,
+    link_type: String,
+    annotation: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct UpdateIn {
+    stem_or_path: String,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    append: Option<String>,
+    #[serde(default)]
+    replace_section: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
+}
+
 #[derive(Clone)]
 pub(super) struct VaultMcpServer {
     tool_router: ToolRouter<Self>,
@@ -99,17 +141,9 @@ impl VaultMcpServer {
 fn parse_kind(value: Option<&str>) -> Result<Option<ArtifactKind>, ErrorData> {
     match value.unwrap_or("all") {
         "all" => Ok(None),
-        "design" => Ok(Some(ArtifactKind::Design)),
-        "plan" => Ok(Some(ArtifactKind::Plan)),
-        "research" => Ok(Some(ArtifactKind::Research)),
-        "structure" => Ok(Some(ArtifactKind::Structure)),
-        "doc" | "docs" => Ok(Some(ArtifactKind::Doc)),
-        other => Err(ErrorData::invalid_params(
-            format!(
-                "invalid artifact type {other:?}; expected all, research, design, structure, plan, or doc"
-            ),
-            None,
-        )),
+        other => ArtifactKind::from_dir_name(other).map(Some).ok_or_else(|| {
+            ErrorData::invalid_params(format!("invalid artifact type {other:?}"), None)
+        }),
     }
 }
 
@@ -143,17 +177,11 @@ fn filtered_artifacts(
             }
         }
         None => {
-            let mut combined = Vec::new();
-            for k in ALL_KINDS {
-                let chunk = if archived {
-                    artifact::list_archived_artifacts(k)
-                } else {
-                    artifact::list_artifacts(k, include_dives)
-                };
-                combined.extend(chunk);
+            if archived {
+                artifact::list_all_archived_artifacts()
+            } else {
+                artifact::list_all_artifacts(include_dives)
             }
-            combined.sort_by_key(|a| std::cmp::Reverse(a.mod_time));
-            combined
         }
     };
 
@@ -188,20 +216,48 @@ impl VaultMcpServer {
 
     #[tool(
         name = "search",
-        description = "Search blueprints vault artifacts via Obsidian CLI."
+        description = "Search blueprints vault artifacts using the local BM25 index."
     )]
     async fn search(
         &self,
         Parameters(input): Parameters<SearchIn>,
     ) -> Result<CallToolResult, ErrorData> {
         let kind = parse_kind(input.kind.as_deref())?;
-        let hits = vault_core::search(
+        let hits = graph::search(
             &input.query,
-            SearchFilters {
-                kind,
-                project: input.project,
-                archived: input.archived.unwrap_or(false),
-            },
+            kind,
+            input.project.as_deref(),
+            input.archived.unwrap_or(false),
+            50,
+        )
+        .map_err(ct_error_to_tool)?;
+        json_success(&json!({ "hits": hits }))
+    }
+
+    #[tool(
+        name = "index",
+        description = "Rebuild the local blueprints vault search index."
+    )]
+    async fn index(&self) -> Result<CallToolResult, ErrorData> {
+        let outcome = graph::rebuild_index().map_err(ct_error_to_tool)?;
+        json_success(&outcome)
+    }
+
+    #[tool(
+        name = "similar",
+        description = "Find blueprints vault artifacts similar to an artifact."
+    )]
+    async fn similar(
+        &self,
+        Parameters(input): Parameters<SimilarIn>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let kind = parse_kind(input.kind.as_deref())?;
+        let hits = graph::similar(
+            &input.stem_or_path,
+            kind,
+            input.project.as_deref(),
+            input.archived.unwrap_or(false),
+            input.limit.unwrap_or(10),
         )
         .map_err(ct_error_to_tool)?;
         json_success(&json!({ "hits": hits }))
@@ -235,6 +291,90 @@ impl VaultMcpServer {
         )
         .map_err(ct_error_to_tool)?;
         json_success(&json!({ "hits": hits }))
+    }
+
+    #[tool(
+        name = "links",
+        description = "Show outgoing blueprints vault wiki-links for an artifact."
+    )]
+    async fn links(
+        &self,
+        Parameters(input): Parameters<ReadIn>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let kind = parse_kind(input.kind.as_deref())?;
+        let edges = graph::links(&input.stem_or_path, kind).map_err(ct_error_to_tool)?;
+        json_success(&json!({ "links": edges }))
+    }
+
+    #[tool(
+        name = "backlinks",
+        description = "Show blueprints vault artifacts linking to an artifact."
+    )]
+    async fn backlinks(
+        &self,
+        Parameters(input): Parameters<ReadIn>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let kind = parse_kind(input.kind.as_deref())?;
+        let edges = graph::backlinks(&input.stem_or_path, kind).map_err(ct_error_to_tool)?;
+        json_success(&json!({ "backlinks": edges }))
+    }
+
+    #[tool(
+        name = "graph",
+        description = "Export the blueprints vault wiki-link graph."
+    )]
+    async fn graph(&self) -> Result<CallToolResult, ErrorData> {
+        let edges = graph::graph().map_err(ct_error_to_tool)?;
+        json_success(&json!({ "edges": edges }))
+    }
+
+    #[tool(
+        name = "review",
+        description = "Review blueprints vault health and structural gaps."
+    )]
+    async fn review(&self) -> Result<CallToolResult, ErrorData> {
+        let report = graph::review(12000).map_err(ct_error_to_tool)?;
+        json_success(&report)
+    }
+
+    #[tool(
+        name = "link",
+        description = "Add a typed, annotated wiki-link between blueprints vault artifacts."
+    )]
+    async fn link(
+        &self,
+        Parameters(input): Parameters<LinkIn>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let path = graph::add_link(&input.from, &input.to, &input.link_type, &input.annotation)
+            .map_err(ct_error_to_tool)?;
+        json_success(&json!({ "path": path }))
+    }
+
+    #[tool(
+        name = "update",
+        description = "Update a blueprints vault artifact body."
+    )]
+    async fn update(
+        &self,
+        Parameters(input): Parameters<UpdateIn>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let kind = parse_kind(input.kind.as_deref())?;
+        let edit = match (input.replace_section, input.append, input.content) {
+            (Some(heading), None, Some(content)) => {
+                graph::BodyEdit::ReplaceSection { heading, content }
+            }
+            (None, Some(content), None) => graph::BodyEdit::Append(content),
+            (None, None, Some(content)) => graph::BodyEdit::Replace(content),
+            _ => {
+                return Err(ErrorData::invalid_params(
+                    "choose exactly one of content, append, or replaceSection+content",
+                    None,
+                ));
+            }
+        };
+        let path = graph::update_body(&input.stem_or_path, kind, edit, input.message.as_deref())
+            .map_err(ct_error_to_tool)?;
+        json_success(&json!({ "path": path }))
     }
 
     #[tool(
@@ -298,4 +438,15 @@ impl ServerHandler for VaultMcpServer {
             env!("CARGO_PKG_VERSION"),
         ))
     }
+}
+
+pub fn run_vault_server() -> Result<(), Box<dyn std::error::Error>> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        let service = VaultMcpServer::new().serve(stdio()).await?;
+        service.waiting().await?;
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })
 }

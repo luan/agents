@@ -7,7 +7,7 @@ fn apply_patch_telemetry_for(cwd_path: &std::path::Path) -> Option<crate::apply_
     let telemetry_root = cwd_path
         .canonicalize()
         .unwrap_or_else(|_| cwd_path.to_path_buf());
-    let project_name = crate::artifact::project_name(&telemetry_root.to_string_lossy());
+    let project_name = vlt::artifact::project_name(&telemetry_root.to_string_lossy());
     crate::apply_patch::Telemetry::open(&project_name).ok()
 }
 
@@ -61,7 +61,7 @@ pub fn run_apply_patch_stats(
         return Ok(());
     }
 
-    let project_name = crate::artifact::project_name(&crate::artifact::current_project());
+    let project_name = vlt::artifact::project_name(&vlt::artifact::current_project());
     let base = match dirs::data_local_dir() {
         Some(b) => b,
         None => {
@@ -91,7 +91,7 @@ pub fn run_apply_patch_report(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::apply_patch::telemetry::{Telemetry, diagnostics};
 
-    let project_name = crate::artifact::project_name(&crate::artifact::current_project());
+    let project_name = vlt::artifact::project_name(&vlt::artifact::current_project());
     let tel = Telemetry::open(&project_name)?;
     if let Some(diagnostic_id) = diagnostic_id {
         let Some(diagnostic) = tel.failure_diagnostic(&diagnostic_id)? else {
@@ -134,7 +134,7 @@ pub fn run_apply_patch_show(
 pub fn run_apply_patch_prune(days: i64) -> Result<(), Box<dyn std::error::Error>> {
     use crate::apply_patch::telemetry::{Telemetry, prune};
 
-    let project_name = crate::artifact::project_name(&crate::artifact::current_project());
+    let project_name = vlt::artifact::project_name(&vlt::artifact::current_project());
     let base = match dirs::data_local_dir() {
         Some(b) => b,
         None => {

@@ -5,96 +5,62 @@ argument-hint: "<task-or-epic> [--auto]"
 user-invocable: true
 ---
 
-# Implement
+# Implement one task
 
-Deliver exactly one selected task. `$implement` owns reviewed commit delivery
-and review handoff, not story acceptance.
+Deliver exactly one selected task. `$implement` owns reviewed commit delivery and review handoff, not story acceptance.
 
-`in_progress` means the agent is actively editing or verifying. Never leave a
-feature/bug task `in_progress` while waiting for human review, Plannotator
-feedback, code-review approval, or manual-verification approval. Move it to
-`in_review` before any review wait; if feedback requires changes, move it back
-to `in_progress` before editing.
+`in_progress` means the agent is actively editing or verifying. Never leave a feature/bug task `in_progress` while waiting for human review, Plannotator feedback, code-review approval, or manual-verification approval. Move it to `in_review` before any review wait; if feedback requires changes, move it back to `in_progress` before editing.
 
-## Quick start
+## Non-code short-circuit
 
-```bash
-$implement <task-id>
-$implement <task-id> --auto
-```
-
-- No argument or an epic: list open unblocked tasks and ask for one task.
-- `--auto`: skip all interrupts until final manual verification.
+If the task at hand does not involve code changes, skip all steps except load/claim and manual-verification gate. For example, if the task is to update documentation, implement the change directly in the source file, then generate the manual-verification artifact with the updated content for review and acceptance.
 
 ## Workflow
 
 1. **Load and claim**
-   - Read task, parent, blockers, acceptance criteria, verification, non-goals,
-     and linked docs.
+   - Read task, parent, blockers, acceptance criteria, verification, non-goals, and linked docs.
+   - Resolve linked vault artifacts with `vlt read <stem-or-path>`.
+   - Load project language with `vlt context list`, `vlt context check`, and `vlt context show [name]`; do not parse or guess context files by hand.
    - Stop if blocked, missing criteria, or already in review/done.
    - Assign the selected task to the current session and move it to `in_progress` before editing.
 
-2. **Confirm scope**
-   - Unless `--auto`, briefly state task, acceptance criteria, non-goals, and verification.
-   - Ask only when scope is ambiguous.
-
-3. **Implement with TDD**
-   - Follow `$tdd`: failing behavior test, minimal implementation, green test,
-     refactor only while green.
+2. **Implement with TDD**
+   - Follow `$tdd`: failing behavior test, minimal implementation, green test, refactor only while green.
    - Repeat until acceptance criteria are covered.
+
+3. **Quality checks**
+   - Run linters, formatters, and static analysis. Fix all issues before review. Do not bypass or ignore quality checks.
+   - Run the `$simplify` on the diff generated in the previous step.
 
 4. **Verify**
    - Run tests, task-specified checks, then project checks.
-   - Review the diff for scope creep, debug artifacts, unrelated cleanup, and
-     satisfied criteria.
-   - Match verification to the task evidence class; do not invent visual gates
-     for non-visible chores.
+   - Review the diff for scope creep, debug artifacts, unrelated cleanup, and satisfied criteria.
+   - Match verification to the task evidence class; do not invent visual gates for non-visible chores.
 
-5. **Plannotator code review**
-   - Before starting review, move feature/bug tasks to `in_review` with a short
-     note that implementation and verification are complete and code review is
-     pending. Do not leave the task `in_progress` while review is open.
-   - Run `plannotator review --git` before commit, unless `--auto` is specified.
-   - Plannotator must run as a blocking foreground command: one command, normal
-     long human-review timeout, no background terminal, no `write_stdin` polling,
-     and no other work while it is open. If it cannot be kept foreground, stop
-     and report that review is unavailable instead of continuing.
+5. **User code review**
+   - [skip-if: --auto] Run `plannotator review` before commit. This will let the user review the code changes. Do not stage files before review; the user will stage approved hunks. Right before running `plannotator review`, say, concisely: a. what you have changed; b. areas you explicitly want feedback on; c. anything you haven't addressed (trick question, you should not have any of these if you followed the process well).
+   - `plannotator` must run as a blocking foreground command, no background terminal, no `write_stdin` polling.
+   - When the review comes back with a question, this is the user starting a conversation. Do not treat it as directional feeedback. Instead, continue the conversation until the gap in understanding is resolved and only then make code changes and re-run the review.
    - For file notes, resolve to the exact absolute file path on the local filesystem first. Do not pass vault stems, wiki-link targets, repo-relative paths, or artifact-link paths to Plannotator.
-   - If unavailable or denied, keep the task `in_review` with captured feedback.
-     Move it back to `in_progress` only when actively applying that feedback,
-     then re-verify and return it to `in_review` before rerunning review.
+   - Only after code-approval, move feature/bug tasks to `in_review` with a short note that code has been approved.
 
-6. **Commit**
-   - Load/use `$commit`; do not hand-roll commit mechanics when available.
-   - Commit only the task-scoped files after review approval.
-   - Fix hook failures and retry. Capture the commit hash.
-
-7. **Manual-verification gate**
+6. **Manual-verification gate**
    - Attempt screenshots or equivalent visual evidence for user-facing changes.
    - For web apps, use [web-development-verification.md](web-development-verification.md).
    - For desktop apps, use [desktop-app-verification.md](desktop-app-verification.md).
    - For TUI apps, use [tui-verification.md](tui-verification.md).
-   - Generate the temporary HTML artifact using
-     [manual-verification-gate.md](manual-verification-gate.md).
-   - Before presenting the gate, validate that screenshots are nonzero, viewed,
-     renderable in Plannotator, and mapped to acceptance criteria.
+   - Generate the temporary HTML artifact using [manual-verification-gate.md](manual-verification-gate.md).
+   - Before presenting the gate, validate that screenshots are nonzero, viewed, renderable in Plannotator, and mapped to acceptance criteria.
    - Ensure feature/bug tasks are `in_review` before presenting the gate.
-   - Present it with `plannotator annotate <artifact.html> --render-html --gate`
-     as a blocking foreground command with a normal long human-review timeout.
-     Do not run it in a background terminal and do not continue other work while
-     the gate is open.
+   - Present it with `plannotator annotate <artifact.html> --render-html --gate` as a blocking foreground command with a normal long human-review timeout. Do not run it in a background terminal and do not continue other work while the gate is open.
+
+7. **Commit**
+   - Load/use `$commit`; do not hand-roll commit mechanics when available.
+   - If the whole diff is approved, you are allowed to stage for commit.
+   - Commit only the task-scoped files after review approval.
+   - Fix hook failures and retry. Capture the commit hash.
 
 8. **Handoff**
-   - Record commit, checks, artifact path, visual evidence, and caveats.
-   - If the manual-verification gate is approved, leave the task `in_review` for
-     human `/accept`.
-   - If denied/unavailable, keep the task `in_review` with feedback. Move it to
-     `in_progress` only when actively revising.
-   - Never accept/reject feature or bug tasks.
-   - Never directly mark feature or bug tasks `done`; human `/accept` performs
-     story acceptance.
-
-## Completion
-
-Report commit hash, checks passed, artifact path, and that the task is in
-`in_review` for human acceptance.
+   - Record commit, checks, linked `vlt` artifact stems/paths, visual evidence, and caveats.
+   - If denied, keep the task reject task with notes from the feedback. Then resume working on it by restarting $implement.
+   - ONLY mark feature or bug tasks `done` after manual verification gate is approved.
