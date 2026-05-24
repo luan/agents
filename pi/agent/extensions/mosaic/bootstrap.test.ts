@@ -146,6 +146,57 @@ describe("registerMosaicBootstrap native messaging", () => {
 		}
 	});
 
+	test("session shutdown disconnects without publishing a terminal error", async () => {
+		const server = new MosaicMessageServer({ now: () => 1000, id: () => "msg-1" });
+		const { token } = server.registerAgent({ agentId: "agent-1", taskName: "reviewer" });
+		const transport = await startMosaicMessageTransport(server, { host: "127.0.0.1", port: 0 });
+		try {
+			process.env.MOSAIC_BOOTSTRAP_FILE = writeBootstrap({
+				agentId: "agent-1",
+				agentType: "Explore",
+				description: "Review code",
+				prompt: "Initial prompt",
+				systemPrompt: "System prompt",
+				toolNames: ["read"],
+				messageEndpoint: transport.endpoint,
+				messageToken: token,
+			});
+			const pi = createFakePi();
+			registerMosaicBootstrap(pi as never);
+
+			await pi.handlers.session_start[0]({}, {});
+			await pi.handlers.message_update[0](
+				{ assistantMessageEvent: { type: "text_delta", delta: "still working" } },
+				{},
+			);
+			const beforeShutdown = server.currentSeq;
+
+			await pi.handlers.session_shutdown[0]({}, {});
+
+			await expect(server.waitForUpdate({ afterSeq: beforeShutdown, timeoutMs: 10 })).resolves.toMatchObject({
+				type: "agent_update",
+				agentId: "agent-1",
+				status: "disconnected",
+			});
+			expect(server.listAgents()[0]).toMatchObject({
+				agentId: "agent-1",
+				status: "disconnected",
+				connected: false,
+			});
+
+			const completed = server.recordAgentUpdate("agent-1", token, {
+				status: "completed",
+				result: "completed after reconnect",
+			});
+			expect(completed).toMatchObject({
+				status: "completed",
+				result: "completed after reconnect",
+			});
+		} finally {
+			await transport.close();
+		}
+	});
+
 	test("registers a child-only leader message tool and filters recursive mosaic tools", async () => {
 		const server = new MosaicMessageServer({ now: () => 1000, id: () => "msg-1" });
 		const { token } = server.registerAgent({ agentId: "agent-1", taskName: "reviewer" });

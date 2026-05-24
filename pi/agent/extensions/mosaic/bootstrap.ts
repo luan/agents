@@ -108,18 +108,6 @@ export function registerMosaicBootstrap(pi: ExtensionAPI) {
 
 	(pi.on as any)("session_shutdown", async () => {
 		stopMessagePolling();
-		if (messageClient && !publishedTerminalStatus) {
-			try {
-				await messageClient.recordUpdate({
-					status: "error",
-					error: "mosaic child session shut down before publishing a terminal result",
-					result: currentAssistantText.trim() || undefined,
-				});
-				publishedTerminalStatus = "error";
-			} catch {
-				/* ignore shutdown reporting failures */
-			}
-		}
 		await messageClient?.disconnect().catch(() => {});
 		messageClient = undefined;
 	});
