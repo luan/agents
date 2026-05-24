@@ -1698,6 +1698,71 @@ test("extension completion message includes truncation metadata for large final 
 	expect(sentMessages[0]?.message.details.output).toContain("chars truncated");
 });
 
+test("extension pushes completion after non-empty write_stdin interaction", async () => {
+	type Handler = (event?: any, ctx?: any) => any;
+	const handlers = new Map<string, Handler[]>();
+	let execTool: any;
+	let writeStdinTool: any;
+	const sentMessages: Array<{ message: any; options: any }> = [];
+	const pi = {
+		registerTool: (definition: any) => {
+			if (definition.name === "exec_command") execTool = definition;
+			if (definition.name === "write_stdin") writeStdinTool = definition;
+		},
+		registerCommand() {},
+		registerMessageRenderer() {},
+		sendMessage: (message: any, options: any) => {
+			sentMessages.push({ message, options });
+		},
+		getActiveTools: () => [],
+		setActiveTools() {},
+		on: (event: string, handler: Handler) => {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+		},
+		exec: async () => ({ code: 1, stdout: "", stderr: "" }),
+	} as any;
+	execCommandExtension(pi);
+
+	const ctx = {
+		hasUI: true,
+		ui: { setStatus() {}, notify() {} },
+		cwd: process.cwd(),
+	};
+	for (const handler of handlers.get("session_start") ?? []) handler(undefined, ctx);
+
+	try {
+		const spawned = await execTool.execute(
+			"call-stdin-completion",
+			{ cmd: 'read line; printf "got:$line"', tty: true, yield_time_ms: 250 },
+			undefined,
+			undefined,
+			ctx,
+		);
+		const sessionId = spawned.details.session_id;
+		expect(sessionId).toBeNumber();
+		expect(spawned.details.stdin_open).toBe(true);
+		expect(sentMessages).toHaveLength(0);
+
+		const write = await writeStdinTool.execute(
+			"write-stdin-completion",
+			{ session_id: sessionId, chars: "hello\n", yield_time_ms: 250 },
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(write.details.session_id).toBeUndefined();
+		expect(write.details.exit_code).toBe(0);
+
+		expect(sentMessages).toHaveLength(1);
+		expect(sentMessages[0]?.message.customType).toBe("exec_command.completed");
+		expect(sentMessages[0]?.message.details.session_id).toBe(sessionId);
+		expect(sentMessages[0]?.message.details.exit_code).toBe(0);
+		expect(sentMessages[0]?.message.details.output).toContain("got:hello");
+	} finally {
+		for (const handler of handlers.get("session_shutdown") ?? []) handler(undefined, ctx);
+	}
+});
+
 test("extension hides empty poll output after rendering a background terminal completion message", async () => {
 	type Handler = (event?: any, ctx?: any) => any;
 	const handlers = new Map<string, Handler[]>();
