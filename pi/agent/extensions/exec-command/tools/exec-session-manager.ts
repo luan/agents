@@ -28,6 +28,9 @@ export interface ExecSessionSnapshot {
 	running: boolean;
 	exitCode?: number;
 	stdinOpen?: boolean;
+	elapsedMs: number;
+	originalTokenCount?: number;
+	outputTruncated: boolean;
 }
 
 export interface ExecSessionRecord {
@@ -945,12 +948,16 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			const session = sessions.get(sessionId);
 			if (!session) return undefined;
 			const running = isRunning(session);
+			const truncated = formattedTruncateText(session.buffer);
 			return {
 				command: session.command,
-				output: session.buffer,
+				output: truncated.output,
 				running,
 				exitCode: running ? undefined : (session.exitCode ?? 0),
 				stdinOpen: running ? session.interactive : undefined,
+				elapsedMs: Date.now() - session.startedAtMs,
+				originalTokenCount: truncated.output_truncated ? approxTokenCount(session.buffer) : undefined,
+				outputTruncated: truncated.output_truncated === true,
 			};
 		},
 		listSessions: () => Array.from(sessions.values(), toRecord),

@@ -150,6 +150,55 @@ function renderBackgroundTerminalHudLine(
 	return renderBackgroundTerminalHud({ command, output, elapsedMs, stdinOpen }, { theme, width });
 }
 
+async function runExecCommandCompletionScenario(command: string, toolCallId: string) {
+	type Handler = (event?: any, ctx?: any) => any;
+	const handlers = new Map<string, Handler[]>();
+	let execTool: any;
+	let renderer: any;
+	const sentMessages: Array<{ message: any; options: any }> = [];
+	const pi = {
+		registerTool: (definition: any) => {
+			if (definition.name === "exec_command") execTool = definition;
+		},
+		registerCommand() {},
+		registerMessageRenderer: (_customType: string, registered: any) => {
+			renderer = registered;
+		},
+		sendMessage: (message: any, options: any) => {
+			sentMessages.push({ message, options });
+		},
+		getActiveTools: () => [],
+		setActiveTools() {},
+		on: (event: string, handler: Handler) => {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+		},
+		exec: async () => ({ code: 1, stdout: "", stderr: "" }),
+	} as any;
+	execCommandExtension(pi);
+
+	const ctx = {
+		hasUI: true,
+		ui: { setStatus() {}, notify() {} },
+		cwd: process.cwd(),
+	};
+	for (const handler of handlers.get("session_start") ?? []) handler(undefined, ctx);
+
+	try {
+		const result = await execTool.execute(
+			toolCallId,
+			{ cmd: command, yield_time_ms: 250 },
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(result.details.session_id).toBeNumber();
+		await Bun.sleep(500);
+		return { result, sentMessages, renderer };
+	} finally {
+		for (const handler of handlers.get("session_shutdown") ?? []) handler(undefined, ctx);
+	}
+}
+
 test("exec command call renders inline syntax-highlighted commands", () => {
 	const rendered = renderExecCommandCall(
 		`git diff --stat luan/pbt...luan/pbt-fixes && gh pr edit 57220 --title "fix(sync): resolve PBT convergence failures"`,
@@ -1600,64 +1649,53 @@ test("extension HUD keeps line count and last output visible before long command
 });
 
 test("extension appends a new completion message when a background terminal exits", async () => {
-	type Handler = (event?: any, ctx?: any) => any;
-	const handlers = new Map<string, Handler[]>();
-	let execTool: any;
-	let renderer: any;
-	const sentMessages: Array<{ message: any; options: any }> = [];
-	const pi = {
-		registerTool: (definition: any) => {
-			if (definition.name === "exec_command") execTool = definition;
-		},
-		registerCommand() {},
-		registerMessageRenderer: (_customType: string, registered: any) => {
-			renderer = registered;
-		},
-		sendMessage: (message: any, options: any) => {
-			sentMessages.push({ message, options });
-		},
-		getActiveTools: () => [],
-		setActiveTools() {},
-		on: (event: string, handler: Handler) => {
-			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
-		},
-		exec: async () => ({ code: 1, stdout: "", stderr: "" }),
-	} as any;
-	execCommandExtension(pi);
+	const { result, sentMessages, renderer } = await runExecCommandCompletionScenario(
+		"sleep 0.3; printf done",
+		"call-finished-message",
+	);
 
-	const ctx = {
-		hasUI: true,
-		ui: { setStatus() {}, notify() {} },
-		cwd: process.cwd(),
-	};
-	for (const handler of handlers.get("session_start") ?? []) handler(undefined, ctx);
+	expect(sentMessages).toHaveLength(1);
+	expect(sentMessages[0]?.options).toEqual({ triggerTurn: false });
+	expect(sentMessages[0]?.message.customType).toBe("exec_command.completed");
+	expect(sentMessages[0]?.message.display).toBe(true);
+	expect(sentMessages[0]?.message.content).toBe("");
+	expect(sentMessages[0]?.message.details.session_id).toBe(result.details.session_id);
+	expect(sentMessages[0]?.message.details.elapsed_ms).toBeNumber();
+	expect(sentMessages[0]?.message.details.exit_code).toBe(0);
+	expect(sentMessages[0]?.message.details.output).toBe("done");
+	expect(sentMessages[0]?.message.details.output_truncated).toBe(false);
 
-	try {
-		const result = await execTool.execute(
-			"call-finished-message",
-			{ cmd: "sleep 0.3; printf done", yield_time_ms: 250 },
-			undefined,
-			undefined,
-			ctx,
-		);
-		expect(result.details.session_id).toBeNumber();
+	const rendered = renderer(sentMessages[0]!.message, { expanded: false }, testTheme).render(120).join("\n");
+	expect(rendered).toContain("<bold>Ran</bold>");
+	expect(rendered).toContain("sleep");
+	expect(rendered).toContain("done");
+	expect(rendered).not.toContain("Session ");
+});
 
-		await Bun.sleep(500);
+test("extension emits completion message for quiet successful background terminal", async () => {
+	const { result, sentMessages } = await runExecCommandCompletionScenario("sleep 0.3", "call-quiet-finished-message");
 
-		expect(sentMessages).toHaveLength(1);
-		expect(sentMessages[0]?.options).toEqual({ triggerTurn: false });
-		expect(sentMessages[0]?.message.display).toBe(true);
-		expect(sentMessages[0]?.message.content).toBe("");
-		expect(sentMessages[0]?.message.details.output).toBe("done");
+	expect(sentMessages).toHaveLength(1);
+	expect(sentMessages[0]?.message.customType).toBe("exec_command.completed");
+	expect(sentMessages[0]?.message.details.session_id).toBe(result.details.session_id);
+	expect(sentMessages[0]?.message.details.exit_code).toBe(0);
+	expect(sentMessages[0]?.message.details.output).toBe("");
+	expect(sentMessages[0]?.message.details.output_truncated).toBe(false);
+});
 
-		const rendered = renderer(sentMessages[0]!.message, { expanded: false }, testTheme).render(120).join("\n");
-		expect(rendered).toContain("<bold>Ran</bold>");
-		expect(rendered).toContain("sleep");
-		expect(rendered).toContain("done");
-		expect(rendered).not.toContain("Session ");
-	} finally {
-		for (const handler of handlers.get("session_shutdown") ?? []) handler(undefined, ctx);
-	}
+test("extension completion message includes truncation metadata for large final output", async () => {
+	const { result, sentMessages } = await runExecCommandCompletionScenario(
+		"sleep 0.3; node -e \"process.stdout.write('x'.repeat(1000))\"",
+		"call-truncated-finished-message",
+	);
+
+	expect(sentMessages).toHaveLength(1);
+	expect(sentMessages[0]?.message.customType).toBe("exec_command.completed");
+	expect(sentMessages[0]?.message.details.session_id).toBe(result.details.session_id);
+	expect(sentMessages[0]?.message.details.exit_code).toBe(0);
+	expect(sentMessages[0]?.message.details.output_truncated).toBe(true);
+	expect(sentMessages[0]?.message.details.original_token_count).toBeNumber();
+	expect(sentMessages[0]?.message.details.output).toContain("chars truncated");
 });
 
 test("extension hides empty poll output after rendering a background terminal completion message", async () => {

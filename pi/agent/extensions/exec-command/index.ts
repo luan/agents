@@ -210,7 +210,7 @@ function parseStopSessionId(args: string): number | undefined | "invalid" {
 }
 
 const BACKGROUND_TERMINAL_STATUS_KEY = "background-terminals";
-const BACKGROUND_TERMINAL_FINISHED_MESSAGE = "background-terminal-finished";
+const EXEC_COMMAND_COMPLETED_MESSAGE = "exec_command.completed";
 const BACKGROUND_TERMINAL_HUD_FRAME_MS = 80;
 
 interface BackgroundTerminalStatusUi {
@@ -228,10 +228,13 @@ interface BackgroundTerminalStatusUi {
 }
 
 interface BackgroundTerminalFinishedDetails {
-	sessionId: number;
+	session_id: number;
 	command: string;
 	output: string;
-	exitCode?: number;
+	exit_code?: number;
+	elapsed_ms: number;
+	output_truncated: boolean;
+	original_token_count?: number;
 }
 
 export default function execCommandExtension(pi: ExtensionAPI) {
@@ -251,7 +254,7 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 	const completionMessageSessionIds = new Set<number>();
 
 	(pi as any).registerMessageRenderer?.(
-		BACKGROUND_TERMINAL_FINISHED_MESSAGE,
+		EXEC_COMMAND_COMPLETED_MESSAGE,
 		(
 			message: { details?: BackgroundTerminalFinishedDetails },
 			{ expanded }: { expanded: boolean },
@@ -259,7 +262,7 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 		) => {
 			const details = message.details;
 			if (!details) return undefined;
-			const failed = details.exitCode !== undefined && details.exitCode !== 0;
+			const failed = details.exit_code !== undefined && details.exit_code !== 0;
 			return renderExecCellComponent(
 				rawCommandToExecCell({
 					command: details.command,
@@ -267,7 +270,7 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 					failed,
 					outputBlock: {
 						output: details.output,
-						footer: failed ? theme.fg("muted", `Exit code: ${details.exitCode}`) : undefined,
+						footer: failed ? theme.fg("muted", `Exit code: ${details.exit_code}`) : undefined,
 						options: { expanded },
 					},
 				}),
@@ -422,17 +425,23 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 		tracker.recordSessionFinished(sessionId);
 		if (!completionMessageSessionIds.delete(sessionId)) return;
 		if (!snapshot) return;
+		const details: BackgroundTerminalFinishedDetails = {
+			session_id: sessionId,
+			command,
+			output: snapshot.output,
+			exit_code: snapshot.exitCode,
+			elapsed_ms: snapshot.elapsedMs,
+			output_truncated: snapshot.outputTruncated,
+		};
+		if (snapshot.originalTokenCount !== undefined) {
+			details.original_token_count = snapshot.originalTokenCount;
+		}
 		(pi as any).sendMessage?.(
 			{
-				customType: BACKGROUND_TERMINAL_FINISHED_MESSAGE,
+				customType: EXEC_COMMAND_COMPLETED_MESSAGE,
 				content: "",
 				display: true,
-				details: {
-					sessionId,
-					command,
-					output: snapshot?.output ?? "",
-					exitCode: snapshot?.exitCode,
-				},
+				details,
 			},
 			{ triggerTurn: false },
 		);
