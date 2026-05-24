@@ -1,5 +1,7 @@
 # Good and Bad Tests
 
+For Rust-specific guidance, see [rust-tests.md](rust-tests.md).
+
 ## Good Tests
 
 **Integration-style**: Test through real interfaces, not mocks of internal parts.
