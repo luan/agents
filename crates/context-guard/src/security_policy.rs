@@ -381,3 +381,138 @@ fn patterns_for_language(language: &str) -> Vec<Regex> {
         .map(|pattern| Regex::new(pattern).expect("shell escape regex"))
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn split_chained_commands_preserves_shell_literals() {
+        let segments = split_chained_commands(
+            "echo 'a;b' && printf \"x|y\" | bash -lc `echo safe && echo nested`; rm -rf target",
+        );
+
+        assert_eq!(
+            segments,
+            vec![
+                "echo 'a;b'",
+                "printf \"x|y\"",
+                "bash -lc `echo safe && echo nested`",
+                "rm -rf target",
+            ]
+        );
+    }
+
+    #[test]
+    fn command_policy_denies_matching_segment_in_chained_command() {
+        let policies = vec![SecurityPolicy {
+            deny: vec!["rm:*".to_string(), "curl *".to_string()],
+        }];
+
+        assert_eq!(
+            evaluate_command_deny_only("echo safe && rm -rf target", &policies, false),
+            Some("rm:*".to_string())
+        );
+        assert_eq!(
+            evaluate_command_deny_only("CURL https://example.test", &policies, true),
+            Some("curl *".to_string())
+        );
+        assert_eq!(
+            evaluate_command_deny_only("echo 'rm -rf target'", &policies, false),
+            None
+        );
+    }
+
+    #[test]
+    fn file_policy_matches_relative_absolute_and_case_insensitive_paths() {
+        let root = unique_temp_dir("context-guard-policy");
+        fs::create_dir_all(root.join("src/nested")).expect("create fixture dirs");
+        fs::write(root.join("src/nested/main.RS"), "fn main() {}\n").expect("write fixture");
+        let deny = vec![vec!["src/**/*.rs".to_string(), "secrets/*.txt".to_string()]];
+
+        assert_eq!(
+            evaluate_file_path(
+                "src/nested/main.rs",
+                &deny,
+                true,
+                Some(root.to_string_lossy().as_ref())
+            ),
+            Some("src/**/*.rs".to_string())
+        );
+        assert_eq!(
+            evaluate_file_path(
+                root.join("src/nested/main.RS").to_string_lossy().as_ref(),
+                &deny,
+                true,
+                Some(root.to_string_lossy().as_ref())
+            ),
+            Some("src/**/*.rs".to_string())
+        );
+        assert_eq!(
+            evaluate_file_path(
+                "src/nested/main.RS",
+                &deny,
+                false,
+                Some(root.to_string_lossy().as_ref())
+            ),
+            None
+        );
+
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn settings_reader_filters_bash_and_named_tool_patterns() {
+        let root = unique_temp_dir("context-guard-settings");
+        fs::create_dir_all(&root).expect("create settings dir");
+        let settings = root.join("settings.json");
+        fs::write(
+            &settings,
+            r#"{
+                "permissions": {
+                    "deny": [
+                        "Bash(rm:*)",
+                        "Read(secrets/**)",
+                        "Write(src/generated/**)",
+                        "Not a permission"
+                    ]
+                }
+            }"#,
+        )
+        .expect("write settings");
+
+        let bash = read_single_settings(&settings, Some("Bash")).expect("read bash settings");
+        assert_eq!(bash.deny, vec!["rm:*"]);
+        let read = read_tool_deny_file(&settings, "Read").expect("read tool settings");
+        assert_eq!(read, vec!["secrets/**"]);
+        let write = read_tool_deny_file(&settings, "Write").expect("read write settings");
+        assert_eq!(write, vec!["src/generated/**"]);
+
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn extract_shell_commands_finds_language_specific_execution_sites() {
+        assert_eq!(
+            extract_shell_commands(r#"subprocess.run(["rm", "-rf", "target"])"#, "python"),
+            vec!["rm -rf target"]
+        );
+        assert_eq!(
+            extract_shell_commands(r#"execSync("curl https://example.test")"#, "typescript"),
+            vec!["curl https://example.test"]
+        );
+        assert_eq!(
+            extract_shell_commands(r#"Command::new("sh").arg("-c").arg("echo safe")"#, "rust"),
+            vec!["sh"]
+        );
+    }
+
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock after unix epoch")
+            .as_nanos();
+        env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()))
+    }
+}
