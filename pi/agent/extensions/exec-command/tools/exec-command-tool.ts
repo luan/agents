@@ -66,6 +66,12 @@ const EXEC_COMMAND_PARAMETERS = Type.Object({
 				"camelCase alias of context_guard. Optional per-call override for Context Guard wrapping. Rarely needed.",
 		}),
 	),
+	wake_on_completion: Type.Optional(
+		Type.Boolean({
+			description:
+				"Whether a managed command session should wake the agent when it later completes. Defaults to true; set false only for intentionally persistent sessions.",
+		}),
+	),
 	commands: Type.Optional(
 		Type.Any({
 			description:
@@ -95,6 +101,7 @@ interface ExecCommandParams {
 	timeout?: number;
 	contextGuard?: boolean;
 	foreground?: boolean;
+	wakeOnCompletion?: boolean;
 }
 
 interface ContextGuardBatchCommand {
@@ -228,6 +235,10 @@ function parseExecCommandParams(params: unknown): ParsedExecInvocation {
 			login: "login" in params && typeof params.login === "boolean" ? params.login : undefined,
 			timeout: "timeout" in params && typeof params.timeout === "number" ? params.timeout : undefined,
 			contextGuard: readContextGuardOverride(record),
+			wakeOnCompletion:
+				"wake_on_completion" in params && typeof params.wake_on_completion === "boolean"
+					? params.wake_on_completion
+					: undefined,
 		},
 	};
 }
@@ -732,6 +743,7 @@ export function registerExecCommandTool(
 			"Use exec_command(mode:'batch', commands, queries) for multi-command research that should auto-index and search output.",
 			"Prefer `rg`/`rg --files` over `grep`/`find`; for broad searches use `rg -n -M 400 --max-columns-preview` plus globs like `--glob '!*.map'`.",
 			"Keep tty disabled unless the command truly needs interactive terminal behavior.",
+			"Use wake_on_completion:false only for intentionally persistent managed command sessions that should stay observable without waking the agent when they exit.",
 		],
 		parameters: EXEC_COMMAND_PARAMETERS,
 		prepareArguments: prepareExecCommandArguments,

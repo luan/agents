@@ -251,7 +251,7 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 	let backgroundTerminalWidgetRegistered = false;
 	let backgroundTerminalWidgetTui: { requestRender(): void } | undefined;
 	let backgroundTerminalWidgetTimer: ReturnType<typeof setInterval> | undefined;
-	const completionMessageSessionIds = new Set<number>();
+	const completionMessageSessions = new Map<number, { triggerTurn: boolean }>();
 
 	(pi as any).registerMessageRenderer?.(
 		EXEC_COMMAND_COMPLETED_MESSAGE,
@@ -413,8 +413,10 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 				rtkWrapped: decision.usedRtk === true,
 			};
 		},
-		onResult: (_input, result) => {
-			if (result.session_id !== undefined) completionMessageSessionIds.add(result.session_id);
+		onResult: (input, result) => {
+			if (result.session_id !== undefined) {
+				completionMessageSessions.set(result.session_id, { triggerTurn: input.wakeOnCompletion !== false });
+			}
 		},
 		contextGuardEnabled: () =>
 			contextGuard.enabled && isExecCommandContextGuardEnabled() && resolveCoreBin() !== null,
@@ -423,7 +425,9 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 	sessions.onSessionExit((sessionId, command) => {
 		const snapshot = sessions.getSessionSnapshot(sessionId);
 		tracker.recordSessionFinished(sessionId);
-		if (!completionMessageSessionIds.delete(sessionId)) return;
+		const completionMessageSession = completionMessageSessions.get(sessionId);
+		completionMessageSessions.delete(sessionId);
+		if (!completionMessageSession) return;
 		if (!snapshot) return;
 		const details: BackgroundTerminalFinishedDetails = {
 			session_id: sessionId,
@@ -436,6 +440,9 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 		if (snapshot.originalTokenCount !== undefined) {
 			details.original_token_count = snapshot.originalTokenCount;
 		}
+		const deliveryOptions = completionMessageSession.triggerTurn
+			? { deliverAs: "followUp", triggerTurn: true }
+			: { triggerTurn: false };
 		(pi as any).sendMessage?.(
 			{
 				customType: EXEC_COMMAND_COMPLETED_MESSAGE,
@@ -443,7 +450,7 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 				display: true,
 				details,
 			},
-			{ deliverAs: "followUp", triggerTurn: true },
+			deliveryOptions,
 		);
 	});
 	sessions.onSessionUpdate(updateBackgroundTerminalStatus);
@@ -548,12 +555,12 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 		}
 		setBackgroundTerminalStatusUi(ctx);
 		tracker.clear();
-		completionMessageSessionIds.clear();
+		completionMessageSessions.clear();
 		syncToolPolicy();
 	});
 	pi.on("session_tree", () => {
 		tracker.clear();
-		completionMessageSessionIds.clear();
+		completionMessageSessions.clear();
 		syncToolPolicy();
 	});
 	pi.on("model_select", () => {
@@ -606,7 +613,7 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 	});
 	pi.on("session_shutdown", () => {
 		shuttingDown = true;
-		completionMessageSessionIds.clear();
+		completionMessageSessions.clear();
 		clearBackgroundTerminalStatus();
 		tracker.clear();
 		sessions.shutdown();

@@ -1683,6 +1683,71 @@ test("extension emits completion message for quiet successful background termina
 	expect(sentMessages[0]?.message.details.output_truncated).toBe(false);
 });
 
+test("extension can suppress completion wake for explicitly persistent background terminals", async () => {
+	type Handler = (event?: any, ctx?: any) => any;
+	const handlers = new Map<string, Handler[]>();
+	let execTool: any;
+	let writeStdinTool: any;
+	const sentMessages: Array<{ message: any; options: any }> = [];
+	const pi = {
+		registerTool: (definition: any) => {
+			if (definition.name === "exec_command") execTool = definition;
+			if (definition.name === "write_stdin") writeStdinTool = definition;
+		},
+		registerCommand() {},
+		registerMessageRenderer() {},
+		sendMessage: (message: any, options: any) => {
+			sentMessages.push({ message, options });
+		},
+		getActiveTools: () => [],
+		setActiveTools() {},
+		on: (event: string, handler: Handler) => {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+		},
+		exec: async () => ({ code: 1, stdout: "", stderr: "" }),
+	} as any;
+	execCommandExtension(pi);
+
+	const ctx = {
+		hasUI: true,
+		ui: { setStatus() {}, notify() {} },
+		cwd: process.cwd(),
+	};
+	for (const handler of handlers.get("session_start") ?? []) handler(undefined, ctx);
+
+	try {
+		const spawned = await execTool.execute(
+			"call-suppressed-wake",
+			{ cmd: 'read line; printf "got:$line"', tty: true, yield_time_ms: 250, wake_on_completion: false },
+			undefined,
+			undefined,
+			ctx,
+		);
+		const sessionId = spawned.details.session_id;
+		expect(sessionId).toBeNumber();
+		expect(spawned.details.stdin_open).toBe(true);
+		expect(sentMessages).toHaveLength(0);
+
+		const write = await writeStdinTool.execute(
+			"write-suppressed-wake",
+			{ session_id: sessionId, chars: "hello\n", yield_time_ms: 500 },
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(write.details.exit_code).toBe(0);
+		expect(write.details.output).toContain("got:hello");
+
+		expect(sentMessages).toHaveLength(1);
+		expect(sentMessages[0]?.message.customType).toBe("exec_command.completed");
+		expect(sentMessages[0]?.message.details.session_id).toBe(sessionId);
+		expect(sentMessages[0]?.message.details.output).toContain("got:hello");
+		expect(sentMessages[0]?.options).toEqual({ triggerTurn: false });
+	} finally {
+		for (const handler of handlers.get("session_shutdown") ?? []) handler(undefined, ctx);
+	}
+});
+
 test("extension completion message includes truncation metadata for large final output", async () => {
 	const { result, sentMessages } = await runExecCommandCompletionScenario(
 		"sleep 0.3; node -e \"process.stdout.write('x'.repeat(1000))\"",
