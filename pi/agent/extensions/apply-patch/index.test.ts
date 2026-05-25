@@ -275,6 +275,51 @@ describe("apply_patch renderer", () => {
 		expect(text).not.toContain("Diff hidden");
 	});
 
+	it("keeps every file header visible when a multi-file diff is collapsed", () => {
+		initTheme("dark");
+		const cwd = mkdtempSync(join(tmpdir(), "apply-patch-large-multifile-render-"));
+		const tool = registerApplyPatchTool();
+		const state: Record<string, unknown> = {};
+		const body = (name: string, oldValue: number, newValue: number) => [
+			`--- a/${name}.ts`,
+			`+++ b/${name}.ts`,
+			"@@ -1,320 +1,320 @@",
+			...Array.from({ length: 160 }, (_, index) => ` const before${index} = ${index};`),
+			`-const value = ${oldValue};`,
+			`+const value = ${newValue};`,
+			...Array.from({ length: 158 }, (_, index) => ` const after${index} = ${index};`),
+		];
+		const diff = [...body("alpha", 1, 10), ...body("beta", 2, 20)].join("\n");
+
+		const result = tool.renderResult(
+			{
+				content: [{ type: "text", text: "M alpha.ts\nM beta.ts" }],
+				details: {
+					stage: "done",
+					filesChanged: 2,
+					fileDiffs: [
+						{ path: "alpha.ts", operation: "update", added: 1, removed: 1 },
+						{ path: "beta.ts", operation: "update", added: 1, removed: 1 },
+					],
+					diff,
+				},
+			},
+			{ expanded: false, isPartial: false },
+			theme,
+			renderContext(cwd, state),
+		);
+
+		const text = renderText(result);
+		expect(text.match(/Edited alpha\.ts/g)?.length).toBe(1);
+		expect(text.match(/Edited beta\.ts/g)?.length).toBe(1);
+		expect(text).toContain("collapsed diff lines");
+		expect(text.match(/to expand/g)?.length).toBe(1);
+		expect(text).not.toContain("more diff lines");
+		expect(text).not.toContain("const before0");
+		expect(text).not.toContain("const after0");
+		expect(text.split("\n").length).toBeLessThan(200);
+	});
+
 	it("renders patch intent before the diff", () => {
 		const cwd = mkdtempSync(join(tmpdir(), "apply-patch-intent-render-"));
 		const tool = registerApplyPatchTool();
@@ -571,7 +616,9 @@ describe("apply_patch renderer", () => {
 							additions: 2,
 							deletions: 2,
 							scopes: [
+								{ name: "alphaHeader", kind: "variable", start_line: 1, end_line: 1 },
 								{ name: "alpha", kind: "function", start_line: 1, end_line: 3 },
+								{ name: "betaHeader", kind: "variable", start_line: 5, end_line: 5 },
 								{ name: "beta", kind: "function", start_line: 5, end_line: 7 },
 							],
 						},
@@ -584,8 +631,116 @@ describe("apply_patch renderer", () => {
 		);
 		const finalText = renderText(final);
 		expect(finalText.match(/Edited sample\.js/g)?.length).toBe(1);
-		expect(finalText).toContain("function alpha:1-3");
-		expect(finalText).toContain("function beta:5-7");
+		expect(finalText).toContain("function alpha:1-3 (+1, -1)");
+		expect(finalText).toContain("function beta:5-7 (+1, -1)");
+		expect(finalText).not.toContain("(+0, -0)");
+		expect(finalText).not.toContain("variable alphaHeader");
+	});
+
+	it("keeps semantic scope headers visible when a scoped diff is collapsed", () => {
+		initTheme("dark");
+		const cwd = mkdtempSync(join(tmpdir(), "apply-patch-large-semantic-render-"));
+		const tool = registerApplyPatchTool();
+		const state: Record<string, unknown> = {};
+		const diff = [
+			"--- a/sample.js",
+			"+++ b/sample.js",
+			"@@ -1,407 +1,407 @@",
+			" function alpha() {",
+			...Array.from({ length: 204 }, (_, index) => `   const alpha${index} = ${index};`),
+			"-  return 1;",
+			"+  return 10;",
+			" }",
+			" ",
+			" function beta() {",
+			...Array.from({ length: 196 }, (_, index) => `   const beta${index} = ${index};`),
+			"-  return 2;",
+			"+  return 20;",
+			" }",
+		].join("\n");
+
+		const result = tool.renderResult(
+			{
+				content: [{ type: "text", text: "M sample.js" }],
+				details: {
+					stage: "done",
+					filesChanged: 1,
+					fileDiffs: [{ path: "sample.js", operation: "update", added: 2, removed: 2 }],
+					diff,
+					semantic: true,
+					previewChanges: [
+						{
+							path: "sample.js",
+							type: "update",
+							additions: 2,
+							deletions: 2,
+							scopes: [
+								{ name: "alpha", kind: "function", start_line: 1, end_line: 207 },
+								{ name: "beta", kind: "function", start_line: 209, end_line: 407 },
+							],
+						},
+					],
+				},
+			},
+			{ expanded: false, isPartial: false },
+			theme,
+			renderContext(cwd, state, { executionStarted: true }),
+		);
+
+		const text = renderText(result);
+		expect(text.match(/Edited sample\.js/g)?.length).toBe(1);
+		expect(text).toContain("function alpha:1-207 (+1, -1)");
+		expect(text).toContain("function beta:209-407 (+1, -1)");
+		expect(text).toContain("collapsed diff lines");
+		expect(text.match(/to expand/g)?.length).toBe(1);
+		expect(text).not.toContain("more diff lines");
+		expect(text).not.toContain("const alpha0");
+		expect(text).not.toContain("const beta0");
+	});
+
+	it("deduplicates repeated scope headers in collapsed structural diffs", () => {
+		initTheme("dark");
+		const cwd = mkdtempSync(join(tmpdir(), "apply-patch-duplicate-scope-render-"));
+		const tool = registerApplyPatchTool();
+		const state: Record<string, unknown> = {};
+		const alphaScope = { name: "alpha", kind: "function", start_line: 1, end_line: 220 };
+		const betaScope = { name: "beta", kind: "function", start_line: 221, end_line: 260 };
+		const highlightedDiffRows = [
+			{ kind: "hunk", oldLine: null, newLine: null, content: "@@ -1,260 +1,260 @@", path: "sample.js" },
+			{ kind: "add", oldLine: null, newLine: 10, content: "  alphaOne();", path: "sample.js", scope: alphaScope },
+			...Array.from({ length: 170 }, (_, index) => ({
+				kind: "context",
+				oldLine: 11 + index,
+				newLine: 11 + index,
+				content: `  filler${index};`,
+				path: "sample.js",
+			})),
+			{ kind: "add", oldLine: null, newLine: 230, content: "  betaOne();", path: "sample.js", scope: betaScope },
+			{ kind: "add", oldLine: null, newLine: 240, content: "  alphaTwo();", path: "sample.js", scope: alphaScope },
+		];
+
+		const result = tool.renderResult(
+			{
+				content: [{ type: "text", text: "M sample.js" }],
+				details: {
+					stage: "done",
+					filesChanged: 1,
+					fileDiffs: [{ path: "sample.js", operation: "update", added: 3, removed: 0 }],
+					diff: "--- a/sample.js\n+++ b/sample.js\n@@ -1,1 +1,1 @@\n-old\n+new\n",
+					highlightedDiffRows,
+					semantic: true,
+				},
+			},
+			{ expanded: false, isPartial: false },
+			theme,
+			renderContext(cwd, state, { executionStarted: true }),
+		);
+
+		const text = renderText(result);
+		expect(text.match(/function alpha:1-220/g)?.length).toBe(1);
+		expect(text.match(/function beta:221-260/g)?.length).toBe(1);
+		expect(text).toContain("collapsed diff lines");
+		expect(text).not.toContain("filler0");
 	});
 
 	it("wraps long apply failure text inside the rendered width", () => {

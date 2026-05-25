@@ -1178,20 +1178,28 @@ function diffContentForRow(row: ParsedDiffLine): string {
 	return row.highlightedContent ?? highlightDiffContent(row.content, row.path);
 }
 
-function diffBlockScope(rows: ParsedDiffLine[], hunkIndex: number): ApplyPatchPreviewScope | undefined {
-	for (let index = hunkIndex + 1; index < rows.length; index += 1) {
-		const row = rows[index];
-		if (!row || row.kind === "hunk") break;
-		if (row.scope) return row.scope;
-	}
-	return undefined;
-}
-
 function diffFileStats(rows: ParsedDiffLine[], path: string | undefined): { added: number; removed: number } {
 	const key = path ?? "patch";
 	const stats = { added: 0, removed: 0 };
 	for (const row of rows) {
 		if ((row.path ?? "patch") !== key) continue;
+		if (row.kind === "add") stats.added += 1;
+		if (row.kind === "remove") stats.removed += 1;
+	}
+	return stats;
+}
+
+function diffScopeStats(
+	rows: ParsedDiffLine[],
+	path: string | undefined,
+	scope: ApplyPatchPreviewScope,
+): { added: number; removed: number } {
+	const key = path ?? "patch";
+	const scopeKey = formatScopeKey(path, scope);
+	const stats = { added: 0, removed: 0 };
+	for (const row of rows) {
+		if ((row.path ?? "patch") !== key) continue;
+		if (formatScopeKey(row.path, row.scope) !== scopeKey) continue;
 		if (row.kind === "add") stats.added += 1;
 		if (row.kind === "remove") stats.removed += 1;
 	}
@@ -1205,6 +1213,7 @@ function formatScopeKey(path: string | undefined, scope: ApplyPatchPreviewScope 
 function renderScopeHeader(
 	theme: ThemeLike,
 	scope: ApplyPatchPreviewScope,
+	stats: { added: number; removed: number },
 	numberWidth: number,
 	width: number,
 	baseBackground: string | undefined,
@@ -1212,7 +1221,7 @@ function renderScopeHeader(
 	const label = `${" ".repeat(numberWidth)} ${theme.fg("dim", "▾")} ${theme.fg(
 		"muted",
 		`${scope.kind} `,
-	)}${theme.fg("accent", scope.name)}${theme.fg("dim", `:${scope.start_line}-${scope.end_line}`)}`;
+	)}${theme.fg("accent", scope.name)}${theme.fg("dim", `:${scope.start_line}-${scope.end_line}`)} ${theme.fg("muted", "(")}${theme.fg("toolDiffAdded", `+${stats.added}`)}${theme.fg("muted", ", ")}${theme.fg("toolDiffRemoved", `-${stats.removed}`)}${theme.fg("muted", ")")}`;
 	return paintDiffRow(label, width, baseBackground);
 }
 
@@ -1248,7 +1257,7 @@ function renderUnifiedDiffRows(
 	let currentPath: string | undefined;
 	let currentScopeKey: string | undefined;
 
-	for (const [rowIndex, row] of rows.entries()) {
+	for (const row of rows) {
 		const rowPath = row.path ?? currentPath ?? "patch";
 		if (rowPath !== currentPath) {
 			if (lines.length > 0) lines.push(paintDiffRow("", width, baseBackground));
@@ -1263,18 +1272,20 @@ function renderUnifiedDiffRows(
 			);
 		}
 
-		const scopeKey = row.scope
-			? `${row.path ?? ""}:${row.scope.kind}:${row.scope.name}:${row.scope.start_line}-${row.scope.end_line}`
-			: undefined;
+		const scopeKey =
+			(row.kind === "add" || row.kind === "remove") && row.scope
+				? `${row.path ?? ""}:${row.scope.kind}:${row.scope.name}:${row.scope.start_line}-${row.scope.end_line}`
+				: undefined;
 		if (scopeKey && scopeKey !== currentScopeKey) {
 			currentScopeKey = scopeKey;
-			lines.push(renderScopeHeader(theme, row.scope!, numberWidth, width, baseBackground));
+			const stats = diffScopeStats(rows, row.path, row.scope!);
+			if (stats.added > 0 || stats.removed > 0) {
+				lines.push(renderScopeHeader(theme, row.scope!, stats, numberWidth, width, baseBackground));
+			}
 		}
 
 		if (row.kind === "hunk") {
-			const blockScope = diffBlockScope(rows, rowIndex);
-			currentScopeKey = formatScopeKey(row.path, blockScope);
-			if (blockScope) lines.push(renderScopeHeader(theme, blockScope, numberWidth, width, baseBackground));
+			currentScopeKey = undefined;
 			continue;
 		}
 
@@ -1315,6 +1326,37 @@ function limitDiffRows(
 		];
 	}
 	if (rows.length <= maxRows) return rows;
+	const isStructuralHeader = (line: string): boolean => {
+		const plain = line.replace(ANSI_PATTERN, "").trimStart();
+		return plain.startsWith("• ") || plain.startsWith("▾ ");
+	};
+	const structuralHeaderKey = (line: string): string => line.replace(ANSI_PATTERN, "").trim();
+	const renderCollapsedFooter = (count: number): string =>
+		paintDiffRow(
+			theme.fg("muted", `… ${count} collapsed diff line${count === 1 ? "" : "s"} (`) +
+				keyHint("app.tools.expand", "to expand") +
+				theme.fg("muted", ")"),
+			width,
+			baseBackground,
+		);
+	const structuralIndexes = rows
+		.map((line, index) => (isStructuralHeader(line) ? index : -1))
+		.filter((index) => index >= 0);
+	if (structuralIndexes.length > 0) {
+		const included = new Set(structuralIndexes);
+		const renderedHeaders = new Set<string>();
+		const limited: string[] = [];
+		for (const [index, row] of rows.entries()) {
+			if (!included.has(index)) continue;
+			const key = structuralHeaderKey(row);
+			if (renderedHeaders.has(key)) continue;
+			renderedHeaders.add(key);
+			limited.push(row);
+		}
+		const collapsed = rows.length - limited.length;
+		if (collapsed > 0) limited.push(renderCollapsedFooter(collapsed));
+		return limited;
+	}
 	const shownBudget = Math.max(1, maxRows - 1);
 	const headCount =
 		shownBudget <= 4
