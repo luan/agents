@@ -211,6 +211,7 @@ function parseStopSessionId(args: string): number | undefined | "invalid" {
 
 const BACKGROUND_TERMINAL_STATUS_KEY = "background-terminals";
 const EXEC_COMMAND_COMPLETED_MESSAGE = "exec_command.completed";
+const EXEC_COMMAND_SESSION_ERROR_MESSAGE = "exec_command.session_error";
 const BACKGROUND_TERMINAL_HUD_FRAME_MS = 80;
 
 interface BackgroundTerminalStatusUi {
@@ -232,6 +233,10 @@ interface BackgroundTerminalFinishedDetails {
 	command: string;
 	output: string;
 	exit_code?: number;
+	terminal_state?: "exited" | "timed_out" | "cancelled" | "session_error";
+	timed_out?: boolean;
+	cancelled?: boolean;
+	session_error?: string;
 	elapsed_ms: number;
 	output_truncated: boolean;
 	original_token_count?: number;
@@ -253,31 +258,43 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 	let backgroundTerminalWidgetTimer: ReturnType<typeof setInterval> | undefined;
 	const completionMessageSessions = new Map<number, { triggerTurn: boolean }>();
 
-	(pi as any).registerMessageRenderer?.(
-		EXEC_COMMAND_COMPLETED_MESSAGE,
-		(
-			message: { details?: BackgroundTerminalFinishedDetails },
-			{ expanded }: { expanded: boolean },
-			theme: RenderTheme,
-		) => {
-			const details = message.details;
-			if (!details) return undefined;
-			const failed = details.exit_code !== undefined && details.exit_code !== 0;
-			return renderExecCellComponent(
-				rawCommandToExecCell({
-					command: details.command,
-					status: "done",
-					failed,
-					outputBlock: {
-						output: details.output,
-						footer: failed ? theme.fg("muted", `Exit code: ${details.exit_code}`) : undefined,
-						options: { expanded },
-					},
-				}),
-				{ theme },
-			);
-		},
-	);
+	const renderBackgroundTerminalFinishedMessage = (
+		message: { details?: BackgroundTerminalFinishedDetails },
+		{ expanded }: { expanded: boolean },
+		theme: RenderTheme,
+	) => {
+		const details = message.details;
+		if (!details) return undefined;
+		const failed =
+			(details.exit_code !== undefined && details.exit_code !== 0) ||
+			details.timed_out === true ||
+			details.cancelled === true ||
+			details.terminal_state === "session_error";
+		const footer = (() => {
+			if (details.terminal_state === "session_error") return theme.fg("muted", "Session error");
+			if (details.timed_out) return theme.fg("muted", "Timed out");
+			if (details.cancelled) return theme.fg("muted", "Cancelled");
+			if (details.exit_code !== undefined && details.exit_code !== 0) {
+				return theme.fg("muted", `Exit code: ${details.exit_code}`);
+			}
+			return undefined;
+		})();
+		return renderExecCellComponent(
+			rawCommandToExecCell({
+				command: details.command,
+				status: "done",
+				failed,
+				outputBlock: {
+					output: details.output,
+					footer,
+					options: { expanded },
+				},
+			}),
+			{ theme },
+		);
+	};
+	(pi as any).registerMessageRenderer?.(EXEC_COMMAND_COMPLETED_MESSAGE, renderBackgroundTerminalFinishedMessage);
+	(pi as any).registerMessageRenderer?.(EXEC_COMMAND_SESSION_ERROR_MESSAGE, renderBackgroundTerminalFinishedMessage);
 
 	const syncToolPolicy = () => {
 		if (shuttingDown) return;
@@ -434,6 +451,10 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 			command,
 			output: snapshot.output,
 			exit_code: snapshot.exitCode,
+			terminal_state: snapshot.terminalState,
+			timed_out: snapshot.timedOut,
+			cancelled: snapshot.cancelled,
+			session_error: snapshot.sessionError,
 			elapsed_ms: snapshot.elapsedMs,
 			output_truncated: snapshot.outputTruncated,
 		};
@@ -445,7 +466,10 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 			: { triggerTurn: false };
 		(pi as any).sendMessage?.(
 			{
-				customType: EXEC_COMMAND_COMPLETED_MESSAGE,
+				customType:
+					snapshot.terminalState === "session_error"
+						? EXEC_COMMAND_SESSION_ERROR_MESSAGE
+						: EXEC_COMMAND_COMPLETED_MESSAGE,
 				content: "",
 				display: true,
 				details,
@@ -601,9 +625,19 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 
 		if (event.toolName === "exec_command" || event.toolName === "write_stdin") {
 			const details = event.details;
-			if (details && typeof details === "object" && "exit_code" in details) {
-				const exitCode = (details as { exit_code?: unknown }).exit_code;
-				if (typeof exitCode === "number" && exitCode !== 0) {
+			if (details && typeof details === "object") {
+				const resultDetails = details as {
+					exit_code?: unknown;
+					timed_out?: unknown;
+					cancelled?: unknown;
+					session_error?: unknown;
+				};
+				if (
+					(typeof resultDetails.exit_code === "number" && resultDetails.exit_code !== 0) ||
+					resultDetails.timed_out === true ||
+					resultDetails.cancelled === true ||
+					typeof resultDetails.session_error === "string"
+				) {
 					patch.isError = true;
 				}
 			}

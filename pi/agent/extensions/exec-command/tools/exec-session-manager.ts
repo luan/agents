@@ -11,11 +11,18 @@ import {
 	UNIFIED_EXEC_OUTPUT_MAX_BYTES,
 } from "./output-truncation.ts";
 
+type ExecTerminalState = "exited" | "timed_out" | "cancelled" | "session_error";
+type ExecInterventionState = "timed_out" | "cancelled";
+
 export interface UnifiedExecResult {
 	chunk_id: string;
 	wall_time_seconds: number;
 	output: string;
 	exit_code?: number;
+	terminal_state?: ExecTerminalState;
+	timed_out?: boolean;
+	cancelled?: boolean;
+	session_error?: string;
 	session_id?: number;
 	stdin_open?: boolean;
 	original_token_count?: number;
@@ -27,6 +34,10 @@ export interface ExecSessionSnapshot {
 	output: string;
 	running: boolean;
 	exitCode?: number;
+	terminalState?: ExecTerminalState;
+	timedOut?: boolean;
+	cancelled?: boolean;
+	sessionError?: string;
 	stdinOpen?: boolean;
 	elapsedMs: number;
 	originalTokenCount?: number;
@@ -49,6 +60,7 @@ export interface ExecCommandInput {
 	shell?: string;
 	tty?: boolean;
 	yield_time_ms?: number;
+	timeout?: number;
 	login?: boolean;
 	foreground?: boolean;
 }
@@ -68,6 +80,10 @@ interface BaseExecSession {
 	pendingBuffer: string;
 	emittedBuffer: string;
 	exitCode: number | null | undefined;
+	terminalState: ExecTerminalState | undefined;
+	pendingTerminalState: ExecInterventionState | undefined;
+	sessionError: string | undefined;
+	finalized: boolean;
 	listeners: Set<() => void>;
 	interactive: boolean;
 	startedAtMs: number;
@@ -576,7 +592,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 	}
 
 	function isRunning(session: ExecSession): boolean {
-		return session.exitCode === undefined || session.exitCode === null;
+		return session.terminalState === undefined;
 	}
 
 	function toRecord(session: ExecSession): ExecSessionRecord {
@@ -586,7 +602,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			command: session.command,
 			output: session.buffer,
 			running,
-			exitCode: running ? undefined : (session.exitCode ?? 0),
+			exitCode: session.terminalState === "exited" ? (session.exitCode ?? 0) : undefined,
 			stdinOpen: session.interactive,
 			startedAtMs: session.startedAtMs,
 		};
@@ -606,8 +622,9 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		}
 	}
 
-	function terminateSession(session: ExecSession): void {
+	function terminateSession(session: ExecSession, reason: ExecInterventionState = "cancelled"): void {
 		if (!isRunning(session)) return;
+		session.pendingTerminalState = reason;
 		if (session.kind === "pty") {
 			terminateProcessTree(session.child.pid, false, true);
 		} else {
@@ -616,10 +633,36 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 	}
 
 	function finalizeSession(session: ExecSession): void {
+		if (session.finalized) return;
+		session.finalized = true;
 		for (const listener of exitListeners) {
 			listener(session.id, session.command);
 		}
 		notify(session);
+	}
+
+	function completeSession(
+		session: ExecSession,
+		terminalState: ExecTerminalState,
+		exitCode?: number,
+		sessionError?: string,
+	): void {
+		if (session.terminalState !== undefined) return;
+		session.terminalState = terminalState;
+		session.exitCode = terminalState === "exited" ? (exitCode ?? 0) : undefined;
+		session.sessionError = sessionError;
+		finalizeSession(session);
+	}
+
+	function addTerminalState(result: UnifiedExecResult, session: ExecSession): void {
+		if (session.terminalState === undefined) return;
+		result.terminal_state = session.terminalState;
+		if (session.terminalState === "exited") result.exit_code = session.exitCode ?? 0;
+		if (session.terminalState === "timed_out") result.timed_out = true;
+		if (session.terminalState === "cancelled") result.cancelled = true;
+		if (session.terminalState === "session_error" && session.sessionError) {
+			result.session_error = session.sessionError;
+		}
 	}
 
 	function appendOutput(session: ExecSession, text: string): void {
@@ -644,14 +687,14 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 	}
 
 	function waitForExit(session: ExecSession): Promise<number> {
-		if (session.exitCode !== undefined && session.exitCode !== null) {
+		if (!isRunning(session)) {
 			return Promise.resolve(0);
 		}
 
 		const startedAt = Date.now();
 		return new Promise((resolvePromise) => {
 			const onWake = () => {
-				if (session.exitCode === undefined || session.exitCode === null) {
+				if (isRunning(session)) {
 					return;
 				}
 				cleanup();
@@ -665,14 +708,14 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 	}
 
 	function waitForExitOrTimeout(session: ExecSession, yieldTimeMs: number): Promise<number> {
-		if (session.exitCode !== undefined && session.exitCode !== null) {
+		if (!isRunning(session)) {
 			return Promise.resolve(0);
 		}
 
 		const startedAt = Date.now();
 		return new Promise((resolvePromise) => {
 			const onWake = () => {
-				if (session.exitCode === undefined || session.exitCode === null) {
+				if (isRunning(session)) {
 					return;
 				}
 				cleanup();
@@ -703,11 +746,11 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		if (consumed.output_truncated) {
 			result.output_truncated = true;
 		}
-		if (session.exitCode === undefined || session.exitCode === null) {
+		if (isRunning(session)) {
 			result.session_id = session.id;
 			result.stdin_open = session.interactive;
 		} else {
-			result.exit_code = session.exitCode;
+			addTerminalState(result, session);
 			if (session.emittedBuffer === session.buffer) {
 				deleteSession(session.id);
 			}
@@ -726,13 +769,19 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			result.output_truncated = true;
 			result.original_token_count = approxTokenCount(session.buffer);
 		}
-		if (session.exitCode === undefined || session.exitCode === null) {
+		if (isRunning(session)) {
 			result.session_id = session.id;
 			result.stdin_open = session.interactive;
 		} else {
-			result.exit_code = session.exitCode;
+			addTerminalState(result, session);
 		}
 		return result;
+	}
+
+	function scheduleCommandTimeout(session: ExecSession, timeoutMs: number | undefined): void {
+		if (timeoutMs === undefined || timeoutMs <= 0) return;
+		const timer = setTimeout(() => terminateSession(session, "timed_out"), timeoutMs);
+		timer.unref?.();
 	}
 
 	function streamSessionUpdates(
@@ -744,12 +793,14 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		let disposed = false;
 		let lastOutput: string | undefined;
+		let lastTerminalState: string | undefined;
 		const emit = () => {
 			timer = undefined;
 			if (disposed) return;
 			const snapshot = makeSnapshot(session, startedAtMs);
-			if (snapshot.output === lastOutput && snapshot.exit_code === undefined) return;
+			if (snapshot.output === lastOutput && snapshot.terminal_state === lastTerminalState) return;
 			lastOutput = snapshot.output;
+			lastTerminalState = snapshot.terminal_state;
 			onUpdate(snapshot);
 		};
 		const schedule = () => {
@@ -789,6 +840,10 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			pendingBuffer: "",
 			emittedBuffer: "",
 			exitCode: undefined,
+			terminalState: undefined,
+			pendingTerminalState: undefined,
+			sessionError: undefined,
+			finalized: false,
 			listeners: new Set(),
 			interactive: Boolean(input.tty),
 			startedAtMs: Date.now(),
@@ -801,20 +856,17 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			appendOutput(session, data.toString("utf8"));
 		});
 		child.on("close", (code) => {
-			session.exitCode = code ?? 0;
-			finalizeSession(session);
+			completeSession(session, session.pendingTerminalState ?? "exited", code ?? 0);
 		});
 		child.on("error", (error) => {
 			appendOutput(session, `${error.message}\n`);
-			session.exitCode = 1;
-			finalizeSession(session);
+			completeSession(session, "session_error", undefined, error.message);
 		});
 
 		registerAbortHandler(signal, () => {
-			if (session.exitCode === undefined) {
-				terminateProcessTree(child.pid, true);
-			}
+			terminateSession(session, "cancelled");
 		});
+		scheduleCommandTimeout(session, input.timeout);
 
 		return session;
 	}
@@ -845,6 +897,10 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			pendingBuffer: "",
 			emittedBuffer: "",
 			exitCode: undefined,
+			terminalState: undefined,
+			pendingTerminalState: undefined,
+			sessionError: undefined,
+			finalized: false,
 			listeners: new Set(),
 			interactive: true,
 			startedAtMs: Date.now(),
@@ -859,15 +915,13 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			appendOutput(session, data);
 		});
 		child.onExit(({ exitCode }) => {
-			session.exitCode = exitCode ?? 0;
-			finalizeSession(session);
+			completeSession(session, session.pendingTerminalState ?? "exited", exitCode ?? 0);
 		});
 
 		registerAbortHandler(signal, () => {
-			if (session.exitCode === undefined) {
-				terminateProcessTree(child.pid, false);
-			}
+			terminateSession(session, "cancelled");
 		});
+		scheduleCommandTimeout(session, input.timeout);
 
 		return session;
 	}
@@ -928,18 +982,17 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 					session.child.stdin.write(input.chars);
 				}
 			}
-			const waitedMs =
-				session.exitCode === undefined
-					? await waitForExitOrTimeout(
-							session,
-							clampWriteYieldTime(
-								input.yield_time_ms,
-								defaultWriteYieldTimeMs,
-								!input.chars || input.chars.length === 0,
-								minEmptyWriteYieldTimeMs,
-							),
-						)
-					: 0;
+			const waitedMs = isRunning(session)
+				? await waitForExitOrTimeout(
+						session,
+						clampWriteYieldTime(
+							input.yield_time_ms,
+							defaultWriteYieldTimeMs,
+							!input.chars || input.chars.length === 0,
+							minEmptyWriteYieldTimeMs,
+						),
+					)
+				: 0;
 			return makeResult(session, waitedMs);
 		},
 		hasSession: (sessionId) => sessions.has(sessionId),
@@ -953,7 +1006,11 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 				command: session.command,
 				output: truncated.output,
 				running,
-				exitCode: running ? undefined : (session.exitCode ?? 0),
+				exitCode: session.terminalState === "exited" ? (session.exitCode ?? 0) : undefined,
+				terminalState: session.terminalState,
+				timedOut: session.terminalState === "timed_out" ? true : undefined,
+				cancelled: session.terminalState === "cancelled" ? true : undefined,
+				sessionError: session.sessionError,
 				stdinOpen: running ? session.interactive : undefined,
 				elapsedMs: Date.now() - session.startedAtMs,
 				originalTokenCount: truncated.output_truncated ? approxTokenCount(session.buffer) : undefined,
@@ -965,6 +1022,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			const session = sessions.get(sessionId);
 			if (!session) return false;
 			terminateSession(session);
+			completeSession(session, "cancelled");
 			return deleteSession(sessionId);
 		},
 		stopAllSessions: () => {
@@ -973,6 +1031,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 				const session = sessions.get(sessionId);
 				if (!session) continue;
 				terminateSession(session);
+				completeSession(session, "cancelled");
 				sessions.delete(sessionId);
 			}
 			if (sessionIds.length > 0) {

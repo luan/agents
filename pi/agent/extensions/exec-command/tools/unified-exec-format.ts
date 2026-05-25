@@ -14,6 +14,15 @@ export function formatUnifiedExecResult(result: UnifiedExecResult, command?: str
 	if (result.exit_code !== undefined) {
 		sections.push(`Process exited with code ${result.exit_code}`);
 	}
+	if (result.timed_out) {
+		sections.push("Process timed out");
+	}
+	if (result.cancelled) {
+		sections.push("Process cancelled");
+	}
+	if (result.session_error) {
+		sections.push(`Session error: ${result.session_error}`);
+	}
 	if (result.session_id !== undefined) {
 		sections.push(`Process running with session ID ${result.session_id}`);
 		if (result.stdin_open) {

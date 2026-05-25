@@ -1748,6 +1748,207 @@ test("extension can suppress completion wake for explicitly persistent backgroun
 	}
 });
 
+test("extension reports timed-out background terminal completion distinctly", async () => {
+	type Handler = (event?: any, ctx?: any) => any;
+	const handlers = new Map<string, Handler[]>();
+	let execTool: any;
+	const sentMessages: Array<{ message: any; options: any }> = [];
+	const pi = {
+		registerTool: (definition: any) => {
+			if (definition.name === "exec_command") execTool = definition;
+		},
+		registerCommand() {},
+		registerMessageRenderer() {},
+		sendMessage: (message: any, options: any) => {
+			sentMessages.push({ message, options });
+		},
+		getActiveTools: () => [],
+		setActiveTools() {},
+		on: (event: string, handler: Handler) => {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+		},
+		exec: async () => ({ code: 1, stdout: "", stderr: "" }),
+	} as any;
+	execCommandExtension(pi);
+
+	const ctx = {
+		hasUI: true,
+		ui: { setStatus() {}, notify() {} },
+		cwd: process.cwd(),
+	};
+	for (const handler of handlers.get("session_start") ?? []) handler(undefined, ctx);
+
+	try {
+		const spawned = await execTool.execute(
+			"call-timeout-completion",
+			{
+				cmd: "printf before-timeout; sleep 5",
+				yield_time_ms: 250,
+				timeout: 350,
+				context_guard: false,
+			},
+			undefined,
+			undefined,
+			ctx,
+		);
+		const sessionId = spawned.details.session_id;
+		expect(sessionId).toBeNumber();
+
+		await Bun.sleep(900);
+
+		expect(sentMessages).toHaveLength(1);
+		expect(sentMessages[0]?.message.customType).toBe("exec_command.completed");
+		expect(sentMessages[0]?.message.details.session_id).toBe(sessionId);
+		expect(sentMessages[0]?.message.details.terminal_state).toBe("timed_out");
+		expect(sentMessages[0]?.message.details.timed_out).toBe(true);
+		expect(sentMessages[0]?.message.details.exit_code).toBeUndefined();
+		expect(sentMessages[0]?.message.details.output).toContain("before-timeout");
+	} finally {
+		for (const handler of handlers.get("session_shutdown") ?? []) handler(undefined, ctx);
+	}
+});
+
+test("extension reports stopped background terminals as cancelled completions", async () => {
+	type Handler = (event?: any, ctx?: any) => any;
+	const handlers = new Map<string, Handler[]>();
+	const commands = new Map<string, any>();
+	let execTool: any;
+	const sentMessages: Array<{ message: any; options: any }> = [];
+	const pi = {
+		registerTool: (definition: any) => {
+			if (definition.name === "exec_command") execTool = definition;
+		},
+		registerCommand: (name: string, command: any) => commands.set(name, command),
+		registerMessageRenderer() {},
+		sendMessage: (message: any, options: any) => {
+			sentMessages.push({ message, options });
+		},
+		getActiveTools: () => [],
+		setActiveTools() {},
+		on: (event: string, handler: Handler) => {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+		},
+		exec: async () => ({ code: 1, stdout: "", stderr: "" }),
+	} as any;
+	execCommandExtension(pi);
+
+	const ctx = {
+		hasUI: true,
+		ui: { setStatus() {}, notify() {} },
+		cwd: process.cwd(),
+	};
+	for (const handler of handlers.get("session_start") ?? []) handler(undefined, ctx);
+
+	try {
+		const spawned = await execTool.execute(
+			"call-cancelled-completion",
+			{ cmd: "printf before-cancel; sleep 60", yield_time_ms: 250, context_guard: false },
+			undefined,
+			undefined,
+			ctx,
+		);
+		const sessionId = spawned.details.session_id;
+		expect(sessionId).toBeNumber();
+
+		await commands.get("stop").handler(String(sessionId), ctx);
+		await Bun.sleep(500);
+
+		expect(sentMessages).toHaveLength(1);
+		expect(sentMessages[0]?.message.customType).toBe("exec_command.completed");
+		expect(sentMessages[0]?.message.details.session_id).toBe(sessionId);
+		expect(sentMessages[0]?.message.details.terminal_state).toBe("cancelled");
+		expect(sentMessages[0]?.message.details.cancelled).toBe(true);
+		expect(sentMessages[0]?.message.details.exit_code).toBeUndefined();
+		expect(sentMessages[0]?.message.details.output).toContain("before-cancel");
+	} finally {
+		for (const handler of handlers.get("session_shutdown") ?? []) handler(undefined, ctx);
+	}
+});
+
+test("extension reports nonzero background terminal exit as command completion", async () => {
+	const { result, sentMessages } = await runExecCommandCompletionScenario(
+		"sleep 0.3; printf failed; exit 7",
+		"call-nonzero-finished-message",
+	);
+
+	expect(sentMessages).toHaveLength(1);
+	expect(sentMessages[0]?.message.customType).toBe("exec_command.completed");
+	expect(sentMessages[0]?.message.details.session_id).toBe(result.details.session_id);
+	expect(sentMessages[0]?.message.details.terminal_state).toBe("exited");
+	expect(sentMessages[0]?.message.details.exit_code).toBe(7);
+	expect(sentMessages[0]?.message.details.timed_out).toBeUndefined();
+	expect(sentMessages[0]?.message.details.cancelled).toBeUndefined();
+	expect(sentMessages[0]?.message.details.output).toBe("failed");
+});
+
+test("extension does not emit speculative events for idle-running background terminals", async () => {
+	type Handler = (event?: any, ctx?: any) => any;
+	const handlers = new Map<string, Handler[]>();
+	let execTool: any;
+	const sentMessages: Array<{ message: any; options: any }> = [];
+	const pi = {
+		registerTool: (definition: any) => {
+			if (definition.name === "exec_command") execTool = definition;
+		},
+		registerCommand() {},
+		registerMessageRenderer() {},
+		sendMessage: (message: any, options: any) => {
+			sentMessages.push({ message, options });
+		},
+		getActiveTools: () => [],
+		setActiveTools() {},
+		on: (event: string, handler: Handler) => {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+		},
+		exec: async () => ({ code: 1, stdout: "", stderr: "" }),
+	} as any;
+	execCommandExtension(pi);
+
+	const ctx = {
+		hasUI: true,
+		ui: { setStatus() {}, notify() {} },
+		cwd: process.cwd(),
+	};
+	for (const handler of handlers.get("session_start") ?? []) handler(undefined, ctx);
+
+	try {
+		const spawned = await execTool.execute(
+			"call-idle-running",
+			{ cmd: "sleep 2", yield_time_ms: 250, context_guard: false },
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(spawned.details.session_id).toBeNumber();
+
+		await Bun.sleep(600);
+
+		expect(sentMessages).toHaveLength(0);
+	} finally {
+		for (const handler of handlers.get("session_shutdown") ?? []) handler(undefined, ctx);
+	}
+});
+
+test("exec session manager reports spawn failures as session errors, not command exits", async () => {
+	const sessions = createExecSessionManager({
+		defaultExecYieldTimeMs: 250,
+		minNonInteractiveExecYieldTimeMs: 250,
+	});
+	try {
+		const result = await sessions.exec(
+			{ cmd: "printf unreachable", shell: "/tmp/definitely-missing-pi-shell", yield_time_ms: 250 },
+			process.cwd(),
+		);
+
+		expect(result.terminal_state).toBe("session_error");
+		expect(result.session_error).toContain("definitely-missing-pi-shell");
+		expect(result.exit_code).toBeUndefined();
+		expect(result.output).toContain("definitely-missing-pi-shell");
+	} finally {
+		sessions.shutdown();
+	}
+});
+
 test("extension completion message includes truncation metadata for large final output", async () => {
 	const { result, sentMessages } = await runExecCommandCompletionScenario(
 		"sleep 0.3; node -e \"process.stdout.write('x'.repeat(1000))\"",

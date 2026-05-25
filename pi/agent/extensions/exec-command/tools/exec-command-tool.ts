@@ -51,7 +51,7 @@ const EXEC_COMMAND_PARAMETERS = Type.Object({
 	timeout: Type.Optional(
 		Type.Number({
 			description:
-				"Optional Context Guard timeout in milliseconds for wrapped commands or mode:'batch'. Ignored for raw PTY execution.",
+				"Optional timeout in milliseconds for raw managed commands, Context Guard wrapping, or mode:'batch'.",
 		}),
 	),
 	context_guard: Type.Optional(
@@ -799,7 +799,11 @@ export function registerExecCommandTool(
 					},
 				],
 				details: result,
-				isError: result.exit_code !== undefined && result.exit_code !== 0,
+				isError:
+					(result.exit_code !== undefined && result.exit_code !== 0) ||
+					result.timed_out === true ||
+					result.cancelled === true ||
+					result.session_error !== undefined,
 				terminate: resultOptions?.terminate,
 			};
 		},
