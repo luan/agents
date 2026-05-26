@@ -6,7 +6,7 @@
   "doubleEscapeAction": "tree",
   "treeFilterMode": "default",
   "defaultProvider": "openai-codex",
-  "defaultModel": "gpt-5.5",
+  "defaultModel": "gpt-5.3-codex-spark",
   "defaultThinkingLevel": "medium",
   "skills": [
     "../.codex/skills"
@@ -35,7 +35,7 @@
     "extensions/plannotator-hub/index.ts",
     "extensions/pretty/index.ts",
     "extensions/prompt-storage/index.ts",
-    "extensions/review-artifacts/index.ts",
+    "-extensions/review-artifacts/index.ts",
     "extensions/skillful/index.ts",
     "extensions/spawn/index.ts",
     "extensions/system-prompt/index.ts",
