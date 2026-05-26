@@ -6,7 +6,7 @@
   "doubleEscapeAction": "tree",
   "treeFilterMode": "default",
   "defaultProvider": "openai-codex",
-  "defaultModel": "gpt-5.3-codex-spark",
+  "defaultModel": "gpt-5.5",
   "defaultThinkingLevel": "medium",
   "skills": [
     "../.codex/skills"
