@@ -25,9 +25,11 @@ manual-verification gate.
 - Validation, error, or disabled states when relevant.
 - Before/after screenshots for visual changes when practical.
 - Exact commands, app version/path, test data, and manual steps.
+- Include screenshot paths and findings in the `$visual-doc`
+  manual-verification HTML.
 
 ## Boundaries
 
 - Prefer semantic app automation over coordinate clicking when available.
-- Do not accept the task from screenshots alone; acceptance still requires the
+- Use screenshots as manual-verification support; acceptance still requires the
   Plannotator manual-verification gate.

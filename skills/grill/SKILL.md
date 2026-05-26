@@ -80,8 +80,8 @@ Use visuals only when they reduce ambiguity faster than more prose: UI choices, 
 
 - Ask a focused visual-choice question with 2-4 options.
 - Generate a disposable image with `image_gen` when the user needs a quick mock, mood, layout direction, or visual metaphor.
-- Generate a temporary self-contained HTML artifact when interaction states, data layout, or multi-step flows matter.
-- Present HTML with `plannotator annotate <artifact.html> --render-html`.
+- Load/use `$visual-doc` for temporary Plannotator HTML when interaction states,
+  data layout, or multi-step flows matter.
 
 ### Update CONTEXT.md inline
 

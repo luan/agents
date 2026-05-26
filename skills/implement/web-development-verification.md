@@ -16,19 +16,21 @@ manual-verification gate.
    happy path, validation/error states, and responsive states when relevant.
 6. Check screenshot byte sizes and visually inspect them before embedding.
 7. Record exact URLs, commands, test data, accounts, and browser steps used.
-8. Include the screenshot paths and findings in the manual-verification HTML.
+8. Include the screenshot paths and findings in the `$visual-doc`
+   manual-verification HTML.
 
 ## Visual checks
 
 - Confirm the intended state is visible, not merely that no error occurred.
 - Check loading, empty, success, and failure states when the change affects them.
 - For layout changes, inspect at desktop and narrow/mobile widths when practical.
-- If screenshots cannot be captured, record why and provide the strongest
+- When screenshots are unavailable, record why and provide the strongest
   substitute evidence available.
-- Do not use OS-level capture as a fallback unless the user explicitly asks for it.
+- Use browser-level captures by default; use OS-level capture when the user asks
+  for it.
 
 ## Boundaries
 
-- Do not replace automated tests with browser verification.
-- Do not accept the task from `$playwriter` output alone; acceptance still
+- Keep automated tests as the primary regression signal.
+- Use `$playwriter` output as manual-verification support; acceptance still
   requires the Plannotator manual-verification gate.

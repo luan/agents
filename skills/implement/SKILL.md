@@ -45,14 +45,14 @@ If the task at hand does not involve code changes, skip all steps except load/cl
    - Only after code-approval, move feature/bug tasks to `in_review` with a short note that code has been approved.
 
 6. **Manual-verification gate**
-   - Attempt screenshots or equivalent visual evidence for user-facing changes.
+   - Record screenshots or video of user-facing changes.
    - For web apps, use [web-development-verification.md](web-development-verification.md).
    - For desktop apps, use [desktop-app-verification.md](desktop-app-verification.md).
    - For TUI apps, use [tui-verification.md](tui-verification.md).
-   - Generate the temporary HTML artifact using [manual-verification-gate.md](manual-verification-gate.md).
-   - Before presenting the gate, validate that screenshots are nonzero, viewed, renderable in Plannotator, and mapped to acceptance criteria.
+   - Generate the temporary HTML artifact using [manual-verification-gate.md](manual-verification-gate.md) and `$visual-doc`.
+   - Before presenting the gate, validate that artifacts are valid, viewed, renderable in Plannotator, and mapped to acceptance criteria.
    - Ensure feature/bug tasks are `in_review` before presenting the gate.
-   - Present it with `plannotator annotate <artifact.html> --render-html --gate` as a blocking foreground command with a normal long human-review timeout. Do not run it in a background terminal and do not continue other work while the gate is open.
+   - Present it with `plannotator annotate <artifact.html> --render-html --gate` as a blocking foreground command with a normal long human-review timeout. Keep Plannotator in the foreground and wait for the gate result before continuing.
 
 7. **Commit**
    - Load/use `$commit`; do not hand-roll commit mechanics when available.

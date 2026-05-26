@@ -37,7 +37,7 @@ Create a vault research artifact that preserves user context but contains only f
    - For existing artifacts, locate/read them with `vlt read [-t research] <stem> --json` or `vlt list -t research --json`, then edit the real file path with `apply_patch`.
    - Include scope, current behavior, code paths, public interfaces, constraints, vocabulary, tests, risks, unknowns, and related links.
    - Include "Input context preserved from intake" when applicable, separating user decisions/defaults from verified code facts.
-   - For visual/stateful/architectural topics, add a lightweight visual section for Plannotator review: Mermaid for flows/sequences/state, Graphviz for architecture/dependency maps, or local SVG/PNG image references.
+   - For visual/stateful/architectural topics, load/use `$visual-doc` when a Plannotator HTML companion is clearer than an inline Mermaid, Graphviz, SVG, or PNG section.
 
 4. **Review**
    - Before the gate, ask at most one compact batch of targeted clarification questions about unresolved evidence gaps; do not frame these as approval.
