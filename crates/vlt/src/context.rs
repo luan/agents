@@ -148,6 +148,7 @@ pub fn set_term(
         None | Some("root") => root.join("CONTEXT.md"),
         Some(name) => root.join("contexts").join(name).join("CONTEXT.md"),
     };
+    let _lock = crate::lock::VaultLock::acquire(&format!("context:{}", path.display()))?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -254,6 +255,43 @@ mod tests {
         assert!(path.ends_with("myproj/CONTEXT.md"));
         assert!(content.contains("**Customer**:"));
         assert!(content.contains("_Avoid_: Client"));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn set_term_preserves_concurrent_updates() {
+        let _guard = CT_BLUEPRINTS_ENV_LOCK.lock().unwrap();
+        let tmp = std::env::temp_dir().join(format!("vlt-context-race-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        unsafe {
+            std::env::set_var("CT_BLUEPRINTS_DIR", &tmp);
+        }
+
+        let handles: Vec<_> = ["Alpha", "Beta", "Gamma", "Delta"]
+            .into_iter()
+            .map(|term| {
+                std::thread::spawn(move || {
+                    set_term(
+                        Some("/tmp/myproj"),
+                        None,
+                        term,
+                        &format!("{term} definition."),
+                        &[],
+                    )
+                    .unwrap();
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let content = fs::read_to_string(tmp.join("myproj/CONTEXT.md")).unwrap();
+        for term in ["Alpha", "Beta", "Gamma", "Delta"] {
+            assert!(content.contains(&format!("**{term}**:")));
+        }
 
         let _ = fs::remove_dir_all(&tmp);
     }

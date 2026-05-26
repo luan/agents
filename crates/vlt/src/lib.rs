@@ -3,6 +3,7 @@ pub mod artifact;
 pub mod cli;
 pub mod context;
 pub mod graph;
+mod lock;
 pub mod mcp;
 pub mod slug;
 pub mod vault;

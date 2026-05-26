@@ -68,52 +68,63 @@ pub fn index_path() -> PathBuf {
 }
 
 pub fn rebuild_index() -> Result<IndexOutcome, CtError> {
+    let _lock = crate::lock::VaultLock::acquire("index")?;
     let path = index_path();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let conn = Connection::open(&path).map_err(sqlite_err)?;
-    conn.execute_batch(
-        "DROP TABLE IF EXISTS artifacts;
-         DROP TABLE IF EXISTS artifact_fts;
-         CREATE TABLE artifacts (
-             path TEXT PRIMARY KEY,
-             name TEXT NOT NULL,
-             stem TEXT NOT NULL,
-             title TEXT NOT NULL,
-             kind TEXT NOT NULL,
-             project TEXT NOT NULL,
-             body TEXT NOT NULL
-         );
-         CREATE VIRTUAL TABLE artifact_fts USING fts5(
-             title, body, stem, content='artifacts', content_rowid='rowid'
-         );",
-    )
-    .map_err(sqlite_err)?;
-
     let artifacts = collect_artifacts(false)?;
-    for artifact in &artifacts {
+    let tmp_path = path.with_extension(format!(
+        "sqlite.{}.{}.tmp",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default()
+    ));
+    fs::remove_file(&tmp_path).ok();
+    {
+        let conn = Connection::open(&tmp_path).map_err(sqlite_err)?;
+        conn.execute_batch(
+            "CREATE TABLE artifacts (
+                path TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                stem TEXT NOT NULL,
+                title TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                project TEXT NOT NULL,
+                body TEXT NOT NULL
+            );
+            CREATE VIRTUAL TABLE artifact_fts USING fts5(
+                title, body, stem, content='artifacts', content_rowid='rowid'
+            );",
+        )
+        .map_err(sqlite_err)?;
+
+        for artifact in &artifacts {
+            conn.execute(
+                "INSERT INTO artifacts(path, name, stem, title, kind, project, body)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    artifact.path.to_string_lossy(),
+                    artifact.name,
+                    artifact.stem,
+                    artifact.title,
+                    artifact.kind.dir_name(),
+                    artifact.project,
+                    artifact.body
+                ],
+            )
+            .map_err(sqlite_err)?;
+        }
         conn.execute(
-            "INSERT INTO artifacts(path, name, stem, title, kind, project, body)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                artifact.path.to_string_lossy(),
-                artifact.name,
-                artifact.stem,
-                artifact.title,
-                artifact.kind.dir_name(),
-                artifact.project,
-                artifact.body
-            ],
+            "INSERT INTO artifact_fts(rowid, title, body, stem)
+            SELECT rowid, title, body, stem FROM artifacts",
+            [],
         )
         .map_err(sqlite_err)?;
     }
-    conn.execute(
-        "INSERT INTO artifact_fts(rowid, title, body, stem)
-         SELECT rowid, title, body, stem FROM artifacts",
-        [],
-    )
-    .map_err(sqlite_err)?;
+    fs::rename(&tmp_path, &path)?;
 
     Ok(IndexOutcome {
         indexed: artifacts.len(),
@@ -875,6 +886,32 @@ mod tests {
             rebuild_index().unwrap();
             let hits = search("oauth token", None, None, false, 10).unwrap();
             assert_eq!(hits[0].stem, "20260524-auth-flow");
+        });
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn concurrent_rebuilds_do_not_interleave_sqlite_schema_writes() {
+        let tmp = env::temp_dir().join(format!("vlt-index-race-{}", std::process::id()));
+        fs::remove_dir_all(&tmp).ok();
+        for idx in 0..20 {
+            seed(
+                &tmp,
+                ArtifactKind::Doc,
+                &format!("20260526-race-{idx}"),
+                "needle race body",
+            );
+        }
+
+        with_blueprints_dir(&tmp, || {
+            let handles: Vec<_> = (0..4)
+                .map(|_| std::thread::spawn(|| rebuild_index().unwrap()))
+                .collect();
+            for handle in handles {
+                assert_eq!(handle.join().unwrap().indexed, 20);
+            }
+            let hits = search("needle", None, None, false, 50).unwrap();
+            assert_eq!(hits.len(), 20);
         });
         fs::remove_dir_all(&tmp).ok();
     }
