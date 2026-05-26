@@ -24,44 +24,44 @@ describe("resolvePiWorkspaceDir — issue #545 (project dir, not config dir)", (
 	it("PI_WORKSPACE_DIR wins (extension-set, freshest)", () => {
 		const result = resolvePiWorkspaceDir({
 			env: {
-				PI_WORKSPACE_DIR: "/Users/x/freshest",
-				PI_PROJECT_DIR: "/Users/x/legacy",
+				PI_WORKSPACE_DIR: "/workspace/x/freshest",
+				PI_PROJECT_DIR: "/workspace/x/legacy",
 				PI_CONFIG_DIR: PI_CONFIG_DIR,
 			},
-			pwd: "/Users/x/somewhere",
+			pwd: "/workspace/x/somewhere",
 			cwd: "/some/cwd",
 		});
-		expect(result).toBe("/Users/x/freshest");
+		expect(result).toBe("/workspace/x/freshest");
 	});
 
 	it("PI_PROJECT_DIR wins when PI_WORKSPACE_DIR unset", () => {
 		const result = resolvePiWorkspaceDir({
 			env: {
-				PI_PROJECT_DIR: "/Users/x/own-project",
+				PI_PROJECT_DIR: "/workspace/x/own-project",
 				PI_CONFIG_DIR: PI_CONFIG_DIR,
 			},
-			pwd: "/Users/x/somewhere",
+			pwd: "/workspace/x/somewhere",
 			cwd: "/some/cwd",
 		});
-		expect(result).toBe("/Users/x/own-project");
+		expect(result).toBe("/workspace/x/own-project");
 	});
 
 	it("PWD wins when PI_WORKSPACE_DIR / PI_PROJECT_DIR unset", () => {
 		const result = resolvePiWorkspaceDir({
 			env: { PI_CONFIG_DIR: PI_CONFIG_DIR },
-			pwd: "/Users/x/from-shell",
+			pwd: "/workspace/x/from-shell",
 			cwd: "/some/chdir",
 		});
-		expect(result).toBe("/Users/x/from-shell");
+		expect(result).toBe("/workspace/x/from-shell");
 	});
 
 	it("cwd is the final fallback", () => {
 		const result = resolvePiWorkspaceDir({
 			env: {},
 			pwd: undefined,
-			cwd: "/Users/x/cwd-fallback",
+			cwd: "/workspace/x/cwd-fallback",
 		});
-		expect(result).toBe("/Users/x/cwd-fallback");
+		expect(result).toBe("/workspace/x/cwd-fallback");
 	});
 
 	it("never returns the Pi config dir even if the cascade somehow lands there", () => {
@@ -88,11 +88,11 @@ describe("resolvePiWorkspaceDir — issue #545 (project dir, not config dir)", (
 		const result = resolvePiWorkspaceDir({
 			env: {
 				PI_WORKSPACE_DIR: join(PI_CONFIG_DIR, "sessions", "abc"),
-				PI_PROJECT_DIR: "/Users/x/safe-project",
+				PI_PROJECT_DIR: "/workspace/x/safe-project",
 			},
 			pwd: undefined,
 			cwd: "/anywhere",
 		});
-		expect(result).toBe("/Users/x/safe-project");
+		expect(result).toBe("/workspace/x/safe-project");
 	});
 });
