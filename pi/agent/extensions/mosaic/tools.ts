@@ -60,6 +60,49 @@ function textResult(value: unknown, details?: unknown) {
 	};
 }
 
+function formatSpawnAgentText(value: unknown): string {
+	if (typeof value === "string") return value;
+	if (!value || typeof value !== "object") return JSON.stringify(value ?? null);
+
+	const result = value as {
+		agentId?: unknown;
+		taskName?: unknown;
+		runtime?: unknown;
+		background?: unknown;
+		status?: unknown;
+		result?: unknown;
+		error?: unknown;
+		seq?: unknown;
+	};
+	const agentId = typeof result.agentId === "string" ? result.agentId : undefined;
+	const taskName = typeof result.taskName === "string" ? result.taskName : undefined;
+	const runtime = typeof result.runtime === "string" ? result.runtime : undefined;
+	const background = result.background === true;
+	const status = typeof result.status === "string" ? result.status : undefined;
+	const output = typeof result.result === "string" ? result.result.trim() : "";
+	const error = typeof result.error === "string" ? result.error.trim() : "";
+	const seq = typeof result.seq === "number" ? result.seq : undefined;
+
+	const lines: string[] = [];
+	if (background) {
+		lines.push("Background agent started.");
+	} else if (status === "error") {
+		lines.push("Agent failed.");
+	} else if (status) {
+		lines.push(runtime === "in-process" ? `Agent ${status} inline.` : `Agent ${status}.`);
+	} else {
+		lines.push("Agent started.");
+	}
+	if (taskName) lines.push(`Task: ${taskName}`);
+	if (agentId) lines.push(`Agent ID: ${agentId}`);
+	if (runtime) lines.push(`Runtime: ${runtime}`);
+	if (status) lines.push(`Status: ${status}`);
+	if (seq != null) lines.push(`Seq: ${seq}`);
+	if (error) lines.push(`Error: ${error}`);
+	if (output) lines.push("", output);
+	return lines.join("\n");
+}
+
 class EmptyMosaicRender implements Component {
 	render(): string[] {
 		return [];
@@ -274,7 +317,7 @@ export function createMosaicTools(deps: MosaicToolDeps) {
 						);
 					},
 				});
-				return textResult(result, result);
+				return textResult(formatSpawnAgentText(result), result);
 			},
 		}),
 		defineTool({

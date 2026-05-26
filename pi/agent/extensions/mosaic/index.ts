@@ -34,6 +34,7 @@ import { resolveAgentCwd } from "./cwd.js";
 import { launchFullSessionAgent } from "./full-session-agent.js";
 import { isTerminalAssistantMessage, resolveFullSessionAgentStatus } from "./full-session-status.js";
 import { GroupJoinManager } from "./group-join.js";
+import { deliverInProcessMessage } from "./in-process-message.js";
 import {
 	type MosaicAgentUpdate,
 	MosaicMessageServer,
@@ -1088,6 +1089,11 @@ export default function (pi: ExtensionAPI) {
 					triggerTurn: input.triggerTurn,
 				});
 			} catch (error) {
+				const inProcessId = resolveInProcessTarget(input.target);
+				if (inProcessId) {
+					const record = manager.getRecord(inProcessId);
+					if (record) return deliverInProcessMessage(record, input);
+				}
 				if (resolveFullSessionTarget(input.target)) {
 					throw new Error(
 						`agent is visible after reload but its native mailbox is not attached: ${input.target}`,

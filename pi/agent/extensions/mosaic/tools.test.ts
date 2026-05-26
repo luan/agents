@@ -244,6 +244,36 @@ describe("createMosaicTools", () => {
 		expect(final?.join("\n")).toContain("final");
 		expect(final?.join("\n")).toContain("line");
 	});
+
+	test("serializes spawn results as readable text while preserving structured details", async () => {
+		const largeResult = "x".repeat(1_000);
+		const tools = createMosaicTools({
+			...fakeDeps(),
+			spawnAgent: async (input) => ({
+				agentId: "agent-1",
+				taskName: input.taskName,
+				runtime: "in-process",
+				background: false,
+				status: "completed",
+				result: largeResult,
+			}),
+		});
+
+		const result = await tools
+			.find((tool) => tool.name === "spawn_agent")
+			?.execute("1", { task_name: "mosaic/demo", message: "go" } as never);
+
+		const text = result?.content[0]?.type === "text" ? result.content[0].text : "";
+		expect(text).toStartWith("Agent completed inline.");
+		expect(text).toContain("Task: mosaic/demo");
+		expect(text).toContain("Agent ID: agent-1");
+		expect(text).not.toStartWith("{");
+		expect(result?.details).toMatchObject({
+			agentId: "agent-1",
+			taskName: "mosaic/demo",
+			result: largeResult,
+		});
+	});
 });
 
 function fakeDeps() {
