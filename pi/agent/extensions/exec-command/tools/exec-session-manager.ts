@@ -62,7 +62,6 @@ export interface ExecCommandInput {
 	yield_time_ms?: number;
 	timeout?: number;
 	login?: boolean;
-	foreground?: boolean;
 }
 
 export interface WriteStdinInput {
@@ -686,27 +685,6 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		notify(session);
 	}
 
-	function waitForExit(session: ExecSession): Promise<number> {
-		if (!isRunning(session)) {
-			return Promise.resolve(0);
-		}
-
-		const startedAt = Date.now();
-		return new Promise((resolvePromise) => {
-			const onWake = () => {
-				if (isRunning(session)) {
-					return;
-				}
-				cleanup();
-				resolvePromise(Date.now() - startedAt);
-			};
-			const cleanup = () => {
-				session.listeners.delete(onWake);
-			};
-			session.listeners.add(onWake);
-		});
-	}
-
 	function waitForExitOrTimeout(session: ExecSession, yieldTimeMs: number): Promise<number> {
 		if (!isRunning(session)) {
 			return Promise.resolve(0);
@@ -951,17 +929,15 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			const stopStreaming = streamSessionUpdates(session, onUpdate);
 
 			try {
-				const waitedMs = input.foreground
-					? await waitForExit(session)
-					: await waitForExitOrTimeout(
-							session,
-							clampExecYieldTime(
-								input.yield_time_ms,
-								defaultExecYieldTimeMs,
-								session.interactive,
-								minNonInteractiveExecYieldTimeMs,
-							),
-						);
+				const waitedMs = await waitForExitOrTimeout(
+					session,
+					clampExecYieldTime(
+						input.yield_time_ms,
+						defaultExecYieldTimeMs,
+						session.interactive,
+						minNonInteractiveExecYieldTimeMs,
+					),
+				);
 				return makeResult(session, waitedMs);
 			} finally {
 				stopStreaming?.();

@@ -18,7 +18,7 @@ import {
 	renderExecCellComponent,
 } from "./tools/exec-cell-presentation.ts";
 import { createExecCommandTracker } from "./tools/exec-command-state.ts";
-import { commandInvokesPlannotator, registerExecCommandTool } from "./tools/exec-command-tool.ts";
+import { registerExecCommandTool } from "./tools/exec-command-tool.ts";
 import { createExecSessionManager } from "./tools/exec-session-manager.ts";
 import { computeRtkRewriteDecision, parseRtkExecutablePath } from "./tools/rtk-wrapper.ts";
 import { formatUnifiedExecResult } from "./tools/unified-exec-format.ts";
@@ -1127,65 +1127,6 @@ test("exec command suppresses partial output streaming for exploration commands"
 	tracker.clear();
 });
 
-test("exec command recognizes real plannotator shell invocations", () => {
-	expect(commandInvokesPlannotator("plannotator review --git")).toBe(true);
-	expect(commandInvokesPlannotator("PLANNOTATOR_SHARE=disabled plannotator annotate file --gate")).toBe(true);
-	expect(commandInvokesPlannotator("cd /tmp && plannotator annotate gate.html --render-html --gate")).toBe(true);
-	expect(commandInvokesPlannotator("plannotator annotate gate.html --gate | tee result.txt")).toBe(true);
-	expect(commandInvokesPlannotator("timeout 300 plannotator annotate gate.html --gate")).toBe(true);
-	expect(commandInvokesPlannotator("gtimeout -k 10 300 plannotator review --git")).toBe(true);
-	expect(commandInvokesPlannotator("rg -n plannotator skills")).toBe(false);
-	expect(commandInvokesPlannotator("printf '%s\\n' plannotator")).toBe(false);
-});
-
-test("exec command forces plannotator invocations to foreground execution", async () => {
-	let tool: any;
-	const tracker = createExecCommandTracker();
-	let execInput: any;
-	const sessions = {
-		exec: async (input: unknown) => {
-			execInput = input;
-			return {
-				chunk_id: "plannotator",
-				wall_time_seconds: 0,
-				output: "# File Feedback\n",
-				exit_code: 0,
-			};
-		},
-		write: async () => {
-			throw new Error("unexpected write");
-		},
-		hasSession: () => false,
-		getSessionCommand: () => undefined,
-		onSessionExit: () => () => {},
-		shutdown() {},
-	};
-	registerExecCommandTool(
-		{ registerTool: (definition: any) => (tool = definition) } as any,
-		tracker,
-		sessions as any,
-		{ contextGuardEnabled: () => true },
-	);
-
-	const result = await tool.execute(
-		"call-plannotator",
-		{ cmd: "plannotator review --git", tty: true, yield_time_ms: 250 },
-		undefined,
-		undefined,
-		{ cwd: process.cwd() },
-	);
-
-	expect(result.details.session_id).toBeUndefined();
-	expect(execInput).toMatchObject({
-		cmd: "plannotator review --git",
-		tty: false,
-		contextGuard: false,
-		foreground: true,
-	});
-	expect(execInput.yield_time_ms).toBeUndefined();
-	tracker.clear();
-});
-
 test("write stdin renderer self-renders without the default success shell", () => {
 	let tool: any;
 	const sessions = createExecSessionManager();
@@ -1658,7 +1599,10 @@ test("extension appends a new completion message when a background terminal exit
 	expect(sentMessages[0]?.options).toEqual({ deliverAs: "followUp", triggerTurn: true });
 	expect(sentMessages[0]?.message.customType).toBe("exec_command.completed");
 	expect(sentMessages[0]?.message.display).toBe(true);
-	expect(sentMessages[0]?.message.content).toBe("");
+	expect(sentMessages[0]?.message.content).toContain("Command: sleep 0.3; printf done");
+	expect(sentMessages[0]?.message.content).toContain("Wall time:");
+	expect(sentMessages[0]?.message.content).toContain("Process exited with code 0");
+	expect(sentMessages[0]?.message.content).toContain("Output:\ndone");
 	expect(sentMessages[0]?.message.details.session_id).toBe(result.details.session_id);
 	expect(sentMessages[0]?.message.details.elapsed_ms).toBeNumber();
 	expect(sentMessages[0]?.message.details.exit_code).toBe(0);
@@ -1681,9 +1625,11 @@ test("extension emits completion message for quiet successful background termina
 	expect(sentMessages[0]?.message.details.exit_code).toBe(0);
 	expect(sentMessages[0]?.message.details.output).toBe("");
 	expect(sentMessages[0]?.message.details.output_truncated).toBe(false);
+	expect(sentMessages[0]?.message.content).toContain("Process exited with code 0");
+	expect(sentMessages[0]?.message.content).toContain("Output:\n");
 });
 
-test("extension can suppress completion wake for explicitly persistent background terminals", async () => {
+test("extension wakes the agent with completion details when an interactive background terminal exits", async () => {
 	type Handler = (event?: any, ctx?: any) => any;
 	const handlers = new Map<string, Handler[]>();
 	let execTool: any;
@@ -1717,8 +1663,8 @@ test("extension can suppress completion wake for explicitly persistent backgroun
 
 	try {
 		const spawned = await execTool.execute(
-			"call-suppressed-wake",
-			{ cmd: 'read line; printf "got:$line"', tty: true, yield_time_ms: 250, wake_on_completion: false },
+			"call-no-wake",
+			{ cmd: 'read line; printf "got:$line"', tty: true, yield_time_ms: 250 },
 			undefined,
 			undefined,
 			ctx,
@@ -1729,7 +1675,7 @@ test("extension can suppress completion wake for explicitly persistent backgroun
 		expect(sentMessages).toHaveLength(0);
 
 		const write = await writeStdinTool.execute(
-			"write-suppressed-wake",
+			"write-no-wake",
 			{ session_id: sessionId, chars: "hello\n", yield_time_ms: 500 },
 			undefined,
 			undefined,
@@ -1742,7 +1688,10 @@ test("extension can suppress completion wake for explicitly persistent backgroun
 		expect(sentMessages[0]?.message.customType).toBe("exec_command.completed");
 		expect(sentMessages[0]?.message.details.session_id).toBe(sessionId);
 		expect(sentMessages[0]?.message.details.output).toContain("got:hello");
-		expect(sentMessages[0]?.options).toEqual({ triggerTurn: false });
+		expect(sentMessages[0]?.options).toEqual({ deliverAs: "followUp", triggerTurn: true });
+		expect(sentMessages[0]?.message.content).toContain('Command: read line; printf "got:$line"');
+		expect(sentMessages[0]?.message.content).toContain("Process exited with code 0");
+		expect(sentMessages[0]?.message.content).toContain("got:hello");
 	} finally {
 		for (const handler of handlers.get("session_shutdown") ?? []) handler(undefined, ctx);
 	}
@@ -1962,6 +1911,7 @@ test("extension completion message includes truncation metadata for large final 
 	expect(sentMessages[0]?.message.details.output_truncated).toBe(true);
 	expect(sentMessages[0]?.message.details.original_token_count).toBeNumber();
 	expect(sentMessages[0]?.message.details.output).toContain("chars truncated");
+	expect(sentMessages[0]?.message.content).toContain("chars truncated");
 });
 
 test("extension pushes completion after non-empty write_stdin interaction", async () => {

@@ -17,9 +17,14 @@ import {
 } from "./tools/exec-cell-presentation.ts";
 import { createExecCommandTracker } from "./tools/exec-command-state.ts";
 import { registerExecCommandTool } from "./tools/exec-command-tool.ts";
-import { createExecSessionManager, type ExecSessionRecord } from "./tools/exec-session-manager.ts";
+import {
+	createExecSessionManager,
+	type ExecSessionRecord,
+	type UnifiedExecResult,
+} from "./tools/exec-session-manager.ts";
 import { formattedTruncateText } from "./tools/output-truncation.ts";
 import { computeRtkRewriteDecision, type RtkWrapperState } from "./tools/rtk-wrapper.ts";
+import { formatUnifiedExecResult } from "./tools/unified-exec-format.ts";
 import { registerWriteStdinTool } from "./tools/write-stdin-tool.ts";
 import { BackgroundTerminalOverlay } from "./ui/background-terminal-overlay.ts";
 
@@ -242,6 +247,21 @@ interface BackgroundTerminalFinishedDetails {
 	original_token_count?: number;
 }
 
+function backgroundTerminalDetailsToUnifiedResult(details: BackgroundTerminalFinishedDetails): UnifiedExecResult {
+	return {
+		chunk_id: "",
+		wall_time_seconds: details.elapsed_ms / 1000,
+		output: details.output,
+		exit_code: details.exit_code,
+		terminal_state: details.terminal_state,
+		timed_out: details.timed_out,
+		cancelled: details.cancelled,
+		session_error: details.session_error,
+		original_token_count: details.original_token_count,
+		output_truncated: details.output_truncated,
+	};
+}
+
 export default function execCommandExtension(pi: ExtensionAPI) {
 	installEmptySelfShellRowPatch();
 	installUserBashRenderPatch();
@@ -256,7 +276,7 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 	let backgroundTerminalWidgetRegistered = false;
 	let backgroundTerminalWidgetTui: { requestRender(): void } | undefined;
 	let backgroundTerminalWidgetTimer: ReturnType<typeof setInterval> | undefined;
-	const completionMessageSessions = new Map<number, { triggerTurn: boolean }>();
+	const completionMessageSessions = new Set<number>();
 
 	const renderBackgroundTerminalFinishedMessage = (
 		message: { details?: BackgroundTerminalFinishedDetails },
@@ -430,9 +450,9 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 				rtkWrapped: decision.usedRtk === true,
 			};
 		},
-		onResult: (input, result) => {
+		onResult: (_input, result) => {
 			if (result.session_id !== undefined) {
-				completionMessageSessions.set(result.session_id, { triggerTurn: input.wakeOnCompletion !== false });
+				completionMessageSessions.add(result.session_id);
 			}
 		},
 		contextGuardEnabled: () =>
@@ -442,9 +462,9 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 	sessions.onSessionExit((sessionId, command) => {
 		const snapshot = sessions.getSessionSnapshot(sessionId);
 		tracker.recordSessionFinished(sessionId);
-		const completionMessageSession = completionMessageSessions.get(sessionId);
+		const shouldEmitCompletionMessage = completionMessageSessions.has(sessionId);
 		completionMessageSessions.delete(sessionId);
-		if (!completionMessageSession) return;
+		if (!shouldEmitCompletionMessage) return;
 		if (!snapshot) return;
 		const details: BackgroundTerminalFinishedDetails = {
 			session_id: sessionId,
@@ -461,20 +481,17 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 		if (snapshot.originalTokenCount !== undefined) {
 			details.original_token_count = snapshot.originalTokenCount;
 		}
-		const deliveryOptions = completionMessageSession.triggerTurn
-			? { deliverAs: "followUp", triggerTurn: true }
-			: { triggerTurn: false };
 		(pi as any).sendMessage?.(
 			{
 				customType:
 					snapshot.terminalState === "session_error"
 						? EXEC_COMMAND_SESSION_ERROR_MESSAGE
 						: EXEC_COMMAND_COMPLETED_MESSAGE,
-				content: "",
+				content: formatUnifiedExecResult(backgroundTerminalDetailsToUnifiedResult(details), command),
 				display: true,
 				details,
 			},
-			deliveryOptions,
+			{ deliverAs: "followUp", triggerTurn: true },
 		);
 	});
 	sessions.onSessionUpdate(updateBackgroundTerminalStatus);

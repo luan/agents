@@ -66,12 +66,6 @@ const EXEC_COMMAND_PARAMETERS = Type.Object({
 				"camelCase alias of context_guard. Optional per-call override for Context Guard wrapping. Rarely needed.",
 		}),
 	),
-	wake_on_completion: Type.Optional(
-		Type.Boolean({
-			description:
-				"Whether a managed command session should wake the agent when it later completes. Defaults to true; set false only for intentionally persistent sessions.",
-		}),
-	),
 	commands: Type.Optional(
 		Type.Any({
 			description:
@@ -100,8 +94,6 @@ interface ExecCommandParams {
 	login?: boolean;
 	timeout?: number;
 	contextGuard?: boolean;
-	foreground?: boolean;
-	wakeOnCompletion?: boolean;
 }
 
 interface ContextGuardBatchCommand {
@@ -235,10 +227,6 @@ function parseExecCommandParams(params: unknown): ParsedExecInvocation {
 			login: "login" in params && typeof params.login === "boolean" ? params.login : undefined,
 			timeout: "timeout" in params && typeof params.timeout === "number" ? params.timeout : undefined,
 			contextGuard: readContextGuardOverride(record),
-			wakeOnCompletion:
-				"wake_on_completion" in params && typeof params.wake_on_completion === "boolean"
-					? params.wake_on_completion
-					: undefined,
 		},
 	};
 }
@@ -447,85 +435,9 @@ async function executeExplicitBatch(params: ContextGuardBatchParams, ctx: Extens
 }
 
 function shouldRouteCommandThroughContextGuard(params: ExecCommandParams, options: ExecCommandToolOptions): boolean {
-	if (params.foreground) return false;
 	if (params.tty) return false;
 	if (typeof params.contextGuard === "boolean") return params.contextGuard;
 	return options.contextGuardEnabled?.() ?? false;
-}
-
-function unquoteShellToken(token: string): string {
-	if ((token.startsWith("'") && token.endsWith("'")) || (token.startsWith('"') && token.endsWith('"'))) {
-		return token.slice(1, -1);
-	}
-	return token;
-}
-
-function firstShellToken(value: string): string | undefined {
-	const match = value.match(/^(?:"[^"]*"|'[^']*'|[^\s]+)/);
-	return match ? unquoteShellToken(match[0]!) : undefined;
-}
-
-function stripLeadingShellPrefixes(segment: string): string {
-	let rest = segment.trim().replace(/^\(+\s*/, "");
-	for (;;) {
-		const before = rest;
-		rest = rest.replace(/^(?:time|command|noglob|builtin)\s+/, "");
-		rest = rest.replace(/^env\s+/, "");
-		rest = stripLeadingTimeoutCommand(rest);
-		while (/^[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s]+)\s+/.test(rest)) {
-			rest = rest.replace(/^[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s]+)\s+/, "");
-		}
-		if (rest === before) return rest;
-	}
-}
-
-function stripLeadingTimeoutCommand(segment: string): string {
-	let rest = segment;
-	const first = firstShellToken(rest);
-	if (first !== "timeout" && first !== "gtimeout") return segment;
-	rest = rest.slice(rest.match(/^(?:"[^"]*"|'[^']*'|[^\s]+)/)?.[0]?.length ?? 0).trimStart();
-
-	while (rest.startsWith("-")) {
-		const token = firstShellToken(rest);
-		if (!token) return segment;
-		rest = rest.slice(rest.match(/^(?:"[^"]*"|'[^']*'|[^\s]+)/)?.[0]?.length ?? 0).trimStart();
-		if (token === "-s" || token === "--signal" || token === "-k" || token === "--kill-after") {
-			const valueToken = firstShellToken(rest);
-			if (!valueToken) return segment;
-			rest = rest.slice(rest.match(/^(?:"[^"]*"|'[^']*'|[^\s]+)/)?.[0]?.length ?? 0).trimStart();
-		}
-	}
-
-	const duration = firstShellToken(rest);
-	if (!duration) return segment;
-	rest = rest.slice(rest.match(/^(?:"[^"]*"|'[^']*'|[^\s]+)/)?.[0]?.length ?? 0).trimStart();
-	return rest || segment;
-}
-
-function commandTokenBasename(token: string): string {
-	const withoutPath = token.split("/").pop() ?? token;
-	return withoutPath;
-}
-
-export function commandInvokesPlannotator(command: string): boolean {
-	const segments = command.split(/(?:&&|\|\||[;|\n])/);
-	return segments.some((segment) => {
-		const first = firstShellToken(stripLeadingShellPrefixes(segment));
-		return first !== undefined && commandTokenBasename(first) === "plannotator";
-	});
-}
-
-function forcePlannotatorForeground(params: ExecCommandParams, command: string): ExecCommandParams {
-	if (!commandInvokesPlannotator(params.cmd) && !commandInvokesPlannotator(command)) {
-		return params;
-	}
-	return {
-		...params,
-		tty: false,
-		yield_time_ms: undefined,
-		contextGuard: false,
-		foreground: true,
-	};
 }
 
 function createEmptyResultComponent(): Container {
@@ -743,7 +655,6 @@ export function registerExecCommandTool(
 			"Use exec_command(mode:'batch', commands, queries) for multi-command research that should auto-index and search output.",
 			"Prefer `rg`/`rg --files` over `grep`/`find`; for broad searches use `rg -n -M 400 --max-columns-preview` plus globs like `--glob '!*.map'`.",
 			"Keep tty disabled unless the command truly needs interactive terminal behavior.",
-			"Use wake_on_completion:false only for intentionally persistent managed command sessions that should stay observable without waking the agent when they exit.",
 		],
 		parameters: EXEC_COMMAND_PARAMETERS,
 		prepareArguments: prepareExecCommandArguments,
@@ -764,13 +675,12 @@ export function registerExecCommandTool(
 			const rewrittenCommand = typeof rewrite === "string" ? rewrite : rewrite.command;
 			const command = shouldUseRawRipgrep(typedParams.cmd, rewrittenCommand) ? typedParams.cmd : rewrittenCommand;
 			const rtkWrapped = typeof rewrite === "string" ? command !== typedParams.cmd : rewrite.rtkWrapped === true;
-			const executionParams = forcePlannotatorForeground(typedParams, command);
 			if (rtkWrapped) {
 				tracker.recordRtkWrapped(toolCallId);
 			}
 			const streamPartialOutput = !summarizeShellCommand(command).maskAsExplored;
 			const result = await sessions.exec(
-				{ ...executionParams, cmd: command },
+				{ ...typedParams, cmd: command },
 				ctx.cwd,
 				signal,
 				streamPartialOutput
