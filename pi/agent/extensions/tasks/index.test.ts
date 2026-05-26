@@ -760,7 +760,7 @@ describe("tasks extension", () => {
 		expect(overlayText).not.toContain("Wrong body");
 	});
 
-	test("/accept and /reject shell out through shared ct review transitions", async () => {
+	test("/accept is silent and /reject notifies through shared ct review transitions", async () => {
 		const calls: string[][] = [];
 		const notifications: Array<{ message: string; type?: string }> = [];
 		const sent: any[] = [];
@@ -799,19 +799,12 @@ describe("tasks extension", () => {
 
 		expect(calls).toContainEqual(["ct", "task", "accept", "ABC", "--json"]);
 		expect(calls).toContainEqual(["ct", "task", "reject", "ABC", "needs", "tests", "--json"]);
-		expect(notifications).toContainEqual({ message: "Accepted PG4W2K4Q03: Smoke test task tools", type: "info" });
-		expect(notifications).toContainEqual({ message: "Rejected PG4W2K4Q03: Smoke test task tools", type: "info" });
-		expect(sent.map((item) => item.message)).toContainEqual({
-			customType: "task-transition",
-			content: [
-				{
-					type: "text",
-					text: "Accepted PG4W2K4Q03: Smoke test task tools\n\nHuman note: do the next thing\n\nThis human acceptance has already been recorded. Do not call task accept or update this task to done again.",
-				},
-			],
-			display: true,
-			details: { action: "accept", taskId: "PG4W2K4Q03", status: "done", note: "do the next thing" },
+		expect(notifications).not.toContainEqual({
+			message: "Accepted PG4W2K4Q03: Smoke test task tools",
+			type: "info",
 		});
+		expect(notifications).toContainEqual({ message: "Rejected PG4W2K4Q03: Smoke test task tools", type: "info" });
+		expect(sent.map((item) => item.message.details.action)).not.toContain("accept");
 		expect(sent.map((item) => item.message)).toContainEqual({
 			customType: "task-transition",
 			content: [
@@ -823,10 +816,6 @@ describe("tasks extension", () => {
 			display: true,
 			details: { action: "reject", taskId: "PG4W2K4Q03", status: "rejected", note: "needs tests" },
 		});
-		expect(sent.find((item) => item.message.details.action === "accept")?.options).toEqual({
-			deliverAs: "followUp",
-			triggerTurn: true,
-		});
 		expect(sent.find((item) => item.message.details.action === "reject")?.options).toEqual({
 			deliverAs: "followUp",
 			triggerTurn: true,
@@ -834,7 +823,7 @@ describe("tasks extension", () => {
 		expect(sent.filter((item) => item.message.customType === "task-guard")).toHaveLength(0);
 	});
 
-	test("/accept without a note still triggers the agent turn when no guard continuation is available", async () => {
+	test("/accept without a note does not send task-transition or task-guard messages", async () => {
 		const commands = new Map<string, any>();
 		const sent: any[] = [];
 		tasksExtension(
@@ -872,15 +861,10 @@ describe("tasks extension", () => {
 
 		await commands.get("accept").handler("DONE", ctx);
 
-		expect(sent).toContainEqual(
-			expect.objectContaining({
-				message: expect.objectContaining({ customType: "task-transition" }),
-				options: { deliverAs: "followUp", triggerTurn: true },
-			}),
-		);
+		expect(sent).toHaveLength(0);
 	});
 
-	test("/accept triggers continuation for next ready task in the same epic", async () => {
+	test("/accept does not trigger task guard continuation for next ready task in the same epic", async () => {
 		const commands = new Map<string, any>();
 		const sent: any[] = [];
 		tasksExtension(
@@ -944,8 +928,7 @@ describe("tasks extension", () => {
 		await commands.get("accept").handler("DONE", ctx);
 
 		const taskGuardMessage = sent.find((item) => item.message.customType === "task-guard");
-		expect(taskGuardMessage.message.content[0].text).toContain("Claim task NEXT");
-		expect(taskGuardMessage.options).toEqual({ deliverAs: "followUp", triggerTurn: true });
+		expect(taskGuardMessage).toBeUndefined();
 	});
 
 	test("alt+t cycles compact and visible task HUD epics", async () => {

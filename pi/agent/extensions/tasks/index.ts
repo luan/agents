@@ -307,10 +307,9 @@ function textResult(text: string, details: TaskDetails) {
 	return { content: [{ type: "text" as const, text }], details };
 }
 
-function taskTransitionMessage(action: "accept" | "reject", task?: TaskRecord): string | undefined {
+function taskTransitionMessage(task?: TaskRecord): string | undefined {
 	if (!task) return undefined;
-	const verb = action === "accept" ? "Accepted" : "Rejected";
-	return `${verb} ${task.id}: ${task.title}`;
+	return `Rejected ${task.id}: ${task.title}`;
 }
 
 function latestRejectionNote(task?: TaskRecord): string | undefined {
@@ -322,18 +321,16 @@ function latestRejectionNote(task?: TaskRecord): string | undefined {
 function publishTaskTransition(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
-	action: "accept" | "reject",
+	action: "reject",
 	task?: TaskRecord,
 	note?: string,
 	triggerTurn = true,
 ): void {
-	const message = taskTransitionMessage(action, task);
+	const message = taskTransitionMessage(task);
 	if (!message) return;
-	const noteLabel = action === "accept" ? "Human note" : "Rejection note";
+	const noteLabel = "Rejection note";
 	const instruction =
-		action === "accept"
-			? "This human acceptance has already been recorded. Do not call task accept or update this task to done again."
-			: "This human rejection has already been recorded. Do not call task reject or update this task to rejected again; treat the note as feedback for the next revision.";
+		"This human rejection has already been recorded. Do not call task reject or update this task to rejected again; treat the note as feedback for the next revision.";
 	const visibleText = [message, note ? `${noteLabel}: ${note}` : undefined, instruction].filter(Boolean).join("\n\n");
 	ctx.ui.notify?.(message, "info");
 	pi.sendMessage?.(
@@ -3015,26 +3012,14 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 	pi.registerCommand?.("accept", {
 		description: "Accept an in-review task",
 		handler: async (args: string, ctx: ExtensionContext) => {
-			const [id, ...noteParts] = args.trim().split(/\s+/).filter(Boolean);
-			const note = noteParts.join(" ");
+			const [id] = args.trim().split(/\s+/).filter(Boolean);
 			if (!id) {
 				ctx.ui.notify?.("Usage: /accept <task-id> [note...]", "warning");
 				return;
 			}
 			await executeTask(config.command, runCommand, ctx.cwd, "accept", { id }, config, pi, ctx, ctx.signal)
-				.then(async (result) => {
+				.then(() => {
 					markProgress();
-					const guardTriggered = note
-						? false
-						: await triggerTaskGuardAfterCommand(
-								pi,
-								ctx,
-								config.command,
-								runCommand,
-								guardState,
-								result.details.task,
-							);
-					publishTaskTransition(pi, ctx, "accept", result.details.task, note || undefined, !guardTriggered);
 				})
 				.catch((error) => {
 					ctx.ui.notify?.(
