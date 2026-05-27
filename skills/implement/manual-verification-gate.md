@@ -19,10 +19,6 @@ Create a temporary self-contained HTML artifact after commit and before task acc
 
 ## Presentation command
 
-```bash
-plannotator annotate <artifact.html> --render-html --gate
-```
-
-Run Plannotator as a blocking foreground command with a normal long human-review timeout. Keep it in the foreground until the gate returns. When foreground review is unavailable, stop and report the gate as unavailable.
+Load/use `$plannotator` and run its rendered artifact-gate workflow for the HTML file.
 
 The HTML itself must ask the user to manually verify the scenarios before approving. For user-visible work, map each acceptance criterion to evidence in the HTML.

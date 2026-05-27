@@ -1,6 +1,6 @@
 ---
 name: visual-doc
-description: Create concise Plannotator-ready HTML visual documents for briefs, issue proposals, implementation evidence, reviews, and manual verification gates. Use when a skill needs a visual companion, visual report, screenshot/recording evidence, Plannotator HTML, or `plannotator annotate --render-html`.
+description: Create concise Plannotator-ready HTML visual documents for briefs, issue proposals, implementation evidence, reviews, and manual verification gates. Use when a skill needs a visual companion, visual report, screenshot/recording evidence, Plannotator HTML, or rendered Plannotator review.
 user-invocable: true
 ---
 
@@ -16,13 +16,7 @@ the source of truth; the visual doc makes decisions and evidence fast to review.
 2. Read [REFERENCE.md](REFERENCE.md) for the shared HTML base and media patterns.
 3. Use [USE-CASES.md](USE-CASES.md) for brief, issues, and implement layouts.
 4. Put the most important conclusion in the first viewport.
-5. Present once with Plannotator:
-
-```bash
-plannotator annotate <artifact.html> --render-html
-```
-
-Add `--gate` to that command only when approval is required before continuing.
+5. Load/use `$plannotator` to present the HTML once. Use its rendered review workflow for informational review, or its rendered artifact-gate workflow when approval is required before continuing.
 
 ## Required shape
 

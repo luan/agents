@@ -38,8 +38,7 @@ If the task at hand does not involve code changes, skip all steps except load/cl
    - Match verification to the task evidence class; do not invent visual gates for non-visible chores.
 
 5. **User code review**
-   - [skip-if: --auto] Run `plannotator review` before commit. This will let the user review the code changes. Do not stage files before review; the user will stage approved hunks. Right before running `plannotator review`, say, concisely: a. what you have changed; b. areas you explicitly want feedback on; c. anything you haven't addressed (trick question, you should not have any of these if you followed the process well).
-   - `plannotator` must run as a blocking foreground command, no background terminal, no `write_stdin` polling.
+   - [skip-if: --auto] Load/use `$plannotator` and run its code-review workflow before commit. This will let the user review the code changes. Do not stage files before review; the user will stage approved hunks. Right before starting review, say, concisely: a. what you have changed; b. areas you explicitly want feedback on; c. anything you haven't addressed (trick question, you should not have any of these if you followed the process well).
    - When the review comes back with a question, this is the user starting a conversation. Do not treat it as directional feeedback. Instead, continue the conversation until the gap in understanding is resolved and only then make code changes and re-run the review.
    - For file notes, resolve to the exact absolute file path on the local filesystem first. Do not pass vault stems, wiki-link targets, repo-relative paths, or artifact-link paths to Plannotator.
    - Only after code-approval, move feature/bug tasks to `in_review` with a short note that code has been approved.
@@ -52,7 +51,7 @@ If the task at hand does not involve code changes, skip all steps except load/cl
    - Generate the temporary HTML artifact using [manual-verification-gate.md](manual-verification-gate.md) and `$visual-doc`.
    - Before presenting the gate, validate that artifacts are valid, viewed, renderable in Plannotator, and mapped to acceptance criteria.
    - Ensure feature/bug tasks are `in_review` before presenting the gate.
-   - Present it with `plannotator annotate <artifact.html> --render-html --gate` as a blocking foreground command with a normal long human-review timeout. Keep Plannotator in the foreground and wait for the gate result before continuing.
+   - Load/use `$plannotator` and present the HTML artifact with its rendered artifact-gate workflow.
 
 7. **Commit**
    - Load/use `$commit`; do not hand-roll commit mechanics when available.
