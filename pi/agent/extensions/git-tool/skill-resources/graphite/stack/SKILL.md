@@ -26,7 +26,7 @@ gt create <branch-name> -i          # Insert between current and its child
 gt up / gt down
 gt top / gt bottom
 gt log --stack                      # View CURRENT stack only; use by default
-gt log                              # View ALL branches
+gt log                              # View ALL branches; avoid this, it will confuse you
 
 # Modify current branch
 gt modify -a
@@ -39,7 +39,7 @@ gt move --onto <branch>
 gt delete
 
 # Recovery
-gt continue / gt abort / gt undo
+gt continue / gt abort --force / gt undo
 ```
 
 ## Branch Creation Rules
@@ -58,7 +58,7 @@ gt create luan/my-feature
 git add -A && git commit -m "feat(scope): add feature"
 
 # Wrong
-gt create luan/my-feature -am "feat(scope): add feature"
+gt create my-feature -am "feat(scope): add feature"
 gt create -m "feat(scope): add feature"
 ```
 
