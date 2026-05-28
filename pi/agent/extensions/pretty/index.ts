@@ -30,12 +30,6 @@ import type {
 import { Container, getCapabilities, Image, Spacer } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
-import {
-	isExplorationHidden,
-	registerExplorationEventHandlers,
-	registerExplorationTool,
-	renderExplorationCall,
-} from "../shared/exploration-rendering";
 import { configureImageCapabilities } from "../shared/image-capabilities";
 
 // ---------------------------------------------------------------------------
@@ -379,7 +373,6 @@ type PiPrettyApi = {
 	registerTool: (tool: unknown) => void;
 	on?: (event: string, handler: (event: any) => void) => void;
 };
-type ReadParams = ReadToolInput;
 type ViewImageParams = { path: string };
 type BashParams = BashToolInput;
 type LsParams = LsToolInput;
@@ -413,20 +406,6 @@ function setResultDetails<T>(result: ToolResultLike, details: T): void {
 	result.details = details;
 }
 
-function positiveInteger(value: unknown): number | undefined {
-	return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
-}
-
-function readLineRange(params: { offset?: unknown; limit?: unknown }): string {
-	const offset = positiveInteger(params.offset);
-	const limit = positiveInteger(params.limit);
-	const start = offset ?? 1;
-
-	if (limit) return `lines ${start}-${start + limit - 1}`;
-	if (offset) return `lines ${offset}+`;
-	return "all lines";
-}
-
 function readDisplayPath(cwd: string, filePath: string | undefined): string {
 	if (!filePath) return "file";
 	const absolute = resolve(cwd, filePath);
@@ -435,11 +414,6 @@ function readDisplayPath(cwd: string, filePath: string | undefined): string {
 
 	if (!isAbsolute(filePath) || withinCwd) return rel || ".";
 	return absolute;
-}
-
-function readRenderAction(cwd: string, args: { path?: string; offset?: unknown; limit?: unknown }) {
-	const path = readDisplayPath(cwd, args.path);
-	return { kind: "read" as const, body: `${path} ${readLineRange(args)}` };
 }
 
 function viewImageDisplayPath(cwd: string, args: { path?: string }) {
@@ -639,70 +613,7 @@ export default function piPrettyExtension(pi: PiPrettyApi, deps?: PiPrettyDeps):
 		}),
 	});
 
-	registerExplorationTool("read", (args) => {
-		const path = args && typeof args === "object" && "path" in args && typeof args.path === "string" ? args.path : "";
-		return readRenderAction(cwd, {
-			path,
-			offset: args && typeof args === "object" && "offset" in args ? args.offset : undefined,
-			limit: args && typeof args === "object" && "limit" in args ? args.limit : undefined,
-		});
-	});
-	registerExplorationEventHandlers(pi);
-
-	// ===================================================================
-	// read — compact exploration row
-	// ===================================================================
-
-	const origRead = createReadTool(cwd);
 	const origImageRead = createReadTool(cwd);
-
-	pi.registerTool({
-		...origRead,
-		name: "read",
-		description:
-			"Read the contents of a text file. Does not support images; use view_image for jpg, png, gif, or webp files. Output is truncated for large files. Use offset/limit to continue.",
-		promptSnippet: "Read text file contents",
-		renderShell: "self",
-
-		async execute(
-			tid: string,
-			params: ReadParams,
-			sig: AbortSignal | undefined,
-			upd: AgentToolUpdateCallback<unknown> | undefined,
-			ctx: ExtensionContext,
-		) {
-			if (typeof params.path === "string") {
-				const mimeType = await imageMimeTypeForExistingPath(resolve(cwd, params.path)).catch(() => null);
-				if (mimeType) {
-					throw new Error(`read only supports text files. Use view_image for ${params.path} (${mimeType}).`);
-				}
-			}
-			return (await origRead.execute(tid, params, sig, upd, ctx)) as ToolResultLike;
-		},
-
-		renderCall(args: ReadParams, theme: ThemeLike, ctx: RenderContextLike) {
-			const text = createTextComponent(TextComponent, ctx);
-			text.setText(renderExplorationCall(readRenderAction(cwd, args), theme, ctx));
-			return text;
-		},
-
-		renderResult(result: ToolResultLike, _opt: unknown, theme: ThemeLike, ctx: RenderContextLike) {
-			const text = createTextComponent(TextComponent, ctx);
-
-			if (isExplorationHidden(ctx.toolCallId)) {
-				text.setText("");
-				return text;
-			}
-
-			if (ctx.isError) {
-				text.setText(theme.fg("error", getTextContent(result) || "Error"));
-				return text;
-			}
-
-			text.setText("");
-			return text;
-		},
-	});
 
 	// ===================================================================
 	// view_image — image-only read with forced inline preview

@@ -10,7 +10,7 @@
     "test:git-tool": "bun test pi/agent/extensions/git-tool/index.test.ts",
     "test:plannotator": "bun test pi/agent/extensions/plannotator-events/index.test.ts pi/agent/extensions/plannotator-hub/index.test.ts",
     "test:context-guard": "bun test pi/agent/extensions/context-guard/*.test.ts",
-    "test:codex-native": "bun test pi/agent/extensions/apply-patch/index.test.ts pi/agent/extensions/codex-native/index.test.ts pi/agent/extensions/exec-command/index.test.ts pi/agent/extensions/token-burden/tool-toggles.test.ts pi/agent/extensions/token-burden/report-view.test.ts pi/agent/extensions/token-burden/parser.test.ts pi/agent/extensions/token-burden/index.test.ts pi/agent/extensions/tui/editor.test.ts",
+    "test:codex-native": "bun test pi/agent/extensions/apply-patch/index.test.ts pi/agent/extensions/fileops/index.test.ts pi/agent/extensions/codex-native/index.test.ts pi/agent/extensions/exec-command/index.test.ts pi/agent/extensions/token-burden/tool-toggles.test.ts pi/agent/extensions/token-burden/report-view.test.ts pi/agent/extensions/token-burden/parser.test.ts pi/agent/extensions/token-burden/index.test.ts pi/agent/extensions/tui/editor.test.ts",
     "test:compaction": "bun test pi/agent/extensions/codex-native/compaction/src/unit.test.ts pi/agent/extensions/codex-native/compaction/src/validation.test.ts pi/agent/extensions/vcc/src/hooks/before-compact.test.ts pi/agent/extensions/vcc/src/commands/vcc.test.ts",
     "prepare": "husky"
   },

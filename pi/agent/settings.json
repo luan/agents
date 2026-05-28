@@ -23,6 +23,7 @@
   ],
   "extensions": [
     "extensions/agents-local/index.ts",
+    "extensions/fileops/index.ts",
     "extensions/apply-patch/index.ts",
     "extensions/ask/index.ts",
     "extensions/codex-native/index.ts",
