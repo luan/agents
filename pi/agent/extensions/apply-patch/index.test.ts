@@ -1290,6 +1290,219 @@ describe("apply_patch Codex freeform provider", () => {
 		}
 	});
 
+	it("uses hyphenated Codex session headers for SSE requests", async () => {
+		const originalFetch = globalThis.fetch;
+		let capturedHeaders: Headers | undefined;
+		globalThis.fetch = (async (_input, init) => {
+			capturedHeaders = init?.headers instanceof Headers ? init.headers : undefined;
+			return new Response("", { status: 500, statusText: "Internal Server Error" });
+		}) as typeof fetch;
+
+		try {
+			let streamSimple: any;
+			registerApplyPatchFreeformProvider(
+				{
+					registerProvider: (_name: string, provider: any) => {
+						streamSimple = provider.streamSimple;
+					},
+					on: () => {},
+					registerMessageRenderer: () => {},
+				} as any,
+				{ toolName: "apply_patch", description: "Apply patch", grammar: "start: /.+/" },
+			);
+
+			await streamSimple(
+				{
+					id: "gpt-5.5",
+					provider: "openai-codex",
+					api: "openai-codex-responses",
+					baseUrl: "https://chatgpt.com/backend-api",
+					headers: {},
+					input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				},
+				{ messages: [{ role: "user", content: "Make a patch", timestamp: 1 }] },
+				{ apiKey: mockCodexToken(), sessionId: "session-hyphen", transport: "sse" },
+			).result();
+
+			expect(capturedHeaders?.get("session-id")).toBe("session-hyphen");
+			expect(capturedHeaders?.has("session_id")).toBe(false);
+			expect(capturedHeaders?.get("x-client-request-id")).toBe("session-hyphen");
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	it("honors Codex SSE maxRetries instead of retrying by default", async () => {
+		const originalFetch = globalThis.fetch;
+		let fetchCalls = 0;
+		globalThis.fetch = (async () => {
+			fetchCalls++;
+			return new Response("temporary overload", { status: 500, statusText: "Internal Server Error" });
+		}) as typeof fetch;
+
+		try {
+			let streamSimple: any;
+			registerApplyPatchFreeformProvider(
+				{
+					registerProvider: (_name: string, provider: any) => {
+						streamSimple = provider.streamSimple;
+					},
+					on: () => {},
+					registerMessageRenderer: () => {},
+				} as any,
+				{ toolName: "apply_patch", description: "Apply patch", grammar: "start: /.+/" },
+			);
+
+			await streamSimple(
+				{
+					id: "gpt-5.5",
+					provider: "openai-codex",
+					api: "openai-codex-responses",
+					baseUrl: "https://chatgpt.com/backend-api",
+					headers: {},
+					input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				},
+				{ messages: [{ role: "user", content: "Make a patch", timestamp: 1 }] },
+				{ apiKey: mockCodexToken(), sessionId: "session-no-hidden-retry", transport: "sse" },
+			).result();
+
+			expect(fetchCalls).toBe(1);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	it("falls back to SSE when websocket connect times out before opening", async () => {
+		let websocketConstructs = 0;
+		let fetchCalls = 0;
+		const originalFetch = globalThis.fetch;
+		const originalWebSocket = globalThis.WebSocket;
+
+		class MockWebSocket {
+			static OPEN = 1;
+			private listeners = new Map<string, Set<(event: unknown) => void>>();
+
+			constructor(_url: string, _protocols?: string | string[] | { headers?: Record<string, string> }) {
+				websocketConstructs++;
+			}
+
+			addEventListener(type: string, listener: (event: unknown) => void): void {
+				let listeners = this.listeners.get(type);
+				if (!listeners) {
+					listeners = new Set();
+					this.listeners.set(type, listeners);
+				}
+				listeners.add(listener);
+			}
+
+			removeEventListener(type: string, listener: (event: unknown) => void): void {
+				this.listeners.get(type)?.delete(listener);
+			}
+
+			send(): void {
+				throw new Error("send should not run before websocket open");
+			}
+
+			close(): void {}
+		}
+
+		globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+		globalThis.fetch = (async () => {
+			fetchCalls++;
+			const encoder = new TextEncoder();
+			const events = [
+				{ type: "response.created", response: { id: "resp_sse" } },
+				{
+					type: "response.output_item.added",
+					item: { type: "message", id: "msg_sse", role: "assistant", status: "in_progress", content: [] },
+				},
+				{ type: "response.content_part.added", part: { type: "output_text", text: "" } },
+				{ type: "response.output_text.delta", delta: "Recovered" },
+				{
+					type: "response.output_item.done",
+					item: {
+						type: "message",
+						id: "msg_sse",
+						role: "assistant",
+						status: "completed",
+						content: [{ type: "output_text", text: "Recovered" }],
+					},
+				},
+				{
+					type: "response.completed",
+					response: {
+						id: "resp_sse",
+						status: "completed",
+						usage: {
+							input_tokens: 1,
+							output_tokens: 1,
+							total_tokens: 2,
+							input_tokens_details: { cached_tokens: 0 },
+						},
+					},
+				},
+			];
+			return new Response(
+				new ReadableStream({
+					start(controller) {
+						for (const event of events) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+						controller.close();
+					},
+				}),
+				{ status: 200 },
+			);
+		}) as typeof fetch;
+
+		try {
+			let streamSimple: any;
+			registerApplyPatchFreeformProvider(
+				{
+					registerProvider: (_name: string, provider: any) => {
+						streamSimple = provider.streamSimple;
+					},
+					on: () => {},
+					registerMessageRenderer: () => {},
+				} as any,
+				{ toolName: "apply_patch", description: "Apply patch", grammar: "start: /.+/" },
+			);
+
+			const result = await streamSimple(
+				{
+					id: "gpt-5.5",
+					provider: "openai-codex",
+					api: "openai-codex-responses",
+					baseUrl: "https://chatgpt.com/backend-api",
+					headers: {},
+					input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				},
+				{ messages: [{ role: "user", content: "Make a patch", timestamp: 1 }] },
+				{
+					apiKey: mockCodexToken(),
+					sessionId: "session-connect-timeout",
+					transport: "websocket-cached",
+					websocketConnectTimeoutMs: 1,
+				},
+			).result();
+
+			expect(result.stopReason).toBe("stop");
+			expect(result.content[0].text).toBe("Recovered");
+			expect(websocketConstructs).toBe(1);
+			expect(fetchCalls).toBe(1);
+			expect(getOpenAICodexWebSocketDebugStats("session-connect-timeout")).toMatchObject({
+				websocketFailures: 1,
+				sseFallbacks: 1,
+				websocketFallbackActive: true,
+				lastWebSocketError: "WebSocket connect timeout after 1ms",
+			});
+		} finally {
+			globalThis.fetch = originalFetch;
+			globalThis.WebSocket = originalWebSocket;
+		}
+	});
+
 	it("sends only response input deltas in websocket-cached mode", async () => {
 		const sentBodies: any[] = [];
 		let closeCalls = 0;

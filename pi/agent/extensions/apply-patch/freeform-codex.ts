@@ -24,6 +24,11 @@ const SESSION_WEBSOCKET_CACHE_TTL_MS = 5 * 60 * 1000;
 const WEBSOCKET_FAILURE_FALLBACK_THRESHOLD = 3;
 const WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE = 1009;
 const HTTP_ERROR_BODY_MAX_CHARS = 1000;
+const DEFAULT_MAX_RETRIES = 0;
+const BASE_RETRY_DELAY_MS = 1000;
+const DEFAULT_MAX_RETRY_DELAY_MS = 60_000;
+const DEFAULT_SSE_HEADER_TIMEOUT_MS = 10_000;
+const DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS = 15_000;
 
 type RequestBody = Record<string, any> & {
 	input?: any[];
@@ -43,6 +48,11 @@ interface AssistantMessageDiagnostic {
 	timestamp: number;
 	error?: DiagnosticErrorInfo;
 	details?: Record<string, unknown>;
+}
+
+interface CombinedAbortSignal {
+	signal?: AbortSignal;
+	cleanup: () => void;
 }
 
 function formatThrownValue(value: unknown): string {
@@ -75,6 +85,106 @@ function appendAssistantMessageDiagnostic<T extends { diagnostics?: AssistantMes
 	diagnostic: AssistantMessageDiagnostic,
 ): void {
 	message.diagnostics = [...(message.diagnostics ?? []), diagnostic];
+}
+
+function combineAbortSignals(signals: readonly (AbortSignal | undefined)[]): CombinedAbortSignal {
+	const activeSignals = signals.filter((signal): signal is AbortSignal => signal !== undefined);
+	if (activeSignals.length === 0) return { cleanup: () => {} };
+	if (activeSignals.length === 1) return { signal: activeSignals[0], cleanup: () => {} };
+
+	const controller = new AbortController();
+	const listeners: Array<{ signal: AbortSignal; listener: () => void }> = [];
+	const abort = (signal: AbortSignal) => {
+		if (!controller.signal.aborted) controller.abort(signal.reason);
+	};
+
+	for (const signal of activeSignals) {
+		if (signal.aborted) {
+			abort(signal);
+			break;
+		}
+		const listener = () => abort(signal);
+		signal.addEventListener("abort", listener, { once: true });
+		listeners.push({ signal, listener });
+	}
+
+	return {
+		signal: controller.signal,
+		cleanup: () => {
+			for (const { signal, listener } of listeners) signal.removeEventListener("abort", listener);
+		},
+	};
+}
+
+function createSSEHeaderTimeout(): { signal: AbortSignal; clear: () => void; error: () => Error | undefined } {
+	const controller = new AbortController();
+	let error: Error | undefined;
+	const timeout = setTimeout(() => {
+		error = new Error(`Codex SSE response headers timed out after ${DEFAULT_SSE_HEADER_TIMEOUT_MS}ms`);
+		controller.abort(error);
+	}, DEFAULT_SSE_HEADER_TIMEOUT_MS);
+	return {
+		signal: controller.signal,
+		clear: () => clearTimeout(timeout),
+		error: () => error,
+	};
+}
+
+function normalizeTimeoutMs(value: number | undefined): number | undefined {
+	if (value === undefined) return undefined;
+	if (!Number.isFinite(value) || value < 0) throw new Error(`Invalid timeoutMs: ${String(value)}`);
+	return Math.floor(value);
+}
+
+function isTerminalRateLimitError(errorText: string): boolean {
+	return /GoUsageLimitError|FreeUsageLimitError|Monthly usage limit reached|available balance|insufficient_quota|out of budget|quota exceeded|billing/i.test(
+		errorText,
+	);
+}
+
+function isRetryableError(status: number, errorText: string): boolean {
+	if (status === 429 && isTerminalRateLimitError(errorText)) return false;
+	if (status === 429 || status === 500 || status === 502 || status === 503 || status === 504) return true;
+	return /rate.?limit|overloaded|service.?unavailable|upstream.?connect|connection.?refused/i.test(errorText);
+}
+
+function getRetryAfterDelayMs(headers: Headers): number | undefined {
+	const retryAfterMs = headers.get("retry-after-ms");
+	if (retryAfterMs !== null) {
+		const millis = Number(retryAfterMs);
+		if (Number.isFinite(millis)) return Math.max(0, millis);
+	}
+
+	const retryAfter = headers.get("retry-after");
+	if (!retryAfter) return undefined;
+
+	const seconds = Number(retryAfter);
+	if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+
+	const date = Date.parse(retryAfter);
+	if (!Number.isNaN(date)) return Math.max(0, date - Date.now());
+
+	return undefined;
+}
+
+function capRetryDelayMs(delayMs: number, options?: SimpleStreamOptions): number {
+	const maxRetryDelayMs = options?.maxRetryDelayMs ?? DEFAULT_MAX_RETRY_DELAY_MS;
+	return maxRetryDelayMs > 0 ? Math.min(delayMs, maxRetryDelayMs) : delayMs;
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+	return new Promise((resolve, reject) => {
+		if (signal?.aborted) {
+			reject(new Error("Request was aborted"));
+			return;
+		}
+		const timeout = setTimeout(resolve, ms);
+		const onAbort = () => {
+			clearTimeout(timeout);
+			reject(new Error("Request was aborted"));
+		};
+		signal?.addEventListener("abort", onAbort, { once: true });
+	});
 }
 
 type WebSocketEventType = "open" | "message" | "error" | "close";
@@ -260,6 +370,8 @@ function streamFreeformCodexResponses(
 			const transport = deps.forceSse && requestedTransport !== "sse" ? "sse" : requestedTransport;
 			const effectiveOptions =
 				transport === requestedTransport ? options : ({ ...options, transport } as SimpleStreamOptions | undefined);
+			const idleTimeoutMs = normalizeTimeoutMs(options?.timeoutMs);
+			const websocketConnectTimeoutMs = normalizeTimeoutMs((options as any)?.websocketConnectTimeoutMs);
 			const requestId = options?.sessionId || createCodexRequestId();
 			const sseHeaders = buildSSEHeaders(model.headers, options?.headers, accountId, apiKey, options?.sessionId);
 			const websocketHeaders = buildWebSocketHeaders(model.headers, options?.headers, accountId, apiKey, requestId);
@@ -286,6 +398,8 @@ function streamFreeformCodexResponses(
 						() => {
 							websocketStarted = true;
 						},
+						idleTimeoutMs,
+						websocketConnectTimeoutMs,
 						effectiveOptions,
 					);
 					if (options?.signal?.aborted) throw new Error("Request was aborted");
@@ -315,12 +429,7 @@ function streamFreeformCodexResponses(
 				}
 			}
 
-			const response = await fetch(resolveCodexUrl(model.baseUrl), {
-				method: "POST",
-				headers: sseHeaders,
-				body: JSON.stringify(body),
-				signal: options?.signal,
-			});
+			const response = await fetchCodexSSEWithRetries(resolveCodexUrl(model.baseUrl), sseHeaders, body, options);
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 			if (!response.ok) throw await createCodexHttpError(response);
 			if (!response.body) throw new Error("No response body");
@@ -393,7 +502,7 @@ function buildRequestBody(
 		model: model.id,
 		store: false,
 		stream: true,
-		instructions: context.systemPrompt,
+		instructions: context.systemPrompt || "You are a helpful assistant.",
 		input: messages,
 		text: { verbosity: (options as any)?.textVerbosity || "low" },
 		include: ["reasoning.encrypted_content"],
@@ -598,6 +707,67 @@ async function createCodexHttpError(response: Response): Promise<CodexApiError> 
 		code: String(response.status),
 		payload: { status: response.status, statusText: response.statusText },
 	});
+}
+
+async function fetchCodexSSEWithRetries(
+	url: string,
+	headers: Headers,
+	body: RequestBody,
+	options?: SimpleStreamOptions,
+): Promise<Response> {
+	let lastError: Error | undefined;
+	const bodyJson = JSON.stringify(body);
+	const maxRetries = options?.maxRetries ?? DEFAULT_MAX_RETRIES;
+
+	for (let attempt = 0; attempt <= maxRetries; attempt++) {
+		if (options?.signal?.aborted) throw new Error("Request was aborted");
+		try {
+			const headerTimeout = createSSEHeaderTimeout();
+			const combinedSignal = combineAbortSignals([options?.signal, headerTimeout.signal]);
+			let response: Response;
+			try {
+				response = await fetch(url, {
+					method: "POST",
+					headers,
+					body: bodyJson,
+					signal: combinedSignal.signal,
+				});
+			} catch (error) {
+				const timeoutError = headerTimeout.error();
+				throw timeoutError && !options?.signal?.aborted ? timeoutError : error;
+			} finally {
+				combinedSignal.cleanup();
+				headerTimeout.clear();
+			}
+
+			if (response.ok) return response;
+
+			const errorText = await response.clone().text();
+			if (attempt < maxRetries && isRetryableError(response.status, errorText)) {
+				const retryAfterDelayMs = getRetryAfterDelayMs(response.headers);
+				const delayMs =
+					retryAfterDelayMs === undefined
+						? BASE_RETRY_DELAY_MS * 2 ** attempt
+						: response.status === 429
+							? capRetryDelayMs(retryAfterDelayMs, options)
+							: retryAfterDelayMs;
+				await sleep(delayMs, options?.signal);
+				continue;
+			}
+
+			return response;
+		} catch (error) {
+			lastError = error instanceof Error ? error : new Error(String(error));
+			if (attempt < maxRetries && !lastError.message.includes("usage limit")) {
+				const delayMs = BASE_RETRY_DELAY_MS * 2 ** attempt;
+				await sleep(delayMs, options?.signal);
+				continue;
+			}
+			break;
+		}
+	}
+
+	throw lastError ?? new Error("Codex SSE request failed");
 }
 
 class CodexProtocolError extends Error {
@@ -827,13 +997,19 @@ function scheduleSessionWebSocketExpiry(sessionId: string, entry: CachedWebSocke
 	}, SESSION_WEBSOCKET_CACHE_TTL_MS);
 }
 
-async function connectWebSocket(url: string, headers: Headers, signal?: AbortSignal): Promise<WebSocketLike> {
+async function connectWebSocket(
+	url: string,
+	headers: Headers,
+	signal?: AbortSignal,
+	connectTimeoutMs = DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS,
+): Promise<WebSocketLike> {
 	const WebSocketCtor = getWebSocketConstructor();
 	if (!WebSocketCtor) throw new Error("WebSocket transport is not available in this runtime");
 	const wsHeaders = headersToRecord(headers);
 
 	return new Promise<WebSocketLike>((resolve, reject) => {
 		let settled = false;
+		let timeout: ReturnType<typeof setTimeout> | undefined;
 		let socket: WebSocketLike;
 		try {
 			socket = new WebSocketCtor(url, { headers: wsHeaders });
@@ -843,10 +1019,21 @@ async function connectWebSocket(url: string, headers: Headers, signal?: AbortSig
 		}
 
 		const cleanup = () => {
+			if (timeout) {
+				clearTimeout(timeout);
+				timeout = undefined;
+			}
 			socket.removeEventListener("open", onOpen);
 			socket.removeEventListener("error", onError);
 			socket.removeEventListener("close", onClose);
 			signal?.removeEventListener("abort", onAbort);
+		};
+		const fail = (error: Error, closeReason?: string) => {
+			if (settled) return;
+			settled = true;
+			cleanup();
+			if (closeReason) closeWebSocketSilently(socket, 1000, closeReason);
+			reject(error);
 		};
 		const onOpen: WebSocketListener = () => {
 			if (settled) return;
@@ -854,32 +1041,22 @@ async function connectWebSocket(url: string, headers: Headers, signal?: AbortSig
 			cleanup();
 			resolve(socket);
 		};
-		const onError: WebSocketListener = (event) => {
-			const error = extractWebSocketError(event);
-			if (settled) return;
-			settled = true;
-			cleanup();
-			reject(error);
-		};
-		const onClose: WebSocketListener = (event) => {
-			const error = extractWebSocketCloseError(event);
-			if (settled) return;
-			settled = true;
-			cleanup();
-			reject(error);
-		};
+		const onError: WebSocketListener = (event) => fail(extractWebSocketError(event));
+		const onClose: WebSocketListener = (event) => fail(extractWebSocketCloseError(event));
 		const onAbort = () => {
-			if (settled) return;
-			settled = true;
-			cleanup();
-			socket.close(1000, "aborted");
-			reject(new Error("Request was aborted"));
+			fail(new Error("Request was aborted"), "aborted");
 		};
 
 		socket.addEventListener("open", onOpen);
 		socket.addEventListener("error", onError);
 		socket.addEventListener("close", onClose);
 		signal?.addEventListener("abort", onAbort);
+		if (connectTimeoutMs > 0) {
+			timeout = setTimeout(() => {
+				fail(new Error(`WebSocket connect timeout after ${connectTimeoutMs}ms`), "connect_timeout");
+			}, connectTimeoutMs);
+		}
+		if (signal?.aborted) onAbort();
 	});
 }
 
@@ -888,6 +1065,7 @@ async function acquireWebSocket(
 	headers: Headers,
 	sessionId: string | undefined,
 	signal?: AbortSignal,
+	connectTimeoutMs?: number,
 ): Promise<{
 	socket: WebSocketLike;
 	entry?: CachedWebSocketConnection;
@@ -895,7 +1073,7 @@ async function acquireWebSocket(
 	release: (options?: { keep?: boolean }) => void;
 }> {
 	if (!sessionId) {
-		const socket = await connectWebSocket(url, headers, signal);
+		const socket = await connectWebSocket(url, headers, signal, connectTimeoutMs);
 		return { socket, reused: false, release: () => closeWebSocketSilently(socket) };
 	}
 
@@ -921,14 +1099,14 @@ async function acquireWebSocket(
 			};
 		}
 		if (cached.busy) {
-			const socket = await connectWebSocket(url, headers, signal);
+			const socket = await connectWebSocket(url, headers, signal, connectTimeoutMs);
 			return { socket, reused: false, release: () => closeWebSocketSilently(socket) };
 		}
 		closeWebSocketSilently(cached.socket);
 		websocketSessionCache.delete(sessionId);
 	}
 
-	const socket = await connectWebSocket(url, headers, signal);
+	const socket = await connectWebSocket(url, headers, signal, connectTimeoutMs);
 	const entry: CachedWebSocketConnection = { socket, busy: true };
 	websocketSessionCache.set(sessionId, entry);
 	return {
@@ -1002,7 +1180,11 @@ async function decodeWebSocketData(data: unknown): Promise<string | null> {
 	return null;
 }
 
-async function* parseWebSocket(socket: WebSocketLike, signal?: AbortSignal): AsyncGenerator<Record<string, unknown>> {
+async function* parseWebSocket(
+	socket: WebSocketLike,
+	signal?: AbortSignal,
+	idleTimeoutMs?: number,
+): AsyncGenerator<Record<string, unknown>> {
 	const queue: Record<string, unknown>[] = [];
 	let pending: (() => void) | null = null;
 	let done = false;
@@ -1074,8 +1256,21 @@ async function* parseWebSocket(socket: WebSocketLike, signal?: AbortSignal): Asy
 				continue;
 			}
 			if (done) break;
-			await new Promise<void>((resolve) => {
+			let timeout: ReturnType<typeof setTimeout> | undefined;
+			await new Promise<void>((resolve, reject) => {
 				pending = resolve;
+				if (idleTimeoutMs !== undefined && idleTimeoutMs > 0) {
+					timeout = setTimeout(() => {
+						const error = new Error(`WebSocket idle timeout after ${idleTimeoutMs}ms`);
+						failed = error;
+						done = true;
+						pending = null;
+						closeWebSocketSilently(socket, 1000, "idle_timeout");
+						reject(error);
+					}, idleTimeoutMs);
+				}
+			}).finally(() => {
+				if (timeout) clearTimeout(timeout);
 			});
 		}
 		if (failed) throw failed;
@@ -1152,9 +1347,17 @@ async function processWebSocketStream(
 	applyPatch: ApplyPatchFreeformOptions,
 	activityOptions: Parameters<typeof captureNativeActivities>[1],
 	onStart: () => void,
+	idleTimeoutMs: number | undefined,
+	websocketConnectTimeoutMs: number | undefined,
 	options?: SimpleStreamOptions,
 ): Promise<void> {
-	const { socket, entry, reused, release } = await acquireWebSocket(url, headers, options?.sessionId, options?.signal);
+	const { socket, entry, reused, release } = await acquireWebSocket(
+		url,
+		headers,
+		options?.sessionId,
+		options?.signal,
+		websocketConnectTimeoutMs,
+	);
 	let keepConnection = true;
 	const useCachedContext = (options as any)?.transport === "websocket-cached";
 	const fullBody = body;
@@ -1182,7 +1385,10 @@ async function processWebSocketStream(
 		await processResponsesStream(
 			startWebSocketOutputOnFirstEvent(
 				mapFreeformEvents(
-					captureNativeActivities(mapCodexEvents(parseWebSocket(socket, options?.signal)), activityOptions),
+					captureNativeActivities(
+						mapCodexEvents(parseWebSocket(socket, options?.signal, idleTimeoutMs)),
+						activityOptions,
+					),
 					applyPatch.toolName,
 				) as AsyncIterable<never>,
 				output,
@@ -1333,7 +1539,7 @@ function buildSSEHeaders(
 	headers.set("accept", "text/event-stream");
 	headers.set("content-type", "application/json");
 	if (sessionId) {
-		headers.set("session_id", sessionId);
+		headers.set("session-id", sessionId);
 		headers.set("x-client-request-id", sessionId);
 	}
 	return headers;
@@ -1353,7 +1559,7 @@ function buildWebSocketHeaders(
 	headers.delete("openai-beta");
 	headers.set("OpenAI-Beta", OPENAI_BETA_RESPONSES_WEBSOCKETS);
 	headers.set("x-client-request-id", requestId);
-	headers.set("session_id", requestId);
+	headers.set("session-id", requestId);
 	return headers;
 }
 
