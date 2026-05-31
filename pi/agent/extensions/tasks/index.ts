@@ -2441,13 +2441,17 @@ async function guardAgentTaskWrite(
 	if (action === "reject")
 		throw new Error("Agents cannot reject tasks; use the human /reject command for story feedback.");
 	if (action !== "update" || params.status !== "done") return;
-	const resolvedType =
-		typeof params.type === "string"
-			? params.type
-			: await loadTaskForWriteGuard(command, runCommand, cwd, params.id, signal).then((task) => task?.type);
+	const task = await loadTaskForWriteGuard(command, runCommand, cwd, params.id, signal);
+	const resolvedType = typeof params.type === "string" ? params.type : task?.type;
+	if (
+		isStoryTaskType(resolvedType) &&
+		task?.status === "in_review" &&
+		params.accepted_visual_validation_report === true
+	)
+		return;
 	if (isStoryTaskType(resolvedType)) {
 		throw new Error(
-			"Agents cannot mark feature or bug tasks done; deliver reviewed commits to in_review for human acceptance.",
+			"Agents can mark feature or bug tasks done only from in_review with accepted_visual_validation_report=true after the user accepts an implement visual validation report.",
 		);
 	}
 }
@@ -3112,7 +3116,7 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 		name: "task_write",
 		label: "Write Tasks",
 		description:
-			"Add/update/delete/accept/reject tasks. Put fields in data: type, body, status, priority, assigned_to ('current' ok), epic_id, epic_title, labels, parent_id, blocked_by. Use clear for assignee/epic/parent/blockers.",
+			"Add/update/delete/accept/reject tasks. Put fields in data: type, body, status, priority, assigned_to ('current' ok), epic_id, epic_title, labels, parent_id, blocked_by. Use clear for assignee/epic/parent/blockers. Mark feature/bug tasks done only from in_review with accepted_visual_validation_report=true after the user accepts an implement visual validation report.",
 		promptSnippet: "Write project tasks",
 		parameters: Type.Object({
 			op: Type.String({ description: "add, update, delete, accept, or reject" }),
@@ -3125,6 +3129,12 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 			),
 			clear: Type.Optional(Type.Array(Type.String(), { description: "assignee, epic, parent, blockers" })),
 			note: Type.Optional(Type.String({ description: "Reject note" })),
+			accepted_visual_validation_report: Type.Optional(
+				Type.Boolean({
+					description:
+						"Set true only when updating an in_review feature/bug task to done after the user accepts the implement visual validation report.",
+				}),
+			),
 		}),
 	});
 }

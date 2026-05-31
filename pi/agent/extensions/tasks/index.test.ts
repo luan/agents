@@ -1208,10 +1208,18 @@ describe("tasks extension", () => {
 		expect(result.content[0].text).toBe(JSON.stringify({ task }));
 		expect(result.details.task.id).toBe(task.id);
 		expect(tools.map((tool) => tool.name).sort()).toEqual(["task_read", "task_write"]);
-		expect(Object.keys(write.parameters.properties).sort()).toEqual(["clear", "data", "id", "note", "op", "title"]);
+		expect(Object.keys(write.parameters.properties).sort()).toEqual([
+			"accepted_visual_validation_report",
+			"clear",
+			"data",
+			"id",
+			"note",
+			"op",
+			"title",
+		]);
 	});
 
-	test("task_write blocks agent story acceptance while slash accept remains human-owned", async () => {
+	test("task_write allows accepted in-review stories to be completed while slash accept remains human-owned", async () => {
 		const calls: string[][] = [];
 		const tools: any[] = [];
 		const commands = new Map<string, any>();
@@ -1228,6 +1236,13 @@ describe("tasks extension", () => {
 			{
 				runCommand: async (command: string, args: string[]) => {
 					calls.push([command, ...args]);
+					if (args[1] === "show" && args[2] === "STARTED") {
+						return {
+							stdout: JSON.stringify({ task: { ...task, type: "feature", status: "in_progress" } }),
+							stderr: "",
+							exitCode: 0,
+						};
+					}
 					return {
 						stdout: JSON.stringify({ task: { ...task, type: "feature", status: "in_review" } }),
 						stderr: "",
@@ -1245,8 +1260,29 @@ describe("tasks extension", () => {
 			write.execute("call-reject", { op: "reject", id: "PG4", note: "needs tests" }, undefined),
 		).rejects.toThrow("Agents cannot reject tasks");
 		await expect(
-			write.execute("call-done", { op: "update", id: "PG4", data: { status: "done" } }, undefined),
-		).rejects.toThrow("Agents cannot mark feature or bug tasks done");
+			write.execute(
+				"call-done-without-acceptance",
+				{ op: "update", id: "PG4", data: { status: "done" } },
+				undefined,
+			),
+		).rejects.toThrow("accepted_visual_validation_report=true");
+		await write.execute(
+			"call-done",
+			{ op: "update", id: "PG4", data: { status: "done" }, accepted_visual_validation_report: true },
+			undefined,
+		);
+		await expect(
+			write.execute(
+				"call-started-done",
+				{
+					op: "update",
+					id: "STARTED",
+					data: { status: "done" },
+					accepted_visual_validation_report: true,
+				},
+				undefined,
+			),
+		).rejects.toThrow("only from in_review with accepted_visual_validation_report=true");
 		await write.execute(
 			"call-chore-done",
 			{ op: "update", id: "CHORE", data: { type: "chore", status: "done" } },
@@ -1255,10 +1291,12 @@ describe("tasks extension", () => {
 		await commands.get("accept").handler("PG4", { cwd: "/repo", ui: {} });
 
 		expect(calls).toContainEqual(["ct", "task", "show", "PG4", "--json"]);
+		expect(calls).toContainEqual(["ct", "task", "show", "STARTED", "--json"]);
+		expect(calls).toContainEqual(["ct", "task", "update", "PG4", "--status", "done", "--json"]);
 		expect(calls).toContainEqual(["ct", "task", "update", "CHORE", "--type", "chore", "--status", "done", "--json"]);
 		expect(calls).toContainEqual(["ct", "task", "accept", "PG4", "--json"]);
 		expect(calls).not.toContainEqual(["ct", "task", "accept", "PG4", "--json", "--from-tool"]);
-		expect(calls).not.toContainEqual(["ct", "task", "update", "PG4", "--status", "done", "--json"]);
+		expect(calls).not.toContainEqual(["ct", "task", "update", "STARTED", "--status", "done", "--json"]);
 	});
 
 	test("renders a scoped columnar HUD for active tasks", () => {
