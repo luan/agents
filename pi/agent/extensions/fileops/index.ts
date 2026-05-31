@@ -1325,6 +1325,9 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 		description:
 			"Search file contents. In hashline edit mode, matching lines are grouped under ¶PATH#TAG headers with LINE:TEXT rows.",
 		promptSnippet: "Search file contents and return hashline-editable matches",
+		promptGuidelines: [
+			"Use search for file-content searches when it is active; use read when you already know the path.",
+		],
 		parameters: searchToolSchema,
 		renderShell: "self",
 		renderCall(params, theme) {
@@ -1403,6 +1406,7 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 		...baseFind,
 		name: "find",
 		description: "Find files by glob/path. Accepts either {pattern,path} or oh-my-pi-style {paths:[...]} inputs.",
+		promptGuidelines: ["Use find for file discovery by glob or path when it is active."],
 		parameters: findToolSchema,
 		renderShell: "self",
 		renderCall(params, theme) {
@@ -1500,9 +1504,9 @@ export default function fileopsExtension(pi: ExtensionAPI) {
 			name: "edit",
 			label: "edit",
 			description: modeDescription(current),
-			promptSnippet: "Edit files using the configured edit mode; default mode is apply_patch/freeform.",
+			promptSnippet: "Edit files using the currently configured edit mode.",
 			promptGuidelines: [
-				"Use edit for file edits when it is active; /edit-config controls whether edit uses apply_patch, patch, hashline, or replace mode.",
+				"Use edit for manual file edits when it is active; follow the tool description and grammar for the current edit mode.",
 			],
 			parameters: modeParameters(),
 			renderShell: "self",

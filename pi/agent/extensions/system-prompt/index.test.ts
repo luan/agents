@@ -76,17 +76,34 @@ describe("system-prompt Skillful skill rendering", () => {
 		expect(prompt).toContain("<timezone>Etc/UTC</timezone>");
 	});
 
-	test("search guidance prefers line-safe rg without exposing implicit RTK rewrites", () => {
+	test("tool guidance keeps dedicated file tools and shell search non-contradictory", () => {
+		const prompt = buildSystemPrompt("base", {
+			...baseOptions,
+			selectedTools: ["read", "search", "find", "edit", "exec_command"],
+		});
+
+		expect(prompt).toContain("use `sym` first when it can answer the question");
+		expect(prompt).toContain("use active file tools when you need hashline-editable line context");
+		expect(prompt).toContain("Use `read` for known file paths");
+		expect(prompt).toContain("Use `search` for file-content matching");
+		expect(prompt).toContain("Use `find` for file discovery by glob or path");
+		expect(prompt).not.toContain("Prefer active dedicated file tools for file and text workflows");
+		expect(prompt).not.toContain("Use `apply_patch` for manual code edits");
+		expect(prompt).not.toContain("/edit-config");
+		expect(prompt).not.toContain("RTK");
+		expect(prompt).not.toContain("rtk grep");
+	});
+
+	test("omits dedicated file tool guidance when only shell execution is active", () => {
 		const prompt = buildSystemPrompt("base", {
 			...baseOptions,
 			selectedTools: ["exec_command"],
 		});
 
-		expect(prompt).toContain("avoid `grep`, `grep -R`, and `find`");
-		expect(prompt).toContain("rg -n -M 400 --max-columns-preview");
-		expect(prompt).toContain("`head` limits line count, not line length");
-		expect(prompt).not.toContain("RTK");
-		expect(prompt).not.toContain("rtk grep");
+		expect(prompt).not.toContain("Use `read` for known file paths");
+		expect(prompt).not.toContain("Use `search` for file-content matching");
+		expect(prompt).not.toContain("Use `find` for file discovery by glob or path");
+		expect(prompt).toContain("Use `exec_command` for shell-only workflows");
 	});
 
 	test("skill tool active lists skills by name and description only", () => {

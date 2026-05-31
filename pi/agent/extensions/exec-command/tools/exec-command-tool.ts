@@ -681,13 +681,11 @@ export function registerExecCommandTool(
 		description:
 			"Runs a shell command in a PTY, with default Context Guard wrapping for non-interactive commands, plus an explicit batch mode for multi-command research workflows.",
 		renderShell: "self",
-		promptSnippet:
-			"Run a command; Context Guard wraps non-interactive exec_command calls by default. Use mode:'batch' for multi-command research.",
+		promptSnippet: "Run shell commands for builds, tests, git, process inspection, and other shell-only workflows.",
 		promptGuidelines: [
-			"Use exec_command for search, listing files, and local text-file reads.",
-			"Context Guard wrapping is enabled by default for non-interactive exec_command calls; use tty=true for true terminal interaction.",
+			"Use exec_command for shell-only workflows; prefer active dedicated file tools for reading, content search, and file discovery when they are available.",
 			"Use exec_command(mode:'batch', commands, queries) for multi-command research that should auto-index and search output.",
-			"Prefer `rg`/`rg --files` over `grep`/`find`; for broad searches use `rg -n -M 400 --max-columns-preview` plus globs like `--glob '!*.map'`.",
+			"When using shell search, prefer `rg`/`rg --files` over `grep` or shell `find`; for broad searches use line-safe `rg -n -M 400 --max-columns-preview` plus narrow globs.",
 			"Keep tty disabled unless the command truly needs interactive terminal behavior.",
 		],
 		parameters: EXEC_COMMAND_PARAMETERS,

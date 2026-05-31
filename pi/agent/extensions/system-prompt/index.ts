@@ -68,10 +68,8 @@ export function buildSystemPrompt(original: string, options: SystemPromptBuildOp
 	const skills = providedSkills ?? [];
 	const tools = selectedTools || ["read", "bash", "edit", "write"];
 
-	const hasBash = tools.includes("bash");
-	const hasGrep = tools.includes("grep");
+	const hasSearch = tools.includes("search");
 	const hasFind = tools.includes("find");
-	const hasLs = tools.includes("ls");
 	const hasRead = tools.includes("read");
 	const hasSkillTool = tools.includes("skill");
 
@@ -97,15 +95,17 @@ export function buildSystemPrompt(original: string, options: SystemPromptBuildOp
 			],
 		}),
 		examplesPath: examplesPath ?? "null",
+		hasFind,
 		hasContextFiles: contextFiles.length > 0,
+		hasRead,
+		hasSearch,
+		hasExecCommand: tools.includes("exec_command"),
 		includeSkills: (hasSkillTool || hasRead) && visibleSkills.length > 0,
-		preferDedicatedFileToolsGuideline: hasBash && (hasGrep || hasFind || hasLs),
 		promptGuidelines: uniqueNonEmptyLines(promptGuidelines ?? []),
 		readmePath: readmePath ?? "null",
 		readSkillFallback: !hasSkillTool && hasRead,
 		skills: visibleSkills,
 		skillToolActive: hasSkillTool,
-		useBashFileOpsGuideline: hasBash && !hasGrep && !hasFind && !hasLs,
 	});
 }
 
