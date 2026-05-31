@@ -10,5 +10,6 @@
   "validateBeforeApply": false,
   "recordUsageEntry": false,
   "registerTool": true,
-  "activeByDefault": true
+  "activeByDefault": true,
+  "allowEditTool": true
 }

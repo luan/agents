@@ -11,10 +11,20 @@ import {
 	type ExtensionAPI,
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
+import { Box, Text } from "@earendil-works/pi-tui";
 import { createTwoFilesPatch } from "diff";
 import { Type } from "typebox";
-
 import { runCommand as runExternalCommand } from "../shared/ct-runner.ts";
+import {
+	buildHighlightedDiffRows,
+	type DiffRenderRow,
+	EditDiffView,
+	highlightCodeRows,
+	highlightCodeRowsSync,
+	highlightSearchMatches,
+	languageFromPath,
+	type RenderTheme,
+} from "./diff-render.ts";
 import { buildCompactDiffPreview } from "./hashline/diff-preview.ts";
 import { formatHashlineHeader, formatNumberedLines } from "./hashline/format.ts";
 import { Filesystem, NotFoundError, type WriteResult } from "./hashline/fs.ts";
@@ -24,7 +34,14 @@ import { stripHashlinePrefixes } from "./hashline/prefixes.ts";
 import { InMemorySnapshotStore as UpstreamInMemorySnapshotStore } from "./hashline/snapshots.ts";
 
 type EditMode = "apply_patch" | "patch" | "hashline" | "replace";
+type Rgb = [number, number, number];
 
+const EDIT_FRAME_MS = 120;
+const EDIT_RUNNING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const EDIT_LABEL = "Editing";
+const EDIT_LABEL_SHINE_WIDTH = 3;
+const EDIT_LABEL_PERCOLATION_MS = 80;
+const RGB_FALLBACK: Rgb = [0xff, 0xff, 0xff];
 type EditConfig = {
 	mode: EditMode;
 	fuzzyMatch: boolean;
@@ -73,6 +90,11 @@ type ToolTextResult = {
 	details?: Record<string, unknown>;
 };
 
+type HighlightedSection = {
+	path: string;
+	rows: string[];
+};
+
 const EDIT_MODES: EditMode[] = ["apply_patch", "patch", "hashline", "replace"];
 const DEFAULT_CONFIG: EditConfig = {
 	mode: "apply_patch",
@@ -96,12 +118,18 @@ const readToolSchema = Type.Object({
 
 const searchToolSchema = Type.Object({
 	pattern: Type.String({ description: "Search pattern (regex or literal string)" }),
-	path: Type.Optional(Type.String({ description: "Directory or file to search (default: current directory)" })),
+	path: Type.Optional(
+		Type.String({
+			description:
+				"Directory or file to search (default: current directory). Single-file paths support :LINE ranges.",
+		}),
+	),
 	glob: Type.Optional(Type.String({ description: "Filter files by glob pattern, e.g. '*.ts'" })),
 	ignoreCase: Type.Optional(Type.Boolean({ description: "Case-insensitive search" })),
 	literal: Type.Optional(Type.Boolean({ description: "Treat pattern as a literal string instead of regex" })),
 	context: Type.Optional(Type.Number({ description: "Number of lines to show before and after each match" })),
 	limit: Type.Optional(Type.Number({ description: "Maximum number of matches to return" })),
+	ranges: Type.Optional(Type.Array(Type.String({ description: "Single-file line range such as 10 or 10-20" }))),
 });
 
 const writeToolSchema = Type.Object({
@@ -272,6 +300,521 @@ function selectedLineEntries(lines: readonly string[], ranges: readonly LineRang
 	return entries;
 }
 
+function lineNumberInRanges(lineNumber: number, ranges: readonly LineRange[]): boolean {
+	if (ranges.length === 0) return true;
+	return ranges.some((range) => lineNumber >= range.start && lineNumber <= range.end);
+}
+
+function firstTextContent(result: ToolTextResult): string {
+	const content = result.content.find(
+		(part): part is { type: "text"; text: string } => part.type === "text" && typeof part.text === "string",
+	);
+	return content?.text ?? "";
+}
+
+function renderText(text: string): Text {
+	return new Text(text, 0, 0);
+}
+
+class EmptyView {
+	invalidate() {}
+	render(): string[] {
+		return [];
+	}
+}
+
+const EMPTY_VIEW = new EmptyView();
+
+class BlockTextView {
+	constructor(
+		private readonly text: string,
+		private readonly theme: RenderTheme,
+	) {}
+
+	invalidate() {}
+
+	render(width: number): string[] {
+		const box = new Box(0, 0, this.theme.bg ? (line) => this.theme.bg?.("toolPendingBg", line) ?? line : undefined);
+		box.addChild(new Text(this.text, 0, 0));
+		return box.render(width);
+	}
+}
+
+function toolTextLines(text: string): string[] {
+	const lines = text.split("\n");
+	let end = lines.length;
+	while (end > 0 && lines[end - 1] === "") end--;
+	return lines.slice(0, end);
+}
+
+function shortenDisplayPath(path: string): string {
+	const normalized = path.replace(/\\/g, "/");
+	const parts = normalized.split("/");
+	return parts.length > 4 ? `.../${parts.slice(-4).join("/")}` : normalized;
+}
+
+function invalidArgText(theme: RenderTheme): string {
+	return theme.fg("error", "[invalid]");
+}
+
+function treeLast(theme: RenderTheme): string {
+	return theme.tree?.last ?? "└─";
+}
+
+function treeBranch(theme: RenderTheme): string {
+	return theme.tree?.branch ?? "├─";
+}
+
+function fileIcon(theme: RenderTheme, filePath?: string): string {
+	return theme.getLangIcon?.(languageFromPath(filePath)) ?? "≡";
+}
+
+function statusIcon(theme: RenderTheme, icon: "success" | "error" | "warning" | "pending"): string {
+	return (
+		theme.styledSymbol?.(`status.${icon}`, icon === "pending" ? "muted" : icon) ??
+		(icon === "success" ? "✓" : icon === "error" ? "✗" : icon === "warning" ? "!" : "∙")
+	);
+}
+
+function renderStatusHeader(
+	label: string,
+	theme: RenderTheme,
+	rest = "",
+	icon: "success" | "error" | "warning" | "pending" = "success",
+): string {
+	return `${statusIcon(theme, icon)} ${theme.fg("toolTitle", theme.bold(label))}${rest}`;
+}
+
+function ansi256ToRgb(code: number): Rgb {
+	if (code < 16) {
+		const base: Rgb[] = [
+			[0, 0, 0],
+			[128, 0, 0],
+			[0, 128, 0],
+			[128, 128, 0],
+			[0, 0, 128],
+			[128, 0, 128],
+			[0, 128, 128],
+			[192, 192, 192],
+			[128, 128, 128],
+			[255, 0, 0],
+			[0, 255, 0],
+			[255, 255, 0],
+			[0, 0, 255],
+			[255, 0, 255],
+			[0, 255, 255],
+			[255, 255, 255],
+		];
+		return base[code] ?? RGB_FALLBACK;
+	}
+	if (code >= 16 && code <= 231) {
+		const n = code - 16;
+		const r = Math.floor(n / 36);
+		const g = Math.floor((n % 36) / 6);
+		const b = n % 6;
+		const scale = (value: number) => (value === 0 ? 0 : 55 + value * 40);
+		return [scale(r), scale(g), scale(b)];
+	}
+	const gray = 8 + (code - 232) * 10;
+	return [gray, gray, gray];
+}
+
+function colorAnsi(theme: RenderTheme, role: string): string | undefined {
+	if (theme.getFgAnsi) return theme.getFgAnsi(role);
+	const sample = theme.fg(role, "x");
+	const marker = sample.indexOf("x");
+	const ansi = marker >= 0 ? sample.slice(0, marker) : undefined;
+	return ansi?.includes("\x1b[38;") ? ansi : undefined;
+}
+
+function colorRgb(theme: RenderTheme, role: string): Rgb {
+	const ansi = colorAnsi(theme, role);
+	const truecolor = ansi?.match(/\x1b\[38;2;(\d+);(\d+);(\d+)m/);
+	if (truecolor) return [Number(truecolor[1]), Number(truecolor[2]), Number(truecolor[3])];
+	const color256 = ansi?.match(/\x1b\[38;5;(\d+)m/);
+	if (color256) return ansi256ToRgb(Number(color256[1]));
+	return RGB_FALLBACK;
+}
+
+function scaleRgb([r, g, b]: Rgb, factor: number): Rgb {
+	const scale = (value: number) => Math.round(Math.max(0, Math.min(255, value * factor)));
+	return [scale(r), scale(g), scale(b)];
+}
+
+function rgbFg([r, g, b]: Rgb): string {
+	return `\x1b[38;2;${r};${g};${b}m`;
+}
+
+function editElapsedMs(context: { state?: Record<string, unknown> } | undefined, running: boolean): number | undefined {
+	const state = context?.state;
+	if (!running || !state) return undefined;
+	if (typeof state.startedAtMs !== "number") state.startedAtMs = Date.now();
+	return Date.now() - state.startedAtMs;
+}
+
+function scheduleEditInvalidation(
+	context: { state?: Record<string, unknown>; invalidate?: () => void } | undefined,
+	running: boolean,
+): void {
+	const state = context?.state;
+	if (!state) return;
+	const timer = state.elapsedTimer as ReturnType<typeof setTimeout> | undefined;
+	if (!running) {
+		if (timer) {
+			clearTimeout(timer);
+			state.elapsedTimer = undefined;
+		}
+		return;
+	}
+	if (timer || !context?.invalidate) return;
+	state.elapsedTimer = setTimeout(() => {
+		state.elapsedTimer = undefined;
+		context.invalidate?.();
+	}, EDIT_FRAME_MS);
+	state.elapsedTimer.unref?.();
+}
+
+function editRunningFrame(elapsedMs: number | undefined): string {
+	if (elapsedMs === undefined) return EDIT_RUNNING_FRAMES[0]!;
+	return EDIT_RUNNING_FRAMES[Math.floor(elapsedMs / EDIT_FRAME_MS) % EDIT_RUNNING_FRAMES.length]!;
+}
+
+function editRunningLabel(theme: RenderTheme, elapsedMs: number | undefined): string {
+	if (!colorAnsi(theme, "accent")) return theme.fg("warning", EDIT_LABEL);
+	const base = scaleRgb(colorRgb(theme, "accent"), 0.55);
+	const shine = scaleRgb(colorRgb(theme, "accent"), 1.55);
+	const chars = [...EDIT_LABEL];
+	const step = Math.floor((elapsedMs ?? 0) / EDIT_LABEL_PERCOLATION_MS);
+	const cycle = chars.length + EDIT_LABEL_SHINE_WIDTH;
+	const pos = step % cycle;
+	return `${chars
+		.map((ch, index) => {
+			const inShine = index >= pos - EDIT_LABEL_SHINE_WIDTH && index < pos;
+			return `${rgbFg(inShine ? shine : base)}${ch}`;
+		})
+		.join("")}\x1b[39m`;
+}
+
+function renderEditRunningHeader(theme: RenderTheme, elapsedMs: number | undefined, rest: string): string {
+	return `${theme.fg("dim", editRunningFrame(elapsedMs))} ${theme.fg("toolTitle", theme.bold(editRunningLabel(theme, elapsedMs)))}${rest}`;
+}
+
+class EditCallView {
+	constructor(
+		private readonly summary: { target?: string; line?: number; suffix: string },
+		private readonly theme: RenderTheme,
+		private readonly running: boolean,
+		private readonly elapsedMs: number | undefined,
+	) {}
+
+	invalidate() {}
+
+	render(width: number): string[] {
+		const path = this.summary.target ? shortenDisplayPath(this.summary.target) : invalidArgText(this.theme);
+		const line = this.summary.line ? this.theme.fg("warning", `:${this.summary.line}`) : "";
+		const rest = ` ${fileIcon(this.theme, this.summary.target)} ${this.theme.fg("accent", `${path}${line}`)}${this.theme.fg("dim", this.summary.suffix)}`;
+		const header = this.running
+			? renderEditRunningHeader(this.theme, this.elapsedMs, rest)
+			: renderStatusHeader("Edit:", this.theme, rest);
+		return renderHeaderBox(header, this.theme, "pending").render(width);
+	}
+}
+
+function renderHeaderBox(text: string, theme: RenderTheme, state: "success" | "error" | "pending"): Box {
+	const role = state === "success" ? "toolSuccessBg" : state === "error" ? "toolErrorBg" : "toolPendingBg";
+	const box = new Box(0, 0, theme.bg ? (line) => theme.bg?.(role, line) ?? line : undefined);
+	box.addChild(new Text(text, 0, 0));
+	return box;
+}
+
+function formatReadLineRange(args: { path?: string; offset?: number; limit?: number; ranges?: string[] }): string {
+	if (args.ranges?.length) return `:${args.ranges.join(",")}`;
+	const selector = typeof args.path === "string" ? splitReadPathSelector(args.path).ranges : [];
+	if (selector.length > 0)
+		return `:${selector.map((range) => (range.start === range.end ? range.start : `${range.start}-${range.end}`)).join(",")}`;
+	if (args.offset === undefined && args.limit === undefined) return "";
+	const startLine = args.offset ?? 1;
+	const endLine = args.limit !== undefined ? startLine + args.limit - 1 : "";
+	return `:${startLine}${endLine ? `-${endLine}` : ""}`;
+}
+
+function renderNumberedRows(
+	rows: readonly string[],
+	theme: RenderTheme,
+	limit: number,
+	highlightedRows: readonly string[] = [],
+): string {
+	const output: string[] = [];
+	const displayed = rows.slice(0, limit);
+	for (const [index, row] of displayed.entries()) {
+		const match = /^([ *]?)([1-9]\d*):(.*)$/.exec(row);
+		if (!match) {
+			output.push(theme.fg("toolOutput", row));
+			continue;
+		}
+		const marker = match[1] === "*" ? "*" : " ";
+		const lineNumber = match[2]?.padStart(3, " ") ?? "";
+		const fallbackBody = theme.fg("toolOutput", match[3] ?? "");
+		const body = highlightedRows[index] ?? fallbackBody;
+		output.push(`${theme.fg("dim", `${marker}${lineNumber}│`)}${body}`);
+	}
+	if (rows.length > limit) output.push(theme.fg("muted", `... (${rows.length - limit} more lines, ctrl+e to expand)`));
+	return output.join("\n");
+}
+
+function parseHashlineSections(text: string): Array<{ path: string; rows: string[] }> {
+	const sections: Array<{ path: string; rows: string[] }> = [];
+	let current: { path: string; rows: string[] } | undefined;
+	for (const line of toolTextLines(text)) {
+		const header = /^¶(.+?)#[0-9A-Fa-f]{3}$/.exec(line);
+		if (header) {
+			current = { path: header[1] ?? "", rows: [] };
+			sections.push(current);
+			continue;
+		}
+		if (current && line.length > 0 && !line.startsWith("[")) current.rows.push(line);
+	}
+	return sections;
+}
+
+function renderReadCall(
+	params: { path?: string; offset?: number; limit?: number; ranges?: string[] },
+	theme: RenderTheme,
+): Text {
+	const path = typeof params.path === "string" ? splitReadPathSelector(params.path).path : undefined;
+	const display = path ? `${shortenDisplayPath(path)}${formatReadLineRange(params)}` : invalidArgText(theme);
+	return renderText(renderStatusHeader("Read", theme, ` ${theme.fg("accent", display)}`));
+}
+
+function renderHashlineReadResult(
+	result: ToolTextResult,
+	options: { expanded?: boolean; isPartial?: boolean },
+	theme: RenderTheme,
+): Text | EmptyView {
+	if (options.isPartial) return renderText(theme.fg("warning", "Reading..."));
+	if (!options.expanded) return EMPTY_VIEW;
+	const sections = parseHashlineSections(firstTextContent(result));
+	const section = sections[0];
+	if (!section) return EMPTY_VIEW;
+	const highlightedRows = Array.isArray(result.details?.highlightedRows)
+		? (result.details.highlightedRows as string[])
+		: [];
+	return renderText(renderNumberedRows(section.rows, theme, section.rows.length, highlightedRows));
+}
+
+function renderSearchCall(_params: { pattern?: unknown; path?: unknown }, _theme: RenderTheme): EmptyView {
+	return EMPTY_VIEW;
+}
+
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function highlightSearchText(text: string, pattern: string, theme: RenderTheme): string {
+	if (!pattern) return theme.fg("toolOutput", text);
+	let regex: RegExp;
+	try {
+		regex = new RegExp(pattern, "gi");
+	} catch {
+		regex = new RegExp(escapeRegExp(pattern), "gi");
+	}
+	return theme
+		.fg("toolOutput", text)
+		.replace(regex, (match) =>
+			match.length === 0 ? match : (theme.inverse?.(match) ?? theme.fg("toolDiffAdded", match)),
+		);
+}
+
+function renderSearchRow(row: string, pattern: string, theme: RenderTheme, highlightedBody?: string): string {
+	const match = /^([ *]?)([1-9]\d*):(.*)$/.exec(row);
+	if (!match) return theme.fg("toolOutput", row);
+	const marker = match[1] === "*" ? "*" : " ";
+	const lineNumber = match[2]?.padStart(3, " ") ?? "";
+	const body = highlightedBody ?? highlightSearchText(match[3] ?? "", pattern, theme);
+	const gutterRole = marker === "*" ? "toolDiffAdded" : "dim";
+	return `${theme.fg(gutterRole, `${marker}${lineNumber}│`)}${body}`;
+}
+
+function renderSearchSections(
+	sections: Array<{ path: string; rows: string[] }>,
+	highlightedSections: readonly HighlightedSection[],
+	theme: RenderTheme,
+	expanded: boolean,
+	pattern: string,
+): string {
+	const lines: string[] = [];
+	const maxRows = expanded ? Number.POSITIVE_INFINITY : 12;
+	let emittedRows = 0;
+	for (let sectionIndex = 0; sectionIndex < sections.length; sectionIndex++) {
+		const section = sections[sectionIndex];
+		const highlighted = highlightedSections.find((candidate) => candidate.path === section.path);
+		const isLastSection = sectionIndex === sections.length - 1;
+		const branch = isLastSection ? treeLast(theme) : treeBranch(theme);
+		const continuation = isLastSection ? "   " : `${theme.tree?.vertical ?? "│"}  `;
+		lines.push(
+			`${theme.fg("dim", `${branch} `)}${theme.fg("accent", `${fileIcon(theme, section.path)} ${shortenDisplayPath(section.path)}`)}`,
+		);
+		for (const [rowIndex, row] of section.rows.entries()) {
+			if (emittedRows >= maxRows) break;
+			lines.push(
+				`${theme.fg("dim", continuation)}${renderSearchRow(row, pattern, theme, highlighted?.rows[rowIndex])}`,
+			);
+			emittedRows++;
+		}
+	}
+	const totalRows = sections.reduce((count, section) => count + section.rows.length, 0);
+	if (totalRows > emittedRows)
+		lines.push(theme.fg("muted", `... (${totalRows - emittedRows} more lines, ctrl+e to expand)`));
+	return lines.join("\n");
+}
+
+function renderSearchResult(
+	result: ToolTextResult,
+	options: { expanded?: boolean; isPartial?: boolean },
+	theme: RenderTheme,
+	args?: { pattern?: unknown; path?: unknown },
+): Text | BlockTextView | EmptyView {
+	if (options.isPartial) return renderText(theme.fg("warning", "Searching..."));
+	const text = firstTextContent(result).trim();
+	if (!text.startsWith("¶")) return renderText(renderStatusHeader("Search:", theme, ` ${theme.fg("dim", text)}`));
+	const sections = parseHashlineSections(text);
+	const matchCount = sections.reduce(
+		(count, section) => count + section.rows.filter((row) => row.startsWith("*")).length,
+		0,
+	);
+	const fileText = `${sections.length} file${sections.length === 1 ? "" : "s"}`;
+	const pattern = typeof args?.pattern === "string" ? args.pattern : "";
+	const path = typeof args?.path === "string" ? splitReadPathSelector(args.path).path : sections[0]?.path;
+	const header = renderStatusHeader(
+		"Search:",
+		theme,
+		` ${theme.fg("accent", pattern)} ${theme.fg("dim", `${matchCount} match${matchCount === 1 ? "" : "es"} · ${fileText} · in ${shortenDisplayPath(path ?? ".")}`)}`,
+	);
+	const highlightedSections = Array.isArray(result.details?.highlightedSections)
+		? (result.details.highlightedSections as HighlightedSection[])
+		: [];
+	const body = renderSearchSections(sections, highlightedSections, theme, options.expanded ?? false, pattern);
+	return new BlockTextView(`${header}${body ? `\n${body}` : ""}`, theme);
+}
+function renderFindCall(params: { paths?: string[]; pattern?: unknown; path?: unknown }, theme: RenderTheme): Text {
+	const target = Array.isArray(params.paths) ? params.paths.join(", ") : String(params.pattern ?? "");
+	const where = Array.isArray(params.paths) ? dirname(params.paths[0] ?? ".") : String(params.path ?? ".");
+	return renderText(
+		renderStatusHeader(
+			"Find:",
+			theme,
+			` ${theme.fg("accent", shortenDisplayPath(target))} ${theme.fg("dim", `in ${shortenDisplayPath(where)}`)}`,
+		),
+	);
+}
+
+function renderFindResult(
+	result: ToolTextResult,
+	options: { expanded?: boolean; isPartial?: boolean },
+	theme: RenderTheme,
+	args?: { paths?: string[]; pattern?: unknown; path?: unknown },
+): Text {
+	if (options.isPartial) return renderText(theme.fg("warning", "Finding files..."));
+	const files = toolTextLines(firstTextContent(result).trim()).filter((line) => line && !line.startsWith("No files"));
+	const target = Array.isArray(args?.paths) ? args.paths.join(", ") : String(args?.pattern ?? "");
+	const where = Array.isArray(args?.paths) ? dirname(args.paths[0] ?? ".") : String(args?.path ?? ".");
+	const header = renderStatusHeader(
+		"Find:",
+		theme,
+		` ${theme.fg("accent", shortenDisplayPath(target))} ${theme.fg("dim", `${files.length} file${files.length === 1 ? "" : "s"} · in ${shortenDisplayPath(where)}`)}`,
+	);
+	const shown = files.slice(0, options.expanded ? files.length : 20);
+	const body = shown
+		.map(
+			(file, index) =>
+				`${theme.fg("dim", `${index === shown.length - 1 ? treeLast(theme) : treeBranch(theme)} ${fileIcon(theme, file)} `)}${theme.fg("toolOutput", shortenDisplayPath(file))}`,
+		)
+		.join("\n");
+	const more =
+		files.length > shown.length
+			? `\n${theme.fg("muted", `... (${files.length - shown.length} more files, ctrl+e to expand)`)}`
+			: "";
+	return renderText(`${header}${body ? `\n${body}${more}` : ""}`);
+}
+function renderWriteCall(
+	params: { path?: string; content?: string },
+	theme: RenderTheme,
+	options: { expanded?: boolean } = {},
+): Text {
+	const path = params.path ? shortenDisplayPath(params.path) : invalidArgText(theme);
+	if (typeof params.content !== "string") {
+		return renderText(
+			`${renderStatusHeader("Write:", theme, ` ${theme.fg("accent", path)}`)}\n\n${theme.fg("error", "[invalid content arg - expected string]")}`,
+		);
+	}
+	const rows = params.content.split("\n").map((line, index) => `${index + 1}:${line}`);
+	const bodyRows = params.content.split("\n");
+	const limit = options.expanded ? rows.length : 12;
+	const highlightedRows = highlightCodeRowsSync(params.path, bodyRows.slice(0, limit));
+	const lineCount = rows.length;
+	const header = renderStatusHeader(
+		"Write:",
+		theme,
+		` ${fileIcon(theme, params.path)} ${theme.fg("accent", path)} ${theme.fg("dim", `· ${lineCount} lines`)}`,
+	);
+	return renderText(`${header}\n\n${renderNumberedRows(rows, theme, limit, highlightedRows)}`);
+}
+
+function renderWriteResult(
+	result: ToolTextResult,
+	options: { isPartial?: boolean },
+	theme: RenderTheme,
+): Text | EmptyView {
+	if (options.isPartial) return renderText(theme.fg("warning", "Writing..."));
+	const text = firstTextContent(result);
+	return /error/i.test(text) ? renderText(`\n${theme.fg("error", text)}`) : EMPTY_VIEW;
+}
+
+function summarizeEditInput(input: unknown, mode: EditMode): { target?: string; line?: number; suffix: string } {
+	if (typeof input !== "string") return { suffix: ` (${mode})` };
+	const hashline = input.match(/^¶(.+?)(?:#[0-9A-Fa-f]{3})?$/m);
+	const range = input.match(/^([1-9]\d*)\s+[1-9]\d*$/m);
+	if (hashline) return { target: hashline[1], line: range ? Number(range[1]) : undefined, suffix: "" };
+	const file = input.match(/^\*\*\* (?:File|Add File|Update File|Delete File):\s*(.+)$/m);
+	if (file) return { target: file[1], suffix: "" };
+	return { suffix: ` (${mode})` };
+}
+
+function renderEditCall(
+	summary: { target?: string; line?: number; suffix: string },
+	theme: RenderTheme,
+	context?: { state?: Record<string, unknown>; isPartial?: boolean; invalidate?: () => void },
+): EditCallView {
+	const running = context?.isPartial === true;
+	scheduleEditInvalidation(context, running);
+	return new EditCallView(summary, theme, running, editElapsedMs(context, running));
+}
+function renderEditResult(
+	result: ToolTextResult,
+	options: { expanded?: boolean; isPartial?: boolean },
+	theme: RenderTheme,
+) {
+	if (options.isPartial) return renderText(theme.fg("warning", "Editing..."));
+	const text = firstTextContent(result);
+	if (/rejected|error/i.test(text.split("\n")[0] ?? "")) return renderText(`\n${theme.fg("error", text)}`);
+	const diff = typeof result.details?.diff === "string" ? result.details.diff : "";
+	if (!diff) return options.expanded ? renderText(theme.fg("toolOutput", text)) : renderText("");
+	const rows = Array.isArray(result.details?.highlightedDiffRows)
+		? (result.details.highlightedDiffRows as DiffRenderRow[])
+		: undefined;
+	return new EditDiffView(diff, rows, options.expanded ?? false, theme);
+}
+
+function splitGlobSearchRoot(cwd: string, pattern: string): { root: string; glob: string } {
+	const normalized = pattern.replace(/\\/g, "/");
+	const firstGlob = normalized.search(/[*?[{]/);
+	if (firstGlob === -1) return { root: cwd, glob: normalized };
+	const slashBeforeGlob = normalized.lastIndexOf("/", firstGlob);
+	if (slashBeforeGlob === -1) return { root: cwd, glob: normalized };
+	const rootText = normalized.slice(0, slashBeforeGlob) || "/";
+	const glob = normalized.slice(slashBeforeGlob + 1);
+	return { root: absolutePath(cwd, rootText), glob };
+}
 const HASHLINE_SNAPSHOTS = new UpstreamInMemorySnapshotStore();
 
 function recordHashlineContiguous(
@@ -421,6 +964,7 @@ async function executeReplace(
 		await writeFile(target, bom + restoreLineEndings(current, lineEnding), "utf-8");
 
 		const patch = createTwoFilesPatch(normalized.path, normalized.path, before, current, "", "", { context: 3 });
+		const highlightedDiffRows = await buildHighlightedDiffRows(patch);
 		return {
 			content: [
 				{
@@ -428,7 +972,7 @@ async function executeReplace(
 					text: `Successfully replaced ${total} occurrence${total === 1 ? "" : "s"} in ${normalized.path}.`,
 				},
 			],
-			details: { diff: patch, patch, firstChangedLine: firstChangedLine(before, current) },
+			details: { diff: patch, patch, highlightedDiffRows, firstChangedLine: firstChangedLine(before, current) },
 		};
 	});
 }
@@ -636,6 +1180,7 @@ async function executeHashline(cwd: string, input: string) {
 	const warnings = applied.sections.flatMap((section) => section.warnings);
 	const firstLine = applied.sections.find((section) => section.firstChangedLine !== undefined)?.firstChangedLine;
 	const preview = buildCompactDiffPreview(diff).preview;
+	const highlightedDiffRows = await buildHighlightedDiffRows(diff);
 	return {
 		content: [
 			{
@@ -651,6 +1196,7 @@ async function executeHashline(cwd: string, input: string) {
 		details: {
 			diff,
 			patch: diff,
+			highlightedDiffRows,
 			preview,
 			results: applied.sections,
 			firstChangedLine: firstLine,
@@ -698,6 +1244,13 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 		description:
 			"Read a text file. In hashline edit mode, returns ¶PATH#TAG plus LINE:TEXT rows that can be targeted by hashline edits.",
 		parameters: readToolSchema,
+		renderShell: "self",
+		renderCall(params, theme) {
+			return renderReadCall(params, theme);
+		},
+		renderResult(result, options, theme) {
+			return renderHashlineReadResult(result as ToolTextResult, options, theme);
+		},
 		async execute(
 			toolCallId,
 			params: { path: string; offset?: number; limit?: number; ranges?: string[]; raw?: boolean },
@@ -725,11 +1278,17 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 				const tag = wholeFile
 					? recordHashlineContiguous(absolute, 1, allLines, text)
 					: recordHashlineSparse(absolute, entries);
-				const output = [
-					formatHashlineHeader(displayPath(callCwd, absolute), tag),
-					...entries.map(([lineNumber, line]) => `${lineNumber}:${line}`),
-				].join("\n");
-				return { content: [{ type: "text", text: output }], details: { hashlineTag: tag, ranges } };
+				const outputRows = entries.map(([lineNumber, line]) => `${lineNumber}:${line}`);
+				const output = [formatHashlineHeader(displayPath(callCwd, absolute), tag), ...outputRows].join("\n");
+				const visibleEntries = entries.slice(0, 80);
+				const highlightedRows = await highlightCodeRows(
+					selectedPath,
+					visibleEntries.map(([, line]) => line),
+				);
+				return {
+					content: [{ type: "text", text: output }],
+					details: { hashlineTag: tag, ranges, highlightedRows },
+				};
 			}
 			const startLine = Math.max(1, Math.floor(params.offset ?? 1));
 			if (startLine > allLines.length)
@@ -748,9 +1307,15 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 			);
 			let output = `${formatHashlineHeader(displayPath(callCwd, absolute), tag)}\n${formatNumberedLines(selected.join("\n"), startLine)}`;
 			if (endExclusive < allLines.length) {
-				output += `\n\n[${allLines.length - endExclusive} more lines in file. Use offset=${endExclusive + 1} or path:${endExclusive + 1}-${allLines.length} to continue.]`;
+				const remaining = allLines.length - endExclusive;
+				const lineWord = remaining === 1 ? "line" : "lines";
+				output += `\n\n[${remaining} more ${lineWord} in file. Use offset=${endExclusive + 1} or path:${endExclusive + 1}-${allLines.length} to continue.]`;
 			}
-			return { content: [{ type: "text", text: output }], details: { hashlineTag: tag } };
+			const visibleSelected = selected.slice(0, 80);
+			return {
+				content: [{ type: "text", text: output }],
+				details: { hashlineTag: tag, highlightedRows: await highlightCodeRows(selectedPath, visibleSelected) },
+			};
 		},
 	});
 
@@ -761,15 +1326,28 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 			"Search file contents. In hashline edit mode, matching lines are grouped under ¶PATH#TAG headers with LINE:TEXT rows.",
 		promptSnippet: "Search file contents and return hashline-editable matches",
 		parameters: searchToolSchema,
+		renderShell: "self",
+		renderCall(params, theme) {
+			return renderSearchCall(params, theme);
+		},
+		renderResult(result, options, theme, context) {
+			return renderSearchResult(result as ToolTextResult, options, theme, context.args as any);
+		},
 		async execute(_toolCallId, params: any, signal, _onUpdate, ctx) {
 			const callCwd = ctx?.cwd ?? cwd;
+			const selector = params.path ? splitReadPathSelector(String(params.path)) : { path: undefined, ranges: [] };
+			const explicitRanges = [
+				...selector.ranges,
+				...(params.ranges ?? []).flatMap((rangeList: string) => rangeList.split(",").map(parseLineRange)),
+			];
+			const searchPath = selector.path;
 			const args = ["--line-number", "--color=never", "--hidden", "--no-heading"];
 			if (params.ignoreCase) args.push("--ignore-case");
 			if (params.literal) args.push("--fixed-strings");
 			if (params.glob) args.push("--glob", String(params.glob));
 			if (params.context && params.context > 0) args.push("-C", String(Math.max(0, Math.floor(params.context))));
 			if (params.limit && params.limit > 0) args.push("--max-count", String(Math.floor(params.limit)));
-			args.push("--", String(params.pattern), params.path ? String(params.path) : ".");
+			args.push("--", String(params.pattern), searchPath ? String(searchPath) : ".");
 			const result = await runExternalCommand("rg", args, callCwd, { signal, allowNonZero: true });
 			if (result.exitCode === 1 || result.stdout.trim().length === 0) {
 				return { content: [{ type: "text", text: "No matches found" }] };
@@ -778,30 +1356,46 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 			for (const line of result.stdout.replace(/\r\n?/g, "\n").split("\n")) {
 				if (!line.trim() || line === "--") continue;
 				const match = /^(.*?)([:-])([1-9]\d*)([:-])(.*)$/.exec(line);
-				const singleFileMatch = !match && params.path ? /^([1-9]\d*)([:-])(.*)$/.exec(line) : undefined;
+				const singleFileMatch = !match && searchPath ? /^([1-9]\d*)([:-])(.*)$/.exec(line) : undefined;
 				if (!match && !singleFileMatch) continue;
-				const absolute = match ? absolutePath(callCwd, match[1]) : absolutePath(callCwd, String(params.path));
+				const absolute = match ? absolutePath(callCwd, match[1]) : absolutePath(callCwd, String(searchPath));
 				const lineNumber = Number(match ? match[3] : singleFileMatch?.[1]);
+				if (!lineNumberInRanges(lineNumber, explicitRanges)) continue;
 				const isMatch = (match ? match[2] : singleFileMatch?.[2]) === ":";
 				const fileLines = byFile.get(absolute) ?? new Map<number, { text: string; isMatch: boolean }>();
 				fileLines.set(lineNumber, { text: match ? match[5] : (singleFileMatch?.[3] ?? ""), isMatch });
 				byFile.set(absolute, fileLines);
 			}
+			if (byFile.size === 0) return { content: [{ type: "text", text: "No matches found in selected ranges" }] };
 			const sections: string[] = [];
-			for (const [absolute, sparse] of byFile) {
+			const highlightedSections: HighlightedSection[] = [];
+			for (const [absolute, sparse] of [...byFile.entries()].sort((left, right) =>
+				left[0].localeCompare(right[0]),
+			)) {
 				const ordered = [...sparse.entries()].sort((left, right) => left[0] - right[0]);
+				const display = displayPath(callCwd, absolute);
 				const tag = recordHashlineSparse(
 					absolute,
 					ordered.map(([lineNumber, entry]) => [lineNumber, entry.text] as const),
 				);
+				const visibleOrdered = ordered.slice(0, 80);
+				const highlightedRows = (
+					await highlightCodeRows(
+						display,
+						visibleOrdered.map(([, entry]) => entry.text),
+					)
+				).map((row, index) =>
+					visibleOrdered[index]?.[1].isMatch ? highlightSearchMatches(row, String(params.pattern)) : row,
+				);
+				highlightedSections.push({ path: display, rows: highlightedRows });
 				sections.push(
 					[
-						formatHashlineHeader(displayPath(callCwd, absolute), tag),
+						formatHashlineHeader(display, tag),
 						...ordered.map(([lineNumber, entry]) => `${entry.isMatch ? "*" : " "}${lineNumber}:${entry.text}`),
 					].join("\n"),
 				);
 			}
-			return { content: [{ type: "text", text: sections.join("\n\n") }] };
+			return { content: [{ type: "text", text: sections.join("\n\n") }], details: { highlightedSections } };
 		},
 	});
 
@@ -810,20 +1404,33 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 		name: "find",
 		description: "Find files by glob/path. Accepts either {pattern,path} or oh-my-pi-style {paths:[...]} inputs.",
 		parameters: findToolSchema,
+		renderShell: "self",
+		renderCall(params, theme) {
+			return renderFindCall(params, theme);
+		},
+		renderResult(result, options, theme, context) {
+			return renderFindResult(result as ToolTextResult, options, theme, context.args as any);
+		},
 		async execute(toolCallId, params: any, signal, onUpdate, ctx) {
 			if (!Array.isArray(params.paths)) return baseFind.execute(toolCallId, params, signal, onUpdate, ctx);
 			const callCwd = ctx?.cwd ?? cwd;
 			const limit = Math.max(1, Math.min(1000, Number(params.limit ?? 200)));
 			const outputs: string[] = [];
 			for (const pattern of params.paths) {
+				const search = splitGlobSearchRoot(callCwd, String(pattern));
 				const args = ["--files", "--color=never"];
 				if (!params.gitignore) args.push("--no-ignore");
 				if (params.hidden) args.push("--hidden");
-				args.push("--glob", String(pattern));
-				const result = await runExternalCommand("rg", args, callCwd, { signal, allowNonZero: true });
-				outputs.push(...result.stdout.split("\n").filter(Boolean));
+				args.push("--glob", search.glob);
+				const result = await runExternalCommand("rg", args, search.root, { signal, allowNonZero: true });
+				outputs.push(
+					...result.stdout
+						.split("\n")
+						.filter(Boolean)
+						.map((file) => displayPath(callCwd, absolutePath(search.root, file))),
+				);
 			}
-			const unique = [...new Set(outputs)].slice(0, limit);
+			const unique = [...new Set(outputs)].sort((left, right) => left.localeCompare(right)).slice(0, limit);
 			return {
 				content: [
 					{ type: "text", text: unique.length > 0 ? unique.join("\n") : "No files found matching pattern" },
@@ -838,6 +1445,13 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 		description:
 			"Write a file. In hashline edit mode, copied ¶PATH#TAG and LINE: prefixes are stripped from content before writing.",
 		parameters: writeToolSchema,
+		renderShell: "self",
+		renderCall(params, theme, context) {
+			return renderWriteCall(params, theme, context);
+		},
+		renderResult(result, options, theme) {
+			return renderWriteResult(result as ToolTextResult, options, theme);
+		},
 		async execute(
 			toolCallId,
 			params: { path: string; content: string; makeExecutable?: boolean },
@@ -889,12 +1503,17 @@ export default function fileopsExtension(pi: ExtensionAPI) {
 			promptSnippet: "Edit files using the configured edit mode; default mode is apply_patch/freeform.",
 			promptGuidelines: [
 				"Use edit for file edits when it is active; /edit-config controls whether edit uses apply_patch, patch, hashline, or replace mode.",
-				"Each edit mode has its own freeform grammar exposed through the input field.",
-				"Use write only when explicitly enabled elsewhere; this configuration keeps write disabled.",
 			],
 			parameters: modeParameters(),
 			renderShell: "self",
 			prepareArguments: prepareEditArguments,
+			renderCall(params, theme, context) {
+				const summary = summarizeEditInput((params as { input?: unknown }).input, current.mode);
+				return renderEditCall(summary, theme, context as any);
+			},
+			renderResult(result, options, theme) {
+				return renderEditResult(result as ToolTextResult, options, theme);
+			},
 			async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 				return executeByMode(ctx.cwd, params as EditInput, current, signal);
 			},

@@ -2,8 +2,6 @@
   "disabledTools": [
     "ls",
     "grab",
-    "find",
-    "read",
     "codex_apps_github_check_repo_initialized",
     "codex_apps_github_compare_commits",
     "codex_apps_github_download_user_content",
@@ -94,7 +92,6 @@
     "codex_apps_github_update_pull_request",
     "codex_apps_github_update_ref",
     "codex_apps_github_update_review_comment",
-    "spawn_lane",
     "spawn_map",
     "spawn_list"
   ]

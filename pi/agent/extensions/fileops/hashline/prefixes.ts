@@ -18,7 +18,8 @@ const HL_PREFIX_RE = /^\s*(?:>>>|>>)?\s*(?:[+*-]\s*)?\d+:/;
 const HL_PREFIX_PLUS_RE = /^\s*(?:>>>|>>)?\s*\+\s*\d+:/;
 const HL_HEADER_RE = /^\s*¶\S+#[0-9a-fA-F]{3}\s*$/;
 const DIFF_PLUS_RE = /^[+](?![+])/;
-const READ_TRUNCATION_NOTICE_RE = /^\[(?:Showing lines \d+-\d+ of \d+|\d+ more lines? in (?:file|\S+))\b.*\bUse :L?\d+/;
+const READ_TRUNCATION_NOTICE_RE =
+	/^\[(?:Showing lines \d+-\d+ of \d+|\d+ more lines? in (?:file|\S+))\b.*\bUse (?:offset=|:L?)\d+/;
 
 function stripLeadingHashlinePrefixes(line: string): string {
 	let result = line;
@@ -68,6 +69,18 @@ function collectLinePrefixStats(lines: string[]): LinePrefixStats {
 	return stats;
 }
 
+function isTruncationNotice(line: string): boolean {
+	return READ_TRUNCATION_NOTICE_RE.test(line);
+}
+
+function isDisplaySeparatorBeforeNotice(lines: readonly string[], index: number): boolean {
+	return lines[index] === "" && isTruncationNotice(lines[index + 1] ?? "");
+}
+
+function isHashlineDisplayNoise(line: string, lines: readonly string[], index: number): boolean {
+	return isTruncationNotice(line) || isDisplaySeparatorBeforeNotice(lines, index);
+}
+
 /**
  * Strip whichever prefix scheme the lines appear to be carrying:
  * - hashline line-number prefixes (`123:`) when every content line has one
@@ -91,7 +104,7 @@ export function stripNewLinePrefixes(lines: string[]): string[] {
 	if (!stripHash && !stripPlus && stats.diffPlusHashPrefixCount === 0) return lines;
 
 	return lines
-		.filter((line) => !READ_TRUNCATION_NOTICE_RE.test(line) && !(stripHash && HL_HEADER_RE.test(line)))
+		.filter((line, index) => !isHashlineDisplayNoise(line, lines, index) && !(stripHash && HL_HEADER_RE.test(line)))
 		.map((line) => {
 			if (stripHash) return stripLeadingHashlinePrefixes(line);
 			if (stripPlus) return line.replace(DIFF_PLUS_RE, "");
@@ -112,7 +125,7 @@ export function stripHashlinePrefixes(lines: string[]): string[] {
 	const contentLineCount = stats.nonEmpty - stats.headerCount;
 	if (contentLineCount === 0 || stats.hashPrefixCount !== contentLineCount) return lines;
 	return lines
-		.filter((line) => !READ_TRUNCATION_NOTICE_RE.test(line) && !HL_HEADER_RE.test(line))
+		.filter((line, index) => !isHashlineDisplayNoise(line, lines, index) && !HL_HEADER_RE.test(line))
 		.map((line) => stripLeadingHashlinePrefixes(line));
 }
 

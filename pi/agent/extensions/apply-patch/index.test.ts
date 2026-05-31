@@ -25,7 +25,6 @@ import applyPatchExtension, {
 const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const originalWebSocket = globalThis.WebSocket;
 const SUPPORTED_APPLY_PATCH_CONSTRUCTS = [
-	"*** Intent: ",
 	"*** Environment ID: ",
 	"*** Add File: ",
 	"*** Delete File: ",
@@ -39,6 +38,51 @@ const SUPPORTED_APPLY_PATCH_CONSTRUCTS = [
 	"*** End of File",
 ] as const;
 
+function codexSseSuccessResponse(text = "Recovered"): Response {
+	const encoder = new TextEncoder();
+	const events = [
+		{ type: "response.created", response: { id: "resp_sse" } },
+		{
+			type: "response.output_item.added",
+			item: { type: "message", id: "msg_sse", role: "assistant", status: "in_progress", content: [] },
+		},
+		{ type: "response.content_part.added", part: { type: "output_text", text: "" } },
+		{ type: "response.output_text.delta", delta: text },
+		{
+			type: "response.output_item.done",
+			item: {
+				type: "message",
+				id: "msg_sse",
+				role: "assistant",
+				status: "completed",
+				content: [{ type: "output_text", text }],
+			},
+		},
+		{
+			type: "response.completed",
+			response: {
+				id: "resp_sse",
+				status: "completed",
+				usage: {
+					input_tokens: 1,
+					output_tokens: 1,
+					total_tokens: 2,
+					input_tokens_details: { cached_tokens: 0 },
+				},
+			},
+		},
+	];
+	return new Response(
+		new ReadableStream({
+			start(controller) {
+				for (const event of events) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+				controller.close();
+			},
+		}),
+		{ status: 200 },
+	);
+}
+
 afterEach(() => {
 	globalThis.WebSocket = originalWebSocket;
 	closeOpenAICodexWebSocketSessions();
@@ -50,13 +94,12 @@ describe("apply_patch grammar drift guard", () => {
 		for (const construct of SUPPORTED_APPLY_PATCH_CONSTRUCTS) {
 			expect(APPLY_PATCH_GRAMMAR).toContain(construct);
 		}
-		expect(APPLY_PATCH_GRAMMAR).toContain("preamble: (intent | environment_id)+");
+		expect(APPLY_PATCH_GRAMMAR).toContain("preamble: environment_id*");
 		expect(APPLY_PATCH_GRAMMAR).toContain("move_spec: /(.+) -> (.+)/");
 	});
 
 	it("keeps tool descriptions aligned with advanced repair affordances", () => {
 		for (const description of [APPLY_PATCH_TOOL_DESCRIPTION, APPLY_PATCH_FREEFORM_TOOL_DESCRIPTION]) {
-			expect(description).toContain("*** Intent:");
 			expect(description).toContain("@@ lines A-B");
 		}
 		expect(APPLY_PATCH_TOOL_DESCRIPTION).toContain("*** Update Scope");
@@ -113,26 +156,6 @@ function registerApplyPatchTool(): any {
 	applyPatchExtension(pi as any);
 	expect(tool?.name).toBe("apply_patch");
 	return tool;
-}
-
-function registerApplyPatchCommands() {
-	const commands = new Map<string, any>();
-	const handlers = new Map<string, (...args: any[]) => any>();
-	const pi = {
-		on: (name: string, handler: (...args: any[]) => any) => {
-			handlers.set(name, handler);
-		},
-		registerCommand: (name: string, definition: any) => {
-			commands.set(name, definition);
-		},
-		registerTool: () => {},
-		getActiveTools: () => ["apply_patch"],
-		setActiveTools: () => {},
-		appendEntry: () => {},
-		events: { emit: () => {} },
-	};
-	applyPatchExtension(pi as any);
-	return { commands, handlers };
 }
 
 function renderContext(cwd: string, state: Record<string, unknown>, overrides: Record<string, unknown> = {}) {
@@ -318,32 +341,6 @@ describe("apply_patch renderer", () => {
 		expect(text).not.toContain("const before0");
 		expect(text).not.toContain("const after0");
 		expect(text.split("\n").length).toBeLessThan(200);
-	});
-
-	it("renders patch intent before the diff", () => {
-		const cwd = mkdtempSync(join(tmpdir(), "apply-patch-intent-render-"));
-		const tool = registerApplyPatchTool();
-		const state: Record<string, unknown> = {};
-
-		const result = tool.renderResult(
-			{
-				content: [{ type: "text", text: "M sample.js" }],
-				details: {
-					stage: "done",
-					filesChanged: 1,
-					fileDiffs: [{ path: "sample.js", operation: "update", added: 1, removed: 1 }],
-					diff: resolvedDiff,
-					intent: "Make the summary wording shorter.",
-				},
-			},
-			{ expanded: true, isPartial: false },
-			theme,
-			renderContext(cwd, state, { executionStarted: true }),
-		);
-
-		const text = renderText(result);
-		expect(text).toContain("Intent: Make the summary wording shorter.");
-		expect(text.indexOf("Intent:")).toBeLessThan(text.indexOf("• Edited sample.js"));
 	});
 
 	it("caches rendered diff output between identical TUI renders", () => {
@@ -912,140 +909,8 @@ describe("apply_patch renderer", () => {
 	});
 });
 
-describe("apply_patch intent command", () => {
-	it("registers /apply-patch-intents and removes /apply-patch-diff", () => {
-		const { commands } = registerApplyPatchCommands();
-
-		expect(commands.has("apply-patch-intents")).toBe(true);
-		expect(commands.has("apply-patch-diff")).toBe(false);
-	});
-
-	it("shows session intents with optional stats", async () => {
-		const { commands } = registerApplyPatchCommands();
-		const notifications: string[] = [];
-		const entries = [
-			{
-				message: {
-					role: "toolResult",
-					toolName: "apply_patch",
-					isError: false,
-					details: {
-						intent: "Make the summary wording shorter.",
-						fileDiffs: [{ path: "sample.js", operation: "update", added: 1, removed: 1 }],
-					},
-				},
-			},
-			{
-				message: {
-					role: "toolResult",
-					toolName: "functions.apply_patch",
-					isError: false,
-					details: {
-						intent: "Add command tests.",
-						fileDiffs: [
-							{ path: "index.test.ts", operation: "update", added: 12, removed: 0 },
-							{ path: "index.ts", operation: "update", added: 3, removed: 1 },
-						],
-					},
-				},
-			},
-		];
-
-		await commands.get("apply-patch-intents").handler("session --stat", {
-			sessionManager: { getBranch: () => entries },
-			ui: { notify: (message: string) => notifications.push(message) },
-		});
-
-		expect(notifications[0]).toBe(
-			["- Make the summary wording shorter. — sample.js (+1 -1)", "- Add command tests. — 2 files (+15 -1)"].join(
-				"\n",
-			),
-		);
-	});
-
-	it("shows last turn intents from the turn_end event", async () => {
-		const { commands, handlers } = registerApplyPatchCommands();
-		const notifications: string[] = [];
-
-		handlers.get("turn_end")?.({
-			toolResults: [
-				{
-					toolName: "apply_patch",
-					isError: false,
-					details: {
-						intent: "Update runtime behavior.",
-						fileDiffs: [{ path: "index.ts", operation: "update", added: 2, removed: 1 }],
-					},
-				},
-			],
-		});
-
-		await commands.get("apply-patch-intents").handler("turn", {
-			sessionManager: { getBranch: () => [] },
-			ui: { notify: (message: string) => notifications.push(message) },
-		});
-
-		expect(notifications[0]).toBe("- Update runtime behavior.");
-	});
-
-	it("keeps last turn intents when a final assistant turn has no tool results", async () => {
-		const { commands, handlers } = registerApplyPatchCommands();
-		const notifications: string[] = [];
-
-		handlers.get("agent_start")?.({});
-		handlers.get("turn_end")?.({
-			toolResults: [
-				{
-					toolName: "apply_patch",
-					isError: false,
-					details: {
-						intent: "Update runtime behavior.",
-						fileDiffs: [{ path: "index.ts", operation: "update", added: 2, removed: 1 }],
-					},
-				},
-			],
-		});
-		handlers.get("turn_end")?.({ toolResults: [] });
-
-		await commands.get("apply-patch-intents").handler("turn", {
-			sessionManager: { getBranch: () => [] },
-			ui: { notify: (message: string) => notifications.push(message) },
-		});
-
-		expect(notifications[0]).toBe("- Update runtime behavior.");
-	});
-
-	it("finds last turn intents in branch entries before the final assistant message", async () => {
-		const { commands } = registerApplyPatchCommands();
-		const notifications: string[] = [];
-		const entries = [
-			{ message: { role: "user" } },
-			{ message: { role: "assistant" } },
-			{
-				message: {
-					role: "toolResult",
-					toolName: "apply_patch",
-					isError: false,
-					details: {
-						intent: "Update runtime behavior.",
-						fileDiffs: [{ path: "index.ts", operation: "update", added: 2, removed: 1 }],
-					},
-				},
-			},
-			{ message: { role: "assistant" } },
-		];
-
-		await commands.get("apply-patch-intents").handler("turn", {
-			sessionManager: { getBranch: () => entries },
-			ui: { notify: (message: string) => notifications.push(message) },
-		});
-
-		expect(notifications[0]).toBe("- Update runtime behavior.");
-	});
-});
-
 describe("apply_patch Codex tool policy", () => {
-	it("blocks edit and write when the selected model is from the Codex provider", () => {
+	it("allows configured edit tool and blocks write when the selected model is from the Codex provider", () => {
 		type Handler = (...args: any[]) => any;
 		const handlers = new Map<string, Handler>();
 		const pi = {
@@ -1065,7 +930,7 @@ describe("apply_patch Codex tool policy", () => {
 		expect(handler).toBeDefined();
 
 		const ctx = { model: { provider: "openai-codex", id: "gpt-5.5" } };
-		expect(handler?.({ toolName: "edit" }, ctx)?.block).toBe(true);
+		expect(handler?.({ toolName: "edit" }, ctx)).toBeUndefined();
 		expect(handler?.({ toolName: "write" }, ctx)?.block).toBe(true);
 		expect(handler?.({ toolName: "read" }, ctx)).toBeUndefined();
 	});
@@ -1231,6 +1096,35 @@ describe("apply_patch Codex freeform provider", () => {
 			name: "apply_patch",
 			description: "Freeform apply_patch",
 			format: { type: "grammar", syntax: "lark", definition: "start: /.+/" },
+		});
+	});
+
+	it("uses per-tool freeform grammars when configured", () => {
+		const tools = convertTools(
+			[
+				{ name: "apply_patch", description: "JSON wrapper", parameters: { type: "object" } },
+				{ name: "edit", description: "Edit", parameters: { type: "object" } },
+			] as any,
+			{
+				toolName: "apply_patch",
+				description: "Freeform apply_patch",
+				grammar: "start: /apply/",
+				toolConfigs: {
+					edit: () => ({ description: "Hashline edit", grammar: "start: /hashline/" }),
+				},
+			},
+		);
+
+		expect(tools[0]).toMatchObject({
+			type: "custom",
+			name: "apply_patch",
+			format: { definition: "start: /apply/" },
+		});
+		expect(tools[1]).toMatchObject({
+			type: "custom",
+			name: "edit",
+			description: "Hashline edit",
+			format: { definition: "start: /hashline/" },
 		});
 	});
 
@@ -1411,48 +1305,7 @@ describe("apply_patch Codex freeform provider", () => {
 		globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
 		globalThis.fetch = (async () => {
 			fetchCalls++;
-			const encoder = new TextEncoder();
-			const events = [
-				{ type: "response.created", response: { id: "resp_sse" } },
-				{
-					type: "response.output_item.added",
-					item: { type: "message", id: "msg_sse", role: "assistant", status: "in_progress", content: [] },
-				},
-				{ type: "response.content_part.added", part: { type: "output_text", text: "" } },
-				{ type: "response.output_text.delta", delta: "Recovered" },
-				{
-					type: "response.output_item.done",
-					item: {
-						type: "message",
-						id: "msg_sse",
-						role: "assistant",
-						status: "completed",
-						content: [{ type: "output_text", text: "Recovered" }],
-					},
-				},
-				{
-					type: "response.completed",
-					response: {
-						id: "resp_sse",
-						status: "completed",
-						usage: {
-							input_tokens: 1,
-							output_tokens: 1,
-							total_tokens: 2,
-							input_tokens_details: { cached_tokens: 0 },
-						},
-					},
-				},
-			];
-			return new Response(
-				new ReadableStream({
-					start(controller) {
-						for (const event of events) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
-						controller.close();
-					},
-				}),
-				{ status: 200 },
-			);
+			return codexSseSuccessResponse();
 		}) as typeof fetch;
 
 		try {
@@ -1771,48 +1624,7 @@ describe("apply_patch Codex freeform provider", () => {
 		globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
 		globalThis.fetch = (async () => {
 			fetchCalls++;
-			const encoder = new TextEncoder();
-			const events = [
-				{ type: "response.created", response: { id: "resp_sse" } },
-				{
-					type: "response.output_item.added",
-					item: { type: "message", id: "msg_sse", role: "assistant", status: "in_progress", content: [] },
-				},
-				{ type: "response.content_part.added", part: { type: "output_text", text: "" } },
-				{ type: "response.output_text.delta", delta: "Recovered" },
-				{
-					type: "response.output_item.done",
-					item: {
-						type: "message",
-						id: "msg_sse",
-						role: "assistant",
-						status: "completed",
-						content: [{ type: "output_text", text: "Recovered" }],
-					},
-				},
-				{
-					type: "response.completed",
-					response: {
-						id: "resp_sse",
-						status: "completed",
-						usage: {
-							input_tokens: 1,
-							output_tokens: 1,
-							total_tokens: 2,
-							input_tokens_details: { cached_tokens: 0 },
-						},
-					},
-				},
-			];
-			return new Response(
-				new ReadableStream({
-					start(controller) {
-						for (const event of events) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
-						controller.close();
-					},
-				}),
-				{ status: 200 },
-			);
+			return codexSseSuccessResponse();
 		}) as typeof fetch;
 
 		try {
@@ -1892,48 +1704,7 @@ describe("apply_patch Codex freeform provider", () => {
 		globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
 		globalThis.fetch = (async () => {
 			fetchCalls++;
-			const encoder = new TextEncoder();
-			const events = [
-				{ type: "response.created", response: { id: "resp_sse" } },
-				{
-					type: "response.output_item.added",
-					item: { type: "message", id: "msg_sse", role: "assistant", status: "in_progress", content: [] },
-				},
-				{ type: "response.content_part.added", part: { type: "output_text", text: "" } },
-				{ type: "response.output_text.delta", delta: "Recovered" },
-				{
-					type: "response.output_item.done",
-					item: {
-						type: "message",
-						id: "msg_sse",
-						role: "assistant",
-						status: "completed",
-						content: [{ type: "output_text", text: "Recovered" }],
-					},
-				},
-				{
-					type: "response.completed",
-					response: {
-						id: "resp_sse",
-						status: "completed",
-						usage: {
-							input_tokens: 1,
-							output_tokens: 1,
-							total_tokens: 2,
-							input_tokens_details: { cached_tokens: 0 },
-						},
-					},
-				},
-			];
-			return new Response(
-				new ReadableStream({
-					start(controller) {
-						for (const event of events) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
-						controller.close();
-					},
-				}),
-				{ status: 200 },
-			);
+			return codexSseSuccessResponse();
 		}) as typeof fetch;
 
 		try {

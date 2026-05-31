@@ -233,16 +233,51 @@ const websocketSseFallbackSessions = new Set<string>();
 
 type ApplyPatchFreeformOptions = {
 	toolName: string;
+	toolNames?: string[];
 	description: string;
 	grammar: string;
+	toolConfigs?: Record<
+		string,
+		{ description: string; grammar: string } | (() => { description: string; grammar: string } | undefined)
+	>;
 	getCurrentCwd?: () => string;
 };
+
+function resolveFreeformToolConfig(
+	value:
+		| { description: string; grammar: string }
+		| (() => { description: string; grammar: string } | undefined)
+		| undefined,
+): { description: string; grammar: string } | undefined {
+	return typeof value === "function" ? value() : value;
+}
+
+function freeformToolNames(options: ApplyPatchFreeformOptions): Set<string> {
+	return new Set([
+		options.toolName,
+		...(options.toolNames ?? []),
+		...Object.entries(options.toolConfigs ?? {})
+			.filter(([, config]) => resolveFreeformToolConfig(config) !== undefined)
+			.map(([name]) => name),
+	]);
+}
+
+function freeformToolConfig(
+	options: ApplyPatchFreeformOptions,
+	toolName: string,
+): { description: string; grammar: string } {
+	return (
+		resolveFreeformToolConfig(options.toolConfigs?.[toolName]) ?? {
+			description: options.description,
+			grammar: options.grammar,
+		}
+	);
+}
 
 type PendingActivity =
 	| {
 			kind: "image";
 			savedImage: SavedGeneratedImage;
-			imageData: { data: string; mimeType: string };
 	  }
 	| { kind: "web-search"; search: SurfacedWebSearch };
 
@@ -302,7 +337,7 @@ export function registerApplyPatchFreeformProvider(pi: ExtensionAPI, options: Ap
 		streamSimple: (model, context, streamOptions) =>
 			streamFreeformCodexResponses(model, context, options, streamOptions, {
 				forceSse: forceSseForSession,
-				onImageSaved: (savedImage, imageData) => pendingActivities.push({ kind: "image", savedImage, imageData }),
+				onImageSaved: (savedImage) => pendingActivities.push({ kind: "image", savedImage }),
 				onWebSearchCaptured: (search) => pendingActivities.push({ kind: "web-search", search }),
 				onStreamSuccess: () => {
 					consecutiveWebSocketFailures = 0;
@@ -436,14 +471,14 @@ function streamFreeformCodexResponses(
 
 			stream.push({ type: "start", partial: output });
 			await processResponsesStream(
-				mapFreeformEvents(
+				mapFreeformEventsForTools(
 					captureNativeActivities(mapCodexEvents(parseSSE(response)), {
 						cwd: applyPatch.getCurrentCwd?.() ?? process.cwd(),
 						requestPrompt,
 						onImageSaved: (savedImage, imageData) => deps.onImageSaved?.(savedImage, imageData),
 						onWebSearchCaptured: (search) => deps.onWebSearchCaptured?.(search),
 					}),
-					applyPatch.toolName,
+					freeformToolNames(applyPatch),
 				) as AsyncIterable<never>,
 				output,
 				stream,
@@ -497,7 +532,7 @@ function buildRequestBody(
 	applyPatch: ApplyPatchFreeformOptions,
 	options?: SimpleStreamOptions,
 ) {
-	const messages = convertFreeformResponsesMessages(model, context, applyPatch.toolName);
+	const messages = convertFreeformResponsesMessagesForTools(model, context, freeformToolNames(applyPatch));
 	const body: any = {
 		model: model.id,
 		store: false,
@@ -532,10 +567,14 @@ function normalizeCustomToolCallItemId(id: string | undefined): string | undefin
 }
 
 export function convertFreeformResponsesMessages(model: Model<any>, context: Context, toolName: string) {
+	return convertFreeformResponsesMessagesForTools(model, context, new Set([toolName]));
+}
+
+function convertFreeformResponsesMessagesForTools(model: Model<any>, context: Context, toolNames: Set<string>) {
 	const messages = convertResponsesMessages(model, context, CODEX_TOOL_CALL_PROVIDERS, { includeSystemPrompt: false });
 	const applyPatchCallIds = new Set<string>();
 	return messages.map((item: any) => {
-		if (item?.type === "function_call" && item.name === toolName) {
+		if (item?.type === "function_call" && toolNames.has(item.name)) {
 			applyPatchCallIds.add(item.call_id);
 			let input = "";
 			try {
@@ -562,8 +601,9 @@ export function convertFreeformResponsesMessages(model: Model<any>, context: Con
 }
 
 export function convertTools(tools: Tool[], applyPatch: ApplyPatchFreeformOptions) {
+	const toolNames = freeformToolNames(applyPatch);
 	return tools.map((tool: any) => {
-		if (tool.name !== applyPatch.toolName) {
+		if (!toolNames.has(tool.name)) {
 			return {
 				type: "function",
 				name: tool.name,
@@ -574,25 +614,29 @@ export function convertTools(tools: Tool[], applyPatch: ApplyPatchFreeformOption
 		}
 		return {
 			type: "custom",
-			name: applyPatch.toolName,
-			description: applyPatch.description,
+			name: tool.name,
+			description: freeformToolConfig(applyPatch, tool.name).description,
 			format: {
 				type: "grammar",
 				syntax: "lark",
-				definition: applyPatch.grammar,
+				definition: freeformToolConfig(applyPatch, tool.name).grammar,
 			},
 		};
 	});
 }
 
 export async function* mapFreeformEvents(events: AsyncIterable<any>, toolName: string) {
+	yield* mapFreeformEventsForTools(events, new Set([toolName]));
+}
+
+async function* mapFreeformEventsForTools(events: AsyncIterable<any>, toolNames: Set<string>) {
 	const customInputs = new Map<string, string>();
 	const jsonStringOpen = new Set<string>();
 	for await (const event of events) {
 		if (
 			event.type === "response.output_item.added" &&
 			event.item?.type === "custom_tool_call" &&
-			event.item.name === toolName
+			toolNames.has(event.item.name)
 		) {
 			customInputs.set(event.item.id, event.item.input || "");
 			yield {
@@ -638,7 +682,7 @@ export async function* mapFreeformEvents(events: AsyncIterable<any>, toolName: s
 		if (
 			event.type === "response.output_item.done" &&
 			event.item?.type === "custom_tool_call" &&
-			event.item.name === toolName
+			toolNames.has(event.item.name)
 		) {
 			const raw = event.item.input ?? customInputs.get(event.item.id) ?? "";
 			if (jsonStringOpen.has(event.item.id)) {
@@ -1384,12 +1428,12 @@ async function processWebSocketStream(
 		socket.send(JSON.stringify({ type: "response.create", ...requestBody }));
 		await processResponsesStream(
 			startWebSocketOutputOnFirstEvent(
-				mapFreeformEvents(
+				mapFreeformEventsForTools(
 					captureNativeActivities(
 						mapCodexEvents(parseWebSocket(socket, options?.signal, idleTimeoutMs)),
 						activityOptions,
 					),
-					applyPatch.toolName,
+					freeformToolNames(applyPatch),
 				) as AsyncIterable<never>,
 				output,
 				stream,
@@ -1402,10 +1446,10 @@ async function processWebSocketStream(
 		if (options?.signal?.aborted) {
 			keepConnection = false;
 		} else if (useCachedContext && entry && output.responseId) {
-			const responseItems = convertFreeformResponsesMessages(
+			const responseItems = convertFreeformResponsesMessagesForTools(
 				model,
 				{ messages: [output] } as any,
-				applyPatch.toolName,
+				freeformToolNames(applyPatch),
 			).filter((item: any) => item.type !== "function_call_output" && item.type !== "custom_tool_call_output");
 			entry.continuation = {
 				lastRequestBody: fullBody,
