@@ -12,9 +12,8 @@ Use this skill for Plannotator browser sessions.
 
 Start Plannotator as a managed background terminal:
 
-1. Run `exec_command` with the Plannotator command, `context_guard: false`, and
-   a short `yield_time_ms`.
-2. End the turn once Plannotator is running.
+1. Run `exec_command` with the Plannotator command, `context_guard: false`, with no timeout.
+2. End the turn as soon as you spawn the command, no waiting, no polling.
 3. Resume work when the review or gate result is available.
 
 ## Code review
@@ -23,12 +22,9 @@ Start Plannotator as a managed background terminal:
 plannotator review
 ```
 
-Before starting review, state what changed, where feedback is requested, and
-anything intentionally left out.
+Before starting review, state what changed, where feedback is requested, and anything intentionally left out.
 
-Treat files or hunks staged by the user during Plannotator review as approved
-review selections. Preserve the index exactly as the user left it unless they
-ask for a staging change.
+Treat files or hunks staged by the user during Plannotator review as approved review selections. Preserve the index exactly as the user left it unless they ask for a staging change.
 
 ## Artifact gate
 

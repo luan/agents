@@ -2,7 +2,6 @@
 name: improve-rust-tests
 description: "Improve Rust test suites with a wide, evidence-grounded pass over placement, coverage, readability, and tooling. Use when the user asks to improve Rust tests, adopt stronger Rust testing practices, add property tests, reorganize unit/integration tests, or modernize a Rust project toward TDD guidance."
 user-invocable: true
-disable-model-invocation: true
 ---
 
 # Improve Rust Tests

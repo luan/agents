@@ -1,5 +1,5 @@
 {
-  "lastChangelogVersion": "0.75.5",
+  "lastChangelogVersion": "0.76.0",
   "steeringMode": "all",
   "autoUpdate": true,
   "transport": "auto",
@@ -8,9 +8,7 @@
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-5.5",
   "defaultThinkingLevel": "medium",
-  "skills": [
-    "../.codex/skills"
-  ],
+  "skills": ["../.codex/skills"],
   "packages": [
     "npm:@ifi/oh-pi-themes",
     "npm:@dreki-gg/pi-context7",
@@ -24,7 +22,7 @@
   "extensions": [
     "extensions/agents-local/index.ts",
     "extensions/fileops/index.ts",
-    "extensions/apply-patch/index.ts",
+    "-extensions/apply-patch/index.ts",
     "extensions/ask/index.ts",
     "extensions/codex-native/index.ts",
     "extensions/context7/index.ts",
