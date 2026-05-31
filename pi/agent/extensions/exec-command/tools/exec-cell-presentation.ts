@@ -109,8 +109,67 @@ export function renderExecCell(cell: ExecCell, env: RenderExecCellEnv): string {
 	return output ? `${header}\n${output}` : header;
 }
 
-export function renderExecCellComponent(cell: ExecCell, env: RenderExecCellEnv): Component {
+export function renderExecCellComponent(cell: ExecCell, env: RenderExecCellEnv, previous?: unknown): Component {
+	if (previous instanceof ExecCellComponent) {
+		previous.update(cell, env);
+		return previous;
+	}
 	return new ExecCellComponent(cell, env);
+}
+
+const MAX_CACHED_RENDER_TEXT_LENGTH = 16_384;
+
+function renderedTextSignature(text: string): string {
+	let hash = 2166136261;
+	for (let index = 0; index < text.length; index += 1) {
+		hash ^= text.charCodeAt(index);
+		hash = Math.imul(hash, 16777619);
+	}
+	return `${text.length}:${hash >>> 0}`;
+}
+function shouldCacheRenderedLines(cell: ExecCell, text: string): boolean {
+	return (
+		!cell.outputBlock ||
+		(cell.outputBlock.output.length <= MAX_CACHED_RENDER_TEXT_LENGTH && text.length <= MAX_CACHED_RENDER_TEXT_LENGTH)
+	);
+}
+
+class ExecCellComponent implements Component {
+	private renderedCache?: {
+		width: number;
+		textSignature: string;
+		lines: string[];
+	};
+
+	constructor(
+		private cell: ExecCell,
+		private env: RenderExecCellEnv,
+	) {}
+
+	update(cell: ExecCell, env: RenderExecCellEnv) {
+		this.cell = cell;
+		this.env = env;
+	}
+
+	invalidate() {
+		this.renderedCache = undefined;
+	}
+
+	render(width: number): string[] {
+		const text = renderExecCell(this.cell, { ...this.env, width });
+		const cacheable = shouldCacheRenderedLines(this.cell, text);
+		const textSignature = cacheable ? renderedTextSignature(text) : undefined;
+		if (
+			textSignature !== undefined &&
+			this.renderedCache?.width === width &&
+			this.renderedCache.textSignature === textSignature
+		) {
+			return this.renderedCache.lines;
+		}
+		const lines = new Text(text, 0, 0).render(width);
+		this.renderedCache = textSignature === undefined ? undefined : { width, textSignature, lines };
+		return lines;
+	}
 }
 
 export function renderBackgroundTerminalHud(
@@ -128,33 +187,6 @@ export function renderBackgroundTerminalHud(
 		env.width,
 		cell.stdinOpen,
 	);
-}
-
-class ExecCellComponent implements Component {
-	private renderedCache?: {
-		width: number;
-		lines: string[];
-	};
-
-	constructor(
-		private readonly cell: ExecCell,
-		private readonly env: RenderExecCellEnv,
-	) {}
-
-	invalidate() {
-		this.renderedCache = undefined;
-	}
-
-	render(width: number): string[] {
-		if (this.cell.status !== "running" && this.renderedCache?.width === width) {
-			return this.renderedCache.lines;
-		}
-		const lines = new Text(renderExecCell(this.cell, { ...this.env, width }), 0, 0).render(width);
-		if (this.cell.status !== "running") {
-			this.renderedCache = { width, lines };
-		}
-		return lines;
-	}
 }
 
 function renderBackgroundTerminalWidgetLine(

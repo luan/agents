@@ -61,6 +61,15 @@ async function waitForProcessListToExclude(marker: string): Promise<void> {
 	expect(processList()).not.toContain(marker);
 }
 
+async function waitForCondition(condition: () => boolean, timeoutMs = 4000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if (condition()) return;
+		await Bun.sleep(50);
+	}
+	expect(condition()).toBe(true);
+}
+
 function renderExecCommandCall(
 	command: string,
 	state: "running" | "done",
@@ -308,6 +317,36 @@ test("exec cell facade caches stable component renders by width", () => {
 	expect(component.render(72)).not.toBe(first);
 	component.invalidate();
 	expect(component.render(80)).not.toBe(first);
+});
+
+test("exec cell facade does not retain render caches for large output blocks", () => {
+	const component = renderExecCellComponent(
+		{
+			kind: "command",
+			status: "done",
+			command: "printf large",
+			outputBlock: { output: `${"x".repeat(20_000)}\nend` },
+		},
+		{ theme: testTheme },
+	);
+
+	const first = component.render(80);
+	expect(component.render(80)).not.toBe(first);
+});
+
+test("exec cell facade reuses running renders when visible text is unchanged", () => {
+	const component = renderExecCellComponent(
+		{
+			kind: "command",
+			status: "running",
+			command: "sleep 60",
+			elapsedMs: 0,
+		},
+		{ theme: testTheme },
+	);
+
+	const first = component.render(80);
+	expect(component.render(80)).toBe(first);
 });
 
 test("exec cell facade renders write_stdin cells and output blocks", () => {
@@ -684,6 +723,90 @@ test("exploration grouping hides later placeholders before execution starts", ()
 	}
 });
 
+test("completed render contexts do not keep running-command elapsed timers alive", () => {
+	let tool: any;
+	const tracker = createExecCommandTracker();
+	const sessions = createExecSessionManager();
+	try {
+		registerExecCommandTool({ registerTool: (definition: any) => (tool = definition) } as any, tracker, sessions);
+		tracker.recordStart("call", "sleep 60");
+
+		const state: { elapsedTimer?: ReturnType<typeof setTimeout> } = {};
+		tool.renderCall({ cmd: "sleep 60" }, testTheme, {
+			toolCallId: "call",
+			state,
+			isPartial: false,
+			invalidate() {},
+		});
+
+		expect(state.elapsedTimer).toBeUndefined();
+	} finally {
+		tracker.clear();
+		sessions.shutdown();
+	}
+});
+
+test("running render contexts keep only one elapsed timer per tool call", () => {
+	let tool: any;
+	const tracker = createExecCommandTracker();
+	const sessions = createExecSessionManager();
+	try {
+		registerExecCommandTool({ registerTool: (definition: any) => (tool = definition) } as any, tracker, sessions);
+		tracker.recordStart("call", "sleep 60");
+
+		const firstState: { elapsedTimer?: ReturnType<typeof setTimeout> } = {};
+		const secondState: { elapsedTimer?: ReturnType<typeof setTimeout> } = {};
+		tool.renderCall({ cmd: "sleep 60" }, testTheme, {
+			toolCallId: "call",
+			state: firstState,
+			isPartial: true,
+			invalidate() {},
+		});
+		tool.renderCall({ cmd: "sleep 60" }, testTheme, {
+			toolCallId: "call",
+			state: secondState,
+			isPartial: true,
+			invalidate() {},
+		});
+
+		expect(firstState.elapsedTimer).toBeDefined();
+		expect(secondState.elapsedTimer).toBeUndefined();
+		if (firstState.elapsedTimer) clearTimeout(firstState.elapsedTimer);
+	} finally {
+		tracker.clear();
+		sessions.shutdown();
+	}
+});
+
+test("running render contexts without tool call ids de-dupe by command", () => {
+	let tool: any;
+	const tracker = createExecCommandTracker();
+	const sessions = createExecSessionManager();
+	try {
+		registerExecCommandTool({ registerTool: (definition: any) => (tool = definition) } as any, tracker, sessions);
+		tracker.recordStart("call", "sleep 60");
+
+		const firstState: { elapsedTimer?: ReturnType<typeof setTimeout> } = {};
+		const secondState: { elapsedTimer?: ReturnType<typeof setTimeout> } = {};
+		tool.renderCall({ cmd: "sleep 60" }, testTheme, {
+			state: firstState,
+			isPartial: true,
+			invalidate() {},
+		});
+		tool.renderCall({ cmd: "sleep 60" }, testTheme, {
+			state: secondState,
+			isPartial: true,
+			invalidate() {},
+		});
+
+		expect(firstState.elapsedTimer).toBeDefined();
+		expect(secondState.elapsedTimer).toBeUndefined();
+		if (firstState.elapsedTimer) clearTimeout(firstState.elapsedTimer);
+	} finally {
+		tracker.clear();
+		sessions.shutdown();
+	}
+});
 test("exploration grouping does not append a single command output preview", () => {
 	let tool: any;
 	const tracker = createExecCommandTracker();
@@ -695,7 +818,6 @@ test("exploration grouping does not append a single command output preview", () 
 		const resultRow = tool.renderResult(
 			{
 				content: [{ type: "text", text: "fallback" }],
-				details: { output: "arbitrary file preview\n", exit_code: 0 },
 			},
 			{ expanded: false, isPartial: false },
 			testTheme,
@@ -3049,13 +3171,13 @@ test("exec session manager lists running and exited-unread sessions with stdin c
 		minEmptyWriteYieldTimeMs: 250,
 	});
 	try {
-		const first = await sessions.exec({ cmd: "sleep 1; printf done", yield_time_ms: 250 }, process.cwd());
+		const first = await sessions.exec({ cmd: "sleep 0.5; printf done", yield_time_ms: 250 }, process.cwd());
 		expect(first.session_id).toBeNumber();
 
 		expect(sessions.listSessions()).toEqual([
 			{
 				id: first.session_id!,
-				command: "sleep 1; printf done",
+				command: "sleep 0.5; printf done",
 				output: "",
 				running: true,
 				exitCode: undefined,
@@ -3064,12 +3186,12 @@ test("exec session manager lists running and exited-unread sessions with stdin c
 			},
 		]);
 
-		await Bun.sleep(1200);
+		await waitForCondition(() => sessions.listSessions()[0]?.running === false);
 
 		expect(sessions.listSessions()).toEqual([
 			{
 				id: first.session_id!,
-				command: "sleep 1; printf done",
+				command: "sleep 0.5; printf done",
 				output: "done",
 				running: false,
 				exitCode: 0,

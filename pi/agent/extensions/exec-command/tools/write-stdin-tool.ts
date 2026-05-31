@@ -128,12 +128,12 @@ function createEmptyResultComponent(): Container {
 }
 
 const BACKGROUND_TERMINAL_HUD_FRAME_MS = 120;
-
 interface RenderContextLike {
 	args?: unknown;
 	isError?: boolean;
 	isPartial?: boolean;
 	invalidate?: () => void;
+	lastComponent?: unknown;
 	state?: {
 		elapsedTimer?: ReturnType<typeof setTimeout>;
 		startedAtMs?: number;
@@ -223,6 +223,7 @@ export function registerWriteStdinTool(pi: ExtensionAPI, sessions: ExecSessionMa
 					},
 				},
 				{ theme, part: "header" },
+				context?.lastComponent,
 			);
 		},
 		renderResult(result, { expanded, isPartial }, theme, context?: RenderContextLike) {
@@ -255,6 +256,7 @@ export function registerWriteStdinTool(pi: ExtensionAPI, sessions: ExecSessionMa
 					},
 				},
 				{ theme, part: "output" },
+				context?.lastComponent,
 			);
 		},
 	});

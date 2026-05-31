@@ -458,6 +458,7 @@ interface ExecCommandRenderContextLike {
 	args?: unknown;
 	isError?: boolean;
 	isPartial?: boolean;
+	lastComponent?: unknown;
 	state?: {
 		elapsedTimer?: ReturnType<typeof setTimeout>;
 	};
@@ -480,6 +481,7 @@ function renderBatchCallWithOptionalContext(
 			contextGuardWrapped: true,
 		}),
 		{ theme, part: "header" },
+		context?.lastComponent,
 	);
 }
 
@@ -511,22 +513,51 @@ function renderBatchResultWithOptionalContext(
 }
 
 const RUNNING_INVALIDATION_MS = 120;
+const elapsedTimersByRenderKey = new Map<string, ReturnType<typeof setTimeout>>();
 
-function scheduleElapsedInvalidation(context: ExecCommandRenderContextLike | undefined, running: boolean): void {
+function elapsedInvalidationKey(
+	context: ExecCommandRenderContextLike | undefined,
+	command: string,
+): string | undefined {
+	if (context?.toolCallId) return `call:${context.toolCallId}`;
+	return command ? `cmd:${command}` : undefined;
+}
+
+function clearElapsedInvalidation(context: ExecCommandRenderContextLike | undefined, command = ""): void {
 	const state = context?.state;
-	if (!state) return;
+	if (state?.elapsedTimer) {
+		clearTimeout(state.elapsedTimer);
+		state.elapsedTimer = undefined;
+	}
+	const key = elapsedInvalidationKey(context, command);
+	if (!key) return;
+	const timer = elapsedTimersByRenderKey.get(key);
+	if (!timer) return;
+	clearTimeout(timer);
+	elapsedTimersByRenderKey.delete(key);
+}
+
+function scheduleElapsedInvalidation(
+	context: ExecCommandRenderContextLike | undefined,
+	running: boolean,
+	command = "",
+): void {
 	if (!running) {
-		if (state.elapsedTimer) {
-			clearTimeout(state.elapsedTimer);
-			state.elapsedTimer = undefined;
-		}
+		clearElapsedInvalidation(context, command);
 		return;
 	}
-	if (state.elapsedTimer || !context?.invalidate) return;
-	state.elapsedTimer = setTimeout(() => {
-		state.elapsedTimer = undefined;
+	if (!context?.invalidate) return;
+	const key = elapsedInvalidationKey(context, command);
+	if (key && elapsedTimersByRenderKey.has(key)) return;
+	const state = context.state;
+	if (!key && state?.elapsedTimer) return;
+	const timer = setTimeout(() => {
+		if (key) elapsedTimersByRenderKey.delete(key);
+		if (state?.elapsedTimer === timer) state.elapsedTimer = undefined;
 		context.invalidate?.();
 	}, RUNNING_INVALIDATION_MS);
+	if (key) elapsedTimersByRenderKey.set(key, timer);
+	if (state) state.elapsedTimer = timer;
 }
 
 const renderExecCommandCallWithOptionalContext: any = (
@@ -538,12 +569,13 @@ const renderExecCommandCallWithOptionalContext: any = (
 ) => {
 	const command = typeof args.cmd === "string" ? args.cmd : "";
 	tracker.ensurePlannedExploration(context?.toolCallId, command);
-	tracker.registerRenderContext(context?.toolCallId, context?.invalidate ?? (() => {}));
 	const renderInfo = tracker.getRenderInfo(context?.toolCallId, command);
 	const failed = context?.isError === true;
 	const isExplorationRow = renderInfo.actionGroups !== undefined;
 	const snapshot = renderInfo.sessionId !== undefined ? sessions.getSessionSnapshot(renderInfo.sessionId) : undefined;
-	scheduleElapsedInvalidation(context, !snapshot?.running && !isExplorationRow && renderInfo.status === "running");
+	const shouldAnimateElapsed =
+		context?.isPartial === true && !snapshot?.running && !isExplorationRow && renderInfo.status === "running";
+	scheduleElapsedInvalidation(context, shouldAnimateElapsed, command);
 	if (renderInfo.hidden) {
 		return createEmptyResultComponent();
 	}
@@ -558,6 +590,7 @@ const renderExecCommandCallWithOptionalContext: any = (
 				contextGuardWrapped: renderInfo.contextGuardWrapped,
 			},
 			{ theme, part: "header" },
+			context?.lastComponent,
 		);
 	}
 	const cell = renderInfo.actionGroups
@@ -579,7 +612,7 @@ const renderExecCommandCallWithOptionalContext: any = (
 				rtkWrapped: renderInfo.rtkWrapped,
 				contextGuardWrapped: renderInfo.contextGuardWrapped,
 			});
-	return renderExecCellComponent(cell, { theme, part: "header" });
+	return renderExecCellComponent(cell, { theme, part: "header" }, context?.lastComponent);
 };
 
 const renderExecCommandResultWithOptionalContext: any = (
@@ -632,6 +665,7 @@ const renderExecCommandResultWithOptionalContext: any = (
 			},
 		}),
 		{ theme, part: "output" },
+		context?.lastComponent,
 	);
 };
 

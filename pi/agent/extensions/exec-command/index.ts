@@ -218,7 +218,6 @@ const BACKGROUND_TERMINAL_STATUS_KEY = "background-terminals";
 const EXEC_COMMAND_COMPLETED_MESSAGE = "exec_command.completed";
 const EXEC_COMMAND_SESSION_ERROR_MESSAGE = "exec_command.session_error";
 const BACKGROUND_TERMINAL_HUD_FRAME_MS = 80;
-
 interface BackgroundTerminalStatusUi {
 	setStatus(key: string, text: string | undefined): void;
 	setWidget?(
