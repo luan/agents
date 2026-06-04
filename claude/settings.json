@@ -1,22 +1,34 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "env": {
-    "GIT_USERNAME": "luan",
-    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
-    "CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING": "1"
+    "GIT_USERNAME": "luan"
   },
   "attribution": {
     "commit": "",
     "pr": ""
   },
-  "includeGitInstructions": false,
   "permissions": {
     "deny": [],
     "defaultMode": "bypassPermissions"
   },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/context-mode-cache-heal.mjs"
+          }
+        ]
+      }
+    ]
+  },
+  "worktree": {
+    "baseRef": "fresh"
+  },
   "statusLine": {
     "type": "command",
-    "command": "uv run ~/.claude/statusline.py",
+    "command": "uv run ~/.claude/statusline.py && echo && context-mode statusline",
     "padding": 0,
     "refreshInterval": 5
   },
@@ -31,8 +43,10 @@
     "lua-lsp@claude-plugins-official": false,
     "linear@claude-plugins-official": false,
     "notion@claude-plugins-official": false,
-    "worktrunk@worktrunk": true,
-    "gt@local": true
+    "git-tool@local": true,
+    "context-mode@context-mode": true,
+    "gt@local": false,
+    "gs@local": false
   },
   "extraKnownMarketplaces": {
     "claude-plugins-official": {
@@ -41,25 +55,28 @@
         "repo": "anthropics/claude-plugins-official"
       }
     },
-    "worktrunk": {
+    "context-mode": {
       "source": {
         "source": "github",
-        "repo": "max-sixty/worktrunk"
+        "repo": "mksglu/context-mode"
       }
     }
   },
   "alwaysThinkingEnabled": true,
-  "effortLevel": "xhigh",
   "promptSuggestionEnabled": true,
   "tui": "fullscreen",
   "autoDreamEnabled": true,
   "showThinkingSummaries": true,
   "skipDangerousModePermissionPrompt": true,
-  "theme": "dark",
-  "verbose": true,
+  "theme": "auto",
+  "editorMode": "normal",
+  "verbose": false,
   "preferredNotifChannel": "notifications_disabled",
+  "autoCompactEnabled": true,
   "teammateMode": "in-process",
-  "remoteControlAtStartup": true,
+  "remoteControlAtStartup": false,
+  "inputNeededNotifEnabled": true,
   "agentPushNotifEnabled": true,
+  "useAutoModeDuringPlan": false,
   "voiceEnabled": true
 }
