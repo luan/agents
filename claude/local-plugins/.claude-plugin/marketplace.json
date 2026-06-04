@@ -6,9 +6,21 @@
   },
   "plugins": [
     {
+      "name": "git-tool",
+      "description": "Config-driven gating plugin — reads the agents.git-tool git config, injects the matching workflow addendum, and enables the gt or gs skill plugin per-repo",
+      "source": "./plugins/git-tool",
+      "category": "productivity"
+    },
+    {
       "name": "gt",
-      "description": "Graphite CLI wrapper for stacked branch management — create, navigate, modify, sync, restack, submit, and push stacked PRs",
+      "description": "Graphite stacked-branch skills — submit, sync, restack, stack. Enabled per-repo by git-tool when agents.git-tool=graphite",
       "source": "./plugins/gt",
+      "category": "productivity"
+    },
+    {
+      "name": "gs",
+      "description": "Git-Spice stacked-branch skills — submit, sync, restack, stack. Enabled per-repo by git-tool when agents.git-tool=git-spice",
+      "source": "./plugins/gs",
       "category": "productivity"
     }
   ]

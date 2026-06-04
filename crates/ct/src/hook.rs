@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use regex::Regex;
 use serde_json::{Value, json};
 
-const GRAPHITE_CONTEXT: &str = "## Graphite Workflow\n\nThis repo uses Graphite for stacked PRs. Decision rule: if on a gt-managed branch, use gt commands exclusively (never raw git rebase, git push, or git checkout -b). If not on a gt-managed branch, use git normally. Never mix.\n\n- Push / create-update PRs -> `Skill(gt:submit)`\n- Rebase / sync with main -> `Skill(gt:restack)`\n- Create branch / navigate / stack ops -> `Skill(gt:gt)`\n\nRaw git/gt in Bash is fine only when the user explicitly requests it. Return `app.graphite.com/...` URLs.";
+const GRAPHITE_CONTEXT: &str = "## Graphite Workflow\n\nThis repo uses Graphite for stacked PRs. Decision rule: if on a gt-managed branch, use gt commands exclusively (never raw git rebase, git push, or git checkout -b). If not on a gt-managed branch, use git normally. Never mix.\n\n- Push / create-update PRs -> `Skill(gt:submit)`\n- Rebase / restack -> `Skill(gt:restack)`\n- Sync with main/trunk -> `Skill(gt:sync)`\n- Create branch / navigate / stack ops -> `Skill(gt:stack)`\n\nRaw git/gt in Bash is fine only when the user explicitly requests it. Return `app.graphite.com/...` URLs.";
 const APPLY_PATCH_CONTEXT: &str = "File-edit tool: use `apply_patch` when the host provides it, otherwise pipe patches to `ct apply-patch`. Use it for every text file change - single-line, single-file, multi-file, creates, deletes, renames alike. Do not fall back to Edit/Write because a change is \"just one line\" or \"just one file\"; that is the documented failure mode. Use Edit/Write only when apply_patch genuinely cannot express the change (e.g. binary files) and say why in the same turn.";
 
 pub fn run_hook(name: &str) -> Result<()> {
@@ -113,7 +113,7 @@ fn gt_validate_git() -> Result<()> {
         deny("BLOCKED: raw 'git push' on stacked branch. Use /gt:submit instead.");
     }
     if contains_command(&command, r"git\s+pull") {
-        deny("BLOCKED: raw 'git pull' on stacked branch. Use /gt:restack instead.");
+        deny("BLOCKED: raw 'git pull' on stacked branch. Use /gt:sync instead.");
     }
     if contains_command(&command, r"gh\s+pr\s+create") {
         deny("BLOCKED: raw 'gh pr create' in Graphite repo. Use /gt:submit instead.");
@@ -125,11 +125,11 @@ fn gt_validate_git() -> Result<()> {
     }
     if contains_command(&command, r"git\s+checkout\s+-b") {
         deny(
-            "BLOCKED: raw 'git checkout -b' in Graphite repo. Use /start or /gt:gt create instead.",
+            "BLOCKED: raw 'git checkout -b' in Graphite repo. Use /start or /gt:stack create instead.",
         );
     }
     if contains_command(&command, r"git\s+branch\s+-[dD]") {
-        deny("BLOCKED: raw 'git branch -d/-D' in Graphite repo. Use /gt:gt delete instead.");
+        deny("BLOCKED: raw 'git branch -d/-D' in Graphite repo. Use /gt:stack delete instead.");
     }
 
     Ok(())

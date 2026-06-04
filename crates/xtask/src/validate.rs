@@ -11,14 +11,25 @@ pub fn run() -> Result<()> {
     assert_fresh_agents(&root)?;
     assert_no_checkout_paths(&root)?;
     validate_json(&root.join("plugins/marketplace.json"))?;
-    validate_json(&root.join("plugins/gt/.codex-plugin/plugin.json"))?;
+    validate_json(&root.join("plugins/git-tool/.claude-plugin/plugin.json"))?;
+    validate_json(&root.join("plugins/git-tool/hooks/hooks.json"))?;
+    validate_json(&root.join("plugins/gt/.claude-plugin/plugin.json"))?;
+    validate_json(&root.join("plugins/gs/.claude-plugin/plugin.json"))?;
     let global_agents = root.join("GLOBAL_AGENTS.md");
     assert_symlink(&root.join("claude/CLAUDE.md"), &global_agents)?;
     assert_symlink(&root.join("codex/AGENTS.md"), &global_agents)?;
     assert_symlink(&root.join("pi/agent/AGENTS.md"), &global_agents)?;
     assert_symlink(
+        &root.join("claude/local-plugins/plugins/git-tool"),
+        &root.join("plugins/git-tool"),
+    )?;
+    assert_symlink(
         &root.join("claude/local-plugins/plugins/gt"),
         &root.join("plugins/gt"),
+    )?;
+    assert_symlink(
+        &root.join("claude/local-plugins/plugins/gs"),
+        &root.join("plugins/gs"),
     )?;
     assert_symlink(&root.join("claude/hooks"), &root.join("hooks/claude"))?;
     stow::run(stow::Mode::DryRun).context("stow dry-run")?;

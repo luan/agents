@@ -1,0 +1,8 @@
+{
+  "name": "gs",
+  "version": "1.0.0",
+  "description": "Git-Spice stacked-branch skills — submit, sync, restack, and stack operations. Enabled per-repo by the git-tool plugin when `agents.git-tool=git-spice`.",
+  "author": {
+    "name": "Luan"
+  }
+}
