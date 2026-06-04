@@ -47,10 +47,10 @@ enabled = false
 [plugins."slack@openai-curated"]
 enabled = true
 
-[plugins."browser@openai-bundled"]
+[plugins."chrome@openai-bundled"]
 enabled = true
 
-[plugins."chrome@openai-bundled"]
+[plugins."browser@openai-bundled"]
 enabled = true
 
 [shell_environment_policy]
@@ -77,19 +77,19 @@ status_line = [
 queue = "alt-enter"
 
 [marketplaces.claude-plugins-official]
-last_updated = "2026-05-26T20:57:50Z"
-last_revision = "1b527e2ee74e6dbd198e22cd41701c3b6f47dfec"
+last_updated = "2026-06-04T16:59:46Z"
+last_revision = "9b3f5842ebf59b79d87acfb3c66aa1e4b20837c1"
 source_type = "git"
 source = "https://github.com/anthropics/claude-plugins-official.git"
 
 [marketplaces.worktrunk]
-last_updated = "2026-05-26T20:57:01Z"
-last_revision = "cc754bc66e687d028ddbe76b3d948499eff7b6c4"
+last_updated = "2026-06-04T16:59:57Z"
+last_revision = "56fe4915ae0ea064e7ce54bf14694ccddc38e19e"
 source_type = "git"
 source = "https://github.com/max-sixty/worktrunk.git"
 
 [marketplaces.openai-bundled]
-last_updated = "2026-05-26T20:57:52Z"
+last_updated = "2026-06-04T16:59:50Z"
 source_type = "local"
 source = "/Users/luan.santos/.codex/.tmp/bundled-marketplaces/openai-bundled"
 
@@ -139,6 +139,9 @@ trust_level = "trusted"
 [hooks.state."/Users/luan/.codex/hooks.json:stop:0:0"]
 trusted_hash = "sha256:a638898dcc8555db61cebdc42e6ba4e35e78d1df55f8832f4aa7c0996d5a984a"
 
+[hooks.state."/Users/luan.santos/.codex/hooks.json:stop:0:0"]
+trusted_hash = "sha256:a638898dcc8555db61cebdc42e6ba4e35e78d1df55f8832f4aa7c0996d5a984a"
+
 [desktop]
 default-service-tier = "priority"
 
@@ -148,14 +151,15 @@ command = "/Applications/Codex.app/Contents/Resources/node_repl"
 startup_timeout_sec = 120
 
 [mcp_servers.node_repl.env]
-BROWSER_USE_AVAILABLE_BACKENDS = "chrome,iab"
-BROWSER_USE_MARKETPLACE_NAME = "openai-bundled"
-CODEX_CLI_PATH = "/Applications/Codex.app/Contents/Resources/codex"
-CODEX_HOME = "/Users/luan.santos/.codex"
 NODE_REPL_NATIVE_PIPE_CONNECT_TIMEOUT_MS = "1000"
 NODE_REPL_NODE_MODULE_DIRS = ""
 NODE_REPL_NODE_PATH = "/Applications/Codex.app/Contents/Resources/node"
-NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = "167fdf579477181fba1773c1efb067b00c5a64fe85dafb50a2001bde198dc739"
 NODE_REPL_TRUSTED_CODE_PATHS = "/Users/luan.santos/.codex"
-NODE_REPL_UNTRUSTED_ENV_ALLOWLIST = "BROWSER_USE_MARKETPLACE_NAME"
-SKY_CUA_SERVICE_PATH = "/Users/luan.santos/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/computer-use/Codex Computer Use.app"
+CODEX_HOME = "/Users/luan.santos/.codex"
+NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = "0b0d41e7a14a4903d2f95b0b3f427ed796b12c8edca2fa392a03df43997075ae"
+BROWSER_USE_AVAILABLE_BACKENDS = "chrome,iab"
+NODE_REPL_INSTRUCTIONS_USE_CASE_BROWSER = "Control the in-app browser in conjunction with the Browser Plugin."
+NODE_REPL_INSTRUCTIONS_USE_CASE_CHROME = "Control the Chrome browser in conjunction with the Chrome Plugin. Prefer this method of controlling Chrome over alternatives (such as Computer Use) unless the user explicitly mentions an alternative."
+BROWSER_USE_CODEX_APP_BUILD_FLAVOR = "prod"
+SKY_CUA_SERVICE_PATH = "/Users/luan.santos/.codex/plugins/cache/openai-bundled/computer-use/1.0.799/Codex Computer Use.app"
+CODEX_CLI_PATH = "/Applications/Codex.app/Contents/Resources/codex"
