@@ -65,9 +65,12 @@ fn render_rules(rules_dir: &Path, root: &Path) -> Result<String> {
             .display()
             .to_string();
         let name = path.file_name().unwrap().to_string_lossy();
-        lines.push(format!(
-            "- `{rel}` (~/.agents/rules/{name}): {title} - {description}"
-        ));
+        let line = if description.is_empty() {
+            title
+        } else {
+            format!("{title} - {description}")
+        };
+        lines.push(format!("- `{rel}` (~/.agents/rules/{name}): {line}"));
     }
     Ok(lines.join("\n") + "\n")
 }
@@ -119,7 +122,7 @@ fn parse_rule(path: &Path) -> Result<(String, String)> {
             .join(" ");
     }
     let description = if description.is_empty() {
-        title.clone()
+        String::new()
     } else {
         description
     };
