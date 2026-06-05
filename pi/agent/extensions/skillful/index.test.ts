@@ -537,6 +537,48 @@ describe("skillful extension", () => {
 		]);
 	});
 
+	test("re-injects loaded skill content after compaction", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "skillful-"));
+		const skillPath = join(dir, "SKILL.md");
+		writeFileSync(skillPath, "---\nname: tdd\n---\n# TDD\n\nKeep the test loop active.\n");
+
+		const handlers = new Map<string, Array<(event: { prompt?: string }, ctx: unknown) => unknown>>();
+		const pi = {
+			getCommands: () => [{ source: "skill", name: "skill:tdd", sourceInfo: { path: skillPath } }],
+			on: (event: string, handler: (event: { prompt?: string }, ctx: unknown) => unknown) => {
+				handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+			},
+			registerTool() {},
+			registerMessageRenderer() {},
+			events: { emit() {} },
+		};
+
+		extension(pi as never);
+
+		const branch: unknown[] = [];
+		const sessionManager = {
+			getBranch: () => branch,
+			appendCustomMessageEntry: (customType: string, content: string, display: boolean, details: unknown) => {
+				branch.push({ type: "custom_message", customType, content, display, details });
+				return "reinject-entry";
+			},
+		};
+		await handlers.get("before_agent_start")?.[0]?.({ prompt: "$tdd" }, { sessionManager });
+		branch.length = 0;
+		branch.push({ type: "compaction" });
+
+		await handlers.get("session_compact")?.[0]?.({}, { sessionManager });
+
+		expect(branch).toHaveLength(2);
+		expect(branch[1]).toMatchObject({
+			type: "custom_message",
+			customType: SKILLFUL_CUSTOM_TYPE,
+			display: true,
+			details: loadedDetails("tdd", "read", skillPath, dir),
+		});
+		expect((branch[1] as { content?: string }).content).toContain("# TDD");
+	});
+
 	test("reinstalls autocomplete provider after reload", async () => {
 		const ui = {
 			added: 0,

@@ -35,6 +35,20 @@ type SkillLoad = {
 	details: SkillfulLoadDetails;
 };
 
+type SkillfulMutableSessionManager = {
+	getBranch?: () => unknown[];
+	appendCustomMessageEntry?: (
+		customType: string,
+		content: string,
+		display: boolean,
+		details?: SkillfulLoadDetails,
+	) => string;
+};
+
+type SkillfulContext = {
+	sessionManager?: SkillfulMutableSessionManager;
+};
+
 type SkillfulTheme = {
 	fg(role: string, text: string): string;
 	bold(text: string): string;
@@ -87,10 +101,15 @@ export default function (pi: ExtensionAPI) {
 		state.loaded = reconstructLoadedSkills(ctx?.sessionManager?.getBranch?.() ?? []);
 		publishCache();
 	};
-	const loadSkill = async (
-		name: string,
-		ctx: { sessionManager?: { getBranch?: () => unknown[] } } | undefined,
-	): Promise<SkillLoad> => {
+	const readSkill = async (name: string, filePath: string): Promise<SkillLoad> => {
+		const body = rewriteSlashSkillReferences(stripFrontmatter(await readFile(filePath, "utf8")), state.skills.keys());
+		const details = loadedDetails(name, "read", filePath, skillBaseDir(filePath));
+		return {
+			content: formatReadSkillContent(name, filePath, body),
+			details,
+		};
+	};
+	const loadSkill = async (name: string, ctx: SkillfulContext | undefined): Promise<SkillLoad> => {
 		refresh();
 		refreshCache(ctx);
 		const filePath = state.skills.get(name);
@@ -101,14 +120,39 @@ export default function (pi: ExtensionAPI) {
 				details: loadedDetails(name, "cached", filePath, skillBaseDir(filePath)),
 			};
 		}
-		const body = rewriteSlashSkillReferences(stripFrontmatter(await readFile(filePath, "utf8")), state.skills.keys());
-		const details = loadedDetails(name, "read", filePath, skillBaseDir(filePath));
+		const load = await readSkill(name, filePath);
 		state.loaded.add(name);
 		publishCache();
-		return {
-			content: formatReadSkillContent(name, filePath, body),
+		return load;
+	};
+	const reinjectLoadedSkills = async (ctx: SkillfulContext | undefined) => {
+		refresh();
+		refreshCache(ctx);
+		const loads: SkillLoad[] = [];
+		for (const name of [...state.loaded].sort()) {
+			const filePath = state.skills.get(name);
+			if (!filePath) continue;
+			loads.push(await readSkill(name, filePath));
+		}
+		const [firstLoad] = loads;
+		if (!firstLoad) {
+			resetCacheFromBranch(ctx);
+			return;
+		}
+		const details =
+			loads.length === 1
+				? firstLoad.details
+				: {
+						...firstLoad.details,
+						loads: loads.map((load) => load.details),
+					};
+		ctx?.sessionManager?.appendCustomMessageEntry?.(
+			SKILLFUL_CUSTOM_TYPE,
+			loads.map((load) => load.content).join("\n\n"),
+			true,
 			details,
-		};
+		);
+		resetCacheFromBranch(ctx);
 	};
 
 	pi.on("resources_discover", () => {
@@ -179,7 +223,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_compact", async (_event, ctx) => {
-		resetCacheFromBranch(ctx);
+		await reinjectLoadedSkills(ctx);
 	});
 
 	pi.on("session_tree", async (_event, ctx) => {
