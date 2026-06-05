@@ -1000,14 +1000,23 @@ export default function (pi: ExtensionAPI) {
 		};
 
 		if (input.runInBackground === false) {
-			const record = await manager.spawnAndWait(pi, currentCtx, subagentType, input.message, {
+			const id = manager.spawn(pi, currentCtx, subagentType, input.message, {
 				...options,
+				isBackground: false,
+				signal: currentCtx.signal,
 				onTextDelta: (_delta, fullText) =>
 					input.onTextDelta?.(fullText, {
 						modelName: runDisplay.modelName,
 						thinkingLevel: runDisplay.thinkingLevel,
 					}),
 			});
+			activeInlineAgentId = id;
+			const record = manager.getRecord(id)!;
+			try {
+				await record.promise;
+			} finally {
+				if (activeInlineAgentId === id) activeInlineAgentId = undefined;
+			}
 			record.resultConsumed = true;
 			return {
 				agentId: record.id,
@@ -1256,7 +1265,8 @@ export default function (pi: ExtensionAPI) {
 	const MANAGER_KEY = Symbol.for("mosaic:manager");
 	(globalThis as any)[MANAGER_KEY] = {
 		waitForAll: () => manager.waitForAll(),
-		hasRunning: () => manager.hasRunning(),
+		hasRunning: () => manager.hasBlockingRunning(),
+		hasBackgroundRunning: () => manager.hasRunning(),
 		spawn: (piRef: any, ctx: any, type: string, prompt: string, options: any) =>
 			manager.spawn(piRef, ctx, type, prompt, options),
 		getRecord: (id: string) => manager.getRecord(id),
@@ -1264,6 +1274,7 @@ export default function (pi: ExtensionAPI) {
 
 	// --- Cross-extension RPC via pi.events ---
 	let currentCtx: ExtensionContext | undefined;
+	let activeInlineAgentId: string | undefined;
 
 	// ---- Subagent scheduler ----
 	// Session-scoped: store is constructed inside session_start once sessionId
@@ -1292,6 +1303,16 @@ export default function (pi: ExtensionAPI) {
 		refreshFullSessionHud(ctx.ui as UICtx);
 		manager.clearCompleted();
 		if (isSchedulingEnabled() && !scheduler.isActive()) startScheduler(ctx);
+	});
+
+	pi.on("input", async (event) => {
+		if (!activeInlineAgentId) return { action: "continue" };
+		if (event.source !== "interactive" && event.source !== "rpc") return { action: "continue" };
+		if (event.text.trimStart().startsWith("/")) return { action: "continue" };
+		const record = manager.getRecord(activeInlineAgentId);
+		if (!record || record.status !== "running") return { action: "continue" };
+		await deliverInProcessMessage(record, { message: event.text, triggerTurn: true });
+		return { action: "handled" };
 	});
 
 	pi.on("session_before_switch", () => {

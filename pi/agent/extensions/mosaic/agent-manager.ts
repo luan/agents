@@ -432,6 +432,13 @@ export class AgentManager {
 		}
 	}
 
+	/** Whether any foreground agents are still running or queued. */
+	hasBlockingRunning(): boolean {
+		return [...this.agents.values()].some(
+			(r) => !r.isBackground && (r.status === "running" || r.status === "queued"),
+		);
+	}
+
 	/** Whether any agents are still running or queued. */
 	hasRunning(): boolean {
 		return [...this.agents.values()].some((r) => r.status === "running" || r.status === "queued");
