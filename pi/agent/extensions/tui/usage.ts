@@ -21,12 +21,10 @@ export const USAGE_REFRESH_INTERVAL = 5 * 60_000;
 
 const FIVE_HOURS_SECS = 5 * 60 * 60;
 const SEVEN_DAYS_SECS = 7 * 24 * 60 * 60;
-const THIRTY_DAYS_SECS = 30 * 24 * 60 * 60;
 
 const PROVIDER_MAP: Record<string, string> = {
 	anthropic: "claude",
 	"openai-codex": "codex",
-	"github-copilot": "copilot",
 	"google-gemini-cli": "gemini",
 	minimax: "minimax",
 	"minimax-cn": "minimax-cn",
@@ -99,10 +97,6 @@ function getClaudeToken(): string | undefined {
 	} catch {}
 
 	return undefined;
-}
-
-function getCopilotToken(): string | undefined {
-	return loadAuthJson()["github-copilot"]?.refresh;
 }
 
 function getCodexToken(): { token: string; accountId?: string } | undefined {
@@ -262,74 +256,6 @@ async function fetchClaudeUsage(): Promise<UsageSnapshot> {
 	} catch (e) {
 		return {
 			provider: "Claude",
-			windows: [],
-			error: String(e),
-			fetchedAt: Date.now(),
-		};
-	}
-}
-
-async function fetchCopilotUsage(): Promise<UsageSnapshot> {
-	const token = getCopilotToken();
-	if (!token) {
-		return {
-			provider: "Copilot",
-			windows: [],
-			error: "no-auth",
-			fetchedAt: Date.now(),
-		};
-	}
-
-	try {
-		const res = await fetchWithTimeout("https://api.github.com/copilot_internal/user", {
-			headers: {
-				"Editor-Version": "vscode/1.96.2",
-				"User-Agent": "GitHubCopilotChat/0.26.7",
-				"X-Github-Api-Version": "2025-04-01",
-				Accept: "application/json",
-				Authorization: `token ${token}`,
-			},
-		});
-
-		if (!res.ok) {
-			return {
-				provider: "Copilot",
-				windows: [],
-				error: `HTTP ${res.status}`,
-				fetchedAt: Date.now(),
-			};
-		}
-
-		const data = (await res.json()) as any;
-		const windows: RateWindow[] = [];
-
-		const resetDate = data.quota_reset_date_utc ? new Date(data.quota_reset_date_utc) : undefined;
-		const resetSecs = secondsUntil(resetDate);
-
-		if (data.quota_snapshots?.premium_interactions) {
-			const pi = data.quota_snapshots.premium_interactions;
-			windows.push({
-				label: "Premium",
-				usedPercent: clampPercent(100 - (pi.percent_remaining || 0)),
-				windowSecs: THIRTY_DAYS_SECS,
-				resetSecs,
-			});
-		}
-
-		if (data.quota_snapshots?.chat && !data.quota_snapshots.chat.unlimited) {
-			const chat = data.quota_snapshots.chat;
-			windows.push({
-				label: "Chat",
-				usedPercent: clampPercent(100 - (chat.percent_remaining || 0)),
-				windowSecs: THIRTY_DAYS_SECS,
-				resetSecs,
-			});
-		}
-
-		return { provider: "Copilot", windows, fetchedAt: Date.now() };
-	} catch (e) {
-		return {
-			provider: "Copilot",
 			windows: [],
 			error: String(e),
 			fetchedAt: Date.now(),
@@ -606,8 +532,6 @@ export async function fetchUsageForProvider(provider: string): Promise<UsageSnap
 			return fetchClaudeUsage();
 		case "codex":
 			return fetchCodexUsage();
-		case "copilot":
-			return fetchCopilotUsage();
 		case "gemini":
 			return fetchGeminiUsage();
 		case "minimax":

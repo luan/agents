@@ -498,11 +498,6 @@ fn poll_usage_sources(providers: &[UsageProvider]) {
     {
         let _ = poll_codex_usage();
     }
-    if providers.contains(&UsageProvider::Copilot)
-        && should_poll(&copilot_log(), std::time::Duration::from_secs(300))
-    {
-        let _ = poll_copilot_usage();
-    }
 }
 
 fn should_poll(path: &std::path::Path, interval: std::time::Duration) -> bool {
@@ -517,16 +512,13 @@ fn should_poll(path: &std::path::Path, interval: std::time::Duration) -> bool {
 
 const FIVE_HOURS: i64 = 5 * 3600;
 const SEVEN_DAYS: i64 = 7 * 24 * 3600;
-const THIRTY_DAYS: i64 = 30 * 24 * 3600;
 
 const CLAUDE_GLYPH: &str = "\u{e861}";
 const CODEX_GLYPH: &str = "\u{e7cf}";
-const COPILOT_GLYPH: &str = "\u{f113}";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum UsageProvider {
     Claude,
-    Copilot,
     Codex,
 }
 
@@ -534,7 +526,6 @@ impl UsageProvider {
     fn parse(value: &str) -> Option<Self> {
         match value {
             "claude" => Some(Self::Claude),
-            "copilot" => Some(Self::Copilot),
             "codex" => Some(Self::Codex),
             _ => None,
         }
@@ -543,7 +534,6 @@ impl UsageProvider {
     fn name(self) -> &'static str {
         match self {
             Self::Claude => "claude",
-            Self::Copilot => "copilot",
             Self::Codex => "codex",
         }
     }
@@ -570,11 +560,7 @@ fn configured_usage_providers() -> Result<Vec<UsageProvider>, Box<dyn std::error
 }
 
 fn default_usage_providers() -> Vec<UsageProvider> {
-    vec![
-        UsageProvider::Claude,
-        UsageProvider::Copilot,
-        UsageProvider::Codex,
-    ]
+    vec![UsageProvider::Claude, UsageProvider::Codex]
 }
 
 fn ct_config_path() -> std::path::PathBuf {
@@ -597,6 +583,9 @@ fn parse_usage_providers_config(
 
     let mut providers = Vec::new();
     for provider_name in provider_names {
+        if provider_name == "copilot" {
+            continue;
+        }
         let Some(provider) = UsageProvider::parse(&provider_name) else {
             let valid = default_usage_providers()
                 .iter()
@@ -625,13 +614,6 @@ struct DualSample {
     s_reset: i64,
 }
 
-#[derive(Clone, Copy)]
-struct SimpleSample {
-    ts: i64,
-    pct: f64,
-    reset: i64,
-}
-
 fn collect_usage_bar_requests(
     width: usize,
     providers: &[UsageProvider],
@@ -647,22 +629,6 @@ fn collect_usage_bar_requests(
                         provider_label: CLAUDE_GLYPH.to_string(),
                         provider_color: Some("d87b4a".to_string()),
                         windows: dual_peak_windows(&claude_samples),
-                        width,
-                    });
-                }
-            }
-            UsageProvider::Copilot => {
-                let copilot_samples = load_simple(&copilot_log());
-                if let Some(last) = copilot_samples.last() {
-                    out.push(usage_bars::RenderRequest {
-                        provider_label: COPILOT_GLYPH.to_string(),
-                        provider_color: Some("cba6f7".to_string()),
-                        windows: vec![usage_bars::Window {
-                            label: "mo".to_string(),
-                            used_percent: last.pct,
-                            window_secs: THIRTY_DAYS,
-                            reset_secs: last.reset - now_ts(),
-                        }],
                         width,
                     });
                 }
@@ -703,10 +669,6 @@ fn home() -> std::path::PathBuf {
 
 fn claude_usage_db() -> std::path::PathBuf {
     home().join(".local/state/claude-statusline/usage.db")
-}
-
-fn copilot_log() -> std::path::PathBuf {
-    std::env::temp_dir().join("copilot-usage-log.tsv")
 }
 
 fn codex_log() -> std::path::PathBuf {
@@ -829,24 +791,6 @@ fn load_dual_tsv(path: &std::path::Path) -> Vec<DualSample> {
     out
 }
 
-fn load_simple(path: &std::path::Path) -> Vec<SimpleSample> {
-    let data = std::fs::read_to_string(path).unwrap_or_default();
-    let mut out = Vec::new();
-    for line in data.lines() {
-        let mut it = line.split('\t');
-        let (Some(t), Some(p), Some(r)) = (it.next(), it.next(), it.next()) else {
-            continue;
-        };
-        let (Ok(ts), Ok(pct), Ok(reset)) = (t.parse::<i64>(), p.parse::<f64>(), r.parse::<i64>())
-        else {
-            continue;
-        };
-        out.push(SimpleSample { ts, pct, reset });
-    }
-    out.sort_by_key(|s| s.ts);
-    out
-}
-
 fn poll_codex_usage() -> Option<()> {
     let token = codex_token()?;
     let body = fetch_usage("https://chatgpt.com/backend-api/wham/usage", &token, &[])?;
@@ -871,28 +815,6 @@ fn poll_codex_usage() -> Option<()> {
     )
 }
 
-fn poll_copilot_usage() -> Option<()> {
-    let token = gh_token()?;
-    let body = fetch_usage(
-        "https://api.github.com/copilot_internal/user",
-        &token,
-        &[
-            "Editor-Version: vscode/1.85".to_string(),
-            "User-Agent: GithubCopilot/1.155".to_string(),
-        ],
-    )?;
-    let json: serde_json::Value = serde_json::from_str(&body).ok()?;
-    let prem = json.get("quota_snapshots")?.get("premium_interactions")?;
-    let pct_remaining = prem.get("percent_remaining")?.as_f64()?;
-    let used = 100.0 - pct_remaining;
-    let reset_date = json.get("quota_reset_date")?.as_str()?;
-    let reset_ts = parse_reset_date(reset_date)?;
-    append_snapshot(
-        &copilot_log(),
-        &format!("{}\t{}\t{}\n", now_ts(), used, reset_ts),
-    )
-}
-
 fn codex_token() -> Option<String> {
     let raw = std::fs::read_to_string(home().join(".codex/auth.json")).ok()?;
     let json: serde_json::Value = serde_json::from_str(&raw).ok()?;
@@ -900,19 +822,6 @@ fn codex_token() -> Option<String> {
         .get("access_token")?
         .as_str()
         .map(String::from)
-}
-
-fn gh_token() -> Option<String> {
-    let out = std::process::Command::new("gh")
-        .args(["auth", "token"])
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let token = String::from_utf8(out.stdout).ok()?.trim().to_string();
-    (!token.is_empty()).then_some(token)
 }
 
 fn fetch_usage(endpoint: &str, token: &str, extra_headers: &[String]) -> Option<String> {
@@ -944,11 +853,6 @@ fn append_snapshot(path: &std::path::Path, line: &str) -> Option<()> {
     std::fs::write(path, format!("{existing}{line}")).ok()
 }
 
-fn parse_reset_date(s: &str) -> Option<i64> {
-    let d = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()?;
-    Some(d.and_hms_opt(0, 0, 0)?.and_utc().timestamp())
-}
-
 type Rgb = (u8, u8, u8);
 
 const RGB_DIM: Rgb = (0x6c, 0x70, 0x86);
@@ -966,11 +870,7 @@ fn render_sidebar_usage_bars(reqs: &[usage_bars::RenderRequest], width: usize) -
             if window.reset_secs <= 0 {
                 continue;
             }
-            let display = if req.provider_label == COPILOT_GLYPH {
-                format!("{} ", req.provider_label)
-            } else {
-                format!("{} {}", req.provider_label, window.label)
-            };
+            let display = format!("{} {}", req.provider_label, window.label);
             lines.push(render_sidebar_stats(
                 &display, provider, window, remaining, width,
             ));
@@ -1185,11 +1085,7 @@ mod tests {
     fn usage_provider_config_defaults_when_absent() {
         assert_eq!(
             parse_usage_providers_config("").unwrap(),
-            vec![
-                UsageProvider::Claude,
-                UsageProvider::Copilot,
-                UsageProvider::Codex
-            ]
+            vec![UsageProvider::Claude, UsageProvider::Codex]
         );
     }
 
@@ -1205,8 +1101,26 @@ mod tests {
     #[test]
     fn usage_provider_config_accepts_hyphenated_table() {
         assert_eq!(
-            parse_usage_providers_config("[usage-bars]\nproviders = [\"copilot\"]\n").unwrap(),
-            vec![UsageProvider::Copilot]
+            parse_usage_providers_config("[usage-bars]\nproviders = [\"codex\"]\n").unwrap(),
+            vec![UsageProvider::Codex]
+        );
+    }
+    #[test]
+    fn usage_provider_config_ignores_legacy_copilot() {
+        assert_eq!(
+            parse_usage_providers_config(
+                "[usage_bars]\nproviders = [\"claude\", \"copilot\", \"codex\"]\n"
+            )
+            .unwrap(),
+            vec![UsageProvider::Claude, UsageProvider::Codex]
+        );
+    }
+
+    #[test]
+    fn usage_provider_config_allows_legacy_copilot_only_as_empty() {
+        assert_eq!(
+            parse_usage_providers_config("[usage_bars]\nproviders = [\"copilot\"]\n").unwrap(),
+            Vec::<UsageProvider>::new()
         );
     }
 

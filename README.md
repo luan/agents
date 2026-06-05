@@ -69,7 +69,7 @@ Configure `ct tui usage-bars` provider visibility and order in `~/.config/ct/con
 
 ```toml
 [usage_bars]
-providers = ["claude", "copilot", "codex"]
+providers = ["claude", "codex"]
 ```
 
 Use `ct tui usage-bars --sidebar --watch` for a live sidebar; it rereads the config on every redraw.
