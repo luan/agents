@@ -251,7 +251,7 @@ export class PatchSection {
 	get hasAnchorScopedEdit(): boolean {
 		return this.edits.some((edit) => {
 			if (edit.kind === "delete" || edit.kind === "repeat") return true;
-			return edit.cursor.kind === "before_anchor";
+			return edit.cursor.kind === "before_anchor" || edit.cursor.kind === "after_anchor";
 		});
 	}
 
@@ -266,7 +266,7 @@ export class PatchSection {
 			if (edit.kind === "repeat") {
 				for (let line = edit.range.start.line; line <= edit.range.end.line; line++) lines.add(line);
 			}
-			if (edit.cursor.kind === "before_anchor") {
+			if (edit.cursor.kind === "before_anchor" || edit.cursor.kind === "after_anchor") {
 				lines.add(edit.cursor.anchor.line);
 			}
 		}

@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync } from "node:fs";
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -25,13 +25,13 @@ import {
 	languageFromPath,
 	type RenderTheme,
 } from "./diff-render.ts";
+import { HASHLINE_SNAPSHOTS, recordHashlineContiguous, recordHashlineSparse } from "./hashline/anchors.js";
 import { buildCompactDiffPreview } from "./hashline/diff-preview.ts";
 import { formatHashlineHeader, formatNumberedLines } from "./hashline/format.ts";
 import { Filesystem, NotFoundError, type WriteResult } from "./hashline/fs.ts";
 import { Patch } from "./hashline/input.ts";
 import { Patcher } from "./hashline/patcher.ts";
 import { stripHashlinePrefixes } from "./hashline/prefixes.ts";
-import { InMemorySnapshotStore as UpstreamInMemorySnapshotStore } from "./hashline/snapshots.ts";
 
 type EditMode = "apply_patch" | "patch" | "hashline" | "replace";
 type Rgb = [number, number, number];
@@ -42,6 +42,11 @@ const EDIT_LABEL = "Editing";
 const EDIT_LABEL_SHINE_WIDTH = 3;
 const EDIT_LABEL_PERCOLATION_MS = 80;
 const RGB_FALLBACK: Rgb = [0xff, 0xff, 0xff];
+const CONTEXT_PROTECTION_READ_BYTES = 50_000;
+const CONTEXT_PROTECTION_READ_LABEL = "Large file read blocked";
+const DEFAULT_SEARCH_RESULT_LIMIT = 200;
+const DEFAULT_FIND_RESULT_LIMIT = 200;
+
 type EditConfig = {
 	mode: EditMode;
 	fuzzyMatch: boolean;
@@ -84,6 +89,40 @@ type NormalizedReplaceInput = {
 	path: string;
 	edits: NormalizedReplaceEntry[];
 };
+
+function largeReadGuidance(path: string, bytes: number): ToolTextResult {
+	return {
+		content: [
+			{
+				type: "text",
+				text: [
+					`${CONTEXT_PROTECTION_READ_LABEL}: ${path} is ${bytes.toLocaleString()} bytes.`,
+					"",
+					"Reading the whole file would put all bytes into the conversation.",
+					'Use bounded read arguments for edit targeting, for example `ranges: ["120-180"]` or `offset` with `limit`.',
+					"For analysis, summarization, filtering, or extraction, use `cg_process_file` so the file stays out of context and only your derived answer is returned.",
+				].join("\n"),
+			},
+		],
+		details: { protected: true, bytes },
+	};
+}
+
+function hasBoundedReadRequest(params: { limit?: number; ranges?: string[] }, ranges: readonly LineRange[]): boolean {
+	return ranges.length > 0 || (params.ranges?.length ?? 0) > 0 || params.limit !== undefined;
+}
+
+async function maybeBlockLargeWholeFileRead(
+	display: string,
+	absolute: string,
+	params: { limit?: number; ranges?: string[] },
+	ranges: readonly LineRange[],
+): Promise<ToolTextResult | undefined> {
+	if (hasBoundedReadRequest(params, ranges)) return undefined;
+	const info = await stat(absolute);
+	if (!info.isFile() || info.size <= CONTEXT_PROTECTION_READ_BYTES) return undefined;
+	return largeReadGuidance(display, info.size);
+}
 
 type ToolTextResult = {
 	content: Array<{ type: "text"; text: string } | Record<string, unknown>>;
@@ -230,7 +269,7 @@ function modeDescription(config: EditConfig): string {
 		case "patch":
 			return "Edit one file using the patch-mode freeform grammar: *** File, then create, update diff hunks, delete, or rename entries.";
 		case "hashline":
-			return "Edit files using oh-my-pi hashline-style patches: ¶PATH#TAG sections, bare A B/BOF/EOF anchors, +TEXT literal rows, and &A..B repeat rows.";
+			return "Edit files using oh-my-pi hashline-style patches: ¶PATH#TAG sections, bare A B replacements, DELETE A B explicit deletes, BEFORE N/AFTER N/BOF/EOF insertion anchors, +TEXT literal rows, and &A..B repeat rows.";
 		case "replace":
 			return "Edit one file using the replace-mode freeform grammar: *** File, *** Old, *** New, and optional *** All blocks.";
 	}
@@ -815,21 +854,6 @@ function splitGlobSearchRoot(cwd: string, pattern: string): { root: string; glob
 	const glob = normalized.slice(slashBeforeGlob + 1);
 	return { root: absolutePath(cwd, rootText), glob };
 }
-const HASHLINE_SNAPSHOTS = new UpstreamInMemorySnapshotStore();
-
-function recordHashlineContiguous(
-	path: string,
-	startLine: number,
-	lines: readonly string[],
-	fullText?: string,
-): string {
-	return HASHLINE_SNAPSHOTS.recordContiguous(path, startLine, lines, fullText === undefined ? {} : { fullText });
-}
-
-function recordHashlineSparse(path: string, entries: Iterable<readonly [number, string]>, fullText?: string): string {
-	return HASHLINE_SNAPSHOTS.recordSparse(path, entries, fullText === undefined ? {} : { fullText });
-}
-
 function stripHashlineDisplayPrefixes(content: string): { text: string; stripped: boolean } {
 	const lines = normalizeToLf(content).split("\n");
 	const stripped = stripHashlinePrefixes(lines);
@@ -1258,22 +1282,33 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 			onUpdate,
 			ctx,
 		) {
-			if (getConfig().mode !== "hashline") return baseRead.execute(toolCallId, params, signal, onUpdate, ctx);
 			const callCwd = ctx?.cwd ?? cwd;
 			const selector = splitReadPathSelector(params.path);
 			const selectedPath = selector.path;
 			const absolute = absolutePath(callCwd, selectedPath);
-			const { text: rawText } = stripBom(await readFile(absolute, "utf-8"));
-			const text = normalizeToLf(rawText);
-			if (params.raw) return { content: [{ type: "text", text }] };
-			const allLines = textToDisplayLines(text);
 			const explicitRanges = [
 				...selector.ranges,
 				...(params.ranges ?? []).flatMap((rangeList) => rangeList.split(",").map(parseLineRange)),
 			];
+			const largeReadBlock = await maybeBlockLargeWholeFileRead(
+				displayPath(callCwd, absolute),
+				absolute,
+				params,
+				explicitRanges,
+			);
+			if (largeReadBlock) return largeReadBlock;
+			if (getConfig().mode !== "hashline") {
+				return baseRead.execute(toolCallId, params, signal, onUpdate, ctx);
+			}
+			const { text: rawText } = stripBom(await readFile(absolute, "utf-8"));
+			const text = normalizeToLf(rawText);
+			if (params.raw && explicitRanges.length === 0 && params.limit === undefined)
+				return { content: [{ type: "text", text }] };
+			const allLines = textToDisplayLines(text);
 			if (explicitRanges.length > 0) {
 				const ranges = mergeLineRanges(explicitRanges);
 				const entries = selectedLineEntries(allLines, ranges);
+				if (params.raw) return { content: [{ type: "text", text: entries.map(([, line]) => line).join("\n") }] };
 				const wholeFile = ranges.length === 1 && ranges[0]?.start === 1 && ranges[0].end >= allLines.length;
 				const tag = wholeFile
 					? recordHashlineContiguous(absolute, 1, allLines, text)
@@ -1298,6 +1333,7 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 					? allLines.length
 					: Math.min(allLines.length, startLine - 1 + Math.max(1, params.limit));
 			const selected = allLines.slice(startLine - 1, endExclusive);
+			if (params.raw) return { content: [{ type: "text", text: selected.join("\n") }] };
 			const wholeFile = startLine === 1 && endExclusive === allLines.length;
 			const tag = recordHashlineContiguous(
 				absolute,
@@ -1349,7 +1385,9 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 			if (params.literal) args.push("--fixed-strings");
 			if (params.glob) args.push("--glob", String(params.glob));
 			if (params.context && params.context > 0) args.push("-C", String(Math.max(0, Math.floor(params.context))));
-			if (params.limit && params.limit > 0) args.push("--max-count", String(Math.floor(params.limit)));
+			const resultLimit = Math.max(1, Math.min(1000, Number(params.limit ?? DEFAULT_SEARCH_RESULT_LIMIT)));
+			const rgMaxCount = params.limit === undefined ? resultLimit + 1 : resultLimit;
+			args.push("--max-count", String(rgMaxCount));
 			args.push("--", String(params.pattern), searchPath ? String(searchPath) : ".");
 			const result = await runExternalCommand("rg", args, callCwd, { signal, allowNonZero: true });
 			if (result.exitCode === 1 || result.stdout.trim().length === 0) {
@@ -1372,16 +1410,22 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 			if (byFile.size === 0) return { content: [{ type: "text", text: "No matches found in selected ranges" }] };
 			const sections: string[] = [];
 			const highlightedSections: HighlightedSection[] = [];
+			let emittedRows = 0;
+			let truncatedSearch = false;
 			for (const [absolute, sparse] of [...byFile.entries()].sort((left, right) =>
 				left[0].localeCompare(right[0]),
 			)) {
 				const ordered = [...sparse.entries()].sort((left, right) => left[0] - right[0]);
+				const cappedOrdered = ordered.slice(0, Math.max(0, resultLimit - emittedRows));
+				emittedRows += cappedOrdered.length;
+				if (cappedOrdered.length < ordered.length) truncatedSearch = true;
+				if (cappedOrdered.length === 0) continue;
 				const display = displayPath(callCwd, absolute);
 				const tag = recordHashlineSparse(
 					absolute,
-					ordered.map(([lineNumber, entry]) => [lineNumber, entry.text] as const),
+					cappedOrdered.map(([lineNumber, entry]) => [lineNumber, entry.text] as const),
 				);
-				const visibleOrdered = ordered.slice(0, 80);
+				const visibleOrdered = cappedOrdered.slice(0, 80);
 				const highlightedRows = (
 					await highlightCodeRows(
 						display,
@@ -1394,7 +1438,17 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 				sections.push(
 					[
 						formatHashlineHeader(display, tag),
-						...ordered.map(([lineNumber, entry]) => `${entry.isMatch ? "*" : " "}${lineNumber}:${entry.text}`),
+						...cappedOrdered.map(
+							([lineNumber, entry]) => `${entry.isMatch ? "*" : " "}${lineNumber}:${entry.text}`,
+						),
+					].join("\n"),
+				);
+			}
+			if (truncatedSearch) {
+				sections.push(
+					[
+						`[Search results truncated at ${resultLimit} rows.]`,
+						"Use a narrower path/glob/ranges, or index the source with `cg_index` and query it with `cg_search`.",
 					].join("\n"),
 				);
 			}
@@ -1418,7 +1472,7 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 		async execute(toolCallId, params: any, signal, onUpdate, ctx) {
 			if (!Array.isArray(params.paths)) return baseFind.execute(toolCallId, params, signal, onUpdate, ctx);
 			const callCwd = ctx?.cwd ?? cwd;
-			const limit = Math.max(1, Math.min(1000, Number(params.limit ?? 200)));
+			const limit = Math.max(1, Math.min(1000, Number(params.limit ?? DEFAULT_FIND_RESULT_LIMIT)));
 			const outputs: string[] = [];
 			for (const pattern of params.paths) {
 				const search = splitGlobSearchRoot(callCwd, String(pattern));
@@ -1434,11 +1488,22 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 						.map((file) => displayPath(callCwd, absolutePath(search.root, file))),
 				);
 			}
-			const unique = [...new Set(outputs)].sort((left, right) => left.localeCompare(right)).slice(0, limit);
+			const allUnique = [...new Set(outputs)].sort((left, right) => left.localeCompare(right));
+			const unique = allUnique.slice(0, limit);
+			const truncatedFind = params.limit === undefined && allUnique.length > limit;
+			const text =
+				unique.length === 0
+					? "No files found matching pattern"
+					: [
+							...unique,
+							...(truncatedFind
+								? [
+										`[Find results truncated at ${limit} files. Use a narrower glob/path, or index sources with cg_index and query them with cg_search.]`,
+									]
+								: []),
+						].join("\n");
 			return {
-				content: [
-					{ type: "text", text: unique.length > 0 ? unique.join("\n") : "No files found matching pattern" },
-				],
+				content: [{ type: "text", text }],
 			};
 		},
 	});

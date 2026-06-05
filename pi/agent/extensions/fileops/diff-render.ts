@@ -24,6 +24,7 @@ export type DiffRenderRow = {
 };
 
 const ANSI_SGR_PATTERN = /\x1b\[([0-9;]*)m/g;
+const OSC_PATTERN = /\x1b\][^\x07]*(?:\x07|\x1b\\)/g;
 const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const ANSI_RESET = "\x1b[0m";
 const ADD_ROW_BG = "\x1b[48;2;20;53;31m";
@@ -454,6 +455,9 @@ function formatDiffStatsLine(diff: string, theme: RenderTheme): string {
 	return `${theme.fg("dim", "<")}${theme.fg("toolDiffAdded", `+${stats.added}`)}${theme.fg("dim", " / ")}${theme.fg("toolDiffRemoved", `-${stats.removed}`)}${theme.fg("dim", ` / ${stats.hunks} hunk${stats.hunks === 1 ? "" : "s"}>`)}`;
 }
 
+function clampRenderedLine(line: string, width: number): string {
+	return truncateToWidth(line.replace(OSC_PATTERN, ""), width, "", true);
+}
 function diffLineNumberWidth(rows: DiffRenderRow[]): number {
 	const maxLineNumber = rows.reduce((max, row) => Math.max(max, row.oldLine ?? 0, row.newLine ?? 0), 0);
 	return Math.max(2, String(maxLineNumber).length);
@@ -557,7 +561,9 @@ export class EditDiffView {
 		if (this.renderedCache?.width === width && this.renderedCache.expanded === this.expanded) {
 			return this.renderedCache.lines;
 		}
-		const lines = renderDiffRows(this.diff, this.rows, this.theme, width, this.expanded);
+		const lines = renderDiffRows(this.diff, this.rows, this.theme, width, this.expanded).map((line) =>
+			clampRenderedLine(line, width),
+		);
 		this.renderedCache = { width, expanded: this.expanded, lines };
 		return lines;
 	}

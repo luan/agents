@@ -9,14 +9,16 @@
  *
  * Format shape:
  * ```
- * *** path/to/file.ts#0A3
- * @@ 5,7 @@
- * +literal new line
- * &3,4
+ * ¶path/to/file.ts#0A3
+ * 5 7
+ * +literal replacement line
+ * &3..4
+ * AFTER 12
+ * +literal inserted line
  * ```
- * Each `***` line opens a new file section; each `@@ A,B @@` line opens a
- * new hunk whose body (zero or more `+`/`&` rows) replaces the selected
- * range. Empty body = delete the selected range.
+ * Each `¶` line opens a new file section. `A B` hunk headers replace the
+ * selected range (empty body = delete). `BEFORE N` / `AFTER N` insert without
+ * consuming an existing line. `BOF` / `EOF` insert at file boundaries.
  */
 
 import {
@@ -50,7 +52,8 @@ const CHAR_PAYLOAD_REPEAT = HL_PAYLOAD_REPEAT.charCodeAt(0);
 const FILE_PREFIX_LENGTH = HL_FILE_PREFIX.length;
 const BOF_ANCHOR = "BOF";
 const EOF_ANCHOR = "EOF";
-
+const BEFORE_ANCHOR = "BEFORE";
+const AFTER_ANCHOR = "AFTER";
 function isDigitCode(code: number): boolean {
 	return code >= CHAR_ZERO && code <= CHAR_NINE;
 }
@@ -118,7 +121,9 @@ export function splitHashlineLines(text: string): string[] {
 }
 
 export function cloneCursor(cursor: Cursor): Cursor {
-	if (cursor.kind === "before_anchor") return { kind: "before_anchor", anchor: { ...cursor.anchor } };
+	if (cursor.kind === "before_anchor" || cursor.kind === "after_anchor") {
+		return { kind: cursor.kind, anchor: { ...cursor.anchor } };
+	}
 	return cursor;
 }
 
@@ -217,7 +222,13 @@ function scanRangeSeparator(line: string, index: number, end: number): number | 
 	return cursor;
 }
 
-export type BlockTarget = { kind: "range"; range: ParsedRange } | { kind: "bof" } | { kind: "eof" };
+export type BlockTarget =
+	| { kind: "range"; range: ParsedRange }
+	| { kind: "delete_range"; range: ParsedRange }
+	| { kind: "bof" }
+	| { kind: "eof" }
+	| { kind: "before"; anchor: Anchor }
+	| { kind: "after"; anchor: Anchor };
 
 interface TargetScan {
 	target: BlockTarget;
@@ -225,9 +236,10 @@ interface TargetScan {
 }
 
 /**
- * Scan the anchor portion of a hunk header. Accepts `BOF`, `EOF`, or
- * `A B` (range). Single-number anchors are NOT accepted; callers must
- * spell single-line ranges as `A A`.
+ * Scan the anchor portion of a hunk header. Accepts `BOF`, `EOF`,
+ * `BEFORE N`, `AFTER N`, `DELETE A B`, or `A B` (range). Single-number
+ * range anchors are NOT accepted; callers must spell single-line replacements
+ * as `A A`.
  */
 function scanHunkAnchor(line: string, start: number, end: number): TargetScan | null {
 	const cursor = skipWhitespace(line, start, end);
@@ -236,6 +248,27 @@ function scanHunkAnchor(line: string, start: number, end: number): TargetScan | 
 	}
 	if (line.startsWith(EOF_ANCHOR, cursor)) {
 		return { target: { kind: "eof" }, nextIndex: skipWhitespace(line, cursor + EOF_ANCHOR.length, end) };
+	}
+	if (line.startsWith(BEFORE_ANCHOR, cursor)) {
+		const anchor = scanLineNumber(line, skipWhitespace(line, cursor + BEFORE_ANCHOR.length, end), end);
+		if (anchor === null) return null;
+		return {
+			target: { kind: "before", anchor: { line: anchor.line } },
+			nextIndex: skipWhitespace(line, anchor.nextIndex, end),
+		};
+	}
+	if (line.startsWith(AFTER_ANCHOR, cursor)) {
+		const anchor = scanLineNumber(line, skipWhitespace(line, cursor + AFTER_ANCHOR.length, end), end);
+		if (anchor === null) return null;
+		return {
+			target: { kind: "after", anchor: { line: anchor.line } },
+			nextIndex: skipWhitespace(line, anchor.nextIndex, end),
+		};
+	}
+	if (line.startsWith("DELETE", cursor)) {
+		const range = scanHeaderRange(line, cursor + "DELETE".length, end);
+		if (range === null) return null;
+		return { target: { kind: "delete_range", range: range.range }, nextIndex: range.nextIndex };
 	}
 	const range = scanHeaderRange(line, cursor, end);
 	if (range === null) return null;
@@ -247,8 +280,9 @@ interface ParsedHunkHeader {
 }
 
 /**
- * Parse a bare hunk-header line: `A B` (range) or the keywords
- * `BOF` / `EOF`. Returns `null` for lines that do not match the shape.
+ * Parse a bare hunk-header line: `A B` (range), `DELETE A B`, `BEFORE N`,
+ * `AFTER N`, or the keywords `BOF` / `EOF`. Returns `null` for lines that do
+ * not match.
  */
 function tryParseHunkHeader(line: string): ParsedHunkHeader | null {
 	const end = trimEndIndex(line);
@@ -360,11 +394,17 @@ function classifyLine(line: string, lineNum: number): Token {
 		}
 	}
 
-	// Hunk header lines are `A B` (two numbers) or the keyword `BOF` /
-	// `EOF`. `@@`-bracketed forms are intentionally NOT accepted here —
-	// they fall through to `raw` and the parser rejects them as
-	// apply_patch contamination.
-	const isHunkLead = isNonZeroDigitCode(firstCode) || line.startsWith(BOF_ANCHOR) || line.startsWith(EOF_ANCHOR);
+	// Hunk header lines are `A B` (two numbers), `DELETE A B`, `BEFORE N`,
+	// `AFTER N`, or the keywords `BOF` / `EOF`. `@@`-bracketed forms are
+	// intentionally NOT accepted here — they fall through to `raw` and the
+	// parser rejects them as apply_patch contamination.
+	const isHunkLead =
+		isNonZeroDigitCode(firstCode) ||
+		line.startsWith("DELETE") ||
+		line.startsWith(BOF_ANCHOR) ||
+		line.startsWith(EOF_ANCHOR) ||
+		line.startsWith(BEFORE_ANCHOR) ||
+		line.startsWith(AFTER_ANCHOR);
 	if (isHunkLead) {
 		const hunk = tryParseHunkHeader(line);
 		if (hunk !== null) return { kind: "op-block", lineNum, target: hunk.target };

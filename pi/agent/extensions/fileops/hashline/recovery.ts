@@ -70,7 +70,8 @@ function collectAnchorLines(edits: readonly Edit[]): number[] {
 
 function getEditAnchors(edit: Edit): Anchor[] {
 	if (edit.kind === "delete") return [edit.anchor];
-	const cursorAnchors = edit.cursor.kind === "before_anchor" ? [edit.cursor.anchor] : [];
+	const cursorAnchors =
+		edit.cursor.kind === "before_anchor" || edit.cursor.kind === "after_anchor" ? [edit.cursor.anchor] : [];
 	if (edit.kind === "insert") return cursorAnchors;
 
 	const repeatAnchors: Anchor[] = [];

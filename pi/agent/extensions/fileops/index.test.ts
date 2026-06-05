@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { visibleWidth } from "@earendil-works/pi-tui";
 import fileopsExtension, { HASHLINE_GRAMMAR, PATCH_GRAMMAR, REPLACE_GRAMMAR } from "./index.ts";
 
 const originalVariant = process.env.PI_FILEOPS_EDIT_VARIANT;
@@ -206,6 +207,44 @@ describe("fileops extension modes", () => {
 		expect(readFileSync(join(cwd, "sample.txt"), "utf-8")).toBe("one\nTWO\nthree\nfour\n");
 	});
 
+	it("hashline edit supports explicit before and after insertion anchors", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-insert-anchors-"));
+		writeFileSync(join(cwd, "sample.txt"), "alpha\nbeta\ngamma\n");
+		const tools = registerEditTools("hashline");
+		const readResult = await tools.get("read").execute("read", { path: "sample.txt" }, undefined, undefined, { cwd });
+		const header = readResult.content[0].text.split("\n")[0];
+
+		await tools
+			.get("edit")
+			.execute(
+				"call",
+				{ input: `${header}\nBEFORE 2\n+before beta\nAFTER 2\n+after beta\n` },
+				undefined,
+				undefined,
+				{ cwd },
+			);
+
+		expect(readFileSync(join(cwd, "sample.txt"), "utf-8")).toBe("alpha\nbefore beta\nbeta\nafter beta\ngamma\n");
+	});
+
+	it("hashline after insertion preserves scope delimiters without repeat rows", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-scope-insert-"));
+		writeFileSync(join(cwd, "sample.rs"), "#[cfg(test)]\nmod tests {\n    use super::*;\n}\n");
+		const tools = registerEditTools("hashline");
+		const readResult = await tools.get("read").execute("read", { path: "sample.rs" }, undefined, undefined, { cwd });
+		const header = readResult.content[0].text.split("\n")[0];
+
+		await tools
+			.get("edit")
+			.execute("call", { input: `${header}\nAFTER 2\n+    #[test]\n+    fn smoke() {}\n` }, undefined, undefined, {
+				cwd,
+			});
+
+		expect(readFileSync(join(cwd, "sample.rs"), "utf-8")).toBe(
+			"#[cfg(test)]\nmod tests {\n    #[test]\n    fn smoke() {}\n    use super::*;\n}\n",
+		);
+	});
+
 	it("hashline search output can drive sparse anchored edits", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-search-edit-"));
 		writeFileSync(join(cwd, "sample.txt"), "alpha\nbeta\ngamma\n");
@@ -348,6 +387,111 @@ describe("fileops extension modes", () => {
 		expect(result.content[0].text).toContain("Treated as `&A..B`");
 	});
 
+	it("hashline edit rejects hashless BOF or EOF inserts into existing files", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-hashless-existing-"));
+		writeFileSync(join(cwd, "sample.txt"), "one\ntwo\n");
+		const tools = registerEditTools("hashline");
+
+		await expect(
+			tools.get("edit").execute("call", { input: "¶sample.txt\nBOF\n+zero\n" }, undefined, undefined, { cwd }),
+		).rejects.toThrow("Hashless BOF/EOF edits can only create new files");
+		expect(readFileSync(join(cwd, "sample.txt"), "utf-8")).toBe("one\ntwo\n");
+	});
+
+	it("hashline edit rejects implicit empty-body range deletes", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-implicit-delete-"));
+		writeFileSync(join(cwd, "sample.txt"), "one\ntwo\nthree\n");
+		const tools = registerEditTools("hashline");
+		const readResult = await tools.get("read").execute("read", { path: "sample.txt" }, undefined, undefined, { cwd });
+		const header = readResult.content[0].text.split("\n")[0];
+
+		await expect(
+			tools.get("edit").execute("call", { input: `${header}\n2 3\n` }, undefined, undefined, { cwd }),
+		).rejects.toThrow("Implicit deletes are not accepted");
+		expect(readFileSync(join(cwd, "sample.txt"), "utf-8")).toBe("one\ntwo\nthree\n");
+	});
+
+	it("hashline edit supports explicit DELETE range hunks", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-explicit-delete-"));
+		writeFileSync(join(cwd, "sample.txt"), "one\ntwo\nthree\nfour\n");
+		const tools = registerEditTools("hashline");
+		const readResult = await tools.get("read").execute("read", { path: "sample.txt" }, undefined, undefined, { cwd });
+		const header = readResult.content[0].text.split("\n")[0];
+
+		await tools.get("edit").execute("call", { input: `${header}\nDELETE 2 3\n` }, undefined, undefined, { cwd });
+
+		expect(readFileSync(join(cwd, "sample.txt"), "utf-8")).toBe("one\nfour\n");
+	});
+
+	it("hashline edit rejects repeat-only replacements that delete by omission", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-repeat-shrink-"));
+		writeFileSync(join(cwd, "sample.txt"), "one\ntwo\nthree\nfour\n");
+		const tools = registerEditTools("hashline");
+		const readResult = await tools.get("read").execute("read", { path: "sample.txt" }, undefined, undefined, { cwd });
+		const header = readResult.content[0].text.split("\n")[0];
+
+		await expect(
+			tools.get("edit").execute("call", { input: `${header}\n1 4\n&1..2\n` }, undefined, undefined, { cwd }),
+		).rejects.toThrow("repeat-only replacement");
+		expect(readFileSync(join(cwd, "sample.txt"), "utf-8")).toBe("one\ntwo\nthree\nfour\n");
+	});
+
+	it("protects large whole-file reads from entering context", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-large-read-"));
+		writeFileSync(join(cwd, "large.log"), `${"x".repeat(60_000)}\n`);
+		const tools = registerEditTools("hashline");
+
+		const result = await tools.get("read").execute("read", { path: "large.log" }, undefined, undefined, { cwd });
+		const text = result.content[0].text;
+
+		expect(text).toContain("Large file read blocked");
+		expect(text).toContain("cg_process_file");
+		expect(text.length).toBeLessThan(2_000);
+		expect(text).not.toContain("x".repeat(1_000));
+	});
+
+	it("allows bounded reads from large files for edit targeting", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-bounded-large-read-"));
+		writeFileSync(join(cwd, "large.log"), `${"x".repeat(60_000)}\nneedle\n`);
+		const tools = registerEditTools("hashline");
+
+		const result = await tools
+			.get("read")
+			.execute("read", { path: "large.log", ranges: ["2"] }, undefined, undefined, { cwd });
+
+		expect(result.content[0].text).toMatch(/^¶large\.log#[0-9A-F]{3}\n2:needle/);
+	});
+
+	it("caps search output globally and points large explorations at indexed search", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-search-cap-"));
+		writeFileSync(
+			join(cwd, "large.txt"),
+			Array.from({ length: 205 }, (_, index) => `needle ${index + 1}`).join("\n"),
+		);
+		const tools = registerEditTools("hashline");
+
+		const result = await tools.get("search").execute("search", { pattern: "needle" }, undefined, undefined, { cwd });
+		const text = result.content[0].text;
+
+		expect((text.match(/\*?\d+:needle/g) ?? []).length).toBe(200);
+		expect(text).toContain("Search results truncated at 200 rows");
+		expect(text).toContain("cg_index");
+		expect(text).toContain("cg_search");
+	});
+
+	it("caps find output and reports when additional files were omitted", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-find-cap-"));
+		for (let index = 0; index < 205; index++)
+			writeFileSync(join(cwd, `file-${String(index).padStart(3, "0")}.txt`), "");
+		const tools = registerEditTools("hashline");
+
+		const result = await tools.get("find").execute("find", { paths: ["*.txt"] }, undefined, undefined, { cwd });
+		const text = result.content[0].text;
+
+		expect(text.split("\n").filter((line: string) => line.endsWith(".txt"))).toHaveLength(200);
+		expect(text).toContain("Find results truncated at 200 files");
+	});
+
 	it("registers search and find workflow tools", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-search-"));
 		writeFileSync(join(cwd, "sample.txt"), "alpha\nbeta\n");
@@ -438,11 +582,17 @@ describe("fileops extension modes", () => {
 			{ input: `${header}\n2 2\n+needle delta\n` },
 			undefined,
 			undefined,
-			{ cwd },
+			{
+				cwd,
+			},
 		);
 		const editRendered = render(edit.renderResult(editResult, { expanded: true, isPartial: false }, theme, {}));
 		expect(stripAnsi(editRendered)).toContain("delta");
 		expect(editRendered).not.toContain("[toolSuccessBg]");
+		const wideEditLines = edit
+			.renderResult(editResult, { expanded: true, isPartial: false }, rgbTheme, {})
+			.render(237);
+		expect(wideEditLines.every((line: string) => visibleWidth(line) <= 237)).toBe(true);
 
 		const write = tools.get("write");
 		const writeRendered = render(write.renderCall({ path: "out.txt", content: "one\ntwo" }, theme, {}));
@@ -480,7 +630,7 @@ describe("fileops extension modes", () => {
 
 	it("highlights the minimal visible character changes inside syntax-highlighted diff rows", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-visible-char-diff-"));
-		writeFileSync(join(cwd, "sample.ts"), "if (bestIndex >= 0 && bestScore >= 0.35) {\n");
+		writeFileSync(join(cwd, "sample.ts"), "if (bestIndex >= 0 && bestScore >= 0.35) {\n}\n");
 		const tools = registerEditTools("hashline");
 		const readResult = await tools.get("read").execute("read", { path: "sample.ts" }, undefined, undefined, { cwd });
 		const header = readResult.content[0].text.split("\n")[0];

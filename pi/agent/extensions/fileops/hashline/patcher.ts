@@ -98,7 +98,7 @@ export class PreparedSection {
 function hasAnchorScopedEdit(edits: readonly Edit[]): boolean {
 	return edits.some((edit) => {
 		if (edit.kind === "delete" || edit.kind === "repeat") return true;
-		return edit.cursor.kind === "before_anchor";
+		return edit.cursor.kind === "before_anchor" || edit.cursor.kind === "after_anchor";
 	});
 }
 
@@ -106,6 +106,22 @@ function assertSectionHashAllowed(sectionPath: string, fileHash: string | undefi
 	if (fileHash !== undefined || !hasAnchorScopedEdit(edits)) return;
 	throw new Error(
 		`Missing hashline snapshot tag for anchored edit to ${sectionPath}; use \`${HL_FILE_PREFIX}${sectionPath}${HL_FILE_HASH_SEP}tag\` from your latest read/search output.`,
+	);
+}
+
+function hasBoundaryInsert(edits: readonly Edit[]): boolean {
+	return edits.some((edit) => edit.kind === "insert" && (edit.cursor.kind === "bof" || edit.cursor.kind === "eof"));
+}
+
+function assertHashlessBoundaryInsertAllowed(
+	sectionPath: string,
+	fileHash: string | undefined,
+	exists: boolean,
+	edits: readonly Edit[],
+): void {
+	if (fileHash !== undefined || !exists || !hasBoundaryInsert(edits)) return;
+	throw new Error(
+		`Hashless BOF/EOF edits can only create new files. ${sectionPath} already exists; read it first and use its ${HL_FILE_PREFIX}path${HL_FILE_HASH_SEP}tag header.`,
 	);
 }
 
@@ -187,6 +203,7 @@ export class Patcher {
 		// Single-section fast path.
 		if (patch.sections.length === 1) {
 			const prepared = await this.prepare(patch.sections[0]);
+			this.#validatePrepared([prepared]);
 			return { sections: [await this.commit(prepared)] };
 		}
 
@@ -194,12 +211,7 @@ export class Patcher {
 		// file, parse error, in-memory no-op) surfaces before any write.
 		const prepared: PreparedSection[] = [];
 		for (const section of patch.sections) prepared.push(await this.prepare(section));
-		assertUniqueCanonicalPaths(prepared);
-		for (const entry of prepared) {
-			if (entry.isNoop) {
-				throw new Error(`Edits to ${entry.section.path} resulted in no changes being made.`);
-			}
-		}
+		this.#validatePrepared(prepared);
 
 		const results: PatchSectionResult[] = [];
 		for (const entry of prepared) results.push(await this.commit(entry));
@@ -213,12 +225,7 @@ export class Patcher {
 	async preflight(patch: Patch): Promise<void> {
 		const prepared: PreparedSection[] = [];
 		for (const section of patch.sections) prepared.push(await this.prepare(section));
-		assertUniqueCanonicalPaths(prepared);
-		for (const entry of prepared) {
-			if (entry.isNoop) {
-				throw new Error(`Edits to ${entry.section.path} resulted in no changes being made.`);
-			}
-		}
+		this.#validatePrepared(prepared);
 	}
 
 	/**
@@ -240,6 +247,7 @@ export class Patcher {
 		if (!exists && hasAnchorScopedEdit(edits)) {
 			throw new Error(`File not found: ${section.path}`);
 		}
+		assertHashlessBoundaryInsertAllowed(section.path, section.fileHash, exists, edits);
 
 		const { bom, text } = stripBom(rawContent);
 		const lineEnding = detectLineEnding(text);
@@ -311,6 +319,15 @@ export class Patcher {
 			firstChangedLine: applyResult.firstChangedLine,
 			warnings,
 		};
+	}
+
+	#validatePrepared(prepared: readonly PreparedSection[]): void {
+		assertUniqueCanonicalPaths(prepared);
+		for (const entry of prepared) {
+			if (entry.isNoop) {
+				throw new Error(`Edits to ${entry.section.path} resulted in no changes being made.`);
+			}
+		}
 	}
 
 	async #tryRead(path: string): Promise<{ exists: boolean; rawContent: string }> {

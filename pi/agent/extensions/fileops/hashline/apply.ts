@@ -27,7 +27,7 @@ function rangeAnchors(start: Anchor, end: Anchor): Anchor[] {
 }
 
 function getCursorAnchors(cursor: Cursor): Anchor[] {
-	return cursor.kind === "before_anchor" ? [cursor.anchor] : [];
+	return cursor.kind === "before_anchor" || cursor.kind === "after_anchor" ? [cursor.anchor] : [];
 }
 
 function getEditAnchors(edit: Edit): Anchor[] {
@@ -122,7 +122,7 @@ function bucketAnchorEditsByLine(edits: IndexedEdit[]): Map<number, IndexedEdit[
 		const line =
 			entry.edit.kind === "delete"
 				? entry.edit.anchor.line
-				: entry.edit.cursor.kind === "before_anchor"
+				: entry.edit.cursor.kind === "before_anchor" || entry.edit.cursor.kind === "after_anchor"
 					? entry.edit.cursor.anchor.line
 					: 0;
 		const bucket = byLine.get(line);
@@ -175,28 +175,32 @@ export function applyEdits(text: string, edits: Edit[]): ApplyResult {
 
 		const idx = line - 1;
 		const currentLine = fileLines[idx] ?? "";
-		const insertLines: string[] = [];
+		const beforeLines: string[] = [];
+		const afterLines: string[] = [];
 		const replacementLines: string[] = [];
 		let deleteLine = false;
 
 		for (const { edit } of bucket) {
 			if (isReplacementInsert(edit)) {
 				replacementLines.push(edit.text);
+			} else if (edit.kind === "insert" && edit.cursor.kind === "after_anchor") {
+				afterLines.push(edit.text);
 			} else if (edit.kind === "insert") {
-				insertLines.push(edit.text);
+				beforeLines.push(edit.text);
 			} else if (edit.kind === "delete") {
 				deleteLine = true;
 			}
 		}
-		if (insertLines.length === 0 && replacementLines.length === 0 && !deleteLine) continue;
+		if (beforeLines.length === 0 && afterLines.length === 0 && replacementLines.length === 0 && !deleteLine) continue;
 
 		const replacement = deleteLine
-			? [...insertLines, ...replacementLines]
-			: [...insertLines, ...replacementLines, currentLine];
+			? [...beforeLines, ...replacementLines, ...afterLines]
+			: [...beforeLines, ...replacementLines, currentLine, ...afterLines];
 		const origins: LineOrigin[] = [];
-		for (let i = 0; i < insertLines.length; i++) origins.push("insert");
+		for (let i = 0; i < beforeLines.length; i++) origins.push("insert");
 		for (let i = 0; i < replacementLines.length; i++) origins.push(deleteLine ? "replacement" : "insert");
 		if (!deleteLine) origins.push(lineOrigins[idx] ?? "original");
+		for (let i = 0; i < afterLines.length; i++) origins.push("insert");
 
 		fileLines.splice(idx, 1, ...replacement);
 		lineOrigins.splice(idx, 1, ...origins);

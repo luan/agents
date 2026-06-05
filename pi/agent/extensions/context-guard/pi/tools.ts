@@ -1,5 +1,6 @@
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import type { z } from "zod";
+import { createHashlineEditAnchor } from "../../fileops/hashline/anchors.js";
 import type { PiToolResponse } from "./core.js";
 import { invokeCore } from "./core.js";
 import { getPiConfigDir } from "./index.js";
@@ -195,32 +196,52 @@ function initDirectToolRuntime(): void {
 
 const toolSpecs = createPiToolSpecs();
 
-server.registerTool("cg_process_file", toolSpecs.processFile, async ({ path, language, code, timeout, intent }) =>
-	trackResponse(
-		"cg_process_file",
-		await invokeCore("process_file", {
-			path,
-			language,
-			code,
-			timeout,
-			intent,
-			projectDir: getProjectDir(),
-		}),
-	),
-);
+async function withHashlineEditAnchor(result: ToolResult, path: string | undefined): Promise<ToolResult> {
+	if (!path) return result;
+	try {
+		const anchor = await createHashlineEditAnchor(getProjectDir(), path);
+		const suffix = [
+			"",
+			"---",
+			"Hashline edit anchor:",
+			anchor,
+			"Use bounded `read` or `search` when you need source lines in context; use this anchor with discovered line numbers for `edit`.",
+		].join("\n");
+		return {
+			...result,
+			content: (result.content ?? []).map((part, index) =>
+				index === 0 && part?.type === "text" && typeof part.text === "string"
+					? { ...part, text: `${part.text}${suffix}` }
+					: part,
+			),
+		};
+	} catch {
+		return result;
+	}
+}
+
+server.registerTool("cg_process_file", toolSpecs.processFile, async ({ path, language, code, timeout, intent }) => {
+	const result = await invokeCore("process_file", {
+		path,
+		language,
+		code,
+		timeout,
+		intent,
+		projectDir: getProjectDir(),
+	});
+	return trackResponse("cg_process_file", await withHashlineEditAnchor(result, path));
+});
 
 server.registerTool("cg_index", toolSpecs.index, async ({ content, path, source }) => {
 	if (content) trackIndexed(Buffer.byteLength(content));
-	return trackResponse(
-		"cg_index",
-		await invokeCore("index", {
-			dbPath: getStorePath(),
-			content,
-			path,
-			source,
-			projectDir: getProjectDir(),
-		}),
-	);
+	const result = await invokeCore("index", {
+		dbPath: getStorePath(),
+		content,
+		path,
+		source,
+		projectDir: getProjectDir(),
+	});
+	return trackResponse("cg_index", await withHashlineEditAnchor(result, path));
 });
 
 server.registerTool("cg_search", toolSpecs.search, async (params) =>

@@ -10,7 +10,11 @@ export interface Anchor {
 }
 
 /** Where an `insert` or `repeat` edit should land relative to existing content. */
-export type Cursor = { kind: "bof" } | { kind: "eof" } | { kind: "before_anchor"; anchor: Anchor };
+export type Cursor =
+	| { kind: "bof" }
+	| { kind: "eof" }
+	| { kind: "before_anchor"; anchor: Anchor }
+	| { kind: "after_anchor"; anchor: Anchor };
 
 /**
  * A single low-level edit produced by the parser and consumed by the applier.

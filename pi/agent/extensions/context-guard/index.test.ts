@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import fileopsExtension from "../fileops/index.ts";
 import piExtension, { _toolRuntimeReady } from "./index.js";
 import { resetExecCommandContextGuardEnabled } from "./pi/index.js";
 
@@ -41,6 +42,7 @@ const originalSkipLocalBin = process.env.CONTEXT_GUARD_SKIP_LOCAL_BIN;
 const originalPath = process.env.PATH;
 const originalPiConfigDir = process.env.PI_CONFIG_DIR;
 const originalProjectDir = process.env.CONTEXT_GUARD_PROJECT_DIR;
+const originalFileopsVariant = process.env.PI_FILEOPS_EDIT_VARIANT;
 
 afterEach(() => {
 	if (originalCoreBin === undefined) {
@@ -62,6 +64,11 @@ afterEach(() => {
 		delete process.env.CONTEXT_GUARD_PROJECT_DIR;
 	} else {
 		process.env.CONTEXT_GUARD_PROJECT_DIR = originalProjectDir;
+	}
+	if (originalFileopsVariant === undefined) {
+		delete process.env.PI_FILEOPS_EDIT_VARIANT;
+	} else {
+		process.env.PI_FILEOPS_EDIT_VARIANT = originalFileopsVariant;
 	}
 	process.env.PATH = originalPath;
 	resetExecCommandContextGuardEnabled();
@@ -245,8 +252,17 @@ describe("piExtension — direct cg_* tool registration", () => {
 			code: "wc -c",
 		});
 		const text = result.content.map((item) => item.text).join("\n");
+		expect(text).toContain(`processed by rust core: ${filePath}`);
+		expect(text).toContain("Hashline edit anchor:");
+		const anchor = text.match(/¶.*input\.txt#[0-9A-F]{3}/)?.[0];
+		expect(anchor).toBeDefined();
 
-		expect(text).toBe(`processed by rust core: ${filePath}`);
+		process.env.PI_FILEOPS_EDIT_VARIANT = "hashline";
+		const fileops = createMockPi();
+		fileopsExtension(fileops as any);
+		const edit = fileops.tools.find((tool) => tool.name === "edit");
+		await (edit!.execute as any)("edit-1", { input: `${anchor}\n1 1\n+xyz\n` }, undefined, undefined, { cwd: dir });
+		expect(readFileSync(filePath, "utf8")).toBe("xyz");
 	});
 
 	it("delegates cg_index, cg_search, and cg_purge to the configured Context Guard core binary", async () => {
@@ -277,10 +293,17 @@ describe("piExtension — direct cg_* tool registration", () => {
 		const search = pi.tools.find((tool) => tool.name === "cg_search");
 		const purge = pi.tools.find((tool) => tool.name === "cg_purge");
 
+		const filePath = join(dir, "input.txt");
+		writeFileSync(filePath, "abc\n", "utf8");
 		await expect(index!.execute("call-1", { content: "hello", source: "adapter" })).resolves.toEqual({
 			content: [{ type: "text", text: "index via rust core" }],
 			details: {},
 		});
+		const pathIndexResult = await index!.execute("call-1b", { path: filePath });
+		const pathIndexText = pathIndexResult.content.map((item) => item.text).join("\n");
+		expect(pathIndexText).toContain("index via rust core");
+		expect(pathIndexText).toContain("Hashline edit anchor:");
+		expect(pathIndexText).toMatch(/¶.*input\.txt#[0-9A-F]{3}/);
 		await expect(search!.execute("call-2", { queries: ["hello"] })).resolves.toEqual({
 			content: [{ type: "text", text: "search via rust core" }],
 			details: {},

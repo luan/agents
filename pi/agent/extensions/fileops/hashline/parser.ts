@@ -46,6 +46,22 @@ function tryParseLiteralAsRepeat(text: string): ParsedRange | null {
 	return { start: { line: start }, end: { line: end } };
 }
 
+function rangeLineCount(range: ParsedRange): number {
+	return range.end.line - range.start.line + 1;
+}
+
+function repeatPayloadLineCount(payloads: readonly PayloadRow[]): number {
+	let count = 0;
+	for (const payload of payloads) {
+		if (payload.kind === "repeat") count += rangeLineCount(payload.range);
+	}
+	return count;
+}
+
+function payloadsAreOnlyRepeats(payloads: readonly PayloadRow[]): boolean {
+	return payloads.length > 0 && payloads.every((payload) => payload.kind === "repeat");
+}
+
 function rangesEqual(a: ParsedRange, b: ParsedRange): boolean {
 	return a.start.line === b.start.line && a.end.line === b.end.line;
 }
@@ -233,7 +249,9 @@ export class Executor {
 				return;
 			case "op-block":
 				this.#discardPendingSkippableComments();
-				if (token.target.kind === "range") validateRangeOrder(token.target.range, token.lineNum);
+				if (token.target.kind === "range" || token.target.kind === "delete_range") {
+					validateRangeOrder(token.target.range, token.lineNum);
+				}
 
 				if (this.#pending !== undefined && targetsEqualConcreteRange(this.#pending.target, token.target)) {
 					// Identical-range coalesce: drop the first hunk. Last-wins.
@@ -307,7 +325,6 @@ export class Executor {
 		this.#skippableComments = [];
 		this.#terminated = false;
 	}
-
 	/**
 	 * Each hunk contributes a delete edit per line in its range; if any line
 	 * ends up targeted by deletes originating from two different source
@@ -487,9 +504,47 @@ export class Executor {
 			return;
 		}
 
+		if (target.kind === "before" || target.kind === "after") {
+			const cursor: Cursor =
+				target.kind === "before"
+					? { kind: "before_anchor", anchor: { ...target.anchor } }
+					: { kind: "after_anchor", anchor: { ...target.anchor } };
+			for (const payload of payloads) {
+				this.#emitPayloadRow(cursor, payload, lineNum);
+			}
+			// Empty body at insertion anchors is a no-op.
+			this.#pending = undefined;
+			return;
+		}
+
+		if (target.kind === "delete_range") {
+			if (payloads.length > 0) {
+				throw new Error(
+					`line ${lineNum}: DELETE ${target.range.start.line} ${target.range.end.line} does not accept payload rows.`,
+				);
+			}
+			for (const anchor of expandRange(target.range)) {
+				this.#pushDelete(anchor, lineNum);
+			}
+			this.#pending = undefined;
+			return;
+		}
+		if (payloads.length === 0) {
+			throw new Error(
+				`line ${lineNum}: empty range hunk ${target.range.start.line} ${target.range.end.line} would delete existing lines. ` +
+					"Implicit deletes are not accepted; use DELETE for deletes.",
+			);
+		}
+
+		if (payloadsAreOnlyRepeats(payloads) && repeatPayloadLineCount(payloads) < rangeLineCount(target.range)) {
+			throw new Error(
+				`line ${lineNum}: repeat-only replacement ${target.range.start.line} ${target.range.end.line} would delete omitted lines. ` +
+					"Use DELETE for deletes, or include literal payload rows for the final desired replacement.",
+			);
+		}
+
 		const cursor: Cursor = { kind: "before_anchor", anchor: { ...target.range.start } };
-		// Empty body = pure delete. Otherwise, emit the body rows as
-		// replacement payload and delete the original range.
+		// Emit the body rows as replacement payload and delete the original range.
 		for (const payload of payloads) {
 			this.#emitPayloadRow(cursor, payload, lineNum, "replacement");
 		}
