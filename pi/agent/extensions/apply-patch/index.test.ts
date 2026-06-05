@@ -94,7 +94,8 @@ describe("apply_patch grammar drift guard", () => {
 		for (const construct of SUPPORTED_APPLY_PATCH_CONSTRUCTS) {
 			expect(APPLY_PATCH_GRAMMAR).toContain(construct);
 		}
-		expect(APPLY_PATCH_GRAMMAR).toContain("preamble: environment_id*");
+		expect(APPLY_PATCH_GRAMMAR).toContain("preamble: (intent | environment_id)+");
+		expect(APPLY_PATCH_GRAMMAR).toContain('intent: "*** Intent: " intent_text LF');
 		expect(APPLY_PATCH_GRAMMAR).toContain("move_spec: /(.+) -> (.+)/");
 	});
 

@@ -27,7 +27,8 @@ registerWgslHighlightLanguage();
 export const APPLY_PATCH_GRAMMAR = `start: begin_patch preamble? hunk+ end_patch
 begin_patch: "*** Begin Patch" LF
 end_patch: "*** End Patch" LF?
-preamble: environment_id*
+preamble: (intent | environment_id)+
+intent: "*** Intent: " intent_text LF
 environment_id: "*** Environment ID: " filename LF
 
 hunk: add_hunk | delete_hunk | update_hunk | move_hunk | replace_all_hunk | update_scope_hunk
@@ -39,6 +40,7 @@ replace_all_hunk: "*** Replace All In File: " filename LF expect_replacements re
 update_scope_hunk: "*** Update Scope: " filename LF scope_change+
 
 filename: /(.+)/
+intent_text: /(.+)/
 move_spec: /(.+) -> (.+)/
 add_line: "+" /(.*)/ LF -> line
 
