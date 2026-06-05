@@ -16,8 +16,7 @@
       "source": "npm:@plannotator/pi-extension",
       "skills": []
     },
-    "npm:pi-cache-graph",
-    "npm:@narumitw/pi-goal"
+    "npm:pi-cache-graph"
   ],
   "extensions": [
     "extensions/agents-local/index.ts",
