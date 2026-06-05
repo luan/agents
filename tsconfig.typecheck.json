@@ -5,6 +5,7 @@
     "pi/agent/extensions/ask/**/*.ts",
     "pi/agent/extensions/prompt-storage/**/*.ts",
     "pi/agent/extensions/skillful/**/*.ts",
+    "pi/agent/extensions/shared/tui/**/*.ts",
     "pi/agent/extensions/tui/**/*.ts"
   ],
   "exclude": ["**/*.test.ts"]
