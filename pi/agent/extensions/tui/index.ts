@@ -92,8 +92,6 @@ function providerColor(providerLabel: string): string | undefined {
 			return "d87b4a";
 		case "OpenAI":
 			return "74c7ec";
-		case "Copilot":
-			return "cba6f7";
 		case "Google":
 			return "a6e3a1";
 		case "MiniMax":
