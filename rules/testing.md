@@ -13,17 +13,20 @@ Every test must answer: **"What bug would this catch?"** No realistic scenario =
 5. Refactor, stay green
 
 No test infrastructure in project? Note it, proceed without tests.
+Visuals? Skip tests unless you can automate them. Checking that text shows up is not useful in and of itself.
 
 ## Banned
 
-- **Tautology** — mock returns what you told it
+- **Tautology** — returns what you told it, obvious
 - **Getter/setter** — compiler catches this
 - **Implementation mirror** — test duplicates production formula
 - **Constant echo** — `assert_eq!(MY_CONST, 42)` restates definition
+- **Content absence** — `assert!(!contains("blabla"))` false positives, brittle
 - **Happy-path-only** — bugs live at boundaries
 - **Coverage padding** — executes without asserting
 - **No-assertion smoke** — constructs object, asserts nothing
-- **Nonexistent-feature absence** — don't assert that unrelated, deleted, or never-implemented behavior is absent. Test only behavior that exists in the current contract.
+- **Feature absence** — don't assert that unrelated, deleted, or never-implemented behavior is absent. Test only behavior that exists in the current contract.
+- **Sleeps** — non-deterministic, slow, brittle. Synchronize on events instead.
 
 ## What to Test
 
@@ -37,16 +40,6 @@ Last resort. Every mock removes a real integration.
 - Never mock the thing under test
 - Never mock collaborators you own
 - 3+ mocks = design too coupled — simplify the design
-
-## Speed
-
-Fast feedback is non-negotiable.
-
-- No network, disk, or subprocesses in unit tests
-- No sleeps — synchronize on events
-- No shared mutable state between tests
-
-Unit tests stay fast. Integration tests run separately.
 
 ## Deletion Test
 
