@@ -86,6 +86,7 @@ interface BaseExecSession {
 	listeners: Set<() => void>;
 	interactive: boolean;
 	startedAtMs: number;
+	hidden: boolean;
 }
 
 interface PipeExecSession extends BaseExecSession {
@@ -637,6 +638,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		for (const listener of exitListeners) {
 			listener(session.id, session.command);
 		}
+		if (session.hidden) sessions.delete(session.id);
 		notify(session);
 	}
 
@@ -825,6 +827,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			listeners: new Set(),
 			interactive: Boolean(input.tty),
 			startedAtMs: Date.now(),
+			hidden: false,
 		};
 
 		child.stdout.on("data", (data: Buffer) => {
@@ -882,6 +885,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			listeners: new Set(),
 			interactive: true,
 			startedAtMs: Date.now(),
+			hidden: false,
 			terminalCommitted: "",
 			terminalLine: [],
 			terminalCursor: 0,
@@ -945,7 +949,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		},
 		write: async (input) => {
 			const session = sessions.get(input.session_id);
-			if (!session) {
+			if (!session || session.hidden) {
 				throw new Error(`Unknown process id ${input.session_id}`);
 			}
 			if (input.chars && input.chars.length > 0) {
@@ -971,7 +975,10 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 				: 0;
 			return makeResult(session, waitedMs);
 		},
-		hasSession: (sessionId) => sessions.has(sessionId),
+		hasSession: (sessionId) => {
+			const session = sessions.get(sessionId);
+			return session !== undefined && !session.hidden;
+		},
 		getSessionCommand: (sessionId) => sessions.get(sessionId)?.command ?? commandHistory.get(sessionId),
 		getSessionSnapshot: (sessionId) => {
 			const session = sessions.get(sessionId);
@@ -993,27 +1000,30 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 				outputTruncated: truncated.output_truncated === true,
 			};
 		},
-		listSessions: () => Array.from(sessions.values(), toRecord),
+		listSessions: () =>
+			Array.from(sessions.values())
+				.filter((session) => !session.hidden)
+				.map(toRecord),
 		stopSession: (sessionId) => {
 			const session = sessions.get(sessionId);
-			if (!session) return false;
+			if (!session || session.hidden) return false;
+			session.hidden = true;
 			terminateSession(session);
-			completeSession(session, "cancelled");
-			return deleteSession(sessionId);
+			notifySessionUpdate();
+			return true;
 		},
 		stopAllSessions: () => {
-			const sessionIds = Array.from(sessions.keys());
-			for (const sessionId of sessionIds) {
-				const session = sessions.get(sessionId);
-				if (!session) continue;
+			let stopped = 0;
+			for (const session of sessions.values()) {
+				if (session.hidden) continue;
+				session.hidden = true;
 				terminateSession(session);
-				completeSession(session, "cancelled");
-				sessions.delete(sessionId);
+				stopped++;
 			}
-			if (sessionIds.length > 0) {
+			if (stopped > 0) {
 				notifySessionUpdate();
 			}
-			return sessionIds.length;
+			return stopped;
 		},
 		onSessionExit: (listener) => {
 			exitListeners.add(listener);
