@@ -3,6 +3,7 @@ import { writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { SessionManager, SessionSelectorComponent } from "@earendil-works/pi-coding-agent";
+import { defineExtensionTui } from "../shared/tui";
 
 type SessionManagerLike = {
 	getSessionName(): string | undefined;
@@ -16,6 +17,7 @@ import { MuxMenu } from "./mux-menu.js";
 import { spawnAndSwap } from "./mux-swap.js";
 
 const SELF = fileURLToPath(new URL("index.ts", import.meta.url));
+const mosaicMuxTui = defineExtensionTui({ id: "mosaic-mux" });
 
 export function inTmux(): boolean {
 	return Boolean(process.env.TMUX && process.env.TMUX_PANE);
@@ -70,7 +72,7 @@ export async function showMosaicSessions(ctx: ExtensionCommandContext): Promise<
 		return;
 	}
 	const cwd = ctx.cwd;
-	await ctx.ui.custom<undefined>((tui, theme, _keybindings, done) => {
+	await mosaicMuxTui.bind(ctx).overlays.openComponent<undefined>((tui, theme, _keybindings, done) => {
 		const menu = new MuxMenu({
 			tui,
 			theme,
@@ -351,32 +353,34 @@ export function registerMosaicMux(pi: ExtensionAPI) {
 						.map((e) => e.sessionFile),
 				);
 
-			const picked = await ctx.ui.custom<string | undefined>((tui, _theme, keybindings, done) => {
-				const spinner = createSpinner(tui);
-				const selector = new SessionSelectorComponent(
-					(onProgress) => SessionManager.list(cwd, sessionDir, onProgress),
-					SessionManager.listAll,
-					(sessionPath: string) => done(sessionPath),
-					() => done(undefined),
-					() => done(undefined),
-					() => tui.requestRender(),
-					{
-						renameSession: async (sessionFilePath, nextName) => {
-							const next = (nextName ?? "").trim();
-							if (!next) return;
-							const mgr = SessionManager.open(sessionFilePath);
-							mgr.appendSessionInfo(next);
+			const picked = await mosaicMuxTui
+				.bind(ctx)
+				.overlays.openComponent<string | undefined>((tui, _theme, keybindings, done) => {
+					const spinner = createSpinner(tui);
+					const selector = new SessionSelectorComponent(
+						(onProgress) => SessionManager.list(cwd, sessionDir, onProgress),
+						SessionManager.listAll,
+						(sessionPath: string) => done(sessionPath),
+						() => done(undefined),
+						() => done(undefined),
+						() => tui.requestRender(),
+						{
+							renameSession: async (sessionFilePath, nextName) => {
+								const next = (nextName ?? "").trim();
+								if (!next) return;
+								const mgr = SessionManager.open(sessionFilePath);
+								mgr.appendSessionInfo(next);
+							},
+							showRenameHint: true,
+							keybindings,
 						},
-						showRenameHint: true,
-						keybindings,
-					},
-					currentFile,
-				);
-				relabelSelectorTitle(selector, "Switch Session");
-				attachSpinner(selector, spinner, queryBusyPaths);
-				tui.setFocus(selector.getSessionList());
-				return selector;
-			});
+						currentFile,
+					);
+					relabelSelectorTitle(selector, "Switch Session");
+					attachSpinner(selector, spinner, queryBusyPaths);
+					tui.setFocus(selector.getSessionList());
+					return selector;
+				});
 
 			if (!picked) return;
 			if (picked === currentFile) return;

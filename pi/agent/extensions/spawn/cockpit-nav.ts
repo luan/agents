@@ -1,7 +1,10 @@
 import { type ExtensionContext, keyText } from "@earendil-works/pi-coding-agent";
 import { type Component, type Focusable, getKeybindings, Input } from "@earendil-works/pi-tui";
+import { defineExtensionTui, type RenderTheme } from "../shared/tui";
 
 export type NavResult<T> = { action: "value"; value: T } | { action: "back" } | { action: "cancel" };
+
+const spawnTui = defineExtensionTui({ id: "spawn" });
 
 class NavSelectComponent implements Component {
 	private selected = 0;
@@ -9,7 +12,7 @@ class NavSelectComponent implements Component {
 	constructor(
 		private title: string,
 		private options: string[],
-		private theme: ExtensionContext["ui"]["theme"],
+		private theme: RenderTheme,
 		private done: (result: NavResult<string>) => void,
 	) {}
 
@@ -66,7 +69,7 @@ class NavInputComponent implements Component, Focusable {
 
 	constructor(
 		private title: string,
-		private theme: ExtensionContext["ui"]["theme"],
+		private theme: RenderTheme,
 		private done: (result: NavResult<string>) => void,
 		private allowEmpty = false,
 	) {
@@ -104,15 +107,23 @@ class NavInputComponent implements Component, Focusable {
 }
 
 export async function navSelect(ctx: ExtensionContext, title: string, options: string[]): Promise<NavResult<string>> {
-	return ctx.ui.custom<NavResult<string>>(
-		(_tui, theme, _kb, done) => new NavSelectComponent(title, options, theme, done),
-	);
+	return spawnTui
+		.bind(ctx)
+		.overlays.openComponent<NavResult<string>>(
+			(_tui, theme, _kb, done) => new NavSelectComponent(title, options, theme, done),
+		);
 }
 
 export async function navInput(ctx: ExtensionContext, title: string): Promise<NavResult<string>> {
-	return ctx.ui.custom<NavResult<string>>((_tui, theme, _kb, done) => new NavInputComponent(title, theme, done));
+	return spawnTui
+		.bind(ctx)
+		.overlays.openComponent<NavResult<string>>((_tui, theme, _kb, done) => new NavInputComponent(title, theme, done));
 }
 
 export async function navOptionalInput(ctx: ExtensionContext, title: string): Promise<NavResult<string>> {
-	return ctx.ui.custom<NavResult<string>>((_tui, theme, _kb, done) => new NavInputComponent(title, theme, done, true));
+	return spawnTui
+		.bind(ctx)
+		.overlays.openComponent<NavResult<string>>(
+			(_tui, theme, _kb, done) => new NavInputComponent(title, theme, done, true),
+		);
 }

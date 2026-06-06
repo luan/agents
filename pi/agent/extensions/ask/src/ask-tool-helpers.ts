@@ -1,5 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { textComponent } from "../../shared/tui";
 import { renderResultText } from "./result";
 import { createInitialState } from "./state/create";
 import { collectValidationIssues } from "./state/normalize";
@@ -60,7 +61,7 @@ export function renderAskToolCall(args: unknown, theme: ToolTheme) {
 	if (labels) {
 		text += theme.fg("dim", ` (${truncateToWidth(labels, UI_DIMENSIONS.callLabelTruncateWidth)})`);
 	}
-	return new Text(text, 0, 0);
+	return textComponent(text);
 }
 
 export function renderAskToolResult(
@@ -72,23 +73,23 @@ export function renderAskToolResult(
 	theme: ToolTheme,
 	context?: { lastComponent?: unknown },
 ) {
-	const textComponent = context?.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
+	const textComponentInstance = context?.lastComponent instanceof Text ? context.lastComponent : textComponent("");
 	const details = result.details;
 	if (!details) {
 		const text = result.content[0];
-		textComponent.setText(text?.type === "text" ? (text.text ?? "") : "");
-		return textComponent;
+		textComponentInstance.setText(text?.type === "text" ? (text.text ?? "") : "");
+		return textComponentInstance;
 	}
 	if (details.error) {
-		textComponent.setText(theme.fg("warning", "Invalid input"));
-		return textComponent;
+		textComponentInstance.setText(theme.fg("warning", "Invalid input"));
+		return textComponentInstance;
 	}
 	if (details.cancelled) {
-		textComponent.setText(theme.fg("warning", "Cancelled"));
-		return textComponent;
+		textComponentInstance.setText(theme.fg("warning", "Cancelled"));
+		return textComponentInstance;
 	}
-	textComponent.setText(renderResultBlock(details, theme));
-	return textComponent;
+	textComponentInstance.setText(renderResultBlock(details, theme));
+	return textComponentInstance;
 }
 
 function renderResultBlock(result: AskResult, theme: ToolTheme): string {

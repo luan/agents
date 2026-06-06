@@ -6,6 +6,7 @@
  */
 
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { triangleWave } from "../../shared/tui";
 import type { AgentManager } from "../agent-manager.js";
 import { getConfig } from "../agent-types.js";
 import type { AgentRecord, SubagentType } from "../types.js";
@@ -217,12 +218,6 @@ function fgColor(theme: Theme, color: string, text: string): string {
 	} catch {
 		return theme.fg("accent", text);
 	}
-}
-
-function triangleWave(elapsedMs: number, periodMs: number, lo: number, hi: number): number {
-	const t = (elapsedMs % periodMs) / periodMs;
-	const tri = 1 - Math.abs(2 * t - 1);
-	return lo + tri * (hi - lo);
 }
 
 function identityPulseFactor(frame: number): number {

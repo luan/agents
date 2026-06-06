@@ -1,8 +1,9 @@
 import { promises as fsPromises, readFileSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { Container, Image, Spacer, Text } from "@earendil-works/pi-tui";
+import { Container, Image, Spacer, type Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { registerExtensionMessageRenderer, textComponent } from "../shared/tui";
 
 export const WEB_SEARCH_ACTIVITY_MESSAGE_TYPE = "codex-web-search-activity";
 export const IMAGE_SAVE_DISPLAY_MESSAGE_TYPE = "codex-image-generation-display";
@@ -440,7 +441,7 @@ export function createImageGenerationTool(): ToolDefinition<any> {
 			throw new Error("image_generation is a native openai-codex provider tool and should not execute locally");
 		},
 		renderCall(_args, theme, context) {
-			const text = (context?.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+			const text = (context?.lastComponent as Text | undefined) ?? textComponent("");
 			const running = context?.isPartial !== false;
 			const marker = theme.fg(running ? "dim" : "success", "•");
 			text.setText(`${marker} ${theme.bold(running ? "Generating image" : "Generated image")}`);
@@ -449,7 +450,7 @@ export function createImageGenerationTool(): ToolDefinition<any> {
 		renderResult(result, { expanded }, theme) {
 			if (!expanded) return new Container();
 			const text = result.content.find((item) => item.type === "text")?.text ?? "(no output)";
-			return new Text(theme.fg("dim", text), 0, 0);
+			return textComponent(theme.fg("dim", text));
 		},
 	};
 }
@@ -474,12 +475,12 @@ export function createWebSearchTool(): ToolDefinition<any> {
 			throw new Error("web_search is a native openai-codex provider tool and should not execute locally");
 		},
 		renderCall(_args, theme) {
-			return new Text(theme.fg("toolTitle", theme.bold(WEB_SEARCH_TOOL_NAME)), 0, 0);
+			return textComponent(theme.fg("toolTitle", theme.bold(WEB_SEARCH_TOOL_NAME)));
 		},
 		renderResult(result, { expanded }, theme) {
 			if (!expanded) return new Container();
 			const text = result.content.find((item) => item.type === "text")?.text ?? "(no output)";
-			return new Text(theme.fg("dim", text), 0, 0);
+			return textComponent(theme.fg("dim", text));
 		},
 	};
 }
@@ -524,7 +525,7 @@ export function renderImageGenerationMessage(
 	const savedImage = message.details?.savedImages?.[0];
 	const container = new Container();
 	if (savedImage) {
-		container.addChild(new Text(renderGeneratedImageActivity(savedImage, options, theme), 0, 0));
+		container.addChild(textComponent(renderGeneratedImageActivity(savedImage, options, theme)));
 		try {
 			const data = readFileSync(savedImage.absolutePath).toString("base64");
 			container.addChild(new Spacer(1));
@@ -543,16 +544,16 @@ export function renderImageGenerationMessage(
 		}
 		return container;
 	}
-	return new Text(`${theme.fg("success", "•")} ${theme.bold("Generated image")}`, 0, 0);
+	return textComponent(`${theme.fg("success", "•")} ${theme.bold("Generated image")}`);
 }
 
 export function registerNativeActivityMessageRenderers(pi: ExtensionAPI): void {
 	if (registeredRendererApis.has(pi)) return;
 	registeredRendererApis.add(pi);
-	pi.registerMessageRenderer(IMAGE_SAVE_DISPLAY_MESSAGE_TYPE, (message, renderOptions, theme) =>
+	registerExtensionMessageRenderer(pi, IMAGE_SAVE_DISPLAY_MESSAGE_TYPE, (message, renderOptions, theme) =>
 		renderImageGenerationMessage(message as any, renderOptions, theme),
 	);
-	pi.registerMessageRenderer(WEB_SEARCH_ACTIVITY_MESSAGE_TYPE, (message, renderOptions, theme) =>
+	registerExtensionMessageRenderer(pi, WEB_SEARCH_ACTIVITY_MESSAGE_TYPE, (message, renderOptions, theme) =>
 		renderWebSearchMessage(message as any, renderOptions, theme),
 	);
 }
@@ -568,5 +569,5 @@ export function renderWebSearchMessage(
 		const content = typeof message.content === "string" ? message.content : "";
 		if (content.trim()) text += `\n${theme.fg("dim", content)}`;
 	}
-	return new Text(text, 0, 0);
+	return textComponent(text);
 }

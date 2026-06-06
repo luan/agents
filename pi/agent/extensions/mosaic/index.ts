@@ -23,7 +23,7 @@ import {
 	ModelSelectorComponent,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import { defineExtensionTui, registerExtensionMessageRenderer, textComponent } from "../shared/tui";
 import { AgentManager } from "./agent-manager.js";
 import { getDefaultMaxTurns, getGraceTurns, setDefaultMaxTurns, setGraceTurns } from "./agent-runner.js";
 import { getAgentConfig, getAllTypes, registerAgents, resolveType } from "./agent-types.js";
@@ -77,6 +77,7 @@ import {
 import { showSchedulesMenu } from "./ui/schedule-menu.js";
 import { addUsage, getLifetimeTotal, getSessionContextPercent } from "./usage.js";
 
+const mosaicTui = defineExtensionTui({ id: "mosaic" });
 // ---- Shared helpers ----
 
 interface FullSessionAgentRecord {
@@ -344,7 +345,7 @@ export default function (pi: ExtensionAPI) {
 	registerMosaicMux(pi);
 
 	// ---- Register custom notification renderer ----
-	pi.registerMessageRenderer<NotificationDetails>("subagent-notification", (message, { expanded }, theme) => {
+	registerExtensionMessageRenderer(pi, "subagent-notification", (message, { expanded }, theme) => {
 		const d = message.details;
 		if (!d) return undefined;
 
@@ -386,7 +387,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		const all = [d, ...(d.others ?? [])];
-		return new Text(all.map(renderOne).join("\n"), 0, 0);
+		return textComponent(all.map(renderOne).join("\n"));
 	});
 
 	/** Reload agents from .pi/agents/*.md and merge with defaults (called on init and each Agent invocation). */
@@ -1520,7 +1521,7 @@ export default function (pi: ExtensionAPI) {
 		const currentConfigured = currentModelRef
 			? resolveModel(currentModelRef, ctx.modelRegistry as ModelRegistry)
 			: undefined;
-		return ctx.ui.custom<string | undefined>(
+		return mosaicTui.bind(ctx).overlays.openComponent<string | undefined>(
 			(tui, _theme, _keybindings, done) => {
 				const selector = new ModelSelectorComponent(
 					tui,
@@ -2025,7 +2026,7 @@ export default function (pi: ExtensionAPI) {
 		const session = record.session;
 		const activity = agentActivity.get(record.id);
 
-		await ctx.ui.custom<undefined>(
+		await mosaicTui.bind(ctx).overlays.openComponent<undefined>(
 			(tui, theme, _keybindings, done) => {
 				return new ConversationViewer(tui, session, record, activity, theme, done);
 			},

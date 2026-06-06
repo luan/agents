@@ -2,6 +2,7 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { buildSessionContext, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { runCommand } from "../shared/ct-runner";
+import { defineExtensionTui } from "../shared/tui";
 import { ensureConfigExists, loadConfig, type PolishedTuiConfig, saveConfig } from "./config";
 import { installFocusCursor } from "./cursor-focus";
 import {
@@ -31,6 +32,9 @@ import { readGitStatus } from "./git";
 import { readRuntimeInfo } from "./runtime";
 import { detectUsageProvider, fetchUsageForProvider, USAGE_REFRESH_INTERVAL, type UsageSnapshot } from "./usage";
 
+const polishedTui = defineExtensionTui({ id: "polished-tui" });
+
+type FooterFactory = Parameters<ExtensionContext["ui"]["setFooter"]>[0];
 type UsageTotals = { input: number; output: number; cost: number };
 
 type UsageBarCache = {
@@ -534,7 +538,7 @@ export default function (pi: ExtensionAPI) {
 		const generation = uiGeneration;
 		syncStateIfCurrent(ctx);
 
-		ctx.ui.setFooter((tui, _theme, footerData) => {
+		const footerFactory: FooterFactory = (tui, _theme, footerData) => {
 			requestFooterRender = () => tui.requestRender();
 			const disposeFocusCursor = installFocusCursor(pi, ctx, tui);
 			const unsubscribeBranch = footerData.onBranchChange(() => {
@@ -560,7 +564,8 @@ export default function (pi: ExtensionAPI) {
 					return [];
 				},
 			};
-		});
+		};
+		polishedTui.bind(ctx).footer.replace(footerFactory);
 	};
 
 	const installEditor = (ctx: ExtensionContext) => {

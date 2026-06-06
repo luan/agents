@@ -1,4 +1,5 @@
-import { type Component, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { textComponent } from "../../shared/tui";
 import { type ShellAction, summarizeShellCommand } from "../shell/summary.ts";
 import {
 	backgroundTerminalAnimatedLabel,
@@ -166,7 +167,7 @@ class ExecCellComponent implements Component {
 		) {
 			return this.renderedCache.lines;
 		}
-		const lines = new Text(text, 0, 0).render(width);
+		const lines = textComponent(text).render(width);
 		this.renderedCache = textSignature === undefined ? undefined : { width, textSignature, lines };
 		return lines;
 	}

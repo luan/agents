@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { defineExtensionTui } from "../shared/tui";
 import type { BasePromptTraceResult, TraceBucket, TraceLineEvidence } from "./base-trace/index.js";
 import { TraceCache } from "./base-trace/index.js";
 import { DisableMode } from "./enums.js";
@@ -21,6 +22,7 @@ import type {
 } from "./types.js";
 import { buildBarSegments, fuzzyFilter } from "./utils.js";
 
+const tokenBurdenTui = defineExtensionTui({ id: "token-burden" });
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -2180,7 +2182,7 @@ export async function showReport(
 	onToolToggle?: ToolToggleHandler,
 	sessionUsage?: SessionUsageData,
 ): Promise<void> {
-	await ctx.ui.custom<null>(
+	await tokenBurdenTui.bind(ctx).overlays.openComponent<null>(
 		(tui, _theme, _kb, done) => {
 			const overlay = new BudgetOverlay(
 				tui,

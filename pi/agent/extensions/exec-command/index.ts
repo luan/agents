@@ -7,7 +7,7 @@ import {
 import { Text } from "@earendil-works/pi-tui";
 import { resolveCoreBin } from "../context-guard/pi/core.ts";
 import { isExecCommandContextGuardEnabled } from "../context-guard/pi/index.ts";
-import { setOrderedAboveEditorWidget } from "../shared/ordered-widgets";
+import { defineExtensionTui, registerExtensionMessageRenderer, setOrderedAboveEditorWidget } from "../shared/tui";
 import {
 	type RenderTheme,
 	rawCommandToExecCell,
@@ -28,6 +28,7 @@ import { formatUnifiedExecResult } from "./tools/unified-exec-format.ts";
 import { registerWriteStdinTool } from "./tools/write-stdin-tool.ts";
 import { BackgroundTerminalOverlay } from "./ui/background-terminal-overlay.ts";
 
+const execCommandTui = defineExtensionTui({ id: "exec-command" });
 function arraysEqual(a: string[], b: string[]): boolean {
 	return a.length === b.length && a.every((value, index) => value === b[index]);
 }
@@ -312,8 +313,12 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 			{ theme },
 		);
 	};
-	(pi as any).registerMessageRenderer?.(EXEC_COMMAND_COMPLETED_MESSAGE, renderBackgroundTerminalFinishedMessage);
-	(pi as any).registerMessageRenderer?.(EXEC_COMMAND_SESSION_ERROR_MESSAGE, renderBackgroundTerminalFinishedMessage);
+	registerExtensionMessageRenderer(pi as any, EXEC_COMMAND_COMPLETED_MESSAGE, renderBackgroundTerminalFinishedMessage);
+	registerExtensionMessageRenderer(
+		pi as any,
+		EXEC_COMMAND_SESSION_ERROR_MESSAGE,
+		renderBackgroundTerminalFinishedMessage,
+	);
 
 	const syncToolPolicy = () => {
 		if (shuttingDown) return;
@@ -536,15 +541,15 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 	pi.registerCommand("ps", {
 		description: "list background terminals",
 		handler: async (_args, ctx) => {
-			await ctx.ui.custom<undefined>(
-				(tui, theme, _keybindings, done) => {
-					return new BackgroundTerminalOverlay(sessions, tui, theme, done);
-				},
-				{
-					overlay: true,
-					overlayOptions: { anchor: "center", width: "90%", minWidth: 60 },
-				},
-			);
+			await execCommandTui
+				.bind(ctx)
+				.overlays.openComponent<undefined>(
+					(tui, theme, _keybindings, done) => new BackgroundTerminalOverlay(sessions, tui, theme, done),
+					{
+						overlay: true,
+						overlayOptions: { anchor: "center", width: "90%", minWidth: 60 },
+					},
+				);
 		},
 	});
 

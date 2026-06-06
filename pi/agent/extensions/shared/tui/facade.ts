@@ -3,18 +3,32 @@ import { renderView } from "./renderer";
 import { createSurfaceRegistry, type SurfaceContribution } from "./surfaces";
 import type { RenderTheme, ViewNode } from "./types";
 
+type WidgetTui = Pick<TUI, "requestRender">;
+
 export interface ExtensionTuiDefinition {
 	tools: ToolRegistry;
 	bind(ctx: TuiSessionContext): BoundExtensionTui;
+}
+
+export interface OverlayHostOptions {
+	overlay?: boolean;
+	overlayOptions?: unknown;
 }
 
 export interface TuiSessionContext {
 	ui: {
 		setWidget(
 			key: string,
-			content: undefined | ((tui: Pick<TUI, "requestRender">, theme: RenderTheme) => Component),
+			content: undefined | ((tui: WidgetTui, theme: RenderTheme) => Component),
 			options?: { placement?: "aboveEditor" | "belowEditor" },
 		): void;
+		custom?<T>(
+			factory: (tui: TUI, theme: RenderTheme, keybindings: unknown, done: (value: T) => void) => Component,
+			options?: OverlayHostOptions,
+		): Promise<T>;
+		setStatus?(key: string, text: string | undefined): void;
+		setFooter?(factory: unknown): void;
+		setEditorComponent?(factory: unknown): void;
 	};
 }
 
@@ -23,6 +37,24 @@ export interface BoundExtensionTui {
 		aboveEditor: {
 			contribute(contribution: SurfaceContribution): void;
 		};
+	};
+	overlays: {
+		openComponent<T>(
+			factory: (tui: TUI, theme: RenderTheme, keybindings: unknown, done: (value: T) => void) => Component,
+			options?: OverlayHostOptions,
+		): Promise<T>;
+	};
+	status: {
+		set(key: string, text: string): void;
+		clear(key: string): void;
+	};
+	footer: {
+		replace(factory: unknown): void;
+		clear(): void;
+	};
+	editor: {
+		replace(factory: unknown): void;
+		clear(): void;
 	};
 }
 
@@ -69,6 +101,59 @@ class BoundExtensionTuiImpl implements BoundExtensionTui {
 			},
 		},
 	};
+
+	overlays = {
+		openComponent: <T>(
+			factory: (tui: TUI, theme: RenderTheme, keybindings: unknown, done: (value: T) => void) => Component,
+			options: OverlayHostOptions = { overlay: true },
+		): Promise<T> => {
+			if (!this.ctx.ui.custom) throw new Error("ctx.ui.custom is unavailable for overlay Host Surface");
+			return this.ctx.ui.custom(factory, {
+				overlay: options.overlay ?? true,
+				overlayOptions: options.overlayOptions,
+			});
+		},
+	};
+
+	status = {
+		set: (key: string, text: string): void => {
+			this.setStatus(key, text);
+		},
+		clear: (key: string): void => {
+			this.setStatus(key, undefined);
+		},
+	};
+
+	footer = {
+		replace: (factory: unknown): void => {
+			if (!this.ctx.ui.setFooter) throw new Error("ctx.ui.setFooter is unavailable for footer Host Surface");
+			this.ctx.ui.setFooter(factory);
+		},
+		clear: (): void => {
+			if (!this.ctx.ui.setFooter) throw new Error("ctx.ui.setFooter is unavailable for footer Host Surface");
+			this.ctx.ui.setFooter(undefined);
+		},
+	};
+
+	editor = {
+		replace: (factory: unknown): void => {
+			if (!this.ctx.ui.setEditorComponent) {
+				throw new Error("ctx.ui.setEditorComponent is unavailable for editor Host Surface");
+			}
+			this.ctx.ui.setEditorComponent(factory);
+		},
+		clear: (): void => {
+			if (!this.ctx.ui.setEditorComponent) {
+				throw new Error("ctx.ui.setEditorComponent is unavailable for editor Host Surface");
+			}
+			this.ctx.ui.setEditorComponent(undefined);
+		},
+	};
+
+	private setStatus(key: string, text: string | undefined): void {
+		if (!this.ctx.ui.setStatus) throw new Error("ctx.ui.setStatus is unavailable for status Host Surface");
+		this.ctx.ui.setStatus(`${this.extensionId}:${key}`, text);
+	}
 
 	private mountWidget(surface: string, placement: "aboveEditor" | "belowEditor"): void {
 		const key = `${this.extensionId}:${surface}`;

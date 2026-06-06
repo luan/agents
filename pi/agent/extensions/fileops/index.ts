@@ -11,10 +11,11 @@ import {
 	type ExtensionAPI,
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
-import { Box, Text } from "@earendil-works/pi-tui";
+import { Box, type Text } from "@earendil-works/pi-tui";
 import { createTwoFilesPatch } from "diff";
 import { Type } from "typebox";
 import { runCommand as runExternalCommand } from "../shared/ct-runner.ts";
+import { EmptyComponent, runningFrame, shineText, textComponent } from "../shared/tui";
 import {
 	buildHighlightedDiffRows,
 	type DiffRenderRow,
@@ -34,14 +35,8 @@ import { Patcher } from "./hashline/patcher.ts";
 import { stripHashlinePrefixes } from "./hashline/prefixes.ts";
 
 type EditMode = "apply_patch" | "patch" | "hashline" | "replace";
-type Rgb = [number, number, number];
-
 const EDIT_FRAME_MS = 120;
-const EDIT_RUNNING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const EDIT_LABEL = "Editing";
-const EDIT_LABEL_SHINE_WIDTH = 3;
-const EDIT_LABEL_PERCOLATION_MS = 80;
-const RGB_FALLBACK: Rgb = [0xff, 0xff, 0xff];
 const CONTEXT_PROTECTION_READ_BYTES = 50_000;
 const CONTEXT_PROTECTION_READ_LABEL = "Large file read blocked";
 const DEFAULT_SEARCH_RESULT_LIMIT = 200;
@@ -352,17 +347,10 @@ function firstTextContent(result: ToolTextResult): string {
 }
 
 function renderText(text: string): Text {
-	return new Text(text, 0, 0);
+	return textComponent(text);
 }
 
-class EmptyView {
-	invalidate() {}
-	render(): string[] {
-		return [];
-	}
-}
-
-const EMPTY_VIEW = new EmptyView();
+const EMPTY_VIEW = new EmptyComponent();
 
 class BlockTextView {
 	constructor(
@@ -374,7 +362,7 @@ class BlockTextView {
 
 	render(width: number): string[] {
 		const box = new Box(0, 0, this.theme.bg ? (line) => this.theme.bg?.("toolPendingBg", line) ?? line : undefined);
-		box.addChild(new Text(this.text, 0, 0));
+		box.addChild(textComponent(this.text));
 		return box.render(width);
 	}
 }
@@ -424,66 +412,6 @@ function renderStatusHeader(
 	return `${statusIcon(theme, icon)} ${theme.fg("toolTitle", theme.bold(label))}${rest}`;
 }
 
-function ansi256ToRgb(code: number): Rgb {
-	if (code < 16) {
-		const base: Rgb[] = [
-			[0, 0, 0],
-			[128, 0, 0],
-			[0, 128, 0],
-			[128, 128, 0],
-			[0, 0, 128],
-			[128, 0, 128],
-			[0, 128, 128],
-			[192, 192, 192],
-			[128, 128, 128],
-			[255, 0, 0],
-			[0, 255, 0],
-			[255, 255, 0],
-			[0, 0, 255],
-			[255, 0, 255],
-			[0, 255, 255],
-			[255, 255, 255],
-		];
-		return base[code] ?? RGB_FALLBACK;
-	}
-	if (code >= 16 && code <= 231) {
-		const n = code - 16;
-		const r = Math.floor(n / 36);
-		const g = Math.floor((n % 36) / 6);
-		const b = n % 6;
-		const scale = (value: number) => (value === 0 ? 0 : 55 + value * 40);
-		return [scale(r), scale(g), scale(b)];
-	}
-	const gray = 8 + (code - 232) * 10;
-	return [gray, gray, gray];
-}
-
-function colorAnsi(theme: RenderTheme, role: string): string | undefined {
-	if (theme.getFgAnsi) return theme.getFgAnsi(role);
-	const sample = theme.fg(role, "x");
-	const marker = sample.indexOf("x");
-	const ansi = marker >= 0 ? sample.slice(0, marker) : undefined;
-	return ansi?.includes("\x1b[38;") ? ansi : undefined;
-}
-
-function colorRgb(theme: RenderTheme, role: string): Rgb {
-	const ansi = colorAnsi(theme, role);
-	const truecolor = ansi?.match(/\x1b\[38;2;(\d+);(\d+);(\d+)m/);
-	if (truecolor) return [Number(truecolor[1]), Number(truecolor[2]), Number(truecolor[3])];
-	const color256 = ansi?.match(/\x1b\[38;5;(\d+)m/);
-	if (color256) return ansi256ToRgb(Number(color256[1]));
-	return RGB_FALLBACK;
-}
-
-function scaleRgb([r, g, b]: Rgb, factor: number): Rgb {
-	const scale = (value: number) => Math.round(Math.max(0, Math.min(255, value * factor)));
-	return [scale(r), scale(g), scale(b)];
-}
-
-function rgbFg([r, g, b]: Rgb): string {
-	return `\x1b[38;2;${r};${g};${b}m`;
-}
-
 function editElapsedMs(context: { state?: Record<string, unknown> } | undefined, running: boolean): number | undefined {
 	const state = context?.state;
 	if (!running || !state) return undefined;
@@ -513,29 +441,15 @@ function scheduleEditInvalidation(
 	state.elapsedTimer.unref?.();
 }
 
-function editRunningFrame(elapsedMs: number | undefined): string {
-	if (elapsedMs === undefined) return EDIT_RUNNING_FRAMES[0]!;
-	return EDIT_RUNNING_FRAMES[Math.floor(elapsedMs / EDIT_FRAME_MS) % EDIT_RUNNING_FRAMES.length]!;
-}
-
 function editRunningLabel(theme: RenderTheme, elapsedMs: number | undefined): string {
-	if (!colorAnsi(theme, "accent")) return theme.fg("warning", EDIT_LABEL);
-	const base = scaleRgb(colorRgb(theme, "accent"), 0.55);
-	const shine = scaleRgb(colorRgb(theme, "accent"), 1.55);
-	const chars = [...EDIT_LABEL];
-	const step = Math.floor((elapsedMs ?? 0) / EDIT_LABEL_PERCOLATION_MS);
-	const cycle = chars.length + EDIT_LABEL_SHINE_WIDTH;
-	const pos = step % cycle;
-	return `${chars
-		.map((ch, index) => {
-			const inShine = index >= pos - EDIT_LABEL_SHINE_WIDTH && index < pos;
-			return `${rgbFg(inShine ? shine : base)}${ch}`;
-		})
-		.join("")}\x1b[39m`;
+	return shineText(theme, EDIT_LABEL, elapsedMs, {
+		role: "accent",
+		fallback: (text) => theme.fg("warning", text),
+	});
 }
 
 function renderEditRunningHeader(theme: RenderTheme, elapsedMs: number | undefined, rest: string): string {
-	return `${theme.fg("dim", editRunningFrame(elapsedMs))} ${theme.fg("toolTitle", theme.bold(editRunningLabel(theme, elapsedMs)))}${rest}`;
+	return `${theme.fg("dim", runningFrame(elapsedMs, EDIT_FRAME_MS))} ${theme.fg("toolTitle", theme.bold(editRunningLabel(theme, elapsedMs)))}${rest}`;
 }
 
 class EditCallView {
@@ -562,7 +476,7 @@ class EditCallView {
 function renderHeaderBox(text: string, theme: RenderTheme, state: "success" | "error" | "pending"): Box {
 	const role = state === "success" ? "toolSuccessBg" : state === "error" ? "toolErrorBg" : "toolPendingBg";
 	const box = new Box(0, 0, theme.bg ? (line) => theme.bg?.(role, line) ?? line : undefined);
-	box.addChild(new Text(text, 0, 0));
+	box.addChild(textComponent(text));
 	return box;
 }
 
@@ -629,7 +543,7 @@ function renderHashlineReadResult(
 	result: ToolTextResult,
 	options: { expanded?: boolean; isPartial?: boolean },
 	theme: RenderTheme,
-): Text | EmptyView {
+): Text | EmptyComponent {
 	if (options.isPartial) return renderText(theme.fg("warning", "Reading..."));
 	if (!options.expanded) return EMPTY_VIEW;
 	const sections = parseHashlineSections(firstTextContent(result));
@@ -641,7 +555,7 @@ function renderHashlineReadResult(
 	return renderText(renderNumberedRows(section.rows, theme, section.rows.length, highlightedRows));
 }
 
-function renderSearchCall(_params: { pattern?: unknown; path?: unknown }, _theme: RenderTheme): EmptyView {
+function renderSearchCall(_params: { pattern?: unknown; path?: unknown }, _theme: RenderTheme): EmptyComponent {
 	return EMPTY_VIEW;
 }
 
@@ -712,7 +626,7 @@ function renderSearchResult(
 	options: { expanded?: boolean; isPartial?: boolean },
 	theme: RenderTheme,
 	args?: { pattern?: unknown; path?: unknown },
-): Text | BlockTextView | EmptyView {
+): Text | BlockTextView | EmptyComponent {
 	if (options.isPartial) return renderText(theme.fg("warning", "Searching..."));
 	const text = firstTextContent(result).trim();
 	if (!text.startsWith("¶")) return renderText(renderStatusHeader("Search:", theme, ` ${theme.fg("dim", text)}`));
@@ -803,7 +717,7 @@ function renderWriteResult(
 	result: ToolTextResult,
 	options: { isPartial?: boolean },
 	theme: RenderTheme,
-): Text | EmptyView {
+): Text | EmptyComponent {
 	if (options.isPartial) return renderText(theme.fg("warning", "Writing..."));
 	const text = firstTextContent(result);
 	return /error/i.test(text) ? renderText(`\n${theme.fg("error", text)}`) : EMPTY_VIEW;

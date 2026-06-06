@@ -1,6 +1,6 @@
 import { CustomEditor } from "@earendil-works/pi-coding-agent";
 import type { EditorComponent } from "@earendil-works/pi-tui";
-import { type EditorFactory, type EditorUi, installEditorLayer } from "../shared/editor-composition";
+import { type EditorFactory, type EditorUi, installEditorLayer } from "../shared/tui";
 import { colorize, colorizeLines } from "./highlight";
 
 const EDITOR_LAYER_ID = Symbol.for("skillful.editorHighlightLayer");

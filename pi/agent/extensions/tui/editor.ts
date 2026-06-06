@@ -1,5 +1,6 @@
 import { CustomEditor, type Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { rgbBg, rgbFg, scaleRgb, shineText, themeRoleToRgb, triangleWave } from "../shared/tui";
 import { ANSI_RESET, fillBackgroundLine } from "./render-lines";
 
 const CUSTOM_EDITOR_ORIGINAL_RENDER = Symbol.for("agents.polishedTui.customEditorOriginalRender");
@@ -51,14 +52,10 @@ let workingNowMsForTest: number | undefined;
 let editorSessionIdentityProvider: (() => EditorSessionIdentity | undefined) | undefined;
 
 const WORKING_WORD = "Working";
-const WORKING_SHINE_WIDTH = 3;
 const WORKING_PERCOLATION_MS = 80;
 const RAIL_PULSE_MS = 2000;
-const RGB_FALLBACK: Rgb = [0xff, 0xff, 0xff];
 const EDITOR_BG_DARKEN = 0.78;
 const MODE_LABEL_RESERVE = 9;
-
-type Rgb = [number, number, number];
 let editorChromeProvider: EditorChromeProvider | undefined;
 
 export function setEditorTheme(uiTheme: Theme): void {
@@ -186,96 +183,8 @@ function truncateVisible(text: string, maxWidth: number): string {
 	return `${[...text].slice(0, maxWidth - 1).join("")}…`;
 }
 
-function ansi256ToRgb(code: number): Rgb {
-	if (code < 16) {
-		const base: Rgb[] = [
-			[0, 0, 0],
-			[128, 0, 0],
-			[0, 128, 0],
-			[128, 128, 0],
-			[0, 0, 128],
-			[128, 0, 128],
-			[0, 128, 128],
-			[192, 192, 192],
-			[128, 128, 128],
-			[255, 0, 0],
-			[0, 255, 0],
-			[255, 255, 0],
-			[0, 0, 255],
-			[255, 0, 255],
-			[0, 255, 255],
-			[255, 255, 255],
-		];
-		return base[code] ?? RGB_FALLBACK;
-	}
-	if (code >= 16 && code <= 231) {
-		const n = code - 16;
-		const r = Math.floor(n / 36);
-		const g = Math.floor((n % 36) / 6);
-		const b = n % 6;
-		const scale = (value: number) => (value === 0 ? 0 : 55 + value * 40);
-		return [scale(r), scale(g), scale(b)];
-	}
-	const gray = 8 + (code - 232) * 10;
-	return [gray, gray, gray];
-}
-
-function colorAnsi(uiTheme: Theme, color: string): string | undefined {
-	const withGetter = uiTheme as Theme & { getFgAnsi?: (color: string) => string };
-	if (withGetter.getFgAnsi) return withGetter.getFgAnsi(color);
-	const sample = uiTheme.fg(color as never, "x");
-	const marker = sample.indexOf("x");
-	return marker >= 0 ? sample.slice(0, marker) : undefined;
-}
-
-function colorRgb(uiTheme: Theme, color: string): Rgb {
-	const hex = parseHexRgb(color);
-	if (hex) return hex;
-	const ansi = colorAnsi(uiTheme, color);
-	const truecolor = ansi?.match(/\x1b\[38;2;(\d+);(\d+);(\d+)m/);
-	if (truecolor) return [Number(truecolor[1]), Number(truecolor[2]), Number(truecolor[3])];
-
-	const color256 = ansi?.match(/\x1b\[38;5;(\d+)m/);
-	if (color256) return ansi256ToRgb(Number(color256[1]));
-
-	return RGB_FALLBACK;
-}
-
-function scaleRgb([r, g, b]: Rgb, factor: number): Rgb {
-	const scale = (value: number) => Math.round(Math.max(0, Math.min(255, value * factor)));
-	return [scale(r), scale(g), scale(b)];
-}
-
-function rgbFg([r, g, b]: Rgb): string {
-	return `\x1b[38;2;${r};${g};${b}m`;
-}
-
-function rgbBg([r, g, b]: Rgb): string {
-	return `\x1b[48;2;${r};${g};${b}m`;
-}
-
 function colorFg(uiTheme: Theme, color: string, text: string): string {
-	const rgb = parseHexRgb(color);
-	if (rgb) return `${rgbFg(rgb)}${text}\x1b[39m`;
-	return uiTheme.fg(color as never, text);
-}
-
-function parseHexRgb(color: string): Rgb | undefined {
-	const match = color.match(/^#?([0-9a-fA-F]{6})$/);
-	if (!match) return undefined;
-	const hex = match[1]!;
-	return [
-		Number.parseInt(hex.slice(0, 2), 16),
-		Number.parseInt(hex.slice(2, 4), 16),
-		Number.parseInt(hex.slice(4, 6), 16),
-	];
-}
-
-function triangleWave(frame: number, periodMs: number, lo: number, hi: number): number {
-	const elapsedMs = frame * WORKING_PERCOLATION_MS;
-	const t = (elapsedMs % periodMs) / periodMs;
-	const tri = 1 - Math.abs(2 * t - 1);
-	return lo + tri * (hi - lo);
+	return `${rgbFg(themeRoleToRgb(uiTheme, color))}${text}\x1b[39m`;
 }
 
 function modeColor(mode: string | undefined): string {
@@ -290,19 +199,10 @@ function railColorForMode(mode: string | undefined, identityColor: string | unde
 }
 
 function renderWorkingWord(uiTheme: Theme, color: string, frame: number): string {
-	const base = scaleRgb(colorRgb(uiTheme, color), 0.55);
-	const shine = scaleRgb(colorRgb(uiTheme, color), 1.55);
-	const step = Math.floor((frame * WORKING_PERCOLATION_MS) / WORKING_PERCOLATION_MS);
-	const chars = [...WORKING_WORD];
-	const cycle = chars.length + WORKING_SHINE_WIDTH;
-	const pos = step % cycle;
-
-	return chars
-		.map((ch, index) => {
-			const inShine = index >= pos - WORKING_SHINE_WIDTH && index < pos;
-			return `${rgbFg(inShine ? shine : base)}${ch}`;
-		})
-		.join("");
+	return shineText(uiTheme, WORKING_WORD, frame * WORKING_PERCOLATION_MS, {
+		role: color,
+		fallback: (text) => uiTheme.fg("warning", text),
+	}).replace(/\x1b\[39m$/, "");
 }
 
 export function formatWorkingDuration(durationMs: number): string {
@@ -341,7 +241,7 @@ function workingHeaderSegment(uiTheme: Theme, color: string): string {
 		"dim",
 		` ${formatWorkingDuration(elapsed)}. Total cumulative: ${formatWorkingDuration(totalWorkingDurationMs())}.`,
 	);
-	return `${label}${rgbFg(scaleRgb(colorRgb(uiTheme, color), 0.85))}…${timing}${ANSI_RESET}`;
+	return `${label}${rgbFg(scaleRgb(themeRoleToRgb(uiTheme, color), 0.85))}…${timing}${ANSI_RESET}`;
 }
 
 function cleanIdentityPart(value: string | undefined): string | undefined {
@@ -361,7 +261,7 @@ function sessionIdentityText(identity: EditorSessionIdentity | undefined): strin
 
 function renderIdentityText(uiTheme: Theme, identity: string, identityColor: string | undefined): string {
 	if (!identityColor) return uiTheme.fg("dim", identity);
-	const rgb = parseHexRgb(identityColor) ?? colorRgb(uiTheme, identityColor);
+	const rgb = themeRoleToRgb(uiTheme, identityColor);
 	return `${rgbFg(scaleRgb(rgb, 0.62))}${identity}${ANSI_RESET}`;
 }
 
@@ -443,8 +343,10 @@ export function renderPolishedEditorForTest(
 	const modeReserve = typeof editor.getMode === "function" ? MODE_LABEL_RESERVE : 0;
 	const statusWidth = Math.max(1, innerWidth - modeReserve);
 	const chrome = editorChromeProvider?.(innerWidth, uiTheme, { modeReserve }) ?? {};
-	const railPulseFactor = workingActive ? triangleWave(workingFrame, RAIL_PULSE_MS, 0.18, 1.25) : 0;
-	const railBg = workingActive ? rgbBg(scaleRgb(colorRgb(uiTheme, railColor), railPulseFactor)) : "";
+	const railPulseFactor = workingActive
+		? triangleWave(workingFrame * WORKING_PERCOLATION_MS, RAIL_PULSE_MS, 0.18, 1.25)
+		: 0;
+	const railBg = workingActive ? rgbBg(scaleRgb(themeRoleToRgb(uiTheme, railColor), railPulseFactor)) : "";
 	const railGap = fillBackgroundLine(uiTheme, "", 1, { darken: EDITOR_BG_DARKEN });
 	const secondaryRail = secondaryRailColor ? `${colorFg(uiTheme, secondaryRailColor, "▐")}${ANSI_RESET}` : "";
 	const mainRailGlyph = secondaryRailColor ? "▌" : "┃";

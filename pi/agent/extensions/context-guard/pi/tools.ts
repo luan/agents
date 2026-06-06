@@ -1,6 +1,7 @@
-import { Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { z } from "zod";
 import { createHashlineEditAnchor } from "../../fileops/hashline/anchors.js";
+import { textComponent } from "../../shared/tui";
 import type { PiToolResponse } from "./core.js";
 import { invokeCore } from "./core.js";
 import { getPiConfigDir } from "./index.js";
@@ -16,7 +17,9 @@ class ContextToolComponent {
 	invalidate(): void {}
 
 	render(width: number): string[] {
-		return new Text(this.text, 0, 0).render(width).map((line) => truncateToWidth(line, Math.max(1, width)));
+		return textComponent(this.text)
+			.render(width)
+			.map((line) => truncateToWidth(line, Math.max(1, width)));
 	}
 }
 

@@ -2,6 +2,7 @@ import { defineTool } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { EmptyComponent } from "../shared/tui";
 import { highlightTrickle } from "./ui/animation.js";
 
 export const MOSAIC_TOOL_NAMES = [
@@ -103,15 +104,7 @@ function formatSpawnAgentText(value: unknown): string {
 	return lines.join("\n");
 }
 
-class EmptyMosaicRender implements Component {
-	render(): string[] {
-		return [];
-	}
-
-	invalidate(): void {}
-}
-
-const emptyMosaicRender = new EmptyMosaicRender();
+const emptyMosaicRender = new EmptyComponent();
 
 const INLINE_FRAME_MS = 120;
 const INLINE_OUTPUT_BOX_LINES = 5;

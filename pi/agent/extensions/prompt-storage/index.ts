@@ -23,12 +23,17 @@ import {
 	Key,
 	matchesKey,
 	Spacer,
-	Text,
 	type TUI,
 	truncateToWidth,
 } from "@earendil-works/pi-tui";
-import { type EditorFactory, type EditorUi, installEditorLayer } from "../shared/editor-composition";
-import { setOrderedAboveEditorWidget } from "../shared/ordered-widgets";
+import {
+	defineExtensionTui,
+	type EditorFactory,
+	type EditorUi,
+	installEditorLayer,
+	setOrderedAboveEditorWidget,
+	textComponent,
+} from "../shared/tui";
 
 type PromptKind = "stash" | "history";
 type PickerAction = "apply" | "pop" | "drop";
@@ -53,6 +58,7 @@ interface Config {
 	};
 }
 
+const promptStorageTui = defineExtensionTui({ id: "prompt-storage" });
 interface PromptItem {
 	kind: PromptKind;
 	id: number | string;
@@ -561,14 +567,14 @@ class PromptPicker extends Container implements Focusable {
 		this.searchInput.onSubmit = () => this.choose(this.mode === "stash" ? "pop" : "apply");
 		this.searchInput.onEscape = () => this.done(null);
 		this.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-		this.addChild(new Text(theme.fg("accent", theme.bold(` ${title} `)), 0, 0));
-		this.addChild(new Text(theme.fg("dim", "Type to fuzzy-filter prompt text or session name"), 0, 0));
+		this.addChild(textComponent(theme.fg("accent", theme.bold(` ${title} `))));
+		this.addChild(textComponent(theme.fg("dim", "Type to fuzzy-filter prompt text or session name")));
 		this.addChild(new Spacer(1));
 		this.addChild(this.searchInput);
 		this.addChild(new Spacer(1));
 		this.addChild(this.list);
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(this.helpText(), 0, 0));
+		this.addChild(textComponent(this.helpText()));
 		this.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
 		this.applyFilter();
 	}
@@ -633,16 +639,15 @@ class PromptPicker extends Container implements Focusable {
 	private rebuildList(): void {
 		this.list.clear();
 		if (this.filtered.length === 0) {
-			this.list.addChild(new Text(this.theme.fg("warning", "No matching prompts"), 0, 0));
-			return;
-		}
-		const visible = this.config.picker.maxVisible;
-		const start = Math.max(0, Math.min(this.selected - Math.floor(visible / 2), this.filtered.length - visible));
-		for (let index = start; index < Math.min(start + visible, this.filtered.length); index++) {
-			this.list.addChild(new Text(this.formatLine(this.filtered[index]!, index), 0, 0));
-		}
-		if (start > 0 || start + visible < this.filtered.length) {
-			this.list.addChild(new Text(this.theme.fg("muted", `(${this.selected + 1}/${this.filtered.length})`), 0, 0));
+			this.list.addChild(textComponent(this.theme.fg("warning", "No matching prompts")));
+		} else {
+			const max = Math.min(this.filtered.length, this.config.picker.maxVisible);
+			for (let index = 0; index < max; index++) {
+				this.list.addChild(textComponent(this.formatLine(this.filtered[index]!, index)));
+			}
+			if (this.filtered.length > max) {
+				this.list.addChild(textComponent(this.theme.fg("muted", `(${this.selected + 1}/${this.filtered.length})`)));
+			}
 		}
 	}
 
@@ -706,9 +711,12 @@ async function pick(
 		ctx.ui.notify(mode === "stash" ? "No stashes." : "No prompt history found.", "info");
 		return null;
 	}
-	return await ctx.ui.custom<PickerResult | null>((tui, theme, _keybindings, done) => {
-		return new PromptPicker(tui, theme, title, items, config, mode, done);
-	});
+	return await promptStorageTui
+		.bind(ctx)
+		.overlays.openComponent<PickerResult | null>(
+			(tui, theme, _keybindings, done) =>
+				new PromptPicker(tui as TUI, theme as Theme, title, items, config, mode, done),
+		);
 }
 
 async function openStashPicker(ctx: ExtensionContext, config: Config): Promise<void> {

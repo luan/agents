@@ -1,8 +1,8 @@
 import { readFile } from "node:fs/promises";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem, Component } from "@earendil-works/pi-tui";
-import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { EmptyComponent, registerExtensionMessageRenderer, textComponent } from "../shared/tui";
 import { patchDollarAutocompleteTrigger, wrapProvider } from "./autocomplete";
 import { installEditorHighlight } from "./editor";
 import {
@@ -54,23 +54,13 @@ type SkillfulTheme = {
 	bold(text: string): string;
 };
 
-class EmptyRender implements Component {
-	render(): string[] {
-		return [];
-	}
-
-	invalidate(): void {}
-}
-
-const emptyRender = new EmptyRender();
+const emptyRender = new EmptyComponent();
 
 function renderSkillLoad(details: SkillfulLoadDetails | undefined, theme: SkillfulTheme): Component {
 	const name = details?.name ?? "unknown";
 	const status = details?.status ?? "read";
-	return new Text(
+	return textComponent(
 		`${theme.fg("toolTitle", theme.bold("Skill"))} ${theme.fg("dim", "-")} ${name} ${theme.fg("muted", status)}`,
-		0,
-		0,
 	);
 }
 
@@ -159,7 +149,7 @@ export default function (pi: ExtensionAPI) {
 		refresh();
 	});
 
-	pi.registerMessageRenderer(SKILLFUL_CUSTOM_TYPE, (message, _options, theme) => {
+	registerExtensionMessageRenderer(pi, SKILLFUL_CUSTOM_TYPE, (message, _options, theme) => {
 		const details = isSkillfulLoadDetails(message.details) ? message.details : undefined;
 		return renderSkillLoad(details, theme);
 	});

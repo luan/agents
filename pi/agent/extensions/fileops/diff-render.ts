@@ -2,6 +2,7 @@ import { highlightCode } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { processPatch } from "@pierre/diffs";
 import { diffChars } from "diff";
+import { clampAnsiLine, paintAnsiBackgroundRow, sgrResetsBackground } from "../shared/tui";
 export type RenderTheme = {
 	fg(role: string, text: string): string;
 	bg?: (role: string, text: string) => string;
@@ -24,7 +25,6 @@ export type DiffRenderRow = {
 };
 
 const ANSI_SGR_PATTERN = /\x1b\[([0-9;]*)m/g;
-const OSC_PATTERN = /\x1b\][^\x07]*(?:\x07|\x1b\\)/g;
 const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const ANSI_RESET = "\x1b[0m";
 const ADD_ROW_BG = "\x1b[48;2;20;53;31m";
@@ -405,21 +405,6 @@ export async function buildHighlightedDiffRows(diff: string): Promise<DiffRender
 	return applyWordDiffHighlights(diff, rows);
 }
 
-function sgrResetsBackground(rawParams: string): boolean {
-	if (rawParams.trim() === "") return true;
-	return rawParams
-		.split(";")
-		.map((param) => Number.parseInt(param, 10))
-		.some((param) => param === 0 || param === 49);
-}
-
-function keepBackgroundAcrossResets(text: string, backgroundAnsi: string): string {
-	return text.replace(ANSI_SGR_PATTERN, (sequence, rawParams: string) => {
-		if (!sgrResetsBackground(rawParams)) return sequence;
-		return `${sequence}${backgroundAnsi}`;
-	});
-}
-
 function rowBackground(kind: DiffRenderRow["kind"]): string | undefined {
 	if (kind === "add") return ADD_ROW_BG;
 	if (kind === "remove") return REMOVE_ROW_BG;
@@ -433,8 +418,9 @@ function paintDiffRow(
 	backgroundRole: "toolPendingBg" | "toolDiffAdded" | "toolDiffRemoved",
 	backgroundAnsi?: string,
 ): string {
+	const painted = paintAnsiBackgroundRow(line, width, backgroundAnsi);
+	if (backgroundAnsi) return painted;
 	const padded = truncateToWidth(line, width, "", true);
-	if (backgroundAnsi) return `${backgroundAnsi}${keepBackgroundAcrossResets(padded, backgroundAnsi)}${ANSI_RESET}`;
 	return theme.bg ? theme.bg(backgroundRole, padded) : padded;
 }
 
@@ -456,7 +442,7 @@ function formatDiffStatsLine(diff: string, theme: RenderTheme): string {
 }
 
 function clampRenderedLine(line: string, width: number): string {
-	return truncateToWidth(line.replace(OSC_PATTERN, ""), width, "", true);
+	return clampAnsiLine(line, width);
 }
 function diffLineNumberWidth(rows: DiffRenderRow[]): number {
 	const maxLineNumber = rows.reduce((max, row) => Math.max(max, row.oldLine ?? 0, row.newLine ?? 0), 0);

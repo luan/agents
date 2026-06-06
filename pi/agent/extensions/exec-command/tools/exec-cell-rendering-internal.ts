@@ -1,4 +1,5 @@
 import { keyHint } from "@earendil-works/pi-coding-agent";
+import { pulseGlyph, runningFrame, shineText } from "../../shared/tui";
 import { type ShellAction, summarizeShellCommand } from "../shell/summary.ts";
 import { shellSplit } from "../shell/tokenize.ts";
 import type { ExecCommandStatus } from "./exec-command-state.ts";
@@ -21,17 +22,8 @@ const COMMAND_DISPLAY_WRAP_CHARS = 180;
 const COMMAND_DISPLAY_MAX_LINES = 4;
 const COMMAND_PREVIEW_MAX_CHARS = 100;
 const OUTPUT_LINE_DISPLAY_MAX_CHARS = 220;
-const RUNNING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const RUNNING_FRAME_MS = 120;
-const BACKGROUND_PULSE_MS = 1200;
-const BACKGROUND_PULSE_LO = 0.45;
-const BACKGROUND_PULSE_HI = 1.45;
 const BACKGROUND_LABEL = "background terminal";
-const BACKGROUND_LABEL_SHINE_WIDTH = 3;
-const BACKGROUND_LABEL_PERCOLATION_MS = 80;
-const RGB_FALLBACK: Rgb = [0xff, 0xff, 0xff];
-
-type Rgb = [number, number, number];
 
 export function renderExecCommandCall(
 	command: string,
@@ -385,104 +377,23 @@ function renderStatusMarker(
 }
 
 export function runningMarker(elapsedMs: number | undefined): string {
-	if (elapsedMs === undefined) return RUNNING_FRAMES[0]!;
-	return RUNNING_FRAMES[Math.floor(elapsedMs / RUNNING_FRAME_MS) % RUNNING_FRAMES.length]!;
+	return runningFrame(elapsedMs, RUNNING_FRAME_MS);
 }
 
 export function backgroundTerminalPulseMarker(theme: Pick<RenderTheme, "fg">, elapsedMs: number | undefined): string {
-	const baseAnsi = colorAnsi(theme, "accent");
-	if (!baseAnsi) return theme.fg("accent", "●");
-	const color = scaleRgb(
-		colorRgb(theme, "accent"),
-		triangleWave(elapsedMs ?? 0, BACKGROUND_PULSE_MS, BACKGROUND_PULSE_LO, BACKGROUND_PULSE_HI),
-	);
-	return `${rgbFg(color)}●\x1b[39m`;
+	return pulseGlyph(theme, "●", elapsedMs, {
+		role: "accent",
+		periodMs: 1_200,
+		lowScale: 0.45,
+		highScale: 1.45,
+	});
 }
 
 export function backgroundTerminalAnimatedLabel(theme: RenderTheme, elapsedMs: number | undefined): string {
-	const baseAnsi = colorAnsi(theme, "accent");
-	if (!baseAnsi) return theme.bold(BACKGROUND_LABEL);
-	const base = scaleRgb(colorRgb(theme, "accent"), 0.55);
-	const shine = scaleRgb(colorRgb(theme, "accent"), 1.55);
-	const chars = [...BACKGROUND_LABEL];
-	const step = Math.floor((elapsedMs ?? 0) / BACKGROUND_LABEL_PERCOLATION_MS);
-	const cycle = chars.length + BACKGROUND_LABEL_SHINE_WIDTH;
-	const pos = step % cycle;
-	return `${chars
-		.map((ch, index) => {
-			const inShine = index >= pos - BACKGROUND_LABEL_SHINE_WIDTH && index < pos;
-			return `${rgbFg(inShine ? shine : base)}${ch}`;
-		})
-		.join("")}\x1b[39m`;
-}
-
-function triangleWave(elapsedMs: number, periodMs: number, lo: number, hi: number): number {
-	const t = (elapsedMs % periodMs) / periodMs;
-	const tri = 1 - Math.abs(2 * t - 1);
-	return lo + tri * (hi - lo);
-}
-
-function ansi256ToRgb(code: number): Rgb {
-	if (code < 16) {
-		const base: Rgb[] = [
-			[0, 0, 0],
-			[128, 0, 0],
-			[0, 128, 0],
-			[128, 128, 0],
-			[0, 0, 128],
-			[128, 0, 128],
-			[0, 128, 128],
-			[192, 192, 192],
-			[128, 128, 128],
-			[255, 0, 0],
-			[0, 255, 0],
-			[255, 255, 0],
-			[0, 0, 255],
-			[255, 0, 255],
-			[0, 255, 255],
-			[255, 255, 255],
-		];
-		return base[code] ?? RGB_FALLBACK;
-	}
-	if (code >= 16 && code <= 231) {
-		const n = code - 16;
-		const r = Math.floor(n / 36);
-		const g = Math.floor((n % 36) / 6);
-		const b = n % 6;
-		const scale = (value: number) => (value === 0 ? 0 : 55 + value * 40);
-		return [scale(r), scale(g), scale(b)];
-	}
-	const gray = 8 + (code - 232) * 10;
-	return [gray, gray, gray];
-}
-
-function colorAnsi(theme: Pick<RenderTheme, "fg">, color: string): string | undefined {
-	const withGetter = theme as Pick<RenderTheme, "fg"> & { getFgAnsi?: (color: string) => string };
-	if (withGetter.getFgAnsi) return withGetter.getFgAnsi(color);
-	const sample = theme.fg(color, "x");
-	const marker = sample.indexOf("x");
-	const ansi = marker >= 0 ? sample.slice(0, marker) : undefined;
-	return ansi?.includes("\x1b[38;") ? ansi : undefined;
-}
-
-function colorRgb(theme: Pick<RenderTheme, "fg">, color: string): Rgb {
-	const ansi = colorAnsi(theme, color);
-	const truecolor = ansi?.match(/\x1b\[38;2;(\d+);(\d+);(\d+)m/);
-	if (truecolor) return [Number(truecolor[1]), Number(truecolor[2]), Number(truecolor[3])];
-
-	const color256 = ansi?.match(/\x1b\[38;5;(\d+)m/);
-	if (color256) return ansi256ToRgb(Number(color256[1]));
-
-	return RGB_FALLBACK;
-}
-
-function scaleRgb([r, g, b]: Rgb, factor: number): Rgb {
-	const scale = (value: number) => Math.round(Math.max(0, Math.min(255, value * factor)));
-	return [scale(r), scale(g), scale(b)];
-}
-
-function rgbFg([r, g, b]: Rgb): string {
-	return `\x1b[38;2;${r};${g};${b}m`;
+	return shineText(theme, BACKGROUND_LABEL, elapsedMs, {
+		role: "accent",
+		fallback: (text) => theme.bold(text),
+	});
 }
 
 function styleOutputLine(line: string, theme: Pick<RenderTheme, "fg">): string {

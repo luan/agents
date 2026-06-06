@@ -17,13 +17,14 @@ import {
 import { Type } from "typebox";
 import { shellQuote, shellSplit } from "../exec-command/shell/tokenize.ts";
 import { resolveLaneBackend, TmuxLanePlacement, ZellijLanePlacement } from "../shared/lane-placement.ts";
+import { defineExtensionTui } from "../shared/tui";
 import { navInput, navOptionalInput, navSelect } from "./cockpit-nav.ts";
 
 const CONTEXT_RECENT_TOKEN_BUDGET = 8_000;
 const SPAWN_ENTRY_TYPE = "spawn-lane";
 const SPAWN_USAGE =
 	"Usage: /spawn direct|context|empty [child|root] ...; /spawn shell|bash ...; /spawn command|run ... -- <command>; /spawn list|map|status|help";
-
+const spawnTui = defineExtensionTui({ id: "spawn" });
 const SPAWN_HELP = `# /spawn help
 
 Spawn opens an execution lane. It only controls runtime, payload, topology, mux placement, cwd, and prompt transfer.
@@ -302,7 +303,7 @@ async function generateContextTransferDraft(
 	conversationText: string,
 	ctx: ExtensionContext,
 ): Promise<string | null> {
-	return ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
+	return spawnTui.bind(ctx).overlays.openComponent<string | null>((tui, theme, _kb, done) => {
 		const loader = new BorderedLoader(tui, theme, "Generating context prompt...");
 		loader.onAbort = () => done(null);
 
@@ -312,7 +313,6 @@ async function generateContextTransferDraft(
 				console.error("Context generation failed:", error);
 				done(null);
 			});
-
 		return loader;
 	});
 }

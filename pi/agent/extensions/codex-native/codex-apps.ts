@@ -14,8 +14,10 @@ import {
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { defineExtensionTui, textComponent } from "../shared/tui";
 
 const CODEX_APPS_TOOL_PREFIX = "codex_apps_";
+const codexAppsTui = defineExtensionTui({ id: "codex-tools" });
 const DEFAULT_CODEX_APPS_MCP_URL = "https://chatgpt.com/backend-api/codex/apps";
 const CODEX_APPS_CONFIG_PATH = join(homedir(), ".pi", "agent", "codex-tools.json");
 const CODEX_APPS_CACHE_DIR = join(homedir(), ".codex", "cache", "codex_apps_tools");
@@ -447,20 +449,20 @@ function createToolDefinition(tool: CodexAppsToolRecord, getConfig: () => CodexA
 			};
 		},
 		renderCall(args, theme, context) {
-			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+			const text = (context.lastComponent as Text | undefined) ?? textComponent("");
 			text.setText(renderCodexAppCall(tool, args, theme, context?.isPartial !== false, context?.isError === true));
 			return text;
 		},
 		renderResult(result, { expanded }, theme, context) {
-			const textComponent = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-			if (context?.isPartial) return textComponent;
+			const textComponentInstance = (context.lastComponent as Text | undefined) ?? textComponent("");
+			if (context?.isPartial) return textComponentInstance;
 			const output = codexAppTextContentToText(result.content.find((item) => item.type === "text")?.text ?? "");
 			const details = isRecord(result.details) ? result.details : {};
 			const params = isRecord(details.params) ? details.params : {};
-			textComponent.setText(
+			textComponentInstance.setText(
 				`${renderCodexAppCall(tool, params, theme, false, context?.isError === true)}\n${renderCodexAppResult(output, theme, { expanded })}`,
 			);
-			return textComponent;
+			return textComponentInstance;
 		},
 	};
 }
@@ -590,7 +592,7 @@ async function showCodexToolsPanel(
 		})),
 	];
 
-	await ctx.ui.custom((_tui, theme: Theme, _keybindings, done) => {
+	await codexAppsTui.bind(ctx).overlays.openComponent<undefined>((_tui, theme: Theme, _keybindings, done) => {
 		const container = new Container();
 		container.addChild(new Text(theme.fg("accent", theme.bold("Codex Tools")), 1, 0));
 		container.addChild(
@@ -653,7 +655,7 @@ export default async function registerCodexAppsBridge(pi: ExtensionAPI) {
 		const active = pi.getActiveTools();
 		const next = activeCodexAppsToolNames(tools, config, active);
 		if (active.length !== next.length || active.some((name, index) => name !== next[index])) pi.setActiveTools(next);
-		if (ctx) ctx.ui.setStatus("codex-tools", ctx.ui.theme.fg("dim", codexToolsStatus(tools, config)));
+		if (ctx) codexAppsTui.bind(ctx).status.set("status", ctx.ui.theme.fg("dim", codexToolsStatus(tools, config)));
 	};
 
 	const persistAndApply = async (nextConfig: CodexAppsConfig) => {

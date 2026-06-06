@@ -1,11 +1,17 @@
 import { describe, expect, test } from "bun:test";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import {
 	AnimationScheduler,
 	createResource,
 	createSelectController,
 	createSurfaceRegistry,
 	enforceNoRawTuiSurfaceCalls,
+	padToVisibleWidth,
 	renderView,
+	runningFrame,
+	shineText,
+	themeRoleToRgb,
+	triangleWave,
 	view,
 } from "./index";
 
@@ -142,6 +148,34 @@ describe("Extension TUI ViewNodes", () => {
 		resource.cancel();
 		await stale;
 		expect(aborted).toBe(true);
+	});
+
+	test("animation primitives render shared spinner, shine, pulse color math", () => {
+		const rgbTheme = {
+			fg(role: string, text: string) {
+				return role === "accent" ? `\x1b[38;2;100;120;200m${text}\x1b[39m` : `<${role}>${text}</${role}>`;
+			},
+		};
+
+		expect(runningFrame(undefined)).toBe("⠋");
+		expect(runningFrame(240)).toBe("⠹");
+		expect(themeRoleToRgb(rgbTheme, "accent")).toEqual([100, 120, 200]);
+		expect(triangleWave(600, 1_200, 0.45, 1.45)).toBe(1.45);
+
+		const early = shineText(rgbTheme, "Working", 0, { role: "accent" });
+		const later = shineText(rgbTheme, "Working", 240, { role: "accent" });
+		expect(early).not.toBe(later);
+		expect(early).toContain("\x1b[38;2;55;66;110m");
+		expect(later).toContain("\x1b[38;2;155;186;255m");
+	});
+
+	test("text primitives pad to visible width with optional truncation", () => {
+		const truncated = padToVisibleWidth("abcdef", 4);
+
+		expect(padToVisibleWidth("abc", 5)).toBe("abc  ");
+		expect(truncated.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")).toBe("abc…");
+		expect(visibleWidth(truncated)).toBe(4);
+		expect(padToVisibleWidth("\x1b[31mred\x1b[39m", 5, { truncate: false })).toBe("\x1b[31mred\x1b[39m  ");
 	});
 
 	test("architecture enforcement reports raw TUI surface calls outside adapters", () => {

@@ -3,9 +3,9 @@ import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import type { ExecResult, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Component } from "@earendil-works/pi-tui";
 import { startMarkdownAnnotationSession } from "@plannotator/pi-extension/plannotator-events.js";
 import { Type } from "typebox";
+import { EmptyComponent } from "../shared/tui";
 
 const IMAGE_EXTENSIONS = new Set([
 	".png",
@@ -50,15 +50,7 @@ type AnnotationResult = {
 
 type AnnotationSessionStarter = typeof startMarkdownAnnotationSession;
 
-class EmptyRender implements Component {
-	render(): string[] {
-		return [];
-	}
-
-	invalidate(): void {}
-}
-
-const emptyRender = new EmptyRender();
+const emptyRender = new EmptyComponent();
 let startAnnotationSession: AnnotationSessionStarter = startMarkdownAnnotationSession;
 
 function commonTool() {

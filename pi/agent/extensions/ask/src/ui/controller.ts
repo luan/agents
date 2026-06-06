@@ -1,5 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Editor, type EditorTheme } from "@earendil-works/pi-tui";
+import { defineExtensionTui } from "../../../shared/tui";
 import { createInitialState } from "../state/create";
 import { getEditorDraft, saveEditorDraft, submitEditorDraft, syncStateToSelection } from "../state/editor";
 import { toAskResult } from "../state/result";
@@ -30,6 +31,8 @@ type Keybindings = CustomCallbackArgs[2];
 type Done = (result: AskResult) => void;
 type AskFlowParams = AskParams & Pick<ExtensionContext, "cwd">;
 
+const askTui = defineExtensionTui({ id: "ask" });
+
 interface AskFlowController {
 	done: Done;
 	editor: Editor;
@@ -40,7 +43,14 @@ interface AskFlowController {
 }
 
 export function runAskFlow(ctx: ExtensionContext, params: AskParams): Promise<AskResult> {
-	return ctx.ui.custom<AskResult>((...args) => createAskFlowController(args, { ...params, cwd: ctx.cwd }));
+	return askTui.bind(ctx).overlays.openComponent<AskResult>(
+		(tui, theme, keybindings, done) =>
+			createAskFlowController([tui as Tui, theme as Theme, keybindings as Keybindings, done], {
+				...params,
+				cwd: ctx.cwd,
+			}),
+		{ overlay: false },
+	);
 }
 
 function createAskFlowController(

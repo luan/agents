@@ -436,6 +436,27 @@ describe("fileops extension modes", () => {
 		expect(readFileSync(join(cwd, "sample.txt"), "utf-8")).toBe("one\ntwo\nthree\nfour\n");
 	});
 
+	it("hashline edit rejects small expanding replacements without repeat rows", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-small-expand-"));
+		writeFileSync(join(cwd, "sample.ts"), "interface Config {\n\tname: string;\n}\n");
+		const tools = registerEditTools("hashline");
+		const readResult = await tools.get("read").execute("read", { path: "sample.ts" }, undefined, undefined, { cwd });
+		const header = readResult.content[0].text.split("\n")[0];
+
+		await expect(
+			tools
+				.get("edit")
+				.execute(
+					"call",
+					{ input: `${header}\n1 3\n+interface Config {\n+\tname: string;\n+\tenabled: boolean;\n+}\n` },
+					undefined,
+					undefined,
+					{ cwd },
+				),
+		).rejects.toThrow("small replacement");
+		expect(readFileSync(join(cwd, "sample.ts"), "utf-8")).toBe("interface Config {\n\tname: string;\n}\n");
+	});
+
 	it("protects large whole-file reads from entering context", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-large-read-"));
 		writeFileSync(join(cwd, "large.log"), `${"x".repeat(60_000)}\n`);

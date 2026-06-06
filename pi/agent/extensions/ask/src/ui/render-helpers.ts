@@ -1,5 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { padToVisibleWidth } from "../../../shared/tui";
 import { NO_PREVIEW_TEXT } from "../constants";
 import { clamp } from "../math";
 import { wrapText } from "../text";
@@ -306,8 +307,4 @@ export function renderFooterText(
 		default:
 			return UI_TEXT.footerDefault;
 	}
-}
-
-function padToVisibleWidth(text: string, width: number): string {
-	return text + " ".repeat(Math.max(0, width - visibleWidth(text)));
 }

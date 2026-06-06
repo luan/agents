@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 
 import { CustomEditor, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CURSOR_MARKER, Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { defineExtensionTui } from "../shared/tui";
 import {
 	type ClipboardMirrorPolicy,
 	DEFAULT_CLIPBOARD_MIRROR_POLICY,
@@ -25,6 +26,9 @@ import {
 	type WordTextObjectClass,
 } from "./text-objects.js";
 import type { CharMotion, LastCharMotion, Mode, PendingMotion, PendingOperator } from "./types.js";
+
+const vimTui = defineExtensionTui({ id: "vim" });
+
 import {
 	CHAR_MOTION_KEYS,
 	CTRL_A,
@@ -3173,7 +3177,7 @@ export default function (pi: ExtensionAPI) {
 					ex: (s: string) => t.fg("warning", reverseVideo(s)),
 				}
 			: null;
-		ctx.ui.setEditorComponent((tui, theme, kb) => {
+		vimTui.bind(ctx).editor.replace((tui, theme, kb) => {
 			cursorShapeCleanup?.();
 			cursorShapeCleanup = enableCursorShapeSupport(tui);
 			const editor = new ModalEditor(tui, theme, kb, colorizers, initialModeForEnvironment());

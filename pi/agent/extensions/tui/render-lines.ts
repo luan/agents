@@ -1,10 +1,10 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { type Rgb, scaleRgb } from "../shared/tui";
 
 const ESCAPE_PATTERN = "\\x1B";
 const RESET_ANSI = new RegExp(`${ESCAPE_PATTERN}\\[0m`, "g");
 const RESET = "\x1b[0m";
-type Rgb = [number, number, number];
 
 export function fillLine(content: string, width: number): string {
 	const truncated = truncateToWidth(content, width, "");
@@ -30,11 +30,6 @@ function backgroundRgb(uiTheme: Theme, color: "customMessageBg"): Rgb | undefine
 	const truecolor = ansi?.match(/\x1b\[48;2;(\d+);(\d+);(\d+)m/);
 	if (!truecolor) return undefined;
 	return [Number(truecolor[1]), Number(truecolor[2]), Number(truecolor[3])];
-}
-
-function scaleRgb([red, green, blue]: Rgb, factor: number): Rgb {
-	const scale = (value: number) => Math.round(Math.max(0, Math.min(255, value * factor)));
-	return [scale(red), scale(green), scale(blue)];
 }
 
 export function fillBackgroundLine(

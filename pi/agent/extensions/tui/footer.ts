@@ -1,5 +1,6 @@
 import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { ansiFgToRgb, parseHexRgb, rgbFg, scaleRgb, themeRoleAnsi } from "../shared/tui";
 import type { PolishedTuiConfig } from "./config";
 import { emptyGitStatus, type GitStatusSummary } from "./git";
 import type { RuntimeInfo } from "./runtime";
@@ -297,114 +298,21 @@ function contextSegmentColor(key: ContextSegmentKey): string {
 	return CONTEXT_SEGMENTS.find((segment) => segment.key === key)?.color ?? "muted";
 }
 
-function hexToRgb(hex: string): [number, number, number] | undefined {
-	const match = hex.match(/^#([0-9a-fA-F]{6})$/);
-	if (!match) return undefined;
-	const value = Number.parseInt(match[1] ?? "", 16);
-	return [(value >> 16) & 0xff, (value >> 8) & 0xff, value & 0xff];
-}
-
-function rgbFg([red, green, blue]: [number, number, number], text: string): string {
-	return `\x1b[38;2;${red};${green};${blue}m${text}\x1b[39m`;
-}
-
-function ansi256ToRgb(index: number): [number, number, number] | undefined {
-	if (index < 0 || index > 255) return undefined;
-	const basic: [number, number, number][] = [
-		[0, 0, 0],
-		[128, 0, 0],
-		[0, 128, 0],
-		[128, 128, 0],
-		[0, 0, 128],
-		[128, 0, 128],
-		[0, 128, 128],
-		[192, 192, 192],
-		[128, 128, 128],
-		[255, 0, 0],
-		[0, 255, 0],
-		[255, 255, 0],
-		[0, 0, 255],
-		[255, 0, 255],
-		[0, 255, 255],
-		[255, 255, 255],
-	];
-	if (index < 16) return basic[index];
-	if (index < 232) {
-		const cubeIndex = index - 16;
-		const channel = (value: number) => (value === 0 ? 0 : 55 + value * 40);
-		return [channel(Math.floor(cubeIndex / 36)), channel(Math.floor((cubeIndex % 36) / 6)), channel(cubeIndex % 6)];
-	}
-	const gray = 8 + (index - 232) * 10;
-	return [gray, gray, gray];
-}
-
-function basicAnsiToRgb(code: number): [number, number, number] | undefined {
-	const normal: Record<number, [number, number, number]> = {
-		30: [0, 0, 0],
-		31: [128, 0, 0],
-		32: [0, 128, 0],
-		33: [128, 128, 0],
-		34: [0, 0, 128],
-		35: [128, 0, 128],
-		36: [0, 128, 128],
-		37: [192, 192, 192],
-		90: [128, 128, 128],
-		91: [255, 0, 0],
-		92: [0, 255, 0],
-		93: [255, 255, 0],
-		94: [0, 0, 255],
-		95: [255, 0, 255],
-		96: [0, 255, 255],
-		97: [255, 255, 255],
-	};
-	return normal[code];
-}
-
-function darkenRgb([red, green, blue]: [number, number, number]): [number, number, number] {
-	const factor = 0.68;
-	return [Math.round(red * factor), Math.round(green * factor), Math.round(blue * factor)];
-}
-
-function themeFgAnsi(theme: Theme, color: ThemeColor): string | undefined {
-	const withGetter = theme as Theme & { getFgAnsi?: (color: ThemeColor) => string };
-	if (withGetter.getFgAnsi) return withGetter.getFgAnsi(color);
-
-	const sample = theme.fg(color, "x");
-	const marker = sample.indexOf("x");
-	return marker >= 0 ? sample.slice(0, marker) : undefined;
-}
-
 function colorFg(theme: Theme, color: string, text: string): string {
-	const rgb = hexToRgb(color);
-	if (rgb) return rgbFg(rgb, text);
+	const rgb = parseHexRgb(color);
+	if (rgb) return `${rgbFg(rgb)}${text}\x1b[39m`;
 	return theme.fg(color as ThemeColor, text);
 }
 
 function colorFgAnsi(theme: Theme, color: string): string | undefined {
-	const rgb = hexToRgb(color);
-	if (rgb) {
-		const [red, green, blue] = rgb;
-		return `\x1b[38;2;${red};${green};${blue}m`;
-	}
-	return themeFgAnsi(theme, color as ThemeColor);
+	const rgb = parseHexRgb(color);
+	if (rgb) return rgbFg(rgb);
+	return themeRoleAnsi(theme, color as ThemeColor);
 }
 
 function darkenFgAnsi(ansi: string | undefined): string | undefined {
-	if (!ansi) return undefined;
-	const truecolor = ansi.match(/\x1b\[38;2;(\d+);(\d+);(\d+)m/);
-	const color256 = ansi.match(/\x1b\[38;5;(\d+)m/);
-	const basic = ansi.match(/\x1b\[(\d+)m/);
-	const rgb = truecolor
-		? ([Number(truecolor[1]), Number(truecolor[2]), Number(truecolor[3])] as [number, number, number])
-		: color256
-			? ansi256ToRgb(Number(color256[1]))
-			: basic
-				? basicAnsiToRgb(Number(basic[1]))
-				: undefined;
-	if (!rgb) return undefined;
-
-	const [red, green, blue] = darkenRgb(rgb);
-	return `\x1b[38;2;${red};${green};${blue}m`;
+	const rgb = ansiFgToRgb(ansi);
+	return rgb ? rgbFg(scaleRgb(rgb, 0.68)) : undefined;
 }
 
 function dimColorFg(theme: Theme, color: string, text: string): string {

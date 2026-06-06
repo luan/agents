@@ -20,9 +20,15 @@ import {
 } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { runCommand as defaultRunCommand } from "../shared/ct-runner";
-import { setOrderedAboveEditorWidget } from "../shared/ordered-widgets";
 import { hasEnoughTerminalRows } from "../shared/terminal";
+import {
+	defineExtensionTui,
+	EmptyComponent,
+	setOrderedAboveEditorWidget,
+	padToVisibleWidth as sharedPadToVisibleWidth,
+} from "../shared/tui";
 
+const tasksTui = defineExtensionTui({ id: "tasks" });
 type TaskCommand = "add" | "list" | "show" | "update" | "delete" | "accept" | "reject";
 
 interface Config {
@@ -580,7 +586,7 @@ async function showTaskBoard(
 	const load = () => loadHudTasks(ctx.cwd, command, runCommand, ctx.signal);
 	const tasks = await load();
 	try {
-		await ctx.ui.custom(
+		await tasksTui.bind(ctx).overlays.openComponent(
 			(tui, theme, _keybindings, done) => {
 				const close = () => {
 					done();
@@ -832,8 +838,7 @@ function truncateLine(text: string, width: number): string {
 }
 
 function padToVisibleWidth(text: string, width: number): string {
-	const truncated = truncateLine(text, width);
-	return `${truncated}${" ".repeat(Math.max(0, width - visibleWidth(truncated)))}`;
+	return sharedPadToVisibleWidth(truncateLine(text, width), width, { truncate: false });
 }
 
 function fitCells(cells: string[], widths: number[]): string {
@@ -2356,15 +2361,7 @@ class RatatuiTaskBoardOverlay implements Component {
 	}
 }
 
-class EmptyTaskRender implements Component {
-	render(): string[] {
-		return [];
-	}
-
-	invalidate(): void {}
-}
-
-const emptyTaskRender = new EmptyTaskRender();
+const emptyTaskRender = new EmptyComponent();
 
 const taskReadActions = new Set<TaskCommand>(["list", "show"]);
 const taskWriteActions = new Set<TaskCommand>(["add", "update", "delete", "accept", "reject"]);

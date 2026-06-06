@@ -1,7 +1,7 @@
 import { readFileSync, unlinkSync } from "node:fs";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { EmptyComponent } from "../shared/tui";
 import { deliverMosaicMailboxMessages, MosaicMessageClient } from "./message-client.js";
 import { MOSAIC_AGENT_ACTIVITY_WRITING } from "./message-server.js";
 import { isMosaicOrchestrationToolName } from "./orchestration-tools.js";
@@ -191,15 +191,7 @@ function applyActiveTools(pi: ExtensionAPI, payload: MosaicBootstrapPayload): vo
 	pi.setActiveTools(next);
 }
 
-class EmptyLeaderMessageRender implements Component {
-	render(): string[] {
-		return [];
-	}
-
-	invalidate(): void {}
-}
-
-const emptyLeaderMessageRender = new EmptyLeaderMessageRender();
+const emptyLeaderMessageRender = new EmptyComponent();
 
 function registerLeaderMessageTool(pi: ExtensionAPI, payload: MosaicBootstrapPayload): void {
 	if (!payload.messageEndpoint || leaderMessageToolRegistered) return;

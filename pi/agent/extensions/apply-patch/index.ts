@@ -4,20 +4,28 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { type ExtensionAPI, type ExtensionContext, highlightCode, keyHint } from "@earendil-works/pi-coding-agent";
-import { Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { BundledLanguage, BundledTheme } from "shiki";
 import { Type } from "typebox";
 import { getConfiguredEditMode, getEditFreeformToolConfig } from "../fileops/index.ts";
 import { nf, title } from "../shared/ct-render.ts";
 import { runCommand as runExternalCommand } from "../shared/ct-runner.ts";
 import { resolveInlineLanguageForPath, resolveShikiLanguageForPath } from "../shared/path-language";
+import {
+	clampAnsiLine,
+	EmptyComponent,
+	padToVisibleWidth,
+	paintAnsiBackgroundRow,
+	runningFrame,
+	shineText,
+	textComponent,
+} from "../shared/tui";
+
 import { highlightWgslAnsi, registerWgslHighlightLanguage } from "../shared/wgsl-highlight.ts";
 import { registerApplyPatchFreeformProvider } from "./freeform-codex.ts";
 
 const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const ANSI_SGR_PATTERN = /\x1b\[([0-9;]*)m/g;
-const ANSI_RESET = "\x1b[0m";
-const OSC_SEQUENCE_PATTERN = /\x1b\][^\x07]*(?:\x07|\x1b\\)/g;
 
 const APPLY_PATCH_USAGE_ENTRY = "apply_patch_usage";
 const APPLY_PATCH_TOOL_NAME = "apply_patch";
@@ -237,12 +245,7 @@ const SHIKI_CACHE_LIMIT = 64;
 const SHIKI_BACKGROUND_PATTERN = /\x1b\[(?:48;2;\d+;\d+;\d+|48;5;\d+|49)m/g;
 const COMPLETED_PATCH_INPUT_LIMIT = 128;
 const APPLY_PATCH_FRAME_MS = 120;
-const APPLY_PATCH_RUNNING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const APPLY_PATCH_LABEL = "Preparing patch…";
-const APPLY_PATCH_LABEL_SHINE_WIDTH = 3;
-const APPLY_PATCH_LABEL_PERCOLATION_MS = 80;
-type Rgb = [number, number, number];
-const RGB_FALLBACK: Rgb = [0xff, 0xff, 0xff];
 
 function editVerb(state: "success" | "pending" | "error", kind: ApplyPatchEditKind): string {
 	void kind;
@@ -289,93 +292,13 @@ function scheduleApplyPatchInvalidation(
 	state.elapsedTimer.unref?.();
 }
 
-function applyPatchRunningFrame(elapsedMs: number | undefined): string {
-	if (elapsedMs === undefined) return APPLY_PATCH_RUNNING_FRAMES[0]!;
-	return APPLY_PATCH_RUNNING_FRAMES[Math.floor(elapsedMs / APPLY_PATCH_FRAME_MS) % APPLY_PATCH_RUNNING_FRAMES.length]!;
-}
-
-function applyPatchPreparingLabel(theme: ThemeLike, elapsedMs: number | undefined): string {
-	const baseAnsi = colorAnsi(theme, "accent");
-	if (!baseAnsi) return theme.fg("warning", APPLY_PATCH_LABEL);
-	const base = scaleRgb(colorRgb(theme, "accent"), 0.55);
-	const shine = scaleRgb(colorRgb(theme, "accent"), 1.55);
-	const chars = [...APPLY_PATCH_LABEL];
-	const step = Math.floor((elapsedMs ?? 0) / APPLY_PATCH_LABEL_PERCOLATION_MS);
-	const cycle = chars.length + APPLY_PATCH_LABEL_SHINE_WIDTH;
-	const pos = step % cycle;
-	return `${chars
-		.map((ch, index) => {
-			const inShine = index >= pos - APPLY_PATCH_LABEL_SHINE_WIDTH && index < pos;
-			return `${rgbFg(inShine ? shine : base)}${ch}`;
-		})
-		.join("")}\x1b[39m`;
-}
-
 function renderApplyPatchPreparingStatus(theme: ThemeLike, elapsedMs: number | undefined): string {
-	const spinner = theme.fg("dim", applyPatchRunningFrame(elapsedMs));
-	return `${spinner} ${applyPatchPreparingLabel(theme, elapsedMs)}`;
-}
-
-function ansi256ToRgb(code: number): Rgb {
-	if (code < 16) {
-		const base: Rgb[] = [
-			[0, 0, 0],
-			[128, 0, 0],
-			[0, 128, 0],
-			[128, 128, 0],
-			[0, 0, 128],
-			[128, 0, 128],
-			[0, 128, 128],
-			[192, 192, 192],
-			[128, 128, 128],
-			[255, 0, 0],
-			[0, 255, 0],
-			[255, 255, 0],
-			[0, 0, 255],
-			[255, 0, 255],
-			[0, 255, 255],
-			[255, 255, 255],
-		];
-		return base[code] ?? RGB_FALLBACK;
-	}
-	if (code >= 16 && code <= 231) {
-		const n = code - 16;
-		const r = Math.floor(n / 36);
-		const g = Math.floor((n % 36) / 6);
-		const b = n % 6;
-		const scale = (value: number) => (value === 0 ? 0 : 55 + value * 40);
-		return [scale(r), scale(g), scale(b)];
-	}
-	const gray = 8 + (code - 232) * 10;
-	return [gray, gray, gray];
-}
-
-function colorAnsi(theme: Pick<ThemeLike, "fg" | "getFgAnsi">, color: string): string | undefined {
-	if (theme.getFgAnsi) return theme.getFgAnsi(color);
-	const sample = theme.fg(color, "x");
-	const marker = sample.indexOf("x");
-	const ansi = marker >= 0 ? sample.slice(0, marker) : undefined;
-	return ansi?.includes("\x1b[38;") ? ansi : undefined;
-}
-
-function colorRgb(theme: Pick<ThemeLike, "fg" | "getFgAnsi">, color: string): Rgb {
-	const ansi = colorAnsi(theme, color);
-	const truecolor = ansi?.match(/\x1b\[38;2;(\d+);(\d+);(\d+)m/);
-	if (truecolor) return [Number(truecolor[1]), Number(truecolor[2]), Number(truecolor[3])];
-
-	const color256 = ansi?.match(/\x1b\[38;5;(\d+)m/);
-	if (color256) return ansi256ToRgb(Number(color256[1]));
-
-	return RGB_FALLBACK;
-}
-
-function scaleRgb([r, g, b]: Rgb, factor: number): Rgb {
-	const scale = (value: number) => Math.round(Math.max(0, Math.min(255, value * factor)));
-	return [scale(r), scale(g), scale(b)];
-}
-
-function rgbFg([r, g, b]: Rgb): string {
-	return `\x1b[38;2;${r};${g};${b}m`;
+	const spinner = theme.fg("dim", runningFrame(elapsedMs, APPLY_PATCH_FRAME_MS));
+	const label = shineText(theme, APPLY_PATCH_LABEL, elapsedMs, {
+		role: "accent",
+		fallback: (text) => theme.fg("warning", text),
+	});
+	return `${spinner} ${label}`;
 }
 
 class ApplyPatchDiffView {
@@ -621,14 +544,10 @@ function renderDigestItem(
 			? `${theme.fg("toolDiffAdded", "+")} ${theme.fg("toolTitle", item.addedLabel)} ${theme.fg("toolDiffAdded", `${item.added}`)}`
 			: theme.fg("muted", "—");
 	return paintDiffRow(
-		`${prefix}${padVisible(truncateToWidth(left, leftWidth, "…", true), leftWidth)}${separator}${truncateToWidth(right, rightWidth, "…", true)}`,
+		`${prefix}${padToVisibleWidth(truncateToWidth(left, leftWidth, "…", true), leftWidth, { truncate: false })}${separator}${truncateToWidth(right, rightWidth, "…", true)}`,
 		width,
 		background,
 	);
-}
-
-function padVisible(text: string, width: number): string {
-	return text + " ".repeat(Math.max(0, width - visibleWidth(text)));
 }
 
 function buildDiffDigest(diff: string, maxItems: number): { items: DiffDigestItem[]; remaining: number } {
@@ -706,21 +625,6 @@ function classifyDigestLines(lines: string[]): string {
 
 function isCommentLikeLine(line: string): boolean {
 	return /^(?:\/\/|\/\*|\*|#|<!--|--)/.test(line.trim());
-}
-
-function sgrResetsBackground(rawParams: string): boolean {
-	if (rawParams.trim() === "") return true;
-	return rawParams
-		.split(";")
-		.map((param) => Number.parseInt(param, 10))
-		.some((param) => param === 0 || param === 49);
-}
-
-function keepBackgroundAcrossResets(text: string, backgroundAnsi: string): string {
-	return text.replace(ANSI_SGR_PATTERN, (sequence, rawParams: string) => {
-		if (!sgrResetsBackground(rawParams)) return sequence;
-		return `${sequence}${backgroundAnsi}`;
-	});
 }
 
 function isLowContrastShikiFg(rawParams: string): boolean {
@@ -1043,21 +947,16 @@ function rowBackground(kind: DiffLineKind): string | undefined {
 	if (kind === "remove") return REMOVE_ROW_BG;
 	return undefined;
 }
-
 function paintDiffRow(line: string, width: number, background: string | undefined): string {
-	const padded = truncateToWidth(line, width, "", true);
-	if (!background) return padded;
-	return `${background}${keepBackgroundAcrossResets(padded, background)}${ANSI_RESET}`;
+	return paintAnsiBackgroundRow(line, width, background);
 }
-
 function clampRenderedLine(line: string, width: number): string {
-	return truncateToWidth(line.replace(OSC_SEQUENCE_PATTERN, ""), width, "", true);
+	return clampAnsiLine(line, width);
 }
-
 function paintPanelRow(line: string, width: number, theme: ThemeLike, background: ToolPanelBg): string {
-	const padded = truncateToWidth(line, width, "", true);
 	const backgroundAnsi = theme.getBgAnsi?.(background);
-	if (backgroundAnsi) return `${backgroundAnsi}${keepBackgroundAcrossResets(padded, backgroundAnsi)}${ANSI_RESET}`;
+	if (backgroundAnsi) return paintAnsiBackgroundRow(line, width, backgroundAnsi);
+	const padded = truncateToWidth(line, width, "", true);
 	return theme.bg ? theme.bg(background, padded) : padded;
 }
 
@@ -1836,23 +1735,21 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 		renderShell: "self",
 		executionMode: "sequential",
 		renderCall(_args, theme, context) {
-			if (!config.richRender) return new Text(title(theme, nf.apply, "apply_patch"), 0, 0);
+			if (!config.richRender) return textComponent(title(theme, nf.apply, "apply_patch"));
 			const state = context.state as ApplyPatchRenderState;
 			if (!context.isPartial || state.resultRendered || context.executionStarted) {
 				scheduleApplyPatchInvalidation(
 					context as { state?: ApplyPatchRenderState; invalidate?: () => void },
 					false,
 				);
-				return new Text("", 0, 0);
+				return new EmptyComponent();
 			}
 			scheduleApplyPatchInvalidation(context as { state?: ApplyPatchRenderState; invalidate?: () => void }, true);
-			return new Text(
+			return textComponent(
 				renderApplyPatchPreparingStatus(
 					theme,
 					applyPatchElapsedMs(context as { state?: ApplyPatchRenderState }, true),
 				),
-				0,
-				0,
 			);
 		},
 		renderResult(result, { expanded, isPartial }, theme, context) {
@@ -1863,7 +1760,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 				const count = details?.filesChanged ?? details?.operations;
 				const suffix = typeof count === "number" && count > 0 ? ` (${count} file${count === 1 ? "" : "s"})` : "";
 				const label = isPartial ? "Running" : baseText.startsWith("Error:") ? "Failed" : "Done";
-				return new Text(title(theme, nf.apply, "apply_patch", `${label}${suffix}`), 0, 0);
+				return textComponent(title(theme, nf.apply, "apply_patch", `${label}${suffix}`));
 			}
 
 			const details = result.details as ApplyPatchRenderDetails | undefined;

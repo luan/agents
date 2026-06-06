@@ -1,4 +1,4 @@
-import { Text } from "@earendil-works/pi-tui";
+import { textComponent } from "./tui";
 
 type RenderContext = { lastComponent?: { setText(value: string): void } };
 type RenderTheme = {
@@ -24,7 +24,7 @@ export const nf = {
 };
 
 export function renderText(ctx: RenderContext, value: string) {
-	const text = ctx.lastComponent ?? new Text("", 0, 0);
+	const text = ctx.lastComponent ?? textComponent("");
 	text.setText(value);
 	return text;
 }
