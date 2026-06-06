@@ -29,6 +29,13 @@ const theme = {
 	tree: { last: "└─", branch: "├─", vertical: "│" },
 };
 
+const roleTheme = {
+	...theme,
+	fg(role: string, text: string) {
+		return `<${role}>${text}</${role}>`;
+	},
+};
+
 afterEach(() => {
 	if (originalVariant === undefined) delete process.env.PI_FILEOPS_EDIT_VARIANT;
 	else process.env.PI_FILEOPS_EDIT_VARIANT = originalVariant;
@@ -545,6 +552,11 @@ describe("fileops extension modes", () => {
 		expect(render(read.renderCall({ path: "sample.txt:1-3" }, theme, {}))).toBe("✓ **Read** sample.txt:1-3");
 		expect(render(read.renderResult(readResult, { expanded: false, isPartial: false }, theme, {}))).toBe("");
 		const readRendered = render(read.renderResult(readResult, { expanded: true, isPartial: false }, theme, {}));
+		expect(readRendered).toContain("¶sample.txt#");
+		const readRoleRendered = render(
+			read.renderResult(readResult, { expanded: true, isPartial: false }, roleTheme, {}),
+		);
+		expect(readRoleRendered).toMatch(/<accent>¶sample\.txt<\/accent><toolDiffAdded>#[0-9A-F]{3}<\/toolDiffAdded>/);
 		expect(readRendered.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")).toContain("  1│alpha");
 
 		const search = tools.get("search");
@@ -554,6 +566,7 @@ describe("fileops extension modes", () => {
 			search.renderResult(searchResult, { expanded: false, isPartial: false }, theme, { args: searchArgs }),
 		);
 		expect(searchRendered).toContain("✓ **Search:** needle 1 match · 1 file · in sample.txt");
+		expect(searchRendered).toContain("¶sample.txt#");
 		expect(searchRendered).toContain("*  2│");
 		expect(searchRendered).toContain("needle");
 		expect(searchRendered).toContain("beta");
@@ -578,7 +591,13 @@ describe("fileops extension modes", () => {
 		const editCallRendered = render(
 			edit.renderCall({ input: `${header}\n2 2\n+needle delta\n` }, theme, editContext),
 		);
-		expect(editCallRendered).toContain("✓ **Edit:** ≡ sample.txt:2");
+		expect(editCallRendered).toContain(`✓ **Edit:** ≡ ${header}:2`);
+		const editCallRoleRendered = render(
+			edit.renderCall({ input: `${header}\n2 2\n+needle delta\n` }, roleTheme, editContext),
+		);
+		expect(editCallRoleRendered).toMatch(
+			/<accent>¶sample\.txt<\/accent><toolDiffAdded>#[0-9A-F]{3}<\/toolDiffAdded><warning>:2<\/warning>/,
+		);
 		expect(editCallRendered).toContain("[toolPendingBg]");
 		expect(editCallRendered).toStartWith("[toolPendingBg]✓");
 		const runningState: Record<string, any> = {};
@@ -593,8 +612,8 @@ describe("fileops extension modes", () => {
 			edit.renderCall({ input: `${header}\n2 2\n+needle delta\n` }, rgbTheme, runningContext),
 		);
 		if (runningState.elapsedTimer) clearTimeout(runningState.elapsedTimer);
-		expect(stripAnsi(runningEarly)).toContain("**Editing** ≡ sample.txt:2");
-		expect(stripAnsi(runningLater)).toContain("**Editing** ≡ sample.txt:2");
+		expect(stripAnsi(runningEarly)).toContain(`**Editing** ≡ ${header}:2`);
+		expect(stripAnsi(runningLater)).toContain(`**Editing** ≡ ${header}:2`);
 		expect(stripAnsi(runningLater)).toContain("⠹");
 		expect(runningEarly).not.toBe(runningLater);
 
@@ -609,6 +628,7 @@ describe("fileops extension modes", () => {
 		);
 		const editRendered = render(edit.renderResult(editResult, { expanded: true, isPartial: false }, theme, {}));
 		expect(stripAnsi(editRendered)).toContain("delta");
+		expect(stripAnsi(editRendered)).not.toContain("✓ **Edit:**");
 		expect(editRendered).not.toContain("[toolSuccessBg]");
 		const wideEditLines = edit
 			.renderResult(editResult, { expanded: true, isPartial: false }, rgbTheme, {})
@@ -621,6 +641,34 @@ describe("fileops extension modes", () => {
 		expect(writeRendered).toContain("1│one");
 		expect(writeRendered).toContain("2│two");
 		expect(writeRendered).not.toContain("[toolSuccessBg]");
+	});
+
+	it("renders an edit header only when an edit diff switches files", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-multi-file-render-"));
+		writeFileSync(join(cwd, "sample.txt"), "alpha\nbeta\n");
+		const tools = registerEditTools("hashline");
+		const readResult = await tools.get("read").execute("read", { path: "sample.txt" }, undefined, undefined, { cwd });
+		const header = readResult.content[0].text.split("\n")[0];
+		const editResult = await tools
+			.get("edit")
+			.execute(
+				"edit",
+				{ input: `${header}\n2 2\n+BETA\n¶created.rs\nBOF\n+use super::*;\n+fn smoke() {}\n` },
+				undefined,
+				undefined,
+				{ cwd },
+			);
+
+		const rendered = stripAnsi(
+			render(tools.get("edit").renderResult(editResult, { expanded: true, isPartial: false }, theme, {})),
+		);
+		const sampleHeader = rendered.indexOf("✓ **Edit:** ≡ ¶sample.txt#");
+		const createdHeader = rendered.indexOf("✓ **Edit:** ≡ ¶created.rs#");
+		const createdContent = rendered.indexOf("  1 + use super::*;");
+
+		expect(sampleHeader).toBe(-1);
+		expect(createdHeader).toBeGreaterThanOrEqual(0);
+		expect(createdContent).toBeGreaterThan(createdHeader);
 	});
 
 	it("precomputes syntax-highlighted edit rows with word-level diff overlays", async () => {

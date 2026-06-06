@@ -24,6 +24,12 @@ export type DiffRenderRow = {
 	highlightedContent?: string;
 };
 
+export type DiffSectionHeaderRenderer = (
+	filePath: string,
+	firstChangedLine: number | undefined,
+	theme: RenderTheme,
+) => string;
+
 const ANSI_SGR_PATTERN = /\x1b\[([0-9;]*)m/g;
 const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const ANSI_RESET = "\x1b[0m";
@@ -468,49 +474,127 @@ function diffContentForRow(row: DiffRenderRow): string {
 	return row.highlightedContent ?? row.content.replace(/\t/g, "  ");
 }
 
+function defaultDiffSectionHeader(filePath: string, firstChangedLine: number | undefined, theme: RenderTheme): string {
+	const icon = theme.getLangIcon?.(languageFromPath(filePath));
+	const line = firstChangedLine === undefined ? "" : `:${firstChangedLine}`;
+	return `✓ ${theme.fg("toolTitle", theme.bold("Edit:"))} ${theme.fg("accent", `${icon ? `${icon} ` : ""}${filePath}${line}`)}`;
+}
+
+type DiffFileSection = {
+	path: string;
+	rows: DiffRenderRow[];
+};
+
+function groupDiffRowsByFile(rows: readonly DiffRenderRow[]): DiffFileSection[] {
+	const sections: DiffFileSection[] = [];
+	let current: DiffFileSection | undefined;
+	for (const row of rows) {
+		const path = row.path ?? current?.path;
+		if (!path) continue;
+		if (!current || current.path !== path) {
+			current = { path, rows: [] };
+			sections.push(current);
+		}
+		current.rows.push(row);
+	}
+	return sections;
+}
+
+function firstChangedLine(rows: readonly DiffRenderRow[]): number | undefined {
+	for (const row of rows) {
+		if (row.kind === "add" && row.newLine !== null) return row.newLine;
+		if (row.kind === "remove" && row.oldLine !== null) return row.oldLine;
+	}
+	return undefined;
+}
+
+function sectionDiffStats(rows: readonly DiffRenderRow[]): { added: number; removed: number; hunks: number } {
+	let added = 0;
+	let removed = 0;
+	let hunks = 0;
+	for (const row of rows) {
+		if (row.kind === "hunk") hunks++;
+		else if (row.kind === "add") added++;
+		else if (row.kind === "remove") removed++;
+	}
+	return { added, removed, hunks };
+}
+
+function formatSectionDiffStatsLine(rows: readonly DiffRenderRow[], theme: RenderTheme): string {
+	const stats = sectionDiffStats(rows);
+	return `${theme.fg("dim", "<")}${theme.fg("toolDiffAdded", `+${stats.added}`)}${theme.fg("dim", " / ")}${theme.fg("toolDiffRemoved", `-${stats.removed}`)}${theme.fg("dim", ` / ${stats.hunks} hunk${stats.hunks === 1 ? "" : "s"}>`)}`;
+}
+
 function renderDiffRows(
 	diff: string,
 	rows: DiffRenderRow[] | undefined,
 	theme: RenderTheme,
 	width: number,
 	expanded: boolean,
+	headerRenderer: DiffSectionHeaderRenderer = defaultDiffSectionHeader,
 ): string[] {
 	const parsedRows = rows ?? parseUnifiedDiff(diff);
-	const numberWidth = diffLineNumberWidth(parsedRows);
-	const gutterWidth = numberWidth + 5;
-	const codeWidth = Math.max(8, width - gutterWidth);
+	const rendered: string[] = [];
 	const wrapLimit = diffWrapRows(width);
-	const rendered: string[] = [
-		paintDiffRow(formatDiffStatsLine(diff, theme), width, theme, "toolPendingBg", theme.getBgAnsi?.("toolPendingBg")),
-	];
-	let currentPath: string | undefined;
-	for (const row of parsedRows) {
-		currentPath = row.path ?? currentPath;
-		if (row.kind === "hunk") continue;
-		const kindColor = row.kind === "add" ? "toolDiffAdded" : row.kind === "remove" ? "toolDiffRemoved" : "dim";
-		const sign = row.kind === "add" ? "+" : row.kind === "remove" ? "-" : " ";
-		const lineNumber = row.kind === "remove" ? row.oldLine : row.newLine;
-		const prefix = `  ${theme.fg(kindColor, String(lineNumber ?? "").padStart(numberWidth, " "))} ${theme.fg(kindColor, sign)} `;
-		const continuation = `  ${" ".repeat(numberWidth)}   `;
-		const bodyLines = wrapDiffContent(
-			diffContentForRow({ ...row, path: row.path ?? currentPath }),
-			codeWidth,
-			wrapLimit,
+	const sections = groupDiffRowsByFile(parsedRows);
+	if (sections.length === 0) {
+		rendered.push(
+			paintDiffRow(
+				formatDiffStatsLine(diff, theme),
+				width,
+				theme,
+				"toolPendingBg",
+				theme.getBgAnsi?.("toolPendingBg"),
+			),
 		);
-		const rowBg = rowBackground(row.kind);
-		const backgroundRole =
-			row.kind === "add" ? "toolDiffAdded" : row.kind === "remove" ? "toolDiffRemoved" : "toolPendingBg";
-		const backgroundAnsi = rowBg ?? theme.getBgAnsi?.("toolPendingBg");
-		for (const [bodyIndex, body] of bodyLines.entries()) {
+	}
+	for (const [sectionIndex, section] of sections.entries()) {
+		const numberWidth = diffLineNumberWidth(section.rows);
+		const gutterWidth = numberWidth + 5;
+		const codeWidth = Math.max(8, width - gutterWidth);
+		if (sectionIndex > 0) {
 			rendered.push(
 				paintDiffRow(
-					`${bodyIndex === 0 ? prefix : continuation}${body}`,
+					headerRenderer(section.path, firstChangedLine(section.rows), theme),
 					width,
 					theme,
-					backgroundRole,
-					backgroundAnsi,
+					"toolPendingBg",
+					theme.getBgAnsi?.("toolPendingBg"),
 				),
 			);
+		}
+		rendered.push(
+			paintDiffRow(
+				formatSectionDiffStatsLine(section.rows, theme),
+				width,
+				theme,
+				"toolPendingBg",
+				theme.getBgAnsi?.("toolPendingBg"),
+			),
+		);
+		for (const row of section.rows) {
+			if (row.kind === "hunk") continue;
+			const kindColor = row.kind === "add" ? "toolDiffAdded" : row.kind === "remove" ? "toolDiffRemoved" : "dim";
+			const sign = row.kind === "add" ? "+" : row.kind === "remove" ? "-" : " ";
+			const lineNumber = row.kind === "remove" ? row.oldLine : row.newLine;
+			const prefix = `  ${theme.fg(kindColor, String(lineNumber ?? "").padStart(numberWidth, " "))} ${theme.fg(kindColor, sign)} `;
+			const continuation = `  ${" ".repeat(numberWidth)}   `;
+			const bodyLines = wrapDiffContent(diffContentForRow(row), codeWidth, wrapLimit);
+			const rowBg = rowBackground(row.kind);
+			const backgroundRole =
+				row.kind === "add" ? "toolDiffAdded" : row.kind === "remove" ? "toolDiffRemoved" : "toolPendingBg";
+			const backgroundAnsi = rowBg ?? theme.getBgAnsi?.("toolPendingBg");
+			for (const [bodyIndex, body] of bodyLines.entries()) {
+				rendered.push(
+					paintDiffRow(
+						`${bodyIndex === 0 ? prefix : continuation}${body}`,
+						width,
+						theme,
+						backgroundRole,
+						backgroundAnsi,
+					),
+				);
+			}
 		}
 	}
 	const limit = expanded ? rendered.length : 40;
@@ -537,6 +621,7 @@ export class EditDiffView {
 		private readonly rows: DiffRenderRow[] | undefined,
 		private readonly expanded: boolean,
 		private readonly theme: RenderTheme,
+		private readonly headerRenderer: DiffSectionHeaderRenderer = defaultDiffSectionHeader,
 	) {}
 
 	invalidate() {
@@ -547,8 +632,8 @@ export class EditDiffView {
 		if (this.renderedCache?.width === width && this.renderedCache.expanded === this.expanded) {
 			return this.renderedCache.lines;
 		}
-		const lines = renderDiffRows(this.diff, this.rows, this.theme, width, this.expanded).map((line) =>
-			clampRenderedLine(line, width),
+		const lines = renderDiffRows(this.diff, this.rows, this.theme, width, this.expanded, this.headerRenderer).map(
+			(line) => clampRenderedLine(line, width),
 		);
 		this.renderedCache = { width, expanded: this.expanded, lines };
 		return lines;

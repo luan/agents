@@ -19,6 +19,7 @@ import { EmptyComponent, runningFrame, shineText, textComponent } from "../share
 import {
 	buildHighlightedDiffRows,
 	type DiffRenderRow,
+	type DiffSectionHeaderRenderer,
 	EditDiffView,
 	highlightCodeRows,
 	highlightCodeRowsSync,
@@ -454,7 +455,7 @@ function renderEditRunningHeader(theme: RenderTheme, elapsedMs: number | undefin
 
 class EditCallView {
 	constructor(
-		private readonly summary: { target?: string; line?: number; suffix: string },
+		private readonly summary: EditSummary,
 		private readonly theme: RenderTheme,
 		private readonly running: boolean,
 		private readonly elapsedMs: number | undefined,
@@ -463,9 +464,9 @@ class EditCallView {
 	invalidate() {}
 
 	render(width: number): string[] {
-		const path = this.summary.target ? shortenDisplayPath(this.summary.target) : invalidArgText(this.theme);
-		const line = this.summary.line ? this.theme.fg("warning", `:${this.summary.line}`) : "";
-		const rest = ` ${fileIcon(this.theme, this.summary.target)} ${this.theme.fg("accent", `${path}${line}`)}${this.theme.fg("dim", this.summary.suffix)}`;
+		const rest = this.summary.target
+			? ` ${renderEditHeaderDisplay(this.summary.target, this.summary.display, this.summary.line, this.theme)}${this.theme.fg("dim", this.summary.suffix)}`
+			: ` ${invalidArgText(this.theme)}${this.theme.fg("dim", this.summary.suffix)}`;
 		const header = this.running
 			? renderEditRunningHeader(this.theme, this.elapsedMs, rest)
 			: renderStatusHeader("Edit:", this.theme, rest);
@@ -515,19 +516,31 @@ function renderNumberedRows(
 	return output.join("\n");
 }
 
-function parseHashlineSections(text: string): Array<{ path: string; rows: string[] }> {
-	const sections: Array<{ path: string; rows: string[] }> = [];
-	let current: { path: string; rows: string[] } | undefined;
+type HashlineRenderSection = {
+	header: string;
+	path: string;
+	rows: string[];
+};
+
+function parseHashlineSections(text: string): HashlineRenderSection[] {
+	const sections: HashlineRenderSection[] = [];
+	let current: HashlineRenderSection | undefined;
 	for (const line of toolTextLines(text)) {
-		const header = /^¶(.+?)#[0-9A-Fa-f]{3}$/.exec(line);
+		const header = /^(¶(.+?)#[0-9A-Fa-f]{3})$/.exec(line);
 		if (header) {
-			current = { path: header[1] ?? "", rows: [] };
+			current = { header: header[1] ?? line, path: header[2] ?? "", rows: [] };
 			sections.push(current);
 			continue;
 		}
 		if (current && line.length > 0 && !line.startsWith("[")) current.rows.push(line);
 	}
 	return sections;
+}
+
+function renderHashlineHeader(header: string, theme: RenderTheme): string {
+	const match = /^(¶.+?)(#[0-9A-Fa-f]{3})?$/.exec(header);
+	if (!match) return theme.fg("accent", header);
+	return `${theme.fg("accent", match[1] ?? "")}${match[2] ? theme.fg("toolDiffAdded", match[2]) : ""}`;
 }
 
 function renderReadCall(
@@ -552,7 +565,9 @@ function renderHashlineReadResult(
 	const highlightedRows = Array.isArray(result.details?.highlightedRows)
 		? (result.details.highlightedRows as string[])
 		: [];
-	return renderText(renderNumberedRows(section.rows, theme, section.rows.length, highlightedRows));
+	return renderText(
+		`${renderHashlineHeader(section.header, theme)}\n${renderNumberedRows(section.rows, theme, section.rows.length, highlightedRows)}`,
+	);
 }
 
 function renderSearchCall(_params: { pattern?: unknown; path?: unknown }, _theme: RenderTheme): EmptyComponent {
@@ -589,7 +604,7 @@ function renderSearchRow(row: string, pattern: string, theme: RenderTheme, highl
 }
 
 function renderSearchSections(
-	sections: Array<{ path: string; rows: string[] }>,
+	sections: readonly HashlineRenderSection[],
 	highlightedSections: readonly HighlightedSection[],
 	theme: RenderTheme,
 	expanded: boolean,
@@ -605,7 +620,7 @@ function renderSearchSections(
 		const branch = isLastSection ? treeLast(theme) : treeBranch(theme);
 		const continuation = isLastSection ? "   " : `${theme.tree?.vertical ?? "│"}  `;
 		lines.push(
-			`${theme.fg("dim", `${branch} `)}${theme.fg("accent", `${fileIcon(theme, section.path)} ${shortenDisplayPath(section.path)}`)}`,
+			`${theme.fg("dim", `${branch} ${fileIcon(theme, section.path)} `)}${renderHashlineHeader(section.header, theme)}`,
 		);
 		for (const [rowIndex, row] of section.rows.entries()) {
 			if (emittedRows >= maxRows) break;
@@ -723,18 +738,46 @@ function renderWriteResult(
 	return /error/i.test(text) ? renderText(`\n${theme.fg("error", text)}`) : EMPTY_VIEW;
 }
 
-function summarizeEditInput(input: unknown, mode: EditMode): { target?: string; line?: number; suffix: string } {
+type EditSummary = { target?: string; display?: string; line?: number; suffix: string };
+
+function shortenHashlineHeader(header: string): string {
+	const match = /^¶(.+?)(#[0-9A-Fa-f]{3})?$/.exec(header);
+	if (!match) return shortenDisplayPath(header);
+	return `¶${shortenDisplayPath(match[1] ?? "")}${match[2] ?? ""}`;
+}
+
+function summarizeEditInput(input: unknown, mode: EditMode): EditSummary {
 	if (typeof input !== "string") return { suffix: ` (${mode})` };
-	const hashline = input.match(/^¶(.+?)(?:#[0-9A-Fa-f]{3})?$/m);
+	const hashline = input.match(/^(¶([^#\n]+)(?:#[0-9A-Fa-f]{3})?)$/m);
 	const range = input.match(/^([1-9]\d*)\s+[1-9]\d*$/m);
-	if (hashline) return { target: hashline[1], line: range ? Number(range[1]) : undefined, suffix: "" };
+	if (hashline) {
+		return {
+			target: hashline[2],
+			display: shortenHashlineHeader(hashline[1] ?? ""),
+			line: range ? Number(range[1]) : undefined,
+			suffix: "",
+		};
+	}
 	const file = input.match(/^\*\*\* (?:File|Add File|Update File|Delete File):\s*(.+)$/m);
 	if (file) return { target: file[1], suffix: "" };
 	return { suffix: ` (${mode})` };
 }
 
+function renderEditHeaderDisplay(
+	target: string,
+	display: string | undefined,
+	line: number | undefined,
+	theme: RenderTheme,
+) {
+	const lineSuffix = line ? theme.fg("warning", `:${line}`) : "";
+	const renderedTarget = display?.startsWith("¶")
+		? renderHashlineHeader(display, theme)
+		: theme.fg("accent", display ?? shortenDisplayPath(target));
+	return `${fileIcon(theme, target)} ${renderedTarget}${lineSuffix}`;
+}
+
 function renderEditCall(
-	summary: { target?: string; line?: number; suffix: string },
+	summary: EditSummary,
 	theme: RenderTheme,
 	context?: { state?: Record<string, unknown>; isPartial?: boolean; invalidate?: () => void },
 ): EditCallView {
@@ -755,7 +798,22 @@ function renderEditResult(
 	const rows = Array.isArray(result.details?.highlightedDiffRows)
 		? (result.details.highlightedDiffRows as DiffRenderRow[])
 		: undefined;
-	return new EditDiffView(diff, rows, options.expanded ?? false, theme);
+	const resultHeaders = new Map<string, string>();
+	if (Array.isArray(result.details?.results)) {
+		for (const section of result.details.results as Array<{ path?: unknown; header?: unknown }>) {
+			if (typeof section.path === "string" && typeof section.header === "string") {
+				resultHeaders.set(section.path, shortenHashlineHeader(section.header));
+			}
+		}
+	}
+	const renderHashlineEditSectionHeader: DiffSectionHeaderRenderer = (target, line, theme) => {
+		return renderStatusHeader(
+			"Edit:",
+			theme,
+			` ${renderEditHeaderDisplay(target, resultHeaders.get(target), line, theme)}`,
+		);
+	};
+	return new EditDiffView(diff, rows, options.expanded ?? false, theme, renderHashlineEditSectionHeader);
 }
 
 function splitGlobSearchRoot(cwd: string, pattern: string): { root: string; glob: string } {
