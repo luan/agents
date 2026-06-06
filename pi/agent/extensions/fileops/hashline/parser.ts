@@ -46,6 +46,8 @@ function tryParseLiteralAsRepeat(text: string): ParsedRange | null {
 	return { start: { line: start }, end: { line: end } };
 }
 
+const SMALL_EXPANDING_REPLACEMENT_LINE_LIMIT = 20;
+
 function literalPayloadLineCount(payloads: readonly PayloadRow[]): number {
 	let count = 0;
 	for (const payload of payloads) {
