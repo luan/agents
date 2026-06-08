@@ -540,6 +540,10 @@ describe("fileops extension modes", () => {
 			.get("find")
 			.execute("find", { paths: [join(cwd, "*.txt")], limit: 10 }, undefined, undefined, { cwd });
 		expect(absoluteFindResult.content[0].text).toBe("other.txt\nsample.txt");
+		const missingRootResult = await tools
+			.get("find")
+			.execute("find", { paths: ["missing-root/**"], limit: 10 }, undefined, undefined, { cwd });
+		expect(missingRootResult.content[0].text).toBe("No files found matching pattern");
 	});
 
 	it("renders file workflow tools in the OMP transcript shape", async () => {
@@ -570,14 +574,36 @@ describe("fileops extension modes", () => {
 		expect(searchRendered).toContain("*  2│");
 		expect(searchRendered).toContain("needle");
 		expect(searchRendered).toContain("beta");
+		const searchRoleRendered = render(
+			search.renderResult(searchResult, { expanded: false, isPartial: false }, roleTheme, { args: searchArgs }),
+		);
+		expect(searchRoleRendered).toContain("<warning>needle</warning>");
+		const noMatchResult = await search.execute(
+			"search",
+			{ pattern: "absent", path: "sample.txt" },
+			undefined,
+			undefined,
+			{ cwd },
+		);
+		const noMatchRendered = render(
+			search.renderResult(noMatchResult, { expanded: false, isPartial: false }, theme, {
+				args: { pattern: "absent", path: "sample.txt" },
+			}),
+		);
+		expect(noMatchRendered).toContain("✓ **Search:** absent No matches found · in sample.txt");
 
 		const find = tools.get("find");
 		const findArgs = { paths: ["*.txt"] };
 		const findResult = await find.execute("find", findArgs, undefined, undefined, { cwd });
+		expect(render(find.renderCall(findArgs, theme, {}))).toBe("");
 		const findRendered = render(
 			find.renderResult(findResult, { expanded: false, isPartial: false }, theme, { args: findArgs }),
 		);
 		expect(findRendered).toContain("✓ **Find:** *.txt 1 file · in .");
+		const findRoleRendered = render(
+			find.renderResult(findResult, { expanded: false, isPartial: false }, roleTheme, { args: findArgs }),
+		);
+		expect(findRoleRendered).toContain("<warning>*.txt</warning>");
 		expect(findRendered).toContain("└─ ≡ sample.txt");
 
 		const edit = tools.get("edit");
@@ -641,6 +667,59 @@ describe("fileops extension modes", () => {
 		expect(writeRendered).toContain("1│one");
 		expect(writeRendered).toContain("2│two");
 		expect(writeRendered).not.toContain("[toolSuccessBg]");
+	});
+
+	it("renders independent file sections in columns when width allows", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-columns-"));
+		writeFileSync(join(cwd, "alpha.txt"), "needle alpha\n");
+		writeFileSync(join(cwd, "beta.txt"), "needle beta\n");
+		const tools = registerEditTools("hashline");
+
+		const search = tools.get("search");
+		const searchArgs = { pattern: "needle", path: "." };
+		const searchResult = await search.execute("search", searchArgs, undefined, undefined, { cwd });
+		const searchWideLines = search
+			.renderResult(searchResult, { expanded: false, isPartial: false }, theme, { args: searchArgs })
+			.render(240)
+			.map(stripAnsi);
+		expect(searchWideLines.some((line: string) => line.includes("¶alpha.txt#") && line.includes("¶beta.txt#"))).toBe(
+			true,
+		);
+
+		const find = tools.get("find");
+		const findArgs = { paths: ["*.txt"] };
+		const findResult = await find.execute("find", findArgs, undefined, undefined, { cwd });
+		const findWideLines = find
+			.renderResult(findResult, { expanded: false, isPartial: false }, theme, { args: findArgs })
+			.render(240)
+			.map(stripAnsi);
+		expect(findWideLines.some((line: string) => line.includes("alpha.txt") && line.includes("beta.txt"))).toBe(true);
+	});
+
+	it("renders multi-file edit diffs in columns when width allows", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-diff-columns-"));
+		writeFileSync(join(cwd, "alpha.txt"), "alpha\n");
+		writeFileSync(join(cwd, "beta.txt"), "beta\n");
+		const tools = registerEditTools("hashline");
+		const alphaHeader = (
+			await tools.get("read").execute("read", { path: "alpha.txt" }, undefined, undefined, { cwd })
+		).content[0].text.split("\n")[0];
+		const betaHeader = (
+			await tools.get("read").execute("read", { path: "beta.txt" }, undefined, undefined, { cwd })
+		).content[0].text.split("\n")[0];
+
+		const editResult = await tools
+			.get("edit")
+			.execute("edit", { input: `${alphaHeader}\n1 1\n+ALPHA\n${betaHeader}\n1 1\n+BETA\n` }, undefined, undefined, {
+				cwd,
+			});
+		const wideLines = tools
+			.get("edit")
+			.renderResult(editResult, { expanded: true, isPartial: false }, theme, {})
+			.render(240)
+			.map(stripAnsi);
+
+		expect(wideLines.some((line: string) => line.includes("¶alpha.txt#") && line.includes("¶beta.txt#"))).toBe(true);
 	});
 
 	it("renders an edit header only when an edit diff switches files", async () => {

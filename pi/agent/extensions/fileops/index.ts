@@ -9,6 +9,7 @@ import {
 	createWriteToolDefinition,
 	type EditToolDetails,
 	type ExtensionAPI,
+	keyHint,
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
 import { Box, type Text } from "@earendil-works/pi-tui";
@@ -16,6 +17,7 @@ import { createTwoFilesPatch } from "diff";
 import { Type } from "typebox";
 import { runCommand as runExternalCommand } from "../shared/command-runner.ts";
 import { EmptyComponent, runningFrame, shineText, textComponent } from "../shared/tui";
+import { columnCountForWidth, renderColumns } from "./columns.ts";
 import {
 	buildHighlightedDiffRows,
 	type DiffRenderRow,
@@ -34,6 +36,18 @@ import { Filesystem, NotFoundError, type WriteResult } from "./hashline/fs.ts";
 import { Patch } from "./hashline/input.ts";
 import { Patcher } from "./hashline/patcher.ts";
 import { stripHashlinePrefixes } from "./hashline/prefixes.ts";
+
+const FILEOPS_TOOL_SEARCH_PATHS = [
+	"~/.local/bin",
+	"~/.cargo/bin",
+	"~/.zerobrew/bin",
+	"/opt/zerobrew/bin",
+	"/opt/homebrew/bin",
+	"/usr/local/bin",
+	"/pkg/env/global/bin",
+	"/usr/bin",
+	"/bin",
+];
 
 type EditMode = "apply_patch" | "patch" | "hashline" | "replace";
 const EDIT_FRAME_MS = 120;
@@ -355,7 +369,7 @@ const EMPTY_VIEW = new EmptyComponent();
 
 class BlockTextView {
 	constructor(
-		private readonly text: string,
+		private readonly text: string | ((width: number) => string),
 		private readonly theme: RenderTheme,
 	) {}
 
@@ -363,7 +377,7 @@ class BlockTextView {
 
 	render(width: number): string[] {
 		const box = new Box(0, 0, this.theme.bg ? (line) => this.theme.bg?.("toolPendingBg", line) ?? line : undefined);
-		box.addChild(textComponent(this.text));
+		box.addChild(textComponent(typeof this.text === "function" ? this.text(width) : this.text));
 		return box.render(width);
 	}
 }
@@ -512,7 +526,12 @@ function renderNumberedRows(
 		const body = highlightedRows[index] ?? fallbackBody;
 		output.push(`${theme.fg("dim", `${marker}${lineNumber}│`)}${body}`);
 	}
-	if (rows.length > limit) output.push(theme.fg("muted", `... (${rows.length - limit} more lines, ctrl+e to expand)`));
+	if (rows.length > limit)
+		output.push(
+			theme.fg("muted", `... (${rows.length - limit} more lines, `) +
+				keyHint("app.tools.expand", "to expand") +
+				theme.fg("muted", ")"),
+		);
 	return output.join("\n");
 }
 
@@ -602,40 +621,47 @@ function renderSearchRow(row: string, pattern: string, theme: RenderTheme, highl
 	const gutterRole = marker === "*" ? "toolDiffAdded" : "dim";
 	return `${theme.fg(gutterRole, `${marker}${lineNumber}│`)}${body}`;
 }
-
 function renderSearchSections(
 	sections: readonly HashlineRenderSection[],
 	highlightedSections: readonly HighlightedSection[],
 	theme: RenderTheme,
 	expanded: boolean,
 	pattern: string,
+	width: number,
 ): string {
-	const lines: string[] = [];
-	const maxRows = expanded ? Number.POSITIVE_INFINITY : 12;
+	const columnCount = columnCountForWidth(width, sections.length);
+	const blocks: string[][] = [];
+	const maxRows = expanded ? Number.POSITIVE_INFINITY : 12 * columnCount;
 	let emittedRows = 0;
 	for (let sectionIndex = 0; sectionIndex < sections.length; sectionIndex++) {
+		if (emittedRows >= maxRows) break;
 		const section = sections[sectionIndex];
 		const highlighted = highlightedSections.find((candidate) => candidate.path === section.path);
 		const isLastSection = sectionIndex === sections.length - 1;
 		const branch = isLastSection ? treeLast(theme) : treeBranch(theme);
 		const continuation = isLastSection ? "   " : `${theme.tree?.vertical ?? "│"}  `;
-		lines.push(
+		const block = [
 			`${theme.fg("dim", `${branch} ${fileIcon(theme, section.path)} `)}${renderHashlineHeader(section.header, theme)}`,
-		);
+		];
 		for (const [rowIndex, row] of section.rows.entries()) {
 			if (emittedRows >= maxRows) break;
-			lines.push(
+			block.push(
 				`${theme.fg("dim", continuation)}${renderSearchRow(row, pattern, theme, highlighted?.rows[rowIndex])}`,
 			);
 			emittedRows++;
 		}
+		blocks.push(block);
 	}
+	const lines = renderColumns(blocks, width);
 	const totalRows = sections.reduce((count, section) => count + section.rows.length, 0);
 	if (totalRows > emittedRows)
-		lines.push(theme.fg("muted", `... (${totalRows - emittedRows} more lines, ctrl+e to expand)`));
+		lines.push(
+			theme.fg("muted", `... (${totalRows - emittedRows} more lines, `) +
+				keyHint("app.tools.expand", "to expand") +
+				theme.fg("muted", ")"),
+		);
 	return lines.join("\n");
 }
-
 function renderSearchResult(
 	result: ToolTextResult,
 	options: { expanded?: boolean; isPartial?: boolean },
@@ -644,36 +670,49 @@ function renderSearchResult(
 ): Text | BlockTextView | EmptyComponent {
 	if (options.isPartial) return renderText(theme.fg("warning", "Searching..."));
 	const text = firstTextContent(result).trim();
-	if (!text.startsWith("¶")) return renderText(renderStatusHeader("Search:", theme, ` ${theme.fg("dim", text)}`));
+	const pattern = typeof args?.pattern === "string" ? args.pattern : "";
+	const noMatchPath = typeof args?.path === "string" ? splitReadPathSelector(args.path).path : ".";
+	if (!text.startsWith("¶"))
+		return renderText(
+			renderStatusHeader(
+				"Search:",
+				theme,
+				` ${theme.fg("warning", pattern)} ${theme.fg("dim", `${text} · in ${shortenDisplayPath(noMatchPath)}`)}`,
+			),
+		);
 	const sections = parseHashlineSections(text);
 	const matchCount = sections.reduce(
 		(count, section) => count + section.rows.filter((row) => row.startsWith("*")).length,
 		0,
 	);
 	const fileText = `${sections.length} file${sections.length === 1 ? "" : "s"}`;
-	const pattern = typeof args?.pattern === "string" ? args.pattern : "";
 	const path = typeof args?.path === "string" ? splitReadPathSelector(args.path).path : sections[0]?.path;
 	const header = renderStatusHeader(
 		"Search:",
 		theme,
-		` ${theme.fg("accent", pattern)} ${theme.fg("dim", `${matchCount} match${matchCount === 1 ? "" : "es"} · ${fileText} · in ${shortenDisplayPath(path ?? ".")}`)}`,
+		` ${theme.fg("warning", pattern)} ${theme.fg("dim", `${matchCount} match${matchCount === 1 ? "" : "es"} · ${fileText} · in ${shortenDisplayPath(path ?? ".")}`)}`,
 	);
 	const highlightedSections = Array.isArray(result.details?.highlightedSections)
 		? (result.details.highlightedSections as HighlightedSection[])
 		: [];
-	const body = renderSearchSections(sections, highlightedSections, theme, options.expanded ?? false, pattern);
-	return new BlockTextView(`${header}${body ? `\n${body}` : ""}`, theme);
-}
-function renderFindCall(params: { paths?: string[]; pattern?: unknown; path?: unknown }, theme: RenderTheme): Text {
-	const target = Array.isArray(params.paths) ? params.paths.join(", ") : String(params.pattern ?? "");
-	const where = Array.isArray(params.paths) ? dirname(params.paths[0] ?? ".") : String(params.path ?? ".");
-	return renderText(
-		renderStatusHeader(
-			"Find:",
+	return new BlockTextView((width) => {
+		const body = renderSearchSections(
+			sections,
+			highlightedSections,
 			theme,
-			` ${theme.fg("accent", shortenDisplayPath(target))} ${theme.fg("dim", `in ${shortenDisplayPath(where)}`)}`,
-		),
-	);
+			options.expanded ?? false,
+			pattern,
+			width,
+		);
+		return `${header}${body ? `\n${body}` : ""}`;
+	}, theme);
+}
+
+function renderFindCall(
+	_params: { paths?: string[]; pattern?: unknown; path?: unknown },
+	_theme: RenderTheme,
+): EmptyComponent {
+	return EMPTY_VIEW;
 }
 
 function renderFindResult(
@@ -681,28 +720,32 @@ function renderFindResult(
 	options: { expanded?: boolean; isPartial?: boolean },
 	theme: RenderTheme,
 	args?: { paths?: string[]; pattern?: unknown; path?: unknown },
-): Text {
+): Text | BlockTextView {
 	if (options.isPartial) return renderText(theme.fg("warning", "Finding files..."));
-	const files = toolTextLines(firstTextContent(result).trim()).filter((line) => line && !line.startsWith("No files"));
+	const output = firstTextContent(result).trim();
+	if (/not found on PATH|failed|error/i.test(output.split("\n")[0] ?? ""))
+		return renderText(theme.fg("error", output));
+	const files = toolTextLines(output).filter((line) => line && !line.startsWith("No files"));
 	const target = Array.isArray(args?.paths) ? args.paths.join(", ") : String(args?.pattern ?? "");
 	const where = Array.isArray(args?.paths) ? dirname(args.paths[0] ?? ".") : String(args?.path ?? ".");
 	const header = renderStatusHeader(
 		"Find:",
 		theme,
-		` ${theme.fg("accent", shortenDisplayPath(target))} ${theme.fg("dim", `${files.length} file${files.length === 1 ? "" : "s"} · in ${shortenDisplayPath(where)}`)}`,
+		` ${theme.fg("warning", shortenDisplayPath(target))} ${theme.fg("dim", `${files.length} file${files.length === 1 ? "" : "s"} · in ${shortenDisplayPath(where)}`)}`,
 	);
-	const shown = files.slice(0, options.expanded ? files.length : 20);
-	const body = shown
-		.map(
-			(file, index) =>
-				`${theme.fg("dim", `${index === shown.length - 1 ? treeLast(theme) : treeBranch(theme)} ${fileIcon(theme, file)} `)}${theme.fg("toolOutput", shortenDisplayPath(file))}`,
-		)
-		.join("\n");
-	const more =
-		files.length > shown.length
-			? `\n${theme.fg("muted", `... (${files.length - shown.length} more files, ctrl+e to expand)`)}`
-			: "";
-	return renderText(`${header}${body ? `\n${body}${more}` : ""}`);
+	return new BlockTextView((width) => {
+		const columnCount = columnCountForWidth(width, files.length);
+		const shown = files.slice(0, options.expanded ? files.length : 20 * columnCount);
+		const blocks = shown.map((file, index) => [
+			`${theme.fg("dim", `${index === shown.length - 1 ? treeLast(theme) : treeBranch(theme)} ${fileIcon(theme, file)} `)}${theme.fg("toolOutput", shortenDisplayPath(file))}`,
+		]);
+		const body = renderColumns(blocks, width).join("\n");
+		const more =
+			files.length > shown.length
+				? `\n${theme.fg("muted", `... (${files.length - shown.length} more files, `)}${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`
+				: "";
+		return `${header}${body ? `\n${body}${more}` : ""}`;
+	}, theme);
 }
 function renderWriteCall(
 	params: { path?: string; content?: string },
@@ -1361,7 +1404,11 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 			const rgMaxCount = params.limit === undefined ? resultLimit + 1 : resultLimit;
 			args.push("--max-count", String(rgMaxCount));
 			args.push("--", String(params.pattern), searchPath ? String(searchPath) : ".");
-			const result = await runExternalCommand("rg", args, callCwd, { signal, allowNonZero: true });
+			const result = await runExternalCommand("rg", args, callCwd, {
+				signal,
+				allowNonZero: true,
+				extraSearchPaths: FILEOPS_TOOL_SEARCH_PATHS,
+			});
 			if (result.exitCode === 1 || result.stdout.trim().length === 0) {
 				return { content: [{ type: "text", text: "No matches found" }] };
 			}
@@ -1448,11 +1495,17 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 			const outputs: string[] = [];
 			for (const pattern of params.paths) {
 				const search = splitGlobSearchRoot(callCwd, String(pattern));
+				const rootStat = await stat(search.root).catch(() => undefined);
+				if (!rootStat?.isDirectory()) continue;
 				const args = ["--files", "--color=never"];
 				if (!params.gitignore) args.push("--no-ignore");
 				if (params.hidden) args.push("--hidden");
 				args.push("--glob", search.glob);
-				const result = await runExternalCommand("rg", args, search.root, { signal, allowNonZero: true });
+				const result = await runExternalCommand("rg", args, search.root, {
+					signal,
+					allowNonZero: true,
+					extraSearchPaths: FILEOPS_TOOL_SEARCH_PATHS,
+				});
 				outputs.push(
 					...result.stdout
 						.split("\n")
