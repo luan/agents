@@ -30,20 +30,23 @@ If the task at hand does not involve code changes, skip all steps except load/cl
 
 3. **Quality checks**
    - Run linters, formatters, and static analysis. Fix all issues before review. Do not bypass or ignore quality checks.
-   - Run the `$simplify` on the diff generated in the previous step.
 
 4. **Verify**
    - Run tests, task-specified checks, then project checks.
    - Review the diff for scope creep, debug artifacts, unrelated cleanup, and satisfied criteria.
    - Match verification to the task evidence class; do not invent visual gates for non-visible chores.
 
-5. **User code review**
+5. **Simplify**
+   - Run `$simplify` on the verified diff before any user review or Plannotator workflow.
+   - If confirmed simplifications are applied, repeat quality checks and verification before continuing.
+
+6. **User code review**
    - [skip-if: --auto] Load/use `$plannotator` and run its code-review workflow before commit. This will let the user review the code changes. Do not stage files before review; the user will stage approved hunks. Right before starting review, say, concisely: a. what you have changed; b. areas you explicitly want feedback on; c. anything you haven't addressed (trick question, you should not have any of these if you followed the process well).
    - When the review comes back with a question, this is the user starting a conversation. Do not treat it as directional feeedback. Instead, continue the conversation until the gap in understanding is resolved and only then make code changes and re-run the review.
    - For file notes, resolve to the exact absolute file path on the local filesystem first. Do not pass vault stems, wiki-link targets, repo-relative paths, or artifact-link paths to Plannotator.
    - Only after code-approval, move feature/bug tasks to `in_review` with a short note that code has been approved.
 
-6. **Manual-verification gate**
+7. **Manual-verification gate**
    - Record screenshots or video of user-facing changes.
    - For web apps, use [web-development-verification.md](web-development-verification.md).
    - For desktop apps, use [desktop-app-verification.md](desktop-app-verification.md).
@@ -53,13 +56,13 @@ If the task at hand does not involve code changes, skip all steps except load/cl
    - Ensure feature/bug tasks are `in_review` before presenting the gate.
    - Load/use `$plannotator` and present the HTML artifact with its rendered artifact-gate workflow.
 
-7. **Commit**
+8. **Commit**
    - Load/use `$commit`; do not hand-roll commit mechanics when available.
    - If the whole diff is approved, you are allowed to stage for commit.
    - Commit only the task-scoped files after review approval.
    - Fix hook failures and retry. Capture the commit hash.
 
-8. **Handoff**
+9. **Handoff**
    - Record commit, checks, linked `vlt` artifact stems/paths, visual evidence, and caveats.
    - If denied, keep the task reject task with notes from the feedback. Then resume working on it by restarting $implement.
    - ONLY mark feature or bug tasks `done` after manual verification gate is approved.

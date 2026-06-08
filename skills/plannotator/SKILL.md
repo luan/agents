@@ -12,9 +12,10 @@ Use this skill for Plannotator browser sessions.
 
 Start Plannotator as a managed background terminal:
 
-1. Run `exec_command` with the Plannotator command, `context_guard: false`, with no timeout.
-2. End the turn as soon as you spawn the command, no waiting, no polling.
-3. Resume work when the review or gate result is available.
+1. Use only the commands documented in this skill. Do not run `plannotator --help`, subcommand `--help`, or other discovery probes; Plannotator does not expose a help command.
+2. Run `exec_command` with the Plannotator command, `context_guard: false`, with no timeout.
+3. End the turn as soon as you spawn the command, no waiting, no polling.
+4. Resume work when the review or gate result is available.
 
 ## Code review
 

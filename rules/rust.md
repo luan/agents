@@ -3,8 +3,6 @@ paths:
   - "**/*.rs"
 ---
 
-**Toolchain:** Latest nightly, latest edition (check project config)
-
 **Zero warnings:**
 
 - `cargo clippy -- -W clippy::all` after every implementation

@@ -9,6 +9,7 @@
 7. Task discipline: if you create or select a task and then execute it in the same session, immediately mark it `in_progress` and assign it to the current session before editing files. Leave tasks open/unassigned only when you are handing them off for future work.
 8. Task labels are optional metadata, not a required field. Use labels only for useful cross-cutting filters that are not already obvious from the project, epic, title, type, or parent. Do not add redundant project-name labels.
 9. When creating tasks you intend to work on immediately, create them already assigned to the current session and/or immediately update them to `in_progress` before editing.
+10. Plannotator command discipline: never run `plannotator --help`, subcommand `--help`, or other discovery probes. For any Plannotator review, gate, HTML render, or setup-goal browser session, load/use `$plannotator` and run only the commands documented there.
 
 ## Shared Rules
 
