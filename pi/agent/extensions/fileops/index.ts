@@ -14,7 +14,7 @@ import {
 import { Box, type Text } from "@earendil-works/pi-tui";
 import { createTwoFilesPatch } from "diff";
 import { Type } from "typebox";
-import { runCommand as runExternalCommand } from "../shared/ct-runner.ts";
+import { runCommand as runExternalCommand } from "../shared/command-runner.ts";
 import { EmptyComponent, runningFrame, shineText, textComponent } from "../shared/tui";
 import {
 	buildHighlightedDiffRows,

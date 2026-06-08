@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
+import { accessSync, constants } from "node:fs";
+import { delimiter, join } from "node:path";
 
-export type CtResult = {
+export type CommandResult = {
 	stdout: string;
 	stderr: string;
 	exitCode: number;
@@ -10,10 +12,42 @@ export type RunCommandOptions = {
 	signal?: AbortSignal;
 	input?: string;
 	allowNonZero?: boolean;
+	extraSearchPaths?: readonly string[];
 };
 
-export function formatCommand(command: string, args: string[]): string {
+export function formatCommand(command: string, args: readonly string[]): string {
 	return [command, ...args.map((arg) => (/[\s\t]/.test(arg) ? JSON.stringify(arg) : arg))].join(" ");
+}
+
+function isRunCommandOptions(value: unknown): value is RunCommandOptions {
+	return Boolean(value && typeof value === "object" && !("aborted" in (value as Record<string, unknown>)));
+}
+
+function expandPathEntry(entry: string): string | undefined {
+	if (entry === "~") return process.env.HOME;
+	if (entry.startsWith("~/")) return process.env.HOME ? join(process.env.HOME, entry.slice(2)) : undefined;
+	return entry;
+}
+
+function isExecutable(path: string): boolean {
+	try {
+		accessSync(path, constants.X_OK);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export function resolveCommand(command: string, extraSearchPaths: readonly string[] = []): string | undefined {
+	if (command.includes("/") || (process.platform === "win32" && command.includes("\\"))) return command;
+	const paths = [...(process.env.PATH ?? "").split(delimiter), ...extraSearchPaths]
+		.map(expandPathEntry)
+		.filter((entry): entry is string => Boolean(entry));
+	for (const searchPath of new Set(paths)) {
+		const candidate = join(searchPath, command);
+		if (isExecutable(candidate)) return candidate;
+	}
+	return undefined;
 }
 
 export function runCommand(
@@ -22,8 +56,14 @@ export function runCommand(
 	cwd: string,
 	signalOrOptions?: AbortSignal | RunCommandOptions,
 	input?: string,
-): Promise<CtResult> {
+): Promise<CommandResult> {
 	const options = isRunCommandOptions(signalOrOptions) ? signalOrOptions : { signal: signalOrOptions, input };
+	const resolvedCommand = resolveCommand(command, options.extraSearchPaths) ?? command;
+	try {
+		accessSync(cwd, constants.R_OK);
+	} catch {
+		return Promise.reject(new Error(`Working directory not found: ${cwd}`));
+	}
 	return new Promise((resolve, reject) => {
 		let settled = false;
 		let stdinError: NodeJS.ErrnoException | undefined;
@@ -32,13 +72,13 @@ export function runCommand(
 			settled = true;
 			reject(error);
 		};
-		const resolveOnce = (result: CtResult) => {
+		const resolveOnce = (result: CommandResult) => {
 			if (settled) return;
 			settled = true;
 			resolve(result);
 		};
 
-		const child = spawn(command, args, {
+		const child = spawn(resolvedCommand, args, {
 			cwd,
 			env: process.env,
 			stdio: ["pipe", "pipe", "pipe"],
@@ -65,11 +105,8 @@ export function runCommand(
 		const onAbort = () => child.kill();
 		options.signal?.addEventListener("abort", onAbort, { once: true });
 
-		if (options.input === undefined) {
-			child.stdin.end();
-		} else {
-			child.stdin.end(options.input);
-		}
+		if (options.input === undefined) child.stdin.end();
+		else child.stdin.end(options.input);
 
 		child.on("close", (exitCode) => {
 			options.signal?.removeEventListener("abort", onAbort);
@@ -87,8 +124,4 @@ export function runCommand(
 			);
 		});
 	});
-}
-
-function isRunCommandOptions(value: unknown): value is RunCommandOptions {
-	return Boolean(value && typeof value === "object" && !("aborted" in (value as Record<string, unknown>)));
 }

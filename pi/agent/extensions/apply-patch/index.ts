@@ -8,8 +8,8 @@ import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works
 import type { BundledLanguage, BundledTheme } from "shiki";
 import { Type } from "typebox";
 import { getConfiguredEditMode, getEditFreeformToolConfig } from "../fileops/index.ts";
+import { runCommand as runExternalCommand } from "../shared/command-runner.ts";
 import { nf, title } from "../shared/ct-render.ts";
-import { runCommand as runExternalCommand } from "../shared/ct-runner.ts";
 import { resolveInlineLanguageForPath, resolveShikiLanguageForPath } from "../shared/path-language";
 import {
 	clampAnsiLine,

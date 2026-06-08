@@ -19,7 +19,7 @@ import {
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { runCommand as defaultRunCommand } from "../shared/ct-runner";
+import { runCommand as defaultRunCommand } from "../shared/command-runner";
 import { hasEnoughTerminalRows } from "../shared/terminal";
 import {
 	defineExtensionTui,
