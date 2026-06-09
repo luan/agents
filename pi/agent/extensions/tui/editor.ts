@@ -42,7 +42,7 @@ const globalPatchState = globalThis as typeof globalThis & {
 };
 globalPatchState.__agentsPolishedTuiState ??= {};
 const patchState = globalPatchState.__agentsPolishedTuiState;
-let cachedSkillNames: string[] = [];
+
 let workingActive = false;
 let workingFrame = 0;
 let workingStartedAtMs: number | undefined;
@@ -60,14 +60,6 @@ let editorChromeProvider: EditorChromeProvider | undefined;
 
 export function setEditorTheme(uiTheme: Theme): void {
 	patchState.currentUiTheme = uiTheme;
-}
-
-export function setCachedSkillNames(names: readonly string[]): void {
-	cachedSkillNames = [...new Set(names.filter(Boolean))].sort();
-}
-
-export function setCachedSkillNamesForTest(names: readonly string[]): void {
-	setCachedSkillNames(names);
 }
 
 export function setWorkingAnimationState(active: boolean, frame = workingFrame): void {
@@ -284,12 +276,6 @@ function headerLeftSegment(
 	return truncateToWidth(working, width, "");
 }
 
-function cachedSkillsSegment(innerWidth: number, uiTheme: Theme): string {
-	if (cachedSkillNames.length === 0) return "";
-	const label = truncateVisible(`skills: ${cachedSkillNames.join(", ")}`, innerWidth);
-	return uiTheme.fg("dim", label);
-}
-
 function composeLeftRight(left: string, right: string | undefined, width: number): string {
 	if (!right) return truncateToWidth(left, width, "");
 	if (!left) return " ".repeat(Math.max(0, width - visibleWidth(right))) + truncateToWidth(right, width, "");
@@ -358,7 +344,7 @@ export function renderPolishedEditorForTest(
 			innerWidth,
 		),
 		...editorLines,
-		composeLeftRight(cachedSkillsSegment(statusWidth, uiTheme), chrome.bottomRight, statusWidth),
+		composeLeftRight("", chrome.bottomRight, statusWidth),
 	];
 
 	return [

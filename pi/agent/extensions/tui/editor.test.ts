@@ -5,12 +5,10 @@ import {
 	getWorkingTimerSnapshot,
 	renderPolishedEditorForTest,
 	restoreWorkingTimerSnapshot,
-	setCachedSkillNamesForTest,
 	setEditorChromeProvider,
 	setEditorSessionIdentityProvider,
 	setWorkingAnimationForTest,
 } from "./editor";
-import extension from "./index";
 
 const ANSI_PATTERN = /\x1b\[[0-9;]*m/g;
 const theme = {
@@ -34,41 +32,14 @@ function editor(overrides: Record<string, unknown> = {}) {
 	};
 }
 
-describe("polished TUI editor cached skills", () => {
+describe("polished TUI editor", () => {
 	beforeEach(() => {
 		setWorkingAnimationForTest(false, 0);
 		setEditorChromeProvider(undefined);
 		setEditorSessionIdentityProvider(undefined);
 	});
 
-	test("renders no cached skills metadata when cache is empty", () => {
-		setCachedSkillNamesForTest([]);
-		const lines = renderPolishedEditorForTest(editor(), 40, () => ["> hello", ""], theme);
-
-		expect(stripAnsi(lines.at(-1) ?? "")).not.toContain("skills:");
-		expect(lines.every((line) => visibleWidth(line) <= 40)).toBe(true);
-	});
-
-	test("renders cached skills on the bottom editor row", () => {
-		setCachedSkillNamesForTest(["question", "research"]);
-		const lines = renderPolishedEditorForTest(editor(), 50, () => ["> hello", ""], theme);
-
-		expect(stripAnsi(lines.at(-1) ?? "")).toContain("skills: question, research");
-		expect(lines.every((line) => visibleWidth(line) <= 50)).toBe(true);
-	});
-
-	test("truncates long cached skills metadata width-safely", () => {
-		setCachedSkillNamesForTest(["question", "research", "structure", "implement"]);
-		const lines = renderPolishedEditorForTest(editor(), 24, () => ["> hello", ""], theme);
-		const bottom = lines.at(-1) ?? "";
-
-		expect(stripAnsi(bottom)).toContain("skills:");
-		expect(stripAnsi(bottom)).toContain("…");
-		expect(visibleWidth(bottom)).toBeLessThanOrEqual(24);
-	});
-
 	test("keeps autocomplete lines after the editor frame", () => {
-		setCachedSkillNamesForTest(["question"]);
 		const lines = renderPolishedEditorForTest(
 			editor({
 				isShowingAutocomplete: () => true,
@@ -79,42 +50,10 @@ describe("polished TUI editor cached skills", () => {
 			theme,
 		);
 
-		expect(stripAnsi(lines.at(-2) ?? "")).toContain("skills: question");
 		expect(stripAnsi(lines.at(-1) ?? "")).toBe("$question");
 	});
 
-	test("extension updates cached skills from skillful cache events and clears on shutdown", async () => {
-		const handlers = new Map<string, Array<(event: unknown, ctx: unknown) => unknown>>();
-		const eventHandlers = new Map<string, (data: unknown) => void>();
-		const pi = {
-			getThinkingLevel: () => "medium",
-			on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => {
-				handlers.set(event, [...(handlers.get(event) ?? []), handler]);
-			},
-			events: {
-				on: (channel: string, handler: (data: unknown) => void) => {
-					eventHandlers.set(channel, handler);
-					return () => eventHandlers.delete(channel);
-				},
-			},
-			registerCommand: () => {},
-		};
-
-		extension(pi as never);
-		eventHandlers.get("skillful:cache")?.({ names: ["research"] });
-		expect(stripAnsi(renderPolishedEditorForTest(editor(), 50, () => ["> hello", ""], theme).at(-1) ?? "")).toContain(
-			"skills: research",
-		);
-
-		await handlers.get("session_shutdown")?.[0]?.({}, {});
-		expect(
-			stripAnsi(renderPolishedEditorForTest(editor(), 50, () => ["> hello", ""], theme).at(-1) ?? ""),
-		).not.toContain("skills:");
-		expect(eventHandlers.has("skillful:cache")).toBe(false);
-	});
-
 	test("renders animated working text on the first editor row", () => {
-		setCachedSkillNamesForTest([]);
 		setWorkingAnimationForTest(true, 3);
 
 		const lines = renderPolishedEditorForTest(
@@ -135,7 +74,6 @@ describe("polished TUI editor cached skills", () => {
 	});
 
 	test("renders a dim elapsed timer while working", () => {
-		setCachedSkillNamesForTest([]);
 		setWorkingAnimationForTest(true, 3, {
 			elapsedMs: 32_400,
 			cumulativeMs: 19 * 3_600_000 + 20 * 60_000 + 4_000,
@@ -149,7 +87,6 @@ describe("polished TUI editor cached skills", () => {
 	});
 
 	test("renders last and cumulative working time after work finishes", () => {
-		setCachedSkillNamesForTest([]);
 		setWorkingAnimationForTest(false, 0, {
 			lastTurnMs: 3 * 3_600_000 + 5 * 60_000 + 20_000,
 			cumulativeMs: 19 * 3_600_000 + 20 * 60_000 + 4_000,
@@ -163,7 +100,6 @@ describe("polished TUI editor cached skills", () => {
 	});
 
 	test("restores persisted working time after reload or resume", () => {
-		setCachedSkillNamesForTest([]);
 		setWorkingAnimationForTest(false);
 		restoreWorkingTimerSnapshot({
 			active: false,
@@ -193,7 +129,6 @@ describe("polished TUI editor cached skills", () => {
 	});
 
 	test("renders session identity before animated working text", () => {
-		setCachedSkillNamesForTest([]);
 		setWorkingAnimationForTest(true, 3);
 		setEditorSessionIdentityProvider(() => ({ name: "Spawn mosaic refactor" }));
 
@@ -209,7 +144,6 @@ describe("polished TUI editor cached skills", () => {
 	});
 
 	test("ignores stale session identity providers during render", () => {
-		setCachedSkillNamesForTest([]);
 		setEditorSessionIdentityProvider(() => {
 			throw new Error("This extension ctx is stale after session replacement or reload.");
 		});
@@ -226,7 +160,6 @@ describe("polished TUI editor cached skills", () => {
 	});
 
 	test("truncates long session identity before working status", () => {
-		setCachedSkillNamesForTest([]);
 		setWorkingAnimationForTest(true, 3);
 		setEditorSessionIdentityProvider(() => ({ name: "A very long named session that should shrink first" }));
 
@@ -242,7 +175,6 @@ describe("polished TUI editor cached skills", () => {
 	});
 
 	test("renders mosaic label and secondary rail color outside normal mode", () => {
-		setCachedSkillNamesForTest([]);
 		setEditorSessionIdentityProvider(() => ({ label: "A2", name: "Tests", color: "74c7ec" }));
 
 		const lines = renderPolishedEditorForTest(editor({ getMode: () => "insert" }), 32, () => ["> hello", ""], theme);
@@ -254,7 +186,6 @@ describe("polished TUI editor cached skills", () => {
 	});
 
 	test("uses mosaic color as the normal-mode rail without an extra identity rail", () => {
-		setCachedSkillNamesForTest([]);
 		setEditorSessionIdentityProvider(() => ({ label: "A2", name: "Tests", color: "74c7ec" }));
 
 		const lines = renderPolishedEditorForTest(editor({ getMode: () => "normal" }), 32, () => ["> hello", ""], theme);
@@ -267,7 +198,6 @@ describe("polished TUI editor cached skills", () => {
 	});
 
 	test("right-aligns editor chrome status on the first row", () => {
-		setCachedSkillNamesForTest([]);
 		setEditorChromeProvider(() => ({ topRight: "status" }));
 
 		const lines = renderPolishedEditorForTest(editor({ getMode: () => "normal" }), 40, () => ["> hello", ""], theme);
@@ -277,7 +207,6 @@ describe("polished TUI editor cached skills", () => {
 	});
 
 	test("pulses the rail background from the mode color while working", () => {
-		setCachedSkillNamesForTest([]);
 		setWorkingAnimationForTest(true, 0);
 		const dark = renderPolishedEditorForTest(
 			editor({ getMode: () => "insert" }),

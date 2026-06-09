@@ -12,7 +12,6 @@ import {
 	installEditorComposition,
 	resetWorkingTimerState,
 	restoreWorkingTimerSnapshot,
-	setCachedSkillNames,
 	setEditorChromeProvider,
 	setEditorSessionIdentityProvider,
 	setWorkingTimerStarted,
@@ -176,7 +175,6 @@ export default function (pi: ExtensionAPI) {
 	let disposed = false;
 	let uiGeneration = 0;
 	let activeSessionFile: string | undefined;
-	let unsubscribeSkillfulCache: (() => void) | undefined;
 	let editorSessionIdentity: EditorSessionIdentity | undefined;
 
 	const isStaleCtxError = (error: unknown) =>
@@ -649,9 +647,6 @@ export default function (pi: ExtensionAPI) {
 		uiGeneration++;
 		activeSessionFile = undefined;
 		requestFooterRender = undefined;
-		unsubscribeSkillfulCache?.();
-		unsubscribeSkillfulCache = undefined;
-		setCachedSkillNames([]);
 		setEditorChromeProvider(undefined);
 		setEditorSessionIdentityProvider(undefined);
 		editorSessionIdentity = undefined;
@@ -706,15 +701,6 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_compact", async (_event, ctx) => {
 		if (!syncStateIfCurrent(ctx)) return;
 		scheduleProjectRefresh(ctx);
-		refresh();
-	});
-
-	unsubscribeSkillfulCache = pi.events.on("skillful:cache", (data) => {
-		const names =
-			data && typeof data === "object" && Array.isArray((data as { names?: unknown }).names)
-				? (data as { names: unknown[] }).names.filter((name): name is string => typeof name === "string")
-				: [];
-		setCachedSkillNames(names);
 		refresh();
 	});
 }

@@ -39,16 +39,44 @@ Embed the recording with the asciinema player in the `$visual-doc` report. Use `
 4. Embed the recording in the report with the player:
 
    ```html
+   <style>
+     /* contents of <implement-skill-dir>/vendor/asciinema-player/asciinema-player.css */
+   </style>
    <div id="tui-player"></div>
+   <script>
+     /* contents of <implement-skill-dir>/vendor/asciinema-player/asciinema-player.min.js */
+   </script>
    <script>
      const castText = /* JSON.stringify(contents of /tmp/tui.cast) */;
      AsciinemaPlayer.create(
        { data: castText },
        document.getElementById("tui-player"),
-       { preload: true, terminalFontSize: "14px" },
+       {
+         preload: true,
+         autoPlay: true,
+         terminalFontSize: "14px",
+         fit: false
+       },
      );
    </script>
    ```
+
+   Use `{ data: castText }`, not a relative `.cast` URL, for Plannotator gates.
+   Inline the player CSS/JS in the artifact so the rendered gate is self-contained.
+   Keep the player container fixed-height or otherwise strictly bounded; avoid
+   `100vh`, `min-height: 100vh`, and unbounded media sections because Plannotator
+   can render them as extremely tall pages.
+
+   `poster` values use the `npt:` prefix (for example, `poster: "npt:3.58"`).
+   `startAt` values are numeric/NPT strings without the prefix (for example,
+   `startAt: "2.20"`). When a visual state is transient, add a marker at the
+   target time and set `pauseOnMarkers: true` so the playback stops on the state
+   under review instead of running through teardown.
+
+   Browser DOM probes of asciinema-player may not expose terminal cell background
+   colors as span `background-color`; validate background-sensitive TUI states by
+   viewing the rendered player frame and by checking the cast for the relevant
+   SGR output.
 
 5. View the rendered report before presenting the gate. The player is ready only
    when it visibly demonstrates the scenario; a generated cast file by itself is
