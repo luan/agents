@@ -248,12 +248,41 @@ fn trim_one_final_newline(bytes: &[u8]) -> &[u8] {
     bytes.strip_suffix(b"\n").unwrap_or(bytes)
 }
 
-fn bail_non_symlink(source: &Path, target: &Path) -> Result<()> {
+fn next_backup_path(target: &Path) -> Result<PathBuf> {
+    let parent = target.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = target
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "backup".to_string());
+
+    for index in 0..1000 {
+        let candidate_name = if index == 0 {
+            format!("{file_name}.agents-backup")
+        } else {
+            format!("{file_name}.agents-backup.{index}")
+        };
+        let candidate = parent.join(candidate_name);
+        match fs::symlink_metadata(&candidate) {
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(candidate),
+            Ok(_) => {}
+            Err(err) => {
+                return Err(anyhow::Error::from(err))
+                    .with_context(|| format!("stat {}", candidate.display()));
+            }
+        }
+    }
+
     bail!(
-        "{} already exists and is not a symlink, and it differs from {} (merge wanted changes into the repo file or move the live file aside before rerunning setup)",
-        target.display(),
-        source.display()
+        "could not find an available backup path for {} after 1000 attempts",
+        target.display()
     )
+}
+
+fn move_conflicting_entry_aside(target: &Path) -> Result<PathBuf> {
+    let backup = next_backup_path(target)?;
+    fs::rename(target, &backup)
+        .with_context(|| format!("move {} to {}", target.display(), backup.display()))?;
+    Ok(backup)
 }
 
 fn act_link(source: &Path, target: &Path) -> Result<()> {
@@ -300,7 +329,14 @@ fn act_link(source: &Path, target: &Path) -> Result<()> {
                     source.display()
                 );
             } else {
-                bail_non_symlink(source, target)?;
+                let backup = move_conflicting_entry_aside(target)?;
+                create_symlink(source, target)?;
+                eprintln!(
+                    "  ~ {} -> {} (moved existing entry to {})",
+                    target.display(),
+                    source.display(),
+                    backup.display()
+                );
             }
         }
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
@@ -356,7 +392,13 @@ fn act_dry_run(source: &Path, target: &Path) -> Result<()> {
                     source.display()
                 );
             } else {
-                bail_non_symlink(source, target)?;
+                let backup = next_backup_path(target)?;
+                eprintln!(
+                    "  ~ would move existing entry {} to {} and link -> {}",
+                    target.display(),
+                    backup.display(),
+                    source.display()
+                );
             }
         }
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
@@ -506,18 +548,21 @@ mod tests {
     }
 
     #[test]
-    fn link_rejects_different_regular_file() -> Result<()> {
+    #[cfg(unix)]
+    fn link_moves_different_regular_file_aside_and_symlinks() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let source = dir.path().join("config.toml");
         let target = dir.path().join("target-config.toml");
+        let backup = dir.path().join("target-config.toml.agents-backup");
         fs::write(&source, "model = \"gpt-5.5\"\n")?;
         fs::write(&target, "model = \"gpt-5\"\n")?;
 
-        let err = act_link(&source, &target).expect_err("different file should be rejected");
+        act_link(&source, &target)?;
 
-        assert!(err.to_string().contains("differs from"));
         let meta = fs::symlink_metadata(&target)?;
-        assert!(!meta.file_type().is_symlink());
+        assert!(meta.file_type().is_symlink());
+        assert_eq!(fs::canonicalize(&source)?, fs::canonicalize(&target)?);
+        assert_eq!(fs::read_to_string(backup)?, "model = \"gpt-5\"\n");
         Ok(())
     }
 }
