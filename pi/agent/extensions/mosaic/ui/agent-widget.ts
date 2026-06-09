@@ -19,7 +19,7 @@ import { highlightTrickle, rgbFg, scaleRgb } from "./animation.js";
 const MAX_WIDGET_LINES = 12;
 
 const WIDGET_PULSE_MS = 2000;
-const WIDGET_FRAME_MS = 80;
+const WIDGET_REFRESH_MS = 50;
 
 /** Statuses that indicate an error/non-success outcome (used for linger behavior and icon rendering). */
 export const ERROR_STATUSES = new Set(["error", "aborted", "steered", "stopped"]);
@@ -220,8 +220,8 @@ function fgColor(theme: Theme, color: string, text: string): string {
 	}
 }
 
-function identityPulseFactor(frame: number): number {
-	return triangleWave(frame * WIDGET_FRAME_MS, WIDGET_PULSE_MS, 0.55, 1.2);
+function identityPulseFactor(elapsedMs: number): number {
+	return triangleWave(elapsedMs, WIDGET_PULSE_MS, 0.55, 1.2);
 }
 
 function trickleRgb(text: string, rgb: Rgb, elapsedMs: number): string {
@@ -240,24 +240,24 @@ function trickleRgb(text: string, rgb: Rgb, elapsedMs: number): string {
 		.join("")}\x1b[39m`;
 }
 
-function renderRunningName(text: string, theme: Theme, frame: number): string {
-	return highlightTrickle(text, theme, frame * WIDGET_FRAME_MS);
+function renderRunningName(text: string, theme: Theme, elapsedMs: number): string {
+	return highlightTrickle(text, theme, elapsedMs);
 }
 
 export function renderMosaicHudIdentityPrefix(
 	identity: AgentRecord["mosaicIdentity"] | undefined,
 	theme: Theme,
-	pulseFrame?: number,
+	pulseElapsedMs?: number,
 ): string {
 	if (!identity) return "";
 	const rgb = parseHexRgb(identity.color);
 	const marker =
-		rgb && pulseFrame !== undefined
-			? `${rgbFg(scaleRgb(rgb, identityPulseFactor(pulseFrame)))}●\x1b[39m`
+		rgb && pulseElapsedMs !== undefined
+			? `${rgbFg(scaleRgb(rgb, identityPulseFactor(pulseElapsedMs)))}●\x1b[39m`
 			: fgColor(theme, identity.color, "●");
 	const label =
-		rgb && pulseFrame !== undefined
-			? trickleRgb(identity.label, rgb, pulseFrame * WIDGET_FRAME_MS)
+		rgb && pulseElapsedMs !== undefined
+			? trickleRgb(identity.label, rgb, pulseElapsedMs)
 			: fgColor(theme, identity.color, identity.label);
 	return `${marker} ${label} `;
 }
@@ -276,7 +276,7 @@ function appendRightStatus(line: string, statusIcon: string, width: number): str
 
 export class AgentWidget {
 	private uiCtx: UICtx | undefined;
-	private widgetFrame = 0;
+	private animationStartedAt: number | undefined;
 	private widgetInterval: ReturnType<typeof setInterval> | undefined;
 	/** Tracks how many turns each finished agent has survived. Key: agent ID, Value: turns since finished. */
 	private finishedTurnAge = new Map<string, number>();
@@ -331,7 +331,7 @@ export class AgentWidget {
 	/** Ensure the widget update timer is running. */
 	ensureTimer() {
 		if (!this.widgetInterval) {
-			this.widgetInterval = setInterval(() => this.update(), 80);
+			this.widgetInterval = setInterval(() => this.update(), WIDGET_REFRESH_MS);
 			this.widgetInterval.unref?.();
 		}
 	}
@@ -421,9 +421,9 @@ export class AgentWidget {
 	private renderMosaicHudIdentity(
 		a: { mosaicIdentity?: AgentRecord["mosaicIdentity"] },
 		theme: Theme,
-		pulseFrame?: number,
+		pulseElapsedMs?: number,
 	): string {
-		return renderMosaicHudIdentityPrefix(a.mosaicIdentity, theme, pulseFrame);
+		return renderMosaicHudIdentityPrefix(a.mosaicIdentity, theme, pulseElapsedMs);
 	}
 
 	/**
@@ -440,16 +440,16 @@ export class AgentWidget {
 
 		const hasActive = running.length > 0 || queued.length > 0;
 		const hasFinished = finished.length > 0;
-
 		// Nothing to show — return empty (widget will be unregistered by update())
 		if (!hasActive && !hasFinished) return [];
+		const animationElapsedMs = this.currentAnimationElapsedMs();
 
 		const w = tui.terminal.columns;
 		const truncate = (line: string) => truncateToWidth(line, w);
 		const headingColor = hasActive ? "accent" : "dim";
 		const headingIcon = hasActive ? "●" : "○";
 		const headingText = hasActive
-			? renderRunningName("Agents", theme, this.widgetFrame)
+			? renderRunningName("Agents", theme, animationElapsedMs)
 			: theme.fg(headingColor, "Agents");
 
 		// Build sections separately for overflow-aware assembly.
@@ -488,7 +488,7 @@ export class AgentWidget {
 			runningLines.push([
 				truncate(
 					theme.fg("dim", "├─") +
-						` ${this.renderMosaicHudIdentity(a, theme, this.widgetFrame)}${renderRunningName(name, theme, this.widgetFrame)}${modeTag}  ${theme.fg("muted", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", statsText)}`,
+						` ${this.renderMosaicHudIdentity(a, theme, animationElapsedMs)}${renderRunningName(name, theme, animationElapsedMs)}${modeTag}  ${theme.fg("muted", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", statsText)}`,
 				),
 				truncate(theme.fg("dim", "│  ") + theme.fg("dim", `  ⎿  ${activity}`)),
 			]);
@@ -592,12 +592,16 @@ export class AgentWidget {
 			}
 		}
 		const hasActive = runningCount > 0 || queuedCount > 0;
+		if (hasActive && this.animationStartedAt === undefined) {
+			this.animationStartedAt = Date.now();
+		}
 		if (hasActive && !this.widgetInterval) {
 			this.ensureTimer();
 		} else if (!hasActive && this.widgetInterval) {
 			clearInterval(this.widgetInterval);
 			this.widgetInterval = undefined;
 		}
+		if (!hasActive) this.animationStartedAt = undefined;
 
 		// Nothing active to show — clear widget. Finished agents can be reported
 		// elsewhere, but they must not keep a render hook attached while the
@@ -637,8 +641,6 @@ export class AgentWidget {
 			this.lastStatusText = newStatusText;
 		}
 
-		this.widgetFrame++;
-
 		// Register widget callback once; subsequent updates use requestRender()
 		// which re-invokes render() without replacing the component (avoids layout thrashing).
 		if (!this.widgetRegistered) {
@@ -664,11 +666,17 @@ export class AgentWidget {
 		}
 	}
 
+	private currentAnimationElapsedMs(): number {
+		if (this.animationStartedAt === undefined) return 0;
+		return Math.max(0, Date.now() - this.animationStartedAt);
+	}
+
 	dispose() {
 		if (this.widgetInterval) {
 			clearInterval(this.widgetInterval);
 			this.widgetInterval = undefined;
 		}
+		this.animationStartedAt = undefined;
 		if (this.uiCtx) {
 			if (this.widgetRegistered) this.uiCtx.setWidget("agents", undefined);
 			if (this.lastStatusText !== undefined) this.uiCtx.setStatus("subagents", undefined);

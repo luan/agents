@@ -49,6 +49,20 @@ describe("mosaic agent widget identity", () => {
 		expect(dim).not.toBe(bright);
 	});
 
+	test("uses elapsed milliseconds for smoother identity pulse", () => {
+		const theme: Theme = {
+			fg: (_color, text) => text,
+			bold: (text) => text,
+		};
+
+		const first = renderMosaicHudIdentityPrefix({ label: "A1", color: "f38ba8" }, theme, 0);
+		const next = renderMosaicHudIdentityPrefix({ label: "A1", color: "f38ba8" }, theme, 50);
+
+		expect(stripAnsi(first)).toBe("● A1 ");
+		expect(stripAnsi(next)).toBe("● A1 ");
+		expect(next).not.toBe(first);
+	});
+
 	test("renders completed status at the right edge instead of before the identity", () => {
 		const theme: Theme = {
 			fg: (_color, text) => text,
@@ -308,6 +322,56 @@ describe("mosaic agent widget identity", () => {
 			status = "completed";
 			widget.update();
 			expect(cleared).toHaveLength(1);
+		} finally {
+			globalThis.setInterval = originalSetInterval;
+			globalThis.clearInterval = originalClearInterval;
+		}
+	});
+
+	test("does not advance animation when updates happen without elapsed time", () => {
+		const originalSetInterval = globalThis.setInterval;
+		const originalClearInterval = globalThis.clearInterval;
+		(globalThis as unknown as { setInterval: typeof setInterval }).setInterval = ((fn: () => void) => {
+			void fn;
+			return { unref() {} } as unknown as ReturnType<typeof setInterval>;
+		}) as typeof setInterval;
+		(globalThis as unknown as { clearInterval: typeof clearInterval }).clearInterval =
+			(() => {}) as typeof clearInterval;
+		try {
+			const theme: Theme = {
+				fg: (color, text) => (color === "accent" ? `\x1b[38;2;100;120;200m${text}\x1b[39m` : text),
+				bold: (text) => text,
+			};
+			const now = 10_000;
+			Date.now = () => now;
+			let factory: ((tui: unknown, theme: Theme) => { render(): string[]; invalidate(): void }) | undefined;
+			const widget = new AgentWidget({ listAgents: () => [] } as never, new Map(), () => [
+				{
+					id: "a1",
+					type: "general-purpose",
+					description: "Running agent",
+					status: "running",
+					toolUses: 0,
+					startedAt: now - 10_000,
+					lifetimeUsage: { input: 0, output: 0, cacheWrite: 0 },
+					compactionCount: 0,
+					mosaicIdentity: { label: "A1", color: "f38ba8" },
+				},
+			]);
+			widget.setUICtx({
+				setWidget(_key, content) {
+					if (content) factory = content;
+				},
+				setStatus() {},
+			});
+
+			widget.update();
+			const component = factory?.({ terminal: { columns: 80 }, requestRender() {} }, theme);
+			const first = component?.render();
+			for (let i = 0; i < 10; i++) widget.update();
+			const second = component?.render();
+
+			expect(second).toEqual(first);
 		} finally {
 			globalThis.setInterval = originalSetInterval;
 			globalThis.clearInterval = originalClearInterval;
