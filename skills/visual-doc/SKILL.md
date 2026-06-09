@@ -16,7 +16,7 @@ the source of truth; the visual doc makes decisions and evidence fast to review.
 2. Read [REFERENCE.md](REFERENCE.md) for the shared HTML base and media patterns.
 3. Use [USE-CASES.md](USE-CASES.md) for brief, issues, and implement layouts.
 4. Put the most important conclusion in the first viewport.
-5. Load/use `$plannotator` to present the HTML once. Use its rendered review workflow for informational review, or its rendered artifact-gate workflow when approval is required before continuing.
+5. Load/use `$plannotator-annotate` to present the HTML once. Use its rendered review workflow for informational review, or its rendered artifact-gate workflow when approval is required before continuing.
 
 ## Required shape
 

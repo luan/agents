@@ -39,7 +39,7 @@ Produce a short Structure Outline: how the work is shaped, not every task.
      - risks or unknowns that change ordering
 
 4. **Review**
-   - Unless `--auto` is clearly safe, resolve the structure artifact to its real absolute local filesystem path, then load/use `$plannotator` and run its artifact-gate workflow.
+   - Unless `--auto` is clearly safe, resolve the structure artifact to its real absolute local filesystem path, then load/use `$plannotator-annotate` and run its artifact-gate workflow.
    - Do not pass vault stems, wiki-link targets, repo-relative paths, or artifact-link paths to Plannotator.
    - In the gate `instructions`, name the exact absolute file being reviewed and state that it is a structure outline.
    - If denied, revise the same artifact and re-gate.

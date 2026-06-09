@@ -27,7 +27,7 @@ Publish tactical handoff when direction and structure are settled enough: a plan
 2. **Confirm structure**
    - Use the structure artifact when one exists.
    - If context already contains enough shape, include a compact inline structure note and proceed.
-   - If structure is missing or risky, create or update a structure artifact with `vlt create -t structure --topic "..." --json`, edit it with `apply_patch`, then load/use `$plannotator` and run its artifact-gate workflow.
+   - If structure is missing or risky, create or update a structure artifact with `vlt create -t structure --topic "..." --json`, edit it with `apply_patch`, then load/use `$plannotator-annotate` and run its artifact-gate workflow.
 
 3. **Draft the plan artifact**
    - Create/update a vault plan artifact linked to source research and plan artifact paths plus design/structure paths when available.
@@ -44,7 +44,7 @@ Publish tactical handoff when direction and structure are settled enough: a plan
    - Do not create tasks until the proposal is approved or `--auto` legitimately skips the gate.
 
 5. **Gate when needed**
-   - If not `--auto`, resolve the proposal artifact to its real absolute local filesystem path, then load/use `$plannotator` and run its artifact-gate workflow. Do not pass vault stems, wiki-link targets, repo-relative paths, or artifact-link paths to Plannotator.
+   - If not `--auto`, resolve the proposal artifact to its real absolute local filesystem path, then load/use `$plannotator-annotate` and run its artifact-gate workflow. Do not pass vault stems, wiki-link targets, repo-relative paths, or artifact-link paths to Plannotator.
    - In the gate `instructions`, name the exact absolute file being reviewed and state whether Plannotator is reviewing a plan artifact or a temporary proposal.
    - If denied, revise the plan/proposal and re-gate.
    - If closed, unavailable, timed out, or unapproved, stop before creating tasks.

@@ -19,6 +19,6 @@ Create a temporary self-contained HTML artifact after commit and before task acc
 
 ## Presentation command
 
-Load/use `$plannotator` and run its rendered artifact-gate workflow for the HTML file.
+Load/use `$plannotator-annotate` and run its rendered artifact-gate workflow for the HTML file.
 
 The HTML itself must ask the user to manually verify the scenarios before approving. For user-visible work, map each acceptance criterion to evidence in the HTML.

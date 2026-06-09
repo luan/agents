@@ -77,19 +77,19 @@ status_line = [
 queue = "alt-enter"
 
 [marketplaces.claude-plugins-official]
-last_updated = "2026-06-04T16:59:46Z"
-last_revision = "9b3f5842ebf59b79d87acfb3c66aa1e4b20837c1"
+last_updated = "2026-06-09T14:58:03Z"
+last_revision = "379a00dba50ec79c45e9b5f4d7e108ad4c65bd88"
 source_type = "git"
 source = "https://github.com/anthropics/claude-plugins-official.git"
 
 [marketplaces.worktrunk]
-last_updated = "2026-06-04T16:59:57Z"
-last_revision = "56fe4915ae0ea064e7ce54bf14694ccddc38e19e"
+last_updated = "2026-06-09T14:58:08Z"
+last_revision = "ba6a3c2b56c34ef60ae8ca85dadcaf46524401fd"
 source_type = "git"
 source = "https://github.com/max-sixty/worktrunk.git"
 
 [marketplaces.openai-bundled]
-last_updated = "2026-06-04T16:59:50Z"
+last_updated = "2026-06-09T14:58:05Z"
 source_type = "local"
 source = "/Users/luan.santos/.codex/.tmp/bundled-marketplaces/openai-bundled"
 

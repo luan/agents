@@ -43,7 +43,7 @@ Produce a compact review brief: where the solution is going, which decisions mat
    - If the design needs more than 5 decisions, merge details under broader decisions or defer implementation-level choices out of the artifact.
 
 4. **Review**
-   - Unless `--auto` is clearly safe, resolve the design artifact to its real absolute local filesystem path, then load/use `$plannotator` and run its artifact-gate workflow.
+   - Unless `--auto` is clearly safe, resolve the design artifact to its real absolute local filesystem path, then load/use `$plannotator-annotate` and run its artifact-gate workflow.
    - Do not pass vault stems, wiki-link targets, repo-relative paths, or artifact-link paths to Plannotator.
    - In the gate `instructions`, name the exact absolute file being reviewed and state that it is a design discussion.
    - If denied, revise the same artifact and re-gate.

@@ -16,7 +16,7 @@ This skill takes the current conversation context and codebase understanding and
 3. Sketch out the major modules you will need to build or modify to complete the implementation. Actively look for opportunities to extract deep modules that can be tested in isolation.
    A deep module (as opposed to a shallow module) is one which encapsulates a lot of functionality in a simple, testable interface which rarely changes.
    Check with the user that these modules match their expectations. Check with the user which modules they want tests written for.
-4. Write the PRD using the template below. Load/use `$plannotator` and run its artifact-gate workflow for the absolute path. Then plublish it to the project vault.
+4. Write the PRD using the template below. Load/use `$plannotator-annotate` and run its artifact-gate workflow for the absolute path. Then publish it to the project vault.
 
 <prd-template>
 

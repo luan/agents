@@ -43,7 +43,7 @@ Create a vault research artifact that preserves user context but contains only f
    - Before the gate, ask at most one compact batch of targeted clarification questions about unresolved evidence gaps; do not frame these as approval.
    - Do not ask questions that code/vault exploration can answer. Prefer a concrete default recommendation plus a small choice set when a human choice is necessary.
    - Resolve the artifact to its real absolute local filesystem path before the gate. For vault artifacts, use the path returned by `vlt create --json` or `vlt read --json`, expanding `~` if needed. Do not pass vault stems, wiki-link targets, repo-relative paths, or artifact-link paths to Plannotator.
-   - Load/use `$plannotator` and run its artifact-gate workflow for the absolute path.
+   - Load/use `$plannotator-annotate` and run its artifact-gate workflow for the absolute path.
    - In the gate `instructions`, name the exact absolute file being reviewed and state the artifact type/purpose so Plannotator is not left to infer whether it is research, a plan, or a fixture.
    - A handled approved Plannotator gate is sufficient approval to continue; do not ask the user for another approval afterward.
    - If denied with feedback, treat it as content feedback: revise and re-gate.

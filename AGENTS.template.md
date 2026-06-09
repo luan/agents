@@ -4,7 +4,7 @@
 4. All tests pass before committing. You own every failure you can see.
 5. When `--auto` is used with a skill, do not ask questions, perform the most comprehensive action set.
 6. NEVER discard unrelated changes.
-7. Plannotator command discipline: never run `plannotator --help`, subcommand `--help`, or other discovery probes. For any Plannotator review, gate, HTML render, or setup-goal browser session, load/use `$plannotator` and run only the commands documented there.
+7. Plannotator command discipline: never run `plannotator --help`, subcommand `--help`, or other discovery probes. For code review, load/use `$plannotator-review`; for annotation, artifact gates, or rendered HTML, load/use `$plannotator-annotate`; for latest assistant message annotation, load/use `$plannotator-last`; run only the commands documented in the loaded skill.
 
 ## Shared Rules
 
