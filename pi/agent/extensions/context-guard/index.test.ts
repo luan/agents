@@ -254,14 +254,16 @@ describe("piExtension — direct cg_* tool registration", () => {
 		const text = result.content.map((item) => item.text).join("\n");
 		expect(text).toContain(`processed by rust core: ${filePath}`);
 		expect(text).toContain("Hashline edit anchor:");
-		const anchor = text.match(/¶.*input\.txt#[0-9A-F]{3}/)?.[0];
+		const anchor = text.match(/\[.*input\.txt#[0-9A-F]{4}\]/)?.[0];
 		expect(anchor).toBeDefined();
 
 		process.env.PI_FILEOPS_EDIT_VARIANT = "hashline";
 		const fileops = createMockPi();
 		fileopsExtension(fileops as any);
 		const edit = fileops.tools.find((tool) => tool.name === "edit");
-		await (edit!.execute as any)("edit-1", { input: `${anchor}\n1 1\n+xyz\n` }, undefined, undefined, { cwd: dir });
+		await (edit!.execute as any)("edit-1", { input: `${anchor}\nreplace 1..1:\n+xyz\n` }, undefined, undefined, {
+			cwd: dir,
+		});
 		expect(readFileSync(filePath, "utf8")).toBe("xyz");
 	});
 
@@ -303,7 +305,7 @@ describe("piExtension — direct cg_* tool registration", () => {
 		const pathIndexText = pathIndexResult.content.map((item) => item.text).join("\n");
 		expect(pathIndexText).toContain("index via rust core");
 		expect(pathIndexText).toContain("Hashline edit anchor:");
-		expect(pathIndexText).toMatch(/¶.*input\.txt#[0-9A-F]{3}/);
+		expect(pathIndexText).toMatch(/\[.*input\.txt#[0-9A-F]{4}\]/);
 		await expect(search!.execute("call-2", { queries: ["hello"] })).resolves.toEqual({
 			content: [{ type: "text", text: "search via rust core" }],
 			details: {},

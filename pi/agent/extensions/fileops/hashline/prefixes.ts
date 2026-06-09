@@ -16,7 +16,7 @@
 
 const HL_PREFIX_RE = /^\s*(?:>>>|>>)?\s*(?:[+*-]\s*)?\d+:/;
 const HL_PREFIX_PLUS_RE = /^\s*(?:>>>|>>)?\s*\+\s*\d+:/;
-const HL_HEADER_RE = /^\s*¶\S+#[0-9a-fA-F]{3}\s*$/;
+const HL_HEADER_RE = /^\s*\[[^#\r\n]+#[0-9a-fA-F]{4}\]\s*$/;
 const DIFF_PLUS_RE = /^[+](?![+])/;
 const READ_TRUNCATION_NOTICE_RE =
 	/^\[(?:Showing lines \d+-\d+ of \d+|\d+ more lines? in (?:file|\S+))\b.*\bUse (?:offset=|:L?)\d+/;
@@ -29,6 +29,17 @@ function stripLeadingHashlinePrefixes(line: string): string {
 		result = result.replace(HL_PREFIX_RE, "");
 	} while (result !== previous);
 	return result;
+}
+
+/**
+ * Single-pass variant of {@link stripLeadingHashlinePrefixes} that strips at
+ * most one leading hashline prefix (`N:`, `>>>N:`, `+N:` etc.) and does NOT
+ * loop. Use this when the input carries at most one snapshot prefix (e.g. a
+ * bare body row paste from `read` output) — recursive stripping would corrupt
+ * content whose own text starts with `digits:`.
+ */
+export function stripOneLeadingHashlinePrefix(line: string): string {
+	return line.replace(HL_PREFIX_RE, "");
 }
 
 interface LinePrefixStats {

@@ -3,20 +3,23 @@ begin_patch: "*** Begin Patch" LF
 end_patch:   "*** End Patch" LF?
 
 file_patch: file_header hunk+
-file_header: "¶" filename ("#" file_hash)? LF
-file_hash: /[0-9A-F]{3}/
-filename: /[^\s#]+/
+file_header: "[" filename "#" file_hash "]" LF
+file_hash: /[0-9A-F]{4}/
+filename: /[^#\r\n]+/
 
-hunk: hunk_header op*
-hunk_header: anchor LF
-op: emit_op | repeat_op
-emit_op:   "+" /(.*)/ LF
-repeat_op: "&" body_range LF
+hunk: replace_hunk | replace_block_hunk | insert_hunk | delete_hunk | delete_block_hunk
+replace_hunk: replace_anchor LF emit_op*
+replace_block_hunk: replace_block_anchor LF emit_op+
+insert_hunk: insert_anchor LF emit_op+
+delete_hunk: "delete " (header_range | LID) LF
+delete_block_hunk: "delete block " LID LF
+replace_anchor: "replace " header_range ":"
+replace_block_anchor: "replace block " LID ":"
+insert_anchor:  "insert " insert_pos ":"
+insert_pos: "before " LID | "after " LID | "head" | "tail"
+emit_op: "+" /(.*)/ LF
 
-anchor: header_range | "DELETE" WS LID WS LID | "BEFORE" WS LID | "AFTER" WS LID | "BOF" | "EOF"
-header_range: LID WS LID
-body_range: LID (".." LID)?
+header_range: LID ".." LID
 LID: /[1-9]\d*/
-WS: /[ \t]+/
 
 %import common.LF

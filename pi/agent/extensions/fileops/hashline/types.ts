@@ -9,7 +9,7 @@ export interface Anchor {
 	line: number;
 }
 
-/** Where an `insert` or `repeat` edit should land relative to existing content. */
+/** Where an `insert` edit should land relative to existing content. */
 export type Cursor =
 	| { kind: "bof" }
 	| { kind: "eof" }
@@ -18,9 +18,9 @@ export type Cursor =
 
 /**
  * A single low-level edit produced by the parser and consumed by the applier.
- * Multi-line replacements decompose to one `insert`/`repeat` per replacement
- * line plus one `delete` per consumed line. Replacement payloads are tagged so
- * the applier can distinguish literal insertion from new content for a deleted
+ * Multi-line replacements decompose to one `insert` per replacement line plus
+ * one `delete` per consumed line. Replacement payloads are tagged so the
+ * applier can distinguish literal insertion from new content for a deleted
  * line.
  */
 export type Edit =
@@ -32,15 +32,24 @@ export type Edit =
 			index: number;
 			mode?: "replacement";
 	  }
+	| { kind: "delete"; anchor: Anchor; lineNum: number; index: number; oldAssertion?: string }
 	| {
-			kind: "repeat";
-			cursor: Cursor;
-			range: ParsedRange;
+			/**
+			 * Deferred block edit (`replace block N:` / `delete block N`). The exact
+			 * line span is unknown at parse time — it is computed by
+			 * {@link resolveBlockEdits} once file text + path (→ language) are
+			 * available, then expanded into concrete edits: a non-empty `payloads`
+			 * (from `replace block`) becomes the same `replacement` inserts + deletes
+			 * that `replace start..end:` produces; an empty `payloads` (from `delete
+			 * block`) becomes a pure range deletion. `applyEdits` never sees this
+			 * variant.
+			 */
+			kind: "block";
+			anchor: Anchor;
+			payloads: string[];
 			lineNum: number;
 			index: number;
-			mode?: "replacement";
-	  }
-	| { kind: "delete"; anchor: Anchor; lineNum: number; index: number; oldAssertion?: string };
+	  };
 
 /** Result of applying a parsed set of edits to a text body. */
 export interface ApplyResult {
@@ -50,6 +59,13 @@ export interface ApplyResult {
 	firstChangedLine?: number;
 	/** Diagnostic warnings collected by the parser, patcher, or recovery. */
 	warnings?: string[];
+	/**
+	 * Resolved spans for each `replace block`/`delete block` op in this apply,
+	 * in patch order. Present only when the apply matched the tagged content
+	 * (the common no-drift path), so the line numbers line up with what the
+	 * caller read. Absent when there were no block ops.
+	 */
+	blockResolutions?: BlockResolution[];
 }
 
 /** A parsed `[A..B]` line range. */
@@ -63,7 +79,7 @@ export interface SplitOptions {
 	/** Resolves absolute paths inside hashline headers to cwd-relative form. */
 	cwd?: string;
 	/**
-	 * Fallback path used when the input lacks a `¶PATH` header but contains
+	 * Fallback path used when the input lacks a `[PATH]` header but contains
 	 * recognizable hashline operations. Lets streaming previews work before
 	 * the model has written the header.
 	 */
@@ -87,8 +103,57 @@ export interface CompactDiffPreview {
 	removedLines: number;
 }
 
-/** Optional knobs for {@link buildCompactDiffPreview}. Reserved for future use. */
+/** Optional knobs for {@link buildCompactDiffPreview}. */
 export interface CompactDiffOptions {
-	/** Maximum entries kept on each side of an unchanged-context truncation (default 2). */
+	/** Added lines kept on each side of a long added-run elision (default 2). */
+	maxAddedRunContext?: number;
+	/** Back-compat alias for {@link maxAddedRunContext}. */
 	maxUnchangedRun?: number;
 }
+
+/**
+ * Resolved 1-indexed inclusive line span of a `replace block N:` target.
+ */
+export interface BlockSpan {
+	/** First line of the block (1-indexed, inclusive). */
+	start: number;
+	/** Last line of the block (1-indexed, inclusive). */
+	end: number;
+}
+
+/**
+ * One `replace block N:` / `delete block N` anchor resolved to its concrete
+ * line span. Surfaced on {@link ApplyResult} so the host can echo
+ * "block N → lines start..end" and let the model catch a wrong opener — e.g. a
+ * decorator or doc-comment that sits in a separate node outside the resolved
+ * block.
+ */
+export interface BlockResolution {
+	/** The 1-indexed line the block op was anchored on (the `N`). */
+	anchorLine: number;
+	/** First line of the resolved span (1-indexed, inclusive). */
+	start: number;
+	/** Last line of the resolved span (1-indexed, inclusive). */
+	end: number;
+	/** True for `delete block N`; false for `replace block N:`. */
+	isDelete: boolean;
+}
+
+/** Request handed to a {@link BlockResolver} to resolve one `replace block N:` anchor. */
+export interface BlockResolverRequest {
+	/** Target file path (used to infer language by extension). */
+	path: string;
+	/** Full text the block must be resolved against (the snapshot the tag names). */
+	text: string;
+	/** 1-indexed line the block must begin on. */
+	line: number;
+}
+
+/**
+ * Resolves a `replace block N:` anchor to the line span of the syntactic block
+ * that begins on line N. Returns `null` when no block can be resolved
+ * (unrecognized language, blank/out-of-range line, no node begins there, or the
+ * resolved subtree has a syntax error). Pure seam: the hashline core declares
+ * the contract; the host injects a tree-sitter-backed implementation.
+ */
+export type BlockResolver = (request: BlockResolverRequest) => BlockSpan | null;

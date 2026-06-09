@@ -23,21 +23,29 @@
  * filesystem configuration.
  */
 import { applyEdits } from "./apply";
-import { formatHashlineHeader, HL_FILE_HASH_SEP, HL_FILE_PREFIX } from "./format";
+import { hasBlockEdit, resolveBlockEdits } from "./block";
+import { formatHashlineHeader } from "./format";
 import type { Filesystem, WriteResult } from "./fs";
 import { isNotFound } from "./fs";
 import type { Patch, PatchSection } from "./input";
+import { HEADTAIL_DRIFT_WARNING, missingSnapshotTagMessage } from "./messages";
 import { MismatchError } from "./mismatch";
 import { detectLineEnding, type LineEnding, normalizeToLF, restoreLineEndings, stripBom } from "./normalize";
 import { Recovery, type RecoveryResult } from "./recovery";
 import type { Snapshot, SnapshotStore } from "./snapshots";
-import type { ApplyResult, Edit } from "./types";
+import type { ApplyResult, BlockResolution, BlockResolver, Edit } from "./types";
 
 export interface PatcherOptions {
 	/** Storage backend used for all reads and writes. */
 	fs: Filesystem;
 	/** Snapshot store that minted and resolves hashline section tags. Required. */
 	snapshots: SnapshotStore;
+	/**
+	 * Resolves `replace block N:` anchors to concrete line spans via tree-sitter.
+	 * Optional: when omitted, any `replace block N:` edit throws on apply (the
+	 * host did not wire a resolver). Plain line-range ops never need it.
+	 */
+	blockResolver?: BlockResolver;
 }
 
 /** Per-section result returned by {@link Patcher.apply} / {@link Patcher.commit}. */
@@ -46,8 +54,8 @@ export interface PatchSectionResult {
 	path: string;
 	/** Filesystem-canonical key for this section (e.g. absolute path). */
 	canonicalPath: string;
-	/** `"noop"` when the apply produced no change; otherwise `"create"` / `"update"`. */
-	op: "create" | "update" | "noop";
+	/** `"noop"` when the apply produced no change; otherwise `"update"`. */
+	op: "update" | "noop";
 	/** Pre-edit text (LF-normalized, BOM-stripped). */
 	before: string;
 	/** Post-edit text (LF-normalized, BOM-stripped). For `"noop"` equals `before`. */
@@ -56,14 +64,20 @@ export interface PatchSectionResult {
 	persisted: string;
 	/** Final text that the {@link Filesystem} actually wrote (may differ if the FS transformed it). */
 	written: string;
-	/** 3-hex opaque snapshot tag for `after`. Use to anchor follow-up edits. */
+	/** 4-hex opaque snapshot tag for `after`. Use to anchor follow-up edits. */
 	fileHash: string;
-	/** Hashline section header (`¶path#tag`) of the post-edit content. */
+	/** Hashline section header (`[path#tag]`) of the post-edit content. */
 	header: string;
 	/** 1-indexed first changed line in `after`, or `undefined` for noops. */
 	firstChangedLine?: number;
 	/** Warnings collected by the parser, applier, and (optionally) recovery. */
 	warnings: string[];
+	/**
+	 * Resolved spans for any `replace block`/`delete block` ops, present when the
+	 * apply matched the tagged content. Undefined for patches with no block ops
+	 * (and for resolutions routed through drift recovery, where numbers shift).
+	 */
+	blockResolutions?: BlockResolution[];
 }
 
 export interface PatcherApplyResult {
@@ -97,32 +111,16 @@ export class PreparedSection {
 
 function hasAnchorScopedEdit(edits: readonly Edit[]): boolean {
 	return edits.some((edit) => {
-		if (edit.kind === "delete" || edit.kind === "repeat") return true;
+		if (edit.kind === "delete") return true;
+		// A `replace block N:` edit anchors to concrete content on line N.
+		if (edit.kind === "block") return true;
 		return edit.cursor.kind === "before_anchor" || edit.cursor.kind === "after_anchor";
 	});
 }
 
-function assertSectionHashAllowed(sectionPath: string, fileHash: string | undefined, edits: readonly Edit[]): void {
-	if (fileHash !== undefined || !hasAnchorScopedEdit(edits)) return;
-	throw new Error(
-		`Missing hashline snapshot tag for anchored edit to ${sectionPath}; use \`${HL_FILE_PREFIX}${sectionPath}${HL_FILE_HASH_SEP}tag\` from your latest read/search output.`,
-	);
-}
-
-function hasBoundaryInsert(edits: readonly Edit[]): boolean {
-	return edits.some((edit) => edit.kind === "insert" && (edit.cursor.kind === "bof" || edit.cursor.kind === "eof"));
-}
-
-function assertHashlessBoundaryInsertAllowed(
-	sectionPath: string,
-	fileHash: string | undefined,
-	exists: boolean,
-	edits: readonly Edit[],
-): void {
-	if (fileHash !== undefined || !exists || !hasBoundaryInsert(edits)) return;
-	throw new Error(
-		`Hashless BOF/EOF edits can only create new files. ${sectionPath} already exists; read it first and use its ${HL_FILE_PREFIX}path${HL_FILE_HASH_SEP}tag header.`,
-	);
+function assertSectionHashPresent(sectionPath: string, fileHash: string | undefined): void {
+	if (fileHash !== undefined) return;
+	throw new Error(missingSnapshotTagMessage(sectionPath));
 }
 
 function recoveryToApplyResult(result: RecoveryResult): ApplyResult {
@@ -133,22 +131,8 @@ function recoveryToApplyResult(result: RecoveryResult): ApplyResult {
 	};
 }
 
-/**
- * Decide whether `snapshot` proves the live file is byte-for-byte the read
- * the model authored against. Two shapes:
- *   - Full-text snapshot: cheap string equality.
- *   - Sparse snapshot (e.g. selector reads, search hits): every anchor line
- *     must be in the snapshot AND every recorded line must match the live
- *     file. Without this branch, sparse reads can't short-circuit and fall
- *     through to recovery, which declines them as "patcher-owned direct
- *     apply" — yielding a spurious MismatchError on unchanged files.
- */
-function snapshotProvesUnchanged(snapshot: Snapshot, currentText: string, section: PatchSection): boolean {
-	if (snapshot.fullText !== undefined) return snapshot.fullText === currentText;
-	for (const lineNumber of section.collectAnchorLines()) {
-		if (snapshot.get(lineNumber) === undefined) return false;
-	}
-	return snapshot.matchesLiveFile(currentText.split("\n"));
+function snapshotProvesUnchanged(snapshot: Snapshot, currentText: string): boolean {
+	return snapshot.fullText === currentText;
 }
 
 function mergeWarnings(...sources: ReadonlyArray<readonly string[] | undefined>): string[] {
@@ -183,6 +167,7 @@ export class Patcher {
 	readonly fs: Filesystem;
 	readonly snapshots: SnapshotStore;
 	readonly recovery: Recovery;
+	readonly blockResolver: BlockResolver | undefined;
 
 	constructor(options: PatcherOptions) {
 		if (!options.snapshots) {
@@ -191,6 +176,7 @@ export class Patcher {
 		this.fs = options.fs;
 		this.snapshots = options.snapshots;
 		this.recovery = new Recovery(options.snapshots);
+		this.blockResolver = options.blockResolver;
 	}
 
 	/**
@@ -198,12 +184,15 @@ export class Patcher {
 	 * section in memory before any write hits the filesystem, so a
 	 * multi-section batch is naturally all-or-nothing. Returns one
 	 * {@link PatchSectionResult} per section in the original patch order.
+	 *
+	 * A single-section no-op apply is returned as an `op: "noop"` result so
+	 * the host can render the no-change diagnostic; a no-op inside a
+	 * multi-section batch throws before any write.
 	 */
 	async apply(patch: Patch): Promise<PatcherApplyResult> {
 		// Single-section fast path.
 		if (patch.sections.length === 1) {
 			const prepared = await this.prepare(patch.sections[0]);
-			this.#validatePrepared([prepared]);
 			return { sections: [await this.commit(prepared)] };
 		}
 
@@ -211,7 +200,12 @@ export class Patcher {
 		// file, parse error, in-memory no-op) surfaces before any write.
 		const prepared: PreparedSection[] = [];
 		for (const section of patch.sections) prepared.push(await this.prepare(section));
-		this.#validatePrepared(prepared);
+		assertUniqueCanonicalPaths(prepared);
+		for (const entry of prepared) {
+			if (entry.isNoop) {
+				throw new Error(`Edits to ${entry.section.path} resulted in no changes being made.`);
+			}
+		}
 
 		const results: PatchSectionResult[] = [];
 		for (const entry of prepared) results.push(await this.commit(entry));
@@ -225,7 +219,12 @@ export class Patcher {
 	async preflight(patch: Patch): Promise<void> {
 		const prepared: PreparedSection[] = [];
 		for (const section of patch.sections) prepared.push(await this.prepare(section));
-		this.#validatePrepared(prepared);
+		assertUniqueCanonicalPaths(prepared);
+		for (const entry of prepared) {
+			if (entry.isNoop) {
+				throw new Error(`Edits to ${entry.section.path} resulted in no changes being made.`);
+			}
+		}
 	}
 
 	/**
@@ -234,20 +233,22 @@ export class Patcher {
 	 * {@link PreparedSection} which can be fed to {@link commit} to land
 	 * the result on the filesystem.
 	 *
-	 * Throws on parse error, missing-file-for-anchored-edit, or unrecovered
+	 * Throws on parse error, missing tag, missing file, or unrecovered
 	 * tag mismatch ({@link MismatchError}).
 	 */
 	async prepare(section: PatchSection): Promise<PreparedSection> {
 		const { edits, warnings: parseWarnings } = section.parse();
-		assertSectionHashAllowed(section.path, section.fileHash, edits);
+		assertSectionHashPresent(section.path, section.fileHash);
 
 		const canonicalPath = this.fs.canonicalPath(section.path);
-		await this.fs.preflightWrite(section.path);
 		const { exists, rawContent } = await this.#tryRead(section.path);
-		if (!exists && hasAnchorScopedEdit(edits)) {
-			throw new Error(`File not found: ${section.path}`);
+		if (!exists) {
+			throw new Error(`File not found: ${section.path}. Use the write tool to create new files.`);
 		}
-		assertHashlessBoundaryInsertAllowed(section.path, section.fileHash, exists, edits);
+		// After the existence check so a rejected edit cannot leave side
+		// effects (e.g. a filesystem whose write preflight creates parent
+		// directories).
+		await this.fs.preflightWrite(section.path);
 
 		const { bom, text } = stripBom(rawContent);
 		const lineEnding = detectLineEnding(text);
@@ -281,7 +282,7 @@ export class Patcher {
 	 * filesystem-canonical path.
 	 */
 	async commit(prepared: PreparedSection): Promise<PatchSectionResult> {
-		const { section, normalized, bom, lineEnding, parseWarnings, exists, applyResult, canonicalPath } = prepared;
+		const { section, normalized, bom, lineEnding, parseWarnings, applyResult, canonicalPath } = prepared;
 		const after = applyResult.text;
 		const warnings = mergeWarnings(parseWarnings, applyResult.warnings);
 
@@ -304,12 +305,11 @@ export class Patcher {
 		const persisted = bom + restoreLineEndings(after, lineEnding);
 		const write: WriteResult = await this.fs.writeText(section.path, persisted);
 		const fileHash = this.#recordFullSnapshot(canonicalPath, after);
-		const op = exists ? "update" : "create";
 
 		return {
 			path: section.path,
 			canonicalPath,
-			op,
+			op: "update",
 			before: normalized,
 			after,
 			persisted,
@@ -317,17 +317,9 @@ export class Patcher {
 			fileHash,
 			header: formatHashlineHeader(section.path, fileHash),
 			firstChangedLine: applyResult.firstChangedLine,
+			blockResolutions: applyResult.blockResolutions,
 			warnings,
 		};
-	}
-
-	#validatePrepared(prepared: readonly PreparedSection[]): void {
-		assertUniqueCanonicalPaths(prepared);
-		for (const entry of prepared) {
-			if (entry.isNoop) {
-				throw new Error(`Edits to ${entry.section.path} resulted in no changes being made.`);
-			}
-		}
 	}
 
 	async #tryRead(path: string): Promise<{ exists: boolean; rawContent: string }> {
@@ -341,7 +333,25 @@ export class Patcher {
 	}
 
 	#recordFullSnapshot(canonicalPath: string, normalized: string): string {
-		return this.snapshots.recordContiguous(canonicalPath, 1, normalized.split("\n"), { fullText: normalized });
+		return this.snapshots.record(canonicalPath, normalized);
+	}
+
+	#mismatchError(
+		section: PatchSection,
+		canonicalPath: string,
+		normalized: string,
+		expected: string,
+		hashRecognized: boolean,
+	): MismatchError {
+		const actualFileHash = this.#recordFullSnapshot(canonicalPath, normalized);
+		return new MismatchError({
+			path: section.path,
+			expectedFileHash: expected,
+			actualFileHash,
+			fileLines: normalized.split("\n"),
+			anchorLines: section.collectAnchorLines(),
+			hashRecognized,
+		});
 	}
 
 	#applyWithRecovery(args: {
@@ -353,29 +363,56 @@ export class Patcher {
 	}): ApplyResult {
 		const { section, canonicalPath, exists, normalized, edits } = args;
 		const expected = exists ? section.fileHash : undefined;
-		if (expected === undefined) return applyEdits(normalized, [...edits]);
+		const snapshot = expected !== undefined ? this.snapshots.byHash(canonicalPath, expected) : null;
+		const liveMatches = snapshot !== null && snapshotProvesUnchanged(snapshot, normalized);
 
-		const snapshot = this.snapshots.byHash(canonicalPath, expected);
-		if (snapshot && snapshotProvesUnchanged(snapshot, normalized, section)) {
-			return applyEdits(normalized, [...edits]);
+		// Resolve `replace block N:` edits to concrete ranges before recovery
+		// runs. Block anchors are expressed against the snapshot the section tag
+		// names, so resolve against that exact text:
+		//   - the tag still proves the live content → resolve against the live,
+		//     normalized content;
+		//   - the file drifted → resolve against the tagged snapshot's full text
+		//     so the resulting ranges flow through the 3-way-merge recovery below.
+		const blockResolutions: BlockResolution[] = [];
+		let resolved: readonly Edit[] = edits;
+		if (hasBlockEdit(edits)) {
+			const baseText = expected === undefined || liveMatches ? normalized : snapshot?.fullText;
+			if (baseText === undefined) {
+				throw this.#mismatchError(section, canonicalPath, normalized, expected ?? "", snapshot !== null);
+			}
+			resolved = resolveBlockEdits(edits, baseText, section.path, this.blockResolver, {
+				onUnresolved: "throw",
+				onResolved: (resolution) => blockResolutions.push(resolution),
+			});
 		}
+
+		// No tag, or the tag still proves the live content: an edit anchored at
+		// any line is safe to apply, and the resolved block spans line up with
+		// what the caller read, so echo them back. (A drifted file falls through
+		// to recovery below, where line numbers shift, so resolutions are dropped.)
+		if (expected === undefined || liveMatches) {
+			const result = applyEdits(normalized, resolved);
+			return blockResolutions.length > 0 ? { ...result, blockResolutions } : result;
+		}
+		// Head/tail-only inserts are position-stable: "start"/"end" cannot move
+		// with content drift, so a stale tag is non-fatal. Apply onto the live
+		// content and warn instead of hard-failing — unlike an anchored
+		// mismatch, which cannot be safely relocated and must reject.
+		if (!hasAnchorScopedEdit(resolved)) {
+			const result = applyEdits(normalized, resolved);
+			return { ...result, warnings: [HEADTAIL_DRIFT_WARNING, ...(result.warnings ?? [])] };
+		}
+		// File drifted: try to replay the edit against the version the tag
+		// names and 3-way-merge it onto the live content.
 		if (snapshot) {
 			const recovered = this.recovery.tryRecover({
 				path: canonicalPath,
 				currentText: normalized,
 				fileHash: expected,
-				edits,
+				edits: resolved,
 			});
 			if (recovered) return recoveryToApplyResult(recovered);
 		}
-
-		const currentHash = this.#recordFullSnapshot(canonicalPath, normalized);
-		throw new MismatchError({
-			path: section.path,
-			expectedFileHash: expected,
-			actualFileHash: currentHash,
-			fileLines: normalized.split("\n"),
-			anchorLines: section.collectAnchorLines(),
-		});
+		throw this.#mismatchError(section, canonicalPath, normalized, expected, snapshot !== null);
 	}
 }

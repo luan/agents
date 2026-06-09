@@ -70,15 +70,10 @@ function collectAnchorLines(edits: readonly Edit[]): number[] {
 
 function getEditAnchors(edit: Edit): Anchor[] {
 	if (edit.kind === "delete") return [edit.anchor];
-	const cursorAnchors =
-		edit.cursor.kind === "before_anchor" || edit.cursor.kind === "after_anchor" ? [edit.cursor.anchor] : [];
-	if (edit.kind === "insert") return cursorAnchors;
-
-	const repeatAnchors: Anchor[] = [];
-	for (let line = edit.range.start.line; line <= edit.range.end.line; line++) {
-		repeatAnchors.push({ line });
-	}
-	return cursorAnchors.concat(repeatAnchors);
+	// Recovery only ever receives already-resolved edits (no `block`); this arm
+	// exists for type-exhaustiveness over the full `Edit` union.
+	if (edit.kind === "block") return [edit.anchor];
+	return edit.cursor.kind === "before_anchor" || edit.cursor.kind === "after_anchor" ? [edit.cursor.anchor] : [];
 }
 
 /**
@@ -136,35 +131,6 @@ function replaySessionChainOnCurrent(
 	};
 }
 
-function snapshotHasEntries(snapshot: Snapshot): boolean {
-	for (const _entry of snapshot.entries()) return true;
-	return false;
-}
-
-function buildSparseOverlayText(currentText: string, snapshot: Snapshot): string {
-	const overlaid = currentText.split("\n");
-	let maxCachedLine = 0;
-	for (const [lineNum] of snapshot.entries()) {
-		if (lineNum > maxCachedLine) maxCachedLine = lineNum;
-	}
-	while (overlaid.length < maxCachedLine) overlaid.push("");
-	for (const [lineNum, content] of snapshot.entries()) {
-		overlaid[lineNum - 1] = content;
-	}
-	return overlaid.join("\n");
-}
-
-function sparseSnapshotCoversAnchors(snapshot: Snapshot, edits: readonly Edit[]): boolean {
-	for (const lineNumber of collectAnchorLines(edits)) {
-		if (snapshot.get(lineNumber) === undefined) return false;
-	}
-	return true;
-}
-
-function sparseSnapshotMatchesCurrent(currentText: string, snapshot: Snapshot): boolean {
-	return snapshot.matchesLiveFile(currentText.split("\n"));
-}
-
 /** First 1-indexed line at which `a` and `b` diverge, or `undefined` if equal. */
 function findFirstChangedLine(a: string, b: string): number | undefined {
 	if (a === b) return undefined;
@@ -184,7 +150,7 @@ function isHeadSnapshot(head: Snapshot | null, snapshot: Snapshot): boolean {
 /**
  * Stateless recovery driver over a {@link SnapshotStore}. Construct once and
  * call {@link Recovery.tryRecover} per stale-hash incident. The default
- * implementation tries three strategies in order:
+ * implementation tries two strategies in order:
  *
  * 1. Apply on the cached `fullText` snapshot, then 3-way-merge onto current.
  * 2. (Session chain) If the snapshot wasn't the head, retry on current text
@@ -194,9 +160,6 @@ function isHeadSnapshot(head: Snapshot | null, snapshot: Snapshot): boolean {
  *    a dedicated {@link RECOVERY_SESSION_REPLAY_WARNING} because even with
  *    both guards a coincidental insert+delete pair on duplicate rows can
  *    still land the edit on the wrong row; see {@link replaySessionChainOnCurrent}.
- * 3. Reconstruct from a sparse snapshot (lines map only), then 3-way-merge.
- *    Sparse snapshots that still match the live file are direct-apply cases
- *    owned by the patcher, so recovery declines them.
  */
 export class Recovery {
 	constructor(readonly store: SnapshotStore) {}
@@ -209,26 +172,19 @@ export class Recovery {
 		const { path, currentText, fileHash, edits } = args;
 		const head = this.store.head(path);
 		const snapshot = this.store.byHash(path, fileHash);
-		if (!snapshot || !snapshotHasEntries(snapshot)) return null;
+		if (!snapshot) return null;
 
 		const isHead = isHeadSnapshot(head, snapshot);
 		const recoveryWarning = isHead ? RECOVERY_EXTERNAL_WARNING : RECOVERY_SESSION_CHAIN_WARNING;
 		const isSessionChain = !isHead;
 
-		if (snapshot.fullText !== undefined) {
-			const merged = applyEditsToSnapshot(snapshot.fullText, currentText, edits, recoveryWarning);
-			if (merged !== null) return merged;
-			// Session-chain fallback: the 3-way merge on the snapshot refused.
-			// Replay onto current is gated by line-count equality AND
-			// anchor-content alignment — see `replaySessionChainOnCurrent`
-			// for why both guards together still don't fully prove correctness.
-			if (isSessionChain) return replaySessionChainOnCurrent(snapshot.fullText, currentText, edits);
-			return null;
-		}
-
-		if (!sparseSnapshotCoversAnchors(snapshot, edits)) return null;
-		if (sparseSnapshotMatchesCurrent(currentText, snapshot)) return null;
-		const overlayText = buildSparseOverlayText(currentText, snapshot);
-		return applyEditsToSnapshot(overlayText, currentText, edits, recoveryWarning);
+		const merged = applyEditsToSnapshot(snapshot.fullText, currentText, edits, recoveryWarning);
+		if (merged !== null) return merged;
+		// Session-chain fallback: the 3-way merge on the snapshot refused.
+		// Replay onto current is gated by line-count equality AND
+		// anchor-content alignment — see `replaySessionChainOnCurrent`
+		// for why both guards together still don't fully prove correctness.
+		if (isSessionChain) return replaySessionChainOnCurrent(snapshot.fullText, currentText, edits);
+		return null;
 	}
 }

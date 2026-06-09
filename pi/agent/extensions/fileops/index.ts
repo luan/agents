@@ -17,6 +17,7 @@ import { createTwoFilesPatch } from "diff";
 import { Type } from "typebox";
 import { runCommand as runExternalCommand } from "../shared/command-runner.ts";
 import { EmptyComponent, runningFrame, shineText, textComponent } from "../shared/tui";
+import { preloadBlockLanguages, treeSitterBlockResolver } from "./block-resolver.ts";
 import { columnCountForWidth, renderColumns } from "./columns.ts";
 import {
 	buildHighlightedDiffRows,
@@ -29,13 +30,19 @@ import {
 	languageFromPath,
 	type RenderTheme,
 } from "./diff-render.ts";
-import { HASHLINE_SNAPSHOTS, recordHashlineContiguous, recordHashlineSparse } from "./hashline/anchors.js";
-import { buildCompactDiffPreview } from "./hashline/diff-preview.ts";
+import {
+	HASHLINE_SNAPSHOTS,
+	recordHashlineFileSnapshot,
+	recordHashlineSnapshot,
+	SNAPSHOT_MAX_BYTES,
+} from "./hashline/anchors.js";
+import { buildCompactDiffPreview, generateNumberedDiff } from "./hashline/diff-preview.ts";
 import { formatHashlineHeader, formatNumberedLines } from "./hashline/format.ts";
 import { Filesystem, NotFoundError, type WriteResult } from "./hashline/fs.ts";
 import { Patch } from "./hashline/input.ts";
 import { Patcher } from "./hashline/patcher.ts";
 import { stripHashlinePrefixes } from "./hashline/prefixes.ts";
+import type { BlockResolution } from "./hashline/types.ts";
 
 const FILEOPS_TOOL_SEARCH_PATHS = [
 	"~/.local/bin",
@@ -198,6 +205,7 @@ const findToolSchema = Type.Object({
 });
 
 export const HASHLINE_GRAMMAR = readFileSync(join(EXTENSION_DIR, "hashline", "grammar.lark"), "utf-8");
+export const HASHLINE_PROMPT = readFileSync(join(EXTENSION_DIR, "hashline", "prompt.md"), "utf-8");
 export const APPLY_PATCH_MODE_GRAMMAR = readFileSync(join(EXTENSION_DIR, "modes", "apply-patch.lark"), "utf-8");
 export const PATCH_GRAMMAR = readFileSync(join(EXTENSION_DIR, "modes", "patch.lark"), "utf-8");
 export const REPLACE_GRAMMAR = readFileSync(join(EXTENSION_DIR, "modes", "replace.lark"), "utf-8");
@@ -279,7 +287,10 @@ function modeDescription(config: EditConfig): string {
 		case "patch":
 			return "Edit one file using the patch-mode freeform grammar: *** File, then create, update diff hunks, delete, or rename entries.";
 		case "hashline":
-			return "Edit files using oh-my-pi hashline-style patches: ¶PATH#TAG sections, bare A B replacements, DELETE A B explicit deletes, BEFORE N/AFTER N/BOF/EOF insertion anchors, +TEXT literal rows, and &A..B repeat rows.";
+			// The full teaching doc is the tool description, mirroring oh-my-pi's
+			// edit tool — the prompt is the only place the model learns the verb
+			// grammar and the re-grounding discipline.
+			return HASHLINE_PROMPT;
 		case "replace":
 			return "Edit one file using the replace-mode freeform grammar: *** File, *** Old, *** New, and optional *** All blocks.";
 	}
@@ -545,7 +556,7 @@ function parseHashlineSections(text: string): HashlineRenderSection[] {
 	const sections: HashlineRenderSection[] = [];
 	let current: HashlineRenderSection | undefined;
 	for (const line of toolTextLines(text)) {
-		const header = /^(¶(.+?)#[0-9A-Fa-f]{3})$/.exec(line);
+		const header = /^(\[(.+?)#[0-9A-Fa-f]{4}\])$/.exec(line);
 		if (header) {
 			current = { header: header[1] ?? line, path: header[2] ?? "", rows: [] };
 			sections.push(current);
@@ -557,7 +568,7 @@ function parseHashlineSections(text: string): HashlineRenderSection[] {
 }
 
 function renderHashlineHeader(header: string, theme: RenderTheme): string {
-	const match = /^(¶.+?)(#[0-9A-Fa-f]{3})?$/.exec(header);
+	const match = /^(\[.+?)(#[0-9A-Fa-f]{4}\])?$/.exec(header);
 	if (!match) return theme.fg("accent", header);
 	return `${theme.fg("accent", match[1] ?? "")}${match[2] ? theme.fg("toolDiffAdded", match[2]) : ""}`;
 }
@@ -672,7 +683,7 @@ function renderSearchResult(
 	const text = firstTextContent(result).trim();
 	const pattern = typeof args?.pattern === "string" ? args.pattern : "";
 	const noMatchPath = typeof args?.path === "string" ? splitReadPathSelector(args.path).path : ".";
-	if (!text.startsWith("¶"))
+	if (!text.startsWith("["))
 		return renderText(
 			renderStatusHeader(
 				"Search:",
@@ -784,15 +795,15 @@ function renderWriteResult(
 type EditSummary = { target?: string; display?: string; line?: number; suffix: string };
 
 function shortenHashlineHeader(header: string): string {
-	const match = /^¶(.+?)(#[0-9A-Fa-f]{3})?$/.exec(header);
+	const match = /^\[([^#\]]+)(#[0-9A-Fa-f]{4})?\]$/.exec(header);
 	if (!match) return shortenDisplayPath(header);
-	return `¶${shortenDisplayPath(match[1] ?? "")}${match[2] ?? ""}`;
+	return `[${shortenDisplayPath(match[1] ?? "")}${match[2] ?? ""}]`;
 }
 
 function summarizeEditInput(input: unknown, mode: EditMode): EditSummary {
 	if (typeof input !== "string") return { suffix: ` (${mode})` };
-	const hashline = input.match(/^(¶([^#\n]+)(?:#[0-9A-Fa-f]{3})?)$/m);
-	const range = input.match(/^([1-9]\d*)\s+[1-9]\d*$/m);
+	const hashline = input.match(/^(\[([^#\n\]]+)(?:#[0-9A-Fa-f]{4})?\])$/m);
+	const range = input.match(/^(?:replace|delete|insert)\s+(?:block\s+|before\s+|after\s+)?([1-9]\d*)/m);
 	if (hashline) {
 		return {
 			target: hashline[2],
@@ -813,7 +824,7 @@ function renderEditHeaderDisplay(
 	theme: RenderTheme,
 ) {
 	const lineSuffix = line ? theme.fg("warning", `:${line}`) : "";
-	const renderedTarget = display?.startsWith("¶")
+	const renderedTarget = display?.startsWith("[")
 		? renderHashlineHeader(display, theme)
 		: theme.fg("accent", display ?? shortenDisplayPath(target));
 	return `${fileIcon(theme, target)} ${renderedTarget}${lineSuffix}`;
@@ -835,9 +846,14 @@ function renderEditResult(
 ) {
 	if (options.isPartial) return renderText(theme.fg("warning", "Editing..."));
 	const text = firstTextContent(result);
-	if (/rejected|error/i.test(text.split("\n")[0] ?? "")) return renderText(`\n${theme.fg("error", text)}`);
+	// Success text leads with a `[path#TAG]` header; a path containing "error"
+	// must not route into the rejection styling.
+	const firstLine = text.split("\n")[0] ?? "";
+	if (!firstLine.startsWith("[") && /rejected|error/i.test(firstLine))
+		return renderText(`\n${theme.fg("error", text)}`);
 	const diff = typeof result.details?.diff === "string" ? result.details.diff : "";
-	if (!diff) return options.expanded ? renderText(theme.fg("toolOutput", text)) : renderText("");
+	// No diff means a no-op apply: keep its diagnostic visible even collapsed.
+	if (!diff) return renderText(theme.fg("toolOutput", options.expanded ? text : firstLine));
 	const rows = Array.isArray(result.details?.highlightedDiffRows)
 		? (result.details.highlightedDiffRows as DiffRenderRow[])
 		: undefined;
@@ -1204,39 +1220,72 @@ async function withHashlineMutationQueues<T>(paths: readonly string[], fn: () =>
 	return run(0);
 }
 
+function noChangeDiagnostic(path: string): string {
+	// The patch parsed and applied cleanly but produced no change — the
+	// literal body rows matched the file content at the targeted lines
+	// byte-for-byte. The model usually misreads this as "wrong anchor, try
+	// again with a bigger payload" and starts duplicating content; the
+	// message below names the cause directly so the next turn can re-read
+	// instead of expanding the patch.
+	return (
+		`Edits to ${path} parsed and applied cleanly, but produced no change: ` +
+		`your body row(s) are byte-identical to the file at the targeted lines. ` +
+		`The bug is somewhere else — re-read the file before issuing another edit. ` +
+		`Do NOT widen the payload or add lines; verify the anchor first.`
+	);
+}
+
+function formatBlockResolution(resolution: BlockResolution): string {
+	const op = resolution.isDelete ? "delete block" : "replace block";
+	const lines = resolution.end - resolution.start + 1;
+	const span =
+		resolution.start === resolution.end ? `line ${resolution.start}` : `lines ${resolution.start}-${resolution.end}`;
+	return `${op} ${resolution.anchorLine} → resolved ${span} (${lines} line${lines === 1 ? "" : "s"})`;
+}
+
 async function executeHashline(cwd: string, input: string) {
 	const patch = Patch.parse(input, { cwd });
-	if (patch.sections.length === 0) throw new Error("hashline mode requires at least one ¶PATH section.");
+	if (patch.sections.length === 0) throw new Error("hashline mode requires at least one [PATH#TAG] section.");
 	const fs = new CwdHashlineFilesystem(cwd);
-	const patcher = new Patcher({ fs, snapshots: HASHLINE_SNAPSHOTS });
+	// The block resolver is synchronous; warm its language cache for every
+	// section path before the apply so `replace block N:` edits resolve.
+	await preloadBlockLanguages(patch.sections.map((section) => section.path));
+	const patcher = new Patcher({ fs, snapshots: HASHLINE_SNAPSHOTS, blockResolver: treeSitterBlockResolver });
 	const targets = patch.sections.map((section) => fs.canonicalPath(section.path));
 	const applied = await withHashlineMutationQueues(targets, () => patcher.apply(patch));
-	const diffs = applied.sections.map((section) =>
-		createTwoFilesPatch(section.path, section.path, section.before, section.after, "", "", { context: 3 }),
-	);
+
+	const sectionTexts: string[] = [];
+	const diffs: string[] = [];
+	for (const section of applied.sections) {
+		if (section.op === "noop") {
+			const warningsBlock = section.warnings.length > 0 ? `\n\nWarnings:\n${section.warnings.join("\n")}` : "";
+			sectionTexts.push(`${noChangeDiagnostic(section.path)}${warningsBlock}`);
+			continue;
+		}
+		// Model-facing text: the fresh `[path#tag]` re-anchoring handle, block
+		// span echoes, and a compact post-edit preview whose line numbers are
+		// directly usable by the next edit.
+		const preview = buildCompactDiffPreview(generateNumberedDiff(section.before, section.after).diff);
+		const blockBlock =
+			section.blockResolutions && section.blockResolutions.length > 0
+				? `\n${section.blockResolutions.map(formatBlockResolution).join("\n")}`
+				: "";
+		const previewBlock = preview.preview ? `\n${preview.preview}` : "";
+		const warningsBlock = section.warnings.length > 0 ? `\n\nWarnings:\n${section.warnings.join("\n")}` : "";
+		sectionTexts.push(`${section.header}${blockBlock}${previewBlock}${warningsBlock}`);
+		diffs.push(
+			createTwoFilesPatch(section.path, section.path, section.before, section.after, "", "", { context: 3 }),
+		);
+	}
 	const diff = diffs.join("\n");
-	const noops = applied.sections.filter((section) => section.op === "noop");
-	const warnings = applied.sections.flatMap((section) => section.warnings);
 	const firstLine = applied.sections.find((section) => section.firstChangedLine !== undefined)?.firstChangedLine;
-	const preview = buildCompactDiffPreview(diff).preview;
 	const highlightedDiffRows = await buildHighlightedDiffRows(diff);
 	return {
-		content: [
-			{
-				type: "text",
-				text: [
-					`Applied hashline edit to ${applied.sections.length} section${applied.sections.length === 1 ? "" : "s"}.`,
-					...applied.sections.map((section) => `${section.op}: ${section.header}`),
-					...(noops.length > 0 ? [`No-op sections: ${noops.map((section) => section.path).join(", ")}`] : []),
-					...(warnings.length > 0 ? ["", "Warnings:", ...warnings.map((warning) => `- ${warning}`)] : []),
-				].join("\n"),
-			},
-		],
+		content: [{ type: "text", text: sectionTexts.join("\n\n") }],
 		details: {
 			diff,
 			patch: diff,
 			highlightedDiffRows,
-			preview,
 			results: applied.sections,
 			firstChangedLine: firstLine,
 		},
@@ -1281,7 +1330,7 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 		...baseRead,
 		name: "read",
 		description:
-			"Read a text file. In hashline edit mode, returns ¶PATH#TAG plus LINE:TEXT rows that can be targeted by hashline edits.",
+			"Read a text file. In hashline edit mode, returns [PATH#TAG] plus LINE:TEXT rows that can be targeted by hashline edits.",
 		parameters: readToolSchema,
 		renderShell: "self",
 		renderCall(params, theme) {
@@ -1324,12 +1373,15 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 				const ranges = mergeLineRanges(explicitRanges);
 				const entries = selectedLineEntries(allLines, ranges);
 				if (params.raw) return { content: [{ type: "text", text: entries.map(([, line]) => line).join("\n") }] };
-				const wholeFile = ranges.length === 1 && ranges[0]?.start === 1 && ranges[0].end >= allLines.length;
-				const tag = wholeFile
-					? recordHashlineContiguous(absolute, 1, allLines, text)
-					: recordHashlineSparse(absolute, entries);
+				const tag =
+					Buffer.byteLength(text, "utf8") <= SNAPSHOT_MAX_BYTES
+						? recordHashlineSnapshot(absolute, text)
+						: undefined;
 				const outputRows = entries.map(([lineNumber, line]) => `${lineNumber}:${line}`);
-				const output = [formatHashlineHeader(displayPath(callCwd, absolute), tag), ...outputRows].join("\n");
+				const output = [
+					...(tag ? [formatHashlineHeader(displayPath(callCwd, absolute), tag)] : []),
+					...outputRows,
+				].join("\n");
 				const visibleEntries = entries.slice(0, 80);
 				const highlightedRows = await highlightCodeRows(
 					selectedPath,
@@ -1349,14 +1401,9 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 					: Math.min(allLines.length, startLine - 1 + Math.max(1, params.limit));
 			const selected = allLines.slice(startLine - 1, endExclusive);
 			if (params.raw) return { content: [{ type: "text", text: selected.join("\n") }] };
-			const wholeFile = startLine === 1 && endExclusive === allLines.length;
-			const tag = recordHashlineContiguous(
-				absolute,
-				wholeFile ? 1 : startLine,
-				wholeFile ? allLines : selected,
-				wholeFile ? text : undefined,
-			);
-			let output = `${formatHashlineHeader(displayPath(callCwd, absolute), tag)}\n${formatNumberedLines(selected.join("\n"), startLine)}`;
+			const tag =
+				Buffer.byteLength(text, "utf8") <= SNAPSHOT_MAX_BYTES ? recordHashlineSnapshot(absolute, text) : undefined;
+			let output = `${tag ? `${formatHashlineHeader(displayPath(callCwd, absolute), tag)}\n` : ""}${formatNumberedLines(selected.join("\n"), startLine)}`;
 			if (endExclusive < allLines.length) {
 				const remaining = allLines.length - endExclusive;
 				const lineWord = remaining === 1 ? "line" : "lines";
@@ -1374,7 +1421,7 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 		name: "search",
 		label: "search",
 		description:
-			"Search file contents. In hashline edit mode, matching lines are grouped under ¶PATH#TAG headers with LINE:TEXT rows.",
+			"Search file contents. In hashline edit mode, matching lines are grouped under [PATH#TAG] headers with LINE:TEXT rows.",
 		promptSnippet: "Search file contents and return hashline-editable matches",
 		promptGuidelines: [
 			"Use search for file-content searches when it is active; use read when you already know the path.",
@@ -1431,19 +1478,16 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 			const highlightedSections: HighlightedSection[] = [];
 			let emittedRows = 0;
 			let truncatedSearch = false;
-			for (const [absolute, sparse] of [...byFile.entries()].sort((left, right) =>
+			for (const [absolute, fileEntries] of [...byFile.entries()].sort((left, right) =>
 				left[0].localeCompare(right[0]),
 			)) {
-				const ordered = [...sparse.entries()].sort((left, right) => left[0] - right[0]);
+				const ordered = [...fileEntries.entries()].sort((left, right) => left[0] - right[0]);
 				const cappedOrdered = ordered.slice(0, Math.max(0, resultLimit - emittedRows));
 				emittedRows += cappedOrdered.length;
 				if (cappedOrdered.length < ordered.length) truncatedSearch = true;
 				if (cappedOrdered.length === 0) continue;
 				const display = displayPath(callCwd, absolute);
-				const tag = recordHashlineSparse(
-					absolute,
-					cappedOrdered.map(([lineNumber, entry]) => [lineNumber, entry.text] as const),
-				);
+				const tag = await recordHashlineFileSnapshot(absolute);
 				const visibleOrdered = cappedOrdered.slice(0, 80);
 				const highlightedRows = (
 					await highlightCodeRows(
@@ -1456,7 +1500,7 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 				highlightedSections.push({ path: display, rows: highlightedRows });
 				sections.push(
 					[
-						formatHashlineHeader(display, tag),
+						...(tag ? [formatHashlineHeader(display, tag)] : []),
 						...cappedOrdered.map(
 							([lineNumber, entry]) => `${entry.isMatch ? "*" : " "}${lineNumber}:${entry.text}`,
 						),
@@ -1537,7 +1581,7 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 		...baseWrite,
 		name: "write",
 		description:
-			"Write a file. In hashline edit mode, copied ¶PATH#TAG and LINE: prefixes are stripped from content before writing.",
+			"Write a file. In hashline edit mode, copied [PATH#TAG] and LINE: prefixes are stripped from content before writing.",
 		parameters: writeToolSchema,
 		renderShell: "self",
 		renderCall(params, theme, context) {
