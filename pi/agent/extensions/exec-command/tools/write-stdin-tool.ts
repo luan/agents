@@ -174,7 +174,11 @@ function scheduleRunningInvalidation(context: RenderContextLike | undefined, run
 	}, BACKGROUND_TERMINAL_HUD_FRAME_MS);
 }
 
-export function registerWriteStdinTool(pi: ExtensionAPI, sessions: ExecSessionManager): void {
+export function registerWriteStdinTool(
+	pi: ExtensionAPI,
+	sessions: ExecSessionManager,
+	options: { onResult?: (input: WriteStdinParams, result: UnifiedExecResult) => void } = {},
+): void {
 	pi.registerTool({
 		name: "write_stdin",
 		label: "write_stdin",
@@ -188,6 +192,7 @@ export function registerWriteStdinTool(pi: ExtensionAPI, sessions: ExecSessionMa
 			let result: UnifiedExecResult;
 			try {
 				result = await sessions.write(typed);
+				options.onResult?.(typed, result);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				throw new Error(`write_stdin failed: ${message}`);

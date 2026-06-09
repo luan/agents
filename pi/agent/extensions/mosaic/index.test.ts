@@ -71,7 +71,7 @@ describe("mosaic extension registration", () => {
 		const staleFullSessionAgents = new Map();
 		let unsubscribed = false;
 		(globalThis as any)[Symbol.for("mosaic:process-state")] = {
-			protocolVersion: 4,
+			protocolVersion: 5,
 			fullSessionAgents: staleFullSessionAgents,
 			messageServer: { listAgents: () => [{ agentId: "stale" }] },
 			messageUpdateUnsubscribe: () => {
@@ -240,7 +240,7 @@ describe("mosaic extension registration", () => {
 		expect(widgets).toEqual([]);
 	});
 
-	test("delivers native full-session completion as a parent follow-up message", () => {
+	test("delivers native full-session completion as a parent follow-up message", async () => {
 		const sent: Array<{ message: any; options?: unknown }> = [];
 		const pi = createFakePi({
 			onSendMessage: (message, options) => sent.push({ message, options }),
@@ -281,6 +281,8 @@ describe("mosaic extension registration", () => {
 		});
 		state.messageServer.closeAgent("agent-1");
 
+		await Bun.sleep(250);
+
 		expect(sent).toHaveLength(1);
 		expect(sent[0]?.options).toEqual({ deliverAs: "steer", triggerTurn: true });
 		expect(sent[0]?.message).toMatchObject({
@@ -294,6 +296,55 @@ describe("mosaic extension registration", () => {
 			modelName: "claude-haiku-4-5",
 			thinkingLevel: "high",
 		});
+	});
+	test("wait_agent consumes native completion before it becomes a follow-up notification", async () => {
+		const sent: Array<{ message: any; options?: unknown }> = [];
+		let waitTool: any;
+		const pi = createFakePi({
+			onTool: (tool) => {
+				if (tool.name === "wait_agent") waitTool = tool;
+			},
+			onSendMessage: (message, options) => sent.push({ message, options }),
+		});
+		registerMosaic(pi as never);
+		const state = __getMosaicProcessStateForTest();
+		const { token } = state.messageServer.registerAgent({
+			agentId: "agent-1",
+			taskName: "review/probe",
+			type: "general-purpose",
+			description: "review/probe",
+		});
+		state.fullSessionAgents.set("agent-1", {
+			id: "agent-1",
+			laneId: "agent-1",
+			type: "general-purpose",
+			description: "review/probe",
+			sessionFile: "/tmp/mosaic-session.jsonl",
+			paneId: "%1",
+			windowId: "@1",
+			windowName: "mc: review/probe",
+			startedAt: 1000,
+			status: "running",
+		});
+
+		state.messageServer.connectAgent("agent-1", token);
+		state.messageServer.recordAgentUpdate("agent-1", token, {
+			status: "completed",
+			result: "FULL_NATIVE_RESULT",
+		});
+
+		const result = await waitTool.execute("wait-native", {}, undefined, undefined, {});
+		const text = result.content[0].text;
+		expect(text).toContain("FULL_NATIVE_RESULT");
+		expect(JSON.parse(text)).toMatchObject({
+			type: "agent_update",
+			agentId: "agent-1",
+			status: "completed",
+			result: "FULL_NATIVE_RESULT",
+		});
+
+		await Bun.sleep(250);
+		expect(sent).toHaveLength(0);
 	});
 });
 

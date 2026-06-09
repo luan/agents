@@ -1751,7 +1751,7 @@ test("extension emits completion message for quiet successful background termina
 	expect(sentMessages[0]?.message.content).toContain("Output:\n");
 });
 
-test("extension wakes the agent with completion details when an interactive background terminal exits", async () => {
+test("extension does not wake the agent after write_stdin already returned interactive completion", async () => {
 	type Handler = (event?: any, ctx?: any) => any;
 	const handlers = new Map<string, Handler[]>();
 	let execTool: any;
@@ -1806,14 +1806,9 @@ test("extension wakes the agent with completion details when an interactive back
 		expect(write.details.exit_code).toBe(0);
 		expect(write.details.output).toContain("got:hello");
 
-		expect(sentMessages).toHaveLength(1);
-		expect(sentMessages[0]?.message.customType).toBe("exec_command.completed");
-		expect(sentMessages[0]?.message.details.session_id).toBe(sessionId);
-		expect(sentMessages[0]?.message.details.output).toContain("got:hello");
-		expect(sentMessages[0]?.options).toEqual({ deliverAs: "followUp", triggerTurn: true });
-		expect(sentMessages[0]?.message.content).toContain('Command: read line; printf "got:$line"');
-		expect(sentMessages[0]?.message.content).toContain("Process exited with code 0");
-		expect(sentMessages[0]?.message.content).toContain("got:hello");
+		await Bun.sleep(250);
+
+		expect(sentMessages).toHaveLength(0);
 	} finally {
 		for (const handler of handlers.get("session_shutdown") ?? []) handler(undefined, ctx);
 	}
@@ -2036,7 +2031,7 @@ test("extension completion message includes truncation metadata for large final 
 	expect(sentMessages[0]?.message.content).toContain("chars truncated");
 });
 
-test("extension pushes completion after non-empty write_stdin interaction", async () => {
+test("extension suppresses completion after non-empty write_stdin returns the final result", async () => {
 	type Handler = (event?: any, ctx?: any) => any;
 	const handlers = new Map<string, Handler[]>();
 	let execTool: any;
@@ -2091,11 +2086,74 @@ test("extension pushes completion after non-empty write_stdin interaction", asyn
 		expect(write.details.session_id).toBeUndefined();
 		expect(write.details.exit_code).toBe(0);
 
-		expect(sentMessages).toHaveLength(1);
-		expect(sentMessages[0]?.message.customType).toBe("exec_command.completed");
-		expect(sentMessages[0]?.message.details.session_id).toBe(sessionId);
-		expect(sentMessages[0]?.message.details.exit_code).toBe(0);
-		expect(sentMessages[0]?.message.details.output).toContain("got:hello");
+		await Bun.sleep(250);
+
+		expect(sentMessages).toHaveLength(0);
+	} finally {
+		for (const handler of handlers.get("session_shutdown") ?? []) handler(undefined, ctx);
+	}
+});
+
+test("extension leaves active-turn background terminal completion for write_stdin instead of follow-up", async () => {
+	type Handler = (event?: any, ctx?: any) => any;
+	const handlers = new Map<string, Handler[]>();
+	let execTool: any;
+	let writeStdinTool: any;
+	const sentMessages: Array<{ message: any; options: any }> = [];
+	const pi = {
+		registerTool: (definition: any) => {
+			if (definition.name === "exec_command") execTool = definition;
+			if (definition.name === "write_stdin") writeStdinTool = definition;
+		},
+		registerCommand() {},
+		registerMessageRenderer() {},
+		sendMessage: (message: any, options: any) => {
+			sentMessages.push({ message, options });
+		},
+		getActiveTools: () => [],
+		setActiveTools() {},
+		on: (event: string, handler: Handler) => {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+		},
+		exec: async () => ({ code: 1, stdout: "", stderr: "" }),
+	} as any;
+	execCommandExtension(pi);
+
+	const ctx = {
+		hasUI: true,
+		ui: { setStatus() {}, notify() {} },
+		cwd: process.cwd(),
+	};
+	for (const handler of handlers.get("session_start") ?? []) handler(undefined, ctx);
+	for (const handler of handlers.get("agent_start") ?? []) handler(undefined, ctx);
+
+	try {
+		const spawned = await execTool.execute(
+			"call-active-turn-background",
+			{ cmd: "sleep 0.3; printf ACTIVE_TURN_OK", yield_time_ms: 250, context_guard: false },
+			undefined,
+			undefined,
+			ctx,
+		);
+		const sessionId = spawned.details.session_id;
+		expect(sessionId).toBeNumber();
+
+		await Bun.sleep(700);
+		expect(sentMessages).toHaveLength(0);
+
+		const poll = await writeStdinTool.execute(
+			"poll-active-turn-background",
+			{ session_id: sessionId, chars: "", yield_time_ms: 5000 },
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(poll.details.exit_code).toBe(0);
+		expect(poll.details.output).toContain("ACTIVE_TURN_OK");
+
+		for (const handler of handlers.get("agent_end") ?? []) handler(undefined, ctx);
+		await Bun.sleep(250);
+		expect(sentMessages).toHaveLength(0);
 	} finally {
 		for (const handler of handlers.get("session_shutdown") ?? []) handler(undefined, ctx);
 	}

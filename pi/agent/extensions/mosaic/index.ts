@@ -113,7 +113,7 @@ interface MosaicProcessState {
 }
 
 const PROCESS_STATE_KEY = Symbol.for("mosaic:process-state");
-const MOSAIC_NATIVE_PROTOCOL_VERSION = 4;
+const MOSAIC_NATIVE_PROTOCOL_VERSION = 5;
 
 function getMosaicProcessState(): MosaicProcessState {
 	const global = globalThis as typeof globalThis & { [PROCESS_STATE_KEY]?: MosaicProcessState };
@@ -134,7 +134,7 @@ function getMosaicProcessState(): MosaicProcessState {
 }
 
 function isCompatibleMosaicProcessState(state: MosaicProcessState): boolean {
-	return typeof state.messageServer?.onUpdate === "function";
+	return typeof state.messageServer?.onUpdate === "function" && typeof state.messageServer?.listUpdates === "function";
 }
 
 function createMosaicProcessState(): MosaicProcessState {
@@ -586,14 +586,61 @@ export default function (pi: ExtensionAPI) {
 		});
 	}
 
-	function waitForAnyAgentUpdate(input: { afterSeq?: number; timeoutMs?: number }): Promise<unknown> {
+	function isTerminalAgentUpdate(update: unknown): update is MosaicAgentUpdate {
+		if (!update || typeof update !== "object") return false;
+		const candidate = update as MosaicAgentUpdate;
+		return candidate.type === "agent_update" && (candidate.status === "completed" || candidate.status === "error");
+	}
+
+	function findPendingTerminalAgentUpdate(): MosaicAgentUpdate | undefined {
+		const nativeUpdates = messageServer
+			.listUpdates()
+			.filter(isTerminalAgentUpdate)
+			.filter((update) => {
+				const fullSession = fullSessionAgents.get(update.agentId);
+				return fullSession !== undefined && fullSession.resultDelivered !== true;
+			});
+		const localUpdates = inProcessUpdates
+			.filter(isTerminalAgentUpdate)
+			.filter((update) => manager.getRecord(update.agentId)?.resultConsumed !== true);
+		return [...nativeUpdates, ...localUpdates].sort((left, right) => left.seq - right.seq)[0];
+	}
+	function markAgentUpdateConsumed(update: unknown): void {
+		if (!isTerminalAgentUpdate(update)) return;
+		const inProcessRecord = manager.getRecord(update.agentId);
+		if (inProcessRecord) {
+			inProcessRecord.resultConsumed = true;
+			cancelNudge(inProcessRecord.id);
+			agentActivity.delete(inProcessRecord.id);
+			widget.markFinished(inProcessRecord.id);
+			widget.update();
+			return;
+		}
+		const fullSession = fullSessionAgents.get(update.agentId);
+		if (!fullSession) return;
+		fullSession.resultDelivered = true;
+		cancelNudge(`native:${update.agentId}`);
+		agentActivity.delete(update.agentId);
+		widget.markFinished(update.agentId);
+		widget.update();
+	}
+
+	async function waitForAnyAgentUpdate(input: { afterSeq?: number; timeoutMs?: number }): Promise<unknown> {
+		if (input.afterSeq === undefined) {
+			const pending = findPendingTerminalAgentUpdate();
+			if (pending) {
+				markAgentUpdateConsumed(pending);
+				return pending;
+			}
+		}
 		const afterSeq = input.afterSeq ?? Math.max(messageServer.currentSeq, inProcessSeq);
-		return Promise.race([
+		const update = await Promise.race([
 			messageServer.waitForUpdate({ afterSeq, timeoutMs: input.timeoutMs }),
 			waitForInProcessUpdate({ afterSeq, timeoutMs: input.timeoutMs }),
 		]);
+		markAgentUpdateConsumed(update);
+		return update;
 	}
-
 	// Background completion: route through group join or send individual nudge
 	const manager = new AgentManager(
 		(record) => {
@@ -694,19 +741,8 @@ export default function (pi: ExtensionAPI) {
 		return candidate.type === "agent_update" && (candidate.status === "completed" || candidate.status === "error");
 	}
 
-	function emitFullSessionCompletion(update: MosaicAgentUpdate): void {
-		if (isMosaicChildSession()) return;
-		const fullSession = fullSessionAgents.get(update.agentId);
-		if (!fullSession || fullSession.resultDelivered) return;
-
-		fullSession.status = update.status === "error" ? "error" : "completed";
-		fullSession.result = update.result;
-		fullSession.error = update.error;
-		fullSession.completedAt ??= update.createdAt;
-		fullSession.resultDelivered = true;
-
-		const activity = agentActivity.get(update.agentId);
-		const record: AgentRecord = {
+	function buildFullSessionAgentRecord(fullSession: FullSessionAgentRecord, activity?: AgentActivity): AgentRecord {
+		return {
 			id: fullSession.id,
 			type: fullSession.type,
 			description: fullSession.description,
@@ -724,18 +760,39 @@ export default function (pi: ExtensionAPI) {
 			compactionCount: 0,
 			mosaicIdentity: fullSession.mosaicIdentity,
 		};
+	}
 
-		agentActivity.delete(update.agentId);
+	function emitFullSessionCompletion(update: MosaicAgentUpdate): void {
+		if (isMosaicChildSession()) return;
+		const fullSession = fullSessionAgents.get(update.agentId);
+		if (!fullSession || fullSession.resultDelivered) return;
+
+		fullSession.status = update.status === "error" ? "error" : "completed";
+		fullSession.result = update.result;
+		fullSession.error = update.error;
+		fullSession.completedAt ??= update.createdAt;
+
 		widget.markFinished(update.agentId);
-		pi.sendMessage<NotificationDetails>(
-			{
-				customType: "subagent-notification",
-				content: formatTaskNotification(record, 20_000),
-				display: true,
-				details: buildNotificationDetails(record, 500, activity),
-			},
-			{ deliverAs: "steer", triggerTurn: true },
-		);
+		scheduleNudge(`native:${update.agentId}`, () => {
+			if (fullSession.resultDelivered) {
+				widget.update();
+				return;
+			}
+			const activity = agentActivity.get(update.agentId);
+			const record = buildFullSessionAgentRecord(fullSession, activity);
+			fullSession.resultDelivered = true;
+			agentActivity.delete(update.agentId);
+			pi.sendMessage<NotificationDetails>(
+				{
+					customType: "subagent-notification",
+					content: formatTaskNotification(record, 20_000),
+					display: true,
+					details: buildNotificationDetails(record, 500, activity),
+				},
+				{ deliverAs: "steer", triggerTurn: true },
+			);
+			widget.update();
+		});
 		widget.update();
 	}
 

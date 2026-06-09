@@ -292,6 +292,10 @@ export class MosaicMessageServer {
 		});
 	}
 
+	listUpdates(): MosaicControlUpdate[] {
+		return [...this.updates];
+	}
+
 	listAgents(): MosaicAgentSnapshot[] {
 		return [...this.agents.values()].map(
 			({ token: _token, mailbox: _mailbox, lastUpdate: _lastUpdate, ...snapshot }) => ({
