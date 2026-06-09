@@ -80,6 +80,7 @@ describe("skillful autocomplete", () => {
 			},
 		};
 		const wrapped = wrapProvider(base, () => buildItems(new Map([["tdd", "/skills/tdd/SKILL.md"]])));
+		expect((wrapped as AutocompleteProvider & { triggerCharacters?: string[] }).triggerCharacters).toEqual(["$"]);
 		const suggestions = await wrapped.getSuggestions(["use $td"], 0, 7, {});
 		expect(suggestions?.prefix).toBe("$td");
 		expect(suggestions?.items[0]?.value).toBe("$tdd");

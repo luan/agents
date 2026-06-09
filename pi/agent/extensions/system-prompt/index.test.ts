@@ -139,6 +139,18 @@ describe("system-prompt Skillful skill rendering", () => {
 		expect(prompt).not.toContain("- tdd: Apply test-driven development");
 	});
 
+	test("renders pi feature guidance for templates and autocomplete providers", () => {
+		const prompt = buildSystemPrompt("base", {
+			...baseOptions,
+			selectedTools: [],
+		});
+
+		expect(prompt).toContain("default positional arguments such as `");
+		expect(prompt).toContain("$" + "{1:-7}`");
+		expect(prompt).toContain("set `triggerCharacters` on the provider");
+		expect(prompt).toContain("instead of patching editor input");
+	});
+
 	test("renders context files contributed through system prompt options", () => {
 		const prompt = buildSystemPrompt("base", {
 			...baseOptions,

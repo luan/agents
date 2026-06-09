@@ -3,7 +3,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem, Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { EmptyComponent, registerExtensionMessageRenderer, textComponent } from "../shared/tui";
-import { patchDollarAutocompleteTrigger, wrapProvider } from "./autocomplete";
+import { wrapProvider } from "./autocomplete";
 import { installEditorHighlight } from "./editor";
 import {
 	buildItems,
@@ -48,8 +48,6 @@ function renderSkillLoad(details: SkillfulLoadDetails | undefined, theme: Skillf
 }
 
 export default function (pi: ExtensionAPI) {
-	patchDollarAutocompleteTrigger();
-
 	const state: SkillState = { skills: new Map(), items: [] };
 	const refresh = () => {
 		state.skills = collectSkills(pi);

@@ -1,12 +1,10 @@
-import { CustomEditor } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem, AutocompleteProvider } from "@earendil-works/pi-tui";
 
 const MENTION_AT_CURSOR_RE = /(?:^|\s)\$([a-zA-Z0-9\-_]*)$/;
-const INPUT_TRIGGER_PATCHED = Symbol.for("skillful.inputTriggerPatched");
 
-function isPrintable(data: string): boolean {
-	return data.length === 1 && data.charCodeAt(0) >= 32;
-}
+type TriggeredAutocompleteProvider = AutocompleteProvider & {
+	triggerCharacters?: string[];
+};
 
 export function findMentionAtCursor(line: string, col: number): { token: string; query: string } | null {
 	const match = line.slice(0, col).match(MENTION_AT_CURSOR_RE);
@@ -15,7 +13,8 @@ export function findMentionAtCursor(line: string, col: number): { token: string;
 }
 
 export function wrapProvider(base: AutocompleteProvider, getItems: () => AutocompleteItem[]): AutocompleteProvider {
-	const wrapped: AutocompleteProvider = {
+	const wrapped: TriggeredAutocompleteProvider = {
+		triggerCharacters: ["$"],
 		async getSuggestions(lines, cursorLine, cursorCol, options) {
 			const mention = findMentionAtCursor(lines[cursorLine] ?? "", cursorCol);
 			if (mention) {
@@ -41,27 +40,4 @@ export function wrapProvider(base: AutocompleteProvider, getItems: () => Autocom
 		wrapped.shouldTriggerFileCompletion = base.shouldTriggerFileCompletion.bind(base);
 	}
 	return wrapped;
-}
-
-export function patchDollarAutocompleteTrigger() {
-	const proto = CustomEditor.prototype as unknown as {
-		handleInput: (data: string) => void;
-		[INPUT_TRIGGER_PATCHED]?: true;
-	};
-	if (proto[INPUT_TRIGGER_PATCHED]) return;
-	proto[INPUT_TRIGGER_PATCHED] = true;
-	const original = proto.handleInput;
-	proto.handleInput = function (this: Record<string, unknown>, data: string) {
-		original.call(this, data);
-		const showing = this.isShowingAutocomplete as (() => boolean) | undefined;
-		if (showing?.call(this)) return;
-		if (!isPrintable(data)) return;
-		const getLines = this.getLines as (() => string[]) | undefined;
-		const getCursor = this.getCursor as (() => { line: number; col: number }) | undefined;
-		const trigger = this.tryTriggerAutocomplete as (() => void) | undefined;
-		if (!getLines || !getCursor || !trigger) return;
-		const cursor = getCursor.call(this);
-		const lines = getLines.call(this);
-		if (findMentionAtCursor(lines[cursor.line] ?? "", cursor.col)) trigger.call(this);
-	};
 }
