@@ -41,4 +41,5 @@ plugins/install-counts-cache.json
 /.pi/openai-codex-images
 /pi/agent/codex-tools.json
 /pi/agent/npm/
+/pi/agent/trust.json
 .pi
