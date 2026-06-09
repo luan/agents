@@ -4,10 +4,11 @@
 4. All tests pass before committing. You own every failure you can see.
 5. When `--auto` is used with a skill, do not ask questions, perform the most comprehensive action set.
 6. NEVER discard unrelated changes.
-7. Plannotator command discipline: never run `plannotator --help`, subcommand `--help`, or other discovery probes. For code review, load/use `$plannotator-review`; for annotation, artifact gates, or rendered HTML, load/use `$plannotator-annotate`; for latest assistant message annotation, load/use `$plannotator-last`; run only the commands documented in the loaded skill.
+7. Plannotator command discipline: For code review, load/use `$plannotator-review`, for annotation, artifact gates, or rendered HTML, load/use `$plannotator-annotate`. ALWAYS run plannotator in the BACKGROUND.
 
 ## Shared Rules
 
 The rules section below is generated from `rules/*.md`. Read the referenced rule file when the task matches its topic.
+
 <!-- BEGIN GENERATED RULES -->
 <!-- END GENERATED RULES -->
