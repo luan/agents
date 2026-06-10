@@ -24,7 +24,7 @@ afterEach(() => {
 	process.env.PATH = originalPath;
 });
 
-function createExecTool(options: { contextGuardEnabled?: boolean; rewriteCommand?: any } = {}) {
+function createExecTool(options: { contextGuardEnabled?: boolean } = {}) {
 	let tool: any;
 	const sessions = {
 		exec: async () => {
@@ -45,7 +45,6 @@ function createExecTool(options: { contextGuardEnabled?: boolean; rewriteCommand
 		sessions as any,
 		{
 			contextGuardEnabled: () => options.contextGuardEnabled ?? false,
-			...(options.rewriteCommand ? { rewriteCommand: options.rewriteCommand } : {}),
 		},
 	);
 	return tool;
@@ -85,7 +84,7 @@ describe("exec_command context-guard wrapping", () => {
 		chmodSync(coreBin, 0o755);
 
 		const tool = createExecTool({ contextGuardEnabled: true });
-		const result = await tool.execute("call-wrap", { cmd: "printf hello", timeout: 25 }, undefined, undefined, {
+		const result = await tool.execute("call-wrap", { cmd: "printf hello" }, undefined, undefined, {
 			cwd: join(dir, "workspace"),
 		});
 
@@ -179,7 +178,7 @@ describe("exec_command context-guard wrapping", () => {
 		).toBe(true);
 	});
 
-	it("skips rewrite routing when Context Guard wraps a plain cmd", async () => {
+	it("wraps a plain cmd without using local exec", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "exec-command-cg-precedence-"));
 		const coreBin = join(dir, "context-guard-core.js");
 		process.env.CONTEXT_GUARD_BIN = coreBin;
@@ -206,19 +205,11 @@ describe("exec_command context-guard wrapping", () => {
 		);
 		chmodSync(coreBin, 0o755);
 
-		let rewriteCalled = false;
-		const tool = createExecTool({
-			contextGuardEnabled: true,
-			rewriteCommand: () => {
-				rewriteCalled = true;
-				return { command: "printf rewritten", rtkWrapped: true };
-			},
-		});
+		const tool = createExecTool({ contextGuardEnabled: true });
 		const result = await tool.execute("call-precedence", { cmd: "printf original" }, undefined, undefined, {
 			cwd: join(dir, "workspace"),
 		});
 
-		expect(rewriteCalled).toBe(false);
 		expect(result.details.output).toBe("printf original");
 
 		tool.renderCall(
@@ -235,7 +226,6 @@ describe("exec_command context-guard wrapping", () => {
 			.render(120)
 			.join("\n");
 		expect(renderedCall).toContain("via context-guard");
-		expect(renderedCall).not.toContain("via rtk");
 	});
 
 	it("delegates explicit mode:'batch' to the core and renders with exec styling", async () => {
@@ -271,7 +261,6 @@ describe("exec_command context-guard wrapping", () => {
 					{ label: "two", command: "printf two" },
 				],
 				queries: ["one", "two"],
-				timeout: 250,
 				concurrency: 3,
 				workdir,
 			},
@@ -281,7 +270,6 @@ describe("exec_command context-guard wrapping", () => {
 		);
 		const payload = JSON.parse(result.content[0]?.text ?? "{}");
 
-		expect(payload.timeout).toBe(250);
 		expect(payload.concurrency).toBe(3);
 		expect(payload.projectDir).toBe(workdir);
 		expect(payload.commands).toHaveLength(2);

@@ -1,11 +1,7 @@
 import { beforeAll, expect, test } from "bun:test";
 import { execSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { BashExecutionComponent, initTheme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 import { Container } from "@earendil-works/pi-tui";
-import { markExecCommandContextGuardEnabled, resetExecCommandContextGuardEnabled } from "../context-guard/pi/index.ts";
 import { DEFAULT_EXEC_SHELL, resolveRuntimeShell } from "./adapter/runtime-shell.ts";
 import execCommandExtension from "./index.ts";
 import type { ShellAction } from "./shell/summary.ts";
@@ -20,7 +16,6 @@ import {
 import { createExecCommandTracker } from "./tools/exec-command-state.ts";
 import { registerExecCommandTool } from "./tools/exec-command-tool.ts";
 import { createExecSessionManager } from "./tools/exec-session-manager.ts";
-import { computeRtkRewriteDecision, parseRtkExecutablePath } from "./tools/rtk-wrapper.ts";
 import { formatUnifiedExecResult } from "./tools/unified-exec-format.ts";
 import { registerWriteStdinTool } from "./tools/write-stdin-tool.ts";
 import { BackgroundTerminalOverlay } from "./ui/background-terminal-overlay.ts";
@@ -76,16 +71,12 @@ function renderExecCommandCall(
 	theme: RenderTheme,
 	failed = false,
 	elapsedMs?: number,
-	rtkWrapped = false,
 	contextGuardWrapped = false,
 ): string {
-	return renderExecCell(
-		rawCommandToExecCell({ command, status: state, failed, elapsedMs, rtkWrapped, contextGuardWrapped }),
-		{
-			theme,
-			part: "header",
-		},
-	);
+	return renderExecCell(rawCommandToExecCell({ command, status: state, failed, elapsedMs, contextGuardWrapped }), {
+		theme,
+		part: "header",
+	});
 }
 
 function renderGroupedExecCommandCall(
@@ -94,10 +85,9 @@ function renderGroupedExecCommandCall(
 	theme: RenderTheme,
 	failed = false,
 	elapsedMs?: number,
-	rtkWrapped = false,
 ): string {
 	return renderExecCell(
-		{ kind: "exploration", status: state, actionGroups, failed, elapsedMs, rtkWrapped },
+		{ kind: "exploration", status: state, actionGroups, failed, elapsedMs },
 		{ theme, part: "header" },
 	);
 }
@@ -118,15 +108,12 @@ function renderOutputBlock(
 	);
 }
 
-function renderSpawnedBackgroundTerminalCall(command: string, theme: RenderTheme, rtkWrapped = false): string {
-	return renderExecCell(
-		{ kind: "spawned-background-terminal", status: "done", command, rtkWrapped },
-		{ theme, part: "header" },
-	);
+function renderSpawnedBackgroundTerminalCall(command: string, theme: RenderTheme): string {
+	return renderExecCell({ kind: "spawned-background-terminal", status: "done", command }, { theme, part: "header" });
 }
 
 function renderWriteStdinCall(
-	sessionId: number | string,
+	processId: number | string,
 	input: string | undefined,
 	command: string | undefined,
 	theme: RenderTheme,
@@ -142,7 +129,7 @@ function renderWriteStdinCall(
 			command,
 			failed,
 			elapsedMs,
-			writeStdin: { sessionId, input, stdinOpen },
+			writeStdin: { processId, input, stdinOpen },
 		},
 		{ theme, part: "header" },
 	);
@@ -200,7 +187,7 @@ async function runExecCommandCompletionScenario(command: string, toolCallId: str
 			undefined,
 			ctx,
 		);
-		expect(result.details.session_id).toBeNumber();
+		expect(result.details.process_id).toBeNumber();
 		await Bun.sleep(500);
 		return { result, sentMessages, renderer };
 	} finally {
@@ -225,17 +212,6 @@ test("exec command call renders inline syntax-highlighted commands", () => {
 	expect(rendered).not.toContain("\n<dim>  └ ");
 });
 
-test("exec cell facade renders raw command cells with RTK presentation metadata", () => {
-	const cell = rawCommandToExecCell({
-		command: "cargo test",
-		status: "done",
-		rtkWrapped: true,
-	});
-	const rendered = renderExecCell(cell, { theme: testTheme, part: "header" });
-
-	expect(rendered).toBe(renderExecCommandCall("cargo test", "done", testTheme, false, undefined, true));
-});
-
 test("exec cell facade renders raw command cells with Context Guard presentation metadata", () => {
 	const cell = rawCommandToExecCell({
 		command: "cargo test",
@@ -244,7 +220,7 @@ test("exec cell facade renders raw command cells with Context Guard presentation
 	});
 	const rendered = renderExecCell(cell, { theme: testTheme, part: "header" });
 
-	expect(rendered).toBe(renderExecCommandCall("cargo test", "done", testTheme, false, undefined, false, true));
+	expect(rendered).toBe(renderExecCommandCall("cargo test", "done", testTheme, false, undefined, true));
 });
 
 test("exec cell facade renders exploration rows from an explicit cell model", () => {
@@ -357,7 +333,7 @@ test("exec cell facade renders write_stdin cells and output blocks", () => {
 			command: "python repl.py",
 			elapsedMs: 65_400,
 			writeStdin: {
-				sessionId: 3,
+				processId: 3,
 				input: "print(1)\n",
 				stdinOpen: true,
 			},
@@ -370,7 +346,7 @@ test("exec cell facade renders write_stdin cells and output blocks", () => {
 			status: "done",
 			outputBlock: {
 				output: "1\n",
-				footer: `${testTheme.fg("accent", "Session 3 still running")}${testTheme.fg("dim", " · ")}${testTheme.fg("mdLink", "tty")}`,
+				footer: `${testTheme.fg("accent", "Process 3 still running")}${testTheme.fg("dim", " · ")}${testTheme.fg("mdLink", "tty")}`,
 			},
 		},
 		{ theme: testTheme, part: "output" },
@@ -383,7 +359,7 @@ test("exec cell facade renders write_stdin cells and output blocks", () => {
 		renderOutputBlock(
 			"1\n",
 			testTheme,
-			`${testTheme.fg("accent", "Session 3 still running")}${testTheme.fg("dim", " · ")}${testTheme.fg("mdLink", "tty")}`,
+			`${testTheme.fg("accent", "Process 3 still running")}${testTheme.fg("dim", " · ")}${testTheme.fg("mdLink", "tty")}`,
 		),
 	);
 });
@@ -394,7 +370,6 @@ test("exec cell facade renders spawned background terminal cells and HUD lines",
 			kind: "spawned-background-terminal",
 			status: "done",
 			command: "npm run dev",
-			rtkWrapped: true,
 		},
 		{ theme: testTheme, part: "header" },
 	);
@@ -496,21 +471,34 @@ test("unified exec format hides non-tty stdin and labels tty sessions", () => {
 		chunk_id: "chunk",
 		wall_time_seconds: 0.25,
 		output: "",
-		session_id: 7,
+		process_id: 7,
 		stdin_open: false,
 	});
 
-	expect(rendered).toContain("Process running with session ID 7");
+	expect(rendered).toContain("Process running with process ID 7");
 	expect(rendered).not.toContain("Stdin:");
 
 	const ttyRendered = formatUnifiedExecResult({
 		chunk_id: "chunk",
 		wall_time_seconds: 0.25,
 		output: "",
-		session_id: 8,
+		process_id: 8,
 		stdin_open: true,
 	});
 	expect(ttyRendered).toContain("TTY: yes");
+});
+
+test("unified exec format does not show a process as running after terminal output", () => {
+	const rendered = formatUnifiedExecResult({
+		chunk_id: "chunk",
+		wall_time_seconds: 15.065,
+		output: "startdone",
+		exit_code: 0,
+		process_id: 2,
+	});
+
+	expect(rendered).toContain("Process exited with code 0");
+	expect(rendered).not.toContain("Process running with process ID 2");
 });
 
 test("background terminal overlay renders empty and visible session rows", () => {
@@ -596,9 +584,9 @@ test("background terminal overlay supports vim navigation, attach, and kill", ()
 	const overlay = new BackgroundTerminalOverlay(
 		{
 			listSessions: () => records,
-			stopSession: (sessionId: number) => {
-				killed.push(sessionId);
-				records = records.filter((record) => record.id !== sessionId);
+			stopSession: (processId: number) => {
+				killed.push(processId);
+				records = records.filter((record) => record.id !== processId);
 				for (const listener of listeners) listener();
 				return true;
 			},
@@ -904,15 +892,8 @@ test("exec command call renders failed status as a red dot", () => {
 	expect(rendered).toBe(`<error>•</error> <bold>Ran</bold> <syntaxFunction>false</syntaxFunction>`);
 });
 
-test("exec command call can show an RTK routing marker", () => {
-	const rendered = renderExecCommandCall("cargo test", "done", testTheme, false, undefined, true);
-	expect(rendered).toBe(
-		`<success>•</success> <bold>Ran</bold> <syntaxFunction>cargo</syntaxFunction> test<dim> · </dim><mdLink>\x1b[3mvia rtk\x1b[23m</mdLink>`,
-	);
-});
-
 test("exec command call can show a Context Guard routing marker", () => {
-	const rendered = renderExecCommandCall("cargo test", "done", testTheme, false, undefined, false, true);
+	const rendered = renderExecCommandCall("cargo test", "done", testTheme, false, undefined, true);
 	expect(rendered).toBe(
 		`<success>•</success> <bold>Ran</bold> <syntaxFunction>cargo</syntaxFunction> test<dim> · </dim><mdLink>\x1b[3mvia context-guard\x1b[23m</mdLink>`,
 	);
@@ -927,19 +908,6 @@ test("line-safe rg summaries do not display numeric limits as the query", () => 
 	expect(rendered).toContain("<bold>Explored</bold>");
 	expect(rendered).toContain(
 		"<accent>Search</accent> <muted>struct SyncPersistenceUtilities|class SyncPersistenceUtilities</muted>",
-	);
-	expect(rendered).not.toContain("<muted>400");
-});
-
-test("compact rtk grep summaries do not display output limits as the query", () => {
-	const rendered = renderExecCommandCall(
-		`rtk grep -m 100 -l 400 "struct SyncPersistenceUtilities|class SyncPersistenceUtilities" src`,
-		"done",
-		testTheme,
-	);
-	expect(rendered).toContain("<bold>Explored</bold>");
-	expect(rendered).toContain(
-		"<accent>Search</accent> <muted>struct SyncPersistenceUtilities|class SyncPersistenceUtilities in src</muted>",
 	);
 	expect(rendered).not.toContain("<muted>400");
 });
@@ -1098,7 +1066,7 @@ test("exec result renderer hides yielded background-terminal session details", (
 			.renderResult(
 				{
 					content: [{ type: "text", text: "fallback" }],
-					details: { output: "partial\n", session_id: 9, stdin_open: false },
+					details: { output: "partial\n", process_id: 9, stdin_open: false },
 				},
 				{ expanded: false, isPartial: false },
 				testTheme,
@@ -1132,7 +1100,7 @@ test("exec result renderer hides tracker-known background terminal results even 
 								chunk_id: "abc123",
 								wall_time_seconds: 0.25,
 								output: "partial\n",
-								session_id: 9,
+								process_id: 9,
 							}),
 						},
 					],
@@ -1204,7 +1172,7 @@ test("exec command streams partial output while the process is still running", a
 
 		expect(result.details.output).toBe("firstsecond");
 		expect(updates.some((update) => update.details?.output?.includes("first"))).toBe(true);
-		expect(updates.some((update) => update.details?.session_id !== undefined)).toBe(true);
+		expect(updates.some((update) => update.details?.process_id !== undefined)).toBe(true);
 	} finally {
 		tracker.clear();
 		sessions.shutdown();
@@ -1278,11 +1246,11 @@ test("write stdin hides still-running empty background terminal polls from trans
 	try {
 		registerWriteStdinTool({ registerTool: (definition: any) => (tool = definition) } as any, sessions);
 
-		expect(tool.renderCall({ session_id: 3 }, testTheme, { isPartial: false }).render(120)).toEqual([]);
+		expect(tool.renderCall({ process_id: 3 }, testTheme, { isPartial: false }).render(120)).toEqual([]);
 		const waitState: { elapsedTimer?: ReturnType<typeof setTimeout>; startedAtMs?: number } = {};
 		expect(
 			tool
-				.renderCall({ session_id: 3 }, testTheme, {
+				.renderCall({ process_id: 3 }, testTheme, {
 					isPartial: true,
 					state: waitState,
 					invalidate() {},
@@ -1295,17 +1263,17 @@ test("write stdin hides still-running empty background terminal polls from trans
 				.renderResult(
 					{
 						content: [{ type: "text", text: "" }],
-						details: { output: "still running\n", session_id: 3 },
+						details: { output: "still running\n", process_id: 3 },
 					},
 					{ expanded: false, isPartial: false },
 					testTheme,
-					{ args: { session_id: 3 } },
+					{ args: { process_id: 3 } },
 				)
 				.render(120),
 		).toEqual([]);
 
 		const interacted = tool
-			.renderCall({ session_id: 3, chars: "\u0003" }, testTheme, { isPartial: false })
+			.renderCall({ process_id: 3, chars: "\u0003" }, testTheme, { isPartial: false })
 			.render(120);
 		expect(interacted.join("\n")).toContain("<bold>Interacted with background terminal</bold>");
 	} finally {
@@ -1328,8 +1296,8 @@ test("write stdin result renderer parses stdin capability from formatted transcr
 							text: [
 								"Chunk ID: chunk",
 								"Wall time: 0.2500 seconds",
-								"Process running with session ID 3",
-								"Stdin: open",
+								"Process running with process ID 3",
+								"TTY: yes",
 								"Output:",
 								"hello",
 							].join("\n"),
@@ -1338,12 +1306,12 @@ test("write stdin result renderer parses stdin capability from formatted transcr
 				},
 				{ expanded: false, isPartial: false },
 				testTheme,
-				{ args: { session_id: 3, chars: "\u0003" } },
+				{ args: { process_id: 3, chars: "\u0003" } },
 			)
 			.render(120)
 			.join("\n");
 
-		expect(rendered).toContain("Session 3 still running");
+		expect(rendered).toContain("Process 3 still running");
 		expect(rendered).toContain("<mdLink>tty</mdLink>");
 		expect(rendered).not.toContain("stdin open");
 	} finally {
@@ -1359,7 +1327,7 @@ test("write stdin renders animated in-flight interaction rows", () => {
 
 		const interactionState: { elapsedTimer?: ReturnType<typeof setTimeout>; startedAtMs?: number } = {};
 		const interactionRow = tool
-			.renderCall({ session_id: 3, chars: "\u0003" }, testTheme, {
+			.renderCall({ process_id: 3, chars: "\u0003" }, testTheme, {
 				isPartial: true,
 				state: interactionState,
 				invalidate() {},
@@ -1398,10 +1366,10 @@ test("shutdown terminates descendant processes that escaped the shell process gr
 			},
 			process.cwd(),
 		);
-		expect(result.session_id).toBeDefined();
+		expect(result.process_id).toBeDefined();
 		let output = result.output;
 		for (let attempt = 0; !output.includes("child=") && attempt < 12; attempt += 1) {
-			const poll = await sessions.write({ session_id: result.session_id!, yield_time_ms: 250 });
+			const poll = await sessions.write({ process_id: result.process_id!, yield_time_ms: 250 });
 			output += poll.output;
 		}
 		expect(output).toContain("child=");
@@ -1507,7 +1475,7 @@ test("extension status shows background terminal and stdin-open counts", async (
 			ctx,
 		);
 
-		expect(result.details.session_id).toBeNumber();
+		expect(result.details.process_id).toBeNumber();
 		expect(statusCalls.at(-1)).toEqual({
 			key: "background-terminals",
 			text: "1 background terminal · 1 running",
@@ -1579,7 +1547,7 @@ test("extension resume clears stale background terminal sessions and HUD state",
 		undefined,
 		ctx,
 	);
-	expect(result.details.session_id).toBeNumber();
+	expect(result.details.process_id).toBeNumber();
 	expect(statusCalls.at(-1)).toEqual({
 		key: "background-terminals",
 		text: "1 background terminal · 1 running",
@@ -1593,12 +1561,12 @@ test("extension resume clears stale background terminal sessions and HUD state",
 	await expect(
 		writeTool.execute(
 			"poll-cleared-stale-terminal",
-			{ session_id: result.details.session_id, chars: "", yield_time_ms: 250 },
+			{ process_id: result.details.process_id, chars: "", yield_time_ms: 250 },
 			undefined,
 			undefined,
 			ctx,
 		),
-	).rejects.toThrow(`Unknown process id ${result.details.session_id}`);
+	).rejects.toThrow(`Unknown process id ${result.details.process_id}`);
 
 	for (const handler of handlers.get("session_shutdown") ?? []) handler(undefined, ctx);
 });
@@ -1645,7 +1613,7 @@ test("extension status counts stdin-open tty sessions", async () => {
 			ctx,
 		);
 
-		expect(result.details.session_id).toBeNumber();
+		expect(result.details.process_id).toBeNumber();
 		expect(statusCalls.at(-1)).toEqual({
 			key: "background-terminals",
 			text: "1 background terminal · 1 running · 1 tty",
@@ -1725,7 +1693,7 @@ test("extension appends a new completion message when a background terminal exit
 	expect(sentMessages[0]?.message.content).toContain("Wall time:");
 	expect(sentMessages[0]?.message.content).toContain("Process exited with code 0");
 	expect(sentMessages[0]?.message.content).toContain("Output:\ndone");
-	expect(sentMessages[0]?.message.details.session_id).toBe(result.details.session_id);
+	expect(sentMessages[0]?.message.details.process_id).toBe(result.details.process_id);
 	expect(sentMessages[0]?.message.details.elapsed_ms).toBeNumber();
 	expect(sentMessages[0]?.message.details.exit_code).toBe(0);
 	expect(sentMessages[0]?.message.details.output).toBe("done");
@@ -1743,7 +1711,7 @@ test("extension emits completion message for quiet successful background termina
 
 	expect(sentMessages).toHaveLength(1);
 	expect(sentMessages[0]?.message.customType).toBe("exec_command.completed");
-	expect(sentMessages[0]?.message.details.session_id).toBe(result.details.session_id);
+	expect(sentMessages[0]?.message.details.process_id).toBe(result.details.process_id);
 	expect(sentMessages[0]?.message.details.exit_code).toBe(0);
 	expect(sentMessages[0]?.message.details.output).toBe("");
 	expect(sentMessages[0]?.message.details.output_truncated).toBe(false);
@@ -1791,14 +1759,14 @@ test("extension does not wake the agent after write_stdin already returned inter
 			undefined,
 			ctx,
 		);
-		const sessionId = spawned.details.session_id;
-		expect(sessionId).toBeNumber();
+		const processId = spawned.details.process_id;
+		expect(processId).toBeNumber();
 		expect(spawned.details.stdin_open).toBe(true);
 		expect(sentMessages).toHaveLength(0);
 
 		const write = await writeStdinTool.execute(
 			"write-no-wake",
-			{ session_id: sessionId, chars: "hello\n", yield_time_ms: 500 },
+			{ process_id: processId, chars: "hello\n", yield_time_ms: 500 },
 			undefined,
 			undefined,
 			ctx,
@@ -1809,66 +1777,6 @@ test("extension does not wake the agent after write_stdin already returned inter
 		await Bun.sleep(250);
 
 		expect(sentMessages).toHaveLength(0);
-	} finally {
-		for (const handler of handlers.get("session_shutdown") ?? []) handler(undefined, ctx);
-	}
-});
-
-test("extension reports timed-out background terminal completion distinctly", async () => {
-	type Handler = (event?: any, ctx?: any) => any;
-	const handlers = new Map<string, Handler[]>();
-	let execTool: any;
-	const sentMessages: Array<{ message: any; options: any }> = [];
-	const pi = {
-		registerTool: (definition: any) => {
-			if (definition.name === "exec_command") execTool = definition;
-		},
-		registerCommand() {},
-		registerMessageRenderer() {},
-		sendMessage: (message: any, options: any) => {
-			sentMessages.push({ message, options });
-		},
-		getActiveTools: () => [],
-		setActiveTools() {},
-		on: (event: string, handler: Handler) => {
-			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
-		},
-		exec: async () => ({ code: 1, stdout: "", stderr: "" }),
-	} as any;
-	execCommandExtension(pi);
-
-	const ctx = {
-		hasUI: true,
-		ui: { setStatus() {}, notify() {} },
-		cwd: process.cwd(),
-	};
-	for (const handler of handlers.get("session_start") ?? []) handler(undefined, ctx);
-
-	try {
-		const spawned = await execTool.execute(
-			"call-timeout-completion",
-			{
-				cmd: "printf before-timeout; sleep 5",
-				yield_time_ms: 250,
-				timeout: 350,
-				context_guard: false,
-			},
-			undefined,
-			undefined,
-			ctx,
-		);
-		const sessionId = spawned.details.session_id;
-		expect(sessionId).toBeNumber();
-
-		await Bun.sleep(900);
-
-		expect(sentMessages).toHaveLength(1);
-		expect(sentMessages[0]?.message.customType).toBe("exec_command.completed");
-		expect(sentMessages[0]?.message.details.session_id).toBe(sessionId);
-		expect(sentMessages[0]?.message.details.terminal_state).toBe("timed_out");
-		expect(sentMessages[0]?.message.details.timed_out).toBe(true);
-		expect(sentMessages[0]?.message.details.exit_code).toBeUndefined();
-		expect(sentMessages[0]?.message.details.output).toContain("before-timeout");
 	} finally {
 		for (const handler of handlers.get("session_shutdown") ?? []) handler(undefined, ctx);
 	}
@@ -1913,15 +1821,15 @@ test("extension reports stopped background terminals as cancelled completions", 
 			undefined,
 			ctx,
 		);
-		const sessionId = spawned.details.session_id;
-		expect(sessionId).toBeNumber();
+		const processId = spawned.details.process_id;
+		expect(processId).toBeNumber();
 
-		await commands.get("stop").handler(String(sessionId), ctx);
+		await commands.get("stop").handler(String(processId), ctx);
 		await Bun.sleep(500);
 
 		expect(sentMessages).toHaveLength(1);
 		expect(sentMessages[0]?.message.customType).toBe("exec_command.completed");
-		expect(sentMessages[0]?.message.details.session_id).toBe(sessionId);
+		expect(sentMessages[0]?.message.details.process_id).toBe(processId);
 		expect(sentMessages[0]?.message.details.terminal_state).toBe("cancelled");
 		expect(sentMessages[0]?.message.details.cancelled).toBe(true);
 		expect(sentMessages[0]?.message.details.exit_code).toBeUndefined();
@@ -1939,7 +1847,7 @@ test("extension reports nonzero background terminal exit as command completion",
 
 	expect(sentMessages).toHaveLength(1);
 	expect(sentMessages[0]?.message.customType).toBe("exec_command.completed");
-	expect(sentMessages[0]?.message.details.session_id).toBe(result.details.session_id);
+	expect(sentMessages[0]?.message.details.process_id).toBe(result.details.process_id);
 	expect(sentMessages[0]?.message.details.terminal_state).toBe("exited");
 	expect(sentMessages[0]?.message.details.exit_code).toBe(7);
 	expect(sentMessages[0]?.message.details.timed_out).toBeUndefined();
@@ -1985,7 +1893,7 @@ test("extension does not emit speculative events for idle-running background ter
 			undefined,
 			ctx,
 		);
-		expect(spawned.details.session_id).toBeNumber();
+		expect(spawned.details.process_id).toBeNumber();
 
 		await Bun.sleep(600);
 
@@ -2023,7 +1931,7 @@ test("extension completion message includes truncation metadata for large final 
 
 	expect(sentMessages).toHaveLength(1);
 	expect(sentMessages[0]?.message.customType).toBe("exec_command.completed");
-	expect(sentMessages[0]?.message.details.session_id).toBe(result.details.session_id);
+	expect(sentMessages[0]?.message.details.process_id).toBe(result.details.process_id);
 	expect(sentMessages[0]?.message.details.exit_code).toBe(0);
 	expect(sentMessages[0]?.message.details.output_truncated).toBe(true);
 	expect(sentMessages[0]?.message.details.original_token_count).toBeNumber();
@@ -2071,19 +1979,19 @@ test("extension suppresses completion after non-empty write_stdin returns the fi
 			undefined,
 			ctx,
 		);
-		const sessionId = spawned.details.session_id;
-		expect(sessionId).toBeNumber();
+		const processId = spawned.details.process_id;
+		expect(processId).toBeNumber();
 		expect(spawned.details.stdin_open).toBe(true);
 		expect(sentMessages).toHaveLength(0);
 
 		const write = await writeStdinTool.execute(
 			"write-stdin-completion",
-			{ session_id: sessionId, chars: "hello\n", yield_time_ms: 250 },
+			{ process_id: processId, chars: "hello\n", yield_time_ms: 250 },
 			undefined,
 			undefined,
 			ctx,
 		);
-		expect(write.details.session_id).toBeUndefined();
+		expect(write.details.process_id).toBeUndefined();
 		expect(write.details.exit_code).toBe(0);
 
 		await Bun.sleep(250);
@@ -2135,15 +2043,15 @@ test("extension leaves active-turn background terminal completion for write_stdi
 			undefined,
 			ctx,
 		);
-		const sessionId = spawned.details.session_id;
-		expect(sessionId).toBeNumber();
+		const processId = spawned.details.process_id;
+		expect(processId).toBeNumber();
 
 		await Bun.sleep(700);
 		expect(sentMessages).toHaveLength(0);
 
 		const poll = await writeStdinTool.execute(
 			"poll-active-turn-background",
-			{ session_id: sessionId, chars: "", yield_time_ms: 5000 },
+			{ process_id: processId, chars: "", yield_time_ms: 5000 },
 			undefined,
 			undefined,
 			ctx,
@@ -2199,8 +2107,8 @@ test("extension hides empty poll output after rendering a background terminal co
 			undefined,
 			ctx,
 		);
-		const sessionId = spawned.details.session_id;
-		expect(sessionId).toBeNumber();
+		const processId = spawned.details.process_id;
+		expect(processId).toBeNumber();
 
 		await Bun.sleep(500);
 		expect(sentMessages).toHaveLength(1);
@@ -2208,7 +2116,7 @@ test("extension hides empty poll output after rendering a background terminal co
 
 		const poll = await writeStdinTool.execute(
 			"poll-duplicated-output",
-			{ session_id: sessionId, chars: "", yield_time_ms: 5000 },
+			{ process_id: processId, chars: "", yield_time_ms: 5000 },
 			undefined,
 			undefined,
 			ctx,
@@ -2217,7 +2125,7 @@ test("extension hides empty poll output after rendering a background terminal co
 
 		const renderedPoll = writeStdinTool
 			.renderResult(poll, { expanded: false, isPartial: false }, testTheme, {
-				args: { session_id: sessionId, chars: "" },
+				args: { process_id: processId, chars: "" },
 				state: {},
 			})
 			.render(120)
@@ -2320,8 +2228,8 @@ test("stop command stops one background terminal and completes visible ids", asy
 			undefined,
 			ctx,
 		);
-		const firstId = first.details.session_id;
-		const secondId = second.details.session_id;
+		const firstId = first.details.process_id;
+		const secondId = second.details.process_id;
 		expect(firstId).toBeNumber();
 		expect(secondId).toBeNumber();
 
@@ -2336,7 +2244,7 @@ test("stop command stops one background terminal and completes visible ids", asy
 		await expect(
 			writeTool.execute(
 				"write-stopped",
-				{ session_id: firstId, chars: "", yield_time_ms: 250 },
+				{ process_id: firstId, chars: "", yield_time_ms: 250 },
 				undefined,
 				undefined,
 				ctx,
@@ -2344,12 +2252,12 @@ test("stop command stops one background terminal and completes visible ids", asy
 		).rejects.toThrow(`Unknown process id ${firstId}`);
 		const pollSecond = await writeTool.execute(
 			"write-running",
-			{ session_id: secondId, chars: "", yield_time_ms: 250 },
+			{ process_id: secondId, chars: "", yield_time_ms: 250 },
 			undefined,
 			undefined,
 			ctx,
 		);
-		expect(pollSecond.details.session_id).toBe(secondId);
+		expect(pollSecond.details.process_id).toBe(secondId);
 	} finally {
 		for (const handler of handlers.get("session_shutdown") ?? []) handler(undefined, ctx);
 	}
@@ -2395,8 +2303,8 @@ test("stop command warns for invalid ids without stopping sessions", async () =>
 			undefined,
 			ctx,
 		);
-		const sessionId = result.details.session_id;
-		expect(sessionId).toBeNumber();
+		const processId = result.details.process_id;
+		expect(processId).toBeNumber();
 
 		await commands.get("stop").handler("999999", ctx);
 		await commands.get("stop").handler("not-a-number", ctx);
@@ -2405,12 +2313,12 @@ test("stop command warns for invalid ids without stopping sessions", async () =>
 		expect(notifications).toContainEqual({ message: "Usage: /stop [id]", type: "warning" });
 		const poll = await writeTool.execute(
 			"write-after-invalid-stop",
-			{ session_id: sessionId, chars: "", yield_time_ms: 250 },
+			{ process_id: processId, chars: "", yield_time_ms: 250 },
 			undefined,
 			undefined,
 			ctx,
 		);
-		expect(poll.details.session_id).toBe(sessionId);
+		expect(poll.details.process_id).toBe(processId);
 	} finally {
 		for (const handler of handlers.get("session_shutdown") ?? []) handler(undefined, ctx);
 	}
@@ -2546,8 +2454,6 @@ test("exec_command keeps write_stdin active across non-interactive and tty runs"
 		handler(undefined, ctx);
 	}
 	try {
-		await commands.get("rtk").handler("off", ctx);
-
 		expect(activeTools).toEqual(["read", "exec_command", "write_stdin"]);
 		const nonTty = await execTool.execute(
 			"call-non-tty",
@@ -2556,7 +2462,7 @@ test("exec_command keeps write_stdin active across non-interactive and tty runs"
 			undefined,
 			ctx,
 		);
-		expect(nonTty.details.session_id).toBeNumber();
+		expect(nonTty.details.process_id).toBeNumber();
 		expect(nonTty.terminate).toBeUndefined();
 		expect(activeTools).toEqual(["read", "exec_command", "write_stdin"]);
 
@@ -2567,525 +2473,12 @@ test("exec_command keeps write_stdin active across non-interactive and tty runs"
 			undefined,
 			ctx,
 		);
-		expect(tty.details.session_id).toBeNumber();
+		expect(tty.details.process_id).toBeNumber();
 		expect(tty.terminate).toBeUndefined();
 		expect(activeTools).toEqual(["read", "exec_command", "write_stdin"]);
 	} finally {
 		for (const handler of handlers.get("session_shutdown") ?? []) handler();
 	}
-});
-
-test("rtk command toggles default-on exec command wrapping", async () => {
-	type Handler = (event?: any, ctx?: any) => any;
-	const commands = new Map<string, any>();
-	const handlers = new Map<string, Handler[]>();
-	let tool: any;
-	const execCalls: Array<{ command: string; args: string[] }> = [];
-	const notifications: Array<{ message: string; type?: string }> = [];
-	const pi = {
-		registerTool: (definition: any) => {
-			if (definition.name === "exec_command") tool = definition;
-		},
-		registerCommand: (name: string, command: any) => commands.set(name, command),
-		getActiveTools: () => [],
-		setActiveTools() {},
-		exec: async (command: string, args: string[]) => {
-			execCalls.push({ command, args });
-			if (command === "which") return { code: 0, stdout: "/usr/local/bin/rtk\n", stderr: "" };
-			return { code: 3, stdout: "printf rtk-wrapped\n", stderr: "" };
-		},
-		on: (event: string, handler: Handler) => {
-			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
-		},
-	} as any;
-	execCommandExtension(pi);
-
-	const ctx = {
-		hasUI: true,
-		ui: {
-			notify: (message: string, type?: string) => notifications.push({ message, type }),
-		},
-		cwd: process.cwd(),
-	};
-	const rtkCommand = commands.get("rtk");
-	expect(rtkCommand).toBeDefined();
-	expect(await rtkCommand.getArgumentCompletions("o")).toEqual([
-		{ value: "on", label: "on" },
-		{ value: "off", label: "off" },
-	]);
-
-	const enabled = await tool.execute(
-		"call-enabled",
-		{ cmd: "printf original", yield_time_ms: 5000 },
-		undefined,
-		undefined,
-		ctx,
-	);
-
-	expect(enabled.details.output).toBe("rtk-wrapped");
-	expect(enabled.content[0].text).toContain("Command: printf original");
-	expect(enabled.content[0].text).not.toContain("printf rtk-wrapped");
-	expect(execCalls).toEqual([
-		{ command: "which", args: ["rtk"] },
-		{ command: "/usr/local/bin/rtk", args: ["rewrite", "printf original"] },
-	]);
-	expect(notifications.some((notice) => notice.message.startsWith("RTK rewrite:"))).toBe(false);
-
-	for (const handler of handlers.get("tool_execution_start") ?? []) {
-		handler({
-			toolName: "exec_command",
-			toolCallId: "call-render",
-			args: { cmd: "printf original" },
-		});
-	}
-	await tool.execute("call-render", { cmd: "printf original", yield_time_ms: 5000 }, undefined, undefined, ctx);
-	for (const handler of handlers.get("tool_execution_end") ?? []) {
-		handler({ toolName: "exec_command", toolCallId: "call-render" });
-	}
-	const renderedCall = tool
-		.renderCall({ cmd: "printf original" }, testTheme, {
-			toolCallId: "call-render",
-			state: {},
-			isPartial: false,
-			invalidate() {},
-		})
-		.render(200)
-		.join("\n");
-	expect(renderedCall).toContain("<mdLink>\x1b[3mvia rtk\x1b[23m</mdLink>");
-	expect(renderedCall).not.toContain("printf rtk-wrapped");
-
-	await rtkCommand.handler("off", ctx);
-	const off = await tool.execute("call-off", { cmd: "printf off", yield_time_ms: 5000 }, undefined, undefined, ctx);
-	expect(off.details.output).toBe("off");
-	expect(notifications).toContainEqual({ message: "RTK wrapping disabled.", type: "info" });
-
-	await rtkCommand.handler("on", ctx);
-	expect(notifications).toContainEqual({ message: "RTK wrapping enabled.", type: "info" });
-
-	for (const handler of handlers.get("session_shutdown") ?? []) handler();
-});
-
-test("cg-wrap command toggles default-on Context Guard wrapping", async () => {
-	type Handler = (event?: any, ctx?: any) => any;
-	const originalCoreBin = process.env.CONTEXT_GUARD_BIN;
-	const originalSkipLocalBin = process.env.CONTEXT_GUARD_SKIP_LOCAL_BIN;
-	const commands = new Map<string, any>();
-	const handlers = new Map<string, Handler[]>();
-	let tool: any;
-	const notifications: Array<{ message: string; type?: string }> = [];
-	const dir = mkdtempSync(join(tmpdir(), "exec-command-cg-wrap-toggle-"));
-	const coreBin = join(dir, "context-guard-core.js");
-	const logPath = join(dir, "requests.log");
-	writeFileSync(
-		coreBin,
-		[
-			`#!${process.execPath}`,
-			"const fs = require('node:fs');",
-			`const logPath = ${JSON.stringify(logPath)};`,
-			"let input = '';",
-			"process.stdin.setEncoding('utf8');",
-			"process.stdin.on('data', chunk => input += chunk);",
-			"process.stdin.on('end', () => {",
-			"  const request = JSON.parse(input);",
-			"  fs.appendFileSync(logPath, JSON.stringify(request) + '\\n', 'utf8');",
-			"  const text = request.command === 'batch' ? 'ignored' : '{}';",
-			"  process.stdout.write(JSON.stringify({",
-			"    ok: true,",
-			"    content: [{ type: 'text', text }],",
-			"    details: { results: [{ output: 'wrapped from core\\n', summary: 'ok', exitCode: 0 }] }",
-			"  }));",
-			"});",
-			"",
-		].join("\n"),
-		"utf8",
-	);
-	chmodSync(coreBin, 0o755);
-	process.env.CONTEXT_GUARD_BIN = coreBin;
-	delete process.env.CONTEXT_GUARD_SKIP_LOCAL_BIN;
-	markExecCommandContextGuardEnabled();
-
-	const pi = {
-		registerTool: (definition: any) => {
-			if (definition.name === "exec_command") tool = definition;
-		},
-		registerCommand: (name: string, command: any) => commands.set(name, command),
-		getActiveTools: () => [],
-		setActiveTools() {},
-		on: (event: string, handler: Handler) => {
-			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
-		},
-	} as any;
-	execCommandExtension(pi);
-
-	const ctx = {
-		hasUI: true,
-		ui: {
-			notify: (message: string, type?: string) => notifications.push({ message, type }),
-		},
-		cwd: process.cwd(),
-	};
-	const toggle = commands.get("cg-wrap");
-	expect(toggle).toBeDefined();
-	expect(await toggle.getArgumentCompletions("o")).toEqual([
-		{ value: "on", label: "on" },
-		{ value: "off", label: "off" },
-	]);
-
-	try {
-		const enabled = await tool.execute("call-cg-enabled", { cmd: "printf raw-disabled" }, undefined, undefined, ctx);
-		expect(enabled.details.output).toBe("wrapped from core\n");
-
-		await toggle.handler("off", ctx);
-		const disabled = await tool.execute("call-cg-disabled", { cmd: "printf raw-enabled" }, undefined, undefined, ctx);
-		expect(disabled.details.output).toBe("raw-enabled");
-		expect(notifications).toContainEqual({ message: "Context Guard wrapping disabled.", type: "info" });
-
-		await toggle.handler("on", ctx);
-		expect(notifications).toContainEqual({ message: "Context Guard wrapping enabled.", type: "info" });
-
-		const reenabled = await tool.execute(
-			"call-cg-reenabled",
-			{ cmd: "printf raw-disabled-again" },
-			undefined,
-			undefined,
-			ctx,
-		);
-		expect(reenabled.details.output).toBe("wrapped from core\n");
-
-		const coreRequests = readFileSync(logPath, "utf8")
-			.trim()
-			.split("\n")
-			.filter(Boolean)
-			.map((line) => JSON.parse(line));
-		expect(coreRequests.filter((request) => request.command === "batch")).toHaveLength(2);
-	} finally {
-		if (originalCoreBin === undefined) {
-			delete process.env.CONTEXT_GUARD_BIN;
-		} else {
-			process.env.CONTEXT_GUARD_BIN = originalCoreBin;
-		}
-		if (originalSkipLocalBin === undefined) {
-			delete process.env.CONTEXT_GUARD_SKIP_LOCAL_BIN;
-		} else {
-			process.env.CONTEXT_GUARD_SKIP_LOCAL_BIN = originalSkipLocalBin;
-		}
-		resetExecCommandContextGuardEnabled();
-		for (const handler of handlers.get("session_shutdown") ?? []) handler();
-	}
-});
-
-test("rtk wrapping updates legacy command argument aliases", async () => {
-	type Handler = (event?: any, ctx?: any) => any;
-	const commands = new Map<string, any>();
-	const handlers = new Map<string, Handler[]>();
-	let tool: any;
-	const pi = {
-		registerTool: (definition: any) => {
-			if (definition.name === "exec_command") tool = definition;
-		},
-		registerCommand: (name: string, command: any) => commands.set(name, command),
-		getActiveTools: () => [],
-		setActiveTools() {},
-		exec: async (command: string) => {
-			if (command === "which") return { code: 0, stdout: "/usr/local/bin/rtk\n", stderr: "" };
-			return { code: 0, stdout: "printf alias-wrapped\n", stderr: "" };
-		},
-		on: (event: string, handler: Handler) => {
-			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
-		},
-	} as any;
-	execCommandExtension(pi);
-
-	const ctx = { hasUI: false, ui: { notify() {} }, cwd: process.cwd() };
-	const prepared = tool.prepareArguments({ command: "printf alias-original", yield_time_ms: 5000 });
-	const result = await tool.execute("call-alias", prepared, undefined, undefined, ctx);
-
-	expect(result.details.output).toBe("alias-wrapped");
-	expect(result.content[0].text).toContain("Command: printf alias-original");
-
-	for (const handler of handlers.get("session_shutdown") ?? []) handler();
-});
-
-test("rtk helper parses executable paths", () => {
-	expect(parseRtkExecutablePath("'rtk path'\n")).toBe("rtk path");
-});
-
-test("rtk rewrite is allowed to rewrite rg commands", async () => {
-	const execCalls: Array<{ command: string; args?: string[] }> = [];
-	const pi = {
-		exec: async (command: string, args?: string[]) => {
-			execCalls.push({ command, args });
-			if (command === "which") return { code: 0, stdout: "/usr/local/bin/rtk\n", stderr: "" };
-			return { code: 0, stdout: "rtk grep --files\n", stderr: "" };
-		},
-	} as any;
-
-	const decision = await computeRtkRewriteDecision(pi, "pwd && rg --files -g '!*node_modules*' | head -200", true);
-
-	expect(decision.changed).toBe(true);
-	expect(decision.rewrittenCommand).toBe("rtk grep --files");
-	expect(execCalls).toEqual([
-		{ command: "which", args: ["rtk"] },
-		{
-			command: "/usr/local/bin/rtk",
-			args: ["rewrite", "pwd && rg --files -g '!*node_modules*' | head -200"],
-		},
-	]);
-});
-
-test("rtk grep rewrite of rg uses raw rg immediately", async () => {
-	let tool: any;
-	const pi = {
-		registerTool: (definition: any) => {
-			if (definition.name === "exec_command") tool = definition;
-		},
-	} as any;
-	const tracker = createExecCommandTracker();
-	const executedCommands: string[] = [];
-	const sessions = {
-		exec: async (input: { cmd: string }) => {
-			executedCommands.push(input.cmd);
-			return {
-				chunk_id: "ok",
-				wall_time_seconds: 0,
-				output: "pi/agent/extensions/exec-command/tools/rtk-wrapper.ts\n",
-				exit_code: 0,
-			};
-		},
-		write: async () => {
-			throw new Error("unexpected write");
-		},
-		hasSession: () => false,
-		getSessionCommand: () => undefined,
-		onSessionExit: () => () => {},
-		shutdown() {},
-	};
-	registerExecCommandTool(pi, tracker, sessions as any, {
-		rewriteCommand: () => "pwd && rtk grep --files",
-	});
-
-	const result = await tool.execute(
-		"call-rg-fallback",
-		{ cmd: "rg --files pi/agent/extensions/exec-command/tools/rtk-wrapper.ts" },
-		undefined,
-		undefined,
-		{ cwd: process.cwd() },
-	);
-
-	expect(executedCommands).toEqual(["rg --files pi/agent/extensions/exec-command/tools/rtk-wrapper.ts"]);
-	expect(result.details.output).toContain("rtk-wrapper.ts");
-	expect(result.isError).toBe(false);
-});
-
-test("rtk grep rewrite of raw-only rg modes uses raw rg immediately", async () => {
-	let tool: any;
-	const pi = {
-		registerTool: (definition: any) => {
-			if (definition.name === "exec_command") tool = definition;
-		},
-	} as any;
-	const tracker = createExecCommandTracker();
-	const executedCommands: string[] = [];
-	const sessions = {
-		exec: async (input: { cmd: string }) => {
-			executedCommands.push(input.cmd);
-			return {
-				chunk_id: "rg",
-				wall_time_seconds: 0,
-				output: "ripgrep 15.1.0\n",
-				exit_code: 0,
-			};
-		},
-		write: async () => {
-			throw new Error("unexpected write");
-		},
-		hasSession: () => false,
-		getSessionCommand: () => undefined,
-		onSessionExit: () => () => {},
-		shutdown() {},
-	};
-	registerExecCommandTool(pi, tracker, sessions as any, {
-		rewriteCommand: () => "rtk grep --version",
-	});
-
-	const result = await tool.execute("call-rg-version", { cmd: "rg --version" }, undefined, undefined, {
-		cwd: process.cwd(),
-	});
-
-	expect(executedCommands).toEqual(["rg --version"]);
-	expect(result.details.output).toContain("ripgrep");
-	expect(result.isError).toBe(false);
-});
-
-test("non-rtk safety rewrites do not render a via rtk marker", async () => {
-	let tool: any;
-	const pi = {
-		registerTool: (definition: any) => {
-			if (definition.name === "exec_command") tool = definition;
-		},
-	} as any;
-	const tracker = createExecCommandTracker();
-	const sessions = {
-		exec: async () => ({
-			chunk_id: "git",
-			wall_time_seconds: 0,
-			output: "",
-			exit_code: 0,
-		}),
-		write: async () => {
-			throw new Error("unexpected write");
-		},
-		hasSession: () => false,
-		getSessionCommand: () => undefined,
-		onSessionExit: () => () => {},
-		shutdown() {},
-	};
-	registerExecCommandTool(pi, tracker, sessions as any, {
-		rewriteCommand: () => ({ command: "GIT_OPTIONAL_LOCKS=0 git status --short", rtkWrapped: false }),
-	});
-
-	await tool.execute("call-git-safety", { cmd: "git status --short" }, undefined, undefined, { cwd: process.cwd() });
-
-	const renderedCall = tool
-		.renderCall({ cmd: "git status --short" }, testTheme, {
-			toolCallId: "call-git-safety",
-			state: {},
-			isPartial: false,
-			invalidate() {},
-		})
-		.render(200)
-		.join("\n");
-	expect(renderedCall).not.toContain("via rtk");
-});
-
-test("rtk rewrite preserves returned shell-expanded path globs", async () => {
-	const original = `rg -n "pub fn draw|fn draw" src/font/sprite/draw/*.zig`;
-	const rewritten = `rtk rg -n "pub fn draw|fn draw" src/font/sprite/draw/*.zig`;
-	const execCalls: Array<{ command: string; args?: string[] }> = [];
-	const pi = {
-		exec: async (command: string, args?: string[]) => {
-			execCalls.push({ command, args });
-			if (command === "which") return { code: 0, stdout: "/usr/local/bin/rtk\n", stderr: "" };
-			return { code: 0, stdout: `${rewritten}\n`, stderr: "" };
-		},
-	} as any;
-
-	const decision = await computeRtkRewriteDecision(pi, original, true);
-
-	expect(decision.changed).toBe(true);
-	expect(decision.rewrittenCommand).toBe(rewritten);
-	expect(execCalls).toEqual([
-		{ command: "which", args: ["rtk"] },
-		{ command: "/usr/local/bin/rtk", args: ["rewrite", original] },
-	]);
-});
-
-test("rtk rewrite adds optional-lock suppression to git commands without invoking rtk", async () => {
-	const execCalls: Array<{ command: string; args?: string[] }> = [];
-	const pi = {
-		exec: async (command: string, args?: string[]) => {
-			execCalls.push({ command, args });
-			return { code: 0, stdout: "rtk git status --short\n", stderr: "" };
-		},
-	} as any;
-
-	const decision = await computeRtkRewriteDecision(pi, "git status --short", true);
-
-	expect(decision.changed).toBe(true);
-	expect(decision.rewrittenCommand).toBe("GIT_OPTIONAL_LOCKS=0 git status --short");
-	expect(execCalls).toEqual([]);
-});
-
-test("rtk rewrite does not wrap git write commands", async () => {
-	const execCalls: Array<{ command: string; args?: string[] }> = [];
-	const pi = {
-		exec: async (command: string, args?: string[]) => {
-			execCalls.push({ command, args });
-			return { code: 0, stdout: "rtk git add file.txt\n", stderr: "" };
-		},
-	} as any;
-
-	const decision = await computeRtkRewriteDecision(pi, "git add file.txt", true);
-
-	expect(decision.changed).toBe(true);
-	expect(decision.rewrittenCommand).toBe("GIT_OPTIONAL_LOCKS=0 git add file.txt");
-	expect(execCalls).toEqual([]);
-});
-
-test("rtk rewrite applies git optional-lock suppression across shell segments", async () => {
-	const pi = {
-		exec: async () => {
-			throw new Error("rtk should not be invoked for git commands");
-		},
-	} as any;
-
-	const decision = await computeRtkRewriteDecision(pi, "git add file.txt && git status -sb", true);
-
-	expect(decision.changed).toBe(true);
-	expect(decision.rewrittenCommand).toBe(
-		"GIT_OPTIONAL_LOCKS=0 git add file.txt && GIT_OPTIONAL_LOCKS=0 git status -sb",
-	);
-});
-
-test("rtk rewrite applies git optional-lock suppression inside shell scripts", async () => {
-	const pi = {
-		exec: async () => {
-			throw new Error("rtk should not be invoked for git commands");
-		},
-	} as any;
-
-	const decision = await computeRtkRewriteDecision(pi, "bash -lc 'git status --short'", true);
-
-	expect(decision.changed).toBe(true);
-	expect(decision.rewrittenCommand).toBe("bash -lc 'GIT_OPTIONAL_LOCKS=0 git status --short'");
-});
-
-test("rtk rewrite suppresses optional locks for explicit rtk git commands", async () => {
-	const pi = {
-		exec: async () => {
-			throw new Error("rtk rewrite should not be invoked for explicit rtk commands");
-		},
-	} as any;
-
-	const decision = await computeRtkRewriteDecision(pi, "rtk git status -sb", true);
-
-	expect(decision.changed).toBe(true);
-	expect(decision.rewrittenCommand).toBe("GIT_OPTIONAL_LOCKS=0 rtk git status -sb");
-});
-
-test("rtk rewrite leaves already-protected git commands raw", async () => {
-	const execCalls: Array<{ command: string; args?: string[] }> = [];
-	const pi = {
-		exec: async (command: string, args?: string[]) => {
-			execCalls.push({ command, args });
-			return { code: 0, stdout: "rtk git status --short\n", stderr: "" };
-		},
-	} as any;
-
-	const decision = await computeRtkRewriteDecision(pi, "GIT_OPTIONAL_LOCKS=0 git status --short", true);
-
-	expect(decision.changed).toBe(false);
-	expect(decision.rewrittenCommand).toBe("GIT_OPTIONAL_LOCKS=0 git status --short");
-	expect(execCalls).toEqual([]);
-});
-
-test("rtk rewrite does not wrap graphite or gh commands", async () => {
-	const execCalls: Array<{ command: string; args?: string[] }> = [];
-	const pi = {
-		exec: async (command: string, args?: string[]) => {
-			execCalls.push({ command, args });
-			return { code: 0, stdout: "rtk gt up\n", stderr: "" };
-		},
-	} as any;
-
-	const graphite = await computeRtkRewriteDecision(pi, "gt up", true);
-	const github = await computeRtkRewriteDecision(pi, "gh pr view", true);
-
-	expect(graphite.changed).toBe(false);
-	expect(graphite.rewrittenCommand).toBe("gt up");
-	expect(github.changed).toBe(false);
-	expect(github.rewrittenCommand).toBe("gh pr view");
-	expect(execCalls).toEqual([]);
 });
 
 test("extension truncates oversized non-exec tool results before session history", () => {
@@ -3129,7 +2522,7 @@ test("exec session manager runs short non-interactive commands", async () => {
 		const result = await sessions.exec({ cmd: "printf exec-command", yield_time_ms: 5000 }, process.cwd());
 		expect(result.output).toBe("exec-command");
 		expect(result.exit_code).toBe(0);
-		expect(result.session_id).toBeUndefined();
+		expect(result.process_id).toBeUndefined();
 	} finally {
 		sessions.shutdown();
 	}
@@ -3230,11 +2623,11 @@ test("exec session manager lists running and exited-unread sessions with stdin c
 	});
 	try {
 		const first = await sessions.exec({ cmd: "sleep 0.5; printf done", yield_time_ms: 250 }, process.cwd());
-		expect(first.session_id).toBeNumber();
+		expect(first.process_id).toBeNumber();
 
 		expect(sessions.listSessions()).toEqual([
 			{
-				id: first.session_id!,
+				id: first.process_id!,
 				command: "sleep 0.5; printf done",
 				output: "",
 				running: true,
@@ -3248,7 +2641,7 @@ test("exec session manager lists running and exited-unread sessions with stdin c
 
 		expect(sessions.listSessions()).toEqual([
 			{
-				id: first.session_id!,
+				id: first.process_id!,
 				command: "sleep 0.5; printf done",
 				output: "done",
 				running: false,
@@ -3258,7 +2651,7 @@ test("exec session manager lists running and exited-unread sessions with stdin c
 			},
 		]);
 
-		const final = await sessions.write({ session_id: first.session_id!, chars: "", yield_time_ms: 250 });
+		const final = await sessions.write({ process_id: first.process_id!, chars: "", yield_time_ms: 250 });
 		expect(final.output).toBe("done");
 		expect(final.exit_code).toBe(0);
 		expect(sessions.listSessions()).toEqual([]);
@@ -3276,21 +2669,21 @@ test("exec session manager lazily removes exited sessions when a new session sta
 	});
 	try {
 		const exited = await sessions.exec({ cmd: "sleep 0.4; printf done", yield_time_ms: 250 }, process.cwd());
-		expect(exited.session_id).toBeNumber();
+		expect(exited.process_id).toBeNumber();
 
 		await Bun.sleep(600);
 
 		expect(sessions.listSessions()).toMatchObject([
 			{
-				id: exited.session_id!,
+				id: exited.process_id!,
 				running: false,
 				output: "done",
 			},
 		]);
 
 		const running = await sessions.exec({ cmd: "sleep 1", yield_time_ms: 250 }, process.cwd());
-		expect(running.session_id).toBeNumber();
-		expect(sessions.listSessions().map((session) => session.id)).toEqual([running.session_id!]);
+		expect(running.process_id).toBeNumber();
+		expect(sessions.listSessions().map((session) => session.id)).toEqual([running.process_id!]);
 	} finally {
 		sessions.shutdown();
 	}
@@ -3305,17 +2698,17 @@ test("exec session manager includes stdin capability in running results and snap
 	});
 	try {
 		const nonInteractive = await sessions.exec({ cmd: "sleep 1", yield_time_ms: 250 }, process.cwd());
-		expect(nonInteractive.session_id).toBeNumber();
+		expect(nonInteractive.process_id).toBeNumber();
 		expect(nonInteractive.stdin_open).toBe(false);
-		expect(sessions.getSessionSnapshot(nonInteractive.session_id!)?.stdinOpen).toBe(false);
+		expect(sessions.getSessionSnapshot(nonInteractive.process_id!)?.stdinOpen).toBe(false);
 
 		const interactive = await sessions.exec(
 			{ cmd: 'read line; printf "got:$line"', tty: true, yield_time_ms: 250 },
 			process.cwd(),
 		);
-		expect(interactive.session_id).toBeNumber();
+		expect(interactive.process_id).toBeNumber();
 		expect(interactive.stdin_open).toBe(true);
-		expect(sessions.getSessionSnapshot(interactive.session_id!)?.stdinOpen).toBe(true);
+		expect(sessions.getSessionSnapshot(interactive.process_id!)?.stdinOpen).toBe(true);
 	} finally {
 		sessions.shutdown();
 	}
@@ -3333,10 +2726,10 @@ test("exec session manager marks tty-requested sessions as stdin open", async ()
 			{ cmd: 'read line; printf "got:$line"', tty: true, yield_time_ms: 250 },
 			process.cwd(),
 		);
-		expect(first.session_id).toBeNumber();
+		expect(first.process_id).toBeNumber();
 
 		expect(sessions.listSessions()[0]).toMatchObject({
-			id: first.session_id!,
+			id: first.process_id!,
 			command: 'read line; printf "got:$line"',
 			running: true,
 			stdinOpen: true,
@@ -3354,14 +2747,14 @@ test("exec session manager stops one session without clearing other sessions or 
 	try {
 		const first = await sessions.exec({ cmd: "sleep 60", yield_time_ms: 250 }, process.cwd());
 		const second = await sessions.exec({ cmd: "sleep 60", yield_time_ms: 250 }, process.cwd());
-		expect(first.session_id).toBeNumber();
-		expect(second.session_id).toBeNumber();
+		expect(first.process_id).toBeNumber();
+		expect(second.process_id).toBeNumber();
 
-		expect(sessions.stopSession(first.session_id!)).toBe(true);
+		expect(sessions.stopSession(first.process_id!)).toBe(true);
 		expect(sessions.stopSession(999_999)).toBe(false);
-		expect(sessions.listSessions().map((session) => session.id)).toEqual([second.session_id!]);
-		expect(sessions.getSessionCommand(first.session_id!)).toBe("sleep 60");
-		expect(sessions.getSessionCommand(second.session_id!)).toBe("sleep 60");
+		expect(sessions.listSessions().map((session) => session.id)).toEqual([second.process_id!]);
+		expect(sessions.getSessionCommand(first.process_id!)).toBe("sleep 60");
+		expect(sessions.getSessionCommand(second.process_id!)).toBe("sleep 60");
 	} finally {
 		sessions.shutdown();
 	}
@@ -3377,8 +2770,8 @@ test("exec session manager stops all sessions and notifies subscribers", async (
 	try {
 		const first = await sessions.exec({ cmd: "sleep 60", yield_time_ms: 250 }, process.cwd());
 		const second = await sessions.exec({ cmd: "sleep 60", yield_time_ms: 250 }, process.cwd());
-		expect(first.session_id).toBeNumber();
-		expect(second.session_id).toBeNumber();
+		expect(first.process_id).toBeNumber();
+		expect(second.process_id).toBeNumber();
 		expect(sessions.listSessions()).toHaveLength(2);
 
 		expect(sessions.stopAllSessions()).toBe(2);
@@ -3396,9 +2789,9 @@ test("exec session manager can poll running sessions", async () => {
 	const sessions = createExecSessionManager();
 	try {
 		const first = await sessions.exec({ cmd: "sleep 1; printf done", yield_time_ms: 250 }, process.cwd());
-		expect(first.session_id).toBeNumber();
+		expect(first.process_id).toBeNumber();
 		const next = await sessions.write({
-			session_id: first.session_id!,
+			process_id: first.process_id!,
 			chars: "",
 			yield_time_ms: 5000,
 		});
@@ -3421,9 +2814,9 @@ test("exec session manager can write to tty-requested sessions", async () => {
 			{ cmd: 'read line; printf "got:$line"', tty: true, yield_time_ms: 250 },
 			process.cwd(),
 		);
-		expect(first.session_id).toBeNumber();
+		expect(first.process_id).toBeNumber();
 		const next = await sessions.write({
-			session_id: first.session_id!,
+			process_id: first.process_id!,
 			chars: "hi\n",
 			yield_time_ms: 5000,
 		});

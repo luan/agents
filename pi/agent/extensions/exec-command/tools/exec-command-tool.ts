@@ -11,7 +11,6 @@ import { summarizeShellCommand } from "../shell/summary.ts";
 import { rawCommandToExecCell, renderExecCellComponent } from "./exec-cell-presentation.ts";
 import type { ExecCommandTracker } from "./exec-command-state.ts";
 import type { ExecSessionManager, UnifiedExecResult } from "./exec-session-manager.ts";
-import { commandHasRipgrepSegment, isRtkGrepCommand } from "./rtk-wrapper.ts";
 import { formatUnifiedExecResult } from "./unified-exec-format.ts";
 
 const EXEC_COMMAND_PARAMETERS = Type.Object({
@@ -46,12 +45,6 @@ const EXEC_COMMAND_PARAMETERS = Type.Object({
 	login: Type.Optional(
 		Type.Boolean({
 			description: "Whether to run the shell with -l/-i semantics. Defaults to true.",
-		}),
-	),
-	timeout: Type.Optional(
-		Type.Number({
-			description:
-				"Optional timeout in milliseconds for raw managed commands, Context Guard wrapping, or mode:'batch'.",
 		}),
 	),
 	context_guard: Type.Optional(
@@ -92,7 +85,6 @@ interface ExecCommandParams {
 	tty?: boolean;
 	yield_time_ms?: number;
 	login?: boolean;
-	timeout?: number;
 	contextGuard?: boolean;
 }
 
@@ -106,7 +98,6 @@ interface ContextGuardBatchParams {
 	workdir?: string;
 	commands: ContextGuardBatchCommand[];
 	queries?: string[];
-	timeout?: number;
 	concurrency?: number;
 }
 
@@ -114,10 +105,7 @@ type ParsedExecInvocation =
 	| { kind: "command"; params: ExecCommandParams }
 	| { kind: "batch"; params: ContextGuardBatchParams };
 
-type ExecCommandRewrite = string | { command: string; rtkWrapped?: boolean };
-
 interface ExecCommandToolOptions {
-	rewriteCommand?: (command: string, ctx: ExtensionContext) => Promise<ExecCommandRewrite> | ExecCommandRewrite;
 	onResult?: (
 		params: ExecCommandParams,
 		result: UnifiedExecResult,
@@ -204,7 +192,6 @@ function parseExecCommandParams(params: unknown): ParsedExecInvocation {
 				workdir: typeof record.workdir === "string" ? record.workdir : undefined,
 				commands,
 				queries: normalizeContextGuardQueries(record.queries),
-				timeout: typeof record.timeout === "number" ? record.timeout : undefined,
 				concurrency: typeof record.concurrency === "number" ? record.concurrency : undefined,
 			},
 		};
@@ -225,7 +212,6 @@ function parseExecCommandParams(params: unknown): ParsedExecInvocation {
 			yield_time_ms:
 				"yield_time_ms" in params && typeof params.yield_time_ms === "number" ? params.yield_time_ms : undefined,
 			login: "login" in params && typeof params.login === "boolean" ? params.login : undefined,
-			timeout: "timeout" in params && typeof params.timeout === "number" ? params.timeout : undefined,
 			contextGuard: readContextGuardOverride(record),
 		},
 	};
@@ -378,7 +364,6 @@ async function executeContextGuardBatch(
 		dbPath,
 		commands: params.commands,
 		queries: params.queries,
-		timeout: params.timeout,
 		concurrency: params.concurrency,
 		projectDir,
 	});
@@ -402,7 +387,6 @@ async function executeWrappedCommandWithContextGuard(
 			mode: "batch",
 			workdir: params.workdir,
 			commands: [{ label: labelForWrappedCommand(params.cmd), command: executedCommand }],
-			timeout: params.timeout,
 		},
 		ctx,
 	);
@@ -442,14 +426,6 @@ function shouldRouteCommandThroughContextGuard(params: ExecCommandParams, option
 
 function createEmptyResultComponent(): Container {
 	return new Container();
-}
-
-function shouldUseRawRipgrep(originalCommand: string, rewrittenCommand: string): boolean {
-	return (
-		originalCommand !== rewrittenCommand &&
-		commandHasRipgrepSegment(originalCommand) &&
-		isRtkGrepCommand(rewrittenCommand)
-	);
 }
 
 interface ExecCommandRenderContextLike {
@@ -586,7 +562,6 @@ const renderExecCommandCallWithOptionalContext: any = (
 				kind: "spawned-background-terminal",
 				status: "done",
 				command: sessionCommand,
-				rtkWrapped: renderInfo.rtkWrapped,
 				contextGuardWrapped: renderInfo.contextGuardWrapped,
 			},
 			{ theme, part: "header" },
@@ -601,7 +576,6 @@ const renderExecCommandCallWithOptionalContext: any = (
 				actionGroups: renderInfo.actionGroups,
 				failed,
 				elapsedMs: renderInfo.elapsedMs,
-				rtkWrapped: renderInfo.rtkWrapped,
 				contextGuardWrapped: renderInfo.contextGuardWrapped,
 			}
 		: rawCommandToExecCell({
@@ -609,7 +583,6 @@ const renderExecCommandCallWithOptionalContext: any = (
 				status: renderInfo.status,
 				failed,
 				elapsedMs: renderInfo.elapsedMs,
-				rtkWrapped: renderInfo.rtkWrapped,
 				contextGuardWrapped: renderInfo.contextGuardWrapped,
 			});
 	return renderExecCellComponent(cell, { theme, part: "header" }, context?.lastComponent);
@@ -640,7 +613,7 @@ const renderExecCommandResultWithOptionalContext: any = (
 	}
 
 	const details = isUnifiedExecResult(result.details) ? result.details : undefined;
-	if (details?.session_id !== undefined || renderInfo.sessionId !== undefined) {
+	if (details?.process_id !== undefined || renderInfo.sessionId !== undefined) {
 		return createEmptyResultComponent();
 	}
 	const content = result.content.find((item) => item.type === "text");
@@ -703,13 +676,7 @@ export function registerExecCommandTool(
 				tracker.recordContextGuardWrapped(toolCallId);
 				return executeWrappedCommandWithContextGuard(typedParams, typedParams.cmd, ctx);
 			}
-			const rewrite = options.rewriteCommand ? await options.rewriteCommand(typedParams.cmd, ctx) : typedParams.cmd;
-			const rewrittenCommand = typeof rewrite === "string" ? rewrite : rewrite.command;
-			const command = shouldUseRawRipgrep(typedParams.cmd, rewrittenCommand) ? typedParams.cmd : rewrittenCommand;
-			const rtkWrapped = typeof rewrite === "string" ? command !== typedParams.cmd : rewrite.rtkWrapped === true;
-			if (rtkWrapped) {
-				tracker.recordRtkWrapped(toolCallId);
-			}
+			const command = typedParams.cmd;
 			const streamPartialOutput = !summarizeShellCommand(command).maskAsExplored;
 			const result = await sessions.exec(
 				{ ...typedParams, cmd: command },
@@ -729,8 +696,8 @@ export function registerExecCommandTool(
 						}
 					: undefined,
 			);
-			if (result.session_id !== undefined) {
-				tracker.recordPersistentSession(toolCallId, result.session_id);
+			if (result.process_id !== undefined) {
+				tracker.recordPersistentSession(toolCallId, result.process_id);
 			}
 			const resultOptions = options.onResult?.(typedParams, result, ctx);
 			return {

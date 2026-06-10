@@ -23,7 +23,7 @@ export interface UnifiedExecResult {
 	timed_out?: boolean;
 	cancelled?: boolean;
 	session_error?: string;
-	session_id?: number;
+	process_id?: number;
 	stdin_open?: boolean;
 	original_token_count?: number;
 	output_truncated?: boolean;
@@ -60,12 +60,11 @@ export interface ExecCommandInput {
 	shell?: string;
 	tty?: boolean;
 	yield_time_ms?: number;
-	timeout?: number;
 	login?: boolean;
 }
 
 export interface WriteStdinInput {
-	session_id: number;
+	process_id: number;
 	chars?: string;
 	yield_time_ms?: number;
 }
@@ -133,10 +132,10 @@ export interface ExecSessionManagerOptions {
 	maxSessionBufferChars?: number;
 }
 
-const DEFAULT_EXEC_YIELD_TIME_MS = 120_000;
+const DEFAULT_EXEC_YIELD_TIME_MS = 10_000;
 const DEFAULT_WRITE_YIELD_TIME_MS = 250;
 const MIN_YIELD_TIME_MS = 250;
-const MIN_NON_INTERACTIVE_EXEC_YIELD_TIME_MS = 120_000;
+const MIN_NON_INTERACTIVE_EXEC_YIELD_TIME_MS = 10_000;
 const MIN_EMPTY_WRITE_YIELD_TIME_MS = 30_000;
 const MAX_YIELD_TIME_MS = 120_000;
 const MAX_COMMAND_HISTORY = 256;
@@ -727,7 +726,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			result.output_truncated = true;
 		}
 		if (isRunning(session)) {
-			result.session_id = session.id;
+			result.process_id = session.id;
 			result.stdin_open = session.interactive;
 		} else {
 			addTerminalState(result, session);
@@ -750,20 +749,13 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			result.original_token_count = approxTokenCount(session.buffer);
 		}
 		if (isRunning(session)) {
-			result.session_id = session.id;
+			result.process_id = session.id;
 			result.stdin_open = session.interactive;
 		} else {
 			addTerminalState(result, session);
 		}
 		return result;
 	}
-
-	function scheduleCommandTimeout(session: ExecSession, timeoutMs: number | undefined): void {
-		if (timeoutMs === undefined || timeoutMs <= 0) return;
-		const timer = setTimeout(() => terminateSession(session, "timed_out"), timeoutMs);
-		timer.unref?.();
-	}
-
 	function streamSessionUpdates(
 		session: ExecSession,
 		onUpdate: ExecSessionUpdateCallback | undefined,
@@ -847,7 +839,6 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		registerAbortHandler(signal, () => {
 			terminateSession(session, "cancelled");
 		});
-		scheduleCommandTimeout(session, input.timeout);
 
 		return session;
 	}
@@ -903,7 +894,6 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		registerAbortHandler(signal, () => {
 			terminateSession(session, "cancelled");
 		});
-		scheduleCommandTimeout(session, input.timeout);
 
 		return session;
 	}
@@ -948,9 +938,9 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			}
 		},
 		write: async (input) => {
-			const session = sessions.get(input.session_id);
+			const session = sessions.get(input.process_id);
 			if (!session || session.hidden) {
-				throw new Error(`Unknown process id ${input.session_id}`);
+				throw new Error(`Unknown process id ${input.process_id}`);
 			}
 			if (input.chars && input.chars.length > 0) {
 				if (!session.interactive) {

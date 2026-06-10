@@ -23,7 +23,6 @@ import {
 	type UnifiedExecResult,
 } from "./tools/exec-session-manager.ts";
 import { formattedTruncateText } from "./tools/output-truncation.ts";
-import { computeRtkRewriteDecision, type RtkWrapperState } from "./tools/rtk-wrapper.ts";
 import { formatUnifiedExecResult } from "./tools/unified-exec-format.ts";
 import { registerWriteStdinTool } from "./tools/write-stdin-tool.ts";
 import { BackgroundTerminalOverlay } from "./ui/background-terminal-overlay.ts";
@@ -234,7 +233,7 @@ interface BackgroundTerminalStatusUi {
 }
 
 interface BackgroundTerminalFinishedDetails {
-	session_id: number;
+	process_id: number;
 	command: string;
 	output: string;
 	exit_code?: number;
@@ -259,6 +258,7 @@ function backgroundTerminalDetailsToUnifiedResult(details: BackgroundTerminalFin
 		session_error: details.session_error,
 		original_token_count: details.original_token_count,
 		output_truncated: details.output_truncated,
+		process_id: details.process_id,
 	};
 }
 
@@ -267,9 +267,7 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 	installUserBashRenderPatch();
 	const tracker = createExecCommandTracker();
 	const sessions = createExecSessionManager();
-	const rtk: RtkWrapperState = { enabled: true };
 	const contextGuard = { enabled: true };
-	const rtkWarningsShown = new Set<string>();
 	let shuttingDown = false;
 	let statusUi: BackgroundTerminalStatusUi | undefined;
 	let lastBackgroundTerminalStatus: string | undefined;
@@ -482,20 +480,9 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 	};
 
 	registerExecCommandTool(pi, tracker, sessions, {
-		rewriteCommand: async (command, ctx) => {
-			const decision = await computeRtkRewriteDecision(pi, command, rtk.enabled);
-			if (decision.warning && ctx.hasUI && !rtkWarningsShown.has(decision.warning)) {
-				rtkWarningsShown.add(decision.warning);
-				ctx.ui.notify(`RTK rewrite skipped: ${decision.warning}`, "warning");
-			}
-			return {
-				command: decision.changed ? decision.rewrittenCommand : command,
-				rtkWrapped: decision.usedRtk === true,
-			};
-		},
 		onResult: (_input, result) => {
-			if (result.session_id !== undefined) {
-				completionMessageSessions.add(result.session_id);
+			if (result.process_id !== undefined) {
+				completionMessageSessions.add(result.process_id);
 			}
 		},
 		contextGuardEnabled: () =>
@@ -503,7 +490,7 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 	});
 	registerWriteStdinTool(pi, sessions, {
 		onResult: (input, result) => {
-			if (isTerminalExecResult(result)) cancelBackgroundTerminalCompletionMessage(input.session_id);
+			if (isTerminalExecResult(result)) cancelBackgroundTerminalCompletionMessage(input.process_id);
 		},
 	});
 	sessions.onSessionExit((sessionId, command) => {
@@ -515,7 +502,7 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 		if (agentTurnActive) return;
 		if (!snapshot) return;
 		const details: BackgroundTerminalFinishedDetails = {
-			session_id: sessionId,
+			process_id: sessionId,
 			command,
 			output: snapshot.output,
 			exit_code: snapshot.exitCode,
@@ -544,25 +531,6 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 		);
 	});
 	sessions.onSessionUpdate(updateBackgroundTerminalStatus);
-
-	pi.registerCommand("rtk", {
-		description: "Toggle RTK command wrapping for exec_command calls",
-		getArgumentCompletions: (prefix) => {
-			const items = ["on", "off"]
-				.filter((value) => value.startsWith(prefix.trim().toLowerCase()))
-				.map((value) => ({ value, label: value }));
-			return items.length > 0 ? items : null;
-		},
-		handler: async (args, ctx) => {
-			const parsed = parseBooleanToggleArgument(args);
-			if (parsed === "invalid") {
-				ctx.ui.notify("Usage: /rtk [on|off]", "error");
-				return;
-			}
-			rtk.enabled = parsed ?? !rtk.enabled;
-			ctx.ui.notify(`RTK wrapping ${rtk.enabled ? "enabled" : "disabled"}.`, "info");
-		},
-	});
 
 	pi.registerCommand("cg-wrap", {
 		description: "Toggle Context Guard wrapping for exec_command calls",
