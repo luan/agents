@@ -1,7 +1,11 @@
 set shell := ["sh", "-eu", "-c"]
+# On Windows `sh` is usually not on PATH, but Git for Windows ships bash. Point
+# just at it directly so the POSIX recipe bodies run unchanged. Override with a
+# different absolute path if Git is installed elsewhere.
+set windows-shell := ["C:\\Program Files\\Git\\bin\\bash.exe", "-eu", "-c"]
 
 repo := justfile_directory()
-home := env("HOME")
+home := env("HOME", env("USERPROFILE", ""))
 
 default:
     @just --list
@@ -49,14 +53,14 @@ node-deps-install:
     cd "{{ repo }}" && bun install
 
 pi-node-modules-link:
-    ln -sfn ../../node_modules "{{ repo }}/pi/agent/node_modules"
+    cd "{{ repo }}" && cargo xtask link-node-modules
 
 codex-plugins-install:
     cd "{{ repo }}" && cargo xtask codex-plugins-install
 
 install:
-    @command -v wt >/dev/null 2>&1 || cargo binstall worktrunk --locked
-    @command -v git-surgeon >/dev/null 2>&1 || cargo binstall git-surgeon --locked
+    @cargo install --list | grep -q '^worktrunk ' || cargo binstall worktrunk --locked --no-confirm || echo "warning: worktrunk install failed; continuing without it" >&2
+    @cargo install --list | grep -q '^git-surgeon ' || cargo binstall git-surgeon --locked --no-confirm || echo "warning: git-surgeon install failed (no prebuilt binary; source build is Unix-only); continuing without it" >&2
     cargo install --path "{{ repo }}/crates/ct"
     cargo install --path "{{ repo }}/crates/vlt"
     cargo install --path "{{ repo }}/crates/sym"

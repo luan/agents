@@ -30,7 +30,7 @@
   },
   "statusLine": {
     "type": "command",
-    "command": "uv run ~/.claude/statusline.py && echo && context-mode statusline",
+    "command": "uv run $HOME/.claude/statusline.py; command -v context-mode >/dev/null 2>&1 && { echo; context-mode statusline; }; true",
     "padding": 0,
     "refreshInterval": 5
   },

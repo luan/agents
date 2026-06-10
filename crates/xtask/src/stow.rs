@@ -53,6 +53,50 @@ pub fn run(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+/// Symlink `pi/agent/node_modules` -> the workspace-root `node_modules` so the
+/// pi agent resolves the single hoisted dependency tree installed by
+/// `bun install`. Cross-platform: uses the same symlink primitives as `link`,
+/// so on Windows it creates a real directory symlink (and surfaces Developer
+/// Mode guidance via `create_symlink` on failure) instead of the file copy that
+/// `ln` produces under Git's `sh`.
+pub fn link_pi_node_modules() -> Result<()> {
+    let root = crate::repo_root();
+    let source = root.join("node_modules");
+    let target = root.join("pi").join("agent").join("node_modules");
+
+    if !source.is_dir() {
+        bail!(
+            "{} does not exist; run `bun install` first",
+            source.display()
+        );
+    }
+
+    match fs::symlink_metadata(&target) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            if same_canonical_path(&source, &target).unwrap_or(false) {
+                eprintln!("  = {} (up to date)", target.display());
+                return Ok(());
+            }
+            remove_symlink(&target).with_context(|| format!("remove {}", target.display()))?;
+            create_symlink(&source, &target)?;
+            eprintln!("  ~ {} -> {}", target.display(), source.display());
+            Ok(())
+        }
+        Ok(_) => bail!(
+            "{} already exists and is not a symlink (refusing to clobber a real node_modules)",
+            target.display()
+        ),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            create_symlink(&source, &target)?;
+            eprintln!("  + {} -> {}", target.display(), source.display());
+            Ok(())
+        }
+        Err(err) => {
+            Err(anyhow::Error::from(err)).with_context(|| format!("stat {}", target.display()))
+        }
+    }
+}
+
 fn mode_verb(mode: Mode) -> &'static str {
     match mode {
         Mode::DryRun => "[dry-run]",

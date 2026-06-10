@@ -97,9 +97,9 @@ fn check_symlinks() -> Result<()> {
             {
                 let dev_mode = check_developer_mode();
                 let git_symlinks = check_git_symlinks();
-                return Err(anyhow::anyhow!(
+                Err(anyhow::anyhow!(
                     "could not create a test symlink: {err}\n  - Windows Developer Mode: {dev_mode}\n  - git core.symlinks: {git_symlinks}\n\nFix:\n  1. Enable Developer Mode: Settings -> System -> For developers -> turn ON \"Developer Mode\"\n     (or set HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\AppModelUnlock\\AllowDevelopmentWithoutDevLicense = 1 in an elevated shell)\n  2. Tell Git to honour symlinks: `git config --global core.symlinks true`\n  3. Re-clone or run `git checkout -- .` so existing symlink placeholders are materialised as real symlinks."
-                ));
+                ))
             }
             #[cfg(unix)]
             Err(anyhow::Error::from(err).context("symlink probe failed"))

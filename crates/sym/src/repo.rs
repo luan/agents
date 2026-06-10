@@ -29,7 +29,7 @@ fn resolve_cache_base_dir(
 
     #[cfg(windows)]
     {
-        return Some(home.join("AppData").join("Local"));
+        Some(home.join("AppData").join("Local"))
     }
 
     #[cfg(not(any(target_os = "macos", windows)))]

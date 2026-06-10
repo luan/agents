@@ -26,6 +26,8 @@ enum Cmd {
     Unlink,
     /// Install enabled local plugins from the marketplace into ~/.codex
     CodexPluginsInstall,
+    /// Symlink pi/agent/node_modules -> the workspace-root node_modules
+    LinkNodeModules,
     /// Render agents, run static checks, dry-run stow, and run cargo tests
     Validate,
     /// Check that required external tools are present on PATH
@@ -47,6 +49,7 @@ fn main() -> Result<()> {
         }
         Cmd::Unlink => stow::run(stow::Mode::Unlink),
         Cmd::CodexPluginsInstall => codex_plugins::run(),
+        Cmd::LinkNodeModules => stow::link_pi_node_modules(),
         Cmd::Validate => {
             render_agents::run()?;
             validate::run()

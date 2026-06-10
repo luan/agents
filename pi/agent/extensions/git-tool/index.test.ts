@@ -55,14 +55,14 @@ describe("git-tool resources", () => {
 		const resources = gitToolResources("graphite");
 
 		expect(resources.skillPaths?.map((path) => basename(path))).toEqual(["graphite"]);
-		expect(resources.skillPaths?.[0]).toContain("git-tool/skill-resources/graphite");
+		expect(resources.skillPaths?.[0]?.replace(/\\/g, "/")).toContain("git-tool/skill-resources/graphite");
 	});
 
 	test("git-spice mode contributes exactly the Git-Spice generic skill directory", () => {
 		const resources = gitToolResources("git-spice");
 
 		expect(resources.skillPaths?.map((path) => basename(path))).toEqual(["git-spice"]);
-		expect(resources.skillPaths?.[0]).toContain("git-tool/skill-resources/git-spice");
+		expect(resources.skillPaths?.[0]?.replace(/\\/g, "/")).toContain("git-tool/skill-resources/git-spice");
 	});
 
 	test("main mode contributes no skill paths", () => {
