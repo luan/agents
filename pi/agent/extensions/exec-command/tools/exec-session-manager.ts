@@ -728,6 +728,10 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		if (isRunning(session)) {
 			result.process_id = session.id;
 			result.stdin_open = session.interactive;
+			if (session.hidden) {
+				session.hidden = false;
+				notifySessionUpdate();
+			}
 		} else {
 			addTerminalState(result, session);
 			if (session.emittedBuffer === session.buffer) {
@@ -819,7 +823,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			listeners: new Set(),
 			interactive: Boolean(input.tty),
 			startedAtMs: Date.now(),
-			hidden: false,
+			hidden: true,
 		};
 
 		child.stdout.on("data", (data: Buffer) => {
@@ -876,7 +880,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			listeners: new Set(),
 			interactive: true,
 			startedAtMs: Date.now(),
-			hidden: false,
+			hidden: true,
 			terminalCommitted: "",
 			terminalLine: [],
 			terminalCursor: 0,

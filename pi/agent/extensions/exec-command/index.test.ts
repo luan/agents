@@ -1782,6 +1782,90 @@ test("extension does not wake the agent after write_stdin already returned inter
 	}
 });
 
+test("escape interrupts a foreground exec_command while the tool is waiting", async () => {
+	type Handler = (event?: any, ctx?: any) => any;
+	const handlers = new Map<string, Handler[]>();
+	let execTool: any;
+	let terminalInputHandler: ((data: string) => { consume?: boolean; data?: string } | undefined) | undefined;
+	let abortCalled = false;
+	const controller = new AbortController();
+	const notifications: Array<{ message: string; type?: string }> = [];
+	const statuses: Array<string | undefined> = [];
+	const pi = {
+		registerTool: (definition: any) => {
+			if (definition.name === "exec_command") execTool = definition;
+		},
+		registerCommand() {},
+		registerMessageRenderer() {},
+		sendMessage() {},
+		getActiveTools: () => [],
+		setActiveTools() {},
+		on: (event: string, handler: Handler) => {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+		},
+		exec: async () => ({ code: 1, stdout: "", stderr: "" }),
+	} as any;
+	execCommandExtension(pi);
+
+	const ctx = {
+		hasUI: true,
+		ui: {
+			setStatus(_key: string, text: string | undefined) {
+				statuses.push(text);
+			},
+			notify(message: string, type?: string) {
+				notifications.push({ message, type });
+			},
+			onTerminalInput(handler: typeof terminalInputHandler) {
+				terminalInputHandler = handler;
+				return () => {
+					terminalInputHandler = undefined;
+				};
+			},
+		},
+		cwd: process.cwd(),
+		abort() {
+			abortCalled = true;
+			controller.abort();
+		},
+	};
+	for (const handler of handlers.get("session_start") ?? []) handler(undefined, ctx);
+
+	try {
+		for (const handler of handlers.get("tool_execution_start") ?? []) {
+			handler({ toolName: "exec_command", toolCallId: "call-foreground-abort", args: { cmd: "sleep 60" } }, ctx);
+		}
+
+		const execution = execTool.execute(
+			"call-foreground-abort",
+			{ cmd: "sleep 60", yield_time_ms: 120_000, context_guard: false },
+			controller.signal,
+			undefined,
+			ctx,
+		);
+		expect(statuses.filter((status) => status?.includes("background terminal"))).toEqual([]);
+		await waitForCondition(() => terminalInputHandler !== undefined);
+		expect(terminalInputHandler?.("\x1b")?.consume).toBe(true);
+
+		const result = await Promise.race([
+			execution,
+			Bun.sleep(1500).then(() => {
+				throw new Error("foreground exec_command did not abort promptly");
+			}),
+		]);
+
+		expect(abortCalled).toBe(true);
+		expect(notifications.at(-1)).toEqual({ message: "Interrupting foreground exec_command...", type: "info" });
+		expect(result.details.terminal_state).toBe("cancelled");
+		expect(result.details.cancelled).toBe(true);
+	} finally {
+		for (const handler of handlers.get("tool_execution_end") ?? []) {
+			handler({ toolName: "exec_command", toolCallId: "call-foreground-abort" }, ctx);
+		}
+		for (const handler of handlers.get("session_shutdown") ?? []) handler(undefined, ctx);
+	}
+});
+
 test("extension reports stopped background terminals as cancelled completions", async () => {
 	type Handler = (event?: any, ctx?: any) => any;
 	const handlers = new Map<string, Handler[]>();

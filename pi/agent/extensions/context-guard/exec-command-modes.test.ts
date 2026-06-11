@@ -1,5 +1,6 @@
 import "./setup-home";
 import { afterEach, describe, expect, it } from "bun:test";
+import { execSync } from "node:child_process";
 import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,6 +24,19 @@ afterEach(() => {
 	}
 	process.env.PATH = originalPath;
 });
+
+function processList(): string {
+	return execSync("ps -axo pid,ppid,pgid,stat,command", { encoding: "utf8" });
+}
+
+async function waitForProcessListToExclude(marker: string): Promise<void> {
+	const deadline = Date.now() + 3000;
+	while (Date.now() < deadline) {
+		if (!processList().includes(marker)) return;
+		await Bun.sleep(100);
+	}
+	expect(processList()).not.toContain(marker);
+}
 
 function createExecTool(options: { contextGuardEnabled?: boolean } = {}) {
 	let tool: any;
@@ -119,6 +133,54 @@ describe("exec_command context-guard wrapping", () => {
 			.join("\n");
 		expect(rendered).toContain("wrapped output");
 		expect(rendered).not.toContain("Context:");
+	});
+
+	it("cancels context-guard wrapped commands when the tool signal aborts", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "exec-command-cg-abort-"));
+		const coreBin = join(dir, "context-guard-core.js");
+		const marker = `exec-command-cg-abort-descendant-${process.pid}-${Date.now()}`;
+		process.env.CONTEXT_GUARD_BIN = coreBin;
+		writeFileSync(
+			coreBin,
+			[
+				`#!${process.execPath}`,
+				"const { spawn } = require('node:child_process');",
+				`const marker = ${JSON.stringify(marker)};`,
+				"let input = '';",
+				"process.stdin.setEncoding('utf8');",
+				"process.stdin.on('data', chunk => input += chunk);",
+				"process.stdin.on('end', () => {",
+				"  const request = JSON.parse(input);",
+				"  if (request.command !== 'batch') {",
+				"    process.stdout.write(JSON.stringify({ ok: true, content: [{ type: 'text', text: 'ok' }] }));",
+				"    return;",
+				"  }",
+				"  spawn('sh', ['-c', 'sleep 30 # ' + marker], { stdio: 'ignore' });",
+				"  setInterval(() => {}, 1000);",
+				"});",
+				"",
+			].join("\n"),
+			"utf8",
+		);
+		chmodSync(coreBin, 0o755);
+
+		const controller = new AbortController();
+		const tool = createExecTool({ contextGuardEnabled: true });
+		const execution = tool.execute("call-wrap-abort", { cmd: "sleep 60" }, controller.signal, undefined, {
+			cwd: join(dir, "workspace"),
+		});
+		setTimeout(() => controller.abort(), 50);
+
+		const result = await Promise.race([
+			execution,
+			Bun.sleep(1500).then(() => {
+				throw new Error("context-guard wrapped exec did not abort promptly");
+			}),
+		]);
+
+		expect(result.isError).toBe(true);
+		expect(result.content[0]?.text).toContain("Context Guard core cancelled");
+		await waitForProcessListToExclude(marker);
 	});
 
 	it("records wrapped plain cmd telemetry as exec_command.batch", async () => {

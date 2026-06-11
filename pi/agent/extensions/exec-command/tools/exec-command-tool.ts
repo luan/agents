@@ -350,6 +350,7 @@ function makeBatchRenderDetails(params: ContextGuardBatchParams, output: string)
 async function executeContextGuardBatch(
 	params: ContextGuardBatchParams,
 	ctx: ExtensionContext,
+	signal?: AbortSignal,
 ): Promise<{
 	toolName: "exec_command.batch";
 	projectDir: string;
@@ -360,13 +361,17 @@ async function executeContextGuardBatch(
 }> {
 	const projectDir = resolveContextGuardProjectDir(params.workdir, ctx);
 	const { dbPath, sessionDbPath } = resolveContextGuardPaths(projectDir);
-	const response = await invokeCore("batch", {
-		dbPath,
-		commands: params.commands,
-		queries: params.queries,
-		concurrency: params.concurrency,
-		projectDir,
-	});
+	const response = await invokeCore(
+		"batch",
+		{
+			dbPath,
+			commands: params.commands,
+			queries: params.queries,
+			concurrency: params.concurrency,
+			projectDir,
+		},
+		signal,
+	);
 	return {
 		toolName: "exec_command.batch",
 		projectDir,
@@ -381,6 +386,7 @@ async function executeWrappedCommandWithContextGuard(
 	params: ExecCommandParams,
 	executedCommand: string,
 	ctx: ExtensionContext,
+	signal?: AbortSignal,
 ) {
 	const batch = await executeContextGuardBatch(
 		{
@@ -389,6 +395,7 @@ async function executeWrappedCommandWithContextGuard(
 			commands: [{ label: labelForWrappedCommand(params.cmd), command: executedCommand }],
 		},
 		ctx,
+		signal,
 	);
 	setImmediate(() =>
 		sessionRecordToolTelemetry({
@@ -401,8 +408,8 @@ async function executeWrappedCommandWithContextGuard(
 	return makeWrappedCommandResult(params.cmd, batch.responseText, batch.details, batch.responseIsError);
 }
 
-async function executeExplicitBatch(params: ContextGuardBatchParams, ctx: ExtensionContext) {
-	const batch = await executeContextGuardBatch(params, ctx);
+async function executeExplicitBatch(params: ContextGuardBatchParams, ctx: ExtensionContext, signal?: AbortSignal) {
+	const batch = await executeContextGuardBatch(params, ctx, signal);
 	setImmediate(() =>
 		sessionRecordToolTelemetry({
 			sessionDbPath: batch.sessionDbPath,
@@ -669,12 +676,12 @@ export function registerExecCommandTool(
 			}
 			const invocation = parseExecCommandParams(params);
 			if (invocation.kind === "batch") {
-				return executeExplicitBatch(invocation.params, ctx);
+				return executeExplicitBatch(invocation.params, ctx, signal);
 			}
 			const typedParams = invocation.params;
 			if (shouldRouteCommandThroughContextGuard(typedParams, options)) {
 				tracker.recordContextGuardWrapped(toolCallId);
-				return executeWrappedCommandWithContextGuard(typedParams, typedParams.cmd, ctx);
+				return executeWrappedCommandWithContextGuard(typedParams, typedParams.cmd, ctx, signal);
 			}
 			const command = typedParams.cmd;
 			const streamPartialOutput = !summarizeShellCommand(command).maskAsExplored;

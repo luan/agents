@@ -4,7 +4,7 @@ import {
 	type ExtensionContext,
 	ToolExecutionComponent,
 } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import { Key, matchesKey, Text } from "@earendil-works/pi-tui";
 import { resolveCoreBin } from "../context-guard/pi/core.ts";
 import { isExecCommandContextGuardEnabled } from "../context-guard/pi/index.ts";
 import { defineExtensionTui, registerExtensionMessageRenderer, setOrderedAboveEditorWidget } from "../shared/tui";
@@ -277,6 +277,8 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 	const completionMessageSessions = new Set<number>();
 	const pendingCompletionMessages = new Map<number, ReturnType<typeof setTimeout>>();
 	let agentTurnActive = false;
+	const foregroundExecToolCalls = new Set<string>();
+	let uninstallForegroundExecInterrupt: (() => void) | undefined;
 	const BACKGROUND_TERMINAL_COMPLETION_HOLD_MS = 200;
 	const renderBackgroundTerminalFinishedMessage = (
 		message: { details?: BackgroundTerminalFinishedDetails },
@@ -479,6 +481,27 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 		lastBackgroundTerminalStatus = undefined;
 	};
 
+	function installForegroundExecInterrupt(ctx: ExtensionContext): void {
+		uninstallForegroundExecInterrupt?.();
+		const onTerminalInput = ctx.ui?.onTerminalInput;
+		if (!onTerminalInput) {
+			uninstallForegroundExecInterrupt = undefined;
+			return;
+		}
+		uninstallForegroundExecInterrupt = onTerminalInput((data) => {
+			if (foregroundExecToolCalls.size === 0 || !matchesKey(data, Key.escape)) return undefined;
+			ctx.abort();
+			ctx.ui.notify("Interrupting foreground exec_command...", "info");
+			return { consume: true };
+		});
+	}
+
+	function clearForegroundExecInterrupt(): void {
+		uninstallForegroundExecInterrupt?.();
+		uninstallForegroundExecInterrupt = undefined;
+		foregroundExecToolCalls.clear();
+	}
+
 	registerExecCommandTool(pi, tracker, sessions, {
 		onResult: (_input, result) => {
 			if (result.process_id !== undefined) {
@@ -612,6 +635,7 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 			clearBackgroundTerminalStatus();
 			sessions.shutdown();
 		}
+		installForegroundExecInterrupt(ctx);
 		setBackgroundTerminalStatusUi(ctx);
 		tracker.clear();
 		completionMessageSessions.clear();
@@ -658,11 +682,15 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 			tracker.resetExplorationGroup();
 			return;
 		}
+		foregroundExecToolCalls.add(event.toolCallId);
 		const command = getCommandArg(event.args);
 		if (command) tracker.recordStart(event.toolCallId, command);
 	});
 	pi.on("tool_execution_end", (event) => {
-		if (event.toolName === "exec_command") tracker.recordEnd(event.toolCallId);
+		if (event.toolName === "exec_command") {
+			foregroundExecToolCalls.delete(event.toolCallId);
+			tracker.recordEnd(event.toolCallId);
+		}
 	});
 	pi.on("tool_result", (event) => {
 		const content = truncateTextToolResultContent(event.content);
@@ -696,6 +724,7 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 		shuttingDown = true;
 		completionMessageSessions.clear();
 		clearPendingBackgroundTerminalCompletionMessages();
+		clearForegroundExecInterrupt();
 		clearBackgroundTerminalStatus();
 		tracker.clear();
 		sessions.shutdown();
