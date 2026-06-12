@@ -32,9 +32,6 @@ fast_default_opt_out = true
 [plugins."github@openai-curated"]
 enabled = true
 
-[plugins."computer-use@openai-bundled"]
-enabled = true
-
 [plugins."documents@openai-primary-runtime"]
 enabled = true
 
@@ -54,6 +51,9 @@ enabled = true
 enabled = true
 
 [plugins."browser@openai-bundled"]
+enabled = true
+
+[plugins."computer-use@openai-bundled"]
 enabled = true
 
 [shell_environment_policy]
@@ -80,19 +80,19 @@ status_line = [
 queue = "alt-enter"
 
 [marketplaces.claude-plugins-official]
-last_updated = "2026-06-10T14:22:40Z"
-last_revision = "cf6decf9e8befc69c3c4d5a1251986842aba96e1"
+last_updated = "2026-06-11T19:29:20Z"
+last_revision = "78fa3df8d671bfe7ba4dcc972f1e12ae2b8750af"
 source_type = "git"
 source = "https://github.com/anthropics/claude-plugins-official.git"
 
 [marketplaces.worktrunk]
-last_updated = "2026-06-10T14:22:50Z"
-last_revision = "89b21bb07ef23da451bec73f85f3dddbeab479f9"
+last_updated = "2026-06-12T01:41:05Z"
+last_revision = "214d82aedabb927c955ee82b1b1fd518588971ff"
 source_type = "git"
 source = "https://github.com/max-sixty/worktrunk.git"
 
 [marketplaces.openai-bundled]
-last_updated = "2026-06-09T22:59:07Z"
+last_updated = "2026-06-12T01:41:27Z"
 source_type = "local"
 source = "/Users/luan/.codex/.tmp/bundled-marketplaces/openai-bundled"
 
@@ -158,6 +158,7 @@ appearanceTheme = "dark"
 appearanceDarkCodeThemeId = "tokyo-night"
 selected-avatar-id = "fireball"
 show-context-window-usage = true
+dock-icon-preference = "codex-dark"
 
 [desktop.appearanceLightChromeTheme]
 accent = "#0169cc"
@@ -203,10 +204,10 @@ NODE_REPL_NODE_MODULE_DIRS = "/Applications/Codex.app/Contents/Resources/cua_nod
 NODE_REPL_NODE_PATH = "/Applications/Codex.app/Contents/Resources/cua_node/bin/node"
 NODE_REPL_TRUSTED_CODE_PATHS = "/Users/luan/.codex"
 CODEX_HOME = "/Users/luan/.codex"
-NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = "72614174f4dad67a58d46a3ac759cffb45c92fa48a293af4c4ea35102ba391ba"
+NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = "a3f3ca79fe2bff56076b895f1f13a8f673168160bd79d880cc34b4500e08a71c"
 BROWSER_USE_AVAILABLE_BACKENDS = "chrome,iab"
 NODE_REPL_INSTRUCTIONS_USE_CASE_BROWSER = "Control the in-app browser in conjunction with the Browser Plugin."
 NODE_REPL_INSTRUCTIONS_USE_CASE_CHROME = "Control the Chrome browser in conjunction with the Chrome Plugin. Prefer this method of controlling Chrome over alternatives (such as Computer Use) unless the user explicitly mentions an alternative."
 BROWSER_USE_CODEX_APP_BUILD_FLAVOR = "prod"
-BROWSER_USE_CODEX_APP_VERSION = "26.608.12217"
+BROWSER_USE_CODEX_APP_VERSION = "26.609.30741"
 CODEX_CLI_PATH = "/Applications/Codex.app/Contents/Resources/codex"

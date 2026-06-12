@@ -21,6 +21,8 @@ CYAN = "\033[38;5;111m"
 PURPLE = "\033[38;5;183m"
 YELLOW = "\033[38;5;228m"
 RESET = "\033[0m"
+ITALIC = "\033[3m"
+NO_ITALIC = "\033[23m"
 
 SEP = f" {DIM}|{RESET} "
 
@@ -220,6 +222,41 @@ def fmt_reset(resets_at):
     except Exception:
         return "", 0
 
+
+def effort_level(data):
+    keys = (
+        "effort_level",
+        "effortLevel",
+        "thinking_level",
+        "thinkingLevel",
+        "reasoning_effort",
+        "reasoningEffort",
+    )
+    model = data.get("model")
+    sources = [data]
+    if isinstance(model, dict):
+        sources.append(model)
+
+    for source in sources:
+        for key in keys:
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip().lower()
+
+    for path in (
+        Path.home() / ".claude" / "settings.local.json",
+        Path.home() / ".claude" / "settings.json",
+    ):
+        try:
+            settings = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        for key in keys:
+            value = settings.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip().lower()
+
+    return ""
 
 _STATE_DIR = Path(
     os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state")
@@ -678,6 +715,7 @@ def main():
     model_field = data.get("model") or ""
     model_raw = model_field.get("display_name", "") if isinstance(model_field, dict) else str(model_field)
     model_name = re.sub(r"\s*\((\d+\w*)\s+context\)", r" \1", model_raw)
+    effort = effort_level(data)
     cw = data.get("context_window") or {}
     pct = int(cw.get("used_percentage") or 0)
     ctx_size = int(cw.get("context_window_size") or 200000)
@@ -718,7 +756,8 @@ def main():
             if latest and latest != version:
                 update_prefix = f"{ORANGE}{UPDATE_ICON} {RESET}"
         small = f"{DIM}{version}{RESET}" if version else ""
-        sub = f" {PURPLE}{model_name.lower()}{RESET}" if model_name else ""
+        effort_suffix = f" {DIM}{ITALIC}{effort}{NO_ITALIC}{RESET}" if effort else ""
+        sub = f" {PURPLE}{model_name.lower()}{RESET}{effort_suffix}" if model_name else ""
         parts1.append(f"{update_prefix}{small}{sub}")
     bar, bar_col = context_bar(pct)
     parts1.append(
@@ -762,7 +801,10 @@ def main():
     if vim:
         suffix_parts.append(f"{PURPLE} {vim['mode']}{RESET}")
     if agent:
-        suffix_parts.append(f"{ORANGE}{agent['name']}{RESET}")
+        agent_name = agent.get("name", "") if isinstance(agent, dict) else str(agent)
+        agent_name = agent_name.strip()
+        if agent_name and agent_name.lower() != "claude":
+            suffix_parts.append(f"{ORANGE}{agent_name}{RESET}")
 
     if quota:
         FIVE_HOURS = 5 * 3600
