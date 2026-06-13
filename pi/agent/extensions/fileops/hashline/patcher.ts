@@ -33,7 +33,7 @@ import { MismatchError } from "./mismatch";
 import { detectLineEnding, type LineEnding, normalizeToLF, restoreLineEndings, stripBom } from "./normalize";
 import { Recovery, type RecoveryResult } from "./recovery";
 import type { Snapshot, SnapshotStore } from "./snapshots";
-import type { ApplyResult, BlockResolution, BlockResolver, Edit } from "./types";
+import type { ApplyOptions, ApplyResult, BlockResolution, BlockResolver, Edit } from "./types";
 
 export interface PatcherOptions {
 	/** Storage backend used for all reads and writes. */
@@ -46,6 +46,8 @@ export interface PatcherOptions {
 	 * host did not wire a resolver). Plain line-range ops never need it.
 	 */
 	blockResolver?: BlockResolver;
+	/** OMP-compatible apply-time behavior knobs. */
+	applyOptions?: ApplyOptions;
 }
 
 /** Per-section result returned by {@link Patcher.apply} / {@link Patcher.commit}. */
@@ -168,6 +170,7 @@ export class Patcher {
 	readonly snapshots: SnapshotStore;
 	readonly recovery: Recovery;
 	readonly blockResolver: BlockResolver | undefined;
+	readonly applyOptions: ApplyOptions;
 
 	constructor(options: PatcherOptions) {
 		if (!options.snapshots) {
@@ -177,6 +180,7 @@ export class Patcher {
 		this.snapshots = options.snapshots;
 		this.recovery = new Recovery(options.snapshots);
 		this.blockResolver = options.blockResolver;
+		this.applyOptions = options.applyOptions ?? {};
 	}
 
 	/**
@@ -365,6 +369,13 @@ export class Patcher {
 		const expected = exists ? section.fileHash : undefined;
 		const snapshot = expected !== undefined ? this.snapshots.byHash(canonicalPath, expected) : null;
 		const liveMatches = snapshot !== null && snapshotProvesUnchanged(snapshot, normalized);
+		const observedLineWarning = snapshot?.unobservedAnchorWarning(section.collectAnchorLines());
+		const blockWarnings: string[] = [];
+		const appendObservedWarning = (result: ApplyResult): ApplyResult => {
+			const combined = [...blockWarnings, ...(result.warnings ?? [])];
+			if (observedLineWarning) combined.unshift(observedLineWarning);
+			return combined.length > 0 ? { ...result, warnings: combined } : result;
+		};
 
 		// Resolve `replace block N:` edits to concrete ranges before recovery
 		// runs. Block anchors are expressed against the snapshot the section tag
@@ -383,6 +394,7 @@ export class Patcher {
 			resolved = resolveBlockEdits(edits, baseText, section.path, this.blockResolver, {
 				onUnresolved: "throw",
 				onResolved: (resolution) => blockResolutions.push(resolution),
+				onWarning: (message) => blockWarnings.push(message),
 			});
 		}
 
@@ -391,7 +403,7 @@ export class Patcher {
 		// what the caller read, so echo them back. (A drifted file falls through
 		// to recovery below, where line numbers shift, so resolutions are dropped.)
 		if (expected === undefined || liveMatches) {
-			const result = applyEdits(normalized, resolved);
+			const result = appendObservedWarning(applyEdits(normalized, resolved, this.applyOptions));
 			return blockResolutions.length > 0 ? { ...result, blockResolutions } : result;
 		}
 		// Head/tail-only inserts are position-stable: "start"/"end" cannot move
@@ -399,7 +411,7 @@ export class Patcher {
 		// content and warn instead of hard-failing — unlike an anchored
 		// mismatch, which cannot be safely relocated and must reject.
 		if (!hasAnchorScopedEdit(resolved)) {
-			const result = applyEdits(normalized, resolved);
+			const result = appendObservedWarning(applyEdits(normalized, resolved, this.applyOptions));
 			return { ...result, warnings: [HEADTAIL_DRIFT_WARNING, ...(result.warnings ?? [])] };
 		}
 		// File drifted: try to replay the edit against the version the tag
@@ -410,8 +422,9 @@ export class Patcher {
 				currentText: normalized,
 				fileHash: expected,
 				edits: resolved,
+				applyOptions: this.applyOptions,
 			});
-			if (recovered) return recoveryToApplyResult(recovered);
+			if (recovered) return recoveryToApplyResult(appendObservedWarning(recovered));
 		}
 		throw this.#mismatchError(section, canonicalPath, normalized, expected, snapshot !== null);
 	}

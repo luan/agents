@@ -348,11 +348,12 @@ export class Executor {
 		this.#edits.push({ kind: "delete", anchor: { ...anchor }, lineNum, index: this.#editIndex++ });
 	}
 
-	#pushBlock(anchor: Anchor, payloads: readonly PayloadRow[], lineNum: number): void {
+	#pushBlock(anchor: Anchor, payloads: readonly PayloadRow[], lineNum: number, mode?: "insert_after"): void {
 		this.#edits.push({
 			kind: "block",
 			anchor: { ...anchor },
 			payloads: payloads.map((payload) => payload.text),
+			...(mode === undefined ? {} : { mode }),
 			lineNum,
 			index: this.#editIndex++,
 		});
@@ -380,6 +381,11 @@ export class Executor {
 		if (target.kind === "block") {
 			if (payloads.length === 0) throw new Error(`line ${lineNum}: ${EMPTY_BLOCK}`);
 			this.#pushBlock(target.anchor, payloads, lineNum);
+			return;
+		}
+		if (target.kind === "insert_after_block") {
+			if (payloads.length === 0) throw new Error(`line ${lineNum}: ${EMPTY_INSERT}`);
+			this.#pushBlock(target.anchor, payloads, lineNum, "insert_after");
 			return;
 		}
 		if (payloads.length === 0) {

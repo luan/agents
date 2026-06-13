@@ -1,7 +1,7 @@
 import { readFile, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import { formatHashlineHeader } from "./format.js";
-import { InMemorySnapshotStore } from "./snapshots.js";
+import { InMemorySnapshotStore, type ObservedLines } from "./snapshots.js";
 
 const HASHLINE_SNAPSHOT_STORE_KEY = Symbol.for("pi.fileops.hashline.snapshots");
 
@@ -10,7 +10,12 @@ type HashlineSnapshotGlobal = typeof globalThis & {
 };
 
 const snapshotGlobal = globalThis as HashlineSnapshotGlobal;
-if (!snapshotGlobal[HASHLINE_SNAPSHOT_STORE_KEY]) {
+
+function isCompatibleSnapshotStore(value: unknown): value is InMemorySnapshotStore {
+	return value instanceof InMemorySnapshotStore;
+}
+
+if (!isCompatibleSnapshotStore(snapshotGlobal[HASHLINE_SNAPSHOT_STORE_KEY])) {
 	snapshotGlobal[HASHLINE_SNAPSHOT_STORE_KEY] = new InMemorySnapshotStore();
 }
 
@@ -35,16 +40,19 @@ function normalizeToLf(text: string): string {
 	return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 }
 
-export function recordHashlineSnapshot(path: string, fullText: string): string {
-	return HASHLINE_SNAPSHOTS.record(path, normalizeToLf(fullText));
+export function recordHashlineSnapshot(path: string, fullText: string, observedLines: ObservedLines = "all"): string {
+	return HASHLINE_SNAPSHOTS.record(path, normalizeToLf(fullText), observedLines);
 }
 
-export async function recordHashlineFileSnapshot(path: string): Promise<string | undefined> {
+export async function recordHashlineFileSnapshot(
+	path: string,
+	observedLines: ObservedLines = "all",
+): Promise<string | undefined> {
 	try {
 		const info = await stat(path);
 		if (info.size > SNAPSHOT_MAX_BYTES) return undefined;
 		const { text } = stripBom(await readFile(path, "utf-8"));
-		return recordHashlineSnapshot(path, text);
+		return recordHashlineSnapshot(path, text, observedLines);
 	} catch {
 		return undefined;
 	}

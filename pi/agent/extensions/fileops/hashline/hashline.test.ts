@@ -12,9 +12,13 @@ import { Recovery } from "./recovery";
 import { InMemorySnapshotStore } from "./snapshots";
 import type { BlockResolution, BlockResolver, Edit } from "./types";
 
-function apply(text: string, diff: string): { text: string; warnings: string[] } {
+function apply(
+	text: string,
+	diff: string,
+	options: { autoDropPureInsertDuplicates?: boolean } = {},
+): { text: string; warnings: string[] } {
 	const { edits, warnings } = parsePatch(diff);
-	const result = applyEdits(text, edits);
+	const result = applyEdits(text, edits, options);
 	return { text: result.text, warnings: [...warnings, ...(result.warnings ?? [])] };
 }
 
@@ -277,8 +281,37 @@ describe("hashline section headers", () => {
 	});
 });
 
+describe("pure insert boundary repair", () => {
+	it("auto-drops a duplicated single structural suffix by default", () => {
+		const result = apply("if ok {\n\tkeep();\n}", "insert before 3:\n+\tadded();\n+}");
+		expect(result.text).toBe("if ok {\n\tkeep();\n\tadded();\n}");
+		expect(result.warnings.join("\n")).toMatch(/Auto-dropped 1 duplicate line\(s\) at the end of insert/);
+	});
+
+	it("auto-drops a duplicated single structural prefix by default", () => {
+		const result = apply("});\nnext();", "insert after 1:\n+});\n+added();");
+		expect(result.text).toBe("});\nadded();\nnext();");
+		expect(result.warnings.join("\n")).toMatch(/Auto-dropped 1 duplicate line\(s\) at the start of insert/);
+	});
+
+	it("preserves generic pure-insert duplicate boundaries by default", () => {
+		const result = apply("aaa\nbbb\nccc", "insert after 2:\n+aaa\n+bbb\n+NEW");
+		expect(result.text).toBe("aaa\nbbb\naaa\nbbb\nNEW\nccc");
+		expect(result.warnings).toEqual([]);
+	});
+
+	it("auto-drops generic pure-insert duplicate boundaries when enabled", () => {
+		const result = apply("aaa\nbbb\nccc\nddd", "insert after 2:\n+aaa\n+bbb\n+NEW\n+ccc\n+ddd", {
+			autoDropPureInsertDuplicates: true,
+		});
+		expect(result.text).toBe("aaa\nbbb\nNEW\nccc\nddd");
+		expect(result.warnings.join("\n")).toMatch(/Auto-dropped 2 duplicate line\(s\) at the start of insert/);
+		expect(result.warnings.join("\n")).toMatch(/Auto-dropped 2 duplicate line\(s\) at the end of insert/);
+	});
+});
+
 describe("replacement boundary repair", () => {
-	it("repairs a multi-line duplicated closing block", () => {
+	it("auto-absorbs duplicated multiline suffix boundaries during replacement", () => {
 		const file = [
 			"import React from 'react';",
 			"import { Composition } from 'remotion';",
@@ -313,17 +346,21 @@ describe("replacement boundary repair", () => {
 		].join("\n");
 		const result = apply(file, diff);
 		expect(result.text).toBe(file.replace("durationInFrames={300}", "durationInFrames={600}"));
-		expect(result.warnings.join("\n")).toMatch(/delimiter-balance/);
+		expect(result.warnings.join("\n")).toMatch(
+			/dropped 2 duplicated trailing payload line\(s\) already present below the range/,
+		);
 	});
 
-	it("drops a single duplicated structural closer", () => {
+	it("auto-absorbs a single duplicated structural closer during replacement", () => {
 		const file = ["it('a', () => {", "\tsetup();", "\trun();", "});", "after();"].join("\n");
 		const result = apply(file, "replace 2..3:\n+\tsetup2();\n+\trun2();\n+});");
 		expect(result.text).toBe(["it('a', () => {", "\tsetup2();", "\trun2();", "});", "after();"].join("\n"));
-		expect(result.warnings.join("\n")).toMatch(/delimiter-balance/);
+		expect(result.warnings.join("\n")).toMatch(
+			/dropped 1 duplicated trailing payload line\(s\) already present below the range/,
+		);
 	});
 
-	it("drops a single duplicated structural opener", () => {
+	it("drops a duplicated structural opener when it exactly explains delimiter imbalance", () => {
 		const file = [
 			"class Renderer {",
 			"\tprivate ready = false;",
@@ -342,19 +379,23 @@ describe("replacement boundary repair", () => {
 		const lines = result.text.split("\n");
 		expect(lines.filter((line) => line === "\tplanRender(")).toHaveLength(1);
 		expect(result.text).toContain("c: number");
-		expect(result.warnings.join("\n")).toMatch(/delimiter-balance/);
+		expect(result.warnings.join("\n")).toMatch(
+			/dropped 1 duplicated leading payload line\(s\) already present above the range/,
+		);
 	});
 
-	it("spares a structural closer the range deleted without restating", () => {
+	it("keeps structural closing lines the replacement range deleted without restating", () => {
 		const file = ["const handlers = {", "\ta() {", "\t\trun();", "\t},", "};"].join("\n");
 		const result = apply(file, "replace 5..5:\n+\tb() {\n+\t\trun2();\n+\t},");
 		expect(result.text).toBe(
 			["const handlers = {", "\ta() {", "\t\trun();", "\t},", "\tb() {", "\t\trun2();", "\t},", "};"].join("\n"),
 		);
-		expect(result.warnings.join("\n")).toMatch(/delimiter-balance/);
+		expect(result.warnings.join("\n")).toMatch(
+			/kept 1 structural closing line\(s\) the range deleted without restating/,
+		);
 	});
 
-	it("drops duplicated leading and trailing boundary echoes", () => {
+	it("repairs single-line nonstructural boundary echoes when both sides are echoed", () => {
 		const file = [
 			"func _cmd_travel_homeworld():",
 			"\tvar destination = get_homeworld()",
@@ -377,23 +418,30 @@ describe("replacement boundary repair", () => {
 				"\tprint_status()",
 			].join("\n"),
 		);
-		expect(result.warnings.join("\n")).toMatch(/boundary echo/);
+		expect(result.warnings.join("\n")).toMatch(/replacement boundary echo/);
 	});
 
-	it("keeps a duplicated opener that does not explain the imbalance", () => {
+	it("keeps single blank boundary echoes", () => {
+		const file = ["function f() {", "", "\tfoo();", "", "}", "tail();"].join("\n");
+		const result = apply(file, "replace 3..3:\n+\n+\tfoo2();\n+");
+		expect(result.text).toBe(["function f() {", "", "", "\tfoo2();", "", "", "}", "tail();"].join("\n"));
+		expect(result.warnings).toEqual([]);
+	});
+
+	it("keeps unresolved delimiter imbalance instead of inventing a repair", () => {
 		const file = ["if (a) {", "\tfoo();", "}", "bar();"].join("\n");
 		const result = apply(file, "replace 2..2:\n+if (a) {\n+\tif (b) {\n+\t\tfoo();");
 		expect(result.text).toBe(["if (a) {", "if (a) {", "\tif (b) {", "\t\tfoo();", "}", "bar();"].join("\n"));
 		expect(result.warnings).toEqual([]);
 	});
 
-	it("keeps payloads where boundary echoes cover every payload line", () => {
+	it("keeps boundary echoes when they would consume the whole payload", () => {
 		const result = apply("A\nB\nold\nC\nD", "replace 3..3:\n+A\n+B\n+C\n+D");
 		expect(result.text).toBe("A\nB\nA\nB\nC\nD\nC\nD");
 		expect(result.warnings).toEqual([]);
 	});
 
-	it("keeps payloads made only of lines matching both neighbors", () => {
+	it("keeps payloads made only of single lines matching both neighbors", () => {
 		const result = apply("a\nold\nc", "replace 2..2:\n+a\n+c");
 		expect(result.text).toBe("a\na\nc\nc");
 		expect(result.warnings).toEqual([]);
@@ -418,7 +466,7 @@ describe("replacement boundary repair", () => {
 		expect(result.warnings).toEqual([]);
 	});
 
-	it("composes repair through stale-snapshot recovery", () => {
+	it("composes OMP-style boundary absorption through stale-snapshot recovery", () => {
 		const PATH = "/repo/spec.ts";
 		const snapshotText = [
 			"describe('suite', () => {",
@@ -447,7 +495,29 @@ describe("replacement boundary repair", () => {
 		expect(lines.filter((line) => line.trim() === "});")).toHaveLength(1);
 		expect(recovered?.text).toContain("setup2();");
 		expect(recovered?.text).toContain("const tail = 99;");
-		expect(recovered?.warnings?.join("\n")).toMatch(/delimiter-balance/);
+		expect(recovered?.warnings?.join("\n")).toMatch(
+			/dropped 1 duplicated trailing payload line\(s\) already present below the range/,
+		);
+	});
+});
+
+describe("after-insert landing correction", () => {
+	it("slides a shallower insert after anchor past structural closers", () => {
+		const file = ["function f() {", "    if (x) {", "        a();", "    }", "    b();", "}", ""].join("\n");
+		const result = apply(file, "insert after 3:\n+    c();");
+		expect(result.text).toBe(
+			["function f() {", "    if (x) {", "        a();", "    }", "    c();", "    b();", "}", ""].join("\n"),
+		);
+		expect(result.warnings.join("\n")).toMatch(/moved past 1 closing line to after line 4/);
+	});
+
+	it("does not slide when another hunk targets the closer", () => {
+		const file = ["function f() {", "    if (x) {", "        a();", "    }", "    b();", "}", ""].join("\n");
+		const result = apply(file, "insert after 3:\n+    c();\ndelete 4");
+		expect(result.text).toBe(
+			["function f() {", "    if (x) {", "        a();", "    c();", "    b();", "}", ""].join("\n"),
+		);
+		expect(result.warnings).toEqual([]);
 	});
 });
 
@@ -455,7 +525,8 @@ const stubResolver: BlockResolver = ({ line }) => ({ start: line, end: line + 1 
 
 function normalizeEdits(edits: readonly Edit[]): unknown[] {
 	return edits.map((edit) => {
-		if (edit.kind === "insert") return { kind: edit.kind, cursor: edit.cursor, text: edit.text, mode: edit.mode };
+		if (edit.kind === "insert")
+			return { kind: edit.kind, cursor: edit.cursor, text: edit.text, mode: edit.mode, blockStart: edit.blockStart };
 		if (edit.kind === "delete") return { kind: edit.kind, anchor: edit.anchor };
 		return { kind: edit.kind, anchor: edit.anchor };
 	});
@@ -493,6 +564,19 @@ describe("hashline block edits", () => {
 		expect(() => parsePatch("delete block 2\n+X")).toThrow(/`delete block N` does not take body rows/);
 	});
 
+	it("parses insert after block N into an insert-after block edit", () => {
+		const { edits } = parsePatch("insert after block 2:\n+A");
+		expect(edits).toHaveLength(1);
+		const edit = edits[0];
+		if (edit.kind !== "block") throw new Error("expected block edit");
+		expect(edit.mode).toBe("insert_after");
+		expect(edit.payloads).toEqual(["A"]);
+	});
+
+	it("rejects insert after block N with no body rows", () => {
+		expect(() => parsePatch("insert after block 2:")).toThrow(/`insert` needs at least one/);
+	});
+
 	it("expands a block edit exactly like the equivalent replace range", () => {
 		const blockEdits = resolveBlockEdits(
 			parsePatch("replace block 2:\n+A\n+B").edits,
@@ -509,6 +593,51 @@ describe("hashline block edits", () => {
 		const resolved = resolveBlockEdits(parsePatch("delete block 2").edits, "ignored", "x.ts", stubResolver);
 		expect(resolved.every((edit) => edit.kind === "delete")).toBe(true);
 		expect(resolved.map((edit) => (edit.kind === "delete" ? edit.anchor.line : 0))).toEqual([2, 3]);
+	});
+
+	it("expands insert-after-block to after-anchor inserts at the resolved block end", () => {
+		const resolved = resolveBlockEdits(
+			parsePatch("insert after block 2:\n+A").edits,
+			"ignored",
+			"x.ts",
+			stubResolver,
+			{
+				onResolved: (resolution) =>
+					expect(resolution).toEqual({ anchorLine: 2, start: 2, end: 3, op: "insert_after" }),
+			},
+		);
+		expect(normalizeEdits(resolved)).toEqual([
+			{
+				kind: "insert",
+				cursor: { kind: "after_anchor", anchor: { line: 3 } },
+				text: "A",
+				mode: undefined,
+				blockStart: 2,
+			},
+		]);
+	});
+
+	it("lowers unresolvable insert-after-block to plain insert-after with a warning", () => {
+		const warnings: string[] = [];
+		const resolved = resolveBlockEdits(
+			parsePatch("insert after block 2:\n+A").edits,
+			"one\ntwo",
+			"x.ts",
+			() => null,
+			{
+				onWarning: (message) => warnings.push(message),
+			},
+		);
+		expect(normalizeEdits(resolved)).toEqual([
+			{
+				kind: "insert",
+				cursor: { kind: "after_anchor", anchor: { line: 2 } },
+				text: "A",
+				mode: undefined,
+				blockStart: undefined,
+			},
+		]);
+		expect(warnings.join("\n")).toMatch(/applied as plain `insert after 2:`/);
 	});
 
 	it("returns the input untouched when there are no block edits", () => {
@@ -541,8 +670,8 @@ describe("hashline block edits", () => {
 			onResolved: (resolution) => seen.push(resolution),
 		});
 		expect(seen).toEqual([
-			{ anchorLine: 2, start: 2, end: 3, isDelete: false },
-			{ anchorLine: 5, start: 5, end: 6, isDelete: true },
+			{ anchorLine: 2, start: 2, end: 3, op: "replace" },
+			{ anchorLine: 5, start: 5, end: 6, op: "delete" },
 		]);
 	});
 
@@ -572,6 +701,18 @@ describe("hashline block edits", () => {
 		expect(section.applyPartialTo("a\nb\nc").text).toBe("a\nb\nc");
 	});
 
+	it("pulls a deeper insert-after-block body inside trailing block closers", () => {
+		const text = ["function f() {", "    afterEach(() => {", "        destroy();", "    });", "}", ""].join("\n");
+		const section = Patch.parseSingle("[x.ts#0A3B]\ninsert after block 2:\n+        setup();");
+		const result = section.applyTo(text, ({ line }) => ({ start: line, end: line + 2 }));
+		expect(result.text).toBe(
+			["function f() {", "    afterEach(() => {", "        destroy();", "        setup();", "    });", "}", ""].join(
+				"\n",
+			),
+		);
+		expect(result.warnings?.join("\n")).toMatch(/placed inside the block, after line 3/);
+	});
+
 	it("applies a block edit on the tag-match path and surfaces the resolved span", async () => {
 		const PATH = "x.ts";
 		const text = "function x() {\n  if (y) {\n  }\n}\n";
@@ -582,7 +723,7 @@ describe("hashline block edits", () => {
 		const result = await patcher.apply(Patch.parse(`[${PATH}#${tag}]\nreplace block 2:\n+  if (y || z) {\n+  }`));
 		expect(result.sections[0].op).toBe("update");
 		expect(fs.get(PATH)).toBe("function x() {\n  if (y || z) {\n  }\n}\n");
-		expect(result.sections[0].blockResolutions).toEqual([{ anchorLine: 2, start: 2, end: 3, isDelete: false }]);
+		expect(result.sections[0].blockResolutions).toEqual([{ anchorLine: 2, start: 2, end: 3, op: "replace" }]);
 	});
 
 	it("applies a delete-block edit on the tag-match path", async () => {
@@ -804,8 +945,20 @@ describe("hashline patcher contracts", () => {
 		record(store, PATH, v1);
 		const { edits } = parsePatch("replace 10..10:\n+L10-EDITED");
 		const recovered = new Recovery(store).tryRecover({ path: PATH, currentText: v1, fileHash: tag0, edits });
+
 		expect(recovered).not.toBeNull();
 		expect(recovered?.text).toContain("L10-EDITED");
+	});
+
+	it("ignores deletion of the trailing phantom newline sentinel", async () => {
+		const PATH = "eof.ts";
+		const text = "one\ntwo\n";
+		const fs = new InMemoryFilesystem([[PATH, text]]);
+		const snapshots = new InMemorySnapshotStore();
+		const tag = record(snapshots, PATH, text);
+		const patcher = new Patcher({ fs, snapshots });
+		await patcher.apply(Patch.parse(`[${PATH}#${tag}]\ndelete 3`));
+		expect(fs.get(PATH)).toBe(text);
 	});
 
 	it("returns null when neither patch recovery nor replay can land", () => {
@@ -883,6 +1036,22 @@ describe("numbered diff and compact preview", () => {
 		expect(preview.preview).toBe("1:a\n2:b\n3:X\n4:Y\n5:d\n6:e");
 		expect(preview.addedLines).toBe(2);
 		expect(preview.removedLines).toBe(1);
+	});
+
+	it("can generate wider numbered diff context for risky structural edits", () => {
+		const before = "a\nb\nc\nd\ne\nf\ng\nh\ni\n";
+		const after = "a\nb\nc\nD\ne\nf\ng\nh\ni\n";
+		expect(generateNumberedDiff(before, after).diff).toBe(" 2|b\n 3|c\n-4|d\n+4|D\n 5|e\n 6|f");
+		expect(generateNumberedDiff(before, after, { contextLines: 4 }).diff).toBe(
+			" 1|a\n 2|b\n 3|c\n-4|d\n+4|D\n 5|e\n 6|f\n 7|g\n 8|h",
+		);
+	});
+
+	it("adds matching block-boundary context rows around partial structural diffs", () => {
+		const before = ["function f() {", "  if (x) {", "    a();", "  }", "}", "tail();", ""].join("\n");
+		const after = before.replace("if (x)", "if (y)");
+		const { diff } = generateNumberedDiff(before, after, { contextLines: 0, path: "x.ts" });
+		expect(diff).toContain(" 4|  }");
 	});
 
 	it("elides long added runs with a marker", () => {

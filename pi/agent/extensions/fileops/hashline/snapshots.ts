@@ -3,25 +3,51 @@
  * bind hashline section tags to the exact file content that minted them.
  *
  * A section tag fingerprints the whole normalized file text. Producers
- * (typically `read`, `search`, and successful `edit`) record full text; the
- * patcher resolves a tag back to that file version and verifies or recovers
- * against it. Partial outputs may display only selected lines, but their tag is
- * still a whole-file tag.
+ * (typically `read`, `search`, and successful `edit`) record full text plus
+ * which line numbers were actually displayed to the model. Full reads record
+ * all lines; partial reads and search results record only emitted lines.
+ * The patcher can then warn when an edit uses a valid tag but targets lines
+ * that were not present in the transcript.
  */
+
+/** OMP-style observed-line authority for a full-file snapshot. */
+export type ObservedLines = "all" | Iterable<number>;
+
+function normalizeObservedLines(observedLines: ObservedLines): Set<number> | null {
+	if (observedLines === "all") return null;
+	const lines = new Set<number>();
+	for (const line of observedLines) {
+		if (Number.isInteger(line) && line > 0) lines.add(line);
+	}
+	return lines;
+}
+
+function mergeObservedLines(current: Set<number> | null, incoming: Set<number> | null): Set<number> | null {
+	if (current === null || incoming === null) return null;
+	return new Set([...current, ...incoming]);
+}
+
+function describeLineList(lines: readonly number[]): string {
+	if (lines.length <= 6) return lines.join(", ");
+	return `${lines.slice(0, 6).join(", ")}, …`;
+}
 
 /** One full-file version observed at a point in time. */
 export class Snapshot {
 	readonly fullText: string;
 	readonly recordedAt: number;
+	#observedLines: Set<number> | null;
 
 	constructor(
 		readonly path: string,
 		text: string,
 		readonly hash: string,
+		observedLines: ObservedLines = "all",
 		recordedAt: number = Date.now(),
 	) {
 		this.fullText = text;
 		this.recordedAt = recordedAt;
+		this.#observedLines = normalizeObservedLines(observedLines);
 	}
 
 	get(lineNumber: number): string | undefined {
@@ -36,6 +62,20 @@ export class Snapshot {
 	matchesLiveFile(currentLines: readonly string[]): boolean {
 		return this.fullText === currentLines.join("\n");
 	}
+
+	mergeObservedLines(observedLines: ObservedLines): void {
+		this.#observedLines = mergeObservedLines(this.#observedLines, normalizeObservedLines(observedLines));
+	}
+
+	unobservedAnchorWarning(anchorLines: readonly number[]): string | undefined {
+		if (this.#observedLines === null) return undefined;
+		const missing = [...new Set(anchorLines)].filter((line) => !this.#observedLines?.has(line)).sort((a, b) => a - b);
+		if (missing.length === 0) return undefined;
+		return (
+			`This edit uses line(s) ${describeLineList(missing)} that were not displayed by the read/search output that minted this snapshot tag. ` +
+			`Re-read the target range before making further line-numbered edits across unseen gaps.`
+		);
+	}
 }
 
 /**
@@ -49,8 +89,8 @@ export abstract class SnapshotStore {
 	/** Recorded version for `path` whose tag equals `hash`, or `null`. */
 	abstract byHash(path: string, hash: string): Snapshot | null;
 
-	/** Record the full normalized text of `path` and return its tag. */
-	abstract record(path: string, fullText: string): string;
+	/** Record full normalized text and the observed line numbers for `path`; returns its tag. */
+	abstract record(path: string, fullText: string, observedLines?: ObservedLines): string;
 
 	/** Drop snapshots belonging to a single path. */
 	abstract invalidate(path: string): void;
@@ -123,17 +163,19 @@ export class InMemorySnapshotStore extends SnapshotStore {
 		return history.find((snapshot) => snapshot.hash === upper) ?? null;
 	}
 
-	record(path: string, fullText: string): string {
+	record(path: string, fullText: string, observedLines: ObservedLines = "all"): string {
 		const hash = computeFileHash(fullText);
 		const history = this.#versions.get(path) ?? [];
+		const incomingObservedLines = normalizeObservedLines(observedLines);
 		const existing = history.find((snapshot) => snapshot.hash === hash);
 		if (existing) {
+			existing.mergeObservedLines(incomingObservedLines ?? "all");
 			this.#versions.set(path, [existing, ...history.filter((snapshot) => snapshot !== existing)]);
 			for (const evicted of touchPathOrder(this.#pathOrder, path, this.#maxPaths)) this.#versions.delete(evicted);
 			return hash;
 		}
 
-		const snapshot = new Snapshot(path, fullText, hash);
+		const snapshot = new Snapshot(path, fullText, hash, incomingObservedLines ?? "all");
 		this.#versions.set(path, [snapshot, ...history].slice(0, this.#maxVersionsPerPath));
 		for (const evicted of touchPathOrder(this.#pathOrder, path, this.#maxPaths)) this.#versions.delete(evicted);
 		return hash;

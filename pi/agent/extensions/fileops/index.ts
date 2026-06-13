@@ -17,6 +17,7 @@ import { createTwoFilesPatch } from "diff";
 import { Type } from "typebox";
 import { runCommand as runExternalCommand } from "../shared/command-runner.ts";
 import { EmptyComponent, runningFrame, shineText, textComponent } from "../shared/tui";
+import { buildLineEntriesWithBlockContext } from "./block-context.ts";
 import { preloadBlockLanguages, treeSitterBlockResolver } from "./block-resolver.ts";
 import { columnCountForWidth, renderColumns } from "./columns.ts";
 import {
@@ -37,7 +38,7 @@ import {
 	SNAPSHOT_MAX_BYTES,
 } from "./hashline/anchors.js";
 import { buildCompactDiffPreview, generateNumberedDiff } from "./hashline/diff-preview.ts";
-import { formatHashlineHeader, formatNumberedLines } from "./hashline/format.ts";
+import { formatHashlineHeader } from "./hashline/format.ts";
 import { Filesystem, NotFoundError, type WriteResult } from "./hashline/fs.ts";
 import { Patch } from "./hashline/input.ts";
 import { Patcher } from "./hashline/patcher.ts";
@@ -69,6 +70,7 @@ type EditConfig = {
 	fuzzyMatch: boolean;
 	fuzzyThreshold: number;
 	allowReplaceAll: boolean;
+	autoDropPureInsertDuplicates: boolean;
 };
 
 type ReplaceEntry = {
@@ -157,6 +159,7 @@ const DEFAULT_CONFIG: EditConfig = {
 	fuzzyMatch: true,
 	fuzzyThreshold: 0.95,
 	allowReplaceAll: true,
+	autoDropPureInsertDuplicates: false,
 };
 const EXTENSION_DIR = dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = join(EXTENSION_DIR, "config.json");
@@ -250,6 +253,16 @@ function loadConfig(): EditConfig {
 				: Number.isFinite(fuzzyThreshold)
 					? Math.max(0, Math.min(1, fuzzyThreshold))
 					: DEFAULT_CONFIG.fuzzyThreshold,
+			autoDropPureInsertDuplicates:
+				process.env.PI_FILEOPS_HASHLINE_AUTO_DROP_PURE_INSERT_DUPLICATES === "1" ||
+				process.env.PI_FILEOPS_HASHLINE_AUTO_DROP_PURE_INSERT_DUPLICATES === "true"
+					? true
+					: process.env.PI_FILEOPS_HASHLINE_AUTO_DROP_PURE_INSERT_DUPLICATES === "0" ||
+							process.env.PI_FILEOPS_HASHLINE_AUTO_DROP_PURE_INSERT_DUPLICATES === "false"
+						? false
+						: typeof parsed.autoDropPureInsertDuplicates === "boolean"
+							? parsed.autoDropPureInsertDuplicates
+							: DEFAULT_CONFIG.autoDropPureInsertDuplicates,
 			allowReplaceAll:
 				typeof parsed.allowReplaceAll === "boolean" ? parsed.allowReplaceAll : DEFAULT_CONFIG.allowReplaceAll,
 		};
@@ -1236,21 +1249,40 @@ function noChangeDiagnostic(path: string): string {
 }
 
 function formatBlockResolution(resolution: BlockResolution): string {
-	const op = resolution.isDelete ? "delete block" : "replace block";
+	const op =
+		resolution.op === "insert_after"
+			? "insert after block"
+			: resolution.op === "delete"
+				? "delete block"
+				: "replace block";
 	const lines = resolution.end - resolution.start + 1;
 	const span =
 		resolution.start === resolution.end ? `line ${resolution.start}` : `lines ${resolution.start}-${resolution.end}`;
 	return `${op} ${resolution.anchorLine} → resolved ${span} (${lines} line${lines === 1 ? "" : "s"})`;
 }
 
-async function executeHashline(cwd: string, input: string) {
+function hasStructuralDelimiterChange(before: string, after: string): boolean {
+	if (before === after) return false;
+	return /[{}()[\]]/.test(before) || /[{}()[\]]/.test(after);
+}
+
+function editPreviewContextLines(before: string, after: string, warnings: readonly string[]): number {
+	return warnings.length > 0 || hasStructuralDelimiterChange(before, after) ? 4 : 2;
+}
+
+async function executeHashline(cwd: string, input: string, config: EditConfig) {
 	const patch = Patch.parse(input, { cwd });
 	if (patch.sections.length === 0) throw new Error("hashline mode requires at least one [PATH#TAG] section.");
 	const fs = new CwdHashlineFilesystem(cwd);
 	// The block resolver is synchronous; warm its language cache for every
 	// section path before the apply so `replace block N:` edits resolve.
 	await preloadBlockLanguages(patch.sections.map((section) => section.path));
-	const patcher = new Patcher({ fs, snapshots: HASHLINE_SNAPSHOTS, blockResolver: treeSitterBlockResolver });
+	const patcher = new Patcher({
+		fs,
+		snapshots: HASHLINE_SNAPSHOTS,
+		blockResolver: treeSitterBlockResolver,
+		applyOptions: { autoDropPureInsertDuplicates: config.autoDropPureInsertDuplicates },
+	});
 	const targets = patch.sections.map((section) => fs.canonicalPath(section.path));
 	const applied = await withHashlineMutationQueues(targets, () => patcher.apply(patch));
 
@@ -1265,7 +1297,11 @@ async function executeHashline(cwd: string, input: string) {
 		// Model-facing text: the fresh `[path#tag]` re-anchoring handle, block
 		// span echoes, and a compact post-edit preview whose line numbers are
 		// directly usable by the next edit.
-		const preview = buildCompactDiffPreview(generateNumberedDiff(section.before, section.after).diff);
+		const numberedDiff = generateNumberedDiff(section.before, section.after, {
+			contextLines: editPreviewContextLines(section.before, section.after, section.warnings),
+			path: section.path,
+		});
+		const preview = buildCompactDiffPreview(numberedDiff.diff);
 		const blockBlock =
 			section.blockResolutions && section.blockResolutions.length > 0
 				? `\n${section.blockResolutions.map(formatBlockResolution).join("\n")}`
@@ -1309,7 +1345,7 @@ async function executeByMode(cwd: string, params: EditInput, config: EditConfig,
 			);
 		case "hashline":
 			if (typeof params.input !== "string") throw new Error("edit hashline mode requires input.");
-			return executeHashline(cwd, params.input);
+			return executeHashline(cwd, params.input, config);
 		case "replace":
 			return executeReplace(
 				cwd,
@@ -1369,23 +1405,32 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 			if (params.raw && explicitRanges.length === 0 && params.limit === undefined)
 				return { content: [{ type: "text", text }] };
 			const allLines = textToDisplayLines(text);
+			await preloadBlockLanguages([absolute]);
 			if (explicitRanges.length > 0) {
 				const ranges = mergeLineRanges(explicitRanges);
 				const entries = selectedLineEntries(allLines, ranges);
 				if (params.raw) return { content: [{ type: "text", text: entries.map(([, line]) => line).join("\n") }] };
+				const displayEntries = buildLineEntriesWithBlockContext(
+					allLines,
+					ranges.map((range) => ({ startLine: range.start, endLine: range.end })),
+					absolute,
+				);
+				const observedLines = displayEntries.flatMap((entry) => (entry.kind === "line" ? [entry.lineNumber] : []));
 				const tag =
 					Buffer.byteLength(text, "utf8") <= SNAPSHOT_MAX_BYTES
-						? recordHashlineSnapshot(absolute, text)
+						? recordHashlineSnapshot(absolute, text, observedLines)
 						: undefined;
-				const outputRows = entries.map(([lineNumber, line]) => `${lineNumber}:${line}`);
+				const outputRows = displayEntries.map((entry) =>
+					entry.kind === "ellipsis" ? "…" : `${entry.lineNumber}:${entry.text}`,
+				);
 				const output = [
 					...(tag ? [formatHashlineHeader(displayPath(callCwd, absolute), tag)] : []),
 					...outputRows,
 				].join("\n");
-				const visibleEntries = entries.slice(0, 80);
+				const visibleEntries = displayEntries.filter((entry) => entry.kind === "line").slice(0, 80);
 				const highlightedRows = await highlightCodeRows(
 					selectedPath,
-					visibleEntries.map(([, line]) => line),
+					visibleEntries.map((entry) => entry.text),
 				);
 				return {
 					content: [{ type: "text", text: output }],
@@ -1401,18 +1446,40 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 					: Math.min(allLines.length, startLine - 1 + Math.max(1, params.limit));
 			const selected = allLines.slice(startLine - 1, endExclusive);
 			if (params.raw) return { content: [{ type: "text", text: selected.join("\n") }] };
+			const wholeFileSelected = params.limit === undefined && startLine === 1 && endExclusive === allLines.length;
+			const displayEntries = wholeFileSelected
+				? selected.map((line, index) => ({
+						kind: "line" as const,
+						lineNumber: startLine + index,
+						text: line,
+						context: false,
+					}))
+				: buildLineEntriesWithBlockContext(allLines, [{ startLine, endLine: endExclusive }], absolute);
+			const observedLines = wholeFileSelected
+				? "all"
+				: displayEntries.flatMap((entry) => (entry.kind === "line" ? [entry.lineNumber] : []));
 			const tag =
-				Buffer.byteLength(text, "utf8") <= SNAPSHOT_MAX_BYTES ? recordHashlineSnapshot(absolute, text) : undefined;
-			let output = `${tag ? `${formatHashlineHeader(displayPath(callCwd, absolute), tag)}\n` : ""}${formatNumberedLines(selected.join("\n"), startLine)}`;
+				Buffer.byteLength(text, "utf8") <= SNAPSHOT_MAX_BYTES
+					? recordHashlineSnapshot(absolute, text, observedLines)
+					: undefined;
+			let output = `${tag ? `${formatHashlineHeader(displayPath(callCwd, absolute), tag)}\n` : ""}${displayEntries
+				.map((entry) => (entry.kind === "ellipsis" ? "…" : `${entry.lineNumber}:${entry.text}`))
+				.join("\n")}`;
 			if (endExclusive < allLines.length) {
 				const remaining = allLines.length - endExclusive;
 				const lineWord = remaining === 1 ? "line" : "lines";
 				output += `\n\n[${remaining} more ${lineWord} in file. Use offset=${endExclusive + 1} or path:${endExclusive + 1}-${allLines.length} to continue.]`;
 			}
-			const visibleSelected = selected.slice(0, 80);
+			const visibleSelected = displayEntries.filter((entry) => entry.kind === "line").slice(0, 80);
 			return {
 				content: [{ type: "text", text: output }],
-				details: { hashlineTag: tag, highlightedRows: await highlightCodeRows(selectedPath, visibleSelected) },
+				details: {
+					hashlineTag: tag,
+					highlightedRows: await highlightCodeRows(
+						selectedPath,
+						visibleSelected.map((entry) => entry.text),
+					),
+				},
 			};
 		},
 	});
@@ -1474,6 +1541,7 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 				byFile.set(absolute, fileLines);
 			}
 			if (byFile.size === 0) return { content: [{ type: "text", text: "No matches found in selected ranges" }] };
+			await preloadBlockLanguages(byFile.keys());
 			const sections: string[] = [];
 			const highlightedSections: HighlightedSection[] = [];
 			let emittedRows = 0;
@@ -1487,23 +1555,40 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 				if (cappedOrdered.length < ordered.length) truncatedSearch = true;
 				if (cappedOrdered.length === 0) continue;
 				const display = displayPath(callCwd, absolute);
-				const tag = await recordHashlineFileSnapshot(absolute);
-				const visibleOrdered = cappedOrdered.slice(0, 80);
+				const rawFile = normalizeToLf((await readFile(absolute, "utf-8")).replace(/^\uFEFF/, ""));
+				const fullLines = textToDisplayLines(rawFile);
+				const entryText = new Map(cappedOrdered.map(([lineNumber, entry]) => [lineNumber, entry.text] as const));
+				const displayEntries = buildLineEntriesWithBlockContext(
+					fullLines,
+					cappedOrdered.map(([lineNumber]) => ({ startLine: lineNumber, endLine: lineNumber })),
+					absolute,
+					{ lineText: (lineNumber, sourceText) => entryText.get(lineNumber) ?? sourceText },
+				);
+				const tag = await recordHashlineFileSnapshot(
+					absolute,
+					displayEntries.flatMap((entry) => (entry.kind === "line" ? [entry.lineNumber] : [])),
+				);
+				const visibleOrdered = displayEntries.filter((entry) => entry.kind === "line").slice(0, 80);
 				const highlightedRows = (
 					await highlightCodeRows(
 						display,
-						visibleOrdered.map(([, entry]) => entry.text),
+						visibleOrdered.map((entry) => entry.text),
 					)
-				).map((row, index) =>
-					visibleOrdered[index]?.[1].isMatch ? highlightSearchMatches(row, String(params.pattern)) : row,
-				);
+				).map((row, index) => {
+					const lineNumber = visibleOrdered[index]?.lineNumber;
+					return lineNumber !== undefined && fileEntries.get(lineNumber)?.isMatch
+						? highlightSearchMatches(row, String(params.pattern))
+						: row;
+				});
 				highlightedSections.push({ path: display, rows: highlightedRows });
 				sections.push(
 					[
 						...(tag ? [formatHashlineHeader(display, tag)] : []),
-						...cappedOrdered.map(
-							([lineNumber, entry]) => `${entry.isMatch ? "*" : " "}${lineNumber}:${entry.text}`,
-						),
+						...displayEntries.map((entry) => {
+							if (entry.kind === "ellipsis") return "…";
+							const isMatch = fileEntries.get(entry.lineNumber)?.isMatch === true;
+							return `${isMatch ? "*" : " "}${entry.lineNumber}:${entry.text}`;
+						}),
 					].join("\n"),
 				);
 			}
@@ -1626,6 +1711,7 @@ function formatConfig(config: EditConfig): string {
 		`fuzzyMatch: ${config.fuzzyMatch}`,
 		`fuzzyThreshold: ${config.fuzzyThreshold}`,
 		`allowReplaceAll: ${config.allowReplaceAll}`,
+		`autoDropPureInsertDuplicates: ${config.autoDropPureInsertDuplicates}`,
 	].join("\n");
 }
 

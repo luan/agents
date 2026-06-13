@@ -308,11 +308,15 @@ export class PatchSection {
 	 */
 	applyTo(text: string, blockResolver?: BlockResolver): ApplyResult {
 		const { edits, warnings } = this.parse();
-		const resolved = resolveBlockEdits(edits, text, this.path, blockResolver, { onUnresolved: "throw" });
+		const blockWarnings: string[] = [];
+		const resolved = resolveBlockEdits(edits, text, this.path, blockResolver, {
+			onUnresolved: "throw",
+			onWarning: (message) => blockWarnings.push(message),
+		});
 		const result = applyEdits(text, resolved);
-		// Preserve parse warnings so consumers don't need to call `parse()`
+		// Preserve parse/block warnings so consumers don't need to call `parse()`
 		// separately.
-		const merged = warnings.length === 0 ? result.warnings : [...warnings, ...(result.warnings ?? [])];
+		const merged = [...warnings, ...blockWarnings, ...(result.warnings ?? [])];
 		return merged && merged.length > 0
 			? { ...result, warnings: merged }
 			: { text: result.text, firstChangedLine: result.firstChangedLine };
@@ -330,9 +334,13 @@ export class PatchSection {
 	 */
 	applyPartialTo(text: string, blockResolver?: BlockResolver): ApplyResult {
 		const { edits, warnings } = parsePatchStreaming(this.diff);
-		const resolved = resolveBlockEdits(edits, text, this.path, blockResolver, { onUnresolved: "drop" });
+		const blockWarnings: string[] = [];
+		const resolved = resolveBlockEdits(edits, text, this.path, blockResolver, {
+			onUnresolved: "drop",
+			onWarning: (message) => blockWarnings.push(message),
+		});
 		const result = applyEdits(text, resolved);
-		const merged = warnings.length === 0 ? result.warnings : [...warnings, ...(result.warnings ?? [])];
+		const merged = [...warnings, ...blockWarnings, ...(result.warnings ?? [])];
 		return merged && merged.length > 0
 			? { ...result, warnings: merged }
 			: { text: result.text, firstChangedLine: result.firstChangedLine };

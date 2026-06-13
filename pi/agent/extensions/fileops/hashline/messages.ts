@@ -5,10 +5,35 @@
  * them.
  */
 
-import { HL_FILE_HASH_SEP, HL_FILE_PREFIX, HL_FILE_SUFFIX } from "./format";
+import { formatNumberedLine, HL_FILE_HASH_SEP, HL_FILE_PREFIX, HL_FILE_SUFFIX } from "./format";
 
 /** Lines of context shown either side of a hash mismatch. */
 export const MISMATCH_CONTEXT = 2;
+
+/**
+ * Numbered `LINE:TEXT` rows around `anchorLines` (±{@link MISMATCH_CONTEXT}),
+ * `*`-marking anchors, `...` between non-adjacent runs. Out-of-range anchors
+ * contribute no rows.
+ */
+export function formatAnchoredContext(anchorLines: readonly number[], fileLines: readonly string[]): string[] {
+	const displayLines = new Set<number>();
+	for (const line of anchorLines) {
+		if (line < 1 || line > fileLines.length) continue;
+		const lo = Math.max(1, line - MISMATCH_CONTEXT);
+		const hi = Math.min(fileLines.length, line + MISMATCH_CONTEXT);
+		for (let lineNum = lo; lineNum <= hi; lineNum++) displayLines.add(lineNum);
+	}
+	const anchorSet = new Set(anchorLines);
+	const rows: string[] = [];
+	let previous = -1;
+	for (const lineNum of [...displayLines].sort((a, b) => a - b)) {
+		if (previous !== -1 && lineNum > previous + 1) rows.push("...");
+		previous = lineNum;
+		const marker = anchorSet.has(lineNum) ? "*" : " ";
+		rows.push(`${marker}${formatNumberedLine(lineNum, fileLines[lineNum - 1] ?? "")}`);
+	}
+	return rows;
+}
 
 /** Optional patch envelope start marker; silently consumed when present. */
 export const BEGIN_PATCH_MARKER = "*** Begin Patch";
@@ -36,27 +61,51 @@ export const EMPTY_BLOCK =
 	"`replace block N:` needs at least one `+TEXT` body row. To delete a block, use `delete block N`.";
 
 /**
- * Error text emitted when a `replace block N:` anchor cannot be resolved to a
- * syntactic block (unrecognized language, blank/out-of-range line, no node
- * begins on line N such as a lone closing delimiter, or the resolved block has
- * a syntax error). Names the offending line and steers back to an explicit
- * `replace N..M:` range.
+ * Block-anchored replace/delete could not resolve to a syntactic block
+ * (unsupported language, blank/out-of-range line, no node beginning on N, or
+ * parse error). Appends a {@link formatAnchoredContext} preview when
+ * `fileLines` is given. `insert after block N:` never reaches this — it is
+ * lowered to plain `insert after N:` instead (see
+ * {@link insertAfterBlockUnresolvedLoweredWarning}).
  */
-export function blockUnresolvedMessage(line: number): string {
-	return (
-		`\`replace block ${line}:\` could not resolve a syntactic block beginning on line ${line}. ` +
-		`The language may be unsupported, the line may be blank or a closing delimiter, or the block may not parse. ` +
-		`Use \`replace ${line}..M:\` with the block's explicit end line instead.`
-	);
+export function blockUnresolvedMessage(
+	line: number,
+	op: "replace" | "delete" = "replace",
+	fileLines?: readonly string[],
+): string {
+	const phrase = op === "delete" ? `delete block ${line}` : `replace block ${line}:`;
+	const fallback = op === "delete" ? `delete ${line}..M` : `replace ${line}..M:`;
+	let message =
+		`\`${phrase}\` could not resolve a syntactic block beginning on line ${line} ` +
+		`(unsupported language, blank/closer line, or parse error). Use \`${fallback}\` with explicit lines.`;
+	if (fileLines) {
+		const context = formatAnchoredContext([line], fileLines);
+		if (context.length > 0) message += `\n\n${context.join("\n")}`;
+	}
+	return message;
+}
+
+/** Block-anchored edit reached a path with no {@link BlockResolver} wired in — a host-configuration bug. */
+export const BLOCK_RESOLVER_UNAVAILABLE =
+	"`replace block`/`delete block`/`insert after block` are not available here (no block resolver configured). Use a concrete line range.";
+
+/**
+ * `insert after block N:` anchored on a closing-delimiter line, lowered to
+ * plain `insert after N:` — the closer ends a block, and inserting after it
+ * is exactly what the plain form does.
+ */
+export function insertAfterBlockCloserLoweredWarning(line: number): string {
+	return `\`insert after block ${line}:\` anchors on a closing delimiter, so it was applied as plain \`insert after ${line}:\`. Anchor on the line that OPENS the construct.`;
 }
 
 /**
- * Error text emitted when a `replace block N:` edit reaches a code path that
- * has no {@link BlockResolver} wired in. Indicates a host-configuration bug
- * rather than authored-input error.
+ * `insert after block N:` anchor unresolvable (unsupported language, blank
+ * line, parse error, or no resolver), lowered to plain `insert after N:` —
+ * applying with a warning beats failing the patch.
  */
-export const BLOCK_RESOLVER_UNAVAILABLE =
-	"`replace block N:` is not available here (no tree-sitter block resolver is configured). Use `replace N..M:` with an explicit range.";
+export function insertAfterBlockUnresolvedLoweredWarning(line: number): string {
+	return `\`insert after block ${line}:\` could not resolve a syntactic block on line ${line}, so it was applied as plain \`insert after ${line}:\`. Verify the landing line; anchor on a line that OPENS a construct.`;
+}
 
 /**
  * Internal invariant error: `applyEdits` received an unresolved `replace block
@@ -75,6 +124,24 @@ export const DELETE_BLOCK_TAKES_NO_BODY =
 
 /** Error text emitted when an insert hunk has no body. */
 export const EMPTY_INSERT = "`insert` needs at least one `+TEXT` body row.";
+
+/**
+ * `insert after` body indented shallower than the anchor: the landing slid
+ * forward past trailing closer lines — the common "anchored on the last line
+ * I read instead of after the block" mistake.
+ */
+export function afterInsertLandingShiftWarning(anchorLine: number, landingLine: number, crossed: number): string {
+	return `insert after ${anchorLine}: body indented shallower than the anchor, so the landing moved past ${crossed} closing line${crossed === 1 ? "" : "s"} to after line ${landingLine}. For the deeper position inside the block, re-issue with the body indented to match.`;
+}
+
+/**
+ * `insert after block N:` body indented deeper than the block's closer: the
+ * landing was pulled inside the block — a deeper body almost always means
+ * "append inside the block's body".
+ */
+export function blockInsertLandingShiftWarning(blockStart: number, closerLine: number, landingLine: number): string {
+	return `insert after block ${blockStart}: body indented deeper than closing line ${closerLine}, so it was placed inside the block, after line ${landingLine}. \`insert after block\` lands AFTER the block at sibling depth — if inside was intended, use plain \`insert after ${closerLine}:\`.`;
+}
 
 /** Warning text emitted by `Recovery` when an external write fits a cached snapshot. */
 export const RECOVERY_EXTERNAL_WARNING =

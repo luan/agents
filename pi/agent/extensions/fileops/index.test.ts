@@ -7,6 +7,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import fileopsExtension, { HASHLINE_GRAMMAR, PATCH_GRAMMAR, REPLACE_GRAMMAR } from "./index.ts";
 
 const originalVariant = process.env.PI_FILEOPS_EDIT_VARIANT;
+const originalAutoDropPureInsertDuplicates = process.env.PI_FILEOPS_HASHLINE_AUTO_DROP_PURE_INSERT_DUPLICATES;
 const theme = {
 	fg(_role: string, text: string) {
 		return text;
@@ -40,6 +41,11 @@ afterEach(() => {
 	if (originalVariant === undefined) delete process.env.PI_FILEOPS_EDIT_VARIANT;
 	else process.env.PI_FILEOPS_EDIT_VARIANT = originalVariant;
 	delete process.env.PI_EDIT_VARIANT;
+	if (originalAutoDropPureInsertDuplicates === undefined) {
+		delete process.env.PI_FILEOPS_HASHLINE_AUTO_DROP_PURE_INSERT_DUPLICATES;
+	} else {
+		process.env.PI_FILEOPS_HASHLINE_AUTO_DROP_PURE_INSERT_DUPLICATES = originalAutoDropPureInsertDuplicates;
+	}
 });
 
 function registerEditTool(mode: string): any {
@@ -214,6 +220,23 @@ describe("fileops extension modes", () => {
 		expect(readFileSync(join(cwd, "sample.txt"), "utf-8")).toBe("one\nTWO\nthree\nfour\n");
 	});
 
+	it("hashline edit warns when a partial-read tag is used outside displayed lines", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-partial-authority-"));
+		writeFileSync(join(cwd, "sample.txt"), "one\ntwo\nthree\nfour\n");
+		const tools = registerEditTools("hashline");
+		const readResult = await tools
+			.get("read")
+			.execute("read", { path: "sample.txt", ranges: ["2"] }, undefined, undefined, { cwd });
+		const header = readResult.content[0].text.split("\n")[0];
+
+		const result = await tools
+			.get("edit")
+			.execute("call", { input: `${header}\nreplace 4..4:\n+FOUR\n` }, undefined, undefined, { cwd });
+
+		expect(readFileSync(join(cwd, "sample.txt"), "utf-8")).toBe("one\ntwo\nthree\nFOUR\n");
+		expect(result.content[0].text).toContain("were not displayed by the read/search output");
+	});
+
 	it("hashline edit supports explicit before and after insertion anchors", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-insert-anchors-"));
 		writeFileSync(join(cwd, "sample.txt"), "alpha\nbeta\ngamma\n");
@@ -232,6 +255,29 @@ describe("fileops extension modes", () => {
 			);
 
 		expect(readFileSync(join(cwd, "sample.txt"), "utf-8")).toBe("alpha\nbefore beta\nbeta\nafter beta\ngamma\n");
+	});
+
+	it("hashline edit can auto-drop generic pure-insert duplicate context when configured", async () => {
+		process.env.PI_FILEOPS_HASHLINE_AUTO_DROP_PURE_INSERT_DUPLICATES = "true";
+		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-pure-insert-drop-"));
+		writeFileSync(join(cwd, "sample.txt"), "aaa\nbbb\nccc\nddd\n");
+		const tools = registerEditTools("hashline");
+		const readResult = await tools.get("read").execute("read", { path: "sample.txt" }, undefined, undefined, { cwd });
+		const header = readResult.content[0].text.split("\n")[0];
+
+		const result = await tools
+			.get("edit")
+			.execute(
+				"call",
+				{ input: `${header}\ninsert after 2:\n+aaa\n+bbb\n+NEW\n+ccc\n+ddd\n` },
+				undefined,
+				undefined,
+				{ cwd },
+			);
+
+		expect(readFileSync(join(cwd, "sample.txt"), "utf-8")).toBe("aaa\nbbb\nNEW\nccc\nddd\n");
+		expect(result.content[0].text).toContain("Auto-dropped 2 duplicate line(s) at the start of insert");
+		expect(result.content[0].text).toContain("Auto-dropped 2 duplicate line(s) at the end of insert");
 	});
 
 	it("hashline after insertion preserves scope delimiters", async () => {
@@ -455,7 +501,7 @@ describe("fileops extension modes", () => {
 		expect(readFileSync(join(cwd, "sample.txt"), "utf-8")).toBe("one\ntwo\nthree\n");
 	});
 
-	it("hashline edit repairs duplicated structural closers and surfaces the warning", async () => {
+	it("hashline edit auto-absorbs duplicated structural closers and surfaces the warning", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-boundary-repair-"));
 		writeFileSync(join(cwd, "sample.ts"), "it('a', () => {\n\tsetup();\n\trun();\n});\nafter();\n");
 		const tools = registerEditTools("hashline");
@@ -476,7 +522,9 @@ describe("fileops extension modes", () => {
 			"it('a', () => {\n\tsetup2();\n\trun2();\n});\nafter();\n",
 		);
 		expect(result.content[0].text).toContain("Warnings:");
-		expect(result.content[0].text).toContain("delimiter-balance");
+		expect(result.content[0].text).toContain(
+			"dropped 1 duplicated trailing payload line(s) already present below the range",
+		);
 	});
 
 	it("hashline edit resolves replace block spans through tree-sitter and echoes them", async () => {

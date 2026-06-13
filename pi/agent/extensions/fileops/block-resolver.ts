@@ -41,6 +41,14 @@ const WASM_BY_EXTENSION: Record<string, string> = {
 	zsh: "tree-sitter-bash/tree-sitter-bash.wasm",
 };
 
+export interface LineSpan {
+	startLine: number;
+	endLine: number;
+}
+
+const resolutionCache = new Map<string, BlockSpan | null>();
+const RESOLUTION_CACHE_MAX = 512;
+
 const loadedLanguages = new Map<string, Language | null>();
 let runtimeReady: Promise<boolean> | undefined;
 let sharedParser: Parser | undefined;
@@ -60,11 +68,6 @@ function ensureRuntime(): Promise<boolean> {
 	return runtimeReady;
 }
 
-/**
- * Load (and cache) the tree-sitter languages needed to resolve block edits in
- * `paths`. Unknown extensions are skipped; load failures are cached as
- * unresolvable. Safe to call repeatedly.
- */
 export async function preloadBlockLanguages(paths: Iterable<string>): Promise<void> {
 	const wanted = new Set<string>();
 	for (const path of paths) {
@@ -88,10 +91,6 @@ export async function preloadBlockLanguages(paths: Iterable<string>): Promise<vo
 	);
 }
 
-/**
- * Column of the first non-space/tab character on `row` (0-indexed), or `null`
- * when the row is out of range or blank — there is no block to resolve there.
- */
 function firstContentColumn(code: string, row: number): number | null {
 	const line = code.split("\n")[row];
 	if (line === undefined) return null;
@@ -102,59 +101,133 @@ function firstContentColumn(code: string, row: number): number | null {
 	return null;
 }
 
-/**
- * Last content line of `node`, 1-indexed: when a node's final byte is the
- * trailing newline, its `endPosition` lands at column 0 of the NEXT row —
- * counting that row would make every such block one line too long.
- */
 function nodeContentEndLine(node: Node): number {
 	const pos = node.endPosition;
 	const row = pos.column === 0 && pos.row > 0 ? pos.row - 1 : pos.row;
 	return row + 1;
 }
 
-/**
- * Synchronous tree-sitter block resolver. Returns `null` for unsupported or
- * not-yet-{@link preloadBlockLanguages}'d languages, blank/out-of-range
- * lines, points where no block begins, and error-containing subtrees.
- */
-export const treeSitterBlockResolver: BlockResolver = ({ path, text, line }): BlockSpan | null => {
-	if (line < 1 || text.length === 0) return null;
+function hashText(text: string): string {
+	let hash = 0x811c9dc5;
+	for (let index = 0; index < text.length; index++) {
+		hash ^= text.charCodeAt(index);
+		hash = Math.imul(hash, 0x01000193) >>> 0;
+	}
+	return hash.toString(36);
+}
+
+function cacheKey(path: string, text: string, line: number): string {
+	return `${hashText(text)}:${text.length}:${line}:${path}`;
+}
+
+function rememberResolution(key: string, value: BlockSpan | null): BlockSpan | null {
+	if (resolutionCache.size >= RESOLUTION_CACHE_MAX) {
+		const oldest = resolutionCache.keys().next().value;
+		if (oldest !== undefined) resolutionCache.delete(oldest);
+	}
+	resolutionCache.set(key, value);
+	return value;
+}
+
+function parserForPath(path: string): Parser | null {
 	const wasm = wasmForPath(path);
 	if (wasm === undefined) return null;
 	const language = loadedLanguages.get(wasm);
 	if (!language || sharedParser === undefined) return null;
+	sharedParser.setLanguage(language);
+	return sharedParser;
+}
+
+export const treeSitterBlockResolver: BlockResolver = ({ path, text, line }): BlockSpan | null => {
+	if (line < 1 || text.length === 0) return null;
+	const key = cacheKey(path, text, line);
+	const cached = resolutionCache.get(key);
+	if (cached !== undefined) return cached;
 
 	const row = line - 1;
 	const column = firstContentColumn(text, row);
-	if (column === null) return null;
+	if (column === null) return rememberResolution(key, null);
+	const parser = parserForPath(path);
+	if (parser === null) return rememberResolution(key, null);
 
-	sharedParser.setLanguage(language);
-	const tree = sharedParser.parse(text);
-	if (!tree) return null;
+	const tree = parser.parse(text);
+	if (!tree) return rememberResolution(key, null);
 	try {
 		const root = tree.rootNode;
 		const leaf = root.namedDescendantForPosition({ row, column });
-		if (!leaf) return null;
-		// A leaf whose own start row is earlier than `row` means the point
-		// landed on a continuation line or a closing delimiter of a block that
-		// opened earlier — there is no block *beginning* on line N.
-		if (leaf.startPosition.row !== row) return null;
-		// Climb to the outermost named ancestor that still begins on `row`,
-		// excluding the whole-file root.
+		if (!leaf) return rememberResolution(key, null);
+		if (leaf.startPosition.row !== row) return rememberResolution(key, null);
 		let node = leaf;
 		for (let parent = node.parent; parent !== null; parent = node.parent) {
 			if (parent.id === root.id) break;
 			if (parent.startPosition.row !== row) break;
 			node = parent;
 		}
-		// Refuse degenerate error-recovery spans: a missing brace can make
-		// tree-sitter wrap a huge region in an ERROR node. Checking only the
-		// resolved node's subtree (not the whole file) keeps an unrelated
-		// syntax error elsewhere from disabling the feature.
-		if (node.hasError) return null;
-		return { start: node.startPosition.row + 1, end: nodeContentEndLine(node) };
+		if (node.hasError) return rememberResolution(key, null);
+		return rememberResolution(key, { start: node.startPosition.row + 1, end: nodeContentEndLine(node) });
 	} finally {
 		tree.delete();
 	}
 };
+
+function normalizeRanges(ranges: readonly LineSpan[], totalLines: number): LineSpan[] {
+	const normalized: LineSpan[] = [];
+	for (const range of ranges) {
+		const startLine = Math.max(1, Math.trunc(range.startLine));
+		const endLine = Math.min(totalLines, Math.trunc(range.endLine));
+		if (endLine >= startLine) normalized.push({ startLine, endLine });
+	}
+	normalized.sort((left, right) => left.startLine - right.startLine || left.endLine - right.endLine);
+	const merged: LineSpan[] = [];
+	for (const range of normalized) {
+		const previous = merged[merged.length - 1];
+		if (previous && range.startLine <= previous.endLine + 1)
+			previous.endLine = Math.max(previous.endLine, range.endLine);
+		else merged.push({ ...range });
+	}
+	return merged;
+}
+
+function lineVisible(ranges: readonly LineSpan[], line: number): boolean {
+	return ranges.some((range) => line >= range.startLine && line <= range.endLine);
+}
+
+function collectBoundaryLines(node: Node, ranges: readonly LineSpan[], out: Set<number>): void {
+	if (node.isNamed && node.parent !== null) {
+		const start = node.startPosition.row + 1;
+		const end = nodeContentEndLine(node);
+		if (end > start) {
+			const startVisible = lineVisible(ranges, start);
+			const endVisible = lineVisible(ranges, end);
+			if (startVisible && !endVisible) out.add(end);
+			else if (endVisible && !startVisible) out.add(start);
+		}
+	}
+	for (let i = 0; i < node.namedChildCount; i++) {
+		const child = node.namedChild(i);
+		if (child) collectBoundaryLines(child, ranges, out);
+	}
+}
+
+export function treeSitterEnclosingBlockBoundaries(
+	path: string,
+	text: string,
+	ranges: readonly LineSpan[],
+): number[] | null {
+	const lines = text.split("\n");
+	const normalized = normalizeRanges(ranges, lines.length);
+	if (text.length === 0 || normalized.length === 0) return [];
+	const parser = parserForPath(path);
+	if (parser === null) return null;
+	const tree = parser.parse(text);
+	if (!tree) return null;
+	try {
+		const root = tree.rootNode;
+		if (root.hasError) return null;
+		const out = new Set<number>();
+		collectBoundaryLines(root, normalized, out);
+		return [...out].sort((left, right) => left - right);
+	} finally {
+		tree.delete();
+	}
+}

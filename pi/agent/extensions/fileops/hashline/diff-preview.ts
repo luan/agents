@@ -13,6 +13,7 @@
  * `…` marker instead of echoing every inserted line.
  */
 import { diffLines } from "diff";
+import { findBlockContextLines } from "../block-context.ts";
 import type { CompactDiffOptions, CompactDiffPreview } from "./types";
 
 const DIFF_CONTEXT_LINES = 2;
@@ -22,10 +23,97 @@ function formatNumberedDiffLine(prefix: "+" | "-" | " ", lineNum: number, conten
 }
 
 /** Result of {@link generateNumberedDiff}. */
+export interface NumberedDiffOptions {
+	/** Context lines around changed regions (default 2). */
+	contextLines?: number;
+	/** Path used for tree-sitter block-boundary context. */
+	path?: string;
+}
+
+function normalizeContextLines(value: number | undefined): number {
+	if (value === undefined || !Number.isFinite(value)) return DIFF_CONTEXT_LINES;
+	return Math.max(0, Math.trunc(value));
+}
+
 export interface NumberedDiff {
 	diff: string;
 	/** First changed line number in the post-edit file, or `undefined` when equal. */
 	firstChangedLine?: number;
+}
+
+const DIFF_GAP_ROW = "...";
+
+function insertContextRows(rows: string[], contextLines: ReadonlyMap<number, string>): void {
+	const context = [...contextLines].sort(([left], [right]) => left - right);
+	const seen = new Set(rows);
+	for (const [lineNumber, text] of context) {
+		const row = formatNumberedDiffLine(" ", lineNumber, text);
+		if (seen.has(row)) continue;
+		let insertIndex = rows.length;
+		let previousSourceLine: number | undefined;
+		let nextSourceLine: number | undefined;
+		for (let i = 0; i < rows.length; i++) {
+			const parsed = parseNumberedDiffLine(rows[i]);
+			if (!parsed || parsed.kind === "+") continue;
+			if (parsed.lineNumber < lineNumber) {
+				previousSourceLine = parsed.lineNumber;
+				continue;
+			}
+			nextSourceLine = parsed.lineNumber;
+			insertIndex = i;
+			break;
+		}
+		const chunk: string[] = [];
+		if (previousSourceLine !== undefined && lineNumber > previousSourceLine + 1) chunk.push(DIFF_GAP_ROW);
+		chunk.push(row);
+		if (nextSourceLine !== undefined && nextSourceLine > lineNumber + 1) chunk.push(DIFF_GAP_ROW);
+		rows.splice(insertIndex, 0, ...chunk);
+		seen.add(row);
+	}
+}
+
+function addBlockContextRows(
+	rows: string[],
+	oldLines: readonly string[],
+	newLines: readonly string[],
+	path?: string,
+): void {
+	if (!path) return;
+	const oldVisible: number[] = [];
+	const newVisible: number[] = [];
+	const changes: { newPos: number; delta: 1 | -1 }[] = [];
+	let offset = 0;
+	for (const row of rows) {
+		const parsed = parseNumberedDiffLine(row);
+		if (!parsed) continue;
+		switch (parsed.kind) {
+			case "-":
+				oldVisible.push(parsed.lineNumber);
+				changes.push({ newPos: parsed.lineNumber + offset, delta: -1 });
+				offset--;
+				break;
+			case "+":
+				newVisible.push(parsed.lineNumber);
+				changes.push({ newPos: parsed.lineNumber, delta: 1 });
+				offset++;
+				break;
+			default:
+				oldVisible.push(parsed.lineNumber);
+				newVisible.push(parsed.lineNumber + offset);
+				break;
+		}
+	}
+	const toOldLineNumber = (newLineNumber: number): number => {
+		let shift = 0;
+		for (const change of changes) if (change.newPos <= newLineNumber) shift += change.delta;
+		return newLineNumber - shift;
+	};
+	const contextRows = findBlockContextLines(oldLines, oldVisible, path);
+	for (const [lineNumber, text] of findBlockContextLines(newLines, newVisible, path)) {
+		const oldLineNumber = toOldLineNumber(lineNumber);
+		if (!contextRows.has(oldLineNumber)) contextRows.set(oldLineNumber, text);
+	}
+	insertContextRows(rows, contextRows);
 }
 
 /**
@@ -34,8 +122,13 @@ export interface NumberedDiff {
  * runs are elided without placeholders — the jump in emitted line numbers
  * conveys the gap.
  */
-export function generateNumberedDiff(oldContent: string, newContent: string): NumberedDiff {
+export function generateNumberedDiff(
+	oldContent: string,
+	newContent: string,
+	options: NumberedDiffOptions = {},
+): NumberedDiff {
 	const parts = diffLines(oldContent, newContent);
+	const contextLines = normalizeContextLines(options.contextLines);
 	const output: string[] = [];
 
 	let oldLineNum = 1;
@@ -72,20 +165,20 @@ export function generateNumberedDiff(oldContent: string, newContent: string): Nu
 			let linesToShow: string[];
 
 			if (lastWasChange && nextPartIsChange) {
-				if (raw.length > DIFF_CONTEXT_LINES * 2) {
-					const leadingContext = raw.slice(0, DIFF_CONTEXT_LINES);
-					const trailingContext = raw.slice(raw.length - DIFF_CONTEXT_LINES);
+				if (raw.length > contextLines * 2) {
+					const leadingContext = raw.slice(0, contextLines);
+					const trailingContext = raw.slice(raw.length - contextLines);
 					middleSkip = raw.length - leadingContext.length - trailingContext.length;
 					linesToShow = [...leadingContext, ...trailingContext];
 				} else {
 					linesToShow = raw;
 				}
 			} else if (nextPartIsChange) {
-				leadingSkip = Math.max(0, raw.length - DIFF_CONTEXT_LINES);
+				leadingSkip = Math.max(0, raw.length - contextLines);
 				linesToShow = raw.slice(leadingSkip);
 			} else {
-				trailingSkip = Math.max(0, raw.length - DIFF_CONTEXT_LINES);
-				linesToShow = raw.slice(0, DIFF_CONTEXT_LINES);
+				trailingSkip = Math.max(0, raw.length - contextLines);
+				linesToShow = raw.slice(0, contextLines);
 			}
 
 			// Skip placeholders are omitted: the jump between emitted line
@@ -95,7 +188,7 @@ export function generateNumberedDiff(oldContent: string, newContent: string): Nu
 				newLineNum += leadingSkip;
 			}
 
-			const firstChunkLength = middleSkip > 0 ? DIFF_CONTEXT_LINES : linesToShow.length;
+			const firstChunkLength = middleSkip > 0 ? contextLines : linesToShow.length;
 			for (const line of linesToShow.slice(0, firstChunkLength)) {
 				output.push(formatNumberedDiffLine(" ", oldLineNum, line));
 				oldLineNum++;
@@ -123,7 +216,7 @@ export function generateNumberedDiff(oldContent: string, newContent: string): Nu
 
 		lastWasChange = false;
 	}
-
+	addBlockContextRows(output, oldContent.split("\n"), newContent.split("\n"), options.path);
 	return { diff: output.join("\n"), firstChangedLine };
 }
 
