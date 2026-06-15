@@ -58,7 +58,7 @@ After approval, create a normal typed `plan` artifact linked to the brief: `vlt 
 
 ### 6. Create tasks
 
-Create task records with `task_write` (ct task add if tool is unavailable), including blockers, epic links, priorities, and the structured bodies.
+Create task records with `task_write`, including blockers, priorities, and the structured bodies. Do not create epic records or add epic metadata.
 
 ## Output
 

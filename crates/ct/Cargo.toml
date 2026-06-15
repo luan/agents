@@ -12,12 +12,9 @@ anyhow = "^1"
 chrono = "^0.4"
 clap = { version = "^4", features = ["derive"] }
 clap_complete = "^4"
-crossterm = "^0.29"
 dirs = "^6"
 image = "^0.25"
-getrandom = "^0.3"
 regex = "^1"
-ratatui = "^0.30"
 rmcp = { version = "^1", features = ["server", "macros", "transport-io"] }
 rusqlite = { version = "^0.39", features = ["bundled"] }
 serde = { version = "^1", features = ["derive"] }
@@ -29,8 +26,6 @@ thiserror = "^2"
 tempfile = "^3"
 tokio = { version = "^1", features = ["rt", "macros", "io-std"] }
 toml = "^0.8"
-tuirealm = "4"
-tui-textarea = { package = "tui-textarea-2", version = "0.11" }
 tree-sitter = { workspace = true }
 tree-sitter-bash = { workspace = true }
 tree-sitter-c = { workspace = true }

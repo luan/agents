@@ -73,4 +73,4 @@ Side effects happen inline as decisions crystallize:
 
 ### 4. Follow-up tasks
 
-If the user asks for executable follow-up work, create persisted tasks with `ct task`; do not add planning files to the repo or vault unless explicitly asked.
+If the user asks for executable follow-up work, create persisted tasks with `task_write`; do not add planning files to the repo or vault unless explicitly asked.

@@ -12,9 +12,7 @@ mod tool;
 mod tui;
 
 pub use apply_patch::run_apply_patch;
-pub use args::{
-    ApplyPatchArgs, DevAction, McpAction, RepoAction, ShellAction, TaskAction, TuiAction,
-};
+pub use args::{ApplyPatchArgs, DevAction, McpAction, RepoAction, ShellAction, TuiAction};
 pub use dev::run_dev;
 pub use repo::run_repo;
 pub use shell::run_shell;
@@ -34,12 +32,6 @@ pub enum Command {
     Repo {
         #[command(subcommand)]
         action: RepoAction,
-    },
-
-    #[command(about = "Project task storage")]
-    Task {
-        #[command(subcommand)]
-        action: TaskAction,
     },
 
     #[command(about = "Apply patches and inspect apply_patch telemetry")]

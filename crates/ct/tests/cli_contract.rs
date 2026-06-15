@@ -63,47 +63,6 @@ fn project_dir() -> TempDir {
     tempfile::tempdir().expect("create project tempdir")
 }
 
-fn ast_replace_apply_updates_files() {
-    if StdCommand::new("sg").arg("--version").output().is_err() {
-        return;
-    }
-    let (bp, _remote) = setup_blueprints();
-    let project = project_dir();
-    let state = tempfile::tempdir().expect("state dir");
-    run_git(project.path(), &["init", "--initial-branch=main"]);
-    fs::write(
-        project.path().join("main.rs"),
-        "fn main() {\n    let value = 1;\n}\n",
-    )
-    .expect("write source");
-
-    ct_cmd(bp.path())
-        .current_dir(project.path())
-        .env("XDG_STATE_HOME", state.path())
-        .args([
-            "dev",
-            "debug",
-            "ast",
-            "replace",
-            "--lang",
-            "rust",
-            "--pattern",
-            "let $A = 1",
-            "--rewrite",
-            "let $A = 2",
-            "--path",
-            "main.rs",
-            "--apply",
-            "--json",
-        ])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("\"apply\": true"));
-
-    let source = fs::read_to_string(project.path().join("main.rs")).expect("read source");
-    assert!(source.contains("let value = 2;"));
-}
-
 #[test]
 fn repo_namespace_routes_project_and_removes_top_level_project() {
     let (bp, _remote) = setup_blueprints();
@@ -182,16 +141,7 @@ fn top_level_help_exposes_only_canonical_public_domains() {
     let assert = ct_cmd(bp.path()).arg("--help").assert().success();
     let help = String::from_utf8(assert.get_output().stdout.clone()).expect("help utf8");
 
-    for canonical in [
-        "repo",
-        "task",
-        "apply-patch",
-        "mcp",
-        "hook",
-        "shell",
-        "tui",
-        "dev",
-    ] {
+    for canonical in ["repo", "apply-patch", "mcp", "hook", "shell", "tui", "dev"] {
         assert!(
             help.contains(canonical),
             "help should contain {canonical}:\n{help}"

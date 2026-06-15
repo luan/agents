@@ -11,10 +11,6 @@ mod phases;
 mod refs;
 mod slug;
 mod state;
-mod task;
-mod task_board;
-#[allow(dead_code)]
-mod task_tui;
 
 use clap::{CommandFactory, Parser};
 
@@ -28,7 +24,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         Some(cli::Command::Repo { action }) => cli::run_repo(action),
-        Some(cli::Command::Task { action }) => task::run_task(action),
         Some(cli::Command::Notify) => notify::run(),
         Some(cli::Command::Mcp { action }) => match action {
             cli::McpAction::ApplyPatch => mcp::run_apply_patch_server(),

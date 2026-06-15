@@ -1,13 +1,10 @@
-import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
-import { createInterface } from "node:readline";
-import { fileURLToPath } from "node:url";
+import { randomBytes } from "node:crypto";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 import {
 	type ExtensionAPI,
 	type ExtensionContext,
-	type Theme,
 	type ThemeColor,
 	ToolExecutionComponent,
 } from "@earendil-works/pi-coding-agent";
@@ -19,7 +16,6 @@ import {
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { runCommand as defaultRunCommand } from "../shared/command-runner";
 import { hasEnoughTerminalRows } from "../shared/terminal";
 import {
 	defineExtensionTui,
@@ -29,11 +25,17 @@ import {
 } from "../shared/tui";
 
 const tasksTui = defineExtensionTui({ id: "tasks" });
-type TaskCommand = "add" | "list" | "show" | "update" | "delete" | "accept" | "reject";
+type TaskCommand = "add" | "list" | "show" | "update" | "delete";
+type TaskStatus = "open" | "todo" | "in_progress" | "in_review" | "rejected" | "done" | "canceled";
+
+interface Theme {
+	fg(color: string, text: string): string;
+	bold?(text: string): string;
+	strikethrough?(text: string): string;
+}
 
 interface Config {
 	enabled: boolean;
-	command: string;
 	hud: {
 		enabled: boolean;
 		maxTasks: number;
@@ -43,9 +45,7 @@ interface Config {
 	keybindings: TaskBoardKeybindings;
 }
 
-interface Runtime {
-	runCommand?: typeof defaultRunCommand;
-}
+interface Runtime {}
 
 interface GuardState {
 	enabled: boolean;
@@ -69,47 +69,20 @@ interface TaskRecord {
 	priority?: number;
 	assigned_to?: string | null;
 	assigned_label?: string | null;
-	epic_id?: string | null;
-	epic_title?: string | null;
 	parent_id?: string | null;
 	blocked_by?: string[];
+	active_form?: string | null;
+	started_at?: number | null;
+	completed_at?: number | null;
 	created_at: number;
 	updated_at: number;
 }
-
-type TicketBoardLaneId = "rejected" | "ready" | "blocked" | "in_progress" | "in_review" | "done";
-type BlockedReasonKind = "open_blocker" | "missing_blocker" | "canceled_blocker" | "active_child";
-
-interface TicketBoardProjection {
-	boards: TicketBoardProjectionGroup[];
-}
-
-interface TicketBoardProjectionGroup {
-	key: string;
-	title: string;
-	epic_label?: string | null;
-	priority: number;
-	updated_at: number;
-	done: number;
-	total: number;
-	lanes: TicketBoardProjectionLane[];
-}
-
-interface TicketBoardProjectionLane {
-	id: TicketBoardLaneId;
-	title: string;
-	tickets: TicketBoardProjectionTicket[];
-}
-
-interface TicketBoardProjectionTicket {
-	task: TaskRecord;
-	lane: TicketBoardLaneId;
-	blocked_reasons?: Array<{ kind: BlockedReasonKind; task_id: string; title?: string | null }>;
+interface TaskStoreData {
+	tasks: TaskRecord[];
 }
 
 interface TaskSnapshot {
 	tasks: TaskRecord[];
-	board?: TicketBoardProjection;
 }
 
 interface TaskDetails {
@@ -123,8 +96,6 @@ interface TaskDetails {
 interface TaskBoardKeybindings {
 	toggle: string;
 	close: string[];
-	left: string[];
-	right: string[];
 	up: string[];
 	down: string[];
 	cycleStatus: string[];
@@ -140,32 +111,23 @@ interface TaskBoardKeybindings {
 	cancelDelete: string[];
 }
 
-const extensionDir = dirname(fileURLToPath(import.meta.url));
-const configPath = join(extensionDir, "config.json");
 const widgetId = "project-tasks";
-const taskHudFlashMs = 5000;
 const taskHudPulseFrameMs = 160;
 const maxGuardAutoTurnsWithoutProgress = 2;
 const silentTaskToolNames = new Set(["task_read", "task_write"]);
 const silentTaskToolPatchKey = Symbol.for("agents.tasks.silent-tool-render-patch");
+const spinnerFrames = ["✳", "✴", "✵", "✶", "✷", "✸", "✹", "✺", "✻", "✼", "✽"];
 let activeTaskBoard: { close: () => void } | undefined;
-let taskHudExpandedEpicKey: string | null | undefined;
+let taskHudExpanded = true;
 let taskHudPulseTimer: ReturnType<typeof setInterval> | undefined;
 let requestTaskHudRender: (() => void) | undefined;
 let taskHudWidget: TaskHudWidget | undefined;
 let taskHudWidgetCtx: ExtensionContext | undefined;
 let latestTaskHudState: TaskHudState | undefined;
-
-interface TaskHudFlash {
-	startedAt: number;
-	until: number;
-}
-
-const taskHudFlashes = new Map<string, TaskHudFlash>();
+let taskHudFrame = 0;
 
 interface TaskHudState {
 	tasks: TaskRecord[];
-	board?: TicketBoardProjection;
 	display: AssignmentDisplayContext;
 	config: Config;
 	taskGuardEnabled: boolean;
@@ -173,18 +135,15 @@ interface TaskHudState {
 
 const defaultConfig: Config = {
 	enabled: true,
-	command: "ct",
 	hud: {
 		enabled: true,
-		maxTasks: 6,
-		minTerminalRows: 28,
+		maxTasks: 10,
+		minTerminalRows: 24,
 		toggleShortcut: "alt+t",
 	},
 	keybindings: {
 		toggle: "alt+t",
 		close: ["escape", "alt+t"],
-		left: ["left", "h"],
-		right: ["right", "l"],
 		up: ["up", "k"],
 		down: ["down", "j"],
 		cycleStatus: ["space"],
@@ -203,7 +162,7 @@ const defaultConfig: Config = {
 
 function loadConfig(): Config {
 	try {
-		const parsed = JSON.parse(readFileSync(configPath, "utf8")) as Partial<Config>;
+		const parsed = JSON.parse(readFileSync(join(import.meta.dirname, "config.json"), "utf8")) as Partial<Config>;
 		return {
 			...defaultConfig,
 			...parsed,
@@ -215,170 +174,356 @@ function loadConfig(): Config {
 	}
 }
 
-function pushOption(args: string[], name: string, value: unknown): void {
-	if (typeof value === "number" && Number.isFinite(value)) {
-		args.push(name, String(value));
-		return;
-	}
-	if (typeof value !== "string" || value.length === 0) return;
-	args.push(name, value);
-}
-
-function pushRepeatedOption(args: string[], name: string, value: unknown): void {
-	if (!Array.isArray(value)) return;
-	for (const item of value) pushOption(args, name, item);
-}
-
-export function buildTaskCommand(action: TaskCommand, params: Record<string, unknown>): string[] {
-	const args = ["task", action];
-	switch (action) {
-		case "add":
-			args.push(String(params.title ?? ""));
-			pushOption(args, "--type", params.type);
-			pushOption(args, "--body", params.body);
-			pushOption(args, "--status", params.status);
-			pushOption(args, "--priority", params.priority);
-			pushOption(args, "--assigned-to", params.assigned_to);
-			pushOption(args, "--assigned-label", params.assigned_label);
-			pushOption(args, "--epic-id", params.epic_id);
-			pushOption(args, "--epic-title", params.epic_title);
-			pushRepeatedOption(args, "--label", params.labels);
-			pushOption(args, "--parent-id", params.parent_id);
-			pushRepeatedOption(args, "--blocked-by", params.blocked_by);
-			break;
-		case "list":
-			pushOption(args, "--status", params.status);
-			pushOption(args, "--type", params.type);
-			pushOption(args, "--label", params.label);
-			pushOption(args, "--epic-id", params.epic_id);
-			pushOption(args, "--assigned-to", params.assigned_to);
-			if (params.all === true) args.push("--all");
-			break;
-		case "show":
-		case "delete":
-		case "accept":
-			args.push(String(params.id ?? ""));
-			break;
-		case "reject":
-			args.push(String(params.id ?? ""));
-			for (const part of String(params.note ?? "")
-				.split(/\s+/)
-				.filter(Boolean))
-				args.push(part);
-			break;
-		case "update":
-			args.push(String(params.id ?? ""));
-			pushOption(args, "--type", params.type);
-			pushOption(args, "--title", params.title);
-			pushOption(args, "--body", params.body);
-			pushOption(args, "--status", params.status);
-			pushOption(args, "--priority", params.priority);
-			pushOption(args, "--assigned-to", params.assigned_to);
-			pushOption(args, "--assigned-label", params.assigned_label);
-			if (params.clear_assignee === true) args.push("--clear-assignee");
-			pushOption(args, "--epic-id", params.epic_id);
-			pushOption(args, "--epic-title", params.epic_title);
-			pushRepeatedOption(args, "--label", params.labels);
-			if (params.clear_epic === true) args.push("--clear-epic");
-			pushOption(args, "--parent-id", params.parent_id);
-			if (params.clear_parent === true) args.push("--clear-parent");
-			pushRepeatedOption(args, "--blocked-by", params.blocked_by);
-			if (params.clear_blockers === true) args.push("--clear-blockers");
-			break;
-	}
-	args.push("--json");
-	return args;
-}
-
-function parseTaskPayload(text: string, action: TaskCommand, args: string[]): TaskDetails {
-	try {
-		const parsed = JSON.parse(text || "{}") as {
-			task?: TaskRecord;
-			tasks?: TaskRecord[];
-			deleted?: string;
-		};
-		return {
-			action,
-			args,
-			task: parsed.task,
-			tasks: parsed.tasks,
-			deleted: parsed.deleted,
-		};
-	} catch {
-		return { action, args };
-	}
+function objectParam(value: unknown): Record<string, unknown> {
+	return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
 function textResult(text: string, details: TaskDetails) {
 	return { content: [{ type: "text" as const, text }], details };
 }
 
-function taskTransitionMessage(task?: TaskRecord): string | undefined {
-	if (!task) return undefined;
-	return `Rejected ${task.id}: ${task.title}`;
+function taskStorePath(cwd: string): string {
+	return join(cwd, ".pi", "tasks", "tasks.json");
 }
 
-function latestRejectionNote(task?: TaskRecord): string | undefined {
-	const notes = String(task?.body ?? "").match(/^- \d+: (.+)$/gm);
-	const latest = notes?.at(-1);
-	return latest?.replace(/^- \d+: /, "").trim() || undefined;
+class TaskStore {
+	private tasks = new Map<string, TaskRecord>();
+
+	constructor(private readonly cwd: string) {
+		this.load();
+	}
+
+	private load(): void {
+		try {
+			const parsed = JSON.parse(readFileSync(taskStorePath(this.cwd), "utf8")) as Partial<TaskStoreData>;
+			this.tasks.clear();
+			for (const task of parsed.tasks ?? []) this.tasks.set(task.id, normalizeStoredTask(task));
+			if (this.migrateNumericIds()) this.save();
+		} catch {}
+	}
+
+	private save(): void {
+		const path = taskStorePath(this.cwd);
+		mkdirSync(join(this.cwd, ".pi", "tasks"), { recursive: true });
+		const tmp = `${path}.tmp`;
+		writeFileSync(tmp, JSON.stringify({ tasks: this.listRaw() }, null, 2));
+		renameSync(tmp, path);
+	}
+
+	private listRaw(): TaskRecord[] {
+		return [...this.tasks.values()].sort(compareTasks);
+	}
+
+	add(params: Record<string, unknown>, ctx?: ExtensionContext, pi?: ExtensionAPI): TaskRecord {
+		const now = Date.now();
+		const status = normalizeStatus(params.status, "open");
+		const task: TaskRecord = {
+			id: this.nextId(),
+			title: requiredString(params.title, "title"),
+			body: stringValue(params.body),
+			status,
+			type: normalizeTaskType(params.type),
+			labels: stringArray(params.labels),
+			priority: numberValue(params.priority) ?? 0,
+			assigned_to: stringOrNull(params.assigned_to),
+			assigned_label: stringOrNull(params.assigned_label),
+			parent_id: stringOrNull(params.parent_id),
+			blocked_by: stringArray(params.blocked_by),
+			active_form: stringOrNull(params.active_form),
+			started_at: status === "in_progress" ? now : null,
+			completed_at: isTerminalStatus(status) ? now : null,
+			created_at: now,
+			updated_at: now,
+		};
+		const normalized = normalizeTaskParams(task as unknown as Record<string, unknown>, ctx, pi);
+		Object.assign(task, normalized);
+		this.tasks.set(task.id, task);
+		this.save();
+		return task;
+	}
+
+	list(filters: Record<string, unknown>, ctx?: ExtensionContext): TaskRecord[] {
+		this.load();
+		const assignedFilter =
+			filters.assigned_to === "current" ? sessionAssignment(ctx) : stringValue(filters.assigned_to);
+		return this.listRaw().filter((task) => {
+			if (filters.all !== true && isCanceled(task)) return false;
+			if (typeof filters.status === "string" && task.status !== filters.status) return false;
+			if (typeof filters.type === "string" && task.type !== filters.type) return false;
+			if (typeof filters.label === "string" && !(task.labels ?? []).includes(filters.label)) return false;
+			if (assignedFilter && task.assigned_to !== assignedFilter) return false;
+			return true;
+		});
+	}
+
+	show(id: string): TaskRecord {
+		this.load();
+		return this.resolve(id);
+	}
+
+	update(id: string, params: Record<string, unknown>, ctx?: ExtensionContext, pi?: ExtensionAPI): TaskRecord {
+		this.load();
+		const task = this.resolve(id);
+		guardTaskCompletion(task, params);
+		const now = Date.now();
+		const normalized = normalizeTaskParams(params, ctx, pi);
+		if (typeof normalized.title === "string") task.title = normalized.title;
+		if (typeof normalized.body === "string") task.body = normalized.body;
+		if (typeof normalized.priority === "number") task.priority = normalized.priority;
+		if (Array.isArray(normalized.labels)) task.labels = stringArray(normalized.labels);
+		if (typeof normalized.type === "string") task.type = normalizeTaskType(normalized.type);
+		if (normalized.assigned_to !== undefined) task.assigned_to = stringOrNull(normalized.assigned_to);
+		if (normalized.assigned_label !== undefined) task.assigned_label = stringOrNull(normalized.assigned_label);
+		if (normalized.clear_assignee === true) {
+			task.assigned_to = null;
+			task.assigned_label = null;
+		}
+		if (normalized.parent_id !== undefined) task.parent_id = stringOrNull(normalized.parent_id);
+		if (normalized.clear_parent === true) task.parent_id = null;
+		if (Array.isArray(normalized.blocked_by)) task.blocked_by = stringArray(normalized.blocked_by);
+		if (normalized.clear_blockers === true) task.blocked_by = [];
+		if (normalized.active_form !== undefined) task.active_form = stringOrNull(normalized.active_form);
+		if (typeof normalized.status === "string") {
+			const nextStatus = normalizeStatus(normalized.status, task.status);
+			if (nextStatus === "in_progress" && task.status !== "in_progress") {
+				task.started_at = now;
+				if (!task.active_form) task.active_form = gerundTitle(task.title);
+			}
+			if (isTerminalStatus(nextStatus) && !task.completed_at) task.completed_at = now;
+			if (!isTerminalStatus(nextStatus)) task.completed_at = null;
+			task.status = nextStatus;
+		}
+		task.updated_at = now;
+		this.tasks.set(task.id, task);
+		this.save();
+		return task;
+	}
+
+	delete(id: string): string {
+		this.load();
+		const task = this.resolve(id);
+		this.tasks.delete(task.id);
+		for (const candidate of this.tasks.values()) {
+			candidate.blocked_by = (candidate.blocked_by ?? []).filter((blocker) => blocker !== task.id);
+			if (candidate.parent_id === task.id) candidate.parent_id = null;
+		}
+		this.save();
+		return task.id;
+	}
+
+	private migrateNumericIds(): boolean {
+		const remap = new Map<string, string>();
+		const taken = new Set(this.tasks.keys());
+		for (const id of this.tasks.keys()) {
+			if (!/^\d+$/.test(id)) continue;
+			const next = uniqueRandomTaskId(taken);
+			remap.set(id, next);
+			taken.add(next);
+		}
+		if (remap.size === 0) return false;
+		const migrated = new Map<string, TaskRecord>();
+		for (const task of this.tasks.values()) {
+			const id = remap.get(task.id) ?? task.id;
+			migrated.set(id, {
+				...task,
+				id,
+				parent_id: task.parent_id ? (remap.get(task.parent_id) ?? task.parent_id) : task.parent_id,
+				blocked_by: (task.blocked_by ?? []).map((blocker) => remap.get(blocker) ?? blocker),
+			});
+		}
+		this.tasks = migrated;
+		return true;
+	}
+
+	private nextId(): string {
+		return uniqueRandomTaskId(new Set(this.tasks.keys()));
+	}
+
+	private resolve(idOrPrefix: string): TaskRecord {
+		const exact = this.tasks.get(idOrPrefix);
+		if (exact) return exact;
+		const matches = [...this.tasks.values()].filter((task) => task.id.startsWith(idOrPrefix));
+		if (matches.length === 1) return matches[0]!;
+		if (matches.length > 1) throw new Error(`Task id prefix '${idOrPrefix}' is ambiguous`);
+		throw new Error(`Task not found: ${idOrPrefix}`);
+	}
 }
 
-function publishTaskTransition(
-	pi: ExtensionAPI,
-	ctx: ExtensionContext,
-	action: "reject",
-	task?: TaskRecord,
-	note?: string,
-	triggerTurn = true,
-): void {
-	const message = taskTransitionMessage(task);
-	if (!message) return;
-	const noteLabel = "Rejection note";
-	const instruction =
-		"This human rejection has already been recorded. Do not call task reject or update this task to rejected again; treat the note as feedback for the next revision.";
-	const visibleText = [message, note ? `${noteLabel}: ${note}` : undefined, instruction].filter(Boolean).join("\n\n");
-	ctx.ui.notify?.(message, "info");
-	pi.sendMessage?.(
-		{
-			customType: "task-transition",
-			content: [{ type: "text", text: visibleText }],
-			display: true,
-			details: { action, taskId: task?.id, status: task?.status, note },
-		},
-		triggerTurn ? { deliverAs: "followUp", triggerTurn: true } : { deliverAs: "followUp" },
+function normalizeStoredTask(task: TaskRecord): TaskRecord {
+	return {
+		...task,
+		body: task.body ?? "",
+		status: task.status ?? "open",
+		type: task.type ?? "chore",
+		labels: task.labels ?? [],
+		priority: task.priority ?? 0,
+		blocked_by: task.blocked_by ?? [],
+		created_at: task.created_at ?? Date.now(),
+		updated_at: task.updated_at ?? task.created_at ?? Date.now(),
+	};
+}
+
+function stringValue(value: unknown): string {
+	return typeof value === "string" ? value : "";
+}
+
+function requiredString(value: unknown, name: string): string {
+	const text = stringValue(value).trim();
+	if (!text) throw new Error(`Task ${name} is required`);
+	return text;
+}
+
+function stringOrNull(value: unknown): string | null {
+	return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function stringArray(value: unknown): string[] {
+	return Array.isArray(value)
+		? value.filter((item): item is string => typeof item === "string" && item.length > 0)
+		: [];
+}
+
+function numberValue(value: unknown): number | undefined {
+	if (typeof value === "number" && Number.isFinite(value)) return value;
+	if (typeof value === "string" && value.trim() && Number.isFinite(Number(value))) return Number(value);
+	return undefined;
+}
+
+function normalizeStatus(value: unknown, fallback: string): TaskStatus {
+	const status = typeof value === "string" && value.length > 0 ? value : fallback;
+	if (status === "pending") return "open";
+	if (["open", "todo", "in_progress", "in_review", "rejected", "done", "canceled"].includes(status)) {
+		return status as TaskStatus;
+	}
+	throw new Error(`Unsupported task status: ${status}`);
+}
+
+function isTerminalStatus(status: string): boolean {
+	return status === "done" || status === "completed" || status === "canceled";
+}
+
+function isComplete(task: TaskRecord): boolean {
+	return task.status === "done" || task.status === "completed";
+}
+
+function isCanceled(task: TaskRecord): boolean {
+	return task.status === "canceled";
+}
+
+function normalizeTaskType(value: unknown): string {
+	const type = typeof value === "string" && value.length > 0 ? value : "chore";
+	if (type === "epic") throw new Error("Epic tasks are no longer supported; create flat tasks with blockers instead.");
+	return type;
+}
+
+const taskIdAlphabet = "0123456789abcdefghjkmnpqrstvwxyz";
+
+function randomTaskId(): string {
+	const bytes = randomBytes(6);
+	let id = "";
+	for (const byte of bytes) id += taskIdAlphabet[byte % taskIdAlphabet.length];
+	return id;
+}
+
+function uniqueRandomTaskId(taken: ReadonlySet<string>): string {
+	for (let attempt = 0; attempt < 16; attempt++) {
+		const id = randomTaskId();
+		if (!taken.has(id)) return id;
+	}
+	throw new Error("Could not generate a unique task id");
+}
+
+function minimalTaskIdPrefixes(tasks: readonly TaskRecord[]): Map<string, string> {
+	const ids = tasks.map((task) => task.id);
+	const prefixes = new Map<string, string>();
+	for (const id of ids) {
+		let prefix = id;
+		for (let length = 1; length <= id.length; length++) {
+			const candidate = id.slice(0, length);
+			if (ids.filter((other) => other.startsWith(candidate)).length === 1) {
+				prefix = candidate;
+				break;
+			}
+		}
+		prefixes.set(id, prefix);
+	}
+	return prefixes;
+}
+
+function displayTaskId(id: string, prefixes: ReadonlyMap<string, string>): string {
+	return prefixes.get(id) ?? id;
+}
+
+function isStoryTaskType(value: unknown): boolean {
+	return value === "feature" || value === "bug";
+}
+
+function guardTaskCompletion(task: TaskRecord, params: Record<string, unknown>): void {
+	if (params.status !== "done" || !isStoryTaskType(params.type ?? task.type)) return;
+	if (params.user_approved_completion === true || params.auto_verified_completion === true) return;
+	throw new Error(
+		"Mark feature/bug tasks done only after user approval with user_approved_completion=true, or in auto mode with auto_verified_completion=true.",
 	);
 }
 
-function flashTaskHud(task?: TaskRecord): void {
-	if (!task?.id) return;
-	const now = Date.now();
-	taskHudFlashes.set(task.id, { startedAt: now, until: now + taskHudFlashMs });
-	ensureTaskHudPulseTimer();
+function compareTasks(left: TaskRecord, right: TaskRecord): number {
+	return (
+		taskStatusRank(left) - taskStatusRank(right) ||
+		priority(right) - priority(left) ||
+		left.id.localeCompare(right.id)
+	);
 }
 
-function activeTaskHudFlashes(now = Date.now()): Map<string, TaskHudFlash> {
-	const active = new Map<string, TaskHudFlash>();
-	for (const [id, flash] of taskHudFlashes) {
-		if (flash.until > now) {
-			active.set(id, flash);
-			continue;
-		}
-		taskHudFlashes.delete(id);
-	}
-	return active;
+function taskStatusRank(task: TaskRecord): number {
+	if (task.status === "in_progress") return 0;
+	if (task.status === "rejected") return 1;
+	if (task.status === "in_review") return 2;
+	if (isComplete(task)) return 4;
+	if (isCanceled(task)) return 5;
+	return 3;
 }
 
-function ensureTaskHudPulseTimer(): void {
-	if (taskHudPulseTimer) return;
-	taskHudPulseTimer = setInterval(() => {
-		activeTaskHudFlashes();
-		requestTaskHudRender?.();
-		if (taskHudFlashes.size > 0) return;
-		if (taskHudPulseTimer) clearInterval(taskHudPulseTimer);
-		taskHudPulseTimer = undefined;
-	}, taskHudPulseFrameMs);
-	taskHudPulseTimer.unref?.();
+function priority(task: TaskRecord): number {
+	return typeof task.priority === "number" ? task.priority : 0;
+}
+
+function formatDuration(ms: number): string {
+	const totalSec = Math.max(0, Math.floor(ms / 1000));
+	if (totalSec < 60) return `${totalSec}s`;
+	const min = Math.floor(totalSec / 60);
+	const sec = totalSec % 60;
+	if (min < 60) return sec > 0 ? `${min}m ${sec}s` : `${min}m`;
+	const hr = Math.floor(min / 60);
+	const remMin = min % 60;
+	return remMin > 0 ? `${hr}h ${remMin}m` : `${hr}h`;
+}
+
+function gerundTitle(title: string): string {
+	const trimmed = title.trim();
+	const [verb = "Working", ...rest] = trimmed.split(/\s+/);
+	const object = rest.join(" ");
+	const lower = verb.toLowerCase();
+	const gerunds: Record<string, string> = {
+		add: "Adding",
+		build: "Building",
+		create: "Creating",
+		debug: "Debugging",
+		delete: "Deleting",
+		diagnose: "Diagnosing",
+		fix: "Fixing",
+		implement: "Implementing",
+		investigate: "Investigating",
+		move: "Moving",
+		remove: "Removing",
+		render: "Rendering",
+		review: "Reviewing",
+		run: "Running",
+		test: "Testing",
+		update: "Updating",
+		write: "Writing",
+	};
+	const gerund = gerunds[lower] ?? (lower.endsWith("ing") ? verb : "Working on");
+	return object ? `${gerund} ${object}` : gerund;
 }
 
 function sessionAssignment(ctx?: ExtensionContext): string | undefined {
@@ -392,7 +537,11 @@ function sessionAssignment(ctx?: ExtensionContext): string | undefined {
 	const direct = anyCtx?.sessionId ?? anyCtx?.session?.id;
 	if (typeof direct === "string" && direct.length > 0) return `session:${direct}`;
 	const file = anyCtx?.sessionManager?.getSessionFile?.();
-	if (typeof file === "string" && file.length > 0) return `session:${basename(file).replace(/\.jsonl$/, "")}`;
+	if (typeof file === "string" && file.length > 0)
+		return `session:${file
+			.split("/")
+			.at(-1)
+			?.replace(/\.jsonl$/, "")}`;
 	return undefined;
 }
 
@@ -431,57 +580,95 @@ function normalizeTaskParams(
 	};
 }
 
-async function executeTask(
-	command: string,
-	runCommand: typeof defaultRunCommand,
+function taskBody(task: TaskRecord, prefixes: ReadonlyMap<string, string>): string {
+	const blocked = task.blocked_by?.length
+		? `\nBlocked by: ${task.blocked_by.map((id) => displayTaskId(id, prefixes)).join(", ")}`
+		: "";
+	const assignee = assignmentLabel(task);
+	const assigned = assignee ? `\nAssignee: ${assignee}` : "";
+	return `${displayTaskId(task.id, prefixes)} [${task.status}] ${task.title}${assigned}${blocked}`;
+}
+
+function executeTask(
 	cwd: string,
 	action: TaskCommand,
 	params: Record<string, unknown>,
-	config: Config,
 	pi?: ExtensionAPI,
 	ctx?: ExtensionContext,
-	signal?: AbortSignal,
 ) {
-	const args = buildTaskCommand(action, normalizeTaskParams(params, ctx, pi));
-	const result = await runCommand(command, args, cwd, signal);
-	const text = result.stdout.trim() || result.stderr.trim();
-	const details = parseTaskPayload(text, action, args);
-	if (action === "add" || action === "update" || action === "accept" || action === "reject")
-		flashTaskHud(details.task);
-	if (
-		ctx &&
-		config.hud.enabled &&
-		(action === "add" || action === "update" || action === "delete" || action === "accept" || action === "reject")
-	) {
-		await updateTaskHud(ctx, pi, command, runCommand, config).catch((error) => {
-			ctx.ui.notify?.(
-				`Task HUD refresh failed: ${error instanceof Error ? error.message : String(error)}`,
-				"warning",
-			);
-		});
+	const store = new TaskStore(cwd);
+	const normalizedParams = normalizeTaskWriteParams(params);
+	let details: TaskDetails;
+	let text: string;
+	switch (action) {
+		case "add": {
+			const task = store.add(normalizedParams, ctx, pi);
+			const tasks = store.list({ all: true });
+			const prefixes = minimalTaskIdPrefixes(tasks);
+			details = { action, args: [], task };
+			text = `Created task ${taskBody(task, prefixes)}`;
+			break;
+		}
+		case "list": {
+			const tasks = store.list(params, ctx);
+			const prefixes = minimalTaskIdPrefixes(tasks);
+			details = { action, args: [], tasks };
+			text = tasks.length ? tasks.map((task) => taskBody(task, prefixes)).join("\n") : "No tasks";
+			break;
+		}
+		case "show": {
+			const task = store.show(requiredString(params.id, "id"));
+			details = { action, args: [], task };
+			const allTasks = store.list({ all: true });
+			const prefixes = minimalTaskIdPrefixes(allTasks);
+			text = detailedTaskText(task, allTasks, prefixes);
+			break;
+		}
+		case "update": {
+			const task = store.update(requiredString(params.id, "id"), normalizedParams, ctx, pi);
+			const tasks = store.list({ all: true });
+			const prefixes = minimalTaskIdPrefixes(tasks);
+			details = { action, args: [], task };
+			text = `Updated task ${taskBody(task, prefixes)}`;
+			break;
+		}
+		case "delete": {
+			const deleted = store.delete(requiredString(params.id, "id"));
+			details = { action, args: [], deleted };
+			text = `Deleted ${deleted}`;
+			break;
+		}
 	}
 	return textResult(text, details);
 }
 
-async function loadTaskSnapshot(
-	cwd: string,
-	command: string,
-	runCommand: typeof defaultRunCommand,
-	signal?: AbortSignal,
-): Promise<TaskSnapshot> {
-	const result = await runCommand(command, ["task", "tui", "--json"], cwd, signal);
-	const parsed = JSON.parse(result.stdout || "{}") as { tasks?: TaskRecord[]; board?: TicketBoardProjection };
-	return { tasks: parsed.tasks ?? tasksFromProjection(parsed.board), board: parsed.board };
+function detailedTaskText(task: TaskRecord, tasks: TaskRecord[], prefixes: ReadonlyMap<string, string>): string {
+	const blocked = (task.blocked_by ?? []).map((id) => displayTaskId(id, prefixes)).join(", ") || "none";
+	const blocks =
+		tasks
+			.filter((candidate) => (candidate.blocked_by ?? []).includes(task.id))
+			.map((candidate) => displayTaskId(candidate.id, prefixes))
+			.join(", ") || "none";
+	return [
+		`Task ${displayTaskId(task.id, prefixes)}: ${task.title}`,
+		`Status: ${task.status}`,
+		`Type: ${task.type ?? "chore"}`,
+		`Priority: ${priority(task)}`,
+		`Assigned: ${assignmentLabel(task) ?? "none"}`,
+		`Blocked by: ${blocked}`,
+		`Blocks: ${blocks}`,
+		task.body.trim() ? `Description:\n${task.body.trim()}` : undefined,
+	]
+		.filter(Boolean)
+		.join("\n");
 }
 
-async function loadHudTasks(cwd: string, command: string, runCommand: typeof defaultRunCommand, signal?: AbortSignal) {
-	return (await loadTaskSnapshot(cwd, command, runCommand, signal)).tasks;
+async function loadTaskSnapshot(cwd: string): Promise<TaskSnapshot> {
+	return { tasks: new TaskStore(cwd).list({ all: true }) };
 }
 
-function tasksFromProjection(board: TicketBoardProjection | undefined): TaskRecord[] {
-	return (
-		board?.boards.flatMap((group) => group.lanes.flatMap((lane) => lane.tickets.map((ticket) => ticket.task))) ?? []
-	);
+async function loadHudTasks(cwd: string) {
+	return (await loadTaskSnapshot(cwd)).tasks;
 }
 
 class TaskHudWidget implements Component {
@@ -500,10 +687,8 @@ class TaskHudWidget implements Component {
 		const state = this.state;
 		if (!state || !hasEnoughTerminalRows(state.config.hud.minTerminalRows)) return [];
 		return renderHudLines(state.tasks, this.theme, width, state.config.hud.maxTasks, state.display, {
-			board: state.board,
-			hideKanban: taskHudExpandedEpicKey === null,
-			expandedEpicKey: taskHudExpandedEpicKey ?? undefined,
-			flashTasks: activeTaskHudFlashes(),
+			compact: !taskHudExpanded,
+			frame: taskHudFrame,
 			taskGuardEnabled: state.taskGuardEnabled,
 		});
 	}
@@ -525,57 +710,36 @@ function ensureTaskHudWidget(ctx: ExtensionContext): void {
 async function updateTaskHud(
 	ctx: ExtensionContext,
 	pi: ExtensionAPI | undefined,
-	command: string,
-	runCommand: typeof defaultRunCommand,
 	config: Config,
 	taskGuardEnabled = latestTaskHudState?.taskGuardEnabled ?? false,
-	signal: AbortSignal | false | undefined = ctx.signal,
 	preloadedTasks?: TaskRecord[],
 ): Promise<void> {
-	const snapshot = preloadedTasks
-		? { tasks: preloadedTasks }
-		: await loadTaskSnapshot(ctx.cwd, command, runCommand, signal || undefined);
-	const tasks = snapshot.tasks;
+	const tasks = preloadedTasks ?? (await loadHudTasks(ctx.cwd));
 	const display = assignmentDisplayContext(pi, ctx, tasks);
-	const visibleKeys = visibleHudEpicKeys(tasks, snapshot.board);
-	if (
-		taskHudExpandedEpicKey === undefined ||
-		(taskHudExpandedEpicKey !== null && !visibleKeys.includes(taskHudExpandedEpicKey))
-	) {
-		taskHudExpandedEpicKey = visibleKeys[0] ?? null;
-	}
-	const state = { tasks, board: snapshot.board, display, config, taskGuardEnabled };
+	const state = { tasks, display, config, taskGuardEnabled };
 	latestTaskHudState = state;
 	ensureTaskHudWidget(ctx);
 	taskHudWidget?.setState(state);
+	updateHudTimer(tasks);
 }
 
-function visibleHudEpicKeys(tasks: TaskRecord[], board?: TicketBoardProjection): string[] {
-	return buildTaskBoardGroups(
-		tasks.filter((task) => !isCanceled(task)),
-		board,
-	).map((group) => group.key);
-}
-
-function cycleTaskHudExpandedEpic(tasks: TaskRecord[]): void {
-	const keys = visibleHudEpicKeys(tasks);
-	if (keys.length === 0) {
-		taskHudExpandedEpicKey = null;
-		return;
+function updateHudTimer(tasks: TaskRecord[]): void {
+	const needsAnimation = tasks.some((task) => task.status === "in_progress");
+	if (needsAnimation && !taskHudPulseTimer) {
+		taskHudPulseTimer = setInterval(() => {
+			taskHudFrame++;
+			requestTaskHudRender?.();
+		}, taskHudPulseFrameMs);
+		taskHudPulseTimer.unref?.();
+	} else if (!needsAnimation && taskHudPulseTimer) {
+		clearInterval(taskHudPulseTimer);
+		taskHudPulseTimer = undefined;
 	}
-	if (taskHudExpandedEpicKey === null) {
-		taskHudExpandedEpicKey = keys[0];
-		return;
-	}
-	const index = keys.indexOf(taskHudExpandedEpicKey);
-	taskHudExpandedEpicKey = index >= 0 && index < keys.length - 1 ? keys[index + 1] : null;
 }
 
 async function showTaskBoard(
 	ctx: ExtensionContext,
 	pi: ExtensionAPI,
-	command: string,
-	runCommand: typeof defaultRunCommand,
 	config: Config,
 	initialTaskId?: string,
 ): Promise<void> {
@@ -583,61 +747,31 @@ async function showTaskBoard(
 		activeTaskBoard.close();
 		return;
 	}
-	const load = () => loadHudTasks(ctx.cwd, command, runCommand, ctx.signal);
+	const load = () => loadHudTasks(ctx.cwd);
 	const tasks = await load();
 	try {
 		await tasksTui.bind(ctx).overlays.openComponent(
 			(tui, theme, _keybindings, done) => {
-				const close = () => {
-					done();
-				};
+				const close = () => done(undefined);
 				activeTaskBoard = { close };
-				const useRustOverlay = runCommand === defaultRunCommand;
-				const board = useRustOverlay
-					? new RatatuiTaskBoardOverlay({
-							tasks,
-							theme,
-							keybindings: config.keybindings,
-							command,
-							cwd: ctx.cwd,
-							initialTaskId,
-							onClose: close,
-							onMutate: async (action, params) => {
-								await executeTask(command, runCommand, ctx.cwd, action, params, config, pi, ctx, ctx.signal);
-								return load();
-							},
-							onChange: () => tui.requestRender(),
-						})
-					: new TaskBoardOverlay({
-							tasks,
-							theme,
-							keybindings: config.keybindings,
-							initialTaskId,
-							onClose: close,
-							onReload: load,
-							onMutate: async (action, params) => {
-								await executeTask(command, runCommand, ctx.cwd, action, params, config, pi, ctx, ctx.signal);
-								return load();
-							},
-							onEditBody: async (task) => {
-								const edited = await ctx.ui.editor(`Edit task ${task.id} body`, task.body ?? "");
-								if (edited !== task.body) {
-									await executeTask(
-										command,
-										runCommand,
-										ctx.cwd,
-										"update",
-										{ id: task.id, body: edited },
-										config,
-										pi,
-										ctx,
-										ctx.signal,
-									);
-								}
-								return load();
-							},
-							onChange: () => tui.requestRender(),
-						});
+				const board = new TaskBoardOverlay({
+					tasks,
+					theme,
+					keybindings: config.keybindings,
+					initialTaskId,
+					onClose: close,
+					onReload: load,
+					onMutate: async (action, params) => {
+						executeTask(ctx.cwd, action, params, pi, ctx);
+						return load();
+					},
+					onEditBody: async (task) => {
+						const edited = await ctx.ui.editor(`Edit task ${task.id} body`, task.body ?? "");
+						if (edited !== task.body) executeTask(ctx.cwd, "update", { id: task.id, body: edited }, pi, ctx);
+						return load();
+					},
+					onChange: () => tui.requestRender(),
+				});
 				return {
 					render: (width: number) => board.render(width),
 					handleInput: (data: string) => {
@@ -651,9 +785,9 @@ async function showTaskBoard(
 			{
 				overlay: true,
 				overlayOptions: {
-					width: "98%",
-					maxHeight: "92%",
-					minWidth: 90,
+					width: "92%",
+					maxHeight: "85%",
+					minWidth: 70,
 					anchor: "center",
 					margin: 1,
 				},
@@ -662,20 +796,7 @@ async function showTaskBoard(
 	} finally {
 		activeTaskBoard = undefined;
 	}
-	if (config.hud.enabled) await updateTaskHud(ctx, pi, command, runCommand, config).catch(() => {});
-}
-
-function compact(value: string, max = 90): string {
-	const text = value.replace(/\s+/g, " ").trim();
-	return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
-}
-
-function isComplete(task: TaskRecord): boolean {
-	return task.status === "done" || task.status === "completed";
-}
-
-function isCanceled(task: TaskRecord): boolean {
-	return task.status === "canceled";
+	if (config.hud.enabled) await updateTaskHud(ctx, pi, config).catch(() => {});
 }
 
 function openBlockers(task: TaskRecord, byId: Map<string, TaskRecord>): string[] {
@@ -689,148 +810,45 @@ function hasOpenBlockers(task: TaskRecord, byId: Map<string, TaskRecord>): boole
 	return openBlockers(task, byId).length > 0;
 }
 
-function hasOpenDependencies(
-	task: TaskRecord,
-	byId: Map<string, TaskRecord>,
-	children: Map<string, TaskRecord[]>,
-): boolean {
-	return hasOpenBlockers(task, byId) || activeChildren(task, children).length > 0;
-}
-
-function priority(task: TaskRecord): number {
-	return typeof task.priority === "number" ? task.priority : 0;
-}
-
-function sortTasksForDisplay(
-	tasks: TaskRecord[],
-	blockersById?: Map<string, TaskRecord>,
-	childrenByParent?: Map<string, TaskRecord[]>,
-): TaskRecord[] {
-	const byId = blockersById ?? new Map(tasks.map((task) => [task.id, task]));
-	const children = childrenByParent ?? taskChildren([...byId.values()]);
-	return [...tasks].sort((left, right) => {
-		const leftBlocked = hasOpenDependencies(left, byId, children);
-		const rightBlocked = hasOpenDependencies(right, byId, children);
-		if (leftBlocked !== rightBlocked) return leftBlocked ? 1 : -1;
-		const priorityDelta = priority(right) - priority(left);
-		if (priorityDelta !== 0) return priorityDelta;
-		return right.updated_at - left.updated_at || left.id.localeCompare(right.id);
-	});
-}
-
-export interface TaskBoardColumn {
-	id: "rejected" | "ready" | "blocked" | "in_progress" | "in_review" | "done";
-	label: string;
-	tasks: TaskRecord[];
-}
-
-interface TaskBoardGroup {
-	key: string;
-	label: string;
-	epicLabel?: string;
-	tasks: TaskRecord[];
-	priority: number;
-	updatedAt: number;
-	done: number;
-	total: number;
-}
-
-export interface TaskBoardSelection {
-	column: number;
-	row: number;
-}
-
-function isBoardReady(task: TaskRecord): boolean {
-	return !isComplete(task) && !isCanceled(task) && task.status !== "in_progress" && task.status !== "in_review";
-}
-
-function isBoardActive(task: TaskRecord): boolean {
+function isActiveTask(task: TaskRecord): boolean {
 	return !isComplete(task) && !isCanceled(task);
 }
 
-export function buildTaskBoardColumns(tasks: TaskRecord[]): TaskBoardColumn[] {
-	const byId = new Map(tasks.map((task) => [task.id, task]));
-	const active = tasks.filter((task) => !isCanceled(task) && task.type !== "epic" && hasEpicMetadata(task));
-	const children = taskChildren(active);
-	const rejected = sortTasksForDisplay(
-		active.filter((task) => task.status === "rejected" && !hasOpenDependencies(task, byId, children)),
-		byId,
-		children,
+function isReadyForWork(task: TaskRecord, byId: Map<string, TaskRecord>): boolean {
+	return (
+		isActiveTask(task) && task.status !== "in_progress" && task.status !== "in_review" && !hasOpenBlockers(task, byId)
 	);
-	const columns: TaskBoardColumn[] = [
-		{
-			id: "ready",
-			label: "Ready",
-			tasks: sortTasksForDisplay(
-				active.filter(
-					(task) => isBoardReady(task) && task.status !== "rejected" && !hasOpenDependencies(task, byId, children),
-				),
-				byId,
-				children,
-			),
-		},
-		{
-			id: "blocked",
-			label: "Blocked",
-			tasks: sortTasksForDisplay(
-				active.filter((task) => isBoardActive(task) && hasOpenDependencies(task, byId, children)),
-				byId,
-				children,
-			),
-		},
-		{
-			id: "in_progress",
-			label: "In Progress",
-			tasks: sortTasksForDisplay(
-				active.filter((task) => task.status === "in_progress" && !hasOpenDependencies(task, byId, children)),
-				byId,
-				children,
-			),
-		},
-		{
-			id: "in_review",
-			label: "In Review",
-			tasks: sortTasksForDisplay(
-				active.filter((task) => task.status === "in_review" && !hasOpenDependencies(task, byId, children)),
-				byId,
-				children,
-			),
-		},
-		{
-			id: "done",
-			label: "Done",
-			tasks: sortTasksForDisplay(active.filter(isComplete), byId, children),
-		},
-	];
-	if (rejected.length > 0) {
-		columns.unshift({ id: "rejected", label: "Rejected", tasks: rejected });
-	}
-	return columns;
 }
 
-function clampSelection(columns: TaskBoardColumn[], selection: TaskBoardSelection): TaskBoardSelection {
-	const column = Math.max(0, Math.min(columns.length - 1, selection.column));
-	const rowCount = columns[column]?.tasks.length ?? 0;
-	const row = Math.max(0, Math.min(Math.max(0, rowCount - 1), selection.row));
-	return { column, row };
+export interface TaskBoardItem {
+	task: TaskRecord;
+	blocked: boolean;
 }
 
-function selectedTask(columns: TaskBoardColumn[], selection: TaskBoardSelection): TaskRecord | undefined {
-	const clamped = clampSelection(columns, selection);
-	return columns[clamped.column]?.tasks[clamped.row];
+export interface TaskBoardSelection {
+	row: number;
 }
 
-function selectionForTask(columns: TaskBoardColumn[], taskId: string): TaskBoardSelection | undefined {
-	for (let column = 0; column < columns.length; column++) {
-		const row = columns[column]?.tasks.findIndex((task) => task.id === taskId) ?? -1;
-		if (row >= 0) return { column, row };
-	}
-	return undefined;
+export function buildTaskBoardItems(tasks: TaskRecord[]): TaskBoardItem[] {
+	const byId = new Map(tasks.map((task) => [task.id, task]));
+	return [...tasks]
+		.filter((task) => !isCanceled(task))
+		.sort(compareTasks)
+		.map((task) => ({ task, blocked: hasOpenBlockers(task, byId) }));
 }
 
-function formatBoardTime(timestamp: number): string {
-	if (!Number.isFinite(timestamp) || timestamp <= 0) return "unknown";
-	return new Date(timestamp).toLocaleString();
+function clampSelection(items: TaskBoardItem[], selection: TaskBoardSelection): TaskBoardSelection {
+	const row = Math.max(0, Math.min(Math.max(0, items.length - 1), selection.row));
+	return { row };
+}
+
+function selectedTask(items: TaskBoardItem[], selection: TaskBoardSelection): TaskRecord | undefined {
+	return items[clampSelection(items, selection).row]?.task;
+}
+
+function selectionForTask(items: TaskBoardItem[], taskId: string): TaskBoardSelection | undefined {
+	const row = items.findIndex((item) => item.task.id === taskId);
+	return row >= 0 ? { row } : undefined;
 }
 
 function truncateLine(text: string, width: number): string {
@@ -841,20 +859,8 @@ function padToVisibleWidth(text: string, width: number): string {
 	return sharedPadToVisibleWidth(truncateLine(text, width), width, { truncate: false });
 }
 
-function fitCells(cells: string[], widths: number[]): string {
-	return cells.map((cell, index) => padToVisibleWidth(cell, widths[index] ?? 0)).join("  ");
-}
-
-function splitWidths(width: number, count: number): number[] {
-	const gapWidth = (count - 1) * 2;
-	const available = Math.max(count, width - gapWidth);
-	const base = Math.floor(available / count);
-	let extra = available % count;
-	return Array.from({ length: count }, () => base + (extra-- > 0 ? 1 : 0));
-}
-
 function matchesAnyKey(data: string, keys: readonly string[]): boolean {
-	return keys.some((key) => data === key || (key === "space" && data === " ") || matchesKey(data, key));
+	return keys.some((key) => data === key || (key === "space" && data === " ") || matchesKey(data, key as never));
 }
 
 function keyLabel(key: string): string {
@@ -871,7 +877,7 @@ function keyLabels(keys: readonly string[]): string {
 function taskBoardHelp(bindings: TaskBoardKeybindings): string {
 	return [
 		`${keyLabel(bindings.toggle)}/${keyLabels(bindings.close.filter((key) => key !== bindings.toggle))} close`,
-		`${keyLabels(bindings.left)}/${keyLabels(bindings.right)}/${keyLabels(bindings.up)}/${keyLabels(bindings.down)} move`,
+		`${keyLabels(bindings.up)}/${keyLabels(bindings.down)} move`,
 		`${keyLabels(bindings.cycleStatus)} status`,
 		`${keyLabels(bindings.assignCurrent)} assign`,
 		`${keyLabels(bindings.clearAssignee)} unassign`,
@@ -902,336 +908,89 @@ function boxedTaskBoard(theme: Theme, width: number, lines: string[]): string[] 
 	];
 }
 
-function columnColor(column: TaskBoardColumn): ThemeColor {
-	switch (column.id) {
-		case "rejected":
-			return "error";
-		case "ready":
-			return "mdLink";
-		case "blocked":
-			return "muted";
-		case "in_progress":
-			return "warning";
-		case "in_review":
-			return "accent";
-		case "done":
-			return "success";
-	}
+function statusColor(task: TaskRecord, blocked = false): ThemeColor {
+	if (blocked) return "muted";
+	if (isComplete(task)) return "success";
+	if (task.status === "in_progress") return "accent";
+	if (task.status === "in_review") return "warning";
+	if (task.status === "rejected") return "error";
+	return "text";
 }
 
-function columnIcon(column: TaskBoardColumn): string {
-	switch (column.id) {
-		case "rejected":
-			return "";
-		case "ready":
-			return "";
-		case "blocked":
-			return "";
-		case "in_progress":
-			return "";
-		case "in_review":
-			return "";
-		case "done":
-			return "";
-	}
+function statusIcon(task: TaskRecord, blocked = false, frame = 0): string {
+	if (task.status === "in_progress") return spinnerFrames[frame % spinnerFrames.length] ?? "✳";
+	if (isComplete(task)) return "✔";
+	if (blocked) return "◻";
+	return task.status === "in_review" ? "◼" : "◻";
 }
 
-function isEpicTask(task: TaskRecord): boolean {
-	return task.type === "epic";
+function taskPrefix(task: TaskRecord, theme: Theme, prefixes: ReadonlyMap<string, string>): string {
+	return theme.fg("dim", displayTaskId(task.id, prefixes));
 }
 
-function taskEpicKey(task: TaskRecord): string {
-	return task.epic_id?.trim() || "";
+function assignmentLabel(task: TaskRecord): string | undefined {
+	return task.assigned_label || task.assigned_to?.replace(/^session:/, "");
 }
 
-function hasEpicMetadata(task: TaskRecord): boolean {
-	return taskEpicKey(task).length > 0;
+interface AssignmentDisplayContext {
+	currentAssignment?: string;
+	currentLabel?: string;
 }
 
-function buildTaskBoardGroups(tasks: TaskRecord[], board?: TicketBoardProjection): TaskBoardGroup[] {
-	if (board) return board.boards.map(taskBoardGroupFromProjection);
-	const epicByLabel = new Map<string, TaskRecord>();
-	for (const task of tasks) {
-		if (!isEpicTask(task)) continue;
-		const label = taskEpicKey(task);
-		if (label) epicByLabel.set(label, task);
-	}
-	const grouped = new Map<string, TaskRecord[]>();
-	for (const task of tasks.filter((candidate) => !isEpicTask(candidate) && hasEpicMetadata(candidate))) {
-		const label = taskEpicKey(task);
-		const key = epicByLabel.has(label) ? label : `unknown:${label}`;
-		grouped.set(key, [...(grouped.get(key) ?? []), task]);
-	}
-	const groups = [...grouped.entries()]
-		.map(([key, groupTasks]) => {
-			const label = key.startsWith("unknown:") ? key.slice("unknown:".length) : key;
-			const epic = label ? epicByLabel.get(label) : undefined;
-			const progressTasks = groupTasks.filter((task) => !isCanceled(task));
-			return {
-				key,
-				label: epic?.title ?? `Unknown Epic: ${label}`,
-				epicLabel: label,
-				tasks: groupTasks,
-				priority: epic ? priority(epic) : Math.max(0, ...groupTasks.map(priority)),
-				updatedAt: Math.max(epic?.updated_at ?? 0, ...groupTasks.map((task) => task.updated_at)),
-				done: progressTasks.filter(isComplete).length,
-				total: progressTasks.length,
-			};
-		})
-		.filter((group) => group.tasks.length > 0);
-	return groups.sort((left, right) => {
-		const priorityDelta = right.priority - left.priority;
-		if (priorityDelta !== 0) return priorityDelta;
-		return (
-			right.updatedAt - left.updatedAt ||
-			(left.epicLabel ?? left.label).localeCompare(right.epicLabel ?? right.label)
-		);
-	});
+function assignmentDisplayContext(
+	pi: ExtensionAPI | undefined,
+	ctx: ExtensionContext | undefined,
+	_tasks: TaskRecord[],
+) {
+	return { currentAssignment: sessionAssignment(ctx), currentLabel: sessionName(pi, ctx) };
 }
 
-function taskBoardGroupFromProjection(group: TicketBoardProjectionGroup): TaskBoardGroup {
-	return {
-		key: group.key,
-		label: group.title,
-		epicLabel: group.epic_label ?? undefined,
-		tasks: group.lanes.flatMap((lane) => lane.tickets.map((ticket) => ticket.task)),
-		priority: group.priority,
-		updatedAt: group.updated_at,
-		done: group.done,
-		total: group.total,
-	};
+function isAssignedToCurrentSession(task: TaskRecord, display: AssignmentDisplayContext): boolean {
+	return Boolean(display.currentAssignment && task.assigned_to === display.currentAssignment);
 }
 
-function progressBar(theme: Theme, done: number, total: number, width: number): string {
-	const ratio = total === 0 ? 0 : Math.max(0, Math.min(1, done / total));
-	const filled = Math.round(width * ratio);
-	return `${theme.fg("accent", "─".repeat(filled))}${theme.fg("dim", "─".repeat(Math.max(0, width - filled)))}`;
+function formatAssignee(task: TaskRecord, theme: Theme, display: AssignmentDisplayContext): string {
+	const label = assignmentLabel(task);
+	if (!label) return "";
+	const marker = isAssignedToCurrentSession(task, display) ? "@me" : `@${label}`;
+	return ` ${theme.fg("mdLink", marker)}`;
 }
 
-function renderEpicBoardHeader(group: TaskBoardGroup, theme: Theme, width: number): string {
-	const prefix = "Epic:";
-	const suffixStart = ` – ${group.done}/${group.total} [`;
-	const suffixEnd = "]";
-	const label = group.epicLabel ? ` ${theme.fg("success", group.epicLabel)}` : "";
-	const staticWidth = visibleWidth(`${prefix}  ${suffixStart}${suffixEnd}`) + visibleWidth(label);
-	const barWidth = Math.max(5, Math.min(20, Math.max(5, width - staticWidth - 8)));
-	const titleWidth = Math.max(4, width - staticWidth - barWidth - 1);
-	return truncateLine(
-		`${theme.fg("mdHeading", prefix)} ${theme.fg("toolTitle", compact(group.label, titleWidth))}${label}${theme.fg("dim", suffixStart)}${progressBar(theme, group.done, group.total, barWidth)}${theme.fg("dim", suffixEnd)}`,
-		width,
-	);
+function strike(theme: Theme, text: string): string {
+	return theme.strikethrough?.(text) ?? text;
 }
 
-function renderPersistentBackground(text: string, theme: Theme, background: "selectedBg"): string {
-	const marker = "__PI_TASK_BG_MARKER__";
-	const wrappedMarker = theme.bg(background, marker);
-	const markerIndex = wrappedMarker.indexOf(marker);
-	if (markerIndex === -1) return theme.bg(background, text);
-
-	const prefix = wrappedMarker.slice(0, markerIndex);
-	const suffix = wrappedMarker.slice(markerIndex + marker.length);
-	return renderPersistentAnsiBackground(text, prefix, suffix);
+function bold(theme: Theme, text: string): string {
+	return theme.bold?.(text) ?? text;
 }
 
-function renderPersistentAnsiBackground(text: string, prefix: string, suffix: string): string {
-	const reopenedText = text.split("\x1b[0m").join(`\x1b[0m${prefix}`);
-	return `${prefix}${reopenedText}${suffix}`;
-}
-
-interface Rgb {
-	r: number;
-	g: number;
-	b: number;
-}
-
-function xterm256Rgb(index: number): Rgb | undefined {
-	if (index < 0 || index > 255) return undefined;
-	const system = [
-		[0, 0, 0],
-		[128, 0, 0],
-		[0, 128, 0],
-		[128, 128, 0],
-		[0, 0, 128],
-		[128, 0, 128],
-		[0, 128, 128],
-		[192, 192, 192],
-		[128, 128, 128],
-		[255, 0, 0],
-		[0, 255, 0],
-		[255, 255, 0],
-		[0, 0, 255],
-		[255, 0, 255],
-		[0, 255, 255],
-		[255, 255, 255],
-	][index];
-	if (system) return { r: system[0] ?? 0, g: system[1] ?? 0, b: system[2] ?? 0 };
-	if (index >= 232) {
-		const level = 8 + (index - 232) * 10;
-		return { r: level, g: level, b: level };
-	}
-	const value = index - 16;
-	const levels = [0, 95, 135, 175, 215, 255];
-	return {
-		r: levels[Math.floor(value / 36)] ?? 0,
-		g: levels[Math.floor((value % 36) / 6)] ?? 0,
-		b: levels[value % 6] ?? 0,
-	};
-}
-
-function parseBackgroundRgb(ansi: string | undefined): Rgb | undefined {
-	const truecolor = ansi?.match(/\x1b\[[0-9;]*48;2;([0-9]+);([0-9]+);([0-9]+)m/);
-	if (truecolor) {
-		return {
-			r: Number(truecolor[1]),
-			g: Number(truecolor[2]),
-			b: Number(truecolor[3]),
-		};
-	}
-	const indexed = ansi?.match(/\x1b\[[0-9;]*48;5;([0-9]+)m/);
-	return indexed ? xterm256Rgb(Number(indexed[1])) : undefined;
-}
-
-function themeBackgroundAnsi(theme: Theme, background: "selectedBg"): string | undefined {
-	const direct = (theme as Theme & { getBgAnsi?: (color: "selectedBg") => string }).getBgAnsi?.(background);
-	if (direct) return direct;
-	const marker = "__PI_TASK_BG_MARKER__";
-	const wrappedMarker = theme.bg(background, marker);
-	const markerIndex = wrappedMarker.indexOf(marker);
-	return markerIndex > 0 ? wrappedMarker.slice(0, markerIndex) : undefined;
-}
-
-function taskHudFlashOpacity(flash: TaskHudFlash | undefined, now: number): number {
-	if (!flash) return 1;
-	const elapsed = Math.max(0, now - flash.startedAt);
-	const remaining = Math.max(0, flash.until - now);
-	const fade = Math.min(1, remaining / 600);
-	const wave = (Math.sin((elapsed / 900) * Math.PI * 2 - Math.PI / 2) + 1) / 2;
-	return Math.max(0, Math.min(1, (0.18 + wave * 0.45) * fade));
-}
-
-function opacityBackgroundAnsi(theme: Theme, opacity: number): string | undefined {
-	const rgb = parseBackgroundRgb(themeBackgroundAnsi(theme, "selectedBg"));
-	if (!rgb) return undefined;
-	const blend = (value: number) => Math.round(value * opacity);
-	return `\x1b[48;2;${blend(rgb.r)};${blend(rgb.g)};${blend(rgb.b)}m`;
-}
-
-function renderTaskHudFlashBackground(
-	line: string,
-	theme: Theme,
-	flash: TaskHudFlash | undefined,
-	now: number,
-): string {
-	if (!flash) return renderPersistentBackground(line, theme, "selectedBg");
-	const prefix = opacityBackgroundAnsi(theme, taskHudFlashOpacity(flash, now));
-	return prefix
-		? renderPersistentAnsiBackground(line, prefix, "\x1b[49m")
-		: renderPersistentBackground(line, theme, "selectedBg");
-}
-
-function boardColumn(columns: TaskBoardColumn[], id: TaskBoardColumn["id"]): TaskBoardColumn {
-	const column = columns.find((candidate) => candidate.id === id);
-	if (!column) throw new Error(`Missing task board column: ${id}`);
-	return column;
-}
-
-function withDoneRecencyOrder(column: TaskBoardColumn): TaskBoardColumn {
-	return {
-		...column,
-		tasks: [...column.tasks].sort(
-			(left, right) => right.updated_at - left.updated_at || left.id.localeCompare(right.id),
-		),
-	};
-}
-
-function taskHudSummary(columns: Record<TaskBoardColumn["id"], TaskBoardColumn>): string[] {
-	const parts: string[] = [];
-	if (columns.rejected?.tasks.length > 0) parts.push(`${columns.rejected.tasks.length} rejected`);
-	if (columns.ready.tasks.length > 0) parts.push(`${columns.ready.tasks.length} ready`);
-	if (columns.blocked.tasks.length > 0) parts.push(`${columns.blocked.tasks.length} blocked`);
-	const done = columns.done.tasks.length;
-	if (done > 0) parts.push(`${done} done`);
-	if (columns.in_progress.tasks.length > 0) parts.push(`${columns.in_progress.tasks.length} in progress`);
-	if (columns.in_review.tasks.length > 0) parts.push(`${columns.in_review.tasks.length} in review`);
-	return parts;
-}
-
-function taskGuardHudLine(theme: Theme, width: number): string {
-	return truncateLine(`${theme.fg("accent", "󰌾")} ${theme.fg("warning", "Task guard on")}`, width);
-}
-
-function shelfHeader(theme: Theme, column: TaskBoardColumn, width: number, hidden = 0): string {
-	const count = hidden > 0 ? `${column.tasks.length} – ${hidden} hidden` : `${column.tasks.length}`;
-	const title = theme.fg(columnColor(column), `${columnIcon(column)} ${column.label} (${count})`);
-	return padToVisibleWidth(title, width);
-}
-
-function hudColumnRows(column: TaskBoardColumn, maxTasks: number): number {
-	switch (column.id) {
-		case "rejected":
-		case "ready":
-			return Math.max(1, Math.min(3, column.tasks.length));
-		case "blocked":
-			return Math.max(1, Math.min(2, column.tasks.length));
-		case "in_progress":
-		case "in_review":
-			return Math.max(1, Math.min(maxTasks, column.tasks.length));
-		case "done":
-			return Math.max(1, Math.min(5, column.tasks.length));
-	}
-}
-
-function renderHudTaskCard(
+function taskLine(
 	task: TaskRecord,
-	column: TaskBoardColumn,
 	theme: Theme,
 	width: number,
 	byId: Map<string, TaskRecord>,
-	display: AssignmentDisplayContext,
-	flashTaskIds: ReadonlySet<string> = new Set(),
-	flashTasks: ReadonlyMap<string, TaskHudFlash> = new Map(),
+	prefixes: ReadonlyMap<string, string>,
+	display: AssignmentDisplayContext = {},
+	selected = false,
+	frame = 0,
 	now = Date.now(),
 ): string {
-	const blockers = openBlockers(task, byId);
+	const blocked = hasOpenBlockers(task, byId);
+	const icon = theme.fg(statusColor(task, blocked), statusIcon(task, blocked, frame));
+	const blockers = openBlockers(task, byId).map((id) => displayTaskId(id, prefixes));
+	const suffix = blockers.length > 0 ? theme.fg("dim", ` › blocked by ${blockers.join(", ")}`) : "";
 	const assignee = formatAssignee(task, theme, display);
-	const labels = formatTaskLabels(task, theme);
-	const meta = blockers.length > 0 ? ` ←${blockers.length}` : "";
-	const titleColor = column.id === "done" || isAssignedToOtherSession(task, display) ? "dim" : "text";
-	const fixedWidth = visibleWidth(`${typeIcon(task)}  ${task.id} ${labels}${assignee}${meta}`) + 4;
-	const card = `${theme.fg(typeColor(task), typeIcon(task))} ${formatTaskId(task.id, theme)} ${theme.fg(titleColor, compact(task.title, Math.max(8, width - fixedWidth)))}${labels}${assignee}${theme.fg("dim", meta)}`;
-	const line = padToVisibleWidth(` ${padToVisibleWidth(card, width)}`, width + 2);
-	const flash = flashTasks.get(task.id);
-	return flash || flashTaskIds.has(task.id) ? renderTaskHudFlashBackground(line, theme, flash, now) : line;
-}
-
-function renderHudSection(
-	column: TaskBoardColumn,
-	theme: Theme,
-	width: number,
-	rows: number,
-	byId: Map<string, TaskRecord>,
-	display: AssignmentDisplayContext,
-	flashTaskIds: ReadonlySet<string> = new Set(),
-	flashTasks: ReadonlyMap<string, TaskHudFlash> = new Map(),
-	now = Date.now(),
-): string[] {
-	if (column.tasks.length === 0) return [];
-	const hidden = Math.max(0, column.tasks.length - rows);
-	const lines = [shelfHeader(theme, column, width, hidden)];
-	const cardWidth = Math.max(1, width - 2);
-	for (const task of column.tasks.slice(0, rows)) {
-		lines.push(renderHudTaskCard(task, column, theme, cardWidth, byId, display, flashTaskIds, flashTasks, now));
+	const marker = selected ? "›" : " ";
+	let subject = task.title;
+	let stats = "";
+	if (task.status === "in_progress") {
+		subject = `${task.active_form || gerundTitle(task.title)}…`;
+		stats = ` ${theme.fg("dim", `(${formatDuration(now - (task.started_at ?? task.updated_at ?? now))})`)}`;
 	}
-	return lines;
-}
-
-function isTaskBodyHeading(line: string): boolean {
-	const trimmed = line.trim();
-	return /^#{1,6}\s+\S/.test(trimmed) || (/^[A-Z][A-Za-z0-9 /-]+:$/.test(trimmed) && trimmed.length <= 80);
-}
-
-function formatTaskBodyHeading(line: string, theme: Theme): string {
-	return theme.fg("mdHeading", line.trim().replace(/^#{1,6}\s+/, ""));
+	let text = `${marker} ${icon} ${taskPrefix(task, theme, prefixes)} ${subject}${assignee}${stats}${suffix}`;
+	if (isComplete(task))
+		text = `${marker} ${icon} ${theme.fg("dim", strike(theme, `${displayTaskId(task.id, prefixes)} ${task.title}`))}`;
+	return truncateLine(text, width);
 }
 
 function taskBodyDetailLines(body: string, theme: Theme): string[] {
@@ -1242,8 +1001,11 @@ function taskBodyDetailLines(body: string, theme: Theme): string[] {
 		const clean = line.trimEnd();
 		if (!clean.trim()) {
 			lines.push("");
-		} else if (isTaskBodyHeading(clean)) {
-			lines.push(formatTaskBodyHeading(clean, theme));
+		} else if (
+			/^#{1,6}\s+\S/.test(clean) ||
+			(/^[A-Z][A-Za-z0-9 /-]+:$/.test(clean.trim()) && clean.trim().length <= 80)
+		) {
+			lines.push(theme.fg("mdHeading", clean.trim().replace(/^#{1,6}\s+/, "")));
 		} else if (/^\s*[-*]\s+/.test(clean)) {
 			lines.push(`  ${theme.fg("dim", "•")} ${clean.replace(/^\s*[-*]\s+/, "")}`);
 		} else {
@@ -1253,112 +1015,63 @@ function taskBodyDetailLines(body: string, theme: Theme): string[] {
 	return lines;
 }
 
-function detailLines(task: TaskRecord, tasks: TaskRecord[], theme: Theme, width: number): string[] {
+function detailLines(
+	task: TaskRecord,
+	tasks: TaskRecord[],
+	theme: Theme,
+	width: number,
+	prefixes: ReadonlyMap<string, string>,
+): string[] {
 	const blocked = tasks
 		.filter((candidate) => (candidate.blocked_by ?? []).includes(task.id))
-		.map((candidate) => candidate.id);
+		.map((candidate) => displayTaskId(candidate.id, prefixes));
 	const assignee = assignmentLabel(task) ?? "none";
 	const raw = [
-		theme.fg("toolTitle", theme.bold(`${task.id} ${task.title}`)),
+		theme.fg("toolTitle", bold(theme, `${displayTaskId(task.id, prefixes)} ${task.title}`)),
 		"",
 		`${theme.fg("dim", "Status:")} ${task.status}   ${theme.fg("dim", "Priority:")} ${priority(task)}   ${theme.fg("dim", "Assignee:")} ${assignee}`,
-		`${theme.fg("dim", "Blockers:")} ${(task.blocked_by ?? []).join(", ") || "none"}`,
-		`${theme.fg("dim", "Parent:")} ${task.parent_id ?? "none"}`,
+		`${theme.fg("dim", "Blockers:")} ${(task.blocked_by ?? []).map((id) => displayTaskId(id, prefixes)).join(", ") || "none"}`,
+		`${theme.fg("dim", "Parent:")} ${task.parent_id ? displayTaskId(task.parent_id, prefixes) : "none"}`,
 		`${theme.fg("dim", "Blocks:")} ${blocked.join(", ") || "none"}`,
-		`Created: ${formatBoardTime(task.created_at)}   Updated: ${formatBoardTime(task.updated_at)}`,
 		...(task.body.trim() ? ["", ...taskBodyDetailLines(task.body, theme)] : []),
 	];
 	return raw.flatMap((line) => wrapTextWithAnsi(line, width)).map((line) => truncateLine(line, width));
-}
-
-function renderBoardTaskRow(task: TaskRecord, theme: Theme, width: number, selected: boolean): string {
-	const marker = selected ? "›" : " ";
-	const assignee = assignmentLabel(task);
-	const labels = formatTaskLabels(task, theme);
-	const assigneeText = assignee ? ` ${theme.fg("mdLink", italic(`@${assignee}`))}` : "";
-	const label = `${marker} ${theme.fg(typeColor(task), typeIcon(task))} ${task.id} ${compact(task.title, Math.max(12, width - visibleWidth(`${task.id}${labels}${assigneeText}`) - 6))}${labels}${assigneeText}`;
-	return selected
-		? renderPersistentBackground(padToVisibleWidth(theme.fg("text", label), width), theme, "selectedBg")
-		: theme.fg("text", label);
 }
 
 export function renderTaskBoardLines(
 	tasks: TaskRecord[],
 	theme: Theme,
 	width: number,
-	selection: TaskBoardSelection = { column: 0, row: 0 },
+	selection: TaskBoardSelection = { row: 0 },
 	bindings: TaskBoardKeybindings = defaultConfig.keybindings,
 ): string[] {
 	const safeWidth = Math.max(20, width);
 	const innerWidth = Math.max(1, safeWidth - 4);
-	const columns = buildTaskBoardColumns(tasks);
-	const clamped = clampSelection(columns, selection);
+	const items = buildTaskBoardItems(tasks);
+	const clamped = clampSelection(items, selection);
+	const byId = new Map(tasks.map((task) => [task.id, task]));
+	const prefixes = minimalTaskIdPrefixes(tasks);
 	const lines = [
 		truncateLine(`${theme.fg("mdHeading", "Tasks")} ${theme.fg("dim", taskBoardHelp(bindings))}`, innerWidth),
 		"",
 	];
-	for (const group of buildTaskBoardGroups(tasks)) {
-		const groupColumns = buildTaskBoardColumns(group.tasks);
-		const leftLane = (["rejected", "ready", "blocked"] as const).flatMap((id) => {
-			const column = groupColumns.find((candidate) => candidate.id === id) ?? { id, label: "Rejected", tasks: [] };
-			if (column.tasks.length === 0) return [];
-			return [
-				theme.fg(columnColor(column), `${columnIcon(column)} ${column.label} (${column.tasks.length})`),
-				...column.tasks.map((task) => {
-					const globalSelection = selectionForTask(columns, task.id);
-					return renderBoardTaskRow(
-						task,
-						theme,
-						Math.max(1, Math.floor(innerWidth / 3) - 2),
-						globalSelection?.column === clamped.column && globalSelection.row === clamped.row,
-					);
-				}),
-			];
-		});
-		const lanes = [
-			leftLane,
-			...(["in_progress", "in_review", "done"] as const).map((id) => {
-				const column = boardColumn(groupColumns, id);
-				if (column.tasks.length === 0) return [];
-				return [
-					theme.fg(columnColor(column), `${columnIcon(column)} ${column.label} (${column.tasks.length})`),
-					...column.tasks.map((task) => {
-						const globalSelection = selectionForTask(columns, task.id);
-						return renderBoardTaskRow(
-							task,
-							theme,
-							Math.max(1, Math.floor(innerWidth / 3) - 2),
-							globalSelection?.column === clamped.column && globalSelection.row === clamped.row,
-						);
-					}),
-				];
-			}),
-		].filter((lane) => lane.length > 0);
-		if (lanes.length === 0) continue;
-		lines.push(renderEpicBoardHeader(group, theme, innerWidth));
-		const widths = splitWidths(innerWidth, lanes.length);
-		const height = Math.max(...lanes.map((lane) => lane.length));
-		for (let row = 0; row < height; row++) {
-			lines.push(
-				fitCells(
-					lanes.map((lane, index) => lane[row] ?? " ".repeat(widths[index] ?? 0)),
-					widths,
-				),
-			);
-		}
-		lines.push(theme.fg("borderMuted", "─".repeat(innerWidth)));
-	}
-	if (lines.length === 2) lines.push(truncateLine(theme.fg("dim", "No tasks"), innerWidth));
-	lines.push("");
-	lines.push(truncateLine(theme.fg("borderMuted", "─".repeat(innerWidth)), innerWidth));
-	lines.push(theme.fg("mdHeading", "Details"));
-	lines.push("");
-	const task = selectedTask(columns, clamped);
-	if (task) {
-		lines.push(...detailLines(task, tasks, theme, innerWidth));
+	if (items.length === 0) {
+		lines.push(truncateLine(theme.fg("dim", "No tasks"), innerWidth));
 	} else {
-		lines.push(truncateLine(theme.fg("dim", "No task selected"), innerWidth));
+		for (let row = 0; row < items.length; row++) {
+			const item = items[row]!;
+			lines.push(taskLine(item.task, theme, innerWidth, byId, prefixes, {}, row === clamped.row));
+		}
 	}
+	lines.push(
+		"",
+		truncateLine(theme.fg("borderMuted", "─".repeat(innerWidth)), innerWidth),
+		theme.fg("mdHeading", "Details"),
+		"",
+	);
+	const task = selectedTask(items, clamped);
+	if (task) lines.push(...detailLines(task, tasks, theme, innerWidth, prefixes));
+	else lines.push(truncateLine(theme.fg("dim", "No task selected"), innerWidth));
 	return boxedTaskBoard(
 		theme,
 		safeWidth,
@@ -1368,7 +1081,7 @@ export function renderTaskBoardLines(
 
 export class TaskBoardOverlay implements Component {
 	private tasks: TaskRecord[];
-	private boardSelection: TaskBoardSelection = { column: 0, row: 0 };
+	private boardSelection: TaskBoardSelection = { row: 0 };
 	private pendingReload?: Promise<void>;
 	private pendingMutation?: Promise<void>;
 	private confirmingDeleteId?: string;
@@ -1388,10 +1101,10 @@ export class TaskBoardOverlay implements Component {
 		},
 	) {
 		this.tasks = options.tasks;
-		const columns = buildTaskBoardColumns(this.tasks);
+		const items = buildTaskBoardItems(this.tasks);
 		this.boardSelection = options.initialTaskId
-			? (selectionForTask(columns, options.initialTaskId) ?? clampSelection(columns, this.boardSelection))
-			: clampSelection(columns, this.boardSelection);
+			? (selectionForTask(items, options.initialTaskId) ?? clampSelection(items, this.boardSelection))
+			: clampSelection(items, this.boardSelection);
 	}
 
 	selection(): TaskBoardSelection {
@@ -1407,28 +1120,18 @@ export class TaskBoardOverlay implements Component {
 	}
 
 	private setSelection(next: TaskBoardSelection): void {
-		this.boardSelection = clampSelection(buildTaskBoardColumns(this.tasks), next);
+		this.boardSelection = clampSelection(buildTaskBoardItems(this.tasks), next);
 	}
 
 	private preserveSelection(taskId: string | undefined): void {
-		const columns = buildTaskBoardColumns(this.tasks);
+		const items = buildTaskBoardItems(this.tasks);
 		this.boardSelection = taskId
-			? (selectionForTask(columns, taskId) ?? clampSelection(columns, this.boardSelection))
-			: clampSelection(columns, this.boardSelection);
-	}
-
-	private moveColumn(delta: number): void {
-		this.setSelection({
-			column: this.boardSelection.column + delta,
-			row: this.boardSelection.row,
-		});
+			? (selectionForTask(items, taskId) ?? clampSelection(items, this.boardSelection))
+			: clampSelection(items, this.boardSelection);
 	}
 
 	private moveRow(delta: number): void {
-		this.setSelection({
-			column: this.boardSelection.column,
-			row: this.boardSelection.row + delta,
-		});
+		this.setSelection({ row: this.boardSelection.row + delta });
 	}
 
 	private reload(): void {
@@ -1450,7 +1153,7 @@ export class TaskBoardOverlay implements Component {
 	}
 
 	private currentTask(): TaskRecord | undefined {
-		return selectedTask(buildTaskBoardColumns(this.tasks), this.boardSelection);
+		return selectedTask(buildTaskBoardItems(this.tasks), this.boardSelection);
 	}
 
 	private mutate(action: "update" | "delete", params: Record<string, unknown>): void {
@@ -1484,9 +1187,8 @@ export class TaskBoardOverlay implements Component {
 		const task = this.currentTask();
 		if (!task) return;
 		const byId = new Map(this.tasks.map((item) => [item.id, item]));
-		if (hasOpenDependencies(task, byId, taskChildren(this.tasks))) return;
-		const nextStatus = nextCycledStatus(task);
-		this.updateSelected({ status: nextStatus });
+		if (hasOpenBlockers(task, byId)) return;
+		this.updateSelected({ status: nextCycledStatus(task) });
 	}
 
 	private confirmDeleteSelected(): void {
@@ -1498,13 +1200,6 @@ export class TaskBoardOverlay implements Component {
 
 	private deleteConfirmed(): void {
 		if (!this.confirmingDeleteId) return;
-		const dependencyMessage = taskDeleteDependencyMessage(this.confirmingDeleteId, this.tasks);
-		if (dependencyMessage) {
-			this.errorMessage = dependencyMessage;
-			this.confirmingDeleteId = undefined;
-			this.options.onChange?.();
-			return;
-		}
 		this.mutate("delete", { id: this.confirmingDeleteId });
 	}
 
@@ -1523,14 +1218,6 @@ export class TaskBoardOverlay implements Component {
 		}
 		if (matchesAnyKey(data, bindings.close)) {
 			this.options.onClose();
-			return;
-		}
-		if (matchesAnyKey(data, bindings.left)) {
-			this.moveColumn(-1);
-			return;
-		}
-		if (matchesAnyKey(data, bindings.right)) {
-			this.moveColumn(1);
 			return;
 		}
 		if (matchesAnyKey(data, bindings.up)) {
@@ -1591,7 +1278,7 @@ export class TaskBoardOverlay implements Component {
 			.onEditBody(task)
 			.then((tasks) => {
 				this.tasks = tasks;
-				this.boardSelection = selectionForTask(buildTaskBoardColumns(tasks), task.id) ?? this.boardSelection;
+				this.boardSelection = selectionForTask(buildTaskBoardItems(tasks), task.id) ?? this.boardSelection;
 			})
 			.catch((error) => {
 				this.errorMessage = taskBoardErrorMessage("Edit failed", error);
@@ -1616,9 +1303,7 @@ export class TaskBoardOverlay implements Component {
 				truncateLine(this.options.theme.fg("warning", `Confirm delete ${this.confirmingDeleteId}? y/N`), width),
 			);
 		}
-		if (this.errorMessage) {
-			prefix.push(truncateLine(this.options.theme.fg("warning", this.errorMessage), width));
-		}
+		if (this.errorMessage) prefix.push(truncateLine(this.options.theme.fg("warning", this.errorMessage), width));
 		return [...prefix, ...lines];
 	}
 
@@ -1626,745 +1311,76 @@ export class TaskBoardOverlay implements Component {
 }
 
 function taskBoardErrorMessage(prefix: string, error: unknown): string {
-	const raw = error instanceof Error ? error.message : String(error);
-	const message = raw
-		.replace(/^.+ failed with exit code \d+: /, "")
-		.replace(/^Error:\s*/, "")
-		.trim();
-	return `${prefix}: ${message || raw}`;
+	return `${prefix}: ${error instanceof Error ? error.message : String(error)}`;
 }
 
-function taskDeleteDependencyMessage(taskId: string, tasks: TaskRecord[]): string | undefined {
-	const blocked = tasks.filter((task) => task.blocked_by?.includes(taskId)).map((task) => task.id);
-	if (blocked.length > 0) return `Delete failed: cannot delete task ${taskId}; blocked by ${blocked.join(", ")}`;
-	const children = tasks.filter((task) => task.parent_id === taskId).map((task) => task.id);
-	if (children.length > 0) return `Delete failed: cannot delete task ${taskId}; parent of ${children.join(", ")}`;
-	return undefined;
+function nextCycledStatus(task: TaskRecord): string {
+	if (task.status === "rejected") return "in_progress";
+	if (task.status === "in_progress") return "in_review";
+	if (task.status === "in_review") return "open";
+	return "in_progress";
 }
 
-type AssignmentDisplayContext = {
-	currentAssignment?: string;
-	currentLabel?: string;
-	labels?: Map<string, string>;
-	sessionPrefixes?: Map<string, string>;
-};
-
-function isMutatingTaskAction(action: TaskCommand): boolean {
-	return action === "add" || action === "update" || action === "delete" || action === "accept" || action === "reject";
+function doneKeyStatus(task: TaskRecord): string {
+	return isStoryTaskType(task.type) ? "in_review" : "done";
 }
 
-function sessionFile(ctx?: ExtensionContext): string | undefined {
-	return (
-		ctx as
-			| (ExtensionContext & {
-					sessionManager?: { getSessionFile?: () => string | undefined };
-			  })
-			| undefined
-	)?.sessionManager?.getSessionFile?.();
+function taskGuardHudLine(theme: Theme, width: number): string {
+	return truncateLine(`${theme.fg("accent", "󰌾")} ${theme.fg("warning", "Task guard on")}`, width);
 }
 
-function taskGuardStatePath(): string | undefined {
-	const base =
-		process.env.XDG_STATE_HOME ?? (process.env.HOME ? join(process.env.HOME, ".local", "state") : undefined);
-	return base ? join(base, "pi", "task-guard.json") : undefined;
-}
-
-function taskGuardPreferenceKey(ctx?: ExtensionContext): string | undefined {
-	const file = sessionFile(ctx);
-	if (!file) return undefined;
-	const id = basename(file).replace(/\.jsonl$/, "");
-	return id ? `session:${id}` : undefined;
-}
-
-function readTaskGuardPreference(ctx?: ExtensionContext): boolean | undefined {
-	const path = taskGuardStatePath();
-	const key = taskGuardPreferenceKey(ctx);
-	if (!path || !key) return undefined;
-	try {
-		const parsed = JSON.parse(readFileSync(path, "utf8")) as { sessions?: Record<string, unknown> };
-		const value = parsed.sessions?.[key];
-		return typeof value === "boolean" ? value : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-function writeTaskGuardPreference(ctx: ExtensionContext, enabled: boolean): void {
-	const path = taskGuardStatePath();
-	const key = taskGuardPreferenceKey(ctx);
-	if (!path || !key) return;
-	try {
-		let parsed: { sessions?: Record<string, boolean> } = {};
-		try {
-			parsed = JSON.parse(readFileSync(path, "utf8")) as { sessions?: Record<string, boolean> };
-		} catch {}
-		const sessions = parsed.sessions && typeof parsed.sessions === "object" ? parsed.sessions : {};
-		sessions[key] = enabled;
-		mkdirSync(dirname(path), { recursive: true });
-		writeFileSync(path, `${JSON.stringify({ ...parsed, sessions }, null, 2)}\n`, "utf8");
-	} catch {}
-}
-
-function sessionIdFromAssignment(assignedTo: string): string | undefined {
-	if (!assignedTo.startsWith("session:")) return undefined;
-	const id = assignedTo.slice("session:".length);
-	return /^[A-Za-z0-9_.:-]+$/.test(id) ? id : undefined;
-}
-
-function sessionDisplaySeed(assignedTo: string): string | undefined {
-	const id = sessionIdFromAssignment(assignedTo);
-	if (!id) return undefined;
-	const uuid = id.match(/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/)?.[0];
-	return uuid ? uuid.replace(/-/g, "").toLowerCase() : id;
-}
-
-function shortestSessionPrefixes(assignments: string[]): Map<string, string> {
-	const seeds = new Map<string, string>();
-	for (const assignment of new Set(assignments)) {
-		const seed = sessionDisplaySeed(assignment);
-		if (seed) seeds.set(assignment, seed);
-	}
-	const result = new Map<string, string>();
-	for (const [assignment, seed] of seeds) {
-		let length = Math.min(seed.length, 4);
-		while (
-			length < seed.length &&
-			[...seeds].some(
-				([otherAssignment, otherSeed]) =>
-					otherAssignment !== assignment && otherSeed.startsWith(seed.slice(0, length)),
-			)
-		) {
-			length++;
-		}
-		result.set(assignment, seed.slice(0, length));
-	}
-	return result;
-}
-
-function sessionNameFromFile(path: string): string | undefined {
-	try {
-		let name: string | undefined;
-		for (const line of readFileSync(path, "utf8").split("\n")) {
-			if (!line.includes('"session_info"')) continue;
-			const entry = JSON.parse(line) as { type?: string; name?: unknown };
-			if (entry.type === "session_info" && typeof entry.name === "string" && entry.name.trim()) {
-				name = entry.name.trim();
-			}
-		}
-		return name;
-	} catch {
-		return undefined;
-	}
-}
-
-function sessionNameForAssignment(ctx: ExtensionContext | undefined, assignedTo: string): string | undefined {
-	const id = sessionIdFromAssignment(assignedTo);
-	const currentFile = sessionFile(ctx);
-	if (!id || !currentFile) return undefined;
-	const sessionDir = resolve(dirname(currentFile));
-	const path = resolve(join(sessionDir, `${id}.jsonl`));
-	if (!path.startsWith(`${sessionDir}/`)) return undefined;
-	return sessionNameFromFile(path);
-}
-
-function assignmentDisplayContext(
-	pi?: ExtensionAPI,
-	ctx?: ExtensionContext,
-	tasks: TaskRecord[] = [],
-): AssignmentDisplayContext {
-	const currentAssignment = sessionAssignment(ctx);
-	const currentLabel = sessionName(pi, ctx);
-	const labels = new Map<string, string>();
-	const assignments = new Set<string>();
-	if (currentAssignment) assignments.add(currentAssignment);
-	if (currentAssignment && currentLabel) labels.set(currentAssignment, currentLabel);
-	for (const task of tasks) {
-		const assignedTo = task.assigned_to;
-		if (!assignedTo) continue;
-		assignments.add(assignedTo);
-		if (labels.has(assignedTo)) continue;
-		const label = sessionNameForAssignment(ctx, assignedTo);
-		if (label) labels.set(assignedTo, label);
-	}
-	return {
-		currentAssignment,
-		currentLabel,
-		labels,
-		sessionPrefixes: shortestSessionPrefixes([...assignments]),
-	};
-}
-
-function assignmentLabel(task: TaskRecord, display: AssignmentDisplayContext = {}): string | undefined {
-	const assignedTo = task.assigned_to;
-	if (!assignedTo) return undefined;
-	if (assignedTo === display.currentAssignment && display.currentLabel) return display.currentLabel;
-	const label = display.labels?.get(assignedTo);
-	if (label) return label;
-	if (task.assigned_label) return task.assigned_label;
-	const prefix = display.sessionPrefixes?.get(assignedTo);
-	if (prefix) return prefix;
-	const seed = sessionDisplaySeed(assignedTo);
-	if (seed) return seed.slice(0, Math.min(seed.length, 4));
-	if (assignedTo.startsWith("session:")) return assignedTo.slice("session:".length);
-	return assignedTo;
-}
-
-function isAssignedToCurrentSession(task: TaskRecord, display: AssignmentDisplayContext): boolean {
-	return Boolean(task.assigned_to && task.assigned_to === display.currentAssignment);
-}
-
-function isAssignedToOtherSession(task: TaskRecord, display: AssignmentDisplayContext): boolean {
-	return Boolean(task.assigned_to && display.currentAssignment && task.assigned_to !== display.currentAssignment);
-}
-
-function formatAssignee(task: TaskRecord, theme: Theme, display: AssignmentDisplayContext): string {
-	const label = assignmentLabel(task, display);
-	if (!label) return "";
-	if (isAssignedToCurrentSession(task, display)) {
-		return ` ${theme.fg("muted", italic("self"))}`;
-	}
-	return ` ${theme.fg("mdLink", italic(`@${label}`))}`;
-}
-
-function italic(text: string): string {
-	return `\x1b[3m${text}\x1b[23m`;
-}
-
-function typeIcon(task: TaskRecord): string {
-	switch (task.type) {
-		case "feature":
-			return "";
-		case "bug":
-			return "";
-		case "epic":
-			return "";
-		default:
-			return "";
-	}
-}
-
-function typeColor(task: TaskRecord): ThemeColor {
-	switch (task.type) {
-		case "feature":
-			return "warning";
-		case "bug":
-			return "error";
-		case "epic":
-			return "accent";
-		default:
-			return "muted";
-	}
-}
-
-function formatTaskLabels(task: TaskRecord, theme: Theme): string {
-	const labels = task.labels ?? [];
-	if (labels.length === 0) return "";
-	return ` ${labels.map((label) => theme.fg("syntaxString", italic(label))).join(", ")}`;
-}
-
-function formatTaskId(id: string, theme: Theme): string {
-	const padded = id.padEnd(4);
-	const visible =
-		id.length > 0 ? `${theme.fg("syntaxPunctuation", id.slice(0, -1))}${theme.fg("syntaxType", id.slice(-1))}` : "";
-	return `${visible}${" ".repeat(Math.max(0, padded.length - id.length))}`;
-}
-
-const HUD_DONE_WINDOW_MS = 60 * 60 * 1000;
-
-function isRecentlyComplete(task: TaskRecord, now: number): boolean {
-	return isComplete(task) && now - task.updated_at <= HUD_DONE_WINDOW_MS;
-}
-
-function isActiveCurrentSessionEpicTask(task: TaskRecord, display: AssignmentDisplayContext): boolean {
-	return isAssignedToCurrentSession(task, display) && !isComplete(task) && !isCanceled(task) && task.type !== "epic";
-}
-
-function renderHudEpicSummary(group: TaskBoardGroup, theme: Theme, width: number): string {
-	const label = group.epicLabel ? ` ${theme.fg("success", group.epicLabel)}` : "";
-	const marker = group.total > 0 && group.done === group.total ? theme.fg("success", "✓") : theme.fg("dim", "○");
-	const completed = group.done > 0 ? ` · ${group.done} done` : "";
-	return truncateLine(`${marker} ${theme.fg("toolTitle", group.label)}${label}${theme.fg("dim", completed)}`, width);
-}
-
-function renderColumnarHudGroup(
-	group: TaskBoardGroup,
-	theme: Theme,
-	width: number,
-	maxTasks: number,
-	byId: Map<string, TaskRecord>,
-	display: AssignmentDisplayContext,
-	now: number,
-	flashTaskIds?: ReadonlySet<string>,
-	flashTasks?: ReadonlyMap<string, TaskHudFlash>,
-): string[] {
-	const groupTasks = group.tasks.filter((task) => !isCanceled(task));
-	const visibleTasks = groupTasks.filter(
-		(task) => !isComplete(task) || (isAssignedToCurrentSession(task, display) && isRecentlyComplete(task, now)),
-	);
-	if (visibleTasks.length === 0 && groupTasks.length > 0 && groupTasks.every(isComplete)) {
-		return [
-			truncateLine(
-				`${theme.fg("success", "✓")} ${theme.fg("toolTitle", group.label)} ${theme.fg("dim", `${groupTasks.length} completed`)}`,
-				width,
-			),
-		];
-	}
-	if (visibleTasks.length === 0) return [];
-	const scopedGroup: TaskBoardGroup = {
-		...group,
-		tasks: visibleTasks,
-		done: visibleTasks.filter(isComplete).length,
-		total: visibleTasks.length,
-	};
-	const visibleTasksForColumns = visibleTasks.map((task) => ({ ...task, blocked_by: openBlockers(task, byId) }));
-	const groupColumns = buildTaskBoardColumns(visibleTasksForColumns);
-	const groupDoneColumn = boardColumn(groupColumns, "done");
-	const groupHudColumns = {
-		rejected: groupColumns.find((column) => column.id === "rejected") ?? {
-			id: "rejected" as const,
-			label: "Rejected",
-			tasks: [],
-		},
-		ready: boardColumn(groupColumns, "ready"),
-		blocked: boardColumn(groupColumns, "blocked"),
-		in_progress: boardColumn(groupColumns, "in_progress"),
-		in_review: boardColumn(groupColumns, "in_review"),
-		done: withDoneRecencyOrder(groupDoneColumn),
-	};
-	const widths = splitWidths(width, 3);
-	const renderedColumns = [
-		[
-			...renderHudSection(
-				groupHudColumns.rejected,
-				theme,
-				widths[0] ?? width,
-				hudColumnRows(groupHudColumns.rejected, maxTasks),
-				byId,
-				display,
-				flashTaskIds,
-				flashTasks,
-				now,
-			),
-			...renderHudSection(
-				groupHudColumns.ready,
-				theme,
-				widths[0] ?? width,
-				hudColumnRows(groupHudColumns.ready, maxTasks),
-				byId,
-				display,
-				flashTaskIds,
-				flashTasks,
-				now,
-			),
-			...(groupHudColumns.blocked.tasks.length > 0
-				? renderHudSection(
-						groupHudColumns.blocked,
-						theme,
-						widths[0] ?? width,
-						hudColumnRows(groupHudColumns.blocked, maxTasks),
-						byId,
-						display,
-						flashTaskIds,
-						flashTasks,
-						now,
-					)
-				: []),
-		],
-		[
-			...renderHudSection(
-				groupHudColumns.in_progress,
-				theme,
-				widths[1] ?? width,
-				hudColumnRows(groupHudColumns.in_progress, maxTasks),
-				byId,
-				display,
-				flashTaskIds,
-				flashTasks,
-				now,
-			),
-			...renderHudSection(
-				groupHudColumns.in_review,
-				theme,
-				widths[1] ?? width,
-				hudColumnRows(groupHudColumns.in_review, maxTasks),
-				byId,
-				display,
-				flashTaskIds,
-				flashTasks,
-				now,
-			),
-		],
-		renderHudSection(
-			groupHudColumns.done,
-			theme,
-			widths[2] ?? width,
-			hudColumnRows(groupHudColumns.done, maxTasks),
-			byId,
-			display,
-			flashTaskIds,
-			flashTasks,
-			now,
-		),
-	];
-	if (renderedColumns.every((column) => column.length === 0)) return [];
-	const lines = [renderEpicBoardHeader(scopedGroup, theme, width)];
-	const height = Math.max(...renderedColumns.map((column) => column.length));
-	for (let row = 0; row < height; row++) {
-		lines.push(
-			fitCells(
-				renderedColumns.map((column, index) => column[row] ?? " ".repeat(widths[index] ?? 0)),
-				widths,
-			),
-		);
-	}
-	return lines;
+function taskHudSummary(tasks: TaskRecord[]): string[] {
+	const visible = tasks.filter((task) => !isCanceled(task));
+	const done = visible.filter(isComplete).length;
+	const inProgress = visible.filter((task) => task.status === "in_progress").length;
+	const inReview = visible.filter((task) => task.status === "in_review").length;
+	const open = visible.length - done - inProgress - inReview;
+	const parts: string[] = [];
+	if (done > 0) parts.push(`${done} done`);
+	if (inProgress > 0) parts.push(`${inProgress} in progress`);
+	if (inReview > 0) parts.push(`${inReview} in review`);
+	if (open > 0) parts.push(`${open} open`);
+	return parts;
 }
 
 export function renderHudLines(
 	tasks: TaskRecord[],
 	theme: Theme,
 	width: number,
-	maxTasks = 6,
+	maxTasks = 10,
 	display: AssignmentDisplayContext = {},
 	options: {
-		hideKanban?: boolean;
-		expandedEpicKey?: string;
-		board?: TicketBoardProjection;
-		flashTaskIds?: ReadonlySet<string>;
-		flashTasks?: ReadonlyMap<string, TaskHudFlash>;
+		compact?: boolean;
+		frame?: number;
 		now?: number;
 		taskGuardEnabled?: boolean;
 	} = {},
 ): string[] {
-	const hudTasks = tasks.filter((task) => !isCanceled(task));
 	const now = options.now ?? Date.now();
 	const guardLines = options.taskGuardEnabled ? [taskGuardHudLine(theme, width)] : [];
-	const visibleTasks = hudTasks.filter(
-		(task) =>
-			task.type !== "epic" &&
-			(!isComplete(task) || (isAssignedToCurrentSession(task, display) && isRecentlyComplete(task, now))),
-	);
-	const groups = buildTaskBoardGroups(hudTasks, options.board);
-	if (visibleTasks.length === 0 && groups.length === 0) return guardLines;
-	const columns = buildTaskBoardColumns(hudTasks);
-	const doneColumn = boardColumn(columns, "done");
-	const hudColumns = {
-		rejected: columns.find((column) => column.id === "rejected") ?? {
-			id: "rejected" as const,
-			label: "Rejected",
-			tasks: [],
-		},
-		ready: boardColumn(columns, "ready"),
-		blocked: boardColumn(columns, "blocked"),
-		in_progress: boardColumn(columns, "in_progress"),
-		in_review: boardColumn(columns, "in_review"),
-		done: withDoneRecencyOrder({
-			...doneColumn,
-			tasks: doneColumn.tasks.filter((task) => isAssignedToCurrentSession(task, display)),
-		}),
-	};
-	const parts = taskHudSummary(hudColumns);
+	const visibleTasks = tasks.filter((task) => !isCanceled(task));
+	if (visibleTasks.length === 0) return guardLines;
+	const parts = taskHudSummary(visibleTasks);
 	const summaryLine = truncateLine(
-		`${theme.fg("mdHeading", "●")} ${theme.fg("mdHeading", `${visibleTasks.length} tasks`)} ${theme.fg("muted", `(${parts.join(", ")})`)}`,
+		`${theme.fg("accent", "●")} ${theme.fg("accent", `${visibleTasks.length} tasks`)} ${theme.fg("muted", `(${parts.join(", ")})`)}`,
 		width,
 	);
-	if (options.hideKanban) return [...guardLines, summaryLine];
-	const lines: string[] = [];
-	const byId = new Map(hudTasks.map((item) => [item.id, item]));
-	if (options.expandedEpicKey) {
-		const group = groups.find((candidate) => candidate.key === options.expandedEpicKey);
-		if (!group) return [...guardLines, summaryLine];
-		lines.push(
-			...renderColumnarHudGroup(
-				group,
-				theme,
-				width,
-				maxTasks,
-				byId,
-				display,
-				now,
-				options.flashTaskIds,
-				options.flashTasks,
-			),
-		);
-		return [...guardLines, ...(lines.length > 0 ? lines : [summaryLine])].map((line) => truncateLine(line, width));
+	if (options.compact) return [...guardLines, summaryLine];
+	const byId = new Map(tasks.map((task) => [task.id, task]));
+	const prefixes = minimalTaskIdPrefixes(tasks);
+	const lines = [summaryLine];
+	const sorted = buildTaskBoardItems(visibleTasks).map((item) => item.task);
+	for (const task of sorted.slice(0, maxTasks)) {
+		lines.push(taskLine(task, theme, width, byId, prefixes, display, false, options.frame ?? 0, now));
 	}
-	const activeEpicKeys = new Set(
-		hudTasks
-			.filter((task) => taskEpicKey(task) && isActiveCurrentSessionEpicTask(task, display))
-			.map((task) => {
-				const label = taskEpicKey(task);
-				return groups.some((group) => group.key === label) ? label : `unknown:${label}`;
-			}),
-	);
-	if (activeEpicKeys.size === 0) {
-		for (const group of groups) {
-			lines.push(renderHudEpicSummary(group, theme, width));
-		}
-		return [...guardLines, ...lines].map((line) => truncateLine(line, width));
-	}
-	for (const group of groups.filter((group) => activeEpicKeys.has(group.key))) {
-		if (lines.length > 0) lines.push(theme.fg("borderMuted", "─".repeat(width)));
-		lines.push(
-			...renderColumnarHudGroup(
-				group,
-				theme,
-				width,
-				maxTasks,
-				byId,
-				display,
-				now,
-				options.flashTaskIds,
-				options.flashTasks,
-			),
-		);
-	}
+	const hidden = sorted.length - Math.min(sorted.length, maxTasks);
+	if (hidden > 0) lines.push(truncateLine(theme.fg("dim", `    … and ${hidden} more`), width));
 	return [...guardLines, ...lines].map((line) => truncateLine(line, width));
 }
 
-interface RatatuiTaskTuiResponse {
-	request_id: number;
-	lines?: string[];
-	selected_task_id?: string | null;
-	mutation?: { action: "update" | "delete"; params: Record<string, unknown> };
-	editing?: boolean;
-}
-
-class RatatuiTaskBoardOverlay implements Component {
-	private tasks: TaskRecord[];
-	private selectedTaskId?: string;
-	private lines: string[] = [];
-	private requestId = 0;
-	private pending = new Map<number, Promise<void>>();
-	private resolvePending = new Map<number, () => void>();
-	private pendingMutation?: Promise<void>;
-	private child?: ChildProcessWithoutNullStreams;
-	private errorMessage?: string;
-	private editing = false;
-
-	constructor(
-		private readonly options: {
-			tasks: TaskRecord[];
-			theme: Theme;
-			keybindings?: TaskBoardKeybindings;
-			command: string;
-			cwd: string;
-			initialTaskId?: string;
-			onClose: () => void;
-			onMutate?: (action: "update" | "delete", params: Record<string, unknown>) => Promise<TaskRecord[]>;
-			onChange?: () => void;
-		},
-	) {
-		this.tasks = options.tasks;
-		this.selectedTaskId = options.initialTaskId;
-		this.lines = [options.theme.fg("dim", "Loading task TUI…")];
-		this.start();
-		this.send({ tasks: this.tasks });
-	}
-
-	waitForIdle(): Promise<void> {
-		return Promise.all([...this.pending.values(), this.pendingMutation].filter(Boolean)).then(() => {});
-	}
-
-	render(width: number): string[] {
-		const lines = this.errorMessage ? [...this.lines, this.options.theme.fg("error", this.errorMessage)] : this.lines;
-		return lines.map((line) => truncateLine(line, Math.max(20, width)));
-	}
-
-	handleInput(data: string): void {
-		const bindings = this.options.keybindings ?? defaultConfig.keybindings;
-		if (data === "q" || (matchesAnyKey(data, bindings.close) && data !== "escape")) {
-			this.close();
-			this.options.onClose();
-			return;
-		}
-		if (this.pendingMutation) return;
-		if (this.editing) {
-			this.send({ input: this.ratatuiInput(data) });
-			return;
-		}
-		if (matchesAnyKey(data, bindings.left) || matchesAnyKey(data, bindings.up)) {
-			this.send({ input: matchesAnyKey(data, bindings.left) ? "left" : "up" });
-			return;
-		}
-		if (matchesAnyKey(data, bindings.right) || matchesAnyKey(data, bindings.down)) {
-			this.send({ input: matchesAnyKey(data, bindings.right) ? "right" : "down" });
-			return;
-		}
-		const task = this.currentTask();
-		if (!task) return;
-		if (data === "e") {
-			this.send({ input: "e" });
-			return;
-		}
-		if (matchesAnyKey(data, bindings.assignCurrent)) {
-			this.mutate("update", { id: task.id, assigned_to: "current" });
-			return;
-		}
-		if (matchesAnyKey(data, bindings.clearAssignee)) {
-			this.mutate("update", { id: task.id, clear_assignee: true });
-			return;
-		}
-		if (matchesAnyKey(data, bindings.priorityUp)) {
-			this.mutate("update", { id: task.id, priority: priority(task) + 1 });
-			return;
-		}
-		if (matchesAnyKey(data, bindings.priorityDown)) {
-			this.mutate("update", { id: task.id, priority: priority(task) - 1 });
-			return;
-		}
-		if (matchesAnyKey(data, bindings.done)) {
-			this.mutate("update", { id: task.id, status: doneKeyStatus(task) });
-			return;
-		}
-		if (matchesAnyKey(data, bindings.cancel)) {
-			this.send({ input: "x" });
-			return;
-		}
-		if (matchesAnyKey(data, bindings.delete)) {
-			this.send({ input: "delete" });
-			return;
-		}
-		if (matchesAnyKey(data, bindings.cycleStatus)) {
-			const byId = new Map(this.tasks.map((item) => [item.id, item]));
-			if (!hasOpenDependencies(task, byId, taskChildren(this.tasks))) {
-				this.mutate("update", { id: task.id, status: nextCycledStatus(task) });
-			}
-			return;
-		}
-		if (matchesAnyKey(data, bindings.reload)) {
-			this.send({ tasks: this.tasks });
-			return;
-		}
-		this.send({ input: this.ratatuiInput(data) });
-	}
-
-	invalidate(): void {}
-
-	private start(): void {
-		this.child = spawn(this.options.command, ["task", "tui", "--embed"], {
-			cwd: this.options.cwd,
-			env: process.env,
-			stdio: ["pipe", "pipe", "pipe"],
-		});
-		createInterface({ input: this.child.stdout }).on("line", (line) => this.handleBridgeLine(line));
-		this.child.stderr.on("data", (chunk) => {
-			const text = Buffer.from(chunk).toString("utf8").trim();
-			if (text) this.errorMessage = text;
-			this.options.onChange?.();
-		});
-		this.child.on("error", (error) => {
-			this.errorMessage = error.message;
-			this.options.onChange?.();
-		});
-	}
-
-	private send(payload: { input?: string; tasks?: TaskRecord[] }): void {
-		const child = this.child;
-		if (!child || child.killed) return;
-		const requestId = ++this.requestId;
-		const promise = new Promise<void>((resolve) => this.resolvePending.set(requestId, resolve));
-		this.pending.set(requestId, promise);
-		const request = {
-			request_id: requestId,
-			width: 120,
-			height: 40,
-			selected_task_id: this.selectedTaskId,
-			...payload,
-		};
-		child.stdin.write(`${JSON.stringify(request)}\n`, (error) => {
-			if (error) {
-				this.errorMessage = error.message;
-				this.resolveRequest(requestId);
-				this.options.onChange?.();
-			}
-		});
-	}
-
-	private handleBridgeLine(line: string): void {
-		const payload = JSON.parse(line) as RatatuiTaskTuiResponse;
-		if (payload.lines) this.lines = payload.lines;
-		this.selectedTaskId = payload.selected_task_id ?? undefined;
-		this.editing = Boolean(payload.editing);
-		this.resolveRequest(payload.request_id);
-		this.options.onChange?.();
-		if (payload.mutation) this.mutate(payload.mutation.action, payload.mutation.params);
-	}
-
-	private ratatuiInput(data: string): string {
-		return matchesKey(data, "ctrl+g")
-			? "ctrl-g"
-			: matchesKey(data, "ctrl+s")
-				? "ctrl-s"
-				: matchesKey(data, "ctrl+a")
-					? "ctrl-a"
-					: matchesKey(data, "ctrl+e")
-						? "ctrl-e"
-						: matchesKey(data, "ctrl+b")
-							? "ctrl-b"
-							: matchesKey(data, "ctrl+f")
-								? "ctrl-f"
-								: matchesKey(data, "ctrl+d")
-									? "ctrl-d"
-									: matchesKey(data, "ctrl+k")
-										? "ctrl-k"
-										: matchesKey(data, "ctrl+u")
-											? "ctrl-u"
-											: matchesKey(data, "ctrl+p")
-												? "ctrl-p"
-												: matchesKey(data, "ctrl+n")
-													? "ctrl-n"
-													: matchesKey(data, "up")
-														? "up"
-														: matchesKey(data, "down")
-															? "down"
-															: matchesKey(data, "left")
-																? "left"
-																: matchesKey(data, "right")
-																	? "right"
-																	: data === "escape"
-																		? "esc"
-																		: data === "\r"
-																			? "\n"
-																			: data;
-	}
-
-	private resolveRequest(requestId: number): void {
-		this.resolvePending.get(requestId)?.();
-		this.resolvePending.delete(requestId);
-		this.pending.delete(requestId);
-	}
-
-	private currentTask(): TaskRecord | undefined {
-		return this.tasks.find((task) => task.id === this.selectedTaskId) ?? this.tasks.find((task) => !isCanceled(task));
-	}
-
-	private mutate(action: "update" | "delete", params: Record<string, unknown>): void {
-		if (!this.options.onMutate) return;
-		this.pendingMutation = this.options
-			.onMutate(action, params)
-			.then((tasks) => {
-				this.tasks = tasks;
-				this.send({ tasks });
-			})
-			.catch((error) => {
-				this.errorMessage = taskBoardErrorMessage(`${action === "delete" ? "Delete" : "Update"} failed`, error);
-			})
-			.finally(() => {
-				this.pendingMutation = undefined;
-				this.options.onChange?.();
-			});
-	}
-
-	private close(): void {
-		this.child?.kill();
-	}
-}
-
 const emptyTaskRender = new EmptyComponent();
-
 const taskReadActions = new Set<TaskCommand>(["list", "show"]);
-const taskWriteActions = new Set<TaskCommand>(["add", "update", "delete", "accept", "reject"]);
+const taskWriteActions = new Set<TaskCommand>(["add", "update", "delete"]);
 
 function taskReadAction(params: Record<string, unknown>): TaskCommand {
 	const mode = String(params.mode ?? (params.id ? "show" : "list"));
@@ -2375,20 +1391,13 @@ function taskReadAction(params: Record<string, unknown>): TaskCommand {
 
 function taskWriteAction(params: Record<string, unknown>): TaskCommand {
 	const op = String(params.op ?? "");
-	if (!taskWriteActions.has(op as TaskCommand)) {
-		throw new Error("task_write op must be add, update, delete, accept, or reject");
-	}
+	if (!taskWriteActions.has(op as TaskCommand)) throw new Error("task_write op must be add, update, or delete");
 	const data = objectParam(params.data);
 	if (op === "add" && typeof params.title !== "string" && typeof data.title !== "string") {
 		throw new Error("task_write op 'add' requires title");
 	}
 	if (op !== "add" && typeof params.id !== "string") throw new Error(`task_write op '${op}' requires id`);
-	if (op === "reject" && typeof params.note !== "string") throw new Error("task_write op 'reject' requires note");
 	return op as TaskCommand;
-}
-
-function objectParam(value: unknown): Record<string, unknown> {
-	return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
 function normalizeTaskWriteParams(params: Record<string, unknown>): Record<string, unknown> {
@@ -2399,69 +1408,17 @@ function normalizeTaskWriteParams(params: Record<string, unknown>): Record<strin
 		...params,
 		title: params.title ?? data.title,
 		clear_assignee: params.clear_assignee === true || clear.has("assignee"),
-		clear_epic: params.clear_epic === true || clear.has("epic"),
 		clear_parent: params.clear_parent === true || clear.has("parent"),
 		clear_blockers: params.clear_blockers === true || clear.has("blockers"),
 	};
 }
 
-function isStoryTaskType(value: unknown): boolean {
-	return value === "feature" || value === "bug";
-}
-
-async function loadTaskForWriteGuard(
-	command: string,
-	runCommand: typeof defaultRunCommand,
-	cwd: string,
-	id: unknown,
-	signal?: AbortSignal,
-): Promise<TaskRecord | undefined> {
-	if (typeof id !== "string" || id.length === 0) return undefined;
-	const result = await runCommand(command, ["task", "show", id, "--json"], cwd, signal);
-	try {
-		return (JSON.parse(result.stdout || "{}") as { task?: TaskRecord }).task;
-	} catch {
-		return undefined;
-	}
-}
-
-async function guardAgentTaskWrite(
-	action: TaskCommand,
-	params: Record<string, unknown>,
-	command: string,
-	runCommand: typeof defaultRunCommand,
-	cwd: string,
-	signal?: AbortSignal,
-): Promise<void> {
-	if (action === "accept")
-		throw new Error("Agents cannot accept tasks; use the human /accept command after delivery.");
-	if (action === "reject")
-		throw new Error("Agents cannot reject tasks; use the human /reject command for story feedback.");
-	if (action !== "update" || params.status !== "done") return;
-	const task = await loadTaskForWriteGuard(command, runCommand, cwd, params.id, signal);
-	const resolvedType = typeof params.type === "string" ? params.type : task?.type;
-	if (
-		isStoryTaskType(resolvedType) &&
-		task?.status === "in_review" &&
-		params.accepted_visual_validation_report === true
-	)
-		return;
-	if (isStoryTaskType(resolvedType)) {
-		throw new Error(
-			"Agents can mark feature or bug tasks done only from in_review with accepted_visual_validation_report=true after the user accepts an implement visual validation report.",
-		);
-	}
-}
-
 function makeCombinedTaskTool(
 	resolveAction: (params: Record<string, unknown>) => TaskCommand,
-	command: string,
-	runCommand: typeof defaultRunCommand,
 	config: Config,
 	pi: ExtensionAPI,
 	getCwd: () => string,
 	onProgress?: () => void,
-	normalizeParams: (params: Record<string, unknown>) => Record<string, unknown> = (params) => params,
 ) {
 	return {
 		renderShell: "self" as const,
@@ -2474,27 +1431,16 @@ function makeCombinedTaskTool(
 		execute: async (
 			_toolCallId: string,
 			params: Record<string, unknown>,
-			signal?: AbortSignal,
+			_signal?: AbortSignal,
 			_onUpdate?: unknown,
 			ctx?: ExtensionContext,
 		) => {
 			const action = resolveAction(params);
-			const normalizedParams = normalizeParams(params);
-			if (resolveAction === taskWriteAction) {
-				await guardAgentTaskWrite(action, normalizedParams, command, runCommand, getCwd(), signal);
+			const result = executeTask(getCwd(), action, params, pi, ctx);
+			if (action !== "list" && action !== "show") {
+				onProgress?.();
+				if (ctx && config.hud.enabled) await updateTaskHud(ctx, pi, config).catch(() => {});
 			}
-			const result = await executeTask(
-				command,
-				runCommand,
-				getCwd(),
-				action,
-				normalizedParams,
-				config,
-				pi,
-				ctx,
-				signal,
-			);
-			if (isMutatingTaskAction(action)) onProgress?.();
 			return result;
 		},
 	};
@@ -2508,17 +1454,13 @@ function installSilentTaskToolRenderPatch(): void {
 	if (prototype[silentTaskToolPatchKey]) return;
 	const originalRender = prototype.render;
 	prototype.render = function renderSilentTaskTool(width: number): string[] {
-		if (silentTaskToolNames.has((this as { toolName?: string }).toolName ?? "")) return [];
+		if (silentTaskToolNames.has((this as unknown as { toolName?: string }).toolName ?? "")) return [];
 		return originalRender.call(this, width);
 	};
 	prototype[silentTaskToolPatchKey] = true;
 }
 
-function isActiveTask(task: TaskRecord): boolean {
-	return !isComplete(task) && !isCanceled(task);
-}
-
-type TaskGuardActionKind = "continue" | "revise" | "start" | "claim" | "fix_dependency" | "close_parent";
+type TaskGuardActionKind = "continue" | "revise" | "start" | "claim" | "fix_dependency";
 
 interface TaskGuardAction {
 	kind: TaskGuardActionKind;
@@ -2528,69 +1470,41 @@ interface TaskGuardAction {
 }
 
 interface TaskGuardDecision {
-	kind: "continue" | "escalate";
+	kind: "continue";
 	fingerprint: string;
 	action: TaskGuardAction;
 	content: string;
 }
 
-function taskChildren(tasks: TaskRecord[]): Map<string, TaskRecord[]> {
-	const children = new Map<string, TaskRecord[]>();
-	for (const task of tasks) {
-		const parentId = task.parent_id;
-		if (!parentId) continue;
-		const list = children.get(parentId) ?? [];
-		list.push(task);
-		children.set(parentId, list);
-	}
-	return children;
-}
-
-function activeChildren(task: TaskRecord, children: Map<string, TaskRecord[]>): TaskRecord[] {
-	return (children.get(task.id) ?? []).filter(isActiveTask);
-}
-
 function unresolvedBlockers(task: TaskRecord, byId: Map<string, TaskRecord>): Array<TaskRecord | string> {
-	return (task.blocked_by ?? []).flatMap((id) => {
+	const blockers: Array<TaskRecord | string> = [];
+	for (const id of task.blocked_by ?? []) {
 		const blocker = byId.get(id);
-		if (!blocker) return [id];
-		return isComplete(blocker) ? [] : [blocker];
-	});
-}
-
-function hasUnresolvedDependencies(
-	task: TaskRecord,
-	byId: Map<string, TaskRecord>,
-	children: Map<string, TaskRecord[]>,
-): boolean {
-	return unresolvedBlockers(task, byId).length > 0 || activeChildren(task, children).length > 0;
-}
-
-function isReadyForWork(task: TaskRecord, byId: Map<string, TaskRecord>, children: Map<string, TaskRecord[]>): boolean {
-	return (
-		isActiveTask(task) &&
-		task.status !== "in_progress" &&
-		task.status !== "in_review" &&
-		!hasUnresolvedDependencies(task, byId, children)
-	);
-}
-
-function hasReviewLifecycle(task: TaskRecord): boolean {
-	return task.type === "feature" || task.type === "bug";
-}
-
-function nextCycledStatus(task: TaskRecord): string {
-	if (hasReviewLifecycle(task)) {
-		if (task.status === "rejected") return "in_progress";
-		if (task.status === "in_progress") return "in_review";
-		if (task.status === "in_review") return "open";
-		return "in_progress";
+		if (!blocker) blockers.push(id);
+		else if (!isComplete(blocker)) blockers.push(blocker);
 	}
-	return task.status === "in_progress" ? "done" : isComplete(task) ? "open" : "in_progress";
+	return blockers;
 }
 
-function doneKeyStatus(task: TaskRecord): string {
-	return hasReviewLifecycle(task) ? "in_review" : "done";
+function selectDependencyAction(
+	task: TaskRecord,
+	assignedTo: string,
+	byId: Map<string, TaskRecord>,
+	seen = new Set<string>(),
+): TaskGuardAction | undefined {
+	if (!seen.add(task.id)) return undefined;
+	for (const dependency of unresolvedBlockers(task, byId)) {
+		if (typeof dependency === "string") return { kind: "fix_dependency", task, invalidBlocker: dependency };
+		if (isAssignedTo(assignedTo, dependency)) {
+			if (dependency.status === "in_progress") return { kind: "continue", task: dependency, source: task };
+			const nested = selectDependencyAction(dependency, assignedTo, byId, seen);
+			if (nested) return nested;
+			if (isReadyForWork(dependency, byId)) return { kind: "start", task: dependency, source: task };
+		}
+		if (isUnassigned(dependency) && isReadyForWork(dependency, byId))
+			return { kind: "claim", task: dependency, source: task };
+	}
+	return undefined;
 }
 
 function isAssignedTo(assignment: string, task: TaskRecord): boolean {
@@ -2601,118 +1515,27 @@ function isUnassigned(task: TaskRecord): boolean {
 	return !task.assigned_to;
 }
 
-function isGuardWorkTask(task: TaskRecord): boolean {
-	return task.type !== "epic";
+function sortedGuardTasks(tasks: TaskRecord[]): TaskRecord[] {
+	return [...tasks].sort(compareTasks);
 }
 
-function sortedActive(tasks: TaskRecord[], byId: Map<string, TaskRecord>): TaskRecord[] {
-	return sortTasksForDisplay(tasks.filter(isActiveTask), byId);
-}
-
-function sortedGuardTasks(tasks: TaskRecord[], byId: Map<string, TaskRecord>): TaskRecord[] {
-	return sortedActive(tasks, byId).sort((left, right) => guardStatusRank(left) - guardStatusRank(right));
-}
-
-function guardStatusRank(task: TaskRecord): number {
-	switch (task.status) {
-		case "in_progress":
-			return 0;
-		case "rejected":
-			return 1;
-		case "in_review":
-			return 3;
-		default:
-			return 2;
-	}
-}
-
-function selectDependencyAction(
-	task: TaskRecord,
-	assignedTo: string,
-	byId: Map<string, TaskRecord>,
-	children: Map<string, TaskRecord[]>,
-	seen = new Set<string>(),
-): TaskGuardAction | undefined {
-	if (!seen.add(task.id)) return undefined;
-	for (const dependency of [...unresolvedBlockers(task, byId), ...activeChildren(task, children)]) {
-		if (typeof dependency === "string") {
-			return { kind: "fix_dependency", task, invalidBlocker: dependency };
-		}
-		if (isCanceled(dependency)) {
-			return { kind: "fix_dependency", task, invalidBlocker: dependency.id };
-		}
-		if (isAssignedTo(assignedTo, dependency)) {
-			if (isGuardWorkTask(dependency) && dependency.status === "in_progress") {
-				return { kind: "continue", task: dependency, source: task };
-			}
-			const nested = selectDependencyAction(dependency, assignedTo, byId, children, seen);
-			if (nested) return nested;
-			if (isGuardWorkTask(dependency) && isReadyForWork(dependency, byId, children)) {
-				return { kind: "start", task: dependency, source: task };
-			}
-			continue;
-		}
-		if (isUnassigned(dependency)) {
-			const nested = selectDependencyAction(dependency, assignedTo, byId, children, seen);
-			if (nested) return nested;
-			if (isGuardWorkTask(dependency) && isReadyForWork(dependency, byId, children)) {
-				return { kind: "claim", task: dependency, source: task };
-			}
-		}
-	}
-	return undefined;
-}
-
-function selectGuardAction(
-	tasks: TaskRecord[],
-	assignedTo: string,
-	preferredEpicId?: string | null,
-): TaskGuardAction | undefined {
+function selectGuardAction(tasks: TaskRecord[], assignedTo: string): TaskGuardAction | undefined {
 	const byId = new Map(tasks.map((task) => [task.id, task]));
-	const children = taskChildren(tasks);
-	const assigned = sortedGuardTasks(
-		tasks.filter((task) => isAssignedTo(assignedTo, task)),
-		byId,
-	);
-	if (assigned.length === 0 && !preferredEpicId) return undefined;
+	const assigned = sortedGuardTasks(tasks.filter((task) => isAssignedTo(assignedTo, task) && isActiveTask(task)));
 	for (const task of assigned) {
-		const action = selectDependencyAction(task, assignedTo, byId, children);
+		const action = selectDependencyAction(task, assignedTo, byId);
 		if (action) return action;
 	}
-	const inProgress = assigned.find(
-		(task) =>
-			isGuardWorkTask(task) && task.status === "in_progress" && !hasUnresolvedDependencies(task, byId, children),
-	);
+	const inProgress = assigned.find((task) => task.status === "in_progress" && !hasOpenBlockers(task, byId));
 	if (inProgress) return { kind: "continue", task: inProgress };
-	const rejected = assigned.find(
-		(task) => isGuardWorkTask(task) && task.status === "rejected" && !hasUnresolvedDependencies(task, byId, children),
-	);
+	const rejected = assigned.find((task) => task.status === "rejected" && !hasOpenBlockers(task, byId));
 	if (rejected) return { kind: "revise", task: rejected };
-	const pendingAcceptance = assigned.some((task) => hasReviewLifecycle(task) && task.status === "in_review");
-	if (pendingAcceptance) return undefined;
-	const assignedReady = assigned.find(
-		(task) =>
-			isGuardWorkTask(task) && isReadyForWork(task, byId, children) && (children.get(task.id)?.length ?? 0) === 0,
-	);
+	const assignedReady = assigned.find((task) => isReadyForWork(task, byId));
 	if (assignedReady) return { kind: "start", task: assignedReady };
-	const epicIds = new Set(assigned.map((task) => task.epic_id).filter((id): id is string => Boolean(id)));
-	if (preferredEpicId) epicIds.add(preferredEpicId);
-	const sameEpicReady = sortedGuardTasks(
-		tasks.filter(
-			(task) =>
-				isGuardWorkTask(task) &&
-				isUnassigned(task) &&
-				task.epic_id &&
-				epicIds.has(task.epic_id) &&
-				isReadyForWork(task, byId, children),
-		),
-		byId,
+	const unassignedReady = sortedGuardTasks(
+		tasks.filter((task) => isUnassigned(task) && isReadyForWork(task, byId)),
 	)[0];
-	if (sameEpicReady) return { kind: "claim", task: sameEpicReady };
-	const parentToClose = assigned.find(
-		(task) => (children.get(task.id)?.length ?? 0) > 0 && !hasUnresolvedDependencies(task, byId, children),
-	);
-	if (parentToClose) return { kind: "close_parent", task: parentToClose };
+	if (unassignedReady) return { kind: "claim", task: unassignedReady };
 	return undefined;
 }
 
@@ -2725,33 +1548,27 @@ function guardFingerprint(tasks: TaskRecord[], action: TaskGuardAction, assigned
 	return `${action.kind}:${action.task.id}:${action.invalidBlocker ?? ""}:${activeAssigned}`;
 }
 
-function guardInstruction(action: TaskGuardAction): string {
-	const source = action.source ? ` to unblock ${action.source.id}` : "";
+function guardInstruction(action: TaskGuardAction, prefixes: ReadonlyMap<string, string> = new Map()): string {
+	const source = action.source ? ` to unblock ${displayTaskId(action.source.id, prefixes)}` : "";
 	switch (action.kind) {
 		case "continue":
-			return `Continue in-progress task ${action.task.id}${source}: ${action.task.title}`;
-		case "revise": {
-			const note = latestRejectionNote(action.task);
-			return note
-				? `Revise rejected task ${action.task.id}${source}: ${action.task.title}.\nRejection note: ${note}`
-				: `Revise rejected task ${action.task.id}${source}: ${action.task.title}.`;
-		}
+			return `Continue in-progress task ${displayTaskId(action.task.id, prefixes)}${source}: ${action.task.title}`;
+		case "revise":
+			return `Revise rejected task ${displayTaskId(action.task.id, prefixes)}${source}: ${action.task.title}.`;
 		case "start":
-			return `Start assigned task ${action.task.id}${source}: ${action.task.title}.`;
+			return `Start assigned task ${displayTaskId(action.task.id, prefixes)}${source}: ${action.task.title}.`;
 		case "claim":
-			return `Claim task ${action.task.id}${source}: ${action.task.title}.`;
+			return `Claim task ${displayTaskId(action.task.id, prefixes)}${source}: ${action.task.title}.`;
 		case "fix_dependency":
-			return `Fix invalid blocker ${action.invalidBlocker} on task ${action.task.id}: update blocked_by or choose a replacement blocker.`;
-		case "close_parent":
-			return `Verify acceptance for parent ${action.task.id} and mark it done; all child tasks are terminal.`;
+			return `Fix invalid blocker ${displayTaskId(action.invalidBlocker ?? "", prefixes)} on task ${displayTaskId(action.task.id, prefixes)}: update blocked_by or choose a replacement blocker.`;
 	}
 }
 
-function guardContent(action: TaskGuardAction): string {
+function guardContent(action: TaskGuardAction, prefixes: ReadonlyMap<string, string>): string {
 	return [
 		"Task nudge: this session has a ready next step.",
 		"",
-		`Suggested next step: ${guardInstruction(action)}`,
+		`Suggested next step: ${guardInstruction(action, prefixes)}`,
 		"",
 		"Continue with tools when this matches the user's direction; otherwise switch tasks or dismiss this nudge.",
 	].join("\n");
@@ -2763,7 +1580,9 @@ function userTextAllowsGuardAutoTurn(text: string | undefined): boolean {
 	if (/\btask[- ]guard\b|\bguard\b/i.test(text)) return false;
 	if (/[?]\s*$/.test(text)) return false;
 	if (/^\s*(why|what|when|where|who|how|do|does|did|can|could|should|would|is|are)\b/i.test(text)) return false;
-	return /\b(assign|assigned|implement|continue|start|work|proceed|resume|finish|complete|done|fix)\b/i.test(text);
+	return /\b(assign|assigned|implement|continue|start|work|proceed|resume|finish|complete|done|fix|try|test|demo)\b/i.test(
+		text,
+	);
 }
 
 function shouldTriggerGuardTurn(state: GuardState, decision: TaskGuardDecision): boolean {
@@ -2778,67 +1597,42 @@ function shouldTriggerGuardTurn(state: GuardState, decision: TaskGuardDecision):
 	return true;
 }
 
-async function evaluateTaskGuard(
-	ctx: ExtensionContext,
-	command: string,
-	runCommand: typeof defaultRunCommand,
-	state: GuardState,
-	preferredEpicId?: string | null,
-): Promise<TaskGuardDecision | undefined> {
+async function evaluateTaskGuard(ctx: ExtensionContext, state: GuardState): Promise<TaskGuardDecision | undefined> {
 	const assignedTo = sessionAssignment(ctx);
 	if (!assignedTo) return undefined;
-	const tasks = await loadHudTasks(ctx.cwd, command, runCommand, ctx.signal);
-	const action = selectGuardAction(tasks, assignedTo, preferredEpicId);
+	const tasks = await loadHudTasks(ctx.cwd);
+	const action = selectGuardAction(tasks, assignedTo);
 	if (!action) {
 		state.lastGuardFingerprint = undefined;
 		state.lastGuardProgressSerial = undefined;
 		return undefined;
 	}
 	const fingerprint = guardFingerprint(tasks, action, assignedTo);
-	return {
-		kind: "continue",
-		fingerprint,
-		action,
-		content: guardContent(action),
-	};
+	return { kind: "continue", fingerprint, action, content: guardContent(action, minimalTaskIdPrefixes(tasks)) };
 }
 
 async function sendTaskGuard(pi: ExtensionAPI, state: GuardState, force = false): Promise<boolean> {
 	const pending = state.pending;
 	state.pending = undefined;
 	if (!pending || (!state.enabled && !force)) return false;
-	const decision: TaskGuardDecision | undefined = pending;
-	if (!decision) return false;
 	if (!userTextAllowsGuardAutoTurn(state.lastUserText)) {
 		state.lastUserText = undefined;
 		return false;
 	}
-	const triggerTurn = force ? true : shouldTriggerGuardTurn(state, decision);
-	state.lastGuardFingerprint = decision.fingerprint;
+	const triggerTurn = force ? true : shouldTriggerGuardTurn(state, pending);
+	state.lastGuardFingerprint = pending.fingerprint;
 	state.lastGuardProgressSerial = state.progressSerial;
 	pi.sendMessage(
 		{
 			customType: "task-guard",
-			content: [{ type: "text", text: decision.content }],
+			content: [{ type: "text", text: pending.content }],
 			display: true,
-			details: { action: decision.action.kind, taskId: decision.action.task.id },
+			details: { action: pending.action.kind, taskId: pending.action.task.id },
 		},
 		triggerTurn ? { deliverAs: "followUp", triggerTurn: true } : { deliverAs: "followUp" },
 	);
 	state.lastUserText = undefined;
 	return triggerTurn;
-}
-
-async function triggerTaskGuardAfterCommand(
-	pi: ExtensionAPI,
-	ctx: ExtensionContext,
-	command: string,
-	runCommand: typeof defaultRunCommand,
-	state: GuardState,
-	task?: TaskRecord,
-): Promise<boolean> {
-	state.pending = await evaluateTaskGuard(ctx, command, runCommand, state, task?.epic_id);
-	return sendTaskGuard(pi, state, true);
 }
 
 function messageText(message: { content?: unknown }): string {
@@ -2904,18 +1698,39 @@ function fileChangingResult(result: unknown): boolean {
 	);
 }
 
-export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) {
+function taskGuardPreferencePath(cwd: string): string {
+	return join(cwd, ".pi", "tasks", "task-guard.json");
+}
+
+function readTaskGuardPreference(ctx: ExtensionContext): boolean | undefined {
+	try {
+		const parsed = JSON.parse(readFileSync(taskGuardPreferencePath(ctx.cwd), "utf8")) as { enabled?: unknown };
+		return typeof parsed.enabled === "boolean" ? parsed.enabled : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function writeTaskGuardPreference(ctx: ExtensionContext, enabled: boolean): void {
+	const tasksDir = join(ctx.cwd, ".pi", "tasks");
+	mkdirSync(tasksDir, { recursive: true });
+	const path = taskGuardPreferencePath(ctx.cwd);
+	const tmpPath = `${path}.tmp`;
+	writeFileSync(tmpPath, JSON.stringify({ enabled }, null, 2));
+	renameSync(tmpPath, path);
+}
+
+export default function tasksExtension(pi: ExtensionAPI, _runtime: Runtime = {}) {
 	const config = loadConfig();
 	if (!config.enabled) return;
 	installSilentTaskToolRenderPatch();
 	activeTaskBoard = undefined;
-	taskHudExpandedEpicKey = undefined;
 	taskHudWidget = undefined;
 	taskHudWidgetCtx = undefined;
 	latestTaskHudState = undefined;
 	requestTaskHudRender = undefined;
+	taskHudExpanded = true;
 
-	const runCommand = runtime.runCommand ?? defaultRunCommand;
 	let cwd = process.cwd();
 	const guardState: GuardState = { enabled: false, progressSerial: 0, autoLoopTurns: 0, pauseResponses: 0 };
 	const getCwd = () => cwd;
@@ -2927,7 +1742,7 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 		cwd = ctx.cwd;
 		setTaskGuardEnabled(guardState, readTaskGuardPreference(ctx) ?? false);
 		if (config.hud.enabled) {
-			await updateTaskHud(ctx, pi, config.command, runCommand, config, guardState.enabled).catch((error) => {
+			await updateTaskHud(ctx, pi, config, guardState.enabled).catch((error) => {
 				ctx.ui.notify?.(
 					`Task HUD refresh failed: ${error instanceof Error ? error.message : String(error)}`,
 					"warning",
@@ -2943,8 +1758,6 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 		taskHudWidgetCtx = undefined;
 		latestTaskHudState = undefined;
 		requestTaskHudRender = undefined;
-		taskHudExpandedEpicKey = undefined;
-		taskHudFlashes.clear();
 	});
 
 	pi.on("tool_execution_end", (event) => {
@@ -2972,15 +1785,12 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 			guardState.pending = undefined;
 			return undefined;
 		}
-		let decision: TaskGuardDecision | undefined;
 		try {
-			decision = await evaluateTaskGuard(ctx, config.command, runCommand, guardState);
+			guardState.pending = await evaluateTaskGuard(ctx, guardState);
 		} catch (error) {
 			guardState.pending = undefined;
 			ctx.ui.notify?.(`Task guard failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
-			return undefined;
 		}
-		guardState.pending = decision;
 		return undefined;
 	});
 
@@ -2991,10 +1801,10 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 	});
 
 	pi.registerCommand?.("tasks", {
-		description: "Open project task board; pass a task id to focus it",
+		description: "Open project task list; pass a task id to focus it",
 		handler: async (args: string, ctx: ExtensionContext) => {
 			const initialTaskId = args.trim().split(/\s+/).filter(Boolean)[0];
-			await showTaskBoard(ctx, pi, config.command, runCommand, config, initialTaskId).catch((error) => {
+			await showTaskBoard(ctx, pi, config, initialTaskId).catch((error) => {
 				ctx.ui.notify?.(`Task board failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
 			});
 		},
@@ -3005,84 +1815,37 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 		handler: async (args: string, ctx: ExtensionContext) => {
 			const result = taskGuardCommandMessage(guardState, args);
 			const mode = args.trim().toLowerCase();
-			if (mode === "on" || mode === "off") writeTaskGuardPreference(ctx, guardState.enabled);
+			if (mode === "on" || mode === "off") {
+				try {
+					writeTaskGuardPreference(ctx, guardState.enabled);
+				} catch (error) {
+					ctx.ui.notify?.(
+						`Task guard preference save failed: ${error instanceof Error ? error.message : String(error)}`,
+						"warning",
+					);
+				}
+			}
 			ctx.ui.notify?.(result.message, result.type);
 		},
 	});
 
-	pi.registerCommand?.("accept", {
-		description: "Accept an in-review task",
-		handler: async (args: string, ctx: ExtensionContext) => {
-			const [id] = args.trim().split(/\s+/).filter(Boolean);
-			if (!id) {
-				ctx.ui.notify?.("Usage: /accept <task-id> [note...]", "warning");
-				return;
-			}
-			await executeTask(config.command, runCommand, ctx.cwd, "accept", { id }, config, pi, ctx, ctx.signal)
-				.then(() => {
-					markProgress();
-				})
-				.catch((error) => {
-					ctx.ui.notify?.(
-						`Task accept failed: ${error instanceof Error ? error.message : String(error)}`,
-						"warning",
-					);
-				});
-		},
-	});
-
-	pi.registerCommand?.("reject", {
-		description: "Reject an in-review task with a note",
-		handler: async (args: string, ctx: ExtensionContext) => {
-			const [id, ...noteParts] = args.trim().split(/\s+/).filter(Boolean);
-			const note = noteParts.join(" ");
-			if (!id || !note) {
-				ctx.ui.notify?.("Usage: /reject <task-id> <note...>", "warning");
-				return;
-			}
-			await executeTask(config.command, runCommand, ctx.cwd, "reject", { id, note }, config, pi, ctx, ctx.signal)
-				.then((result) => {
-					publishTaskTransition(pi, ctx, "reject", result.details.task, note);
-					markProgress();
-					if (note) return undefined;
-					return triggerTaskGuardAfterCommand(
-						pi,
-						ctx,
-						config.command,
-						runCommand,
-						guardState,
-						result.details.task,
-					);
-				})
-				.catch((error) => {
-					ctx.ui.notify?.(
-						`Task reject failed: ${error instanceof Error ? error.message : String(error)}`,
-						"warning",
-					);
-				});
-		},
-	});
-
-	pi.registerShortcut?.(config.hud.toggleShortcut, {
-		description: "Cycle project task HUD compact/epic view",
+	pi.registerShortcut?.(config.hud.toggleShortcut as never, {
+		description: "Toggle project task HUD summary/list view",
 		handler: async (ctx: ExtensionContext) => {
+			taskHudExpanded = !taskHudExpanded;
 			const tasks =
-				(taskHudWidgetCtx === ctx ? latestTaskHudState?.tasks : undefined) ??
-				(await loadHudTasks(ctx.cwd, config.command, runCommand, ctx.signal).catch(() => []));
-			cycleTaskHudExpandedEpic(tasks);
-			await updateTaskHud(ctx, pi, config.command, runCommand, config, undefined, ctx.signal, tasks).catch(
-				(error) => {
-					ctx.ui.notify?.(
-						`Task HUD refresh failed: ${error instanceof Error ? error.message : String(error)}`,
-						"warning",
-					);
-				},
-			);
+				(taskHudWidgetCtx === ctx ? latestTaskHudState?.tasks : undefined) ?? (await loadHudTasks(ctx.cwd));
+			await updateTaskHud(ctx, pi, config, undefined, tasks).catch((error) => {
+				ctx.ui.notify?.(
+					`Task HUD refresh failed: ${error instanceof Error ? error.message : String(error)}`,
+					"warning",
+				);
+			});
 		},
 	});
 
 	pi.registerTool({
-		...makeCombinedTaskTool(taskReadAction, config.command, runCommand, config, pi, getCwd, markProgress),
+		...makeCombinedTaskTool(taskReadAction, config, pi, getCwd, markProgress),
 		name: "task_read",
 		label: "Read Tasks",
 		description: "List/show project tasks.",
@@ -3093,44 +1856,33 @@ export default function tasksExtension(pi: ExtensionAPI, runtime: Runtime = {}) 
 			status: Type.Optional(Type.String({ description: "List filter" })),
 			type: Type.Optional(Type.String({ description: "List filter" })),
 			label: Type.Optional(Type.String({ description: "List filter" })),
-			epic_id: Type.Optional(Type.String({ description: "List filter" })),
 			assigned_to: Type.Optional(Type.String({ description: "List filter, or 'current'" })),
 			all: Type.Optional(Type.Boolean({ description: "Include completed/canceled tasks" })),
 		}),
 	});
 
 	pi.registerTool({
-		...makeCombinedTaskTool(
-			taskWriteAction,
-			config.command,
-			runCommand,
-			config,
-			pi,
-			getCwd,
-			markProgress,
-			normalizeTaskWriteParams,
-		),
+		...makeCombinedTaskTool(taskWriteAction, config, pi, getCwd, markProgress),
 		name: "task_write",
 		label: "Write Tasks",
 		description:
-			"Add/update/delete/accept/reject tasks. Put fields in data: type, body, status, priority, assigned_to ('current' ok), epic_id, epic_title, labels, parent_id, blocked_by. Use clear for assignee/epic/parent/blockers. Mark feature/bug tasks done only from in_review with accepted_visual_validation_report=true after the user accepts an implement visual validation report.",
+			"Add/update/delete tasks. Put fields in data: type, body, status, priority, assigned_to ('current' ok), active_form, labels, parent_id, blocked_by. Use clear for assignee/parent/blockers. There are no accept/reject commands: after user approval in normal mode, agents complete accepted feature/bug tasks with status=done and user_approved_completion=true; in auto mode use auto_verified_completion=true when automated evidence proves acceptance.",
 		promptSnippet: "Write project tasks",
 		parameters: Type.Object({
-			op: Type.String({ description: "add, update, delete, accept, or reject" }),
+			op: Type.String({ description: "add, update, or delete" }),
 			id: Type.Optional(Type.String({ description: "Task ID/prefix; required except add" })),
 			title: Type.Optional(Type.String({ description: "Add title shorthand" })),
 			data: Type.Optional(
 				Type.Record(Type.String(), Type.Unknown(), {
-					description: "Add/update fields, e.g. status/priority/assigned_to/epic_id/labels/blocked_by",
+					description: "Add/update fields, e.g. status/priority/assigned_to/labels/blocked_by/active_form",
 				}),
 			),
-			clear: Type.Optional(Type.Array(Type.String(), { description: "assignee, epic, parent, blockers" })),
-			note: Type.Optional(Type.String({ description: "Reject note" })),
-			accepted_visual_validation_report: Type.Optional(
-				Type.Boolean({
-					description:
-						"Set true only when updating an in_review feature/bug task to done after the user accepts the implement visual validation report.",
-				}),
+			clear: Type.Optional(Type.Array(Type.String(), { description: "assignee, parent, blockers" })),
+			user_approved_completion: Type.Optional(
+				Type.Boolean({ description: "Set true only after the user approves completion in non-auto mode." }),
+			),
+			auto_verified_completion: Type.Optional(
+				Type.Boolean({ description: "Set true in auto mode only when automated evidence proves completion." }),
 			),
 		}),
 	});

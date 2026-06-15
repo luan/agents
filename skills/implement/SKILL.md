@@ -1,19 +1,19 @@
 ---
 name: implement
-description: "Deliver one approved task through claim, TDD, verification, Plannotator review, commit, and gated manual acceptance. Use when the user asks to implement a specific task or selected issue."
-argument-hint: "<task-or-epic> [--auto]"
+description: "Deliver one approved task through claim, TDD, verification, Plannotator review, commit, and agent-driven completion after user approval. Use when the user asks to implement a specific task or selected issue."
+argument-hint: "<task> [--auto]"
 user-invocable: true
 ---
 
 # Implement one task
 
-Deliver exactly one selected task. `$implement` owns reviewed commit delivery and review handoff, not story acceptance.
+Deliver exactly one selected task. `$implement` owns reviewed commit delivery and, after approval, the agent-driven task completion update.
 
 `in_progress` means the agent is actively editing or verifying. Never leave a feature/bug task `in_progress` while waiting for human review, Plannotator feedback, code-review approval, or manual-verification approval. Move it to `in_review` before any review wait; if feedback requires changes, move it back to `in_progress` before editing.
 
 ## Non-code short-circuit
 
-If the task at hand does not involve code changes, skip all steps except load/claim and manual-verification gate. For example, if the task is to update documentation, implement the change directly in the source file, then generate the manual-verification artifact with the updated content for review and acceptance.
+If the task at hand does not involve code changes, skip all steps except load/claim and manual-verification gate. For example, if the task is to update documentation, implement the change directly in the source file, then generate the manual-verification artifact with the updated content for review and user approval.
 
 ## Workflow
 
@@ -54,7 +54,7 @@ If the task at hand does not involve code changes, skip all steps except load/cl
    - Generate the temporary HTML artifact using [manual-verification-gate.md](manual-verification-gate.md) and `$visual-doc`.
    - Before presenting the gate, validate that artifacts are valid, viewed, renderable in Plannotator, and mapped to acceptance criteria.
    - Ensure feature/bug tasks are `in_review` before presenting the gate.
-   - Load/use `$plannotator-annotate` and present the HTML artifact with its rendered artifact-gate workflow.
+   - Load/use `$plannotator-annotate` and present the HTML artifact with its rendered artifact-gate workflow. In normal mode, wait for user approval before completing the task; in `--auto`, complete only when the automated evidence is sufficient for the task's stated acceptance model.
 
 8. **Commit**
    - Load/use `$commit`; do not hand-roll commit mechanics when available.
@@ -64,5 +64,5 @@ If the task at hand does not involve code changes, skip all steps except load/cl
 
 9. **Handoff**
    - Record commit, checks, linked `vlt` artifact stems/paths, visual evidence, and caveats.
-   - If denied, keep the task reject task with notes from the feedback. Then resume working on it by restarting $implement.
-   - ONLY mark feature or bug tasks `done` after manual verification gate is approved.
+   - If denied, update the task with the feedback and move it back to `in_progress` before revising.
+   - After approval, the agent marks the feature/bug task `done` with `user_approved_completion=true`; in `--auto`, use `auto_verified_completion=true` only when automated evidence proves acceptance.

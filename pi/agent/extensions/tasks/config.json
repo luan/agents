@@ -1,29 +1,26 @@
 {
-  "enabled": true,
-  "command": "ct",
-  "hud": {
-    "enabled": true,
-    "maxTasks": 6,
-    "minTerminalRows": 28,
+	"enabled": true,
+	"hud": {
+		"enabled": true,
+		"maxTasks": 10,
+		"minTerminalRows": 24,
 		"toggleShortcut": "alt+t"
-  },
-  "keybindings": {
-    "toggle": "alt+t",
-    "close": ["escape", "alt+t"],
-    "left": ["left", "h"],
-    "right": ["right", "l"],
-    "up": ["up", "k"],
-    "down": ["down", "j"],
-    "cycleStatus": ["space"],
-    "assignCurrent": ["a"],
-    "clearAssignee": ["u"],
-    "priorityUp": ["alt+k", "+"],
-    "priorityDown": ["alt+j", "-"],
-    "done": ["d"],
-    "cancel": ["x"],
-    "delete": ["D"],
-    "reload": ["r"],
-    "confirmDelete": ["y", "Y"],
-    "cancelDelete": ["n", "N"]
-  }
+	},
+	"keybindings": {
+		"toggle": "alt+t",
+		"close": ["escape", "alt+t"],
+		"up": ["up", "k"],
+		"down": ["down", "j"],
+		"cycleStatus": ["space"],
+		"assignCurrent": ["a"],
+		"clearAssignee": ["u"],
+		"priorityUp": ["alt+k", "+"],
+		"priorityDown": ["alt+j", "-"],
+		"done": ["d"],
+		"cancel": ["x"],
+		"delete": ["D"],
+		"reload": ["r"],
+		"confirmDelete": ["y", "Y"],
+		"cancelDelete": ["n", "N"]
+	}
 }

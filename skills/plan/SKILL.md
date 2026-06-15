@@ -37,7 +37,7 @@ Publish tactical handoff when direction and structure are settled enough: a plan
 
 4. **Draft tasks**
    - Draft a temporary proposal before publishing task records.
-   - Include epic title/id, task titles, AFK vs HITL/review-gated classification, blockers, acceptance criteria, verification, artifact links, and out-of-scope notes.
+   - Include task titles, AFK vs HITL/review-gated classification, blockers, acceptance criteria, verification, artifact links, and out-of-scope notes.
    - Shape tasks as vertical slices that each land a user- or reviewer-visible capability.
    - Avoid tiny file-by-file microtasks and broad phase buckets.
    - Add a final HITL/review-gated task when manual parity review, visual acceptance, migration signoff, or other human judgment is required.
@@ -51,7 +51,7 @@ Publish tactical handoff when direction and structure are settled enough: a plan
 
 6. **Publish**
    - Commit the plan artifact with `vlt commit "<absolute-path>" --message "..." --json`.
-   - Create one epic umbrella and independently executable vertical-slice tasks.
+   - Create independently executable vertical-slice tasks; do not create an epic umbrella.
    - Use blockers only for real dependencies.
    - Link the plan artifact and task set.
 
