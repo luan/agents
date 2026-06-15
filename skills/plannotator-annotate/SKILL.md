@@ -36,6 +36,8 @@ Rendered HTML artifact gate:
 plannotator annotate "<absolute-path>" --render-html --gate
 ```
 
+Use this path for HTML manual-verification gates that must render browser HTML, image-proxy evidence, or embedded asciinema players.
+
 Rendered HTML informational review:
 
 ```bash
