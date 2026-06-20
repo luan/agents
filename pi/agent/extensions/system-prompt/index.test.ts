@@ -155,11 +155,11 @@ describe("system-prompt Skillful skill rendering", () => {
 		const prompt = buildSystemPrompt("base", {
 			...baseOptions,
 			selectedTools: [],
-			contextFiles: [{ path: "/repo/CLAUDE.local.md", content: "LOCAL_SENTINEL" }],
+			contextFiles: [{ path: "/repo/AGENTS.local.md", content: "LOCAL_SENTINEL" }],
 		});
 
 		expect(prompt).toContain("# Project Context");
-		expect(prompt).toContain("## /repo/CLAUDE.local.md");
+		expect(prompt).toContain("## /repo/AGENTS.local.md");
 		expect(prompt).toContain("LOCAL_SENTINEL");
 	});
 });
