@@ -350,22 +350,54 @@ export default function (pi: ExtensionAPI) {
 		return parts.join("  ");
 	};
 
+	const sessionName = (ctx: ExtensionContext): string | undefined => {
+		const sessionManager = ctx.sessionManager as typeof ctx.sessionManager & {
+			getSessionName?: () => string | null | undefined;
+		};
+		return sessionManager.getSessionName?.() ?? undefined;
+	};
+
+	const sessionLeafId = (ctx: ExtensionContext): string | undefined => {
+		const sessionManager = ctx.sessionManager as typeof ctx.sessionManager & {
+			getLeafId?: () => string | null | undefined;
+		};
+		return sessionManager.getLeafId?.() ?? undefined;
+	};
+
+	const systemPromptText = (prompt: unknown): string => {
+		if (typeof prompt === "string") return prompt;
+		if (Array.isArray(prompt)) {
+			return prompt
+				.map((part) => {
+					if (typeof part === "string") return part;
+					if (part && typeof part === "object" && "text" in part) {
+						const text = (part as { text?: unknown }).text;
+						return typeof text === "string" ? text : "";
+					}
+					return "";
+				})
+				.filter(Boolean)
+				.join("\n");
+		}
+		if (prompt && typeof prompt === "object" && "content" in prompt) {
+			return systemPromptText((prompt as { content?: unknown }).content);
+		}
+		return String(prompt ?? "");
+	};
+
 	const syncState = (ctx: ExtensionContext, activeMessage?: unknown) => {
 		const mosaicIdentity = readMosaicIdentityEnv();
-		const name = cleanIdentityPart(ctx.sessionManager.getSessionName()) ?? mosaicIdentity?.name;
+		const name = cleanIdentityPart(sessionName(ctx)) ?? mosaicIdentity?.name;
 		editorSessionIdentity = mosaicIdentity ? { ...mosaicIdentity, name } : name ? { name } : undefined;
 
 		const totals = getUsageTotals(ctx);
 		const usage = ctx.getContextUsage();
 		const contextWindow = ctx.model?.contextWindow ?? usage?.contextWindow ?? 0;
 		const measuredContextTokens = typeof usage?.tokens === "number" && usage.tokens > 0 ? usage.tokens : undefined;
-		const contextMessages = buildSessionContext(
-			ctx.sessionManager.getEntries(),
-			ctx.sessionManager.getLeafId(),
-		).messages;
+		const contextMessages = buildSessionContext(ctx.sessionManager.getEntries(), sessionLeafId(ctx)).messages;
 		const rawContext = estimateContextBreakdown(
 			activeMessage ? [...contextMessages, activeMessage] : contextMessages,
-			ctx.getSystemPrompt(),
+			systemPromptText(ctx.getSystemPrompt()),
 		);
 		const rawContextSegments = rawContext.segments;
 		const estimatedContextTokens = Object.values(rawContextSegments).reduce((total, value) => total + value, 0);
@@ -588,7 +620,7 @@ export default function (pi: ExtensionAPI) {
 		restoreWorkingTimerSnapshot(persistedWorkingTimer, {
 			restoreActive: persistedWorkingTimer?.active && !ctx.isIdle(),
 		});
-		ctx.ui.setWorkingVisible(false);
+		ctx.ui.setWorkingVisible?.(false);
 		installFooter(ctx);
 		installEditor(ctx);
 		scheduleProjectRefresh(ctx);

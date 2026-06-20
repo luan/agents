@@ -1,3 +1,6 @@
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
 
 export type ClipboardMirrorPolicy = "all" | "yank" | "never";
@@ -53,10 +56,63 @@ export function readPiVimClipboardMirrorSetting(
 	return global === missing ? undefined : global;
 }
 
+type SettingsReader = {
+	getGlobalSettings?: () => unknown;
+	getProjectSettings?: () => unknown;
+};
+
+function synchronousSettingsReader(value: unknown): SettingsReader | undefined {
+	if (!value || typeof value !== "object") return undefined;
+	if ("then" in value && typeof (value as { then?: unknown }).then === "function") {
+		void (value as PromiseLike<unknown>).then(undefined, () => {});
+		return undefined;
+	}
+	return value as SettingsReader;
+}
+
+function readJsonFile(path: string): unknown {
+	if (!existsSync(path)) return undefined;
+	try {
+		return JSON.parse(readFileSync(path, "utf8"));
+	} catch {
+		return undefined;
+	}
+}
+
+function expandHome(path: string): string {
+	if (path === "~") return homedir();
+	if (path.startsWith("~/")) return join(homedir(), path.slice(2));
+	return path;
+}
+
+function fallbackGlobalSettings(): unknown {
+	const configuredAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const candidates = [
+		configuredAgentDir ? join(expandHome(configuredAgentDir), "settings.json") : undefined,
+		join(homedir(), ".omp", "agent", "settings.json"),
+		join(homedir(), ".pi", "agent", "settings.json"),
+	].filter((path): path is string => Boolean(path));
+	for (const path of candidates) {
+		const settings = readJsonFile(path);
+		if (readSetting(settings) !== missing) return settings;
+	}
+	return undefined;
+}
+
+function fallbackProjectSettings(cwd: string): unknown {
+	for (const path of [join(cwd, ".omp", "settings.json"), join(cwd, ".pi", "settings.json")]) {
+		const settings = readJsonFile(path);
+		if (readSetting(settings) !== missing) return settings;
+	}
+	return undefined;
+}
+
 function readPiVimSettingsFromDisk(cwd: string): PiVimSettings {
-	const settings = SettingsManager.create(cwd);
+	const settings = synchronousSettingsReader(SettingsManager.create(cwd));
+	const globalSettings = settings?.getGlobalSettings?.() ?? fallbackGlobalSettings();
+	const projectSettings = settings?.getProjectSettings?.() ?? fallbackProjectSettings(cwd);
 	return {
-		clipboardMirror: readPiVimClipboardMirrorSetting(settings.getGlobalSettings(), settings.getProjectSettings()),
+		clipboardMirror: readPiVimClipboardMirrorSetting(globalSettings, projectSettings),
 	};
 }
 

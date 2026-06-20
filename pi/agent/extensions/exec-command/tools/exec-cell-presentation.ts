@@ -1,5 +1,5 @@
-import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { textComponent } from "../../shared/tui";
+import { type Component, visibleWidth } from "@earendil-works/pi-tui";
+import { textComponent, truncateToWidthCompat } from "../../shared/tui";
 import { type ShellAction, summarizeShellCommand } from "../shell/summary.ts";
 import {
 	backgroundTerminalAnimatedLabel,
@@ -213,8 +213,8 @@ function renderBackgroundTerminalWidgetLine(
 		" · ",
 	)}${theme.fg("muted", outputSummary)}${last}${theme.fg("dim", " · ")}`;
 	const commandWidth = Math.max(8, width - visibleWidth(fixed));
-	const text = `${fixed}${theme.fg("muted", truncateToWidth(command, commandWidth, "..."))}`;
-	return visibleWidth(text) > width ? truncateToWidth(text, width, "...") : text;
+	const text = `${fixed}${theme.fg("muted", truncateToWidthCompat(command, commandWidth, "..."))}`;
+	return visibleWidth(text) > width ? truncateToWidthCompat(text, width, "...") : text;
 }
 
 function renderExecCellHeader(cell: ExecCell, theme: RenderTheme): string {

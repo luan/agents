@@ -5,16 +5,9 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { getSettingsListTheme } from "@earendil-works/pi-coding-agent";
-import {
-	Container,
-	type SettingItem,
-	SettingsList,
-	Text,
-	truncateToWidth,
-	wrapTextWithAnsi,
-} from "@earendil-works/pi-tui";
+import { Container, type SettingItem, SettingsList, Text, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { defineExtensionTui, textComponent } from "../shared/tui";
+import { defineExtensionTui, textComponent, truncateToWidthCompat } from "../shared/tui";
 
 const CODEX_APPS_TOOL_PREFIX = "codex_apps_";
 const codexAppsTui = defineExtensionTui({ id: "codex-tools" });
@@ -495,7 +488,7 @@ function renderCodexAppResult(text: string, theme: Theme, options: { expanded?: 
 		.flatMap((line) => wrapTextWithAnsi(line, 120))
 		.map((line, index, allLines) => {
 			const prefix = index === allLines.length - 1 ? "  └ " : index === 0 ? "  ├ " : "  │ ";
-			return `${theme.fg("dim", prefix)}${theme.fg("dim", truncateToWidth(line || " ", 120, "…"))}`;
+			return `${theme.fg("dim", prefix)}${theme.fg("dim", truncateToWidthCompat(line || " ", 120, "…"))}`;
 		})
 		.join("\n");
 }
@@ -547,7 +540,7 @@ function formatArgValue(key: string, value: unknown): string {
 	if (value === undefined || value === null) return "";
 	const label = key.endsWith("_id") ? "" : `${humanizeIdentifier(key)} `;
 	const raw = typeof value === "string" ? value : String(value);
-	return `${label}${truncateToWidth(raw.replace(/\s+/g, " "), 80, "…")}`.trim();
+	return `${label}${truncateToWidthCompat(raw.replace(/\s+/g, " "), 80, "…")}`.trim();
 }
 
 function humanizeIdentifier(value: string): string {

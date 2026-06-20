@@ -1,6 +1,7 @@
 import { DynamicBorder, rawKeyHint, type Theme } from "@earendil-works/pi-coding-agent";
 import type { Component, Focusable, TUI } from "@earendil-works/pi-tui";
-import { Container, Spacer, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { Container, Spacer, visibleWidth } from "@earendil-works/pi-tui";
+import { truncateToWidthCompat } from "../shared/tui";
 import { killTarget } from "./multiplexer.js";
 import * as heartbeat from "./mux-heartbeat.js";
 
@@ -219,10 +220,10 @@ class MuxList implements Component {
 		const header = title + " ".repeat(spacingN) + scopeText;
 
 		const lines: string[] = [];
-		lines.push(truncateToWidth(header, width, ""));
+		lines.push(truncateToWidthCompat(header, width, ""));
 
 		if (mode !== "list") {
-			lines.push(truncateToWidth(theme.fg("error", this.parent.getPendingConfirmMessage()), width, "…"));
+			lines.push(truncateToWidthCompat(theme.fg("error", this.parent.getPendingConfirmMessage()), width, "…"));
 		} else {
 			const sep = theme.fg("muted", " · ");
 			const hints = [
@@ -231,7 +232,7 @@ class MuxList implements Component {
 				rawKeyHint("tab", "scope"),
 				rawKeyHint("q", "close"),
 			].join(sep);
-			lines.push(truncateToWidth(hints, width, "…"));
+			lines.push(truncateToWidthCompat(hints, width, "…"));
 		}
 		lines.push("");
 
@@ -267,7 +268,7 @@ class MuxList implements Component {
 				const cwdWidth = visibleWidth(cwdShort);
 				const minGap = 6;
 				const availableForName = Math.max(5, width - cursorWidth - prefixWidth - 1 - tagWidth - minGap - cwdWidth);
-				const truncatedName = truncateToWidth(normalizedName, availableForName, "…");
+				const truncatedName = truncateToWidthCompat(normalizedName, availableForName, "…");
 				const styledName = isCurrent ? theme.fg("accent", truncatedName) : truncatedName;
 				const boldedName = isSelected ? theme.bold(styledName) : styledName;
 
@@ -276,7 +277,7 @@ class MuxList implements Component {
 				const spacing = Math.max(minGap, width - leftWidth - cwdWidth);
 				let line = leftPart + " ".repeat(spacing) + theme.fg("dim", cwdShort);
 				if (isSelected) line = theme.bg("selectedBg", line);
-				lines.push(truncateToWidth(line, width, ""));
+				lines.push(truncateToWidthCompat(line, width, ""));
 			}
 		}
 

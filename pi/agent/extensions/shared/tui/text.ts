@@ -1,8 +1,24 @@
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth as truncateToWidthRaw, visibleWidth } from "@earendil-works/pi-tui";
 
 const ANSI_RESET = "\x1b[0m";
 const ANSI_SGR_PATTERN = /\x1b\[([0-9;]*)m/g;
 const OSC_SEQUENCE_PATTERN = /\x1b\][^\x07]*(?:\x07|\x1b\\)/g;
+
+let stringEllipsisSupported: boolean | undefined;
+
+export function truncateToWidthCompat(text: string, width: number, ellipsis: string | undefined, pad = false): string {
+	if (!ellipsis || ellipsis === "" || stringEllipsisSupported === false) {
+		return truncateToWidthRaw(text, width, ellipsis === "" ? "" : undefined, pad);
+	}
+	try {
+		const result = truncateToWidthRaw(text, width, ellipsis, pad);
+		stringEllipsisSupported = true;
+		return result;
+	} catch {
+		stringEllipsisSupported = false;
+		return truncateToWidthRaw(text, width, undefined, pad);
+	}
+}
 
 export interface PadToVisibleWidthOptions {
 	truncate?: boolean;
@@ -26,19 +42,19 @@ export function keepBackgroundAcrossResets(text: string, backgroundAnsi: string)
 }
 
 export function paintAnsiBackgroundRow(line: string, width: number, backgroundAnsi: string | undefined): string {
-	const padded = truncateToWidth(line, width, "", true);
+	const padded = truncateToWidthCompat(line, width, "", true);
 	if (!backgroundAnsi) return padded;
 	return `${backgroundAnsi}${keepBackgroundAcrossResets(padded, backgroundAnsi)}${ANSI_RESET}`;
 }
 
 export function clampAnsiLine(line: string, width: number): string {
-	return truncateToWidth(line.replace(OSC_SEQUENCE_PATTERN, ""), width, "", true);
+	return truncateToWidthCompat(line.replace(OSC_SEQUENCE_PATTERN, ""), width, "", true);
 }
 
 export function padToVisibleWidth(text: string, width: number, options: PadToVisibleWidthOptions = {}): string {
 	const rendered =
 		options.truncate === false
 			? text
-			: truncateToWidth(text, width, options.ellipsis ?? "…", options.preserveAnsi ?? false);
+			: truncateToWidthCompat(text, width, options.ellipsis ?? "…", options.preserveAnsi ?? false);
 	return `${rendered}${" ".repeat(Math.max(0, width - visibleWidth(rendered)))}`;
 }

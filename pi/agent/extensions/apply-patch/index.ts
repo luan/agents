@@ -4,7 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { type ExtensionAPI, type ExtensionContext, highlightCode, keyHint } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { BundledLanguage, BundledTheme } from "shiki";
 import { Type } from "typebox";
 import { getConfiguredEditMode, getEditFreeformToolConfig } from "../fileops/index.ts";
@@ -19,6 +19,7 @@ import {
 	runningFrame,
 	shineText,
 	textComponent,
+	truncateToWidthCompat,
 } from "../shared/tui";
 
 import { highlightWgslAnsi, registerWgslHighlightLanguage } from "../shared/wgsl-highlight.ts";
@@ -456,7 +457,7 @@ class ApplyPatchDiffView {
 		const marker = this.state === "error" ? nf.error : this.state === "pending" ? nf.warn : nf.ok;
 		const markerColor = this.state === "error" ? "error" : this.state === "pending" ? "warning" : "toolTitle";
 		const title = `${this.theme.fg(markerColor, marker)} ${this.theme.fg("toolTitle", this.theme.bold(verb))} ${this.theme.fg("accent", this.label)}${stats}`;
-		return truncateToWidth(title, width, "…", true);
+		return truncateToWidthCompat(title, width, "…", true);
 	}
 }
 
@@ -544,7 +545,7 @@ function renderDigestItem(
 			? `${theme.fg("toolDiffAdded", "+")} ${theme.fg("toolTitle", item.addedLabel)} ${theme.fg("toolDiffAdded", `${item.added}`)}`
 			: theme.fg("muted", "—");
 	return paintDiffRow(
-		`${prefix}${padToVisibleWidth(truncateToWidth(left, leftWidth, "…", true), leftWidth, { truncate: false })}${separator}${truncateToWidth(right, rightWidth, "…", true)}`,
+		`${prefix}${padToVisibleWidth(truncateToWidthCompat(left, leftWidth, "…", true), leftWidth, { truncate: false })}${separator}${truncateToWidthCompat(right, rightWidth, "…", true)}`,
 		width,
 		background,
 	);
@@ -956,7 +957,7 @@ function clampRenderedLine(line: string, width: number): string {
 function paintPanelRow(line: string, width: number, theme: ThemeLike, background: ToolPanelBg): string {
 	const backgroundAnsi = theme.getBgAnsi?.(background);
 	if (backgroundAnsi) return paintAnsiBackgroundRow(line, width, backgroundAnsi);
-	const padded = truncateToWidth(line, width, "", true);
+	const padded = truncateToWidthCompat(line, width, "", true);
 	return theme.bg ? theme.bg(background, padded) : padded;
 }
 
@@ -1043,11 +1044,11 @@ function wrapDiffContent(content: string, width: number, maxRows: number): strin
 	if (width <= 0) return [""];
 	const wrapped = content.length === 0 ? [""] : wrapTextWithAnsi(content, width);
 	if (wrapped.length <= maxRows) {
-		return wrapped.map((line) => truncateToWidth(line, width, "", true));
+		return wrapped.map((line) => truncateToWidthCompat(line, width, "", true));
 	}
 	return wrapped
 		.slice(0, maxRows)
-		.map((line, index) => truncateToWidth(line, width, index === maxRows - 1 ? "…" : "", true));
+		.map((line, index) => truncateToWidthCompat(line, width, index === maxRows - 1 ? "…" : "", true));
 }
 
 function diffContentForRow(row: ParsedDiffLine): string {

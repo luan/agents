@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
-import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { matchesKey, truncateToWidth as truncateToWidthRaw, visibleWidth } from "@earendil-works/pi-tui";
 import { defineExtensionTui } from "../shared/tui";
 import type { BasePromptTraceResult, TraceBucket, TraceLineEvidence } from "./base-trace/index.js";
 import { TraceCache } from "./base-trace/index.js";
@@ -45,6 +45,22 @@ const SESSION_COLORS = {
 	thinking: "38;2;203;166;247",
 	tools: "38;2;249;226;175",
 } as const;
+
+let stringEllipsisSupported: boolean | undefined;
+
+function truncateCompat(text: string, maxWidth: number, pad = false): string {
+	if (stringEllipsisSupported === false) {
+		return truncateToWidthRaw(text, maxWidth, undefined, pad);
+	}
+	try {
+		const result = truncateToWidthRaw(text, maxWidth, "…", pad);
+		stringEllipsisSupported = true;
+		return result;
+	} catch {
+		stringEllipsisSupported = false;
+		return truncateToWidthRaw(text, maxWidth, undefined, pad);
+	}
+}
 
 const SESSION_COLOR_PALETTE = [
 	SESSION_COLORS.prompt,
@@ -112,9 +128,9 @@ function shortenLabel(label: string): string {
 		const toolLabel = label.slice("Tool result:".length).trim();
 		const execMatch = toolLabel.match(/^exec_command\((.*)\)$/);
 		if (execMatch?.[1]) {
-			return truncateToWidth(`exec:${execMatch[1]}`, 18, "…");
+			return truncateCompat(`exec:${execMatch[1]}`, 18);
 		}
-		return truncateToWidth(toolLabel, 18, "…");
+		return truncateCompat(toolLabel, 18);
 	}
 	if (label.startsWith("User")) {
 		return "User";
@@ -143,7 +159,7 @@ function shortenLabel(label: string): string {
 	if (label.startsWith("Tool")) {
 		return "Tools";
 	}
-	return truncateToWidth(label, 10, "…");
+	return truncateCompat(label, 10);
 }
 
 /** Resolve the user's preferred editor: $VISUAL → $EDITOR → vi. */
@@ -232,7 +248,7 @@ export function buildTableItems(parsed: ParsedPrompt): TableItem[] {
 // ---------------------------------------------------------------------------
 
 function makeRow(innerW: number): (content: string) => string {
-	return (content: string): string => `${dim("│")}${truncateToWidth(` ${content}`, innerW, "…", true)}${dim("│")}`;
+	return (content: string): string => `${dim("│")}${truncateCompat(` ${content}`, innerW, true)}${dim("│")}`;
 }
 
 function makeEmptyRow(innerW: number): () => string {
@@ -503,13 +519,13 @@ function renderTableRow(item: TableItem, isSelected: boolean, innerW: number): s
 	const gapMin = 2;
 	const nameMaxWidth = innerW - prefixWidth - suffixWidth - gapMin - 3;
 
-	const truncatedName = truncateToWidth(isSelected ? bold(sgr("36", item.label)) : item.label, nameMaxWidth, "…");
+	const truncatedName = truncateCompat(isSelected ? bold(sgr("36", item.label)) : item.label, nameMaxWidth);
 	const nameWidth = visibleWidth(truncatedName);
 	const gap = Math.max(1, innerW - prefixWidth - nameWidth - suffixWidth - 3);
 
 	const content = `${prefix} ${truncatedName}${" ".repeat(gap)}${dim(suffix)}`;
 
-	return `${dim("│")}${truncateToWidth(` ${content}`, innerW, "…", true)}${dim("│")}`;
+	return `${dim("│")}${truncateCompat(` ${content}`, innerW, true)}${dim("│")}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -570,13 +586,13 @@ export type ToolToggleHandler = (
 function partitionTools(tools: ToolSectionData, activeSet: Set<string>): ToolSectionData {
 	const byName = new Map<string, ToolEntry>();
 	for (const tool of [...tools.active, ...tools.inactive]) {
-		byName.set(tool.name, tool);
+		byName.set(toolDisplayName(tool), tool);
 	}
 
 	const active: ToolEntry[] = [];
 	const inactive: ToolEntry[] = [];
 	for (const tool of byName.values()) {
-		if (activeSet.has(tool.name)) {
+		if (activeSet.has(toolDisplayName(tool))) {
 			active.push(tool);
 		} else {
 			inactive.push(tool);
@@ -588,11 +604,11 @@ function partitionTools(tools: ToolSectionData, activeSet: Set<string>): ToolSec
 
 function parseToolContent(tool: ToolEntry): unknown {
 	try {
-		return JSON.parse(tool.content) as unknown;
+		return JSON.parse(typeof tool.content === "string" ? tool.content : JSON.stringify(tool.content)) as unknown;
 	} catch {
 		return {
-			name: tool.name,
-			content: tool.content,
+			name: typeof tool.name === "string" ? tool.name : undefined,
+			content: typeof tool.content === "string" ? tool.content : "",
 		};
 	}
 }
@@ -624,9 +640,18 @@ interface CodexAppToolInfo {
 	displayName: string;
 }
 
+function toolDisplayName(tool: ToolEntry): string {
+	if (typeof tool.name === "string" && tool.name.length > 0) return tool.name;
+	const parsed = parseToolContent(tool);
+	const parsedName = objectValue(parsed, "name");
+	if (typeof parsedName === "string" && parsedName.length > 0) return parsedName;
+	return "(unnamed tool)";
+}
+
 function codexAppToolInfo(tool: ToolEntry): CodexAppToolInfo | undefined {
 	const prefix = "codex_apps_";
-	if (!tool.name.startsWith(prefix)) {
+	const toolName = toolDisplayName(tool);
+	if (!toolName.startsWith(prefix)) {
 		return undefined;
 	}
 
@@ -634,7 +659,7 @@ function codexAppToolInfo(tool: ToolEntry): CodexAppToolInfo | undefined {
 	const description = objectValue(parsed, "description");
 	const descriptionApp =
 		typeof description === "string" ? description.match(/(?:^|\n)Codex app:\s*([^\n.]+)\./i)?.[1]?.trim() : "";
-	const rawName = tool.name.slice(prefix.length);
+	const rawName = toolName.slice(prefix.length);
 	const fallbackApp = rawName.split("_").at(0) ?? "app";
 	const appLabel = descriptionApp || humanizeIdentifier(fallbackApp);
 	const appSlug = slugIdentifier(appLabel || fallbackApp);
@@ -666,8 +691,10 @@ function formatToolMarkdown(tool: ToolEntry, headingLevel = 3): string {
 	const parsed = parseToolContent(tool);
 	const description = objectValue(parsed, "description");
 	const parameters = objectValue(parsed, "parameters");
-	const heading = `${"#".repeat(headingLevel)} ${tool.name} (${formatTokenCount(tool.tokens)})`;
-	const lines = [heading, "", `- Tokens: ${fmt(tool.tokens)}`, `- Characters: ${fmt(tool.chars)}`];
+	const tokens = Number.isFinite(tool.tokens) ? tool.tokens : 0;
+	const chars = Number.isFinite(tool.chars) ? tool.chars : 0;
+	const heading = `${"#".repeat(headingLevel)} ${toolDisplayName(tool)} (${formatTokenCount(tokens)})`;
+	const lines = [heading, "", `- Tokens: ${fmt(tokens)}`, `- Characters: ${fmt(chars)}`];
 
 	if (typeof description === "string" && description.trim()) {
 		lines.push("", description.trim());
@@ -678,7 +705,12 @@ function formatToolMarkdown(tool: ToolEntry, headingLevel = 3): string {
 	} else if (typeof parsed === "object") {
 		lines.push("", "#### Definition", "", markdownCodeBlock("json", JSON.stringify(parsed, null, 2)));
 	} else {
-		lines.push("", "#### Definition", "", markdownCodeBlock("text", tool.content));
+		lines.push(
+			"",
+			"#### Definition",
+			"",
+			markdownCodeBlock("text", typeof tool.content === "string" ? tool.content : ""),
+		);
 	}
 
 	return lines.join("\n");
@@ -1031,15 +1063,16 @@ class BudgetOverlay {
 			...tools.active.map((tool) => ({ tool, enabled: true })),
 			...tools.inactive.map((tool) => ({ tool, enabled: false })),
 		].map(({ tool, enabled }) => {
+			const toolName = toolDisplayName(tool);
 			const info = codexAppToolInfo(tool);
 			const row: ToolRow = {
 				kind: "tool",
-				label: info?.displayName ?? tool.name,
-				toolName: tool.name,
+				label: info?.displayName ?? toolName,
+				toolName,
 				enabled,
-				chars: tool.chars,
-				tokens: tool.tokens,
-				content: tool.content,
+				chars: Number.isFinite(tool.chars) ? tool.chars : 0,
+				tokens: Number.isFinite(tool.tokens) ? tool.tokens : 0,
+				content: typeof tool.content === "string" ? tool.content : "",
 			};
 			return { row, info };
 		});
@@ -1714,12 +1747,12 @@ class BudgetOverlay {
 			const nameMaxWidth = innerW - prefixWidth - suffixWidth - gapMin - 3;
 
 			const label = this.getTraceBucketLabel(bucket);
-			const truncatedName = truncateToWidth(isSelected ? bold(sgr("36", label)) : label, nameMaxWidth, "…");
+			const truncatedName = truncateCompat(isSelected ? bold(sgr("36", label)) : label, nameMaxWidth);
 			const nameWidth = visibleWidth(truncatedName);
 			const gap = Math.max(1, innerW - prefixWidth - nameWidth - suffixWidth - 3);
 
 			const content = `${prefix} ${truncatedName}${" ".repeat(gap)}${dim(suffix)}`;
-			lines.push(`${dim("│")}${truncateToWidth(` ${content}`, innerW, "…", true)}${dim("│")}`);
+			lines.push(`${dim("│")}${truncateCompat(` ${content}`, innerW, true)}${dim("│")}`);
 		}
 
 		lines.push(emptyRow());
@@ -1776,12 +1809,12 @@ class BudgetOverlay {
 			const nameMaxWidth = innerW - prefixWidth - suffixWidth - gapMin - 3;
 
 			const lineText = e.line.startsWith("- ") ? e.line.slice(2) : e.line;
-			const truncatedLine = truncateToWidth(isSelected ? bold(sgr("36", lineText)) : lineText, nameMaxWidth, "…");
+			const truncatedLine = truncateCompat(isSelected ? bold(sgr("36", lineText)) : lineText, nameMaxWidth);
 			const lineWidth = visibleWidth(truncatedLine);
 			const gap = Math.max(1, innerW - prefixWidth - lineWidth - suffixWidth - 3);
 
 			const content = `${prefix} ${truncatedLine}${" ".repeat(gap)}${dim(suffix)}`;
-			lines.push(`${dim("│")}${truncateToWidth(` ${content}`, innerW, "…", true)}${dim("│")}`);
+			lines.push(`${dim("│")}${truncateCompat(` ${content}`, innerW, true)}${dim("│")}`);
 		}
 
 		lines.push(emptyRow());
@@ -1894,7 +1927,7 @@ class BudgetOverlay {
 			const prefixWidth = 8;
 			const nameMaxWidth = innerW - prefixWidth - suffixWidth - 4;
 
-			const truncatedName = truncateToWidth(nameStr, nameMaxWidth, "…");
+			const truncatedName = truncateCompat(nameStr, nameMaxWidth);
 			const nameWidth = visibleWidth(truncatedName);
 			const gap = Math.max(1, innerW - prefixWidth - nameWidth - suffixWidth - 3);
 
@@ -1977,7 +2010,7 @@ class BudgetOverlay {
 				const suffixWidth = visibleWidth(tokenStr);
 				const prefixWidth = 5;
 				const nameMaxWidth = innerW - prefixWidth - suffixWidth - 4;
-				const truncatedName = truncateToWidth(nameStr, nameMaxWidth, "…");
+				const truncatedName = truncateCompat(nameStr, nameMaxWidth);
 				const nameWidth = visibleWidth(truncatedName);
 				const gap = Math.max(1, innerW - prefixWidth - nameWidth - suffixWidth - 3);
 
@@ -1994,7 +2027,7 @@ class BudgetOverlay {
 			const suffixWidth = visibleWidth(tokenStr);
 			const prefixWidth = 5 + visibleWidth(indent);
 			const nameMaxWidth = innerW - prefixWidth - suffixWidth - 4;
-			const truncatedName = truncateToWidth(nameStr, nameMaxWidth, "…");
+			const truncatedName = truncateCompat(nameStr, nameMaxWidth);
 			const nameWidth = visibleWidth(truncatedName);
 			const gap = Math.max(1, innerW - prefixWidth - nameWidth - suffixWidth - 3);
 

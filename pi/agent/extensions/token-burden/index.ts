@@ -287,7 +287,8 @@ function scaleCategoriesToUsage(categories: SessionUsageCategory[], tokens: numb
 }
 
 export function buildSessionUsageData(ctx: ExtensionCommandContext): SessionUsageData | undefined {
-	const context = buildSessionContext(ctx.sessionManager.getEntries(), ctx.sessionManager.getLeafId());
+	const sessionManager = ctx.sessionManager as typeof ctx.sessionManager & { getLeafId?: () => string | undefined };
+	const context = buildSessionContext(ctx.sessionManager.getEntries(), sessionManager.getLeafId?.());
 	const rawCategories = estimateRawSessionCategories(context.messages);
 	const estimatedTokens = rawCategories.reduce((total, category) => total + category.tokens, 0);
 	const usage = ctx.getContextUsage();
@@ -305,6 +306,27 @@ export function buildSessionUsageData(ctx: ExtensionCommandContext): SessionUsag
 	};
 }
 
+function systemPromptText(prompt: unknown): string {
+	if (typeof prompt === "string") return prompt;
+	if (Array.isArray(prompt)) {
+		return prompt
+			.map((part) => {
+				if (typeof part === "string") return part;
+				if (part && typeof part === "object" && "text" in part) {
+					const text = (part as { text?: unknown }).text;
+					return typeof text === "string" ? text : "";
+				}
+				return "";
+			})
+			.filter(Boolean)
+			.join("\n");
+	}
+	if (prompt && typeof prompt === "object" && "content" in prompt) {
+		return systemPromptText((prompt as { content?: unknown }).content);
+	}
+	return String(prompt ?? "");
+}
+
 const extension: ExtensionFactory = (pi) => {
 	const toolToggles = createToolToggleController(pi, loadToolToggleConfig(CONFIG_PATH).disabledTools, CONFIG_PATH);
 	toolToggles.install();
@@ -312,7 +334,7 @@ const extension: ExtensionFactory = (pi) => {
 	pi.registerCommand("token-burden", {
 		description: "Show token budget breakdown and manage skills",
 		handler: async (_args, ctx) => {
-			const prompt = ctx.getSystemPrompt();
+			const prompt = systemPromptText(ctx.getSystemPrompt());
 			const parsed = parseSystemPrompt(prompt);
 
 			// Add tool definitions section (function schemas sent via tool-calling API)
@@ -339,7 +361,7 @@ const extension: ExtensionFactory = (pi) => {
 			const { skills, byName } = loadAllSkills(settings, undefined, agentDir);
 
 			const onRunTrace = async (): Promise<BasePromptTraceResult> => {
-				const sm = SettingsManager.create(process.cwd(), agentDir);
+				const sm = await SettingsManager.create(process.cwd(), agentDir);
 				const configuredPaths = sm.getExtensionPaths();
 				const { extensions, errors: loadErrors } = await discoverAndLoadExtensions(
 					configuredPaths,

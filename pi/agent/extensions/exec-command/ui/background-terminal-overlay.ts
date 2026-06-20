@@ -1,4 +1,5 @@
-import { type Component, Key, matchesKey, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { type Component, Key, matchesKey, type TUI, visibleWidth } from "@earendil-works/pi-tui";
+import { truncateToWidthCompat } from "../../shared/tui";
 import type { ExecSessionManager, ExecSessionRecord } from "../tools/exec-session-manager.ts";
 
 interface OverlayTheme {
@@ -173,7 +174,7 @@ export class BackgroundTerminalOverlay implements Component {
 		const prefix = `${selected ? this.theme.fg("accent", ">") : " "} #${record.id} `;
 		const tty = record.stdinOpen ? `${this.theme.fg("dim", " · ")}${this.theme.fg("mdLink", "tty")}` : "";
 		const meta = `${state}${tty}${this.theme.fg("dim", " · ")}`;
-		return truncateToWidth(`${prefix}${meta}${sanitizeLine(record.command)}`, width, "...");
+		return truncateToWidthCompat(`${prefix}${meta}${sanitizeLine(record.command)}`, width, "...");
 	}
 
 	private handleAttachedInput(data: string): void {
@@ -372,7 +373,7 @@ export class BackgroundTerminalOverlay implements Component {
 
 	private row(content: string, innerWidth: number): string {
 		const padded = content + " ".repeat(Math.max(0, innerWidth - visibleWidth(content)));
-		return `${this.theme.fg("border", "│")} ${truncateToWidth(padded, innerWidth, "")} ${this.theme.fg("border", "│")}`;
+		return `${this.theme.fg("border", "│")} ${truncateToWidthCompat(padded, innerWidth, "")} ${this.theme.fg("border", "│")}`;
 	}
 
 	private separator(innerWidth: number): string {
@@ -400,7 +401,7 @@ function sanitizeLine(text: string): string {
 }
 
 function truncatePlain(text: string, width: number): string {
-	return truncateToWidth(sanitizeLine(text), width, "...");
+	return truncateToWidthCompat(sanitizeLine(text), width, "...");
 }
 
 function outputLinesForRender(output: string, width: number): string[] {

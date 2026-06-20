@@ -1,8 +1,8 @@
 import { spawn, spawnSync } from "node:child_process";
 
 import { CustomEditor, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { CURSOR_MARKER, Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { defineExtensionTui } from "../shared/tui";
+import { CURSOR_MARKER, Key, matchesKey, visibleWidth } from "@earendil-works/pi-tui";
+import { defineExtensionTui, truncateToWidthCompat } from "../shared/tui";
 import {
 	type ClipboardMirrorPolicy,
 	DEFAULT_CLIPBOARD_MIRROR_POLICY,
@@ -62,6 +62,48 @@ const CLIPBOARD_SPAWN_FAILURE_LIMIT = 3;
 const CLIPBOARD_READ_TIMEOUT_MS = 750;
 const CLIPBOARD_READ_MAX_BUFFER_BYTES = 1024 * 1024;
 
+const FALLBACK_SYMBOLS = {
+	cursor: ">",
+	inputCursor: "▏",
+	boxRound: {
+		topLeft: "╭",
+		topRight: "╮",
+		bottomLeft: "╰",
+		bottomRight: "╯",
+		horizontal: "─",
+		vertical: "│",
+	},
+	boxSharp: {
+		topLeft: "┌",
+		topRight: "┐",
+		bottomLeft: "└",
+		bottomRight: "┘",
+		horizontal: "─",
+		vertical: "│",
+		teeDown: "┬",
+		teeUp: "┴",
+		teeLeft: "┤",
+		teeRight: "├",
+		cross: "┼",
+	},
+	table: {
+		topLeft: "┌",
+		topRight: "┐",
+		bottomLeft: "└",
+		bottomRight: "┘",
+		horizontal: "─",
+		vertical: "│",
+		teeDown: "┬",
+		teeUp: "┴",
+		teeLeft: "┤",
+		teeRight: "├",
+		cross: "┼",
+	},
+	quoteBorder: "┃",
+	hrChar: "─",
+	spinnerFrames: ["-", "\\", "|", "/"],
+} as const;
+
 type EditorSnapshot = {
 	text: string;
 	cursor: { line: number; col: number };
@@ -84,6 +126,26 @@ type CustomEditorConstructorArgs = ConstructorParameters<typeof CustomEditor>;
 type ClipboardWriteFn = (text: string, signal: AbortSignal) => Promise<void>;
 type ClipboardReadFn = () => string | null;
 type ClipboardProcess = ReturnType<typeof spawn>;
+
+function editorThemeWithSymbols(theme: CustomEditorConstructorArgs[1]): CustomEditorConstructorArgs[1] {
+	const candidate = theme as CustomEditorConstructorArgs[1] & { symbols?: unknown };
+	if (candidate.symbols && typeof candidate.symbols === "object" && "boxRound" in candidate.symbols) return theme;
+	return {
+		...theme,
+		symbols: FALLBACK_SYMBOLS,
+	} as CustomEditorConstructorArgs[1];
+}
+
+function customEditorBaseArgs(
+	tui: CustomEditorConstructorArgs[0],
+	theme: CustomEditorConstructorArgs[1],
+	kb: CustomEditorConstructorArgs[2],
+): CustomEditorConstructorArgs {
+	const editorConstructor = Object.getPrototypeOf(CustomEditor.prototype)?.constructor as
+		| { length?: number }
+		| undefined;
+	return ((editorConstructor?.length ?? 1) >= 2 ? [tui, theme, kb] : [theme]) as CustomEditorConstructorArgs;
+}
 
 type ModeLabelColorizers = {
 	insert: (s: string) => string;
@@ -591,6 +653,7 @@ export class ModalEditor extends CustomEditor {
 	private readonly labelColorizers: ModeLabelColorizers | null;
 	private readonly cursorShapeRuntime: CursorShapeRuntime | null;
 	private lastCursorShapeSequence: CursorShapeSequence | null = null;
+	private useTerminalCursorCompat: boolean = false;
 
 	// Unnamed register
 	private unnamedRegister: string = "";
@@ -607,11 +670,27 @@ export class ModalEditor extends CustomEditor {
 		labelColorizers?: ModeLabelColorizers | null,
 		initialMode: Mode = "insert",
 	) {
-		super(tui, theme, kb);
+		const compatTheme = editorThemeWithSymbols(theme);
+		const baseArgs = customEditorBaseArgs(tui, compatTheme, kb);
+		super(...baseArgs);
 		this.mode = initialMode;
 		this.cursorShapeRuntime = getCursorShapeRuntime(tui);
 		this.labelColorizers = labelColorizers ?? null;
 		this.syncCursorShapeForState();
+	}
+
+	override setUseTerminalCursor(useTerminalCursor: boolean): void {
+		this.useTerminalCursorCompat = useTerminalCursor;
+		const base = Object.getPrototypeOf(ModalEditor.prototype) as {
+			setUseTerminalCursor?: (useTerminalCursor: boolean) => void;
+		};
+		base.setUseTerminalCursor?.call(this, useTerminalCursor);
+		this.syncCursorShapeForState();
+	}
+
+	getUseTerminalCursor(): boolean {
+		const base = Object.getPrototypeOf(ModalEditor.prototype) as { getUseTerminalCursor?: () => boolean };
+		return base.getUseTerminalCursor?.call(this) ?? this.useTerminalCursorCompat;
 	}
 
 	// Test seams
@@ -3013,7 +3092,7 @@ export class ModalEditor extends CustomEditor {
 					: "";
 
 		if (!prefix || visibleWidth(prefix) >= width) {
-			return truncateToWidth(rawLabel, width, "");
+			return truncateToWidthCompat(rawLabel, width, "");
 		}
 
 		const suffixWidth = width - visibleWidth(prefix) - 1;
@@ -3112,7 +3191,7 @@ export class ModalEditor extends CustomEditor {
 		const last = lines.length - 1;
 		const lastLine = lines[last];
 		if (lastLine && visibleWidth(lastLine) >= visibleWidth(rawLabel)) {
-			lines[last] = truncateToWidth(lastLine, width - visibleWidth(rawLabel), "") + label;
+			lines[last] = truncateToWidthCompat(lastLine, width - visibleWidth(rawLabel), "") + label;
 		} else {
 			lines[last] = label;
 		}
@@ -3180,7 +3259,13 @@ export default function (pi: ExtensionAPI) {
 		vimTui.bind(ctx).editor.replace((tui, theme, kb) => {
 			cursorShapeCleanup?.();
 			cursorShapeCleanup = enableCursorShapeSupport(tui);
-			const editor = new ModalEditor(tui, theme, kb, colorizers, initialModeForEnvironment());
+			const editor = new ModalEditor(
+				tui,
+				editorThemeWithSymbols(theme),
+				kb,
+				colorizers,
+				initialModeForEnvironment(),
+			);
 			editor.setClipboardMirrorPolicy(clipboardMirrorPolicy.policy);
 			editor.setQuitFn(() => ctx.shutdown());
 			editor.setNotifyFn((message) => ctx.ui.notify(message, "warning"));

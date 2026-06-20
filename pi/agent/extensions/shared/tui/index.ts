@@ -29,6 +29,7 @@ export {
 	padToVisibleWidth,
 	paintAnsiBackgroundRow,
 	sgrResetsBackground,
+	truncateToWidthCompat,
 } from "./text";
 export type { Emphasis, ListItem, OverflowMode, RenderOptions, RenderTheme, Tone, ViewNode } from "./types";
 export { view } from "./view";
