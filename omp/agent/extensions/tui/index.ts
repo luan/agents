@@ -64,9 +64,6 @@ export type PromptEditorChrome = {
 	contextStatus?: string;
 	headerLeft?: string;
 	headerRight?: string;
-	workingActive?: boolean;
-	workingFrame?: number;
-	workingStartedAtMs?: number;
 };
 
 export type PromptEditorChromeProvider = (width: number) => PromptEditorChrome | undefined;
@@ -374,25 +371,18 @@ export default function (pi: ExtensionAPI): void {
 	let cleanupEditor: (() => void) | undefined;
 	let currentCtx: ExtensionContext | undefined;
 
-	const refresh = () => {};
 	const chromeProvider: PromptEditorChromeProvider = (width) => {
 		const uiTheme = (currentCtx?.ui as ExtensionUiWithEditor | undefined)?.theme as ThemeLike | undefined;
 		if (!uiTheme || !hasThemeColorSource(uiTheme)) {
 			return {
 				headerLeft: "",
 				headerRight: state.modelLabel,
-				workingActive: false,
-				workingFrame: 0,
-				workingStartedAtMs: undefined,
 			};
 		}
 		return {
 			contextStatus: renderEditorContextStatus(state, uiTheme as never, compactContextWidth(width)),
 			headerLeft: "",
 			headerRight: renderEditorTopStatus(state, defaultConfig, currentCtx?.cwd ?? process.cwd(), uiTheme as never, width),
-			workingActive: false,
-			workingFrame: 0,
-			workingStartedAtMs: undefined,
 		};
 	};
 
@@ -412,30 +402,25 @@ export default function (pi: ExtensionAPI): void {
 	pi.on("agent_start", async (_event, ctx) => {
 		currentCtx = ctx;
 		syncFooterState(pi, ctx, state);
-		refresh();
 	});
 
 	pi.on("agent_end", async (_event, ctx) => {
 		currentCtx = ctx;
 		syncFooterState(pi, ctx, state);
-		refresh();
 	});
 
 	pi.on("model_select", async (_event, ctx) => {
 		currentCtx = ctx;
 		syncFooterState(pi, ctx, state);
-		refresh();
 	});
 
 	pi.on("message_update", async (event, ctx) => {
 		currentCtx = ctx;
 		syncFooterState(pi, ctx, state, event.message);
-		refresh();
 	});
 
 	pi.on("message_end", async (_event, ctx) => {
 		currentCtx = ctx;
 		syncFooterState(pi, ctx, state);
-		refresh();
 	});
 }
