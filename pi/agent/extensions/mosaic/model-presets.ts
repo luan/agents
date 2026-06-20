@@ -4,24 +4,11 @@ import type { ModelPresetCandidate, ThinkingLevel } from "./types.js";
 export const DEFAULT_MODEL_PRESET_ORDER = ["fast", "small", "efficient", "smart", "oracle"] as const;
 
 export const DEFAULT_MODEL_PRESETS: Record<string, ModelPresetCandidate[]> = {
-	fast: [
-		{ model: "gpt-5.3-codex-spark" },
-		{ model: "gpt-5.4-mini" },
-		{ model: "anthropic/claude-haiku-4-5-20251001" },
-	],
-	small: [{ model: "gpt-5.4-mini" }, { model: "anthropic/claude-haiku-4-5-20251001" }],
-	efficient: [
-		{ model: "gpt-5.5", thinking: "low" },
-		{ model: "anthropic/claude-sonnet-4-6", thinking: "medium" },
-	],
-	smart: [
-		{ model: "gpt-5.5", thinking: "medium" },
-		{ model: "anthropic/claude-opus-4-6", thinking: "medium" },
-	],
-	oracle: [
-		{ model: "gpt-5.5", thinking: "high" },
-		{ model: "anthropic/claude-opus-4-6", thinking: "xhigh" },
-	],
+	fast: [{ model: "gpt-5.3-codex-spark" }, { model: "gpt-5.4-mini" }],
+	small: [{ model: "gpt-5.4-mini" }],
+	efficient: [{ model: "gpt-5.5", thinking: "low" }],
+	smart: [{ model: "gpt-5.5", thinking: "medium" }],
+	oracle: [{ model: "gpt-5.5", thinking: "high" }],
 };
 
 export function mergeModelPresets(

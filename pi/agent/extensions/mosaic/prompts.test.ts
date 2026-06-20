@@ -13,7 +13,7 @@ const replaceConfig: AgentConfig = {
 	description: "explore",
 	toolNames: ["read"],
 	extensions: true,
-	skills: true,
+	skills: false,
 	systemPrompt: "Explore files.",
 	promptMode: "replace",
 };

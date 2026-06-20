@@ -146,7 +146,7 @@ export function getConfig(type: string): {
 		displayName: "Agent",
 		description: "General-purpose agent for complex, multi-step tasks",
 		extensions: true,
-		skills: true,
+		skills: false,
 		promptMode: "append",
 	};
 }

@@ -3,7 +3,7 @@ description: Software architect for implementation planning (read-only)
 display_name: Plan
 tools: read, bash, grep, find, ls
 extensions: true
-skills: true
+skills: false
 prompt_mode: replace
 ---
 # CRITICAL: READ-ONLY MODE - NO FILE MODIFICATIONS
