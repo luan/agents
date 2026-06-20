@@ -79,11 +79,6 @@ status_line = [
 [tui.keymap.composer]
 queue = "alt-enter"
 
-[marketplaces.claude-plugins-official]
-last_updated = "2026-06-14T19:53:33Z"
-last_revision = "b1b442f791da88564eef42a2e26e9bca70dfe954"
-source_type = "git"
-source = "https://github.com/anthropics/claude-plugins-official.git"
 
 [marketplaces.worktrunk]
 last_updated = "2026-06-14T19:53:38Z"

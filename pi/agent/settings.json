@@ -1,5 +1,5 @@
 {
-  "lastChangelogVersion": "0.79.3",
+  "lastChangelogVersion": "0.79.8",
   "steeringMode": "all",
   "autoUpdate": true,
   "transport": "auto",
@@ -8,9 +8,7 @@
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-5.5",
   "defaultThinkingLevel": "high",
-  "skills": [
-    "../.codex/skills"
-  ],
+  "skills": [],
   "packages": [
     "npm:@ifi/oh-pi-themes",
     "npm:@dreki-gg/pi-context7",
