@@ -10,16 +10,12 @@ import {
 	scaleContextSegmentsToUsage,
 	scaleContextSlicesToUsage,
 } from "../../../../pi/agent/extensions/tui/footer";
-import { rgbBg, rgbFg, scaleRgb, shineText, themeRoleToRgb, triangleWave } from "../../../../pi/agent/extensions/shared/tui";
 
 const BLINKING_BEAM_CURSOR = "\x1b[5 q";
 const RESET_CURSOR_SHAPE = "\x1b[0 q";
 const EDITOR_RAIL_WIDTH = 2;
 const EDITOR_CHROME_LINES = 1;
 const CONTEXT_STATUS_MAX_WIDTH = 88;
-const WORKING_FRAME_MS = 80;
-const RAIL_PULSE_MS = 2000;
-const RAIL_ANIMATION_CELLS = ["▌ ", "█ ", "█▌", "█▐", " █", " ▐", " ▌", "▌ "] as const;
 
 type CursorTerminal = {
 	write?: unknown;
@@ -28,8 +24,6 @@ type CursorTerminal = {
 type CursorTui = {
 	terminal?: CursorTerminal;
 	getShowHardwareCursor?: unknown;
-	requestComponentRender?: unknown;
-	requestRender?: unknown;
 	setShowHardwareCursor?: unknown;
 };
 
@@ -141,37 +135,11 @@ function fg(theme: ThemeLike, role: string, text: string): string {
 function hasThemeColorSource(theme: ThemeLike): theme is ThemeLike & { fg: (role: string, text: string) => string } {
 	return typeof theme.fg === "function";
 }
-function workingElapsedMs(chrome: PromptEditorChrome | undefined): number {
-	if (!chrome?.workingActive) return 0;
-	const frameElapsed = (chrome.workingFrame ?? 0) * WORKING_FRAME_MS;
-	if (typeof chrome.workingStartedAtMs === "number") {
-		return Math.max(frameElapsed, Date.now() - chrome.workingStartedAtMs);
-	}
-	return frameElapsed > 0 ? frameElapsed : Date.now();
-}
 
-function renderWorkingLabel(theme: ThemeLike, chrome: PromptEditorChrome | undefined): string {
-	if (!chrome?.workingActive) return chrome?.headerLeft ?? "";
-	const elapsed = workingElapsedMs(chrome);
-	const seconds = Math.floor(elapsed / 1000);
-	const timing = seconds > 0 ? dim(theme, ` ${seconds}s`) : "";
-	const word = hasThemeColorSource(theme)
-		? shineText(theme, "Working", elapsed, { role: "accent", fallback: (text) => fg(theme, "accent", text) })
-		: "Working";
-	return `${word}${fg(theme, "accent", "…")}${timing}`;
-}
-
-function rail(theme: ThemeLike, colorRail: ((text: string) => string) | unknown, chrome: PromptEditorChrome | undefined): string {
-	const staticGlyph =
+function rail(theme: ThemeLike, colorRail: ((text: string) => string) | unknown): string {
+	const glyph =
 		typeof colorRail === "function" ? (colorRail as (text: string) => string)("┃") : fg(theme, "accent", "┃");
-	if (chrome?.workingActive && hasThemeColorSource(theme)) {
-		const elapsed = workingElapsedMs(chrome);
-		const pulse = triangleWave(elapsed, RAIL_PULSE_MS, 0.28, 1.35);
-		const color = scaleRgb(themeRoleToRgb(theme, "accent"), pulse);
-		const cells = RAIL_ANIMATION_CELLS[Math.floor(elapsed / WORKING_FRAME_MS) % RAIL_ANIMATION_CELLS.length] ?? "┃ ";
-		return `${rgbBg(scaleRgb(color, 0.42))}${rgbFg(color)}${cells}\x1b[39m\x1b[49m`;
-	}
-	return `${staticGlyph}${dim(theme, " ")}`;
+	return `${glyph}${dim(theme, " ")}`;
 }
 
 function configuredEditor(editor: CustomEditor): CustomEditor {
@@ -239,16 +207,12 @@ export function createNativeOmpPromptEditor(
 			const bodyLines = [...super.render(innerWidth)];
 			const chrome = chromeProvider?.(innerWidth);
 			const colorRail = (this as unknown as NativeEditorControls).borderColor ?? renderTheme.borderColor ?? theme.borderColor;
-			const prefix = rail(renderTheme, colorRail, chrome);
+			const prefix = rail(renderTheme, colorRail);
 			const chromeLine = (line: string) => prefix + fitLine(line, innerWidth);
 			const hostStatus = this.#topBorder?.content;
 			const header = chrome?.contextStatus
 				? composeLeftRight(hostStatus ?? chrome.headerRight ?? "", chrome.contextStatus, innerWidth)
-				: composeLeftRight(
-						renderWorkingLabel(renderTheme, chrome),
-						hostStatus ?? chrome?.headerRight,
-						innerWidth,
-					);
+				: composeLeftRight("", hostStatus ?? chrome?.headerRight, innerWidth);
 
 			return [chromeLine(header), ...bodyLines.map(chromeLine)];
 		}
@@ -261,7 +225,6 @@ export function installNativeOmpPromptEditor(
 	ctx: ExtensionContext,
 	EditorClass: CustomEditorConstructor = CustomEditor,
 	chromeProvider?: PromptEditorChromeProvider,
-	onRenderRequest?: (requestRender: (() => void) | undefined) => void,
 ): () => void {
 	const ui = ctx.ui as ExtensionUiWithEditor;
 	const setEditorComponent = ui.setEditorComponent;
@@ -285,15 +248,10 @@ export function installNativeOmpPromptEditor(
 			borderColor: theme.borderColor ?? uiTheme?.borderColor,
 			hintStyle: theme.hintStyle ?? uiTheme?.hintStyle,
 		};
-		const editor = createNativeOmpPromptEditor(EditorClass, tui, theme, keybindings, chromeProvider, renderTheme);
-		onRenderRequest?.(
-			typeof tui.requestRender === "function" ? () => (tui.requestRender as (force?: boolean) => void).call(tui, true) : undefined,
-		);
-		return editor;
+		return createNativeOmpPromptEditor(EditorClass, tui, theme, keybindings, chromeProvider, renderTheme);
 	});
 
 	return () => {
-		onRenderRequest?.(undefined);
 		if (activeTui) {
 			writeCursorShape(activeTui, RESET_CURSOR_SHAPE);
 			if (
@@ -414,49 +372,27 @@ function syncFooterState(pi: ExtensionAPI, ctx: ExtensionContext, state: FooterR
 export default function (pi: ExtensionAPI): void {
 	const state = emptyFooterState();
 	let cleanupEditor: (() => void) | undefined;
-	let requestRender: (() => void) | undefined;
-	let workingTimer: ReturnType<typeof setInterval> | undefined;
-	let workingActive = false;
-	let workingFrame = 0;
-	let workingStartedAtMs: number | undefined;
 	let currentCtx: ExtensionContext | undefined;
-	const isWorking = () => workingActive || Boolean(currentCtx && !(currentCtx as { isIdle?: () => boolean }).isIdle?.());
-	const refresh = () => requestRender?.();
-	const ensureRailAnimationTimer = () => {
-		if (workingTimer) return;
-		workingTimer = setInterval(() => {
-			workingFrame++;
-			refresh();
-		}, WORKING_FRAME_MS);
-	};
-	const resetWorkingState = () => {
-		workingActive = false;
-		workingStartedAtMs = undefined;
-		workingFrame = 0;
-	};
-	const stopRailAnimation = () => {
-		if (workingTimer) clearInterval(workingTimer);
-		workingTimer = undefined;
-		resetWorkingState();
-	};
+
+	const refresh = () => {};
 	const chromeProvider: PromptEditorChromeProvider = (width) => {
 		const uiTheme = (currentCtx?.ui as ExtensionUiWithEditor | undefined)?.theme as ThemeLike | undefined;
 		if (!uiTheme || !hasThemeColorSource(uiTheme)) {
 			return {
 				headerLeft: "",
 				headerRight: state.modelLabel,
-				workingActive: true,
-				workingFrame,
-				workingStartedAtMs,
+				workingActive: false,
+				workingFrame: 0,
+				workingStartedAtMs: undefined,
 			};
 		}
 		return {
 			contextStatus: renderEditorContextStatus(state, uiTheme as never, compactContextWidth(width)),
 			headerLeft: "",
 			headerRight: renderEditorTopStatus(state, defaultConfig, currentCtx?.cwd ?? process.cwd(), uiTheme as never, width),
-			workingActive: true,
-			workingFrame,
-			workingStartedAtMs,
+			workingActive: false,
+			workingFrame: 0,
+			workingStartedAtMs: undefined,
 		};
 	};
 
@@ -464,35 +400,24 @@ export default function (pi: ExtensionAPI): void {
 		cleanupEditor?.();
 		currentCtx = ctx;
 		syncFooterState(pi, ctx, state);
-		ensureRailAnimationTimer();
-		cleanupEditor = installNativeOmpPromptEditor(ctx, CustomEditor, chromeProvider, (request) => {
-			requestRender = request;
-		});
-		refresh();
+		cleanupEditor = installNativeOmpPromptEditor(ctx, CustomEditor, chromeProvider);
 	});
 
 	pi.on("session_shutdown", async () => {
 		cleanupEditor?.();
 		cleanupEditor = undefined;
-		requestRender = undefined;
 		currentCtx = undefined;
-		stopRailAnimation();
 	});
 
 	pi.on("agent_start", async (_event, ctx) => {
 		currentCtx = ctx;
 		syncFooterState(pi, ctx, state);
-		resetWorkingState();
-		workingActive = true;
-		workingStartedAtMs = Date.now();
-		ensureRailAnimationTimer();
 		refresh();
 	});
 
 	pi.on("agent_end", async (_event, ctx) => {
 		currentCtx = ctx;
 		syncFooterState(pi, ctx, state);
-		resetWorkingState();
 		refresh();
 	});
 
