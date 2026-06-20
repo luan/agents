@@ -86,8 +86,8 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "skill",
 		label: "Skill",
-		description: "Load a named skill by exact name.",
-		promptSnippet: "Load specialized skill instructions by exact skill name",
+		description: "Load a skill by exact name, including hidden/non-advertised skills.",
+		promptSnippet: "Load named skill instructions; try exact names even if not advertised.",
 		parameters: Type.Object({
 			name: Type.String({ description: "Exact skill name" }),
 		}),
