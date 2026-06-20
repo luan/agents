@@ -1,6 +1,10 @@
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { z } from "zod";
-import { createHashlineEditAnchor } from "../../fileops/hashline/anchors.js";
+import {
+	createHashlineEditAnchor,
+	FALLBACK_HASHLINE_SNAPSHOT_SESSION_ID,
+	hashlineSnapshotStoreForSession,
+} from "../../fileops/hashline/anchors.js";
 import { textComponent } from "../../shared/tui";
 import type { PiToolResponse } from "./core.js";
 import { invokeCore } from "./core.js";
@@ -198,11 +202,12 @@ function initDirectToolRuntime(): void {
 }
 
 const toolSpecs = createPiToolSpecs();
+const HASHLINE_EDIT_ANCHOR_SNAPSHOTS = hashlineSnapshotStoreForSession(FALLBACK_HASHLINE_SNAPSHOT_SESSION_ID);
 
 async function withHashlineEditAnchor(result: ToolResult, path: string | undefined): Promise<ToolResult> {
 	if (!path) return result;
 	try {
-		const anchor = await createHashlineEditAnchor(getProjectDir(), path);
+		const anchor = await createHashlineEditAnchor(HASHLINE_EDIT_ANCHOR_SNAPSHOTS, getProjectDir(), path);
 		const suffix = [
 			"",
 			"---",

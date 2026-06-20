@@ -135,6 +135,14 @@ export interface BlockSpan {
 	end: number;
 }
 
+export type BlockResolverFailureReason = "no_block" | "syntax_error" | "parser_unavailable" | "unsupported_language";
+
+export interface BlockResolverFailure {
+	readonly reason: BlockResolverFailureReason;
+}
+
+export type BlockResolverResult = BlockSpan | BlockResolverFailure | null;
+
 /**
  * One `replace block N:` / `delete block N` / `insert after block N:` anchor
  * resolved to its concrete line span. Surfaced on {@link ApplyResult} so the
@@ -165,9 +173,25 @@ export interface BlockResolverRequest {
 
 /**
  * Resolves a `replace block N:` anchor to the line span of the syntactic block
- * that begins on line N. Returns `null` when no block can be resolved
- * (unrecognized language, blank/out-of-range line, no node begins there, or the
- * resolved subtree has a syntax error). Pure seam: the hashline core declares
- * the contract; the host injects a tree-sitter-backed implementation.
+ * that begins on line N. Returns a diagnostic failure when the host can explain
+ * why resolution failed, or `null` for legacy no-block behavior. Pure seam: the
+ * hashline core declares the contract; the host injects a tree-sitter-backed
+ * implementation.
  */
-export type BlockResolver = (request: BlockResolverRequest) => BlockSpan | null;
+export type BlockResolver = (request: BlockResolverRequest) => BlockResolverResult;
+
+export interface SyntaxValidationRequest {
+	/** Target file path (used to infer language by extension). */
+	path: string;
+	/** Full LF-normalized file text to parse. */
+	text: string;
+}
+
+export type SyntaxValidationResult =
+	| { kind: "valid"; errorCount: 0 }
+	| { kind: "invalid"; errorCount: number }
+	| { kind: "unsupported_language" }
+	| { kind: "parser_unavailable" };
+
+/** Parses full file text and reports whether tree-sitter found syntax errors. */
+export type SyntaxValidator = (request: SyntaxValidationRequest) => SyntaxValidationResult;

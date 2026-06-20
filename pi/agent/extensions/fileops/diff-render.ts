@@ -1,8 +1,8 @@
 import { highlightCode, keyHint } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { processPatch } from "@pierre/diffs";
 import { diffChars } from "diff";
-import { clampAnsiLine, paintAnsiBackgroundRow, sgrResetsBackground } from "../shared/tui";
+import { clampAnsiLine, paintAnsiBackgroundRow, sgrResetsBackground, truncateToWidthCompat } from "../shared/tui";
 import { columnCountForWidth, columnWidthFor, renderColumns } from "./columns.ts";
 export type RenderTheme = {
 	fg(role: string, text: string): string;
@@ -427,7 +427,7 @@ function paintDiffRow(
 ): string {
 	const painted = paintAnsiBackgroundRow(line, width, backgroundAnsi);
 	if (backgroundAnsi) return painted;
-	const padded = truncateToWidth(line, width, "", true);
+	const padded = truncateToWidthCompat(line, width, "", true);
 	return theme.bg ? theme.bg(backgroundRole, padded) : padded;
 }
 
@@ -465,10 +465,10 @@ function diffWrapRows(width: number): number {
 function wrapDiffContent(content: string, width: number, maxRows: number): string[] {
 	if (width <= 0) return [""];
 	const wrapped = content.length === 0 ? [""] : wrapTextWithAnsi(content, width);
-	if (wrapped.length <= maxRows) return wrapped.map((line) => truncateToWidth(line, width, "", true));
+	if (wrapped.length <= maxRows) return wrapped.map((line) => truncateToWidthCompat(line, width, "", true));
 	return wrapped
 		.slice(0, maxRows)
-		.map((line, index) => truncateToWidth(line, width, index === maxRows - 1 ? "…" : "", true));
+		.map((line, index) => truncateToWidthCompat(line, width, index === maxRows - 1 ? "…" : "", true));
 }
 
 function diffContentForRow(row: DiffRenderRow): string {
@@ -639,14 +639,15 @@ function renderDiffRows(
 }
 
 export class EditDiffView {
-	private renderedCache?: { width: number; expanded: boolean; lines: string[] };
+	private renderedCache?: { width: number; expanded: boolean; visible: boolean; lines: string[] };
 
 	constructor(
 		private readonly diff: string,
 		private readonly rows: DiffRenderRow[] | undefined,
-		private readonly expanded: boolean,
+		private readonly expanded: boolean | (() => boolean),
 		private readonly theme: RenderTheme,
 		private readonly headerRenderer: DiffSectionHeaderRenderer = defaultDiffSectionHeader,
+		private readonly shouldRender: (() => boolean) | undefined = undefined,
 	) {}
 
 	invalidate() {
@@ -654,13 +655,21 @@ export class EditDiffView {
 	}
 
 	render(width: number): string[] {
-		if (this.renderedCache?.width === width && this.renderedCache.expanded === this.expanded) {
+		const visible = this.shouldRender?.() ?? true;
+		const expanded = typeof this.expanded === "function" ? this.expanded() : this.expanded;
+		if (
+			this.renderedCache?.width === width &&
+			this.renderedCache.expanded === expanded &&
+			this.renderedCache.visible === visible
+		) {
 			return this.renderedCache.lines;
 		}
-		const lines = renderDiffRows(this.diff, this.rows, this.theme, width, this.expanded, this.headerRenderer).map(
-			(line) => clampRenderedLine(line, width),
-		);
-		this.renderedCache = { width, expanded: this.expanded, lines };
+		const lines = visible
+			? renderDiffRows(this.diff, this.rows, this.theme, width, expanded, this.headerRenderer).map((line) =>
+					clampRenderedLine(line, width),
+				)
+			: [];
+		this.renderedCache = { width, expanded, visible, lines };
 		return lines;
 	}
 }

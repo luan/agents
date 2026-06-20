@@ -14,12 +14,12 @@
  * The hashline {@link BlockResolver} contract is synchronous, but
  * `Language.load` is async — callers must {@link preloadBlockLanguages} for
  * the paths they are about to resolve so the sync resolver hits a warm cache.
- * Load failures are cached as `null` so a missing wasm degrades to
- * "unresolvable" instead of crashing the extension.
+ * Load failures are cached as `null` so the resolver and syntax validator
+ * return parser-unavailable diagnostics instead of crashing the extension.
  */
 import { createRequire } from "node:module";
 import { Language, type Node, Parser } from "web-tree-sitter";
-import type { BlockResolver, BlockSpan } from "./hashline/types.ts";
+import type { BlockResolver, BlockResolverResult, SyntaxValidationResult, SyntaxValidator } from "./hashline/types.ts";
 
 const require = createRequire(import.meta.url);
 
@@ -46,7 +46,7 @@ export interface LineSpan {
 	endLine: number;
 }
 
-const resolutionCache = new Map<string, BlockSpan | null>();
+const resolutionCache = new Map<string, BlockResolverResult>();
 const RESOLUTION_CACHE_MAX = 512;
 
 const loadedLanguages = new Map<string, Language | null>();
@@ -120,7 +120,7 @@ function cacheKey(path: string, text: string, line: number): string {
 	return `${hashText(text)}:${text.length}:${line}:${path}`;
 }
 
-function rememberResolution(key: string, value: BlockSpan | null): BlockSpan | null {
+function rememberResolution(key: string, value: BlockResolverResult): BlockResolverResult {
 	if (resolutionCache.size >= RESOLUTION_CACHE_MAX) {
 		const oldest = resolutionCache.keys().next().value;
 		if (oldest !== undefined) resolutionCache.delete(oldest);
@@ -138,32 +138,65 @@ function parserForPath(path: string): Parser | null {
 	return sharedParser;
 }
 
-export const treeSitterBlockResolver: BlockResolver = ({ path, text, line }): BlockSpan | null => {
-	if (line < 1 || text.length === 0) return null;
+function countSyntaxErrors(root: Node): number {
+	if (!root.hasError) return 0;
+	let count = 0;
+	const stack: Node[] = [root];
+	while (stack.length > 0) {
+		const node = stack.pop();
+		if (!node) continue;
+		if (!node.hasError && !node.isError && !node.isMissing) continue;
+		if (node.isError || node.isMissing) count++;
+		for (let index = 0; index < node.childCount; index++) {
+			const child = node.child(index);
+			if (child) stack.push(child);
+		}
+	}
+	return count || 1;
+}
+
+export const treeSitterSyntaxValidator: SyntaxValidator = ({ path, text }): SyntaxValidationResult => {
+	if (wasmForPath(path) === undefined) return { kind: "unsupported_language" };
+	const parser = parserForPath(path);
+	if (parser === null) return { kind: "parser_unavailable" };
+	const tree = parser.parse(text);
+	if (!tree) return { kind: "parser_unavailable" };
+	try {
+		const errorCount = countSyntaxErrors(tree.rootNode);
+		return errorCount === 0 ? { kind: "valid", errorCount: 0 } : { kind: "invalid", errorCount };
+	} finally {
+		tree.delete();
+	}
+};
+
+export const treeSitterBlockResolver: BlockResolver = ({ path, text, line }): BlockResolverResult => {
+	if (line < 1 || text.length === 0) return { reason: "no_block" };
 	const key = cacheKey(path, text, line);
 	const cached = resolutionCache.get(key);
 	if (cached !== undefined) return cached;
 
 	const row = line - 1;
 	const column = firstContentColumn(text, row);
-	if (column === null) return rememberResolution(key, null);
+	if (column === null) return rememberResolution(key, { reason: "no_block" });
+	if (wasmForPath(path) === undefined) return rememberResolution(key, { reason: "unsupported_language" });
 	const parser = parserForPath(path);
-	if (parser === null) return rememberResolution(key, null);
+	if (parser === null) return rememberResolution(key, { reason: "parser_unavailable" });
 
 	const tree = parser.parse(text);
-	if (!tree) return rememberResolution(key, null);
+	if (!tree) return rememberResolution(key, { reason: "parser_unavailable" });
 	try {
 		const root = tree.rootNode;
+		if (root.hasError) return rememberResolution(key, { reason: "syntax_error" });
 		const leaf = root.namedDescendantForPosition({ row, column });
-		if (!leaf) return rememberResolution(key, null);
-		if (leaf.startPosition.row !== row) return rememberResolution(key, null);
+		if (!leaf) return rememberResolution(key, { reason: "no_block" });
+		if (leaf.startPosition.row !== row) return rememberResolution(key, { reason: "no_block" });
 		let node = leaf;
 		for (let parent = node.parent; parent !== null; parent = node.parent) {
 			if (parent.id === root.id) break;
 			if (parent.startPosition.row !== row) break;
 			node = parent;
 		}
-		if (node.hasError) return rememberResolution(key, null);
+		if (node.hasError) return rememberResolution(key, { reason: "syntax_error" });
 		return rememberResolution(key, { start: node.startPosition.row + 1, end: nodeContentEndLine(node) });
 	} finally {
 		tree.delete();

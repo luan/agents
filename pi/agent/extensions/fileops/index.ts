@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync } from "node:fs";
-import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, open, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -9,7 +9,9 @@ import {
 	createWriteToolDefinition,
 	type EditToolDetails,
 	type ExtensionAPI,
+	type ExtensionContext,
 	keyHint,
+	type ToolRenderContext,
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
 import { Box, type Text } from "@earendil-works/pi-tui";
@@ -17,8 +19,9 @@ import { createTwoFilesPatch } from "diff";
 import { Type } from "typebox";
 import { runCommand as runExternalCommand } from "../shared/command-runner.ts";
 import { EmptyComponent, runningFrame, shineText, textComponent } from "../shared/tui";
+import { registerAstTools } from "./ast-tools.ts";
 import { buildLineEntriesWithBlockContext } from "./block-context.ts";
-import { preloadBlockLanguages, treeSitterBlockResolver } from "./block-resolver.ts";
+import { preloadBlockLanguages, treeSitterBlockResolver, treeSitterSyntaxValidator } from "./block-resolver.ts";
 import { columnCountForWidth, renderColumns } from "./columns.ts";
 import {
 	buildHighlightedDiffRows,
@@ -32,7 +35,8 @@ import {
 	type RenderTheme,
 } from "./diff-render.ts";
 import {
-	HASHLINE_SNAPSHOTS,
+	FALLBACK_HASHLINE_SNAPSHOT_SESSION_ID,
+	hashlineSnapshotStoreForSession,
 	recordHashlineFileSnapshot,
 	recordHashlineSnapshot,
 	SNAPSHOT_MAX_BYTES,
@@ -43,6 +47,7 @@ import { Filesystem, NotFoundError, type WriteResult } from "./hashline/fs.ts";
 import { Patch } from "./hashline/input.ts";
 import { Patcher } from "./hashline/patcher.ts";
 import { stripHashlinePrefixes } from "./hashline/prefixes.ts";
+import type { InMemorySnapshotStore } from "./hashline/snapshots.ts";
 import type { BlockResolution } from "./hashline/types.ts";
 
 const FILEOPS_TOOL_SEARCH_PATHS = [
@@ -141,6 +146,27 @@ async function maybeBlockLargeWholeFileRead(
 	const info = await stat(absolute);
 	if (!info.isFile() || info.size <= CONTEXT_PROTECTION_READ_BYTES) return undefined;
 	return largeReadGuidance(display, info.size);
+}
+
+async function detectSupportedReadImageMimeType(absolute: string): Promise<string | undefined> {
+	const file = await open(absolute, "r");
+	try {
+		const buffer = Buffer.alloc(12);
+		const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+		if (
+			bytesRead >= 8 &&
+			buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+		) {
+			return "image/png";
+		}
+		if (bytesRead >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return "image/jpeg";
+		const header = buffer.subarray(0, Math.min(bytesRead, 12)).toString("ascii");
+		if (header.startsWith("GIF87a") || header.startsWith("GIF89a")) return "image/gif";
+		if (bytesRead >= 12 && header.startsWith("RIFF") && header.slice(8, 12) === "WEBP") return "image/webp";
+		return undefined;
+	} finally {
+		await file.close();
+	}
 }
 
 type ToolTextResult = {
@@ -389,17 +415,33 @@ function renderText(text: string): Text {
 	return textComponent(text);
 }
 
+class DynamicTextView {
+	constructor(
+		private readonly text: () => string,
+		private readonly shouldRender: () => boolean = () => true,
+	) {}
+
+	invalidate() {}
+
+	render(width: number): string[] {
+		return this.shouldRender() ? textComponent(this.text()).render(width) : [];
+	}
+}
+const EMPTY_TOOL_CALL_IDS = new Set<string>();
+
 const EMPTY_VIEW = new EmptyComponent();
 
 class BlockTextView {
 	constructor(
 		private readonly text: string | ((width: number) => string),
 		private readonly theme: RenderTheme,
+		private readonly shouldRender: () => boolean = () => true,
 	) {}
 
 	invalidate() {}
 
 	render(width: number): string[] {
+		if (!this.shouldRender()) return [];
 		const box = new Box(0, 0, this.theme.bg ? (line) => this.theme.bg?.("toolPendingBg", line) ?? line : undefined);
 		box.addChild(textComponent(typeof this.text === "function" ? this.text(width) : this.text));
 		return box.render(width);
@@ -691,18 +733,26 @@ function renderSearchResult(
 	options: { expanded?: boolean; isPartial?: boolean },
 	theme: RenderTheme,
 	args?: { pattern?: unknown; path?: unknown },
+	context?: Partial<ToolRenderContext<Record<string, unknown>, unknown>>,
+	latestTurnToolCallIds: ReadonlySet<string> = EMPTY_TOOL_CALL_IDS,
+	getLatestTurnIndex: () => number | undefined = () => undefined,
 ): Text | BlockTextView | EmptyComponent {
 	if (options.isPartial) return renderText(theme.fg("warning", "Searching..."));
+	const shouldRender = () =>
+		shouldRenderLatestToolResult(result, context, latestTurnToolCallIds, getLatestTurnIndex());
+	if (!shouldRender()) return EMPTY_VIEW;
 	const text = firstTextContent(result).trim();
 	const pattern = typeof args?.pattern === "string" ? args.pattern : "";
 	const noMatchPath = typeof args?.path === "string" ? splitReadPathSelector(args.path).path : ".";
 	if (!text.startsWith("["))
-		return renderText(
-			renderStatusHeader(
-				"Search:",
-				theme,
-				` ${theme.fg("warning", pattern)} ${theme.fg("dim", `${text} · in ${shortenDisplayPath(noMatchPath)}`)}`,
-			),
+		return new DynamicTextView(
+			() =>
+				renderStatusHeader(
+					"Search:",
+					theme,
+					` ${theme.fg("warning", pattern)} ${theme.fg("dim", `${text} · in ${shortenDisplayPath(noMatchPath)}`)}`,
+				),
+			shouldRender,
 		);
 	const sections = parseHashlineSections(text);
 	const matchCount = sections.reduce(
@@ -719,17 +769,21 @@ function renderSearchResult(
 	const highlightedSections = Array.isArray(result.details?.highlightedSections)
 		? (result.details.highlightedSections as HighlightedSection[])
 		: [];
-	return new BlockTextView((width) => {
-		const body = renderSearchSections(
-			sections,
-			highlightedSections,
-			theme,
-			options.expanded ?? false,
-			pattern,
-			width,
-		);
-		return `${header}${body ? `\n${body}` : ""}`;
-	}, theme);
+	return new BlockTextView(
+		(width) => {
+			const body = renderSearchSections(
+				sections,
+				highlightedSections,
+				theme,
+				options.expanded ?? false,
+				pattern,
+				width,
+			);
+			return `${header}${body ? `\n${body}` : ""}`;
+		},
+		theme,
+		shouldRender,
+	);
 }
 
 function renderFindCall(
@@ -744,11 +798,17 @@ function renderFindResult(
 	options: { expanded?: boolean; isPartial?: boolean },
 	theme: RenderTheme,
 	args?: { paths?: string[]; pattern?: unknown; path?: unknown },
-): Text | BlockTextView {
+	context?: Partial<ToolRenderContext<Record<string, unknown>, unknown>>,
+	latestTurnToolCallIds: ReadonlySet<string> = EMPTY_TOOL_CALL_IDS,
+	getLatestTurnIndex: () => number | undefined = () => undefined,
+): Text | BlockTextView | EmptyComponent {
 	if (options.isPartial) return renderText(theme.fg("warning", "Finding files..."));
+	const shouldRender = () =>
+		shouldRenderLatestToolResult(result, context, latestTurnToolCallIds, getLatestTurnIndex());
+	if (!shouldRender()) return EMPTY_VIEW;
 	const output = firstTextContent(result).trim();
 	if (/not found on PATH|failed|error/i.test(output.split("\n")[0] ?? ""))
-		return renderText(theme.fg("error", output));
+		return new DynamicTextView(() => theme.fg("error", output), shouldRender);
 	const files = toolTextLines(output).filter((line) => line && !line.startsWith("No files"));
 	const target = Array.isArray(args?.paths) ? args.paths.join(", ") : String(args?.pattern ?? "");
 	const where = Array.isArray(args?.paths) ? dirname(args.paths[0] ?? ".") : String(args?.path ?? ".");
@@ -757,19 +817,23 @@ function renderFindResult(
 		theme,
 		` ${theme.fg("warning", shortenDisplayPath(target))} ${theme.fg("dim", `${files.length} file${files.length === 1 ? "" : "s"} · in ${shortenDisplayPath(where)}`)}`,
 	);
-	return new BlockTextView((width) => {
-		const columnCount = columnCountForWidth(width, files.length);
-		const shown = files.slice(0, options.expanded ? files.length : 20 * columnCount);
-		const blocks = shown.map((file, index) => [
-			`${theme.fg("dim", `${index === shown.length - 1 ? treeLast(theme) : treeBranch(theme)} ${fileIcon(theme, file)} `)}${theme.fg("toolOutput", shortenDisplayPath(file))}`,
-		]);
-		const body = renderColumns(blocks, width).join("\n");
-		const more =
-			files.length > shown.length
-				? `\n${theme.fg("muted", `... (${files.length - shown.length} more files, `)}${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`
-				: "";
-		return `${header}${body ? `\n${body}${more}` : ""}`;
-	}, theme);
+	return new BlockTextView(
+		(width) => {
+			const columnCount = columnCountForWidth(width, files.length);
+			const shown = files.slice(0, options.expanded ? files.length : 20 * columnCount);
+			const blocks = shown.map((file, index) => [
+				`${theme.fg("dim", `${index === shown.length - 1 ? treeLast(theme) : treeBranch(theme)} ${fileIcon(theme, file)} `)}${theme.fg("toolOutput", shortenDisplayPath(file))}`,
+			]);
+			const body = renderColumns(blocks, width).join("\n");
+			const more =
+				files.length > shown.length
+					? `\n${theme.fg("muted", `... (${files.length - shown.length} more files, `)}${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`
+					: "";
+			return `${header}${body ? `\n${body}${more}` : ""}`;
+		},
+		theme,
+		shouldRender,
+	);
 }
 function renderWriteCall(
 	params: { path?: string; content?: string },
@@ -856,6 +920,9 @@ function renderEditResult(
 	result: ToolTextResult,
 	options: { expanded?: boolean; isPartial?: boolean },
 	theme: RenderTheme,
+	context: Partial<ToolRenderContext<Record<string, unknown>, EditInput>> | undefined,
+	latestTurnEditToolCallIds: ReadonlySet<string>,
+	getLatestTurnIndex: () => number | undefined,
 ) {
 	if (options.isPartial) return renderText(theme.fg("warning", "Editing..."));
 	const text = firstTextContent(result);
@@ -864,9 +931,12 @@ function renderEditResult(
 	const firstLine = text.split("\n")[0] ?? "";
 	if (!firstLine.startsWith("[") && /rejected|error/i.test(firstLine))
 		return renderText(`\n${theme.fg("error", text)}`);
+	const isLatestTurnEdit = () =>
+		shouldRenderLatestToolResult(result, context, latestTurnEditToolCallIds, getLatestTurnIndex());
+	const expanded = () => options.expanded === true;
 	const diff = typeof result.details?.diff === "string" ? result.details.diff : "";
 	// No diff means a no-op apply: keep its diagnostic visible even collapsed.
-	if (!diff) return renderText(theme.fg("toolOutput", options.expanded ? text : firstLine));
+	if (!diff) return new DynamicTextView(() => theme.fg("toolOutput", expanded() ? text : firstLine), isLatestTurnEdit);
 	const rows = Array.isArray(result.details?.highlightedDiffRows)
 		? (result.details.highlightedDiffRows as DiffRenderRow[])
 		: undefined;
@@ -885,7 +955,28 @@ function renderEditResult(
 			` ${renderEditHeaderDisplay(target, resultHeaders.get(target), line, theme)}`,
 		);
 	};
-	return new EditDiffView(diff, rows, options.expanded ?? false, theme, renderHashlineEditSectionHeader);
+	return new EditDiffView(diff, rows, expanded, theme, renderHashlineEditSectionHeader, isLatestTurnEdit);
+}
+
+function editResultTurnIndex(result: ToolTextResult): number | undefined {
+	const value = result.details?.editTurnIndex;
+	return typeof value === "number" ? value : undefined;
+}
+
+function shouldRenderLatestToolResult(
+	result: ToolTextResult,
+	context: Partial<ToolRenderContext<Record<string, unknown>, unknown>> | undefined,
+	latestTurnToolCallIds: ReadonlySet<string>,
+	latestTurnIndex: number | undefined,
+): boolean {
+	if (context?.executionStarted === false) {
+		return typeof context.toolCallId === "string" && latestTurnToolCallIds.has(context.toolCallId);
+	}
+	if (context === undefined || context.executionStarted === undefined) return true;
+	if (typeof context.toolCallId === "string" && latestTurnToolCallIds.has(context.toolCallId)) return true;
+	if (latestTurnIndex === undefined) return context.executionStarted === true;
+	const turnIndex = editResultTurnIndex(result);
+	return turnIndex !== undefined && turnIndex === latestTurnIndex;
 }
 
 function splitGlobSearchRoot(cwd: string, pattern: string): { root: string; glob: string } {
@@ -1270,7 +1361,7 @@ function editPreviewContextLines(before: string, after: string, warnings: readon
 	return warnings.length > 0 || hasStructuralDelimiterChange(before, after) ? 4 : 2;
 }
 
-async function executeHashline(cwd: string, input: string, config: EditConfig) {
+async function executeHashline(cwd: string, input: string, config: EditConfig, snapshots: InMemorySnapshotStore) {
 	const patch = Patch.parse(input, { cwd });
 	if (patch.sections.length === 0) throw new Error("hashline mode requires at least one [PATH#TAG] section.");
 	const fs = new CwdHashlineFilesystem(cwd);
@@ -1279,8 +1370,9 @@ async function executeHashline(cwd: string, input: string, config: EditConfig) {
 	await preloadBlockLanguages(patch.sections.map((section) => section.path));
 	const patcher = new Patcher({
 		fs,
-		snapshots: HASHLINE_SNAPSHOTS,
+		snapshots,
 		blockResolver: treeSitterBlockResolver,
+		syntaxValidator: treeSitterSyntaxValidator,
 		applyOptions: { autoDropPureInsertDuplicates: config.autoDropPureInsertDuplicates },
 	});
 	const targets = patch.sections.map((section) => fs.canonicalPath(section.path));
@@ -1328,7 +1420,13 @@ async function executeHashline(cwd: string, input: string, config: EditConfig) {
 	};
 }
 
-async function executeByMode(cwd: string, params: EditInput, config: EditConfig, signal?: AbortSignal) {
+async function executeByMode(
+	cwd: string,
+	params: EditInput,
+	config: EditConfig,
+	snapshots: InMemorySnapshotStore,
+	signal?: AbortSignal,
+) {
 	switch (config.mode) {
 		case "apply_patch":
 			if (typeof params.input !== "string") throw new Error("edit apply_patch mode requires input.");
@@ -1345,7 +1443,7 @@ async function executeByMode(cwd: string, params: EditInput, config: EditConfig,
 			);
 		case "hashline":
 			if (typeof params.input !== "string") throw new Error("edit hashline mode requires input.");
-			return executeHashline(cwd, params.input, config);
+			return executeHashline(cwd, params.input, config, snapshots);
 		case "replace":
 			return executeReplace(
 				cwd,
@@ -1356,7 +1454,21 @@ async function executeByMode(cwd: string, params: EditInput, config: EditConfig,
 	}
 }
 
-function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditConfig) {
+function withEditTurnIndex(result: ToolTextResult, turnIndex: number | undefined): ToolTextResult {
+	if (turnIndex === undefined) return result;
+	return { ...result, details: { ...(result.details ?? {}), editTurnIndex: turnIndex } };
+}
+
+function registerHashlineWorkflowTools(
+	pi: ExtensionAPI,
+	getConfig: () => EditConfig,
+	snapshotsForContext: (ctx: Pick<ExtensionContext, "sessionManager"> | undefined) => InMemorySnapshotStore,
+	renderTracking: {
+		latestTurnToolCallIds: Set<string>;
+		markToolCall: (toolCallId: string) => void;
+		getLatestTurnIndex: () => number | undefined;
+	},
+) {
 	const cwd = process.cwd();
 	const baseRead = createReadToolDefinition(cwd);
 	const baseFind = createFindToolDefinition(cwd);
@@ -1366,7 +1478,7 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 		...baseRead,
 		name: "read",
 		description:
-			"Read a text file. In hashline edit mode, returns [PATH#TAG] plus LINE:TEXT rows that can be targeted by hashline edits.",
+			"Read the contents of a file. Supports text files and images (jpg, png, gif, webp). In hashline edit mode, text reads return [PATH#TAG] plus LINE:TEXT rows that can be targeted by hashline edits.",
 		parameters: readToolSchema,
 		renderShell: "self",
 		renderCall(params, theme) {
@@ -1390,6 +1502,15 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 				...selector.ranges,
 				...(params.ranges ?? []).flatMap((rangeList) => rangeList.split(",").map(parseLineRange)),
 			];
+			const imageMimeType = await detectSupportedReadImageMimeType(absolute);
+			if (imageMimeType)
+				return baseRead.execute(
+					toolCallId,
+					{ path: absolute, offset: params.offset, limit: params.limit },
+					signal,
+					onUpdate,
+					ctx,
+				);
 			const largeReadBlock = await maybeBlockLargeWholeFileRead(
 				displayPath(callCwd, absolute),
 				absolute,
@@ -1415,10 +1536,15 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 					ranges.map((range) => ({ startLine: range.start, endLine: range.end })),
 					absolute,
 				);
-				const observedLines = displayEntries.flatMap((entry) => (entry.kind === "line" ? [entry.lineNumber] : []));
+				const observedLines = {
+					explicit: entries.map(([lineNumber]) => lineNumber),
+					synthetic: displayEntries.flatMap((entry) =>
+						entry.kind === "line" && entry.context ? [entry.lineNumber] : [],
+					),
+				};
 				const tag =
 					Buffer.byteLength(text, "utf8") <= SNAPSHOT_MAX_BYTES
-						? recordHashlineSnapshot(absolute, text, observedLines)
+						? recordHashlineSnapshot(snapshotsForContext(ctx), absolute, text, observedLines)
 						: undefined;
 				const outputRows = displayEntries.map((entry) =>
 					entry.kind === "ellipsis" ? "…" : `${entry.lineNumber}:${entry.text}`,
@@ -1457,10 +1583,15 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 				: buildLineEntriesWithBlockContext(allLines, [{ startLine, endLine: endExclusive }], absolute);
 			const observedLines = wholeFileSelected
 				? "all"
-				: displayEntries.flatMap((entry) => (entry.kind === "line" ? [entry.lineNumber] : []));
+				: {
+						explicit: selected.map((_, index) => startLine + index),
+						synthetic: displayEntries.flatMap((entry) =>
+							entry.kind === "line" && entry.context ? [entry.lineNumber] : [],
+						),
+					};
 			const tag =
 				Buffer.byteLength(text, "utf8") <= SNAPSHOT_MAX_BYTES
-					? recordHashlineSnapshot(absolute, text, observedLines)
+					? recordHashlineSnapshot(snapshotsForContext(ctx), absolute, text, observedLines)
 					: undefined;
 			let output = `${tag ? `${formatHashlineHeader(displayPath(callCwd, absolute), tag)}\n` : ""}${displayEntries
 				.map((entry) => (entry.kind === "ellipsis" ? "…" : `${entry.lineNumber}:${entry.text}`))
@@ -1499,9 +1630,18 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 			return renderSearchCall(params, theme);
 		},
 		renderResult(result, options, theme, context) {
-			return renderSearchResult(result as ToolTextResult, options, theme, context.args as any);
+			return renderSearchResult(
+				result as ToolTextResult,
+				options,
+				theme,
+				context.args as any,
+				context,
+				renderTracking.latestTurnToolCallIds,
+				renderTracking.getLatestTurnIndex,
+			);
 		},
-		async execute(_toolCallId, params: any, signal, _onUpdate, ctx) {
+		async execute(toolCallId, params: any, signal, _onUpdate, ctx) {
+			renderTracking.markToolCall(toolCallId);
 			const callCwd = ctx?.cwd ?? cwd;
 			const selector = params.path ? splitReadPathSelector(String(params.path)) : { path: undefined, ranges: [] };
 			const explicitRanges = [
@@ -1564,10 +1704,12 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 					absolute,
 					{ lineText: (lineNumber, sourceText) => entryText.get(lineNumber) ?? sourceText },
 				);
-				const tag = await recordHashlineFileSnapshot(
-					absolute,
-					displayEntries.flatMap((entry) => (entry.kind === "line" ? [entry.lineNumber] : [])),
-				);
+				const tag = await recordHashlineFileSnapshot(snapshotsForContext(ctx), absolute, {
+					explicit: cappedOrdered.map(([lineNumber]) => lineNumber),
+					synthetic: displayEntries.flatMap((entry) =>
+						entry.kind === "line" && entry.context ? [entry.lineNumber] : [],
+					),
+				});
 				const visibleOrdered = displayEntries.filter((entry) => entry.kind === "line").slice(0, 80);
 				const highlightedRows = (
 					await highlightCodeRows(
@@ -1615,9 +1757,18 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 			return renderFindCall(params, theme);
 		},
 		renderResult(result, options, theme, context) {
-			return renderFindResult(result as ToolTextResult, options, theme, context.args as any);
+			return renderFindResult(
+				result as ToolTextResult,
+				options,
+				theme,
+				context.args as any,
+				context,
+				renderTracking.latestTurnToolCallIds,
+				renderTracking.getLatestTurnIndex,
+			);
 		},
 		async execute(toolCallId, params: any, signal, onUpdate, ctx) {
+			renderTracking.markToolCall(toolCallId);
 			if (!Array.isArray(params.paths)) return baseFind.execute(toolCallId, params, signal, onUpdate, ctx);
 			const callCwd = ctx?.cwd ?? cwd;
 			const limit = Math.max(1, Math.min(1000, Number(params.limit ?? DEFAULT_FIND_RESULT_LIMIT)));
@@ -1689,7 +1840,7 @@ function registerHashlineWorkflowTools(pi: ExtensionAPI, getConfig: () => EditCo
 			await mkdir(dirname(absolute), { recursive: true });
 			await writeFile(absolute, stripped.text, "utf-8");
 			if (params.makeExecutable || stripped.text.startsWith("#!")) await chmod(absolute, 0o755);
-			HASHLINE_SNAPSHOTS.invalidate(absolute);
+			snapshotsForContext(ctx).invalidate(absolute);
 			const result: ToolTextResult = {
 				content: [{ type: "text", text: `Wrote ${params.path}` }],
 				details: {},
@@ -1715,9 +1866,68 @@ function formatConfig(config: EditConfig): string {
 	].join("\n");
 }
 
+function sessionIdFromContext(ctx: Pick<ExtensionContext, "sessionManager"> | undefined): string | undefined {
+	const sessionId = ctx?.sessionManager?.getSessionId?.();
+	return typeof sessionId === "string" && sessionId.length > 0 ? sessionId : undefined;
+}
+
 export default function fileopsExtension(pi: ExtensionAPI) {
 	let config = loadConfig();
-
+	const fallbackSnapshots = hashlineSnapshotStoreForSession(FALLBACK_HASHLINE_SNAPSHOT_SESSION_ID);
+	const snapshotsForContext = (ctx: Pick<ExtensionContext, "sessionManager"> | undefined): InMemorySnapshotStore => {
+		const sessionId = sessionIdFromContext(ctx);
+		return sessionId ? hashlineSnapshotStoreForSession(sessionId) : fallbackSnapshots;
+	};
+	let currentTurnIndex: number | undefined;
+	let latestVisibleTurnIndex: number | undefined;
+	const latestTurnEditToolCallIds = new Set<string>();
+	const isFileopsResultTool = (toolName: unknown) =>
+		toolName === "edit" || toolName === "search" || toolName === "find";
+	const rebuildLatestVisibleFileopsTurn = (ctx: ExtensionContext | undefined) => {
+		latestTurnEditToolCallIds.clear();
+		latestVisibleTurnIndex = undefined;
+		for (const entry of ctx?.sessionManager?.getBranch?.() ?? []) {
+			if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+			const ids = entry.message.content
+				.filter((block: any) => block?.type === "toolCall" && isFileopsResultTool(block.name))
+				.map((block: any) => block.id)
+				.filter((id: unknown): id is string => typeof id === "string" && id.length > 0);
+			if (ids.length === 0) continue;
+			latestTurnEditToolCallIds.clear();
+			for (const id of ids) latestTurnEditToolCallIds.add(id);
+		}
+	};
+	const markLatestFileopsToolCall = (toolCallId: string) => {
+		if (currentTurnIndex !== undefined && latestVisibleTurnIndex !== currentTurnIndex) {
+			latestTurnEditToolCallIds.clear();
+			latestVisibleTurnIndex = currentTurnIndex;
+		}
+		latestTurnEditToolCallIds.add(toolCallId);
+	};
+	const resetTurnTracking = () => {
+		currentTurnIndex = undefined;
+		latestVisibleTurnIndex = undefined;
+		latestTurnEditToolCallIds.clear();
+	};
+	const on = (pi as Partial<ExtensionAPI>).on;
+	if (typeof on === "function") {
+		on.call(pi, "session_start", (_event, ctx) => {
+			resetTurnTracking();
+			rebuildLatestVisibleFileopsTurn(ctx);
+		});
+		on.call(pi, "session_tree", (_event, ctx) => {
+			resetTurnTracking();
+			rebuildLatestVisibleFileopsTurn(ctx);
+		});
+		on.call(pi, "turn_start", (event) => {
+			currentTurnIndex = event.turnIndex;
+		});
+		on.call(pi, "tool_execution_start", (event) => {
+			if (isFileopsResultTool(event.toolName)) {
+				markLatestFileopsToolCall(event.toolCallId);
+			}
+		});
+	}
 	const registerEditTool = () => {
 		const current = config;
 		pi.registerTool({
@@ -1735,17 +1945,33 @@ export default function fileopsExtension(pi: ExtensionAPI) {
 				const summary = summarizeEditInput((params as { input?: unknown }).input, current.mode);
 				return renderEditCall(summary, theme, context as any);
 			},
-			renderResult(result, options, theme) {
-				return renderEditResult(result as ToolTextResult, options, theme);
+			renderResult(result, options, theme, context) {
+				return renderEditResult(
+					result as ToolTextResult,
+					options,
+					theme,
+					context,
+					latestTurnEditToolCallIds,
+					() => currentTurnIndex,
+				);
 			},
-			async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-				return executeByMode(ctx.cwd, params as EditInput, current, signal);
+			async execute(toolCallId, params, signal, _onUpdate, ctx) {
+				markLatestFileopsToolCall(toolCallId);
+				return withEditTurnIndex(
+					await executeByMode(ctx.cwd, params as EditInput, current, snapshotsForContext(ctx), signal),
+					currentTurnIndex,
+				);
 			},
 		});
 	};
 
 	registerEditTool();
-	registerHashlineWorkflowTools(pi, () => config);
+	registerHashlineWorkflowTools(pi, () => config, snapshotsForContext, {
+		latestTurnToolCallIds: latestTurnEditToolCallIds,
+		markToolCall: markLatestFileopsToolCall,
+		getLatestTurnIndex: () => currentTurnIndex,
+	});
+	registerAstTools(pi, snapshotsForContext);
 
 	pi.registerCommand("edit-config", {
 		description: "Configure edit mode: apply_patch, patch, hashline, or replace",

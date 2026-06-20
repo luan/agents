@@ -33,7 +33,7 @@ import { MismatchError } from "./mismatch";
 import { detectLineEnding, type LineEnding, normalizeToLF, restoreLineEndings, stripBom } from "./normalize";
 import { Recovery, type RecoveryResult } from "./recovery";
 import type { Snapshot, SnapshotStore } from "./snapshots";
-import type { ApplyOptions, ApplyResult, BlockResolution, BlockResolver, Edit } from "./types";
+import type { ApplyOptions, ApplyResult, BlockResolution, BlockResolver, Edit, SyntaxValidator } from "./types";
 
 export interface PatcherOptions {
 	/** Storage backend used for all reads and writes. */
@@ -48,6 +48,12 @@ export interface PatcherOptions {
 	blockResolver?: BlockResolver;
 	/** OMP-compatible apply-time behavior knobs. */
 	applyOptions?: ApplyOptions;
+	/** Optional parser-backed syntax gate. When present, enabled by default. */
+	syntaxValidator?: SyntaxValidator;
+	/** Disable syntax validation for callers that need legacy apply-only behavior. */
+	validateSyntax?: boolean;
+	/** Permit edits anchored only to synthetic block-context lines. Defaults false. */
+	allowSyntheticContextEdits?: boolean;
 }
 
 /** Per-section result returned by {@link Patcher.apply} / {@link Patcher.commit}. */
@@ -146,6 +152,22 @@ function mergeWarnings(...sources: ReadonlyArray<readonly string[] | undefined>)
 	return out;
 }
 
+function syntaxErrorCount(result: ReturnType<SyntaxValidator>): number | null {
+	if (result.kind === "unsupported_language" || result.kind === "parser_unavailable") return null;
+	return result.errorCount;
+}
+
+function assertNoNewSyntaxErrors(path: string, before: string, after: string, validator: SyntaxValidator): void {
+	const beforeCount = syntaxErrorCount(validator({ path, text: before }));
+	const afterCount = syntaxErrorCount(validator({ path, text: after }));
+	if (beforeCount === null || afterCount === null) return;
+	if (afterCount <= beforeCount) return;
+	const gained = afterCount - beforeCount;
+	throw new Error(
+		`Hashline edit rejected: ${path} would gain ${gained} tree-sitter syntax error${gained === 1 ? "" : "s"} (${beforeCount} before, ${afterCount} after). Re-read and fix the edit before writing.`,
+	);
+}
+
 function assertUniqueCanonicalPaths(prepared: readonly PreparedSection[]): void {
 	const seen = new Map<string, string>();
 	for (const entry of prepared) {
@@ -172,6 +194,9 @@ export class Patcher {
 	readonly blockResolver: BlockResolver | undefined;
 	readonly applyOptions: ApplyOptions;
 
+	readonly syntaxValidator: SyntaxValidator | undefined;
+	readonly validateSyntax: boolean;
+	readonly allowSyntheticContextEdits: boolean;
 	constructor(options: PatcherOptions) {
 		if (!options.snapshots) {
 			throw new Error("Hashline Patcher requires a SnapshotStore; section tags are opaque store pointers.");
@@ -181,6 +206,9 @@ export class Patcher {
 		this.recovery = new Recovery(options.snapshots);
 		this.blockResolver = options.blockResolver;
 		this.applyOptions = options.applyOptions ?? {};
+		this.syntaxValidator = options.syntaxValidator;
+		this.validateSyntax = options.validateSyntax ?? true;
+		this.allowSyntheticContextEdits = options.allowSyntheticContextEdits ?? false;
 	}
 
 	/**
@@ -265,6 +293,9 @@ export class Patcher {
 			normalized,
 			edits,
 		});
+		if (this.validateSyntax && this.syntaxValidator && applyResult.text !== normalized) {
+			assertNoNewSyntaxErrors(section.path, normalized, applyResult.text, this.syntaxValidator);
+		}
 
 		return new PreparedSection(
 			section,
@@ -369,11 +400,12 @@ export class Patcher {
 		const expected = exists ? section.fileHash : undefined;
 		const snapshot = expected !== undefined ? this.snapshots.byHash(canonicalPath, expected) : null;
 		const liveMatches = snapshot !== null && snapshotProvesUnchanged(snapshot, normalized);
-		const observedLineWarning = snapshot?.unobservedAnchorWarning(section.collectAnchorLines());
+		const observedLineError = snapshot?.unobservedAnchorWarning(section.collectAnchorLines(), {
+			allowSynthetic: this.allowSyntheticContextEdits,
+		});
 		const blockWarnings: string[] = [];
-		const appendObservedWarning = (result: ApplyResult): ApplyResult => {
+		const appendBlockWarnings = (result: ApplyResult): ApplyResult => {
 			const combined = [...blockWarnings, ...(result.warnings ?? [])];
-			if (observedLineWarning) combined.unshift(observedLineWarning);
 			return combined.length > 0 ? { ...result, warnings: combined } : result;
 		};
 
@@ -403,7 +435,8 @@ export class Patcher {
 		// what the caller read, so echo them back. (A drifted file falls through
 		// to recovery below, where line numbers shift, so resolutions are dropped.)
 		if (expected === undefined || liveMatches) {
-			const result = appendObservedWarning(applyEdits(normalized, resolved, this.applyOptions));
+			if (expected !== undefined && observedLineError) throw new Error(observedLineError);
+			const result = appendBlockWarnings(applyEdits(normalized, resolved, this.applyOptions));
 			return blockResolutions.length > 0 ? { ...result, blockResolutions } : result;
 		}
 		// Head/tail-only inserts are position-stable: "start"/"end" cannot move
@@ -411,7 +444,7 @@ export class Patcher {
 		// content and warn instead of hard-failing — unlike an anchored
 		// mismatch, which cannot be safely relocated and must reject.
 		if (!hasAnchorScopedEdit(resolved)) {
-			const result = appendObservedWarning(applyEdits(normalized, resolved, this.applyOptions));
+			const result = appendBlockWarnings(applyEdits(normalized, resolved, this.applyOptions));
 			return { ...result, warnings: [HEADTAIL_DRIFT_WARNING, ...(result.warnings ?? [])] };
 		}
 		// File drifted: try to replay the edit against the version the tag
@@ -424,7 +457,7 @@ export class Patcher {
 				edits: resolved,
 				applyOptions: this.applyOptions,
 			});
-			if (recovered) return recoveryToApplyResult(appendObservedWarning(recovered));
+			if (recovered) return recoveryToApplyResult(appendBlockWarnings(recovered));
 		}
 		throw this.#mismatchError(section, canonicalPath, normalized, expected, snapshot !== null);
 	}

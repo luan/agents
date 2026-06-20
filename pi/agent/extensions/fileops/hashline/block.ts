@@ -14,22 +14,29 @@
  */
 import { STRUCTURAL_CLOSER_RE } from "./apply";
 import {
-	BLOCK_RESOLVER_UNAVAILABLE,
-	blockUnresolvedMessage,
+	blockResolverFailureMessage,
+	blockSingleLineMessage,
 	insertAfterBlockCloserLoweredWarning,
 	insertAfterBlockUnresolvedLoweredWarning,
 } from "./messages";
-import type { BlockResolution, BlockResolver, Cursor, Edit } from "./types";
+import type {
+	BlockResolution,
+	BlockResolver,
+	BlockResolverFailure,
+	BlockResolverResult,
+	BlockSpan,
+	Cursor,
+	Edit,
+} from "./types";
 
 export interface ResolveBlockEditsOptions {
 	/**
-	 * How to handle a replace/delete block edit that cannot be resolved
-	 * (missing resolver or a `null` span). `"throw"` (default) raises a
-	 * `blockUnresolvedMessage` error — used by the authoritative apply + final
-	 * preview paths. `"drop"` silently skips the edit — used by the streaming
-	 * preview, where a half-written file or transient parse error must not
-	 * throw. Unresolvable `insert after block N:` edits never reach this: they
-	 * are lowered to plain `insert after N:` with a warning.
+	 * How to handle a block edit that cannot be resolved safely. `"throw"`
+	 * (default) raises a diagnostic error — used by the authoritative apply +
+	 * final preview paths. `"drop"` silently skips the edit — used by the
+	 * streaming preview, where a half-written file or transient parse error must
+	 * not throw. `insert after block N:` only lowers to plain `insert after N:`
+	 * for no-block/closer cases; syntax, parser, and language failures reject.
 	 */
 	onUnresolved?: "throw" | "drop";
 	/**
@@ -40,9 +47,9 @@ export interface ResolveBlockEditsOptions {
 	 */
 	onResolved?: (resolution: BlockResolution) => void;
 	/**
-	 * Invoked once per diagnostic produced while resolving — currently the
-	 * `insert after block N:` lowerings (closer anchor or unresolvable block).
-	 * Hosts should surface these on the apply result's `warnings`.
+	 * Invoked once per diagnostic produced while resolving — currently the safe
+	 * `insert after block N:` lowerings (closer/no-block cases). Hosts should
+	 * surface these on the apply result's `warnings`.
 	 */
 	onWarning?: (message: string) => void;
 }
@@ -52,6 +59,38 @@ export function hasBlockEdit(edits: readonly Edit[]): boolean {
 	return edits.some((edit) => edit.kind === "block");
 }
 
+function isBlockResolverFailure(result: BlockResolverResult): result is BlockResolverFailure {
+	return result !== null && "reason" in result;
+}
+
+function resolveBlock(
+	resolver: BlockResolver | undefined,
+	request: Parameters<BlockResolver>[0],
+): BlockSpan | BlockResolverFailure {
+	if (!resolver) return { reason: "parser_unavailable" };
+	return resolver(request) ?? { reason: "no_block" };
+}
+
+function lowerInsertAfterBlock(
+	edit: Extract<Edit, { kind: "block" }>,
+	resolved: Edit[],
+	text: string,
+	synthIndex: number,
+	onWarning: ((message: string) => void) | undefined,
+): number {
+	const anchorText = text.split("\n")[edit.anchor.line - 1];
+	const isCloser = anchorText !== undefined && STRUCTURAL_CLOSER_RE.test(anchorText);
+	onWarning?.(
+		isCloser
+			? insertAfterBlockCloserLoweredWarning(edit.anchor.line)
+			: insertAfterBlockUnresolvedLoweredWarning(edit.anchor.line),
+	);
+	for (const payload of edit.payloads) {
+		const cursor: Cursor = { kind: "after_anchor", anchor: { line: edit.anchor.line } };
+		resolved.push({ kind: "insert", cursor, text: payload, lineNum: edit.lineNum, index: synthIndex++ });
+	}
+	return synthIndex;
+}
 /**
  * Resolve every deferred block edit in `edits` against `text` (parsed as the
  * language inferred from `path`). Non-block edits pass through untouched.
@@ -79,30 +118,18 @@ export function resolveBlockEdits(
 			continue;
 		}
 		const op = edit.mode === "insert_after" ? "insert_after" : edit.payloads.length === 0 ? "delete" : "replace";
-		const span = resolver ? resolver({ path, text, line: edit.anchor.line }) : null;
-		if (span === null) {
-			// `insert after block N:` never fails the patch — lower it to plain
-			// `insert after N:` with a warning instead.
-			if (op === "insert_after") {
-				const anchorText = text.split("\n")[edit.anchor.line - 1];
-				const isCloser = anchorText !== undefined && STRUCTURAL_CLOSER_RE.test(anchorText);
-				options.onWarning?.(
-					isCloser
-						? insertAfterBlockCloserLoweredWarning(edit.anchor.line)
-						: insertAfterBlockUnresolvedLoweredWarning(edit.anchor.line),
-				);
-				for (const payload of edit.payloads) {
-					const cursor: Cursor = { kind: "after_anchor", anchor: { line: edit.anchor.line } };
-					resolved.push({ kind: "insert", cursor, text: payload, lineNum: edit.lineNum, index: synthIndex++ });
-				}
+		const span = resolveBlock(resolver, { path, text, line: edit.anchor.line });
+		if (isBlockResolverFailure(span)) {
+			if (onUnresolved === "drop") continue;
+			if (op === "insert_after" && span.reason === "no_block") {
+				synthIndex = lowerInsertAfterBlock(edit, resolved, text, synthIndex, options.onWarning);
 				continue;
 			}
+			throw new Error(`line ${edit.lineNum}: ${blockResolverFailureMessage(edit.anchor.line, op, span.reason)}`);
+		}
+		if (span.start === span.end) {
 			if (onUnresolved === "drop") continue;
-			throw new Error(
-				`line ${edit.lineNum}: ${
-					resolver ? blockUnresolvedMessage(edit.anchor.line, op, text.split("\n")) : BLOCK_RESOLVER_UNAVAILABLE
-				}`,
-			);
+			throw new Error(`line ${edit.lineNum}: ${blockSingleLineMessage(edit.anchor.line, op)}`);
 		}
 		options.onResolved?.({
 			anchorLine: edit.anchor.line,

@@ -6,6 +6,7 @@
  */
 
 import { formatNumberedLine, HL_FILE_HASH_SEP, HL_FILE_PREFIX, HL_FILE_SUFFIX } from "./format";
+import type { BlockResolution, BlockResolverFailureReason } from "./types";
 
 /** Lines of context shown either side of a hash mismatch. */
 export const MISMATCH_CONTEXT = 2;
@@ -60,34 +61,28 @@ export const MINUS_ROW_REJECTED =
 export const EMPTY_BLOCK =
 	"`replace block N:` needs at least one `+TEXT` body row. To delete a block, use `delete block N`.";
 
-/**
- * Block-anchored replace/delete could not resolve to a syntactic block
- * (unsupported language, blank/out-of-range line, no node beginning on N, or
- * parse error). Appends a {@link formatAnchoredContext} preview when
- * `fileLines` is given. `insert after block N:` never reaches this — it is
- * lowered to plain `insert after N:` instead (see
- * {@link insertAfterBlockUnresolvedLoweredWarning}).
- */
-export function blockUnresolvedMessage(
-	line: number,
-	op: "replace" | "delete" = "replace",
-	fileLines?: readonly string[],
-): string {
-	const phrase = op === "delete" ? `delete block ${line}` : `replace block ${line}:`;
-	const fallback = op === "delete" ? `delete ${line}..M` : `replace ${line}..M:`;
-	let message =
-		`\`${phrase}\` could not resolve a syntactic block beginning on line ${line} ` +
-		`(unsupported language, blank/closer line, or parse error). Use \`${fallback}\` with explicit lines.`;
-	if (fileLines) {
-		const context = formatAnchoredContext([line], fileLines);
-		if (context.length > 0) message += `\n\n${context.join("\n")}`;
+function describeBlockResolverFailure(reason: BlockResolverFailureReason): string {
+	switch (reason) {
+		case "syntax_error":
+			return "tree-sitter found a syntax error in the file";
+		case "parser_unavailable":
+			return "tree-sitter parser unavailable";
+		case "unsupported_language":
+			return "unsupported language";
+		case "no_block":
+			return "no syntactic block begins on that line";
 	}
-	return message;
 }
 
-/** Block-anchored edit reached a path with no {@link BlockResolver} wired in — a host-configuration bug. */
-export const BLOCK_RESOLVER_UNAVAILABLE =
-	"`replace block`/`delete block`/`insert after block` are not available here (no block resolver configured). Use a concrete line range.";
+export function blockResolverFailureMessage(line: number, op: BlockOp, reason: BlockResolverFailureReason): string {
+	const phrase =
+		op === "insert_after"
+			? `insert after block ${line}:`
+			: op === "delete"
+				? `delete block ${line}`
+				: `replace block ${line}:`;
+	return `\`${phrase}\` could not resolve safely because ${describeBlockResolverFailure(reason)}. Re-read the target range and use a concrete line edit if that exact landing was intended.`;
+}
 
 /**
  * `insert after block N:` anchored on a closing-delimiter line, lowered to
@@ -99,9 +94,9 @@ export function insertAfterBlockCloserLoweredWarning(line: number): string {
 }
 
 /**
- * `insert after block N:` anchor unresolvable (unsupported language, blank
- * line, parse error, or no resolver), lowered to plain `insert after N:` —
- * applying with a warning beats failing the patch.
+ * `insert after block N:` anchor has no syntactic block beginning on that line,
+ * lowered to plain `insert after N:` with a warning. Syntax, parser, and
+ * unsupported-language failures reject instead of reaching this fallback.
  */
 export function insertAfterBlockUnresolvedLoweredWarning(line: number): string {
 	return `\`insert after block ${line}:\` could not resolve a syntactic block on line ${line}, so it was applied as plain \`insert after ${line}:\`. Verify the landing line; anchor on a line that OPENS a construct.`;
@@ -180,4 +175,21 @@ export const HEADTAIL_DRIFT_WARNING =
  */
 export function missingSnapshotTagMessage(sectionPath: string): string {
 	return `Missing hashline snapshot tag for edit to ${sectionPath}; use \`${HL_FILE_PREFIX}${sectionPath}${HL_FILE_HASH_SEP}tag${HL_FILE_SUFFIX}\` from your latest read/search output. To create a new file, use the write tool.`;
+}
+
+export type BlockOp = BlockResolution["op"];
+
+export function blockSingleLineMessage(line: number, op: BlockOp): string {
+	const blockForm = op === "insert_after" ? "insert after block" : op === "delete" ? "delete block" : "replace block";
+	const plainForm =
+		op === "insert_after"
+			? `insert after ${line}:`
+			: op === "delete"
+				? `delete ${line}`
+				: `replace ${line}..${line}:`;
+	return (
+		`\`${blockForm} ${line}\` resolved a single-line block — line ${line} is a bare statement, not the opening line ` +
+		`of a multi-line construct. For that one line use \`${plainForm}\`; to act on an enclosing construct, anchor ` +
+		`${blockForm} on the line that OPENS it.`
+	);
 }

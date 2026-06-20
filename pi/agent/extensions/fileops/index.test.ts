@@ -60,6 +60,37 @@ function registerEditTool(mode: string): any {
 	return tool;
 }
 
+function registerEditToolWithEvents(mode: string): {
+	tool: any;
+	tools: Map<string, any>;
+	emit: (event: string, payload: any, ctx?: any) => void;
+} {
+	process.env.PI_FILEOPS_EDIT_VARIANT = mode;
+	const tools = new Map<string, any>();
+	const handlers = new Map<string, Array<(event: any, ctx: any) => void>>();
+	fileopsExtension({
+		registerTool: (definition: any) => {
+			tools.set(definition.name, definition);
+		},
+		registerCommand: () => {},
+		on: (event: string, handler: (event: any, ctx: any) => void) => {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+		},
+	} as any);
+	return {
+		tool: tools.get("edit"),
+		tools,
+		emit(event: string, payload: any, ctx: any = {}) {
+			for (const handler of handlers.get(event) ?? []) handler(payload, ctx);
+		},
+	};
+}
+
+function longUnifiedDiff(lineCount: number): string {
+	const body = Array.from({ length: lineCount }, (_, index) => [`-old${index + 1}`, `+new${index + 1}`]).flat();
+	return [`--- a/sample.txt`, `+++ b/sample.txt`, `@@ -1,${lineCount} +1,${lineCount} @@`, ...body, ""].join("\n");
+}
+
 function registerEditTools(mode: string): Map<string, any> {
 	process.env.PI_FILEOPS_EDIT_VARIANT = mode;
 	const tools = new Map<string, any>();
@@ -190,6 +221,21 @@ describe("fileops extension modes", () => {
 		expect(readFileSync(join(cwd, "copy.txt"), "utf-8")).toBe("first\nsecond");
 	});
 
+	it("hashline read delegates supported images to the image-capable reader", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-image-"));
+		const png = Buffer.from(
+			"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
+			"base64",
+		);
+		writeFileSync(join(cwd, "sample.png"), png);
+		const tools = registerEditTools("hashline");
+
+		const readResult = await tools.get("read").execute("read", { path: "sample.png" }, undefined, undefined, { cwd });
+
+		expect(readResult.content[0].text).toStartWith("Read image file [image/png]");
+		expect(readResult.content[0].text).not.toContain("[sample.png#");
+	});
+
 	it("hashline write leaves ordinary content with isolated line-number text untouched", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-write-conservative-"));
 		const tools = registerEditTools("hashline");
@@ -220,7 +266,7 @@ describe("fileops extension modes", () => {
 		expect(readFileSync(join(cwd, "sample.txt"), "utf-8")).toBe("one\nTWO\nthree\nfour\n");
 	});
 
-	it("hashline edit warns when a partial-read tag is used outside displayed lines", async () => {
+	it("hashline edit rejects when a partial-read tag is used outside displayed lines", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-partial-authority-"));
 		writeFileSync(join(cwd, "sample.txt"), "one\ntwo\nthree\nfour\n");
 		const tools = registerEditTools("hashline");
@@ -229,12 +275,68 @@ describe("fileops extension modes", () => {
 			.execute("read", { path: "sample.txt", ranges: ["2"] }, undefined, undefined, { cwd });
 		const header = readResult.content[0].text.split("\n")[0];
 
-		const result = await tools
-			.get("edit")
-			.execute("call", { input: `${header}\nreplace 4..4:\n+FOUR\n` }, undefined, undefined, { cwd });
+		await expect(
+			tools
+				.get("edit")
+				.execute("call", { input: `${header}\nreplace 4..4:\n+FOUR\n` }, undefined, undefined, { cwd }),
+		).rejects.toThrow(/exact target range/);
+		expect(readFileSync(join(cwd, "sample.txt"), "utf-8")).toBe("one\ntwo\nthree\nfour\n");
+	});
 
-		expect(readFileSync(join(cwd, "sample.txt"), "utf-8")).toBe("one\ntwo\nthree\nFOUR\n");
-		expect(result.content[0].text).toContain("were not displayed by the read/search output");
+	it("hashline edit rejects anchors that came only from synthetic read context", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-synthetic-authority-"));
+		writeFileSync(join(cwd, "sample.ts"), "function x() {\n  return 1;\n}\n");
+		const tools = registerEditTools("hashline");
+		const readResult = await tools
+			.get("read")
+			.execute("read", { path: "sample.ts", ranges: ["1"] }, undefined, undefined, { cwd });
+		const text = readResult.content[0].text;
+		expect(text).toMatch(/1:function x\(\) \{/);
+		expect(text).toMatch(/3:}/);
+		const header = text.split("\n")[0];
+
+		await expect(
+			tools
+				.get("edit")
+				.execute("call", { input: `${header}\ninsert after 3:\n+const y = 2;\n` }, undefined, undefined, { cwd }),
+		).rejects.toThrow(/synthetic context/);
+		expect(readFileSync(join(cwd, "sample.ts"), "utf-8")).toBe("function x() {\n  return 1;\n}\n");
+	});
+
+	it("hashline snapshots are isolated across session ids", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-session-isolation-"));
+		writeFileSync(join(cwd, "sample.txt"), "one\ntwo\n");
+		const tools = registerEditTools("hashline");
+		const sessionA = { cwd, sessionManager: { getSessionId: () => `${cwd}:A` } };
+		const sessionB = { cwd, sessionManager: { getSessionId: () => `${cwd}:B` } };
+		const readResult = await tools
+			.get("read")
+			.execute("read", { path: "sample.txt" }, undefined, undefined, sessionA);
+		const header = readResult.content[0].text.split("\n")[0];
+
+		await expect(
+			tools
+				.get("edit")
+				.execute("call", { input: `${header}\nreplace 2..2:\n+TWO\n` }, undefined, undefined, sessionB),
+		).rejects.toThrow(/not from this session/);
+		expect(readFileSync(join(cwd, "sample.txt"), "utf-8")).toBe("one\ntwo\n");
+	});
+
+	it("hashline snapshots survive extension reloads within the same session id", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-session-reload-"));
+		writeFileSync(join(cwd, "sample.txt"), "one\ntwo\n");
+		const sessionCtx = { cwd, sessionManager: { getSessionId: () => `${cwd}:same` } };
+		const readTools = registerEditTools("hashline");
+		const readResult = await readTools
+			.get("read")
+			.execute("read", { path: "sample.txt" }, undefined, undefined, sessionCtx);
+		const header = readResult.content[0].text.split("\n")[0];
+		const editTools = registerEditTools("hashline");
+
+		await editTools
+			.get("edit")
+			.execute("call", { input: `${header}\nreplace 2..2:\n+TWO\n` }, undefined, undefined, sessionCtx);
+		expect(readFileSync(join(cwd, "sample.txt"), "utf-8")).toBe("one\nTWO\n");
 	});
 
 	it("hashline edit supports explicit before and after insertion anchors", async () => {
@@ -255,6 +357,65 @@ describe("fileops extension modes", () => {
 			);
 
 		expect(readFileSync(join(cwd, "sample.txt"), "utf-8")).toBe("alpha\nbefore beta\nbeta\nafter beta\ngamma\n");
+	});
+
+	it("ast_grep finds structural matches with metavariables", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-ast-grep-"));
+		writeFileSync(join(cwd, "sample.ts"), "const a = foo(1);\nconst b = foo(2);\n");
+		const tools = registerEditTools("hashline");
+
+		const result = await tools
+			.get("ast_grep")
+			.execute("ast", { pattern: "foo($X)", path: "sample.ts", lang: "ts" }, undefined, undefined, { cwd });
+
+		expect(result.content[0].text).toMatch(/^\[sample\.ts#[0-9A-F]{4}\]/);
+		expect(result.content[0].text).toContain("1:const a = foo(1);");
+		expect(result.content[0].text).toContain('meta: X="1"');
+	});
+
+	it("ast_edit previews rewrites and applies with a fresh hashline tag", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-ast-edit-"));
+		writeFileSync(join(cwd, "sample.ts"), "const a = foo(1);\n");
+		const tools = registerEditTools("hashline");
+		const astEdit = tools.get("ast_edit");
+
+		const preview = await astEdit.execute(
+			"ast",
+			{ pattern: "foo($X)", rewrite: "bar($X)", path: "sample.ts", lang: "ts" },
+			undefined,
+			undefined,
+			{ cwd },
+		);
+		expect(preview.content[0].text).toContain("Preview: 1 rewrite(s)");
+		expect(readFileSync(join(cwd, "sample.ts"), "utf-8")).toBe("const a = foo(1);\n");
+
+		const applied = await astEdit.execute(
+			"ast",
+			{ pattern: "foo($X)", rewrite: "bar($X)", path: "sample.ts", lang: "ts", apply: true },
+			undefined,
+			undefined,
+			{ cwd },
+		);
+		expect(readFileSync(join(cwd, "sample.ts"), "utf-8")).toBe("const a = bar(1);\n");
+		const header = applied.content[0].text.split("\n")[0];
+		expect(header).toMatch(/^\[sample\.ts#[0-9A-F]{4}\]/);
+
+		await tools
+			.get("edit")
+			.execute("call", { input: `${header}\nreplace 1..1:\n+const a = baz(1);\n` }, undefined, undefined, { cwd });
+		expect(readFileSync(join(cwd, "sample.ts"), "utf-8")).toBe("const a = baz(1);\n");
+	});
+
+	it("ast_grep reports pattern parse errors", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-ast-grep-error-"));
+		writeFileSync(join(cwd, "sample.ts"), "const a = foo(1);\n");
+		const tools = registerEditTools("hashline");
+
+		await expect(
+			tools
+				.get("ast_grep")
+				.execute("ast", { pattern: "if $$$", path: "sample.ts", lang: "ts" }, undefined, undefined, { cwd }),
+		).rejects.toThrow(/ast-grep failed/);
 	});
 
 	it("hashline edit can auto-drop generic pure-insert duplicate context when configured", async () => {
@@ -772,6 +933,202 @@ describe("fileops extension modes", () => {
 		expect(writeRendered).toContain("1│one");
 		expect(writeRendered).toContain("2│two");
 		expect(writeRendered).not.toContain("[toolSuccessBg]");
+	});
+
+	it("does not expand edit diffs from older turns", () => {
+		const { tool, emit } = registerEditToolWithEvents("hashline");
+		const result = {
+			content: [{ type: "text", text: "[sample.txt#ABCD]" }],
+			details: { diff: longUnifiedDiff(60), editTurnIndex: 1 },
+		};
+
+		emit("turn_start", { type: "turn_start", turnIndex: 1, timestamp: 1 });
+		emit("tool_execution_start", {
+			type: "tool_execution_start",
+			toolName: "edit",
+			toolCallId: "turn-1-edit",
+			args: {},
+		});
+		const staleComponent = tool.renderResult(result, { expanded: true, isPartial: false }, theme, {
+			toolCallId: "turn-1-edit",
+			executionStarted: true,
+		});
+		const latestRendered = stripAnsi(render(staleComponent));
+		expect(latestRendered).toContain("new60");
+
+		emit("turn_start", { type: "turn_start", turnIndex: 2, timestamp: 2 });
+		const stillLatestRendered = stripAnsi(render(staleComponent));
+		expect(stillLatestRendered).toContain("new60");
+
+		emit("session_start", { type: "session_start", reason: "reload" });
+		const replayedComponent = tool.renderResult(result, { expanded: true, isPartial: false }, theme, {
+			toolCallId: "turn-1-edit",
+			executionStarted: false,
+		});
+		expect(stripAnsi(render(replayedComponent))).toBe("");
+
+		emit("turn_start", { type: "turn_start", turnIndex: 3, timestamp: 3 });
+		emit("tool_execution_start", {
+			type: "tool_execution_start",
+			toolName: "edit",
+			toolCallId: "turn-2-edit",
+			args: {},
+		});
+		expect(stripAnsi(render(staleComponent))).toBe("");
+		const newLatestResult = { ...result, details: { ...result.details, editTurnIndex: 3 } };
+		const newLatestRendered = stripAnsi(
+			render(
+				tool.renderResult(newLatestResult, { expanded: true, isPartial: false }, theme, {
+					toolCallId: "turn-2-edit",
+					executionStarted: true,
+				}),
+			),
+		);
+		expect(newLatestRendered).toContain("new60");
+	});
+
+	it("does not expand no-diff edit text from older turns", () => {
+		const { tool, emit } = registerEditToolWithEvents("apply_patch");
+		const result = {
+			content: [
+				{
+					type: "text",
+					text: Array.from({ length: 60 }, (_, index) => `text fallback line ${index + 1}`).join("\n"),
+				},
+			],
+			details: { editTurnIndex: 1 },
+		};
+
+		emit("turn_start", { type: "turn_start", turnIndex: 1, timestamp: 1 });
+		emit("tool_execution_start", {
+			type: "tool_execution_start",
+			toolName: "edit",
+			toolCallId: "turn-1-edit",
+			args: {},
+		});
+		const staleComponent = tool.renderResult(result, { expanded: true, isPartial: false }, theme, {
+			toolCallId: "turn-1-edit",
+			executionStarted: true,
+		});
+		expect(stripAnsi(render(staleComponent))).toContain("text fallback line 60");
+
+		emit("turn_start", { type: "turn_start", turnIndex: 2, timestamp: 2 });
+		expect(stripAnsi(render(staleComponent))).toContain("text fallback line 60");
+		emit("tool_execution_start", {
+			type: "tool_execution_start",
+			toolName: "edit",
+			toolCallId: "turn-2-edit",
+			args: {},
+		});
+		expect(stripAnsi(render(staleComponent))).toBe("");
+	});
+
+	it("does not render search or find results from older turns", () => {
+		const { tools, emit } = registerEditToolWithEvents("hashline");
+		const search = tools.get("search");
+		const find = tools.get("find");
+		const searchResult = { content: [{ type: "text", text: "[sample.txt#ABCD]\n*1:needle" }], details: {} };
+		const findResult = { content: [{ type: "text", text: "sample.txt\nother.txt" }], details: {} };
+
+		emit("turn_start", { type: "turn_start", turnIndex: 1, timestamp: 1 });
+		emit("tool_execution_start", {
+			type: "tool_execution_start",
+			toolName: "search",
+			toolCallId: "search-1",
+			args: {},
+		});
+		emit("tool_execution_start", { type: "tool_execution_start", toolName: "find", toolCallId: "find-1", args: {} });
+		const searchComponent = search.renderResult(searchResult, { expanded: true, isPartial: false }, theme, {
+			args: { pattern: "needle", path: "." },
+			toolCallId: "search-1",
+			executionStarted: true,
+		});
+		const findComponent = find.renderResult(findResult, { expanded: true, isPartial: false }, theme, {
+			args: { paths: ["*.txt"] },
+			toolCallId: "find-1",
+			executionStarted: true,
+		});
+		expect(stripAnsi(render(searchComponent))).toContain("needle");
+		expect(stripAnsi(render(findComponent))).toContain("sample.txt");
+
+		emit("turn_start", { type: "turn_start", turnIndex: 2, timestamp: 2 });
+		expect(stripAnsi(render(searchComponent))).toContain("needle");
+		expect(stripAnsi(render(findComponent))).toContain("sample.txt");
+		emit("tool_execution_start", {
+			type: "tool_execution_start",
+			toolName: "search",
+			toolCallId: "search-2",
+			args: {},
+		});
+		expect(stripAnsi(render(searchComponent))).toBe("");
+		expect(stripAnsi(render(findComponent))).toBe("");
+	});
+
+	it("renders all replayed fileops results from the latest assistant turn", () => {
+		const { tools, emit } = registerEditToolWithEvents("hashline");
+		const search = tools.get("search");
+		const find = tools.get("find");
+		const olderSearchResult = { content: [{ type: "text", text: "[old.txt#ABCD]\n*1:old" }], details: {} };
+		const latestSearchResult = { content: [{ type: "text", text: "[new.txt#ABCD]\n*1:needle" }], details: {} };
+		const latestFindResult = { content: [{ type: "text", text: "new.txt\nother.txt" }], details: {} };
+		const ctx = {
+			sessionManager: {
+				getBranch: () => [
+					{
+						type: "message",
+						message: {
+							role: "assistant",
+							content: [{ type: "toolCall", id: "old-search", name: "search", arguments: {} }],
+						},
+					},
+					{
+						type: "message",
+						message: {
+							role: "assistant",
+							content: [
+								{ type: "toolCall", id: "latest-search", name: "search", arguments: {} },
+								{ type: "toolCall", id: "latest-find", name: "find", arguments: {} },
+							],
+						},
+					},
+				],
+			},
+		};
+
+		emit("session_start", { type: "session_start", reason: "reload" }, ctx);
+		expect(
+			stripAnsi(
+				render(
+					search.renderResult(olderSearchResult, { expanded: true, isPartial: false }, theme, {
+						args: { pattern: "old", path: "." },
+						toolCallId: "old-search",
+						executionStarted: false,
+					}),
+				),
+			),
+		).toBe("");
+		expect(
+			stripAnsi(
+				render(
+					search.renderResult(latestSearchResult, { expanded: true, isPartial: false }, theme, {
+						args: { pattern: "needle", path: "." },
+						toolCallId: "latest-search",
+						executionStarted: false,
+					}),
+				),
+			),
+		).toContain("needle");
+		expect(
+			stripAnsi(
+				render(
+					find.renderResult(latestFindResult, { expanded: true, isPartial: false }, theme, {
+						args: { paths: ["*.txt"] },
+						toolCallId: "latest-find",
+						executionStarted: false,
+					}),
+				),
+			),
+		).toContain("new.txt");
 	});
 
 	it("renders independent file sections in columns when width allows", async () => {

@@ -9,8 +9,8 @@ import { MismatchError } from "./mismatch";
 import { parsePatch, parsePatchStreaming } from "./parser";
 import { Patcher } from "./patcher";
 import { Recovery } from "./recovery";
-import { InMemorySnapshotStore } from "./snapshots";
-import type { BlockResolution, BlockResolver, Edit } from "./types";
+import { InMemorySnapshotStore, type ObservedLines } from "./snapshots";
+import type { BlockResolution, BlockResolver, Edit, SyntaxValidator } from "./types";
 
 function apply(
 	text: string,
@@ -22,8 +22,8 @@ function apply(
 	return { text: result.text, warnings: [...warnings, ...(result.warnings ?? [])] };
 }
 
-function record(store: InMemorySnapshotStore, path: string, text: string): string {
-	return store.record(path, text);
+function record(store: InMemorySnapshotStore, path: string, text: string, observedLines?: ObservedLines): string {
+	return store.record(path, text, observedLines);
 }
 
 /** A tag the store can never have minted: flip the first hex digit of a real one. */
@@ -640,14 +640,56 @@ describe("hashline block edits", () => {
 		expect(warnings.join("\n")).toMatch(/applied as plain `insert after 2:`/);
 	});
 
+	it("lowers insert-after-block only for no-block resolver failures", () => {
+		const warnings: string[] = [];
+		const noBlockResolver: BlockResolver = () => ({ reason: "no_block" });
+		const resolved = resolveBlockEdits(
+			parsePatch("insert after block 2:\n+A").edits,
+			"one\ntwo",
+			"x.ts",
+			noBlockResolver,
+			{ onWarning: (message) => warnings.push(message) },
+		);
+
+		expect(normalizeEdits(resolved)).toEqual([
+			{
+				kind: "insert",
+				cursor: { kind: "after_anchor", anchor: { line: 2 } },
+				text: "A",
+				mode: undefined,
+				blockStart: undefined,
+			},
+		]);
+		expect(warnings.join("\n")).toMatch(/applied as plain `insert after 2:`/);
+	});
+
+	it("rejects insert-after-block when the resolver reports syntax or parser failures", () => {
+		for (const [reason, pattern] of [
+			["syntax_error", /syntax error/],
+			["parser_unavailable", /parser unavailable/],
+			["unsupported_language", /unsupported language/],
+		] as const) {
+			const resolver: BlockResolver = () => ({ reason });
+			expect(() =>
+				resolveBlockEdits(parsePatch("insert after block 2:\n+A").edits, "one\ntwo", "x.ts", resolver),
+			).toThrow(pattern);
+		}
+	});
+
+	it("rejects insert-after-block when no resolver is wired", () => {
+		expect(() =>
+			resolveBlockEdits(parsePatch("insert after block 2:\n+A").edits, "one\ntwo", "x.ts", undefined),
+		).toThrow(/parser unavailable/);
+	});
+
 	it("returns the input untouched when there are no block edits", () => {
 		const { edits } = parsePatch("replace 2..2:\n+A");
 		expect(resolveBlockEdits(edits, "ignored", "x.ts", stubResolver)).toBe(edits);
 	});
 
-	it("throws when no resolver is wired", () => {
+	it("throws a parser-unavailable diagnostic when no resolver is wired", () => {
 		expect(() => resolveBlockEdits(parsePatch("replace block 2:\n+A").edits, "ignored", "x.ts", undefined)).toThrow(
-			/not available here/,
+			/parser unavailable/,
 		);
 	});
 
@@ -658,9 +700,9 @@ describe("hashline block edits", () => {
 		expect(resolved).toHaveLength(0);
 	});
 
-	it("throws a block-unresolved error in throw mode when the resolver returns null", () => {
+	it("throws a no-block diagnostic in throw mode when the resolver returns null", () => {
 		expect(() => resolveBlockEdits(parsePatch("replace block 7:\n+A").edits, "ignored", "x.ts", () => null)).toThrow(
-			/could not resolve a syntactic block beginning on line 7/,
+			/no syntactic block begins/,
 		);
 	});
 
@@ -682,6 +724,27 @@ describe("hashline block edits", () => {
 			onResolved: (resolution) => seen.push(resolution),
 		});
 		expect(seen).toEqual([]);
+	});
+
+	it("rejects a block edit that resolves to a single line", () => {
+		const singleLineResolver: BlockResolver = ({ line }) => ({ start: line, end: line });
+		expect(() =>
+			resolveBlockEdits(parsePatch("insert after block 2:\n+X").edits, "a\nb\nc", "x.ts", singleLineResolver),
+		).toThrow(/single-line block/);
+	});
+
+	it("drops a single-line block resolution in drop mode", () => {
+		const singleLineResolver: BlockResolver = ({ line }) => ({ start: line, end: line });
+		const resolved = resolveBlockEdits(
+			parsePatch("replace block 2:\n+X").edits,
+			"a\nb\nc",
+			"x.ts",
+			singleLineResolver,
+			{
+				onUnresolved: "drop",
+			},
+		);
+		expect(resolved).toHaveLength(0);
 	});
 
 	it("applyTo resolves a block edit and matches the equivalent replace", () => {
@@ -778,7 +841,7 @@ describe("hashline block edits", () => {
 		const tag = record(snapshots, PATH, text);
 		const patcher = new Patcher({ fs, snapshots, blockResolver: () => null });
 		await expect(patcher.apply(Patch.parse(`[${PATH}#${tag}]\nreplace block 2:\n+NEW`))).rejects.toThrow(
-			/could not resolve a syntactic block/,
+			/no syntactic block begins/,
 		);
 		expect(fs.get(PATH)).toBe(text);
 	});
@@ -812,6 +875,122 @@ describe("hashline patcher contracts", () => {
 		const patcher = new Patcher({ fs, snapshots });
 		await patcher.apply(Patch.parse(`[${PATH}#${tag}]\nreplace 2..2:\n+TWO`));
 		expect(fs.get(PATH)).toBe("one\nTWO\nthree\nfour\n");
+	});
+
+	it("rejects anchored edits on lines the read never displayed", async () => {
+		const PATH = "a.ts";
+		const text = "one\ntwo\nthree\nfour\n";
+		const fs = new InMemoryFilesystem([[PATH, text]]);
+		const snapshots = new InMemorySnapshotStore();
+		const tag = record(snapshots, PATH, text, [1, 2]);
+		const patcher = new Patcher({ fs, snapshots });
+
+		await expect(patcher.apply(Patch.parse(`[${PATH}#${tag}]\ninsert after 4:\n+FIVE`))).rejects.toThrow(
+			/exact target range/,
+		);
+		expect(fs.get(PATH)).toBe(text);
+	});
+
+	it("widens observed-line coverage when identical content is re-read", async () => {
+		const PATH = "a.ts";
+		const text = "one\ntwo\nthree\nfour\n";
+		const fs = new InMemoryFilesystem([[PATH, text]]);
+		const snapshots = new InMemorySnapshotStore();
+		const tag = record(snapshots, PATH, text, [1, 2]);
+		record(snapshots, PATH, text, [4]);
+		const patcher = new Patcher({ fs, snapshots });
+
+		await patcher.apply(Patch.parse(`[${PATH}#${tag}]\ninsert after 4:\n+FIVE`));
+		expect(fs.get(PATH)).toBe("one\ntwo\nthree\nfour\nFIVE\n");
+	});
+
+	it("rejects edits anchored only to synthetic context lines", async () => {
+		const PATH = "a.ts";
+		const text = "function x() {\n  return 1;\n}\n";
+		const fs = new InMemoryFilesystem([[PATH, text]]);
+		const snapshots = new InMemorySnapshotStore();
+		const tag = record(snapshots, PATH, text, { explicit: [2], synthetic: [1, 3] });
+		const patcher = new Patcher({ fs, snapshots });
+
+		await expect(patcher.apply(Patch.parse(`[${PATH}#${tag}]\ninsert after 3:\n+const y = 2;`))).rejects.toThrow(
+			/synthetic context/i,
+		);
+		expect(fs.get(PATH)).toBe(text);
+	});
+
+	it("allows edits anchored to synthetic context lines only when policy permits it", async () => {
+		const PATH = "a.ts";
+		const text = "function x() {\n  return 1;\n}\n";
+		const fs = new InMemoryFilesystem([[PATH, text]]);
+		const snapshots = new InMemorySnapshotStore();
+		const tag = record(snapshots, PATH, text, { explicit: [2], synthetic: [1, 3] });
+		const patcher = new Patcher({ fs, snapshots, allowSyntheticContextEdits: true });
+
+		await patcher.apply(Patch.parse(`[${PATH}#${tag}]\ninsert after 3:\n+const y = 2;`));
+		expect(fs.get(PATH)).toBe("function x() {\n  return 1;\n}\nconst y = 2;\n");
+	});
+
+	it("rejects hashline edits that introduce syntax errors before writing", async () => {
+		const PATH = "a.ts";
+		const before = "const ok = 1;\n";
+		const fs = new InMemoryFilesystem([[PATH, before]]);
+		const snapshots = new InMemorySnapshotStore();
+		const tag = record(snapshots, PATH, before);
+		const syntaxValidator: SyntaxValidator = ({ text }) =>
+			text.includes("const =") ? { kind: "invalid", errorCount: 1 } : { kind: "valid", errorCount: 0 };
+		const patcher = new Patcher({ fs, snapshots, syntaxValidator });
+
+		await expect(patcher.apply(Patch.parse(`[${PATH}#${tag}]\nreplace 1..1:\n+const = ;`))).rejects.toThrow(
+			/syntax error/i,
+		);
+		expect(fs.get(PATH)).toBe(before);
+	});
+
+	it("allows edits to already-broken files when syntax errors do not increase", async () => {
+		const PATH = "a.ts";
+		const before = "const = ;\n";
+		const fs = new InMemoryFilesystem([[PATH, before]]);
+		const snapshots = new InMemorySnapshotStore();
+		const tag = record(snapshots, PATH, before);
+		const syntaxValidator: SyntaxValidator = ({ text }) => ({
+			kind: "invalid",
+			errorCount: text.split("const =").length - 1,
+		});
+		const patcher = new Patcher({ fs, snapshots, syntaxValidator });
+
+		await patcher.apply(Patch.parse(`[${PATH}#${tag}]\ninsert tail:\n+// still one syntax error`));
+		expect(fs.get(PATH)).toBe("const = ;\n// still one syntax error\n");
+	});
+
+	it("rejects edits to already-broken files when syntax errors increase", async () => {
+		const PATH = "a.ts";
+		const before = "const = ;\n";
+		const fs = new InMemoryFilesystem([[PATH, before]]);
+		const snapshots = new InMemorySnapshotStore();
+		const tag = record(snapshots, PATH, before);
+		const syntaxValidator: SyntaxValidator = ({ text }) => ({
+			kind: "invalid",
+			errorCount: text.split("const =").length - 1,
+		});
+		const patcher = new Patcher({ fs, snapshots, syntaxValidator });
+
+		await expect(patcher.apply(Patch.parse(`[${PATH}#${tag}]\ninsert tail:\n+const = ;`))).rejects.toThrow(
+			/syntax error/i,
+		);
+		expect(fs.get(PATH)).toBe(before);
+	});
+
+	it("does not block hashline edits for unsupported syntax-validation languages", async () => {
+		const PATH = "a.txt";
+		const before = "before\n";
+		const fs = new InMemoryFilesystem([[PATH, before]]);
+		const snapshots = new InMemorySnapshotStore();
+		const tag = record(snapshots, PATH, before);
+		const syntaxValidator: SyntaxValidator = () => ({ kind: "unsupported_language" });
+		const patcher = new Patcher({ fs, snapshots, syntaxValidator });
+
+		await patcher.apply(Patch.parse(`[${PATH}#${tag}]\nreplace 1..1:\n+after`));
+		expect(fs.get(PATH)).toBe("after\n");
 	});
 
 	it("refuses with a mismatch when the recorded version no longer matches live content", async () => {
