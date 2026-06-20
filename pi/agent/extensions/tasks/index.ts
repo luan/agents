@@ -49,14 +49,9 @@ interface Runtime {}
 
 interface GuardState {
 	enabled: boolean;
-	progressSerial: number;
-	lastGuardFingerprint?: string;
-	lastGuardProgressSerial?: number;
-	autoLoopTaskId?: string;
-	autoLoopTurns: number;
-	pending?: TaskGuardDecision;
-	pauseResponses: number;
-	lastUserText?: string;
+	toolsUsedThisTurn: boolean;
+	noToolNudges: number;
+	reviewNudgeKeys: Set<string>;
 }
 
 interface TaskRecord {
@@ -113,7 +108,6 @@ interface TaskBoardKeybindings {
 
 const widgetId = "project-tasks";
 const taskHudPulseFrameMs = 160;
-const maxGuardAutoTurnsWithoutProgress = 2;
 const silentTaskToolNames = new Set(["task_read", "task_write"]);
 const silentTaskToolPatchKey = Symbol.for("agents.tasks.silent-tool-render-patch");
 const spinnerFrames = ["✳", "✴", "✵", "✶", "✷", "✸", "✹", "✺", "✻", "✼", "✽"];
@@ -245,13 +239,15 @@ class TaskStore {
 	list(filters: Record<string, unknown>, ctx?: ExtensionContext): TaskRecord[] {
 		this.load();
 		const assignedFilter =
-			filters.assigned_to === "current" ? sessionAssignment(ctx) : stringValue(filters.assigned_to);
+			filters.assigned_to === "current" ? sessionAssignmentAliases(ctx) : stringValue(filters.assigned_to);
 		return this.listRaw().filter((task) => {
 			if (filters.all !== true && isCanceled(task)) return false;
 			if (typeof filters.status === "string" && task.status !== filters.status) return false;
 			if (typeof filters.type === "string" && task.type !== filters.type) return false;
 			if (typeof filters.label === "string" && !(task.labels ?? []).includes(filters.label)) return false;
-			if (assignedFilter && task.assigned_to !== assignedFilter) return false;
+			if (Array.isArray(assignedFilter)) {
+				if (assignedFilter.length === 0 || !assignedFilter.includes(task.assigned_to ?? "")) return false;
+			} else if (assignedFilter && task.assigned_to !== assignedFilter) return false;
 			return true;
 		});
 	}
@@ -526,23 +522,36 @@ function gerundTitle(title: string): string {
 	return object ? `${gerund} ${object}` : gerund;
 }
 
-function sessionAssignment(ctx?: ExtensionContext): string | undefined {
+function sessionAssignmentAliases(ctx?: ExtensionContext): string[] {
 	const anyCtx = ctx as
 		| (ExtensionContext & {
 				sessionId?: string;
 				session?: { id?: string };
-				sessionManager?: { getSessionFile?: () => string | undefined };
+				sessionManager?: { getSessionFile?: () => string | undefined; getSessionId?: () => string | undefined };
 		  })
 		| undefined;
-	const direct = anyCtx?.sessionId ?? anyCtx?.session?.id;
-	if (typeof direct === "string" && direct.length > 0) return `session:${direct}`;
+	const aliases: string[] = [];
+	const add = (value: unknown) => {
+		if (typeof value !== "string" || value.length === 0) return;
+		const alias = `session:${value}`;
+		if (!aliases.includes(alias)) aliases.push(alias);
+	};
+	add(anyCtx?.sessionId);
+	add(anyCtx?.session?.id);
 	const file = anyCtx?.sessionManager?.getSessionFile?.();
 	if (typeof file === "string" && file.length > 0)
-		return `session:${file
-			.split("/")
-			.at(-1)
-			?.replace(/\.jsonl$/, "")}`;
-	return undefined;
+		add(
+			file
+				.split("/")
+				.at(-1)
+				?.replace(/\.jsonl$/, ""),
+		);
+	add(anyCtx?.sessionManager?.getSessionId?.());
+	return aliases;
+}
+
+function sessionAssignment(ctx?: ExtensionContext): string | undefined {
+	return sessionAssignmentAliases(ctx)[0];
 }
 
 function sessionName(pi?: ExtensionAPI, ctx?: ExtensionContext): string | undefined {
@@ -814,12 +823,6 @@ function isActiveTask(task: TaskRecord): boolean {
 	return !isComplete(task) && !isCanceled(task);
 }
 
-function isReadyForWork(task: TaskRecord, byId: Map<string, TaskRecord>): boolean {
-	return (
-		isActiveTask(task) && task.status !== "in_progress" && task.status !== "in_review" && !hasOpenBlockers(task, byId)
-	);
-}
-
 export interface TaskBoardItem {
 	task: TaskRecord;
 	blocked: boolean;
@@ -933,7 +936,7 @@ function assignmentLabel(task: TaskRecord): string | undefined {
 }
 
 interface AssignmentDisplayContext {
-	currentAssignment?: string;
+	currentAssignments?: string[];
 	currentLabel?: string;
 }
 
@@ -942,11 +945,11 @@ function assignmentDisplayContext(
 	ctx: ExtensionContext | undefined,
 	_tasks: TaskRecord[],
 ) {
-	return { currentAssignment: sessionAssignment(ctx), currentLabel: sessionName(pi, ctx) };
+	return { currentAssignments: sessionAssignmentAliases(ctx), currentLabel: sessionName(pi, ctx) };
 }
 
 function isAssignedToCurrentSession(task: TaskRecord, display: AssignmentDisplayContext): boolean {
-	return Boolean(display.currentAssignment && task.assigned_to === display.currentAssignment);
+	return Boolean((display.currentAssignments ?? []).includes(task.assigned_to ?? ""));
 }
 
 function formatAssignee(task: TaskRecord, theme: Theme, display: AssignmentDisplayContext): string {
@@ -1413,12 +1416,37 @@ function normalizeTaskWriteParams(params: Record<string, unknown>): Record<strin
 	};
 }
 
+function taskResultTask(result: unknown): TaskRecord | undefined {
+	const task = (result as { details?: { task?: unknown } } | undefined)?.details?.task;
+	return task && typeof task === "object" ? (task as TaskRecord) : undefined;
+}
+
+function taskWriteMayInvalidateQueuedGuard(action: TaskCommand, result: unknown): boolean {
+	if (action === "delete") return true;
+	const task = taskResultTask(result);
+	return Boolean(task && (isTerminalStatus(task.status) || isCanceled(task)));
+}
+
+function clearQueuedMessages(ctx: ExtensionContext | undefined): void {
+	if (!ctx) return;
+	const maybeClear = (ctx as ExtensionContext & { clearQueue?: () => void }).clearQueue;
+	if (typeof maybeClear === "function") {
+		maybeClear.call(ctx);
+		return;
+	}
+	try {
+		if (typeof ctx.hasPendingMessages === "function" && ctx.hasPendingMessages()) ctx.abort?.();
+	} catch {
+		// Queue clearing is best-effort; task writes must still succeed.
+	}
+}
+
 function makeCombinedTaskTool(
 	resolveAction: (params: Record<string, unknown>) => TaskCommand,
 	config: Config,
 	pi: ExtensionAPI,
 	getCwd: () => string,
-	onProgress?: () => void,
+	onProgress?: (ctx: ExtensionContext | undefined, action: TaskCommand, result: unknown) => void,
 ) {
 	return {
 		renderShell: "self" as const,
@@ -1438,7 +1466,7 @@ function makeCombinedTaskTool(
 			const action = resolveAction(params);
 			const result = executeTask(getCwd(), action, params, pi, ctx);
 			if (action !== "list" && action !== "show") {
-				onProgress?.();
+				onProgress?.(ctx, action, result);
 				if (ctx && config.hud.enabled) await updateTaskHud(ctx, pi, config).catch(() => {});
 			}
 			return result;
@@ -1460,210 +1488,180 @@ function installSilentTaskToolRenderPatch(): void {
 	prototype[silentTaskToolPatchKey] = true;
 }
 
-type TaskGuardActionKind = "continue" | "revise" | "start" | "claim" | "fix_dependency";
-
-interface TaskGuardAction {
-	kind: TaskGuardActionKind;
-	task: TaskRecord;
-	source?: TaskRecord;
-	invalidBlocker?: string;
-}
+const maxGuardNudgesWithoutTools = 2;
 
 interface TaskGuardDecision {
-	kind: "continue";
-	fingerprint: string;
-	action: TaskGuardAction;
+	task: TaskRecord;
 	content: string;
+	reviewKey?: string;
 }
 
-function unresolvedBlockers(task: TaskRecord, byId: Map<string, TaskRecord>): Array<TaskRecord | string> {
-	const blockers: Array<TaskRecord | string> = [];
-	for (const id of task.blocked_by ?? []) {
-		const blocker = byId.get(id);
-		if (!blocker) blockers.push(id);
-		else if (!isComplete(blocker)) blockers.push(blocker);
-	}
-	return blockers;
-}
-
-function selectDependencyAction(
-	task: TaskRecord,
-	assignedTo: string,
-	byId: Map<string, TaskRecord>,
-	seen = new Set<string>(),
-): TaskGuardAction | undefined {
-	if (!seen.add(task.id)) return undefined;
-	for (const dependency of unresolvedBlockers(task, byId)) {
-		if (typeof dependency === "string") return { kind: "fix_dependency", task, invalidBlocker: dependency };
-		if (isAssignedTo(assignedTo, dependency)) {
-			if (dependency.status === "in_progress") return { kind: "continue", task: dependency, source: task };
-			const nested = selectDependencyAction(dependency, assignedTo, byId, seen);
-			if (nested) return nested;
-			if (isReadyForWork(dependency, byId)) return { kind: "start", task: dependency, source: task };
-		}
-		if (isUnassigned(dependency) && isReadyForWork(dependency, byId))
-			return { kind: "claim", task: dependency, source: task };
-	}
-	return undefined;
-}
-
-function isAssignedTo(assignment: string, task: TaskRecord): boolean {
-	return task.assigned_to === assignment;
-}
-
-function isUnassigned(task: TaskRecord): boolean {
-	return !task.assigned_to;
+function isAssignedTo(assignments: readonly string[], task: TaskRecord): boolean {
+	return assignments.includes(task.assigned_to ?? "");
 }
 
 function sortedGuardTasks(tasks: TaskRecord[]): TaskRecord[] {
 	return [...tasks].sort(compareTasks);
 }
 
-function selectGuardAction(tasks: TaskRecord[], assignedTo: string): TaskGuardAction | undefined {
-	const byId = new Map(tasks.map((task) => [task.id, task]));
-	const assigned = sortedGuardTasks(tasks.filter((task) => isAssignedTo(assignedTo, task) && isActiveTask(task)));
-	for (const task of assigned) {
-		const action = selectDependencyAction(task, assignedTo, byId);
-		if (action) return action;
-	}
-	const inProgress = assigned.find((task) => task.status === "in_progress" && !hasOpenBlockers(task, byId));
-	if (inProgress) return { kind: "continue", task: inProgress };
-	const rejected = assigned.find((task) => task.status === "rejected" && !hasOpenBlockers(task, byId));
-	if (rejected) return { kind: "revise", task: rejected };
-	const assignedReady = assigned.find((task) => isReadyForWork(task, byId));
-	if (assignedReady) return { kind: "start", task: assignedReady };
-	const unassignedReady = sortedGuardTasks(
-		tasks.filter((task) => isUnassigned(task) && isReadyForWork(task, byId)),
-	)[0];
-	if (unassignedReady) return { kind: "claim", task: unassignedReady };
-	return undefined;
+function assignedSessionTasks(tasks: TaskRecord[], assignedTo: readonly string[]): TaskRecord[] {
+	return sortedGuardTasks(tasks.filter((task) => isActiveTask(task) && isAssignedTo(assignedTo, task)));
 }
 
-function guardFingerprint(tasks: TaskRecord[], action: TaskGuardAction, assignedTo: string): string {
-	const activeAssigned = tasks
-		.filter((task) => isActiveTask(task) && task.assigned_to === assignedTo)
-		.map((task) => `${task.id}:${task.status}:${task.updated_at}:${(task.blocked_by ?? []).join(",")}`)
-		.sort()
-		.join("|");
-	return `${action.kind}:${action.task.id}:${action.invalidBlocker ?? ""}:${activeAssigned}`;
+function guardInstruction(task: TaskRecord, prefixes: ReadonlyMap<string, string> = new Map()): string {
+	if (task.status === "in_progress")
+		return `Continue in-progress task ${displayTaskId(task.id, prefixes)}: ${task.title}`;
+	return `Continue assigned task ${displayTaskId(task.id, prefixes)} [${task.status}]: ${task.title}`;
 }
 
-function guardInstruction(action: TaskGuardAction, prefixes: ReadonlyMap<string, string> = new Map()): string {
-	const source = action.source ? ` to unblock ${displayTaskId(action.source.id, prefixes)}` : "";
-	switch (action.kind) {
-		case "continue":
-			return `Continue in-progress task ${displayTaskId(action.task.id, prefixes)}${source}: ${action.task.title}`;
-		case "revise":
-			return `Revise rejected task ${displayTaskId(action.task.id, prefixes)}${source}: ${action.task.title}.`;
-		case "start":
-			return `Start assigned task ${displayTaskId(action.task.id, prefixes)}${source}: ${action.task.title}.`;
-		case "claim":
-			return `Claim task ${displayTaskId(action.task.id, prefixes)}${source}: ${action.task.title}.`;
-		case "fix_dependency":
-			return `Fix invalid blocker ${displayTaskId(action.invalidBlocker ?? "", prefixes)} on task ${displayTaskId(action.task.id, prefixes)}: update blocked_by or choose a replacement blocker.`;
-	}
-}
-
-function guardContent(action: TaskGuardAction, prefixes: ReadonlyMap<string, string>): string {
+function reviewGuardContent(task: TaskRecord, prefixes: ReadonlyMap<string, string>): string {
 	return [
-		"Task nudge: this session has a ready next step.",
+		"Review clarification needed: this session has a task in review.",
 		"",
-		`Suggested next step: ${guardInstruction(action, prefixes)}`,
+		`Suggested next step: Ask what needs to be reviewed and how for task ${displayTaskId(task.id, prefixes)}: ${task.title}`,
 		"",
-		"Continue with tools when this matches the user's direction; otherwise switch tasks or dismiss this nudge.",
+		"Clarify the review scope, expected evidence, and approval path before doing more implementation work.",
 	].join("\n");
 }
 
-function userTextAllowsGuardAutoTurn(text: string | undefined): boolean {
-	if (!text) return true;
-	if (pausesGuard(text)) return false;
-	if (/\btask[- ]guard\b|\bguard\b/i.test(text)) return false;
-	if (/[?]\s*$/.test(text)) return false;
-	if (/^\s*(why|what|when|where|who|how|do|does|did|can|could|should|would|is|are)\b/i.test(text)) return false;
-	return /\b(assign|assigned|implement|continue|start|work|proceed|resume|finish|complete|done|fix|try|test|demo)\b/i.test(
-		text,
+function guardContent(task: TaskRecord, prefixes: ReadonlyMap<string, string>): string {
+	return [
+		"Task nudge: this session has assigned task work.",
+		"",
+		`Suggested next step: ${guardInstruction(task, prefixes)}`,
+	].join("\n");
+}
+
+function reviewNudgeKey(task: TaskRecord): string {
+	return `${task.id}:${task.status}:${task.updated_at}`;
+}
+
+function isTaskGuardMessage(message: { customType?: unknown; details?: unknown } | undefined): boolean {
+	return message?.customType === "task-guard";
+}
+
+function isTaskGuardInputText(text: unknown): text is string {
+	return (
+		typeof text === "string" &&
+		(text.startsWith("Task nudge: this session has assigned task work.") ||
+			text.startsWith("Review clarification needed: this session has a task in review."))
 	);
 }
-
-function shouldTriggerGuardTurn(state: GuardState, decision: TaskGuardDecision): boolean {
-	if (!userTextAllowsGuardAutoTurn(state.lastUserText)) return false;
-	if (decision.action.kind !== "continue" && decision.action.kind !== "revise") return false;
-	if (state.autoLoopTaskId !== decision.action.task.id || state.lastGuardProgressSerial !== state.progressSerial) {
-		state.autoLoopTaskId = decision.action.task.id;
-		state.autoLoopTurns = 0;
-	}
-	if (state.autoLoopTurns >= maxGuardAutoTurnsWithoutProgress) return false;
-	state.autoLoopTurns++;
-	return true;
+function taskGuardMessageText(message: { content?: unknown } | undefined): string | undefined {
+	const content = message?.content;
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return undefined;
+	const text = content
+		.map((part) => {
+			if (typeof part === "string") return part;
+			if (part && typeof part === "object" && "text" in part && typeof part.text === "string") return part.text;
+			return undefined;
+		})
+		.filter((part): part is string => part !== undefined)
+		.join("\n");
+	return text || undefined;
 }
 
-async function evaluateTaskGuard(ctx: ExtensionContext, state: GuardState): Promise<TaskGuardDecision | undefined> {
-	const assignedTo = sessionAssignment(ctx);
-	if (!assignedTo) return undefined;
+function hiddenStaleTaskGuardMessage<T extends { content?: unknown; display?: boolean; details?: unknown }>(
+	message: T,
+): T {
+	const details = message.details && typeof message.details === "object" ? message.details : {};
+	return {
+		...message,
+		content: [{ type: "text", text: "Task guard skipped because the referenced task is no longer active." }],
+		display: false,
+		details: { ...details, stale: true },
+	};
+}
+
+async function shouldHandleStaleTaskGuardMessage(
+	message: { content?: unknown },
+	state: GuardState,
+	ctx: ExtensionContext,
+): Promise<boolean> {
+	const text = taskGuardMessageText(message);
+	return isTaskGuardInputText(text) && shouldHandleStaleTaskGuardInput(text, state, ctx);
+}
+
+async function shouldHandleStaleTaskGuardInput(
+	text: string,
+	state: GuardState,
+	ctx: ExtensionContext,
+): Promise<boolean> {
+	if (!state.enabled) return true;
+	const decision = await evaluateTaskGuard(ctx);
+	return !decision || decision.content !== text;
+}
+
+async function evaluateTaskGuard(ctx: ExtensionContext): Promise<TaskGuardDecision | undefined> {
+	const assignedTo = sessionAssignmentAliases(ctx);
+	if (assignedTo.length === 0) return undefined;
 	const tasks = await loadHudTasks(ctx.cwd);
-	const action = selectGuardAction(tasks, assignedTo);
-	if (!action) {
-		state.lastGuardFingerprint = undefined;
-		state.lastGuardProgressSerial = undefined;
-		return undefined;
-	}
-	const fingerprint = guardFingerprint(tasks, action, assignedTo);
-	return { kind: "continue", fingerprint, action, content: guardContent(action, minimalTaskIdPrefixes(tasks)) };
+	const task = assignedSessionTasks(tasks, assignedTo)[0];
+	if (!task) return undefined;
+	if (task.status === "in_review")
+		return { task, content: reviewGuardContent(task, minimalTaskIdPrefixes(tasks)), reviewKey: reviewNudgeKey(task) };
+	return { task, content: guardContent(task, minimalTaskIdPrefixes(tasks)) };
 }
 
-async function sendTaskGuard(pi: ExtensionAPI, state: GuardState, force = false): Promise<boolean> {
-	const pending = state.pending;
-	state.pending = undefined;
-	if (!pending || (!state.enabled && !force)) return false;
-	if (!userTextAllowsGuardAutoTurn(state.lastUserText)) {
-		state.lastUserText = undefined;
-		return false;
-	}
-	const triggerTurn = force ? true : shouldTriggerGuardTurn(state, pending);
-	state.lastGuardFingerprint = pending.fingerprint;
-	state.lastGuardProgressSerial = state.progressSerial;
+function sendTaskGuard(
+	pi: ExtensionAPI,
+	state: GuardState,
+	decision: TaskGuardDecision,
+	usedToolsThisTurn: boolean,
+): boolean {
+	if (!state.enabled) return false;
+	if (!usedToolsThisTurn && state.noToolNudges >= maxGuardNudgesWithoutTools) return false;
+	if (decision.reviewKey && state.reviewNudgeKeys.has(decision.reviewKey)) return false;
 	pi.sendMessage(
 		{
 			customType: "task-guard",
-			content: [{ type: "text", text: pending.content }],
+			content: [{ type: "text", text: decision.content }],
 			display: true,
-			details: { action: pending.action.kind, taskId: pending.action.task.id },
+			details: { taskId: decision.task.id },
 		},
-		triggerTurn ? { deliverAs: "followUp", triggerTurn: true } : { deliverAs: "followUp" },
+		undefined,
 	);
-	state.lastUserText = undefined;
-	return triggerTurn;
+	if (decision.reviewKey) state.reviewNudgeKeys.add(decision.reviewKey);
+	state.noToolNudges = usedToolsThisTurn ? 0 : state.noToolNudges + 1;
+	return true;
+}
+function canSendTaskGuardNow(ctx: ExtensionContext): boolean {
+	try {
+		return typeof ctx.isIdle !== "function" || ctx.isIdle();
+	} catch {
+		return true;
+	}
 }
 
-function messageText(message: { content?: unknown }): string {
-	const content = message.content;
-	if (typeof content === "string") return content;
-	if (!Array.isArray(content)) return "";
-	return content
-		.map((item) => (item && typeof item === "object" && "text" in item ? String(item.text ?? "") : ""))
-		.join("");
-}
-
-function messageHasToolCall(message: { content?: unknown }): boolean {
-	return (
-		Array.isArray(message.content) &&
-		message.content.some(
-			(item) => item && typeof item === "object" && (item as { type?: string }).type === "toolCall",
-		)
-	);
-}
-
-function pausesGuard(text: string): boolean {
-	return /\b(pause|stop|hold|disable)\s+(the\s+)?task guard\b|\btask guard\s+(pause|stop|off|disable)\b/i.test(text);
+function scheduleTaskGuardWhenIdle(
+	pi: ExtensionAPI,
+	state: GuardState,
+	ctx: ExtensionContext,
+	usedToolsThisTurn: boolean,
+	setPendingTimer: (timer: ReturnType<typeof setTimeout> | undefined) => void,
+): void {
+	const run = async () => {
+		if (!canSendTaskGuardNow(ctx)) {
+			setPendingTimer(setTimeout(run, 10));
+			return;
+		}
+		setPendingTimer(undefined);
+		try {
+			const decision = state.enabled ? await evaluateTaskGuard(ctx) : undefined;
+			if (decision) sendTaskGuard(pi, state, decision, usedToolsThisTurn);
+		} catch (error) {
+			ctx.ui.notify?.(`Task guard failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
+		}
+	};
+	setPendingTimer(setTimeout(run, 0));
 }
 
 function setTaskGuardEnabled(state: GuardState, enabled: boolean): void {
 	state.enabled = enabled;
-	state.pending = undefined;
-	state.lastUserText = undefined;
-	state.autoLoopTaskId = undefined;
-	state.autoLoopTurns = 0;
-	if (!enabled) state.pauseResponses = 0;
+	state.toolsUsedThisTurn = false;
+	state.noToolNudges = 0;
+	state.reviewNudgeKeys.clear();
 	if (latestTaskHudState) {
 		latestTaskHudState = { ...latestTaskHudState, taskGuardEnabled: enabled };
 		taskHudWidget?.setState(latestTaskHudState);
@@ -1688,14 +1686,6 @@ function taskGuardCommandMessage(state: GuardState, args: string): { message: st
 		return { message: "Task guard disabled for this session.", type: "info" };
 	}
 	return { message: "Usage: /task-guard [on|off|status]", type: "warning" };
-}
-
-function fileChangingResult(result: unknown): boolean {
-	const details = (result as { details?: { filesChanged?: unknown; fileDiffs?: unknown } } | undefined)?.details;
-	return (
-		(typeof details?.filesChanged === "number" && details.filesChanged > 0) ||
-		(Array.isArray(details?.fileDiffs) && details.fileDiffs.length > 0)
-	);
 }
 
 function taskGuardPreferencePath(cwd: string): string {
@@ -1732,10 +1722,22 @@ export default function tasksExtension(pi: ExtensionAPI, _runtime: Runtime = {})
 	taskHudExpanded = true;
 
 	let cwd = process.cwd();
-	const guardState: GuardState = { enabled: false, progressSerial: 0, autoLoopTurns: 0, pauseResponses: 0 };
+	const guardState: GuardState = {
+		enabled: false,
+		toolsUsedThisTurn: false,
+		noToolNudges: 0,
+		reviewNudgeKeys: new Set(),
+	};
 	const getCwd = () => cwd;
-	const markProgress = () => {
-		guardState.progressSerial++;
+	let pendingTaskGuardTimer: ReturnType<typeof setTimeout> | undefined;
+	const setPendingTaskGuardTimer = (timer: ReturnType<typeof setTimeout> | undefined) => {
+		pendingTaskGuardTimer = timer;
+	};
+	const markToolUsed = (ctx: ExtensionContext | undefined, action: TaskCommand, result: unknown) => {
+		guardState.toolsUsedThisTurn = true;
+		if (pendingTaskGuardTimer) clearTimeout(pendingTaskGuardTimer);
+		pendingTaskGuardTimer = undefined;
+		if (taskWriteMayInvalidateQueuedGuard(action, result)) clearQueuedMessages(ctx);
 	};
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -1752,6 +1754,8 @@ export default function tasksExtension(pi: ExtensionAPI, _runtime: Runtime = {})
 	});
 
 	pi.on("session_shutdown", async () => {
+		if (pendingTaskGuardTimer) clearTimeout(pendingTaskGuardTimer);
+		pendingTaskGuardTimer = undefined;
 		if (taskHudPulseTimer) clearInterval(taskHudPulseTimer);
 		taskHudPulseTimer = undefined;
 		taskHudWidget = undefined;
@@ -1760,44 +1764,71 @@ export default function tasksExtension(pi: ExtensionAPI, _runtime: Runtime = {})
 		requestTaskHudRender = undefined;
 	});
 
-	pi.on("tool_execution_end", (event) => {
-		if (fileChangingResult((event as { result?: unknown }).result)) markProgress();
+	pi.on("tool_execution_end", () => {
+		guardState.toolsUsedThisTurn = true;
 	});
 
-	pi.on("message_end", async (event, ctx) => {
-		const message = (event as { message?: { role?: string; content?: unknown } }).message;
-		if (message?.role === "user") {
-			const text = messageText(message);
-			guardState.lastUserText = text;
-			if (pausesGuard(text)) guardState.pauseResponses = 1;
+	(pi as unknown as { on(event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown): void }).on(
+		"message_end",
+		async (event, ctx) => {
+			const message = (
+				event as { message?: { content?: unknown; customType?: unknown; details?: unknown; role?: string } }
+			).message;
+			if (
+				message &&
+				isTaskGuardMessage(message) &&
+				(await shouldHandleStaleTaskGuardMessage(message, guardState, ctx))
+			) {
+				return { message: hiddenStaleTaskGuardMessage(message) };
+			}
+			if (message?.role === "user" && !isTaskGuardMessage(message)) {
+				guardState.noToolNudges = 0;
+				guardState.toolsUsedThisTurn = false;
+			}
 			return undefined;
-		}
-		if (
-			!guardState.enabled ||
-			message?.role !== "assistant" ||
-			messageHasToolCall(message) ||
-			!messageText(message).trim()
-		) {
+		},
+	);
+
+	(pi as unknown as { on(event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown): void }).on(
+		"message_start",
+		async (event, ctx) => {
+			const message = (event as { message?: { content?: unknown; customType?: unknown; details?: unknown } })
+				.message;
+			if (!message || !isTaskGuardMessage(message)) return undefined;
+			if (await shouldHandleStaleTaskGuardMessage(message, guardState, ctx)) ctx.abort?.();
 			return undefined;
-		}
-		if (guardState.pauseResponses > 0) {
-			guardState.pauseResponses--;
-			guardState.pending = undefined;
-			return undefined;
-		}
-		try {
-			guardState.pending = await evaluateTaskGuard(ctx, guardState);
-		} catch (error) {
-			guardState.pending = undefined;
-			ctx.ui.notify?.(`Task guard failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
-		}
-		return undefined;
+		},
+	);
+
+	pi.on("input", async (event, ctx) => {
+		if (event.source !== "extension" || !isTaskGuardInputText(event.text)) return undefined;
+		if (await shouldHandleStaleTaskGuardInput(event.text, guardState, ctx)) return { action: "handled" as const };
+		return { action: "continue" as const };
 	});
+
+	const hasQueuedMessages = (ctx: ExtensionContext) => {
+		try {
+			return typeof ctx.hasPendingMessages === "function" && ctx.hasPendingMessages();
+		} catch {
+			return false;
+		}
+	};
 
 	pi.on("turn_end", async (_event, ctx) => {
-		await sendTaskGuard(pi, guardState).catch((error) => {
+		const usedToolsThisTurn = guardState.toolsUsedThisTurn;
+		guardState.toolsUsedThisTurn = false;
+		if (hasQueuedMessages(ctx)) return;
+		if (pendingTaskGuardTimer) clearTimeout(pendingTaskGuardTimer);
+		if (!canSendTaskGuardNow(ctx)) {
+			scheduleTaskGuardWhenIdle(pi, guardState, ctx, usedToolsThisTurn, setPendingTaskGuardTimer);
+			return;
+		}
+		try {
+			const decision = guardState.enabled ? await evaluateTaskGuard(ctx) : undefined;
+			if (decision) sendTaskGuard(pi, guardState, decision, usedToolsThisTurn);
+		} catch (error) {
 			ctx.ui.notify?.(`Task guard failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
-		});
+		}
 	});
 
 	pi.registerCommand?.("tasks", {
@@ -1845,7 +1876,7 @@ export default function tasksExtension(pi: ExtensionAPI, _runtime: Runtime = {})
 	});
 
 	pi.registerTool({
-		...makeCombinedTaskTool(taskReadAction, config, pi, getCwd, markProgress),
+		...makeCombinedTaskTool(taskReadAction, config, pi, getCwd, markToolUsed),
 		name: "task_read",
 		label: "Read Tasks",
 		description: "List/show project tasks.",
@@ -1862,7 +1893,7 @@ export default function tasksExtension(pi: ExtensionAPI, _runtime: Runtime = {})
 	});
 
 	pi.registerTool({
-		...makeCombinedTaskTool(taskWriteAction, config, pi, getCwd, markProgress),
+		...makeCombinedTaskTool(taskWriteAction, config, pi, getCwd, markToolUsed),
 		name: "task_write",
 		label: "Write Tasks",
 		description:

@@ -121,8 +121,12 @@ export function formatSessionTokens(tokens: number, percent: number | null, them
 	if (compactions > 0) {
 		annot.push(theme.fg("dim", `↻${compactions}`));
 	}
-	if (annot.length === 0) return tokenStr;
-	return `${tokenStr} (${annot.join(" · ")})`;
+	if (annot.length === 0) return theme.fg("dim", tokenStr);
+	return `${theme.fg("dim", tokenStr)}${theme.fg("dim", " (")}${annot.join(theme.fg("dim", " · "))}${theme.fg("dim", ")")}`;
+}
+
+function formatStatsParts(parts: string[], theme: Theme): string {
+	return parts.map((part) => (part.includes("\x1b[") ? part : theme.fg("dim", part))).join(theme.fg("dim", " · "));
 }
 
 /** Format turn count with optional max limit: "⟳5≤30" or "⟳5". */
@@ -413,7 +417,7 @@ export class AgentWidget {
 
 		const modeTag = modeLabel ? ` ${theme.fg("dim", `(${modeLabel})`)}` : "";
 		return {
-			line: `${this.renderMosaicHudIdentity(a, theme)}${theme.fg("dim", name)}${modeTag}  ${theme.fg("dim", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", parts.join(" · "))}${statusText}`,
+			line: `${this.renderMosaicHudIdentity(a, theme)}${theme.fg("dim", name)}${modeTag}  ${theme.fg("dim", a.description)} ${theme.fg("dim", "·")} ${formatStatsParts(parts, theme)}${statusText}`,
 			statusIcon: icon,
 		};
 	}
@@ -481,14 +485,14 @@ export class AgentWidget {
 			if (toolUses > 0) parts.push(`${toolUses} tool use${toolUses === 1 ? "" : "s"}`);
 			if (tokenText) parts.push(tokenText);
 			parts.push(elapsed);
-			const statsText = parts.join(" · ");
+			const statsText = formatStatsParts(parts, theme);
 
 			const activity = bg ? describeActivity(bg.activeTools, bg.responseText) : "thinking…";
 
 			runningLines.push([
 				truncate(
 					theme.fg("dim", "├─") +
-						` ${this.renderMosaicHudIdentity(a, theme, animationElapsedMs)}${renderRunningName(name, theme, animationElapsedMs)}${modeTag}  ${theme.fg("muted", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", statsText)}`,
+						` ${this.renderMosaicHudIdentity(a, theme, animationElapsedMs)}${renderRunningName(name, theme, animationElapsedMs)}${modeTag}  ${theme.fg("muted", a.description)} ${theme.fg("dim", "·")} ${statsText}`,
 				),
 				truncate(theme.fg("dim", "│  ") + theme.fg("dim", `  ⎿  ${activity}`)),
 			]);

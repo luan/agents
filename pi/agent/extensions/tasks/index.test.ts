@@ -372,7 +372,724 @@ describe("tasks extension", () => {
 		expect(second.messages).toHaveLength(1);
 		expect(second.messages[0].message.customType).toBe("task-guard");
 		expect(second.messages[0].message.content[0].text).toContain("Continue in-progress task");
-		expect(second.messages[0].options).toEqual({ deliverAs: "followUp", triggerTurn: true });
+		expect(second.messages[0].message.content[0].text).not.toContain("/task-guard off");
+		expect(second.messages[0].options).toBeUndefined();
+
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	test("sends task guard nudges when session identity only comes from session manager id", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-tasks-guard-session-id-"));
+		const storePath = join(cwd, ".pi", "tasks", "tasks.json");
+		mkdirSync(join(cwd, ".pi", "tasks"), { recursive: true });
+		writeFileSync(
+			storePath,
+			JSON.stringify({
+				tasks: [
+					{
+						...task,
+						id: "act2k7",
+						title: "Continue from session manager id",
+						status: "in_progress",
+						assigned_to: "session:live-session-id",
+					},
+				],
+			}),
+		);
+		const commands = new Map<string, any>();
+		const handlers = new Map<string, any>();
+		const messages: Array<{ message: any; options: any }> = [];
+		const pi = {
+			on(name: string, handler: any) {
+				handlers.set(name, handler);
+			},
+			registerCommand(name: string, command: any) {
+				commands.set(name, command);
+			},
+			registerShortcut() {},
+			registerTool() {},
+			sendMessage(message: any, options: any) {
+				messages.push({ message, options });
+			},
+		};
+		const ctx = {
+			cwd,
+			sessionManager: {
+				getSessionId() {
+					return "live-session-id";
+				},
+				getSessionFile() {
+					return undefined;
+				},
+			},
+			ui: {
+				notify() {},
+				setWidget() {},
+			},
+		};
+
+		tasksExtension(pi as any);
+		await handlers.get("session_start")?.({}, ctx);
+		await commands.get("task-guard").handler("on", ctx);
+		await handlers.get("message_end")?.({ message: { role: "user", content: "continue" } }, ctx);
+		await handlers.get("message_end")?.({ message: { role: "assistant", content: "Continuing." } }, ctx);
+		await handlers.get("turn_end")?.({}, ctx);
+
+		expect(messages).toHaveLength(1);
+		expect(messages[0].message.content[0].text).toContain("Continue from session manager id");
+
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	test("continues bootty-style in-progress tasks after a do-it directive", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-tasks-guard-do-it-"));
+		const storePath = join(cwd, ".pi", "tasks", "tasks.json");
+		const sessionFile = join(
+			cwd,
+			".pi",
+			"agent",
+			"sessions",
+			"2026-06-19T16-19-32-675Z_019ee0ae-30c3-7158-a7ee-e7b37c3f6b6a.jsonl",
+		);
+		mkdirSync(join(cwd, ".pi", "tasks"), { recursive: true });
+		writeFileSync(
+			storePath,
+			JSON.stringify({
+				tasks: [
+					{
+						...task,
+						id: "5z2zdd",
+						title: "Evaluate egui-shadcn as Bootty component layer",
+						status: "in_progress",
+						assigned_to: "session:2026-06-19T16-19-32-675Z_019ee0ae-30c3-7158-a7ee-e7b37c3f6b6a",
+					},
+				],
+			}),
+		);
+		const commands = new Map<string, any>();
+		const handlers = new Map<string, any>();
+		const messages: Array<{ message: any; options: any }> = [];
+		const pi = {
+			on(name: string, handler: any) {
+				handlers.set(name, handler);
+			},
+			registerCommand(name: string, command: any) {
+				commands.set(name, command);
+			},
+			registerShortcut() {},
+			registerTool() {},
+			sendMessage(message: any, options: any) {
+				messages.push({ message, options });
+			},
+		};
+		const ctx = {
+			cwd,
+			sessionManager: {
+				getSessionFile() {
+					return sessionFile;
+				},
+			},
+			ui: {
+				notify() {},
+				setWidget() {},
+			},
+		};
+
+		tasksExtension(pi as any);
+		await handlers.get("session_start")?.({}, ctx);
+		await commands.get("task-guard").handler("on", ctx);
+		await handlers.get("message_end")?.({ message: { role: "user", content: "let's do it" } }, ctx);
+		await handlers.get("message_end")?.({ message: { role: "assistant", content: "Done." } }, ctx);
+		await handlers.get("turn_end")?.({}, ctx);
+
+		expect(messages).toHaveLength(1);
+		expect(messages[0].message.content[0].text).toContain("Continue in-progress task");
+		expect(messages[0].options).toBeUndefined();
+
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	test("does not send task guard nudges for unassigned in-progress tasks", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-tasks-guard-unassigned-"));
+		const storePath = join(cwd, ".pi", "tasks", "tasks.json");
+		mkdirSync(join(cwd, ".pi", "tasks"), { recursive: true });
+		writeFileSync(
+			storePath,
+			JSON.stringify({
+				tasks: [
+					{
+						...task,
+						id: "act2k7",
+						title: "Continue unassigned active work",
+						status: "in_progress",
+						assigned_to: null,
+					},
+				],
+			}),
+		);
+		const commands = new Map<string, any>();
+		const handlers = new Map<string, any>();
+		const messages: Array<{ message: any; options: any }> = [];
+		const pi = {
+			on(name: string, handler: any) {
+				handlers.set(name, handler);
+			},
+			registerCommand(name: string, command: any) {
+				commands.set(name, command);
+			},
+			registerShortcut() {},
+			registerTool() {},
+			sendMessage(message: any, options: any) {
+				messages.push({ message, options });
+			},
+		};
+		const ctx = {
+			cwd,
+			sessionId: "guard-session",
+			ui: {
+				notify() {},
+				setWidget() {},
+			},
+		};
+
+		tasksExtension(pi as any);
+		await handlers.get("session_start")?.({}, ctx);
+		await commands.get("task-guard").handler("on", ctx);
+		await handlers.get("message_end")?.({ message: { role: "user", content: "continue" } }, ctx);
+		await handlers.get("message_end")?.({ message: { role: "assistant", content: "Continuing." } }, ctx);
+		await handlers.get("turn_end")?.({}, ctx);
+
+		expect(messages).toHaveLength(0);
+
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	test("stops nudging after two no-tool turns until the next user message", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-tasks-guard-no-tools-"));
+		const storePath = join(cwd, ".pi", "tasks", "tasks.json");
+		mkdirSync(join(cwd, ".pi", "tasks"), { recursive: true });
+		writeFileSync(
+			storePath,
+			JSON.stringify({
+				tasks: [
+					{
+						...task,
+						id: "act2k7",
+						title: "Continue assigned active work",
+						status: "in_progress",
+						assigned_to: "session:guard-session",
+					},
+				],
+			}),
+		);
+		const commands = new Map<string, any>();
+		const handlers = new Map<string, any>();
+		const messages: Array<{ message: any; options: any }> = [];
+		const pi = {
+			on(name: string, handler: any) {
+				handlers.set(name, handler);
+			},
+			registerCommand(name: string, command: any) {
+				commands.set(name, command);
+			},
+			registerShortcut() {},
+			registerTool() {},
+			sendMessage(message: any, options: any) {
+				messages.push({ message, options });
+			},
+		};
+		const ctx = {
+			cwd,
+			sessionId: "guard-session",
+			ui: {
+				notify() {},
+				setWidget() {},
+			},
+		};
+
+		tasksExtension(pi as any);
+		await handlers.get("session_start")?.({}, ctx);
+		await commands.get("task-guard").handler("on", ctx);
+		await handlers.get("message_end")?.({ message: { role: "user", content: "continue" } }, ctx);
+		await handlers.get("message_end")?.({ message: { role: "assistant", content: "No tools." } }, ctx);
+		await handlers.get("turn_end")?.({}, ctx);
+		await handlers.get("message_end")?.({ message: { role: "assistant", content: "Still no tools." } }, ctx);
+		await handlers.get("turn_end")?.({}, ctx);
+		await handlers.get("message_end")?.({ message: { role: "assistant", content: "Still no tools." } }, ctx);
+		await handlers.get("turn_end")?.({}, ctx);
+
+		expect(messages).toHaveLength(2);
+		expect(messages.every((message) => message.options === undefined)).toBe(true);
+
+		await handlers.get("message_end")?.({ message: { role: "user", content: "continue again" } }, ctx);
+		await handlers.get("message_end")?.({ message: { role: "assistant", content: "No tools after reset." } }, ctx);
+		await handlers.get("turn_end")?.({}, ctx);
+
+		expect(messages).toHaveLength(3);
+
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	test("does not reset no-tool nudge suppression for task-guard follow-up messages", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-tasks-guard-self-loop-"));
+		const storePath = join(cwd, ".pi", "tasks", "tasks.json");
+		mkdirSync(join(cwd, ".pi", "tasks"), { recursive: true });
+		writeFileSync(
+			storePath,
+			JSON.stringify({
+				tasks: [
+					{
+						...task,
+						id: "act2k7",
+						title: "Avoid self-loop nudges",
+						status: "in_progress",
+						assigned_to: "session:guard-session",
+					},
+				],
+			}),
+		);
+		const commands = new Map<string, any>();
+		const handlers = new Map<string, any>();
+		const messages: Array<{ message: any; options: any }> = [];
+		const pi = {
+			on(name: string, handler: any) {
+				handlers.set(name, handler);
+			},
+			registerCommand(name: string, command: any) {
+				commands.set(name, command);
+			},
+			registerShortcut() {},
+			registerTool() {},
+			sendMessage(message: any, options: any) {
+				messages.push({ message, options });
+			},
+		};
+		const ctx = {
+			cwd,
+			sessionId: "guard-session",
+			ui: {
+				notify() {},
+				setWidget() {},
+			},
+		};
+
+		tasksExtension(pi as any);
+		await handlers.get("session_start")?.({}, ctx);
+		await commands.get("task-guard").handler("on", ctx);
+		await handlers.get("message_end")?.({ message: { role: "user", content: "continue" } }, ctx);
+		for (let index = 0; index < 5; index++) {
+			await handlers.get("message_end")?.({ message: { role: "assistant", content: `No tools ${index}.` } }, ctx);
+			await handlers.get("turn_end")?.({}, ctx);
+			const latest = messages.at(-1)?.message;
+			if (latest) await handlers.get("message_end")?.({ message: { role: "user", ...latest } }, ctx);
+		}
+
+		expect(messages).toHaveLength(2);
+
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	test("aborts and hides a queued task-guard message after the referenced task completes", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-tasks-guard-stale-queued-"));
+		const commands = new Map<string, any>();
+		const tools = new Map<string, any>();
+		const handlers = new Map<string, any>();
+		const messages: Array<{ message: any; options: any }> = [];
+		let aborted = false;
+		let queueCleared = false;
+		const pi = {
+			on(name: string, handler: any) {
+				handlers.set(name, handler);
+			},
+			registerCommand(name: string, command: any) {
+				commands.set(name, command);
+			},
+			registerShortcut() {},
+			registerTool(toolDef: any) {
+				tools.set(toolDef.name, toolDef);
+			},
+			sendMessage(message: any, options: any) {
+				messages.push({ message, options });
+			},
+		};
+		const ctx = {
+			cwd,
+			sessionId: "guard-session",
+			abort() {
+				aborted = true;
+			},
+			clearQueue() {
+				queueCleared = true;
+			},
+			ui: {
+				notify() {},
+				setWidget() {},
+			},
+		};
+
+		tasksExtension(pi as any);
+		await handlers.get("session_start")?.({}, ctx);
+		await tools.get("task_write").execute(
+			"add",
+			{
+				op: "add",
+				title: "Complete after first guard",
+				data: { type: "feature", status: "in_progress", assigned_to: "current" },
+			},
+			undefined,
+			undefined,
+			ctx,
+		);
+		await commands.get("task-guard").handler("on", ctx);
+		await handlers.get("message_end")?.(
+			{ message: { role: "assistant", content: "Stopping before task completion." } },
+			ctx,
+		);
+		await handlers.get("turn_end")?.({}, ctx);
+
+		expect(messages).toHaveLength(1);
+		const queuedGuard = { role: "custom", ...messages[0].message };
+		const id = messages[0].message.details.taskId;
+
+		await tools
+			.get("task_write")
+			.execute(
+				"done",
+				{ op: "update", id, data: { status: "done" }, auto_verified_completion: true },
+				undefined,
+				undefined,
+				ctx,
+			);
+		expect(queueCleared).toBe(true);
+
+		await handlers.get("message_start")?.({ message: queuedGuard }, ctx);
+		expect(aborted).toBe(true);
+
+		const replacement = await handlers.get("message_end")?.({ message: queuedGuard }, ctx);
+		expect(replacement?.message.role).toBe("custom");
+		expect(replacement?.message.display).toBe(false);
+		expect(replacement?.message.content[0].text).toContain("skipped");
+		expect(replacement?.message.details).toEqual({ taskId: id, stale: true });
+
+		await handlers.get("turn_end")?.({}, ctx);
+		expect(messages).toHaveLength(1);
+
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	test("re-evaluates deferred task guard after task completion before sending", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-tasks-guard-deferred-complete-"));
+		const commands = new Map<string, any>();
+		const tools = new Map<string, any>();
+		const handlers = new Map<string, any>();
+		const messages: Array<{ message: any; options: any }> = [];
+		let idle = false;
+		const pi = {
+			on(name: string, handler: any) {
+				handlers.set(name, handler);
+			},
+			registerCommand(name: string, command: any) {
+				commands.set(name, command);
+			},
+			registerShortcut() {},
+			registerTool(toolDef: any) {
+				tools.set(toolDef.name, toolDef);
+			},
+			sendMessage(message: any, options: any) {
+				messages.push({ message, options });
+			},
+		};
+		const ctx = {
+			cwd,
+			sessionId: "guard-session",
+			isIdle() {
+				return idle;
+			},
+			ui: {
+				notify() {},
+				setWidget() {},
+			},
+		};
+
+		tasksExtension(pi as any);
+		await handlers.get("session_start")?.({}, ctx);
+		await tools.get("task_write").execute(
+			"add",
+			{
+				op: "add",
+				title: "Complete before deferred guard sends",
+				data: { type: "feature", status: "in_progress", assigned_to: "current" },
+			},
+			undefined,
+			undefined,
+			ctx,
+		);
+		await commands.get("task-guard").handler("on", ctx);
+		await handlers.get("message_end")?.({ message: { role: "assistant", content: "Done soon." } }, ctx);
+		await handlers.get("turn_end")?.({}, ctx);
+
+		expect(messages).toHaveLength(0);
+		const taskList = JSON.parse(readFileSync(join(cwd, ".pi", "tasks", "tasks.json"), "utf8")).tasks;
+		const id = taskList[0].id;
+
+		await tools
+			.get("task_write")
+			.execute(
+				"done",
+				{ op: "update", id, data: { status: "done" }, auto_verified_completion: true },
+				undefined,
+				undefined,
+				ctx,
+			);
+		idle = true;
+		await new Promise((resolve) => setTimeout(resolve, 25));
+
+		expect(messages).toHaveLength(0);
+		await handlers.get("session_shutdown")?.({}, ctx);
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	test("allows current task-guard extension input through", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-tasks-guard-current-input-"));
+		const storePath = join(cwd, ".pi", "tasks", "tasks.json");
+		mkdirSync(join(cwd, ".pi", "tasks"), { recursive: true });
+		writeFileSync(
+			storePath,
+			JSON.stringify({
+				tasks: [
+					{
+						...task,
+						id: "act2k7",
+						title: "Current task",
+						status: "in_progress",
+						assigned_to: "session:guard-session",
+					},
+				],
+			}),
+		);
+		const commands = new Map<string, any>();
+		const handlers = new Map<string, any>();
+		const messages: Array<{ message: any; options: any }> = [];
+		const pi = {
+			on(name: string, handler: any) {
+				handlers.set(name, handler);
+			},
+			registerCommand(name: string, command: any) {
+				commands.set(name, command);
+			},
+			registerShortcut() {},
+			registerTool() {},
+			sendMessage(message: any, options: any) {
+				messages.push({ message, options });
+			},
+		};
+		const ctx = {
+			cwd,
+			sessionId: "guard-session",
+			ui: {
+				notify() {},
+				setWidget() {},
+			},
+		};
+
+		tasksExtension(pi as any);
+		await handlers.get("session_start")?.({}, ctx);
+		await commands.get("task-guard").handler("on", ctx);
+		await handlers.get("turn_end")?.({}, ctx);
+		const text = messages[0].message.content[0].text;
+		const result = await handlers.get("input")?.({ type: "input", source: "extension", text }, ctx);
+
+		expect(result).toEqual({ action: "continue" });
+
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	test("does not nudge when queued or steered messages are pending", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-tasks-guard-pending-"));
+		const storePath = join(cwd, ".pi", "tasks", "tasks.json");
+		mkdirSync(join(cwd, ".pi", "tasks"), { recursive: true });
+		writeFileSync(
+			storePath,
+			JSON.stringify({
+				tasks: [
+					{
+						...task,
+						id: "act2k7",
+						title: "Continue assigned work after queued message",
+						status: "in_progress",
+						assigned_to: "session:guard-session",
+					},
+				],
+			}),
+		);
+		const commands = new Map<string, any>();
+		const handlers = new Map<string, any>();
+		const messages: Array<{ message: any; options: any }> = [];
+		let pendingMessages = true;
+		const pi = {
+			on(name: string, handler: any) {
+				handlers.set(name, handler);
+			},
+			registerCommand(name: string, command: any) {
+				commands.set(name, command);
+			},
+			registerShortcut() {},
+			registerTool() {},
+			sendMessage(message: any, options: any) {
+				messages.push({ message, options });
+			},
+		};
+		const ctx = {
+			cwd,
+			sessionId: "guard-session",
+			hasPendingMessages() {
+				return pendingMessages;
+			},
+			ui: {
+				notify() {},
+				setWidget() {},
+			},
+		};
+
+		tasksExtension(pi as any);
+		await handlers.get("session_start")?.({}, ctx);
+		await commands.get("task-guard").handler("on", ctx);
+		await handlers.get("message_end")?.({ message: { role: "assistant", content: "Waiting." } }, ctx);
+		await handlers.get("turn_end")?.({}, ctx);
+
+		expect(messages).toHaveLength(0);
+
+		pendingMessages = false;
+		await handlers.get("message_end")?.({ message: { role: "assistant", content: "Still waiting." } }, ctx);
+		await handlers.get("turn_end")?.({}, ctx);
+
+		expect(messages).toHaveLength(1);
+
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	test("nudges in-review tasks once with review-specific guidance", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-tasks-guard-review-"));
+		const storePath = join(cwd, ".pi", "tasks", "tasks.json");
+		mkdirSync(join(cwd, ".pi", "tasks"), { recursive: true });
+		writeFileSync(
+			storePath,
+			JSON.stringify({
+				tasks: [
+					{
+						...task,
+						id: "rev2k7",
+						title: "Clarify review scope",
+						status: "in_review",
+						assigned_to: "session:guard-session",
+					},
+				],
+			}),
+		);
+		const commands = new Map<string, any>();
+		const handlers = new Map<string, any>();
+		const messages: Array<{ message: any; options: any }> = [];
+		const pi = {
+			on(name: string, handler: any) {
+				handlers.set(name, handler);
+			},
+			registerCommand(name: string, command: any) {
+				commands.set(name, command);
+			},
+			registerShortcut() {},
+			registerTool() {},
+			sendMessage(message: any, options: any) {
+				messages.push({ message, options });
+			},
+		};
+		const ctx = {
+			cwd,
+			sessionId: "guard-session",
+			ui: {
+				notify() {},
+				setWidget() {},
+			},
+		};
+
+		tasksExtension(pi as any);
+		await handlers.get("session_start")?.({}, ctx);
+		await commands.get("task-guard").handler("on", ctx);
+		await handlers.get("message_end")?.({ message: { role: "assistant", content: "Waiting." } }, ctx);
+		await handlers.get("turn_end")?.({}, ctx);
+		await handlers.get("message_end")?.({ message: { role: "assistant", content: "Still waiting." } }, ctx);
+		await handlers.get("turn_end")?.({}, ctx);
+
+		expect(messages).toHaveLength(1);
+		expect(messages[0].message.content[0].text).toContain("Review clarification needed");
+		expect(messages[0].message.content[0].text).toContain("what needs to be reviewed and how");
+		expect(messages[0].options).toBeUndefined();
+
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	test("stops nudging after the assigned task is completed", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-tasks-guard-completed-"));
+		const commands = new Map<string, any>();
+		const tools = new Map<string, any>();
+		const handlers = new Map<string, any>();
+		const messages: Array<{ message: any; options: any }> = [];
+		const pi = {
+			on(name: string, handler: any) {
+				handlers.set(name, handler);
+			},
+			registerCommand(name: string, command: any) {
+				commands.set(name, command);
+			},
+			registerShortcut() {},
+			registerTool(toolDef: any) {
+				tools.set(toolDef.name, toolDef);
+			},
+			sendMessage(message: any, options: any) {
+				messages.push({ message, options });
+			},
+		};
+		const ctx = {
+			cwd,
+			sessionId: "guard-session",
+			ui: {
+				notify() {},
+				setWidget() {},
+			},
+		};
+
+		tasksExtension(pi as any);
+		await handlers.get("session_start")?.({}, ctx);
+		await tools.get("task_write").execute(
+			"add",
+			{
+				op: "add",
+				title: "Complete assigned task",
+				data: { type: "feature", status: "in_progress", assigned_to: "current" },
+			},
+			undefined,
+			undefined,
+			ctx,
+		);
+		await commands.get("task-guard").handler("on", ctx);
+		await handlers.get("message_end")?.({ message: { role: "assistant", content: "Stopping too soon." } }, ctx);
+		await handlers.get("turn_end")?.({}, ctx);
+
+		expect(messages).toHaveLength(1);
+		const id = messages[0].message.details.taskId;
+
+		await tools
+			.get("task_write")
+			.execute(
+				"done",
+				{ op: "update", id, data: { status: "done" }, auto_verified_completion: true },
+				undefined,
+				undefined,
+				ctx,
+			);
+		await handlers.get("message_end")?.({ message: { role: "assistant", content: "Completed." } }, ctx);
+		await handlers.get("turn_end")?.({}, ctx);
+
+		expect(messages).toHaveLength(1);
 
 		rmSync(cwd, { recursive: true, force: true });
 	});
