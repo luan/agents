@@ -1,0 +1,13 @@
+{
+  "name": "agents-omp-extensions",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "omp": {
+    "extensions": [
+      "tui/index.ts",
+      "token-burden/index.ts",
+      "git-tool/index.ts"
+    ]
+  }
+}

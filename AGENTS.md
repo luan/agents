@@ -15,7 +15,7 @@
 
 This repo is the central hub for local agent configuration. The checked-in
 root `AGENTS.md` is only for working on this repo. The global instruction file
-linked into Claude, Codex, and Pi is generated as `GLOBAL_AGENTS.md`
+linked into Claude, Codex, Pi, and OMP is generated as `GLOBAL_AGENTS.md`
 and is intentionally gitignored.
 
 ## Portability Rules

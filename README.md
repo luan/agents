@@ -1,10 +1,10 @@
 # agents
 
-Central configuration hub for Claude, Codex, and Pi.
+Central configuration hub for Claude, Codex, Pi, and OMP.
 
 ## Philosophy
 
-Shared configuration is the default. Tool-specific folders (`claude/`, `codex/`, `pi/`) exist only when a tool requires a different schema, filename, or runtime registration. See `docs/exceptions.md`.
+Shared configuration is the default. Tool-specific folders (`claude/`, `codex/`, `pi/`, `omp/`) exist only when a tool requires a different schema, filename, or runtime registration. See `docs/exceptions.md`.
 
 ## Layout
 

@@ -15,6 +15,7 @@ const TARGETS: &[(&str, &[&str])] = &[
     ("claude", &[".claude"]),
     ("codex", &[".codex"]),
     ("pi", &[".pi"]),
+    ("omp/agent", &[".omp", "agent"]),
     ("skills", &[".claude", "skills"]),
 ];
 
@@ -607,6 +608,30 @@ mod tests {
         assert!(meta.file_type().is_symlink());
         assert_eq!(fs::canonicalize(&source)?, fs::canonicalize(&target)?);
         assert_eq!(fs::read_to_string(backup)?, "model = \"gpt-5\"\n");
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn package_link_creates_target_dir_and_links_file_children() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let source = dir.path().join("source-agent");
+        let target = dir.path().join(".omp").join("agent");
+        fs::create_dir_all(&source)?;
+        fs::write(source.join("config.yml"), "setupVersion: 1\n")?;
+
+        process_package(Mode::Link, &source, &target)?;
+
+        let target_meta = fs::symlink_metadata(&target)?;
+        assert!(target_meta.is_dir());
+        assert!(!target_meta.file_type().is_symlink());
+        let config_link = target.join("config.yml");
+        let config_meta = fs::symlink_metadata(&config_link)?;
+        assert!(config_meta.file_type().is_symlink());
+        assert_eq!(
+            fs::canonicalize(source.join("config.yml"))?,
+            fs::canonicalize(config_link)?
+        );
         Ok(())
     }
 }

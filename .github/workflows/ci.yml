@@ -95,7 +95,7 @@ jobs:
 
       - name: scenario 1 — clean target dirs
         shell: bash
-        run: rm -rf "$HOME/.claude" "$HOME/.codex" "$HOME/.pi" "$HOME/.agents"
+        run: rm -rf "$HOME/.claude" "$HOME/.codex" "$HOME/.pi" "$HOME/.omp" "$HOME/.agents"
 
       - name: scenario 1 — xtask link-dry-run on clean home
         run: cargo xtask link-dry-run
@@ -120,6 +120,7 @@ jobs:
             "$HOME/.codex/AGENTS.md" \
             "$HOME/.codex/config.toml" \
             "$HOME/.pi/agent" \
+            "$HOME/.omp/agent/config.yml" \
             "$HOME/.claude/skills/commit"; do
             test -L "$p" || { echo "::error::missing symlink: $p"; exit 1; }
             test -e "$p" || { echo "::error::broken symlink: $p"; exit 1; }
@@ -161,7 +162,7 @@ jobs:
         shell: bash
         run: |
           set -eu
-          rm -rf "$HOME/.claude" "$HOME/.codex" "$HOME/.pi" "$HOME/.agents"
+          rm -rf "$HOME/.claude" "$HOME/.codex" "$HOME/.pi" "$HOME/.omp" "$HOME/.agents"
           mkdir -p "$HOME/.claude"
           printf '%s' '{"sentinel":"user-data-must-not-be-clobbered"}' > "$HOME/.claude/settings.json"
 
