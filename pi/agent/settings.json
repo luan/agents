@@ -1,5 +1,5 @@
 {
-  "lastChangelogVersion": "0.79.8",
+  "lastChangelogVersion": "0.79.9",
   "steeringMode": "all",
   "autoUpdate": true,
   "transport": "auto",
@@ -39,7 +39,7 @@
     "-extensions/spawn/index.ts",
     "extensions/system-prompt/index.ts",
     "extensions/tasks/index.ts",
-    "extensions/todos/index.ts",
+    "-extensions/todos/index.ts",
     "extensions/token-burden/index.ts",
     "extensions/tui/index.ts",
     "extensions/vcc/index.ts",
@@ -67,3 +67,4 @@
   },
   "enableInstallTelemetry": false
 }
+
