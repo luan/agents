@@ -23,6 +23,7 @@ import {
 	setOrderedAboveEditorWidget,
 	padToVisibleWidth as sharedPadToVisibleWidth,
 } from "../shared/tui";
+import { framedBlock, renderStatusLine } from "../shared/tui/omp-card";
 
 const tasksTui = defineExtensionTui({ id: "tasks" });
 type TaskCommand = "add" | "list" | "show" | "update" | "delete";
@@ -47,11 +48,16 @@ interface Config {
 
 interface Runtime {}
 
-interface GuardState {
-	enabled: boolean;
+interface TaskReminderState {
+	attempts: number;
+	awaitingProgress: boolean;
 	toolsUsedThisTurn: boolean;
-	noToolNudges: number;
-	reviewNudgeKeys: Set<string>;
+}
+
+interface TaskReminderDetails {
+	tasks: Array<{ id: string; title: string; status: string; blocked_by?: string[] }>;
+	attempts: number;
+	maxAttempts: number;
 }
 
 interface TaskRecord {
@@ -124,7 +130,6 @@ interface TaskHudState {
 	tasks: TaskRecord[];
 	display: AssignmentDisplayContext;
 	config: Config;
-	taskGuardEnabled: boolean;
 }
 
 const defaultConfig: Config = {
@@ -429,7 +434,7 @@ function uniqueRandomTaskId(taken: ReadonlySet<string>): string {
 	throw new Error("Could not generate a unique task id");
 }
 
-function minimalTaskIdPrefixes(tasks: readonly TaskRecord[]): Map<string, string> {
+function minimalTaskIdPrefixes(tasks: readonly { id: string }[]): Map<string, string> {
 	const ids = tasks.map((task) => task.id);
 	const prefixes = new Map<string, string>();
 	for (const id of ids) {
@@ -698,7 +703,6 @@ class TaskHudWidget implements Component {
 		return renderHudLines(state.tasks, this.theme, width, state.config.hud.maxTasks, state.display, {
 			compact: !taskHudExpanded,
 			frame: taskHudFrame,
-			taskGuardEnabled: state.taskGuardEnabled,
 		});
 	}
 
@@ -720,12 +724,11 @@ async function updateTaskHud(
 	ctx: ExtensionContext,
 	pi: ExtensionAPI | undefined,
 	config: Config,
-	taskGuardEnabled = latestTaskHudState?.taskGuardEnabled ?? false,
 	preloadedTasks?: TaskRecord[],
 ): Promise<void> {
 	const tasks = preloadedTasks ?? (await loadHudTasks(ctx.cwd));
 	const display = assignmentDisplayContext(pi, ctx, tasks);
-	const state = { tasks, display, config, taskGuardEnabled };
+	const state = { tasks, display, config };
 	latestTaskHudState = state;
 	ensureTaskHudWidget(ctx);
 	taskHudWidget?.setState(state);
@@ -1328,10 +1331,6 @@ function doneKeyStatus(task: TaskRecord): string {
 	return isStoryTaskType(task.type) ? "in_review" : "done";
 }
 
-function taskGuardHudLine(theme: Theme, width: number): string {
-	return truncateLine(`${theme.fg("accent", "󰌾")} ${theme.fg("warning", "Task guard on")}`, width);
-}
-
 function taskHudSummary(tasks: TaskRecord[]): string[] {
 	const visible = tasks.filter((task) => !isCanceled(task));
 	const done = visible.filter(isComplete).length;
@@ -1356,19 +1355,17 @@ export function renderHudLines(
 		compact?: boolean;
 		frame?: number;
 		now?: number;
-		taskGuardEnabled?: boolean;
 	} = {},
 ): string[] {
 	const now = options.now ?? Date.now();
-	const guardLines = options.taskGuardEnabled ? [taskGuardHudLine(theme, width)] : [];
 	const visibleTasks = tasks.filter((task) => !isCanceled(task));
-	if (visibleTasks.length === 0) return guardLines;
+	if (visibleTasks.length === 0) return [];
 	const parts = taskHudSummary(visibleTasks);
 	const summaryLine = truncateLine(
 		`${theme.fg("accent", "●")} ${theme.fg("accent", `${visibleTasks.length} tasks`)} ${theme.fg("muted", `(${parts.join(", ")})`)}`,
 		width,
 	);
-	if (options.compact) return [...guardLines, summaryLine];
+	if (options.compact) return [summaryLine];
 	const byId = new Map(tasks.map((task) => [task.id, task]));
 	const prefixes = minimalTaskIdPrefixes(tasks);
 	const lines = [summaryLine];
@@ -1378,7 +1375,7 @@ export function renderHudLines(
 	}
 	const hidden = sorted.length - Math.min(sorted.length, maxTasks);
 	if (hidden > 0) lines.push(truncateLine(theme.fg("dim", `    … and ${hidden} more`), width));
-	return [...guardLines, ...lines].map((line) => truncateLine(line, width));
+	return lines.map((line) => truncateLine(line, width));
 }
 
 const emptyTaskRender = new EmptyComponent();
@@ -1414,31 +1411,6 @@ function normalizeTaskWriteParams(params: Record<string, unknown>): Record<strin
 		clear_parent: params.clear_parent === true || clear.has("parent"),
 		clear_blockers: params.clear_blockers === true || clear.has("blockers"),
 	};
-}
-
-function taskResultTask(result: unknown): TaskRecord | undefined {
-	const task = (result as { details?: { task?: unknown } } | undefined)?.details?.task;
-	return task && typeof task === "object" ? (task as TaskRecord) : undefined;
-}
-
-function taskWriteMayInvalidateQueuedGuard(action: TaskCommand, result: unknown): boolean {
-	if (action === "delete") return true;
-	const task = taskResultTask(result);
-	return Boolean(task && (isTerminalStatus(task.status) || isCanceled(task)));
-}
-
-function clearQueuedMessages(ctx: ExtensionContext | undefined): void {
-	if (!ctx) return;
-	const maybeClear = (ctx as ExtensionContext & { clearQueue?: () => void }).clearQueue;
-	if (typeof maybeClear === "function") {
-		maybeClear.call(ctx);
-		return;
-	}
-	try {
-		if (typeof ctx.hasPendingMessages === "function" && ctx.hasPendingMessages()) ctx.abort?.();
-	} catch {
-		// Queue clearing is best-effort; task writes must still succeed.
-	}
 }
 
 function makeCombinedTaskTool(
@@ -1488,226 +1460,111 @@ function installSilentTaskToolRenderPatch(): void {
 	prototype[silentTaskToolPatchKey] = true;
 }
 
-const maxGuardNudgesWithoutTools = 2;
-
-interface TaskGuardDecision {
-	task: TaskRecord;
-	content: string;
-	reviewKey?: string;
-}
+const maxTaskReminderAttempts = 3;
 
 function isAssignedTo(assignments: readonly string[], task: TaskRecord): boolean {
 	return assignments.includes(task.assigned_to ?? "");
 }
 
-function sortedGuardTasks(tasks: TaskRecord[]): TaskRecord[] {
+function sortedReminderTasks(tasks: TaskRecord[]): TaskRecord[] {
 	return [...tasks].sort(compareTasks);
 }
 
 function assignedSessionTasks(tasks: TaskRecord[], assignedTo: readonly string[]): TaskRecord[] {
-	return sortedGuardTasks(tasks.filter((task) => isActiveTask(task) && isAssignedTo(assignedTo, task)));
+	return sortedReminderTasks(tasks.filter((task) => isActiveTask(task) && isAssignedTo(assignedTo, task)));
 }
 
-function guardInstruction(task: TaskRecord, prefixes: ReadonlyMap<string, string> = new Map()): string {
-	if (task.status === "in_progress")
-		return `Continue in-progress task ${displayTaskId(task.id, prefixes)}: ${task.title}`;
-	return `Continue assigned task ${displayTaskId(task.id, prefixes)} [${task.status}]: ${task.title}`;
-}
-
-function reviewGuardContent(task: TaskRecord, prefixes: ReadonlyMap<string, string>): string {
-	return [
-		"Review clarification needed: this session has a task in review.",
-		"",
-		`Suggested next step: Ask what needs to be reviewed and how for task ${displayTaskId(task.id, prefixes)}: ${task.title}`,
-		"",
-		"Clarify the review scope, expected evidence, and approval path before doing more implementation work.",
-	].join("\n");
-}
-
-function guardContent(task: TaskRecord, prefixes: ReadonlyMap<string, string>): string {
-	return [
-		"Task nudge: this session has assigned task work.",
-		"",
-		`Suggested next step: ${guardInstruction(task, prefixes)}`,
-	].join("\n");
-}
-
-function reviewNudgeKey(task: TaskRecord): string {
-	return `${task.id}:${task.status}:${task.updated_at}`;
-}
-
-function isTaskGuardMessage(message: { customType?: unknown; details?: unknown } | undefined): boolean {
-	return message?.customType === "task-guard";
-}
-
-function isTaskGuardInputText(text: unknown): text is string {
-	return (
-		typeof text === "string" &&
-		(text.startsWith("Task nudge: this session has assigned task work.") ||
-			text.startsWith("Review clarification needed: this session has a task in review."))
-	);
-}
-function taskGuardMessageText(message: { content?: unknown } | undefined): string | undefined {
-	const content = message?.content;
-	if (typeof content === "string") return content;
-	if (!Array.isArray(content)) return undefined;
-	const text = content
-		.map((part) => {
-			if (typeof part === "string") return part;
-			if (part && typeof part === "object" && "text" in part && typeof part.text === "string") return part.text;
-			return undefined;
-		})
-		.filter((part): part is string => part !== undefined)
-		.join("\n");
-	return text || undefined;
-}
-
-function hiddenStaleTaskGuardMessage<T extends { content?: unknown; display?: boolean; details?: unknown }>(
-	message: T,
-): T {
-	const details = message.details && typeof message.details === "object" ? message.details : {};
-	return {
-		...message,
-		content: [{ type: "text", text: "Task guard skipped because the referenced task is no longer active." }],
-		display: false,
-		details: { ...details, stale: true },
-	};
-}
-
-async function shouldHandleStaleTaskGuardMessage(
-	message: { content?: unknown },
-	state: GuardState,
-	ctx: ExtensionContext,
-): Promise<boolean> {
-	const text = taskGuardMessageText(message);
-	return isTaskGuardInputText(text) && shouldHandleStaleTaskGuardInput(text, state, ctx);
-}
-
-async function shouldHandleStaleTaskGuardInput(
-	text: string,
-	state: GuardState,
-	ctx: ExtensionContext,
-): Promise<boolean> {
-	if (!state.enabled) return true;
-	const decision = await evaluateTaskGuard(ctx);
-	return !decision || decision.content !== text;
-}
-
-async function evaluateTaskGuard(ctx: ExtensionContext): Promise<TaskGuardDecision | undefined> {
+async function taskReminderTasks(ctx: ExtensionContext): Promise<TaskRecord[]> {
 	const assignedTo = sessionAssignmentAliases(ctx);
-	if (assignedTo.length === 0) return undefined;
-	const tasks = await loadHudTasks(ctx.cwd);
-	const task = assignedSessionTasks(tasks, assignedTo)[0];
-	if (!task) return undefined;
-	if (task.status === "in_review")
-		return { task, content: reviewGuardContent(task, minimalTaskIdPrefixes(tasks)), reviewKey: reviewNudgeKey(task) };
-	return { task, content: guardContent(task, minimalTaskIdPrefixes(tasks)) };
+	if (assignedTo.length === 0) return [];
+	return assignedSessionTasks(await loadHudTasks(ctx.cwd), assignedTo);
 }
 
-function sendTaskGuard(
-	pi: ExtensionAPI,
-	state: GuardState,
-	decision: TaskGuardDecision,
-	usedToolsThisTurn: boolean,
-): boolean {
-	if (!state.enabled) return false;
-	if (!usedToolsThisTurn && state.noToolNudges >= maxGuardNudgesWithoutTools) return false;
-	if (decision.reviewKey && state.reviewNudgeKeys.has(decision.reviewKey)) return false;
+function taskReminderContent(tasks: TaskRecord[], prefixes: ReadonlyMap<string, string>, attempt: number): string {
+	const count = tasks.length;
+	const taskList = tasks
+		.map((task) => `- ${displayTaskId(task.id, prefixes)} [${task.status}] ${task.title}`)
+		.join("\n");
+	return [
+		`Task reminder: ${count} assigned active task${count === 1 ? "" : "s"}.`,
+		taskList,
+		"",
+		"Continue the assigned task work or update task status/assignee if this session is no longer responsible.",
+		`Reminder ${attempt}/${maxTaskReminderAttempts}`,
+	].join("\n");
+}
+
+function renderTaskReminderLines(details: TaskReminderDetails, theme: Theme): string[] {
+	const prefixes = minimalTaskIdPrefixes(details.tasks);
+	return details.tasks.map((task, index) => {
+		const isLast = index === details.tasks.length - 1;
+		const blocked = (task.blocked_by ?? []).length > 0;
+		const icon = theme.fg(statusColor(task as TaskRecord, blocked), statusIcon(task as TaskRecord, blocked));
+		const blockers = (task.blocked_by ?? []).map((id) => displayTaskId(id, prefixes));
+		const suffix = blockers.length > 0 ? theme.fg("dim", ` › blocked by ${blockers.join(", ")}`) : "";
+		return `${theme.fg("dim", isLast ? "└─" : "├─")} ${icon} ${theme.fg("dim", displayTaskId(task.id, prefixes))} ${theme.fg("accent", `[${task.status}]`)} ${task.title}${suffix}`;
+	});
+}
+
+function renderTaskReminderMessage(
+	message: { details?: unknown },
+	_themeOptions: unknown,
+	theme: Theme,
+): Component | undefined {
+	const details = message.details as Partial<TaskReminderDetails> | undefined;
+	if (!details || !Array.isArray(details.tasks)) return undefined;
+	const attempts = typeof details.attempts === "number" ? details.attempts : 1;
+	const maxAttempts = typeof details.maxAttempts === "number" ? details.maxAttempts : maxTaskReminderAttempts;
+	const normalized: TaskReminderDetails = { tasks: details.tasks, attempts, maxAttempts };
+	const count = normalized.tasks.length;
+	return framedBlock(theme, {
+		header: renderStatusLine(theme, {
+			icon: "warning",
+			title: "Task reminder",
+			meta: [`${count} active task${count === 1 ? "" : "s"}`, `${attempts}/${maxAttempts}`],
+		}),
+		sections: [{ lines: renderTaskReminderLines(normalized, theme) }],
+		borderColor: "warning",
+	});
+}
+
+function resetTaskReminder(state: TaskReminderState): void {
+	state.attempts = 0;
+	state.awaitingProgress = false;
+}
+
+async function maybeSendTaskReminder(pi: ExtensionAPI, state: TaskReminderState, ctx: ExtensionContext): Promise<void> {
+	if (state.toolsUsedThisTurn) {
+		state.awaitingProgress = false;
+		return;
+	}
+	if (state.awaitingProgress || state.attempts >= maxTaskReminderAttempts) return;
+	const tasks = await taskReminderTasks(ctx);
+	if (tasks.length === 0) {
+		resetTaskReminder(state);
+		return;
+	}
+	state.attempts += 1;
+	state.awaitingProgress = true;
+	const details = {
+		tasks: tasks.map((task) => ({
+			id: task.id,
+			title: task.title,
+			status: task.status,
+			blocked_by: task.blocked_by,
+		})),
+		attempts: state.attempts,
+		maxAttempts: maxTaskReminderAttempts,
+	} satisfies TaskReminderDetails;
 	pi.sendMessage(
 		{
-			customType: "task-guard",
-			content: [{ type: "text", text: decision.content }],
+			customType: "task-reminder",
+			content: [{ type: "text", text: taskReminderContent(tasks, minimalTaskIdPrefixes(tasks), state.attempts) }],
 			display: true,
-			details: { taskId: decision.task.id },
+			details,
 		},
 		undefined,
 	);
-	if (decision.reviewKey) state.reviewNudgeKeys.add(decision.reviewKey);
-	state.noToolNudges = usedToolsThisTurn ? 0 : state.noToolNudges + 1;
-	return true;
-}
-function canSendTaskGuardNow(ctx: ExtensionContext): boolean {
-	try {
-		return typeof ctx.isIdle !== "function" || ctx.isIdle();
-	} catch {
-		return true;
-	}
-}
-
-function scheduleTaskGuardWhenIdle(
-	pi: ExtensionAPI,
-	state: GuardState,
-	ctx: ExtensionContext,
-	usedToolsThisTurn: boolean,
-	setPendingTimer: (timer: ReturnType<typeof setTimeout> | undefined) => void,
-): void {
-	const run = async () => {
-		if (!canSendTaskGuardNow(ctx)) {
-			setPendingTimer(setTimeout(run, 10));
-			return;
-		}
-		setPendingTimer(undefined);
-		try {
-			const decision = state.enabled ? await evaluateTaskGuard(ctx) : undefined;
-			if (decision) sendTaskGuard(pi, state, decision, usedToolsThisTurn);
-		} catch (error) {
-			ctx.ui.notify?.(`Task guard failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
-		}
-	};
-	setPendingTimer(setTimeout(run, 0));
-}
-
-function setTaskGuardEnabled(state: GuardState, enabled: boolean): void {
-	state.enabled = enabled;
-	state.toolsUsedThisTurn = false;
-	state.noToolNudges = 0;
-	state.reviewNudgeKeys.clear();
-	if (latestTaskHudState) {
-		latestTaskHudState = { ...latestTaskHudState, taskGuardEnabled: enabled };
-		taskHudWidget?.setState(latestTaskHudState);
-		requestTaskHudRender?.();
-	}
-}
-
-function taskGuardCommandMessage(state: GuardState, args: string): { message: string; type: "info" | "warning" } {
-	const mode = args.trim().toLowerCase();
-	if (!mode || mode === "status") {
-		return {
-			message: `Task guard is ${state.enabled ? "enabled" : "disabled"} for this session. Use /task-guard [on/off] to change it.`,
-			type: "info",
-		};
-	}
-	if (mode === "on") {
-		setTaskGuardEnabled(state, true);
-		return { message: "Task guard enabled for this session.", type: "info" };
-	}
-	if (mode === "off") {
-		setTaskGuardEnabled(state, false);
-		return { message: "Task guard disabled for this session.", type: "info" };
-	}
-	return { message: "Usage: /task-guard [on|off|status]", type: "warning" };
-}
-
-function taskGuardPreferencePath(cwd: string): string {
-	return join(cwd, ".pi", "tasks", "task-guard.json");
-}
-
-function readTaskGuardPreference(ctx: ExtensionContext): boolean | undefined {
-	try {
-		const parsed = JSON.parse(readFileSync(taskGuardPreferencePath(ctx.cwd), "utf8")) as { enabled?: unknown };
-		return typeof parsed.enabled === "boolean" ? parsed.enabled : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-function writeTaskGuardPreference(ctx: ExtensionContext, enabled: boolean): void {
-	const tasksDir = join(ctx.cwd, ".pi", "tasks");
-	mkdirSync(tasksDir, { recursive: true });
-	const path = taskGuardPreferencePath(ctx.cwd);
-	const tmpPath = `${path}.tmp`;
-	writeFileSync(tmpPath, JSON.stringify({ enabled }, null, 2));
-	renameSync(tmpPath, path);
 }
 
 export default function tasksExtension(pi: ExtensionAPI, _runtime: Runtime = {}) {
@@ -1722,29 +1579,21 @@ export default function tasksExtension(pi: ExtensionAPI, _runtime: Runtime = {})
 	taskHudExpanded = true;
 
 	let cwd = process.cwd();
-	const guardState: GuardState = {
-		enabled: false,
-		toolsUsedThisTurn: false,
-		noToolNudges: 0,
-		reviewNudgeKeys: new Set(),
-	};
+	const reminderState: TaskReminderState = { attempts: 0, awaitingProgress: false, toolsUsedThisTurn: false };
 	const getCwd = () => cwd;
-	let pendingTaskGuardTimer: ReturnType<typeof setTimeout> | undefined;
-	const setPendingTaskGuardTimer = (timer: ReturnType<typeof setTimeout> | undefined) => {
-		pendingTaskGuardTimer = timer;
+	const markToolUsed = () => {
+		reminderState.toolsUsedThisTurn = true;
+		reminderState.awaitingProgress = false;
 	};
-	const markToolUsed = (ctx: ExtensionContext | undefined, action: TaskCommand, result: unknown) => {
-		guardState.toolsUsedThisTurn = true;
-		if (pendingTaskGuardTimer) clearTimeout(pendingTaskGuardTimer);
-		pendingTaskGuardTimer = undefined;
-		if (taskWriteMayInvalidateQueuedGuard(action, result)) clearQueuedMessages(ctx);
-	};
+
+	pi.registerMessageRenderer?.("task-reminder", renderTaskReminderMessage as never);
 
 	pi.on("session_start", async (_event, ctx) => {
 		cwd = ctx.cwd;
-		setTaskGuardEnabled(guardState, readTaskGuardPreference(ctx) ?? false);
+		resetTaskReminder(reminderState);
+		reminderState.toolsUsedThisTurn = false;
 		if (config.hud.enabled) {
-			await updateTaskHud(ctx, pi, config, guardState.enabled).catch((error) => {
+			await updateTaskHud(ctx, pi, config).catch((error) => {
 				ctx.ui.notify?.(
 					`Task HUD refresh failed: ${error instanceof Error ? error.message : String(error)}`,
 					"warning",
@@ -1754,8 +1603,6 @@ export default function tasksExtension(pi: ExtensionAPI, _runtime: Runtime = {})
 	});
 
 	pi.on("session_shutdown", async () => {
-		if (pendingTaskGuardTimer) clearTimeout(pendingTaskGuardTimer);
-		pendingTaskGuardTimer = undefined;
 		if (taskHudPulseTimer) clearInterval(taskHudPulseTimer);
 		taskHudPulseTimer = undefined;
 		taskHudWidget = undefined;
@@ -1765,69 +1612,28 @@ export default function tasksExtension(pi: ExtensionAPI, _runtime: Runtime = {})
 	});
 
 	pi.on("tool_execution_end", () => {
-		guardState.toolsUsedThisTurn = true;
+		markToolUsed();
 	});
 
-	(pi as unknown as { on(event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown): void }).on(
-		"message_end",
-		async (event, ctx) => {
-			const message = (
-				event as { message?: { content?: unknown; customType?: unknown; details?: unknown; role?: string } }
-			).message;
-			if (
-				message &&
-				isTaskGuardMessage(message) &&
-				(await shouldHandleStaleTaskGuardMessage(message, guardState, ctx))
-			) {
-				return { message: hiddenStaleTaskGuardMessage(message) };
-			}
-			if (message?.role === "user" && !isTaskGuardMessage(message)) {
-				guardState.noToolNudges = 0;
-				guardState.toolsUsedThisTurn = false;
-			}
-			return undefined;
-		},
-	);
-
-	(pi as unknown as { on(event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown): void }).on(
-		"message_start",
-		async (event, ctx) => {
-			const message = (event as { message?: { content?: unknown; customType?: unknown; details?: unknown } })
-				.message;
-			if (!message || !isTaskGuardMessage(message)) return undefined;
-			if (await shouldHandleStaleTaskGuardMessage(message, guardState, ctx)) ctx.abort?.();
-			return undefined;
-		},
-	);
-
-	pi.on("input", async (event, ctx) => {
-		if (event.source !== "extension" || !isTaskGuardInputText(event.text)) return undefined;
-		if (await shouldHandleStaleTaskGuardInput(event.text, guardState, ctx)) return { action: "handled" as const };
-		return { action: "continue" as const };
-	});
-
-	const hasQueuedMessages = (ctx: ExtensionContext) => {
-		try {
-			return typeof ctx.hasPendingMessages === "function" && ctx.hasPendingMessages();
-		} catch {
-			return false;
+	(pi as unknown as { on(event: string, handler: (event: unknown) => unknown): void }).on("message_end", (event) => {
+		const message = (event as { message?: { customType?: unknown; role?: string } }).message;
+		if (message?.role === "user" && message.customType !== "task-reminder") {
+			resetTaskReminder(reminderState);
+			reminderState.toolsUsedThisTurn = false;
 		}
-	};
+	});
 
 	pi.on("turn_end", async (_event, ctx) => {
-		const usedToolsThisTurn = guardState.toolsUsedThisTurn;
-		guardState.toolsUsedThisTurn = false;
-		if (hasQueuedMessages(ctx)) return;
-		if (pendingTaskGuardTimer) clearTimeout(pendingTaskGuardTimer);
-		if (!canSendTaskGuardNow(ctx)) {
-			scheduleTaskGuardWhenIdle(pi, guardState, ctx, usedToolsThisTurn, setPendingTaskGuardTimer);
+		const usedToolsThisTurn = reminderState.toolsUsedThisTurn;
+		reminderState.toolsUsedThisTurn = false;
+		if (usedToolsThisTurn) {
+			reminderState.awaitingProgress = false;
 			return;
 		}
 		try {
-			const decision = guardState.enabled ? await evaluateTaskGuard(ctx) : undefined;
-			if (decision) sendTaskGuard(pi, guardState, decision, usedToolsThisTurn);
+			await maybeSendTaskReminder(pi, reminderState, ctx);
 		} catch (error) {
-			ctx.ui.notify?.(`Task guard failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
+			ctx.ui.notify?.(`Task reminder failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
 		}
 	});
 
@@ -1841,32 +1647,13 @@ export default function tasksExtension(pi: ExtensionAPI, _runtime: Runtime = {})
 		},
 	});
 
-	pi.registerCommand?.("task-guard", {
-		description: "Show task guard status; use [on/off] to change it",
-		handler: async (args: string, ctx: ExtensionContext) => {
-			const result = taskGuardCommandMessage(guardState, args);
-			const mode = args.trim().toLowerCase();
-			if (mode === "on" || mode === "off") {
-				try {
-					writeTaskGuardPreference(ctx, guardState.enabled);
-				} catch (error) {
-					ctx.ui.notify?.(
-						`Task guard preference save failed: ${error instanceof Error ? error.message : String(error)}`,
-						"warning",
-					);
-				}
-			}
-			ctx.ui.notify?.(result.message, result.type);
-		},
-	});
-
 	pi.registerShortcut?.(config.hud.toggleShortcut as never, {
 		description: "Toggle project task HUD summary/list view",
 		handler: async (ctx: ExtensionContext) => {
 			taskHudExpanded = !taskHudExpanded;
 			const tasks =
 				(taskHudWidgetCtx === ctx ? latestTaskHudState?.tasks : undefined) ?? (await loadHudTasks(ctx.cwd));
-			await updateTaskHud(ctx, pi, config, undefined, tasks).catch((error) => {
+			await updateTaskHud(ctx, pi, config, tasks).catch((error) => {
 				ctx.ui.notify?.(
 					`Task HUD refresh failed: ${error instanceof Error ? error.message : String(error)}`,
 					"warning",
@@ -1897,7 +1684,7 @@ export default function tasksExtension(pi: ExtensionAPI, _runtime: Runtime = {})
 		name: "task_write",
 		label: "Write Tasks",
 		description:
-			"Add/update/delete tasks. Put fields in data: type, body, status, priority, assigned_to ('current' ok), active_form, labels, parent_id, blocked_by. Use clear for assignee/parent/blockers. There are no accept/reject commands: after user approval in normal mode, agents complete accepted feature/bug tasks with status=done and user_approved_completion=true; in auto mode use auto_verified_completion=true when automated evidence proves acceptance.",
+			"Add/update/delete tasks. Put fields in data: type, body, status, priority, assigned_to ('current' ok), active_form, labels, parent_id, blocked_by. Use clear for assignee/parent/blockers. To complete feature/bug tasks with status=done, agents complete accepted feature/bug tasks with status=done and user_approved_completion=true; in auto mode use auto_verified_completion=true when automated evidence proves acceptance.",
 		promptSnippet: "Write project tasks",
 		parameters: Type.Object({
 			op: Type.String({ description: "add, update, or delete" }),
