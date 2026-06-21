@@ -217,14 +217,6 @@ type ApplyPatchPreviewScope = {
 	end_line: number;
 };
 
-type ApplyPatchPreviewResponse = {
-	status?: "valid" | "invalid" | "empty";
-	complete?: boolean;
-	diff?: string;
-	changes?: ApplyPatchPreviewChange[];
-	error?: string;
-};
-
 type ApplyPatchRenderState = {
 	elapsedTimer?: ReturnType<typeof setTimeout>;
 	startedAtMs?: number;
@@ -1529,34 +1521,6 @@ function markFilesSemantic(files: ApplyPatchProgressFile[], semantic: boolean): 
 	return semantic ? files.map((file) => ({ ...file, semantic: file.semantic ?? true })) : files;
 }
 
-function parsePreviewResponse(stdout: string): ApplyPatchPreviewResponse | undefined {
-	const line = stdout
-		.trim()
-		.split("\n")
-		.find((candidate) => candidate.trim().startsWith("{"));
-	if (!line) return undefined;
-	try {
-		return JSON.parse(line) as ApplyPatchPreviewResponse;
-	} catch {
-		return undefined;
-	}
-}
-
-async function runApplyPatchPreview(
-	cwd: string,
-	input: string,
-	signal?: AbortSignal,
-	partial = false,
-): Promise<ApplyPatchPreviewResponse | undefined> {
-	const args = ["apply-patch", "preview", "--cwd", cwd];
-	if (partial) args.push("--partial");
-	const { stdout } = await runExternalCommand("ct", args, cwd, {
-		signal,
-		input,
-	});
-	return parsePreviewResponse(stdout);
-}
-
 function parseApplyPatchSummary(stdout: string): number {
 	return stdout
 		.replace(/\r\n?/g, "\n")
@@ -1939,8 +1903,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 				const progress = parsePatchInputProgress(input);
 				const shouldDryRun = config.validateBeforeApply || config.syntaxHighlight;
 				let dryRun: { stdout: string; stderr: string } | undefined;
-				let previewDiff = "";
-				let previewChanges: ApplyPatchPreviewChange[] = [];
+				const previewChanges: ApplyPatchPreviewChange[] = [];
 
 				if (shouldDryRun) {
 					if (config.validateBeforeApply) {
@@ -1967,16 +1930,6 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 					dryRun = dryRunResult;
 				}
 
-				if (config.richRender && config.renderDiff && (!dryRun || semanticInput)) {
-					const preview = await runApplyPatchPreview(ctx.cwd, input, signal).catch(() => undefined);
-					if (preview?.status === "valid" && preview.diff) {
-						previewDiff = preview.diff.trim();
-						previewChanges = preview.changes ?? [];
-					} else if (preview?.status === "invalid" && preview.error) {
-						return errorResult(preview.error, { stage: "validate" });
-					}
-				}
-
 				if (signal?.aborted) {
 					return errorResult("apply_patch aborted before applying changes.");
 				}
@@ -1993,9 +1946,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 						operations: progress.totalOperations,
 						files: progress.files,
 						semantic: semanticInput,
-						...(config.richRender && config.renderDiff
-							? { diff: dryRun?.stdout ?? previewDiff, previewChanges }
-							: {}),
+						...(config.richRender && config.renderDiff ? { diff: dryRun?.stdout ?? "", previewChanges } : {}),
 					},
 				});
 
@@ -2012,7 +1963,7 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
 				}
 
 				const filesChanged = parseApplyPatchSummary(applied.stdout);
-				const diff = dryRun?.stdout.trim() ?? previewDiff;
+				const diff = dryRun?.stdout.trim() ?? "";
 				const highlightedDiffRows =
 					config.richRender && config.renderDiff && diff.length > 0
 						? config.syntaxHighlight

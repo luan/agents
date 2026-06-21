@@ -54,42 +54,6 @@ fn add_creates_file() {
 }
 
 #[test]
-fn raw_cli_records_success_telemetry() {
-    let sandbox = TempDir::new().unwrap();
-    let state = TempDir::new().unwrap();
-    let patch = "\
-*** Begin Patch
-*** Add File: new.txt
-+line1
-*** End Patch
-";
-
-    let mut apply = Command::cargo_bin("ct").unwrap();
-    apply
-        .arg("apply-patch")
-        .arg("--cwd")
-        .arg(sandbox.path())
-        .env("XDG_DATA_HOME", state.path())
-        .write_stdin(patch)
-        .assert()
-        .success();
-
-    let mut stats = Command::cargo_bin("ct").unwrap();
-    stats
-        .arg("apply-patch")
-        .arg("stats")
-        .arg("--all-projects")
-        .env("XDG_DATA_HOME", state.path())
-        .assert()
-        .success()
-        .stdout(
-            predicate::str::contains("calls: 1")
-                .and(predicate::str::contains("successes: 1 (100%)"))
-                .and(predicate::str::contains("errors: 0")),
-        );
-}
-
-#[test]
 fn raw_cli_accepts_heredoc_wrapped_patch_argument() {
     let sandbox = TempDir::new().unwrap();
     let patch = "\
@@ -682,52 +646,4 @@ fn anchor_matching_first_body_line_applies() {
 
     let after = fs::read_to_string(sandbox.path().join("m.rs")).unwrap();
     assert_eq!(after, "fn greet() {\n    println!(\"hello\");\n}\n");
-}
-
-#[test]
-fn draft_lifecycle_lives_under_apply_patch_and_patch_namespace_is_removed() {
-    let sandbox = TempDir::new().unwrap();
-    let state = TempDir::new().unwrap();
-    let patch = "\
-*** Begin Patch
-*** Add File: draft.txt
-+drafted
-*** End Patch
-";
-
-    let create = ct()
-        .arg("apply-patch")
-        .arg("draft")
-        .arg("create")
-        .arg("--json")
-        .arg("--cwd")
-        .arg(sandbox.path())
-        .env("XDG_STATE_HOME", state.path())
-        .write_stdin(patch)
-        .assert()
-        .success();
-    let stdout = String::from_utf8(create.get_output().stdout.clone()).unwrap();
-    let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    let patch_id = value["patch_id"].as_str().unwrap();
-    assert_eq!(value["status"], "applicable");
-
-    ct().arg("apply-patch")
-        .arg("draft")
-        .arg("status")
-        .arg(patch_id)
-        .arg("--json")
-        .current_dir(sandbox.path())
-        .env("XDG_STATE_HOME", state.path())
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("applicable"));
-
-    ct().arg("patch")
-        .arg("draft")
-        .arg("status")
-        .arg(patch_id)
-        .current_dir(sandbox.path())
-        .env("XDG_STATE_HOME", state.path())
-        .assert()
-        .failure();
 }

@@ -1,9 +1,5 @@
-use std::path::Path;
-
 use serde::Serialize;
 
-use super::draft;
-use super::draft_store::{NewPatchDraft, PatchCandidate, PatchDraftChunk, PatchDraftStore};
 use super::telemetry::diagnostics::{FailureDiagnostic, FailureDiagnosticInput};
 use super::{
     AnchorAttempt, ApplyFailure, ApplyOutcome, ApplyPatchError, CallRecord, FileCallEntry,
@@ -19,9 +15,7 @@ pub struct RepairBlock {
     pub diagnostic_id: Option<String>,
     pub failure_kind: String,
     pub anchors: Vec<String>,
-    pub report_command: String,
     pub next_action: String,
-    pub draft_created: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -52,7 +46,6 @@ pub fn failure_kind(error: &ApplyPatchError) -> &'static str {
 
 pub fn handle_failure(
     tel: Option<&Telemetry>,
-    cwd: &Path,
     failure: &ApplyFailure,
     duration_us: u64,
     patch_sha: &str,
@@ -61,7 +54,6 @@ pub fn handle_failure(
     let patch_id = sha1_hex(patch_body.as_bytes());
     let kind = failure_kind(&failure.error).to_string();
     let anchors = anchors_for_failure(&failure.error, &failure.attempts);
-    let draft_created = create_or_link_draft(cwd, &patch_id, &kind, &failure.error, patch_body);
     let mut diagnostic = None;
 
     if let Some(tel) = tel {
@@ -84,11 +76,7 @@ pub fn handle_failure(
 
     let telemetry_id = diagnostic.as_ref().map(|d| d.telemetry_id.clone());
     let diagnostic_id = diagnostic.as_ref().map(|d| d.diagnostic_id.clone());
-    let report_command = diagnostic_id
-        .as_ref()
-        .map(|id| format!("ct apply-patch report {id}"))
-        .unwrap_or_else(|| "ct apply-patch report".to_string());
-    let next_action = next_action(&patch_id, &kind, &anchors);
+    let next_action = next_action(&kind, &anchors);
 
     FailureArtifacts {
         repair_block: RepairBlock {
@@ -97,9 +85,7 @@ pub fn handle_failure(
             diagnostic_id,
             failure_kind: kind,
             anchors,
-            report_command,
             next_action,
-            draft_created,
         },
         diagnostic,
     }
@@ -141,19 +127,8 @@ impl RepairBlock {
             self.anchors.join(" | ")
         };
         format!(
-            "repair: patch={} telemetry={} diagnostic={} kind={} anchors={} report=`{}` next={} draft={}",
-            self.patch_id,
-            telemetry,
-            diagnostic,
-            self.failure_kind,
-            anchors,
-            self.report_command,
-            self.next_action,
-            if self.draft_created {
-                "linked"
-            } else {
-                "unavailable"
-            }
+            "repair: patch={} telemetry={} diagnostic={} kind={} anchors={} next={}",
+            self.patch_id, telemetry, diagnostic, self.failure_kind, anchors, self.next_action
         )
     }
 }
@@ -204,108 +179,6 @@ struct FailureRecordContext<'a> {
     anchors: &'a [String],
 }
 
-fn create_or_link_draft(
-    cwd: &Path,
-    patch_id: &str,
-    kind: &str,
-    error: &ApplyPatchError,
-    patch_body: &str,
-) -> bool {
-    let root = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
-    let chunks = draft::chunk_plan(patch_body)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|mut chunk| {
-            chunk.status = "blocked".to_string();
-            chunk.error_kind = Some(kind.to_string());
-            chunk.error_message = Some(error.to_string());
-            PatchDraftChunk {
-                chunk_index: chunk.chunk_index,
-                file_path: chunk.file_path,
-                change_type: chunk.change_type,
-                status: chunk.status,
-                old_start: chunk.old_start,
-                old_end: chunk.old_end,
-                new_start: chunk.new_start,
-                new_end: chunk.new_end,
-                error_kind: chunk.error_kind,
-                error_message: chunk.error_message,
-            }
-        })
-        .collect::<Vec<_>>();
-    let candidates = draft_candidates(error);
-    let Ok(mut store) = PatchDraftStore::open_for_project(&root) else {
-        return false;
-    };
-    store
-        .create_patch_draft(NewPatchDraft {
-            id: patch_id,
-            cwd: &root.to_string_lossy(),
-            session_id: None,
-            status: "blocked",
-            patch_sha: patch_id,
-            body: patch_body,
-            chunks: &chunks,
-            candidates: &candidates,
-        })
-        .is_ok()
-}
-
-fn draft_candidates(error: &ApplyPatchError) -> Vec<PatchCandidate> {
-    let ApplyPatchError::AmbiguousContext {
-        chunk,
-        candidates,
-        disambiguation_hints,
-        ..
-    } = error
-    else {
-        return Vec::new();
-    };
-    candidates
-        .iter()
-        .enumerate()
-        .map(|(idx, line)| {
-            let hint = disambiguation_hints.get(idx).map(String::as_str);
-            let anchor = hint.and_then(clean_anchor_from_hint).map(str::to_string);
-            let mut anchors = anchor.iter().cloned().collect::<Vec<_>>();
-            if let Some(line_range) = hint.and_then(line_range_from_hint) {
-                anchors.push(line_range);
-            }
-            PatchCandidate {
-                chunk_index: *chunk as i64,
-                line: *line as i64,
-                suggested_anchor: anchor,
-                enclosing_symbol: None,
-                enclosing_kind: None,
-                symbol_start: None,
-                symbol_end: None,
-                candidate_kind: "telemetry_disambiguation".to_string(),
-                symbol: None,
-                anchors,
-                confidence: "medium".to_string(),
-                reason: "apply-patch ambiguous context candidate".to_string(),
-            }
-        })
-        .collect()
-}
-
-fn clean_anchor_from_hint(hint: &str) -> Option<&str> {
-    hint.split("  →  ")
-        .next()
-        .filter(|anchor| anchor.starts_with("@@ ") && !anchor.starts_with("@@ lines "))
-}
-
-fn line_range_from_hint(hint: &str) -> Option<String> {
-    let start = hint.find("@@ lines ")?;
-    let rest = &hint[start..];
-    let range = rest
-        .trim_start_matches("@@ lines ")
-        .chars()
-        .take_while(|ch| ch.is_ascii_digit() || *ch == '-')
-        .collect::<String>();
-    (!range.is_empty()).then(|| format!("@@ lines {range}"))
-}
-
 pub fn anchors_for_failure(error: &ApplyPatchError, attempts: &[AnchorAttempt]) -> Vec<String> {
     let mut anchors = Vec::new();
     match error {
@@ -342,15 +215,14 @@ pub fn anchors_for_failure(error: &ApplyPatchError, attempts: &[AnchorAttempt]) 
     anchors
 }
 
-fn next_action(patch_id: &str, kind: &str, anchors: &[String]) -> String {
+fn next_action(kind: &str, anchors: &[String]) -> String {
     if kind == "ambiguous_context" && !anchors.is_empty() {
-        format!(
-            "retry using one suggested `@@ symbol-or-line` anchor plus 2-3 unchanged context lines; if needed inspect `ct apply-patch draft show {patch_id}`"
-        )
+        "retry using one suggested `@@ symbol-or-line` anchor plus 2-3 unchanged context lines"
+            .to_string()
     } else if kind == "context_not_found" {
         "regenerate the failing hunk from the numbered file-state snippet above; prefer `@@ symbol-or-line` anchors and keep 2-3 unchanged context lines".to_string()
     } else {
-        format!("inspect `ct apply-patch draft show {patch_id}` and regenerate the failing hunk")
+        "regenerate the failing hunk from the current file state".to_string()
     }
 }
 
@@ -465,9 +337,7 @@ mod tests {
             diagnostic_id: Some("apd-7".to_string()),
             failure_kind: "ambiguous_context".to_string(),
             anchors: vec!["@@ fn main".to_string()],
-            report_command: "ct apply-patch report apd-7".to_string(),
             next_action: "inspect draft".to_string(),
-            draft_created: true,
         };
         let rendered = block.render_compact();
         assert!(rendered.contains("patch=patch123"));
@@ -475,6 +345,6 @@ mod tests {
         assert!(rendered.contains("diagnostic=apd-7"));
         assert!(rendered.contains("kind=ambiguous_context"));
         assert!(rendered.contains("@@ fn main"));
-        assert!(rendered.contains("ct apply-patch report apd-7"));
+        assert!(rendered.contains("next=inspect draft"));
     }
 }

@@ -21,7 +21,7 @@ Resolve BASE with first success unless args override: `gt parent`, `gt trunk`, t
 
 Diff sources: none -> `git diff $BASE...HEAD`; `main..HEAD` -> BASE=main; file list -> `git diff HEAD -- <files>` plus reads; `#123` -> `gh pr diff 123`.
 
-For local diffs run `ct repo context --base $BASE --stat --cochanges`. Fetch PR metadata with `gh pr view` if available. Also run `git branch --show-current` and `task_read` when available; include a matching task's ID, status, blockers, and acceptance criteria.
+For local diffs collect context with raw git: `git diff --stat "$BASE"...HEAD`, `git diff --name-only "$BASE"...HEAD`, and `git log --oneline --decorate --max-count=30 "$BASE"..HEAD`. Fetch PR metadata with `gh pr view` if available. Also run `git branch --show-current` and `task_read` when available; include a matching task's ID, status, blockers, and acceptance criteria.
 
 Large diffs (>3000 lines): truncate any file with >200 changed lines to first 50 plus last 50 diff lines, list truncations, and require reviewers to read those files in full before making claims.
 

@@ -1,6 +1,6 @@
 # Crit Reviewer Focus Blocks
 
-Use only the blocks needed by the review plan. All reviewers must use the raw diff as source of truth, run `ct repo context --base {base_ref} --format json` when available, read changed files for local/file-list diffs, and read any truncated files in full before making claims.
+Use only the blocks needed by the review plan. All reviewers must use the raw diff as source of truth; when available, use raw git context from `git diff --stat {base_ref}...HEAD`, `git diff --name-only {base_ref}...HEAD`, and `git log --oneline --decorate --max-count=30 {base_ref}..HEAD`; read changed files for local/file-list diffs; and read any truncated files in full before making claims.
 
 ## Combined Reviewer
 

@@ -19,7 +19,9 @@ Assess whether a diff should be made smaller or clearer before deeper review. A 
 Use the same diff-source rules as `$crit`. For local diffs, collect:
 
 ```bash
-ct repo context --base $BASE --stat --cochanges
+git diff --stat "$BASE"...HEAD
+git diff --name-only "$BASE"...HEAD
+git log --oneline --decorate --max-count=30 "$BASE"..HEAD
 ```
 
 Read changed files that matter for any simplification claim. Do not rely only on summaries.

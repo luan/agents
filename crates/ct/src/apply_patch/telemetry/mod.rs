@@ -1,13 +1,11 @@
 pub mod diagnostics;
-pub mod enrich;
-pub mod prune;
 mod schema;
-pub mod stats;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(test)]
 use rusqlite::OptionalExtension;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
@@ -167,6 +165,7 @@ impl Telemetry {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn last_fingerprint(&self, file_path: &str) -> Result<Option<Fingerprint>, TelemetryError> {
         let conn = self.lock_conn();
         let row = conn
@@ -195,14 +194,6 @@ impl Telemetry {
             Ok(p) => p,
             Err(p) => p.into_inner(),
         }
-    }
-
-    /// Run a read-only closure against the underlying connection. Used by the
-    /// enricher to run ad-hoc queries without leaking a `MutexGuard` across
-    /// module boundaries.
-    pub fn with_conn<R>(&self, f: impl FnOnce(&Connection) -> R) -> R {
-        let conn = self.lock_conn();
-        f(&conn)
     }
 }
 
@@ -528,12 +519,7 @@ mod tests {
         assert_eq!(second.occurrence_count, 2);
         assert_eq!(first.fingerprint, second.fingerprint);
 
-        let report = t.failure_report(10).unwrap();
-        assert_eq!(report.recurring.len(), 1);
-        assert_eq!(report.recurring[0].occurrence_count, 2);
-        let rendered = diagnostics::render_report(&report);
-        assert!(rendered.contains("apply-patch failure diagnostics"));
-        assert!(rendered.contains("context_not_found"));
+        assert_eq!(first.fingerprint, second.fingerprint);
     }
 
     #[test]
@@ -572,46 +558,8 @@ mod tests {
         assert_eq!(first.fingerprint, second.fingerprint);
         assert_eq!(second.novelty, "repeated");
 
-        let report = t.failure_report(10).unwrap();
-        let rendered = diagnostics::render_report(&report);
-        assert!(rendered.contains("summary:"));
-        assert!(rendered.contains("anchor issues: bare @@=2"));
-        assert!(rendered.contains("draft: ct apply-patch draft show patch-b"));
-    }
-
-    #[test]
-    fn failure_report_derives_retry_skeleton_from_retained_patch_body() {
-        let t = Telemetry::open_in_memory().unwrap();
-        let patch = concat!(
-            "*** Begin Patch\n",
-            "*** Update File: main.rs\n",
-            "@@\n",
-            "-old();\n",
-            "+new();\n",
-            "*** End Patch\n",
-        );
-        t.record_patch_body("patch-sha", patch).unwrap();
-        let call_id = t.record_call(&sample_call()).unwrap();
-        t.record_failure_diagnostic(&diagnostics::FailureDiagnosticInput {
-            call_id,
-            patch_id: "patch-a".into(),
-            patch_sha: "patch-sha".into(),
-            failure_kind: "ambiguous_context".into(),
-            message: "ambiguous context in main.rs at chunk #0".into(),
-            anchors: vec![
-                "@@ fn chosen()  →  pins to candidate at line 12 (anchor at line 10)".into(),
-            ],
-            files: vec!["main.rs".into()],
-            candidates: serde_json::Value::Null,
-        })
-        .unwrap();
-
-        let report = t.failure_report(10).unwrap();
-        let rendered = diagnostics::render_report(&report);
-        assert!(rendered.contains("retry hunk suggestion:"), "{rendered}");
-        assert!(rendered.contains("@@ fn chosen()"), "{rendered}");
-        assert!(rendered.contains("-old();"), "{rendered}");
-        assert!(rendered.contains("+new();"), "{rendered}");
+        assert_eq!(first.fingerprint, second.fingerprint);
+        assert_eq!(second.novelty, "repeated");
     }
 
     #[test]

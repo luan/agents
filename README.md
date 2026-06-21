@@ -59,20 +59,11 @@ evidence.
 
 `ct` is the primary tool installed from `crates/ct/`. It provides:
 
-- `ct repo` — repository identity, branch context, references, cochanges, and churn
-- `ct apply-patch` — raw patch apply plus apply_patch telemetry and drafts
+- `ct apply-patch` — raw patch apply
 - `ct shell completion` — shell completions
 - `ct tui usage-bar` / `ct tui usage-bars` — terminal UI helpers
-- `ct dev` — developer/internal helpers; raw backends live under `ct dev debug`
 
-Configure `ct tui usage-bars` provider visibility and order in `~/.config/ct/config.toml`:
-
-```toml
-[usage_bars]
-providers = ["claude", "codex"]
-```
-
-Use `ct tui usage-bars --sidebar --watch` for a live sidebar; it rereads the config on every redraw.
+Use `ct tui usage-bars --sidebar --watch` for a live sidebar.
 
 ## `vlt` CLI
 

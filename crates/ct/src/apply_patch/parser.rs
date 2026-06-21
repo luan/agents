@@ -53,10 +53,9 @@ const CHANGE_CONTEXT_MARKER: &str = "@@ ";
 const EMPTY_CHANGE_CONTEXT_MARKER: &str = "@@";
 const LINE_RANGE_CONTEXT_PREFIX: &str = "lines ";
 
-/// Subkind of `InvalidHunkError`. Surfaced through telemetry so the dominant
-/// parse-failure shape (e.g. Add-File body lines without a `+` prefix) is
-/// visible in `ct apply-patch stats` rather than collapsed into a single
-/// `parse` bucket.
+/// Subkind of `InvalidHunkError`. Stored in telemetry so dominant parse-failure
+/// shapes (e.g. Add-File body lines without a `+` prefix) are not collapsed into
+/// a single `parse` bucket.
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum ParseErrorKind {
     /// Add-File body line without the required `+` prefix.
@@ -199,6 +198,7 @@ pub struct UpdateScopeChunk {
     pub is_end_of_file: bool,
 }
 
+#[cfg(test)]
 pub fn parse_patch(patch: &str) -> Result<Vec<Hunk>, ParseError> {
     parse_patch_with_repairs(patch).map(|(hunks, _repairs)| hunks)
 }

@@ -57,53 +57,9 @@ fn ct_cmd(bp: &Path) -> Command {
     cmd
 }
 
-/// Make a throwaway project directory — project_name() uses the last path
-/// component, so the tempdir name becomes the project slug in the vault.
-fn project_dir() -> TempDir {
-    tempfile::tempdir().expect("create project tempdir")
-}
-
-#[test]
-fn repo_namespace_routes_project_and_removes_top_level_project() {
-    let (bp, _remote) = setup_blueprints();
-    let project = project_dir();
-
-    let expected_project = project
-        .path()
-        .file_name()
-        .unwrap()
-        .to_string_lossy()
-        .replace('.', "_");
-    ct_cmd(bp.path())
-        .current_dir(project.path())
-        .args(["repo", "project"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains(expected_project));
-
-    ct_cmd(bp.path())
-        .current_dir(project.path())
-        .arg("project")
-        .assert()
-        .failure();
-}
-
 #[test]
 fn support_namespaces_route_and_removed_homes_fail() {
     let (bp, _remote) = setup_blueprints();
-
-    ct_cmd(bp.path())
-        .args(["dev", "slug", "Fix:", "The", "Thing!"])
-        .assert()
-        .success()
-        .stdout(predicate::eq("fix-thing\n"));
-
-    ct_cmd(bp.path())
-        .args(["dev", "phases"])
-        .write_stdin("### Phase 1: Setup\n1. Install deps\n")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Setup"));
 
     ct_cmd(bp.path())
         .args(["shell", "completion", "bash"])
@@ -129,7 +85,24 @@ fn support_namespaces_route_and_removed_homes_fail() {
         .success()
         .stdout(predicate::str::contains("Codex"));
 
-    for removed in ["vault", "tool", "usage-bar", "sym", "ast", "lsp", "notify"] {
+    ct_cmd(bp.path())
+        .args(["tui", "usage-bars", "--width", "80"])
+        .assert()
+        .success();
+
+    for removed in [
+        "repo",
+        "vault",
+        "tool",
+        "usage-bar",
+        "sym",
+        "ast",
+        "lsp",
+        "mcp",
+        "hook",
+        "dev",
+        "n",
+    ] {
         ct_cmd(bp.path()).arg(removed).assert().failure();
     }
 }
@@ -141,10 +114,16 @@ fn top_level_help_exposes_only_canonical_public_domains() {
     let assert = ct_cmd(bp.path()).arg("--help").assert().success();
     let help = String::from_utf8(assert.get_output().stdout.clone()).expect("help utf8");
 
-    for canonical in ["repo", "apply-patch", "mcp", "hook", "shell", "tui", "dev"] {
+    for canonical in ["apply-patch", "shell", "tui"] {
         assert!(
             help.contains(canonical),
             "help should contain {canonical}:\n{help}"
+        );
+    }
+    for removed in ["repo", "mcp", "hook", "dev"] {
+        assert!(
+            !help.contains(removed),
+            "help should not contain removed command {removed}:\n{help}"
         );
     }
     assert!(
@@ -158,33 +137,11 @@ fn top_level_help_exposes_only_canonical_public_domains() {
 }
 
 #[test]
-fn source_mcp_server_is_removed_but_vault_mcp_is_available() {
+fn mcp_namespace_is_removed_from_ct() {
     let (bp, _remote) = setup_blueprints();
-
-    ct_cmd(bp.path())
-        .args(["mcp", "source", "--help"])
-        .assert()
-        .failure();
-
-    ct_cmd(bp.path())
-        .args(["mcp", "sym", "--help"])
-        .assert()
-        .failure();
 
     ct_cmd(bp.path())
         .args(["mcp", "vault", "--help"])
         .assert()
-        .success()
-        .stdout(predicate::str::contains("Serve the vault MCP over stdio"));
-
-    ct_cmd(bp.path())
-        .args(["mcp", "--help"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("vault"))
-        .stdout(predicate::str::contains("source").not())
-        .stdout(predicate::str::contains("apply-patch").not())
-        .stdout(predicate::str::contains("sym").not())
-        .stdout(predicate::str::contains("ast").not())
-        .stdout(predicate::str::contains("lsp").not());
+        .failure();
 }
