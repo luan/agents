@@ -7,10 +7,24 @@ description: Open Plannotator's annotation UI for a markdown file, converted HTM
 
 Use this skill when the user wants to annotate a document in Plannotator instead of reviewing it inline in chat.
 
-Run:
+Command selection:
+
+- Markdown, URL, or folder targets:
 
 ```bash
 plannotator annotate <path-or-url>
+```
+
+- Local HTML documents that should be shown rendered instead of as source:
+
+```bash
+plannotator annotate <html-file> --render-html
+```
+
+- Approval gates for rendered HTML artifacts:
+
+```bash
+plannotator annotate <html-file> --render-html --gate
 ```
 
 Behavior:
