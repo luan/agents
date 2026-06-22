@@ -16,6 +16,7 @@ GREEN = "\033[38;5;114m"
 ORANGE = "\033[38;5;215m"
 RED = "\033[38;5;203m"
 DIM = "\033[38;5;242m"
+LGRAY = "\033[38;5;250m"
 BLUE = "\033[38;5;75m"
 CYAN = "\033[38;5;111m"
 PURPLE = "\033[38;5;183m"
@@ -61,6 +62,8 @@ def join_segments(segments, max_width):
     return "\n".join(lines)
 
 _TMPDIR = Path(tempfile.gettempdir())
+GIT_CACHE = str(_TMPDIR / "claude-statusline-git")
+GIT_TTL = 5
 SID_CACHE = str(_TMPDIR / "claude-statusline-sids")
 SID_TTL = 30
 VERSION_CACHE = str(_TMPDIR / "claude-statusline-version")
@@ -702,6 +705,34 @@ def latest_version():
         return None
 
 
+def git_branch(cwd):
+    """Current branch name (or short HEAD when detached), cached per-cwd."""
+    if not cwd:
+        return None
+    import hashlib
+
+    cache_path = GIT_CACHE + "-" + hashlib.md5(cwd.encode()).hexdigest()[:8]
+    cached = read_cache(cache_path, GIT_TTL)
+    if cached is not None:
+        return cached or None
+
+    try:
+        branch = subprocess.check_output(
+            ["git", "branch", "--show-current"],
+            cwd=cwd, stderr=subprocess.DEVNULL, text=True, timeout=3,
+        ).strip()
+        if not branch:
+            branch = subprocess.check_output(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=cwd, stderr=subprocess.DEVNULL, text=True, timeout=3,
+            ).strip()
+    except Exception:
+        branch = ""
+
+    write_cache(cache_path, branch)
+    return branch or None
+
+
 # -- Main --
 
 
@@ -796,6 +827,10 @@ def main():
         home = str(Path.home())
         disp = "~" + cwd[len(home):] if cwd == home or cwd.startswith(home + os.sep) else cwd
         parts2.append(f"{CYAN}{disp}{RESET}")
+
+    branch = git_branch(cwd)
+    if branch:
+        parts2.append(f"{LGRAY}󰘬 {branch}{RESET}")
 
     suffix_parts = []
     if vim:
