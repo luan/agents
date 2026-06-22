@@ -42,7 +42,7 @@
     "-extensions/todos/index.ts",
     "extensions/token-burden/index.ts",
     "extensions/tui/index.ts",
-    "extensions/vcc/index.ts",
+    "-extensions/vcc/index.ts",
     "extensions/vim/index.ts",
     "extensions/clear.ts",
     "extensions/effort.ts",
@@ -67,4 +67,3 @@
   },
   "enableInstallTelemetry": false
 }
-
