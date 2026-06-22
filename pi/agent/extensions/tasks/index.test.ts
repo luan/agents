@@ -80,7 +80,7 @@ describe("tasks extension", () => {
 			{ ...task, id: "blk3m8", status: "open", title: "Wire task storage", blocked_by: ["act2k7"] },
 		];
 
-		const lines = renderHudLines(tasks, theme as any, 90, 10, {}, { frame: 2, now });
+		const lines = renderHudLines(tasks, theme as any, 90, 10, { frame: 2, now });
 
 		expect(lines[0]).toBe("● 3 tasks (1 done, 1 in progress, 1 open)");
 		expect(lines.join("\n")).toContain("✵ a Running task tests… (2m 49s)");
@@ -95,7 +95,7 @@ describe("tasks extension", () => {
 			{ ...task, id: "abd456", status: "open", title: "Second collision", blocked_by: ["abc123"] },
 		];
 
-		const lines = renderHudLines(tasks, theme as any, 90, 10, {}, { frame: 0, now });
+		const lines = renderHudLines(tasks, theme as any, 90, 10, { frame: 0, now });
 		const text = lines.join("\n");
 
 		expect(text).toContain("abc Working on collision…");
@@ -197,6 +197,7 @@ describe("tasks extension", () => {
 		};
 		const ctx = {
 			cwd,
+			sessionId: "tools-session",
 			signal: new AbortController().signal,
 			ui: {
 				notify() {},
@@ -233,6 +234,11 @@ describe("tasks extension", () => {
 		const id = created.details.task.id;
 		expect(id).toMatch(/^[0-9a-z]{6}$/);
 		expect(id).not.toMatch(/^\d+$/);
+		const otherSession = await tools
+			.get("task_read")
+			.execute("other", { all: true }, undefined, undefined, { ...ctx, sessionId: "other-session" });
+		expect(otherSession.details.tasks).toEqual([]);
+
 		await tools
 			.get("task_write")
 			.execute("2", { op: "update", id, data: { status: "in_progress" } }, undefined, undefined, ctx);
@@ -251,14 +257,15 @@ describe("tasks extension", () => {
 				ctx,
 			);
 
-		const storePath = join(cwd, ".pi", "tasks", "tasks.json");
+		const storePath = join(cwd, ".pi", "tasks", "sessions", "tools-session.json");
 		expect(existsSync(storePath)).toBe(true);
+		expect(existsSync(join(cwd, ".pi", "tasks", "tasks.json"))).toBe(false);
 		expect(JSON.parse(readFileSync(storePath, "utf8")).tasks[0].status).toBe("done");
 
 		rmSync(cwd, { recursive: true, force: true });
 	});
 
-	test("sends assigned task reminders with a rendered task card", async () => {
+	test("sends active session task reminders with a rendered task card", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "pi-tasks-reminder-send-"));
 		const commands = new Map<string, any>();
 		const tools = new Map<string, any>();
@@ -301,7 +308,7 @@ describe("tasks extension", () => {
 			{
 				op: "add",
 				title: "Run reminder regression",
-				data: { type: "feature", status: "in_progress", assigned_to: "current" },
+				data: { type: "feature", status: "in_progress" },
 			},
 			undefined,
 			undefined,
@@ -314,7 +321,7 @@ describe("tasks extension", () => {
 
 		expect(messages).toHaveLength(1);
 		expect(messages[0].message.customType).toBe("task-reminder");
-		expect(messages[0].message.content[0].text).toContain("Task reminder: 1 assigned active task");
+		expect(messages[0].message.content[0].text).toContain("Task reminder: 1 active task");
 		expect(messages[0].message.content[0].text).toContain("Run reminder regression");
 		expect(messages[0].message.details.attempts).toBe(1);
 		expect(messages[0].message.details.maxAttempts).toBe(3);
@@ -331,10 +338,10 @@ describe("tasks extension", () => {
 		rmSync(cwd, { recursive: true, force: true });
 	});
 
-	test("does not send task reminders for unassigned work", async () => {
-		const cwd = mkdtempSync(join(tmpdir(), "pi-tasks-reminder-unassigned-"));
-		const storePath = join(cwd, ".pi", "tasks", "tasks.json");
-		mkdirSync(join(cwd, ".pi", "tasks"), { recursive: true });
+	test("does not send task reminders for another session's work", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-tasks-reminder-other-session-"));
+		const storePath = join(cwd, ".pi", "tasks", "sessions", "other-session.json");
+		mkdirSync(join(cwd, ".pi", "tasks", "sessions"), { recursive: true });
 		writeFileSync(
 			storePath,
 			JSON.stringify({
@@ -342,9 +349,8 @@ describe("tasks extension", () => {
 					{
 						...task,
 						id: "act2k7",
-						title: "Do not remind unassigned work",
+						title: "Do not remind another session's work",
 						status: "in_progress",
-						assigned_to: null,
 					},
 				],
 			}),
@@ -383,8 +389,8 @@ describe("tasks extension", () => {
 
 	test("waits for real user input before repeating a no-tool task reminder", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "pi-tasks-reminder-max-"));
-		const storePath = join(cwd, ".pi", "tasks", "tasks.json");
-		mkdirSync(join(cwd, ".pi", "tasks"), { recursive: true });
+		const storePath = join(cwd, ".pi", "tasks", "sessions", "reminder-session.json");
+		mkdirSync(join(cwd, ".pi", "tasks", "sessions"), { recursive: true });
 		writeFileSync(
 			storePath,
 			JSON.stringify({
@@ -394,7 +400,6 @@ describe("tasks extension", () => {
 						id: "act2k7",
 						title: "Limit reminder repeats",
 						status: "in_progress",
-						assigned_to: "session:reminder-session",
 					},
 				],
 			}),
@@ -439,8 +444,8 @@ describe("tasks extension", () => {
 	});
 	test("migrates persisted numeric demo ids to short hash ids", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "pi-tasks-migrate-"));
-		const storePath = join(cwd, ".pi", "tasks", "tasks.json");
-		mkdirSync(join(cwd, ".pi", "tasks"), { recursive: true });
+		const storePath = join(cwd, ".pi", "tasks", "sessions", "migrate-session.json");
+		mkdirSync(join(cwd, ".pi", "tasks", "sessions"), { recursive: true });
 		writeFileSync(
 			storePath,
 			JSON.stringify({
@@ -463,7 +468,7 @@ describe("tasks extension", () => {
 			},
 			sendMessage() {},
 		};
-		const ctx = { cwd, ui: { notify() {}, setWidget() {} } };
+		const ctx = { cwd, sessionId: "migrate-session", ui: { notify() {}, setWidget() {} } };
 
 		tasksExtension(pi as any);
 		await handlers.get("session_start")?.({}, ctx);

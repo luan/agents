@@ -12,8 +12,6 @@
 		"up": ["up", "k"],
 		"down": ["down", "j"],
 		"cycleStatus": ["space"],
-		"assignCurrent": ["a"],
-		"clearAssignee": ["u"],
 		"priorityUp": ["alt+k", "+"],
 		"priorityDown": ["alt+j", "-"],
 		"done": ["d"],

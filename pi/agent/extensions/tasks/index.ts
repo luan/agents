@@ -68,8 +68,6 @@ interface TaskRecord {
 	type?: string;
 	labels?: string[];
 	priority?: number;
-	assigned_to?: string | null;
-	assigned_label?: string | null;
 	parent_id?: string | null;
 	blocked_by?: string[];
 	active_form?: string | null;
@@ -100,8 +98,6 @@ interface TaskBoardKeybindings {
 	up: string[];
 	down: string[];
 	cycleStatus: string[];
-	assignCurrent: string[];
-	clearAssignee: string[];
 	priorityUp: string[];
 	priorityDown: string[];
 	done: string[];
@@ -128,7 +124,6 @@ let taskHudFrame = 0;
 
 interface TaskHudState {
 	tasks: TaskRecord[];
-	display: AssignmentDisplayContext;
 	config: Config;
 }
 
@@ -146,8 +141,6 @@ const defaultConfig: Config = {
 		up: ["up", "k"],
 		down: ["down", "j"],
 		cycleStatus: ["space"],
-		assignCurrent: ["a"],
-		clearAssignee: ["u"],
 		priorityUp: ["alt+k", "+"],
 		priorityDown: ["alt+j", "-"],
 		done: ["d"],
@@ -181,20 +174,34 @@ function textResult(text: string, details: TaskDetails) {
 	return { content: [{ type: "text" as const, text }], details };
 }
 
-function taskStorePath(cwd: string): string {
-	return join(cwd, ".pi", "tasks", "tasks.json");
+function taskStorePath(cwd: string, ctx?: ExtensionContext): string {
+	return join(cwd, ".pi", "tasks", "sessions", `${sessionTaskFileName(ctx)}.json`);
+}
+
+function taskStoreDir(cwd: string): string {
+	return join(cwd, ".pi", "tasks", "sessions");
+}
+
+function sessionTaskFileName(ctx?: ExtensionContext): string {
+	const sessionId = sessionTaskId(ctx);
+	if (!sessionId) throw new Error("Task session id is unavailable");
+	return sessionId.replace(/[^A-Za-z0-9._-]/g, "_");
 }
 
 class TaskStore {
 	private tasks = new Map<string, TaskRecord>();
 
-	constructor(private readonly cwd: string) {
+	constructor(
+		private readonly cwd: string,
+		private readonly ctx?: ExtensionContext,
+	) {
 		this.load();
 	}
 
 	private load(): void {
+		const path = taskStorePath(this.cwd, this.ctx);
 		try {
-			const parsed = JSON.parse(readFileSync(taskStorePath(this.cwd), "utf8")) as Partial<TaskStoreData>;
+			const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<TaskStoreData>;
 			this.tasks.clear();
 			for (const task of parsed.tasks ?? []) this.tasks.set(task.id, normalizeStoredTask(task));
 			if (this.migrateNumericIds()) this.save();
@@ -202,8 +209,8 @@ class TaskStore {
 	}
 
 	private save(): void {
-		const path = taskStorePath(this.cwd);
-		mkdirSync(join(this.cwd, ".pi", "tasks"), { recursive: true });
+		const path = taskStorePath(this.cwd, this.ctx);
+		mkdirSync(taskStoreDir(this.cwd), { recursive: true });
 		const tmp = `${path}.tmp`;
 		writeFileSync(tmp, JSON.stringify({ tasks: this.listRaw() }, null, 2));
 		renameSync(tmp, path);
@@ -213,7 +220,7 @@ class TaskStore {
 		return [...this.tasks.values()].sort(compareTasks);
 	}
 
-	add(params: Record<string, unknown>, ctx?: ExtensionContext, pi?: ExtensionAPI): TaskRecord {
+	add(params: Record<string, unknown>): TaskRecord {
 		const now = Date.now();
 		const status = normalizeStatus(params.status, "open");
 		const task: TaskRecord = {
@@ -224,8 +231,6 @@ class TaskStore {
 			type: normalizeTaskType(params.type),
 			labels: stringArray(params.labels),
 			priority: numberValue(params.priority) ?? 0,
-			assigned_to: stringOrNull(params.assigned_to),
-			assigned_label: stringOrNull(params.assigned_label),
 			parent_id: stringOrNull(params.parent_id),
 			blocked_by: stringArray(params.blocked_by),
 			active_form: stringOrNull(params.active_form),
@@ -234,25 +239,18 @@ class TaskStore {
 			created_at: now,
 			updated_at: now,
 		};
-		const normalized = normalizeTaskParams(task as unknown as Record<string, unknown>, ctx, pi);
-		Object.assign(task, normalized);
 		this.tasks.set(task.id, task);
 		this.save();
 		return task;
 	}
 
-	list(filters: Record<string, unknown>, ctx?: ExtensionContext): TaskRecord[] {
+	list(filters: Record<string, unknown>): TaskRecord[] {
 		this.load();
-		const assignedFilter =
-			filters.assigned_to === "current" ? sessionAssignmentAliases(ctx) : stringValue(filters.assigned_to);
 		return this.listRaw().filter((task) => {
 			if (filters.all !== true && isCanceled(task)) return false;
 			if (typeof filters.status === "string" && task.status !== filters.status) return false;
 			if (typeof filters.type === "string" && task.type !== filters.type) return false;
 			if (typeof filters.label === "string" && !(task.labels ?? []).includes(filters.label)) return false;
-			if (Array.isArray(assignedFilter)) {
-				if (assignedFilter.length === 0 || !assignedFilter.includes(task.assigned_to ?? "")) return false;
-			} else if (assignedFilter && task.assigned_to !== assignedFilter) return false;
 			return true;
 		});
 	}
@@ -262,23 +260,17 @@ class TaskStore {
 		return this.resolve(id);
 	}
 
-	update(id: string, params: Record<string, unknown>, ctx?: ExtensionContext, pi?: ExtensionAPI): TaskRecord {
+	update(id: string, params: Record<string, unknown>): TaskRecord {
 		this.load();
 		const task = this.resolve(id);
 		guardTaskCompletion(task, params);
 		const now = Date.now();
-		const normalized = normalizeTaskParams(params, ctx, pi);
+		const normalized = params;
 		if (typeof normalized.title === "string") task.title = normalized.title;
 		if (typeof normalized.body === "string") task.body = normalized.body;
 		if (typeof normalized.priority === "number") task.priority = normalized.priority;
 		if (Array.isArray(normalized.labels)) task.labels = stringArray(normalized.labels);
 		if (typeof normalized.type === "string") task.type = normalizeTaskType(normalized.type);
-		if (normalized.assigned_to !== undefined) task.assigned_to = stringOrNull(normalized.assigned_to);
-		if (normalized.assigned_label !== undefined) task.assigned_label = stringOrNull(normalized.assigned_label);
-		if (normalized.clear_assignee === true) {
-			task.assigned_to = null;
-			task.assigned_label = null;
-		}
 		if (normalized.parent_id !== undefined) task.parent_id = stringOrNull(normalized.parent_id);
 		if (normalized.clear_parent === true) task.parent_id = null;
 		if (Array.isArray(normalized.blocked_by)) task.blocked_by = stringArray(normalized.blocked_by);
@@ -352,13 +344,18 @@ class TaskStore {
 
 function normalizeStoredTask(task: TaskRecord): TaskRecord {
 	return {
-		...task,
+		id: task.id,
+		title: task.title,
 		body: task.body ?? "",
 		status: task.status ?? "open",
 		type: task.type ?? "chore",
 		labels: task.labels ?? [],
 		priority: task.priority ?? 0,
+		parent_id: task.parent_id ?? null,
 		blocked_by: task.blocked_by ?? [],
+		active_form: task.active_form ?? null,
+		started_at: task.started_at ?? null,
+		completed_at: task.completed_at ?? null,
 		created_at: task.created_at ?? Date.now(),
 		updated_at: task.updated_at ?? task.created_at ?? Date.now(),
 	};
@@ -527,7 +524,7 @@ function gerundTitle(title: string): string {
 	return object ? `${gerund} ${object}` : gerund;
 }
 
-function sessionAssignmentAliases(ctx?: ExtensionContext): string[] {
+function sessionTaskId(ctx?: ExtensionContext): string | undefined {
 	const anyCtx = ctx as
 		| (ExtensionContext & {
 				sessionId?: string;
@@ -535,88 +532,35 @@ function sessionAssignmentAliases(ctx?: ExtensionContext): string[] {
 				sessionManager?: { getSessionFile?: () => string | undefined; getSessionId?: () => string | undefined };
 		  })
 		| undefined;
-	const aliases: string[] = [];
-	const add = (value: unknown) => {
-		if (typeof value !== "string" || value.length === 0) return;
-		const alias = `session:${value}`;
-		if (!aliases.includes(alias)) aliases.push(alias);
-	};
-	add(anyCtx?.sessionId);
-	add(anyCtx?.session?.id);
+	const fromCtx = [anyCtx?.sessionId, anyCtx?.session?.id, anyCtx?.sessionManager?.getSessionId?.()].find(
+		(value): value is string => typeof value === "string" && value.trim().length > 0,
+	);
+	if (fromCtx) return fromCtx.trim();
 	const file = anyCtx?.sessionManager?.getSessionFile?.();
-	if (typeof file === "string" && file.length > 0)
-		add(
-			file
+	return typeof file === "string" && file.trim().length > 0
+		? file
 				.split("/")
 				.at(-1)
-				?.replace(/\.jsonl$/, ""),
-		);
-	add(anyCtx?.sessionManager?.getSessionId?.());
-	return aliases;
-}
-
-function sessionAssignment(ctx?: ExtensionContext): string | undefined {
-	return sessionAssignmentAliases(ctx)[0];
-}
-
-function sessionName(pi?: ExtensionAPI, ctx?: ExtensionContext): string | undefined {
-	try {
-		const fromPi = (
-			pi as (ExtensionAPI & { getSessionName?: () => string | undefined }) | undefined
-		)?.getSessionName?.();
-		if (typeof fromPi === "string" && fromPi.trim()) return fromPi.trim();
-	} catch {}
-	try {
-		const fromCtx = (
-			ctx as
-				| (ExtensionContext & {
-						sessionManager?: { getSessionName?: () => string | undefined };
-				  })
-				| undefined
-		)?.sessionManager?.getSessionName?.();
-		if (typeof fromCtx === "string" && fromCtx.trim()) return fromCtx.trim();
-	} catch {}
-	return undefined;
-}
-
-function normalizeTaskParams(
-	params: Record<string, unknown>,
-	ctx?: ExtensionContext,
-	pi?: ExtensionAPI,
-): Record<string, unknown> {
-	if (params.assigned_to !== "current") return params;
-	const assignedTo = sessionAssignment(ctx);
-	if (!assignedTo) return params;
-	return {
-		...params,
-		assigned_to: assignedTo,
-		assigned_label: sessionName(pi, ctx),
-	};
+				?.replace(/\.jsonl$/, "")
+				.trim()
+		: undefined;
 }
 
 function taskBody(task: TaskRecord, prefixes: ReadonlyMap<string, string>): string {
 	const blocked = task.blocked_by?.length
 		? `\nBlocked by: ${task.blocked_by.map((id) => displayTaskId(id, prefixes)).join(", ")}`
 		: "";
-	const assignee = assignmentLabel(task);
-	const assigned = assignee ? `\nAssignee: ${assignee}` : "";
-	return `${displayTaskId(task.id, prefixes)} [${task.status}] ${task.title}${assigned}${blocked}`;
+	return `${displayTaskId(task.id, prefixes)} [${task.status}] ${task.title}${blocked}`;
 }
 
-function executeTask(
-	cwd: string,
-	action: TaskCommand,
-	params: Record<string, unknown>,
-	pi?: ExtensionAPI,
-	ctx?: ExtensionContext,
-) {
-	const store = new TaskStore(cwd);
+function executeTask(cwd: string, action: TaskCommand, params: Record<string, unknown>, ctx?: ExtensionContext) {
+	const store = new TaskStore(cwd, ctx);
 	const normalizedParams = normalizeTaskWriteParams(params);
 	let details: TaskDetails;
 	let text: string;
 	switch (action) {
 		case "add": {
-			const task = store.add(normalizedParams, ctx, pi);
+			const task = store.add(normalizedParams);
 			const tasks = store.list({ all: true });
 			const prefixes = minimalTaskIdPrefixes(tasks);
 			details = { action, args: [], task };
@@ -624,7 +568,7 @@ function executeTask(
 			break;
 		}
 		case "list": {
-			const tasks = store.list(params, ctx);
+			const tasks = store.list(params);
 			const prefixes = minimalTaskIdPrefixes(tasks);
 			details = { action, args: [], tasks };
 			text = tasks.length ? tasks.map((task) => taskBody(task, prefixes)).join("\n") : "No tasks";
@@ -639,7 +583,7 @@ function executeTask(
 			break;
 		}
 		case "update": {
-			const task = store.update(requiredString(params.id, "id"), normalizedParams, ctx, pi);
+			const task = store.update(requiredString(params.id, "id"), normalizedParams);
 			const tasks = store.list({ all: true });
 			const prefixes = minimalTaskIdPrefixes(tasks);
 			details = { action, args: [], task };
@@ -668,7 +612,6 @@ function detailedTaskText(task: TaskRecord, tasks: TaskRecord[], prefixes: Reado
 		`Status: ${task.status}`,
 		`Type: ${task.type ?? "chore"}`,
 		`Priority: ${priority(task)}`,
-		`Assigned: ${assignmentLabel(task) ?? "none"}`,
 		`Blocked by: ${blocked}`,
 		`Blocks: ${blocks}`,
 		task.body.trim() ? `Description:\n${task.body.trim()}` : undefined,
@@ -677,12 +620,12 @@ function detailedTaskText(task: TaskRecord, tasks: TaskRecord[], prefixes: Reado
 		.join("\n");
 }
 
-async function loadTaskSnapshot(cwd: string): Promise<TaskSnapshot> {
-	return { tasks: new TaskStore(cwd).list({ all: true }) };
+async function loadTaskSnapshot(ctx: ExtensionContext): Promise<TaskSnapshot> {
+	return { tasks: new TaskStore(ctx.cwd, ctx).list({ all: true }) };
 }
 
-async function loadHudTasks(cwd: string) {
-	return (await loadTaskSnapshot(cwd)).tasks;
+async function loadHudTasks(ctx: ExtensionContext) {
+	return (await loadTaskSnapshot(ctx)).tasks;
 }
 
 class TaskHudWidget implements Component {
@@ -700,7 +643,7 @@ class TaskHudWidget implements Component {
 	render(width: number): string[] {
 		const state = this.state;
 		if (!state || !hasEnoughTerminalRows(state.config.hud.minTerminalRows)) return [];
-		return renderHudLines(state.tasks, this.theme, width, state.config.hud.maxTasks, state.display, {
+		return renderHudLines(state.tasks, this.theme, width, state.config.hud.maxTasks, {
 			compact: !taskHudExpanded,
 			frame: taskHudFrame,
 		});
@@ -722,13 +665,12 @@ function ensureTaskHudWidget(ctx: ExtensionContext): void {
 
 async function updateTaskHud(
 	ctx: ExtensionContext,
-	pi: ExtensionAPI | undefined,
+	_pi: ExtensionAPI | undefined,
 	config: Config,
 	preloadedTasks?: TaskRecord[],
 ): Promise<void> {
-	const tasks = preloadedTasks ?? (await loadHudTasks(ctx.cwd));
-	const display = assignmentDisplayContext(pi, ctx, tasks);
-	const state = { tasks, display, config };
+	const tasks = preloadedTasks ?? (await loadHudTasks(ctx));
+	const state = { tasks, config };
 	latestTaskHudState = state;
 	ensureTaskHudWidget(ctx);
 	taskHudWidget?.setState(state);
@@ -759,7 +701,7 @@ async function showTaskBoard(
 		activeTaskBoard.close();
 		return;
 	}
-	const load = () => loadHudTasks(ctx.cwd);
+	const load = () => loadHudTasks(ctx);
 	const tasks = await load();
 	try {
 		await tasksTui.bind(ctx).overlays.openComponent(
@@ -774,12 +716,12 @@ async function showTaskBoard(
 					onClose: close,
 					onReload: load,
 					onMutate: async (action, params) => {
-						executeTask(ctx.cwd, action, params, pi, ctx);
+						executeTask(ctx.cwd, action, params, ctx);
 						return load();
 					},
 					onEditBody: async (task) => {
 						const edited = await ctx.ui.editor(`Edit task ${task.id} body`, task.body ?? "");
-						if (edited !== task.body) executeTask(ctx.cwd, "update", { id: task.id, body: edited }, pi, ctx);
+						if (edited !== task.body) executeTask(ctx.cwd, "update", { id: task.id, body: edited }, ctx);
 						return load();
 					},
 					onChange: () => tui.requestRender(),
@@ -885,8 +827,6 @@ function taskBoardHelp(bindings: TaskBoardKeybindings): string {
 		`${keyLabel(bindings.toggle)}/${keyLabels(bindings.close.filter((key) => key !== bindings.toggle))} close`,
 		`${keyLabels(bindings.up)}/${keyLabels(bindings.down)} move`,
 		`${keyLabels(bindings.cycleStatus)} status`,
-		`${keyLabels(bindings.assignCurrent)} assign`,
-		`${keyLabels(bindings.clearAssignee)} unassign`,
 		`${keyLabels(bindings.priorityUp)}/${keyLabels(bindings.priorityDown)} priority`,
 		`${keyLabels(bindings.done)} done`,
 		`${keyLabels(bindings.cancel)} cancel`,
@@ -934,34 +874,6 @@ function taskPrefix(task: TaskRecord, theme: Theme, prefixes: ReadonlyMap<string
 	return theme.fg("dim", displayTaskId(task.id, prefixes));
 }
 
-function assignmentLabel(task: TaskRecord): string | undefined {
-	return task.assigned_label || task.assigned_to?.replace(/^session:/, "");
-}
-
-interface AssignmentDisplayContext {
-	currentAssignments?: string[];
-	currentLabel?: string;
-}
-
-function assignmentDisplayContext(
-	pi: ExtensionAPI | undefined,
-	ctx: ExtensionContext | undefined,
-	_tasks: TaskRecord[],
-) {
-	return { currentAssignments: sessionAssignmentAliases(ctx), currentLabel: sessionName(pi, ctx) };
-}
-
-function isAssignedToCurrentSession(task: TaskRecord, display: AssignmentDisplayContext): boolean {
-	return Boolean((display.currentAssignments ?? []).includes(task.assigned_to ?? ""));
-}
-
-function formatAssignee(task: TaskRecord, theme: Theme, display: AssignmentDisplayContext): string {
-	const label = assignmentLabel(task);
-	if (!label) return "";
-	const marker = isAssignedToCurrentSession(task, display) ? "@me" : `@${label}`;
-	return ` ${theme.fg("mdLink", marker)}`;
-}
-
 function strike(theme: Theme, text: string): string {
 	return theme.strikethrough?.(text) ?? text;
 }
@@ -976,7 +888,6 @@ function taskLine(
 	width: number,
 	byId: Map<string, TaskRecord>,
 	prefixes: ReadonlyMap<string, string>,
-	display: AssignmentDisplayContext = {},
 	selected = false,
 	frame = 0,
 	now = Date.now(),
@@ -985,7 +896,6 @@ function taskLine(
 	const icon = theme.fg(statusColor(task, blocked), statusIcon(task, blocked, frame));
 	const blockers = openBlockers(task, byId).map((id) => displayTaskId(id, prefixes));
 	const suffix = blockers.length > 0 ? theme.fg("dim", ` › blocked by ${blockers.join(", ")}`) : "";
-	const assignee = formatAssignee(task, theme, display);
 	const marker = selected ? "›" : " ";
 	let subject = task.title;
 	let stats = "";
@@ -993,7 +903,7 @@ function taskLine(
 		subject = `${task.active_form || gerundTitle(task.title)}…`;
 		stats = ` ${theme.fg("dim", `(${formatDuration(now - (task.started_at ?? task.updated_at ?? now))})`)}`;
 	}
-	let text = `${marker} ${icon} ${taskPrefix(task, theme, prefixes)} ${subject}${assignee}${stats}${suffix}`;
+	let text = `${marker} ${icon} ${taskPrefix(task, theme, prefixes)} ${subject}${stats}${suffix}`;
 	if (isComplete(task))
 		text = `${marker} ${icon} ${theme.fg("dim", strike(theme, `${displayTaskId(task.id, prefixes)} ${task.title}`))}`;
 	return truncateLine(text, width);
@@ -1031,11 +941,10 @@ function detailLines(
 	const blocked = tasks
 		.filter((candidate) => (candidate.blocked_by ?? []).includes(task.id))
 		.map((candidate) => displayTaskId(candidate.id, prefixes));
-	const assignee = assignmentLabel(task) ?? "none";
 	const raw = [
 		theme.fg("toolTitle", bold(theme, `${displayTaskId(task.id, prefixes)} ${task.title}`)),
 		"",
-		`${theme.fg("dim", "Status:")} ${task.status}   ${theme.fg("dim", "Priority:")} ${priority(task)}   ${theme.fg("dim", "Assignee:")} ${assignee}`,
+		`${theme.fg("dim", "Status:")} ${task.status}   ${theme.fg("dim", "Priority:")} ${priority(task)}`,
 		`${theme.fg("dim", "Blockers:")} ${(task.blocked_by ?? []).map((id) => displayTaskId(id, prefixes)).join(", ") || "none"}`,
 		`${theme.fg("dim", "Parent:")} ${task.parent_id ? displayTaskId(task.parent_id, prefixes) : "none"}`,
 		`${theme.fg("dim", "Blocks:")} ${blocked.join(", ") || "none"}`,
@@ -1066,7 +975,7 @@ export function renderTaskBoardLines(
 	} else {
 		for (let row = 0; row < items.length; row++) {
 			const item = items[row]!;
-			lines.push(taskLine(item.task, theme, innerWidth, byId, prefixes, {}, row === clamped.row));
+			lines.push(taskLine(item.task, theme, innerWidth, byId, prefixes, row === clamped.row));
 		}
 	}
 	lines.push(
@@ -1239,14 +1148,6 @@ export class TaskBoardOverlay implements Component {
 			this.editBody();
 			return;
 		}
-		if (matchesAnyKey(data, bindings.assignCurrent)) {
-			this.updateSelected({ assigned_to: "current" });
-			return;
-		}
-		if (matchesAnyKey(data, bindings.clearAssignee)) {
-			this.updateSelected({ clear_assignee: true });
-			return;
-		}
 		if (matchesAnyKey(data, bindings.priorityUp)) {
 			const task = this.currentTask();
 			if (task) this.updateSelected({ priority: priority(task) + 1 });
@@ -1350,7 +1251,6 @@ export function renderHudLines(
 	theme: Theme,
 	width: number,
 	maxTasks = 10,
-	display: AssignmentDisplayContext = {},
 	options: {
 		compact?: boolean;
 		frame?: number;
@@ -1371,7 +1271,7 @@ export function renderHudLines(
 	const lines = [summaryLine];
 	const sorted = buildTaskBoardItems(visibleTasks).map((item) => item.task);
 	for (const task of sorted.slice(0, maxTasks)) {
-		lines.push(taskLine(task, theme, width, byId, prefixes, display, false, options.frame ?? 0, now));
+		lines.push(taskLine(task, theme, width, byId, prefixes, false, options.frame ?? 0, now));
 	}
 	const hidden = sorted.length - Math.min(sorted.length, maxTasks);
 	if (hidden > 0) lines.push(truncateLine(theme.fg("dim", `    … and ${hidden} more`), width));
@@ -1407,7 +1307,6 @@ function normalizeTaskWriteParams(params: Record<string, unknown>): Record<strin
 		...data,
 		...params,
 		title: params.title ?? data.title,
-		clear_assignee: params.clear_assignee === true || clear.has("assignee"),
 		clear_parent: params.clear_parent === true || clear.has("parent"),
 		clear_blockers: params.clear_blockers === true || clear.has("blockers"),
 	};
@@ -1436,7 +1335,7 @@ function makeCombinedTaskTool(
 			ctx?: ExtensionContext,
 		) => {
 			const action = resolveAction(params);
-			const result = executeTask(getCwd(), action, params, pi, ctx);
+			const result = executeTask(ctx?.cwd ?? getCwd(), action, params, ctx);
 			if (action !== "list" && action !== "show") {
 				onProgress?.(ctx, action, result);
 				if (ctx && config.hud.enabled) await updateTaskHud(ctx, pi, config).catch(() => {});
@@ -1462,22 +1361,16 @@ function installSilentTaskToolRenderPatch(): void {
 
 const maxTaskReminderAttempts = 3;
 
-function isAssignedTo(assignments: readonly string[], task: TaskRecord): boolean {
-	return assignments.includes(task.assigned_to ?? "");
-}
-
 function sortedReminderTasks(tasks: TaskRecord[]): TaskRecord[] {
 	return [...tasks].sort(compareTasks);
 }
 
-function assignedSessionTasks(tasks: TaskRecord[], assignedTo: readonly string[]): TaskRecord[] {
-	return sortedReminderTasks(tasks.filter((task) => isActiveTask(task) && isAssignedTo(assignedTo, task)));
+function activeSessionTasks(tasks: TaskRecord[]): TaskRecord[] {
+	return sortedReminderTasks(tasks.filter(isActiveTask));
 }
 
 async function taskReminderTasks(ctx: ExtensionContext): Promise<TaskRecord[]> {
-	const assignedTo = sessionAssignmentAliases(ctx);
-	if (assignedTo.length === 0) return [];
-	return assignedSessionTasks(await loadHudTasks(ctx.cwd), assignedTo);
+	return activeSessionTasks(await loadHudTasks(ctx));
 }
 
 function taskReminderContent(tasks: TaskRecord[], prefixes: ReadonlyMap<string, string>, attempt: number): string {
@@ -1486,10 +1379,10 @@ function taskReminderContent(tasks: TaskRecord[], prefixes: ReadonlyMap<string, 
 		.map((task) => `- ${displayTaskId(task.id, prefixes)} [${task.status}] ${task.title}`)
 		.join("\n");
 	return [
-		`Task reminder: ${count} assigned active task${count === 1 ? "" : "s"}.`,
+		`Task reminder: ${count} active task${count === 1 ? "" : "s"}.`,
 		taskList,
 		"",
-		"Continue the assigned task work or update task status/assignee if this session is no longer responsible.",
+		"Continue the current session's task work or update task status.",
 		`Reminder ${attempt}/${maxTaskReminderAttempts}`,
 	].join("\n");
 }
@@ -1651,8 +1544,7 @@ export default function tasksExtension(pi: ExtensionAPI, _runtime: Runtime = {})
 		description: "Toggle project task HUD summary/list view",
 		handler: async (ctx: ExtensionContext) => {
 			taskHudExpanded = !taskHudExpanded;
-			const tasks =
-				(taskHudWidgetCtx === ctx ? latestTaskHudState?.tasks : undefined) ?? (await loadHudTasks(ctx.cwd));
+			const tasks = (taskHudWidgetCtx === ctx ? latestTaskHudState?.tasks : undefined) ?? (await loadHudTasks(ctx));
 			await updateTaskHud(ctx, pi, config, tasks).catch((error) => {
 				ctx.ui.notify?.(
 					`Task HUD refresh failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -1674,7 +1566,6 @@ export default function tasksExtension(pi: ExtensionAPI, _runtime: Runtime = {})
 			status: Type.Optional(Type.String({ description: "List filter" })),
 			type: Type.Optional(Type.String({ description: "List filter" })),
 			label: Type.Optional(Type.String({ description: "List filter" })),
-			assigned_to: Type.Optional(Type.String({ description: "List filter, or 'current'" })),
 			all: Type.Optional(Type.Boolean({ description: "Include completed/canceled tasks" })),
 		}),
 	});
@@ -1684,7 +1575,7 @@ export default function tasksExtension(pi: ExtensionAPI, _runtime: Runtime = {})
 		name: "task_write",
 		label: "Write Tasks",
 		description:
-			"Add/update/delete tasks. Put fields in data: type, body, status, priority, assigned_to ('current' ok), active_form, labels, parent_id, blocked_by. Use clear for assignee/parent/blockers. To complete feature/bug tasks with status=done, agents complete accepted feature/bug tasks with status=done and user_approved_completion=true; in auto mode use auto_verified_completion=true when automated evidence proves acceptance.",
+			"Add/update/delete tasks for the current session. Put fields in data: type, body, status, priority, active_form, labels, parent_id, blocked_by. Use clear for parent/blockers. To complete feature/bug tasks with status=done, agents complete accepted feature/bug tasks with status=done and user_approved_completion=true; in auto mode use auto_verified_completion=true when automated evidence proves acceptance.",
 		promptSnippet: "Write project tasks",
 		parameters: Type.Object({
 			op: Type.String({ description: "add, update, or delete" }),
@@ -1692,10 +1583,10 @@ export default function tasksExtension(pi: ExtensionAPI, _runtime: Runtime = {})
 			title: Type.Optional(Type.String({ description: "Add title shorthand" })),
 			data: Type.Optional(
 				Type.Record(Type.String(), Type.Unknown(), {
-					description: "Add/update fields, e.g. status/priority/assigned_to/labels/blocked_by/active_form",
+					description: "Add/update fields, e.g. status/priority/labels/blocked_by/active_form",
 				}),
 			),
-			clear: Type.Optional(Type.Array(Type.String(), { description: "assignee, parent, blockers" })),
+			clear: Type.Optional(Type.Array(Type.String(), { description: "parent, blockers" })),
 			user_approved_completion: Type.Optional(
 				Type.Boolean({ description: "Set true only after the user approves completion in non-auto mode." }),
 			),
