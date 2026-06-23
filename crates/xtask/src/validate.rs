@@ -150,4 +150,5 @@ fn is_checkout_path_scan_excluded(path: &Path) -> bool {
         || path.ends_with("pi/agent/mcp-cache.json")
         || path.ends_with("pi/agent/mcp-oauth")
         || path.ends_with("pi/agent/mcp-onboarding.json")
+        || path.ends_with("pi/agent/trust.json")
 }

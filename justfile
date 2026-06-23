@@ -23,8 +23,8 @@ test:
     cargo nextest run && \
     bun run test
 
-build:
-    cd "{{ repo }}" && cargo build --release -p ct -p vlt
+build: context-guard
+    cd "{{ repo }}" && cargo build --release -p context-guard -p ct -p vlt
 
 render-agents:
     cd "{{ repo }}" && cargo xtask render-agents
@@ -58,12 +58,16 @@ pi-node-modules-link:
 codex-plugins-install:
     cd "{{ repo }}" && cargo xtask codex-plugins-install
 
-install:
+context-guard:
+    cd "{{ repo }}" && cargo build -p context-guard
+
+install: context-guard
     @cargo install --list | grep -q '^worktrunk ' || cargo binstall worktrunk --locked --no-confirm || echo "warning: worktrunk install failed; continuing without it" >&2
     @cargo install --list | grep -q '^git-surgeon ' || cargo binstall git-surgeon --locked --no-confirm || echo "warning: git-surgeon install failed (no prebuilt binary; source build is Unix-only); continuing without it" >&2
     cargo install --path "{{ repo }}/crates/ct"
     cargo install --path "{{ repo }}/crates/vlt"
     cargo install --path "{{ repo }}/crates/sym"
+    cargo install --path "{{ repo }}/crates/context-guard"
     claude mcp remove -s user vault 2>/dev/null || true
     claude mcp remove -s user source 2>/dev/null || true
     claude mcp remove -s user apply-patch 2>/dev/null || true
