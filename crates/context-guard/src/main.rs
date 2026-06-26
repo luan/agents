@@ -585,7 +585,7 @@ fn execute_code(
             command
         }
         "python" => {
-            let mut command = Command::new("python3");
+            let mut command = Command::new(python_executable());
             command.arg("-c").arg(format!(
                 "import os\nFILE_CONTENT = open(os.environ['FILE_CONTENT_PATH'], encoding='utf-8').read() if os.environ.get('FILE_CONTENT_PATH') else os.environ.get('FILE_CONTENT', '')\n{code}"
             ));
@@ -612,6 +612,16 @@ fn execute_code(
         let _ = fs::remove_file(path);
     }
     output
+}
+
+#[cfg(windows)]
+fn python_executable() -> &'static str {
+    "python"
+}
+
+#[cfg(not(windows))]
+fn python_executable() -> &'static str {
+    "python3"
 }
 
 fn write_temp_file_content(content: &str) -> Result<String, String> {
@@ -788,10 +798,10 @@ fn backgrounded_output(timeout_ms: u64) -> Output {
 }
 
 fn write_execution_response(label: &str, output: Output) -> Result<(), String> {
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = normalize_output_text(&String::from_utf8_lossy(&output.stdout));
+    let stderr = normalize_output_text(&String::from_utf8_lossy(&output.stderr));
     let combined = if output.status.success() {
-        stdout.to_string()
+        stdout
     } else {
         format!(
             "{label} exited {}\n\nstdout:\n{}\n\nstderr:\n{}",
@@ -818,6 +828,10 @@ fn write_execution_response(label: &str, output: Output) -> Result<(), String> {
         },
         !output.status.success(),
     )
+}
+
+fn normalize_output_text(text: &str) -> String {
+    text.replace("\r\n", "\n")
 }
 
 fn open_context_db(db_path: &str) -> Result<Connection, String> {
@@ -2148,15 +2162,24 @@ fn resolve_index_document(
 fn resolve_project_path(project_dir: Option<&str>, raw_path: &str) -> String {
     let path = Path::new(raw_path);
     if path.is_absolute() {
-        return raw_path.to_string();
+        return path_to_string(path);
     }
     if let Some(project_dir) = project_dir {
-        return Path::new(project_dir)
-            .join(path)
-            .to_string_lossy()
-            .to_string();
+        return path_to_string(&Path::new(project_dir).join(path));
     }
-    raw_path.to_string()
+    path_to_string(path)
+}
+
+fn path_to_string(path: &Path) -> String {
+    let path = path.to_string_lossy().to_string();
+    #[cfg(windows)]
+    {
+        path.replace('/', "\\")
+    }
+    #[cfg(not(windows))]
+    {
+        path
+    }
 }
 
 fn build_pi_system_prompt(

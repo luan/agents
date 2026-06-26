@@ -1,5 +1,6 @@
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -63,6 +64,24 @@ fn temp_file_path(name: &str, ext: &str) -> std::path::PathBuf {
             .as_nanos(),
         ext
     ))
+}
+
+fn shell_quote_path(path: &Path) -> String {
+    let path = shell_path(path);
+    format!("'{}'", path.replace('\'', "'\\''"))
+}
+
+fn shell_path(path: &Path) -> String {
+    let path = path.to_string_lossy().replace('\\', "/");
+    #[cfg(windows)]
+    {
+        if path.len() >= 2 && path.as_bytes()[1] == b':' {
+            let drive = path[..1].to_ascii_lowercase();
+            let rest = path[2..].trim_start_matches('/');
+            return format!("/{drive}/{rest}");
+        }
+    }
+    path
 }
 
 fn serve_http_once(body: &'static str) -> String {
@@ -217,7 +236,10 @@ fn run_command_honors_timeout() {
 #[test]
 fn run_command_can_background_on_timeout_and_continue_side_effects() {
     let marker_path = temp_file_path("run-background", "txt");
-    let code = format!("sleep 0.1; printf done > {}", marker_path.to_string_lossy());
+    let code = format!(
+        "sleep 0.1; printf done > {}",
+        shell_quote_path(&marker_path)
+    );
     let request = serde_json::json!({
         "command": "run",
         "params": {

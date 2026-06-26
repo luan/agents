@@ -164,6 +164,17 @@ fn act_agents_home_link(root: &Path, target: &Path) -> Result<()> {
                 eprintln!("  = {} (repo checkout)", target.display());
                 return Ok(());
             }
+            if directory_contains_only_repo_links(root, target)? {
+                let backup = move_repo_owned_directory_aside(target)?;
+                create_symlink(root, target)?;
+                eprintln!(
+                    "  ~ {} -> {} (moved existing repo-owned directory to {})",
+                    target.display(),
+                    root.display(),
+                    backup.display()
+                );
+                return Ok(());
+            }
             bail!(
                 "{} already exists and is not this repo checkout (refusing to clobber)",
                 target.display()
@@ -197,6 +208,16 @@ fn act_agents_home_dry_run(root: &Path, target: &Path) -> Result<()> {
         Ok(meta) if meta.is_dir() => {
             if same_canonical_path(root, target)? {
                 eprintln!("  = {} (repo checkout)", target.display());
+                return Ok(());
+            }
+            if directory_contains_only_repo_links(root, target)? {
+                let backup = next_backup_path(target)?;
+                eprintln!(
+                    "  ~ would move existing repo-owned directory {} to {} and link -> {}",
+                    target.display(),
+                    backup.display(),
+                    root.display()
+                );
                 return Ok(());
             }
             bail!(
@@ -261,6 +282,89 @@ fn bail_foreign_symlink(root: &Path, target: &Path) -> Result<()> {
             .unwrap_or_else(|| "<broken>".to_string()),
         root_canon.display(),
     )
+}
+
+fn directory_contains_only_repo_links(root: &Path, target: &Path) -> Result<bool> {
+    let root =
+        fs::canonicalize(root).with_context(|| format!("canonicalize {}", root.display()))?;
+    directory_entries_are_repo_links(&root, target)
+}
+
+fn directory_entries_are_repo_links(root: &Path, target: &Path) -> Result<bool> {
+    let mut saw_entry = false;
+    for entry in fs::read_dir(target).with_context(|| format!("read_dir {}", target.display()))? {
+        let entry = entry.with_context(|| format!("read_dir entry {}", target.display()))?;
+        let path = entry.path();
+        let meta =
+            fs::symlink_metadata(&path).with_context(|| format!("stat {}", path.display()))?;
+        if meta.file_type().is_symlink() {
+            if !symlink_points_under(&path, root)? {
+                return Ok(false);
+            }
+            saw_entry = true;
+        } else if meta.is_dir() {
+            if !directory_entries_are_repo_links(root, &path)? {
+                return Ok(false);
+            }
+            saw_entry = true;
+        } else {
+            return Ok(false);
+        }
+    }
+    Ok(saw_entry)
+}
+
+fn symlink_points_under(link: &Path, root: &Path) -> Result<bool> {
+    if let Ok(target) = fs::canonicalize(link) {
+        return Ok(path_is_at_or_under(&target, root));
+    }
+
+    let raw_target = fs::read_link(link).with_context(|| format!("readlink {}", link.display()))?;
+    let target = if raw_target.is_absolute() {
+        raw_target
+    } else {
+        link.parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(raw_target)
+    };
+    if target
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Ok(false);
+    }
+    Ok(path_is_at_or_under(&target, root))
+}
+
+fn path_is_at_or_under(path: &Path, root: &Path) -> bool {
+    if path.starts_with(root) {
+        return true;
+    }
+
+    #[cfg(windows)]
+    {
+        let path = comparable_path(path);
+        let root = comparable_path(root);
+        if path == root {
+            return true;
+        }
+        path.strip_prefix(&root)
+            .is_some_and(|rest| rest.starts_with('\\'))
+    }
+
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+#[cfg(windows)]
+fn comparable_path(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('/', "\\")
+        .trim_start_matches(r"\\?\")
+        .trim_end_matches('\\')
+        .to_ascii_lowercase()
 }
 
 fn iter_children(source: &Path) -> Result<Vec<PathBuf>> {
@@ -328,6 +432,45 @@ fn move_conflicting_entry_aside(target: &Path) -> Result<PathBuf> {
     fs::rename(target, &backup)
         .with_context(|| format!("move {} to {}", target.display(), backup.display()))?;
     Ok(backup)
+}
+
+fn move_repo_owned_directory_aside(target: &Path) -> Result<PathBuf> {
+    let backup = next_backup_path(target)?;
+    match fs::rename(target, &backup) {
+        Ok(()) => Ok(backup),
+        Err(rename_err) => {
+            fs::create_dir(&backup).with_context(|| format!("mkdir {}", backup.display()))?;
+            move_children_into_backup(target, &backup).with_context(|| {
+                format!(
+                    "move entries from {} to {} after rename failed: {rename_err}",
+                    target.display(),
+                    backup.display()
+                )
+            })?;
+            fs::remove_dir(target).with_context(|| {
+                format!(
+                    "remove empty {} after moving entries to {}; original rename failed: {rename_err}",
+                    target.display(),
+                    backup.display()
+                )
+            })?;
+            Ok(backup)
+        }
+    }
+}
+
+fn move_children_into_backup(source: &Path, backup: &Path) -> Result<()> {
+    for child in iter_children(source)? {
+        let name = child.file_name().expect("entry has filename");
+        fs::rename(&child, backup.join(name)).with_context(|| {
+            format!(
+                "move {} to {}",
+                child.display(),
+                backup.join(name).display()
+            )
+        })?;
+    }
+    Ok(())
 }
 
 fn act_link(source: &Path, target: &Path) -> Result<()> {
@@ -631,6 +774,38 @@ mod tests {
         assert_eq!(
             fs::canonicalize(source.join("config.yml"))?,
             fs::canonicalize(config_link)?
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn agents_home_link_migrates_repo_owned_directory() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let root = dir.path().join("repo");
+        let target = dir.path().join(".agents");
+        fs::create_dir_all(root.join("rules"))?;
+        fs::create_dir_all(target.join("rules"))?;
+        fs::write(root.join("rules").join("cargo.md"), "cargo\n")?;
+        std::os::unix::fs::symlink(
+            root.join("rules").join("cargo.md"),
+            target.join("rules").join("cargo.md"),
+        )?;
+        std::os::unix::fs::symlink(
+            root.join("rules").join("deleted.md"),
+            target.join("rules").join("deleted.md"),
+        )?;
+
+        act_agents_home_link(&root, &target)?;
+
+        let meta = fs::symlink_metadata(&target)?;
+        assert!(meta.file_type().is_symlink());
+        assert_eq!(fs::canonicalize(&root)?, fs::canonicalize(&target)?);
+        let backup = dir.path().join(".agents.agents-backup");
+        assert!(
+            fs::symlink_metadata(backup.join("rules").join("cargo.md"))?
+                .file_type()
+                .is_symlink()
         );
         Ok(())
     }
