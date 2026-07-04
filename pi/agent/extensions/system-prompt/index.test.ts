@@ -82,8 +82,6 @@ describe("system-prompt Skillful skill rendering", () => {
 			selectedTools: ["read", "search", "find", "edit", "exec_command"],
 		});
 
-		expect(prompt).toContain("use `sym` first when it can answer the question");
-		expect(prompt).toContain("use active file tools when you need hashline-editable line context");
 		expect(prompt).toContain("Use `read` for known file paths");
 		expect(prompt).toContain("Use `search` for file-content matching");
 		expect(prompt).toContain("Use `find` for file discovery by glob or path");

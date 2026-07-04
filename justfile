@@ -66,12 +66,10 @@ install: context-guard
     @cargo install --list | grep -q '^git-surgeon ' || cargo binstall git-surgeon --locked --no-confirm || echo "warning: git-surgeon install failed (no prebuilt binary; source build is Unix-only); continuing without it" >&2
     cargo install --path "{{ repo }}/crates/ct"
     cargo install --path "{{ repo }}/crates/vlt"
-    cargo install --path "{{ repo }}/crates/sym"
     cargo install --path "{{ repo }}/crates/context-guard"
     claude mcp remove -s user vault 2>/dev/null || true
     claude mcp remove -s user source 2>/dev/null || true
     claude mcp remove -s user apply-patch 2>/dev/null || true
-    claude mcp remove -s user sym 2>/dev/null || true
 
 completions:
     mkdir -p "{{ home }}/.config/fish/completions"

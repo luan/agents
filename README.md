@@ -24,36 +24,9 @@ default model invocation. `$vibe` is intentionally deleted rather than kept as a
 | `plugins/` | Shared plugin sources; tool folders link here |
 | `crates/ct/` | `ct` Rust CLI — repo, MCP, apply-patch, and TUI helpers |
 | `crates/vlt/` | `vlt` Rust CLI — blueprints vault artifact management |
-| `crates/sym/` | Canonical source-navigation CLI and Tree-sitter symbol indexer |
 | `crates/xtask/` | Task automation invoked via `cargo xtask <cmd>` |
 | `docs/` | Permanent reference docs (architecture, exceptions) |
 
-## Source navigation
-
-`sym` is the canonical read-only source-navigation CLI. It stores its index in
-the central platform cache, not in the working tree, and supports compact AI
-output for agent context.
-
-Use one coherent source-navigation loop: **Orient → locate → inspect → relate → assess**.
-
-```sh
-sym stats                         # orient: repo size and languages
-sym map --level 2                 # orient: files with symbol counts
-sym query Parser                  # locate: friendly symbol lookup
-sym search --text "TODO"          # locate: text search
-sym inspect crates/ct/src/main.rs # inspect: file-local symbols
-sym callers run_source            # relate: direct callers
-sym callees run_source            # relate: direct callees
-sym types source_types_value      # assess: signature type definitions
-sym schema SourceTypesRequest     # assess: data fields
-sym tests run_source              # assess: tests referencing a symbol
-sym test-deps test_run_source     # assess: production callees from a test
-sym untested --lang rust          # assess: symbols without indexed test refs
-sym diff run_source main          # assess: symbol-scoped diff
-```
-
-Use `sym --format ai <cmd>` when an agent report needs compact structured
-evidence.
 
 ## `ct` CLI
 

@@ -95,7 +95,6 @@ fn support_namespaces_route_and_removed_homes_fail() {
         "vault",
         "tool",
         "usage-bar",
-        "sym",
         "ast",
         "lsp",
         "mcp",
@@ -128,7 +127,7 @@ fn top_level_help_exposes_only_canonical_public_domains() {
     }
     assert!(
         !help.contains("source"),
-        "source navigation lives in the sym binary:\n{help}"
+        "help should not contain removed command source:\n{help}"
     );
     assert!(
         !help.contains("vault"),

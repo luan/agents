@@ -265,7 +265,6 @@ jobs:
       # validate runs: render-agents freshness, JSON validity, in-repo symlink
       # asserts, stow dry-run, and `cargo test --workspace`. Enforced on all
       # OSes; path-separator hardcodes that previously broke Windows have
-      # been normalised at the storage boundary (sym indexer rel_path) and
-      # in the affected tests (ct churn/artifact, sym repo_config).
+      # been normalised at the storage boundary and in the affected tests.
       - name: cargo xtask validate
         run: cargo xtask validate

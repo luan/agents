@@ -2045,7 +2045,7 @@ fn session_prepare_before_agent_start_returns_active_memory_and_consumes_resume(
             "events": [
                 { "type": "role", "category": "role", "data": "You are a senior engineer", "priority": 3 },
                 { "type": "decision", "category": "decision", "data": "Prefer the Rust boundary", "priority": 3 },
-                { "type": "skill", "category": "skill", "data": "sym", "priority": 3 },
+                { "type": "skill", "category": "skill", "data": "diagnose", "priority": 3 },
                 { "type": "intent", "category": "intent", "data": "implement", "priority": 4 }
             ]
         }

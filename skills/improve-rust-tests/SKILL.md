@@ -14,7 +14,7 @@ Take a wide pass over a Rust project and move its tests toward the Rust testing 
 
 - Read project instructions, Cargo workspace layout, and existing test commands.
 - Inspect `Cargo.toml` dev-dependencies before adding any tools.
-- Use `sym` first for source navigation when it can answer the question; use `rg` for file/text discovery.
+- Use the repo's available source-navigation tools first when they can answer the question; use `rg` for file/text discovery.
 - Run the narrowest useful baseline command: `cargo nextest run` when available, otherwise `cargo test`; include `cargo test --doc` when doctests matter.
 - Note existing failures before editing; do not claim them as caused by your changes unless verified.
 
