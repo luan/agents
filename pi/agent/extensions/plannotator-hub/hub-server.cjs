@@ -29,6 +29,10 @@ function logLifecycle(message) {
 	} catch {}
 }
 
+function isListenAddressInUseError(error) {
+	return Boolean(error && error.code === "EADDRINUSE");
+}
+
 process.on("uncaughtException", (error) => {
 	logLifecycle(`uncaughtException: ${error && error.stack ? error.stack : String(error)}`);
 	process.exit(1);
@@ -444,6 +448,15 @@ async function startServer() {
 		}
 	});
 
+	server.once("error", (error) => {
+		if (isListenAddressInUseError(error)) {
+			logLifecycle(`hub already listening on ${bindHost}:${hubPort}; exiting duplicate starter`);
+			process.exit(0);
+			return;
+		}
+		throw error;
+	});
+
 	server.listen(hubPort, bindHost, () => {
 		const address = state.publicBaseUrl;
 		process.stdout.write(`${LOG_PREFIX} listening on ${bindHost}:${hubPort} (public ${address})\n`);
@@ -460,6 +473,7 @@ if (require.main === module) {
 module.exports = {
 	createState,
 	isBackendAlive,
+	isListenAddressInUseError,
 	pipeUpstreamBodyToResponse,
 	pruneDeadSessions,
 	removeSession,

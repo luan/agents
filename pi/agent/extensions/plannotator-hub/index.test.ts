@@ -20,6 +20,7 @@ const hubServer = require("./hub-server.cjs") as {
 		sessionIdsByBackend: Map<string, string>;
 	};
 	isBackendAlive: (entry: { backendUrl: string }) => Promise<boolean>;
+	isListenAddressInUseError: (error: unknown) => boolean;
 	pruneDeadSessions: (state: {
 		sessions: Map<string, { backendUrl: string }>;
 		sessionIdsByBackend: Map<string, string>;
@@ -139,6 +140,13 @@ describe("plannotator hub environment", () => {
 });
 
 describe("plannotator hub helpers", () => {
+	test("recognizes duplicate hub listener failures as singleton collisions", () => {
+		const error = Object.assign(new Error("listen EADDRINUSE"), { code: "EADDRINUSE" });
+
+		expect(hubServer.isListenAddressInUseError(error)).toBe(true);
+		expect(hubServer.isListenAddressInUseError(new Error("boom"))).toBe(false);
+	});
+
 	test("rejects non-loopback backend URLs", () => {
 		expect(shared.validateBackendUrl("https://example.com:1234")).toEqual({
 			ok: false,

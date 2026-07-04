@@ -203,7 +203,9 @@ function startHubProcess(env: NodeJS.ProcessEnv = process.env) {
 	child.unref();
 }
 
-async function ensurePlannotatorHub(env: NodeJS.ProcessEnv = process.env) {
+let ensurePlannotatorHubPromise: Promise<void> | undefined;
+
+async function ensurePlannotatorHubOnce(env: NodeJS.ProcessEnv = process.env) {
 	logHubSupervisor(env, `ensure start for ${localHubBaseUrl(env)}`);
 	if (await isHubHealthy(env)) {
 		logHubSupervisor(env, `health check passed for ${localHubBaseUrl(env)}`);
@@ -220,6 +222,13 @@ async function ensurePlannotatorHub(env: NodeJS.ProcessEnv = process.env) {
 		}
 	}
 	logHubSupervisor(env, `hub failed to become healthy within ${HUB_START_TIMEOUT_MS}ms for ${localHubBaseUrl(env)}`);
+}
+
+async function ensurePlannotatorHub(env: NodeJS.ProcessEnv = process.env) {
+	ensurePlannotatorHubPromise ??= ensurePlannotatorHubOnce(env).finally(() => {
+		ensurePlannotatorHubPromise = undefined;
+	});
+	return ensurePlannotatorHubPromise;
 }
 
 function setOrDelete(env: NodeJS.ProcessEnv, key: string, value?: string) {
