@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -333,7 +334,31 @@ fn symlink_points_under(link: &Path, root: &Path) -> Result<bool> {
     {
         return Ok(false);
     }
+    let target = canonicalize_existing_prefix(&target)?;
     Ok(path_is_at_or_under(&target, root))
+}
+
+fn canonicalize_existing_prefix(path: &Path) -> Result<PathBuf> {
+    let mut current = path;
+    let mut missing: Vec<OsString> = Vec::new();
+
+    loop {
+        if let Ok(mut canonical) = fs::canonicalize(current) {
+            for component in missing.iter().rev() {
+                canonical.push(component);
+            }
+            return Ok(canonical);
+        }
+
+        let Some(parent) = current.parent() else {
+            return Ok(path.to_path_buf());
+        };
+        let Some(file_name) = current.file_name() else {
+            return Ok(path.to_path_buf());
+        };
+        missing.push(file_name.to_os_string());
+        current = parent;
+    }
 }
 
 fn path_is_at_or_under(path: &Path, root: &Path) -> bool {
