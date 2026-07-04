@@ -2,14 +2,13 @@
 
 1. Delete dead code completely. No commented-out code, shims, or "just in case."
 2. Comments for WHY / edge cases / surprises only.
-3. Use `sym` for source navigation and code exploration. Prefer `sym search`, `sym show`, `sym outline`, `sym refs`, `sym callers`, `sym callees`, `sym impact`, `sym trace`, `sym impls`, `sym tests`, and `sym untested` before grep/find or broad reads. Use `sym --format ai <cmd>` when you need compact evidence for an agent report.
-4. All tests pass before committing. You own every failure you can see.
-5. After changing `ct`, run `just install` so the live `ct` binary matches the repo.
-6. Task discipline: if you create or select a task and then execute it in the same session, immediately mark it `in_progress` and assign it to the current session before editing files. Leave tasks open/unassigned only when you are handing them off for future work.
-7. Review discipline: never leave a feature/bug task `in_progress` while waiting for human review, Plannotator feedback, code-review approval, or manual-verification approval. Move it to `in_review` before the wait; move it back to `in_progress` only while actively revising.
-8. Plannotator discipline: never run `plannotator --help`, subcommand `--help`, or other discovery probes. For code review, load/use `$plannotator-review`; for annotation, artifact gates, or rendered HTML, load/use `$plannotator-annotate`; for latest assistant message annotation, load/use `$plannotator-last`; run only the commands documented in the loaded skill.
-9. Process discipline: long-running services are managed sessions, not blocking foreground commands.
-10. Do not write tests that assert mutable skill instruction wording, read skill Markdown to enforce process policy, or otherwise make intentional skill edits fail tests. Skill files are operator-authored instructions, not executable contracts.
+3. All tests pass before committing. You own every failure you can see.
+4. After changing `ct`, run `just install` so the live `ct` binary matches the repo.
+5. Task discipline: if you create or select a task and then execute it in the same session, immediately mark it `in_progress` and assign it to the current session before editing files. Leave tasks open/unassigned only when you are handing them off for future work.
+6. Review discipline: never leave a feature/bug task `in_progress` while waiting for human review, Plannotator feedback, code-review approval, or manual-verification approval. Move it to `in_review` before the wait; move it back to `in_progress` only while actively revising.
+7. Plannotator discipline: never run `plannotator --help`, subcommand `--help`, or other discovery probes. For code review, load/use `$plannotator-review`; for annotation, artifact gates, or rendered HTML, load/use `$plannotator-annotate`; for latest assistant message annotation, load/use `$plannotator-last`; run only the commands documented in the loaded skill. Run Plannotator commands in the foreground without shell/tool timeout wrappers and without backgrounding so returned feedback is captured.
+8. Process discipline: long-running services are managed sessions, not blocking foreground commands.
+9. Do not write tests that assert mutable skill instruction wording, read skill Markdown to enforce process policy, or otherwise make intentional skill edits fail tests. Skill files are operator-authored instructions, not executable contracts.
 
 ## Repo Purpose
 

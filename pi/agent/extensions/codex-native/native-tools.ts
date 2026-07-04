@@ -1,8 +1,10 @@
-import { promises as fsPromises, readFileSync } from "node:fs";
+import { promises as fsPromises } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { Container, Image, Spacer, type Text } from "@earendil-works/pi-tui";
+import { Container, Spacer, type Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { readPreviewImageFromPathSync } from "../shared/image-preview";
+import { KittyVirtualImage } from "../shared/kitty-virtual-image";
 import { registerExtensionMessageRenderer, textComponent } from "../shared/tui";
 
 export const WEB_SEARCH_ACTIVITY_MESSAGE_TYPE = "codex-web-search-activity";
@@ -526,21 +528,19 @@ export function renderImageGenerationMessage(
 	const container = new Container();
 	if (savedImage) {
 		container.addChild(textComponent(renderGeneratedImageActivity(savedImage, options, theme)));
-		try {
-			const data = readFileSync(savedImage.absolutePath).toString("base64");
+		const preview = readPreviewImageFromPathSync(savedImage.absolutePath);
+		if (preview) {
 			container.addChild(new Spacer(1));
 			container.addChild(
-				new Image(
-					data,
-					`image/${savedImage.outputFormat}`,
+				new KittyVirtualImage(
+					preview.data,
+					preview.mimeType,
 					{
 						fallbackColor: (text: string) => theme.fg("toolOutput", text),
 					},
-					{ maxWidthCells: Number.MAX_SAFE_INTEGER },
+					{ maxWidthCells: 80, maxHeightCells: 30, sourcePath: preview.sourcePath },
 				),
 			);
-		} catch {
-			// Image previews are best-effort; the saved file path above is the durable output.
 		}
 		return container;
 	}

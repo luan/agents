@@ -39,9 +39,14 @@ const REMOVE_ROW_BG = "\x1b[48;2;59;29;36m";
 const ADD_WORD_BG = "\x1b[48;2;45;94;60m";
 const REMOVE_WORD_BG = "\x1b[48;2;115;55;75m";
 
+const LUAU_PATH_SUFFIXES = [".luau", ".server.lua", ".client.lua"] as const;
+
 export function languageFromPath(filePath?: string): string | undefined {
 	if (!filePath) return undefined;
-	const ext = filePath.split(".").pop()?.toLowerCase();
+	const fileName = filePath.replace(/\\/g, "/").split("/").pop()?.toLowerCase();
+	if (!fileName) return undefined;
+	if (LUAU_PATH_SUFFIXES.some((suffix) => fileName.endsWith(suffix))) return "luau";
+	const ext = fileName.split(".").pop();
 	if (!ext) return undefined;
 	if (ext === "ts" || ext === "tsx") return "typescript";
 	if (ext === "js" || ext === "jsx" || ext === "mjs" || ext === "cjs") return "javascript";
@@ -51,6 +56,10 @@ export function languageFromPath(filePath?: string): string | undefined {
 	if (ext === "py") return "python";
 	if (ext === "sh" || ext === "zsh" || ext === "bash") return "bash";
 	return ext;
+}
+
+function syncHighlighterLanguage(language: string): string {
+	return language === "luau" ? "lua" : language;
 }
 const MATCH_BG = "\x1b[48;2;92;78;35m";
 const SHIKI_THEME = "github-dark";
@@ -354,7 +363,7 @@ export function highlightCodeRowsSync(filePath: string | undefined, rows: readon
 	const normalized = rows.map((row) => row.replace(/\t/g, "  "));
 	if (!language) return normalized;
 	try {
-		const highlighted = highlightCode(normalized.join("\n"), language);
+		const highlighted = highlightCode(normalized.join("\n"), syncHighlighterLanguage(language));
 		return normalized.map((fallback, index) => stripBackgroundSgr(highlighted[index] ?? fallback));
 	} catch {
 		return normalized;

@@ -56,6 +56,12 @@ enabled = true
 [plugins."browser@openai-bundled"]
 enabled = true
 
+[plugins."pdf@openai-primary-runtime"]
+enabled = true
+
+[plugins."template-creator@openai-primary-runtime"]
+enabled = true
+
 [shell_environment_policy]
 inherit = "core"
 
@@ -80,18 +86,18 @@ status_line = [
 queue = "alt-enter"
 
 [marketplaces.worktrunk]
-last_updated = "2026-06-20T23:35:51Z"
-last_revision = "9147c0e46d58ddd4dfa99cad1b967ff5f00f0c7a"
+last_updated = "2026-07-03T04:47:10Z"
+last_revision = "552cc1be6c9e10200bb6108be7da06498367cdd3"
 source_type = "git"
 source = "https://github.com/max-sixty/worktrunk.git"
 
 [marketplaces.openai-bundled]
-last_updated = "2026-06-20T23:36:18Z"
+last_updated = "2026-07-04T03:35:26Z"
 source_type = "local"
 source = "/Users/luan/.codex/.tmp/bundled-marketplaces/openai-bundled"
 
 [marketplaces.openai-primary-runtime]
-last_updated = "2026-05-17T05:36:39Z"
+last_updated = "2026-07-02T18:27:24Z"
 source_type = "local"
 source = "/Users/luan/.cache/codex-runtimes/codex-primary-runtime/plugins/openai-primary-runtime"
 
@@ -140,6 +146,15 @@ trust_level = "trusted"
 [projects."/Users/luan/Documents/Codex/2026-06-14/dia-plugin-computer-use-openai-bundled"]
 trust_level = "trusted"
 
+[projects."/Users/luan/projects/unraid"]
+trust_level = "trusted"
+
+[projects."/Users/luan/Documents/Codex/2026-06-28/why"]
+trust_level = "trusted"
+
+[projects."/Users/luan/src/cupprobs"]
+trust_level = "trusted"
+
 [hooks.state]
 
 [hooks.state."/Users/luan/.codex/hooks.json:stop:0:0"]
@@ -156,6 +171,7 @@ appearanceDarkCodeThemeId = "tokyo-night"
 selected-avatar-id = "fireball"
 show-context-window-usage = true
 dock-icon-preference = "codex-dark"
+followUpQueueMode = "queue"
 
 [desktop.appearanceLightChromeTheme]
 accent = "#0169cc"
@@ -201,10 +217,10 @@ NODE_REPL_NODE_MODULE_DIRS = "/Applications/Codex.app/Contents/Resources/cua_nod
 NODE_REPL_NODE_PATH = "/Applications/Codex.app/Contents/Resources/cua_node/bin/node"
 NODE_REPL_TRUSTED_CODE_PATHS = "/Users/luan/.codex"
 CODEX_HOME = "/Users/luan/.codex"
-NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = "4cfaeb70b54d114e1cd56bc0f85d04e1b344a5049cddb729e2b1161b9ff3008a"
+NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = "60e4902788f207f88fd09344dfeafe07769488bdb2924bbb12b322c3b9d2b999"
 BROWSER_USE_AVAILABLE_BACKENDS = "chrome,iab"
 NODE_REPL_INSTRUCTIONS_USE_CASE_BROWSER = "Control the in-app browser in conjunction with the Browser Plugin."
 NODE_REPL_INSTRUCTIONS_USE_CASE_CHROME = "Control the Chrome browser in conjunction with the Chrome Plugin. Prefer this method of controlling Chrome over alternatives (such as Computer Use) unless the user explicitly mentions an alternative."
 BROWSER_USE_CODEX_APP_BUILD_FLAVOR = "prod"
-BROWSER_USE_CODEX_APP_VERSION = "26.616.41845"
+BROWSER_USE_CODEX_APP_VERSION = "26.623.101652"
 CODEX_CLI_PATH = "/Applications/Codex.app/Contents/Resources/codex"

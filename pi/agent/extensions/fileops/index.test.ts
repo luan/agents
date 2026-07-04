@@ -3,7 +3,9 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
+import { resetCapabilitiesCache, setCapabilities, visibleWidth } from "@earendil-works/pi-tui";
+import { highlightCodeRows, languageFromPath } from "./diff-render.ts";
 import fileopsExtension, { HASHLINE_GRAMMAR, PATCH_GRAMMAR, REPLACE_GRAMMAR } from "./index.ts";
 
 const originalVariant = process.env.PI_FILEOPS_EDIT_VARIANT;
@@ -38,6 +40,7 @@ const roleTheme = {
 };
 
 afterEach(() => {
+	resetCapabilitiesCache();
 	if (originalVariant === undefined) delete process.env.PI_FILEOPS_EDIT_VARIANT;
 	else process.env.PI_FILEOPS_EDIT_VARIANT = originalVariant;
 	delete process.env.PI_EDIT_VARIANT;
@@ -122,6 +125,26 @@ function render(component: any): string {
 		.join("\n");
 }
 
+function createToolExecution(
+	toolName: string,
+	toolDefinition: any,
+	args: Record<string, unknown>,
+): ToolExecutionComponent {
+	return new ToolExecutionComponent(
+		toolName,
+		`call-${toolName}`,
+		args,
+		{},
+		toolDefinition,
+		{ requestRender() {} } as any,
+		process.cwd(),
+	);
+}
+
+function renderToolExecution(toolName: string, toolDefinition: any, args: Record<string, unknown>): string[] {
+	return createToolExecution(toolName, toolDefinition, args).render(120);
+}
+
 const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 
 function stripAnsi(text: string): string {
@@ -153,6 +176,24 @@ function charsWithBackground(text: string, background: string): string {
 	return output;
 }
 describe("fileops extension modes", () => {
+	it("renders AST tools as TUI components", () => {
+		const tools = registerEditTools("hashline");
+
+		const grepRendered = renderToolExecution("ast_grep", tools.get("ast_grep"), { pattern: "foo($X)" }).join("\n");
+		const editRendered = renderToolExecution("ast_edit", tools.get("ast_edit"), {
+			pattern: "foo($X)",
+			rewrite: "bar($X)",
+			path: "sample.ts",
+		}).join("\n");
+		const grepWithResult = createToolExecution("ast_grep", tools.get("ast_grep"), { pattern: "foo($X)" });
+		grepWithResult.updateResult({ content: [{ type: "text", text: "matched" }] } as any, false);
+
+		expect(grepRendered).toContain("ast_grep");
+		expect(grepRendered).toContain("foo($X)");
+		expect(editRendered).toContain("ast_edit preview");
+		expect(grepWithResult.render(120).join("\n")).toContain("matched");
+	});
+
 	it("starts in apply_patch mode and applies freeform envelopes", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-apply-patch-"));
 		const tool = registerEditTool("apply_patch");
@@ -234,6 +275,20 @@ describe("fileops extension modes", () => {
 
 		expect(readResult.content[0].text).toStartWith("Read image file [image/png]");
 		expect(readResult.content[0].text).not.toContain("[sample.png#");
+		expect(readResult.details?.previewImage?.mimeType).toBe("image/png");
+		expect(readResult.details?.previewImage?.sourcePath).toEndWith(".png");
+		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: false });
+		const rendererResult = { content: readResult.content, details: readResult.details };
+		const rendered = tools
+			.get("read")
+			.renderResult(rendererResult, { expanded: false, isPartial: false }, theme, { args: { path: "sample.png" } })
+			.render(100)
+			.join("\n");
+		expect(rendered).toContain("\x1b_Ga=T");
+		expect(rendered).toContain("t=f");
+		expect(rendered).toContain("Read image file [image/png]");
+		expect(rendered).toContain("\u{10EEEE}");
+		expect(readResult.content.some((content: any) => content.type === "image")).toBe(false);
 	});
 
 	it("hashline write leaves ordinary content with isolated line-number text untouched", async () => {
@@ -1239,6 +1294,17 @@ describe("fileops extension modes", () => {
 		);
 
 		expect(rendered).toContain("1 + FIXED");
+	});
+
+	it("uses Luau grammar for Luau file suffixes", async () => {
+		expect(languageFromPath("init.luau")).toBe("luau");
+		expect(languageFromPath("src/Player.server.lua")).toBe("luau");
+		expect(languageFromPath("src/Player.client.lua")).toBe("luau");
+		expect(languageFromPath("plain.lua")).toBe("lua");
+
+		const [row] = await highlightCodeRows("src/Player.server.lua", ["local score: number = 1"]);
+
+		expect(row).toContain("\x1b[38;2;121;184;255mnumber");
 	});
 
 	it("precomputes syntax-highlighted edit rows with word-level diff overlays", async () => {

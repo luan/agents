@@ -105,25 +105,29 @@ describe("pretty image rendering", () => {
 		}
 	});
 
-	test("view_image renders an inline preview even when showImages is disabled", () => {
+	test.each([false, true])("view_image renders an extension-owned inline preview when showImages=%p", (showImages) => {
 		setCapabilities({ images: "iterm2", trueColor: true, hyperlinks: true });
 		try {
 			const viewImage = createTools().find((tool) => tool.name === "view_image");
-			const component = viewImage.renderResult(
-				{
-					content: [
-						{ type: "text", text: "Read image file [image/png]" },
-						{ type: "image", data: PNG_BASE64, mimeType: "image/png" },
-					],
-				},
-				{ expanded: false, isPartial: false },
-				theme,
-				{ state: {}, expanded: false, showImages: false, isError: false, invalidate() {} },
-			);
+			const result = {
+				content: [
+					{ type: "text", text: "Read image file [image/png]" },
+					{ type: "image", data: PNG_BASE64, mimeType: "image/png" },
+				],
+			};
+			const rendererResult = { content: result.content };
+			const component = viewImage.renderResult(rendererResult, { expanded: false, isPartial: false }, theme, {
+				state: {},
+				expanded: false,
+				showImages,
+				isError: false,
+				invalidate() {},
+			});
 
 			const rendered = component.render(80).join("\n");
 			expect(rendered).toContain("\x1b]1337;File=");
 			expect(rendered).not.toContain("Read image file");
+			expect(result.content.some((content: any) => content.type === "image")).toBe(false);
 		} finally {
 			setCapabilities({ images: null, trueColor: false, hyperlinks: false });
 		}

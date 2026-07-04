@@ -12,6 +12,7 @@ function isTmuxSession(): boolean {
 
 function normalizeTerminalName(term: string): string {
 	const t = term.toLowerCase();
+	if (t.includes("bootty")) return "bootty";
 	if (t.includes("kitty")) return "kitty";
 	if (t.includes("ghostty")) return "ghostty";
 	if (t.includes("wezterm")) return "WezTerm";
@@ -36,6 +37,31 @@ function readTmuxClientTerm(): string | null {
 		tmuxClientTermCache = null;
 	}
 	return tmuxClientTermCache;
+}
+
+function readTmuxOption(args: string[]): string | null {
+	try {
+		const value = childProcess
+			.execFileSync("tmux", args, {
+				encoding: "utf8",
+				stdio: ["ignore", "pipe", "ignore"],
+				timeout: 200,
+			})
+			.trim();
+		return value || null;
+	} catch {
+		return null;
+	}
+}
+
+function tmuxPassthroughEnabled(): boolean {
+	const value = readTmuxOption(["show-options", "-qv", "-p", "allow-passthrough"])?.toLowerCase();
+	return value === "on" || value === "all";
+}
+
+function tmuxClientSupportsKittyImages(): boolean {
+	const term = readTmuxClientTerm();
+	return term === "bootty" || term === "ghostty" || term === "kitty" || term === "WezTerm";
 }
 
 function detectImageProtocol(): NativeImageProtocol | null {
@@ -65,7 +91,7 @@ export function configureImageCapabilities(): void {
 
 	const capabilities = getCapabilities();
 	if (capabilities.images) return;
-	if (isTmuxSession()) return;
+	if (isTmuxSession() && (!tmuxPassthroughEnabled() || !tmuxClientSupportsKittyImages())) return;
 
 	const protocol = detectImageProtocol();
 	if (!protocol) return;

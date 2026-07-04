@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { defaultConfig, type PolishedTuiConfig } from "./config";
-import { emptyFooterState, type FooterRenderState, renderFooter } from "./footer";
+import { emptyFooterState, type FooterRenderState, renderEditorTopStatus, renderFooter } from "./footer";
 
 const ANSI_PATTERN = /\x1b\[[0-9;]*m/g;
 const COLOR_CODES: Record<string, number> = {
@@ -248,5 +248,19 @@ describe("renderFooter", () => {
 		expect(ctxLine).toContain("\x1b[38;2;243;139;168m");
 		expect(ctxLine).toContain("\x1b[38;2;137;220;235m");
 		expect(ctxLine).not.toContain("\x1b[1m");
+	});
+});
+
+describe("renderEditorTopStatus", () => {
+	test("renders model status badges immediately after thinking level", () => {
+		const line = renderEditorTopStatus(
+			state({ thinkingLevel: "high", modelStatusBadges: ["fast"] }),
+			config,
+			"/tmp/p",
+			theme,
+			80,
+		);
+
+		expect(stripAnsi(line)).toContain("m > high > fast");
 	});
 });

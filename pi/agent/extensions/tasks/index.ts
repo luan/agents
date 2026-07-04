@@ -27,7 +27,7 @@ import { framedBlock, renderStatusLine } from "../shared/tui/omp-card";
 
 const tasksTui = defineExtensionTui({ id: "tasks" });
 type TaskCommand = "add" | "list" | "show" | "update" | "delete";
-type TaskStatus = "open" | "todo" | "in_progress" | "in_review" | "rejected" | "done" | "canceled";
+type TaskStatus = "open" | "todo" | "in_progress" | "rejected" | "done" | "canceled";
 
 interface Theme {
 	fg(color: string, text: string): string;
@@ -263,7 +263,6 @@ class TaskStore {
 	update(id: string, params: Record<string, unknown>): TaskRecord {
 		this.load();
 		const task = this.resolve(id);
-		guardTaskCompletion(task, params);
 		const now = Date.now();
 		const normalized = params;
 		if (typeof normalized.title === "string") task.title = normalized.title;
@@ -390,7 +389,7 @@ function numberValue(value: unknown): number | undefined {
 function normalizeStatus(value: unknown, fallback: string): TaskStatus {
 	const status = typeof value === "string" && value.length > 0 ? value : fallback;
 	if (status === "pending") return "open";
-	if (["open", "todo", "in_progress", "in_review", "rejected", "done", "canceled"].includes(status)) {
+	if (["open", "todo", "in_progress", "rejected", "done", "canceled"].includes(status)) {
 		return status as TaskStatus;
 	}
 	throw new Error(`Unsupported task status: ${status}`);
@@ -452,18 +451,6 @@ function displayTaskId(id: string, prefixes: ReadonlyMap<string, string>): strin
 	return prefixes.get(id) ?? id;
 }
 
-function isStoryTaskType(value: unknown): boolean {
-	return value === "feature" || value === "bug";
-}
-
-function guardTaskCompletion(task: TaskRecord, params: Record<string, unknown>): void {
-	if (params.status !== "done" || !isStoryTaskType(params.type ?? task.type)) return;
-	if (params.user_approved_completion === true || params.auto_verified_completion === true) return;
-	throw new Error(
-		"Mark feature/bug tasks done only after user approval with user_approved_completion=true, or in auto mode with auto_verified_completion=true.",
-	);
-}
-
 function compareTasks(left: TaskRecord, right: TaskRecord): number {
 	return (
 		taskStatusRank(left) - taskStatusRank(right) ||
@@ -475,7 +462,6 @@ function compareTasks(left: TaskRecord, right: TaskRecord): number {
 function taskStatusRank(task: TaskRecord): number {
 	if (task.status === "in_progress") return 0;
 	if (task.status === "rejected") return 1;
-	if (task.status === "in_review") return 2;
 	if (isComplete(task)) return 4;
 	if (isCanceled(task)) return 5;
 	return 3;
@@ -858,16 +844,14 @@ function statusColor(task: TaskRecord, blocked = false): ThemeColor {
 	if (blocked) return "muted";
 	if (isComplete(task)) return "success";
 	if (task.status === "in_progress") return "accent";
-	if (task.status === "in_review") return "warning";
 	if (task.status === "rejected") return "error";
 	return "text";
 }
 
-function statusIcon(task: TaskRecord, blocked = false, frame = 0): string {
+function statusIcon(task: TaskRecord, _blocked = false, frame = 0): string {
 	if (task.status === "in_progress") return spinnerFrames[frame % spinnerFrames.length] ?? "✳";
 	if (isComplete(task)) return "✔";
-	if (blocked) return "◻";
-	return task.status === "in_review" ? "◼" : "◻";
+	return "◻";
 }
 
 function taskPrefix(task: TaskRecord, theme: Theme, prefixes: ReadonlyMap<string, string>): string {
@@ -1160,7 +1144,7 @@ export class TaskBoardOverlay implements Component {
 		}
 		if (matchesAnyKey(data, bindings.done)) {
 			const task = this.currentTask();
-			if (task) this.updateSelected({ status: doneKeyStatus(task) });
+			if (task) this.updateSelected({ status: "done" });
 			return;
 		}
 		if (matchesAnyKey(data, bindings.cancel)) {
@@ -1223,25 +1207,19 @@ function taskBoardErrorMessage(prefix: string, error: unknown): string {
 
 function nextCycledStatus(task: TaskRecord): string {
 	if (task.status === "rejected") return "in_progress";
-	if (task.status === "in_progress") return "in_review";
-	if (task.status === "in_review") return "open";
+	if (task.status === "in_progress") return "done";
+	if (isComplete(task)) return "open";
 	return "in_progress";
-}
-
-function doneKeyStatus(task: TaskRecord): string {
-	return isStoryTaskType(task.type) ? "in_review" : "done";
 }
 
 function taskHudSummary(tasks: TaskRecord[]): string[] {
 	const visible = tasks.filter((task) => !isCanceled(task));
 	const done = visible.filter(isComplete).length;
 	const inProgress = visible.filter((task) => task.status === "in_progress").length;
-	const inReview = visible.filter((task) => task.status === "in_review").length;
-	const open = visible.length - done - inProgress - inReview;
+	const open = visible.length - done - inProgress;
 	const parts: string[] = [];
 	if (done > 0) parts.push(`${done} done`);
 	if (inProgress > 0) parts.push(`${inProgress} in progress`);
-	if (inReview > 0) parts.push(`${inReview} in review`);
 	if (open > 0) parts.push(`${open} open`);
 	return parts;
 }
@@ -1575,7 +1553,7 @@ export default function tasksExtension(pi: ExtensionAPI, _runtime: Runtime = {})
 		name: "task_write",
 		label: "Write Tasks",
 		description:
-			"Add/update/delete tasks for the current session. Put fields in data: type, body, status, priority, active_form, labels, parent_id, blocked_by. Use clear for parent/blockers. To complete feature/bug tasks with status=done, agents complete accepted feature/bug tasks with status=done and user_approved_completion=true; in auto mode use auto_verified_completion=true when automated evidence proves acceptance.",
+			"Add/update/delete tasks for the current session. Put fields in data: type, body, status, priority, active_form, labels, parent_id, blocked_by. Use clear for parent/blockers.",
 		promptSnippet: "Write project tasks",
 		parameters: Type.Object({
 			op: Type.String({ description: "add, update, or delete" }),
@@ -1587,12 +1565,6 @@ export default function tasksExtension(pi: ExtensionAPI, _runtime: Runtime = {})
 				}),
 			),
 			clear: Type.Optional(Type.Array(Type.String(), { description: "parent, blockers" })),
-			user_approved_completion: Type.Optional(
-				Type.Boolean({ description: "Set true only after the user approves completion in non-auto mode." }),
-			),
-			auto_verified_completion: Type.Optional(
-				Type.Boolean({ description: "Set true in auto mode only when automated evidence proves completion." }),
-			),
 		}),
 	});
 }

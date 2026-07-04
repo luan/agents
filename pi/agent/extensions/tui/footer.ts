@@ -30,6 +30,7 @@ export type FooterRenderState = GitStatusSummary & {
 	modelLabel: string;
 	providerLabel: string;
 	thinkingLevel?: string;
+	modelStatusBadges: readonly string[];
 	contextPercent: number | null;
 	contextUsed: number;
 	contextTotal: number;
@@ -62,6 +63,7 @@ export function emptyFooterState(): FooterRenderState {
 		modelLabel: "no-model",
 		providerLabel: "Unknown",
 		thinkingLevel: undefined,
+		modelStatusBadges: [],
 		contextPercent: null,
 		contextUsed: 0,
 		contextTotal: 0,
@@ -546,15 +548,17 @@ export function renderEditorTopStatus(
 	const modelLabel = theme.fg("muted", state.modelLabel);
 	const thinkingLabel =
 		state.thinkingLevel && state.thinkingLevel !== "off" ? theme.fg("accent", state.thinkingLevel) : "";
+	const modelStatusLabels = state.modelStatusBadges.map((badge) => theme.fg("success", badge));
+	const modelParts = [modelLabel, thinkingLabel, ...modelStatusLabels].filter(Boolean);
 
 	const safeWidth = Math.max(1, width);
 	const fitted = fitFooterSegment(
 		Math.max(1, safeWidth - 1),
 		[
-			[cwdLabel, branchLabel, runtimeLabel, modelLabel, thinkingLabel].filter(Boolean).join(sep),
-			[cwdLabel, branchLabel, modelLabel, thinkingLabel].filter(Boolean).join(sep),
-			[branchLabel, modelLabel, thinkingLabel].filter(Boolean).join(sep),
-			[modelLabel, thinkingLabel].filter(Boolean).join(sep),
+			[cwdLabel, branchLabel, runtimeLabel, ...modelParts].filter(Boolean).join(sep),
+			[cwdLabel, branchLabel, ...modelParts].filter(Boolean).join(sep),
+			[branchLabel, ...modelParts].filter(Boolean).join(sep),
+			modelParts.join(sep),
 			modelLabel,
 		].filter(Boolean),
 	);
@@ -613,10 +617,13 @@ export function renderFooter(
 	const locationBlock = locationVariants.length > 0 ? fitFooterSegment(width, locationVariants) : "";
 
 	const plainModelStr = theme.fg("muted", state.modelLabel);
-	const modelStr =
-		state.thinkingLevel && state.thinkingLevel !== "off"
-			? plainModelStr + sep + theme.fg("accent", state.thinkingLevel)
-			: plainModelStr;
+	const modelStatusLabels = state.modelStatusBadges.map((badge) => theme.fg("success", badge));
+	const modelParts = [
+		plainModelStr,
+		state.thinkingLevel && state.thinkingLevel !== "off" ? theme.fg("accent", state.thinkingLevel) : "",
+		...modelStatusLabels,
+	].filter(Boolean);
+	const modelStr = modelParts.join(sep);
 	const modelBlock = fitFooterSegment(width, modelStr === plainModelStr ? [plainModelStr] : [modelStr, plainModelStr]);
 
 	const rightParts: string[] = [];

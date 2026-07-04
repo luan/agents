@@ -14,10 +14,12 @@ import {
 	type ToolRenderContext,
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
-import { Box, type Text } from "@earendil-works/pi-tui";
+import { Box, Container, type Text } from "@earendil-works/pi-tui";
 import { createTwoFilesPatch } from "diff";
 import { Type } from "typebox";
 import { runCommand as runExternalCommand } from "../shared/command-runner.ts";
+import { readPreviewImageFromPath } from "../shared/image-preview.ts";
+import { KittyVirtualImage } from "../shared/kitty-virtual-image.ts";
 import { EmptyComponent, runningFrame, shineText, textComponent } from "../shared/tui";
 import { registerAstTools } from "./ast-tools.ts";
 import { buildLineEntriesWithBlockContext } from "./block-context.ts";
@@ -173,6 +175,28 @@ type ToolTextResult = {
 	content: Array<{ type: "text"; text: string } | Record<string, unknown>>;
 	details?: Record<string, unknown>;
 };
+
+type PreviewImageDetails = {
+	data: string;
+	mimeType: "image/png";
+	sourcePath?: string;
+};
+
+function previewImageDetails(value: unknown): PreviewImageDetails | undefined {
+	if (!value || typeof value !== "object") return undefined;
+	const candidate = value as Record<string, unknown>;
+	if (typeof candidate.data !== "string" || candidate.mimeType !== "image/png") return undefined;
+	return {
+		data: candidate.data,
+		mimeType: candidate.mimeType,
+		sourcePath: typeof candidate.sourcePath === "string" ? candidate.sourcePath : undefined,
+	};
+}
+
+function suppressCoreImageRendering(result: ToolTextResult): void {
+	const filtered = result.content.filter((item) => item.type !== "image");
+	result.content.splice(0, result.content.length, ...filtered);
+}
 
 type HighlightedSection = {
 	path: string;
@@ -653,6 +677,30 @@ function renderHashlineReadResult(
 	return renderText(
 		`${renderHashlineHeader(section.header, theme)}\n${renderNumberedRows(section.rows, theme, section.rows.length, highlightedRows)}`,
 	);
+}
+
+function renderReadResult(
+	result: ToolTextResult,
+	options: { expanded?: boolean; isPartial?: boolean },
+	theme: RenderTheme,
+): Text | Container | EmptyComponent {
+	if (options.isPartial) return renderText(theme.fg("warning", "Reading..."));
+	const preview = previewImageDetails(result.details?.previewImage);
+	if (!preview) return renderHashlineReadResult(result, options, theme);
+
+	suppressCoreImageRendering(result);
+	const container = new Container();
+	const text = firstTextContent(result).trim();
+	if (text) container.addChild(textComponent(theme.fg("toolOutput", text)));
+	container.addChild(
+		new KittyVirtualImage(
+			preview.data,
+			preview.mimeType,
+			{ fallbackColor: (fallback) => theme.fg("toolOutput", fallback) },
+			{ maxWidthCells: 80, maxHeightCells: 30, sourcePath: preview.sourcePath },
+		),
+	);
+	return container;
 }
 
 function renderSearchCall(_params: { pattern?: unknown; path?: unknown }, _theme: RenderTheme): EmptyComponent {
@@ -1485,7 +1533,7 @@ function registerHashlineWorkflowTools(
 			return renderReadCall(params, theme);
 		},
 		renderResult(result, options, theme) {
-			return renderHashlineReadResult(result as ToolTextResult, options, theme);
+			return renderReadResult(result as ToolTextResult, options, theme);
 		},
 		async execute(
 			toolCallId,
@@ -1503,14 +1551,17 @@ function registerHashlineWorkflowTools(
 				...(params.ranges ?? []).flatMap((rangeList) => rangeList.split(",").map(parseLineRange)),
 			];
 			const imageMimeType = await detectSupportedReadImageMimeType(absolute);
-			if (imageMimeType)
-				return baseRead.execute(
+			if (imageMimeType) {
+				const result = (await baseRead.execute(
 					toolCallId,
 					{ path: absolute, offset: params.offset, limit: params.limit },
 					signal,
 					onUpdate,
 					ctx,
-				);
+				)) as ToolTextResult;
+				const previewImage = await readPreviewImageFromPath(absolute);
+				return previewImage ? { ...result, details: { ...(result.details ?? {}), previewImage } } : result;
+			}
 			const largeReadBlock = await maybeBlockLargeWholeFileRead(
 				displayPath(callCwd, absolute),
 				absolute,

@@ -10,6 +10,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { runCommand as runExternalCommand } from "../shared/command-runner.ts";
 import { recordHashlineSnapshot, SNAPSHOT_MAX_BYTES } from "./hashline/anchors.js";
@@ -247,10 +248,10 @@ export function registerAstTools(pi: ExtensionAPI, snapshotsForContext: Snapshot
 		parameters: astGrepSchema,
 		renderShell: "self",
 		renderCall(params) {
-			return `ast_grep ${JSON.stringify((params as { pattern?: string }).pattern ?? "")}`;
+			return new Text(`ast_grep ${JSON.stringify((params as { pattern?: string }).pattern ?? "")}`, 0, 0);
 		},
 		renderResult(result) {
-			return (result as ToolTextResult).content[0]?.text ?? "";
+			return new Text((result as ToolTextResult).content[0]?.text ?? "", 0, 0);
 		},
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			return executeAstGrep(params as any, ctx, snapshotsForContext, signal);
@@ -265,10 +266,10 @@ export function registerAstTools(pi: ExtensionAPI, snapshotsForContext: Snapshot
 		renderShell: "self",
 		renderCall(params) {
 			const input = params as { pattern?: string; apply?: boolean };
-			return `ast_edit ${input.apply ? "apply" : "preview"} ${JSON.stringify(input.pattern ?? "")}`;
+			return new Text(`ast_edit ${input.apply ? "apply" : "preview"} ${JSON.stringify(input.pattern ?? "")}`, 0, 0);
 		},
 		renderResult(result) {
-			return (result as ToolTextResult).content[0]?.text ?? "";
+			return new Text((result as ToolTextResult).content[0]?.text ?? "", 0, 0);
 		},
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			return executeAstEdit(params as any, ctx, snapshotsForContext, signal);

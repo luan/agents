@@ -15,8 +15,7 @@
  */
 
 import { open as openFile } from "node:fs/promises";
-import { basename, dirname, extname, isAbsolute, relative, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { basename, extname, isAbsolute, relative, resolve } from "node:path";
 
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type {
@@ -27,10 +26,12 @@ import type {
 	LsToolInput,
 	ReadToolInput,
 } from "@earendil-works/pi-coding-agent";
-import { Container, getCapabilities, Image, Spacer } from "@earendil-works/pi-tui";
+import { Container, getCapabilities, Spacer } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 import { configureImageCapabilities } from "../shared/image-capabilities";
+import { createPreviewImageFromBase64 } from "../shared/image-preview";
+import { KittyVirtualImage } from "../shared/kitty-virtual-image";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -342,6 +343,13 @@ type ToolExecutor<TParams, TDetails = unknown> = (
 	onUpdate?: AgentToolUpdateCallback<TDetails | undefined>,
 	ctx?: ExtensionContext,
 ) => Promise<ToolResultLike<TDetails>>;
+
+function suppressCoreImageRendering(result: ToolResultLike): void {
+	const content = result.content ?? [];
+	const filtered = content.filter((item) => item.type !== "image");
+	content.splice(0, content.length, ...filtered);
+	result.content = content;
+}
 type ToolDefinitionLike<TParams, TDetails = unknown> = {
 	name?: string;
 	description?: string;
@@ -476,21 +484,12 @@ async function imageMimeTypeForExistingPath(filePath: string): Promise<string | 
 }
 
 async function convertImageForKittyPreview(content: ImageContent): Promise<ImageContent> {
-	if (getCapabilities().images !== "kitty" || content.mimeType === "image/png" || !content.data || !content.mimeType) {
-		return content;
-	}
+	if (getCapabilities().images !== "kitty" || !content.data || !content.mimeType) return content;
 
-	try {
-		const packageEntry = require.resolve("@earendil-works/pi-coding-agent");
-		const converterUrl = pathToFileURL(resolve(dirname(packageEntry), "utils/image-convert.js")).href;
-		const { convertToPng } = (await import(converterUrl)) as {
-			convertToPng?: (data: string, mimeType: string) => Promise<{ data: string; mimeType: string } | null>;
-		};
-		const converted = await convertToPng?.(content.data, content.mimeType);
-		return converted ? { ...content, data: converted.data, mimeType: converted.mimeType } : content;
-	} catch {
-		return content;
-	}
+	const preview = await createPreviewImageFromBase64(content.data, content.mimeType);
+	return preview
+		? ({ ...content, data: preview.data, mimeType: preview.mimeType, sourcePath: preview.sourcePath } as ImageContent)
+		: content;
 }
 
 async function convertResultImagesForKittyPreview(result: ToolResultLike): Promise<ToolResultLike> {
@@ -539,11 +538,7 @@ function renderViewImageResult(
 		return text;
 	}
 
-	if (ctx.showImages) {
-		const text = createTextComponent(TextComponent, ctx);
-		text.setText("");
-		return text;
-	}
+	suppressCoreImageRendering(result);
 
 	const container = new Container();
 	let hasContent = false;
@@ -551,11 +546,15 @@ function renderViewImageResult(
 		if (!image.data || !image.mimeType) continue;
 		if (hasContent) container.addChild(new Spacer(1));
 		container.addChild(
-			new Image(
+			new KittyVirtualImage(
 				image.data,
 				image.mimeType,
 				{ fallbackColor: (text) => theme.fg("toolOutput", text) },
-				{ maxWidthCells: Number.MAX_SAFE_INTEGER },
+				{
+					maxWidthCells: 80,
+					maxHeightCells: 30,
+					sourcePath: (image as ImageContent & { sourcePath?: string }).sourcePath,
+				},
 			),
 		);
 		hasContent = true;

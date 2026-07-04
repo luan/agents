@@ -306,7 +306,7 @@ test("renders generated images as compact activity with inline preview", async (
 		expect(rendered).toContain("<success>•</success> <bold>Generated image</bold>");
 		expect(rendered).toContain("<accent>Prompt</accent> <muted>a moon dog</muted>");
 		expect(rendered).toContain("\x1b]1337;File=");
-		expect(rendered).toContain("width=998");
+		expect(rendered).toContain("width=80");
 		expect(rendered).not.toContain("[image_generation]");
 		expect(rendered).not.toContain("customMessageBg");
 	} finally {

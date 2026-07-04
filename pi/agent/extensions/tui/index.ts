@@ -34,6 +34,7 @@ import { detectUsageProvider, fetchUsageForProvider, USAGE_REFRESH_INTERVAL, typ
 const polishedTui = defineExtensionTui({ id: "polished-tui" });
 
 type FooterFactory = Parameters<ExtensionContext["ui"]["setFooter"]>[0];
+type FooterDataProvider = Parameters<NonNullable<FooterFactory>>[2];
 type UsageTotals = { input: number; output: number; cost: number };
 
 type UsageBarCache = {
@@ -45,6 +46,7 @@ const CONTEXT_PULSE_INTERVAL_MS = 320;
 const CONTEXT_PULSE_DURATION_MS = 1200;
 const MOSAIC_IDENTITY_COLORS = ["f38ba8", "fab387", "f9e2af", "eba0ac", "e78284", "ff9e64", "ffc777", "ff757f"];
 const WORKING_TIMER_ENTRY_TYPE = "tui:working-timer";
+const MODEL_STATUS_KEYS = new Set(["openai-fast"]);
 
 function cleanIdentityPart(value: string | undefined): string | undefined {
 	const text = value
@@ -52,6 +54,14 @@ function cleanIdentityPart(value: string | undefined): string | undefined {
 		.replace(/\s+/g, " ")
 		.trim();
 	return text || undefined;
+}
+
+function readModelStatusBadges(footerData: FooterDataProvider | undefined): string[] {
+	if (!footerData) return [];
+	const statuses = footerData.getExtensionStatuses();
+	return [...MODEL_STATUS_KEYS]
+		.map((key) => cleanIdentityPart(statuses.get(key)))
+		.filter((status): status is string => Boolean(status));
 }
 
 function readMosaicIdentityEnv(): EditorSessionIdentity | undefined {
@@ -177,6 +187,7 @@ export default function (pi: ExtensionAPI) {
 	let activeSessionFile: string | undefined;
 	let editorSessionIdentity: EditorSessionIdentity | undefined;
 
+	let footerDataProvider: FooterDataProvider | undefined;
 	const isStaleCtxError = (error: unknown) =>
 		(error instanceof Error ? error.message : String(error)).includes("ctx is stale");
 	const isCurrent = (generation: number) => !disposed && generation === uiGeneration;
@@ -338,6 +349,7 @@ export default function (pi: ExtensionAPI) {
 			usageLine = "";
 			statusWidth = safeWidth;
 		}
+		state.modelStatusBadges = readModelStatusBadges(footerDataProvider);
 		const topStatus = renderEditorTopStatus(state, currentConfig, cwd, theme, statusWidth);
 		return [usageLine, topStatus].filter(Boolean).join("  ");
 	};
@@ -415,6 +427,7 @@ export default function (pi: ExtensionAPI) {
 		state.modelLabel = ctx.model?.name ?? "no-model";
 		state.providerLabel = formatProviderLabel(ctx.model?.provider);
 		state.thinkingLevel = ctx.model?.reasoning ? pi.getThinkingLevel() : undefined;
+		state.modelStatusBadges = readModelStatusBadges(footerDataProvider);
 		state.contextPercent = usage?.percent ?? (contextWindow > 0 ? (contextUsed / contextWindow) * 100 : null);
 		state.contextTotal = contextWindow;
 		state.contextUsed = contextUsed;
@@ -569,6 +582,7 @@ export default function (pi: ExtensionAPI) {
 		syncStateIfCurrent(ctx);
 
 		const footerFactory: FooterFactory = (tui, _theme, footerData) => {
+			footerDataProvider = footerData;
 			requestFooterRender = () => tui.requestRender();
 			const disposeFocusCursor = installFocusCursor(pi, ctx, tui);
 			const unsubscribeBranch = footerData.onBranchChange(() => {
@@ -586,6 +600,7 @@ export default function (pi: ExtensionAPI) {
 					disposeFocusCursor();
 					unsubscribeBranch();
 					requestFooterRender = undefined;
+					footerDataProvider = undefined;
 					stopRefreshTimer();
 					stopContextPulse();
 				},

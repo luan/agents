@@ -1,5 +1,5 @@
 {
-  "lastChangelogVersion": "0.79.10",
+  "lastChangelogVersion": "0.80.3",
   "steeringMode": "all",
   "autoUpdate": true,
   "transport": "auto",
@@ -18,7 +18,8 @@
       "source": "npm:@plannotator/pi-extension",
       "skills": []
     },
-    "npm:pi-cache-graph"
+    "npm:pi-cache-graph",
+    "npm:@diegopetrucci/pi-openai-fast"
   ],
   "extensions": [
     "extensions/agents-local/index.ts",

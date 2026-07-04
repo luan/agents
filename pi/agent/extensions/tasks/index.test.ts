@@ -177,7 +177,7 @@ describe("tasks extension", () => {
 		expect(closed).toBe(true);
 	});
 
-	test("task tools are extension-backed and acceptance is agent-driven", async () => {
+	test("task tools are extension-backed and session-scoped", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "pi-tasks-"));
 		const commands = new Map<string, any>();
 		const tools = new Map<string, any>();
@@ -242,20 +242,9 @@ describe("tasks extension", () => {
 		await tools
 			.get("task_write")
 			.execute("2", { op: "update", id, data: { status: "in_progress" } }, undefined, undefined, ctx);
-		await expect(
-			tools
-				.get("task_write")
-				.execute("3", { op: "update", id, data: { status: "done" } }, undefined, undefined, ctx),
-		).rejects.toThrow("user_approved_completion=true");
 		await tools
 			.get("task_write")
-			.execute(
-				"4",
-				{ op: "update", id, data: { status: "done" }, user_approved_completion: true },
-				undefined,
-				undefined,
-				ctx,
-			);
+			.execute("3", { op: "update", id, data: { status: "done" } }, undefined, undefined, ctx);
 
 		const storePath = join(cwd, ".pi", "tasks", "sessions", "tools-session.json");
 		expect(existsSync(storePath)).toBe(true);
