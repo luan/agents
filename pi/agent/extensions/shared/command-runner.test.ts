@@ -43,6 +43,21 @@ describe("command runner", () => {
 		expect(result).toEqual({ stdout: "out", stderr: "err", exitCode: 7 });
 	});
 
+	it("rejects oversized command output before converting it to a string", async () => {
+		const dir = join(tmpdir(), `pi-command-runner-output-${crypto.randomUUID()}`);
+		mkdirSync(dir, { recursive: true });
+		const bin = join(dir, "bin");
+		const tool = join(bin, "noisy");
+		mkdirSync(bin);
+		writeFileSync(tool, "#!/bin/sh\nprintf 1234567890\n");
+		chmodSync(tool, 0o755);
+		process.env.PATH = "";
+
+		await expect(runCommand("noisy", [], dir, { extraSearchPaths: [bin], maxOutputBytes: 4 })).rejects.toThrow(
+			/exceeded 4 bytes of output/,
+		);
+	});
+
 	it("reports a missing working directory without blaming the command PATH", async () => {
 		await expect(runCommand("rg", [], join(tmpdir(), `missing-${crypto.randomUUID()}`))).rejects.toThrow(
 			/Working directory not found/,

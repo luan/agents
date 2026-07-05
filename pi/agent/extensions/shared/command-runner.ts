@@ -2,6 +2,8 @@ import { spawn } from "node:child_process";
 import { accessSync, constants } from "node:fs";
 import { delimiter, join } from "node:path";
 
+const DEFAULT_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
+
 export type CommandResult = {
 	stdout: string;
 	stderr: string;
@@ -13,6 +15,7 @@ export type RunCommandOptions = {
 	input?: string;
 	allowNonZero?: boolean;
 	extraSearchPaths?: readonly string[];
+	maxOutputBytes?: number;
 };
 
 export function formatCommand(command: string, args: readonly string[]): string {
@@ -65,6 +68,8 @@ export function runCommand(
 		return Promise.reject(new Error(`Working directory not found: ${cwd}`));
 	}
 	return new Promise((resolve, reject) => {
+		const maxOutputBytes = Math.max(1, options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES);
+		let outputBytes = 0;
 		let settled = false;
 		let stdinError: NodeJS.ErrnoException | undefined;
 		const rejectOnce = (error: Error) => {
@@ -86,9 +91,20 @@ export function runCommand(
 
 		const stdoutChunks: Buffer[] = [];
 		const stderrChunks: Buffer[] = [];
+		const appendOutput = (chunks: Buffer[], chunk: unknown) => {
+			if (settled) return;
+			const buffer = Buffer.from(chunk as Buffer);
+			outputBytes += buffer.length;
+			if (outputBytes > maxOutputBytes) {
+				rejectOnce(new Error(`${formatCommand(command, args)} exceeded ${maxOutputBytes} bytes of output`));
+				child.kill();
+				return;
+			}
+			chunks.push(buffer);
+		};
 
-		child.stdout.on("data", (chunk) => stdoutChunks.push(Buffer.from(chunk)));
-		child.stderr.on("data", (chunk) => stderrChunks.push(Buffer.from(chunk)));
+		child.stdout.on("data", (chunk) => appendOutput(stdoutChunks, chunk));
+		child.stderr.on("data", (chunk) => appendOutput(stderrChunks, chunk));
 		child.on("error", (error) => {
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") {
 				rejectOnce(new Error(`${command} not found on PATH`));
@@ -110,6 +126,7 @@ export function runCommand(
 
 		child.on("close", (exitCode) => {
 			options.signal?.removeEventListener("abort", onAbort);
+			if (settled) return;
 			const stdout = Buffer.concat(stdoutChunks).toString("utf8");
 			const stderr = Buffer.concat(stderrChunks).toString("utf8");
 			if (exitCode === 0 || options.allowNonZero) {
