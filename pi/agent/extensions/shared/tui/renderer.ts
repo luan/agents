@@ -1,4 +1,5 @@
 import { visibleWidth } from "@earendil-works/pi-tui";
+import { paintAnsiBackgroundRow } from "./text";
 import type { RenderOptions, RenderTheme, Tone, ViewNode } from "./types";
 
 const DEFAULT_THEME: RenderTheme = {
@@ -12,7 +13,10 @@ export function renderView(node: ViewNode, options: RenderOptions): string[] {
 	const width = Math.max(1, options.width);
 	const height = options.height ?? Number.POSITIVE_INFINITY;
 	const lines = renderNode(node, { ...options, width, theme });
-	return lines.slice(0, height).map((line) => truncateStyled(line, width));
+	const rendered = lines.slice(0, height).map((line) => truncateStyled(line, width));
+	const background = options.background;
+	if (!background) return rendered;
+	return rendered.map((line) => paintThemeBackground(line, width, theme, background));
 }
 
 function renderNode(
@@ -112,6 +116,12 @@ function renderList(
 
 function style(theme: RenderTheme, tone: Tone, text: string): string {
 	return theme.fg(tone, text);
+}
+
+function paintThemeBackground(line: string, width: number, theme: RenderTheme, role: string): string {
+	const backgroundAnsi = theme.getBgAnsi?.(role);
+	if (backgroundAnsi) return paintAnsiBackgroundRow(line, width, backgroundAnsi);
+	return theme.bg?.(role, padStyled(line, width)) ?? line;
 }
 
 function emphasize(theme: RenderTheme, text: string, emphasis: string | undefined): string {

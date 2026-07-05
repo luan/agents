@@ -206,6 +206,25 @@ describe("polished TUI editor", () => {
 		expect(lines.every((line) => visibleWidth(line) <= 40)).toBe(true);
 	});
 
+	test("does not paint the editor background", () => {
+		const background = "\x1b[48;2;237;231;246m";
+		const backgroundTheme = {
+			fg: (_color: string, text: string) => text,
+			bg: (color: string, text: string) => (color === "customMessageBg" ? `${background}${text}\x1b[49m` : text),
+			getBgAnsi: (color: string) => (color === "customMessageBg" ? background : undefined),
+		} as any;
+
+		const lines = renderPolishedEditorForTest(
+			editor({ getMode: () => "insert" }),
+			40,
+			() => ["> hello", ""],
+			backgroundTheme,
+		);
+
+		expect(lines.join("\n")).not.toContain(background);
+		expect(lines.every((line) => visibleWidth(line) <= 40)).toBe(true);
+	});
+
 	test("pulses the rail background from the mode color while working", () => {
 		setWorkingAnimationForTest(true, 0);
 		const dark = renderPolishedEditorForTest(

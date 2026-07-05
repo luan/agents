@@ -1,7 +1,7 @@
 import { CustomEditor, type Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { rgbBg, rgbFg, scaleRgb, shineText, themeRoleToRgb, triangleWave } from "../shared/tui";
-import { ANSI_RESET, fillBackgroundLine } from "./render-lines";
+import { ANSI_RESET, fillLine } from "./render-lines";
 
 const CUSTOM_EDITOR_ORIGINAL_RENDER = Symbol.for("agents.polishedTui.customEditorOriginalRender");
 
@@ -54,7 +54,6 @@ let editorSessionIdentityProvider: (() => EditorSessionIdentity | undefined) | u
 const WORKING_WORD = "Working";
 const WORKING_PERCOLATION_MS = 80;
 const RAIL_PULSE_MS = 2000;
-const EDITOR_BG_DARKEN = 0.78;
 const MODE_LABEL_RESERVE = 9;
 let editorChromeProvider: EditorChromeProvider | undefined;
 
@@ -333,7 +332,7 @@ export function renderPolishedEditorForTest(
 		? triangleWave(workingFrame * WORKING_PERCOLATION_MS, RAIL_PULSE_MS, 0.18, 1.25)
 		: 0;
 	const railBg = workingActive ? rgbBg(scaleRgb(themeRoleToRgb(uiTheme, railColor), railPulseFactor)) : "";
-	const railGap = fillBackgroundLine(uiTheme, "", 1, { darken: EDITOR_BG_DARKEN });
+	const railGap = fillLine("", 1);
 	const secondaryRail = secondaryRailColor ? `${colorFg(uiTheme, secondaryRailColor, "▐")}${ANSI_RESET}` : "";
 	const mainRailGlyph = secondaryRailColor ? "▌" : "┃";
 	const rail = `${secondaryRail}${railBg}${colorFg(uiTheme, railColor, mainRailGlyph)}\x1b[49m${ANSI_RESET}${railGap}`;
@@ -347,10 +346,7 @@ export function renderPolishedEditorForTest(
 		composeLeftRight("", chrome.bottomRight, statusWidth),
 	];
 
-	return [
-		...lines.map((line) => `${rail}${fillBackgroundLine(uiTheme, line, innerWidth, { darken: EDITOR_BG_DARKEN })}`),
-		...autocompleteLines,
-	];
+	return [...lines.map((line) => `${rail}${fillLine(line, innerWidth)}`), ...autocompleteLines];
 }
 
 export function installEditorComposition(uiTheme: Theme): void {

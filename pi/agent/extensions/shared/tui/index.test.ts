@@ -51,6 +51,30 @@ describe("Extension TUI ViewNodes", () => {
 		expect(lines.every((line) => line.length > 0)).toBe(true);
 	});
 
+	test("paints requested view backgrounds across foreground resets", () => {
+		const backgroundAnsi = "\x1b[48;2;250;250;250m";
+		const ansiTheme = {
+			fg(role: string, text: string) {
+				return role === "accent" ? `\x1b[31m${text}\x1b[0m` : text;
+			},
+			bg(role: string, text: string) {
+				return role === "customMessageBg" ? `${backgroundAnsi}${text}\x1b[49m` : text;
+			},
+			getBgAnsi(role: string) {
+				return role === "customMessageBg" ? backgroundAnsi : undefined;
+			},
+		};
+
+		const [line = ""] = renderView(view.text("light", { tone: "accent" }), {
+			width: 10,
+			theme: ansiTheme,
+			background: "customMessageBg",
+		});
+
+		expect(line).toBe(`${backgroundAnsi}\x1b[31mlight\x1b[0m${backgroundAnsi}     \x1b[0m`);
+		expect(visibleWidth(line)).toBe(10);
+	});
+
 	test("summarizes overflowing lists when requested", () => {
 		const lines = renderView(
 			view.list({

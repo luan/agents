@@ -20,7 +20,7 @@ import { Type } from "typebox";
 import { runCommand as runExternalCommand } from "../shared/command-runner.ts";
 import { readPreviewImageFromPath } from "../shared/image-preview.ts";
 import { KittyVirtualImage } from "../shared/kitty-virtual-image.ts";
-import { EmptyComponent, runningFrame, shineText, textComponent } from "../shared/tui";
+import { EmptyComponent, keepBackgroundAcrossResets, runningFrame, shineText, textComponent } from "../shared/tui";
 import { registerAstTools } from "./ast-tools.ts";
 import { buildLineEntriesWithBlockContext } from "./block-context.ts";
 import { preloadBlockLanguages, treeSitterBlockResolver, treeSitterSyntaxValidator } from "./block-resolver.ts";
@@ -466,7 +466,7 @@ class BlockTextView {
 
 	render(width: number): string[] {
 		if (!this.shouldRender()) return [];
-		const box = new Box(0, 0, this.theme.bg ? (line) => this.theme.bg?.("toolPendingBg", line) ?? line : undefined);
+		const box = new Box(0, 0, paintToolBackground(this.theme, "toolPendingBg"));
 		box.addChild(textComponent(typeof this.text === "function" ? this.text(width) : this.text));
 		return box.render(width);
 	}
@@ -557,6 +557,17 @@ function renderEditRunningHeader(theme: RenderTheme, elapsedMs: number | undefin
 	return `${theme.fg("dim", runningFrame(elapsedMs, EDIT_FRAME_MS))} ${theme.fg("toolTitle", theme.bold(editRunningLabel(theme, elapsedMs)))}${rest}`;
 }
 
+function isLightTheme(theme: RenderTheme): boolean {
+	return typeof theme.name === "string" && /(?:^|[/_-])light(?:$|[/_-])/.test(theme.name);
+}
+
+function paintToolBackground(theme: RenderTheme, role: string): ((line: string) => string) | undefined {
+	if (isLightTheme(theme)) return undefined;
+	const backgroundAnsi = theme.getBgAnsi?.(role);
+	if (backgroundAnsi) return (line) => `${backgroundAnsi}${keepBackgroundAcrossResets(line, backgroundAnsi)}\x1b[0m`;
+	return theme.bg ? (line) => theme.bg?.(role, line) ?? line : undefined;
+}
+
 class EditCallView {
 	constructor(
 		private readonly summary: EditSummary,
@@ -580,7 +591,7 @@ class EditCallView {
 
 function renderHeaderBox(text: string, theme: RenderTheme, state: "success" | "error" | "pending"): Box {
 	const role = state === "success" ? "toolSuccessBg" : state === "error" ? "toolErrorBg" : "toolPendingBg";
-	const box = new Box(0, 0, theme.bg ? (line) => theme.bg?.(role, line) ?? line : undefined);
+	const box = new Box(0, 0, paintToolBackground(theme, role));
 	box.addChild(textComponent(text));
 	return box;
 }

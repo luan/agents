@@ -35,6 +35,37 @@ test("session facade mounts above-editor widgets through shared renderer", () =>
 	]);
 });
 
+test("session facade paints above-editor widget rows with the light theme background", () => {
+	const backgroundAnsi = "\x1b[48;2;250;250;250m";
+	let lines: string[] = [];
+	const extension = defineExtensionTui({ id: "tasks" });
+	const session = extension.bind({
+		ui: {
+			setWidget(_key, content) {
+				if (typeof content !== "function") return;
+				const component = content(
+					{ requestRender() {} },
+					{
+						fg: (_role: string, text: string) => text,
+						bg: (role: string, text: string) =>
+							role === "customMessageBg" ? `${backgroundAnsi}${text}\x1b[49m` : text,
+						getBgAnsi: (role: string) => (role === "customMessageBg" ? backgroundAnsi : undefined),
+					},
+				);
+				lines = component.render(12);
+			},
+		},
+	});
+
+	session.widgets.aboveEditor.contribute({
+		id: "project-tasks",
+		priority: 10,
+		view: view.text("light"),
+	});
+
+	expect(lines).toEqual([`${backgroundAnsi}light       \x1b[0m`]);
+});
+
 test("tool renderers registered on global facade return ViewNodes", () => {
 	const extension = defineExtensionTui({ id: "exec" });
 

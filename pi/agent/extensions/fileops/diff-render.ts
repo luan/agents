@@ -6,6 +6,7 @@ import { clampAnsiLine, paintAnsiBackgroundRow, sgrResetsBackground, truncateToW
 import { columnCountForWidth, columnWidthFor, renderColumns } from "./columns.ts";
 export type RenderTheme = {
 	fg(role: string, text: string): string;
+	name?: string;
 	bg?: (role: string, text: string) => string;
 	getBgAnsi?: (role: string) => string | undefined;
 	getFgAnsi?: (role: string) => string | undefined;
@@ -15,6 +16,8 @@ export type RenderTheme = {
 	tree?: { last: string; branch: string; vertical: string };
 	sep?: { dot: string };
 };
+
+type ToolPanelBg = "toolSuccessBg" | "toolPendingBg" | "toolErrorBg";
 
 export type DiffRenderRow = {
 	kind: "add" | "remove" | "context" | "hunk";
@@ -36,6 +39,8 @@ const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const ANSI_RESET = "\x1b[0m";
 const ADD_ROW_BG = "\x1b[48;2;20;53;31m";
 const REMOVE_ROW_BG = "\x1b[48;2;59;29;36m";
+const LIGHT_ADD_ROW_BG = "\x1b[48;2;230;255;235m";
+const LIGHT_REMOVE_ROW_BG = "\x1b[48;2;255;235;240m";
 const ADD_WORD_BG = "\x1b[48;2;45;94;60m";
 const REMOVE_WORD_BG = "\x1b[48;2;115;55;75m";
 
@@ -76,6 +81,31 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } | undefined 
 		g: Number.parseInt(value.slice(2, 4), 16),
 		b: Number.parseInt(value.slice(4, 6), 16),
 	};
+}
+
+function truecolorBackgroundToRgb(ansi: string | undefined): { r: number; g: number; b: number } | undefined {
+	const match = ansi?.match(/\x1b\[48;2;(\d+);(\d+);(\d+)m/);
+	if (!match) return undefined;
+	return { r: Number(match[1]), g: Number(match[2]), b: Number(match[3]) };
+}
+
+function isLightTheme(theme: RenderTheme): boolean {
+	return typeof theme.name === "string" && /(?:^|[/_-])light(?:$|[/_-])/.test(theme.name);
+}
+
+function isLightBackground(ansi: string | undefined): boolean {
+	const rgb = truecolorBackgroundToRgb(ansi);
+	if (!rgb) return false;
+	return 0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b >= 128;
+}
+
+function toolBackgroundAnsi(theme: RenderTheme, role: ToolPanelBg): string | undefined {
+	if (isLightTheme(theme)) return undefined;
+	try {
+		return theme.getBgAnsi?.(role);
+	} catch {
+		return undefined;
+	}
 }
 
 function ansiFg(hex: string | undefined, text: string): string {
@@ -421,9 +451,14 @@ export async function buildHighlightedDiffRows(diff: string): Promise<DiffRender
 	return applyWordDiffHighlights(diff, rows);
 }
 
-function rowBackground(kind: DiffRenderRow["kind"]): string | undefined {
-	if (kind === "add") return ADD_ROW_BG;
-	if (kind === "remove") return REMOVE_ROW_BG;
+function rowBackground(
+	kind: DiffRenderRow["kind"],
+	theme: RenderTheme,
+	panelBackgroundAnsi: string | undefined,
+): string | undefined {
+	const light = isLightTheme(theme) || isLightBackground(panelBackgroundAnsi);
+	if (kind === "add") return light ? LIGHT_ADD_ROW_BG : ADD_ROW_BG;
+	if (kind === "remove") return light ? LIGHT_REMOVE_ROW_BG : REMOVE_ROW_BG;
 	return undefined;
 }
 
@@ -431,12 +466,13 @@ function paintDiffRow(
 	line: string,
 	width: number,
 	theme: RenderTheme,
-	backgroundRole: "toolPendingBg" | "toolDiffAdded" | "toolDiffRemoved",
+	backgroundRole: ToolPanelBg,
 	backgroundAnsi?: string,
 ): string {
 	const painted = paintAnsiBackgroundRow(line, width, backgroundAnsi);
 	if (backgroundAnsi) return painted;
 	const padded = truncateToWidthCompat(line, width, "", true);
+	if (isLightTheme(theme)) return padded;
 	return theme.bg ? theme.bg(backgroundRole, padded) : padded;
 }
 
@@ -543,7 +579,7 @@ function renderDiffOmittedLine(remaining: number, width: number, theme: RenderTh
 		width,
 		theme,
 		"toolPendingBg",
-		theme.getBgAnsi?.("toolPendingBg"),
+		toolBackgroundAnsi(theme, "toolPendingBg"),
 	);
 }
 
@@ -556,6 +592,7 @@ function renderDiffSectionRows(
 	includeHeader: boolean,
 ): string[] {
 	const rendered: string[] = [];
+	const panelBackgroundAnsi = toolBackgroundAnsi(theme, "toolPendingBg");
 	const numberWidth = diffLineNumberWidth(section.rows);
 	const gutterWidth = numberWidth + 5;
 	const codeWidth = Math.max(8, width - gutterWidth);
@@ -566,18 +603,12 @@ function renderDiffSectionRows(
 				width,
 				theme,
 				"toolPendingBg",
-				theme.getBgAnsi?.("toolPendingBg"),
+				panelBackgroundAnsi,
 			),
 		);
 	}
 	rendered.push(
-		paintDiffRow(
-			formatSectionDiffStatsLine(section.rows, theme),
-			width,
-			theme,
-			"toolPendingBg",
-			theme.getBgAnsi?.("toolPendingBg"),
-		),
+		paintDiffRow(formatSectionDiffStatsLine(section.rows, theme), width, theme, "toolPendingBg", panelBackgroundAnsi),
 	);
 	const wrapLimit = diffWrapRows(width);
 	for (const row of section.rows) {
@@ -588,17 +619,15 @@ function renderDiffSectionRows(
 		const prefix = `  ${theme.fg(kindColor, String(lineNumber ?? "").padStart(numberWidth, " "))} ${theme.fg(kindColor, sign)} `;
 		const continuation = `  ${" ".repeat(numberWidth)}   `;
 		const bodyLines = wrapDiffContent(diffContentForRow(row), codeWidth, wrapLimit);
-		const rowBg = rowBackground(row.kind);
-		const backgroundRole =
-			row.kind === "add" ? "toolDiffAdded" : row.kind === "remove" ? "toolDiffRemoved" : "toolPendingBg";
-		const backgroundAnsi = rowBg ?? theme.getBgAnsi?.("toolPendingBg");
+		const rowBg = rowBackground(row.kind, theme, panelBackgroundAnsi);
+		const backgroundAnsi = rowBg ?? panelBackgroundAnsi;
 		for (const [bodyIndex, body] of bodyLines.entries()) {
 			rendered.push(
 				paintDiffRow(
 					`${bodyIndex === 0 ? prefix : continuation}${body}`,
 					width,
 					theme,
-					backgroundRole,
+					"toolPendingBg",
 					backgroundAnsi,
 				),
 			);
@@ -624,7 +653,7 @@ function renderDiffRows(
 				width,
 				theme,
 				"toolPendingBg",
-				theme.getBgAnsi?.("toolPendingBg"),
+				toolBackgroundAnsi(theme, "toolPendingBg"),
 			),
 		];
 	}

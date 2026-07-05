@@ -158,6 +158,27 @@ const rgbTheme = {
 	},
 };
 
+const darkToolBackground = "\x1b[48;2;30;30;46m";
+const lightAddedBackground = "\x1b[48;2;230;255;235m";
+const lightRemovedBackground = "\x1b[48;2;255;235;240m";
+const lightTheme = {
+	...theme,
+	name: "light/tokyo-night",
+	fg(role: string, text: string) {
+		return role === "toolTitle" || role === "accent" ? `\x1b[31m${text}\x1b[0m` : text;
+	},
+	bold(text: string) {
+		return `\x1b[1m${text}\x1b[0m`;
+	},
+	bg(role: string, text: string) {
+		return role === "toolPendingBg" ? `${darkToolBackground}${text}\x1b[49m` : text;
+	},
+	getBgAnsi(role: string) {
+		if (role === "toolPendingBg") return darkToolBackground;
+		throw new Error(`Unknown theme background color: ${role}`);
+	},
+};
+
 const ANSI_SGR_PATTERN = /\x1b\[([0-9;]*)m/g;
 function charsWithBackground(text: string, background: string): string {
 	let output = "";
@@ -192,6 +213,42 @@ describe("fileops extension modes", () => {
 		expect(grepRendered).toContain("foo($X)");
 		expect(editRendered).toContain("ast_edit preview");
 		expect(grepWithResult.render(120).join("\n")).toContain("matched");
+	});
+
+	it("does not paint dark tool backgrounds for light fileops headers", () => {
+		const tools = registerEditTools("hashline");
+		const edit = tools.get("edit");
+
+		const [line = ""] = edit
+			.renderCall({ input: "[sample.txt#ABCD]\nreplace 1..1:\n+new\n" }, lightTheme, {})
+			.render(80);
+
+		expect(line).not.toContain(darkToolBackground);
+		expect(stripAnsi(line)).toContain("Edit:");
+		expect(stripAnsi(line)).toContain("sample.txt");
+		expect(visibleWidth(line)).toBe(80);
+	});
+
+	it("uses light theme backgrounds for fileops diff rows", () => {
+		const tools = registerEditTools("hashline");
+		const edit = tools.get("edit");
+		const result = {
+			content: [{ type: "text", text: "[sample.txt#ABCD]\n1:+new" }],
+			details: {
+				diff: ["--- a/sample.txt", "+++ b/sample.txt", "@@ -1 +1 @@", "-old", "+new", ""].join("\n"),
+				results: [{ path: "sample.txt", header: "[sample.txt#ABCD]" }],
+			},
+		};
+
+		const lines = edit.renderResult(result, { expanded: true, isPartial: false }, lightTheme, {}).render(80);
+		const removedLine = lines.find((line: string) => stripAnsi(line).includes("- old")) ?? "";
+		const addedLine = lines.find((line: string) => stripAnsi(line).includes("+ new")) ?? "";
+		expect(lines.join("\n")).not.toContain(darkToolBackground);
+
+		expect(removedLine).toContain(lightRemovedBackground);
+		expect(charsWithBackground(removedLine, lightRemovedBackground)).toContain("old");
+		expect(addedLine).toContain(lightAddedBackground);
+		expect(charsWithBackground(addedLine, lightAddedBackground)).toContain("new");
 	});
 
 	it("starts in apply_patch mode and applies freeform envelopes", async () => {

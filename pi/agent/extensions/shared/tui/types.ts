@@ -7,6 +7,7 @@ export type OverflowMode = "clip" | "scroll" | "summarize" | "expandable";
 export interface RenderTheme {
 	fg(role: string, text: string): string;
 	bg?(role: string, text: string): string;
+	getBgAnsi?(role: string): string | undefined;
 	bold?(text: string): string;
 }
 
@@ -14,6 +15,7 @@ export interface RenderOptions {
 	width: number;
 	height?: number;
 	theme?: RenderTheme;
+	background?: string;
 }
 
 export interface TextViewNode {

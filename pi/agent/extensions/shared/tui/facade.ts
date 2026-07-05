@@ -179,7 +179,7 @@ class ViewComponent implements Component {
 
 	render(width: number): string[] {
 		const { node, theme } = this.snapshot();
-		return renderView(node, { width, theme });
+		return renderView(node, { width, theme, background: "customMessageBg" });
 	}
 
 	invalidate(): void {}
