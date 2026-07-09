@@ -16,7 +16,7 @@ Assess whether a diff should be made smaller or clearer before deeper review. A 
 
 ## Step 1: Scope
 
-Use the same diff-source rules as `$crit`. For local diffs, collect:
+Use the same fixed-point and three-dot diff rules as `$code-review`. For local diffs, collect:
 
 ```bash
 git diff --stat "$BASE"...HEAD

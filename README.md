@@ -16,11 +16,6 @@ Shared configuration is the default. Tool-specific folders (`claude/`, `codex/`,
 | `rules/` | Available as `~/.agents/rules` when this repo is cloned or linked to `~/.agents` |
 | `skills/` | Available as `~/.agents/skills`; also linked to `~/.claude/skills` |
 
-## Default delivery workflow
-
-The intended default product-feature workflow is `$grill -> $brief -> $issues -> $implement`.
-QRDSPI skills remain available in source for expert/manual use, but are hidden from
-default model invocation. `$vibe` is intentionally deleted rather than kept as a stub.
 | `plugins/` | Shared plugin sources; tool folders link here |
 | `crates/ct/` | `ct` Rust CLI — repo, MCP, apply-patch, and TUI helpers |
 | `crates/vlt/` | `vlt` Rust CLI — blueprints vault artifact management |

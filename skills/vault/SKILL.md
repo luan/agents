@@ -44,7 +44,9 @@ vlt backlinks <stem>
    vlt search "<topic>"
    vlt context show
    vlt search --type decision "<decision term>"
-   vlt search --type brief "<brief topic>"
+   vlt search --type spec "<feature>"
+   vlt search --type ticket "<slice>"
+   vlt search --type decision "<decision term>"
    vlt search --type research "<feature>"
    vlt search --type <custom-type> "<topic>"
    vlt similar <stem>
@@ -94,7 +96,8 @@ vlt backlinks <stem>
 | Find only research artifacts          | `vlt search --type research "<topic>"`                      |
 | Find custom workflow artifacts        | `vlt search --type <custom-type> "<topic>"`                 |
 | Find decision artifacts               | `vlt search --type decision "<term>"`                       |
-| Find brief artifacts                  | `vlt search --type brief "<term>"`                          |
+| Find specs                            | `vlt search --type spec "<term>"`                           |
+| Find implementation tickets           | `vlt search --type ticket "<term>"`                         |
 | Find similar artifacts                | `vlt similar <stem>`                                        |
 | Browse active artifacts               | `vlt list`                                                  |
 | Browse all projects                   | `vlt list --all`                                            |
@@ -125,7 +128,7 @@ vlt backlinks <stem>
 - Do not edit, link, update, archive, retag, rename, or commit vault artifacts unless explicitly asked.
 - Context docs are special: use `vlt context ...` for root `CONTEXT.md`, `CONTEXT-MAP.md`, and named `contexts/<name>/CONTEXT.md` workflows.
 - Normal artifact filenames are stable numeric ids (`0001-topic.md`); creation dates belong in frontmatter.
-- Treat artifact types as workflow-owned directory names. Built-ins are `research`, `design`, `structure`, `plan`, and `doc`/`docs`, but custom types like `brief`, `decision`, `review`, or `spec` are valid when a workflow needs them.
+- Treat artifact types as workflow-owned directory names. Built-ins are `research`, `design`, `structure`, `plan`, and `doc`/`docs`; this workflow also uses custom `spec`, `ticket`, `decision`, `wayfinder`, `wayfinding`, `prototype`, `brief`, and `review` types.
 - Do not treat archived artifacts as current unless the user asks for history.
 - Call out conflicts between vault intent, tasks, and code instead of silently choosing one.
 - Prefer JSON output for mutating workflows; do not rely on truncated table identifiers.

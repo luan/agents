@@ -1,39 +1,20 @@
 ---
 name: improve-codebase-architecture
-description: 'Find architecture-deepening refactor opportunities grounded in vault docs and code evidence. Use when the user asks to improve codebase architecture, module boundaries, cohesion, or AI navigability.'
-user-invocable: true
+description: Scan a codebase for deepening opportunities, present them as a visual HTML report, then grill through whichever one you pick.
+disable-model-invocation: true
 ---
 
 # Improve Codebase Architecture
 
 Surface architectural friction and propose **deepening opportunities** — refactors that turn shallow modules into deep ones. The aim is testability and AI-navigability.
 
-## Glossary
-
-Use these terms exactly in every suggestion. Consistent language is the point — don't drift into "component," "service," "API," or "boundary." Full definitions in [LANGUAGE.md](LANGUAGE.md).
-
-- **Module** — anything with an interface and an implementation (function, class, package, slice).
-- **Interface** — everything a caller must know to use the module: types, invariants, error modes, ordering, config. Not just the type signature.
-- **Implementation** — the code inside.
-- **Depth** — leverage at the interface: a lot of behaviour behind a small interface. **Deep** = high leverage. **Shallow** = interface nearly as complex as the implementation.
-- **Seam** — where an interface lives; a place behaviour can be altered without editing in place. (Use this, not "boundary.")
-- **Adapter** — a concrete thing satisfying an interface at a seam.
-- **Leverage** — what callers get from depth.
-- **Locality** — what maintainers get from depth: change, bugs, knowledge concentrated in one place.
-
-Key principles (see [LANGUAGE.md](LANGUAGE.md) for the full list):
-
-- **Deletion test**: imagine deleting the module. If complexity vanishes, it was a pass-through. If complexity reappears across N callers, it was earning its keep.
-- **The interface is the test surface.**
-- **One adapter = hypothetical seam. Two adapters = real seam.**
-
-Use the project's domain model. Vault domain docs give names to good seams; vault decision docs record decisions that should not be re-litigated.
+This command is informed by the project's vault-backed domain model and uses one architecture vocabulary: **module**, **interface**, **depth**, **seam**, **adapter**, **leverage**, and **locality**. A module is deep when a small interface hides substantial implementation. The interface is the test surface. One adapter suggests a hypothetical seam; two adapters establish a real one.
 
 ## Process
 
 ### 1. Explore
 
-Search/read relevant blueprints vault domain and decision artifacts for the area you're touching first. If no relevant vault docs exist, proceed silently.
+Load `/vault`, then read project context and relevant decision artifacts with `vlt context show`, `vlt search --type decision`, and `vlt read`.
 
 Then use the Agent tool with `subagent_type=Explore` to walk the codebase. Don't follow rigid heuristics — explore organically and note where you experience friction:
 
@@ -45,32 +26,38 @@ Then use the Agent tool with `subagent_type=Explore` to walk the codebase. Don't
 
 Apply the **deletion test** to anything you suspect is shallow: would deleting it concentrate complexity, or just move it? A "yes, concentrates" is the signal you want.
 
-### 2. Present candidates
+### 2. Present candidates as an HTML report
 
-Present a numbered list of deepening opportunities. For each candidate:
+Write a self-contained HTML file to the OS temp directory so nothing lands in the repo. Resolve the temp dir from `$TMPDIR`, falling back to `/tmp` (or `%TEMP%` on Windows), and write to `<tmpdir>/architecture-review-<timestamp>.html` so each run gets a fresh file. Open it for the user — `xdg-open <path>` on Linux, `open <path>` on macOS, `start <path>` on Windows — and tell them the absolute path.
+
+The report uses **Tailwind via CDN** for layout and styling, and **Mermaid via CDN** for diagrams where a graph/flow/sequence reliably communicates the structure. Mix Mermaid with hand-crafted CSS/SVG visuals — use Mermaid when relationships are graph-shaped (call graphs, dependencies, sequences), and hand-built divs/SVG when you want something more editorial (mass diagrams, cross-sections, collapse animations). Each candidate gets a **before/after visualisation**. Be visual.
+
+For each candidate, render a card with:
 
 - **Files** — which files/modules are involved
 - **Problem** — why the current architecture is causing friction
 - **Solution** — plain English description of what would change
-- **Benefits** — explained in terms of locality and leverage, and also in how tests would improve
+- **Benefits** — explained in terms of locality and leverage, and how tests would improve
+- **Before / After diagram** — side-by-side, custom-drawn, illustrating the shallowness and the deepening
+- **Recommendation strength** — one of `Strong`, `Worth exploring`, `Speculative`, rendered as a badge
 
-**Use vault domain vocabulary for the domain, and [LANGUAGE.md](LANGUAGE.md) vocabulary for the architecture.** If a vault domain doc defines "Order," talk about "the Order intake module" — not "the FooBarHandler," and not "the Order service."
+End the report with a **Top recommendation** section: which candidate you'd tackle first and why.
 
-**Decision conflicts**: if a candidate contradicts an existing vault decision artifact, only surface it when the friction is real enough to warrant revisiting the decision. Mark it clearly (e.g. _"contradicts [[event-sourced-orders]] — but worth reopening because…"_). Don't list every theoretical refactor a decision forbids.
+Use vault context vocabulary for the domain and the architecture vocabulary above for structure. If the glossary defines "Order," talk about "the Order intake module," not its incidental class name.
 
-Do NOT propose interfaces yet. Ask the user: "Which of these would you like to explore?"
+**Decision conflicts**: surface a candidate that contradicts a vault decision only when measured friction justifies reopening it. Mark the conflict and link the decision artifact.
+
+See [HTML-REPORT.md](HTML-REPORT.md) for the full HTML scaffold, diagram patterns, and styling guidance.
+
+Do NOT propose interfaces yet. After the file is written, ask the user: "Which of these would you like to explore?"
 
 ### 3. Grilling loop
 
-Once the user picks a candidate, drop into a grilling conversation. Walk the design tree with them — constraints, dependencies, the shape of the deepened module, what sits behind the seam, what tests survive.
+Once the user picks a candidate, run the `/grilling` skill to walk the design tree with them — constraints, dependencies, the shape of the deepened module, what sits behind the seam, what tests survive.
 
-Side effects happen inline as decisions crystallize:
+Side effects happen inline as decisions crystallize — run the `/domain-modeling` skill to keep the domain model current as you go:
 
-- **Naming a deepened module after an undocumented domain concept?** Create or update the relevant vault domain doc — same discipline as `$question` (see [VAULT-DOMAIN-DOC-FORMAT.md](../question/VAULT-DOMAIN-DOC-FORMAT.md)). Create the vault doc lazily only when there is a resolved term to record.
-- **Sharpening a fuzzy term during the conversation?** Update the relevant vault domain doc right there.
-- **User rejects the candidate with a load-bearing reason?** Offer a vault decision doc, framed as: _"Want me to record this as a decision doc so future architecture reviews don't re-suggest it?"_ Only offer when the reason would actually be needed by a future explorer to avoid re-suggesting the same thing — skip ephemeral reasons ("not worth it right now") and self-evident ones. See [VAULT-DECISION-DOC-FORMAT.md](../question/VAULT-DECISION-DOC-FORMAT.md).
-- **Want to explore alternative interfaces for the deepened module?** See [INTERFACE-DESIGN.md](INTERFACE-DESIGN.md).
-
-### 4. Follow-up tasks
-
-If the user asks for executable follow-up work, create persisted tasks with `task_write`; do not add planning files to the repo or vault unless explicitly asked.
+- **Naming a deepened module after a new domain concept?** Use `/domain-modeling` and `vlt context set` when the term resolves.
+- **Sharpening a fuzzy term?** Update vault context immediately.
+- **Rejecting a candidate for a load-bearing reason?** Offer a vault `decision` artifact when future reviews need the reason to avoid repeating the proposal.
+- **Exploring alternative interfaces?** Design two materially different interfaces in isolated passes, then compare their leverage, locality, and test seams before choosing.

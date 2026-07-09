@@ -1,22 +1,22 @@
 # Visual Doc Use Cases
 
-## Brief
+## Spec
 
 Use visual docs for workflows, state choices, UX alternatives, before/after
 states, information architecture, or human-judgment acceptance examples.
 
-- Keep the vault brief as the source of truth.
-- Summarize visual decisions in the brief before gating it.
+- Keep the vault spec as the source of truth.
+- Summarize visual decisions in the spec before gating it.
 - Pause for clarification when the visual review reveals unsettled behavior.
 
-## Issues
+## Tickets
 
 Use visual docs for epic/task maps, dependency graphs, scenario-to-task
 matrices, rollout slices, or review of task boundaries.
 
 Recommended review order:
 
-1. Header with brief link, proposal goal, and recommended first `$implement`
+1. Header with spec link, proposal goal, and recommended first `$implement`
    task.
 2. Summary strip with slice count, AFK/HITL count, and open review decisions.
 3. One card per slice with title, type, verification, readable blockers, story
@@ -24,8 +24,8 @@ Recommended review order:
    implementation handoff notes.
 4. Relationship section when blockers or sequencing materially affect review.
 
-Keep the issue proposal and task records as the source of truth. If visual
-review changes slicing, update the issue proposal before gating it.
+Keep vault ticket artifacts as the source of truth. If visual review changes
+slicing, update the ticket set and blocking links before gating it.
 
 ## Implement
 

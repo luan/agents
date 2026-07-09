@@ -6,7 +6,7 @@ user-invocable: true
 
 # Improve Rust Tests
 
-Take a wide pass over a Rust project and move its tests toward the Rust testing guidance in the TDD skill. Activate `$tdd` before using this skill if it is not already active, then follow its Rust testing reference. The goal is substantial, behavior-focused improvement, not coverage padding.
+Take a wide pass over a Rust project and move its tests toward the behavior-first seam discipline in `$tdd`. Activate `$tdd` before using this skill. The goal is substantial, behavior-focused improvement, not coverage padding.
 
 ## Process
 
@@ -41,7 +41,7 @@ Ask which candidates to execute unless the user asked for an automatic pass.
 Work vertically. For each selected behavior:
 
 1. State the bug scenario or invariant the test will catch.
-2. Choose placement using the Rust TDD placement ladder.
+2. Choose the highest stable public seam: executable boundary, public crate API, module API, then a private helper only when no clearer public setup exists.
 3. Add the smallest test that proves the behavior or property.
 4. Confirm RED when changing behavior; for pure test refactors, preserve GREEN.
 5. Implement or refactor only enough to satisfy the selected test improvement.

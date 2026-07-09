@@ -26,9 +26,6 @@ Use `goals/<slug>/` for both working JSON files and final docs. The JSON files a
 
 **Optional: grill first (deep, one-at-a-time interview).** Before building the compact interview bundle, *suggest* a grilling pass whenever the goal is vague or carries many interdependent decisions — and run one whenever the user asks for it ("grill me first"). This is opt-in: for a clear, well-scoped goal, skip it and go straight to the bundle, so grilling never fights the bundle's "fewer, higher-leverage questions" philosophy. When you grill, run the protocol below verbatim, then fold the resolved decisions forward into a higher-quality interview bundle (Phase 2) — or, if grilling fully resolves scope, straight into the fact sheet (Phase 3).
 
-<!-- Grilling protocol below adapted verbatim from the /grill-me skill by Matt Pocock (MIT-licensed):
-     https://github.com/mattpocock/skills/blob/main/skills/productivity/grill-me/SKILL.md -->
-
 > Interview me relentlessly about every aspect of this plan until we reach a shared understanding. Walk down each branch of the design tree, resolving dependencies between decisions one-by-one. For each question, provide your recommended answer.
 >
 > Ask the questions one at a time.
