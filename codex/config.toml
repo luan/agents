@@ -1,8 +1,8 @@
 approval_policy = "never"
-model = "gpt-5.5"
+model = "gpt-5.6-sol"
 model_auto_compact_token_limit = 9000000
 model_context_window = 1000000
-model_reasoning_effort = "xhigh"
+model_reasoning_effort = "low"
 personality = "pragmatic"
 plan_mode_reasoning_effort = "high"
 sandbox_mode = "danger-full-access"
@@ -53,13 +53,19 @@ enabled = true
 [plugins."computer-use@openai-bundled"]
 enabled = true
 
-[plugins."browser@openai-bundled"]
-enabled = true
-
 [plugins."pdf@openai-primary-runtime"]
 enabled = true
 
 [plugins."template-creator@openai-primary-runtime"]
+enabled = true
+
+[plugins."sites@openai-bundled"]
+enabled = true
+
+[plugins."visualize@openai-bundled"]
+enabled = true
+
+[plugins."browser@openai-bundled"]
 enabled = true
 
 [shell_environment_policy]
@@ -86,13 +92,13 @@ status_line = [
 queue = "alt-enter"
 
 [marketplaces.worktrunk]
-last_updated = "2026-07-03T04:47:10Z"
-last_revision = "552cc1be6c9e10200bb6108be7da06498367cdd3"
+last_updated = "2026-07-09T21:12:08Z"
+last_revision = "d96eedb747d315949a6d884280010bb2b88a83b0"
 source_type = "git"
 source = "https://github.com/max-sixty/worktrunk.git"
 
 [marketplaces.openai-bundled]
-last_updated = "2026-07-04T03:35:26Z"
+last_updated = "2026-07-09T21:12:09Z"
 source_type = "local"
 source = "/Users/luan/.codex/.tmp/bundled-marketplaces/openai-bundled"
 
@@ -155,6 +161,15 @@ trust_level = "trusted"
 [projects."/Users/luan/src/cupprobs"]
 trust_level = "trusted"
 
+[projects."/Users/luan/Documents/Codex/2026-07-05/i"]
+trust_level = "trusted"
+
+[projects."/Users/luan/Library/Application Support/Steam/steamapps/common/Football Manager 2024"]
+trust_level = "trusted"
+
+[projects."/Users/luan/Documents/Codex/2026-07-08/set"]
+trust_level = "trusted"
+
 [hooks.state]
 
 [hooks.state."/Users/luan/.codex/hooks.json:stop:0:0"]
@@ -170,7 +185,7 @@ appearanceTheme = "dark"
 appearanceDarkCodeThemeId = "tokyo-night"
 selected-avatar-id = "fireball"
 show-context-window-usage = true
-dock-icon-preference = "codex-dark"
+dock-icon-preference = "codex-system"
 followUpQueueMode = "queue"
 
 [desktop.appearanceLightChromeTheme]
@@ -208,19 +223,27 @@ global = "zed"
 
 [mcp_servers.node_repl]
 args = []
-command = "/Applications/Codex.app/Contents/Resources/cua_node/bin/node_repl"
+command = "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl"
 startup_timeout_sec = 120
 
 [mcp_servers.node_repl.env]
 NODE_REPL_NATIVE_PIPE_CONNECT_TIMEOUT_MS = "1000"
-NODE_REPL_NODE_MODULE_DIRS = "/Applications/Codex.app/Contents/Resources/cua_node/lib/node_modules"
-NODE_REPL_NODE_PATH = "/Applications/Codex.app/Contents/Resources/cua_node/bin/node"
+NODE_REPL_NODE_MODULE_DIRS = "/Applications/ChatGPT.app/Contents/Resources/cua_node/lib/node_modules"
+NODE_REPL_NODE_PATH = "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node"
 NODE_REPL_TRUSTED_CODE_PATHS = "/Users/luan/.codex"
 CODEX_HOME = "/Users/luan/.codex"
-NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = "60e4902788f207f88fd09344dfeafe07769488bdb2924bbb12b322c3b9d2b999"
+NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = "6d25aa7656feac858f3a3bdaea5bcbab0dbfd426c9de8e6931ce90c399ee8e4f,9f3594de71104f9f06015712cef546902a47ab57709ebf93db6e6081d8e92364"
 BROWSER_USE_AVAILABLE_BACKENDS = "chrome,iab"
 NODE_REPL_INSTRUCTIONS_USE_CASE_BROWSER = "Control the in-app browser in conjunction with the Browser Plugin."
 NODE_REPL_INSTRUCTIONS_USE_CASE_CHROME = "Control the Chrome browser in conjunction with the Chrome Plugin. Prefer this method of controlling Chrome over alternatives (such as Computer Use) unless the user explicitly mentions an alternative."
+NODE_REPL_INSTRUCTIONS_USE_CASE_COMPUTER_USE = "Control desktop apps on macOS through Computer Use."
 BROWSER_USE_CODEX_APP_BUILD_FLAVOR = "prod"
-BROWSER_USE_CODEX_APP_VERSION = "26.623.101652"
-CODEX_CLI_PATH = "/Applications/Codex.app/Contents/Resources/codex"
+BROWSER_USE_CODEX_APP_VERSION = "26.707.31123"
+SKY_CUA_SERVICE_PATH = "/Users/luan/.codex/plugins/cache/openai-bundled/computer-use/1.0.1000366/Codex Computer Use.app"
+CODEX_CLI_PATH = "/Applications/ChatGPT.app/Contents/Resources/codex"
+
+[mcp_servers.computer-use]
+command = "./Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient"
+args = ["mcp"]
+cwd = "."
+enabled = false
