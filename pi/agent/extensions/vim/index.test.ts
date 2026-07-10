@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { CURSOR_MARKER, TUI } from "@earendil-works/pi-tui";
 
-import { initialModeForEnvironment, installStableHardwareCursorVisibility, ModalEditor } from "./index";
+import { installStableHardwareCursorVisibility, ModalEditor } from "./index";
 
 class FakeTerminal {
 	public shown = 0;
@@ -43,11 +43,7 @@ async function flushRender(): Promise<void> {
 }
 
 describe("vim hardware cursor stability", () => {
-	test("starts mosaic agent editors in normal mode", () => {
-		expect(initialModeForEnvironment({ MOSAIC_AGENT_LABEL: "A1" })).toBe("normal");
-		expect(initialModeForEnvironment({ MOSAIC_BOOTSTRAP_FILE: "/tmp/bootstrap.json" })).toBe("normal");
-		expect(initialModeForEnvironment({})).toBe("insert");
-
+	test("uses normal-mode cursor shape when initialized in normal mode", () => {
 		const writes: string[] = [];
 		const editor = new ModalEditor(
 			{

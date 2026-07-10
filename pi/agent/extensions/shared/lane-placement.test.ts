@@ -309,7 +309,7 @@ describe("lane placement", () => {
 			targetWorkspace: "dev",
 			detached: true,
 			captureWindowId: true,
-			env: { MOSAIC_OWNER: "%1", MOSAIC_BOOTSTRAP_FILE: "/tmp/bootstrap.json" },
+			env: { LANE_OWNER: "%1", LANE_BOOTSTRAP_FILE: "/tmp/bootstrap.json" },
 		});
 
 		expect(placed.tmux).toMatchObject({ session: "dev", windowId: "@7", paneId: "%47" });
@@ -326,9 +326,9 @@ describe("lane placement", () => {
 			"-c",
 			"/repo",
 			"-e",
-			"MOSAIC_OWNER=%1",
+			"LANE_OWNER=%1",
 			"-e",
-			"MOSAIC_BOOTSTRAP_FILE=/tmp/bootstrap.json",
+			"LANE_BOOTSTRAP_FILE=/tmp/bootstrap.json",
 			"echo ok",
 		]);
 	});
@@ -390,7 +390,7 @@ describe("lane placement", () => {
 			name: "lane",
 			command: "echo ok",
 			targetWorkspace: "dev",
-			env: { MOSAIC_OWNER: "owner" },
+			env: { LANE_OWNER: "owner" },
 		});
 
 		expect(placed.zellij).toEqual({
@@ -411,7 +411,7 @@ describe("lane placement", () => {
 			"--",
 			"sh",
 			"-lc",
-			"MOSAIC_OWNER='owner' exec echo ok",
+			"LANE_OWNER='owner' exec echo ok",
 		]);
 	});
 

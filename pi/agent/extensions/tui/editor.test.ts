@@ -130,7 +130,7 @@ describe("polished TUI editor", () => {
 
 	test("renders session identity before animated working text", () => {
 		setWorkingAnimationForTest(true, 3);
-		setEditorSessionIdentityProvider(() => ({ name: "Spawn mosaic refactor" }));
+		setEditorSessionIdentityProvider(() => ({ name: "Spawn refactor" }));
 
 		const lines = renderPolishedEditorForTest(
 			editor({ getMode: () => "insert" }),
@@ -139,7 +139,7 @@ describe("polished TUI editor", () => {
 			rgbTheme,
 		);
 
-		expect(stripAnsi(lines[0] ?? "")).toContain("Spawn mosaic refactor · Working…");
+		expect(stripAnsi(lines[0] ?? "")).toContain("Spawn refactor · Working…");
 		expect(lines.every((line) => visibleWidth(line) <= 80)).toBe(true);
 	});
 
@@ -174,7 +174,7 @@ describe("polished TUI editor", () => {
 		expect(lines.every((line) => visibleWidth(line) <= 80)).toBe(true);
 	});
 
-	test("renders mosaic label and secondary rail color outside normal mode", () => {
+	test("renders session label and secondary rail color outside normal mode", () => {
 		setEditorSessionIdentityProvider(() => ({ label: "A2", name: "Tests", color: "74c7ec" }));
 
 		const lines = renderPolishedEditorForTest(editor({ getMode: () => "insert" }), 32, () => ["> hello", ""], theme);
@@ -185,7 +185,7 @@ describe("polished TUI editor", () => {
 		expect(lines.every((line) => visibleWidth(line) <= 32)).toBe(true);
 	});
 
-	test("uses mosaic color as the normal-mode rail without an extra identity rail", () => {
+	test("uses identity color as the normal-mode rail without an extra identity rail", () => {
 		setEditorSessionIdentityProvider(() => ({ label: "A2", name: "Tests", color: "74c7ec" }));
 
 		const lines = renderPolishedEditorForTest(editor({ getMode: () => "normal" }), 32, () => ["> hello", ""], theme);

@@ -11,8 +11,8 @@
     "test:plannotator": "bun test pi/agent/extensions/plannotator-events/index.test.ts pi/agent/extensions/plannotator-hub/index.test.ts",
     "test:context-guard": "bun test pi/agent/extensions/context-guard/*.test.ts",
     "test:shared": "bun test pi/agent/extensions/shared/*.test.ts pi/agent/extensions/shared/tui/*.test.ts",
-    "test:codex-native": "bun test pi/agent/extensions/apply-patch/index.test.ts pi/agent/extensions/fileops/index.test.ts pi/agent/extensions/fileops/hashline/hashline.test.ts pi/agent/extensions/fileops/block-resolver.test.ts pi/agent/extensions/codex-native/index.test.ts pi/agent/extensions/pretty/index.test.ts pi/agent/extensions/exec-command/index.test.ts pi/agent/extensions/tasks/index.test.ts pi/agent/extensions/mosaic/*.test.ts pi/agent/extensions/mosaic/ui/*.test.ts pi/agent/extensions/spawn/index.test.ts pi/agent/extensions/token-burden/report-view.test.ts pi/agent/extensions/token-burden/parser.test.ts pi/agent/extensions/token-burden/index.test.ts pi/agent/extensions/tui/editor.test.ts",
-    "test:compaction": "bun test pi/agent/extensions/codex-native/compaction/src/unit.test.ts pi/agent/extensions/codex-native/compaction/src/validation.test.ts pi/agent/extensions/vcc/src/hooks/before-compact.test.ts pi/agent/extensions/vcc/src/commands/vcc.test.ts",
+    "test:codex-native": "bun test pi/agent/extensions/apply-patch/index.test.ts pi/agent/extensions/fileops/index.test.ts pi/agent/extensions/fileops/hashline/hashline.test.ts pi/agent/extensions/fileops/block-resolver.test.ts pi/agent/extensions/codex-native/index.test.ts pi/agent/extensions/pretty/index.test.ts pi/agent/extensions/exec-command/index.test.ts pi/agent/extensions/tasks/index.test.ts pi/agent/extensions/spawn/index.test.ts pi/agent/extensions/token-burden/report-view.test.ts pi/agent/extensions/token-burden/parser.test.ts pi/agent/extensions/token-burden/index.test.ts pi/agent/extensions/tui/editor.test.ts",
+    "test:compaction": "bun test pi/agent/extensions/codex-native/compaction/src/unit.test.ts pi/agent/extensions/codex-native/compaction/src/validation.test.ts",
     "prepare": "husky"
   },
   "dependencies": {

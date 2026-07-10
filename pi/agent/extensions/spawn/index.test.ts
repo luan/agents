@@ -197,7 +197,7 @@ describe("spawn lane records", () => {
 });
 
 describe("spawn map", () => {
-	test("uses session topology without reading mosaic heartbeat state", () => {
+	test("uses session topology without reading external heartbeat state", () => {
 		const map = formatSpawnMap({
 			sessionManager: {
 				getSessionFile: () => "/sessions/parent.jsonl",
@@ -205,7 +205,6 @@ describe("spawn map", () => {
 			},
 		} as any);
 
-		expect(map).not.toContain("mosaic");
 		expect(map).not.toContain("heartbeat");
 		expect(map).toContain("session");
 	});

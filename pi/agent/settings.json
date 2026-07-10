@@ -27,11 +27,9 @@
     "-extensions/apply-patch/index.ts",
     "extensions/ask/index.ts",
     "extensions/codex-native/index.ts",
-    "extensions/context7/index.ts",
     "extensions/context-guard/index.ts",
     "extensions/exec-command/index.ts",
     "extensions/git-tool/index.ts",
-    "extensions/mosaic/index.ts",
     "extensions/plannotator-events/index.ts",
     "extensions/plannotator-hub/index.ts",
     "extensions/pretty/index.ts",
@@ -43,7 +41,6 @@
     "extensions/tasks/index.ts",
     "extensions/token-burden/index.ts",
     "extensions/tui/index.ts",
-    "extensions/vcc/index.ts",
     "extensions/vim/index.ts",
     "extensions/clear.ts",
     "extensions/effort.ts",
@@ -55,7 +52,7 @@
     "openai-codex/gpt-5.4",
     "openai-codex/gpt-5.4-mini"
   ],
-  "theme": "catppuccin-mocha",
+  "theme": "light/tokyo-night",
   "hideThinkingBlock": false,
   "editorPaddingX": 0,
   "terminal": {

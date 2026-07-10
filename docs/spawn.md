@@ -182,11 +182,6 @@ Good division:
   prompt content
 - spawn extension: open lanes, transfer context, record lane metadata, and show
   the lane tree
-- mosaic extension: own full-session agent lifecycle, bootstrap payloads,
-  heartbeats, result retrieval, and steering; delegate terminal placement only.
-  Mosaic background agents default to a right-side split for the first agent;
-  later agents split below the first agent pane to form a right-hand agent
-  column beside the main pane.
 
 This keeps the primitive short, reusable, testable, and safe to call from tools.
 
@@ -202,6 +197,5 @@ cd /path/to/agents
 git diff --check
 node --check pi/agent/extensions/spawn/index.ts
 node --check pi/agent/extensions/shared/lane-placement.ts
-node --check pi/agent/extensions/mosaic/multiplexer.ts
 bun run typecheck
 ```

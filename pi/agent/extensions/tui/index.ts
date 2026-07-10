@@ -44,7 +44,6 @@ type UsageBarCache = {
 
 const CONTEXT_PULSE_INTERVAL_MS = 320;
 const CONTEXT_PULSE_DURATION_MS = 1200;
-const MOSAIC_IDENTITY_COLORS = ["f38ba8", "fab387", "f9e2af", "eba0ac", "e78284", "ff9e64", "ffc777", "ff757f"];
 const WORKING_TIMER_ENTRY_TYPE = "tui:working-timer";
 const MODEL_STATUS_KEYS = new Set(["openai-fast"]);
 
@@ -62,22 +61,6 @@ function readModelStatusBadges(footerData: FooterDataProvider | undefined): stri
 	return [...MODEL_STATUS_KEYS]
 		.map((key) => cleanIdentityPart(statuses.get(key)))
 		.filter((status): status is string => Boolean(status));
-}
-
-function readMosaicIdentityEnv(): EditorSessionIdentity | undefined {
-	const label = cleanIdentityPart(process.env.MOSAIC_AGENT_LABEL);
-	const name = cleanIdentityPart(process.env.MOSAIC_AGENT_NAME);
-	const color = mosaicIdentityColor(label) ?? cleanIdentityPart(process.env.MOSAIC_AGENT_COLOR);
-	if (!label && !name && !color) return undefined;
-	return { label, name, color };
-}
-
-function mosaicIdentityColor(label: string | undefined): string | undefined {
-	const match = label?.match(/^A(\d+)$/);
-	if (!match) return undefined;
-	const index = Number(match[1]);
-	if (!Number.isFinite(index) || index <= 0) return undefined;
-	return MOSAIC_IDENTITY_COLORS[(index - 1) % MOSAIC_IDENTITY_COLORS.length];
 }
 
 function formatCount(value: number): string {
@@ -398,9 +381,8 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	const syncState = (ctx: ExtensionContext, activeMessage?: unknown) => {
-		const mosaicIdentity = readMosaicIdentityEnv();
-		const name = cleanIdentityPart(sessionName(ctx)) ?? mosaicIdentity?.name;
-		editorSessionIdentity = mosaicIdentity ? { ...mosaicIdentity, name } : name ? { name } : undefined;
+		const name = cleanIdentityPart(sessionName(ctx));
+		editorSessionIdentity = name ? { name } : undefined;
 
 		const totals = getUsageTotals(ctx);
 		const usage = ctx.getContextUsage();
