@@ -23,7 +23,6 @@ terminal_resize_reflow = true
 goals = true
 hooks = true
 js_repl = false
-chronicle = true
 
 [notice]
 hide_full_access_warning = true
@@ -91,7 +90,7 @@ queue = "alt-enter"
 
 [tui.model_availability_nux]
 "gpt-5.5" = 4
-"gpt-5.6-sol" = 1
+"gpt-5.6-sol" = 2
 
 [marketplaces.openai-bundled]
 last_updated = "2026-07-09T17:58:21Z"
