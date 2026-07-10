@@ -204,6 +204,11 @@ async function highlightDiffContent(content: string, filePath: string | undefine
 	return (await highlightCodeRows(filePath, [content]))[0] ?? content.replace(/\t/g, "  ");
 }
 
+function renderDiffContentForRow(row: DiffRenderRow, theme: RenderTheme): string {
+	if (isLightTheme(theme)) return row.content.replace(/\t/g, "  ");
+	return row.highlightedContent ?? row.content.replace(/\t/g, "  ");
+}
+
 function visibleText(text: string): string {
 	return text.replace(ANSI_PATTERN, "");
 }
@@ -516,10 +521,6 @@ function wrapDiffContent(content: string, width: number, maxRows: number): strin
 		.map((line, index) => truncateToWidthCompat(line, width, index === maxRows - 1 ? "…" : "", true));
 }
 
-function diffContentForRow(row: DiffRenderRow): string {
-	return row.highlightedContent ?? row.content.replace(/\t/g, "  ");
-}
-
 function defaultDiffSectionHeader(filePath: string, firstChangedLine: number | undefined, theme: RenderTheme): string {
 	const icon = theme.getLangIcon?.(languageFromPath(filePath));
 	const line = firstChangedLine === undefined ? "" : `:${firstChangedLine}`;
@@ -618,7 +619,7 @@ function renderDiffSectionRows(
 		const lineNumber = row.kind === "remove" ? row.oldLine : row.newLine;
 		const prefix = `  ${theme.fg(kindColor, String(lineNumber ?? "").padStart(numberWidth, " "))} ${theme.fg(kindColor, sign)} `;
 		const continuation = `  ${" ".repeat(numberWidth)}   `;
-		const bodyLines = wrapDiffContent(diffContentForRow(row), codeWidth, wrapLimit);
+		const bodyLines = wrapDiffContent(renderDiffContentForRow(row, theme), codeWidth, wrapLimit);
 		const rowBg = rowBackground(row.kind, theme, panelBackgroundAnsi);
 		const backgroundAnsi = rowBg ?? panelBackgroundAnsi;
 		for (const [bodyIndex, body] of bodyLines.entries()) {

@@ -237,6 +237,24 @@ describe("fileops extension modes", () => {
 			details: {
 				diff: ["--- a/sample.txt", "+++ b/sample.txt", "@@ -1 +1 @@", "-old", "+new", ""].join("\n"),
 				results: [{ path: "sample.txt", header: "[sample.txt#ABCD]" }],
+				highlightedDiffRows: [
+					{
+						kind: "remove",
+						oldLine: 1,
+						newLine: null,
+						content: "old",
+						path: "sample.txt",
+						highlightedContent: `${darkToolBackground}old\x1b[0m`,
+					},
+					{
+						kind: "add",
+						oldLine: null,
+						newLine: 1,
+						content: "new",
+						path: "sample.txt",
+						highlightedContent: "\x1b[38;2;200;220;255mnew\x1b[39m",
+					},
+				],
 			},
 		};
 
@@ -244,6 +262,7 @@ describe("fileops extension modes", () => {
 		const removedLine = lines.find((line: string) => stripAnsi(line).includes("- old")) ?? "";
 		const addedLine = lines.find((line: string) => stripAnsi(line).includes("+ new")) ?? "";
 		expect(lines.join("\n")).not.toContain(darkToolBackground);
+		expect(lines.join("\n")).not.toContain("\x1b[38;2;200;220;255m");
 
 		expect(removedLine).toContain(lightRemovedBackground);
 		expect(charsWithBackground(removedLine, lightRemovedBackground)).toContain("old");
