@@ -1,12 +1,12 @@
 {
-  "lastChangelogVersion": "0.80.3",
+  "lastChangelogVersion": "0.80.6",
   "steeringMode": "all",
   "autoUpdate": true,
   "transport": "auto",
   "doubleEscapeAction": "tree",
   "treeFilterMode": "default",
   "defaultProvider": "openai-codex",
-  "defaultModel": "gpt-5.5",
+  "defaultModel": "gpt-5.6-terra",
   "defaultThinkingLevel": "high",
   "skills": [
     "../.codex/skills"
@@ -48,9 +48,9 @@
     "extensions/mux-sidebar.ts"
   ],
   "enabledModels": [
-    "openai-codex/gpt-5.5",
-    "openai-codex/gpt-5.4",
-    "openai-codex/gpt-5.4-mini"
+    "openai-codex/gpt-5.6-luna",
+    "openai-codex/gpt-5.6-sol",
+    "openai-codex/gpt-5.6-terra"
   ],
   "theme": "light/tokyo-night",
   "hideThinkingBlock": false,
