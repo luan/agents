@@ -16,7 +16,6 @@ const TARGETS: &[(&str, &[&str])] = &[
     ("claude", &[".claude"]),
     ("codex", &[".codex"]),
     ("pi", &[".pi"]),
-    ("omp/agent", &[".omp", "agent"]),
     ("skills", &[".claude", "skills"]),
 ];
 
@@ -128,6 +127,7 @@ fn process_package(mode: Mode, source: &Path, target: &Path) -> Result<()> {
 
     if mode == Mode::Link {
         fs::create_dir_all(target).with_context(|| format!("mkdir -p {}", target.display()))?;
+        remove_broken_repo_links(source, target)?;
     }
 
     for source_entry in iter_children(source)? {
@@ -137,6 +137,28 @@ fn process_package(mode: Mode, source: &Path, target: &Path) -> Result<()> {
             Mode::DryRun => act_dry_run(&source_entry, &target_entry)?,
             Mode::Link => act_link(&source_entry, &target_entry)?,
             Mode::Unlink => act_unlink(&source_entry, &target_entry)?,
+        }
+    }
+    Ok(())
+}
+
+fn remove_broken_repo_links(source: &Path, target: &Path) -> Result<()> {
+    for target_entry in iter_children(target)? {
+        let meta = fs::symlink_metadata(&target_entry)
+            .with_context(|| format!("stat {}", target_entry.display()))?;
+        if meta.file_type().is_symlink() {
+            if fs::canonicalize(&target_entry).is_err()
+                && symlink_points_under(&target_entry, source)?
+            {
+                remove_symlink(&target_entry)
+                    .with_context(|| format!("remove {}", target_entry.display()))?;
+                eprintln!(
+                    "  - {} (removed broken repo-owned link)",
+                    target_entry.display()
+                );
+            }
+        } else if meta.is_dir() {
+            remove_broken_repo_links(source, &target_entry)?;
         }
     }
     Ok(())
@@ -800,6 +822,30 @@ mod tests {
             fs::canonicalize(source.join("config.yml"))?,
             fs::canonicalize(config_link)?
         );
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn package_link_removes_broken_repo_owned_symlinks() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let source = dir.path().join("source-skills");
+        let target = dir.path().join(".claude").join("skills");
+        fs::create_dir_all(&source)?;
+        fs::create_dir_all(&target)?;
+        fs::write(source.join("current"), "current skill\n")?;
+        std::os::unix::fs::symlink(source.join("removed"), target.join("removed"))?;
+
+        process_package(Mode::Link, &source, &target)?;
+
+        assert_eq!(
+            fs::canonicalize(source.join("current"))?,
+            fs::canonicalize(target.join("current"))?
+        );
+        assert!(matches!(
+            fs::symlink_metadata(target.join("removed")),
+            Err(err) if err.kind() == io::ErrorKind::NotFound
+        ));
         Ok(())
     }
 
