@@ -1,6 +1,6 @@
 # ct notify
 
-Cross-platform notification handler for Claude Code hooks.
+Cross-platform notification handler for agent hooks.
 Reads a JSON payload from stdin and sends a desktop notification with per-type icons, sounds, and click-to-focus.
 
 ## Setup
@@ -30,6 +30,7 @@ JSON on stdin with optional fields:
 
 | Field               | Description                                                        |
 |---------------------|--------------------------------------------------------------------|
+| `agent`             | Optional app identity; use `Pi` for Pi notifications               |
 | `notification_type` | `permission_prompt`, `idle_prompt`, `elicitation_dialog`, or other |
 | `title`             | Notification title (falls back to tmux session name)               |
 | `message`           | Notification subtitle                                              |
@@ -54,13 +55,13 @@ JSON on stdin with optional fields:
 ## Platform notes
 
 - **Linux**: uses `notify-send`, `paplay`, `xdotool`. GNOME Wayland desaturates custom icons and blocks programmatic window activation.
-- **macOS**: uses `grrr` for notifications with sound and click actions.
+- **macOS**: uses `grrr` for notifications with sound and click actions; detects the source terminal from tmux or environment metadata.
 
 ## Environment variables
 
-| Variable       | Default    | Description                        |
-|----------------|------------|------------------------------------|
-| `CT_TERMINAL`  | `ghostty`  | Terminal app name for focus detection |
+| Variable       | Default       | Description                                      |
+|----------------|---------------|--------------------------------------------------|
+| `CT_TERMINAL`  | auto-detected | Explicit terminal app name for focus routing     |
 
 ## Testing
 

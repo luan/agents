@@ -18,9 +18,15 @@ struct HookPayload {
     title: Option<String>,
     message: Option<String>,
     notification_type: Option<String>,
+    agent: Option<String>,
 }
 
-type ParsedFields = (Option<String>, Option<String>, Option<String>);
+type ParsedFields = (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
 
 pub struct TypeMapping {
     pub sound: &'static str,
@@ -61,7 +67,12 @@ pub fn map_notification_type(notification_type: Option<&str>) -> TypeMapping {
 pub fn parse_hook(json: &str) -> Result<ParsedFields, String> {
     let payload: HookPayload =
         serde_json::from_str(json).map_err(|e| format!("JSON parse error: {e}"))?;
-    Ok((payload.title, payload.message, payload.notification_type))
+    Ok((
+        payload.title,
+        payload.message,
+        payload.notification_type,
+        payload.agent,
+    ))
 }
 
 fn tmux_session() -> Option<String> {
@@ -107,6 +118,14 @@ fn set_tmux_attention(session: &str) {
         .output();
 }
 
+fn app_id(agent: Option<&str>) -> &'static str {
+    if agent.is_some_and(|agent| agent.eq_ignore_ascii_case("pi")) {
+        "Pi"
+    } else {
+        "Claude"
+    }
+}
+
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var("CLAUDE_CODE_SUBAGENT").is_ok() {
         return Ok(());
@@ -115,14 +134,19 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut input = String::new();
     io::stdin().read_to_string(&mut input)?;
 
-    let (title, subtitle, notification_type) =
+    let (title, subtitle, notification_type, agent) =
         parse_hook(&input).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
     let mapping = map_notification_type(notification_type.as_deref());
     let session = tmux_session();
     #[cfg(target_os = "linux")]
     let target = tmux_target();
-    let display_title = session.as_deref().unwrap_or("Claude Code");
+    let app_id = app_id(agent.as_deref());
+    let default_title = if app_id == "Pi" { "Pi" } else { "Claude Code" };
+    let display_title = session
+        .as_deref()
+        .or(title.as_deref())
+        .unwrap_or(default_title);
     let display_subtitle = subtitle.as_deref().or(title.as_deref()).unwrap_or("");
 
     if let Some(sess) = session.as_deref() {
@@ -189,13 +213,14 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     #[cfg(target_os = "macos")]
     {
-        let icon_str = icon_path.as_deref().and_then(|p| p.to_str());
         let _ = macos::notify(
             session.as_deref(),
+            app_id,
+            display_title,
             display_subtitle,
             mapping.message,
             mapping.sound,
-            icon_str,
+            icon_path.as_deref(),
         );
     }
 
@@ -214,20 +239,23 @@ mod tests {
 
     #[test]
     fn parse_hook_idle_prompt() {
-        let json = r#"{"notification_type":"idle_prompt","title":"Claude","message":"Done"}"#;
-        let (title, message, ntype) = parse_hook(json).unwrap();
-        assert_eq!(title.as_deref(), Some("Claude"));
+        let json =
+            r#"{"agent":"Pi","notification_type":"idle_prompt","title":"Pi","message":"Done"}"#;
+        let (title, message, ntype, agent) = parse_hook(json).unwrap();
+        assert_eq!(title.as_deref(), Some("Pi"));
         assert_eq!(message.as_deref(), Some("Done"));
         assert_eq!(ntype.as_deref(), Some("idle_prompt"));
+        assert_eq!(agent.as_deref(), Some("Pi"));
     }
 
     #[test]
     fn parse_hook_missing_fields_gives_none() {
         let json = r#"{}"#;
-        let (title, message, ntype) = parse_hook(json).unwrap();
+        let (title, message, ntype, agent) = parse_hook(json).unwrap();
         assert!(title.is_none());
         assert!(message.is_none());
         assert!(ntype.is_none());
+        assert!(agent.is_none());
     }
 
     #[test]

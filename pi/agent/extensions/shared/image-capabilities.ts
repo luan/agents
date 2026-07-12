@@ -64,6 +64,15 @@ function tmuxClientSupportsKittyImages(): boolean {
 	return term === "bootty" || term === "ghostty" || term === "kitty" || term === "WezTerm";
 }
 
+export function imageProtocolForTerminal(term: string): NativeImageProtocol | null {
+	const normalized = normalizeTerminalName(term);
+	if (normalized === "bootty" || normalized === "ghostty" || normalized === "kitty" || normalized === "WezTerm") {
+		return "kitty";
+	}
+	if (normalized === "iTerm.app" || normalized === "mintty") return "iterm2";
+	return null;
+}
+
 function detectImageProtocol(): NativeImageProtocol | null {
 	const forced = (process.env.PI_IMAGE_PROTOCOL ?? process.env.PRETTY_IMAGE_PROTOCOL ?? "").toLowerCase();
 	if (forced === "kitty" || forced === "iterm2") return forced;
@@ -78,11 +87,9 @@ function detectImageProtocol(): NativeImageProtocol | null {
 	const termProgram = process.env.TERM_PROGRAM ?? "";
 	const term =
 		termProgram && termProgram !== "tmux" && termProgram !== "screen"
-			? normalizeTerminalName(termProgram)
-			: (readTmuxClientTerm() ?? normalizeTerminalName(process.env.TERM ?? ""));
-	if (term === "ghostty" || term === "kitty" || term === "WezTerm") return "kitty";
-	if (term === "iTerm.app" || term === "mintty") return "iterm2";
-	return null;
+			? termProgram
+			: (readTmuxClientTerm() ?? process.env.TERM ?? "");
+	return imageProtocolForTerminal(term);
 }
 
 export function configureImageCapabilities(): void {

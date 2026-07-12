@@ -143,6 +143,7 @@ export default function muxSidebarExtension(pi: ExtensionAPI) {
 		child.stdin?.end(
 			`${JSON.stringify({
 				title: sessionName(pi) ?? "Pi",
+				agent: "Pi",
 				message,
 				notification_type: notificationType,
 			})}\n`,
