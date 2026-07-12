@@ -206,7 +206,26 @@ describe("polished TUI editor", () => {
 		expect(lines.every((line) => visibleWidth(line) <= 40)).toBe(true);
 	});
 
-	test("does not paint the editor background", () => {
+	test("paints dark-theme editor rows with a compositor background", () => {
+		const background = "\x1b[48;2;45;40;56m";
+		const darkTheme = {
+			fg: (_color: string, text: string) => text,
+			bg: (color: string, text: string) => (color === "customMessageBg" ? `${background}${text}\x1b[49m` : text),
+			getBgAnsi: (color: string) => (color === "customMessageBg" ? background : undefined),
+		} as any;
+
+		const lines = renderPolishedEditorForTest(
+			editor({ getMode: () => "insert" }),
+			40,
+			() => ["> hello", ""],
+			darkTheme,
+		);
+
+		expect(lines[0]).toContain("\x1b[48;2;35;31;44m");
+		expect(lines.every((line) => visibleWidth(line) <= 40)).toBe(true);
+	});
+
+	test("preserves the terminal background for light-theme editor rows", () => {
 		const background = "\x1b[48;2;237;231;246m";
 		const backgroundTheme = {
 			fg: (_color: string, text: string) => text,
@@ -221,8 +240,8 @@ describe("polished TUI editor", () => {
 			backgroundTheme,
 		);
 
-		expect(lines.join("\n")).not.toContain(background);
-		expect(lines.every((line) => visibleWidth(line) <= 40)).toBe(true);
+		const expectedLine = `\x1b[38;2;255;255;255m┃\x1b[39m\x1b[49m\x1b[0m${" ".repeat(39)}`;
+		expect(lines).toEqual([expectedLine, expectedLine]);
 	});
 
 	test("pulses the rail background from the mode color while working", () => {
