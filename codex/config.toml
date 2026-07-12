@@ -1,5 +1,5 @@
 approval_policy = "never"
-model = "gpt-5.6-sol"
+model = "gpt-5.6-luna"
 model_reasoning_effort = "high"
 personality = "pragmatic"
 plan_mode_reasoning_effort = "high"
@@ -10,10 +10,8 @@ approvals_reviewer = "user"
 
 service_tier = "default"
 
-notify = [
-  "/Users/luan.santos/.codex/computer-use/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient",
-  "turn-ended",
-]
+
+notify = ["/Users/luan/.codex/computer-use/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient", "turn-ended"]
 
 [features]
 image_generation = true
@@ -93,9 +91,9 @@ queue = "alt-enter"
 "gpt-5.6-sol" = 2
 
 [marketplaces.openai-bundled]
-last_updated = "2026-07-09T17:58:21Z"
+last_updated = "2026-07-12T15:00:19Z"
 source_type = "local"
-source = "/Users/luan.santos/.codex/.tmp/bundled-marketplaces/openai-bundled"
+source = "/Users/luan/.codex/.tmp/bundled-marketplaces/openai-bundled"
 
 [marketplaces.openai-primary-runtime]
 last_updated = "2026-07-10T14:43:11Z"
@@ -159,6 +157,15 @@ trust_level = "trusted"
 [projects."/Users/luan.santos/Documents/Codex/2026-06-23/sites-plugin-sites-openai-bundled-create-3"]
 trust_level = "trusted"
 
+[projects."/Users/luan/Documents/Codex/2026-07-11/new-chat"]
+trust_level = "trusted"
+
+[projects."/Users/luan/src/probabola"]
+trust_level = "trusted"
+
+[projects."/Users/luan/Documents/Codex/2026-07-11/hatch-pet-users-luan-codex-skills"]
+trust_level = "trusted"
+
 [hooks.state]
 
 [hooks.state."/Users/luan/.codex/hooks.json:stop:0:0"]
@@ -171,12 +178,15 @@ trusted_hash = "sha256:a638898dcc8555db61cebdc42e6ba4e35e78d1df55f8832f4aa7c0996
 appearanceLightCodeThemeId = "codex"
 appearanceTheme = "dark"
 appearanceDarkCodeThemeId = "tokyo-night"
-selected-avatar-id = "fireball"
+selected-avatar-id = "custom:kumo"
 show-context-window-usage = true
 dock-icon-preference = "codex-system"
 default-service-tier = "priority"
-followUpQueueMode = "queue"
+followUpQueueMode = "steer"
 conversationDetailMode = "STEPS_COMMANDS"
+dictationDictionary = []
+enabled-reasoning-efforts = ["low", "medium", "high", "xhigh", "ultra", "max"]
+avatar-overlay-mascot-width-px = 89
 
 [desktop.appearanceLightChromeTheme]
 accent = "#0169cc"
@@ -220,16 +230,16 @@ startup_timeout_sec = 120
 NODE_REPL_NATIVE_PIPE_CONNECT_TIMEOUT_MS = "1000"
 NODE_REPL_NODE_MODULE_DIRS = "/Applications/ChatGPT.app/Contents/Resources/cua_node/lib/node_modules"
 NODE_REPL_NODE_PATH = "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node"
-NODE_REPL_TRUSTED_CODE_PATHS = "/Users/luan.santos/.codex"
-CODEX_HOME = "/Users/luan.santos/.codex"
-NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = "2b020a2faded171bf620563ce51864b7c3ff320f1834f0044b73fcbeabb29a76,6d25aa7656feac858f3a3bdaea5bcbab0dbfd426c9de8e6931ce90c399ee8e4f"
+NODE_REPL_TRUSTED_CODE_PATHS = "/Users/luan/.codex"
+CODEX_HOME = "/Users/luan/.codex"
+NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = "6d25aa7656feac858f3a3bdaea5bcbab0dbfd426c9de8e6931ce90c399ee8e4f,e74b67ab909392b37f7aef14977fce7aa80cfa02ade5491f30abcdbcb9e69f33"
 BROWSER_USE_AVAILABLE_BACKENDS = "chrome,iab"
 NODE_REPL_INSTRUCTIONS_USE_CASE_BROWSER = "Control the in-app browser in conjunction with the Browser Plugin."
 NODE_REPL_INSTRUCTIONS_USE_CASE_CHROME = "Control the Chrome browser in conjunction with the Chrome Plugin. Prefer this method of controlling Chrome over alternatives (such as Computer Use) unless the user explicitly mentions an alternative."
 NODE_REPL_INSTRUCTIONS_USE_CASE_COMPUTER_USE = "Control desktop apps on macOS through Computer Use."
 BROWSER_USE_CODEX_APP_BUILD_FLAVOR = "prod"
-BROWSER_USE_CODEX_APP_VERSION = "26.707.30751"
-SKY_CUA_SERVICE_PATH = "/Users/luan.santos/.codex/plugins/cache/openai-bundled/computer-use/1.0.1000362/Codex Computer Use.app"
+BROWSER_USE_CODEX_APP_VERSION = "26.707.51957"
+SKY_CUA_SERVICE_PATH = "/Users/luan/.codex/plugins/cache/openai-bundled/computer-use/1.0.1000387/Codex Computer Use.app"
 CODEX_CLI_PATH = "/Applications/ChatGPT.app/Contents/Resources/codex"
 
 [mcp_servers.computer-use]
