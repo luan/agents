@@ -1,7 +1,7 @@
 {
   "name": "gt",
-  "version": "1.0.0",
-  "description": "Graphite stacked-branch skills — submit, sync, restack, and stack operations. Enabled per-repo by the git-tool plugin when `agents.git-tool=graphite`.",
+  "version": "2.0.0",
+  "description": "Graphite stacked-branch skills — submit, sync, restack, and stack operations.",
   "author": {
     "name": "Luan"
   }

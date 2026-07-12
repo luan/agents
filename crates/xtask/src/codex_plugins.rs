@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -32,12 +31,6 @@ struct PluginManifest {
     version: Option<String>,
 }
 
-#[derive(Deserialize)]
-struct CodexConfig {
-    #[serde(default)]
-    plugins: HashMap<String, toml::Value>,
-}
-
 pub fn run() -> Result<()> {
     let root = crate::repo_root();
     let home = dirs::home_dir().context("cannot determine HOME")?;
@@ -46,35 +39,15 @@ pub fn run() -> Result<()> {
         .unwrap_or_else(|| home.join(".codex"));
 
     let marketplace_path = root.join("plugins/marketplace.json");
-    let config_path = root.join("codex/config.toml");
-
     let marketplace: Marketplace = serde_json::from_str(
         &fs::read_to_string(&marketplace_path)
             .with_context(|| format!("read {}", marketplace_path.display()))?,
     )
     .with_context(|| format!("parse {}", marketplace_path.display()))?;
 
-    let config: CodexConfig = toml::from_str(
-        &fs::read_to_string(&config_path)
-            .with_context(|| format!("read {}", config_path.display()))?,
-    )
-    .with_context(|| format!("parse {}", config_path.display()))?;
-
-    let enabled: std::collections::HashSet<String> = config
-        .plugins
-        .iter()
-        .filter_map(|(k, v)| {
-            v.get("enabled")
-                .and_then(|e| e.as_bool())
-                .filter(|b| *b)
-                .map(|_| k.clone())
-        })
-        .collect();
-
     let mut installed = 0usize;
     for plugin in &marketplace.plugins {
-        let key = format!("{}@{}", plugin.name, marketplace.name);
-        if !enabled.contains(&key) {
+        if !has_codex_manifest(&root, plugin) {
             continue;
         }
         install_plugin(&root, &codex_home, &marketplace.name, plugin)?;
@@ -83,11 +56,20 @@ pub fn run() -> Result<()> {
 
     if installed == 0 {
         eprintln!(
-            "no enabled plugins found for marketplace `{}`",
+            "no Codex plugins found for marketplace `{}`",
             marketplace.name
         );
     }
     Ok(())
+}
+
+fn has_codex_manifest(root: &Path, plugin: &Plugin) -> bool {
+    plugin.source.source == "local"
+        && plugin
+            .source
+            .path
+            .as_deref()
+            .is_some_and(|path| root.join(path).join(".codex-plugin/plugin.json").is_file())
 }
 
 fn install_plugin(
@@ -147,6 +129,7 @@ fn install_plugin(
         remove_path(&target).with_context(|| format!("remove {}", target.display()))?;
     }
     fs::rename(&tmp, &target).with_context(|| format!("install {}", target.display()))?;
+    remove_stale_versions(&parent, &target)?;
 
     println!(
         "installed {}@{} {} -> {}",
@@ -155,6 +138,17 @@ fn install_plugin(
         version,
         target.display()
     );
+    Ok(())
+}
+
+fn remove_stale_versions(parent: &Path, current: &Path) -> Result<()> {
+    for entry in fs::read_dir(parent).with_context(|| format!("read_dir {}", parent.display()))? {
+        let path = entry?.path();
+        if path == current {
+            continue;
+        }
+        remove_path(&path).with_context(|| format!("remove stale plugin {}", path.display()))?;
+    }
     Ok(())
 }
 
@@ -236,4 +230,45 @@ fn copy_symlink(src: &Path, dst: &Path) -> Result<()> {
         std::os::windows::fs::symlink_file(&target, dst)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn install_plugin_removes_stale_cached_versions() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("repo");
+        let codex_home = temp.path().join("codex");
+        let source = root.join("plugins/gt");
+        fs::create_dir_all(source.join(".codex-plugin")).unwrap();
+        fs::create_dir_all(source.join("skills/submit")).unwrap();
+        fs::write(
+            source.join(".codex-plugin/plugin.json"),
+            r#"{"name":"gt","version":"2.0.0"}"#,
+        )
+        .unwrap();
+        fs::write(source.join("skills/submit/SKILL.md"), "# Submit\n").unwrap();
+
+        let stale = codex_home.join("plugins/cache/agents/gt/1.5.2");
+        fs::create_dir_all(&stale).unwrap();
+        fs::write(stale.join("stale"), "old").unwrap();
+
+        let plugin = Plugin {
+            name: "gt".into(),
+            source: PluginSource {
+                source: "local".into(),
+                path: Some("plugins/gt".into()),
+            },
+        };
+        install_plugin(&root, &codex_home, "agents", &plugin).unwrap();
+
+        assert!(!stale.exists());
+        assert!(
+            codex_home
+                .join("plugins/cache/agents/gt/2.0.0/skills/submit/SKILL.md")
+                .is_file()
+        );
+    }
 }

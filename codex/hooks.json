@@ -1,5 +1,17 @@
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.codex/hooks/sync-git-tool.sh",
+            "statusMessage": "Syncing repository stack skills"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [
