@@ -338,8 +338,10 @@ fn directory_entries_are_repo_links(root: &Path, target: &Path) -> Result<bool> 
 }
 
 fn symlink_points_under(link: &Path, root: &Path) -> Result<bool> {
+    let root =
+        fs::canonicalize(root).with_context(|| format!("canonicalize {}", root.display()))?;
     if let Ok(target) = fs::canonicalize(link) {
-        return Ok(path_is_at_or_under(&target, root));
+        return Ok(path_is_at_or_under(&target, &root));
     }
 
     let raw_target = fs::read_link(link).with_context(|| format!("readlink {}", link.display()))?;
@@ -357,7 +359,7 @@ fn symlink_points_under(link: &Path, root: &Path) -> Result<bool> {
         return Ok(false);
     }
     let target = canonicalize_existing_prefix(&target)?;
-    Ok(path_is_at_or_under(&target, root))
+    Ok(path_is_at_or_under(&target, &root))
 }
 
 fn canonicalize_existing_prefix(path: &Path) -> Result<PathBuf> {
@@ -822,6 +824,19 @@ mod tests {
             fs::canonicalize(source.join("config.yml"))?,
             fs::canonicalize(config_link)?
         );
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn broken_absolute_link_under_source_is_repo_owned() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let source = dir.path().join("source-skills");
+        let link = dir.path().join("removed");
+        fs::create_dir_all(&source)?;
+        std::os::unix::fs::symlink(source.join("removed"), &link)?;
+
+        assert!(symlink_points_under(&link, &source)?);
         Ok(())
     }
 
