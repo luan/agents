@@ -152,6 +152,10 @@ async function runExecCommandCompletionScenario(command: string, toolCallId: str
 	let execTool: any;
 	let renderer: any;
 	const sentMessages: Array<{ message: any; options: any }> = [];
+	let resolveSentMessage: (() => void) | undefined;
+	const sentMessage = new Promise<void>((resolve) => {
+		resolveSentMessage = resolve;
+	});
 	const pi = {
 		registerTool: (definition: any) => {
 			if (definition.name === "exec_command") execTool = definition;
@@ -162,6 +166,7 @@ async function runExecCommandCompletionScenario(command: string, toolCallId: str
 		},
 		sendMessage: (message: any, options: any) => {
 			sentMessages.push({ message, options });
+			resolveSentMessage?.();
 		},
 		getActiveTools: () => [],
 		setActiveTools() {},
@@ -188,7 +193,17 @@ async function runExecCommandCompletionScenario(command: string, toolCallId: str
 			ctx,
 		);
 		expect(result.details.process_id).toBeNumber();
-		await Bun.sleep(500);
+		let timeout: ReturnType<typeof setTimeout> | undefined;
+		try {
+			await Promise.race([
+				sentMessage,
+				new Promise<never>((_resolve, reject) => {
+					timeout = setTimeout(() => reject(new Error("completion message timed out")), 5_000);
+				}),
+			]);
+		} finally {
+			if (timeout) clearTimeout(timeout);
+		}
 		return { result, sentMessages, renderer };
 	} finally {
 		for (const handler of handlers.get("session_shutdown") ?? []) handler(undefined, ctx);
