@@ -873,6 +873,16 @@ describe("fileops extension modes", () => {
 		expect(text).toContain("cg_process_file");
 		expect(text.length).toBeLessThan(2_000);
 		expect(text).not.toContain("x".repeat(1_000));
+		const read = tools.get("read");
+		const collapsed = render(read.renderResult(result, { expanded: false, isPartial: false }, theme, {}));
+		const expanded = render(read.renderResult(result, { expanded: true, isPartial: false }, theme, {}));
+		const warningRendered = render(read.renderResult(result, { expanded: false, isPartial: false }, roleTheme, {}));
+
+		expect(collapsed).toContain("Large file read blocked: large.log");
+		expect(collapsed).toContain("Use bounded read arguments");
+		expect(collapsed).toContain("cg_process_file");
+		expect(expanded).toContain("Large file read blocked: large.log");
+		expect(warningRendered).toContain("<warning>Large file read blocked: large.log");
 	});
 
 	it("allows bounded reads from large files for edit targeting", async () => {
