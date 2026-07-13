@@ -100,6 +100,10 @@ function safeToolName(value: string): string {
 		.slice(0, 56);
 }
 
+function normalizeMcpToolName(value: string): string {
+	return value.replaceAll(".", "_");
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
 }
@@ -130,7 +134,7 @@ async function saveConfig(config: CodexAppsConfig): Promise<void> {
 }
 
 function toolKey(tool: CodexAppsCachedTool): string | undefined {
-	const name = tool.tool?.name;
+	const name = tool.tool?.name ? normalizeMcpToolName(tool.tool.name) : undefined;
 	if (!name) return undefined;
 	const connectorId =
 		tool.tool?._meta?.connector_id ?? tool.connector_id ?? tool.tool?._meta?.connector_name ?? "unknown";
@@ -139,7 +143,7 @@ function toolKey(tool: CodexAppsCachedTool): string | undefined {
 }
 
 function normalizeCachedTool(tool: CodexAppsCachedTool, usedPiNames: Set<string>): CodexAppsToolRecord | undefined {
-	const mcpToolName = tool.tool?.name;
+	const mcpToolName = tool.tool?.name ? normalizeMcpToolName(tool.tool.name) : undefined;
 	const key = toolKey(tool);
 	if (!mcpToolName || !key) return undefined;
 	const connectorName = tool.tool?._meta?.connector_name ?? tool.connector_name ?? "Codex App";

@@ -365,7 +365,7 @@ test("discovers Codex app tools from Codex cache", async () => {
 			tools: [
 				{
 					tool: {
-						name: "slack_slack_read_channel",
+						name: "slack.slack_read_channel",
 						title: "slack_read_channel",
 						description: "Reads messages.",
 						inputSchema: {
@@ -390,6 +390,8 @@ test("discovers Codex app tools from Codex cache", async () => {
 	const tools = await discoverCodexAppsTools(root);
 	expect(tools).toHaveLength(1);
 	expect(tools[0]?.piToolName).toBe("codex_apps_slack_slack_read_channel");
+	expect(tools[0]?.mcpToolName).toBe("slack_slack_read_channel");
+	expect(tools[0]?.key).toBe("asdk_app_slack:link_slack:slack_slack_read_channel");
 	expect(tools[0]?.connectorName).toBe("Slack");
 	expect(tools[0]?.readOnly).toBe(true);
 });
