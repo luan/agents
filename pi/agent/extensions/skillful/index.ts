@@ -15,6 +15,7 @@ import {
 	rewriteSlashSkillReferences,
 	SKILLFUL_CUSTOM_TYPE,
 	type SkillfulLoadDetails,
+	type SkillReference,
 	skillBaseDir,
 	stripFrontmatter,
 } from "./skills";
@@ -23,7 +24,7 @@ import { ensureTranscriptHighlight } from "./transcript";
 const AUTOCOMPLETE_INSTALLED = Symbol.for("skillful.autocompleteInstalled");
 
 type SkillState = {
-	skills: Map<string, string>;
+	skills: Map<string, SkillReference[]>;
 	items: AutocompleteItem[];
 };
 
@@ -69,9 +70,25 @@ export default function (pi: ExtensionAPI) {
 	};
 	const loadSkill = async (name: string): Promise<SkillLoad> => {
 		refresh();
-		const filePath = state.skills.get(name);
-		if (!filePath) throw new Error(`Unknown skill "${name}"`);
-		return readSkill(name, filePath);
+		const references = state.skills.get(name);
+		if (!references) throw new Error(`Unknown skill "${name}"`);
+		if (references.length === 0) {
+			throw new Error(`Plugin "${name}" has no local skill document; use its enabled app tools directly`);
+		}
+		const loads = await Promise.all(references.map((reference) => readSkill(reference.name, reference.filePath)));
+		const [firstLoad] = loads;
+		if (!firstLoad) throw new Error(`Unknown skill "${name}"`);
+		if (loads.length === 1) return firstLoad;
+		return {
+			content: loads.map((load) => load.content).join("\n\n"),
+			details: {
+				extension: "skillful",
+				kind: "skill-load",
+				name,
+				status: "read",
+				loads: loads.map((load) => load.details),
+			},
+		};
 	};
 
 	pi.on("resources_discover", () => {
@@ -120,7 +137,11 @@ export default function (pi: ExtensionAPI) {
 
 		const loads: SkillLoad[] = [];
 		for (const name of referenced) {
-			loads.push(await loadSkill(name));
+			try {
+				loads.push(await loadSkill(name));
+			} catch (error) {
+				if (!(error instanceof Error) || !error.message.includes("has no local skill document")) throw error;
+			}
 		}
 		const [firstLoad] = loads;
 		if (!firstLoad) return;

@@ -1,6 +1,6 @@
 import type { AutocompleteItem, AutocompleteProvider } from "@earendil-works/pi-tui";
 
-const MENTION_AT_CURSOR_RE = /(?:^|\s)\$([a-zA-Z0-9\-_]*)$/;
+const MENTION_AT_CURSOR_RE = /(?:^|\s)\$([a-zA-Z0-9_:-]*)$/;
 
 type TriggeredAutocompleteProvider = AutocompleteProvider & {
 	triggerCharacters?: string[];

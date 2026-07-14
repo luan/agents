@@ -3,12 +3,24 @@ import { mkdir, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setCapabilities } from "@earendil-works/pi-tui";
-import { activeCodexAppsToolNames, discoverCodexAppsTools } from "./codex-apps.ts";
+import { CodexAppServerMcpClient } from "./app-server-mcp.ts";
+import {
+	activeCodexAppsToolNames,
+	buildCodexAppRecords,
+	CodexToolsPanel,
+	disabledCodexAppToolKeys,
+	discoverCodexAppsTools,
+	discoverCodexPlugins,
+	discoverPluginMcpTools,
+	migrateCodexAppsConfig,
+	pluginSkillPaths,
+} from "./codex-apps.ts";
 import {
 	isCodexWebSocketError,
 	normalizeCodexWebSocketError as normalizeCodexWebSocketErrorMessage,
 	normalizeLegacyFunctionCallIds,
 } from "./index.ts";
+import { LocalMcpClient } from "./local-mcp.ts";
 import {
 	createWebSearchTool,
 	getOpenAICodexLatestImagePath,
@@ -23,6 +35,7 @@ import {
 	WEB_SEARCH_TOOL_NAME,
 } from "./native-tools.ts";
 import { convertResponsesMessages } from "./openai-responses-shared.ts";
+import { isCodexPluginEnabled } from "./plugin-aliases.ts";
 
 const codexModel = {
 	provider: "openai-codex",
@@ -436,4 +449,454 @@ test("activates read-only Codex app tools by default and respects explicit toggl
 	expect(activeCodexAppsToolNames(tools, { enabled: false, enabledToolKeys: ["slack:send"] }, ["read"])).toEqual([
 		"read",
 	]);
+});
+
+test("disables every app tool owned by a disabled plugin", () => {
+	const tools = [
+		{
+			key: "sites:read",
+			piToolName: "codex_apps_sites_list",
+			mcpToolName: "list",
+			title: "list",
+			description: "list",
+			inputSchema: {},
+			connectorId: "sites",
+			connectorName: "Sites",
+			connectorDescription: "",
+			readOnly: true,
+			destructive: false,
+			openWorld: false,
+		},
+		{
+			key: "slack:read",
+			piToolName: "codex_apps_slack_read",
+			mcpToolName: "read",
+			title: "read",
+			description: "read",
+			inputSchema: {},
+			connectorId: "slack",
+			connectorName: "Slack",
+			connectorDescription: "",
+			readOnly: true,
+			destructive: false,
+			openWorld: true,
+		},
+	];
+	const plugins = [
+		{
+			key: "sites",
+			name: "sites",
+			version: "0.1.27",
+			marketplace: "openai-bundled",
+			rootPath: "/plugins/sites",
+			skillPaths: [],
+			connectorIds: ["sites"],
+		},
+	];
+	const disabled = disabledCodexAppToolKeys(tools, plugins, { enabled: true, disabledPluginKeys: ["sites"] });
+
+	expect(activeCodexAppsToolNames(tools, { enabled: true }, ["read"], disabled)).toEqual([
+		"read",
+		"codex_apps_slack_read",
+	]);
+});
+
+test("builds app surfaces from plugin connector manifests", () => {
+	const tools = [
+		{
+			key: "sites:list",
+			piToolName: "codex_apps_sites_list",
+			mcpToolName: "list",
+			title: "List sites",
+			description: "list",
+			inputSchema: {},
+			connectorId: "connector_sites",
+			connectorName: "Sites",
+			connectorDescription: "Build and deploy websites with Sites",
+			readOnly: true,
+			destructive: false,
+			openWorld: true,
+		},
+	];
+	const apps = buildCodexAppRecords(tools, [
+		{
+			key: "sites",
+			name: "sites",
+			version: "0.1.27",
+			marketplace: "openai-bundled",
+			rootPath: "/plugins/sites",
+			skillPaths: [],
+			connectorIds: ["connector_sites"],
+		},
+	]);
+
+	expect(apps).toEqual([
+		{
+			connectorId: "connector_sites",
+			connectorName: "Sites",
+			connectorDescription: "Build and deploy websites with Sites",
+			toolKeys: ["sites:list"],
+			pluginKey: "sites",
+		},
+	]);
+});
+
+test("discovers newest plugin manifests and their skill roots", async () => {
+	const root = await mkdtemp(join(tmpdir(), "codex-plugin-skills-test-"));
+	const newest = join(root, "plugins", "cache", "openai-bundled", "sites", "0.1.27");
+	const older = join(root, "plugins", "cache", "openai-bundled", "sites", "0.1.9");
+	const alternateMarketplace = join(root, "plugins", "cache", "openai-curated", "sites", "9deadbeef");
+	const other = join(root, "plugins", "cache", "openai-bundled", "visualize", "1.0.11");
+	const flatApp = join(root, ".tmp", "plugins", "plugins", "datadog");
+	await mkdir(join(newest, ".codex-plugin"), { recursive: true });
+	await mkdir(join(newest, "declared-skills", "sites-building"), {
+		recursive: true,
+	});
+	await mkdir(join(older, ".codex-plugin"), {
+		recursive: true,
+	});
+	await mkdir(join(alternateMarketplace, ".codex-plugin"), {
+		recursive: true,
+	});
+	await mkdir(join(other, ".codex-plugin"), {
+		recursive: true,
+	});
+	await mkdir(join(flatApp, ".codex-plugin"), {
+		recursive: true,
+	});
+	await Bun.write(
+		join(newest, ".codex-plugin", "plugin.json"),
+		JSON.stringify({ name: "sites", version: "0.1.27", skills: "./declared-skills" }),
+	);
+	await Bun.write(join(older, ".codex-plugin", "plugin.json"), JSON.stringify({ name: "sites", version: "0.1.9" }));
+	await Bun.write(
+		join(alternateMarketplace, ".codex-plugin", "plugin.json"),
+		JSON.stringify({ name: "sites", version: "0.1.1" }),
+	);
+	await Bun.write(
+		join(other, ".codex-plugin", "plugin.json"),
+		JSON.stringify({ name: "visualize", version: "1.0.11" }),
+	);
+	await Bun.write(
+		join(flatApp, ".codex-plugin", "plugin.json"),
+		JSON.stringify({ name: "datadog", version: "0.1.2", apps: "./.app.json" }),
+	);
+	await Bun.write(
+		join(root, "config.toml"),
+		'[plugins."sites@openai-bundled"]\nenabled = true\n[plugins."visualize@openai-bundled"]\nenabled = false\n',
+	);
+
+	const plugins = await discoverCodexPlugins(root);
+	expect(plugins.map((plugin) => plugin.name)).toEqual(["sites", "visualize"]);
+	const sites = plugins.find((plugin) => plugin.name === "sites");
+	expect(sites?.version).toBe("0.1.27");
+	expect(sites?.marketplace).toBe("openai-bundled");
+	expect(pluginSkillPaths(plugins, { enabled: true })).toEqual([join(newest, "declared-skills")]);
+	expect(pluginSkillPaths(plugins, { enabled: true, disabledPluginKeys: ["sites"] })).toEqual([]);
+});
+
+test("does not expose skills from unconfigured marketplace inventory", async () => {
+	const home = await mkdtemp(join(tmpdir(), "codex-plugin-config-test-"));
+	const inventoryPlugin = join(home, ".codex", ".tmp", "plugins", "plugins", "build-web-data-visualization");
+	await mkdir(join(inventoryPlugin, ".codex-plugin"), { recursive: true });
+	await Bun.write(join(home, ".codex", "config.toml"), '[plugins."sites@openai-bundled"]\nenabled = true\n');
+
+	expect(isCodexPluginEnabled("build-web-data-visualization", "tmp", inventoryPlugin)).toBe(false);
+	expect(
+		isCodexPluginEnabled(
+			"sites",
+			"openai-bundled",
+			join(home, ".codex", "plugins", "cache", "openai-bundled", "sites", "1.0.0"),
+		),
+	).toBe(true);
+});
+
+test("uses the Pi-native Computer Use skill instead of the Codex node-repl skill", () => {
+	const plugin = {
+		key: "computer-use",
+		name: "computer-use",
+		version: "1.0.0",
+		marketplace: "openai-bundled",
+		rootPath: "/plugins/computer-use",
+		skillPaths: ["/plugins/computer-use/skills"],
+		connectorIds: [],
+	};
+
+	expect(pluginSkillPaths([plugin], { enabled: true })).toEqual([
+		join(import.meta.dir, "skill-resources", "computer-use"),
+	]);
+});
+
+test("does not launch the Computer Use MCP client directly under Pi", async () => {
+	const root = await mkdtemp(join(tmpdir(), "computer-use-mcp-skip-test-"));
+	const server = [
+		"const readline = require('node:readline');",
+		"const rl = readline.createInterface({ input: process.stdin });",
+		"rl.on('line', line => {",
+		"  const request = JSON.parse(line);",
+		"  const result = request.method === 'initialize' ? { protocolVersion: '2025-06-18' } : { tools: [{ name: 'list_apps' }] };",
+		"  if (request.id !== undefined) process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\\n');",
+		"});",
+	].join("\n");
+	await Bun.write(
+		join(root, ".mcp.json"),
+		JSON.stringify({ mcpServers: { "computer-use": { command: process.execPath, args: ["-e", server] } } }),
+	);
+	const surfaces = await discoverPluginMcpTools([
+		{
+			key: "computer-use",
+			name: "computer-use",
+			version: "1.0.0",
+			marketplace: "openai-bundled",
+			rootPath: root,
+			skillPaths: [],
+			connectorIds: [],
+		},
+	]);
+
+	try {
+		expect(surfaces).toEqual([]);
+	} finally {
+		for (const surface of surfaces) surface.client.close();
+	}
+});
+
+test("migrates explicit tool selections to the Computer Use surface once", () => {
+	const config = { enabled: true, enabledToolKeys: ["slack:read"] };
+	const tools = [
+		{
+			key: "computer-use:js",
+			piToolName: "node_repl",
+			mcpToolName: "js",
+			title: "Run JavaScript",
+			description: "Run JavaScript",
+			inputSchema: {},
+			connectorId: "computer-use",
+			connectorName: "Computer Use",
+			connectorDescription: "Control Mac apps",
+			readOnly: false,
+			destructive: false,
+			openWorld: true,
+			defaultEnabled: true,
+		},
+	];
+	const plugins = [
+		{
+			key: "computer-use",
+			name: "computer-use",
+			version: "1.0.0",
+			marketplace: "openai-bundled",
+			rootPath: "/plugins/computer-use",
+			skillPaths: [],
+			connectorIds: [],
+		},
+	];
+
+	expect(migrateCodexAppsConfig(config, tools, plugins)).toBe(true);
+	expect(config.enabledToolKeys).toEqual(["computer-use:js", "slack:read"]);
+	expect(config.surfaceVersion).toBe(1);
+	expect(migrateCodexAppsConfig(config, tools, plugins)).toBe(false);
+});
+
+test("local MCP client keeps a server session and forwards tool calls", async () => {
+	const server = [
+		"const readline = require('node:readline');",
+		"const rl = readline.createInterface({ input: process.stdin });",
+		"let calls = 0;",
+		"rl.on('line', line => {",
+		"  const request = JSON.parse(line);",
+		"  let result;",
+		"  if (request.method === 'initialize') result = { protocolVersion: '2025-06-18' };",
+		"  else if (request.method === 'tools/list') result = { tools: [{ name: 'js', inputSchema: { type: 'object' } }] };",
+		"  else if (request.method === 'tools/call') result = { content: [{ type: 'text', text: String(++calls) }] };",
+		"  if (request.id !== undefined) process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\\n');",
+		"});",
+	].join("\n");
+	const client = new LocalMcpClient({ command: process.execPath, args: ["-e", server], env: {} });
+
+	expect(await client.listTools()).toEqual([{ name: "js", inputSchema: { type: "object" } }]);
+	expect(await client.callTool("js", {})).toEqual({ content: [{ type: "text", text: "1" }] });
+	expect(await client.callTool("js", {})).toEqual({ content: [{ type: "text", text: "2" }] });
+	client.close();
+});
+
+test("local MCP client answers server elicitation requests through its approval callback", async () => {
+	const server = [
+		"const readline = require('node:readline');",
+		"const rl = readline.createInterface({ input: process.stdin });",
+		"let callId;",
+		"rl.on('line', line => {",
+		"  const request = JSON.parse(line);",
+		"  if (request.method === 'initialize') process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { protocolVersion: '2025-06-18' } }) + '\\n');",
+		"  else if (request.method === 'tools/list') process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { tools: [{ name: 'click' }] } }) + '\\n');",
+		"  else if (request.method === 'tools/call') { callId = request.id; process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: 99, method: 'elicitation/create', params: { message: 'Allow click?' } }) + '\\n'); }",
+		"  else if (request.id === 99) process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: callId, result: { content: [{ type: 'text', text: request.result.action }] } }) + '\\n');",
+		"});",
+	].join("\n");
+	const client = new LocalMcpClient({ command: process.execPath, args: ["-e", server], env: {} });
+	let approvalMessage = "";
+
+	try {
+		expect(await client.listTools()).toEqual([{ name: "click" }]);
+		expect(
+			await client.callTool("click", {}, undefined, async (message) => {
+				approvalMessage = message;
+				return true;
+			}),
+		).toEqual({ content: [{ type: "text", text: "accept" }] });
+		expect(approvalMessage).toBe("Allow click?");
+	} finally {
+		client.close();
+	}
+});
+
+test("Codex app-server MCP client proxies tools through a signed Codex parent", async () => {
+	const server = [
+		"const readline = require('node:readline');",
+		"const rl = readline.createInterface({ input: process.stdin });",
+		"let callId;",
+		"rl.on('line', line => {",
+		"  const request = JSON.parse(line);",
+		"  if (request.method === 'initialize') process.stdout.write(JSON.stringify({ id: request.id, result: {} }) + '\\n');",
+		"  else if (request.method === 'thread/start') process.stdout.write(JSON.stringify({ id: request.id, result: { thread: { id: 'thread-1' } } }) + '\\n');",
+		"  else if (request.method === 'mcpServerStatus/list') process.stdout.write(JSON.stringify({ id: request.id, result: { data: [{ name: 'node_repl', tools: { js: { name: 'js', inputSchema: { type: 'object' } } } }] } }) + '\\n');",
+		"  else if (request.method === 'mcpServer/tool/call') { callId = request.id; process.stdout.write(JSON.stringify({ id: 99, method: 'mcpServer/elicitation/request', params: { mode: 'form', message: 'Allow JavaScript?', serverName: 'node_repl', threadId: 'thread-1', turnId: null, requestedSchema: {}, _meta: null } }) + '\\n'); }",
+		"  else if (request.id === 99) process.stdout.write(JSON.stringify({ id: callId, result: { content: [{ type: 'text', text: request.result.action }] } }) + '\\n');",
+		"});",
+	].join("\n");
+	const client = new CodexAppServerMcpClient("node_repl", {
+		command: process.execPath,
+		args: ["-e", server],
+		cwd: process.cwd(),
+	});
+	let approvalMessage = "";
+
+	try {
+		expect(await client.listTools()).toEqual([{ name: "js", inputSchema: { type: "object" } }]);
+		expect(
+			await client.callTool("js", { code: "1 + 1" }, undefined, async (message) => {
+				approvalMessage = message;
+				return true;
+			}),
+		).toEqual({ content: [{ type: "text", text: "accept" }] });
+		expect(approvalMessage).toBe("Allow JavaScript?");
+	} finally {
+		client.close();
+	}
+});
+
+test("Codex Tools panel supports vim navigation, filtering, and app tabs", async () => {
+	const tool = {
+		key: "slack:read",
+		piToolName: "codex_apps_slack_read",
+		mcpToolName: "read",
+		title: "Read channel",
+		description: "Read messages from a Slack channel",
+		inputSchema: {},
+		connectorId: "slack",
+		connectorName: "Slack",
+		connectorDescription: "Read and manage Slack",
+		readOnly: true,
+		destructive: false,
+		openWorld: true,
+	};
+	const plugin = {
+		key: "slack",
+		name: "slack",
+		version: "0.1.4",
+		marketplace: "openai-curated-remote",
+		rootPath: "/plugins/slack",
+		skillPaths: [],
+		connectorIds: ["slack"],
+	};
+	const config = { enabled: true, enabledToolKeys: [tool.key] };
+	let saves = 0;
+	let closed = false;
+	const panel = new CodexToolsPanel(
+		testTheme as never,
+		[tool],
+		[plugin],
+		config,
+		async () => {
+			saves++;
+		},
+		() => {
+			closed = true;
+		},
+	);
+
+	const initialRender = panel.render(120);
+	expect(initialRender.join("\n")).toContain("[ Main ]");
+	expect(initialRender[0]).toContain("<border>╭");
+	expect(initialRender.at(-1)).toContain("<border>╰");
+	const panelHeight = initialRender.length;
+	panel.handleInput("l");
+	const appRender = panel.render(120);
+	expect(appRender.join("\n")).toContain("[ Slack ]");
+	expect(appRender).toHaveLength(panelHeight);
+	panel.handleInput("/");
+	panel.handleInput("r");
+	panel.handleInput("e");
+	const filteredRender = panel.render(120);
+	expect(filteredRender.join("\n")).toContain("/re▌");
+	expect(filteredRender).toHaveLength(panelHeight);
+	panel.handleInput("\r");
+	panel.handleInput("h");
+	panel.handleInput("j");
+	panel.handleInput("j");
+	expect(panel.render(120).join("\n")).toContain("<accent>▸</accent> App · Slack");
+	panel.handleInput("l");
+	panel.handleInput("\r");
+	await panel.waitForPendingSaves();
+
+	expect(config.enabledToolKeys).toEqual([]);
+	expect(saves).toBe(1);
+	const finalRender = panel.render(120);
+	expect(finalRender.join("\n")).toContain("[ Main ]");
+	expect(finalRender).toHaveLength(panelHeight);
+	panel.handleInput("q");
+	expect(closed).toBe(true);
+});
+
+test("Codex Tools panel persists per-skill autocomplete visibility", async () => {
+	const config = { enabled: true };
+	let saves = 0;
+	const panel = new CodexToolsPanel(
+		testTheme as never,
+		[],
+		[
+			{
+				key: "browser",
+				name: "browser",
+				version: "1.0.0",
+				marketplace: "openai-bundled",
+				rootPath: "/plugins/browser",
+				skillPaths: ["/plugins/browser/skills"],
+				connectorIds: [],
+			},
+		],
+		config,
+		async () => {
+			saves++;
+		},
+		() => {},
+		[
+			{
+				name: "control-in-app-browser",
+				filePath: "/plugins/browser/skills/control-in-app-browser/SKILL.md",
+				pluginKey: "browser",
+			},
+		],
+	);
+
+	panel.handleInput("/");
+	for (const character of "control-in-app-browser") panel.handleInput(character);
+	panel.handleInput("\r");
+	expect(panel.render(120).join("\n")).toContain("Skill · control-in-app-browser  <success>on</success>");
+	panel.handleInput(" ");
+	await panel.waitForPendingSaves();
+
+	expect(config.hiddenSkillNames).toEqual(["control-in-app-browser"]);
+	expect(saves).toBe(1);
+	expect(panel.render(120).join("\n")).toContain("Skill · control-in-app-browser  <muted>off</muted>");
 });

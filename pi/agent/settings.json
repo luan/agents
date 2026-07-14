@@ -1,5 +1,5 @@
 {
-  "lastChangelogVersion": "0.80.6",
+  "lastChangelogVersion": "0.80.7",
   "steeringMode": "all",
   "autoUpdate": true,
   "transport": "auto",
@@ -7,7 +7,7 @@
   "treeFilterMode": "default",
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-5.6-terra",
-  "defaultThinkingLevel": "high",
+  "defaultThinkingLevel": "xhigh",
   "skills": [
     "../.codex/skills"
   ],
@@ -63,5 +63,10 @@
   "warnings": {
     "anthropicExtraUsage": false
   },
-  "enableInstallTelemetry": false
+  "enableInstallTelemetry": false,
+  "compaction": {
+    "enabled": true
+  },
+  "showCacheMissNotices": true,
+  "defaultProjectTrust": "always"
 }

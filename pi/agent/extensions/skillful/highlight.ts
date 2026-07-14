@@ -1,6 +1,6 @@
 import { findDollarSkillReferences } from "./skills";
 
-const SLASH_SKILL_RE = /(?<!\w)\/skill:([a-zA-Z][\w-]*)/g;
+const SLASH_SKILL_RE = /(?<!\w)\/skill:([a-zA-Z][\w-]*(?::[\w-]+)*)/g;
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 const HL = (s: string) => `\x1b[36m${s}\x1b[39m`;
 

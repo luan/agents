@@ -1,5 +1,5 @@
 approval_policy = "never"
-model = "gpt-5.6-luna"
+model = "gpt-5.6-sol"
 model_reasoning_effort = "high"
 personality = "pragmatic"
 plan_mode_reasoning_effort = "high"
@@ -11,7 +11,9 @@ approvals_reviewer = "user"
 service_tier = "default"
 
 
-notify = ["/Users/luan/.codex/computer-use/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient", "turn-ended"]
+
+
+notify = ["/Users/luan.santos/.codex/computer-use/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient", "turn-ended"]
 
 [features]
 image_generation = true
@@ -30,13 +32,7 @@ fast_default_opt_out = true
 [plugins."github@openai-curated"]
 enabled = true
 
-[plugins."documents@openai-primary-runtime"]
-enabled = true
-
 [plugins."spreadsheets@openai-primary-runtime"]
-enabled = true
-
-[plugins."presentations@openai-primary-runtime"]
 enabled = true
 
 [plugins."gt@agents"]
@@ -58,9 +54,6 @@ enabled = true
 enabled = true
 
 [plugins."pdf@openai-primary-runtime"]
-enabled = true
-
-[plugins."template-creator@openai-primary-runtime"]
 enabled = true
 
 [plugins."visualize@openai-bundled"]
@@ -88,12 +81,12 @@ queue = "alt-enter"
 
 [tui.model_availability_nux]
 "gpt-5.5" = 4
-"gpt-5.6-sol" = 2
+"gpt-5.6-sol" = 3
 
 [marketplaces.openai-bundled]
-last_updated = "2026-07-12T15:00:19Z"
+last_updated = "2026-07-14T15:03:54Z"
 source_type = "local"
-source = "/Users/luan/.codex/.tmp/bundled-marketplaces/openai-bundled"
+source = "/Users/luan.santos/.codex/.tmp/bundled-marketplaces/openai-bundled"
 
 [marketplaces.openai-primary-runtime]
 last_updated = "2026-07-10T14:43:11Z"
@@ -166,6 +159,12 @@ trust_level = "trusted"
 [projects."/Users/luan/Documents/Codex/2026-07-11/hatch-pet-users-luan-codex-skills"]
 trust_level = "trusted"
 
+[projects."/Users/luan.santos/Documents/Codex/2026-07-13/sites-plugin-sites-openai-bundled-create"]
+trust_level = "trusted"
+
+[projects."/Users/luan.santos/Documents/Codex/2026-07-13/what"]
+trust_level = "trusted"
+
 [hooks.state]
 
 [hooks.state."/Users/luan/.codex/hooks.json:stop:0:0"]
@@ -173,6 +172,9 @@ trusted_hash = "sha256:a638898dcc8555db61cebdc42e6ba4e35e78d1df55f8832f4aa7c0996
 
 [hooks.state."/Users/luan.santos/.codex/hooks.json:stop:0:0"]
 trusted_hash = "sha256:a638898dcc8555db61cebdc42e6ba4e35e78d1df55f8832f4aa7c0996d5a984a"
+
+[hooks.state."/Users/luan.santos/.codex/hooks.json:session_start:0:0"]
+trusted_hash = "sha256:5c6ce537866d0968286c0badbf33598f12cf3f1a3b004cbdb1b7dc15631f8167"
 
 [desktop]
 appearanceLightCodeThemeId = "codex"
@@ -230,16 +232,16 @@ startup_timeout_sec = 120
 NODE_REPL_NATIVE_PIPE_CONNECT_TIMEOUT_MS = "1000"
 NODE_REPL_NODE_MODULE_DIRS = "/Applications/ChatGPT.app/Contents/Resources/cua_node/lib/node_modules"
 NODE_REPL_NODE_PATH = "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node"
-NODE_REPL_TRUSTED_CODE_PATHS = "/Users/luan/.codex"
-CODEX_HOME = "/Users/luan/.codex"
-NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = "6d25aa7656feac858f3a3bdaea5bcbab0dbfd426c9de8e6931ce90c399ee8e4f,e74b67ab909392b37f7aef14977fce7aa80cfa02ade5491f30abcdbcb9e69f33"
+NODE_REPL_TRUSTED_CODE_PATHS = "/Users/luan.santos/.codex"
+CODEX_HOME = "/Users/luan.santos/.codex"
+NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = "6d25aa7656feac858f3a3bdaea5bcbab0dbfd426c9de8e6931ce90c399ee8e4f,cf732b4a285497bfd7e75a2ac14879bce9ae644eb4e1babeb17bb6a840dfc9bd"
 BROWSER_USE_AVAILABLE_BACKENDS = "chrome,iab"
 NODE_REPL_INSTRUCTIONS_USE_CASE_BROWSER = "Control the in-app browser in conjunction with the Browser Plugin."
 NODE_REPL_INSTRUCTIONS_USE_CASE_CHROME = "Control the Chrome browser in conjunction with the Chrome Plugin. Prefer this method of controlling Chrome over alternatives (such as Computer Use) unless the user explicitly mentions an alternative."
 NODE_REPL_INSTRUCTIONS_USE_CASE_COMPUTER_USE = "Control desktop apps on macOS through Computer Use."
 BROWSER_USE_CODEX_APP_BUILD_FLAVOR = "prod"
-BROWSER_USE_CODEX_APP_VERSION = "26.707.51957"
-SKY_CUA_SERVICE_PATH = "/Users/luan/.codex/plugins/cache/openai-bundled/computer-use/1.0.1000387/Codex Computer Use.app"
+BROWSER_USE_CODEX_APP_VERSION = "26.707.72221"
+SKY_CUA_SERVICE_PATH = "/Users/luan.santos/.codex/plugins/cache/openai-bundled/computer-use/1.0.1000387/Codex Computer Use.app"
 CODEX_CLI_PATH = "/Applications/ChatGPT.app/Contents/Resources/codex"
 
 [mcp_servers.computer-use]

@@ -1,10 +1,16 @@
 import { dirname } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
+import { getCodexHiddenSkillNames, getCodexPluginAliases } from "../codex-native/plugin-aliases";
 
 const SKILL_PREFIX = "skill:";
-const DOLLAR_SKILL_NAME_RE = /^[a-zA-Z][\w-]*/;
+const DOLLAR_SKILL_NAME_RE = /^[a-zA-Z][\w-]*(?::[\w-]+)*/;
 export const SKILLFUL_CUSTOM_TYPE = "skillful-load";
+
+export type SkillReference = {
+	name: string;
+	filePath: string;
+};
 
 export type SkillfulLoadStatus = "read";
 
@@ -18,24 +24,52 @@ export type SkillfulLoadDetails = {
 	loads?: SkillfulLoadDetails[];
 };
 
-export function collectSkills(pi: ExtensionAPI): Map<string, string> {
-	const out = new Map<string, string>();
+export function collectSkills(pi: ExtensionAPI): Map<string, SkillReference[]> {
+	const direct = new Map<string, SkillReference>();
 	for (const cmd of pi.getCommands()) {
 		if (cmd.source !== "skill" || !cmd.name.startsWith(SKILL_PREFIX)) continue;
 		const name = cmd.name.slice(SKILL_PREFIX.length).trim();
 		const path = cmd.sourceInfo?.path;
-		if (!name || !path || out.has(name)) continue;
-		out.set(name, path);
+		if (!name || !path || direct.has(name)) continue;
+		direct.set(name, { name, filePath: path });
+	}
+
+	const out = new Map<string, SkillReference[]>();
+	for (const [name, reference] of direct) out.set(name, [reference]);
+	for (const [name, reference] of direct) {
+		const alias = pluginAlias(name, reference.filePath);
+		if (!alias) continue;
+		if (direct.has(alias)) continue;
+		const references = out.get(alias) ?? [];
+		if (!references.some((candidate) => candidate.filePath === reference.filePath)) references.push(reference);
+		out.set(alias, references);
+	}
+	for (const alias of getCodexPluginAliases()) {
+		if (!out.has(alias)) out.set(alias, []);
 	}
 	return out;
 }
 
-export function buildItems(skills: Map<string, string>): AutocompleteItem[] {
-	return [...skills.keys()].map((name) => ({
-		value: `$${name}`,
-		label: `$${name}`,
-		description: "skill",
-	}));
+function pluginAlias(name: string, filePath: string): string | undefined {
+	const separator = name.indexOf(":");
+	if (separator > 0) return name.slice(0, separator);
+
+	const normalizedPath = filePath.replaceAll("\\", "/");
+	return normalizedPath.match(/(?:^|\/)\.codex\/plugins\/cache\/[^/]+\/([^/]+)\/[^/]+(?:\/|$)/)?.[1];
+}
+
+export function buildItems(
+	skills: Map<string, SkillReference[]>,
+	hiddenSkillNames: Iterable<string> = getCodexHiddenSkillNames(),
+): AutocompleteItem[] {
+	const hidden = new Set(hiddenSkillNames);
+	return [...skills.keys()]
+		.filter((name) => !hidden.has(name))
+		.map((name) => ({
+			value: `$${name}`,
+			label: `$${name}`,
+			description: "skill",
+		}));
 }
 
 export function extractDollarSkillReferences(text: string, skills: Iterable<string>): string[] {

@@ -1,13 +1,20 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AutocompleteProvider, EditorComponent } from "@earendil-works/pi-tui";
+import { setCodexPluginAliases } from "../codex-native/plugin-aliases";
 import { findMentionAtCursor, wrapProvider } from "./autocomplete";
 import { installEditorHighlight } from "./editor";
 import { colorize, colorizeLines } from "./highlight";
 import extension from "./index";
-import { buildItems, extractDollarSkillReferences, rewriteSlashSkillReferences, stripFrontmatter } from "./skills";
+import {
+	buildItems,
+	collectSkills,
+	extractDollarSkillReferences,
+	rewriteSlashSkillReferences,
+	stripFrontmatter,
+} from "./skills";
 import { highlightTranscriptLines } from "./transcript";
 
 describe("skillful highlighting", () => {
@@ -67,6 +74,7 @@ describe("skillful transcript highlighting", () => {
 describe("skillful autocomplete", () => {
 	test("detects dollar mention at cursor", () => {
 		expect(findMentionAtCursor("please $td", 10)).toEqual({ token: "$td", query: "td" });
+		expect(findMentionAtCursor("please $sites:", 14)).toEqual({ token: "$sites:", query: "sites:" });
 		expect(findMentionAtCursor("email$a", 7)).toBeNull();
 	});
 
@@ -79,7 +87,9 @@ describe("skillful autocomplete", () => {
 				return { lines, cursorLine: 0, cursorCol: 0 };
 			},
 		};
-		const wrapped = wrapProvider(base, () => buildItems(new Map([["tdd", "/skills/tdd/SKILL.md"]])));
+		const wrapped = wrapProvider(base, () =>
+			buildItems(new Map([["tdd", [{ name: "tdd", filePath: "/skills/tdd/SKILL.md" }]]])),
+		);
 		expect((wrapped as AutocompleteProvider & { triggerCharacters?: string[] }).triggerCharacters).toEqual(["$"]);
 		const suggestions = await wrapped.getSuggestions(["use $td"], 0, 7, {});
 		expect(suggestions?.prefix).toBe("$td");
@@ -228,16 +238,114 @@ describe("skillful skills", () => {
 	});
 
 	test("extracts only known unquoted dollar skill references at token starts", () => {
-		const skills = new Set(["tdd", "plan", "crit"]);
+		const skills = new Set(["tdd", "plan", "crit", "sites:sites-building"]);
 		expect(
 			extractDollarSkillReferences('$missing "$tdd" ` $plan` prefix:$crit path/$tdd\n$crit and $tdd', skills),
 		).toEqual(["crit", "tdd"]);
 		expect(extractDollarSkillReferences("don't break $plan", skills)).toEqual(["plan"]);
 		expect(extractDollarSkillReferences("' $plan' then $tdd", skills)).toEqual(["tdd"]);
+		expect(extractDollarSkillReferences("use $sites:sites-building", skills)).toEqual(["sites:sites-building"]);
 	});
 });
 
 describe("skillful extension", () => {
+	test("adds a plugin alias for qualified skills", () => {
+		setCodexPluginAliases([]);
+		const skills = collectSkills({
+			getCommands: () => [
+				{ source: "skill", name: "skill:sites:sites-building", sourceInfo: { path: "/sites/building/SKILL.md" } },
+				{ source: "skill", name: "skill:sites:sites-hosting", sourceInfo: { path: "/sites/hosting/SKILL.md" } },
+			],
+		} as never);
+
+		expect(skills.get("sites")).toEqual([
+			{ name: "sites:sites-building", filePath: "/sites/building/SKILL.md" },
+			{ name: "sites:sites-hosting", filePath: "/sites/hosting/SKILL.md" },
+		]);
+		expect(buildItems(skills).map((item) => item.value)).toEqual([
+			"$sites:sites-building",
+			"$sites:sites-hosting",
+			"$sites",
+		]);
+	});
+
+	test("adds a plugin alias for skills loaded from the Codex cache", () => {
+		const skills = collectSkills({
+			getCommands: () => [
+				{
+					source: "skill",
+					name: "skill:sites-building",
+					sourceInfo: {
+						path: "/home/test/.codex/plugins/cache/openai-bundled/sites/0.1.27/skills/sites-building/SKILL.md",
+					},
+				},
+				{
+					source: "skill",
+					name: "skill:sites-hosting",
+					sourceInfo: {
+						path: "/home/test/.codex/plugins/cache/openai-bundled/sites/0.1.27/skills/sites-hosting/SKILL.md",
+					},
+				},
+			],
+		} as never);
+
+		expect(skills.get("sites")).toEqual([
+			{
+				name: "sites-building",
+				filePath: "/home/test/.codex/plugins/cache/openai-bundled/sites/0.1.27/skills/sites-building/SKILL.md",
+			},
+			{
+				name: "sites-hosting",
+				filePath: "/home/test/.codex/plugins/cache/openai-bundled/sites/0.1.27/skills/sites-hosting/SKILL.md",
+			},
+		]);
+	});
+
+	test("hides configured skills from autocomplete while keeping plugin aliases visible", () => {
+		const skills = new Map([
+			["browser", [{ name: "browser:control-in-app-browser", filePath: "/browser/SKILL.md" }]],
+			["control-in-app-browser", [{ name: "control-in-app-browser", filePath: "/browser/SKILL.md" }]],
+		]);
+
+		expect(buildItems(skills, new Set(["control-in-app-browser"])).map((item) => item.value)).toEqual(["$browser"]);
+		expect(skills.has("control-in-app-browser")).toBe(true);
+	});
+
+	test("loads all plugin skills through the plugin alias", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "skillful-plugin-"));
+		const cacheSkillsDir = join(dir, ".codex", "plugins", "cache", "openai-bundled", "sites", "0.1.27", "skills");
+		mkdirSync(cacheSkillsDir, { recursive: true });
+		const buildingPath = join(cacheSkillsDir, "sites-building", "SKILL.md");
+		const hostingPath = join(cacheSkillsDir, "sites-hosting", "SKILL.md");
+		mkdirSync(join(cacheSkillsDir, "sites-building"), { recursive: true });
+		mkdirSync(join(cacheSkillsDir, "sites-hosting"), { recursive: true });
+		writeFileSync(buildingPath, "---\nname: sites-building\n---\n# Build with Sites\n");
+		writeFileSync(hostingPath, "---\nname: sites-hosting\n---\n# Host with Sites\n");
+		const handlers = new Map<string, Array<(event: { prompt: string }) => unknown>>();
+		const pi = {
+			getCommands: () => [
+				{ source: "skill", name: "skill:sites-building", sourceInfo: { path: buildingPath } },
+				{ source: "skill", name: "skill:sites-hosting", sourceInfo: { path: hostingPath } },
+			],
+			on: (event: string, handler: (event: { prompt: string }) => unknown) => {
+				handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+			},
+			registerTool() {},
+			registerMessageRenderer() {},
+			events: { emit() {} },
+		};
+
+		extension(pi as never);
+		const result = await handlers.get("before_agent_start")?.[0]?.({ prompt: "$sites build a site" });
+		const message = (
+			result as { message?: { content?: string; details?: { loads?: Array<{ name: string }> } } } | undefined
+		)?.message;
+
+		expect(message?.content).toContain("# Build with Sites");
+		expect(message?.content).toContain("# Host with Sites");
+		expect(message?.details?.loads?.map((load) => load.name)).toEqual(["sites-building", "sites-hosting"]);
+	});
+
 	test("does not visually rewrite leading dollar shorthand", async () => {
 		const handlers = new Map<string, Array<(event: { text: string }) => unknown>>();
 		const pi = {
