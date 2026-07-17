@@ -16,7 +16,6 @@ plannotator review [optional-pr-url]
 Behavior:
 
 1. Launch the command with Bash.
-   Run it in the foreground without shell/tool timeout wrappers and without backgrounding; Plannotator is expected to block while the user reviews.
 2. Wait for it to finish.
 3. If it returns feedback or annotations, address them in the same conversation.
 4. If it returns an approval/LGTM-style message, acknowledge that review passed and continue.

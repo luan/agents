@@ -1,13 +1,13 @@
 {
-  "lastChangelogVersion": "0.80.7",
+  "lastChangelogVersion": "0.80.10",
   "steeringMode": "all",
   "autoUpdate": true,
   "transport": "auto",
   "doubleEscapeAction": "tree",
   "treeFilterMode": "default",
   "defaultProvider": "openai-codex",
-  "defaultModel": "gpt-5.6-terra",
-  "defaultThinkingLevel": "xhigh",
+  "defaultModel": "gpt-5.6-sol",
+  "defaultThinkingLevel": "high",
   "skills": [
     "../.codex/skills"
   ],
@@ -24,16 +24,13 @@
   "extensions": [
     "extensions/agents-local/index.ts",
     "extensions/fileops/index.ts",
-    "-extensions/apply-patch/index.ts",
     "extensions/ask/index.ts",
     "extensions/codex-native/index.ts",
     "extensions/context-guard/index.ts",
     "extensions/exec-command/index.ts",
     "extensions/git-tool/index.ts",
-    "-extensions/mosaic/index.ts",
     "extensions/subagents/index.ts",
     "extensions/plannotator-events/index.ts",
-    "extensions/plannotator-hub/index.ts",
     "extensions/pretty/index.ts",
     "extensions/prompt-storage/index.ts",
     "extensions/skillful/index.ts",
@@ -65,7 +62,8 @@
   },
   "enableInstallTelemetry": false,
   "compaction": {
-    "enabled": true
+    "enabled": true,
+    "reserveTokens": 20000
   },
   "showCacheMissNotices": true,
   "defaultProjectTrust": "always"

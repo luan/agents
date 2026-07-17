@@ -21,7 +21,6 @@ plannotator last
 Behavior:
 
 1. Launch the command with Bash.
-   Run it in the foreground without shell/tool timeout wrappers and without backgrounding; Plannotator is expected to block while the user annotates.
 2. Wait for the annotation session to finish.
 3. If feedback is returned, incorporate it into the follow-up response.
 4. If the session closes without feedback, mention that briefly and continue.

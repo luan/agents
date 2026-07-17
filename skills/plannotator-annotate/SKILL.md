@@ -1,36 +1,21 @@
 ---
 name: plannotator-annotate
-description: Open Plannotator's annotation UI for a markdown file, converted HTML file, URL, or folder and then respond to the returned annotations.
+description: Open Plannotator's annotation UI for a markdown file, HTML file, URL, or folder and then respond to the returned annotations.
 ---
 
 # Plannotator Annotate
 
 Use this skill when the user wants to annotate a document in Plannotator instead of reviewing it inline in chat.
 
-Command selection:
-
-- Markdown, URL, or folder targets:
+Run:
 
 ```bash
 plannotator annotate <path-or-url>
 ```
 
-- Local HTML documents that should be shown rendered instead of as source:
-
-```bash
-plannotator annotate <html-file> --render-html
-```
-
-- Approval gates for rendered HTML artifacts:
-
-```bash
-plannotator annotate <html-file> --render-html --gate
-```
-
 Behavior:
 
 1. Launch the command with Bash.
-   Run it in the foreground without shell/tool timeout wrappers and without backgrounding; Plannotator is expected to block while the user reviews.
 2. Wait for the browser review to finish.
 3. If annotations are returned, address them directly.
 4. If the session closes without feedback, say so briefly and continue.
