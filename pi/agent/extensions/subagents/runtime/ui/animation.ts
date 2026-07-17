@@ -1,4 +1,4 @@
-import { rgbFg, scaleRgb, shineText, type ThemeColorSource, themeRoleAnsi, themeRoleToRgb } from "../../shared/tui";
+import { rgbFg, scaleRgb, shineText, type ThemeColorSource, themeRoleAnsi, themeRoleToRgb } from "../../../shared/tui";
 
 export type AnimationTheme = ThemeColorSource & {
 	bold?(text: string): string;

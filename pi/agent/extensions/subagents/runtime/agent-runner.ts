@@ -27,7 +27,7 @@ import { detectEnv } from "./env.js";
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "./memory.js";
 import { mergeModelPresets, resolveModelPreset } from "./model-presets.js";
 import { resolveDefaultModel } from "./model-resolver.js";
-import { isMosaicOrchestrationToolName } from "./orchestration-tools.js";
+import { isSubagentOrchestrationToolName } from "./orchestration-tools.js";
 import { buildAgentPrompt, type PromptExtras } from "./prompts.js";
 import { loadSettings } from "./settings.js";
 import { preloadSkills } from "./skill-loader.js";
@@ -164,6 +164,12 @@ export function filterExtensionsByPath<T extends { path: string; resolvedPath: s
 	);
 }
 
+export function resolveSessionRuntimeOptions(modelRegistry: object): Record<string, unknown> {
+	const modelRuntime = (modelRegistry as { runtime?: unknown }).runtime;
+	if (modelRuntime) return { modelRuntime };
+	return { modelRegistry };
+}
+
 export async function runAgent(
 	ctx: ExtensionContext,
 	type: SubagentType,
@@ -280,16 +286,16 @@ export async function runAgent(
 	// Resolve thinking level: explicit option > agent config > config.modelPreset > undefined (inherit)
 	const thinkingLevel = options.thinkingLevel ?? agentConfig?.thinking ?? preset.thinking;
 
-	const sessionOpts: Parameters<typeof createAgentSession>[0] = {
+	const sessionOpts = {
 		cwd: effectiveCwd,
 		agentDir,
 		sessionManager: SessionManager.inMemory(effectiveCwd),
 		settingsManager: SettingsManager.create(effectiveCwd, agentDir),
-		modelRegistry: ctx.modelRegistry,
+		...resolveSessionRuntimeOptions(ctx.modelRegistry),
 		model,
 		tools: toolNames,
 		resourceLoader: loader,
-	};
+	} as Parameters<typeof createAgentSession>[0];
 	if (thinkingLevel) {
 		sessionOpts.thinkingLevel = thinkingLevel;
 	}
@@ -302,7 +308,7 @@ export async function runAgent(
 	// Filter active tools: remove orchestration tools, inherit the parent's active
 	// tool set by default, and let explicit allow/deny rules narrow or override it.
 	const activeTools = session.getActiveToolNames().filter((toolName) => {
-		if (isMosaicOrchestrationToolName(toolName)) return false;
+		if (isSubagentOrchestrationToolName(toolName)) return false;
 		if (disallowedSet?.has(toolName)) return false;
 		return selectedToolNames.has(toolName);
 	});

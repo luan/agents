@@ -6,7 +6,7 @@
  */
 
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { triangleWave } from "../../shared/tui";
+import { triangleWave } from "../../../shared/tui";
 import type { AgentManager } from "../agent-manager.js";
 import { getConfig } from "../agent-types.js";
 import type { AgentRecord, SubagentType } from "../types.js";

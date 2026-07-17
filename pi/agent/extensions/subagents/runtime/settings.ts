@@ -1,6 +1,6 @@
-// Persistence for mosaic operational settings.
+// Persistence for subagent runtime settings.
 // - Global:  ~/.pi/agent/subagents.json (via getAgentDir()) — manual defaults, never written here
-// - Project: <cwd>/.pi/subagents.json — written by /mosaic settings; overrides global on load
+// - Project: <cwd>/.pi/subagents.json — project overrides global on load
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -10,21 +10,13 @@ import type { JoinMode, ModelPresetCandidate, ThinkingLevel } from "./types.js";
 export interface SubagentsSettings {
 	maxConcurrent?: number;
 	/**
-	 * 0 = unlimited — the extension's single source of truth for that convention:
-	 * `normalizeMaxTurns()` in agent-runner.ts treats 0 → `undefined`, and the
-	 * `/mosaic settings` input prompt explicitly says "0 = unlimited".
+	 * 0 = unlimited. `normalizeMaxTurns()` in agent-runner.ts is the runtime
+	 * source of truth for that convention.
 	 */
 	defaultMaxTurns?: number;
 	graceTurns?: number;
 	defaultJoinMode?: JoinMode;
-	/**
-	 * Master switch for the schedule subagent feature. Defaults to `true`.
-	 * When `false`: the `Agent` tool's `schedule` param + its guideline are
-	 * stripped from the tool spec at registration (zero LLM-context cost), the
-	 * scheduler doesn't bind to the session, and the `/mosaic settings → Scheduled jobs`
-	 * menu entry is hidden. Schema-level removal applies at extension load
-	 * (next pi session); runtime menu/runtime-fire short-circuit is immediate.
-	 */
+	/** Retained for compatibility with existing subagents.json files. */
 	schedulingEnabled?: boolean;
 	modelPresets?: Record<string, ModelPresetCandidate[]>;
 }
@@ -141,7 +133,7 @@ function readSettingsFile(path: string): SubagentsSettings {
 		return sanitize(JSON.parse(readFileSync(path, "utf-8")));
 	} catch (err) {
 		const reason = err instanceof Error ? err.message : String(err);
-		console.warn(`[mosaic] Ignoring malformed settings at ${path}: ${reason}`);
+		console.warn(`[subagents] Ignoring malformed settings at ${path}: ${reason}`);
 		return {};
 	}
 }

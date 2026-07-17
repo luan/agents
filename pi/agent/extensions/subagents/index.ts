@@ -10,13 +10,13 @@ import {
 import type { Component } from "@earendil-works/pi-tui";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { AgentManager } from "../mosaic/agent-manager.js";
-import { registerAgents } from "../mosaic/agent-types.js";
-import { loadCustomAgents } from "../mosaic/custom-agents.js";
-import { loadSettings } from "../mosaic/settings.js";
-import type { AgentConfig, AgentRecord, SubagentType, ThinkingLevel } from "../mosaic/types.js";
-import { type AgentActivity, AgentWidget } from "../mosaic/ui/agent-widget.js";
 import { bold, framedBlock, renderStatusLine, styledSymbol, textComponent, treeGlyphs } from "../shared/tui/omp-card";
+import { AgentManager } from "./runtime/agent-manager.js";
+import { registerAgents } from "./runtime/agent-types.js";
+import { loadCustomAgents } from "./runtime/custom-agents.js";
+import { loadSettings } from "./runtime/settings.js";
+import type { AgentConfig, AgentRecord, SubagentType, ThinkingLevel } from "./runtime/types.js";
+import { type AgentActivity, AgentWidget } from "./runtime/ui/agent-widget.js";
 
 type TaskItem = {
 	id?: string;

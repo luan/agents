@@ -7,13 +7,12 @@ import {
 	extractWebSearch,
 	IMAGE_SAVE_DISPLAY_MESSAGE_TYPE,
 	markGeneratedImageDisplayed,
-	registerNativeActivityMessageRenderers,
 	type SavedGeneratedImage,
 	type SurfacedWebSearch,
 	saveOpenAICodexGeneratedImage,
 	WEB_SEARCH_ACTIVITY_MESSAGE_TYPE,
-} from "../codex-native/native-tools";
-import { convertResponsesMessages, processResponsesStream } from "../codex-native/openai-responses-shared";
+} from "./native-tools";
+import { convertResponsesMessages, processResponsesStream } from "./openai-responses-shared";
 
 const DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api";
 const JWT_CLAIM_PATH = "https://api.openai.com/auth";
@@ -231,7 +230,7 @@ const websocketSessionCache = new Map<string, CachedWebSocketConnection>();
 const websocketDebugStats = new Map<string, OpenAICodexWebSocketDebugStats>();
 const websocketSseFallbackSessions = new Set<string>();
 
-type ApplyPatchFreeformOptions = {
+type CodexFreeformOptions = {
 	toolName: string;
 	toolNames?: string[];
 	description: string;
@@ -252,7 +251,7 @@ function resolveFreeformToolConfig(
 	return typeof value === "function" ? value() : value;
 }
 
-function freeformToolNames(options: ApplyPatchFreeformOptions): Set<string> {
+function freeformToolNames(options: CodexFreeformOptions): Set<string> {
 	return new Set([
 		options.toolName,
 		...(options.toolNames ?? []),
@@ -262,10 +261,7 @@ function freeformToolNames(options: ApplyPatchFreeformOptions): Set<string> {
 	]);
 }
 
-function freeformToolConfig(
-	options: ApplyPatchFreeformOptions,
-	toolName: string,
-): { description: string; grammar: string } {
+function freeformToolConfig(options: CodexFreeformOptions, toolName: string): { description: string; grammar: string } {
 	return (
 		resolveFreeformToolConfig(options.toolConfigs?.[toolName]) ?? {
 			description: options.description,
@@ -281,7 +277,7 @@ type PendingActivity =
 	  }
 	| { kind: "web-search"; search: SurfacedWebSearch };
 
-export function registerApplyPatchFreeformProvider(pi: ExtensionAPI, options: ApplyPatchFreeformOptions) {
+export function registerCodexFreeformProvider(pi: ExtensionAPI, options: CodexFreeformOptions) {
 	if (typeof pi.registerProvider !== "function") return;
 	const pendingActivities: PendingActivity[] = [];
 	let pendingFlushTimer: ReturnType<typeof setTimeout> | undefined;
@@ -373,7 +369,7 @@ export function registerApplyPatchFreeformProvider(pi: ExtensionAPI, options: Ap
 				),
 		),
 	}));
-	registerNativeActivityMessageRenderers(pi);
+	// Rendering is registered once by the owning codex-native extension.
 }
 
 function streamFreeformCodexResponses(

@@ -1,9 +1,10 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { closeOpenAICodexWebSocketSessions } from "../apply-patch/freeform-codex";
+import { getEditFreeformToolConfig } from "../fileops/index";
 import { configureImageCapabilities } from "../shared/image-capabilities";
 import registerCodexAppsBridge from "./codex-apps";
 import registerOpenAINativeCompaction from "./compaction/index";
+import { registerCodexFreeformProvider } from "./freeform-codex";
 import {
 	createImageGenerationTool,
 	createWebSearchTool,
@@ -86,6 +87,7 @@ export function isCodexWebSocketError(message: AssistantMessage): boolean {
 }
 
 export default async function codexNativeExtension(pi: ExtensionAPI) {
+	registerCodexFreeformProvider(pi, { toolName: "edit", ...getEditFreeformToolConfig() });
 	configureImageCapabilities();
 	registerOpenAINativeCompaction(pi);
 	await registerCodexAppsBridge(pi);
@@ -128,10 +130,6 @@ export default async function codexNativeExtension(pi: ExtensionAPI) {
 
 	pi.on("model_select", (_event, ctx) => {
 		applyToolPolicy(ctx);
-	});
-
-	pi.on("session_shutdown", () => {
-		closeOpenAICodexWebSocketSessions();
 	});
 
 	pi.on("message_end", async (event, ctx) => {

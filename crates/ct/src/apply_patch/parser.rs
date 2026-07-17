@@ -828,55 +828,6 @@ fn parse_update_scope_chunk(
 mod tests {
     use super::*;
 
-    const SUPPORTED_MARKERS: &[&str] = &[
-        INTENT_MARKER,
-        ENVIRONMENT_ID_MARKER,
-        ADD_FILE_MARKER,
-        DELETE_FILE_MARKER,
-        UPDATE_FILE_MARKER,
-        MOVE_FILE_MARKER,
-        MOVE_TO_MARKER,
-        REPLACE_ALL_MARKER,
-        EXPECT_REPLACEMENTS_MARKER,
-        UPDATE_SCOPE_MARKER,
-        EOF_MARKER,
-        "@@ lines ",
-    ];
-
-    #[test]
-    fn documented_grammar_surfaces_include_supported_markers() {
-        let parser_source = include_str!("parser.rs");
-        let ts_source = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../pi/agent/extensions/apply-patch/index.ts"
-        ));
-        let ts_grammar = extract_ts_apply_patch_grammar(ts_source);
-
-        for marker in SUPPORTED_MARKERS {
-            assert!(
-                parser_source.contains(marker),
-                "Rust parser docs/source must mention supported marker {marker:?}"
-            );
-            assert!(
-                ts_grammar.contains(marker),
-                "TypeScript freeform grammar must mention supported marker {marker:?}"
-            );
-        }
-
-        assert!(parser_source.contains("preamble: (intent | environment_id)+"));
-        assert!(ts_grammar.contains("preamble: (intent | environment_id)+"));
-        assert!(ts_grammar.contains("move_spec: /(.+) -> (.+)/"));
-    }
-
-    fn extract_ts_apply_patch_grammar(source: &str) -> &str {
-        let start = source
-            .find("export const APPLY_PATCH_GRAMMAR = `")
-            .expect("APPLY_PATCH_GRAMMAR export");
-        let grammar_start = source[start..].find('`').unwrap() + start + 1;
-        let grammar_end = source[grammar_start..].find("`;").unwrap() + grammar_start;
-        &source[grammar_start..grammar_end]
-    }
-
     #[test]
     fn test_parse_patch() {
         assert_eq!(
