@@ -1,10 +1,33 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { setEditorChromeProvider, setEditorSessionIdentityProvider } from "./editor";
-import registerTui from "./index";
+import registerTui, { getUsageTotals } from "./index";
 
 afterEach(() => {
 	setEditorChromeProvider(undefined);
 	setEditorSessionIdentityProvider(undefined);
+});
+
+test("includes persisted subagent usage in session totals", () => {
+	const ctx = {
+		sessionManager: {
+			getBranch: () => [
+				{
+					type: "message",
+					message: {
+						role: "assistant",
+						usage: { input: 100, output: 40, cost: { total: 0.25 } },
+					},
+				},
+				{
+					type: "custom",
+					customType: "subagents:usage",
+					data: { input: 300, output: 80, cost: 0.75 },
+				},
+			],
+		},
+	};
+
+	expect(getUsageTotals(ctx as never)).toEqual({ input: 400, output: 120, cost: 1 });
 });
 
 describe("polished TUI session binding", () => {
@@ -116,7 +139,11 @@ function createCtx(
 		ui: {
 			theme: {},
 			setFooter(factory: (tui: { requestRender: () => void }, theme: unknown, footerData: unknown) => unknown) {
-				factory({ requestRender: options.requestRender ?? (() => {}) }, {}, { onBranchChange: () => () => {} });
+				factory(
+					{ requestRender: options.requestRender ?? (() => {}) },
+					{},
+					{ onBranchChange: () => () => {}, getExtensionStatuses: () => new Map() },
+				);
 			},
 			setWorkingVisible() {},
 		},

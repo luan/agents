@@ -10,6 +10,7 @@ import {
 import type { Component } from "@earendil-works/pi-tui";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { SUBAGENT_USAGE_ENTRY_TYPE, SUBAGENT_USAGE_EVENT, type SubagentUsageEvent } from "../shared/subagent-usage";
 import { bold, framedBlock, renderStatusLine, styledSymbol, textComponent, treeGlyphs } from "../shared/tui/omp-card";
 import { AgentManager } from "./runtime/agent-manager.js";
 import { registerAgents } from "./runtime/agent-types.js";
@@ -17,6 +18,7 @@ import { loadCustomAgents } from "./runtime/custom-agents.js";
 import { loadSettings } from "./runtime/settings.js";
 import type { AgentConfig, AgentRecord, SubagentType, ThinkingLevel } from "./runtime/types.js";
 import { type AgentActivity, AgentWidget } from "./runtime/ui/agent-widget.js";
+import type { AssistantUsage } from "./runtime/usage.js";
 
 type TaskItem = {
 	id?: string;
@@ -451,17 +453,30 @@ function ensureActivity(activityByAgent: Map<string, AgentActivity>, id: string)
 			toolUses: 0,
 			responseText: "",
 			turnCount: 0,
-			lifetimeUsage: { input: 0, output: 0, cacheWrite: 0 },
+			lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
 		};
 		activityByAgent.set(id, activity);
 	}
 	return activity;
 }
 
-function addActivityUsage(activity: AgentActivity, usage: { input: number; output: number; cacheWrite: number }): void {
+function addActivityUsage(activity: AgentActivity, usage: AssistantUsage): void {
 	activity.lifetimeUsage.input += usage.input;
 	activity.lifetimeUsage.output += usage.output;
 	activity.lifetimeUsage.cacheWrite += usage.cacheWrite;
+	activity.lifetimeUsage.cost += usage.cost;
+}
+
+function recordSubagentUsage(pi: ExtensionAPI, ctx: ExtensionContext, usage: AssistantUsage): void {
+	const delta: SubagentUsageEvent = { input: usage.input, output: usage.output, cost: usage.cost };
+	if (delta.input === 0 && delta.output === 0 && delta.cost === 0) return;
+	try {
+		pi.appendEntry(SUBAGENT_USAGE_ENTRY_TYPE, delta);
+	} catch {}
+	try {
+		delta.sessionFile = ctx.sessionManager.getSessionFile() ?? undefined;
+		pi.events.emit(SUBAGENT_USAGE_EVENT, delta);
+	} catch {}
 }
 
 function finishWidgetAgent(agentWidget: AgentWidget, record: AgentRecord): void {
@@ -610,6 +625,7 @@ export default function ompSubagentsExtension(pi: ExtensionAPI) {
 									agentWidget.update();
 								},
 								onAssistantUsage: (usage) => {
+									recordSubagentUsage(pi, ctx, usage);
 									addActivityUsage(ensureActivity(activityByAgent, id), usage);
 									agentWidget.update();
 								},
@@ -716,11 +732,10 @@ export default function ompSubagentsExtension(pi: ExtensionAPI) {
 		}),
 		execute: async (_toolCallId, params, signal) => {
 			if (!currentCtx) throw new Error("No active session");
-			const record = await manager.resume(
-				(params as { id: string }).id,
-				(params as { message: string }).message,
+			const record = await manager.resume((params as { id: string }).id, (params as { message: string }).message, {
 				signal,
-			);
+				onAssistantUsage: (usage) => recordSubagentUsage(pi, currentCtx!, usage),
+			});
 			if (!record) throw new Error(`Subagent not found or not resumable: ${(params as { id: string }).id}`);
 			const result = resultFromRecord(
 				record,

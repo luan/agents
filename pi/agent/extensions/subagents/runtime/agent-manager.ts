@@ -11,7 +11,7 @@ import type { Model } from "@earendil-works/pi-ai";
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { resumeAgent, runAgent, type ToolActivity } from "./agent-runner.js";
 import type { AgentRecord, IsolationMode, SubagentType, ThinkingLevel } from "./types.js";
-import { addUsage } from "./usage.js";
+import { type AssistantUsage, addUsage } from "./usage.js";
 import { cleanupWorktree, createWorktree, pruneWorktrees } from "./worktree.js";
 
 export type OnAgentComplete = (record: AgentRecord) => void;
@@ -60,9 +60,14 @@ interface SpawnOptions {
 	/** Called at the end of each agentic turn with the cumulative count. */
 	onTurnEnd?: (turnCount: number) => void;
 	/** Called once per assistant message_end with that message's usage delta. */
-	onAssistantUsage?: (usage: { input: number; output: number; cacheWrite: number }) => void;
+	onAssistantUsage?: (usage: AssistantUsage) => void;
 	/** Called when the session successfully compacts. */
 	onCompaction?: (info: CompactionInfo) => void;
+}
+
+interface ResumeOptions {
+	signal?: AbortSignal;
+	onAssistantUsage?: (usage: AssistantUsage) => void;
 }
 
 export class AgentManager {
@@ -122,7 +127,7 @@ export class AgentManager {
 			modelName: options.modelName ?? modelLabel(options.model),
 			thinkingLevel: options.thinkingLevel,
 			abortController,
-			lifetimeUsage: { input: 0, output: 0, cacheWrite: 0 },
+			lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
 			compactionCount: 0,
 		};
 		this.agents.set(id, record);
@@ -342,7 +347,7 @@ export class AgentManager {
 	/**
 	 * Resume an existing agent session with a new prompt.
 	 */
-	async resume(id: string, prompt: string, signal?: AbortSignal): Promise<AgentRecord | undefined> {
+	async resume(id: string, prompt: string, options: ResumeOptions = {}): Promise<AgentRecord | undefined> {
 		const record = this.agents.get(id);
 		if (!record?.session) return undefined;
 
@@ -359,12 +364,13 @@ export class AgentManager {
 				},
 				onAssistantUsage: (usage) => {
 					addUsage(record.lifetimeUsage, usage);
+					options.onAssistantUsage?.(usage);
 				},
 				onCompaction: (info) => {
 					record.compactionCount++;
 					this.onCompact?.(record, info);
 				},
-				signal,
+				signal: options.signal,
 			});
 			record.status = "completed";
 			record.result = responseText;

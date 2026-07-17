@@ -6,6 +6,7 @@
     "pi/agent/extensions/prompt-storage/**/*.ts",
     "pi/agent/extensions/skillful/**/*.ts",
     "pi/agent/extensions/shared/tui/**/*.ts",
+    "pi/agent/extensions/subagents/**/*.ts",
     "pi/agent/extensions/tui/**/*.ts",
     "omp/agent/extensions/tui/**/*.ts"
   ],

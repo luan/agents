@@ -32,6 +32,7 @@ import { buildAgentPrompt, type PromptExtras } from "./prompts.js";
 import { loadSettings } from "./settings.js";
 import { preloadSkills } from "./skill-loader.js";
 import type { SubagentType, ThinkingLevel } from "./types.js";
+import { type AssistantUsage, readAssistantUsage } from "./usage.js";
 
 /** Default max turns. undefined = unlimited (no turn limit). */
 let defaultMaxTurns: number | undefined;
@@ -93,7 +94,7 @@ export interface RunOptions {
 	 * Lets callers maintain a lifetime accumulator that survives compaction
 	 * (which replaces session.state.messages and resets stats-derived sums).
 	 */
-	onAssistantUsage?: (usage: { input: number; output: number; cacheWrite: number }) => void;
+	onAssistantUsage?: (usage: AssistantUsage) => void;
 	/**
 	 * Called when the session successfully compacts. `tokensBefore` is upstream's
 	 * pre-compaction context size estimate. Aborted compactions don't fire.
@@ -295,7 +296,7 @@ export async function runAgent(
 		model,
 		tools: toolNames,
 		resourceLoader: loader,
-	} as Parameters<typeof createAgentSession>[0];
+	} as NonNullable<Parameters<typeof createAgentSession>[0]>;
 	if (thinkingLevel) {
 		sessionOpts.thinkingLevel = thinkingLevel;
 	}
@@ -364,13 +365,8 @@ export async function runAgent(
 			options.onToolActivity?.({ type: "end", toolName: event.toolName });
 		}
 		if (event.type === "message_end" && event.message.role === "assistant") {
-			const u = (event.message as any).usage;
-			if (u)
-				options.onAssistantUsage?.({
-					input: u.input ?? 0,
-					output: u.output ?? 0,
-					cacheWrite: u.cacheWrite ?? 0,
-				});
+			const usage = readAssistantUsage(event.message);
+			if (usage) options.onAssistantUsage?.(usage);
 		}
 		if (event.type === "compaction_end" && !event.aborted && event.result) {
 			options.onCompaction?.({ reason: event.reason, tokensBefore: event.result.tokensBefore });
@@ -409,7 +405,7 @@ export async function resumeAgent(
 	prompt: string,
 	options: {
 		onToolActivity?: (activity: ToolActivity) => void;
-		onAssistantUsage?: (usage: { input: number; output: number; cacheWrite: number }) => void;
+		onAssistantUsage?: (usage: AssistantUsage) => void;
 		onCompaction?: (info: { reason: "manual" | "threshold" | "overflow"; tokensBefore: number }) => void;
 		signal?: AbortSignal;
 	} = {},
@@ -425,13 +421,8 @@ export async function resumeAgent(
 					if (event.type === "tool_execution_end")
 						options.onToolActivity?.({ type: "end", toolName: event.toolName });
 					if (event.type === "message_end" && event.message.role === "assistant") {
-						const u = (event.message as any).usage;
-						if (u)
-							options.onAssistantUsage?.({
-								input: u.input ?? 0,
-								output: u.output ?? 0,
-								cacheWrite: u.cacheWrite ?? 0,
-							});
+						const usage = readAssistantUsage(event.message);
+						if (usage) options.onAssistantUsage?.(usage);
 					}
 					if (event.type === "compaction_end" && !event.aborted && event.result) {
 						options.onCompaction?.({ reason: event.reason, tokensBefore: event.result.tokensBefore });

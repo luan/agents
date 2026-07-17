@@ -2,6 +2,12 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { buildSessionContext, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { runCommand } from "../shared/command-runner";
+import {
+	parseSubagentUsage,
+	SUBAGENT_USAGE_ENTRY_TYPE,
+	SUBAGENT_USAGE_EVENT,
+	type SubagentUsageEvent,
+} from "../shared/subagent-usage";
 import { defineExtensionTui } from "../shared/tui";
 import { ensureConfigExists, loadConfig, type PolishedTuiConfig, saveConfig } from "./config";
 import { installFocusCursor } from "./cursor-focus";
@@ -98,16 +104,24 @@ function providerColor(providerLabel: string): string | undefined {
 	}
 }
 
-function getUsageTotals(ctx: ExtensionContext): UsageTotals {
+export function getUsageTotals(ctx: ExtensionContext): UsageTotals {
 	let input = 0;
 	let output = 0;
 	let cost = 0;
 	for (const entry of ctx.sessionManager.getBranch()) {
-		if (entry.type !== "message" || entry.message.role !== "assistant") continue;
-		const message = entry.message as AssistantMessage;
-		input += message.usage?.input ?? 0;
-		output += message.usage?.output ?? 0;
-		cost += message.usage?.cost?.total ?? 0;
+		if (entry.type === "message" && entry.message.role === "assistant") {
+			const message = entry.message as AssistantMessage;
+			input += message.usage?.input ?? 0;
+			output += message.usage?.output ?? 0;
+			cost += message.usage?.cost?.total ?? 0;
+			continue;
+		}
+		if (entry.type !== "custom" || entry.customType !== SUBAGENT_USAGE_ENTRY_TYPE) continue;
+		const usage = parseSubagentUsage(entry.data);
+		if (!usage) continue;
+		input += usage.input;
+		output += usage.output;
+		cost += usage.cost;
 	}
 	return { input, output, cost };
 }
@@ -169,6 +183,7 @@ export default function (pi: ExtensionAPI) {
 	let uiGeneration = 0;
 	let activeSessionFile: string | undefined;
 	let editorSessionIdentity: EditorSessionIdentity | undefined;
+	let activeCtx: ExtensionContext | undefined;
 
 	let footerDataProvider: FooterDataProvider | undefined;
 	const isStaleCtxError = (error: unknown) =>
@@ -568,6 +583,7 @@ export default function (pi: ExtensionAPI) {
 			requestFooterRender = () => tui.requestRender();
 			const disposeFocusCursor = installFocusCursor(pi, ctx, tui);
 			const unsubscribeBranch = footerData.onBranchChange(() => {
+				syncStateIfCurrent(ctx);
 				scheduleProjectRefresh(ctx, generation);
 				tui.requestRender();
 			});
@@ -660,10 +676,17 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	pi.events.on(SUBAGENT_USAGE_EVENT, (payload: unknown) => {
+		const event = payload as Partial<SubagentUsageEvent> | undefined;
+		if (!activeCtx || event?.sessionFile !== activeSessionFile) return;
+		if (syncStateIfCurrent(activeCtx)) refresh();
+	});
+
 	pi.on("session_start", async (_event, ctx) => {
 		const sessionFile = sessionFileFor(ctx);
 		if (!sessionFile) return;
 		activeSessionFile = sessionFile;
+		activeCtx = ctx;
 		disposed = false;
 		uiGeneration++;
 		installUi(ctx);
@@ -675,6 +698,7 @@ export default function (pi: ExtensionAPI) {
 		disposed = true;
 		uiGeneration++;
 		activeSessionFile = undefined;
+		activeCtx = undefined;
 		requestFooterRender = undefined;
 		setEditorChromeProvider(undefined);
 		setEditorSessionIdentityProvider(undefined);
