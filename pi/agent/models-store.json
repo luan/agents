@@ -149,7 +149,7 @@
             }
           ]
         },
-        "contextWindow": 372000,
+        "contextWindow": 272000,
         "maxTokens": 128000,
         "thinkingLevelMap": {
           "xhigh": "xhigh",
@@ -186,7 +186,7 @@
             }
           ]
         },
-        "contextWindow": 372000,
+        "contextWindow": 272000,
         "maxTokens": 128000,
         "thinkingLevelMap": {
           "xhigh": "xhigh",
@@ -223,7 +223,7 @@
             }
           ]
         },
-        "contextWindow": 372000,
+        "contextWindow": 272000,
         "maxTokens": 128000,
         "thinkingLevelMap": {
           "xhigh": "xhigh",
@@ -235,7 +235,8 @@
         }
       }
     ],
-    "checkedAt": 1784304673320
+    "checkedAt": 1784774352908,
+    "lastModified": 1784724573000
   },
   "github-copilot": {
     "models": [
@@ -747,7 +748,12 @@
         },
         "thinkingLevelMap": {
           "off": null,
-          "minimal": "low"
+          "minimal": "low",
+          "low": "low",
+          "medium": "medium",
+          "high": "high",
+          "xhigh": null,
+          "max": null
         }
       },
       {
@@ -840,7 +846,11 @@
         "thinkingLevelMap": {
           "off": null,
           "minimal": "low",
-          "xhigh": "xhigh"
+          "low": "low",
+          "medium": "medium",
+          "high": "high",
+          "xhigh": "xhigh",
+          "max": null
         }
       },
       {
@@ -880,7 +890,11 @@
         "thinkingLevelMap": {
           "off": null,
           "minimal": "low",
-          "xhigh": "xhigh"
+          "low": "low",
+          "medium": "medium",
+          "high": "high",
+          "xhigh": "xhigh",
+          "max": null
         }
       },
       {
@@ -911,7 +925,11 @@
         "thinkingLevelMap": {
           "off": null,
           "minimal": "low",
-          "xhigh": "xhigh"
+          "low": "low",
+          "medium": "medium",
+          "high": "high",
+          "xhigh": "xhigh",
+          "max": null
         }
       },
       {
@@ -982,7 +1000,11 @@
         "thinkingLevelMap": {
           "off": null,
           "minimal": "low",
-          "xhigh": "xhigh"
+          "low": "low",
+          "medium": "medium",
+          "high": "high",
+          "xhigh": "xhigh",
+          "max": null
         }
       },
       {
@@ -1000,14 +1022,14 @@
           "input": 1,
           "output": 6,
           "cacheRead": 0.1,
-          "cacheWrite": 0,
+          "cacheWrite": 1.25,
           "tiers": [
             {
               "inputTokensAbove": 200000,
               "input": 2,
               "output": 9,
               "cacheRead": 0.2,
-              "cacheWrite": 0
+              "cacheWrite": 2.5
             }
           ]
         },
@@ -1022,6 +1044,9 @@
         "thinkingLevelMap": {
           "off": null,
           "minimal": "low",
+          "low": "low",
+          "medium": "medium",
+          "high": "high",
           "xhigh": "xhigh",
           "max": "max"
         }
@@ -1041,14 +1066,14 @@
           "input": 5,
           "output": 30,
           "cacheRead": 0.5,
-          "cacheWrite": 0,
+          "cacheWrite": 6.25,
           "tiers": [
             {
               "inputTokensAbove": 272000,
               "input": 10,
               "output": 45,
               "cacheRead": 1,
-              "cacheWrite": 0
+              "cacheWrite": 12.5
             }
           ]
         },
@@ -1063,6 +1088,9 @@
         "thinkingLevelMap": {
           "off": null,
           "minimal": "low",
+          "low": "low",
+          "medium": "medium",
+          "high": "high",
           "xhigh": "xhigh",
           "max": "max"
         }
@@ -1082,14 +1110,14 @@
           "input": 2.5,
           "output": 15,
           "cacheRead": 0.25,
-          "cacheWrite": 0,
+          "cacheWrite": 3.125,
           "tiers": [
             {
               "inputTokensAbove": 272000,
               "input": 5,
               "output": 22.5,
               "cacheRead": 0.5,
-              "cacheWrite": 0
+              "cacheWrite": 6.25
             }
           ]
         },
@@ -1104,6 +1132,9 @@
         "thinkingLevelMap": {
           "off": null,
           "minimal": "low",
+          "low": "low",
+          "medium": "medium",
+          "high": "high",
           "xhigh": "xhigh",
           "max": "max"
         }
@@ -1162,10 +1193,20 @@
           "Editor-Version": "vscode/1.107.0",
           "Editor-Plugin-Version": "copilot-chat/0.35.0",
           "Copilot-Integration-Id": "vscode-chat"
+        },
+        "thinkingLevelMap": {
+          "off": null,
+          "minimal": null,
+          "low": "low",
+          "medium": "medium",
+          "high": "high",
+          "xhigh": null,
+          "max": null
         }
       }
     ],
-    "checkedAt": 1784304675328
+    "checkedAt": 1784774354019,
+    "lastModified": 1784724556000
   },
   "anthropic": {
     "models": [
@@ -1493,6 +1534,7 @@
         }
       }
     ],
-    "checkedAt": 1784304673620
+    "checkedAt": 1784774352870,
+    "lastModified": 1784724547000
   }
 }
