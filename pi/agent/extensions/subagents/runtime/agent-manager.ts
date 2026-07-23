@@ -9,7 +9,7 @@
 import { randomUUID } from "node:crypto";
 import type { Model } from "@earendil-works/pi-ai";
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { resumeAgent, runAgent, type ToolActivity } from "./agent-runner.js";
+import { findRetryableTurn, resumeAgent, retryFailedTurn, runAgent, type ToolActivity } from "./agent-runner.js";
 import type { AgentRecord, IsolationMode, SubagentType, ThinkingLevel } from "./types.js";
 import { type AssistantUsage, addUsage } from "./usage.js";
 import { cleanupWorktree, createWorktree, pruneWorktrees } from "./worktree.js";
@@ -195,6 +195,10 @@ export class AgentManager {
 			isolated: options.isolated,
 			inheritContext: options.inheritContext,
 			thinkingLevel: options.thinkingLevel,
+			onRuntimeResolved: (model, thinkingLevel) => {
+				record.modelName = options.modelName ?? modelLabel(model);
+				record.thinkingLevel = thinkingLevel;
+			},
 			cwd: worktreeCwd ?? options.cwd,
 			signal: record.abortController!.signal,
 			onToolActivity: (activity) => {
@@ -224,12 +228,13 @@ export class AgentManager {
 				options.onSessionCreated?.(session);
 			},
 		})
-			.then(({ responseText, session, aborted, steered }) => {
+			.then(({ responseText, session, aborted, steered, error }) => {
 				// Don't overwrite status if externally stopped via abort()
 				if (record.status !== "stopped") {
-					record.status = aborted ? "aborted" : steered ? "steered" : "completed";
+					record.status = error ? "error" : aborted ? "aborted" : steered ? "steered" : "completed";
 				}
 				record.result = responseText;
+				record.error = error;
 				record.session = session;
 				record.completedAt ??= Date.now();
 
@@ -358,7 +363,7 @@ export class AgentManager {
 		record.error = undefined;
 
 		try {
-			const responseText = await resumeAgent(record.session, prompt, {
+			const turn = await resumeAgent(record.session, prompt, {
 				onToolActivity: (activity) => {
 					if (activity.type === "end") record.toolUses++;
 				},
@@ -372,8 +377,9 @@ export class AgentManager {
 				},
 				signal: options.signal,
 			});
-			record.status = "completed";
-			record.result = responseText;
+			record.status = turn.error ? "error" : "completed";
+			record.result = turn.responseText;
+			record.error = turn.error;
 			record.completedAt = Date.now();
 		} catch (err) {
 			record.status = "error";
@@ -382,6 +388,51 @@ export class AgentManager {
 		}
 
 		return record;
+	}
+
+	async retry(id: string, options: ResumeOptions = {}): Promise<AgentRecord | undefined> {
+		const record = this.agents.get(id);
+		if (!record?.session || !findRetryableTurn(record.session.sessionManager.getBranch())) return undefined;
+
+		record.status = "running";
+		record.startedAt = Date.now();
+		record.completedAt = undefined;
+		record.result = undefined;
+		record.error = undefined;
+		this.onStart?.(record);
+
+		try {
+			const turn = await retryFailedTurn(record.session, {
+				onToolActivity: (activity) => {
+					if (activity.type === "end") record.toolUses++;
+				},
+				onAssistantUsage: (usage) => {
+					addUsage(record.lifetimeUsage, usage);
+					options.onAssistantUsage?.(usage);
+				},
+				onCompaction: (info) => {
+					record.compactionCount++;
+					this.onCompact?.(record, info);
+				},
+				signal: options.signal,
+			});
+			record.status = turn.error ? "error" : "completed";
+			record.result = turn.responseText;
+			record.error = turn.error;
+			record.completedAt = Date.now();
+		} catch (err) {
+			record.status = "error";
+			record.error = err instanceof Error ? err.message : String(err);
+			record.completedAt = Date.now();
+		}
+
+		return record;
+	}
+
+	getLatestRetryableRecord(): AgentRecord | undefined {
+		return this.listAgents().find(
+			(record) => record.session && findRetryableTurn(record.session.sessionManager.getBranch()),
+		);
 	}
 
 	getRecord(id: string): AgentRecord | undefined {

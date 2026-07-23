@@ -13,6 +13,7 @@ import { Type } from "typebox";
 import { SUBAGENT_USAGE_ENTRY_TYPE, SUBAGENT_USAGE_EVENT, type SubagentUsageEvent } from "../shared/subagent-usage";
 import { bold, framedBlock, renderStatusLine, styledSymbol, textComponent, treeGlyphs } from "../shared/tui/omp-card";
 import { AgentManager } from "./runtime/agent-manager.js";
+import { findRetryableTurn } from "./runtime/agent-runner.js";
 import { registerAgents } from "./runtime/agent-types.js";
 import { loadCustomAgents } from "./runtime/custom-agents.js";
 import { loadSettings } from "./runtime/settings.js";
@@ -568,6 +569,62 @@ export default function ompSubagentsExtension(pi: ExtensionAPI) {
 		},
 	});
 
+	pi.registerCommand("retry", {
+		description: "Retry the failed main turn, or a failed subagent by id",
+		handler: async (args: string, ctx: ExtensionCommandContext) => {
+			await ctx.waitForIdle();
+			const target = args.trim();
+			const retryMain = !target || target === "main";
+			const mainTurn = findRetryableTurn(ctx.sessionManager.getBranch());
+
+			if (retryMain && mainTurn) {
+				const navigation = await ctx.navigateTree(mainTurn.userEntryId);
+				if (navigation.cancelled) {
+					ctx.ui.notify("Retry cancelled.", "warning");
+					return;
+				}
+				ctx.ui.setEditorText("");
+				ctx.ui.notify("Retrying failed turn on a clean branch.", "info");
+				pi.sendUserMessage(mainTurn.content as Parameters<ExtensionAPI["sendUserMessage"]>[0]);
+				return;
+			}
+
+			if (target === "main") {
+				ctx.ui.notify("No failed main-session turn is available to retry.", "warning");
+				return;
+			}
+
+			const record = target
+				? (manager.getRecord(target) ?? manager.listAgents().find((agent) => agent.id.startsWith(target)))
+				: manager.getLatestRetryableRecord();
+			if (!record) {
+				ctx.ui.notify(
+					target
+						? `No retryable subagent found for "${target}".`
+						: "No failed main-session turn or subagent is available to retry.",
+					"warning",
+				);
+				return;
+			}
+
+			ctx.ui.notify(`Retrying subagent ${record.id} on a clean branch.`, "info");
+			const retried = await manager.retry(record.id, {
+				onAssistantUsage: (usage) => recordSubagentUsage(pi, ctx, usage),
+			});
+			if (!retried) {
+				ctx.ui.notify(`Subagent ${record.id} is not retryable.`, "warning");
+				return;
+			}
+			finishWidgetAgent(agentWidget, retried);
+			ctx.ui.notify(
+				retried.error
+					? `Subagent ${retried.id} failed again: ${retried.error}`
+					: `Subagent ${retried.id} completed after retry.`,
+				retried.error ? "error" : "info",
+			);
+		},
+	});
+
 	pi.registerTool({
 		name: "task",
 		label: "Subagent",
@@ -725,7 +782,7 @@ export default function ompSubagentsExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "subagent_send",
 		label: "Send Subagent Message",
-		description: "Send a follow-up prompt to an existing live subagent session by id.",
+		description: "Send a follow-up prompt to a live subagent, or use /retry to replay its failed turn.",
 		promptSnippet: "Message a subagent",
 		renderShell: "self",
 		renderCall: (args: unknown, theme: ToolTheme) => {
@@ -746,17 +803,15 @@ export default function ompSubagentsExtension(pi: ExtensionAPI) {
 		}),
 		execute: async (_toolCallId, params, signal) => {
 			if (!currentCtx) throw new Error("No active session");
-			const record = await manager.resume((params as { id: string }).id, (params as { message: string }).message, {
+			const { id, message } = params as { id: string; message: string };
+			const options = {
 				signal,
-				onAssistantUsage: (usage) => recordSubagentUsage(pi, currentCtx!, usage),
-			});
-			if (!record) throw new Error(`Subagent not found or not resumable: ${(params as { id: string }).id}`);
-			const result = resultFromRecord(
-				record,
-				{ assignment: (params as { message: string }).message },
-				0,
-				record.type,
-			);
+				onAssistantUsage: (usage: AssistantUsage) => recordSubagentUsage(pi, currentCtx!, usage),
+			};
+			const record =
+				message.trim() === "/retry" ? await manager.retry(id, options) : await manager.resume(id, message, options);
+			if (!record) throw new Error(`Subagent not found or not resumable: ${id}`);
+			const result = resultFromRecord(record, { assignment: message }, 0, record.type);
 			return { content: [{ type: "text" as const, text: formatTaskResults([result]) }], details: { result } };
 		},
 	});

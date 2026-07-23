@@ -3,7 +3,7 @@
  */
 
 import type { Model } from "@earendil-works/pi-ai";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import {
 	type AgentSession,
 	type AgentSessionEvent,
@@ -87,6 +87,8 @@ export interface RunOptions {
 	/** Called on streaming text deltas from the assistant response. */
 	onTextDelta?: (delta: string, fullText: string) => void;
 	onSessionCreated?: (session: AgentSession) => void;
+	/** Called after model and thinking settings are resolved. */
+	onRuntimeResolved?: (model: Model<any> | undefined, thinkingLevel: ThinkingLevel | undefined) => void;
 	/** Called at the end of each agentic turn with the cumulative count. */
 	onTurnEnd?: (turnCount: number) => void;
 	/**
@@ -109,6 +111,49 @@ export interface RunResult {
 	aborted: boolean;
 	/** True if the agent was steered to wrap up (hit soft turn limit) but finished in time. */
 	steered: boolean;
+	/** Final provider error after automatic retries are exhausted. */
+	error?: string;
+}
+
+export interface AgentTurnResult {
+	responseText: string;
+	error?: string;
+}
+
+export interface RetryableTurn {
+	userEntryId: string;
+	content: Parameters<AgentSession["sendUserMessage"]>[0];
+	error: string;
+}
+
+export function findRetryableTurn(entries: readonly SessionEntry[]): RetryableTurn | undefined {
+	let failedAssistantIndex = -1;
+	let error: string | undefined;
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const entry = entries[index];
+		if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+		if (entry.message.stopReason !== "error") return undefined;
+		failedAssistantIndex = index;
+		error = entry.message.errorMessage || "Assistant request failed";
+		break;
+	}
+	if (failedAssistantIndex === -1 || !error) return undefined;
+
+	for (let index = failedAssistantIndex - 1; index >= 0; index--) {
+		const entry = entries[index];
+		if (entry.type === "message" && entry.message.role === "user") {
+			return {
+				userEntryId: entry.id,
+				content: entry.message.content as Parameters<AgentSession["sendUserMessage"]>[0],
+				error,
+			};
+		}
+	}
+	return undefined;
+}
+
+function getActiveTurnError(session: AgentSession): string | undefined {
+	return findRetryableTurn(session.sessionManager.getBranch())?.error;
 }
 
 /**
@@ -284,8 +329,13 @@ export async function runAgent(
 	// Resolve model: explicit option > config.model > config.modelPreset > parent model
 	const model = options.model ?? resolveDefaultModel(preset.model ?? ctx.model, ctx.modelRegistry, agentConfig?.model);
 
-	// Resolve thinking level: explicit option > agent config > config.modelPreset > undefined (inherit)
-	const thinkingLevel = options.thinkingLevel ?? agentConfig?.thinking ?? preset.thinking;
+	// Resolve thinking level: explicit option > agent config > config.modelPreset > parent
+	const thinkingLevel =
+		options.thinkingLevel ??
+		agentConfig?.thinking ??
+		preset.thinking ??
+		(model?.reasoning ? options.pi.getThinkingLevel() : undefined);
+	options.onRuntimeResolved?.(model, thinkingLevel);
 
 	const sessionOpts = {
 		cwd: effectiveCwd,
@@ -394,7 +444,7 @@ export async function runAgent(
 	}
 
 	const responseText = collector.getText().trim() || getLastAssistantText(session);
-	return { responseText, session, aborted, steered: softLimitReached };
+	return { responseText, session, aborted, steered: softLimitReached, error: getActiveTurnError(session) };
 }
 
 /**
@@ -409,7 +459,7 @@ export async function resumeAgent(
 		onCompaction?: (info: { reason: "manual" | "threshold" | "overflow"; tokensBefore: number }) => void;
 		signal?: AbortSignal;
 	} = {},
-): Promise<string> {
+): Promise<AgentTurnResult> {
 	const collector = collectResponseText(session);
 	const cleanupAbort = forwardAbortSignal(session, options.signal);
 
@@ -438,7 +488,52 @@ export async function resumeAgent(
 		cleanupAbort();
 	}
 
-	return collector.getText().trim() || getLastAssistantText(session);
+	return {
+		responseText: collector.getText().trim() || getLastAssistantText(session),
+		error: getActiveTurnError(session),
+	};
+}
+
+export async function retryFailedTurn(
+	session: AgentSession,
+	options: {
+		onToolActivity?: (activity: ToolActivity) => void;
+		onAssistantUsage?: (usage: AssistantUsage) => void;
+		onCompaction?: (info: { reason: "manual" | "threshold" | "overflow"; tokensBefore: number }) => void;
+		signal?: AbortSignal;
+	} = {},
+): Promise<AgentTurnResult> {
+	const retryable = findRetryableTurn(session.sessionManager.getBranch());
+	if (!retryable) throw new Error("No failed assistant turn is available to retry");
+
+	const collector = collectResponseText(session);
+	const cleanupAbort = forwardAbortSignal(session, options.signal);
+	const unsubEvents = session.subscribe((event: AgentSessionEvent) => {
+		if (event.type === "tool_execution_start") options.onToolActivity?.({ type: "start", toolName: event.toolName });
+		if (event.type === "tool_execution_end") options.onToolActivity?.({ type: "end", toolName: event.toolName });
+		if (event.type === "message_end" && event.message.role === "assistant") {
+			const usage = readAssistantUsage(event.message);
+			if (usage) options.onAssistantUsage?.(usage);
+		}
+		if (event.type === "compaction_end" && !event.aborted && event.result) {
+			options.onCompaction?.({ reason: event.reason, tokensBefore: event.result.tokensBefore });
+		}
+	});
+
+	try {
+		const navigation = await session.navigateTree(retryable.userEntryId);
+		if (navigation.cancelled) throw new Error("Retry cancelled while branching away from the failed turn");
+		await session.sendUserMessage(retryable.content as Parameters<AgentSession["sendUserMessage"]>[0]);
+	} finally {
+		collector.unsubscribe();
+		unsubEvents();
+		cleanupAbort();
+	}
+
+	return {
+		responseText: collector.getText().trim() || getLastAssistantText(session),
+		error: getActiveTurnError(session),
+	};
 }
 
 /**
