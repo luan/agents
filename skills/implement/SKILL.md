@@ -1,17 +1,17 @@
 ---
 name: implement
-description: "Implement one approved vault ticket or bounded spec slice through TDD, verification, code review, and commit."
+description: "Implement one bounded change from conversation context or a named vault artifact through TDD, verification, code review, and commit."
 disable-model-invocation: true
 ---
 
-Load `/vault` and resolve the selected `ticket` or `spec` artifact with `vlt read`. Implement one bounded slice per session.
+Use conversation context as the source of scope and acceptance criteria. When the user supplies a vault artifact, load `/vault`, resolve it with `vlt read`, and treat it as implementation input without depending on its artifact type.
 
-When working a ticket, claim it before editing by replacing its `## Status` section with `in_progress` and the current session identifier when available. Preserve its acceptance criteria and blocking links.
+Inspect the relevant code and tests before editing. Ask for a missing decision only when it prevents a safe implementation.
 
-Use `/tdd` at the pre-agreed seams. If the artifact has no usable acceptance criteria or an unresolved blocker, return it to the shaping flow instead of silently redesigning it.
+Use `/tdd` at the agreed seams. Require observable acceptance criteria before changing behavior.
 
 Run typechecking regularly, single test files regularly, and the full test suite once at the end.
 
-Once the implementation and checks are green, use `/code-review` against the ticket or spec artifact.
+Once the implementation and checks are green, use `/code-review` against the request and any supplied artifact.
 
-Address confirmed review findings, then use `/commit` to commit the work to the current branch. After the commit, replace the ticket's `## Status` with `in_review` and append concise delivery evidence through `vlt update`.
+Address confirmed findings, then use `/commit` to commit the work to the current branch. Report delivered behavior, verification, and remaining risk.

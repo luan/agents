@@ -1,54 +1,55 @@
 ---
 name: to-tickets
-description: Break a settled vault spec, plan, or conversation into tracer-bullet ticket artifacts with explicit blocking links.
+description: Split settled conversation or an implementation-ready artifact into independently deliverable tracer-bullet tickets when explicit work decomposition is useful.
 disable-model-invocation: true
 ---
 
 # To Tickets
 
-Turn settled work into **tracer bullet** tickets: narrow vertical slices, each independently verifiable and linked to everything that blocks it.
+Turn settled work into tracer-bullet tickets when the user explicitly wants separately tracked work units.
 
 Load `/vault` before reading or publishing artifacts.
 
 ## Process
 
-### 1. Gather context
+### 1. Gather the source
 
-Read the supplied vault artifact with `vlt read <stem> --depth 2`. When only conversation context is supplied, search for related specs, decisions, and research with `vlt search`, then follow `vlt links` and `vlt backlinks`.
+Use settled conversation as the source when no artifact is supplied. When the user supplies a vault artifact, resolve it with `vlt read <stem> --depth 2`. Require clear scope, implementation approach, acceptance criteria, and verification regardless of source shape. Report missing information and stop when the work is not implementation-ready.
 
-### 2. Explore the codebase
+### 2. Confirm current boundaries
 
-Explore enough current code to make the slices real. Use vault context vocabulary and respect durable decisions. Look for prefactoring that makes the change easy before making the easy change.
+Inspect enough current code and tests to verify the proposed slices against real integration points, dependencies, and test seams. Preserve the source scope and decisions.
 
-### 3. Draft vertical slices
+### 3. Draft tracer bullets
 
 Each ticket:
 
-- cuts a complete path through every affected layer
-- delivers behavior that can be demonstrated or verified alone
-- fits one fresh context window
-- states acceptance criteria in observable terms
-- names every genuine blocker
+- delivers observable end-to-end behavior
+- can be implemented and verified in one fresh context
+- owns explicit source acceptance criteria
+- states its verification evidence
+- names only genuine blockers
+- leaves the repository coherent after completion
 
-Use **expand–migrate–contract** for a wide refactor whose blast radius cannot remain green as independent vertical slices. Keep each migration batch green when possible; otherwise make the shared integration point and final verification explicit.
+Use expand-migrate-contract only when a wide change cannot stay green as independent vertical slices.
 
-### 4. Grill the breakdown
+### 4. Check coverage
 
-Present the proposed tickets by title, blockers, and delivered behavior. Use `/grilling` one decision at a time to settle granularity, blocking edges, and merges or splits. Publish only after the user confirms the breakdown.
+Map every source acceptance criterion or settled requirement to one or more tickets. Merge slices that only produce scaffolding, and split slices that exceed one coherent implementation session. Resolve material ambiguity with the user before publishing.
 
-### 5. Publish vault tickets
+### 5. Publish tickets
 
 Create blockers first:
 
 ```bash
-vlt create --type ticket --topic "<ticket title>" --source <spec-stem> --tags "stage/ready-for-agent" --json
+vlt create --type ticket --topic "<ticket title>" --tags "stage/ready-for-agent" --json
 vlt update <ticket-stem> --stdin --json
 ```
 
-Link every ticket to its source and blockers:
+When a source artifact exists, record and link it:
 
 ```bash
-vlt link <ticket> <spec> --type derives-from --annotation "Implements one vertical slice"
+vlt link <ticket> <source> --type derives-from --annotation "Implements one vertical slice"
 vlt link <ticket> <blocker> --type blocked-by --annotation "Requires <capability> first"
 ```
 
@@ -59,27 +60,35 @@ Use this body:
 
 ready_for_agent
 
-## What to build
+## What to Build
 
-The end-to-end behavior this ticket makes work.
+The end-to-end behavior this ticket delivers.
 
-## Acceptance criteria
+## Source Coverage
 
-- [ ] Independently verifiable criterion
+- Source acceptance criterion or settled requirement covered by this ticket.
 
-## Blocked by
+## Acceptance Criteria
 
-- Linked ticket title, or `None — can start immediately`
+- [ ] Independently verifiable ticket result.
 
-## Out of scope
+## Verification
 
-- Adjacent behavior intentionally excluded
+- Check or test that proves completion.
 
-## Delivery evidence
+## Blocked By
+
+- Linked ticket title, or `None - can start immediately`.
+
+## Out of Scope
+
+- Adjacent behavior owned elsewhere.
+
+## Delivery Evidence
 
 Pending implementation.
 ```
 
-Keep titles and prose durable: prefer behavior and interfaces over file paths. Inline a small prototype-derived state machine, schema, reducer, or type shape only when it encodes a settled decision more precisely than prose.
+### 6. Report the work graph
 
-Report the **frontier**: ticket artifacts whose `## Status` is `ready_for_agent` and whose `blocked-by` links all point to completed tickets. Work one frontier ticket per fresh context with `/implement`.
+Report every ticket, covered spec criteria, blocking edges, and the initial frontier. A frontier ticket has `ready_for_agent` status and no incomplete blocker.

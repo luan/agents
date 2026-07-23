@@ -1,77 +1,77 @@
 ---
 name: to-spec
-description: Turn settled conversation and codebase context into a durable vault spec without reopening the interview.
+description: Turn settled conversation and codebase context into an implementation-ready vault spec that can be implemented directly or optionally split into tickets.
 disable-model-invocation: true
 ---
 
-This skill takes settled conversation context and codebase understanding and produces a spec. Synthesize what is already known; return to `/grilling` when a material decision is still unresolved.
+# To Spec
 
-Load `/vault` before reading or publishing artifacts.
+Produce one implementation-ready source of truth from settled decisions. Load `/vault` before reading or publishing artifacts.
 
 ## Process
 
-1. Explore the codebase when current-state evidence is missing. Read vault context and relevant decisions/research first. Use the project's canonical vocabulary throughout the spec.
+1. Read relevant vault context, decisions, and research. Explore current code and tests until the spec can name the existing behavior, affected boundaries, and verification seams with evidence.
 
-2. Sketch out the seams at which you're going to test the feature. Existing seams should be preferred to new ones. Use the highest seam possible. If new seams are needed, propose them at the highest point you can. The fewer seams across the codebase, the better - the ideal number is one.
+2. Resolve material uncertainty before publishing. Use the conversation as settled input; ask only about a decision whose answer changes scope, behavior, architecture, or acceptance criteria.
 
-Check with the user that these seams match their expectations.
+3. Write the spec using the template below. Every acceptance criterion must be observable, and the implementation approach must be concrete enough to execute without redesigning the feature. When work spans multiple coherent sessions, include a delivery plan with ordered phases, phase-specific verification, and completion criteria. Include required reading, rollout or cutover steps, and scenario matrices only when the settled discussion made them material.
 
-3. Write the spec using the template below. Publish it with `vlt create --type spec --topic "<topic>" --json` and `vlt update <stem> --stdin --json`. Link source research and decisions with typed `vlt link` relationships.
+4. Publish with `vlt create --type spec --topic "<topic>" --json` and `vlt update <stem> --stdin --json`. Link source research and decisions with typed `vlt link` relationships.
 
-4. Report the spec stem and stop. `/to-tickets` owns implementation slicing.
+5. Report the spec stem, scope, and any remaining risk, then stop.
 
-<spec-template>
+## Spec Template
 
-## Problem Statement
+```markdown
+## Problem
 
-The problem that the user is facing, from the user's perspective.
+The user-visible or operational problem, including current behavior and why it matters.
 
-## Solution
+## Outcome
 
-The solution to the problem, from the user's perspective.
+The behavior that will exist when the work is complete.
 
-## User Stories
+## Scope
 
-A LONG, numbered list of user stories. Each user story should be in the format of:
-
-1. As an <actor>, I want a <feature>, so that <benefit>
-
-<user-story-example>
-1. As a mobile bank customer, I want to see balance on my accounts, so that I can make better informed decisions about my spending
-</user-story-example>
-
-This list of user stories should be extremely extensive and cover all aspects of the feature.
-
-## Implementation Decisions
-
-A list of implementation decisions that were made. This can include:
-
-- The modules that will be built/modified
-- The interfaces of those modules that will be modified
-- Technical clarifications from the developer
-- Architectural decisions
-- Schema changes
-- API contracts
-- Specific interactions
-
-Do NOT include specific file paths or code snippets. They may end up being outdated very quickly.
-
-Exception: if a prototype produced a snippet that encodes a decision more precisely than prose can (state machine, reducer, schema, type shape), inline it within the relevant decision and note briefly that it came from a prototype. Trim to the decision-rich parts — not a working demo, just the important bits.
-
-## Testing Decisions
-
-A list of testing decisions that were made. Include:
-
-- A description of what makes a good test (only test external behavior, not implementation details)
-- Which modules will be tested
-- Prior art for the tests (i.e. similar types of tests in the codebase)
+- Included behavior and boundaries.
+- Affected components, interfaces, data, or workflows.
 
 ## Out of Scope
 
-A description of the things that are out of scope for this spec.
+- Adjacent behavior intentionally excluded.
 
-## Further Notes
+## Current System
 
-Any further notes about the feature.
+Evidence-backed description of relevant code paths, existing conventions, constraints, and reusable test seams. Include file paths when they help implementation locate current behavior.
 
-</spec-template>
+## Implementation Approach
+
+Ordered, implementation-ready changes. Name affected modules and interfaces, compatibility or migration requirements, and important failure behavior. Include a small prototype-derived state machine, schema, reducer, or type shape when it records a settled decision more precisely than prose.
+
+## Acceptance Criteria
+
+- [ ] Observable behavior or externally verifiable result.
+
+## Verification
+
+- Tests and checks that prove each acceptance criterion.
+- Existing test seams and prior art to reuse.
+- Any required manual verification.
+
+## Risks and Constraints
+
+- Known edge cases, operational constraints, compatibility limits, or rollout concerns.
+
+## Delivery Plan
+
+Include this section only when the work spans multiple coherent sessions.
+
+- Required reading needed before changing the system.
+- Ordered phases or delivery increments, each with a goal, bounded scope, verification, and completion criteria.
+- Rollout, migration, cutover, or cleanup ordering when partial deployment changes behavior.
+- Scenario matrix when many edge cases must remain visible during implementation.
+
+## Implementation Notes
+
+Pending implementation.
+```
