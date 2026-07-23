@@ -39,7 +39,7 @@ type TaskParams = {
 	isolated?: boolean;
 };
 
-type TaskResult = {
+export type TaskResult = {
 	index: number;
 	id: string;
 	agent: string;
@@ -139,7 +139,15 @@ function renderTaskResult(
 	);
 }
 
-function renderSubagentList(
+function singleLinePreview(text: string, width: number): string {
+	const line = text
+		.split(/\r?\n/)
+		.find((candidate) => candidate.trim())
+		?.trim();
+	return line ? truncateToWidth(line, width) : "";
+}
+
+export function renderSubagentList(
 	result: {
 		details?: { agents?: Array<Pick<AgentRecord, "id" | "type" | "description" | "status" | "result" | "error">> };
 	},
@@ -161,7 +169,7 @@ function renderSubagentList(
 		const output = agent.error || agent.result?.trim();
 		if (output)
 			lines.push(
-				`${theme.fg("dim", isLast ? "  " : `${tree.vertical} `)}${theme.fg("dim", truncateToWidth(output, 82))}`,
+				`${theme.fg("dim", isLast ? "  " : `${tree.vertical} `)}${theme.fg("dim", singleLinePreview(output, 82))}`,
 			);
 	});
 	return framedBlock(theme, {
@@ -441,8 +449,14 @@ function resultFromRecord(record: AgentRecord, item: TaskItem, index: number, ag
 	};
 }
 
-function formatTaskResults(results: TaskResult[]): string {
-	return compactTaskResults(results);
+export function formatTaskResults(results: TaskResult[]): string {
+	return results
+		.map((result) => {
+			const heading = `## ${result.description?.trim() || result.id} (${result.status})`;
+			const output = result.error ? `Error: ${result.error}` : result.output?.trim() || "No output.";
+			return `${heading}\n${output}`;
+		})
+		.join("\n\n");
 }
 
 function ensureActivity(activityByAgent: Map<string, AgentActivity>, id: string): AgentActivity {
