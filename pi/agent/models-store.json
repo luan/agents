@@ -244,8 +244,9 @@
         }
       }
     ],
-    "checkedAt": 1784946682106,
-    "lastModified": 1784920533000
+    "checkedAt": 1785002059857,
+    "lastModified": 1784920533000,
+    "etag": "W/\"8c50b40966720784303e46378a0807dc\""
   },
   "github-copilot": {
     "models": [
@@ -1247,8 +1248,9 @@
         }
       }
     ],
-    "checkedAt": 1784946141468,
-    "lastModified": 1784920516000
+    "checkedAt": 1785016109679,
+    "lastModified": 1784920516000,
+    "etag": "W/\"8993459fb7af10e49d81a98fde3e6f9c\""
   },
   "anthropic": {
     "models": [
@@ -8219,7 +8221,8 @@
         }
       }
     ],
-    "checkedAt": 1784996694452,
-    "lastModified": 1784920538000
+    "checkedAt": 1785016108455,
+    "lastModified": 1784920538000,
+    "etag": "W/\"4aac5166b816fe7aee446728527a680a\""
   }
 }
