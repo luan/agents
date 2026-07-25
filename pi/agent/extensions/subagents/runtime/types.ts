@@ -64,11 +64,20 @@ export interface AgentConfig {
 
 export type JoinMode = "async" | "group" | "smart";
 
+export interface AgentEvent {
+	type: "tool-start" | "tool-end" | "text" | "turn-end" | "compaction";
+	at: number;
+	toolName?: string;
+	text?: string;
+	turnCount?: number;
+	tokensBefore?: number;
+}
+
 export interface AgentRecord {
 	id: string;
 	type: SubagentType;
 	description: string;
-	status: "queued" | "running" | "completed" | "steered" | "aborted" | "stopped" | "error";
+	status: "queued" | "running" | "completed" | "steered" | "aborted" | "stopped" | "interrupted" | "error";
 	result?: string;
 	error?: string;
 	toolUses: number;
@@ -78,6 +87,28 @@ export interface AgentRecord {
 	modelName?: string;
 	/** Effective reasoning effort / thinking level used by this agent. */
 	thinkingLevel?: ThinkingLevel;
+	/** Root Pi session that owns the complete descendant tree. */
+	rootSessionId: string;
+	/** Immediate parent Pi session. */
+	parentSessionId: string;
+	/** Parent agent path; omitted for agents spawned by the root session. */
+	parentAgentId?: string;
+	/** Session id created for this agent, used to attach recursive children. */
+	childSessionId?: string;
+	/** Agent configuration snapshot used for queued starts and persisted resume. */
+	agentConfig?: AgentConfig;
+	/** Original delegated assignment, retained for inspection and restoration. */
+	assignment: string;
+	/** Working directory used by the child session. */
+	cwd: string;
+	/** Persisted child session JSONL path. */
+	sessionFile?: string;
+	/** Whether completion has been delivered to the owning parent session. */
+	completionDelivered?: boolean;
+	/** Whether lifetime usage has been persisted to the owning root session. */
+	usageReported?: boolean;
+	/** Recent structured activity for the HUD and inspector. */
+	events: AgentEvent[];
 	/** True for agents intentionally running outside the current inline tool call. */
 	isBackground?: boolean;
 	session?: AgentSession;

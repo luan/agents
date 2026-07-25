@@ -8,9 +8,15 @@
 
 import { randomUUID } from "node:crypto";
 import type { Model } from "@earendil-works/pi-ai";
-import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+	type AgentSession,
+	type ExtensionAPI,
+	type ExtensionContext,
+	SessionManager,
+} from "@earendil-works/pi-coding-agent";
 import { findRetryableTurn, resumeAgent, retryFailedTurn, runAgent, type ToolActivity } from "./agent-runner.js";
-import type { AgentRecord, IsolationMode, SubagentType, ThinkingLevel } from "./types.js";
+import { childSessionDir, type PersistedAgent } from "./persistence.js";
+import type { AgentConfig, AgentEvent, AgentRecord, IsolationMode, SubagentType, ThinkingLevel } from "./types.js";
 import { type AssistantUsage, addUsage } from "./usage.js";
 import { cleanupWorktree, createWorktree, pruneWorktrees } from "./worktree.js";
 
@@ -32,6 +38,13 @@ interface SpawnArgs {
 
 interface SpawnOptions {
 	description: string;
+	rootSessionId: string;
+	parentAgentId?: string;
+	parentSessionId: string;
+	assignment: string;
+	id?: string;
+	agentConfig?: AgentConfig;
+	resolveRuntime?: () => { pi: ExtensionAPI; ctx: ExtensionContext } | undefined;
 	modelName?: string;
 	model?: Model<any>;
 	maxTurns?: number;
@@ -67,6 +80,7 @@ interface SpawnOptions {
 
 interface ResumeOptions {
 	signal?: AbortSignal;
+	deliverCompletion?: boolean;
 	onAssistantUsage?: (usage: AssistantUsage) => void;
 }
 
@@ -114,13 +128,26 @@ export class AgentManager {
 	 * If the concurrency limit is reached, the agent is queued.
 	 */
 	spawn(pi: ExtensionAPI, ctx: ExtensionContext, type: SubagentType, prompt: string, options: SpawnOptions): string {
-		const id = randomUUID().slice(0, 17);
+		const requestedId = options.id
+			?.trim()
+			.replace(/[^A-Za-z0-9._-]+/g, "-")
+			.replace(/^-+|-+$/g, "");
+		const localId = requestedId || randomUUID().slice(0, 17);
+		const id = options.parentAgentId ? `${options.parentAgentId}/${localId}` : localId;
+		if (this.agents.has(id)) throw new Error(`Agent id already exists: ${id}`);
 		const abortController = new AbortController();
 		const record: AgentRecord = {
 			id,
 			type,
 			description: options.description,
 			status: options.isBackground ? "queued" : "running",
+			rootSessionId: options.rootSessionId,
+			parentSessionId: options.parentSessionId,
+			parentAgentId: options.parentAgentId,
+			agentConfig: options.agentConfig,
+			assignment: options.assignment,
+			cwd: options.cwd ?? ctx.cwd,
+			events: [],
 			isBackground: options.isBackground === true,
 			toolUses: 0,
 			startedAt: Date.now(),
@@ -153,7 +180,9 @@ export class AgentManager {
 
 	/** Actually start an agent (called immediately or from queue drain). */
 	private startAgent(id: string, record: AgentRecord, { pi, ctx, type, prompt, options }: SpawnArgs) {
-		const baseCwd = options.cwd ?? ctx.cwd;
+		const runtime = options.resolveRuntime ? options.resolveRuntime() : { pi, ctx };
+		if (!runtime) throw new Error(`Parent session unavailable for queued agent ${id}`);
+		const baseCwd = record.cwd;
 		// Worktree isolation: try to create a temporary git worktree. Strict —
 		// fail loud if not possible (no silent fallback to main tree). Done
 		// BEFORE state mutation so a throw doesn't leave the record half-running.
@@ -179,22 +208,27 @@ export class AgentManager {
 		let detachParentSignal: (() => void) | undefined;
 		if (options.signal) {
 			const onParentAbort = () => this.abort(id);
-			options.signal.addEventListener("abort", onParentAbort, { once: true });
-			detachParentSignal = () => options.signal!.removeEventListener("abort", onParentAbort);
+			if (options.signal.aborted) onParentAbort();
+			else {
+				options.signal.addEventListener("abort", onParentAbort, { once: true });
+				detachParentSignal = () => options.signal!.removeEventListener("abort", onParentAbort);
+			}
 		}
 		const detach = () => {
 			detachParentSignal?.();
 			detachParentSignal = undefined;
 		};
 
-		const promise = runAgent(ctx, type, prompt, {
-			pi,
+		const promise = runAgent(runtime.ctx, type, prompt, {
+			pi: runtime.pi,
 			description: options.description,
+			agentConfig: options.agentConfig,
 			model: options.model,
 			maxTurns: options.maxTurns,
 			isolated: options.isolated,
 			inheritContext: options.inheritContext,
 			thinkingLevel: options.thinkingLevel,
+			sessionDir: childSessionDir(record.rootSessionId, id),
 			onRuntimeResolved: (model, thinkingLevel) => {
 				record.modelName = options.modelName ?? modelLabel(model);
 				record.thinkingLevel = thinkingLevel;
@@ -203,21 +237,35 @@ export class AgentManager {
 			signal: record.abortController!.signal,
 			onToolActivity: (activity) => {
 				if (activity.type === "end") record.toolUses++;
+				this.pushEvent(record, {
+					type: activity.type === "start" ? "tool-start" : "tool-end",
+					at: Date.now(),
+					toolName: activity.toolName,
+				});
 				options.onToolActivity?.(activity);
 			},
-			onTurnEnd: options.onTurnEnd,
-			onTextDelta: options.onTextDelta,
+			onTurnEnd: (turnCount) => {
+				this.pushEvent(record, { type: "turn-end", at: Date.now(), turnCount });
+				options.onTurnEnd?.(turnCount);
+			},
+			onTextDelta: (delta, fullText) => {
+				this.pushEvent(record, { type: "text", at: Date.now(), text: delta });
+				options.onTextDelta?.(delta, fullText);
+			},
 			onAssistantUsage: (usage) => {
 				addUsage(record.lifetimeUsage, usage);
 				options.onAssistantUsage?.(usage);
 			},
 			onCompaction: (info) => {
 				record.compactionCount++;
+				this.pushEvent(record, { type: "compaction", at: Date.now(), tokensBefore: info.tokensBefore });
 				this.onCompact?.(record, info);
 				options.onCompaction?.(info);
 			},
 			onSessionCreated: (session) => {
 				record.session = session;
+				record.sessionFile = session.sessionManager.getSessionFile();
+				record.childSessionId = session.sessionManager.getSessionId();
 				// Flush any steers that arrived before the session was ready
 				if (record.pendingSteers?.length) {
 					for (const msg of record.pendingSteers) {
@@ -304,8 +352,13 @@ export class AgentManager {
 
 				if (options.isBackground) {
 					this.runningBackground--;
-					this.onComplete?.(record);
-					this.drainQueue();
+					try {
+						this.onComplete?.(record);
+					} catch {
+						/* ignore completion side-effect errors */
+					} finally {
+						this.drainQueue();
+					}
 				}
 				return "";
 			});
@@ -316,6 +369,8 @@ export class AgentManager {
 	/** Start queued agents up to the concurrency limit. */
 	private drainQueue() {
 		while (this.queue.length > 0 && this.runningBackground < this.maxConcurrent) {
+			const queued = this.queue[0]!;
+			if (queued.args.options.resolveRuntime && !queued.args.options.resolveRuntime()) break;
 			const next = this.queue.shift()!;
 			const record = this.agents.get(next.id);
 			if (!record || record.status !== "queued") continue;
@@ -330,6 +385,10 @@ export class AgentManager {
 				this.onComplete?.(record);
 			}
 		}
+	}
+
+	drain(): void {
+		this.drainQueue();
 	}
 
 	/**
@@ -349,84 +408,152 @@ export class AgentManager {
 		return record;
 	}
 
-	/**
-	 * Resume an existing agent session with a new prompt.
-	 */
-	async resume(id: string, prompt: string, options: ResumeOptions = {}): Promise<AgentRecord | undefined> {
+	/** Resume an agent, reopening its persisted child session when necessary. */
+	async resume(
+		pi: ExtensionAPI,
+		ctx: ExtensionContext,
+		id: string,
+		prompt: string,
+		options: ResumeOptions = {},
+	): Promise<AgentRecord | undefined> {
 		const record = this.agents.get(id);
-		if (!record?.session) return undefined;
-
-		record.status = "running";
-		record.startedAt = Date.now();
-		record.completedAt = undefined;
-		record.result = undefined;
-		record.error = undefined;
+		if (!record || (!record.session && !record.sessionFile)) return undefined;
+		this.beginTurn(record, options.deliverCompletion === true);
 
 		try {
-			const turn = await resumeAgent(record.session, prompt, {
-				onToolActivity: (activity) => {
-					if (activity.type === "end") record.toolUses++;
-				},
-				onAssistantUsage: (usage) => {
-					addUsage(record.lifetimeUsage, usage);
-					options.onAssistantUsage?.(usage);
-				},
-				onCompaction: (info) => {
-					record.compactionCount++;
-					this.onCompact?.(record, info);
-				},
-				signal: options.signal,
-			});
-			record.status = turn.error ? "error" : "completed";
-			record.result = turn.responseText;
-			record.error = turn.error;
-			record.completedAt = Date.now();
+			if (record.session) {
+				const turn = await resumeAgent(record.session, prompt, this.turnOptions(record, options));
+				this.finishTurn(record, turn.responseText, turn.error);
+			} else {
+				const turn = await runAgent(ctx, record.type, prompt, {
+					pi,
+					description: record.description,
+					agentConfig: record.agentConfig,
+					cwd: record.cwd,
+					sessionFile: record.sessionFile,
+					...this.persistedTurnOptions(record, options),
+				});
+				record.session = turn.session;
+				record.sessionFile = turn.session.sessionManager.getSessionFile();
+				this.finishTurn(record, turn.responseText, turn.error);
+			}
 		} catch (err) {
-			record.status = "error";
-			record.error = err instanceof Error ? err.message : String(err);
-			record.completedAt = Date.now();
+			this.finishTurn(record, "", err instanceof Error ? err.message : String(err));
 		}
-
 		return record;
 	}
 
-	async retry(id: string, options: ResumeOptions = {}): Promise<AgentRecord | undefined> {
+	async retry(
+		pi: ExtensionAPI,
+		ctx: ExtensionContext,
+		id: string,
+		options: ResumeOptions = {},
+	): Promise<AgentRecord | undefined> {
 		const record = this.agents.get(id);
-		if (!record?.session || !findRetryableTurn(record.session.sessionManager.getBranch())) return undefined;
+		if (!record || (!record.session && !record.sessionFile)) return undefined;
+		if (record.session && !findRetryableTurn(record.session.sessionManager.getBranch())) return undefined;
+		if (record.sessionFile && !record.session) {
+			const persistedSession = SessionManager.open(record.sessionFile, undefined, record.cwd);
+			if (!findRetryableTurn(persistedSession.getBranch())) return undefined;
+		}
+		this.beginTurn(record, options.deliverCompletion === true);
 
+		try {
+			if (record.session) {
+				const turn = await retryFailedTurn(record.session, this.turnOptions(record, options));
+				this.finishTurn(record, turn.responseText, turn.error);
+			} else {
+				const turn = await runAgent(ctx, record.type, record.assignment, {
+					pi,
+					description: record.description,
+					agentConfig: record.agentConfig,
+					cwd: record.cwd,
+					sessionFile: record.sessionFile,
+					retry: true,
+					...this.persistedTurnOptions(record, options),
+				});
+				record.session = turn.session;
+				record.sessionFile = turn.session.sessionManager.getSessionFile();
+				this.finishTurn(record, turn.responseText, turn.error);
+			}
+		} catch (err) {
+			this.finishTurn(record, "", err instanceof Error ? err.message : String(err));
+		}
+		return record;
+	}
+
+	async steer(id: string, message: string): Promise<boolean> {
+		const record = this.agents.get(id);
+		if (!record || record.status !== "running") return false;
+		if (!record.session) {
+			record.pendingSteers ??= [];
+			record.pendingSteers.push(message);
+			return true;
+		}
+		await record.session.steer(message);
+		return true;
+	}
+
+	private beginTurn(record: AgentRecord, deliverCompletion: boolean): void {
+		if (deliverCompletion) record.completionDelivered = false;
 		record.status = "running";
 		record.startedAt = Date.now();
 		record.completedAt = undefined;
 		record.result = undefined;
 		record.error = undefined;
+		record.abortController = new AbortController();
+		if (record.isBackground) this.runningBackground++;
 		this.onStart?.(record);
+	}
 
-		try {
-			const turn = await retryFailedTurn(record.session, {
-				onToolActivity: (activity) => {
-					if (activity.type === "end") record.toolUses++;
-				},
-				onAssistantUsage: (usage) => {
-					addUsage(record.lifetimeUsage, usage);
-					options.onAssistantUsage?.(usage);
-				},
-				onCompaction: (info) => {
-					record.compactionCount++;
-					this.onCompact?.(record, info);
-				},
-				signal: options.signal,
-			});
-			record.status = turn.error ? "error" : "completed";
-			record.result = turn.responseText;
-			record.error = turn.error;
-			record.completedAt = Date.now();
-		} catch (err) {
-			record.status = "error";
-			record.error = err instanceof Error ? err.message : String(err);
-			record.completedAt = Date.now();
+	private finishTurn(record: AgentRecord, result: string, error?: string): void {
+		record.status = error ? "error" : "completed";
+		record.result = result;
+		record.error = error;
+		record.completedAt = Date.now();
+		if (record.isBackground) {
+			this.runningBackground = Math.max(0, this.runningBackground - 1);
+			this.onComplete?.(record);
+			this.drainQueue();
 		}
+	}
 
-		return record;
+	private pushEvent(record: AgentRecord, event: AgentEvent): void {
+		record.events.push(event);
+		if (record.events.length > 100) record.events.splice(0, record.events.length - 100);
+	}
+
+	private turnOptions(record: AgentRecord, options: ResumeOptions) {
+		return {
+			signal: options.signal,
+			onToolActivity: (activity: ToolActivity) => {
+				if (activity.type === "end") record.toolUses++;
+				this.pushEvent(record, {
+					type: activity.type === "start" ? "tool-start" : "tool-end",
+					at: Date.now(),
+					toolName: activity.toolName,
+				});
+			},
+			onAssistantUsage: (usage: AssistantUsage) => {
+				addUsage(record.lifetimeUsage, usage);
+				options.onAssistantUsage?.(usage);
+			},
+			onCompaction: (info: CompactionInfo) => {
+				record.compactionCount++;
+				this.pushEvent(record, { type: "compaction", at: Date.now(), tokensBefore: info.tokensBefore });
+				this.onCompact?.(record, info);
+			},
+		};
+	}
+
+	private persistedTurnOptions(record: AgentRecord, options: ResumeOptions) {
+		return {
+			onSessionCreated: (session: AgentSession) => {
+				record.session = session;
+				record.sessionFile = session.sessionManager.getSessionFile();
+			},
+			...this.turnOptions(record, options),
+		};
 	}
 
 	getLatestRetryableRecord(): AgentRecord | undefined {
@@ -435,12 +562,37 @@ export class AgentManager {
 		);
 	}
 
+	restore(records: PersistedAgent[]): void {
+		for (const persisted of records) {
+			const id = persisted.id.replace(/^\/root\//, "");
+			if (this.agents.has(id)) continue;
+			this.agents.set(id, {
+				...persisted,
+				id,
+				parentAgentId: persisted.parentAgentId?.replace(/^\/root\//, ""),
+				rootSessionId: persisted.rootSessionId ?? persisted.parentSessionId,
+				status: persisted.status === "running" || persisted.status === "queued" ? "interrupted" : persisted.status,
+				events: persisted.events ?? [],
+			});
+		}
+	}
+
 	getRecord(id: string): AgentRecord | undefined {
 		return this.agents.get(id);
 	}
 
-	listAgents(): AgentRecord[] {
-		return [...this.agents.values()].sort((a, b) => b.startedAt - a.startedAt);
+	listAgents(rootSessionId?: string): AgentRecord[] {
+		return [...this.agents.values()]
+			.filter((record) => !rootSessionId || record.rootSessionId === rootSessionId)
+			.sort((a, b) => b.startedAt - a.startedAt);
+	}
+
+	findByChildSessionId(sessionId: string): AgentRecord | undefined {
+		return [...this.agents.values()].find((record) => record.childSessionId === sessionId);
+	}
+
+	getRootSessionId(sessionId: string): string {
+		return this.findByChildSessionId(sessionId)?.rootSessionId ?? sessionId;
 	}
 
 	abort(id: string): boolean {
@@ -462,30 +614,13 @@ export class AgentManager {
 		return true;
 	}
 
-	/** Dispose a record's session and remove it from the map. */
-	private removeRecord(id: string, record: AgentRecord): void {
-		record.session?.dispose?.();
-		record.session = undefined;
-		this.agents.delete(id);
-	}
-
 	private cleanup() {
 		const cutoff = Date.now() - 10 * 60_000;
-		for (const [id, record] of this.agents) {
+		for (const record of this.agents.values()) {
 			if (record.status === "running" || record.status === "queued") continue;
 			if ((record.completedAt ?? 0) >= cutoff) continue;
-			this.removeRecord(id, record);
-		}
-	}
-
-	/**
-	 * Remove all completed/stopped/errored records immediately.
-	 * Called on session start/switch so tasks from a prior session don't persist.
-	 */
-	clearCompleted(): void {
-		for (const [id, record] of this.agents) {
-			if (record.status === "running" || record.status === "queued") continue;
-			this.removeRecord(id, record);
+			record.session?.dispose?.();
+			record.session = undefined;
 		}
 	}
 

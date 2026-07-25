@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { findRetryableTurn, resolveSessionRuntimeOptions, retryFailedTurn } from "./agent-runner";
+import { isSubagentOrchestrationToolName } from "./orchestration-tools";
 import { readAssistantUsage } from "./usage";
 
 test("shares the parent model runtime with subagents on Pi 0.80+", () => {
@@ -105,4 +106,11 @@ test("does not retry a successful assistant turn", () => {
 	});
 
 	expect(findRetryableTurn(sessionManager.getBranch())).toBeUndefined();
+});
+
+test("allows recursive agent tools while blocking parent-owned interaction", () => {
+	expect(isSubagentOrchestrationToolName("spawn_agent")).toBe(false);
+	expect(isSubagentOrchestrationToolName("followup_task")).toBe(false);
+	expect(isSubagentOrchestrationToolName("ask_user")).toBe(true);
+	expect(isSubagentOrchestrationToolName("task_write")).toBe(true);
 });

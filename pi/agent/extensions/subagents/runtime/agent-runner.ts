@@ -31,7 +31,7 @@ import { isSubagentOrchestrationToolName } from "./orchestration-tools.js";
 import { buildAgentPrompt, type PromptExtras } from "./prompts.js";
 import { loadSettings } from "./settings.js";
 import { preloadSkills } from "./skill-loader.js";
-import type { SubagentType, ThinkingLevel } from "./types.js";
+import type { AgentConfig, SubagentType, ThinkingLevel } from "./types.js";
 import { type AssistantUsage, readAssistantUsage } from "./usage.js";
 
 /** Default max turns. undefined = unlimited (no turn limit). */
@@ -74,6 +74,7 @@ export interface RunOptions {
 	/** ExtensionAPI instance — used for pi.exec() instead of execSync. */
 	pi: ExtensionAPI;
 	description?: string;
+	agentConfig?: AgentConfig;
 	model?: Model<any>;
 	maxTurns?: number;
 	signal?: AbortSignal;
@@ -82,6 +83,12 @@ export interface RunOptions {
 	thinkingLevel?: ThinkingLevel;
 	/** Override working directory (e.g. for worktree isolation). */
 	cwd?: string;
+	/** Directory for a new persistent child session. */
+	sessionDir?: string;
+	/** Existing child session JSONL to reopen. */
+	sessionFile?: string;
+	/** Retry the latest failed turn instead of appending a new prompt. */
+	retry?: boolean;
 	/** Called on tool start/end with activity info. */
 	onToolActivity?: (activity: ToolActivity) => void;
 	/** Called on streaming text deltas from the assistant response. */
@@ -191,6 +198,10 @@ function getLastAssistantText(session: AgentSession): string {
 function forwardAbortSignal(session: AgentSession, signal?: AbortSignal): () => void {
 	if (!signal) return () => {};
 	const onAbort = () => session.abort();
+	if (signal.aborted) {
+		onAbort();
+		return () => {};
+	}
 	signal.addEventListener("abort", onAbort, { once: true });
 	return () => signal.removeEventListener("abort", onAbort);
 }
@@ -222,8 +233,18 @@ export async function runAgent(
 	prompt: string,
 	options: RunOptions,
 ): Promise<RunResult> {
-	const config = getConfig(type);
-	const agentConfig = getAgentConfig(type);
+	const agentConfig = options.agentConfig ?? getAgentConfig(type);
+	const config =
+		agentConfig && agentConfig.enabled !== false
+			? {
+					displayName: agentConfig.displayName ?? agentConfig.name,
+					description: agentConfig.description,
+					toolNames: agentConfig.toolNames,
+					extensions: agentConfig.extensions,
+					skills: agentConfig.skills,
+					promptMode: agentConfig.promptMode,
+				}
+			: getConfig(type);
 
 	// Resolve working directory: worktree override > parent cwd
 	const effectiveCwd = options.cwd ?? ctx.cwd;
@@ -249,7 +270,7 @@ export async function runAgent(
 	}
 
 	const parentActiveToolNames = new Set(options.pi.getActiveTools());
-	const explicitAllowedToolNames = getAllowedToolNamesForType(type);
+	const explicitAllowedToolNames = agentConfig?.toolNames ?? getAllowedToolNamesForType(type);
 	const selectedToolNames = new Set(explicitAllowedToolNames ?? [...parentActiveToolNames]);
 	let toolNames = [...selectedToolNames];
 
@@ -337,10 +358,13 @@ export async function runAgent(
 		(model?.reasoning ? options.pi.getThinkingLevel() : undefined);
 	options.onRuntimeResolved?.(model, thinkingLevel);
 
+	const sessionManager = options.sessionFile
+		? SessionManager.open(options.sessionFile, options.sessionDir, effectiveCwd)
+		: SessionManager.create(effectiveCwd, options.sessionDir);
 	const sessionOpts = {
 		cwd: effectiveCwd,
 		agentDir,
-		sessionManager: SessionManager.inMemory(effectiveCwd),
+		sessionManager,
 		settingsManager: SettingsManager.create(effectiveCwd, agentDir),
 		...resolveSessionRuntimeOptions(ctx.modelRegistry),
 		model,
@@ -365,6 +389,10 @@ export async function runAgent(
 	});
 	session.setActiveToolsByName(activeTools);
 
+	// Publish the child session id before extension session_start hooks run so
+	// recursive subagent extensions can attach to their parent record.
+	options.onSessionCreated?.(session);
+
 	// Bind extensions so that session_start fires and extensions can initialize
 	// (e.g. loading credentials, setting up state). Placed after tool filtering
 	// so extension-provided skills/prompts from extendResourcesFromExtensions()
@@ -377,8 +405,6 @@ export async function runAgent(
 			});
 		},
 	});
-
-	options.onSessionCreated?.(session);
 
 	// Track turns for graceful max_turns enforcement
 	let turnCount = 0;
@@ -436,7 +462,15 @@ export async function runAgent(
 	}
 
 	try {
-		await session.prompt(effectivePrompt);
+		if (options.retry) {
+			const retryable = findRetryableTurn(session.sessionManager.getBranch());
+			if (!retryable) throw new Error("No failed assistant turn is available to retry");
+			const navigation = await session.navigateTree(retryable.userEntryId);
+			if (navigation.cancelled) throw new Error("Retry cancelled while branching away from the failed turn");
+			await session.sendUserMessage(retryable.content as Parameters<AgentSession["sendUserMessage"]>[0]);
+		} else {
+			await session.prompt(effectivePrompt);
+		}
 	} finally {
 		unsubTurns();
 		collector.unsubscribe();

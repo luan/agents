@@ -108,7 +108,7 @@ export function getUsageTotals(ctx: ExtensionContext): UsageTotals {
 	let input = 0;
 	let output = 0;
 	let cost = 0;
-	for (const entry of ctx.sessionManager.getBranch()) {
+	for (const entry of ctx.sessionManager.getEntries()) {
 		if (entry.type === "message" && entry.message.role === "assistant") {
 			const message = entry.message as AssistantMessage;
 			input += message.usage?.input ?? 0;
@@ -197,6 +197,8 @@ export default function (pi: ExtensionAPI) {
 			throw error;
 		}
 	};
+	const isSubagentSessionFile = (sessionFile: string): boolean =>
+		sessionFile.replaceAll("\\", "/").includes("/sessions/subagents/");
 	const isCurrentSessionContext = (ctx: ExtensionContext): boolean => {
 		const sessionFile = sessionFileFor(ctx);
 		return sessionFile !== undefined && sessionFile === activeSessionFile;
@@ -684,7 +686,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		const sessionFile = sessionFileFor(ctx);
-		if (!sessionFile) return;
+		if (!sessionFile || isSubagentSessionFile(sessionFile)) return;
 		activeSessionFile = sessionFile;
 		activeCtx = ctx;
 		disposed = false;

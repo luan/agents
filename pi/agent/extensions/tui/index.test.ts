@@ -12,6 +12,13 @@ test("includes persisted subagent usage in session totals", () => {
 		sessionManager: {
 			getBranch: () => [
 				{
+					type: "custom",
+					customType: "subagents:usage",
+					data: { input: 300, output: 80, cost: 0.75 },
+				},
+			],
+			getEntries: () => [
+				{
 					type: "message",
 					message: {
 						role: "assistant",
@@ -31,7 +38,7 @@ test("includes persisted subagent usage in session totals", () => {
 });
 
 describe("polished TUI session binding", () => {
-	test("ignores in-memory subagent session_start events", async () => {
+	test("ignores persisted and in-memory subagent session_start events", async () => {
 		const handlers: Record<string, Array<(event: unknown, ctx: any) => unknown>> = {};
 		let footerInstalls = 0;
 		let workingVisibleCalls = 0;
@@ -45,6 +52,10 @@ describe("polished TUI session binding", () => {
 		registerTui(pi as never);
 
 		await handlers.session_start?.at(-1)?.({}, createCtx("/sessions/main.jsonl", "GPT-5"));
+		await handlers.session_start?.at(-1)?.(
+			{},
+			createCtx("/sessions/subagents/root/sessions/demo/child.jsonl", "Claude Haiku"),
+		);
 		await handlers.session_start?.at(-1)?.({}, createCtx(undefined, "Claude Haiku"));
 
 		expect(footerInstalls).toBe(1);

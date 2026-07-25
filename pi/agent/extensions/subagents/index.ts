@@ -10,14 +10,23 @@ import {
 import type { Component } from "@earendil-works/pi-tui";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { SUBAGENT_USAGE_ENTRY_TYPE, SUBAGENT_USAGE_EVENT, type SubagentUsageEvent } from "../shared/subagent-usage";
 import { bold, framedBlock, renderStatusLine, styledSymbol, textComponent, treeGlyphs } from "../shared/tui/omp-card";
-import { AgentManager } from "./runtime/agent-manager.js";
 import { findRetryableTurn } from "./runtime/agent-runner.js";
-import { registerAgents } from "./runtime/agent-types.js";
+import {
+	deliverPendingForSession,
+	getSessionRuntime,
+	getSharedAgentActivity,
+	getSharedAgentManager,
+	persistAgent,
+	registerAgentWidget,
+	registerSessionBinding,
+	unregisterAgentWidget,
+	unregisterSessionBinding,
+} from "./runtime/coordinator.js";
 import { loadCustomAgents } from "./runtime/custom-agents.js";
-import { loadSettings } from "./runtime/settings.js";
+import { readAgentRegistry, writeAgentRegistry } from "./runtime/persistence.js";
 import type { AgentConfig, AgentRecord, SubagentType, ThinkingLevel } from "./runtime/types.js";
+import { openAgentBrowser, openAgentInspector } from "./runtime/ui/agent-browser.js";
 import { type AgentActivity, AgentWidget } from "./runtime/ui/agent-widget.js";
 import type { AssistantUsage } from "./runtime/usage.js";
 
@@ -38,6 +47,7 @@ type TaskParams = {
 	role?: string;
 	assignment?: string;
 	isolated?: boolean;
+	background?: boolean;
 };
 
 export type TaskResult = {
@@ -69,6 +79,8 @@ function statusMarker(status: AgentRecord["status"] | "pending", theme: ToolThem
 			return styledSymbol(theme, "status.pending", "muted");
 		case "steered":
 			return styledSymbol(theme, "status.warning", "warning");
+		case "interrupted":
+			return styledSymbol(theme, "status.warning", "warning");
 		case "aborted":
 		case "stopped":
 		case "error":
@@ -98,7 +110,7 @@ function renderTaskCall(args: unknown, theme: ToolTheme): Component {
 	return textComponent(
 		renderStatusLine(theme, {
 			icon: "pending",
-			title: items.length === 1 ? "Subagent" : "Subagents",
+			title: items.length === 1 ? "Agent" : "Agents",
 			description: params.agent,
 			meta: items.length ? [`${items.length} ${items.length === 1 ? "agent" : "agents"}`] : undefined,
 		}),
@@ -108,7 +120,7 @@ function renderTaskCall(args: unknown, theme: ToolTheme): Component {
 function compactTaskResults(results: TaskResult[]): string {
 	const failed = results.filter((result) => result.status === "error" || result.error).length;
 	const suffix = failed > 0 ? `, ${failed} failed` : "";
-	return `Completed ${results.length} subagent${results.length === 1 ? "" : "s"}${suffix}.`;
+	return `Completed ${results.length} agent${results.length === 1 ? "" : "s"}${suffix}.`;
 }
 
 function renderTaskResult(
@@ -131,11 +143,16 @@ function renderTaskResult(
 		);
 	}
 	const failed = results.some((item) => item.status === "error" || item.error);
+	const active = results.some((item) => item.status === "running" || item.status === "queued");
 	return textComponent(
 		renderStatusLine(theme, {
-			icon: failed ? "error" : "success",
-			title: results.length === 1 ? "Subagent" : "Subagents",
-			description: results.length ? compactTaskResults(results) : "No subagent result.",
+			icon: failed ? "error" : active ? "pending" : "success",
+			title: results.length === 1 ? "Agent" : "Agents",
+			description: results.length
+				? active
+					? `Started ${results.length} background agent${results.length === 1 ? "" : "s"}.`
+					: compactTaskResults(results)
+				: "No agent result.",
 		}),
 	);
 }
@@ -194,9 +211,22 @@ You have FULL access to all available tools and MUST use them as needed to compl
 - Prefer edits to existing files over creating new files.
 - Never create documentation files (*.md) unless explicitly requested.
 - Skip project-wide gates, formatters, builds, and broad test suites unless explicitly assigned; the parent agent owns final verification.
+- Delegate independent subtasks with spawn_agent when useful, then integrate child results before finishing.
 - Be concise. Do not include filler, repetition, or tool transcripts.
 </directives>`;
-const readOnlyDisallowedTools = ["apply_patch", "ast_edit", "bash", "edit", "task_write", "write", "write_stdin"];
+const readOnlyDisallowedTools = [
+	"apply_patch",
+	"ast_edit",
+	"bash",
+	"edit",
+	"followup_task",
+	"send_message",
+	"spawn_agent",
+	"stop_agent",
+	"task_write",
+	"write",
+	"write_stdin",
+];
 
 const bundledAgents: AgentConfig[] = [
 	{
@@ -450,11 +480,17 @@ function resultFromRecord(record: AgentRecord, item: TaskItem, index: number, ag
 	};
 }
 
+const MODEL_VISIBLE_RESULT_LIMIT = 50 * 1024;
+
 export function formatTaskResults(results: TaskResult[]): string {
 	return results
 		.map((result) => {
 			const heading = `## ${result.description?.trim() || result.id} (${result.status})`;
-			const output = result.error ? `Error: ${result.error}` : result.output?.trim() || "No output.";
+			const fullOutput = result.error ? `Error: ${result.error}` : result.output?.trim() || "No output.";
+			const output =
+				fullOutput.length > MODEL_VISIBLE_RESULT_LIMIT
+					? `${fullOutput.slice(0, MODEL_VISIBLE_RESULT_LIMIT)}\n\n[Output truncated; full output remains in agent history.]`
+					: fullOutput;
 			return `${heading}\n${output}`;
 		})
 		.join("\n\n");
@@ -482,23 +518,6 @@ function addActivityUsage(activity: AgentActivity, usage: AssistantUsage): void 
 	activity.lifetimeUsage.cost += usage.cost;
 }
 
-function recordSubagentUsage(pi: ExtensionAPI, ctx: ExtensionContext, usage: AssistantUsage): void {
-	const delta: SubagentUsageEvent = { input: usage.input, output: usage.output, cost: usage.cost };
-	if (delta.input === 0 && delta.output === 0 && delta.cost === 0) return;
-	try {
-		pi.appendEntry(SUBAGENT_USAGE_ENTRY_TYPE, delta);
-	} catch {}
-	try {
-		delta.sessionFile = ctx.sessionManager.getSessionFile() ?? undefined;
-		pi.events.emit(SUBAGENT_USAGE_EVENT, delta);
-	} catch {}
-}
-
-function finishWidgetAgent(agentWidget: AgentWidget, record: AgentRecord): void {
-	agentWidget.markFinished(record.id);
-	agentWidget.update();
-}
-
 const taskItemSchema = Type.Object({
 	id: Type.Optional(Type.String({ description: "Stable agent id, CamelCase, <=32 chars preferred." })),
 	description: Type.Optional(Type.String({ description: "UI label only; the subagent never sees it." })),
@@ -507,65 +526,89 @@ const taskItemSchema = Type.Object({
 	isolated: Type.Optional(Type.Boolean({ description: "Run in an isolated worktree." })),
 });
 
-let activeAgentManager: AgentManager | undefined;
-
 export function getActiveSubagentDescriptions(): string[] {
-	return (
-		activeAgentManager
-			?.listAgents()
-			.filter((agent) => agent.status === "running")
-			.map((agent) => agent.description.trim())
-			.filter(Boolean) ?? []
-	);
+	return getSharedAgentManager()
+		.listAgents()
+		.filter((agent) => agent.status === "running")
+		.map((agent) => agent.description.trim())
+		.filter(Boolean);
 }
 
-function registerCurrentAgents(cwd: string, manager: AgentManager): void {
-	registerAgents(loadOmpAgents(cwd));
-	const settings = loadSettings(cwd);
-	if (settings.maxConcurrent) manager.setMaxConcurrent(settings.maxConcurrent);
+function resolveAgentConfig(agents: Map<string, AgentConfig>, requested: string): AgentConfig | undefined {
+	const exact = agents.get(requested);
+	if (exact?.enabled !== false) return exact;
+	const lower = requested.toLowerCase();
+	return [...agents.values()].find((agent) => agent.enabled !== false && agent.name.toLowerCase() === lower);
+}
+
+export function shouldOwnAgentWidget(
+	manager: Pick<ReturnType<typeof getSharedAgentManager>, "findByChildSessionId">,
+	sessionId: string,
+	hasUI: boolean,
+): boolean {
+	return hasUI && !manager.findByChildSessionId(sessionId);
 }
 
 export default function ompSubagentsExtension(pi: ExtensionAPI) {
 	let currentCtx: ExtensionContext | undefined;
-	const activityByAgent = new Map<string, AgentActivity>();
-	let agentWidget: AgentWidget;
-	const manager = new AgentManager(
-		(record) => finishWidgetAgent(agentWidget, record),
-		undefined,
-		() => agentWidget.update(),
-		() => agentWidget.update(),
-	);
-	activeAgentManager = manager;
-	agentWidget = new AgentWidget(manager, activityByAgent, () =>
-		manager.listAgents().filter((agent) => !agent.isBackground),
+	const manager = getSharedAgentManager();
+	const activityByAgent = getSharedAgentActivity();
+	let currentAgents = new Map<string, AgentConfig>();
+	const visibleRecords = (ctx: ExtensionContext): AgentRecord[] => {
+		const sessionId = ctx.sessionManager.getSessionId();
+		const owner = manager.findByChildSessionId(sessionId);
+		return manager
+			.listAgents(manager.getRootSessionId(sessionId))
+			.filter((record) => !owner || record.id.startsWith(`${owner.id}/`));
+	};
+	const findOwnedRecord = (ctx: ExtensionContext, id: string): AgentRecord | undefined => {
+		const records = visibleRecords(ctx);
+		return records.find((record) => record.id === id) ?? records.find((record) => record.id.startsWith(id));
+	};
+	const agentWidget = new AgentWidget(
+		manager,
+		activityByAgent,
+		() => manager.listAgents().filter((agent) => !agent.isBackground),
+		() => (currentCtx ? manager.getRootSessionId(currentCtx.sessionManager.getSessionId()) : undefined),
 	);
 
 	pi.on("session_start", async (_event, ctx) => {
 		currentCtx = ctx;
-		manager.clearCompleted();
-		activityByAgent.clear();
-		registerCurrentAgents(ctx.cwd, manager);
-		agentWidget.setUICtx(ctx.ui);
-		agentWidget.update();
+		const sessionId = ctx.sessionManager.getSessionId();
+		const owner = manager.findByChildSessionId(sessionId);
+		const rootSessionId = owner?.rootSessionId ?? sessionId;
+		if (!owner) manager.restore(readAgentRegistry(rootSessionId));
+		writeAgentRegistry(rootSessionId, manager.listAgents(rootSessionId));
+		currentAgents = loadOmpAgents(ctx.cwd);
+		registerSessionBinding(pi, ctx);
+		if (shouldOwnAgentWidget(manager, sessionId, ctx.hasUI)) {
+			registerAgentWidget(agentWidget);
+			agentWidget.setUICtx(ctx.ui);
+			agentWidget.update();
+		}
+		deliverPendingForSession(sessionId);
 	});
 
 	pi.on("session_shutdown", async () => {
-		manager.abortAll();
+		if (currentCtx) unregisterSessionBinding(currentCtx);
+		unregisterAgentWidget(agentWidget);
 		agentWidget.dispose();
-		activityByAgent.clear();
 		currentCtx = undefined;
 	});
 
 	pi.registerCommand("subagents", {
-		description: "List oh-my-pi style subagents",
+		description: "Browse and inspect the current agent tree",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
-			const agents = manager.listAgents();
-			ctx.ui.notify(
-				agents.length
-					? agents.map((agent) => `${agent.id} ${agent.type} ${agent.status} — ${agent.description}`).join("\n")
-					: "No subagents in this session.",
-				"info",
-			);
+			await openAgentBrowser(ctx, visibleRecords(ctx));
+		},
+	});
+
+	pi.registerCommand("subagent", {
+		description: "Inspect a subagent by id",
+		handler: async (args: string, ctx: ExtensionCommandContext) => {
+			const target = args.trim();
+			const record = findOwnedRecord(ctx, target);
+			await openAgentInspector(ctx, record);
 		},
 	});
 
@@ -584,153 +627,164 @@ export default function ompSubagentsExtension(pi: ExtensionAPI) {
 					return;
 				}
 				ctx.ui.setEditorText("");
-				ctx.ui.notify("Retrying failed turn on a clean branch.", "info");
 				pi.sendUserMessage(mainTurn.content as Parameters<ExtensionAPI["sendUserMessage"]>[0]);
 				return;
 			}
-
 			if (target === "main") {
 				ctx.ui.notify("No failed main-session turn is available to retry.", "warning");
 				return;
 			}
-
 			const record = target
-				? (manager.getRecord(target) ?? manager.listAgents().find((agent) => agent.id.startsWith(target)))
-				: manager.getLatestRetryableRecord();
+				? findOwnedRecord(ctx, target)
+				: visibleRecords(ctx).find(
+						(agent) => agent.session && findRetryableTurn(agent.session.sessionManager.getBranch()),
+					);
 			if (!record) {
-				ctx.ui.notify(
-					target
-						? `No retryable subagent found for "${target}".`
-						: "No failed main-session turn or subagent is available to retry.",
-					"warning",
-				);
+				ctx.ui.notify("No retryable subagent found.", "warning");
 				return;
 			}
-
-			ctx.ui.notify(`Retrying subagent ${record.id} on a clean branch.`, "info");
-			const retried = await manager.retry(record.id, {
-				onAssistantUsage: (usage) => recordSubagentUsage(pi, ctx, usage),
+			record.completionDelivered = true;
+			const retried = await manager.retry(pi, ctx, record.id, {
+				onAssistantUsage: () => {},
 			});
 			if (!retried) {
 				ctx.ui.notify(`Subagent ${record.id} is not retryable.`, "warning");
 				return;
 			}
-			finishWidgetAgent(agentWidget, retried);
+			persistAgent(retried);
+			agentWidget.update();
 			ctx.ui.notify(
-				retried.error
-					? `Subagent ${retried.id} failed again: ${retried.error}`
-					: `Subagent ${retried.id} completed after retry.`,
+				retried.error ? retried.error : `Subagent ${retried.id} completed after retry.`,
 				retried.error ? "error" : "info",
 			);
 		},
 	});
 
 	pi.registerTool({
-		name: "task",
-		label: "Subagent",
+		name: "spawn_agent",
+		label: "Spawn Agent",
 		description:
-			"Spawn subagents. Use tasks[] plus shared context for parallel fan-out; use a single assignment for one subagent. Subagents have no conversation history, so include all facts, paths, constraints, and acceptance criteria.",
-		promptSnippet: "Spawn subagents",
+			"Spawn one or many native Pi agents. Background completion is automatic. After spawning in the background, end the turn instead of polling, listing agents, or sleeping.",
+		promptSnippet: "Spawn agents",
 		renderShell: "self",
 		renderCall: renderTaskCall,
 		renderResult: renderTaskResult,
 		parameters: Type.Object({
 			agent: Type.String({
 				description:
-					"Agent type to spawn: task, quick_task, explore, plan, designer, reviewer, oracle, librarian, or a custom .omp/.pi agent.",
+					"Agent type: task, quick_task, explore, plan, designer, reviewer, oracle, librarian, or a custom agent.",
 			}),
-			context: Type.Optional(
-				Type.String({
-					description: "Shared background prepended to every tasks[] item. Required for batch calls.",
-				}),
-			),
-			tasks: Type.Optional(
-				Type.Array(taskItemSchema, { description: "One subagent per item; all run in parallel." }),
-			),
-			id: Type.Optional(Type.String({ description: "Single-spawn stable id." })),
+			context: Type.Optional(Type.String({ description: "Shared context prepended to every tasks[] item." })),
+			tasks: Type.Optional(Type.Array(taskItemSchema, { description: "One agent per item." })),
+			id: Type.Optional(Type.String({ description: "Single-spawn display name." })),
 			description: Type.Optional(Type.String({ description: "Single-spawn UI label." })),
 			role: Type.Optional(Type.String({ description: "Single-spawn specialist identity." })),
-			assignment: Type.Optional(Type.String({ description: "Single-spawn complete self-contained instructions." })),
-			isolated: Type.Optional(Type.Boolean({ description: "Single-spawn isolated worktree." })),
+			assignment: Type.Optional(Type.String({ description: "Single-spawn complete assignment." })),
+			isolated: Type.Optional(Type.Boolean({ description: "Use an isolated git worktree." })),
+			background: Type.Optional(
+				Type.Boolean({ description: "Return immediately and notify on completion. Default true." }),
+			),
 		}),
 		execute: async (_toolCallId, params, signal, onUpdate, ctx) => {
 			currentCtx = ctx;
-			agentWidget.setUICtx(ctx.ui);
-			registerCurrentAgents(ctx.cwd, manager);
+			currentAgents = loadOmpAgents(ctx.cwd);
 			const taskParams = params as TaskParams;
 			const items = normalizeItems(taskParams);
+			const background = taskParams.background !== false;
+			const parentSessionId = ctx.sessionManager.getSessionId();
+			if (shouldOwnAgentWidget(manager, parentSessionId, ctx.hasUI)) agentWidget.setUICtx(ctx.ui);
+			const parentAgent = manager.findByChildSessionId(parentSessionId);
+			const rootSessionId = parentAgent?.rootSessionId ?? parentSessionId;
+			const agentConfig = resolveAgentConfig(currentAgents, taskParams.agent);
+			if (!agentConfig) throw new Error(`Unknown or disabled agent type: ${taskParams.agent}`);
 			let completed = 0;
-			const results = await Promise.all(
-				items.map(async (item, index) => {
-					const name = taskName(item, index);
-					let id = name;
-					try {
-						id = manager.spawn(
-							pi,
-							ctx,
-							taskParams.agent as SubagentType,
-							assignmentPrompt(taskParams.context, item),
-							{
-								description: name,
-								isolation: item.isolated ? "worktree" : undefined,
-								signal,
-								onToolActivity: (tool) => {
-									const activity = ensureActivity(activityByAgent, id);
-									if (tool.type === "start") activity.activeTools.set(tool.toolName, tool.toolName);
-									else {
-										activity.activeTools.delete(tool.toolName);
-										activity.toolUses++;
-									}
-									agentWidget.update();
-								},
-								onTextDelta: (_delta, fullText) => {
-									ensureActivity(activityByAgent, id).responseText = fullText;
-									agentWidget.update();
-								},
-								onSessionCreated: (session) => {
-									ensureActivity(activityByAgent, id).session = session;
-									agentWidget.update();
-								},
-								onTurnEnd: (turnCount) => {
-									ensureActivity(activityByAgent, id).turnCount = turnCount;
-									agentWidget.update();
-								},
-								onAssistantUsage: (usage) => {
-									recordSubagentUsage(pi, ctx, usage);
-									addActivityUsage(ensureActivity(activityByAgent, id), usage);
-									agentWidget.update();
-								},
+			const spawned = items.map((item, index) => {
+				const name = taskName(item, index);
+				const prompt = assignmentPrompt(taskParams.context, item);
+				let id = name;
+				try {
+					id = manager.spawn(pi, ctx, agentConfig.name as SubagentType, prompt, {
+						description: name,
+						id: item.id,
+						agentConfig,
+						resolveRuntime: () => getSessionRuntime(parentSessionId, rootSessionId),
+						rootSessionId,
+						parentAgentId: parentAgent?.id,
+						parentSessionId,
+						assignment: prompt,
+						isBackground: background,
+						isolation: item.isolated ? "worktree" : undefined,
+						signal: background ? undefined : signal,
+						onToolActivity: (tool) => {
+							const activity = ensureActivity(activityByAgent, id);
+							if (tool.type === "start") activity.activeTools.set(tool.toolName, tool.toolName);
+							else {
+								activity.activeTools.delete(tool.toolName);
+								activity.toolUses++;
+							}
+							agentWidget.update();
+						},
+						onTextDelta: (_delta, fullText) => {
+							ensureActivity(activityByAgent, id).responseText = fullText;
+							agentWidget.update();
+						},
+						onSessionCreated: (session) => {
+							ensureActivity(activityByAgent, id).session = session;
+							const record = manager.getRecord(id);
+							if (record) persistAgent(record);
+							agentWidget.update();
+						},
+						onTurnEnd: (turnCount) => {
+							ensureActivity(activityByAgent, id).turnCount = turnCount;
+							agentWidget.update();
+						},
+						onAssistantUsage: (usage) => {
+							addActivityUsage(ensureActivity(activityByAgent, id), usage);
+							agentWidget.update();
+						},
+					});
+					ensureActivity(activityByAgent, id);
+					const record = manager.getRecord(id);
+					if (!record) throw new Error(`Subagent record missing after spawn: ${id}`);
+					persistAgent(record);
+					agentWidget.update();
+					return { item, index, record };
+				} catch (error) {
+					return { item, index, error: error instanceof Error ? error.message : String(error), id };
+				}
+			});
+
+			if (background) {
+				const results = spawned.map(({ item, index, record, error, id }) =>
+					record
+						? resultFromRecord(record, item, index, taskParams.agent)
+						: {
+								index,
+								id,
+								agent: taskParams.agent,
+								description: item.description,
+								role: item.role,
+								assignment: item.assignment,
+								status: "error" as const,
+								error,
+								durationMs: 0,
+								toolUses: 0,
 							},
-						);
-						ensureActivity(activityByAgent, id);
-						agentWidget.update();
-						const record = manager.getRecord(id);
-						if (!record) throw new Error(`Subagent record missing after spawn: ${id}`);
-						await record.promise;
-						completed++;
-						finishWidgetAgent(agentWidget, record);
-						onUpdate?.({
-							content: [
-								{
-									type: "text" as const,
-									text: `Completed ${completed}/${items.length} subagent${items.length === 1 ? "" : "s"}.`,
-								},
-							],
-							details: { completed, total: items.length },
-						});
-						return resultFromRecord(record, item, index, taskParams.agent);
-					} catch (error) {
-						completed++;
-						agentWidget.update();
-						onUpdate?.({
-							content: [
-								{
-									type: "text" as const,
-									text: `Completed ${completed}/${items.length} subagent${items.length === 1 ? "" : "s"}.`,
-								},
-							],
-							details: { completed, total: items.length },
-						});
+				);
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: `Started ${results.length} background agent${results.length === 1 ? "" : "s"}. Do not poll, call list_agents, or sleep; end this turn. Completion will trigger a follow-up automatically.`,
+						},
+					],
+					details: { results },
+				};
+			}
+
+			const results = await Promise.all(
+				spawned.map(async ({ item, index, record, error, id }) => {
+					if (!record) {
 						return {
 							index,
 							id,
@@ -739,11 +793,20 @@ export default function ompSubagentsExtension(pi: ExtensionAPI) {
 							role: item.role,
 							assignment: item.assignment,
 							status: "error" as const,
-							error: error instanceof Error ? error.message : String(error),
+							error,
 							durationMs: 0,
 							toolUses: 0,
 						};
 					}
+					await record.promise;
+					completed++;
+					agentWidget.update();
+					persistAgent(record);
+					onUpdate?.({
+						content: [{ type: "text" as const, text: `Completed ${completed}/${items.length} agents.` }],
+						details: { completed, total: items.length },
+					});
+					return resultFromRecord(record, item, index, taskParams.agent);
 				}),
 			);
 			const ordered = results.sort((left, right) => left.index - right.index);
@@ -755,24 +818,23 @@ export default function ompSubagentsExtension(pi: ExtensionAPI) {
 	});
 
 	pi.registerTool({
-		name: "subagent_list",
-		label: "List Subagents",
-		description: "List subagents in the current session.",
-		promptSnippet: "List subagents",
+		name: "list_agents",
+		label: "List Agents",
+		description: "List agents owned by the current Pi session.",
+		promptSnippet: "List agents",
 		renderShell: "self",
 		renderCall: (_args: unknown, theme: ToolTheme) =>
 			textComponent(
-				renderStatusLine(theme, { iconOverride: styledSymbol(theme, "tool.task", "accent"), title: "Subagents" }),
+				renderStatusLine(theme, { iconOverride: styledSymbol(theme, "tool.task", "accent"), title: "Agents" }),
 			),
 		renderResult: renderSubagentList,
 		parameters: Type.Object({}),
-		execute: async () => {
-			const agents = manager.listAgents().map((agent) => ({
+		execute: async (_toolCallId, _params, _signal, _onUpdate, ctx) => {
+			const agents = visibleRecords(ctx).map((agent) => ({
 				id: agent.id,
 				type: agent.type,
 				description: agent.description,
 				status: agent.status,
-				result: agent.result,
 				error: agent.error,
 			}));
 			return { content: [{ type: "text" as const, text: JSON.stringify(agents, null, 2) }], details: { agents } };
@@ -780,39 +842,79 @@ export default function ompSubagentsExtension(pi: ExtensionAPI) {
 	});
 
 	pi.registerTool({
-		name: "subagent_send",
-		label: "Send Subagent Message",
-		description: "Send a follow-up prompt to a live subagent, or use /retry to replay its failed turn.",
-		promptSnippet: "Message a subagent",
+		name: "followup_task",
+		label: "Follow Up Agent",
+		description: "Run another turn in an existing agent session, or retry its latest failed turn.",
+		promptSnippet: "Follow up an agent",
 		renderShell: "self",
 		renderCall: (args: unknown, theme: ToolTheme) => {
 			const params = args as { id?: string };
 			return framedBlock(theme, {
 				header: renderStatusLine(theme, {
 					iconOverride: styledSymbol(theme, "tool.task", "accent"),
-					title: "Subagent",
-					description: params.id ? `message ${params.id}` : "message",
+					title: "Agent",
+					description: params.id ? `follow up ${params.id}` : "follow up",
 				}),
 				borderColor: "borderMuted",
 			});
 		},
 		renderResult: renderTaskResult,
 		parameters: Type.Object({
-			id: Type.String({ description: "Subagent id." }),
-			message: Type.String({ description: "Follow-up prompt." }),
+			id: Type.String({ description: "Agent id." }),
+			prompt: Type.Optional(Type.String({ description: "Follow-up assignment." })),
+			retry: Type.Optional(Type.Boolean({ description: "Retry the latest failed turn." })),
 		}),
-		execute: async (_toolCallId, params, signal) => {
-			if (!currentCtx) throw new Error("No active session");
-			const { id, message } = params as { id: string; message: string };
-			const options = {
-				signal,
-				onAssistantUsage: (usage: AssistantUsage) => recordSubagentUsage(pi, currentCtx!, usage),
-			};
-			const record =
-				message.trim() === "/retry" ? await manager.retry(id, options) : await manager.resume(id, message, options);
-			if (!record) throw new Error(`Subagent not found or not resumable: ${id}`);
-			const result = resultFromRecord(record, { assignment: message }, 0, record.type);
+		execute: async (_toolCallId, params, signal, _onUpdate, ctx) => {
+			const { id, prompt, retry } = params as { id: string; prompt?: string; retry?: boolean };
+			const record = findOwnedRecord(ctx, id);
+			if (!record) throw new Error(`Agent not found in this session: ${id}`);
+			record.completionDelivered = true;
+			const options = { signal };
+			const updated = retry
+				? await manager.retry(pi, ctx, record.id, options)
+				: await manager.resume(pi, ctx, record.id, prompt?.trim() || "Continue the delegated task.", options);
+			if (!updated) throw new Error(`Agent not found or not resumable: ${id}`);
+			persistAgent(updated);
+			const result = resultFromRecord(updated, { assignment: prompt ?? "retry" }, 0, updated.type);
 			return { content: [{ type: "text" as const, text: formatTaskResults([result]) }], details: { result } };
+		},
+	});
+
+	pi.registerTool({
+		name: "send_message",
+		label: "Send Agent Message",
+		description: "Steer a running agent after its current tool execution.",
+		promptSnippet: "Message an agent",
+		renderShell: "self",
+		renderCall: renderTaskCall,
+		renderResult: renderTaskResult,
+		parameters: Type.Object({
+			id: Type.String({ description: "Running agent id." }),
+			message: Type.String({ description: "Steering message." }),
+		}),
+		execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
+			const { id, message } = params as { id: string; message: string };
+			const record = findOwnedRecord(ctx, id);
+			if (!record || !(await manager.steer(record.id, message))) throw new Error(`Running agent not found: ${id}`);
+			return { content: [{ type: "text" as const, text: `Message sent to ${record.id}.` }], details: {} };
+		},
+	});
+
+	pi.registerTool({
+		name: "stop_agent",
+		label: "Stop Agent",
+		description: "Stop a running or queued agent.",
+		promptSnippet: "Stop an agent",
+		renderShell: "self",
+		renderCall: renderTaskCall,
+		renderResult: renderTaskResult,
+		parameters: Type.Object({ id: Type.String({ description: "Agent id." }) }),
+		execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
+			const { id } = params as { id: string };
+			const record = findOwnedRecord(ctx, id);
+			if (!record || !manager.abort(record.id)) throw new Error(`Running or queued agent not found: ${id}`);
+			persistAgent(record);
+			return { content: [{ type: "text" as const, text: `Stopped ${record.id}.` }], details: {} };
 		},
 	});
 }
