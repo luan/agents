@@ -1,13 +1,23 @@
-1. Delete dead code completely. No commented-out code, shims, or "just in case."
-2. Comments for WHY / edge cases / surprises only.
-3. All tests pass before committing. You own every failure you can see.
-4. When `--auto` is used with a skill, do not ask questions, perform the most comprehensive action set.
-5. NEVER discard unrelated changes.
-6. Plannotator commands are interactive gates: run them in the foreground without shell/tool timeout wrappers and without backgrounding; wait for completion so returned feedback is captured.
+# Global Instructions
 
-## Shared Rules
+## Workflow
 
-The rules section below is generated from `rules/*.md`. Read the referenced rule file when the task matches its topic.
+- Use conventional commits for commit messages
+- When `--auto` is used with a skill, do not ask questions, perform the most comprehensive action set.
+- NEVER discard unrelated changes.
+
+## Conciseness
+
+- Make plans extremely concise. Sacrifice grammar for concision.
+- Prefer bullet points over prose. Omit filler words.
+- In conversation, be direct. Skip preamble and summaries unless asked.
+- Use Caveman `lite` by default: remove filler, hedging, and pleasantries while keeping articles, full sentences, technical terms, code, commands, and error text intact. An explicit Caveman level or stop request overrides this default for the current session.
+
+## Efficiency
+
+- Run parallel independent operations when the harness supports it
+- Delegate heavy work to worker/subagents when available; main thread orchestrates
+- Pre-compute summaries for handoffs rather than passing raw content
 
 <!-- BEGIN GENERATED RULES -->
 <!-- END GENERATED RULES -->

@@ -1,5 +1,5 @@
 {
-  "lastChangelogVersion": "0.82.0",
+  "lastChangelogVersion": "0.82.1",
   "steeringMode": "all",
   "autoUpdate": true,
   "transport": "auto",
@@ -21,7 +21,10 @@
     "npm:pi-cache-graph",
     "npm:@diegopetrucci/pi-openai-fast",
     "npm:@dietrichgebert/ponytail",
-    "git:github.com/juliusbrussee/caveman@v1.9.1"
+    {
+      "source": "git:github.com/juliusbrussee/caveman@v1.9.1",
+      "skills": []
+    }
   ],
   "extensions": [
     "extensions/agents-local/index.ts",

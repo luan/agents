@@ -174,6 +174,12 @@ trust_level = "trusted"
 [projects."/Users/luan.santos/Documents/Codex/2026-07-13/what"]
 trust_level = "trusted"
 
+[projects."/Users/luan/src/remeres-map-editor"]
+trust_level = "trusted"
+
+[projects."/Users/luan/src/canary"]
+trust_level = "trusted"
+
 [hooks.state]
 
 [hooks.state."/Users/luan/.codex/hooks.json:stop:0:0"]
