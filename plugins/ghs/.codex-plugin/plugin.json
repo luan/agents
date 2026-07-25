@@ -1,0 +1,25 @@
+{
+  "name": "ghs",
+  "version": "1.0.0",
+  "description": "GitHub Stacked PRs (gh-stack) skills for creating, navigating, syncing, rebasing, and submitting stacked pull requests.",
+  "author": {
+    "name": "Luan"
+  },
+  "keywords": ["gh-stack", "github", "git", "stacked-prs", "branches", "pull-requests"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "GitHub Stacked PRs",
+    "shortDescription": "gh-stack stacked-branch and PR workflows.",
+    "longDescription": "GitHub Stacked PRs workflow support for creating and navigating stacked branches, syncing with trunk, rebasing, and submitting stacked pull requests.",
+    "developerName": "Luan",
+    "category": "Coding",
+    "capabilities": ["Interactive", "Read", "Write"],
+    "defaultPrompt": [
+      "Check my gh-stack stack",
+      "Rebase and sync this branch",
+      "Submit this stack"
+    ],
+    "brandColor": "#1F883D",
+    "screenshots": []
+  }
+}

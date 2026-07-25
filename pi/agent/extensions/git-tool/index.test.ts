@@ -3,6 +3,7 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { basename } from "node:path";
 import gitToolExtension, {
 	appendGitToolPrompt,
+	GIT_TOOL_GH_STACK_PROMPT_ADDENDUM,
 	GIT_TOOL_GIT_SPICE_PROMPT_ADDENDUM,
 	GIT_TOOL_GRAPHITE_PROMPT_ADDENDUM,
 	GIT_TOOL_MAIN_PROMPT_ADDENDUM,
@@ -39,6 +40,7 @@ describe("git-tool mode parsing", () => {
 	test.each([
 		["graphite", "graphite"],
 		["git-spice", "git-spice"],
+		["gh-stack", "gh-stack"],
 		["main", "main"],
 		["none", "none"],
 		[undefined, "none"],
@@ -63,6 +65,13 @@ describe("git-tool resources", () => {
 
 		expect(resources.skillPaths?.map((path) => basename(path))).toEqual(["git-spice"]);
 		expect(resources.skillPaths?.[0]?.replace(/\\/g, "/")).toContain("git-tool/skill-resources/git-spice");
+	});
+
+	test("gh-stack mode contributes exactly the gh-stack generic skill directory", () => {
+		const resources = gitToolResources("gh-stack");
+
+		expect(resources.skillPaths?.map((path) => basename(path))).toEqual(["gh-stack"]);
+		expect(resources.skillPaths?.[0]?.replace(/\\/g, "/")).toContain("git-tool/skill-resources/gh-stack");
 	});
 
 	test("main mode contributes no skill paths", () => {
@@ -91,6 +100,14 @@ describe("git-tool prompt addendum", () => {
 		expect(prompt).toContain("Use the `submit`, `sync`, `restack`, and `stack` skills");
 	});
 
+	test("gh-stack mode adds strict stack workflow guidance", () => {
+		const prompt = appendGitToolPrompt("base", "gh-stack");
+
+		expect(prompt).toContain(GIT_TOOL_GH_STACK_PROMPT_ADDENDUM);
+		expect(prompt).toContain("Do not use raw `git push`");
+		expect(prompt).toContain("Use the `submit`, `sync`, `restack`, and `stack` skills");
+	});
+
 	test("main mode adds current-branch commit and push guidance", () => {
 		const prompt = appendGitToolPrompt("base", "main");
 
@@ -114,6 +131,11 @@ describe("git-tool prompt addendum", () => {
 		expect(appendGitToolPrompt(once, "git-spice")).toBe(once);
 	});
 
+	test("gh-stack prompt addendum is idempotent", () => {
+		const once = appendGitToolPrompt("base", "gh-stack");
+		expect(appendGitToolPrompt(once, "gh-stack")).toBe(once);
+	});
+
 	test("none mode leaves system prompt unchanged", () => {
 		expect(appendGitToolPrompt("base", "none")).toBe("base");
 	});
@@ -123,6 +145,15 @@ describe("Git-Spice skills", () => {
 	test("exposes generic skill names only", () => {
 		const skillDir = gitToolResources("git-spice").skillPaths?.[0];
 		if (!skillDir) throw new Error("missing Git-Spice skill directory");
+
+		expect(skillDirectoryNames(skillDir)).toEqual(["restack", "stack", "submit", "sync"]);
+	});
+});
+
+describe("gh-stack skills", () => {
+	test("exposes generic skill names only", () => {
+		const skillDir = gitToolResources("gh-stack").skillPaths?.[0];
+		if (!skillDir) throw new Error("missing gh-stack skill directory");
 
 		expect(skillDirectoryNames(skillDir)).toEqual(["restack", "stack", "submit", "sync"]);
 	});

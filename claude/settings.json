@@ -46,7 +46,8 @@
     "git-tool@local": true,
     "context-mode@context-mode": true,
     "gt@local": false,
-    "gs@local": false
+    "gs@local": false,
+    "ghs@local": false
   },
   "extraKnownMarketplaces": {
     "claude-plugins-official": {

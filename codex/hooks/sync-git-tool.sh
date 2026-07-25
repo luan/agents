@@ -13,14 +13,22 @@ case "$mode" in
 	graphite)
 		gt=true
 		gs=false
+		ghs=false
 		;;
 	git-spice)
 		gt=false
 		gs=true
+		ghs=false
+		;;
+	gh-stack)
+		gt=false
+		gs=false
+		ghs=true
 		;;
 	*)
 		gt=
 		gs=
+		ghs=
 		;;
 esac
 
@@ -30,11 +38,16 @@ config_dir="$root/.codex"
 config="$config_dir/config.toml"
 
 if [ -f "$config" ] && ! grep -Fq "$start" "$config"; then
-	if grep -Eq '^\[plugins\."(gt|gs)@agents"\]$' "$config"; then
-		jq -n --arg path "$config" '{systemMessage: ("Skipped stack-skill sync because " + $path + " has manually managed gt/gs plugin settings.")}'
+	if grep -Eq '^\[plugins\."(gt|gs|ghs)@agents"\]$' "$config"; then
+		jq -n --arg path "$config" '{systemMessage: ("Skipped stack-skill sync because " + $path + " has manually managed gt/gs/ghs plugin settings.")}'
 		exit 0
 	fi
 fi
+
+emit_block() {
+	printf '%s\n[plugins."gt@agents"]\nenabled = %s\n\n[plugins."gs@agents"]\nenabled = %s\n\n[plugins."ghs@agents"]\nenabled = %s\n%s\n' \
+		"$start" "$gt" "$gs" "$ghs" "$end" >>"$tmp"
+}
 
 mkdir -p "$config_dir"
 tmp="$config.tmp.$$"
@@ -48,7 +61,7 @@ if [ -f "$config" ]; then
 			inside=true
 			replaced=true
 			if [ -n "$gt" ]; then
-				printf '%s\n[plugins."gt@agents"]\nenabled = %s\n\n[plugins."gs@agents"]\nenabled = %s\n%s\n' "$start" "$gt" "$gs" "$end" >>"$tmp"
+				emit_block
 			fi
 			continue
 		fi
@@ -62,7 +75,7 @@ fi
 
 if [ "$replaced" = false ] && [ -n "$gt" ]; then
 	[ ! -s "$tmp" ] || printf '\n' >>"$tmp"
-	printf '%s\n[plugins."gt@agents"]\nenabled = %s\n\n[plugins."gs@agents"]\nenabled = %s\n%s\n' "$start" "$gt" "$gs" "$end" >>"$tmp"
+	emit_block
 fi
 
 if [ ! -s "$tmp" ]; then
