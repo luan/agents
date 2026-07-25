@@ -1964,45 +1964,55 @@ export default function fileopsExtension(pi: ExtensionAPI) {
 		return sessionId ? hashlineSnapshotStoreForSession(sessionId) : fallbackSnapshots;
 	};
 	let currentTurnIndex: number | undefined;
-	let latestVisibleTurnIndex: number | undefined;
 	const latestTurnEditToolCallIds = new Set<string>();
 	const isFileopsResultTool = (toolName: unknown) =>
 		toolName === "edit" || toolName === "search" || toolName === "find";
-	const rebuildLatestVisibleFileopsTurn = (ctx: ExtensionContext | undefined) => {
+	const rebuildVisibleFileopsWindow = (ctx: ExtensionContext | undefined) => {
 		latestTurnEditToolCallIds.clear();
-		latestVisibleTurnIndex = undefined;
-		for (const entry of ctx?.sessionManager?.getBranch?.() ?? []) {
+		const branch = ctx?.sessionManager?.getBranch?.() ?? [];
+		const latestCompactionIndex = branch.findLastIndex((entry) => entry.type === "compaction");
+		const latestCompaction = latestCompactionIndex === -1 ? undefined : branch[latestCompactionIndex];
+		const firstKeptEntryId = latestCompaction?.type === "compaction" ? latestCompaction.firstKeptEntryId : undefined;
+		const firstVisibleIndex =
+			typeof firstKeptEntryId === "string"
+				? Math.max(
+						0,
+						branch.findIndex((entry) => entry.id === firstKeptEntryId),
+					)
+				: 0;
+		for (const entry of branch.slice(firstVisibleIndex)) {
 			if (entry.type !== "message" || entry.message.role !== "assistant") continue;
-			const ids = entry.message.content
-				.filter((block: any) => block?.type === "toolCall" && isFileopsResultTool(block.name))
-				.map((block: any) => block.id)
-				.filter((id: unknown): id is string => typeof id === "string" && id.length > 0);
-			if (ids.length === 0) continue;
-			latestTurnEditToolCallIds.clear();
-			for (const id of ids) latestTurnEditToolCallIds.add(id);
+			for (const block of entry.message.content) {
+				if (
+					block?.type === "toolCall" &&
+					isFileopsResultTool(block.name) &&
+					typeof block.id === "string" &&
+					block.id.length > 0
+				) {
+					latestTurnEditToolCallIds.add(block.id);
+				}
+			}
 		}
 	};
 	const markLatestFileopsToolCall = (toolCallId: string) => {
-		if (currentTurnIndex !== undefined && latestVisibleTurnIndex !== currentTurnIndex) {
-			latestTurnEditToolCallIds.clear();
-			latestVisibleTurnIndex = currentTurnIndex;
-		}
 		latestTurnEditToolCallIds.add(toolCallId);
 	};
 	const resetTurnTracking = () => {
 		currentTurnIndex = undefined;
-		latestVisibleTurnIndex = undefined;
 		latestTurnEditToolCallIds.clear();
 	};
 	const on = (pi as Partial<ExtensionAPI>).on;
 	if (typeof on === "function") {
 		on.call(pi, "session_start", (_event, ctx) => {
 			resetTurnTracking();
-			rebuildLatestVisibleFileopsTurn(ctx);
+			rebuildVisibleFileopsWindow(ctx);
 		});
 		on.call(pi, "session_tree", (_event, ctx) => {
 			resetTurnTracking();
-			rebuildLatestVisibleFileopsTurn(ctx);
+			rebuildVisibleFileopsWindow(ctx);
+		});
+		on.call(pi, "session_compact", (_event, ctx) => {
+			rebuildVisibleFileopsWindow(ctx);
 		});
 		on.call(pi, "turn_start", (event) => {
 			currentTurnIndex = event.turnIndex;

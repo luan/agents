@@ -208,11 +208,20 @@ describe("fileops extension modes", () => {
 		}).join("\n");
 		const grepWithResult = createToolExecution("ast_grep", tools.get("ast_grep"), { pattern: "foo($X)" });
 		grepWithResult.updateResult({ content: [{ type: "text", text: "matched" }] } as any, false);
+		const editResult = {
+			content: [{ type: "text", text: "sample.ts\nPreview: 1 rewrite(s), 1 changed line(s)." }],
+			details: {
+				diff: "--- sample.ts\n+++ sample.ts\n@@ -1 +1 @@\n-foo(value)\n+bar(value)\n",
+			},
+		};
 
 		expect(grepRendered).toContain("ast_grep");
 		expect(grepRendered).toContain("foo($X)");
 		expect(editRendered).toContain("ast_edit preview");
 		expect(grepWithResult.render(120).join("\n")).toContain("matched");
+		const renderedDiff = render(tools.get("ast_edit").renderResult(editResult, {}, theme));
+		expect(renderedDiff).toContain("foo(value)");
+		expect(renderedDiff).toContain("bar(value)");
 	});
 
 	it("does not paint dark tool backgrounds for light fileops headers", () => {
@@ -1076,7 +1085,7 @@ describe("fileops extension modes", () => {
 		expect(writeRendered).not.toContain("[toolSuccessBg]");
 	});
 
-	it("does not expand edit diffs from older turns", () => {
+	it("keeps edit diffs visible until compaction", () => {
 		const { tool, emit } = registerEditToolWithEvents("hashline");
 		const result = {
 			content: [{ type: "text", text: "[sample.txt#ABCD]" }],
@@ -1101,20 +1110,33 @@ describe("fileops extension modes", () => {
 		const stillLatestRendered = stripAnsi(render(staleComponent));
 		expect(stillLatestRendered).toContain("new60");
 
-		emit("session_start", { type: "session_start", reason: "reload" });
-		const replayedComponent = tool.renderResult(result, { expanded: true, isPartial: false }, theme, {
-			toolCallId: "turn-1-edit",
-			executionStarted: false,
-		});
-		expect(stripAnsi(render(replayedComponent))).toBe("");
-
-		emit("turn_start", { type: "turn_start", turnIndex: 3, timestamp: 3 });
 		emit("tool_execution_start", {
 			type: "tool_execution_start",
 			toolName: "edit",
 			toolCallId: "turn-2-edit",
 			args: {},
 		});
+		expect(stripAnsi(render(staleComponent))).toContain("new60");
+
+		emit(
+			"session_compact",
+			{ type: "session_compact" },
+			{
+				sessionManager: {
+					getBranch: () => [
+						{
+							id: "kept",
+							type: "message",
+							message: {
+								role: "assistant",
+								content: [{ type: "toolCall", id: "turn-2-edit", name: "edit", arguments: {} }],
+							},
+						},
+						{ type: "compaction", firstKeptEntryId: "kept" },
+					],
+				},
+			},
+		);
 		expect(stripAnsi(render(staleComponent))).toBe("");
 		const newLatestResult = { ...result, details: { ...result.details, editTurnIndex: 3 } };
 		const newLatestRendered = stripAnsi(
@@ -1128,7 +1150,7 @@ describe("fileops extension modes", () => {
 		expect(newLatestRendered).toContain("new60");
 	});
 
-	it("does not expand no-diff edit text from older turns", () => {
+	it("keeps no-diff edit text visible until compaction", () => {
 		const { tool, emit } = registerEditToolWithEvents("apply_patch");
 		const result = {
 			content: [
@@ -1161,10 +1183,10 @@ describe("fileops extension modes", () => {
 			toolCallId: "turn-2-edit",
 			args: {},
 		});
-		expect(stripAnsi(render(staleComponent))).toBe("");
+		expect(stripAnsi(render(staleComponent))).toContain("text fallback line 60");
 	});
 
-	it("does not render search or find results from older turns", () => {
+	it("keeps search and find results visible until compaction", () => {
 		const { tools, emit } = registerEditToolWithEvents("hashline");
 		const search = tools.get("search");
 		const find = tools.get("find");
@@ -1201,11 +1223,11 @@ describe("fileops extension modes", () => {
 			toolCallId: "search-2",
 			args: {},
 		});
-		expect(stripAnsi(render(searchComponent))).toBe("");
-		expect(stripAnsi(render(findComponent))).toBe("");
+		expect(stripAnsi(render(searchComponent))).toContain("needle");
+		expect(stripAnsi(render(findComponent))).toContain("sample.txt");
 	});
 
-	it("renders all replayed fileops results from the latest assistant turn", () => {
+	it("renders all replayed fileops results in the current compaction window", () => {
 		const { tools, emit } = registerEditToolWithEvents("hashline");
 		const search = tools.get("search");
 		const find = tools.get("find");
@@ -1216,6 +1238,7 @@ describe("fileops extension modes", () => {
 			sessionManager: {
 				getBranch: () => [
 					{
+						id: "old-entry",
 						type: "message",
 						message: {
 							role: "assistant",
@@ -1223,6 +1246,7 @@ describe("fileops extension modes", () => {
 						},
 					},
 					{
+						id: "latest-entry",
 						type: "message",
 						message: {
 							role: "assistant",
@@ -1231,6 +1255,10 @@ describe("fileops extension modes", () => {
 								{ type: "toolCall", id: "latest-find", name: "find", arguments: {} },
 							],
 						},
+					},
+					{
+						type: "compaction",
+						firstKeptEntryId: "latest-entry",
 					},
 				],
 			},

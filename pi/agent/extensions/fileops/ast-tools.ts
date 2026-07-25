@@ -11,8 +11,10 @@ import { readFile, writeFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
+import { createTwoFilesPatch } from "diff";
 import { Type } from "typebox";
 import { runCommand as runExternalCommand } from "../shared/command-runner.ts";
+import { buildHighlightedDiffRows, type DiffRenderRow, EditDiffView, type RenderTheme } from "./diff-render.ts";
 import { recordHashlineSnapshot, SNAPSHOT_MAX_BYTES } from "./hashline/anchors.js";
 import { formatHashlineHeader } from "./hashline/format.ts";
 import type { InMemorySnapshotStore } from "./hashline/snapshots.ts";
@@ -216,10 +218,18 @@ async function executeAstEdit(
 		};
 	const snapshots = snapshotsForContext(ctx);
 	const sections: string[] = [];
+	const diffs: string[] = [];
 	for (const [file, fileMatches] of groupMatchesByFile(limited)) {
 		const before = normalizeToLf(await readFile(file, "utf-8"));
 		const after = rewriteSource(before, fileMatches, params.rewrite);
 		const changed = changedLineCount(before, after);
+		if (after !== before) {
+			diffs.push(
+				createTwoFilesPatch(displayPath(ctx.cwd, file), displayPath(ctx.cwd, file), before, after, "", "", {
+					context: 3,
+				}),
+			);
+		}
 		if (params.apply && after !== before) {
 			await withFileMutationQueue(file, () => writeFile(file, after, "utf-8"));
 			const tag = recordHashlineSnapshot(snapshots, file, after);
@@ -234,9 +244,15 @@ async function executeAstEdit(
 	}
 	if (matches.length > limit) sections.push(`… ${matches.length - limit} additional match(es) omitted`);
 	if (stderr) sections.push(`Diagnostics:\n${stderr}`);
+	const diff = diffs.join("\n");
 	return {
 		content: [{ type: "text", text: sections.join("\n\n") }],
-		details: { matches: matches.length, applied: params.apply === true },
+		details: {
+			matches: matches.length,
+			applied: params.apply === true,
+			diff: diff || undefined,
+			highlightedDiffRows: diff ? await buildHighlightedDiffRows(diff) : undefined,
+		},
 	};
 }
 
@@ -268,8 +284,14 @@ export function registerAstTools(pi: ExtensionAPI, snapshotsForContext: Snapshot
 			const input = params as { pattern?: string; apply?: boolean };
 			return new Text(`ast_edit ${input.apply ? "apply" : "preview"} ${JSON.stringify(input.pattern ?? "")}`, 0, 0);
 		},
-		renderResult(result) {
-			return new Text((result as ToolTextResult).content[0]?.text ?? "", 0, 0);
+		renderResult(result, options, theme) {
+			const output = result as ToolTextResult;
+			const diff = typeof output.details?.diff === "string" ? output.details.diff : "";
+			if (!diff) return new Text(output.content[0]?.text ?? "", 0, 0);
+			const rows = Array.isArray(output.details?.highlightedDiffRows)
+				? (output.details.highlightedDiffRows as DiffRenderRow[])
+				: undefined;
+			return new EditDiffView(diff, rows, options.expanded === true, theme as RenderTheme);
 		},
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			return executeAstEdit(params as any, ctx, snapshotsForContext, signal);
