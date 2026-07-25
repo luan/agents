@@ -2,6 +2,7 @@ import { type ChildProcessByStdio, execFileSync, spawn } from "node:child_proces
 import { randomBytes } from "node:crypto";
 import { resolve } from "node:path";
 import type { Readable } from "node:stream";
+import { fileURLToPath } from "node:url";
 import * as pty from "node-pty";
 import { DEFAULT_EXEC_SHELL, isFishShell, resolveRuntimeShell } from "../adapter/runtime-shell.ts";
 import {
@@ -141,6 +142,7 @@ const MAX_YIELD_TIME_MS = 120_000;
 const MAX_COMMAND_HISTORY = 256;
 const DEFAULT_MAX_SESSION_BUFFER_CHARS = UNIFIED_EXEC_OUTPUT_MAX_BYTES;
 const IS_BUN_RUNTIME = typeof process !== "undefined" && typeof process.versions?.bun === "string";
+const NODE_PTY_HOST = fileURLToPath(new URL("./node-pty-host.mjs", import.meta.url));
 
 function resolveWorkdir(baseCwd: string, workdir?: string): string {
 	if (!workdir) return baseCwd;
@@ -800,12 +802,20 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		const login = input.login ?? true;
 		const execution = resolveExecution(input.shell, input.cmd);
 		const shellArgs = login ? ["-lc", execution.command] : ["-c", execution.command];
-		const child = spawn(shell, shellArgs, {
-			cwd: workdir,
-			stdio: [input.tty ? "pipe" : "ignore", "pipe", "pipe"],
-			env: execution.env,
-			detached: true,
-		});
+		const child =
+			input.tty && IS_BUN_RUNTIME
+				? spawn("node", [NODE_PTY_HOST, shell, ...shellArgs], {
+						cwd: workdir,
+						stdio: ["pipe", "pipe", "pipe"],
+						env: { ...execution.env, TERM: process.env.TERM || "xterm-256color" },
+						detached: true,
+					})
+				: spawn(shell, shellArgs, {
+						cwd: workdir,
+						stdio: [input.tty ? "pipe" : "ignore", "pipe", "pipe"],
+						env: execution.env,
+						detached: true,
+					});
 
 		const session: PipeExecSession = {
 			kind: "pipe",
@@ -908,8 +918,6 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			const workdir = resolveWorkdir(cwd, input.workdir);
 			const session = input.tty
 				? (() => {
-						// Bun's node-pty bridge drops stdin-waiting shells immediately with SIGHUP,
-						// which breaks the tty=true contract for write_stdin in tests and local tools.
 						if (IS_BUN_RUNTIME) {
 							return createPipeSession(input, workdir, shell, signal);
 						}

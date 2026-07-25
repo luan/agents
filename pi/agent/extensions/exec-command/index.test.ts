@@ -2788,6 +2788,20 @@ test("exec session manager lazily removes exited sessions when a new session sta
 	}
 });
 
+test("exec session manager provides a real tty when requested", async () => {
+	const sessions = createExecSessionManager({ defaultExecYieldTimeMs: 5000 });
+	try {
+		const result = await sessions.exec(
+			{ cmd: "[ -t 0 ] && [ -t 1 ] && printf tty", tty: true, yield_time_ms: 5000 },
+			process.cwd(),
+		);
+		expect(result.output).toContain("tty");
+		expect(result.exit_code).toBe(0);
+	} finally {
+		sessions.shutdown();
+	}
+});
+
 test("exec session manager includes stdin capability in running results and snapshots", async () => {
 	const sessions = createExecSessionManager({
 		defaultExecYieldTimeMs: 250,
