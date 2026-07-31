@@ -35,6 +35,17 @@ test("fast toggle survives new sessions for the current runtime and alt+g uses t
 	handlers.get("session_start")?.({}, first);
 	await commands.get("fast").handler("", first);
 	expect(notifications.at(-1)).toContain("on (runtime override)");
+	const childHandlers = new Map<string, (...args: any[]) => any>();
+	openAIFastExtension({
+		on: (name: string, handler: (...args: any[]) => any) => childHandlers.set(name, handler),
+		registerCommand: () => {},
+		registerShortcut: () => {},
+	} as any);
+	const child = context({});
+	childHandlers.get("session_start")?.({}, child);
+	expect(childHandlers.get("before_provider_request")?.({ payload: { model: "gpt-5.6-sol" } }, child)).toMatchObject({
+		service_tier: "priority",
+	});
 
 	const second = context({});
 	handlers.get("session_start")?.({}, second);

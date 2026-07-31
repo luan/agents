@@ -141,9 +141,11 @@ function injectFastServiceTier(
 	return { ...payload, service_tier: FAST_SERVICE_TIER };
 }
 
+// Extension factories are instantiated per session; keep the runtime override shared with child sessions.
+let runtimeOverride: FastOverride = "auto";
+
 export default function openAIFastExtension(pi: ExtensionAPI) {
 	const states = new WeakMap<object, SessionState>();
-	let runtimeOverride: FastOverride = "auto";
 
 	function getState(ctx: ExtensionContext): SessionState {
 		let state = states.get(ctx.sessionManager);
