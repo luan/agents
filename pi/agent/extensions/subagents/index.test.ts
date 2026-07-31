@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import ompSubagentsExtension, {
+import subagentsExtension, {
 	formatTaskResults,
 	renderSubagentList,
 	shouldOwnAgentWidget,
@@ -43,7 +43,7 @@ test("returns complete subagent output to the parent", () => {
 	const result: TaskResult = {
 		index: 0,
 		id: "agent-1",
-		agent: "librarian",
+		agent: "explore",
 		description: "Research Chromium inbound sync",
 		assignment: "Research the implementation.",
 		status: "completed",
@@ -60,7 +60,7 @@ test("returns complete subagent output to the parent", () => {
 test("registers explicit agent tools instead of the generic task tool", () => {
 	const tools: string[] = [];
 	const commands: string[] = [];
-	ompSubagentsExtension({
+	subagentsExtension({
 		on() {},
 		registerTool(tool: { name: string }) {
 			tools.push(tool.name);

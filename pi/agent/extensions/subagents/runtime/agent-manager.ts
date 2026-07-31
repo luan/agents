@@ -16,7 +16,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { findRetryableTurn, resumeAgent, retryFailedTurn, runAgent, type ToolActivity } from "./agent-runner.js";
 import { childSessionDir, type PersistedAgent } from "./persistence.js";
-import type { AgentConfig, AgentEvent, AgentRecord, IsolationMode, SubagentType, ThinkingLevel } from "./types.js";
+import type { AgentConfig, AgentEvent, AgentRecord, IsolationMode, SubagentType } from "./types.js";
 import { type AssistantUsage, addUsage } from "./usage.js";
 import { cleanupWorktree, createWorktree, pruneWorktrees } from "./worktree.js";
 
@@ -43,21 +43,9 @@ interface SpawnOptions {
 	parentSessionId: string;
 	assignment: string;
 	id?: string;
-	agentConfig?: AgentConfig;
+	agentConfig: AgentConfig;
 	resolveRuntime?: () => { pi: ExtensionAPI; ctx: ExtensionContext } | undefined;
-	modelName?: string;
-	model?: Model<any>;
-	maxTurns?: number;
-	isolated?: boolean;
-	inheritContext?: boolean;
-	thinkingLevel?: ThinkingLevel;
 	isBackground?: boolean;
-	/**
-	 * Skip the maxConcurrent queue check for this spawn — start immediately even
-	 * if the configured concurrency limit would otherwise queue it. Used by the
-	 * scheduler so a fired job can't be deferred past its trigger window.
-	 */
-	bypassQueue?: boolean;
 	/** Isolation mode — "worktree" creates a temp git worktree for the agent. */
 	isolation?: IsolationMode;
 	/** Override working directory for the agent. */
@@ -112,17 +100,6 @@ export class AgentManager {
 		this.cleanupInterval.unref();
 	}
 
-	/** Update the max concurrent background agents limit. */
-	setMaxConcurrent(n: number) {
-		this.maxConcurrent = Math.max(1, n);
-		// Start queued agents if the new limit allows
-		this.drainQueue();
-	}
-
-	getMaxConcurrent(): number {
-		return this.maxConcurrent;
-	}
-
 	/**
 	 * Spawn an agent and return its ID immediately (for background use).
 	 * If the concurrency limit is reached, the agent is queued.
@@ -151,8 +128,6 @@ export class AgentManager {
 			isBackground: options.isBackground === true,
 			toolUses: 0,
 			startedAt: Date.now(),
-			modelName: options.modelName ?? modelLabel(options.model),
-			thinkingLevel: options.thinkingLevel,
 			abortController,
 			lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
 			compactionCount: 0,
@@ -161,7 +136,7 @@ export class AgentManager {
 
 		const args: SpawnArgs = { pi, ctx, type, prompt, options };
 
-		if (options.isBackground && !options.bypassQueue && this.runningBackground >= this.maxConcurrent) {
+		if (options.isBackground && this.runningBackground >= this.maxConcurrent) {
 			// Queue it — will be started when a running agent completes
 			this.queue.push({ id, args });
 			return id;
@@ -223,14 +198,9 @@ export class AgentManager {
 			pi: runtime.pi,
 			description: options.description,
 			agentConfig: options.agentConfig,
-			model: options.model,
-			maxTurns: options.maxTurns,
-			isolated: options.isolated,
-			inheritContext: options.inheritContext,
-			thinkingLevel: options.thinkingLevel,
 			sessionDir: childSessionDir(record.rootSessionId, id),
 			onRuntimeResolved: (model, thinkingLevel) => {
-				record.modelName = options.modelName ?? modelLabel(model);
+				record.modelName = modelLabel(model);
 				record.thinkingLevel = thinkingLevel;
 			},
 			cwd: worktreeCwd ?? options.cwd,
@@ -391,23 +361,6 @@ export class AgentManager {
 		this.drainQueue();
 	}
 
-	/**
-	 * Spawn an agent and wait for completion (foreground use).
-	 * Foreground agents bypass the concurrency queue.
-	 */
-	async spawnAndWait(
-		pi: ExtensionAPI,
-		ctx: ExtensionContext,
-		type: SubagentType,
-		prompt: string,
-		options: Omit<SpawnOptions, "isBackground">,
-	): Promise<AgentRecord> {
-		const id = this.spawn(pi, ctx, type, prompt, { ...options, isBackground: false });
-		const record = this.agents.get(id)!;
-		await record.promise;
-		return record;
-	}
-
 	/** Resume an agent, reopening its persisted child session when necessary. */
 	async resume(
 		pi: ExtensionAPI,
@@ -417,7 +370,7 @@ export class AgentManager {
 		options: ResumeOptions = {},
 	): Promise<AgentRecord | undefined> {
 		const record = this.agents.get(id);
-		if (!record || (!record.session && !record.sessionFile)) return undefined;
+		if (!record || (!record.session && (!record.sessionFile || !record.agentConfig))) return undefined;
 		this.beginTurn(record, options.deliverCompletion === true);
 
 		try {
@@ -425,10 +378,12 @@ export class AgentManager {
 				const turn = await resumeAgent(record.session, prompt, this.turnOptions(record, options));
 				this.finishTurn(record, turn.responseText, turn.error);
 			} else {
+				const agentConfig = record.agentConfig;
+				if (!agentConfig) return undefined;
 				const turn = await runAgent(ctx, record.type, prompt, {
 					pi,
 					description: record.description,
-					agentConfig: record.agentConfig,
+					agentConfig,
 					cwd: record.cwd,
 					sessionFile: record.sessionFile,
 					...this.persistedTurnOptions(record, options),
@@ -450,7 +405,7 @@ export class AgentManager {
 		options: ResumeOptions = {},
 	): Promise<AgentRecord | undefined> {
 		const record = this.agents.get(id);
-		if (!record || (!record.session && !record.sessionFile)) return undefined;
+		if (!record || (!record.session && (!record.sessionFile || !record.agentConfig))) return undefined;
 		if (record.session && !findRetryableTurn(record.session.sessionManager.getBranch())) return undefined;
 		if (record.sessionFile && !record.session) {
 			const persistedSession = SessionManager.open(record.sessionFile, undefined, record.cwd);
@@ -463,10 +418,12 @@ export class AgentManager {
 				const turn = await retryFailedTurn(record.session, this.turnOptions(record, options));
 				this.finishTurn(record, turn.responseText, turn.error);
 			} else {
+				const agentConfig = record.agentConfig;
+				if (!agentConfig) return undefined;
 				const turn = await runAgent(ctx, record.type, record.assignment, {
 					pi,
 					description: record.description,
-					agentConfig: record.agentConfig,
+					agentConfig,
 					cwd: record.cwd,
 					sessionFile: record.sessionFile,
 					retry: true,

@@ -1,12 +1,4 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { basename, join } from "node:path";
-import {
-	type ExtensionAPI,
-	type ExtensionCommandContext,
-	type ExtensionContext,
-	parseFrontmatter,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
@@ -25,7 +17,7 @@ import {
 } from "./runtime/coordinator.js";
 import { loadCustomAgents } from "./runtime/custom-agents.js";
 import { readAgentRegistry, writeAgentRegistry } from "./runtime/persistence.js";
-import type { AgentConfig, AgentRecord, SubagentType, ThinkingLevel } from "./runtime/types.js";
+import type { AgentConfig, AgentRecord, SubagentType } from "./runtime/types.js";
 import { openAgentBrowser, openAgentInspector } from "./runtime/ui/agent-browser.js";
 import { type AgentActivity, AgentWidget } from "./runtime/ui/agent-widget.js";
 import type { AssistantUsage } from "./runtime/usage.js";
@@ -231,187 +223,58 @@ const readOnlyDisallowedTools = [
 const bundledAgents: AgentConfig[] = [
 	{
 		name: "task",
-		description: "General-purpose subagent with full capabilities for delegated multi-step tasks",
-		model: "openai-codex/gpt-5.6-terra",
-		thinking: "high",
+		description: "General-purpose implementation agent",
+		modelCategory: "default",
 		extensions: true,
 		skills: false,
 		promptMode: "append",
 		systemPrompt: taskAgentPrompt,
-		source: "default",
-		isDefault: true,
-	},
-	{
-		name: "quick_task",
-		description: "Low-reasoning agent for strictly mechanical updates or data collection only",
-		model: "openai-codex/gpt-5.6-luna",
-		extensions: true,
-		skills: false,
-		promptMode: "append",
-		systemPrompt: taskAgentPrompt,
-		thinking: "medium",
 		source: "default",
 		isDefault: true,
 	},
 	{
 		name: "explore",
-		description: "Fast read-only codebase scout returning compressed context for handoff",
-		model: "openai-codex/gpt-5.6-luna",
+		description: "Fast read-only codebase and documentation scout",
+		modelCategory: "fast",
 		disallowedTools: readOnlyDisallowedTools,
 		extensions: true,
 		skills: false,
 		promptMode: "replace",
 		systemPrompt:
-			"Investigate the codebase rapidly. Use broad search, read key sections, identify relevant files and architecture, and return concise findings. Read-only: never write, edit, or run state-changing commands.",
-		thinking: "medium",
+			"Investigate rapidly. Search broadly, read key sections, and return concise findings with exact source paths. Read-only: never write, edit, or run state-changing commands.",
 		source: "default",
 		isDefault: true,
 	},
 	{
 		name: "plan",
-		description: "Software architect for complex multi-file architectural decisions",
-		model: "openai-codex/gpt-5.6-sol",
+		description: "Read-only implementation planner for complex changes",
+		modelCategory: "smart",
 		disallowedTools: readOnlyDisallowedTools,
 		extensions: true,
 		skills: false,
 		promptMode: "replace",
 		systemPrompt:
-			"Analyze requirements and code, then produce an implementation plan with summary, concrete changes, sequence, edge cases, verification, and critical files. Read-only: do not modify files.",
-		thinking: "high",
-		source: "default",
-		isDefault: true,
-	},
-	{
-		name: "designer",
-		description: "UI/UX specialist for design implementation, review, and visual refinement",
-		model: "openai-codex/gpt-5.6-terra",
-		thinking: "high",
-		extensions: true,
-		skills: false,
-		promptMode: "append",
-		systemPrompt:
-			"Implement and review UI designs with attention to design systems, accessibility, responsive behavior, visual hierarchy, and explicit states. Prefer existing components and tokens over one-off styling.",
+			"Analyze requirements and code, then produce a concise implementation plan covering changes, sequence, edge cases, verification, and critical files. Read-only: do not modify files.",
 		source: "default",
 		isDefault: true,
 	},
 	{
 		name: "reviewer",
-		description: "Code review specialist for quality and security analysis",
-		model: "openai-codex/gpt-5.6-sol",
+		description: "Read-only code review agent",
+		modelCategory: "smart",
 		disallowedTools: readOnlyDisallowedTools,
 		extensions: true,
 		skills: false,
 		promptMode: "replace",
 		systemPrompt:
-			"Identify bugs the author would want fixed before merge. Report only provable, actionable issues introduced by the change. Never edit files or run commands.",
-		thinking: "high",
-		source: "default",
-		isDefault: true,
-	},
-	{
-		name: "oracle",
-		description: "Deep reasoning agent for hard implementation or architecture work",
-		model: "openai-codex/gpt-5.6-sol",
-		extensions: true,
-		skills: false,
-		promptMode: "append",
-		systemPrompt: `${taskAgentPrompt}\n\nUse deep reasoning for ambiguous, cross-cutting, or architecture-sensitive work.`,
-		thinking: "high",
-		source: "default",
-		isDefault: true,
-	},
-	{
-		name: "librarian",
-		description: "Read-only documentation and repository research specialist",
-		model: "openai-codex/gpt-5.6-luna",
-		thinking: "medium",
-		disallowedTools: readOnlyDisallowedTools,
-		extensions: true,
-		skills: false,
-		promptMode: "replace",
-		systemPrompt:
-			"Research docs and repository context. Return cited, compressed findings. Read-only: never write, edit, or run state-changing commands.",
+			"Identify bugs the author would want fixed before merge. Report only provable, actionable issues introduced by the change. Never edit files or run state-changing commands.",
 		source: "default",
 		isDefault: true,
 	},
 ];
 
-function parseList(value: unknown): string[] | undefined {
-	if (Array.isArray(value))
-		return value
-			.map(String)
-			.map((item) => item.trim())
-			.filter(Boolean);
-	if (typeof value !== "string") return undefined;
-	const trimmed = value.trim();
-	if (!trimmed || trimmed === "none") return [];
-	if (trimmed === "all" || trimmed === "inherit") return undefined;
-	return trimmed
-		.split(",")
-		.map((item) => item.trim())
-		.filter(Boolean);
-}
-
-function inheritField(value: unknown): true | string[] | false {
-	if (value === undefined || value === null || value === true) return true;
-	if (value === false || value === "none") return false;
-	return parseList(value) ?? false;
-}
-
-function parseAgentFile(path: string, source: "project" | "global"): AgentConfig | undefined {
-	try {
-		const { frontmatter, body } = parseFrontmatter<Record<string, unknown>>(readFileSync(path, "utf8"));
-		const name =
-			typeof frontmatter.name === "string" && frontmatter.name.trim()
-				? frontmatter.name.trim()
-				: basename(path, ".md");
-		const description =
-			typeof frontmatter.description === "string" && frontmatter.description.trim()
-				? frontmatter.description.trim()
-				: name;
-		return {
-			name,
-			displayName: typeof frontmatter.display_name === "string" ? frontmatter.display_name : undefined,
-			description,
-			toolNames: parseList(frontmatter.tools),
-			disallowedTools: parseList(frontmatter.disallowed_tools),
-			extensions: inheritField(frontmatter.extensions ?? frontmatter.inherit_extensions),
-			skills: inheritField(frontmatter.skills ?? frontmatter.inherit_skills),
-			model: typeof frontmatter.model === "string" ? frontmatter.model : undefined,
-			thinking: (frontmatter.thinking ?? frontmatter["thinking-level"]) as ThinkingLevel | undefined,
-			maxTurns: typeof frontmatter.max_turns === "number" ? frontmatter.max_turns : undefined,
-			systemPrompt: body.trim(),
-			promptMode: frontmatter.prompt_mode === "append" ? "append" : "replace",
-			enabled: frontmatter.enabled !== false,
-			source,
-		};
-	} catch (error) {
-		console.warn(
-			`[omp-subagents] Ignoring invalid agent file ${path}: ${error instanceof Error ? error.message : String(error)}`,
-		);
-		return undefined;
-	}
-}
-
-function loadAgentsFromDir(dir: string, source: "project" | "global"): AgentConfig[] {
-	if (!existsSync(dir)) return [];
-	try {
-		return readdirSync(dir)
-			.filter((file) => file.endsWith(".md"))
-			.sort()
-			.map((file) => parseAgentFile(join(dir, file), source))
-			.filter((agent): agent is AgentConfig => Boolean(agent));
-	} catch {
-		return [];
-	}
-}
-
-function loadOmpAgents(cwd: string): Map<string, AgentConfig> {
-	const agents = new Map<string, AgentConfig>();
-	for (const agent of bundledAgents) agents.set(agent.name, agent);
-	for (const agent of loadAgentsFromDir(join(homedir(), ".omp", "agent", "agents"), "global"))
-		agents.set(agent.name, agent);
-	for (const agent of loadAgentsFromDir(join(cwd, ".omp", "agents"), "project")) agents.set(agent.name, agent);
+function loadAgents(cwd: string): Map<string, AgentConfig> {
+	const agents = new Map(bundledAgents.map((agent) => [agent.name, agent]));
 	for (const [name, agent] of loadCustomAgents(cwd)) agents.set(name, agent);
 	return agents;
 }
@@ -549,7 +412,7 @@ export function shouldOwnAgentWidget(
 	return hasUI && !manager.findByChildSessionId(sessionId);
 }
 
-export default function ompSubagentsExtension(pi: ExtensionAPI) {
+export default function subagentsExtension(pi: ExtensionAPI) {
 	let currentCtx: ExtensionContext | undefined;
 	const manager = getSharedAgentManager();
 	const activityByAgent = getSharedAgentActivity();
@@ -579,7 +442,7 @@ export default function ompSubagentsExtension(pi: ExtensionAPI) {
 		const rootSessionId = owner?.rootSessionId ?? sessionId;
 		if (!owner) manager.restore(readAgentRegistry(rootSessionId));
 		writeAgentRegistry(rootSessionId, manager.listAgents(rootSessionId));
-		currentAgents = loadOmpAgents(ctx.cwd);
+		currentAgents = loadAgents(ctx.cwd);
 		registerSessionBinding(pi, ctx);
 		if (shouldOwnAgentWidget(manager, sessionId, ctx.hasUI)) {
 			registerAgentWidget(agentWidget);
@@ -671,8 +534,7 @@ export default function ompSubagentsExtension(pi: ExtensionAPI) {
 		renderResult: renderTaskResult,
 		parameters: Type.Object({
 			agent: Type.String({
-				description:
-					"Agent type: task, quick_task, explore, plan, designer, reviewer, oracle, librarian, or a custom agent.",
+				description: "Agent type: task, explore, plan, reviewer, or a custom agent.",
 			}),
 			context: Type.Optional(Type.String({ description: "Shared context prepended to every tasks[] item." })),
 			tasks: Type.Optional(Type.Array(taskItemSchema, { description: "One agent per item." })),
@@ -687,7 +549,7 @@ export default function ompSubagentsExtension(pi: ExtensionAPI) {
 		}),
 		execute: async (_toolCallId, params, signal, onUpdate, ctx) => {
 			currentCtx = ctx;
-			currentAgents = loadOmpAgents(ctx.cwd);
+			currentAgents = loadAgents(ctx.cwd);
 			const taskParams = params as TaskParams;
 			const items = normalizeItems(taskParams);
 			const background = taskParams.background !== false;

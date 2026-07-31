@@ -11,16 +11,13 @@ export type { ThinkingLevel };
 /** Agent type: any string name (built-in defaults or user-defined). */
 export type SubagentType = string;
 
-/** Names of the three embedded default agents. */
-export const DEFAULT_AGENT_NAMES = ["general-purpose", "Explore", "Plan"] as const;
-
 /** Memory scope for persistent agent memory. */
 export type MemoryScope = "user" | "project" | "local";
 
 /** Isolation mode for agent execution. */
 export type IsolationMode = "worktree";
 
-export interface ModelPresetCandidate {
+export interface ModelCategory {
 	model: string;
 	thinking?: ThinkingLevel;
 }
@@ -38,22 +35,14 @@ export interface AgentConfig {
 	extensions: true | string[] | false;
 	/** true = inherit all, string[] = only listed, false = none */
 	skills: true | string[] | false;
-	modelPreset?: string;
+	modelCategory?: string;
 	model?: string;
 	thinking?: ThinkingLevel;
 	maxTurns?: number;
 	systemPrompt: string;
 	promptMode: "replace" | "append";
-	/** Default for spawn: fork parent conversation. undefined = caller decides. */
-	inheritContext?: boolean;
-	/** Default for spawn: run in background. undefined = caller decides. */
-	runInBackground?: boolean;
-	/** Default for spawn: no extension tools. undefined = caller decides. */
-	isolated?: boolean;
-	/** Persistent memory scope — agents with memory get a persistent directory and MEMORY.md */
+	/** Persistent memory scope. */
 	memory?: MemoryScope;
-	/** Isolation mode — "worktree" runs the agent in a temporary git worktree */
-	isolation?: IsolationMode;
 	/** true = this is an embedded default agent (informational) */
 	isDefault?: boolean;
 	/** false = agent is hidden from the registry */
@@ -168,48 +157,4 @@ export interface EnvInfo {
 	isGitRepo: boolean;
 	branch: string;
 	platform: string;
-}
-
-/**
- * A subagent spawn registered to fire on a schedule.
- *
- * Stored at `<cwd>/.pi/subagent-schedules/<sessionId>.json`. Session-scoped:
- * survives `/resume` but resets on `/new`, mirroring pi-chonky-tasks.
- */
-export interface ScheduledSubagent {
-	id: string;
-	/** Unique within store. Defaults to `description`. */
-	name: string;
-	description: string;
-	/** Raw user input — cron expr | "+10m" | ISO | "5m". */
-	schedule: string;
-	scheduleType: "cron" | "once" | "interval";
-	/** Computed at create time for interval/once. */
-	intervalMs?: number;
-
-	// spawn params (no inherit_context, no resume)
-	subagent_type: SubagentType;
-	prompt: string;
-	model?: string;
-	thinking?: ThinkingLevel;
-	max_turns?: number;
-	isolated?: boolean;
-	isolation?: IsolationMode;
-	cwd?: string;
-
-	// state
-	enabled: boolean;
-	/** ISO timestamp. */
-	createdAt: string;
-	lastRun?: string;
-	lastStatus?: "success" | "error" | "running";
-	/** Refreshed on every fire and on store load. */
-	nextRun?: string;
-	runCount: number;
-}
-
-export interface ScheduleStoreData {
-	/** For future migrations. */
-	version: 1;
-	jobs: ScheduledSubagent[];
 }

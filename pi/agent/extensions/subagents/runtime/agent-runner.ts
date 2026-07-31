@@ -14,54 +14,30 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import {
-	getAgentConfig,
-	getAllowedToolNamesForType,
-	getConfig,
-	getMemoryToolNames,
-	getReadOnlyMemoryToolNames,
-} from "./agent-types.js";
-import { buildParentContext, extractText } from "./context.js";
-import { DEFAULT_AGENTS } from "./default-agents.js";
+import { extractText } from "./context.js";
 import { detectEnv } from "./env.js";
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "./memory.js";
-import { mergeModelPresets, resolveModelPreset } from "./model-presets.js";
+import { loadModelCategories, resolveModelCategory } from "./model-categories.js";
 import { resolveDefaultModel } from "./model-resolver.js";
 import { isSubagentOrchestrationToolName } from "./orchestration-tools.js";
 import { buildAgentPrompt, type PromptExtras } from "./prompts.js";
-import { loadSettings } from "./settings.js";
 import { preloadSkills } from "./skill-loader.js";
 import type { AgentConfig, SubagentType, ThinkingLevel } from "./types.js";
 import { type AssistantUsage, readAssistantUsage } from "./usage.js";
 
-/** Default max turns. undefined = unlimited (no turn limit). */
-let defaultMaxTurns: number | undefined;
+const GRACE_TURNS = 5;
+
+const MEMORY_TOOL_NAMES = ["read", "write", "edit"];
+const READ_ONLY_MEMORY_TOOL_NAMES = ["read"];
+
+function missingToolNames(required: string[], existing: Set<string>): string[] {
+	return required.filter((name) => !existing.has(name));
+}
 
 /** Normalize max turns. undefined or 0 = unlimited, otherwise minimum 1. */
 export function normalizeMaxTurns(n: number | undefined): number | undefined {
 	if (n == null || n === 0) return undefined;
 	return Math.max(1, n);
-}
-
-/** Get the default max turns value. undefined = unlimited. */
-export function getDefaultMaxTurns(): number | undefined {
-	return defaultMaxTurns;
-}
-/** Set the default max turns value. undefined or 0 = unlimited, otherwise minimum 1. */
-export function setDefaultMaxTurns(n: number | undefined): void {
-	defaultMaxTurns = normalizeMaxTurns(n);
-}
-
-/** Additional turns allowed after the soft limit steer message. */
-let graceTurns = 5;
-
-/** Get the grace turns value. */
-export function getGraceTurns(): number {
-	return graceTurns;
-}
-/** Set the grace turns value (minimum 1). */
-export function setGraceTurns(n: number): void {
-	graceTurns = Math.max(1, n);
 }
 
 /** Info about a tool event in the subagent. */
@@ -74,13 +50,8 @@ export interface RunOptions {
 	/** ExtensionAPI instance — used for pi.exec() instead of execSync. */
 	pi: ExtensionAPI;
 	description?: string;
-	agentConfig?: AgentConfig;
-	model?: Model<any>;
-	maxTurns?: number;
+	agentConfig: AgentConfig;
 	signal?: AbortSignal;
-	isolated?: boolean;
-	inheritContext?: boolean;
-	thinkingLevel?: ThinkingLevel;
 	/** Override working directory (e.g. for worktree isolation). */
 	cwd?: string;
 	/** Directory for a new persistent child session. */
@@ -233,18 +204,15 @@ export async function runAgent(
 	prompt: string,
 	options: RunOptions,
 ): Promise<RunResult> {
-	const agentConfig = options.agentConfig ?? getAgentConfig(type);
-	const config =
-		agentConfig && agentConfig.enabled !== false
-			? {
-					displayName: agentConfig.displayName ?? agentConfig.name,
-					description: agentConfig.description,
-					toolNames: agentConfig.toolNames,
-					extensions: agentConfig.extensions,
-					skills: agentConfig.skills,
-					promptMode: agentConfig.promptMode,
-				}
-			: getConfig(type);
+	const agentConfig = options.agentConfig;
+	const config = {
+		displayName: agentConfig.displayName ?? agentConfig.name,
+		description: agentConfig.description,
+		toolNames: agentConfig.toolNames,
+		extensions: agentConfig.extensions,
+		skills: agentConfig.skills,
+		promptMode: agentConfig.promptMode,
+	};
 
 	// Resolve working directory: worktree override > parent cwd
 	const effectiveCwd = options.cwd ?? ctx.cwd;
@@ -257,9 +225,8 @@ export async function runAgent(
 	// Build prompt extras (memory, skill preloading)
 	const extras: PromptExtras = { delegatedTask: { taskName: options.description ?? type, message: prompt } };
 
-	// Resolve extensions/skills: isolated overrides to false
-	const extensions = options.isolated ? false : config.extensions;
-	const skills = options.isolated ? false : config.skills;
+	const extensions = config.extensions;
+	const skills = config.skills;
 
 	// Skill preloading: when skills is string[], preload their content into prompt
 	if (Array.isArray(skills)) {
@@ -270,21 +237,20 @@ export async function runAgent(
 	}
 
 	const parentActiveToolNames = new Set(options.pi.getActiveTools());
-	const explicitAllowedToolNames = agentConfig?.toolNames ?? getAllowedToolNamesForType(type);
+	const explicitAllowedToolNames = agentConfig.toolNames;
 	const selectedToolNames = new Set(explicitAllowedToolNames ?? [...parentActiveToolNames]);
 	let toolNames = [...selectedToolNames];
 
 	// Persistent memory: detect write capability and branch accordingly.
 	// Account for disallowedTools — a tool in the base set but on the denylist is not truly available.
-	if (agentConfig?.memory) {
+	if (agentConfig.memory) {
 		const existingNames = new Set(toolNames);
 		const denied = agentConfig.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined;
 		const effectivelyHas = (name: string) => existingNames.has(name) && !denied?.has(name);
 		const hasWriteTools = effectivelyHas("write") || effectivelyHas("edit");
 
 		if (hasWriteTools) {
-			// Read-write memory: add any missing memory tool names (read/write/edit)
-			const extraNames = getMemoryToolNames(existingNames);
+			const extraNames = missingToolNames(MEMORY_TOOL_NAMES, existingNames);
 			if (extraNames.length > 0) {
 				toolNames = [...toolNames, ...extraNames];
 				for (const name of extraNames) selectedToolNames.add(name);
@@ -292,7 +258,7 @@ export async function runAgent(
 			extras.memoryBlock = buildMemoryBlock(agentConfig.name, agentConfig.memory, effectiveCwd);
 		} else {
 			// Read-only memory: only add read tool name, use read-only prompt
-			const extraNames = getReadOnlyMemoryToolNames(existingNames);
+			const extraNames = missingToolNames(READ_ONLY_MEMORY_TOOL_NAMES, existingNames);
 			if (extraNames.length > 0) {
 				toolNames = [...toolNames, ...extraNames];
 				for (const name of extraNames) selectedToolNames.add(name);
@@ -301,17 +267,7 @@ export async function runAgent(
 		}
 	}
 
-	// Build system prompt from agent config
-	let systemPrompt: string;
-	if (agentConfig) {
-		systemPrompt = buildAgentPrompt(agentConfig, effectiveCwd, env, parentSystemPrompt, extras);
-	} else {
-		// Unknown type fallback: spread the canonical general-purpose config (defensive —
-		// unreachable in practice since index.ts resolves unknown types before calling runAgent).
-		const fallback = DEFAULT_AGENTS.get("general-purpose");
-		if (!fallback) throw new Error(`No fallback config available for unknown type "${type}"`);
-		systemPrompt = buildAgentPrompt({ ...fallback, name: type }, effectiveCwd, env, parentSystemPrompt, extras);
-	}
+	const systemPrompt = buildAgentPrompt(agentConfig, effectiveCwd, env, parentSystemPrompt, extras);
 
 	// When skills is string[], we've already preloaded them into the prompt.
 	// Still pass noSkills: true since we don't need the skill loader to load them again.
@@ -341,21 +297,18 @@ export async function runAgent(
 	});
 	await loader.reload();
 
-	const preset = resolveModelPreset(
-		agentConfig?.modelPreset,
+	const category = resolveModelCategory(
+		agentConfig.modelCategory,
 		ctx.modelRegistry,
-		mergeModelPresets(loadSettings(effectiveCwd).modelPresets),
+		loadModelCategories(effectiveCwd),
 	);
 
-	// Resolve model: explicit option > config.model > config.modelPreset > parent model
-	const model = options.model ?? resolveDefaultModel(preset.model ?? ctx.model, ctx.modelRegistry, agentConfig?.model);
+	// Resolve model: config.model > config.modelCategory > parent model
+	const model = resolveDefaultModel(category.model ?? ctx.model, ctx.modelRegistry, agentConfig.model);
 
-	// Resolve thinking level: explicit option > agent config > config.modelPreset > parent
+	// Resolve thinking level: agent config > model category > parent
 	const thinkingLevel =
-		options.thinkingLevel ??
-		agentConfig?.thinking ??
-		preset.thinking ??
-		(model?.reasoning ? options.pi.getThinkingLevel() : undefined);
+		agentConfig.thinking ?? category.thinking ?? (model?.reasoning ? options.pi.getThinkingLevel() : undefined);
 	options.onRuntimeResolved?.(model, thinkingLevel);
 
 	const sessionManager = options.sessionFile
@@ -408,7 +361,7 @@ export async function runAgent(
 
 	// Track turns for graceful max_turns enforcement
 	let turnCount = 0;
-	const maxTurns = normalizeMaxTurns(options.maxTurns ?? agentConfig?.maxTurns ?? defaultMaxTurns);
+	const maxTurns = normalizeMaxTurns(agentConfig.maxTurns);
 	let softLimitReached = false;
 	let aborted = false;
 
@@ -421,7 +374,7 @@ export async function runAgent(
 				if (!softLimitReached && turnCount >= maxTurns) {
 					softLimitReached = true;
 					session.steer("You have reached your turn limit. Wrap up immediately — provide your final answer now.");
-				} else if (softLimitReached && turnCount >= maxTurns + graceTurns) {
+				} else if (softLimitReached && turnCount >= maxTurns + GRACE_TURNS) {
 					aborted = true;
 					session.abort();
 				}
@@ -452,15 +405,6 @@ export async function runAgent(
 	const collector = collectResponseText(session);
 	const cleanupAbort = forwardAbortSignal(session, options.signal);
 
-	// Build the effective prompt: optionally prepend parent context
-	let effectivePrompt = prompt;
-	if (options.inheritContext) {
-		const parentContext = buildParentContext(ctx);
-		if (parentContext) {
-			effectivePrompt = `${parentContext}\n\n${prompt}`;
-		}
-	}
-
 	try {
 		if (options.retry) {
 			const retryable = findRetryableTurn(session.sessionManager.getBranch());
@@ -469,7 +413,7 @@ export async function runAgent(
 			if (navigation.cancelled) throw new Error("Retry cancelled while branching away from the failed turn");
 			await session.sendUserMessage(retryable.content as Parameters<AgentSession["sendUserMessage"]>[0]);
 		} else {
-			await session.prompt(effectivePrompt);
+			await session.prompt(prompt);
 		}
 	} finally {
 		unsubTurns();
