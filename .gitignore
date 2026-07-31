@@ -40,6 +40,7 @@ plugins/install-counts-cache.json
 /pi/agent/.extmgr-cache
 /pi/agent/mcp-cache.json
 /pi/agent/mcp-oauth/
+/pi/agent/models-store.json
 /pi/agent/mcp-onboarding.json
 /pi/agent/git/
 /pi/agent/image-previews/
