@@ -6,7 +6,7 @@
   "doubleEscapeAction": "tree",
   "treeFilterMode": "default",
   "defaultProvider": "openai-codex",
-  "defaultModel": "gpt-5.6-luna",
+  "defaultModel": "gpt-5.6-sol",
   "defaultThinkingLevel": "low",
   "skills": [
     "../.codex/skills"
@@ -19,7 +19,6 @@
       "skills": []
     },
     "npm:pi-cache-graph",
-    "npm:@diegopetrucci/pi-openai-fast",
     "npm:@dietrichgebert/ponytail",
     {
       "source": "git:github.com/juliusbrussee/caveman@v1.9.1",

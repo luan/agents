@@ -51,7 +51,7 @@ type UsageBarCache = {
 const CONTEXT_PULSE_INTERVAL_MS = 320;
 const CONTEXT_PULSE_DURATION_MS = 1200;
 const WORKING_TIMER_ENTRY_TYPE = "tui:working-timer";
-const MODEL_STATUS_KEYS = new Set(["openai-fast"]);
+const MODEL_STATUS_KEYS = new Set(["openai-fast:active"]);
 
 function cleanIdentityPart(value: string | undefined): string | undefined {
 	const text = value
@@ -349,6 +349,7 @@ export default function (pi: ExtensionAPI) {
 			usageLine = "";
 			statusWidth = safeWidth;
 		}
+		state.thinkingLevel = activeCtx?.model?.reasoning ? pi.getThinkingLevel() : undefined;
 		state.modelStatusBadges = readModelStatusBadges(footerDataProvider);
 		const topStatus = renderEditorTopStatus(state, currentConfig, cwd, theme, statusWidth);
 		return [usageLine, topStatus].filter(Boolean).join("  ");
