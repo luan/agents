@@ -5,7 +5,15 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { type Component, Key, matchesKey, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import {
+	type Component,
+	Container,
+	Key,
+	matchesKey,
+	Text,
+	visibleWidth,
+	wrapTextWithAnsi,
+} from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { defineExtensionTui, textComponent, truncateToWidthCompat } from "../shared/tui";
 import { CodexAppServerMcpClient } from "./app-server-mcp";
@@ -853,7 +861,7 @@ async function callCodexAppsTool(
 	).json;
 }
 
-function createToolDefinition(
+export function createToolDefinition(
 	tool: CodexAppsToolRecord,
 	getConfig: () => CodexAppsConfig,
 	localMcpClients: ReadonlyMap<string, McpClient>,
@@ -876,20 +884,25 @@ function createToolDefinition(
 			};
 		},
 		renderCall(args, theme, context) {
-			const text = (context.lastComponent as Text | undefined) ?? textComponent("");
+			const text = context.lastComponent instanceof Text ? context.lastComponent : textComponent("");
 			text.setText(renderCodexAppCall(tool, args, theme, context?.isPartial !== false, context?.isError === true));
 			return text;
 		},
 		renderResult(result, { expanded }, theme, context) {
-			const textComponentInstance = (context.lastComponent as Text | undefined) ?? textComponent("");
-			if (context?.isPartial) return textComponentInstance;
+			const text = context.lastComponent instanceof Text ? context.lastComponent : textComponent("");
+			if (context?.isPartial) return text;
 			const output = codexAppTextContentToText(result.content.find((item) => item.type === "text")?.text ?? "");
-			const details = isRecord(result.details) ? result.details : {};
-			const params = isRecord(details.params) ? details.params : {};
-			textComponentInstance.setText(
-				`${renderCodexAppCall(tool, params, theme, false, context?.isError === true)}\n${renderCodexAppResult(output, theme, { expanded })}`,
-			);
-			return textComponentInstance;
+			if (tool.connectorId === "computer-use" && !expanded && !context?.isError) return new Container();
+			const code = expanded && tool.connectorId === "computer-use" ? context.args?.code : undefined;
+			const details = [
+				typeof code === "string" && code.trim() ? `Code:\n${code}` : "",
+				output.trim() ? `${code ? "Output:\n" : ""}${output}` : "",
+			]
+				.filter(Boolean)
+				.join("\n\n");
+			if (!details) return new Container();
+			text.setText(renderCodexAppResult(details, theme, { expanded }));
+			return text;
 		},
 	};
 }
@@ -901,6 +914,11 @@ function renderCodexAppCall(
 	running: boolean,
 	failed: boolean,
 ): string {
+	if (tool.connectorId === "computer-use") {
+		const status = theme.fg(running ? "dim" : failed ? "error" : "success", running ? "•" : failed ? "✗" : "✓");
+		const title = typeof args.title === "string" && args.title.trim() ? args.title.trim() : codexAppActionLabel(tool);
+		return `${status} ${theme.bold("Computer Use")} ${theme.fg("dim", "·")} ${theme.fg("accent", title)}`;
+	}
 	const status = theme.fg(running ? "dim" : failed ? "error" : "success", "•");
 	const verb = running ? "Using" : "Used";
 	const action = codexAppActionLabel(tool);

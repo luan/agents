@@ -8,6 +8,7 @@ import {
 	activeCodexAppsToolNames,
 	buildCodexAppRecords,
 	CodexToolsPanel,
+	createToolDefinition,
 	disabledCodexAppToolKeys,
 	discoverCodexAppsTools,
 	discoverCodexPlugins,
@@ -696,6 +697,68 @@ test("migrates explicit tool selections to the Computer Use surface once", () =>
 	expect(config.enabledToolKeys).toEqual(["computer-use:js", "slack:read"]);
 	expect(config.surfaceVersion).toBe(1);
 	expect(migrateCodexAppsConfig(config, tools, plugins)).toBe(false);
+});
+
+test("Computer Use renders one compact row and reveals details only when expanded", () => {
+	const tool = {
+		key: "computer-use:js",
+		piToolName: "node_repl",
+		mcpToolName: "js",
+		title: "Run JavaScript",
+		description: "Run JavaScript",
+		inputSchema: {},
+		connectorId: "computer-use",
+		connectorName: "Computer Use",
+		connectorDescription: "Control Mac apps",
+		readOnly: false,
+		destructive: false,
+		openWorld: true,
+	};
+	const definition = createToolDefinition(tool, () => ({ enabled: true }), new Map());
+	const args = { title: "Inspect Bootty", code: "nodeRepl.write(JSON.stringify(state));" };
+	const call = definition.renderCall?.(
+		args,
+		testTheme as never,
+		{
+			args,
+			isPartial: false,
+			isError: false,
+		} as never,
+	);
+
+	expect(call?.render(160).join("\n")).toContain("Inspect Bootty");
+	expect(call?.render(160).join("\n")).not.toContain(args.code);
+
+	const result = { content: [{ type: "text" as const, text: "Window: Bootty" }] };
+	const collapsed = definition.renderResult?.(
+		result,
+		{ expanded: false },
+		testTheme as never,
+		{
+			args,
+			isPartial: false,
+			isError: false,
+		} as never,
+	);
+	expect(collapsed?.render(160)).toEqual([]);
+
+	const expanded = definition.renderResult?.(
+		result,
+		{ expanded: true },
+		testTheme as never,
+		{
+			args,
+			lastComponent: collapsed,
+			isPartial: false,
+			isError: false,
+		} as never,
+	);
+	const expandedText = expanded?.render(160).join("\n") ?? "";
+	expect(expandedText).toContain("Code:");
+	expect(expandedText).toContain(args.code);
+	expect(expandedText).toContain("Output:");
+	expect(expandedText).toContain("Window: Bootty");
+	expect(expandedText).not.toContain("Inspect Bootty");
 });
 
 test("local MCP client keeps a server session and forwards tool calls", async () => {
