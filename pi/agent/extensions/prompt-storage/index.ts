@@ -810,7 +810,7 @@ function wrapEditorFactory(previous: EditorFactory | undefined, ctx: ExtensionCo
 			}
 			previousHandleInput?.(data);
 		};
-		return editor;
+		return editor as ReturnType<EditorFactory>;
 	};
 	return wrapped;
 }
