@@ -24,6 +24,7 @@ interface ImageGenerationCallItem {
 	status: string;
 	result: string | null;
 	revised_prompt?: string;
+	artifact_result?: string;
 }
 
 interface ImageGenerationCallBlock {
@@ -103,6 +104,19 @@ function sanitizeImageGenerationCallItem(item: unknown): ImageGenerationCallItem
 		status: candidate.status,
 		result: candidate.result,
 		...(typeof candidate.revised_prompt === "string" ? { revised_prompt: candidate.revised_prompt } : {}),
+		...(typeof candidate.artifact_result === "string" ? { artifact_result: candidate.artifact_result } : {}),
+	};
+}
+
+function toResponsesImageGenerationCallItem(item: unknown): ImageGenerationCallItem | undefined {
+	const sanitized = sanitizeImageGenerationCallItem(item);
+	if (!sanitized) return undefined;
+	return {
+		type: sanitized.type,
+		id: sanitized.id,
+		status: sanitized.status,
+		result: sanitized.result,
+		...(sanitized.revised_prompt !== undefined ? { revised_prompt: sanitized.revised_prompt } : {}),
 	};
 }
 
@@ -362,7 +376,7 @@ export function convertResponsesMessages<TApi extends Api>(
 			let assistantBlockIndex = 0;
 			for (const block of msg.content as InternalAssistantContent[]) {
 				if (isImageGenerationCallBlock(block)) {
-					const imageGenerationCall = sanitizeImageGenerationCallItem(block.item);
+					const imageGenerationCall = toResponsesImageGenerationCallItem(block.item);
 					if (imageGenerationCall) output.push(imageGenerationCall as ResponseInput[number]);
 				} else if (block.type === "thinking") {
 					if (block.thinkingSignature) output.push(JSON.parse(block.thinkingSignature));
@@ -742,6 +756,22 @@ export async function processResponsesStream<TApi extends Api>(
 						type: "image_generation_call",
 						item: imageGenerationCall,
 					});
+					if (imageGenerationCall.artifact_result) {
+						const artifactBlock: TextBlock = { type: "text", text: imageGenerationCall.artifact_result };
+						output.content.push(artifactBlock);
+						const artifactBlockIndex = blockIndex();
+						stream.push({
+							type: "text_start",
+							contentIndex: artifactBlockIndex,
+							partial: output,
+						});
+						stream.push({
+							type: "text_end",
+							contentIndex: artifactBlockIndex,
+							content: artifactBlock.text,
+							partial: output,
+						});
+					}
 				}
 				outputStates.delete(event.output_index);
 			}

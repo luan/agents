@@ -6,10 +6,10 @@ import registerCodexAppsBridge from "./codex-apps";
 import registerOpenAINativeCompaction from "./compaction/index";
 import { registerCodexFreeformProvider } from "./freeform-codex";
 import {
+	buildGeneratedImageArtifactResult,
 	createImageGenerationTool,
 	createWebSearchTool,
 	IMAGE_GENERATION_TOOL_NAME,
-	IMAGE_SAVE_DISPLAY_MESSAGE_TYPE,
 	registerNativeActivityMessageRenderers,
 	rewriteNativeImageGenerationTool,
 	rewriteNativeWebSearchTool,
@@ -132,20 +132,38 @@ export default async function codexNativeExtension(pi: ExtensionAPI) {
 		applyToolPolicy(ctx);
 	});
 
+	const queueImageProvenance = (artifactResult: string) => {
+		pi.sendMessage(
+			{
+				customType: "codex-image-generation-provenance",
+				content: artifactResult,
+				display: false,
+			},
+			{ triggerTurn: true, deliverAs: "followUp" },
+		);
+	};
+
 	pi.on("message_end", async (event, ctx) => {
 		if (event.message.role !== "assistant") return;
 		const message = normalizeCodexWebSocketError(event.message);
-		const savedImages = await saveGeneratedImagesFromAssistantMessage(ctx.cwd, message ?? event.message);
-		for (const savedImage of savedImages) {
-			pi.sendMessage(
-				{
-					customType: IMAGE_SAVE_DISPLAY_MESSAGE_TYPE,
-					content: [{ type: "text", text: savedImage.latestRelativePath }],
-					display: true,
-					details: { savedImages: [savedImage] },
+		const baseMessage = message ?? event.message;
+		const savedImages = await saveGeneratedImagesFromAssistantMessage(ctx.cwd, baseMessage);
+		if (savedImages.length > 0) {
+			const artifactResult = buildGeneratedImageArtifactResult(savedImages);
+			queueImageProvenance(artifactResult);
+			return {
+				message: {
+					...baseMessage,
+					content: [...baseMessage.content, { type: "text", text: artifactResult }],
 				},
-				{ triggerTurn: false },
-			);
+			};
+		}
+		for (const block of baseMessage.content as Array<{ type?: string; item?: { artifact_result?: unknown } }>) {
+			const artifactResult = block.item?.artifact_result;
+			if (block.type === "image_generation_call" && typeof artifactResult === "string") {
+				queueImageProvenance(artifactResult);
+				break;
+			}
 		}
 		if (message) return { message };
 	});
@@ -153,9 +171,7 @@ export default async function codexNativeExtension(pi: ExtensionAPI) {
 	pi.on("context", (event) => ({
 		messages: event.messages.filter(
 			(message) =>
-				(message.role !== "custom" ||
-					(message.customType !== WEB_SEARCH_ACTIVITY_MESSAGE_TYPE &&
-						message.customType !== IMAGE_SAVE_DISPLAY_MESSAGE_TYPE)) &&
+				(message.role !== "custom" || message.customType !== WEB_SEARCH_ACTIVITY_MESSAGE_TYPE) &&
 				(message.role !== "assistant" || !isCodexWebSocketError(message)),
 		),
 	}));

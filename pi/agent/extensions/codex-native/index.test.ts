@@ -15,6 +15,7 @@ import {
 	discoverPluginMcpTools,
 	migrateCodexAppsConfig,
 	pluginSkillPaths,
+	systemSkillPaths,
 } from "./codex-apps.ts";
 import {
 	isCodexWebSocketError,
@@ -23,6 +24,7 @@ import {
 } from "./index.ts";
 import { LocalMcpClient } from "./local-mcp.ts";
 import {
+	buildGeneratedImageArtifactResult,
 	createWebSearchTool,
 	getOpenAICodexLatestImagePath,
 	renderImageGenerationMessage,
@@ -35,7 +37,7 @@ import {
 	supportsNativeWebSearch,
 	WEB_SEARCH_TOOL_NAME,
 } from "./native-tools.ts";
-import { convertResponsesMessages } from "./openai-responses-shared.ts";
+import { convertResponsesMessages, processResponsesStream } from "./openai-responses-shared.ts";
 import { isCodexPluginEnabled } from "./plugin-aliases.ts";
 
 const codexModel = {
@@ -121,6 +123,52 @@ test("normalizes legacy Codex custom tool call item ids for Responses replay", (
 	expect(call.id.length).toBeLessThanOrEqual(64);
 });
 
+test("strips local image artifact metadata from Responses replay", () => {
+	const messages = convertResponsesMessages(
+		{ ...codexModel, api: "openai-codex-responses" } as never,
+		{
+			messages: [
+				{
+					role: "assistant",
+					api: "openai-codex-responses",
+					provider: "openai-codex",
+					model: "gpt-5.5",
+					content: [
+						{
+							type: "image_generation_call",
+							item: {
+								type: "image_generation_call",
+								id: "ig_1",
+								status: "completed",
+								result: PNG_BASE64,
+								revised_prompt: "a moon dog",
+								saved_path: "/tmp/moon-dog.png",
+								savedPath: "/tmp/moon-dog.png",
+								artifacts: [{ path: "/tmp/moon-dog.png" }],
+								artifact_result: '{"artifacts":[{"path":"/tmp/moon-dog.png"}]}',
+							},
+						},
+					],
+					stopReason: "stop",
+					timestamp: Date.now(),
+				},
+			],
+			systemPrompt: "",
+			tools: [],
+		} as never,
+		new Set(["openai-codex"]),
+	) as any[];
+
+	expect(messages).toEqual([
+		{
+			type: "image_generation_call",
+			id: "ig_1",
+			status: "completed",
+			result: PNG_BASE64,
+			revised_prompt: "a moon dog",
+		},
+	]);
+});
 const PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
 
 test("rewrites Codex web_search function tool to native Responses tool", () => {
@@ -236,8 +284,8 @@ test("rewrites image_generation only for image-capable openai-codex models", () 
 	expect(textOnly.tools[0]).toEqual(payload.tools[0]);
 });
 
-test("does not enable native image_generation for gpt-5.4-mini", () => {
-	expect(supportsNativeImageGeneration(codexMiniModel as never)).toBe(false);
+test("enables native image_generation for image-capable Codex models", () => {
+	expect(supportsNativeImageGeneration(codexMiniModel as never)).toBe(true);
 	expect(supportsNativeImageGeneration(codexModel as never)).toBe(true);
 
 	const payload = {
@@ -246,7 +294,10 @@ test("does not enable native image_generation for gpt-5.4-mini", () => {
 		tools: [{ type: "function", name: "image_generation", parameters: {} }],
 	};
 
-	expect(rewriteNativeImageGenerationTool(payload, codexMiniModel as never)).toEqual(payload);
+	expect(rewriteNativeImageGenerationTool(payload, codexMiniModel as never).tools[0]).toEqual({
+		type: "image_generation",
+		output_format: "png",
+	});
 });
 
 test("saves generated images under workspace .pi directory and mirrors latest", async () => {
@@ -263,10 +314,94 @@ test("saves generated images under workspace .pi directory and mirrors latest", 
 
 	expect(saved.relativePath.startsWith(".pi/openai-codex-images/")).toBe(true);
 	expect(saved.latestRelativePath).toBe(".pi/openai-codex-images/latest.png");
+	expect(saved.mimeType).toBe("image/png");
+	expect(saved.sha256).toBe("f084b1351c41cf3c554d932a3a978992a39b902f289c6e213b6428c3b38541ed");
 	expect(await readFile(saved.absolutePath, "utf8")).toBe("fake-png");
 	expect(await readFile(getOpenAICodexLatestImagePath(root), "utf8")).toBe("fake-png");
+	expect(JSON.parse(buildGeneratedImageArtifactResult([saved]))).toEqual({
+		artifacts: [
+			{
+				id: "call_abcdef",
+				path: saved.absolutePath,
+				mime_type: "image/png",
+				sha256: saved.sha256,
+			},
+		],
+	});
 });
 
+test("keeps concurrent generated image artifacts attributable to their calls", async () => {
+	const root = await mkdtemp(join(tmpdir(), "codex-native-concurrent-images-test-"));
+	await mkdir(join(root, ".git"));
+	const [first, second] = await Promise.all([
+		saveOpenAICodexGeneratedImage(root, {
+			responseId: "resp_first",
+			callId: "call_first",
+			result: Buffer.from("first-image").toString("base64"),
+		}),
+		saveOpenAICodexGeneratedImage(root, {
+			responseId: "resp_second",
+			callId: "call_second",
+			result: Buffer.from("second-image").toString("base64"),
+		}),
+	]);
+
+	const result = JSON.parse(buildGeneratedImageArtifactResult([first, second]));
+	expect(result.artifacts.map((artifact: { id: string }) => artifact.id)).toEqual(["call_first", "call_second"]);
+	expect(await readFile(result.artifacts[0].path, "utf8")).toBe("first-image");
+	expect(await readFile(result.artifacts[1].path, "utf8")).toBe("second-image");
+	expect(result.artifacts[0].path).not.toBe(result.artifacts[1].path);
+});
+
+test("surfaces image artifact metadata in the originating assistant message", async () => {
+	const output = {
+		role: "assistant",
+		content: [],
+		api: "openai-codex-responses",
+		provider: "openai-codex",
+		model: "gpt-5.5",
+		stopReason: "stop",
+		timestamp: Date.now(),
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+	} as any;
+	const events = {
+		async *[Symbol.asyncIterator]() {
+			yield {
+				type: "response.output_item.done",
+				output_index: 0,
+				item: {
+					type: "image_generation_call",
+					id: "ig_origin",
+					status: "completed",
+					result: PNG_BASE64,
+					artifact_result: '{"artifacts":[{"id":"ig_origin","path":"/tmp/generated.png"}]}',
+				},
+			};
+		},
+	};
+	const emitted: any[] = [];
+
+	await processResponsesStream(
+		events as never,
+		output,
+		{ push: (event: any) => emitted.push(event) } as never,
+		codexModel as never,
+	);
+
+	expect(output.content).toHaveLength(2);
+	expect(output.content[1]).toEqual({
+		type: "text",
+		text: '{"artifacts":[{"id":"ig_origin","path":"/tmp/generated.png"}]}',
+	});
+	expect(emitted.map((event) => event.type)).toEqual(["text_start", "text_end"]);
+});
 test("saves native image_generation assistant blocks for display", async () => {
 	const root = await mkdtemp(join(tmpdir(), "codex-native-image-block-test-"));
 	await mkdir(join(root, ".git"));
@@ -292,6 +427,16 @@ test("saves native image_generation assistant blocks for display", async () => {
 	expect(saved).toHaveLength(1);
 	expect(saved[0]?.relativePath).toContain(".pi/openai-codex-images/");
 	expect(saved[0]?.latestRelativePath).toBe(".pi/openai-codex-images/latest.png");
+	expect(saved[0]?.width).toBe(1);
+	expect(saved[0]?.height).toBe(1);
+	expect(JSON.parse(buildGeneratedImageArtifactResult(saved)).artifacts[0]).toMatchObject({
+		id: "ig_image_block",
+		path: saved[0]?.absolutePath,
+		mime_type: "image/png",
+		width: 1,
+		height: 1,
+		sha256: saved[0]?.sha256,
+	});
 	expect(await readFile(getOpenAICodexLatestImagePath(root), "base64")).toBe(PNG_BASE64);
 
 	const duplicate = await saveGeneratedImagesFromAssistantMessage(root, message);
@@ -320,7 +465,7 @@ test("renders generated images as compact activity with inline preview", async (
 		expect(rendered).toContain("<success>•</success> <bold>Generated image</bold>");
 		expect(rendered).toContain("<accent>Prompt</accent> <muted>a moon dog</muted>");
 		expect(rendered).toContain("\x1b]1337;File=");
-		expect(rendered).toContain("width=80");
+		expect(rendered).toMatch(/width=\d+/);
 		expect(rendered).not.toContain("[image_generation]");
 		expect(rendered).not.toContain("customMessageBg");
 	} finally {
@@ -594,6 +739,14 @@ test("discovers newest plugin manifests and their skill roots", async () => {
 	expect(sites?.marketplace).toBe("openai-bundled");
 	expect(pluginSkillPaths(plugins, { enabled: true })).toEqual([join(newest, "declared-skills")]);
 	expect(pluginSkillPaths(plugins, { enabled: true, disabledPluginKeys: ["sites"] })).toEqual([]);
+});
+
+test("loads Codex system skills", async () => {
+	const root = await mkdtemp(join(tmpdir(), "codex-system-skills-test-"));
+	const skills = join(root, "skills", ".system");
+	await mkdir(skills, { recursive: true });
+
+	expect(await systemSkillPaths(root)).toEqual([skills]);
 });
 
 test("does not expose skills from unconfigured marketplace inventory", async () => {

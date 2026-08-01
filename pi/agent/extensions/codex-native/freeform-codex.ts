@@ -2,10 +2,9 @@ import type { AssistantMessage, Context, Model, SimpleStreamOptions, Tool } from
 import { AssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
-	buildGeneratedImageDisplayText,
+	buildGeneratedImageArtifactResult,
 	buildWebSearchActivityMessage,
 	extractWebSearch,
-	IMAGE_SAVE_DISPLAY_MESSAGE_TYPE,
 	markGeneratedImageDisplayed,
 	type SavedGeneratedImage,
 	type SurfacedWebSearch,
@@ -270,12 +269,7 @@ function freeformToolConfig(options: CodexFreeformOptions, toolName: string): { 
 	);
 }
 
-type PendingActivity =
-	| {
-			kind: "image";
-			savedImage: SavedGeneratedImage;
-	  }
-	| { kind: "web-search"; search: SurfacedWebSearch };
+type PendingActivity = { kind: "web-search"; search: SurfacedWebSearch };
 
 export function registerCodexFreeformProvider(pi: ExtensionAPI, options: CodexFreeformOptions) {
 	if (typeof pi.registerProvider !== "function") return;
@@ -289,23 +283,6 @@ export function registerCodexFreeformProvider(pi: ExtensionAPI, options: CodexFr
 		const activities = pendingActivities.splice(0, pendingActivities.length);
 		for (let index = 0; index < activities.length; index++) {
 			const activity = activities[index];
-			if (activity.kind === "image") {
-				pi.sendMessage(
-					{
-						customType: IMAGE_SAVE_DISPLAY_MESSAGE_TYPE,
-						content: [
-							{
-								type: "text",
-								text: buildGeneratedImageDisplayText(activity.savedImage),
-							},
-						],
-						display: true,
-						details: { savedImages: [activity.savedImage] },
-					},
-					{ triggerTurn: false },
-				);
-				continue;
-			}
 
 			const searches = [activity.search];
 			while (index + 1 < activities.length && activities[index + 1]?.kind === "web-search") {
@@ -333,7 +310,6 @@ export function registerCodexFreeformProvider(pi: ExtensionAPI, options: CodexFr
 		streamSimple: (model, context, streamOptions) =>
 			streamFreeformCodexResponses(model, context, options, streamOptions, {
 				forceSse: forceSseForSession,
-				onImageSaved: (savedImage) => pendingActivities.push({ kind: "image", savedImage }),
 				onWebSearchCaptured: (search) => pendingActivities.push({ kind: "web-search", search }),
 				onStreamSuccess: () => {
 					consecutiveWebSocketFailures = 0;
@@ -361,12 +337,7 @@ export function registerCodexFreeformProvider(pi: ExtensionAPI, options: CodexFr
 	});
 	pi.on("context", async (event) => ({
 		messages: event.messages.filter(
-			(message) =>
-				!(
-					message.role === "custom" &&
-					(message.customType === WEB_SEARCH_ACTIVITY_MESSAGE_TYPE ||
-						message.customType === IMAGE_SAVE_DISPLAY_MESSAGE_TYPE)
-				),
+			(message) => !(message.role === "custom" && message.customType === WEB_SEARCH_ACTIVITY_MESSAGE_TYPE),
 		),
 	}));
 	// Rendering is registered once by the owning codex-native extension.
@@ -898,6 +869,9 @@ async function* captureNativeActivities(
 						outputFormat,
 						revisedPrompt:
 							typeof event.item.revised_prompt === "string" ? event.item.revised_prompt : options.requestPrompt,
+					});
+					Object.assign(event.item, {
+						artifact_result: buildGeneratedImageArtifactResult([savedImage]),
 					});
 					markGeneratedImageDisplayed(responseId, callId);
 					options.onImageSaved?.(savedImage, {

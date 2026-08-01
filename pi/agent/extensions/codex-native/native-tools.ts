@@ -1,7 +1,8 @@
+import { createHash } from "node:crypto";
 import { promises as fsPromises } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { Container, Spacer, type Text } from "@earendil-works/pi-tui";
+import { Container, getImageDimensions, Spacer, type Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { readPreviewImageFromPathSync } from "../shared/image-preview";
 import { KittyVirtualImage } from "../shared/kitty-virtual-image";
@@ -33,7 +34,20 @@ export type SavedGeneratedImage = {
 	responseId: string | undefined;
 	callId: string;
 	outputFormat: string;
+	mimeType: string;
+	width?: number;
+	height?: number;
+	sha256: string;
 	revisedPrompt?: string;
+};
+
+export type GeneratedImageArtifact = {
+	id: string;
+	path: string;
+	mime_type: string;
+	width?: number;
+	height?: number;
+	sha256: string;
 };
 
 export type SurfacedWebSearch = {
@@ -93,7 +107,7 @@ export function supportsNativeWebSearch(model: ExtensionContext["model"]): boole
 }
 
 export function supportsNativeImageGeneration(model: ExtensionContext["model"]): boolean {
-	return isOpenAICodexModel(model) && model?.id === "gpt-5.5" && supportsImageInputs(model);
+	return isOpenAICodexModel(model) && supportsImageInputs(model);
 }
 
 function isFunctionToolNamed(tool: unknown, name: string): tool is FunctionToolPayload {
@@ -216,9 +230,11 @@ export async function saveOpenAICodexGeneratedImage(
 ): Promise<SavedGeneratedImage> {
 	const workspaceRoot = await resolveWorkspaceRoot(cwd);
 	const outputFormat = normalizeImageOutputFormat(image.outputFormat);
+	const mimeType = outputFormat === "jpg" || outputFormat === "jpeg" ? "image/jpeg" : `image/${outputFormat}`;
 	const absolutePath = getOpenAICodexImagePath(workspaceRoot, image.responseId, image.callId, outputFormat);
 	const latestAbsolutePath = getOpenAICodexLatestImagePath(workspaceRoot);
 	const bytes = Buffer.from(image.result, "base64");
+	const dimensions = getImageDimensions(image.result, mimeType);
 	await fsPromises.mkdir(dirname(absolutePath), { recursive: true });
 	await fsPromises.writeFile(absolutePath, bytes);
 	await fsPromises.writeFile(latestAbsolutePath, bytes);
@@ -231,19 +247,26 @@ export async function saveOpenAICodexGeneratedImage(
 		responseId: image.responseId,
 		callId: image.callId,
 		outputFormat,
+		mimeType,
+		...(dimensions ? { width: dimensions.widthPx, height: dimensions.heightPx } : {}),
+		sha256: createHash("sha256").update(bytes).digest("hex"),
 		revisedPrompt: image.revisedPrompt,
 	};
 }
 
-export function buildGeneratedImageDisplayText(
-	savedImage: SavedGeneratedImage,
-	options?: { expanded?: boolean },
-): string {
-	const lines: string[] = [];
-	if (options?.expanded && savedImage.revisedPrompt) lines.push(`Prompt: ${savedImage.revisedPrompt}`);
-	lines.push(`File: ${savedImage.relativePath}`);
-	lines.push(`Latest: ${savedImage.latestRelativePath}`);
-	return lines.join("\n");
+export function generatedImageArtifact(image: SavedGeneratedImage): GeneratedImageArtifact {
+	return {
+		id: image.callId,
+		path: image.absolutePath,
+		mime_type: image.mimeType,
+		...(image.width === undefined ? {} : { width: image.width }),
+		...(image.height === undefined ? {} : { height: image.height }),
+		sha256: image.sha256,
+	};
+}
+
+export function buildGeneratedImageArtifactResult(savedImages: SavedGeneratedImage[]): string {
+	return JSON.stringify({ artifacts: savedImages.map(generatedImageArtifact) });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
