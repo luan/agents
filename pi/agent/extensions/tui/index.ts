@@ -35,6 +35,7 @@ import {
 } from "./footer";
 import { readGitStatus } from "./git";
 import { readRuntimeInfo } from "./runtime";
+import { installTranscriptSpacingPatch } from "./transcript-spacing";
 import { detectUsageProvider, fetchUsageForProvider, USAGE_REFRESH_INTERVAL, type UsageSnapshot } from "./usage";
 
 const polishedTui = defineExtensionTui({ id: "polished-tui" });
@@ -184,6 +185,7 @@ export default function (pi: ExtensionAPI) {
 	let activeSessionFile: string | undefined;
 	let editorSessionIdentity: EditorSessionIdentity | undefined;
 	let activeCtx: ExtensionContext | undefined;
+	let releaseTranscriptSpacingPatch: (() => void) | undefined;
 
 	let footerDataProvider: FooterDataProvider | undefined;
 	const isStaleCtxError = (error: unknown) =>
@@ -692,6 +694,7 @@ export default function (pi: ExtensionAPI) {
 		activeCtx = ctx;
 		disposed = false;
 		uiGeneration++;
+		releaseTranscriptSpacingPatch ??= await installTranscriptSpacingPatch();
 		installUi(ctx);
 	});
 
@@ -710,6 +713,8 @@ export default function (pi: ExtensionAPI) {
 		stopRefreshTimer();
 		stopContextPulse();
 		stopWorkingAnimation();
+		releaseTranscriptSpacingPatch?.();
+		releaseTranscriptSpacingPatch = undefined;
 	});
 
 	pi.on("agent_start", async (_event, ctx) => {
