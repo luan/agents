@@ -69,3 +69,33 @@ test("restores one root-owned recursive agent tree", () => {
 	expect(manager.findByChildSessionId("child-session")?.id).toBe("parent");
 	expect(manager.getRootSessionId("child-session")).toBe("root-session");
 });
+
+test("retains only the newest terminal agents per root session", () => {
+	const removed: string[] = [];
+	const manager = new AgentManager(undefined, undefined, undefined, undefined, (record) => removed.push(record.id), 2);
+	const records = [1, 2, 3].map(
+		(index) =>
+			({
+				id: `agent-${index}`,
+				type: "task",
+				description: `agent ${index}`,
+				status: "completed",
+				rootSessionId: "root-session",
+				parentSessionId: "root-session",
+				assignment: "delegate",
+				cwd: "/tmp/project",
+				events: [],
+				toolUses: 0,
+				startedAt: index,
+				completedAt: index,
+				lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
+				compactionCount: 0,
+			}) satisfies PersistedAgent,
+	);
+
+	manager.restore(records);
+
+	expect(manager.listAgents("root-session").map((record) => record.id)).toEqual(["agent-3", "agent-2"]);
+	expect(removed).toEqual(["agent-1"]);
+	manager.dispose();
+});

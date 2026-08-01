@@ -23,10 +23,12 @@ import { cleanupWorktree, createWorktree, pruneWorktrees } from "./worktree.js";
 export type OnAgentComplete = (record: AgentRecord) => void;
 export type OnAgentStart = (record: AgentRecord) => void;
 export type OnAgentCompact = (record: AgentRecord, info: CompactionInfo) => void;
+export type OnAgentRemove = (record: AgentRecord) => void;
 export type CompactionInfo = { reason: "manual" | "threshold" | "overflow"; tokensBefore: number };
 
 /** Default max concurrent background agents. */
 const DEFAULT_MAX_CONCURRENT = 4;
+export const MAX_RETAINED_TERMINAL_AGENTS = 100;
 
 interface SpawnArgs {
 	pi: ExtensionAPI;
@@ -78,7 +80,9 @@ export class AgentManager {
 	private onComplete?: OnAgentComplete;
 	private onStart?: OnAgentStart;
 	private onCompact?: OnAgentCompact;
+	private onRemove?: OnAgentRemove;
 	private maxConcurrent: number;
+	private maxRetainedTerminal: number;
 
 	/** Queue of background agents waiting to start. */
 	private queue: { id: string; args: SpawnArgs }[] = [];
@@ -90,12 +94,16 @@ export class AgentManager {
 		maxConcurrent = DEFAULT_MAX_CONCURRENT,
 		onStart?: OnAgentStart,
 		onCompact?: OnAgentCompact,
+		onRemove?: OnAgentRemove,
+		maxRetainedTerminal = MAX_RETAINED_TERMINAL_AGENTS,
 	) {
 		this.onComplete = onComplete;
 		this.onStart = onStart;
 		this.onCompact = onCompact;
+		this.onRemove = onRemove;
 		this.maxConcurrent = maxConcurrent;
-		// Cleanup completed agents after 10 minutes (but keep sessions for resume)
+		this.maxRetainedTerminal = maxRetainedTerminal;
+		// Release inactive session runtimes; retained records remain resumable from disk.
 		this.cleanupInterval = setInterval(() => this.cleanup(), 60_000);
 		this.cleanupInterval.unref();
 	}
@@ -279,6 +287,7 @@ export class AgentManager {
 					}
 				}
 
+				this.enforceRetention(record.rootSessionId);
 				if (options.isBackground) {
 					this.runningBackground--;
 					try {
@@ -320,6 +329,7 @@ export class AgentManager {
 					}
 				}
 
+				this.enforceRetention(record.rootSessionId);
 				if (options.isBackground) {
 					this.runningBackground--;
 					try {
@@ -352,6 +362,7 @@ export class AgentManager {
 				record.status = "error";
 				record.error = err instanceof Error ? err.message : String(err);
 				record.completedAt = Date.now();
+				this.enforceRetention(record.rootSessionId);
 				this.onComplete?.(record);
 			}
 		}
@@ -468,6 +479,7 @@ export class AgentManager {
 		record.result = result;
 		record.error = error;
 		record.completedAt = Date.now();
+		this.enforceRetention(record.rootSessionId);
 		if (record.isBackground) {
 			this.runningBackground = Math.max(0, this.runningBackground - 1);
 			this.onComplete?.(record);
@@ -520,18 +532,22 @@ export class AgentManager {
 	}
 
 	restore(records: PersistedAgent[]): void {
+		const rootSessionIds = new Set<string>();
 		for (const persisted of records) {
 			const id = persisted.id.replace(/^\/root\//, "");
 			if (this.agents.has(id)) continue;
+			const rootSessionId = persisted.rootSessionId ?? persisted.parentSessionId;
+			rootSessionIds.add(rootSessionId);
 			this.agents.set(id, {
 				...persisted,
 				id,
 				parentAgentId: persisted.parentAgentId?.replace(/^\/root\//, ""),
-				rootSessionId: persisted.rootSessionId ?? persisted.parentSessionId,
+				rootSessionId,
 				status: persisted.status === "running" || persisted.status === "queued" ? "interrupted" : persisted.status,
 				events: persisted.events ?? [],
 			});
 		}
+		for (const rootSessionId of rootSessionIds) this.enforceRetention(rootSessionId);
 	}
 
 	getRecord(id: string): AgentRecord | undefined {
@@ -561,6 +577,7 @@ export class AgentManager {
 			this.queue = this.queue.filter((q) => q.id !== id);
 			record.status = "stopped";
 			record.completedAt = Date.now();
+			this.enforceRetention(record.rootSessionId);
 			return true;
 		}
 
@@ -568,7 +585,23 @@ export class AgentManager {
 		record.abortController?.abort();
 		record.status = "stopped";
 		record.completedAt = Date.now();
+		this.enforceRetention(record.rootSessionId);
 		return true;
+	}
+
+	private enforceRetention(rootSessionId: string): void {
+		const expired = [...this.agents.values()]
+			.filter(
+				(record) =>
+					record.rootSessionId === rootSessionId && record.status !== "running" && record.status !== "queued",
+			)
+			.sort((left, right) => (right.completedAt ?? right.startedAt) - (left.completedAt ?? left.startedAt))
+			.slice(this.maxRetainedTerminal);
+		for (const record of expired) {
+			record.session?.dispose?.();
+			this.agents.delete(record.id);
+			this.onRemove?.(record);
+		}
 	}
 
 	private cleanup() {
@@ -596,12 +629,14 @@ export class AgentManager {
 	/** Abort all running and queued agents immediately. */
 	abortAll(): number {
 		let count = 0;
+		const rootSessionIds = new Set<string>();
 		// Clear queued agents first
 		for (const queued of this.queue) {
 			const record = this.agents.get(queued.id);
 			if (record) {
 				record.status = "stopped";
 				record.completedAt = Date.now();
+				rootSessionIds.add(record.rootSessionId);
 				count++;
 			}
 		}
@@ -612,9 +647,11 @@ export class AgentManager {
 				record.abortController?.abort();
 				record.status = "stopped";
 				record.completedAt = Date.now();
+				rootSessionIds.add(record.rootSessionId);
 				count++;
 			}
 		}
+		for (const rootSessionId of rootSessionIds) this.enforceRetention(rootSessionId);
 		return count;
 	}
 

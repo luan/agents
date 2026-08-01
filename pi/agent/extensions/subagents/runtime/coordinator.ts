@@ -177,6 +177,9 @@ const manager = new AgentManager(
 		persist(record);
 		updateWidgets();
 	},
+	(record) => {
+		activityByAgent.delete(record.id);
+	},
 );
 
 export function getSharedAgentManager(): AgentManager {
