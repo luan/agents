@@ -14,7 +14,7 @@ describe("KittyVirtualImage", () => {
 		resetKittyVirtualImageUploadCache();
 	});
 
-	it("renders kitty virtual placeholders anchored to text cells", () => {
+	it("preserves aspect ratio when height limits the image", () => {
 		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: false });
 		const image = new KittyVirtualImage(
 			PNG_BASE64,
@@ -32,10 +32,28 @@ describe("KittyVirtualImage", () => {
 		expect(lines[0]).toContain("\x1b_Ga=T");
 		expect(lines[0]).toContain("f=100");
 		expect(lines[0]).toContain("U=1");
-		expect(lines[0]).toContain("c=10");
+		expect(lines[0]).toContain("c=6");
 		expect(lines[0]).toContain("r=3");
+		expect(lines[0].split("\u{10EEEE}")).toHaveLength(7);
 		expect(lines.join("\n")).toContain("\u{10EEEE}");
 		expect(lines.slice(1).every((line) => line.includes("\u{10EEEE}"))).toBe(true);
+	});
+
+	it("preserves aspect ratio when width limits a wide image", () => {
+		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: false });
+		const image = new KittyVirtualImage(
+			PNG_BASE64,
+			"image/png",
+			{ fallbackColor: (text) => text },
+			{ maxWidthCells: 80, maxHeightCells: 30 },
+			{ widthPx: 1826, heightPx: 218 },
+		);
+
+		const lines = image.render(100);
+
+		expect(lines).toHaveLength(5);
+		expect(lines[0]).toContain("c=80");
+		expect(lines[0]).toContain("r=5");
 	});
 
 	it("renders deterministic upload lines for differential TUI redraws", () => {

@@ -914,6 +914,50 @@ test("Computer Use renders one compact row and reveals details only when expande
 	expect(expandedText).not.toContain("Inspect Bootty");
 });
 
+test("Computer Use renders image results through the shared Kitty renderer", () => {
+	setCapabilities({ images: "kitty", trueColor: true, hyperlinks: false });
+	try {
+		const tool = {
+			key: "computer-use:js",
+			piToolName: "node_repl",
+			mcpToolName: "js",
+			title: "Run JavaScript",
+			description: "Run JavaScript",
+			inputSchema: {},
+			connectorId: "computer-use",
+			connectorName: "Computer Use",
+			connectorDescription: "Control Mac apps",
+			readOnly: false,
+			destructive: false,
+			openWorld: true,
+		};
+		const definition = createToolDefinition(tool, () => ({ enabled: true }), new Map());
+		const result = {
+			content: [{ type: "image" as const, data: PNG_BASE64, mimeType: "image/png" }],
+		};
+
+		const rendered =
+			definition
+				.renderResult?.(
+					result,
+					{ expanded: false },
+					testTheme as never,
+					{
+						args: {},
+						isPartial: false,
+						isError: false,
+					} as never,
+				)
+				.render(80)
+				.join("\n") ?? "";
+
+		expect(rendered).toContain("\x1b_Ga=T");
+		expect(result.content).toEqual([]);
+	} finally {
+		setCapabilities({ images: null, trueColor: true, hyperlinks: false });
+	}
+});
+
 test("local MCP client keeps a server session and forwards tool calls", async () => {
 	const server = [
 		"const readline = require('node:readline');",

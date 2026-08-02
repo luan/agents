@@ -172,11 +172,11 @@ function clampPositiveInteger(value: number | undefined, fallback: number): numb
 	return Number.isFinite(value) && value !== undefined && value > 0 ? Math.floor(value) : fallback;
 }
 
-function calculateRowCount(
+function calculateCellSize(
 	dimensions: ImageDimensions,
 	maxWidthCells: number,
 	maxHeightCells: number | undefined,
-): number {
+): { columns: number; rows: number } {
 	const cell = getCellDimensions();
 	const maxWidth = Math.max(1, Math.floor(maxWidthCells));
 	const maxHeight = maxHeightCells === undefined ? undefined : Math.max(1, Math.floor(maxHeightCells));
@@ -184,8 +184,12 @@ function calculateRowCount(
 	const heightScale =
 		maxHeight === undefined ? widthScale : (maxHeight * cell.heightPx) / Math.max(1, dimensions.heightPx);
 	const scale = Math.min(widthScale, heightScale);
-	const rows = Math.ceil((dimensions.heightPx * scale) / cell.heightPx);
-	return Math.max(1, maxHeight === undefined ? rows : Math.min(maxHeight, rows));
+	const columns = Math.round((dimensions.widthPx * scale) / cell.widthPx);
+	const rows = Math.round((dimensions.heightPx * scale) / cell.heightPx);
+	return {
+		columns: Math.max(1, Math.min(maxWidth, columns)),
+		rows: Math.max(1, maxHeight === undefined ? rows : Math.min(maxHeight, rows)),
+	};
 }
 
 function stableImageId(data: string, mimeType: string): number {
@@ -294,15 +298,15 @@ export class KittyVirtualImage implements Component {
 		const cell = getCellDimensions();
 		const defaultMaxHeight = Math.max(1, Math.ceil((maxWidth * cell.widthPx) / cell.heightPx));
 		const maxHeight = this.options.maxHeightCells ?? defaultMaxHeight;
-		const rows = calculateRowCount(this.dimensions, maxWidth, maxHeight);
+		const { columns, rows } = calculateCellSize(this.dimensions, maxWidth, maxHeight);
 
 		const imageId =
 			this.options.imageId ??
-			stableVirtualImageId(this.options.sourcePath ?? this.base64Data, this.mimeType, maxWidth, rows);
+			stableVirtualImageId(this.options.sourcePath ?? this.base64Data, this.mimeType, columns, rows);
 		const lines = [
-			`${uploadSequence(this.base64Data, imageId, maxWidth, rows, this.options.sourcePath)}${placeholderRow(0, maxWidth, imageId)}`,
+			`${uploadSequence(this.base64Data, imageId, columns, rows, this.options.sourcePath)}${placeholderRow(0, columns, imageId)}`,
 		];
-		for (let row = 1; row < rows; row++) lines.push(placeholderRow(row, maxWidth, imageId));
+		for (let row = 1; row < rows; row++) lines.push(placeholderRow(row, columns, imageId));
 		this.cachedLines = lines;
 		this.cachedWidth = width;
 		return lines;

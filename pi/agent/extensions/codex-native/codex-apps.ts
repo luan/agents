@@ -4,17 +4,21 @@ import { request as httpsRequest } from "node:https";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { ImageContent } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
 	type Component,
 	Container,
+	getCapabilities,
 	Key,
 	matchesKey,
+	Spacer,
 	Text,
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { KittyVirtualImage } from "../shared/kitty-virtual-image";
 import { defineExtensionTui, textComponent, truncateToWidthCompat } from "../shared/tui";
 import { CodexAppServerMcpClient } from "./app-server-mcp";
 import { discoverLocalMcpServers, findCodexCliPath, LocalMcpClient, type LocalMcpTool } from "./local-mcp";
@@ -892,7 +896,6 @@ export function createToolDefinition(
 			const text = context.lastComponent instanceof Text ? context.lastComponent : textComponent("");
 			if (context?.isPartial) return text;
 			const output = codexAppTextContentToText(result.content.find((item) => item.type === "text")?.text ?? "");
-			if (tool.connectorId === "computer-use" && !expanded && !context?.isError) return new Container();
 			const code = expanded && tool.connectorId === "computer-use" ? context.args?.code : undefined;
 			const details = [
 				typeof code === "string" && code.trim() ? `Code:\n${code}` : "",
@@ -900,6 +903,31 @@ export function createToolDefinition(
 			]
 				.filter(Boolean)
 				.join("\n\n");
+			const images = result.content.filter(
+				(item): item is ImageContent => item.type === "image" && Boolean(item.data && item.mimeType),
+			);
+			if (images.length > 0 && getCapabilities().images) {
+				result.content.splice(0, result.content.length, ...result.content.filter((item) => item.type !== "image"));
+				const container = new Container();
+				if (details && (expanded || tool.connectorId !== "computer-use")) {
+					text.setText(renderCodexAppResult(details, theme, { expanded }));
+					container.addChild(text);
+					container.addChild(new Spacer(1));
+				}
+				for (const [index, image] of images.entries()) {
+					if (index > 0) container.addChild(new Spacer(1));
+					container.addChild(
+						new KittyVirtualImage(
+							image.data,
+							image.mimeType,
+							{ fallbackColor: (fallback) => theme.fg("toolOutput", fallback) },
+							{ maxWidthCells: 80, maxHeightCells: 30 },
+						),
+					);
+				}
+				return container;
+			}
+			if (tool.connectorId === "computer-use" && !expanded && !context?.isError) return new Container();
 			if (!details) return new Container();
 			text.setText(renderCodexAppResult(details, theme, { expanded }));
 			return text;

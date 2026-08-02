@@ -1,5 +1,5 @@
 import * as childProcess from "node:child_process";
-import { getCapabilities, setCapabilities } from "@earendil-works/pi-tui";
+import { getCapabilities, getCellDimensions, setCapabilities, setCellDimensions } from "@earendil-works/pi-tui";
 
 type NativeImageProtocol = "kitty" | "iterm2";
 
@@ -19,6 +19,19 @@ function normalizeTerminalName(term: string): string {
 	if (t.includes("iterm")) return "iTerm.app";
 	if (t.includes("mintty")) return "mintty";
 	return term;
+}
+
+export function imageCellDimensionsForTerminal(
+	term: string,
+	measured: { widthPx: number; heightPx: number },
+	widthOverride = process.env.PI_IMAGE_CELL_WIDTH_PX,
+	heightOverride = process.env.PI_IMAGE_CELL_HEIGHT_PX,
+): { widthPx: number; heightPx: number } {
+	const widthPx = Number(widthOverride);
+	const heightPx = Number(heightOverride);
+	if (widthPx > 0 && heightPx > 0) return { widthPx, heightPx };
+	if (normalizeTerminalName(term) === "bootty") return { widthPx: 7, heightPx: 22 };
+	return measured;
 }
 
 function readTmuxClientTerm(): string | null {
@@ -95,6 +108,9 @@ function detectImageProtocol(): NativeImageProtocol | null {
 export function configureImageCapabilities(): void {
 	if (configured) return;
 	configured = true;
+
+	const cellDimensions = imageCellDimensionsForTerminal(process.env.TERM ?? "", getCellDimensions());
+	setCellDimensions(cellDimensions);
 
 	const capabilities = getCapabilities();
 	if (capabilities.images) return;

@@ -8,8 +8,8 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-const PREVIEW_MAX_WIDTH_PX = 360;
-const PREVIEW_MAX_HEIGHT_PX = 240;
+const PREVIEW_MAX_WIDTH_PX = 720;
+const PREVIEW_MAX_HEIGHT_PX = 540;
 const PREVIEW_DIR = join(homedir(), ".pi", "agent", "image-previews");
 
 export type PreviewImage = {
