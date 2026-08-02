@@ -1,6 +1,13 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
+import {
+	getOpenAIFastOverride,
+	OPENAI_FAST_REQUEST_EVENT,
+	type OpenAIFastOverride,
+	type OpenAIFastRequestEvent,
+	setOpenAIFastOverride,
+} from "../shared/openai-fast-state";
 import { defineExtensionTui } from "../shared/tui";
 
 const EXTENSION_ID = "openai-fast";
@@ -16,7 +23,7 @@ const DEFAULT_CONFIG: OpenAIFastConfig = {
 	showStatus: true,
 };
 
-type FastOverride = "auto" | "on" | "off";
+type FastOverride = OpenAIFastOverride;
 type OpenAIFastConfig = { enabled: boolean; showStatus: boolean };
 type SessionState = {
 	config: OpenAIFastConfig;
@@ -114,6 +121,18 @@ function updateStatus(ctx: ExtensionContext, state: SessionState): void {
 	else status.clear("active");
 }
 
+function updateRequestStatus(pi: ExtensionAPI, ctx: ExtensionContext, active: boolean): void {
+	const event: OpenAIFastRequestEvent = {
+		active,
+		sessionFile: ctx.sessionManager.getSessionFile?.() ?? undefined,
+	};
+	pi.events.emit(OPENAI_FAST_REQUEST_EVENT, event);
+	if (!ctx.hasUI) return;
+	const status = fastTui.bind(ctx).status;
+	if (active) status.set("request", "fast");
+	else status.clear("request");
+}
+
 function getStatusMessage(ctx: ExtensionContext, state: SessionState): string {
 	const enabled = isFastEnabled(state);
 	const eligibility = getEligibility(ctx);
@@ -141,16 +160,13 @@ function injectFastServiceTier(
 	return { ...payload, service_tier: FAST_SERVICE_TIER };
 }
 
-// Extension factories are instantiated per session; keep the runtime override shared with child sessions.
-let runtimeOverride: FastOverride = "auto";
-
 export default function openAIFastExtension(pi: ExtensionAPI) {
 	const states = new WeakMap<object, SessionState>();
 
 	function getState(ctx: ExtensionContext): SessionState {
 		let state = states.get(ctx.sessionManager);
 		if (!state) {
-			state = { config: loadConfig(ctx), override: runtimeOverride };
+			state = { config: loadConfig(ctx), override: getOpenAIFastOverride() };
 			states.set(ctx.sessionManager, state);
 		}
 		return state;
@@ -159,13 +175,13 @@ export default function openAIFastExtension(pi: ExtensionAPI) {
 	function toggle(ctx: ExtensionContext): void {
 		const state = getState(ctx);
 		state.override = isFastEnabled(state) ? "off" : "on";
-		runtimeOverride = state.override;
+		setOpenAIFastOverride(state.override);
 		updateStatus(ctx, state);
 		ctx.ui.notify(getStatusMessage(ctx, state), "info");
 	}
 
 	pi.on("session_start", (_event, ctx) => {
-		const state = { config: loadConfig(ctx), override: runtimeOverride };
+		const state = { config: loadConfig(ctx), override: getOpenAIFastOverride() };
 		states.set(ctx.sessionManager, state);
 		updateStatus(ctx, state);
 	});
@@ -173,9 +189,12 @@ export default function openAIFastExtension(pi: ExtensionAPI) {
 	pi.on("before_provider_request", (event, ctx) => {
 		const state = getState(ctx);
 		const nextPayload = injectFastServiceTier(event.payload, ctx, state);
+		updateRequestStatus(pi, ctx, Boolean(nextPayload));
 		updateStatus(ctx, state);
 		return nextPayload;
 	});
+	pi.on("message_end", (_event, ctx) => updateRequestStatus(pi, ctx, false));
+	pi.on("agent_end", (_event, ctx) => updateRequestStatus(pi, ctx, false));
 
 	pi.registerCommand("fast", {
 		description: "Toggle OpenAI Codex Fast mode for this Pi runtime",

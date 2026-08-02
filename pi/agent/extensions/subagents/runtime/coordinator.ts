@@ -179,6 +179,8 @@ const manager = new AgentManager(
 	},
 	(record) => {
 		activityByAgent.delete(record.id);
+		persist(record);
+		updateWidgets();
 	},
 );
 

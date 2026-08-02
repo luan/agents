@@ -22,12 +22,14 @@ test("removes live runtime handles from persisted agents", () => {
 		abortController: new AbortController(),
 		promise: Promise.resolve("done"),
 		session: { dispose() {} },
+		runtime: { session: { dispose() {} } },
 		outputCleanup() {},
 	} as unknown as AgentRecord;
 
 	const persisted = toPersistedAgent(record) as Record<string, unknown>;
 	expect(persisted.id).toBe("/root/agent-1");
 	expect(persisted.session).toBeUndefined();
+	expect(persisted.runtime).toBeUndefined();
 	expect(persisted.promise).toBeUndefined();
 	expect(persisted.abortController).toBeUndefined();
 	expect(persisted.outputCleanup).toBeUndefined();
@@ -43,8 +45,8 @@ test("restores one root-owned recursive agent tree", () => {
 		cwd: "/tmp/project",
 		events: [],
 		toolUses: 0,
-		startedAt: 1,
-		completedAt: 2,
+		startedAt: Date.now(),
+		completedAt: Date.now(),
 		lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
 		compactionCount: 0,
 	};
@@ -73,6 +75,7 @@ test("restores one root-owned recursive agent tree", () => {
 test("retains only the newest terminal agents per root session", () => {
 	const removed: string[] = [];
 	const manager = new AgentManager(undefined, undefined, undefined, undefined, (record) => removed.push(record.id), 2);
+	const now = Date.now();
 	const records = [1, 2, 3].map(
 		(index) =>
 			({
@@ -86,8 +89,8 @@ test("retains only the newest terminal agents per root session", () => {
 				cwd: "/tmp/project",
 				events: [],
 				toolUses: 0,
-				startedAt: index,
-				completedAt: index,
+				startedAt: now + index,
+				completedAt: now + index,
 				lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
 				compactionCount: 0,
 			}) satisfies PersistedAgent,
@@ -97,5 +100,30 @@ test("retains only the newest terminal agents per root session", () => {
 
 	expect(manager.listAgents("root-session").map((record) => record.id)).toEqual(["agent-3", "agent-2"]);
 	expect(removed).toEqual(["agent-1"]);
+	manager.dispose();
+});
+
+test("removes terminal agents older than the inspection window on restore", () => {
+	const manager = new AgentManager();
+	manager.restore([
+		{
+			id: "old-agent",
+			type: "task",
+			description: "old agent",
+			status: "completed",
+			rootSessionId: "root-session",
+			parentSessionId: "root-session",
+			assignment: "delegate",
+			cwd: "/tmp/project",
+			events: [],
+			toolUses: 0,
+			startedAt: Date.now() - 11 * 60_000,
+			completedAt: Date.now() - 11 * 60_000,
+			lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
+			compactionCount: 0,
+		},
+	]);
+
+	expect(manager.listAgents("root-session")).toEqual([]);
 	manager.dispose();
 });

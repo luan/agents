@@ -34,6 +34,14 @@ export function fillEditorLine(uiTheme: Theme, content: string, width: number): 
 	return `${backgroundAnsi}${filled.replace(RESET_ANSI, `${RESET}${backgroundAnsi}`)}\x1b[49m`;
 }
 
+export function fillEditorTransitionLine(uiTheme: Theme, leading: string, width: number): string {
+	const rgb = backgroundRgb(uiTheme);
+	if (!rgb || isLight(rgb)) return fillLine(leading, width);
+	const background = darken(rgb);
+	const remaining = Math.max(0, width - visibleWidth(leading));
+	return `${leading}\x1b[38;2;${background[0]};${background[1]};${background[2]}m${"▄".repeat(remaining)}\x1b[39m`;
+}
+
 export function fillLine(content: string, width: number): string {
 	const truncated = truncateToWidth(content, width, "");
 	const spaces = " ".repeat(Math.max(0, width - visibleWidth(truncated)));

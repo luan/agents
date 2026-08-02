@@ -5,7 +5,7 @@ import type { AgentRecord } from "./types.js";
 
 const REGISTRY_VERSION = 1;
 
-export type PersistedAgent = Omit<AgentRecord, "abortController" | "outputCleanup" | "promise" | "session">;
+export type PersistedAgent = Omit<AgentRecord, "abortController" | "outputCleanup" | "promise" | "runtime" | "session">;
 
 type Registry = {
 	version: typeof REGISTRY_VERSION;
@@ -25,7 +25,7 @@ export function registryPath(rootSessionId: string): string {
 }
 
 export function toPersistedAgent(record: AgentRecord): PersistedAgent {
-	const { abortController: _, outputCleanup: __, promise: ___, session: ____, ...persisted } = record;
+	const { abortController: _, outputCleanup: __, promise: ___, runtime: ____, session: _____, ...persisted } = record;
 	return persisted;
 }
 

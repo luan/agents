@@ -11,6 +11,7 @@ test("fast toggle survives new sessions for the current runtime and alt+g uses t
 		on: (name: string, handler: (...args: any[]) => any) => handlers.set(name, handler),
 		registerCommand: (name: string, command: any) => commands.set(name, command),
 		registerShortcut: (key: string, shortcut: any) => shortcuts.set(key, shortcut),
+		events: { emit() {} },
 	} as any;
 	openAIFastExtension(pi);
 
@@ -36,10 +37,12 @@ test("fast toggle survives new sessions for the current runtime and alt+g uses t
 	await commands.get("fast").handler("", first);
 	expect(notifications.at(-1)).toContain("on (runtime override)");
 	const childHandlers = new Map<string, (...args: any[]) => any>();
-	openAIFastExtension({
+	const { default: childOpenAIFastExtension } = await import(`./index.ts?child=${Date.now()}`);
+	childOpenAIFastExtension({
 		on: (name: string, handler: (...args: any[]) => any) => childHandlers.set(name, handler),
 		registerCommand: () => {},
 		registerShortcut: () => {},
+		events: { emit() {} },
 	} as any);
 	const child = context({});
 	childHandlers.get("session_start")?.({}, child);
@@ -52,7 +55,10 @@ test("fast toggle survives new sessions for the current runtime and alt+g uses t
 	expect(handlers.get("before_provider_request")?.({ payload: { model: "gpt-5.6-sol" } }, second)).toMatchObject({
 		service_tier: "priority",
 	});
-	expect(statuses.at(-1)).toEqual(["openai-fast:active", "fast"]);
+	expect(statuses).toContainEqual(["openai-fast:request", "fast"]);
+	expect(statuses).toContainEqual(["openai-fast:active", "fast"]);
+	handlers.get("message_end")?.({}, second);
+	expect(statuses.at(-1)).toEqual(["openai-fast:request", undefined]);
 
 	await shortcuts.get("alt+g").handler(second);
 	const third = context({});

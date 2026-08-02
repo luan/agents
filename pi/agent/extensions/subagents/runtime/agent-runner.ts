@@ -3,10 +3,16 @@
  */
 
 import type { Model } from "@earendil-works/pi-ai";
-import type { ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
+import type {
+	CreateAgentSessionRuntimeResult,
+	ExtensionContext,
+	SessionEntry,
+	SessionStartEvent,
+} from "@earendil-works/pi-coding-agent";
 import {
 	type AgentSession,
 	type AgentSessionEvent,
+	AgentSessionRuntime,
 	createAgentSession,
 	DefaultResourceLoader,
 	type ExtensionAPI,
@@ -26,6 +32,15 @@ import type { AgentConfig, SubagentType, ThinkingLevel } from "./types.js";
 import { type AssistantUsage, readAssistantUsage } from "./usage.js";
 
 const GRACE_TURNS = 5;
+
+function isGeneratedDelta(event: AgentSessionEvent): boolean {
+	return (
+		event.type === "message_update" &&
+		(event.assistantMessageEvent.type === "text_delta" ||
+			event.assistantMessageEvent.type === "thinking_delta" ||
+			event.assistantMessageEvent.type === "toolcall_delta")
+	);
+}
 
 const MEMORY_TOOL_NAMES = ["read", "write", "edit"];
 const READ_ONLY_MEMORY_TOOL_NAMES = ["read"];
@@ -65,6 +80,7 @@ export interface RunOptions {
 	/** Called on streaming text deltas from the assistant response. */
 	onTextDelta?: (delta: string, fullText: string) => void;
 	onSessionCreated?: (session: AgentSession) => void;
+	onRuntimeCreated?: (runtime: AgentSessionRuntime) => void;
 	/** Called after model and thinking settings are resolved. */
 	onRuntimeResolved?: (model: Model<any> | undefined, thinkingLevel: ThinkingLevel | undefined) => void;
 	/** Called at the end of each agentic turn with the cumulative count. */
@@ -74,7 +90,7 @@ export interface RunOptions {
 	 * Lets callers maintain a lifetime accumulator that survives compaction
 	 * (which replaces session.state.messages and resets stats-derived sums).
 	 */
-	onAssistantUsage?: (usage: AssistantUsage) => void;
+	onAssistantUsage?: (usage: AssistantUsage, durationMs: number) => void;
 	/**
 	 * Called when the session successfully compacts. `tokensBefore` is upstream's
 	 * pre-compaction context size estimate. Aborted compactions don't fire.
@@ -85,6 +101,7 @@ export interface RunOptions {
 export interface RunResult {
 	responseText: string;
 	session: AgentSession;
+	runtime: AgentSessionRuntime;
 	/** True if the agent was hard-aborted (max_turns + grace exceeded). */
 	aborted: boolean;
 	/** True if the agent was steered to wrap up (hit soft turn limit) but finished in time. */
@@ -281,21 +298,25 @@ export async function runAgent(
 	// would defeat prompt_mode: replace and isolated: true. Parent context, if
 	// wanted, reaches the subagent via prompt_mode: append (parentSystemPrompt
 	// is embedded in systemPromptOverride) or inherit_context (conversation).
-	const loader = new DefaultResourceLoader({
-		cwd: effectiveCwd,
-		agentDir,
-		noExtensions: extensions === false,
-		extensionsOverride: Array.isArray(extensions)
-			? (base) => ({ ...base, extensions: filterExtensionsByPath(base.extensions, extensions) })
-			: undefined,
-		noSkills,
-		noPromptTemplates: true,
-		noThemes: true,
-		noContextFiles: true,
-		systemPromptOverride: () => systemPrompt,
-		appendSystemPromptOverride: () => [],
-	});
-	await loader.reload();
+	const loadResources = async (cwd: string, resourceAgentDir: string) => {
+		const resourceLoader = new DefaultResourceLoader({
+			cwd,
+			agentDir: resourceAgentDir,
+			noExtensions: extensions === false,
+			extensionsOverride: Array.isArray(extensions)
+				? (base) => ({ ...base, extensions: filterExtensionsByPath(base.extensions, extensions) })
+				: undefined,
+			noSkills,
+			noPromptTemplates: true,
+			noThemes: true,
+			noContextFiles: true,
+			systemPromptOverride: () => systemPrompt,
+			appendSystemPromptOverride: () => [],
+		});
+		await resourceLoader.reload();
+		return resourceLoader;
+	};
+	const loader = await loadResources(effectiveCwd, agentDir);
 
 	const category = resolveModelCategory(
 		agentConfig.modelCategory,
@@ -314,33 +335,68 @@ export async function runAgent(
 	const sessionManager = options.sessionFile
 		? SessionManager.open(options.sessionFile, options.sessionDir, effectiveCwd)
 		: SessionManager.create(effectiveCwd, options.sessionDir);
-	const sessionOpts = {
+	const disallowedSet = agentConfig?.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined;
+	const createRuntime = async ({
+		cwd,
+		agentDir: runtimeAgentDir,
+		sessionManager: runtimeSessionManager,
+		sessionStartEvent,
+	}: {
+		cwd: string;
+		agentDir: string;
+		sessionManager: SessionManager;
+		sessionStartEvent?: SessionStartEvent;
+	}): Promise<CreateAgentSessionRuntimeResult> => {
+		const settingsManager = SettingsManager.create(cwd, runtimeAgentDir);
+		const resourceLoader =
+			runtimeSessionManager === sessionManager ? loader : await loadResources(cwd, runtimeAgentDir);
+		const sessionOpts = {
+			cwd,
+			agentDir: runtimeAgentDir,
+			sessionManager: runtimeSessionManager,
+			settingsManager,
+			...resolveSessionRuntimeOptions(ctx.modelRegistry),
+			model,
+			tools: toolNames,
+			resourceLoader,
+			sessionStartEvent,
+		} as NonNullable<Parameters<typeof createAgentSession>[0]>;
+		if (thinkingLevel) sessionOpts.thinkingLevel = thinkingLevel;
+
+		const result = await createAgentSession(sessionOpts);
+		const activeTools = result.session.getActiveToolNames().filter((toolName) => {
+			if (isSubagentOrchestrationToolName(toolName)) return false;
+			if (disallowedSet?.has(toolName)) return false;
+			return selectedToolNames.has(toolName);
+		});
+		result.session.setActiveToolsByName(activeTools);
+		return {
+			...result,
+			services: {
+				cwd,
+				agentDir: runtimeAgentDir,
+				modelRuntime: result.session.modelRuntime,
+				settingsManager,
+				resourceLoader,
+				diagnostics: [],
+			},
+			diagnostics: [],
+		};
+	};
+	const initialRuntime = await createRuntime({
 		cwd: effectiveCwd,
 		agentDir,
 		sessionManager,
-		settingsManager: SettingsManager.create(effectiveCwd, agentDir),
-		...resolveSessionRuntimeOptions(ctx.modelRegistry),
-		model,
-		tools: toolNames,
-		resourceLoader: loader,
-	} as NonNullable<Parameters<typeof createAgentSession>[0]>;
-	if (thinkingLevel) {
-		sessionOpts.thinkingLevel = thinkingLevel;
-	}
-
-	const { session } = await createAgentSession(sessionOpts);
-
-	// Build disallowed tools set from agent config
-	const disallowedSet = agentConfig?.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined;
-
-	// Filter active tools: remove orchestration tools, inherit the parent's active
-	// tool set by default, and let explicit allow/deny rules narrow or override it.
-	const activeTools = session.getActiveToolNames().filter((toolName) => {
-		if (isSubagentOrchestrationToolName(toolName)) return false;
-		if (disallowedSet?.has(toolName)) return false;
-		return selectedToolNames.has(toolName);
 	});
-	session.setActiveToolsByName(activeTools);
+	const runtime = new AgentSessionRuntime(
+		initialRuntime.session,
+		initialRuntime.services,
+		createRuntime,
+		initialRuntime.diagnostics,
+		initialRuntime.modelFallbackMessage,
+	);
+	const session = runtime.session;
+	options.onRuntimeCreated?.(runtime);
 
 	// Publish the child session id before extension session_start hooks run so
 	// recursive subagent extensions can attach to their parent record.
@@ -366,6 +422,8 @@ export async function runAgent(
 	let aborted = false;
 
 	let currentMessageText = "";
+	let messageOpenedAt: number | undefined;
+	let firstTokenAt: number | undefined;
 	const unsubTurns = session.subscribe((event: AgentSessionEvent) => {
 		if (event.type === "turn_end") {
 			turnCount++;
@@ -382,11 +440,16 @@ export async function runAgent(
 		}
 		if (event.type === "message_start") {
 			currentMessageText = "";
+			if (event.message.role === "assistant") {
+				messageOpenedAt = Date.now();
+				firstTokenAt = undefined;
+			}
 		}
 		if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
 			currentMessageText += event.assistantMessageEvent.delta;
 			options.onTextDelta?.(event.assistantMessageEvent.delta, currentMessageText);
 		}
+		if (isGeneratedDelta(event) && firstTokenAt === undefined) firstTokenAt = Date.now();
 		if (event.type === "tool_execution_start") {
 			options.onToolActivity?.({ type: "start", toolName: event.toolName });
 		}
@@ -395,7 +458,11 @@ export async function runAgent(
 		}
 		if (event.type === "message_end" && event.message.role === "assistant") {
 			const usage = readAssistantUsage(event.message);
-			if (usage) options.onAssistantUsage?.(usage);
+			const startedAt = firstTokenAt ?? messageOpenedAt;
+			const durationMs = startedAt === undefined ? undefined : Math.max(1, Date.now() - startedAt);
+			messageOpenedAt = undefined;
+			firstTokenAt = undefined;
+			if (usage && durationMs !== undefined) options.onAssistantUsage?.(usage, durationMs);
 		}
 		if (event.type === "compaction_end" && !event.aborted && event.result) {
 			options.onCompaction?.({ reason: event.reason, tokensBefore: event.result.tokensBefore });
@@ -421,8 +488,16 @@ export async function runAgent(
 		cleanupAbort();
 	}
 
-	const responseText = collector.getText().trim() || getLastAssistantText(session);
-	return { responseText, session, aborted, steered: softLimitReached, error: getActiveTurnError(session) };
+	const activeSession = runtime.session;
+	const responseText = collector.getText().trim() || getLastAssistantText(activeSession);
+	return {
+		responseText,
+		session: activeSession,
+		runtime,
+		aborted,
+		steered: softLimitReached,
+		error: getActiveTurnError(activeSession),
+	};
 }
 
 /**
@@ -433,7 +508,7 @@ export async function resumeAgent(
 	prompt: string,
 	options: {
 		onToolActivity?: (activity: ToolActivity) => void;
-		onAssistantUsage?: (usage: AssistantUsage) => void;
+		onAssistantUsage?: (usage: AssistantUsage, durationMs: number) => void;
 		onCompaction?: (info: { reason: "manual" | "threshold" | "overflow"; tokensBefore: number }) => void;
 		signal?: AbortSignal;
 	} = {},
@@ -441,16 +516,27 @@ export async function resumeAgent(
 	const collector = collectResponseText(session);
 	const cleanupAbort = forwardAbortSignal(session, options.signal);
 
+	let messageOpenedAt: number | undefined;
+	let firstTokenAt: number | undefined;
 	const unsubEvents =
 		options.onToolActivity || options.onAssistantUsage || options.onCompaction
 			? session.subscribe((event: AgentSessionEvent) => {
+					if (event.type === "message_start" && event.message.role === "assistant") {
+						messageOpenedAt = Date.now();
+						firstTokenAt = undefined;
+					}
+					if (isGeneratedDelta(event) && firstTokenAt === undefined) firstTokenAt = Date.now();
 					if (event.type === "tool_execution_start")
 						options.onToolActivity?.({ type: "start", toolName: event.toolName });
 					if (event.type === "tool_execution_end")
 						options.onToolActivity?.({ type: "end", toolName: event.toolName });
 					if (event.type === "message_end" && event.message.role === "assistant") {
 						const usage = readAssistantUsage(event.message);
-						if (usage) options.onAssistantUsage?.(usage);
+						const startedAt = firstTokenAt ?? messageOpenedAt;
+						const durationMs = startedAt === undefined ? undefined : Math.max(1, Date.now() - startedAt);
+						messageOpenedAt = undefined;
+						firstTokenAt = undefined;
+						if (usage && durationMs !== undefined) options.onAssistantUsage?.(usage, durationMs);
 					}
 					if (event.type === "compaction_end" && !event.aborted && event.result) {
 						options.onCompaction?.({ reason: event.reason, tokensBefore: event.result.tokensBefore });
@@ -476,7 +562,7 @@ export async function retryFailedTurn(
 	session: AgentSession,
 	options: {
 		onToolActivity?: (activity: ToolActivity) => void;
-		onAssistantUsage?: (usage: AssistantUsage) => void;
+		onAssistantUsage?: (usage: AssistantUsage, durationMs: number) => void;
 		onCompaction?: (info: { reason: "manual" | "threshold" | "overflow"; tokensBefore: number }) => void;
 		signal?: AbortSignal;
 	} = {},
@@ -486,12 +572,23 @@ export async function retryFailedTurn(
 
 	const collector = collectResponseText(session);
 	const cleanupAbort = forwardAbortSignal(session, options.signal);
+	let messageOpenedAt: number | undefined;
+	let firstTokenAt: number | undefined;
 	const unsubEvents = session.subscribe((event: AgentSessionEvent) => {
+		if (event.type === "message_start" && event.message.role === "assistant") {
+			messageOpenedAt = Date.now();
+			firstTokenAt = undefined;
+		}
+		if (isGeneratedDelta(event) && firstTokenAt === undefined) firstTokenAt = Date.now();
 		if (event.type === "tool_execution_start") options.onToolActivity?.({ type: "start", toolName: event.toolName });
 		if (event.type === "tool_execution_end") options.onToolActivity?.({ type: "end", toolName: event.toolName });
 		if (event.type === "message_end" && event.message.role === "assistant") {
 			const usage = readAssistantUsage(event.message);
-			if (usage) options.onAssistantUsage?.(usage);
+			const startedAt = firstTokenAt ?? messageOpenedAt;
+			const durationMs = startedAt === undefined ? undefined : Math.max(1, Date.now() - startedAt);
+			messageOpenedAt = undefined;
+			firstTokenAt = undefined;
+			if (usage && durationMs !== undefined) options.onAssistantUsage?.(usage, durationMs);
 		}
 		if (event.type === "compaction_end" && !event.aborted && event.result) {
 			options.onCompaction?.({ reason: event.reason, tokensBefore: event.result.tokensBefore });

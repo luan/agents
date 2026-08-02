@@ -1,7 +1,7 @@
 import { CustomEditor, type Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { rgbBg, rgbFg, scaleRgb, shineText, themeRoleToRgb, triangleWave } from "../shared/tui";
-import { ANSI_RESET, fillEditorLine } from "./render-lines";
+import { rgbFg, scaleRgb, shineText, themeRoleToRgb } from "../shared/tui";
+import { ANSI_RESET, fillEditorLine, fillEditorTransitionLine } from "./render-lines";
 
 const CUSTOM_EDITOR_ORIGINAL_RENDER = Symbol.for("agents.polishedTui.customEditorOriginalRender");
 
@@ -49,16 +49,53 @@ let workingStartedAtMs: number | undefined;
 let lastWorkingDurationMs: number | undefined;
 let cumulativeWorkingDurationMs = 0;
 let workingNowMsForTest: number | undefined;
+let workingFastMode = false;
+let workingLastTurnTps: number | undefined;
+let workingOverallTps: number | undefined;
 let editorSessionIdentityProvider: (() => EditorSessionIdentity | undefined) | undefined;
+let transitionRailColor = "syntaxFunction";
+let transitionIdentityColor: string | undefined;
 
 const WORKING_WORD = "Working";
-const WORKING_PERCOLATION_MS = 80;
+const ZIPPING_VARIANTS = [
+	["ż", "i", "ṅ", "ġ"],
+	["ž", "ǐ", "ň", "ǧ"],
+	["ẑ", "î", "n̂", "ĝ"],
+	["ẕ", "ī", "ṉ", "ḡ"],
+	["ẓ", "ị", "ṇ", "g̣"],
+	["z̧", "į", "ņ", "ģ"],
+	["z̃", "ĩ", "ñ", "g̃"],
+	["z̊", "i̊", "n̊", "g̊"],
+	["z̸", "i̸", "n̸", "g̸"],
+] as const;
+export const WORKING_ANIMATION_INTERVAL_MS = 32;
 const RAIL_PULSE_MS = 2000;
 const MODE_LABEL_RESERVE = 9;
+const FULL_RAIL_FRAMES = ["▐"] as const;
+const HALF_RAIL_FRAMES = ["▗"] as const;
+const SECONDARY_RAIL_FRAMES = FULL_RAIL_FRAMES;
 let editorChromeProvider: EditorChromeProvider | undefined;
 
 export function setEditorTheme(uiTheme: Theme): void {
 	patchState.currentUiTheme = uiTheme;
+}
+
+function animatedRail(frames: readonly string[], uiTheme: Theme, color: string, fallback: string): string {
+	if (!workingActive) return colorFg(uiTheme, color, fallback);
+	const phase = ((workingFrame * WORKING_ANIMATION_INTERVAL_MS) % RAIL_PULSE_MS) / RAIL_PULSE_MS;
+	const progress = (1 - Math.cos(phase * Math.PI * 2)) / 2;
+	const factor = 0.35 + progress * 0.8;
+	const glyph = frames[Math.round(progress * (frames.length - 1))] ?? fallback;
+	return `${rgbFg(scaleRgb(themeRoleToRgb(uiTheme, color), factor))}${glyph}${ANSI_RESET}`;
+}
+
+export function renderEditorTransition(width: number, uiTheme: Theme, mode?: string): string {
+	const railColor = mode === undefined ? transitionRailColor : railColorForMode(mode, transitionIdentityColor);
+	const secondaryRailColor =
+		transitionIdentityColor && railColor !== transitionIdentityColor ? transitionIdentityColor : undefined;
+	const secondary = secondaryRailColor ? `${colorFg(uiTheme, secondaryRailColor, "▖")}${ANSI_RESET}` : "";
+	const rail = `${secondary}${animatedRail(HALF_RAIL_FRAMES, uiTheme, railColor, "╻")}`;
+	return fillEditorTransitionLine(uiTheme, rail, width);
 }
 
 export function setWorkingAnimationState(active: boolean, frame = workingFrame): void {
@@ -68,6 +105,15 @@ export function setWorkingAnimationState(active: boolean, frame = workingFrame):
 
 export function advanceWorkingAnimationFrame(): void {
 	workingFrame++;
+}
+
+export function setWorkingFastMode(active: boolean): void {
+	workingFastMode = active;
+}
+
+export function setWorkingTokenSpeed(lastTurnTps: number | undefined, overallTps?: number): void {
+	workingLastTurnTps = lastTurnTps;
+	workingOverallTps = overallTps;
 }
 
 export function setWorkingTimerStarted(nowMs = Date.now()): void {
@@ -190,7 +236,23 @@ function railColorForMode(mode: string | undefined, identityColor: string | unde
 }
 
 function renderWorkingWord(uiTheme: Theme, color: string, frame: number): string {
-	return shineText(uiTheme, WORKING_WORD, frame * WORKING_PERCOLATION_MS, {
+	if (workingFastMode) {
+		const variants = ZIPPING_VARIANTS[frame % ZIPPING_VARIANTS.length] ?? ZIPPING_VARIANTS[0];
+		const popIndex = Math.floor(frame / ZIPPING_VARIANTS.length) % variants.length;
+		const word = [variants[0], variants[1], "p", "p", "i", variants[2], variants[3]];
+		const animatedIndexes = [0, 1, 5, 6];
+		const baseRgb = themeRoleToRgb(uiTheme, color);
+		const letters = word
+			.map((letter, index) => {
+				if (animatedIndexes[popIndex] === index) return uiTheme.fg("warning", letter);
+				const phase = ((frame + index * 2) % 18) / 18;
+				const brightness = 0.35 + ((1 - Math.cos(phase * Math.PI * 2)) / 2) * 0.8;
+				return `${rgbFg(scaleRgb(baseRgb, brightness))}${letter}\x1b[39m`;
+			})
+			.join("");
+		return `${uiTheme.fg("warning", "⚡")}${letters}`;
+	}
+	return shineText(uiTheme, WORKING_WORD, frame * WORKING_ANIMATION_INTERVAL_MS, {
 		role: color,
 		fallback: (text) => uiTheme.fg("warning", text),
 	}).replace(/\x1b\[39m$/, "");
@@ -207,6 +269,32 @@ export function formatWorkingDuration(durationMs: number): string {
 	return `${seconds}s`;
 }
 
+export function renderTokenSpeed(tokensPerSecond: number | undefined): string {
+	if (tokensPerSecond === undefined || !Number.isFinite(tokensPerSecond) || tokensPerSecond < 0) return "";
+	const label = `${Math.max(1, tokensPerSecond).toFixed(1)} tps`;
+	const stops = [
+		[0, 125, 18, 18],
+		[5, 220, 45, 20],
+		[15, 255, 140, 0],
+		[30, 255, 215, 0],
+		[60, 255, 255, 180],
+		[150, 255, 255, 255],
+	] as const;
+	const speed = Math.min(150, tokensPerSecond);
+	const upperIndex = stops.findIndex(([threshold]) => threshold >= speed);
+	const upper = stops[upperIndex < 0 ? stops.length - 1 : upperIndex];
+	const lower = stops[Math.max(0, (upperIndex < 0 ? stops.length : upperIndex) - 1)];
+	const progress = upper[0] === lower[0] ? 0 : (speed - lower[0]) / (upper[0] - lower[0]);
+	const color = [1, 2, 3].map((index) => Math.round(lower[index] + (upper[index] - lower[index]) * progress));
+	return `${tokensPerSecond >= 150 ? "\x1b[1m" : ""}\x1b[38;2;${color.join(";")}m${label}\x1b[0m`;
+}
+
+function renderTokenSpeedStats(): string {
+	const last = renderTokenSpeed(workingLastTurnTps ?? 1);
+	const overall = renderTokenSpeed(workingOverallTps ?? workingLastTurnTps ?? 1);
+	return `${last} ${overall.replace(" tps", " overall tps")}`;
+}
+
 function nowMs(): number {
 	return workingNowMsForTest ?? Date.now();
 }
@@ -220,11 +308,22 @@ function totalWorkingDurationMs(): number {
 	return cumulativeWorkingDurationMs + (workingActive ? activeWorkingDurationMs() : 0);
 }
 
-function workingHeaderSegment(uiTheme: Theme, color: string): string {
+function appendTrailing(left: string, trailing: string, width: number): string {
+	const trailingWidth = visibleWidth(trailing);
+	if (trailingWidth >= width) return truncateToWidth(trailing, width, "");
+	const fittedLeft = truncateToWidth(left, width - trailingWidth - 1, "");
+	return `${fittedLeft} ${trailing}`;
+}
+
+function workingHeaderSegment(uiTheme: Theme, color: string, width: number): string {
+	const speed = renderTokenSpeedStats();
 	if (!workingActive) {
 		if (lastWorkingDurationMs === undefined) return "";
-		const text = `Last turn: ${formatWorkingDuration(lastWorkingDurationMs)}. Total cumulative: ${formatWorkingDuration(totalWorkingDurationMs())}.`;
-		return `${uiTheme.fg("dim", text)}${ANSI_RESET}`;
+		const text = uiTheme.fg(
+			"dim",
+			`Last turn: ${formatWorkingDuration(lastWorkingDurationMs)}. Total cumulative: ${formatWorkingDuration(totalWorkingDurationMs())}.`,
+		);
+		return `${appendTrailing(text, speed, width)}${ANSI_RESET}`;
 	}
 	const label = renderWorkingWord(uiTheme, color, workingFrame);
 	const elapsed = activeWorkingDurationMs();
@@ -232,7 +331,8 @@ function workingHeaderSegment(uiTheme: Theme, color: string): string {
 		"dim",
 		` ${formatWorkingDuration(elapsed)}. Total cumulative: ${formatWorkingDuration(totalWorkingDurationMs())}.`,
 	);
-	return `${label}${rgbFg(scaleRgb(themeRoleToRgb(uiTheme, color), 0.85))}…${timing}${ANSI_RESET}`;
+	const left = `${label}${rgbFg(scaleRgb(themeRoleToRgb(uiTheme, color), 0.85))}…${timing}`;
+	return `${appendTrailing(left, speed, width)}${ANSI_RESET}`;
 }
 
 function cleanIdentityPart(value: string | undefined): string | undefined {
@@ -263,7 +363,7 @@ function headerLeftSegment(
 	identity: string | undefined,
 	identityColor: string | undefined,
 ): string {
-	const working = workingHeaderSegment(uiTheme, color);
+	const working = workingHeaderSegment(uiTheme, color, width);
 	if (identity && working) {
 		const delimiter = uiTheme.fg("dim", " · ");
 		const identityWidth = width - visibleWidth(working) - visibleWidth(delimiter);
@@ -277,12 +377,14 @@ function headerLeftSegment(
 
 function composeLeftRight(left: string, right: string | undefined, width: number): string {
 	if (!right) return truncateToWidth(left, width, "");
-	if (!left) return " ".repeat(Math.max(0, width - visibleWidth(right))) + truncateToWidth(right, width, "");
 
-	const maxRightWidth = Math.max(0, width - visibleWidth(left) - 1);
-	const fittedRight = truncateToWidth(right, maxRightWidth, "");
-	const gap = Math.max(1, width - visibleWidth(left) - visibleWidth(fittedRight));
-	return truncateToWidth(left, width, "") + " ".repeat(gap) + fittedRight;
+	const fittedRight = truncateToWidth(right, width, "");
+	const rightWidth = visibleWidth(fittedRight);
+	if (!left || rightWidth >= width) return " ".repeat(Math.max(0, width - rightWidth)) + fittedRight;
+
+	const fittedLeft = truncateToWidth(left, Math.max(0, width - rightWidth - 1), "");
+	const gap = Math.max(1, width - visibleWidth(fittedLeft) - rightWidth);
+	return fittedLeft + " ".repeat(gap) + fittedRight;
 }
 
 export function renderPolishedEditorForTest(
@@ -297,12 +399,19 @@ export function renderPolishedEditorForTest(
 	const identity = getEditorSessionIdentity();
 	const identityText = sessionIdentityText(identity);
 	const identityColor = cleanIdentityPart(identity?.color);
+	transitionIdentityColor = identityColor;
 	const mode = typeof editor.getMode === "function" ? editor.getMode() : undefined;
 	const railColor = railColorForMode(mode, identityColor);
 	const secondaryRailColor = identityColor && railColor !== identityColor ? identityColor : undefined;
+	transitionRailColor = railColor;
 	const railWidth = 2 + (secondaryRailColor ? 1 : 0);
 	const innerWidth = Math.max(1, width - railWidth);
-	const rendered = renderBase(innerWidth);
+	const modeReserve = typeof editor.getMode === "function" ? MODE_LABEL_RESERVE : 0;
+	const statusWidth = Math.max(1, innerWidth - modeReserve);
+	const chrome = editorChromeProvider?.(innerWidth, uiTheme, { modeReserve }) ?? {};
+	const topRightReserve = chrome.topRight ? Math.min(innerWidth - 1, visibleWidth(chrome.topRight) + 1) : 0;
+	const editorWidth = Math.max(1, innerWidth - topRightReserve);
+	const rendered = renderBase(editorWidth);
 	const isShowingAutocomplete =
 		typeof editor.isShowingAutocomplete === "function" ? Boolean(editor.isShowingAutocomplete()) : false;
 
@@ -311,7 +420,7 @@ export function renderPolishedEditorForTest(
 	const { autocompleteList } = editor;
 	const autocompleteCount =
 		isShowingAutocomplete && typeof autocompleteList?.render === "function"
-			? autocompleteList.render(innerWidth).length
+			? autocompleteList.render(editorWidth).length
 			: 0;
 	const editorFrame =
 		autocompleteCount > 0 && autocompleteCount < rendered.length ? rendered.slice(0, -autocompleteCount) : rendered;
@@ -325,28 +434,29 @@ export function renderPolishedEditorForTest(
 			? (line: string) => editor.transformEditorLine?.(line) ?? line
 			: (line: string) => line;
 	const editorLines = editorFrame.slice(1, -1).map(transformEditorLine);
-	const modeReserve = typeof editor.getMode === "function" ? MODE_LABEL_RESERVE : 0;
-	const statusWidth = Math.max(1, innerWidth - modeReserve);
-	const chrome = editorChromeProvider?.(innerWidth, uiTheme, { modeReserve }) ?? {};
-	const railPulseFactor = workingActive
-		? triangleWave(workingFrame * WORKING_PERCOLATION_MS, RAIL_PULSE_MS, 0.18, 1.25)
-		: 0;
-	const railBg = workingActive ? rgbBg(scaleRgb(themeRoleToRgb(uiTheme, railColor), railPulseFactor)) : "";
 	const railGap = fillEditorLine(uiTheme, "", 1);
-	const secondaryRail = secondaryRailColor ? `${colorFg(uiTheme, secondaryRailColor, "▐")}${ANSI_RESET}` : "";
+	const secondaryRail = secondaryRailColor
+		? `${animatedRail(SECONDARY_RAIL_FRAMES, uiTheme, secondaryRailColor, "▐")}${ANSI_RESET}`
+		: "";
+	const mainRailFrames = secondaryRailColor ? SECONDARY_RAIL_FRAMES : FULL_RAIL_FRAMES;
 	const mainRailGlyph = secondaryRailColor ? "▌" : "┃";
-	const rail = `${secondaryRail}${railBg}${colorFg(uiTheme, railColor, mainRailGlyph)}\x1b[49m${ANSI_RESET}${railGap}`;
+	const rail = `${secondaryRail}${animatedRail(mainRailFrames, uiTheme, railColor, mainRailGlyph)}${railGap}`;
+	const [firstEditorLine = "", ...remainingEditorLines] = editorLines;
 	const lines = [
+		composeLeftRight(firstEditorLine, chrome.topRight, innerWidth),
+		...remainingEditorLines,
 		composeLeftRight(
-			headerLeftSegment(innerWidth, uiTheme, railColor, identityText, identityColor),
-			chrome.topRight,
-			innerWidth,
+			headerLeftSegment(statusWidth, uiTheme, railColor, identityText, identityColor),
+			chrome.bottomRight,
+			statusWidth,
 		),
-		...editorLines,
-		composeLeftRight("", chrome.bottomRight, statusWidth),
 	];
 
-	return [...lines.map((line) => `${rail}${fillEditorLine(uiTheme, line, innerWidth)}`), ...autocompleteLines];
+	return [
+		renderEditorTransition(width, uiTheme, mode),
+		...lines.map((line) => `${rail}${fillEditorLine(uiTheme, line, innerWidth)}`),
+		...autocompleteLines,
+	];
 }
 
 export function installEditorComposition(uiTheme: Theme): void {

@@ -8,7 +8,12 @@ import {
 	SUBAGENT_USAGE_EVENT,
 	type SubagentUsageEvent,
 } from "../shared/subagent-usage";
-import { defineExtensionTui } from "../shared/tui";
+import {
+	type AnimationMount,
+	type AnimationRenderTarget,
+	defineExtensionTui,
+	sharedAnimationRenderScheduler,
+} from "../shared/tui";
 import { ensureConfigExists, loadConfig, type PolishedTuiConfig, saveConfig } from "./config";
 import { installFocusCursor } from "./cursor-focus";
 import {
@@ -20,19 +25,22 @@ import {
 	restoreWorkingTimerSnapshot,
 	setEditorChromeProvider,
 	setEditorSessionIdentityProvider,
+	setWorkingFastMode,
 	setWorkingTimerStarted,
 	setWorkingTimerStopped,
+	setWorkingTokenSpeed,
+	WORKING_ANIMATION_INTERVAL_MS,
 	type WorkingTimerSnapshot,
 } from "./editor";
 import {
 	emptyFooterState,
-	estimateContextBreakdown,
+	estimateContextSegments,
 	type FooterRenderState,
 	renderEditorContextStatus,
 	renderEditorTopStatus,
 	scaleContextSegmentsToUsage,
-	scaleContextSlicesToUsage,
 } from "./footer";
+import { GenerationRateStats } from "./generation-rate";
 import { readGitStatus } from "./git";
 import { readRuntimeInfo } from "./runtime";
 import { installTranscriptSpacingPatch } from "./transcript-spacing";
@@ -49,8 +57,6 @@ type UsageBarCache = {
 	lines: string[];
 };
 
-const CONTEXT_PULSE_INTERVAL_MS = 320;
-const CONTEXT_PULSE_DURATION_MS = 1200;
 const WORKING_TIMER_ENTRY_TYPE = "tui:working-timer";
 const MODEL_STATUS_KEYS = new Set(["openai-fast:active"]);
 
@@ -169,6 +175,7 @@ export default function (pi: ExtensionAPI) {
 
 	let currentConfig: PolishedTuiConfig = loadConfig();
 	let requestFooterRender: (() => void) | undefined;
+	let footerAnimationTarget: AnimationRenderTarget | undefined;
 	let projectRefreshInFlight = false;
 	let projectRefreshPending = false;
 
@@ -177,15 +184,14 @@ export default function (pi: ExtensionAPI) {
 	let usageBarCache: UsageBarCache | null = null;
 	let usageBarPendingKey: string | null = null;
 	let usageBarsVisible = currentConfig.usageBars.visible;
-	let contextPulseTimer: ReturnType<typeof setInterval> | null = null;
-	let workingAnimationTimer: ReturnType<typeof setInterval> | null = null;
-	const contextPulseDeadlines = new Map<number, number>();
+	let workingAnimationTimer: AnimationMount | undefined;
 	let disposed = false;
 	let uiGeneration = 0;
 	let activeSessionFile: string | undefined;
 	let editorSessionIdentity: EditorSessionIdentity | undefined;
 	let activeCtx: ExtensionContext | undefined;
 	let releaseTranscriptSpacingPatch: (() => void) | undefined;
+	const generationRate = new GenerationRateStats();
 
 	let footerDataProvider: FooterDataProvider | undefined;
 	const isStaleCtxError = (error: unknown) =>
@@ -218,57 +224,6 @@ export default function (pi: ExtensionAPI) {
 			if (!snapshot.active && snapshot.lastTurnMs === undefined && snapshot.cumulativeMs === 0) return;
 			pi.appendEntry(WORKING_TIMER_ENTRY_TYPE, snapshot);
 		} catch {}
-	};
-
-	const stopContextPulse = () => {
-		if (contextPulseTimer) {
-			clearInterval(contextPulseTimer);
-			contextPulseTimer = null;
-		}
-		state.contextPulseSliceIndexes = [];
-		state.contextPulseFrame = 0;
-		contextPulseDeadlines.clear();
-	};
-
-	const activePulseIndexes = () => {
-		const now = Date.now();
-		for (const [index, deadline] of contextPulseDeadlines) {
-			if (deadline <= now || index >= state.contextSlices.length) contextPulseDeadlines.delete(index);
-		}
-		return [...contextPulseDeadlines.keys()].sort((a: number, b: number) => a - b);
-	};
-
-	const pulseContextSliceIndexes = (indexes: readonly number[]) => {
-		if (indexes.length === 0) return;
-		const deadline = Date.now() + CONTEXT_PULSE_DURATION_MS;
-		for (const index of indexes) {
-			if (index >= 0 && index < state.contextSlices.length) contextPulseDeadlines.set(index, deadline);
-		}
-		state.contextPulseSliceIndexes = activePulseIndexes();
-		if (contextPulseTimer) return;
-
-		contextPulseTimer = setInterval(() => {
-			if (disposed) {
-				stopContextPulse();
-				refresh();
-				return;
-			}
-			state.contextPulseSliceIndexes = activePulseIndexes();
-			if (state.contextPulseSliceIndexes.length === 0) {
-				stopContextPulse();
-				refresh();
-				return;
-			}
-			state.contextPulseFrame++;
-			refresh();
-		}, CONTEXT_PULSE_INTERVAL_MS);
-	};
-
-	const pulseLastContextSlicesForMessage = (message: unknown) => {
-		const pulseSliceCount = estimateContextBreakdown([message], "").slices.length;
-		if (pulseSliceCount <= 0) return;
-		const start = Math.max(0, state.contextSlices.length - pulseSliceCount);
-		pulseContextSliceIndexes(Array.from({ length: state.contextSlices.length - start }, (_, index) => start + index));
 	};
 
 	const usageBarKey = (width: number): string =>
@@ -353,6 +308,7 @@ export default function (pi: ExtensionAPI) {
 		}
 		state.thinkingLevel = activeCtx?.model?.reasoning ? pi.getThinkingLevel() : undefined;
 		state.modelStatusBadges = readModelStatusBadges(footerDataProvider);
+		setWorkingFastMode(footerDataProvider?.getExtensionStatuses().get("openai-fast:request") === "fast");
 		const topStatus = renderEditorTopStatus(state, currentConfig, cwd, theme, statusWidth);
 		return [usageLine, topStatus].filter(Boolean).join("  ");
 	};
@@ -409,11 +365,10 @@ export default function (pi: ExtensionAPI) {
 		const contextWindow = ctx.model?.contextWindow ?? usage?.contextWindow ?? 0;
 		const measuredContextTokens = typeof usage?.tokens === "number" && usage.tokens > 0 ? usage.tokens : undefined;
 		const contextMessages = buildSessionContext(ctx.sessionManager.getEntries(), sessionLeafId(ctx)).messages;
-		const rawContext = estimateContextBreakdown(
+		const rawContextSegments = estimateContextSegments(
 			activeMessage ? [...contextMessages, activeMessage] : contextMessages,
 			systemPromptText(ctx.getSystemPrompt()),
 		);
-		const rawContextSegments = rawContext.segments;
 		const estimatedContextTokens = Object.values(rawContextSegments).reduce((total, value) => total + value, 0);
 		const storedContextUsed =
 			measuredContextTokens ??
@@ -424,7 +379,6 @@ export default function (pi: ExtensionAPI) {
 			activeMessage && measuredContextTokens !== undefined
 				? Math.max(measuredContextTokens, estimatedContextTokens)
 				: storedContextUsed;
-		const scaledSlices = scaleContextSlicesToUsage(rawContext.slices, contextUsed);
 
 		state.modelLabel = ctx.model?.name ?? "no-model";
 		state.providerLabel = formatProviderLabel(ctx.model?.provider);
@@ -434,10 +388,6 @@ export default function (pi: ExtensionAPI) {
 		state.contextTotal = contextWindow;
 		state.contextUsed = contextUsed;
 		state.contextSegments = scaleContextSegmentsToUsage(rawContextSegments, contextUsed);
-		state.contextSlices = scaledSlices;
-		if (activeMessage && scaledSlices.length > 0) {
-			pulseLastContextSlicesForMessage(activeMessage);
-		}
 		state.contextUsageEstimated = measuredContextTokens === undefined;
 		state.tokenLabel = `↑${formatCount(totals.input)} ↓${formatCount(totals.output)}`;
 		state.costLabel = `$${totals.cost.toFixed(2)}`;
@@ -489,35 +439,37 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	const stopWorkingAnimation = () => {
-		if (workingAnimationTimer) {
-			clearInterval(workingAnimationTimer);
-			workingAnimationTimer = null;
-		}
+		workingAnimationTimer?.dispose();
+		workingAnimationTimer = undefined;
 	};
 
 	const startWorkingAnimation = (ctx: ExtensionContext) => {
 		setWorkingTimerStarted();
 		stopWorkingAnimation();
-		workingAnimationTimer = setInterval(() => {
-			try {
-				if (disposed || !isCurrentSessionContext(ctx) || ctx.isIdle()) {
-					setWorkingTimerStopped();
-					persistWorkingTimer();
-					stopWorkingAnimation();
-					refresh();
-					return;
+		if (!footerAnimationTarget) return;
+		workingAnimationTimer = sharedAnimationRenderScheduler.mount(
+			footerAnimationTarget,
+			WORKING_ANIMATION_INTERVAL_MS,
+			() => {
+				const rate = generationRate.snapshot();
+				setWorkingTokenSpeed(rate.lastTurnTps, rate.overallTps);
+				try {
+					if (disposed || !isCurrentSessionContext(ctx) || ctx.isIdle()) {
+						setWorkingTimerStopped();
+						persistWorkingTimer();
+						stopWorkingAnimation();
+						return;
+					}
+				} catch (error) {
+					if (isStaleCtxError(error)) {
+						stopWorkingAnimation();
+						return;
+					}
+					throw error;
 				}
-			} catch (error) {
-				if (isStaleCtxError(error)) {
-					stopWorkingAnimation();
-					refresh();
-					return;
-				}
-				throw error;
-			}
-			advanceWorkingAnimationFrame();
-			refresh();
-		}, 80);
+				advanceWorkingAnimationFrame();
+			},
+		);
 		refresh();
 	};
 
@@ -586,6 +538,7 @@ export default function (pi: ExtensionAPI) {
 		const footerFactory: FooterFactory = (tui, _theme, footerData) => {
 			footerDataProvider = footerData;
 			requestFooterRender = () => tui.requestRender();
+			footerAnimationTarget = tui;
 			const disposeFocusCursor = installFocusCursor(pi, ctx, tui);
 			const unsubscribeBranch = footerData.onBranchChange(() => {
 				syncStateIfCurrent(ctx);
@@ -603,9 +556,9 @@ export default function (pi: ExtensionAPI) {
 					disposeFocusCursor();
 					unsubscribeBranch();
 					requestFooterRender = undefined;
+					footerAnimationTarget = undefined;
 					footerDataProvider = undefined;
 					stopRefreshTimer();
-					stopContextPulse();
 				},
 				invalidate() {},
 				render(): string[] {
@@ -706,12 +659,14 @@ export default function (pi: ExtensionAPI) {
 		activeSessionFile = undefined;
 		activeCtx = undefined;
 		requestFooterRender = undefined;
+		footerAnimationTarget = undefined;
 		setEditorChromeProvider(undefined);
 		setEditorSessionIdentityProvider(undefined);
 		editorSessionIdentity = undefined;
 		resetWorkingTimerState();
+		generationRate.reset();
+		setWorkingTokenSpeed(undefined, undefined);
 		stopRefreshTimer();
-		stopContextPulse();
 		stopWorkingAnimation();
 		releaseTranscriptSpacingPatch?.();
 		releaseTranscriptSpacingPatch = undefined;
@@ -741,15 +696,40 @@ export default function (pi: ExtensionAPI) {
 		refresh();
 	});
 
+	pi.on("message_start", async (event, ctx) => {
+		if (!isCurrentSessionContext(ctx) || event.message.role !== "assistant") return;
+		generationRate.startMessage();
+	});
+
 	pi.on("message_end", async (event, ctx) => {
 		if (!syncStateIfCurrent(ctx)) return;
-		pulseLastContextSlicesForMessage(event.message);
+		if (event.message.role === "assistant") {
+			const message = event.message as AssistantMessage;
+			generationRate.finishMessage(message.usage?.output ?? 0);
+			const rate = generationRate.snapshot();
+			setWorkingTokenSpeed(rate.lastTurnTps, rate.overallTps);
+		}
 		scheduleProjectRefresh(ctx);
+		refresh();
+	});
+
+	pi.on("turn_end", async (_event, ctx) => {
+		if (!isCurrentSessionContext(ctx)) return;
+		generationRate.finishTurn();
+		const rate = generationRate.snapshot();
+		setWorkingTokenSpeed(rate.lastTurnTps, rate.overallTps);
 		refresh();
 	});
 
 	pi.on("message_update", async (event, ctx) => {
 		if (!syncStateIfCurrent(ctx, event.message)) return;
+		if (
+			event.assistantMessageEvent.type === "text_delta" ||
+			event.assistantMessageEvent.type === "thinking_delta" ||
+			event.assistantMessageEvent.type === "toolcall_delta"
+		) {
+			generationRate.markFirstToken();
+		}
 		refresh();
 	});
 

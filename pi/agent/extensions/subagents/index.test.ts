@@ -3,6 +3,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import subagentsExtension, {
 	formatTaskResults,
 	renderSubagentList,
+	routeForegroundInput,
 	shouldOwnAgentWidget,
 	type TaskResult,
 } from "./index";
@@ -61,6 +62,7 @@ test("registers explicit agent tools instead of the generic task tool", () => {
 	const tools: string[] = [];
 	const commands: string[] = [];
 	subagentsExtension({
+		events: { on() {} },
 		on() {},
 		registerTool(tool: { name: string }) {
 			tools.push(tool.name);
@@ -84,4 +86,30 @@ test("only the root session owns the agents widget", () => {
 	expect(shouldOwnAgentWidget(manager as never, "root-session", true)).toBe(true);
 	expect(shouldOwnAgentWidget(manager as never, "child-session", true)).toBe(false);
 	expect(shouldOwnAgentWidget(manager as never, "root-session", false)).toBe(false);
+});
+
+test("backgrounds a blocking foreground subagent and keeps input in the main session", () => {
+	const backgrounded: string[] = [];
+	const manager = {
+		listAgents: () => [
+			{
+				id: "worker",
+				parentSessionId: "main-session",
+				status: "running",
+				isBackground: false,
+			},
+		],
+		background: (id: string) => {
+			backgrounded.push(id);
+			return true;
+		},
+	};
+
+	expect(
+		routeForegroundInput(manager as never, "main-session", {
+			source: "interactive",
+			streamingBehavior: "steer",
+		}),
+	).toEqual({ action: "continue", backgrounded: 1 });
+	expect(backgrounded).toEqual(["worker"]);
 });

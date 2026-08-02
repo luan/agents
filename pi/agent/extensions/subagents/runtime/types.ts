@@ -3,7 +3,7 @@
  */
 
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { AgentSession } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, AgentSessionRuntime } from "@earendil-works/pi-coding-agent";
 import type { LifetimeUsage } from "./usage.js";
 
 export type { ThinkingLevel };
@@ -76,6 +76,8 @@ export interface AgentRecord {
 	modelName?: string;
 	/** Effective reasoning effort / thinking level used by this agent. */
 	thinkingLevel?: ThinkingLevel;
+	/** Whether the current provider request is using OpenAI priority service tier. */
+	fastModeActive?: boolean;
 	/** Root Pi session that owns the complete descendant tree. */
 	rootSessionId: string;
 	/** Immediate parent Pi session. */
@@ -101,6 +103,7 @@ export interface AgentRecord {
 	/** True for agents intentionally running outside the current inline tool call. */
 	isBackground?: boolean;
 	session?: AgentSession;
+	runtime?: AgentSessionRuntime;
 	abortController?: AbortController;
 	promise?: Promise<string>;
 	groupId?: string;

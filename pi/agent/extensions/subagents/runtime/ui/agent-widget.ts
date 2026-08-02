@@ -1,5 +1,6 @@
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { runningFrame } from "../../../shared/tui";
+import type { GenerationRateStats } from "../../../tui/generation-rate";
 import type { AgentManager } from "../agent-manager.js";
 import type { AgentRecord } from "../types.js";
 import { getLifetimeTotal, type LifetimeUsage, type SessionLike } from "../usage.js";
@@ -39,6 +40,7 @@ export interface AgentActivity {
 	turnCount: number;
 	maxTurns?: number;
 	lifetimeUsage: LifetimeUsage;
+	generationRate: GenerationRateStats;
 }
 
 export function formatTokens(count: number): string {
@@ -119,23 +121,33 @@ export class AgentWidget {
 			const toolUses = activity?.toolUses ?? agent.toolUses;
 			const usage = activity?.lifetimeUsage ?? agent.lifetimeUsage;
 			const tokens = getLifetimeTotal(usage);
+			const generationRate = activity?.generationRate.snapshot();
 			const stats = [
-				agent.modelName,
-				agent.thinkingLevel ? `effort ${agent.thinkingLevel}` : undefined,
-				usage.cost > 0 ? `$${usage.cost.toFixed(usage.cost < 0.01 ? 4 : 2)}` : "$0.00",
-				toolUses > 0 ? `${toolUses} tools` : undefined,
-				tokens > 0 ? formatTokens(tokens) : undefined,
-				`${Math.floor((now - agent.startedAt) / 1000)}s`,
+				agent.modelName ? theme.fg("dim", agent.modelName) : undefined,
+				agent.thinkingLevel ? theme.fg("dim", `effort ${agent.thinkingLevel}`) : undefined,
+				agent.fastModeActive ? theme.fg("warning", "⚡ fast") : undefined,
+				generationRate?.lastTurnTps
+					? theme.fg(
+							"warning",
+							`${generationRate.lastTurnTps.toFixed(1)} tps · ${(generationRate.overallTps ?? generationRate.lastTurnTps).toFixed(1)} overall`,
+						)
+					: activity
+						? theme.fg("warning", "1.0 tps · 1.0 overall")
+						: undefined,
+				theme.fg("dim", usage.cost > 0 ? `$${usage.cost.toFixed(usage.cost < 0.01 ? 4 : 2)}` : "$0.00"),
+				toolUses > 0 ? theme.fg("dim", `${toolUses} tools`) : undefined,
+				tokens > 0 ? theme.fg("dim", formatTokens(tokens)) : undefined,
+				theme.fg("dim", `${Math.floor((now - agent.startedAt) / 1000)}s`),
 			]
 				.filter(Boolean)
-				.join(" | ");
+				.join(theme.fg("dim", " | "));
 			const displayId = agent.id.replace(/^\/root\//, "");
 			const depth = Math.max(0, displayId.split("/").filter(Boolean).length - 1);
 			const connector = index === visible.length - 1 && queued.length === 0 ? "└─" : "├─";
 			const spinner = theme.fg("accent", runningFrame(now - agent.startedAt));
 			lines.push(
 				truncateToWidth(
-					`${theme.fg("dim", connector)} ${"  ".repeat(depth)}${spinner} ${theme.fg("accent", displayId)} ${theme.fg("dim", `| ${stats} | ${action}`)}`,
+					`${theme.fg("dim", connector)} ${"  ".repeat(depth)}${spinner} ${theme.fg("accent", displayId)} ${theme.fg("dim", "| ")}${stats}${theme.fg("dim", ` | ${action}`)}`,
 					width,
 				),
 			);

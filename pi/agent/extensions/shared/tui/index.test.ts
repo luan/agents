@@ -1,12 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import {
+	AnimationRenderScheduler,
 	AnimationScheduler,
 	createResource,
 	createSelectController,
 	createSurfaceRegistry,
 	enforceNoRawTuiSurfaceCalls,
 	padToVisibleWidth,
+	pulseGlyph,
 	renderView,
 	runningFrame,
 	shineText,
@@ -191,6 +193,50 @@ describe("Extension TUI ViewNodes", () => {
 		expect(early).not.toBe(later);
 		expect(early).toContain("\x1b[38;2;55;66;110m");
 		expect(later).toContain("\x1b[38;2;155;186;255m");
+	});
+
+	test("animation color lookup is cached across frames", () => {
+		let colorReads = 0;
+		const theme = {
+			fg(_role: string, text: string) {
+				colorReads++;
+				return `\x1b[38;2;100;120;200m${text}\x1b[39m`;
+			},
+		};
+
+		shineText(theme, "Working", 0);
+		shineText(theme, "Working", 80);
+		pulseGlyph(theme, "●", 160);
+
+		expect(colorReads).toBe(1);
+	});
+	test("animation render scheduler deduplicates concurrent extension targets", () => {
+		const callbacks: (() => void)[] = [];
+		let stopped = 0;
+		const scheduler = new AnimationRenderScheduler(
+			(callback) => {
+				callbacks.push(callback);
+				return { unref() {} } as ReturnType<typeof setInterval>;
+			},
+			() => {
+				stopped++;
+			},
+		);
+		let renders = 0;
+		const target = { requestRender: () => renders++ };
+		const first = scheduler.mount(target, 80);
+		const second = scheduler.mount(target, 80);
+		const other = scheduler.mount({ requestRender: () => renders++ }, 80);
+
+		expect(scheduler.activeTimerCount).toBe(1);
+		callbacks[0]?.();
+		expect(renders).toBe(2);
+
+		first.dispose();
+		second.dispose();
+		other.dispose();
+		expect(scheduler.activeTimerCount).toBe(0);
+		expect(stopped).toBe(1);
 	});
 
 	test("text primitives pad to visible width with optional truncation", () => {

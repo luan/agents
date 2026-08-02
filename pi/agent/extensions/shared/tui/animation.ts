@@ -26,6 +26,8 @@ const RUNNING_FRAME_MS = 120;
 const DEFAULT_SHINE_WIDTH = 3;
 const DEFAULT_PERCOLATION_MS = 80;
 const RGB_FALLBACK: Rgb = [0xff, 0xff, 0xff];
+const ansiByTheme = new WeakMap<ThemeColorSource, Map<string, string | undefined>>();
+const rgbByTheme = new WeakMap<ThemeColorSource, Map<string, Rgb>>();
 
 export function runningFrame(elapsedMs: number | undefined, frameMs = RUNNING_FRAME_MS): string {
 	if (elapsedMs === undefined) return RUNNING_FRAMES[0]!;
@@ -79,22 +81,44 @@ export function triangleWave(elapsedMs: number, periodMs: number, lo: number, hi
 export function themeRoleAnsi(theme: ThemeColorSource, role: string): string | undefined {
 	const hex = parseHexRgb(role);
 	if (hex) return rgbFg(hex);
-	if (theme.getFgAnsi) return theme.getFgAnsi(role);
-	const sample = theme.fg(role, "x");
-	const marker = sample.indexOf("x");
-	const ansi = marker >= 0 ? sample.slice(0, marker) : undefined;
-	return ansi?.includes("\x1b[38;") ? ansi : undefined;
+	let cache = ansiByTheme.get(theme);
+	if (!cache) {
+		cache = new Map();
+		ansiByTheme.set(theme, cache);
+	}
+	if (cache.has(role)) return cache.get(role);
+	const ansi = theme.getFgAnsi
+		? theme.getFgAnsi(role)
+		: (() => {
+				const sample = theme.fg(role, "x");
+				const marker = sample.indexOf("x");
+				const prefix = marker >= 0 ? sample.slice(0, marker) : undefined;
+				return prefix?.includes("\x1b[38;") ? prefix : undefined;
+			})();
+	cache.set(role, ansi);
+	return ansi;
 }
 
 export function themeRoleToRgb(theme: ThemeColorSource, role: string): Rgb {
 	const hex = parseHexRgb(role);
 	if (hex) return hex;
+	let cache = rgbByTheme.get(theme);
+	if (!cache) {
+		cache = new Map();
+		rgbByTheme.set(theme, cache);
+	}
+	const cached = cache.get(role);
+	if (cached) return cached;
 	const ansi = themeRoleAnsi(theme, role);
 	const truecolor = ansi?.match(/\x1b\[38;2;(\d+);(\d+);(\d+)m/);
-	if (truecolor) return [Number(truecolor[1]), Number(truecolor[2]), Number(truecolor[3])];
 	const color256 = ansi?.match(/\x1b\[38;5;(\d+)m/);
-	if (color256) return ansi256ToRgb(Number(color256[1]));
-	return RGB_FALLBACK;
+	const rgb = truecolor
+		? ([Number(truecolor[1]), Number(truecolor[2]), Number(truecolor[3])] as Rgb)
+		: color256
+			? ansi256ToRgb(Number(color256[1]))
+			: RGB_FALLBACK;
+	cache.set(role, rgb);
+	return rgb;
 }
 
 export function scaleRgb([r, g, b]: Rgb, factor: number): Rgb {
@@ -197,6 +221,71 @@ export interface AnimationMount {
 	dispose(): void;
 }
 
+export interface AnimationRenderTarget {
+	requestRender(): void;
+}
+
+interface AnimationRenderRegistration {
+	count: number;
+	onFrames: Set<() => void>;
+}
+
+interface AnimationRenderBucket {
+	timer: ReturnType<typeof setInterval>;
+	targets: Map<AnimationRenderTarget, AnimationRenderRegistration>;
+}
+
+export class AnimationRenderScheduler {
+	private buckets = new Map<number, AnimationRenderBucket>();
+
+	constructor(
+		private startTimer: (callback: () => void, intervalMs: number) => ReturnType<typeof setInterval> = (
+			callback,
+			intervalMs,
+		) => setInterval(callback, intervalMs),
+		private stopTimer: (timer: ReturnType<typeof setInterval>) => void = (timer) => clearInterval(timer),
+	) {}
+
+	mount(target: AnimationRenderTarget, intervalMs: number, onFrame?: () => void): AnimationMount {
+		let bucket = this.buckets.get(intervalMs);
+		if (!bucket) {
+			const targets = new Map<AnimationRenderTarget, AnimationRenderRegistration>();
+			const timer = this.startTimer(() => {
+				for (const [current, registration] of targets) {
+					for (const callback of registration.onFrames) callback();
+					current.requestRender();
+				}
+			}, intervalMs);
+			timer.unref?.();
+			bucket = { timer, targets };
+			this.buckets.set(intervalMs, bucket);
+		}
+		const registration = bucket.targets.get(target) ?? { count: 0, onFrames: new Set() };
+		registration.count++;
+		if (onFrame) registration.onFrames.add(onFrame);
+		bucket.targets.set(target, registration);
+		let disposed = false;
+		return {
+			dispose: () => {
+				if (disposed) return;
+				disposed = true;
+				if (onFrame) registration.onFrames.delete(onFrame);
+				registration.count--;
+				if (registration.count > 0) return;
+				bucket.targets.delete(target);
+				if (bucket.targets.size > 0) return;
+				this.stopTimer(bucket.timer);
+				this.buckets.delete(intervalMs);
+			},
+		};
+	}
+
+	get activeTimerCount(): number {
+		return this.buckets.size;
+	}
+}
+
+export const sharedAnimationRenderScheduler = new AnimationRenderScheduler();
 interface AnimationEntry extends AnimationMountOptions {
 	frame: number;
 	nextFrameAt?: number;

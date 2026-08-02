@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { GenerationRateStats } from "../../../tui/generation-rate";
 import { AgentWidget, formatAgentModelInfo, WIDGET_REFRESH_MS } from "./agent-widget";
 
 const theme = {
@@ -23,6 +24,7 @@ test("uses a calm refresh rate and one HUD row per running agent", () => {
 		parentAgentId: index === 0 ? undefined : "/root/parent",
 		modelName: "GPT-5.6 Luna",
 		thinkingLevel: "medium",
+		fastModeActive: index === 0,
 		assignment: "work",
 		cwd: "/tmp",
 		events: [],
@@ -31,9 +33,25 @@ test("uses a calm refresh rate and one HUD row per running agent", () => {
 		lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0.42 },
 		compactionCount: 0,
 	}));
+	const generationRate = new GenerationRateStats();
+	generationRate.recordMessage(100, 10_000);
+	generationRate.finishTurn();
+	const activity = new Map([
+		[
+			"/root/parent",
+			{
+				activeTools: new Map(),
+				toolUses: 0,
+				responseText: "",
+				turnCount: 0,
+				lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0.42 },
+				generationRate,
+			},
+		],
+	]);
 	const widget = new AgentWidget(
 		{ listAgents: () => [] } as never,
-		new Map(),
+		activity,
 		() => records as never,
 		() => "root-session",
 	);
@@ -52,6 +70,46 @@ test("uses a calm refresh rate and one HUD row per running agent", () => {
 	expect(lines[1]).toContain("GPT-5.6 Luna");
 	expect(lines[1]).toContain("effort medium");
 	expect(lines[1]).toContain("$0.42");
+	expect(lines[1]).toContain("⚡ fast");
+	expect(lines[1]).toContain("10.0 tps · 10.0 overall");
 	expect(lines[1]).toEndWith("| thinking");
 	expect(nextFrame[1]).not.toBe(lines[1]);
+});
+
+test("removes the above-editor widget when the last agent completes", () => {
+	const records = [
+		{
+			id: "worker",
+			type: "task",
+			description: "worker",
+			status: "running",
+			rootSessionId: "root-session",
+			parentSessionId: "root-session",
+			assignment: "work",
+			cwd: "/tmp",
+			events: [],
+			toolUses: 0,
+			startedAt: 1000,
+			lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
+			compactionCount: 0,
+		},
+	];
+	const widgetCalls: Array<unknown> = [];
+	const widget = new AgentWidget(
+		{ listAgents: () => [] } as never,
+		new Map(),
+		() => records as never,
+		() => "root-session",
+	);
+	widget.setUICtx({
+		setStatus: () => {},
+		setWidget: (_key, content) => widgetCalls.push(content),
+	});
+
+	widget.update();
+	expect(widgetCalls.at(-1)).toBeFunction();
+	records[0]!.status = "completed";
+	widget.update();
+	expect(widgetCalls.at(-1)).toBeUndefined();
+	widget.dispose();
 });

@@ -2,7 +2,9 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@e
 import type { Component } from "@earendil-works/pi-tui";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { OPENAI_FAST_REQUEST_EVENT, type OpenAIFastRequestEvent } from "../shared/openai-fast-state";
 import { bold, framedBlock, renderStatusLine, styledSymbol, textComponent, treeGlyphs } from "../shared/tui/omp-card";
+import { GenerationRateStats } from "../tui/generation-rate";
 import { findRetryableTurn } from "./runtime/agent-runner.js";
 import {
 	deliverPendingForSession,
@@ -367,6 +369,7 @@ function ensureActivity(activityByAgent: Map<string, AgentActivity>, id: string)
 			toolUses: 0,
 			responseText: "",
 			turnCount: 0,
+			generationRate: new GenerationRateStats(),
 			lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
 		};
 		activityByAgent.set(id, activity);
@@ -374,11 +377,12 @@ function ensureActivity(activityByAgent: Map<string, AgentActivity>, id: string)
 	return activity;
 }
 
-function addActivityUsage(activity: AgentActivity, usage: AssistantUsage): void {
+function addActivityUsage(activity: AgentActivity, usage: AssistantUsage, durationMs: number): void {
 	activity.lifetimeUsage.input += usage.input;
 	activity.lifetimeUsage.output += usage.output;
 	activity.lifetimeUsage.cacheWrite += usage.cacheWrite;
 	activity.lifetimeUsage.cost += usage.cost;
+	activity.generationRate.recordMessage(usage.output, durationMs);
 }
 
 const taskItemSchema = Type.Object({
@@ -410,6 +414,24 @@ export function shouldOwnAgentWidget(
 	hasUI: boolean,
 ): boolean {
 	return hasUI && !manager.findByChildSessionId(sessionId);
+}
+
+export function routeForegroundInput(
+	manager: Pick<ReturnType<typeof getSharedAgentManager>, "listAgents" | "background">,
+	sessionId: string,
+	event: { source: string; streamingBehavior?: "steer" | "followUp" },
+): { action: "continue"; backgrounded: number } {
+	if (event.source === "extension" || event.streamingBehavior !== "steer") {
+		return { action: "continue", backgrounded: 0 };
+	}
+	const backgrounded = manager
+		.listAgents()
+		.filter(
+			(record) =>
+				record.parentSessionId === sessionId && record.status === "running" && record.isBackground !== true,
+		)
+		.filter((record) => manager.background(record.id)).length;
+	return { action: "continue", backgrounded };
 }
 
 export default function subagentsExtension(pi: ExtensionAPI) {
@@ -452,6 +474,21 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		() => manager.listAgents().filter((agent) => !agent.isBackground),
 		() => (currentCtx ? manager.getRootSessionId(currentCtx.sessionManager.getSessionId()) : undefined),
 	);
+
+	pi.events.on(OPENAI_FAST_REQUEST_EVENT, (payload: unknown) => {
+		const event = payload as OpenAIFastRequestEvent | undefined;
+		if (!event?.sessionFile) return;
+		const record = manager.listAgents().find((agent) => agent.sessionFile === event.sessionFile);
+		if (!record) return;
+		record.fastModeActive = event.active;
+		agentWidget.update();
+	});
+
+	pi.on("input", (event, ctx) => {
+		const result = routeForegroundInput(manager, ctx.sessionManager.getSessionId(), event);
+		if (result.backgrounded > 0) ctx.ui.notify("Backgrounded foreground subagent.", "info");
+		return { action: result.action };
+	});
 
 	pi.on("session_start", async (_event, ctx) => {
 		currentCtx = ctx;
@@ -615,11 +652,13 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 							agentWidget.update();
 						},
 						onTurnEnd: (turnCount) => {
-							ensureActivity(activityByAgent, id).turnCount = turnCount;
+							const activity = ensureActivity(activityByAgent, id);
+							activity.turnCount = turnCount;
+							activity.generationRate.finishTurn();
 							agentWidget.update();
 						},
-						onAssistantUsage: (usage) => {
-							addActivityUsage(ensureActivity(activityByAgent, id), usage);
+						onAssistantUsage: (usage, durationMs) => {
+							addActivityUsage(ensureActivity(activityByAgent, id), usage, durationMs);
 							agentWidget.update();
 						},
 					});
@@ -678,7 +717,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 							toolUses: 0,
 						};
 					}
-					await record.promise;
+					await manager.waitForForeground(record.id);
 					completed++;
 					agentWidget.update();
 					persistAgent(record);
