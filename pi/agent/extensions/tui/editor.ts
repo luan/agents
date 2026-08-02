@@ -238,15 +238,24 @@ function railColorForMode(mode: string | undefined, identityColor: string | unde
 function renderWorkingWord(uiTheme: Theme, color: string, frame: number): string {
 	if (workingFastMode) {
 		const variants = ZIPPING_VARIANTS[frame % ZIPPING_VARIANTS.length] ?? ZIPPING_VARIANTS[0];
-		const popIndex = Math.floor(frame / ZIPPING_VARIANTS.length) % variants.length;
-		const word = [variants[0], variants[1], "p", "p", "i", variants[2], variants[3]];
-		const animatedIndexes = [0, 1, 5, 6];
+		const word = [variants[0], variants[1], "p", "p", "i", variants[2], variants[3], "…"];
+		const popIndex = word.length - 1 - (Math.floor(frame / 2) % word.length);
 		const baseRgb = themeRoleToRgb(uiTheme, color);
+		const warningBaseRgb = themeRoleToRgb(uiTheme, "warning");
+		const warningRgb = scaleRgb(warningBaseRgb, 1.25);
+		const warningEdgeRgb = scaleRgb(warningBaseRgb, 0.65);
+		const baseShinePosition = ((frame * WORKING_ANIMATION_INTERVAL_MS) / 80) % (word.length + 3);
 		const letters = word
 			.map((letter, index) => {
-				if (animatedIndexes[popIndex] === index) return uiTheme.fg("warning", letter);
-				const phase = ((frame + index * 2) % 18) / 18;
-				const brightness = 0.35 + ((1 - Math.cos(phase * Math.PI * 2)) / 2) * 0.8;
+				if (popIndex === index) return `\x1b[1;9m${rgbFg(warningRgb)}${letter}\x1b[22;29;39m`;
+				const leftIndex = (popIndex + word.length - 1) % word.length;
+				const rightIndex = (popIndex + 1) % word.length;
+				if (index === leftIndex || index === rightIndex) {
+					return `\x1b[9m${rgbFg(warningEdgeRgb)}${letter}\x1b[29;39m`;
+				}
+				const shineDistance = baseShinePosition - index;
+				const shineAmount = shineDistance > 0 && shineDistance < 3 ? Math.sin((shineDistance / 3) * Math.PI) : 0;
+				const brightness = 0.55 + shineAmount;
 				return `${rgbFg(scaleRgb(baseRgb, brightness))}${letter}\x1b[39m`;
 			})
 			.join("");
@@ -331,7 +340,8 @@ function workingHeaderSegment(uiTheme: Theme, color: string, width: number): str
 		"dim",
 		` ${formatWorkingDuration(elapsed)}. Total cumulative: ${formatWorkingDuration(totalWorkingDurationMs())}.`,
 	);
-	const left = `${label}${rgbFg(scaleRgb(themeRoleToRgb(uiTheme, color), 0.85))}…${timing}`;
+	const ellipsis = workingFastMode ? "" : `${rgbFg(scaleRgb(themeRoleToRgb(uiTheme, color), 0.85))}…`;
+	const left = `${label}${ellipsis}${timing}`;
 	return `${appendTrailing(left, speed, width)}${ANSI_RESET}`;
 }
 

@@ -19,9 +19,10 @@ const theme = {
 	bg: (_color: string, text: string) => text,
 } as any;
 const rgbTheme = {
-	fg: (_color: string, text: string) => `\x1b[38;2;100;50;200m${text}\x1b[39m`,
+	fg: (color: string, text: string) =>
+		`\x1b[${color === "warning" ? "38;2;255;220;40" : "38;2;100;50;200"}m${text}\x1b[39m`,
 	bg: (_color: string, text: string) => text,
-	getFgAnsi: () => "\x1b[38;2;100;50;200m",
+	getFgAnsi: (color: string) => (color === "warning" ? "\x1b[38;2;255;220;40m" : "\x1b[38;2;100;50;200m"),
 } as any;
 
 test("increases TPS color continuously through 150", () => {
@@ -95,9 +96,29 @@ describe("polished TUI editor", () => {
 			() => ["", "> hello", ""],
 			rgbTheme,
 		);
+		setWorkingAnimationForTest(true, 9);
+		const third = renderPolishedEditorForTest(
+			editor({ getMode: () => "insert" }),
+			50,
+			() => ["", "> hello", ""],
+			rgbTheme,
+		);
+		setWorkingAnimationForTest(true, 32);
+		const late = renderPolishedEditorForTest(
+			editor({ getMode: () => "insert" }),
+			50,
+			() => ["", "> hello", ""],
+			rgbTheme,
+		);
 
 		expect(stripAnsi(first.at(-1) ?? "")).toContain("⚡żippiṅġ…");
+		expect(stripAnsi(second.at(-1) ?? "")).toContain("⚡žǐppiňǧ…");
 		expect(stripAnsi(first.at(-1) ?? "")).toContain("42.5 tps 42.5 overall tps");
+		expect(first.at(-1)).toContain("\x1b[1;9m\x1b[38;2;255;255;50m…\x1b[22;29;39m");
+		expect(first.at(-1)).toContain("\x1b[9m\x1b[38;2;166;143;26mż\x1b[29;39m");
+		expect(first.at(-1)).toContain("\x1b[9m\x1b[38;2;166;143;26mġ\x1b[29;39m");
+		expect(third.at(-1)).toContain("\x1b[1;9m\x1b[38;2;255;255;50mp\x1b[22;29;39m");
+		expect(late.at(-1)).toContain("\x1b[1;9m\x1b[38;2;255;255;50m…\x1b[22;29;39m");
 		expect(first.at(-1)).not.toBe(second.at(-1));
 		expect(first.every((line) => visibleWidth(line) <= 50)).toBe(true);
 	});
