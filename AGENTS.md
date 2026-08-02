@@ -9,6 +9,7 @@
 7. Plannotator discipline: never run `plannotator --help`, subcommand `--help`, or other discovery probes. For code review, load/use `$plannotator-review`; for annotation, artifact gates, or rendered HTML, load/use `$plannotator-annotate`; for latest assistant message annotation, load/use `$plannotator-last`; run only the commands documented in the loaded skill. Run Plannotator commands in the foreground without shell/tool timeout wrappers and without backgrounding so returned feedback is captured.
 8. Process discipline: long-running services are managed sessions, not blocking foreground commands.
 9. Do not write tests that assert mutable skill instruction wording, read skill Markdown to enforce process policy, or otherwise make intentional skill edits fail tests. Skill files are operator-authored instructions, not executable contracts.
+10. Do not add tests for Pi extensions unless they cover specific, non-visual logic. Do not test rendering, animation, spacing, colors, glyphs, or other subjective TUI presentation.
 
 ## Repo Purpose
 
