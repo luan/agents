@@ -2,8 +2,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
 import {
+	emitOpenAIFastRequest,
 	getOpenAIFastOverride,
-	OPENAI_FAST_REQUEST_EVENT,
 	type OpenAIFastOverride,
 	type OpenAIFastRequestEvent,
 	setOpenAIFastOverride,
@@ -121,12 +121,12 @@ function updateStatus(ctx: ExtensionContext, state: SessionState): void {
 	else status.clear("active");
 }
 
-function updateRequestStatus(pi: ExtensionAPI, ctx: ExtensionContext, active: boolean): void {
+function updateRequestStatus(ctx: ExtensionContext, active: boolean): void {
 	const event: OpenAIFastRequestEvent = {
 		active,
 		sessionFile: ctx.sessionManager.getSessionFile?.() ?? undefined,
 	};
-	pi.events.emit(OPENAI_FAST_REQUEST_EVENT, event);
+	emitOpenAIFastRequest(event);
 	if (!ctx.hasUI) return;
 	const status = fastTui.bind(ctx).status;
 	if (active) status.set("request", "fast");
@@ -189,12 +189,12 @@ export default function openAIFastExtension(pi: ExtensionAPI) {
 	pi.on("before_provider_request", (event, ctx) => {
 		const state = getState(ctx);
 		const nextPayload = injectFastServiceTier(event.payload, ctx, state);
-		updateRequestStatus(pi, ctx, Boolean(nextPayload));
+		updateRequestStatus(ctx, Boolean(nextPayload));
 		updateStatus(ctx, state);
 		return nextPayload;
 	});
-	pi.on("message_end", (_event, ctx) => updateRequestStatus(pi, ctx, false));
-	pi.on("agent_end", (_event, ctx) => updateRequestStatus(pi, ctx, false));
+	pi.on("message_end", (_event, ctx) => updateRequestStatus(ctx, false));
+	pi.on("agent_end", (_event, ctx) => updateRequestStatus(ctx, false));
 
 	pi.registerCommand("fast", {
 		description: "Toggle OpenAI Codex Fast mode for this Pi runtime",

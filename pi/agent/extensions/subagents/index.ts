@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@e
 import type { Component } from "@earendil-works/pi-tui";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { OPENAI_FAST_REQUEST_EVENT, type OpenAIFastRequestEvent } from "../shared/openai-fast-state";
+import { onOpenAIFastRequest } from "../shared/openai-fast-state";
 import { bold, framedBlock, renderStatusLine, styledSymbol, textComponent, treeGlyphs } from "../shared/tui/omp-card";
 import { GenerationRateStats } from "../tui/generation-rate";
 import { findRetryableTurn } from "./runtime/agent-runner.js";
@@ -475,9 +475,8 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		() => (currentCtx ? manager.getRootSessionId(currentCtx.sessionManager.getSessionId()) : undefined),
 	);
 
-	pi.events.on(OPENAI_FAST_REQUEST_EVENT, (payload: unknown) => {
-		const event = payload as OpenAIFastRequestEvent | undefined;
-		if (!event?.sessionFile) return;
+	const unsubscribeFastRequests = onOpenAIFastRequest((event) => {
+		if (!event.sessionFile) return;
 		const record = manager.listAgents().find((agent) => agent.sessionFile === event.sessionFile);
 		if (!record) return;
 		record.fastModeActive = event.active;
@@ -508,6 +507,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async () => {
+		unsubscribeFastRequests();
 		if (currentCtx) unregisterSessionBinding(currentCtx);
 		unregisterAgentWidget(agentWidget);
 		agentWidget.dispose();
