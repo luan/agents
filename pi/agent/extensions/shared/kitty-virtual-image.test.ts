@@ -120,4 +120,14 @@ describe("KittyVirtualImage", () => {
 
 		expect(image.render(80).join("\n")).toContain("\x1b]1337;File=");
 	});
+
+	it("rerenders when image capability becomes available", () => {
+		setCapabilities({ images: null, trueColor: true, hyperlinks: false });
+		const image = new KittyVirtualImage(PNG_BASE64, "image/png", { fallbackColor: (text) => text });
+
+		expect(image.render(80)[0]).toContain("[Image:");
+
+		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: false });
+		expect(image.render(80)[0]).toContain("\x1b_Ga=T");
+	});
 });

@@ -10,6 +10,10 @@ function isTmuxSession(): boolean {
 	return !!process.env.TMUX || /^(tmux|screen)/.test(process.env.TERM ?? "");
 }
 
+export function isRmuxSession(tmux = process.env.TMUX): boolean {
+	return /(?:^|\/)rmux-/.test(tmux ?? "");
+}
+
 function normalizeTerminalName(term: string): string {
 	const t = term.toLowerCase();
 	if (t.includes("bootty")) return "bootty";
@@ -114,7 +118,7 @@ export function configureImageCapabilities(): void {
 
 	const capabilities = getCapabilities();
 	if (capabilities.images) return;
-	if (isTmuxSession() && (!tmuxPassthroughEnabled() || !tmuxClientSupportsKittyImages())) return;
+	if (isTmuxSession() && !isRmuxSession() && (!tmuxPassthroughEnabled() || !tmuxClientSupportsKittyImages())) return;
 
 	const protocol = detectImageProtocol();
 	if (!protocol) return;

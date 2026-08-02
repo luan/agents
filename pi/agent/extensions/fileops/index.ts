@@ -51,6 +51,7 @@ import { Patcher } from "./hashline/patcher.ts";
 import { stripHashlinePrefixes } from "./hashline/prefixes.ts";
 import type { InMemorySnapshotStore } from "./hashline/snapshots.ts";
 import type { BlockResolution } from "./hashline/types.ts";
+import { installConsecutiveReadSpacingPatch } from "./read-spacing.ts";
 
 const FILEOPS_TOOL_SEARCH_PATHS = [
 	"~/.local/bin",
@@ -1958,6 +1959,8 @@ function sessionIdFromContext(ctx: Pick<ExtensionContext, "sessionManager"> | un
 
 export default function fileopsExtension(pi: ExtensionAPI) {
 	let config = loadConfig();
+	const readSpacingPatch = installConsecutiveReadSpacingPatch();
+	let releaseReadSpacingPatch: (() => void) | undefined;
 	const fallbackSnapshots = hashlineSnapshotStoreForSession(FALLBACK_HASHLINE_SNAPSHOT_SESSION_ID);
 	const snapshotsForContext = (ctx: Pick<ExtensionContext, "sessionManager"> | undefined): InMemorySnapshotStore => {
 		const sessionId = sessionIdFromContext(ctx);
@@ -2004,8 +2007,16 @@ export default function fileopsExtension(pi: ExtensionAPI) {
 	const on = (pi as Partial<ExtensionAPI>).on;
 	if (typeof on === "function") {
 		on.call(pi, "session_start", (_event, ctx) => {
+			void readSpacingPatch.then((release) => {
+				releaseReadSpacingPatch ??= release;
+				ctx.ui?.setWidget?.("fileops-read-spacing-refresh", undefined);
+			});
 			resetTurnTracking();
 			rebuildVisibleFileopsWindow(ctx);
+		});
+		on.call(pi, "session_shutdown", () => {
+			releaseReadSpacingPatch?.();
+			releaseReadSpacingPatch = undefined;
 		});
 		on.call(pi, "session_tree", (_event, ctx) => {
 			resetTurnTracking();

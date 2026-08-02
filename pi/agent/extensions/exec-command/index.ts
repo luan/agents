@@ -7,7 +7,13 @@ import {
 import { Key, matchesKey, Text } from "@earendil-works/pi-tui";
 import { resolveCoreBin } from "../context-guard/pi/core.ts";
 import { isExecCommandContextGuardEnabled } from "../context-guard/pi/index.ts";
-import { defineExtensionTui, registerExtensionMessageRenderer, setOrderedAboveEditorWidget } from "../shared/tui";
+import {
+	type AnimationMount,
+	defineExtensionTui,
+	registerExtensionMessageRenderer,
+	setOrderedAboveEditorWidget,
+	sharedAnimationRenderScheduler,
+} from "../shared/tui";
 import {
 	type RenderTheme,
 	rawCommandToExecCell,
@@ -273,7 +279,7 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 	let lastBackgroundTerminalStatus: string | undefined;
 	let backgroundTerminalWidgetRegistered = false;
 	let backgroundTerminalWidgetTui: { requestRender(): void } | undefined;
-	let backgroundTerminalWidgetTimer: ReturnType<typeof setInterval> | undefined;
+	let backgroundTerminalWidgetTimer: AnimationMount | undefined;
 	const completionMessageSessions = new Set<number>();
 	const pendingCompletionMessages = new Map<number, ReturnType<typeof setTimeout>>();
 	let agentTurnActive = false;
@@ -431,6 +437,8 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 					return {
 						render: (width) => renderBackgroundTerminalWidget(theme, width),
 						invalidate: () => {
+							backgroundTerminalWidgetTimer?.dispose();
+							backgroundTerminalWidgetTimer = undefined;
 							backgroundTerminalWidgetRegistered = false;
 							backgroundTerminalWidgetTui = undefined;
 						},
@@ -441,18 +449,17 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 		} else {
 			backgroundTerminalWidgetTui?.requestRender();
 		}
-		if (!backgroundTerminalWidgetTimer) {
-			backgroundTerminalWidgetTimer = setInterval(
-				() => backgroundTerminalWidgetTui?.requestRender(),
+		if (!backgroundTerminalWidgetTimer && backgroundTerminalWidgetTui) {
+			backgroundTerminalWidgetTimer = sharedAnimationRenderScheduler.mount(
+				backgroundTerminalWidgetTui,
 				BACKGROUND_TERMINAL_HUD_FRAME_MS,
 			);
-			backgroundTerminalWidgetTimer.unref?.();
 		}
 	}
 
 	function clearBackgroundTerminalWidget() {
 		if (backgroundTerminalWidgetTimer) {
-			clearInterval(backgroundTerminalWidgetTimer);
+			backgroundTerminalWidgetTimer.dispose();
 			backgroundTerminalWidgetTimer = undefined;
 		}
 		if (backgroundTerminalWidgetRegistered) {

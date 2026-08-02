@@ -1,6 +1,5 @@
 import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { ansiFgToRgb, parseHexRgb, rgbFg, scaleRgb, themeRoleAnsi } from "../shared/tui";
 import type { PolishedTuiConfig } from "./config";
 import { emptyGitStatus, type GitStatusSummary } from "./git";
 import type { RuntimeInfo } from "./runtime";
@@ -8,23 +7,16 @@ import type { UsageSnapshot } from "./usage";
 
 const MIN_CONTEXT_BAR_WIDTH = 12;
 const CHARACTERS_PER_TOKEN = 4;
+const MAX_CONTEXT_BAR_WIDTH = 16;
 const IMAGE_TOKEN_ESTIMATE = 1200;
 const CONTEXT_BAR_USED = "━";
 const CONTEXT_BAR_FREE = "─";
 
-const CONTEXT_SEGMENTS = [
-	{ key: "system", color: "#A6E3A1", legend: "s" },
-	{ key: "prompt", color: "#F38BA8", legend: "p" },
-	{ key: "assistant", color: "#89DCEB", legend: "a" },
-	{ key: "thinking", color: "#CBA6F7", legend: "r" },
-	{ key: "tools", color: "#F9E2AF", legend: "x" },
-] as const;
+const CONTEXT_SEGMENTS = ["system", "prompt", "assistant", "thinking", "tools"] as const;
 
-export type ContextSegmentKey = (typeof CONTEXT_SEGMENTS)[number]["key"];
+export type ContextSegmentKey = (typeof CONTEXT_SEGMENTS)[number];
 export type ContextSegments = Readonly<Record<ContextSegmentKey, number>>;
 export type WritableContextSegments = Record<ContextSegmentKey, number>;
-export type ContextSlice = Readonly<{ key: ContextSegmentKey; tokens: number }>;
-export type ContextBreakdown = Readonly<{ segments: ContextSegments; slices: readonly ContextSlice[] }>;
 
 export type FooterRenderState = GitStatusSummary & {
 	modelLabel: string;
@@ -35,9 +27,6 @@ export type FooterRenderState = GitStatusSummary & {
 	contextUsed: number;
 	contextTotal: number;
 	contextSegments: ContextSegments;
-	contextSlices: readonly ContextSlice[];
-	contextPulseSliceIndexes: readonly number[];
-	contextPulseFrame: number;
 	contextUsageEstimated: boolean;
 	tokenLabel: string;
 	costLabel: string;
@@ -68,9 +57,6 @@ export function emptyFooterState(): FooterRenderState {
 		contextUsed: 0,
 		contextTotal: 0,
 		contextSegments: emptyContextSegments(),
-		contextSlices: [],
-		contextPulseSliceIndexes: [],
-		contextPulseFrame: 0,
 		contextUsageEstimated: false,
 		tokenLabel: "↑0 ↓0",
 		costLabel: "$0.00",
@@ -138,77 +124,50 @@ function estimateToolCallTokens(part: Record<string, unknown>): number {
 	return estimateTextTokens(`${name}${input}`);
 }
 
-function addContextSlice(slices: ContextSlice[], key: ContextSegmentKey, tokens: number): void {
-	if (tokens <= 0) return;
-	const last = slices[slices.length - 1];
-	if (last?.key === key) {
-		slices[slices.length - 1] = { key, tokens: last.tokens + tokens };
-		return;
-	}
-	slices.push({ key, tokens });
+function addContextTokens(segments: WritableContextSegments, key: ContextSegmentKey, tokens: number): void {
+	if (tokens > 0) segments[key] += tokens;
 }
 
-function addContextTokens(
-	segments: WritableContextSegments,
-	slices: ContextSlice[],
-	key: ContextSegmentKey,
-	tokens: number,
-): void {
-	if (tokens <= 0) return;
-	segments[key] += tokens;
-	addContextSlice(slices, key, tokens);
-}
-
-function addAssistantTokens(segments: WritableContextSegments, slices: ContextSlice[], content: unknown): void {
+function addAssistantTokens(segments: WritableContextSegments, content: unknown): void {
 	for (const part of contentRecords(content)) {
 		if (part.type === "text" && typeof part.text === "string") {
-			addContextTokens(segments, slices, "assistant", estimateTextTokens(part.text));
+			addContextTokens(segments, "assistant", estimateTextTokens(part.text));
 		}
 		if (part.type === "thinking" && typeof part.thinking === "string") {
-			addContextTokens(segments, slices, "thinking", estimateTextTokens(part.thinking));
+			addContextTokens(segments, "thinking", estimateTextTokens(part.thinking));
 		}
 		if (part.type === "toolCall") {
-			addContextTokens(segments, slices, "assistant", estimateToolCallTokens(part));
+			addContextTokens(segments, "assistant", estimateToolCallTokens(part));
 		}
 	}
 }
 
-export function estimateContextBreakdown(messages: readonly unknown[], systemPrompt: string): ContextBreakdown {
+export function estimateContextSegments(messages: readonly unknown[], systemPrompt: string): ContextSegments {
 	const segments = emptyContextSegments();
-	const slices: ContextSlice[] = [];
-	addContextTokens(segments, slices, "system", estimateTextTokens(systemPrompt));
+	addContextTokens(segments, "system", estimateTextTokens(systemPrompt));
 
 	for (const message of messages) {
 		if (!message || typeof message !== "object") continue;
 		const record = message as Record<string, unknown>;
 
 		if (record.role === "user" || record.role === "custom") {
-			addContextTokens(segments, slices, "prompt", estimateContentTokens(record.content));
+			addContextTokens(segments, "prompt", estimateContentTokens(record.content));
 		} else if (record.role === "assistant") {
-			addAssistantTokens(segments, slices, record.content);
+			addAssistantTokens(segments, record.content);
 		} else if (record.role === "toolResult") {
-			addContextTokens(segments, slices, "tools", estimateContentTokens(record.content));
+			addContextTokens(segments, "tools", estimateContentTokens(record.content));
 		} else if (record.role === "bashExecution") {
-			addContextTokens(
-				segments,
-				slices,
-				"tools",
-				estimateTextTokens(`${record.command ?? ""}${record.output ?? ""}`),
-			);
+			addContextTokens(segments, "tools", estimateTextTokens(`${record.command ?? ""}${record.output ?? ""}`));
 		} else if (record.role === "branchSummary" || record.role === "compactionSummary") {
-			addContextTokens(segments, slices, "system", estimateTextTokens(String(record.summary ?? "")));
+			addContextTokens(segments, "system", estimateTextTokens(String(record.summary ?? "")));
 		}
 	}
 
-	return { segments, slices };
-}
-
-export function estimateContextSegments(messages: readonly unknown[], systemPrompt: string): ContextSegments {
-	return estimateContextBreakdown(messages, systemPrompt).segments;
+	return segments;
 }
 
 function segmentTotal(segments: ContextSegments): number {
-	return CONTEXT_SEGMENTS.reduce((total, segment) => total + segments[segment.key], 0);
+	return CONTEXT_SEGMENTS.reduce((total, segment) => total + segments[segment], 0);
 }
 
 function allocateProportionally(values: readonly number[], columns: number): number[] {
@@ -242,167 +201,31 @@ export function scaleContextSegmentsToUsage(segments: ContextSegments, usedToken
 		};
 	}
 
-	const values = CONTEXT_SEGMENTS.map((segment) => segments[segment.key]);
+	const values = CONTEXT_SEGMENTS.map((segment) => segments[segment]);
 	const allocated = allocateProportionally(values, Math.round(usedTokens));
 	const scaled = emptyContextSegments();
 	for (const [index, segment] of CONTEXT_SEGMENTS.entries()) {
-		scaled[segment.key] = allocated[index] ?? 0;
+		scaled[segment] = allocated[index] ?? 0;
 	}
 	return scaled;
-}
-
-export function scaleContextSlicesToUsage(
-	slices: readonly ContextSlice[],
-	usedTokens: number,
-): readonly ContextSlice[] {
-	if (usedTokens <= 0) return [];
-	const total = slices.reduce((sum, slice) => sum + slice.tokens, 0);
-	if (total <= 0) return [{ key: "prompt", tokens: Math.round(usedTokens) }];
-
-	const allocated = allocateProportionally(
-		slices.map((slice) => slice.tokens),
-		Math.round(usedTokens),
-	);
-	const scaled: ContextSlice[] = [];
-	for (const [index, slice] of slices.entries()) {
-		addContextSlice(scaled, slice.key, allocated[index] ?? 0);
-	}
-	return scaled;
-}
-
-function allocateUsedBarColumns(values: readonly number[], width: number): number[] {
-	const visibleUsedSegments = values.map((value, index) => ({ value, index })).filter(({ value }) => value > 0);
-
-	if (visibleUsedSegments.length === 0 || visibleUsedSegments.length >= width) {
-		return allocateProportionally(values, width);
-	}
-
-	const minimumColumns = Array.from({ length: values.length }, () => 0);
-	for (const { index } of visibleUsedSegments) {
-		minimumColumns[index] = 1;
-	}
-
-	const remainingColumns = allocateProportionally(values, width - visibleUsedSegments.length);
-	return minimumColumns.map((minimum, index) => minimum + (remainingColumns[index] ?? 0));
-}
-
-function allocateBarColumns(values: readonly number[], width: number, usedSegmentCount: number): number[] {
-	const usedValues = values.slice(0, usedSegmentCount);
-	const freeValues = values.slice(usedSegmentCount);
-	const usedTotal = usedValues.reduce((sum, value) => sum + value, 0);
-	const freeTotal = freeValues.reduce((sum, value) => sum + value, 0);
-	const [usedWidth = 0, freeWidth = 0] = allocateProportionally([usedTotal, freeTotal], width);
-
-	return [...allocateUsedBarColumns(usedValues, usedWidth), ...allocateProportionally(freeValues, freeWidth)];
-}
-
-function contextSegmentColor(key: ContextSegmentKey): string {
-	return CONTEXT_SEGMENTS.find((segment) => segment.key === key)?.color ?? "muted";
-}
-
-function colorFg(theme: Theme, color: string, text: string): string {
-	const rgb = parseHexRgb(color);
-	if (rgb) return `${rgbFg(rgb)}${text}\x1b[39m`;
-	return theme.fg(color as ThemeColor, text);
-}
-
-function colorFgAnsi(theme: Theme, color: string): string | undefined {
-	const rgb = parseHexRgb(color);
-	if (rgb) return rgbFg(rgb);
-	return themeRoleAnsi(theme, color as ThemeColor);
-}
-
-function darkenFgAnsi(ansi: string | undefined): string | undefined {
-	const rgb = ansiFgToRgb(ansi);
-	return rgb ? rgbFg(scaleRgb(rgb, 0.68)) : undefined;
-}
-
-function dimColorFg(theme: Theme, color: string, text: string): string {
-	const darkAnsi = darkenFgAnsi(colorFgAnsi(theme, color));
-	return darkAnsi ? `${darkAnsi}${text}\x1b[39m` : colorFg(theme, color, text);
-}
-
-function renderContextSliceSegment(
-	state: FooterRenderState,
-	theme: Theme,
-	slice: ContextSlice,
-	index: number,
-	width: number,
-	pulsingEnabled = true,
-): string {
-	if (width <= 0) return "";
-
-	const color = contextSegmentColor(slice.key);
-	const text = CONTEXT_BAR_USED.repeat(width);
-	const pulsing = pulsingEnabled && state.contextPulseSliceIndexes.includes(index);
-	if (pulsing && state.contextPulseFrame % 2 === 1) {
-		return colorFg(theme, color, text);
-	}
-	return dimColorFg(theme, color, text);
-}
-
-function contextSlicesForState(state: FooterRenderState): readonly ContextSlice[] {
-	return state.contextSlices.length > 0
-		? state.contextSlices
-		: CONTEXT_SEGMENTS.map((segment) => ({ key: segment.key, tokens: state.contextSegments[segment.key] })).filter(
-				(slice) => slice.tokens > 0,
-			);
-}
-
-function aggregateSlicesBySegment(slices: readonly ContextSlice[]): ContextSegments {
-	const segments = emptyContextSegments();
-	for (const slice of slices) {
-		segments[slice.key] += slice.tokens;
-	}
-	return segments;
-}
-
-function slicesFromSegments(segments: ContextSegments): readonly ContextSlice[] {
-	return CONTEXT_SEGMENTS.map((segment) => ({ key: segment.key, tokens: segments[segment.key] })).filter(
-		(slice) => slice.tokens > 0,
-	);
-}
-
-function compactDenseContextSlices(state: FooterRenderState, slices: readonly ContextSlice[]): readonly ContextSlice[] {
-	const usedTokens = slices.reduce((sum, slice) => sum + slice.tokens, 0);
-	const sourceSegments =
-		segmentTotal(state.contextSegments) > 0 ? state.contextSegments : aggregateSlicesBySegment(slices);
-	return slicesFromSegments(scaleContextSegmentsToUsage(sourceSegments, usedTokens));
-}
-
-function selectContextBarSlices(
-	state: FooterRenderState,
-	width: number,
-): { slices: readonly ContextSlice[]; pulsingEnabled: boolean } {
-	const slices = contextSlicesForState(state);
-	const freeTokens = Math.max(0, state.contextTotal - state.contextUsed);
-	const usedTokens = slices.reduce((sum, slice) => sum + slice.tokens, 0);
-	const [usedWidth = 0] = allocateProportionally([usedTokens, freeTokens], width);
-	const visibleSliceCount = slices.filter((slice) => slice.tokens > 0).length;
-	if (usedWidth > 0 && visibleSliceCount > usedWidth) {
-		return { slices: compactDenseContextSlices(state, slices), pulsingEnabled: false };
-	}
-	return { slices, pulsingEnabled: true };
-}
-
-function renderSegmentedContextBar(state: FooterRenderState, theme: Theme, width: number): string {
-	const { slices, pulsingEnabled } = selectContextBarSlices(state, width);
-	const values = [...slices.map((slice) => slice.tokens), Math.max(0, state.contextTotal - state.contextUsed)];
-	const columns = allocateBarColumns(values, width, slices.length);
-	const usedSegments = slices
-		.map((slice, index) => renderContextSliceSegment(state, theme, slice, index, columns[index] ?? 0, pulsingEnabled))
-		.join("");
-	const freeWidth = columns[slices.length] ?? 0;
-	return usedSegments + theme.fg("dim", CONTEXT_BAR_FREE.repeat(freeWidth));
 }
 
 function renderContextBar(state: FooterRenderState, theme: Theme, width: number, suffix: string): string | undefined {
 	const safeWidth = Math.max(1, width);
-	const legend = CONTEXT_SEGMENTS.map((segment) => colorFg(theme, segment.color, segment.legend)).join(" ");
-	const prefix = `${theme.fg("dim", "ctx [")}${legend}${theme.fg("dim", "] ")}`;
-	const barWidth = safeWidth - visibleWidth(prefix) - visibleWidth(suffix);
+	const prefix = theme.fg("dim", "ctx ");
+	const barWidth = Math.min(MAX_CONTEXT_BAR_WIDTH, safeWidth - visibleWidth(prefix) - visibleWidth(suffix));
 	if (barWidth < MIN_CONTEXT_BAR_WIDTH) return undefined;
-	return prefix + renderSegmentedContextBar(state, theme, barWidth) + suffix;
+	const usedTokens = Math.min(Math.max(0, state.contextUsed), state.contextTotal);
+	const [usedWidth = 0, freeWidth = 0] = allocateProportionally(
+		[usedTokens, Math.max(0, state.contextTotal - usedTokens)],
+		barWidth,
+	);
+	return (
+		prefix +
+		theme.fg(contextHealthColor(state), CONTEXT_BAR_USED.repeat(usedWidth)) +
+		theme.fg("dim", CONTEXT_BAR_FREE.repeat(freeWidth)) +
+		suffix
+	);
 }
 
 function contextHealthColor(state: FooterRenderState): ThemeColor {

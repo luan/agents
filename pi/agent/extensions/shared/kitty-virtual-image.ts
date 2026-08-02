@@ -248,6 +248,7 @@ export class KittyVirtualImage implements Component {
 	private readonly dimensions: ImageDimensions;
 	private cachedLines?: string[];
 	private cachedWidth?: number;
+	private cachedImageProtocol?: ReturnType<typeof getCapabilities>["images"];
 	private nativeImage?: Image;
 
 	constructor(
@@ -266,13 +267,17 @@ export class KittyVirtualImage implements Component {
 	invalidate(): void {
 		this.cachedLines = undefined;
 		this.cachedWidth = undefined;
+		this.cachedImageProtocol = undefined;
 		this.nativeImage?.invalidate();
 	}
 
 	render(width: number): string[] {
-		if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
-
 		const caps = getCapabilities();
+		if (this.cachedLines && this.cachedWidth === width && this.cachedImageProtocol === caps.images) {
+			return this.cachedLines;
+		}
+		this.cachedImageProtocol = caps.images;
+
 		if (caps.images !== "kitty") {
 			if (caps.images) {
 				this.nativeImage ??= new Image(this.base64Data, this.mimeType, this.theme, this.options, this.dimensions);

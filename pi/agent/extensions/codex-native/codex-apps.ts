@@ -277,6 +277,11 @@ async function directoryIfExists(path: string): Promise<string | undefined> {
 	}
 }
 
+export async function systemSkillPaths(root = codexHome()): Promise<string[]> {
+	const path = await directoryIfExists(join(root, "skills", ".system"));
+	return path ? [path] : [];
+}
+
 function shortHash(value: string): string {
 	let hash = 2166136261;
 	for (let index = 0; index < value.length; index++) {
@@ -1566,7 +1571,9 @@ export default async function registerCodexAppsBridge(pi: ExtensionAPI) {
 	});
 	pi.on("resources_discover", async (_event, ctx) => {
 		applyActiveTools(ctx);
-		return { skillPaths: pluginSkillPaths(plugins, config, tools) };
+		return {
+			skillPaths: [...(await systemSkillPaths()), ...pluginSkillPaths(plugins, config, tools)],
+		};
 	});
 	pi.on("model_select", (_event, ctx) => applyActiveTools(ctx));
 }

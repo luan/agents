@@ -22,6 +22,27 @@ import type { ExecCommandStatus } from "./exec-command-state.ts";
 
 export type { RenderOutputBlockOptions, RenderTheme } from "./exec-cell-rendering-internal.ts";
 
+const WIDTH_CACHE_LIMIT = 512;
+const widthCache = new Map<string, number>();
+const truncationCache = new Map<string, string>();
+
+function cacheValue<T>(cache: Map<string, T>, key: string, value: () => T): T {
+	const cached = cache.get(key);
+	if (cached !== undefined) return cached;
+	if (cache.size >= WIDTH_CACHE_LIMIT) cache.clear();
+	const next = value();
+	cache.set(key, next);
+	return next;
+}
+
+function cachedVisibleWidth(text: string): number {
+	return cacheValue(widthCache, text, () => visibleWidth(text));
+}
+
+function cachedTruncate(text: string, width: number): string {
+	return cacheValue(truncationCache, `${width}\0${text}`, () => truncateToWidthCompat(text, width, "..."));
+}
+
 export type ExecCellKind = "command" | "exploration" | "spawned-background-terminal" | "user-command" | "write-stdin";
 
 export interface ExecCellOutputBlock {
@@ -198,9 +219,8 @@ function renderBackgroundTerminalWidgetLine(
 		"muted",
 		`#${cell.id}`,
 	)}`;
-	const tty = cell.stdinOpen
-		? `${theme.fg("dim", " · ")}${theme.fg("mdLink", formatStdinCapability(cell.stdinOpen))}`
-		: "";
+	const ttyLabel = cell.stdinOpen ? formatStdinCapability(cell.stdinOpen) : undefined;
+	const tty = ttyLabel ? `${theme.fg("dim", " · ")}${theme.fg("mdLink", ttyLabel)}` : "";
 	const lines = outputLineCount(cell.output);
 	const outputSummary = lines > 0 ? `(${lines} ${lines === 1 ? "line" : "lines"})` : "(no output)";
 	const lastLine = lastOutputLine(cell.output)
@@ -212,9 +232,25 @@ function renderBackgroundTerminalWidgetLine(
 		"dim",
 		" · ",
 	)}${theme.fg("muted", outputSummary)}${last}${theme.fg("dim", " · ")}`;
-	const commandWidth = Math.max(8, width - visibleWidth(fixed));
-	const text = `${fixed}${theme.fg("muted", truncateToWidthCompat(command, commandWidth, "..."))}`;
-	return visibleWidth(text) > width ? truncateToWidthCompat(text, width, "...") : text;
+	const fixedVisibleWidth =
+		1 +
+		1 +
+		"background terminal".length +
+		1 +
+		`#${cell.id}`.length +
+		3 +
+		elapsed.length +
+		(ttyLabel ? 3 + cachedVisibleWidth(ttyLabel) : 0) +
+		3 +
+		outputSummary.length +
+		(lastLine ? 3 + cachedVisibleWidth(lastLine) : 0) +
+		3;
+	const commandWidth = Math.max(8, width - fixedVisibleWidth);
+	const renderedCommand = cachedTruncate(command, commandWidth);
+	const text = `${fixed}${theme.fg("muted", renderedCommand)}`;
+	return fixedVisibleWidth + cachedVisibleWidth(renderedCommand) > width
+		? truncateToWidthCompat(text, width, "...")
+		: text;
 }
 
 function renderExecCellHeader(cell: ExecCell, theme: RenderTheme): string {

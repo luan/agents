@@ -1,6 +1,6 @@
 approval_policy = "never"
 model = "gpt-5.6-sol"
-model_reasoning_effort = "high"
+model_reasoning_effort = "medium"
 personality = "pragmatic"
 plan_mode_reasoning_effort = "high"
 sandbox_mode = "danger-full-access"
@@ -75,7 +75,7 @@ inherit = "core"
 [shell_environment_policy.set]
 GIT_USERNAME = "luan"
 BROWSER_USE_AVAILABLE_BACKENDS = "chrome,iab"
-NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = "028a14b6eaa6d98dac2aae00764345ab9f244801ed8493d42b9af3be5575006e,8785b5437d98636c3002d3d7e64b98db79c3b66870b1bd3d18dea953a99b1562"
+NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = "028a14b6eaa6d98dac2aae00764345ab9f244801ed8493d42b9af3be5575006e,f204d340535055781952b10ed396de20b842f00a19e430852f7e121ad1ce91f6"
 NODE_REPL_TRUSTED_CODE_PATHS = "/Users/luan/.codex"
 
 [tui]
@@ -97,12 +97,12 @@ queue = "alt-enter"
 "gpt-5.6-sol" = 3
 
 [marketplaces.openai-bundled]
-last_updated = "2026-07-31T18:54:32Z"
+last_updated = "2026-08-01T03:37:21Z"
 source_type = "local"
 source = "/Users/luan/.codex/.tmp/bundled-marketplaces/openai-bundled"
 
 [marketplaces.openai-primary-runtime]
-last_updated = "2026-07-31T02:27:14Z"
+last_updated = "2026-08-02T19:27:02Z"
 source_type = "local"
 source = "/Users/luan/.cache/codex-runtimes/codex-primary-runtime/plugins/openai-primary-runtime"
 
@@ -196,6 +196,15 @@ trust_level = "trusted"
 [projects."/Users/luan/Documents/Codex/2026-07-31/realtime-voice-chat"]
 trust_level = "trusted"
 
+[projects."/Users/luan/.config/nvim"]
+trust_level = "trusted"
+
+[projects."/Users/luan/Documents/Codex/2026-08-01/new-chat"]
+trust_level = "trusted"
+
+[projects."/Users/luan/Documents/Codex/2026-08-02/new-chat"]
+trust_level = "trusted"
+
 [hooks.state]
 
 [hooks.state."/Users/luan/.codex/hooks.json:stop:0:0"]
@@ -269,13 +278,13 @@ NODE_REPL_NODE_MODULE_DIRS = "/Applications/ChatGPT.app/Contents/Resources/cua_n
 NODE_REPL_NODE_PATH = "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node"
 NODE_REPL_TRUSTED_CODE_PATHS = "/Users/luan/.codex"
 CODEX_HOME = "/Users/luan/.codex"
-NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = "028a14b6eaa6d98dac2aae00764345ab9f244801ed8493d42b9af3be5575006e,8785b5437d98636c3002d3d7e64b98db79c3b66870b1bd3d18dea953a99b1562"
+NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = "028a14b6eaa6d98dac2aae00764345ab9f244801ed8493d42b9af3be5575006e,f204d340535055781952b10ed396de20b842f00a19e430852f7e121ad1ce91f6"
 BROWSER_USE_AVAILABLE_BACKENDS = "chrome,iab"
 NODE_REPL_INSTRUCTIONS_USE_CASE_BROWSER = "Control the in-app browser in conjunction with the Browser Plugin."
 NODE_REPL_INSTRUCTIONS_USE_CASE_CHROME = "Control the Chrome browser in conjunction with the Chrome Plugin. Prefer this method of controlling Chrome over alternatives (such as Computer Use) unless the user explicitly mentions an alternative."
 NODE_REPL_INSTRUCTIONS_USE_CASE_COMPUTER_USE = "Control desktop apps on macOS through Computer Use."
 BROWSER_USE_CODEX_APP_BUILD_FLAVOR = "prod"
-BROWSER_USE_CODEX_APP_VERSION = "26.727.40816"
+BROWSER_USE_CODEX_APP_VERSION = "26.727.51351"
 SKY_CUA_SERVICE_PATH = "/Users/luan/.codex/computer-use/Codex Computer Use.app"
 CODEX_CLI_PATH = "/Applications/ChatGPT.app/Contents/Resources/codex"
 

@@ -21,12 +21,12 @@
     "npm:pi-cache-graph",
     "npm:@dietrichgebert/ponytail",
     {
-      "source": "git:github.com/juliusbrussee/caveman@v1.9.1",
-      "skills": []
+      "source": "git:github.com/juliusbrussee/caveman@v1.9.1"
     }
   ],
   "extensions": [
     "extensions/agents-local/index.ts",
+    "extensions/auto-compact-resume/index.ts",
     "extensions/fileops/index.ts",
     "extensions/ask/index.ts",
     "extensions/codex-native/index.ts",

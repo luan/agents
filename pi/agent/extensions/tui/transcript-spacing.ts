@@ -16,7 +16,10 @@ type ChatContainer = {
 	addChild?: AddChild;
 	[ORIGINAL_ADD_CHILD]?: AddChild;
 };
-type InteractiveModeInstance = { chatContainer?: ChatContainer };
+type InteractiveModeInstance = {
+	chatContainer?: ChatContainer;
+	widgetContainerAbove?: { children: Component[] };
+};
 type RenderWidgets = (this: InteractiveModeInstance) => void;
 type InteractiveModePrototype = { renderWidgets: RenderWidgets };
 type PatchState = {
@@ -27,6 +30,7 @@ type PatchState = {
 };
 
 const PATCH_KEY = Symbol.for("agents.polishedTui.transcriptSpacingPatch");
+const LEGACY_PATCH_KEY = Symbol.for("agents.polishedTui.interactiveTransitionPatch");
 const ORIGINAL_RENDER = Symbol.for("agents.polishedTui.transcriptOriginalRender");
 const ORIGINAL_ADD_CHILD = Symbol.for("agents.polishedTui.transcriptOriginalAddChild");
 const SUPPRESS_LEADING = Symbol.for("agents.polishedTui.suppressLeadingSpacer");
@@ -97,6 +101,9 @@ function patchTranscript(container: ChatContainer): void {
 }
 
 function patchInstance(instance: InteractiveModeInstance): void {
+	const aboveEditor = instance.widgetContainerAbove;
+	if (aboveEditor?.children[0]?.constructor.name === "Spacer") aboveEditor.children.shift();
+
 	const container = instance.chatContainer;
 	if (!container) return;
 	patchTranscript(container);
@@ -127,6 +134,28 @@ function patchPrototype(prototype: InteractiveModePrototype): () => void {
 	return () => releasePatch(state);
 }
 
+function removeCurrentPatch(prototype: InteractiveModePrototype): void {
+	const existing = globalState[PATCH_KEY];
+	if (!existing) return;
+	if (prototype.renderWidgets === existing.wrapped) prototype.renderWidgets = existing.original;
+	delete globalState[PATCH_KEY];
+}
+
+function removeLegacyTransitionPatch(prototype: InteractiveModePrototype): void {
+	const legacy = (
+		globalThis as typeof globalThis & {
+			[LEGACY_PATCH_KEY]?: PatchState;
+		}
+	)[LEGACY_PATCH_KEY];
+	if (!legacy) return;
+	if (prototype.renderWidgets === legacy.wrapped) prototype.renderWidgets = legacy.original;
+	delete (
+		globalThis as typeof globalThis & {
+			[LEGACY_PATCH_KEY]?: PatchState;
+		}
+	)[LEGACY_PATCH_KEY];
+}
+
 export async function installTranscriptSpacingPatch(): Promise<() => void> {
 	const cliPath = process.argv[1] ? realpathSync(process.argv[1]) : "";
 	const interactivePath = join(dirname(cliPath), "modes", "interactive", "interactive-mode.js");
@@ -134,7 +163,10 @@ export async function installTranscriptSpacingPatch(): Promise<() => void> {
 	const module = (await import(pathToFileURL(interactivePath).href)) as {
 		InteractiveMode?: { prototype: InteractiveModePrototype };
 	};
-	return module.InteractiveMode ? patchPrototype(module.InteractiveMode.prototype) : () => {};
+	if (!module.InteractiveMode) return () => {};
+	removeCurrentPatch(module.InteractiveMode.prototype);
+	removeLegacyTransitionPatch(module.InteractiveMode.prototype);
+	return patchPrototype(module.InteractiveMode.prototype);
 }
 
 function releasePatch(state: PatchState): void {

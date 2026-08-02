@@ -18,9 +18,12 @@ import {
 import { Type } from "typebox";
 import { hasEnoughTerminalRows } from "../shared/terminal";
 import {
+	type AnimationMount,
+	type AnimationRenderTarget,
 	defineExtensionTui,
 	EmptyComponent,
 	setOrderedAboveEditorWidget,
+	sharedAnimationRenderScheduler,
 	padToVisibleWidth as sharedPadToVisibleWidth,
 } from "../shared/tui";
 import { framedBlock, renderStatusLine } from "../shared/tui/omp-card";
@@ -115,8 +118,8 @@ const silentTaskToolPatchKey = Symbol.for("agents.tasks.silent-tool-render-patch
 const spinnerFrames = ["✳", "✴", "✵", "✶", "✷", "✸", "✹", "✺", "✻", "✼", "✽"];
 let activeTaskBoard: { close: () => void } | undefined;
 let taskHudExpanded = true;
-let taskHudPulseTimer: ReturnType<typeof setInterval> | undefined;
-let requestTaskHudRender: (() => void) | undefined;
+let taskHudPulseTimer: AnimationMount | undefined;
+let taskHudAnimationTarget: AnimationRenderTarget | undefined;
 let taskHudWidget: TaskHudWidget | undefined;
 let taskHudWidgetCtx: ExtensionContext | undefined;
 let latestTaskHudState: TaskHudState | undefined;
@@ -640,10 +643,13 @@ class TaskHudWidget implements Component {
 
 function ensureTaskHudWidget(ctx: ExtensionContext): void {
 	if (taskHudWidget && taskHudWidgetCtx === ctx) return;
+	taskHudPulseTimer?.dispose();
+	taskHudPulseTimer = undefined;
+	taskHudAnimationTarget = undefined;
 	taskHudWidget = undefined;
 	taskHudWidgetCtx = ctx;
 	setOrderedAboveEditorWidget(ctx, widgetId, (tui, theme) => {
-		requestTaskHudRender = typeof tui.requestRender === "function" ? () => tui.requestRender() : undefined;
+		taskHudAnimationTarget = tui;
 		taskHudWidget = new TaskHudWidget(tui, theme, latestTaskHudState);
 		return taskHudWidget;
 	});
@@ -665,14 +671,14 @@ async function updateTaskHud(
 
 function updateHudTimer(tasks: TaskRecord[]): void {
 	const needsAnimation = tasks.some((task) => task.status === "in_progress");
-	if (needsAnimation && !taskHudPulseTimer) {
-		taskHudPulseTimer = setInterval(() => {
-			taskHudFrame++;
-			requestTaskHudRender?.();
-		}, taskHudPulseFrameMs);
-		taskHudPulseTimer.unref?.();
+	if (needsAnimation && !taskHudPulseTimer && taskHudAnimationTarget) {
+		taskHudPulseTimer = sharedAnimationRenderScheduler.mount(
+			taskHudAnimationTarget,
+			taskHudPulseFrameMs,
+			() => taskHudFrame++,
+		);
 	} else if (!needsAnimation && taskHudPulseTimer) {
-		clearInterval(taskHudPulseTimer);
+		taskHudPulseTimer.dispose();
 		taskHudPulseTimer = undefined;
 	}
 }
@@ -1446,7 +1452,7 @@ export default function tasksExtension(pi: ExtensionAPI, _runtime: Runtime = {})
 	taskHudWidget = undefined;
 	taskHudWidgetCtx = undefined;
 	latestTaskHudState = undefined;
-	requestTaskHudRender = undefined;
+	taskHudAnimationTarget = undefined;
 	taskHudExpanded = true;
 
 	let cwd = process.cwd();
@@ -1474,12 +1480,12 @@ export default function tasksExtension(pi: ExtensionAPI, _runtime: Runtime = {})
 	});
 
 	pi.on("session_shutdown", async () => {
-		if (taskHudPulseTimer) clearInterval(taskHudPulseTimer);
+		taskHudPulseTimer?.dispose();
 		taskHudPulseTimer = undefined;
 		taskHudWidget = undefined;
 		taskHudWidgetCtx = undefined;
 		latestTaskHudState = undefined;
-		requestTaskHudRender = undefined;
+		taskHudAnimationTarget = undefined;
 	});
 
 	pi.on("tool_execution_end", () => {

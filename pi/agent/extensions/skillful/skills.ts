@@ -10,6 +10,7 @@ export const SKILLFUL_CUSTOM_TYPE = "skillful-load";
 export type SkillReference = {
 	name: string;
 	filePath: string;
+	description?: string;
 };
 
 export type SkillfulLoadStatus = "read";
@@ -31,7 +32,7 @@ export function collectSkills(pi: ExtensionAPI): Map<string, SkillReference[]> {
 		const name = cmd.name.slice(SKILL_PREFIX.length).trim();
 		const path = cmd.sourceInfo?.path;
 		if (!name || !path || direct.has(name)) continue;
-		direct.set(name, { name, filePath: path });
+		direct.set(name, { name, filePath: path, ...(cmd.description ? { description: cmd.description } : {}) });
 	}
 
 	const out = new Map<string, SkillReference[]>();
@@ -63,12 +64,13 @@ export function buildItems(
 	hiddenSkillNames: Iterable<string> = getCodexHiddenSkillNames(),
 ): AutocompleteItem[] {
 	const hidden = new Set(hiddenSkillNames);
-	return [...skills.keys()]
-		.filter((name) => !hidden.has(name))
-		.map((name) => ({
+	return [...skills.entries()]
+		.filter(([name]) => !hidden.has(name))
+		.map(([name, references]) => ({
 			value: `$${name}`,
 			label: `$${name}`,
-			description: "skill",
+			description:
+				[...new Set(references.map((reference) => reference.description).filter(Boolean))].join(" • ") || "skill",
 		}));
 }
 

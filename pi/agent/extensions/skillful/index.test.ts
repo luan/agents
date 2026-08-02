@@ -222,6 +222,16 @@ describe("skillful editor wrapping", () => {
 });
 
 describe("skillful skills", () => {
+	test("shows skill descriptions in autocomplete", () => {
+		const items = buildItems(
+			new Map([
+				["tdd", [{ name: "tdd", filePath: "/skills/tdd/SKILL.md", description: "Build changes test-first" }]],
+			]),
+		);
+
+		expect(items[0]?.description).toBe("Build changes test-first");
+	});
+
 	test("strips yaml frontmatter", () => {
 		expect(stripFrontmatter("---\nname: tdd\n---\nbody")).toBe("body");
 		expect(stripFrontmatter("body")).toBe("body");
