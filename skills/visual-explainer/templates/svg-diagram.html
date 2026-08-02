@@ -50,29 +50,13 @@ p { margin:0 0 12px; }
   </div>
   <div class="viewport" role="region" aria-label="[Diagram subject]" tabindex="0">
     <div class="canvas">
-      <!-- Replace this placeholder with Mermaid-rendered SVG at generation time. -->
       <svg viewBox="0 0 720 300" role="img" aria-labelledby="svg-title svg-desc">
         <title id="svg-title">[Diagram subject]</title>
         <desc id="svg-desc">[Complete textual description of nodes, labeled branches, and outcomes.]</desc>
-        <rect x="40" y="110" width="140" height="70" fill="ButtonFace" stroke="GrayText"/>
-        <text x="110" y="150" text-anchor="middle" fill="CanvasText">[Trigger]</text>
-        <path d="M180 145H270" stroke="LinkText" fill="none"/>
-        <polygon points="340,95 410,145 340,195 270,145" fill="ButtonFace" stroke="GrayText"/>
-        <text x="340" y="140" text-anchor="middle" fill="CanvasText">[Decision]</text>
-        <text x="340" y="158" text-anchor="middle" fill="CanvasText">[condition]</text>
-        <path d="M410 145H500" stroke="LinkText" fill="none"/>
-        <rect x="500" y="110" width="170" height="70" fill="ButtonFace" stroke="GrayText"/>
-        <text x="585" y="150" text-anchor="middle" fill="CanvasText">[Outcome]</text>
+        [Insert source-shaped SVG geometry.]
       </svg>
     </div>
   </div>
-  <script type="text/plain" class="diagram-source">
-flowchart LR
-  trigger["[Trigger]"] --> decision{"[Decision condition]"}
-  decision -->|"[condition true]"| transition["[State transition]"]
-  decision -->|"[condition false]"| terminal["[Terminal outcome]"]
-  transition --> next["[Next observable state]"]
-  </script>
 </section>
 </main>
 <script>
@@ -81,7 +65,7 @@ const canvas=document.querySelector('.canvas');
 let scale=1,x=0,y=0,drag=null;
 function canPan(){const box=canvas.querySelector('svg').viewBox.baseVal;return box.width*scale>viewport.clientWidth||box.height*scale>viewport.clientHeight;}
 function apply(){canvas.style.transform=`translate(${x}px,${y}px) scale(${scale})`;viewport.classList.toggle('is-pannable',canPan());}
-function fit(){const svg=canvas.querySelector('svg');const box=svg.viewBox.baseVal;scale=Math.min((viewport.clientWidth-24)/box.width,(viewport.clientHeight-24)/box.height,1.5);x=(viewport.clientWidth-box.width*scale)/2;y=(viewport.clientHeight-box.height*scale)/2;apply();}
+function fit(){const box=canvas.querySelector('svg').viewBox.baseVal;scale=Math.min((viewport.clientWidth-24)/box.width,(viewport.clientHeight-24)/box.height,1.5);x=(viewport.clientWidth-box.width*scale)/2;y=(viewport.clientHeight-box.height*scale)/2;apply();}
 function zoom(delta,cx=viewport.clientWidth/2,cy=viewport.clientHeight/2){const next=Math.max(.2,Math.min(5,scale+delta));x=cx-(cx-x)*(next/scale);y=cy-(cy-y)*(next/scale);scale=next;apply();}
 document.querySelector('[data-action="in"]').addEventListener('click',()=>zoom(.15));
 document.querySelector('[data-action="out"]').addEventListener('click',()=>zoom(-.15));

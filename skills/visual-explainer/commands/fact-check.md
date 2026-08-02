@@ -13,4 +13,4 @@ Read the target document. Extract verifiable claims about file paths, function/t
 
 For each claim, inspect the actual source or git history. Re-read referenced files. For diff reviews, compare before/after with `git show` or the relevant range. For plan docs, verify referenced files/functions/types exist and behave as described.
 
-Classify claims as verified, corrected, unsupported, or unverifiable. Preserve the document’s structure. Correct factual errors in place and add a verification summary that lists what was checked and changed. For HTML, match the existing page style and open it in the browser. For markdown, report the path in chat.
+Classify claims as verified, corrected, unsupported, or unverifiable. Preserve the document's reader-facing structure and correct factual errors in place. Report the verification work in chat unless the user explicitly requested an audit section. For HTML, inspect the corrected artifact in Dia when permitted; never launch Chrome or Chromium.

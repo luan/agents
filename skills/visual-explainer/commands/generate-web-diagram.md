@@ -1,10 +1,10 @@
 ---
 name: generate-web-diagram
-description: Generate a standalone HTML diagram and open it in the browser
+description: Generate a standalone HTML visual explainer and inspect it in Dia
 ---
 
 Load the visual-explainer skill and generate an HTML visual explainer for: $@
 
-Use the skill’s reference routing and final checklist. Pick a representation that fits the topic: Mermaid for connected flows/topologies; CSS cards for text-heavy explanations; tables for matrices; timelines for linear history.
+Use the skill's anti-slop review, reference routing, and final checklist. Choose geometry from the subject: connected flows/topologies, sequence, state, ownership, comparison, or measured data. Do not default text-heavy material into cards.
 
-Write to `~/.agent/diagrams/` with a descriptive filename and open the result in the browser. In Pi package installs, this is an explicit visual request: use `visual_explainer.prepare` when planning/context scouting helps, then `visual_explainer.render` with the complete HTML.
+Write to the requested path; otherwise use `~/.agent/diagrams/` with a descriptive filename. When visible review is permitted, inspect it in Dia; never launch Chrome or Chromium. In Pi package installs, call `visual_explainer` with `action: "prepare"` when planning/context scouting helps, then call `visual_explainer` with `action: "render"` and the complete HTML.

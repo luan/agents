@@ -2,8 +2,8 @@
   "name": "agents",
   "private": true,
   "scripts": {
-    "check": "biome check --write --error-on-warnings . && bun run test:codex-native && bun run test:compaction && bun run test:skillful && bun run test:system-prompt && bun run test:git-tool && bun run test:plannotator && bun run test:context-guard && bun run test:shared",
-    "test": "bun run test:codex-native && bun run test:compaction && bun run test:skillful && bun run test:system-prompt && bun run test:git-tool && bun run test:plannotator && bun run test:context-guard && bun run test:shared",
+    "check": "biome check --write --error-on-warnings . && bun run test:codex-native && bun run test:compaction && bun run test:skillful && bun run test:system-prompt && bun run test:git-tool && bun run test:plannotator && bun run test:context-guard && bun run test:shared && bun run test:visual-explainer",
+    "test": "bun run test:codex-native && bun run test:compaction && bun run test:skillful && bun run test:system-prompt && bun run test:git-tool && bun run test:plannotator && bun run test:context-guard && bun run test:shared && bun run test:visual-explainer",
     "typecheck": "tsgo --noEmit --pretty false --project tsconfig.typecheck.json",
     "test:skillful": "bun test pi/agent/extensions/skillful/index.test.ts pi/agent/extensions/tui/editor.test.ts pi/agent/extensions/tui/git.test.ts pi/agent/extensions/openai-fast/index.test.ts",
     "test:system-prompt": "bun test pi/agent/extensions/agents-local/index.test.ts pi/agent/extensions/system-prompt/index.test.ts pi/agent/extensions/token-burden/parser.test.ts",
@@ -13,6 +13,7 @@
     "test:shared": "bun test pi/agent/extensions/shared/*.test.ts pi/agent/extensions/shared/tui/*.test.ts",
     "test:codex-native": "bun test pi/agent/extensions/apply-patch/index.test.ts pi/agent/extensions/fileops/index.test.ts pi/agent/extensions/fileops/hashline/hashline.test.ts pi/agent/extensions/fileops/block-resolver.test.ts pi/agent/extensions/codex-native/index.test.ts pi/agent/extensions/pretty/index.test.ts pi/agent/extensions/exec-command/index.test.ts pi/agent/extensions/tasks/index.test.ts pi/agent/extensions/spawn/index.test.ts pi/agent/extensions/token-burden/report-view.test.ts pi/agent/extensions/token-burden/parser.test.ts pi/agent/extensions/token-burden/index.test.ts pi/agent/extensions/tui/editor.test.ts",
     "test:compaction": "bun test pi/agent/extensions/codex-native/compaction/src/unit.test.ts pi/agent/extensions/codex-native/compaction/src/validation.test.ts",
+    "test:visual-explainer": "bun test skills/visual-explainer/extension.test.ts skills/visual-explainer/scripts/lint-visible-copy.test.ts",
     "prepare": "husky"
   },
   "dependencies": {

@@ -4,7 +4,7 @@ description: >
   Generate self-contained HTML visualizations with Plannotator theming. Use for implementation
   plans, PR explainers, architecture diagrams, data tables, slide decks, and any visual
   explanation of technical concepts. Plans and PR explainers follow Plannotator's prescriptive
-  approach; all other visual content delegates to nicobailon/visual-explainer.
+  approach; all other visual content delegates to the local visual-explainer skill.
 ---
 
 # Plannotator Visual Explainer
@@ -17,18 +17,20 @@ Three paths depending on content type. Each has its own references and structure
 
 **PR explainer, diff review, or code change walkthrough** → Follow the [PR path](#pr-path). Read `references/design-system.md` and `references/pr-components.md`. Prescriptive structure.
 
-**Everything else** (architecture diagrams, data tables, slide decks, project recaps, general visual explanations) → Follow the [Visual explainer path](#visual-explainer-path). Delegates to nicobailon/visual-explainer with Plannotator theme tokens.
+**Everything else** (architecture diagrams, data tables, slide decks, project recaps, general visual explanations) → Follow the [Visual explainer path](#visual-explainer-path). Delegates to the local visual-explainer skill with Plannotator theme tokens.
 
 ## Delivery
 
 Always deliver via Plannotator's annotation UI. Do NOT use `open` or `xdg-open`.
 
 **Plans/proposals** (user should approve/deny):
+
 ```bash
 plannotator annotate <file> --render-html --gate
 ```
 
 **Everything else** (informational):
+
 ```bash
 plannotator annotate <file> --render-html
 ```
@@ -40,6 +42,7 @@ plannotator annotate <file> --render-html
 For implementation plans, design docs, feature specs, migration guides, and proposals.
 
 **Before generating, read:**
+
 1. `references/design-system.md` — Plannotator theme tokens, typography, component patterns
 2. `references/svg-patterns.md` — inline SVG building blocks for architecture diagrams, flowcharts, data flow
 
@@ -67,6 +70,7 @@ Not every plan needs every section. Skip what doesn't serve the content. Never i
 For PR walkthroughs, diff reviews, code change explainers, and reviewer guides.
 
 **Before generating, read:**
+
 1. `references/design-system.md` — Plannotator theme tokens, typography, component patterns
 2. `references/pr-components.md` — diff rendering, review comment bubbles, risk chips, file cards, before/after panels
 
@@ -91,14 +95,11 @@ For architecture diagrams, data tables, slide decks, project recaps, comparisons
 
 **Before generating:**
 
-1. Ensure `visual-explainer` is installed:
-   - Check: `~/.claude/skills/visual-explainer/SKILL.md` or `~/.agents/skills/visual-explainer/SKILL.md`
-   - If not found: `npx skills add nicobailon/visual-explainer -g --yes`
-2. Read visual-explainer's `SKILL.md` (workflow, diagram types, anti-slop rules)
-3. Read the relevant visual-explainer references and templates for your content type
-4. Read `references/theme-override.md` — Plannotator tokens replacing Nico's palettes
+1. Read visual-explainer's `SKILL.md` (workflow, diagram types, anti-slop rules)
+2. Read the relevant visual-explainer references and templates for your content type
+3. Read `references/theme-override.md` — Plannotator theme tokens for the local skill
 
-Follow visual-explainer's structure, component classes (`.ve-card`, `.kpi-card`, `.pipeline`), and anti-slop rules. The only override is the color/typography layer — Plannotator tokens instead of Nico's custom palettes.
+Follow visual-explainer's technical-document workflow and use Plannotator tokens for the color and typography layer.
 
 ---
 

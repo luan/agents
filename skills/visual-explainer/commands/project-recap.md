@@ -13,17 +13,15 @@ Read project identity files (`README`, changelog, package/build files), top-leve
 
 Cite command output or file:line evidence for project state, module/function/type names, recent activity, current blockers, and next-step claims. Do not fabricate momentum or rationale.
 
-## Required page sections
+## Required outcomes
 
-1. Project identity: what this repo is, stack, entry points.
-2. Architecture snapshot: Mermaid or hybrid diagram of current conceptual modules.
-3. Recent activity: grouped narrative, not raw log.
-4. Current state: uncommitted work, branches, TODOs, known blockers.
-5. Mental model map: key modules, data flow, command/test/deploy paths.
-6. Risks and cognitive debt: hotspots and gotchas.
-7. Useful commands and files.
-8. Likely next steps, based only on evidence.
+The recap must let a returning developer recover:
 
-Use responsive nav. Use compact reference tables for file maps and commands. Follow the skill’s Mermaid, overflow, and delivery rules.
+- the current operating behavior and constraints;
+- the active work that changes the next action;
+- the shortest execution, test, or deployment path needed to resume;
+- verified blockers or risks that affect that path.
 
-Write to `~/.agent/diagrams/` and open in browser.
+Let the evidence determine the composition. Add architecture, history, file maps, or command reference only when each improves next-action recoverability.
+
+Write to the requested path; otherwise use `~/.agent/diagrams/`. When visible review is permitted, inspect it in Dia; never launch Chrome or Chromium.

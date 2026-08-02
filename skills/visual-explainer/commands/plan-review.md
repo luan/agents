@@ -17,17 +17,13 @@ Read the plan in full. Extract goals, assumptions, proposed files/functions/type
 
 For each proposed change, verify whether referenced files/functions/types exist, whether current behavior matches the plan, what ripple effects are missing, and whether the proposed test coverage fits the current test style. Cite plan sections and file:line evidence.
 
-## Required page sections
+## Document spine
 
-1. Plan summary: problem, core idea, scope.
-2. Accuracy verdict: correct, stale, risky, unsupported, missing.
-3. Current architecture: diagram of affected subsystem only.
-4. Proposed architecture: matching visual diff against current state.
-5. Gap/risk matrix: correctness, tests, API, data model, UX, security/privacy, performance, maintainability, release.
-6. File-by-file review: proposed edits, current reality, recommendation.
-7. Better plan: concrete corrections or simplifications.
-8. Decision: approve, revise, or reject with rationale.
+1. Explain whether the plan matches current behavior and the consequence of any mismatch.
+2. Compare current and proposed behavior at the smallest useful scope.
+3. Present source-grounded gaps, risks, and required corrections.
+4. Conclude with approve, revise, or reject and concrete reasons.
 
-Use current-vs-planned visual language. Include responsive nav. Follow the skill’s Mermaid, overflow, and evidence rules.
+Use architecture views only when the plan changes architectural relationships. Add file-level detail only where code location changes the recommendation.
 
-Write to `~/.agent/diagrams/` and open in browser.
+Write to the requested path; otherwise use `~/.agent/diagrams/`. When visible review is permitted, inspect it in Dia; never launch Chrome or Chromium.

@@ -1,103 +1,182 @@
 ---
 name: visual-explainer
-description: Generate self-contained HTML visual explanations for systems, code changes, plans, data, and technical concepts. Use for diagrams, architecture overviews, diff or plan reviews, project recaps, comparison tables, slide decks, and other visual explanations.
+description: Explain technical systems visually. Use when a diagram, architecture walkthrough, code-change explanation, comparison, data view, or slide deck would communicate relationships better than prose alone.
 license: MIT
-compatibility: Requires a browser to view generated HTML files. Optional surf-cli for AI image generation.
-metadata:
-  author: nicobailon
-  version: "0.8.1"
 ---
 
 # Visual Explainer
 
-Generate self-contained HTML pages that explain systems, code changes, plans, data, and technical concepts visually. Use this skill for diagram requests, architecture overviews, diff/plan reviews, project recaps, comparison tables, slide decks, and any visual explanation.
+Create a **source-shaped teaching artifact**: its narrative, geometry, interaction, and styling arise from the subject's actual mechanisms.
 
-## Trigger and delivery rules
+Three ideas govern the work:
 
-- Prefer an HTML page over terminal ASCII when the output is inherently visual.
-- If a table would have 4+ rows or 3+ columns, render it as HTML and give only a short chat summary.
-- Write files to `~/.agent/diagrams/` or the explicit eval output path. Use descriptive filenames.
-- Open generated pages in the browser when running normally. In Pi package installs, use `visual_explainer` with `prepare` for planning/context and `render` only after the complete HTML document exists.
-- The final page must be a complete self-contained HTML document, including embedded CSS and any needed JS.
+- **Teaching spine** — an ordered sequence of questions the reader can follow.
+- **Source-shaped grammar** — visual structure derived from topology, sequence, state, ownership, scale, or comparison in the source.
+- **Earned visual** — every large visual region adds recoverable understanding.
+
+## Process
+
+### 1. Establish the contract
+
+Determine:
+
+- the reader and the question they need answered;
+- scope, exclusions, and required concepts;
+- the appropriate form: walkthrough, reference, comparison, plan, data view, or slides;
+- delivery path and review workflow.
+
+HTML is the default branch. Slides use self-contained HTML. When the user explicitly requests standalone SVG, Markdown with Mermaid, or raster output, deliver that format directly and load only references relevant to it; HTML templates and renderer steps do not apply. Verify SVG bounds and labels, Mermaid source plus text alternatives, or raster legibility as appropriate.
+
+### 2. Recover the source model
+
+Read the relevant source before designing. Trace the actual modules, types, state, inputs, outputs, ordered behavior, and ownership boundaries.
+
+Capture a source fingerprint before modeling: Git commit plus working-tree diff hash, or checksums for the relevant files. Recheck it before delivery. If the source changed, re-read affected material or continue against an explicitly fixed snapshot.
+
+Scope every claim to the behavior the source proves. For concurrent systems, distinguish ownership, execution context, scheduling, and mutation authority.
+
+For every asynchronous boundary, build a private contract row by tracing public request/reply handles, waiter APIs, spawned tasks, `spawn_blocking` calls, deadline resources, timeout result types, and error variants. Record caller, accepted operation, caller wait bound, work bound, outer-task cancellation, underlying side-effect cancellation, every delivery outcome, whether an error becomes data or terminal failure, whether the operation continues, and whether retry is safe. A boundary is incomplete until those fields are verified or explicitly inapplicable.
+
+Prove execution location from the called function, not from the message used to return its result. For registries, catalogs, and authentication, trace capability registration, configuration precedence, unavailable or missing-credential behavior, and post-configuration refresh.
+
+Name temporal anchors from the exact write or assignment that creates them. Do not replace “after durable prompt commit and before provider work” with an ambiguous label such as “pre-turn.”
+
+Verify planned source paths. Copy source-exact excerpts directly; label compressed teaching excerpts as simplified.
+
+For each ordered mechanism, create a private hierarchical ledger containing stages, nested order, triggers, state changes, transitions, and branches. Copy the sequence from one verified source span and generate every displayed order, count, label, and textual alternative from that single ledger; never hand-type parallel copies.
+
+Keep a private coverage matrix. Rows are the major mechanisms required by the reader; columns are:
+
+- ownership and mutable state;
+- trigger, exact order, and state transition;
+- execution context, waits, deadlines, and retry safety;
+- failure, cancellation, staleness, and terminal outcomes;
+- durability, recovery, and restart behavior;
+- projection or other reader-observable consequence;
+- source evidence.
+
+Breadth means every required subsystem has a primary explanation. Depth means each load-bearing subsystem explains the governing mechanism, at least one important branch or boundary, and its consequence. Mark irrelevant cells explicitly instead of silently omitting them.
+
+Use a source path only beside the mechanism or excerpt it substantiates. Do not add a detached “source locations,” file map, provenance, or repository tour section unless the user explicitly requests source navigation or an audit. Keep research process, confidence labels, and construction metadata private.
+
+**Complete when:** the source fingerprint is stable; the coverage matrix has no unexplained gap; every required concept has source support or an approved exclusion; every asynchronous boundary distinguishes wait timeout from operation timeout, continuation, retry safety, and terminal outcomes; and every excerpt is copied exactly or marked simplified. Begin visual design only after this state exists.
+
+### 3. Set the teaching spine
+
+Order the document by the reader's reasoning path:
+
+- lifecycle for behavioral systems;
+- ownership and dependency flow for architecture;
+- before/after behavior for changes;
+- decision criteria for comparisons;
+- chronology for timelines;
+- concrete reader questions for exploratory material.
+
+Lead with the stable mental model, then mechanism, then important exceptions. Place code beside the mechanism it demonstrates. Keep inventories as compact reference rather than narrative.
+
+Keep the teaching spine private by default. Render a reader question only when the artifact is explicitly exploratory and the question itself is the navigation mechanism; otherwise use the source-native mechanism heading directly.
+Choose the opening from the artifact's teaching job:
+
+- a substantial reference may begin with the exact subject and a summary that explains the governing mechanism and predicts a behavior;
+- a focused diagram may begin with its accessible title and explanatory caption;
+- a compact comparison may begin with the decision question and table caption.
+
+Headings use mechanism names from the source. Legends sit beside the visual they decode. Audience guidance appears only when it changes how the artifact is read.
+
+Reader-facing examples in templates model final-quality explanation. Structural examples use explicit bracketed placeholders rather than finished-sounding generic copy.
+
+For substantial multi-section HTML, use a persistent top bar for document-level navigation and a page-local table of contents for section navigation. Load `./references/responsive-nav.md`. Preserve the reading surface by moving navigation out of the masthead and progressively disclosing secondary detail.
+
+### 4. Choose source-shaped grammar
+
+Each visual answers one named technical question with the simplest exact representation:
+
+| Question | Representation |
+| --- | --- |
+| What happens, and in what order? | Flow or sequence diagram |
+| Who owns state or authority? | Ownership or data-flow diagram |
+| What depends on what? | Dependency or topology diagram |
+| What states and transitions exist? | State diagram |
+| How do alternatives differ? | Semantic table |
+| What changed? | Annotated before/after or diff |
+| What are the measured values? | Table or chart |
+
+A diagram earns space by making a relationship visible that prose would conceal. Text, code, and semantic tables remain first-class when they are clearer.
+
+For layered or staged mechanisms, load `./references/guided-exploration.md`. Build interactions as lessons: establish context, add one relationship, update adjacent explanation, and preserve prior understanding.
+
+A generated image qualifies only when a concrete scene, physical subject, or tightly bounded metaphor teaches something exact diagrams cannot. When it qualifies, load `./references/generated-visuals.md` and `$imagegen`. Otherwise use code-native visuals.
+
+### 5. Prove one representative slice
+
+For a substantial artifact, build one real section before expanding. Include final navigation, one source-shaped visualization, direct mechanism explanation, and a Shiki-highlighted excerpt when code evidence is useful.
+
+When browser review is permitted, inspect the slice in Chrome through `$computer-use`; otherwise run the static layout and interaction checks.
+
+When staged review is part of the contract, present this slice before expansion.
+
+**Complete when:** the slice teaches its mechanism cleanly and establishes a reusable document grammar.
+
+### 6. Build the artifact
+
+Build the contracted form. For HTML, write the document to the requested path or `~/.agent/diagrams/` with embedded CSS, JavaScript, and rendered assets.
+
+Construct from the source model:
+
+- use the reference register for the title, summary, and headings;
+- choose geometry from the relationship being taught;
+- render ordered behavior from the hierarchical ledger with explicit branch labels;
+- keep code exact or visibly simplified and place it beside the mechanism it demonstrates;
+- use semantic tables only for genuine comparison;
+- load `./references/guided-exploration.md` when interaction teaches staged or selectable relationships;
+- load `./references/generated-visuals.md` only when imagery qualifies;
+- load `./references/css-patterns.md` for HTML accessibility, responsive behavior, code, tables, and diagram mechanics;
+- derive typography and color from the project or platform, assigning additional visual treatments only to defined technical semantics;
+- keep research process and construction metadata out of the reader-facing artifact.
+
+For substantial documents, load `./references/anti-slop.md` while choosing the document grammar.
+
+Before delivery, use a fresh read-only reviewer when subagents are available. Give it the raw artifact, fixed source fingerprint, and source path only—not the intended answer or prior diagnosis. Require a claim-by-claim factual review and plain-text editorial review; resolve every material finding. Without subagents, perform a cold second pass from an extracted claim list.
+
+### 7. Verify delivery
+
+Verify in this order:
+
+1. **Plain-text content:** run `bun ./scripts/lint-visible-copy.ts <artifact.html>`, then apply the semantic content gate in `./references/anti-slop.md`.
+2. **Truth and coverage:** required concepts are covered or explicitly excluded; claims, paths, excerpts, and source-shaped visuals agree with the source.
+3. **Cold claim review:** complete the independent or cold source-claim review and resolve every material finding.
+4. **Structure and behavior:** ordered visuals match their source ledgers; interactions earn their place; branch-specific reference checks pass.
+5. **Rendered delivery:** after the earlier gates pass, use Chrome through `$computer-use` and follow `./references/rendered-review.md` at desktop width, a narrow viewport when available, and 200% zoom.
+
+**Complete when:** the content, truth, cold review, structure, and applicable rendered checks pass in that order.
 
 ## Reference routing
 
-Read only the references needed for the current output:
+Load only the branch-specific material needed:
 
 | Need | Read |
-|---|---|
-| Text-heavy architecture/cards | `./templates/architecture.html` |
-| Mermaid flowcharts, sequence, ER, state, class, C4, data flow | `./templates/mermaid-flowchart.html`, Mermaid sections in `./references/libraries.md` |
-| Data tables, comparisons, audits | `./templates/data-table.html` |
-| Slide decks | `./templates/slide-deck.html`, `./references/slide-patterns.md` |
-| CSS layout, overflow, depth, collapsibles, SVG connectors, generated images | `./references/css-patterns.md` |
-| Pages with 4+ major sections | `./references/responsive-nav.md` |
-| Prose-heavy pages | “Prose Page Elements” in `css-patterns.md`, typography sections in `libraries.md` |
+| --- | --- |
+| Source-shaped craft for substantial documents | `./references/anti-slop.md` |
+| Guided architecture interaction | `./references/guided-exploration.md` |
+| Generated illustration qualification and art direction | `./references/generated-visuals.md` |
+| Technical document layout mechanics | `./templates/architecture.html` |
+| Mermaid implementation and interaction | `./templates/mermaid-flowchart.html`, Mermaid sections in `./references/libraries.md` |
+| Tables and comparisons | `./templates/data-table.html` |
+| CSS, overflow, and code patterns | `./references/css-patterns.md` |
+| Multi-section navigation | `./references/responsive-nav.md` |
+| Chrome presentation review | `./references/rendered-review.md` |
+| Slides | `./templates/slide-deck.html`, `./references/slide-patterns.md` |
 
-## Choose the representation
+Templates are mechanics, not page prescriptions. Reuse the working behavior and derive the composition from the source.
 
-| Content | Default representation |
-|---|---|
-| Flowchart, pipeline, state machine, decision tree | Mermaid |
-| Sequence, ER/schema, class, C4, topology-focused architecture | Mermaid |
-| Text-heavy architecture, module internals, implementation plans | CSS grid cards, optionally with a Mermaid overview |
-| 15+ element architecture | Hybrid: small Mermaid overview + CSS detail cards |
-| Comparison/audit/status matrix | Semantic HTML `<table>` |
-| Timeline/roadmap | CSS timeline |
-| Dashboard/metrics | CSS grid + charts/KPIs |
-| Slide deck | `100dvh` slides using slide template patterns |
+## Mermaid branch
 
-## Mermaid invariants
+Use Mermaid when automatic graph layout is the simplest exact representation. Follow `templates/mermaid-flowchart.html` and the Mermaid sections of `references/libraries.md`.
 
-- Use `theme: 'base'` with custom `themeVariables` matching the page palette.
-- For complex diagrams use ELK layout when available.
-- Never use bare `<pre class="mermaid">`.
-- Use the canonical `diagram-shell` pattern from `templates/mermaid-flowchart.html`: `.diagram-shell` > `.mermaid-wrap` > `.zoom-controls` + `.mermaid-viewport` > `.mermaid-canvas`.
-- Every Mermaid diagram needs zoom in/out/reset/expand controls, Ctrl/Cmd+scroll zoom, drag panning, and click-to-expand.
-- Prefer `flowchart TD` for complex diagrams. Use `LR` only for simple 3–4 node linear flows.
-- Use `<br/>` in quoted flowchart labels. Do not use escaped `\n` labels.
-- Never define page-level `.node`; Mermaid uses it internally. Use namespaced page classes such as `.ve-card`.
-- For 15+ elements, do not cram everything into one Mermaid diagram. Use the hybrid overview + cards pattern.
+Keep each graph focused. Interactive diagrams provide semantic controls, visible focus, keyboard equivalents, a textual alternative, and Ctrl/Cmd-gated wheel zoom that preserves normal page scrolling.
 
-## Layout and style invariants
+## Slide branch
 
-- Use semantic HTML where it helps accessibility and copy/paste: `<table>`, headings, lists, `<details>`, captions.
-- Use CSS custom properties for palette: `--bg`, `--surface`, `--border`, `--text`, `--text-dim`, and 3–5 accents.
-- Pick a clear aesthetic direction before writing: blueprint, editorial, paper/ink, terminal, IDE-inspired, or data-dense.
-- Avoid generic defaults: no body font that is only Inter, Roboto, Arial, Helvetica, or system-ui; no violet/fuchsia Tailwind-default accents as the main palette (`#8b5cf6`, `#7c3aed`, `#a78bfa`, `#d946ef`); no cyan+magenta+purple neon dashboard; no gradient-mesh blobs.
-- Good font pair families: DM Sans + Fira Code; Instrument Serif + JetBrains Mono; IBM Plex Sans + IBM Plex Mono; Bricolage Grotesque + Fragment Mono; Plus Jakarta Sans + Azeret Mono.
-- Good accent directions: terracotta+sage, teal+slate, rose+cranberry, amber+emerald, deep blue+gold.
-- Prevent overflow: `min-width: 0` on grid/flex children, `overflow-wrap: break-word` for long text, and scroll containers for wide tables/code.
-- Do not set `display: flex` directly on `<li>` when list markers matter.
-- Use depth sparingly: hero/elevated only for primary sections; flat/recessed for reference material.
-- Use entrance/hover animation only when it clarifies hierarchy. Respect `prefers-reduced-motion`. Do not use continuous glow, pulse, or breathing effects on static content.
+Use slides only when explicitly requested. Build a decision-focused sequence from the teaching spine, with one point per `100dvh` slide and visible keyboard and pointer navigation.
 
-## Slide deck mode
-
-Use slides only when explicitly requested or when a command asks for slides. Slides are a different medium, not a paginated article:
-
-- Each slide is one viewport (`100dvh`) with no page-level scrolling.
-- Use larger type, fewer objects per slide, varied compositions, and visible navigation.
-- Include slide nav chrome from `slide-deck.html`: prev/next controls, slide count, keyboard navigation, and carousel dots/indicators.
-- Before writing HTML, inventory the source and map every source item to slides.
-- Do not drop content to fit a fixed slide count. Add slides instead.
-- Use the 10 slide types from `slide-patterns.md`: Title, Section Divider, Content, Split, Diagram, Dashboard, Table, Code, Quote, Full-Bleed.
-
-## Optional generated images
-
-If `surf` is available, generated images may be embedded as base64 for hero banners, conceptual illustrations, or educational visuals. Skip images for data-heavy, structural, or Mermaid/CSS-suitable content. Pages must stand on CSS, typography, and diagrams without images.
-
-## Final checklist
-
-Before delivery, verify:
-
-- complete HTML document;
-- output written to the requested path;
-- no console errors when opened;
-- no horizontal overflow at normal desktop width;
-- fonts load with fallbacks;
-- tables preserve rows/columns and wrap long text;
-- Mermaid diagrams use `diagram-shell` with zoom/pan/expand;
-- slides fit one viewport, include carousel dots, and preserve source coverage;
-- visual hierarchy makes the main idea obvious in the first viewport;
-- styling would still be recognizable if compared against a generic dark/violet template.
+Map required claims to the main sequence or a compact appendix. Let evidence support the narrative rather than reproduce the source document.

@@ -24,16 +24,15 @@ Before generating, know and cite:
 
 Use file paths, command outputs, or file:line evidence. Do not invent rationale or code paths.
 
-## Required page sections
+## Required outcomes
 
-1. Executive summary: intuition, problem solved, factual scope.
-2. File map: full tree, color-coded new/modified/deleted; compact, `<details>` if long.
-3. Architecture impact: Mermaid or hybrid diagram when relationships matter.
-4. Before/after behavior: side-by-side visual comparison.
-5. Risk review: correctness, tests, API compatibility, security/privacy, performance, maintainability.
-6. Coupling map: dependencies, hidden coupling, migration/release concerns.
-7. Review recommendation: merge/readiness, blockers, follow-ups.
+The review must let the reader determine:
 
-Use diff color language consistently: red removed/before, green added/after, amber modified/risk, blue neutral context. Use responsive section navigation for 4+ sections. Follow the skill’s Mermaid and overflow rules.
+- what observable behavior changed;
+- which interfaces or dependencies carry the change;
+- what evidence supports the assessment;
+- which risks or blockers change the merge decision.
 
-Write to `~/.agent/diagrams/` and open in browser.
+Let those outcomes determine the sections and visuals. Include architecture, file maps, before/after views, or risk tables only when they reveal a relationship needed for the decision.
+
+Write to the requested path; otherwise use `~/.agent/diagrams/`. When visible review is permitted, inspect it in Dia; never launch Chrome or Chromium.

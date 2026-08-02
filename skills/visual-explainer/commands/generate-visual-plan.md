@@ -9,18 +9,15 @@ Load the visual-explainer skill and generate a self-contained HTML implementatio
 
 Read relevant repo files before planning. Identify entry points, existing patterns, affected modules, public APIs, tests, config/schema/data model, similar features, and constraints from README/CHANGELOG/docs.
 
-## Required page sections
+## Document spine
 
-1. Goal and scope: what will change and what is intentionally out.
-2. Current state: short diagram/table of existing architecture.
-3. Proposed design: architecture/data/control flow, preferably Mermaid or hybrid cards.
-4. Implementation sequence: ordered phases with dependencies.
-5. File map: files to create/edit/delete and why.
-6. Interface/contracts: types, APIs, schemas, CLI flags, config, events.
-7. Risk and decision matrix: correctness, tests, migration, release, UX, security/privacy, performance.
-8. Test plan: unit/integration/e2e/edge cases mapped to files.
-9. Acceptance checklist: observable done criteria.
+Build the plan around:
 
-Use hierarchy: overview and architecture dominate; detailed file/test/reference sections stay compact or collapsible. Follow the skill’s Mermaid, table, overflow, and delivery rules.
+1. the current behavior that creates the need;
+2. the proposed behavioral change;
+3. implementation order and dependencies;
+4. observable completion criteria.
 
-Write to `~/.agent/diagrams/` and open in browser.
+Add architecture, file maps, contracts, migration, risks, or test detail only when each changes an implementation decision. Use a visual only for relationships that prose would conceal.
+
+Write to the requested path; otherwise use `~/.agent/diagrams/`. When visible review is permitted, inspect it in Dia; never launch Chrome or Chromium.
