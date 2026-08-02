@@ -428,6 +428,24 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		const records = visibleRecords(ctx);
 		return records.find((record) => record.id === id) ?? records.find((record) => record.id.startsWith(id));
 	};
+	const harnessActions = (ctx: ExtensionCommandContext) => ({
+		steer: (id: string, message: string) => manager.steer(id, message),
+		stop: (id: string) => {
+			const stopped = manager.abort(id);
+			const record = manager.getRecord(id);
+			if (record) persistAgent(record);
+			agentWidget.update();
+			return stopped;
+		},
+		followUp: async (id: string, prompt: string) => {
+			const record = await manager.resume(pi, ctx, id, prompt);
+			if (!record) return false;
+			persistAgent(record);
+			agentWidget.update();
+			return true;
+		},
+	});
+
 	const agentWidget = new AgentWidget(
 		manager,
 		activityByAgent,
@@ -462,7 +480,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	pi.registerCommand("subagents", {
 		description: "Browse and inspect the current agent tree",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
-			await openAgentBrowser(ctx, visibleRecords(ctx));
+			await openAgentBrowser(ctx, visibleRecords(ctx), harnessActions(ctx));
 		},
 	});
 
@@ -471,7 +489,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		handler: async (args: string, ctx: ExtensionCommandContext) => {
 			const target = args.trim();
 			const record = findOwnedRecord(ctx, target);
-			await openAgentInspector(ctx, record);
+			await openAgentInspector(ctx, record, harnessActions(ctx));
 		},
 	});
 
