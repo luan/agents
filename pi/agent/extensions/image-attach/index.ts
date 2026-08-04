@@ -49,6 +49,7 @@ import {
 	PENDING_HANDLE,
 	setHandleThumbnail,
 } from "./handles";
+import { magickBuffer } from "./magick";
 import { renderThumbnailCells } from "./thumbnail";
 
 const PREVIEW_MESSAGE_TYPE = "image-attach-preview";
@@ -82,6 +83,11 @@ function registerPastedImage(path: string): { index: number; handle: string } {
 	pastedImageCount += 1;
 	pastedImages.set(pastedImageCount, path);
 	return { index: pastedImageCount, handle: formatHandle(pastedImageCount) };
+}
+
+/** Point an existing handle at a different file, once a copy of it exists. */
+function repointHandle(index: number, path: string): void {
+	pastedImages.set(index, path);
 }
 
 /**
@@ -202,6 +208,36 @@ async function loadClipboardImageModule(): Promise<ClipboardImageModule | undefi
 }
 
 /**
+ * Longest edge a handle's image keeps. Mirrors the ceiling pi's own read tool applies, so the file
+ * a handle points at is already the size the model will be shown.
+ */
+const MAX_ATTACHMENT_EDGE = 2000;
+
+const NORMALIZE_ARGS = ["-strip", "-resize", `${MAX_ATTACHMENT_EDGE}x${MAX_ATTACHMENT_EDGE}>`, "png:-"];
+
+/** Rewrite a temp file we created as a normalized PNG. Left as-is if `magick` is unavailable. */
+async function normalizeInPlace(path: string): Promise<void> {
+	const png = await magickBuffer(path, NORMALIZE_ARGS);
+	if (png?.length) await writeFile(path, png);
+}
+
+/**
+ * Copy an image we did not create into a normalized temp PNG of our own.
+ *
+ * A file-flavoured clipboard (CleanShot and friends put the saved file on the pasteboard) makes the
+ * terminal paste that file's own path, so a handle would otherwise point into someone's screenshot
+ * library at whatever retina size it was saved at. Taking a copy gives both paste routes the same
+ * kind of file, and keeps the conversation independent of a library that prunes itself.
+ */
+export async function adoptImageFile(path: string): Promise<string> {
+	const png = await magickBuffer(path, NORMALIZE_ARGS);
+	if (!png?.length) return path;
+	const target = join(tmpdir(), `pi-clipboard-${randomUUID()}.png`);
+	await writeFile(target, png);
+	return target;
+}
+
+/**
  * Write the clipboard image to a temp file and leave its handle in the editor. False when the
  * clipboard holds no image, in which case the placeholder is taken back out again.
  */
@@ -217,6 +253,7 @@ async function captureClipboardImage(ctx: ExtensionContext): Promise<boolean> {
 		const extension = clipboard?.extensionForImageMimeType(image.mimeType) ?? "png";
 		const path = join(tmpdir(), `pi-clipboard-${randomUUID()}.${extension}`);
 		await writeFile(path, Buffer.from(image.bytes));
+		await normalizeInPlace(path);
 		const { index, handle } = registerPastedImage(path);
 		// The spinner is still up, so pay for the thumbnail before revealing the handle.
 		setHandleThumbnail(index, await renderThumbnailCells(path));
@@ -382,13 +419,15 @@ export default function imageAttachExtension(pi: ExtensionAPI, deps?: { loadImag
 			const path = pastedImagePath(data, ctx.cwd);
 			if (!path) return undefined;
 			const { index, handle } = registerPastedImage(path);
-			// Nothing is waiting on this paste, so let the handle land as text and colour it in
-			// once the thumbnail is ready.
-			void renderThumbnailCells(path).then((cells) => {
-				if (!cells) return;
-				setHandleThumbnail(index, cells);
-				requestRender();
-			});
+			// The handle has to land in this tick, so copy and draw behind it: the original stays
+			// attachable until the copy exists, and the handle then follows the copy.
+			void adoptImageFile(path)
+				.then(async (adopted) => {
+					repointHandle(index, adopted);
+					setHandleThumbnail(index, await renderThumbnailCells(adopted));
+					requestRender();
+				})
+				.catch(() => {});
 			return { data: bracketedPaste(`${handle} `) };
 		});
 	});
@@ -422,12 +461,34 @@ export default function imageAttachExtension(pi: ExtensionAPI, deps?: { loadImag
 	});
 }
 
-function createReadImageLoader(): ImageLoader {
+/**
+ * Attachment payload we accept without re-encoding. A screenshot inside pi's 2000×2000 cap
+ * encodes to a small fraction of this; well past it means the file was written with little or no
+ * compression, which pi's read tool passes straight through because the *dimensions* are fine.
+ */
+const MAX_ATTACHMENT_BASE64 = 1024 * 1024;
+
+/**
+ * Squeeze an attachment whose bytes are out of proportion to its dimensions. The read tool caps
+ * how big an image is, not how wastefully it was encoded — an uncompressed 800×600 PNG sails under
+ * every limit and still costs megabytes on the wire. Re-encoding is only kept when it actually
+ * wins, so a genuinely dense image is left alone.
+ */
+async function shrinkAttachment(path: string, image: ImageContent): Promise<ImageContent> {
+	if (image.data.length <= MAX_ATTACHMENT_BASE64) return image;
+	const reencoded = await magickBuffer(path, ["-strip", "-resize", "2000x2000>", "png:-"]);
+	if (!reencoded?.length) return image;
+	const data = reencoded.toString("base64");
+	return data.length < image.data.length ? { type: "image", data, mimeType: "image/png" } : image;
+}
+
+export function createReadImageLoader(): ImageLoader {
 	const baseRead = createReadToolDefinition(process.cwd());
 	return async (path, ctx) => {
 		try {
 			const result = await baseRead.execute("image-attach", { path }, undefined, undefined, ctx);
-			return result.content.find(isImageContent);
+			const image = result.content.find(isImageContent);
+			return image && (await shrinkAttachment(path, image));
 		} catch {
 			return undefined;
 		}

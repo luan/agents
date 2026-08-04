@@ -1,9 +1,6 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { getCapabilities, getCellDimensions } from "@earendil-works/pi-tui";
 import { transmitKittyInlineImageRow } from "../shared/kitty-virtual-image";
-
-const execFileAsync = promisify(execFile);
+import { magickBuffer } from "./magick";
 
 /** Cells the thumbnail may use: exactly the width of `image ` inside a handle. */
 export const THUMBNAIL_CELLS = 6;
@@ -95,19 +92,6 @@ export function cellsToHalfBlocks(colors: readonly Rgb[], cells = THUMBNAIL_CELL
 	// A full reset rather than `\x1b[49m`: the polished editor re-applies its own background after
 	// every reset it finds in a line, which is what keeps the rest of the row seam-free.
 	return `${row}\x1b[0m`;
-}
-
-async function magickBuffer(path: string, args: string[]): Promise<Buffer | undefined> {
-	try {
-		const { stdout } = await execFileAsync("magick", [path, "-alpha", "remove", "-alpha", "off", ...args], {
-			timeout: 4000,
-			encoding: "buffer",
-			maxBuffer: 256 * 1024,
-		});
-		return stdout;
-	} catch {
-		return undefined;
-	}
 }
 
 /**
