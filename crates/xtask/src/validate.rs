@@ -1,8 +1,8 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use walkdir::WalkDir;
 
 use crate::stow;
 
@@ -33,6 +33,10 @@ pub fn run() -> Result<()> {
     assert_symlink(
         &root.join("claude/local-plugins/plugins/gs"),
         &root.join("plugins/gs"),
+    )?;
+    assert_symlink(
+        &root.join("claude/local-plugins/plugins/ghs"),
+        &root.join("plugins/ghs"),
     )?;
     stow::run(stow::Mode::DryRun).context("stow dry-run")?;
     Ok(())
@@ -75,82 +79,75 @@ fn assert_symlink(path: &Path, expected: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Files that get read rather than executed -- prompts, docs, configs, skills --
+/// must not carry one machine's absolute paths. Scanning only what git tracks keeps
+/// gitignored runtime state out of it: pi's sessions, caches and debug logs all
+/// embed this checkout's cwd by design, and enumerating them by hand meant every
+/// new artifact broke validation until someone appended another line.
 fn assert_no_checkout_paths(root: &Path) -> Result<()> {
     let needles = ["/".to_string() + "Users/", "/".to_string() + "private/"];
-    let roots: &[PathBuf] = &[
-        root.join("AGENTS.md"),
-        root.join("AGENTS.template.md"),
-        root.join("GLOBAL_AGENTS.md"),
-        root.join("README.md"),
-        root.join("docs"),
-        root.join("rules"),
-        root.join("codex"),
-        root.join("scripts"),
-        root.join("bin"),
-        root.join("claude"),
-        root.join("pi"),
-        root.join("plugins"),
+    const SCANNED: &[&str] = &[
+        "AGENTS.md",
+        "AGENTS.template.md",
+        "GLOBAL_AGENTS.md",
+        "README.md",
+        "docs/",
+        "rules/",
+        "codex/",
+        "scripts/",
+        "bin/",
+        "claude/",
+        "pi/",
+        "plugins/",
     ];
-    for r in roots {
-        if !r.exists() {
+
+    for rel in tracked_files(root)? {
+        if !SCANNED
+            .iter()
+            .any(|s| rel == *s || (s.ends_with('/') && rel.starts_with(s)))
+        {
             continue;
         }
-        let walker: Box<dyn Iterator<Item = PathBuf>> = if r.is_file() {
-            Box::new(std::iter::once(r.clone()))
-        } else {
-            Box::new(
-                WalkDir::new(r)
-                    .into_iter()
-                    .filter_entry(|e| {
-                        // Vendored dependencies contain example absolute paths in docs.
-                        if e.file_name().to_str() == Some("node_modules") {
-                            return false;
-                        }
-                        !is_checkout_path_scan_excluded(e.path())
-                    })
-                    .filter_map(|e| e.ok())
-                    .map(|e| e.into_path()),
-            )
+        // Codex writes its own resolved paths here; test fixtures assert on path
+        // parsing, so literal paths are their input data.
+        if rel == "codex/config.toml" || rel.contains(".test.") {
+            continue;
+        }
+        let path = root.join(&rel);
+        let meta = match fs::symlink_metadata(&path) {
+            Ok(m) => m,
+            Err(_) => continue,
         };
-        for path in walker {
-            let meta = match fs::symlink_metadata(&path) {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-            if !meta.is_file() || meta.file_type().is_symlink() {
-                continue;
-            }
-            if path.ends_with("codex/config.toml") {
-                continue;
-            }
-            if is_checkout_path_scan_excluded(&path) {
-                continue;
-            }
-            let bytes = match fs::read(&path) {
-                Ok(b) => b,
-                Err(_) => continue,
-            };
-            let text = String::from_utf8_lossy(&bytes);
-            for needle in &needles {
-                if text.contains(needle) {
-                    bail!(
-                        "{} contains checkout-specific absolute path {}",
-                        path.display(),
-                        needle
-                    );
-                }
+        if !meta.is_file() || meta.file_type().is_symlink() {
+            continue;
+        }
+        let bytes = match fs::read(&path) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        let text = String::from_utf8_lossy(&bytes);
+        for needle in &needles {
+            if text.contains(needle) {
+                bail!("{rel} contains checkout-specific absolute path {needle}");
             }
         }
     }
     Ok(())
 }
 
-fn is_checkout_path_scan_excluded(path: &Path) -> bool {
-    // Pi runtime state includes checkout-local cwd/session paths and is gitignored.
-    path.ends_with("pi/agent/sessions")
-        || path.ends_with("pi/agent/run-history.jsonl")
-        || path.ends_with("pi/agent/mcp-cache.json")
-        || path.ends_with("pi/agent/mcp-oauth")
-        || path.ends_with("pi/agent/mcp-onboarding.json")
-        || path.ends_with("pi/agent/trust.json")
+fn tracked_files(root: &Path) -> Result<Vec<String>> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["ls-files", "-z"])
+        .output()
+        .context("run git ls-files")?;
+    if !out.status.success() {
+        bail!("git ls-files failed in {}", root.display());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .split('\0')
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect())
 }
