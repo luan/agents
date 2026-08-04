@@ -374,18 +374,22 @@ export function renderEditorTopStatus(
 	const modelStatusLabels = state.modelStatusBadges.map((badge) => theme.fg("success", badge));
 	const modelParts = [modelLabel, thinkingLabel, ...modelStatusLabels].filter(Boolean);
 
-	const safeWidth = Math.max(1, width);
-	const fitted = fitFooterSegment(
-		Math.max(1, safeWidth - 1),
-		[
-			[cwdLabel, branchLabel, runtimeLabel, ...modelParts].filter(Boolean).join(sep),
-			[cwdLabel, branchLabel, ...modelParts].filter(Boolean).join(sep),
-			[branchLabel, ...modelParts].filter(Boolean).join(sep),
-			modelParts.join(sep),
-			modelLabel,
-		].filter(Boolean),
-	);
-	return safeWidth > 1 ? `${fitted} ` : fitted;
+	const safeWidth = width;
+	if (safeWidth <= 0) return "";
+	const basename = cwd.split("/").filter(Boolean).pop() ?? cwd;
+	const shortCwdLabel = theme.fg("accent", formatCwdLabel(basename, config.icons.cwd));
+	const fitted = [
+		[cwdLabel, branchLabel, runtimeLabel, ...modelParts].filter(Boolean).join(sep),
+		[cwdLabel, branchLabel, runtimeLabel, modelLabel, thinkingLabel].filter(Boolean).join(sep),
+		[cwdLabel, branchLabel, modelLabel, thinkingLabel].filter(Boolean).join(sep),
+		[shortCwdLabel, branchLabel, modelLabel, thinkingLabel].filter(Boolean).join(sep),
+		[branchLabel, modelLabel].filter(Boolean).join(sep),
+		modelParts.join(sep),
+		modelLabel,
+	]
+		.filter(Boolean)
+		.find((variant) => visibleWidth(variant) <= safeWidth - 1);
+	return fitted ? `${fitted} ` : "";
 }
 
 export function renderEditorContextStatus(state: FooterRenderState, theme: Theme, width: number): string {

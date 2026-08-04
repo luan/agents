@@ -150,4 +150,32 @@ describe("renderEditorTopStatus", () => {
 
 		expect(stripAnsi(line)).toContain("m > high > fast");
 	});
+
+	test("drops segments as the available width shrinks, then hides entirely", () => {
+		const topStatus = (width: number) =>
+			stripAnsi(
+				renderEditorTopStatus(
+					state({
+						branch: "feature/long-branch-name",
+						modelLabel: "model-name",
+						thinkingLevel: "high",
+						runtime: { name: "nodejs", symbol: "node", version: "v22.21.1" },
+					}),
+					config,
+					"/home/user/projects/deep/my-project",
+					theme,
+					width,
+				),
+			).trimEnd();
+
+		expect(topStatus(99)).toBe(
+			"/home/user/projects/deep/my-project > feature/long-branch-name > node v22.21.1 > model-name > high",
+		);
+		expect(topStatus(90)).toBe("/home/user/projects/deep/my-project > feature/long-branch-name > model-name > high");
+		expect(topStatus(60)).toBe("my-project > feature/long-branch-name > model-name > high");
+		expect(topStatus(40)).toBe("feature/long-branch-name > model-name");
+		expect(topStatus(20)).toBe("model-name > high");
+		expect(topStatus(11)).toBe("model-name");
+		expect(topStatus(6)).toBe("");
+	});
 });

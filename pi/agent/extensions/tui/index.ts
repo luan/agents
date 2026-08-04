@@ -289,7 +289,8 @@ export default function (pi: ExtensionAPI) {
 		theme: Parameters<typeof renderEditorContextStatus>[1],
 		cwd: string,
 	) => {
-		const safeWidth = Math.max(1, width);
+		const safeWidth = width;
+		if (safeWidth <= 0) return "";
 		let usageLine = "";
 		if (usageBarsVisible) {
 			const usageWidth = Math.max(20, Math.min(56, Math.floor(safeWidth * 0.36)));
@@ -307,6 +308,7 @@ export default function (pi: ExtensionAPI) {
 		state.modelStatusBadges = readModelStatusBadges(footerDataProvider);
 		setWorkingFastMode(footerDataProvider?.getExtensionStatuses().get("openai-fast:request") === "fast");
 		const topStatus = renderEditorTopStatus(state, currentConfig, cwd, theme, statusWidth);
+		if (!topStatus) return "";
 		return [usageLine, topStatus].filter(Boolean).join("  ");
 	};
 
@@ -571,7 +573,7 @@ export default function (pi: ExtensionAPI) {
 		setEditorChromeProvider((width, theme, options) => {
 			const bottomWidth = Math.max(1, width - options.modeReserve);
 			return {
-				topRight: renderEditorTopChrome(width, theme, cwd),
+				topRight: renderEditorTopChrome(options.topRightWidth, theme, cwd),
 				bottomRight: renderEditorBottomStatus(bottomWidth, theme),
 			};
 		});

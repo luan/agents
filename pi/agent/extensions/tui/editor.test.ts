@@ -282,23 +282,33 @@ describe("polished TUI editor", () => {
 		expect(lines.every((line) => visibleWidth(line) <= 40)).toBe(true);
 	});
 
-	test("preserves the complete right status before truncating a long prompt", () => {
-		setEditorChromeProvider(() => ({ topRight: "project > branch > runtime > model > low" }));
-		let editorWidth = 0;
+	test("gives the prompt full width and offers the status only the leftover columns", () => {
+		const offered: number[] = [];
+		setEditorChromeProvider((_width, _theme, options) => {
+			offered.push(options.topRightWidth);
+			return { topRight: "▒".repeat(Math.min(20, options.topRightWidth)) };
+		});
+		const editorWidths: number[] = [];
+		// The real editor pads every row out to its full width.
+		const render = (prompt: string) =>
+			renderPolishedEditorForTest(
+				editor({ getMode: () => "normal" }),
+				60,
+				(width) => {
+					editorWidths.push(width);
+					return ["", prompt.padEnd(width), ""];
+				},
+				theme,
+			);
 
-		const lines = renderPolishedEditorForTest(
-			editor({ getMode: () => "normal" }),
-			60,
-			(width) => {
-				editorWidth = width;
-				return ["", "> this prompt is much too long to fit beside the complete status", ""];
-			},
-			theme,
-		);
+		const short = render("> hi");
+		const long = render("> this prompt is much too long to fit beside the complete status");
 
-		expect(stripAnsi(lines[1] ?? "")).toEndWith("project > branch > runtime > model > low");
-		expect(editorWidth).toBe(17);
-		expect(lines.every((line) => visibleWidth(line) <= 60)).toBe(true);
+		expect(editorWidths).toEqual([58, 58]);
+		expect(offered).toEqual([53, 0]);
+		expect(stripAnsi(short[1] ?? "")).toEndWith("▒".repeat(20));
+		expect(stripAnsi(long[1] ?? "")).not.toContain("▒");
+		expect([...short, ...long].every((line) => visibleWidth(line) <= 60)).toBe(true);
 	});
 
 	test("paints dark-theme editor rows with a compositor background", () => {

@@ -20,7 +20,11 @@ type EditorChrome = {
 	bottomRight?: string;
 };
 
-type EditorChromeProvider = (width: number, theme: Theme, options: { modeReserve: number }) => EditorChrome;
+type EditorChromeProvider = (
+	width: number,
+	theme: Theme,
+	options: { modeReserve: number; topRightWidth: number },
+) => EditorChrome;
 
 export interface EditorSessionIdentity {
 	label?: string;
@@ -213,6 +217,10 @@ function truncateVisible(text: string, maxWidth: number): string {
 	return `${[...text].slice(0, maxWidth - 1).join("")}…`;
 }
 
+function trimTrailingBlanks(line: string): string {
+	return line.replace(/[ \t]+$/, "");
+}
+
 function colorFg(uiTheme: Theme, color: string, text: string): string {
 	return `${rgbFg(themeRoleToRgb(uiTheme, color))}${text}\x1b[39m`;
 }
@@ -377,10 +385,7 @@ export function renderPolishedEditorForTest(
 	const innerWidth = Math.max(1, width - railWidth);
 	const modeReserve = typeof editor.getMode === "function" ? MODE_LABEL_RESERVE : 0;
 	const statusWidth = Math.max(1, innerWidth - modeReserve);
-	const chrome = editorChromeProvider?.(innerWidth, uiTheme, { modeReserve }) ?? {};
-	const topRightReserve = chrome.topRight ? Math.min(innerWidth - 1, visibleWidth(chrome.topRight) + 1) : 0;
-	const editorWidth = Math.max(1, innerWidth - topRightReserve);
-	const rendered = renderBase(editorWidth);
+	const rendered = renderBase(innerWidth);
 	const isShowingAutocomplete =
 		typeof editor.isShowingAutocomplete === "function" ? Boolean(editor.isShowingAutocomplete()) : false;
 
@@ -389,7 +394,7 @@ export function renderPolishedEditorForTest(
 	const { autocompleteList } = editor;
 	const autocompleteCount =
 		isShowingAutocomplete && typeof autocompleteList?.render === "function"
-			? autocompleteList.render(editorWidth).length
+			? autocompleteList.render(innerWidth).length
 			: 0;
 	const editorFrame =
 		autocompleteCount > 0 && autocompleteCount < rendered.length ? rendered.slice(0, -autocompleteCount) : rendered;
@@ -402,7 +407,8 @@ export function renderPolishedEditorForTest(
 		typeof editor.transformEditorLine === "function"
 			? (line: string) => editor.transformEditorLine?.(line) ?? line
 			: (line: string) => line;
-	const editorLines = editorFrame.slice(1, -1).map(transformEditorLine);
+	const rawEditorLines = editorFrame.slice(1, -1);
+	const editorLines = rawEditorLines.map(transformEditorLine);
 	const railGap = fillEditorLine(uiTheme, "", 1);
 	const secondaryRail = secondaryRailColor
 		? `${animatedRail(SECONDARY_RAIL_FRAMES, uiTheme, secondaryRailColor, "▐")}${ANSI_RESET}`
@@ -411,6 +417,11 @@ export function renderPolishedEditorForTest(
 	const mainRailGlyph = secondaryRailColor ? "▌" : "┃";
 	const rail = `${secondaryRail}${animatedRail(mainRailFrames, uiTheme, railColor, mainRailGlyph)}${railGap}`;
 	const [firstEditorLine = "", ...remainingEditorLines] = editorLines;
+	// The prompt owns the full width; the status gets whatever the first row leaves over
+	// (one column of gap), compacting itself and vanishing as the text grows into it.
+	// The base editor pads every row to its full width, so measure typed content, not padding.
+	const topRightWidth = Math.max(0, innerWidth - visibleWidth(trimTrailingBlanks(rawEditorLines[0] ?? "")) - 1);
+	const chrome = editorChromeProvider?.(innerWidth, uiTheme, { modeReserve, topRightWidth }) ?? {};
 	const lines = [
 		composeLeftRight(firstEditorLine, chrome.topRight, innerWidth),
 		...remainingEditorLines,
