@@ -788,7 +788,9 @@ export default function piPrettyExtension(pi: PiPrettyApi, deps?: PiPrettyDeps):
 				const fp = args.path ?? ".";
 				const text = createTextComponent(TextComponent, ctx);
 				text.setText(
-					fillToolBackground(`${theme.fg("toolTitle", theme.bold("ls"))} ${theme.fg("accent", sp(fp))}`),
+					fillToolBackground(
+						`${theme.fg("toolTitle", theme.bold("ls"))} ${theme.fg("accent", fp.length > 80 ? `${fp.slice(0, 77)}…` : fp)}`,
+					),
 				);
 				return text;
 			},

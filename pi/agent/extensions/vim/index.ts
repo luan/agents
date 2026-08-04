@@ -658,7 +658,7 @@ export class ModalEditor extends CustomEditor {
 		this.syncCursorShapeForState();
 	}
 
-	override setUseTerminalCursor(useTerminalCursor: boolean): void {
+	setUseTerminalCursor(useTerminalCursor: boolean): void {
 		this.useTerminalCursorCompat = useTerminalCursor;
 		const base = Object.getPrototypeOf(ModalEditor.prototype) as {
 			setUseTerminalCursor?: (useTerminalCursor: boolean) => void;
@@ -3232,15 +3232,23 @@ export default function (pi: ExtensionAPI) {
 					ex: (s: string) => t.fg("warning", reverseVideo(s)),
 				}
 			: null;
-		vimTui.bind(ctx).editor.replace((tui, theme, kb) => {
-			cursorShapeCleanup?.();
-			cursorShapeCleanup = enableCursorShapeSupport(tui);
-			const editor = new ModalEditor(tui, editorThemeWithSymbols(theme), kb, colorizers, "insert");
-			editor.setClipboardMirrorPolicy(clipboardMirrorPolicy.policy);
-			editor.setQuitFn(() => ctx.shutdown());
-			editor.setNotifyFn((message) => ctx.ui.notify(message, "warning"));
-			return editor;
-		});
+		vimTui
+			.bind(ctx)
+			.editor.replace(
+				(
+					tui: CustomEditorConstructorArgs[0],
+					theme: CustomEditorConstructorArgs[1],
+					kb: CustomEditorConstructorArgs[2],
+				) => {
+					cursorShapeCleanup?.();
+					cursorShapeCleanup = enableCursorShapeSupport(tui);
+					const editor = new ModalEditor(tui, editorThemeWithSymbols(theme), kb, colorizers, "insert");
+					editor.setClipboardMirrorPolicy(clipboardMirrorPolicy.policy);
+					editor.setQuitFn(() => ctx.shutdown());
+					editor.setNotifyFn((message) => ctx.ui.notify(message, "warning"));
+					return editor;
+				},
+			);
 	}
 
 	pi.on("session_start", (_event, ctx) => {

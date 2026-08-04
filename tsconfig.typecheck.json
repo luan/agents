@@ -1,14 +1,29 @@
 {
   "extends": "./tsconfig.json",
   "include": [
-    "pi/agent/extensions/context-guard/**/*.ts",
+    "omp/agent/extensions/tui/**/*.ts",
+    "pi/agent/extensions/agents-local/**/*.ts",
     "pi/agent/extensions/ask/**/*.ts",
+    "pi/agent/extensions/auto-compact-resume/**/*.ts",
+    "pi/agent/extensions/context-guard/**/*.ts",
+    "pi/agent/extensions/context7/**/*.ts",
+    "pi/agent/extensions/git-tool/**/*.ts",
+    "pi/agent/extensions/image-attach/**/*.ts",
+    "pi/agent/extensions/openai-fast/**/*.ts",
+    "pi/agent/extensions/plannotator-events/**/*.ts",
+    "pi/agent/extensions/pretty/**/*.ts",
     "pi/agent/extensions/prompt-storage/**/*.ts",
-    "pi/agent/extensions/skillful/**/*.ts",
+    "pi/agent/extensions/shared/image-preview.ts",
     "pi/agent/extensions/shared/tui/**/*.ts",
+    "pi/agent/extensions/skillful/**/*.ts",
     "pi/agent/extensions/subagents/**/*.ts",
+    "pi/agent/extensions/system-prompt/**/*.ts",
+    "pi/agent/extensions/tasks/**/*.ts",
+    "pi/agent/extensions/token-burden/**/*.ts",
     "pi/agent/extensions/tui/**/*.ts",
-    "omp/agent/extensions/tui/**/*.ts"
+    "pi/agent/extensions/vim/**/*.ts"
   ],
-  "exclude": ["**/*.test.ts"]
+  "exclude": [
+    "**/*.test.ts"
+  ]
 }

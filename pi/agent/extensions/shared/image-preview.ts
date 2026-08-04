@@ -25,7 +25,7 @@ async function magickPreview(inputPath: string): Promise<PreviewImage | undefine
 		await execFileAsync(
 			"magick",
 			[inputPath, "-auto-orient", "-resize", `${PREVIEW_MAX_WIDTH_PX}x${PREVIEW_MAX_HEIGHT_PX}>`, "-strip", output],
-			{ timeout: 4000, stdio: ["ignore", "ignore", "ignore"] },
+			{ timeout: 4000 },
 		);
 		const data = await readFile(output);
 		if (data.length === 0) return undefined;

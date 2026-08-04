@@ -22,7 +22,10 @@ export default function autoCompactResumeExtension(pi: ExtensionAPI) {
 		if (compacting) return;
 
 		const usage = ctx.getContextUsage();
-		if (!usage || !needsCompaction(event.message.content, usage.tokens, usage.contextWindow)) {
+		// Only some AgentMessage variants carry content; reading it blind threw on the rest.
+		const message = event.message;
+		const content = "content" in message && Array.isArray(message.content) ? message.content : [];
+		if (!usage || !needsCompaction(content, usage.tokens, usage.contextWindow)) {
 			return;
 		}
 
