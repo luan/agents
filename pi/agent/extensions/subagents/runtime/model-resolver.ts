@@ -2,7 +2,7 @@
  * Model resolution: exact match ("provider/modelId") with fuzzy fallback.
  */
 
-export interface ModelEntry {
+interface ModelEntry {
 	id: string;
 	name: string;
 	provider: string;
@@ -19,7 +19,7 @@ export interface ModelRegistry {
  * Tries exact match first ("provider/modelId"), then fuzzy match against all available models.
  * Returns the Model on success, or an error message string on failure.
  */
-export function resolveModel(input: string, registry: ModelRegistry): any | string {
+function resolveModel(input: string, registry: ModelRegistry): any | string {
 	// Available models (those with auth configured)
 	const all = (registry.getAvailable?.() ?? registry.getAll()) as ModelEntry[];
 	const availableSet = new Set(all.map((m) => `${m.provider}/${m.id}`.toLowerCase()));

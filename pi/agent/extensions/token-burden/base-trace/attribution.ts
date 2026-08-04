@@ -19,7 +19,7 @@ const BUILT_IN_GUIDELINES = new Set([
  * Normalize a snippet string the same way pi core does:
  * collapse all whitespace (including newlines) to single spaces, then trim.
  */
-export function normalizeSnippet(text: string): string {
+function normalizeSnippet(text: string): string {
 	return text.replaceAll(/\s+/g, " ").trim();
 }
 

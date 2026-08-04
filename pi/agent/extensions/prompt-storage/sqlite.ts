@@ -2,12 +2,12 @@ import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 
-export interface SqliteRunResult {
+interface SqliteRunResult {
 	lastInsertRowid: number | bigint;
 	changes: number | bigint;
 }
 
-export interface SqliteStatement {
+interface SqliteStatement {
 	run(...params: unknown[]): SqliteRunResult;
 	get(...params: unknown[]): unknown;
 	all(...params: unknown[]): unknown[];

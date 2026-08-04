@@ -1,16 +1,4 @@
 /**
- * Storage seam for the hashline patcher. {@link Filesystem} is intentionally
- * minimal — `readText`, `writeText`, `exists` — so any backing store can be
- * adapted: disk, memory, S3, an LSP text-document protocol, a Git tree, a
- * VFS, etc.
- *
- * The patcher does its own BOM stripping and LF normalization between
- * {@link Filesystem.readText} and {@link Filesystem.writeText}; the FS deals
- * only in raw text strings.
- */
-import * as pathModule from "node:path";
-
-/**
  * Result returned by {@link Filesystem.writeText}. The patcher echoes back
  * `text` so adapters that transform on serialization (e.g. notebooks) can
  * report what actually landed on disk.
@@ -137,31 +125,5 @@ export class InMemoryFilesystem extends Filesystem {
 	/** Iterate `[path, content]` pairs. */
 	entries(): IterableIterator<[string, string]> {
 		return this.#files.entries();
-	}
-}
-
-/**
- * Disk-backed {@link Filesystem} using Bun's file APIs. The default for CLI
- * use. Paths are accepted as-is; callers responsible for any cwd or
- * jail/sandbox resolution should wrap this with their own subclass.
- */
-export class NodeFilesystem extends Filesystem {
-	async readText(path: string): Promise<string> {
-		const file = Bun.file(path);
-		if (!(await file.exists())) throw new NotFoundError(path);
-		return file.text();
-	}
-
-	async writeText(path: string, content: string): Promise<WriteResult> {
-		await Bun.write(path, content);
-		return { text: content };
-	}
-
-	canonicalPath(path: string): string {
-		return pathModule.resolve(path);
-	}
-
-	async exists(path: string): Promise<boolean> {
-		return Bun.file(path).exists();
 	}
 }

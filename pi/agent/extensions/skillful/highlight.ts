@@ -39,7 +39,7 @@ export function colorizeLines(lines: string[], skills: Set<string>): string[] {
 	return colorize(lines.join("\n"), skills).split("\n");
 }
 
-export function colorizePlain(text: string, skills: Set<string>): string {
+function colorizePlain(text: string, skills: Set<string>): string {
 	let out = "";
 	let pos = 0;
 	for (const reference of findDollarSkillReferences(text, skills)) {

@@ -5,7 +5,7 @@ import type { AgentRecord } from "../types.js";
 import { getLifetimeTotal, type LifetimeUsage, type SessionLike } from "../usage.js";
 
 const MAX_WIDGET_LINES = 12;
-export const WIDGET_REFRESH_MS = 120;
+const WIDGET_REFRESH_MS = 120;
 
 const TOOL_DISPLAY: Record<string, string> = {
 	read: "reading",
@@ -22,7 +22,7 @@ export type Theme = {
 	bold(text: string): string;
 };
 
-export type UICtx = {
+type UICtx = {
 	setStatus(key: string, text: string | undefined): void;
 	setWidget(
 		key: string,
@@ -41,7 +41,7 @@ export interface AgentActivity {
 	lifetimeUsage: LifetimeUsage;
 }
 
-export function formatTokens(count: number): string {
+function formatTokens(count: number): string {
 	if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M token`;
 	if (count >= 1_000) return `${(count / 1_000).toFixed(1)}k token`;
 	return `${count} token`;
@@ -59,7 +59,7 @@ export function formatMs(ms: number): string {
 	return `${(ms / 1000).toFixed(1)}s`;
 }
 
-export function describeActivity(activeTools: Map<string, string>): string {
+function describeActivity(activeTools: Map<string, string>): string {
 	if (activeTools.size === 0) return "thinking";
 	const groups = new Map<string, number>();
 	for (const toolName of activeTools.values()) {

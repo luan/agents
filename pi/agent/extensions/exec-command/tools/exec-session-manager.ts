@@ -30,7 +30,7 @@ export interface UnifiedExecResult {
 	output_truncated?: boolean;
 }
 
-export interface ExecSessionSnapshot {
+interface ExecSessionSnapshot {
 	command: string;
 	output: string;
 	running: boolean;
@@ -55,7 +55,7 @@ export interface ExecSessionRecord {
 	startedAtMs: number;
 }
 
-export interface ExecCommandInput {
+interface ExecCommandInput {
 	cmd: string;
 	workdir?: string;
 	shell?: string;
@@ -64,13 +64,13 @@ export interface ExecCommandInput {
 	login?: boolean;
 }
 
-export interface WriteStdinInput {
+interface WriteStdinInput {
 	process_id: number;
 	chars?: string;
 	yield_time_ms?: number;
 }
 
-export type ExecSessionUpdateCallback = (result: UnifiedExecResult) => void;
+type ExecSessionUpdateCallback = (result: UnifiedExecResult) => void;
 
 interface BaseExecSession {
 	id: number;
@@ -125,7 +125,7 @@ export interface ExecSessionManager {
 	shutdown(): void;
 }
 
-export interface ExecSessionManagerOptions {
+interface ExecSessionManagerOptions {
 	defaultExecYieldTimeMs?: number;
 	defaultWriteYieldTimeMs?: number;
 	minNonInteractiveExecYieldTimeMs?: number;

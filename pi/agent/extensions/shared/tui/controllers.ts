@@ -1,4 +1,4 @@
-export interface SelectController {
+interface SelectController {
 	readonly selectedId: string | undefined;
 	readonly version: number;
 	move(delta: number): void;

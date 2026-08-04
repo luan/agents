@@ -11,9 +11,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { DisableMode } from "./enums.js";
 import { estimateTokens } from "./parser.js";
-import type { Settings, SkillInfo } from "./types.js";
+import { DisableMode, type Settings, type SkillInfo } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Frontmatter parsing
@@ -110,7 +109,7 @@ function loadRawSkill(filePath: string, skills: RawSkill[], visitedRealPaths: Se
 	}
 }
 
-export function scanSkillDir(
+function scanSkillDir(
 	dir: string,
 	skills: RawSkill[],
 	visitedRealPaths: Set<string>,
@@ -197,7 +196,7 @@ function scanSkillPath(sourcePath: string, skills: RawSkill[], visitedRealPaths:
 // ---------------------------------------------------------------------------
 
 /** Estimate the token cost of a skill's list entry in the system prompt. */
-export function estimateSkillPromptTokens(skill: { name: string; description: string; filePath: string }): number {
+function estimateSkillPromptTokens(skill: { name: string; description: string; filePath: string }): number {
 	return estimateTokens(`- ${skill.name}: ${skill.description} (${skill.filePath})`);
 }
 

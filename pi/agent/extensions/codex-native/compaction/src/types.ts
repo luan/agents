@@ -3,11 +3,11 @@ import type { CompactionEntry, CompactionResult, ExtensionContext } from "@earen
 export const EXTENSION_ID = "openai-native-compaction";
 export const EXTENSION_SETTINGS_KEY = "openaiNativeCompaction";
 export const EXTENSION_SETTINGS_FILE = "settings.json";
-export const DEFAULT_ARTIFACT_ROOT = "~/.pi/agent/artifacts/openai-native-compaction";
+const DEFAULT_ARTIFACT_ROOT = "~/.pi/agent/artifacts/openai-native-compaction";
 export const REDACTED_VALUE = "[REDACTED]";
 export const DEFAULT_SUPPORTED_PROVIDERS = ["openai", "openai-codex"] as const;
 export const DEFAULT_SUPPORTED_APIS = ["openai-responses", "openai-codex-responses"] as const;
-export const NATIVE_COMPACTION_STRATEGY = "openai-native-compact-v1";
+const NATIVE_COMPACTION_STRATEGY = "openai-native-compact-v1";
 export const NATIVE_COMPACTION_SHIM_SUMMARY = "[OpenAI native compaction checkpoint]";
 
 export type DebugArtifactKind = "provider-request" | "compact-response" | "compaction-event" | "lifecycle";
@@ -39,7 +39,7 @@ export type ArtifactPaths = {
 	lifecycleDir: string;
 };
 
-export type ArtifactSessionInfo = {
+type ArtifactSessionInfo = {
 	cwd: string;
 	sessionId?: string;
 	sessionFile?: string;
@@ -66,8 +66,8 @@ export type RedactOptions = {
 	placeholder?: string;
 };
 
-export type NativeCompactionStrategy = typeof NATIVE_COMPACTION_STRATEGY;
-export type NativeCompactionShimSummary = typeof NATIVE_COMPACTION_SHIM_SUMMARY;
+type NativeCompactionStrategy = typeof NATIVE_COMPACTION_STRATEGY;
+type NativeCompactionShimSummary = typeof NATIVE_COMPACTION_SHIM_SUMMARY;
 
 export type NativeCompactionRequestMeta = {
 	tokensBefore?: number;
@@ -91,14 +91,14 @@ export type NativeCompactionDetails = NativeCompactionIdentity & {
 
 export type NativeCompactionEntry = CompactionEntry<NativeCompactionDetails>;
 
-export type CreateNativeCompactionDetailsInput = NativeCompactionIdentity & {
+type CreateNativeCompactionDetailsInput = NativeCompactionIdentity & {
 	compactedWindow: unknown[];
 	compactResponseId?: string;
 	createdAt?: string;
 	requestMeta?: NativeCompactionRequestMeta;
 };
 
-export type CreateNativeCompactionShimResultInput = {
+type CreateNativeCompactionShimResultInput = {
 	firstKeptEntryId: string;
 	tokensBefore: number;
 	details: NativeCompactionDetails;
@@ -160,7 +160,7 @@ function isCompactedWindowItem(value: unknown): value is Record<string, unknown>
 	return isRecord(value) && Object.values(value).every(isStructuredValue);
 }
 
-export function isNativeCompactionRequestMeta(value: unknown): value is NativeCompactionRequestMeta {
+function isNativeCompactionRequestMeta(value: unknown): value is NativeCompactionRequestMeta {
 	if (!isRecord(value)) {
 		return false;
 	}
@@ -177,7 +177,7 @@ export function isNativeCompactionRequestMeta(value: unknown): value is NativeCo
 	return true;
 }
 
-export function isNativeCompactionIdentity(value: unknown): value is NativeCompactionIdentity {
+function isNativeCompactionIdentity(value: unknown): value is NativeCompactionIdentity {
 	if (!isRecord(value)) {
 		return false;
 	}
@@ -210,10 +210,6 @@ export function isNativeCompactionEntry(value: unknown): value is NativeCompacti
 	return isRecord(value) && value.type === "compaction" && isNativeCompactionDetails(value.details);
 }
 
-export function isNativeCompactionShimSummary(value: unknown): value is NativeCompactionShimSummary {
-	return value === NATIVE_COMPACTION_SHIM_SUMMARY;
-}
-
 export function createNativeCompactionDetails(input: CreateNativeCompactionDetailsInput): NativeCompactionDetails {
 	return {
 		strategy: NATIVE_COMPACTION_STRATEGY,
@@ -241,7 +237,7 @@ export function createNativeCompactionDetails(input: CreateNativeCompactionDetai
 	};
 }
 
-export function createNativeCompactionShimSummary(): NativeCompactionShimSummary {
+function createNativeCompactionShimSummary(): NativeCompactionShimSummary {
 	return NATIVE_COMPACTION_SHIM_SUMMARY;
 }
 

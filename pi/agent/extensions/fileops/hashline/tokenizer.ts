@@ -93,32 +93,6 @@ function markerLineEquals(line: string, marker: string): boolean {
 	return end === marker.length && line.startsWith(marker);
 }
 
-/**
- * Split a hashline diff into individual lines without losing the trailing
- * empty line that callers may rely on for explicit blank payloads. CRLF pairs
- * are normalized to a single line break.
- */
-export function splitHashlineLines(text: string): string[] {
-	if (text.length === 0) return [""];
-
-	const lines: string[] = [];
-	let start = 0;
-	for (let index = 0; index < text.length; index++) {
-		if (text.charCodeAt(index) !== CHAR_LINE_FEED) continue;
-		let end = index;
-		if (end > start && text.charCodeAt(end - 1) === CHAR_CARRIAGE_RETURN) end--;
-		lines.push(text.slice(start, end));
-		start = index + 1;
-	}
-
-	if (start < text.length) {
-		let end = text.length;
-		if (end > start && text.charCodeAt(end - 1) === CHAR_CARRIAGE_RETURN) end--;
-		lines.push(text.slice(start, end));
-	}
-	return lines;
-}
-
 export function cloneCursor(cursor: Cursor): Cursor {
 	if (cursor.kind === "before_anchor" || cursor.kind === "after_anchor") {
 		return { kind: cursor.kind, anchor: { ...cursor.anchor } };

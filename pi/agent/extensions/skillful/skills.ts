@@ -13,7 +13,7 @@ export type SkillReference = {
 	description?: string;
 };
 
-export type SkillfulLoadStatus = "read";
+type SkillfulLoadStatus = "read";
 
 export type SkillfulLoadDetails = {
 	extension: "skillful";

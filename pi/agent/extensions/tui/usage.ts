@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-export interface RateWindow {
+interface RateWindow {
 	label: string;
 	usedPercent: number;
 	windowSecs: number;

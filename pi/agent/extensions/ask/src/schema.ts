@@ -1,6 +1,6 @@
 import { Type } from "typebox";
 
-export const AskOptionSchema = Type.Object({
+const AskOptionSchema = Type.Object({
 	value: Type.Optional(
 		Type.String({
 			description: "Required answer key",
@@ -23,7 +23,7 @@ export const AskOptionSchema = Type.Object({
 	),
 });
 
-export const AskQuestionSchema = Type.Object({
+const AskQuestionSchema = Type.Object({
 	id: Type.Optional(
 		Type.String({
 			description: "Answer key",

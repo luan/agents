@@ -1,5 +1,5 @@
-export const DEFAULT_MAX_OUTPUT_TOKENS = 10_000;
-export const DEFAULT_MAX_OUTPUT_LINE_CHARS = 400;
+const DEFAULT_MAX_OUTPUT_TOKENS = 10_000;
+const DEFAULT_MAX_OUTPUT_LINE_CHARS = 400;
 export const UNIFIED_EXEC_OUTPUT_MAX_BYTES = 1024 * 1024;
 
 export function approxTokenCount(text: string): number {
@@ -52,7 +52,7 @@ function truncateLineMiddle(line: string, maxChars: number): string {
 	return `${line.slice(0, headBudget)}${marker}${line.slice(line.length - tailBudget)}`;
 }
 
-export function truncateLongLines(
+function truncateLongLines(
 	text: string,
 	maxChars = DEFAULT_MAX_OUTPUT_LINE_CHARS,
 ): { output: string; output_truncated?: boolean } {

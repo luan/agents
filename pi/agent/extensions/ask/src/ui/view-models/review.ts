@@ -5,12 +5,12 @@ import { type ReviewAnswer, shouldRenderAnswersIndividually, toReviewAnswer } fr
 import type { AskState } from "../../types";
 import { UI_DIMENSIONS } from "../constants";
 
-export interface ReviewSelectionModel {
+interface ReviewSelectionModel {
 	label: string;
 	note?: string;
 }
 
-export interface ReviewQuestionModel {
+interface ReviewQuestionModel {
 	answerText?: string;
 	extraOptionNotes?: Array<{ label: string; note: string }>;
 	isCustomOnly?: boolean;
@@ -20,7 +20,7 @@ export interface ReviewQuestionModel {
 	unanswered: boolean;
 }
 
-export interface ReviewScreenModel {
+interface ReviewScreenModel {
 	actionColumnWidth: number;
 	actions: Array<{ label: string; selected: boolean }>;
 	layout: "stacked" | "wide";

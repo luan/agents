@@ -1,6 +1,6 @@
 import type { AskDisplayOption, AskResultAnswer, AskSelectedOption, AskStateAnswer } from "../types";
 
-export interface ExtraOptionNote {
+interface ExtraOptionNote {
 	label: string;
 	note: string;
 }
@@ -9,7 +9,7 @@ export function emptyAnswer(): AskStateAnswer {
 	return { selected: [] };
 }
 
-export function cloneAnswer(answer: AskStateAnswer): AskStateAnswer {
+function cloneAnswer(answer: AskStateAnswer): AskStateAnswer {
 	return {
 		selected: answer.selected.map(cloneSelection),
 		customText: answer.customText,

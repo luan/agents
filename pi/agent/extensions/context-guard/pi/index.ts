@@ -6,14 +6,13 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { resolvePiConfigDir } from "../util/pi-config.js";
 
-export interface DiagnosticResult {
+interface DiagnosticResult {
 	check: string;
 	status: "pass" | "fail" | "warn";
 	message: string;
 	fix?: string;
 }
 
-export const PI_NAME = "Pi";
 const EXEC_COMMAND_WRAP_FLAG = Symbol.for("agents.context-guard.exec-wrap-enabled");
 
 export function markExecCommandContextGuardEnabled(): void {

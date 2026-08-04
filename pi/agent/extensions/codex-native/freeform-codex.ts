@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import type { AssistantMessage, Context, Model, SimpleStreamOptions, Tool } from "@earendil-works/pi-ai";
 import { AssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -170,19 +171,14 @@ function capRetryDelayMs(delayMs: number, options?: SimpleStreamOptions): number
 	return maxRetryDelayMs > 0 ? Math.min(delayMs, maxRetryDelayMs) : delayMs;
 }
 
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-	return new Promise((resolve, reject) => {
-		if (signal?.aborted) {
-			reject(new Error("Request was aborted"));
-			return;
-		}
-		const timeout = setTimeout(resolve, ms);
-		const onAbort = () => {
-			clearTimeout(timeout);
-			reject(new Error("Request was aborted"));
-		};
-		signal?.addEventListener("abort", onAbort, { once: true });
-	});
+// Rethrown as a plain Error so an aborted retry delay reports the same message
+// as every other abort path in this file rather than a DOMException.
+async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+	try {
+		await delay(ms, undefined, { signal });
+	} catch {
+		throw new Error("Request was aborted");
+	}
 }
 
 type WebSocketEventType = "open" | "message" | "error" | "close";
@@ -208,7 +204,7 @@ interface CachedWebSocketConnection {
 	continuation?: CachedWebSocketContinuationState;
 }
 
-export interface OpenAICodexWebSocketDebugStats {
+interface OpenAICodexWebSocketDebugStats {
 	requests: number;
 	connectionsCreated: number;
 	connectionsReused: number;
@@ -533,10 +529,6 @@ function normalizeCustomToolCallItemId(id: string | undefined): string | undefin
 	return normalized.length > 64 ? normalized.slice(0, 64) : normalized;
 }
 
-export function convertFreeformResponsesMessages(model: Model<any>, context: Context, toolName: string) {
-	return convertFreeformResponsesMessagesForTools(model, context, new Set([toolName]));
-}
-
 function convertFreeformResponsesMessagesForTools(model: Model<any>, context: Context, toolNames: Set<string>) {
 	const messages = convertResponsesMessages(model, context, CODEX_TOOL_CALL_PROVIDERS, { includeSystemPrompt: false });
 	const applyPatchCallIds = new Set<string>();
@@ -567,7 +559,7 @@ function convertFreeformResponsesMessagesForTools(model: Model<any>, context: Co
 	});
 }
 
-export function convertTools(tools: Tool[], applyPatch: ApplyPatchFreeformOptions) {
+function convertTools(tools: Tool[], applyPatch: ApplyPatchFreeformOptions) {
 	const toolNames = freeformToolNames(applyPatch);
 	return tools.map((tool: any) => {
 		if (!toolNames.has(tool.name)) {
@@ -916,22 +908,7 @@ function getOrCreateWebSocketDebugStats(sessionId: string): OpenAICodexWebSocket
 	return stats;
 }
 
-export function getOpenAICodexWebSocketDebugStats(sessionId: string): OpenAICodexWebSocketDebugStats | undefined {
-	const stats = websocketDebugStats.get(sessionId);
-	return stats ? { ...stats } : undefined;
-}
-
-export function resetOpenAICodexWebSocketDebugStats(sessionId?: string): void {
-	if (sessionId) {
-		websocketDebugStats.delete(sessionId);
-		websocketSseFallbackSessions.delete(sessionId);
-		return;
-	}
-	websocketDebugStats.clear();
-	websocketSseFallbackSessions.clear();
-}
-
-export function closeOpenAICodexWebSocketSessions(sessionId?: string): void {
+function closeOpenAICodexWebSocketSessions(sessionId?: string): void {
 	const closeEntry = (entry: CachedWebSocketConnection) => {
 		if (entry.idleTimer) clearTimeout(entry.idleTimer);
 		closeWebSocketSilently(entry.socket, 1000, "debug_close");

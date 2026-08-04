@@ -16,19 +16,19 @@ import {
 } from "./serializer";
 import type { NativeCompactionEntry } from "./types";
 
-export type FreshAuthoritativePreamble = {
+type FreshAuthoritativePreamble = {
 	instructions?: string;
 	leadingInput: ResponsesInputMessageItem[];
 	trailingInput: ResponsesInputMessageItem[];
 };
 
-export type SerializedReplaySlice = {
+type SerializedReplaySlice = {
 	entries: SessionEntry[];
 	messages: AgentMessage[];
 	input: ResponsesInputItem[];
 };
 
-export type NativeReplaySegments = {
+type NativeReplaySegments = {
 	boundaryIndex: number;
 	firstKeptEntryIndex: number;
 	instructions?: string;
@@ -42,13 +42,13 @@ export type NativeReplaySegments = {
 	replayInput: unknown[];
 };
 
-export type NativeReplayPayloadRewrite = {
+type NativeReplayPayloadRewrite = {
 	ok: true;
 	segments: NativeReplaySegments;
 	rewrittenPayload: ResponsesCompatibleRequestPayload;
 };
 
-export type NativeReplayPayloadRewriteFailureReason =
+type NativeReplayPayloadRewriteFailureReason =
 	| "compaction-boundary-not-found"
 	| "first-kept-entry-not-found"
 	| "unsupported-instructions"
@@ -56,7 +56,7 @@ export type NativeReplayPayloadRewriteFailureReason =
 	| "unexpected-compaction-after-boundary"
 	| "expected-pi-replay-mismatch";
 
-export type NativeReplayPayloadRewriteFailure = {
+type NativeReplayPayloadRewriteFailure = {
 	ok: false;
 	reason: NativeReplayPayloadRewriteFailureReason;
 	parity?: {
@@ -66,7 +66,7 @@ export type NativeReplayPayloadRewriteFailure = {
 	};
 };
 
-export type NativeReplayPayloadRewriteResult = NativeReplayPayloadRewrite | NativeReplayPayloadRewriteFailure;
+type NativeReplayPayloadRewriteResult = NativeReplayPayloadRewrite | NativeReplayPayloadRewriteFailure;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
@@ -269,7 +269,7 @@ function isPromptEnvelopeItem(item: unknown): item is ResponsesInputMessageItem 
 	return isResponsesInputMessageItem(item) && isPreambleRole(item.role);
 }
 
-export function extractFreshAuthoritativePreamble(
+function extractFreshAuthoritativePreamble(
 	payload: ResponsesCompatibleRequestPayload,
 ): FreshAuthoritativePreamble | undefined {
 	if (payload.instructions !== undefined && typeof payload.instructions !== "string") {
@@ -350,28 +350,9 @@ function findEntryIndexByIdBeforeBoundary(
 	return index >= 0 ? index : undefined;
 }
 
-export function findCompactionBoundaryIndex(
-	entries: readonly SessionEntry[],
-	compactionEntryId: string,
-): number | undefined {
+function findCompactionBoundaryIndex(entries: readonly SessionEntry[], compactionEntryId: string): number | undefined {
 	const boundaryIndex = entries.findIndex((entry) => entry.id === compactionEntryId);
 	return boundaryIndex >= 0 ? boundaryIndex : undefined;
-}
-
-export function findEntriesStrictlyAfterCompactionBoundary(
-	entries: readonly SessionEntry[],
-	compactionEntryId: string,
-): SessionEntry[] | undefined {
-	const boundaryIndex = findCompactionBoundaryIndex(entries, compactionEntryId);
-	if (boundaryIndex === undefined) {
-		return undefined;
-	}
-
-	return entries.slice(boundaryIndex + 1);
-}
-
-export function collectLiveTailMessages(entries: readonly SessionEntry[]): AgentMessage[] {
-	return collectReplayMessages(entries);
 }
 
 export function serializeLiveTailToResponsesInput<TApi extends Api>(args: {
@@ -527,15 +508,6 @@ function buildNativeReplaySegmentsInternal<TApi extends Api>(args: {
 			],
 		},
 	};
-}
-
-export function buildNativeReplaySegments<TApi extends Api>(args: {
-	model: Model<TApi>;
-	payload: ResponsesCompatibleRequestPayload;
-	branchEntries: readonly SessionEntry[];
-	compactionEntry: NativeCompactionEntry;
-}): NativeReplayPayloadRewriteResult {
-	return buildNativeReplaySegmentsInternal(args);
 }
 
 export function rewriteResponsesPayloadWithNativeReplay<TApi extends Api>(args: {

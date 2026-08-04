@@ -7,7 +7,7 @@ export type TextObjectRange = {
 
 export type WordTextObjectClass = "word" | "WORD";
 
-export type DelimiterSpec = {
+type DelimiterSpec = {
 	type: "quote" | "bracket";
 	open: string;
 	close: string;
@@ -67,7 +67,7 @@ function isWhitespace(ch: string | undefined): boolean {
 	return ch !== undefined && /\s/.test(ch);
 }
 
-export function normalizeDelimiterKey(key: string): DelimiterSpec | null {
+function normalizeDelimiterKey(key: string): DelimiterSpec | null {
 	if (key === '"' || key === "'" || key === "`") {
 		return {
 			type: "quote",
@@ -103,7 +103,7 @@ export function normalizeDelimiterKey(key: string): DelimiterSpec | null {
 	return null;
 }
 
-export function isEscapedDelimiter(text: string, index: number): boolean {
+function isEscapedDelimiter(text: string, index: number): boolean {
 	if (!Number.isInteger(index) || index <= 0 || index >= text.length) return false;
 
 	let backslashCount = 0;
@@ -114,7 +114,7 @@ export function isEscapedDelimiter(text: string, index: number): boolean {
 	return backslashCount % 2 === 1;
 }
 
-export function resolveQuoteObjectRange(
+function resolveQuoteObjectRange(
 	text: string,
 	cursorAbs: number,
 	kind: TextObjectKind,
@@ -162,7 +162,7 @@ export function resolveQuoteObjectRange(
 	};
 }
 
-export function resolveBracketObjectRange(
+function resolveBracketObjectRange(
 	text: string,
 	cursorAbs: number,
 	kind: TextObjectKind,

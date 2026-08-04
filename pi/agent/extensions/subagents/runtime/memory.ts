@@ -27,7 +27,7 @@ export function isUnsafeName(name: string): boolean {
 /**
  * Returns true if the given path is a symlink (defense against symlink attacks).
  */
-export function isSymlink(filePath: string): boolean {
+function isSymlink(filePath: string): boolean {
 	try {
 		return lstatSync(filePath).isSymbolicLink();
 	} catch {
@@ -53,7 +53,7 @@ export function safeReadFile(filePath: string): string | undefined {
  * Resolve the memory directory path for a given agent + scope + cwd.
  * Throws if agentName contains path traversal characters.
  */
-export function resolveMemoryDir(agentName: string, scope: MemoryScope, cwd: string): string {
+function resolveMemoryDir(agentName: string, scope: MemoryScope, cwd: string): string {
 	if (isUnsafeName(agentName)) {
 		throw new Error(`Unsafe agent name for memory directory: "${agentName}"`);
 	}
@@ -72,7 +72,7 @@ export function resolveMemoryDir(agentName: string, scope: MemoryScope, cwd: str
  * Refuses to create directories if any component in the path is a symlink
  * to prevent symlink-based directory traversal attacks.
  */
-export function ensureMemoryDir(memoryDir: string): void {
+function ensureMemoryDir(memoryDir: string): void {
 	// If the directory already exists, verify it's not a symlink
 	if (existsSync(memoryDir)) {
 		if (isSymlink(memoryDir)) {
@@ -87,7 +87,7 @@ export function ensureMemoryDir(memoryDir: string): void {
  * Read the first N lines of MEMORY.md from the memory directory, if it exists.
  * Returns undefined if no MEMORY.md exists or if the path is a symlink.
  */
-export function readMemoryIndex(memoryDir: string): string | undefined {
+function readMemoryIndex(memoryDir: string): string | undefined {
 	// Reject symlinked memory directories
 	if (isSymlink(memoryDir)) return undefined;
 

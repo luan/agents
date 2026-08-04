@@ -11,7 +11,7 @@ import type { AskDisplayOption } from "../../types";
 import { UI_DIMENSIONS, UI_TEXT } from "../constants";
 import type { QuestionRenderContext } from "../render-types";
 
-export type QuestionNoteModel = { kind: "editor"; placeholder: string } | { kind: "saved"; text: string };
+type QuestionNoteModel = { kind: "editor"; placeholder: string } | { kind: "saved"; text: string };
 
 export type OptionDetailModel =
 	| { kind: "editor"; placeholder: string; withGap: boolean }
@@ -30,7 +30,7 @@ export interface OptionRowModel {
 	selected: boolean;
 }
 
-export interface QuestionScreenModel {
+interface QuestionScreenModel {
 	mode: "preview" | "standard";
 	previewLayout?: "custom" | "stacked" | "wide";
 	questionNote?: QuestionNoteModel;

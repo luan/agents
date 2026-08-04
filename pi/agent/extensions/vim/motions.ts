@@ -7,19 +7,6 @@ import type { CharMotion } from "./types.js";
 // Character types for word boundary detection
 export type WordMotionClass = "word" | "WORD";
 
-enum CharType {
-	Space = 0,
-	Keyword = 1, // alphanumeric + underscore (or all non-space in WORD mode)
-	Other = 2, // punctuation/symbols
-}
-
-function getCharType(c: string | undefined, semanticClass: WordMotionClass = "word"): CharType {
-	if (!c || /\s/.test(c)) return CharType.Space;
-	if (semanticClass === "WORD") return CharType.Keyword;
-	if (/\w/.test(c)) return CharType.Keyword;
-	return CharType.Other;
-}
-
 function clampLineIndex(lines: readonly string[], lineIndex: number): number {
 	if (lines.length === 0) return 0;
 	if (!Number.isFinite(lineIndex)) return 0;
@@ -38,7 +25,7 @@ export function findFirstNonWhitespaceColumn(line: string): number {
 /**
  * True when line matches ^\s*$.
  */
-export function isBlankLine(line: string | undefined): boolean {
+function isBlankLine(line: string | undefined): boolean {
 	if (line === undefined) return true;
 	return /^\s*$/.test(line);
 }
@@ -46,7 +33,7 @@ export function isBlankLine(line: string | undefined): boolean {
 /**
  * Paragraph start: non-blank line at BOF or after a blank line.
  */
-export function isParagraphStart(lines: readonly string[], lineIndex: number): boolean {
+function isParagraphStart(lines: readonly string[], lineIndex: number): boolean {
 	if (!Number.isInteger(lineIndex)) return false;
 	if (lineIndex < 0 || lineIndex >= lines.length) return false;
 	if (isBlankLine(lines[lineIndex])) return false;
@@ -57,7 +44,7 @@ export function isParagraphStart(lines: readonly string[], lineIndex: number): b
 /**
  * One step of } motion from current line index.
  */
-export function findNextParagraphStart(lines: readonly string[], fromLine: number): number {
+function findNextParagraphStart(lines: readonly string[], fromLine: number): number {
 	if (lines.length === 0) return 0;
 
 	const start = clampLineIndex(lines, fromLine) + 1;
@@ -71,7 +58,7 @@ export function findNextParagraphStart(lines: readonly string[], fromLine: numbe
 /**
  * One step of { motion from current line index.
  */
-export function findPrevParagraphStart(lines: readonly string[], fromLine: number): number {
+function findPrevParagraphStart(lines: readonly string[], fromLine: number): number {
 	if (lines.length === 0) return 0;
 
 	const start = clampLineIndex(lines, fromLine) - 1;
@@ -214,66 +201,4 @@ export function findCharMotionTarget(
 	}
 
 	return null;
-}
-
-/**
- * Calculate word motion target column.
- */
-export function findWordMotionTarget(
-	line: string,
-	col: number,
-	direction: "forward" | "backward",
-	target: "start" | "end",
-	semanticClass: WordMotionClass = "word",
-): number {
-	const len = line.length;
-	if (len === 0) return 0;
-
-	let i = Math.max(0, Math.min(col, len));
-
-	if (direction === "forward") {
-		if (i >= len) return len;
-
-		if (target === "start") {
-			// w: move to start of next word
-			const startType = getCharType(line[i], semanticClass);
-
-			// Skip current word/punct block
-			if (startType !== CharType.Space) {
-				while (i < len && getCharType(line[i], semanticClass) === startType) i++;
-			}
-
-			// Skip whitespace
-			while (i < len && getCharType(line[i], semanticClass) === CharType.Space) i++;
-
-			return i;
-		}
-
-		// e: move to end of current/next word
-		if (i < len - 1) i++;
-
-		// Skip whitespace forward
-		while (i < len && getCharType(line[i], semanticClass) === CharType.Space) i++;
-
-		// Now at start of next word (or end of line). Find end.
-		if (i >= len) return len;
-
-		const type = getCharType(line[i], semanticClass);
-		while (i < len - 1 && getCharType(line[i + 1], semanticClass) === type) i++;
-
-		return i;
-	}
-
-	// b: move to start of previous word
-	if (i >= len) i = len - 1;
-	if (i > 0) i--;
-
-	// Skip whitespace backward
-	while (i > 0 && getCharType(line[i], semanticClass) === CharType.Space) i--;
-
-	// Now at end of prev word (or start of line). Find start.
-	const type = getCharType(line[i], semanticClass);
-	while (i > 0 && getCharType(line[i - 1], semanticClass) === type) i--;
-
-	return i;
 }

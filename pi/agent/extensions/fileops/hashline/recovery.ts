@@ -19,7 +19,7 @@ import type { Anchor, ApplyOptions, ApplyResult, Edit } from "./types";
 // align exactly, refuse and let the caller re-read.
 const RECOVERY_FUZZ_FACTOR = 0;
 
-export interface RecoveryArgs {
+interface RecoveryArgs {
 	path: string;
 	currentText: string;
 	fileHash: string;

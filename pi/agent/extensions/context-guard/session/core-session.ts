@@ -7,7 +7,7 @@ export interface HookInput {
 	tool_output?: { isError?: boolean; is_error?: boolean };
 }
 
-export interface SessionEventWrite {
+interface SessionEventWrite {
 	type: string;
 	category: string;
 	data: string;
@@ -20,7 +20,7 @@ export interface SessionEventWrite {
 	bytesReturned?: number;
 }
 
-export interface SessionQueryEvent {
+interface SessionQueryEvent {
 	id: number;
 	session_id: string;
 	type: string;
@@ -37,7 +37,7 @@ export interface SessionQueryEvent {
 	data_hash: string;
 }
 
-export interface SessionQueryStats {
+interface SessionQueryStats {
 	session_id?: string;
 	project_dir?: string;
 	started_at?: string;
@@ -46,7 +46,7 @@ export interface SessionQueryStats {
 	compact_count?: number;
 }
 
-export interface SessionQueryResume {
+interface SessionQueryResume {
 	snapshot: string;
 	eventCount: number;
 	consumed: boolean;
@@ -63,23 +63,23 @@ export interface SessionToolCallStats {
 	byTool: Record<string, SessionToolCallByTool>;
 }
 
-export interface SessionBeforeAgentStartResult {
+interface SessionBeforeAgentStartResult {
 	activeMemory?: string;
 	resumeSnapshot?: string;
 	systemPrompt?: string;
 }
 
-export interface SessionBeforeCompactResult {
+interface SessionBeforeCompactResult {
 	snapshot?: string;
 	eventCount?: number;
 }
 
-export interface SessionToolCallCheckResult {
+interface SessionToolCallCheckResult {
 	block?: boolean;
 	reason?: string;
 }
 
-export interface SessionQueryResult {
+interface SessionQueryResult {
 	latestSessionId?: string;
 	events?: SessionQueryEvent[];
 	stats?: SessionQueryStats | null;

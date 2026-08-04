@@ -1,12 +1,12 @@
 import { basename } from "node:path";
 
-export type ExplorationStatus = "running" | "done";
+type ExplorationStatus = "running" | "done";
 
-export type ExplorationAction =
+type ExplorationAction =
 	| { kind: "read"; title?: string; body: string; path?: string }
 	| { kind: "find" | "search" | "list" | "run"; title: string; body: string };
 
-export interface ExplorationRenderTheme {
+interface ExplorationRenderTheme {
 	fg(role: string, text: string): string;
 	bold(text: string): string;
 }
@@ -26,7 +26,7 @@ interface ExplorationGroup {
 	visibleEntryId: string;
 }
 
-export interface ExplorationRenderInfo {
+interface ExplorationRenderInfo {
 	hidden: boolean;
 	status: ExplorationStatus;
 	actionGroups?: ExplorationAction[][];
@@ -80,17 +80,14 @@ export function registerExplorationEventHandlers(pi: PiWithEvents): void {
 	});
 }
 
-export function registerExplorationRenderContext(
-	toolCallId: string | undefined,
-	invalidate: (() => void) | undefined,
-): void {
+function registerExplorationRenderContext(toolCallId: string | undefined, invalidate: (() => void) | undefined): void {
 	if (!toolCallId) return;
 	const entry = entriesByToolCallId.get(toolCallId);
 	if (!entry) return;
 	entry.invalidate = invalidate;
 }
 
-export function getExplorationRenderInfo(
+function getExplorationRenderInfo(
 	toolCallId: string | undefined,
 	fallbackStatus: ExplorationStatus,
 ): ExplorationRenderInfo {

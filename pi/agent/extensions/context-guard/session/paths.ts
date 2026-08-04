@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 let _wtCache: { projectDir: string; envSuffix: string | undefined; suffix: string } | undefined;
 
-export function normalizeWorktreePath(path: string): string {
+function normalizeWorktreePath(path: string): string {
 	const normalized = path.replace(/\\/g, "/");
 	if (/^\/+$/.test(normalized)) return "/";
 	if (/^[A-Za-z]:\/+$/.test(normalized)) return `${normalized.slice(0, 2)}/`;
@@ -48,7 +48,7 @@ function getMainWorktreeRoot(projectDir: string): string | null {
 	return root ? normalizeWorktreePath(root) : null;
 }
 
-export function getWorktreeSuffix(projectDir = process.cwd()): string {
+function getWorktreeSuffix(projectDir = process.cwd()): string {
 	const envSuffix = process.env.CONTEXT_GUARD_SESSION_SUFFIX;
 	if (_wtCache && _wtCache.projectDir === projectDir && _wtCache.envSuffix === envSuffix) {
 		return _wtCache.suffix;
@@ -77,15 +77,15 @@ export function getWorktreeSuffix(projectDir = process.cwd()): string {
 	return suffix;
 }
 
-export function _resetWorktreeSuffixCacheForTests(): void {
+function _resetWorktreeSuffixCacheForTests(): void {
 	_wtCache = undefined;
 }
 
-export function hashProjectDirLegacy(projectDir: string): string {
+function hashProjectDirLegacy(projectDir: string): string {
 	return createHash("sha256").update(normalizeWorktreePath(projectDir)).digest("hex").slice(0, 16);
 }
 
-export function hashProjectDirCanonical(projectDir: string): string {
+function hashProjectDirCanonical(projectDir: string): string {
 	const normalized = normalizeWorktreePath(projectDir);
 	const folded = process.platform === "darwin" || process.platform === "win32" ? normalized.toLowerCase() : normalized;
 	return createHash("sha256").update(folded).digest("hex").slice(0, 16);
@@ -120,12 +120,7 @@ export function resolveSessionDbPath(opts: { projectDir: string; sessionsDir: st
 	return resolveSessionPath({ ...opts, ext: ".db" });
 }
 
-export function resolveSessionPath(opts: {
-	projectDir: string;
-	sessionsDir: string;
-	ext: string;
-	suffix?: string;
-}): string {
+function resolveSessionPath(opts: { projectDir: string; sessionsDir: string; ext: string; suffix?: string }): string {
 	const { projectDir, sessionsDir, ext } = opts;
 	const suffix = opts.suffix ?? getWorktreeSuffix(projectDir);
 	const canonicalHash = hashProjectDirCanonical(projectDir);

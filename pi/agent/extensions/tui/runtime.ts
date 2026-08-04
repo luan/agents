@@ -157,7 +157,7 @@ const runtimes: RuntimeCandidate[] = [
 	},
 ];
 
-export function detectRuntime(cwd: string, entries: string[]): RuntimeCandidate | undefined {
+function detectRuntime(cwd: string, entries: string[]): RuntimeCandidate | undefined {
 	for (const runtime of runtimes) {
 		if (runtime.detect(cwd, entries)) return runtime;
 	}

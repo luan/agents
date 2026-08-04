@@ -2,7 +2,7 @@ import { type CommandSummary, type ShellAction, summarizeShellCommand } from "..
 
 export type ExecCommandStatus = "running" | "done";
 
-export interface ExecCommandRenderInfo {
+interface ExecCommandRenderInfo {
 	hidden: boolean;
 	status: ExecCommandStatus;
 	actionGroups?: ShellAction[][];

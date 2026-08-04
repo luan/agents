@@ -241,7 +241,7 @@ function changedRangesForVisiblePair(
 	return { oldRanges, newRanges };
 }
 
-export function applyVisibleRangeBackground(
+function applyVisibleRangeBackground(
 	ansiText: string,
 	ranges: readonly [number, number][],
 	background: string,

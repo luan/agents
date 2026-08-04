@@ -10,7 +10,6 @@ import { matchesKey, truncateToWidth as truncateToWidthRaw, visibleWidth } from 
 import { defineExtensionTui } from "../shared/tui";
 import type { BasePromptTraceResult, TraceBucket, TraceLineEvidence } from "./base-trace/index.js";
 import { TraceCache } from "./base-trace/index.js";
-import { DisableMode } from "./enums.js";
 import type {
 	ParsedPrompt,
 	SessionUsageData,
@@ -20,6 +19,7 @@ import type {
 	ToolEntry,
 	ToolSectionData,
 } from "./types.js";
+import { DisableMode } from "./types.js";
 import { buildBarSegments, fuzzyFilter } from "./utils.js";
 
 const tokenBurdenTui = defineExtensionTui({ id: "token-burden" });
@@ -163,12 +163,12 @@ function shortenLabel(label: string): string {
 }
 
 /** Resolve the user's preferred editor: $VISUAL → $EDITOR → vi. */
-export function getEditor(): string {
+function getEditor(): string {
 	return process.env.VISUAL || process.env.EDITOR || "vi";
 }
 
 /** True for sections whose content is generated (not a user-editable file). */
-export function isReadOnlySection(label: string): boolean {
+function isReadOnlySection(label: string): boolean {
 	return label.startsWith("Base") || label.startsWith("Metadata") || label.startsWith("SYSTEM");
 }
 
@@ -209,7 +209,7 @@ function isToggleKey(data: string): boolean {
 // ---------------------------------------------------------------------------
 
 /** Convert ParsedPrompt sections into TableItems sorted by tokens desc. */
-export function buildTableItems(parsed: ParsedPrompt): TableItem[] {
+function buildTableItems(parsed: ParsedPrompt): TableItem[] {
 	return parsed.sections
 		.map((section): TableItem => {
 			const pct = parsed.totalTokens > 0 ? (section.tokens / parsed.totalTokens) * 100 : 0;
@@ -575,7 +575,7 @@ interface ToolGroupRow {
 
 type ToolsRow = ToolRow | ToolGroupRow;
 
-export type ToolToggleHandler = (
+type ToolToggleHandler = (
 	toolName: string,
 	enabled: boolean,
 ) => {

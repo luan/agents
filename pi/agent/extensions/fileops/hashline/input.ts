@@ -147,7 +147,7 @@ function stripLeadingBlankLines(input: string): string {
  * recognizes as a hashline op. Used by streaming previews to decide whether
  * the partial input is worth treating as a hashline patch yet.
  */
-export function containsRecognizableHashlineOperations(input: string): boolean {
+function containsRecognizableHashlineOperations(input: string): boolean {
 	for (const line of input.split(/\r?\n/)) {
 		if (TOKENIZER.isOp(line)) return true;
 	}

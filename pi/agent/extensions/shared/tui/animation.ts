@@ -5,7 +5,7 @@ export interface ThemeColorSource {
 	getFgAnsi?(role: string): string | undefined;
 }
 
-export interface ShineTextOptions {
+interface ShineTextOptions {
 	role?: string;
 	baseScale?: number;
 	shineScale?: number;
@@ -14,7 +14,7 @@ export interface ShineTextOptions {
 	fallback?: (text: string) => string;
 }
 
-export interface PulseGlyphOptions {
+interface PulseGlyphOptions {
 	role?: string;
 	periodMs?: number;
 	lowScale?: number;
@@ -211,7 +211,7 @@ function ansi256ToRgb(code: number): Rgb {
 	return [gray, gray, gray];
 }
 
-export interface AnimationMountOptions {
+interface AnimationMountOptions {
 	id: string;
 	intervalMs: number;
 	onFrame(frame: number): void;

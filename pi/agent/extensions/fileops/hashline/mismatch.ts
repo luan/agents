@@ -9,7 +9,7 @@
 import { formatNumberedLine, HL_FILE_HASH_SEP, HL_FILE_PREFIX, HL_FILE_SUFFIX } from "./format";
 import { MISMATCH_CONTEXT } from "./messages";
 
-export interface MismatchDetails {
+interface MismatchDetails {
 	path?: string;
 	expectedFileHash: string;
 	actualFileHash: string;

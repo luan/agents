@@ -12,13 +12,13 @@ export type OmpTheme = {
 	checkbox?: { checked?: string; unchecked?: string };
 };
 
-export interface OmpSection {
+interface OmpSection {
 	label?: string;
 	lines: readonly string[];
 	separator?: boolean;
 }
 
-export interface OmpCardSpec {
+interface OmpCardSpec {
 	header: string;
 	sections?: readonly OmpSection[];
 	borderColor?: string;
@@ -67,13 +67,6 @@ export function treeGlyphs(theme: OmpTheme): { branch: string; last: string; ver
 		branch: theme.tree?.branch ?? "├─",
 		last: theme.tree?.last ?? "└─",
 		vertical: theme.tree?.vertical ?? "│",
-	};
-}
-
-export function checkboxGlyphs(theme: OmpTheme): { checked: string; unchecked: string } {
-	return {
-		checked: theme.checkbox?.checked ?? "☑",
-		unchecked: theme.checkbox?.unchecked ?? "☐",
 	};
 }
 

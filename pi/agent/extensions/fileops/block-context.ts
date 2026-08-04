@@ -12,7 +12,7 @@ const CLOSE_TO_OPEN: Record<string, string> = {
 	"}": "{",
 };
 
-export type LineEntry = { kind: "line"; lineNumber: number; text: string; context: boolean } | { kind: "ellipsis" };
+type LineEntry = { kind: "line"; lineNumber: number; text: string; context: boolean } | { kind: "ellipsis" };
 
 interface StackEntry {
 	opener: string;

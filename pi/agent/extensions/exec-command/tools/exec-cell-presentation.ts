@@ -43,15 +43,15 @@ function cachedTruncate(text: string, width: number): string {
 	return cacheValue(truncationCache, `${width}\0${text}`, () => truncateToWidthCompat(text, width, "..."));
 }
 
-export type ExecCellKind = "command" | "exploration" | "spawned-background-terminal" | "user-command" | "write-stdin";
+type ExecCellKind = "command" | "exploration" | "spawned-background-terminal" | "user-command" | "write-stdin";
 
-export interface ExecCellOutputBlock {
+interface ExecCellOutputBlock {
 	output: string;
 	footer?: string;
 	options?: RenderOutputBlockOptions;
 }
 
-export interface ExecCell {
+interface ExecCell {
 	kind: ExecCellKind;
 	status: ExecCommandStatus;
 	command?: string;
@@ -67,7 +67,7 @@ export interface ExecCell {
 	};
 }
 
-export interface RawCommandToExecCellInput {
+interface RawCommandToExecCellInput {
 	command: string;
 	status: ExecCommandStatus;
 	failed?: boolean;
@@ -76,14 +76,14 @@ export interface RawCommandToExecCellInput {
 	outputBlock?: ExecCellOutputBlock;
 }
 
-export interface RenderExecCellEnv {
+interface RenderExecCellEnv {
 	theme: RenderTheme;
 	part?: "header" | "output" | "full";
 	width?: number;
 	expanded?: boolean;
 }
 
-export interface BackgroundTerminalHudCell {
+interface BackgroundTerminalHudCell {
 	id?: number | string;
 	command?: string;
 	output: string;

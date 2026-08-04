@@ -1,11 +1,11 @@
-export type ResourceState<T> =
+type ResourceState<T> =
 	| { kind: "idle" }
 	| { kind: "loading" }
 	| { kind: "ready"; data: T; updatedAt: number }
 	| { kind: "stale"; data: T; updatedAt: number }
 	| { kind: "error"; error: unknown; previous?: T; updatedAt?: number };
 
-export interface ResourceController<T> {
+interface ResourceController<T> {
 	readonly state: ResourceState<T>;
 	refresh(): Promise<void>;
 	cancel(): void;

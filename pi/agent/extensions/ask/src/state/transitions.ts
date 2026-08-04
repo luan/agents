@@ -48,7 +48,7 @@ export function dismissFlow(state: AskState): AskState {
 	return dismissFlowBase(state);
 }
 
-export function reduceAskState(state: AskState, action: AskAction): AskState {
+function reduceAskState(state: AskState, action: AskAction): AskState {
 	switch (action.type) {
 		case "MOVE_TAB":
 			return moveTabBase(state, action.delta);
@@ -93,7 +93,7 @@ export function enterOptionNoteMode(state: AskState, questionId: string, optionV
 	});
 }
 
-export function toggleCurrentOption(state: AskState): AskState {
+function toggleCurrentOption(state: AskState): AskState {
 	return activateCurrentOption(state, "toggle");
 }
 

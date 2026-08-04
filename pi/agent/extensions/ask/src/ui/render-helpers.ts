@@ -35,12 +35,7 @@ export function pushWrappedText(
 	}
 }
 
-export function renderInputLine(
-	line: string,
-	availableWidth: number,
-	theme: Theme,
-	color: ThemeColor = "text",
-): string {
+function renderInputLine(line: string, availableWidth: number, theme: Theme, color: ThemeColor = "text"): string {
 	const innerWidth = Math.max(4, availableWidth - 2);
 	const truncated = truncateToWidth(line, innerWidth);
 	const padding = " ".repeat(Math.max(0, innerWidth - visibleWidth(truncated)));
@@ -81,46 +76,6 @@ export function renderEditorBlock(args: {
 
 	for (const editorLine of innerLines) {
 		lines.push(truncateToWidth(`${indent}${renderEditorLine(editorLine, availableWidth, theme)}`, width));
-	}
-}
-
-export function renderLabeledEditorBlock(args: {
-	lines: string[];
-	label: string;
-	editorLines: string[];
-	width: number;
-	theme: Theme;
-	indent: string;
-	availableWidth: number;
-	placeholder?: string;
-	placeholderColor?: ThemeColor;
-	isEmpty?: boolean;
-}) {
-	const {
-		lines,
-		label,
-		editorLines,
-		width,
-		theme,
-		indent,
-		availableWidth,
-		placeholder,
-		placeholderColor = "muted",
-		isEmpty = false,
-	} = args;
-	const contentLines = getEditorContentLines(editorLines);
-	const labelText = theme.fg("accent", label);
-	const contentIndent = `${indent}${" ".repeat(visibleWidth(label) + 1)}`;
-	const editorWidth = Math.max(4, availableWidth - visibleWidth(label) - 1);
-	const firstLine =
-		isEmpty && placeholder
-			? renderInputLine(placeholder, editorWidth, theme, placeholderColor)
-			: renderEditorLine(contentLines[0] ?? "", editorWidth, theme);
-
-	lines.push(truncateToWidth(`${indent}${labelText} ${firstLine}`, width));
-
-	for (const editorLine of contentLines.slice(1)) {
-		lines.push(truncateToWidth(`${contentIndent}${renderEditorLine(editorLine, availableWidth, theme)}`, width));
 	}
 }
 
@@ -186,7 +141,7 @@ function renderPersistentBackground(text: string, theme: Theme, background: "sel
 	return `${prefix} ${reopenedText} ${suffix}`;
 }
 
-export function renderBox(content: Array<{ text: string; color: ThemeColor }>, width: number, theme: Theme): string[] {
+function renderBox(content: Array<{ text: string; color: ThemeColor }>, width: number, theme: Theme): string[] {
 	const boxWidth = Math.max(UI_DIMENSIONS.boxMinWidth, width);
 	const innerWidth = Math.max(4, boxWidth - 2);
 	const top = theme.fg("accent", `┌${"─".repeat(innerWidth)}┐`);
@@ -264,7 +219,7 @@ export function measurePreviewLeftWidth(
 	return clamp(preferred, UI_DIMENSIONS.previewLeftMinWidth, Math.max(UI_DIMENSIONS.previewLeftMinWidth, maxWidth));
 }
 
-export function getSavedNotePrefixes(theme: Theme, args: { indent: string; label?: string }) {
+function getSavedNotePrefixes(theme: Theme, args: { indent: string; label?: string }) {
 	const title = args.label ? `${args.label} ${UI_TEXT.questionNoteTitle}` : UI_TEXT.questionNoteTitle;
 	return {
 		prefix: `${args.indent}${theme.fg("syntaxString", title)} `,

@@ -10,9 +10,9 @@
  * do not authorize later line-numbered edits by default.
  */
 
-export type ObservedLineSet = "all" | Iterable<number>;
+type ObservedLineSet = "all" | Iterable<number>;
 
-export interface ObservedLineAuthority {
+interface ObservedLineAuthority {
 	/** Lines explicitly requested by read ranges/offsets or directly matched by search. */
 	explicit: ObservedLineSet;
 	/** Extra structural context lines shown to help understand the explicit lines. */
@@ -165,7 +165,7 @@ export abstract class SnapshotStore {
 const DEFAULT_MAX_PATHS = 30;
 const DEFAULT_MAX_VERSIONS_PER_PATH = 4;
 
-export interface InMemorySnapshotStoreOptions {
+interface InMemorySnapshotStoreOptions {
 	/** Maximum number of distinct paths tracked at once (default 30). LRU eviction. */
 	maxPaths?: number;
 	/** Maximum full-file versions retained per path (default 4). Oldest dropped first. */

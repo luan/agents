@@ -10,7 +10,7 @@ export type PiToolResponse = {
 	details?: Record<string, unknown>;
 };
 
-export type CoreResponse = PiToolResponse & {
+type CoreResponse = PiToolResponse & {
 	ok?: boolean;
 	isError?: boolean;
 };

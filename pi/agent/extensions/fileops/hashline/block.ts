@@ -29,7 +29,7 @@ import type {
 	Edit,
 } from "./types";
 
-export interface ResolveBlockEditsOptions {
+interface ResolveBlockEditsOptions {
 	/**
 	 * How to handle a block edit that cannot be resolved safely. `"throw"`
 	 * (default) raises a diagnostic error — used by the authoritative apply +

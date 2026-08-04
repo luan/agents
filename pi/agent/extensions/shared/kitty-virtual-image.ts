@@ -1,12 +1,4 @@
-import { execFileSync } from "node:child_process";
-import {
-	type Component,
-	getCapabilities,
-	getCellDimensions,
-	getImageDimensions,
-	Image,
-	setCapabilities,
-} from "@earendil-works/pi-tui";
+import { type Component, getCapabilities, getCellDimensions, getImageDimensions, Image } from "@earendil-works/pi-tui";
 
 type ImageDimensions = { widthPx: number; heightPx: number };
 
@@ -24,36 +16,6 @@ type KittyVirtualImageOptions = {
 
 function isTmuxSession(): boolean {
 	return Boolean(process.env.TMUX) || (process.env.TERM ?? "").toLowerCase().startsWith("tmux");
-}
-
-function tmux(args: string[]): string | undefined {
-	try {
-		return execFileSync("tmux", args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 250 }).trim();
-	} catch {
-		return undefined;
-	}
-}
-
-function tmuxPassthroughEnabled(): boolean {
-	const value = tmux(["show-options", "-qv", "-p", "allow-passthrough"])?.toLowerCase();
-	return value === "on" || value === "all";
-}
-
-function tmuxClientSupportsKitty(): boolean {
-	const term = tmux(["display-message", "-p", "#{client_termname}"])?.toLowerCase() ?? "";
-	return /bootty|ghostty|kitty|wezterm/.test(term);
-}
-
-export function configureTmuxKittyImageCapability(): void {
-	const caps = getCapabilities();
-	if (caps.images) return;
-	if (!isTmuxSession()) return;
-	if (!tmuxPassthroughEnabled() || !tmuxClientSupportsKitty()) return;
-	setCapabilities({
-		...caps,
-		images: "kitty",
-		trueColor: caps.trueColor || process.env.COLORTERM === "truecolor" || process.env.COLORTERM === "24bit",
-	});
 }
 
 function tmuxWrap(sequence: string): string {

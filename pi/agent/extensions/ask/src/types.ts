@@ -1,4 +1,4 @@
-export type AskQuestionType = "single" | "multi" | "preview";
+type AskQuestionType = "single" | "multi" | "preview";
 
 export interface AskOption {
 	description?: string;
@@ -66,11 +66,11 @@ export interface AskQuestionSummary {
 	type: AskQuestionType;
 }
 
-export interface AskElaborationQuestionContext extends AskQuestionSummary {
+interface AskElaborationQuestionContext extends AskQuestionSummary {
 	options: AskOption[];
 }
 
-export interface AskElaborationQuestionItem {
+interface AskElaborationQuestionItem {
 	answer?: AskResultAnswer;
 	answered: boolean;
 	note: string;
@@ -80,7 +80,7 @@ export interface AskElaborationQuestionItem {
 	};
 }
 
-export interface AskElaborationOptionItem {
+interface AskElaborationOptionItem {
 	answer?: AskResultAnswer;
 	answered: boolean;
 	note: string;
@@ -93,7 +93,7 @@ export interface AskElaborationOptionItem {
 	};
 }
 
-export type AskElaborationItem = AskElaborationQuestionItem | AskElaborationOptionItem;
+type AskElaborationItem = AskElaborationQuestionItem | AskElaborationOptionItem;
 
 export interface AskElaborationPayload {
 	instruction: string;
@@ -101,7 +101,7 @@ export interface AskElaborationPayload {
 	nextAction: "clarify" | "clarify_then_reask";
 }
 
-export interface AskContinuationQuestionState {
+interface AskContinuationQuestionState {
 	status: "answered" | "needs_clarification" | "unanswered";
 }
 

@@ -6,7 +6,6 @@ export const DEFAULT_SUPPORTED_APIS = ["openai-responses", "openai-codex-respons
 const OPENAI_COMPACT_PATH = "responses/compact";
 const CODEX_COMPACT_PATH = "codex/responses/compact";
 
-type BuiltInSupportedProvider = (typeof DEFAULT_SUPPORTED_PROVIDERS)[number];
 type DefaultSupportedApi = (typeof DEFAULT_SUPPORTED_APIS)[number];
 
 type RuntimeModel = Model<Api>;
@@ -21,7 +20,7 @@ type NativeCompactionFailureReason =
 	| "unsupported-payload"
 	| "payload-model-mismatch";
 
-export type NativeCompactionSupportOptions = {
+type NativeCompactionSupportOptions = {
 	enabled?: boolean;
 	supportedProviders?: readonly string[];
 	supportedApis?: readonly string[];
@@ -48,7 +47,7 @@ export type NativeCompactionRuntime = {
 	currentModel: RuntimeModel;
 };
 
-export type NativeCompactionEnvironmentFailure = {
+type NativeCompactionEnvironmentFailure = {
 	ok: false;
 	reason: NativeCompactionFailureReason;
 	provider?: string;
@@ -57,21 +56,19 @@ export type NativeCompactionEnvironmentFailure = {
 	baseUrl?: string;
 };
 
-export type NativeCompactionEnvironmentSuccess = {
+type NativeCompactionEnvironmentSuccess = {
 	ok: true;
 	runtime: NativeCompactionRuntime;
 };
 
-export type NativeCompactionEnvironmentResolution =
-	| NativeCompactionEnvironmentFailure
-	| NativeCompactionEnvironmentSuccess;
+type NativeCompactionEnvironmentResolution = NativeCompactionEnvironmentFailure | NativeCompactionEnvironmentSuccess;
 
 function normalizeConfiguredSet(values: readonly string[] | undefined, defaults: readonly string[]): Set<string> {
 	const source = values && values.length > 0 ? values : defaults;
 	return new Set(source.map((value) => value.trim()).filter((value) => value.length > 0));
 }
 
-export function normalizeBaseUrl(baseUrl: string | undefined | null): string | undefined {
+function normalizeBaseUrl(baseUrl: string | undefined | null): string | undefined {
 	const normalized = baseUrl?.trim().replace(/\/+$/, "");
 	return normalized ? normalized : undefined;
 }
@@ -99,12 +96,8 @@ export function buildCompactUrl(baseUrl: string, api: DefaultSupportedApi): stri
 	return api === "openai-codex-responses" ? buildCodexCompactUrl(baseUrl) : buildOpenAICompactUrl(baseUrl);
 }
 
-export function buildCompactPath(api: DefaultSupportedApi): string {
+function buildCompactPath(api: DefaultSupportedApi): string {
 	return api === "openai-codex-responses" ? CODEX_COMPACT_PATH : OPENAI_COMPACT_PATH;
-}
-
-export function isSupportedProvider(provider: string): provider is BuiltInSupportedProvider {
-	return (DEFAULT_SUPPORTED_PROVIDERS as readonly string[]).includes(provider);
 }
 
 async function resolveRequestAuth(
@@ -125,11 +118,11 @@ async function resolveRequestAuth(
 	return auth.ok ? { apiKey: auth.apiKey, headers: auth.headers } : {};
 }
 
-export function isSupportedApi(api: string): api is DefaultSupportedApi {
+function isSupportedApi(api: string): api is DefaultSupportedApi {
 	return (DEFAULT_SUPPORTED_APIS as readonly string[]).includes(api);
 }
 
-export function isResponsesCompatiblePayload(payload: unknown): payload is ResponsesCompatibleRequestPayload {
+function isResponsesCompatiblePayload(payload: unknown): payload is ResponsesCompatibleRequestPayload {
 	if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
 		return false;
 	}
@@ -138,7 +131,7 @@ export function isResponsesCompatiblePayload(payload: unknown): payload is Respo
 	return typeof candidate.model === "string" && Array.isArray(candidate.input);
 }
 
-export function getRuntimeModelDescriptor(model: RuntimeModel | undefined): {
+function getRuntimeModelDescriptor(model: RuntimeModel | undefined): {
 	provider?: string;
 	api?: string;
 	model?: string;
@@ -258,13 +251,4 @@ export async function resolveNativeCompactionEnvironment(
 			currentModel,
 		},
 	};
-}
-
-export async function getNativeCompactionRuntime(
-	ctx: ExtensionContext,
-	options: NativeCompactionSupportOptions = {},
-	payload?: unknown,
-): Promise<NativeCompactionRuntime | undefined> {
-	const resolution = await resolveNativeCompactionEnvironment(ctx, options, payload);
-	return resolution.ok ? resolution.runtime : undefined;
 }

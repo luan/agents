@@ -10,8 +10,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { DisableMode } from "./enums.js";
-import type { Settings, SkillInfo } from "./types.js";
+import { DisableMode, type Settings, type SkillInfo } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Settings file I/O
@@ -28,7 +27,7 @@ export function loadSettings(settingsPath: string): Settings {
 	return {};
 }
 
-export function saveSettings(settings: Settings, settingsPath: string): void {
+function saveSettings(settings: Settings, settingsPath: string): void {
 	const dir = path.dirname(settingsPath);
 	if (!fs.existsSync(dir)) {
 		fs.mkdirSync(dir, { recursive: true });
@@ -40,7 +39,7 @@ export function saveSettings(settings: Settings, settingsPath: string): void {
 // Frontmatter manipulation
 // ---------------------------------------------------------------------------
 
-export function setFrontmatterField(content: string, key: string, value: string): string {
+function setFrontmatterField(content: string, key: string, value: string): string {
 	if (!content.startsWith("---")) {
 		return `---\n${key}: ${value}\n---\n${content}`;
 	}
@@ -76,7 +75,7 @@ export function setFrontmatterField(content: string, key: string, value: string)
 	return `---\n${lines.join("\n")}\n---${rest}`;
 }
 
-export function removeFrontmatterField(content: string, key: string): string {
+function removeFrontmatterField(content: string, key: string): string {
 	if (!content.startsWith("---")) {
 		return content;
 	}

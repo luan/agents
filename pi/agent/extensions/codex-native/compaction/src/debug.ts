@@ -54,7 +54,7 @@ function shouldRedactKey(key: string): boolean {
 	return SENSITIVE_KEY_RE.test(key);
 }
 
-export function redactValue(value: unknown, options: RedactOptions = {}): unknown {
+function redactValue(value: unknown, options: RedactOptions = {}): unknown {
 	const placeholder = options.placeholder ?? REDACTED_VALUE;
 	const seen = new WeakSet<object>();
 
@@ -84,7 +84,7 @@ export function redactValue(value: unknown, options: RedactOptions = {}): unknow
 	return visit(value);
 }
 
-export function resolveArtifactPaths(settings: ExtensionSettings, context: ArtifactContext): ArtifactPaths {
+function resolveArtifactPaths(settings: ExtensionSettings, context: ArtifactContext): ArtifactPaths {
 	const sessionInfo = toSessionInfo(context);
 	const rootDir = settings.artifactRoot.startsWith("~/")
 		? path.join(os.homedir(), settings.artifactRoot.slice(2))

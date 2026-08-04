@@ -20,16 +20,16 @@ import type { AgentConfig, AgentEvent, AgentRecord, IsolationMode, SubagentType 
 import { type AssistantUsage, addUsage } from "./usage.js";
 import { cleanupWorktree, createWorktree, pruneWorktrees } from "./worktree.js";
 
-export type OnAgentComplete = (record: AgentRecord) => void;
-export type OnAgentStart = (record: AgentRecord) => void;
-export type OnAgentCompact = (record: AgentRecord, info: CompactionInfo) => void;
-export type OnAgentRemove = (record: AgentRecord) => void;
-export type CompactionInfo = { reason: "manual" | "threshold" | "overflow"; tokensBefore: number };
+type OnAgentComplete = (record: AgentRecord) => void;
+type OnAgentStart = (record: AgentRecord) => void;
+type OnAgentCompact = (record: AgentRecord, info: CompactionInfo) => void;
+type OnAgentRemove = (record: AgentRecord) => void;
+type CompactionInfo = { reason: "manual" | "threshold" | "overflow"; tokensBefore: number };
 
 /** Default max concurrent background agents. */
 const DEFAULT_MAX_CONCURRENT = 4;
-export const MAX_RETAINED_TERMINAL_AGENTS = 100;
-export const TERMINAL_AGENT_RETENTION_MS = 10 * 60_000;
+const MAX_RETAINED_TERMINAL_AGENTS = 100;
+const TERMINAL_AGENT_RETENTION_MS = 10 * 60_000;
 
 interface SpawnArgs {
 	pi: ExtensionAPI;

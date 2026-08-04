@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-export type GitToolMode = "graphite" | "git-spice" | "gh-stack" | "main" | "none";
+type GitToolMode = "graphite" | "git-spice" | "gh-stack" | "main" | "none";
 
 type GitToolExtensionOptions = {
 	readGitToolConfig?: () => string | undefined;

@@ -19,9 +19,9 @@ const widgets = new Set<AgentWidget>();
 const activityByAgent = new Map<string, AgentActivity>();
 const completionBatches = new Map<string, Map<string, AgentRecord>>();
 const completionTimers = new Map<string, ReturnType<typeof setTimeout>>();
-export const COMPLETION_BATCH_MS = 250;
+const COMPLETION_BATCH_MS = 250;
 
-export function formatCompletionBatch(records: AgentRecord[]): string {
+function formatCompletionBatch(records: AgentRecord[]): string {
 	return records
 		.map((record) => {
 			const output = record.error || record.result || "No output.";

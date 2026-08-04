@@ -50,7 +50,7 @@ export function fillEditorTransitionLine(uiTheme: Theme, leading: string, width:
 	return `${leading}\x1b[38;2;${background[0]};${background[1]};${background[2]}m${"▄".repeat(remaining)}\x1b[39m`;
 }
 
-export function fillLine(content: string, width: number): string {
+function fillLine(content: string, width: number): string {
 	const truncated = truncateToWidth(content, width, "");
 	const spaces = " ".repeat(Math.max(0, width - visibleWidth(truncated)));
 	return `${truncated}${spaces}`;

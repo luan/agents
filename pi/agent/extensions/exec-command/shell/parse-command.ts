@@ -1,6 +1,5 @@
 import { extractBashCommand, parseShellLcPlainCommands } from "./bash.ts";
 import {
-	isAbsoluteLike,
 	joinCommandTokens,
 	joinPaths,
 	normalizeTokens,
@@ -19,7 +18,7 @@ export function parseCommandString(command: string): ParsedShellCommand[] {
 	return parseCommandTokens(shellSplit(command));
 }
 
-export function parseCommandTokens(command: string[]): ParsedShellCommand[] {
+function parseCommandTokens(command: string[]): ParsedShellCommand[] {
 	const parsed = parseCommandImpl(command);
 	const deduped: ParsedShellCommand[] = [];
 	for (const part of parsed) {
@@ -217,7 +216,7 @@ function simplifyOnce(commands: ParsedShellCommand[]): ParsedShellCommand[] | un
 	return undefined;
 }
 
-export function isSmallFormattingCommand(tokens: string[]): boolean {
+function isSmallFormattingCommand(tokens: string[]): boolean {
 	if (tokens.length === 0) return false;
 	const command = tokens[0];
 	if (
@@ -767,8 +766,4 @@ function xargsHasInPlaceFlag(tokens: string[]): boolean {
 	return tokens.some(
 		(token) => token === "-i" || token.startsWith("-i") || token === "-pi" || token.startsWith("-pi"),
 	);
-}
-
-export function isAbsolutePathLike(path: string): boolean {
-	return isAbsoluteLike(path);
 }

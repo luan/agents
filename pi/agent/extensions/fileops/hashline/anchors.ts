@@ -29,10 +29,6 @@ export function hashlineSnapshotStoreForSession(sessionId: string): InMemorySnap
 	return store;
 }
 
-export function clearHashlineSnapshotStoreForSession(sessionId: string): void {
-	SESSION_SNAPSHOT_STORES.delete(sessionId);
-}
-
 function absolutePath(cwd: string, path: string): string {
 	return isAbsolute(path) ? path : resolve(cwd, path);
 }

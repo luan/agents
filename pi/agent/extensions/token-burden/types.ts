@@ -1,4 +1,8 @@
-import type { DisableMode } from "./enums.js";
+export enum DisableMode {
+	Enabled = "enabled",
+	Hidden = "hidden",
+	Disabled = "disabled",
+}
 
 export interface SkillEntry {
 	name: string;
@@ -88,9 +92,6 @@ export interface TableItem {
 // ---------------------------------------------------------------------------
 // Skill toggle types
 // ---------------------------------------------------------------------------
-
-// DisableMode enum is in enums.ts per factory rules
-export type { DisableMode } from "./enums.js";
 
 export interface SkillInfo {
 	name: string;

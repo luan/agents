@@ -565,7 +565,7 @@ function renderViewImageResult(
  * Dependencies that can be injected for testing.
  * In production, omit `deps` — the extension uses require() to load them.
  */
-export interface PiPrettyDeps {
+interface PiPrettyDeps {
 	sdk: PiPrettySdk;
 	TextComponent: TextComponentCtor;
 }

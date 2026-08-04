@@ -2,7 +2,7 @@
 import { readFile } from "node:fs/promises";
 import { parseHTML } from "linkedom";
 
-export type CopyIssue = {
+type CopyIssue = {
   code: string;
   message: string;
   text?: string;

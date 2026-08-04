@@ -25,7 +25,7 @@ export function restoreLineEndings(text: string, ending: LineEnding): string {
 	return ending === "\r\n" ? text.replace(/\n/g, "\r\n") : text;
 }
 
-export interface BomResult {
+interface BomResult {
 	/** Either the empty string or the BOM sequence (currently UTF-8 BOM). */
 	bom: string;
 	/** Text with any leading BOM removed. */

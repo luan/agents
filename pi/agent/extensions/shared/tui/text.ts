@@ -20,7 +20,7 @@ export function truncateToWidthCompat(text: string, width: number, ellipsis: str
 	}
 }
 
-export interface PadToVisibleWidthOptions {
+interface PadToVisibleWidthOptions {
 	truncate?: boolean;
 	ellipsis?: string;
 	preserveAnsi?: boolean;

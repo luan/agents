@@ -9,7 +9,7 @@ import { KittyVirtualImage } from "../shared/kitty-virtual-image";
 import { registerExtensionMessageRenderer, textComponent } from "../shared/tui";
 
 export const WEB_SEARCH_ACTIVITY_MESSAGE_TYPE = "codex-web-search-activity";
-export const IMAGE_SAVE_DISPLAY_MESSAGE_TYPE = "codex-image-generation-display";
+const IMAGE_SAVE_DISPLAY_MESSAGE_TYPE = "codex-image-generation-display";
 export const WEB_SEARCH_TOOL_NAME = "web_search";
 export const IMAGE_GENERATION_TOOL_NAME = "image_generation";
 
@@ -41,7 +41,7 @@ export type SavedGeneratedImage = {
 	revisedPrompt?: string;
 };
 
-export type GeneratedImageArtifact = {
+type GeneratedImageArtifact = {
 	id: string;
 	path: string;
 	mime_type: string;
@@ -90,7 +90,7 @@ export function markGeneratedImageDisplayed(responseId: string | undefined, call
 	displayedGeneratedImageKeys.add(generatedImageKey(responseId, callId));
 }
 
-export function wasGeneratedImageDisplayed(responseId: string | undefined, callId: string): boolean {
+function wasGeneratedImageDisplayed(responseId: string | undefined, callId: string): boolean {
 	return displayedGeneratedImageKeys.has(generatedImageKey(responseId, callId));
 }
 
@@ -197,11 +197,11 @@ function displayRelative(root: string, filePath: string): string {
 	return relativePath && !relativePath.startsWith("..") && !isAbsolute(relativePath) ? relativePath : filePath;
 }
 
-export function getOpenAICodexImageDirectory(cwd: string): string {
+function getOpenAICodexImageDirectory(cwd: string): string {
 	return resolve(cwd, OPENAI_CODEX_IMAGE_DIR);
 }
 
-export function getOpenAICodexImagePath(
+function getOpenAICodexImagePath(
 	cwd: string,
 	responseId: string | undefined,
 	callId: string,
@@ -254,7 +254,7 @@ export async function saveOpenAICodexGeneratedImage(
 	};
 }
 
-export function generatedImageArtifact(image: SavedGeneratedImage): GeneratedImageArtifact {
+function generatedImageArtifact(image: SavedGeneratedImage): GeneratedImageArtifact {
 	return {
 		id: image.callId,
 		path: image.absolutePath,

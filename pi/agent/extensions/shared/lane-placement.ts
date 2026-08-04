@@ -1,9 +1,9 @@
-export type LanePlacement = "new-window" | "split-pane" | "hidden";
-export type LaneSplitDirection = "horizontal" | "vertical";
-export type LaneMux = "auto" | "tmux" | "zellij" | "pty" | "none";
-export type ResolvedLaneBackend = "tmux" | "zellij" | "none";
+type LanePlacement = "new-window" | "split-pane" | "hidden";
+type LaneSplitDirection = "horizontal" | "vertical";
+type LaneMux = "auto" | "tmux" | "zellij" | "pty" | "none";
+type ResolvedLaneBackend = "tmux" | "zellij" | "none";
 
-export interface ResolveLaneBackendOptions {
+interface ResolveLaneBackendOptions {
 	requested: LaneMux;
 	currentBackend?: "tmux" | "zellij";
 	tmuxAvailable: () => Promise<boolean>;
@@ -31,7 +31,7 @@ export async function resolveLaneBackend(options: ResolveLaneBackendOptions): Pr
 	throw new Error("tmux or zellij backend is unavailable");
 }
 
-export interface LanePlacementRequest {
+interface LanePlacementRequest {
 	placement: LanePlacement;
 	cwd: string;
 	name: string;
@@ -46,7 +46,7 @@ export interface LanePlacementRequest {
 	splitSizePercent?: number;
 }
 
-export interface TmuxLanePlacementRef {
+interface TmuxLanePlacementRef {
 	backend: "tmux";
 	tmux: {
 		session: string;
@@ -59,7 +59,7 @@ export interface TmuxLanePlacementRef {
 	};
 }
 
-export interface ZellijLanePlacementRef {
+interface ZellijLanePlacementRef {
 	backend: "zellij";
 	zellij: {
 		session?: string;
@@ -71,7 +71,7 @@ export interface ZellijLanePlacementRef {
 	};
 }
 
-export interface TmuxLanePlacementOptions {
+interface TmuxLanePlacementOptions {
 	exec: (args: string[]) => Promise<string>;
 }
 
@@ -272,7 +272,7 @@ function tmuxEnvArgs(env: Record<string, string> | undefined): string[] {
 	return Object.entries(env).flatMap(([key, value]) => ["-e", `${key}=${value}`]);
 }
 
-export interface ZellijLanePlacementOptions {
+interface ZellijLanePlacementOptions {
 	exec: (args: string[]) => Promise<string>;
 }
 

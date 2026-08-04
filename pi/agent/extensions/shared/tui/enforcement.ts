@@ -7,12 +7,12 @@ const RAW_TUI_SURFACE_METHODS = [
 	"setEditorComponent",
 ] as const;
 
-export interface SourceFile {
+interface SourceFile {
 	path: string;
 	source: string;
 }
 
-export interface RawTuiSurfaceViolation {
+interface RawTuiSurfaceViolation {
 	path: string;
 	method: (typeof RAW_TUI_SURFACE_METHODS)[number];
 	message: string;

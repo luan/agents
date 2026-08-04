@@ -11,7 +11,3 @@ export function resolvePiConfigDir(env: NodeJS.ProcessEnv = process.env): string
 	}
 	return resolve(homedir(), ".pi");
 }
-
-export function resolvePiGlobalSettingsPaths(env: NodeJS.ProcessEnv = process.env): string[] {
-	return [resolve(resolvePiConfigDir(env), "settings.json")];
-}

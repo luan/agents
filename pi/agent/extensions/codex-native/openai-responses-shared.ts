@@ -5,11 +5,9 @@ import {
 	type Context,
 	calculateCost,
 	type Model,
-	type Tool,
 	type Usage,
 } from "@earendil-works/pi-ai";
 import type {
-	Tool as OpenAITool,
 	ResponseCreateParamsStreaming,
 	ResponseInput,
 	ResponseStreamEvent,
@@ -34,7 +32,7 @@ interface ImageGenerationCallBlock {
 
 type InternalAssistantContent = Extract<Message, { role: "assistant" }>["content"][number] | ImageGenerationCallBlock;
 
-export interface OpenAIResponsesStreamOptions {
+interface OpenAIResponsesStreamOptions {
 	serviceTier?: ResponseCreateParamsStreaming["service_tier"];
 	resolveServiceTier?: (
 		responseServiceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
@@ -50,10 +48,6 @@ type TextSignaturePhase = "commentary" | "final_answer";
 
 interface ConvertResponsesMessagesOptions {
 	includeSystemPrompt?: boolean;
-}
-
-interface ConvertResponsesToolsOptions {
-	strict?: boolean | null;
 }
 
 function shortHash(str: string): string {
@@ -447,17 +441,6 @@ export function convertResponsesMessages<TApi extends Api>(
 	}
 
 	return messages;
-}
-
-export function convertResponsesTools(tools: Tool[], options?: ConvertResponsesToolsOptions): OpenAITool[] {
-	const strict = options?.strict === undefined ? false : options.strict;
-	return tools.map((tool) => ({
-		type: "function",
-		name: tool.name,
-		description: tool.description,
-		parameters: tool.parameters as unknown as Record<string, unknown>,
-		strict,
-	}));
 }
 
 export async function processResponsesStream<TApi extends Api>(

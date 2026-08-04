@@ -129,7 +129,7 @@ interface Pending {
  * flips true (on `envelope-end` or `abort`) subsequent feeds are silently
  * ignored so callers can keep draining their tokenizer.
  */
-export class Executor {
+class Executor {
 	#edits: Edit[] = [];
 	#warnings: string[] = [];
 	#editIndex = 0;

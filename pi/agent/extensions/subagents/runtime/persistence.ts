@@ -20,7 +20,7 @@ export function childSessionDir(rootSessionId: string, agentId: string): string 
 	return join(registryDir(rootSessionId), "sessions", encodeURIComponent(agentId));
 }
 
-export function registryPath(rootSessionId: string): string {
+function registryPath(rootSessionId: string): string {
 	return join(registryDir(rootSessionId), "registry.json");
 }
 

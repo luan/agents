@@ -35,7 +35,7 @@ import { Recovery, type RecoveryResult } from "./recovery";
 import type { Snapshot, SnapshotStore } from "./snapshots";
 import type { ApplyOptions, ApplyResult, BlockResolution, BlockResolver, Edit, SyntaxValidator } from "./types";
 
-export interface PatcherOptions {
+interface PatcherOptions {
 	/** Storage backend used for all reads and writes. */
 	fs: Filesystem;
 	/** Snapshot store that minted and resolves hashline section tags. Required. */
@@ -57,7 +57,7 @@ export interface PatcherOptions {
 }
 
 /** Per-section result returned by {@link Patcher.apply} / {@link Patcher.commit}. */
-export interface PatchSectionResult {
+interface PatchSectionResult {
 	/** Section path (as authored, after cwd-resolution at parse time). */
 	path: string;
 	/** Filesystem-canonical key for this section (e.g. absolute path). */
@@ -88,7 +88,7 @@ export interface PatchSectionResult {
 	blockResolutions?: BlockResolution[];
 }
 
-export interface PatcherApplyResult {
+interface PatcherApplyResult {
 	sections: PatchSectionResult[];
 }
 
@@ -97,7 +97,7 @@ export interface PatcherApplyResult {
  * raw file content read off disk, and the in-memory apply result.
  * {@link Patcher.commit} just writes the {@link PreparedSection.applyResult}.
  */
-export class PreparedSection {
+class PreparedSection {
 	/** @internal */
 	constructor(
 		readonly section: PatchSection,

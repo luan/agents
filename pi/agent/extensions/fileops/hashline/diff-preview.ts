@@ -23,7 +23,7 @@ function formatNumberedDiffLine(prefix: "+" | "-" | " ", lineNum: number, conten
 }
 
 /** Result of {@link generateNumberedDiff}. */
-export interface NumberedDiffOptions {
+interface NumberedDiffOptions {
 	/** Context lines around changed regions (default 2). */
 	contextLines?: number;
 	/** Path used for tree-sitter block-boundary context. */
@@ -35,7 +35,7 @@ function normalizeContextLines(value: number | undefined): number {
 	return Math.max(0, Math.trunc(value));
 }
 
-export interface NumberedDiff {
+interface NumberedDiff {
 	diff: string;
 	/** First changed line number in the post-edit file, or `undefined` when equal. */
 	firstChangedLine?: number;

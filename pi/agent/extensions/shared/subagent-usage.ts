@@ -1,7 +1,7 @@
 export const SUBAGENT_USAGE_ENTRY_TYPE = "subagents:usage";
 export const SUBAGENT_USAGE_EVENT = "subagents:usage";
 
-export type SubagentUsage = {
+type SubagentUsage = {
 	input: number;
 	output: number;
 	cost: number;

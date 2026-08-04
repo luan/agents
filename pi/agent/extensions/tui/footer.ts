@@ -14,9 +14,9 @@ const CONTEXT_BAR_FREE = "─";
 
 const CONTEXT_SEGMENTS = ["system", "prompt", "assistant", "thinking", "tools"] as const;
 
-export type ContextSegmentKey = (typeof CONTEXT_SEGMENTS)[number];
-export type ContextSegments = Readonly<Record<ContextSegmentKey, number>>;
-export type WritableContextSegments = Record<ContextSegmentKey, number>;
+type ContextSegmentKey = (typeof CONTEXT_SEGMENTS)[number];
+type ContextSegments = Readonly<Record<ContextSegmentKey, number>>;
+type WritableContextSegments = Record<ContextSegmentKey, number>;
 
 export type FooterRenderState = GitStatusSummary & {
 	modelLabel: string;
@@ -37,7 +37,7 @@ export type FooterRenderState = GitStatusSummary & {
 	usageLines?: string[];
 };
 
-export function emptyContextSegments(): WritableContextSegments {
+function emptyContextSegments(): WritableContextSegments {
 	return {
 		system: 0,
 		prompt: 0,

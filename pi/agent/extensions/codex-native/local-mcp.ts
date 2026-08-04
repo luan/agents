@@ -1,7 +1,7 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { delimiter, isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 
 export type LocalMcpTool = {
 	name: string;
@@ -14,17 +14,17 @@ export type LocalMcpTool = {
 	};
 };
 
-export type NodeReplConfig = {
+type NodeReplConfig = {
 	command: string;
 	args: string[];
 	env: Record<string, string>;
 };
 
-export type LocalMcpServerConfig = NodeReplConfig & {
+type LocalMcpServerConfig = NodeReplConfig & {
 	cwd?: string;
 };
 
-export type ComputerUseApproval = (message: string) => Promise<boolean>;
+type ComputerUseApproval = (message: string) => Promise<boolean>;
 export type LocalMcpApproval = ComputerUseApproval;
 
 export async function discoverLocalMcpServers(
@@ -58,17 +58,6 @@ type JsonRpcResponse = {
 	error?: { message?: string };
 };
 
-type NodeReplHostFile = {
-	entries?: Array<{
-		updatedAt?: string;
-		paths?: {
-			nodeReplPath?: string;
-			nodePath?: string;
-			nodeModuleDirs?: string[];
-		};
-	}>;
-};
-
 type PendingRequest = {
 	resolve: (value: unknown) => void;
 	reject: (error: Error) => void;
@@ -79,48 +68,6 @@ export async function findCodexCliPath(
 ): Promise<string | undefined> {
 	const configEnv = await readNodeReplConfigEnv(codexHome);
 	return process.env.CODEX_CLI_PATH ?? configEnv.CODEX_CLI_PATH;
-}
-
-export async function findNodeReplConfig(
-	codexHome = process.env.CODEX_HOME ?? join(homedir(), ".codex"),
-): Promise<NodeReplConfig | undefined> {
-	const configuredPath = process.env.NODE_REPL_PATH;
-	const hosts = await readJson<NodeReplHostFile>(join(codexHome, "chrome-native-hosts-v2.json"));
-	const hostPaths = (hosts?.entries ?? [])
-		.filter((entry) => entry.paths?.nodeReplPath)
-		.sort((left, right) => (right.updatedAt ?? "").localeCompare(left.updatedAt ?? ""))
-		.map((entry) => entry.paths!);
-	const selected = configuredPath
-		? { nodeReplPath: configuredPath, nodePath: undefined, nodeModuleDirs: undefined }
-		: hostPaths[0];
-	if (!selected?.nodeReplPath) return undefined;
-
-	const env: Record<string, string> = {
-		...(await readNodeReplConfigEnv(codexHome)),
-		CODEX_HOME: codexHome,
-		NODE_REPL_NATIVE_PIPE_CONNECT_TIMEOUT_MS: process.env.NODE_REPL_NATIVE_PIPE_CONNECT_TIMEOUT_MS ?? "10000",
-		SKY_CUA_NATIVE_PIPE_PATH:
-			process.env.SKY_CUA_NATIVE_PIPE_PATH ??
-			join(
-				homedir(),
-				"Library",
-				"Group Containers",
-				"2DC432GLL2.com.openai.sky.CUAService",
-				"IPC",
-				"computeruse.sock",
-			),
-		...(process.env.NODE_REPL_TRUSTED_CODE_PATHS
-			? { NODE_REPL_TRUSTED_CODE_PATHS: process.env.NODE_REPL_TRUSTED_CODE_PATHS }
-			: { NODE_REPL_TRUSTED_CODE_PATHS: codexHome }),
-	};
-	if (selected.nodePath) env.NODE_REPL_NODE_PATH = selected.nodePath;
-	if (selected.nodeModuleDirs?.length) env.NODE_REPL_NODE_MODULE_DIRS = selected.nodeModuleDirs.join(delimiter);
-	if (process.env.SKY_CUA_SERVICE_PATH) env.SKY_CUA_SERVICE_PATH = process.env.SKY_CUA_SERVICE_PATH;
-	for (const [key, value] of Object.entries(process.env)) {
-		if (value !== undefined && key.startsWith("NODE_REPL_")) env[key] = value;
-	}
-
-	return { command: selected.nodeReplPath, args: [], env };
 }
 
 async function readNodeReplConfigEnv(codexHome: string): Promise<Record<string, string>> {

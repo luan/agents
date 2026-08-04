@@ -34,7 +34,7 @@ export const HL_HEADER_COLON = ":";
 export const HL_FILE_HASH_SEP = "#";
 
 /** Separator between a line number and displayed line content in hashline mode. */
-export const HL_LINE_BODY_SEP = ":";
+const HL_LINE_BODY_SEP = ":";
 
 /** Number of hex characters in an opaque snapshot tag. */
 export const HL_FILE_HASH_LENGTH = 4;
@@ -53,10 +53,4 @@ export function formatHashlineHeader(filePath: string, fileHash: string): string
 /** Formats a single numbered line as `LINE:TEXT`. */
 export function formatNumberedLine(lineNumber: number, line: string): string {
 	return `${lineNumber}${HL_LINE_BODY_SEP}${line}`;
-}
-
-/** Format file text with hashline-mode line-number prefixes for display. */
-export function formatNumberedLines(text: string, startLine = 1): string {
-	const lines = text.split("\n");
-	return lines.map((line, i) => formatNumberedLine(startLine + i, line)).join("\n");
 }

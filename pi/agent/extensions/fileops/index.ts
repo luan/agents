@@ -262,14 +262,10 @@ const findToolSchema = Type.Object({
 });
 
 export const HASHLINE_GRAMMAR = readFileSync(join(EXTENSION_DIR, "hashline", "grammar.lark"), "utf-8");
-export const HASHLINE_PROMPT = readFileSync(join(EXTENSION_DIR, "hashline", "prompt.md"), "utf-8");
-export const APPLY_PATCH_MODE_GRAMMAR = readFileSync(join(EXTENSION_DIR, "modes", "apply-patch.lark"), "utf-8");
+const HASHLINE_PROMPT = readFileSync(join(EXTENSION_DIR, "hashline", "prompt.md"), "utf-8");
+const APPLY_PATCH_MODE_GRAMMAR = readFileSync(join(EXTENSION_DIR, "modes", "apply-patch.lark"), "utf-8");
 export const PATCH_GRAMMAR = readFileSync(join(EXTENSION_DIR, "modes", "patch.lark"), "utf-8");
 export const REPLACE_GRAMMAR = readFileSync(join(EXTENSION_DIR, "modes", "replace.lark"), "utf-8");
-
-export function getConfiguredEditMode(): EditMode {
-	return loadConfig().mode;
-}
 
 export function getEditFreeformToolConfig(): { description: string; grammar: string } {
 	const config = loadConfig();

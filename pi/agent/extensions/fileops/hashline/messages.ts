@@ -5,36 +5,11 @@
  * them.
  */
 
-import { formatNumberedLine, HL_FILE_HASH_SEP, HL_FILE_PREFIX, HL_FILE_SUFFIX } from "./format";
+import { HL_FILE_HASH_SEP, HL_FILE_PREFIX, HL_FILE_SUFFIX } from "./format";
 import type { BlockResolution, BlockResolverFailureReason } from "./types";
 
 /** Lines of context shown either side of a hash mismatch. */
 export const MISMATCH_CONTEXT = 2;
-
-/**
- * Numbered `LINE:TEXT` rows around `anchorLines` (±{@link MISMATCH_CONTEXT}),
- * `*`-marking anchors, `...` between non-adjacent runs. Out-of-range anchors
- * contribute no rows.
- */
-export function formatAnchoredContext(anchorLines: readonly number[], fileLines: readonly string[]): string[] {
-	const displayLines = new Set<number>();
-	for (const line of anchorLines) {
-		if (line < 1 || line > fileLines.length) continue;
-		const lo = Math.max(1, line - MISMATCH_CONTEXT);
-		const hi = Math.min(fileLines.length, line + MISMATCH_CONTEXT);
-		for (let lineNum = lo; lineNum <= hi; lineNum++) displayLines.add(lineNum);
-	}
-	const anchorSet = new Set(anchorLines);
-	const rows: string[] = [];
-	let previous = -1;
-	for (const lineNum of [...displayLines].sort((a, b) => a - b)) {
-		if (previous !== -1 && lineNum > previous + 1) rows.push("...");
-		previous = lineNum;
-		const marker = anchorSet.has(lineNum) ? "*" : " ";
-		rows.push(`${marker}${formatNumberedLine(lineNum, fileLines[lineNum - 1] ?? "")}`);
-	}
-	return rows;
-}
 
 /** Optional patch envelope start marker; silently consumed when present. */
 export const BEGIN_PATCH_MARKER = "*** Begin Patch";
@@ -177,7 +152,7 @@ export function missingSnapshotTagMessage(sectionPath: string): string {
 	return `Missing hashline snapshot tag for edit to ${sectionPath}; use \`${HL_FILE_PREFIX}${sectionPath}${HL_FILE_HASH_SEP}tag${HL_FILE_SUFFIX}\` from your latest read/search output. To create a new file, use the write tool.`;
 }
 
-export type BlockOp = BlockResolution["op"];
+type BlockOp = BlockResolution["op"];
 
 export function blockSingleLineMessage(line: number, op: BlockOp): string {
 	const blockForm = op === "insert_after" ? "insert after block" : op === "delete" ? "delete block" : "replace block";

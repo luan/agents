@@ -1,20 +1,14 @@
 import type { CompactionEntry, SessionEntry } from "@earendil-works/pi-coding-agent";
-import {
-	isNativeCompactionDetails,
-	isNativeCompactionEntry,
-	type NativeCompactionDetails,
-	type NativeCompactionEntry,
-	type NativeCompactionIdentity,
-} from "./types";
+import { isNativeCompactionEntry, type NativeCompactionEntry, type NativeCompactionIdentity } from "./types";
 
-export type NativeCompactionEntryMatch = Partial<NativeCompactionIdentity>;
+type NativeCompactionEntryMatch = Partial<NativeCompactionIdentity>;
 
-export type LatestNativeCompactionResolutionFailureReason =
+type LatestNativeCompactionResolutionFailureReason =
 	| "no-compaction"
 	| "latest-compaction-not-native"
 	| "latest-native-compaction-mismatch";
 
-export type LatestNativeCompactionResolution =
+type LatestNativeCompactionResolution =
 	| {
 			ok: true;
 			entry: NativeCompactionEntry;
@@ -42,23 +36,13 @@ function entryMatches(entry: NativeCompactionEntry, match: NativeCompactionEntry
 	);
 }
 
-export function getNativeCompactionDetails(
-	entry: CompactionEntry | SessionEntry | undefined,
-): NativeCompactionDetails | undefined {
-	if (!entry || entry.type !== "compaction") {
-		return undefined;
-	}
-
-	return isNativeCompactionDetails(entry.details) ? entry.details : undefined;
-}
-
-export function isPersistedNativeCompactionEntry(
+function isPersistedNativeCompactionEntry(
 	entry: CompactionEntry | SessionEntry | undefined,
 ): entry is NativeCompactionEntry {
 	return isNativeCompactionEntry(entry);
 }
 
-export function findLatestCompactionEntryIndex(entries: readonly SessionEntry[]): number | undefined {
+function findLatestCompactionEntryIndex(entries: readonly SessionEntry[]): number | undefined {
 	for (let index = entries.length - 1; index >= 0; index--) {
 		if (entries[index]?.type === "compaction") {
 			return index;
@@ -66,46 +50,6 @@ export function findLatestCompactionEntryIndex(entries: readonly SessionEntry[])
 	}
 
 	return undefined;
-}
-
-export function findLatestCompactionEntry(entries: readonly SessionEntry[]): CompactionEntry | undefined {
-	const index = findLatestCompactionEntryIndex(entries);
-	return index === undefined ? undefined : (entries[index] as CompactionEntry);
-}
-
-export function findLatestNativeCompactionEntryIndex(
-	entries: readonly SessionEntry[],
-	match: NativeCompactionEntryMatch = {},
-): number | undefined {
-	for (let index = entries.length - 1; index >= 0; index--) {
-		const entry = entries[index];
-		if (!isPersistedNativeCompactionEntry(entry)) {
-			continue;
-		}
-
-		if (!entryMatches(entry, match)) {
-			continue;
-		}
-
-		return index;
-	}
-
-	return undefined;
-}
-
-export function findLatestNativeCompactionEntry(
-	entries: readonly SessionEntry[],
-	match: NativeCompactionEntryMatch = {},
-): NativeCompactionEntry | undefined {
-	const index = findLatestNativeCompactionEntryIndex(entries, match);
-	return index === undefined ? undefined : (entries[index] as NativeCompactionEntry);
-}
-
-export function findLatestNativeCompactionDetails(
-	entries: readonly SessionEntry[],
-	match: NativeCompactionEntryMatch = {},
-): NativeCompactionDetails | undefined {
-	return findLatestNativeCompactionEntry(entries, match)?.details;
 }
 
 export function resolveLatestNativeCompactionEntry(

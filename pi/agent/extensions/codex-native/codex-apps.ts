@@ -60,7 +60,7 @@ type CodexPluginAppManifest = {
 	apps?: Record<string, { id?: string; required?: boolean }>;
 };
 
-export type CodexPluginRecord = {
+type CodexPluginRecord = {
 	key: string;
 	name: string;
 	version: string;
@@ -70,7 +70,7 @@ export type CodexPluginRecord = {
 	connectorIds: string[];
 };
 
-export type CodexAppRecord = {
+type CodexAppRecord = {
 	connectorId: string;
 	connectorName: string;
 	connectorDescription: string;
@@ -78,7 +78,7 @@ export type CodexAppRecord = {
 	pluginKey?: string;
 };
 
-export type CodexSkillRecord = {
+type CodexSkillRecord = {
 	name: string;
 	filePath: string;
 	pluginKey: string;
@@ -116,7 +116,7 @@ type CodexAppsCachedTool = {
 	connector_description?: string;
 };
 
-export type CodexAppsToolRecord = {
+type CodexAppsToolRecord = {
 	key: string;
 	piToolName: string;
 	mcpToolName: string;
@@ -398,7 +398,7 @@ export async function discoverCodexAppsTools(cacheDir = CODEX_APPS_CACHE_DIR): P
 	);
 }
 
-export type NodeReplSurface = {
+type NodeReplSurface = {
 	client: CodexAppServerMcpClient;
 	tools: CodexAppsToolRecord[];
 	/** Resolves to newly discovered tools, or [] when the cache is already current. */
@@ -519,7 +519,7 @@ function normalizePluginMcpTool(plugin: CodexPluginRecord, serverKey: string, to
 	};
 }
 
-export async function fetchCodexAppsToolsFromMcp(
+async function fetchCodexAppsToolsFromMcp(
 	config: CodexAppsConfig,
 	signal?: AbortSignal,
 ): Promise<CodexAppsToolRecord[]> {
@@ -616,7 +616,7 @@ function syncCodexPluginAliases(
 	);
 }
 
-export function discoverCodexSkills(
+function discoverCodexSkills(
 	pi: ExtensionAPI,
 	plugins: CodexPluginRecord[],
 	config: CodexAppsConfig,
@@ -677,7 +677,7 @@ export function disabledCodexAppToolKeys(
 	return new Set(tools.filter((tool) => disabledConnectors.has(tool.connectorId)).map((tool) => tool.key));
 }
 
-export function isCodexToolEnabled(
+function isCodexToolEnabled(
 	tool: CodexAppsToolRecord,
 	config: CodexAppsConfig,
 	disabledToolKeys: ReadonlySet<string> = new Set(),

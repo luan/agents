@@ -6,13 +6,13 @@ export interface SurfaceContribution {
 	view: ViewNode | (() => ViewNode);
 }
 
-export interface SurfaceDiagnostic {
+interface SurfaceDiagnostic {
 	code: "exclusive-surface-conflict";
 	surface: string;
 	message: string;
 }
 
-export interface SurfaceRegistry {
+interface SurfaceRegistry {
 	contribute(surface: string, contribution: SurfaceContribution): void;
 	replace(surface: string, contribution: SurfaceContribution): void;
 	resolveShared(surface: string): SurfaceContribution[];

@@ -760,12 +760,12 @@ function isActiveTask(task: TaskRecord): boolean {
 	return !isComplete(task) && !isCanceled(task);
 }
 
-export interface TaskBoardItem {
+interface TaskBoardItem {
 	task: TaskRecord;
 	blocked: boolean;
 }
 
-export interface TaskBoardSelection {
+interface TaskBoardSelection {
 	row: number;
 }
 

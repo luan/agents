@@ -12,7 +12,7 @@ type CompactResponseEnvelope = {
 	[key: string]: unknown;
 };
 
-export type NativeCompactionClientFailureReason =
+type NativeCompactionClientFailureReason =
 	| "aborted"
 	| "network-error"
 	| "non-2xx"
@@ -21,7 +21,7 @@ export type NativeCompactionClientFailureReason =
 	| "malformed-response"
 	| "empty-output";
 
-export type NativeCompactionClientSuccess = {
+type NativeCompactionClientSuccess = {
 	ok: true;
 	status: number;
 	compactedWindow: unknown[];
@@ -30,7 +30,7 @@ export type NativeCompactionClientSuccess = {
 	response: CompactResponseEnvelope;
 };
 
-export type NativeCompactionClientFailure = {
+type NativeCompactionClientFailure = {
 	ok: false;
 	reason: NativeCompactionClientFailureReason;
 	status?: number;
@@ -39,9 +39,9 @@ export type NativeCompactionClientFailure = {
 	responseJson?: unknown;
 };
 
-export type NativeCompactionClientResult = NativeCompactionClientSuccess | NativeCompactionClientFailure;
+type NativeCompactionClientResult = NativeCompactionClientSuccess | NativeCompactionClientFailure;
 
-export type ExecuteNativeCompactionOptions = {
+type ExecuteNativeCompactionOptions = {
 	runtime: NativeCompactionRuntime;
 	request: NativeCompactionRequestBody;
 	signal?: AbortSignal;

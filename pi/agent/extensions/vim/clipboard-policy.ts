@@ -8,7 +8,7 @@ export type RegisterWriteSource = "mutation" | "yank";
 
 export const DEFAULT_CLIPBOARD_MIRROR_POLICY: ClipboardMirrorPolicy = "all";
 
-export type PiVimSettings = { clipboardMirror?: unknown };
+type PiVimSettings = { clipboardMirror?: unknown };
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -46,10 +46,7 @@ export function resolveClipboardMirrorPolicy(value: unknown) {
 	};
 }
 
-export function readPiVimClipboardMirrorSetting(
-	globalSettings: unknown,
-	projectSettings: unknown,
-): unknown | undefined {
+function readPiVimClipboardMirrorSetting(globalSettings: unknown, projectSettings: unknown): unknown | undefined {
 	const project = readSetting(projectSettings);
 	if (project !== missing) return project;
 	const global = readSetting(globalSettings);
@@ -116,17 +113,8 @@ function readPiVimSettingsFromDisk(cwd: string): PiVimSettings {
 	};
 }
 
-let piVimSettingsReader = readPiVimSettingsFromDisk;
+const piVimSettingsReader = readPiVimSettingsFromDisk;
 
 export function readPiVimSettings(cwd: string) {
 	return piVimSettingsReader(cwd);
-}
-
-export function setPiVimSettingsReaderForTests(reader: typeof readPiVimSettingsFromDisk) {
-	const prev = piVimSettingsReader;
-	piVimSettingsReader = reader;
-
-	return () => {
-		piVimSettingsReader = prev;
-	};
 }

@@ -12,14 +12,14 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-export interface WorktreeInfo {
+interface WorktreeInfo {
 	/** Absolute path to the worktree directory. */
 	path: string;
 	/** Branch name created for this worktree (if changes exist). */
 	branch: string;
 }
 
-export interface WorktreeCleanupResult {
+interface WorktreeCleanupResult {
 	/** Whether changes were found in the worktree. */
 	hasChanges: boolean;
 	/** Branch name if changes were committed. */

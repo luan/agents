@@ -17,7 +17,7 @@ type Theme = {
 	bold(text: string): string;
 };
 
-export type AgentHarnessActions = {
+type AgentHarnessActions = {
 	steer(id: string, message: string): Promise<boolean>;
 	stop(id: string): boolean;
 	followUp(id: string, prompt: string): Promise<boolean>;

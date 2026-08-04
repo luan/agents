@@ -108,7 +108,7 @@ export function findImagePathTokens(text: string): string[] {
 }
 
 /** Absolute path of an existing image file, or undefined. */
-export function resolveImagePath(token: string, cwd: string): string | undefined {
+function resolveImagePath(token: string, cwd: string): string | undefined {
 	const unescaped = token.replace(/\\ /g, " ");
 	const expanded = unescaped.startsWith("~/") ? resolve(homedir(), unescaped.slice(2)) : unescaped;
 	const absolute = isAbsolute(expanded) ? expanded : resolve(cwd, expanded);

@@ -368,7 +368,7 @@ function renderStatusMarker(
 	return theme.fg(failed ? "error" : "success", marker);
 }
 
-export function runningMarker(elapsedMs: number | undefined): string {
+function runningMarker(elapsedMs: number | undefined): string {
 	return runningFrame(elapsedMs, RUNNING_FRAME_MS);
 }
 

@@ -1,7 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Editor } from "@earendil-works/pi-tui";
-import type { getAnswer, getCurrentQuestion, getRenderableOptions } from "../state/selectors";
-import type { AskDisplayOption, AskState } from "../types";
+import type { getCurrentQuestion, getRenderableOptions } from "../state/selectors";
+import type { AskState } from "../types";
 
 export type Theme = ExtensionContext["ui"]["theme"];
 
@@ -13,17 +13,4 @@ export interface QuestionRenderContext {
 	state: AskState;
 	theme: Theme;
 	width: number;
-}
-
-export interface OptionDetailRenderContext {
-	answer: ReturnType<typeof getAnswer>;
-	editor: Editor;
-	lines: string[];
-	option: AskDisplayOption | undefined;
-	questionId: string;
-	selected?: boolean;
-	state: AskState;
-	theme: Theme;
-	width: number;
-	withGap?: boolean;
 }

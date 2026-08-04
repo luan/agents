@@ -29,7 +29,7 @@ const globalState = globalThis as typeof globalThis & { [PATCH_KEY]?: PatchState
 type PatchedTool = ToolComponent & { [SUPPRESS_SPACER]?: boolean };
 const ANSI_ESCAPE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 
-export function patchConsecutiveReadSpacing(prototype: InteractiveModePrototype): () => void {
+function patchConsecutiveReadSpacing(prototype: InteractiveModePrototype): () => void {
 	const existing = globalState[PATCH_KEY];
 	if (existing && existing.prototype.renderWidgetContainer === existing.wrapped) {
 		existing.users++;

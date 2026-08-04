@@ -5,17 +5,17 @@ import type { RenderTheme, ViewNode } from "./types";
 
 type WidgetTui = Pick<TUI, "requestRender">;
 
-export interface ExtensionTuiDefinition {
+interface ExtensionTuiDefinition {
 	tools: ToolRegistry;
 	bind(ctx: TuiSessionContext): BoundExtensionTui;
 }
 
-export interface OverlayHostOptions {
+interface OverlayHostOptions {
 	overlay?: boolean;
 	overlayOptions?: unknown;
 }
 
-export interface TuiSessionContext {
+interface TuiSessionContext {
 	ui: {
 		setWidget(
 			key: string,
@@ -32,7 +32,7 @@ export interface TuiSessionContext {
 	};
 }
 
-export interface BoundExtensionTui {
+interface BoundExtensionTui {
 	widgets: {
 		aboveEditor: {
 			contribute(contribution: SurfaceContribution): void;
@@ -65,12 +65,12 @@ export interface ToolRenderContext {
 	result?: unknown;
 }
 
-export interface ToolRenderer {
+interface ToolRenderer {
 	call?(context: ToolRenderContext): ViewNode;
 	result?(context: ToolRenderContext): ViewNode;
 }
 
-export interface ToolRegistry {
+interface ToolRegistry {
 	register(name: string, renderer: ToolRenderer): void;
 	resolve(name: string): ToolRenderer | undefined;
 }

@@ -31,18 +31,6 @@ export function getInputCommand(state: AskState, data: string, editingText = "")
 	return getNavigationInputCommand(data);
 }
 
-export function formatKeybindingLabel(key: string): string {
-	return key
-		.split("+")
-		.map((part) => {
-			if (part.length <= 1) {
-				return part.toUpperCase();
-			}
-			return part.charAt(0).toUpperCase() + part.slice(1);
-		})
-		.join("+");
-}
-
 function getEditingInputCommand(data: string, editingText: string, enableVimNavigation: boolean): AskInputCommand {
 	if (matchesKey(data, Key.escape)) {
 		return { kind: "editClose" };

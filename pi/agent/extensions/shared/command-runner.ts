@@ -4,13 +4,13 @@ import { delimiter, join } from "node:path";
 
 const DEFAULT_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 
-export type CommandResult = {
+type CommandResult = {
 	stdout: string;
 	stderr: string;
 	exitCode: number;
 };
 
-export type RunCommandOptions = {
+type RunCommandOptions = {
 	signal?: AbortSignal;
 	input?: string;
 	allowNonZero?: boolean;

@@ -15,7 +15,7 @@ enum CharType {
 	Other = 2,
 }
 
-export interface WordBoundaryData {
+interface WordBoundaryData {
 	readonly length: number;
 	readonly charTypes: Uint8Array;
 	readonly runStartByIndex: Int32Array;

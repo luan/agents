@@ -78,7 +78,7 @@ const HALF_RAIL_FRAMES = ["▗"] as const;
 const SECONDARY_RAIL_FRAMES = FULL_RAIL_FRAMES;
 let editorChromeProvider: EditorChromeProvider | undefined;
 
-export function setEditorTheme(uiTheme: Theme): void {
+function setEditorTheme(uiTheme: Theme): void {
 	patchState.currentUiTheme = uiTheme;
 }
 
@@ -91,7 +91,7 @@ function animatedRail(frames: readonly string[], uiTheme: Theme, color: string, 
 	return `${rgbFg(scaleRgb(themeRoleToRgb(uiTheme, color), factor))}${glyph}${ANSI_RESET}`;
 }
 
-export function renderEditorTransition(width: number, uiTheme: Theme, mode?: string): string {
+function renderEditorTransition(width: number, uiTheme: Theme, mode?: string): string {
 	const railColor = mode === undefined ? transitionRailColor : railColorForMode(mode, transitionIdentityColor);
 	const secondaryRailColor =
 		transitionIdentityColor && railColor !== transitionIdentityColor ? transitionIdentityColor : undefined;
@@ -100,7 +100,7 @@ export function renderEditorTransition(width: number, uiTheme: Theme, mode?: str
 	return fillEditorTransitionLine(uiTheme, rail, width);
 }
 
-export function setWorkingAnimationState(active: boolean, frame = workingFrame): void {
+function setWorkingAnimationState(active: boolean, frame = workingFrame): void {
 	workingActive = active;
 	workingFrame = frame;
 }

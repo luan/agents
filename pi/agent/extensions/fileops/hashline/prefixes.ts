@@ -93,40 +93,6 @@ function isHashlineDisplayNoise(line: string, lines: readonly string[], index: n
 }
 
 /**
- * Strip whichever prefix scheme the lines appear to be carrying:
- * - hashline line-number prefixes (`123:`) when every content line has one
- * - leading `+` (diff style) when at least half the lines have one
- * - mixed `+<n>:` form when present
- *
- * Returns the lines untouched if no scheme is recognized.
- */
-export function stripNewLinePrefixes(lines: string[]): string[] {
-	const stats = collectLinePrefixStats(lines);
-	if (stats.nonEmpty === 0) return lines;
-
-	const contentLineCount = stats.nonEmpty - stats.headerCount;
-	const stripHash = contentLineCount > 0 && stats.hashPrefixCount === contentLineCount;
-	const stripPlus =
-		!stripHash &&
-		stats.diffPlusHashPrefixCount === 0 &&
-		stats.diffPlusCount > 0 &&
-		stats.diffPlusCount >= stats.nonEmpty * 0.5;
-
-	if (!stripHash && !stripPlus && stats.diffPlusHashPrefixCount === 0) return lines;
-
-	return lines
-		.filter((line, index) => !isHashlineDisplayNoise(line, lines, index) && !(stripHash && HL_HEADER_RE.test(line)))
-		.map((line) => {
-			if (stripHash) return stripLeadingHashlinePrefixes(line);
-			if (stripPlus) return line.replace(DIFF_PLUS_RE, "");
-			if (stats.diffPlusHashPrefixCount > 0 && HL_PREFIX_PLUS_RE.test(line)) {
-				return line.replace(HL_PREFIX_RE, "");
-			}
-			return line;
-		});
-}
-
-/**
  * Strict variant: strip hashline prefixes only when every content line is
  * hashline-prefixed. Returns the lines unchanged otherwise.
  */
@@ -138,17 +104,4 @@ export function stripHashlinePrefixes(lines: string[]): string[] {
 	return lines
 		.filter((line, index) => !isHashlineDisplayNoise(line, lines, index) && !HL_HEADER_RE.test(line))
 		.map((line) => stripLeadingHashlinePrefixes(line));
-}
-
-/**
- * Normalize line payloads by stripping read/search line prefixes. `null` /
- * `undefined` yield `[]`; a single multiline string is split on `\n`.
- */
-export function hashlineParseText(edit: string[] | string | null | undefined): string[] {
-	if (edit == null) return [];
-	if (typeof edit === "string") {
-		const trimmed = edit.endsWith("\n") ? edit.slice(0, -1) : edit;
-		edit = trimmed.replaceAll("\r", "").split("\n");
-	}
-	return stripNewLinePrefixes(edit);
 }

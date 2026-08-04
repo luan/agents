@@ -1,7 +1,7 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import type { LocalMcpApproval, LocalMcpTool } from "./local-mcp";
 
-export type CodexAppServerConfig = {
+type CodexAppServerConfig = {
 	command: string;
 	args: string[];
 	cwd: string;

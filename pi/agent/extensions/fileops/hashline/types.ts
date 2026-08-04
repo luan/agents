@@ -162,7 +162,7 @@ export interface BlockResolution {
 }
 
 /** Request handed to a {@link BlockResolver} to resolve one `replace block N:` anchor. */
-export interface BlockResolverRequest {
+interface BlockResolverRequest {
 	/** Target file path (used to infer language by extension). */
 	path: string;
 	/** Full text the block must be resolved against (the snapshot the tag names). */
@@ -180,7 +180,7 @@ export interface BlockResolverRequest {
  */
 export type BlockResolver = (request: BlockResolverRequest) => BlockResolverResult;
 
-export interface SyntaxValidationRequest {
+interface SyntaxValidationRequest {
 	/** Target file path (used to infer language by extension). */
 	path: string;
 	/** Full LF-normalized file text to parse. */

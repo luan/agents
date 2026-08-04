@@ -68,7 +68,7 @@ export interface ListViewNode {
 	overflow?: OverflowMode;
 }
 
-export interface EmptyViewNode {
+interface EmptyViewNode {
 	kind: "empty";
 }
 

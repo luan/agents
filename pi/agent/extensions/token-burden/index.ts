@@ -6,13 +6,12 @@ import { buildSessionContext, discoverAndLoadExtensions, SettingsManager } from 
 import type { BasePromptTraceResult } from "./base-trace/index.js";
 import { attributeBasePrompt, extractBaseLines, extractContributions } from "./base-trace/index.js";
 import type { LoadedExtension } from "./base-trace/types.js";
-import { DisableMode } from "./enums.js";
 import { buildToolDefinitionsSection, estimateTokens, parseSystemPrompt } from "./parser.js";
 import { showReport } from "./report-view.js";
 import { loadAllSkills } from "./skills.js";
 import { applyChanges, loadSettings } from "./skills-persistence.js";
 import { createToolToggleController, loadToolToggleConfig } from "./tool-toggles.js";
-import type { SessionUsageCategory, SessionUsageData } from "./types.js";
+import { DisableMode, type SessionUsageCategory, type SessionUsageData } from "./types.js";
 
 const CONFIG_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "config.json");
 

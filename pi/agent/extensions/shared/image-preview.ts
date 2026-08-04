@@ -54,7 +54,7 @@ function magickPreviewSync(inputPath: string): PreviewImage | undefined {
 	}
 }
 
-export function createPreviewImageFromPathSync(path: string): PreviewImage | undefined {
+function createPreviewImageFromPathSync(path: string): PreviewImage | undefined {
 	return magickPreviewSync(path);
 }
 
@@ -68,7 +68,7 @@ export function readPreviewImageFromPathSync(path: string): PreviewImage | undef
 	}
 }
 
-export async function createPreviewImageFromPath(path: string): Promise<PreviewImage | undefined> {
+async function createPreviewImageFromPath(path: string): Promise<PreviewImage | undefined> {
 	return magickPreview(path);
 }
 

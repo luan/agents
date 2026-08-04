@@ -49,7 +49,7 @@ export function endPendingHandle(): void {
 }
 
 /** Milliseconds the current capture has been running, or undefined when nothing is pending. */
-export function pendingElapsedMs(): number | undefined {
+function pendingElapsedMs(): number | undefined {
 	return pendingSince === undefined ? undefined : Date.now() - pendingSince;
 }
 

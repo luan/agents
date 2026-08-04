@@ -13,7 +13,6 @@ import {
 	getExtraOptionNotes,
 	hasAnswerNotes,
 	isAnswerAnswered,
-	isAnswerEmpty,
 	isOptionSelected,
 	isResultAnswerCommitted,
 	isResultAnswerEmpty,
@@ -64,11 +63,6 @@ export function summarizeResult(result: AskResult): string {
 
 	const lines = formatResultLines(result, { mode: "summary" });
 	return lines.join("\n") || SUBMITTED_SUMMARY;
-}
-
-export function hasAnswerContent(state: AskState, questionId: string): boolean {
-	const answer = state.answers[questionId];
-	return !!answer && !isAnswerEmpty(answer);
 }
 
 function serializeContinuation(state: AskState, answers: AskResult["answers"]): AskContinuationPayload {

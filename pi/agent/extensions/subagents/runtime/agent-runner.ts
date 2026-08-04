@@ -20,7 +20,6 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { extractText } from "./context.js";
 import { detectEnv } from "./env.js";
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "./memory.js";
 import { loadModelCategories, resolveModelCategory } from "./model-categories.js";
@@ -32,6 +31,14 @@ import type { AgentConfig, SubagentType, ThinkingLevel } from "./types.js";
 import { type AssistantUsage, readAssistantUsage } from "./usage.js";
 
 const GRACE_TURNS = 5;
+
+/** Extract text from a message content block array. */
+function extractText(content: unknown[]): string {
+	return content
+		.filter((c: any) => c.type === "text")
+		.map((c: any) => c.text ?? "")
+		.join("\n");
+}
 
 function isGeneratedDelta(event: AgentSessionEvent): boolean {
 	return (
@@ -50,7 +57,7 @@ function missingToolNames(required: string[], existing: Set<string>): string[] {
 }
 
 /** Normalize max turns. undefined or 0 = unlimited, otherwise minimum 1. */
-export function normalizeMaxTurns(n: number | undefined): number | undefined {
+function normalizeMaxTurns(n: number | undefined): number | undefined {
 	if (n == null || n === 0) return undefined;
 	return Math.max(1, n);
 }
@@ -61,7 +68,7 @@ export interface ToolActivity {
 	toolName: string;
 }
 
-export interface RunOptions {
+interface RunOptions {
 	/** ExtensionAPI instance — used for pi.exec() instead of execSync. */
 	pi: ExtensionAPI;
 	description?: string;
@@ -98,7 +105,7 @@ export interface RunOptions {
 	onCompaction?: (info: { reason: "manual" | "threshold" | "overflow"; tokensBefore: number }) => void;
 }
 
-export interface RunResult {
+interface RunResult {
 	responseText: string;
 	session: AgentSession;
 	runtime: AgentSessionRuntime;
@@ -110,7 +117,7 @@ export interface RunResult {
 	error?: string;
 }
 
-export interface AgentTurnResult {
+interface AgentTurnResult {
 	responseText: string;
 	error?: string;
 }
@@ -133,7 +140,7 @@ export function findRetryableError(entries: readonly SessionEntry[]): string | u
  * `continue()` resumes from the last user or tool result message. Session entries keep the
  * failure for history; providers skip errored assistant messages when building requests.
  */
-export async function resumeFailedRequest(session: AgentSession): Promise<void> {
+async function resumeFailedRequest(session: AgentSession): Promise<void> {
 	const messages = session.agent.state.messages;
 	let keep = messages.length;
 	while (keep > 0) {
@@ -195,7 +202,7 @@ function forwardAbortSignal(session: AgentSession, signal?: AbortSignal): () => 
 	return () => signal.removeEventListener("abort", onAbort);
 }
 
-export function filterExtensionsByPath<T extends { path: string; resolvedPath: string }>(
+function filterExtensionsByPath<T extends { path: string; resolvedPath: string }>(
 	extensions: readonly T[],
 	allowedPaths: readonly string[],
 ): T[] {
@@ -608,42 +615,4 @@ export async function retryFailedTurn(
 		responseText: collector.getText().trim() || getLastAssistantText(session),
 		error: getActiveTurnError(session),
 	};
-}
-
-/**
- * Send a steering message to a running subagent.
- * The message will interrupt the agent after its current tool execution.
- */
-export async function steerAgent(session: AgentSession, message: string): Promise<void> {
-	await session.steer(message);
-}
-
-/**
- * Get the subagent's conversation messages as formatted text.
- */
-export function getAgentConversation(session: AgentSession): string {
-	const parts: string[] = [];
-
-	for (const msg of session.messages) {
-		if (msg.role === "user") {
-			const text = typeof msg.content === "string" ? msg.content : extractText(msg.content);
-			if (text.trim()) parts.push(`[User]: ${text.trim()}`);
-		} else if (msg.role === "assistant") {
-			const textParts: string[] = [];
-			const toolCalls: string[] = [];
-			for (const c of msg.content) {
-				if (c.type === "text" && c.text) textParts.push(c.text);
-				else if (c.type === "toolCall")
-					toolCalls.push(`  Tool: ${(c as any).name ?? (c as any).toolName ?? "unknown"}`);
-			}
-			if (textParts.length > 0) parts.push(`[Assistant]: ${textParts.join("\n")}`);
-			if (toolCalls.length > 0) parts.push(`[Tool Calls]:\n${toolCalls.join("\n")}`);
-		} else if (msg.role === "toolResult") {
-			const text = extractText(msg.content);
-			const truncated = text.length > 200 ? `${text.slice(0, 200)}...` : text;
-			parts.push(`[Tool Result (${msg.toolName})]: ${truncated}`);
-		}
-	}
-
-	return parts.join("\n\n");
 }

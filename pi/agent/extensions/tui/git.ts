@@ -39,7 +39,7 @@ export function emptyGitStatus(): GitStatusSummary {
 	};
 }
 
-export function parseGitStatusPorcelain(stdoutText: string, hasStash: boolean): GitStatusSummary {
+function parseGitStatusPorcelain(stdoutText: string, hasStash: boolean): GitStatusSummary {
 	const status = emptyGitStatus();
 	status.stashed = hasStash;
 

@@ -390,14 +390,6 @@ const taskItemSchema = Type.Object({
 	isolated: Type.Optional(Type.Boolean({ description: "Run in an isolated worktree." })),
 });
 
-export function getActiveSubagentDescriptions(): string[] {
-	return getSharedAgentManager()
-		.listAgents()
-		.filter((agent) => agent.status === "running")
-		.map((agent) => agent.description.trim())
-		.filter(Boolean);
-}
-
 function resolveAgentConfig(agents: Map<string, AgentConfig>, requested: string): AgentConfig | undefined {
 	const exact = agents.get(requested);
 	if (exact?.enabled !== false) return exact;

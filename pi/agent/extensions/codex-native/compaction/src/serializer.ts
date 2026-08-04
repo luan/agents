@@ -12,12 +12,8 @@ import type {
 	ToolResultMessage,
 	UserMessage,
 } from "@earendil-works/pi-ai";
-import { type CompactionPreparation, convertToLlm } from "@earendil-works/pi-coding-agent";
-import type { ResponsesCompatibleRequestPayload } from "./runtime";
+import { convertToLlm } from "@earendil-works/pi-coding-agent";
 
-export const COMPACTION_SERIALIZER_STRATEGY = "local-same-model-responses-serializer" as const;
-
-export type CompactionSerializerStrategy = typeof COMPACTION_SERIALIZER_STRATEGY;
 export type AssistantPhase = "commentary" | "final_answer";
 
 type ResponsesTextInputItem = {
@@ -38,7 +34,7 @@ export type ResponsesInputMessageItem = {
 	content: ResponsesInputContentItem[] | string;
 };
 
-export type ResponsesAssistantOutputItem = {
+type ResponsesAssistantOutputItem = {
 	type: "message";
 	role: "assistant";
 	content: Array<{
@@ -51,7 +47,7 @@ export type ResponsesAssistantOutputItem = {
 	phase?: AssistantPhase;
 };
 
-export type ResponsesFunctionCallItem = {
+type ResponsesFunctionCallItem = {
 	type: "function_call";
 	id?: string;
 	call_id: string;
@@ -59,15 +55,15 @@ export type ResponsesFunctionCallItem = {
 	arguments: string;
 };
 
-export type ResponsesFunctionCallOutputItem = {
+type ResponsesFunctionCallOutputItem = {
 	type: "function_call_output";
 	call_id: string;
 	output: ResponsesInputContentItem[] | string;
 };
 
-export type ResponsesReasoningItem = Record<string, unknown>;
+type ResponsesReasoningItem = Record<string, unknown>;
 
-export type ResponsesImageGenerationCallItem = {
+type ResponsesImageGenerationCallItem = {
 	type: "image_generation_call";
 	id: string;
 	status: string;
@@ -89,12 +85,12 @@ export type NativeCompactionRequestBody = {
 	instructions: string;
 };
 
-export type SerializeResponsesMessagesOptions = {
+type SerializeResponsesMessagesOptions = {
 	instructions?: string;
 	includeInstructionsInInput?: boolean;
 };
 
-export type ResponsesParityReport = {
+type ResponsesParityReport = {
 	ok: boolean;
 	actual: string[];
 	expected: string[];
@@ -129,22 +125,6 @@ function normalizeResponsesFunctionCallItemId(itemId: string | undefined): strin
 	if (!itemId) return undefined;
 	const normalizedItemId = normalizeIdPart(itemId);
 	return normalizedItemId.startsWith("fc_") ? normalizedItemId : normalizeIdPart(`fc_${normalizedItemId}`);
-}
-
-export function collectCompactionWindowMessages(preparation: CompactionPreparation): AgentMessage[] {
-	return [...preparation.messagesToSummarize, ...preparation.turnPrefixMessages];
-}
-
-export function serializeCompactionPreparationToRequest<TApi extends Api>(args: {
-	model: Model<TApi>;
-	preparation: CompactionPreparation;
-	instructions: string;
-}): NativeCompactionRequestBody {
-	return serializeMessagesToCompactRequest({
-		model: args.model,
-		messages: collectCompactionWindowMessages(args.preparation),
-		instructions: args.instructions,
-	});
 }
 
 export function serializeMessagesToCompactRequest<TApi extends Api>(args: {
@@ -227,29 +207,6 @@ export function compareResponsesInputParity(
 		ok: mismatches.length === 0,
 		actual: actualSignature,
 		expected: expectedSignature,
-		mismatches,
-	};
-}
-
-export function compareCompactRequestToPayload(
-	request: NativeCompactionRequestBody,
-	payload: Pick<ResponsesCompatibleRequestPayload, "model" | "input" | "instructions">,
-): ResponsesParityReport {
-	const parity = compareResponsesInputParity(request.input, payload.input);
-	const mismatches = [...parity.mismatches];
-
-	if (payload.model !== request.model) {
-		mismatches.unshift(`model: expected ${payload.model}, got ${request.model}`);
-	}
-
-	if ((payload.instructions ?? "") !== request.instructions) {
-		mismatches.unshift("instructions: expected serialized instructions to match payload instructions");
-	}
-
-	return {
-		ok: mismatches.length === 0,
-		actual: parity.actual,
-		expected: parity.expected,
 		mismatches,
 	};
 }

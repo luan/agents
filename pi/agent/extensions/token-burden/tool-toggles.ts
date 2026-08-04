@@ -1,11 +1,11 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-export type ToolToggleConfig = {
+type ToolToggleConfig = {
 	disabledTools: string[];
 };
 
-export type ToolToggleResult = {
+type ToolToggleResult = {
 	applied: boolean;
 	activeToolNames: string[];
 };
@@ -24,13 +24,13 @@ type PromptOptions = {
 	promptGuidelines?: string[];
 };
 
-export const DEFAULT_DISABLED_TOOLS = ["ls", "grab", "find"];
+const DEFAULT_DISABLED_TOOLS = ["ls", "grab", "find"];
 
 function arraysEqual(a: string[], b: string[]): boolean {
 	return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
-export function normalizeToolName(value: unknown): string | undefined {
+function normalizeToolName(value: unknown): string | undefined {
 	if (typeof value !== "string") return undefined;
 	const trimmed = value.trim();
 	return trimmed ? trimmed.toLowerCase() : undefined;
@@ -51,7 +51,7 @@ export function loadToolToggleConfig(configPath: string): ToolToggleConfig {
 	}
 }
 
-export function saveToolToggleConfig(configPath: string, disabledTools: Iterable<string>): void {
+function saveToolToggleConfig(configPath: string, disabledTools: Iterable<string>): void {
 	const normalized = [
 		...new Set([...disabledTools].map(normalizeToolName).filter((value): value is string => Boolean(value))),
 	];

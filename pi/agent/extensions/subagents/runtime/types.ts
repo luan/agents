@@ -51,7 +51,7 @@ export interface AgentConfig {
 	source?: "default" | "project" | "global";
 }
 
-export type JoinMode = "async" | "group" | "smart";
+type JoinMode = "async" | "group" | "smart";
 
 export interface AgentEvent {
 	type: "tool-start" | "tool-end" | "text" | "turn-end" | "compaction";
@@ -135,25 +135,6 @@ export interface AgentRecord {
 		label: string;
 		color: string;
 	};
-}
-
-/** Details attached to custom notification messages for visual rendering. */
-export interface NotificationDetails {
-	id: string;
-	description: string;
-	status: string;
-	toolUses: number;
-	turnCount: number;
-	maxTurns?: number;
-	modelName?: string;
-	thinkingLevel?: ThinkingLevel;
-	totalTokens: number;
-	durationMs: number;
-	outputFile?: string;
-	error?: string;
-	resultPreview: string;
-	/** Additional agents in a group notification. */
-	others?: NotificationDetails[];
 }
 
 export interface EnvInfo {

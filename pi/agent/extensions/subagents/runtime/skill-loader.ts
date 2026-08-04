@@ -9,7 +9,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { isUnsafeName, safeReadFile } from "./memory.js";
 
-export interface PreloadedSkill {
+interface PreloadedSkill {
 	name: string;
 	content: string;
 }

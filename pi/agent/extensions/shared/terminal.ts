@@ -1,4 +1,4 @@
-export function terminalRows(): number | undefined {
+function terminalRows(): number | undefined {
 	const rows = process.stdout?.rows;
 	return typeof rows === "number" && Number.isFinite(rows) ? rows : undefined;
 }
