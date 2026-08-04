@@ -20,11 +20,7 @@ type EditorChrome = {
 	bottomRight?: string;
 };
 
-type EditorChromeProvider = (
-	width: number,
-	theme: Theme,
-	options: { modeReserve: number; topRightWidth: number },
-) => EditorChrome;
+type EditorChromeProvider = (width: number, theme: Theme, options: { modeReserve: number }) => EditorChrome;
 
 export interface EditorSessionIdentity {
 	label?: string;
@@ -91,13 +87,13 @@ function animatedRail(frames: readonly string[], uiTheme: Theme, color: string, 
 	return `${rgbFg(scaleRgb(themeRoleToRgb(uiTheme, color), factor))}${glyph}${ANSI_RESET}`;
 }
 
-function renderEditorTransition(width: number, uiTheme: Theme, mode?: string): string {
+function renderEditorTransition(width: number, uiTheme: Theme, mode?: string, status?: string): string {
 	const railColor = mode === undefined ? transitionRailColor : railColorForMode(mode, transitionIdentityColor);
 	const secondaryRailColor =
 		transitionIdentityColor && railColor !== transitionIdentityColor ? transitionIdentityColor : undefined;
 	const secondary = secondaryRailColor ? `${colorFg(uiTheme, secondaryRailColor, "▖")}${ANSI_RESET}` : "";
 	const rail = `${secondary}${animatedRail(HALF_RAIL_FRAMES, uiTheme, railColor, "╻")}`;
-	return fillEditorTransitionLine(uiTheme, rail, width);
+	return fillEditorTransitionLine(uiTheme, rail, width, status);
 }
 
 function setWorkingAnimationState(active: boolean, frame = workingFrame): void {
@@ -417,13 +413,15 @@ export function renderPolishedEditorForTest(
 	const mainRailGlyph = secondaryRailColor ? "▌" : "┃";
 	const rail = `${secondaryRail}${animatedRail(mainRailFrames, uiTheme, railColor, mainRailGlyph)}${railGap}`;
 	const [firstEditorLine = "", ...remainingEditorLines] = editorLines;
-	// The prompt owns the full width; the status gets whatever the first row leaves over
-	// (one column of gap), compacting itself and vanishing as the text grows into it.
-	// The base editor pads every row to its full width, so measure typed content, not padding.
-	const topRightWidth = Math.max(0, innerWidth - visibleWidth(trimTrailingBlanks(rawEditorLines[0] ?? "")) - 1);
-	const chrome = editorChromeProvider?.(innerWidth, uiTheme, { modeReserve, topRightWidth }) ?? {};
+	const chrome = editorChromeProvider?.(innerWidth, uiTheme, { modeReserve }) ?? {};
+	// The prompt owns the full width. The status sits beside it while it fits whole, then moves up
+	// onto the transition row, which grows to full height to carry it — the same status either way,
+	// so growing text relocates it rather than eating into it. The base editor pads every row out
+	// to full width, so measure typed content, not padding.
+	const leftoverWidth = innerWidth - visibleWidth(trimTrailingBlanks(rawEditorLines[0] ?? "")) - 1;
+	const promoteStatus = !!chrome.topRight && visibleWidth(chrome.topRight) > leftoverWidth;
 	const lines = [
-		composeLeftRight(firstEditorLine, chrome.topRight, innerWidth),
+		composeLeftRight(firstEditorLine, promoteStatus ? undefined : chrome.topRight, innerWidth),
 		...remainingEditorLines,
 		composeLeftRight(
 			headerLeftSegment(statusWidth, uiTheme, railColor, identityText, identityColor),
@@ -433,7 +431,7 @@ export function renderPolishedEditorForTest(
 	];
 
 	return [
-		renderEditorTransition(width, uiTheme, mode),
+		renderEditorTransition(width, uiTheme, mode, promoteStatus ? chrome.topRight : undefined),
 		...lines.map((line) => `${rail}${fillEditorLine(uiTheme, line, innerWidth)}`),
 		...autocompleteLines,
 	];

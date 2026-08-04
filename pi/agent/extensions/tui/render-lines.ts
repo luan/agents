@@ -5,6 +5,9 @@ import { ansiFgToRgb } from "../shared/tui";
 const RESET = "\x1b[0m";
 const RESET_ANSI = /\x1b\[0m/g;
 const EDITOR_BACKGROUND_DARKEN = 0.78;
+// Block Elements, like the half row it grows out of: the geometric-shape triangles are
+// East-Asian-ambiguous and get drawn double width, which shifts every column after them.
+const TRANSITION_RAMP = "▟";
 
 type Rgb = [number, number, number];
 
@@ -33,21 +36,31 @@ function darken(rgb: Rgb): Rgb {
 	return rgb.map((value) => Math.round(value * EDITOR_BACKGROUND_DARKEN)) as Rgb;
 }
 
+function paintBackground(content: string, background: Rgb): string {
+	const backgroundAnsi = `\x1b[48;2;${background[0]};${background[1]};${background[2]}m`;
+	return `${backgroundAnsi}${content.replace(RESET_ANSI, `${RESET}${backgroundAnsi}`)}\x1b[49m`;
+}
+
 export function fillEditorLine(uiTheme: Theme, content: string, width: number): string {
 	const rgb = backgroundRgb(uiTheme);
 	if (!rgb || isLight(rgb)) return fillLine(content, width);
-	const filled = fillLine(content, width);
-	const background = darken(rgb);
-	const backgroundAnsi = `\x1b[48;2;${background[0]};${background[1]};${background[2]}m`;
-	return `${backgroundAnsi}${filled.replace(RESET_ANSI, `${RESET}${backgroundAnsi}`)}\x1b[49m`;
+	return paintBackground(fillLine(content, width), darken(rgb));
 }
 
-export function fillEditorTransitionLine(uiTheme: Theme, leading: string, width: number): string {
+// The transition row is half height: the editor background rises to meet the transcript. A
+// trailing block grows it to full height for its own columns, ramping up over one diagonal cell.
+export function fillEditorTransitionLine(uiTheme: Theme, leading: string, width: number, trailing = ""): string {
+	const block = trailing ? ` ${trailing}` : "";
+	const blockWidth = visibleWidth(block);
+	const rampWidth = block ? 1 : 0;
+	const halfWidth = Math.max(0, width - visibleWidth(leading) - blockWidth - rampWidth);
+
 	const rgb = backgroundRgb(uiTheme);
-	if (!rgb || isLight(rgb)) return fillLine(leading, width);
+	if (!rgb || isLight(rgb)) return fillLine(`${leading}${" ".repeat(halfWidth + rampWidth)}${block}`, width);
+
 	const background = darken(rgb);
-	const remaining = Math.max(0, width - visibleWidth(leading));
-	return `${leading}\x1b[38;2;${background[0]};${background[1]};${background[2]}m${"▄".repeat(remaining)}\x1b[39m`;
+	const half = `\x1b[38;2;${background[0]};${background[1]};${background[2]}m${"▄".repeat(halfWidth)}${TRANSITION_RAMP.repeat(rampWidth)}\x1b[39m`;
+	return `${leading}${half}${block ? paintBackground(block, background) : ""}`;
 }
 
 function fillLine(content: string, width: number): string {

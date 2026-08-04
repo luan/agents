@@ -282,12 +282,9 @@ describe("polished TUI editor", () => {
 		expect(lines.every((line) => visibleWidth(line) <= 40)).toBe(true);
 	});
 
-	test("gives the prompt full width and offers the status only the leftover columns", () => {
-		const offered: number[] = [];
-		setEditorChromeProvider((_width, _theme, options) => {
-			offered.push(options.topRightWidth);
-			return { topRight: "▒".repeat(Math.min(20, options.topRightWidth)) };
-		});
+	test("relocates the whole status instead of trimming it as the prompt grows", () => {
+		const status = "▒".repeat(20);
+		setEditorChromeProvider(() => ({ topRight: status }));
 		const editorWidths: number[] = [];
 		// The real editor pads every row out to its full width.
 		const render = (prompt: string) =>
@@ -301,14 +298,39 @@ describe("polished TUI editor", () => {
 				theme,
 			);
 
-		const short = render("> hi");
-		const long = render("> this prompt is much too long to fit beside the complete status");
+		// 58 inner columns: 20 of status and a column of gap leave room for 37 of prompt.
+		const fits = render(`> ${"a".repeat(35)}`);
+		const oneOver = render(`> ${"a".repeat(36)}`);
 
 		expect(editorWidths).toEqual([58, 58]);
-		expect(offered).toEqual([53, 0]);
-		expect(stripAnsi(short[1] ?? "")).toEndWith("▒".repeat(20));
-		expect(stripAnsi(long[1] ?? "")).not.toContain("▒");
-		expect([...short, ...long].every((line) => visibleWidth(line) <= 60)).toBe(true);
+		expect(stripAnsi(fits[1] ?? "")).toEndWith(status);
+		expect(stripAnsi(fits[0] ?? "")).not.toContain("▒");
+		expect(stripAnsi(oneOver[0] ?? "")).toEndWith(status);
+		expect(stripAnsi(oneOver[1] ?? "")).not.toContain("▒");
+		expect(fits.length).toBe(oneOver.length);
+		expect([...fits, ...oneOver].every((line) => visibleWidth(line) <= 60)).toBe(true);
+	});
+
+	test("ramps the transition row up to full height beneath a promoted status", () => {
+		const background = "\x1b[48;2;45;40;56m";
+		const darkTheme = {
+			fg: (_color: string, text: string) => text,
+			bg: (color: string, text: string) => (color === "customMessageBg" ? `${background}${text}\x1b[49m` : text),
+			getBgAnsi: (color: string) => (color === "customMessageBg" ? background : undefined),
+		} as any;
+		setEditorChromeProvider(() => ({ topRight: "status" }));
+
+		const lines = renderPolishedEditorForTest(
+			editor({ getMode: () => "normal" }),
+			40,
+			(width) => ["", "> a prompt wide enough to displace the status".padEnd(width), ""],
+			darkTheme,
+		);
+
+		expect(stripAnsi(lines[0] ?? "")).toBe(`╻${"▄".repeat(31)}▟ status`);
+		// The promoted columns are painted, not half-height glyphs.
+		expect(lines[0]).toContain("\x1b[48;2;35;31;44m status");
+		expect(lines.every((line) => visibleWidth(line) <= 40)).toBe(true);
 	});
 
 	test("paints dark-theme editor rows with a compositor background", () => {

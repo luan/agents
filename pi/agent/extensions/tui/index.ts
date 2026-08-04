@@ -573,7 +573,10 @@ export default function (pi: ExtensionAPI) {
 		setEditorChromeProvider((width, theme, options) => {
 			const bottomWidth = Math.max(1, width - options.modeReserve);
 			return {
-				topRight: renderEditorTopChrome(options.topRightWidth, theme, cwd),
+				// Sized off the editor width, never off the space left beside the prompt: this status
+				// must be identical whatever the prompt does, and its usage bar comes from a
+				// subprocess keyed on width, which typing must not keep respawning.
+				topRight: renderEditorTopChrome(Math.max(1, width - 1), theme, cwd),
 				bottomRight: renderEditorBottomStatus(bottomWidth, theme),
 			};
 		});
