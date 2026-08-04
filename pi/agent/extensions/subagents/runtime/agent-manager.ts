@@ -14,7 +14,7 @@ import {
 	type ExtensionContext,
 	SessionManager,
 } from "@earendil-works/pi-coding-agent";
-import { findRetryableTurn, resumeAgent, retryFailedTurn, runAgent, type ToolActivity } from "./agent-runner.js";
+import { findRetryableError, resumeAgent, retryFailedTurn, runAgent, type ToolActivity } from "./agent-runner.js";
 import { childSessionDir, type PersistedAgent } from "./persistence.js";
 import type { AgentConfig, AgentEvent, AgentRecord, IsolationMode, SubagentType } from "./types.js";
 import { type AssistantUsage, addUsage } from "./usage.js";
@@ -435,10 +435,10 @@ export class AgentManager {
 		const record = this.agents.get(id);
 		const session = record?.runtime?.session ?? record?.session;
 		if (!record || (!session && (!record.sessionFile || !record.agentConfig))) return undefined;
-		if (session && !findRetryableTurn(session.sessionManager.getBranch())) return undefined;
+		if (session && !findRetryableError(session.sessionManager.getBranch())) return undefined;
 		if (record.sessionFile && !session) {
 			const persistedSession = SessionManager.open(record.sessionFile, undefined, record.cwd);
-			if (!findRetryableTurn(persistedSession.getBranch())) return undefined;
+			if (!findRetryableError(persistedSession.getBranch())) return undefined;
 		}
 		this.beginTurn(record, options.deliverCompletion === true);
 
@@ -570,7 +570,7 @@ export class AgentManager {
 	getLatestRetryableRecord(): AgentRecord | undefined {
 		return this.listAgents().find((record) => {
 			const session = record.runtime?.session ?? record.session;
-			return session ? findRetryableTurn(session.sessionManager.getBranch()) !== undefined : false;
+			return session ? findRetryableError(session.sessionManager.getBranch()) !== undefined : false;
 		});
 	}
 

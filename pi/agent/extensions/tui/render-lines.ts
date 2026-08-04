@@ -12,9 +12,17 @@ function backgroundAnsi(uiTheme: Theme): string | undefined {
 	return uiTheme.getBgAnsi?.("customMessageBg") ?? uiTheme.bg("customMessageBg", " ").split(" ")[0];
 }
 
+// Called once per editor line per frame, and parsing the escape is pure string work.
+// Keyed on the escape itself, so a theme change simply produces a different key.
+const backgroundRgbCache = new Map<string, Rgb | undefined>();
+
 function backgroundRgb(uiTheme: Theme): Rgb | undefined {
-	const ansi = backgroundAnsi(uiTheme)?.replace("\x1b[48", "\x1b[38");
-	return ansiFgToRgb(ansi);
+	const ansi = backgroundAnsi(uiTheme);
+	if (ansi === undefined) return undefined;
+	if (backgroundRgbCache.has(ansi)) return backgroundRgbCache.get(ansi);
+	const rgb = ansiFgToRgb(ansi.replace("\x1b[48", "\x1b[38"));
+	backgroundRgbCache.set(ansi, rgb);
+	return rgb;
 }
 
 function isLight(rgb: Rgb): boolean {

@@ -50,8 +50,6 @@ let lastWorkingDurationMs: number | undefined;
 let cumulativeWorkingDurationMs = 0;
 let workingNowMsForTest: number | undefined;
 let workingFastMode = false;
-let workingLastTurnTps: number | undefined;
-let workingOverallTps: number | undefined;
 let editorSessionIdentityProvider: (() => EditorSessionIdentity | undefined) | undefined;
 let transitionRailColor = "syntaxFunction";
 let transitionIdentityColor: string | undefined;
@@ -109,11 +107,6 @@ export function advanceWorkingAnimationFrame(): void {
 
 export function setWorkingFastMode(active: boolean): void {
 	workingFastMode = active;
-}
-
-export function setWorkingTokenSpeed(lastTurnTps: number | undefined, overallTps?: number): void {
-	workingLastTurnTps = lastTurnTps;
-	workingOverallTps = overallTps;
 }
 
 export function setWorkingTimerStarted(nowMs = Date.now()): void {
@@ -278,32 +271,6 @@ export function formatWorkingDuration(durationMs: number): string {
 	return `${seconds}s`;
 }
 
-export function renderTokenSpeed(tokensPerSecond: number | undefined): string {
-	if (tokensPerSecond === undefined || !Number.isFinite(tokensPerSecond) || tokensPerSecond < 0) return "";
-	const label = `${Math.max(1, tokensPerSecond).toFixed(1)} tps`;
-	const stops = [
-		[0, 125, 18, 18],
-		[5, 220, 45, 20],
-		[15, 255, 140, 0],
-		[30, 255, 215, 0],
-		[60, 255, 255, 180],
-		[150, 255, 255, 255],
-	] as const;
-	const speed = Math.min(150, tokensPerSecond);
-	const upperIndex = stops.findIndex(([threshold]) => threshold >= speed);
-	const upper = stops[upperIndex < 0 ? stops.length - 1 : upperIndex];
-	const lower = stops[Math.max(0, (upperIndex < 0 ? stops.length : upperIndex) - 1)];
-	const progress = upper[0] === lower[0] ? 0 : (speed - lower[0]) / (upper[0] - lower[0]);
-	const color = [1, 2, 3].map((index) => Math.round(lower[index] + (upper[index] - lower[index]) * progress));
-	return `${tokensPerSecond >= 150 ? "\x1b[1m" : ""}\x1b[38;2;${color.join(";")}m${label}\x1b[0m`;
-}
-
-function renderTokenSpeedStats(): string {
-	const last = renderTokenSpeed(workingLastTurnTps ?? 1);
-	const overall = renderTokenSpeed(workingOverallTps ?? workingLastTurnTps ?? 1);
-	return `${last} ${overall.replace(" tps", " overall tps")}`;
-}
-
 function nowMs(): number {
 	return workingNowMsForTest ?? Date.now();
 }
@@ -317,22 +284,14 @@ function totalWorkingDurationMs(): number {
 	return cumulativeWorkingDurationMs + (workingActive ? activeWorkingDurationMs() : 0);
 }
 
-function appendTrailing(left: string, trailing: string, width: number): string {
-	const trailingWidth = visibleWidth(trailing);
-	if (trailingWidth >= width) return truncateToWidth(trailing, width, "");
-	const fittedLeft = truncateToWidth(left, width - trailingWidth - 1, "");
-	return `${fittedLeft} ${trailing}`;
-}
-
 function workingHeaderSegment(uiTheme: Theme, color: string, width: number): string {
-	const speed = renderTokenSpeedStats();
 	if (!workingActive) {
 		if (lastWorkingDurationMs === undefined) return "";
 		const text = uiTheme.fg(
 			"dim",
 			`Last turn: ${formatWorkingDuration(lastWorkingDurationMs)}. Total cumulative: ${formatWorkingDuration(totalWorkingDurationMs())}.`,
 		);
-		return `${appendTrailing(text, speed, width)}${ANSI_RESET}`;
+		return `${truncateToWidth(text, width, "")}${ANSI_RESET}`;
 	}
 	const label = renderWorkingWord(uiTheme, color, workingFrame);
 	const elapsed = activeWorkingDurationMs();
@@ -342,7 +301,7 @@ function workingHeaderSegment(uiTheme: Theme, color: string, width: number): str
 	);
 	const ellipsis = workingFastMode ? "" : `${rgbFg(scaleRgb(themeRoleToRgb(uiTheme, color), 0.85))}…`;
 	const left = `${label}${ellipsis}${timing}`;
-	return `${appendTrailing(left, speed, width)}${ANSI_RESET}`;
+	return `${truncateToWidth(left, width, "")}${ANSI_RESET}`;
 }
 
 function cleanIdentityPart(value: string | undefined): string | undefined {

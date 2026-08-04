@@ -24,6 +24,7 @@ export { EmptyComponent, registerExtensionMessageRenderer, textComponent } from 
 export { createSelectController } from "./controllers";
 export { enforceNoRawTuiSurfaceCalls } from "./enforcement";
 export { defineExtensionTui } from "./facade";
+export { RenderedLineCache } from "./render-cache";
 export { renderView } from "./renderer";
 export { createResource } from "./resources";
 export { createSurfaceRegistry } from "./surfaces";

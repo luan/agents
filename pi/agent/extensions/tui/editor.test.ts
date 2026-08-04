@@ -4,13 +4,11 @@ import {
 	formatWorkingDuration,
 	getWorkingTimerSnapshot,
 	renderPolishedEditorForTest,
-	renderTokenSpeed,
 	restoreWorkingTimerSnapshot,
 	setEditorChromeProvider,
 	setEditorSessionIdentityProvider,
 	setWorkingAnimationForTest,
 	setWorkingFastMode,
-	setWorkingTokenSpeed,
 } from "./editor";
 
 const ANSI_PATTERN = /\x1b\[[0-9;]*m/g;
@@ -25,11 +23,6 @@ const rgbTheme = {
 	getFgAnsi: (color: string) => (color === "warning" ? "\x1b[38;2;255;220;40m" : "\x1b[38;2;100;50;200m"),
 } as any;
 
-test("increases TPS color continuously through 150", () => {
-	expect(renderTokenSpeed(100)).not.toBe(renderTokenSpeed(125));
-	expect(renderTokenSpeed(125)).not.toBe(renderTokenSpeed(149));
-	expect(renderTokenSpeed(150)).toStartWith("\x1b[1m");
-});
 function stripAnsi(line: string): string {
 	return line.replace(ANSI_PATTERN, "");
 }
@@ -45,7 +38,6 @@ describe("polished TUI editor", () => {
 	beforeEach(() => {
 		setWorkingAnimationForTest(false, 0);
 		setWorkingFastMode(false);
-		setWorkingTokenSpeed(undefined);
 		setEditorChromeProvider(undefined);
 		setEditorSessionIdentityProvider(undefined);
 	});
@@ -74,13 +66,12 @@ describe("polished TUI editor", () => {
 			rgbTheme,
 		);
 
-		expect(stripAnsi(lines.at(-1) ?? "")).toContain("1.0 tps 1.0 overall tps");
+		expect(stripAnsi(lines.at(-1) ?? "")).toContain("Working");
 		expect(lines.every((line) => visibleWidth(line) <= 40)).toBe(true);
 	});
 
-	test("renders zipping with TPS and brightness motion for fast requests", () => {
+	test("renders zipping with brightness motion for fast requests", () => {
 		setWorkingFastMode(true);
-		setWorkingTokenSpeed(42.5);
 		setWorkingAnimationForTest(true, 0);
 
 		const first = renderPolishedEditorForTest(
@@ -113,7 +104,6 @@ describe("polished TUI editor", () => {
 
 		expect(stripAnsi(first.at(-1) ?? "")).toContain("⚡żippiṅġ…");
 		expect(stripAnsi(second.at(-1) ?? "")).toContain("⚡žǐppiňǧ…");
-		expect(stripAnsi(first.at(-1) ?? "")).toContain("42.5 tps 42.5 overall tps");
 		expect(first.at(-1)).toContain("\x1b[1;9m\x1b[38;2;255;255;50m…\x1b[22;29;39m");
 		expect(first.at(-1)).toContain("\x1b[9m\x1b[38;2;166;143;26mż\x1b[29;39m");
 		expect(first.at(-1)).toContain("\x1b[9m\x1b[38;2;166;143;26mġ\x1b[29;39m");
@@ -142,9 +132,7 @@ describe("polished TUI editor", () => {
 			theme,
 		);
 
-		expect(stripAnsi(lines.at(-1) ?? "")).toContain(
-			"Working… 32s. Total cumulative: 19h20m36s. 1.0 tps 1.0 overall tps",
-		);
+		expect(stripAnsi(lines.at(-1) ?? "")).toContain("Working… 32s. Total cumulative: 19h20m36s.");
 		expect(lines.at(-1)).toContain("\x1b[2m 32s. Total cumulative: 19h20m36s.\x1b[39m");
 		expect(lines.every((line) => visibleWidth(line) <= 80)).toBe(true);
 	});
@@ -154,7 +142,6 @@ describe("polished TUI editor", () => {
 			lastTurnMs: 3 * 3_600_000 + 5 * 60_000 + 20_000,
 			cumulativeMs: 19 * 3_600_000 + 20 * 60_000 + 4_000,
 		});
-		setWorkingTokenSpeed(42.5, 30);
 
 		const lines = renderPolishedEditorForTest(
 			editor({ getMode: () => "insert" }),
@@ -165,7 +152,6 @@ describe("polished TUI editor", () => {
 
 		expect(stripAnsi(lines.at(-1) ?? "")).toContain("Last turn: 3h5m20s. Total cumulative: 19h20m4s.");
 		expect(lines.at(-1)).toContain("\x1b[2mLast turn: 3h5m20s. Total cumulative: 19h20m4s.\x1b[39m");
-		expect(stripAnsi(lines.at(-1) ?? "")).toContain("42.5 tps 30.0 overall tps");
 		expect(lines.every((line) => visibleWidth(line) <= 100)).toBe(true);
 	});
 
@@ -214,9 +200,7 @@ describe("polished TUI editor", () => {
 			rgbTheme,
 		);
 
-		expect(stripAnsi(lines.at(-1) ?? "")).toContain(
-			"Spawn refactor · Working… 0s. Total cumulative: 0s. 1.0 tps 1.0 overall tps",
-		);
+		expect(stripAnsi(lines.at(-1) ?? "")).toContain("Spawn refactor · Working… 0s. Total cumulative: 0s.");
 		expect(lines.every((line) => visibleWidth(line) <= 100)).toBe(true);
 	});
 
@@ -247,7 +231,7 @@ describe("polished TUI editor", () => {
 			rgbTheme,
 		);
 
-		expect(stripAnsi(lines.at(-1) ?? "")).toContain("… · Working… 0s. Total cumulative: 0s. 1.0 tps");
+		expect(stripAnsi(lines.at(-1) ?? "")).toContain("… · Working… 0s. Total cumulative: 0s.");
 		expect(lines.every((line) => visibleWidth(line) <= 80)).toBe(true);
 	});
 

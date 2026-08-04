@@ -1,5 +1,6 @@
 import type { Component } from "@earendil-works/pi-tui";
 import { Text, truncateToWidth as truncateToWidthRaw } from "@earendil-works/pi-tui";
+import { RenderedLineCache } from "./render-cache";
 
 export type OmpTheme = {
 	fg(color: string, text: string): string;
@@ -95,12 +96,18 @@ function fitVisible(line: string, width: number): string {
 }
 
 export class OmpCard implements Component {
+	private readonly cache = new RenderedLineCache();
+
 	constructor(
 		private readonly theme: OmpTheme,
 		private readonly spec: OmpCardSpec,
 	) {}
 
 	render(width: number): string[] {
+		return this.cache.get(width, "", () => this.renderLines(width));
+	}
+
+	private renderLines(width: number): string[] {
 		if (width <= 0) return [];
 		if (width < 4) return [fitVisible(this.spec.header, width)];
 		const safeWidth = width;
@@ -132,7 +139,9 @@ export class OmpCard implements Component {
 		return lines;
 	}
 
-	invalidate(): void {}
+	invalidate(): void {
+		this.cache.clear();
+	}
 }
 
 export function framedBlock(theme: OmpTheme, spec: OmpCardSpec): OmpCard {

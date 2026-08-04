@@ -41,12 +41,34 @@ const OSC_ESCAPE = /\x1b]133;[ABC]\x07/g;
 const BACKGROUND = /\x1b\[48(?:;[0-9]+)*m/;
 const globalState = globalThis as typeof globalThis & { [PATCH_KEY]?: PatchState };
 
+// Assistant messages are re-filtered on every animation frame, and stripping escapes
+// allocates a copy of each line. Rendered lines are stable strings, so answer from a
+// bounded cache instead. Mirrors pi-tui's own string-keyed width cache.
+const BLANK_CACHE_LIMIT = 4096;
+const blankCache = new Map<string, boolean>();
+
 function isBlank(line: string): boolean {
-	return line.replace(ANSI_ESCAPE, "").replace(OSC_ESCAPE, "").trim().length === 0;
+	const cached = blankCache.get(line);
+	if (cached !== undefined) return cached;
+	const blank = line.replace(ANSI_ESCAPE, "").replace(OSC_ESCAPE, "").trim().length === 0;
+	if (blankCache.size >= BLANK_CACHE_LIMIT) {
+		const oldest = blankCache.keys().next().value;
+		if (oldest !== undefined) blankCache.delete(oldest);
+	}
+	blankCache.set(line, blank);
+	return blank;
 }
 
+// Tested once per assistant component per animation frame. trim() would allocate a copy
+// of the whole thinking block each time; this scans to the first non-whitespace character.
+const NON_WHITESPACE = /\S/;
+
 function hasThinking(component: TranscriptComponent): boolean {
-	return Boolean(component.lastMessage?.content?.some((block) => block.type === "thinking" && block.thinking?.trim()));
+	return Boolean(
+		component.lastMessage?.content?.some(
+			(block) => block.type === "thinking" && block.thinking && NON_WHITESPACE.test(block.thinking),
+		),
+	);
 }
 
 function removeBlankLines(lines: string[], all: boolean): string[] {

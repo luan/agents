@@ -77,6 +77,10 @@ function patchChatContainer(chat: ChatContainer, state: PatchState): void {
 				previousRead = true;
 				continue;
 			}
+			// Only children that directly follow a read card can affect spacing, and
+			// rendersVisibleContent() costs a full render plus an ANSI strip of every
+			// line — so never ask it about the rest of the transcript.
+			if (!previousRead) continue;
 			if (child.toolName !== undefined || rendersVisibleContent(child, width)) {
 				previousRead = false;
 			}

@@ -20,7 +20,15 @@ import { Type } from "typebox";
 import { runCommand as runExternalCommand } from "../shared/command-runner.ts";
 import { readPreviewImageFromPath } from "../shared/image-preview.ts";
 import { KittyVirtualImage } from "../shared/kitty-virtual-image.ts";
-import { EmptyComponent, keepBackgroundAcrossResets, runningFrame, shineText, textComponent } from "../shared/tui";
+import { detachToolResultImages, registerToolResultImageRestore } from "../shared/tool-result-images.ts";
+import {
+	EmptyComponent,
+	keepBackgroundAcrossResets,
+	RenderedLineCache,
+	runningFrame,
+	shineText,
+	textComponent,
+} from "../shared/tui";
 import { registerAstTools } from "./ast-tools.ts";
 import { buildLineEntriesWithBlockContext } from "./block-context.ts";
 import { preloadBlockLanguages, treeSitterBlockResolver, treeSitterSyntaxValidator } from "./block-resolver.ts";
@@ -192,11 +200,6 @@ function previewImageDetails(value: unknown): PreviewImageDetails | undefined {
 		mimeType: candidate.mimeType,
 		sourcePath: typeof candidate.sourcePath === "string" ? candidate.sourcePath : undefined,
 	};
-}
-
-function suppressCoreImageRendering(result: ToolTextResult): void {
-	const filtered = result.content.filter((item) => item.type !== "image");
-	result.content.splice(0, result.content.length, ...filtered);
 }
 
 type HighlightedSection = {
@@ -440,16 +443,27 @@ function renderText(text: string): Text {
 	return textComponent(text);
 }
 
+/**
+ * `key` reports the live inputs the text producer reads, so the producer itself stays
+ * behind the cache. Building the text is the expensive half for search and find results
+ * (per-row highlighting), and render() runs on every animation frame.
+ */
 class DynamicTextView {
+	private readonly cache = new RenderedLineCache();
+
 	constructor(
 		private readonly text: () => string,
 		private readonly shouldRender: () => boolean = () => true,
+		private readonly key: () => string = () => "",
 	) {}
 
-	invalidate() {}
+	invalidate() {
+		this.cache.clear();
+	}
 
 	render(width: number): string[] {
-		return this.shouldRender() ? textComponent(this.text()).render(width) : [];
+		if (!this.shouldRender()) return [];
+		return this.cache.get(width, this.key(), () => textComponent(this.text()).render(width));
 	}
 }
 const EMPTY_TOOL_CALL_IDS = new Set<string>();
@@ -457,19 +471,27 @@ const EMPTY_TOOL_CALL_IDS = new Set<string>();
 const EMPTY_VIEW = new EmptyComponent();
 
 class BlockTextView {
+	private readonly cache = new RenderedLineCache();
+
 	constructor(
 		private readonly text: string | ((width: number) => string),
 		private readonly theme: RenderTheme,
 		private readonly shouldRender: () => boolean = () => true,
+		private readonly key: () => string = () => "",
 	) {}
 
-	invalidate() {}
+	invalidate() {
+		this.cache.clear();
+	}
 
 	render(width: number): string[] {
 		if (!this.shouldRender()) return [];
-		const box = new Box(0, 0, paintToolBackground(this.theme, "toolPendingBg"));
-		box.addChild(textComponent(typeof this.text === "function" ? this.text(width) : this.text));
-		return box.render(width);
+		return this.cache.get(width, this.key(), () => {
+			const text = typeof this.text === "function" ? this.text(width) : this.text;
+			const box = new Box(0, 0, paintToolBackground(this.theme, "toolPendingBg"));
+			box.addChild(textComponent(text));
+			return box.render(width);
+		});
 	}
 }
 
@@ -570,6 +592,8 @@ function paintToolBackground(theme: RenderTheme, role: string): ((line: string) 
 }
 
 class EditCallView {
+	private readonly cache = new RenderedLineCache();
+
 	constructor(
 		private readonly summary: EditSummary,
 		private readonly theme: RenderTheme,
@@ -577,7 +601,9 @@ class EditCallView {
 		private readonly elapsedMs: number | undefined,
 	) {}
 
-	invalidate() {}
+	invalidate() {
+		this.cache.clear();
+	}
 
 	render(width: number): string[] {
 		const rest = this.summary.target
@@ -586,7 +612,7 @@ class EditCallView {
 		const header = this.running
 			? renderEditRunningHeader(this.theme, this.elapsedMs, rest)
 			: renderStatusHeader("Edit:", this.theme, rest);
-		return renderHeaderBox(header, this.theme, "pending").render(width);
+		return this.cache.get(width, header, () => renderHeaderBox(header, this.theme, "pending").render(width));
 	}
 }
 
@@ -718,12 +744,13 @@ function renderReadResult(
 	result: ToolTextResult,
 	options: { expanded?: boolean; isPartial?: boolean },
 	theme: RenderTheme,
+	toolCallId?: string,
 ): Text | Container | EmptyComponent {
 	if (options.isPartial) return renderText(theme.fg("warning", "Reading..."));
 	const preview = previewImageDetails(result.details?.previewImage);
 	if (!preview) return renderHashlineReadResult(result, options, theme);
 
-	suppressCoreImageRendering(result);
+	detachToolResultImages(toolCallId, result);
 	const container = new Container();
 	const text = firstTextContent(result).trim();
 	if (text) container.addChild(textComponent(theme.fg("toolOutput", text)));
@@ -866,6 +893,7 @@ function renderSearchResult(
 		},
 		theme,
 		shouldRender,
+		() => (options.expanded ? "expanded" : ""),
 	);
 }
 
@@ -916,6 +944,7 @@ function renderFindResult(
 		},
 		theme,
 		shouldRender,
+		() => (options.expanded ? "expanded" : ""),
 	);
 }
 function renderWriteCall(
@@ -1019,7 +1048,12 @@ function renderEditResult(
 	const expanded = () => options.expanded === true;
 	const diff = typeof result.details?.diff === "string" ? result.details.diff : "";
 	// No diff means a no-op apply: keep its diagnostic visible even collapsed.
-	if (!diff) return new DynamicTextView(() => theme.fg("toolOutput", expanded() ? text : firstLine), isLatestTurnEdit);
+	if (!diff)
+		return new DynamicTextView(
+			() => theme.fg("toolOutput", expanded() ? text : firstLine),
+			isLatestTurnEdit,
+			() => (expanded() ? "expanded" : ""),
+		);
 	const rows = Array.isArray(result.details?.highlightedDiffRows)
 		? (result.details.highlightedDiffRows as DiffRenderRow[])
 		: undefined;
@@ -1567,8 +1601,8 @@ function registerHashlineWorkflowTools(
 		renderCall(params, theme) {
 			return renderReadCall(params, theme);
 		},
-		renderResult(result, options, theme) {
-			return renderReadResult(result as ToolTextResult, options, theme);
+		renderResult(result, options, theme, context) {
+			return renderReadResult(result as ToolTextResult, options, theme, context?.toolCallId);
 		},
 		async execute(
 			toolCallId,
@@ -1958,6 +1992,7 @@ function sessionIdFromContext(ctx: Pick<ExtensionContext, "sessionManager"> | un
 }
 
 export default function fileopsExtension(pi: ExtensionAPI) {
+	registerToolResultImageRestore(pi);
 	let config = loadConfig();
 	const readSpacingPatch = installConsecutiveReadSpacingPatch();
 	let releaseReadSpacingPatch: (() => void) | undefined;

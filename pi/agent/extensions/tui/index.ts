@@ -28,7 +28,6 @@ import {
 	setWorkingFastMode,
 	setWorkingTimerStarted,
 	setWorkingTimerStopped,
-	setWorkingTokenSpeed,
 	WORKING_ANIMATION_INTERVAL_MS,
 	type WorkingTimerSnapshot,
 } from "./editor";
@@ -40,7 +39,6 @@ import {
 	renderEditorTopStatus,
 	scaleContextSegmentsToUsage,
 } from "./footer";
-import { GenerationRateStats } from "./generation-rate";
 import { readGitStatus } from "./git";
 import { readRuntimeInfo } from "./runtime";
 import { installTranscriptSpacingPatch } from "./transcript-spacing";
@@ -191,7 +189,6 @@ export default function (pi: ExtensionAPI) {
 	let editorSessionIdentity: EditorSessionIdentity | undefined;
 	let activeCtx: ExtensionContext | undefined;
 	let releaseTranscriptSpacingPatch: (() => void) | undefined;
-	const generationRate = new GenerationRateStats();
 
 	let footerDataProvider: FooterDataProvider | undefined;
 	const isStaleCtxError = (error: unknown) =>
@@ -451,8 +448,6 @@ export default function (pi: ExtensionAPI) {
 			footerAnimationTarget,
 			WORKING_ANIMATION_INTERVAL_MS,
 			() => {
-				const rate = generationRate.snapshot();
-				setWorkingTokenSpeed(rate.lastTurnTps, rate.overallTps);
 				try {
 					if (disposed || !isCurrentSessionContext(ctx) || ctx.isIdle()) {
 						setWorkingTimerStopped();
@@ -664,8 +659,6 @@ export default function (pi: ExtensionAPI) {
 		setEditorSessionIdentityProvider(undefined);
 		editorSessionIdentity = undefined;
 		resetWorkingTimerState();
-		generationRate.reset();
-		setWorkingTokenSpeed(undefined, undefined);
 		stopRefreshTimer();
 		stopWorkingAnimation();
 		releaseTranscriptSpacingPatch?.();
@@ -696,40 +689,19 @@ export default function (pi: ExtensionAPI) {
 		refresh();
 	});
 
-	pi.on("message_start", async (event, ctx) => {
-		if (!isCurrentSessionContext(ctx) || event.message.role !== "assistant") return;
-		generationRate.startMessage();
-	});
-
-	pi.on("message_end", async (event, ctx) => {
+	pi.on("message_end", async (_event, ctx) => {
 		if (!syncStateIfCurrent(ctx)) return;
-		if (event.message.role === "assistant") {
-			const message = event.message as AssistantMessage;
-			generationRate.finishMessage(message.usage?.output ?? 0);
-			const rate = generationRate.snapshot();
-			setWorkingTokenSpeed(rate.lastTurnTps, rate.overallTps);
-		}
 		scheduleProjectRefresh(ctx);
 		refresh();
 	});
 
 	pi.on("turn_end", async (_event, ctx) => {
 		if (!isCurrentSessionContext(ctx)) return;
-		generationRate.finishTurn();
-		const rate = generationRate.snapshot();
-		setWorkingTokenSpeed(rate.lastTurnTps, rate.overallTps);
 		refresh();
 	});
 
 	pi.on("message_update", async (event, ctx) => {
 		if (!syncStateIfCurrent(ctx, event.message)) return;
-		if (
-			event.assistantMessageEvent.type === "text_delta" ||
-			event.assistantMessageEvent.type === "thinking_delta" ||
-			event.assistantMessageEvent.type === "toolcall_delta"
-		) {
-			generationRate.markFirstToken();
-		}
 		refresh();
 	});
 

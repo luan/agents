@@ -115,40 +115,41 @@ export interface AgentTurnResult {
 	error?: string;
 }
 
-export interface RetryableTurn {
-	userEntryId: string;
-	content: Parameters<AgentSession["sendUserMessage"]>[0];
-	error: string;
-}
-
-export function findRetryableTurn(entries: readonly SessionEntry[]): RetryableTurn | undefined {
-	let failedAssistantIndex = -1;
-	let error: string | undefined;
+/** Error of the latest turn when it ended in a provider failure, else undefined. */
+export function findRetryableError(entries: readonly SessionEntry[]): string | undefined {
 	for (let index = entries.length - 1; index >= 0; index--) {
 		const entry = entries[index];
 		if (entry.type !== "message" || entry.message.role !== "assistant") continue;
 		if (entry.message.stopReason !== "error") return undefined;
-		failedAssistantIndex = index;
-		error = entry.message.errorMessage || "Assistant request failed";
-		break;
-	}
-	if (failedAssistantIndex === -1 || !error) return undefined;
-
-	for (let index = failedAssistantIndex - 1; index >= 0; index--) {
-		const entry = entries[index];
-		if (entry.type === "message" && entry.message.role === "user") {
-			return {
-				userEntryId: entry.id,
-				content: entry.message.content as Parameters<AgentSession["sendUserMessage"]>[0],
-				error,
-			};
-		}
+		return entry.message.errorMessage || "Assistant request failed";
 	}
 	return undefined;
 }
 
+/**
+ * Re-issue the failed provider request, keeping every completed step of the turn.
+ *
+ * The failure and any tool calls it left unanswered are dropped from the live context so
+ * `continue()` resumes from the last user or tool result message. Session entries keep the
+ * failure for history; providers skip errored assistant messages when building requests.
+ */
+export async function resumeFailedRequest(session: AgentSession): Promise<void> {
+	const messages = session.agent.state.messages;
+	let keep = messages.length;
+	while (keep > 0) {
+		const message = messages[keep - 1];
+		if (message.role !== "assistant") break;
+		// Trailing assistant messages are the failure itself or a request whose tool calls
+		// never produced results — both block continue() and must not be replayed.
+		if (message.stopReason === "stop" || message.stopReason === "length") break;
+		keep--;
+	}
+	if (keep < messages.length) session.agent.state.messages = messages.slice(0, keep);
+	await session.agent.continue();
+}
+
 function getActiveTurnError(session: AgentSession): string | undefined {
-	return findRetryableTurn(session.sessionManager.getBranch())?.error;
+	return findRetryableError(session.sessionManager.getBranch());
 }
 
 /**
@@ -474,11 +475,10 @@ export async function runAgent(
 
 	try {
 		if (options.retry) {
-			const retryable = findRetryableTurn(session.sessionManager.getBranch());
-			if (!retryable) throw new Error("No failed assistant turn is available to retry");
-			const navigation = await session.navigateTree(retryable.userEntryId);
-			if (navigation.cancelled) throw new Error("Retry cancelled while branching away from the failed turn");
-			await session.sendUserMessage(retryable.content as Parameters<AgentSession["sendUserMessage"]>[0]);
+			if (!findRetryableError(session.sessionManager.getBranch())) {
+				throw new Error("No failed assistant turn is available to retry");
+			}
+			await resumeFailedRequest(session);
 		} else {
 			await session.prompt(prompt);
 		}
@@ -567,8 +567,9 @@ export async function retryFailedTurn(
 		signal?: AbortSignal;
 	} = {},
 ): Promise<AgentTurnResult> {
-	const retryable = findRetryableTurn(session.sessionManager.getBranch());
-	if (!retryable) throw new Error("No failed assistant turn is available to retry");
+	if (!findRetryableError(session.sessionManager.getBranch())) {
+		throw new Error("No failed assistant turn is available to retry");
+	}
 
 	const collector = collectResponseText(session);
 	const cleanupAbort = forwardAbortSignal(session, options.signal);
@@ -596,9 +597,7 @@ export async function retryFailedTurn(
 	});
 
 	try {
-		const navigation = await session.navigateTree(retryable.userEntryId);
-		if (navigation.cancelled) throw new Error("Retry cancelled while branching away from the failed turn");
-		await session.sendUserMessage(retryable.content as Parameters<AgentSession["sendUserMessage"]>[0]);
+		await resumeFailedRequest(session);
 	} finally {
 		collector.unsubscribe();
 		unsubEvents();

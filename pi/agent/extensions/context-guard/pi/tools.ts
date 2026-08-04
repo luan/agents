@@ -5,7 +5,7 @@ import {
 	FALLBACK_HASHLINE_SNAPSHOT_SESSION_ID,
 	hashlineSnapshotStoreForSession,
 } from "../../fileops/hashline/anchors.js";
-import { textComponent } from "../../shared/tui";
+import { RenderedLineCache, textComponent } from "../../shared/tui";
 import type { PiToolResponse } from "./core.js";
 import { invokeCore } from "./core.js";
 import { getPiConfigDir } from "./index.js";
@@ -16,14 +16,20 @@ import { type ToolResult, trackIndexed, trackResponse, VERSION } from "./tool-st
 export { resolveSessionIdFromSessionDB } from "./tool-paths.js";
 
 class ContextToolComponent {
+	private readonly cache = new RenderedLineCache();
+
 	constructor(private readonly text: string) {}
 
-	invalidate(): void {}
+	invalidate(): void {
+		this.cache.clear();
+	}
 
 	render(width: number): string[] {
-		return textComponent(this.text)
-			.render(width)
-			.map((line) => truncateToWidth(line, Math.max(1, width)));
+		return this.cache.get(width, "", () =>
+			textComponent(this.text)
+				.render(width)
+				.map((line) => truncateToWidth(line, Math.max(1, width))),
+		);
 	}
 }
 

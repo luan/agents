@@ -4,8 +4,7 @@ import { truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { onOpenAIFastRequest } from "../shared/openai-fast-state";
 import { bold, framedBlock, renderStatusLine, styledSymbol, textComponent, treeGlyphs } from "../shared/tui/omp-card";
-import { GenerationRateStats } from "../tui/generation-rate";
-import { findRetryableTurn } from "./runtime/agent-runner.js";
+import { findRetryableError } from "./runtime/agent-runner.js";
 import {
 	deliverPendingForSession,
 	getSessionRuntime,
@@ -369,7 +368,6 @@ function ensureActivity(activityByAgent: Map<string, AgentActivity>, id: string)
 			toolUses: 0,
 			responseText: "",
 			turnCount: 0,
-			generationRate: new GenerationRateStats(),
 			lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
 		};
 		activityByAgent.set(id, activity);
@@ -377,12 +375,11 @@ function ensureActivity(activityByAgent: Map<string, AgentActivity>, id: string)
 	return activity;
 }
 
-function addActivityUsage(activity: AgentActivity, usage: AssistantUsage, durationMs: number): void {
+function addActivityUsage(activity: AgentActivity, usage: AssistantUsage): void {
 	activity.lifetimeUsage.input += usage.input;
 	activity.lifetimeUsage.output += usage.output;
 	activity.lifetimeUsage.cacheWrite += usage.cacheWrite;
 	activity.lifetimeUsage.cost += usage.cost;
-	activity.generationRate.recordMessage(usage.output, durationMs);
 }
 
 const taskItemSchema = Type.Object({
@@ -434,6 +431,8 @@ export function routeForegroundInput(
 	return { action: "continue", backgrounded };
 }
 
+const RETRY_MESSAGE = "retry-failed-request";
+
 export default function subagentsExtension(pi: ExtensionAPI) {
 	let currentCtx: ExtensionContext | undefined;
 	const manager = getSharedAgentManager();
@@ -449,6 +448,16 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	const findOwnedRecord = (ctx: ExtensionContext, id: string): AgentRecord | undefined => {
 		const records = visibleRecords(ctx);
 		return records.find((record) => record.id === id) ?? records.find((record) => record.id.startsWith(id));
+	};
+	/** Retry candidates for completions and error messages: the main turn plus failed subagents. */
+	const retryTargets = (ctx: ExtensionContext) => {
+		const mainError = findRetryableError(ctx.sessionManager.getBranch());
+		const targets = mainError ? [{ value: "main", label: "main", description: mainError }] : [];
+		for (const record of visibleRecords(ctx)) {
+			if (record.status !== "error") continue;
+			targets.push({ value: record.id, label: record.id, description: record.error ?? record.description ?? "" });
+		}
+		return targets;
 	};
 	const harnessActions = (ctx: ExtensionCommandContext) => ({
 		steer: (id: string, message: string) => manager.steer(id, message),
@@ -531,34 +540,53 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("retry", {
-		description: "Retry the failed main turn, or a failed subagent by id",
+		description: "Re-issue the failed request: /retry [main|<subagent id>]",
+		getArgumentCompletions: (prefix: string) => {
+			if (!currentCtx) return null;
+			const value = prefix.trim();
+			const items = retryTargets(currentCtx).filter((target) => target.value.startsWith(value));
+			return items.length > 0 ? items : null;
+		},
 		handler: async (args: string, ctx: ExtensionCommandContext) => {
 			await ctx.waitForIdle();
 			const target = args.trim();
-			const retryMain = !target || target === "main";
-			const mainTurn = findRetryableTurn(ctx.sessionManager.getBranch());
+			const report = (message: string, level: "info" | "warning" | "error") => {
+				if (ctx.hasUI) ctx.ui.notify(message, level);
+				else console.error(`[retry] ${message}`);
+			};
+			const targets = retryTargets(ctx);
+			const usage = targets.length
+				? `Retryable: ${targets.map((candidate) => candidate.value).join(", ")}.`
+				: "Nothing failed in this session; there is no request to re-issue.";
 
-			if (retryMain && mainTurn) {
-				const navigation = await ctx.navigateTree(mainTurn.userEntryId);
-				if (navigation.cancelled) {
-					ctx.ui.notify("Retry cancelled.", "warning");
+			const mainError = findRetryableError(ctx.sessionManager.getBranch());
+			if ((!target && mainError) || target === "main") {
+				if (!mainError) {
+					report(`No failed main-session request to re-issue. ${usage}`, "warning");
 					return;
 				}
-				ctx.ui.setEditorText("");
-				pi.sendUserMessage(mainTurn.content as Parameters<ExtensionAPI["sendUserMessage"]>[0]);
+				// The failed request is re-issued from the intact transcript: completed tool calls
+				// stay in context and only a hidden nudge is added, so no work is repeated.
+				pi.sendMessage(
+					{
+						customType: RETRY_MESSAGE,
+						content: `The previous request failed (${mainError}). Continue from the last completed step without repeating finished work.`,
+						display: false,
+					},
+					{ triggerTurn: true },
+				);
+				report(`Re-issuing the failed main request (${mainError}).`, "info");
 				return;
 			}
-			if (target === "main") {
-				ctx.ui.notify("No failed main-session turn is available to retry.", "warning");
-				return;
-			}
+
 			const record = target
 				? findOwnedRecord(ctx, target)
-				: visibleRecords(ctx).find(
-						(agent) => agent.session && findRetryableTurn(agent.session.sessionManager.getBranch()),
-					);
+				: visibleRecords(ctx).find((agent) => agent.status === "error");
 			if (!record) {
-				ctx.ui.notify("No retryable subagent found.", "warning");
+				report(
+					target ? `No subagent matches "${target}". ${usage}` : `No retryable subagent found. ${usage}`,
+					"warning",
+				);
 				return;
 			}
 			record.completionDelivered = true;
@@ -566,12 +594,12 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 				onAssistantUsage: () => {},
 			});
 			if (!retried) {
-				ctx.ui.notify(`Subagent ${record.id} is not retryable.`, "warning");
+				report(`Subagent ${record.id} has no failed request to re-issue.`, "warning");
 				return;
 			}
 			persistAgent(retried);
 			agentWidget.update();
-			ctx.ui.notify(
+			report(
 				retried.error ? retried.error : `Subagent ${retried.id} completed after retry.`,
 				retried.error ? "error" : "info",
 			);
@@ -654,11 +682,10 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 						onTurnEnd: (turnCount) => {
 							const activity = ensureActivity(activityByAgent, id);
 							activity.turnCount = turnCount;
-							activity.generationRate.finishTurn();
 							agentWidget.update();
 						},
-						onAssistantUsage: (usage, durationMs) => {
-							addActivityUsage(ensureActivity(activityByAgent, id), usage, durationMs);
+						onAssistantUsage: (usage) => {
+							addActivityUsage(ensureActivity(activityByAgent, id), usage);
 							agentWidget.update();
 						},
 					});

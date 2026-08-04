@@ -1567,3 +1567,38 @@ describe("fileops extension modes", () => {
 		expect(REPLACE_GRAMMAR).toContain("*** Old");
 	});
 });
+
+it("builds search result text once per frame set and refreshes when expand toggles", () => {
+	const { tools } = registerEditToolWithEvents("hashline");
+	const search = tools.get("search");
+	const result = {
+		content: [{ type: "text", text: "[sample.txt#ABCD]\n*1:needle one\n 2:beta\n*3:needle two" }],
+		details: {},
+	};
+	let themeCalls = 0;
+	const countingTheme = {
+		...theme,
+		fg: (role: string, text: string) => {
+			themeCalls++;
+			return (theme as any).fg(role, text);
+		},
+	};
+	const options = { expanded: false, isPartial: false };
+	const component = search.renderResult(result, options, countingTheme, {
+		args: { pattern: "needle", path: "sample.txt" },
+	});
+
+	const first = render(component);
+	const callsAfterFirst = themeCalls;
+	for (let frame = 0; frame < 10; frame++) component.render(120);
+
+	// Repeat frames must not rebuild the text: that is the per-row match highlighting.
+	expect(themeCalls).toBe(callsAfterFirst);
+	expect(render(component)).toBe(first);
+
+	// Expanding is a live input, so it has to invalidate rather than serve collapsed rows.
+	options.expanded = true;
+	const expanded = render(component);
+	expect(themeCalls).toBeGreaterThan(callsAfterFirst);
+	expect(stripAnsi(expanded)).toContain("needle");
+});

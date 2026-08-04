@@ -137,14 +137,6 @@ export function renderExecCellComponent(cell: ExecCell, env: RenderExecCellEnv, 
 
 const MAX_CACHED_RENDER_TEXT_LENGTH = 16_384;
 
-function renderedTextSignature(text: string): string {
-	let hash = 2166136261;
-	for (let index = 0; index < text.length; index += 1) {
-		hash ^= text.charCodeAt(index);
-		hash = Math.imul(hash, 16777619);
-	}
-	return `${text.length}:${hash >>> 0}`;
-}
 function shouldCacheRenderedLines(cell: ExecCell, text: string): boolean {
 	return (
 		!cell.outputBlock ||
@@ -155,7 +147,6 @@ function shouldCacheRenderedLines(cell: ExecCell, text: string): boolean {
 class ExecCellComponent implements Component {
 	private renderedCache?: {
 		width: number;
-		textSignature: string;
 		lines: string[];
 	};
 
@@ -165,6 +156,9 @@ class ExecCellComponent implements Component {
 	) {}
 
 	update(cell: ExecCell, env: RenderExecCellEnv) {
+		// Callers hand over a freshly built cell whenever anything changed, so identity is
+		// the change signal — and the only thing that may invalidate rendered lines.
+		if (cell !== this.cell || env !== this.env) this.renderedCache = undefined;
 		this.cell = cell;
 		this.env = env;
 	}
@@ -174,18 +168,13 @@ class ExecCellComponent implements Component {
 	}
 
 	render(width: number): string[] {
+		// The cache has to sit in front of renderExecCell(): shell tokenizing, syntax
+		// highlighting and output limiting all happen in there, and render() is called on
+		// every animation frame.
+		if (this.renderedCache?.width === width) return this.renderedCache.lines;
 		const text = renderExecCell(this.cell, { ...this.env, width });
-		const cacheable = shouldCacheRenderedLines(this.cell, text);
-		const textSignature = cacheable ? renderedTextSignature(text) : undefined;
-		if (
-			textSignature !== undefined &&
-			this.renderedCache?.width === width &&
-			this.renderedCache.textSignature === textSignature
-		) {
-			return this.renderedCache.lines;
-		}
 		const lines = textComponent(text).render(width);
-		this.renderedCache = textSignature === undefined ? undefined : { width, textSignature, lines };
+		this.renderedCache = shouldCacheRenderedLines(this.cell, text) ? { width, lines } : undefined;
 		return lines;
 	}
 }
