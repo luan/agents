@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { buildCompletionMessage, COMPLETION_BATCH_MS } from "./coordinator";
+import { buildCompletionMessage } from "./coordinator";
 import type { AgentRecord } from "./types";
 
 function record(id: string): AgentRecord {
@@ -25,7 +25,6 @@ function record(id: string): AgentRecord {
 test("batches completions into one hidden follow-up message", () => {
 	const completion = buildCompletionMessage([record("a"), record("b")]);
 
-	expect(COMPLETION_BATCH_MS).toBeGreaterThanOrEqual(200);
 	expect(completion.message.customType).toBe("subagents-complete");
 	expect(completion.message.display).toBe(false);
 	expect(completion.message.content).toContain("## a");

@@ -239,6 +239,26 @@ function uploadSequence(
 
 export function resetKittyVirtualImageUploadCache(): void {}
 
+/**
+ * Transmit `base64Png` as a one-row virtual placement and return just the placeholder cells that
+ * draw it — `columns` of them, one cell each, so a caller can swap them in for exactly that many
+ * characters of text without disturbing layout.
+ *
+ * The transmit goes out of band rather than into the returned string on purpose: under tmux it
+ * must be wrapped in a DCS passthrough, and `visibleWidth` cannot parse a wrapped sequence, so an
+ * inline transmit measures as several visible cells and shifts everything after it along the row.
+ */
+export function transmitKittyInlineImageRow(
+	base64Png: string,
+	columns: number,
+	sourcePath?: string,
+	write: (sequence: string) => void = (sequence) => void process.stdout.write(sequence),
+): string {
+	const imageId = stableVirtualImageId(sourcePath ?? base64Png, "image/png", columns, 1);
+	write(uploadSequence(base64Png, imageId, columns, 1, sourcePath));
+	return placeholderRow(0, columns, imageId);
+}
+
 function imageFallback(mimeType: string, dimensions: ImageDimensions, filename?: string): string {
 	const name = filename ? `${filename} ` : "";
 	return `[Image: ${name}[${mimeType}] ${dimensions.widthPx}x${dimensions.heightPx}]`;

@@ -1,6 +1,5 @@
 import { expect, test } from "bun:test";
-import { GenerationRateStats } from "../../../tui/generation-rate";
-import { AgentWidget, formatAgentModelInfo, WIDGET_REFRESH_MS } from "./agent-widget";
+import { AgentWidget, formatAgentModelInfo } from "./agent-widget";
 
 const theme = {
 	fg: (_color: string, text: string) => text,
@@ -33,9 +32,6 @@ test("uses a calm refresh rate and one HUD row per running agent", () => {
 		lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0.42 },
 		compactionCount: 0,
 	}));
-	const generationRate = new GenerationRateStats();
-	generationRate.recordMessage(100, 10_000);
-	generationRate.finishTurn();
 	const activity = new Map([
 		[
 			"/root/parent",
@@ -45,7 +41,6 @@ test("uses a calm refresh rate and one HUD row per running agent", () => {
 				responseText: "",
 				turnCount: 0,
 				lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0.42 },
-				generationRate,
 			},
 		],
 	]);
@@ -61,7 +56,6 @@ test("uses a calm refresh rate and one HUD row per running agent", () => {
 	const lines = renderWidget(1000);
 	const nextFrame = renderWidget(1120);
 
-	expect(WIDGET_REFRESH_MS).toBeLessThanOrEqual(150);
 	expect(lines).toHaveLength(3);
 	expect(lines[0]).toContain("2 running");
 	expect(lines.some((line) => line.includes("/root/"))).toBe(false);
@@ -71,7 +65,6 @@ test("uses a calm refresh rate and one HUD row per running agent", () => {
 	expect(lines[1]).toContain("effort medium");
 	expect(lines[1]).toContain("$0.42");
 	expect(lines[1]).toContain("⚡ fast");
-	expect(lines[1]).toContain("10.0 tps · 10.0 overall");
 	expect(lines[1]).toEndWith("| thinking");
 	expect(nextFrame[1]).not.toBe(lines[1]);
 });

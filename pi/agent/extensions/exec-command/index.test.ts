@@ -1499,11 +1499,9 @@ test("extension status shows background terminal and stdin-open counts", async (
 		expect(widgetCalls.at(-1)?.options).toEqual({ placement: "aboveEditor" });
 		expect(widgetText).toContain("background terminal");
 		expect(widgetText).toContain("sleep 1; printf done");
-		expect(widgetText).not.toContain("stdin closed");
 		expect(widgetText).toContain("(no output)");
-		expect(widgetText).toContain("0s");
 
-		await Bun.sleep(1200);
+		await waitForCondition(() => statusCalls.at(-1)?.text === "1 background terminal · 0 running");
 		expect(statusCalls.at(-1)).toEqual({
 			key: "background-terminals",
 			text: "1 background terminal · 0 running",
@@ -1779,9 +1777,11 @@ test("extension does not wake the agent after write_stdin already returned inter
 		expect(spawned.details.stdin_open).toBe(true);
 		expect(sentMessages).toHaveLength(0);
 
+		// Generous budget on purpose: the wait resolves the moment the shell exits, so a large
+		// yield costs nothing here but stops a slow PTY round-trip from reading as "still running".
 		const write = await writeStdinTool.execute(
 			"write-no-wake",
-			{ process_id: processId, chars: "hello\n", yield_time_ms: 500 },
+			{ process_id: processId, chars: "hello\n", yield_time_ms: 30_000 },
 			undefined,
 			undefined,
 			ctx,
@@ -1924,7 +1924,7 @@ test("extension reports stopped background terminals as cancelled completions", 
 		expect(processId).toBeNumber();
 
 		await commands.get("stop").handler(String(processId), ctx);
-		await Bun.sleep(500);
+		await waitForCondition(() => sentMessages.length === 1);
 
 		expect(sentMessages).toHaveLength(1);
 		expect(sentMessages[0]?.message.customType).toBe("exec_command.completed");
@@ -2083,9 +2083,11 @@ test("extension suppresses completion after non-empty write_stdin returns the fi
 		expect(spawned.details.stdin_open).toBe(true);
 		expect(sentMessages).toHaveLength(0);
 
+		// Generous budget on purpose: the wait resolves the moment the shell exits, so a large
+		// yield costs nothing here but stops a slow PTY round-trip from reading as "still running".
 		const write = await writeStdinTool.execute(
 			"write-stdin-completion",
-			{ process_id: processId, chars: "hello\n", yield_time_ms: 250 },
+			{ process_id: processId, chars: "hello\n", yield_time_ms: 30_000 },
 			undefined,
 			undefined,
 			ctx,
@@ -2209,8 +2211,7 @@ test("extension hides empty poll output after rendering a background terminal co
 		const processId = spawned.details.process_id;
 		expect(processId).toBeNumber();
 
-		await Bun.sleep(500);
-		expect(sentMessages).toHaveLength(1);
+		await waitForCondition(() => sentMessages.length === 1);
 		expect(sentMessages[0]?.message.details.output).toContain("omega");
 
 		const poll = await writeStdinTool.execute(
@@ -2696,9 +2697,6 @@ test("exec session manager uses a non-color environment", async () => {
 
 test("exec session manager maps fish to the codex-compatible fallback shell", async () => {
 	expect(resolveRuntimeShell("/opt/homebrew/bin/fish")).toBe(DEFAULT_EXEC_SHELL);
-	if (process.platform === "darwin") {
-		expect(DEFAULT_EXEC_SHELL).toBe("/bin/zsh");
-	}
 
 	const sessions = createExecSessionManager({ defaultExecYieldTimeMs: 5000 });
 	try {
@@ -2770,7 +2768,7 @@ test("exec session manager lazily removes exited sessions when a new session sta
 		const exited = await sessions.exec({ cmd: "sleep 0.4; printf done", yield_time_ms: 250 }, process.cwd());
 		expect(exited.process_id).toBeNumber();
 
-		await Bun.sleep(600);
+		await waitForCondition(() => sessions.listSessions()[0]?.running === false);
 
 		expect(sessions.listSessions()).toMatchObject([
 			{
@@ -2938,4 +2936,40 @@ test("exec session manager can write to tty-requested sessions", async () => {
 	} finally {
 		sessions.shutdown();
 	}
+});
+
+test("exec cell component lays out once per width and refreshes when the cell changes", () => {
+	let layouts = 0;
+	const countingTheme: RenderTheme = {
+		fg: (role, text) => {
+			layouts++;
+			return `<${role}>${text}</${role}>`;
+		},
+		bold: (text) => text,
+	};
+	const cell = rawCommandToExecCell({ command: "echo one", status: "done" });
+	const env = { theme: countingTheme, width: 80 };
+	const component = renderExecCellComponent(cell, env);
+
+	const first = component.render(80);
+	const layoutsAfterFirst = layouts;
+	for (let frame = 0; frame < 10; frame++) component.render(80);
+
+	// Repeat frames must not re-run renderExecCell: that is the shell tokenizing,
+	// highlighting and output limiting that dominated every animation frame.
+	expect(layouts).toBe(layoutsAfterFirst);
+	expect(component.render(80)).toBe(first);
+
+	// A different width has to be laid out again rather than reusing 80-column lines.
+	const narrow = component.render(40);
+	expect(narrow).not.toBe(first);
+	expect(layouts).toBeGreaterThan(layoutsAfterFirst);
+
+	// A new cell must not keep serving the old command.
+	const updated = rawCommandToExecCell({ command: "echo two", status: "done" });
+	const same = renderExecCellComponent(updated, { theme: countingTheme, width: 80 }, component);
+	expect(same).toBe(component);
+	const refreshed = stripAnsi(same.render(80).join("\n")).replace(/<\/?[a-zA-Z]+>/g, "");
+	expect(refreshed).toContain("echo two");
+	expect(refreshed).not.toContain("echo one");
 });

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 import { basename } from "node:path";
 import gitToolExtension, {
 	appendGitToolPrompt,
@@ -13,6 +13,16 @@ import gitToolExtension, {
 } from "./index";
 
 type Handler = (...args: any[]) => unknown;
+
+/** Modes that ship a skill directory, as opposed to main/none which ship none. */
+const STACKED_MODES = ["graphite", "git-spice", "gh-stack"] as const;
+
+const PROMPT_ADDENDA = [
+	["graphite", GIT_TOOL_GRAPHITE_PROMPT_ADDENDUM],
+	["git-spice", GIT_TOOL_GIT_SPICE_PROMPT_ADDENDUM],
+	["gh-stack", GIT_TOOL_GH_STACK_PROMPT_ADDENDUM],
+	["main", GIT_TOOL_MAIN_PROMPT_ADDENDUM],
+] as const;
 
 function createPi(configValue: string | undefined) {
 	const handlers = new Map<string, Handler[]>();
@@ -53,109 +63,40 @@ describe("git-tool mode parsing", () => {
 });
 
 describe("git-tool resources", () => {
-	test("graphite mode contributes exactly the Graphite generic skill directory", () => {
-		const resources = gitToolResources("graphite");
+	test.each(STACKED_MODES)("%s contributes exactly its own skill directory", (mode) => {
+		const resources = gitToolResources(mode);
 
-		expect(resources.skillPaths?.map((path) => basename(path))).toEqual(["graphite"]);
-		expect(resources.skillPaths?.[0]?.replace(/\\/g, "/")).toContain("git-tool/skill-resources/graphite");
+		expect(resources.skillPaths?.map((path) => basename(path))).toEqual([mode]);
+		expect(resources.skillPaths?.[0]?.replace(/\\/g, "/")).toContain(`git-tool/skill-resources/${mode}`);
 	});
 
-	test("git-spice mode contributes exactly the Git-Spice generic skill directory", () => {
-		const resources = gitToolResources("git-spice");
+	test.each(STACKED_MODES)("%s exposes generic skill names only", (mode) => {
+		const skillDir = gitToolResources(mode).skillPaths?.[0];
+		if (!skillDir) throw new Error(`missing ${mode} skill directory`);
 
-		expect(resources.skillPaths?.map((path) => basename(path))).toEqual(["git-spice"]);
-		expect(resources.skillPaths?.[0]?.replace(/\\/g, "/")).toContain("git-tool/skill-resources/git-spice");
+		expect(skillDirectoryNames(skillDir)).toEqual(["restack", "stack", "submit", "sync"]);
 	});
 
-	test("gh-stack mode contributes exactly the gh-stack generic skill directory", () => {
-		const resources = gitToolResources("gh-stack");
-
-		expect(resources.skillPaths?.map((path) => basename(path))).toEqual(["gh-stack"]);
-		expect(resources.skillPaths?.[0]?.replace(/\\/g, "/")).toContain("git-tool/skill-resources/gh-stack");
-	});
-
-	test("main mode contributes no skill paths", () => {
-		expect(gitToolResources("main")).toEqual({});
-	});
-
-	test("none mode contributes no skill paths", () => {
-		expect(gitToolResources("none")).toEqual({});
+	test.each(["main", "none"] as const)("%s contributes no skill paths", (mode) => {
+		expect(gitToolResources(mode)).toEqual({});
 	});
 });
 
 describe("git-tool prompt addendum", () => {
-	test("graphite mode adds strict stack workflow guidance", () => {
-		const prompt = appendGitToolPrompt("base", "graphite");
+	test.each(PROMPT_ADDENDA)("%s appends its addendum without dropping the base prompt", (mode, addendum) => {
+		const prompt = appendGitToolPrompt("base", mode);
 
-		expect(prompt).toContain(GIT_TOOL_GRAPHITE_PROMPT_ADDENDUM);
-		expect(prompt).toContain("Do not use raw `git push`");
-		expect(prompt).toContain("Use the `submit`, `sync`, `restack`, and `stack` skills");
+		expect(prompt.startsWith("base")).toBe(true);
+		expect(prompt).toContain(addendum);
 	});
 
-	test("git-spice mode adds strict stack workflow guidance", () => {
-		const prompt = appendGitToolPrompt("base", "git-spice");
-
-		expect(prompt).toContain(GIT_TOOL_GIT_SPICE_PROMPT_ADDENDUM);
-		expect(prompt).toContain("Do not use raw `git push`");
-		expect(prompt).toContain("Use the `submit`, `sync`, `restack`, and `stack` skills");
-	});
-
-	test("gh-stack mode adds strict stack workflow guidance", () => {
-		const prompt = appendGitToolPrompt("base", "gh-stack");
-
-		expect(prompt).toContain(GIT_TOOL_GH_STACK_PROMPT_ADDENDUM);
-		expect(prompt).toContain("Do not use raw `git push`");
-		expect(prompt).toContain("Use the `submit`, `sync`, `restack`, and `stack` skills");
-	});
-
-	test("main mode adds current-branch commit and push guidance", () => {
-		const prompt = appendGitToolPrompt("base", "main");
-
-		expect(prompt).toContain("base");
-		expect(prompt).toContain(GIT_TOOL_MAIN_PROMPT_ADDENDUM);
-		expect(prompt).toContain("currently checked-out branch");
-	});
-
-	test("main prompt addendum is idempotent", () => {
-		const once = appendGitToolPrompt("base", "main");
-		expect(appendGitToolPrompt(once, "main")).toBe(once);
-	});
-
-	test("graphite prompt addendum is idempotent", () => {
-		const once = appendGitToolPrompt("base", "graphite");
-		expect(appendGitToolPrompt(once, "graphite")).toBe(once);
-	});
-
-	test("git-spice prompt addendum is idempotent", () => {
-		const once = appendGitToolPrompt("base", "git-spice");
-		expect(appendGitToolPrompt(once, "git-spice")).toBe(once);
-	});
-
-	test("gh-stack prompt addendum is idempotent", () => {
-		const once = appendGitToolPrompt("base", "gh-stack");
-		expect(appendGitToolPrompt(once, "gh-stack")).toBe(once);
+	test.each(PROMPT_ADDENDA)("%s addendum is idempotent", (mode) => {
+		const once = appendGitToolPrompt("base", mode);
+		expect(appendGitToolPrompt(once, mode)).toBe(once);
 	});
 
 	test("none mode leaves system prompt unchanged", () => {
 		expect(appendGitToolPrompt("base", "none")).toBe("base");
-	});
-});
-
-describe("Git-Spice skills", () => {
-	test("exposes generic skill names only", () => {
-		const skillDir = gitToolResources("git-spice").skillPaths?.[0];
-		if (!skillDir) throw new Error("missing Git-Spice skill directory");
-
-		expect(skillDirectoryNames(skillDir)).toEqual(["restack", "stack", "submit", "sync"]);
-	});
-});
-
-describe("gh-stack skills", () => {
-	test("exposes generic skill names only", () => {
-		const skillDir = gitToolResources("gh-stack").skillPaths?.[0];
-		if (!skillDir) throw new Error("missing gh-stack skill directory");
-
-		expect(skillDirectoryNames(skillDir)).toEqual(["restack", "stack", "submit", "sync"]);
 	});
 });
 
@@ -170,19 +111,6 @@ describe("git-tool tool-call handling", () => {
 		"functions.exec_command",
 	])("allows %s", (toolName) => {
 		expect(gitToolToolCallBlock(toolCall(toolName))).toBeUndefined();
-	});
-});
-
-describe("Graphite skills", () => {
-	test("exposes generic skill names only", () => {
-		const skillDir = gitToolResources("graphite").skillPaths?.[0];
-		if (!skillDir) throw new Error("missing Graphite skill directory");
-
-		expect(skillDirectoryNames(skillDir)).toEqual(["restack", "stack", "submit", "sync"]);
-	});
-
-	test("removes legacy Graphite skill resources", () => {
-		expect(existsSync("pi/agent/graphite-skills")).toBe(false);
 	});
 });
 
