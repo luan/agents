@@ -1,4 +1,5 @@
-import { z } from "zod";
+import { type Static, type TSchema, Type } from "typebox";
+import { Parser } from "typebox/value";
 
 const LANGUAGE_ENUM = [
 	"javascript",
@@ -15,6 +16,11 @@ const LANGUAGE_ENUM = [
 	"csharp",
 ] as const;
 
+const Language = Type.Union(
+	LANGUAGE_ENUM.map((language) => Type.Literal(language)),
+	{ description: "Runtime language" },
+);
+
 export function createPiToolSpecs() {
 	return {
 		processFile: {
@@ -23,26 +29,25 @@ export function createPiToolSpecs() {
 				"Read a file and process it without loading contents into context. The file is read into a FILE_CONTENT variable inside the sandbox. Only your printed summary enters context.\n\n" +
 				"PREFER THIS OVER Read/cat for: log files, data files, large source files, and any file where you need to extract specific information rather than read the entire content.\n\n" +
 				"Write code against FILE_CONTENT and print only the answer.",
-			inputSchema: z.object({
-				path: z.string().describe("Absolute file path or relative to project root"),
-				language: z.enum(LANGUAGE_ENUM).describe("Runtime language"),
-				code: z
-					.string()
-					.describe(
+			inputSchema: Type.Object({
+				path: Type.String({ description: "Absolute file path or relative to project root" }),
+				language: Language,
+				code: Type.String({
+					description:
 						"Code to process FILE_CONTENT (file_content in Elixir). Print summary via console.log/print/echo/IO.puts/Console.WriteLine.",
-					),
-				timeout: z.coerce
-					.number()
-					.optional()
-					.describe(
-						"Max execution time in ms. When omitted, no internal timer fires and the caller-side timeout governs.",
-					),
-				intent: z
-					.string()
-					.optional()
-					.describe(
-						"What you're looking for in the output. When provided and output is large (>5KB), returns only matching sections via BM25 search instead of truncated output.",
-					),
+				}),
+				timeout: Type.Optional(
+					Type.Number({
+						description:
+							"Max execution time in ms. When omitted, no internal timer fires and the caller-side timeout governs.",
+					}),
+				),
+				intent: Type.Optional(
+					Type.String({
+						description:
+							"What you're looking for in the output. When provided and output is large (>5KB), returns only matching sections via BM25 search instead of truncated output.",
+					}),
+				),
 			}),
 		},
 		index: {
@@ -50,40 +55,49 @@ export function createPiToolSpecs() {
 			description:
 				"Index documentation or knowledge content into a searchable BM25 knowledge base. Chunks markdown by headings (keeping code blocks intact) and stores in ephemeral FTS5 database. The full content does NOT stay in context — only a brief summary is returned.\n\n" +
 				"After indexing, use cg_search to retrieve specific sections on-demand.",
-			inputSchema: z.object({
-				content: z.string().optional().describe("Raw text/markdown to index. Provide this OR path, not both."),
-				path: z
-					.string()
-					.optional()
-					.describe("File path to read and index (content never enters context). Provide this OR content."),
-				source: z
-					.string()
-					.optional()
-					.describe("Label for the indexed content (e.g., 'Context7: React useEffect', 'Skill: frontend-design')"),
+			inputSchema: Type.Object({
+				content: Type.Optional(
+					Type.String({ description: "Raw text/markdown to index. Provide this OR path, not both." }),
+				),
+				path: Type.Optional(
+					Type.String({
+						description: "File path to read and index (content never enters context). Provide this OR content.",
+					}),
+				),
+				source: Type.Optional(
+					Type.String({
+						description:
+							"Label for the indexed content (e.g., 'Context7: React useEffect', 'Skill: frontend-design')",
+					}),
+				),
 			}),
 		},
 		search: {
 			title: "Search Indexed Content",
 			description:
 				"Search indexed content. Requires prior indexing via exec_command(mode:'batch'), cg_index, or cg_fetch. Pass ALL search questions as queries array in ONE call. File-backed sources are auto-refreshed when the source file changes.\n\nTIPS: 2-4 specific terms per query. Use 'source' to scope results.",
-			inputSchema: z.object({
-				queries: z.preprocess(
-					coerceJsonArray,
-					z.array(z.string()).optional().describe("Array of search queries. Batch ALL questions in one call."),
+			// Models sometimes hand `queries` over as a JSON-encoded string rather than an array.
+			coerce: coerceQueriesArray,
+			inputSchema: Type.Object({
+				queries: Type.Optional(
+					Type.Array(Type.String(), {
+						description: "Array of search queries. Batch ALL questions in one call.",
+					}),
 				),
-				limit: z.number().optional().default(3).describe("Results per query (default: 3)"),
-				source: z.string().optional().describe("Filter to a specific indexed source (partial match)."),
-				contentType: z
-					.enum(["code", "prose"])
-					.optional()
-					.describe("Filter results by content type: 'code' or 'prose'."),
-				sort: z
-					.enum(["relevance", "timeline"])
-					.optional()
-					.default("relevance")
-					.describe(
-						"Sort mode. 'relevance' (default): BM25 ranked, current session only. 'timeline': chronological across current session, prior sessions, and auto-memory.",
-					),
+				limit: Type.Optional(Type.Number({ default: 3, description: "Results per query (default: 3)" })),
+				source: Type.Optional(Type.String({ description: "Filter to a specific indexed source (partial match)." })),
+				contentType: Type.Optional(
+					Type.Union([Type.Literal("code"), Type.Literal("prose")], {
+						description: "Filter results by content type: 'code' or 'prose'.",
+					}),
+				),
+				sort: Type.Optional(
+					Type.Union([Type.Literal("relevance"), Type.Literal("timeline")], {
+						default: "relevance",
+						description:
+							"Sort mode. 'relevance' (default): BM25 ranked, current session only. 'timeline': chronological across current session, prior sessions, and auto-memory.",
+					}),
+				),
 			}),
 		},
 		fetch: {
@@ -91,46 +105,47 @@ export function createPiToolSpecs() {
 			description:
 				"Fetches URL content, converts HTML to markdown, indexes into searchable knowledge base, and returns a preview. Full content stays in sandbox — use cg_search() for deeper lookups.\n\n" +
 				"For multi-URL fetches, prefer requests: [{url, source}, ...] with concurrency: 4-8. Single URL uses the legacy url/source shape.",
-			inputSchema: z.object({
-				url: z.string().optional().describe("Single URL to fetch and index (legacy single-shape)"),
-				source: z
-					.string()
-					.optional()
-					.describe(
-						"Label for the indexed content when using single `url`. For batch, put source in each requests entry.",
-					),
-				requests: z
-					.array(
-						z.object({
-							url: z.string().describe("URL to fetch"),
-							source: z.string().optional().describe("Label for this URL's indexed content"),
+			inputSchema: Type.Object({
+				url: Type.Optional(Type.String({ description: "Single URL to fetch and index (legacy single-shape)" })),
+				source: Type.Optional(
+					Type.String({
+						description:
+							"Label for the indexed content when using single `url`. For batch, put source in each requests entry.",
+					}),
+				),
+				requests: Type.Optional(
+					Type.Array(
+						Type.Object({
+							url: Type.String({ description: "URL to fetch" }),
+							source: Type.Optional(Type.String({ description: "Label for this URL's indexed content" })),
 						}),
-					)
-					.min(1)
-					.optional()
-					.describe("Batch shape: array of {url, source?} entries."),
-				concurrency: z.coerce
-					.number()
-					.int()
-					.min(1)
-					.max(8)
-					.optional()
-					.default(1)
-					.describe("Max URLs to fetch in parallel (1-8, default: 1)."),
-				force: z.boolean().optional().describe("Skip cache and re-fetch even if content was recently indexed"),
+						{ minItems: 1, description: "Batch shape: array of {url, source?} entries." },
+					),
+				),
+				concurrency: Type.Optional(
+					Type.Integer({
+						minimum: 1,
+						maximum: 8,
+						default: 1,
+						description: "Max URLs to fetch in parallel (1-8, default: 1).",
+					}),
+				),
+				force: Type.Optional(
+					Type.Boolean({ description: "Skip cache and re-fetch even if content was recently indexed" }),
+				),
 			}),
 		},
 		status: {
 			title: "Context Guard Status",
 			description:
 				"Returns factual diagnostics for Context Guard: tool calls, indexed bytes, session events, resume snapshots, and continuity sources.",
-			inputSchema: z.object({}),
+			inputSchema: Type.Object({}),
 		},
 		check: {
 			title: "Run Diagnostics",
 			description:
 				"Diagnose context-guard installation. Runs host-side checks and returns a plain-text status report with [OK]/[FAIL]/[WARN] prefixes (renderer-safe across tool hosts). No CLI execution needed.",
-			inputSchema: z.object({}),
+			inputSchema: Type.Object({}),
 		},
 		purge: {
 			title: "Purge Knowledge Base",
@@ -148,27 +163,44 @@ export function createPiToolSpecs() {
 				"  • sessionId + scope:'project' -> ambiguous, reject\n" +
 				"  • bare {confirm:true} defaults to project-wide purge for back-compat\n\n" +
 				"Use sessionId when the user asks to clear a specific conversation's data. Use scope:'project' ONLY when the user explicitly asks to reset everything. NEVER call with bare {confirm:true}; always specify scope.",
-			inputSchema: z.object({
-				confirm: z.boolean().describe("MUST be true. Destructive operation; false returns 'purge cancelled'."),
-				sessionId: z
-					.string()
-					.optional()
-					.describe("UUID of a single session. MUST NOT be combined with scope:'project'."),
-				scope: z
-					.enum(["session", "project"])
-					.optional()
-					.describe("Explicit scope selector. 'session' REQUIRES sessionId. 'project' wipes the entire project."),
+			inputSchema: Type.Object({
+				confirm: Type.Boolean({
+					description: "MUST be true. Destructive operation; false returns 'purge cancelled'.",
+				}),
+				sessionId: Type.Optional(
+					Type.String({ description: "UUID of a single session. MUST NOT be combined with scope:'project'." }),
+				),
+				scope: Type.Optional(
+					Type.Union([Type.Literal("session"), Type.Literal("project")], {
+						description:
+							"Explicit scope selector. 'session' REQUIRES sessionId. 'project' wipes the entire project.",
+					}),
+				),
 			}),
 		},
 	};
 }
 
-function coerceJsonArray(val: unknown): unknown {
-	if (typeof val === "string") {
-		try {
-			const parsed = JSON.parse(val);
-			if (Array.isArray(parsed)) return parsed;
-		} catch {}
-	}
-	return val;
+/**
+ * Applies defaults, coerces stringified scalars, drops unknown keys, then asserts.
+ * `Parser` rather than `Parse` because `Parse` short-circuits on an already-valid
+ * value, which would skip defaults for absent optional fields.
+ */
+export function parseToolParams<Schema extends TSchema>(
+	schema: Schema,
+	coerce: ((params: Record<string, unknown>) => Record<string, unknown>) | undefined,
+	params: unknown,
+): Static<Schema> {
+	const raw = (params ?? {}) as Record<string, unknown>;
+	return Parser(schema, coerce ? coerce(raw) : raw) as Static<Schema>;
+}
+
+function coerceQueriesArray(params: Record<string, unknown>): Record<string, unknown> {
+	const { queries } = params;
+	if (typeof queries !== "string") return params;
+	try {
+		const parsed = JSON.parse(queries);
+		if (Array.isArray(parsed)) return { ...params, queries: parsed };
+	} catch {}
+	return params;
 }

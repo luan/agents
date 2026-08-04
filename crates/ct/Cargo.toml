@@ -8,7 +8,6 @@ name = "ct"
 path = "src/main.rs"
 
 [dependencies]
-anyhow = "^1"
 clap = { version = "^4", features = ["derive"] }
 clap_complete = "^4"
 dirs = "^6"

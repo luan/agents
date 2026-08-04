@@ -1,5 +1,5 @@
 import { truncateToWidth } from "@earendil-works/pi-tui";
-import type { z } from "zod";
+import type { TSchema } from "typebox";
 import {
 	createHashlineEditAnchor,
 	FALLBACK_HASHLINE_SNAPSHOT_SESSION_ID,
@@ -10,7 +10,7 @@ import type { PiToolResponse } from "./core.js";
 import { invokeCore } from "./core.js";
 import { getPiConfigDir } from "./index.js";
 import { getProjectDir, getSessionDbPath, getSessionDir, getStorePath } from "./tool-paths.js";
-import { createPiToolSpecs } from "./tool-specs.js";
+import { createPiToolSpecs, parseToolParams } from "./tool-specs.js";
 import { type ToolResult, trackIndexed, trackResponse, VERSION } from "./tool-stats.js";
 
 export { resolveSessionIdFromSessionDB } from "./tool-paths.js";
@@ -40,10 +40,13 @@ interface PiRenderTheme {
 
 type PiRenderContext = Record<string, unknown>;
 
+type ParamCoercion = (params: Record<string, unknown>) => Record<string, unknown>;
+
 type DirectToolDef = {
 	name: string;
 	description: string;
-	inputSchema: z.ZodTypeAny;
+	inputSchema: TSchema;
+	coerce?: ParamCoercion;
 	handler: (params: any) => Promise<ToolResult>;
 };
 
@@ -188,10 +191,16 @@ function renderMarkdownLine(line: string, theme: PiRenderTheme): string {
 
 function registerDirectTool(
 	name: string,
-	spec: { description: string; inputSchema: z.ZodTypeAny },
+	spec: { description: string; inputSchema: TSchema; coerce?: ParamCoercion },
 	handler: (params: any) => Promise<ToolResult>,
 ): void {
-	DIRECT_TOOLS.push({ name, description: spec.description, inputSchema: spec.inputSchema, handler });
+	DIRECT_TOOLS.push({
+		name,
+		description: spec.description,
+		inputSchema: spec.inputSchema,
+		coerce: spec.coerce,
+		handler,
+	});
 }
 
 const server = { registerTool: registerDirectTool };
@@ -345,7 +354,7 @@ export function registerPiContextTools(pi: {
 			renderResult: createDirectResultRenderer(def.name),
 			async execute(_toolCallId, params) {
 				try {
-					const parsed = def.inputSchema.parse(params ?? {});
+					const parsed = parseToolParams(def.inputSchema, def.coerce, params);
 					const result = await def.handler(parsed);
 					const text = (result.content ?? [])
 						.filter((c) => c?.type === "text" && typeof c.text === "string")
