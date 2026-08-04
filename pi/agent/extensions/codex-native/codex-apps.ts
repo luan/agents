@@ -19,6 +19,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { KittyVirtualImage } from "../shared/kitty-virtual-image";
+import { detachToolResultImages } from "../shared/tool-result-images";
 import { defineExtensionTui, textComponent, truncateToWidthCompat } from "../shared/tui";
 import { CodexAppServerMcpClient } from "./app-server-mcp";
 import { discoverLocalMcpServers, findCodexCliPath, LocalMcpClient, type LocalMcpTool } from "./local-mcp";
@@ -31,6 +32,8 @@ const codexAppsTui = defineExtensionTui({ id: "codex-tools" });
 const DEFAULT_CODEX_APPS_MCP_URL = "https://chatgpt.com/backend-api/codex/apps";
 const CODEX_APPS_CONFIG_PATH = join(homedir(), ".pi", "agent", "codex-tools.json");
 const CODEX_APPS_CACHE_DIR = join(homedir(), ".codex", "cache", "codex_apps_tools");
+const NODE_REPL_TOOL_CACHE_PATH = join(homedir(), ".codex", "cache", "pi-node-repl-tools.json");
+const NODE_REPL_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const CODEX_AUTH_PATH = join(homedir(), ".codex", "auth.json");
 const CODEX_NATIVE_SKILL_RESOURCES = join(dirname(fileURLToPath(import.meta.url)), "skill-resources");
 
@@ -129,6 +132,11 @@ export type CodexAppsToolRecord = {
 	resourceUri?: string;
 	localServer?: string;
 	defaultEnabled?: boolean;
+};
+
+type NodeReplToolCache = {
+	fetchedAt: number;
+	tools: CodexAppsToolRecord[];
 };
 
 type CodexAuth = {
@@ -390,9 +398,22 @@ export async function discoverCodexAppsTools(cacheDir = CODEX_APPS_CACHE_DIR): P
 	);
 }
 
-export async function discoverNodeReplTools(): Promise<
-	{ client: CodexAppServerMcpClient; tools: CodexAppsToolRecord[] } | undefined
-> {
+export type NodeReplSurface = {
+	client: CodexAppServerMcpClient;
+	tools: CodexAppsToolRecord[];
+	/** Resolves to newly discovered tools, or [] when the cache is already current. */
+	refresh: () => Promise<CodexAppsToolRecord[]>;
+};
+
+/**
+ * Serves the tool list from disk. Asking the app-server for it costs ~1.5s — it has to spawn the
+ * codex CLI and complete an initialize/thread-start handshake — and this runs while pi is still
+ * bringing up its UI. Constructing the client is free: it spawns on the first listTools/callTool,
+ * so a session that never calls a node_repl tool never pays for one.
+ */
+export async function discoverNodeReplTools(
+	cachePath = NODE_REPL_TOOL_CACHE_PATH,
+): Promise<NodeReplSurface | undefined> {
 	const command = await findCodexCliPath();
 	if (!command) return undefined;
 	const client = new CodexAppServerMcpClient("node_repl", {
@@ -401,13 +422,38 @@ export async function discoverNodeReplTools(): Promise<
 		cwd: process.cwd(),
 		env: { CODEX_HOME: codexHome() },
 	});
-	try {
-		const tools = await client.listTools();
-		return { client, tools: tools.map(normalizeNodeReplTool) };
-	} catch {
-		client.close();
-		return undefined;
+
+	const fetchTools = async (): Promise<CodexAppsToolRecord[]> => {
+		const tools = (await client.listTools()).map(normalizeNodeReplTool);
+		await mkdir(dirname(cachePath), { recursive: true });
+		await writeFile(
+			cachePath,
+			`${JSON.stringify({ fetchedAt: Date.now(), tools } satisfies NodeReplToolCache, null, 2)}\n`,
+		);
+		return tools;
+	};
+
+	const cached = await readJsonFile<NodeReplToolCache>(cachePath);
+	if (!cached?.tools?.length) {
+		// Nothing cached yet, so pay the handshake once rather than start without the tools.
+		try {
+			return { client, tools: await fetchTools(), refresh: async () => [] };
+		} catch {
+			client.close();
+			return undefined;
+		}
 	}
+
+	const stale = Date.now() - (cached.fetchedAt ?? 0) > NODE_REPL_CACHE_TTL_MS;
+	return {
+		client,
+		tools: cached.tools,
+		refresh: async () => {
+			if (!stale) return [];
+			const known = new Set(cached.tools.map((tool) => tool.key));
+			return (await fetchTools()).filter((tool) => !known.has(tool.key));
+		},
+	};
 }
 
 export async function discoverPluginMcpTools(
@@ -912,7 +958,7 @@ export function createToolDefinition(
 				(item): item is ImageContent => item.type === "image" && Boolean(item.data && item.mimeType),
 			);
 			if (images.length > 0 && getCapabilities().images) {
-				result.content.splice(0, result.content.length, ...result.content.filter((item) => item.type !== "image"));
+				detachToolResultImages(context.toolCallId, result);
 				const container = new Container();
 				if (details && (expanded || tool.connectorId !== "computer-use")) {
 					text.setText(renderCodexAppResult(details, theme, { expanded }));
@@ -1519,6 +1565,20 @@ export default async function registerCodexAppsBridge(pi: ExtensionAPI) {
 		if (ctx)
 			codexAppsTui.bind(ctx).status.set("status", ctx.ui.theme.fg("dim", codexToolsStatus(tools, plugins, config)));
 	};
+
+	// Off the startup path on purpose: this is the call that spawns the codex app-server, and it only
+	// does so once the cached tool list has aged out.
+	if (nodeRepl) {
+		void nodeRepl
+			.refresh()
+			.then((added) => {
+				if (added.length === 0) return;
+				tools = [...tools, ...added];
+				registerDiscoveredTools(added);
+				applyActiveTools();
+			})
+			.catch(() => {});
+	}
 
 	const persistAndApply = async (nextConfig: CodexAppsConfig) => {
 		config = { ...nextConfig };

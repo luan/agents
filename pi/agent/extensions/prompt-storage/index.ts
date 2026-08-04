@@ -2,9 +2,7 @@ import { readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, relative } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
-
 import {
 	CustomEditor,
 	DynamicBorder,
@@ -34,6 +32,7 @@ import {
 	setOrderedAboveEditorWidget,
 	textComponent,
 } from "../shared/tui";
+import { openSqlite, type SqliteDatabase } from "./sqlite";
 
 type PromptKind = "stash" | "history";
 type PickerAction = "apply" | "pop" | "drop";
@@ -104,7 +103,7 @@ const defaultConfig: Config = {
 };
 
 const stashHudWidgetId = "prompt-storage-stash";
-let db: DatabaseSync | undefined;
+let db: SqliteDatabase | undefined;
 const historyRefreshes = new Map<string, Promise<void>>();
 let stashHud: StashHudWidget | undefined;
 let stashHudLines: string[] = [];
@@ -125,10 +124,10 @@ function loadConfig(): Config {
 	}
 }
 
-async function openDb(): Promise<DatabaseSync> {
+async function openDb(): Promise<SqliteDatabase> {
 	if (db) return db;
 	await mkdir(dirname(dbPath), { recursive: true });
-	db = new DatabaseSync(dbPath);
+	db = openSqlite(dbPath);
 	db.exec(`
 		PRAGMA journal_mode = WAL;
 		PRAGMA foreign_keys = ON;
@@ -497,6 +496,12 @@ async function refreshProjectHistoryIndex(
 	}
 }
 
+/**
+ * Only ever called when the picker opens. SessionManager.list() parses every session file in the
+ * project, which is hundreds of milliseconds of synchronous work — enough to stall the event loop
+ * during startup. The picker reads whatever the index already holds and this refresh lands for the
+ * next open; the current session's prompts come straight from ctx.sessionManager either way.
+ */
 function refreshProjectHistorySoon(cwd: string, config: Config): void {
 	if (historyRefreshes.has(cwd)) return;
 	const refresh = refreshProjectHistoryIndex(cwd, config)
@@ -829,7 +834,6 @@ export default function promptStorage(pi: ExtensionAPI) {
 		installEditorShortcuts(ctx, config);
 		await updateStashHud(ctx);
 		restackStashHud(ctx);
-		refreshProjectHistorySoon(ctx.cwd, config);
 	});
 
 	pi.on("before_agent_start", async (_event, ctx) => {

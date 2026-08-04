@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setCapabilities } from "@earendil-works/pi-tui";
@@ -12,6 +12,7 @@ import {
 	disabledCodexAppToolKeys,
 	discoverCodexAppsTools,
 	discoverCodexPlugins,
+	discoverNodeReplTools,
 	discoverPluginMcpTools,
 	migrateCodexAppsConfig,
 	pluginSkillPaths,
@@ -1159,4 +1160,64 @@ test("Codex Tools panel persists per-skill autocomplete visibility", async () =>
 	expect(config.hiddenSkillNames).toEqual(["control-in-app-browser"]);
 	expect(saves).toBe(1);
 	expect(panel.render(120).join("\n")).toContain("Skill · control-in-app-browser  <muted>off</muted>");
+});
+
+test("node_repl tools come from cache without spawning the codex app-server", async () => {
+	// CODEX_CLI_PATH points at a binary that cannot exist: if discovery tried to hand the tool list
+	// off to the app-server, the spawn would fail and no tools would come back.
+	const previousCliPath = process.env.CODEX_CLI_PATH;
+	process.env.CODEX_CLI_PATH = join(tmpdir(), "definitely-not-a-codex-binary");
+	const cachePath = join(await mkdtemp(join(tmpdir(), "node-repl-cache-")), "tools.json");
+	try {
+		const cachedTool = {
+			key: "computer-use:js",
+			piToolName: "node_repl",
+			mcpToolName: "js",
+			title: "js",
+			description: "run javascript",
+			inputSchema: { type: "object" },
+			connectorId: "computer-use",
+			connectorName: "Computer Use",
+			connectorDescription: "",
+			readOnly: false,
+			destructive: false,
+			openWorld: false,
+		};
+		await writeFile(cachePath, JSON.stringify({ fetchedAt: Date.now(), tools: [cachedTool] }));
+
+		const surface = await discoverNodeReplTools(cachePath);
+
+		expect(surface?.tools.map((tool) => tool.piToolName)).toEqual(["node_repl"]);
+		// Cache is inside the TTL, so the background refresh must be a no-op rather than a spawn.
+		expect(await surface?.refresh()).toEqual([]);
+	} finally {
+		if (previousCliPath === undefined) delete process.env.CODEX_CLI_PATH;
+		else process.env.CODEX_CLI_PATH = previousCliPath;
+	}
+});
+
+test("node_repl discovery refreshes past the cache TTL and reports only newly seen tools", async () => {
+	const previousCliPath = process.env.CODEX_CLI_PATH;
+	process.env.CODEX_CLI_PATH = join(tmpdir(), "definitely-not-a-codex-binary");
+	const cachePath = join(await mkdtemp(join(tmpdir(), "node-repl-stale-")), "tools.json");
+	try {
+		await writeFile(
+			cachePath,
+			JSON.stringify({
+				fetchedAt: Date.now() - 8 * 24 * 60 * 60 * 1000,
+				tools: [{ key: "computer-use:js", piToolName: "node_repl" }],
+			}),
+		);
+
+		const surface = await discoverNodeReplTools(cachePath);
+
+		// Stale cache still serves startup immediately...
+		expect(surface?.tools.map((tool) => tool.piToolName)).toEqual(["node_repl"]);
+		// ...and the refresh does reach for the app-server, which cannot spawn here, so it rejects
+		// rather than silently reporting an empty tool list.
+		await expect(surface?.refresh()).rejects.toThrow();
+	} finally {
+		if (previousCliPath === undefined) delete process.env.CODEX_CLI_PATH;
+		else process.env.CODEX_CLI_PATH = previousCliPath;
+	}
 });

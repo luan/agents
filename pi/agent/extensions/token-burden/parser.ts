@@ -9,15 +9,30 @@
  *   5. Environment context metadata
  */
 
-import { encode } from "gpt-tokenizer/encoding/o200k_base";
+import { createRequire } from "node:module";
 
 import type { AgentsFileEntry, ParsedPrompt, PromptSection, SkillEntry, ToolEntry } from "./types.js";
 
 export type { ParsedPrompt };
 
+const require = createRequire(import.meta.url);
+
+type Encoder = (text: string) => unknown[];
+let encode: Encoder | undefined;
+
+/**
+ * Loaded on first use rather than at import: pulling in the o200k_base BPE tables costs well over
+ * 100ms, this module is imported while pi starts up, and nothing counts tokens until the
+ * `/token-burden` command runs. Sync require keeps estimateTokens callable from sync code.
+ */
+function encoder(): Encoder {
+	encode ??= (require("gpt-tokenizer/encoding/o200k_base") as { encode: Encoder }).encode;
+	return encode;
+}
+
 /** Token count using BPE tokenization (o200k_base encoding). */
 export function estimateTokens(text: string): number {
-	return encode(text).length;
+	return encoder()(text).length;
 }
 
 // ---------------------------------------------------------------------------
