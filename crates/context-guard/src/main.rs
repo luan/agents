@@ -1168,10 +1168,6 @@ fn resolve_session_target(
     }
 }
 
-fn clamp_nonnegative_i64(value: Option<i64>) -> i64 {
-    value.unwrap_or(0).max(0)
-}
-
 fn load_session_extractor_state(
     conn: &Connection,
     session_id: &str,
@@ -1313,8 +1309,8 @@ fn session_record_events(
             .trim();
         let attribution_source = event.attribution_source.as_deref().unwrap_or("unknown");
         let attribution_confidence = event.attribution_confidence.unwrap_or(0.0).clamp(0.0, 1.0);
-        let bytes_avoided = clamp_nonnegative_i64(event.bytes_avoided);
-        let bytes_returned = clamp_nonnegative_i64(event.bytes_returned);
+        let bytes_avoided = event.bytes_avoided.unwrap_or(0).max(0);
+        let bytes_returned = event.bytes_returned.unwrap_or(0).max(0);
 
         tx.execute(
             "INSERT INTO session_events (\
@@ -1650,7 +1646,7 @@ fn session_command(params: serde_json::Value) -> Result<(), String> {
                 params![
                     session_id,
                     params.tool_name.as_deref().unwrap_or("unknown"),
-                    clamp_nonnegative_i64(params.bytes_returned),
+                    params.bytes_returned.unwrap_or(0).max(0),
                 ],
             )
             .map_err(|err| format!("failed to increment tool-call counter: {err}"))?;
@@ -1668,7 +1664,7 @@ fn session_command(params: serde_json::Value) -> Result<(), String> {
                 }
             };
             let tool_name = params.tool_name.as_deref().unwrap_or("unknown");
-            let bytes_returned = clamp_nonnegative_i64(params.bytes_returned);
+            let bytes_returned = params.bytes_returned.unwrap_or(0).max(0);
             conn.execute(
                 "INSERT INTO tool_calls (session_id, tool, calls, bytes_returned) VALUES (?1, ?2, 1, ?3) \
                  ON CONFLICT(session_id, tool) DO UPDATE SET \
@@ -1701,7 +1697,7 @@ fn session_command(params: serde_json::Value) -> Result<(), String> {
                 )?;
             }
 
-            let bytes_avoided = clamp_nonnegative_i64(params.bytes_avoided);
+            let bytes_avoided = params.bytes_avoided.unwrap_or(0).max(0);
             if bytes_avoided > 0 {
                 inserted += session_record_events(
                     &mut conn,

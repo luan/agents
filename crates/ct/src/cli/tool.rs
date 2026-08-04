@@ -2,6 +2,7 @@ use clap::CommandFactory;
 use clap_complete::{Shell, generate};
 
 use super::Cli;
+use crate::usage_bars::{RenderRequest, Window, render};
 
 fn apply_patch_telemetry_for(cwd_path: &std::path::Path) -> Option<crate::apply_patch::Telemetry> {
     let telemetry_root = cwd_path
@@ -122,11 +123,11 @@ pub fn run_usage_bar(width: usize) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = String::new();
     std::io::stdin().lock().read_to_string(&mut buf)?;
 
-    let mut req: usage_bars::RenderRequest =
+    let mut req: RenderRequest =
         serde_json::from_str(&buf).map_err(|e| format!("usage-bar: invalid JSON: {e}"))?;
     req.width = width;
 
-    for line in usage_bars::render(&req) {
+    for line in render(&req) {
         println!("{line}");
     }
     Ok(())
@@ -157,17 +158,17 @@ pub fn run_usage_bars(
 fn render_usage_bars_once(width: usize, sidebar: bool) -> Vec<String> {
     let mut requests = Vec::new();
     if let Some(last) = load_codex_usage_samples().last().copied() {
-        requests.push(usage_bars::RenderRequest {
+        requests.push(RenderRequest {
             provider_label: "\u{e7cf}".to_string(),
             provider_color: Some("74c7ec".to_string()),
             windows: vec![
-                usage_bars::Window {
+                Window {
                     label: "5h".to_string(),
                     used_percent: last.primary_percent,
                     window_secs: 5 * 3600,
                     reset_secs: last.primary_reset - now_secs(),
                 },
-                usage_bars::Window {
+                Window {
                     label: "7d".to_string(),
                     used_percent: last.secondary_percent,
                     window_secs: 7 * 24 * 3600,
@@ -183,7 +184,7 @@ fn render_usage_bars_once(width: usize, sidebar: bool) -> Vec<String> {
         if sidebar {
             lines.extend(render_sidebar_usage_request(&request, width));
         } else {
-            lines.extend(usage_bars::render(&request));
+            lines.extend(render(&request));
         }
     }
     lines
@@ -237,7 +238,7 @@ fn load_codex_usage_samples() -> Vec<CodexUsageSample> {
     samples
 }
 
-fn render_sidebar_usage_request(request: &usage_bars::RenderRequest, width: usize) -> Vec<String> {
+fn render_sidebar_usage_request(request: &RenderRequest, width: usize) -> Vec<String> {
     let mut lines = Vec::new();
     for window in &request.windows {
         if window.reset_secs <= 0 {

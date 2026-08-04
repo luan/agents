@@ -1,6 +1,7 @@
 mod apply_patch;
 mod cli;
 mod notify;
+mod usage_bars;
 
 use clap::{CommandFactory, Parser};
 

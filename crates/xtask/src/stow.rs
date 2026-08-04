@@ -439,11 +439,7 @@ fn file_contents_match(source: &Path, target: &Path) -> Result<bool> {
 }
 
 fn contents_equivalent(a: &[u8], b: &[u8]) -> bool {
-    a == b || trim_one_final_newline(a) == trim_one_final_newline(b)
-}
-
-fn trim_one_final_newline(bytes: &[u8]) -> &[u8] {
-    bytes.strip_suffix(b"\n").unwrap_or(bytes)
+    a == b || a.strip_suffix(b"\n").unwrap_or(a) == b.strip_suffix(b"\n").unwrap_or(b)
 }
 
 fn next_backup_path(target: &Path) -> Result<PathBuf> {

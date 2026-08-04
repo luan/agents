@@ -1,15 +1,31 @@
 use clap::{Parser, Subcommand};
 
-mod apply_patch;
 mod args;
-mod shell;
 mod tool;
-mod tui;
 
-pub use apply_patch::run_apply_patch;
 pub use args::{ApplyPatchArgs, ShellAction, TuiAction};
-pub use shell::run_shell;
-pub use tui::run_tui;
+
+pub fn run_apply_patch(args: ApplyPatchArgs) -> Result<(), Box<dyn std::error::Error>> {
+    tool::run_apply_patch_raw(args.cwd, args.dry_run)
+}
+
+pub fn run_shell(action: ShellAction) -> Result<(), Box<dyn std::error::Error>> {
+    match action {
+        ShellAction::Completion { shell } => tool::run_completion(shell),
+    }
+}
+
+pub fn run_tui(action: TuiAction) -> Result<(), Box<dyn std::error::Error>> {
+    match action {
+        TuiAction::UsageBar { width } => tool::run_usage_bar(width),
+        TuiAction::UsageBars {
+            width,
+            sidebar,
+            watch,
+            interval_ms,
+        } => tool::run_usage_bars(width, sidebar, watch, interval_ms),
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "ct")]

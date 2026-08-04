@@ -2,11 +2,9 @@
 name = "ct"
 version = "0.1.0"
 edition = "2024"
-
 [[bin]]
 name = "ct"
 path = "src/main.rs"
-
 [dependencies]
 clap = { version = "^4", features = ["derive"] }
 clap_complete = "^4"
@@ -36,7 +34,6 @@ tree-sitter-rust = { workspace = true }
 tree-sitter-scala = { workspace = true }
 tree-sitter-swift = { workspace = true }
 tree-sitter-typescript = { workspace = true }
-usage-bars = { path = "../usage-bars" }
 vlt = { path = "../vlt" }
 
 [dev-dependencies]

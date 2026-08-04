@@ -534,7 +534,6 @@ dependencies = [
  "tree-sitter-scala",
  "tree-sitter-swift",
  "tree-sitter-typescript",
- "usage-bars",
  "vlt",
 ]
 
@@ -2823,13 +2822,6 @@ dependencies = [
  "form_urlencoded",
  "idna",
  "percent-encoding",
- "serde",
-]
-
-[[package]]
-name = "usage-bars"
-version = "0.1.0"
-dependencies = [
  "serde",
 ]
 
