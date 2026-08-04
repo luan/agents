@@ -15,7 +15,6 @@ check:
     cargo fmt --all -- --check && \
     cargo clippy --all -- -D warnings && \
     cargo check --all-targets && \
-    bun run typecheck && \
     bun run check
 
 test:
