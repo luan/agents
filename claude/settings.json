@@ -8,20 +8,7 @@
     "pr": ""
   },
   "permissions": {
-    "deny": [],
     "defaultMode": "bypassPermissions"
-  },
-  "hooks": {
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.claude/hooks/context-mode-cache-heal.mjs"
-          }
-        ]
-      }
-    ]
   },
   "worktree": {
     "baseRef": "fresh"
