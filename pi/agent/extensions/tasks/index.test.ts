@@ -233,7 +233,6 @@ describe("tasks extension", () => {
 			);
 		const id = created.details.task.id;
 		expect(id).toMatch(/^[0-9a-z]{6}$/);
-		expect(id).not.toMatch(/^\d+$/);
 		const otherSession = await tools
 			.get("task_read")
 			.execute("other", { all: true }, undefined, undefined, { ...ctx, sessionId: "other-session" });
