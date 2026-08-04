@@ -34,6 +34,78 @@ export function runningFrame(elapsedMs: number | undefined, frameMs = RUNNING_FR
 	return RUNNING_FRAMES[Math.floor(elapsedMs / frameMs) % RUNNING_FRAMES.length]!;
 }
 
+/**
+ * A tool call's cell stays "running" until the call reports a terminal state, so one abandoned
+ * mid-stream animates for the rest of the session. That is not merely a wasted timer: once the cell
+ * scrolls above the viewport, pi-tui answers a changed line outside the visible range by clearing
+ * the screen and scrollback and re-emitting the whole transcript. A spinner nobody can see then
+ * costs a full-screen repaint several times a second. Freezing the clock past this point makes a
+ * stalled cell render identically frame to frame, so the differ finds nothing to repaint.
+ *
+ * ponytail: a wall-clock cap, not real stall detection. A genuinely slow call just stops spinning
+ * once past it. Key off a real "arguments finished streaming" signal if a tool exposes one.
+ */
+export const RUNNING_ANIMATION_MAX_MS = 60_000;
+
+/** Spinner clock for a running cell, frozen once the call has clearly stalled. */
+export function cappedRunningElapsedMs(startedAtMs: number): number {
+	return Math.min(Date.now() - startedAtMs, RUNNING_ANIMATION_MAX_MS);
+}
+
+/** True once a running cell's clock has hit the cap, i.e. stop scheduling further frames. */
+export function runningAnimationStalled(elapsedMs: number | undefined): boolean {
+	return elapsedMs !== undefined && elapsedMs >= RUNNING_ANIMATION_MAX_MS;
+}
+
+/**
+ * Resume replays the transcript before any turn runs, and a replayed call that never got a result
+ * is stuck `isPartial` forever with `argsComplete` and `executionStarted` both still false — pi only
+ * sets those from live stream events. That makes a dead history cell indistinguishable from a live
+ * one by its flags alone, so track liveness ourselves: anything first rendered before this process
+ * streamed a turn is history and must never animate. Without this, the stall cap below still lets a
+ * resumed session flicker for a full minute, because a fresh render state restarts its clock.
+ */
+let liveTurnStarted = false;
+
+/** Wire to a live-stream lifecycle event so replayed history can be told apart from live calls. */
+export function markLiveTurnStarted(): void {
+	liveTurnStarted = true;
+}
+
+/** Test seam: forget that a live turn ran. */
+export function resetLiveTurnForTests(): void {
+	liveTurnStarted = false;
+}
+
+type RunningCellState = { startedAtMs?: number; replayed?: boolean };
+
+/** Records once, on a cell's first render, whether it came from replayed history. */
+function isReplayed(state: RunningCellState): boolean {
+	state.replayed ??= !liveTurnStarted;
+	return state.replayed;
+}
+
+/**
+ * Spinner clock for a running cell: `undefined` when not running, frozen at frame 0 for replayed
+ * history, and capped once a live call stalls. Freezing matters because pi-tui answers any changed
+ * line above the viewport by clearing the screen and scrollback and re-emitting the whole
+ * transcript — so an animating cell nobody can see costs a full-screen repaint per frame.
+ */
+export function runningCellElapsedMs(state: RunningCellState | undefined, running: boolean): number | undefined {
+	if (!running || !state) return undefined;
+	if (isReplayed(state)) return 0;
+	state.startedAtMs ??= Date.now();
+	return cappedRunningElapsedMs(state.startedAtMs);
+}
+
+/** Whether a running cell should schedule another animation frame. */
+export function shouldAnimateRunningCell(state: RunningCellState | undefined, running: boolean): boolean {
+	if (!running || !state) return false;
+	if (isReplayed(state)) return false;
+	state.startedAtMs ??= Date.now();
+	return !runningAnimationStalled(cappedRunningElapsedMs(state.startedAtMs));
+}
+
 export function shineText(
 	theme: ThemeColorSource,
 	text: string,

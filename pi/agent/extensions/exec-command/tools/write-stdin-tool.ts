@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Container } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { runningCellElapsedMs, shouldAnimateRunningCell } from "../../shared/tui";
 import { renderExecCellComponent } from "./exec-cell-presentation.ts";
 import type { ExecSessionManager, UnifiedExecResult } from "./exec-session-manager.ts";
 import { formatUnifiedExecResult } from "./unified-exec-format.ts";
@@ -151,16 +152,13 @@ function isEmptyPollRenderContext(context: RenderContextLike | undefined): boole
 }
 
 function elapsedMs(context: RenderContextLike | undefined, running: boolean): number | undefined {
-	const state = context?.state;
-	if (!running || !state) return undefined;
-	state.startedAtMs ??= Date.now();
-	return Date.now() - state.startedAtMs;
+	return runningCellElapsedMs(context?.state, running);
 }
 
 function scheduleRunningInvalidation(context: RenderContextLike | undefined, running: boolean): void {
 	const state = context?.state;
 	if (!state) return;
-	if (!running) {
+	if (!shouldAnimateRunningCell(state, running)) {
 		if (state.elapsedTimer) {
 			clearTimeout(state.elapsedTimer);
 			state.elapsedTimer = undefined;

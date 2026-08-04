@@ -2,6 +2,7 @@ import { beforeAll, expect, test } from "bun:test";
 import { execSync } from "node:child_process";
 import { BashExecutionComponent, initTheme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 import { Container } from "@earendil-works/pi-tui";
+import { markLiveTurnStarted, resetLiveTurnForTests } from "../shared/tui";
 import { DEFAULT_EXEC_SHELL, resolveRuntimeShell } from "./adapter/runtime-shell.ts";
 import execCommandExtension from "./index.ts";
 import type { ShellAction } from "./shell/summary.ts";
@@ -1255,6 +1256,61 @@ test("write stdin renderer self-renders without the default success shell", () =
 	}
 });
 
+test("write stdin stops animating a call that never finished streaming", () => {
+	// A call abandoned mid-stream stays isPartial forever. While its spinner keeps advancing, every
+	// frame changes a transcript line; once that line scrolls above the viewport, pi-tui answers each
+	// change by clearing the screen and re-emitting the whole transcript.
+	let tool: any;
+	const sessions = createExecSessionManager();
+	try {
+		registerWriteStdinTool({ registerTool: (definition: any) => (tool = definition) } as any, sessions);
+
+		markLiveTurnStarted();
+		let invalidations = 0;
+		// Both ages are past the cap and sit 3 spinner frames apart (360ms / 120ms), so an uncapped
+		// clock renders two different frames here.
+		const state: Record<string, any> = { startedAtMs: Date.now() - 90_000 };
+		const context = { state, isPartial: true, invalidate: () => void invalidations++ };
+		const args = { process_id: 1, chars: "y\n" };
+
+		const first = tool.renderCall(args, testTheme, context).render(120).join("\n");
+		state.startedAtMs = Date.now() - 90_360;
+		const second = tool.renderCall(args, testTheme, context).render(120).join("\n");
+
+		// Identical output is what leaves the differ with nothing to repaint.
+		expect(second).toBe(first);
+		expect(state.elapsedTimer).toBeUndefined();
+		expect(invalidations).toBe(0);
+	} finally {
+		sessions.shutdown();
+	}
+});
+
+test("write stdin never animates a call replayed from a resumed transcript", () => {
+	// Resume replays history before any turn runs; a replayed call with no result stays isPartial
+	// forever with a fresh render state, so the stall cap alone would animate it for a full minute.
+	resetLiveTurnForTests();
+	let tool: any;
+	const sessions = createExecSessionManager();
+	try {
+		registerWriteStdinTool({ registerTool: (definition: any) => (tool = definition) } as any, sessions);
+		let invalidations = 0;
+		const state: Record<string, any> = {};
+		const context = { state, isPartial: true, invalidate: () => void invalidations++ };
+		const args = { process_id: 1, chars: "y\n" };
+
+		const first = tool.renderCall(args, testTheme, context).render(120).join("\n");
+		state.startedAtMs = (state.startedAtMs ?? Date.now()) - 360;
+		const second = tool.renderCall(args, testTheme, context).render(120).join("\n");
+
+		expect(second).toBe(first);
+		expect(state.elapsedTimer).toBeUndefined();
+		expect(invalidations).toBe(0);
+	} finally {
+		sessions.shutdown();
+	}
+});
+
 test("write stdin hides still-running empty background terminal polls from transcript", () => {
 	let tool: any;
 	const sessions = createExecSessionManager();
@@ -1340,6 +1396,7 @@ test("write stdin renders animated in-flight interaction rows", () => {
 	try {
 		registerWriteStdinTool({ registerTool: (definition: any) => (tool = definition) } as any, sessions);
 
+		markLiveTurnStarted();
 		const interactionState: { elapsedTimer?: ReturnType<typeof setTimeout>; startedAtMs?: number } = {};
 		const interactionRow = tool
 			.renderCall({ process_id: 3, chars: "\u0003" }, testTheme, {

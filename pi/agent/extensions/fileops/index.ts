@@ -24,9 +24,12 @@ import { detachToolResultImages, registerToolResultImageRestore } from "../share
 import {
 	EmptyComponent,
 	keepBackgroundAcrossResets,
+	markLiveTurnStarted,
 	RenderedLineCache,
+	runningCellElapsedMs,
 	runningFrame,
 	shineText,
+	shouldAnimateRunningCell,
 	textComponent,
 } from "../shared/tui";
 import { registerAstTools } from "./ast-tools.ts";
@@ -537,10 +540,7 @@ function renderStatusHeader(
 }
 
 function editElapsedMs(context: { state?: Record<string, unknown> } | undefined, running: boolean): number | undefined {
-	const state = context?.state;
-	if (!running || !state) return undefined;
-	if (typeof state.startedAtMs !== "number") state.startedAtMs = Date.now();
-	return Date.now() - state.startedAtMs;
+	return runningCellElapsedMs(context?.state, running);
 }
 
 function scheduleEditInvalidation(
@@ -550,7 +550,7 @@ function scheduleEditInvalidation(
 	const state = context?.state;
 	if (!state) return;
 	const timer = state.elapsedTimer as ReturnType<typeof setTimeout> | undefined;
-	if (!running) {
+	if (!shouldAnimateRunningCell(state, running)) {
 		if (timer) {
 			clearTimeout(timer);
 			state.elapsedTimer = undefined;
@@ -1988,6 +1988,8 @@ function sessionIdFromContext(ctx: Pick<ExtensionContext, "sessionManager"> | un
 }
 
 export default function fileopsExtension(pi: ExtensionAPI) {
+	// Tells replayed history apart from live calls, so a resumed transcript does not animate.
+	pi.on?.("turn_start", () => markLiveTurnStarted());
 	registerToolResultImageRestore(pi);
 	let config = loadConfig();
 	const readSpacingPatch = installConsecutiveReadSpacingPatch();

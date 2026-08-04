@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import { ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 import { resetCapabilitiesCache, setCapabilities, visibleWidth } from "@earendil-works/pi-tui";
+import { markLiveTurnStarted, resetLiveTurnForTests } from "../shared/tui";
 import { highlightCodeRows, languageFromPath } from "./diff-render.ts";
 import fileopsExtension, { HASHLINE_GRAMMAR, PATCH_GRAMMAR, REPLACE_GRAMMAR } from "./index.ts";
 
@@ -1042,6 +1043,7 @@ describe("fileops extension modes", () => {
 		);
 		expect(editCallRendered).toContain("[toolPendingBg]");
 		expect(editCallRendered).toStartWith("[toolPendingBg]✓");
+		markLiveTurnStarted();
 		const runningState: Record<string, any> = {};
 		const runningContext = { state: runningState, isPartial: true, invalidate() {} };
 		const runningEarly = render(
@@ -1083,6 +1085,53 @@ describe("fileops extension modes", () => {
 		expect(writeRendered).toContain("1│one");
 		expect(writeRendered).toContain("2│two");
 		expect(writeRendered).not.toContain("[toolSuccessBg]");
+	});
+
+	it("stops animating an edit call that never finished streaming", () => {
+		// A call abandoned mid-stream stays isPartial forever. While its spinner keeps advancing,
+		// every frame changes a transcript line; once that line scrolls above the viewport pi-tui
+		// answers each change by clearing the screen and re-emitting the whole transcript.
+		const tools = registerEditTools("hashline");
+		const edit = tools.get("edit");
+		const input = "[sample.txt#ABCD]\nreplace 1..1:\n+new\n";
+
+		markLiveTurnStarted();
+		let invalidations = 0;
+		// Both ages are past the cap, and they sit 3 spinner frames apart (360ms / 120ms), so an
+		// uncapped clock renders two different frames here.
+		const state: Record<string, any> = { startedAtMs: Date.now() - 90_000 };
+		const context = { state, isPartial: true, invalidate: () => void invalidations++ };
+
+		const first = render(edit.renderCall({ input }, rgbTheme, context));
+		state.startedAtMs = Date.now() - 90_360;
+		const second = render(edit.renderCall({ input }, rgbTheme, context));
+
+		// Identical output is what leaves the differ with nothing to repaint.
+		expect(second).toBe(first);
+		expect(state.elapsedTimer).toBeUndefined();
+		expect(invalidations).toBe(0);
+	});
+
+	it("never animates an edit call replayed from a resumed transcript", () => {
+		// Resume replays history before any turn runs, and a replayed call with no result stays
+		// isPartial forever. Its render state is fresh, so the stall cap alone would let a resumed
+		// session animate — and flicker — for a full minute before freezing.
+		resetLiveTurnForTests();
+		const tools = registerEditTools("hashline");
+		const edit = tools.get("edit");
+		const input = "[sample.txt#ABCD]\nreplace 1..1:\n+new\n";
+
+		let invalidations = 0;
+		const state: Record<string, any> = {};
+		const context = { state, isPartial: true, invalidate: () => void invalidations++ };
+
+		const first = render(edit.renderCall({ input }, rgbTheme, context));
+		state.startedAtMs = (state.startedAtMs ?? Date.now()) - 360;
+		const second = render(edit.renderCall({ input }, rgbTheme, context));
+
+		expect(second).toBe(first);
+		expect(state.elapsedTimer).toBeUndefined();
+		expect(invalidations).toBe(0);
 	});
 
 	it("keeps edit diffs visible until compaction", () => {

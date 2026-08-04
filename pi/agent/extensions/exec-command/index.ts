@@ -10,6 +10,7 @@ import { isExecCommandContextGuardEnabled } from "../context-guard/pi/index.ts";
 import {
 	type AnimationMount,
 	defineExtensionTui,
+	markLiveTurnStarted,
 	registerExtensionMessageRenderer,
 	setOrderedAboveEditorWidget,
 	sharedAnimationRenderScheduler,
@@ -269,6 +270,8 @@ function backgroundTerminalDetailsToUnifiedResult(details: BackgroundTerminalFin
 }
 
 export default function execCommandExtension(pi: ExtensionAPI) {
+	// Tells replayed history apart from live calls, so a resumed transcript does not animate.
+	pi.on?.("turn_start", () => markLiveTurnStarted());
 	installEmptySelfShellRowPatch();
 	installUserBashRenderPatch();
 	const tracker = createExecCommandTracker();
