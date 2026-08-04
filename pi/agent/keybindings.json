@@ -35,7 +35,7 @@
   "app.exit": ["ctrl+d"],
   "app.suspend": ["ctrl+z"],
   "app.editor.external": ["ctrl+g"],
-  "app.clipboard.pasteImage": ["ctrl+v"],
+  "app.clipboard.pasteImage": [],
   "app.session.togglePath": ["alt+p"],
   "app.session.toggleSort": ["ctrl+s"],
   "app.session.toggleNamedFilter": ["alt+n"],

@@ -2,6 +2,7 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getEditFreeformToolConfig } from "../fileops/index";
 import { configureImageCapabilities } from "../shared/image-capabilities";
+import { registerToolResultImageRestore } from "../shared/tool-result-images";
 import registerCodexAppsBridge from "./codex-apps";
 import registerOpenAINativeCompaction from "./compaction/index";
 import { registerCodexFreeformProvider } from "./freeform-codex";
@@ -89,6 +90,7 @@ export function isCodexWebSocketError(message: AssistantMessage): boolean {
 export default async function codexNativeExtension(pi: ExtensionAPI) {
 	registerCodexFreeformProvider(pi, { toolName: "edit", ...getEditFreeformToolConfig() });
 	configureImageCapabilities();
+	registerToolResultImageRestore(pi);
 	registerOpenAINativeCompaction(pi);
 	await registerCodexAppsBridge(pi);
 	pi.registerTool(createImageGenerationTool());

@@ -32,6 +32,7 @@ import { Type } from "typebox";
 import { configureImageCapabilities } from "../shared/image-capabilities";
 import { createPreviewImageFromBase64 } from "../shared/image-preview";
 import { KittyVirtualImage } from "../shared/kitty-virtual-image";
+import { detachToolResultImages, registerToolResultImageRestore } from "../shared/tool-result-images";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -344,12 +345,6 @@ type ToolExecutor<TParams, TDetails = unknown> = (
 	ctx?: ExtensionContext,
 ) => Promise<ToolResultLike<TDetails>>;
 
-function suppressCoreImageRendering(result: ToolResultLike): void {
-	const content = result.content ?? [];
-	const filtered = content.filter((item) => item.type !== "image");
-	content.splice(0, content.length, ...filtered);
-	result.content = content;
-}
 type ToolDefinitionLike<TParams, TDetails = unknown> = {
 	name?: string;
 	description?: string;
@@ -538,7 +533,7 @@ function renderViewImageResult(
 		return text;
 	}
 
-	suppressCoreImageRendering(result);
+	detachToolResultImages(ctx.toolCallId, result);
 
 	const container = new Container();
 	let hasContent = false;
@@ -577,6 +572,7 @@ export interface PiPrettyDeps {
 
 export default function piPrettyExtension(pi: PiPrettyApi, deps?: PiPrettyDeps): void {
 	configureImageCapabilities();
+	registerToolResultImageRestore(pi);
 
 	let createReadTool: ToolFactory<ReadToolInput> | undefined;
 	let createBashTool: ToolFactory<BashToolInput> | undefined;
