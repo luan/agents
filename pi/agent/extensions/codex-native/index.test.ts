@@ -689,7 +689,7 @@ test("builds app surfaces from plugin connector manifests", () => {
 });
 
 test("discovers newest plugin manifests and their skill roots", async () => {
-	const root = await mkdtemp(join(tmpdir(), "codex-plugin-skills-test-"));
+	const root = join(await mkdtemp(join(tmpdir(), "codex-plugin-skills-test-")), ".codex");
 	const newest = join(root, "plugins", "cache", "openai-bundled", "sites", "0.1.27");
 	const older = join(root, "plugins", "cache", "openai-bundled", "sites", "0.1.9");
 	const alternateMarketplace = join(root, "plugins", "cache", "openai-curated", "sites", "9deadbeef");
