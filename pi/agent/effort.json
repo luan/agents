@@ -6,5 +6,5 @@
   "gpt-5.4": "high",
   "gpt-5.4-mini": "high",
   "gpt-5.3-codex-spark": "high",
-  "gpt-5.6-sol": "low"
+  "gpt-5.6-sol": "medium"
 }
