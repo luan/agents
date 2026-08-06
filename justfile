@@ -60,7 +60,21 @@ codex-plugins-install:
 context-guard:
     cd "{{ repo }}" && cargo build -p context-guard
 
-install: context-guard
+git-spice-install:
+    @checkout="{{ home }}/.local/share/agents/git-spice"; \
+    mkdir -p "$(dirname "$checkout")" "{{ home }}/.local/bin"; \
+    if [ -d "$checkout/.git" ]; then \
+        git -C "$checkout" fetch --depth=1 origin luan/github-stacks; \
+    else \
+        git clone --depth=1 --branch luan/github-stacks https://github.com/luan/git-spice.git "$checkout"; \
+    fi; \
+    git -C "$checkout" checkout --detach --force origin/luan/github-stacks; \
+    go_bin=""; old_ifs="$IFS"; IFS=:; \
+    for dir in $PATH; do case "$dir/go" in */mise/shims/go) continue;; esac; if [ -x "$dir/go" ]; then go_bin="$dir/go"; break; fi; done; \
+    IFS="$old_ifs"; test -n "$go_bin"; \
+    cd "$checkout" && "$go_bin" build -o "{{ home }}/.local/bin/git-spice" go.abhg.dev/gs
+
+install: context-guard git-spice-install
     @cargo install --list | grep -q '^worktrunk ' || cargo binstall worktrunk --locked --no-confirm || echo "warning: worktrunk install failed; continuing without it" >&2
     @cargo install --list | grep -q '^git-surgeon ' || cargo binstall git-surgeon --locked --no-confirm || echo "warning: git-surgeon install failed (no prebuilt binary; source build is Unix-only); continuing without it" >&2
     cargo install --path "{{ repo }}/crates/ct"
