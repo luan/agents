@@ -1,42 +1,39 @@
 ---
 name: restack
-description: >
-  Use this skill to rebase gh-stack branches and resolve conflicts. Replaces raw git rebase
-  for stack workflows. Triggers: restack, rebase, rebase on main, branches out of date,
-  resolve conflicts.
+description: Restack Git-Spice branches while preserving native GitHub Stack identity.
 user-invocable: true
 agent: general-purpose
 allowed-tools:
+  - "Bash(gs:*)"
   - "Bash(gh stack:*)"
-  - "Bash(git add:*)"
   - "Bash(git status)"
+  - "Bash(git add:*)"
   - Read
   - Edit
-  - Glob
-  - Grep
+  - Skill
 ---
 
-# Rebase gh-stack Stack
+# Restack a native GitHub Stack
 
-Cascade-rebase every branch in the stack onto its parent and resolve conflicts.
+Reconcile before rewriting:
 
-Command contracts are based on the upstream CLI reference at <https://github.github.com/gh-stack/reference/cli/>.
+```bash
+git status --short
+gs log short
+gh stack view --json
+```
 
-## Steps
+Use the narrowest command:
 
-1. Run `gh stack rebase 2>&1`.
-   - `--downstack` rebases only from trunk up to the current branch.
-   - `--upstack` rebases only from the current branch to the top.
-   - `--no-trunk` rebases stack branches onto each other without fetching or touching trunk.
-2. If clean, report which branches were rebased.
-3. If conflicts occur, loop until resolved:
-   - Read each conflicted file in full before editing; the CLI prints the conflicted files with line numbers.
-   - Identify all conflict markers: `<<<<<<<`, `=======`, `>>>>>>>`.
-   - Resolve every conflict region in a single edit; never leave partial markers.
-   - Run `rg -c '<<<<<<<' <file>` to verify no conflict markers remain.
-   - `git add <file>` each resolved file.
-   - Continue with `gh stack rebase --continue 2>&1`.
-   - If new conflicts appear on another branch, repeat.
-4. Report branches rebased, conflicts resolved, and any issues.
+```bash
+gs branch restack --branch <name>
+gs upstack restack --branch <name>
+gs stack restack --branch <name>
+```
 
-If conflict resolution is ambiguous, run `gh stack rebase --abort` to restore all branches to their pre-rebase state and report the blocker to the user.
+On conflict, resolve files, stage them, then run `gs rebase continue`. Abort
+ambiguous work with `gs rebase abort`. Do not use raw `git rebase` or `gh stack
+rebase`.
+
+Restacking does not authorize a push. Update remote PRs only when requested,
+using `gs stack submit --update-only --existing-only --no-web`.

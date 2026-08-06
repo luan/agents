@@ -1,71 +1,32 @@
 ---
 name: stack
-description: >
-  Use this skill for Git-Spice stack status, branch creation, stack navigation, moving
-  changes between branches, splitting work into stacked Change Requests, or general
-  Git-Spice operations. Replaces raw git checkout -b, git rebase, git push, and gh pr
-  create for stack workflows.
+description: Create, inspect, navigate, reorder, and merge Git-Spice stacks.
 user-invocable: true
+agent: general-purpose
 allowed-tools:
   - "Bash(gs:*)"
   - "Bash(git status)"
-argument-hint: "[log|branch|up|down|top|bottom|create|track|split|...] [flags]"
+  - Skill
 ---
 
-# Git-Spice Stack
+# Git-Spice stacks
 
-Use Git-Spice for stacked branch workflows in this repository.
-
-Command contracts are based on the upstream Git-Spice docs:
-
-- `doc/src/guide/branch.md` documents `gs branch create`.
-- `doc/src/cli/shorthand.md` and `doc/includes/cli-shorthands.md` document shorthands such as `gs bc`.
-- `doc/includes/cli-reference.md` documents stack submit/restack and repo sync.
-
-## Quick Reference
+Use `gs` for stack operations. Do not substitute raw branch creation, rebase,
+or push commands.
 
 ```bash
-# Create branches
-gs branch create <name>              # Canonical branch-create command
-gs bc <name>                         # Built-in shorthand for branch create
-gs branch create <name> --no-commit  # Create branch without committing staged changes
-
-# Navigate and inspect
-gs log short                         # Current stack
-gs log short --all                   # All tracked branches
-gs up / gs down
-gs top / gs bottom
-
-# Submit / sync / restack
-gs stack submit --update-only        # Update existing Change Requests only
-gs ss -u                             # Shorthand update-only submit
-gs repo sync                         # Pull latest remote changes and delete merged CR branches
-gs rs                                # Shorthand repo sync
-gs stack restack                     # Restack current stack
-gs sr                                # Shorthand stack restack
+git status --short
+gs log short
 ```
 
-## Branch Creation Rules
-
-`gs branch create` creates and tracks a branch stacked on the current branch.
-By default, staged changes are committed to the new branch; if there are no staged changes, Git-Spice creates an empty commit. Use `--no-commit` when the user wants to create the branch before making the commit.
-
-Canonical and shorthand forms are both valid and are intentionally documented for the trunk safety whitelist:
-
-```bash
-gs branch create luan/my-feature
-gs bc luan/my-feature
-```
-
-Prefer the canonical form in scripts and skill instructions unless the user explicitly asks for shorthand.
-
-## Forbidden Replacements
-
-Never use these raw commands for stack workflows:
-
-| Forbidden | Use instead |
+| Goal | Command |
 | --- | --- |
-| `git checkout -b` | `gs branch create` / `gs bc` |
-| `git rebase` | `gs:restack` skill / `gs stack restack` |
-| `git push` / `git push --force` | `gs:submit` skill |
-| `gh pr create` | `gs:submit` skill |
+| Create layer | `gs branch create <name> --message <message>` |
+| Navigate | `gs up`, `gs down`, `gs top`, `gs bottom`, `gs trunk` |
+| Move layer | `gs branch onto <base> --branch <name> --restack=upstack` |
+| Reorder stack | `gs stack reorder <bottom> ... <top>` |
+| Restack | `gs stack restack --branch <name>` |
+| Merge | `gs stack merge --branch <top> --method squash --fail-fast` |
+
+`gs stack reorder` requires every branch in one linear stack exactly once,
+ordered bottom to top. Stop on ambiguous membership or identity errors.

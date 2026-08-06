@@ -37,15 +37,17 @@ Do not use raw \`git push\`, \`git rebase\`, \`git checkout -b\`, or \`gh pr cre
 
 export const GIT_TOOL_GIT_SPICE_PROMPT_ADDENDUM = `## Git tool strategy: Git-Spice
 
-This repository is configured with \`agents.git-tool=git-spice\`. Use Git-Spice for stacked-branch workflows. Use the \`submit\`, \`sync\`, \`restack\`, and \`stack\` skills for pushing, creating or updating Change Requests, syncing with trunk, rebasing/restacking, branch creation, stack navigation, and stack inspection.
+This repository is configured with \`agents.git-tool=git-spice\`. Use Git-Spice for stacked-branch workflows. Use the \`absorb\`, \`restack\`, \`stack\`, \`submit\`, and \`sync\` skills. Update known remote work with \`--update-only --existing-only\`; create remote branches or change requests only when the user asks.
 
 Do not use raw \`git push\`, \`git rebase\`, \`git checkout -b\`, or \`gh pr create\` for stack workflows. Ordinary \`git status\`, \`git add\`, and \`git commit\` remain allowed when they do not replace a Git-Spice stack operation.`;
 
-export const GIT_TOOL_GH_STACK_PROMPT_ADDENDUM = `## Git tool strategy: GitHub Stacked PRs
+export const GIT_TOOL_GH_STACK_PROMPT_ADDENDUM = `## Git tool strategy: GitHub Stacks through Git-Spice
 
-This repository is configured with \`agents.git-tool=gh-stack\`. Use the \`gh stack\` CLI for stacked-branch workflows. Use the \`submit\`, \`sync\`, \`restack\`, and \`stack\` skills for pushing, creating or updating PRs, syncing with trunk, rebasing, branch creation, stack navigation, and stack inspection.
+This repository is configured with \`agents.git-tool=gh-stack\`. Use Git-Spice (\`gs\`) for local stack mutation, reconciliation, and submission. \`gs log short\` automatically reconciles the active \`.git/gh-stack\`; never run an import command.
 
-Do not use raw \`git push\`, \`git rebase\`, \`git checkout -b\`, or \`gh pr create\` for stack workflows. Ordinary \`git status\`, \`git add\`, and \`git commit\` remain allowed when they do not replace a \`gh stack\` operation.`;
+Use \`gh stack view\`, \`gh pr view\`, and read-only \`gh api\` calls for inspection. Use \`gh stack merge <stack-number> --yes --squash\` only for the atomic native Stack merge. Update exact existing PRs with \`gs stack submit --update-only --existing-only --no-web\`; use creation-capable submit only when the user asks to create remote work.
+
+Do not use raw \`git push\`, \`git rebase\`, \`git checkout -b\`, \`gh pr create\`, or \`gh stack modify\` for this workflow. Ordinary \`git status\`, \`git add\`, and \`git commit\` remain allowed when they do not replace a Git-Spice operation.`;
 
 export default function gitToolExtension(pi: ExtensionAPI, options: GitToolExtensionOptions = {}) {
 	const readGitToolConfig = options.readGitToolConfig ?? defaultReadGitToolConfig;

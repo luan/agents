@@ -1,47 +1,36 @@
 ---
 name: submit
-description: >
-  Use this skill to push Git-Spice stack changes and create or update Change Requests.
-  Replaces git push and gh pr create for stack workflows. Triggers: push, ship it, send
-  this up, submit, update PRs, create PR, push stack, send PRs.
+description: Create or update Git-Spice change requests without duplicating remote work.
 user-invocable: true
 agent: general-purpose
 allowed-tools:
   - "Bash(gs:*)"
   - "Bash(git status)"
-  - "Bash(git branch:*)"
-  - "Bash(gh pr view:*)"
   - Skill
 ---
 
-# Submit Git-Spice Stack
+# Submit Git-Spice changes
 
-Push the Git-Spice stack and create or update Change Requests.
+```bash
+git status --short
+gs log short
+```
 
-Command contracts are based on upstream `doc/includes/cli-reference.md`, which documents `gs stack submit`, `gs ss`, and `--update-only` / `-u`.
+Update known remote work only:
 
-## Modes
+```bash
+gs stack submit --update-only --existing-only --no-web
+```
 
-| Mode | Command | When |
-| --- | --- | --- |
-| **Default** | `gs stack submit --update-only` or `gs ss -u` | Always, unless user explicitly asks otherwise |
-| Single branch | `gs branch submit --update-only` | User explicitly says "submit this branch" or "update this branch" |
-| Create new | `gs stack submit` or `gs ss` | User explicitly says "create PR", "create CR", or "create PRs" |
+This must fail before mutation when any selected branch lacks an exact change
+request or upstream mapping. Add `--force` only when the user explicitly
+authorizes the planned history rewrite.
 
-Default is update-only. `--update-only` is used to update existing Change Requests and skip branches that would create new Change Requests, avoiding accidental publication of WIP stack branches.
+Create remote branches or change requests only when requested:
 
-## Steps
+```bash
+gs stack submit --fill --no-web
+```
 
-1. Check stack state: `gs log short 2>&1`.
-2. Submit with the selected mode:
-
-   ```bash
-   gs stack submit --update-only 2>&1
-   # or gs ss -u 2>&1
-   ```
-
-3. Refresh PR/CR descriptions for every submitted GitHub PR:
-   - After Git-Spice has created or updated Change Requests, fetch and read the current title/body for each affected GitHub PR with `gh pr view <PR> --json number,title,body,headRefName,url`. This current description is mandatory grounding.
-   - Then run `Skill(pr-descr)` for each affected GitHub PR so the title and body match the final branch diff without blindly discarding existing PR context.
-   - This applies to update-only and create modes; existing Change Requests may still have stale descriptions.
-4. Report created or updated Change Request URLs.
+Never substitute raw `git push` or forge-specific create commands. Verify the
+reported change request identities after submission.

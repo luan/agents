@@ -70,11 +70,15 @@ describe("git-tool resources", () => {
 		expect(resources.skillPaths?.[0]?.replace(/\\/g, "/")).toContain(`git-tool/skill-resources/${mode}`);
 	});
 
-	test.each(STACKED_MODES)("%s exposes generic skill names only", (mode) => {
+	test.each(STACKED_MODES)("%s exposes only its generic skills", (mode) => {
 		const skillDir = gitToolResources(mode).skillPaths?.[0];
 		if (!skillDir) throw new Error(`missing ${mode} skill directory`);
 
-		expect(skillDirectoryNames(skillDir)).toEqual(["restack", "stack", "submit", "sync"]);
+		const expected =
+			mode === "graphite"
+				? ["restack", "stack", "submit", "sync"]
+				: ["absorb", "restack", "stack", "submit", "sync"];
+		expect(skillDirectoryNames(skillDir)).toEqual(expected);
 	});
 
 	test.each(["main", "none"] as const)("%s contributes no skill paths", (mode) => {
