@@ -7,7 +7,7 @@
   "treeFilterMode": "default",
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-5.6-sol",
-  "defaultThinkingLevel": "low",
+  "defaultThinkingLevel": "medium",
   "skills": [
     "../.codex/skills"
   ],
