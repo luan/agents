@@ -95,11 +95,10 @@ For architecture diagrams, data tables, slide decks, project recaps, comparisons
 
 **Before generating:**
 
-1. Read visual-explainer's `SKILL.md` (workflow, diagram types, anti-slop rules)
-2. Read the relevant visual-explainer references and templates for your content type
-3. Read `references/theme-override.md` — Plannotator theme tokens for the local skill
+1. Read visual-explainer's `SKILL.md`.
+2. Read `references/theme-override.md`.
 
-Follow visual-explainer's technical-document workflow and use Plannotator tokens for the color and typography layer.
+Follow visual-explainer's one-shot workflow and use Plannotator tokens for the color and typography layer.
 
 ---
 

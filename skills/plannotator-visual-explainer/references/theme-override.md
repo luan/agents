@@ -1,10 +1,10 @@
 # Plannotator Theme Override
 
-When visual-explainer's workflow says to pick a palette and font pairing, use these Plannotator tokens instead. Everything else — layout, structure, components, anti-slop rules — stays as visual-explainer prescribes.
+Use these Plannotator tokens for visual-explainer output rendered in Plannotator.
 
 ## CSS Custom Properties
 
-Replace visual-explainer's `--bg`, `--surface`, `--border`, `--text`, `--accent` variables with Plannotator's semantic tokens. Include these as `:root` defaults so the file works standalone. When embedded in the Plannotator UI via `--render-html`, these get overridden by the active theme.
+Use the semantic tokens below as `:root` defaults so the file works standalone. When embedded in the Plannotator UI via `--render-html`, the active theme overrides them.
 
 ```css
 :root {
@@ -41,11 +41,11 @@ Replace visual-explainer's `--bg`, `--surface`, `--border`, `--text`, `--accent`
 }
 ```
 
-## Mapping visual-explainer variables to Plannotator tokens
+## Optional CSS aliases
 
-When visual-explainer references or templates use these variables, substitute:
+If the artifact uses shorter local variable names, map them to Plannotator tokens:
 
-| visual-explainer | Plannotator | Notes |
+| Local alias | Plannotator | Notes |
 |-----------------|-------------|-------|
 | `--bg` | `var(--background)` | Page background |
 | `--surface` | `var(--card)` | Card/panel surfaces |
@@ -63,15 +63,13 @@ When visual-explainer references or templates use these variables, substitute:
 | `--font-mono` | `var(--font-mono)` | Code and labels |
 | `--font-heading` | `var(--font-display)` | Headings (serif) |
 
-## Typography exception
+## Typography
 
-Visual-explainer forbids Inter as `--font-body`. Plannotator uses Inter as its default sans-serif. This is intentional — Plannotator's identity is defined by its theme tokens, not font novelty. When using this skill, Inter is permitted as the body font because the output is meant to look like part of Plannotator, not like an independent design piece.
-
-The `--font-display` (serif) is still used for headings to create visual contrast, matching the visual-explainer's emphasis on distinctive typography.
+Use `--font-sans` for body text, `--font-mono` for code and labels, and `--font-display` for headings when visual contrast helps.
 
 ## Mermaid theming
 
-When visual-explainer instructs you to set `themeVariables` in Mermaid config, use Plannotator tokens:
+When using Mermaid, apply Plannotator tokens through `themeVariables`:
 
 ```javascript
 mermaid.initialize({
@@ -118,7 +116,7 @@ For standalone viewing, you may optionally add a `prefers-color-scheme: dark` bl
 
 ## Depth tiers
 
-Visual-explainer defines depth tiers (hero, elevated, default, recessed). Map them using Plannotator tokens:
+Use these depth tiers when the artifact needs visual emphasis:
 
 ```css
 /* Hero — elevated, accent-tinted */

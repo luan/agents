@@ -34,12 +34,24 @@ geometry, labels, and styling from the source. Bracketed text must be replaced.
 .ve-code { min-width:0; border:1px solid #30363d; }
 .ve-code header { padding:7px 10px; border-bottom:1px solid #30363d; background:#161b22; color:#9da7b3; font:12px var(--ve-mono); }
 .ve-code pre { margin:0; padding:14px; overflow:auto; background:#0d1117; color:#e6edf3; font:12.5px/1.58 var(--ve-mono); white-space:pre; }
+.ve-code .ve-line { display:block; min-height:1.58em; }
+.ve-code .ve-comment { color:#8b949e; }
+.ve-code .ve-keyword { color:#ff7b72; }
+.ve-code .ve-type,.ve-code .ve-function { color:#d2a8ff; }
+.ve-code .ve-string { color:#a5d6ff; }
+.ve-code .ve-number { color:#79c0ff; }
 .ve-linked-selection { display:grid; grid-template-columns:max-content minmax(0,1fr); gap:16px; border-block:1px solid var(--ve-line); }
 .ve-tablist { padding:10px 10px 10px 0; border-right:1px solid var(--ve-line); }
 .ve-tablist button { display:block; width:100%; text-align:left; }
 .ve-tabpanel { padding:12px 0; }
 .ve-tabpanel[hidden] { display:none; }
 :focus-visible { outline:2px solid var(--ve-accent); outline-offset:2px; }
+.ve-table-tools { display:flex; justify-content:flex-end; margin:0 0 10px; }
+.ve-table-tools input { width:min(100%,360px); padding:8px 10px; border:1px solid var(--ve-line); background:var(--ve-surface); color:var(--ve-text); }
+.ve-table-wrap { max-width:100%; overflow:auto; border:1px solid var(--ve-line); }
+.ve-table { width:100%; border-collapse:collapse; font:13px/1.45 var(--ve-sans); }
+.ve-table th,.ve-table td { padding:9px 11px; border-bottom:1px solid var(--ve-line); text-align:left; vertical-align:top; }
+.ve-table th { position:sticky; top:0; background:var(--ve-bg); color:var(--ve-text); }
 @media (max-width:760px) {
   .ve-guided-layout,.ve-evidence-pair,.ve-linked-selection { grid-template-columns:1fr; }
   .ve-tablist { display:flex; overflow:auto; border-right:0; border-bottom:1px solid var(--ve-line); }
@@ -98,7 +110,7 @@ geometry, labels, and styling from the source. Bracketed text must be replaced.
 <template id="evidence-pair-pattern">
   <div class="ve-evidence-pair">
     <div class="ve-explanation">[Mechanism explanation]</div>
-    <div class="ve-code"><header>[Exact path and symbol, or simplified label]</header><pre><code>[Shiki-rendered excerpt]</code></pre></div>
+    <div class="ve-code"><header>[Exact path and symbol, or simplified label]</header><pre><code><span class="ve-line">[Shiki-rendered HTML, or escaped code using ve-comment, ve-keyword, ve-type, ve-function, ve-string, and ve-number spans]</span></code></pre></div>
   </div>
 </template>
 
@@ -113,6 +125,19 @@ geometry, labels, and styling from the source. Bracketed text must be replaced.
       <section id="[panel-b]" class="ve-tabpanel" role="tabpanel" aria-labelledby="[tab-b]" hidden>[Source-grounded detail]</section>
     </div>
   </div>
+</template>
+
+<template id="filterable-table-pattern">
+  <section aria-labelledby="[inventory-heading-id]">
+    <h2 id="[inventory-heading-id]">[Inventory name]</h2>
+    <div class="ve-table-tools"><label>[Filter label] <input type="search" data-ve-filter placeholder="[Source-native examples]"></label></div>
+    <div class="ve-table-wrap">
+      <table class="ve-table" data-ve-table>
+        <thead><tr><th>[Column]</th><th>[Column]</th><th>[Column]</th></tr></thead>
+        <tbody><tr><td>[Source-native item]</td><td>[Role]</td><td>[Interaction]</td></tr></tbody>
+      </table>
+    </div>
+  </section>
 </template>
 
 <script>
@@ -133,6 +158,16 @@ function initVeTabs(root) {
   const tabs=[...root.querySelectorAll('[role="tab"]')];
   function select(tab,focus=false){tabs.forEach(item=>{const selected=item===tab;item.setAttribute('aria-selected',String(selected));item.tabIndex=selected?0:-1;document.getElementById(item.getAttribute('aria-controls')).hidden=!selected;});if(focus)tab.focus();}
   tabs.forEach((tab,index)=>{tab.addEventListener('click',()=>select(tab));tab.addEventListener('keydown',event=>{const offsets={ArrowRight:1,ArrowDown:1,ArrowLeft:-1,ArrowUp:-1};let next=index;if(event.key in offsets)next=(index+offsets[event.key]+tabs.length)%tabs.length;else if(event.key==='Home')next=0;else if(event.key==='End')next=tabs.length-1;else return;event.preventDefault();select(tabs[next],true);});});
+}
+
+function initVeFilter(root) {
+  const input=root.querySelector('[data-ve-filter]');
+  const rows=[...root.querySelectorAll('[data-ve-table] tbody tr')];
+  if(!input)return;
+  input.addEventListener('input',()=>{
+    const query=input.value.trim().toLowerCase();
+    rows.forEach(row=>{row.hidden=query&&!row.textContent.toLowerCase().includes(query);});
+  });
 }
 
 function initVeToc(root=document) {
