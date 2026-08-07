@@ -7,8 +7,9 @@ interface OverlayTheme {
 	bold(text: string): string;
 }
 
-const CHROME_LINES = 7;
-const MIN_BODY_LINES = 3;
+const OVERLAY_HEIGHT_RATIO = 0.9;
+const LIST_CHROME_LINES = 9;
+const ATTACHED_CHROME_LINES = 8;
 
 export class BackgroundTerminalOverlay implements Component {
 	focused = true;
@@ -54,11 +55,11 @@ export class BackgroundTerminalOverlay implements Component {
 			return;
 		}
 		if (isPageUpKey(data)) {
-			this.moveSelection(-Math.max(1, Math.floor((this.tui.terminal.rows - CHROME_LINES) / 2)));
+			this.moveSelection(-Math.max(1, Math.floor(this.listBodyHeight() / 2)));
 			return;
 		}
 		if (isPageDownKey(data)) {
-			this.moveSelection(Math.max(1, Math.floor((this.tui.terminal.rows - CHROME_LINES) / 2)));
+			this.moveSelection(Math.max(1, Math.floor(this.listBodyHeight() / 2)));
 			return;
 		}
 		if (data === "g" || matchesKey(data, Key.home)) {
@@ -100,7 +101,7 @@ export class BackgroundTerminalOverlay implements Component {
 		const innerWidth = width - 4;
 		const records = this.sessions.listSessions();
 		this.clampSelection(records.length);
-		const bodyLimit = Math.max(MIN_BODY_LINES, this.tui.terminal.rows - CHROME_LINES);
+		const bodyLimit = this.listBodyHeight();
 		const recordLimit = Math.max(1, Math.floor(bodyLimit / 2));
 		this.syncListScroll(records.length, recordLimit);
 		const visibleRecords = records.slice(this.listScrollOffset, this.listScrollOffset + recordLimit);
@@ -289,7 +290,15 @@ export class BackgroundTerminalOverlay implements Component {
 	}
 
 	private attachedViewportHeight(): number {
-		return Math.max(MIN_BODY_LINES, this.tui.terminal.rows - 8);
+		return Math.max(1, this.availableRows() - ATTACHED_CHROME_LINES);
+	}
+
+	private availableRows(): number {
+		return Math.max(1, Math.floor(this.tui.terminal.rows * OVERLAY_HEIGHT_RATIO));
+	}
+
+	private listBodyHeight(): number {
+		return Math.max(1, this.availableRows() - LIST_CHROME_LINES);
 	}
 
 	private attachedOutputLines(): string[] {
@@ -302,7 +311,7 @@ export class BackgroundTerminalOverlay implements Component {
 		const records = this.sessions.listSessions();
 		if (records.length === 0) return;
 		this.selectedIndex = Math.max(0, Math.min(records.length - 1, this.selectedIndex + delta));
-		this.syncListScroll(records.length, Math.max(1, Math.floor((this.tui.terminal.rows - CHROME_LINES) / 2)));
+		this.syncListScroll(records.length, Math.max(1, Math.floor(this.listBodyHeight() / 2)));
 		this.message = undefined;
 		this.tui.requestRender();
 	}

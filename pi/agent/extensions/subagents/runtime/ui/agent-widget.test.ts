@@ -1,10 +1,14 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
+import { visibleWidth } from "@earendil-works/pi-tui";
+import { setSharedAnimationRenderGuard } from "../../../shared/tui";
 import { AgentWidget, formatAgentModelInfo } from "./agent-widget";
 
 const theme = {
 	fg: (_color: string, text: string) => text,
 	bold: (text: string) => text,
 };
+
+afterEach(() => setSharedAnimationRenderGuard(undefined));
 
 test("shows the subagent model and thinking effort", () => {
 	expect(formatAgentModelInfo({ modelName: "GPT-5.6 Luna", thinkingLevel: "medium" }, theme)).toBe(
@@ -51,8 +55,8 @@ test("uses a calm refresh rate and one HUD row per running agent", () => {
 		() => "root-session",
 	);
 	const renderWidget = (
-		widget as unknown as { renderWidget(tui: unknown, theme: typeof theme, now: number): string[] }
-	).renderWidget.bind(widget, { terminal: { columns: 120 } }, theme);
+		widget as unknown as { renderWidget(theme: typeof theme, width: number, now: number): string[] }
+	).renderWidget.bind(widget, theme, 120);
 	const lines = renderWidget(1000);
 	const nextFrame = renderWidget(1120);
 
@@ -104,5 +108,135 @@ test("removes the above-editor widget when the last agent completes", () => {
 	records[0]!.status = "completed";
 	widget.update();
 	expect(widgetCalls.at(-1)).toBeUndefined();
+	widget.dispose();
+});
+
+test("moves animation to a replacement UI context", async () => {
+	const records = [
+		{
+			id: "worker",
+			type: "task",
+			description: "worker",
+			status: "running",
+			rootSessionId: "root-session",
+			parentSessionId: "root-session",
+			assignment: "work",
+			cwd: "/tmp",
+			events: [],
+			toolUses: 0,
+			startedAt: Date.now(),
+			lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
+			compactionCount: 0,
+		},
+	];
+	const renders = [0, 0];
+	const widget = new AgentWidget(
+		{ listAgents: () => [] } as never,
+		new Map(),
+		() => records as never,
+		() => "root-session",
+	);
+	const context = (index: number) => ({
+		setStatus() {},
+		setWidget: (_key: string, content: unknown) => {
+			if (typeof content === "function") {
+				content({ requestRender: () => renders[index]++ }, theme);
+			}
+		},
+	});
+
+	widget.setUICtx(context(0));
+	widget.update();
+	await Bun.sleep(140);
+	expect(renders).toEqual([1, 0]);
+
+	widget.setUICtx(context(1));
+	widget.update();
+	await Bun.sleep(140);
+	expect(renders).toEqual([1, 1]);
+	widget.dispose();
+});
+
+test("animates independently but pauses repaint while the editor is active", async () => {
+	const records = ["one", "two", "three"].map((id) => ({
+		id,
+		type: "explore",
+		description: id,
+		status: "running",
+		rootSessionId: "root-session",
+		parentSessionId: "root-session",
+		assignment: "audit",
+		cwd: "/tmp",
+		events: [],
+		toolUses: 0,
+		startedAt: Date.now(),
+		lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
+		compactionCount: 0,
+	}));
+	let renders = 0;
+	let editorActive = true;
+	setSharedAnimationRenderGuard(() => !editorActive);
+	const widget = new AgentWidget(
+		{ listAgents: () => [] } as never,
+		new Map(),
+		() => records as never,
+		() => "root-session",
+	);
+	widget.setUICtx({
+		setStatus: () => {},
+		setWidget: (_key, content) => {
+			if (typeof content === "function") {
+				content({ terminal: { columns: 120 }, requestRender: () => renders++ }, theme);
+			}
+		},
+	});
+
+	widget.update();
+	await Bun.sleep(140);
+	expect(renders).toBe(0);
+	editorActive = false;
+	await Bun.sleep(140);
+	expect(renders).toBe(1);
+	widget.dispose();
+	await Bun.sleep(140);
+	expect(renders).toBe(1);
+});
+
+test("bounds the sticky widget to Pi's assigned dock width", () => {
+	const records = [
+		{
+			id: "agent-with-a-long-identifier",
+			type: "explore",
+			description: "agent",
+			status: "running",
+			rootSessionId: "root-session",
+			parentSessionId: "root-session",
+			assignment: "audit",
+			cwd: "/tmp",
+			events: [],
+			toolUses: 0,
+			startedAt: Date.now(),
+			lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
+			compactionCount: 0,
+		},
+	];
+	let component: { render(width: number): string[] } | undefined;
+	const widget = new AgentWidget(
+		{ listAgents: () => [] } as never,
+		new Map(),
+		() => records as never,
+		() => "root-session",
+	);
+	widget.setUICtx({
+		setStatus: () => {},
+		setWidget: (_key, content) => {
+			if (typeof content === "function") {
+				component = content({ terminal: { columns: 120 }, requestRender() {} }, theme);
+			}
+		},
+	});
+
+	widget.update();
+	expect(component?.render(32).every((line) => visibleWidth(line) <= 32)).toBe(true);
 	widget.dispose();
 });

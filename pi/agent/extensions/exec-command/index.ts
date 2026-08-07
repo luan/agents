@@ -22,6 +22,7 @@ import {
 	renderExecCell,
 	renderExecCellComponent,
 } from "./tools/exec-cell-presentation.ts";
+import { lastOutputLine, outputLineCount } from "./tools/exec-cell-rendering-internal.ts";
 import { createExecCommandTracker } from "./tools/exec-command-state.ts";
 import { registerExecCommandTool } from "./tools/exec-command-tool.ts";
 import {
@@ -224,7 +225,7 @@ function parseStopSessionId(args: string): number | undefined | "invalid" {
 const BACKGROUND_TERMINAL_STATUS_KEY = "background-terminals";
 const EXEC_COMMAND_COMPLETED_MESSAGE = "exec_command.completed";
 const EXEC_COMMAND_SESSION_ERROR_MESSAGE = "exec_command.session_error";
-const BACKGROUND_TERMINAL_HUD_FRAME_MS = 80;
+const BACKGROUND_TERMINAL_HUD_FRAME_MS = 32;
 interface BackgroundTerminalStatusUi {
 	setStatus(key: string, text: string | undefined): void;
 	setWidget?(
@@ -285,6 +286,10 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 	let backgroundTerminalWidgetTimer: AnimationMount | undefined;
 	const completionMessageSessions = new Set<number>();
 	const pendingCompletionMessages = new Map<number, ReturnType<typeof setTimeout>>();
+	const backgroundTerminalOutputSummaries = new Map<
+		number,
+		{ output: string; lineCount: number; lastLine?: string }
+	>();
 	let agentTurnActive = false;
 	const foregroundExecToolCalls = new Set<string>();
 	let uninstallForegroundExecInterrupt: (() => void) | undefined;
@@ -404,8 +409,24 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 		}
 	};
 
+	const getBackgroundTerminalOutputSummary = (record: ExecSessionRecord) => {
+		const cached = backgroundTerminalOutputSummaries.get(record.id);
+		if (cached?.output === record.output) return cached;
+		const summary = {
+			output: record.output,
+			lineCount: outputLineCount(record.output),
+			lastLine: lastOutputLine(record.output),
+		};
+		backgroundTerminalOutputSummaries.set(record.id, summary);
+		return summary;
+	};
+
 	const renderBackgroundTerminalWidget = (theme: RenderTheme, width: number): string[] => {
 		const runningRecords = sessions.listSessions().filter((record) => record.running);
+		const runningIds = new Set(runningRecords.map((record) => record.id));
+		for (const id of backgroundTerminalOutputSummaries.keys()) {
+			if (!runningIds.has(id)) backgroundTerminalOutputSummaries.delete(id);
+		}
 		if (runningRecords.length === 0) return [];
 		const lines = runningRecords
 			.slice(0, 4)
@@ -417,17 +438,25 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 		return lines;
 	};
 
-	const renderBackgroundTerminalWidgetLine = (record: ExecSessionRecord, theme: RenderTheme, width: number): string =>
-		renderBackgroundTerminalHud(
+	const renderBackgroundTerminalWidgetLine = (
+		record: ExecSessionRecord,
+		theme: RenderTheme,
+		width: number,
+	): string => {
+		const outputSummary = getBackgroundTerminalOutputSummary(record);
+		return renderBackgroundTerminalHud(
 			{
 				id: record.id,
 				command: record.command,
 				output: record.output,
+				lineCount: outputSummary.lineCount,
+				lastLine: outputSummary.lastLine,
 				startedAtMs: record.startedAtMs,
 				stdinOpen: record.stdinOpen,
 			},
 			{ theme, width },
 		);
+	};
 
 	function registerOrRefreshBackgroundTerminalWidget() {
 		if (!statusUi?.setWidget) return;
@@ -474,6 +503,7 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 		}
 		backgroundTerminalWidgetRegistered = false;
 		backgroundTerminalWidgetTui = undefined;
+		backgroundTerminalOutputSummaries.clear();
 	}
 
 	const setBackgroundTerminalStatusUi = (ctx: ExtensionContext | undefined) => {
@@ -593,7 +623,7 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 					(tui, theme, _keybindings, done) => new BackgroundTerminalOverlay(sessions, tui, theme, done),
 					{
 						overlay: true,
-						overlayOptions: { anchor: "center", width: "90%", minWidth: 60 },
+						overlayOptions: { anchor: "center", width: "90%", minWidth: 60, maxHeight: "90%" },
 					},
 				);
 		},

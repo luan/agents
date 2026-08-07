@@ -2052,6 +2052,7 @@ class BudgetOverlay {
 	// -----------------------------------------------------------------------
 
 	render(width: number): string[] {
+		if (width < 4) return [];
 		if (this.cachedLines && this.cachedWidth === width) {
 			return this.cachedLines;
 		}

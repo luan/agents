@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Container } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { runningCellElapsedMs, shouldAnimateRunningCell } from "../../shared/tui";
+import { runningCellElapsedMs, sharedAnimationRenderAllowed, shouldAnimateRunningCell } from "../../shared/tui";
 import { renderExecCellComponent } from "./exec-cell-presentation.ts";
 import type { ExecSessionManager, UnifiedExecResult } from "./exec-session-manager.ts";
 import { formatUnifiedExecResult } from "./unified-exec-format.ts";
@@ -168,7 +168,7 @@ function scheduleRunningInvalidation(context: RenderContextLike | undefined, run
 	if (state.elapsedTimer || !context?.invalidate) return;
 	state.elapsedTimer = setTimeout(() => {
 		state.elapsedTimer = undefined;
-		context.invalidate?.();
+		if (sharedAnimationRenderAllowed()) context.invalidate?.();
 	}, BACKGROUND_TERMINAL_HUD_FRAME_MS);
 }
 

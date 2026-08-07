@@ -28,6 +28,7 @@ import {
 	RenderedLineCache,
 	runningCellElapsedMs,
 	runningFrame,
+	sharedAnimationRenderAllowed,
 	shineText,
 	shouldAnimateRunningCell,
 	textComponent,
@@ -560,7 +561,7 @@ function scheduleEditInvalidation(
 	if (timer || !context?.invalidate) return;
 	state.elapsedTimer = setTimeout(() => {
 		state.elapsedTimer = undefined;
-		context.invalidate?.();
+		if (sharedAnimationRenderAllowed()) context.invalidate?.();
 	}, EDIT_FRAME_MS);
 	state.elapsedTimer.unref?.();
 }

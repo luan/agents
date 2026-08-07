@@ -19,6 +19,8 @@ export {
 	runningCellElapsedMs,
 	runningFrame,
 	scaleRgb,
+	setSharedAnimationRenderGuard,
+	sharedAnimationRenderAllowed,
 	sharedAnimationRenderScheduler,
 	shineText,
 	shouldAnimateRunningCell,

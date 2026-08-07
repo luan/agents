@@ -7,6 +7,7 @@ import { invokeCore } from "../../context-guard/pi/core.ts";
 import { getPiSessionDir } from "../../context-guard/pi/index.ts";
 import { sessionRecordToolTelemetry } from "../../context-guard/session/core-session.ts";
 import { resolveContentStorePath, resolveSessionDbPath } from "../../context-guard/session/paths.ts";
+import { sharedAnimationRenderAllowed } from "../../shared/tui";
 import { summarizeShellCommand } from "../shell/summary.ts";
 import { rawCommandToExecCell, renderExecCellComponent } from "./exec-cell-presentation.ts";
 import type { ExecCommandTracker } from "./exec-command-state.ts";
@@ -537,7 +538,7 @@ function scheduleElapsedInvalidation(
 	const timer = setTimeout(() => {
 		if (key) elapsedTimersByRenderKey.delete(key);
 		if (state?.elapsedTimer === timer) state.elapsedTimer = undefined;
-		context.invalidate?.();
+		if (sharedAnimationRenderAllowed()) context.invalidate?.();
 	}, RUNNING_INVALIDATION_MS);
 	if (key) elapsedTimersByRenderKey.set(key, timer);
 	if (state) state.elapsedTimer = timer;

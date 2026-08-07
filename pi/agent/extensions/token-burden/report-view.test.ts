@@ -57,11 +57,13 @@ describe("token burden stacked legend", () => {
 
 	test("renders combined burden plus session bars", async () => {
 		let rendered = "";
+		let narrow: string[] = [];
 		const ctx = {
 			ui: {
 				custom: async (factory: any) => {
 					const component = factory({ requestRender() {}, stop() {}, start() {} }, {}, {}, () => {});
 					rendered = stripAnsi(component.render(80).join("\n"));
+					narrow = component.render(3);
 				},
 			},
 		};
@@ -96,6 +98,7 @@ describe("token burden stacked legend", () => {
 		expect(rendered).toContain("Burden + session by category");
 		expect(rendered).toContain("User 13.3%");
 		expect(rendered).toContain("Assistant 20.0%");
+		expect(narrow).toEqual([]);
 	});
 
 	test("sorts combined categories by token share descending", async () => {

@@ -297,8 +297,13 @@ export interface AnimationRenderTarget {
 	requestRender(): void;
 }
 
+interface AnimationRenderOptions {
+	bypassRenderGuard?: boolean;
+}
+
 interface AnimationRenderRegistration {
 	count: number;
+	bypassRenderGuardCount: number;
 	onFrames: Set<() => void>;
 }
 
@@ -307,8 +312,11 @@ interface AnimationRenderBucket {
 	targets: Map<AnimationRenderTarget, AnimationRenderRegistration>;
 }
 
+const ANIMATION_LAG_TOLERANCE = 1.5;
+
 export class AnimationRenderScheduler {
 	private buckets = new Map<number, AnimationRenderBucket>();
+	private renderGuard: () => boolean = () => true;
 
 	constructor(
 		private startTimer: (callback: () => void, intervalMs: number) => ReturnType<typeof setInterval> = (
@@ -316,24 +324,48 @@ export class AnimationRenderScheduler {
 			intervalMs,
 		) => setInterval(callback, intervalMs),
 		private stopTimer: (timer: ReturnType<typeof setInterval>) => void = (timer) => clearInterval(timer),
+		private now: () => number = () => performance.now(),
 	) {}
 
-	mount(target: AnimationRenderTarget, intervalMs: number, onFrame?: () => void): AnimationMount {
+	setRenderGuard(guard: (() => boolean) | undefined): void {
+		this.renderGuard = guard ?? (() => true);
+	}
+
+	isRenderAllowed(): boolean {
+		return this.renderGuard();
+	}
+
+	mount(
+		target: AnimationRenderTarget,
+		intervalMs: number,
+		onFrame?: () => void,
+		options: AnimationRenderOptions = {},
+	): AnimationMount {
 		let bucket = this.buckets.get(intervalMs);
 		if (!bucket) {
 			const targets = new Map<AnimationRenderTarget, AnimationRenderRegistration>();
+			let lastTickAt = this.now();
 			const timer = this.startTimer(() => {
+				const now = this.now();
+				const overloaded = now - lastTickAt > intervalMs * ANIMATION_LAG_TOLERANCE;
+				lastTickAt = now;
+				const renderAllowed = this.renderGuard();
 				for (const [current, registration] of targets) {
 					for (const callback of registration.onFrames) callback();
-					current.requestRender();
+					if (!overloaded && (renderAllowed || registration.bypassRenderGuardCount > 0)) current.requestRender();
 				}
 			}, intervalMs);
 			timer.unref?.();
 			bucket = { timer, targets };
 			this.buckets.set(intervalMs, bucket);
 		}
-		const registration = bucket.targets.get(target) ?? { count: 0, onFrames: new Set() };
+		const registration = bucket.targets.get(target) ?? {
+			count: 0,
+			bypassRenderGuardCount: 0,
+			onFrames: new Set(),
+		};
 		registration.count++;
+		if (options.bypassRenderGuard) registration.bypassRenderGuardCount++;
 		if (onFrame) registration.onFrames.add(onFrame);
 		bucket.targets.set(target, registration);
 		let disposed = false;
@@ -343,6 +375,7 @@ export class AnimationRenderScheduler {
 				disposed = true;
 				if (onFrame) registration.onFrames.delete(onFrame);
 				registration.count--;
+				if (options.bypassRenderGuard) registration.bypassRenderGuardCount--;
 				if (registration.count > 0) return;
 				bucket.targets.delete(target);
 				if (bucket.targets.size > 0) return;
@@ -358,6 +391,14 @@ export class AnimationRenderScheduler {
 }
 
 export const sharedAnimationRenderScheduler = new AnimationRenderScheduler();
+
+export function setSharedAnimationRenderGuard(guard: (() => boolean) | undefined): void {
+	sharedAnimationRenderScheduler.setRenderGuard(guard);
+}
+
+export function sharedAnimationRenderAllowed(): boolean {
+	return sharedAnimationRenderScheduler.isRenderAllowed();
+}
 interface AnimationEntry extends AnimationMountOptions {
 	frame: number;
 	nextFrameAt?: number;

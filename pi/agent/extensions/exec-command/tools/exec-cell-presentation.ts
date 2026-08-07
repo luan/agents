@@ -88,6 +88,8 @@ interface BackgroundTerminalHudCell {
 	command?: string;
 	output: string;
 	elapsedMs?: number;
+	lineCount?: number;
+	lastLine?: string;
 	startedAtMs?: number;
 	nowMs?: number;
 	stdinOpen?: boolean;
@@ -210,11 +212,9 @@ function renderBackgroundTerminalWidgetLine(
 	)}`;
 	const ttyLabel = cell.stdinOpen ? formatStdinCapability(cell.stdinOpen) : undefined;
 	const tty = ttyLabel ? `${theme.fg("dim", " · ")}${theme.fg("mdLink", ttyLabel)}` : "";
-	const lines = outputLineCount(cell.output);
+	const lines = cell.lineCount ?? outputLineCount(cell.output);
 	const outputSummary = lines > 0 ? `(${lines} ${lines === 1 ? "line" : "lines"})` : "(no output)";
-	const lastLine = lastOutputLine(cell.output)
-		?.replace(/[\x00-\x1f\x7f]/g, " ")
-		.trim();
+	const lastLine = (cell.lastLine ?? lastOutputLine(cell.output))?.replace(/[\x00-\x1f\x7f]/g, " ").trim();
 	const command = (cell.command ?? "").replace(/[\x00-\x1f\x7f]/g, " ").trim();
 	const last = lastLine ? `${theme.fg("dim", " · ")}${theme.fg("dim", lastLine)}` : "";
 	const fixed = `${prefix}${theme.fg("dim", " · ")}${theme.fg("dim", elapsed)}${tty}${theme.fg(

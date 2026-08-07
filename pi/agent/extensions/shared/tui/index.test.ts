@@ -222,21 +222,62 @@ describe("Extension TUI ViewNodes", () => {
 				stopped++;
 			},
 		);
+		let renderAllowed = false;
+		scheduler.setRenderGuard(() => renderAllowed);
 		let renders = 0;
+		let frames = 0;
+		let unguardedRenders = 0;
 		const target = { requestRender: () => renders++ };
-		const first = scheduler.mount(target, 80);
+		const first = scheduler.mount(target, 80, () => frames++);
 		const second = scheduler.mount(target, 80);
 		const other = scheduler.mount({ requestRender: () => renders++ }, 80);
+		const unguarded = scheduler.mount({ requestRender: () => unguardedRenders++ }, 80, undefined, {
+			bypassRenderGuard: true,
+		});
 
 		expect(scheduler.activeTimerCount).toBe(1);
 		callbacks[0]?.();
+		expect(renders).toBe(0);
+		expect(frames).toBe(1);
+		expect(unguardedRenders).toBe(1);
+		renderAllowed = true;
+		callbacks[0]?.();
 		expect(renders).toBe(2);
+		expect(frames).toBe(2);
+		expect(unguardedRenders).toBe(2);
 
 		first.dispose();
 		second.dispose();
 		other.dispose();
+		unguarded.dispose();
 		expect(scheduler.activeTimerCount).toBe(0);
 		expect(stopped).toBe(1);
+	});
+
+	test("animation render scheduler drops repaint work when timer lag shows event-loop pressure", () => {
+		let callback: (() => void) | undefined;
+		let now = 0;
+		let renders = 0;
+		let frames = 0;
+		const scheduler = new AnimationRenderScheduler(
+			(next) => {
+				callback = next;
+				return { unref() {} } as ReturnType<typeof setInterval>;
+			},
+			() => {},
+			() => now,
+		);
+		scheduler.mount({ requestRender: () => renders++ }, 80, () => frames++);
+
+		now = 80;
+		callback?.();
+		now = 220;
+		callback?.();
+		now = 300;
+		callback?.();
+
+		expect(frames).toBe(3);
+		expect(renders).toBe(2);
 	});
 
 	test("text primitives pad to visible width with optional truncation", () => {

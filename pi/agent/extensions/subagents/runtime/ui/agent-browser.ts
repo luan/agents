@@ -49,6 +49,7 @@ export class AgentHarness {
 	private message = "";
 	private readonly unsubscribe: Array<() => void>;
 	private closed = false;
+	private pendingRender: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(
 		private readonly records: AgentRecord[],
@@ -63,11 +64,11 @@ export class AgentHarness {
 		this.input.onSubmit = (value) => void this.submitInput(value);
 		this.input.onEscape = () => this.cancelInput();
 		this.unsubscribe = records.flatMap((record) =>
-			record.session ? [record.session.subscribe(() => this.tui.requestRender())] : [],
+			record.session ? [record.session.subscribe(() => this.scheduleRender())] : [],
 		);
 		if (records.some((record) => record.status === "queued" || record.status === "running")) {
 			const refresh = setInterval(() => {
-				this.tui.requestRender();
+				this.scheduleRender(0);
 				if (!records.some((record) => record.status === "queued" || record.status === "running")) {
 					clearInterval(refresh);
 				}
@@ -133,9 +134,10 @@ export class AgentHarness {
 	}
 
 	render(width: number): string[] {
-		if (width < 24) return [];
+		const availableHeight = Math.floor(this.tui.terminal.rows * 0.95);
+		if (width < 24 || availableHeight <= CHROME_ROWS) return [];
 		const innerWidth = width - 4;
-		const bodyHeight = Math.max(4, Math.floor(this.tui.terminal.rows * 0.95) - CHROME_ROWS);
+		const bodyHeight = availableHeight - CHROME_ROWS;
 		const lines = [
 			this.borderTop(width),
 			this.row(
@@ -396,6 +398,15 @@ export class AgentHarness {
 		this.selectedIndex = Math.max(0, Math.min(Math.max(0, this.records.length - 1), this.selectedIndex));
 	}
 
+	private scheduleRender(delay = 100): void {
+		if (this.closed || this.pendingRender) return;
+		this.pendingRender = setTimeout(() => {
+			this.pendingRender = undefined;
+			if (!this.closed) this.tui.requestRender();
+		}, delay);
+		this.pendingRender.unref?.();
+	}
+
 	private close(): void {
 		if (this.closed) return;
 		this.closed = true;
@@ -404,6 +415,8 @@ export class AgentHarness {
 	}
 
 	private cleanup(): void {
+		if (this.pendingRender) clearTimeout(this.pendingRender);
+		this.pendingRender = undefined;
 		for (const unsubscribe of this.unsubscribe.splice(0)) unsubscribe();
 	}
 
@@ -434,9 +447,10 @@ export async function openAgentBrowser(
 		ctx.ui.notify("No subagents in this session.", "info");
 		return;
 	}
-	await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
-		return new AgentHarness(records, actions, tui, theme, () => done());
-	});
+	await ctx.ui.custom<void>(
+		(tui, theme, _keybindings, done) => new AgentHarness(records, actions, tui, theme, () => done()),
+		{ overlay: true, overlayOptions: { anchor: "center", width: "95%", maxHeight: "95%" } },
+	);
 }
 
 export async function openAgentInspector(
@@ -449,9 +463,10 @@ export async function openAgentInspector(
 		return;
 	}
 	if (!ctx.hasUI || !ctx.ui.custom) return;
-	await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
-		return new AgentHarness([record], actions, tui, theme, () => done(), record.id);
-	});
+	await ctx.ui.custom<void>(
+		(tui, theme, _keybindings, done) => new AgentHarness([record], actions, tui, theme, () => done(), record.id),
+		{ overlay: true, overlayOptions: { anchor: "center", width: "95%", maxHeight: "95%" } },
+	);
 }
 
 function statusText(theme: Theme, status: AgentRecord["status"]): string {

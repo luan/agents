@@ -663,18 +663,15 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 						},
 						onTextDelta: (_delta, fullText) => {
 							ensureActivity(activityByAgent, id).responseText = fullText;
-							agentWidget.update();
 						},
 						onSessionCreated: (session) => {
 							ensureActivity(activityByAgent, id).session = session;
 							const record = manager.getRecord(id);
 							if (record) persistAgent(record);
-							agentWidget.update();
 						},
 						onTurnEnd: (turnCount) => {
 							const activity = ensureActivity(activityByAgent, id);
 							activity.turnCount = turnCount;
-							agentWidget.update();
 						},
 						onAssistantUsage: (usage) => {
 							addActivityUsage(ensureActivity(activityByAgent, id), usage);

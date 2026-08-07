@@ -1,5 +1,5 @@
 import { truncateToWidth } from "@earendil-works/pi-tui";
-import { runningFrame } from "../../../shared/tui";
+import { type AnimationMount, runningFrame, sharedAnimationRenderScheduler } from "../../../shared/tui";
 import type { AgentManager } from "../agent-manager.js";
 import type { AgentRecord } from "../types.js";
 import { getLifetimeTotal, type LifetimeUsage, type SessionLike } from "../usage.js";
@@ -26,7 +26,7 @@ type UICtx = {
 	setStatus(key: string, text: string | undefined): void;
 	setWidget(
 		key: string,
-		content: undefined | ((tui: any, theme: Theme) => { render(): string[]; invalidate(): void }),
+		content: undefined | ((tui: any, theme: Theme) => { render(width: number): string[]; invalidate(): void }),
 		options?: { placement?: "aboveEditor" | "belowEditor" },
 	): void;
 };
@@ -71,7 +71,7 @@ function describeActivity(activeTools: Map<string, string>): string {
 
 export class AgentWidget {
 	private uiCtx: UICtx | undefined;
-	private widgetInterval: ReturnType<typeof setInterval> | undefined;
+	private widgetAnimation: AnimationMount | undefined;
 	private widgetRegistered = false;
 	private tui: any | undefined;
 	private lastStatusText: string | undefined;
@@ -85,6 +85,8 @@ export class AgentWidget {
 
 	setUICtx(ctx: UICtx): void {
 		if (ctx === this.uiCtx) return;
+		this.widgetAnimation?.dispose();
+		this.widgetAnimation = undefined;
 		if (this.uiCtx && this.widgetRegistered) this.uiCtx.setWidget("agents", undefined);
 		if (this.uiCtx && this.lastStatusText !== undefined) this.uiCtx.setStatus("subagents", undefined);
 		this.uiCtx = ctx;
@@ -94,18 +96,16 @@ export class AgentWidget {
 	}
 
 	private ensureTimer(): void {
-		if (this.widgetInterval) return;
-		this.widgetInterval = setInterval(() => this.update(), WIDGET_REFRESH_MS);
-		this.widgetInterval.unref?.();
+		if (this.widgetAnimation || !this.tui) return;
+		this.widgetAnimation = sharedAnimationRenderScheduler.mount(this.tui, WIDGET_REFRESH_MS);
 	}
 
-	private renderWidget(tui: any, theme: Theme, now = Date.now()): string[] {
+	private renderWidget(theme: Theme, width: number, now = Date.now()): string[] {
 		const allAgents = this.listAgents();
 		const running = allAgents.filter((agent) => agent.status === "running");
 		const queued = allAgents.filter((agent) => agent.status === "queued");
 		if (running.length === 0 && queued.length === 0) return [];
 
-		const width = tui.terminal.columns;
 		const lines = [
 			truncateToWidth(
 				`${theme.fg("accent", "Agents")} ${theme.fg("dim", `| ${running.length} running${queued.length ? ` | ${queued.length} queued` : ""}`)}`,
@@ -159,15 +159,14 @@ export class AgentWidget {
 		if (!hasActive) {
 			if (this.widgetRegistered) this.uiCtx.setWidget("agents", undefined);
 			if (this.lastStatusText !== undefined) this.uiCtx.setStatus("subagents", undefined);
-			if (this.widgetInterval) clearInterval(this.widgetInterval);
+			this.widgetAnimation?.dispose();
+			this.widgetAnimation = undefined;
 			this.widgetRegistered = false;
-			this.widgetInterval = undefined;
 			this.tui = undefined;
 			this.lastStatusText = undefined;
 			return;
 		}
 
-		this.ensureTimer();
 		const statusParts = [
 			runningCount > 0 ? `${runningCount} running` : undefined,
 			queuedCount > 0 ? `${queuedCount} queued` : undefined,
@@ -184,26 +183,25 @@ export class AgentWidget {
 				(tui, theme) => {
 					this.tui = tui;
 					return {
-						render: () => this.renderWidget(tui, theme),
+						render: (width: number) => this.renderWidget(theme, width),
 						invalidate: () => {},
 					};
 				},
 				{ placement: "aboveEditor" },
 			);
 			this.widgetRegistered = true;
-		} else {
-			this.tui?.requestRender();
 		}
+		this.ensureTimer();
 	}
 
 	dispose(): void {
-		if (this.widgetInterval) clearInterval(this.widgetInterval);
+		this.widgetAnimation?.dispose();
 		if (this.uiCtx) {
 			if (this.widgetRegistered) this.uiCtx.setWidget("agents", undefined);
 			if (this.lastStatusText !== undefined) this.uiCtx.setStatus("subagents", undefined);
 		}
-		this.widgetInterval = undefined;
 		this.widgetRegistered = false;
+		this.widgetAnimation = undefined;
 		this.tui = undefined;
 		this.lastStatusText = undefined;
 	}

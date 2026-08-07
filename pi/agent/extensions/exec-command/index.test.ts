@@ -537,6 +537,7 @@ test("background terminal overlay renders empty and visible session rows", () =>
 	);
 
 	expect(overlay.render(100).join("\n")).toContain("No background terminals");
+	expect(overlay.render(100)).toHaveLength(8);
 
 	records = [
 		{
@@ -568,6 +569,7 @@ test("background terminal overlay renders empty and visible session rows", () =>
 	expect(rendered).toContain("#4");
 	expect(rendered).toContain("exited 7");
 	expect(rendered).not.toContain("stdin closed");
+	expect(overlay.render(80).length).toBeLessThanOrEqual(18);
 	expect(rendered).not.toContain("x".repeat(80));
 
 	overlay.handleInput("q");
@@ -2055,6 +2057,7 @@ test("ps command opens a background terminal overlay", async () => {
 	expect(customOptions.overlay).toBe(true);
 	expect(customOptions.overlayOptions.width).toBe("90%");
 	expect(customOptions.overlayOptions.minWidth).toBe(60);
+	expect(customOptions.overlayOptions.maxHeight).toBe("90%");
 	expect(setFocusCalls).toBe(0);
 	expect(overlayText).toContain("background terminals");
 	expect(overlayText).toContain("No background terminals");

@@ -65,7 +65,21 @@ test("renders a bordered, colored, interactive subagent harness", async () => {
 	harness.dispose();
 });
 
-test("opens the browser as replacement UI instead of a redraw-churning overlay", async () => {
+test("fits the native overlay height on short terminals", () => {
+	const rows = 10;
+	const harness = new AgentHarness(
+		[record()],
+		{ steer: async () => true, stop: () => true, followUp: async () => true },
+		{ terminal: { rows }, requestRender() {} } as never,
+		theme,
+		() => {},
+	);
+
+	expect(harness.render(80).length).toBeLessThanOrEqual(Math.floor(rows * 0.95));
+	harness.dispose();
+});
+
+test("opens the browser in Pi's native fullscreen-compatible overlay", async () => {
 	let customOptions: unknown = "not called";
 	await openAgentBrowser(
 		{
@@ -79,10 +93,13 @@ test("opens the browser as replacement UI instead of a redraw-churning overlay",
 		[record("completed")],
 		{ steer: async () => true, stop: () => true, followUp: async () => true },
 	);
-	expect(customOptions).toBeUndefined();
+	expect(customOptions).toEqual({
+		overlay: true,
+		overlayOptions: { anchor: "center", width: "95%", maxHeight: "95%" },
+	});
 });
 
-test("renders the live child session transcript instead of the completion summary", () => {
+test("renders the live child session transcript and coalesces session updates", async () => {
 	const live = record();
 	live.result = "stale completion summary";
 	let sessionListener: (() => void) | undefined;
@@ -127,7 +144,9 @@ test("renders the live child session transcript instead of the completion summar
 	const rendered = harness.render(100).join("\n");
 	expect(rendered).toContain("Live assistant response");
 	expect(rendered).not.toContain("stale completion summary");
-	sessionListener?.();
+	for (let update = 0; update < 100; update++) sessionListener?.();
+	expect(renders).toBe(0);
+	await Bun.sleep(120);
 	expect(renders).toBe(1);
 	harness.dispose();
 });
