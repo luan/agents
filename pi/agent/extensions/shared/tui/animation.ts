@@ -312,8 +312,6 @@ interface AnimationRenderBucket {
 	targets: Map<AnimationRenderTarget, AnimationRenderRegistration>;
 }
 
-const ANIMATION_LAG_TOLERANCE = 1.5;
-
 export class AnimationRenderScheduler {
 	private buckets = new Map<number, AnimationRenderBucket>();
 	private renderGuard: () => boolean = () => true;
@@ -324,7 +322,6 @@ export class AnimationRenderScheduler {
 			intervalMs,
 		) => setInterval(callback, intervalMs),
 		private stopTimer: (timer: ReturnType<typeof setInterval>) => void = (timer) => clearInterval(timer),
-		private now: () => number = () => performance.now(),
 	) {}
 
 	setRenderGuard(guard: (() => boolean) | undefined): void {
@@ -333,6 +330,21 @@ export class AnimationRenderScheduler {
 
 	isRenderAllowed(): boolean {
 		return this.renderGuard();
+	}
+
+	private shouldRender(
+		target: AnimationRenderTarget,
+		intervalMs: number,
+		registration: AnimationRenderRegistration,
+		renderAllowed: boolean,
+	): boolean {
+		if (!renderAllowed && registration.bypassRenderGuardCount === 0) return false;
+		for (const [candidateInterval, bucket] of this.buckets) {
+			if (candidateInterval >= intervalMs) continue;
+			const candidate = bucket.targets.get(target);
+			if (candidate && (renderAllowed || candidate.bypassRenderGuardCount > 0)) return false;
+		}
+		return true;
 	}
 
 	mount(
@@ -344,15 +356,11 @@ export class AnimationRenderScheduler {
 		let bucket = this.buckets.get(intervalMs);
 		if (!bucket) {
 			const targets = new Map<AnimationRenderTarget, AnimationRenderRegistration>();
-			let lastTickAt = this.now();
 			const timer = this.startTimer(() => {
-				const now = this.now();
-				const overloaded = now - lastTickAt > intervalMs * ANIMATION_LAG_TOLERANCE;
-				lastTickAt = now;
 				const renderAllowed = this.renderGuard();
 				for (const [current, registration] of targets) {
 					for (const callback of registration.onFrames) callback();
-					if (!overloaded && (renderAllowed || registration.bypassRenderGuardCount > 0)) current.requestRender();
+					if (this.shouldRender(current, intervalMs, registration, renderAllowed)) current.requestRender();
 				}
 			}, intervalMs);
 			timer.unref?.();

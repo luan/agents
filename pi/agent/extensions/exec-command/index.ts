@@ -478,8 +478,6 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 				},
 			);
 			backgroundTerminalWidgetRegistered = true;
-		} else {
-			backgroundTerminalWidgetTui?.requestRender();
 		}
 		if (!backgroundTerminalWidgetTimer && backgroundTerminalWidgetTui) {
 			backgroundTerminalWidgetTimer = sharedAnimationRenderScheduler.mount(

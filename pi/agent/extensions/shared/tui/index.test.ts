@@ -254,9 +254,30 @@ describe("Extension TUI ViewNodes", () => {
 		expect(stopped).toBe(1);
 	});
 
-	test("animation render scheduler drops repaint work when timer lag shows event-loop pressure", () => {
+	test("animation render scheduler uses the fastest cadence per target", () => {
+		const callbacks = new Map<number, () => void>();
+		let renders = 0;
+		const target = { requestRender: () => renders++ };
+		const scheduler = new AnimationRenderScheduler((callback, intervalMs) => {
+			callbacks.set(intervalMs, callback);
+			return { unref() {} } as ReturnType<typeof setInterval>;
+		});
+		const fast = scheduler.mount(target, 32);
+		const slow = scheduler.mount(target, 80);
+
+		callbacks.get(80)?.();
+		expect(renders).toBe(0);
+		callbacks.get(32)?.();
+		expect(renders).toBe(1);
+
+		fast.dispose();
+		callbacks.get(80)?.();
+		expect(renders).toBe(2);
+		slow.dispose();
+	});
+
+	test("animation render scheduler does not discard repaint callbacks", () => {
 		let callback: (() => void) | undefined;
-		let now = 0;
 		let renders = 0;
 		let frames = 0;
 		const scheduler = new AnimationRenderScheduler(
@@ -265,19 +286,15 @@ describe("Extension TUI ViewNodes", () => {
 				return { unref() {} } as ReturnType<typeof setInterval>;
 			},
 			() => {},
-			() => now,
 		);
 		scheduler.mount({ requestRender: () => renders++ }, 80, () => frames++);
 
-		now = 80;
 		callback?.();
-		now = 220;
 		callback?.();
-		now = 300;
 		callback?.();
 
 		expect(frames).toBe(3);
-		expect(renders).toBe(2);
+		expect(renders).toBe(3);
 	});
 
 	test("text primitives pad to visible width with optional truncation", () => {
