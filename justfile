@@ -75,7 +75,7 @@ git-spice-install:
     cd "$checkout" && "$go_bin" build -o "{{ home }}/.local/bin/git-spice" go.abhg.dev/gs
 
 install: context-guard git-spice-install
-    @cargo install --list | grep -q '^worktrunk ' || cargo binstall worktrunk --locked --no-confirm || echo "warning: worktrunk install failed; continuing without it" >&2
+    @command -v rtk >/dev/null 2>&1 || { command -v brew >/dev/null 2>&1 && brew install rtk-ai/tap/rtk || echo "warning: rtk install failed or Homebrew is unavailable; continuing without it" >&2; }
     @cargo install --list | grep -q '^git-surgeon ' || cargo binstall git-surgeon --locked --no-confirm || echo "warning: git-surgeon install failed (no prebuilt binary; source build is Unix-only); continuing without it" >&2
     cargo install --path "{{ repo }}/crates/ct"
     cargo install --path "{{ repo }}/crates/vlt"

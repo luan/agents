@@ -40,6 +40,59 @@ beforeAll(() => {
 	initTheme("dark");
 });
 
+test("extension rewrites exec_command commands when rtk is installed", async () => {
+	type Handler = (event: any, ctx: any) => any;
+	let toolCallHandler: Handler | undefined;
+	const execCalls: string[][] = [];
+	const pi = {
+		registerTool() {},
+		registerCommand() {},
+		getActiveTools: () => [],
+		setActiveTools() {},
+		on: (event: string, handler: Handler) => {
+			if (event === "tool_call") toolCallHandler = handler;
+		},
+		exec: async (_command: string, args: string[]) => {
+			execCalls.push(args);
+			if (args[0] === "--version") return { code: 0, stdout: "rtk 0.23.0", stderr: "" };
+			return { code: 0, stdout: "rtk git status", stderr: "" };
+		},
+	} as any;
+	execCommandExtension(pi);
+	const event = { toolName: "exec_command", input: { cmd: "git status" } };
+
+	await toolCallHandler?.(event, {});
+
+	expect(event.input.cmd).toBe("rtk git status");
+	expect(execCalls).toEqual([["--version"], ["rewrite", "git status"]]);
+});
+
+test("extension leaves exec_command commands unchanged when rtk is unavailable", async () => {
+	type Handler = (event: any, ctx: any) => any;
+	let toolCallHandler: Handler | undefined;
+	const execCalls: string[][] = [];
+	const pi = {
+		registerTool() {},
+		registerCommand() {},
+		getActiveTools: () => [],
+		setActiveTools() {},
+		on: (event: string, handler: Handler) => {
+			if (event === "tool_call") toolCallHandler = handler;
+		},
+		exec: async (_command: string, args: string[]) => {
+			execCalls.push(args);
+			return { code: 1, stdout: "", stderr: "" };
+		},
+	} as any;
+	execCommandExtension(pi);
+	const event = { toolName: "exec_command", input: { cmd: "git status" } };
+
+	await toolCallHandler?.(event, {});
+
+	expect(event.input.cmd).toBe("git status");
+	expect(execCalls).toEqual([["--version"]]);
+});
+
 function shellQuote(value: string): string {
 	return `'${value.replace(/'/g, `'"'"'`)}'`;
 }

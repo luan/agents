@@ -2,6 +2,7 @@ import {
 	BashExecutionComponent,
 	type ExtensionAPI,
 	type ExtensionContext,
+	isToolCallEventType,
 	ToolExecutionComponent,
 } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, Text } from "@earendil-works/pi-tui";
@@ -36,6 +37,21 @@ import { registerWriteStdinTool } from "./tools/write-stdin-tool.ts";
 import { BackgroundTerminalOverlay } from "./ui/background-terminal-overlay.ts";
 
 const execCommandTui = defineExtensionTui({ id: "exec-command" });
+const RTK_REWRITE_TIMEOUT_MS = 2_000;
+
+async function rewriteCommandWithRtk(
+	pi: ExtensionAPI,
+	command: string,
+	signal?: AbortSignal,
+): Promise<string | undefined> {
+	const result = await pi.exec("rtk", ["rewrite", command], {
+		timeout: RTK_REWRITE_TIMEOUT_MS,
+		signal,
+	});
+	if (result.killed || (result.code !== 0 && result.code !== 3)) return undefined;
+	return result.stdout.trim() || undefined;
+}
+
 function arraysEqual(a: string[], b: string[]): boolean {
 	return a.length === b.length && a.every((value, index) => value === b[index]);
 }
@@ -271,6 +287,13 @@ function backgroundTerminalDetailsToUnifiedResult(details: BackgroundTerminalFin
 }
 
 export default function execCommandExtension(pi: ExtensionAPI) {
+	const rtkAvailable =
+		typeof pi.exec === "function"
+			? pi
+					.exec("rtk", ["--version"], { timeout: RTK_REWRITE_TIMEOUT_MS })
+					.then((result) => result.code === 0)
+					.catch(() => false)
+			: Promise.resolve(false);
 	// Tells replayed history apart from live calls, so a resumed transcript does not animate.
 	pi.on?.("turn_start", () => markLiveTurnStarted());
 	installEmptySelfShellRowPatch();
@@ -702,11 +725,29 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 		syncToolPolicy();
 	});
 	pi.on("tool_call", (event) => {
-		if (event.toolName === "bash") {
-			return {
-				block: true,
-				reason: "bash is disabled. Use exec_command instead.",
-			};
+		if (event.toolName !== "bash") return;
+		return {
+			block: true,
+			reason: "bash is disabled. Use exec_command instead.",
+		};
+	});
+	pi.on("tool_call", async (event, ctx) => {
+		if (!isToolCallEventType<"exec_command", { cmd?: unknown }>("exec_command", event)) return;
+		const command = event.input.cmd;
+		if (
+			typeof command !== "string" ||
+			command.trim() === "" ||
+			command.startsWith("rtk ") ||
+			process.env.RTK_DISABLED === "1" ||
+			!(await rtkAvailable)
+		) {
+			return;
+		}
+		try {
+			const rewritten = await rewriteCommandWithRtk(pi, command, ctx.signal);
+			if (rewritten && rewritten !== command) event.input.cmd = rewritten;
+		} catch (error) {
+			console.warn("[rtk] rewrite failed; passing through command", error);
 		}
 	});
 	pi.on("message_start", (event) => {
