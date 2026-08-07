@@ -1,5 +1,5 @@
 {
-  "lastChangelogVersion": "0.83.0",
+  "lastChangelogVersion": "0.84.0",
   "steeringMode": "all",
   "autoUpdate": true,
   "transport": "auto",
@@ -46,5 +46,10 @@
     "reserveTokens": 20000
   },
   "showCacheMissNotices": true,
-  "defaultProjectTrust": "always"
+  "defaultProjectTrust": "always",
+  "markdown": {
+    "mermaid": "streaming"
+  },
+  "showHardwareCursor": true,
+  "tuiMode": "fullscreen"
 }

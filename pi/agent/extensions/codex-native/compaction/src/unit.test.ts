@@ -83,6 +83,7 @@ test("executeNativeCompaction propagates resolved request headers and codex auth
 			headers: {
 				"x-test-model-header": "present",
 				"x-test-runtime-header": "resolved",
+				"x-delete-me": null,
 			},
 			compactPath: "codex/responses/compact",
 			compactUrl: buildCompactUrl("https://chatgpt.com/backend-api", "openai-codex-responses"),
@@ -93,6 +94,9 @@ test("executeNativeCompaction propagates resolved request headers and codex auth
 				id: "gpt-5.1",
 				name: "gpt-5.1",
 				baseUrl: "https://chatgpt.com/backend-api",
+				headers: {
+					"x-delete-me": "model default",
+				},
 			},
 		},
 		request: {
@@ -107,6 +111,7 @@ test("executeNativeCompaction propagates resolved request headers and codex auth
 	const headers = new Headers(fetchArgs.init?.headers);
 	expect(headers.get("x-test-model-header")).toBe("present");
 	expect(headers.get("x-test-runtime-header")).toBe("resolved");
+	expect(headers.has("x-delete-me")).toBe(false);
 	expect(headers.get("authorization")).toBe(`Bearer ${token}`);
 	expect(headers.get("chatgpt-account-id")).toBe("acct_123");
 	expect(headers.get("originator")).toBe("pi");

@@ -1,4 +1,4 @@
-import type { Api, Model } from "@earendil-works/pi-ai";
+import type { Api, Model, ProviderHeaders } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 export const DEFAULT_SUPPORTED_PROVIDERS = ["openai", "openai-codex"] as const;
@@ -40,7 +40,7 @@ export type NativeCompactionRuntime = {
 	model: string;
 	baseUrl: string;
 	apiKey: string;
-	headers?: Record<string, string>;
+	headers?: ProviderHeaders;
 	compactPath: string;
 	compactUrl: string;
 	payload?: ResponsesCompatibleRequestPayload;
@@ -103,11 +103,11 @@ function buildCompactPath(api: DefaultSupportedApi): string {
 async function resolveRequestAuth(
 	ctx: ExtensionContext,
 	model: RuntimeModel,
-): Promise<{ apiKey?: string; headers?: Record<string, string> }> {
+): Promise<{ apiKey?: string; headers?: ProviderHeaders }> {
 	const modelRegistry = ctx.modelRegistry as {
 		getApiKeyAndHeaders?: (
 			currentModel: RuntimeModel,
-		) => Promise<{ ok: true; apiKey?: string; headers?: Record<string, string> } | { ok: false; error: string }>;
+		) => Promise<{ ok: true; apiKey?: string; headers?: ProviderHeaders } | { ok: false; error: string }>;
 	};
 
 	if (typeof modelRegistry.getApiKeyAndHeaders !== "function") {
