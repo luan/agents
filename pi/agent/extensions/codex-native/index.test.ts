@@ -713,12 +713,15 @@ test("discovers newest plugin manifests and their skill roots", async () => {
 	});
 	await Bun.write(
 		join(newest, ".codex-plugin", "plugin.json"),
-		JSON.stringify({ name: "sites", version: "0.1.27", skills: "./declared-skills" }),
+		JSON.stringify({ name: "fixture-sites", version: "0.1.27", skills: "./declared-skills" }),
 	);
-	await Bun.write(join(older, ".codex-plugin", "plugin.json"), JSON.stringify({ name: "sites", version: "0.1.9" }));
+	await Bun.write(
+		join(older, ".codex-plugin", "plugin.json"),
+		JSON.stringify({ name: "fixture-sites", version: "0.1.9" }),
+	);
 	await Bun.write(
 		join(alternateMarketplace, ".codex-plugin", "plugin.json"),
-		JSON.stringify({ name: "sites", version: "0.1.1" }),
+		JSON.stringify({ name: "fixture-sites", version: "0.1.1" }),
 	);
 	await Bun.write(
 		join(other, ".codex-plugin", "plugin.json"),
@@ -730,16 +733,16 @@ test("discovers newest plugin manifests and their skill roots", async () => {
 	);
 	await Bun.write(
 		join(root, "config.toml"),
-		'[plugins."sites@openai-bundled"]\nenabled = true\n[plugins."visualize@openai-bundled"]\nenabled = false\n',
+		'[plugins."fixture-sites@openai-bundled"]\nenabled = true\n[plugins."visualize@openai-bundled"]\nenabled = false\n',
 	);
 
 	const plugins = await discoverCodexPlugins(root);
-	expect(plugins.map((plugin) => plugin.name)).toEqual(["sites", "visualize"]);
-	const sites = plugins.find((plugin) => plugin.name === "sites");
+	expect(plugins.map((plugin) => plugin.name)).toEqual(["fixture-sites", "visualize"]);
+	const sites = plugins.find((plugin) => plugin.name === "fixture-sites");
 	expect(sites?.version).toBe("0.1.27");
 	expect(sites?.marketplace).toBe("openai-bundled");
 	expect(pluginSkillPaths(plugins, { enabled: true })).toEqual([join(newest, "declared-skills")]);
-	expect(pluginSkillPaths(plugins, { enabled: true, disabledPluginKeys: ["sites"] })).toEqual([]);
+	expect(pluginSkillPaths(plugins, { enabled: true, disabledPluginKeys: ["fixture-sites"] })).toEqual([]);
 });
 
 test("loads Codex system skills", async () => {
@@ -754,12 +757,12 @@ test("does not expose skills from unconfigured marketplace inventory", async () 
 	const home = await mkdtemp(join(tmpdir(), "codex-plugin-config-test-"));
 	const inventoryPlugin = join(home, ".codex", ".tmp", "plugins", "plugins", "build-web-data-visualization");
 	await mkdir(join(inventoryPlugin, ".codex-plugin"), { recursive: true });
-	await Bun.write(join(home, ".codex", "config.toml"), '[plugins."sites@openai-bundled"]\nenabled = true\n');
+	await Bun.write(join(home, ".codex", "config.toml"), '[plugins."fixture-sites@openai-bundled"]\nenabled = true\n');
 
 	expect(isCodexPluginEnabled("build-web-data-visualization", "tmp", inventoryPlugin)).toBe(false);
 	expect(
 		isCodexPluginEnabled(
-			"sites",
+			"fixture-sites",
 			"openai-bundled",
 			join(home, ".codex", "plugins", "cache", "openai-bundled", "sites", "1.0.0"),
 		),
