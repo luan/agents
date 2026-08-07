@@ -51,10 +51,7 @@ const BRACKETED_PASTE_END_TAIL = BRACKETED_PASTE_END.slice(1);
 const MAX_COUNT = 9999;
 const PI_NATIVE_CLIPBOARD_TIMEOUT_MS = 5000;
 const SOFTWARE_CURSOR_START = "\x1b[7m";
-const SOFTWARE_CURSOR_RESETS = ["\x1b[0m", "\x1b[27m"] as const;
-const INSERT_CURSOR_SHAPE = "\x1b[5 q";
-const BLOCK_CURSOR_SHAPE = "\x1b[1 q";
-const RESET_CURSOR_SHAPE = "\x1b[0 q";
+const SOFTWARE_CURSOR_END = "\x1b[0m";
 // Pi emits OSC52 before its native clipboard fallback. Give that 5s fallback
 // a small grace so the parent does not kill the helper and discard stdout.
 const CLIPBOARD_WRITE_TIMEOUT_MS = PI_NATIVE_CLIPBOARD_TIMEOUT_MS + 500;
@@ -153,144 +150,6 @@ type ModeLabelColorizers = {
 	visual: (s: string) => string;
 	ex: (s: string) => string;
 };
-
-type CursorShapeSequence = typeof INSERT_CURSOR_SHAPE | typeof BLOCK_CURSOR_SHAPE | typeof RESET_CURSOR_SHAPE;
-
-type CursorShapeRuntime = {
-	writeCursorShape: (sequence: CursorShapeSequence) => void;
-	setShowHardwareCursor: (show: boolean) => void;
-	getShowHardwareCursor?: () => boolean | undefined;
-};
-
-type CursorShapeCleanup = () => void;
-
-type CursorShapeTuiCandidate = {
-	terminal?: { write?: unknown };
-	setShowHardwareCursor?: unknown;
-	getShowHardwareCursor?: unknown;
-};
-
-type CursorVisibilityTuiCandidate = {
-	terminal?: {
-		showCursor?: unknown;
-		hideCursor?: unknown;
-	};
-};
-
-export function installStableHardwareCursorVisibility(tui: unknown): CursorShapeCleanup | null {
-	if (typeof tui !== "object" || tui === null) return null;
-
-	const candidate = tui as CursorVisibilityTuiCandidate;
-	const terminal = candidate.terminal;
-	if (typeof terminal !== "object" || terminal === null) return null;
-
-	const showCursor = terminal.showCursor;
-	const hideCursor = terminal.hideCursor;
-	if (typeof showCursor !== "function" || typeof hideCursor !== "function") return null;
-
-	let visible = false;
-	terminal.showCursor = function (this: typeof terminal) {
-		if (visible) return;
-		visible = true;
-		showCursor.call(this);
-	};
-	terminal.hideCursor = function (this: typeof terminal) {
-		if (!visible) return;
-		visible = false;
-		hideCursor.call(this);
-	};
-
-	return () => {
-		terminal.showCursor = showCursor;
-		terminal.hideCursor = hideCursor;
-	};
-}
-
-function getCursorShapeRuntime(tui: unknown): CursorShapeRuntime | null {
-	if (typeof tui !== "object" || tui === null) return null;
-
-	const candidate = tui as CursorShapeTuiCandidate;
-	const terminal = candidate.terminal;
-	if (typeof terminal !== "object" || terminal === null) return null;
-
-	const write = terminal.write;
-	const setShowHardwareCursor = candidate.setShowHardwareCursor;
-	if (typeof write !== "function" || typeof setShowHardwareCursor !== "function") {
-		return null;
-	}
-
-	const runtime: CursorShapeRuntime = {
-		writeCursorShape(sequence: CursorShapeSequence): void {
-			write.call(terminal, sequence);
-		},
-		setShowHardwareCursor(show: boolean): void {
-			setShowHardwareCursor.call(candidate, show);
-		},
-	};
-
-	if (typeof candidate.getShowHardwareCursor === "function") {
-		const getShowHardwareCursor = candidate.getShowHardwareCursor;
-		runtime.getShowHardwareCursor = () => {
-			const value = getShowHardwareCursor.call(candidate);
-			return typeof value === "boolean" ? value : undefined;
-		};
-	}
-
-	return runtime;
-}
-
-function enableCursorShapeSupport(tui: unknown): CursorShapeCleanup | null {
-	const runtime = getCursorShapeRuntime(tui);
-	if (!runtime) return null;
-
-	const previousShowHardwareCursor = runtime.getShowHardwareCursor?.();
-	const stableCursorCleanup = installStableHardwareCursorVisibility(tui);
-	runtime.setShowHardwareCursor(true);
-
-	return () => {
-		runtime.writeCursorShape(RESET_CURSOR_SHAPE);
-		if (previousShowHardwareCursor !== undefined) {
-			runtime.setShowHardwareCursor(previousShowHardwareCursor);
-		}
-		stableCursorCleanup?.();
-	};
-}
-
-function findSoftwareCursorReset(
-	line: string,
-	startIndex: number,
-): { index: number; sequence: (typeof SOFTWARE_CURSOR_RESETS)[number] } | null {
-	let firstReset: { index: number; sequence: (typeof SOFTWARE_CURSOR_RESETS)[number] } | null = null;
-
-	for (const sequence of SOFTWARE_CURSOR_RESETS) {
-		const index = line.indexOf(sequence, startIndex);
-		if (index === -1) continue;
-		if (!firstReset || index < firstReset.index) {
-			firstReset = { index, sequence };
-		}
-	}
-
-	return firstReset;
-}
-
-function stripSoftwareCursorAfterMarker(line: string): string {
-	const markerIndex = line.indexOf(CURSOR_MARKER);
-	if (markerIndex === -1) return line;
-
-	const searchStart = markerIndex + CURSOR_MARKER.length;
-	const cursorStart = line.indexOf(SOFTWARE_CURSOR_START, searchStart);
-	if (cursorStart === -1) return line;
-
-	const cursorContentStart = cursorStart + SOFTWARE_CURSOR_START.length;
-	const reset = findSoftwareCursorReset(line, cursorContentStart);
-	if (!reset) return line;
-
-	return (
-		line.slice(0, cursorStart) +
-		line.slice(cursorContentStart, reset.index) +
-		line.slice(reset.index + reset.sequence.length)
-	);
-}
 
 type ClipboardCircuitBreaker = {
 	consecutiveEnvironmentFailures: number;
@@ -630,9 +489,6 @@ export class ModalEditor extends CustomEditor {
 	private currentTransition: TransitionState = "none";
 	private onChangeHooked: boolean = false;
 	private readonly labelColorizers: ModeLabelColorizers | null;
-	private readonly cursorShapeRuntime: CursorShapeRuntime | null;
-	private lastCursorShapeSequence: CursorShapeSequence | null = null;
-	private useTerminalCursorCompat: boolean = false;
 
 	// Unnamed register
 	private unnamedRegister: string = "";
@@ -653,23 +509,9 @@ export class ModalEditor extends CustomEditor {
 		const baseArgs = customEditorBaseArgs(tui, compatTheme, kb);
 		super(...baseArgs);
 		this.mode = initialMode;
-		this.cursorShapeRuntime = getCursorShapeRuntime(tui);
 		this.labelColorizers = labelColorizers ?? null;
-		this.syncCursorShapeForState();
-	}
-
-	setUseTerminalCursor(useTerminalCursor: boolean): void {
-		this.useTerminalCursorCompat = useTerminalCursor;
-		const base = Object.getPrototypeOf(ModalEditor.prototype) as {
-			setUseTerminalCursor?: (useTerminalCursor: boolean) => void;
-		};
-		base.setUseTerminalCursor?.call(this, useTerminalCursor);
-		this.syncCursorShapeForState();
-	}
-
-	getUseTerminalCursor(): boolean {
-		const base = Object.getPrototypeOf(ModalEditor.prototype) as { getUseTerminalCursor?: () => boolean };
-		return base.getUseTerminalCursor?.call(this) ?? this.useTerminalCursorCompat;
+		const cursorTui = tui as unknown as { setShowHardwareCursor?: (enabled: boolean) => void };
+		cursorTui.setShowHardwareCursor?.(false);
 	}
 
 	// Test seams
@@ -1017,146 +859,141 @@ export class ModalEditor extends CustomEditor {
 	}
 
 	handleInput(data: string): void {
-		const shouldSyncCursorShape = Boolean(this.cursorShapeRuntime);
 		this.ensureOnChangeHook();
 
-		try {
-			if (this.pendingExCommand !== null) {
-				const normalized = this.normalizePendingExCommandInput(data);
-				if (normalized === null) return;
-				data = normalized;
-			} else if (this.mode !== "insert") {
-				if (this.discardingBracketedPasteInNormalMode) {
-					if (this.isEscapeLikeInput(data)) {
-						if (this.pendingEscWhileDiscardingBracketedPasteInNormalMode) {
-							this.pendingEscWhileDiscardingBracketedPasteInNormalMode = false;
-							this.discardingBracketedPasteInNormalMode = false;
-							this.clearPendingState();
-							return;
-						} else {
-							this.pendingEscWhileDiscardingBracketedPasteInNormalMode = true;
+		if (this.pendingExCommand !== null) {
+			const normalized = this.normalizePendingExCommandInput(data);
+			if (normalized === null) return;
+			data = normalized;
+		} else if (this.mode !== "insert") {
+			if (this.discardingBracketedPasteInNormalMode) {
+				if (this.isEscapeLikeInput(data)) {
+					if (this.pendingEscWhileDiscardingBracketedPasteInNormalMode) {
+						this.pendingEscWhileDiscardingBracketedPasteInNormalMode = false;
+						this.discardingBracketedPasteInNormalMode = false;
+						this.clearPendingState();
+						return;
+					} else {
+						this.pendingEscWhileDiscardingBracketedPasteInNormalMode = true;
+						this.clearPendingState();
+						return;
+					}
+				} else if (this.pendingEscWhileDiscardingBracketedPasteInNormalMode) {
+					if (data.startsWith(BRACKETED_PASTE_END_TAIL)) {
+						this.pendingEscWhileDiscardingBracketedPasteInNormalMode = false;
+						this.discardingBracketedPasteInNormalMode = false;
+						data = data.slice(BRACKETED_PASTE_END_TAIL.length);
+						if (data.length === 0) {
 							this.clearPendingState();
 							return;
 						}
-					} else if (this.pendingEscWhileDiscardingBracketedPasteInNormalMode) {
-						if (data.startsWith(BRACKETED_PASTE_END_TAIL)) {
-							this.pendingEscWhileDiscardingBracketedPasteInNormalMode = false;
-							this.discardingBracketedPasteInNormalMode = false;
-							data = data.slice(BRACKETED_PASTE_END_TAIL.length);
-							if (data.length === 0) {
-								this.clearPendingState();
-								return;
-							}
-						} else {
-							this.pendingEscWhileDiscardingBracketedPasteInNormalMode = false;
-						}
+					} else {
+						this.pendingEscWhileDiscardingBracketedPasteInNormalMode = false;
 					}
 				}
-
-				const { filtered, stripped } = this.stripBracketedPasteInNormalMode(data);
-				if (stripped) {
-					this.clearPendingState();
-				}
-				if (filtered === null) return;
-				data = filtered;
 			}
 
-			if (this.isEscapeLikeInput(data)) {
-				this.handleEscape();
-				return;
+			const { filtered, stripped } = this.stripBracketedPasteInNormalMode(data);
+			if (stripped) {
+				this.clearPendingState();
 			}
-
-			if (this.mode === "insert") {
-				// Shift+Alt+A: go to end of line (like Esc -> A but stay in insert)
-				if (matchesKey(data, Key.shiftAlt("a")) || data === "\x1bA") {
-					super.handleInput(CTRL_E);
-					return;
-				}
-				// Shift+Alt+I: go to start of line (like Esc -> I but stay in insert)
-				if (matchesKey(data, Key.shiftAlt("i")) || data === "\x1bI") {
-					super.handleInput(CTRL_A);
-					return;
-				}
-				// Alt+o: open new line below (stay in insert mode)
-				if (matchesKey(data, Key.alt("o")) || data === "\x1bo") {
-					this.openLineBelow();
-					return;
-				}
-				// Alt+Shift+o: open new line above (stay in insert mode)
-				// \x1bO is the legacy sequence for Alt+Shift+O (VT100 SS3 prefix in non-Kitty terminals)
-				if (matchesKey(data, Key.shiftAlt("o")) || data === "\x1bO") {
-					this.openLineAbove();
-					return;
-				}
-				super.handleInput(data);
-				return;
-			}
-
-			if (this.pendingReplace) {
-				this.pendingReplace = false;
-				if (!this.isPrintableInput(data)) {
-					this.prefixCount = "";
-					this.operatorCount = "";
-					return;
-				}
-
-				const count = this.takeTotalCount(1);
-				const cursor = this.getCursor();
-				const line = this.getLines()[cursor.line] ?? "";
-				const range = this.getGraphemeRangeAtCol(line, cursor.col, count);
-				if (!range) return;
-
-				const before = line.slice(0, range.start);
-				const after = line.slice(range.end);
-				const replacement = data.repeat(count);
-				const lineStartAbs = this.getAbsoluteIndex(cursor.line, 0);
-				const text = this.getText();
-				const newText =
-					text.slice(0, lineStartAbs) + before + replacement + after + text.slice(lineStartAbs + line.length);
-				const newCursorAbs = lineStartAbs + before.length + data.length * (count - 1);
-				this.replaceTextInBuffer(newText, newCursorAbs);
-				return;
-			}
-
-			if (this.pendingExCommand !== null) {
-				this.handlePendingExCommand(data);
-				return;
-			}
-
-			if (this.pendingTextObject) {
-				this.handlePendingTextObject(data);
-				return;
-			}
-
-			if (this.pendingMotion) {
-				this.handlePendingMotion(data);
-				return;
-			}
-
-			if (this.pendingOperator === "d") {
-				this.handlePendingDelete(data);
-				return;
-			}
-
-			if (this.pendingOperator === "c") {
-				this.handlePendingChange(data);
-				return;
-			}
-
-			if (this.pendingOperator === "y") {
-				this.handlePendingYank(data);
-				return;
-			}
-
-			if (this.mode === "visual") {
-				this.handleVisualMode(data);
-				return;
-			}
-
-			this.handleNormalMode(data);
-		} finally {
-			if (shouldSyncCursorShape) this.syncCursorShapeForState();
+			if (filtered === null) return;
+			data = filtered;
 		}
+
+		if (this.isEscapeLikeInput(data)) {
+			this.handleEscape();
+			return;
+		}
+
+		if (this.mode === "insert") {
+			// Shift+Alt+A: go to end of line (like Esc -> A but stay in insert)
+			if (matchesKey(data, Key.shiftAlt("a")) || data === "\x1bA") {
+				super.handleInput(CTRL_E);
+				return;
+			}
+			// Shift+Alt+I: go to start of line (like Esc -> I but stay in insert)
+			if (matchesKey(data, Key.shiftAlt("i")) || data === "\x1bI") {
+				super.handleInput(CTRL_A);
+				return;
+			}
+			// Alt+o: open new line below (stay in insert mode)
+			if (matchesKey(data, Key.alt("o")) || data === "\x1bo") {
+				this.openLineBelow();
+				return;
+			}
+			// Alt+Shift+o: open new line above (stay in insert mode)
+			// \x1bO is the legacy sequence for Alt+Shift+O (VT100 SS3 prefix in non-Kitty terminals)
+			if (matchesKey(data, Key.shiftAlt("o")) || data === "\x1bO") {
+				this.openLineAbove();
+				return;
+			}
+			super.handleInput(data);
+			return;
+		}
+
+		if (this.pendingReplace) {
+			this.pendingReplace = false;
+			if (!this.isPrintableInput(data)) {
+				this.prefixCount = "";
+				this.operatorCount = "";
+				return;
+			}
+
+			const count = this.takeTotalCount(1);
+			const cursor = this.getCursor();
+			const line = this.getLines()[cursor.line] ?? "";
+			const range = this.getGraphemeRangeAtCol(line, cursor.col, count);
+			if (!range) return;
+
+			const before = line.slice(0, range.start);
+			const after = line.slice(range.end);
+			const replacement = data.repeat(count);
+			const lineStartAbs = this.getAbsoluteIndex(cursor.line, 0);
+			const text = this.getText();
+			const newText =
+				text.slice(0, lineStartAbs) + before + replacement + after + text.slice(lineStartAbs + line.length);
+			const newCursorAbs = lineStartAbs + before.length + data.length * (count - 1);
+			this.replaceTextInBuffer(newText, newCursorAbs);
+			return;
+		}
+
+		if (this.pendingExCommand !== null) {
+			this.handlePendingExCommand(data);
+			return;
+		}
+
+		if (this.pendingTextObject) {
+			this.handlePendingTextObject(data);
+			return;
+		}
+
+		if (this.pendingMotion) {
+			this.handlePendingMotion(data);
+			return;
+		}
+
+		if (this.pendingOperator === "d") {
+			this.handlePendingDelete(data);
+			return;
+		}
+
+		if (this.pendingOperator === "c") {
+			this.handlePendingChange(data);
+			return;
+		}
+
+		if (this.pendingOperator === "y") {
+			this.handlePendingYank(data);
+			return;
+		}
+
+		if (this.mode === "visual") {
+			this.handleVisualMode(data);
+			return;
+		}
+
+		this.handleNormalMode(data);
 	}
 
 	private clearUnderlyingPasteStateIfActive(): void {
@@ -3079,37 +2916,6 @@ export class ModalEditor extends CustomEditor {
 		return `${prefix}…${this.takeModeLabelSuffix(rawLabel, suffixWidth)}`;
 	}
 
-	private getDesiredCursorShapeSequence(): CursorShapeSequence {
-		return this.mode === "insert" && this.pendingExCommand === null ? INSERT_CURSOR_SHAPE : BLOCK_CURSOR_SHAPE;
-	}
-
-	private stripSoftwareCursorWhenHardwareCursorIsUsed(lines: string[]): void {
-		if (this.cursorShapeRuntime?.getShowHardwareCursor?.() === false) return;
-
-		for (let i = lines.length - 1; i >= 0; i--) {
-			const line = lines[i];
-			if (!line?.includes(CURSOR_MARKER)) continue;
-
-			lines[i] = stripSoftwareCursorAfterMarker(line);
-			return;
-		}
-	}
-
-	private syncCursorShapeForState(): void {
-		if (!this.cursorShapeRuntime) return;
-
-		if (this.cursorShapeRuntime.getShowHardwareCursor?.() === false) {
-			this.lastCursorShapeSequence = null;
-			return;
-		}
-
-		const sequence = this.getDesiredCursorShapeSequence();
-		if (sequence === this.lastCursorShapeSequence) return;
-
-		this.cursorShapeRuntime.writeCursorShape(sequence);
-		this.lastCursorShapeSequence = sequence;
-	}
-
 	private highlightRenderedSelectionLine(
 		line: string,
 		sourceText: string,
@@ -3158,23 +2964,38 @@ export class ModalEditor extends CustomEditor {
 		}
 	}
 
+	private hideEditorCursorInExMode(lines: string[]): void {
+		if (this.pendingExCommand === null) return;
+
+		for (let i = lines.length - 1; i >= 0; i--) {
+			const line = lines[i] ?? "";
+			const markerIndex = line.indexOf(CURSOR_MARKER);
+			if (markerIndex === -1) continue;
+
+			const cursorStart = line.indexOf(SOFTWARE_CURSOR_START, markerIndex + CURSOR_MARKER.length);
+			const cursorEnd =
+				cursorStart === -1 ? -1 : line.indexOf(SOFTWARE_CURSOR_END, cursorStart + SOFTWARE_CURSOR_START.length);
+			if (cursorStart !== -1 && cursorEnd !== -1) {
+				lines[i] =
+					line.slice(0, cursorStart) +
+					line.slice(cursorStart + SOFTWARE_CURSOR_START.length, cursorEnd) +
+					line.slice(cursorEnd + SOFTWARE_CURSOR_END.length);
+			}
+			return;
+		}
+	}
+
 	render(width: number): string[] {
 		const lines = super.render(width);
-		this.stripSoftwareCursorWhenHardwareCursorIsUsed(lines);
 		this.applyVisualSelectionHighlight(lines);
-		if (lines.length === 0) return lines;
+		this.hideEditorCursorInExMode(lines);
+		return lines;
+	}
 
+	getFooterModeLabel(width: number): string {
 		const rawLabel = this.fitModeLabel(this.getModeLabel(), width);
 		const colorize = this.getModeLabelColorizer();
-		const label = colorize ? colorize(rawLabel) : rawLabel;
-		const last = lines.length - 1;
-		const lastLine = lines[last];
-		if (lastLine && visibleWidth(lastLine) >= visibleWidth(rawLabel)) {
-			lines[last] = truncateToWidthCompat(lastLine, width - visibleWidth(rawLabel), "") + label;
-		} else {
-			lines[last] = label;
-		}
-		return lines;
+		return colorize ? colorize(rawLabel) : rawLabel;
 	}
 
 	private getModeLabelColorizer(): ((s: string) => string) | null {
@@ -3187,7 +3008,7 @@ export class ModalEditor extends CustomEditor {
 	private getModeLabel(): string {
 		if (this.mode === "insert") return " INSERT ";
 		if (this.mode === "visual") return " VISUAL ";
-		if (this.pendingExCommand !== null) return ` EX ${this.pendingExCommand}_ `;
+		if (this.pendingExCommand !== null) return ` EX ${this.pendingExCommand}${FALLBACK_SYMBOLS.inputCursor} `;
 
 		const prefixCount = this.prefixCount;
 		const operatorCount = this.operatorCount;
@@ -3213,8 +3034,6 @@ export class ModalEditor extends CustomEditor {
 }
 
 export default function (pi: ExtensionAPI) {
-	let cursorShapeCleanup: CursorShapeCleanup | null = null;
-
 	function installEditor(ctx: ExtensionContext): void {
 		const piVimSettings = readPiVimSettings(ctx.cwd);
 		const clipboardMirrorPolicy = resolveClipboardMirrorPolicy(piVimSettings.clipboardMirror);
@@ -3240,8 +3059,6 @@ export default function (pi: ExtensionAPI) {
 					theme: CustomEditorConstructorArgs[1],
 					kb: CustomEditorConstructorArgs[2],
 				) => {
-					cursorShapeCleanup?.();
-					cursorShapeCleanup = enableCursorShapeSupport(tui);
 					const editor = new ModalEditor(tui, editorThemeWithSymbols(theme), kb, colorizers, "insert");
 					editor.setClipboardMirrorPolicy(clipboardMirrorPolicy.policy);
 					editor.setQuitFn(() => ctx.shutdown());
@@ -3260,13 +3077,5 @@ export default function (pi: ExtensionAPI) {
 				if (!(error instanceof Error) || !error.message.includes("ctx is stale")) throw error;
 			}
 		}, 0);
-	});
-
-	pi.on("session_shutdown", () => {
-		try {
-			cursorShapeCleanup?.();
-		} finally {
-			cursorShapeCleanup = null;
-		}
 	});
 }

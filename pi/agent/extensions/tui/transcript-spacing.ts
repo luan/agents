@@ -16,13 +16,29 @@ type ChatContainer = {
 	addChild?: AddChild;
 	[ORIGINAL_ADD_CHILD]?: AddChild;
 };
+type StackEntry = { component: Component; minSize?: number };
+type LayoutStack = Component & { entries?: StackEntry[] };
 type InteractiveModeInstance = {
 	chatContainer?: ChatContainer;
+	editorContainer?: Component;
+	fullscreenLayoutRoot?: LayoutStack;
 	widgetContainerAbove?: { children: Component[] };
 };
 type RenderWidgets = (this: InteractiveModeInstance) => void;
-type InteractiveModePrototype = { renderWidgets: RenderWidgets };
+type SetExtensionFooter = (this: InteractiveModeInstance, factory: unknown) => void;
+type InteractiveModePrototype = {
+	renderWidgets: RenderWidgets;
+	setExtensionFooter: SetExtensionFooter;
+};
 type PatchState = {
+	prototype: InteractiveModePrototype;
+	originalRenderWidgets: RenderWidgets;
+	wrappedRenderWidgets: RenderWidgets;
+	originalSetFooter: SetExtensionFooter;
+	wrappedSetFooter: SetExtensionFooter;
+	users: number;
+};
+type LegacyPatchState = {
 	prototype: InteractiveModePrototype;
 	original: RenderWidgets;
 	wrapped: RenderWidgets;
@@ -39,7 +55,7 @@ const ANSI_ESCAPE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const OSC_PREFIX = /^(?:\x1b]133;[ABC]\x07)*/;
 const OSC_ESCAPE = /\x1b]133;[ABC]\x07/g;
 const BACKGROUND = /\x1b\[48(?:;[0-9]+)*m/;
-const globalState = globalThis as typeof globalThis & { [PATCH_KEY]?: PatchState };
+const globalState = globalThis as typeof globalThis & { [PATCH_KEY]?: PatchState | LegacyPatchState };
 
 // Assistant messages are re-filtered on every animation frame, and stripping escapes
 // allocates a copy of each line. Rendered lines are stable strings, so answer from a
@@ -122,9 +138,19 @@ function patchTranscript(container: ChatContainer): void {
 	}
 }
 
+export function relaxFullscreenEditorSize(instance: InteractiveModeInstance): void {
+	const editor = instance.editorContainer;
+	const dock = instance.fullscreenLayoutRoot?.entries
+		?.map((entry) => entry.component as LayoutStack)
+		.find((component) => component.entries?.some((entry) => entry.component === editor));
+	const editorEntry = dock?.entries?.find((entry) => entry.component === editor);
+	if (editorEntry) editorEntry.minSize = 2;
+}
+
 function patchInstance(instance: InteractiveModeInstance): void {
 	const aboveEditor = instance.widgetContainerAbove;
 	if (aboveEditor?.children[0]?.constructor.name === "Spacer") aboveEditor.children.shift();
+	relaxFullscreenEditorSize(instance);
 
 	const container = instance.chatContainer;
 	if (!container) return;
@@ -140,18 +166,36 @@ function patchInstance(instance: InteractiveModeInstance): void {
 
 function patchPrototype(prototype: InteractiveModePrototype): () => void {
 	const existing = globalState[PATCH_KEY];
-	if (existing && existing.prototype.renderWidgets === existing.wrapped) {
+	if (
+		existing &&
+		"wrappedRenderWidgets" in existing &&
+		existing.prototype.renderWidgets === existing.wrappedRenderWidgets &&
+		existing.prototype.setExtensionFooter === existing.wrappedSetFooter
+	) {
 		existing.users++;
 		return () => releasePatch(existing);
 	}
 
-	const original = prototype.renderWidgets;
-	const wrapped: RenderWidgets = function () {
-		original.call(this);
+	const originalRenderWidgets = prototype.renderWidgets;
+	const wrappedRenderWidgets: RenderWidgets = function () {
+		originalRenderWidgets.call(this);
 		patchInstance(this);
 	};
-	const state: PatchState = { prototype, original, wrapped, users: 1 };
-	prototype.renderWidgets = wrapped;
+	const originalSetFooter = prototype.setExtensionFooter;
+	const wrappedSetFooter: SetExtensionFooter = function (factory) {
+		originalSetFooter.call(this, factory);
+		relaxFullscreenEditorSize(this);
+	};
+	const state: PatchState = {
+		prototype,
+		originalRenderWidgets,
+		wrappedRenderWidgets,
+		originalSetFooter,
+		wrappedSetFooter,
+		users: 1,
+	};
+	prototype.renderWidgets = wrappedRenderWidgets;
+	prototype.setExtensionFooter = wrappedSetFooter;
 	globalState[PATCH_KEY] = state;
 	return () => releasePatch(state);
 }
@@ -159,21 +203,30 @@ function patchPrototype(prototype: InteractiveModePrototype): () => void {
 function removeCurrentPatch(prototype: InteractiveModePrototype): void {
 	const existing = globalState[PATCH_KEY];
 	if (!existing) return;
-	if (prototype.renderWidgets === existing.wrapped) prototype.renderWidgets = existing.original;
+	if ("wrappedRenderWidgets" in existing) {
+		if (prototype.renderWidgets === existing.wrappedRenderWidgets) {
+			prototype.renderWidgets = existing.originalRenderWidgets;
+		}
+		if (prototype.setExtensionFooter === existing.wrappedSetFooter) {
+			prototype.setExtensionFooter = existing.originalSetFooter;
+		}
+	} else if (prototype.renderWidgets === existing.wrapped) {
+		prototype.renderWidgets = existing.original;
+	}
 	delete globalState[PATCH_KEY];
 }
 
 function removeLegacyTransitionPatch(prototype: InteractiveModePrototype): void {
 	const legacy = (
 		globalThis as typeof globalThis & {
-			[LEGACY_PATCH_KEY]?: PatchState;
+			[LEGACY_PATCH_KEY]?: LegacyPatchState;
 		}
 	)[LEGACY_PATCH_KEY];
 	if (!legacy) return;
 	if (prototype.renderWidgets === legacy.wrapped) prototype.renderWidgets = legacy.original;
 	delete (
 		globalThis as typeof globalThis & {
-			[LEGACY_PATCH_KEY]?: PatchState;
+			[LEGACY_PATCH_KEY]?: LegacyPatchState;
 		}
 	)[LEGACY_PATCH_KEY];
 }
@@ -194,6 +247,11 @@ export async function installTranscriptSpacingPatch(): Promise<() => void> {
 function releasePatch(state: PatchState): void {
 	state.users--;
 	if (state.users > 0) return;
-	if (state.prototype.renderWidgets === state.wrapped) state.prototype.renderWidgets = state.original;
+	if (state.prototype.renderWidgets === state.wrappedRenderWidgets) {
+		state.prototype.renderWidgets = state.originalRenderWidgets;
+	}
+	if (state.prototype.setExtensionFooter === state.wrappedSetFooter) {
+		state.prototype.setExtensionFooter = state.originalSetFooter;
+	}
 	if (globalState[PATCH_KEY] === state) delete globalState[PATCH_KEY];
 }

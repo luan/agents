@@ -1,61 +1,21 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 
-import { CURSOR_MARKER, TUI } from "@earendil-works/pi-tui";
+import { CustomEditor } from "@earendil-works/pi-coding-agent";
+import { CURSOR_MARKER } from "@earendil-works/pi-tui";
 
-import { installStableHardwareCursorVisibility, ModalEditor } from "./index";
+import { ModalEditor } from "./index";
 
-class FakeTerminal {
-	public shown = 0;
-	public hidden = 0;
-	public writes: string[] = [];
-
-	start() {}
-	stop() {}
-	async drainInput() {}
-	write(data: string) {
-		this.writes.push(data);
-	}
-	get columns() {
-		return 80;
-	}
-	get rows() {
-		return 24;
-	}
-	get kittyProtocolActive() {
-		return false;
-	}
-	moveBy() {}
-	hideCursor() {
-		this.hidden += 1;
-	}
-	showCursor() {
-		this.shown += 1;
-	}
-	clearLine() {}
-	clearFromCursor() {}
-	clearScreen() {}
-	setTitle() {}
-	setProgress() {}
-}
-
-async function flushRender(): Promise<void> {
-	await new Promise((resolve) => setTimeout(resolve, 20));
-}
-
-describe("vim hardware cursor stability", () => {
-	test("uses normal-mode cursor shape when initialized in normal mode", () => {
+describe("vim cursor", () => {
+	test("disables hardware cursor and keeps the native software block", () => {
+		const baseRender = spyOn(CustomEditor.prototype, "render").mockImplementation(() => [
+			`${CURSOR_MARKER}\x1b[7mx\x1b[0m`,
+		]);
+		const hardwareStates: boolean[] = [];
 		const writes: string[] = [];
 		const editor = new ModalEditor(
 			{
-				terminal: {
-					write(sequence: string) {
-						writes.push(sequence);
-					},
-				},
-				setShowHardwareCursor() {},
-				getShowHardwareCursor() {
-					return true;
-				},
+				terminal: { write: (sequence: string) => writes.push(sequence) },
+				setShowHardwareCursor: (enabled: boolean) => hardwareStates.push(enabled),
 			} as never,
 			{} as never,
 			{} as never,
@@ -63,112 +23,51 @@ describe("vim hardware cursor stability", () => {
 			"normal",
 		);
 
-		expect(editor.getMode()).toBe("normal");
-		expect(writes).toContain("\x1b[1 q");
-		expect(writes).not.toContain("\x1b[5 q");
+		try {
+			expect(editor.render(80)).toEqual([`${CURSOR_MARKER}\x1b[7mx\x1b[0m`]);
+
+			editor.handleInput("i");
+
+			expect(editor.render(80)).toEqual([`${CURSOR_MARKER}\x1b[7mx\x1b[0m`]);
+			expect(hardwareStates).toEqual([false]);
+			expect(writes).toEqual([]);
+		} finally {
+			baseRender.mockRestore();
+		}
 	});
 
-	test("uses blinking cursor-shape sequences only on state changes, not on redraw", () => {
-		const writes: string[] = [];
+	test("keeps a block in visual mode and renders one ex cursor in the footer", () => {
+		const baseRender = spyOn(CustomEditor.prototype, "render").mockImplementation(() => [
+			`${CURSOR_MARKER}\x1b[7mx\x1b[0m`,
+		]);
 		const editor = new ModalEditor(
-			{
-				terminal: {
-					write(sequence: string) {
-						writes.push(sequence);
-					},
-				},
-				setShowHardwareCursor() {},
-				getShowHardwareCursor() {
-					return true;
-				},
-			} as never,
+			{ terminal: { write() {} }, setShowHardwareCursor() {} } as never,
 			{} as never,
 			{} as never,
+			null,
+			"normal",
 		);
 
-		expect(writes).toContain("\x1b[5 q");
-		const writesAfterInit = writes.length;
+		try {
+			editor.handleInput("v");
+			expect(editor.render(80)).toEqual([`${CURSOR_MARKER}\x1b[7mx\x1b[0m`]);
+			expect(editor.getMode()).toBe("visual");
 
+			editor.handleInput("\x1b");
+			editor.handleInput(":");
+			expect(editor.render(80)).toEqual([`${CURSOR_MARKER}x`]);
+			expect(editor.getFooterModeLabel(80)).toBe(" EX :▏ ");
+		} finally {
+			baseRender.mockRestore();
+		}
+	});
+
+	test("exposes the mode label for the footer instead of drawing it over the editor", () => {
+		const editor = new ModalEditor({ terminal: { write() {} } } as never, {} as never, {} as never);
 		(editor as unknown as { borderColor: (text: string) => string }).borderColor = (text: string) => text;
 		(editor as unknown as { focused: boolean }).focused = true;
-		editor.render(80);
-		editor.render(80);
-		expect(writes.length).toBe(writesAfterInit);
 
-		editor.handleInput("\x1b");
-		expect(writes).toContain("\x1b[1 q");
-		const writesAfterNormal = writes.length;
-		editor.render(80);
-		expect(writes.length).toBe(writesAfterNormal);
-
-		editor.handleInput("i");
-		expect(writes.filter((value) => value === "\x1b[5 q").length).toBeGreaterThanOrEqual(2);
-		expect(writes).not.toContain("\x1b[6 q");
-		expect(writes).not.toContain("\x1b[2 q");
-	});
-
-	test("dedupes repeated showCursor calls across steady renders", async () => {
-		const terminal = new FakeTerminal();
-		const tui = new TUI(terminal);
-		const cleanup = installStableHardwareCursorVisibility(tui);
-
-		const editorLike = {
-			focused: false,
-			render() {
-				return [`prompt ${CURSOR_MARKER}x`];
-			},
-			invalidate() {},
-		};
-
-		tui.addChild(editorLike as never);
-		tui.setFocus(editorLike as never);
-		tui.setShowHardwareCursor(true);
-		await flushRender();
-		tui.requestRender(true);
-		await flushRender();
-		tui.requestRender();
-		await flushRender();
-		tui.requestRender();
-		await flushRender();
-
-		expect(terminal.shown).toBe(1);
-		expect(terminal.hidden).toBe(0);
-
-		cleanup?.();
-	});
-
-	test("still allows real visibility transitions", async () => {
-		const terminal = new FakeTerminal();
-		const tui = new TUI(terminal);
-		const cleanup = installStableHardwareCursorVisibility(tui);
-
-		let showMarker = true;
-		const editorLike = {
-			focused: false,
-			render() {
-				return [showMarker ? `prompt ${CURSOR_MARKER}x` : "prompt x"];
-			},
-			invalidate() {},
-		};
-
-		tui.addChild(editorLike as never);
-		tui.setFocus(editorLike as never);
-		tui.setShowHardwareCursor(true);
-		await flushRender();
-		tui.requestRender(true);
-		await flushRender();
-
-		showMarker = false;
-		tui.requestRender();
-		await flushRender();
-
-		showMarker = true;
-		tui.requestRender();
-		await flushRender();
-
-		expect(terminal.shown).toBe(2);
-		expect(terminal.hidden).toBe(1);
-
-		cleanup?.();
+		expect(editor.render(80).join("\n")).not.toContain("INSERT");
+		expect(editor.getFooterModeLabel(80)).toContain("INSERT");
 	});
 });

@@ -12,15 +12,15 @@ type AutocompleteEditorInternals = {
 
 type TransformableEditor = AutocompleteEditorInternals & {
 	getMode?: () => string;
+	getFooterModeLabel?: (width: number) => string;
 	transformEditorLine?: (line: string) => string;
 };
 
 type EditorChrome = {
 	topRight?: string;
-	bottomRight?: string;
 };
 
-type EditorChromeProvider = (width: number, theme: Theme, options: { modeReserve: number }) => EditorChrome;
+type EditorChromeProvider = (width: number, theme: Theme) => EditorChrome;
 
 export interface EditorSessionIdentity {
 	label?: string;
@@ -53,6 +53,7 @@ let workingFastMode = false;
 let editorSessionIdentityProvider: (() => EditorSessionIdentity | undefined) | undefined;
 let transitionRailColor = "syntaxFunction";
 let transitionIdentityColor: string | undefined;
+let transitionFooterModeLabel: string | undefined;
 
 const WORKING_WORD = "Working";
 const ZIPPING_VARIANTS = [
@@ -68,7 +69,6 @@ const ZIPPING_VARIANTS = [
 ] as const;
 export const WORKING_ANIMATION_INTERVAL_MS = 32;
 const RAIL_PULSE_MS = 2000;
-const MODE_LABEL_RESERVE = 9;
 const FULL_RAIL_FRAMES = ["▐"] as const;
 const HALF_RAIL_FRAMES = ["▗"] as const;
 const SECONDARY_RAIL_FRAMES = FULL_RAIL_FRAMES;
@@ -360,6 +360,16 @@ function composeLeftRight(left: string, right: string | undefined, width: number
 	return fittedLeft + " ".repeat(gap) + fittedRight;
 }
 
+function renderEditorRail(uiTheme: Theme, railColor: string, secondaryRailColor: string | undefined): string {
+	const railGap = fillEditorLine(uiTheme, "", 1);
+	const secondaryRail = secondaryRailColor
+		? `${animatedRail(SECONDARY_RAIL_FRAMES, uiTheme, secondaryRailColor, "▐")}${ANSI_RESET}`
+		: "";
+	const mainRailFrames = secondaryRailColor ? SECONDARY_RAIL_FRAMES : FULL_RAIL_FRAMES;
+	const mainRailGlyph = secondaryRailColor ? "▌" : "┃";
+	return `${secondaryRail}${animatedRail(mainRailFrames, uiTheme, railColor, mainRailGlyph)}${railGap}`;
+}
+
 export function renderPolishedEditorForTest(
 	editor: TransformableEditor,
 	width: number,
@@ -370,7 +380,6 @@ export function renderPolishedEditorForTest(
 	if (!uiTheme) return renderBase(width);
 
 	const identity = getEditorSessionIdentity();
-	const identityText = sessionIdentityText(identity);
 	const identityColor = cleanIdentityPart(identity?.color);
 	transitionIdentityColor = identityColor;
 	const mode = typeof editor.getMode === "function" ? editor.getMode() : undefined;
@@ -379,8 +388,7 @@ export function renderPolishedEditorForTest(
 	transitionRailColor = railColor;
 	const railWidth = 2 + (secondaryRailColor ? 1 : 0);
 	const innerWidth = Math.max(1, width - railWidth);
-	const modeReserve = typeof editor.getMode === "function" ? MODE_LABEL_RESERVE : 0;
-	const statusWidth = Math.max(1, innerWidth - modeReserve);
+	transitionFooterModeLabel = editor.getFooterModeLabel?.(innerWidth);
 	const rendered = renderBase(innerWidth);
 	const isShowingAutocomplete =
 		typeof editor.isShowingAutocomplete === "function" ? Boolean(editor.isShowingAutocomplete()) : false;
@@ -405,15 +413,9 @@ export function renderPolishedEditorForTest(
 			: (line: string) => line;
 	const rawEditorLines = editorFrame.slice(1, -1);
 	const editorLines = rawEditorLines.map(transformEditorLine);
-	const railGap = fillEditorLine(uiTheme, "", 1);
-	const secondaryRail = secondaryRailColor
-		? `${animatedRail(SECONDARY_RAIL_FRAMES, uiTheme, secondaryRailColor, "▐")}${ANSI_RESET}`
-		: "";
-	const mainRailFrames = secondaryRailColor ? SECONDARY_RAIL_FRAMES : FULL_RAIL_FRAMES;
-	const mainRailGlyph = secondaryRailColor ? "▌" : "┃";
-	const rail = `${secondaryRail}${animatedRail(mainRailFrames, uiTheme, railColor, mainRailGlyph)}${railGap}`;
+	const rail = renderEditorRail(uiTheme, railColor, secondaryRailColor);
 	const [firstEditorLine = "", ...remainingEditorLines] = editorLines;
-	const chrome = editorChromeProvider?.(innerWidth, uiTheme, { modeReserve }) ?? {};
+	const chrome = editorChromeProvider?.(innerWidth, uiTheme) ?? {};
 	// The prompt owns the full width. The status sits beside it while it fits whole, then moves up
 	// onto the transition row, which grows to full height to carry it — the same status either way,
 	// so growing text relocates it rather than eating into it. The base editor pads every row out
@@ -423,18 +425,37 @@ export function renderPolishedEditorForTest(
 	const lines = [
 		composeLeftRight(firstEditorLine, promoteStatus ? undefined : chrome.topRight, innerWidth),
 		...remainingEditorLines,
-		composeLeftRight(
-			headerLeftSegment(statusWidth, uiTheme, railColor, identityText, identityColor),
-			chrome.bottomRight,
-			statusWidth,
-		),
 	];
 
 	return [
+		...autocompleteLines,
 		renderEditorTransition(width, uiTheme, mode, promoteStatus ? chrome.topRight : undefined),
 		...lines.map((line) => `${rail}${fillEditorLine(uiTheme, line, innerWidth)}`),
-		...autocompleteLines,
 	];
+}
+
+export function renderPolishedFooter(
+	width: number,
+	uiTheme: Theme,
+	renderRightStatus: (width: number) => string,
+): string[] {
+	const identity = getEditorSessionIdentity();
+	const identityText = sessionIdentityText(identity);
+	const identityColor = cleanIdentityPart(identity?.color) ?? transitionIdentityColor;
+	const railColor = transitionRailColor;
+	const secondaryRailColor = identityColor && railColor !== identityColor ? identityColor : undefined;
+	const railWidth = 2 + (secondaryRailColor ? 1 : 0);
+	const innerWidth = Math.max(1, width - railWidth);
+	const rail = renderEditorRail(uiTheme, railColor, secondaryRailColor);
+	const modeLabel = transitionFooterModeLabel ?? "";
+	const statusWidth = Math.max(0, innerWidth - visibleWidth(modeLabel) - (modeLabel ? 1 : 0));
+	const rightStatus = truncateToWidth(renderRightStatus(statusWidth), statusWidth, "");
+	const content = composeLeftRight(
+		headerLeftSegment(innerWidth, uiTheme, railColor, identityText, identityColor),
+		`${rightStatus}${rightStatus && modeLabel ? " " : ""}${modeLabel}`,
+		innerWidth,
+	);
+	return [`${rail}${fillEditorLine(uiTheme, content, innerWidth)}`];
 }
 
 export function installEditorComposition(uiTheme: Theme): void {
@@ -444,6 +465,7 @@ export function installEditorComposition(uiTheme: Theme): void {
 	// Other packages can keep their own editor/autocomplete behavior.
 	const prototype = CustomEditor.prototype as unknown as CustomEditor & {
 		render(width: number): string[];
+		handleInput(data: string): void;
 	} & Record<symbol, unknown>;
 	const originalRender =
 		(prototype[CUSTOM_EDITOR_ORIGINAL_RENDER] as ((this: CustomEditor, width: number) => string[]) | undefined) ??

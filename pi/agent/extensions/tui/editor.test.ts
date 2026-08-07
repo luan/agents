@@ -4,6 +4,7 @@ import {
 	formatWorkingDuration,
 	getWorkingTimerSnapshot,
 	renderPolishedEditorForTest,
+	renderPolishedFooter,
 	restoreWorkingTimerSnapshot,
 	setEditorChromeProvider,
 	setEditorSessionIdentityProvider,
@@ -34,6 +35,16 @@ function editor(overrides: Record<string, unknown> = {}) {
 	};
 }
 
+function renderEditorWithFooter(
+	editorComponent: ReturnType<typeof editor>,
+	width: number,
+	renderBase: (width: number) => string[],
+	uiTheme: any,
+): string[] {
+	const editorLines = renderPolishedEditorForTest(editorComponent, width, renderBase, uiTheme);
+	return [...editorLines, ...renderPolishedFooter(width, uiTheme, () => "")];
+}
+
 describe("polished TUI editor", () => {
 	beforeEach(() => {
 		setWorkingAnimationForTest(false, 0);
@@ -42,7 +53,7 @@ describe("polished TUI editor", () => {
 		setEditorSessionIdentityProvider(undefined);
 	});
 
-	test("keeps autocomplete lines after the editor frame", () => {
+	test("renders autocomplete lines above the editor frame", () => {
 		const lines = renderPolishedEditorForTest(
 			editor({
 				isShowingAutocomplete: () => true,
@@ -53,54 +64,53 @@ describe("polished TUI editor", () => {
 			theme,
 		);
 
-		expect(stripAnsi(lines.at(-1) ?? "")).toBe("$question");
+		expect(stripAnsi(lines[0] ?? "")).toBe("$question");
 	});
 
-	test("renders animated working text on the bottom editor row", () => {
+	test("moves working and Vim mode status into the footer", () => {
 		setWorkingAnimationForTest(true, 3);
 
-		const lines = renderPolishedEditorForTest(
-			editor({ getMode: () => "insert" }),
+		const editorLines = renderPolishedEditorForTest(
+			editor({ getMode: () => "insert", getFooterModeLabel: () => " INSERT " }),
 			40,
 			() => ["", "> hello", ""],
 			rgbTheme,
 		);
+		const footerLines = renderPolishedFooter(40, rgbTheme, () => "context");
 
-		expect(stripAnsi(lines.at(-1) ?? "")).toContain("Working");
-		expect(lines.every((line) => visibleWidth(line) <= 40)).toBe(true);
+		expect(stripAnsi(editorLines.join("\n"))).not.toContain("Working");
+		expect(stripAnsi(editorLines.join("\n"))).not.toContain("INSERT");
+		expect(stripAnsi(footerLines[0] ?? "")).toContain("Working");
+		expect(stripAnsi(footerLines[0] ?? "")).toEndWith("context  INSERT ");
+		expect([...editorLines, ...footerLines].every((line) => visibleWidth(line) <= 40)).toBe(true);
 	});
 
 	test("renders zipping with brightness motion for fast requests", () => {
 		setWorkingFastMode(true);
 		setWorkingAnimationForTest(true, 0);
 
-		const first = renderPolishedEditorForTest(
+		const first = renderEditorWithFooter(
 			editor({ getMode: () => "insert" }),
 			50,
 			() => ["", "> hello", ""],
 			rgbTheme,
 		);
 		setWorkingAnimationForTest(true, 1);
-		const second = renderPolishedEditorForTest(
+		const second = renderEditorWithFooter(
 			editor({ getMode: () => "insert" }),
 			50,
 			() => ["", "> hello", ""],
 			rgbTheme,
 		);
 		setWorkingAnimationForTest(true, 9);
-		const third = renderPolishedEditorForTest(
+		const third = renderEditorWithFooter(
 			editor({ getMode: () => "insert" }),
 			50,
 			() => ["", "> hello", ""],
 			rgbTheme,
 		);
 		setWorkingAnimationForTest(true, 32);
-		const late = renderPolishedEditorForTest(
-			editor({ getMode: () => "insert" }),
-			50,
-			() => ["", "> hello", ""],
-			rgbTheme,
-		);
+		const late = renderEditorWithFooter(editor({ getMode: () => "insert" }), 50, () => ["", "> hello", ""], rgbTheme);
 
 		expect(stripAnsi(first.at(-1) ?? "")).toContain("⚡żippiṅġ…");
 		expect(stripAnsi(second.at(-1) ?? "")).toContain("⚡žǐppiňǧ…");
@@ -125,12 +135,7 @@ describe("polished TUI editor", () => {
 			cumulativeMs: 19 * 3_600_000 + 20 * 60_000 + 4_000,
 		});
 
-		const lines = renderPolishedEditorForTest(
-			editor({ getMode: () => "insert" }),
-			80,
-			() => ["", "> hello", ""],
-			theme,
-		);
+		const lines = renderEditorWithFooter(editor({ getMode: () => "insert" }), 80, () => ["", "> hello", ""], theme);
 
 		expect(stripAnsi(lines.at(-1) ?? "")).toContain("Working… 32s. Total cumulative: 19h20m36s.");
 		expect(lines.at(-1)).toContain("\x1b[2m 32s. Total cumulative: 19h20m36s.\x1b[39m");
@@ -143,12 +148,7 @@ describe("polished TUI editor", () => {
 			cumulativeMs: 19 * 3_600_000 + 20 * 60_000 + 4_000,
 		});
 
-		const lines = renderPolishedEditorForTest(
-			editor({ getMode: () => "insert" }),
-			100,
-			() => ["", "> hello", ""],
-			theme,
-		);
+		const lines = renderEditorWithFooter(editor({ getMode: () => "insert" }), 100, () => ["", "> hello", ""], theme);
 
 		expect(stripAnsi(lines.at(-1) ?? "")).toContain("Last turn: 3h5m20s. Total cumulative: 19h20m4s.");
 		expect(lines.at(-1)).toContain("\x1b[2mLast turn: 3h5m20s. Total cumulative: 19h20m4s.\x1b[39m");
@@ -164,12 +164,7 @@ describe("polished TUI editor", () => {
 			persistedAtMs: 1_700_000_000_000,
 		});
 
-		const lines = renderPolishedEditorForTest(
-			editor({ getMode: () => "insert" }),
-			80,
-			() => ["", "> hello", ""],
-			theme,
-		);
+		const lines = renderEditorWithFooter(editor({ getMode: () => "insert" }), 80, () => ["", "> hello", ""], theme);
 
 		expect(stripAnsi(lines.at(-1) ?? "")).toContain("Last turn: 5m20s. Total cumulative: 19h20m4s.");
 		expect(lines.every((line) => visibleWidth(line) <= 80)).toBe(true);
@@ -193,7 +188,7 @@ describe("polished TUI editor", () => {
 		setWorkingAnimationForTest(true, 3);
 		setEditorSessionIdentityProvider(() => ({ name: "Spawn refactor" }));
 
-		const lines = renderPolishedEditorForTest(
+		const lines = renderEditorWithFooter(
 			editor({ getMode: () => "insert" }),
 			100,
 			() => ["", "> hello", ""],
@@ -224,7 +219,7 @@ describe("polished TUI editor", () => {
 		setWorkingAnimationForTest(true, 3);
 		setEditorSessionIdentityProvider(() => ({ name: "A very long named session that should shrink first" }));
 
-		const lines = renderPolishedEditorForTest(
+		const lines = renderEditorWithFooter(
 			editor({ getMode: () => "insert" }),
 			80,
 			() => ["", "> hello", ""],
@@ -238,12 +233,7 @@ describe("polished TUI editor", () => {
 	test("renders session label and secondary rail color outside normal mode", () => {
 		setEditorSessionIdentityProvider(() => ({ label: "A2", name: "Tests", color: "74c7ec" }));
 
-		const lines = renderPolishedEditorForTest(
-			editor({ getMode: () => "insert" }),
-			32,
-			() => ["", "> hello", ""],
-			theme,
-		);
+		const lines = renderEditorWithFooter(editor({ getMode: () => "insert" }), 32, () => ["", "> hello", ""], theme);
 
 		expect(stripAnsi(lines.at(-1) ?? "")).toStartWith("▐▌ A2 Tests");
 		expect(lines.at(-1)).toContain("\x1b[38;2;116;199;236m▐");
@@ -254,12 +244,7 @@ describe("polished TUI editor", () => {
 	test("uses identity color as the normal-mode rail without an extra identity rail", () => {
 		setEditorSessionIdentityProvider(() => ({ label: "A2", name: "Tests", color: "74c7ec" }));
 
-		const lines = renderPolishedEditorForTest(
-			editor({ getMode: () => "normal" }),
-			32,
-			() => ["", "> hello", ""],
-			theme,
-		);
+		const lines = renderEditorWithFooter(editor({ getMode: () => "normal" }), 32, () => ["", "> hello", ""], theme);
 
 		expect(stripAnsi(lines.at(-1) ?? "")).toStartWith("┃ A2 Tests");
 		expect(stripAnsi(lines.at(-1) ?? "")).not.toStartWith("▐▌");
@@ -367,6 +352,6 @@ describe("polished TUI editor", () => {
 			backgroundTheme,
 		);
 
-		expect(lines.map(stripAnsi)).toEqual([`╻${" ".repeat(39)}`, `┃ > hello${" ".repeat(31)}`, `┃ ${" ".repeat(38)}`]);
+		expect(lines.map(stripAnsi)).toEqual([`╻${" ".repeat(39)}`, `┃ > hello${" ".repeat(31)}`]);
 	});
 });
