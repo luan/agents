@@ -2,7 +2,6 @@
 name: pr-comments
 description: 'Fix unresolved pull request review comments locally. Use when the user asks to address PR comments, review threads, or requested changes.'
 argument-hint: "[--auto]"
-user-invocable: true
 disable-model-invocation: true
 ---
 
@@ -32,6 +31,6 @@ Fix unresolved review comments from a PR.
 
 6. **Run tests**: Detect and run the project test suite (look for `test` script in package.json, pytest, cargo test, etc.). Fix failures caused by your changes. If 3+ failures persist after fixes, state the blocker and stop.
 
-7. **Commit**: Use `Skill(commit)` to generate message and commit.
+7. **Commit**: Use `$commit` to generate message and commit.
 
-8. **Push** (optional): `--auto` → push automatically. Without `--auto` → ask first. Detect stack tool: `gt log --stack 2>/dev/null` succeeds → `Skill(gt:submit)`. Otherwise `git push`.
+8. **Push** (optional): `--auto` → push automatically. Without `--auto` → ask first. Use `$submit`.

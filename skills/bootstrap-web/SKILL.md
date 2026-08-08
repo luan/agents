@@ -2,7 +2,6 @@
 name: bootstrap-web
 description: 'Bootstrap a new SvelteKit web project with the preferred stack. Use when starting a new web app or product prototype from scratch.'
 argument-hint: "<project-name> [description] [--auto]"
-user-invocable: true
 disable-model-invocation: true
 ---
 
@@ -52,7 +51,7 @@ Without `--auto`, AskUserQuestion:
 2. **Color direction** — warm/cool, muted/vibrant, monochrome/colorful
 3. **Typography** — serif, sans, mono, mixed; formal vs casual
 
-Use answers to select Google Fonts, build OKLCH palette, shape layout per `$frontend-design`.
+Use answers to select Google Fonts, build OKLCH palette, and shape the layout.
 
 ## Scaffold
 

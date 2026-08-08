@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # To Spec
 
-Produce one implementation-ready source of truth from settled decisions. Load `/vault` before reading or publishing artifacts.
+Produce one implementation-ready source of truth from settled decisions. Load `$vault` before reading or publishing artifacts.
 
 ## Process
 

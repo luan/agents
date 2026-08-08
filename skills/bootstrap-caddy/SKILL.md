@@ -2,7 +2,6 @@
 name: bootstrap-caddy
 description: 'Register a project in the local dev routing system. Use when a project needs a https://<project>.localhost route through Caddy and dnsmasq.'
 argument-hint: "<project-name> [port]"
-user-invocable: true
 disable-model-invocation: true
 ---
 

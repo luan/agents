@@ -1,110 +1,34 @@
 ---
 name: plannotator-visual-explainer
-description: >
-  Generate self-contained HTML visualizations with Plannotator theming. Use for implementation
-  plans, PR explainers, architecture diagrams, data tables, slide decks, and any visual
-  explanation of technical concepts. Plans and PR explainers follow Plannotator's prescriptive
-  approach; all other visual content delegates to the local visual-explainer skill.
+description: Generate self-contained HTML visualizations with Plannotator theming. Use for implementation plans, PR explainers, architecture diagrams, data tables, slide decks, and any visual explanation of technical concepts.
 ---
 
 # Plannotator Visual Explainer
 
-Three paths depending on content type. Each has its own references and structure.
+Route by what is being explained, then follow that path's reference.
 
-## Route by content type
+| Content | Path |
+|---|---|
+| Implementation plan, design doc, feature spec, migration guide, proposal | [`references/plan-path.md`](references/plan-path.md) — prescriptive structure |
+| PR walkthrough, diff review, code change explainer, reviewer guide | [`references/pr-path.md`](references/pr-path.md) — prescriptive structure |
+| Architecture diagram, data table, slide deck, project recap, comparison, anything else | `$visual-explainer`, with [`references/theme-override.md`](references/theme-override.md) for the color and typography layer |
 
-**Implementation plan, design doc, or proposal** → Follow the [Plan path](#plan-path). Read `references/design-system.md` and `references/svg-patterns.md`. Prescriptive structure.
-
-**PR explainer, diff review, or code change walkthrough** → Follow the [PR path](#pr-path). Read `references/design-system.md` and `references/pr-components.md`. Prescriptive structure.
-
-**Everything else** (architecture diagrams, data tables, slide decks, project recaps, general visual explanations) → Follow the [Visual explainer path](#visual-explainer-path). Delegates to the local visual-explainer skill with Plannotator theme tokens.
+The third path follows visual-explainer's one-shot workflow; the first two carry their own structure because a plan and a PR each have a known shape worth repeating.
 
 ## Delivery
 
-Always deliver via Plannotator's annotation UI. Do NOT use `open` or `xdg-open`.
-
-**Plans/proposals** (user should approve/deny):
+Deliver through Plannotator's annotation UI so the page arrives where the user can mark it up:
 
 ```bash
-plannotator annotate <file> --render-html --gate
+plannotator annotate <file> --render-html --gate   # plans and proposals — the user approves or denies
+plannotator annotate <file> --render-html          # everything else — informational
 ```
 
-**Everything else** (informational):
+The `open` and `xdg-open` commands bypass the annotation UI, so the feedback loop is lost.
 
-```bash
-plannotator annotate <file> --render-html
-```
+## Design philosophy
 
----
-
-## Plan path
-
-For implementation plans, design docs, feature specs, migration guides, and proposals.
-
-**Before generating, read:**
-
-1. `references/design-system.md` — Plannotator theme tokens, typography, component patterns
-2. `references/svg-patterns.md` — inline SVG building blocks for architecture diagrams, flowcharts, data flow
-
-**Document structure (in order, pick what fits):**
-
-1. **Header** — eyebrow label (mono, uppercase), title (serif, large), prompt box (the original brief)
-2. **Summary strip** — 3-5 stat cards showing key numbers at a glance (components, endpoints, tables, etc.)
-3. **Milestones / timeline** — vertical timeline showing phases without time estimates. Phases show sequence and dependencies, not duration.
-4. **Architecture / data flow** — inline SVG diagram. Use for 3+ interacting components. Highlighted boxes for new components, dashed arrows for async paths.
-5. **Mockups** — build UI mockups in HTML/CSS directly, not as descriptions
-6. **Key code** — dark-theme code blocks with syntax highlighting. Only architecturally significant interfaces/schemas — not every function.
-7. **Risks & mitigations** — table with severity badges (HIGH/MED/LOW)
-8. **Open questions** — callout cards with decision owner ("Decide with: backend team")
-
-Not every plan needs every section. Skip what doesn't serve the content. Never include time estimates, boilerplate sections, or exhaustive file lists.
-
-**Adapt to the task:** Backend → lead with data flow. Frontend → lead with mockups. Refactoring → lead with before/after diagrams. Infrastructure → lead with architecture.
-
-**Quality bar:** The plan answers "what, why, and how" within 30 seconds of reading. Whitespace is a feature — one idea per viewport.
-
----
-
-## PR path
-
-For PR walkthroughs, diff reviews, code change explainers, and reviewer guides.
-
-**Before generating, read:**
-
-1. `references/design-system.md` — Plannotator theme tokens, typography, component patterns
-2. `references/pr-components.md` — diff rendering, review comment bubbles, risk chips, file cards, before/after panels
-
-**Document structure (in order, pick what fits):**
-
-1. **Header** — PR title, meta strip (file count, +/- lines, branch, author)
-2. **TL;DR** — bordered card with primary accent left border. 2-3 sentences. Readers who see nothing else should get the gist.
-3. **Why** — motivation and before/after comparison (two-column grid)
-4. **File tour** — collapsible cards per file. Each has: file path + badge (NEW/MOD/DEL) + line stats, a "why" paragraph, and important diff hunks. High-risk files expanded, safe files collapsed.
-5. **Risk map** — visual chips showing which files need careful review vs. which are mechanical. Three tiers: attention (destructive), medium (warning), safe (success).
-6. **Where to focus** — numbered callout cards. Each names a file/function and describes the concern.
-7. **Test plan** — checkbox-style verification checklist
-8. **Rollout** (if applicable) — phased deployment with feature flags
-
-Use Pierre diffs via CDN for syntax-highlighted inline diffs — see `references/pr-components.md` for the pattern.
-
----
-
-## Visual explainer path
-
-For architecture diagrams, data tables, slide decks, project recaps, comparisons, and any other visual explanation.
-
-**Before generating:**
-
-1. Read visual-explainer's `SKILL.md`.
-2. Read `references/theme-override.md`.
-
-Follow visual-explainer's one-shot workflow and use Plannotator tokens for the color and typography layer.
-
----
-
-## Design philosophy (all paths)
-
-- **Whitespace is a feature.** Generous padding, large section gaps. If cramped, add space — don't shrink text.
-- **One idea per viewport.** Hero section, then diagram, then detail grid — not all crammed together.
+- **Whitespace is a feature.** Generous padding, large section gaps. Cramped means add space, not shrink text.
+- **One idea per viewport.** Hero, then diagram, then detail grid — in sequence.
 - **Show, don't describe.** A timeline shows sequencing. A diagram shows relationships. A code block shows the interface.
-- **No time estimates.** Timelines show phases and dependencies. Never attach hour/day estimates.
+- **Phases, not hours.** Timelines carry sequence and dependencies; time estimates belong to the reader.

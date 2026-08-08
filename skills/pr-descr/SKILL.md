@@ -2,8 +2,6 @@
 name: pr-descr
 description: 'Update an existing pull request title and description from branch context. Use when the user asks to write, refresh, or improve PR metadata.'
 argument-hint: "[--auto]"
-user-invocable: true
-disable-model-invocation: false
 ---
 
 # PR Description
@@ -59,22 +57,20 @@ If diff is large, use `--stat` first and read key files.
 - If the repo has a PR template, preserve its top-level headings unless the existing PR body has already intentionally changed them.
 - Otherwise, if recent merged PRs share a consistent format, match it.
 - Fallback: 1-3 tight sections with bullets only where they improve scanability.
-- Focus on motivation, user/reviewer impact, and the high-level abstractions or behavior changes that matter for review.
-- Do not list low-level technical changes, touched files, renamed symbols, helper functions, or implementation minutiae that duplicate the diff.
-- Do not create a "what changed" inventory or add a "Changes" section unless the template already has that section; even then, keep it conceptual.
-- Don't blindly replace the existing description with a fresh body that ignores current content.
+- Write at the altitude of motivation, user and reviewer impact, and the behavior changes that matter for review. The diff already carries touched files, renamed symbols, and helper functions; leave those to it.
+- Keep a "Changes" section only when the template asks for one, and keep it conceptual there.
 
 **Testing / validation sections**:
 
-- Treat "Testing", "QA", "Validation", "Screenshots", and similar template sections as manual verification reports.
-- Do not list the tests, checks, or commands the agent ran in these sections.
-- Do not use the phrase "automated testing" or an "Automated" label/heading. It is too generic to be useful.
-- Do not fill those sections with agent-run command output or command inventories such as unit tests, lint, typecheck, or build commands.
-- If the template explicitly asks what tests were run, answer as manual verification only. Use "Manual testing not reported" when there is no manual evidence.
-- Prefer concrete manual evidence: scenario tested, environment, screenshots, screen recordings, or videos when applicable.
-- If manual testing seems necessary and there is no evidence, ask the user what they manually tested before updating the PR.
-- If using `--auto` or the user cannot answer, do not invent coverage. Write "Manual testing not reported" or leave the template's unchecked/manual item unchanged, depending on the template.
-- It is acceptable to perform manual validation yourself by running the app and capturing screenshots; use `$manual-testing` for that workflow, and only report what was actually exercised.
+"Testing", "QA", "Validation", and "Screenshots" sections answer one question: how was this change verified? Cover what applies:
+
+- **Tests added or updated** — name them explicitly. A PR that changes behavior generally carries unit or UI test changes; when it carries none, say why.
+- **Manual verification** — the scenario exercised and the environment it ran in.
+- **User-facing changes** — before/after screenshots, GIFs, or video. These are load-bearing for UI review, not decoration.
+
+Ask the user what they exercised when the section needs evidence you do not have. Under `--auto`, or when they cannot answer, record what you can verify and mark the rest unreported rather than inventing coverage.
+
+Distinguish the two kinds of evidence. A green suite proves the assertions held; it does not prove a human looked at the feature. Report each as what it is.
 
 ## Step 4: Preview and Update
 

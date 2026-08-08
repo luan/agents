@@ -15,8 +15,18 @@
 
 This repo is the central hub for local agent configuration. The checked-in
 root `AGENTS.md` is only for working on this repo. The global instruction file
-linked into Claude, Codex, Pi, and OMP is generated as `GLOBAL_AGENTS.md`
-and is intentionally gitignored.
+linked into Claude, Codex, Pi, and OMP is `GLOBAL_AGENTS.md`: a static,
+hand-edited file. Keep it minimal: it holds only what applies to every task.
+
+Anything scoped to one language, tool, or kind of work becomes a **skill**
+instead. A skill's `description` is its pointer; instruction files name no
+paths.
+
+Subagents reach a smaller skill set than the session that spawns them: a Pi
+subagent sees only plugin-bundled skills and answers `Unknown skill "rust"` for
+this repo's own. A skill that dispatches a subagent therefore puts everything
+the child needs in the prompt itself, and never passes a `$skill` reference
+across that boundary.
 
 ## Portability Rules
 
@@ -24,9 +34,9 @@ and is intentionally gitignored.
   scripts.
   Use `~`, `$HOME`, a Stow-managed path, or a stable command installed by
   `just setup`.
-- `just setup` must be idempotent and converge the live machine state: render,
-  install local Codex plugins, stow links, install `ct`, register MCP servers,
-  and validate.
+- `just setup` must be idempotent and converge the live machine state: install
+  local Codex plugins, stow links, install `ct`, register MCP servers, and
+  validate.
 - Shared configuration is the default. Tool-specific files belong under
   `claude/`, `codex/`, or `pi/` only when the tool requires a
   different schema, filename, or runtime registration mechanism.

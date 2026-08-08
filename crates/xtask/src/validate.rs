@@ -8,7 +8,6 @@ use crate::stow;
 
 pub fn run() -> Result<()> {
     let root = crate::repo_root();
-    assert_fresh_agents(&root)?;
     assert_no_checkout_paths(&root)?;
     validate_json(&root.join("plugins/marketplace.json"))?;
     validate_json(&root.join("codex/hooks.json"))?;
@@ -39,17 +38,6 @@ pub fn run() -> Result<()> {
         &root.join("plugins/ghs"),
     )?;
     stow::run(stow::Mode::DryRun).context("stow dry-run")?;
-    Ok(())
-}
-
-fn assert_fresh_agents(root: &Path) -> Result<()> {
-    let path = root.join("GLOBAL_AGENTS.md");
-    let before = fs::read_to_string(&path).unwrap_or_default();
-    crate::render_agents::run()?;
-    let after = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
-    if before != after {
-        bail!("GLOBAL_AGENTS.md was stale; regenerated it. Re-run validation.");
-    }
     Ok(())
 }
 
@@ -88,11 +76,9 @@ fn assert_no_checkout_paths(root: &Path) -> Result<()> {
     let needles = ["/".to_string() + "Users/", "/".to_string() + "private/"];
     const SCANNED: &[&str] = &[
         "AGENTS.md",
-        "AGENTS.template.md",
         "GLOBAL_AGENTS.md",
         "README.md",
         "docs/",
-        "rules/",
         "codex/",
         "scripts/",
         "bin/",

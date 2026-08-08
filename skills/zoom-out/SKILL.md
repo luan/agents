@@ -1,7 +1,6 @@
 ---
 name: zoom-out
 description: 'Explain broader module and caller context for unfamiliar code. Use when the user asks to zoom out, map a code area, understand ownership, or get architectural orientation.'
-user-invocable: true
 disable-model-invocation: true
 ---
 

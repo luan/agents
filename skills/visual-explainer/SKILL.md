@@ -93,4 +93,4 @@ Spot-check load-bearing claims, diagram order, labels, and code against the sour
 
 Write to the requested path; otherwise use `~/.agent/diagrams/` with a descriptive filename.
 
-Do not create a plan, fingerprint, matrix, scout task, staged preview, independent review, lint gate, or repeated validation cycle unless the user explicitly asks for it.
+This is a **one-shot** workflow: read, organize, build, check once, deliver. Add a staged process step only when the user explicitly asks for one.

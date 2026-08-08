@@ -10,10 +10,8 @@ Shared configuration is the default. Tool-specific folders (`claude/`, `codex/`,
 
 | Path | Purpose |
 |---|---|
-| `AGENTS.template.md` | Hand-edited instruction source |
-| `GLOBAL_AGENTS.md` | Generated — template + `rules/*.md` (gitignored) |
+| `GLOBAL_AGENTS.md` | Global instructions — hand-edited, linked into Claude, Codex, and Pi |
 | `AGENTS.md` | Repo-local guidance for working on this hub |
-| `rules/` | Available as `~/.agents/rules` when this repo is cloned or linked to `~/.agents` |
 | `skills/` | Available as `~/.agents/skills`; also linked to `~/.claude/skills` |
 
 | `plugins/` | Shared plugin sources; tool folders link here |
@@ -43,7 +41,7 @@ such as `0001-topic.md`; creation dates live in frontmatter.
 ## Setup
 
 ```sh
-just setup          # idempotent: render, link, install ct, register MCP servers, validate
+just setup          # idempotent: link, install ct, register MCP servers, validate
 just link-dry-run   # preview link targets before linking
 just ct-install     # rebuild and reinstall ct + register MCP servers
 ```

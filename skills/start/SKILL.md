@@ -2,7 +2,6 @@
 name: start
 description: 'Create a new branch using the repo-preferred stack tool. Use when the user asks to start work, create a branch, switch to a new task branch, or begin an issue.'
 argument-hint: "<branch-name> [--auto]"
-user-invocable: true
 ---
 
 # Start

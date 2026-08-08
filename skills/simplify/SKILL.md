@@ -2,7 +2,6 @@
 name: simplify
 description: "Find simpler, smaller, or more idiomatic versions of a changeset without forcing churn. Use when reviewing or preparing diffs for unnecessary complexity, speculative abstraction, duplication, dead code, or scope creep."
 argument-hint: "[base..head | file-list | PR#] [--auto]"
-user-invocable: true
 ---
 
 # Simplify

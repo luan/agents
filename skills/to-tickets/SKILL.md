@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 Turn settled work into tracer-bullet tickets when the user explicitly wants separately tracked work units.
 
-Load `/vault` before reading or publishing artifacts.
+Load `$vault` before reading or publishing artifacts.
 
 ## Process
 
@@ -19,6 +19,8 @@ Use settled conversation as the source when no artifact is supplied. When the us
 ### 2. Confirm current boundaries
 
 Inspect enough current code and tests to verify the proposed slices against real integration points, dependencies, and test seams. Preserve the source scope and decisions.
+
+Look for opportunities to prefactor the code to make the implementation easier. "Make the change easy, then make the easy change." Prefactoring tickets come first.
 
 ### 3. Draft tracer bullets
 
@@ -31,7 +33,7 @@ Each ticket:
 - names only genuine blockers
 - leaves the repository coherent after completion
 
-Use expand-migrate-contract only when a wide change cannot stay green as independent vertical slices.
+**Wide refactors are the exception to vertical slicing.** A **wide refactor** is one mechanical change — rename a column, retype a shared symbol — whose **blast radius** fans across the whole codebase, so a single edit breaks thousands of call sites at once and no vertical slice can land green. Sequence it as **expand–migrate–contract** instead. First expand: add the new form beside the old so nothing breaks. Then migrate the call sites in batches sized by blast radius (per crate, per package, per directory), each batch its own ticket blocked by the expand, keeping checks green batch to batch because the old form still exists. Finally contract: delete the old form once no caller remains, in a ticket blocked by every migrate batch. When even the batches cannot stay green alone, keep the sequence but let them share an integration branch that all block a final integrate-and-verify ticket — green is promised only there.
 
 ### 4. Check coverage
 

@@ -2,7 +2,6 @@
 name: archive
 description: 'Archive consumed blueprint artifacts and preserve content in git notes. Use when blueprint artifacts are implemented, obsolete, or ready to move into archive/ without losing history.'
 argument-hint: "[<slug-or-path>] [--type <research|plan|doc>]"
-user-invocable: true
 disable-model-invocation: true
 ---
 

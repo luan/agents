@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # Triage
 
-Move vault artifacts through a small state machine. Load `/vault` before using `vlt`.
+Move vault artifacts through a small state machine. Load `$vault` before using `vlt`.
 
 Every triage section written by an agent starts with:
 
@@ -59,8 +59,8 @@ Show counts, artifact titles, stems, types, and a one-line summary. Let the main
 
 1. **Gather context.** Read the full artifact and linked context with `vlt read <stem> --depth 2`, plus vault context and relevant decisions. Search the codebase by domain concept for existing behavior. Search `decision` artifacts for a matching out-of-scope choice.
 2. **Recommend.** Present the category and stage recommendation with evidence. Wait for maintainer direction before mutating the vault.
-3. **Verify the claim.** Reproduce a bug through `/diagnosing-bugs` or verify an enhancement against current code and behavior. Report confirmed, disproved, or insufficient evidence.
-4. **Grill when needed.** Use `/grilling` and `/domain-modeling` one question at a time until acceptance boundaries and vocabulary are settled.
+3. **Verify the claim.** Reproduce a bug through `$diagnosing-bugs` or verify an enhancement against current code and behavior. Report confirmed, disproved, or insufficient evidence.
+4. **Grill when needed.** Use `$grilling` and `$domain-modeling` one frontier round at a time until acceptance boundaries and vocabulary are settled.
 5. **Apply the outcome** with `vlt update <stem> --replace-section Triage --stdin --json`:
    - `ready-for-agent` — create a `brief` artifact using [AGENT-BRIEF.md](AGENT-BRIEF.md), then link it with `vlt link <brief> <source> --type briefs --annotation "Agent-ready contract"`.
    - `ready-for-human` — create the same brief and state which judgment or access remains human-owned.

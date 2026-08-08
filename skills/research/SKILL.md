@@ -3,7 +3,7 @@ name: research
 description: Investigate a question against high-trust primary sources and capture cited findings in a vault research artifact. Use when the user wants a topic researched, documentation or API facts gathered, or reading legwork delegated.
 ---
 
-Load `/vault`, then spin up a **background agent** to do the research while the primary thread keeps moving.
+Load `$vault`, then spin up a **background agent** to do the research while the primary thread keeps moving.
 
 Its job:
 

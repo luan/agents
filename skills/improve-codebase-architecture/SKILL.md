@@ -8,13 +8,21 @@ disable-model-invocation: true
 
 Surface architectural friction and propose **deepening opportunities** — refactors that turn shallow modules into deep ones. The aim is testability and AI-navigability.
 
-This command is informed by the project's vault-backed domain model and uses one architecture vocabulary: **module**, **interface**, **depth**, **seam**, **adapter**, **leverage**, and **locality**. A module is deep when a small interface hides substantial implementation. The interface is the test surface. One adapter suggests a hypothetical seam; two adapters establish a real one.
+This command is informed by the project's vault-backed domain model and built on one shared architecture vocabulary:
+
+- Run the `$codebase-design` skill for the architecture vocabulary (**module**, **interface**, **depth**, **seam**, **adapter**, **leverage**, **locality**) and its principles (the deletion test, "the interface is the test surface", "one adapter = hypothetical seam, two = real"). Use these terms exactly in every suggestion — don't drift into "component," "service," "API," or "boundary."
+- Vault context gives names to good seams; vault decisions record trade-offs this command should not re-litigate.
 
 ## Process
 
 ### 1. Explore
 
-Load `/vault`, then read project context and relevant decision artifacts with `vlt context show`, `vlt search --type decision`, and `vlt read`.
+**Scope before you scan — YAGNI.** Deepening a module pays off by making future changes to it easier, so put extra weight on the parts of the codebase that have recently changed. Decide *where* to look before you look:
+
+- If the user named a direction — a module, a subsystem, a pain point — take it, and skip the inference below.
+- Otherwise, walk back a good stretch of the commit history (`git log --oneline`) to find the codebase's hot spots — the files and areas that keep coming up — and let those paths pull your attention first. If the changes are scattered with no clear hot spot, widen the net.
+
+Load `$vault`, then read project context and relevant decision artifacts with `vlt context show`, `vlt search --type decision`, and `vlt read`.
 
 Then use the Agent tool with `subagent_type=Explore` to walk the codebase. Don't follow rigid heuristics — explore organically and note where you experience friction:
 
@@ -43,7 +51,7 @@ For each candidate, render a card with:
 
 End the report with a **Top recommendation** section: which candidate you'd tackle first and why.
 
-Use vault context vocabulary for the domain and the architecture vocabulary above for structure. If the glossary defines "Order," talk about "the Order intake module," not its incidental class name.
+Use vault context vocabulary for the domain and the `$codebase-design` vocabulary for structure. If the glossary defines "Order," talk about "the Order intake module," not its incidental class name.
 
 **Decision conflicts**: surface a candidate that contradicts a vault decision only when measured friction justifies reopening it. Mark the conflict and link the decision artifact.
 
@@ -53,11 +61,11 @@ Do NOT propose interfaces yet. After the file is written, ask the user: "Which o
 
 ### 3. Grilling loop
 
-Once the user picks a candidate, run the `/grilling` skill to walk the design tree with them — constraints, dependencies, the shape of the deepened module, what sits behind the seam, what tests survive.
+Once the user picks a candidate, run the `$grilling` skill to walk the design tree with them — constraints, dependencies, the shape of the deepened module, what sits behind the seam, what tests survive.
 
-Side effects happen inline as decisions crystallize — run the `/domain-modeling` skill to keep the domain model current as you go:
+Side effects happen inline as decisions crystallize — run the `$domain-modeling` skill to keep the domain model current as you go:
 
-- **Naming a deepened module after a new domain concept?** Use `/domain-modeling` and `vlt context set` when the term resolves.
+- **Naming a deepened module after a new domain concept?** Use `$domain-modeling` and `vlt context set` when the term resolves.
 - **Sharpening a fuzzy term?** Update vault context immediately.
 - **Rejecting a candidate for a load-bearing reason?** Offer a vault `decision` artifact when future reviews need the reason to avoid repeating the proposal.
-- **Exploring alternative interfaces?** Design two materially different interfaces in isolated passes, then compare their leverage, locality, and test seams before choosing.
+- **Exploring alternative interfaces?** Run the `$codebase-design` skill and use its design-it-twice parallel sub-agent pattern.

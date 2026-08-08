@@ -3,7 +3,6 @@ use clap::{Parser, Subcommand};
 
 mod codex_plugins;
 mod doctor;
-mod render_agents;
 mod stow;
 mod validate;
 
@@ -16,11 +15,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Regenerate GLOBAL_AGENTS.md from AGENTS.template.md + rules/*.md
-    RenderAgents,
     /// Preview stow operations without changing the filesystem
     LinkDryRun,
-    /// Render agents, install codex plugins, then stow packages into ~/
+    /// Install codex plugins, then stow packages into ~/
     Link,
     /// Unstow packages from their canonical install locations
     Unlink,
@@ -28,7 +25,7 @@ enum Cmd {
     CodexPluginsInstall,
     /// Symlink pi/agent/node_modules -> the workspace-root node_modules
     LinkNodeModules,
-    /// Render agents, run static checks, dry-run stow, and run cargo tests
+    /// Run static checks, dry-run stow, and run cargo tests
     Validate,
     /// Check that required external tools are present on PATH
     Doctor,
@@ -37,23 +34,15 @@ enum Cmd {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::RenderAgents => render_agents::run(),
-        Cmd::LinkDryRun => {
-            render_agents::run()?;
-            stow::run(stow::Mode::DryRun)
-        }
+        Cmd::LinkDryRun => stow::run(stow::Mode::DryRun),
         Cmd::Link => {
-            render_agents::run()?;
             codex_plugins::run()?;
             stow::run(stow::Mode::Link)
         }
         Cmd::Unlink => stow::run(stow::Mode::Unlink),
         Cmd::CodexPluginsInstall => codex_plugins::run(),
         Cmd::LinkNodeModules => stow::link_pi_node_modules(),
-        Cmd::Validate => {
-            render_agents::run()?;
-            validate::run()
-        }
+        Cmd::Validate => validate::run(),
         Cmd::Doctor => doctor::run(),
     }
 }

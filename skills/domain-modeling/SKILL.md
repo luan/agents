@@ -9,7 +9,7 @@ Actively build and sharpen the project's domain model as you design. Challenge t
 
 ## Vault structure
 
-Load `/vault`, then inspect the project's language with `vlt context list`, `vlt context check`, and `vlt context show [name|map]`. Context may be a single project glossary or a map of named contexts. Use `vlt context set` to create or replace terms; the CLI owns the underlying files.
+Load `$vault`, then inspect the project's language with `vlt context list`, `vlt context check`, and `vlt context show [name|map]`. Context may be a single project glossary or a map of named contexts. Use `vlt context set` to create or replace terms; the CLI owns the underlying files.
 
 Store durable trade-offs as typed vault artifacts:
 

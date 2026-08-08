@@ -25,25 +25,22 @@ test:
 build: context-guard
     cd "{{ repo }}" && cargo build --release -p context-guard -p ct -p vlt
 
-render-agents:
-    cd "{{ repo }}" && cargo xtask render-agents
-
-link-dry-run: render-agents
+link-dry-run:
     cd "{{ repo }}" && cargo xtask link-dry-run
 
-link: render-agents codex-plugins-install
+link: codex-plugins-install
     cd "{{ repo }}" && cargo xtask link
 
 unlink:
     cd "{{ repo }}" && cargo xtask unlink || true
 
-restow: render-agents codex-plugins-install
+restow: codex-plugins-install
     cd "{{ repo }}" && cargo xtask link
 
 doctor:
     cd "{{ repo }}" && cargo xtask doctor
 
-validate: render-agents
+validate:
     cd "{{ repo }}" && cargo xtask validate
 
 setup: node-deps-install pi-node-modules-link doctor link install validate
@@ -77,9 +74,9 @@ git-spice-install:
 install: context-guard git-spice-install
     @command -v rtk >/dev/null 2>&1 || { command -v brew >/dev/null 2>&1 && brew install rtk-ai/tap/rtk || echo "warning: rtk install failed or Homebrew is unavailable; continuing without it" >&2; }
     @cargo install --list | grep -q '^git-surgeon ' || cargo binstall git-surgeon --locked --no-confirm || echo "warning: git-surgeon install failed (no prebuilt binary; source build is Unix-only); continuing without it" >&2
-    cargo install --path "{{ repo }}/crates/ct"
-    cargo install --path "{{ repo }}/crates/vlt"
-    cargo install --path "{{ repo }}/crates/context-guard"
+    cargo install --locked --path "{{ repo }}/crates/ct"
+    cargo install --locked --path "{{ repo }}/crates/vlt"
+    cargo install --locked --path "{{ repo }}/crates/context-guard"
     claude mcp remove -s user vault 2>/dev/null || true
     claude mcp remove -s user source 2>/dev/null || true
     claude mcp remove -s user apply-patch 2>/dev/null || true

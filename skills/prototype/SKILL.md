@@ -27,4 +27,4 @@ The two branches produce very different artifacts — getting this wrong wastes 
 
 ## When done
 
-The _answer_ is the only durable output. Load `/vault`, then create or update a `prototype` artifact containing the question, the observed result, and the resulting decision. Link it to the governing wayfinding ticket, spec, or decision with `vlt link`. Keep prototype code temporary and keep durable prose in the vault.
+The _answer_ is the only durable output. Load `$vault`, then create or update a `prototype` artifact containing the question, the observed result, and the resulting decision. Link it to the governing wayfinding ticket, spec, or decision with `vlt link`. Keep prototype code temporary and keep durable prose in the vault.
