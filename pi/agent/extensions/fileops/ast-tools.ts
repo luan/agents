@@ -1,20 +1,20 @@
-/**
- * AST tool engine choice: use the installed ast-grep CLI (`sg`) instead of
- * OMP's native ast-grep-core addon. This repo does not ship `@oh-my-pi/pi-natives`
- * or an ast-grep JS binding, while `sg` is already available in the local tool
- * search path. The tradeoff is process-spawn overhead and a smaller rewrite
- * surface; the benefit is no native packaging work and real ast-grep
- * metavariable matching today. `ast_edit` uses CLI matches plus local rewrite
- * application so dry-run previews and fresh hashline tags remain under fileops.
- */
 import { readFile, writeFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import type { Component } from "@earendil-works/pi-tui";
 import { createTwoFilesPatch } from "diff";
 import { Type } from "typebox";
 import { runCommand as runExternalCommand } from "../shared/command-runner.ts";
-import { buildHighlightedDiffRows, type DiffRenderRow, EditDiffView, type RenderTheme } from "./diff-render.ts";
+import { type CardTheme, darkerCardBackgroundAnsi, framedBlock, renderStatusLine } from "../shared/tui/card.ts";
+import { EmptyComponent } from "../shared/tui/index.ts";
+import {
+	buildHighlightedDiffRows,
+	type DiffRenderRow,
+	EditDiffView,
+	highlightCodeRowsSync,
+	languageFromPath,
+	type RenderTheme,
+} from "./diff-render.ts";
 import { recordHashlineSnapshot, SNAPSHOT_MAX_BYTES } from "./hashline/anchors.js";
 import { formatHashlineHeader } from "./hashline/format.ts";
 import type { InMemorySnapshotStore } from "./hashline/snapshots.ts";
@@ -256,6 +256,117 @@ async function executeAstEdit(
 	};
 }
 
+type AstTheme = CardTheme & RenderTheme;
+
+type AstOutputSection = {
+	header: string;
+	path: string;
+	rows: Array<{ line: number; code: string; meta?: string }>;
+};
+
+const EMPTY_VIEW = new EmptyComponent();
+
+function parseAstOutputSections(text: string): AstOutputSection[] {
+	const sections: AstOutputSection[] = [];
+	for (const block of text.split(/\n{2,}/)) {
+		const lines = block.split("\n");
+		const header = lines.shift()?.trim();
+		if (!header) continue;
+		const rows: AstOutputSection["rows"] = [];
+		for (const line of lines) {
+			const match = /^([1-9]\d*):(.*)$/.exec(line);
+			if (match) {
+				rows.push({ line: Number(match[1]), code: match[2] ?? "" });
+			} else if (line.startsWith("meta:") && rows.length > 0) {
+				rows[rows.length - 1]!.meta = line;
+			}
+		}
+		if (rows.length === 0) continue;
+		const taggedPath = /^\[(.+?)#[0-9A-Fa-f]{4}\]$/.exec(header)?.[1];
+		sections.push({ header, path: taggedPath ?? header, rows });
+	}
+	return sections;
+}
+
+function renderAstSearchLines(text: string, theme: AstTheme, expanded: boolean, failed: boolean): string[] {
+	const sections = parseAstOutputSections(text);
+	if (sections.length === 0) {
+		return text.split("\n").map((line) => theme.fg(failed ? "error" : "toolOutput", line));
+	}
+	const maxRows = expanded ? Number.POSITIVE_INFINITY : 12;
+	const lines: string[] = [];
+	let emitted = 0;
+	for (const [sectionIndex, section] of sections.entries()) {
+		if (emitted >= maxRows) break;
+		const visibleRows = section.rows.slice(0, maxRows - emitted);
+		const lastSection = sectionIndex === sections.length - 1 || emitted + visibleRows.length >= maxRows;
+		const branch = lastSection ? (theme.tree?.last ?? "└─") : (theme.tree?.branch ?? "├─");
+		const continuation = lastSection ? "   " : `${theme.tree?.vertical ?? "│"}  `;
+		const icon = theme.getLangIcon?.(languageFromPath(section.path));
+		lines.push(`${theme.fg("dim", `${branch} ${icon ? `${icon} ` : ""}`)}${theme.fg("accent", section.header)}`);
+		const highlighted = highlightCodeRowsSync(
+			section.path,
+			visibleRows.map((row) => row.code),
+		);
+		for (const [rowIndex, row] of visibleRows.entries()) {
+			const lineNumber = String(row.line).padStart(4, " ");
+			lines.push(`${theme.fg("dim", `${continuation}${lineNumber}│`)}${highlighted[rowIndex] ?? row.code}`);
+			if (row.meta) lines.push(`${theme.fg("dim", `${continuation}     ${row.meta}`)}`);
+			emitted++;
+		}
+	}
+	const totalRows = sections.reduce((count, section) => count + section.rows.length, 0);
+	if (emitted < totalRows) lines.push(theme.fg("muted", `... (${totalRows - emitted} more matches)`));
+	return lines;
+}
+
+type AstRenderContext = {
+	args?: { pattern?: string; path?: string; apply?: boolean };
+	isError?: boolean;
+};
+
+function astHeader(
+	theme: AstTheme,
+	title: string,
+	params: { pattern?: string; path?: string; apply?: boolean },
+	status: "pending" | "success" | "error",
+	meta?: string[],
+): string {
+	return renderStatusLine(theme, {
+		icon: status,
+		title,
+		description: params.pattern ? JSON.stringify(params.pattern) : undefined,
+		meta: [params.path ?? ".", ...(meta ?? [])],
+	});
+}
+
+function astResultCard(
+	title: string,
+	result: ToolTextResult,
+	options: { expanded?: boolean },
+	theme: AstTheme,
+	context: AstRenderContext | undefined,
+	body: { lines?: string[]; component?: Component } = {},
+) {
+	const failed = context?.isError === true;
+	const text = result.content[0]?.text ?? "";
+	const allLines = text ? text.split("\n") : [];
+	const lines = body.lines ?? (options.expanded ? allLines : allLines.slice(0, 12));
+	if (!body.lines && lines.length < allLines.length) lines.push(`… ${allLines.length - lines.length} more lines`);
+	const matches = typeof result.details?.matches === "number" ? [`${result.details.matches} matches`] : [];
+	const backgroundColor = failed ? "toolErrorBg" : "toolPendingBg";
+	return framedBlock(theme, {
+		header: astHeader(theme, title, context?.args ?? {}, failed ? "error" : "success", matches),
+		sections: [
+			...(lines.length > 0 ? [{ lines }] : []),
+			...(body.component ? [{ label: theme.fg("toolTitle", "Diff"), component: body.component }] : []),
+		],
+		borderColor: failed ? "error" : "borderMuted",
+		backgroundColor,
+		backgroundAnsi: darkerCardBackgroundAnsi(theme, backgroundColor),
+	});
+}
+
 export function registerAstTools(pi: ExtensionAPI, snapshotsForContext: SnapshotResolver): void {
 	pi.registerTool({
 		name: "ast_grep",
@@ -263,11 +374,25 @@ export function registerAstTools(pi: ExtensionAPI, snapshotsForContext: Snapshot
 		description: "Structural AST search using ast-grep CLI (`sg`). Supports metavariable patterns such as `foo($X)`.",
 		parameters: astGrepSchema,
 		renderShell: "self",
-		renderCall(params) {
-			return new Text(`ast_grep ${JSON.stringify((params as { pattern?: string }).pattern ?? "")}`, 0, 0);
+		renderCall(params, theme, context) {
+			if (context?.isPartial === false) return EMPTY_VIEW;
+			const input = params as { pattern?: string; path?: string };
+			return framedBlock(theme, {
+				header: astHeader(theme, "AST search", input, "pending"),
+				borderColor: "borderMuted",
+				backgroundAnsi: darkerCardBackgroundAnsi(theme, "toolPendingBg"),
+			});
 		},
-		renderResult(result) {
-			return new Text((result as ToolTextResult).content[0]?.text ?? "", 0, 0);
+		renderResult(result, options, theme, context) {
+			const output = result as ToolTextResult;
+			const failed = context?.isError === true;
+			const lines = renderAstSearchLines(
+				output.content[0]?.text ?? "",
+				theme as AstTheme,
+				options.expanded === true,
+				failed,
+			);
+			return astResultCard("AST search", output, options, theme as AstTheme, context as AstRenderContext, { lines });
 		},
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			return executeAstGrep(params as any, ctx, snapshotsForContext, signal);
@@ -280,18 +405,28 @@ export function registerAstTools(pi: ExtensionAPI, snapshotsForContext: Snapshot
 		description: "Structural AST rewrite using ast-grep CLI (`sg`). Dry-run by default; set apply=true to write.",
 		parameters: astEditSchema,
 		renderShell: "self",
-		renderCall(params) {
-			const input = params as { pattern?: string; apply?: boolean };
-			return new Text(`ast_edit ${input.apply ? "apply" : "preview"} ${JSON.stringify(input.pattern ?? "")}`, 0, 0);
+		renderCall(params, theme, context) {
+			if (context?.isPartial === false) return EMPTY_VIEW;
+			const input = params as { pattern?: string; path?: string; apply?: boolean };
+			return framedBlock(theme, {
+				header: astHeader(theme, "AST edit", input, "pending", [input.apply ? "apply" : "preview"]),
+				borderColor: "borderMuted",
+				backgroundAnsi: darkerCardBackgroundAnsi(theme, "toolPendingBg"),
+			});
 		},
-		renderResult(result, options, theme) {
+		renderResult(result, options, theme, context) {
 			const output = result as ToolTextResult;
 			const diff = typeof output.details?.diff === "string" ? output.details.diff : "";
-			if (!diff) return new Text(output.content[0]?.text ?? "", 0, 0);
 			const rows = Array.isArray(output.details?.highlightedDiffRows)
 				? (output.details.highlightedDiffRows as DiffRenderRow[])
 				: undefined;
-			return new EditDiffView(diff, rows, options.expanded === true, theme as RenderTheme);
+			const backgroundAnsi = darkerCardBackgroundAnsi(theme, "toolPendingBg");
+			const component = diff
+				? new EditDiffView(diff, rows, options.expanded === true, theme as RenderTheme, backgroundAnsi)
+				: undefined;
+			return astResultCard("AST edit", output, options, theme as AstTheme, context as AstRenderContext, {
+				component,
+			});
 		},
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			return executeAstEdit(params as any, ctx, snapshotsForContext, signal);

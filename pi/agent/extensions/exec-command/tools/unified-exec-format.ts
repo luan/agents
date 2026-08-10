@@ -43,6 +43,9 @@ export function formatUnifiedExecResult(result: UnifiedExecResult, command?: str
 	if (result.original_token_count !== undefined) {
 		sections.push(`Original token count: ${result.original_token_count}`);
 	}
+	if (result.context_guard_capture_failure) {
+		sections.push(`Context Guard capture failed: ${result.context_guard_capture_failure}`);
+	}
 
 	sections.push("Output:");
 	sections.push(result.output);

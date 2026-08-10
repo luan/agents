@@ -1,328 +1,220 @@
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import type { Component } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
-import {
-	createHashlineEditAnchor,
-	FALLBACK_HASHLINE_SNAPSHOT_SESSION_ID,
-	hashlineSnapshotStoreForSession,
-} from "../../fileops/hashline/anchors.js";
-import { RenderedLineCache, textComponent } from "../../shared/tui";
-import type { PiToolResponse } from "./core.js";
-import { invokeCore } from "./core.js";
-import { getPiConfigDir } from "./index.js";
-import { getProjectDir, getSessionDbPath, getSessionDir, getStorePath } from "./tool-paths.js";
+import { EmptyComponent } from "../../shared/tui";
+import { framedBlock, renderStatusLine } from "../../shared/tui/card.js";
+import { invokeCore, type PiToolResponse } from "./core.js";
+import { getStorePath } from "./tool-paths.js";
 import { createPiToolSpecs, parseToolParams } from "./tool-specs.js";
-import { type ToolResult, trackIndexed, trackResponse, VERSION } from "./tool-stats.js";
-
-export { resolveSessionIdFromSessionDB } from "./tool-paths.js";
-
-class ContextToolComponent {
-	private readonly cache = new RenderedLineCache();
-
-	constructor(private readonly text: string) {}
-
-	invalidate(): void {
-		this.cache.clear();
-	}
-
-	render(width: number): string[] {
-		return this.cache.get(width, "", () =>
-			textComponent(this.text)
-				.render(width)
-				.map((line) => truncateToWidth(line, Math.max(1, width))),
-		);
-	}
-}
 
 interface PiRenderTheme {
 	bold(text: string): string;
 	fg(color: string, text: string): string;
+	getBgAnsi?(color: "customMessageBg" | "toolPendingBg" | "toolSuccessBg" | "toolErrorBg"): string;
+	styledSymbol?(name: string, color: string): string;
 }
 
-type PiRenderContext = Record<string, unknown>;
-
-type ParamCoercion = (params: Record<string, unknown>) => Record<string, unknown>;
+type PiRenderContext = {
+	args?: Record<string, unknown>;
+	isPartial?: boolean;
+	isError?: boolean;
+};
+type ToolResult = PiToolResponse & { isError?: boolean };
 
 type DirectToolDef = {
-	name: string;
+	name: "cg_search" | "cg_status" | "cg_purge";
 	description: string;
 	inputSchema: TSchema;
-	coerce?: ParamCoercion;
-	handler: (params: any) => Promise<ToolResult>;
+	handler: (params: Record<string, unknown>, projectDir?: string) => Promise<ToolResult>;
 };
 
-const DIRECT_TOOLS: DirectToolDef[] = [];
-let runtimeInitialized = false;
-
-function displayLabelForTool(toolName: string): string {
-	const suffix = toolName.startsWith("cg_") ? toolName.slice(3) : toolName;
-	const compact = suffix
-		.replace(/^process_file$/, "file")
-		.replace(/^run$/, "run")
-		.replace(/^batch$/, "batch")
-		.replace(/^fetch$/, "fetch")
-		.replace(/^search$/, "search")
-		.replace(/^index$/, "index")
-		.replace(/^status$/, "status")
-		.replace(/^check$/, "check")
-		.replace(/^purge$/, "purge");
-	return compact;
-}
-
-function summarizeToolArgs(toolName: string, args: unknown): string {
-	if (!args || typeof args !== "object") return toolName;
-	const record = args as Record<string, unknown>;
-	if (toolName === "cg_search") {
-		const query =
-			typeof record.query === "string"
-				? record.query
-				: Array.isArray(record.queries)
-					? record.queries.filter((item) => typeof item === "string").join(" | ")
-					: "";
-		return query ? `cg_search ${JSON.stringify(query)}` : "cg_search";
-	}
-	if (toolName === "cg_fetch") {
-		if (typeof record.url === "string") return `cg_fetch ${record.url}`;
-		if (Array.isArray(record.requests)) return `cg_fetch ${record.requests.length} requests`;
-	}
-	if (toolName === "cg_process_file") {
-		return typeof record.path === "string" ? `cg_process_file ${record.path}` : "cg_process_file";
-	}
-	if (toolName === "cg_index") {
-		if (typeof record.path === "string") return `cg_index ${record.path}`;
-		if (typeof record.source === "string") return `cg_index ${record.source}`;
-	}
-	return toolName;
-}
-
-function actionTextForTool(toolName: string, args: unknown): string {
-	const summary = summarizeToolArgs(toolName, args);
-	switch (toolName) {
-		case "cg_index":
-			return summary === "cg_index"
-				? "Context indexed content"
-				: `Context indexed ${summary.replace(/^cg_index\s+/, "")}`;
-		case "cg_search":
-			return summary === "cg_search"
-				? "Context searched memory"
-				: `Context searched ${summary.replace(/^cg_search\s+/, "")}`;
-		case "cg_fetch":
-			return summary === "cg_fetch"
-				? "Context fetched content"
-				: `Context fetched ${summary.replace(/^cg_fetch\s+/, "")}`;
-		case "cg_process_file":
-			return summary === "cg_process_file"
-				? "Context processed file"
-				: `Context processed ${summary.replace(/^cg_process_file\s+/, "")}`;
-		case "cg_status":
-			return "Context status";
-		case "cg_check":
-			return "Context checked install";
-		case "cg_purge":
-			return "Context purged memory";
-		default:
-			return `Context used ${toolName}`;
-	}
-}
-
-function createDirectCallRenderer(toolName: string) {
-	return (_args: unknown, theme: PiRenderTheme, context: PiRenderContext) => {
-		return new ContextToolComponent(
-			renderContextToolHeader(actionTextForTool(toolName, _args), theme, context?.isPartial === true),
-		);
-	};
-}
-
-function createDirectResultRenderer(toolName: string) {
-	return (
-		result: PiToolResponse,
-		{ expanded, isPartial }: { expanded: boolean; isPartial: boolean },
-		theme: PiRenderTheme,
-		context: PiRenderContext,
-	) => {
-		if (isPartial) {
-			return new ContextToolComponent(
-				renderContextToolHeader(actionTextForTool(toolName, context?.args), theme, true),
-			);
-		}
-		const output = (result.content ?? [])
-			.filter((c: PiToolResponse["content"][number] | undefined) => c?.type === "text" && typeof c.text === "string")
-			.map((c: PiToolResponse["content"][number]) => c.text)
-			.join("\n");
-		return new ContextToolComponent(renderContextToolOutput(output, theme, expanded));
-	};
-}
-
-function renderContextToolHeader(command: string, theme: PiRenderTheme, running: boolean): string {
-	const marker = running ? theme.fg("dim", "◜") : theme.fg("success", "•");
-	return `${marker} ${theme.bold(command)}${running ? theme.fg("dim", " ...") : ""}${theme.fg("dim", " · ")}${theme.fg("mdLink", "\x1b[3mvia context-guard\x1b[23m")}`;
-}
-
-function renderContextToolOutput(output: string, theme: PiRenderTheme, expanded: boolean): string {
-	const lines = output.replace(/\n$/, "").split(/\r?\n/);
-	const visible = expanded ? lines : lines.slice(0, 12);
-	const rendered = visible.map((line) => renderMarkdownLine(line, theme)).join("\n");
-	const omitted =
-		!expanded && lines.length > visible.length
-			? `\n${theme.fg("dim", `… +${lines.length - visible.length} lines (ctrl+o transcript)`)}`
-			: "";
-	return `${rendered}${omitted}`;
-}
-
-function renderMarkdownLine(line: string, theme: PiRenderTheme): string {
-	const trimmed = line.trimEnd();
-	if (trimmed.length === 0) return "";
-	const heading = /^(#{1,6})\s+(.*)$/.exec(trimmed);
-	if (heading) {
-		const level = heading[1]!.length;
-		const text = heading[2]!;
-		const marker = theme.fg("dim", `${"#".repeat(level)} `);
-		return `${marker}${theme.fg("toolTitle", theme.bold(text))}`;
-	}
-	const bullet = /^(\s*)[-*]\s+(.*)$/.exec(line);
-	if (bullet) {
-		return `${bullet[1] ?? ""}${theme.fg("dim", "- ")}${bullet[2] ?? ""}`;
-	}
-	const section = /^--- \[(.*)] ---$/.exec(trimmed);
-	if (section) {
-		return theme.fg("muted", section[1] ?? trimmed);
-	}
-	return line;
-}
-
-function registerDirectTool(
-	name: string,
-	spec: { description: string; inputSchema: TSchema; coerce?: ParamCoercion },
-	handler: (params: any) => Promise<ToolResult>,
-): void {
-	DIRECT_TOOLS.push({
-		name,
-		description: spec.description,
-		inputSchema: spec.inputSchema,
-		coerce: spec.coerce,
-		handler,
-	});
-}
-
-const server = { registerTool: registerDirectTool };
-
-function initDirectToolRuntime(): void {
-	if (runtimeInitialized) return;
-	runtimeInitialized = true;
-	process.on("unhandledRejection", (err) => {
-		process.stderr.write(`[context-guard] unhandledRejection: ${err}\n`);
-	});
-	process.on("uncaughtException", (err) => {
-		process.stderr.write(`[context-guard] uncaughtException: ${err?.message ?? err}\n`);
-	});
-}
-
 const toolSpecs = createPiToolSpecs();
-const HASHLINE_EDIT_ANCHOR_SNAPSHOTS = hashlineSnapshotStoreForSession(FALLBACK_HASHLINE_SNAPSHOT_SESSION_ID);
+const DIRECT_TOOLS: DirectToolDef[] = [
+	{
+		name: "cg_search",
+		description: toolSpecs.search.description,
+		inputSchema: toolSpecs.search.inputSchema,
+		handler: (params, projectDir) => invokeCore("search", { dbPath: getStorePath(projectDir), ...params }),
+	},
+	{
+		name: "cg_status",
+		description: toolSpecs.status.description,
+		inputSchema: toolSpecs.status.inputSchema,
+		handler: (_params, projectDir) => invokeCore("status", { dbPath: getStorePath(projectDir) }),
+	},
+	{
+		name: "cg_purge",
+		description: toolSpecs.purge.description,
+		inputSchema: toolSpecs.purge.inputSchema,
+		handler: (params, projectDir) => invokeCore("purge", { dbPath: getStorePath(projectDir), ...params }),
+	},
+];
 
-async function withHashlineEditAnchor(result: ToolResult, path: string | undefined): Promise<ToolResult> {
-	if (!path) return result;
+const EMPTY_VIEW = new EmptyComponent();
+
+function outputText(result: PiToolResponse): string {
+	return result.content
+		.filter((part) => part.type === "text")
+		.map((part) => part.text)
+		.join("\n");
+}
+
+function parseOutput(result: PiToolResponse): Record<string, unknown> | undefined {
 	try {
-		const anchor = await createHashlineEditAnchor(HASHLINE_EDIT_ANCHOR_SNAPSHOTS, getProjectDir(), path);
-		const suffix = [
-			"",
-			"---",
-			"Hashline edit anchor:",
-			anchor,
-			"Use bounded `read` or `search` when you need source lines in context; use this anchor with discovered line numbers for `edit`.",
-		].join("\n");
-		return {
-			...result,
-			content: (result.content ?? []).map((part, index) =>
-				index === 0 && part?.type === "text" && typeof part.text === "string"
-					? { ...part, text: `${part.text}${suffix}` }
-					: part,
-			),
-		};
+		const value = JSON.parse(outputText(result));
+		return value && typeof value === "object" && !Array.isArray(value) ? value : undefined;
 	} catch {
-		return result;
+		return undefined;
 	}
 }
 
-server.registerTool("cg_process_file", toolSpecs.processFile, async ({ path, language, code, timeout, intent }) => {
-	const result = await invokeCore("process_file", {
-		path,
-		language,
-		code,
-		timeout,
-		intent,
-		projectDir: getProjectDir(),
+function argumentDescription(toolName: DirectToolDef["name"], args: Record<string, unknown> = {}): string {
+	if (toolName === "cg_search") {
+		if (typeof args.query === "string") return args.query;
+		if (Array.isArray(args.queries)) return args.queries.join(", ");
+		if (typeof args.artifactId === "string") return `artifact ${args.artifactId.slice(0, 12)}`;
+		return "captured output";
+	}
+	if (toolName === "cg_purge") return typeof args.scope === "string" ? args.scope : "captured output";
+	return "capture store";
+}
+
+function renderCall(
+	toolName: DirectToolDef["name"],
+	args: Record<string, unknown>,
+	theme: PiRenderTheme,
+	context: PiRenderContext,
+): Component {
+	if (context.isPartial !== true) return EMPTY_VIEW;
+	const title =
+		toolName === "cg_search"
+			? "Searching context"
+			: toolName === "cg_status"
+				? "Reading context status"
+				: "Purging context";
+	return framedBlock(theme, {
+		header: renderStatusLine(theme, {
+			icon: "pending",
+			title,
+			description: argumentDescription(toolName, args),
+		}),
+		borderColor: "accent",
+		backgroundColor: "toolPendingBg",
 	});
-	return trackResponse("cg_process_file", await withHashlineEditAnchor(result, path));
-});
+}
 
-server.registerTool("cg_index", toolSpecs.index, async ({ content, path, source }) => {
-	if (content) trackIndexed(Buffer.byteLength(content));
-	const result = await invokeCore("index", {
-		dbPath: getStorePath(),
-		content,
-		path,
-		source,
-		projectDir: getProjectDir(),
+function renderSearchResult(
+	data: Record<string, unknown>,
+	args: Record<string, unknown>,
+	expanded: boolean,
+	theme: PiRenderTheme,
+): Component {
+	const results = Array.isArray(data.results) ? data.results.filter((item) => item && typeof item === "object") : [];
+	const shown = expanded ? results : results.slice(0, 5);
+	const sections: Array<{ label?: string; lines: string[] }> = shown.map((value, index) => {
+		const item = value as Record<string, unknown>;
+		const snippet = typeof item.snippet === "string" ? item.snippet.split(/\r?\n/) : [];
+		const visibleSnippet = expanded ? snippet : snippet.slice(0, 4);
+		const source = typeof item.source === "string" ? item.source : "";
+		const kind = typeof item.sourceKind === "string" ? item.sourceKind : "";
+		const capture = typeof item.captureId === "number" ? `capture ${item.captureId}` : "";
+		const chunk = typeof item.chunkIndex === "number" ? `chunk ${item.chunkIndex}` : "";
+		const metadata = [kind, source, capture, chunk].filter(Boolean).join(" · ");
+		return {
+			label: `${index + 1}. ${typeof item.label === "string" && item.label ? item.label : "Captured output"}`,
+			lines: [
+				...(metadata ? [theme.fg("dim", metadata)] : []),
+				...visibleSnippet.map((line) => theme.fg("toolOutput", line)),
+				...(!expanded && snippet.length > visibleSnippet.length
+					? [theme.fg("dim", `… +${snippet.length - visibleSnippet.length} lines`)]
+					: []),
+			],
+		};
 	});
-	return trackResponse("cg_index", await withHashlineEditAnchor(result, path));
-});
-
-server.registerTool("cg_search", toolSpecs.search, async (params) =>
-	trackResponse(
-		"cg_search",
-		await invokeCore("search", {
-			dbPath: getStorePath(),
-			...(params as Record<string, unknown>),
-			sessionDbPath: getSessionDbPath(),
-			projectDir: getProjectDir(),
-			configDir: getPiConfigDir(),
+	if (sections.length === 0) sections.push({ lines: [theme.fg("muted", "No captured output matched.")] });
+	return framedBlock(theme, {
+		header: renderStatusLine(theme, {
+			icon: "success",
+			title: "Context search",
+			description: argumentDescription("cg_search", args),
+			meta: [`${results.length} result${results.length === 1 ? "" : "s"}`],
 		}),
-	),
-);
+		sections,
+		borderColor: "borderMuted",
+		backgroundColor: "toolSuccessBg",
+	});
+}
 
-server.registerTool("cg_fetch", toolSpecs.fetch, async ({ url, source, requests, concurrency, force }) =>
-	trackResponse(
-		"cg_fetch",
-		await invokeCore("fetch", {
-			dbPath: getStorePath(),
-			sessionDbPath: getSessionDbPath(),
-			url,
-			source,
-			requests,
-			concurrency,
-			force,
+function formatBytes(value: unknown): string {
+	const bytes = typeof value === "number" ? value : 0;
+	if (bytes < 1024) return `${bytes} B`;
+	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+	return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+}
+
+function renderStatusResult(data: Record<string, unknown>, theme: PiRenderTheme): Component {
+	return framedBlock(theme, {
+		header: renderStatusLine(theme, {
+			icon: "success",
+			title: "Context status",
+			description: data.exists === false ? "empty store" : "capture store",
+			meta: [`${Number(data.captures ?? 0)} captures`, `${Number(data.artifacts ?? 0)} artifacts`],
 		}),
-	),
-);
+		sections: [
+			{
+				lines: [
+					`Indexed: ${formatBytes(data.indexedBytes)}`,
+					`Database: ${formatBytes(data.databaseBytes)}`,
+					`Searches: ${Number(data.searchCalls ?? 0)} · failures: ${Number(data.searchFailures ?? 0)}`,
+					`Captures: ${Number(data.captureCalls ?? 0)} · failures: ${Number(data.captureFailures ?? 0)}`,
+				].map((line) => theme.fg("toolOutput", line)),
+			},
+		],
+		borderColor: "borderMuted",
+		backgroundColor: "toolSuccessBg",
+	});
+}
 
-server.registerTool("cg_status", toolSpecs.status, async () =>
-	trackResponse(
-		"cg_status",
-		await invokeCore("status", {
-			dbPath: getStorePath(),
-			sessionDbPath: getSessionDbPath(),
-			sessionsDir: getSessionDir(),
-			configDir: getPiConfigDir(),
-			version: VERSION,
-			cwd: getProjectDir(),
+function renderPurgeResult(data: Record<string, unknown>, theme: PiRenderTheme): Component {
+	const scope = typeof data.scope === "string" ? data.scope : "unknown";
+	const count = typeof data.deleted === "number" ? `${data.deleted} captures deleted` : "store deleted";
+	return framedBlock(theme, {
+		header: renderStatusLine(theme, { icon: "success", title: "Context purge", description: scope, meta: [count] }),
+		borderColor: "borderMuted",
+		backgroundColor: "toolSuccessBg",
+	});
+}
+
+function renderResult(
+	toolName: DirectToolDef["name"],
+	result: PiToolResponse,
+	state: { expanded: boolean; isPartial: boolean },
+	theme: PiRenderTheme,
+	context: PiRenderContext,
+): Component {
+	if (state.isPartial) return EMPTY_VIEW;
+	const data = parseOutput(result);
+	if (data) {
+		if (toolName === "cg_search") return renderSearchResult(data, context.args ?? {}, state.expanded, theme);
+		if (toolName === "cg_status") return renderStatusResult(data, theme);
+		return renderPurgeResult(data, theme);
+	}
+	return framedBlock(theme, {
+		header: renderStatusLine(theme, {
+			icon: context.isError ? "error" : "success",
+			title:
+				toolName === "cg_search" ? "Context search" : toolName === "cg_status" ? "Context status" : "Context purge",
 		}),
-	),
-);
-
-server.registerTool("cg_check", toolSpecs.check, async () => trackResponse("cg_check", await invokeCore("check")));
-
-server.registerTool("cg_purge", toolSpecs.purge, async ({ confirm, sessionId, scope }) =>
-	trackResponse(
-		"cg_purge",
-		await invokeCore("purge", {
-			dbPath: getStorePath(),
-			sessionDbPath: getSessionDbPath(),
-			confirm,
-			scope,
-			sessionId,
-		}),
-	),
-);
+		sections: [
+			{
+				lines: outputText(result)
+					.split(/\r?\n/)
+					.map((line) => theme.fg("toolOutput", line)),
+			},
+		],
+		borderColor: context.isError ? "error" : "borderMuted",
+		backgroundColor: context.isError ? "toolErrorBg" : "toolSuccessBg",
+	});
+}
 
 export function registerPiContextTools(pi: {
 	registerTool: (def: {
@@ -338,35 +230,45 @@ export function registerPiContextTools(pi: {
 			theme: PiRenderTheme,
 			context: PiRenderContext,
 		) => unknown;
-		execute: (_toolCallId: string, params: unknown) => Promise<PiToolResponse>;
+		execute: (
+			_toolCallId: string,
+			params: unknown,
+			_signal?: AbortSignal,
+			_onUpdate?: unknown,
+			ctx?: { cwd?: string },
+		) => Promise<PiToolResponse>;
 	}) => void;
 }): void {
-	initDirectToolRuntime();
 	for (const def of DIRECT_TOOLS) {
-		const label = displayLabelForTool(def.name);
 		pi.registerTool({
 			name: def.name,
-			label: `Context: ${label}`,
+			label: `Context: ${def.name.slice(3)}`,
 			description: def.description,
-			parameters: { type: "object", additionalProperties: true, properties: {} },
+			parameters: def.inputSchema as unknown as Record<string, unknown>,
 			renderShell: "self",
-			renderCall: createDirectCallRenderer(def.name),
-			renderResult: createDirectResultRenderer(def.name),
-			async execute(_toolCallId, params) {
+			renderCall: (args, theme, context) => renderCall(def.name, args as Record<string, unknown>, theme, context),
+			renderResult: (result, state, theme, context) => renderResult(def.name, result, state, theme, context),
+			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 				try {
-					const parsed = parseToolParams(def.inputSchema, def.coerce, params);
-					const result = await def.handler(parsed);
-					const text = (result.content ?? [])
-						.filter((c) => c?.type === "text" && typeof c.text === "string")
-						.map((c) => c.text)
+					const result = await def.handler(
+						parseToolParams(def.inputSchema, params) as Record<string, unknown>,
+						ctx?.cwd,
+					);
+					const text = result.content
+						.filter((part) => part.type === "text")
+						.map((part) => part.text)
 						.join("\n");
-					if (result.isError) {
-						throw new Error(text || `${def.name} returned an error`);
+					if (result.isError) throw new Error(text || `${def.name} returned an error`);
+					return { content: [{ type: "text", text }], details: result.details };
+				} catch (error) {
+					if (def.name === "cg_search") {
+						try {
+							await invokeCore("record_failure", { dbPath: getStorePath(ctx?.cwd), operation: "search" });
+						} catch {
+							// The core may be unavailable; retrieval errors remain visible.
+						}
 					}
-					return { content: [{ type: "text", text }], details: {} };
-				} catch (err) {
-					const message = err instanceof Error ? err.message : String(err);
-					throw new Error(message);
+					throw error;
 				}
 			},
 		});

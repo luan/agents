@@ -101,8 +101,10 @@ function setWorkingAnimationState(active: boolean, frame = workingFrame): void {
 	workingFrame = frame;
 }
 
-export function advanceWorkingAnimationFrame(): void {
-	workingFrame++;
+export function advanceWorkingAnimationFrame(nowMs = Date.now()): number {
+	if (workingStartedAtMs === undefined) return ++workingFrame;
+	workingFrame = Math.floor(Math.max(0, nowMs - workingStartedAtMs) / WORKING_ANIMATION_INTERVAL_MS);
+	return workingFrame;
 }
 
 export function setWorkingFastMode(active: boolean): void {

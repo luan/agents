@@ -1,3 +1,5 @@
+import { CONTEXT_GUARD_CAPTURE_MAX_BYTES } from "../../context-guard/pi/capture.ts";
+
 const DEFAULT_MAX_OUTPUT_TOKENS = 10_000;
 const DEFAULT_MAX_OUTPUT_LINE_CHARS = 400;
 export const UNIFIED_EXEC_OUTPUT_MAX_BYTES = 1024 * 1024;
@@ -21,6 +23,15 @@ export function capHeadTail(text: string, maxBytes: number): string {
 	const headBudget = Math.floor(maxBytes / 2);
 	const tailBudget = maxBytes - headBudget;
 	return safeSliceByBytes(text, 0, headBudget) + safeSliceByBytes(text, totalBytes - tailBudget);
+}
+
+export function appendCaptureOutput(current: string, appended: string): { output: string; truncated: boolean } {
+	const currentBytes = Buffer.byteLength(current, "utf8");
+	if (currentBytes >= CONTEXT_GUARD_CAPTURE_MAX_BYTES) return { output: current, truncated: true };
+	const remaining = CONTEXT_GUARD_CAPTURE_MAX_BYTES - currentBytes;
+	const appendedBytes = Buffer.byteLength(appended, "utf8");
+	if (appendedBytes <= remaining) return { output: `${current}${appended}`, truncated: false };
+	return { output: `${current}${safeSliceByBytes(appended, 0, remaining)}`, truncated: true };
 }
 
 function lineCount(text: string): number {

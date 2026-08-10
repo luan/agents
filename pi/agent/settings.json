@@ -22,7 +22,8 @@
     "npm:@dietrichgebert/ponytail",
     {
       "source": "git:github.com/juliusbrussee/caveman@v1.9.1"
-    }
+    },
+    "npm:@injaneity/pi-computer-use"
   ],
   "enabledModels": [
     "openai-codex/gpt-5.6-luna",

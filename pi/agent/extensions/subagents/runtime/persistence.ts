@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { AgentRecord } from "./types.js";
@@ -11,9 +11,22 @@ type Registry = {
 	version: typeof REGISTRY_VERSION;
 	agents: PersistedAgent[];
 };
+function readRegistry(path: string): PersistedAgent[] {
+	if (!existsSync(path)) return [];
+	try {
+		const data = JSON.parse(readFileSync(path, "utf8")) as Registry;
+		return data.version === REGISTRY_VERSION && Array.isArray(data.agents) ? data.agents : [];
+	} catch {
+		return [];
+	}
+}
+
+function registryRoot(): string {
+	return join(getAgentDir(), "sessions", "subagents");
+}
 
 function registryDir(rootSessionId: string): string {
-	return join(getAgentDir(), "sessions", "subagents", rootSessionId);
+	return join(registryRoot(), rootSessionId);
 }
 
 export function childSessionDir(rootSessionId: string, agentId: string): string {
@@ -30,15 +43,14 @@ export function toPersistedAgent(record: AgentRecord): PersistedAgent {
 }
 
 export function readAgentRegistry(rootSessionId: string): PersistedAgent[] {
-	const path = registryPath(rootSessionId);
-	if (!existsSync(path)) return [];
-	try {
-		const data = JSON.parse(readFileSync(path, "utf8")) as Registry;
-		if (data.version !== REGISTRY_VERSION || !Array.isArray(data.agents)) return [];
-		return data.agents;
-	} catch {
-		return [];
-	}
+	return readRegistry(registryPath(rootSessionId));
+}
+
+export function readAllAgentRegistries(root = registryRoot()): PersistedAgent[] {
+	if (!existsSync(root)) return [];
+	return readdirSync(root, { withFileTypes: true }).flatMap((entry) =>
+		entry.isDirectory() ? readRegistry(join(root, entry.name, "registry.json")) : [],
+	);
 }
 
 export function writeAgentRegistry(rootSessionId: string, records: Iterable<AgentRecord>): void {

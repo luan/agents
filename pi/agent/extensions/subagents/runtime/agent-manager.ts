@@ -73,6 +73,7 @@ interface ResumeOptions {
 	signal?: AbortSignal;
 	deliverCompletion?: boolean;
 	onAssistantUsage?: (usage: AssistantUsage, durationMs: number) => void;
+	rootSessionId?: string;
 }
 
 export class AgentManager {
@@ -109,6 +110,22 @@ export class AgentManager {
 		// Keep terminal agents briefly for inspection, then remove them from memory and persistence.
 		this.cleanupInterval = setInterval(() => this.cleanup(), 60_000);
 		this.cleanupInterval.unref();
+	}
+
+	private findRecord(id: string, rootSessionId?: string): AgentRecord | undefined {
+		const direct = this.agents.get(id);
+		if (direct && (!rootSessionId || direct.rootSessionId === rootSessionId)) return direct;
+		return [...this.agents.values()].find(
+			(record) => record.id === id && (!rootSessionId || record.rootSessionId === rootSessionId),
+		);
+	}
+
+	private deleteRecord(record: AgentRecord): void {
+		for (const [key, candidate] of this.agents) {
+			if (candidate !== record) continue;
+			this.agents.delete(key);
+			return;
+		}
 	}
 
 	/**
@@ -395,7 +412,7 @@ export class AgentManager {
 		prompt: string,
 		options: ResumeOptions = {},
 	): Promise<AgentRecord | undefined> {
-		const record = this.agents.get(id);
+		const record = this.findRecord(id, options.rootSessionId);
 		const session = record?.runtime?.session ?? record?.session;
 		if (!record || (!session && (!record.sessionFile || !record.agentConfig))) return undefined;
 		this.beginTurn(record, options.deliverCompletion === true);
@@ -432,7 +449,7 @@ export class AgentManager {
 		id: string,
 		options: ResumeOptions = {},
 	): Promise<AgentRecord | undefined> {
-		const record = this.agents.get(id);
+		const record = this.findRecord(id, options.rootSessionId);
 		const session = record?.runtime?.session ?? record?.session;
 		if (!record || (!session && (!record.sessionFile || !record.agentConfig))) return undefined;
 		if (session && !findRetryableError(session.sessionManager.getBranch())) return undefined;
@@ -488,8 +505,8 @@ export class AgentManager {
 		return true;
 	}
 
-	async steer(id: string, message: string): Promise<boolean> {
-		const record = this.agents.get(id);
+	async steer(id: string, message: string, rootSessionId?: string): Promise<boolean> {
+		const record = this.findRecord(id, rootSessionId);
 		if (!record || record.status !== "running") return false;
 		const session = record.runtime?.session ?? record.session;
 		if (!session) {
@@ -574,14 +591,15 @@ export class AgentManager {
 		});
 	}
 
-	restore(records: PersistedAgent[]): void {
+	restore(records: PersistedAgent[], enforceRetention = true): void {
 		const rootSessionIds = new Set<string>();
 		for (const persisted of records) {
 			const id = persisted.id.replace(/^\/root\//, "");
-			if (this.agents.has(id)) continue;
 			const rootSessionId = persisted.rootSessionId ?? persisted.parentSessionId;
+			if (this.findRecord(id, rootSessionId)) continue;
 			rootSessionIds.add(rootSessionId);
-			this.agents.set(id, {
+			const storageKey = this.agents.has(id) ? `${rootSessionId}\0${id}` : id;
+			this.agents.set(storageKey, {
 				...persisted,
 				id,
 				parentAgentId: persisted.parentAgentId?.replace(/^\/root\//, ""),
@@ -590,11 +608,13 @@ export class AgentManager {
 				events: persisted.events ?? [],
 			});
 		}
-		for (const rootSessionId of rootSessionIds) this.enforceRetention(rootSessionId);
+		if (enforceRetention) {
+			for (const rootSessionId of rootSessionIds) this.enforceRetention(rootSessionId);
+		}
 	}
 
-	getRecord(id: string): AgentRecord | undefined {
-		return this.agents.get(id);
+	getRecord(id: string, rootSessionId?: string): AgentRecord | undefined {
+		return this.findRecord(id, rootSessionId);
 	}
 
 	listAgents(rootSessionId?: string): AgentRecord[] {
@@ -611,8 +631,8 @@ export class AgentManager {
 		return this.findByChildSessionId(sessionId)?.rootSessionId ?? sessionId;
 	}
 
-	abort(id: string): boolean {
-		const record = this.agents.get(id);
+	abort(id: string, rootSessionId?: string): boolean {
+		const record = this.findRecord(id, rootSessionId);
 		if (!record) return false;
 
 		// Remove from queue if queued
@@ -643,7 +663,7 @@ export class AgentManager {
 		for (const [index, record] of terminal.entries()) {
 			if (index < this.maxRetainedTerminal && (record.completedAt ?? record.startedAt) >= cutoff) continue;
 			record.session?.dispose?.();
-			this.agents.delete(record.id);
+			this.deleteRecord(record);
 			this.onRemove?.(record);
 		}
 	}

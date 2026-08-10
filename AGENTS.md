@@ -8,8 +8,9 @@
 6. Review discipline: never leave a feature/bug task `in_progress` while waiting for human review, Plannotator feedback, code-review approval, or manual-verification approval. Move it to `in_review` before the wait; move it back to `in_progress` only while actively revising.
 7. Plannotator discipline: never run `plannotator --help`, subcommand `--help`, or other discovery probes. For code review, load/use `$plannotator-review`; for annotation, artifact gates, or rendered HTML, load/use `$plannotator-annotate`; for latest assistant message annotation, load/use `$plannotator-last`; run only the commands documented in the loaded skill. Run Plannotator commands in the foreground without shell/tool timeout wrappers and without backgrounding so returned feedback is captured.
 8. Process discipline: long-running services are managed sessions, not blocking foreground commands.
-9. Do not write tests that assert mutable skill instruction wording, read skill Markdown to enforce process policy, or otherwise make intentional skill edits fail tests. Skill files are operator-authored instructions, not executable contracts.
-10. Do not add tests for Pi extensions unless they cover specific, non-visual logic. Do not test rendering, animation, spacing, colors, glyphs, or other subjective TUI presentation.
+9. Tests are exceptional. Add one only for deterministic logic with a plausible regression that direct validation cannot cover more cheaply. Prefer no test for wiring, configuration, trivial adapters, wrappers, or pass-through behavior.
+10. Test behavior, not presentation. Never assert rendered text, snapshots, labels, spacing, widths, colors, glyphs, animation frames, or other TUI output. Delete presentation-only tests instead of updating them.
+11. Skill files are operator-authored instructions. Never test their wording or read them from tests to enforce process policy.
 
 ## Repo Purpose
 

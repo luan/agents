@@ -26,7 +26,7 @@ import {
 	sharedAnimationRenderScheduler,
 	padToVisibleWidth as sharedPadToVisibleWidth,
 } from "../shared/tui";
-import { framedBlock, renderStatusLine } from "../shared/tui/omp-card";
+import { framedBlock, renderStatusLine } from "../shared/tui/card";
 
 const tasksTui = defineExtensionTui({ id: "tasks" });
 type TaskCommand = "add" | "list" | "show" | "update" | "delete";
@@ -1402,6 +1402,7 @@ function renderTaskReminderMessage(
 		}),
 		sections: [{ lines: renderTaskReminderLines(normalized, theme) }],
 		borderColor: "warning",
+		backgroundColor: "customMessageBg",
 	});
 }
 

@@ -3,42 +3,12 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
-import { resetCapabilitiesCache, setCapabilities, visibleWidth } from "@earendil-works/pi-tui";
-import { markLiveTurnStarted, resetLiveTurnForTests } from "../shared/tui";
-import { highlightCodeRows, languageFromPath } from "./diff-render.ts";
+import { resetCapabilitiesCache } from "@earendil-works/pi-tui";
+import { languageFromPath } from "./diff-render.ts";
 import fileopsExtension, { HASHLINE_GRAMMAR, PATCH_GRAMMAR, REPLACE_GRAMMAR } from "./index.ts";
 
 const originalVariant = process.env.PI_FILEOPS_EDIT_VARIANT;
 const originalAutoDropPureInsertDuplicates = process.env.PI_FILEOPS_HASHLINE_AUTO_DROP_PURE_INSERT_DUPLICATES;
-const theme = {
-	fg(_role: string, text: string) {
-		return text;
-	},
-	bg(role: string, text: string) {
-		return `[${role}]${text}[/]`;
-	},
-	bold(text: string) {
-		return `**${text}**`;
-	},
-	inverse(text: string) {
-		return `<inv>${text}</inv>`;
-	},
-	styledSymbol(name: string) {
-		return name === "status.success" ? "✓" : name === "status.error" ? "✗" : "∙";
-	},
-	getLangIcon() {
-		return "≡";
-	},
-	tree: { last: "└─", branch: "├─", vertical: "│" },
-};
-
-const roleTheme = {
-	...theme,
-	fg(role: string, text: string) {
-		return `<${role}>${text}</${role}>`;
-	},
-};
 
 afterEach(() => {
 	resetCapabilitiesCache();
@@ -62,37 +32,6 @@ function registerEditTool(mode: string): any {
 		registerCommand: () => {},
 	} as any);
 	return tool;
-}
-
-function registerEditToolWithEvents(mode: string): {
-	tool: any;
-	tools: Map<string, any>;
-	emit: (event: string, payload: any, ctx?: any) => void;
-} {
-	process.env.PI_FILEOPS_EDIT_VARIANT = mode;
-	const tools = new Map<string, any>();
-	const handlers = new Map<string, Array<(event: any, ctx: any) => void>>();
-	fileopsExtension({
-		registerTool: (definition: any) => {
-			tools.set(definition.name, definition);
-		},
-		registerCommand: () => {},
-		on: (event: string, handler: (event: any, ctx: any) => void) => {
-			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
-		},
-	} as any);
-	return {
-		tool: tools.get("edit"),
-		tools,
-		emit(event: string, payload: any, ctx: any = {}) {
-			for (const handler of handlers.get(event) ?? []) handler(payload, ctx);
-		},
-	};
-}
-
-function longUnifiedDiff(lineCount: number): string {
-	const body = Array.from({ length: lineCount }, (_, index) => [`-old${index + 1}`, `+new${index + 1}`]).flat();
-	return [`--- a/sample.txt`, `+++ b/sample.txt`, `@@ -1,${lineCount} +1,${lineCount} @@`, ...body, ""].join("\n");
 }
 
 function registerEditTools(mode: string): Map<string, any> {
@@ -119,167 +58,7 @@ function registerEditCommand(mode = "apply_patch"): any {
 	return command;
 }
 
-function render(component: any): string {
-	return component
-		.render(120)
-		.map((line: string) => line.trimEnd())
-		.join("\n");
-}
-
-function createToolExecution(
-	toolName: string,
-	toolDefinition: any,
-	args: Record<string, unknown>,
-): ToolExecutionComponent {
-	return new ToolExecutionComponent(
-		toolName,
-		`call-${toolName}`,
-		args,
-		{},
-		toolDefinition,
-		{ requestRender() {} } as any,
-		process.cwd(),
-	);
-}
-
-function renderToolExecution(toolName: string, toolDefinition: any, args: Record<string, unknown>): string[] {
-	return createToolExecution(toolName, toolDefinition, args).render(120);
-}
-
-const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
-
-function stripAnsi(text: string): string {
-	return text.replace(ANSI_PATTERN, "");
-}
-
-const rgbTheme = {
-	...theme,
-	getFgAnsi(role: string) {
-		return role === "accent" ? "\x1b[38;2;121;184;255m" : undefined;
-	},
-};
-
-const darkToolBackground = "\x1b[48;2;30;30;46m";
-const lightAddedBackground = "\x1b[48;2;230;255;235m";
-const lightRemovedBackground = "\x1b[48;2;255;235;240m";
-const lightTheme = {
-	...theme,
-	name: "light/tokyo-night",
-	fg(role: string, text: string) {
-		return role === "toolTitle" || role === "accent" ? `\x1b[31m${text}\x1b[0m` : text;
-	},
-	bold(text: string) {
-		return `\x1b[1m${text}\x1b[0m`;
-	},
-	bg(role: string, text: string) {
-		return role === "toolPendingBg" ? `${darkToolBackground}${text}\x1b[49m` : text;
-	},
-	getBgAnsi(role: string) {
-		if (role === "toolPendingBg") return darkToolBackground;
-		throw new Error(`Unknown theme background color: ${role}`);
-	},
-};
-
-const ANSI_SGR_PATTERN = /\x1b\[([0-9;]*)m/g;
-function charsWithBackground(text: string, background: string): string {
-	let output = "";
-	let active = false;
-	let index = 0;
-	for (const match of text.matchAll(ANSI_SGR_PATTERN)) {
-		if (active) output += text.slice(index, match.index ?? 0);
-		const sequence = match[0];
-		const params = (match[1] ?? "").split(";").filter(Boolean);
-		if (sequence === background) active = true;
-		else if (params.length === 0 || params.includes("0") || params.includes("49") || params.includes("48"))
-			active = false;
-		index = (match.index ?? 0) + sequence.length;
-	}
-	if (active) output += text.slice(index);
-	return output;
-}
 describe("fileops extension modes", () => {
-	it("renders AST tools as TUI components", () => {
-		const tools = registerEditTools("hashline");
-
-		const grepRendered = renderToolExecution("ast_grep", tools.get("ast_grep"), { pattern: "foo($X)" }).join("\n");
-		const editRendered = renderToolExecution("ast_edit", tools.get("ast_edit"), {
-			pattern: "foo($X)",
-			rewrite: "bar($X)",
-			path: "sample.ts",
-		}).join("\n");
-		const grepWithResult = createToolExecution("ast_grep", tools.get("ast_grep"), { pattern: "foo($X)" });
-		grepWithResult.updateResult({ content: [{ type: "text", text: "matched" }] } as any, false);
-		const editResult = {
-			content: [{ type: "text", text: "sample.ts\nPreview: 1 rewrite(s), 1 changed line(s)." }],
-			details: {
-				diff: "--- sample.ts\n+++ sample.ts\n@@ -1 +1 @@\n-foo(value)\n+bar(value)\n",
-			},
-		};
-
-		expect(grepRendered).toContain("ast_grep");
-		expect(grepRendered).toContain("foo($X)");
-		expect(editRendered).toContain("ast_edit preview");
-		expect(grepWithResult.render(120).join("\n")).toContain("matched");
-		const renderedDiff = render(tools.get("ast_edit").renderResult(editResult, {}, theme));
-		expect(renderedDiff).toContain("foo(value)");
-		expect(renderedDiff).toContain("bar(value)");
-	});
-
-	it("does not paint dark tool backgrounds for light fileops headers", () => {
-		const tools = registerEditTools("hashline");
-		const edit = tools.get("edit");
-
-		const [line = ""] = edit
-			.renderCall({ input: "[sample.txt#ABCD]\nreplace 1..1:\n+new\n" }, lightTheme, {})
-			.render(80);
-
-		expect(line).not.toContain(darkToolBackground);
-		expect(stripAnsi(line)).toContain("Edit:");
-		expect(stripAnsi(line)).toContain("sample.txt");
-		expect(visibleWidth(line)).toBe(80);
-	});
-
-	it("uses light theme backgrounds for fileops diff rows", () => {
-		const tools = registerEditTools("hashline");
-		const edit = tools.get("edit");
-		const result = {
-			content: [{ type: "text", text: "[sample.txt#ABCD]\n1:+new" }],
-			details: {
-				diff: ["--- a/sample.txt", "+++ b/sample.txt", "@@ -1 +1 @@", "-old", "+new", ""].join("\n"),
-				results: [{ path: "sample.txt", header: "[sample.txt#ABCD]" }],
-				highlightedDiffRows: [
-					{
-						kind: "remove",
-						oldLine: 1,
-						newLine: null,
-						content: "old",
-						path: "sample.txt",
-						highlightedContent: `${darkToolBackground}old\x1b[0m`,
-					},
-					{
-						kind: "add",
-						oldLine: null,
-						newLine: 1,
-						content: "new",
-						path: "sample.txt",
-						highlightedContent: "\x1b[38;2;200;220;255mnew\x1b[39m",
-					},
-				],
-			},
-		};
-
-		const lines = edit.renderResult(result, { expanded: true, isPartial: false }, lightTheme, {}).render(80);
-		const removedLine = lines.find((line: string) => stripAnsi(line).includes("- old")) ?? "";
-		const addedLine = lines.find((line: string) => stripAnsi(line).includes("+ new")) ?? "";
-		expect(lines.join("\n")).not.toContain(darkToolBackground);
-		expect(lines.join("\n")).not.toContain("\x1b[38;2;200;220;255m");
-
-		expect(removedLine).toContain(lightRemovedBackground);
-		expect(charsWithBackground(removedLine, lightRemovedBackground)).toContain("old");
-		expect(addedLine).toContain(lightAddedBackground);
-		expect(charsWithBackground(addedLine, lightAddedBackground)).toContain("new");
-	});
-
 	it("starts in apply_patch mode and applies freeform envelopes", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-apply-patch-"));
 		const tool = registerEditTool("apply_patch");
@@ -363,17 +142,6 @@ describe("fileops extension modes", () => {
 		expect(readResult.content[0].text).not.toContain("[sample.png#");
 		expect(readResult.details?.previewImage?.mimeType).toBe("image/png");
 		expect(readResult.details?.previewImage?.sourcePath).toEndWith(".png");
-		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: false });
-		const rendererResult = { content: readResult.content, details: readResult.details };
-		const rendered = tools
-			.get("read")
-			.renderResult(rendererResult, { expanded: false, isPartial: false }, theme, { args: { path: "sample.png" } })
-			.render(100)
-			.join("\n");
-		expect(rendered).toContain("\x1b_Ga=T");
-		expect(rendered).toContain("t=f");
-		expect(rendered).toContain("Read image file [image/png]");
-		expect(rendered).toContain("\u{10EEEE}");
 		expect(readResult.content.some((content: any) => content.type === "image")).toBe(false);
 	});
 
@@ -622,20 +390,6 @@ describe("fileops extension modes", () => {
 		expect(readFileSync(join(cwd, "sample.txt"), "utf-8")).toBe("alpha\nbeta\nGAMMA\n");
 	});
 
-	it("hashline search highlights regex alternatives in matched rows", async () => {
-		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-search-regex-highlight-"));
-		writeFileSync(join(cwd, "sample.txt"), "alpha\nbeta\ngamma\n");
-		const tools = registerEditTools("hashline");
-
-		const searchResult = await tools
-			.get("search")
-			.execute("search", { pattern: "alpha|gamma", path: "sample.txt" }, undefined, undefined, { cwd });
-		const highlightedRows = searchResult.details.highlightedSections[0].rows;
-
-		expect(charsWithBackground(highlightedRows[0], "\x1b[48;2;92;78;35m")).toBe("alpha");
-		expect(charsWithBackground(highlightedRows[1], "\x1b[48;2;92;78;35m")).toBe("gamma");
-	});
-
 	it("hashline search supports file line selectors", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-search-range-"));
 		writeFileSync(join(cwd, "sample.txt"), "needle one\nskip\nneedle two\n");
@@ -647,6 +401,20 @@ describe("fileops extension modes", () => {
 
 		expect(searchResult.content[0].text).toContain("*3:needle two");
 		expect(searchResult.content[0].text).not.toContain("1:needle one");
+	});
+
+	it("applies search limits after filtering selected ranges", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-search-range-limit-"));
+		writeFileSync(join(cwd, "sample.txt"), `${"needle\n".repeat(10)}target needle\n`);
+		const tools = registerEditTools("hashline");
+
+		const searchResult = await tools
+			.get("search")
+			.execute("search", { pattern: "needle", path: "sample.txt", ranges: ["11"], limit: 1 }, undefined, undefined, {
+				cwd,
+			});
+
+		expect(searchResult.content[0].text).toContain("*11:target needle");
 	});
 
 	it("hashline write invalidates previous snapshots", async () => {
@@ -880,19 +648,22 @@ describe("fileops extension modes", () => {
 		const text = result.content[0].text;
 
 		expect(text).toContain("Large file read blocked");
-		expect(text).toContain("cg_process_file");
+		expect(text).toContain("bounded reads and search only the needed ranges.");
 		expect(text.length).toBeLessThan(2_000);
 		expect(text).not.toContain("x".repeat(1_000));
-		const read = tools.get("read");
-		const collapsed = render(read.renderResult(result, { expanded: false, isPartial: false }, theme, {}));
-		const expanded = render(read.renderResult(result, { expanded: true, isPartial: false }, theme, {}));
-		const warningRendered = render(read.renderResult(result, { expanded: false, isPartial: false }, roleTheme, {}));
+	});
 
-		expect(collapsed).toContain("Large file read blocked: large.log");
-		expect(collapsed).toContain("Use bounded read arguments");
-		expect(collapsed).toContain("cg_process_file");
-		expect(expanded).toContain("Large file read blocked: large.log");
-		expect(warningRendered).toContain("<warning>Large file read blocked: large.log");
+	it("summarizes large full-file code reads", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-summary-read-"));
+		const body = Array.from({ length: 240 }, (_, index) => `\tconst value${index} = ${index};`).join("\n");
+		writeFileSync(join(cwd, "large.ts"), `export function large() {\n${body}\n}\n`);
+		const read = registerEditTools("hashline").get("read");
+
+		const result = await read.execute("read", { path: "large.ts" }, undefined, undefined, { cwd });
+
+		expect(result.details.summary.elidedLines).toBeGreaterThan(200);
+		expect(result.content[0].text).toContain("lines elided; re-read needed ranges");
+		expect(result.content[0].text).not.toContain("value120");
 	});
 
 	it("allows bounded reads from large files for edit targeting", async () => {
@@ -907,7 +678,7 @@ describe("fileops extension modes", () => {
 		expect(result.content[0].text).toMatch(/^\[large\.log#[0-9A-F]{4}\]\n2:needle/);
 	});
 
-	it("caps search output globally and points large explorations at indexed search", async () => {
+	it("caps search output and asks for narrower scope", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-search-cap-"));
 		writeFileSync(
 			join(cwd, "large.txt"),
@@ -920,8 +691,7 @@ describe("fileops extension modes", () => {
 
 		expect((text.match(/\*?\d+:needle/g) ?? []).length).toBe(200);
 		expect(text).toContain("Search results truncated at 200 rows");
-		expect(text).toContain("cg_index");
-		expect(text).toContain("cg_search");
+		expect(text).toContain("Use a narrower path, glob, or ranges.");
 	});
 
 	it("caps find output and reports when additional files were omitted", async () => {
@@ -963,621 +733,11 @@ describe("fileops extension modes", () => {
 		expect(missingRootResult.content[0].text).toBe("No files found matching pattern");
 	});
 
-	it("renders file workflow tools in the OMP transcript shape", async () => {
-		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-render-"));
-		writeFileSync(join(cwd, "sample.txt"), "alpha\nneedle beta\ngamma\n");
-		const tools = registerEditTools("hashline");
-
-		const read = tools.get("read");
-		const readResult = await read.execute("read", { path: "sample.txt:1-3" }, undefined, undefined, { cwd });
-		expect(render(read.renderCall({ path: "sample.txt:1-3" }, theme, {}))).toBe("✓ **Read** sample.txt:1-3");
-		expect(render(read.renderResult(readResult, { expanded: false, isPartial: false }, theme, {}))).toBe("");
-		const readRendered = render(read.renderResult(readResult, { expanded: true, isPartial: false }, theme, {}));
-		expect(readRendered).toContain("[sample.txt#");
-		const readRoleRendered = render(
-			read.renderResult(readResult, { expanded: true, isPartial: false }, roleTheme, {}),
-		);
-		expect(readRoleRendered).toMatch(/<accent>\[sample\.txt<\/accent><toolDiffAdded>#[0-9A-F]{4}\]<\/toolDiffAdded>/);
-		expect(readRendered.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")).toContain("  1│alpha");
-
-		const search = tools.get("search");
-		const searchArgs = { pattern: "needle", path: "sample.txt" };
-		const searchResult = await search.execute("search", searchArgs, undefined, undefined, { cwd });
-		const searchRendered = render(
-			search.renderResult(searchResult, { expanded: false, isPartial: false }, theme, { args: searchArgs }),
-		);
-		expect(searchRendered).toContain("✓ **Search:** needle 1 match · 1 file · in sample.txt");
-		expect(searchRendered).toContain("[sample.txt#");
-		expect(searchRendered).toContain("*  2│");
-		expect(searchRendered).toContain("needle");
-		expect(searchRendered).toContain("beta");
-		const searchRoleRendered = render(
-			search.renderResult(searchResult, { expanded: false, isPartial: false }, roleTheme, { args: searchArgs }),
-		);
-		expect(searchRoleRendered).toContain("<warning>needle</warning>");
-		const noMatchResult = await search.execute(
-			"search",
-			{ pattern: "absent", path: "sample.txt" },
-			undefined,
-			undefined,
-			{ cwd },
-		);
-		const noMatchRendered = render(
-			search.renderResult(noMatchResult, { expanded: false, isPartial: false }, theme, {
-				args: { pattern: "absent", path: "sample.txt" },
-			}),
-		);
-		expect(noMatchRendered).toContain("✓ **Search:** absent No matches found · in sample.txt");
-
-		const find = tools.get("find");
-		const findArgs = { paths: ["*.txt"] };
-		const findResult = await find.execute("find", findArgs, undefined, undefined, { cwd });
-		expect(render(find.renderCall(findArgs, theme, {}))).toBe("");
-		const findRendered = render(
-			find.renderResult(findResult, { expanded: false, isPartial: false }, theme, { args: findArgs }),
-		);
-		expect(findRendered).toContain("✓ **Find:** *.txt 1 file · in .");
-		const findRoleRendered = render(
-			find.renderResult(findResult, { expanded: false, isPartial: false }, roleTheme, { args: findArgs }),
-		);
-		expect(findRoleRendered).toContain("<warning>*.txt</warning>");
-		expect(findRendered).toContain("└─ ≡ sample.txt");
-
-		const edit = tools.get("edit");
-		const header = readResult.content[0].text.split("\n")[0];
-		const editContext = {
-			state: {},
-			invalidate: () => {
-				throw new Error("edit render should not self-invalidate");
-			},
-		};
-		const editCallRendered = render(
-			edit.renderCall({ input: `${header}\nreplace 2..2:\n+needle delta\n` }, theme, editContext),
-		);
-		expect(editCallRendered).toContain(`✓ **Edit:** ≡ ${header}:2`);
-		const editCallRoleRendered = render(
-			edit.renderCall({ input: `${header}\nreplace 2..2:\n+needle delta\n` }, roleTheme, editContext),
-		);
-		expect(editCallRoleRendered).toMatch(
-			/<accent>\[sample\.txt<\/accent><toolDiffAdded>#[0-9A-F]{4}\]<\/toolDiffAdded><warning>:2<\/warning>/,
-		);
-		expect(editCallRendered).toContain("[toolPendingBg]");
-		expect(editCallRendered).toStartWith("[toolPendingBg]✓");
-		markLiveTurnStarted();
-		const runningState: Record<string, any> = {};
-		const runningContext = { state: runningState, isPartial: true, invalidate() {} };
-		const runningEarly = render(
-			edit.renderCall({ input: `${header}\nreplace 2..2:\n+needle delta\n` }, rgbTheme, runningContext),
-		);
-		if (runningState.elapsedTimer) clearTimeout(runningState.elapsedTimer);
-		runningState.elapsedTimer = undefined;
-		runningState.startedAtMs = Date.now() - 240;
-		const runningLater = render(
-			edit.renderCall({ input: `${header}\nreplace 2..2:\n+needle delta\n` }, rgbTheme, runningContext),
-		);
-		if (runningState.elapsedTimer) clearTimeout(runningState.elapsedTimer);
-		expect(stripAnsi(runningEarly)).toContain(`**Editing** ≡ ${header}:2`);
-		expect(stripAnsi(runningLater)).toContain(`**Editing** ≡ ${header}:2`);
-		expect(stripAnsi(runningLater)).toContain("⠹");
-		expect(runningEarly).not.toBe(runningLater);
-
-		const editResult = await edit.execute(
-			"edit",
-			{ input: `${header}\nreplace 2..2:\n+needle delta\n` },
-			undefined,
-			undefined,
-			{
-				cwd,
-			},
-		);
-		const editRendered = render(edit.renderResult(editResult, { expanded: true, isPartial: false }, theme, {}));
-		expect(stripAnsi(editRendered)).toContain("delta");
-		expect(stripAnsi(editRendered)).not.toContain("✓ **Edit:**");
-		expect(editRendered).not.toContain("[toolSuccessBg]");
-		const wideEditLines = edit
-			.renderResult(editResult, { expanded: true, isPartial: false }, rgbTheme, {})
-			.render(237);
-		expect(wideEditLines.every((line: string) => visibleWidth(line) <= 237)).toBe(true);
-
-		const write = tools.get("write");
-		const writeRendered = render(write.renderCall({ path: "out.txt", content: "one\ntwo" }, theme, {}));
-		expect(writeRendered).toContain("✓ **Write:** ≡ out.txt · 2 lines");
-		expect(writeRendered).toContain("1│one");
-		expect(writeRendered).toContain("2│two");
-		expect(writeRendered).not.toContain("[toolSuccessBg]");
-	});
-
-	it("stops animating an edit call that never finished streaming", () => {
-		// A call abandoned mid-stream stays isPartial forever. While its spinner keeps advancing,
-		// every frame changes a transcript line; once that line scrolls above the viewport pi-tui
-		// answers each change by clearing the screen and re-emitting the whole transcript.
-		const tools = registerEditTools("hashline");
-		const edit = tools.get("edit");
-		const input = "[sample.txt#ABCD]\nreplace 1..1:\n+new\n";
-
-		markLiveTurnStarted();
-		let invalidations = 0;
-		// Both ages are past the cap, and they sit 3 spinner frames apart (360ms / 120ms), so an
-		// uncapped clock renders two different frames here.
-		const state: Record<string, any> = { startedAtMs: Date.now() - 90_000 };
-		const context = { state, isPartial: true, invalidate: () => void invalidations++ };
-
-		const first = render(edit.renderCall({ input }, rgbTheme, context));
-		state.startedAtMs = Date.now() - 90_360;
-		const second = render(edit.renderCall({ input }, rgbTheme, context));
-
-		// Identical output is what leaves the differ with nothing to repaint.
-		expect(second).toBe(first);
-		expect(state.elapsedTimer).toBeUndefined();
-		expect(invalidations).toBe(0);
-	});
-
-	it("never animates an edit call replayed from a resumed transcript", () => {
-		// Resume replays history before any turn runs, and a replayed call with no result stays
-		// isPartial forever. Its render state is fresh, so the stall cap alone would let a resumed
-		// session animate — and flicker — for a full minute before freezing.
-		resetLiveTurnForTests();
-		const tools = registerEditTools("hashline");
-		const edit = tools.get("edit");
-		const input = "[sample.txt#ABCD]\nreplace 1..1:\n+new\n";
-
-		let invalidations = 0;
-		const state: Record<string, any> = {};
-		const context = { state, isPartial: true, invalidate: () => void invalidations++ };
-
-		const first = render(edit.renderCall({ input }, rgbTheme, context));
-		state.startedAtMs = (state.startedAtMs ?? Date.now()) - 360;
-		const second = render(edit.renderCall({ input }, rgbTheme, context));
-
-		expect(second).toBe(first);
-		expect(state.elapsedTimer).toBeUndefined();
-		expect(invalidations).toBe(0);
-	});
-
-	it("keeps edit diffs visible until compaction", () => {
-		const { tool, emit } = registerEditToolWithEvents("hashline");
-		const result = {
-			content: [{ type: "text", text: "[sample.txt#ABCD]" }],
-			details: { diff: longUnifiedDiff(60), editTurnIndex: 1 },
-		};
-
-		emit("turn_start", { type: "turn_start", turnIndex: 1, timestamp: 1 });
-		emit("tool_execution_start", {
-			type: "tool_execution_start",
-			toolName: "edit",
-			toolCallId: "turn-1-edit",
-			args: {},
-		});
-		const staleComponent = tool.renderResult(result, { expanded: true, isPartial: false }, theme, {
-			toolCallId: "turn-1-edit",
-			executionStarted: true,
-		});
-		const latestRendered = stripAnsi(render(staleComponent));
-		expect(latestRendered).toContain("new60");
-
-		emit("turn_start", { type: "turn_start", turnIndex: 2, timestamp: 2 });
-		const stillLatestRendered = stripAnsi(render(staleComponent));
-		expect(stillLatestRendered).toContain("new60");
-
-		emit("tool_execution_start", {
-			type: "tool_execution_start",
-			toolName: "edit",
-			toolCallId: "turn-2-edit",
-			args: {},
-		});
-		expect(stripAnsi(render(staleComponent))).toContain("new60");
-
-		emit(
-			"session_compact",
-			{ type: "session_compact" },
-			{
-				sessionManager: {
-					getBranch: () => [
-						{
-							id: "kept",
-							type: "message",
-							message: {
-								role: "assistant",
-								content: [{ type: "toolCall", id: "turn-2-edit", name: "edit", arguments: {} }],
-							},
-						},
-						{ type: "compaction", firstKeptEntryId: "kept" },
-					],
-				},
-			},
-		);
-		expect(stripAnsi(render(staleComponent))).toBe("");
-		const newLatestResult = { ...result, details: { ...result.details, editTurnIndex: 3 } };
-		const newLatestRendered = stripAnsi(
-			render(
-				tool.renderResult(newLatestResult, { expanded: true, isPartial: false }, theme, {
-					toolCallId: "turn-2-edit",
-					executionStarted: true,
-				}),
-			),
-		);
-		expect(newLatestRendered).toContain("new60");
-	});
-
-	it("keeps no-diff edit text visible until compaction", () => {
-		const { tool, emit } = registerEditToolWithEvents("apply_patch");
-		const result = {
-			content: [
-				{
-					type: "text",
-					text: Array.from({ length: 60 }, (_, index) => `text fallback line ${index + 1}`).join("\n"),
-				},
-			],
-			details: { editTurnIndex: 1 },
-		};
-
-		emit("turn_start", { type: "turn_start", turnIndex: 1, timestamp: 1 });
-		emit("tool_execution_start", {
-			type: "tool_execution_start",
-			toolName: "edit",
-			toolCallId: "turn-1-edit",
-			args: {},
-		});
-		const staleComponent = tool.renderResult(result, { expanded: true, isPartial: false }, theme, {
-			toolCallId: "turn-1-edit",
-			executionStarted: true,
-		});
-		expect(stripAnsi(render(staleComponent))).toContain("text fallback line 60");
-
-		emit("turn_start", { type: "turn_start", turnIndex: 2, timestamp: 2 });
-		expect(stripAnsi(render(staleComponent))).toContain("text fallback line 60");
-		emit("tool_execution_start", {
-			type: "tool_execution_start",
-			toolName: "edit",
-			toolCallId: "turn-2-edit",
-			args: {},
-		});
-		expect(stripAnsi(render(staleComponent))).toContain("text fallback line 60");
-	});
-
-	it("keeps search and find results visible until compaction", () => {
-		const { tools, emit } = registerEditToolWithEvents("hashline");
-		const search = tools.get("search");
-		const find = tools.get("find");
-		const searchResult = { content: [{ type: "text", text: "[sample.txt#ABCD]\n*1:needle" }], details: {} };
-		const findResult = { content: [{ type: "text", text: "sample.txt\nother.txt" }], details: {} };
-
-		emit("turn_start", { type: "turn_start", turnIndex: 1, timestamp: 1 });
-		emit("tool_execution_start", {
-			type: "tool_execution_start",
-			toolName: "search",
-			toolCallId: "search-1",
-			args: {},
-		});
-		emit("tool_execution_start", { type: "tool_execution_start", toolName: "find", toolCallId: "find-1", args: {} });
-		const searchComponent = search.renderResult(searchResult, { expanded: true, isPartial: false }, theme, {
-			args: { pattern: "needle", path: "." },
-			toolCallId: "search-1",
-			executionStarted: true,
-		});
-		const findComponent = find.renderResult(findResult, { expanded: true, isPartial: false }, theme, {
-			args: { paths: ["*.txt"] },
-			toolCallId: "find-1",
-			executionStarted: true,
-		});
-		expect(stripAnsi(render(searchComponent))).toContain("needle");
-		expect(stripAnsi(render(findComponent))).toContain("sample.txt");
-
-		emit("turn_start", { type: "turn_start", turnIndex: 2, timestamp: 2 });
-		expect(stripAnsi(render(searchComponent))).toContain("needle");
-		expect(stripAnsi(render(findComponent))).toContain("sample.txt");
-		emit("tool_execution_start", {
-			type: "tool_execution_start",
-			toolName: "search",
-			toolCallId: "search-2",
-			args: {},
-		});
-		expect(stripAnsi(render(searchComponent))).toContain("needle");
-		expect(stripAnsi(render(findComponent))).toContain("sample.txt");
-	});
-
-	it("renders all replayed fileops results in the current compaction window", () => {
-		const { tools, emit } = registerEditToolWithEvents("hashline");
-		const search = tools.get("search");
-		const find = tools.get("find");
-		const olderSearchResult = { content: [{ type: "text", text: "[old.txt#ABCD]\n*1:old" }], details: {} };
-		const latestSearchResult = { content: [{ type: "text", text: "[new.txt#ABCD]\n*1:needle" }], details: {} };
-		const latestFindResult = { content: [{ type: "text", text: "new.txt\nother.txt" }], details: {} };
-		const ctx = {
-			sessionManager: {
-				getBranch: () => [
-					{
-						id: "old-entry",
-						type: "message",
-						message: {
-							role: "assistant",
-							content: [{ type: "toolCall", id: "old-search", name: "search", arguments: {} }],
-						},
-					},
-					{
-						id: "latest-entry",
-						type: "message",
-						message: {
-							role: "assistant",
-							content: [
-								{ type: "toolCall", id: "latest-search", name: "search", arguments: {} },
-								{ type: "toolCall", id: "latest-find", name: "find", arguments: {} },
-							],
-						},
-					},
-					{
-						type: "compaction",
-						firstKeptEntryId: "latest-entry",
-					},
-				],
-			},
-		};
-
-		emit("session_start", { type: "session_start", reason: "reload" }, ctx);
-		expect(
-			stripAnsi(
-				render(
-					search.renderResult(olderSearchResult, { expanded: true, isPartial: false }, theme, {
-						args: { pattern: "old", path: "." },
-						toolCallId: "old-search",
-						executionStarted: false,
-					}),
-				),
-			),
-		).toBe("");
-		expect(
-			stripAnsi(
-				render(
-					search.renderResult(latestSearchResult, { expanded: true, isPartial: false }, theme, {
-						args: { pattern: "needle", path: "." },
-						toolCallId: "latest-search",
-						executionStarted: false,
-					}),
-				),
-			),
-		).toContain("needle");
-		expect(
-			stripAnsi(
-				render(
-					find.renderResult(latestFindResult, { expanded: true, isPartial: false }, theme, {
-						args: { paths: ["*.txt"] },
-						toolCallId: "latest-find",
-						executionStarted: false,
-					}),
-				),
-			),
-		).toContain("new.txt");
-	});
-
-	it("renders independent file sections in columns when width allows", async () => {
-		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-columns-"));
-		writeFileSync(join(cwd, "alpha.txt"), "needle alpha\n");
-		writeFileSync(join(cwd, "beta.txt"), "needle beta\n");
-		const tools = registerEditTools("hashline");
-
-		const search = tools.get("search");
-		const searchArgs = { pattern: "needle", path: "." };
-		const searchResult = await search.execute("search", searchArgs, undefined, undefined, { cwd });
-		const searchWideLines = search
-			.renderResult(searchResult, { expanded: false, isPartial: false }, theme, { args: searchArgs })
-			.render(240)
-			.map(stripAnsi);
-		expect(searchWideLines.some((line: string) => line.includes("[alpha.txt#") && line.includes("[beta.txt#"))).toBe(
-			true,
-		);
-
-		const find = tools.get("find");
-		const findArgs = { paths: ["*.txt"] };
-		const findResult = await find.execute("find", findArgs, undefined, undefined, { cwd });
-		const findWideLines = find
-			.renderResult(findResult, { expanded: false, isPartial: false }, theme, { args: findArgs })
-			.render(240)
-			.map(stripAnsi);
-		expect(findWideLines.some((line: string) => line.includes("alpha.txt") && line.includes("beta.txt"))).toBe(true);
-	});
-
-	it("renders multi-file edit diffs in columns when width allows", async () => {
-		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-diff-columns-"));
-		writeFileSync(join(cwd, "alpha.txt"), "alpha\n");
-		writeFileSync(join(cwd, "beta.txt"), "beta\n");
-		const tools = registerEditTools("hashline");
-		const alphaHeader = (
-			await tools.get("read").execute("read", { path: "alpha.txt" }, undefined, undefined, { cwd })
-		).content[0].text.split("\n")[0];
-		const betaHeader = (
-			await tools.get("read").execute("read", { path: "beta.txt" }, undefined, undefined, { cwd })
-		).content[0].text.split("\n")[0];
-
-		const editResult = await tools
-			.get("edit")
-			.execute(
-				"edit",
-				{ input: `${alphaHeader}\nreplace 1..1:\n+ALPHA\n${betaHeader}\nreplace 1..1:\n+BETA\n` },
-				undefined,
-				undefined,
-				{
-					cwd,
-				},
-			);
-		const wideLines = tools
-			.get("edit")
-			.renderResult(editResult, { expanded: true, isPartial: false }, theme, {})
-			.render(240)
-			.map(stripAnsi);
-
-		expect(wideLines.some((line: string) => line.includes("[alpha.txt#") && line.includes("[beta.txt#"))).toBe(true);
-	});
-
-	it("renders an edit header only when an edit diff switches files", async () => {
-		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-multi-file-render-"));
-		writeFileSync(join(cwd, "sample.txt"), "alpha\nbeta\n");
-		writeFileSync(join(cwd, "other.rs"), "fn smoke() {}\n");
-		const tools = registerEditTools("hashline");
-		const sampleHeader = (
-			await tools.get("read").execute("read", { path: "sample.txt" }, undefined, undefined, { cwd })
-		).content[0].text.split("\n")[0];
-		const otherHeader = (
-			await tools.get("read").execute("read", { path: "other.rs" }, undefined, undefined, { cwd })
-		).content[0].text.split("\n")[0];
-		const editResult = await tools
-			.get("edit")
-			.execute(
-				"edit",
-				{ input: `${sampleHeader}\nreplace 2..2:\n+BETA\n${otherHeader}\ninsert before 1:\n+use super::*;\n` },
-				undefined,
-				undefined,
-				{ cwd },
-			);
-
-		const rendered = stripAnsi(
-			render(tools.get("edit").renderResult(editResult, { expanded: true, isPartial: false }, theme, {})),
-		);
-		const sampleHeaderIndex = rendered.indexOf("✓ **Edit:** ≡ [sample.txt#");
-		const otherHeaderIndex = rendered.indexOf("✓ **Edit:** ≡ [other.rs#");
-		const otherContentIndex = rendered.indexOf("1 + use super::*;");
-
-		expect(sampleHeaderIndex).toBe(-1);
-		expect(otherHeaderIndex).toBeGreaterThanOrEqual(0);
-		expect(otherContentIndex).toBeGreaterThan(otherHeaderIndex);
-	});
-
-	it("renders successful edits to files with 'error' in the name as diffs", async () => {
-		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-error-path-name-"));
-		writeFileSync(join(cwd, "error.txt"), "broken\n");
-		const tools = registerEditTools("hashline");
-		const header = (
-			await tools.get("read").execute("read", { path: "error.txt" }, undefined, undefined, { cwd })
-		).content[0].text.split("\n")[0];
-
-		const editResult = await tools
-			.get("edit")
-			.execute("edit", { input: `${header}\nreplace 1..1:\n+FIXED\n` }, undefined, undefined, { cwd });
-		const rendered = stripAnsi(
-			render(tools.get("edit").renderResult(editResult, { expanded: true, isPartial: false }, theme, {})),
-		);
-
-		expect(rendered).toContain("1 + FIXED");
-	});
-
 	it("uses Luau grammar for Luau file suffixes", async () => {
 		expect(languageFromPath("init.luau")).toBe("luau");
 		expect(languageFromPath("src/Player.server.lua")).toBe("luau");
 		expect(languageFromPath("src/Player.client.lua")).toBe("luau");
 		expect(languageFromPath("plain.lua")).toBe("lua");
-
-		const [row] = await highlightCodeRows("src/Player.server.lua", ["local score: number = 1"]);
-
-		expect(row).toContain("\x1b[38;2;121;184;255mnumber");
-	});
-
-	it("precomputes syntax-highlighted edit rows with word-level diff overlays", async () => {
-		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-highlight-"));
-		writeFileSync(join(cwd, "sample.ts"), "const value = 1;\n");
-		const tools = registerEditTools("hashline");
-		const readResult = await tools.get("read").execute("read", { path: "sample.ts" }, undefined, undefined, { cwd });
-		expect(readResult.details.highlightedRows.some((row: string) => row.includes("\x1b["))).toBe(true);
-		const header = readResult.content[0].text.split("\n")[0];
-		const searchResult = await tools
-			.get("search")
-			.execute("search", { pattern: "value", path: "sample.ts" }, undefined, undefined, { cwd });
-		expect(searchResult.details.highlightedSections[0].rows[0]).toContain("\x1b[48;2;92;78;35m");
-
-		const editResult = await tools
-			.get("edit")
-			.execute("edit", { input: `${header}\nreplace 1..1:\n+const value = 2;\n` }, undefined, undefined, { cwd });
-		const rows = editResult.details.highlightedDiffRows;
-
-		expect(Array.isArray(rows)).toBe(true);
-		expect(
-			rows.some((row: any) => row.kind === "remove" && row.highlightedContent.includes("\x1b[48;2;115;55;75m1")),
-		).toBe(true);
-		expect(
-			rows.some((row: any) => row.kind === "add" && row.highlightedContent.includes("\x1b[48;2;45;94;60m2")),
-		).toBe(true);
-	});
-
-	it("highlights the minimal visible character changes inside syntax-highlighted diff rows", async () => {
-		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-visible-char-diff-"));
-		writeFileSync(join(cwd, "sample.ts"), "if (bestIndex >= 0 && bestScore >= 0.35) {\n}\n");
-		const tools = registerEditTools("hashline");
-		const readResult = await tools.get("read").execute("read", { path: "sample.ts" }, undefined, undefined, { cwd });
-		const header = readResult.content[0].text.split("\n")[0];
-
-		const editResult = await tools
-			.get("edit")
-			.execute(
-				"edit",
-				{ input: `${header}\nreplace 1..1:\n+if (bestIndex >= 0 && bestScore >= 0.65) {\n` },
-				undefined,
-				undefined,
-				{ cwd },
-			);
-		const rows = editResult.details.highlightedDiffRows;
-		const removed = rows.find((row: any) => row.kind === "remove");
-		const added = rows.find((row: any) => row.kind === "add");
-
-		expect(charsWithBackground(removed.highlightedContent, "\x1b[48;2;115;55;75m")).toBe("3");
-		expect(charsWithBackground(added.highlightedContent, "\x1b[48;2;45;94;60m")).toBe("6");
-	});
-
-	it("pairs word diff lines by similarity when an edit also inserts a line", async () => {
-		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-word-pair-"));
-		const original =
-			"const editCallRendered = render(edit.renderCall({ input: `$" +
-			"{header}\\n2 2\\n+needle delta\\n` }, theme, {}));\n";
-		writeFileSync(join(cwd, "sample.ts"), original);
-		const tools = registerEditTools("hashline");
-		const readResult = await tools.get("read").execute("read", { path: "sample.ts" }, undefined, undefined, { cwd });
-		const header = readResult.content[0].text.split("\n")[0];
-		const inserted =
-			'const editContext = { state: {}, invalidate: () => { throw new Error("edit render should not self-invalidate"); } };\n';
-		const changed =
-			"const editCallRendered = render(edit.renderCall({ input: `$" +
-			"{header}\\n2 2\\n+needle delta\\n` }, theme, editContext));\n";
-
-		const editResult = await tools
-			.get("edit")
-			.execute("edit", { input: `${header}\nreplace 1..1:\n+${inserted}+${changed}` }, undefined, undefined, {
-				cwd,
-			});
-		const rows = editResult.details.highlightedDiffRows;
-		const removed = rows.find((row: any) => row.kind === "remove");
-		const addedInserted = rows.find((row: any) => row.kind === "add" && row.content.includes("editContext ="));
-		const addedChanged = rows.find((row: any) => row.kind === "add" && row.content.includes("editCallRendered"));
-
-		expect(removed.highlightedContent).not.toContain("\x1b[48;2;115;55;75mconst editCallRendered");
-		expect(addedInserted.highlightedContent).not.toContain("\x1b[48;2;45;94;60m");
-		expect(addedChanged.highlightedContent).toContain("\x1b[48;2;45;94;60m");
-	});
-
-	it("does not invent inline word diffs for unpaired multi-line rewrite blocks", async () => {
-		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-complex-rewrite-"));
-		writeFileSync(
-			join(cwd, "sample.ts"),
-			"const escaped = pattern.replace(/[.*+?^$" +
-				'{}()|[\\]\\\\]/g, "\\\\$&");\nconst regex = new RegExp(escaped, "gi");\n',
-		);
-		const tools = registerEditTools("hashline");
-		const readResult = await tools.get("read").execute("read", { path: "sample.ts" }, undefined, undefined, { cwd });
-		const header = readResult.content[0].text.split("\n")[0];
-		const replacement = [
-			"let regex: RegExp;",
-			"try {",
-			'\tregex = new RegExp(pattern, "gi");',
-			"} catch {",
-			"\tregex = new RegExp(pattern.replace(/[.*+?^$" + '{}()|[\\]\\\\]/g, "\\\\$&"), "gi");',
-			"}",
-			"",
-		].join("\n");
-
-		const editResult = await tools
-			.get("edit")
-			.execute("edit", { input: `${header}\nreplace 1..2:\n+${replacement}` }, undefined, undefined, { cwd });
-		const rows = editResult.details.highlightedDiffRows;
-		const changedRows = rows.filter((row: any) => row.kind === "remove" || row.kind === "add");
-
-		expect(changedRows.every((row: any) => !row.highlightedContent.includes("\x1b[48;2;115;55;75m"))).toBe(true);
-		expect(changedRows.every((row: any) => !row.highlightedContent.includes("\x1b[48;2;45;94;60m"))).toBe(true);
 	});
 
 	it("supports replace mode snake-case and all true", async () => {
@@ -1595,6 +755,24 @@ describe("fileops extension modes", () => {
 
 		expect(result.content[0].text).toContain("3 occurrences");
 		expect(readFileSync(join(cwd, "sample.txt"), "utf-8")).toBe("baz bar baz\nbaz\n");
+	});
+
+	it("fuzzy matches replace-mode edits", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-replace-fuzzy-"));
+		writeFileSync(join(cwd, "sample.ts"), "function value() {\n  return current;\n}\n");
+		const tool = registerEditTool("replace");
+
+		await tool.execute(
+			"call",
+			{
+				input: "*** File: sample.ts\n*** Old\n|function value() {\n| return   current;\n|}\n*** New\n|function value() {\n|  return next;\n|}\n",
+			},
+			undefined,
+			undefined,
+			{ cwd },
+		);
+
+		expect(readFileSync(join(cwd, "sample.ts"), "utf-8")).toContain("return next;");
 	});
 
 	it("completes edit-config mode arguments by prefix", () => {
@@ -1615,39 +793,4 @@ describe("fileops extension modes", () => {
 		expect(HASHLINE_GRAMMAR).toContain("replace_block_anchor");
 		expect(REPLACE_GRAMMAR).toContain("*** Old");
 	});
-});
-
-it("builds search result text once per frame set and refreshes when expand toggles", () => {
-	const { tools } = registerEditToolWithEvents("hashline");
-	const search = tools.get("search");
-	const result = {
-		content: [{ type: "text", text: "[sample.txt#ABCD]\n*1:needle one\n 2:beta\n*3:needle two" }],
-		details: {},
-	};
-	let themeCalls = 0;
-	const countingTheme = {
-		...theme,
-		fg: (role: string, text: string) => {
-			themeCalls++;
-			return (theme as any).fg(role, text);
-		},
-	};
-	const options = { expanded: false, isPartial: false };
-	const component = search.renderResult(result, options, countingTheme, {
-		args: { pattern: "needle", path: "sample.txt" },
-	});
-
-	const first = render(component);
-	const callsAfterFirst = themeCalls;
-	for (let frame = 0; frame < 10; frame++) component.render(120);
-
-	// Repeat frames must not rebuild the text: that is the per-row match highlighting.
-	expect(themeCalls).toBe(callsAfterFirst);
-	expect(render(component)).toBe(first);
-
-	// Expanding is a live input, so it has to invalidate rather than serve collapsed rows.
-	options.expanded = true;
-	const expanded = render(component);
-	expect(themeCalls).toBeGreaterThan(callsAfterFirst);
-	expect(stripAnsi(expanded)).toContain("needle");
 });

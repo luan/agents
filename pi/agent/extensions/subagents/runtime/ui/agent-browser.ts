@@ -18,9 +18,9 @@ type Theme = {
 };
 
 type AgentHarnessActions = {
-	steer(id: string, message: string): Promise<boolean>;
-	stop(id: string): boolean;
-	followUp(id: string, prompt: string): Promise<boolean>;
+	steer(record: AgentRecord, message: string): Promise<boolean>;
+	stop(record: AgentRecord): boolean;
+	followUp(record: AgentRecord, prompt: string): Promise<boolean>;
 };
 
 type HarnessMode = "browse" | "input";
@@ -370,8 +370,8 @@ export class AgentHarness {
 		this.mode = "browse";
 		const sent =
 			this.inputAction === "steer"
-				? await this.actions.steer(record.id, message)
-				: await this.actions.followUp(record.id, message);
+				? await this.actions.steer(record, message)
+				: await this.actions.followUp(record, message);
 		this.message = sent ? `${this.inputAction} sent to ${record.id}` : `${record.id} is no longer available`;
 		this.tui.requestRender();
 	}
@@ -385,7 +385,7 @@ export class AgentHarness {
 	private stopSelected(): void {
 		const record = this.selectedRecord();
 		if (!record) return;
-		this.message = this.actions.stop(record.id) ? `Stopped ${record.id}` : `${record.id} is not running`;
+		this.message = this.actions.stop(record) ? `Stopped ${record.id}` : `${record.id} is not running`;
 		this.tui.requestRender();
 	}
 

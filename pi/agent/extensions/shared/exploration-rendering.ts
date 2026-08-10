@@ -1,5 +1,3 @@
-import { basename } from "node:path";
-
 type ExplorationStatus = "running" | "done";
 
 type ExplorationAction =
@@ -34,20 +32,21 @@ interface ExplorationRenderInfo {
 
 type ArgsToAction = (args: unknown) => ExplorationAction | undefined;
 type PiWithEvents = {
-	on?: (event: string, handler: (event: any) => void) => void;
+	on?: (event: string, handler: (event: any, context?: any) => void) => void;
 };
 
 const actionByToolName = new Map<string, ArgsToAction>();
 const registeredPis = new WeakSet<object>();
 
 const entriesByToolCallId = new Map<string, ExplorationEntry>();
+const pendingInvalidatesByToolCallId = new Map<string, () => void>();
 const groupsById = new Map<number, ExplorationGroup>();
 let activeExplorationGroupId: number | undefined;
 let nextGroupId = 1;
 
 export function readAction(filePath: string | undefined): ExplorationAction {
 	const path = filePath ?? "";
-	return { kind: "read", body: basename(path) || path || "file", path };
+	return { kind: "read", body: path || "file", path };
 }
 
 export function registerExplorationTool(toolName: string, toAction: ArgsToAction): void {
@@ -58,8 +57,9 @@ export function registerExplorationEventHandlers(pi: PiWithEvents): void {
 	if (!pi.on || registeredPis.has(pi)) return;
 	registeredPis.add(pi);
 
-	pi.on("session_start", clearExplorationGroup);
-	pi.on("session_tree", clearExplorationGroup);
+	pi.on("session_start", (_event, context) => rebuildExplorationGroups(context));
+	pi.on("session_tree", (_event, context) => rebuildExplorationGroups(context));
+	pi.on("session_compact", (_event, context) => rebuildExplorationGroups(context));
 	pi.on("session_shutdown", clearExplorationGroup);
 	pi.on("message_start", (event) => {
 		if (event.message?.role === "toolResult") return;
@@ -80,11 +80,60 @@ export function registerExplorationEventHandlers(pi: PiWithEvents): void {
 	});
 }
 
+function rebuildExplorationGroups(context: unknown): void {
+	clearExplorationGroup();
+	if (!context || typeof context !== "object" || !("sessionManager" in context)) return;
+	const sessionManager = context.sessionManager;
+	if (!sessionManager || typeof sessionManager !== "object") return;
+	const getEntries =
+		"buildContextEntries" in sessionManager && typeof sessionManager.buildContextEntries === "function"
+			? sessionManager.buildContextEntries
+			: "getBranch" in sessionManager && typeof sessionManager.getBranch === "function"
+				? sessionManager.getBranch
+				: undefined;
+	if (!getEntries) return;
+	const branch = getEntries.call(sessionManager);
+	if (!Array.isArray(branch)) return;
+
+	for (const entry of branch) {
+		if (!entry || typeof entry !== "object" || !("type" in entry)) continue;
+		if (entry.type !== "message") {
+			if (entry.type === "compaction" || entry.type === "branch_summary") resetExplorationGroup();
+			continue;
+		}
+		if (!("message" in entry) || !entry.message || typeof entry.message !== "object" || !("role" in entry.message)) {
+			continue;
+		}
+		const message = entry.message;
+		if (message.role === "toolResult") {
+			if ("toolCallId" in message && typeof message.toolCallId === "string")
+				recordExplorationEnd(message.toolCallId);
+			continue;
+		}
+		if (!isToolCallOnlyAssistantMessage(message)) resetExplorationGroup();
+		if (message.role !== "assistant" || !("content" in message) || !Array.isArray(message.content)) continue;
+		for (const block of message.content) {
+			if (!block || typeof block !== "object" || !("type" in block) || block.type !== "toolCall") continue;
+			if (!("id" in block) || typeof block.id !== "string" || !("name" in block) || typeof block.name !== "string") {
+				continue;
+			}
+			const toAction = actionByToolName.get(block.name);
+			const action = toAction?.("arguments" in block ? block.arguments : undefined);
+			if (action) recordExplorationStart(block.id, action);
+			else resetExplorationGroup();
+		}
+	}
+}
+
 function registerExplorationRenderContext(toolCallId: string | undefined, invalidate: (() => void) | undefined): void {
 	if (!toolCallId) return;
 	const entry = entriesByToolCallId.get(toolCallId);
-	if (!entry) return;
-	entry.invalidate = invalidate;
+	if (entry) {
+		entry.invalidate = invalidate;
+		pendingInvalidatesByToolCallId.delete(toolCallId);
+	} else if (invalidate) {
+		pendingInvalidatesByToolCallId.set(toolCallId, invalidate);
+	}
 }
 
 function getExplorationRenderInfo(
@@ -121,15 +170,30 @@ export function renderExplorationText(
 	theme: ExplorationRenderTheme,
 	failed = false,
 ): string {
+	const actions = actionGroups.flat();
+	if (actions.length > 0 && actions.every((action) => action.kind === "read")) {
+		const reads = actions.filter(
+			(action, index) =>
+				action.kind === "read" &&
+				actions.findIndex((candidate) => candidate.kind === "read" && candidate.path === action.path) === index,
+		);
+		const marker = theme.fg(failed ? "error" : status === "running" ? "dim" : "accent", "●");
+		const count = reads.length > 1 ? ` ${theme.fg("dim", `(${reads.length})`)}` : "";
+		let text = `${marker} ${theme.bold("Read")}${count}`;
+		for (const [index, read] of reads.entries()) {
+			const branch = index === reads.length - 1 ? "└─" : "├─";
+			text += `\n${theme.fg("dim", `   ${branch} `)}${theme.fg("accent", read.body)}`;
+		}
+		return text;
+	}
+
 	const header = status === "running" ? "Exploring" : "Explored";
 	let text = `${renderStatusMarker("•", status, theme, failed)} ${theme.bold(header)}`;
-
-	for (const [index, action] of coalesceReadActions(actionGroups.flat()).entries()) {
+	for (const [index, action] of coalesceReadActions(actions).entries()) {
 		const prefix = index === 0 ? "  └ " : "    ";
 		const title = action.kind === "read" ? "Read" : action.title;
 		text += `\n${theme.fg("dim", prefix)}${theme.fg("accent", title)} ${theme.fg("muted", action.body)}`;
 	}
-
 	return text;
 }
 
@@ -142,10 +206,18 @@ export function renderExplorationCall(
 				invalidate?: () => void;
 				isPartial?: boolean;
 				isError?: boolean;
+				executionStarted?: boolean;
 		  }
 		| undefined,
 ): string {
 	registerExplorationRenderContext(context?.toolCallId, context?.invalidate);
+	if (
+		context?.executionStarted === false &&
+		context.isPartial !== false &&
+		context.toolCallId &&
+		!entriesByToolCallId.has(context.toolCallId)
+	)
+		return "";
 	const fallbackStatus = context?.isPartial === false ? "done" : "running";
 	const renderInfo = getExplorationRenderInfo(context?.toolCallId, fallbackStatus);
 	if (renderInfo.hidden) return "";
@@ -167,7 +239,9 @@ function recordExplorationStart(toolCallId: string, action: ExplorationAction): 
 		action,
 		status: "running",
 		hidden: false,
+		invalidate: pendingInvalidatesByToolCallId.get(toolCallId),
 	};
+	pendingInvalidatesByToolCallId.delete(toolCallId);
 	entriesByToolCallId.set(toolCallId, entry);
 
 	let group = activeExplorationGroupId ? groupsById.get(activeExplorationGroupId) : undefined;
@@ -192,6 +266,7 @@ function recordExplorationStart(toolCallId: string, action: ExplorationAction): 
 	group.entryIds.push(toolCallId);
 	group.visibleEntryId = toolCallId;
 	entry.groupId = group.id;
+	entry.invalidate?.();
 }
 
 function recordExplorationEnd(toolCallId: string): void {
@@ -208,6 +283,7 @@ function resetExplorationGroup(): void {
 
 function clearExplorationGroup(): void {
 	entriesByToolCallId.clear();
+	pendingInvalidatesByToolCallId.clear();
 	groupsById.clear();
 	activeExplorationGroupId = undefined;
 	nextGroupId = 1;

@@ -3,13 +3,16 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import autoCompactResumeExtension, { needsCompaction } from "./index";
 
 describe("auto compact and resume", () => {
-	test("compacts tool loops at 85 percent, then resumes", async () => {
+	test("stops high-context tool loops and resumes after Pi compacts", () => {
 		let turnEnd: ((event: any, ctx: any) => void) | undefined;
-		let compactOptions: any;
+		let sessionCompact: ((event: any, ctx: any) => void) | undefined;
+		let abortCalls = 0;
+		let compactCalls = 0;
 		const messages: any[] = [];
 		const pi = {
 			on(event: string, handler: (event: any, ctx: any) => void) {
 				if (event === "turn_end") turnEnd = handler;
+				if (event === "session_compact") sessionCompact = handler;
 			},
 			sendMessage(message: any, options: any) {
 				messages.push({ message, options });
@@ -18,17 +21,22 @@ describe("auto compact and resume", () => {
 		const ctx = {
 			getContextUsage: () => ({ tokens: 235_000, contextWindow: 272_000, percent: 86 }),
 			hasPendingMessages: () => false,
-			hasUI: false,
-			compact(options: any) {
-				compactOptions = options;
+			abort() {
+				abortCalls++;
+			},
+			compact() {
+				compactCalls++;
 			},
 		};
 
 		autoCompactResumeExtension(pi);
 		turnEnd?.({ message: { content: [{ type: "toolCall" }] } }, ctx);
-		expect(compactOptions).toBeDefined();
 
-		compactOptions.onComplete();
+		expect(abortCalls).toBe(1);
+		expect(compactCalls).toBe(0);
+		expect(messages).toEqual([]);
+
+		sessionCompact?.({}, ctx);
 		expect(messages).toEqual([
 			{
 				message: {

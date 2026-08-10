@@ -60,20 +60,23 @@ pub fn run_apply_patch_raw(
     let outcome = match crate::apply_patch::apply(&patch, &cwd_path, dry_run) {
         Ok(o) => o,
         Err(failure) => {
-            let tel = apply_patch_telemetry_for(&cwd_path);
-            let artifacts = crate::apply_patch::repair::handle_failure(
-                tel.as_ref(),
-                &failure,
-                start.elapsed().as_micros() as u64,
-                &patch_sha,
-                &patch,
-            );
             eprintln!("{}", failure.error);
-            eprintln!("{}", artifacts.repair_block.render_compact());
+            if !dry_run {
+                let tel = apply_patch_telemetry_for(&cwd_path);
+                let artifacts = crate::apply_patch::repair::handle_failure(
+                    tel.as_ref(),
+                    &failure,
+                    start.elapsed().as_micros() as u64,
+                    &patch_sha,
+                    &patch,
+                );
+                eprintln!("{}", artifacts.repair_block.render_compact());
+            }
             std::process::exit(1);
         }
     };
-    if let Some(tel) = apply_patch_telemetry_for(&cwd_path)
+    if !dry_run
+        && let Some(tel) = apply_patch_telemetry_for(&cwd_path)
         && let Err(e) = crate::apply_patch::repair::record_success(
             &tel,
             &outcome,

@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { framedBlock, type OmpTheme } from "./omp-card";
+import { type CardTheme, framedBlock } from "./card";
 import { RenderedLineCache } from "./render-cache";
 
-const theme: OmpTheme = {
+const theme: CardTheme = {
 	fg: (_color, text) => text,
 	bold: (text) => text,
 };
@@ -67,7 +67,7 @@ describe("RenderedLineCache", () => {
 	});
 });
 
-describe("OmpCard caching", () => {
+describe("Card caching", () => {
 	const spec = {
 		header: "Subagents",
 		sections: [{ lines: ["├─ agent-1 running", "└─ agent-2 done"] }],

@@ -1,9 +1,9 @@
+import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { chmod, mkdir, open, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-	createEditToolDefinition,
 	createFindToolDefinition,
 	createReadToolDefinition,
 	createWriteToolDefinition,
@@ -14,10 +14,16 @@ import {
 	type ToolRenderContext,
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
-import { Box, Container, type Text } from "@earendil-works/pi-tui";
-import { createTwoFilesPatch } from "diff";
+import { Box, type Component, Container, type Text } from "@earendil-works/pi-tui";
+import { createTwoFilesPatch, diffChars } from "diff";
 import { Type } from "typebox";
-import { runCommand as runExternalCommand } from "../shared/command-runner.ts";
+import { resolveCommand, runCommand as runExternalCommand } from "../shared/command-runner.ts";
+import {
+	readAction,
+	registerExplorationEventHandlers,
+	registerExplorationTool,
+	renderExplorationCall,
+} from "../shared/exploration-rendering.ts";
 import { readPreviewImageFromPath } from "../shared/image-preview.ts";
 import { KittyVirtualImage } from "../shared/kitty-virtual-image.ts";
 import { detachToolResultImages, registerToolResultImageRestore } from "../shared/tool-result-images.ts";
@@ -29,14 +35,18 @@ import {
 	runningCellElapsedMs,
 	runningFrame,
 	sharedAnimationRenderAllowed,
-	shineText,
 	shouldAnimateRunningCell,
 	textComponent,
 } from "../shared/tui";
+import { type CardBackgroundColor, darkerCardBackgroundAnsi, framedBlock } from "../shared/tui/card.ts";
 import { registerAstTools } from "./ast-tools.ts";
 import { buildLineEntriesWithBlockContext } from "./block-context.ts";
-import { preloadBlockLanguages, treeSitterBlockResolver, treeSitterSyntaxValidator } from "./block-resolver.ts";
-import { columnCountForWidth, renderColumns } from "./columns.ts";
+import {
+	preloadBlockLanguages,
+	summarizeCodeStructure,
+	treeSitterBlockResolver,
+	treeSitterSyntaxValidator,
+} from "./block-resolver.ts";
 import {
 	buildHighlightedDiffRows,
 	type DiffRenderRow,
@@ -63,7 +73,6 @@ import { Patcher } from "./hashline/patcher.ts";
 import { stripHashlinePrefixes } from "./hashline/prefixes.ts";
 import type { InMemorySnapshotStore } from "./hashline/snapshots.ts";
 import type { BlockResolution } from "./hashline/types.ts";
-import { installConsecutiveReadSpacingPatch } from "./read-spacing.ts";
 
 const FILEOPS_TOOL_SEARCH_PATHS = [
 	"~/.local/bin",
@@ -79,12 +88,13 @@ const FILEOPS_TOOL_SEARCH_PATHS = [
 
 type EditMode = "apply_patch" | "patch" | "hashline" | "replace";
 const EDIT_FRAME_MS = 120;
-const EDIT_LABEL = "Editing";
 const CONTEXT_PROTECTION_READ_BYTES = 50_000;
 const CONTEXT_PROTECTION_READ_LABEL = "Large file read blocked";
 const DEFAULT_SEARCH_RESULT_LIMIT = 200;
 const DEFAULT_FIND_RESULT_LIMIT = 200;
 
+const READ_SUMMARY_MIN_LINES = 200;
+const READ_SUMMARY_MAX_BYTES = 2 * 1024 * 1024;
 type EditConfig = {
 	mode: EditMode;
 	fuzzyMatch: boolean;
@@ -139,7 +149,7 @@ function largeReadGuidance(path: string, bytes: number): ToolTextResult {
 					"",
 					"Reading the whole file would put all bytes into the conversation.",
 					'Use bounded read arguments for edit targeting, for example `ranges: ["120-180"]` or `offset` with `limit`.',
-					"For analysis, summarization, filtering, or extraction, use `cg_process_file` so the file stays out of context and only your derived answer is returned.",
+					"For analysis, summarization, filtering, or extraction, use bounded reads and search only the needed ranges.",
 				].join("\n"),
 			},
 		],
@@ -161,6 +171,50 @@ async function maybeBlockLargeWholeFileRead(
 	const info = await stat(absolute);
 	if (!info.isFile() || info.size <= CONTEXT_PROTECTION_READ_BYTES) return undefined;
 	return largeReadGuidance(display, info.size);
+}
+
+async function trySummarizeWholeFileRead(
+	display: string,
+	absolute: string,
+	params: { limit?: number; ranges?: string[]; raw?: boolean },
+	ranges: readonly LineRange[],
+	snapshots: InMemorySnapshotStore,
+): Promise<ToolTextResult | undefined> {
+	if (params.raw || hasBoundedReadRequest(params, ranges)) return undefined;
+	const info = await stat(absolute);
+	if (!info.isFile() || info.size > READ_SUMMARY_MAX_BYTES) return undefined;
+	const { text: rawText } = stripBom(await readFile(absolute, "utf-8"));
+	const text = normalizeToLf(rawText);
+	if (text.split("\n").length < READ_SUMMARY_MIN_LINES) return undefined;
+	await preloadBlockLanguages([absolute]);
+	const summary = summarizeCodeStructure(absolute, text);
+	if (!summary) return undefined;
+	const explicit = summary.rows.flatMap((row) => (row.kind === "line" ? [row.lineNumber] : []));
+	const tag =
+		Buffer.byteLength(text, "utf8") <= SNAPSHOT_MAX_BYTES
+			? recordHashlineSnapshot(snapshots, absolute, text, { explicit, synthetic: [] })
+			: undefined;
+	const rows = summary.rows.map((row) => (row.kind === "line" ? `${row.lineNumber}:${row.text}` : "…"));
+	const selector = summary.elidedRanges
+		.slice(0, 2)
+		.map((range) => `${range.startLine}-${range.endLine}`)
+		.join(",");
+	const footer = `[…${summary.elidedLines} lines elided; re-read needed ranges with ${display}:${selector}]`;
+	return {
+		content: [
+			{
+				type: "text",
+				text: [...(tag ? [formatHashlineHeader(display, tag)] : []), ...rows, "", footer].join("\n"),
+			},
+		],
+		details: {
+			hashlineTag: tag,
+			summary: {
+				elidedLines: summary.elidedLines,
+				elidedSpans: summary.elidedRanges.length,
+			},
+		},
+	};
 }
 
 async function detectSupportedReadImageMimeType(absolute: string): Promise<string | undefined> {
@@ -478,6 +532,7 @@ class BlockTextView {
 		private readonly theme: RenderTheme,
 		private readonly shouldRender: () => boolean = () => true,
 		private readonly key: () => string = () => "",
+		private readonly backgroundRole: string | null = "toolPendingBg",
 	) {}
 
 	invalidate() {
@@ -488,7 +543,8 @@ class BlockTextView {
 		if (!this.shouldRender()) return [];
 		return this.cache.get(width, this.key(), () => {
 			const text = typeof this.text === "function" ? this.text(width) : this.text;
-			const box = new Box(0, 0, paintToolBackground(this.theme, "toolPendingBg"));
+			if (!this.backgroundRole) return textComponent(text).render(width);
+			const box = new Box(0, 0, paintToolBackground(this.theme, this.backgroundRole));
 			box.addChild(textComponent(text));
 			return box.render(width);
 		});
@@ -540,14 +596,18 @@ function renderStatusHeader(
 	return `${statusIcon(theme, icon)} ${theme.fg("toolTitle", theme.bold(label))}${rest}`;
 }
 
-function editElapsedMs(context: { state?: Record<string, unknown> } | undefined, running: boolean): number | undefined {
+type StreamingRenderContext = {
+	state?: Record<string, unknown>;
+	isPartial?: boolean;
+	expanded?: boolean;
+	invalidate?: () => void;
+};
+
+function streamingElapsedMs(context: StreamingRenderContext | undefined, running: boolean): number | undefined {
 	return runningCellElapsedMs(context?.state, running);
 }
 
-function scheduleEditInvalidation(
-	context: { state?: Record<string, unknown>; invalidate?: () => void } | undefined,
-	running: boolean,
-): void {
+function scheduleStreamingInvalidation(context: StreamingRenderContext | undefined, running: boolean): void {
 	const state = context?.state;
 	if (!state) return;
 	const timer = state.elapsedTimer as ReturnType<typeof setTimeout> | undefined;
@@ -566,58 +626,18 @@ function scheduleEditInvalidation(
 	state.elapsedTimer.unref?.();
 }
 
-function editRunningLabel(theme: RenderTheme, elapsedMs: number | undefined): string {
-	return shineText(theme, EDIT_LABEL, elapsedMs, {
-		role: "accent",
-		fallback: (text) => theme.fg("warning", text),
-	});
-}
-
-function renderEditRunningHeader(theme: RenderTheme, elapsedMs: number | undefined, rest: string): string {
-	return `${theme.fg("dim", runningFrame(elapsedMs, EDIT_FRAME_MS))} ${theme.fg("toolTitle", theme.bold(editRunningLabel(theme, elapsedMs)))}${rest}`;
-}
-
-function isLightTheme(theme: RenderTheme): boolean {
-	return typeof theme.name === "string" && /(?:^|[/_-])light(?:$|[/_-])/.test(theme.name);
+function streamingStatusLine(theme: RenderTheme, context: StreamingRenderContext | undefined, label: string): string {
+	return `${theme.fg("dim", runningFrame(streamingElapsedMs(context, true), EDIT_FRAME_MS))} ${theme.fg("dim", `(${label})`)}`;
 }
 
 function paintToolBackground(theme: RenderTheme, role: string): ((line: string) => string) | undefined {
-	if (isLightTheme(theme)) return undefined;
 	const backgroundAnsi = theme.getBgAnsi?.(role);
 	if (backgroundAnsi) return (line) => `${backgroundAnsi}${keepBackgroundAcrossResets(line, backgroundAnsi)}\x1b[0m`;
 	return theme.bg ? (line) => theme.bg?.(role, line) ?? line : undefined;
 }
 
-class EditCallView {
-	private readonly cache = new RenderedLineCache();
-
-	constructor(
-		private readonly summary: EditSummary,
-		private readonly theme: RenderTheme,
-		private readonly running: boolean,
-		private readonly elapsedMs: number | undefined,
-	) {}
-
-	invalidate() {
-		this.cache.clear();
-	}
-
-	render(width: number): string[] {
-		const rest = this.summary.target
-			? ` ${renderEditHeaderDisplay(this.summary.target, this.summary.display, this.summary.line, this.theme)}${this.theme.fg("dim", this.summary.suffix)}`
-			: ` ${invalidArgText(this.theme)}${this.theme.fg("dim", this.summary.suffix)}`;
-		const header = this.running
-			? renderEditRunningHeader(this.theme, this.elapsedMs, rest)
-			: renderStatusHeader("Edit:", this.theme, rest);
-		return this.cache.get(width, header, () => renderHeaderBox(header, this.theme, "pending").render(width));
-	}
-}
-
-function renderHeaderBox(text: string, theme: RenderTheme, state: "success" | "error" | "pending"): Box {
-	const role = state === "success" ? "toolSuccessBg" : state === "error" ? "toolErrorBg" : "toolPendingBg";
-	const box = new Box(0, 0, paintToolBackground(theme, role));
-	box.addChild(textComponent(text));
-	return box;
+function cardBackgroundAnsi(theme: RenderTheme, role: CardBackgroundColor): string | undefined {
+	return darkerCardBackgroundAnsi(theme, role);
 }
 
 function formatReadLineRange(args: { path?: string; offset?: number; limit?: number; ranges?: string[] }): string {
@@ -687,13 +707,17 @@ function renderHashlineHeader(header: string, theme: RenderTheme): string {
 	return `${theme.fg("accent", match[1] ?? "")}${match[2] ? theme.fg("toolDiffAdded", match[2]) : ""}`;
 }
 
+function readDisplay(params: { path?: string; offset?: number; limit?: number; ranges?: string[] }): string {
+	const path = typeof params.path === "string" ? splitReadPathSelector(params.path).path : undefined;
+	return path ? `${path.replace(/\\/g, "/")}${formatReadLineRange(params)}` : "[invalid]";
+}
+
 function renderReadCall(
 	params: { path?: string; offset?: number; limit?: number; ranges?: string[] },
 	theme: RenderTheme,
-): Text {
-	const path = typeof params.path === "string" ? splitReadPathSelector(params.path).path : undefined;
-	const display = path ? `${shortenDisplayPath(path)}${formatReadLineRange(params)}` : invalidArgText(theme);
-	return renderText(renderStatusHeader("Read", theme, ` ${theme.fg("accent", display)}`));
+	context?: Partial<ToolRenderContext<Record<string, unknown>, unknown>>,
+): Component {
+	return new BlockTextView(() => renderExplorationCall(readAction(readDisplay(params)), theme, context), theme);
 }
 
 function renderHashlineReadResult(
@@ -701,15 +725,14 @@ function renderHashlineReadResult(
 	options: { expanded?: boolean; isPartial?: boolean },
 	theme: RenderTheme,
 ): Text | EmptyComponent {
-	if (options.isPartial) return renderText(theme.fg("warning", "Reading..."));
+	if (options.isPartial) return EMPTY_VIEW;
 	const text = firstTextContent(result);
 	const sections = parseHashlineSections(text);
 	const section = sections[0];
 	if (!section) return renderPlainReadResult(text, result, options, theme);
 	if (!options.expanded) return EMPTY_VIEW;
-	const highlightedRows = Array.isArray(result.details?.highlightedRows)
-		? (result.details.highlightedRows as string[])
-		: [];
+	const bodies = section.rows.map((row) => /^([ *]?)([1-9]\d*):(.*)$/.exec(row)?.[3] ?? row);
+	const highlightedRows = highlightCodeRowsSync(section.path, bodies);
 	return renderText(
 		`${renderHashlineHeader(section.header, theme)}\n${renderNumberedRows(section.rows, theme, section.rows.length, highlightedRows)}`,
 	);
@@ -722,19 +745,9 @@ function renderPlainReadResult(
 	theme: RenderTheme,
 ): Text | EmptyComponent {
 	const lines = toolTextLines(text);
-	if (lines.length === 0) return EMPTY_VIEW;
-
-	const limit = options.expanded ? lines.length : 12;
+	if (lines.length === 0 || (!options.expanded && result.details?.protected !== true)) return EMPTY_VIEW;
 	const role = result.details?.protected === true ? "warning" : "toolOutput";
-	const output = lines.slice(0, limit).map((line) => theme.fg(role, line));
-	if (lines.length > limit) {
-		output.push(
-			theme.fg("muted", `... (${lines.length - limit} more lines, `) +
-				keyHint("app.tools.expand", "to expand") +
-				theme.fg("muted", ")"),
-		);
-	}
-	return renderText(output.join("\n"));
+	return renderText(lines.map((line) => theme.fg(role, line)).join("\n"));
 }
 
 function renderReadResult(
@@ -743,7 +756,7 @@ function renderReadResult(
 	theme: RenderTheme,
 	toolCallId?: string,
 ): Text | Container | EmptyComponent {
-	if (options.isPartial) return renderText(theme.fg("warning", "Reading..."));
+	if (options.isPartial) return EMPTY_VIEW;
 	const preview = previewImageDetails(result.details?.previewImage);
 	if (!preview) return renderHashlineReadResult(result, options, theme);
 
@@ -796,36 +809,39 @@ function renderSearchRow(row: string, pattern: string, theme: RenderTheme, highl
 }
 function renderSearchSections(
 	sections: readonly HashlineRenderSection[],
-	highlightedSections: readonly HighlightedSection[],
 	theme: RenderTheme,
 	expanded: boolean,
 	pattern: string,
-	width: number,
 ): string {
-	const columnCount = columnCountForWidth(width, sections.length);
-	const blocks: string[][] = [];
-	const maxRows = expanded ? Number.POSITIVE_INFINITY : 12 * columnCount;
+	const lines: string[] = [];
+	const maxRows = expanded ? Number.POSITIVE_INFINITY : 12;
 	let emittedRows = 0;
 	for (let sectionIndex = 0; sectionIndex < sections.length; sectionIndex++) {
 		if (emittedRows >= maxRows) break;
 		const section = sections[sectionIndex];
-		const highlighted = highlightedSections.find((candidate) => candidate.path === section.path);
+		const bodies = section.rows.map((row) => /^([ *]?)([1-9]\d*):(.*)$/.exec(row)?.[3] ?? row);
+		const highlightedRows = highlightCodeRowsSync(section.path, bodies);
 		const isLastSection = sectionIndex === sections.length - 1;
 		const branch = isLastSection ? treeLast(theme) : treeBranch(theme);
 		const continuation = isLastSection ? "   " : `${theme.tree?.vertical ?? "│"}  `;
-		const block = [
+		lines.push(
 			`${theme.fg("dim", `${branch} ${fileIcon(theme, section.path)} `)}${renderHashlineHeader(section.header, theme)}`,
-		];
+		);
 		for (const [rowIndex, row] of section.rows.entries()) {
 			if (emittedRows >= maxRows) break;
-			block.push(
-				`${theme.fg("dim", continuation)}${renderSearchRow(row, pattern, theme, highlighted?.rows[rowIndex])}`,
+			const isMatch = row.startsWith("*");
+			const highlighted = highlightedRows[rowIndex];
+			lines.push(
+				`${theme.fg("dim", continuation)}${renderSearchRow(
+					row,
+					pattern,
+					theme,
+					isMatch && highlighted ? highlightSearchMatches(highlighted, pattern) : highlighted,
+				)}`,
 			);
 			emittedRows++;
 		}
-		blocks.push(block);
 	}
-	const lines = renderColumns(blocks, width);
 	const totalRows = sections.reduce((count, section) => count + section.rows.length, 0);
 	if (totalRows > emittedRows)
 		lines.push(
@@ -843,24 +859,33 @@ function renderSearchResult(
 	context?: Partial<ToolRenderContext<Record<string, unknown>, unknown>>,
 	latestTurnToolCallIds: ReadonlySet<string> = EMPTY_TOOL_CALL_IDS,
 	getLatestTurnIndex: () => number | undefined = () => undefined,
-): Text | BlockTextView | EmptyComponent {
-	if (options.isPartial) return renderText(theme.fg("warning", "Searching..."));
+): Component {
 	const shouldRender = () =>
 		shouldRenderLatestToolResult(result, context, latestTurnToolCallIds, getLatestTurnIndex());
 	if (!shouldRender()) return EMPTY_VIEW;
-	const text = firstTextContent(result).trim();
 	const pattern = typeof args?.pattern === "string" ? args.pattern : "";
 	const noMatchPath = typeof args?.path === "string" ? splitReadPathSelector(args.path).path : ".";
-	if (!text.startsWith("["))
-		return new DynamicTextView(
-			() =>
-				renderStatusHeader(
-					"Search:",
-					theme,
-					` ${theme.fg("warning", pattern)} ${theme.fg("dim", `${text} · in ${shortenDisplayPath(noMatchPath)}`)}`,
-				),
-			shouldRender,
-		);
+	if (options.isPartial) {
+		return framedBlock(theme, {
+			header: renderStatusHeader("Search", theme, ` ${theme.fg("warning", pattern)}`, "pending"),
+			borderColor: "borderMuted",
+			backgroundAnsi: cardBackgroundAnsi(theme, "toolPendingBg"),
+			visible: shouldRender,
+		});
+	}
+	const text = firstTextContent(result).trim();
+	if (!text.startsWith("[")) {
+		return framedBlock(theme, {
+			header: renderStatusHeader(
+				"Search:",
+				theme,
+				` ${theme.fg("warning", pattern)} ${theme.fg("dim", `${text} · in ${shortenDisplayPath(noMatchPath)}`)}`,
+			),
+			borderColor: "borderMuted",
+			backgroundAnsi: cardBackgroundAnsi(theme, "toolPendingBg"),
+			visible: shouldRender,
+		});
+	}
 	const sections = parseHashlineSections(text);
 	const matchCount = sections.reduce(
 		(count, section) => count + section.rows.filter((row) => row.startsWith("*")).length,
@@ -873,25 +898,24 @@ function renderSearchResult(
 		theme,
 		` ${theme.fg("warning", pattern)} ${theme.fg("dim", `${matchCount} match${matchCount === 1 ? "" : "es"} · ${fileText} · in ${shortenDisplayPath(path ?? ".")}`)}`,
 	);
-	const highlightedSections = Array.isArray(result.details?.highlightedSections)
-		? (result.details.highlightedSections as HighlightedSection[])
-		: [];
-	return new BlockTextView(
-		(width) => {
-			const body = renderSearchSections(
-				sections,
-				highlightedSections,
-				theme,
-				options.expanded ?? false,
-				pattern,
-				width,
-			);
-			return `${header}${body ? `\n${body}` : ""}`;
-		},
-		theme,
-		shouldRender,
-		() => (options.expanded ? "expanded" : ""),
-	);
+	return framedBlock(theme, {
+		header,
+		sections: [
+			{
+				component: new BlockTextView(
+					renderSearchSections(sections, theme, options.expanded ?? false, pattern),
+					theme,
+					() => true,
+					() => (options.expanded ? "expanded" : ""),
+					null,
+				),
+			},
+		],
+		borderColor: "borderMuted",
+		cacheKey: () => (options.expanded ? "expanded" : "collapsed"),
+		backgroundAnsi: cardBackgroundAnsi(theme, "toolPendingBg"),
+		visible: shouldRender,
+	});
 }
 
 function renderFindCall(
@@ -925,57 +949,103 @@ function renderFindResult(
 		theme,
 		` ${theme.fg("warning", shortenDisplayPath(target))} ${theme.fg("dim", `${files.length} file${files.length === 1 ? "" : "s"} · in ${shortenDisplayPath(where)}`)}`,
 	);
-	return new BlockTextView(
-		(width) => {
-			const columnCount = columnCountForWidth(width, files.length);
-			const shown = files.slice(0, options.expanded ? files.length : 20 * columnCount);
-			const blocks = shown.map((file, index) => [
+	const shown = files.slice(0, options.expanded ? files.length : 20);
+	const body = shown
+		.map(
+			(file, index) =>
 				`${theme.fg("dim", `${index === shown.length - 1 ? treeLast(theme) : treeBranch(theme)} ${fileIcon(theme, file)} `)}${theme.fg("toolOutput", shortenDisplayPath(file))}`,
-			]);
-			const body = renderColumns(blocks, width).join("\n");
-			const more =
-				files.length > shown.length
-					? `\n${theme.fg("muted", `... (${files.length - shown.length} more files, `)}${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`
-					: "";
-			return `${header}${body ? `\n${body}${more}` : ""}`;
-		},
-		theme,
-		shouldRender,
-		() => (options.expanded ? "expanded" : ""),
+		)
+		.join("\n");
+	const more =
+		files.length > shown.length
+			? `\n${theme.fg("muted", `... (${files.length - shown.length} more files, `)}${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`
+			: "";
+	return new BlockTextView(`${header}${body ? `\n${body}${more}` : ""}`, theme, shouldRender, () =>
+		options.expanded ? "expanded" : "",
 	);
 }
+function renderWriteCard(
+	params: { path?: string; content?: string },
+	theme: RenderTheme,
+	options: {
+		expanded?: boolean;
+		state: "pending" | "success" | "error";
+		error?: string;
+		context?: StreamingRenderContext;
+	},
+): Component {
+	const path = params.path ? shortenDisplayPath(params.path) : invalidArgText(theme);
+	const rest = ` ${fileIcon(theme, params.path)} ${theme.fg("accent", path)}`;
+	if (typeof params.content !== "string") {
+		return framedBlock(theme, {
+			header: renderStatusHeader("Write", theme, rest, "error"),
+			sections: [{ lines: [theme.fg("error", options.error ?? "[invalid content arg - expected string]")] }],
+			borderColor: "error",
+			backgroundAnsi: cardBackgroundAnsi(theme, "toolErrorBg"),
+		});
+	}
+	const rawRows = params.content.split("\n");
+	const numberedRows = rawRows.map((line, index) => `${index + 1}:${line}`);
+	const pending = options.state === "pending";
+	const start = pending && !options.expanded ? Math.max(0, rawRows.length - 12) : 0;
+	const end = options.expanded ? rawRows.length : pending ? rawRows.length : Math.min(rawRows.length, 12);
+	const visibleRows = rawRows.slice(start, end);
+	const highlightedRows = highlightCodeRowsSync(params.path, visibleRows);
+	const lines = renderNumberedRows(numberedRows.slice(start, end), theme, visibleRows.length, highlightedRows).split(
+		"\n",
+	);
+	if (start > 0) lines.unshift(theme.fg("dim", `… (${start} earlier line${start === 1 ? "" : "s"})`));
+	if (!pending && end < rawRows.length) {
+		lines.push(
+			theme.fg("muted", `... (${rawRows.length - end} more lines, `) +
+				keyHint("app.tools.expand", "to expand") +
+				theme.fg("muted", ")"),
+		);
+	}
+	if (pending) lines.push(streamingStatusLine(theme, options.context, "streaming"));
+	if (options.error) lines.push(theme.fg("error", options.error));
+	return framedBlock(theme, {
+		header: renderStatusHeader(
+			"Write",
+			theme,
+			`${rest} ${theme.fg("dim", `· ${rawRows.length} lines`)}`,
+			options.state === "error" ? "error" : pending ? "pending" : "success",
+		),
+		sections: [{ lines }],
+		borderColor: options.state === "error" ? "error" : "borderMuted",
+		backgroundAnsi:
+			options.state === "error"
+				? cardBackgroundAnsi(theme, "toolErrorBg")
+				: cardBackgroundAnsi(theme, "toolPendingBg"),
+	});
+}
+
 function renderWriteCall(
 	params: { path?: string; content?: string },
 	theme: RenderTheme,
-	options: { expanded?: boolean } = {},
-): Text {
-	const path = params.path ? shortenDisplayPath(params.path) : invalidArgText(theme);
-	if (typeof params.content !== "string") {
-		return renderText(
-			`${renderStatusHeader("Write:", theme, ` ${theme.fg("accent", path)}`)}\n\n${theme.fg("error", "[invalid content arg - expected string]")}`,
-		);
-	}
-	const rows = params.content.split("\n").map((line, index) => `${index + 1}:${line}`);
-	const bodyRows = params.content.split("\n");
-	const limit = options.expanded ? rows.length : 12;
-	const highlightedRows = highlightCodeRowsSync(params.path, bodyRows.slice(0, limit));
-	const lineCount = rows.length;
-	const header = renderStatusHeader(
-		"Write:",
-		theme,
-		` ${fileIcon(theme, params.path)} ${theme.fg("accent", path)} ${theme.fg("dim", `· ${lineCount} lines`)}`,
-	);
-	return renderText(`${header}\n\n${renderNumberedRows(rows, theme, limit, highlightedRows)}`);
+	context: StreamingRenderContext = {},
+): Component {
+	const running = context.isPartial === true;
+	scheduleStreamingInvalidation(context, running);
+	return running
+		? renderWriteCard(params, theme, { expanded: context.expanded, state: "pending", context })
+		: EMPTY_VIEW;
 }
 
 function renderWriteResult(
 	result: ToolTextResult,
-	options: { isPartial?: boolean },
+	options: { expanded?: boolean; isPartial?: boolean },
 	theme: RenderTheme,
-): Text | EmptyComponent {
-	if (options.isPartial) return renderText(theme.fg("warning", "Writing..."));
+	context?: StreamingRenderContext & { args?: { path?: string; content?: string }; isError?: boolean },
+): Component {
+	if (options.isPartial) return EMPTY_VIEW;
 	const text = firstTextContent(result);
-	return /error/i.test(text) ? renderText(`\n${theme.fg("error", text)}`) : EMPTY_VIEW;
+	const error = context?.isError || /error/i.test(text) ? text : undefined;
+	return renderWriteCard(context?.args ?? {}, theme, {
+		expanded: options.expanded,
+		state: error ? "error" : "success",
+		error,
+	});
 }
 
 type EditSummary = { target?: string; display?: string; line?: number; suffix: string };
@@ -1016,14 +1086,193 @@ function renderEditHeaderDisplay(
 	return `${fileIcon(theme, target)} ${renderedTarget}${lineSuffix}`;
 }
 
+function renderEditStreamingRows(lines: readonly string[], summary: EditSummary, theme: RenderTheme): string[] {
+	const codeRows = lines.map((line) => (/^[+-](?![+-]{2})/.test(line) ? line.slice(1) : ""));
+	const highlighted = highlightCodeRowsSync(summary.target, codeRows);
+	return lines.map((line, index) => {
+		if (/^\[.+(?:#[0-9A-Fa-f]{0,4})?\]?$/.test(line)) return renderHashlineHeader(line, theme);
+		if (/^\*\*\* (?:Begin|End|Add|Update|Delete|Move)/.test(line)) return theme.fg("syntaxKeyword", line);
+		if (/^(?:replace|delete|insert|create|update)\b/.test(line)) {
+			const [verb = "", ...rest] = line.split(" ");
+			return `${theme.fg("syntaxKeyword", verb)}${rest.length ? ` ${theme.fg("toolOutput", rest.join(" "))}` : ""}`;
+		}
+		if (line.startsWith("+") && !line.startsWith("+++")) {
+			return `${theme.fg("toolDiffAdded", "+")}${highlighted[index] ?? theme.fg("toolOutput", line.slice(1))}`;
+		}
+		if (line.startsWith("-") && !line.startsWith("---")) {
+			return `${theme.fg("toolDiffRemoved", "-")}${highlighted[index] ?? theme.fg("toolOutput", line.slice(1))}`;
+		}
+		return theme.fg("toolOutput", line);
+	});
+}
+
+type StreamingEditPreview = {
+	diff: string;
+	headers: ReadonlyMap<string, string>;
+};
+
+function cachedSource(path: string, sources: Map<string, string>): string {
+	let text = sources.get(path);
+	if (text === undefined) {
+		text = normalizeToLf(stripBom(readFileSync(path, "utf-8")).text);
+		sources.set(path, text);
+	}
+	return text;
+}
+
+function buildApplyPatchStreamingPreview(
+	input: string,
+	mode: "apply_patch" | "patch",
+	cwd: string,
+): StreamingEditPreview | undefined {
+	const patch =
+		mode === "patch"
+			? patchModeToApplyPatch(parsePatchInput(input))
+			: input.includes("*** End Patch")
+				? input
+				: `${input.trimEnd()}\n*** End Patch\n`;
+	const ct = resolveCommand("ct", FILEOPS_TOOL_SEARCH_PATHS);
+	if (!ct) return undefined;
+	const result = spawnSync(ct, ["apply-patch", "--cwd", cwd, "--dry-run"], {
+		cwd,
+		encoding: "utf-8",
+		input: patch,
+		maxBuffer: 16 * 1024 * 1024,
+		timeout: 2_000,
+	});
+	return result.status === 0 && result.stdout ? { diff: result.stdout, headers: new Map() } : undefined;
+}
+
+function buildStreamingEditPreview(
+	input: unknown,
+	config: EditConfig,
+	cwd: string,
+	sources: Map<string, string>,
+): StreamingEditPreview | undefined {
+	if (typeof input !== "string") return undefined;
+	try {
+		if (config.mode === "apply_patch" || config.mode === "patch") {
+			return buildApplyPatchStreamingPreview(input, config.mode, cwd);
+		}
+		if (config.mode === "replace") {
+			const normalized = normalizeReplaceInput(parseReplaceInput(input));
+			const before = cachedSource(absolutePath(cwd, normalized.path), sources);
+			const applied = applyNormalizedReplace(before, normalized, config);
+			if (applied.text === before) return undefined;
+			const diff = createTwoFilesPatch(normalized.path, normalized.path, before, applied.text, "", "", {
+				context: 3,
+			});
+			return { diff, headers: new Map() };
+		}
+		const patch = Patch.parse(input, { cwd });
+		const headers = new Map<string, string>();
+		const diffs: string[] = [];
+		for (const section of patch.sections) {
+			const before = cachedSource(absolutePath(cwd, section.path), sources);
+			const applied = section.applyPartialTo(before, treeSitterBlockResolver);
+			if (applied.text === before) continue;
+			headers.set(section.path, shortenHashlineHeader(formatHashlineHeader(section.path, section.fileHash)));
+			diffs.push(
+				createTwoFilesPatch(section.path, section.path, before, applied.text, "", "", {
+					context: editPreviewContextLines(before, applied.text, applied.warnings ?? []),
+				}),
+			);
+		}
+		return diffs.length > 0 ? { diff: diffs.join(""), headers } : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+type StreamingEditPreviewCache = {
+	key: string;
+	input: string;
+	preview?: StreamingEditPreview;
+	sources: Map<string, string>;
+};
+
+function cachedStreamingEditPreview(
+	input: unknown,
+	config: EditConfig,
+	cwd: string,
+	state: Record<string, unknown> | undefined,
+	argsComplete: boolean,
+): StreamingEditPreview | undefined {
+	const text = typeof input === "string" ? input : "";
+	const key = `${config.mode}\0${config.fuzzyMatch}\0${config.fuzzyThreshold}\0${config.allowReplaceAll}\0${cwd}\0${text}`;
+	const cached = state?.editPreview as StreamingEditPreviewCache | undefined;
+	if (cached?.key === key) return cached.preview;
+	if (cached && text.startsWith(cached.input) && !argsComplete && !text.endsWith("\n")) {
+		return cached.preview;
+	}
+	const sources = cached?.sources ?? new Map<string, string>();
+	const preview = buildStreamingEditPreview(input, config, cwd, sources);
+	const stablePreview = preview ?? (cached && text.startsWith(cached.input) ? cached.preview : undefined);
+	if (state) state.editPreview = { key, input: text, preview: stablePreview, sources };
+	return stablePreview;
+}
+
 function renderEditCall(
 	summary: EditSummary,
+	input: unknown,
+	config: EditConfig,
 	theme: RenderTheme,
-	context?: { state?: Record<string, unknown>; isPartial?: boolean; invalidate?: () => void },
-): EditCallView {
-	const running = context?.isPartial === true;
-	scheduleEditInvalidation(context, running);
-	return new EditCallView(summary, theme, running, editElapsedMs(context, running));
+	context: StreamingRenderContext & { cwd?: string; argsComplete?: boolean } = {},
+): Component {
+	const running = context.isPartial === true;
+	scheduleStreamingInvalidation(context, running);
+	if (!running) return EMPTY_VIEW;
+	const rest = summary.target
+		? ` ${renderEditHeaderDisplay(summary.target, summary.display, summary.line, theme)}${theme.fg("dim", summary.suffix)}`
+		: ` ${invalidArgText(theme)}${theme.fg("dim", summary.suffix)}`;
+	const backgroundAnsi = cardBackgroundAnsi(theme, "toolPendingBg");
+	const preview = cachedStreamingEditPreview(
+		input,
+		config,
+		context.cwd ?? resolve("."),
+		context.state,
+		context.argsComplete === true,
+	);
+	if (preview) {
+		const renderHeader: DiffSectionHeaderRenderer = (target, line, theme) =>
+			renderStatusHeader(
+				"Edit:",
+				theme,
+				` ${renderEditHeaderDisplay(target, preview.headers.get(target), line, theme)}`,
+				"pending",
+			);
+		return framedBlock(theme, {
+			header: renderStatusHeader("Edit", theme, rest, "pending"),
+			sections: [
+				{
+					component: new EditDiffView(
+						preview.diff,
+						undefined,
+						context.expanded === true,
+						theme,
+						backgroundAnsi,
+						renderHeader,
+					),
+				},
+				{ lines: [streamingStatusLine(theme, context, "streaming")] },
+			],
+			borderColor: "borderMuted",
+			backgroundAnsi,
+		});
+	}
+	const allLines = typeof input === "string" ? input.replace(/\t/g, "  ").split(/\r?\n/) : [];
+	if (allLines.at(-1) === "") allLines.pop();
+	const visible = context.expanded ? allLines : allLines.slice(-12);
+	const hidden = allLines.length - visible.length;
+	const lines = renderEditStreamingRows(visible, summary, theme);
+	if (hidden > 0) lines.unshift(theme.fg("dim", `… (${hidden} earlier line${hidden === 1 ? "" : "s"})`));
+	lines.push(streamingStatusLine(theme, context, "streaming"));
+	return framedBlock(theme, {
+		header: renderStatusHeader("Edit", theme, rest, "pending"),
+		sections: [{ lines }],
+		borderColor: "borderMuted",
+		backgroundAnsi,
+	});
 }
 function renderEditResult(
 	result: ToolTextResult,
@@ -1032,25 +1281,38 @@ function renderEditResult(
 	context: Partial<ToolRenderContext<Record<string, unknown>, EditInput>> | undefined,
 	latestTurnEditToolCallIds: ReadonlySet<string>,
 	getLatestTurnIndex: () => number | undefined,
+	mode: EditMode,
 ) {
-	if (options.isPartial) return renderText(theme.fg("warning", "Editing..."));
+	if (options.isPartial) return EMPTY_VIEW;
 	const text = firstTextContent(result);
-	// Success text leads with a `[path#TAG]` header; a path containing "error"
-	// must not route into the rejection styling.
 	const firstLine = text.split("\n")[0] ?? "";
-	if (!firstLine.startsWith("[") && /rejected|error/i.test(firstLine))
-		return renderText(`\n${theme.fg("error", text)}`);
+	const summary = summarizeEditInput(context?.args?.input, mode);
+	const rest = summary.target
+		? ` ${renderEditHeaderDisplay(summary.target, summary.display, summary.line, theme)}${theme.fg("dim", summary.suffix)}`
+		: ` ${theme.fg("dim", summary.suffix)}`;
 	const isLatestTurnEdit = () =>
 		shouldRenderLatestToolResult(result, context, latestTurnEditToolCallIds, getLatestTurnIndex());
-	const expanded = () => options.expanded === true;
+	if (!firstLine.startsWith("[") && /rejected|error/i.test(firstLine)) {
+		return framedBlock(theme, {
+			header: renderStatusHeader("Edit:", theme, rest, "error"),
+			sections: [{ lines: text.split("\n").map((line) => theme.fg("error", line)) }],
+			borderColor: "error",
+			backgroundAnsi: cardBackgroundAnsi(theme, "toolErrorBg"),
+			visible: isLatestTurnEdit,
+		});
+	}
 	const diff = typeof result.details?.diff === "string" ? result.details.diff : "";
-	// No diff means a no-op apply: keep its diagnostic visible even collapsed.
-	if (!diff)
-		return new DynamicTextView(
-			() => theme.fg("toolOutput", expanded() ? text : firstLine),
-			isLatestTurnEdit,
-			() => (expanded() ? "expanded" : ""),
-		);
+	if (!diff) {
+		return framedBlock(theme, {
+			header: renderStatusHeader("Edit:", theme, rest),
+			sections: [
+				{ lines: (options.expanded ? text : firstLine).split("\n").map((line) => theme.fg("toolOutput", line)) },
+			],
+			borderColor: "borderMuted",
+			backgroundAnsi: cardBackgroundAnsi(theme, "toolPendingBg"),
+			visible: isLatestTurnEdit,
+		});
+	}
 	const rows = Array.isArray(result.details?.highlightedDiffRows)
 		? (result.details.highlightedDiffRows as DiffRenderRow[])
 		: undefined;
@@ -1062,14 +1324,28 @@ function renderEditResult(
 			}
 		}
 	}
-	const renderHashlineEditSectionHeader: DiffSectionHeaderRenderer = (target, line, theme) => {
-		return renderStatusHeader(
-			"Edit:",
-			theme,
-			` ${renderEditHeaderDisplay(target, resultHeaders.get(target), line, theme)}`,
-		);
-	};
-	return new EditDiffView(diff, rows, expanded, theme, renderHashlineEditSectionHeader, isLatestTurnEdit);
+	const backgroundAnsi = cardBackgroundAnsi(theme, "toolPendingBg");
+	const renderHashlineEditSectionHeader: DiffSectionHeaderRenderer = (target, line, theme) =>
+		renderStatusHeader("Edit:", theme, ` ${renderEditHeaderDisplay(target, resultHeaders.get(target), line, theme)}`);
+	return framedBlock(theme, {
+		header: renderStatusHeader("Edit:", theme, rest),
+		sections: [
+			{
+				component: new EditDiffView(
+					diff,
+					rows,
+					options.expanded === true,
+					theme,
+					backgroundAnsi,
+					renderHashlineEditSectionHeader,
+				),
+			},
+		],
+		borderColor: "borderMuted",
+		backgroundAnsi,
+		cacheKey: () => (options.expanded ? "expanded" : "collapsed"),
+		visible: isLatestTurnEdit,
+	});
 }
 
 function editResultTurnIndex(result: ToolTextResult): number | undefined {
@@ -1149,16 +1425,6 @@ function normalizeReplaceInput(input: EditInput): NormalizedReplaceInput {
 	};
 }
 
-function toBuiltInInput(input: NormalizedReplaceInput): {
-	path: string;
-	edits: Array<{ oldText: string; newText: string }>;
-} {
-	return {
-		path: input.path,
-		edits: input.edits.map((edit) => ({ oldText: edit.oldText, newText: edit.newText })),
-	};
-}
-
 function stripBom(text: string): { bom: string; text: string } {
 	return text.charCodeAt(0) === 0xfeff ? { bom: text.slice(0, 1), text: text.slice(1) } : { bom: "", text };
 }
@@ -1191,6 +1457,144 @@ function replaceAllLiteral(text: string, oldText: string, newText: string): { te
 	return { text: parts.join(newText), count: parts.length - 1 };
 }
 
+type FuzzyWindow = { start: number; end: number; actual: string; confidence: number };
+
+function fuzzyComparable(text: string): string {
+	return text
+		.normalize("NFC")
+		.split("\n")
+		.map((line) => line.trim().replace(/\s+/g, " "))
+		.join("\n")
+		.trim();
+}
+
+function fuzzySimilarity(left: string, right: string): number {
+	const a = fuzzyComparable(left);
+	const b = fuzzyComparable(right);
+	if (a === b) return 1;
+	const total = Math.max(a.length, b.length);
+	if (total === 0) return 1;
+	let common = 0;
+	for (const change of diffChars(a, b)) if (!change.added && !change.removed) common += change.value.length;
+	return common / total;
+}
+
+function findFuzzyWindow(
+	content: string,
+	target: string,
+	threshold: number,
+): {
+	match?: FuzzyWindow;
+	closest?: FuzzyWindow;
+	ambiguous: number;
+} {
+	const lines = content.split("\n");
+	const targetLineCount = Math.max(1, target.split("\n").length);
+	const starts: number[] = [];
+	let offset = 0;
+	for (const line of lines) {
+		starts.push(offset);
+		offset += line.length + 1;
+	}
+	const candidates: FuzzyWindow[] = [];
+	for (let index = 0; index + targetLineCount <= lines.length; index++) {
+		const actual = lines.slice(index, index + targetLineCount).join("\n");
+		const start = starts[index] ?? 0;
+		candidates.push({
+			start,
+			end: start + actual.length,
+			actual,
+			confidence: fuzzySimilarity(actual, target),
+		});
+	}
+	candidates.sort((left, right) => right.confidence - left.confidence);
+	const closest = candidates[0];
+	const eligible = candidates.filter((candidate) => candidate.confidence >= threshold);
+	return { match: eligible.length === 1 ? eligible[0] : undefined, closest, ambiguous: eligible.length };
+}
+
+function adjustReplacementIndent(search: string, actual: string, replacement: string): string {
+	const indent = (text: string) =>
+		text
+			.split("\n")
+			.find((line) => line.trim())
+			?.match(/^\s*/)?.[0].length ?? 0;
+	const delta = indent(actual) - indent(search);
+	if (delta === 0) return replacement;
+	return replacement
+		.split("\n")
+		.map((line) => {
+			if (!line.trim()) return line;
+			return delta > 0
+				? `${" ".repeat(delta)}${line}`
+				: line.slice(Math.min(-delta, line.match(/^\s*/)?.[0].length ?? 0));
+		})
+		.join("\n");
+}
+
+function replaceFuzzy(
+	content: string,
+	oldText: string,
+	newText: string,
+	config: EditConfig,
+	path: string,
+): { text: string; count: number } {
+	const exact = replaceAllLiteral(content, oldText, newText);
+	if (exact.count > 0) return exact;
+	if (!config.fuzzyMatch) throw new Error(`Could not find old_text in ${path}. Fuzzy matching is disabled.`);
+	const outcome = findFuzzyWindow(content, oldText, config.fuzzyThreshold);
+	if (outcome.ambiguous > 1) {
+		throw new Error(`Found ${outcome.ambiguous} fuzzy matches in ${path}. Add more context.`);
+	}
+	if (!outcome.match) {
+		const similarity = Math.round((outcome.closest?.confidence ?? 0) * 100);
+		throw new Error(
+			`Could not find a close enough match in ${path}. Closest match was ${similarity}% similar; threshold is ${Math.round(config.fuzzyThreshold * 100)}%.`,
+		);
+	}
+	const replacement = adjustReplacementIndent(oldText, outcome.match.actual, newText);
+	return {
+		text: `${content.slice(0, outcome.match.start)}${replacement}${content.slice(outcome.match.end)}`,
+		count: 1,
+	};
+}
+
+function applyNormalizedReplace(
+	before: string,
+	normalized: NormalizedReplaceInput,
+	config: EditConfig,
+): { text: string; total: number } {
+	if (normalized.edits.some((edit) => edit.all) && !config.allowReplaceAll) {
+		throw new Error("edit replace mode has all: true disabled by /edit-config.");
+	}
+	let current = before;
+	let total = 0;
+	for (const edit of normalized.edits) {
+		const oldText = normalizeToLf(edit.oldText);
+		const newText = normalizeToLf(edit.newText);
+		if (edit.all) {
+			const exact = replaceAllLiteral(current, oldText, newText);
+			const replaced = exact.count > 0 ? exact : replaceFuzzy(current, oldText, newText, config, normalized.path);
+			current = replaced.text;
+			total += replaced.count;
+			continue;
+		}
+		const first = current.indexOf(oldText);
+		if (first !== -1) {
+			if (current.indexOf(oldText, first + oldText.length) !== -1) {
+				throw new Error(`Found multiple occurrences in ${normalized.path}. Add more context or set all: true.`);
+			}
+			current = `${current.slice(0, first)}${newText}${current.slice(first + oldText.length)}`;
+			total += 1;
+			continue;
+		}
+		const fuzzy = replaceFuzzy(current, oldText, newText, config, normalized.path);
+		current = fuzzy.text;
+		total += fuzzy.count;
+	}
+	return { text: current, total };
+}
+
 async function executeReplace(
 	cwd: string,
 	input: EditInput,
@@ -1198,10 +1602,6 @@ async function executeReplace(
 	signal?: AbortSignal,
 ): Promise<{ content: Array<{ type: "text"; text: string }>; details: EditToolDetails }> {
 	const normalized = normalizeReplaceInput(input);
-	if (!normalized.edits.some((edit) => edit.all)) {
-		return createEditToolDefinition(cwd).execute("edit", toBuiltInInput(normalized), signal);
-	}
-	if (!config.allowReplaceAll) throw new Error("edit replace mode has all: true disabled by /edit-config.");
 
 	const target = absolutePath(cwd, normalized.path);
 	return withFileMutationQueue(target, async () => {
@@ -1210,29 +1610,9 @@ async function executeReplace(
 		const { bom, text } = stripBom(raw);
 		const lineEnding = detectLineEnding(text);
 		const before = normalizeToLf(text);
-		let current = before;
-		let total = 0;
-
-		for (const edit of normalized.edits) {
-			const oldText = normalizeToLf(edit.oldText);
-			const newText = normalizeToLf(edit.newText);
-			if (edit.all) {
-				const result = replaceAllLiteral(current, oldText, newText);
-				if (result.count === 0) throw new Error(`Could not find old_text in ${normalized.path}.`);
-				current = result.text;
-				total += result.count;
-				continue;
-			}
-
-			const first = current.indexOf(oldText);
-			if (first === -1) throw new Error(`Could not find old_text in ${normalized.path}.`);
-			if (current.indexOf(oldText, first + oldText.length) !== -1) {
-				throw new Error(`Found multiple occurrences in ${normalized.path}. Add more context or set all: true.`);
-			}
-			current = `${current.slice(0, first)}${newText}${current.slice(first + oldText.length)}`;
-			total += 1;
-		}
-
+		const applied = applyNormalizedReplace(before, normalized, config);
+		const current = applied.text;
+		const total = applied.total;
 		if (current === before) throw new Error(`Edits to ${normalized.path} resulted in no changes being made.`);
 		await writeFile(target, bom + restoreLineEndings(current, lineEnding), "utf-8");
 
@@ -1595,8 +1975,8 @@ function registerHashlineWorkflowTools(
 			"Read the contents of a file. Supports text files and images (jpg, png, gif, webp). In hashline edit mode, text reads return [PATH#TAG] plus LINE:TEXT rows that can be targeted by hashline edits.",
 		parameters: readToolSchema,
 		renderShell: "self",
-		renderCall(params, theme) {
-			return renderReadCall(params, theme);
+		renderCall(params, theme, context) {
+			return renderReadCall(params, theme, context);
 		},
 		renderResult(result, options, theme, context) {
 			return renderReadResult(result as ToolTextResult, options, theme, context?.toolCallId);
@@ -1627,6 +2007,16 @@ function registerHashlineWorkflowTools(
 				)) as ToolTextResult;
 				const previewImage = await readPreviewImageFromPath(absolute);
 				return previewImage ? { ...result, details: { ...(result.details ?? {}), previewImage } } : result;
+			}
+			if (getConfig().mode === "hashline") {
+				const summary = await trySummarizeWholeFileRead(
+					displayPath(callCwd, absolute),
+					absolute,
+					params,
+					explicitRanges,
+					snapshotsForContext(ctx),
+				);
+				if (summary) return summary;
 			}
 			const largeReadBlock = await maybeBlockLargeWholeFileRead(
 				displayPath(callCwd, absolute),
@@ -1772,8 +2162,10 @@ function registerHashlineWorkflowTools(
 			if (params.glob) args.push("--glob", String(params.glob));
 			if (params.context && params.context > 0) args.push("-C", String(Math.max(0, Math.floor(params.context))));
 			const resultLimit = Math.max(1, Math.min(1000, Number(params.limit ?? DEFAULT_SEARCH_RESULT_LIMIT)));
-			const rgMaxCount = params.limit === undefined ? resultLimit + 1 : resultLimit;
-			args.push("--max-count", String(rgMaxCount));
+			if (explicitRanges.length === 0) {
+				const rgMaxCount = params.limit === undefined ? resultLimit + 1 : resultLimit;
+				args.push("--max-count", String(rgMaxCount));
+			}
 			args.push("--", String(params.pattern), searchPath ? String(searchPath) : ".");
 			const result = await runExternalCommand("rg", args, callCwd, {
 				signal,
@@ -1853,10 +2245,9 @@ function registerHashlineWorkflowTools(
 			}
 			if (truncatedSearch) {
 				sections.push(
-					[
-						`[Search results truncated at ${resultLimit} rows.]`,
-						"Use a narrower path/glob/ranges, or index the source with `cg_index` and query it with `cg_search`.",
-					].join("\n"),
+					[`[Search results truncated at ${resultLimit} rows.]`, "Use a narrower path, glob, or ranges."].join(
+						"\n",
+					),
 				);
 			}
 			return { content: [{ type: "text", text: sections.join("\n\n") }], details: { highlightedSections } };
@@ -1919,9 +2310,7 @@ function registerHashlineWorkflowTools(
 					: [
 							...unique,
 							...(truncatedFind
-								? [
-										`[Find results truncated at ${limit} files. Use a narrower glob/path, or index sources with cg_index and query them with cg_search.]`,
-									]
+								? [`[Find results truncated at ${limit} files. Use a narrower glob or path.]`]
 								: []),
 						].join("\n");
 			return {
@@ -1940,8 +2329,8 @@ function registerHashlineWorkflowTools(
 		renderCall(params, theme, context) {
 			return renderWriteCall(params, theme, context);
 		},
-		renderResult(result, options, theme) {
-			return renderWriteResult(result as ToolTextResult, options, theme);
+		renderResult(result, options, theme, context) {
+			return renderWriteResult(result as ToolTextResult, options, theme, context);
 		},
 		async execute(
 			toolCallId,
@@ -1950,6 +2339,7 @@ function registerHashlineWorkflowTools(
 			onUpdate,
 			ctx,
 		) {
+			onUpdate?.({ content: [{ type: "text", text: "Writing..." }], details: {} });
 			if (getConfig().mode !== "hashline") return baseWrite.execute(toolCallId, params, signal, onUpdate, ctx);
 			const callCwd = ctx?.cwd ?? cwd;
 			const stripped = stripHashlineDisplayPrefixes(params.content);
@@ -1992,9 +2382,9 @@ export default function fileopsExtension(pi: ExtensionAPI) {
 	// Tells replayed history apart from live calls, so a resumed transcript does not animate.
 	pi.on?.("turn_start", () => markLiveTurnStarted());
 	registerToolResultImageRestore(pi);
+	registerExplorationTool("read", (args) => readAction(readDisplay((args ?? {}) as any)));
+	registerExplorationEventHandlers(pi);
 	let config = loadConfig();
-	const readSpacingPatch = installConsecutiveReadSpacingPatch();
-	let releaseReadSpacingPatch: (() => void) | undefined;
 	const fallbackSnapshots = hashlineSnapshotStoreForSession(FALLBACK_HASHLINE_SNAPSHOT_SESSION_ID);
 	const snapshotsForContext = (ctx: Pick<ExtensionContext, "sessionManager"> | undefined): InMemorySnapshotStore => {
 		const sessionId = sessionIdFromContext(ctx);
@@ -2041,16 +2431,8 @@ export default function fileopsExtension(pi: ExtensionAPI) {
 	const on = (pi as Partial<ExtensionAPI>).on;
 	if (typeof on === "function") {
 		on.call(pi, "session_start", (_event, ctx) => {
-			void readSpacingPatch.then((release) => {
-				releaseReadSpacingPatch ??= release;
-				ctx.ui?.setWidget?.("fileops-read-spacing-refresh", undefined);
-			});
 			resetTurnTracking();
 			rebuildVisibleFileopsWindow(ctx);
-		});
-		on.call(pi, "session_shutdown", () => {
-			releaseReadSpacingPatch?.();
-			releaseReadSpacingPatch = undefined;
 		});
 		on.call(pi, "session_tree", (_event, ctx) => {
 			resetTurnTracking();
@@ -2083,7 +2465,7 @@ export default function fileopsExtension(pi: ExtensionAPI) {
 			prepareArguments: prepareEditArguments,
 			renderCall(params, theme, context) {
 				const summary = summarizeEditInput((params as { input?: unknown }).input, current.mode);
-				return renderEditCall(summary, theme, context as any);
+				return renderEditCall(summary, (params as { input?: unknown }).input, current, theme, context as any);
 			},
 			renderResult(result, options, theme, context) {
 				return renderEditResult(
@@ -2093,10 +2475,12 @@ export default function fileopsExtension(pi: ExtensionAPI) {
 					context,
 					latestTurnEditToolCallIds,
 					() => currentTurnIndex,
+					current.mode,
 				);
 			},
-			async execute(toolCallId, params, signal, _onUpdate, ctx) {
+			async execute(toolCallId, params, signal, onUpdate, ctx) {
 				markLatestFileopsToolCall(toolCallId);
+				onUpdate?.({ content: [{ type: "text", text: "Editing..." }], details: {} });
 				return withEditTurnIndex(
 					await executeByMode(ctx.cwd, params as EditInput, current, snapshotsForContext(ctx), signal),
 					currentTurnIndex,

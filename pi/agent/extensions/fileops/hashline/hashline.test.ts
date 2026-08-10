@@ -466,7 +466,7 @@ describe("replacement boundary repair", () => {
 		expect(result.warnings).toEqual([]);
 	});
 
-	it("composes OMP-style boundary absorption through stale-snapshot recovery", () => {
+	it("composes boundary repair through stale-snapshot recovery", () => {
 		const PATH = "/repo/spec.ts";
 		const snapshotText = [
 			"describe('suite', () => {",

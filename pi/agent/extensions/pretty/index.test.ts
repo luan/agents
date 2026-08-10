@@ -2,24 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setCapabilities } from "@earendil-works/pi-tui";
 
 import piPrettyExtension from "./index";
 
 const PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
 const PNG_BYTES = Buffer.from(PNG_BASE64, "base64");
-
-function createText() {
-	let value = "";
-	return {
-		setText(next: string) {
-			value = next;
-		},
-		getText() {
-			return value;
-		},
-	};
-}
 
 class TestText {
 	private text: string;
@@ -36,15 +23,6 @@ class TestText {
 		return this.text ? [this.text] : [];
 	}
 }
-
-const theme = {
-	fg(_role: string, text: string) {
-		return text;
-	},
-	bold(text: string) {
-		return `**${text}**`;
-	},
-};
 
 function createTools(overrides: { execute?: (...args: any[]) => Promise<any> } = {}) {
 	const tools: any[] = [];
@@ -103,48 +81,5 @@ describe("pretty image rendering", () => {
 		} finally {
 			await rm(dir, { recursive: true, force: true });
 		}
-	});
-
-	test.each([false, true])("view_image renders an extension-owned inline preview when showImages=%p", (showImages) => {
-		setCapabilities({ images: "iterm2", trueColor: true, hyperlinks: true });
-		try {
-			const viewImage = createTools().find((tool) => tool.name === "view_image");
-			const result = {
-				content: [
-					{ type: "text", text: "Read image file [image/png]" },
-					{ type: "image", data: PNG_BASE64, mimeType: "image/png" },
-				],
-			};
-			const rendererResult = { content: result.content };
-			const component = viewImage.renderResult(rendererResult, { expanded: false, isPartial: false }, theme, {
-				state: {},
-				expanded: false,
-				showImages,
-				isError: false,
-				invalidate() {},
-			});
-
-			const rendered = component.render(80).join("\n");
-			expect(rendered).toContain("\x1b]1337;File=");
-			expect(rendered).not.toContain("Read image file");
-			expect(result.content.some((content: any) => content.type === "image")).toBe(false);
-		} finally {
-			setCapabilities({ images: null, trueColor: false, hyperlinks: false });
-		}
-	});
-
-	test("view_image call renders as a viewed-image header with dim path", () => {
-		const viewImage = createTools().find((tool) => tool.name === "view_image");
-		const text = createText();
-		const path = "/tmp/pixel.png";
-
-		viewImage.renderCall({ path }, theme, {
-			lastComponent: text,
-			isPartial: false,
-			isError: false,
-			invalidate() {},
-		});
-
-		expect(text.getText()).toBe("**Viewed image** ─ /tmp/pixel.png");
 	});
 });

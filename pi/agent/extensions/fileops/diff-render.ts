@@ -3,7 +3,6 @@ import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { processPatch } from "@pierre/diffs";
 import { diffChars } from "diff";
 import { clampAnsiLine, paintAnsiBackgroundRow, sgrResetsBackground, truncateToWidthCompat } from "../shared/tui";
-import { columnCountForWidth, columnWidthFor, renderColumns } from "./columns.ts";
 export type RenderTheme = {
 	fg(role: string, text: string): string;
 	name?: string;
@@ -446,6 +445,16 @@ export function highlightSearchMatches(ansiText: string, pattern: string): strin
 	return applyVisibleRangeBackground(ansiText, ranges, MATCH_BG);
 }
 
+export function buildHighlightedDiffRowsSync(diff: string): DiffRenderRow[] {
+	const parsedRows = parseUnifiedDiff(diff);
+	const rows = parsedRows.map((row) =>
+		row.kind === "hunk"
+			? row
+			: { ...row, highlightedContent: highlightCodeRowsSync(row.path, [row.content])[0] ?? row.content },
+	);
+	return applyWordDiffHighlights(diff, rows);
+}
+
 export async function buildHighlightedDiffRows(diff: string): Promise<DiffRenderRow[]> {
 	const parsedRows = parseUnifiedDiff(diff);
 	const rows = await Promise.all(
@@ -572,7 +581,12 @@ function formatSectionDiffStatsLine(rows: readonly DiffRenderRow[], theme: Rende
 	return `${theme.fg("dim", "<")}${theme.fg("toolDiffAdded", `+${stats.added}`)}${theme.fg("dim", " / ")}${theme.fg("toolDiffRemoved", `-${stats.removed}`)}${theme.fg("dim", ` / ${stats.hunks} hunk${stats.hunks === 1 ? "" : "s"}>`)}`;
 }
 
-function renderDiffOmittedLine(remaining: number, width: number, theme: RenderTheme): string {
+function renderDiffOmittedLine(
+	remaining: number,
+	width: number,
+	theme: RenderTheme,
+	panelBackgroundAnsi: string | undefined,
+): string {
 	return paintDiffRow(
 		theme.fg("muted", `... (${remaining} more diff lines, `) +
 			keyHint("app.tools.expand", "to expand") +
@@ -580,7 +594,7 @@ function renderDiffOmittedLine(remaining: number, width: number, theme: RenderTh
 		width,
 		theme,
 		"toolPendingBg",
-		toolBackgroundAnsi(theme, "toolPendingBg"),
+		panelBackgroundAnsi,
 	);
 }
 
@@ -591,9 +605,9 @@ function renderDiffSectionRows(
 	width: number,
 	headerRenderer: DiffSectionHeaderRenderer,
 	includeHeader: boolean,
+	panelBackgroundAnsi: string | undefined,
 ): string[] {
 	const rendered: string[] = [];
-	const panelBackgroundAnsi = toolBackgroundAnsi(theme, "toolPendingBg");
 	const numberWidth = diffLineNumberWidth(section.rows);
 	const gutterWidth = numberWidth + 5;
 	const codeWidth = Math.max(8, width - gutterWidth);
@@ -643,37 +657,21 @@ function renderDiffRows(
 	theme: RenderTheme,
 	width: number,
 	expanded: boolean,
-	headerRenderer: DiffSectionHeaderRenderer = defaultDiffSectionHeader,
+	headerRenderer: DiffSectionHeaderRenderer,
+	panelBackgroundAnsi: string | undefined,
 ): string[] {
-	const parsedRows = rows ?? parseUnifiedDiff(diff);
+	const parsedRows = rows ?? buildHighlightedDiffRowsSync(diff);
 	const sections = groupDiffRowsByFile(parsedRows);
 	if (sections.length === 0) {
-		return [
-			paintDiffRow(
-				formatDiffStatsLine(diff, theme),
-				width,
-				theme,
-				"toolPendingBg",
-				toolBackgroundAnsi(theme, "toolPendingBg"),
-			),
-		];
-	}
-	const columnCount = columnCountForWidth(width, sections.length);
-	if (columnCount > 1) {
-		const columnWidth = columnWidthFor(width, columnCount);
-		const blocks = sections.map((section, sectionIndex) => {
-			const rendered = renderDiffSectionRows(section, sectionIndex, theme, columnWidth, headerRenderer, true);
-			if (expanded || rendered.length <= 40) return rendered;
-			return [...rendered.slice(0, 40), renderDiffOmittedLine(rendered.length - 40, columnWidth, theme)];
-		});
-		return renderColumns(blocks, width);
+		return [paintDiffRow(formatDiffStatsLine(diff, theme), width, theme, "toolPendingBg", panelBackgroundAnsi)];
 	}
 	const rendered = sections.flatMap((section, sectionIndex) =>
-		renderDiffSectionRows(section, sectionIndex, theme, width, headerRenderer, false),
+		renderDiffSectionRows(section, sectionIndex, theme, width, headerRenderer, false, panelBackgroundAnsi),
 	);
 	const limit = expanded ? rendered.length : 40;
 	const visible = rendered.slice(0, limit);
-	if (rendered.length > limit) visible.push(renderDiffOmittedLine(rendered.length - limit, width, theme));
+	if (rendered.length > limit)
+		visible.push(renderDiffOmittedLine(rendered.length - limit, width, theme, panelBackgroundAnsi));
 	return visible;
 }
 
@@ -685,6 +683,7 @@ export class EditDiffView {
 		private readonly rows: DiffRenderRow[] | undefined,
 		private readonly expanded: boolean | (() => boolean),
 		private readonly theme: RenderTheme,
+		private readonly panelBackgroundAnsi = toolBackgroundAnsi(theme, "toolPendingBg"),
 		private readonly headerRenderer: DiffSectionHeaderRenderer = defaultDiffSectionHeader,
 		private readonly shouldRender: (() => boolean) | undefined = undefined,
 	) {}
@@ -704,9 +703,15 @@ export class EditDiffView {
 			return this.renderedCache.lines;
 		}
 		const lines = visible
-			? renderDiffRows(this.diff, this.rows, this.theme, width, expanded, this.headerRenderer).map((line) =>
-					clampRenderedLine(line, width),
-				)
+			? renderDiffRows(
+					this.diff,
+					this.rows,
+					this.theme,
+					width,
+					expanded,
+					this.headerRenderer,
+					this.panelBackgroundAnsi,
+				).map((line) => clampRenderedLine(line, width))
 			: [];
 		this.renderedCache = { width, expanded, visible, lines };
 		return lines;

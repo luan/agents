@@ -1,56 +1,61 @@
 import "./setup-home";
 import { afterEach, describe, expect, it } from "bun:test";
-import { execSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createExecCommandTracker } from "../exec-command/tools/exec-command-state.ts";
 import { registerExecCommandTool } from "../exec-command/tools/exec-command-tool.ts";
+import { captureExecOutput } from "./pi/capture.ts";
+import { setCurrentContextGuardSessionId } from "./pi/current-session.ts";
 
 const originalCoreBin = process.env.CONTEXT_GUARD_BIN;
-const originalSkipLocalBin = process.env.CONTEXT_GUARD_SKIP_LOCAL_BIN;
-const originalPath = process.env.PATH;
+const originalProjectDir = process.env.CONTEXT_GUARD_PROJECT_DIR;
+const originalPiConfigDir = process.env.PI_CONFIG_DIR;
 
 afterEach(() => {
-	if (originalCoreBin === undefined) {
-		delete process.env.CONTEXT_GUARD_BIN;
-	} else {
-		process.env.CONTEXT_GUARD_BIN = originalCoreBin;
-	}
-	if (originalSkipLocalBin === undefined) {
-		delete process.env.CONTEXT_GUARD_SKIP_LOCAL_BIN;
-	} else {
-		process.env.CONTEXT_GUARD_SKIP_LOCAL_BIN = originalSkipLocalBin;
-	}
-	process.env.PATH = originalPath;
+	if (originalCoreBin === undefined) delete process.env.CONTEXT_GUARD_BIN;
+	else process.env.CONTEXT_GUARD_BIN = originalCoreBin;
+	if (originalProjectDir === undefined) delete process.env.CONTEXT_GUARD_PROJECT_DIR;
+	else process.env.CONTEXT_GUARD_PROJECT_DIR = originalProjectDir;
+	if (originalPiConfigDir === undefined) delete process.env.PI_CONFIG_DIR;
+	else process.env.PI_CONFIG_DIR = originalPiConfigDir;
+	setCurrentContextGuardSessionId(undefined);
 });
 
-function processList(): string {
-	return execSync("ps -axo pid,ppid,pgid,stat,command", { encoding: "utf8" });
+function writeCore(source: string): void {
+	const dir = mkdtempSync(join(tmpdir(), "context-guard-exec-test-"));
+	const coreBin = join(dir, "context-guard-core.js");
+	writeFileSync(coreBin, `#!${process.execPath}\n${source}`, "utf8");
+	chmodSync(coreBin, 0o755);
+	process.env.CONTEXT_GUARD_BIN = coreBin;
 }
 
-async function waitForProcessListToExclude(marker: string): Promise<void> {
-	const deadline = Date.now() + 3000;
-	while (Date.now() < deadline) {
-		if (!processList().includes(marker)) return;
-		await Bun.sleep(100);
-	}
-	expect(processList()).not.toContain(marker);
-}
-
-function createExecTool(options: { contextGuardEnabled?: boolean } = {}) {
+function createTool(result: Record<string, unknown>, options: Record<string, unknown> = {}) {
 	let tool: any;
+	let receivedInput: Record<string, unknown> | undefined;
+	const receivedInputs: Record<string, unknown>[] = [];
+	let backgroundCapture: unknown;
+	const onExec = options.onExec as ((input: Record<string, unknown>) => void | Promise<void>) | undefined;
+	const resultForInput = options.resultForInput as
+		| ((input: Record<string, unknown>) => Record<string, unknown>)
+		| undefined;
+
 	const sessions = {
-		exec: async () => {
-			throw new Error("sessions.exec should not be used for context-guard-wrapped commands");
+		exec: async (input: Record<string, unknown>) => {
+			receivedInput = input;
+			receivedInputs.push(input);
+			await onExec?.(input);
+			return { ...(resultForInput?.(input) ?? result) };
 		},
-		write: async () => {
-			throw new Error("sessions.write should not be used in these tests");
-		},
+		write: async () => ({}),
 		hasSession: () => false,
 		getSessionCommand: () => undefined,
 		getSessionSnapshot: () => undefined,
+		listSessions: () => [],
+		stopSession: () => false,
+		stopAllSessions: () => 0,
 		onSessionExit: () => () => {},
+		onSessionUpdate: () => () => {},
 		shutdown() {},
 	};
 	registerExecCommandTool(
@@ -58,306 +63,340 @@ function createExecTool(options: { contextGuardEnabled?: boolean } = {}) {
 		createExecCommandTracker(),
 		sessions as any,
 		{
-			contextGuardEnabled: () => options.contextGuardEnabled ?? false,
+			contextGuardEnabled: () => true,
+			getOriginalCommand: () => "git status",
+			onResult: (_params: unknown, _result: unknown, _ctx: unknown, capture: unknown) => {
+				backgroundCapture = capture;
+			},
+			...options,
 		},
 	);
-	return tool;
+	return {
+		tool,
+		getInput: () => receivedInput,
+		getInputs: () => receivedInputs,
+		getBackgroundCapture: () => backgroundCapture,
+	};
 }
 
-describe("exec_command context-guard wrapping", () => {
-	it("wraps a plain cmd through Context Guard batch when enabled", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "exec-command-cg-wrap-"));
-		const coreBin = join(dir, "context-guard-core.js");
-		process.env.CONTEXT_GUARD_BIN = coreBin;
-		writeFileSync(
-			coreBin,
+describe("exec_command Context Guard capture", () => {
+	it("captures foreground output without changing execution", async () => {
+		const captureLog = join(tmpdir(), `context-guard-capture-${Date.now()}.json`);
+		writeCore(
 			[
-				`#!${process.execPath}`,
-				"let input = '';",
-				"process.stdin.setEncoding('utf8');",
-				"process.stdin.on('data', chunk => input += chunk);",
-				"process.stdin.on('end', () => {",
-				"  const request = JSON.parse(input);",
-				"  if (request.command !== 'batch') process.exit(2);",
-				"  const command = request.params.commands[0].command;",
-				"  process.stdout.write(JSON.stringify({",
-				"    ok: true,",
-				"    content: [{ type: 'text', text: 'ignored batch text' }],",
-				"    details: {",
-				"      commandCount: 1,",
-				"      concurrency: 1,",
-				"      queries: [],",
-				"      results: [{ label: request.params.commands[0].label, command, output: 'wrapped output\\n', summary: 'ok', exitCode: 0 }]",
-				"    }",
-				"  }));",
-				"});",
-				"",
-			].join("\n"),
-			"utf8",
-		);
-		chmodSync(coreBin, 0o755);
-
-		const tool = createExecTool({ contextGuardEnabled: true });
-		const result = await tool.execute("call-wrap", { cmd: "printf hello" }, undefined, undefined, {
-			cwd: join(dir, "workspace"),
-		});
-
-		expect(result.details.output).toBe("wrapped output\n");
-		expect(result.content[0]?.text).toContain("Command: printf hello");
-		expect(result.content[0]?.text).toContain("wrapped output");
-		expect(result.isError).toBe(false);
-
-		tool.renderCall(
-			{ cmd: "printf hello" },
-			{ fg: (_role: string, text: string) => text, bold: (text: string) => text },
-			{ toolCallId: "call-wrap", state: {}, isPartial: true, invalidate() {} },
-		);
-		const renderedCall = tool
-			.renderCall(
-				{ cmd: "printf hello" },
-				{ fg: (_role: string, text: string) => text, bold: (text: string) => text },
-				{ toolCallId: "call-wrap", state: {}, isPartial: false, invalidate() {} },
-			)
-			.render(120)
-			.join("\n");
-		expect(renderedCall).toContain("via context-guard");
-
-		const rendered = tool
-			.renderResult(
-				result,
-				{ expanded: false, isPartial: false },
-				{ fg: (_role: string, text: string) => text },
-				{ toolCallId: "call-wrap", args: { cmd: "printf hello" }, state: {} },
-			)
-			.render(120)
-			.join("\n");
-		expect(rendered).toContain("wrapped output");
-		expect(rendered).not.toContain("Context:");
-	});
-
-	it("cancels context-guard wrapped commands when the tool signal aborts", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "exec-command-cg-abort-"));
-		const coreBin = join(dir, "context-guard-core.js");
-		const marker = `exec-command-cg-abort-descendant-${process.pid}-${Date.now()}`;
-		process.env.CONTEXT_GUARD_BIN = coreBin;
-		writeFileSync(
-			coreBin,
-			[
-				`#!${process.execPath}`,
-				"const { spawn } = require('node:child_process');",
-				`const marker = ${JSON.stringify(marker)};`,
-				"let input = '';",
-				"process.stdin.setEncoding('utf8');",
-				"process.stdin.on('data', chunk => input += chunk);",
-				"process.stdin.on('end', () => {",
-				"  const request = JSON.parse(input);",
-				"  if (request.command !== 'batch') {",
-				"    process.stdout.write(JSON.stringify({ ok: true, content: [{ type: 'text', text: 'ok' }] }));",
-				"    return;",
-				"  }",
-				"  spawn('sh', ['-c', 'sleep 30 # ' + marker], { stdio: 'ignore' });",
-				"  setInterval(() => {}, 1000);",
-				"});",
-				"",
-			].join("\n"),
-			"utf8",
-		);
-		chmodSync(coreBin, 0o755);
-
-		const controller = new AbortController();
-		const tool = createExecTool({ contextGuardEnabled: true });
-		const execution = tool.execute("call-wrap-abort", { cmd: "sleep 60" }, controller.signal, undefined, {
-			cwd: join(dir, "workspace"),
-		});
-		setTimeout(() => controller.abort(), 50);
-
-		const result = await Promise.race([
-			execution,
-			Bun.sleep(1500).then(() => {
-				throw new Error("context-guard wrapped exec did not abort promptly");
-			}),
-		]);
-
-		expect(result.isError).toBe(true);
-		expect(result.content[0]?.text).toContain("Context Guard core cancelled");
-		await waitForProcessListToExclude(marker);
-	});
-
-	it("records wrapped plain cmd telemetry as exec_command.batch", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "exec-command-cg-wrap-telemetry-"));
-		const coreBin = join(dir, "context-guard-core.js");
-		const logPath = join(dir, "requests.log");
-		process.env.CONTEXT_GUARD_BIN = coreBin;
-		writeFileSync(
-			coreBin,
-			[
-				`#!${process.execPath}`,
 				"const fs = require('node:fs');",
-				`const logPath = ${JSON.stringify(logPath)};`,
 				"let input = '';",
-				"process.stdin.setEncoding('utf8');",
 				"process.stdin.on('data', chunk => input += chunk);",
 				"process.stdin.on('end', () => {",
 				"  const request = JSON.parse(input);",
-				"  fs.appendFileSync(logPath, JSON.stringify(request) + '\\n', 'utf8');",
-				"  const text = request.command === 'batch' ? 'ignored' : '{}';",
-				"  process.stdout.write(JSON.stringify({",
-				"    ok: true,",
-				"    content: [{ type: 'text', text }],",
-				"    details: { results: [{ output: 'hello from rust core', summary: 'ok', exitCode: 0 }] }",
-				"  }));",
+				`  fs.writeFileSync(${JSON.stringify(captureLog)}, JSON.stringify(request));`,
+				"  const payload = { artifactId: 'artifact-1', byteCount: 42, lineCount: 2, preview: 'preview output\\n' };",
+				"  process.stdout.write(JSON.stringify({ ok: true, content: [{ type: 'text', text: JSON.stringify(payload) }] }));",
 				"});",
-				"",
 			].join("\n"),
-			"utf8",
 		);
-		chmodSync(coreBin, 0o755);
-
-		const tool = createExecTool({ contextGuardEnabled: true });
-		const result = await tool.execute("call-wrap-telemetry", { cmd: "printf hello" }, undefined, undefined, {
-			cwd: join(dir, "workspace"),
-		});
-		expect(result.details.output).toBe("hello from rust core");
-
-		await Bun.sleep(25);
-
-		const requests = readFileSync(logPath, "utf8")
-			.trim()
-			.split("\n")
-			.filter(Boolean)
-			.map((line) => JSON.parse(line)) as Array<{
-			command: string;
-			params?: { action?: string; toolName?: string };
-		}>;
-		expect(requests.some((request) => request.command === "batch")).toBe(true);
-		expect(
-			requests.some(
-				(request) =>
-					request.command === "session" &&
-					request.params?.action === "record_tool_telemetry" &&
-					request.params?.toolName === "exec_command.batch",
-			),
-		).toBe(true);
-	});
-
-	it("wraps a plain cmd without using local exec", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "exec-command-cg-precedence-"));
-		const coreBin = join(dir, "context-guard-core.js");
-		process.env.CONTEXT_GUARD_BIN = coreBin;
-		writeFileSync(
-			coreBin,
-			[
-				`#!${process.execPath}`,
-				"let input = '';",
-				"process.stdin.setEncoding('utf8');",
-				"process.stdin.on('data', chunk => input += chunk);",
-				"process.stdin.on('end', () => {",
-				"  const request = JSON.parse(input);",
-				"  if (request.command !== 'batch') process.exit(2);",
-				"  const command = request.params.commands[0].command;",
-				"  process.stdout.write(JSON.stringify({",
-				"    ok: true,",
-				"    content: [{ type: 'text', text: 'ignored' }],",
-				"    details: { results: [{ label: request.params.commands[0].label, command, output: command, summary: 'ok', exitCode: 0 }] }",
-				"  }));",
-				"});",
-				"",
-			].join("\n"),
-			"utf8",
-		);
-		chmodSync(coreBin, 0o755);
-
-		const tool = createExecTool({ contextGuardEnabled: true });
-		const result = await tool.execute("call-precedence", { cmd: "printf original" }, undefined, undefined, {
-			cwd: join(dir, "workspace"),
+		setCurrentContextGuardSessionId("session-a");
+		const { tool } = createTool({
+			chunk_id: "done",
+			wall_time_seconds: 0.01,
+			output: "short output\n",
+			capture_output: "full output\nsecond line\n",
+			terminal_state: "exited",
+			exit_code: 0,
 		});
 
-		expect(result.details.output).toBe("printf original");
-
-		tool.renderCall(
-			{ cmd: "printf original" },
-			{ fg: (_role: string, text: string) => text, bold: (text: string) => text },
-			{ toolCallId: "call-precedence", state: {}, isPartial: true, invalidate() {} },
-		);
-		const renderedCall = tool
-			.renderCall(
-				{ cmd: "printf original" },
-				{ fg: (_role: string, text: string) => text, bold: (text: string) => text },
-				{ toolCallId: "call-precedence", state: {}, isPartial: false, invalidate() {} },
-			)
-			.render(120)
-			.join("\n");
-		expect(renderedCall).toContain("via context-guard");
+		const result = await tool.execute("call-1", { cmd: "rtk git status", workdir: "subdir" }, undefined, undefined, {
+			cwd: "/workspace",
+		});
+		const request = JSON.parse(await Bun.file(captureLog).text());
+		expect(request.command).toBe("capture");
+		expect(request.params.originalCommand).toBe("git status");
+		expect(request.params.executedCommand).toBe("rtk git status");
+		expect(request.params.projectDir).toBe("/workspace");
+		expect(request.params.cwd).toBe("/workspace/subdir");
+		expect(request.params.sessionId).toBe("session-a");
+		expect(request.params.output).toBe("full output\nsecond line\n");
+		expect(result.details.output).toBe("preview output\n");
+		expect(result.details.context_guard_capture).toEqual({
+			artifact_id: "artifact-1",
+			byte_count: 42,
+			line_count: 2,
+		});
+		expect(result.isError).toBe(false);
 	});
 
-	it("delegates explicit mode:'batch' to the core and renders with exec styling", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "exec-command-cg-batch-"));
-		const coreBin = join(dir, "context-guard-core.js");
-		process.env.CONTEXT_GUARD_BIN = coreBin;
-		writeFileSync(
-			coreBin,
+	it("reports when the searchable capture omits the command tail", async () => {
+		const captureLog = join(tmpdir(), `context-guard-truncated-${Date.now()}.json`);
+		writeCore(
 			[
-				`#!${process.execPath}`,
+				"const fs = require('node:fs');",
 				"let input = '';",
-				"process.stdin.setEncoding('utf8');",
 				"process.stdin.on('data', chunk => input += chunk);",
 				"process.stdin.on('end', () => {",
-				"  const request = JSON.parse(input);",
-				"  if (request.command !== 'batch') process.exit(2);",
-				"  process.stdout.write(JSON.stringify({ ok: true, content: [{ type: 'text', text: JSON.stringify(request.params) }], details: { results: [] } }));",
+				`  fs.writeFileSync(${JSON.stringify(captureLog)}, input);`,
+				"  const payload = { artifactId: 'truncated-artifact', byteCount: 99, lineCount: 2, preview: 'truncated preview' };",
+				"  process.stdout.write(JSON.stringify({ ok: true, content: [{ type: 'text', text: JSON.stringify(payload) }] }));",
 				"});",
-				"",
 			].join("\n"),
-			"utf8",
 		);
-		chmodSync(coreBin, 0o755);
+		const { tool } = createTool({
+			chunk_id: "done",
+			wall_time_seconds: 0.01,
+			output: "short output",
+			capture_output: "captured prefix",
+			capture_output_truncated: true,
+			terminal_state: "exited",
+			exit_code: 0,
+		});
 
-		const tool = createExecTool({ contextGuardEnabled: true });
-		const workdir = join(dir, "workspace");
-		const result = await tool.execute(
-			"call-batch",
-			{
-				mode: "batch",
-				commands: [
-					{ label: "one", command: "printf one" },
-					{ label: "two", command: "printf two" },
-				],
-				queries: ["one", "two"],
-				concurrency: 3,
-				workdir,
-			},
-			undefined,
-			undefined,
-			{ cwd: join(dir, "ignored-cwd") },
-		);
-		const payload = JSON.parse(result.content[0]?.text ?? "{}");
+		const result = await tool.execute("truncated", { cmd: "printf lots" }, undefined, undefined, {
+			cwd: "/workspace",
+		});
+		const request = JSON.parse(await Bun.file(captureLog).text());
+		expect(request.params.output).toContain("capture truncated at 8 MiB");
+		expect(request.params.metadata).toMatchObject({
+			captureOutputTruncated: true,
+			captureOutputMaxBytes: 8 * 1024 * 1024,
+		});
+		expect(result.details.context_guard_capture_truncated).toBe(true);
+	});
 
-		expect(payload.concurrency).toBe(3);
-		expect(payload.projectDir).toBe(workdir);
-		expect(payload.commands).toHaveLength(2);
-		expect(payload.queries).toEqual(["one", "two"]);
-		expect(String(payload.dbPath)).toContain("context-guard");
-
-		const renderedCall = tool
-			.renderCall(
+	for (const { name, terminalResult, abort } of [
+		{
+			name: "cancelled",
+			terminalResult: { terminal_state: "cancelled", cancelled: true },
+			abort: true,
+		},
+		{
+			name: "timed out",
+			terminalResult: { terminal_state: "timed_out", timed_out: true },
+			abort: false,
+		},
+	]) {
+		it(`captures ${name} foreground output after execution`, async () => {
+			const captureLog = join(tmpdir(), `context-guard-${name.replaceAll(" ", "-")}-${Date.now()}.json`);
+			writeCore(
+				[
+					"const fs = require('node:fs');",
+					"let input = '';",
+					"process.stdin.on('data', chunk => input += chunk);",
+					"process.stdin.on('end', () => {",
+					`  fs.writeFileSync(${JSON.stringify(captureLog)}, input);`,
+					"  const payload = { artifactId: 'terminal-artifact', byteCount: 12, lineCount: 1, preview: 'captured terminal output' };",
+					"  process.stdout.write(JSON.stringify({ ok: true, content: [{ type: 'text', text: JSON.stringify(payload) }] }));",
+					"});",
+				].join("\n"),
+			);
+			const controller = abort ? new AbortController() : undefined;
+			const { tool } = createTool(
 				{
-					mode: "batch",
-					commands: [
-						{ label: "one", command: "printf one" },
-						{ label: "two", command: "printf two" },
-					],
+					chunk_id: "done",
+					wall_time_seconds: 0.01,
+					output: "terminal output\n",
+					capture_output: "complete terminal output\n",
+					...terminalResult,
 				},
-				testTheme,
-				{ isPartial: false, state: {}, invalidate() {} },
-			)
-			.render(120)
-			.join("\n");
-		expect(renderedCall).toContain("<bold>Ran</bold>");
-		expect(renderedCall).not.toContain("Context:");
+				{ onExec: () => controller?.abort() },
+			);
+
+			const result = await tool.execute(`call-${name}`, { cmd: "printf terminal" }, controller?.signal, undefined, {
+				cwd: "/workspace",
+			});
+			const request = JSON.parse(await Bun.file(captureLog).text());
+			expect(request.params.output).toBe("complete terminal output\n");
+			expect(result.details.output).toBe("captured terminal output");
+			expect(result.details.context_guard_capture?.artifact_id).toBe("terminal-artifact");
+			expect(result.isError).toBe(true);
+		});
+	}
+
+	it("fails open when capture fails", async () => {
+		writeCore("process.exit(1);");
+		const { tool } = createTool({
+			chunk_id: "done",
+			wall_time_seconds: 0.01,
+			output: "ordinary output\n",
+			terminal_state: "exited",
+			exit_code: 0,
+		});
+		const result = await tool.execute("call-2", { cmd: "printf ok" }, undefined, undefined, { cwd: "/workspace" });
+		expect(result.details.output).toBe("ordinary output\n");
+		expect(result.details.context_guard_capture_failure).toContain("Context Guard core exited 1");
+		expect(result.content[0]?.text).toContain("Context Guard capture failed:");
+		expect(result.isError).toBe(false);
+	});
+
+	it("bypasses capture for TTY commands", async () => {
+		writeCore("process.exit(2);");
+		const { tool, getInput } = createTool({
+			chunk_id: "done",
+			wall_time_seconds: 0,
+			output: "interactive\n",
+			terminal_state: "exited",
+			exit_code: 0,
+		});
+		const result = await tool.execute("call-3", { cmd: "printf ok", tty: true }, undefined, undefined, {
+			cwd: "/workspace",
+		});
+		expect(getInput()?.tty).toBe(true);
+		expect(result.details.output).toBe("interactive\n");
+		expect(result.details.context_guard_capture).toBeUndefined();
+	});
+
+	it("hands background sessions to the completion capture path", async () => {
+		setCurrentContextGuardSessionId("session-a");
+		const { tool, getBackgroundCapture } = createTool({
+			chunk_id: "running",
+			wall_time_seconds: 0,
+			output: "",
+			process_id: 7,
+		});
+		const result = await tool.execute("call-4", { cmd: "rtk git status" }, undefined, undefined, {
+			cwd: "/workspace",
+		});
+		expect(result.details.process_id).toBe(7);
+		expect(getBackgroundCapture()).toEqual({
+			projectDir: "/workspace",
+			originalCommand: "git status",
+			executedCommand: "rtk git status",
+			sessionId: "session-a",
+			cwd: "/workspace",
+		});
+	});
+
+	it("captures a background command under its launch session after a session switch", async () => {
+		const captureLog = join(tmpdir(), `context-guard-session-switch-${Date.now()}.json`);
+		writeCore(
+			[
+				"const fs = require('node:fs');",
+				"let input = '';",
+				"process.stdin.on('data', chunk => input += chunk);",
+				"process.stdin.on('end', () => {",
+				`  fs.writeFileSync(${JSON.stringify(captureLog)}, input);`,
+				"  const payload = { artifactId: 'artifact-2', byteCount: 1, lineCount: 1, preview: 'done' };",
+				"  process.stdout.write(JSON.stringify({ ok: true, content: [{ type: 'text', text: JSON.stringify(payload) }] }));",
+				"});",
+			].join("\n"),
+		);
+		setCurrentContextGuardSessionId("session-a");
+		const { tool, getBackgroundCapture } = createTool({
+			chunk_id: "running",
+			wall_time_seconds: 0,
+			output: "",
+			process_id: 8,
+		});
+		await tool.execute("call-5", { cmd: "printf done" }, undefined, undefined, { cwd: "/workspace" });
+		setCurrentContextGuardSessionId("session-b");
+		await captureExecOutput(getBackgroundCapture() as any, { output: "done", elapsedMs: 1 });
+		const request = JSON.parse(await Bun.file(captureLog).text());
+		expect(request.params.sessionId).toBe("session-a");
+	});
+	it("normalizes command lists and runs at fixed concurrency four", async () => {
+		let active = 0;
+		let maxActive = 0;
+		const { tool, getInputs } = createTool(
+			{},
+			{
+				contextGuardEnabled: () => false,
+				onExec: async () => {
+					active++;
+					maxActive = Math.max(maxActive, active);
+					await Bun.sleep(20);
+					active--;
+				},
+				resultForInput: (input: Record<string, unknown>) => ({
+					chunk_id: String(input.cmd),
+					wall_time_seconds: 0.02,
+					output: `${input.cmd}\n`,
+					terminal_state: "exited",
+					exit_code: 0,
+				}),
+			},
+		);
+		const commands = Array.from({ length: 6 }, (_, index) => ({
+			label: `job-${index}`,
+			command: `printf ${index}`,
+		}));
+		const result = await tool.execute("batch", { commands }, undefined, undefined, { cwd: "/workspace" });
+
+		expect(maxActive).toBe(4);
+		expect(getInputs()).toHaveLength(6);
+		expect(getInputs().every((input) => input.wait_for_exit === true)).toBe(true);
+		expect(result.isError).toBe(false);
+		expect(result.details.results.map((item: { command: string }) => item.command)).toEqual(
+			commands.map(({ command }) => command),
+		);
+		expect(result.content[0].text.indexOf("job-0")).toBeLessThan(result.content[0].text.indexOf("job-5"));
+		expect(result.content[0].text).toContain("## job-0\n");
+		expect(result.content[0].text).not.toContain("\\n");
+	});
+
+	it("does not launch queued batch commands after cancellation", async () => {
+		const controller = new AbortController();
+		let started = 0;
+		let release!: () => void;
+		const barrier = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const { tool, getInputs } = createTool(
+			{},
+			{
+				contextGuardEnabled: () => false,
+				onExec: async () => {
+					started++;
+					if (started === 4) {
+						controller.abort();
+						release();
+					}
+					await barrier;
+				},
+				resultForInput: (input: Record<string, unknown>) => ({
+					chunk_id: String(input.cmd),
+					wall_time_seconds: 0,
+					output: `${input.cmd}\n`,
+					terminal_state: "cancelled",
+					cancelled: true,
+				}),
+			},
+		);
+		const commands = Array.from({ length: 8 }, (_, index) => `printf ${index}`);
+
+		await tool.execute("cancelled-batch", { commands }, controller.signal, undefined, { cwd: "/workspace" });
+
+		expect(getInputs()).toHaveLength(4);
+	});
+
+	it("rejects obsolete mode arguments and ignores removed capture overrides", async () => {
+		const captureLog = join(tmpdir(), `context-guard-override-${Date.now()}.json`);
+		writeCore(
+			[
+				"const fs = require('node:fs');",
+				"let input = '';",
+				"process.stdin.on('data', chunk => input += chunk);",
+				"process.stdin.on('end', () => {",
+				`  fs.writeFileSync(${JSON.stringify(captureLog)}, input);`,
+				"  const payload = { artifactId: 'artifact-override', byteCount: 7, lineCount: 1, preview: 'failed\\n' };",
+				"  process.stdout.write(JSON.stringify({ ok: true, content: [{ type: 'text', text: JSON.stringify(payload) }] }));",
+				"});",
+			].join("\n"),
+		);
+		const { tool } = createTool({
+			chunk_id: "done",
+			wall_time_seconds: 0,
+			output: "failed\n",
+			capture_output: "failed\n",
+			terminal_state: "exited",
+			exit_code: 7,
+		});
+		await expect(
+			tool.execute("call-5", { mode: "batch", commands: ["pwd"] }, undefined, undefined, { cwd: "/workspace" }),
+		).rejects.toThrow("does not accept mode, queries, or concurrency");
+		const result = await tool.execute("call-6", { cmd: "false", context_guard: false }, undefined, undefined, {
+			cwd: "/workspace",
+		});
+		expect(await Bun.file(captureLog).exists()).toBe(true);
+		expect(result.isError).toBe(true);
+		expect(result.details.exit_code).toBe(7);
+		expect(result.details.context_guard_capture.artifact_id).toBe("artifact-override");
 	});
 });
-
-const testTheme = {
-	fg: (role: string, text: string) => `<${role}>${text}</${role}>`,
-	bold: (text: string) => `<bold>${text}</bold>`,
-};

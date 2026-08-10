@@ -138,6 +138,66 @@ function parserForPath(path: string): Parser | null {
 	return sharedParser;
 }
 
+export type StructuralSummaryRow =
+	| { kind: "line"; lineNumber: number; text: string }
+	| { kind: "ellipsis"; startLine: number; endLine: number };
+
+export interface StructuralSummary {
+	rows: StructuralSummaryRow[];
+	elidedRanges: LineSpan[];
+	elidedLines: number;
+}
+
+export function summarizeCodeStructure(path: string, text: string, maxBlockLines = 12): StructuralSummary | undefined {
+	const parser = parserForPath(path);
+	if (!parser) return undefined;
+	const tree = parser.parse(text);
+	if (!tree) return undefined;
+	try {
+		const root = tree.rootNode;
+		if (root.hasError) return undefined;
+		const lines = text.split("\n");
+		const rows: StructuralSummaryRow[] = [];
+		const elidedRanges: LineSpan[] = [];
+		let cursor = 0;
+		const pushLines = (start: number, endExclusive: number) => {
+			for (let index = start; index < endExclusive; index++) {
+				rows.push({ kind: "line", lineNumber: index + 1, text: lines[index] ?? "" });
+			}
+		};
+		for (let index = 0; index < root.namedChildCount; index++) {
+			const child = root.namedChild(index);
+			if (!child) continue;
+			const start = child.startPosition.row;
+			const endExclusive = nodeContentEndLine(child);
+			if (start > cursor) pushLines(cursor, start);
+			const span = endExclusive - start;
+			if (span > maxBlockLines) {
+				const headEnd = Math.min(endExclusive - 1, start + 3);
+				pushLines(start, headEnd);
+				const elidedStart = headEnd + 1;
+				const elidedEnd = endExclusive - 1;
+				if (elidedStart <= elidedEnd) {
+					rows.push({ kind: "ellipsis", startLine: elidedStart, endLine: elidedEnd });
+					elidedRanges.push({ startLine: elidedStart, endLine: elidedEnd });
+				}
+				pushLines(endExclusive - 1, endExclusive);
+			} else {
+				pushLines(start, endExclusive);
+			}
+			cursor = Math.max(cursor, endExclusive);
+		}
+		if (cursor < lines.length) pushLines(cursor, lines.length);
+		const elidedLines = elidedRanges.reduce(
+			(total, range) => total + Math.max(0, range.endLine - range.startLine + 1),
+			0,
+		);
+		return elidedLines >= 20 ? { rows, elidedRanges, elidedLines } : undefined;
+	} finally {
+		tree.delete();
+	}
+}
+
 function countSyntaxErrors(root: Node): number {
 	if (!root.hasError) return 0;
 	let count = 0;

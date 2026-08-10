@@ -51,7 +51,10 @@ const BRACKETED_PASTE_END_TAIL = BRACKETED_PASTE_END.slice(1);
 const MAX_COUNT = 9999;
 const PI_NATIVE_CLIPBOARD_TIMEOUT_MS = 5000;
 const SOFTWARE_CURSOR_START = "\x1b[7m";
-const SOFTWARE_CURSOR_END = "\x1b[0m";
+const SOFTWARE_CURSOR_RESETS = ["\x1b[0m", "\x1b[27m"] as const;
+const INSERT_CURSOR_SHAPE = "\x1b[5 q";
+const BLOCK_CURSOR_SHAPE = "\x1b[1 q";
+const RESET_CURSOR_SHAPE = "\x1b[0 q";
 // Pi emits OSC52 before its native clipboard fallback. Give that 5s fallback
 // a small grace so the parent does not kill the helper and discard stdout.
 const CLIPBOARD_WRITE_TIMEOUT_MS = PI_NATIVE_CLIPBOARD_TIMEOUT_MS + 500;
@@ -489,6 +492,9 @@ export class ModalEditor extends CustomEditor {
 	private currentTransition: TransitionState = "none";
 	private onChangeHooked: boolean = false;
 	private readonly labelColorizers: ModeLabelColorizers | null;
+	private readonly hardwareCursorEnabled: () => boolean;
+	private readonly writeCursorShape: ((sequence: string) => void) | undefined;
+	private lastCursorShape: string | undefined;
 
 	// Unnamed register
 	private unnamedRegister: string = "";
@@ -510,8 +516,18 @@ export class ModalEditor extends CustomEditor {
 		super(...baseArgs);
 		this.mode = initialMode;
 		this.labelColorizers = labelColorizers ?? null;
-		const cursorTui = tui as unknown as { setShowHardwareCursor?: (enabled: boolean) => void };
-		cursorTui.setShowHardwareCursor?.(false);
+		const cursorTui = tui as unknown as {
+			terminal?: { write?: (sequence: string) => void };
+			setShowHardwareCursor?: (enabled: boolean) => void;
+			getShowHardwareCursor?: () => boolean;
+		};
+		cursorTui.setShowHardwareCursor?.(true);
+		this.hardwareCursorEnabled = () => cursorTui.getShowHardwareCursor?.() ?? true;
+		this.writeCursorShape =
+			typeof cursorTui.terminal?.write === "function"
+				? (sequence) => cursorTui.terminal?.write?.(sequence)
+				: undefined;
+		this.syncCursorShape();
 	}
 
 	// Test seams
@@ -2964,31 +2980,59 @@ export class ModalEditor extends CustomEditor {
 		}
 	}
 
-	private hideEditorCursorInExMode(lines: string[]): void {
-		if (this.pendingExCommand === null) return;
+	resetCursorShape(): void {
+		this.writeCursorShape?.(RESET_CURSOR_SHAPE);
+		this.lastCursorShape = undefined;
+	}
 
+	private syncCursorShape(): void {
+		if (!this.hardwareCursorEnabled()) {
+			this.lastCursorShape = undefined;
+			return;
+		}
+		const shape = this.mode === "insert" && this.pendingExCommand === null ? INSERT_CURSOR_SHAPE : BLOCK_CURSOR_SHAPE;
+		if (!this.writeCursorShape || shape === this.lastCursorShape) return;
+		this.writeCursorShape(shape);
+		this.lastCursorShape = shape;
+	}
+
+	private applyHardwareCursorPolicy(lines: string[]): void {
+		if (this.pendingExCommand === null && !this.hardwareCursorEnabled()) return;
 		for (let i = lines.length - 1; i >= 0; i--) {
 			const line = lines[i] ?? "";
 			const markerIndex = line.indexOf(CURSOR_MARKER);
 			if (markerIndex === -1) continue;
 
-			const cursorStart = line.indexOf(SOFTWARE_CURSOR_START, markerIndex + CURSOR_MARKER.length);
-			const cursorEnd =
-				cursorStart === -1 ? -1 : line.indexOf(SOFTWARE_CURSOR_END, cursorStart + SOFTWARE_CURSOR_START.length);
-			if (cursorStart !== -1 && cursorEnd !== -1) {
-				lines[i] =
-					line.slice(0, cursorStart) +
-					line.slice(cursorStart + SOFTWARE_CURSOR_START.length, cursorEnd) +
-					line.slice(cursorEnd + SOFTWARE_CURSOR_END.length);
+			const markerEnd = markerIndex + CURSOR_MARKER.length;
+			const cursorStart = line.indexOf(SOFTWARE_CURSOR_START, markerEnd);
+			if (cursorStart === -1) {
+				if (this.pendingExCommand !== null) lines[i] = line.slice(0, markerIndex) + line.slice(markerEnd);
+				return;
 			}
+
+			const contentStart = cursorStart + SOFTWARE_CURSOR_START.length;
+			const reset = SOFTWARE_CURSOR_RESETS.map((sequence) => ({
+				index: line.indexOf(sequence, contentStart),
+				sequence,
+			}))
+				.filter(({ index }) => index !== -1)
+				.sort((left, right) => left.index - right.index)[0];
+			if (!reset) return;
+
+			const prefix =
+				this.pendingExCommand === null
+					? line.slice(0, cursorStart)
+					: line.slice(0, markerIndex) + line.slice(markerEnd, cursorStart);
+			lines[i] = prefix + line.slice(contentStart, reset.index) + line.slice(reset.index + reset.sequence.length);
 			return;
 		}
 	}
 
 	render(width: number): string[] {
 		const lines = super.render(width);
+		this.syncCursorShape();
+		this.applyHardwareCursorPolicy(lines);
 		this.applyVisualSelectionHighlight(lines);
-		this.hideEditorCursorInExMode(lines);
 		return lines;
 	}
 
@@ -3034,6 +3078,7 @@ export class ModalEditor extends CustomEditor {
 }
 
 export default function (pi: ExtensionAPI) {
+	let activeEditor: ModalEditor | undefined;
 	function installEditor(ctx: ExtensionContext): void {
 		const piVimSettings = readPiVimSettings(ctx.cwd);
 		const clipboardMirrorPolicy = resolveClipboardMirrorPolicy(piVimSettings.clipboardMirror);
@@ -3059,7 +3104,9 @@ export default function (pi: ExtensionAPI) {
 					theme: CustomEditorConstructorArgs[1],
 					kb: CustomEditorConstructorArgs[2],
 				) => {
+					activeEditor?.resetCursorShape();
 					const editor = new ModalEditor(tui, editorThemeWithSymbols(theme), kb, colorizers, "insert");
+					activeEditor = editor;
 					editor.setClipboardMirrorPolicy(clipboardMirrorPolicy.policy);
 					editor.setQuitFn(() => ctx.shutdown());
 					editor.setNotifyFn((message) => ctx.ui.notify(message, "warning"));
@@ -3077,5 +3124,10 @@ export default function (pi: ExtensionAPI) {
 				if (!(error instanceof Error) || !error.message.includes("ctx is stale")) throw error;
 			}
 		}, 0);
+	});
+
+	pi.on("session_shutdown", () => {
+		activeEditor?.resetCursorShape();
+		activeEditor = undefined;
 	});
 }

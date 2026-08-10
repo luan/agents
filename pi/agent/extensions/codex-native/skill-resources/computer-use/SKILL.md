@@ -13,29 +13,11 @@ Prefer a purpose-built connector, API, or CLI when one can complete the task. Us
 
 ## Bootstrap
 
-Load the active plugin-owned wrapper once per fresh Node REPL session:
+Import the bundled `@oai/sky` package once per fresh Node REPL session:
 
 ```js
 if (!globalThis.sky) {
-  const fs = await import("node:fs/promises");
-  const path = await import("node:path");
-  const { pathToFileURL } = await import("node:url");
-  const versionsRoot = path.join(
-    nodeRepl.homeDir,
-    ".codex",
-    "plugins",
-    "cache",
-    "openai-bundled",
-    "computer-use",
-  );
-  const versions = (await fs.readdir(versionsRoot, { withFileTypes: true }))
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => entry.name)
-    .sort((left, right) => right.localeCompare(left, undefined, { numeric: true }));
-  if (!versions[0]) throw new Error("Computer Use plugin is not installed");
-  const wrapper = path.join(versionsRoot, versions[0], "scripts", "computer-use-client.mjs");
-  const { setupComputerUseRuntime } = await import(pathToFileURL(wrapper).href);
-  await setupComputerUseRuntime({ globals: globalThis });
+  globalThis.sky = (await import("@oai/sky")).sky;
 }
 ```
 

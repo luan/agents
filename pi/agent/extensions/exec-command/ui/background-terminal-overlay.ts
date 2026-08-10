@@ -1,4 +1,4 @@
-import { type Component, Key, matchesKey, type TUI, visibleWidth } from "@earendil-works/pi-tui";
+import { type Component, Key, matchesKey, type TUI, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { truncateToWidthCompat } from "../../shared/tui";
 import type { ExecSessionManager, ExecSessionRecord } from "../tools/exec-session-manager.ts";
 
@@ -25,7 +25,7 @@ export class BackgroundTerminalOverlay implements Component {
 	private lastOutputInnerWidth = 0;
 
 	constructor(
-		private readonly sessions: Pick<ExecSessionManager, "listSessions" | "onSessionUpdate" | "stopSession">,
+		private readonly sessions: Pick<ExecSessionManager, "listSessions" | "onSessionUpdate" | "stopSession" | "write">,
 		private readonly tui: Pick<TUI, "requestRender" | "terminal">,
 		private readonly theme: OverlayTheme,
 		private readonly done: (result: undefined) => void,
@@ -36,13 +36,12 @@ export class BackgroundTerminalOverlay implements Component {
 	}
 
 	handleInput(data: string): void {
-		if (matchesKey(data, Key.escape) || matchesKey(data, "q")) {
-			this.close();
-			return;
-		}
-
 		if (this.mode === "attached") {
 			this.handleAttachedInput(data);
+			return;
+		}
+		if (matchesKey(data, Key.escape) || matchesKey(data, "q")) {
+			this.close();
 			return;
 		}
 
@@ -179,10 +178,44 @@ export class BackgroundTerminalOverlay implements Component {
 	}
 
 	private handleAttachedInput(data: string): void {
+		if (matchesKey(data, Key.escape)) {
+			this.close();
+			return;
+		}
+		const record = this.sessions.listSessions().find((item) => item.id === this.attachedSessionId);
+		if (!record) {
+			this.mode = "list";
+			this.attachedSessionId = undefined;
+			this.tui.requestRender();
+			return;
+		}
+		if (record.stdinOpen && record.running) {
+			if (data === "\u001d") {
+				this.mode = "list";
+				this.attachedSessionId = undefined;
+				this.scrollOffset = 0;
+				this.autoScroll = true;
+				this.message = undefined;
+				this.tui.requestRender();
+				return;
+			}
+			this.autoScroll = true;
+			void this.sessions
+				.write({ process_id: record.id, chars: data })
+				.catch((error) => {
+					this.message = error instanceof Error ? error.message : String(error);
+				})
+				.finally(() => this.tui.requestRender());
+			return;
+		}
+
 		const lines = this.attachedOutputLines();
 		const viewportHeight = this.attachedViewportHeight();
 		const maxScroll = Math.max(0, lines.length - viewportHeight);
-
+		if (matchesKey(data, Key.escape) || data === "q") {
+			this.close();
+			return;
+		}
 		if (data === "h" || data === "b" || matchesKey(data, Key.left)) {
 			this.mode = "list";
 			this.attachedSessionId = undefined;
@@ -228,9 +261,7 @@ export class BackgroundTerminalOverlay implements Component {
 			this.tui.requestRender();
 			return;
 		}
-		if (isKillKey(data)) {
-			this.killAttached();
-		}
+		if (isKillKey(data)) this.killAttached();
 	}
 
 	private renderAttached(width: number): string[] {
@@ -258,13 +289,21 @@ export class BackgroundTerminalOverlay implements Component {
 		lines.push(this.borderTop(width));
 		lines.push(
 			this.row(
-				`${this.theme.bold(`background terminal #${record.id}`)} ${this.theme.fg("dim", "attached")}`,
+				`${this.theme.bold(`background terminal #${record.id}`)} ${this.theme.fg(
+					"dim",
+					record.stdinOpen && record.running ? "interactive" : "attached",
+				)}`,
 				innerWidth,
 			),
 		);
 		lines.push(
 			this.row(
-				this.theme.fg("dim", "j/k scroll · ctrl-u/d page · g/G top/bottom · h back · x kill · q/esc close"),
+				this.theme.fg(
+					"dim",
+					record.stdinOpen && record.running
+						? "terminal input active · esc close · ctrl+] back"
+						: "j/k scroll · ctrl-u/d page · g/G top/bottom · h back · x kill · q/esc close",
+				),
 				innerWidth,
 			),
 		);
@@ -414,10 +453,13 @@ function truncatePlain(text: string, width: number): string {
 }
 
 function outputLinesForRender(output: string, width: number): string[] {
+	const safeWidth = Math.max(8, width);
 	return output
 		.replace(/\n$/, "")
 		.split("\n")
-		.map((line) => truncatePlain(line, Math.max(8, width)))
+		.flatMap((line) =>
+			wrapTextWithAnsi(line.replace(/\t/g, "    ").replace(/[\x00-\x08\x0b-\x1a\x1c-\x1f\x7f]/g, ""), safeWidth),
+		)
 		.filter((line, index, lines) => line.length > 0 || index < lines.length - 1);
 }
 

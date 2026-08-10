@@ -1,46 +1,34 @@
-import { type CommandSummary, type ShellAction, summarizeShellCommand } from "../shell/summary.ts";
-
 export type ExecCommandStatus = "running" | "done";
 
 interface ExecCommandRenderInfo {
-	hidden: boolean;
 	status: ExecCommandStatus;
-	actionGroups?: ShellAction[][];
 	elapsedMs?: number;
 	contextGuardWrapped?: boolean;
 	sessionId?: number;
+	output?: string;
 }
 
 interface ExecEntry {
 	toolCallId: string;
 	command: string;
-	summary: CommandSummary;
 	status: ExecCommandStatus;
-	hidden: boolean;
 	startedAtMs: number;
 	contextGuardWrapped: boolean;
 	sessionId?: number;
-	groupId?: number;
+	output?: string;
 	invalidate?: () => void;
 }
 
-interface ExecGroup {
-	id: number;
-	entryIds: string[];
-	visibleEntryId: string;
-}
-
 export interface ExecCommandTracker {
-	getState(command: string): ExecCommandStatus;
 	getRenderInfo(toolCallId: string | undefined, command: string): ExecCommandRenderInfo;
 	registerRenderContext(toolCallId: string | undefined, invalidate: () => void): void;
-	ensurePlannedExploration(toolCallId: string | undefined, command: string): void;
 	recordStart(toolCallId: string, command: string): void;
 	recordContextGuardWrapped(toolCallId: string): void;
 	recordPersistentSession(toolCallId: string, processId: number): void;
+	recordOutput(toolCallId: string, output: string): void;
 	recordEnd(toolCallId: string): void;
 	recordSessionFinished(processId: number): void;
-	resetExplorationGroup(): void;
+	invalidateSessions(): void;
 	clear(): void;
 }
 
@@ -51,9 +39,6 @@ export function createExecCommandTracker(): ExecCommandTracker {
 	const contextGuardWrappedToolCallIds = new Set<string>();
 	const toolCallIdBySessionId = new Map<number, string>();
 	const entriesByToolCallId = new Map<string, ExecEntry>();
-	const groupsById = new Map<number, ExecGroup>();
-	let activeExplorationGroupId: number | undefined;
-	let nextGroupId = 1;
 
 	function incrementCommand(command: string): void {
 		runningCountsByCommand.set(command, (runningCountsByCommand.get(command) ?? 0) + 1);
@@ -61,182 +46,61 @@ export function createExecCommandTracker(): ExecCommandTracker {
 
 	function decrementCommand(command: string): void {
 		const next = (runningCountsByCommand.get(command) ?? 0) - 1;
-		if (next > 0) {
-			runningCountsByCommand.set(command, next);
-			return;
-		}
-		runningCountsByCommand.delete(command);
+		if (next > 0) runningCountsByCommand.set(command, next);
+		else runningCountsByCommand.delete(command);
 	}
 
-	function invalidateToolCall(toolCallId: string | undefined): void {
-		if (!toolCallId) return;
-		entriesByToolCallId.get(toolCallId)?.invalidate?.();
-	}
-
-	function getGroupForEntry(entry: ExecEntry | undefined): ExecGroup | undefined {
-		if (!entry?.groupId) return undefined;
-		return groupsById.get(entry.groupId);
-	}
-
-	function getElapsedMs(entries: ExecEntry[]): number | undefined {
-		const startedAtValues = entries.filter((entry) => entry.status === "running").map((entry) => entry.startedAtMs);
-		if (startedAtValues.length === 0) return undefined;
-		return Math.max(0, Date.now() - Math.min(...startedAtValues));
+	function elapsedMs(entry: ExecEntry): number | undefined {
+		return entry.status === "running" ? Math.max(0, Date.now() - entry.startedAtMs) : undefined;
 	}
 
 	return {
-		getState(command) {
-			return (runningCountsByCommand.get(command) ?? 0) > 0 ? "running" : "done";
-		},
 		getRenderInfo(toolCallId, command) {
-			if (!toolCallId) {
-				return {
-					hidden: false,
-					status: (runningCountsByCommand.get(command) ?? 0) > 0 ? "running" : "done",
-				};
-			}
-
-			const entry = entriesByToolCallId.get(toolCallId);
+			const entry = toolCallId ? entriesByToolCallId.get(toolCallId) : undefined;
 			if (!entry) {
 				return {
-					hidden: false,
 					status: (runningCountsByCommand.get(command) ?? 0) > 0 ? "running" : "done",
-					contextGuardWrapped: contextGuardWrappedToolCallIds.has(toolCallId),
+					contextGuardWrapped: toolCallId ? contextGuardWrappedToolCallIds.has(toolCallId) : false,
 				};
 			}
-
-			if (entry.hidden) {
-				return {
-					hidden: true,
-					status: entry.status,
-					elapsedMs: getElapsedMs([entry]),
-					contextGuardWrapped: entry.contextGuardWrapped,
-					sessionId: entry.sessionId,
-				};
-			}
-
-			const group = getGroupForEntry(entry);
-			if (!group) {
-				return {
-					hidden: false,
-					status: entry.status,
-					actionGroups: entry.summary.maskAsExplored ? [entry.summary.actions] : undefined,
-					elapsedMs: getElapsedMs([entry]),
-					sessionId: entry.sessionId,
-					contextGuardWrapped: entry.contextGuardWrapped,
-				};
-			}
-
-			const entries = group.entryIds
-				.map((groupEntryId) => entriesByToolCallId.get(groupEntryId))
-				.filter((groupEntry): groupEntry is ExecEntry => Boolean(groupEntry));
 			return {
-				hidden: false,
-				status: entries.some((groupEntry) => groupEntry.status === "running") ? "running" : "done",
-				actionGroups: entries.map((groupEntry) => groupEntry.summary.actions),
-				elapsedMs: getElapsedMs(entries),
-				contextGuardWrapped: entries.some((groupEntry) => groupEntry.contextGuardWrapped),
+				status: entry.status,
+				elapsedMs: elapsedMs(entry),
+				contextGuardWrapped: entry.contextGuardWrapped,
+				sessionId: entry.sessionId,
+				output: entry.output,
 			};
 		},
 		registerRenderContext(toolCallId, invalidate) {
 			if (!toolCallId) return;
 			const entry = entriesByToolCallId.get(toolCallId);
-			if (!entry) return;
-			entry.invalidate = invalidate;
-		},
-		ensurePlannedExploration(toolCallId, command) {
-			if (!toolCallId || entriesByToolCallId.has(toolCallId)) return;
-			const summary = summarizeShellCommand(command);
-			if (!summary.maskAsExplored) return;
-
-			const entry: ExecEntry = {
-				toolCallId,
-				command,
-				summary,
-				status: "running",
-				hidden: false,
-				startedAtMs: Date.now(),
-				contextGuardWrapped: contextGuardWrappedToolCallIds.has(toolCallId),
-			};
-			entriesByToolCallId.set(toolCallId, entry);
-
-			let group = activeExplorationGroupId ? groupsById.get(activeExplorationGroupId) : undefined;
-			if (!group) {
-				group = {
-					id: nextGroupId++,
-					entryIds: [toolCallId],
-					visibleEntryId: toolCallId,
-				};
-				groupsById.set(group.id, group);
-				activeExplorationGroupId = group.id;
-				entry.groupId = group.id;
-				return;
-			}
-
-			group.entryIds.push(toolCallId);
-			entry.hidden = true;
-			entry.groupId = group.id;
-			invalidateToolCall(group.visibleEntryId);
+			if (entry) entry.invalidate = invalidate;
 		},
 		recordStart(toolCallId, command) {
 			const existing = entriesByToolCallId.get(toolCallId);
-			if (existing) {
-				commandByToolCallId.set(toolCallId, command);
-				incrementCommand(command);
-				existing.command = command;
-				existing.summary = summarizeShellCommand(command);
-				existing.status = "running";
-				existing.startedAtMs = Date.now();
-				const group = getGroupForEntry(existing);
-				invalidateToolCall(group?.visibleEntryId ?? toolCallId);
-				return;
-			}
-
 			commandByToolCallId.set(toolCallId, command);
 			incrementCommand(command);
-
-			const summary = summarizeShellCommand(command);
-			const entry: ExecEntry = {
+			if (existing) {
+				existing.command = command;
+				existing.status = "running";
+				existing.startedAtMs = Date.now();
+				existing.invalidate?.();
+				return;
+			}
+			entriesByToolCallId.set(toolCallId, {
 				toolCallId,
 				command,
-				summary,
 				status: "running",
-				hidden: false,
 				startedAtMs: Date.now(),
 				contextGuardWrapped: contextGuardWrappedToolCallIds.has(toolCallId),
-			};
-			entriesByToolCallId.set(toolCallId, entry);
-
-			if (!summary.maskAsExplored) {
-				activeExplorationGroupId = undefined;
-				return;
-			}
-
-			let group = activeExplorationGroupId ? groupsById.get(activeExplorationGroupId) : undefined;
-			if (!group) {
-				group = {
-					id: nextGroupId++,
-					entryIds: [toolCallId],
-					visibleEntryId: toolCallId,
-				};
-				groupsById.set(group.id, group);
-				activeExplorationGroupId = group.id;
-				entry.groupId = group.id;
-				return;
-			}
-
-			group.entryIds.push(toolCallId);
-			entry.hidden = true;
-			entry.groupId = group.id;
-			invalidateToolCall(group.visibleEntryId);
+			});
 		},
 		recordContextGuardWrapped(toolCallId) {
 			contextGuardWrappedToolCallIds.add(toolCallId);
 			const entry = entriesByToolCallId.get(toolCallId);
 			if (!entry || entry.contextGuardWrapped) return;
 			entry.contextGuardWrapped = true;
-			const group = getGroupForEntry(entry);
-			invalidateToolCall(group?.visibleEntryId ?? entry.toolCallId);
+			entry.invalidate?.();
 		},
 		recordPersistentSession(toolCallId, processId) {
 			sessionBackedToolCallIds.add(toolCallId);
@@ -245,8 +109,13 @@ export function createExecCommandTracker(): ExecCommandTracker {
 			if (!entry) return;
 			entry.status = "running";
 			entry.sessionId = processId;
-			const group = getGroupForEntry(entry);
-			invalidateToolCall(group?.visibleEntryId ?? entry.toolCallId);
+			entry.invalidate?.();
+		},
+		recordOutput(toolCallId, output) {
+			const entry = entriesByToolCallId.get(toolCallId);
+			if (!entry) return;
+			entry.output = output;
+			entry.invalidate?.();
 		},
 		recordEnd(toolCallId) {
 			const command = commandByToolCallId.get(toolCallId);
@@ -254,12 +123,9 @@ export function createExecCommandTracker(): ExecCommandTracker {
 			const entry = entriesByToolCallId.get(toolCallId);
 			if (!sessionBackedToolCallIds.has(toolCallId)) {
 				decrementCommand(command);
-				if (entry) {
-					entry.status = "done";
-				}
+				if (entry) entry.status = "done";
 			}
-			const group = getGroupForEntry(entry);
-			invalidateToolCall(group?.visibleEntryId ?? toolCallId);
+			entry?.invalidate?.();
 			commandByToolCallId.delete(toolCallId);
 		},
 		recordSessionFinished(processId) {
@@ -271,11 +137,12 @@ export function createExecCommandTracker(): ExecCommandTracker {
 			decrementCommand(entry.command);
 			entry.status = "done";
 			sessionBackedToolCallIds.delete(toolCallId);
-			const group = getGroupForEntry(entry);
-			invalidateToolCall(group?.visibleEntryId ?? entry.toolCallId);
+			entry.invalidate?.();
 		},
-		resetExplorationGroup() {
-			activeExplorationGroupId = undefined;
+		invalidateSessions() {
+			for (const toolCallId of sessionBackedToolCallIds) {
+				entriesByToolCallId.get(toolCallId)?.invalidate?.();
+			}
 		},
 		clear() {
 			commandByToolCallId.clear();
@@ -284,9 +151,6 @@ export function createExecCommandTracker(): ExecCommandTracker {
 			contextGuardWrappedToolCallIds.clear();
 			toolCallIdBySessionId.clear();
 			entriesByToolCallId.clear();
-			groupsById.clear();
-			activeExplorationGroupId = undefined;
-			nextGroupId = 1;
 		},
 	};
 }

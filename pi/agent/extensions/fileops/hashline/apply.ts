@@ -115,7 +115,7 @@ function bucketAnchorEditsByLine(edits: IndexedEdit[]): Map<number, IndexedEdit[
 // (duplicating a function header and final statement); sometimes it only
 // re-states or omits a structural closer, which leaves delimiter balance broken.
 //
-// OMP-style boundary absorption widens the deletion when replacement payloads
+// Boundary absorption widens the deletion when replacement payloads
 // duplicate adjacent file context. Generic context requires 2+ matching lines;
 // single-line absorption is limited to structural closing delimiters whose
 // removal restores the deleted range's delimiter balance.
@@ -239,8 +239,8 @@ interface ReplacementGroup {
 /**
  * Detect a replacement group starting at `start`: a run of `before_anchor`
  * replacement inserts sharing one source op line, immediately followed by the
- * contiguous range deletes for that same op. Mirrors how the parser lowers an
- * OMP/hashline replacement hunk with a body.
+ * contiguous range deletes for that same op. This mirrors how the parser lowers
+ * a hashline replacement hunk with a body.
  */
 function findReplacementGroup(edits: readonly AppliedEdit[], start: number): ReplacementGroup | undefined {
 	const first = edits[start];

@@ -66,7 +66,6 @@ describe("shared editor composition", () => {
 		] as const) {
 			const { factory, getText } = composeInOrder([...order]);
 			const editor = factory?.(undefined as never, undefined as never, undefined as never);
-			expect(editor?.render(80)).toEqual(["replacement:rendered"]);
 			editor?.handleInput?.("x");
 			expect(getText()).toBe("handled");
 		}

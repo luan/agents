@@ -3,7 +3,7 @@ import type { Component } from "@earendil-works/pi-tui";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { onOpenAIFastRequest } from "../shared/openai-fast-state";
-import { bold, framedBlock, renderStatusLine, styledSymbol, textComponent, treeGlyphs } from "../shared/tui/omp-card";
+import { bold, framedBlock, renderStatusLine, styledSymbol, textComponent, treeGlyphs } from "../shared/tui/card";
 import { findRetryableError } from "./runtime/agent-runner.js";
 import {
 	deliverPendingForSession,
@@ -17,7 +17,7 @@ import {
 	unregisterSessionBinding,
 } from "./runtime/coordinator.js";
 import { loadCustomAgents } from "./runtime/custom-agents.js";
-import { readAgentRegistry, writeAgentRegistry } from "./runtime/persistence.js";
+import { readAgentRegistry, readAllAgentRegistries, writeAgentRegistry } from "./runtime/persistence.js";
 import type { AgentConfig, AgentRecord, SubagentType } from "./runtime/types.js";
 import { openAgentBrowser, openAgentInspector } from "./runtime/ui/agent-browser.js";
 import { type AgentActivity, AgentWidget } from "./runtime/ui/agent-widget.js";
@@ -452,22 +452,65 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		return targets;
 	};
 	const harnessActions = (ctx: ExtensionCommandContext) => ({
-		steer: (id: string, message: string) => manager.steer(id, message),
-		stop: (id: string) => {
-			const stopped = manager.abort(id);
-			const record = manager.getRecord(id);
-			if (record) persistAgent(record);
+		steer: (record: AgentRecord, message: string) => manager.steer(record.id, message, record.rootSessionId),
+		stop: (record: AgentRecord) => {
+			const stopped = manager.abort(record.id, record.rootSessionId);
+			if (stopped) persistAgent(record);
 			agentWidget.update();
 			return stopped;
 		},
-		followUp: async (id: string, prompt: string) => {
-			const record = await manager.resume(pi, ctx, id, prompt);
-			if (!record) return false;
-			persistAgent(record);
+		followUp: async (record: AgentRecord, prompt: string) => {
+			const updated = await manager.resume(pi, ctx, record.id, prompt, { rootSessionId: record.rootSessionId });
+			if (!updated) return false;
+			persistAgent(updated);
 			agentWidget.update();
 			return true;
 		},
 	});
+	const hubRecords = (): AgentRecord[] => {
+		const records = new Map(
+			readAllAgentRegistries().map((record) => [`${record.rootSessionId}\0${record.id}`, record as AgentRecord]),
+		);
+		for (const record of manager.listAgents()) records.set(`${record.rootSessionId}\0${record.id}`, record);
+		return [...records.values()].sort((a, b) => b.startedAt - a.startedAt);
+	};
+	const hubActions = (ctx: ExtensionCommandContext) => {
+		const liveRecord = (target: AgentRecord) =>
+			manager
+				.listAgents()
+				.find((record) => record.id === target.id && record.rootSessionId === target.rootSessionId);
+		return {
+			steer: (target: AgentRecord, message: string) => {
+				const record = liveRecord(target);
+				return record ? manager.steer(record.id, message, record.rootSessionId) : Promise.resolve(false);
+			},
+			stop: (target: AgentRecord) => {
+				const record = liveRecord(target);
+				if (!record) return false;
+				const stopped = manager.abort(record.id, record.rootSessionId);
+				if (stopped) persistAgent(record);
+				agentWidget.update();
+				return stopped;
+			},
+			followUp: async (target: AgentRecord, prompt: string) => {
+				let record = liveRecord(target);
+				if (!record) {
+					if (manager.getRecord(target.id, target.rootSessionId)) return false;
+					manager.restore([target], false);
+					record = liveRecord(target);
+				}
+				if (!record) return false;
+				const runtime = getSessionRuntime(record.parentSessionId, record.rootSessionId) ?? { pi, ctx };
+				const updated = await manager.resume(runtime.pi, runtime.ctx, record.id, prompt, {
+					rootSessionId: record.rootSessionId,
+				});
+				if (!updated) return false;
+				persistAgent(updated);
+				agentWidget.update();
+				return true;
+			},
+		};
+	};
 
 	const agentWidget = new AgentWidget(
 		manager,
@@ -519,6 +562,13 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		description: "Browse and inspect the current agent tree",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			await openAgentBrowser(ctx, visibleRecords(ctx), harnessActions(ctx));
+		},
+	});
+
+	pi.registerCommand("hub", {
+		description: "Browse agents across persisted sessions",
+		handler: async (_args: string, ctx: ExtensionCommandContext) => {
+			await openAgentBrowser(ctx, hubRecords(), hubActions(ctx));
 		},
 	});
 
@@ -804,7 +854,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 			const record = findOwnedRecord(ctx, id);
 			if (!record) throw new Error(`Agent not found in this session: ${id}`);
 			record.completionDelivered = true;
-			const options = { signal };
+			const options = { signal, rootSessionId: record.rootSessionId };
 			const updated = retry
 				? await manager.retry(pi, ctx, record.id, options)
 				: await manager.resume(pi, ctx, record.id, prompt?.trim() || "Continue the delegated task.", options);
@@ -830,7 +880,9 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
 			const { id, message } = params as { id: string; message: string };
 			const record = findOwnedRecord(ctx, id);
-			if (!record || !(await manager.steer(record.id, message))) throw new Error(`Running agent not found: ${id}`);
+			if (!record || !(await manager.steer(record.id, message, record.rootSessionId))) {
+				throw new Error(`Running agent not found: ${id}`);
+			}
 			return { content: [{ type: "text" as const, text: `Message sent to ${record.id}.` }], details: {} };
 		},
 	});
@@ -847,7 +899,9 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
 			const { id } = params as { id: string };
 			const record = findOwnedRecord(ctx, id);
-			if (!record || !manager.abort(record.id)) throw new Error(`Running or queued agent not found: ${id}`);
+			if (!record || !manager.abort(record.id, record.rootSessionId)) {
+				throw new Error(`Running or queued agent not found: ${id}`);
+			}
 			persistAgent(record);
 			return { content: [{ type: "text" as const, text: `Stopped ${record.id}.` }], details: {} };
 		},

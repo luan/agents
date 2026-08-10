@@ -208,33 +208,38 @@ export function registerWriteStdinTool(
 				return createEmptyResultComponent();
 			}
 			scheduleRunningInvalidation(context, running);
-			const currentElapsedMs = elapsedMs(context, running);
 			const input = typeof args.chars === "string" ? args.chars : undefined;
-			const snapshot = typeof processId === "number" ? sessions.getSessionSnapshot(processId) : undefined;
-			const command = typeof processId === "number" ? sessions.getSessionCommand(processId) : undefined;
-			return renderExecCellComponent(
-				{
-					kind: "write-stdin",
-					status: running ? "running" : "done",
+			const resolveCell = () => {
+				const stdinOpen = typeof processId === "number" ? sessions.getSessionStdinOpen(processId) : undefined;
+				const command = typeof processId === "number" ? sessions.getSessionCommand(processId) : undefined;
+				return {
+					kind: "write-stdin" as const,
+					status: running ? ("running" as const) : ("done" as const),
 					command,
 					failed: context?.isError === true,
-					elapsedMs: currentElapsedMs,
+					elapsedMs: elapsedMs(context, running),
 					writeStdin: {
 						processId,
 						input,
-						stdinOpen: snapshot?.stdinOpen,
+						stdinOpen,
 					},
-				},
-				{ theme, part: "header" },
-				context?.lastComponent,
-			);
+				};
+			};
+			return renderExecCellComponent(resolveCell(), { theme, part: "header", resolveCell }, context?.lastComponent);
 		},
 		renderResult(result, { expanded, isPartial }, theme, context?: RenderContextLike) {
 			if (isPartial) return createEmptyResultComponent();
 			const state = getResultState(result);
-			if (isEmptyPollRenderContext(context)) {
-				return createEmptyResultComponent();
-			}
+			const processId =
+				context?.args &&
+				typeof context.args === "object" &&
+				"process_id" in context.args &&
+				typeof context.args.process_id === "number"
+					? context.args.process_id
+					: state.processId;
+			const tty = processId !== undefined ? sessions.getSessionTty(processId) === true : state.stdinOpen === true;
+			if (tty) return createEmptyResultComponent();
+			if (isEmptyPollRenderContext(context)) return createEmptyResultComponent();
 			const output = renderTerminalText(state.output);
 			const footer =
 				state.processId !== undefined

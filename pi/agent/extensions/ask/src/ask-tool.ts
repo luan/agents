@@ -8,7 +8,6 @@ import {
 	successfulResponse,
 	validateParams,
 } from "./ask-tool-helpers";
-import { updateMuxAskState } from "./mux-state";
 import { AskParamsSchema } from "./schema";
 import type { AskParams } from "./types";
 import { runAskFlow } from "./ui/controller";
@@ -47,12 +46,10 @@ async function executeAskTool(
 		return nonInteractiveResponse(validation.state);
 	}
 	pi.events.emit("ask:waiting:start", undefined);
-	updateMuxAskState({ activity: "Waiting", asking: true }, ctx.cwd);
 	try {
 		const result = await runAskFlow(ctx as never, params);
 		return successfulResponse(result);
 	} finally {
-		updateMuxAskState({ activity: "Working…", asking: false }, ctx.cwd);
 		pi.events.emit("ask:waiting:end", undefined);
 	}
 }

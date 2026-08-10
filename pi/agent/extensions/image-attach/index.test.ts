@@ -4,9 +4,9 @@ import { readFileSync, rmSync, statSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { Editor, getImageDimensions, setCapabilities, visibleWidth } from "@earendil-works/pi-tui";
+import { Editor, getImageDimensions } from "@earendil-works/pi-tui";
 import { installEditorHandleHighlight, mergeHandleSegments } from "./editor";
-import { colorizeHandles, PENDING_HANDLE, setHandleThumbnail } from "./handles";
+import { PENDING_HANDLE } from "./handles";
 import imageAttachExtension, {
 	adoptImageFile,
 	appendHandlePaths,
@@ -16,15 +16,7 @@ import imageAttachExtension, {
 	pastedImagePath,
 	resolveImageHandles,
 } from "./index";
-import {
-	cellsToHalfBlocks,
-	pickCellColors,
-	type Rgb,
-	renderGraphicsThumbnail,
-	renderThumbnailCells,
-	stretchCellColors,
-	THUMBNAIL_CELLS,
-} from "./thumbnail";
+import { pickCellColors } from "./thumbnail";
 
 const PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
 
@@ -231,27 +223,6 @@ describe("pasted image paths", () => {
 	});
 });
 
-describe("handle colouring", () => {
-	test("tints only the handle and restores the default foreground", () => {
-		expect(colorizeHandles("look at [image #2] please")).toBe("look at \x1b[35m[image #2]\x1b[39m please");
-	});
-
-	test("leaves lines without a handle untouched", () => {
-		const line = "\x1b[36mplain [paste #1 20 chars]\x1b[39m";
-		expect(colorizeHandles(line)).toBe(line);
-	});
-
-	test("spins the pending placeholder without changing how many cells it takes", () => {
-		const first = colorizeHandles(`see ${PENDING_HANDLE}`, 0);
-		const later = colorizeHandles(`see ${PENDING_HANDLE}`, 360);
-
-		expect(first).toBe("see \x1b[35m[image ⠋]\x1b[39m");
-		expect(later).not.toBe(first);
-		// A wider frame would push the editor's wrap and border maths off by a cell.
-		expect([...later.replace(/\x1b\[[0-9;]*m/g, "")].length).toBe([...`see ${PENDING_HANDLE}`].length);
-	});
-});
-
 describe("atomic handles", () => {
 	const graphemes = (text: string) => new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text);
 	const segmentsOf = (text: string) => [...mergeHandleSegments(text, graphemes(text))].map((s) => s.segment);
@@ -409,190 +380,8 @@ describe("attachment payload", () => {
 });
 
 describe("handle thumbnails", () => {
-	const cellWidth = (text: string) => [...text.replace(/\x1b\[[0-9;]*m/g, "")].length;
-	const grey = (level: number): Rgb => [level, level, level];
-	const luminance = ([r, g, b]: Rgb) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
-
-	/** Colours read back out of a rendered thumbnail, foreground then background per cell. */
-	function renderedColors(cells: string): number[][] {
-		return [...cells.matchAll(/38;2;(\d+);(\d+);(\d+)m\x1b\[48;2;(\d+);(\d+);(\d+)m/g)].flatMap((match) => [
-			[Number(match[1]), Number(match[2]), Number(match[3])],
-			[Number(match[4]), Number(match[5]), Number(match[6])],
-		]);
-	}
-
-	/** A raster of `samples`×`samples` blocks, one solid colour each, in cell order. */
-	function raster(blocks: Rgb[], cells: number, samples: number): Buffer {
-		const width = cells * samples;
-		const bytes = Buffer.alloc(width * 2 * samples * 3);
-		blocks.forEach((color, block) => {
-			const originX = (block % cells) * samples;
-			const originY = Math.floor(block / cells) * samples;
-			for (let y = 0; y < samples; y++) {
-				for (let x = 0; x < samples; x++) {
-					bytes.set(color, ((originY + y) * width + originX + x) * 3);
-				}
-			}
-		});
-		return bytes;
-	}
-
-	test("each cell paints the top row as foreground and the bottom as background", () => {
-		const colors: Rgb[] = [
-			[255, 0, 0],
-			[0, 255, 0],
-			[0, 0, 255],
-			[255, 255, 255],
-		];
-		expect(cellsToHalfBlocks(colors, 2)).toBe(
-			"\x1b[38;2;255;0;0m\x1b[48;2;0;0;255m▀\x1b[38;2;0;255;0m\x1b[48;2;255;255;255m▀\x1b[0m",
-		);
-	});
-
-	test("a cell keeps its ink, not its average", () => {
-		// One dark pixel in an otherwise white block: averaging is what turned every screenshot
-		// into the same pale square, so the outlier is what a cell has to keep.
-		const bytes = raster([grey(255), grey(255), grey(255), grey(255)], 2, 2);
-		bytes.set([20, 20, 20], 0);
-
-		expect(pickCellColors(bytes, 2, 2)?.[0]).toEqual([20, 20, 20]);
-	});
-
 	test("refuses a raster short of a full row", () => {
 		expect(pickCellColors(Buffer.alloc(11), 2, 2)).toBeUndefined();
-	});
-
-	test("stretching widens a flat-looking spread and leaves a truly flat one alone", () => {
-		const nearlyWhite: Rgb[] = [grey(246), grey(250), grey(255), grey(248)];
-		const stretched = stretchCellColors(nearlyWhite);
-		expect(Math.max(...stretched.map(luminance)) - Math.min(...stretched.map(luminance))).toBeGreaterThan(100);
-
-		const flat: Rgb[] = [grey(255), grey(255), grey(255), grey(255)];
-		expect(stretchCellColors(flat)).toEqual(flat);
-	});
-
-	test("a light UI screenshot keeps both its ink and its paper", async () => {
-		setCapabilities({ images: null, trueColor: true, hyperlinks: false });
-		await withImageDir(async (dir) => {
-			const path = join(dir, "ui.png");
-			// White page, dark text bars top-left, a green button bottom-right — the shape of a
-			// screenshot that used to reduce to one flat pale square.
-			execFileSync("magick", [
-				"-size",
-				"900x600",
-				"xc:white",
-				"-fill",
-				"#24292f",
-				"-draw",
-				"rectangle 60,90 520,102 rectangle 60,120 700,132 rectangle 60,150 420,162",
-				"-fill",
-				"#1a7f37",
-				"-draw",
-				"rectangle 700,500 860,550",
-				path,
-			]);
-
-			const colors = renderedColors((await renderThumbnailCells(path)) ?? "");
-			const luminances = colors.map(([r, g, b]) => luminance([r, g, b] as Rgb));
-
-			expect(Math.min(...luminances)).toBeLessThan(150);
-			expect(Math.max(...luminances)).toBeGreaterThan(200);
-		});
-	});
-
-	test("draws a real image where the terminal speaks kitty graphics", async () => {
-		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: false });
-		await withImageDir(async (dir) => {
-			const first = join(dir, "one.png");
-			const second = join(dir, "two.png");
-			execFileSync("magick", ["-size", "200x120", "gradient:red-yellow", first]);
-			execFileSync("magick", ["-size", "200x120", "gradient:blue-black", second]);
-
-			const transmitted: string[] = [];
-			const rows = [
-				await renderGraphicsThumbnail(first, THUMBNAIL_CELLS, (sequence) => transmitted.push(sequence)),
-				await renderGraphicsThumbnail(second, THUMBNAIL_CELLS, (sequence) => transmitted.push(sequence)),
-			];
-
-			// A one-row virtual placement of PNG data, and a different image behind each handle.
-			expect(transmitted[0]).toContain("a=T,f=100,U=1,c=6,r=1");
-			expect(transmitted.map((sequence) => sequence.match(/i=(\d+)/)?.[1])).toEqual([
-				expect.any(String),
-				expect.any(String),
-			]);
-			expect(transmitted[0]?.match(/i=(\d+)/)?.[1]).not.toBe(transmitted[1]?.match(/i=(\d+)/)?.[1]);
-			for (const row of rows) expect(row).toContain("\u{10EEEE}");
-		});
-	});
-
-	test("the placeholder row measures exactly the cells it replaces", async () => {
-		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: false });
-		await withImageDir(async (dir) => {
-			const path = join(dir, "one.png");
-			execFileSync("magick", ["-size", "200x120", "gradient:red-yellow", path]);
-
-			const row = await renderGraphicsThumbnail(path, THUMBNAIL_CELLS, () => {});
-
-			// The transmit stays out of band because tmux wraps it in a DCS passthrough that
-			// `visibleWidth` cannot parse — inline, it would measure as cells and shift the row.
-			expect(visibleWidth(row ?? "")).toBe(THUMBNAIL_CELLS);
-			expect(visibleWidth(row ?? "")).toBe(visibleWidth("image "));
-		});
-	});
-
-	test("falls back to the colour signature without kitty graphics", async () => {
-		setCapabilities({ images: null, trueColor: true, hyperlinks: false });
-		await withImageDir(async (dir) => {
-			const path = join(dir, "one.png");
-			execFileSync("magick", ["-size", "200x120", "gradient:red-yellow", path]);
-			expect(await renderThumbnailCells(path)).toContain("▀");
-		});
-	});
-
-	test("keeps no truecolour terminals on plain text", async () => {
-		setCapabilities({ images: null, trueColor: false, hyperlinks: false });
-		await withImageDir(async (dir) => {
-			const path = join(dir, "solid.png");
-			execFileSync("magick", ["-size", "12x4", "xc:red", path]);
-			expect(await renderThumbnailCells(path)).toBeUndefined();
-		});
-	});
-
-	test("a thumbnail takes exactly the cells `image ` gave up", () => {
-		const cells = cellsToHalfBlocks(Array.from({ length: THUMBNAIL_CELLS * 2 }, () => grey(128)));
-		setHandleThumbnail(501, cells);
-		setHandleThumbnail(5012, cells);
-
-		// Cursor placement comes from the untinted buffer, so a drifting width would draw the
-		// handle a cell away from where the editor thinks it is.
-		expect(cellWidth(colorizeHandles("a [image #501] b"))).toBe(cellWidth("a [image #501] b"));
-		expect(cellWidth(colorizeHandles("a [image #5012] b"))).toBe(cellWidth("a [image #5012] b"));
-		expect(colorizeHandles("a [image #501] b")).toContain(cells as string);
-	});
-});
-
-describe("editor layer", () => {
-	test("tints handles in the host's own line transform", () => {
-		const editor = layeredEditor({
-			render: (_width: number) => ["border", "unused"],
-			transformEditorLine: (line: string) => line,
-		});
-		expect(editor.transformEditorLine?.("see [image #1]")).toBe("see \x1b[35m[image #1]\x1b[39m");
-	});
-
-	test("tints the rendered frame when the host has no line transform", () => {
-		const editor = layeredEditor({ render: (_width: number) => ["───", "see [image #4]", "───"] });
-		expect(editor.render(80)).toEqual(["───", "see \x1b[35m[image #4]\x1b[39m", "───"]);
-	});
-
-	test("leaves the frame alone once the host used the line transform", () => {
-		const base = {
-			render(this: { transformEditorLine?: (line: string) => string }, _width: number) {
-				return ["───", this.transformEditorLine?.("see [image #9]") ?? "", "───"];
-			},
-		};
-		const editor = layeredEditor(base);
-		expect(editor.render(80)).toEqual(["───", "see \x1b[35m[image #9]\x1b[39m", "───"]);
 	});
 });
 

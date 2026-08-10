@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import * as pty from "node-pty";
 import { DEFAULT_EXEC_SHELL, isFishShell, resolveRuntimeShell } from "../adapter/runtime-shell.ts";
 import {
+	appendCaptureOutput,
 	approxTokenCount,
 	capHeadTail,
 	formattedTruncateText,
@@ -28,6 +29,15 @@ export interface UnifiedExecResult {
 	stdin_open?: boolean;
 	original_token_count?: number;
 	output_truncated?: boolean;
+	context_guard_capture?: {
+		artifact_id: string;
+		byte_count: number;
+		line_count: number;
+	};
+	context_guard_capture_failure?: string;
+	context_guard_capture_truncated?: boolean;
+	capture_output?: string;
+	capture_output_truncated?: boolean;
 }
 
 interface ExecSessionSnapshot {
@@ -40,9 +50,12 @@ interface ExecSessionSnapshot {
 	cancelled?: boolean;
 	sessionError?: string;
 	stdinOpen?: boolean;
+	tty: boolean;
 	elapsedMs: number;
 	originalTokenCount?: number;
 	outputTruncated: boolean;
+	captureOutput: string;
+	captureOutputTruncated: boolean;
 }
 
 export interface ExecSessionRecord {
@@ -60,8 +73,11 @@ interface ExecCommandInput {
 	workdir?: string;
 	shell?: string;
 	tty?: boolean;
+	env?: Record<string, string>;
+	timeout_ms?: number;
 	yield_time_ms?: number;
 	login?: boolean;
+	wait_for_exit?: boolean;
 }
 
 interface WriteStdinInput {
@@ -78,6 +94,8 @@ interface BaseExecSession {
 	buffer: string;
 	pendingBuffer: string;
 	emittedBuffer: string;
+	captureBuffer: string;
+	captureBufferTruncated: boolean;
 	exitCode: number | null | undefined;
 	terminalState: ExecTerminalState | undefined;
 	pendingTerminalState: ExecInterventionState | undefined;
@@ -87,6 +105,7 @@ interface BaseExecSession {
 	interactive: boolean;
 	startedAtMs: number;
 	hidden: boolean;
+	timeoutTimer?: ReturnType<typeof setTimeout>;
 }
 
 interface PipeExecSession extends BaseExecSession {
@@ -116,6 +135,8 @@ export interface ExecSessionManager {
 	write(input: WriteStdinInput): Promise<UnifiedExecResult>;
 	hasSession(sessionId: number): boolean;
 	getSessionCommand(sessionId: number): string | undefined;
+	getSessionStdinOpen(sessionId: number): boolean | undefined;
+	getSessionTty(sessionId: number): boolean | undefined;
 	getSessionSnapshot(sessionId: number): ExecSessionSnapshot | undefined;
 	listSessions(): ExecSessionRecord[];
 	stopSession(sessionId: number): boolean;
@@ -195,9 +216,11 @@ function buildSyncedFallbackShellCommand(command: string, env: NodeJS.ProcessEnv
 function resolveExecution(
 	requestedShell: string | undefined,
 	command: string,
+	overrides?: Record<string, string>,
+	tty = false,
 ): { shell: string; command: string; env: NodeJS.ProcessEnv } {
 	const shell = resolveShell(requestedShell);
-	const env = withUnifiedExecEnvironment({ ...process.env });
+	const env = withUnifiedExecEnvironment({ ...process.env, ...overrides }, tty);
 	if (!shouldSyncFallbackShellEnv(requestedShell, shell)) {
 		return { shell, command, env };
 	}
@@ -209,17 +232,26 @@ function resolveExecution(
 	};
 }
 
-function withUnifiedExecEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+function withUnifiedExecEnvironment(env: NodeJS.ProcessEnv, tty: boolean): NodeJS.ProcessEnv {
 	Object.assign(env, {
-		NO_COLOR: "1",
-		TERM: "dumb",
 		LANG: "C.UTF-8",
 		LC_CTYPE: "C.UTF-8",
 		LC_ALL: "C.UTF-8",
-		COLORTERM: "",
 		PAGER: "cat",
 		GIT_PAGER: "cat",
 		GH_PAGER: "cat",
+	});
+	if (tty) {
+		delete env.NO_COLOR;
+		delete env.CODEX_CI;
+		env.TERM = "xterm-256color";
+		env.COLORTERM = "truecolor";
+		return env;
+	}
+	Object.assign(env, {
+		NO_COLOR: "1",
+		TERM: "dumb",
+		COLORTERM: "",
 		CODEX_CI: "1",
 	});
 	delete env.FORCE_COLOR;
@@ -305,8 +337,50 @@ function sanitizeBinaryOutput(text: string, preserveBackspace = false, preserveS
 	return output;
 }
 
+function compactSgrRuns(text: string): string {
+	const sgr = /\u001b\[([0-9;]*)m/g;
+	let output = "";
+	let cursor = 0;
+	let activeStyle = "";
+	let pendingReset = false;
+	for (const match of text.matchAll(sgr)) {
+		const index = match.index;
+		const plain = text.slice(cursor, index);
+		if (plain) {
+			if (pendingReset) {
+				output += "\u001b[0m";
+				activeStyle = "";
+				pendingReset = false;
+			}
+			output += plain;
+		}
+		const sequence = match[0];
+		const params = match[1] ?? "";
+		const reset = params === "" || params.split(";").includes("0");
+		if (reset) {
+			pendingReset = true;
+		} else if (pendingReset && sequence === activeStyle) {
+			pendingReset = false;
+		} else {
+			if (pendingReset) output += "\u001b[0m";
+			output += sequence;
+			activeStyle = sequence;
+			pendingReset = false;
+		}
+		cursor = index + sequence.length;
+	}
+	const tail = text.slice(cursor);
+	if (tail) {
+		if (pendingReset) output += "\u001b[0m";
+		output += tail;
+		pendingReset = false;
+	}
+	if (pendingReset) output += "\u001b[0m";
+	return output;
+}
+
 function normalizePipeOutput(text: string): string {
-	return sanitizeBinaryOutput(stripTerminalControlSequences(text, false, true), false, true)
+	return compactSgrRuns(sanitizeBinaryOutput(stripTerminalControlSequences(text, false, true), false, true))
 		.replace(/\r\n/g, "\n")
 		.replace(/\r/g, "\n");
 }
@@ -323,11 +397,36 @@ function writeTerminalChar(session: PtyExecSession, char: string): void {
 	session.terminalCursor += 1;
 }
 
+function compactTerminalLine(cells: string[]): string {
+	let output = "";
+	let activeStyle = "";
+	for (const cell of cells) {
+		const styled = cell.match(/^(\u001b\[[0-9;]*m)([\s\S]*)\u001b\[0m$/);
+		if (styled) {
+			const style = styled[1]!;
+			if (style !== activeStyle) {
+				if (activeStyle) output += "\u001b[0m";
+				output += style;
+				activeStyle = style;
+			}
+			output += styled[2]!;
+			continue;
+		}
+		if (activeStyle) {
+			output += "\u001b[0m";
+			activeStyle = "";
+		}
+		output += cell;
+	}
+	if (activeStyle) output += "\u001b[0m";
+	return output;
+}
+
 function applyTerminalOutput(session: PtyExecSession, text: string): string {
 	const sanitized = session.terminalPendingEscape + stripTerminalControlSequences(text, true);
 	session.terminalPendingEscape = "";
 	if (sanitized.length === 0) {
-		return session.terminalCommitted + session.terminalLine.join("");
+		return session.terminalCommitted + compactTerminalLine(session.terminalLine);
 	}
 
 	for (let index = 0; index < sanitized.length; index += 1) {
@@ -397,7 +496,7 @@ function applyTerminalOutput(session: PtyExecSession, text: string): string {
 				session.terminalCursor = 0;
 				break;
 			case "\n":
-				session.terminalCommitted += `${session.terminalLine.join("")}\n`;
+				session.terminalCommitted += `${compactTerminalLine(session.terminalLine)}\n`;
 				session.terminalLine = [];
 				session.terminalCursor = 0;
 				break;
@@ -410,7 +509,7 @@ function applyTerminalOutput(session: PtyExecSession, text: string): string {
 		}
 	}
 
-	return session.terminalCommitted + session.terminalLine.join("");
+	return session.terminalCommitted + compactTerminalLine(session.terminalLine);
 }
 
 function computePtyDelta(previous: string, current: string): string {
@@ -554,6 +653,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 	let nextSessionId = 1;
 	const sessions = new Map<number, ExecSession>();
 	const commandHistory = new Map<number, string>();
+	const ttyHistory = new Map<number, boolean>();
 	const exitListeners = new Set<(sessionId: number, command: string) => void>();
 	const updateListeners = new Set<() => void>();
 	const defaultExecYieldTimeMs = options.defaultExecYieldTimeMs ?? DEFAULT_EXEC_YIELD_TIME_MS;
@@ -568,14 +668,16 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 	);
 	const maxSessionBufferChars = Math.max(1024, options.maxSessionBufferChars ?? DEFAULT_MAX_SESSION_BUFFER_CHARS);
 
-	function rememberCommand(sessionId: number, command: string): void {
+	function rememberCommand(sessionId: number, command: string, tty: boolean): void {
 		commandHistory.set(sessionId, command);
+		ttyHistory.set(sessionId, tty);
 		if (commandHistory.size <= MAX_COMMAND_HISTORY) {
 			return;
 		}
 		const oldest = commandHistory.keys().next().value;
 		if (oldest !== undefined) {
 			commandHistory.delete(oldest);
+			ttyHistory.delete(oldest);
 		}
 	}
 
@@ -632,6 +734,11 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			terminateProcessTree(session.child.pid, true, true);
 		}
 	}
+	function scheduleSessionTimeout(session: ExecSession, timeoutMs: number | undefined): void {
+		if (timeoutMs === undefined || !Number.isFinite(timeoutMs) || timeoutMs <= 0) return;
+		session.timeoutTimer = setTimeout(() => terminateSession(session, "timed_out"), timeoutMs);
+		session.timeoutTimer.unref?.();
+	}
 
 	function finalizeSession(session: ExecSession): void {
 		if (session.finalized) return;
@@ -650,6 +757,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		sessionError?: string,
 	): void {
 		if (session.terminalState !== undefined) return;
+		if (session.timeoutTimer) clearTimeout(session.timeoutTimer);
 		session.terminalState = terminalState;
 		session.exitCode = terminalState === "exited" ? (exitCode ?? 0) : undefined;
 		session.sessionError = sessionError;
@@ -672,12 +780,18 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		const previous = session.buffer;
 		if (session.kind === "pty") {
 			session.buffer = applyTerminalOutput(session, text);
+			const captured = appendCaptureOutput(session.captureBuffer, session.buffer.slice(previous.length));
+			session.captureBuffer = captured.output;
+			session.captureBufferTruncated ||= captured.truncated;
 			session.pendingBuffer = capHeadTail(
 				`${session.pendingBuffer}${computePtyDelta(previous, session.buffer)}`,
 				UNIFIED_EXEC_OUTPUT_MAX_BYTES,
 			);
 		} else {
 			const normalized = normalizePipeOutput(text);
+			const captured = appendCaptureOutput(session.captureBuffer, normalized);
+			session.captureBuffer = captured.output;
+			session.captureBufferTruncated ||= captured.truncated;
 			session.buffer = `${session.buffer}${normalized}`;
 			session.pendingBuffer = capHeadTail(`${session.pendingBuffer}${normalized}`, UNIFIED_EXEC_OUTPUT_MAX_BYTES);
 		}
@@ -740,6 +854,11 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 				deleteSession(session.id);
 			}
 		}
+		Object.defineProperty(result, "capture_output", { value: session.captureBuffer, enumerable: false });
+		Object.defineProperty(result, "capture_output_truncated", {
+			value: session.captureBufferTruncated,
+			enumerable: false,
+		});
 		return result;
 	}
 
@@ -760,6 +879,11 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		} else {
 			addTerminalState(result, session);
 		}
+		Object.defineProperty(result, "capture_output", { value: session.captureBuffer, enumerable: false });
+		Object.defineProperty(result, "capture_output_truncated", {
+			value: session.captureBufferTruncated,
+			enumerable: false,
+		});
 		return result;
 	}
 	function streamSessionUpdates(
@@ -800,14 +924,14 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		signal?: AbortSignal,
 	): PipeExecSession {
 		const login = input.login ?? true;
-		const execution = resolveExecution(input.shell, input.cmd);
+		const execution = resolveExecution(input.shell, input.cmd, input.env, input.tty === true);
 		const shellArgs = login ? ["-lc", execution.command] : ["-c", execution.command];
 		const child =
 			input.tty && IS_BUN_RUNTIME
 				? spawn("node", [NODE_PTY_HOST, shell, ...shellArgs], {
 						cwd: workdir,
 						stdio: ["pipe", "pipe", "pipe"],
-						env: { ...execution.env, TERM: process.env.TERM || "xterm-256color" },
+						env: execution.env,
 						detached: true,
 					})
 				: spawn(shell, shellArgs, {
@@ -825,6 +949,8 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			buffer: "",
 			pendingBuffer: "",
 			emittedBuffer: "",
+			captureBuffer: "",
+			captureBufferTruncated: false,
 			exitCode: undefined,
 			terminalState: undefined,
 			pendingTerminalState: undefined,
@@ -853,6 +979,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		registerAbortHandler(signal, () => {
 			terminateSession(session, "cancelled");
 		});
+		scheduleSessionTimeout(session, input.timeout_ms);
 
 		return session;
 	}
@@ -864,7 +991,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		signal?: AbortSignal,
 	): PtyExecSession {
 		const login = input.login ?? true;
-		const execution = resolveExecution(input.shell, input.cmd);
+		const execution = resolveExecution(input.shell, input.cmd, input.env, true);
 		const shellArgs = login ? ["-lc", execution.command] : ["-c", execution.command];
 		const child = pty.spawn(shell, shellArgs, {
 			cwd: workdir,
@@ -882,6 +1009,8 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			buffer: "",
 			pendingBuffer: "",
 			emittedBuffer: "",
+			captureBuffer: "",
+			captureBufferTruncated: false,
 			exitCode: undefined,
 			terminalState: undefined,
 			pendingTerminalState: undefined,
@@ -908,8 +1037,17 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		registerAbortHandler(signal, () => {
 			terminateSession(session, "cancelled");
 		});
+		scheduleSessionTimeout(session, input.timeout_ms);
 
 		return session;
+	}
+
+	async function waitForTerminal(session: ExecSession): Promise<number> {
+		const startedAt = Date.now();
+		while (isRunning(session)) {
+			await waitForExitOrTimeout(session, 1_000);
+		}
+		return Date.now() - startedAt;
 	}
 
 	return {
@@ -930,20 +1068,22 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 				: createPipeSession(input, workdir, shell, signal);
 			deleteExitedSessions();
 			sessions.set(session.id, session);
-			rememberCommand(session.id, session.command);
+			rememberCommand(session.id, session.command, session.interactive);
 			notifySessionUpdate();
 			const stopStreaming = streamSessionUpdates(session, onUpdate);
 
 			try {
-				const waitedMs = await waitForExitOrTimeout(
-					session,
-					clampExecYieldTime(
-						input.yield_time_ms,
-						defaultExecYieldTimeMs,
-						session.interactive,
-						minNonInteractiveExecYieldTimeMs,
-					),
-				);
+				const waitedMs = input.wait_for_exit
+					? await waitForTerminal(session)
+					: await waitForExitOrTimeout(
+							session,
+							clampExecYieldTime(
+								input.yield_time_ms,
+								defaultExecYieldTimeMs,
+								session.interactive,
+								minNonInteractiveExecYieldTimeMs,
+							),
+						);
 				return makeResult(session, waitedMs);
 			} finally {
 				stopStreaming?.();
@@ -982,6 +1122,11 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			return session !== undefined && !session.hidden;
 		},
 		getSessionCommand: (sessionId) => sessions.get(sessionId)?.command ?? commandHistory.get(sessionId),
+		getSessionStdinOpen: (sessionId) => {
+			const session = sessions.get(sessionId);
+			return session && isRunning(session) ? session.interactive : undefined;
+		},
+		getSessionTty: (sessionId) => sessions.get(sessionId)?.interactive ?? ttyHistory.get(sessionId),
 		getSessionSnapshot: (sessionId) => {
 			const session = sessions.get(sessionId);
 			if (!session) return undefined;
@@ -997,9 +1142,12 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 				cancelled: session.terminalState === "cancelled" ? true : undefined,
 				sessionError: session.sessionError,
 				stdinOpen: running ? session.interactive : undefined,
+				tty: session.interactive,
 				elapsedMs: Date.now() - session.startedAtMs,
 				originalTokenCount: truncated.output_truncated ? approxTokenCount(session.buffer) : undefined,
 				outputTruncated: truncated.output_truncated === true,
+				captureOutput: session.captureBuffer,
+				captureOutputTruncated: session.captureBufferTruncated,
 			};
 		},
 		listSessions: () =>
@@ -1042,6 +1190,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			const hadSessions = sessions.size > 0;
 			sessions.clear();
 			commandHistory.clear();
+			ttyHistory.clear();
 			if (hadSessions) {
 				notifySessionUpdate();
 			}

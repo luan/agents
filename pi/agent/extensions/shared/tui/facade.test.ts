@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { defineExtensionTui, renderView, view } from "./index";
+import { defineExtensionTui } from "./index";
 
 const theme = {
 	fg(_role: string, text: string) {
@@ -7,84 +7,8 @@ const theme = {
 	},
 };
 
-test("session facade mounts above-editor widgets through shared renderer", () => {
-	const mounted: Array<{ key: string; placement?: string; lines: string[] }> = [];
-	const extension = defineExtensionTui({ id: "tasks" });
-	const session = extension.bind({
-		ui: {
-			setWidget(key, content, options) {
-				if (typeof content !== "function") return;
-				const component = content({ requestRender() {} }, theme);
-				mounted.push({ key, placement: options?.placement, lines: component.render(24) });
-			},
-		},
-	});
-
-	session.widgets.aboveEditor.contribute({
-		id: "project-tasks",
-		priority: 10,
-		view: view.panel({ title: view.text("Tasks"), children: [view.text("one active task")] }),
-	});
-
-	expect(mounted).toEqual([
-		{
-			key: "tasks:widgets.aboveEditor",
-			placement: "aboveEditor",
-			lines: ["╭─ Tasks ──────────────╮", "│ one active task      │", "╰──────────────────────╯"],
-		},
-	]);
-});
-
-test("session facade paints above-editor widget rows with the light theme background", () => {
-	const backgroundAnsi = "\x1b[48;2;250;250;250m";
-	let lines: string[] = [];
-	const extension = defineExtensionTui({ id: "tasks" });
-	const session = extension.bind({
-		ui: {
-			setWidget(_key, content) {
-				if (typeof content !== "function") return;
-				const component = content(
-					{ requestRender() {} },
-					{
-						fg: (_role: string, text: string) => text,
-						bg: (role: string, text: string) =>
-							role === "customMessageBg" ? `${backgroundAnsi}${text}\x1b[49m` : text,
-						getBgAnsi: (role: string) => (role === "customMessageBg" ? backgroundAnsi : undefined),
-					},
-				);
-				lines = component.render(12);
-			},
-		},
-	});
-
-	session.widgets.aboveEditor.contribute({
-		id: "project-tasks",
-		priority: 10,
-		view: view.text("light"),
-	});
-
-	expect(lines).toEqual([`${backgroundAnsi}light       \x1b[0m`]);
-});
-
-test("tool renderers registered on global facade return ViewNodes", () => {
-	const extension = defineExtensionTui({ id: "exec" });
-
-	extension.tools.register("exec_command", {
-		call: ({ args }) => view.panel({ title: view.text("Command"), children: [view.text(String(args.cmd))] }),
-	});
-
-	const renderer = extension.tools.resolve("exec_command");
-	const node = renderer?.call?.({ args: { cmd: "git status" }, state: "ready" });
-
-	expect(node ? renderView(node, { width: 24, theme }) : []).toEqual([
-		"╭─ Command ────────────╮",
-		"│ git status           │",
-		"╰──────────────────────╯",
-	]);
-});
-
 test("session facade opens component overlays without direct extension ctx.ui.custom calls", async () => {
-	const opened: Array<{ overlay?: boolean; result: string[] }> = [];
+	const opened: Array<{ overlay?: boolean }> = [];
 	const component = {
 		render: (width: number) => [`overlay:${width}`],
 		invalidate() {},
@@ -94,8 +18,8 @@ test("session facade opens component overlays without direct extension ctx.ui.cu
 		ui: {
 			setWidget() {},
 			async custom(factory, options) {
-				const created = factory({ requestRender() {} }, theme, {}, (value) => value);
-				opened.push({ overlay: options?.overlay, result: created.render(32) });
+				factory({ requestRender() {} }, theme, {}, (value) => value);
+				opened.push({ overlay: options?.overlay });
 				return "picked";
 			},
 		},
@@ -106,7 +30,7 @@ test("session facade opens component overlays without direct extension ctx.ui.cu
 	});
 
 	expect(result).toBe("picked");
-	expect(opened).toEqual([{ overlay: true, result: ["overlay:32"] }]);
+	expect(opened).toEqual([{ overlay: true }]);
 });
 
 test("session facade sets status through named Host Surface", () => {

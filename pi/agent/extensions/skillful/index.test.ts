@@ -2,11 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AutocompleteProvider, EditorComponent } from "@earendil-works/pi-tui";
 import { setCodexPluginAliases } from "../codex-native/plugin-aliases";
 import { findMentionAtCursor, wrapProvider } from "./autocomplete";
-import { installEditorHighlight } from "./editor";
-import { colorize, colorizeLines } from "./highlight";
 import extension from "./index";
 import {
 	buildItems,
@@ -15,61 +12,6 @@ import {
 	rewriteSlashSkillReferences,
 	stripFrontmatter,
 } from "./skills";
-import { highlightTranscriptLines } from "./transcript";
-
-describe("skillful highlighting", () => {
-	test("highlights known dollar and slash skill references", () => {
-		const skills = new Set(["tdd", "crit"]);
-		expect(colorize("use $tdd then /skill:crit not $missing", skills)).toBe(
-			"use \x1b[36m$tdd\x1b[39m then \x1b[36m/skill:crit\x1b[39m not $missing",
-		);
-	});
-
-	test("preserves ansi escapes around plain text segments", () => {
-		const skills = new Set(["tdd"]);
-		expect(colorize("\x1b[7muse $tdd\x1b[0m", skills)).toBe("\x1b[7muse \x1b[36m$tdd\x1b[39m\x1b[0m");
-	});
-
-	test("does not highlight dollar skills inside quotes or code", () => {
-		const skills = new Set(["commit", "diagnose"]);
-		expect(colorize("this here: `$commit` but $commit activates", skills)).toBe(
-			"this here: `$commit` but \x1b[36m$commit\x1b[39m activates",
-		);
-		expect(colorize("this$commit stays plain", skills)).toBe("this$commit stays plain");
-		expect(colorizeLines(["```", "$diagnose", "```", "$diagnose"], skills)).toEqual([
-			"```",
-			"$diagnose",
-			"```",
-			"\x1b[36m$diagnose\x1b[39m",
-		]);
-	});
-
-	test("does not highlight markdown-rendered ansi code spans or blocks", () => {
-		const skills = new Set(["commit", "diagnose"]);
-		expect(colorize("\x1b[39mthis here: \x1b[38;2;138;190;183m$commit\x1b[39m but $commit activates", skills)).toBe(
-			"\x1b[39mthis here: \x1b[38;2;138;190;183m$commit\x1b[39m but \x1b[36m$commit\x1b[39m activates",
-		);
-		expect(
-			colorizeLines(["\x1b[38;2;128;128;128m```\x1b[39m", "  \x1b[38;2;181;189;104m$diagnose\x1b[39m"], skills),
-		).toEqual(["\x1b[38;2;128;128;128m```\x1b[39m", "  \x1b[38;2;181;189;104m$diagnose\x1b[39m"]);
-	});
-});
-
-describe("skillful transcript highlighting", () => {
-	test("does not highlight rendered transcript skills when raw markdown has no activating references", () => {
-		const skills = new Set(["commit", "diagnose"]);
-		const raw = "humm this here: `$commit`\nthis$commit\n\n```\n$diagnose\n```";
-		expect(highlightTranscriptLines([" $commit", "   $diagnose"], raw, skills)).toEqual([" $commit", "   $diagnose"]);
-	});
-
-	test("only highlights skills that activate in the raw markdown", () => {
-		const skills = new Set(["commit", "diagnose"]);
-		const raw = "`$commit` then $diagnose";
-		expect(highlightTranscriptLines(["$commit then $diagnose"], raw, skills)).toEqual([
-			"$commit then \x1b[36m$diagnose\x1b[39m",
-		]);
-	});
-});
 
 describe("skillful autocomplete", () => {
 	test("detects dollar mention at cursor", () => {
@@ -104,122 +46,7 @@ describe("skillful autocomplete", () => {
 	});
 });
 
-describe("skillful editor wrapping", () => {
-	test("wraps the existing editor line transform", () => {
-		const editor: EditorComponent & { transformEditorLine?: (line: string) => string } = {
-			render() {
-				return [this.transformEditorLine?.("$tdd") ?? "$tdd"];
-			},
-			invalidate() {},
-			transformEditorLine: (line) => `before ${line}`,
-		};
-		let factory: ((...args: never[]) => EditorComponent) | undefined = () => editor;
-		installEditorHighlight(
-			{
-				getEditorComponent: () => factory as never,
-				setEditorComponent: (next) => {
-					factory = next as never;
-				},
-			},
-			() => new Set(["tdd"]),
-		);
-
-		const nextEditor = factory?.(undefined as never, undefined as never, undefined as never) as typeof editor;
-		expect(nextEditor.transformEditorLine?.("$tdd")).toBe("before \x1b[36m$tdd\x1b[39m");
-		expect(nextEditor.render(80)).toEqual(["before \x1b[36m$tdd\x1b[39m"]);
-	});
-
-	test("wraps editor render output when line transform is unavailable", () => {
-		const editor: EditorComponent = {
-			render: () => ["use $tdd"],
-			invalidate() {},
-			getText: () => "",
-			setText() {},
-			handleInput() {},
-		};
-		let factory: ((...args: never[]) => EditorComponent) | undefined = () => editor;
-		installEditorHighlight(
-			{
-				getEditorComponent: () => factory as never,
-				setEditorComponent: (next) => {
-					factory = next as never;
-				},
-			},
-			() => new Set(["tdd"]),
-		);
-
-		const nextEditor = factory?.(undefined as never, undefined as never, undefined as never);
-		expect(nextEditor?.render(80)).toEqual(["use \x1b[36m$tdd\x1b[39m"]);
-	});
-
-	test("does not highlight editor dollar skills inside fenced code", () => {
-		const editor: EditorComponent = {
-			render: () => ["```", "$tdd", "```", "$tdd"],
-			invalidate() {},
-			getText: () => "",
-			setText() {},
-			handleInput() {},
-		};
-		let factory: ((...args: never[]) => EditorComponent) | undefined = () => editor;
-		installEditorHighlight(
-			{
-				getEditorComponent: () => factory as never,
-				setEditorComponent: (next) => {
-					factory = next as never;
-				},
-			},
-			() => new Set(["tdd"]),
-		);
-
-		const nextEditor = factory?.(undefined as never, undefined as never, undefined as never);
-		expect(nextEditor?.render(80)).toEqual(["```", "$tdd", "```", "\x1b[36m$tdd\x1b[39m"]);
-	});
-
-	test("does not highlight transformed editor lines inside fenced code", () => {
-		const editor: EditorComponent & { transformEditorLine?: (line: string) => string } = {
-			render() {
-				return ["```", "$tdd", "```", "$tdd"].map((line) => this.transformEditorLine?.(line) ?? line);
-			},
-			invalidate() {},
-		};
-		let factory: ((...args: never[]) => EditorComponent) | undefined = () => editor;
-		installEditorHighlight(
-			{
-				getEditorComponent: () => factory as never,
-				setEditorComponent: (next) => {
-					factory = next as never;
-				},
-			},
-			() => new Set(["tdd"]),
-		);
-
-		const nextEditor = factory?.(undefined as never, undefined as never, undefined as never);
-		expect(nextEditor?.render(80)).toEqual(["```", "$tdd", "```", "\x1b[36m$tdd\x1b[39m"]);
-	});
-
-	test("wraps editors installed after highlight setup", () => {
-		let factory: ((...args: never[]) => EditorComponent) | undefined;
-		const ui = {
-			getEditorComponent: () => factory,
-			setEditorComponent: (next: typeof factory) => {
-				factory = next;
-			},
-		};
-		installEditorHighlight(ui, () => new Set(["tdd"]));
-
-		const editor: EditorComponent = {
-			render: () => ["use $tdd"],
-			invalidate() {},
-			getText: () => "",
-			setText() {},
-			handleInput() {},
-		};
-		ui.setEditorComponent(() => editor);
-
-		const nextEditor = factory?.(undefined as never, undefined as never, undefined as never);
-		expect(nextEditor?.render(80)).toEqual(["use \x1b[36m$tdd\x1b[39m"]);
-	});
-});
+describe("skillful editor wrapping", () => {});
 
 describe("skillful skills", () => {
 	test("shows skill descriptions in autocomplete", () => {

@@ -16,10 +16,10 @@ export function needsCompaction(
 }
 
 export default function autoCompactResumeExtension(pi: ExtensionAPI) {
-	let compacting = false;
+	let resumeAfterCompaction = false;
 
 	pi.on("turn_end", (event, ctx: ExtensionContext) => {
-		if (compacting) return;
+		if (resumeAfterCompaction) return;
 
 		const usage = ctx.getContextUsage();
 		// Only some AgentMessage variants carry content; reading it blind threw on the rest.
@@ -29,24 +29,26 @@ export default function autoCompactResumeExtension(pi: ExtensionAPI) {
 			return;
 		}
 
-		compacting = true;
-		ctx.compact({
-			onComplete: () => {
-				compacting = false;
-				if (ctx.hasPendingMessages()) return;
-				pi.sendMessage(
-					{
-						customType: MESSAGE_TYPE,
-						content: "Continue the original request from the compacted context.",
-						display: false,
-					},
-					{ triggerTurn: true, deliverAs: "followUp" },
-				);
+		resumeAfterCompaction = true;
+		ctx.abort();
+	});
+
+	pi.on("session_compact", (_event, ctx: ExtensionContext) => {
+		if (!resumeAfterCompaction) return;
+
+		resumeAfterCompaction = false;
+		if (ctx.hasPendingMessages()) return;
+		pi.sendMessage(
+			{
+				customType: MESSAGE_TYPE,
+				content: "Continue the original request from the compacted context.",
+				display: false,
 			},
-			onError: (error) => {
-				compacting = false;
-				if (ctx.hasUI) ctx.ui.notify(`Auto-compaction failed: ${error.message}`, "error");
-			},
-		});
+			{ triggerTurn: true, deliverAs: "followUp" },
+		);
+	});
+
+	pi.on("agent_settled", () => {
+		resumeAfterCompaction = false;
 	});
 }

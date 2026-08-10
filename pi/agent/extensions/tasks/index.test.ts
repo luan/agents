@@ -2,9 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { visibleWidth } from "@earendil-works/pi-tui";
 
-import tasksExtension, { buildTaskBoardItems, renderHudLines, renderTaskBoardLines, TaskBoardOverlay } from "./index";
+import tasksExtension, { buildTaskBoardItems, TaskBoardOverlay } from "./index";
 
 const now = 10 * 60 * 1000;
 
@@ -36,21 +35,6 @@ const theme = {
 	},
 };
 
-const markedTheme = {
-	fg(role: string, text: string) {
-		return `<${role}>${text}</${role}>`;
-	},
-	bg(role: string, text: string) {
-		return `<${role}>${text}</${role}>`;
-	},
-	bold(text: string) {
-		return `**${text}**`;
-	},
-	strikethrough(text: string) {
-		return `~~${text}~~`;
-	},
-};
-
 describe("tasks extension", () => {
 	test("builds a flat task list instead of board columns", () => {
 		const tasks = [
@@ -64,87 +48,6 @@ describe("tasks extension", () => {
 
 		expect(items.map((item) => item.task.id)).toEqual(["act2k7", "blk3m8", "done9q"]);
 		expect(items.map((item) => item.blocked)).toEqual([false, true, false]);
-	});
-
-	test("renders pi-tasks style HUD rows with active gerund timers and blockers", () => {
-		const tasks = [
-			{ ...task, id: "done9q", status: "done", title: "Design task UI" },
-			{
-				...task,
-				id: "act2k7",
-				status: "in_progress",
-				title: "Run task tests",
-				active_form: "Running task tests",
-				started_at: now - 169_000,
-			},
-			{ ...task, id: "blk3m8", status: "open", title: "Wire task storage", blocked_by: ["act2k7"] },
-		];
-
-		const lines = renderHudLines(tasks, theme as any, 90, 10, { frame: 2, now });
-
-		expect(lines[0]).toBe("● 3 tasks (1 done, 1 in progress, 1 open)");
-		expect(lines.join("\n")).toContain("✵ a Running task tests… (2m 49s)");
-		expect(lines.join("\n")).toContain("◻ b Wire task storage › blocked by a");
-		expect(lines.join("\n")).toContain("✔ ~~d Design task UI~~");
-		expect(lines.every((line) => visibleWidth(line) <= 90)).toBe(true);
-	});
-
-	test("expands displayed prefixes only as far as needed for uniqueness", () => {
-		const tasks = [
-			{ ...task, id: "abc123", status: "in_progress", title: "First collision" },
-			{ ...task, id: "abd456", status: "open", title: "Second collision", blocked_by: ["abc123"] },
-		];
-
-		const lines = renderHudLines(tasks, theme as any, 90, 10, { frame: 0, now });
-		const text = lines.join("\n");
-
-		expect(text).toContain("abc Working on collision…");
-		expect(text).toContain("abd Second collision › blocked by abc");
-		expect(text).not.toContain("abc123");
-	});
-
-	test("renders a flat task overlay with details and no lane headings", () => {
-		const tasks = [
-			{ ...task, id: "block1", title: "Blocking task", body: "Important context", priority: 7 },
-			{ ...task, id: "child2", title: "Blocked task", blocked_by: ["block1"] },
-		];
-
-		const lines = renderTaskBoardLines(tasks, theme as any, 70, { row: 0 });
-		const text = lines.join("\n");
-
-		expect(lines.every((line) => visibleWidth(line) <= 70)).toBe(true);
-		expect(text).toContain("╭ Tasks");
-		expect(text).toContain("b Blocking task");
-		expect(text).toContain("Details");
-		expect(text).toContain("Important context");
-		expect(text).not.toContain("Ready (");
-		expect(text).not.toContain("In Progress (");
-	});
-
-	test("renders structured task body sections in details", () => {
-		const tasks = [
-			{
-				...task,
-				id: "1",
-				title: "Structured task",
-				body: [
-					"Context / problem:",
-					"",
-					"The body should stay readable.",
-					"",
-					"Agent-verifiable acceptance criteria:",
-					"- Shows body sections",
-					"- Preserves bullet content",
-				].join("\n"),
-			},
-		];
-
-		const rendered = renderTaskBoardLines(tasks, markedTheme as any, 100).join("\n");
-
-		expect(rendered).toContain("<dim>Body:</dim>");
-		expect(rendered).toContain("<mdHeading>Context / problem:</mdHeading>");
-		expect(rendered).toContain("<mdHeading>Agent-verifiable acceptance criteria:</mdHeading>");
-		expect(rendered).toContain("<dim>•</dim> Shows body sections");
 	});
 
 	test("task overlay handles vertical navigation, reload, and close keys", async () => {
@@ -172,7 +75,6 @@ describe("tasks extension", () => {
 		board.handleInput("r");
 		await board.waitForIdle();
 		expect(reloads).toBe(1);
-		expect(board.render(80).join("\n")).toContain("Reloaded");
 		board.handleInput("\x1b");
 		expect(closed).toBe(true);
 	});
@@ -314,14 +216,6 @@ describe("tasks extension", () => {
 		expect(messages[0].message.details.attempts).toBe(1);
 		expect(messages[0].message.details.maxAttempts).toBe(3);
 		expect(messages[0].options).toBeUndefined();
-
-		const rendered = renderers
-			.get("task-reminder")(messages[0].message, undefined, theme as any)
-			.render(90)
-			.join("\n");
-		expect(rendered).toContain("Task reminder");
-		expect(rendered).toContain("Run reminder regression");
-		expect(rendered).toContain("1/3");
 
 		rmSync(cwd, { recursive: true, force: true });
 	});

@@ -76,7 +76,7 @@ inherit = "core"
 [shell_environment_policy.set]
 GIT_USERNAME = "luan"
 BROWSER_USE_AVAILABLE_BACKENDS = "chrome,iab"
-NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = "091a81603ff202a16ed56557709bf42d97caf8f0dd2e07ae9e26d7c014d71035"
+NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = "323bc3e687e17d7e377238d9f4c69111c4d0e6219103b6316d8c52082489533b"
 NODE_REPL_TRUSTED_CODE_PATHS = "/Users/luan/.codex:/Applications/ChatGPT.app/Contents/Resources/cua_node/lib/node_modules"
 
 [tui]
@@ -98,7 +98,7 @@ queue = "alt-enter"
 "gpt-5.6-sol" = 3
 
 [marketplaces.openai-bundled]
-last_updated = "2026-08-05T21:52:24Z"
+last_updated = "2026-08-08T07:15:06Z"
 source_type = "local"
 source = "/Users/luan/.codex/.tmp/bundled-marketplaces/openai-bundled"
 
@@ -212,6 +212,7 @@ trust_level = "trusted"
 [projects."/Users/luan/Documents/Codex/2026-08-05/ple"]
 trust_level = "trusted"
 
+
 [hooks.state]
 
 [hooks.state."/Users/luan/.codex/hooks.json:stop:0:0"]
@@ -285,13 +286,13 @@ NODE_REPL_NODE_MODULE_DIRS = "/Applications/ChatGPT.app/Contents/Resources/cua_n
 NODE_REPL_NODE_PATH = "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node"
 NODE_REPL_TRUSTED_CODE_PATHS = "/Users/luan/.codex:/Applications/ChatGPT.app/Contents/Resources/cua_node/lib/node_modules"
 CODEX_HOME = "/Users/luan/.codex"
-NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = "091a81603ff202a16ed56557709bf42d97caf8f0dd2e07ae9e26d7c014d71035"
+NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = "323bc3e687e17d7e377238d9f4c69111c4d0e6219103b6316d8c52082489533b"
 BROWSER_USE_AVAILABLE_BACKENDS = "chrome,iab"
 NODE_REPL_INSTRUCTIONS_USE_CASE_BROWSER = "Control the in-app browser in conjunction with the Browser Plugin."
 NODE_REPL_INSTRUCTIONS_USE_CASE_CHROME = "Control the Chrome browser in conjunction with the Chrome Plugin. Prefer this method of controlling Chrome over alternatives (such as Computer Use) unless the user explicitly mentions an alternative."
 NODE_REPL_INSTRUCTIONS_USE_CASE_COMPUTER_USE = "Control desktop apps on macOS through Computer Use."
 BROWSER_USE_CODEX_APP_BUILD_FLAVOR = "prod"
-BROWSER_USE_CODEX_APP_VERSION = "26.730.61639"
+BROWSER_USE_CODEX_APP_VERSION = "26.803.41515"
 SKY_CUA_SERVICE_PATH = "/Users/luan/.codex/computer-use/Codex Computer Use.app"
 CODEX_CLI_PATH = "/Applications/ChatGPT.app/Contents/Resources/codex"
 

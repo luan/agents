@@ -6,7 +6,7 @@ import {
 	ToolExecutionComponent,
 } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, Text } from "@earendil-works/pi-tui";
-import { resolveCoreBin } from "../context-guard/pi/core.ts";
+import { captureExecResult } from "../context-guard/pi/capture.ts";
 import { isExecCommandContextGuardEnabled } from "../context-guard/pi/index.ts";
 import {
 	type AnimationMount,
@@ -16,6 +16,7 @@ import {
 	setOrderedAboveEditorWidget,
 	sharedAnimationRenderScheduler,
 } from "../shared/tui";
+import { resolveRuntimeShell } from "./adapter/runtime-shell.ts";
 import {
 	type RenderTheme,
 	rawCommandToExecCell,
@@ -25,7 +26,7 @@ import {
 } from "./tools/exec-cell-presentation.ts";
 import { lastOutputLine, outputLineCount } from "./tools/exec-cell-rendering-internal.ts";
 import { createExecCommandTracker } from "./tools/exec-command-state.ts";
-import { registerExecCommandTool } from "./tools/exec-command-tool.ts";
+import { type BackgroundCaptureContext, registerExecCommandTool } from "./tools/exec-command-tool.ts";
 import {
 	createExecSessionManager,
 	type ExecSessionRecord,
@@ -200,14 +201,6 @@ function getCommandArg(args: unknown): string | undefined {
 	return typeof args.cmd === "string" ? args.cmd : undefined;
 }
 
-function isToolCallOnlyAssistantMessage(message: unknown): boolean {
-	if (!message || typeof message !== "object" || !("role" in message) || message.role !== "assistant") return false;
-	if (!("content" in message) || !Array.isArray(message.content) || message.content.length === 0) return false;
-	return message.content.every(
-		(item) => typeof item === "object" && item !== null && "type" in item && item.type === "toolCall",
-	);
-}
-
 function truncateTextToolResultContent(content: unknown): unknown[] | undefined {
 	if (!Array.isArray(content)) return undefined;
 	let changed = false;
@@ -220,14 +213,6 @@ function truncateTextToolResultContent(content: unknown): unknown[] | undefined 
 		return { ...item, text: truncated.output };
 	});
 	return changed ? next : undefined;
-}
-
-function parseBooleanToggleArgument(args: string): boolean | undefined | "invalid" {
-	const arg = args.trim().toLowerCase();
-	if (!arg) return undefined;
-	if (arg === "on" || arg === "true" || arg === "enable" || arg === "enabled") return true;
-	if (arg === "off" || arg === "false" || arg === "disable" || arg === "disabled") return false;
-	return "invalid";
 }
 
 function parseStopSessionId(args: string): number | undefined | "invalid" {
@@ -259,6 +244,7 @@ interface BackgroundTerminalStatusUi {
 interface BackgroundTerminalFinishedDetails {
 	process_id: number;
 	command: string;
+	shell?: string;
 	output: string;
 	exit_code?: number;
 	terminal_state?: "exited" | "timed_out" | "cancelled" | "session_error";
@@ -268,6 +254,35 @@ interface BackgroundTerminalFinishedDetails {
 	elapsed_ms: number;
 	output_truncated: boolean;
 	original_token_count?: number;
+	context_guard_capture?: {
+		artifact_id: string;
+		byte_count: number;
+		line_count: number;
+	};
+	context_guard_capture_failure?: string;
+	context_guard_capture_truncated?: boolean;
+	capture_output?: string;
+	capture_output_truncated?: boolean;
+}
+
+const COMPLETION_OUTPUT_MAX_LINES = 20;
+
+function compactBackgroundTerminalCompletionOutput(output: string): string {
+	const plain = output.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "").replace(/\r/g, "");
+	const trailingNewline = plain.endsWith("\n");
+	const body = trailingNewline ? plain.slice(0, -1) : plain;
+	if (!body) return "";
+	const lines = body.split("\n");
+	if (lines.length <= COMPLETION_OUTPUT_MAX_LINES) return plain;
+	const headCount = Math.floor((COMPLETION_OUTPUT_MAX_LINES - 1) / 2);
+	const tailCount = COMPLETION_OUTPUT_MAX_LINES - headCount - 1;
+	const omitted = lines.length - headCount - tailCount;
+	const compact = [
+		...lines.slice(0, headCount),
+		`… ${omitted} lines omitted; use /ps for full output …`,
+		...lines.slice(-tailCount),
+	].join("\n");
+	return trailingNewline ? `${compact}\n` : compact;
 }
 
 function backgroundTerminalDetailsToUnifiedResult(details: BackgroundTerminalFinishedDetails): UnifiedExecResult {
@@ -282,6 +297,9 @@ function backgroundTerminalDetailsToUnifiedResult(details: BackgroundTerminalFin
 		session_error: details.session_error,
 		original_token_count: details.original_token_count,
 		output_truncated: details.output_truncated,
+		context_guard_capture: details.context_guard_capture,
+		context_guard_capture_failure: details.context_guard_capture_failure,
+		context_guard_capture_truncated: details.context_guard_capture_truncated,
 		process_id: details.process_id,
 	};
 }
@@ -300,7 +318,6 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 	installUserBashRenderPatch();
 	const tracker = createExecCommandTracker();
 	const sessions = createExecSessionManager();
-	const contextGuard = { enabled: true };
 	let shuttingDown = false;
 	let statusUi: BackgroundTerminalStatusUi | undefined;
 	let lastBackgroundTerminalStatus: string | undefined;
@@ -313,6 +330,11 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 		number,
 		{ output: string; lineCount: number; lastLine?: string }
 	>();
+	const backgroundCaptureContexts = new Map<number, BackgroundCaptureContext>();
+	const backgroundCaptureFailures = new Map<number, string>();
+	const backgroundTerminalShells = new Map<number, string | undefined>();
+
+	const originalCommands = new Map<string, Map<string, string>>();
 	let agentTurnActive = false;
 	const foregroundExecToolCalls = new Set<string>();
 	let uninstallForegroundExecInterrupt: (() => void) | undefined;
@@ -341,12 +363,14 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 		return renderExecCellComponent(
 			rawCommandToExecCell({
 				command: details.command,
+				shell: details.shell ?? process.env.SHELL,
 				status: "done",
+				elapsedMs: details.elapsed_ms,
 				failed,
 				outputBlock: {
 					output: details.output,
 					footer,
-					options: { expanded },
+					options: { expanded, maxLines: 8 },
 				},
 			}),
 			{ theme },
@@ -564,75 +588,90 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 	}
 
 	registerExecCommandTool(pi, tracker, sessions, {
-		onResult: (_input, result) => {
-			if (result.process_id !== undefined) {
-				completionMessageSessions.add(result.process_id);
-			}
+		onResult: (input, result, _ctx, captureContext) => {
+			if (result.process_id === undefined) return;
+			completionMessageSessions.add(result.process_id);
+			backgroundTerminalShells.set(result.process_id, resolveRuntimeShell(input.shell ?? process.env.SHELL));
+			if (captureContext) backgroundCaptureContexts.set(result.process_id, captureContext);
 		},
-		contextGuardEnabled: () =>
-			contextGuard.enabled && isExecCommandContextGuardEnabled() && resolveCoreBin() !== null,
+		contextGuardEnabled: isExecCommandContextGuardEnabled,
+		getOriginalCommand: (toolCallId, executedCommand) => originalCommands.get(toolCallId)?.get(executedCommand),
 	});
 	registerWriteStdinTool(pi, sessions, {
 		onResult: (input, result) => {
-			if (isTerminalExecResult(result)) cancelBackgroundTerminalCompletionMessage(input.process_id);
+			if (isTerminalExecResult(result)) {
+				cancelBackgroundTerminalCompletionMessage(input.process_id);
+				const captureFailure = backgroundCaptureFailures.get(input.process_id);
+				if (captureFailure) {
+					result.context_guard_capture_failure = captureFailure;
+					backgroundCaptureFailures.delete(input.process_id);
+				}
+			}
 		},
 	});
 	sessions.onSessionExit((sessionId, command) => {
-		const snapshot = sessions.getSessionSnapshot(sessionId);
-		tracker.recordSessionFinished(sessionId);
-		const shouldEmitCompletionMessage = completionMessageSessions.has(sessionId);
-		completionMessageSessions.delete(sessionId);
-		if (!shouldEmitCompletionMessage) return;
-		if (agentTurnActive) return;
-		if (!snapshot) return;
-		const details: BackgroundTerminalFinishedDetails = {
-			process_id: sessionId,
-			command,
-			output: snapshot.output,
-			exit_code: snapshot.exitCode,
-			terminal_state: snapshot.terminalState,
-			timed_out: snapshot.timedOut,
-			cancelled: snapshot.cancelled,
-			session_error: snapshot.sessionError,
-			elapsed_ms: snapshot.elapsedMs,
-			output_truncated: snapshot.outputTruncated,
-		};
-		if (snapshot.originalTokenCount !== undefined) {
-			details.original_token_count = snapshot.originalTokenCount;
-		}
-		scheduleBackgroundTerminalCompletionMessage(
-			sessionId,
-			{
-				customType:
-					snapshot.terminalState === "session_error"
-						? EXEC_COMMAND_SESSION_ERROR_MESSAGE
-						: EXEC_COMMAND_COMPLETED_MESSAGE,
-				content: formatUnifiedExecResult(backgroundTerminalDetailsToUnifiedResult(details), command),
-				display: true,
-				details,
-			},
-			{ deliverAs: "followUp", triggerTurn: true },
-		);
-	});
-	sessions.onSessionUpdate(updateBackgroundTerminalStatus);
-
-	pi.registerCommand("cg-wrap", {
-		description: "Toggle Context Guard wrapping for exec_command calls",
-		getArgumentCompletions: (prefix) => {
-			const items = ["on", "off"]
-				.filter((value) => value.startsWith(prefix.trim().toLowerCase()))
-				.map((value) => ({ value, label: value }));
-			return items.length > 0 ? items : null;
-		},
-		handler: async (args, ctx) => {
-			const parsed = parseBooleanToggleArgument(args);
-			if (parsed === "invalid") {
-				ctx.ui.notify("Usage: /cg-wrap [on|off]", "error");
-				return;
+		void (async () => {
+			const snapshot = sessions.getSessionSnapshot(sessionId);
+			const captureContext = backgroundCaptureContexts.get(sessionId);
+			backgroundCaptureContexts.delete(sessionId);
+			tracker.recordSessionFinished(sessionId);
+			const shouldEmitCompletionMessage = completionMessageSessions.has(sessionId);
+			completionMessageSessions.delete(sessionId);
+			const shell = backgroundTerminalShells.get(sessionId);
+			backgroundTerminalShells.delete(sessionId);
+			if (!snapshot) return;
+			const details: BackgroundTerminalFinishedDetails = {
+				process_id: sessionId,
+				command,
+				shell,
+				output: snapshot.output,
+				exit_code: snapshot.exitCode,
+				terminal_state: snapshot.terminalState,
+				timed_out: snapshot.timedOut,
+				cancelled: snapshot.cancelled,
+				session_error: snapshot.sessionError,
+				elapsed_ms: snapshot.elapsedMs,
+				output_truncated: snapshot.outputTruncated,
+			};
+			if (snapshot.originalTokenCount !== undefined) {
+				details.original_token_count = snapshot.originalTokenCount;
 			}
-			contextGuard.enabled = parsed ?? !contextGuard.enabled;
-			ctx.ui.notify(`Context Guard wrapping ${contextGuard.enabled ? "enabled" : "disabled"}.`, "info");
-		},
+			if (captureContext) {
+				Object.defineProperty(details, "capture_output", {
+					value: snapshot.captureOutput,
+					enumerable: false,
+				});
+				Object.defineProperty(details, "capture_output_truncated", {
+					value: snapshot.captureOutputTruncated,
+					enumerable: false,
+				});
+				await captureExecResult(captureContext, details);
+			}
+			if (agentTurnActive && details.context_guard_capture_failure) {
+				backgroundCaptureFailures.set(sessionId, details.context_guard_capture_failure);
+			}
+
+			if (!shouldEmitCompletionMessage || agentTurnActive) return;
+			const completionResult = backgroundTerminalDetailsToUnifiedResult(details);
+			completionResult.output = compactBackgroundTerminalCompletionOutput(completionResult.output);
+			scheduleBackgroundTerminalCompletionMessage(
+				sessionId,
+				{
+					customType:
+						snapshot.terminalState === "session_error"
+							? EXEC_COMMAND_SESSION_ERROR_MESSAGE
+							: EXEC_COMMAND_COMPLETED_MESSAGE,
+					content: formatUnifiedExecResult(completionResult, command),
+					display: true,
+					details,
+				},
+				{ deliverAs: "followUp", triggerTurn: true },
+			);
+		})();
+	});
+	sessions.onSessionUpdate(() => {
+		tracker.invalidateSessions();
+		updateBackgroundTerminalStatus();
 	});
 
 	pi.registerCommand("ps", {
@@ -700,6 +739,10 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 		setBackgroundTerminalStatusUi(ctx);
 		tracker.clear();
 		completionMessageSessions.clear();
+		backgroundCaptureContexts.clear();
+		backgroundCaptureFailures.clear();
+
+		originalCommands.clear();
 		clearPendingBackgroundTerminalCompletionMessages();
 		syncToolPolicy();
 	});
@@ -707,6 +750,10 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 		agentTurnActive = false;
 		tracker.clear();
 		completionMessageSessions.clear();
+		backgroundCaptureContexts.clear();
+		backgroundCaptureFailures.clear();
+
+		originalCommands.clear();
 		clearPendingBackgroundTerminalCompletionMessages();
 		syncToolPolicy();
 	});
@@ -732,35 +779,46 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 		};
 	});
 	pi.on("tool_call", async (event, ctx) => {
-		if (!isToolCallEventType<"exec_command", { cmd?: unknown }>("exec_command", event)) return;
-		const command = event.input.cmd;
 		if (
-			typeof command !== "string" ||
-			command.trim() === "" ||
-			command.startsWith("rtk ") ||
+			!isToolCallEventType<"exec_command", { cmd?: unknown; commands?: unknown[] }>("exec_command", event) ||
 			process.env.RTK_DISABLED === "1" ||
 			!(await rtkAvailable)
 		) {
 			return;
 		}
-		try {
-			const rewritten = await rewriteCommandWithRtk(pi, command, ctx.signal);
-			if (rewritten && rewritten !== command) event.input.cmd = rewritten;
-		} catch (error) {
-			console.warn("[rtk] rewrite failed; passing through command", error);
+		const toolCallId = (event as { toolCallId?: unknown }).toolCallId;
+		const originals = typeof toolCallId === "string" ? new Map<string, string>() : undefined;
+		const rewrite = async (command: string): Promise<string> => {
+			if (!command.trim() || command.startsWith("rtk ")) return command;
+			try {
+				const rewritten = (await rewriteCommandWithRtk(pi, command, ctx.signal)) || command;
+				if (rewritten !== command) originals?.set(rewritten, command);
+				return rewritten;
+			} catch (error) {
+				console.warn("[rtk] rewrite failed; passing through command", error);
+				return command;
+			}
+		};
+
+		if (typeof event.input.cmd === "string") {
+			event.input.cmd = await rewrite(event.input.cmd);
+		} else if (Array.isArray(event.input.commands)) {
+			event.input.commands = await Promise.all(
+				event.input.commands.map(async (item) => {
+					if (typeof item === "string") return rewrite(item);
+					if (!item || typeof item !== "object") return item;
+					const command = (item as Record<string, unknown>).command;
+					return typeof command === "string" ? { ...item, command: await rewrite(command) } : item;
+				}),
+			);
 		}
-	});
-	pi.on("message_start", (event) => {
-		if (event.message.role === "toolResult") return;
-		if (isToolCallOnlyAssistantMessage(event.message)) return;
-		tracker.resetExplorationGroup();
+		if (originals && originals.size > 0 && typeof toolCallId === "string") {
+			originalCommands.set(toolCallId, originals);
+		}
 	});
 	pi.on("tool_execution_start", (event, ctx) => {
 		setBackgroundTerminalStatusUi(ctx);
-		if (event.toolName !== "exec_command") {
-			tracker.resetExplorationGroup();
-			return;
-		}
+		if (event.toolName !== "exec_command") return;
 		foregroundExecToolCalls.add(event.toolCallId);
 		const command = getCommandArg(event.args);
 		if (command) tracker.recordStart(event.toolCallId, command);
@@ -769,6 +827,7 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 		if (event.toolName === "exec_command") {
 			foregroundExecToolCalls.delete(event.toolCallId);
 			tracker.recordEnd(event.toolCallId);
+			originalCommands.delete(event.toolCallId);
 		}
 	});
 	pi.on("tool_result", (event) => {
@@ -802,6 +861,7 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 		agentTurnActive = false;
 		shuttingDown = true;
 		completionMessageSessions.clear();
+		backgroundCaptureFailures.clear();
 		clearPendingBackgroundTerminalCompletionMessages();
 		clearForegroundExecInterrupt();
 		clearBackgroundTerminalStatus();

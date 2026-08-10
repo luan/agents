@@ -10,17 +10,17 @@ import {
 	readPiSettings,
 	writePiSettings,
 } from "./pi/index.js";
-import { resolveSessionDbPath } from "./session/paths.js";
+import { resolveContentStorePath } from "./session/paths.js";
 
 const originalPiCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
 
 describe("Pi path/settings helpers", () => {
-	it("derives a session DB path from a 16-hex project hash", () => {
-		const dbPath = resolveSessionDbPath({
+	it("derives a v2 content store path from a 16-hex project hash", () => {
+		const dbPath = resolveContentStorePath({
 			projectDir: "/test/project",
-			sessionsDir: getPiSessionDir(),
+			contentDir: getPiSessionDir(),
 		});
-		expect(dbPath).toMatch(/[a-f0-9]{16}\.db$/);
+		expect(dbPath).toMatch(/[a-f0-9]{16}\.v2\.db$/);
 		expect(dbPath).toContain(".pi");
 	});
 

@@ -114,12 +114,13 @@ function deliverCompletion(record: AgentRecord, force = false): void {
 	reportUsage(record);
 	if ((!record.isBackground && !force) || record.completionDelivered) return;
 	const output = record.error || record.result || "No output.";
-	const parent = record.parentAgentId ? manager.getRecord(record.parentAgentId) : undefined;
+	const parent = record.parentAgentId ? manager.getRecord(record.parentAgentId, record.rootSessionId) : undefined;
 	if (parent?.status === "running") {
 		void manager
 			.steer(
 				parent.id,
 				`Child agent ${record.id} ${record.status}. Integrate this result before finishing.\n\n${output.slice(0, 50 * 1024)}`,
+				record.rootSessionId,
 			)
 			.then((sent) => {
 				if (!sent) {

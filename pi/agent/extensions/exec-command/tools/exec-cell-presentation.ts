@@ -1,6 +1,6 @@
 import { type Component, visibleWidth } from "@earendil-works/pi-tui";
-import { textComponent, truncateToWidthCompat } from "../../shared/tui";
-import { type ShellAction, summarizeShellCommand } from "../shell/summary.ts";
+import { truncateToWidthCompat } from "../../shared/tui";
+import { framedBlock } from "../../shared/tui/card.ts";
 import {
 	backgroundTerminalAnimatedLabel,
 	backgroundTerminalPulseMarker,
@@ -12,11 +12,15 @@ import {
 	type RenderTheme,
 	renderBackgroundTerminalHudLine,
 	renderExecCommandCall,
-	renderGroupedExecCommandCall,
 	renderOutputBlock,
+	renderShellCardHeader,
 	renderSpawnedBackgroundTerminalCall,
+	renderTerminalCommandHeader,
+	renderTerminalOutputLines,
+	renderTerminalSessionRow,
 	renderUserExecCommandCall,
 	renderWriteStdinCall,
+	type TerminalSessionView,
 } from "./exec-cell-rendering-internal.ts";
 import type { ExecCommandStatus } from "./exec-command-state.ts";
 
@@ -43,7 +47,13 @@ function cachedTruncate(text: string, width: number): string {
 	return cacheValue(truncationCache, `${width}\0${text}`, () => truncateToWidthCompat(text, width, "..."));
 }
 
-type ExecCellKind = "command" | "exploration" | "spawned-background-terminal" | "user-command" | "write-stdin";
+type ExecCellKind =
+	| "command"
+	| "spawned-background-terminal"
+	| "terminal-logs"
+	| "terminal-wait"
+	| "user-command"
+	| "write-stdin";
 
 interface ExecCellOutputBlock {
 	output: string;
@@ -55,11 +65,12 @@ interface ExecCell {
 	kind: ExecCellKind;
 	status: ExecCommandStatus;
 	command?: string;
-	actionGroups?: ShellAction[][];
+	shell?: string;
 	failed?: boolean;
 	elapsedMs?: number;
 	contextGuardWrapped?: boolean;
 	outputBlock?: ExecCellOutputBlock;
+	terminalSession?: TerminalSessionView;
 	writeStdin?: {
 		processId: number | string;
 		input?: string;
@@ -69,6 +80,7 @@ interface ExecCell {
 
 interface RawCommandToExecCellInput {
 	command: string;
+	shell?: string;
 	status: ExecCommandStatus;
 	failed?: boolean;
 	elapsedMs?: number;
@@ -81,6 +93,7 @@ interface RenderExecCellEnv {
 	part?: "header" | "output" | "full";
 	width?: number;
 	expanded?: boolean;
+	resolveCell?: () => ExecCell;
 }
 
 interface BackgroundTerminalHudCell {
@@ -96,23 +109,11 @@ interface BackgroundTerminalHudCell {
 }
 
 export function rawCommandToExecCell(input: RawCommandToExecCellInput): ExecCell {
-	const summary = summarizeShellCommand(input.command);
-	if (summary.maskAsExplored) {
-		return {
-			kind: "exploration",
-			status: input.status,
-			command: input.command,
-			actionGroups: [summary.actions],
-			failed: input.failed,
-			elapsedMs: input.elapsedMs,
-			contextGuardWrapped: input.contextGuardWrapped,
-			outputBlock: input.outputBlock,
-		};
-	}
 	return {
 		kind: "command",
 		status: input.status,
 		command: input.command,
+		shell: input.shell,
 		failed: input.failed,
 		elapsedMs: input.elapsedMs,
 		contextGuardWrapped: input.contextGuardWrapped,
@@ -173,10 +174,54 @@ class ExecCellComponent implements Component {
 		// The cache has to sit in front of renderExecCell(): shell tokenizing, syntax
 		// highlighting and output limiting all happen in there, and render() is called on
 		// every animation frame.
-		if (this.renderedCache?.width === width) return this.renderedCache.lines;
-		const text = renderExecCell(this.cell, { ...this.env, width });
-		const lines = textComponent(text).render(width);
-		this.renderedCache = shouldCacheRenderedLines(this.cell, text) ? { width, lines } : undefined;
+		if (this.renderedCache?.width === width && !this.env.resolveCell) return this.renderedCache.lines;
+		if (this.env.resolveCell) this.cell = this.env.resolveCell();
+		if (this.cell.kind === "spawned-background-terminal" || this.cell.kind === "terminal-wait") {
+			const text = renderExecCellHeader(this.cell, this.env.theme).replace(/\s*\n\s*/g, " ");
+			const lines = [truncateToWidthCompat(text, width, "...")];
+			this.renderedCache = { width, lines };
+			return lines;
+		}
+		const innerWidth = Math.max(1, width - 3);
+		const shellCard = this.cell.kind === "command" || this.cell.kind === "terminal-logs";
+		const renderedHeader = shellCard
+			? renderShellCardHeader(
+					this.cell.shell,
+					this.cell.status,
+					this.env.theme,
+					this.cell.failed,
+					this.cell.elapsedMs ?? this.cell.terminalSession?.elapsedMs,
+					this.cell.terminalSession?.processId,
+				)
+			: renderExecCellHeader(this.cell, this.env.theme);
+		const commandLines = shellCard
+			? renderTerminalCommandHeader(
+					this.cell.command ?? "",
+					this.cell.status,
+					this.env.theme,
+					this.cell.failed,
+					this.cell.elapsedMs,
+					this.cell.contextGuardWrapped,
+				).split("\n")
+			: renderedHeader.split("\n");
+		const outputLines = this.cell.outputBlock
+			? renderTerminalOutputLines(this.cell.outputBlock.output, this.env.theme, this.cell.outputBlock.footer, {
+					...this.cell.outputBlock.options,
+					expanded: this.env.expanded ?? this.cell.outputBlock.options?.expanded,
+					width: innerWidth,
+				})
+			: [];
+		const lines = framedBlock(this.env.theme, {
+			header: shellCard ? renderedHeader : "",
+			sections: [
+				{ lines: commandLines },
+				...(outputLines.length > 0
+					? [{ label: this.env.theme.fg("toolTitle", "Output"), lines: outputLines }]
+					: []),
+			],
+			borderColor: this.cell.failed ? "error" : this.cell.status === "running" ? "accent" : "dim",
+		}).render(width);
+		this.renderedCache = shouldCacheRenderedLines(this.cell, renderedHeader) ? { width, lines } : undefined;
 		return lines;
 	}
 }
@@ -244,17 +289,16 @@ function renderBackgroundTerminalWidgetLine(
 
 function renderExecCellHeader(cell: ExecCell, theme: RenderTheme): string {
 	switch (cell.kind) {
-		case "exploration":
-			return renderGroupedExecCommandCall(
-				cell.actionGroups ?? [],
-				cell.status,
-				theme,
-				cell.failed,
-				cell.elapsedMs,
-				cell.contextGuardWrapped,
-			);
 		case "spawned-background-terminal":
-			return renderSpawnedBackgroundTerminalCall(cell.command ?? "", theme, cell.contextGuardWrapped);
+			return renderSpawnedBackgroundTerminalCall(
+				cell.command ?? "",
+				theme,
+				cell.contextGuardWrapped,
+				cell.terminalSession,
+			);
+		case "terminal-logs":
+		case "terminal-wait":
+			return renderTerminalSessionRow(cell.terminalSession!, theme);
 		case "user-command":
 			return renderUserExecCommandCall(cell.command ?? "", cell.status, theme, cell.failed, cell.elapsedMs);
 		case "write-stdin":

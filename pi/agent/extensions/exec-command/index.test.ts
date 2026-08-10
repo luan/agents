@@ -1,35 +1,22 @@
 import { beforeAll, expect, test } from "bun:test";
 import { execSync } from "node:child_process";
-import { BashExecutionComponent, initTheme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
-import { Container } from "@earendil-works/pi-tui";
-import { markLiveTurnStarted, resetLiveTurnForTests } from "../shared/tui";
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { initTheme } from "@earendil-works/pi-coding-agent";
+import { setCurrentContextGuardSessionId } from "../context-guard/pi/current-session.ts";
+import { markExecCommandContextGuardEnabled, resetExecCommandContextGuardEnabled } from "../context-guard/pi/index.ts";
 import { DEFAULT_EXEC_SHELL, resolveRuntimeShell } from "./adapter/runtime-shell.ts";
 import execCommandExtension from "./index.ts";
-import type { ShellAction } from "./shell/summary.ts";
-import {
-	type RenderOutputBlockOptions,
-	type RenderTheme,
-	rawCommandToExecCell,
-	renderBackgroundTerminalHud,
-	renderExecCell,
-	renderExecCellComponent,
-} from "./tools/exec-cell-presentation.ts";
+import { type RenderTheme, rawCommandToExecCell, renderExecCellComponent } from "./tools/exec-cell-presentation.ts";
 import { createExecCommandTracker } from "./tools/exec-command-state.ts";
 import { registerExecCommandTool } from "./tools/exec-command-tool.ts";
 import { createExecSessionManager } from "./tools/exec-session-manager.ts";
-import { formatUnifiedExecResult } from "./tools/unified-exec-format.ts";
-import { registerWriteStdinTool } from "./tools/write-stdin-tool.ts";
 import { BackgroundTerminalOverlay } from "./ui/background-terminal-overlay.ts";
 
 const testTheme: RenderTheme = {
 	fg: (role, text) => `<${role}>${text}</${role}>`,
 	bold: (text) => `<bold>${text}</bold>`,
-};
-
-const rgbTestTheme = {
-	fg: (_role: string, text: string) => text,
-	bold: (text: string) => text,
-	getFgAnsi: (role: string) => (role === "accent" ? "\x1b[38;2;100;120;200m" : "\x1b[38;2;255;255;255m"),
 };
 
 function stripAnsi(text: string): string {
@@ -119,87 +106,6 @@ async function waitForCondition(condition: () => boolean, timeoutMs = 4000): Pro
 	expect(condition()).toBe(true);
 }
 
-function renderExecCommandCall(
-	command: string,
-	state: "running" | "done",
-	theme: RenderTheme,
-	failed = false,
-	elapsedMs?: number,
-	contextGuardWrapped = false,
-): string {
-	return renderExecCell(rawCommandToExecCell({ command, status: state, failed, elapsedMs, contextGuardWrapped }), {
-		theme,
-		part: "header",
-	});
-}
-
-function renderGroupedExecCommandCall(
-	actionGroups: ShellAction[][],
-	state: "running" | "done",
-	theme: RenderTheme,
-	failed = false,
-	elapsedMs?: number,
-): string {
-	return renderExecCell(
-		{ kind: "exploration", status: state, actionGroups, failed, elapsedMs },
-		{ theme, part: "header" },
-	);
-}
-
-function renderOutputBlock(
-	output: string,
-	theme: Pick<RenderTheme, "fg">,
-	footer?: string,
-	options: RenderOutputBlockOptions = {},
-): string {
-	return renderExecCell(
-		{
-			kind: "command",
-			status: "done",
-			outputBlock: { output, footer, options },
-		},
-		{ theme: theme as RenderTheme, part: "output", expanded: options.expanded, width: options.width },
-	);
-}
-
-function renderSpawnedBackgroundTerminalCall(command: string, theme: RenderTheme): string {
-	return renderExecCell({ kind: "spawned-background-terminal", status: "done", command }, { theme, part: "header" });
-}
-
-function renderWriteStdinCall(
-	processId: number | string,
-	input: string | undefined,
-	command: string | undefined,
-	theme: RenderTheme,
-	state: "running" | "done" = "done",
-	failed = false,
-	elapsedMs?: number,
-	stdinOpen?: boolean,
-): string {
-	return renderExecCell(
-		{
-			kind: "write-stdin",
-			status: state,
-			command,
-			failed,
-			elapsedMs,
-			writeStdin: { processId, input, stdinOpen },
-		},
-		{ theme, part: "header" },
-	);
-}
-
-function renderBackgroundTerminalHudLine(
-	command: string | undefined,
-	output: string,
-	theme: RenderTheme,
-	elapsedMs: number,
-	width = 120,
-	stdinOpen?: boolean,
-): string {
-	return renderBackgroundTerminalHud({ command, output, elapsedMs, stdinOpen }, { theme, width });
-}
-
 async function runExecCommandCompletionScenario(command: string, toolCallId: string) {
 	type Handler = (event?: any, ctx?: any) => any;
 	const handlers = new Map<string, Handler[]>();
@@ -264,88 +170,6 @@ async function runExecCommandCompletionScenario(command: string, toolCallId: str
 	}
 }
 
-test("exec command call renders inline syntax-highlighted commands", () => {
-	const rendered = renderExecCommandCall(
-		`git diff --stat luan/pbt...luan/pbt-fixes && gh pr edit 57220 --title "fix(sync): resolve PBT convergence failures"`,
-		"done",
-		testTheme,
-	);
-	expect(
-		rendered.startsWith(
-			`<success>•</success> <bold>Ran</bold> <syntaxFunction>git</syntaxFunction> diff <syntaxKeyword>--stat</syntaxKeyword>`,
-		),
-	).toBe(true);
-	expect(rendered).toContain(
-		`<syntaxOperator>&&</syntaxOperator> <syntaxFunction>gh</syntaxFunction> pr edit 57220 <syntaxKeyword>--title</syntaxKeyword> <syntaxString>"fix(sync): resolve PBT convergence failures"</syntaxString>`,
-	);
-	expect(rendered).not.toContain("\n<dim>  └ ");
-});
-
-test("exec cell facade renders raw command cells with Context Guard presentation metadata", () => {
-	const cell = rawCommandToExecCell({
-		command: "cargo test",
-		status: "done",
-		contextGuardWrapped: true,
-	});
-	const rendered = renderExecCell(cell, { theme: testTheme, part: "header" });
-
-	expect(rendered).toBe(renderExecCommandCall("cargo test", "done", testTheme, false, undefined, true));
-});
-
-test("exec cell facade renders exploration rows from an explicit cell model", () => {
-	const rendered = renderExecCell(
-		{
-			kind: "exploration",
-			status: "done",
-			actionGroups: [[{ kind: "search", command: "rg Parser", query: "Parser", path: "src" }]],
-		},
-		{ theme: testTheme, part: "header" },
-	);
-
-	expect(rendered).toBe(
-		renderGroupedExecCommandCall(
-			[[{ kind: "search", command: "rg Parser", query: "Parser", path: "src" }]],
-			"done",
-			testTheme,
-		),
-	);
-});
-
-test("exec cell facade renders combined command header and output block", () => {
-	const rendered = renderExecCell(
-		{
-			kind: "command",
-			status: "done",
-			command: "printf ok",
-			outputBlock: { output: "ok" },
-		},
-		{ theme: testTheme },
-	);
-
-	expect(rendered).toBe(
-		`${renderExecCommandCall("printf ok", "done", testTheme)}\n${renderOutputBlock("ok", testTheme)}`,
-	);
-});
-
-test("exec cell facade renders output components with caller width", () => {
-	const component = renderExecCellComponent(
-		{
-			kind: "command",
-			status: "done",
-			command: "printf ok",
-			outputBlock: {
-				output: "https://example.test/api/v1/projects/alpha-team/releases/2026-02-17/builds/1234567890\ntail",
-				options: { maxLines: 2 },
-			},
-		},
-		{ theme: testTheme, part: "output" },
-	);
-	const rendered = component.render(32).join("\n");
-
-	expect(rendered).toContain("… +");
-	expect(rendered).toContain("tail");
-});
-
 test("exec cell facade caches stable component renders by width", () => {
 	const component = renderExecCellComponent(
 		{
@@ -394,244 +218,7 @@ test("exec cell facade reuses running renders when visible text is unchanged", (
 	expect(component.render(80)).toBe(first);
 });
 
-test("exec cell facade renders write_stdin cells and output blocks", () => {
-	const call = renderExecCell(
-		{
-			kind: "write-stdin",
-			status: "running",
-			command: "python repl.py",
-			elapsedMs: 65_400,
-			writeStdin: {
-				processId: 3,
-				input: "print(1)\n",
-				stdinOpen: true,
-			},
-		},
-		{ theme: testTheme, part: "header" },
-	);
-	const output = renderExecCell(
-		{
-			kind: "write-stdin",
-			status: "done",
-			outputBlock: {
-				output: "1\n",
-				footer: `${testTheme.fg("accent", "Process 3 still running")}${testTheme.fg("dim", " · ")}${testTheme.fg("mdLink", "tty")}`,
-			},
-		},
-		{ theme: testTheme, part: "output" },
-	);
-
-	expect(call).toBe(
-		renderWriteStdinCall(3, "print(1)\n", "python repl.py", testTheme, "running", false, 65_400, true),
-	);
-	expect(output).toBe(
-		renderOutputBlock(
-			"1\n",
-			testTheme,
-			`${testTheme.fg("accent", "Process 3 still running")}${testTheme.fg("dim", " · ")}${testTheme.fg("mdLink", "tty")}`,
-		),
-	);
-});
-
-test("exec cell facade renders spawned background terminal cells and HUD lines", () => {
-	const spawned = renderExecCell(
-		{
-			kind: "spawned-background-terminal",
-			status: "done",
-			command: "npm run dev",
-		},
-		{ theme: testTheme, part: "header" },
-	);
-	const hud = renderBackgroundTerminalHud(
-		{
-			command: "npm run dev",
-			output: "ready\n",
-			elapsedMs: 65_000,
-			stdinOpen: true,
-		},
-		{ theme: testTheme, width: 80 },
-	);
-
-	expect(spawned).toBe(renderSpawnedBackgroundTerminalCall("npm run dev", testTheme, true));
-	expect(hud).toBe(renderBackgroundTerminalHudLine("npm run dev", "ready\n", testTheme, 65_000, 80, true));
-});
-
-test("exec command call unwraps simple shell wrappers before rendering", () => {
-	const rendered = renderExecCommandCall(`bash -lc 'git status --short'`, "running", testTheme);
-	expect(rendered).toBe(
-		`<dim>⠋</dim> <bold>Running</bold> <syntaxFunction>git</syntaxFunction> status <syntaxKeyword>--short</syntaxKeyword>`,
-	);
-});
-
-test("exec command call wraps very long command lines", () => {
-	const rendered = renderExecCommandCall(`printf ${"x".repeat(300)}`, "done", testTheme);
-	expect(rendered).toContain("\n<dim>    </dim>");
-	expect(rendered).not.toContain("x".repeat(200));
-});
-
-test("write stdin call uses unwrapped command previews", () => {
-	const rendered = renderWriteStdinCall(3, "", `bash -lc 'git status --short'`, testTheme);
-	expect(rendered).toBe(
-		`<success>• </success><bold>Waited for background terminal</bold><dim> · </dim><muted>git status --short</muted>`,
-	);
-});
-
-test("write stdin call keeps long command previews compact", () => {
-	const rendered = renderWriteStdinCall(3, "", `printf ${"x".repeat(300)}`, testTheme);
-	expect(rendered).toEndWith("...</muted>");
-	expect(rendered).not.toContain("\n<dim>    </dim>");
-});
-
-test("running terminal calls show elapsed time", () => {
-	const firstFrame = renderExecCommandCall("sleep 60", "running", testTheme, false, 0);
-	const secondFrame = renderExecCommandCall("sleep 60", "running", testTheme, false, 120);
-	expect(firstFrame).not.toBe(secondFrame);
-	expect(renderExecCommandCall("sleep 60", "running", testTheme, false, 65_400)).toContain(
-		`<bold>Running</bold> <syntaxFunction>sleep</syntaxFunction> 60<dim> · 1m 05s</dim>`,
-	);
-	expect(renderWriteStdinCall(3, "", "sleep 60", testTheme, "running", false, 65_400)).toBe(
-		`<dim>⠴ </dim><bold>Waiting for background terminal</bold><dim> · 1m 05s</dim><dim> · </dim><muted>sleep 60</muted>`,
-	);
-});
-
-test("background terminal HUD summarizes command, output size, and last line", () => {
-	const rendered = renderBackgroundTerminalHudLine(
-		"just sync-proptest mock 1 --skip-triage",
-		"first\nmiddle\nlast line\n",
-		testTheme,
-		360,
-		120,
-	);
-
-	expect(rendered).toBe(
-		"<accent>●</accent> <bold>background terminal</bold><dim> · </dim><dim>0s</dim><dim> · </dim><muted>(3 lines)</muted><dim> · </dim><dim>last line</dim><dim> · </dim><muted>just sync-proptest mock 1 --skip-triage</muted>",
-	);
-});
-
-test("background terminal pulse marker uses smooth RGB intensity like Working", () => {
-	const dark = renderBackgroundTerminalHudLine(undefined, "", rgbTestTheme, 0).split(" ")[0] ?? "";
-	const bright = renderBackgroundTerminalHudLine(undefined, "", rgbTestTheme, 600).split(" ")[0] ?? "";
-
-	expect(stripAnsi(dark)).toBe("●");
-	expect(stripAnsi(bright)).toBe("●");
-	expect(dark).toContain("\x1b[38;2;45;54;90m");
-	expect(bright).toContain("\x1b[38;2;145;174;255m");
-});
-
-test("background terminal HUD label uses Working-style trickle animation", () => {
-	const early = renderBackgroundTerminalHudLine(undefined, "", rgbTestTheme, 0);
-	const later = renderBackgroundTerminalHudLine(undefined, "", rgbTestTheme, 240);
-
-	expect(stripAnsi(early)).toContain("background terminal");
-	expect(stripAnsi(later)).toContain("background terminal");
-	expect(early).not.toBe(later);
-	expect(later).toContain("\x1b[38;2;155;186;255m");
-});
-
-test("background terminal HUD shows stdin capability when available", () => {
-	const rendered = renderBackgroundTerminalHudLine("node repl.js", "", testTheme, 0, 120, true);
-
-	expect(rendered).toContain("<mdLink>tty</mdLink>");
-	expect(rendered).not.toContain("stdin");
-});
-
-test("unified exec format hides non-tty stdin and labels tty sessions", () => {
-	const rendered = formatUnifiedExecResult({
-		chunk_id: "chunk",
-		wall_time_seconds: 0.25,
-		output: "",
-		process_id: 7,
-		stdin_open: false,
-	});
-
-	expect(rendered).toContain("Process running with process ID 7");
-	expect(rendered).not.toContain("Stdin:");
-
-	const ttyRendered = formatUnifiedExecResult({
-		chunk_id: "chunk",
-		wall_time_seconds: 0.25,
-		output: "",
-		process_id: 8,
-		stdin_open: true,
-	});
-	expect(ttyRendered).toContain("TTY: yes");
-});
-
-test("unified exec format does not show a process as running after terminal output", () => {
-	const rendered = formatUnifiedExecResult({
-		chunk_id: "chunk",
-		wall_time_seconds: 15.065,
-		output: "startdone",
-		exit_code: 0,
-		process_id: 2,
-	});
-
-	expect(rendered).toContain("Process exited with code 0");
-	expect(rendered).not.toContain("Process running with process ID 2");
-});
-
-test("background terminal overlay renders empty and visible session rows", () => {
-	let records: any[] = [];
-	const listeners: Array<() => void> = [];
-	let renderRequests = 0;
-	let doneCalls = 0;
-	const plainTheme = { fg: (_role: string, text: string) => text, bold: (text: string) => text };
-	const overlay = new BackgroundTerminalOverlay(
-		{
-			listSessions: () => records,
-			onSessionUpdate: (listener) => {
-				listeners.push(listener);
-				return () => listeners.splice(listeners.indexOf(listener), 1);
-			},
-		} as any,
-		{ terminal: { rows: 20 }, requestRender: () => renderRequests++ } as any,
-		plainTheme,
-		() => doneCalls++,
-	);
-
-	expect(overlay.render(100).join("\n")).toContain("No background terminals");
-	expect(overlay.render(100)).toHaveLength(8);
-
-	records = [
-		{
-			id: 3,
-			command: "node repl.js",
-			output: "first\nlast line\n",
-			running: true,
-			stdinOpen: true,
-		},
-		{
-			id: 4,
-			command: `printf ${"x".repeat(160)}`,
-			output: "",
-			running: false,
-			exitCode: 7,
-			stdinOpen: false,
-		},
-	];
-	listeners[0]?.();
-	const rendered = overlay.render(80).join("\n");
-
-	expect(renderRequests).toBe(1);
-	expect(rendered).toContain("background terminals");
-	expect(rendered).toContain("#3");
-	expect(rendered).toContain("running");
-	expect(rendered).toContain("tty");
-	expect(rendered).toContain("node repl.js");
-	expect(rendered).toContain("last: last line");
-	expect(rendered).toContain("#4");
-	expect(rendered).toContain("exited 7");
-	expect(rendered).not.toContain("stdin closed");
-	expect(overlay.render(80).length).toBeLessThanOrEqual(18);
-	expect(rendered).not.toContain("x".repeat(80));
-
-	overlay.handleInput("q");
-	expect(doneCalls).toBe(1);
-	listeners[0]?.();
-	expect(renderRequests).toBe(1);
-});
-
-test("background terminal overlay supports vim navigation, attach, and kill", () => {
+test("background terminal overlay supports vim navigation, attach, and kill", async () => {
 	let records: any[] = [
 		{
 			id: 3,
@@ -650,11 +237,16 @@ test("background terminal overlay supports vim navigation, attach, and kill", ()
 	];
 	const listeners: Array<() => void> = [];
 	const killed: number[] = [];
+	const writes: Array<{ process_id: number; chars: string }> = [];
 	let renderRequests = 0;
 	const plainTheme = { fg: (_role: string, text: string) => text, bold: (text: string) => text };
 	const overlay = new BackgroundTerminalOverlay(
 		{
 			listSessions: () => records,
+			write: async (input: { process_id: number; chars: string }) => {
+				writes.push(input);
+				return {} as any;
+			},
 			stopSession: (processId: number) => {
 				killed.push(processId);
 				records = records.filter((record) => record.id !== processId);
@@ -671,115 +263,54 @@ test("background terminal overlay supports vim navigation, attach, and kill", ()
 		() => {},
 	);
 
-	expect(overlay.render(100).join("\n")).toContain("> #3");
-
 	overlay.handleInput("j");
-	expect(overlay.render(100).join("\n")).toContain("> #4");
 
 	overlay.handleInput("l");
-	let rendered = overlay.render(100).join("\n");
-	expect(rendered).toContain("background terminal #4 attached");
-	expect(rendered).toContain("prompt");
 
 	records = [{ ...records[1], output: "ready\nprompt\nnext\n" }];
 	listeners[0]?.();
-	rendered = overlay.render(100).join("\n");
 	expect(renderRequests).toBeGreaterThan(0);
-	expect(rendered).toContain("next");
 
 	overlay.handleInput("h");
-	expect(overlay.render(100).join("\n")).toContain("> #4");
+	await Promise.resolve();
+	expect(writes).toEqual([{ process_id: 4, chars: "h" }]);
+
+	overlay.handleInput("\u001d");
 
 	overlay.handleInput("x");
-	rendered = overlay.render(100).join("\n");
 	expect(killed).toEqual([4]);
-	expect(rendered).toContain("Killed background terminal #4");
-	expect(rendered).toContain("No background terminals");
-	expect(rendered).not.toContain("node repl.js");
 });
 
-test("grouped exploration rows use a one-line in-flight placeholder", () => {
-	const actionGroups = [[{ kind: "read", title: "Read", body: "a.ts" }]] as any;
-	const running = renderGroupedExecCommandCall(actionGroups, "running", testTheme, false, 0);
-	const done = renderGroupedExecCommandCall(actionGroups, "done", testTheme, false, 120);
+test("background terminal overlay closes from interactive mode with escape", () => {
+	const writes: Array<{ process_id: number; chars: string }> = [];
+	let doneCalls = 0;
+	const overlay = new BackgroundTerminalOverlay(
+		{
+			listSessions: () => [
+				{
+					id: 4,
+					command: "node repl.js",
+					output: "ready\n",
+					running: true,
+					stdinOpen: true,
+				},
+			],
+			write: async (input: { process_id: number; chars: string }) => {
+				writes.push(input);
+				return {} as any;
+			},
+			onSessionUpdate: () => () => {},
+		} as any,
+		{ terminal: { rows: 18 }, requestRender() {} } as any,
+		{ fg: (_role: string, text: string) => text, bold: (text: string) => text },
+		() => doneCalls++,
+	);
 
-	expect(running).toBe("<dim>⠋</dim> <bold>Exploring</bold>");
-	expect(running).not.toContain("a.ts");
-	expect(done).toContain("<success>•</success> <bold>Explored</bold>");
-	expect(done).toContain("<accent>Read</accent>");
-});
+	overlay.handleInput("l");
+	overlay.handleInput("\u001b");
 
-test("exploration grouping keeps the first row as the visible anchor", () => {
-	let tool: any;
-	const tracker = createExecCommandTracker();
-	const sessions = createExecSessionManager();
-	try {
-		registerExecCommandTool({ registerTool: (definition: any) => (tool = definition) } as any, tracker, sessions);
-
-		tracker.recordStart("call-1", "sed -n '1,20p' pi/agent/extensions/exec-command/index.ts");
-		tracker.recordStart("call-2", "sed -n '1,20p' pi/agent/extensions/exec-command/tools/exec-command-tool.ts");
-
-		const firstRow = tool
-			.renderCall({ cmd: "sed -n '1,20p' pi/agent/extensions/exec-command/index.ts" }, testTheme, {
-				toolCallId: "call-1",
-				state: {},
-				isPartial: true,
-				invalidate() {},
-			})
-			.render(200)
-			.join("\n");
-		const secondRow = tool
-			.renderCall({ cmd: "sed -n '1,20p' pi/agent/extensions/exec-command/tools/exec-command-tool.ts" }, testTheme, {
-				toolCallId: "call-2",
-				state: {},
-				isPartial: true,
-				invalidate() {},
-			})
-			.render(200)
-			.join("\n");
-
-		expect(firstRow).toContain("<bold>Exploring</bold>");
-		expect(firstRow).not.toContain("index.ts");
-		expect(firstRow).not.toContain("exec-command-tool.ts");
-		expect(secondRow).toBe("");
-	} finally {
-		tracker.clear();
-		sessions.shutdown();
-	}
-});
-
-test("exploration grouping hides later placeholders before execution starts", () => {
-	let tool: any;
-	const tracker = createExecCommandTracker();
-	const sessions = createExecSessionManager();
-	try {
-		registerExecCommandTool({ registerTool: (definition: any) => (tool = definition) } as any, tracker, sessions);
-
-		const firstRow = tool
-			.renderCall({ cmd: "sed -n '1,20p' pi/agent/extensions/exec-command/index.ts" }, testTheme, {
-				toolCallId: "call-1",
-				state: {},
-				isPartial: true,
-				invalidate() {},
-			})
-			.render(200)
-			.join("\n");
-		const secondRow = tool
-			.renderCall({ cmd: "sed -n '1,20p' pi/agent/extensions/exec-command/tools/exec-command-tool.ts" }, testTheme, {
-				toolCallId: "call-2",
-				state: {},
-				isPartial: true,
-				invalidate() {},
-			})
-			.render(200)
-			.join("\n");
-
-		expect(firstRow).toContain("<bold>Exploring</bold>");
-		expect(secondRow).toBe("");
-	} finally {
-		tracker.clear();
-		sessions.shutdown();
-	}
+	expect(doneCalls).toBe(1);
+	expect(writes).toEqual([]);
 });
 
 test("completed render contexts do not keep running-command elapsed timers alive", () => {
@@ -866,391 +397,34 @@ test("running render contexts without tool call ids de-dupe by command", () => {
 		sessions.shutdown();
 	}
 });
-test("exploration grouping does not append a single command output preview", () => {
-	let tool: any;
-	const tracker = createExecCommandTracker();
-	const sessions = createExecSessionManager();
-	try {
-		registerExecCommandTool({ registerTool: (definition: any) => (tool = definition) } as any, tracker, sessions);
 
-		tracker.recordStart("call-1", "sed -n '1,20p' pi/agent/extensions/exec-command/index.ts");
-		const resultRow = tool.renderResult(
-			{
-				content: [{ type: "text", text: "fallback" }],
-			},
-			{ expanded: false, isPartial: false },
-			testTheme,
-			{
-				toolCallId: "call-1",
-				args: { cmd: "sed -n '1,20p' pi/agent/extensions/exec-command/index.ts" },
-				state: {},
-			},
-		);
-
-		expect(resultRow.render(200)).toEqual([]);
-	} finally {
-		tracker.clear();
-		sessions.shutdown();
-	}
-});
-
-test("yielded background exec calls render a static spawned row", () => {
-	let tool: any;
-	const tracker = createExecCommandTracker();
-	const sessions = {
-		exec: async () => {
-			throw new Error("unexpected exec");
-		},
-		write: async () => {
-			throw new Error("unexpected write");
-		},
-		hasSession: () => true,
-		getSessionCommand: () => "sleep 60",
-		getSessionSnapshot: () => ({
-			command: "sleep 60",
-			output: "first\nlast\n",
-			running: true,
-		}),
-		onSessionExit: () => () => {},
-		shutdown() {},
-	};
-	try {
-		registerExecCommandTool(
-			{ registerTool: (definition: any) => (tool = definition) } as any,
-			tracker,
-			sessions as any,
-		);
-		tracker.recordStart("call", "sleep 60");
-		tracker.recordPersistentSession("call", 7);
-
-		const state: { elapsedTimer?: ReturnType<typeof setTimeout> } = {};
-		const row = tool
-			.renderCall({ cmd: "sleep 60" }, testTheme, {
-				toolCallId: "call",
-				state,
-				isPartial: false,
-				invalidate() {},
-			})
-			.render(120)
-			.join("\n");
-
-		expect(row).toContain("<bold>Spawned background terminal</bold>");
-		expect(row).toContain("<syntaxFunction>sleep</syntaxFunction> 60");
-		expect(row).not.toContain("Waiting for background terminal");
-		expect(state.elapsedTimer).toBeUndefined();
-
-		tracker.recordSessionFinished(7);
-		const finishedRow = tool
-			.renderCall({ cmd: "sleep 60" }, testTheme, {
-				toolCallId: "call",
-				state: {},
-				isPartial: false,
-				invalidate() {},
-			})
-			.render(120)
-			.join("\n");
-
-		expect(finishedRow).toContain("<bold>Spawned background terminal</bold>");
-		expect(finishedRow).not.toContain("<bold>Ran</bold>");
-	} finally {
-		tracker.clear();
-		sessions.shutdown();
-	}
-});
-
-test("exec command call renders failed status as a red dot", () => {
-	const rendered = renderExecCommandCall("false", "done", testTheme, true);
-	expect(rendered).toBe(`<error>•</error> <bold>Ran</bold> <syntaxFunction>false</syntaxFunction>`);
-});
-
-test("exec command call can show a Context Guard routing marker", () => {
-	const rendered = renderExecCommandCall("cargo test", "done", testTheme, false, undefined, true);
-	expect(rendered).toBe(
-		`<success>•</success> <bold>Ran</bold> <syntaxFunction>cargo</syntaxFunction> test<dim> · </dim><mdLink>\x1b[3mvia context-guard\x1b[23m</mdLink>`,
-	);
-});
-
-test("line-safe rg summaries do not display numeric limits as the query", () => {
-	const rendered = renderExecCommandCall(
-		`rg -n -M 400 --max-columns-preview "struct SyncPersistenceUtilities|class SyncPersistenceUtilities"`,
-		"done",
-		testTheme,
-	);
-	expect(rendered).toContain("<bold>Explored</bold>");
-	expect(rendered).toContain(
-		"<accent>Search</accent> <muted>struct SyncPersistenceUtilities|class SyncPersistenceUtilities</muted>",
-	);
-	expect(rendered).not.toContain("<muted>400");
-});
-
-test("output block uses Codex-like prefixes and preserves ANSI color", () => {
-	const rendered = renderOutputBlock("plain\n\u001b[32m✓ green\u001b[0m\n", testTheme);
-	expect(rendered).toBe(`<dim>  └ </dim><dim>plain</dim>\n<dim>    </dim>\u001b[32m✓ green\u001b[0m`);
-});
-
-test("output block preserves plain line spacing", () => {
-	const rendered = renderOutputBlock("  indented  ", testTheme);
-	expect(rendered).toBe("<dim>  └ </dim><dim>  indented  </dim>");
-});
-
-test("output block limits very long plain lines", () => {
-	const rendered = renderOutputBlock("x".repeat(300), testTheme);
-	expect(rendered).toBe(`<dim>  └ </dim><dim>${"x".repeat(217)}...</dim>`);
-});
-
-test("output block truncates by displayed rows for long URL-like lines", () => {
-	const longUrl = "https://example.test/api/v1/projects/alpha-team/releases/2026-02-17/builds/1234567890";
-	const rendered = renderOutputBlock(`${longUrl}\ntail`, testTheme, undefined, {
-		maxLines: 2,
-		width: 32,
-	});
-
-	expect(rendered).toContain("… +");
-	expect(rendered).toContain("tail");
-});
-
-test("output block collapses large output in the middle", () => {
-	const rendered = renderOutputBlock(
-		Array.from({ length: 8 }, (_, index) => `line ${index + 1}`).join("\n"),
-		testTheme,
-		undefined,
-		{ maxLines: 5 },
-	);
-
-	expect(stripAnsi(rendered)).toBe(
-		[
-			"<dim>  └ </dim><dim>line 1</dim>",
-			"<dim>    </dim><dim>line 2</dim>",
-			"<dim>    </dim>… +4 lines ( transcript)",
-			"<dim>    </dim><dim>line 7</dim>",
-			"<dim>    </dim><dim>line 8</dim>",
-		].join("\n"),
-	);
-	expect(rendered).toContain("\x1b[");
-});
-
-test("output block marks token-truncated output at the top", () => {
-	const rendered = renderOutputBlock("tail", testTheme, undefined, {
-		truncatedAbove: true,
-		originalTokenCount: 1234,
-	});
-
-	expect(rendered).toBe(
-		"<dim>  └ </dim><dim>… output truncated above (original ~1234 tokens)</dim>\n<dim>    </dim><dim>tail</dim>",
-	);
-});
-
-test("exec renderers self-render without the default success shell", () => {
-	let tool: any;
-	const sessions = createExecSessionManager();
-	try {
-		registerExecCommandTool(
-			{ registerTool: (definition: any) => (tool = definition) } as any,
-			createExecCommandTracker(),
-			sessions,
-		);
-
-		expect(tool.renderShell).toBe("self");
-		const component = tool.renderResult(
-			{
-				content: [{ type: "text", text: "fallback" }],
-				details: { output: "visible output\nnext line\n", exit_code: 0 },
-			},
-			{ expanded: false, isPartial: false },
-			testTheme,
-			{ toolCallId: "call", args: { cmd: "printf visible" } },
-		);
-		const rendered = component.render(120).join("\n");
-		expect(rendered).toContain("<dim>  └ </dim><dim>visible output</dim>");
-		expect(rendered).toContain("<dim>    </dim><dim>next line</dim>");
-		expect(rendered).not.toContain("Exit code: 0");
-	} finally {
-		sessions.shutdown();
-	}
-});
-
-test("user bash executions render with shared exec command styling", () => {
-	execCommandExtension({
-		registerTool() {},
-		registerCommand() {},
-		getActiveTools: () => [],
-		setActiveTools() {},
-		on() {},
-	} as any);
-
-	const component = new BashExecutionComponent("echo hello", { requestRender() {} } as any);
-	component.appendOutput("hello\n");
-	component.setComplete(0, false);
-
-	const raw = component.render(80).join("\n");
-	const rendered = stripAnsi(raw);
-	expect(rendered).toContain("You ran");
-	expect(rendered).toContain("echo hello");
-	expect(rendered).toContain("  └ hello");
-	expect(rendered).not.toContain("$ echo hello");
-	expect(rendered).not.toContain("─");
-	expect(raw).toContain("\x1b[");
-});
-
-test("exec result renderer truncates output by rendered width", () => {
-	let tool: any;
-	const sessions = createExecSessionManager();
-	try {
-		registerExecCommandTool(
-			{ registerTool: (definition: any) => (tool = definition) } as any,
-			createExecCommandTracker(),
-			sessions,
-		);
-
-		const longUrl = `https://example.test/${"very-long-segment/".repeat(20)}`;
-		const rendered = tool
-			.renderResult(
-				{
-					content: [{ type: "text", text: "fallback" }],
-					details: { output: `${longUrl}\ntail`, exit_code: 0 },
-				},
-				{ expanded: false, isPartial: false },
-				testTheme,
-				{ toolCallId: "call", args: { cmd: "printf long" }, state: {} },
-			)
-			.render(32)
-			.join("\n");
-
-		expect(rendered).toContain("… +");
-		expect(rendered).toContain("tail");
-	} finally {
-		sessions.shutdown();
-	}
-});
-
-test("exec result renderer hides yielded background-terminal session details", () => {
-	let tool: any;
-	const sessions = createExecSessionManager();
-	try {
-		registerExecCommandTool(
-			{ registerTool: (definition: any) => (tool = definition) } as any,
-			createExecCommandTracker(),
-			sessions,
-		);
-
-		const rendered = tool
-			.renderResult(
-				{
-					content: [{ type: "text", text: "fallback" }],
-					details: { output: "partial\n", process_id: 9, stdin_open: false },
-				},
-				{ expanded: false, isPartial: false },
-				testTheme,
-				{ toolCallId: "call", args: { cmd: "sleep 60" }, state: {} },
-			)
-			.render(120)
-			.join("\n");
-
-		expect(rendered).toBe("");
-	} finally {
-		sessions.shutdown();
-	}
-});
-
-test("exec result renderer hides tracker-known background terminal results even when details are omitted", () => {
-	let tool: any;
-	const tracker = createExecCommandTracker();
-	const sessions = createExecSessionManager();
-	try {
-		registerExecCommandTool({ registerTool: (definition: any) => (tool = definition) } as any, tracker, sessions);
-		tracker.recordStart("call", "sleep 60");
-		tracker.recordPersistentSession("call", 9);
-
-		const rendered = tool
-			.renderResult(
-				{
-					content: [
-						{
-							type: "text",
-							text: formatUnifiedExecResult({
-								chunk_id: "abc123",
-								wall_time_seconds: 0.25,
-								output: "partial\n",
-								process_id: 9,
-							}),
-						},
-					],
-				},
-				{ expanded: false, isPartial: false },
-				testTheme,
-				{ toolCallId: "call", args: { cmd: "sleep 60" }, state: {} },
-			)
-			.render(120)
-			.join("\n");
-
-		expect(rendered).toBe("");
-	} finally {
-		tracker.clear();
-		sessions.shutdown();
-	}
-});
-
-test("extension hides empty self-rendered tool rows", () => {
-	type Handler = () => void;
-	const handlers = new Map<string, Handler[]>();
-	execCommandExtension({
-		registerTool() {},
-		registerCommand() {},
-		getActiveTools: () => [],
-		setActiveTools() {},
-		on: (event: string, handler: Handler) => {
-			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
-		},
-	} as any);
-
-	const hiddenTool = {
-		renderShell: "self",
-		renderCall() {
-			return new Container();
-		},
-		renderResult() {
-			return new Container();
-		},
-	};
-	const component = new ToolExecutionComponent(
-		"hidden",
-		"call-hidden",
-		{},
-		{},
-		hiddenTool as any,
-		{ requestRender() {} } as any,
-		process.cwd(),
-	);
-
-	expect(component.render(80)).toEqual([]);
-	for (const handler of handlers.get("session_shutdown") ?? []) handler();
-});
-
-test("exec command streams partial output while the process is still running", async () => {
+test("exec command streams output into its terminal frame", async () => {
 	let tool: any;
 	const tracker = createExecCommandTracker();
 	const sessions = createExecSessionManager({ minNonInteractiveExecYieldTimeMs: 50 });
+	const command = "printf first; sleep 0.25; printf second";
 	try {
 		registerExecCommandTool({ registerTool: (definition: any) => (tool = definition) } as any, tracker, sessions);
+		tracker.recordStart("call-stream", command);
 		const updates: any[] = [];
 		const result = await tool.execute(
 			"call-stream",
-			{ cmd: "printf first; sleep 0.25; printf second", yield_time_ms: 5000 },
+			{ cmd: command, yield_time_ms: 5000 },
 			undefined,
 			(update: any) => updates.push(update),
 			{ cwd: process.cwd() },
 		);
 
 		expect(result.details.output).toBe("firstsecond");
-		expect(updates.some((update) => update.details?.output?.includes("first"))).toBe(true);
-		expect(updates.some((update) => update.details?.process_id !== undefined)).toBe(true);
+		expect(updates).toEqual([]);
+		expect(tracker.getRenderInfo("call-stream", command).output).toBe("first");
 	} finally {
 		tracker.clear();
 		sessions.shutdown();
 	}
 });
 
-test("exec command suppresses partial output streaming for exploration commands", async () => {
+test("exec command streams partial output for file-reading commands", async () => {
 	let tool: any;
 	const tracker = createExecCommandTracker();
 	let receivedUpdateCallback = false;
@@ -1258,7 +432,7 @@ test("exec command suppresses partial output streaming for exploration commands"
 		exec: async (_input: unknown, _cwd: string, _signal?: AbortSignal, onUpdate?: unknown) => {
 			receivedUpdateCallback = typeof onUpdate === "function";
 			return {
-				chunk_id: "explore",
+				chunk_id: "read",
 				wall_time_seconds: 0,
 				output: "content",
 				exit_code: 0,
@@ -1275,198 +449,15 @@ test("exec command suppresses partial output streaming for exploration commands"
 	registerExecCommandTool({ registerTool: (definition: any) => (tool = definition) } as any, tracker, sessions as any);
 
 	await tool.execute(
-		"call-explore-stream",
+		"call-read-stream",
 		{ cmd: "sed -n '1,80p' pi/agent/extensions/exec-command/index.ts", yield_time_ms: 5000 },
 		undefined,
-		() => {
-			throw new Error("exploration command should not stream partial output");
-		},
+		() => {},
 		{ cwd: process.cwd() },
 	);
 
-	expect(receivedUpdateCallback).toBe(false);
+	expect(receivedUpdateCallback).toBe(true);
 	tracker.clear();
-});
-
-test("write stdin renderer self-renders without the default success shell", () => {
-	let tool: any;
-	const sessions = createExecSessionManager();
-	try {
-		registerWriteStdinTool({ registerTool: (definition: any) => (tool = definition) } as any, sessions);
-
-		expect(tool.renderShell).toBe("self");
-		const component = tool.renderResult(
-			{
-				content: [{ type: "text", text: "" }],
-				details: { output: "poll output\n", exit_code: 0 },
-			},
-			{ expanded: false, isPartial: false },
-			testTheme,
-		);
-		const rendered = component.render(120).join("\n");
-		expect(rendered).toContain("<dim>  └ </dim><dim>poll output</dim>");
-		expect(rendered).not.toContain("Exit code: 0");
-	} finally {
-		sessions.shutdown();
-	}
-});
-
-test("write stdin stops animating a call that never finished streaming", () => {
-	// A call abandoned mid-stream stays isPartial forever. While its spinner keeps advancing, every
-	// frame changes a transcript line; once that line scrolls above the viewport, pi-tui answers each
-	// change by clearing the screen and re-emitting the whole transcript.
-	let tool: any;
-	const sessions = createExecSessionManager();
-	try {
-		registerWriteStdinTool({ registerTool: (definition: any) => (tool = definition) } as any, sessions);
-
-		markLiveTurnStarted();
-		let invalidations = 0;
-		// Both ages are past the cap and sit 3 spinner frames apart (360ms / 120ms), so an uncapped
-		// clock renders two different frames here.
-		const state: Record<string, any> = { startedAtMs: Date.now() - 90_000 };
-		const context = { state, isPartial: true, invalidate: () => void invalidations++ };
-		const args = { process_id: 1, chars: "y\n" };
-
-		const first = tool.renderCall(args, testTheme, context).render(120).join("\n");
-		state.startedAtMs = Date.now() - 90_360;
-		const second = tool.renderCall(args, testTheme, context).render(120).join("\n");
-
-		// Identical output is what leaves the differ with nothing to repaint.
-		expect(second).toBe(first);
-		expect(state.elapsedTimer).toBeUndefined();
-		expect(invalidations).toBe(0);
-	} finally {
-		sessions.shutdown();
-	}
-});
-
-test("write stdin never animates a call replayed from a resumed transcript", () => {
-	// Resume replays history before any turn runs; a replayed call with no result stays isPartial
-	// forever with a fresh render state, so the stall cap alone would animate it for a full minute.
-	resetLiveTurnForTests();
-	let tool: any;
-	const sessions = createExecSessionManager();
-	try {
-		registerWriteStdinTool({ registerTool: (definition: any) => (tool = definition) } as any, sessions);
-		let invalidations = 0;
-		const state: Record<string, any> = {};
-		const context = { state, isPartial: true, invalidate: () => void invalidations++ };
-		const args = { process_id: 1, chars: "y\n" };
-
-		const first = tool.renderCall(args, testTheme, context).render(120).join("\n");
-		state.startedAtMs = (state.startedAtMs ?? Date.now()) - 360;
-		const second = tool.renderCall(args, testTheme, context).render(120).join("\n");
-
-		expect(second).toBe(first);
-		expect(state.elapsedTimer).toBeUndefined();
-		expect(invalidations).toBe(0);
-	} finally {
-		sessions.shutdown();
-	}
-});
-
-test("write stdin hides still-running empty background terminal polls from transcript", () => {
-	let tool: any;
-	const sessions = createExecSessionManager();
-	try {
-		registerWriteStdinTool({ registerTool: (definition: any) => (tool = definition) } as any, sessions);
-
-		expect(tool.renderCall({ process_id: 3 }, testTheme, { isPartial: false }).render(120)).toEqual([]);
-		const waitState: { elapsedTimer?: ReturnType<typeof setTimeout>; startedAtMs?: number } = {};
-		expect(
-			tool
-				.renderCall({ process_id: 3 }, testTheme, {
-					isPartial: true,
-					state: waitState,
-					invalidate() {},
-				})
-				.render(120),
-		).toEqual([]);
-		expect(waitState.elapsedTimer).toBeUndefined();
-		expect(
-			tool
-				.renderResult(
-					{
-						content: [{ type: "text", text: "" }],
-						details: { output: "still running\n", process_id: 3 },
-					},
-					{ expanded: false, isPartial: false },
-					testTheme,
-					{ args: { process_id: 3 } },
-				)
-				.render(120),
-		).toEqual([]);
-
-		const interacted = tool
-			.renderCall({ process_id: 3, chars: "\u0003" }, testTheme, { isPartial: false })
-			.render(120);
-		expect(interacted.join("\n")).toContain("<bold>Interacted with background terminal</bold>");
-	} finally {
-		sessions.shutdown();
-	}
-});
-
-test("write stdin result renderer parses stdin capability from formatted transcripts", () => {
-	let tool: any;
-	const sessions = createExecSessionManager();
-	try {
-		registerWriteStdinTool({ registerTool: (definition: any) => (tool = definition) } as any, sessions);
-
-		const rendered = tool
-			.renderResult(
-				{
-					content: [
-						{
-							type: "text",
-							text: [
-								"Chunk ID: chunk",
-								"Wall time: 0.2500 seconds",
-								"Process running with process ID 3",
-								"TTY: yes",
-								"Output:",
-								"hello",
-							].join("\n"),
-						},
-					],
-				},
-				{ expanded: false, isPartial: false },
-				testTheme,
-				{ args: { process_id: 3, chars: "\u0003" } },
-			)
-			.render(120)
-			.join("\n");
-
-		expect(rendered).toContain("Process 3 still running");
-		expect(rendered).toContain("<mdLink>tty</mdLink>");
-		expect(rendered).not.toContain("stdin open");
-	} finally {
-		sessions.shutdown();
-	}
-});
-
-test("write stdin renders animated in-flight interaction rows", () => {
-	let tool: any;
-	const sessions = createExecSessionManager();
-	try {
-		registerWriteStdinTool({ registerTool: (definition: any) => (tool = definition) } as any, sessions);
-
-		markLiveTurnStarted();
-		const interactionState: { elapsedTimer?: ReturnType<typeof setTimeout>; startedAtMs?: number } = {};
-		const interactionRow = tool
-			.renderCall({ process_id: 3, chars: "\u0003" }, testTheme, {
-				isPartial: true,
-				state: interactionState,
-				invalidate() {},
-			})
-			.render(120)
-			.join("\n");
-		expect(interactionRow).toContain("<bold>Interacting with background terminal</bold>");
-		expect(interactionState.elapsedTimer).toBeDefined();
-		if (interactionState.elapsedTimer) clearTimeout(interactionState.elapsedTimer);
-	} finally {
-		sessions.shutdown();
-	}
 });
 
 test("shutdown terminates descendant processes that escaped the shell process group", async () => {
@@ -1548,185 +539,8 @@ test("extension marks nonzero exec results as errors for red status dots", () =>
 	for (const handler of handlers.get("session_shutdown") ?? []) handler();
 });
 
-test("extension resume clears stale background terminal sessions and HUD state", async () => {
-	type Handler = (event?: any, ctx?: any) => any;
-	const handlers = new Map<string, Handler[]>();
-	let execTool: any;
-	let writeTool: any;
-	const statusCalls: Array<{ key: string; text: string | undefined }> = [];
-	const widgetCalls: Array<{ key: string; content: any; options?: any }> = [];
-	let activeTools = ["read", "bash"];
-	const pi = {
-		registerTool: (definition: any) => {
-			if (definition.name === "exec_command") execTool = definition;
-			if (definition.name === "write_stdin") writeTool = definition;
-		},
-		registerCommand() {},
-		registerMessageRenderer() {},
-		sendMessage() {},
-		getActiveTools: () => activeTools,
-		setActiveTools: (next: string[]) => {
-			activeTools = next;
-		},
-		on: (event: string, handler: Handler) => {
-			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
-		},
-		exec: async () => ({ code: 1, stdout: "", stderr: "" }),
-	} as any;
-	execCommandExtension(pi);
-
-	const ctx = {
-		hasUI: true,
-		ui: {
-			setStatus: (key: string, text: string | undefined) => statusCalls.push({ key, text }),
-			setWidget: (key: string, content: any, options?: any) => widgetCalls.push({ key, content, options }),
-			notify() {},
-		},
-		cwd: process.cwd(),
-	};
-
-	for (const handler of handlers.get("session_start") ?? []) handler({ reason: "startup" }, ctx);
-	const result = await execTool.execute(
-		"call-resume-stale-terminal",
-		{ cmd: "sleep 60", yield_time_ms: 250 },
-		undefined,
-		undefined,
-		ctx,
-	);
-	expect(result.details.process_id).toBeNumber();
-	expect(statusCalls.at(-1)).toEqual({
-		key: "background-terminals",
-		text: "1 background terminal · 1 running",
-	});
-	expect(widgetCalls.at(-1)?.key).toBe("background-terminals");
-
-	for (const handler of handlers.get("session_start") ?? []) handler({ reason: "resume" }, ctx);
-
-	expect(statusCalls.at(-1)).toEqual({ key: "background-terminals", text: undefined });
-	expect(widgetCalls.at(-1)).toEqual({ key: "background-terminals", content: undefined, options: undefined });
-	await expect(
-		writeTool.execute(
-			"poll-cleared-stale-terminal",
-			{ process_id: result.details.process_id, chars: "", yield_time_ms: 250 },
-			undefined,
-			undefined,
-			ctx,
-		),
-	).rejects.toThrow(`Unknown process id ${result.details.process_id}`);
-
-	for (const handler of handlers.get("session_shutdown") ?? []) handler(undefined, ctx);
-});
-
-test("extension status counts stdin-open tty sessions", async () => {
-	type Handler = (event?: any, ctx?: any) => any;
-	const handlers = new Map<string, Handler[]>();
-	let execTool: any;
-	const statusCalls: Array<{ key: string; text: string | undefined }> = [];
-	let activeTools = ["read", "bash"];
-	const pi = {
-		registerTool: (definition: any) => {
-			if (definition.name === "exec_command") execTool = definition;
-		},
-		registerCommand() {},
-		getActiveTools: () => activeTools,
-		setActiveTools: (next: string[]) => {
-			activeTools = next;
-		},
-		on: (event: string, handler: Handler) => {
-			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
-		},
-		exec: async () => ({ code: 1, stdout: "", stderr: "" }),
-	} as any;
-	execCommandExtension(pi);
-
-	const ctx = {
-		hasUI: true,
-		ui: {
-			setStatus: (key: string, text: string | undefined) => statusCalls.push({ key, text }),
-			notify() {},
-		},
-		cwd: process.cwd(),
-	};
-
-	for (const handler of handlers.get("session_start") ?? []) handler(undefined, ctx);
-
-	try {
-		const result = await execTool.execute(
-			"call-status-tty",
-			{ cmd: 'read line; printf "got:$line"', tty: true, yield_time_ms: 250 },
-			undefined,
-			undefined,
-			ctx,
-		);
-
-		expect(result.details.process_id).toBeNumber();
-		expect(statusCalls.at(-1)).toEqual({
-			key: "background-terminals",
-			text: "1 background terminal · 1 running · 1 tty",
-		});
-	} finally {
-		for (const handler of handlers.get("session_shutdown") ?? []) handler(undefined, ctx);
-	}
-});
-
-test("extension HUD keeps line count and last output visible before long commands", async () => {
-	type Handler = (event?: any, ctx?: any) => any;
-	const handlers = new Map<string, Handler[]>();
-	let execTool: any;
-	let widgetText = "";
-	const longCommand = `printf 'first line\\nlast visible line\\n'; sleep 1; printf '${"x".repeat(120)}'`;
-	const pi = {
-		registerTool: (definition: any) => {
-			if (definition.name === "exec_command") execTool = definition;
-		},
-		registerCommand() {},
-		registerMessageRenderer() {},
-		sendMessage() {},
-		getActiveTools: () => [],
-		setActiveTools() {},
-		on: (event: string, handler: Handler) => {
-			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
-		},
-		exec: async () => ({ code: 1, stdout: "", stderr: "" }),
-	} as any;
-	execCommandExtension(pi);
-
-	const ctx = {
-		hasUI: true,
-		ui: {
-			setStatus() {},
-			setWidget(_key: string, content: any) {
-				if (typeof content === "function") {
-					let component: any;
-					const rerender = () => {
-						widgetText = component.render(80).join("\n");
-					};
-					component = content(
-						{ requestRender: rerender },
-						{ fg: (_role: string, text: string) => text, bold: (text: string) => text },
-					);
-					rerender();
-				}
-			},
-			notify() {},
-		},
-		cwd: process.cwd(),
-	};
-	for (const handler of handlers.get("session_start") ?? []) handler(undefined, ctx);
-
-	try {
-		await execTool.execute("call-hud-output", { cmd: longCommand, yield_time_ms: 250 }, undefined, undefined, ctx);
-
-		expect(widgetText).toContain("●");
-		expect(widgetText).toContain("(2 lines)");
-		expect(widgetText).toContain("last visible line");
-	} finally {
-		for (const handler of handlers.get("session_shutdown") ?? []) handler(undefined, ctx);
-	}
-});
-
 test("extension appends a new completion message when a background terminal exits", async () => {
-	const { result, sentMessages, renderer } = await runExecCommandCompletionScenario(
+	const { result, sentMessages } = await runExecCommandCompletionScenario(
 		"sleep 0.3; printf done",
 		"call-finished-message",
 	);
@@ -1735,21 +549,11 @@ test("extension appends a new completion message when a background terminal exit
 	expect(sentMessages[0]?.options).toEqual({ deliverAs: "followUp", triggerTurn: true });
 	expect(sentMessages[0]?.message.customType).toBe("exec_command.completed");
 	expect(sentMessages[0]?.message.display).toBe(true);
-	expect(sentMessages[0]?.message.content).toContain("Command: sleep 0.3; printf done");
-	expect(sentMessages[0]?.message.content).toContain("Wall time:");
-	expect(sentMessages[0]?.message.content).toContain("Process exited with code 0");
-	expect(sentMessages[0]?.message.content).toContain("Output:\ndone");
 	expect(sentMessages[0]?.message.details.process_id).toBe(result.details.process_id);
 	expect(sentMessages[0]?.message.details.elapsed_ms).toBeNumber();
 	expect(sentMessages[0]?.message.details.exit_code).toBe(0);
 	expect(sentMessages[0]?.message.details.output).toBe("done");
 	expect(sentMessages[0]?.message.details.output_truncated).toBe(false);
-
-	const rendered = renderer(sentMessages[0]!.message, { expanded: false }, testTheme).render(120).join("\n");
-	expect(rendered).toContain("<bold>Ran</bold>");
-	expect(rendered).toContain("sleep");
-	expect(rendered).toContain("done");
-	expect(rendered).not.toContain("Session ");
 });
 
 test("extension emits completion message for quiet successful background terminal", async () => {
@@ -1821,7 +625,7 @@ test("escape interrupts a foreground exec_command while the tool is waiting", as
 
 		const execution = execTool.execute(
 			"call-foreground-abort",
-			{ cmd: "sleep 60", yield_time_ms: 120_000, context_guard: false },
+			{ cmd: "sleep 60", yield_time_ms: 120_000 },
 			controller.signal,
 			undefined,
 			ctx,
@@ -1883,7 +687,7 @@ test("extension reports stopped background terminals as cancelled completions", 
 	try {
 		const spawned = await execTool.execute(
 			"call-cancelled-completion",
-			{ cmd: "printf before-cancel; sleep 60", yield_time_ms: 250, context_guard: false },
+			{ cmd: "printf before-cancel; sleep 60", yield_time_ms: 250 },
 			undefined,
 			undefined,
 			ctx,
@@ -1955,7 +759,7 @@ test("extension does not emit speculative events for idle-running background ter
 	try {
 		const spawned = await execTool.execute(
 			"call-idle-running",
-			{ cmd: "sleep 2", yield_time_ms: 250, context_guard: false },
+			{ cmd: "sleep 2", yield_time_ms: 250 },
 			undefined,
 			undefined,
 			ctx,
@@ -2006,6 +810,85 @@ test("extension completion message includes truncation metadata for large final 
 	expect(sentMessages[0]?.message.content).toContain("chars truncated");
 });
 
+test("extension bounds ANSI-heavy completion message content", async () => {
+	const { sentMessages } = await runExecCommandCompletionScenario(
+		`sleep 0.3; node -e "for (let i = 0; i < 100; i++) console.log('\\\\x1b[1mline ' + i + '\\\\x1b[0m')"`,
+		"call-ansi-heavy-finished-message",
+	);
+
+	const content = sentMessages[0]?.message.content ?? "";
+	expect(content).not.toContain("\u001b[");
+	expect(content.split("\n").length).toBeLessThanOrEqual(30);
+	expect(content).toContain("lines omitted");
+	expect(content).toContain("line 99");
+});
+
+test("background capture keeps the session that launched the command", async () => {
+	type Handler = (event?: any, ctx?: any) => any;
+	const handlers = new Map<string, Handler[]>();
+	const dir = mkdtempSync(join(tmpdir(), "exec-command-capture-session-"));
+	const logPath = join(dir, "capture.json");
+	const corePath = join(dir, "core.js");
+	const originalCoreBin = process.env.CONTEXT_GUARD_BIN;
+	let execTool: any;
+	writeFileSync(
+		corePath,
+		[
+			`#!${process.execPath}`,
+			"const fs = require('node:fs');",
+			"let input = '';",
+			"process.stdin.on('data', chunk => input += chunk);",
+			"process.stdin.on('end', () => {",
+			`  fs.writeFileSync(${JSON.stringify(logPath)}, input);`,
+			"  const capture = { artifactId: 'capture-1', byteCount: 1, lineCount: 1, preview: 'captured' };",
+			"  process.stdout.write(JSON.stringify({ ok: true, content: [{ type: 'text', text: JSON.stringify(capture) }] }));",
+			"});",
+		].join("\n"),
+	);
+	chmodSync(corePath, 0o755);
+	process.env.CONTEXT_GUARD_BIN = corePath;
+	markExecCommandContextGuardEnabled();
+	setCurrentContextGuardSessionId("launch-session");
+	const pi = {
+		registerTool: (definition: any) => {
+			if (definition.name === "exec_command") execTool = definition;
+		},
+		registerCommand() {},
+		registerMessageRenderer() {},
+		sendMessage() {},
+		getActiveTools: () => [],
+		setActiveTools() {},
+		on: (event: string, handler: Handler) => {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+		},
+		exec: async () => ({ code: 1, stdout: "", stderr: "" }),
+	} as any;
+	execCommandExtension(pi);
+	const ctx = { hasUI: true, ui: { setStatus() {}, notify() {} }, cwd: process.cwd() };
+	for (const handler of handlers.get("session_start") ?? []) handler(undefined, ctx);
+
+	try {
+		const result = await execTool.execute(
+			"capture-session",
+			{ cmd: "sleep 0.6; printf captured", yield_time_ms: 250 },
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(result.details.process_id).toBeNumber();
+		setCurrentContextGuardSessionId("new-session");
+		await waitForCondition(() => Bun.file(logPath).size > 0);
+		const request = JSON.parse(await Bun.file(logPath).text());
+		expect(request.params.sessionId).toBe("launch-session");
+	} finally {
+		for (const handler of handlers.get("session_shutdown") ?? []) handler(undefined, ctx);
+		setCurrentContextGuardSessionId(undefined);
+		resetExecCommandContextGuardEnabled();
+		if (originalCoreBin === undefined) delete process.env.CONTEXT_GUARD_BIN;
+		else process.env.CONTEXT_GUARD_BIN = originalCoreBin;
+	}
+});
+
 test("extension leaves active-turn background terminal completion for write_stdin instead of follow-up", async () => {
 	type Handler = (event?: any, ctx?: any) => any;
 	const handlers = new Map<string, Handler[]>();
@@ -2042,7 +925,7 @@ test("extension leaves active-turn background terminal completion for write_stdi
 	try {
 		const spawned = await execTool.execute(
 			"call-active-turn-background",
-			{ cmd: "sleep 0.3; printf ACTIVE_TURN_OK", yield_time_ms: 250, context_guard: false },
+			{ cmd: "sleep 0.3; printf ACTIVE_TURN_OK", yield_time_ms: 250 },
 			undefined,
 			undefined,
 			ctx,
@@ -2068,6 +951,76 @@ test("extension leaves active-turn background terminal completion for write_stdi
 		expect(sentMessages).toHaveLength(0);
 	} finally {
 		for (const handler of handlers.get("session_shutdown") ?? []) handler(undefined, ctx);
+	}
+});
+
+test("extension exposes active-turn background capture failures through write_stdin", async () => {
+	type Handler = (event?: any, ctx?: any) => any;
+	const handlers = new Map<string, Handler[]>();
+	const dir = mkdtempSync(join(tmpdir(), "exec-command-capture-failure-"));
+	const corePath = join(dir, "core.js");
+	const originalCoreBin = process.env.CONTEXT_GUARD_BIN;
+	const sentMessages: Array<{ message: any; options: any }> = [];
+	let execTool: any;
+	let writeStdinTool: any;
+	writeFileSync(corePath, `#!${process.execPath}\nprocess.exit(1);\n`);
+	chmodSync(corePath, 0o755);
+	process.env.CONTEXT_GUARD_BIN = corePath;
+	markExecCommandContextGuardEnabled();
+	const pi = {
+		registerTool: (definition: any) => {
+			if (definition.name === "exec_command") execTool = definition;
+			if (definition.name === "write_stdin") writeStdinTool = definition;
+		},
+		registerCommand() {},
+		registerMessageRenderer() {},
+		sendMessage: (message: any, options: any) => {
+			sentMessages.push({ message, options });
+		},
+		getActiveTools: () => [],
+		setActiveTools() {},
+		on: (event: string, handler: Handler) => {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+		},
+		exec: async () => ({ code: 1, stdout: "", stderr: "" }),
+	} as any;
+	execCommandExtension(pi);
+	const ctx = { hasUI: true, ui: { setStatus() {}, notify() {} }, cwd: process.cwd() };
+	for (const handler of handlers.get("session_start") ?? []) handler(undefined, ctx);
+	for (const handler of handlers.get("agent_start") ?? []) handler(undefined, ctx);
+
+	try {
+		const spawned = await execTool.execute(
+			"call-active-turn-capture-failure",
+			{ cmd: "sleep 0.3; printf CAPTURE_FAILURE", yield_time_ms: 250 },
+			undefined,
+			undefined,
+			ctx,
+		);
+		const processId = spawned.details.process_id;
+		expect(processId).toBeNumber();
+
+		await Bun.sleep(700);
+		expect(sentMessages).toHaveLength(0);
+
+		const poll = await writeStdinTool.execute(
+			"poll-active-turn-capture-failure",
+			{ process_id: processId, chars: "", yield_time_ms: 5000 },
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(poll.details.context_guard_capture_failure).toContain("Context Guard core exited 1");
+		expect(poll.content[0]?.text).toContain("Context Guard capture failed:");
+
+		for (const handler of handlers.get("agent_end") ?? []) handler(undefined, ctx);
+		await Bun.sleep(250);
+		expect(sentMessages).toHaveLength(0);
+	} finally {
+		for (const handler of handlers.get("session_shutdown") ?? []) handler(undefined, ctx);
+		resetExecCommandContextGuardEnabled();
+		if (originalCoreBin === undefined) delete process.env.CONTEXT_GUARD_BIN;
+		else process.env.CONTEXT_GUARD_BIN = originalCoreBin;
 	}
 });
 
@@ -2463,6 +1416,29 @@ test("exec session manager runs short non-interactive commands", async () => {
 		sessions.shutdown();
 	}
 });
+test("exec session manager applies environment overrides", async () => {
+	const sessions = createExecSessionManager({ defaultExecYieldTimeMs: 5000 });
+	try {
+		const result = await sessions.exec(
+			{ cmd: 'printf "$EXEC_COMMAND_TEST_VALUE"', env: { EXEC_COMMAND_TEST_VALUE: "configured" } },
+			process.cwd(),
+		);
+		expect(result.output).toBe("configured");
+	} finally {
+		sessions.shutdown();
+	}
+});
+
+test("exec session manager stops commands at their runtime timeout", async () => {
+	const sessions = createExecSessionManager({ defaultExecYieldTimeMs: 5000 });
+	try {
+		const result = await sessions.exec({ cmd: "sleep 60", timeout_ms: 50, wait_for_exit: true }, process.cwd());
+		expect(result.terminal_state).toBe("timed_out");
+		expect(result.timed_out).toBe(true);
+	} finally {
+		sessions.shutdown();
+	}
+});
 
 test("exec session manager uses middle truncation", async () => {
 	const sessions = createExecSessionManager({ defaultExecYieldTimeMs: 5000 });
@@ -2478,6 +1454,21 @@ test("exec session manager uses middle truncation", async () => {
 		expect(result.output.split("\n").every((line) => line.length <= 430)).toBe(true);
 		expect(result.original_token_count).toBe(50000);
 		expect("full_output_path" in result).toBe(false);
+	} finally {
+		sessions.shutdown();
+	}
+});
+
+test("exec session manager keeps searchable middle output beyond inline truncation", async () => {
+	const sessions = createExecSessionManager({ defaultExecYieldTimeMs: 5000 });
+	try {
+		const result = await sessions.exec(
+			{ cmd: "node -e \"for (let i = 0; i < 12000; i++) console.log('line ' + i)\"", yield_time_ms: 5000 },
+			process.cwd(),
+		);
+		expect(result.output).not.toContain("line 6000\n");
+		expect(result.capture_output).toContain("line 6000\n");
+		expect(result.capture_output_truncated).toBe(false);
 	} finally {
 		sessions.shutdown();
 	}
@@ -2508,6 +1499,15 @@ test("exec session manager preserves ANSI SGR color output", async () => {
 			process.cwd(),
 		);
 		expect(result.output).toBe("\u001b[32m✓ green\u001b[0m\n");
+		const ttyResult = await sessions.exec(
+			{
+				cmd: "printf '\\033[1mb\\033[0m\\033[1mu\\033[0m\\033[1mn\\033[0m\\033[1m \\033[0m\\033[1mt\\033[0m\\033[1me\\033[0m\\033[1ms\\033[0m\\033[1mt\\033[0m\\n'",
+				tty: true,
+				yield_time_ms: 5000,
+			},
+			process.cwd(),
+		);
+		expect(ttyResult.output).toBe("\u001b[1mbun test\u001b[0m\n");
 		expect(result.exit_code).toBe(0);
 	} finally {
 		sessions.shutdown();
@@ -2525,6 +1525,24 @@ test("exec session manager uses a non-color environment", async () => {
 			process.cwd(),
 		);
 		expect(result.output).toBe("1|dumb|unset");
+		expect(result.exit_code).toBe(0);
+	} finally {
+		sessions.shutdown();
+	}
+});
+
+test("exec session manager keeps color-capable environment for tty commands", async () => {
+	const sessions = createExecSessionManager({ defaultExecYieldTimeMs: 5000 });
+	try {
+		const result = await sessions.exec(
+			{
+				cmd: '[ -z "$NO_COLOR" ] && nc=unset || nc="$NO_COLOR"; printf "%s|%s|%s" "$nc" "$TERM" "$COLORTERM"',
+				tty: true,
+				yield_time_ms: 5000,
+			},
+			process.cwd(),
+		);
+		expect(result.output).toBe("unset|xterm-256color|truecolor");
 		expect(result.exit_code).toBe(0);
 	} finally {
 		sessions.shutdown();
@@ -2648,6 +1666,7 @@ test("exec session manager includes stdin capability in running results and snap
 		expect(nonInteractive.process_id).toBeNumber();
 		expect(nonInteractive.stdin_open).toBe(false);
 		expect(sessions.getSessionSnapshot(nonInteractive.process_id!)?.stdinOpen).toBe(false);
+		expect(sessions.getSessionStdinOpen(nonInteractive.process_id!)).toBe(false);
 
 		const interactive = await sessions.exec(
 			{ cmd: 'read line; printf "got:$line"', tty: true, yield_time_ms: 250 },
@@ -2656,6 +1675,7 @@ test("exec session manager includes stdin capability in running results and snap
 		expect(interactive.process_id).toBeNumber();
 		expect(interactive.stdin_open).toBe(true);
 		expect(sessions.getSessionSnapshot(interactive.process_id!)?.stdinOpen).toBe(true);
+		expect(sessions.getSessionStdinOpen(interactive.process_id!)).toBe(true);
 	} finally {
 		sessions.shutdown();
 	}
@@ -2762,6 +1782,7 @@ test("exec session manager can write to tty-requested sessions", async () => {
 			process.cwd(),
 		);
 		expect(first.process_id).toBeNumber();
+		expect(sessions.getSessionTty(first.process_id!)).toBe(true);
 		const next = await sessions.write({
 			process_id: first.process_id!,
 			chars: "hi\n",
@@ -2769,6 +1790,7 @@ test("exec session manager can write to tty-requested sessions", async () => {
 		});
 		expect(next.output).toContain("got:hi");
 		expect(next.exit_code).toBe(0);
+		expect(sessions.getSessionTty(first.process_id!)).toBe(true);
 	} finally {
 		sessions.shutdown();
 	}

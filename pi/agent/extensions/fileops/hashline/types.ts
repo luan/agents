@@ -59,7 +59,7 @@ export type Edit =
 			index: number;
 	  };
 
-/** Optional apply-time compatibility knobs for OMP hashline behavior. */
+/** Optional hashline apply-time behavior knobs. */
 export interface ApplyOptions {
 	/** Drop 2+ pure-insert payload lines that duplicate adjacent file context. */
 	autoDropPureInsertDuplicates?: boolean;

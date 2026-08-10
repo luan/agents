@@ -2,13 +2,11 @@ import { expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setCapabilities } from "@earendil-works/pi-tui";
 import { CodexAppServerMcpClient } from "./app-server-mcp.ts";
 import {
 	activeCodexAppsToolNames,
 	buildCodexAppRecords,
 	CodexToolsPanel,
-	createToolDefinition,
 	disabledCodexAppToolKeys,
 	discoverCodexAppsTools,
 	discoverCodexPlugins,
@@ -28,8 +26,6 @@ import {
 	buildGeneratedImageArtifactResult,
 	createWebSearchTool,
 	getOpenAICodexLatestImagePath,
-	renderImageGenerationMessage,
-	renderWebSearchMessage,
 	rewriteNativeImageGenerationTool,
 	rewriteNativeWebSearchTool,
 	saveGeneratedImagesFromAssistantMessage,
@@ -203,66 +199,6 @@ test("creates native web_search placeholder tool for openai-codex", () => {
 	expect(tool.prepareArguments?.({ query: "ignored" })).toEqual({});
 	expect(supportsNativeWebSearch(codexModel as never)).toBe(true);
 	expect(supportsNativeWebSearch({ provider: "openai", id: "gpt-5.5" } as never)).toBe(false);
-});
-
-test("renders web search activity as a distinct compact search call", () => {
-	const component = renderWebSearchMessage(
-		{
-			content: "Web search results\nQueries:\n- puppies",
-			details: {
-				searches: [
-					{
-						callId: "search_1",
-						queries: ["puppies"],
-						sources: [
-							{ title: "American Kennel Club", url: "https://www.akc.org/puppies/" },
-							{ title: "Wikipedia", url: "https://en.wikipedia.org/wiki/Puppy" },
-						],
-					},
-				],
-			},
-		},
-		{ expanded: false },
-		testTheme,
-	);
-
-	const rendered = component.render(1000).join("\n").trimEnd();
-	expect(rendered).toBe(
-		"<success>•</success> <bold>Web Searched</bold> <muted>puppies</muted><dim> · </dim><accent>2 results:</accent> <muted>American Kennel Club, Wikipedia</muted>",
-	);
-	expect(rendered).not.toContain("<bold>Explored</bold>");
-	expect(rendered).not.toContain("customMessageBg");
-	expect(rendered).not.toContain("Searched the web once");
-});
-
-test("renders at most five web search result labels when collapsed", () => {
-	const component = renderWebSearchMessage(
-		{
-			content: "",
-			details: {
-				searches: [
-					{
-						callId: "search_1",
-						queries: ["puppies"],
-						sources: [
-							{ title: "One", url: "https://example.com/1" },
-							{ title: "Two", url: "https://example.com/2" },
-							{ title: "Three", url: "https://example.com/3" },
-							{ title: "Four", url: "https://example.com/4" },
-							{ title: "Five", url: "https://example.com/5" },
-							{ title: "Six", url: "https://example.com/6" },
-						],
-					},
-				],
-			},
-		},
-		{ expanded: false },
-		testTheme,
-	);
-
-	const rendered = component.render(1000).join("\n").trimEnd();
-	expect(rendered).toContain("<accent>6 results:</accent> <muted>One, Two, Three, Four, Five, +1 more</muted>");
-	expect(rendered).not.toContain("Six");
 });
 
 test("rewrites image_generation only for image-capable openai-codex models", () => {
@@ -442,36 +378,6 @@ test("saves native image_generation assistant blocks for display", async () => {
 
 	const duplicate = await saveGeneratedImagesFromAssistantMessage(root, message);
 	expect(duplicate).toHaveLength(0);
-});
-
-test("renders generated images as compact activity with inline preview", async () => {
-	const root = await mkdtemp(join(tmpdir(), "codex-native-render-image-test-"));
-	await mkdir(join(root, ".git"));
-	const saved = await saveOpenAICodexGeneratedImage(root, {
-		responseId: "resp_render_image",
-		callId: "ig_render_image",
-		result: PNG_BASE64,
-		outputFormat: "png",
-		revisedPrompt: "a moon dog",
-	});
-
-	setCapabilities({ images: "iterm2", trueColor: true, hyperlinks: true });
-	try {
-		const component = renderImageGenerationMessage(
-			{ content: "", details: { savedImages: [saved] } },
-			{ expanded: true },
-			testTheme,
-		);
-		const rendered = component.render(1000).join("\n");
-		expect(rendered).toContain("<success>•</success> <bold>Generated image</bold>");
-		expect(rendered).toContain("<accent>Prompt</accent> <muted>a moon dog</muted>");
-		expect(rendered).toContain("\x1b]1337;File=");
-		expect(rendered).toMatch(/width=\d+/);
-		expect(rendered).not.toContain("[image_generation]");
-		expect(rendered).not.toContain("customMessageBg");
-	} finally {
-		setCapabilities({ images: null, trueColor: false, hyperlinks: false });
-	}
 });
 
 test("normalizes generic Codex websocket failures for auto-retry", () => {
@@ -856,112 +762,6 @@ test("migrates explicit tool selections to the Computer Use surface once", () =>
 	expect(migrateCodexAppsConfig(config, tools, plugins)).toBe(false);
 });
 
-test("Computer Use renders one compact row and reveals details only when expanded", () => {
-	const tool = {
-		key: "computer-use:js",
-		piToolName: "node_repl",
-		mcpToolName: "js",
-		title: "Run JavaScript",
-		description: "Run JavaScript",
-		inputSchema: {},
-		connectorId: "computer-use",
-		connectorName: "Computer Use",
-		connectorDescription: "Control Mac apps",
-		readOnly: false,
-		destructive: false,
-		openWorld: true,
-	};
-	const definition = createToolDefinition(tool, () => ({ enabled: true }), new Map());
-	const args = { title: "Inspect Bootty", code: "nodeRepl.write(JSON.stringify(state));" };
-	const call = definition.renderCall?.(
-		args,
-		testTheme as never,
-		{
-			args,
-			isPartial: false,
-			isError: false,
-		} as never,
-	);
-
-	expect(call?.render(160).join("\n")).toContain("Inspect Bootty");
-	expect(call?.render(160).join("\n")).not.toContain(args.code);
-
-	const result = { content: [{ type: "text" as const, text: "Window: Bootty" }] };
-	const collapsed = definition.renderResult?.(
-		result,
-		{ expanded: false },
-		testTheme as never,
-		{
-			args,
-			isPartial: false,
-			isError: false,
-		} as never,
-	);
-	expect(collapsed?.render(160)).toEqual([]);
-
-	const expanded = definition.renderResult?.(
-		result,
-		{ expanded: true },
-		testTheme as never,
-		{
-			args,
-			lastComponent: collapsed,
-			isPartial: false,
-			isError: false,
-		} as never,
-	);
-	const expandedText = expanded?.render(160).join("\n") ?? "";
-	expect(expandedText).toContain("Code:");
-	expect(expandedText).toContain(args.code);
-	expect(expandedText).toContain("Output:");
-	expect(expandedText).toContain("Window: Bootty");
-	expect(expandedText).not.toContain("Inspect Bootty");
-});
-
-test("Computer Use renders image results through the shared Kitty renderer", () => {
-	setCapabilities({ images: "kitty", trueColor: true, hyperlinks: false });
-	try {
-		const tool = {
-			key: "computer-use:js",
-			piToolName: "node_repl",
-			mcpToolName: "js",
-			title: "Run JavaScript",
-			description: "Run JavaScript",
-			inputSchema: {},
-			connectorId: "computer-use",
-			connectorName: "Computer Use",
-			connectorDescription: "Control Mac apps",
-			readOnly: false,
-			destructive: false,
-			openWorld: true,
-		};
-		const definition = createToolDefinition(tool, () => ({ enabled: true }), new Map());
-		const result = {
-			content: [{ type: "image" as const, data: PNG_BASE64, mimeType: "image/png" }],
-		};
-
-		const rendered =
-			definition
-				.renderResult?.(
-					result,
-					{ expanded: false },
-					testTheme as never,
-					{
-						args: {},
-						isPartial: false,
-						isError: false,
-					} as never,
-				)
-				.render(80)
-				.join("\n") ?? "";
-
-		expect(rendered).toContain("\x1b_Ga=T");
-		expect(result.content).toEqual([]);
-	} finally {
-		setCapabilities({ images: null, trueColor: true, hyperlinks: false });
-	}
-});
-
 test("local MCP client keeps a server session and forwards tool calls", async () => {
 	const server = [
 		"const readline = require('node:readline');",
@@ -1089,35 +889,20 @@ test("Codex Tools panel supports vim navigation, filtering, and app tabs", async
 		},
 	);
 
-	const initialRender = panel.render(120);
-	expect(initialRender.join("\n")).toContain("[ Main ]");
-	expect(initialRender[0]).toContain("<border>╭");
-	expect(initialRender.at(-1)).toContain("<border>╰");
-	const panelHeight = initialRender.length;
 	panel.handleInput("l");
-	const appRender = panel.render(120);
-	expect(appRender.join("\n")).toContain("[ Slack ]");
-	expect(appRender).toHaveLength(panelHeight);
 	panel.handleInput("/");
 	panel.handleInput("r");
 	panel.handleInput("e");
-	const filteredRender = panel.render(120);
-	expect(filteredRender.join("\n")).toContain("/re▌");
-	expect(filteredRender).toHaveLength(panelHeight);
 	panel.handleInput("\r");
 	panel.handleInput("h");
 	panel.handleInput("j");
 	panel.handleInput("j");
-	expect(panel.render(120).join("\n")).toContain("<accent>▸</accent> App · Slack");
 	panel.handleInput("l");
 	panel.handleInput("\r");
 	await panel.waitForPendingSaves();
 
 	expect(config.enabledToolKeys).toEqual([]);
 	expect(saves).toBe(1);
-	const finalRender = panel.render(120);
-	expect(finalRender.join("\n")).toContain("[ Main ]");
-	expect(finalRender).toHaveLength(panelHeight);
 	panel.handleInput("q");
 	expect(closed).toBe(true);
 });
@@ -1156,13 +941,11 @@ test("Codex Tools panel persists per-skill autocomplete visibility", async () =>
 	panel.handleInput("/");
 	for (const character of "control-in-app-browser") panel.handleInput(character);
 	panel.handleInput("\r");
-	expect(panel.render(120).join("\n")).toContain("Skill · control-in-app-browser  <success>on</success>");
 	panel.handleInput(" ");
 	await panel.waitForPendingSaves();
 
 	expect(config.hiddenSkillNames).toEqual(["control-in-app-browser"]);
 	expect(saves).toBe(1);
-	expect(panel.render(120).join("\n")).toContain("Skill · control-in-app-browser  <muted>off</muted>");
 });
 
 test("node_repl tools come from cache without spawning the codex app-server", async () => {

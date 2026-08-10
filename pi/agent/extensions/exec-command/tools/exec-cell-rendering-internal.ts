@@ -1,12 +1,12 @@
 import { keyHint } from "@earendil-works/pi-coding-agent";
 import { pulseGlyph, runningFrame, shineText } from "../../shared/tui";
-import { type ShellAction, summarizeShellCommand } from "../shell/summary.ts";
 import { shellSplit } from "../shell/tokenize.ts";
 import type { ExecCommandStatus } from "./exec-command-state.ts";
 
 export interface RenderTheme {
 	fg(role: string, text: string): string;
 	bold(text: string): string;
+	getBgAnsi?(role: "toolPendingBg" | "toolSuccessBg" | "toolErrorBg"): string;
 }
 
 export interface RenderOutputBlockOptions {
@@ -24,6 +24,87 @@ const COMMAND_PREVIEW_MAX_CHARS = 100;
 const OUTPUT_LINE_DISPLAY_MAX_CHARS = 220;
 const RUNNING_FRAME_MS = 120;
 const BACKGROUND_LABEL = "background terminal";
+export interface TerminalSessionView {
+	operation: "start" | "logs" | "wait";
+	processId: number | string;
+	command?: string;
+	running?: boolean;
+	exitCode?: number;
+	elapsedMs?: number;
+	cursor?: number;
+}
+
+export function renderTerminalSessionRow(session: TerminalSessionView, theme: RenderTheme): string {
+	const separator = theme.fg("dim", " · ");
+	let text = `${theme.fg("accent", "")} ${theme.fg("accent", "Background terminal:")} ${theme.fg(
+		"muted",
+		`#${session.processId}`,
+	)}`;
+	if (session.command) {
+		text += `${separator}${theme.fg("muted", formatCommandPreview(session.command) ?? session.command)}`;
+	}
+	const state = session.running ? "running" : "exited";
+	text += `${separator}${theme.fg(session.running ? "success" : "muted", state)}`;
+	if (session.exitCode !== undefined) {
+		text += `${separator}${theme.fg(session.exitCode === 0 ? "muted" : "error", `exit ${session.exitCode}`)}`;
+	}
+	if (session.elapsedMs !== undefined) {
+		text += `${separator}${theme.fg("muted", formatTerminalSessionDuration(session.elapsedMs))}`;
+	}
+	return text;
+}
+
+function formatTerminalSessionDuration(elapsedMs: number): string {
+	const ms = Math.max(0, elapsedMs);
+	if (ms < 1_000) return `${Math.round(ms)}ms`;
+	if (ms < 60_000) {
+		const seconds = ms / 1_000;
+		return `${Number.isInteger(seconds) ? seconds : seconds.toFixed(1)}s`;
+	}
+	return formatElapsedTime(ms);
+}
+
+function shellLanguage(shell: string | undefined): { name: string; color: string } {
+	const executable = shell
+		?.replace(/\\/g, "/")
+		.split("/")
+		.pop()
+		?.toLowerCase()
+		.replace(/\.exe$/, "");
+	switch (executable) {
+		case "bash":
+			return { name: "Bash", color: "warning" };
+		case "zsh":
+			return { name: "Zsh", color: "accent" };
+		case "fish":
+			return { name: "Fish", color: "success" };
+		case "sh":
+		case "dash":
+			return { name: "Shell", color: "muted" };
+		default:
+			return { name: executable || "Shell", color: "toolTitle" };
+	}
+}
+
+export function renderShellCardHeader(
+	shell: string | undefined,
+	state: ExecCommandStatus,
+	theme: RenderTheme,
+	failed = false,
+	elapsedMs?: number,
+	processId?: number | string,
+): string {
+	const language = shellLanguage(shell);
+	const icon = theme.fg(language.color, "");
+	const status =
+		state === "running" ? "running" : failed ? "failed" : processId === undefined ? "completed" : "exited";
+	const meta = [
+		processId === undefined ? undefined : `#${processId}`,
+		status,
+		elapsedMs === undefined ? undefined : formatTerminalSessionDuration(elapsedMs),
+	].filter((value): value is string => value !== undefined);
+	return `${icon} ${theme.fg("toolTitle", language.name)} ${theme.fg("dim", meta.join(" · "))}`;
+}
 
 export function renderExecCommandCall(
 	command: string,
@@ -33,17 +114,16 @@ export function renderExecCommandCall(
 	elapsedMs?: number,
 	contextGuardWrapped = false,
 ): string {
-	const summary = summarizeShellCommand(command);
-	return summary.maskAsExplored
-		? renderExplorationText([summary.actions], state, theme, failed, elapsedMs, contextGuardWrapped)
-		: renderCommandText(command, state, theme, failed, elapsedMs, contextGuardWrapped);
+	return renderCommandText(command, state, theme, failed, elapsedMs, contextGuardWrapped);
 }
 
 export function renderSpawnedBackgroundTerminalCall(
 	command: string,
 	theme: RenderTheme,
 	contextGuardWrapped = false,
+	session?: Omit<TerminalSessionView, "operation" | "command">,
 ): string {
+	if (session) return renderTerminalSessionRow({ ...session, operation: "start", command }, theme);
 	return renderCommandText(command, "done", theme, false, undefined, contextGuardWrapped, {
 		done: "Spawned background terminal",
 		running: "Spawning background terminal",
@@ -61,17 +141,6 @@ export function renderUserExecCommandCall(
 		done: "You ran",
 		running: "You are running",
 	});
-}
-
-export function renderGroupedExecCommandCall(
-	actionGroups: ShellAction[][],
-	state: ExecCommandStatus,
-	theme: RenderTheme,
-	failed = false,
-	elapsedMs?: number,
-	contextGuardWrapped = false,
-): string {
-	return renderExplorationText(actionGroups, state, theme, failed, elapsedMs, contextGuardWrapped);
 }
 
 export function renderWriteStdinCall(
@@ -172,6 +241,17 @@ export function renderOutputBlock(
 	footer?: string,
 	options: RenderOutputBlockOptions = {},
 ): string {
+	return renderTerminalOutputLines(output, theme, footer, options)
+		.map((line, index) => `${theme.fg("dim", index === 0 ? "  └ " : "    ")}${line}`)
+		.join("\n");
+}
+
+export function renderTerminalOutputLines(
+	output: string,
+	theme: Pick<RenderTheme, "fg">,
+	footer?: string,
+	options: RenderOutputBlockOptions = {},
+): string[] {
 	const text = output.length > 0 ? output.replace(/\n$/, "") : "(no output)";
 	let lines = text.split("\n");
 	if (options.truncatedAbove) {
@@ -179,12 +259,7 @@ export function renderOutputBlock(
 	}
 	lines = limitOutputLines(lines, options);
 	if (footer) lines.push(footer);
-	return lines
-		.map((line, index) => {
-			const prefix = index === 0 ? "  └ " : "    ";
-			return `${theme.fg("dim", prefix)}${styleOutputLine(line, theme)}`;
-		})
-		.join("\n");
+	return lines.map((line) => styleOutputLine(line, theme));
 }
 
 function limitOutputLines(lines: string[], options: RenderOutputBlockOptions): string[] {
@@ -265,29 +340,19 @@ function formatTruncatedAboveLine(originalTokenCount: number | undefined): strin
 	return "… output truncated above";
 }
 
-function renderExplorationText(
-	actionGroups: ShellAction[][],
-	state: ExecCommandStatus,
+export function renderTerminalCommandHeader(
+	command: string,
+	_state: ExecCommandStatus,
 	theme: RenderTheme,
-	_failed: boolean,
-	elapsedMs?: number,
-	contextGuardWrapped = false,
+	_failed = false,
+	_elapsedMs?: number,
+	_contextGuardWrapped = false,
 ): string {
-	if (state === "running") {
-		return appendRoutingMarkers(`${theme.fg("dim", runningMarker(elapsedMs))} ${theme.bold("Exploring")}`, theme, {
-			contextGuardWrapped,
-		});
+	const [firstLine = "", ...continuationLines] = wrapCommandForDisplay(stripShellWrapper(command));
+	let text = `${theme.bold("$")} ${highlightShellCommand(firstLine, theme)}`;
+	for (const line of continuationLines) {
+		text += `\n${theme.fg("dim", "  ")}${highlightShellCommand(line, theme)}`;
 	}
-
-	let text = appendRoutingMarkers(`${theme.fg("success", "•")} ${theme.bold("Explored")}`, theme, {
-		contextGuardWrapped,
-	});
-
-	for (const [index, line] of coalesceReadGroups(actionGroups).map(formatActionLine).entries()) {
-		const prefix = index === 0 ? "  └ " : "    ";
-		text += `\n${theme.fg("dim", prefix)}${theme.fg("accent", line.title)} ${theme.fg("muted", line.body)}`;
-	}
-
 	return text;
 }
 
@@ -529,11 +594,12 @@ function tokenizeShellHighlight(command: string): ShellHighlightSegment[] {
 			index += 1;
 		}
 		const word = command.slice(start, index);
-		const role = roleForWord(word, expectingCommand);
-		push(word, role);
+		const displayWord = displayCommandWord(word, expectingCommand);
+		const role = roleForWord(displayWord, expectingCommand);
+		push(displayWord, role);
 		if (expectingCommand && isEnvironmentAssignment(word)) {
 			expectingCommand = true;
-		} else if (expectingCommand && COMMAND_PREFIXES.has(word)) {
+		} else if (expectingCommand && COMMAND_PREFIXES.has(displayWord)) {
 			expectingCommand = true;
 		} else {
 			expectingCommand = false;
@@ -561,6 +627,11 @@ const SHELL_KEYWORDS = new Set([
 	"until",
 	"while",
 ]);
+
+function displayCommandWord(word: string, expectingCommand: boolean): string {
+	if (!expectingCommand || !word.startsWith("/")) return word;
+	return word.slice(word.lastIndexOf("/") + 1) || word;
+}
 
 function roleForWord(word: string, expectingCommand: boolean): string | undefined {
 	if (SHELL_KEYWORDS.has(word)) return "syntaxKeyword";
@@ -628,80 +699,4 @@ function balancedEnd(command: string, start: number, open: string, close: string
 		}
 	}
 	return command.length;
-}
-
-function formatActionLine(action: ShellAction): {
-	title: string;
-	body: string;
-} {
-	if (action.kind === "read") {
-		return { title: "Read", body: action.name };
-	}
-	if (action.kind === "list") {
-		return { title: "List", body: action.path ?? action.command };
-	}
-	if (action.kind === "search") {
-		if (action.query && action.path) {
-			return { title: "Search", body: `${action.query} in ${action.path}` };
-		}
-		if (action.query) {
-			return { title: "Search", body: action.query };
-		}
-		return { title: "Search", body: action.command };
-	}
-	return { title: "Run", body: action.command };
-}
-
-function coalesceReadGroups(actionGroups: ShellAction[][]): ShellAction[] {
-	const flattened: ShellAction[] = [];
-
-	for (let index = 0; index < actionGroups.length; index += 1) {
-		const actions = actionGroups[index];
-		if (actions.every((action) => action.kind === "read")) {
-			const reads: Extract<ShellAction, { kind: "read" }>[] = [];
-			const seenPaths = new Set<string>();
-			let lastRead: Extract<ShellAction, { kind: "read" }> | undefined;
-
-			for (let readIndex = index; readIndex < actionGroups.length; readIndex += 1) {
-				const readActions = actionGroups[readIndex];
-				if (!readActions.every((action) => action.kind === "read")) {
-					break;
-				}
-
-				for (const action of readActions) {
-					if (action.kind !== "read") continue;
-					lastRead = action;
-					if (seenPaths.has(action.path)) continue;
-					seenPaths.add(action.path);
-					reads.push(action);
-				}
-
-				index = readIndex;
-			}
-
-			if (lastRead) {
-				const duplicateNames = new Set<string>();
-				const seenNames = new Set<string>();
-				for (const read of reads) {
-					if (seenNames.has(read.name)) {
-						duplicateNames.add(read.name);
-						continue;
-					}
-					seenNames.add(read.name);
-				}
-				const labels = reads.map((read) => (duplicateNames.has(read.name) ? read.path : read.name));
-				flattened.push({
-					kind: "read",
-					command: labels.join(" && "),
-					name: labels.join(", "),
-					path: lastRead.path,
-				});
-			}
-			continue;
-		}
-
-		flattened.push(...actions);
-	}
-
-	return flattened;
 }

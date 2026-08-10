@@ -46,7 +46,7 @@ interface PatcherOptions {
 	 * host did not wire a resolver). Plain line-range ops never need it.
 	 */
 	blockResolver?: BlockResolver;
-	/** OMP-compatible apply-time behavior knobs. */
+	/** Optional apply-time behavior knobs. */
 	applyOptions?: ApplyOptions;
 	/** Optional parser-backed syntax gate. When present, enabled by default. */
 	syntaxValidator?: SyntaxValidator;
