@@ -94,7 +94,7 @@ const defaultConfig: Config = {
 		history: "ctrl+r",
 	},
 	history: {
-		includeSlashCommands: false,
+		includeSlashCommands: true,
 		maxResults: 120,
 	},
 	picker: {
@@ -106,6 +106,26 @@ const defaultConfig: Config = {
 const stashHudWidgetId = "prompt-storage-stash";
 let db: SqliteDatabase | undefined;
 const historyRefreshes = new Map<string, Promise<void>>();
+const historyRefreshesAt = new Map<string, number>();
+const historyRefreshIntervalMs = 30_000;
+const historyIndexProgress = new Map<string, IndexProgress>();
+const historyIndexListeners = new Map<string, Set<(progress: IndexProgress | undefined) => void>>();
+
+function setHistoryIndexProgress(cwd: string, progress: IndexProgress | undefined): void {
+	if (progress) historyIndexProgress.set(cwd, progress);
+	else historyIndexProgress.delete(cwd);
+	for (const listener of historyIndexListeners.get(cwd) ?? []) listener(progress);
+}
+
+function watchHistoryIndex(cwd: string, listener: (progress: IndexProgress | undefined) => void): () => void {
+	const listeners = historyIndexListeners.get(cwd) ?? new Set();
+	listeners.add(listener);
+	historyIndexListeners.set(cwd, listeners);
+	return () => {
+		listeners.delete(listener);
+		if (listeners.size === 0) historyIndexListeners.delete(cwd);
+	};
+}
 let stashHud: StashHudWidget | undefined;
 let stashHudLines: string[] = [];
 let restackTimer: ReturnType<typeof setTimeout> | undefined;
@@ -212,6 +232,11 @@ function dateLabel(timestamp: number): string {
 		hour: "2-digit",
 		minute: "2-digit",
 	});
+}
+function indexProgressLabel(progress: IndexProgress | undefined): string | undefined {
+	if (!progress) return undefined;
+	const noun = progress.phase === "sessions" ? "sessions" : "prompts";
+	return `Indexing ${noun} ${progress.loaded}/${progress.total}…`;
 }
 
 function errorMessage(error: unknown): string {
@@ -326,13 +351,28 @@ function searchableFields(item: PromptItem): string[] {
 }
 
 function itemMatchScore(item: PromptItem, tokens: string[]): number | undefined {
+	const phrase = tokens.join(" ");
+	const text = item.text.toLowerCase();
 	let totalScore = 0;
+
+	if (text === phrase) totalScore -= 10_000;
+	else {
+		const phraseIndex = text.indexOf(phrase);
+		if (phraseIndex >= 0) totalScore -= 5_000 + phraseIndex * 0.1;
+	}
+
 	for (const token of tokens) {
 		let bestScore: number | undefined;
 		for (const field of searchableFields(item)) {
+			const fieldLower = field.toLowerCase();
+			const exactIndex = fieldLower.indexOf(token);
+			if (exactIndex >= 0) {
+				const score = -1_000 + exactIndex * 0.1;
+				bestScore = bestScore === undefined ? score : Math.min(bestScore, score);
+				continue;
+			}
 			const match = fuzzyMatch(token, field);
-			if (!match.matches) continue;
-			bestScore = bestScore === undefined ? match.score : Math.min(bestScore, match.score);
+			if (match.matches) bestScore = bestScore === undefined ? match.score : Math.min(bestScore, match.score);
 		}
 		if (bestScore === undefined) return undefined;
 		totalScore += bestScore;
@@ -437,6 +477,18 @@ function currentSessionPrompts(ctx: ExtensionContext, config: Config): PromptIte
 	}
 	return records;
 }
+function currentBranchPrompts(ctx: ExtensionContext, config: Config): string[] {
+	const prompts: string[] = [];
+	for (const entry of ctx.sessionManager.getBranch()) {
+		if (entry.type !== "message") continue;
+		const message = entry.message as { role?: string; content?: unknown };
+		if (message.role !== "user") continue;
+		const text = extractText(message.content);
+		if (!text || (!config.history.includeSlashCommands && isSlashCommand(text))) continue;
+		prompts.push(text);
+	}
+	return prompts;
+}
 
 async function refreshProjectHistoryIndex(
 	cwd: string,
@@ -498,16 +550,20 @@ async function refreshProjectHistoryIndex(
 }
 
 /**
- * Only ever called when the picker opens. SessionManager.list() parses every session file in the
- * project, which is hundreds of milliseconds of synchronous work — enough to stall the event loop
- * during startup. The picker reads whatever the index already holds and this refresh lands for the
- * next open; the current session's prompts come straight from ctx.sessionManager either way.
+ * Refresh at most once per 30 seconds. Current-session prompts are merged live,
+ * so opening the picker does not need to rescan every session each time.
  */
 function refreshProjectHistorySoon(cwd: string, config: Config): void {
 	if (historyRefreshes.has(cwd)) return;
-	const refresh = refreshProjectHistoryIndex(cwd, config)
+	const refreshedAt = historyRefreshesAt.get(cwd) ?? 0;
+	if (Date.now() - refreshedAt < historyRefreshIntervalMs) return;
+	const refresh = refreshProjectHistoryIndex(cwd, config, (progress) => setHistoryIndexProgress(cwd, progress))
+		.then(() => {
+			historyRefreshesAt.set(cwd, Date.now());
+		})
 		.catch(() => {})
 		.finally(() => {
+			setHistoryIndexProgress(cwd, undefined);
 			historyRefreshes.delete(cwd);
 		});
 	historyRefreshes.set(cwd, refresh);
@@ -517,9 +573,9 @@ async function listHistory(ctx: ExtensionContext, config: Config): Promise<Promp
 	const database = await openDb();
 	const indexed: PromptItem[] = database
 		.prepare(
-			"SELECT session_path, entry_id, text, cwd, session_name, prompt_ts, has_images, search_text FROM history_prompts WHERE cwd = ? ORDER BY prompt_ts DESC LIMIT ?",
+			"SELECT session_path, entry_id, text, cwd, session_name, prompt_ts, has_images, search_text FROM history_prompts WHERE cwd = ? ORDER BY prompt_ts DESC",
 		)
-		.all(ctx.cwd, config.history.maxResults * 8)
+		.all(ctx.cwd)
 		.map((row): PromptItem => {
 			const record = row as Record<string, unknown>;
 			return {
@@ -539,7 +595,7 @@ async function listHistory(ctx: ExtensionContext, config: Config): Promise<Promp
 		const key = `${item.sessionPath ?? ""}|${item.id}|${item.text}`;
 		merged.set(key, item);
 	}
-	return [...merged.values()].sort((a, b) => b.timestamp - a.timestamp).slice(0, config.history.maxResults);
+	return [...merged.values()].sort((a, b) => b.timestamp - a.timestamp);
 }
 
 function filterItems(items: PromptItem[], query: string, limit: number): PromptItem[] {
@@ -559,7 +615,8 @@ class PromptPicker extends Container implements Focusable {
 	private filtered: PromptItem[] = [];
 	private selected = 0;
 	private focusedValue = false;
-
+	private indexStatus?: string;
+	private stopWatchingIndex: (() => void) | undefined;
 	constructor(
 		private readonly tui: TUI,
 		private readonly theme: Theme,
@@ -568,10 +625,19 @@ class PromptPicker extends Container implements Focusable {
 		private readonly config: Config,
 		private readonly mode: PromptKind,
 		private readonly done: (result: PickerResult | null) => void,
+		indexCwd?: string,
 	) {
 		super();
+		this.indexStatus = indexProgressLabel(indexCwd ? historyIndexProgress.get(indexCwd) : undefined);
+		if (indexCwd) {
+			this.stopWatchingIndex = watchHistoryIndex(indexCwd, (progress) => {
+				this.indexStatus = indexProgressLabel(progress);
+				this.rebuildList();
+				this.tui.requestRender();
+			});
+		}
 		this.searchInput.onSubmit = () => this.choose(this.mode === "stash" ? "pop" : "apply");
-		this.searchInput.onEscape = () => this.done(null);
+		this.searchInput.onEscape = () => this.finish(null);
 		this.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
 		this.addChild(textComponent(theme.fg("accent", theme.bold(` ${title} `))));
 		this.addChild(textComponent(theme.fg("dim", "Type to fuzzy-filter prompt text or session name")));
@@ -606,7 +672,7 @@ class PromptPicker extends Container implements Focusable {
 		} else if (matchesKey(data, Key.enter)) {
 			this.choose(this.mode === "stash" ? "pop" : "apply");
 		} else if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) {
-			this.done(null);
+			this.finish(null);
 		} else if (this.mode === "stash" && matchesKey(data, Key.ctrl("a"))) {
 			this.choose("apply");
 		} else if (this.mode === "stash" && matchesKey(data, Key.ctrl("x"))) {
@@ -617,6 +683,11 @@ class PromptPicker extends Container implements Focusable {
 			this.applyFilter();
 		}
 		this.tui.requestRender();
+	}
+	private finish(result: PickerResult | null): void {
+		this.stopWatchingIndex?.();
+		this.stopWatchingIndex = undefined;
+		this.done(result);
 	}
 
 	private helpText(): string {
@@ -633,7 +704,7 @@ class PromptPicker extends Container implements Focusable {
 
 	private choose(action: PickerAction): void {
 		const item = this.filtered[this.selected];
-		if (item) this.done({ item, action });
+		if (item) this.finish({ item, action });
 	}
 
 	private applyFilter(): void {
@@ -644,6 +715,9 @@ class PromptPicker extends Container implements Focusable {
 
 	private rebuildList(): void {
 		this.list.clear();
+		if (this.indexStatus) {
+			this.list.addChild(textComponent(this.theme.fg("dim", this.indexStatus)));
+		}
 		if (this.filtered.length === 0) {
 			this.list.addChild(textComponent(this.theme.fg("warning", "No matching prompts")));
 		} else {
@@ -721,7 +795,17 @@ async function pick(
 		.bind(ctx)
 		.overlays.openComponent<PickerResult | null>(
 			(tui, theme, _keybindings, done) =>
-				new PromptPicker(tui as TUI, theme as Theme, title, items, config, mode, done),
+				new PromptPicker(
+					tui as TUI,
+					theme as Theme,
+					title,
+					items,
+					config,
+					mode,
+					done,
+					mode === "history" ? ctx.cwd : undefined,
+				),
+			{ overlay: false },
 		);
 }
 
@@ -804,6 +888,10 @@ function wrapEditorFactory(
 ): EditorFactory {
 	const wrapped: EditorFactory = (tui, theme, keybindings) => {
 		const editor = previous?.(tui, theme, keybindings) ?? new CustomEditor(tui, theme, keybindings);
+		const ctx = getContext();
+		if (ctx) {
+			for (const prompt of currentBranchPrompts(ctx, config)) editor.addToHistory?.(prompt);
+		}
 		const previousHandleInput = editor.handleInput?.bind(editor);
 		editor.handleInput = (data: string) => {
 			const ctx = getContext();
@@ -848,6 +936,7 @@ export default function promptStorage(pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		activeContext = ctx;
 		installEditorShortcuts(ctx, () => activeContext, config);
+		refreshProjectHistorySoon(ctx.cwd, config);
 		await updateStashHud(ctx);
 		restackStashHud(ctx);
 	});

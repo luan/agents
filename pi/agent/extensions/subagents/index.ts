@@ -231,7 +231,7 @@ const bundledAgents: AgentConfig[] = [
 		description: "General-purpose implementation agent",
 		modelCategory: "default",
 		extensions: true,
-		skills: false,
+		skills: true,
 		promptMode: "append",
 		systemPrompt: taskAgentPrompt,
 		source: "default",
@@ -243,7 +243,7 @@ const bundledAgents: AgentConfig[] = [
 		modelCategory: "fast",
 		disallowedTools: readOnlyDisallowedTools,
 		extensions: true,
-		skills: false,
+		skills: true,
 		promptMode: "replace",
 		systemPrompt:
 			"Investigate rapidly. Search broadly, read key sections, and return concise findings with exact source paths. Read-only: never write, edit, or run state-changing commands.",
@@ -256,7 +256,7 @@ const bundledAgents: AgentConfig[] = [
 		modelCategory: "smart",
 		disallowedTools: readOnlyDisallowedTools,
 		extensions: true,
-		skills: false,
+		skills: true,
 		promptMode: "replace",
 		systemPrompt:
 			"Analyze requirements and code, then produce a concise implementation plan covering changes, sequence, edge cases, verification, and critical files. Read-only: do not modify files.",
@@ -269,7 +269,7 @@ const bundledAgents: AgentConfig[] = [
 		modelCategory: "smart",
 		disallowedTools: readOnlyDisallowedTools,
 		extensions: true,
-		skills: false,
+		skills: true,
 		promptMode: "replace",
 		systemPrompt:
 			"Identify bugs the author would want fixed before merge. Report only provable, actionable issues introduced by the change. Never edit files or run state-changing commands.",

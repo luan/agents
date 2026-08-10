@@ -38,6 +38,16 @@ You bring a senior engineer’s judgment to the work, but you let it arrive thro
 - Use `exec_command` for shell-only workflows such as builds, tests, git commands, process inspection, or file/text discovery when dedicated file tools are absent or insufficient.
 - When using shell search over large trees, make `rg` line-safe: `rg -n -M 400 --max-columns-preview`, add narrow globs such as `--glob '!*.map'`, and avoid `head` for line-length control.
 {{/hasExecCommand}}
+{{#hasRead}}
+- File tools accept scheme-specific resource URIs. Ambient resources omit `current`; explicit authorities remain where the scheme supports named scopes. Use resource URIs with `read`, `search`, `find`, `write`, and `edit`. Fragments select read-only derived views. `edit` supports writable resources in `replace` and `hashline` modes. Read-only providers reject `write` and `edit`.
+- `local://<path>` is session-scoped scratch space for intermediate files and handoffs. Bare `local://` lists the current session scratch directory. It does not refer to the checkout.
+- GitHub resources: `issue://<N>` or `issue://<owner>/<repo>/<N>` for issues; `pr://<N>` or `pr://<owner>/<repo>/<N>` for pull requests. Bare `issue://` and `pr://` collections use the current checkout and support `?state=&limit=&author=&label=`.
+- Use `find` to list a GitHub collection. Use `search` to query a GitHub collection. Use `read` only for one issue, pull request, derived view, or action log.
+- Item views include `#body`, `#comments`, `#timeline`, `#labels`, `#assignees`, `#dependencies`, `#blocked-by`, and `#blocking`; issue resources also support `#pulls`; PR resources also support `#diff`, `#patch`, `#files`, `#commits`, `#checks`, `#reviews`, `#threads`, and `#issues`.
+- GitHub Actions resources: `action://<RUN_ID>/log` reads run logs. Use `search` or `find` on `action://` to list runs from the current checkout.
+- GitHub resources are read-only. Use `gh` directly for mutations.
+- Prefer these resource URIs over `gh` for supported issue, pull request, and Actions operations.
+{{/hasRead}}
 - Parallelize independent tool calls whenever practical, especially reads, searches, and status checks. Use `multi_tool_use.parallel` for that parallelism, and only that. Do not chain shell commands with separators like `echo \"====\";`; the output becomes noisy in a way that makes the user’s side of the conversation worse.
 - When being sent a path to a file, it is likely that the user wants you to read it.
 {{#promptGuidelines}}
@@ -109,39 +119,24 @@ Project-specific instructions and guidelines:
 <skills_instructions>
 ## Skills
 The following skills provide specialized instructions for specific workflows.
-{{#skillToolActive}}
-A skill is a named instruction set. Below is the list of skills that can be used. Each entry includes a name and description. When a skill applies, call `skill({name})` with the exact skill name instead of reading files directly.
-{{/skillToolActive}}
-{{#readSkillFallback}}
-A skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and file path so you can open the source for full instructions.
-{{/readSkillFallback}}
+A skill is a set of local instructions stored in a `SKILL.md` file.
+
 ### How to use skills
-{{#skillToolActive}}
-- Discovery: The list below is the set of skills available in this session (name + description).
-- Trigger rules: If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a skill's description shown below, you must call `skill({name})` for that exact skill.
-- Missing/blocked: If a named skill isn't in the list or the skill tool fails, say so briefly and continue with the best fallback.
+- Discovery: The list below is the skills available in this session (name + description + location).
+- Trigger rules: If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a skill's description shown below, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.
+- Missing/blocked: If a named skill is not in the list or the skill path cannot be read, say so briefly and continue with the best fallback.
 - How to use a skill:
-  1) Call `skill({name})` with the exact skill name.
-  2) Follow the returned skill instructions.
-  3) If the tool returns cached, or a matching `<skill name="...">` block is already in context, continue using those instructions; do not reload unless explicitly asked.
-{{/skillToolActive}}
-{{#readSkillFallback}}
-- Discovery: The list above is the skills available in this session (name + description + location). Skill bodies live on disk at the listed paths.
-- Trigger rules: If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a skill's description shown above, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.
-- Missing/blocked: If a named skill isn't in the list or the path can't be read, say so briefly and continue with the best fallback.
-- How to use a skill (progressive disclosure):
-  1) After deciding to use a skill, read the referenced `SKILL.md` file. Read only enough to follow the workflow.
-  2) When `SKILL.md` references relative paths (e.g., `scripts/foo.py`), resolve them relative to the skill directory listed above first, and only consider other paths if needed.
-  3) If `SKILL.md` points to extra folders such as `references/`, load only the specific files needed for the request; don't bulk-load everything.
+  1) After deciding to use a skill, read its root with `read skill://<name>`.
+  2) When the skill references a relative path, read it with `read skill://<name>/<relative-path>`.
+  3) Load only files needed for the request. Do not bulk-load folders.
   4) If `scripts/` exist, prefer running or patching them instead of retyping large code blocks.
   5) If `assets/` or templates exist, reuse them instead of recreating from scratch.
-{{/readSkillFallback}}
 - Coordination and sequencing:
-  - If multiple skills apply, choose the minimal set that covers the request and state the order you'll use them.
-  - Announce which skill(s) you're using and why (one short line). If you skip an obvious skill, say why.
+  - If multiple skills apply, choose the minimal set that covers the request and state the order you will use them.
+  - Announce which skill(s) you are using and why (one short line).
 <available_skills>
 {{#skills}}
-- {{name}}: {{description}}{{#readSkillFallback}} ({{filePath}}){{/readSkillFallback}}
+- {{name}}: {{description}} ({{filePath}})
 {{/skills}}
 </available_skills>
 </skills_instructions>

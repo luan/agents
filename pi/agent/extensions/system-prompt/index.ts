@@ -116,7 +116,6 @@ export function buildSystemPrompt(original: string, options: SystemPromptBuildOp
 	const hasSearch = tools.includes("search");
 	const hasFind = tools.includes("find");
 	const hasRead = tools.includes("read");
-	const hasSkillTool = tools.includes("skill");
 
 	const readmePath = original.match(/- Main documentation: (.+)/)?.[1] || null;
 	const docsPath = original.match(/- Additional docs: (.+)/)?.[1] || null;
@@ -146,12 +145,10 @@ export function buildSystemPrompt(original: string, options: SystemPromptBuildOp
 		hasRead,
 		hasSearch,
 		hasExecCommand: tools.includes("exec_command"),
-		includeSkills: (hasSkillTool || hasRead) && visibleSkills.length > 0,
+		includeSkills: hasRead && visibleSkills.length > 0,
 		promptGuidelines: uniqueNonEmptyLines(promptGuidelines ?? []),
 		readmePath: readmePath ?? "null",
-		readSkillFallback: !hasSkillTool && hasRead,
 		skills: visibleSkills,
-		skillToolActive: hasSkillTool,
 	});
 }
 

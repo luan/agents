@@ -6,7 +6,7 @@
     "history": "ctrl+r"
   },
   "history": {
-    "includeSlashCommands": false,
+    "includeSlashCommands": true,
     "maxResults": 120
   },
   "picker": {
