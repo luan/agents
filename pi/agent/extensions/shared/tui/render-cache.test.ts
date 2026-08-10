@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { type CardTheme, framedBlock } from "./card";
 import { RenderedLineCache } from "./render-cache";
+import { paintAnsiBackgroundRow } from "./text";
 
 const theme: CardTheme = {
 	fg: (_color, text) => text,
@@ -64,6 +66,16 @@ describe("RenderedLineCache", () => {
 		cache.get(80, "same", produce);
 
 		expect(layouts).toBe(1);
+	});
+});
+describe("ANSI backgrounds", () => {
+	test("reapplies row background after every SGR style change", () => {
+		const background = "\u001b[48;5;17m";
+		const line = "\u001b[38;5;244mCommand\u001b[39m";
+		const rendered = paintAnsiBackgroundRow(line, 20, background);
+
+		expect(visibleWidth(rendered)).toBe(20);
+		expect(rendered.split(background).length - 1).toBe(3);
 	});
 });
 

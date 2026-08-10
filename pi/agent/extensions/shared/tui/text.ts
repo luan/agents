@@ -41,10 +41,14 @@ export function keepBackgroundAcrossResets(text: string, backgroundAnsi: string)
 	});
 }
 
+function keepBackgroundAcrossSgr(text: string, backgroundAnsi: string): string {
+	return text.replace(ANSI_SGR_PATTERN, (sequence) => `${sequence}${backgroundAnsi}`);
+}
+
 export function paintAnsiBackgroundRow(line: string, width: number, backgroundAnsi: string | undefined): string {
 	const padded = truncateToWidthCompat(line, width, "", true);
 	if (!backgroundAnsi) return padded;
-	return `${backgroundAnsi}${keepBackgroundAcrossResets(padded, backgroundAnsi)}${ANSI_RESET}`;
+	return `${backgroundAnsi}${keepBackgroundAcrossSgr(padded, backgroundAnsi)}${ANSI_RESET}`;
 }
 
 export function clampAnsiLine(line: string, width: number): string {
