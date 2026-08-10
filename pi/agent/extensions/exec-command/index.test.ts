@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initTheme } from "@earendil-works/pi-coding-agent";
+import { Container } from "@earendil-works/pi-tui";
 import type { PtyBackend, PtyProcess, PtySpawnOptions } from "./adapter/pty-backend.ts";
 import execCommandExtensionBase, { type ExecCommandExtensionOptions } from "./index.ts";
 import { type RenderTheme, rawCommandToExecCell, renderExecCellComponent } from "./tools/exec-cell-presentation.ts";
@@ -332,6 +333,45 @@ test("completed render contexts do not keep running-command elapsed timers alive
 		});
 
 		expect(state.elapsedTimer).toBeUndefined();
+	} finally {
+		tracker.clear();
+		sessions.shutdown();
+	}
+});
+
+test("completed non-session exec calls leave rendering to result renderer", () => {
+	let tool: any;
+	const tracker = createExecCommandTracker();
+	const sessions = createExecSessionManager();
+	try {
+		registerExecCommandTool({ registerTool: (definition: any) => (tool = definition) } as any, tracker, sessions);
+		tracker.recordStart("call", "printf hello");
+
+		const runningCall = tool.renderCall({ cmd: "printf hello" }, testTheme, {
+			toolCallId: "call",
+			isPartial: true,
+			invalidate() {},
+		});
+		expect(runningCall).not.toBeInstanceOf(Container);
+
+		tracker.recordEnd("call");
+		const completedCall = tool.renderCall({ cmd: "printf hello" }, testTheme, {
+			toolCallId: "call",
+			isPartial: false,
+			invalidate() {},
+		});
+		const result = tool.renderResult(
+			{
+				content: [{ type: "text", text: "hello" }],
+				details: { output: "hello", exit_code: 0 },
+			},
+			{ expanded: false, isPartial: false },
+			testTheme,
+			{ toolCallId: "call", args: { cmd: "printf hello" }, isPartial: false },
+		);
+
+		expect(completedCall).toBeInstanceOf(Container);
+		expect(result).not.toBeInstanceOf(Container);
 	} finally {
 		tracker.clear();
 		sessions.shutdown();

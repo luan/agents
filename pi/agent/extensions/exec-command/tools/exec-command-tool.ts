@@ -332,6 +332,9 @@ const renderExecCommandCallWithOptionalContext: any = (
 	const snapshot = renderInfo.sessionId !== undefined ? sessions.getSessionSnapshot(renderInfo.sessionId) : undefined;
 	const shouldAnimateElapsed = context?.isPartial === true && !snapshot?.running && renderInfo.status === "running";
 	scheduleElapsedInvalidation(context, shouldAnimateElapsed, command);
+	if (context?.isPartial === false && renderInfo.sessionId === undefined) {
+		return createEmptyResultComponent();
+	}
 	const resolveCell = () => {
 		const current = tracker.getRenderInfo(context?.toolCallId, command);
 		if (current.sessionId !== undefined) {
