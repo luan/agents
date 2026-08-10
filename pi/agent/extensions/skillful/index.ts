@@ -1,8 +1,23 @@
-import { readFile } from "node:fs/promises";
+import { readdir, readFile, realpath, stat } from "node:fs/promises";
+import { homedir } from "node:os";
+import { relative, sep } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem, Component } from "@earendil-works/pi-tui";
-import { Type } from "typebox";
-import { EmptyComponent, registerExtensionMessageRenderer, textComponent } from "../shared/tui";
+import { Box } from "@earendil-works/pi-tui";
+import { renderCompactSummaryLine } from "../shared/compact-summary.ts";
+import {
+	formatResourceUri,
+	type Resource,
+	type ResourceProvider,
+	type ResourceRef,
+	registerResourceProvider,
+	type SearchHit,
+} from "../shared/resources.ts";
+import { registerExtensionMessageRenderer, textComponent } from "../shared/tui";
+import { darkerCardBackgroundAnsi } from "../shared/tui/card";
+import { paintAnsiBackgroundRow } from "../shared/tui/text";
+import { estimateTokens } from "../token-burden/parser";
 import { wrapProvider } from "./autocomplete";
 import { installEditorHighlight, removeEditorHighlight } from "./editor";
 import {
@@ -10,8 +25,10 @@ import {
 	collectSkills,
 	extractDollarSkillReferences,
 	formatReadSkillContent,
+	formatSkillAssetContent,
 	isSkillfulLoadDetails,
 	loadedDetails,
+	resolveSkillAssetPath,
 	rewriteSlashSkillReferences,
 	SKILLFUL_CUSTOM_TYPE,
 	type SkillfulLoadDetails,
@@ -35,17 +52,120 @@ type SkillLoad = {
 
 type SkillfulTheme = {
 	fg(role: string, text: string): string;
+	bg(role: string, text: string): string;
 	bold(text: string): string;
 };
 
-const emptyRender = new EmptyComponent();
+function displayPath(filePath: string): string {
+	const home = homedir();
+	return filePath === home ? "~" : filePath.startsWith(`${home}/`) ? `~/${filePath.slice(home.length + 1)}` : filePath;
+}
+
+function halfBackground(line: string, glyph: "▄" | "▀", width: number): string {
+	const background = line.match(/\x1b\[48(?:;[0-9]+)*m/)?.[0];
+	return background ? `${background.replace("[48", "[38")}${glyph.repeat(width)}\x1b[39m` : line;
+}
+
+class SkillLoadComponent implements Component {
+	constructor(
+		private readonly box: Box,
+		private readonly theme: SkillfulTheme,
+	) {}
+
+	render(width: number): string[] {
+		const background =
+			darkerCardBackgroundAnsi(this.theme, "toolPendingBg") ?? this.theme.bg("toolPendingBg", " ").split(" ")[0];
+		const lines = this.box.render(width).map((line) => paintAnsiBackgroundRow(line, width, background));
+		if (lines.length >= 2) {
+			lines[0] = halfBackground(lines[0]!, "▄", width);
+			lines[lines.length - 1] = halfBackground(lines.at(-1)!, "▀", width);
+		}
+		return lines;
+	}
+
+	invalidate(): void {
+		this.box.invalidate();
+	}
+}
 
 function renderSkillLoad(details: SkillfulLoadDetails | undefined, theme: SkillfulTheme): Component {
 	const name = details?.name ?? "unknown";
-	const status = details?.status ?? "read";
-	return textComponent(
-		`${theme.fg("toolTitle", theme.bold("Skill"))} ${theme.fg("dim", "-")} ${name} ${theme.fg("muted", status)}`,
+	const path = details?.filePath ? displayPath(details.filePath) : `${details?.loads?.length ?? 0} skill files`;
+	const tokens = details?.tokens ?? details?.loads?.reduce((total, load) => total + (load.tokens ?? 0), 0) ?? 0;
+	const tokenLabel = tokens > 0 ? `${tokens.toLocaleString()} tokens` : (details?.status ?? "read");
+	const box = new Box(1, 1, (text) => text);
+	box.addChild(
+		textComponent(
+			renderCompactSummaryLine(theme, {
+				icon: "",
+				label: "skill",
+				name,
+				path,
+				meta: tokenLabel,
+				pathUrl: details?.filePath ? pathToFileURL(details.filePath).href : undefined,
+			}),
+		),
 	);
+	return new SkillLoadComponent(box, theme);
+}
+
+async function skillFiles(root: string, directory = root): Promise<string[]> {
+	const entries = await readdir(directory, { withFileTypes: true });
+	const files: string[] = [];
+	for (const entry of entries) {
+		const path = `${directory}/${entry.name}`;
+		if (entry.isSymbolicLink()) continue;
+		if (entry.isDirectory()) files.push(...(await skillFiles(root, path)));
+		else files.push(path);
+	}
+	return files;
+}
+
+function skillAssetPath(ref: ResourceRef): string | undefined {
+	const path = ref.path.replace(/^\/+|\/+$/g, "");
+	return path || undefined;
+}
+function skillReadAssetPath(ref: ResourceRef): string | undefined {
+	const path = skillAssetPath(ref);
+	return path === "SKILL.md" ? undefined : path;
+}
+function isMissingPath(error: unknown): boolean {
+	return (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+async function safeSkillFilePath(root: string, filePath: string): Promise<string | undefined> {
+	const [realRoot, realFile] = await Promise.all([realpath(root), realpath(filePath)]);
+	const fromRoot = relative(realRoot, realFile);
+	if (!fromRoot || fromRoot === ".." || fromRoot.startsWith(`..${sep}`)) return undefined;
+	return realFile;
+}
+
+async function readSkillFile(root: string, filePath: string): Promise<string> {
+	const safePath = await safeSkillFilePath(root, filePath);
+	if (!safePath) throw new Error(`Skill asset path must stay under ${root}: ${filePath}`);
+	return readFile(safePath, "utf8");
+}
+
+async function resourceFromSkillFile(uri: string, name: string, filePath: string): Promise<Resource> {
+	const metadata = await stat(filePath);
+	return {
+		uri,
+		name,
+		kind: "skill",
+		mediaType: "text/markdown",
+		size: metadata.size,
+		modifiedAt: metadata.mtime.toISOString(),
+	};
+}
+function mergeSkillResources(current: Resource, next: Resource): Resource {
+	const modifiedAt = [current.modifiedAt, next.modifiedAt]
+		.filter((value): value is string => Boolean(value))
+		.sort()
+		.at(-1);
+	return {
+		...next,
+		size: (current.size ?? 0) + (next.size ?? 0) + Buffer.byteLength("\n\n"),
+		...(modifiedAt ? { modifiedAt } : {}),
+	};
 }
 
 export default function (pi: ExtensionAPI) {
@@ -60,22 +180,56 @@ export default function (pi: ExtensionAPI) {
 		return state.items;
 	};
 
-	const readSkill = async (name: string, filePath: string): Promise<SkillLoad> => {
-		const body = rewriteSlashSkillReferences(stripFrontmatter(await readFile(filePath, "utf8")), state.skills.keys());
-		const details = loadedDetails(name, "read", filePath, skillBaseDir(filePath));
+	const readSkill = async (name: string, filePath: string, assetPath?: string): Promise<SkillLoad> => {
+		if (assetPath !== undefined) {
+			const resolvedPath = resolveSkillAssetPath(filePath, assetPath);
+			const content = formatSkillAssetContent(
+				name,
+				assetPath,
+				resolvedPath,
+				await readSkillFile(skillBaseDir(filePath), resolvedPath),
+			);
+			return {
+				content,
+				details: loadedDetails(name, "read", resolvedPath, skillBaseDir(filePath), estimateTokens(content)),
+			};
+		}
+		const body = rewriteSlashSkillReferences(
+			stripFrontmatter(await readSkillFile(skillBaseDir(filePath), filePath)),
+			state.skills.keys(),
+		);
+		const content = formatReadSkillContent(name, filePath, body);
+		const details = loadedDetails(name, "read", filePath, skillBaseDir(filePath), estimateTokens(content));
 		return {
-			content: formatReadSkillContent(name, filePath, body),
+			content,
 			details,
 		};
 	};
-	const loadSkill = async (name: string): Promise<SkillLoad> => {
+	const readableReferences = async (references: SkillReference[], assetPath?: string): Promise<SkillReference[]> => {
+		if (assetPath === undefined) return references;
+		const readable: SkillReference[] = [];
+		for (const reference of references) {
+			const resolvedPath = resolveSkillAssetPath(reference.filePath, assetPath);
+			try {
+				if ((await stat(resolvedPath)).isFile()) readable.push(reference);
+			} catch (error) {
+				if (!isMissingPath(error)) throw error;
+			}
+		}
+		return readable;
+	};
+	const loadSkill = async (name: string, assetPath?: string): Promise<SkillLoad> => {
 		refresh();
 		const references = state.skills.get(name);
 		if (!references) throw new Error(`Unknown skill "${name}"`);
 		if (references.length === 0) {
 			throw new Error(`Plugin "${name}" has no local skill document; use its enabled app tools directly`);
 		}
-		const loads = await Promise.all(references.map((reference) => readSkill(reference.name, reference.filePath)));
+		const readable = await readableReferences(references, assetPath);
+		if (readable.length === 0) throw new Error(`Skill asset "${assetPath}" not found in "${name}"`);
+		const loads = await Promise.all(
+			readable.map((reference) => readSkill(reference.name, reference.filePath, assetPath)),
+		);
 		const [firstLoad] = loads;
 		if (!firstLoad) throw new Error(`Unknown skill "${name}"`);
 		if (loads.length === 1) return firstLoad;
@@ -86,11 +240,124 @@ export default function (pi: ExtensionAPI) {
 				kind: "skill-load",
 				name,
 				status: "read",
+				tokens: loads.reduce((total, load) => total + (load.details.tokens ?? 0), 0),
 				loads: loads.map((load) => load.details),
 			},
 		};
 	};
+	const resourceProvider: ResourceProvider = {
+		async read(ref) {
+			const assetPath = skillReadAssetPath(ref);
+			const load = await loadSkill(ref.authority, assetPath);
+			const sourcePath = load.details.filePath;
+			return {
+				resource: {
+					uri: formatResourceUri(ref),
+					name: assetPath ?? "SKILL.md",
+					kind: "skill",
+					mediaType: "text/markdown",
+					...(sourcePath ? { path: sourcePath } : {}),
+					size: Buffer.byteLength(load.content, "utf8"),
+					metadata: {
+						skillName: ref.authority,
+						assetPath: assetPath ?? "SKILL.md",
+						tokens: load.details.tokens ?? 0,
+						...(sourcePath ? { sourcePath } : {}),
+					},
+				},
+				content: load.content,
+			};
+		},
+		async search(request): Promise<SearchHit[]> {
+			refresh();
+			const query = request.query.trim().toLowerCase();
+			if (!query) return [];
+			const names = request.scope?.scheme === "skill" ? [request.scope.authority] : [...state.skills.keys()];
+			const hits: SearchHit[] = [];
+			for (const name of names) {
+				const assetPath =
+					request.scope?.scheme === "skill" && request.scope.authority === name
+						? skillReadAssetPath(request.scope)
+						: undefined;
+				try {
+					const load = await loadSkill(name, assetPath);
+					const index = load.content.toLowerCase().indexOf(query);
+					if (index === -1) continue;
+					const ref = {
+						scheme: "skill" as const,
+						authority: name,
+						path: assetPath ? `/${assetPath}` : "",
+						query: {},
+					};
+					hits.push({
+						uri: formatResourceUri(ref),
+						name: assetPath ?? "SKILL.md",
+						kind: "skill",
+						mediaType: "text/markdown",
+						snippet: load.content.slice(Math.max(0, index - 80), index + query.length + 160),
+						score: 1,
+					});
+				} catch {
+					// Discovery can race resource refresh. Omit stale skills from search.
+				}
+			}
+			return hits;
+		},
+		async find(ref) {
+			refresh();
+			const references = state.skills.get(ref.authority);
+			if (!references) throw new Error(`Unknown skill "${ref.authority}"`);
+			const requested = skillAssetPath(ref);
+			const resources = new Map<string, Resource>();
+			for (const reference of references) {
+				const root = skillBaseDir(reference.filePath);
+				const searchRoot = requested ? resolveSkillAssetPath(reference.filePath, requested) : root;
+				let metadata: Awaited<ReturnType<typeof stat>>;
+				try {
+					metadata = await stat(searchRoot);
+				} catch (error) {
+					if (isMissingPath(error)) continue;
+					throw error;
+				}
+				if (requested) {
+					try {
+						if (!(await safeSkillFilePath(root, searchRoot))) continue;
+					} catch (error) {
+						if (isMissingPath(error)) continue;
+						throw error;
+					}
+				}
+				const filePaths = metadata.isDirectory()
+					? await skillFiles(root, searchRoot)
+					: metadata.isFile()
+						? [searchRoot]
+						: [];
+				for (const filePath of filePaths) {
+					let safePath: string | undefined;
+					try {
+						safePath = await safeSkillFilePath(root, filePath);
+					} catch (error) {
+						if (isMissingPath(error)) continue;
+						throw error;
+					}
+					if (!safePath) continue;
+					const relativePath = relative(root, filePath).replaceAll("\\", "/");
+					const uri = formatResourceUri({
+						scheme: "skill",
+						authority: ref.authority,
+						path: relativePath === "SKILL.md" ? "" : `/${relativePath}`,
+						query: {},
+					});
+					const resource = await resourceFromSkillFile(uri, relativePath, safePath);
+					const current = resources.get(uri);
+					resources.set(uri, current ? mergeSkillResources(current, resource) : resource);
+				}
+			}
+			return [...resources.values()];
+		},
+	};
 
+	registerResourceProvider("skill", resourceProvider);
 	pi.on("resources_discover", () => {
 		refresh();
 	});
@@ -98,34 +365,6 @@ export default function (pi: ExtensionAPI) {
 	registerExtensionMessageRenderer(pi, SKILLFUL_CUSTOM_TYPE, (message, _options, theme) => {
 		const details = isSkillfulLoadDetails(message.details) ? message.details : undefined;
 		return renderSkillLoad(details, theme);
-	});
-
-	pi.registerTool({
-		name: "skill",
-		label: "Skill",
-		description: "Load a skill by exact name, including hidden/non-advertised skills.",
-		promptSnippet: "Load named skill instructions; try exact names even if not advertised.",
-		parameters: Type.Object({
-			name: Type.String({ description: "Exact skill name" }),
-		}),
-		renderShell: "self",
-		executionMode: "sequential",
-		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
-			const load = await loadSkill(params.name);
-			return {
-				content: [{ type: "text", text: load.content }],
-				details: load.details,
-			};
-		},
-		renderCall(args, theme, context) {
-			if (context.isPartial === false) return emptyRender;
-			return renderSkillLoad(loadedDetails(args.name, "read"), theme);
-		},
-		renderResult(result, _options, theme) {
-			const details = isSkillfulLoadDetails(result.details) ? result.details : undefined;
-			if (!details) return emptyRender;
-			return renderSkillLoad(details, theme);
-		},
 	});
 
 	pi.on("before_agent_start", async (event, _ctx) => {

@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { registerResourceProvider } from "../../shared/resources.ts";
+import { artifactResourceProvider } from "./artifact-resources.js";
 import { invokeCoreSync } from "./core.js";
 import { setCurrentContextGuardSessionId } from "./current-session.js";
 import { markExecCommandContextGuardEnabled } from "./index.js";
@@ -54,6 +56,7 @@ export default function piExtension(pi: any): void {
 		pwd: process.env.PWD,
 		cwd: process.cwd(),
 	});
+	registerResourceProvider("artifact", artifactResourceProvider(projectDir));
 
 	pi.on("session_start", (_event: unknown, ctx: Record<string, unknown>) => {
 		sessionId = deriveSessionId(ctx ?? {});

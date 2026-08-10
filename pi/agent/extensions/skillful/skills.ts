@@ -1,4 +1,4 @@
-import { dirname } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { getCodexHiddenSkillNames, getCodexPluginAliases } from "../codex-native/plugin-aliases";
@@ -22,6 +22,7 @@ export type SkillfulLoadDetails = {
 	status: SkillfulLoadStatus;
 	filePath?: string;
 	baseDir?: string;
+	tokens?: number;
 	loads?: SkillfulLoadDetails[];
 };
 
@@ -172,11 +173,22 @@ export function skillBaseDir(filePath: string): string {
 	return dirname(filePath);
 }
 
+export function resolveSkillAssetPath(filePath: string, assetPath: string): string {
+	const baseDir = skillBaseDir(filePath);
+	const resolved = resolve(baseDir, assetPath);
+	const fromBase = relative(baseDir, resolved);
+	if (!assetPath || isAbsolute(assetPath) || !fromBase || fromBase === ".." || fromBase.startsWith(`..${sep}`)) {
+		throw new Error(`Skill asset path must stay under ${baseDir}: ${assetPath}`);
+	}
+	return resolved;
+}
+
 export function loadedDetails(
 	name: string,
 	status: SkillfulLoadStatus,
 	filePath?: string,
 	baseDir?: string,
+	tokens?: number,
 ): SkillfulLoadDetails {
 	return {
 		extension: "skillful",
@@ -185,12 +197,17 @@ export function loadedDetails(
 		status,
 		filePath,
 		baseDir,
+		tokens,
 	};
 }
 
 export function formatReadSkillContent(name: string, filePath: string, body: string): string {
 	const baseDir = skillBaseDir(filePath);
 	return `<skill name="${name}" location="${filePath}">\nReferences are relative to ${baseDir}.\n\n${body}\n</skill>`;
+}
+
+export function formatSkillAssetContent(name: string, assetPath: string, filePath: string, body: string): string {
+	return `<skill-asset name="${name}" path="${assetPath}" location="${filePath}">\n${body}\n</skill-asset>`;
 }
 
 export function isSkillfulLoadDetails(value: unknown): value is SkillfulLoadDetails {

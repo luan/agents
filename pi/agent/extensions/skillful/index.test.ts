@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setCodexPluginAliases } from "../codex-native/plugin-aliases";
+import { findResources, readResource } from "../shared/resources.ts";
 import { findMentionAtCursor, wrapProvider } from "./autocomplete";
 import extension from "./index";
 import {
@@ -246,6 +247,7 @@ describe("skillful extension", () => {
 					status: "read",
 					filePath: skillPath,
 					baseDir: dir,
+					tokens: expect.any(Number),
 				},
 			},
 		});
@@ -319,78 +321,98 @@ describe("skillful extension", () => {
 		expect(result).toBeUndefined();
 	});
 
-	test("registers skill tool with read results", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "skillful-"));
-		const skillPath = join(dir, "SKILL.md");
-		writeFileSync(skillPath, "---\nname: tdd\n---\n# TDD\n\nUse `/plan` after the test loop.\n");
+	test("reads plugin alias assets from the matching skill", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "skillful-resource-alias-"));
+		const buildingDir = join(dir, "building");
+		const hostingDir = join(dir, "hosting");
+		mkdirSync(join(buildingDir, "templates"), { recursive: true });
+		mkdirSync(hostingDir, { recursive: true });
+		const buildingPath = join(buildingDir, "SKILL.md");
+		const hostingPath = join(hostingDir, "SKILL.md");
+		writeFileSync(buildingPath, "---\nname: sites-building\n---\n# Building\n");
+		writeFileSync(hostingPath, "---\nname: sites-hosting\n---\n# Hosting\n");
+		writeFileSync(join(buildingDir, "templates", "example.html"), "<template>building</template>\n");
 
-		const tools: Array<{
-			name: string;
-			renderCall?: (
-				args: { name: string },
-				theme: typeof theme,
-				context: { isPartial?: boolean },
-			) => {
-				render: (width: number) => string[];
-			};
-			renderResult?: (
-				result: { details?: unknown; content: unknown[] },
-				options: unknown,
-				theme: typeof theme,
-			) => {
-				render: (width: number) => string[];
-			};
-			execute: (
-				id: string,
-				params: { name: string },
-				signal?: AbortSignal,
-				onUpdate?: unknown,
-				ctx?: unknown,
-			) => Promise<{
-				content: Array<{ type: "text"; text: string }>;
-				details: unknown;
-			}>;
-		}> = [];
 		const pi = {
 			getCommands: () => [
-				{ source: "skill", name: "skill:tdd", sourceInfo: { path: skillPath } },
-				{ source: "skill", name: "skill:plan", sourceInfo: { path: "/skills/plan/SKILL.md" } },
+				{ source: "skill", name: "skill:sites:sites-building", sourceInfo: { path: buildingPath } },
+				{ source: "skill", name: "skill:sites:sites-hosting", sourceInfo: { path: hostingPath } },
 			],
 			on() {},
-			registerTool: (tool: never) => tools.push(tool),
+			registerTool() {},
 			registerMessageRenderer() {},
 			events: { emit() {} },
 		};
 
 		extension(pi as never);
 
-		const tool = tools.find((candidate) => candidate.name === "skill");
-		expect(tool).toBeTruthy();
-		const ctx = { sessionManager: { getBranch: () => [] } };
-		const first = await tool?.execute("call-1", { name: "tdd" }, undefined, undefined, ctx);
-		expect(first?.content[0]?.text).toContain("# TDD");
-		expect(first?.content[0]?.text).toContain("Use `$plan` after the test loop.");
-		expect(first?.details).toMatchObject({ extension: "skillful", kind: "skill-load", name: "tdd", status: "read" });
-
-		const second = await tool?.execute("call-2", { name: "tdd" }, undefined, undefined, ctx);
-		expect(second?.content[0]?.text).toContain("# TDD");
-		expect(second?.content[0]?.text).toContain("Use `$plan` after the test loop.");
-		expect(second?.details).toMatchObject({ extension: "skillful", kind: "skill-load", name: "tdd", status: "read" });
-		await expect(tool?.execute("call-3", { name: "missing" }, undefined, undefined, ctx)).rejects.toThrow(
-			'Unknown skill "missing"',
+		const asset = await readResource("skill://sites/templates/example.html");
+		expect(asset.resource).toMatchObject({
+			uri: "skill://sites/templates/example.html",
+			name: "templates/example.html",
+			metadata: {
+				skillName: "sites",
+				assetPath: "templates/example.html",
+				tokens: expect.any(Number),
+			},
+		});
+		expect(asset.content).toContain('<skill-asset name="sites:sites-building" path="templates/example.html"');
+		expect(asset.content).toContain("<template>building</template>");
+		const resources = await findResources("skill://sites");
+		const rootResource = resources.find((resource) => resource.uri === "skill://sites");
+		expect(rootResource).toBeDefined();
+		expect(rootResource?.size).toBe(
+			Buffer.byteLength("---\nname: sites-building\n---\n# Building\n") +
+				Buffer.byteLength("---\nname: sites-hosting\n---\n# Hosting\n") +
+				Buffer.byteLength("\n\n"),
 		);
+	});
 
-		const theme = {
-			fg: (_role: string, text: string) => text,
-			bold: (text: string) => text,
+	test("reads skill root and nested resources", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "skillful-resource-"));
+		const skillDir = join(dir, "triage");
+		mkdirSync(skillDir, { recursive: true });
+		const skillPath = join(skillDir, "SKILL.md");
+		const assetPath = join(skillDir, "OUT-OF-SCOPE.md");
+		writeFileSync(skillPath, "---\nname: triage\n---\n# Triage\n");
+		writeFileSync(assetPath, "# Out of Scope\n");
+
+		const pi = {
+			getCommands: () => [{ source: "skill", name: "skill:triage", sourceInfo: { path: skillPath } }],
+			on() {},
+			registerTool() {},
+			registerMessageRenderer() {},
+			events: { emit() {} },
 		};
-		expect(
-			tool
-				?.renderResult?.({ content: [], details: second?.details }, { expanded: false }, theme)
-				?.render(80)[0]
-				?.trim(),
-		).toBe("Skill - tdd read");
-		expect(tool?.renderCall?.({ name: "tdd" }, theme, { isPartial: false })?.render(80)).toEqual([]);
+
+		extension(pi as never);
+
+		const root = await readResource("skill://triage");
+		expect(root.resource).toMatchObject({
+			uri: "skill://triage",
+			name: "SKILL.md",
+			metadata: {
+				skillName: "triage",
+				assetPath: "SKILL.md",
+				sourcePath: skillPath,
+				tokens: expect.any(Number),
+			},
+		});
+		expect(root.content).toContain('<skill name="triage"');
+		expect(root.content).toContain("# Triage");
+		const explicitRoot = await readResource("skill://triage/SKILL.md");
+		expect(explicitRoot.content).toBe(root.content);
+
+		const asset = await readResource("skill://triage/OUT-OF-SCOPE.md");
+		expect(asset.resource).toMatchObject({ uri: "skill://triage/OUT-OF-SCOPE.md", name: "OUT-OF-SCOPE.md" });
+		expect(asset.content).toContain('<skill-asset name="triage" path="OUT-OF-SCOPE.md"');
+		expect(asset.content).toContain("# Out of Scope");
+
+		const exact = await findResources("skill://triage/OUT-OF-SCOPE.md");
+		expect(exact.map((resource) => resource.uri)).toEqual(["skill://triage/OUT-OF-SCOPE.md"]);
+
+		const all = await findResources("skill://triage/");
+		expect(all.map((resource) => resource.uri).sort()).toEqual(["skill://triage", "skill://triage/OUT-OF-SCOPE.md"]);
 	});
 
 	test("reinstalls autocomplete provider after reload", async () => {
