@@ -1,4 +1,10 @@
-export { type EditorFactory, type EditorLayer, type EditorUi, installEditorLayer } from "../editor-composition";
+export {
+	type EditorFactory,
+	type EditorLayer,
+	type EditorUi,
+	installEditorLayer,
+	removeEditorLayer,
+} from "../editor-composition";
 export { setOrderedAboveEditorWidget } from "../ordered-widgets";
 export {
 	type AnimationMount,

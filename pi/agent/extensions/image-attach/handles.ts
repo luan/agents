@@ -26,6 +26,12 @@ let pendingSince: number | undefined;
 export function setHandleThumbnail(index: number, cells: string | undefined): void {
 	if (cells) thumbnails.set(index, cells);
 }
+export function clearHandleThumbnails(): void {
+	thumbnails.clear();
+}
+export function clearHandleThumbnail(index: number): void {
+	thumbnails.delete(index);
+}
 
 /** Where each handle starts and ends in `text`. */
 export function handleSpans(text: string): Array<{ start: number; end: number }> {

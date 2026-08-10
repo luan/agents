@@ -21,7 +21,7 @@
 
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, statSync, unlinkSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
@@ -40,9 +40,11 @@ import {
 	sharedAnimationRenderScheduler,
 	textComponent,
 } from "../shared/tui";
-import { installEditorHandleHighlight } from "./editor";
+import { installEditorHandleHighlight, removeEditorHandleHighlight } from "./editor";
 import {
 	beginPendingHandle,
+	clearHandleThumbnail,
+	clearHandleThumbnails,
 	endPendingHandle,
 	formatHandle,
 	IMAGE_HANDLE,
@@ -72,6 +74,8 @@ function bracketedPaste(text: string): string {
 }
 
 /** Handle number → temp file, so submit can turn `[image #3]` back into bytes. */
+const ownedTempImages = new Set<string>();
+let imageStateGeneration = 0;
 const pastedImages = new Map<number, string>();
 let pastedImageCount = 0;
 
@@ -88,6 +92,12 @@ function registerPastedImage(path: string): { index: number; handle: string } {
 /** Point an existing handle at a different file, once a copy of it exists. */
 function repointHandle(index: number, path: string): void {
 	pastedImages.set(index, path);
+}
+function removeOwnedTempImage(path: string): void {
+	ownedTempImages.delete(path);
+	try {
+		unlinkSync(path);
+	} catch {}
 }
 
 /**
@@ -230,10 +240,16 @@ async function normalizeInPlace(path: string): Promise<void> {
  * kind of file, and keeps the conversation independent of a library that prunes itself.
  */
 export async function adoptImageFile(path: string): Promise<string> {
+	const generation = imageStateGeneration;
 	const png = await magickBuffer(path, NORMALIZE_ARGS);
 	if (!png?.length) return path;
 	const target = join(tmpdir(), `pi-clipboard-${randomUUID()}.png`);
 	await writeFile(target, png);
+	if (generation !== imageStateGeneration) {
+		removeOwnedTempImage(target);
+		return path;
+	}
+	ownedTempImages.add(target);
 	return target;
 }
 
@@ -245,21 +261,41 @@ async function captureClipboardImage(ctx: ExtensionContext): Promise<boolean> {
 	beginPendingHandle();
 	ctx.ui.pasteToEditor(`${PENDING_HANDLE} `);
 	const animation = startPendingAnimation();
+	const generation = imageStateGeneration;
+	let path: string | undefined;
+	let index: number | undefined;
 	try {
 		const clipboard = await loadClipboardImageModule();
 		const image = await clipboard?.readClipboardImage().catch(() => undefined);
 		if (!image) return false;
 
 		const extension = clipboard?.extensionForImageMimeType(image.mimeType) ?? "png";
-		const path = join(tmpdir(), `pi-clipboard-${randomUUID()}.${extension}`);
+		path = join(tmpdir(), `pi-clipboard-${randomUUID()}.${extension}`);
 		await writeFile(path, Buffer.from(image.bytes));
+		ownedTempImages.add(path);
 		await normalizeInPlace(path);
-		const { index, handle } = registerPastedImage(path);
+		if (generation !== imageStateGeneration) {
+			removeOwnedTempImage(path);
+			return false;
+		}
+		const registered = registerPastedImage(path);
+		index = registered.index;
 		// The spinner is still up, so pay for the thumbnail before revealing the handle.
 		setHandleThumbnail(index, await renderThumbnailCells(path));
-		replacePendingHandle(ctx, handle);
+		if (generation !== imageStateGeneration) {
+			pastedImages.delete(index);
+			clearHandleThumbnail(index);
+			removeOwnedTempImage(path);
+			return false;
+		}
+		replacePendingHandle(ctx, registered.handle);
 		return true;
 	} catch {
+		if (index !== undefined) {
+			pastedImages.delete(index);
+			clearHandleThumbnail(index);
+		}
+		if (path) removeOwnedTempImage(path);
 		return false;
 	} finally {
 		animation?.dispose();
@@ -347,6 +383,16 @@ function startPendingAnimation(): AnimationMount | undefined {
 
 /** Previews shell out to `magick`, and render runs on every frame. Keep them per path. */
 const previewCache = new Map<string, PreviewImage | undefined>();
+function cleanupImageState(): void {
+	imageStateGeneration += 1;
+	for (const path of ownedTempImages) removeOwnedTempImage(path);
+	pastedImages.clear();
+	pastedImageCount = 0;
+	clearHandleThumbnails();
+	previewCache.clear();
+	endPendingHandle();
+}
+process.once("exit", cleanupImageState);
 
 function cachedPreview(path: string): PreviewImage | undefined {
 	if (!previewCache.has(path)) previewCache.set(path, readPreviewImageFromPathSync(path));
@@ -419,12 +465,16 @@ export default function imageAttachExtension(pi: ExtensionAPI, deps?: { loadImag
 			const path = pastedImagePath(data, ctx.cwd);
 			if (!path) return undefined;
 			const { index, handle } = registerPastedImage(path);
+			const generation = imageStateGeneration;
 			// The handle has to land in this tick, so copy and draw behind it: the original stays
 			// attachable until the copy exists, and the handle then follows the copy.
 			void adoptImageFile(path)
 				.then(async (adopted) => {
+					if (generation !== imageStateGeneration) return;
+					const thumbnail = await renderThumbnailCells(adopted);
+					if (generation !== imageStateGeneration) return;
 					repointHandle(index, adopted);
-					setHandleThumbnail(index, await renderThumbnailCells(adopted));
+					setHandleThumbnail(index, thumbnail);
 					requestRender();
 				})
 				.catch(() => {});
@@ -432,9 +482,11 @@ export default function imageAttachExtension(pi: ExtensionAPI, deps?: { loadImag
 		});
 	});
 
-	pi.on("session_shutdown", () => {
+	pi.on("session_shutdown", (_event, ctx) => {
+		if (ctx.hasUI) removeEditorHandleHighlight(ctx.ui as unknown as EditorUi);
 		unsubscribeTerminalInput?.();
 		unsubscribeTerminalInput = undefined;
+		cleanupImageState();
 	});
 
 	pi.on("input", async (event, ctx) => {

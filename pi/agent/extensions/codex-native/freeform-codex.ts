@@ -330,6 +330,8 @@ export function registerCodexFreeformProvider(pi: ExtensionAPI, options: CodexFr
 		consecutiveWebSocketFailures = 0;
 		forceSseForSession = false;
 		closeOpenAICodexWebSocketSessions();
+		websocketDebugStats.clear();
+		websocketSseFallbackSessions.clear();
 	});
 	pi.on("context", async (event) => ({
 		messages: event.messages.filter(

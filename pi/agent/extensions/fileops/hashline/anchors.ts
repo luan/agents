@@ -69,6 +69,87 @@ export async function recordHashlineFileSnapshot(
 		return undefined;
 	}
 }
+type SessionEntryLike = {
+	type?: string;
+	message?: {
+		role?: string;
+		content?: Array<{ type?: string; text?: string }>;
+	};
+};
+
+type RestoredSnapshot = {
+	path: string;
+	tag: string;
+	lines: Set<number>;
+	synthetic: Set<number>;
+	searchOutput: boolean;
+};
+
+function collectSessionSnapshots(entries: readonly SessionEntryLike[]): Map<string, RestoredSnapshot> {
+	const snapshots = new Map<string, RestoredSnapshot>();
+	const headerPattern = /^\[([^\]\n]+)#([0-9A-Fa-f]{4})\]\s*$/;
+	const rowPattern = /^(\*| )?([1-9]\d*):/;
+
+	for (const entry of entries) {
+		if (entry.type !== "message" || entry.message?.role !== "toolResult") continue;
+		for (const content of entry.message.content ?? []) {
+			if (content.type !== "text" || typeof content.text !== "string") continue;
+			let current: RestoredSnapshot | undefined;
+			for (const line of content.text.split("\n")) {
+				const header = headerPattern.exec(line.trim());
+				if (header) {
+					const key = `${header[1]}#${header[2].toUpperCase()}`;
+					current = snapshots.get(key) ?? {
+						path: header[1]!,
+						tag: header[2]!.toUpperCase(),
+						lines: new Set(),
+						synthetic: new Set(),
+						searchOutput: false,
+					};
+					snapshots.set(key, current);
+					continue;
+				}
+				if (!current) continue;
+				const row = rowPattern.exec(line);
+				if (!row) continue;
+				const lineNumber = Number(row[2]);
+				current.lines.add(lineNumber);
+				if (row[1] === "*") current.searchOutput = true;
+				if (row[1] === " ") current.synthetic.add(lineNumber);
+			}
+		}
+	}
+	return snapshots;
+}
+
+export async function restoreHashlineSnapshots(
+	snapshots: InMemorySnapshotStore,
+	cwd: string,
+	entries: readonly SessionEntryLike[],
+): Promise<void> {
+	for (const restored of collectSessionSnapshots(entries).values()) {
+		if (/^[a-z][a-z\d+.-]*:\/\//i.test(restored.path)) continue;
+		const path = absolutePath(cwd, restored.path);
+		try {
+			const info = await stat(path);
+			if (info.size > SNAPSHOT_MAX_BYTES) continue;
+			const { text } = stripBom(await readFile(path, "utf-8"));
+			const observedLines = restored.searchOutput
+				? {
+						explicit: [...restored.lines].filter((line) => !restored.synthetic.has(line)),
+						synthetic: restored.synthetic,
+					}
+				: restored.lines.size > 0
+					? [...restored.lines]
+					: "all";
+			const candidateStore = new InMemorySnapshotStore();
+			const candidate = recordHashlineSnapshot(candidateStore, path, text, observedLines);
+			if (candidate === restored.tag) snapshots.record(path, text, observedLines);
+		} catch {
+			// The file may have been deleted or moved since the session was saved.
+		}
+	}
+}
 
 export async function createHashlineEditAnchor(
 	snapshots: InMemorySnapshotStore,

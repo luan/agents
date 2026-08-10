@@ -1,11 +1,17 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { resetCapabilitiesCache } from "@earendil-works/pi-tui";
+import {
+	formatResourceUri,
+	localResourceRoot,
+	RESOURCE_SCHEMES,
+	registerResourceProvider,
+} from "../shared/resources.ts";
 import { languageFromPath } from "./diff-render.ts";
-import fileopsExtension, { HASHLINE_GRAMMAR, PATCH_GRAMMAR, REPLACE_GRAMMAR } from "./index.ts";
+import fileopsExtension, { HASHLINE_GRAMMAR, PATCH_GRAMMAR, REPLACE_GRAMMAR, shortenDisplayPath } from "./index.ts";
 
 const originalVariant = process.env.PI_FILEOPS_EDIT_VARIANT;
 const originalAutoDropPureInsertDuplicates = process.env.PI_FILEOPS_HASHLINE_AUTO_DROP_PURE_INSERT_DUPLICATES;
@@ -58,6 +64,32 @@ function registerEditCommand(mode = "apply_patch"): any {
 	return command;
 }
 
+describe("resource display paths", () => {
+	it("keeps local paths human-readable and preserves non-local URIs", () => {
+		const cwd = join(homedir(), "src", "agents");
+
+		expect(shortenDisplayPath("crates/blabla/a.rs", cwd)).toBe("crates/blabla/a.rs");
+		expect(shortenDisplayPath(join(homedir(), "tmp", "blabla"), cwd)).toBe("~/tmp/blabla");
+		expect(shortenDisplayPath("/tmp/blabla", cwd)).toBe("/tmp/blabla");
+		expect(shortenDisplayPath("local://scratch/data.json", cwd)).toBe("local://scratch/data.json");
+		expect(shortenDisplayPath("pr://luan/agents/23", cwd)).toBe("pr://luan/agents/23");
+	});
+	it("reuses read call components across redraws", () => {
+		const tools = registerEditTools("hashline");
+		const read = tools.get("read");
+		const theme = {
+			fg: (_role: string, text: string) => text,
+			bold: (text: string) => text,
+		};
+		const first = read.renderCall({ path: "pr://owner/repo/1" }, theme, { cwd: process.cwd() });
+		const second = read.renderCall({ path: "pr://owner/repo/1" }, theme, {
+			cwd: process.cwd(),
+			lastComponent: first,
+		});
+		expect(second).toBe(first);
+	});
+});
+
 describe("fileops extension modes", () => {
 	it("starts in apply_patch mode and applies freeform envelopes", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-apply-patch-"));
@@ -75,6 +107,124 @@ describe("fileops extension modes", () => {
 
 		expect(tool.parameters.properties.input).toBeDefined();
 		expect(readFileSync(join(cwd, "sample.txt"), "utf-8")).toBe("hello\n");
+	});
+
+	it("routes local resource URIs through session scratch space", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-resource-local-"));
+		writeFileSync(join(cwd, "sample.txt"), "workspace\n");
+		const tools = registerEditTools("apply_patch");
+		const sessionId = `resource-local-${Date.now()}`;
+		const ctx = { cwd, sessionManager: { getSessionId: () => sessionId } };
+
+		await tools
+			.get("write")
+			.execute("write", { path: "local://sample.txt", content: "alpha\nbeta\n" }, undefined, undefined, ctx);
+
+		const read = await tools.get("read").execute("read", { path: "local://sample.txt" }, undefined, undefined, ctx);
+		expect(read.content[0].text).toContain("1:alpha\n2:beta");
+		const listing = await tools.get("read").execute("read", { path: "local://" }, undefined, undefined, ctx);
+		expect(listing.content[0].text).toContain("local://sample.txt");
+
+		const search = await tools
+			.get("search")
+			.execute("search", { pattern: "beta", path: "local://sample.txt" }, undefined, undefined, ctx);
+		expect(search.content[0].text).toContain("2:beta");
+
+		const found = await tools.get("find").execute("find", { paths: ["local://"] }, undefined, undefined, ctx);
+		expect(found.content[0].text).toContain("local://sample.txt");
+
+		expect(readFileSync(join(cwd, "sample.txt"), "utf-8")).toBe("workspace\n");
+		expect(readFileSync(join(localResourceRoot({ sessionId }), "sample.txt"), "utf-8")).toBe("alpha\nbeta\n");
+	});
+	it("routes every supported resource scheme through find, search, read, write, and edit", async () => {
+		process.env.PI_FILEOPS_EDIT_VARIANT = "replace";
+		const tools = registerEditTools("replace");
+		const values = new Map<string, string>();
+		const cleanups = RESOURCE_SCHEMES.map((scheme) =>
+			registerResourceProvider(scheme, {
+				async read(ref) {
+					const uri = formatResourceUri(ref);
+					return { resource: { uri, name: "item.txt" }, content: values.get(uri) ?? "" };
+				},
+				async search(request) {
+					const uri = formatResourceUri(request.scope!);
+					return [{ uri, name: "item.txt", snippet: request.query, score: 1 }];
+				},
+				async find(ref) {
+					const uri = formatResourceUri(ref);
+					return [{ uri, name: "item.txt" }];
+				},
+				async write(ref, request) {
+					const uri = formatResourceUri(ref);
+					values.set(uri, request.content);
+					return { resource: { uri, name: "item.txt" }, bytes: Buffer.byteLength(request.content) };
+				},
+			}),
+		);
+		const ctx = { cwd: process.cwd(), sessionManager: { getSessionId: () => "resource-matrix" } };
+		try {
+			for (const scheme of RESOURCE_SCHEMES) {
+				const uri = `${scheme}://demo/item.txt`;
+				values.set(uri, `${scheme}\nneedle\n`);
+
+				await tools.get("read").execute("read", { path: uri }, undefined, undefined, ctx);
+				await tools.get("search").execute("search", { pattern: "needle", path: uri }, undefined, undefined, ctx);
+				await tools.get("find").execute("find", { paths: [uri] }, undefined, undefined, ctx);
+				await tools
+					.get("write")
+					.execute("write", { path: uri, content: `${scheme}\nupdated\n` }, undefined, undefined, ctx);
+				await tools
+					.get("edit")
+					.execute(
+						"edit",
+						{ path: uri, edits: [{ old_text: "updated", new_text: "edited" }] },
+						undefined,
+						undefined,
+						ctx,
+					);
+
+				expect(values.get(uri)).toBe(`${scheme}\nedited\n`);
+			}
+		} finally {
+			for (const cleanup of cleanups.reverse()) cleanup();
+		}
+	});
+	it("hashline mode anchors and edits writable resource URIs", async () => {
+		process.env.PI_FILEOPS_EDIT_VARIANT = "hashline";
+		const tools = registerEditTools("hashline");
+		const uri = "vault://demo.md";
+		let content = "one\ntwo\n";
+		const cleanup = registerResourceProvider("vault", {
+			async read(ref) {
+				return { resource: { uri: formatResourceUri(ref), name: "demo.md" }, content };
+			},
+			async search() {
+				return [];
+			},
+			async find(ref) {
+				return [{ uri: formatResourceUri(ref), name: "demo.md" }];
+			},
+			async write(ref, request) {
+				content = request.content;
+				return {
+					resource: { uri: formatResourceUri(ref), name: "demo.md" },
+					bytes: Buffer.byteLength(content),
+				};
+			},
+		});
+		const ctx = { cwd: process.cwd(), sessionManager: { getSessionId: () => "resource-hashline" } };
+		try {
+			const read = await tools.get("read").execute("read", { path: uri }, undefined, undefined, ctx);
+			const header = read.content[0].text.split("\n")[0];
+
+			await tools
+				.get("edit")
+				.execute("edit", { input: `${header}\nreplace 2..2:\n+TWO\n` }, undefined, undefined, ctx);
+
+			expect(content).toBe("one\nTWO\n");
+		} finally {
+			cleanup();
+		}
 	});
 
 	it("supports patch mode create/update/delete envelopes from entries", async () => {
@@ -105,8 +255,15 @@ describe("fileops extension modes", () => {
 		const readResult = await read.execute("read", { path: "sample.txt" }, undefined, undefined, { cwd });
 		const header = readResult.content[0].text.split("\n")[0];
 
-		await tool.execute("call", { input: `${header}\nreplace 1..1:\n+hi\n+there\n` }, undefined, undefined, { cwd });
+		const result = await tool.execute(
+			"call",
+			{ input: `${header}\nreplace 1..1:\n+hi\n+there\n` },
+			undefined,
+			undefined,
+			{ cwd },
+		);
 
+		expect(result.details.results).toEqual([{ path: "sample.txt", header: expect.any(String) }]);
 		expect(readFileSync(join(cwd, "sample.txt"), "utf-8")).toBe("hi\nthere\nworld\n");
 	});
 
@@ -245,6 +402,44 @@ describe("fileops extension modes", () => {
 		await editTools
 			.get("edit")
 			.execute("call", { input: `${header}\nreplace 2..2:\n+TWO\n` }, undefined, undefined, sessionCtx);
+		expect(readFileSync(join(cwd, "sample.txt"), "utf-8")).toBe("one\nTWO\n");
+	});
+
+	it("restores hashline snapshots from a resumed session branch", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-edit-hashline-session-resume-"));
+		writeFileSync(join(cwd, "sample.txt"), "one\ntwo\n");
+		const sourceTools = registerEditTools("hashline");
+		const sourceCtx = { cwd, sessionManager: { getSessionId: () => `${cwd}:source` } };
+		const readResult = await sourceTools
+			.get("read")
+			.execute("read", { path: "sample.txt" }, undefined, undefined, sourceCtx);
+		const header = readResult.content[0].text.split("\n")[0];
+		const resumedTools = new Map<string, any>();
+		let sessionStart: ((event: unknown, ctx: any) => Promise<void>) | undefined;
+		fileopsExtension({
+			registerTool: (definition: any) => resumedTools.set(definition.name, definition),
+			registerCommand: () => {},
+			on: (event: string, handler: any) => {
+				if (event === "session_start") sessionStart = handler;
+			},
+		} as any);
+		const resumedCtx = {
+			cwd,
+			sessionManager: {
+				getSessionId: () => `${cwd}:resumed`,
+				getBranch: () => [
+					{
+						type: "message",
+						message: { role: "toolResult", content: [{ type: "text", text: readResult.content[0].text }] },
+					},
+				],
+			},
+		};
+
+		await sessionStart?.({}, resumedCtx);
+		await resumedTools
+			.get("edit")
+			.execute("call", { input: `${header}\nreplace 2..2:\n+TWO\n` }, undefined, undefined, resumedCtx);
 		expect(readFileSync(join(cwd, "sample.txt"), "utf-8")).toBe("one\nTWO\n");
 	});
 

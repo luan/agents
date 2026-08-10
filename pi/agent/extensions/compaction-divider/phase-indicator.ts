@@ -1,15 +1,30 @@
 import { setTimeout as delay } from "node:timers/promises";
-import { type ExtensionAPI, InteractiveMode, keyText, SessionManager } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, InteractiveMode, SessionManager } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { formatTokenCount } from "./format-tokens";
 
 const patchKey = Symbol.for("agents.pi.compaction-phases.patch");
+const phaseSetterKey = Symbol.for("agents.pi.compaction-phases.set");
+const reasonOverrideKey = Symbol.for("agents.pi.compaction-reason.override");
+const indicatorPatchKey = Symbol.for("agents.pi.compaction-phases.indicator-patch");
+const horizontalRule = "─";
 // Pi queues terminal renders and throttles them to a 16 ms interval.
 const finalizingRenderDwellMs = 32;
 
 type CompactionPhase = "preparing" | "summarizing" | "finalizing";
+type CompactionReason = "manual" | "threshold" | "overflow";
 
 type CompactionIndicator = {
+	[indicatorPatchKey]?: boolean;
 	kind?: string;
 	setMessage?: (message: string) => void;
+	render?: (width: number) => string[];
+	frames?: string[];
+	currentFrame?: number;
+	renderIndicatorVerbatim?: boolean;
+	spinnerColorFn?: (spinner: string) => string;
+	messageColorFn?: (message: string) => string;
+	message?: string;
 };
 
 type InteractiveModeLike = {
@@ -31,12 +46,19 @@ type PhaseState = {
 	activeCompactionIndicator?: CompactionIndicator;
 	activeCompactionMode?: InteractiveModeLike;
 	activeCompactionPhase?: CompactionPhase;
+	tokensBefore?: number;
+	reason?: CompactionReason;
 };
 
 const phaseStateKey = Symbol.for("agents.pi.compaction-phases.state");
-const globalPhaseState = globalThis as typeof globalThis & { [phaseStateKey]?: PhaseState };
+const globalPhaseState = globalThis as typeof globalThis & {
+	[phaseStateKey]?: PhaseState;
+	[phaseSetterKey]?: (phase: CompactionPhase, tokensBefore?: number, reason?: CompactionReason) => void;
+	[reasonOverrideKey]?: CompactionReason;
+};
 const phaseState = globalPhaseState[phaseStateKey] ?? {};
 globalPhaseState[phaseStateKey] = phaseState;
+globalPhaseState[phaseSetterKey] = setCompactionPhase;
 
 function isCompactionIndicator(value: unknown): value is CompactionIndicator {
 	if (!value || typeof value !== "object") return false;
@@ -50,19 +72,46 @@ function isRetryIndicator(value: unknown): boolean {
 }
 
 function phaseMessage(phase: CompactionPhase): string {
-	const interrupt = keyText("app.interrupt") || "esc";
-	const label = {
-		preparing: "Preparing context...",
-		summarizing: "Summarizing context...",
-		finalizing: "Finalizing context...",
+	const action = {
+		preparing: "Preparing",
+		summarizing: "Summarizing",
+		finalizing: "Finalizing",
 	}[phase];
-	return `${label} (${interrupt} to cancel)`;
+	const subject =
+		phaseState.tokensBefore === undefined ? "context" : `${formatTokenCount(phaseState.tokensBefore)} tokens`;
+	const reason = phaseState.reason === undefined ? "" : ` (${phaseState.reason})`;
+	return `${action} ${subject}…${reason}`;
 }
 
-function setCompactionPhase(phase: CompactionPhase): void {
-	if (!phaseState.activeCompactionIndicator || phaseState.activeCompactionPhase === phase) return;
+function setCompactionPhase(phase: CompactionPhase, tokensBefore?: number, reason?: CompactionReason): void {
+	const tokensChanged = tokensBefore !== undefined && tokensBefore !== phaseState.tokensBefore;
+	const effectiveReason = globalPhaseState[reasonOverrideKey] ?? reason;
+	const reasonChanged = effectiveReason !== undefined && effectiveReason !== phaseState.reason;
+	if (tokensBefore !== undefined) phaseState.tokensBefore = tokensBefore;
+	if (effectiveReason !== undefined) phaseState.reason = effectiveReason;
+	if (phaseState.activeCompactionPhase === phase && !tokensChanged && !reasonChanged) return;
 	phaseState.activeCompactionPhase = phase;
-	phaseState.activeCompactionIndicator.setMessage?.(phaseMessage(phase));
+	phaseState.activeCompactionIndicator?.setMessage?.(phaseMessage(phase));
+}
+
+function renderCompactionIndicator(indicator: CompactionIndicator, width: number): string[] {
+	width = Math.max(1, width);
+	const frame = indicator.frames?.[indicator.currentFrame ?? 0] ?? "";
+	const spinner = indicator.renderIndicatorVerbatim ? frame : (indicator.spinnerColorFn?.(frame) ?? frame);
+	const message = indicator.messageColorFn?.(indicator.message ?? "") ?? indicator.message ?? "";
+	const label = frame ? `${spinner} ${message}` : message;
+	const remaining = width - visibleWidth(label) - 2;
+	if (remaining < 4) return ["", truncateToWidth(label, width, "")];
+	const left = Math.floor(remaining / 2);
+	const right = remaining - left;
+	const rule = indicator.messageColorFn ?? ((text: string) => text);
+	return ["", `${rule(horizontalRule.repeat(left))} ${label} ${rule(horizontalRule.repeat(right))}`];
+}
+
+function installIndicatorPatch(indicator: CompactionIndicator): void {
+	if (indicator[indicatorPatchKey]) return;
+	indicator[indicatorPatchKey] = true;
+	indicator.render = (width) => renderCompactionIndicator(indicator, width);
 }
 
 function clearActiveCompactionIndicator(mode?: InteractiveModeLike): void {
@@ -70,6 +119,8 @@ function clearActiveCompactionIndicator(mode?: InteractiveModeLike): void {
 	phaseState.activeCompactionIndicator = undefined;
 	phaseState.activeCompactionMode = undefined;
 	phaseState.activeCompactionPhase = undefined;
+	phaseState.tokensBefore = undefined;
+	phaseState.reason = undefined;
 }
 async function waitForFinalizingRender(): Promise<void> {
 	if (phaseState.activeCompactionPhase !== "finalizing") return;
@@ -90,6 +141,7 @@ function installInteractiveModePatch(): void {
 	): void {
 		showStatusIndicator.call(this, indicator);
 		if (isCompactionIndicator(indicator)) {
+			installIndicatorPatch(indicator);
 			// Summary retries replace the loader without another session_before_compact event.
 			const phase = phaseState.activeCompactionPhase === "summarizing" ? "summarizing" : "preparing";
 			phaseState.activeCompactionIndicator = indicator;
@@ -130,6 +182,14 @@ function installSessionManagerPatch(): void {
 
 	prototype.appendCompaction = function appendCompactionWithPhase(this: unknown, ...args: unknown[]): string {
 		setCompactionPhase("finalizing");
+		if (phaseState.reason) {
+			const details = args[3];
+			if (details === undefined) {
+				args[3] = { compactionDivider: { reason: phaseState.reason } };
+			} else if (details && typeof details === "object" && !Array.isArray(details)) {
+				args[3] = { ...details, compactionDivider: { reason: phaseState.reason } };
+			}
+		}
 		return appendCompaction.apply(this, args);
 	};
 	prototype[patchKey] = true;
@@ -139,8 +199,8 @@ export function installCompactionPhasePatch(pi: ExtensionAPI): void {
 	// Pi keeps the compaction indicator behind InteractiveMode internals and does not expose start/end hooks.
 	installInteractiveModePatch();
 	installSessionManagerPatch();
-	pi.on("session_before_compact", () => {
-		setCompactionPhase("summarizing");
+	pi.on("session_before_compact", (event) => {
+		setCompactionPhase("summarizing", event.preparation.tokensBefore, event.reason);
 	});
 	pi.on("session_compact", async () => {
 		await waitForFinalizingRender();

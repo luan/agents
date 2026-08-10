@@ -7,6 +7,7 @@ import {
 	type Theme,
 } from "@earendil-works/pi-coding-agent";
 import { Box, type Component, Markdown, type MarkdownTheme, visibleWidth } from "@earendil-works/pi-tui";
+import { formatTokenCount } from "./format-tokens";
 import { installCompactionPhasePatch } from "./phase-indicator";
 
 const patchKey = Symbol.for("agents.pi.compaction-divider.patch");
@@ -15,6 +16,12 @@ const compactionIcon = "\uf083";
 const horizontalRule = "─";
 
 type RenderTheme = Pick<Theme, "fg" | "bg">;
+type CompactionReason = "manual" | "threshold" | "overflow";
+
+type CompactionMetadata = {
+	tokensAfter?: number;
+	reason?: CompactionReason;
+};
 
 type ThemeCapableUI = {
 	theme?: RenderTheme;
@@ -23,6 +30,7 @@ type ThemeCapableUI = {
 type CompactionMessage = {
 	tokensBefore: number;
 	summary: string;
+	timestamp?: number;
 };
 
 type CompactionComponent = {
@@ -35,6 +43,7 @@ type CompactionComponent = {
 type SummaryDivider = {
 	setExpanded(expanded: boolean): void;
 	setTheme(theme: RenderTheme): void;
+	setMetadata(metadata: CompactionMetadata | undefined): void;
 	invalidate(): void;
 	render(width: number): string[];
 };
@@ -42,6 +51,7 @@ type SummaryDivider = {
 type PatchState = {
 	theme: RenderTheme;
 	dividers: WeakMap<CompactionComponent, SummaryDivider>;
+	metadataByTimestamp: ReadonlyMap<number, CompactionMetadata>;
 };
 
 type PatchedPrototype = {
@@ -65,6 +75,7 @@ class SummaryDividerComponent implements SummaryDivider, Component {
 		private readonly message: CompactionMessage,
 		private readonly markdownTheme: MarkdownTheme,
 		private theme: RenderTheme,
+		private metadata?: CompactionMetadata,
 	) {}
 
 	setExpanded(expanded: boolean): void {
@@ -76,6 +87,12 @@ class SummaryDividerComponent implements SummaryDivider, Component {
 	setTheme(theme: RenderTheme): void {
 		if (this.theme === theme) return;
 		this.theme = theme;
+		this.invalidate();
+	}
+
+	setMetadata(metadata: CompactionMetadata | undefined): void {
+		if (this.metadata === metadata) return;
+		this.metadata = metadata;
 		this.invalidate();
 	}
 
@@ -97,7 +114,12 @@ class SummaryDividerComponent implements SummaryDivider, Component {
 	}
 
 	private renderDivider(width: number): string {
-		const label = `${compactionIcon} compacted`;
+		const range =
+			this.metadata?.tokensAfter === undefined
+				? formatTokenCount(this.message.tokensBefore)
+				: `${formatTokenCount(this.message.tokensBefore)} → ${formatTokenCount(this.metadata.tokensAfter)}`;
+		const reason = this.metadata?.reason === undefined ? "" : ` (${this.metadata.reason})`;
+		const label = `${compactionIcon} compacted ${range}${reason}`;
 		const expandKey = keyText("app.tools.expand") || "ctrl+o";
 		const hint = `· ${expandKey}`;
 		const plainWidth = visibleWidth(`${label} ${hint}`);
@@ -120,7 +142,7 @@ class SummaryDividerComponent implements SummaryDivider, Component {
 		const box = new Box(1, 1, (text) => this.theme.bg("customMessageBg", text));
 		box.addChild(
 			new Markdown(
-				`**Compacted from ${this.message.tokensBefore.toLocaleString()} tokens**\n\n${this.message.summary}`,
+				`**Compacted from ${this.message.tokensBefore.toLocaleString()}${this.metadata?.tokensAfter === undefined ? "" : ` to ${this.metadata.tokensAfter.toLocaleString()}`} tokens${this.metadata?.reason === undefined ? "" : ` (${this.metadata.reason})`}**\n\n${this.message.summary}`,
 				0,
 				0,
 				this.markdownTheme,
@@ -132,6 +154,30 @@ class SummaryDividerComponent implements SummaryDivider, Component {
 	}
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function collectMetadata(ctx: ExtensionContext): Map<number, CompactionMetadata> {
+	const metadata = new Map<number, CompactionMetadata>();
+	for (const entry of ctx.sessionManager.getEntries()) {
+		if (entry.type !== "compaction" || !isRecord(entry.details)) continue;
+		const requestMeta = entry.details.requestMeta;
+		const dividerMeta = entry.details.compactionDivider;
+		const tokensAfter =
+			isRecord(requestMeta) && typeof requestMeta.tokensAfter === "number" ? requestMeta.tokensAfter : undefined;
+		const reason =
+			isRecord(dividerMeta) &&
+			(dividerMeta.reason === "manual" || dividerMeta.reason === "threshold" || dividerMeta.reason === "overflow")
+				? dividerMeta.reason
+				: undefined;
+		if (tokensAfter === undefined && reason === undefined) continue;
+		const timestamp = typeof entry.timestamp === "number" ? entry.timestamp : Date.parse(entry.timestamp);
+		if (Number.isFinite(timestamp)) metadata.set(timestamp, { tokensAfter, reason });
+	}
+	return metadata;
+}
+
 function getDivider(state: PatchState, component: CompactionComponent): SummaryDivider {
 	const existing = state.dividers.get(component);
 	if (existing) return existing;
@@ -140,6 +186,7 @@ function getDivider(state: PatchState, component: CompactionComponent): SummaryD
 		component.message,
 		component.markdownTheme ?? getMarkdownTheme(),
 		state.theme,
+		state.metadataByTimestamp.get(component.message.timestamp ?? Number.NaN),
 	);
 	state.dividers.set(component, divider);
 	return divider;
@@ -148,14 +195,19 @@ function getDivider(state: PatchState, component: CompactionComponent): SummaryD
 function updateDivider(state: PatchState, component: CompactionComponent): SummaryDivider {
 	const divider = getDivider(state, component);
 	divider.setTheme(state.theme);
+	divider.setMetadata(state.metadataByTimestamp.get(component.message.timestamp ?? Number.NaN));
 	divider.setExpanded(component.expanded);
 	return divider;
 }
 
-export function installCompactionDividerPatch(theme: RenderTheme = plainTheme): void {
+export function installCompactionDividerPatch(
+	theme: RenderTheme = plainTheme,
+	metadataByTimestamp: ReadonlyMap<number, CompactionMetadata> = new Map(),
+): void {
 	const prototype = CompactionSummaryMessageComponent.prototype as unknown as PatchedPrototype;
-	const state = prototype[patchKey] ?? { theme, dividers: new WeakMap() };
+	const state = prototype[patchKey] ?? { theme, dividers: new WeakMap(), metadataByTimestamp };
 	state.theme = theme;
+	state.metadataByTimestamp = metadataByTimestamp;
 	state.dividers = new WeakMap();
 	prototype[patchKey] = state;
 	prototype.updateDisplay = function updateCompactionDividerDisplay(this: CompactionComponent): void {
@@ -173,11 +225,14 @@ export function installCompactionDividerPatch(theme: RenderTheme = plainTheme): 
 export default function compactionDividerExtension(pi: ExtensionAPI): void {
 	installCompactionPhasePatch(pi);
 	installCompactionDividerPatch();
-	pi.on("session_start", (_event, ctx: ExtensionContext) => {
+	const refresh = (ctx: ExtensionContext): void => {
 		if (ctx.mode !== "tui") return;
 		const { theme } = ctx.ui as ThemeCapableUI;
-		if (theme && typeof theme.fg === "function" && typeof theme.bg === "function") {
-			installCompactionDividerPatch(theme);
-		}
-	});
+		installCompactionDividerPatch(
+			theme && typeof theme.fg === "function" && typeof theme.bg === "function" ? theme : plainTheme,
+			collectMetadata(ctx),
+		);
+	};
+	pi.on("session_start", (_event, ctx) => refresh(ctx));
+	pi.on("session_compact", (_event, ctx) => refresh(ctx));
 }

@@ -1,6 +1,6 @@
 import { CustomEditor } from "@earendil-works/pi-coding-agent";
 import type { EditorComponent } from "@earendil-works/pi-tui";
-import { type EditorFactory, type EditorUi, installEditorLayer } from "../shared/tui";
+import { type EditorFactory, type EditorUi, installEditorLayer, removeEditorLayer } from "../shared/tui";
 import { colorizeHandles, handleSpans } from "./handles";
 
 const EDITOR_LAYER_ID = Symbol.for("imageAttach.editorHandleLayer");
@@ -109,4 +109,7 @@ function wrapEditorFactory(previous: EditorFactory | undefined): EditorFactory {
 
 export function installEditorHandleHighlight(ui: EditorUi): void {
 	installEditorLayer(ui, EDITOR_LAYER_ID, wrapEditorFactory);
+}
+export function removeEditorHandleHighlight(ui: EditorUi): void {
+	removeEditorLayer(ui, EDITOR_LAYER_ID);
 }

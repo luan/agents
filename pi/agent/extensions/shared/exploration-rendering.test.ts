@@ -6,6 +6,7 @@ import {
 	registerExplorationEventHandlers,
 	registerExplorationTool,
 	renderExplorationCall,
+	renderExplorationSummaryTitle,
 } from "./exploration-rendering";
 
 const theme = {
@@ -17,7 +18,7 @@ const theme = {
 	},
 };
 
-test("exploration grouping coalesces read and search tool calls", () => {
+test("exploration grouping keeps incompatible render targets separate", () => {
 	const handlers = new Map<string, ((event: any) => void)[]>();
 	const pi = {
 		on(event: string, handler: (event: any) => void) {
@@ -52,7 +53,7 @@ test("exploration grouping coalesces read and search tool calls", () => {
 	emit("tool_execution_end", { toolName: "read", toolCallId: "read-1" });
 	emit("tool_execution_end", { toolName: "grep", toolCallId: "grep-1" });
 
-	expect(isExplorationHidden("read-1")).toBe(true);
+	expect(isExplorationHidden("read-1")).toBe(false);
 });
 
 test("exploration grouping invalidates calls rendered before their start events", () => {
@@ -184,4 +185,23 @@ test("exploration grouping rebuilds contiguous reads when a session resumes", ()
 			isPartial: false,
 		}),
 	).not.toContain("/tmp/old.ts");
+});
+test("resource reads with different paths do not share exploration targets", () => {
+	expect(readAction("pr://owner/repo/1").renderTarget).not.toBe(readAction("pr://owner/repo/2").renderTarget);
+});
+
+test("typed exploration summary title renders without throwing", () => {
+	expect(() =>
+		renderExplorationSummaryTitle(
+			{
+				icon: "I",
+				iconRole: "muted",
+				label: "Issue",
+				title: "#1",
+				subtitle: "Summary",
+				typeIcon: "T",
+			},
+			theme,
+		),
+	).not.toThrow();
 });

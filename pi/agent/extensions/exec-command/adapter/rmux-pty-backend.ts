@@ -8,15 +8,23 @@ import type { PtyBackend, PtyProcess, PtySpawnOptions } from "./pty-backend.js";
 
 const EXIT_POLL_MS = 100;
 const RMUX_CONFIG = [
+	'set-option -g default-terminal "$TERM"',
+	"set-option -g escape-time 0",
+	"set-option -g set-clipboard on",
+	"set-option -g extended-keys on",
+	"set-option -g extended-keys-format xterm",
+	"set-option -g allow-passthrough on",
 	"set-option -g status off",
 	"set-option -g prefix None",
 	"set-option -g prefix2 None",
 	"set-option -g mouse off",
+	'set-option -g terminal-features "$TERM:clipboard:ccolour:cstyle:focus:title:extkeys"',
 	"set-option -g base-index 0",
 	"set-window-option -g pane-base-index 0",
 	"unbind-key -a",
 	"unbind-key -a -T root",
 	"bind-key -n C-] detach-client",
+	"bind-key -n M-BSpace send-keys -l \\033\\177",
 	"",
 ].join("\n");
 

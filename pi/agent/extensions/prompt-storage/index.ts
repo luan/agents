@@ -29,6 +29,7 @@ import {
 	type EditorFactory,
 	type EditorUi,
 	installEditorLayer,
+	removeEditorLayer,
 	setOrderedAboveEditorWidget,
 	textComponent,
 } from "../shared/tui";
@@ -796,11 +797,20 @@ function restackStashHud(ctx: ExtensionContext): void {
 	}, 0);
 }
 
-function wrapEditorFactory(previous: EditorFactory | undefined, ctx: ExtensionContext, config: Config): EditorFactory {
+function wrapEditorFactory(
+	previous: EditorFactory | undefined,
+	getContext: () => ExtensionContext | undefined,
+	config: Config,
+): EditorFactory {
 	const wrapped: EditorFactory = (tui, theme, keybindings) => {
 		const editor = previous?.(tui, theme, keybindings) ?? new CustomEditor(tui, theme, keybindings);
 		const previousHandleInput = editor.handleInput?.bind(editor);
 		editor.handleInput = (data: string) => {
+			const ctx = getContext();
+			if (!ctx) {
+				previousHandleInput?.(data);
+				return;
+			}
 			if (matchesKey(data, shortcutKey(config.shortcuts.stash))) {
 				runEditorAction(ctx, () => stashEditor(ctx));
 				return;
@@ -820,18 +830,24 @@ function wrapEditorFactory(previous: EditorFactory | undefined, ctx: ExtensionCo
 	return wrapped;
 }
 
-function installEditorShortcuts(ctx: ExtensionContext, config: Config): void {
+function installEditorShortcuts(
+	ctx: ExtensionContext,
+	getContext: () => ExtensionContext | undefined,
+	config: Config,
+): void {
 	installEditorLayer(ctx.ui as unknown as EditorUi, EDITOR_LAYER_ID, (factory) =>
-		wrapEditorFactory(factory, ctx, config),
+		wrapEditorFactory(factory, getContext, config),
 	);
 }
 
 export default function promptStorage(pi: ExtensionAPI) {
 	const config = loadConfig();
 	if (!config.enabled) return;
+	let activeContext: ExtensionContext | undefined;
 
 	pi.on("session_start", async (_event, ctx) => {
-		installEditorShortcuts(ctx, config);
+		activeContext = ctx;
+		installEditorShortcuts(ctx, () => activeContext, config);
 		await updateStashHud(ctx);
 		restackStashHud(ctx);
 	});
@@ -864,7 +880,9 @@ export default function promptStorage(pi: ExtensionAPI) {
 		restackStashHud(ctx);
 	});
 
-	pi.on("session_shutdown", async () => {
+	pi.on("session_shutdown", (_event, ctx) => {
+		if (ctx.hasUI) removeEditorLayer(ctx.ui, EDITOR_LAYER_ID);
+		activeContext = undefined;
 		if (restackTimer) clearTimeout(restackTimer);
 		restackTimer = undefined;
 		stashHud = undefined;

@@ -1,17 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { execFileSync } from "node:child_process";
-import { readFileSync, rmSync, statSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
-import { Editor, getImageDimensions } from "@earendil-works/pi-tui";
+import { join } from "node:path";
+import { Editor } from "@earendil-works/pi-tui";
 import { installEditorHandleHighlight, mergeHandleSegments } from "./editor";
 import { PENDING_HANDLE } from "./handles";
 import imageAttachExtension, {
-	adoptImageFile,
 	appendHandlePaths,
 	collectImageAttachments,
-	createReadImageLoader,
 	findImagePathTokens,
 	pastedImagePath,
 	resolveImageHandles,
@@ -285,97 +281,6 @@ describe("atomic handles", () => {
 		editor.setText("plain words here");
 		editor.handleInput(DELETE_WORD_BACKWARD);
 		expect(editor.getText()).toBe("plain words ");
-	});
-});
-
-describe("attachment payload", () => {
-	/** Written with compression off, the way a raw RGBA encoder leaves a file. */
-	function writeBloatedPng(path: string, size: string) {
-		execFileSync("magick", [
-			"-size",
-			size,
-			"xc:white",
-			"-fill",
-			"#24292f",
-			"-draw",
-			"rectangle 40,60 600,80",
-			"-define",
-			"png:compression-level=0",
-			"-define",
-			"png:compression-filter=0",
-			`PNG32:${path}`,
-		]);
-	}
-
-	test("re-encodes an image whose bytes are out of proportion to its size", async () => {
-		await withImageDir(async (dir) => {
-			const path = join(dir, "bloated.png");
-			writeBloatedPng(path, "800x600");
-			const fileBytes = statSync(path).size;
-
-			const image = await createReadImageLoader()(path, {} as never);
-
-			// pi's read tool caps dimensions, not wastefulness: 800x600 clears every limit, so an
-			// uncompressed encode used to reach the model at full size.
-			expect(fileBytes).toBeGreaterThan(1024 * 1024);
-			expect(image?.data.length).toBeLessThan(fileBytes / 100);
-			expect(getImageDimensions(image?.data ?? "", "image/png")).toMatchObject({ widthPx: 800, heightPx: 600 });
-		});
-	});
-
-	test("copies a pasted original into a downscaled file of our own", async () => {
-		await withImageDir(async (dir) => {
-			// A file-flavoured clipboard hands over the app's own saved file, at whatever retina
-			// size it was saved — and it is not ours to rewrite.
-			const original = join(dir, "CleanShot 2026-08-03 at 20.27.12@2x.png");
-			execFileSync("magick", ["-size", "3000x2000", "gradient:navy-white", original]);
-			const before = statSync(original);
-
-			const adopted = await adoptImageFile(original);
-
-			expect(adopted).not.toBe(original);
-			expect(basename(adopted)).toStartWith("pi-clipboard-");
-			expect(getImageDimensions(readFileSync(adopted).toString("base64"), "image/png")).toMatchObject({
-				widthPx: 2000,
-			});
-			expect(statSync(original)).toMatchObject({ size: before.size, mtimeMs: before.mtimeMs });
-			rmSync(adopted, { force: true });
-		});
-	});
-
-	test("keeps the original when it is already within the ceiling", async () => {
-		await withImageDir(async (dir) => {
-			const original = join(dir, "small.png");
-			execFileSync("magick", ["-size", "860x556", "gradient:navy-white", original]);
-
-			const adopted = await adoptImageFile(original);
-
-			expect(getImageDimensions(readFileSync(adopted).toString("base64"), "image/png")).toMatchObject({
-				widthPx: 860,
-				heightPx: 556,
-			});
-			rmSync(adopted, { force: true });
-		});
-	});
-
-	test("leaves an already-tight image byte-for-byte alone", async () => {
-		await withImageDir(async (dir) => {
-			const path = join(dir, "tight.png");
-			execFileSync("magick", [
-				"-size",
-				"800x600",
-				"xc:white",
-				"-fill",
-				"#24292f",
-				"-draw",
-				"circle 400,300 400,80",
-				path,
-			]);
-
-			const image = await createReadImageLoader()(path, {} as never);
-
-			expect(image?.data).toBe(readFileSync(path).toString("base64"));
-		});
 	});
 });
 

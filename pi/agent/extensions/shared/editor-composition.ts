@@ -74,3 +74,8 @@ export function installEditorLayer(ui: EditorUi, id: symbol, layer: EditorLayer)
 	state.layers.set(id, layer);
 	applyComposition(state);
 }
+export function removeEditorLayer(ui: EditorUi, id: symbol): void {
+	const state = (ui as ComposableEditorUi)[EDITOR_COMPOSITION_STATE];
+	if (!state?.layers.delete(id)) return;
+	applyComposition(state);
+}

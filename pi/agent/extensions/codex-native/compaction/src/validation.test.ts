@@ -8,6 +8,15 @@ import {
 	NATIVE_COMPACTION_SHIM_SUMMARY,
 } from "./types";
 
+const compactionPhaseSetterKey = Symbol.for("agents.pi.compaction-phases.set");
+const phaseGlobal = globalThis as typeof globalThis & {
+	[compactionPhaseSetterKey]?: (
+		phase: "summarizing",
+		tokensBefore?: number,
+		reason?: "manual" | "threshold" | "overflow",
+	) => void;
+};
+
 type AssistantPhase = "commentary" | "final_answer";
 
 type ToolCallBlock = {
@@ -30,6 +39,7 @@ type TestModel = {
 	baseUrl: string;
 	input: string[];
 	reasoning: boolean;
+	thinkingLevelMap?: Partial<Record<string, string | null>>;
 };
 
 type TestSessionEntry = {
@@ -51,6 +61,7 @@ type CompactClientResult = {
 	compactedWindow: unknown[];
 	compactResponseId?: string;
 	createdAt?: string;
+	estimatedTokensAfter?: number;
 	response: {
 		id?: string;
 		created_at?: number | string;
@@ -61,6 +72,7 @@ type CompactClientResult = {
 type HookHarnessOptions = {
 	compactResult?: CompactClientResult;
 	settings?: Partial<ExtensionSettings>;
+	thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 };
 
 const defaultModel: TestModel = {
@@ -395,6 +407,17 @@ async function loadHookHarness(options: HookHarnessOptions = {}): Promise<{
 	const handlers = new Map<string, HookHandler>();
 	const { default: extension } = await import(`./extension-runtime.ts?test=${crypto.randomUUID()}`);
 	extension({
+		getActiveTools: () => ["read"],
+		getAllTools: () => [
+			{
+				name: "read",
+				description: "Read a file.",
+				parameters: { type: "object", properties: { path: { type: "string" } } },
+				promptGuidelines: undefined,
+				sourceInfo: { type: "extension", path: "test" },
+			},
+		],
+		getThinkingLevel: () => options.thinkingLevel ?? "high",
 		on: (eventName: string, handler: HookHandler) => {
 			handlers.set(eventName, handler);
 		},
@@ -416,6 +439,7 @@ async function loadHookHarness(options: HookHarnessOptions = {}): Promise<{
 afterEach(() => {
 	serializerImportCounter = 0;
 	timestampCounter = 0;
+	delete phaseGlobal[compactionPhaseSetterKey];
 	mock.restore();
 });
 
@@ -430,6 +454,9 @@ test("manual /compact preserves tool/result ordering + assistant phases and pers
 			content: [],
 		},
 	];
+	const phaseCalls: Array<[string, number | undefined, string | undefined]> = [];
+	phaseGlobal[compactionPhaseSetterKey] = (phase, tokensBefore, reason) =>
+		phaseCalls.push([phase, tokensBefore, reason]);
 	const { sessionBeforeCompact, compactCalls } = await loadHookHarness({
 		compactResult: {
 			ok: true,
@@ -437,6 +464,7 @@ test("manual /compact preserves tool/result ordering + assistant phases and pers
 			compactedWindow,
 			compactResponseId: "resp_manual",
 			createdAt: nextTimestamp(),
+			estimatedTokensAfter: 96,
 			response: {
 				id: "resp_manual",
 				created_at: nextTimestamp(),
@@ -468,6 +496,7 @@ test("manual /compact preserves tool/result ordering + assistant phases and pers
 	const event = {
 		signal: new AbortController().signal,
 		customInstructions: undefined,
+		reason: "manual" as const,
 		preparation: {
 			tokensBefore: 512,
 			firstKeptEntryId: user.id,
@@ -511,6 +540,254 @@ test("manual /compact preserves tool/result ordering + assistant phases and pers
 	expect(result.compaction.firstKeptEntryId).toBe(user.id);
 	expect(result.compaction.tokensBefore).toBe(512);
 	expect((result.compaction.details as { compactedWindow: unknown[] }).compactedWindow).toEqual(compactedWindow);
+	expect(phaseCalls[0]).toEqual(["summarizing", 512, "manual"]);
+	expect((result.compaction.details as { requestMeta: { tokensAfter?: number } }).requestMeta.tokensAfter).toBe(96);
+});
+
+test("V2 compaction reuses current request controls and marks Codex compaction metadata", async () => {
+	const { sessionBeforeCompact, beforeProviderRequest, compactCalls } = await loadHookHarness();
+	const model = {
+		...defaultModel,
+		provider: "openai-codex",
+		api: "openai-codex-responses",
+		baseUrl: "https://chatgpt.com/backend-api",
+	};
+	const user = createUserEntry("metadata_user", "Preserve current request controls.");
+	const context = createContext({
+		model,
+		branchEntries: [user],
+		sessionContextMessages: [toReplayMessage(user)],
+	});
+
+	await beforeProviderRequest(
+		{
+			payload: {
+				model: model.id,
+				input: [],
+				instructions: "Current instructions v1",
+				tools: [{ type: "function", name: "read" }],
+				tool_choice: "auto",
+				parallel_tool_calls: true,
+				reasoning: { effort: "high", summary: "auto" },
+				include: ["custom.include"],
+				prompt_cache_key: "cache-key",
+				client_metadata: {
+					session_id: "session-validation",
+					thread_id: "thread-validation",
+					"x-codex-window-id": "window-current",
+					"x-codex-turn-metadata": JSON.stringify({
+						session_id: "session-validation",
+						request_kind: "turn",
+					}),
+				},
+			},
+		},
+		context,
+	);
+
+	await sessionBeforeCompact(
+		{
+			signal: new AbortController().signal,
+			reason: "overflow",
+			willRetry: true,
+			customInstructions: undefined,
+			preparation: {
+				tokensBefore: 512,
+				firstKeptEntryId: user.id,
+				previousSummary: undefined,
+				messagesToSummarize: [toReplayMessage(user)],
+				turnPrefixMessages: [],
+			},
+		},
+		context,
+	);
+
+	const request = compactCalls[0]?.request as Record<string, unknown>;
+	expect(request.tools).toEqual([{ type: "function", name: "read" }]);
+	expect(request.parallel_tool_calls).toBe(true);
+	expect(request.reasoning).toEqual({ effort: "high", summary: "auto" });
+	expect(request.include).toEqual(["custom.include", "reasoning.encrypted_content"]);
+	expect(request.prompt_cache_key).toBe("cache-key");
+	const clientMetadata = request.client_metadata as Record<string, unknown>;
+	expect(clientMetadata.session_id).toBe("session-validation");
+	expect(clientMetadata["x-codex-window-id"]).toBe("window-current");
+	const turnMetadata = JSON.parse(String(clientMetadata["x-codex-turn-metadata"]));
+	expect(turnMetadata).toMatchObject({
+		session_id: "session-validation",
+		request_kind: "compaction",
+		compaction: {
+			trigger: "auto",
+			reason: "context_limit",
+			implementation: "responses_compaction_v2",
+			phase: "mid_turn",
+			strategy: "memento",
+		},
+	});
+});
+
+test("V2 compaction rebuilds controls and session metadata without a cached provider request", async () => {
+	const { sessionBeforeCompact, compactCalls } = await loadHookHarness();
+	const model = {
+		...defaultModel,
+		provider: "openai-codex",
+		api: "openai-codex-responses",
+		baseUrl: "https://chatgpt.com/backend-api",
+		thinkingLevelMap: { high: "medium" },
+	};
+	const user = createUserEntry("resume_user", "Compact immediately after resume.");
+	const context = createContext({
+		model,
+		branchEntries: [user],
+		sessionContextMessages: [toReplayMessage(user)],
+	});
+
+	await sessionBeforeCompact(
+		{
+			signal: new AbortController().signal,
+			willRetry: false,
+			customInstructions: undefined,
+			preparation: {
+				tokensBefore: 256,
+				firstKeptEntryId: user.id,
+				previousSummary: undefined,
+				messagesToSummarize: [toReplayMessage(user)],
+				turnPrefixMessages: [],
+			},
+		},
+		context,
+	);
+
+	const request = compactCalls[0]?.request as Record<string, unknown>;
+	expect(request.tools).toEqual([
+		{
+			type: "function",
+			name: "read",
+			description: "Read a file.",
+			parameters: { type: "object", properties: { path: { type: "string" } } },
+			strict: false,
+		},
+	]);
+	expect(request.reasoning).toEqual({ effort: "medium", summary: "auto" });
+	expect(request.parallel_tool_calls).toBe(true);
+	const clientMetadata = request.client_metadata as Record<string, unknown>;
+	expect(clientMetadata).toMatchObject({
+		session_id: "session-validation",
+		thread_id: "session-validation",
+		"x-codex-window-id": "session-validation",
+	});
+	expect(typeof clientMetadata.turn_id).toBe("string");
+	const turnMetadata = JSON.parse(String(clientMetadata["x-codex-turn-metadata"]));
+	expect(turnMetadata).toMatchObject({
+		session_id: "session-validation",
+		thread_id: "session-validation",
+		window_id: "session-validation",
+		request_kind: "compaction",
+		turn_id: clientMetadata.turn_id,
+	});
+});
+
+test("V2 fallback omits reasoning when current thinking level resolves to off", async () => {
+	const { sessionBeforeCompact, compactCalls } = await loadHookHarness({ thinkingLevel: "off" });
+	const user = createUserEntry("thinking_off_user", "Do not request reasoning.");
+	const context = createContext({
+		branchEntries: [user],
+		sessionContextMessages: [toReplayMessage(user)],
+	});
+
+	await sessionBeforeCompact(
+		{
+			signal: new AbortController().signal,
+			reason: "manual",
+			willRetry: false,
+			customInstructions: undefined,
+			preparation: {
+				tokensBefore: 256,
+				firstKeptEntryId: user.id,
+				previousSummary: undefined,
+				messagesToSummarize: [toReplayMessage(user)],
+				turnPrefixMessages: [],
+			},
+		},
+		context,
+	);
+
+	const request = compactCalls[0]?.request as Record<string, unknown>;
+	expect(request.reasoning).toBeUndefined();
+});
+
+test("V2 fallback clamps a null-mapped thinking level to the nearest supported level", async () => {
+	const { sessionBeforeCompact, compactCalls } = await loadHookHarness();
+	const user = createUserEntry("thinking_null_user", "Use model thinking map.");
+	const context = createContext({
+		model: { ...defaultModel, thinkingLevelMap: { high: null } },
+		branchEntries: [user],
+		sessionContextMessages: [toReplayMessage(user)],
+	});
+
+	await sessionBeforeCompact(
+		{
+			signal: new AbortController().signal,
+			reason: "manual",
+			willRetry: false,
+			customInstructions: undefined,
+			preparation: {
+				tokensBefore: 256,
+				firstKeptEntryId: user.id,
+				previousSummary: undefined,
+				messagesToSummarize: [toReplayMessage(user)],
+				turnPrefixMessages: [],
+			},
+		},
+		context,
+	);
+
+	const request = compactCalls[0]?.request as Record<string, unknown>;
+	expect(request.reasoning).toEqual({ effort: "medium", summary: "auto" });
+});
+
+test("V2 compaction ignores cached request controls after a model switch", async () => {
+	const { sessionBeforeCompact, beforeProviderRequest, compactCalls } = await loadHookHarness();
+	const oldModel = { ...defaultModel };
+	const user = createUserEntry("model_switch_user", "Use current model controls.");
+	const context = createContext({
+		model: oldModel,
+		branchEntries: [user],
+		sessionContextMessages: [toReplayMessage(user)],
+	});
+	await beforeProviderRequest(
+		{
+			payload: {
+				model: oldModel.id,
+				input: [],
+				tools: [{ type: "function", name: "stale_tool" }],
+				reasoning: { effort: "low" },
+			},
+		},
+		context,
+	);
+	context.model = { ...oldModel, id: "gpt-5-current", name: "gpt-5-current" } as never;
+
+	await sessionBeforeCompact(
+		{
+			signal: new AbortController().signal,
+			reason: "manual",
+			willRetry: false,
+			customInstructions: undefined,
+			preparation: {
+				tokensBefore: 256,
+				firstKeptEntryId: user.id,
+				previousSummary: undefined,
+				messagesToSummarize: [toReplayMessage(user)],
+				turnPrefixMessages: [],
+			},
+		},
+		context,
+	);
+
+	const request = compactCalls[0]?.request as Record<string, unknown>;
+	expect(JSON.stringify(request.tools)).not.toContain("stale_tool");
+	expect(JSON.stringify(request.tools)).toContain('"read"');
+	expect(request.reasoning).toEqual({ effort: "high", summary: "auto" });
 });
 
 test("first native compaction sends the full current session context, including Pi's kept recent window", async () => {
@@ -629,7 +906,7 @@ test("repeated native compaction reuses the latest stored compacted window inste
 	expect(JSON.stringify(compactRequest.input)).not.toContain("Original context before native compaction.");
 });
 
-test("session_before_compact fails open when the latest compaction is not native", async () => {
+test("session_before_compact migrates a non-native checkpoint into native compaction", async () => {
 	const { sessionBeforeCompact, compactCalls } = await loadHookHarness();
 	const model = { ...defaultModel };
 	const olderUser = createUserEntry("older_non_native_user", "Context from before a non-native compaction.");
@@ -645,6 +922,7 @@ test("session_before_compact fails open when the latest compaction is not native
 	const event = {
 		signal: new AbortController().signal,
 		customInstructions: undefined,
+		reason: "threshold" as const,
 		preparation: {
 			tokensBefore: 768,
 			firstKeptEntryId: currentUser.id,
@@ -668,8 +946,11 @@ test("session_before_compact fails open when the latest compaction is not native
 		}),
 	);
 
-	expect(result).toBeUndefined();
-	expect(compactCalls).toHaveLength(0);
+	expect(result).toMatchObject({ compaction: { tokensBefore: 768 } });
+	expect(compactCalls).toHaveLength(1);
+	const compactRequest = compactCalls[0]?.request as { input: unknown[] };
+	expect(JSON.stringify(compactRequest.input)).toContain("Legacy Pi summary");
+	expect(JSON.stringify(compactRequest.input)).toContain("Current context after a non-native compaction.");
 });
 
 test("first post-compaction turn rewrites to fresh preamble + opaque compacted window + live tail without duplication", async () => {

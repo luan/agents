@@ -220,7 +220,7 @@ export default function evalExtension(pi: ExtensionAPI): void {
 			"Execute JavaScript, TypeScript, or Python in persistent session-scoped process kernels. State survives calls per language; reset recreates that language kernel. Use read(path) and display(value) for file analysis and structured output.",
 		promptSnippet: "Evaluate persistent JavaScript/TypeScript or Python for data processing and large-file analysis.",
 		promptGuidelines: [
-			"Use eval for multi-step JavaScript/TypeScript or Python analysis where retained state is useful.",
+			"Use eval first for small JavaScript/TypeScript repros and local imports. Use `bun -e` only when Bun runtime behavior matters.",
 			"Use read(path) inside eval to process files without loading them into the conversation.",
 			"Use display(value), console.log(...), or print(...) for model-visible output.",
 		],

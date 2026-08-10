@@ -16,9 +16,10 @@ Create high-signal, conventional commits that explain intent.
 
 - Format: `type(scope): description`
 - Types: `feat`, `fix`, `perf`, `docs`, `test`, `style`, `build`, `ci`, `chore`, `revert`
-- Description: imperative mood, lowercase start, no trailing period, <= 72 chars
+- Description: imperative mood, lowercase start, no trailing period, <= 50 chars when possible, hard cap 72
 - Scope: optional, but include when it clarifies ownership
-- Body (optional): explain why and impact, not line-by-line mechanics
+- Body: omit when the subject explains the change. Add it only for non-obvious why, breaking changes, security fixes, data migrations, or reversions. Explain intent and impact, not line-by-line mechanics. Wrap near 72 characters.
+- Do not add `I`, `we`, `now`, `currently`, or AI attribution.
 
 ## Core Flow
 

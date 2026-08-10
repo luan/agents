@@ -7,7 +7,8 @@ const DEFAULT_ARTIFACT_ROOT = "~/.pi/agent/artifacts/openai-native-compaction";
 export const REDACTED_VALUE = "[REDACTED]";
 export const DEFAULT_SUPPORTED_PROVIDERS = ["openai", "openai-codex"] as const;
 export const DEFAULT_SUPPORTED_APIS = ["openai-responses", "openai-codex-responses"] as const;
-const NATIVE_COMPACTION_STRATEGY = "openai-native-compact-v1";
+const LEGACY_NATIVE_COMPACTION_STRATEGY = "openai-native-compact-v1";
+const NATIVE_COMPACTION_STRATEGY = "openai-native-compact-v2";
 export const NATIVE_COMPACTION_SHIM_SUMMARY = "[OpenAI native compaction checkpoint]";
 
 export type DebugArtifactKind = "provider-request" | "compact-response" | "compaction-event" | "lifecycle";
@@ -66,11 +67,12 @@ export type RedactOptions = {
 	placeholder?: string;
 };
 
-type NativeCompactionStrategy = typeof NATIVE_COMPACTION_STRATEGY;
+type NativeCompactionStrategy = typeof LEGACY_NATIVE_COMPACTION_STRATEGY | typeof NATIVE_COMPACTION_STRATEGY;
 type NativeCompactionShimSummary = typeof NATIVE_COMPACTION_SHIM_SUMMARY;
 
 export type NativeCompactionRequestMeta = {
 	tokensBefore?: number;
+	tokensAfter?: number;
 	previousSummaryPresent?: boolean;
 };
 
@@ -165,8 +167,11 @@ function isNativeCompactionRequestMeta(value: unknown): value is NativeCompactio
 		return false;
 	}
 
-	const { tokensBefore, previousSummaryPresent } = value;
-	if (tokensBefore !== undefined && !isFiniteNonNegativeNumber(tokensBefore)) {
+	const { tokensBefore, tokensAfter, previousSummaryPresent } = value;
+	if (
+		(tokensBefore !== undefined && !isFiniteNonNegativeNumber(tokensBefore)) ||
+		(tokensAfter !== undefined && !isFiniteNonNegativeNumber(tokensAfter))
+	) {
 		return false;
 	}
 
@@ -196,7 +201,7 @@ export function isNativeCompactionDetails(value: unknown): value is NativeCompac
 	}
 
 	return (
-		value.strategy === NATIVE_COMPACTION_STRATEGY &&
+		(value.strategy === LEGACY_NATIVE_COMPACTION_STRATEGY || value.strategy === NATIVE_COMPACTION_STRATEGY) &&
 		isNativeCompactionIdentity(value) &&
 		Array.isArray(value.compactedWindow) &&
 		value.compactedWindow.every(isCompactedWindowItem) &&
@@ -227,6 +232,7 @@ export function createNativeCompactionDetails(input: CreateNativeCompactionDetai
 					...(input.requestMeta.tokensBefore !== undefined
 						? { tokensBefore: input.requestMeta.tokensBefore }
 						: {}),
+					...(input.requestMeta.tokensAfter !== undefined ? { tokensAfter: input.requestMeta.tokensAfter } : {}),
 					...(input.requestMeta.previousSummaryPresent !== undefined
 						? {
 								previousSummaryPresent: input.requestMeta.previousSummaryPresent,

@@ -1,7 +1,65 @@
+import { resourceOpenUrl } from "./resources.ts";
+
 type ExplorationStatus = "running" | "done";
 
+export type ExplorationReadSummaryPart = {
+	text: string;
+	role?: string;
+	avatarUrl?: string;
+	italic?: boolean;
+	url?: string;
+};
+
+export type ExplorationReadSummaryRow = {
+	icon?: string;
+	iconRole?: string;
+	leading?: string;
+	leadingRole?: string;
+	text: string;
+	textRole?: string;
+	italic?: boolean;
+	textUrl?: string;
+	prefix?: ExplorationReadSummaryPart;
+	bold?: boolean;
+	branch?: boolean;
+	footer?: boolean;
+	status?: ExplorationReadSummaryPart;
+	details?: ExplorationReadSummaryPart[];
+	avatarUrl?: string;
+};
+
+export type ExplorationReadSummary = {
+	icon: string;
+	iconRole: string;
+	label: string;
+	title: string;
+	subtitle: string;
+	identifier?: ExplorationReadSummaryPart;
+	subtitleUrl?: string;
+	meta?: string;
+	metaParts?: ExplorationReadSummaryPart[];
+	statusLabel?: string;
+	statusRole?: string;
+	statusSuffix?: string;
+	typeIcon?: string;
+	hideIcon?: boolean;
+	repository?: string;
+	repositoryUrl?: string;
+	author?: ExplorationReadSummaryPart;
+	rows?: ExplorationReadSummaryRow[];
+	sideRows?: ExplorationReadSummaryRow[];
+};
+
 type ExplorationAction =
-	| { kind: "read"; title?: string; body: string; path?: string }
+	| {
+			kind: "read";
+			title?: string;
+			body: string;
+			path?: string;
+			renderTarget: string;
+			openUrl?: string;
+			summary?: ExplorationReadSummary;
+	  }
 	| { kind: "find" | "search" | "list" | "run"; title: string; body: string };
 
 interface ExplorationRenderTheme {
@@ -40,13 +98,36 @@ const registeredPis = new WeakSet<object>();
 
 const entriesByToolCallId = new Map<string, ExplorationEntry>();
 const pendingInvalidatesByToolCallId = new Map<string, () => void>();
+const summariesByToolCallId = new Map<string, ExplorationReadSummary>();
 const groupsById = new Map<number, ExplorationGroup>();
 let activeExplorationGroupId: number | undefined;
 let nextGroupId = 1;
 
-export function readAction(filePath: string | undefined): ExplorationAction {
+export function readAction(filePath: string | undefined, cwd?: string): ExplorationAction {
 	const path = filePath ?? "";
-	return { kind: "read", body: path || "file", path };
+	const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(path)?.[1]?.toLowerCase();
+	return {
+		kind: "read",
+		body: path || "file",
+		path,
+		openUrl: scheme ? resourceOpenUrl(path, { cwd }) : undefined,
+		renderTarget: scheme ? `read:${scheme}:${path}` : "read:file",
+	};
+}
+export function updateExplorationRead(toolCallId: string | undefined, summary: ExplorationReadSummary): boolean {
+	if (!toolCallId) return false;
+	summariesByToolCallId.set(toolCallId, summary);
+	const entry = entriesByToolCallId.get(toolCallId);
+	if (!entry || entry.action.kind !== "read") return false;
+	if (JSON.stringify(entry.action.summary) === JSON.stringify(summary)) return true;
+	entry.action = { ...entry.action, summary };
+	entry.invalidate?.();
+	return true;
+}
+export function getExplorationReadSummary(toolCallId: string | undefined): ExplorationReadSummary | undefined {
+	if (!toolCallId) return undefined;
+	const action = entriesByToolCallId.get(toolCallId)?.action;
+	return summariesByToolCallId.get(toolCallId) ?? (action?.kind === "read" ? action.summary : undefined);
 }
 
 export function registerExplorationTool(toolName: string, toAction: ArgsToAction): void {
@@ -164,6 +245,77 @@ function getExplorationRenderInfo(
 	};
 }
 
+function osc8Link(text: string, url: string | undefined): string {
+	return url && !/[\u0000-\u001f\u007f]/.test(url) ? `\x1b]8;;${url}\x1b\\${text}\x1b]8;;\x1b\\` : text;
+}
+
+export function renderExplorationSummaryPart(part: ExplorationReadSummaryPart, theme: ExplorationRenderTheme): string {
+	const text = part.italic ? `\x1b[3m${part.text}\x1b[23m` : part.text;
+	return osc8Link(theme.fg(part.role ?? "muted", text), part.url);
+}
+
+function renderReadSummaryMeta(summary: ExplorationReadSummary, theme: ExplorationRenderTheme): string {
+	const parts = summary.metaParts ?? (summary.meta ? [{ text: summary.meta }] : []);
+	if (parts.length === 0) return "";
+	const separator = theme.fg("dim", " · ");
+	return ` ${theme.fg("dim", "·")} ${parts.map((part) => renderExplorationSummaryPart(part, theme)).join(separator)}`;
+}
+
+export function renderExplorationSummaryTitle(
+	summary: ExplorationReadSummary,
+	theme: ExplorationRenderTheme,
+	padLabel = false,
+): string {
+	const status = summary.statusLabel
+		? `${theme.fg(summary.statusRole ?? summary.iconRole, theme.bold(padLabel ? summary.statusLabel.padEnd(6) : summary.statusLabel))}${summary.statusSuffix ? ` ${summary.statusSuffix}` : ""} `
+		: "";
+	if (summary.typeIcon) {
+		const repository = summary.repository
+			? `${renderExplorationSummaryPart(
+					{ text: summary.repository, role: "muted", italic: true, url: summary.repositoryUrl },
+					theme,
+				)} `
+			: "";
+		const icon = summary.hideIcon ? "" : `${theme.fg(summary.iconRole, summary.icon)} `;
+		const identifier = summary.identifier ? `${renderExplorationSummaryPart(summary.identifier, theme)} ` : "";
+		return `${theme.fg("text", summary.typeIcon)} ${repository}${theme.fg("text", theme.bold(summary.label))} ${icon}${status}${identifier}${theme.fg("accent", summary.title)}`;
+	}
+	return `${theme.fg(summary.iconRole, summary.icon)} ${status}${theme.bold(summary.label)} ${theme.fg("accent", summary.title)}`;
+}
+
+function renderReadSummaryRow(
+	row: ExplorationReadSummaryRow,
+	index: number,
+	total: number,
+	theme: ExplorationRenderTheme,
+): string {
+	const branch = row.branch === false ? "" : theme.fg("dim", `   ${index === total - 1 ? "└─" : "├─"} `);
+	const leading = row.leading
+		? row.leading.trim()
+			? theme.fg(row.leadingRole ?? "muted", row.leading)
+			: row.leading
+		: "";
+	const icon = row.icon ? `${theme.fg(row.iconRole ?? "muted", row.icon)} ` : "";
+	const prefix = row.prefix ? `${renderExplorationSummaryPart(row.prefix, theme)} ` : "";
+	const rowText = row.italic ? `\x1b[3m${row.text}\x1b[23m` : row.text;
+	const styledRowText = row.bold ? theme.bold(rowText) : rowText;
+	const body = row.textUrl
+		? renderExplorationSummaryPart({ text: styledRowText, role: row.textRole, url: row.textUrl }, theme)
+		: theme.fg(row.textRole ?? "muted", styledRowText);
+	const details = row.details?.map((part) => renderExplorationSummaryPart(part, theme)).join(theme.fg("dim", " · "));
+	const status = row.status ? renderExplorationSummaryPart(row.status, theme) : "";
+	return `${branch}${leading}${icon}${prefix}${body}${details ? `${theme.fg("dim", " · ")}${details}` : ""}${status ? ` ${status}` : ""}`;
+}
+function renderActionBody(action: ExplorationAction, theme: ExplorationRenderTheme, role: string): string {
+	if (action.kind === "read" && /^[a-z][a-z0-9+.-]*:\/\//i.test(action.body)) {
+		return renderExplorationSummaryPart(
+			{ text: action.body, role: "mdLink", italic: true, url: action.openUrl },
+			theme,
+		);
+	}
+	return theme.fg(role, action.body);
+}
+
 export function renderExplorationText(
 	actionGroups: ExplorationAction[][],
 	status: ExplorationStatus,
@@ -179,10 +331,21 @@ export function renderExplorationText(
 		);
 		const marker = theme.fg(failed ? "error" : status === "running" ? "dim" : "accent", "●");
 		const count = reads.length > 1 ? ` ${theme.fg("dim", `(${reads.length})`)}` : "";
+		const summary = reads.length === 1 && reads[0]?.summary;
+		if (summary) {
+			let text = [
+				` ${renderExplorationSummaryTitle(summary, theme)}`,
+				` ${theme.fg("dim", "   └─ ")}${osc8Link(theme.fg("mdLink", summary.subtitle), summary.subtitleUrl)}${renderReadSummaryMeta(summary, theme)}`,
+			].join("\n");
+			const rows = [...(summary.sideRows ?? []), ...(summary.rows ?? [])];
+			for (const [index, row] of rows.entries())
+				text += `\n ${renderReadSummaryRow(row, index, rows.length, theme)}`;
+			return text;
+		}
 		let text = `${marker} ${theme.bold("Read")}${count}`;
 		for (const [index, read] of reads.entries()) {
 			const branch = index === reads.length - 1 ? "└─" : "├─";
-			text += `\n${theme.fg("dim", `   ${branch} `)}${theme.fg("accent", read.body)}`;
+			text += `\n${theme.fg("dim", `   ${branch} `)}${renderActionBody(read, theme, "accent")}`;
 		}
 		return text;
 	}
@@ -192,7 +355,7 @@ export function renderExplorationText(
 	for (const [index, action] of coalesceReadActions(actions).entries()) {
 		const prefix = index === 0 ? "  └ " : "    ";
 		const title = action.kind === "read" ? "Read" : action.title;
-		text += `\n${theme.fg("dim", prefix)}${theme.fg("accent", title)} ${theme.fg("muted", action.body)}`;
+		text += `\n${theme.fg("dim", prefix)}${theme.fg("accent", title)} ${renderActionBody(action, theme, "muted")}`;
 	}
 	return text;
 }
@@ -245,6 +408,15 @@ function recordExplorationStart(toolCallId: string, action: ExplorationAction): 
 	entriesByToolCallId.set(toolCallId, entry);
 
 	let group = activeExplorationGroupId ? groupsById.get(activeExplorationGroupId) : undefined;
+	if (group) {
+		const previous = entriesByToolCallId.get(group.entryIds.at(-1) ?? "");
+		const previousTarget = previous?.action.kind === "read" ? previous.action.renderTarget : previous?.action.kind;
+		const nextTarget = action.kind === "read" ? action.renderTarget : action.kind;
+		if (previous && previousTarget !== nextTarget) {
+			activeExplorationGroupId = undefined;
+			group = undefined;
+		}
+	}
 	if (!group) {
 		group = {
 			id: nextGroupId++,
@@ -283,6 +455,7 @@ function resetExplorationGroup(): void {
 
 function clearExplorationGroup(): void {
 	entriesByToolCallId.clear();
+	summariesByToolCallId.clear();
 	pendingInvalidatesByToolCallId.clear();
 	groupsById.clear();
 	activeExplorationGroupId = undefined;
@@ -336,6 +509,7 @@ function coalesceReadActions(actions: ExplorationAction[]): ExplorationAction[] 
 			kind: "read",
 			body: reads.map((read) => (duplicateBodies.has(read.body) ? (read.path ?? read.body) : read.body)).join(", "),
 			path: reads.at(-1)?.path,
+			renderTarget: reads.at(-1)?.renderTarget ?? "read:file",
 		});
 	}
 	return coalesced;

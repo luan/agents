@@ -1,6 +1,7 @@
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline";
+import { pathToFileURL } from "node:url";
 import * as vm from "node:vm";
 import { Language, type Node, Parser } from "web-tree-sitter";
 
@@ -112,6 +113,12 @@ async function persistentNames(code: string): Promise<string[]> {
 	return [...names];
 }
 
+function importForEval(specifier: string) {
+	const resolved =
+		specifier.startsWith(".") || specifier.startsWith("/") ? pathToFileURL(resolve(cwd, specifier)).href : specifier;
+	return import(resolved);
+}
+
 async function evaluate(request: EvalRequest): Promise<EvalResponse> {
 	output = [];
 	cwd = request.cwd;
@@ -122,6 +129,7 @@ async function evaluate(request: EvalRequest): Promise<EvalResponse> {
 		const persist = names.map((name) => `globalThis[${JSON.stringify(name)}] = ${name};`).join("\n");
 		const script = new vm.Script(`(async () => {\n${javascript}\n${persist}\n})()`, {
 			filename: `eval-${request.id}.ts`,
+			importModuleDynamically: importForEval,
 		});
 		await script.runInContext(context);
 		return { id: request.id, output: output.join("\n") || "(no output)" };

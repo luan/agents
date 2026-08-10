@@ -6,4 +6,8 @@ Local notes:
 
 - Kept as a submodule of the local `codex-native` Pi extension under `pi/agent/extensions/codex-native/compaction/`.
 - Settings use the upstream `openaiNativeCompaction` key and `PI_OPENAI_NATIVE_COMPACTION_` environment overrides.
+- Native requests use Responses compaction V2: streamed `/responses` with a final `compaction_trigger`.
+- Persisted V1 checkpoints remain replayable, but new compactions never call `/responses/compact`.
+- V2 requests reuse current Responses tools, reasoning, text, cache, and Codex metadata controls when available.
+- Retryable request and stream failures retry at most twice before Pi falls back to its normal compaction path.
 - Local edits keep debug artifact failures fail-open and use portable temporary paths in tests.

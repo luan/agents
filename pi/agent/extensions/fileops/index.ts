@@ -1,8 +1,9 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
-import { chmod, mkdir, open, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, open, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
 	createFindToolDefinition,
 	createReadToolDefinition,
@@ -10,27 +11,68 @@ import {
 	type EditToolDetails,
 	type ExtensionAPI,
 	type ExtensionContext,
+	getMarkdownTheme,
 	keyHint,
 	type ToolRenderContext,
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
-import { Box, type Component, Container, type Text } from "@earendil-works/pi-tui";
+import {
+	Box,
+	type Component,
+	Container,
+	getCapabilities,
+	Markdown,
+	type Text,
+	truncateToWidth,
+	visibleWidth,
+} from "@earendil-works/pi-tui";
 import { createTwoFilesPatch, diffChars } from "diff";
 import { Type } from "typebox";
 import { resolveCommand, runCommand as runExternalCommand } from "../shared/command-runner.ts";
+import { renderCompactSummaryLine } from "../shared/compact-summary.ts";
 import {
+	type ExplorationReadSummaryPart,
+	type ExplorationReadSummaryRow,
+	getExplorationReadSummary,
+	isExplorationHidden,
 	readAction,
 	registerExplorationEventHandlers,
 	registerExplorationTool,
 	renderExplorationCall,
+	renderExplorationSummaryPart,
+	renderExplorationSummaryTitle,
+	updateExplorationRead,
 } from "../shared/exploration-rendering.ts";
-import { readPreviewImageFromPath } from "../shared/image-preview.ts";
-import { KittyVirtualImage } from "../shared/kitty-virtual-image.ts";
+import { githubResourceProvider } from "../shared/github-resources.ts";
+import { historyResourceProvider } from "../shared/history-resources.ts";
+import { createCircularPreviewImageFromBase64, readPreviewImageFromPath } from "../shared/image-preview.ts";
+import { KittyVirtualImage, transmitKittyInlineImageRow } from "../shared/kitty-virtual-image.ts";
+import {
+	findResources,
+	formatResourceUri,
+	isResourceUri,
+	localResourcePath,
+	localResourceRoot,
+	parseResourceUri,
+	type Resource,
+	type ResourceContext,
+	ResourceError,
+	type ResourceProvider,
+	type ResourceRef,
+	readResource,
+	registerResourceProvider,
+	resourceOpenUrl,
+	resourceProvider,
+	type SearchHit,
+	searchResources,
+	writeResource,
+} from "../shared/resources.ts";
 import { detachToolResultImages, registerToolResultImageRestore } from "../shared/tool-result-images.ts";
 import {
 	EmptyComponent,
 	keepBackgroundAcrossResets,
 	markLiveTurnStarted,
+	paintAnsiBackgroundRow,
 	RenderedLineCache,
 	runningCellElapsedMs,
 	runningFrame,
@@ -39,6 +81,8 @@ import {
 	textComponent,
 } from "../shared/tui";
 import { type CardBackgroundColor, darkerCardBackgroundAnsi, framedBlock } from "../shared/tui/card.ts";
+import { vaultResourceProvider } from "../shared/vault-resources.ts";
+import { estimateTokens } from "../token-burden/parser.ts";
 import { registerAstTools } from "./ast-tools.ts";
 import { buildLineEntriesWithBlockContext } from "./block-context.ts";
 import {
@@ -48,7 +92,6 @@ import {
 	treeSitterSyntaxValidator,
 } from "./block-resolver.ts";
 import {
-	buildHighlightedDiffRows,
 	type DiffRenderRow,
 	type DiffSectionHeaderRenderer,
 	EditDiffView,
@@ -63,6 +106,7 @@ import {
 	hashlineSnapshotStoreForSession,
 	recordHashlineFileSnapshot,
 	recordHashlineSnapshot,
+	restoreHashlineSnapshots,
 	SNAPSHOT_MAX_BYTES,
 } from "./hashline/anchors.js";
 import { buildCompactDiffPreview, generateNumberedDiff } from "./hashline/diff-preview.ts";
@@ -279,7 +323,7 @@ const CONFIG_PATH = join(EXTENSION_DIR, "config.json");
 const readToolSchema = Type.Object({
 	path: Type.String({
 		description:
-			"Path to the file to read (relative or absolute). Supports file:LINE or file:START-END in hashline mode.",
+			"File path or scheme-specific resource URI. Ambient resources omit `current`; explicit authorities select named scopes. Supports file:LINE or file:START-END selectors in hashline mode.",
 	}),
 	offset: Type.Optional(Type.Number({ description: "Line number to start reading from (1-indexed)" })),
 	limit: Type.Optional(Type.Number({ description: "Maximum number of lines to read" })),
@@ -292,7 +336,7 @@ const searchToolSchema = Type.Object({
 	path: Type.Optional(
 		Type.String({
 			description:
-				"Directory or file to search (default: current directory). Single-file paths support :LINE ranges.",
+				"Directory, file, or resource URI to search. Resource URI searches use the provider for that scheme.",
 		}),
 	),
 	glob: Type.Optional(Type.String({ description: "Filter files by glob pattern, e.g. '*.ts'" })),
@@ -304,15 +348,15 @@ const searchToolSchema = Type.Object({
 });
 
 const writeToolSchema = Type.Object({
-	path: Type.String({ description: "Path to write" }),
+	path: Type.String({ description: "File path or writable resource URI" }),
 	content: Type.String({ description: "Full file content" }),
 	makeExecutable: Type.Optional(Type.Boolean({ description: "Mark written file executable" })),
 });
 
 const findToolSchema = Type.Object({
-	paths: Type.Optional(Type.Array(Type.String({ description: "Glob including search path" }))),
-	pattern: Type.Optional(Type.String({ description: "Legacy glob pattern to match files" })),
-	path: Type.Optional(Type.String({ description: "Legacy directory to search in" })),
+	paths: Type.Optional(Type.Array(Type.String({ description: "Glob, path, or resource URI" }))),
+	pattern: Type.Optional(Type.String({ description: "Legacy glob pattern or resource URI" })),
+	path: Type.Optional(Type.String({ description: "Legacy directory, file, or resource URI" })),
 	limit: Type.Optional(Type.Number({ description: "Maximum number of results" })),
 	hidden: Type.Optional(Type.Boolean({ description: "Include hidden files" })),
 	gitignore: Type.Optional(Type.Boolean({ description: "Respect gitignore" })),
@@ -420,6 +464,12 @@ function modeDescription(config: EditConfig): string {
 function absolutePath(cwd: string, path: string): string {
 	return isAbsolute(path) ? path : resolve(cwd, path);
 }
+function resourceRefForPath(path: string): ResourceRef | undefined {
+	if (!isResourceUri(path)) return undefined;
+	const ref = parseResourceUri(path);
+	if (!ref) throw new Error(`Invalid resource URI: ${path}`);
+	return ref;
+}
 
 function displayPath(cwd: string, absolute: string): string {
 	const rel = relative(cwd, absolute).replace(/\\/g, "/");
@@ -481,6 +531,1484 @@ function selectedLineEntries(lines: readonly string[], ranges: readonly LineRang
 	return entries;
 }
 
+function resourceReadResult(
+	result: Awaited<ReturnType<typeof readResource>>,
+	params: { offset?: number; limit?: number; raw?: boolean },
+	explicitRanges: readonly LineRange[],
+	snapshots?: InMemorySnapshotStore,
+): ToolTextResult {
+	const text = normalizeToLf(result.content);
+	const resourceSummary = summarizeResource(result.resource, result.content);
+	if (params.raw && explicitRanges.length === 0 && params.limit === undefined && params.offset === undefined) {
+		return {
+			content: [{ type: "text", text }],
+			details: { resource: result.resource, resourceSummary },
+		};
+	}
+	const lines = textToDisplayLines(text);
+	const ranges =
+		explicitRanges.length > 0
+			? mergeLineRanges(explicitRanges)
+			: [
+					{
+						start: Math.max(1, Math.floor(params.offset ?? 1)),
+						end:
+							params.limit === undefined
+								? lines.length
+								: Math.max(1, Math.floor(params.offset ?? 1)) - 1 + Math.max(1, Math.floor(params.limit)),
+					},
+				];
+	const entries = selectedLineEntries(lines, ranges);
+	if (params.raw) {
+		return {
+			content: [{ type: "text", text: entries.map(([, line]) => line).join("\n") }],
+			details: { resource: result.resource, resourceSummary, ranges },
+		};
+	}
+	const observedLines =
+		explicitRanges.length > 0 || params.offset !== undefined || params.limit !== undefined
+			? { explicit: entries.map(([line]) => line), synthetic: [] }
+			: "all";
+	const hashlineTag =
+		snapshots && Buffer.byteLength(text, "utf8") <= SNAPSHOT_MAX_BYTES
+			? recordHashlineSnapshot(snapshots, result.resource.uri, text, observedLines)
+			: undefined;
+	const startLine = ranges[0]?.start ?? 1;
+	const endLine = ranges.at(-1)?.end ?? lines.length;
+	const output = entries.map(([line, value]) => `${line}:${value}`).join("\n");
+	const continuation =
+		explicitRanges.length === 0 && endLine < lines.length
+			? `\n\n[${lines.length - endLine} more lines in resource. Use offset=${endLine + 1} to continue.]`
+			: "";
+	return {
+		content: [
+			{
+				type: "text",
+				text: `${hashlineTag ? `${formatHashlineHeader(result.resource.uri, hashlineTag)}\n` : ""}${output}${continuation}`,
+			},
+		],
+		details: { resource: result.resource, resourceSummary, ranges, offset: startLine, hashlineTag },
+	};
+}
+
+type ResourceReadSummary = {
+	scheme: ResourceRef["scheme"];
+	icon: string;
+	iconRole: string;
+	label: string;
+	title: string;
+	subtitle: string;
+	titleRole?: string;
+	titleItalic?: boolean;
+	identifier?: ExplorationReadSummaryPart;
+	subtitleUrl?: string;
+	meta?: string;
+	subtitleStatus?: ResourceStatus;
+	metaParts?: ExplorationReadSummaryPart[];
+	statusLabel?: string;
+	statusRole?: string;
+	statusSuffix?: string;
+	typeIcon?: string;
+	hideIcon?: boolean;
+	repository?: string;
+	repositoryUrl?: string;
+	markdown?: string;
+	author?: ExplorationReadSummaryPart;
+	listDetails?: ExplorationReadSummaryPart[];
+	rows?: ExplorationReadSummaryRow[];
+	sideRows?: ExplorationReadSummaryRow[];
+};
+
+const GITHUB_TYPE_ICON = "";
+
+function resourceSummaryType(scheme: ResourceRef["scheme"]): Pick<ResourceReadSummary, "typeIcon" | "label"> {
+	if (scheme === "pr" || scheme === "issue" || scheme === "action") {
+		return {
+			typeIcon: GITHUB_TYPE_ICON,
+			label: scheme === "pr" ? "PR" : scheme === "issue" ? "issue" : "action",
+		};
+	}
+	return { label: scheme };
+}
+
+function resourceRecord(content: string): Record<string, unknown> | undefined {
+	try {
+		const value: unknown = JSON.parse(content);
+		return value && typeof value === "object" && !Array.isArray(value)
+			? (value as Record<string, unknown>)
+			: undefined;
+	} catch {
+		return undefined;
+	}
+}
+function resourceData(resource: Resource, content: string): Record<string, unknown> {
+	const record = resourceRecord(content);
+	return { ...(resource.metadata ?? {}), ...record, ...(!record && content ? { text: content } : {}) };
+}
+
+function resourceItemRecords(record: Record<string, unknown>): Record<string, unknown>[] {
+	const values = Array.isArray(record.items) ? record.items : Array.isArray(record.nodes) ? record.nodes : [];
+	return values.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object");
+}
+
+function resourceString(value: unknown): string | undefined {
+	return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function resourceCount(value: unknown): string | undefined {
+	const number = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : NaN;
+	return Number.isFinite(number) ? number.toLocaleString() : undefined;
+}
+function resourceIdentifier(value: unknown): string | undefined {
+	if (typeof value === "number" && Number.isFinite(value)) return String(value);
+	return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+function resourceAuthor(value: unknown): string | undefined {
+	if (!value || typeof value !== "object") return undefined;
+	const author = value as Record<string, unknown>;
+	const login = resourceString(author.login);
+	return login ? `@${login}` : resourceString(author.name);
+}
+function githubUserUrl(login: string): string {
+	return `https://github.com/${encodeURIComponent(login)}`;
+}
+
+function githubRepositoryUrl(repository: string | undefined): string | undefined {
+	return repository ? `https://github.com/${repository}` : undefined;
+}
+
+function resourceAvatarUrlForLogin(login: string): string {
+	return `${githubUserUrl(login)}.png?size=64`;
+}
+
+function resourceAvatarUrl(value: unknown): string | undefined {
+	if (!value || typeof value !== "object") return undefined;
+	const author = value as Record<string, unknown>;
+	const direct = resourceString(author.avatarUrl) ?? resourceString(author.avatar_url);
+	const login = resourceString(author.login);
+	return direct ?? (login ? resourceAvatarUrlForLogin(login) : undefined);
+}
+
+function resourceAuthorPart(value: unknown): ExplorationReadSummaryPart | undefined {
+	const text = resourceAuthor(value);
+	if (!text) return undefined;
+	const login =
+		value && typeof value === "object" ? resourceString((value as Record<string, unknown>).login) : undefined;
+	return {
+		text,
+		role: "muted",
+		avatarUrl: resourceAvatarUrl(value),
+		url: login ? githubUserUrl(login) : undefined,
+	};
+}
+
+function resourceStatsParts(record: Record<string, unknown>): ExplorationReadSummaryPart[] {
+	const additions = resourceCount(record.additions);
+	const deletions = resourceCount(record.deletions);
+	const changedFiles = resourceCount(record.changedFiles);
+	return [
+		additions ? { text: `+${additions}`, role: "toolDiffAdded" } : undefined,
+		deletions ? { text: `-${deletions}`, role: "toolDiffRemoved" } : undefined,
+		changedFiles ? { text: `${changedFiles} files`, role: "dim" } : undefined,
+	].filter((part): part is ExplorationReadSummaryPart => Boolean(part));
+}
+const REACTION_EMOJI: Record<string, string> = {
+	THUMBS_UP: "👍",
+	THUMBS_DOWN: "👎",
+	LAUGH: "😄",
+	HOORAY: "🎉",
+	CONFUSED: "😕",
+	HEART: "❤️",
+	ROCKET: "🚀",
+	EYES: "👀",
+};
+
+function resourceReactionParts(record: Record<string, unknown>): ExplorationReadSummaryPart[] {
+	if (!Array.isArray(record.reactionGroups)) return [];
+	return record.reactionGroups
+		.filter((group): group is Record<string, unknown> => !!group && typeof group === "object")
+		.map((group) => {
+			const content = resourceString(group.content);
+			const users = group.users;
+			const countValue =
+				users && typeof users === "object" ? (users as Record<string, unknown>).totalCount : group.count;
+			const count = resourceCount(countValue);
+			const numericCount = typeof countValue === "number" ? countValue : Number(countValue);
+			if (!count || !Number.isFinite(numericCount) || numericCount <= 0) return undefined;
+			return { text: `${REACTION_EMOJI[content ?? ""] ?? "•"} ${count}`, role: "muted" };
+		})
+		.filter((part): part is ExplorationReadSummaryPart => Boolean(part));
+}
+
+function resourceReactionRow(record: Record<string, unknown>): ExplorationReadSummaryRow | undefined {
+	const reactions = resourceReactionParts(record);
+	if (reactions.length === 0) return undefined;
+	return {
+		branch: false,
+		footer: true,
+		text: reactions.map((reaction) => reaction.text).join(" · "),
+		textRole: "muted",
+	};
+}
+
+function pullRequestReviewerStatus(state: string): ResourceStatus {
+	if (state === "APPROVED") return { icon: "", iconRole: "success", label: "approved" };
+	if (state === "CHANGES_REQUESTED") return { icon: "", iconRole: "error", label: "changes requested" };
+	if (state === "PENDING") return { icon: "", iconRole: "warning", label: "awaiting review" };
+	return { icon: "", iconRole: "text", label: "commented" };
+}
+
+function pullRequestReviewerRows(record: Record<string, unknown>): ExplorationReadSummaryRow[] {
+	const reviewers = new Map<string, { state: string; timestamp: number }>();
+	const pullRequestAuthor = resourceAuthor(record.author);
+	if (Array.isArray(record.reviews)) {
+		for (const review of record.reviews) {
+			if (!review || typeof review !== "object") continue;
+			const reviewRecord = review as Record<string, unknown>;
+			const name = resourceAuthor(reviewRecord.author);
+			if (!name || name === pullRequestAuthor) continue;
+			const timestamp = Date.parse(resourceString(reviewRecord.submittedAt) ?? "");
+			const current = reviewers.get(name);
+			if (
+				!current ||
+				!Number.isFinite(current.timestamp) ||
+				(Number.isFinite(timestamp) && timestamp >= current.timestamp)
+			) {
+				reviewers.set(name, {
+					state: resourceString(reviewRecord.state)?.toUpperCase() ?? "COMMENTED",
+					timestamp,
+				});
+			}
+		}
+	}
+	if (Array.isArray(record.reviewRequests)) {
+		for (const request of record.reviewRequests) {
+			if (!request || typeof request !== "object") continue;
+			const requestRecord = request as Record<string, unknown>;
+			const name = resourceAuthor(requestRecord.requestedReviewer ?? requestRecord);
+			if (name && !reviewers.has(name))
+				reviewers.set(name, { state: "PENDING", timestamp: Number.NEGATIVE_INFINITY });
+		}
+	}
+	return [...reviewers].map(([name, review]) => {
+		const status = pullRequestReviewerStatus(review.state);
+		return {
+			branch: false,
+			avatarUrl: resourceAvatarUrlForLogin(name.slice(1)),
+			textUrl: githubUserUrl(name.slice(1)),
+			text: name,
+			textRole: "muted",
+			status: { text: status.icon, role: status.iconRole },
+		};
+	});
+}
+
+function pullRequestReviewRows(record: Record<string, unknown>): ExplorationReadSummaryRow[] {
+	const reviewerRows = pullRequestReviewerRows(record);
+	const rows: ExplorationReadSummaryRow[] =
+		reviewerRows.length > 0
+			? [
+					{
+						branch: false,
+						text: "Reviewers",
+						textRole: "toolTitle",
+						bold: true,
+					},
+					...reviewerRows,
+				]
+			: [];
+	const total =
+		typeof record.reviewCommentCount === "number" ? record.reviewCommentCount : Number(record.reviewCommentCount);
+	if (!Number.isFinite(total) || total <= 0) return rows;
+	if (rows.length > 0) rows.push({ branch: false, text: "" });
+	const unresolved =
+		typeof record.unresolvedReviewComments === "number"
+			? record.unresolvedReviewComments
+			: Number(record.unresolvedReviewComments);
+	const resolved = Math.max(0, total - (Number.isFinite(unresolved) ? unresolved : 0));
+	if (Number.isFinite(unresolved) && unresolved > 0) {
+		const authors = Array.isArray(record.unresolvedReviewCommentAuthors)
+			? [
+					...new Set(
+						record.unresolvedReviewCommentAuthors.filter(
+							(author): author is string => typeof author === "string" && author.length > 0,
+						),
+					),
+				]
+			: [];
+		const previews = Array.isArray(record.unresolvedReviewCommentPreviews)
+			? record.unresolvedReviewCommentPreviews
+					.filter((preview): preview is Record<string, unknown> => Boolean(preview) && typeof preview === "object")
+					.map((preview) => {
+						const author = resourceString(preview.author);
+						const firstLine = resourceString(preview.firstLine);
+						if (!author && !firstLine) return undefined;
+						return {
+							branch: false,
+							avatarUrl: author ? resourceAvatarUrlForLogin(author) : undefined,
+							prefix: author ? { text: `@${author}`, role: "muted", url: githubUserUrl(author) } : undefined,
+							text: firstLine ?? "comment",
+							textRole: "muted",
+						};
+					})
+					.filter((row): row is ExplorationReadSummaryRow => Boolean(row))
+			: [];
+		rows.push({
+			branch: false,
+			icon: "",
+			iconRole: "warning",
+			text: `${resourceCount(unresolved) ?? unresolved}/${resourceCount(total) ?? total} unresolved`,
+			textRole: "warning",
+		});
+		rows.push(
+			...(previews.length > 0
+				? previews
+				: authors.map((author) => ({
+						branch: false,
+						avatarUrl: resourceAvatarUrlForLogin(author),
+						text: `@${author}`,
+						textUrl: githubUserUrl(author),
+						textRole: "muted",
+					}))),
+		);
+	} else {
+		rows.push({
+			branch: false,
+			icon: "",
+			iconRole: "success",
+			text: `${resourceCount(resolved) ?? resolved}/${resourceCount(total) ?? total}`,
+			textRole: "success",
+		});
+	}
+	return rows;
+}
+
+function resourceTaskRows(record: Record<string, unknown>): ExplorationReadSummaryRow[] {
+	const body = resourceString(record.body);
+	if (!body) return [];
+	const tasks = [...body.matchAll(/^\s*[-*+]\s+\[([ xX])\]\s+(.+?)\s*$/gm)].map((match) => ({
+		checked: match[1]?.toLowerCase() === "x",
+		text: match[2] ?? "",
+	}));
+	if (tasks.length === 0) return [];
+	const completed = tasks.filter((task) => task.checked).length;
+	return [
+		{
+			branch: false,
+			icon: "",
+			iconRole: "accent",
+			text: `tasks ${completed}/${tasks.length}`,
+			textRole: "toolTitle",
+		},
+		...tasks
+			.filter((task) => !task.checked)
+			.slice(0, 5)
+			.map((task) => ({
+				branch: false,
+				leading: "  ",
+				icon: "☐",
+				iconRole: "muted",
+				text: task.text,
+				textRole: "muted",
+			})),
+	];
+}
+
+function resourceTokenCount(content: string): string {
+	return `${estimateTokens(content).toLocaleString()} tokens`;
+}
+
+function resourcePathDisplay(path: string): string {
+	const normalized = path.replaceAll("\\", "/");
+	const home = homedir().replaceAll("\\", "/").replace(/\/+$/, "");
+	if (normalized === home) return "~";
+	return normalized.startsWith(`${home}/`) ? `~/${normalized.slice(home.length + 1)}` : normalized;
+}
+
+function resourceBodyPreview(value: unknown): string | undefined {
+	const body = resourceString(value)?.replace(/\s+/g, " ").trim();
+	if (!body) return undefined;
+	return body.length > 240 ? `${body.slice(0, 237)}…` : body;
+}
+function resourceViewLabel(kind: string | undefined): string | undefined {
+	const view = kind?.replace(/^pull-request-/, "").replace(/^github-/, "");
+	return view && view !== "pr" && view !== "issue" ? view : undefined;
+}
+
+function githubIdentifierPart(
+	record: Record<string, unknown>,
+	number: string,
+	resource?: Resource,
+): ExplorationReadSummaryPart {
+	return {
+		text: `#${number}`,
+		role: "mdLink",
+		italic: true,
+		url: (resource ? resourceOpenUrl(resource) : undefined) ?? resourceString(record.url),
+	};
+}
+
+// ANSI 256-color slot 165 matches the selected terminal purple.
+const MERGED_ANSI_FG = "\x1b[38;5;165m";
+const ANSI_FG_RESET = "\x1b[39m";
+
+function mergedAnsi(text: string): string {
+	return `${MERGED_ANSI_FG}${text}${ANSI_FG_RESET}`;
+}
+function italicAnsi(text: string): string {
+	return `\x1b[3m${text}\x1b[23m`;
+}
+
+function purpleStatus(icon: string, label: string): ResourceStatus {
+	return { icon: mergedAnsi(icon), iconRole: "text", label: mergedAnsi(label) };
+}
+
+function mergedStatus(icon: string): ResourceStatus {
+	return purpleStatus(icon, "merged");
+}
+type ResourceStatus = {
+	icon: string;
+	iconRole: string;
+	label: string;
+};
+
+function resourceStatus(statusValue: unknown, conclusionValue: unknown): ResourceStatus {
+	const status = resourceString(statusValue)?.toUpperCase();
+	const conclusion = resourceString(conclusionValue)?.toUpperCase();
+	if (conclusion === "SUCCESS") return { icon: "", iconRole: "success", label: "passed" };
+	if (conclusion === "CANCELLED" || conclusion === "SKIPPED" || conclusion === "NEUTRAL")
+		return { icon: "", iconRole: "muted", label: "canceled" };
+	if (conclusion) return { icon: "", iconRole: "error", label: "failed" };
+	if (status && !["COMPLETED", "SUCCESS"].includes(status))
+		return { icon: "", iconRole: "warning", label: "running" };
+	return { icon: "", iconRole: "warning", label: "running" };
+}
+
+function resourceRequiredChecks(record: Record<string, unknown>): Set<string> {
+	if (!Array.isArray(record.requiredChecks)) return new Set();
+	return new Set(record.requiredChecks.filter((value): value is string => typeof value === "string"));
+}
+
+function resourceCheckRows(value: unknown, record: Record<string, unknown>): ExplorationReadSummaryRow[] {
+	if (!Array.isArray(value)) return [];
+	const required = resourceRequiredChecks(record);
+	return value
+		.filter((check): check is Record<string, unknown> => !!check && typeof check === "object")
+		.map((check) => {
+			const name = resourceString(check.name) ?? resourceString(check.context) ?? "check";
+			const workflow = resourceString(check.workflowName);
+			const candidates = [name, workflow ? `${workflow} / ${name}` : undefined].filter(
+				(candidate): candidate is string => Boolean(candidate),
+			);
+			const isRequired =
+				check.required === true ||
+				check.isRequired === true ||
+				candidates.some((candidate) => required.has(candidate));
+			const status = resourceStatus(check.status, check.conclusion);
+			return {
+				icon: status.icon,
+				iconRole: status.iconRole,
+				text: `${workflow ? `${workflow} / ` : ""}${name} · ${status.label}${isRequired ? " [required]" : ""}`,
+			};
+		});
+}
+
+type PullRequestCheckState = "passed" | "skipped" | "failed" | "running";
+
+type PullRequestCheck = {
+	name: string;
+	state: PullRequestCheckState;
+	icon: string;
+	iconRole: string;
+	finished: boolean;
+	rerunning: boolean;
+};
+
+function pullRequestCheck(value: Record<string, unknown>): PullRequestCheck {
+	const status = resourceString(value.status)?.toUpperCase();
+	const conclusion = resourceString(value.conclusion)?.toUpperCase();
+	const state = resourceString(value.state)?.toUpperCase();
+	const effectiveState = conclusion ?? state;
+	const name = resourceString(value.name) ?? resourceString(value.context) ?? "check";
+	const workflow = resourceString(value.workflowName);
+	const label = workflow ? `${workflow} / ${name}` : name;
+	const rerunning =
+		value.rerunning === true ||
+		Boolean(
+			status &&
+				["QUEUED", "IN_PROGRESS", "PENDING", "WAITING", "REQUESTED"].includes(status) &&
+				conclusion &&
+				conclusion !== "SUCCESS",
+		);
+	const finished =
+		status === "COMPLETED" ||
+		Boolean(effectiveState && !["QUEUED", "IN_PROGRESS", "PENDING", "WAITING", "REQUESTED"].includes(effectiveState));
+	if (effectiveState === "SUCCESS")
+		return { name: label, state: "passed", icon: "", iconRole: "success", finished, rerunning };
+	if (effectiveState === "SKIPPED" || effectiveState === "NEUTRAL")
+		return { name: label, state: "skipped", icon: "󱃓", iconRole: "muted", finished, rerunning };
+	if (effectiveState && ["FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "ERROR"].includes(effectiveState)) {
+		return { name: label, state: "failed", icon: "", iconRole: "error", finished, rerunning };
+	}
+	if (status === "COMPLETED")
+		return { name: label, state: "failed", icon: "", iconRole: "error", finished: true, rerunning };
+	if (rerunning) return { name: label, state: "running", icon: "", iconRole: "warning", finished, rerunning };
+	return { name: label, state: "running", icon: "", iconRole: "warning", finished, rerunning };
+}
+
+function pullRequestCheckRows(record: Record<string, unknown>): ExplorationReadSummaryRow[] {
+	if (!Array.isArray(record.statusCheckRollup)) return [];
+	const checks = record.statusCheckRollup
+		.filter((check): check is Record<string, unknown> => !!check && typeof check === "object")
+		.map(pullRequestCheck);
+	if (checks.length === 0) return [];
+	const total = checks.length;
+	const passed = checks.filter((check) => check.state === "passed").length;
+	const skipped = checks.filter((check) => check.state === "skipped").length;
+	const failed = checks.filter((check) => check.state === "failed").length;
+	const running = checks.filter((check) => check.state === "running").length;
+	const finished = checks.filter((check) => check.finished).length;
+	const failedNames = new Set(checks.filter((check) => check.state === "failed").map((check) => check.name));
+	const rerunning = checks.some(
+		(check) => check.state === "running" && (check.rerunning || failedNames.has(check.name)),
+	);
+	const suffix = skipped > 0 ? ` (${skipped} skipped)` : "";
+	const mergeable =
+		resourceString(record.mergeable)?.toUpperCase() === "MERGEABLE" &&
+		resourceString(record.mergeStateStatus)?.toUpperCase() === "CLEAN";
+	const header =
+		running > 0
+			? failed > 0
+				? {
+						icon: rerunning ? "󰲼" : "󱄊",
+						iconRole: rerunning ? "warning" : "error",
+						text: `Checks running ${running}/${total}${suffix}`,
+						textRole: rerunning ? "warning" : "error",
+					}
+				: finished === 0
+					? {
+							icon: "",
+							iconRole: "muted",
+							text: `Checks running ${running}/${total}${suffix}`,
+							textRole: "muted",
+						}
+					: {
+							icon: "󰦕",
+							iconRole: "warning",
+							text: `Checks running ${running}/${total}${suffix}`,
+							textRole: "warning",
+						}
+			: failed > 0
+				? { icon: "󰅙", iconRole: "error", text: `Checks failed ${failed}/${total}${suffix}`, textRole: "error" }
+				: {
+						icon: mergeable ? "" : "",
+						iconRole: "success",
+						text: `Checks passed ${passed}/${total}${suffix}`,
+						textRole: "success",
+					};
+	const rows: ExplorationReadSummaryRow[] = [{ branch: false, ...header }];
+	rows.push(
+		...checks
+			.filter((check) => check.state === "running" || check.state === "failed")
+			.map((check) => ({
+				branch: false,
+				icon: check.icon,
+				iconRole: check.iconRole,
+				text: check.name,
+				textRole: check.iconRole,
+			})),
+	);
+	const visibleCompleted = checks.filter((check) => check.state === "passed" || check.state === "skipped");
+	rows.push(
+		...visibleCompleted.slice(0, 3).map((check) => ({
+			branch: false,
+			icon: check.icon,
+			iconRole: check.iconRole,
+			text: check.name,
+			textRole: check.iconRole,
+		})),
+	);
+	const remaining = visibleCompleted.length - Math.min(3, visibleCompleted.length);
+	if (remaining > 0)
+		rows.push({
+			branch: false,
+			text: `(${remaining} more passing/skipped checks)`,
+			textRole: "muted",
+			italic: true,
+		});
+	return rows;
+}
+
+function pullRequestStatus(record: Record<string, unknown>): ResourceStatus {
+	if (resourceString(record.mergedAt) || resourceString(record.state)?.toUpperCase() === "MERGED")
+		return mergedStatus("");
+	if (record.isDraft === true) return { icon: "", iconRole: "muted", label: "draft" };
+	if (resourceString(record.state)?.toUpperCase() === "CLOSED")
+		return { icon: "", iconRole: "error", label: "closed" };
+	return { icon: "󰓂", iconRole: "success", label: "open" };
+}
+
+function pullRequestMergeability(record: Record<string, unknown>): ResourceStatus {
+	if (resourceString(record.mergedAt) || resourceString(record.state)?.toUpperCase() === "MERGED")
+		return mergedStatus("");
+	const decision = resourceString(record.reviewDecision)?.toUpperCase();
+	const mergeable = resourceString(record.mergeable)?.toUpperCase() === "MERGEABLE";
+	const mergeState = resourceString(record.mergeStateStatus)?.toUpperCase() === "CLEAN";
+	if (decision === "CHANGES_REQUESTED") return { icon: "", iconRole: "error", label: "changes requested" };
+	if (record.isDraft === true || !mergeable || !mergeState)
+		return { icon: "", iconRole: "muted", label: "not ready" };
+	if (decision === "REVIEW_REQUIRED") return { icon: "", iconRole: "warning", label: "awaiting approval" };
+	return { icon: "", iconRole: "success", label: "ready to merge" };
+}
+
+function pullRequestStackRows(record: Record<string, unknown>): ExplorationReadSummaryRow[] {
+	if (!Array.isArray(record.stack)) return [];
+	const entries = record.stack
+		.filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === "object")
+		.sort((left, right) => Number(left.stackPosition ?? 0) - Number(right.stackPosition ?? 0));
+	if (entries.length < 2) return [];
+	const currentIndex = entries.findIndex((entry) => String(entry.number ?? "") === String(record.number ?? ""));
+	const position = currentIndex === -1 ? `?/${entries.length}` : `${currentIndex + 1}/${entries.length}`;
+	const rows: ExplorationReadSummaryRow[] = [
+		{
+			branch: false,
+			leading: " ",
+			icon: "",
+			iconRole: "accent",
+			text: `stack · ${position}`,
+			textRole: "toolTitle",
+		},
+	];
+	for (const entry of entries) {
+		const number = resourceIdentifier(entry.number) ?? resourceString(entry.id) ?? "?";
+		const title = resourceString(entry.title) ?? "untitled";
+		const status = pullRequestMergeability(entry);
+		const current = String(entry.number ?? "") === String(record.number ?? "");
+		rows.push({
+			branch: false,
+			leading: current ? " " : "  ",
+			leadingRole: current ? "accent" : "muted",
+			icon: status.icon,
+			iconRole: status.iconRole,
+			prefix: githubIdentifierPart(entry, number),
+			text: title,
+			textRole: current ? "toolTitle" : "muted",
+			bold: current,
+			status: { text: status.label, role: status.iconRole },
+		});
+	}
+	return rows;
+}
+function resourceRelatedRows(record: Record<string, unknown>, kind: string | undefined): ExplorationReadSummaryRow[] {
+	if (!kind || (!kind.includes("issues") && !kind.includes("pulls"))) return [];
+	const items = resourceItemRecords(record);
+	if (items.length === 0) return [];
+	const pullRequests = kind.includes("pulls");
+	const label = pullRequests ? "Linked PRs" : "Linked issues";
+	const rows: ExplorationReadSummaryRow[] = [{ branch: false, text: label, textRole: "toolTitle", bold: true }];
+	for (const item of items.slice(0, 8)) {
+		const number = resourceIdentifier(item.number);
+		const title =
+			resourceString(item.title) ?? resourceBodyPreview(item.body) ?? resourceString(item.name) ?? "untitled";
+		const status = pullRequests
+			? pullRequestStatus(item)
+			: resourceString(item.state)?.toUpperCase() === "CLOSED"
+				? { icon: "", iconRole: "error", label: "closed" }
+				: { icon: "", iconRole: "success", label: "open" };
+		rows.push({
+			branch: false,
+			icon: status.icon,
+			iconRole: status.iconRole,
+			prefix: number ? githubIdentifierPart(item, number) : undefined,
+			text: title,
+			textRole: "muted",
+			status: { text: status.label, role: status.iconRole },
+		});
+	}
+	if (items.length > 8)
+		rows.push({
+			branch: false,
+			text: `(${items.length - 8} more)`,
+			textRole: "muted",
+			italic: true,
+		});
+	return rows;
+}
+function resourceViewRows(record: Record<string, unknown>, kind: string | undefined): ExplorationReadSummaryRow[] {
+	if (kind === "pull-request-files") {
+		return resourceItemRecords(record)
+			.slice(0, 12)
+			.map((file) => {
+				const path = resourceString(file.filename) ?? resourceString(file.path) ?? resourceString(file.name);
+				if (!path) return undefined;
+				const additions = resourceCount(file.additions);
+				const deletions = resourceCount(file.deletions);
+				return {
+					branch: false,
+					icon: "",
+					iconRole: "muted",
+					text: path,
+					textRole: "text",
+					details: [
+						additions ? { text: `+${additions}`, role: "toolDiffAdded" } : undefined,
+						deletions ? { text: `-${deletions}`, role: "toolDiffRemoved" } : undefined,
+					].filter((part): part is ExplorationReadSummaryPart => Boolean(part)),
+				};
+			})
+			.filter((row): row is ExplorationReadSummaryRow => Boolean(row));
+	}
+	if (kind === "github-comments" || kind === "github-comments-page") {
+		return resourceItemRecords(record)
+			.slice(0, 8)
+			.map((comment) => {
+				const authorRecord = comment.user ?? comment.author;
+				const author = resourceAuthor(authorRecord);
+				const body = resourceBodyPreview(comment.body ?? comment.bodyText);
+				if (!author && !body) return undefined;
+				return {
+					branch: false,
+					avatarUrl: resourceAvatarUrl(authorRecord),
+					text: author ?? "comment",
+					textUrl: author?.startsWith("@") ? githubUserUrl(author.slice(1)) : undefined,
+					textRole: "muted",
+					details: body ? [{ text: body, role: "text" }] : undefined,
+				};
+			})
+			.filter((row): row is ExplorationReadSummaryRow => Boolean(row));
+	}
+	if (kind === "pull-request-diff") {
+		const diff = resourceString(record.text);
+		if (!diff) return [];
+		return diff
+			.split(/\r?\n/)
+			.slice(0, 10)
+			.map((line) => ({
+				branch: false,
+				text: line,
+				textRole:
+					line.startsWith("+") && !line.startsWith("+++")
+						? "toolDiffAdded"
+						: line.startsWith("-") && !line.startsWith("---")
+							? "toolDiffRemoved"
+							: line.startsWith("@@")
+								? "accent"
+								: "muted",
+			}));
+	}
+	return [];
+}
+
+function actionLogRows(record: Record<string, unknown>): ExplorationReadSummaryRow[] {
+	if (!Array.isArray(record.logTail)) return [];
+	const lines = record.logTail.filter((line): line is string => typeof line === "string" && line.length > 0);
+	if (lines.length === 0) return [];
+	return [
+		{ branch: false, text: "Log tail", textRole: "toolTitle", bold: true },
+		...lines.map((line) => ({ branch: false, leading: "  ", text: line, textRole: "muted" })),
+	];
+}
+
+function historySummary(resource: Resource, ref: ResourceRef, content: string): ResourceReadSummary {
+	const messages = content.split(/\n\n(?=\[)/).filter(Boolean);
+	const first = /^\[([^\]]+)\]\s*([\s\S]*)$/.exec(messages[0] ?? "");
+	const preview = resourceBodyPreview(first?.[2] ?? resource.metadata?.text);
+	const count = messages.length;
+	const role = first?.[1] ?? resourceString(resource.metadata?.role) ?? resource.title;
+	return {
+		scheme: ref.scheme,
+		icon: "",
+		iconRole: "accent",
+		label: "history",
+		title: resource.name,
+		subtitle: preview ?? (count === 0 ? "empty message" : `${count} messages`),
+		meta: [role, count > 1 ? `${count} messages` : undefined].filter(Boolean).join(" "),
+	};
+}
+
+function resourceSummaryList(
+	resources: readonly Resource[],
+	operation: "find" | "search",
+	subtitle: string,
+	snippets: readonly (string | undefined)[] = [],
+): ResourceReadSummary | undefined {
+	const summaries = resources.map((resource) => summarizeResource(resource, ""));
+	const first = summaries.find((summary): summary is ResourceReadSummary => Boolean(summary));
+	if (!first) return undefined;
+	const rows: ExplorationReadSummaryRow[] = [];
+	for (let index = 0; index < Math.min(resources.length, 24); index++) {
+		const resource = resources[index]!;
+		const summary = summaries[index];
+		const snippet = resourceBodyPreview(snippets[index]);
+		const detail = snippet && snippet !== resource.title ? snippet : undefined;
+		const title = summary?.title ?? resource.title ?? resource.name;
+		const status = summary?.statusLabel;
+		const openUrl = resourceOpenUrl(resource);
+		const history = summary?.scheme === "history";
+		rows.push({
+			branch: false,
+			icon: summary?.icon ?? "•",
+			iconRole: summary?.iconRole ?? "muted",
+			prefix: summary?.identifier,
+			text: history ? summary.subtitle : (status ?? title),
+			textRole: history ? "text" : status ? (summary?.statusRole ?? summary?.iconRole ?? "muted") : "text",
+			textUrl: history || !status ? openUrl : undefined,
+			details: (history
+				? [summary.meta ? { text: summary.meta, role: "muted" } : undefined, { text: title, role: "dim" }]
+				: [
+						status ? { text: title, role: "text", url: openUrl } : undefined,
+						...(summary?.listDetails ?? [summary?.author, detail ? { text: detail, role: "muted" } : undefined]),
+					]
+			).filter((part): part is ExplorationReadSummaryPart => Boolean(part)),
+		});
+	}
+	if (resources.length > rows.length)
+		rows.push({
+			branch: false,
+			text: `(${resources.length - rows.length} more)`,
+			textRole: "muted",
+			italic: true,
+		});
+	const plural =
+		first.scheme === "pr"
+			? "PRs"
+			: first.scheme === "issue"
+				? "issues"
+				: first.scheme === "action"
+					? "actions"
+					: first.scheme === "history"
+						? "messages"
+						: "resources";
+	const singular =
+		first.scheme === "pr"
+			? "PR"
+			: first.scheme === "issue"
+				? "issue"
+				: first.scheme === "action"
+					? "action"
+					: first.scheme === "history"
+						? "message"
+						: "resource";
+	return {
+		scheme: first.scheme,
+		icon: first.icon,
+		iconRole: first.iconRole,
+		typeIcon: first.typeIcon ?? first.icon,
+		hideIcon: true,
+		repository: first.repository,
+		repositoryUrl: first.repositoryUrl,
+		label: operation,
+		title: `${resources.length} ${resources.length === 1 ? singular : plural}`,
+		subtitle,
+		rows,
+	};
+}
+
+function summarizeResource(resource: Resource, content: string): ResourceReadSummary | undefined {
+	let ref: ResourceRef | undefined;
+	try {
+		ref = parseResourceUri(resource.uri);
+	} catch {
+		return undefined;
+	}
+	if (!ref) return undefined;
+	if (ref.scheme === "history") return historySummary(resource, ref, content);
+
+	const record = resourceData(resource, content);
+	const repository = resourceString(record.repository);
+	const number = resourceIdentifier(record.number) ?? resourceIdentifier(record.databaseId) ?? resource.name;
+	const title = resourceString(record.title) ?? resource.title ?? resource.name;
+	if (ref.scheme === "pr") {
+		const status = pullRequestStatus(record);
+		const view = resourceViewLabel(resource.kind);
+		const branch = [
+			resourceString(record.headRefName) && resourceString(record.baseRefName)
+				? `${resourceString(record.baseRefName)}  ${resourceString(record.headRefName)}`
+				: "GitHub",
+			view,
+		]
+			.filter(Boolean)
+			.join(" · ");
+		const mergeability = pullRequestMergeability(record);
+		const reviewRows = pullRequestReviewRows(record);
+		const checkRows = pullRequestCheckRows(record);
+		const showBody = !view || view === "body" || view === "body-page";
+		return {
+			scheme: ref.scheme,
+			icon: status.icon,
+			iconRole: status.iconRole,
+			statusLabel: status.label,
+			statusRole: status.iconRole,
+			...resourceSummaryType(ref.scheme),
+			repository,
+			repositoryUrl: githubRepositoryUrl(repository),
+			identifier: githubIdentifierPart(record, number, resource),
+			title,
+			subtitle: branch,
+			subtitleStatus: mergeability,
+			author: resourceAuthorPart(record.author),
+			markdown: showBody ? resourceString(record.text ?? record.body) : undefined,
+			metaParts: resourceStatsParts(record),
+			rows: [
+				...pullRequestStackRows(record),
+				...resourceViewRows(record, resource.kind),
+				...(showBody ? [] : resourceTaskRows(record)),
+				...resourceRelatedRows(record, resource.kind),
+				resourceReactionRow(record),
+			].filter((row): row is ExplorationReadSummaryRow => Boolean(row)),
+			sideRows: [
+				...reviewRows,
+				...(checkRows.length > 0
+					? [...(reviewRows.length > 0 ? [{ branch: false, text: "" }] : []), ...checkRows]
+					: []),
+			],
+		};
+	}
+	if (ref.scheme === "issue") {
+		const state = resourceString(record.state)?.toUpperCase();
+		const reason = resourceString(record.stateReason)?.toUpperCase();
+		const draft = record.isDraft === true;
+		const done = reason === "COMPLETED" || state === "DONE";
+		const closed = state === "CLOSED";
+		const status = draft
+			? { icon: "", iconRole: "muted", label: "draft" }
+			: done
+				? purpleStatus("", "completed")
+				: closed
+					? { icon: "", iconRole: "error", label: "closed" }
+					: { icon: "", iconRole: "success", label: "open" };
+		const view = resourceViewLabel(resource.kind);
+		const showBody = !view || view === "body" || view === "body-page";
+		return {
+			scheme: ref.scheme,
+			icon: status.icon,
+			iconRole: status.iconRole,
+			statusLabel: status.label,
+			statusRole: status.iconRole,
+			...resourceSummaryType(ref.scheme),
+			repository,
+			repositoryUrl: githubRepositoryUrl(repository),
+			identifier: githubIdentifierPart(record, number, resource),
+			title,
+			subtitle: view === "body" || view === "body-page" ? view : [view, "GitHub"].filter(Boolean).join(" · "),
+			statusSuffix: closed && reason && reason !== "COMPLETED" ? italicAnsi(reason.toLowerCase()) : undefined,
+			author: resourceAuthorPart(record.author),
+			markdown: showBody ? resourceString(record.text ?? record.body) : undefined,
+			rows: [
+				...resourceViewRows(record, resource.kind),
+				...(showBody ? [] : resourceTaskRows(record)),
+				...resourceRelatedRows(record, resource.kind),
+				resourceReactionRow(record),
+			].filter((row): row is ExplorationReadSummaryRow => Boolean(row)),
+		};
+	}
+	if (ref.scheme === "action") {
+		const status = resourceStatus(record.status, record.conclusion);
+		const actionName =
+			resourceString(record.displayTitle) ??
+			resourceString(record.name) ??
+			resourceString(record.workflowName) ??
+			resource.name;
+		const workflow = resourceString(record.workflowName);
+		const branch = resourceString(record.headBranch);
+		const event = resourceString(record.event);
+		const headSha = resourceString(record.headSha);
+		const repositoryUrl = githubRepositoryUrl(repository);
+		const jobRows = resourceCheckRows(record.jobs, record);
+		const logRows = actionLogRows(record);
+		return {
+			scheme: ref.scheme,
+			icon: status.icon,
+			iconRole: status.iconRole,
+			statusLabel: status.label,
+			statusRole: status.iconRole,
+			...resourceSummaryType(ref.scheme),
+			repository,
+			repositoryUrl,
+			title: actionName,
+			subtitle: [`#${number}`, workflow].filter(Boolean).join(" · "),
+			meta: [branch, event, headSha?.slice(0, 7)].filter(Boolean).join(" · "),
+			listDetails: [
+				workflow ? { text: workflow, role: "toolTitle" } : undefined,
+				branch ? { text: branch, role: "muted" } : undefined,
+				event ? { text: event, role: "muted" } : undefined,
+				headSha
+					? {
+							text: headSha.slice(0, 7),
+							role: "mdLink",
+							url: repositoryUrl ? `${repositoryUrl}/commit/${headSha}` : undefined,
+						}
+					: undefined,
+			].filter((part): part is ExplorationReadSummaryPart => Boolean(part)),
+			rows: [
+				...jobRows,
+				...(jobRows.length > 0 && logRows.length > 0 ? [{ branch: false, text: "" }] : []),
+				...logRows,
+			],
+		};
+	}
+	if (ref.scheme === "vault") {
+		return {
+			scheme: ref.scheme,
+			icon: "󱔗",
+			iconRole: "accent",
+			label: "vault",
+			title,
+			subtitle: resourcePathDisplay(resource.path ?? ref.path),
+			subtitleUrl: resourceOpenUrl(resource),
+			meta: resourceTokenCount(content),
+		};
+	}
+	if (ref.scheme === "local") {
+		const path = resource.path ?? ref.path;
+		return {
+			scheme: ref.scheme,
+			icon: "",
+			iconRole: "accent",
+			label: "local",
+			title,
+			subtitle: resourcePathDisplay(path),
+			subtitleUrl: resourceOpenUrl(resource),
+			meta: resourceTokenCount(content),
+		};
+	}
+	if (ref.scheme === "skill") {
+		const skillName = resourceString(resource.metadata?.skillName) ?? ref.authority;
+		const sourcePath = resourceString(resource.metadata?.sourcePath) ?? resource.path;
+		const subtitle = sourcePath
+			? resourcePathDisplay(sourcePath)
+			: ref.path
+				? resourcePathDisplay(ref.path)
+				: resource.uri;
+		const tokens = resourceCount(resource.metadata?.tokens);
+		return {
+			scheme: ref.scheme,
+			icon: "",
+			iconRole: "accent",
+			label: "skill",
+			title: skillName,
+			titleRole: "success",
+			titleItalic: true,
+			subtitle,
+			subtitleUrl: resourceOpenUrl(resource),
+			meta: tokens ? `${tokens} tokens` : resourceTokenCount(content),
+		};
+	}
+	return undefined;
+}
+
+function resourceContextText(resource: Resource, snippet?: string): string {
+	const summary = summarizeResource(resource, "");
+	return [
+		resource.uri,
+		resource.title ? `title: ${resource.title}` : undefined,
+		summary?.author ? `author: ${summary.author.text}` : undefined,
+		summary?.statusLabel ? `status: ${summary.statusLabel}` : undefined,
+		snippet && snippet !== resource.title ? `match: ${snippet}` : undefined,
+	]
+		.filter((line): line is string => Boolean(line))
+		.join("\n");
+}
+
+function halfBackground(line: string, glyph: "▄" | "▀", width: number): string {
+	const background = line.match(/\x1b\[48(?:;[0-9]+)*m/)?.[0];
+	return background ? `${background.replace("[48", "[38")}${glyph.repeat(width)}\x1b[39m` : line;
+}
+type AvatarImageData = { base64Data: string; mimeType: string; sourcePath?: string };
+const avatarImageCache = new Map<string, Promise<AvatarImageData | undefined>>();
+
+function cachedAvatarImage(url: string): Promise<AvatarImageData | undefined> {
+	const cached = avatarImageCache.get(url);
+	if (cached) return cached;
+	const pending = fetch(url, { signal: AbortSignal.timeout(5_000) })
+		.then(async (response) => {
+			if (!response.ok) return undefined;
+			const mimeType = (response.headers.get("content-type") ?? "image/png").split(";", 1)[0] ?? "image/png";
+			if (!mimeType.startsWith("image/")) return undefined;
+			const base64Data = Buffer.from(await response.arrayBuffer()).toString("base64");
+			const preview = await createCircularPreviewImageFromBase64(base64Data, mimeType);
+			if (preview) return { base64Data: preview.data, mimeType: preview.mimeType, sourcePath: preview.sourcePath };
+			return mimeType === "image/png" ? { base64Data, mimeType } : undefined;
+		})
+		.catch(() => undefined);
+	avatarImageCache.set(url, pending);
+	return pending;
+}
+
+class InlineAvatar {
+	private base64Data?: string;
+	private sourcePath?: string;
+	private placeholder?: string;
+
+	constructor(
+		url: string,
+		private readonly onInvalidate: () => void,
+	) {
+		void cachedAvatarImage(url).then((data) => {
+			if (!data) return;
+			this.base64Data = data.base64Data;
+			this.sourcePath = data.sourcePath;
+			this.placeholder = undefined;
+			this.onInvalidate();
+		});
+	}
+
+	render(): string {
+		if (getCapabilities().images !== "kitty" || !this.base64Data) return "";
+		if (this.placeholder) return this.placeholder;
+		this.placeholder = transmitKittyInlineImageRow(this.base64Data, 2, this.sourcePath);
+		return this.placeholder;
+	}
+}
+
+class ResourceSummaryCard implements Component {
+	private cachedLines?: string[];
+	private cachedWidth?: number;
+
+	constructor(
+		private readonly box: Box,
+		private readonly theme: RenderTheme,
+		private readonly visible: () => boolean,
+	) {}
+
+	render(width: number): string[] {
+		if (!this.visible()) return [];
+		if (this.cachedLines !== undefined && this.cachedWidth === width) return this.cachedLines;
+		const background =
+			darkerCardBackgroundAnsi(this.theme, "toolPendingBg") ?? this.theme.bg?.("toolPendingBg", " ").split(" ")[0];
+		const lines = this.box.render(width).map((line) => paintAnsiBackgroundRow(line, width, background));
+		if (lines.length >= 2) {
+			lines[0] = halfBackground(lines[0]!, "▄", width);
+			lines[lines.length - 1] = halfBackground(lines.at(-1)!, "▀", width);
+		}
+		this.cachedLines = lines;
+		this.cachedWidth = width;
+		return lines;
+	}
+
+	invalidate(): void {
+		this.cachedLines = undefined;
+		this.cachedWidth = undefined;
+		this.box.invalidate();
+	}
+}
+
+function renderResourceSummaryPart(
+	part: ExplorationReadSummaryPart,
+	theme: RenderTheme,
+	avatarFor: (url: string | undefined) => string,
+): string {
+	const avatar = avatarFor(part.avatarUrl);
+	return `${avatar ? `${avatar} ` : ""}${renderExplorationSummaryPart(part, theme)}`;
+}
+
+function renderResourceSummaryMeta(
+	summary: ResourceReadSummary,
+	theme: RenderTheme,
+	avatarFor: (url: string | undefined) => string,
+): string {
+	const parts = summary.metaParts ?? (summary.meta ? [{ text: summary.meta }] : []);
+	if (parts.length === 0) return "";
+	const separator = theme.fg("dim", " · ");
+	return ` ${theme.fg("dim", "·")} ${parts.map((part) => renderResourceSummaryPart(part, theme, avatarFor)).join(separator)}`;
+}
+
+function renderResourceSummaryRow(
+	row: ExplorationReadSummaryRow,
+	index: number,
+	total: number,
+	theme: RenderTheme,
+	avatarFor: (url: string | undefined) => string,
+	width?: number,
+): string {
+	const branch = row.branch === false ? "" : theme.fg("dim", `${index === total - 1 ? "└─" : "├─"} `);
+	const leading = row.leading
+		? row.leading.trim()
+			? theme.fg(row.leadingRole ?? "muted", row.leading)
+			: row.leading
+		: "";
+	const avatar = avatarFor(row.avatarUrl);
+	const icon = row.icon ? `${theme.fg(row.iconRole ?? "muted", row.icon)} ` : "";
+	const rowPrefix = row.prefix ? `${renderResourceSummaryPart(row.prefix, theme, avatarFor)} ` : "";
+	const rowText = row.italic ? `\x1b[3m${row.text}\x1b[23m` : row.text;
+	const styledRowText = row.bold ? theme.bold(rowText) : rowText;
+	const body = row.textUrl
+		? renderExplorationSummaryPart({ text: styledRowText, role: row.textRole, url: row.textUrl }, theme)
+		: theme.fg(row.textRole ?? "muted", styledRowText);
+	const details = row.details
+		?.map((part) => renderResourceSummaryPart(part, theme, avatarFor))
+		.join(theme.fg("dim", " · "));
+	const prefix = `${branch}${leading}${avatar ? `${avatar} ` : ""}${icon}${rowPrefix}${body}${details ? `${theme.fg("dim", " · ")}${details}` : ""}`;
+	const status = row.status ? renderResourceSummaryPart(row.status, theme, avatarFor) : "";
+	if (!status) return prefix;
+	if (width === undefined) return `${prefix} ${status}`;
+	const bodyWidth = Math.max(1, width - visibleWidth(status) - 1);
+	const clippedPrefix = truncateToWidth(prefix, bodyWidth);
+	return `${clippedPrefix}${" ".repeat(Math.max(1, width - visibleWidth(clippedPrefix) - visibleWidth(status)))}${status}`;
+}
+function resourceSummaryHeaderLines(
+	summary: ResourceReadSummary,
+	theme: RenderTheme,
+	avatarFor: (url: string | undefined) => string,
+	width: number,
+): string[] {
+	const subtitle = `${renderExplorationSummaryPart(
+		{ text: summary.subtitle, role: "mdLink", url: summary.subtitleUrl },
+		theme,
+	)}${renderResourceSummaryMeta(summary, theme, avatarFor)}`;
+	const subtitleStatus = summary.subtitleStatus
+		? `${theme.fg(summary.subtitleStatus.iconRole, summary.subtitleStatus.icon)} ${theme.fg(
+				summary.subtitleStatus.iconRole,
+				summary.subtitleStatus.label,
+			)}`
+		: "";
+	const subtitleLine = subtitleStatus
+		? (mergeResourceColumns([subtitle], [` ${subtitleStatus}`], width)?.[0] ?? subtitle)
+		: subtitle;
+	if (summary.typeIcon) {
+		const summaryLine = renderExplorationSummaryTitle(summary, theme, true);
+		const author = summary.author ? renderResourceSummaryPart(summary.author, theme, avatarFor) : "";
+		if (!author) return [summaryLine, subtitleLine];
+		const authorLine = mergeResourceColumns([summaryLine], [` ${author}`], width)?.[0];
+		if (authorLine) return [authorLine, subtitleLine];
+		const right = truncateToWidth(author, Math.max(1, width - 2));
+		const left = truncateToWidth(summaryLine, Math.max(1, width - visibleWidth(right) - 1));
+		return [
+			`${left}${" ".repeat(Math.max(1, width - visibleWidth(left) - visibleWidth(right)))}${right}`,
+			subtitleLine,
+		];
+	}
+	if (summary.scheme === "history") {
+		return [
+			renderCompactSummaryLine(theme, {
+				icon: summary.icon,
+				label: summary.label,
+				name: summary.title,
+			}),
+			subtitleLine,
+		];
+	}
+	return [
+		renderCompactSummaryLine(theme, {
+			icon: summary.icon,
+			label: summary.label,
+			name: summary.title,
+			path: summary.subtitle,
+			meta: summary.meta,
+			pathUrl: summary.subtitleUrl,
+		}),
+	];
+}
+
+function padResourceLine(line: string, width: number): string {
+	const fitted = truncateToWidth(line, width);
+	return `${fitted}${" ".repeat(Math.max(0, width - visibleWidth(fitted)))}`;
+}
+
+function resourceRightColumnWidth(width: number): number {
+	return Math.min(42, Math.max(24, Math.floor(width * 0.32)));
+}
+
+function mergeResourceColumns(left: string[], right: string[], width: number): string[] | undefined {
+	const rightWidth = resourceRightColumnWidth(width);
+	const leftWidth = width - rightWidth - 3;
+	if (leftWidth < 36) return undefined;
+	const lines: string[] = [];
+	for (let index = 0; index < Math.max(left.length, right.length); index++) {
+		const leftLine = padResourceLine(left[index] ?? "", leftWidth);
+		const rightLine = right[index] ?? "";
+		lines.push(truncateToWidth(`${leftLine}  ${rightLine}`, width));
+	}
+	return lines;
+}
+
+class ResourceSummaryText implements Component {
+	private readonly avatars = new Map<string, InlineAvatar>();
+	private readonly markdown?: Markdown;
+
+	constructor(
+		private readonly summary: ResourceReadSummary,
+		private readonly theme: RenderTheme,
+		onInvalidate: () => void,
+	) {
+		this.markdown = summary.markdown
+			? new Markdown(summary.markdown, 0, 0, getMarkdownTheme(), {
+					color: (text) => theme.fg("text", text),
+				})
+			: undefined;
+		if (getCapabilities().images !== "kitty") return;
+		const addAvatar = (url: string | undefined) => {
+			if (url && !this.avatars.has(url)) this.avatars.set(url, new InlineAvatar(url, onInvalidate));
+		};
+		for (const part of summary.metaParts ?? []) addAvatar(part.avatarUrl);
+		addAvatar(summary.author?.avatarUrl);
+		for (const row of [...(summary.rows ?? []), ...(summary.sideRows ?? [])]) {
+			addAvatar(row.avatarUrl);
+			for (const detail of row.details ?? []) addAvatar(detail.avatarUrl);
+			addAvatar(row.status?.avatarUrl);
+		}
+	}
+
+	render(width: number): string[] {
+		const avatarFor = (url: string | undefined) => (url ? (this.avatars.get(url)?.render() ?? "") : "");
+		const header = resourceSummaryHeaderLines(this.summary, this.theme, avatarFor, width).map((line) => ` ${line}`);
+		const rows = this.summary.rows ?? [];
+		const footer = rows.filter((row) => row.footer);
+		const left = rows
+			.filter((row) => !row.footer)
+			.map(
+				(row, index, visibleRows) =>
+					` ${renderResourceSummaryRow(row, index, visibleRows.length, this.theme, avatarFor)}`,
+			);
+		const rightWidth = resourceRightColumnWidth(width);
+		const right = (this.summary.sideRows ?? []).map(
+			(row, index, sideRows) =>
+				` ${renderResourceSummaryRow(row, index, sideRows.length, this.theme, avatarFor, Math.max(1, rightWidth - 1))}`,
+		);
+		const leftWidth = width - rightWidth - 3;
+		const markdownWidth = right.length > 0 && leftWidth >= 36 ? leftWidth - 1 : width - 2;
+		const renderedMarkdown = this.markdown?.render(Math.max(1, markdownWidth)) ?? [];
+		const markdown = renderedMarkdown.slice(0, 10).map((line) => ` ${line}`);
+		if (renderedMarkdown.length > markdown.length) markdown.push(` ${this.theme.fg("muted", "… body truncated")}`);
+		const leftColumn = [...markdown, ...left];
+		const body =
+			right.length === 0
+				? leftColumn
+				: (mergeResourceColumns(leftColumn, right, width) ?? [...right, ...leftColumn]);
+		const footerLines = footer.map(
+			(row, index) => ` ${renderResourceSummaryRow(row, index, footer.length, this.theme, avatarFor)}`,
+		);
+		return [...header, ...body, ...footerLines];
+	}
+
+	invalidate(): void {
+		this.markdown?.invalidate();
+	}
+}
+
+function renderResourceSummaryCard(
+	summary: ResourceReadSummary,
+	theme: RenderTheme,
+	invalidate: () => void = () => {},
+	visible: () => boolean = () => true,
+): Component {
+	const box = new Box(1, 1, (text) => text);
+	box.addChild(
+		new ResourceSummaryText(summary, theme, () => {
+			box.invalidate();
+			invalidate();
+		}),
+	);
+	return new ResourceSummaryCard(box, theme, visible);
+}
+function resourceLoadingIcon(scheme: ResourceRef["scheme"]): string {
+	if (scheme === "pr" || scheme === "issue" || scheme === "action") return GITHUB_TYPE_ICON;
+	if (scheme === "history") return "";
+	if (scheme === "vault") return "󱔗";
+	if (scheme === "skill") return "";
+	return "≡";
+}
+
+function renderResourceLoading(
+	operation: "read" | "search" | "find",
+	path: string,
+	theme: RenderTheme,
+	context?: Partial<ToolRenderContext<Record<string, unknown>, unknown>>,
+): Component | undefined {
+	let ref: ResourceRef | undefined;
+	try {
+		ref = parseResourceUri(path);
+	} catch {
+		return undefined;
+	}
+	if (!ref) return undefined;
+	const identity = `resource:${operation}:${formatResourceUri(ref)}`;
+	if (context?.lastComponent instanceof BlockTextView && context.lastComponent.matches(identity))
+		return context.lastComponent;
+	const label = operation === "read" ? "reading" : operation === "search" ? "searching" : "finding";
+	const frame = () => runningFrame(streamingElapsedMs(context, true), EDIT_FRAME_MS);
+	return new BlockTextView(
+		() => {
+			scheduleStreamingInvalidation(context, true);
+			const uri = formatResourceUri(ref);
+			const renderedUri = renderExplorationSummaryPart(
+				{ text: uri, role: "mdLink", italic: true, url: resourceOpenUrl(uri, { cwd: context?.cwd }) },
+				theme,
+			);
+			return `${theme.fg("text", resourceLoadingIcon(ref.scheme))}  ${theme.fg("toolTitle", theme.bold(label))} ${theme.fg("warning", frame())} ${renderedUri}`;
+		},
+		theme,
+		() => context?.isPartial === true,
+		frame,
+		null,
+		identity,
+	);
+}
+
+class ResourceReadCardView implements Component {
+	private card?: Component;
+	private cardSummary?: ResourceReadSummary;
+	private resolvedSummary?: ResourceReadSummary;
+	private cardInitialized = false;
+
+	constructor(
+		private readonly displayPath: string,
+		private readonly loading: Component,
+		private readonly theme: RenderTheme,
+		private readonly context?: Partial<ToolRenderContext<Record<string, unknown>, unknown>>,
+	) {}
+	matches(displayPath: string): boolean {
+		return this.displayPath === displayPath;
+	}
+	setSummary(summary: ResourceReadSummary): void {
+		this.resolvedSummary = summary;
+		this.cardInitialized = false;
+		this.invalidate();
+	}
+
+	render(width: number): string[] {
+		renderExplorationCall(readAction(this.displayPath, this.context?.cwd), this.theme, this.context);
+		if (isExplorationHidden(this.context?.toolCallId)) return [];
+		const summary = this.resolvedSummary ?? getExplorationReadSummary(this.context?.toolCallId);
+		if (!summary) return this.loading.render(width);
+		if (!this.cardInitialized || this.cardSummary !== summary) {
+			this.cardSummary = summary;
+			this.card = renderResourceSummaryCard(summary, this.theme, this.context?.invalidate ?? (() => {}));
+			this.cardInitialized = true;
+		}
+		return this.card?.render(width) ?? [];
+	}
+
+	invalidate(): void {
+		this.loading.invalidate();
+		this.card?.invalidate();
+	}
+}
+
+function renderResourceReadResult(
+	result: ToolTextResult,
+	options: { expanded?: boolean },
+	theme: RenderTheme,
+	toolCallId?: string,
+	invalidate: () => void = () => {},
+	lastComponent?: Component,
+): Component | undefined {
+	const summary = result.details?.resourceSummary;
+	if (!summary || typeof summary !== "object") return undefined;
+	const typedSummary = summary as ResourceReadSummary;
+	const readCard = lastComponent instanceof ResourceReadCardView ? lastComponent : undefined;
+	readCard?.setSummary(typedSummary);
+	const inExploration = updateExplorationRead(toolCallId, typedSummary);
+	if (!options.expanded && inExploration) return EMPTY_VIEW;
+	const card = readCard ?? renderResourceSummaryCard(typedSummary, theme, invalidate);
+	const expanded = options.expanded
+		? renderPlainReadResult(firstTextContent(result), result, { expanded: true }, theme)
+		: EMPTY_VIEW;
+	if (expanded === EMPTY_VIEW) return card;
+	const container = new Container();
+	container.addChild(card);
+	container.addChild(expanded);
+	return container;
+}
 function lineNumberInRanges(lineNumber: number, ranges: readonly LineRange[]): boolean {
 	if (ranges.length === 0) return true;
 	return ranges.some((range) => lineNumber >= range.start && lineNumber <= range.end);
@@ -497,29 +2025,6 @@ function renderText(text: string): Text {
 	return textComponent(text);
 }
 
-/**
- * `key` reports the live inputs the text producer reads, so the producer itself stays
- * behind the cache. Building the text is the expensive half for search and find results
- * (per-row highlighting), and render() runs on every animation frame.
- */
-class DynamicTextView {
-	private readonly cache = new RenderedLineCache();
-
-	constructor(
-		private readonly text: () => string,
-		private readonly shouldRender: () => boolean = () => true,
-		private readonly key: () => string = () => "",
-	) {}
-
-	invalidate() {
-		this.cache.clear();
-	}
-
-	render(width: number): string[] {
-		if (!this.shouldRender()) return [];
-		return this.cache.get(width, this.key(), () => textComponent(this.text()).render(width));
-	}
-}
 const EMPTY_TOOL_CALL_IDS = new Set<string>();
 
 const EMPTY_VIEW = new EmptyComponent();
@@ -533,7 +2038,12 @@ class BlockTextView {
 		private readonly shouldRender: () => boolean = () => true,
 		private readonly key: () => string = () => "",
 		private readonly backgroundRole: string | null = "toolPendingBg",
+		private readonly identity?: string,
 	) {}
+
+	matches(identity: string): boolean {
+		return this.identity === identity;
+	}
 
 	invalidate() {
 		this.cache.clear();
@@ -558,10 +2068,28 @@ function toolTextLines(text: string): string[] {
 	return lines.slice(0, end);
 }
 
-function shortenDisplayPath(path: string): string {
+export function shortenDisplayPath(path: string, cwd = process.cwd()): string {
 	const normalized = path.replace(/\\/g, "/");
-	const parts = normalized.split("/");
-	return parts.length > 4 ? `.../${parts.slice(-4).join("/")}` : normalized;
+	if (isResourceUri(normalized)) return normalized;
+
+	const expanded =
+		normalized === "~" ? homedir() : normalized.startsWith("~/") ? join(homedir(), normalized.slice(2)) : normalized;
+	const root = resolve(cwd);
+	const absolute = resolve(root, expanded);
+	const projectRelative = relative(root, absolute).replace(/\\/g, "/");
+	if (
+		projectRelative === "" ||
+		(!projectRelative.startsWith("../") && projectRelative !== ".." && !isAbsolute(projectRelative))
+	) {
+		return projectRelative || ".";
+	}
+
+	const home = resolve(homedir());
+	const homeRelative = relative(home, absolute).replace(/\\/g, "/");
+	if (absolute === home) return "~";
+	if (!homeRelative.startsWith("../") && homeRelative !== ".." && !isAbsolute(homeRelative))
+		return `~/${homeRelative}`;
+	return absolute;
 }
 
 function invalidArgText(theme: RenderTheme): string {
@@ -684,6 +2212,7 @@ type HashlineRenderSection = {
 	header: string;
 	path: string;
 	rows: string[];
+	diagnostics: string[];
 };
 
 function parseHashlineSections(text: string): HashlineRenderSection[] {
@@ -692,11 +2221,19 @@ function parseHashlineSections(text: string): HashlineRenderSection[] {
 	for (const line of toolTextLines(text)) {
 		const header = /^(\[(.+?)#[0-9A-Fa-f]{4}\])$/.exec(line);
 		if (header) {
-			current = { header: header[1] ?? line, path: header[2] ?? "", rows: [] };
+			current = { header: header[1] ?? line, path: header[2] ?? "", rows: [], diagnostics: [] };
 			sections.push(current);
 			continue;
 		}
-		if (current && line.length > 0 && !line.startsWith("[")) current.rows.push(line);
+		if (!current || line.length === 0) continue;
+		if (
+			line.startsWith("Use a narrower path") ||
+			/^\[(?:Search results truncated|Find results truncated|\d+ more lines in (?:file|resource))/.test(line)
+		) {
+			current.diagnostics.push(line);
+		} else if (!line.startsWith("[")) {
+			current.rows.push(line);
+		}
 	}
 	return sections;
 }
@@ -707,9 +2244,12 @@ function renderHashlineHeader(header: string, theme: RenderTheme): string {
 	return `${theme.fg("accent", match[1] ?? "")}${match[2] ? theme.fg("toolDiffAdded", match[2]) : ""}`;
 }
 
-function readDisplay(params: { path?: string; offset?: number; limit?: number; ranges?: string[] }): string {
+function readDisplay(
+	params: { path?: string; offset?: number; limit?: number; ranges?: string[] },
+	cwd = process.cwd(),
+): string {
 	const path = typeof params.path === "string" ? splitReadPathSelector(params.path).path : undefined;
-	return path ? `${path.replace(/\\/g, "/")}${formatReadLineRange(params)}` : "[invalid]";
+	return path ? `${shortenDisplayPath(path.replace(/\\/g, "/"), cwd)}${formatReadLineRange(params)}` : "[invalid]";
 }
 
 function renderReadCall(
@@ -717,7 +2257,15 @@ function renderReadCall(
 	theme: RenderTheme,
 	context?: Partial<ToolRenderContext<Record<string, unknown>, unknown>>,
 ): Component {
-	return new BlockTextView(() => renderExplorationCall(readAction(readDisplay(params)), theme, context), theme);
+	const rawPath = typeof params.path === "string" ? splitReadPathSelector(params.path).path : undefined;
+	const displayPath = readDisplay(params, context?.cwd ?? process.cwd());
+	if (rawPath && isResourceUri(rawPath)) {
+		if (context?.lastComponent instanceof ResourceReadCardView && context.lastComponent.matches(displayPath))
+			return context.lastComponent;
+		const loading = renderResourceLoading("read", rawPath, theme, context);
+		return loading ? new ResourceReadCardView(displayPath, loading, theme, context) : EMPTY_VIEW;
+	}
+	return new BlockTextView(() => renderExplorationCall(readAction(displayPath, context?.cwd), theme, context), theme);
 }
 
 function renderHashlineReadResult(
@@ -755,8 +2303,12 @@ function renderReadResult(
 	options: { expanded?: boolean; isPartial?: boolean },
 	theme: RenderTheme,
 	toolCallId?: string,
-): Text | Container | EmptyComponent {
+	invalidate: () => void = () => {},
+	lastComponent?: Component,
+): Component {
 	if (options.isPartial) return EMPTY_VIEW;
+	const resource = renderResourceReadResult(result, options, theme, toolCallId, invalidate, lastComponent);
+	if (resource) return resource;
 	const preview = previewImageDetails(result.details?.previewImage);
 	if (!preview) return renderHashlineReadResult(result, options, theme);
 
@@ -775,8 +2327,34 @@ function renderReadResult(
 	return container;
 }
 
-function renderSearchCall(_params: { pattern?: unknown; path?: unknown }, _theme: RenderTheme): EmptyComponent {
-	return EMPTY_VIEW;
+function resourceDetailsList(result: ToolTextResult, key: string): Resource[] {
+	const value = result.details?.[key];
+	if (!Array.isArray(value)) return [];
+	return value.filter(
+		(item): item is Resource =>
+			Boolean(item) && typeof item === "object" && typeof (item as Resource).uri === "string",
+	);
+}
+
+function renderResourceListCard(
+	resources: readonly Resource[],
+	operation: "find" | "search",
+	subtitle: string,
+	theme: RenderTheme,
+	visible: () => boolean,
+	snippets: readonly (string | undefined)[] = [],
+): Component | undefined {
+	const summary = resourceSummaryList(resources, operation, subtitle, snippets);
+	return summary ? renderResourceSummaryCard(summary, theme, () => {}, visible) : undefined;
+}
+
+function renderSearchCall(
+	params: { pattern?: unknown; path?: unknown },
+	theme: RenderTheme,
+	context?: Partial<ToolRenderContext<Record<string, unknown>, unknown>>,
+): Component {
+	if (context?.isPartial !== true || typeof params.path !== "string" || !isResourceUri(params.path)) return EMPTY_VIEW;
+	return renderResourceLoading("search", params.path, theme, context) ?? EMPTY_VIEW;
 }
 
 function escapeRegExp(value: string): string {
@@ -812,6 +2390,7 @@ function renderSearchSections(
 	theme: RenderTheme,
 	expanded: boolean,
 	pattern: string,
+	cwd: string,
 ): string {
 	const lines: string[] = [];
 	const maxRows = expanded ? Number.POSITIVE_INFINITY : 12;
@@ -824,9 +2403,11 @@ function renderSearchSections(
 		const isLastSection = sectionIndex === sections.length - 1;
 		const branch = isLastSection ? treeLast(theme) : treeBranch(theme);
 		const continuation = isLastSection ? "   " : `${theme.tree?.vertical ?? "│"}  `;
-		lines.push(
-			`${theme.fg("dim", `${branch} ${fileIcon(theme, section.path)} `)}${renderHashlineHeader(section.header, theme)}`,
+		const linkedPath = renderExplorationSummaryPart(
+			{ text: section.path, role: "mdLink", url: pathToFileURL(resolve(cwd, section.path)).href },
+			theme,
 		);
+		lines.push(`${theme.fg("dim", `${branch} ${fileIcon(theme, section.path)} `)}${linkedPath}`);
 		for (const [rowIndex, row] of section.rows.entries()) {
 			if (emittedRows >= maxRows) break;
 			const isMatch = row.startsWith("*");
@@ -841,6 +2422,8 @@ function renderSearchSections(
 			);
 			emittedRows++;
 		}
+		for (const diagnostic of section.diagnostics)
+			lines.push(`${theme.fg("dim", continuation)}${theme.fg("muted", diagnostic)}`);
 	}
 	const totalRows = sections.reduce((count, section) => count + section.rows.length, 0);
 	if (totalRows > emittedRows)
@@ -873,6 +2456,18 @@ function renderSearchResult(
 			visible: shouldRender,
 		});
 	}
+	const resources = resourceDetailsList(result, "resources");
+	if (resources.length > 0) {
+		const resourceCard = renderResourceListCard(
+			resources,
+			"search",
+			`query: ${pattern} · scope: ${shortenDisplayPath(noMatchPath)}`,
+			theme,
+			shouldRender,
+			resources.map((resource) => (resource as SearchHit).snippet),
+		);
+		if (resourceCard) return resourceCard;
+	}
 	const text = firstTextContent(result).trim();
 	if (!text.startsWith("[")) {
 		return framedBlock(theme, {
@@ -903,7 +2498,7 @@ function renderSearchResult(
 		sections: [
 			{
 				component: new BlockTextView(
-					renderSearchSections(sections, theme, options.expanded ?? false, pattern),
+					renderSearchSections(sections, theme, options.expanded ?? false, pattern, context?.cwd ?? process.cwd()),
 					theme,
 					() => true,
 					() => (options.expanded ? "expanded" : ""),
@@ -918,11 +2513,39 @@ function renderSearchResult(
 	});
 }
 
+function findRequestTarget(args: { paths?: string[]; pattern?: unknown; path?: unknown }): string {
+	if (Array.isArray(args.paths) && args.paths.length > 0) return args.paths.join(", ");
+	if (typeof args.pattern === "string") return args.pattern;
+	if (typeof args.path === "string") return args.path;
+	return ".";
+}
+
+function findRequestWhere(args: { paths?: string[]; path?: unknown }): string {
+	const first = args.paths?.[0];
+	if (first) return isResourceUri(first) ? first : dirname(first);
+	return typeof args.path === "string" ? args.path : ".";
+}
+
 function renderFindCall(
-	_params: { paths?: string[]; pattern?: unknown; path?: unknown },
-	_theme: RenderTheme,
-): EmptyComponent {
-	return EMPTY_VIEW;
+	params: { paths?: string[]; pattern?: unknown; path?: unknown },
+	theme: RenderTheme,
+	context?: Partial<ToolRenderContext<Record<string, unknown>, unknown>>,
+): Component {
+	if (context?.isPartial !== true) return EMPTY_VIEW;
+	const target = findRequestTarget(params);
+	if (isResourceUri(target)) return renderResourceLoading("find", target, theme, context) ?? EMPTY_VIEW;
+	return framedBlock(theme, {
+		header: renderStatusHeader(
+			"Find:",
+			theme,
+			` ${theme.fg("warning", shortenDisplayPath(target))} ${theme.fg("dim", `in ${shortenDisplayPath(findRequestWhere(params))}`)}`,
+			"pending",
+		),
+		sections: [{ lines: [theme.fg("muted", "Finding files...")] }],
+		borderColor: "borderMuted",
+		backgroundAnsi: cardBackgroundAnsi(theme, "toolPendingBg"),
+		visible: () => context?.isPartial === true,
+	});
 }
 
 function renderFindResult(
@@ -933,36 +2556,73 @@ function renderFindResult(
 	context?: Partial<ToolRenderContext<Record<string, unknown>, unknown>>,
 	latestTurnToolCallIds: ReadonlySet<string> = EMPTY_TOOL_CALL_IDS,
 	getLatestTurnIndex: () => number | undefined = () => undefined,
-): Text | BlockTextView | EmptyComponent {
-	if (options.isPartial) return renderText(theme.fg("warning", "Finding files..."));
+): Component {
+	const request = args ?? {};
+	if (options.isPartial) return renderFindCall(request, theme, context);
 	const shouldRender = () =>
 		shouldRenderLatestToolResult(result, context, latestTurnToolCallIds, getLatestTurnIndex());
 	if (!shouldRender()) return EMPTY_VIEW;
+	const resources = resourceDetailsList(result, "resources");
+	if (resources.length > 0) {
+		const resourceCard = renderResourceListCard(
+			resources,
+			"find",
+			`scope: ${shortenDisplayPath(findRequestWhere(request))}`,
+			theme,
+			shouldRender,
+		);
+		if (resourceCard) return resourceCard;
+	}
 	const output = firstTextContent(result).trim();
-	if (/not found on PATH|failed|error/i.test(output.split("\n")[0] ?? ""))
-		return new DynamicTextView(() => theme.fg("error", output), shouldRender);
-	const files = toolTextLines(output).filter((line) => line && !line.startsWith("No files"));
-	const target = Array.isArray(args?.paths) ? args.paths.join(", ") : String(args?.pattern ?? "");
-	const where = Array.isArray(args?.paths) ? dirname(args.paths[0] ?? ".") : String(args?.path ?? ".");
+	if (/not found on PATH|failed|error/i.test(output.split("\n")[0] ?? "")) {
+		return framedBlock(theme, {
+			header: renderStatusHeader("Find:", theme, "", "error"),
+			sections: [{ lines: [theme.fg("error", output)] }],
+			borderColor: "error",
+			backgroundAnsi: cardBackgroundAnsi(theme, "toolErrorBg"),
+			visible: shouldRender,
+		});
+	}
+	const outputLines = toolTextLines(output).filter(Boolean);
+	const noResults = /^No (?:files|resources) found\b/i.test(output);
+	const diagnostics = outputLines.filter((line) => /^\[Find results truncated\b/.test(line));
+	const files = noResults ? [] : outputLines.filter((line) => !diagnostics.includes(line));
+	const target = findRequestTarget(request);
+	const where = findRequestWhere(request);
 	const header = renderStatusHeader(
 		"Find:",
 		theme,
 		` ${theme.fg("warning", shortenDisplayPath(target))} ${theme.fg("dim", `${files.length} file${files.length === 1 ? "" : "s"} · in ${shortenDisplayPath(where)}`)}`,
 	);
 	const shown = files.slice(0, options.expanded ? files.length : 20);
-	const body = shown
-		.map(
-			(file, index) =>
-				`${theme.fg("dim", `${index === shown.length - 1 ? treeLast(theme) : treeBranch(theme)} ${fileIcon(theme, file)} `)}${theme.fg("toolOutput", shortenDisplayPath(file))}`,
-		)
-		.join("\n");
-	const more =
-		files.length > shown.length
-			? `\n${theme.fg("muted", `... (${files.length - shown.length} more files, `)}${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`
-			: "";
-	return new BlockTextView(`${header}${body ? `\n${body}${more}` : ""}`, theme, shouldRender, () =>
-		options.expanded ? "expanded" : "",
-	);
+	const lines =
+		shown.length > 0
+			? shown.map((file, index) => {
+					const linkedPath = renderExplorationSummaryPart(
+						{
+							text: shortenDisplayPath(file),
+							role: "mdLink",
+							url: pathToFileURL(resolve(context?.cwd ?? process.cwd(), file)).href,
+						},
+						theme,
+					);
+					return `${theme.fg("dim", `${index === shown.length - 1 ? treeLast(theme) : treeBranch(theme)} ${fileIcon(theme, file)} `)}${linkedPath}`;
+				})
+			: [theme.fg("muted", output || "No files found")];
+	if (files.length > shown.length) {
+		lines.push(
+			`${theme.fg("muted", `... (${files.length - shown.length} more files, `)}${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`,
+		);
+	}
+	for (const diagnostic of diagnostics) lines.push(theme.fg("muted", diagnostic));
+	return framedBlock(theme, {
+		header,
+		sections: [{ lines }],
+		borderColor: "borderMuted",
+		backgroundAnsi: cardBackgroundAnsi(theme, "toolPendingBg"),
+		visible: shouldRender,
+		cacheKey: () => (options.expanded ? "expanded" : "collapsed"),
+	});
 }
 function renderWriteCard(
 	params: { path?: string; content?: string },
@@ -1599,14 +3259,15 @@ async function executeReplace(
 	cwd: string,
 	input: EditInput,
 	config: EditConfig,
+	resourceContext?: ResourceContext,
 	signal?: AbortSignal,
 ): Promise<{ content: Array<{ type: "text"; text: string }>; details: EditToolDetails }> {
 	const normalized = normalizeReplaceInput(input);
-
-	const target = absolutePath(cwd, normalized.path);
+	const resource = resourceRefForPath(normalized.path);
+	const target = resource ? formatResourceUri(resource) : absolutePath(cwd, normalized.path);
 	return withFileMutationQueue(target, async () => {
 		if (signal?.aborted) throw new Error("Operation aborted");
-		const raw = await readFile(target, "utf-8");
+		const raw = resource ? (await readResource(resource, resourceContext)).content : await readFile(target, "utf-8");
 		const { bom, text } = stripBom(raw);
 		const lineEnding = detectLineEnding(text);
 		const before = normalizeToLf(text);
@@ -1614,10 +3275,14 @@ async function executeReplace(
 		const current = applied.text;
 		const total = applied.total;
 		if (current === before) throw new Error(`Edits to ${normalized.path} resulted in no changes being made.`);
-		await writeFile(target, bom + restoreLineEndings(current, lineEnding), "utf-8");
+		const persisted = bom + restoreLineEndings(current, lineEnding);
+		if (resource) {
+			await writeResource(resource, { content: persisted, expectedContent: raw, context: resourceContext });
+		} else {
+			await writeFile(target, persisted, "utf-8");
+		}
 
 		const patch = createTwoFilesPatch(normalized.path, normalized.path, before, current, "", "", { context: 3 });
-		const highlightedDiffRows = await buildHighlightedDiffRows(patch);
 		return {
 			content: [
 				{
@@ -1625,7 +3290,7 @@ async function executeReplace(
 					text: `Successfully replaced ${total} occurrence${total === 1 ? "" : "s"} in ${normalized.path}.`,
 				},
 			],
-			details: { diff: patch, patch, highlightedDiffRows, firstChangedLine: firstChangedLine(before, current) },
+			details: { diff: patch, patch, firstChangedLine: firstChangedLine(before, current) },
 		};
 	});
 }
@@ -1772,8 +3437,130 @@ async function runApplyPatch(cwd: string, input: string, signal?: AbortSignal) {
 	};
 }
 
+function localResourceUri(path: string, context: Pick<ResourceContext, "sessionId">): string {
+	const root = resolve(localResourceRoot(context));
+	const relativePath = relative(root, resolve(path)).replaceAll("\\", "/");
+	return formatResourceUri({
+		scheme: "local",
+		authority: "current",
+		path: relativePath ? `/${relativePath}` : "",
+		query: {},
+	});
+}
+
+function localResource(uri: string, path: string, metadata: Awaited<ReturnType<typeof stat>>): Resource {
+	return {
+		uri,
+		name: path.split("/").at(-1) || path,
+		kind: metadata.isDirectory() ? "directory" : "file",
+		mediaType: metadata.isDirectory() ? "inode/directory" : "text/plain",
+		size: metadata.isFile() ? metadata.size : undefined,
+		path,
+		modifiedAt: metadata.mtime.toISOString(),
+	};
+}
+
+async function localFiles(directory: string): Promise<string[]> {
+	const entries = await readdir(directory, { withFileTypes: true });
+	const files: string[] = [];
+	for (const entry of entries) {
+		const path = join(directory, entry.name);
+		if (entry.isDirectory()) files.push(...(await localFiles(path)));
+		else files.push(path);
+	}
+	return files;
+}
+
+function localResourceProvider(baseCwd: string): ResourceProvider {
+	return {
+		async read(ref, context) {
+			const path = localResourcePath(ref, context ?? {});
+			if (!ref.path) await mkdir(path, { recursive: true });
+			const metadata = await stat(path);
+			if (metadata.isDirectory()) {
+				const files = await localFiles(path);
+				const content =
+					files.length === 0
+						? "(empty)\n"
+						: `${files.map((file) => localResourceUri(file, context ?? {})).join("\n")}\n`;
+				return { resource: localResource(formatResourceUri(ref), path, metadata), content };
+			}
+			return {
+				resource: localResource(formatResourceUri(ref), path, metadata),
+				content: await readFile(path, "utf-8"),
+			};
+		},
+		async search(request): Promise<SearchHit[]> {
+			if (!request.scope || request.scope.scheme !== "local") return [];
+			const root = localResourcePath(request.scope, request.context ?? {});
+			const rootMetadata = await stat(root);
+			const args = ["--line-number", "--color=never", "--hidden", "--no-heading", "--max-count", "1"];
+			if (request.ignoreCase) args.push("--ignore-case");
+			if (request.literal) args.push("--fixed-strings");
+			args.push("--", request.query, root);
+			const result = await runExternalCommand("rg", args, request.context?.cwd ?? baseCwd, {
+				signal: request.context?.signal,
+				allowNonZero: true,
+				extraSearchPaths: FILEOPS_TOOL_SEARCH_PATHS,
+			});
+			const hits: SearchHit[] = [];
+			for (const line of result.stdout.replace(/\r\n?/g, "\n").split("\n")) {
+				const singleFileMatch = rootMetadata.isFile() ? /^([1-9]\d*):(.*)$/.exec(line) : undefined;
+				const match = /^(.*?):([1-9]\d*):(.*)$/.exec(line);
+				if (!singleFileMatch && !match) continue;
+				const path = rootMetadata.isFile() ? root : resolve(match![1]!);
+				const snippet = singleFileMatch
+					? `${singleFileMatch[1]}:${singleFileMatch[2]}`
+					: `${match![2]}:${match![3]}`;
+				const metadata = rootMetadata.isFile() ? rootMetadata : await stat(path).catch(() => undefined);
+				if (!metadata) continue;
+				hits.push({
+					...localResource(localResourceUri(path, request.context ?? {}), path, metadata),
+					snippet,
+					score: 1,
+				});
+				if (hits.length >= (request.limit ?? DEFAULT_SEARCH_RESULT_LIMIT)) break;
+			}
+			return hits;
+		},
+		async find(ref, context) {
+			const root = localResourcePath(ref, context ?? {});
+			if (!ref.path) await mkdir(root, { recursive: true });
+			const metadata = await stat(root);
+			const paths = metadata.isDirectory() ? await localFiles(root) : [root];
+			return Promise.all(
+				paths.map(async (path) => {
+					const fileMetadata = await stat(path);
+					return localResource(localResourceUri(path, context ?? {}), path, fileMetadata);
+				}),
+			);
+		},
+		async write(ref, request) {
+			const path = localResourcePath(ref, request.context ?? {});
+			if (request.expectedContent !== undefined) {
+				const current = await readFile(path, "utf-8");
+				if (current !== request.expectedContent)
+					throw new Error(`Local resource changed: ${formatResourceUri(ref)}`);
+			}
+			await mkdir(dirname(path), { recursive: true });
+			await writeFile(path, request.content, "utf-8");
+			if (request.makeExecutable || request.content.startsWith("#!")) await chmod(path, 0o755);
+			const metadata = await stat(path);
+			return {
+				resource: localResource(formatResourceUri(ref), path, metadata),
+				bytes: Buffer.byteLength(request.content, "utf-8"),
+			};
+		},
+	};
+}
+
 class CwdHashlineFilesystem extends Filesystem {
-	constructor(private readonly cwd: string) {
+	#originalContent = new Map<string, string>();
+
+	constructor(
+		private readonly cwd: string,
+		private readonly resourceContext?: ResourceContext,
+	) {
 		super();
 	}
 
@@ -1781,11 +3568,25 @@ class CwdHashlineFilesystem extends Filesystem {
 		return absolutePath(this.cwd, path);
 	}
 
+	#resource(path: string): ResourceRef | undefined {
+		return resourceRefForPath(path);
+	}
+
+	#canonical(path: string): string {
+		const resource = this.#resource(path);
+		return resource ? formatResourceUri(resource) : this.#absolute(path);
+	}
+
 	async readText(path: string): Promise<string> {
+		const resource = this.#resource(path);
 		try {
-			return await readFile(this.#absolute(path), "utf-8");
+			const content = resource
+				? (await readResource(resource, this.resourceContext)).content
+				: await readFile(this.#absolute(path), "utf-8");
+			this.#originalContent.set(this.#canonical(path), content);
+			return content;
 		} catch (error) {
-			if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+			if (!resource && error instanceof Error && "code" in error && error.code === "ENOENT") {
 				throw new NotFoundError(path, error);
 			}
 			throw error;
@@ -1793,10 +3594,25 @@ class CwdHashlineFilesystem extends Filesystem {
 	}
 
 	async preflightWrite(path: string): Promise<void> {
+		const resource = this.#resource(path);
+		if (resource) {
+			if (!resourceProvider(resource.scheme)?.write)
+				throw new ResourceError("read_only", `Resource is read-only: ${formatResourceUri(resource)}`);
+			return;
+		}
 		await mkdir(dirname(this.#absolute(path)), { recursive: true });
 	}
 
 	async writeText(path: string, content: string): Promise<WriteResult> {
+		const resource = this.#resource(path);
+		if (resource) {
+			await writeResource(resource, {
+				content,
+				expectedContent: this.#originalContent.get(this.#canonical(path)),
+				context: this.resourceContext,
+			});
+			return { text: content };
+		}
 		const absolute = this.#absolute(path);
 		await mkdir(dirname(absolute), { recursive: true });
 		await writeFile(absolute, content, "utf-8");
@@ -1804,7 +3620,7 @@ class CwdHashlineFilesystem extends Filesystem {
 	}
 
 	canonicalPath(path: string): string {
-		return this.#absolute(path);
+		return this.#canonical(path);
 	}
 }
 
@@ -1855,10 +3671,16 @@ function editPreviewContextLines(before: string, after: string, warnings: readon
 	return warnings.length > 0 || hasStructuralDelimiterChange(before, after) ? 4 : 2;
 }
 
-async function executeHashline(cwd: string, input: string, config: EditConfig, snapshots: InMemorySnapshotStore) {
+async function executeHashline(
+	cwd: string,
+	input: string,
+	config: EditConfig,
+	snapshots: InMemorySnapshotStore,
+	resourceContext?: ResourceContext,
+) {
 	const patch = Patch.parse(input, { cwd });
 	if (patch.sections.length === 0) throw new Error("hashline mode requires at least one [PATH#TAG] section.");
-	const fs = new CwdHashlineFilesystem(cwd);
+	const fs = new CwdHashlineFilesystem(cwd, resourceContext);
 	// The block resolver is synchronous; warm its language cache for every
 	// section path before the apply so `replace block N:` edits resolve.
 	await preloadBlockLanguages(patch.sections.map((section) => section.path));
@@ -1901,14 +3723,12 @@ async function executeHashline(cwd: string, input: string, config: EditConfig, s
 	}
 	const diff = diffs.join("\n");
 	const firstLine = applied.sections.find((section) => section.firstChangedLine !== undefined)?.firstChangedLine;
-	const highlightedDiffRows = await buildHighlightedDiffRows(diff);
 	return {
 		content: [{ type: "text", text: sectionTexts.join("\n\n") }],
 		details: {
 			diff,
 			patch: diff,
-			highlightedDiffRows,
-			results: applied.sections,
+			results: applied.sections.map(({ path, header }) => ({ path, header })),
 			firstChangedLine: firstLine,
 		},
 	};
@@ -1920,6 +3740,7 @@ async function executeByMode(
 	config: EditConfig,
 	snapshots: InMemorySnapshotStore,
 	signal?: AbortSignal,
+	resourceContext?: ResourceContext,
 ) {
 	switch (config.mode) {
 		case "apply_patch":
@@ -1937,12 +3758,13 @@ async function executeByMode(
 			);
 		case "hashline":
 			if (typeof params.input !== "string") throw new Error("edit hashline mode requires input.");
-			return executeHashline(cwd, params.input, config, snapshots);
+			return executeHashline(cwd, params.input, config, snapshots, resourceContext);
 		case "replace":
 			return executeReplace(
 				cwd,
 				typeof params.input === "string" ? parseReplaceInput(params.input) : params,
 				config,
+				resourceContext,
 				signal,
 			);
 	}
@@ -1967,19 +3789,32 @@ function registerHashlineWorkflowTools(
 	const baseRead = createReadToolDefinition(cwd);
 	const baseFind = createFindToolDefinition(cwd);
 	const baseWrite = createWriteToolDefinition(cwd);
+	registerResourceProvider("local", localResourceProvider(cwd));
+	registerResourceProvider("vault", vaultResourceProvider(cwd));
+	registerResourceProvider("history", historyResourceProvider());
+	registerResourceProvider("pr", githubResourceProvider(cwd));
+	registerResourceProvider("issue", githubResourceProvider(cwd));
+	registerResourceProvider("action", githubResourceProvider(cwd));
 
 	pi.registerTool({
 		...baseRead,
 		name: "read",
 		description:
-			"Read the contents of a file. Supports text files and images (jpg, png, gif, webp). In hashline edit mode, text reads return [PATH#TAG] plus LINE:TEXT rows that can be targeted by hashline edits.",
+			"Read a file or resource URI. Supports text files and images (jpg, png, gif, webp). Hashline mode returns [PATH#TAG] plus LINE:TEXT rows for local files.",
 		parameters: readToolSchema,
 		renderShell: "self",
 		renderCall(params, theme, context) {
 			return renderReadCall(params, theme, context);
 		},
 		renderResult(result, options, theme, context) {
-			return renderReadResult(result as ToolTextResult, options, theme, context?.toolCallId);
+			return renderReadResult(
+				result as ToolTextResult,
+				options,
+				theme,
+				context?.toolCallId,
+				context?.invalidate,
+				context?.lastComponent,
+			);
 		},
 		async execute(
 			toolCallId,
@@ -1989,13 +3824,26 @@ function registerHashlineWorkflowTools(
 			ctx,
 		) {
 			const callCwd = ctx?.cwd ?? cwd;
-			const selector = splitReadPathSelector(params.path);
+			const selector = isResourceUri(params.path)
+				? { path: params.path, ranges: [] }
+				: splitReadPathSelector(params.path);
 			const selectedPath = selector.path;
-			const absolute = absolutePath(callCwd, selectedPath);
 			const explicitRanges = [
 				...selector.ranges,
 				...(params.ranges ?? []).flatMap((rangeList) => rangeList.split(",").map(parseLineRange)),
 			];
+			if (isResourceUri(selectedPath)) {
+				const resource = parseResourceUri(selectedPath);
+				if (!resource) throw new Error(`Invalid resource URI: ${selectedPath}`);
+				const result = await readResource(resource, resourceContextFromContext(ctx, callCwd, signal));
+				return resourceReadResult(
+					result,
+					params,
+					explicitRanges,
+					getConfig().mode === "hashline" ? snapshotsForContext(ctx) : undefined,
+				);
+			}
+			const absolute = absolutePath(callCwd, selectedPath);
 			const imageMimeType = await detectSupportedReadImageMimeType(absolute);
 			if (imageMimeType) {
 				const result = (await baseRead.execute(
@@ -2126,15 +3974,15 @@ function registerHashlineWorkflowTools(
 		name: "search",
 		label: "search",
 		description:
-			"Search file contents. In hashline edit mode, matching lines are grouped under [PATH#TAG] headers with LINE:TEXT rows.",
+			"Search file contents or a resource URI. Hashline mode groups local matches under [PATH#TAG] headers.",
 		promptSnippet: "Search file contents and return hashline-editable matches",
 		promptGuidelines: [
 			"Use search for file-content searches when it is active; use read when you already know the path.",
 		],
 		parameters: searchToolSchema,
 		renderShell: "self",
-		renderCall(params, theme) {
-			return renderSearchCall(params, theme);
+		renderCall(params, theme, context) {
+			return renderSearchCall(params, theme, context);
 		},
 		renderResult(result, options, theme, context) {
 			return renderSearchResult(
@@ -2150,12 +3998,38 @@ function registerHashlineWorkflowTools(
 		async execute(toolCallId, params: any, signal, _onUpdate, ctx) {
 			renderTracking.markToolCall(toolCallId);
 			const callCwd = ctx?.cwd ?? cwd;
-			const selector = params.path ? splitReadPathSelector(String(params.path)) : { path: undefined, ranges: [] };
+			const selector = params.path
+				? isResourceUri(String(params.path))
+					? { path: String(params.path), ranges: [] }
+					: splitReadPathSelector(String(params.path))
+				: { path: undefined, ranges: [] };
 			const explicitRanges = [
 				...selector.ranges,
 				...(params.ranges ?? []).flatMap((rangeList: string) => rangeList.split(",").map(parseLineRange)),
 			];
 			const searchPath = selector.path;
+			if (searchPath && isResourceUri(String(searchPath))) {
+				const resource = parseResourceUri(String(searchPath));
+				if (!resource) throw new Error(`Invalid resource URI: ${searchPath}`);
+				const hits = await searchResources({
+					query: String(params.pattern),
+					scope: resource,
+					literal: Boolean(params.literal),
+					ignoreCase: Boolean(params.ignoreCase),
+					limit: Number(params.limit ?? DEFAULT_SEARCH_RESULT_LIMIT),
+					context: resourceContextFromContext(ctx, callCwd, signal),
+				});
+				if (hits.length === 0) return { content: [{ type: "text", text: "No matches found" }] };
+				return {
+					content: [
+						{
+							type: "text",
+							text: hits.map((hit) => resourceContextText(hit, hit.snippet)).join("\n\n"),
+						},
+					],
+					details: { resources: hits },
+				};
+			}
 			const args = ["--line-number", "--color=never", "--hidden", "--no-heading"];
 			if (params.ignoreCase) args.push("--ignore-case");
 			if (params.literal) args.push("--fixed-strings");
@@ -2257,12 +4131,12 @@ function registerHashlineWorkflowTools(
 	pi.registerTool({
 		...baseFind,
 		name: "find",
-		description: "Find files by glob/path. Accepts either {pattern,path} or oh-my-pi-style {paths:[...]} inputs.",
+		description: "Find files or resources by glob/path. Accepts {pattern,path} and {paths:[...]} inputs.",
 		promptGuidelines: ["Use find for file discovery by glob or path when it is active."],
 		parameters: findToolSchema,
 		renderShell: "self",
-		renderCall(params, theme) {
-			return renderFindCall(params, theme);
+		renderCall(params, theme, context) {
+			return renderFindCall(params, theme, context);
 		},
 		renderResult(result, options, theme, context) {
 			return renderFindResult(
@@ -2277,6 +4151,33 @@ function registerHashlineWorkflowTools(
 		},
 		async execute(toolCallId, params: any, signal, onUpdate, ctx) {
 			renderTracking.markToolCall(toolCallId);
+			const requestedPaths = Array.isArray(params.paths)
+				? params.paths.map(String)
+				: [params.path ?? params.pattern].filter((value): value is string => typeof value === "string");
+			const resourcePaths = requestedPaths.filter(isResourceUri);
+			if (resourcePaths.length > 0) {
+				if (resourcePaths.length !== requestedPaths.length) {
+					throw new Error("find cannot mix resource URIs with local paths.");
+				}
+				const callCwd = ctx?.cwd ?? cwd;
+				const limit = Math.max(1, Math.min(1000, Number(params.limit ?? DEFAULT_FIND_RESULT_LIMIT)));
+				const resources = (
+					await Promise.all(
+						resourcePaths.map((path) => {
+							const resource = parseResourceUri(path);
+							if (!resource) throw new Error(`Invalid resource URI: ${path}`);
+							return findResources(resource, resourceContextFromContext(ctx, callCwd, signal));
+						}),
+					)
+				)
+					.flat()
+					.slice(0, limit);
+				const text =
+					resources.length === 0
+						? "No resources found"
+						: resources.map((item) => resourceContextText(item)).join("\n\n");
+				return { content: [{ type: "text", text }], details: { resources } };
+			}
 			if (!Array.isArray(params.paths)) return baseFind.execute(toolCallId, params, signal, onUpdate, ctx);
 			const callCwd = ctx?.cwd ?? cwd;
 			const limit = Math.max(1, Math.min(1000, Number(params.limit ?? DEFAULT_FIND_RESULT_LIMIT)));
@@ -2323,7 +4224,7 @@ function registerHashlineWorkflowTools(
 		...baseWrite,
 		name: "write",
 		description:
-			"Write a file. In hashline edit mode, copied [PATH#TAG] and LINE: prefixes are stripped from content before writing.",
+			"Write a file or writable resource URI. In hashline mode, copied [PATH#TAG] and LINE: prefixes are stripped from content before writing.",
 		parameters: writeToolSchema,
 		renderShell: "self",
 		renderCall(params, theme, context) {
@@ -2340,6 +4241,23 @@ function registerHashlineWorkflowTools(
 			ctx,
 		) {
 			onUpdate?.({ content: [{ type: "text", text: "Writing..." }], details: {} });
+			if (isResourceUri(params.path)) {
+				const resource = parseResourceUri(params.path);
+				if (!resource) throw new Error(`Invalid resource URI: ${params.path}`);
+				const stripped =
+					getConfig().mode === "hashline"
+						? stripHashlineDisplayPrefixes(params.content)
+						: { text: params.content, stripped: false };
+				const result = await writeResource(resource, {
+					content: stripped.text,
+					makeExecutable: params.makeExecutable,
+					context: resourceContextFromContext(ctx, ctx?.cwd ?? cwd, signal),
+				});
+				return {
+					content: [{ type: "text", text: `Wrote ${result.resource.uri}` }],
+					details: { resource: result.resource, bytes: result.bytes },
+				};
+			}
 			if (getConfig().mode !== "hashline") return baseWrite.execute(toolCallId, params, signal, onUpdate, ctx);
 			const callCwd = ctx?.cwd ?? cwd;
 			const stripped = stripHashlineDisplayPrefixes(params.content);
@@ -2376,6 +4294,19 @@ function formatConfig(config: EditConfig): string {
 function sessionIdFromContext(ctx: Pick<ExtensionContext, "sessionManager"> | undefined): string | undefined {
 	const sessionId = ctx?.sessionManager?.getSessionId?.();
 	return typeof sessionId === "string" && sessionId.length > 0 ? sessionId : undefined;
+}
+
+function resourceContextFromContext(
+	ctx: Pick<ExtensionContext, "cwd" | "sessionManager"> | undefined,
+	cwd: string,
+	signal?: AbortSignal,
+): ResourceContext {
+	return {
+		cwd,
+		signal,
+		sessionId: ctx?.sessionManager?.getSessionId?.(),
+		sessionFile: ctx?.sessionManager?.getSessionFile?.(),
+	};
 }
 
 export default function fileopsExtension(pi: ExtensionAPI) {
@@ -2430,9 +4361,17 @@ export default function fileopsExtension(pi: ExtensionAPI) {
 	};
 	const on = (pi as Partial<ExtensionAPI>).on;
 	if (typeof on === "function") {
-		on.call(pi, "session_start", (_event, ctx) => {
+		on.call(pi, "session_start", async (_event, ctx) => {
 			resetTurnTracking();
 			rebuildVisibleFileopsWindow(ctx);
+			const sessionId = sessionIdFromContext(ctx);
+			if (sessionId) {
+				await restoreHashlineSnapshots(
+					hashlineSnapshotStoreForSession(sessionId),
+					ctx.cwd,
+					ctx.sessionManager?.getBranch?.() ?? [],
+				);
+			}
 		});
 		on.call(pi, "session_tree", (_event, ctx) => {
 			resetTurnTracking();
@@ -2482,7 +4421,14 @@ export default function fileopsExtension(pi: ExtensionAPI) {
 				markLatestFileopsToolCall(toolCallId);
 				onUpdate?.({ content: [{ type: "text", text: "Editing..." }], details: {} });
 				return withEditTurnIndex(
-					await executeByMode(ctx.cwd, params as EditInput, current, snapshotsForContext(ctx), signal),
+					await executeByMode(
+						ctx.cwd,
+						params as EditInput,
+						current,
+						snapshotsForContext(ctx),
+						signal,
+						resourceContextFromContext(ctx, ctx.cwd, signal),
+					),
 					currentTurnIndex,
 				);
 			},

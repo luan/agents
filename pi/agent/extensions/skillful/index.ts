@@ -4,7 +4,7 @@ import type { AutocompleteItem, Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { EmptyComponent, registerExtensionMessageRenderer, textComponent } from "../shared/tui";
 import { wrapProvider } from "./autocomplete";
-import { installEditorHighlight } from "./editor";
+import { installEditorHighlight, removeEditorHighlight } from "./editor";
 import {
 	buildItems,
 	collectSkills,
@@ -178,5 +178,8 @@ export default function (pi: ExtensionAPI) {
 		if (ui[AUTOCOMPLETE_INSTALLED] && event.reason !== "reload") return;
 		ui[AUTOCOMPLETE_INSTALLED] = true;
 		ctx.ui.addAutocompleteProvider((current) => wrapProvider(current, currentItems));
+	});
+	pi.on("session_shutdown", (_event, ctx) => {
+		if (ctx.hasUI) removeEditorHighlight(ctx.ui);
 	});
 }

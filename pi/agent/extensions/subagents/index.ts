@@ -3,9 +3,11 @@ import type { Component, TUI } from "@earendil-works/pi-tui";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { onOpenAIFastRequest } from "../shared/openai-fast-state";
+import { registerResourceProvider } from "../shared/resources.ts";
 import { registerRootSessionHub } from "../shared/root-session-hub";
 import { attachRuntimeTerminal, openRuntimeHub, registerRuntimeHubSource } from "../shared/runtime-hub";
 import { bold, framedBlock, renderStatusLine, styledSymbol, textComponent, treeGlyphs } from "../shared/tui/card";
+import { agentResourceProvider } from "./runtime/agent-resources.ts";
 import { findRetryableError } from "./runtime/agent-runner.js";
 import {
 	deliverPendingForSession,
@@ -453,9 +455,10 @@ export async function attachAgentTerminal(
 const RETRY_MESSAGE = "retry-failed-request";
 
 export default function subagentsExtension(pi: ExtensionAPI) {
+	registerResourceProvider("agent", agentResourceProvider());
 	let currentCtx: ExtensionContext | undefined;
 	let unregisterHubSource: (() => void) | undefined;
-	const unregisterRootSessionHub = registerRootSessionHub(pi);
+	const unregisterRootSessionHub = registerRootSessionHub();
 	const manager = getSharedAgentManager();
 	const activityByAgent = getSharedAgentActivity();
 	let currentAgents = new Map<string, AgentConfig>();

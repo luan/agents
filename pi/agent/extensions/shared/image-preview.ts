@@ -87,6 +87,59 @@ export async function createPreviewImageFromBase64(data: string, mimeType: strin
 	}
 }
 
+export async function createCircularPreviewImageFromBase64(
+	data: string,
+	mimeType: string,
+): Promise<PreviewImage | undefined> {
+	const dir = join(tmpdir(), `pi-image-avatar-${randomUUID()}`);
+	const ext = mimeType === "image/jpeg" ? "jpg" : mimeType.split("/")[1] || "img";
+	const input = join(dir, `input.${ext}`);
+	const output = join(PREVIEW_DIR, `${randomUUID()}-avatar.png`);
+	try {
+		await mkdir(dir, { recursive: true });
+		await mkdir(PREVIEW_DIR, { recursive: true });
+		await writeFile(input, Buffer.from(data, "base64"));
+		await execFileAsync(
+			"magick",
+			[
+				input,
+				"-auto-orient",
+				"-resize",
+				"64x64^",
+				"-gravity",
+				"center",
+				"-extent",
+				"64x64",
+				"(",
+				"-size",
+				"64x64",
+				"xc:black",
+				"-fill",
+				"white",
+				"-draw",
+				"circle 32,32 32,0",
+				")",
+				"-alpha",
+				"off",
+				"-compose",
+				"CopyOpacity",
+				"-composite",
+				"-strip",
+				output,
+			],
+			{ timeout: 4000 },
+		);
+		const outputData = await readFile(output);
+		if (outputData.length === 0) return undefined;
+		return { data: outputData.toString("base64"), mimeType: "image/png", sourcePath: output };
+	} catch {
+		await rm(output, { force: true }).catch(() => {});
+		return undefined;
+	} finally {
+		await rm(dir, { recursive: true, force: true }).catch(() => {});
+	}
+}
+
 export async function readPreviewImageFromPath(path: string): Promise<PreviewImage | undefined> {
 	const preview = await createPreviewImageFromPath(path);
 	if (preview) return preview;

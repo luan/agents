@@ -3,8 +3,8 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 export const DEFAULT_SUPPORTED_PROVIDERS = ["openai", "openai-codex"] as const;
 export const DEFAULT_SUPPORTED_APIS = ["openai-responses", "openai-codex-responses"] as const;
-const OPENAI_COMPACT_PATH = "responses/compact";
-const CODEX_COMPACT_PATH = "codex/responses/compact";
+const OPENAI_RESPONSES_PATH = "responses";
+const CODEX_RESPONSES_PATH = "codex/responses";
 
 type DefaultSupportedApi = (typeof DEFAULT_SUPPORTED_APIS)[number];
 
@@ -41,8 +41,8 @@ export type NativeCompactionRuntime = {
 	baseUrl: string;
 	apiKey: string;
 	headers?: ProviderHeaders;
-	compactPath: string;
-	compactUrl: string;
+	responsesPath: string;
+	responsesUrl: string;
 	payload?: ResponsesCompatibleRequestPayload;
 	currentModel: RuntimeModel;
 };
@@ -73,31 +73,28 @@ function normalizeBaseUrl(baseUrl: string | undefined | null): string | undefine
 	return normalized ? normalized : undefined;
 }
 
-function buildOpenAICompactUrl(baseUrl: string): string {
+function buildOpenAIResponsesUrl(baseUrl: string): string {
 	const normalized = normalizeBaseUrl(baseUrl) ?? baseUrl;
-	if (normalized.endsWith("/responses")) {
-		return `${normalized}/compact`;
-	}
-	return `${normalized}/${OPENAI_COMPACT_PATH}`;
+	return normalized.endsWith("/responses") ? normalized : `${normalized}/${OPENAI_RESPONSES_PATH}`;
 }
 
-function buildCodexCompactUrl(baseUrl: string): string {
+function buildCodexResponsesUrl(baseUrl: string): string {
 	const normalized = normalizeBaseUrl(baseUrl) ?? baseUrl;
 	if (normalized.endsWith("/codex/responses")) {
-		return `${normalized}/compact`;
+		return normalized;
 	}
 	if (normalized.endsWith("/codex")) {
-		return `${normalized}/responses/compact`;
+		return `${normalized}/responses`;
 	}
-	return `${normalized}/${CODEX_COMPACT_PATH}`;
+	return `${normalized}/${CODEX_RESPONSES_PATH}`;
 }
 
-export function buildCompactUrl(baseUrl: string, api: DefaultSupportedApi): string {
-	return api === "openai-codex-responses" ? buildCodexCompactUrl(baseUrl) : buildOpenAICompactUrl(baseUrl);
+export function buildResponsesUrl(baseUrl: string, api: DefaultSupportedApi): string {
+	return api === "openai-codex-responses" ? buildCodexResponsesUrl(baseUrl) : buildOpenAIResponsesUrl(baseUrl);
 }
 
-function buildCompactPath(api: DefaultSupportedApi): string {
-	return api === "openai-codex-responses" ? CODEX_COMPACT_PATH : OPENAI_COMPACT_PATH;
+function buildResponsesPath(api: DefaultSupportedApi): string {
+	return api === "openai-codex-responses" ? CODEX_RESPONSES_PATH : OPENAI_RESPONSES_PATH;
 }
 
 async function resolveRequestAuth(
@@ -245,8 +242,8 @@ export async function resolveNativeCompactionEnvironment(
 			baseUrl: descriptor.baseUrl,
 			apiKey,
 			headers,
-			compactPath: buildCompactPath(descriptor.api),
-			compactUrl: buildCompactUrl(descriptor.baseUrl, descriptor.api),
+			responsesPath: buildResponsesPath(descriptor.api),
+			responsesUrl: buildResponsesUrl(descriptor.baseUrl, descriptor.api),
 			payload: requestPayload,
 			currentModel,
 		},

@@ -910,5 +910,6 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 		clearBackgroundTerminalStatus();
 		tracker.clear();
 		sessions.shutdown();
+		originalCommands.clear();
 	});
 }

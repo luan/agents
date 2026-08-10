@@ -1,6 +1,6 @@
 import { CustomEditor } from "@earendil-works/pi-coding-agent";
 import type { EditorComponent } from "@earendil-works/pi-tui";
-import { type EditorFactory, type EditorUi, installEditorLayer } from "../shared/tui";
+import { type EditorFactory, type EditorUi, installEditorLayer, removeEditorLayer } from "../shared/tui";
 import { colorize, colorizeLines } from "./highlight";
 
 const EDITOR_LAYER_ID = Symbol.for("skillful.editorHighlightLayer");
@@ -49,4 +49,7 @@ function wrapEditorFactory(previous: EditorFactory | undefined, getSkillNames: (
 
 export function installEditorHighlight(ui: EditorUi, getSkillNames: () => Set<string>): void {
 	installEditorLayer(ui, EDITOR_LAYER_ID, (factory) => wrapEditorFactory(factory, getSkillNames));
+}
+export function removeEditorHighlight(ui: EditorUi): void {
+	removeEditorLayer(ui, EDITOR_LAYER_ID);
 }

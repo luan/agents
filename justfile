@@ -43,7 +43,7 @@ doctor:
 validate:
     cd "{{ repo }}" && cargo xtask validate
 
-setup: node-deps-install pi-node-modules-link doctor link pi-launcher-install install validate
+setup: node-deps-install pi-node-modules-link doctor link install validate
 
 node-deps-install:
     cd "{{ repo }}" && bun install
@@ -54,18 +54,6 @@ pi-node-modules-link:
 codex-plugins-install:
     cd "{{ repo }}" && cargo xtask codex-plugins-install
 
-pi-launcher-install:
-    @if [ "${OS:-}" = "Windows_NT" ]; then echo "warning: RMUX root-session launcher is unavailable on Windows" >&2; exit 0; fi; \
-    bin="{{ home }}/.bun/bin"; wrapper="{{ home }}/.pi/agent/bin/pi"; \
-    test -x "$wrapper" || { echo "Pi launcher is not linked at $wrapper; run just link first" >&2; exit 1; }; \
-    mkdir -p "$bin"; \
-    if [ -L "$bin/pi" ] && [ "$(readlink "$bin/pi")" != "$wrapper" ]; then \
-        ln -sfn "$(readlink "$bin/pi")" "$bin/pi-real"; \
-    elif [ -f "$bin/pi" ] && [ ! -L "$bin/pi" ]; then \
-        cp "$bin/pi" "$bin/pi-real"; chmod +x "$bin/pi-real"; \
-    fi; \
-    test -e "$bin/pi-real" || { echo "Cannot preserve real Pi CLI at $bin/pi-real" >&2; exit 1; }; \
-    ln -sfn "$wrapper" "$bin/pi"
 
 context-guard:
     cd "{{ repo }}" && cargo build -p context-guard

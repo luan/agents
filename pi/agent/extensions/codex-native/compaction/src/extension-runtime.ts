@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { clampThinkingLevel } from "@earendil-works/pi-ai";
 import type {
 	BeforeProviderRequestEvent,
 	ExtensionAPI,
@@ -8,8 +10,8 @@ import { executeNativeCompaction } from "./compact-client";
 import { writeDebugArtifact } from "./debug";
 import { resolveLatestNativeCompactionEntry } from "./details-store";
 import { rewriteResponsesPayloadWithNativeReplay, serializeLiveTailToResponsesInput } from "./payload-rewrite";
-import { resolveNativeCompactionEnvironment } from "./runtime";
-import { serializeMessagesToCompactRequest } from "./serializer";
+import { type NativeCompactionRuntime, resolveNativeCompactionEnvironment } from "./runtime";
+import { type NativeCompactionRequestBody, serializeMessagesToCompactRequest } from "./serializer";
 import { loadExtensionSettings } from "./settings";
 import {
 	createNativeCompactionDetails,
@@ -19,9 +21,180 @@ import {
 	type NativeCompactionRequestMeta,
 } from "./types";
 
-function buildCompactionRequestMeta(event: SessionBeforeCompactEvent): NativeCompactionRequestMeta {
+const compactionPhaseSetterKey = Symbol.for("agents.pi.compaction-phases.set");
+const COMPACTION_REQUEST_OPTION_KEYS = [
+	"tools",
+	"tool_choice",
+	"parallel_tool_calls",
+	"reasoning",
+	"stream_options",
+	"include",
+	"service_tier",
+	"prompt_cache_key",
+	"text",
+	"client_metadata",
+] as const;
+type RequestOptionsSnapshot = {
+	identity: {
+		provider: string;
+		api: string;
+		model: string;
+		baseUrl: string;
+	};
+	options: Record<string, unknown>;
+};
+
+const requestOptionsBySession = new WeakMap<object, RequestOptionsSnapshot>();
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizedBaseUrl(value: string): string {
+	return value.trim().replace(/\/+$/, "");
+}
+
+function rememberRequestOptions(payload: unknown, ctx: ExtensionContext): void {
+	const model = ctx.model;
+	if (!model || !isRecord(payload) || payload.model !== model.id) return;
+	const options: Record<string, unknown> = {};
+	for (const key of COMPACTION_REQUEST_OPTION_KEYS) {
+		if (payload[key] !== undefined) options[key] = structuredClone(payload[key]);
+	}
+	requestOptionsBySession.set(ctx.sessionManager, {
+		identity: {
+			provider: model.provider,
+			api: model.api,
+			model: model.id,
+			baseUrl: normalizedBaseUrl(model.baseUrl),
+		},
+		options,
+	});
+}
+
+function compactionMetadata(event: SessionBeforeCompactEvent): Record<string, unknown> {
+	const reason = event.reason ?? "manual";
+	return {
+		trigger: reason === "manual" ? "manual" : "auto",
+		reason: reason === "manual" ? "user_requested" : "context_limit",
+		implementation: "responses_compaction_v2",
+		phase: reason === "overflow" ? "mid_turn" : reason === "threshold" ? "pre_turn" : "standalone_turn",
+		strategy: "memento",
+	};
+}
+
+function buildCompactionClientMetadata(
+	value: unknown,
+	event: SessionBeforeCompactEvent,
+	ctx: ExtensionContext,
+): Record<string, unknown> {
+	const reason = event.reason ?? "manual";
+	const clientMetadata = isRecord(value) ? structuredClone(value) : {};
+	const sessionId = ctx.sessionManager.getSessionId();
+	const threadId = typeof clientMetadata.thread_id === "string" ? clientMetadata.thread_id : sessionId;
+	const windowId =
+		typeof clientMetadata["x-codex-window-id"] === "string" ? clientMetadata["x-codex-window-id"] : sessionId;
+	if (sessionId) clientMetadata.session_id = sessionId;
+	if (threadId) clientMetadata.thread_id = threadId;
+	if (windowId) clientMetadata["x-codex-window-id"] = windowId;
+	const turnId =
+		reason === "manual"
+			? randomUUID()
+			: typeof clientMetadata.turn_id === "string"
+				? clientMetadata.turn_id
+				: undefined;
+	if (turnId) clientMetadata.turn_id = turnId;
+
+	const rawTurnMetadata = clientMetadata["x-codex-turn-metadata"];
+	let turnMetadata: Record<string, unknown> = {};
+	if (typeof rawTurnMetadata === "string") {
+		try {
+			const parsed = JSON.parse(rawTurnMetadata);
+			if (isRecord(parsed)) turnMetadata = parsed;
+		} catch {
+			turnMetadata = {};
+		}
+	} else if (isRecord(rawTurnMetadata)) {
+		turnMetadata = structuredClone(rawTurnMetadata);
+	}
+	if (sessionId) turnMetadata.session_id = sessionId;
+	if (threadId) turnMetadata.thread_id = threadId;
+	if (windowId) turnMetadata.window_id = windowId;
+	if (turnId) turnMetadata.turn_id = turnId;
+	turnMetadata.request_kind = "compaction";
+	turnMetadata.compaction = compactionMetadata(event);
+	clientMetadata["x-codex-turn-metadata"] = JSON.stringify(turnMetadata);
+	return clientMetadata;
+}
+
+function matchesRuntime(snapshot: RequestOptionsSnapshot | undefined, runtime: NativeCompactionRuntime): boolean {
+	return (
+		snapshot?.identity.provider === runtime.provider &&
+		snapshot.identity.api === runtime.api &&
+		snapshot.identity.model === runtime.model &&
+		snapshot.identity.baseUrl === normalizedBaseUrl(runtime.baseUrl)
+	);
+}
+
+function fallbackRequestOptions(pi: ExtensionAPI, runtime: NativeCompactionRuntime): Record<string, unknown> {
+	const activeNames = new Set(pi.getActiveTools?.() ?? []);
+	const tools = (pi.getAllTools?.() ?? [])
+		.filter((tool) => activeNames.has(tool.name))
+		.map((tool) => ({
+			type: "function",
+			name: tool.name,
+			description: tool.description,
+			parameters: structuredClone(tool.parameters),
+			strict: false,
+		}));
+	const requestedThinkingLevel = pi.getThinkingLevel?.();
+	const clampedThinkingLevel = requestedThinkingLevel
+		? clampThinkingLevel(runtime.currentModel, requestedThinkingLevel)
+		: "off";
+	const mappedThinkingLevel = runtime.currentModel.thinkingLevelMap?.[clampedThinkingLevel];
+	const reasoningEffort = mappedThinkingLevel === null ? undefined : (mappedThinkingLevel ?? clampedThinkingLevel);
+	return {
+		tools,
+		tool_choice: "auto",
+		parallel_tool_calls: true,
+		...(reasoningEffort && reasoningEffort !== "off"
+			? { reasoning: { effort: reasoningEffort, summary: "auto" } }
+			: {}),
+	};
+}
+
+function withV2RequestOptions(
+	request: NativeCompactionRequestBody,
+	event: SessionBeforeCompactEvent,
+	runtime: NativeCompactionRuntime,
+	ctx: ExtensionContext,
+	pi: ExtensionAPI,
+): NativeCompactionRequestBody & Record<string, unknown> {
+	const snapshot = requestOptionsBySession.get(ctx.sessionManager);
+	const cachedOptions = matchesRuntime(snapshot, runtime) ? structuredClone(snapshot.options) : {};
+	const options = { ...fallbackRequestOptions(pi, runtime), ...cachedOptions };
+	const include = Array.isArray(options.include)
+		? options.include.filter((value): value is string => typeof value === "string")
+		: [];
+	if (!include.includes("reasoning.encrypted_content")) include.push("reasoning.encrypted_content");
+
+	return {
+		...options,
+		...request,
+		include,
+		...(runtime.provider === "openai-codex"
+			? { client_metadata: buildCompactionClientMetadata(options.client_metadata, event, ctx) }
+			: {}),
+	};
+}
+
+function buildCompactionRequestMeta(
+	event: SessionBeforeCompactEvent,
+	tokensAfter?: number,
+): NativeCompactionRequestMeta {
 	return {
 		tokensBefore: event.preparation.tokensBefore,
+		tokensAfter,
 		previousSummaryPresent: Boolean(event.preparation.previousSummary),
 	};
 }
@@ -59,7 +232,11 @@ function buildCompactionInstructions(systemPrompt: string, customInstructions?: 
 	return `${systemPrompt}\n\nAdditional user guidance for this manual /compact request:\n${guidance}`;
 }
 
-async function handleSessionBeforeCompact(event: SessionBeforeCompactEvent, piContext: ExtensionContext) {
+async function handleSessionBeforeCompact(
+	event: SessionBeforeCompactEvent,
+	piContext: ExtensionContext,
+	pi: ExtensionAPI,
+) {
 	const { settings } = loadExtensionSettings(piContext.cwd);
 	if (!settings.enabled) {
 		return undefined;
@@ -134,7 +311,10 @@ async function handleSessionBeforeCompact(event: SessionBeforeCompactEvent, piCo
 			],
 			instructions,
 		};
-	} else if (latestNativeCompaction.reason === "no-compaction") {
+	} else if (
+		latestNativeCompaction.reason === "no-compaction" ||
+		latestNativeCompaction.reason === "latest-compaction-not-native"
+	) {
 		requestSource = "session-context";
 		request = serializeMessagesToCompactRequest({
 			model: runtime.currentModel,
@@ -159,6 +339,19 @@ async function handleSessionBeforeCompact(event: SessionBeforeCompactEvent, piCo
 		);
 		return undefined;
 	}
+
+	request = withV2RequestOptions(request, event, runtime, piContext, pi);
+
+	const setCompactionPhase = (
+		globalThis as typeof globalThis & {
+			[compactionPhaseSetterKey]?: (
+				phase: "summarizing",
+				tokensBefore?: number,
+				reason?: "manual" | "threshold" | "overflow",
+			) => void;
+		}
+	)[compactionPhaseSetterKey];
+	setCompactionPhase?.("summarizing", event.preparation.tokensBefore, event.reason);
 
 	const compactResult = await executeNativeCompaction({
 		runtime,
@@ -193,7 +386,7 @@ async function handleSessionBeforeCompact(event: SessionBeforeCompactEvent, piCo
 			compactedWindow: compactResult.compactedWindow,
 			compactResponseId: compactResult.compactResponseId,
 			createdAt: compactResult.createdAt,
-			requestMeta: buildCompactionRequestMeta(event),
+			requestMeta: buildCompactionRequestMeta(event, compactResult.estimatedTokensAfter),
 		});
 	} catch (error) {
 		writeDebugArtifact(
@@ -242,6 +435,7 @@ async function handleBeforeProviderRequest(event: BeforeProviderRequestEvent, ct
 	if (!settings.enabled) {
 		return undefined;
 	}
+	rememberRequestOptions(event.payload, ctx);
 
 	const branchEntries = ctx.sessionManager.getBranch();
 	const latestAnyNativeCompaction = resolveLatestNativeCompactionEntry(branchEntries);
@@ -403,6 +597,6 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
-	pi.on("session_before_compact", handleSessionBeforeCompact);
+	pi.on("session_before_compact", (event, ctx) => handleSessionBeforeCompact(event, ctx, pi));
 	pi.on("before_provider_request", handleBeforeProviderRequest);
 }
