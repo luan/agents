@@ -142,6 +142,7 @@ interface BaseExecSession {
 	finishedAtMs?: number;
 	hidden: boolean;
 	timeoutTimer?: ReturnType<typeof setTimeout>;
+	abortCleanup?: () => void;
 }
 
 interface PipeExecSession extends BaseExecSession {
@@ -192,6 +193,7 @@ export interface ExecSessionManagerOptions {
 	defaultExecYieldTimeMs?: number;
 	defaultWriteYieldTimeMs?: number;
 	minNonInteractiveExecYieldTimeMs?: number;
+	minYieldTimeMs?: number;
 	minEmptyWriteYieldTimeMs?: number;
 	maxSessionBufferChars?: number;
 	ptyBackend?: PtyBackend;
@@ -301,10 +303,9 @@ function withUnifiedExecEnvironment(env: NodeJS.ProcessEnv, tty: boolean): NodeJ
 	delete env.CLICOLOR;
 	return env;
 }
-
-function clampYieldTime(yieldTimeMs: number | undefined, fallback: number): number {
-	const value = yieldTimeMs ?? fallback;
-	return Math.min(MAX_YIELD_TIME_MS, Math.max(MIN_YIELD_TIME_MS, value));
+function clampYieldTime(value: number | undefined, fallback: number, minYieldTimeMs: number): number {
+	const resolved = value ?? fallback;
+	return Math.min(MAX_YIELD_TIME_MS, Math.max(minYieldTimeMs, resolved));
 }
 
 function clampExecYieldTime(
@@ -312,8 +313,9 @@ function clampExecYieldTime(
 	fallback: number,
 	isInteractive: boolean,
 	minNonInteractiveExecYieldTimeMs: number,
+	minYieldTimeMs: number,
 ): number {
-	const value = clampYieldTime(yieldTimeMs, fallback);
+	const value = clampYieldTime(yieldTimeMs, fallback, minYieldTimeMs);
 	if (isInteractive || yieldTimeMs !== undefined) {
 		return value;
 	}
@@ -325,8 +327,9 @@ function clampWriteYieldTime(
 	fallback: number,
 	isEmptyPoll: boolean,
 	minEmptyWriteYieldTimeMs: number,
+	minYieldTimeMs: number,
 ): number {
-	const value = clampYieldTime(yieldTimeMs, fallback);
+	const value = clampYieldTime(yieldTimeMs, fallback, minYieldTimeMs);
 	if (!isEmptyPoll || yieldTimeMs !== undefined) {
 		return value;
 	}
@@ -713,13 +716,14 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 	const updateListeners = new Set<() => void>();
 	const defaultExecYieldTimeMs = options.defaultExecYieldTimeMs ?? DEFAULT_EXEC_YIELD_TIME_MS;
 	const defaultWriteYieldTimeMs = options.defaultWriteYieldTimeMs ?? DEFAULT_WRITE_YIELD_TIME_MS;
+	const minYieldTimeMs = Math.min(MAX_YIELD_TIME_MS, Math.max(1, options.minYieldTimeMs ?? MIN_YIELD_TIME_MS));
 	const minNonInteractiveExecYieldTimeMs = Math.min(
 		MAX_YIELD_TIME_MS,
-		Math.max(MIN_YIELD_TIME_MS, options.minNonInteractiveExecYieldTimeMs ?? MIN_NON_INTERACTIVE_EXEC_YIELD_TIME_MS),
+		Math.max(minYieldTimeMs, options.minNonInteractiveExecYieldTimeMs ?? MIN_NON_INTERACTIVE_EXEC_YIELD_TIME_MS),
 	);
 	const minEmptyWriteYieldTimeMs = Math.min(
 		MAX_YIELD_TIME_MS,
-		Math.max(MIN_YIELD_TIME_MS, options.minEmptyWriteYieldTimeMs ?? MIN_EMPTY_WRITE_YIELD_TIME_MS),
+		Math.max(minYieldTimeMs, options.minEmptyWriteYieldTimeMs ?? MIN_EMPTY_WRITE_YIELD_TIME_MS),
 	);
 	const maxSessionBufferChars = Math.max(1024, options.maxSessionBufferChars ?? DEFAULT_MAX_SESSION_BUFFER_CHARS);
 
@@ -816,6 +820,12 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 
 	function terminateSession(session: ExecSession, reason: ExecInterventionState = "cancelled"): void {
 		if (!isRunning(session)) return;
+		session.abortCleanup?.();
+		session.abortCleanup = undefined;
+		if (session.timeoutTimer) {
+			clearTimeout(session.timeoutTimer);
+			session.timeoutTimer = undefined;
+		}
 		session.pendingTerminalState = reason;
 		if (session.kind === "pty") {
 			if (session.child.pid === undefined) session.child.kill();
@@ -824,6 +834,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			terminateProcessTree(session.child.pid, true, true);
 		}
 	}
+
 	function scheduleSessionTimeout(session: ExecSession, timeoutMs: number | undefined): void {
 		if (timeoutMs === undefined || !Number.isFinite(timeoutMs) || timeoutMs <= 0) return;
 		session.timeoutTimer = setTimeout(() => terminateSession(session, "timed_out"), timeoutMs);
@@ -848,7 +859,12 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		sessionError?: string,
 	): void {
 		if (session.terminalState !== undefined) return;
-		if (session.timeoutTimer) clearTimeout(session.timeoutTimer);
+		session.abortCleanup?.();
+		session.abortCleanup = undefined;
+		if (session.timeoutTimer) {
+			clearTimeout(session.timeoutTimer);
+			session.timeoutTimer = undefined;
+		}
 		session.terminalState = terminalState;
 		session.exitCode = terminalState === "exited" ? (exitCode ?? 0) : undefined;
 		session.sessionError = sessionError;
@@ -1087,9 +1103,10 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			completeSession(session, "session_error", undefined, error.message);
 		});
 
-		registerAbortHandler(signal, () => {
+		session.abortCleanup = registerAbortHandler(signal, () => {
 			terminateSession(session, "cancelled");
 		});
+
 		scheduleSessionTimeout(session, input.timeout_ms);
 
 		return session;
@@ -1157,7 +1174,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			completeSession(session, session.pendingTerminalState ?? "exited", exitCode ?? 0);
 		});
 
-		registerAbortHandler(signal, () => {
+		session.abortCleanup = registerAbortHandler(signal, () => {
 			terminateSession(session, "cancelled");
 		});
 		scheduleSessionTimeout(session, input.timeout_ms);
@@ -1220,6 +1237,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 								defaultExecYieldTimeMs,
 								session.interactive,
 								minNonInteractiveExecYieldTimeMs,
+								minYieldTimeMs,
 							),
 						);
 				return makeResult(session, waitedMs);
@@ -1254,6 +1272,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 							defaultWriteYieldTimeMs,
 							!input.chars || input.chars.length === 0,
 							minEmptyWriteYieldTimeMs,
+							minYieldTimeMs,
 						),
 					)
 				: 0;

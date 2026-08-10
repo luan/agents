@@ -81,7 +81,22 @@ const server = createServer((socket) => {
 		}
 	});
 	socket.on("close", () => clients.delete(socket));
+	socket.on("error", () => clients.delete(socket));
+
 });
+let bridgeClosed = false;
+
+function shutdownBridge() {
+	if (bridgeClosed) return;
+	bridgeClosed = true;
+	for (const socket of clients) socket.destroy();
+	clients.clear();
+	if (server.listening) server.close();
+	try {
+		unlinkSync(config.socketPath);
+	} catch {}
+}
+
 
 server.listen(config.socketPath, () => {
 	chmodSync(config.socketPath, 0o600);
@@ -148,11 +163,9 @@ export default function attachedAgentControl(pi) {
 	});
 	pi.on("session_shutdown", () => {
 		currentCtx = undefined;
+		shutdownBridge();
 	});
+
 }
 
-process.on("exit", () => {
-	try {
-		unlinkSync(config.socketPath);
-	} catch {}
-});
+process.on("exit", shutdownBridge);

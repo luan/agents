@@ -152,6 +152,18 @@ export class AgentManager {
 		}
 	}
 
+	private stopAttached(record: AgentRecord): void {
+		if (record.attachedRuntime?.closed !== true && record.attachedRuntime) {
+			void record.attachedRuntime.stop().catch(() => undefined);
+			return;
+		}
+		record.attachedRuntime = undefined;
+		if (record.executionMode !== "attached" || !record.attachment) return;
+		void connectAttachedAgent(record.attachment, undefined, undefined, false)
+			.then((runtime) => runtime.stop())
+			.catch(() => undefined);
+	}
+
 	/**
 	 * Spawn an agent and return its ID immediately (for background use).
 	 * If the concurrency limit is reached, the agent is queued.
@@ -843,12 +855,7 @@ export class AgentManager {
 		}
 
 		if (record.status !== "running") return false;
-		if (record.attachedRuntime) void record.attachedRuntime.stop().catch(() => undefined);
-		else if (record.executionMode === "attached" && record.attachment) {
-			void connectAttachedAgent(record.attachment, undefined, undefined, false)
-				.then((runtime) => runtime.stop())
-				.catch(() => undefined);
-		}
+		this.stopAttached(record);
 		record.abortController?.abort();
 		record.status = "stopped";
 		record.completedAt = Date.now();
@@ -863,7 +870,7 @@ export class AgentManager {
 		for (const record of records) {
 			if (retained.has(record)) continue;
 			record.session?.dispose?.();
-			void record.attachedRuntime?.stop().catch(() => undefined);
+			this.stopAttached(record);
 			this.deleteRecord(record);
 			this.onRemove?.(record);
 		}
@@ -904,12 +911,7 @@ export class AgentManager {
 		// Abort running agents
 		for (const record of this.agents.values()) {
 			if (record.status === "running") {
-				if (record.attachedRuntime) void record.attachedRuntime.stop().catch(() => undefined);
-				else if (record.executionMode === "attached" && record.attachment) {
-					void connectAttachedAgent(record.attachment, undefined, undefined, false)
-						.then((runtime) => runtime.stop())
-						.catch(() => undefined);
-				}
+				this.stopAttached(record);
 				record.abortController?.abort();
 				record.status = "stopped";
 				record.completedAt = Date.now();
@@ -942,7 +944,7 @@ export class AgentManager {
 		// Clear queue
 		this.queue = [];
 		for (const record of this.agents.values()) {
-			void record.attachedRuntime?.stop().catch(() => undefined);
+			this.stopAttached(record);
 			record.session?.dispose();
 		}
 		this.agents.clear();

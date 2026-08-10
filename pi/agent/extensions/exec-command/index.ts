@@ -31,6 +31,7 @@ import { createExecCommandTracker } from "./tools/exec-command-state.ts";
 import { type BackgroundCaptureContext, registerExecCommandTool } from "./tools/exec-command-tool.ts";
 import {
 	createExecSessionManager,
+	type ExecSessionManagerOptions,
 	type ExecSessionRecord,
 	type UnifiedExecResult,
 } from "./tools/exec-session-manager.ts";
@@ -43,6 +44,7 @@ import { BackgroundTerminalOverlay } from "./ui/background-terminal-overlay.ts";
 
 const execCommandTui = defineExtensionTui({ id: "exec-command" });
 const RTK_REWRITE_TIMEOUT_MS = 2_000;
+const BACKGROUND_TERMINAL_COMPLETION_HOLD_MS = 200;
 
 async function rewriteCommandWithRtk(
 	pi: ExtensionAPI,
@@ -308,7 +310,11 @@ function backgroundTerminalDetailsToUnifiedResult(details: BackgroundTerminalFin
 	};
 }
 
-export default function execCommandExtension(pi: ExtensionAPI) {
+export interface ExecCommandExtensionOptions {
+	sessionManagerOptions?: ExecSessionManagerOptions;
+	backgroundTerminalCompletionHoldMs?: number;
+}
+export default function execCommandExtension(pi: ExtensionAPI, options: ExecCommandExtensionOptions = {}) {
 	const rtkAvailable =
 		typeof pi.exec === "function"
 			? pi
@@ -323,7 +329,8 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 	const tracker = createExecCommandTracker();
 	const rmuxBinary = resolveRmuxBinary();
 	const sessions = createExecSessionManager({
-		ptyBackend: rmuxBinary ? createRmuxPtyBackend({ binary: rmuxBinary }) : undefined,
+		...options.sessionManagerOptions,
+		ptyBackend: rmuxBinary ? createRmuxPtyBackend({ binary: rmuxBinary }) : options.sessionManagerOptions?.ptyBackend,
 	});
 	let currentExecCtx: ExtensionContext | undefined;
 	let unregisterHubSource: (() => void) | undefined;
@@ -378,7 +385,8 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 	let agentTurnActive = false;
 	const foregroundExecToolCalls = new Set<string>();
 	let uninstallForegroundExecInterrupt: (() => void) | undefined;
-	const BACKGROUND_TERMINAL_COMPLETION_HOLD_MS = 200;
+	const backgroundTerminalCompletionHoldMs =
+		options.backgroundTerminalCompletionHoldMs ?? BACKGROUND_TERMINAL_COMPLETION_HOLD_MS;
 	const renderBackgroundTerminalFinishedMessage = (
 		message: { details?: BackgroundTerminalFinishedDetails },
 		{ expanded }: { expanded: boolean },
@@ -455,7 +463,7 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 		const timer = setTimeout(() => {
 			pendingCompletionMessages.delete(sessionId);
 			(pi as any).sendMessage?.(message, options);
-		}, BACKGROUND_TERMINAL_COMPLETION_HOLD_MS);
+		}, backgroundTerminalCompletionHoldMs);
 		timer.unref?.();
 		pendingCompletionMessages.set(sessionId, timer);
 	}

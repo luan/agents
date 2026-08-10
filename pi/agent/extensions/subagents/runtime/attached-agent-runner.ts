@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import type { Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { getPackageDir } from "@earendil-works/pi-coding-agent";
+import type { PtyProcess } from "../../exec-command/adapter/pty-backend.js";
 import { createRmuxPtyBackend, resolveRmuxBinary } from "../../exec-command/adapter/rmux-pty-backend.ts";
 import { prepareAgentRun, type ToolActivity } from "./agent-runner.js";
 import { isSubagentOrchestrationToolName } from "./orchestration-tools.js";
@@ -269,29 +270,44 @@ export async function runAttachedAgent(
 
 	const launcher = fileURLToPath(new URL("./attached-agent-launcher.mjs", import.meta.url));
 	const sessionName = `pi-agent-${agentId.replace(/[^A-Za-z0-9_-]+/g, "-").slice(-40)}-${launchId}`;
-	const child = await createRmuxPtyBackend({ binary: rmuxBinary }).spawn(process.execPath, [launcher, configPath], {
-		cwd: prepared.effectiveCwd,
-		env: process.env,
-		name: process.env.TERM || "xterm-256color",
-		sessionName,
-		cols: 100,
-		rows: 30,
-	});
-	const abortChild = () => child.kill();
-	options.signal?.addEventListener("abort", abortChild, { once: true });
+	const removeConfig = () => {
+		try {
+			unlinkSync(configPath);
+		} catch {}
+	};
+	let child: PtyProcess;
+	try {
+		child = await createRmuxPtyBackend({ binary: rmuxBinary }).spawn(process.execPath, [launcher, configPath], {
+			cwd: prepared.effectiveCwd,
+			env: process.env,
+			name: process.env.TERM || "xterm-256color",
+			sessionName,
+			cols: 100,
+			rows: 30,
+		});
+	} catch (error) {
+		removeConfig();
+		throw error;
+	}
+	let childCleaned = false;
+	const cleanupChild = () => {
+		if (childCleaned) return;
+		childCleaned = true;
+		child.kill();
+		removeConfig();
+	};
+	options.signal?.addEventListener("abort", cleanupChild, { once: true });
 	if (options.signal?.aborted) {
-		abortChild();
+		options.signal.removeEventListener("abort", cleanupChild);
+		cleanupChild();
 		options.signal.throwIfAborted();
 	}
 	let socket: Socket;
 	try {
 		socket = await connect(controlSocket, 5000, options.signal);
 	} catch (error) {
-		options.signal?.removeEventListener("abort", abortChild);
-		child.kill();
-		try {
-			unlinkSync(configPath);
-		} catch {}
+		options.signal?.removeEventListener("abort", cleanupChild);
+		cleanupChild();
 		throw error;
 	}
 	let text = "";
@@ -347,7 +363,12 @@ export async function runAttachedAgent(
 			options.onCompaction?.({ reason: event.reason, tokensBefore: event.result.tokensBefore });
 		}
 	});
-	if (!child.attachment) throw new Error("Attached terminal did not provide a launcher");
+	if (!child.attachment) {
+		options.signal?.removeEventListener("abort", cleanupChild);
+		socket.destroy();
+		cleanupChild();
+		throw new Error("Attached terminal did not provide a launcher");
+	}
 	const attachment: AgentAttachment = {
 		mode: "terminal",
 		sessionName: child.name ?? sessionName,
@@ -355,6 +376,14 @@ export async function runAttachedAgent(
 		command: child.attachment.command,
 		args: child.attachment.args,
 	};
-	options.onController?.(controller, attachment);
-	return controller.start().finally(() => options.signal?.removeEventListener("abort", abortChild));
+	try {
+		options.onController?.(controller, attachment);
+		return await controller.start();
+	} catch (error) {
+		socket.destroy();
+		cleanupChild();
+		throw error;
+	} finally {
+		options.signal?.removeEventListener("abort", cleanupChild);
+	}
 }
