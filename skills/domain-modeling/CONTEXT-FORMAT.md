@@ -18,16 +18,8 @@ vlt context set "Order" \
 
 ## Single and multiple contexts
 
-Use `vlt context list` and `vlt context show map` to discover the project shape.
+Use `read vault://current/context#list` and `read vault://current/context?name=map` to discover the project shape.
 
-For a named context, pass `--context`:
-
-```bash
-vlt context set "Invoice" \
-  --context billing \
-  --definition "A request for payment sent after delivery." \
-  --avoid "Bill,payment request" \
-  --json
-```
+For a named context, read and edit `vault://current/context?name=<context>`.
 
 Infer the relevant context from the map and current topic. Ask one focused question when the choice changes the meaning.

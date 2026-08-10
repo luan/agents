@@ -13,7 +13,7 @@ Cut filler, hedging, and pleasantries.
 Keep technical terms, code, commands, and error text verbatim.
 
 Use the project's ubiquitous language.
-In a vault-backed project, read the vault context with `vlt context show`.
+In a vault-backed project, read vault context with resource tools when available. Use `vlt context show` only for explicit CLI workflows or when no resource read tool exists.
 Where `CONTEXT.md` exists, use its terms.
 Otherwise, use the names that the codebase already uses.
 

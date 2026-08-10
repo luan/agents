@@ -4,7 +4,7 @@ description: "Implement one bounded change from conversation context or a named 
 disable-model-invocation: true
 ---
 
-Use conversation context as the source of scope and acceptance criteria. When the user supplies a vault artifact, load `$vault`, resolve it with `vlt read`, and treat it as implementation input without depending on its artifact type.
+Use conversation context as the source of scope and acceptance criteria. When the user supplies a vault artifact, load `$vault`, resolve it with `read vault://current/<artifact>` or `read vault://current/<artifact>#depth=2`, and treat it as implementation input without depending on its artifact type.
 
 Inspect the relevant code and tests before editing. Ask for a missing decision only when it prevents a safe implementation.
 

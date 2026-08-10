@@ -1,46 +1,63 @@
 ---
 name: vault
-description: "Find and read blueprints vault artifacts from the command line such as research, plans and docs, domain notes, and decision records. Use when the user asks for CLI vault commands or command-line vault workflow help."
+description: "Find and manage blueprints vault artifacts with resource tools. Use for vault research, plans, docs, domain notes, decisions, and explicit vlt CLI workflows."
 argument-hint: "<topic-or-stem> [--all-projects] [--archived]"
 ---
 
-# Vault CLI
+# Vault resources
 
-Command-line `vlt` workflows only. The Pi `vault_*` tools are self-documenting and do not need separate CLI guidance.
+Use resource tools first. Use `vlt` only for explicit CLI workflows or operations without a resource surface.
 
-`vlt --help` and `vlt <command> --help` carry the command surface and every flag. Read them for syntax; this skill covers what they cannot tell you — the structure behind the commands, and how to move through a vault.
+## Resource model
 
-## Structural model
+- `vault://current/<type>/<stem>` reads a normal artifact.
+- `vault://current/context` reads root `CONTEXT.md`.
+- `vault://current/context?name=<context>` reads a named context.
+- `vault://current/<artifact>#frontmatter` reads frontmatter.
+- `vault://current/<artifact>#depth=2` reads linked artifacts within two hops.
+- `vault://current/<artifact>#links` reads outgoing links.
+- `vault://current/<artifact>#backlinks` reads incoming links.
+- `vault://current/<artifact>#similar?limit=10` reads similar artifacts.
+- `vault://current/<artifact>#related` reads topic-related artifacts.
+- `vault://current/_search?query=<text>` reads search results.
+- `vault://current/_related?topic=<text>` reads related results.
+- `vault://current/_similar?file=<artifact>` reads similar results.
+- `vault://current/_links?file=<artifact>` reads outgoing links.
+- `vault://current/_backlinks?file=<artifact>` reads incoming links.
+- `vault://current/_graph` reads the vault graph.
+- `vault://current/_review` reads vault health.
+- `vault://current/_check` reads unresolved links.
+- `vault://current/_status` reads vault status.
+- `vault://current/_types` reads available artifact types.
+- `vault://current/context#list` reads available context docs.
 
-- **Context docs are special project structure**, not normal artifacts:
-  - root context: `CONTEXT.md`
-  - context map: `CONTEXT-MAP.md`
-  - named contexts: `contexts/<name>/CONTEXT.md`
-  - use `vlt context ...` for these files.
-- **Normal artifacts are typed docs** under `<project>/<type>/0001-topic.md`.
-  - type directories are workflow-owned; custom types are valid.
-  - numeric stems are stable ids; creation dates belong in frontmatter.
-  - use `vlt create/list/read/search/update/link/...` for these files.
+Use `read` for known resources. Use `search` for topic matching. Use `find` for artifact discovery and query filters. Use `write` or `edit` for existing artifacts and context docs.
 
-Built-in types are `research`, `design`, `structure`, `plan`, and `doc`/`docs`. This workflow adds `spec`, `ticket`, `decision`, `wayfinder`, `wayfinding`, `prototype`, `brief`, and `review`.
+## CLI-only operations
+
+Use `vlt` when the user asks for CLI syntax or when no resource operation exists yet:
+
+- create
+- archive or prune
+- rename
+- retag
+- link mutation
+- commit control
+
+Read `vlt <command> --help` for exact flags.
 
 ## Discovery loop
 
-1. **Search by topic words** — `vlt search "<topic>"`, narrowed with `--type` when you know the artifact kind. Run `vlt index` first if the vault has changed since the last search.
-2. **List when search terms are unclear** — `vlt list`, `vlt list --all` for every project, `vlt context list` for the project's language.
-3. **Read the best match** — `vlt read <stem-or-path>`, `-t <type>` to disambiguate a stem shared across types.
-4. **Follow relationships** — `vlt related`, `vlt links`, `vlt backlinks`, or `vlt read <stem> --depth 2` to pull linked context in one call.
-5. **Review structure when the vault feels stale or disconnected** — `vlt context check`, `vlt graph --json`, `vlt review`.
+1. Search by topic words.
+2. Read the best match.
+3. Follow links, backlinks, related, or similar views when needed.
+4. Write or edit the artifact when the user asks for a change.
+5. Call out conflicts between vault intent, tasks, and code.
 
-`vlt similar <stem>` finds neighbours by content when you have one good match and want its siblings.
+## Structural model
 
-## Rules
-
-- After a failed search, try one synonym or list active artifacts before concluding no document exists.
-- Read freely. Edit, link, update, archive, retag, rename, or commit vault artifacts when the user asks for it.
-- Use `vlt context ...` for the context docs named above, and the artifact commands for everything else.
-- Treat a numeric stem as the artifact's stable id; creation dates live in frontmatter.
-- Treat artifact types as workflow-owned directory names — custom types are expected.
-- Treat archived artifacts as history; confirm before presenting one as current.
-- Call out conflicts between vault intent, tasks, and code instead of silently choosing one.
-- Prefer JSON output for mutating workflows: identifiers in table output are truncated.
+- Context docs are project structure: `CONTEXT.md`, `CONTEXT-MAP.md`, and named `contexts/<name>/CONTEXT.md` files.
+- Normal artifacts are typed docs under `<project>/<type>/<stem>.md`.
+- Numeric stems are stable identifiers.
+- Artifact types are workflow-owned directory names. Custom types are valid.
+- Archived artifacts are history. Confirm before presenting one as current.

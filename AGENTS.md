@@ -23,11 +23,10 @@ Anything scoped to one language, tool, or kind of work becomes a **skill**
 instead. A skill's `description` is its pointer; instruction files name no
 paths.
 
-Subagents reach a smaller skill set than the session that spawns them: a Pi
-subagent sees only plugin-bundled skills and answers `Unknown skill "rust"` for
-this repo's own. A skill that dispatches a subagent therefore puts everything
-the child needs in the prompt itself, and never passes a `$skill` reference
-across that boundary.
+Subagents inherit core Pi skill discovery. They can load available skills with
+`read skill://<name>` and relative skill files with
+`read skill://<name>/<relative-path>`. Do not assume parent-only skill content
+is already loaded.
 
 ## Portability Rules
 

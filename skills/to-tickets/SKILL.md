@@ -14,7 +14,7 @@ Load `$vault` before reading or publishing artifacts.
 
 ### 1. Gather the source
 
-Use settled conversation as the source when no artifact is supplied. When the user supplies a vault artifact, resolve it with `vlt read <stem> --depth 2`. Require clear scope, implementation approach, acceptance criteria, and verification regardless of source shape. Report missing information and stop when the work is not implementation-ready.
+Use settled conversation as the source when no artifact is supplied. When the user supplies a vault artifact, resolve it with `read vault://current/<artifact>#depth=2`. Require clear scope, implementation approach, acceptance criteria, and verification regardless of source shape. Report missing information and stop when the work is not implementation-ready.
 
 ### 2. Confirm current boundaries
 

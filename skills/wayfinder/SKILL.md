@@ -101,7 +101,7 @@ A HITL ticket resolves through live user judgment. The agent supplies recommenda
 
 Resolve at most one ticket per session — research tickets excepted, since they run as parallel subagents.
 
-1. Read the map at low resolution with `vlt read <map> --depth 1`.
+1. Read the map at low resolution with `read vault://current/<map>#depth=1`.
 2. Select the named ticket or the first frontier ticket. Claim it immediately by replacing `## Status` with `in_progress` and a session identifier when available.
 3. Resolve it using the mode-specific skill and only the related artifacts needed for this question.
 4. Replace the ticket's `## Resolution`, set its status to `resolved`, and append one linked gist to the map's `## Decisions so far`.

@@ -7,9 +7,9 @@
   "treeFilterMode": "default",
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-5.6-luna",
-  "defaultThinkingLevel": "medium",
+  "defaultThinkingLevel": "max",
   "skills": [
-    "../.codex/skills"
+    "~/.agents/skills"
   ],
   "packages": [
     "npm:@ifi/oh-pi-themes",

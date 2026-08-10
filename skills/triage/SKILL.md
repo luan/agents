@@ -47,7 +47,7 @@ Interpret natural requests such as:
 
 ## Show what needs attention
 
-Use `vlt list`, `vlt search`, `vlt related`, and `vlt links` to build three oldest-first buckets:
+Use `find vault://current/?kind=...`, `search` scoped to `vault://current`, `read vault://current/<artifact>#related`, and `read vault://current/<artifact>#links` to build three oldest-first buckets:
 
 1. Artifacts without a `## Triage` section.
 2. `needs-triage` artifacts.
@@ -57,11 +57,11 @@ Show counts, artifact titles, stems, types, and a one-line summary. Let the main
 
 ## Triage one artifact
 
-1. **Gather context.** Read the full artifact and linked context with `vlt read <stem> --depth 2`, plus vault context and relevant decisions. Search the codebase by domain concept for existing behavior. Search `decision` artifacts for a matching out-of-scope choice.
+1. **Gather context.** Read the full artifact and linked context with `read vault://current/<artifact>#depth=2`, plus vault context and relevant decisions. Search the codebase by domain concept for existing behavior. Search decision artifacts for a matching out-of-scope choice.
 2. **Recommend.** Present the category and stage recommendation with evidence. Wait for maintainer direction before mutating the vault.
 3. **Verify the claim.** Reproduce a bug through `$diagnosing-bugs` or verify an enhancement against current code and behavior. Report confirmed, disproved, or insufficient evidence.
 4. **Grill when needed.** Use `$grilling` and `$domain-modeling` one frontier round at a time until acceptance boundaries and vocabulary are settled.
-5. **Apply the outcome** with `vlt update <stem> --replace-section Triage --stdin --json`:
+5. **Apply the outcome** with `edit` on the artifact's `vault://current/<artifact>` resource:
    - `ready-for-agent` — create a `brief` artifact using [AGENT-BRIEF.md](AGENT-BRIEF.md), then link it with `vlt link <brief> <source> --type briefs --annotation "Agent-ready contract"`.
    - `ready-for-human` — create the same brief and state which judgment or access remains human-owned.
    - `needs-info` — record established facts and the smallest actionable request for missing evidence.

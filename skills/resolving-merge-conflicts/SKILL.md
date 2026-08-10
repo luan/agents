@@ -5,7 +5,7 @@ description: "Use when you need to resolve an in-progress git merge/rebase confl
 
 1. **See the current state** of the merge/rebase. Check git history, and the conflicting files.
 
-2. **Find the primary sources** for each conflict. Understand why each change was made and what the original intent was. Read commit messages and use `$vault` plus `vlt search/read/links` to recover related specs, tickets, decisions, and research.
+2. **Find the primary sources.** Understand why each change was made and what the original intent was. Read commit messages and use `$vault` plus `search` scoped to `vault://current`, `read`, `#links`, and `#backlinks` views to recover related specs, tickets, decisions, and research.
 
 3. **Resolve each hunk.** Preserve both intents where possible. Where incompatible, pick the one matching the merge's stated goal and note the trade-off. Keep behavior within the two source intents and finish the active merge or rebase.
 

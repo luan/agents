@@ -22,7 +22,7 @@ This command is informed by the project's vault-backed domain model and built on
 - If the user named a direction — a module, a subsystem, a pain point — take it, and skip the inference below.
 - Otherwise, walk back a good stretch of the commit history (`git log --oneline`) to find the codebase's hot spots — the files and areas that keep coming up — and let those paths pull your attention first. If the changes are scattered with no clear hot spot, widen the net.
 
-Load `$vault`, then read project context and relevant decision artifacts with `vlt context show`, `vlt search --type decision`, and `vlt read`.
+Load `$vault`, then read project context and relevant decision artifacts with `read vault://current/context`, `search` scoped to `vault://current/?kind=decision`, and `read`.
 
 Then use the Agent tool with `subagent_type=Explore` to walk the codebase. Don't follow rigid heuristics — explore organically and note where you experience friction:
 
@@ -65,7 +65,7 @@ Once the user picks a candidate, run the `$grilling` skill to walk the design tr
 
 Side effects happen inline as decisions crystallize — run the `$domain-modeling` skill to keep the domain model current as you go:
 
-- **Naming a deepened module after a new domain concept?** Use `$domain-modeling` and `vlt context set` when the term resolves.
+- **Naming a deepened module after a new domain concept?** Use `$domain-modeling` and edit `vault://current/context` when the term resolves.
 - **Sharpening a fuzzy term?** Update vault context immediately.
 - **Rejecting a candidate for a load-bearing reason?** Offer a vault `decision` artifact when future reviews need the reason to avoid repeating the proposal.
 - **Exploring alternative interfaces?** Run the `$codebase-design` skill and use its design-it-twice parallel sub-agent pattern.

@@ -9,7 +9,7 @@ Actively build and sharpen the project's domain model as you design. Challenge t
 
 ## Vault structure
 
-Load `$vault`, then inspect the project's language with `vlt context list`, `vlt context check`, and `vlt context show [name|map]`. Context may be a single project glossary or a map of named contexts. Use `vlt context set` to create or replace terms; the CLI owns the underlying files.
+Load `$vault`, then inspect the project's language with `read vault://current/context#list`, `read vault://current/context`, and `read vault://current/context#check`. Use `read`, `search`, `find`, `write`, and `edit` on vault resources. Use `vlt` only for explicit CLI workflows.
 
 Store durable trade-offs as typed vault artifacts:
 
@@ -40,7 +40,7 @@ When the user states how something works, check whether the code agrees. If you 
 
 ### Update vault context inline
 
-When a term is resolved, run `vlt context set <term> --definition "..." [--avoid "..."] [--context <name>] --json` right there. Capture terms as they happen. Use [CONTEXT-FORMAT.md](./CONTEXT-FORMAT.md) for content guidance.
+When a term is resolved, edit the relevant `vault://current/context` resource immediately. Use `vlt context set` only when the user explicitly requests its CLI workflow.
 
 Keep vault context as a glossary: canonical vocabulary and tight definitions. Put behavior in specs and trade-offs in decision artifacts.
 

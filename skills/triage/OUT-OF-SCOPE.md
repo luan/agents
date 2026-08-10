@@ -9,8 +9,8 @@ Store durable rejected-enhancement reasoning as `decision` artifacts in the vaul
 
 ## Create or update
 
-1. Search first: `vlt search --type decision "<concept> out of scope"`.
-2. Read the closest candidates and their backlinks.
+1. Search `vault://current/?kind=decision` for `<concept> out of scope`.
+2. Read the closest candidates and their `#backlinks` views.
 3. Update the matching decision or create one with `vlt create --type decision --topic "<concept> out of scope" --tags "scope/out-of-scope" --json`.
 4. Link the rejected source artifact with `vlt link <decision> <source> --type governs --annotation "Records why this enhancement is out of scope"`.
 

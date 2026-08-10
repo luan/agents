@@ -28,7 +28,7 @@ Resolve the governing artifact in this order:
 
 1. A vault stem or artifact path supplied by the user.
 2. A vault stem or wiki-link in commit messages.
-3. `vlt search` using the branch name, commit subjects, and changed domain terms; follow candidates with `vlt read`, `vlt links`, and `vlt backlinks`.
+3. Search `vault://current` with branch name, commit subjects, and changed domain terms. Follow candidates with `read` on results and `#links` or `#backlinks` views.
 4. Ask for the governing artifact only when several candidates remain materially different. When no spec exists, skip the **Spec** sub-agent and report `no spec available`.
 
 ### 3. Identify the standards sources
