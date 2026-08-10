@@ -1,7 +1,7 @@
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { type AnimationMount, runningFrame, sharedAnimationRenderScheduler } from "../../../shared/tui";
 import type { AgentManager } from "../agent-manager.js";
-import type { AgentRecord } from "../types.js";
+import { type AgentRecord, agentKey } from "../types.js";
 import { getLifetimeTotal, type LifetimeUsage, type SessionLike } from "../usage.js";
 
 const MAX_WIDGET_LINES = 12;
@@ -114,7 +114,7 @@ export class AgentWidget {
 		];
 		const visible = running.slice(0, MAX_WIDGET_LINES - 2);
 		for (const [index, agent] of visible.entries()) {
-			const activity = this.agentActivity.get(agent.id);
+			const activity = this.agentActivity.get(agentKey(agent.rootSessionId, agent.id));
 			const action = activity ? describeActivity(activity.activeTools) : "thinking";
 			const toolUses = activity?.toolUses ?? agent.toolUses;
 			const usage = activity?.lifetimeUsage ?? agent.lifetimeUsage;

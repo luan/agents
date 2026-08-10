@@ -160,4 +160,14 @@ describe("system-prompt Skillful skill rendering", () => {
 		expect(prompt).toContain("## /repo/AGENTS.local.md");
 		expect(prompt).toContain("LOCAL_SENTINEL");
 	});
+	test("renders the configured caveman prompt", () => {
+		const prompt = buildSystemPrompt("base", {
+			...baseOptions,
+			selectedTools: [],
+			cavemanPrompt: "# Caveman (full)",
+		});
+
+		expect(prompt).toContain("# Caveman (full)");
+		expect(prompt.indexOf("# Caveman (full)")).toBeGreaterThan(prompt.indexOf("</environment_context>"));
+	});
 });

@@ -117,7 +117,23 @@ const silentTaskToolNames = new Set(["task_read", "task_write"]);
 const silentTaskToolPatchKey = Symbol.for("agents.tasks.silent-tool-render-patch");
 const spinnerFrames = ["✳", "✴", "✵", "✶", "✷", "✸", "✹", "✺", "✻", "✼", "✽"];
 let activeTaskBoard: { close: () => void } | undefined;
-let taskHudExpanded = true;
+const TASK_HUD_EXPANDED_STATES_KEY = Symbol.for("pi.tasks.hud.expanded.bySession");
+type TaskHudExpandedGlobal = typeof globalThis & {
+	[TASK_HUD_EXPANDED_STATES_KEY]?: Map<string, boolean>;
+};
+const taskHudExpandedGlobal = globalThis as TaskHudExpandedGlobal;
+if (!(taskHudExpandedGlobal[TASK_HUD_EXPANDED_STATES_KEY] instanceof Map)) {
+	taskHudExpandedGlobal[TASK_HUD_EXPANDED_STATES_KEY] = new Map();
+}
+const taskHudExpandedStates = taskHudExpandedGlobal[TASK_HUD_EXPANDED_STATES_KEY];
+
+function taskHudExpandedForSession(sessionId: string): boolean {
+	const expanded = taskHudExpandedStates.get(sessionId);
+	if (expanded !== undefined) return expanded;
+	taskHudExpandedStates.set(sessionId, true);
+	return true;
+}
+
 let taskHudPulseTimer: AnimationMount | undefined;
 let taskHudAnimationTarget: AnimationRenderTarget | undefined;
 let taskHudWidget: TaskHudWidget | undefined;
@@ -128,6 +144,7 @@ let taskHudFrame = 0;
 interface TaskHudState {
 	tasks: TaskRecord[];
 	config: Config;
+	expanded: boolean;
 }
 
 const defaultConfig: Config = {
@@ -628,14 +645,25 @@ class TaskHudWidget implements Component {
 		this.state = state;
 		this.tui.requestRender?.();
 	}
+	isExpanded(): boolean {
+		return this.state?.expanded ?? true;
+	}
 
 	render(width: number): string[] {
 		const state = this.state;
 		if (!state || !hasEnoughTerminalRows(state.config.hud.minTerminalRows)) return [];
 		return renderHudLines(state.tasks, this.theme, width, state.config.hud.maxTasks, {
-			compact: !taskHudExpanded,
+			compact: !this.isExpanded(),
 			frame: taskHudFrame,
 		});
+	}
+	dispose(): void {
+		if (taskHudWidget !== this) return;
+		taskHudPulseTimer?.dispose();
+		taskHudPulseTimer = undefined;
+		taskHudAnimationTarget = undefined;
+		taskHudWidget = undefined;
+		taskHudWidgetCtx = undefined;
 	}
 
 	invalidate() {}
@@ -662,7 +690,8 @@ async function updateTaskHud(
 	preloadedTasks?: TaskRecord[],
 ): Promise<void> {
 	const tasks = preloadedTasks ?? (await loadHudTasks(ctx));
-	const state = { tasks, config };
+	const sessionId = sessionTaskId(ctx) ?? `cwd:${ctx.cwd}`;
+	const state = { tasks, config, expanded: taskHudExpandedForSession(sessionId) };
 	latestTaskHudState = state;
 	ensureTaskHudWidget(ctx);
 	taskHudWidget?.setState(state);
@@ -1454,9 +1483,9 @@ export default function tasksExtension(pi: ExtensionAPI, _runtime: Runtime = {})
 	taskHudWidgetCtx = undefined;
 	latestTaskHudState = undefined;
 	taskHudAnimationTarget = undefined;
-	taskHudExpanded = true;
 
 	let cwd = process.cwd();
+	let activeTaskHudSessionId: string | undefined;
 	const reminderState: TaskReminderState = { attempts: 0, awaitingProgress: false, toolsUsedThisTurn: false };
 	const getCwd = () => cwd;
 	const markToolUsed = () => {
@@ -1468,6 +1497,7 @@ export default function tasksExtension(pi: ExtensionAPI, _runtime: Runtime = {})
 
 	pi.on("session_start", async (_event, ctx) => {
 		cwd = ctx.cwd;
+		activeTaskHudSessionId = sessionTaskId(ctx) ?? `cwd:${ctx.cwd}`;
 		resetTaskReminder(reminderState);
 		reminderState.toolsUsedThisTurn = false;
 		if (config.hud.enabled) {
@@ -1480,7 +1510,10 @@ export default function tasksExtension(pi: ExtensionAPI, _runtime: Runtime = {})
 		}
 	});
 
-	pi.on("session_shutdown", async () => {
+	pi.on("session_shutdown", async (event, ctx) => {
+		const sessionId = activeTaskHudSessionId ?? sessionTaskId(ctx) ?? `cwd:${ctx.cwd}`;
+		if (event.reason !== "reload") taskHudExpandedStates.delete(sessionId);
+		activeTaskHudSessionId = undefined;
 		taskHudPulseTimer?.dispose();
 		taskHudPulseTimer = undefined;
 		taskHudWidget = undefined;
@@ -1528,7 +1561,8 @@ export default function tasksExtension(pi: ExtensionAPI, _runtime: Runtime = {})
 	pi.registerShortcut?.(config.hud.toggleShortcut as never, {
 		description: "Toggle project task HUD summary/list view",
 		handler: async (ctx: ExtensionContext) => {
-			taskHudExpanded = !taskHudExpanded;
+			const sessionId = sessionTaskId(ctx) ?? `cwd:${ctx.cwd}`;
+			taskHudExpandedStates.set(sessionId, !taskHudExpandedForSession(sessionId));
 			const tasks = (taskHudWidgetCtx === ctx ? latestTaskHudState?.tasks : undefined) ?? (await loadHudTasks(ctx));
 			await updateTaskHud(ctx, pi, config, tasks).catch((error) => {
 				ctx.ui.notify?.(

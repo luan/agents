@@ -8,6 +8,7 @@ import {
 import { Key, matchesKey, Text } from "@earendil-works/pi-tui";
 import { captureExecResult } from "../context-guard/pi/capture.ts";
 import { isExecCommandContextGuardEnabled } from "../context-guard/pi/index.ts";
+import { attachRuntimeTerminal, registerRuntimeHubSource } from "../shared/runtime-hub";
 import {
 	type AnimationMount,
 	defineExtensionTui,
@@ -16,6 +17,7 @@ import {
 	setOrderedAboveEditorWidget,
 	sharedAnimationRenderScheduler,
 } from "../shared/tui";
+import { createRmuxPtyBackend, resolveRmuxBinary } from "./adapter/rmux-pty-backend.ts";
 import { resolveRuntimeShell } from "./adapter/runtime-shell.ts";
 import {
 	type RenderTheme,
@@ -33,6 +35,8 @@ import {
 	type UnifiedExecResult,
 } from "./tools/exec-session-manager.ts";
 import { formattedTruncateText } from "./tools/output-truncation.ts";
+import { registerProcessControlTools } from "./tools/process-control-tools.ts";
+import { registerProcessLogsTool } from "./tools/process-logs-tool.ts";
 import { formatUnifiedExecResult } from "./tools/unified-exec-format.ts";
 import { registerWriteStdinTool } from "./tools/write-stdin-tool.ts";
 import { BackgroundTerminalOverlay } from "./ui/background-terminal-overlay.ts";
@@ -317,7 +321,43 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 	installEmptySelfShellRowPatch();
 	installUserBashRenderPatch();
 	const tracker = createExecCommandTracker();
-	const sessions = createExecSessionManager();
+	const rmuxBinary = resolveRmuxBinary();
+	const sessions = createExecSessionManager({
+		ptyBackend: rmuxBinary ? createRmuxPtyBackend({ binary: rmuxBinary }) : undefined,
+	});
+	let currentExecCtx: ExtensionContext | undefined;
+	let unregisterHubSource: (() => void) | undefined;
+	const openProcess = async (processId: number) => {
+		if (!currentExecCtx) return;
+		await execCommandTui
+			.bind(currentExecCtx)
+			.overlays.openComponent<undefined>(
+				(tui, theme, _keybindings, done) =>
+					new BackgroundTerminalOverlay(sessions, tui, theme, done, undefined, processId),
+				{
+					overlay: true,
+					overlayOptions: { anchor: "center", width: "90%", minWidth: 60, maxHeight: "90%" },
+				},
+			);
+	};
+	const hubSource = {
+		list: (ctx: ExtensionContext) =>
+			sessions
+				.listSessions()
+				.filter((record) => record.ownerSessionId === ctx.sessionManager.getSessionId())
+				.map((record) => ({
+					key: `process:${record.id}`,
+					kind: record.stdinOpen ? ("terminal" as const) : ("job" as const),
+					label: record.name,
+					status: record.running ? "running" : record.exitCode === 0 ? "completed" : "error",
+					description: record.command,
+					lastActivity: record.finishedAtMs ?? record.startedAtMs,
+					open: () => openProcess(record.id),
+					attach: record.attachment ? (tui) => attachRuntimeTerminal(record.attachment!, tui) : undefined,
+					stop: () => sessions.stopSession(record.id),
+					restart: async () => Boolean(await sessions.restart(record.id)),
+				})),
+	};
 	let shuttingDown = false;
 	let statusUi: BackgroundTerminalStatusUi | undefined;
 	let lastBackgroundTerminalStatus: string | undefined;
@@ -426,6 +466,14 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 		const next = active.filter((toolName) => toolName !== "bash");
 		if (!next.includes("exec_command")) next.push("exec_command");
 		if (!next.includes("write_stdin")) next.push("write_stdin");
+		if (!next.includes("process_logs")) next.push("process_logs");
+		if (!next.includes("process_list")) next.push("process_list");
+		if (!next.includes("process_describe")) next.push("process_describe");
+		if (!next.includes("process_wait")) next.push("process_wait");
+		if (!next.includes("process_resize")) next.push("process_resize");
+		if (!next.includes("process_signal")) next.push("process_signal");
+		if (!next.includes("process_restart")) next.push("process_restart");
+		if (!next.includes("process_stop")) next.push("process_stop");
 		if (!arraysEqual(active, next)) pi.setActiveTools(next);
 	};
 
@@ -609,6 +657,8 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 			}
 		},
 	});
+	registerProcessLogsTool(pi, sessions);
+	registerProcessControlTools(pi, sessions);
 	sessions.onSessionExit((sessionId, command) => {
 		void (async () => {
 			const snapshot = sessions.getSessionSnapshot(sessionId);
@@ -674,21 +724,6 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 		updateBackgroundTerminalStatus();
 	});
 
-	pi.registerCommand("ps", {
-		description: "list background terminals",
-		handler: async (_args, ctx) => {
-			await execCommandTui
-				.bind(ctx)
-				.overlays.openComponent<undefined>(
-					(tui, theme, _keybindings, done) => new BackgroundTerminalOverlay(sessions, tui, theme, done),
-					{
-						overlay: true,
-						overlayOptions: { anchor: "center", width: "90%", minWidth: 60, maxHeight: "90%" },
-					},
-				);
-		},
-	});
-
 	pi.registerCommand("stop", {
 		description: "stop all background terminals",
 		getArgumentCompletions: (prefix) => {
@@ -728,6 +763,11 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_start", (event, ctx) => {
+		currentExecCtx = ctx;
+		if (ctx.hasUI) {
+			unregisterHubSource?.();
+			unregisterHubSource = registerRuntimeHubSource("exec-command", hubSource);
+		}
 		shuttingDown = false;
 		agentTurnActive = false;
 		const reason = (event as { reason?: string } | undefined)?.reason;
@@ -858,6 +898,9 @@ export default function execCommandExtension(pi: ExtensionAPI) {
 		return Object.keys(patch).length > 0 ? patch : undefined;
 	});
 	pi.on("session_shutdown", () => {
+		unregisterHubSource?.();
+		unregisterHubSource = undefined;
+		currentExecCtx = undefined;
 		agentTurnActive = false;
 		shuttingDown = true;
 		completionMessageSessions.clear();

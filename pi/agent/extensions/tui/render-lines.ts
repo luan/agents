@@ -5,6 +5,8 @@ import { ansiFgToRgb } from "../shared/tui";
 const RESET = "\x1b[0m";
 const RESET_ANSI = /\x1b\[0m/g;
 const EDITOR_BACKGROUND_DARKEN = 0.78;
+const DIM = "\x1b[2m";
+const DIM_END = "\x1b[22m";
 // Block Elements, like the half row it grows out of: the geometric-shape triangles are
 // East-Asian-ambiguous and get drawn double width, which shifts every column after them.
 const TRANSITION_RAMP = "▟";
@@ -41,10 +43,15 @@ function paintBackground(content: string, background: Rgb): string {
 	return `${backgroundAnsi}${content.replace(RESET_ANSI, `${RESET}${backgroundAnsi}`)}\x1b[49m`;
 }
 
-export function fillEditorLine(uiTheme: Theme, content: string, width: number): string {
+function dimContent(content: string): string {
+	return `${DIM}${content.replace(RESET_ANSI, `${RESET}${DIM}`)}${DIM_END}`;
+}
+
+export function fillEditorLine(uiTheme: Theme, content: string, width: number, dimmed = false): string {
+	const line = fillLine(dimmed ? dimContent(content) : content, width);
 	const rgb = backgroundRgb(uiTheme);
-	if (!rgb || isLight(rgb)) return fillLine(content, width);
-	return paintBackground(fillLine(content, width), darken(rgb));
+	if (!rgb || isLight(rgb)) return line;
+	return paintBackground(line, darken(rgb));
 }
 
 // The transition row is half height: the editor background rises to meet the transcript. A

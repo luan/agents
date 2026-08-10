@@ -5,8 +5,8 @@ import {
 	type SubagentUsageEvent,
 } from "../../shared/subagent-usage.js";
 import { AgentManager } from "./agent-manager.js";
-import { toPersistedAgent, writeAgentRegistry } from "./persistence.js";
-import type { AgentRecord } from "./types.js";
+import { removeAgentRegistryRecord, toPersistedAgent, writeAgentRegistry } from "./persistence.js";
+import { type AgentRecord, agentKey } from "./types.js";
 import type { AgentActivity, AgentWidget } from "./ui/agent-widget.js";
 
 type SessionBinding = {
@@ -179,8 +179,8 @@ const manager = new AgentManager(
 		updateWidgets();
 	},
 	(record) => {
-		activityByAgent.delete(record.id);
-		persist(record);
+		activityByAgent.delete(agentKey(record.rootSessionId, record.id));
+		removeAgentRegistryRecord(record.rootSessionId, record.id);
 		updateWidgets();
 	},
 );

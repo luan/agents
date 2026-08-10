@@ -24,6 +24,7 @@ import {
 	resetWorkingTimerState,
 	restoreWorkingTimerSnapshot,
 	setEditorChromeProvider,
+	setEditorDimmed,
 	setEditorSessionIdentityProvider,
 	setWorkingFastMode,
 	setWorkingTimerStarted,
@@ -167,9 +168,16 @@ function latestWorkingTimerSnapshot(entries: readonly unknown[]): WorkingTimerSn
 	return undefined;
 }
 
+export function shouldInstallPolishedTui(sessionFile: string | undefined, attachedSubagent: boolean): boolean {
+	if (!sessionFile) return false;
+	return attachedSubagent || !sessionFile.replaceAll("\\", "/").includes("/sessions/subagents/");
+}
+
 export default function (pi: ExtensionAPI) {
 	const state: FooterRenderState = emptyFooterState();
 	const usageCache = new Map<string, UsageSnapshot>();
+	const attachedSubagent = process.env.PI_ATTACHED_AGENT === "1";
+	const attachedSubagentName = cleanIdentityPart(process.env.PI_SUBAGENT_NAME);
 
 	let currentConfig: PolishedTuiConfig = loadConfig();
 	let requestFooterRender: (() => void) | undefined;
@@ -202,8 +210,6 @@ export default function (pi: ExtensionAPI) {
 			throw error;
 		}
 	};
-	const isSubagentSessionFile = (sessionFile: string): boolean =>
-		sessionFile.replaceAll("\\", "/").includes("/sessions/subagents/");
 	const isCurrentSessionContext = (ctx: ExtensionContext): boolean => {
 		const sessionFile = sessionFileFor(ctx);
 		return sessionFile !== undefined && sessionFile === activeSessionFile;
@@ -314,8 +320,10 @@ export default function (pi: ExtensionAPI) {
 
 	const renderFooterStatus = (width: number, theme: Parameters<typeof renderEditorContextStatus>[1]) => {
 		const safeWidth = Math.max(1, width);
-		const contextWidth = Math.min(Math.floor(safeWidth * 0.5), safeWidth);
-		return contextWidth >= 12 ? renderEditorContextStatus(state, theme, contextWidth) : "";
+		const detachHint = attachedSubagent ? theme.fg("warning", "Ctrl+] detach") : "";
+		const contextWidth = Math.min(Math.floor(safeWidth * 0.5), safeWidth - visibleWidth(detachHint) - 1);
+		const context = contextWidth >= 12 ? renderEditorContextStatus(state, theme, contextWidth) : "";
+		return truncateToWidth([detachHint, context].filter(Boolean).join("  "), safeWidth, "");
 	};
 
 	const sessionName = (ctx: ExtensionContext): string | undefined => {
@@ -354,8 +362,8 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	const syncState = (ctx: ExtensionContext, activeMessage?: unknown) => {
-		const name = cleanIdentityPart(sessionName(ctx));
-		editorSessionIdentity = name ? { name } : undefined;
+		const name = attachedSubagentName ?? cleanIdentityPart(sessionName(ctx));
+		editorSessionIdentity = name ? { name, color: attachedSubagent ? "muted" : undefined } : undefined;
 
 		const totals = getUsageTotals(ctx);
 		const usage = ctx.getContextUsage();
@@ -566,6 +574,7 @@ export default function (pi: ExtensionAPI) {
 		syncStateIfCurrent(ctx);
 		const cwd = ctx.cwd;
 		setEditorSessionIdentityProvider(() => editorSessionIdentity);
+		setEditorDimmed(attachedSubagent);
 		setEditorChromeProvider((width, theme) => ({
 			// Sized off the editor width, never off the space left beside the prompt: its usage bar
 			// comes from a subprocess keyed on width, which typing must not keep respawning.
@@ -633,7 +642,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		const sessionFile = sessionFileFor(ctx);
-		if (!sessionFile || isSubagentSessionFile(sessionFile)) return;
+		if (!sessionFile || !shouldInstallPolishedTui(sessionFile, attachedSubagent)) return;
 		activeSessionFile = sessionFile;
 		activeCtx = ctx;
 		disposed = false;
@@ -652,6 +661,7 @@ export default function (pi: ExtensionAPI) {
 		requestFooterRender = undefined;
 		footerAnimationTarget = undefined;
 		setEditorChromeProvider(undefined);
+		setEditorDimmed(false);
 		setEditorSessionIdentityProvider(undefined);
 		editorSessionIdentity = undefined;
 		resetWorkingTimerState();

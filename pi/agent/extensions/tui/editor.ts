@@ -51,6 +51,7 @@ let cumulativeWorkingDurationMs = 0;
 let workingNowMsForTest: number | undefined;
 let workingFastMode = false;
 let editorSessionIdentityProvider: (() => EditorSessionIdentity | undefined) | undefined;
+let editorDimmed = false;
 let transitionRailColor = "syntaxFunction";
 let transitionIdentityColor: string | undefined;
 let transitionFooterModeLabel: string | undefined;
@@ -194,6 +195,10 @@ export function setEditorSessionIdentityProvider(
 	editorSessionIdentityProvider = provider;
 }
 
+export function setEditorDimmed(dimmed: boolean): void {
+	editorDimmed = dimmed;
+}
+
 function isStaleCtxError(error: unknown): boolean {
 	return (error instanceof Error ? error.message : String(error)).includes("ctx is stale");
 }
@@ -230,8 +235,7 @@ function modeColor(mode: string | undefined): string {
 }
 
 function railColorForMode(mode: string | undefined, identityColor: string | undefined): string {
-	if (mode === "normal" && identityColor) return identityColor;
-	return modeColor(mode);
+	return identityColor ?? modeColor(mode);
 }
 
 function renderWorkingWord(uiTheme: Theme, color: string, frame: number): string {
@@ -432,7 +436,7 @@ export function renderPolishedEditorForTest(
 	return [
 		...autocompleteLines,
 		renderEditorTransition(width, uiTheme, mode, promoteStatus ? chrome.topRight : undefined),
-		...lines.map((line) => `${rail}${fillEditorLine(uiTheme, line, innerWidth)}`),
+		...lines.map((line) => `${rail}${fillEditorLine(uiTheme, line, innerWidth, editorDimmed)}`),
 	];
 }
 

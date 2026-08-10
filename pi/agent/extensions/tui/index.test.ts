@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { setEditorChromeProvider, setEditorSessionIdentityProvider } from "./editor";
-import registerTui, { getUsageTotals } from "./index";
+import registerTui, { getUsageTotals, shouldInstallPolishedTui } from "./index";
 
 afterEach(() => {
 	setEditorChromeProvider(undefined);
@@ -35,6 +35,13 @@ test("includes persisted subagent usage in session totals", () => {
 	};
 
 	expect(getUsageTotals(ctx as never)).toEqual({ input: 400, output: 120, cost: 1 });
+});
+
+test("installs the normal polished TUI for attached subagent sessions", () => {
+	const childSession = "/sessions/subagents/root/sessions/demo/child.jsonl";
+
+	expect(shouldInstallPolishedTui(childSession, false)).toBe(false);
+	expect(shouldInstallPolishedTui(childSession, true)).toBe(true);
 });
 
 describe("polished TUI session binding", () => {

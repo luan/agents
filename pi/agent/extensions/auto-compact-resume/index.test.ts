@@ -5,14 +5,13 @@ import autoCompactResumeExtension, { needsCompaction } from "./index";
 describe("auto compact and resume", () => {
 	test("stops high-context tool loops and resumes after Pi compacts", () => {
 		let turnEnd: ((event: any, ctx: any) => void) | undefined;
-		let sessionCompact: ((event: any, ctx: any) => void) | undefined;
 		let abortCalls = 0;
 		let compactCalls = 0;
+		let compactOptions: any;
 		const messages: any[] = [];
 		const pi = {
 			on(event: string, handler: (event: any, ctx: any) => void) {
 				if (event === "turn_end") turnEnd = handler;
-				if (event === "session_compact") sessionCompact = handler;
 			},
 			sendMessage(message: any, options: any) {
 				messages.push({ message, options });
@@ -24,19 +23,19 @@ describe("auto compact and resume", () => {
 			abort() {
 				abortCalls++;
 			},
-			compact() {
+			compact(options: any) {
 				compactCalls++;
+				compactOptions = options;
+				options.onComplete();
 			},
 		};
 
 		autoCompactResumeExtension(pi);
 		turnEnd?.({ message: { content: [{ type: "toolCall" }] } }, ctx);
 
-		expect(abortCalls).toBe(1);
-		expect(compactCalls).toBe(0);
-		expect(messages).toEqual([]);
-
-		sessionCompact?.({}, ctx);
+		expect(abortCalls).toBe(0);
+		expect(compactCalls).toBe(1);
+		expect(compactOptions).toBeDefined();
 		expect(messages).toEqual([
 			{
 				message: {

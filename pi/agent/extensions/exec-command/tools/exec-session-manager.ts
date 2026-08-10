@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { resolve } from "node:path";
 import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
-import * as pty from "node-pty";
+import { createNodePtyBackend, type PtyBackend, type PtyProcess } from "../adapter/pty-backend.ts";
 import { DEFAULT_EXEC_SHELL, isFishShell, resolveRuntimeShell } from "../adapter/runtime-shell.ts";
 import {
 	appendCaptureOutput,
@@ -26,6 +26,7 @@ export interface UnifiedExecResult {
 	cancelled?: boolean;
 	session_error?: string;
 	process_id?: number;
+	process_name?: string;
 	stdin_open?: boolean;
 	original_token_count?: number;
 	output_truncated?: boolean;
@@ -39,9 +40,26 @@ export interface UnifiedExecResult {
 	capture_output?: string;
 	capture_output_truncated?: boolean;
 }
+export interface ProcessLogChunk {
+	process_id: number;
+	process_name?: string;
+	cursor: number;
+	next_cursor: number;
+	output: string;
+	truncated: boolean;
+	running: boolean;
+}
+export interface ProcessWaitResult {
+	process: ExecSessionRecord;
+	matched: boolean;
+	timed_out: boolean;
+}
+
+export type ProcessSelector = number | string;
 
 interface ExecSessionSnapshot {
 	command: string;
+	name?: string;
 	output: string;
 	running: boolean;
 	exitCode?: number;
@@ -60,16 +78,24 @@ interface ExecSessionSnapshot {
 
 export interface ExecSessionRecord {
 	id: number;
+	name: string;
+	attachCommand?: string;
+	attachment?: { command: string; args: string[] };
 	command: string;
+	cwd: string;
 	output: string;
+	ownerSessionId?: string;
 	running: boolean;
 	exitCode?: number;
 	stdinOpen: boolean;
 	startedAtMs: number;
+	finishedAtMs?: number;
+	state: "running" | ExecTerminalState;
 }
 
-interface ExecCommandInput {
+export interface ExecCommandInput {
 	cmd: string;
+	name?: string;
 	workdir?: string;
 	shell?: string;
 	tty?: boolean;
@@ -78,10 +104,11 @@ interface ExecCommandInput {
 	yield_time_ms?: number;
 	login?: boolean;
 	wait_for_exit?: boolean;
+	ownerSessionId?: string;
 }
 
 interface WriteStdinInput {
-	process_id: number;
+	process_id: ProcessSelector;
 	chars?: string;
 	yield_time_ms?: number;
 }
@@ -90,12 +117,20 @@ type ExecSessionUpdateCallback = (result: UnifiedExecResult) => void;
 
 interface BaseExecSession {
 	id: number;
+	name: string;
+	attachCommand?: string;
+	attachment?: { command: string; args: string[] };
 	command: string;
+	cwd: string;
+	input: ExecCommandInput;
 	buffer: string;
 	pendingBuffer: string;
 	emittedBuffer: string;
 	captureBuffer: string;
 	captureBufferTruncated: boolean;
+	logBuffer: string;
+	logStartCursor: number;
+	logEndCursor: number;
 	exitCode: number | null | undefined;
 	terminalState: ExecTerminalState | undefined;
 	pendingTerminalState: ExecInterventionState | undefined;
@@ -104,6 +139,7 @@ interface BaseExecSession {
 	listeners: Set<() => void>;
 	interactive: boolean;
 	startedAtMs: number;
+	finishedAtMs?: number;
 	hidden: boolean;
 	timeoutTimer?: ReturnType<typeof setTimeout>;
 }
@@ -115,7 +151,7 @@ interface PipeExecSession extends BaseExecSession {
 
 interface PtyExecSession extends BaseExecSession {
 	kind: "pty";
-	child: pty.IPty;
+	child: PtyProcess;
 	terminalCommitted: string;
 	terminalLine: string[];
 	terminalCursor: number;
@@ -133,25 +169,32 @@ export interface ExecSessionManager {
 		onUpdate?: ExecSessionUpdateCallback,
 	): Promise<UnifiedExecResult>;
 	write(input: WriteStdinInput): Promise<UnifiedExecResult>;
+	resize(selector: ProcessSelector, cols: number, rows: number): Promise<boolean>;
+	logs(selector: ProcessSelector, cursor?: number, maxChars?: number): ProcessLogChunk | undefined;
+	wait(selector: ProcessSelector, pattern?: string, timeoutMs?: number): Promise<ProcessWaitResult | undefined>;
+	describe(selector: ProcessSelector): ExecSessionRecord | undefined;
+	restart(selector: ProcessSelector): Promise<UnifiedExecResult | undefined>;
+	signal(selector: ProcessSelector, signal: "INT" | "TERM" | "KILL"): Promise<boolean>;
 	hasSession(sessionId: number): boolean;
-	getSessionCommand(sessionId: number): string | undefined;
-	getSessionStdinOpen(sessionId: number): boolean | undefined;
-	getSessionTty(sessionId: number): boolean | undefined;
+	getSessionCommand(selector: ProcessSelector): string | undefined;
+	getSessionStdinOpen(selector: ProcessSelector): boolean | undefined;
+	getSessionTty(selector: ProcessSelector): boolean | undefined;
 	getSessionSnapshot(sessionId: number): ExecSessionSnapshot | undefined;
 	listSessions(): ExecSessionRecord[];
-	stopSession(sessionId: number): boolean;
+	stopSession(selector: ProcessSelector): boolean;
 	stopAllSessions(): number;
 	onSessionExit(listener: (sessionId: number, command: string) => void): () => void;
 	onSessionUpdate(listener: () => void): () => void;
 	shutdown(): void;
 }
 
-interface ExecSessionManagerOptions {
+export interface ExecSessionManagerOptions {
 	defaultExecYieldTimeMs?: number;
 	defaultWriteYieldTimeMs?: number;
 	minNonInteractiveExecYieldTimeMs?: number;
 	minEmptyWriteYieldTimeMs?: number;
 	maxSessionBufferChars?: number;
+	ptyBackend?: PtyBackend;
 }
 
 const DEFAULT_EXEC_YIELD_TIME_MS = 10_000;
@@ -617,6 +660,17 @@ function killPid(pid: number, signal: NodeJS.Signals): void {
 	}
 }
 
+function signalProcessTree(
+	rootPid: number | undefined,
+	includeRootProcessGroup: boolean,
+	signal: NodeJS.Signals,
+): void {
+	if (rootPid === undefined || rootPid <= 0) return;
+	const descendants = collectDescendantPids(rootPid);
+	for (const pid of [...descendants.reverse(), rootPid]) killPid(pid, signal);
+	if (includeRootProcessGroup) killPid(-rootPid, signal);
+}
+
 function terminateProcessTree(rootPid: number | undefined, includeRootProcessGroup: boolean, force = false): void {
 	if (rootPid === undefined || rootPid <= 0) return;
 	const descendants = collectDescendantPids(rootPid);
@@ -652,6 +706,7 @@ function terminateProcessTree(rootPid: number | undefined, includeRootProcessGro
 export function createExecSessionManager(options: ExecSessionManagerOptions = {}): ExecSessionManager {
 	let nextSessionId = 1;
 	const sessions = new Map<number, ExecSession>();
+	const reservedNames = new Set<string>();
 	const commandHistory = new Map<number, string>();
 	const ttyHistory = new Map<number, boolean>();
 	const exitListeners = new Set<(sessionId: number, command: string) => void>();
@@ -698,16 +753,50 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		return session.terminalState === undefined;
 	}
 
+	function processName(requested: string | undefined, id: number): string {
+		const normalized = requested
+			?.trim()
+			.replace(/[^A-Za-z0-9._-]+/g, "-")
+			.replace(/^-+|-+$/g, "");
+		return normalized || `pi-exec-${id}`;
+	}
+
+	function nameInUse(name: string): boolean {
+		return reservedNames.has(name) || [...sessions.values()].some((session) => session.name === name);
+	}
+
+	function uniqueProcessName(base: string): string {
+		if (!nameInUse(base)) return base;
+		let suffix = 2;
+		while (nameInUse(`${base}-${suffix}`)) suffix++;
+		return `${base}-${suffix}`;
+	}
+
+	function resolveSession(selector: ProcessSelector): ExecSession | undefined {
+		if (typeof selector === "number") {
+			const session = sessions.get(selector);
+			return session && !session.hidden ? session : undefined;
+		}
+		return [...sessions.values()].find((session) => !session.hidden && session.name === selector);
+	}
+
 	function toRecord(session: ExecSession): ExecSessionRecord {
 		const running = isRunning(session);
 		return {
 			id: session.id,
+			name: session.name,
+			attachCommand: session.attachCommand,
+			attachment: session.attachment,
 			command: session.command,
+			cwd: session.cwd,
+			ownerSessionId: session.input.ownerSessionId,
 			output: session.buffer,
 			running,
 			exitCode: session.terminalState === "exited" ? (session.exitCode ?? 0) : undefined,
 			stdinOpen: session.interactive,
 			startedAtMs: session.startedAtMs,
+			finishedAtMs: session.finishedAtMs,
+			state: running ? "running" : (session.terminalState ?? "exited"),
 		};
 	}
 
@@ -729,7 +818,8 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		if (!isRunning(session)) return;
 		session.pendingTerminalState = reason;
 		if (session.kind === "pty") {
-			terminateProcessTree(session.child.pid, false, true);
+			if (session.child.pid === undefined) session.child.kill();
+			else terminateProcessTree(session.child.pid, false, true);
 		} else {
 			terminateProcessTree(session.child.pid, true, true);
 		}
@@ -743,6 +833,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 	function finalizeSession(session: ExecSession): void {
 		if (session.finalized) return;
 		session.finalized = true;
+		session.finishedAtMs = Date.now();
 		for (const listener of exitListeners) {
 			listener(session.id, session.command);
 		}
@@ -775,8 +866,18 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		}
 	}
 
+	function appendLog(session: ExecSession, text: string): void {
+		session.logBuffer += text;
+		session.logEndCursor += text.length;
+		if (session.logBuffer.length <= maxSessionBufferChars) return;
+		const dropped = session.logBuffer.length - maxSessionBufferChars;
+		session.logBuffer = session.logBuffer.slice(dropped);
+		session.logStartCursor += dropped;
+	}
+
 	function appendOutput(session: ExecSession, text: string): void {
 		if (text.length === 0) return;
+		appendLog(session, text);
 		const previous = session.buffer;
 		if (session.kind === "pty") {
 			session.buffer = applyTerminalOutput(session, text);
@@ -843,6 +944,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		}
 		if (isRunning(session)) {
 			result.process_id = session.id;
+			result.process_name = session.name;
 			result.stdin_open = session.interactive;
 			if (session.hidden) {
 				session.hidden = false;
@@ -875,6 +977,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		}
 		if (isRunning(session)) {
 			result.process_id = session.id;
+			result.process_name = session.name;
 			result.stdin_open = session.interactive;
 		} else {
 			addTerminalState(result, session);
@@ -923,6 +1026,8 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		shell: string,
 		signal?: AbortSignal,
 	): PipeExecSession {
+		const id = nextSessionId++;
+		const name = input.name ?? uniqueProcessName(processName(undefined, id));
 		const login = input.login ?? true;
 		const execution = resolveExecution(input.shell, input.cmd, input.env, input.tty === true);
 		const shellArgs = login ? ["-lc", execution.command] : ["-c", execution.command];
@@ -943,14 +1048,20 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 
 		const session: PipeExecSession = {
 			kind: "pipe",
-			id: nextSessionId++,
+			id,
+			name,
 			command: input.cmd,
+			cwd: workdir,
+			input: { ...input, name },
 			child,
 			buffer: "",
 			pendingBuffer: "",
 			emittedBuffer: "",
 			captureBuffer: "",
 			captureBufferTruncated: false,
+			logBuffer: "",
+			logStartCursor: 0,
+			logEndCursor: 0,
 			exitCode: undefined,
 			terminalState: undefined,
 			pendingTerminalState: undefined,
@@ -984,33 +1095,45 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		return session;
 	}
 
-	function createPtySession(
+	async function createPtySession(
 		input: ExecCommandInput,
 		workdir: string,
 		shell: string,
 		signal?: AbortSignal,
-	): PtyExecSession {
+	): Promise<PtyExecSession> {
+		const id = nextSessionId++;
+		const requestedName = input.name;
 		const login = input.login ?? true;
 		const execution = resolveExecution(input.shell, input.cmd, input.env, true);
 		const shellArgs = login ? ["-lc", execution.command] : ["-c", execution.command];
-		const child = pty.spawn(shell, shellArgs, {
+		const child = await (options.ptyBackend ?? createNodePtyBackend()).spawn(shell, shellArgs, {
 			cwd: workdir,
 			env: execution.env,
 			name: process.env.TERM || "xterm-256color",
+			sessionName: requestedName,
 			cols: 80,
 			rows: 24,
 		});
+		const name = requestedName ?? uniqueProcessName(child.name ?? processName(undefined, id));
 
 		const session: PtyExecSession = {
 			kind: "pty",
-			id: nextSessionId++,
+			id,
 			command: input.cmd,
+			name,
+			cwd: workdir,
+			input: { ...input, name },
+			attachCommand: child.attachCommand,
+			attachment: child.attachment,
 			child,
 			buffer: "",
 			pendingBuffer: "",
 			emittedBuffer: "",
 			captureBuffer: "",
 			captureBufferTruncated: false,
+			logBuffer: "",
+			logStartCursor: 0,
+			logEndCursor: 0,
 			exitCode: undefined,
 			terminalState: undefined,
 			pendingTerminalState: undefined,
@@ -1050,23 +1173,38 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		return Date.now() - startedAt;
 	}
 
-	return {
+	const manager: ExecSessionManager = {
 		exec: async (input, cwd, signal, onUpdate) => {
+			deleteExitedSessions();
+			let reservedName: string | undefined;
+			if (input.name) {
+				input = { ...input, name: processName(input.name, nextSessionId) };
+				if (nameInUse(input.name)) throw new Error(`Process name already exists: ${input.name}`);
+				reservedName = input.name;
+				reservedNames.add(reservedName);
+			}
 			const shell = resolveShell(input.shell);
 			const workdir = resolveWorkdir(cwd, input.workdir);
-			const session = input.tty
-				? (() => {
-						if (IS_BUN_RUNTIME) {
-							return createPipeSession(input, workdir, shell, signal);
-						}
-						try {
-							return createPtySession(input, workdir, shell, signal);
-						} catch {
-							return createPipeSession(input, workdir, shell, signal);
-						}
-					})()
-				: createPipeSession(input, workdir, shell, signal);
-			deleteExitedSessions();
+			let session: ExecSession;
+			try {
+				session = input.tty
+					? await (async () => {
+							if (options.ptyBackend !== undefined) {
+								return createPtySession(input, workdir, shell, signal);
+							}
+							if (IS_BUN_RUNTIME) {
+								return createPipeSession(input, workdir, shell, signal);
+							}
+							try {
+								return await createPtySession(input, workdir, shell, signal);
+							} catch {
+								return createPipeSession(input, workdir, shell, signal);
+							}
+						})()
+					: createPipeSession(input, workdir, shell, signal);
+			} finally {
+				if (reservedName) reservedNames.delete(reservedName);
+			}
 			sessions.set(session.id, session);
 			rememberCommand(session.id, session.command, session.interactive);
 			notifySessionUpdate();
@@ -1090,16 +1228,20 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			}
 		},
 		write: async (input) => {
-			const session = sessions.get(input.process_id);
-			if (!session || session.hidden) {
-				throw new Error(`Unknown process id ${input.process_id}`);
+			const session = resolveSession(input.process_id);
+			if (!session) {
+				throw new Error(
+					typeof input.process_id === "number"
+						? `Unknown process id ${input.process_id}`
+						: `Unknown process ${input.process_id}`,
+				);
 			}
 			if (input.chars && input.chars.length > 0) {
 				if (!session.interactive) {
 					throw new Error("stdin is closed for this session; rerun exec_command with tty=true to keep stdin open");
 				}
 				if (session.kind === "pty") {
-					session.child.write(input.chars);
+					await session.child.write(input.chars);
 				} else {
 					session.child.stdin.write(input.chars);
 				}
@@ -1117,16 +1259,103 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 				: 0;
 			return makeResult(session, waitedMs);
 		},
+		resize: async (selector, cols, rows) => {
+			const session = resolveSession(selector);
+			if (!session || !isRunning(session) || session.kind !== "pty") return false;
+			await session.child.resize(Math.max(1, Math.floor(cols)), Math.max(1, Math.floor(rows)));
+			return true;
+		},
+		logs: (selector, cursor = 0, maxChars = UNIFIED_EXEC_OUTPUT_MAX_BYTES) => {
+			const session = resolveSession(selector);
+			if (!session) return undefined;
+			const start = Math.max(session.logStartCursor, Math.min(cursor, session.logEndCursor));
+			const offset = start - session.logStartCursor;
+			const output = session.logBuffer.slice(offset, offset + Math.max(1, Math.floor(maxChars)));
+			return {
+				process_id: session.id,
+				process_name: session.name,
+				cursor: start,
+				next_cursor: start + output.length,
+				output,
+				truncated: cursor < session.logStartCursor,
+				running: isRunning(session),
+			};
+		},
+		wait: async (selector, pattern, timeoutMs = 10_000) => {
+			const session = resolveSession(selector);
+			if (!session) return undefined;
+			const patternMatched = () => (pattern ? session.logBuffer.includes(pattern) : !isRunning(session));
+			const completed = () => patternMatched() || !isRunning(session);
+			if (completed()) {
+				return { process: toRecord(session), matched: patternMatched(), timed_out: false };
+			}
+			await new Promise<void>((resolvePromise) => {
+				const onWake = () => {
+					if (!completed()) return;
+					cleanup();
+					resolvePromise();
+				};
+				const timeout = setTimeout(
+					() => {
+						cleanup();
+						resolvePromise();
+					},
+					Math.max(1, timeoutMs),
+				);
+				const cleanup = () => {
+					clearTimeout(timeout);
+					session.listeners.delete(onWake);
+				};
+				session.listeners.add(onWake);
+			});
+			return { process: toRecord(session), matched: patternMatched(), timed_out: !completed() };
+		},
+		describe: (selector) => {
+			const session = resolveSession(selector);
+			return session ? toRecord(session) : undefined;
+		},
+		restart: async (selector) => {
+			const session = resolveSession(selector);
+			if (!session) return undefined;
+			const input = { ...session.input, name: session.name, workdir: undefined, wait_for_exit: false };
+			const cwd = session.cwd;
+			if (isRunning(session)) {
+				session.hidden = true;
+				terminateSession(session);
+				await waitForTerminal(session);
+			}
+			sessions.delete(session.id);
+			notifySessionUpdate();
+			return manager.exec(input, cwd);
+		},
+		signal: async (selector, signal) => {
+			const session = resolveSession(selector);
+			if (!session || !isRunning(session)) return false;
+			if (signal === "INT" && session.interactive) {
+				if (session.kind === "pty") await session.child.write("\u0003");
+				else session.child.stdin.write("\u0003");
+				return true;
+			}
+			if (signal !== "INT") session.pendingTerminalState = "cancelled";
+			if (session.kind === "pty" && session.child.pid === undefined) {
+				session.child.kill();
+			} else {
+				signalProcessTree(session.child.pid, session.kind === "pipe", `SIG${signal}` as NodeJS.Signals);
+			}
+			return true;
+		},
 		hasSession: (sessionId) => {
 			const session = sessions.get(sessionId);
 			return session !== undefined && !session.hidden;
 		},
-		getSessionCommand: (sessionId) => sessions.get(sessionId)?.command ?? commandHistory.get(sessionId),
-		getSessionStdinOpen: (sessionId) => {
-			const session = sessions.get(sessionId);
+		getSessionCommand: (selector) =>
+			resolveSession(selector)?.command ?? (typeof selector === "number" ? commandHistory.get(selector) : undefined),
+		getSessionStdinOpen: (selector) => {
+			const session = resolveSession(selector);
 			return session && isRunning(session) ? session.interactive : undefined;
 		},
-		getSessionTty: (sessionId) => sessions.get(sessionId)?.interactive ?? ttyHistory.get(sessionId),
+		getSessionTty: (selector) =>
+			resolveSession(selector)?.interactive ?? (typeof selector === "number" ? ttyHistory.get(selector) : undefined),
 		getSessionSnapshot: (sessionId) => {
 			const session = sessions.get(sessionId);
 			if (!session) return undefined;
@@ -1134,6 +1363,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			const truncated = formattedTruncateText(session.buffer);
 			return {
 				command: session.command,
+				name: session.name,
 				output: truncated.output,
 				running,
 				exitCode: session.terminalState === "exited" ? (session.exitCode ?? 0) : undefined,
@@ -1154,9 +1384,9 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			Array.from(sessions.values())
 				.filter((session) => !session.hidden)
 				.map(toRecord),
-		stopSession: (sessionId) => {
-			const session = sessions.get(sessionId);
-			if (!session || session.hidden) return false;
+		stopSession: (selector) => {
+			const session = resolveSession(selector);
+			if (!session) return false;
 			session.hidden = true;
 			terminateSession(session);
 			notifySessionUpdate();
@@ -1196,4 +1426,5 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			}
 		},
 	};
+	return manager;
 }

@@ -223,6 +223,106 @@ export function resolveSessionRuntimeOptions(modelRegistry: object): Record<stri
 	return { modelRegistry };
 }
 
+export interface PreparedAgentRun {
+	effectiveCwd: string;
+	agentDir: string;
+	systemPrompt: string;
+	toolNames: string[];
+	selectedToolNames: Set<string>;
+	extensionPaths?: string[];
+	noExtensions: boolean;
+	noSkills: boolean;
+	model: Model<any> | undefined;
+	thinkingLevel: ThinkingLevel | undefined;
+	loader: DefaultResourceLoader;
+	disallowedSet: Set<string> | undefined;
+}
+
+export async function prepareAgentRun(
+	ctx: ExtensionContext,
+	type: SubagentType,
+	prompt: string,
+	options: Pick<RunOptions, "agentConfig" | "cwd" | "description" | "pi" | "onRuntimeResolved">,
+): Promise<PreparedAgentRun> {
+	const agentConfig = options.agentConfig;
+	const effectiveCwd = options.cwd ?? ctx.cwd;
+	const env = await detectEnv(options.pi, effectiveCwd);
+	const extras: PromptExtras = { delegatedTask: { taskName: options.description ?? type, message: prompt } };
+	const extensions = agentConfig.extensions;
+	const skills = agentConfig.skills;
+
+	if (Array.isArray(skills)) {
+		const loaded = preloadSkills(skills, effectiveCwd);
+		if (loaded.length > 0) extras.skillBlocks = loaded;
+	}
+
+	const selectedToolNames = new Set(agentConfig.toolNames ?? options.pi.getActiveTools());
+	let toolNames = [...selectedToolNames];
+	if (agentConfig.memory) {
+		const existingNames = new Set(toolNames);
+		const denied = agentConfig.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined;
+		const hasWriteTools =
+			(existingNames.has("write") && !denied?.has("write")) || (existingNames.has("edit") && !denied?.has("edit"));
+		const extraNames = missingToolNames(
+			hasWriteTools ? MEMORY_TOOL_NAMES : READ_ONLY_MEMORY_TOOL_NAMES,
+			existingNames,
+		);
+		if (extraNames.length > 0) {
+			toolNames = [...toolNames, ...extraNames];
+			for (const name of extraNames) selectedToolNames.add(name);
+		}
+		extras.memoryBlock = hasWriteTools
+			? buildMemoryBlock(agentConfig.name, agentConfig.memory, effectiveCwd)
+			: buildReadOnlyMemoryBlock(agentConfig.name, agentConfig.memory, effectiveCwd);
+	}
+
+	const systemPrompt = buildAgentPrompt(agentConfig, effectiveCwd, env, ctx.getSystemPrompt(), extras);
+	const noSkills = skills === false || Array.isArray(skills);
+	const agentDir = getAgentDir();
+	const loader = new DefaultResourceLoader({
+		cwd: effectiveCwd,
+		agentDir,
+		noExtensions: extensions === false,
+		extensionsOverride: Array.isArray(extensions)
+			? (base) => ({ ...base, extensions: filterExtensionsByPath(base.extensions, extensions) })
+			: undefined,
+		noSkills,
+		noPromptTemplates: true,
+		noThemes: true,
+		noContextFiles: true,
+		systemPromptOverride: () => systemPrompt,
+		appendSystemPromptOverride: () => [],
+	});
+	await loader.reload();
+
+	const category = resolveModelCategory(
+		agentConfig.modelCategory,
+		ctx.modelRegistry,
+		loadModelCategories(effectiveCwd),
+	);
+	const model = resolveDefaultModel(category.model ?? ctx.model, ctx.modelRegistry, agentConfig.model);
+	const thinkingLevel =
+		agentConfig.thinking ?? category.thinking ?? (model?.reasoning ? options.pi.getThinkingLevel() : undefined);
+	options.onRuntimeResolved?.(model, thinkingLevel);
+
+	return {
+		effectiveCwd,
+		agentDir,
+		systemPrompt,
+		toolNames,
+		selectedToolNames,
+		extensionPaths: Array.isArray(extensions)
+			? loader.getExtensions().extensions.map((extension) => extension.resolvedPath)
+			: undefined,
+		noExtensions: extensions === false || Array.isArray(extensions),
+		noSkills,
+		model,
+		thinkingLevel,
+		loader,
+		disallowedSet: agentConfig.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined,
+	};
+}
+
 export async function runAgent(
 	ctx: ExtensionContext,
 	type: SubagentType,
@@ -230,83 +330,22 @@ export async function runAgent(
 	options: RunOptions,
 ): Promise<RunResult> {
 	const agentConfig = options.agentConfig;
-	const config = {
-		displayName: agentConfig.displayName ?? agentConfig.name,
-		description: agentConfig.description,
-		toolNames: agentConfig.toolNames,
-		extensions: agentConfig.extensions,
-		skills: agentConfig.skills,
-		promptMode: agentConfig.promptMode,
-	};
-
-	// Resolve working directory: worktree override > parent cwd
-	const effectiveCwd = options.cwd ?? ctx.cwd;
-
-	const env = await detectEnv(options.pi, effectiveCwd);
-
-	// Get parent system prompt for append-mode agents
-	const parentSystemPrompt = ctx.getSystemPrompt();
-
-	// Build prompt extras (memory, skill preloading)
-	const extras: PromptExtras = { delegatedTask: { taskName: options.description ?? type, message: prompt } };
-
-	const extensions = config.extensions;
-	const skills = config.skills;
-
-	// Skill preloading: when skills is string[], preload their content into prompt
-	if (Array.isArray(skills)) {
-		const loaded = preloadSkills(skills, effectiveCwd);
-		if (loaded.length > 0) {
-			extras.skillBlocks = loaded;
-		}
-	}
-
-	const parentActiveToolNames = new Set(options.pi.getActiveTools());
-	const explicitAllowedToolNames = agentConfig.toolNames;
-	const selectedToolNames = new Set(explicitAllowedToolNames ?? [...parentActiveToolNames]);
-	let toolNames = [...selectedToolNames];
-
-	// Persistent memory: detect write capability and branch accordingly.
-	// Account for disallowedTools — a tool in the base set but on the denylist is not truly available.
-	if (agentConfig.memory) {
-		const existingNames = new Set(toolNames);
-		const denied = agentConfig.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined;
-		const effectivelyHas = (name: string) => existingNames.has(name) && !denied?.has(name);
-		const hasWriteTools = effectivelyHas("write") || effectivelyHas("edit");
-
-		if (hasWriteTools) {
-			const extraNames = missingToolNames(MEMORY_TOOL_NAMES, existingNames);
-			if (extraNames.length > 0) {
-				toolNames = [...toolNames, ...extraNames];
-				for (const name of extraNames) selectedToolNames.add(name);
-			}
-			extras.memoryBlock = buildMemoryBlock(agentConfig.name, agentConfig.memory, effectiveCwd);
-		} else {
-			// Read-only memory: only add read tool name, use read-only prompt
-			const extraNames = missingToolNames(READ_ONLY_MEMORY_TOOL_NAMES, existingNames);
-			if (extraNames.length > 0) {
-				toolNames = [...toolNames, ...extraNames];
-				for (const name of extraNames) selectedToolNames.add(name);
-			}
-			extras.memoryBlock = buildReadOnlyMemoryBlock(agentConfig.name, agentConfig.memory, effectiveCwd);
-		}
-	}
-
-	const systemPrompt = buildAgentPrompt(agentConfig, effectiveCwd, env, parentSystemPrompt, extras);
-
-	// When skills is string[], we've already preloaded them into the prompt.
-	// Still pass noSkills: true since we don't need the skill loader to load them again.
-	const noSkills = skills === false || Array.isArray(skills);
-
-	const agentDir = getAgentDir();
-
-	// Load extensions/skills: true or string[] → load; false → don't.
-	// Suppress AGENTS.md/CLAUDE.md and APPEND_SYSTEM.md — upstream's
-	// buildSystemPrompt() re-appends both AFTER systemPromptOverride, which
-	// would defeat prompt_mode: replace and isolated: true. Parent context, if
-	// wanted, reaches the subagent via prompt_mode: append (parentSystemPrompt
-	// is embedded in systemPromptOverride) or inherit_context (conversation).
+	const prepared = await prepareAgentRun(ctx, type, prompt, options);
+	const {
+		effectiveCwd,
+		agentDir,
+		systemPrompt,
+		toolNames,
+		selectedToolNames,
+		model,
+		thinkingLevel,
+		loader,
+		disallowedSet,
+	} = prepared;
+	const extensions = agentConfig.extensions;
+	const noSkills = prepared.noSkills;
 	const loadResources = async (cwd: string, resourceAgentDir: string) => {
+		if (cwd === effectiveCwd && resourceAgentDir === agentDir) return loader;
 		const resourceLoader = new DefaultResourceLoader({
 			cwd,
 			agentDir: resourceAgentDir,
@@ -324,26 +363,10 @@ export async function runAgent(
 		await resourceLoader.reload();
 		return resourceLoader;
 	};
-	const loader = await loadResources(effectiveCwd, agentDir);
-
-	const category = resolveModelCategory(
-		agentConfig.modelCategory,
-		ctx.modelRegistry,
-		loadModelCategories(effectiveCwd),
-	);
-
-	// Resolve model: config.model > config.modelCategory > parent model
-	const model = resolveDefaultModel(category.model ?? ctx.model, ctx.modelRegistry, agentConfig.model);
-
-	// Resolve thinking level: agent config > model category > parent
-	const thinkingLevel =
-		agentConfig.thinking ?? category.thinking ?? (model?.reasoning ? options.pi.getThinkingLevel() : undefined);
-	options.onRuntimeResolved?.(model, thinkingLevel);
 
 	const sessionManager = options.sessionFile
 		? SessionManager.open(options.sessionFile, options.sessionDir, effectiveCwd)
 		: SessionManager.create(effectiveCwd, options.sessionDir);
-	const disallowedSet = agentConfig?.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined;
 	const createRuntime = async ({
 		cwd,
 		agentDir: runtimeAgentDir,

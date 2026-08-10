@@ -1,7 +1,7 @@
 import type { Component } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
 import { EmptyComponent } from "../../shared/tui";
-import { framedBlock, renderStatusLine } from "../../shared/tui/card.js";
+import { darkerCardBackgroundAnsi, framedBlock, renderStatusLine } from "../../shared/tui/card.js";
 import { invokeCore, type PiToolResponse } from "./core.js";
 import { getStorePath } from "./tool-paths.js";
 import { createPiToolSpecs, parseToolParams } from "./tool-specs.js";
@@ -59,12 +59,17 @@ function outputText(result: PiToolResponse): string {
 }
 
 function parseOutput(result: PiToolResponse): Record<string, unknown> | undefined {
-	try {
-		const value = JSON.parse(outputText(result));
-		return value && typeof value === "object" && !Array.isArray(value) ? value : undefined;
-	} catch {
-		return undefined;
+	const text = outputText(result).trim();
+	const candidates = [text, text.replace(/^Total output lines:\s*\d+\s*\r?\n\r?\n/, "")];
+	for (const candidate of candidates) {
+		try {
+			const value = JSON.parse(candidate);
+			if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
+		} catch {
+			// Try the next supported output shape.
+		}
 	}
+	return undefined;
 }
 
 function argumentDescription(toolName: DirectToolDef["name"], args: Record<string, unknown> = {}): string {
@@ -98,7 +103,7 @@ function renderCall(
 			description: argumentDescription(toolName, args),
 		}),
 		borderColor: "accent",
-		backgroundColor: "toolPendingBg",
+		backgroundAnsi: darkerCardBackgroundAnsi(theme, "toolPendingBg"),
 	});
 }
 
@@ -140,7 +145,7 @@ function renderSearchResult(
 		}),
 		sections,
 		borderColor: "borderMuted",
-		backgroundColor: "toolSuccessBg",
+		backgroundAnsi: darkerCardBackgroundAnsi(theme, "toolPendingBg"),
 	});
 }
 
@@ -170,7 +175,7 @@ function renderStatusResult(data: Record<string, unknown>, theme: PiRenderTheme)
 			},
 		],
 		borderColor: "borderMuted",
-		backgroundColor: "toolSuccessBg",
+		backgroundAnsi: darkerCardBackgroundAnsi(theme, "toolPendingBg"),
 	});
 }
 
@@ -180,7 +185,7 @@ function renderPurgeResult(data: Record<string, unknown>, theme: PiRenderTheme):
 	return framedBlock(theme, {
 		header: renderStatusLine(theme, { icon: "success", title: "Context purge", description: scope, meta: [count] }),
 		borderColor: "borderMuted",
-		backgroundColor: "toolSuccessBg",
+		backgroundAnsi: darkerCardBackgroundAnsi(theme, "toolPendingBg"),
 	});
 }
 
@@ -192,7 +197,7 @@ function renderResult(
 	context: PiRenderContext,
 ): Component {
 	if (state.isPartial) return EMPTY_VIEW;
-	const data = parseOutput(result);
+	const data = result.details ?? parseOutput(result);
 	if (data) {
 		if (toolName === "cg_search") return renderSearchResult(data, context.args ?? {}, state.expanded, theme);
 		if (toolName === "cg_status") return renderStatusResult(data, theme);
@@ -212,7 +217,7 @@ function renderResult(
 			},
 		],
 		borderColor: context.isError ? "error" : "borderMuted",
-		backgroundColor: context.isError ? "toolErrorBg" : "toolSuccessBg",
+		backgroundAnsi: darkerCardBackgroundAnsi(theme, context.isError ? "toolErrorBg" : "toolPendingBg"),
 	});
 }
 
@@ -259,7 +264,7 @@ export function registerPiContextTools(pi: {
 						.map((part) => part.text)
 						.join("\n");
 					if (result.isError) throw new Error(text || `${def.name} returned an error`);
-					return { content: [{ type: "text", text }], details: result.details };
+					return { content: [{ type: "text", text }], details: result.details ?? parseOutput(result) };
 				} catch (error) {
 					if (def.name === "cg_search") {
 						try {

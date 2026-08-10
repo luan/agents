@@ -13,7 +13,12 @@
   ],
   "packages": [
     "npm:@ifi/oh-pi-themes",
-    "npm:@dreki-gg/pi-context7",
+    {
+      "source": "npm:@dreki-gg/pi-context7",
+      "extensions": [
+        "-extensions/context7/index.ts"
+      ]
+    },
     {
       "source": "npm:@plannotator/pi-extension",
       "skills": []

@@ -29,6 +29,7 @@
 			"!**/node_modules/**/*",
 			"!**/test-sessions.ts",
 			"!**/models.generated.ts",
+			"!!**/vendor",
 			"!!**/node_modules"
 		]
 	}

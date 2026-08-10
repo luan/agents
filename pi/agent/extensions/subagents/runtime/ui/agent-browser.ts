@@ -1,4 +1,5 @@
-import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { statSync } from "node:fs";
+import { type ExtensionCommandContext, SessionManager } from "@earendil-works/pi-coding-agent";
 import {
 	Input,
 	Key,
@@ -16,11 +17,43 @@ type Theme = {
 	fg(color: string, text: string): string;
 	bold(text: string): string;
 };
+type TranscriptMessage = Extract<ReturnType<SessionManager["getBranch"]>[number], { type: "message" }>["message"];
+
+type FileTranscript = {
+	signature: string;
+	messages: TranscriptMessage[];
+	error?: string;
+};
+
+export function readAgentTranscriptFile(record: AgentRecord, cached?: FileTranscript): FileTranscript | undefined {
+	if (!record.sessionFile) return undefined;
+	let signature: string;
+	try {
+		const stat = statSync(record.sessionFile);
+		signature = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}`;
+	} catch {
+		return { signature: "missing", messages: [], error: "Transcript file is unavailable." };
+	}
+	if (cached?.signature === signature) return cached;
+	try {
+		const messages = SessionManager.open(record.sessionFile, undefined, record.cwd)
+			.getBranch()
+			.flatMap((entry) => (entry.type === "message" ? [entry.message] : []));
+		return { signature, messages };
+	} catch (error) {
+		return {
+			signature,
+			messages: [],
+			error: error instanceof Error ? error.message : String(error),
+		};
+	}
+}
 
 type AgentHarnessActions = {
 	steer(record: AgentRecord, message: string): Promise<boolean>;
 	stop(record: AgentRecord): boolean;
 	followUp(record: AgentRecord, prompt: string): Promise<boolean>;
+	attach(record: AgentRecord, tui: Pick<TUI, "requestRender" | "start" | "stop" | "terminal">): Promise<boolean>;
 };
 
 type HarnessMode = "browse" | "input";
@@ -50,14 +83,16 @@ export class AgentHarness {
 	private readonly unsubscribe: Array<() => void>;
 	private closed = false;
 	private pendingRender: ReturnType<typeof setTimeout> | undefined;
+	private readonly fileTranscripts = new Map<string, FileTranscript>();
 
 	constructor(
 		private readonly records: AgentRecord[],
 		private readonly actions: AgentHarnessActions,
-		private readonly tui: Pick<TUI, "requestRender" | "terminal">,
+		private readonly tui: Pick<TUI, "requestRender" | "start" | "stop" | "terminal">,
 		private readonly theme: Theme,
 		private readonly done: () => void,
 		selectedId?: string,
+		private readonly title = "subagent harness",
 	) {
 		const selected = selectedId ? records.findIndex((record) => record.id === selectedId) : -1;
 		if (selected >= 0) this.selectedIndex = selected;
@@ -66,16 +101,9 @@ export class AgentHarness {
 		this.unsubscribe = records.flatMap((record) =>
 			record.session ? [record.session.subscribe(() => this.scheduleRender())] : [],
 		);
-		if (records.some((record) => record.status === "queued" || record.status === "running")) {
-			const refresh = setInterval(() => {
-				this.scheduleRender(0);
-				if (!records.some((record) => record.status === "queued" || record.status === "running")) {
-					clearInterval(refresh);
-				}
-			}, 250);
-			refresh.unref();
-			this.unsubscribe.push(() => clearInterval(refresh));
-		}
+		const refresh = setInterval(() => this.scheduleRender(0), 250);
+		refresh.unref();
+		this.unsubscribe.push(() => clearInterval(refresh));
 	}
 
 	handleInput(data: string): void {
@@ -112,8 +140,8 @@ export class AgentHarness {
 		} else if (matchesKey(data, Key.down) || data === "j") {
 			if (single) this.scrollDetail(1);
 			else this.moveSelection(1);
-		} else if (matchesKey(data, Key.left) || data === "h") this.switchTab(-1);
-		else if (matchesKey(data, Key.right) || data === "l" || matchesKey(data, Key.tab)) this.switchTab(1);
+		} else if (!single && (matchesKey(data, Key.left) || data === "h")) this.switchTab(-1);
+		else if (!single && (matchesKey(data, Key.right) || data === "l" || matchesKey(data, Key.tab))) this.switchTab(1);
 		else if (matchesKey(data, Key.pageUp) || matchesKey(data, Key.ctrl("u"))) this.scrollDetail(-this.pageSize());
 		else if (matchesKey(data, Key.pageDown) || matchesKey(data, Key.ctrl("d"))) this.scrollDetail(this.pageSize());
 		else if (matchesKey(data, Key.home)) {
@@ -130,6 +158,7 @@ export class AgentHarness {
 			this.tui.requestRender();
 		} else if (data === "s") this.startInput("steer");
 		else if (data === "f") this.startInput("followUp");
+		else if (data === "t") void this.attachSelected();
 		else if (data === "x") this.stopSelected();
 	}
 
@@ -138,16 +167,21 @@ export class AgentHarness {
 		if (width < 24 || availableHeight <= CHROME_ROWS) return [];
 		const innerWidth = width - 4;
 		const bodyHeight = availableHeight - CHROME_ROWS;
+		const single = this.records.length === 1;
 		const lines = [
 			this.borderTop(width),
 			this.row(
-				`${this.theme.bold("subagent harness")} ${this.theme.fg("dim", `${this.records.length} agent${this.records.length === 1 ? "" : "s"}`)}`,
+				single
+					? this.theme.bold(this.title)
+					: `${this.theme.bold(this.title)} ${this.theme.fg("dim", `${this.records.length} agents`)}`,
 				innerWidth,
 			),
 			this.row(
 				this.theme.fg(
 					"dim",
-					"j/k or wheel move/scroll · gg/G top/bottom · ctrl-u/d page · a auto-scroll · h/l view · s/f message · x stop · q close",
+					single
+						? "j/k or wheel scroll · gg/G top/bottom · ctrl-u/d page · a auto-scroll · s/f message · t terminal · x stop · q close"
+						: "j/k move · Enter open · x stop · q close",
 				),
 				innerWidth,
 			),
@@ -208,6 +242,7 @@ export class AgentHarness {
 	private renderDetail(width: number, height: number): string[] {
 		const record = this.selectedRecord();
 		if (!record) return [];
+		const single = this.records.length === 1;
 		const duration = formatMs((record.completedAt ?? Date.now()) - record.startedAt);
 		const usage = getLifetimeTotal(record.lifetimeUsage);
 		const header = [
@@ -217,20 +252,24 @@ export class AgentHarness {
 				width,
 				"…",
 			),
-			truncateToWidth(
-				this.theme.fg(
-					"dim",
-					`${record.toolUses} tools · ${usage} tokens · ${duration} · parent ${record.parentAgentId ?? "root"}`,
-				),
-				width,
-				"…",
-			),
-			this.renderTabs(width),
+			...(!single
+				? [
+						truncateToWidth(
+							this.theme.fg(
+								"dim",
+								`${record.toolUses} tools · ${usage} tokens · ${duration} · root ${record.rootSessionId} · parent ${record.parentAgentId ?? "root"}`,
+							),
+							width,
+							"…",
+						),
+						this.renderTabs(width),
+					]
+				: []),
 		];
 		const viewport = Math.max(1, height - header.length);
 		const content = this.detailLines(record, width);
 		const contentKey = `${record.id}:${this.tab}`;
-		const output = outputState(record);
+		const output = this.outputState(record);
 		if (contentKey !== this.lastContentKey) {
 			this.lastContentKey = contentKey;
 			this.lastOutputRevision = output.revision;
@@ -264,17 +303,21 @@ export class AgentHarness {
 				return detail ? [truncateToWidth(`${this.theme.fg(color, event.type)} ${detail}`, width, "…")] : [];
 			});
 		}
-		if (record.session) {
-			const transcript = renderSessionTranscript(record, this.theme, width);
+		const transcript = this.transcript(record);
+		if (transcript) {
+			if (transcript.error && transcript.messages.length === 0) {
+				return [this.theme.fg("muted", transcript.error)];
+			}
+			const lines = renderSessionTranscript(transcript.messages, this.theme, width);
 			const sessionErrors = new Set(
-				record.session.agent.state.messages.flatMap((message) =>
+				transcript.messages.flatMap((message) =>
 					message.role === "assistant" && message.errorMessage ? [message.errorMessage] : [],
 				),
 			);
 			if (record.error && !sessionErrors.has(record.error)) {
-				appendTranscriptText(transcript, "error", record.error, this.theme, width);
+				appendTranscriptText(lines, "error", record.error, this.theme, width);
 			}
-			return transcript;
+			return lines;
 		}
 		const output =
 			record.error ||
@@ -285,6 +328,20 @@ export class AgentHarness {
 				.join("");
 		if (!output) return [this.theme.fg("muted", record.status === "running" ? "Waiting for output…" : "No output.")];
 		return styleText(this.theme, output, width, Boolean(record.error));
+	}
+	private transcript(record: AgentRecord): FileTranscript | undefined {
+		if (record.session) {
+			return { signature: "live", messages: record.session.agent.state.messages };
+		}
+		if (!record.sessionFile) return undefined;
+		const transcript = readAgentTranscriptFile(record, this.fileTranscripts.get(record.sessionFile));
+		if (!transcript) return undefined;
+		if (transcript.signature !== "missing") this.fileTranscripts.set(record.sessionFile, transcript);
+		return transcript;
+	}
+
+	private outputState(record: AgentRecord): { revision: string; units: number } {
+		return outputState(record, this.transcript(record)?.messages);
 	}
 
 	private renderTabs(width: number): string {
@@ -389,6 +446,15 @@ export class AgentHarness {
 		this.tui.requestRender();
 	}
 
+	private async attachSelected(): Promise<void> {
+		const record = this.selectedRecord();
+		if (!record) return;
+		this.message = (await this.actions.attach(record, this.tui))
+			? `Returned from terminal for ${record.id}`
+			: `${record.id} has no terminal attachment`;
+		this.tui.requestRender();
+	}
+
 	private selectedRecord(): AgentRecord | undefined {
 		this.clampSelection();
 		return this.records[this.selectedIndex];
@@ -437,22 +503,6 @@ export class AgentHarness {
 	}
 }
 
-export async function openAgentBrowser(
-	ctx: ExtensionCommandContext,
-	records: AgentRecord[],
-	actions: AgentHarnessActions,
-): Promise<void> {
-	if (!ctx.hasUI || !ctx.ui.custom) return;
-	if (records.length === 0) {
-		ctx.ui.notify("No subagents in this session.", "info");
-		return;
-	}
-	await ctx.ui.custom<void>(
-		(tui, theme, _keybindings, done) => new AgentHarness(records, actions, tui, theme, () => done()),
-		{ overlay: true, overlayOptions: { anchor: "center", width: "95%", maxHeight: "95%" } },
-	);
-}
-
 export async function openAgentInspector(
 	ctx: ExtensionCommandContext,
 	record: AgentRecord | undefined,
@@ -464,7 +514,8 @@ export async function openAgentInspector(
 	}
 	if (!ctx.hasUI || !ctx.ui.custom) return;
 	await ctx.ui.custom<void>(
-		(tui, theme, _keybindings, done) => new AgentHarness([record], actions, tui, theme, () => done(), record.id),
+		(tui, theme, _keybindings, done) =>
+			new AgentHarness([record], actions, tui, theme, () => done(), record.id, "agent transcript"),
 		{ overlay: true, overlayOptions: { anchor: "center", width: "95%", maxHeight: "95%" } },
 	);
 }
@@ -481,10 +532,13 @@ function statusText(theme: Theme, status: AgentRecord["status"]): string {
 	return theme.fg(color, status);
 }
 
-function outputState(record: AgentRecord): { revision: string; units: number } {
+function outputState(
+	record: AgentRecord,
+	messages?: readonly TranscriptMessage[],
+): { revision: string; units: number } {
 	const chunks: string[] = [];
-	if (record.session) {
-		for (const message of record.session.agent.state.messages) {
+	if (messages) {
+		for (const message of messages) {
 			if (message.role === "user") {
 				chunks.push(`user:${userMessageText(message.content)}`);
 			} else if (message.role === "assistant") {
@@ -513,8 +567,7 @@ function outputState(record: AgentRecord): { revision: string; units: number } {
 	return { revision, units: revision ? revision.split(/\r?\n/).length : 0 };
 }
 
-function renderSessionTranscript(record: AgentRecord, theme: Theme, width: number): string[] {
-	const messages = record.session?.agent.state.messages ?? [];
+function renderSessionTranscript(messages: readonly TranscriptMessage[], theme: Theme, width: number): string[] {
 	const results = new Map(
 		messages.filter((message) => message.role === "toolResult").map((message) => [message.toolCallId, message]),
 	);

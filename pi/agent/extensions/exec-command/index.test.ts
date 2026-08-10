@@ -1,11 +1,13 @@
 import { beforeAll, expect, test } from "bun:test";
-import { execSync } from "node:child_process";
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { execFileSync, execSync } from "node:child_process";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { setCurrentContextGuardSessionId } from "../context-guard/pi/current-session.ts";
 import { markExecCommandContextGuardEnabled, resetExecCommandContextGuardEnabled } from "../context-guard/pi/index.ts";
+import type { PtyBackend, PtyProcess, PtySpawnOptions } from "./adapter/pty-backend.ts";
+import { createRmuxPtyBackend, resolveRmuxBinary } from "./adapter/rmux-pty-backend.ts";
 import { DEFAULT_EXEC_SHELL, resolveRuntimeShell } from "./adapter/runtime-shell.ts";
 import execCommandExtension from "./index.ts";
 import { type RenderTheme, rawCommandToExecCell, renderExecCellComponent } from "./tools/exec-cell-presentation.ts";
@@ -229,6 +231,7 @@ test("background terminal overlay supports vim navigation, attach, and kill", as
 		},
 		{
 			id: 4,
+			attachCommand: "attach node-repl",
 			command: "node repl.js",
 			output: "ready\nprompt\n",
 			running: true,
@@ -238,6 +241,8 @@ test("background terminal overlay supports vim navigation, attach, and kill", as
 	const listeners: Array<() => void> = [];
 	const killed: number[] = [];
 	const writes: Array<{ process_id: number; chars: string }> = [];
+	const copied: string[] = [];
+	const resized: Array<{ processId: number; cols: number; rows: number }> = [];
 	let renderRequests = 0;
 	const plainTheme = { fg: (_role: string, text: string) => text, bold: (text: string) => text };
 	const overlay = new BackgroundTerminalOverlay(
@@ -246,6 +251,10 @@ test("background terminal overlay supports vim navigation, attach, and kill", as
 			write: async (input: { process_id: number; chars: string }) => {
 				writes.push(input);
 				return {} as any;
+			},
+			resize: async (processId: number, cols: number, rows: number) => {
+				resized.push({ processId, cols, rows });
+				return true;
 			},
 			stopSession: (processId: number) => {
 				killed.push(processId);
@@ -261,11 +270,20 @@ test("background terminal overlay supports vim navigation, attach, and kill", as
 		{ terminal: { rows: 18 }, requestRender: () => renderRequests++ } as any,
 		plainTheme,
 		() => {},
+		async (text) => {
+			copied.push(text);
+		},
 	);
 
 	overlay.handleInput("j");
+	overlay.handleInput("c");
+	await Promise.resolve();
+	expect(copied).toEqual(["attach node-repl"]);
 
 	overlay.handleInput("l");
+	overlay.render(80);
+	await Promise.resolve();
+	expect(resized).toEqual([{ processId: 4, cols: 76, rows: 8 }]);
 
 	records = [{ ...records[1], output: "ready\nprompt\nnext\n" }];
 	listeners[0]?.();
@@ -1024,50 +1042,17 @@ test("extension exposes active-turn background capture failures through write_st
 	}
 });
 
-test("ps command opens a background terminal overlay", async () => {
-	type Handler = (event?: any, ctx?: any) => any;
-	const handlers = new Map<string, Handler[]>();
+test("exec command does not register a second Hub entry point", () => {
 	const commands = new Map<string, any>();
-	let customOptions: any;
-	let overlayText = "";
-	let setFocusCalls = 0;
-	const pi = {
+	execCommandExtension({
 		registerTool() {},
 		registerCommand: (name: string, command: any) => commands.set(name, command),
 		getActiveTools: () => [],
 		setActiveTools() {},
-		on: (event: string, handler: Handler) => {
-			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
-		},
-	} as any;
-	execCommandExtension(pi);
+		on() {},
+	} as any);
 
-	await commands.get("ps").handler("", {
-		hasUI: true,
-		ui: {
-			custom(factory: any, options: any) {
-				customOptions = options;
-				const component = factory(
-					{ terminal: { rows: 20 }, requestRender() {}, setFocus: () => setFocusCalls++ },
-					{ fg: (_role: string, text: string) => text, bold: (text: string) => text },
-					{},
-					() => {},
-				);
-				overlayText = component.render(100).join("\n");
-				return Promise.resolve();
-			},
-		},
-	});
-
-	expect(commands.get("ps").description).toBe("list background terminals");
-	expect(customOptions.overlay).toBe(true);
-	expect(customOptions.overlayOptions.width).toBe("90%");
-	expect(customOptions.overlayOptions.minWidth).toBe(60);
-	expect(customOptions.overlayOptions.maxHeight).toBe("90%");
-	expect(setFocusCalls).toBe(0);
-	expect(overlayText).toContain("background terminals");
-	expect(overlayText).toContain("No background terminals");
-	for (const handler of handlers.get("session_shutdown") ?? []) handler();
+	expect(commands.has("ps")).toBe(false);
 });
 
 test("stop command stops one background terminal and completes visible ids", async () => {
@@ -1259,7 +1244,7 @@ test("stop command without arguments stops all background terminals and clears s
 	}
 });
 
-test("extension disables bash and activates exec_command plus write_stdin for every model", () => {
+test("extension disables bash and activates managed process tools for every model", () => {
 	type Handler = (event?: any, ctx?: any) => any;
 	const handlers = new Map<string, Handler[]>();
 	let activeTools = ["read", "bash"];
@@ -1268,7 +1253,20 @@ test("extension disables bash and activates exec_command plus write_stdin for ev
 		registerTool() {},
 		registerCommand() {},
 		getActiveTools: () => activeTools,
-		getAllTools: () => [{ name: "read" }, { name: "bash" }, { name: "exec_command" }, { name: "write_stdin" }],
+		getAllTools: () => [
+			{ name: "read" },
+			{ name: "bash" },
+			{ name: "exec_command" },
+			{ name: "write_stdin" },
+			{ name: "process_logs" },
+			{ name: "process_list" },
+			{ name: "process_describe" },
+			{ name: "process_wait" },
+			{ name: "process_resize" },
+			{ name: "process_signal" },
+			{ name: "process_restart" },
+			{ name: "process_stop" },
+		],
 		setActiveTools: (next: string[]) => {
 			activeTools = next;
 			setActiveToolsCalls.push(next);
@@ -1283,8 +1281,20 @@ test("extension disables bash and activates exec_command plus write_stdin for ev
 		handler(undefined, { model: { provider: "anthropic", id: "claude-sonnet" } });
 	}
 
-	expect(activeTools).toEqual(["read", "exec_command", "write_stdin"]);
-	expect(setActiveToolsCalls).toContainEqual(["read", "exec_command", "write_stdin"]);
+	expect(activeTools).toEqual([
+		"read",
+		"exec_command",
+		"write_stdin",
+		"process_logs",
+		"process_list",
+		"process_describe",
+		"process_wait",
+		"process_resize",
+		"process_signal",
+		"process_restart",
+		"process_stop",
+	]);
+	expect(setActiveToolsCalls).toContainEqual(activeTools);
 
 	const block = handlers
 		.get("tool_call")
@@ -1307,11 +1317,23 @@ test("extension disables bash and activates exec_command plus write_stdin for ev
 		handler(undefined, { model: { provider: "anthropic", id: "claude-sonnet" } });
 	}
 
-	expect(activeTools).toEqual(["read", "exec_command", "write_stdin"]);
+	expect(activeTools).toEqual([
+		"read",
+		"exec_command",
+		"write_stdin",
+		"process_logs",
+		"process_list",
+		"process_describe",
+		"process_wait",
+		"process_resize",
+		"process_signal",
+		"process_restart",
+		"process_stop",
+	]);
 	for (const handler of handlers.get("session_shutdown") ?? []) handler();
 });
 
-test("exec_command keeps write_stdin active across non-interactive and tty runs", async () => {
+test("exec_command keeps managed process tools active across non-interactive and tty runs", async () => {
 	type Handler = (event?: any, ctx?: any) => any;
 	const handlers = new Map<string, Handler[]>();
 	const commands = new Map<string, any>();
@@ -1323,7 +1345,20 @@ test("exec_command keeps write_stdin active across non-interactive and tty runs"
 		},
 		registerCommand: (name: string, command: any) => commands.set(name, command),
 		getActiveTools: () => activeTools,
-		getAllTools: () => [{ name: "read" }, { name: "bash" }, { name: "exec_command" }, { name: "write_stdin" }],
+		getAllTools: () => [
+			{ name: "read" },
+			{ name: "bash" },
+			{ name: "exec_command" },
+			{ name: "write_stdin" },
+			{ name: "process_logs" },
+			{ name: "process_list" },
+			{ name: "process_describe" },
+			{ name: "process_wait" },
+			{ name: "process_resize" },
+			{ name: "process_signal" },
+			{ name: "process_restart" },
+			{ name: "process_stop" },
+		],
 		setActiveTools: (next: string[]) => {
 			activeTools = next;
 		},
@@ -1343,7 +1378,7 @@ test("exec_command keeps write_stdin active across non-interactive and tty runs"
 		handler(undefined, ctx);
 	}
 	try {
-		expect(activeTools).toEqual(["read", "exec_command", "write_stdin"]);
+		expect(activeTools).toContain("process_wait");
 		const nonTty = await execTool.execute(
 			"call-non-tty",
 			{ cmd: "sleep 0.5; printf done", yield_time_ms: 250 },
@@ -1353,7 +1388,7 @@ test("exec_command keeps write_stdin active across non-interactive and tty runs"
 		);
 		expect(nonTty.details.process_id).toBeNumber();
 		expect(nonTty.terminate).toBeUndefined();
-		expect(activeTools).toEqual(["read", "exec_command", "write_stdin"]);
+		expect(activeTools).toContain("process_logs");
 
 		const tty = await execTool.execute(
 			"call-tty",
@@ -1364,7 +1399,7 @@ test("exec_command keeps write_stdin active across non-interactive and tty runs"
 		);
 		expect(tty.details.process_id).toBeNumber();
 		expect(tty.terminate).toBeUndefined();
-		expect(activeTools).toEqual(["read", "exec_command", "write_stdin"]);
+		expect(activeTools).toContain("process_stop");
 	} finally {
 		for (const handler of handlers.get("session_shutdown") ?? []) handler();
 	}
@@ -1573,33 +1608,44 @@ test("exec session manager lists running and exited-unread sessions with stdin c
 		minEmptyWriteYieldTimeMs: 250,
 	});
 	try {
-		const first = await sessions.exec({ cmd: "sleep 0.5; printf done", yield_time_ms: 250 }, process.cwd());
+		const first = await sessions.exec(
+			{ cmd: "sleep 0.5; printf done", yield_time_ms: 250, ownerSessionId: "session-a" },
+			process.cwd(),
+		);
 		expect(first.process_id).toBeNumber();
 
 		expect(sessions.listSessions()).toEqual([
-			{
+			expect.objectContaining({
 				id: first.process_id!,
+				name: `pi-exec-${first.process_id}`,
 				command: "sleep 0.5; printf done",
+				cwd: process.cwd(),
+				ownerSessionId: "session-a",
 				output: "",
 				running: true,
+				state: "running",
 				exitCode: undefined,
 				stdinOpen: false,
 				startedAtMs: expect.any(Number),
-			},
+			}),
 		]);
 
 		await waitForCondition(() => sessions.listSessions()[0]?.running === false);
 
 		expect(sessions.listSessions()).toEqual([
-			{
+			expect.objectContaining({
 				id: first.process_id!,
+				name: `pi-exec-${first.process_id}`,
 				command: "sleep 0.5; printf done",
+				cwd: process.cwd(),
 				output: "done",
 				running: false,
+				state: "exited",
 				exitCode: 0,
 				stdinOpen: false,
 				startedAtMs: expect.any(Number),
-			},
+				finishedAtMs: expect.any(Number),
+			}),
 		]);
 
 		const final = await sessions.write({ process_id: first.process_id!, chars: "", yield_time_ms: 250 });
@@ -1607,6 +1653,106 @@ test("exec session manager lists running and exited-unread sessions with stdin c
 		expect(final.exit_code).toBe(0);
 		expect(sessions.listSessions()).toEqual([]);
 	} finally {
+		sessions.shutdown();
+	}
+});
+
+test("exec session manager addresses stable names and restarts processes", async () => {
+	const sessions = createExecSessionManager({
+		defaultExecYieldTimeMs: 250,
+		defaultWriteYieldTimeMs: 250,
+		minNonInteractiveExecYieldTimeMs: 250,
+		minEmptyWriteYieldTimeMs: 250,
+	});
+	try {
+		const expectedCwd = join(process.cwd(), "pi");
+		const first = await sessions.exec(
+			{ cmd: "pwd; sleep 60", name: "web", workdir: "pi", yield_time_ms: 250 },
+			process.cwd(),
+		);
+		expect(first.process_name).toBe("web");
+		expect(sessions.describe("web")?.id).toBe(first.process_id);
+		expect(sessions.logs("web")?.process_name).toBe("web");
+		expect((await sessions.wait("web", expectedCwd, 1_000))?.matched).toBe(true);
+		await expect(sessions.exec({ cmd: "sleep 60", name: "web", yield_time_ms: 250 }, process.cwd())).rejects.toThrow(
+			"Process name already exists: web",
+		);
+
+		const restarted = await sessions.restart("web");
+		expect(restarted?.process_name).toBe("web");
+		expect(restarted?.process_id).not.toBe(first.process_id);
+		expect(sessions.describe("web")?.id).toBe(restarted?.process_id);
+		expect((await sessions.wait("web", expectedCwd, 1_000))?.matched).toBe(true);
+		const reservedDefault = `pi-exec-${restarted!.process_id! + 2}`;
+		const reserved = await sessions.exec(
+			{ cmd: "sleep 60", name: reservedDefault, yield_time_ms: 250 },
+			process.cwd(),
+		);
+		const unnamed = await sessions.exec({ cmd: "sleep 60", yield_time_ms: 250 }, process.cwd());
+		expect(unnamed.process_name).not.toBe(reserved.process_name);
+		expect(sessions.stopSession("web")).toBe(true);
+		expect(sessions.stopSession(reservedDefault)).toBe(true);
+		expect(sessions.stopSession(unnamed.process_id!)).toBe(true);
+	} finally {
+		sessions.shutdown();
+	}
+});
+
+test("process wait returns when a process exits before its pattern appears", async () => {
+	const sessions = createExecSessionManager({
+		defaultExecYieldTimeMs: 250,
+		minNonInteractiveExecYieldTimeMs: 250,
+	});
+	try {
+		const started = await sessions.exec({ cmd: "sleep 0.5", yield_time_ms: 250 }, process.cwd());
+		const waitStartedAt = Date.now();
+		const result = await sessions.wait(started.process_id!, "never emitted", 2_000);
+		expect(result?.matched).toBe(false);
+		expect(result?.timed_out).toBe(false);
+		expect(result?.process.state).toBe("exited");
+		expect(Date.now() - waitStartedAt).toBeLessThan(1_000);
+	} finally {
+		sessions.shutdown();
+	}
+});
+
+test("exec session manager reserves names while a PTY is starting", async () => {
+	let releaseSpawn = () => {};
+	let exitListener = (_event: { exitCode: number }) => {};
+	const spawnGate = new Promise<void>((resolve) => {
+		releaseSpawn = resolve;
+	});
+	const processHandle: PtyProcess = {
+		name: "web",
+		write() {},
+		resize() {},
+		kill: () => exitListener({ exitCode: 0 }),
+		onData() {},
+		onExit: (listener) => {
+			exitListener = listener;
+		},
+	};
+	const sessions = createExecSessionManager({
+		ptyBackend: {
+			spawn: async () => {
+				await spawnGate;
+				return processHandle;
+			},
+		},
+		defaultExecYieldTimeMs: 250,
+	});
+	try {
+		const firstPromise = sessions.exec({ cmd: "sleep 60", name: "web", tty: true }, process.cwd());
+		await Promise.resolve();
+		await expect(sessions.exec({ cmd: "sleep 60", name: "web", tty: true }, process.cwd())).rejects.toThrow(
+			"Process name already exists: web",
+		);
+		releaseSpawn();
+		const first = await firstPromise;
+		expect(first.process_name).toBe("web");
+		expect(sessions.stopSession("web")).toBe(true);
+	} finally {
+		releaseSpawn();
 		sessions.shutdown();
 	}
 });
@@ -1651,6 +1797,202 @@ test("exec session manager provides a real tty when requested", async () => {
 		expect(result.exit_code).toBe(0);
 	} finally {
 		sessions.shutdown();
+	}
+});
+
+test("exec session manager can use an injected PTY backend", async () => {
+	let spawnOptions: PtySpawnOptions | undefined;
+	let written = "";
+	let resizedTo: { cols: number; rows: number } | undefined;
+	const dataListeners = new Set<(data: string) => void>();
+	const exitListeners = new Set<(event: { exitCode: number }) => void>();
+	const processHandle: PtyProcess = {
+		name: "fake-pty",
+		write: (data) => {
+			written += data;
+			for (const listener of dataListeners) listener(`got:${data}`);
+			for (const listener of exitListeners) listener({ exitCode: 0 });
+		},
+		resize: (cols, rows) => {
+			resizedTo = { cols, rows };
+		},
+		kill: () => {
+			for (const listener of exitListeners) listener({ exitCode: 0 });
+		},
+		onData: (listener) => dataListeners.add(listener),
+		onExit: (listener) => exitListeners.add(listener),
+	};
+	const backend: PtyBackend = {
+		spawn: (_file, _args, options) => {
+			spawnOptions = options;
+			return processHandle;
+		},
+	};
+	const sessions = createExecSessionManager({
+		ptyBackend: backend,
+		defaultExecYieldTimeMs: 250,
+		defaultWriteYieldTimeMs: 250,
+	});
+	try {
+		const first = await sessions.exec(
+			{ cmd: "fake command", tty: true, env: { RMUX_TEST_VALUE: "set" }, yield_time_ms: 250 },
+			process.cwd(),
+		);
+		expect(first.process_id).toBeNumber();
+		expect(first.process_name).toBe("fake-pty");
+		expect(spawnOptions?.cwd).toBe(process.cwd());
+		expect(spawnOptions?.env.RMUX_TEST_VALUE).toBe("set");
+		expect(await sessions.resize(first.process_id!, 120, 40)).toBe(true);
+		expect(resizedTo).toEqual({ cols: 120, rows: 40 });
+
+		const completed = await sessions.write({ process_id: first.process_id!, chars: "hello" });
+		expect(written).toBe("hello");
+		expect(completed.output).toContain("got:hello");
+		expect(completed.exit_code).toBe(0);
+
+		const named = await sessions.exec(
+			{ cmd: "named command", name: "web", tty: true, yield_time_ms: 250 },
+			process.cwd(),
+		);
+		expect(named.process_name).toBe("web");
+		expect(spawnOptions?.sessionName).toBe("web");
+		expect(await sessions.resize("web", 100, 30)).toBe(true);
+		expect(await sessions.signal("web", "INT")).toBe(true);
+		expect(written).toBe("hello\u0003");
+	} finally {
+		sessions.shutdown();
+	}
+});
+
+test("exec session manager reads append-only logs with cursors", async () => {
+	let emitData: (data: string) => void = () => {};
+	const processHandle: PtyProcess = {
+		write() {},
+		resize() {},
+		kill() {},
+		onData: (listener) => {
+			emitData = listener;
+		},
+		onExit() {},
+	};
+	const sessions = createExecSessionManager({
+		ptyBackend: { spawn: () => processHandle },
+		defaultExecYieldTimeMs: 250,
+	});
+	try {
+		const started = await sessions.exec({ cmd: "log producer", tty: true, yield_time_ms: 250 }, process.cwd());
+		emitData("alpha");
+		const first = sessions.logs(started.process_id!, 0, 3);
+		expect(first?.output).toBe("alp");
+		expect(first?.next_cursor).toBe(3);
+
+		const waiting = sessions.wait(started.process_id!, "beta", 1000);
+		emitData("beta");
+		const waited = await waiting;
+		expect(waited?.matched).toBe(true);
+		expect(waited?.timed_out).toBe(false);
+		const second = sessions.logs(started.process_id!, first?.next_cursor);
+		expect(second?.output).toBe("habeta");
+		expect(second?.next_cursor).toBe(9);
+	} finally {
+		sessions.shutdown();
+	}
+});
+
+test("RMUX PTY backend runs a command against RMUX 0.10", async () => {
+	const rmuxBinary = resolveRmuxBinary();
+	if (!rmuxBinary) return;
+	const rmuxDir = mkdtempSync(join(tmpdir(), "exec-command-rmux-"));
+	const rmuxSocket = join(rmuxDir, "rmux.sock");
+	const rmuxConfig = join(rmuxDir, "rmux.conf");
+	writeFileSync(rmuxConfig, "set-option -g base-index 7\nset-window-option -g pane-base-index 7\n");
+	const sessions = createExecSessionManager({
+		ptyBackend: createRmuxPtyBackend({
+			binary: rmuxBinary,
+			socketPath: rmuxSocket,
+			configFile: rmuxConfig,
+		}),
+		defaultExecYieldTimeMs: 250,
+		defaultWriteYieldTimeMs: 1000,
+	});
+	try {
+		const first = await sessions.exec(
+			{ cmd: 'read line; printf "got:$line"', tty: true, yield_time_ms: 250 },
+			process.cwd(),
+		);
+		expect(first.process_id).toBeNumber();
+		expect(first.process_name).toMatch(/^pi-exec-\d+-[0-9a-f]{8}$/);
+		const record = sessions.listSessions().find((session) => session.id === first.process_id);
+		expect(record?.attachCommand).toContain("attach-session");
+		expect(record?.attachCommand).toContain(first.process_name!);
+		expect(record?.attachment?.args).toContain("attach-session");
+		execFileSync(rmuxBinary, ["-f", rmuxConfig, "-S", rmuxSocket, "has-session", "-t", first.process_name!]);
+		expect(
+			execFileSync(rmuxBinary, ["-f", rmuxConfig, "-S", rmuxSocket, "show-options", "-gv", "base-index"], {
+				encoding: "utf8",
+			}).trim(),
+		).toBe("0");
+		expect(
+			execFileSync(rmuxBinary, ["-f", rmuxConfig, "-S", rmuxSocket, "show-options", "-gv", "status"], {
+				encoding: "utf8",
+			}).trim(),
+		).toBe("off");
+		expect(
+			execFileSync(rmuxBinary, ["-f", rmuxConfig, "-S", rmuxSocket, "show-options", "-gv", "prefix"], {
+				encoding: "utf8",
+			}).trim(),
+		).toBe("None");
+		const rootKeys = execFileSync(rmuxBinary, ["-f", rmuxConfig, "-S", rmuxSocket, "list-keys", "-T", "root"], {
+			encoding: "utf8",
+		});
+		expect(rootKeys).toMatch(/C-\]\s+detach-client/);
+		expect(rootKeys).not.toMatch(/new-window|split-window|select-pane/);
+
+		const completed = await sessions.write({ process_id: first.process_id!, chars: "rmux-backend\n" });
+		expect(completed.output).toContain("got:rmux-backend");
+		expect(completed.exit_code).toBe(0);
+	} finally {
+		sessions.shutdown();
+		execFileSync(rmuxBinary, ["-f", rmuxConfig, "-S", rmuxSocket, "kill-server"]);
+		rmSync(rmuxDir, { recursive: true, force: true });
+	}
+});
+
+test("RMUX isolates identical public process names across managers", async () => {
+	const rmuxBinary = resolveRmuxBinary();
+	if (!rmuxBinary) return;
+	const rmuxDir = mkdtempSync(join(tmpdir(), "exec-command-rmux-isolation-"));
+	const rmuxSocket = join(rmuxDir, "rmux.sock");
+	const rmuxConfig = join(rmuxDir, "rmux.conf");
+	const backend = () =>
+		createRmuxPtyBackend({
+			binary: rmuxBinary,
+			socketPath: rmuxSocket,
+			configFile: rmuxConfig,
+		});
+	const firstManager = createExecSessionManager({ ptyBackend: backend(), defaultExecYieldTimeMs: 250 });
+	const secondManager = createExecSessionManager({ ptyBackend: backend(), defaultExecYieldTimeMs: 250 });
+	try {
+		const first = await firstManager.exec(
+			{ cmd: 'read line; printf "first:$line"', name: "shared", tty: true, yield_time_ms: 250 },
+			process.cwd(),
+		);
+		const second = await secondManager.exec(
+			{ cmd: 'read line; printf "second:$line"', name: "shared", tty: true, yield_time_ms: 250 },
+			process.cwd(),
+		);
+		expect(first.process_name).toBe("shared");
+		expect(second.process_name).toBe("shared");
+		expect(firstManager.describe("shared")?.attachCommand).not.toBe(secondManager.describe("shared")?.attachCommand);
+		expect((await firstManager.write({ process_id: "shared", chars: "one\n" })).output).toContain("first:one");
+		expect((await secondManager.write({ process_id: "shared", chars: "two\n" })).output).toContain("second:two");
+	} finally {
+		firstManager.shutdown();
+		secondManager.shutdown();
+		try {
+			execFileSync(rmuxBinary, ["-f", rmuxConfig, "-S", rmuxSocket, "kill-server"]);
+		} catch {}
+		rmSync(rmuxDir, { recursive: true, force: true });
 	}
 });
 

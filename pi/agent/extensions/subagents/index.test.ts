@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import subagentsExtension, {
+	attachAgentTerminal,
 	formatTaskResults,
+	mergeHubAgentRecords,
 	routeForegroundInput,
 	shouldOwnAgentWidget,
 	type TaskResult,
@@ -27,6 +29,7 @@ test("returns complete subagent output to the parent", () => {
 test("registers explicit agent tools instead of the generic task tool", () => {
 	const tools: string[] = [];
 	const commands: string[] = [];
+	const shortcuts: string[] = [];
 	subagentsExtension({
 		events: { on() {} },
 		on() {},
@@ -36,12 +39,85 @@ test("registers explicit agent tools instead of the generic task tool", () => {
 		registerCommand(name: string) {
 			commands.push(name);
 		},
+		registerShortcut(name: string) {
+			shortcuts.push(name);
+		},
 	} as never);
 
 	expect(tools).toEqual(["spawn_agent", "list_agents", "followup_task", "send_message", "stop_agent"]);
 	expect(tools).not.toContain("task");
-	expect(commands).toContain("subagents");
-	expect(commands).toContain("subagent");
+	expect(commands).toContain("hub");
+	expect(shortcuts).toContain("alt+a");
+	expect(commands).not.toContain("subagents");
+	expect(commands).not.toContain("subagent");
+});
+
+test("spawn_agent keeps terminal placement internal", () => {
+	let spawnTool: any;
+	subagentsExtension({
+		events: { on() {} },
+		on() {},
+		registerTool(tool: any) {
+			if (tool.name === "spawn_agent") spawnTool = tool;
+		},
+		registerCommand() {},
+	} as never);
+
+	expect(spawnTool.parameters.properties.attach).toBeUndefined();
+});
+
+test("central Hub attachment hands the terminal to the agent process", async () => {
+	const calls: string[] = [];
+	const attached = await attachAgentTerminal(
+		{
+			attachment: {
+				mode: "terminal",
+				sessionName: "worker",
+				socketPath: "/tmp/worker.sock",
+				command: "true",
+				args: [],
+			},
+		} as never,
+		{
+			terminal: { rows: 40, columns: 120 },
+			stop: () => calls.push("stop"),
+			start: () => calls.push("start"),
+			requestRender: () => calls.push("render"),
+		} as never,
+	);
+
+	expect(attached).toBe(true);
+	expect(calls).toEqual(["stop", "start", "render"]);
+});
+
+test("Hub excludes agents from every other root session", () => {
+	const saved = [
+		{
+			id: "old",
+			rootSessionId: "old-root",
+			status: "completed",
+			startedAt: Date.now(),
+			completedAt: Date.now(),
+		},
+		{
+			id: "live",
+			rootSessionId: "other-root",
+			status: "running",
+			executionMode: "attached",
+			startedAt: Date.now(),
+			attachment: { socketPath: "/tmp/live.sock" },
+		},
+	] as never[];
+	const inMemory = [
+		{
+			id: "old-memory",
+			rootSessionId: "old-root",
+			status: "completed",
+			startedAt: Date.now(),
+		},
+	] as never[];
+
+	expect(mergeHubAgentRecords(saved, inMemory, "fresh-root").map((record) => record.id)).toEqual([]);
 });
 
 test("only the root session owns the agents widget", () => {

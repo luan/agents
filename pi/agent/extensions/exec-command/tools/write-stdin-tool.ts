@@ -7,9 +7,10 @@ import type { ExecSessionManager, UnifiedExecResult } from "./exec-session-manag
 import { formatUnifiedExecResult } from "./unified-exec-format.ts";
 
 const WRITE_STDIN_PARAMETERS = Type.Object({
-	process_id: Type.Number({
-		description: "Identifier of the running unified exec process.",
-	}),
+	process: Type.Optional(
+		Type.Union([Type.Number(), Type.String()], { description: "Managed process ID or stable name." }),
+	),
+	process_id: Type.Optional(Type.Number({ description: "Managed process ID. Prefer process." })),
 	chars: Type.Optional(
 		Type.String({
 			description: "Bytes to write to stdin. May be empty to poll.",
@@ -23,7 +24,7 @@ const WRITE_STDIN_PARAMETERS = Type.Object({
 });
 
 interface WriteStdinParams {
-	process_id: number;
+	process_id: number | string;
 	chars?: string;
 	yield_time_ms?: number;
 }
@@ -107,16 +108,19 @@ function getResultState(result: {
 }
 
 function parseWriteStdinParams(params: unknown): WriteStdinParams {
-	if (!params || typeof params !== "object" || !("process_id" in params) || typeof params.process_id !== "number") {
-		throw new Error("write_stdin requires numeric 'process_id'");
-	}
-	const chars = "chars" in params && typeof params.chars === "string" ? params.chars : undefined;
-	const yield_time_ms =
-		"yield_time_ms" in params && typeof params.yield_time_ms === "number" ? params.yield_time_ms : undefined;
+	if (!params || typeof params !== "object") throw new Error("write_stdin requires a process ID or name");
+	const record = params as Record<string, unknown>;
+	const process =
+		typeof record.process === "number" || typeof record.process === "string"
+			? record.process
+			: typeof record.process_id === "number"
+				? record.process_id
+				: undefined;
+	if (process === undefined) throw new Error("write_stdin requires a process ID or name");
 	return {
-		process_id: params.process_id,
-		chars,
-		yield_time_ms,
+		process_id: process,
+		chars: typeof record.chars === "string" ? record.chars : undefined,
+		yield_time_ms: typeof record.yield_time_ms === "number" ? record.yield_time_ms : undefined,
 	};
 }
 
@@ -186,7 +190,7 @@ export function registerWriteStdinTool(
 		parameters: WRITE_STDIN_PARAMETERS,
 		async execute(_toolCallId, params) {
 			const typed = parseWriteStdinParams(params);
-			const command = sessions.getSessionCommand(typed.process_id);
+			const command = sessions.describe(typed.process_id)?.command;
 			let result: UnifiedExecResult;
 			try {
 				result = await sessions.write(typed);
@@ -202,7 +206,12 @@ export function registerWriteStdinTool(
 			};
 		},
 		renderCall(args, theme, context) {
-			const processId = typeof args.process_id === "number" ? args.process_id : "?";
+			const processId =
+				typeof args.process === "number" || typeof args.process === "string"
+					? args.process
+					: typeof args.process_id === "number"
+						? args.process_id
+						: "?";
 			const running = context?.isPartial === true;
 			if (isEmptyPoll(args)) {
 				return createEmptyResultComponent();
@@ -210,8 +219,9 @@ export function registerWriteStdinTool(
 			scheduleRunningInvalidation(context, running);
 			const input = typeof args.chars === "string" ? args.chars : undefined;
 			const resolveCell = () => {
-				const stdinOpen = typeof processId === "number" ? sessions.getSessionStdinOpen(processId) : undefined;
-				const command = typeof processId === "number" ? sessions.getSessionCommand(processId) : undefined;
+				const record = processId !== "?" ? sessions.describe(processId) : undefined;
+				const stdinOpen = record?.running ? record.stdinOpen : undefined;
+				const command = record?.command;
 				return {
 					kind: "write-stdin" as const,
 					status: running ? ("running" as const) : ("done" as const),
@@ -230,13 +240,14 @@ export function registerWriteStdinTool(
 		renderResult(result, { expanded, isPartial }, theme, context?: RenderContextLike) {
 			if (isPartial) return createEmptyResultComponent();
 			const state = getResultState(result);
+			const args =
+				context?.args && typeof context.args === "object" ? (context.args as Record<string, unknown>) : undefined;
 			const processId =
-				context?.args &&
-				typeof context.args === "object" &&
-				"process_id" in context.args &&
-				typeof context.args.process_id === "number"
-					? context.args.process_id
-					: state.processId;
+				typeof args?.process === "number" || typeof args?.process === "string"
+					? args.process
+					: typeof args?.process_id === "number"
+						? args.process_id
+						: state.processId;
 			const tty = processId !== undefined ? sessions.getSessionTty(processId) === true : state.stdinOpen === true;
 			if (tty) return createEmptyResultComponent();
 			if (isEmptyPollRenderContext(context)) return createEmptyResultComponent();

@@ -1,7 +1,9 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { BuildSystemPromptOptions, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import Mustache, { type TemplateSpans } from "mustache";
 import { resolveRuntimeShell } from "../exec-command/adapter/runtime-shell.ts";
+import { buildCavemanPrompt, isCavemanMode, resolveCavemanMode } from "./caveman.ts";
 
 const SYSTEM_PROMPT_TEMPLATE = readFileSync(new URL("./SYSTEM_PROMPT.md.mustache", import.meta.url), "utf8").trimEnd();
 
@@ -36,15 +38,57 @@ type EnvironmentContextView = {
 type SystemPromptBuildOptions = BuildSystemPromptOptions & {
 	environmentContext?: EnvironmentContextOptions;
 	now?: Date;
+	cavemanPrompt?: string | null;
 };
 
 export default async function systemPromptExtension(pi: ExtensionAPI) {
+	pi.registerCommand("caveman", {
+		description: "Set Caveman style: lite, full, ultra, or off",
+		getArgumentCompletions: (prefix: string) => {
+			const modes = ["lite", "full", "ultra", "off"].filter((mode) => mode.startsWith(prefix.trim().toLowerCase()));
+			return modes.length > 0 ? modes.map((value) => ({ value, label: value })) : null;
+		},
+		handler: async (args, ctx) => {
+			const mode = args.trim().toLowerCase();
+			if (!mode) {
+				const currentMode = resolveCavemanMode(ctx.cwd);
+				ctx.ui.notify(`Caveman mode: ${currentMode ?? "off"}. Usage: /caveman <lite|full|ultra|off>`, "info");
+				return;
+			}
+			if (mode !== "off" && !isCavemanMode(mode)) {
+				ctx.ui.notify("Usage: /caveman <lite|full|ultra|off>", "warning");
+				return;
+			}
+
+			const path = join(ctx.cwd, ".pi", "caveman.json");
+			mkdirSync(dirname(path), { recursive: true });
+			writeFileSync(path, `${JSON.stringify({ mode }, null, 2)}\n`);
+			ctx.ui.notify(`Caveman mode set to ${mode}.`, "info");
+		},
+	});
 	pi.on("before_agent_start", (event, ctx) => {
+		const cavemanMode = resolveCavemanMode(ctx.cwd);
+
 		return {
 			systemPrompt: buildSystemPrompt(event.systemPrompt, {
 				...event.systemPromptOptions,
+				cavemanPrompt: cavemanMode ? buildCavemanPrompt(cavemanMode) : null,
 				cwd: ctx.cwd,
 			}),
+		};
+	});
+	pi.on("before_provider_request", (event, ctx) => {
+		const cavemanMode = resolveCavemanMode(ctx.cwd);
+		const payload = event.payload as Record<string, unknown>;
+		const instructions = payload.instructions;
+		if (!cavemanMode || typeof instructions !== "string") return;
+
+		const cavemanPrompt = buildCavemanPrompt(cavemanMode);
+		const normalizedInstructions = instructions.split(cavemanPrompt).join("").trimEnd();
+
+		return {
+			...payload,
+			instructions: `${normalizedInstructions}\n\n${cavemanPrompt}`,
 		};
 	});
 }
@@ -58,6 +102,7 @@ export function buildSystemPrompt(original: string, options: SystemPromptBuildOp
 		cwd,
 		contextFiles: providedContextFiles,
 		skills: providedSkills,
+		cavemanPrompt,
 	} = options;
 	const promptCwd = cwd.replace(/\\/g, "/");
 
@@ -80,6 +125,7 @@ export function buildSystemPrompt(original: string, options: SystemPromptBuildOp
 
 	return renderTemplate("SYSTEM_PROMPT.md.mustache", SYSTEM_PROMPT_TEMPLATE, {
 		appendSystemPrompt: appendSystemPrompt || null,
+		cavemanPrompt: cavemanPrompt || null,
 		contextFiles,
 		customPrompt: customPrompt || null,
 		docsPath: docsPath ?? "null",

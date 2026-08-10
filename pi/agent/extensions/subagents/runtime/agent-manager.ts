@@ -12,12 +12,32 @@ import {
 	type AgentSession,
 	type ExtensionAPI,
 	type ExtensionContext,
+	type JsonAgentSessionEvent,
 	SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import { findRetryableError, resumeAgent, retryFailedTurn, runAgent, type ToolActivity } from "./agent-runner.js";
-import { childSessionDir, type PersistedAgent } from "./persistence.js";
-import type { AgentConfig, AgentEvent, AgentRecord, IsolationMode, SubagentType } from "./types.js";
-import { type AssistantUsage, addUsage } from "./usage.js";
+import {
+	type AttachedAgentBridgeState,
+	attachedAgentTerminalsAvailable,
+	connectAttachedAgent,
+	type ResultMessage,
+	runAttachedAgent,
+} from "./attached-agent-runner.js";
+import {
+	childSessionDir,
+	MAX_RETAINED_TERMINAL_AGENTS,
+	type PersistedAgent,
+	retainAgentRecords,
+} from "./persistence.js";
+import {
+	type AgentConfig,
+	type AgentEvent,
+	type AgentRecord,
+	agentKey,
+	type IsolationMode,
+	type SubagentType,
+} from "./types.js";
+import { type AssistantUsage, addUsage, readAssistantUsage } from "./usage.js";
 import { cleanupWorktree, createWorktree, pruneWorktrees } from "./worktree.js";
 
 type OnAgentComplete = (record: AgentRecord) => void;
@@ -28,8 +48,6 @@ type CompactionInfo = { reason: "manual" | "threshold" | "overflow"; tokensBefor
 
 /** Default max concurrent background agents. */
 const DEFAULT_MAX_CONCURRENT = 4;
-const MAX_RETAINED_TERMINAL_AGENTS = 100;
-const TERMINAL_AGENT_RETENTION_MS = 10 * 60_000;
 
 interface SpawnArgs {
 	pi: ExtensionAPI;
@@ -87,9 +105,11 @@ export class AgentManager {
 	private maxRetainedTerminal: number;
 
 	/** Queue of background agents waiting to start. */
-	private queue: { id: string; args: SpawnArgs }[] = [];
+	private queue: { key: string; args: SpawnArgs }[] = [];
 	/** Number of currently running background agents. */
 	private runningBackground = 0;
+	private restoredBackgroundSlots = new Set<AgentRecord>();
+	private inheritedAttachedTurns = new Set<AgentRecord>();
 	private foregroundWaiters = new Map<string, () => void>();
 	private parentSignalDetachers = new Map<string, () => void>();
 
@@ -113,6 +133,10 @@ export class AgentManager {
 	}
 
 	private findRecord(id: string, rootSessionId?: string): AgentRecord | undefined {
+		if (rootSessionId) {
+			const scoped = this.agents.get(agentKey(rootSessionId, id));
+			if (scoped) return scoped;
+		}
 		const direct = this.agents.get(id);
 		if (direct && (!rootSessionId || direct.rootSessionId === rootSessionId)) return direct;
 		return [...this.agents.values()].find(
@@ -139,7 +163,7 @@ export class AgentManager {
 			.replace(/^-+|-+$/g, "");
 		const localId = requestedId || randomUUID().slice(0, 17);
 		const id = options.parentAgentId ? `${options.parentAgentId}/${localId}` : localId;
-		if (this.agents.has(id)) throw new Error(`Agent id already exists: ${id}`);
+		if (this.findRecord(id, options.rootSessionId)) throw new Error(`Agent id already exists: ${id}`);
 		const abortController = new AbortController();
 		const record: AgentRecord = {
 			id,
@@ -154,35 +178,38 @@ export class AgentManager {
 			cwd: options.cwd ?? ctx.cwd,
 			events: [],
 			isBackground: options.isBackground === true,
+			executionMode: attachedAgentTerminalsAvailable() ? "attached" : "in-process",
 			toolUses: 0,
 			startedAt: Date.now(),
 			abortController,
 			lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
 			compactionCount: 0,
 		};
-		this.agents.set(id, record);
+		const key = agentKey(options.rootSessionId, id);
+		this.agents.set(key, record);
 
 		const args: SpawnArgs = { pi, ctx, type, prompt, options };
 
 		if (options.isBackground && this.runningBackground >= this.maxConcurrent) {
 			// Queue it — will be started when a running agent completes
-			this.queue.push({ id, args });
+			this.queue.push({ key, args });
 			return id;
 		}
 
 		// startAgent can throw (e.g. strict worktree-isolation failure) — clean
 		// up the record so callers don't see an orphan in `listAgents()`.
 		try {
-			this.startAgent(id, record, args);
+			this.startAgent(key, record, args);
 		} catch (err) {
-			this.agents.delete(id);
+			this.agents.delete(key);
 			throw err;
 		}
 		return id;
 	}
 
 	/** Actually start an agent (called immediately or from queue drain). */
-	private startAgent(id: string, record: AgentRecord, { pi, ctx, type, prompt, options }: SpawnArgs) {
+	private startAgent(key: string, record: AgentRecord, { pi, ctx, type, prompt, options }: SpawnArgs) {
+		const id = record.id;
 		const runtime = options.resolveRuntime ? options.resolveRuntime() : { pi, ctx };
 		if (!runtime) throw new Error(`Parent session unavailable for queued agent ${id}`);
 		const baseCwd = record.cwd;
@@ -210,7 +237,7 @@ export class AgentManager {
 		// Wire parent abort signal to stop the subagent when the parent is interrupted
 		let detachParentSignal: (() => void) | undefined;
 		if (options.signal) {
-			const onParentAbort = () => this.abort(id);
+			const onParentAbort = () => this.abort(id, record.rootSessionId);
 			if (options.signal.aborted) onParentAbort();
 			else {
 				options.signal.addEventListener("abort", onParentAbort, { once: true });
@@ -218,26 +245,27 @@ export class AgentManager {
 			}
 		}
 		const detach = () => {
-			this.parentSignalDetachers.get(id)?.();
-			this.parentSignalDetachers.delete(id);
+			this.parentSignalDetachers.get(key)?.();
+			this.parentSignalDetachers.delete(key);
 		};
-		this.parentSignalDetachers.set(id, () => {
+		this.parentSignalDetachers.set(key, () => {
 			detachParentSignal?.();
 			detachParentSignal = undefined;
 		});
 
-		const promise = runAgent(runtime.ctx, type, prompt, {
+		const sessionDir = childSessionDir(record.rootSessionId, id);
+		const commonOptions = {
 			pi: runtime.pi,
 			description: options.description,
 			agentConfig: options.agentConfig,
-			sessionDir: childSessionDir(record.rootSessionId, id),
-			onRuntimeResolved: (model, thinkingLevel) => {
+			sessionDir,
+			signal: record.abortController?.signal,
+			onRuntimeResolved: (model: Model<any> | undefined, thinkingLevel: AgentRecord["thinkingLevel"]) => {
 				record.modelName = modelLabel(model);
 				record.thinkingLevel = thinkingLevel;
 			},
-			cwd: worktreeCwd ?? options.cwd,
-			signal: record.abortController!.signal,
-			onToolActivity: (activity) => {
+			cwd: worktreeCwd ?? options.cwd ?? record.cwd,
+			onToolActivity: (activity: ToolActivity) => {
 				if (activity.type === "end") record.toolUses++;
 				this.pushEvent(record, {
 					type: activity.type === "start" ? "tool-start" : "tool-end",
@@ -246,50 +274,82 @@ export class AgentManager {
 				});
 				options.onToolActivity?.(activity);
 			},
-			onTurnEnd: (turnCount) => {
+			onTurnEnd: (turnCount: number) => {
 				this.pushEvent(record, { type: "turn-end", at: Date.now(), turnCount });
 				options.onTurnEnd?.(turnCount);
 			},
-			onTextDelta: (delta, fullText) => {
+			onTextDelta: (delta: string, fullText: string) => {
 				this.pushEvent(record, { type: "text", at: Date.now(), text: delta });
 				options.onTextDelta?.(delta, fullText);
 			},
-			onAssistantUsage: (usage, durationMs) => {
+			onAssistantUsage: (usage: AssistantUsage, durationMs: number) => {
 				addUsage(record.lifetimeUsage, usage);
 				options.onAssistantUsage?.(usage, durationMs);
 			},
-			onCompaction: (info) => {
+			onCompaction: (info: CompactionInfo) => {
 				record.compactionCount++;
 				this.pushEvent(record, { type: "compaction", at: Date.now(), tokensBefore: info.tokensBefore });
 				this.onCompact?.(record, info);
 				options.onCompaction?.(info);
 			},
-			onRuntimeCreated: (agentRuntime) => {
-				record.runtime = agentRuntime;
-			},
-			onSessionCreated: (session) => {
-				record.session = session;
-				record.sessionFile = session.sessionManager.getSessionFile();
-				record.childSessionId = session.sessionManager.getSessionId();
-				// Flush any steers that arrived before the session was ready
-				if (record.pendingSteers?.length) {
-					for (const msg of record.pendingSteers) {
-						session.steer(msg).catch(() => {});
-					}
-					record.pendingSteers = undefined;
-				}
-				options.onSessionCreated?.(session);
-			},
-		})
-			.then(({ responseText, session, runtime: agentRuntime, aborted, steered, error }) => {
+		};
+		const run: Promise<{
+			responseText: string;
+			error?: string;
+			aborted: boolean;
+			steered: boolean;
+			session?: AgentSession;
+			runtime?: AgentRecord["runtime"];
+		}> =
+			record.executionMode === "attached"
+				? runAttachedAgent(runtime.ctx, type, prompt, record.rootSessionId, id, {
+						...commonOptions,
+						onReady: (state) => {
+							record.sessionFile = state.sessionFile;
+							record.childSessionId = state.sessionId;
+							this.onStart?.(record);
+						},
+						onExternalTurnStart: () => this.startExternalAttachedTurn(record),
+						onExternalResult: (result) => this.applyAttachedResult(record, result),
+						onController: (controller, attachment) => {
+							record.attachedRuntime = controller;
+							record.attachment = attachment;
+							this.onStart?.(record);
+							if (record.pendingSteers?.length) {
+								for (const message of record.pendingSteers) void controller.steer(message);
+								record.pendingSteers = undefined;
+							}
+						},
+					}).then((result) => ({ ...result, aborted: false, steered: false }))
+				: runAgent(runtime.ctx, type, prompt, {
+						...commonOptions,
+						signal: record.abortController!.signal,
+						onRuntimeCreated: (agentRuntime) => {
+							record.runtime = agentRuntime;
+						},
+						onSessionCreated: (session) => {
+							record.session = session;
+							record.sessionFile = session.sessionManager.getSessionFile();
+							record.childSessionId = session.sessionManager.getSessionId();
+							if (record.pendingSteers?.length) {
+								for (const message of record.pendingSteers) void session.steer(message);
+								record.pendingSteers = undefined;
+							}
+							options.onSessionCreated?.(session);
+						},
+					});
+		const promise = run
+			.then(({ responseText, aborted, steered, error, ...inProcess }) => {
 				// Don't overwrite status if externally stopped via abort()
 				if (record.status !== "stopped") {
 					record.status = error ? "error" : aborted ? "aborted" : steered ? "steered" : "completed";
 				}
 				record.result = responseText;
 				record.error = error;
-				record.runtime = agentRuntime;
-				record.session = agentRuntime.session ?? session;
+				if (inProcess.runtime) {
+					record.runtime = inProcess.runtime;
+					record.session = inProcess.runtime.session ?? inProcess.session;
+				}
 				record.completedAt ??= Date.now();
 
 				detach();
@@ -325,8 +385,8 @@ export class AgentManager {
 					}
 					this.drainQueue();
 				}
-				this.foregroundWaiters.get(id)?.();
-				this.foregroundWaiters.delete(id);
+				this.foregroundWaiters.get(key)?.();
+				this.foregroundWaiters.delete(key);
 				return responseText;
 			})
 			.catch((err) => {
@@ -370,8 +430,8 @@ export class AgentManager {
 						this.drainQueue();
 					}
 				}
-				this.foregroundWaiters.get(id)?.();
-				this.foregroundWaiters.delete(id);
+				this.foregroundWaiters.get(key)?.();
+				this.foregroundWaiters.delete(key);
 				return "";
 			});
 
@@ -384,10 +444,10 @@ export class AgentManager {
 			const queued = this.queue[0]!;
 			if (queued.args.options.resolveRuntime && !queued.args.options.resolveRuntime()) break;
 			const next = this.queue.shift()!;
-			const record = this.agents.get(next.id);
+			const record = this.agents.get(next.key);
 			if (!record || record.status !== "queued") continue;
 			try {
-				this.startAgent(next.id, record, next.args);
+				this.startAgent(next.key, record, next.args);
 			} catch (err) {
 				// Late failure (e.g. strict worktree-isolation) — surface on the record
 				// so the user/agent can see it via /agents, then keep draining.
@@ -404,6 +464,108 @@ export class AgentManager {
 		this.drainQueue();
 	}
 
+	private releaseRestoredBackgroundSlot(record: AgentRecord): void {
+		if (!this.restoredBackgroundSlots.delete(record)) return;
+		this.runningBackground = Math.max(0, this.runningBackground - 1);
+		this.drainQueue();
+	}
+
+	private startExternalAttachedTurn(record: AgentRecord): void {
+		record.status = "running";
+		record.startedAt = Date.now();
+		record.completedAt = undefined;
+		record.result = undefined;
+		record.error = undefined;
+		this.onStart?.(record);
+	}
+
+	private applyAttachedMessage(record: AgentRecord, message: any): void {
+		if (message.type === "ready") {
+			record.sessionFile = message.state.sessionFile;
+			record.childSessionId = message.state.sessionId;
+			this.onStart?.(record);
+			return;
+		}
+		if (message.type !== "event") return;
+		const event = message.event as JsonAgentSessionEvent;
+		if (message.turnId?.startsWith("terminal-") && event.type === "agent_start") {
+			this.startExternalAttachedTurn(record);
+		}
+		if (event.type === "tool_execution_start") {
+			this.pushEvent(record, { type: "tool-start", at: Date.now(), toolName: event.toolName });
+		}
+		if (event.type === "tool_execution_end") {
+			record.toolUses++;
+			this.pushEvent(record, { type: "tool-end", at: Date.now(), toolName: event.toolName });
+		}
+		if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
+			this.pushEvent(record, { type: "text", at: Date.now(), text: event.assistantMessageEvent.delta });
+		}
+		if (event.type === "turn_end") {
+			this.pushEvent(record, { type: "turn-end", at: Date.now() });
+		}
+		if (event.type === "message_end" && event.message.role === "assistant") {
+			const usage = readAssistantUsage(event.message);
+			if (usage) addUsage(record.lifetimeUsage, usage);
+		}
+		if (event.type === "compaction_end" && !event.aborted && event.result) {
+			record.compactionCount++;
+			this.pushEvent(record, { type: "compaction", at: Date.now(), tokensBefore: event.result.tokensBefore });
+		}
+	}
+
+	private applyAttachedResult(record: AgentRecord, result: ResultMessage): void {
+		this.inheritedAttachedTurns.delete(record);
+		if (record.status !== "running") return;
+		record.result = result.responseText;
+		record.error = result.error;
+		record.status = result.error ? "error" : "completed";
+		record.completedAt = Date.now();
+		this.releaseRestoredBackgroundSlot(record);
+		this.onComplete?.(record);
+	}
+
+	private applyAttachedState(record: AgentRecord, state: AttachedAgentBridgeState): void {
+		if (state.streaming) {
+			record.status = "running";
+			return;
+		}
+		if (state.lastResult) this.applyAttachedResult(record, state.lastResult);
+	}
+
+	private async reconnectAttached(record: AgentRecord): Promise<AgentRecord["attachedRuntime"]> {
+		if (record.attachedRuntime?.closed !== true) return record.attachedRuntime;
+		record.attachedRuntime = undefined;
+		if (record.executionMode !== "attached" || !record.attachment) return undefined;
+		try {
+			let inheritedTurn = false;
+			record.attachedRuntime = await connectAttachedAgent(
+				record.attachment,
+				(state) => {
+					inheritedTurn = state.streaming || !state.started;
+					if (inheritedTurn) this.inheritedAttachedTurns.add(record);
+					this.applyAttachedState(record, state);
+				},
+				(message) => {
+					if (inheritedTurn && message.type === "result") {
+						inheritedTurn = false;
+						this.inheritedAttachedTurns.delete(record);
+						this.applyAttachedResult(record, message as ResultMessage);
+					} else if (message.type === "result" && message.turnId?.startsWith("terminal-")) {
+						this.applyAttachedResult(record, message as ResultMessage);
+					}
+					this.applyAttachedMessage(record, message);
+				},
+			);
+			return record.attachedRuntime;
+		} catch {
+			if (record.status === "running") record.status = "interrupted";
+			this.inheritedAttachedTurns.delete(record);
+			this.releaseRestoredBackgroundSlot(record);
+			return undefined;
+		}
+	}
+
 	/** Resume an agent, reopening its persisted child session when necessary. */
 	async resume(
 		pi: ExtensionAPI,
@@ -413,6 +575,20 @@ export class AgentManager {
 		options: ResumeOptions = {},
 	): Promise<AgentRecord | undefined> {
 		const record = this.findRecord(id, options.rootSessionId);
+		if (!record) return undefined;
+		await this.reconnectAttached(record);
+		if (this.inheritedAttachedTurns.has(record)) return undefined;
+		if (record.attachedRuntime) {
+			this.beginTurn(record, options.deliverCompletion === true);
+			try {
+				const turn = await record.attachedRuntime.run(prompt);
+				this.finishTurn(record, turn.responseText, turn.error);
+			} catch (err) {
+				this.finishTurn(record, "", err instanceof Error ? err.message : String(err));
+			}
+			return record;
+		}
+		if (record.executionMode === "attached") return undefined;
 		const session = record?.runtime?.session ?? record?.session;
 		if (!record || (!session && (!record.sessionFile || !record.agentConfig))) return undefined;
 		this.beginTurn(record, options.deliverCompletion === true);
@@ -450,6 +626,7 @@ export class AgentManager {
 		options: ResumeOptions = {},
 	): Promise<AgentRecord | undefined> {
 		const record = this.findRecord(id, options.rootSessionId);
+		if (record?.executionMode === "attached") return undefined;
 		const session = record?.runtime?.session ?? record?.session;
 		if (!record || (!session && (!record.sessionFile || !record.agentConfig))) return undefined;
 		if (session && !findRetryableError(session.sessionManager.getBranch())) return undefined;
@@ -486,28 +663,37 @@ export class AgentManager {
 		return record;
 	}
 
-	async waitForForeground(id: string): Promise<void> {
-		const record = this.agents.get(id);
+	async waitForForeground(id: string, rootSessionId?: string): Promise<void> {
+		const record = this.findRecord(id, rootSessionId);
 		if (!record || record.isBackground || record.status !== "running") return;
-		await new Promise<void>((resolve) => this.foregroundWaiters.set(id, resolve));
+		const key = agentKey(record.rootSessionId, record.id);
+		await new Promise<void>((resolve) => this.foregroundWaiters.set(key, resolve));
 	}
 
-	background(id: string): boolean {
-		const record = this.agents.get(id);
+	background(id: string, rootSessionId?: string): boolean {
+		const record = this.findRecord(id, rootSessionId);
 		if (!record || record.isBackground || record.status !== "running") return false;
+		const key = agentKey(record.rootSessionId, record.id);
 		record.isBackground = true;
 		this.runningBackground++;
-		this.parentSignalDetachers.get(id)?.();
+		this.parentSignalDetachers.get(key)?.();
 		this.onStart?.(record);
-		this.parentSignalDetachers.delete(id);
-		this.foregroundWaiters.get(id)?.();
-		this.foregroundWaiters.delete(id);
+		this.parentSignalDetachers.delete(key);
+		this.foregroundWaiters.get(key)?.();
+		this.foregroundWaiters.delete(key);
 		return true;
 	}
 
 	async steer(id: string, message: string, rootSessionId?: string): Promise<boolean> {
 		const record = this.findRecord(id, rootSessionId);
 		if (!record || record.status !== "running") return false;
+		await this.reconnectAttached(record);
+		if (record.status !== "running") return false;
+		if (record.attachedRuntime) {
+			await record.attachedRuntime.steer(message);
+			return true;
+		}
+		if (record.executionMode === "attached") return false;
 		const session = record.runtime?.session ?? record.session;
 		if (!session) {
 			record.pendingSteers ??= [];
@@ -598,15 +784,26 @@ export class AgentManager {
 			const rootSessionId = persisted.rootSessionId ?? persisted.parentSessionId;
 			if (this.findRecord(id, rootSessionId)) continue;
 			rootSessionIds.add(rootSessionId);
-			const storageKey = this.agents.has(id) ? `${rootSessionId}\0${id}` : id;
+			const storageKey = agentKey(rootSessionId, id);
+			const status =
+				persisted.status === "running" && persisted.executionMode === "attached" && persisted.attachment
+					? "running"
+					: persisted.status === "running" || persisted.status === "queued"
+						? "interrupted"
+						: persisted.status;
 			this.agents.set(storageKey, {
 				...persisted,
 				id,
 				parentAgentId: persisted.parentAgentId?.replace(/^\/root\//, ""),
 				rootSessionId,
-				status: persisted.status === "running" || persisted.status === "queued" ? "interrupted" : persisted.status,
+				status,
 				events: persisted.events ?? [],
 			});
+			if (status === "running" && persisted.isBackground) {
+				const record = this.agents.get(storageKey)!;
+				this.runningBackground++;
+				this.restoredBackgroundSlots.add(record);
+			}
 		}
 		if (enforceRetention) {
 			for (const rootSessionId of rootSessionIds) this.enforceRetention(rootSessionId);
@@ -637,7 +834,8 @@ export class AgentManager {
 
 		// Remove from queue if queued
 		if (record.status === "queued") {
-			this.queue = this.queue.filter((q) => q.id !== id);
+			const key = agentKey(record.rootSessionId, record.id);
+			this.queue = this.queue.filter((queued) => queued.key !== key);
 			record.status = "stopped";
 			record.completedAt = Date.now();
 			this.enforceRetention(record.rootSessionId);
@@ -645,24 +843,27 @@ export class AgentManager {
 		}
 
 		if (record.status !== "running") return false;
+		if (record.attachedRuntime) void record.attachedRuntime.stop().catch(() => undefined);
+		else if (record.executionMode === "attached" && record.attachment) {
+			void connectAttachedAgent(record.attachment, undefined, undefined, false)
+				.then((runtime) => runtime.stop())
+				.catch(() => undefined);
+		}
 		record.abortController?.abort();
 		record.status = "stopped";
 		record.completedAt = Date.now();
+		this.releaseRestoredBackgroundSlot(record);
 		this.enforceRetention(record.rootSessionId);
 		return true;
 	}
 
 	private enforceRetention(rootSessionId: string): void {
-		const cutoff = Date.now() - TERMINAL_AGENT_RETENTION_MS;
-		const terminal = [...this.agents.values()]
-			.filter(
-				(record) =>
-					record.rootSessionId === rootSessionId && record.status !== "running" && record.status !== "queued",
-			)
-			.sort((left, right) => (right.completedAt ?? right.startedAt) - (left.completedAt ?? left.startedAt));
-		for (const [index, record] of terminal.entries()) {
-			if (index < this.maxRetainedTerminal && (record.completedAt ?? record.startedAt) >= cutoff) continue;
+		const records = [...this.agents.values()].filter((record) => record.rootSessionId === rootSessionId);
+		const retained = new Set(retainAgentRecords(records, this.maxRetainedTerminal));
+		for (const record of records) {
+			if (retained.has(record)) continue;
 			record.session?.dispose?.();
+			void record.attachedRuntime?.stop().catch(() => undefined);
 			this.deleteRecord(record);
 			this.onRemove?.(record);
 		}
@@ -691,7 +892,7 @@ export class AgentManager {
 		const rootSessionIds = new Set<string>();
 		// Clear queued agents first
 		for (const queued of this.queue) {
-			const record = this.agents.get(queued.id);
+			const record = this.agents.get(queued.key);
 			if (record) {
 				record.status = "stopped";
 				record.completedAt = Date.now();
@@ -703,9 +904,16 @@ export class AgentManager {
 		// Abort running agents
 		for (const record of this.agents.values()) {
 			if (record.status === "running") {
+				if (record.attachedRuntime) void record.attachedRuntime.stop().catch(() => undefined);
+				else if (record.executionMode === "attached" && record.attachment) {
+					void connectAttachedAgent(record.attachment, undefined, undefined, false)
+						.then((runtime) => runtime.stop())
+						.catch(() => undefined);
+				}
 				record.abortController?.abort();
 				record.status = "stopped";
 				record.completedAt = Date.now();
+				this.releaseRestoredBackgroundSlot(record);
 				rootSessionIds.add(record.rootSessionId);
 				count++;
 			}
@@ -734,6 +942,7 @@ export class AgentManager {
 		// Clear queue
 		this.queue = [];
 		for (const record of this.agents.values()) {
+			void record.attachedRuntime?.stop().catch(() => undefined);
 			record.session?.dispose();
 		}
 		this.agents.clear();

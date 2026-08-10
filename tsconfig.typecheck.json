@@ -5,6 +5,7 @@
     "pi/agent/extensions/agents-local/**/*.ts",
     "pi/agent/extensions/ask/**/*.ts",
     "pi/agent/extensions/auto-compact-resume/**/*.ts",
+    "pi/agent/extensions/compaction-divider/**/*.ts",
     "pi/agent/extensions/context-guard/**/*.ts",
     "pi/agent/extensions/context7/**/*.ts",
     "pi/agent/extensions/git-tool/**/*.ts",

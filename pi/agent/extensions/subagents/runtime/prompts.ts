@@ -2,6 +2,7 @@
  * prompts.ts — System prompt builder for agents.
  */
 
+import { buildCavemanPrompt, resolveCavemanMode } from "../../system-prompt/caveman.ts";
 import type { AgentConfig, EnvInfo } from "./types.js";
 
 /** Extra sections to inject into the system prompt (memory, skills, etc.). */
@@ -17,7 +18,7 @@ export interface PromptExtras {
 /**
  * Build the system prompt for an agent from its config.
  *
- * - "replace" mode: env header + config.systemPrompt (full control, no parent identity)
+ * - "replace" mode: env header + Caveman style + config.systemPrompt
  * - "append" mode: env header + parent system prompt + sub-agent context + config.systemPrompt
  * - "append" with empty systemPrompt: pure parent clone
  *
@@ -53,6 +54,7 @@ Platform: ${env.platform}`;
 
 	if (config.promptMode === "append") {
 		const identity = parentSystemPrompt || genericBase;
+		const cavemanPrompt = extractCavemanPrompt(identity) ? undefined : configuredCavemanPrompt(cwd);
 
 		const bridge = `<sub_agent_context>
 You are operating as a sub-agent invoked to handle a specific task.
@@ -70,11 +72,13 @@ You are operating as a sub-agent invoked to handle a specific task.
 		const customSection = config.systemPrompt?.trim()
 			? `\n\n<agent_instructions>\n${config.systemPrompt}\n</agent_instructions>`
 			: "";
+		const cavemanSection = cavemanPrompt ? `\n\n${cavemanPrompt}` : "";
 
 		return (
 			envBlock +
 			"\n\n<inherited_system_prompt>\n" +
 			identity +
+			cavemanSection +
 			"\n</inherited_system_prompt>\n\n" +
 			bridge +
 			customSection +
@@ -82,15 +86,28 @@ You are operating as a sub-agent invoked to handle a specific task.
 		);
 	}
 
-	// "replace" mode — env header + the config's full system prompt
+	// "replace" mode — env header + Caveman style + config system prompt
 	const replaceHeader = `You are a pi coding agent sub-agent.
-You have been invoked to handle a specific task autonomously.
+You have been invoked to handle a specific task.
 
 ${envBlock}`;
+	const cavemanPrompt = configuredCavemanPrompt(cwd, parentSystemPrompt);
+	const sections = [cavemanPrompt, config.systemPrompt].filter((section): section is string =>
+		Boolean(section?.trim()),
+	);
 
-	return `${replaceHeader}\n\n${config.systemPrompt}${extrasSuffix}`;
+	return `${replaceHeader}\n\n${sections.join("\n\n")}${extrasSuffix}`;
 }
 
+function configuredCavemanPrompt(cwd: string, parentSystemPrompt?: string): string | undefined {
+	const mode = resolveCavemanMode(cwd);
+	return extractCavemanPrompt(parentSystemPrompt) ?? (mode ? buildCavemanPrompt(mode) : undefined);
+}
+
+function extractCavemanPrompt(prompt: string | undefined): string | undefined {
+	const match = prompt?.match(/# Caveman \((?:lite|full|ultra)\)[\s\S]*?(?=\n(?:# |<)|$)/);
+	return match?.[0]?.trim();
+}
 /** Fallback base prompt when parent system prompt is unavailable in append mode. */
 const genericBase = `# Role
 You are a general-purpose coding agent for complex, multi-step tasks.

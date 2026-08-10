@@ -1,0 +1,97 @@
+#!/usr/bin/env node
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+import { spawnSync } from "node:child_process";
+
+const args = process.argv.slice(2);
+const bunBin = join(homedir(), ".bun", "bin");
+const realPi = process.env.PI_REAL_BIN || join(bunBin, "pi-real");
+const rmux = process.env.RMUX_BIN || "rmux";
+const socketPath = join(homedir(), ".pi", "agent", "rmux", "roots.sock");
+const configFile = join(homedir(), ".pi", "agent", "rmux", "roots.conf");
+const config = [
+	"set-option -g status off",
+	"set-option -g prefix None",
+	"set-option -g prefix2 None",
+	"set-option -g mouse off",
+	"unbind-key -a",
+	"unbind-key -a -T root",
+	"bind-key -n C-] detach-client",
+	"",
+].join("\n");
+
+function run(command, commandArgs, env = process.env) {
+	const result = spawnSync(command, commandArgs, { env, stdio: "inherit" });
+	if (result.error) {
+		console.error(result.error.message);
+		process.exit(1);
+	}
+	process.exit(result.status ?? 1);
+}
+
+const nonInteractive =
+	!process.stdin.isTTY ||
+	!process.stdout.isTTY ||
+	args.includes("--help") ||
+	args.includes("-h") ||
+	args.includes("--version") ||
+	args.includes("-v") ||
+	args.includes("--print") ||
+	args.includes("-p") ||
+	args.some((arg, index) => arg === "--mode" && args[index + 1] !== "tui");
+
+if (process.env.PI_ROOT_RMUX || process.env.PI_ATTACHED_AGENT || nonInteractive) run(realPi, args);
+if (!existsSync(realPi)) {
+	console.error(`Pi launcher cannot find ${realPi}. Run just setup.`);
+	process.exit(1);
+}
+if (spawnSync(rmux, ["-V"], { stdio: "ignore" }).status !== 0) run(realPi, args);
+
+mkdirSync(dirname(configFile), { recursive: true });
+writeFileSync(configFile, config);
+const sessionName = `pi-root-${process.pid}-${randomUUID().slice(0, 8)}`;
+const env = {
+	...process.env,
+	TMUX: undefined,
+	TMUX_PANE: undefined,
+	PI_ROOT_RMUX: "1",
+	PI_ROOT_RMUX_BIN: rmux,
+	PI_ROOT_RMUX_CONFIG: configFile,
+	PI_ROOT_RMUX_SESSION: sessionName,
+	PI_ROOT_RMUX_SOCKET: socketPath,
+};
+const started = spawnSync(
+	rmux,
+	[
+		"-f",
+		configFile,
+		"-S",
+		socketPath,
+		"new-session",
+		"-d",
+		"-s",
+		sessionName,
+		"-c",
+		process.cwd(),
+		"-e",
+		"PI_ROOT_RMUX=1",
+		"-e",
+		`PI_ROOT_RMUX_BIN=${rmux}`,
+		"-e",
+		`PI_ROOT_RMUX_CONFIG=${configFile}`,
+		"-e",
+		`PI_ROOT_RMUX_SESSION=${sessionName}`,
+		"-e",
+		`PI_ROOT_RMUX_SOCKET=${socketPath}`,
+		realPi,
+		...args,
+	],
+	{ env, stdio: "inherit" },
+);
+if (started.error || started.status !== 0) {
+	console.error(started.error?.message || `RMUX failed with status ${started.status}`);
+	process.exit(started.status ?? 1);
+}
+run(rmux, ["-f", configFile, "-S", socketPath, "attach-session", "-t", sessionName], env);

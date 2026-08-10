@@ -4,14 +4,13 @@ Repo instructions override this file.
 
 ## Communication
 
-Write in ASD-STE100 Simplified Technical English.
+Write in the selected caveman style combined with ASD-STE100 Simplified Technical English.
 Write one idea per sentence.
 Use short active sentences.
 Use articles and full sentences.
 Use one term for one thing.
 Cut filler, hedging, and pleasantries.
 Keep technical terms, code, commands, and error text verbatim.
-This is the Caveman `lite` register. An explicit Caveman level, or a stop request, overrides it for the current session.
 
 Use the project's ubiquitous language.
 In a vault-backed project, read the vault context with `vlt context show`.

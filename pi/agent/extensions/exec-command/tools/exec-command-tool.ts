@@ -30,6 +30,7 @@ const EXEC_COMMAND_PARAMETERS = Type.Object({
 			description: "Shell commands to execute with fixed concurrency four.",
 		}),
 	),
+	name: Type.Optional(Type.String({ description: "Stable process name for a single command." })),
 	workdir: Type.Optional(
 		Type.String({
 			description: "Optional working directory; defaults to the current turn cwd.",
@@ -54,7 +55,7 @@ const EXEC_COMMAND_PARAMETERS = Type.Object({
 	tty: Type.Optional(
 		Type.Boolean({
 			description:
-				"Whether to allocate a TTY for a single command. Command lists are non-interactive and wait to completion.",
+				"Whether to allocate a TTY for a single command. TTY processes can be attached from the Hub. Command lists are non-interactive and wait to completion.",
 		}),
 	),
 	yield_time_ms: Type.Optional(
@@ -76,6 +77,7 @@ interface ExecCommandItem {
 
 interface ExecCommandParams {
 	commands: ExecCommandItem[];
+	name?: string;
 	workdir?: string;
 	shell?: string;
 	tty?: boolean;
@@ -159,6 +161,9 @@ function parseExecCommandParams(params: unknown): ExecCommandParams {
 	if (commands.length > 1 && record.tty === true) {
 		throw new Error("exec_command command lists do not support tty");
 	}
+	if (commands.length > 1 && typeof record.name === "string") {
+		throw new Error("exec_command command lists do not support name");
+	}
 	if (
 		record.env !== undefined &&
 		(!record.env ||
@@ -174,6 +179,7 @@ function parseExecCommandParams(params: unknown): ExecCommandParams {
 
 	return {
 		commands,
+		name: typeof record.name === "string" ? record.name : undefined,
 		workdir: typeof record.workdir === "string" ? record.workdir : undefined,
 		shell: typeof record.shell === "string" ? record.shell : undefined,
 		tty: typeof record.tty === "boolean" ? record.tty : undefined,
@@ -499,6 +505,7 @@ export function registerExecCommandTool(
 					const result = await sessions.exec(
 						{
 							cmd: item.command,
+							name: typedParams.name,
 							workdir: typedParams.workdir,
 							shell: typedParams.shell,
 							tty: typedParams.tty,
@@ -507,6 +514,7 @@ export function registerExecCommandTool(
 							yield_time_ms: typedParams.yield_time_ms,
 							login: typedParams.login,
 							wait_for_exit: multiple,
+							ownerSessionId: ctx.sessionManager?.getSessionId?.() ?? ctx.cwd,
 						},
 						ctx.cwd,
 						signal,

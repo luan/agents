@@ -18,7 +18,7 @@ type RegisteredTool = {
 		_signal?: AbortSignal,
 		_onUpdate?: unknown,
 		ctx?: { cwd?: string },
-	) => Promise<{ content: Array<{ type: string; text: string }> }>;
+	) => Promise<{ content: Array<{ type: string; text: string }>; details?: Record<string, unknown> }>;
 };
 
 const originalCoreBin = process.env.CONTEXT_GUARD_BIN;
@@ -94,7 +94,8 @@ describe("Context Guard v2 Pi tools", () => {
 		const status = pi.tools.find((tool) => tool.name === "cg_status")!;
 		const purge = pi.tools.find((tool) => tool.name === "cg_purge")!;
 		const ctx = { cwd: projectDir };
-		await search.execute("search", { query: "needle", limit: 2 }, undefined, undefined, ctx);
+		const searchResult = await search.execute("search", { query: "needle", limit: 2 }, undefined, undefined, ctx);
+		expect(searchResult.details).toMatchObject({ query: "needle", limit: 2 });
 		await status.execute("status", {}, undefined, undefined, ctx);
 		await purge.execute(
 			"purge",

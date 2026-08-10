@@ -62,6 +62,25 @@ export interface AgentEvent {
 	tokensBefore?: number;
 }
 
+export function agentKey(rootSessionId: string, id: string): string {
+	return `${rootSessionId}\0${id}`;
+}
+
+export interface AgentAttachment {
+	mode: "terminal";
+	sessionName: string;
+	socketPath: string;
+	command: string;
+	args: string[];
+}
+
+export interface AttachedAgentRuntime {
+	readonly closed?: boolean;
+	steer(message: string): Promise<void>;
+	run(prompt: string): Promise<{ responseText: string; error?: string }>;
+	stop(): Promise<void>;
+}
+
 export interface AgentRecord {
 	id: string;
 	type: SubagentType;
@@ -102,8 +121,11 @@ export interface AgentRecord {
 	events: AgentEvent[];
 	/** True for agents intentionally running outside the current inline tool call. */
 	isBackground?: boolean;
+	executionMode?: "in-process" | "attached";
 	session?: AgentSession;
 	runtime?: AgentSessionRuntime;
+	attachment?: AgentAttachment;
+	attachedRuntime?: AttachedAgentRuntime;
 	abortController?: AbortController;
 	promise?: Promise<string>;
 	groupId?: string;

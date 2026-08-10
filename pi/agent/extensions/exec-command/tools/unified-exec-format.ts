@@ -36,6 +36,9 @@ export function formatUnifiedExecResult(result: UnifiedExecResult, command?: str
 	}
 	if (isProcessStillRunning(result)) {
 		sections.push(`Process running with process ID ${result.process_id}`);
+		if (result.process_name) {
+			sections.push(`Process name: ${result.process_name}`);
+		}
 		if (result.stdin_open) {
 			sections.push("TTY: yes");
 		}

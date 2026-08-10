@@ -1,8 +1,10 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Component } from "@earendil-works/pi-tui";
+import type { Component, TUI } from "@earendil-works/pi-tui";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { onOpenAIFastRequest } from "../shared/openai-fast-state";
+import { registerRootSessionHub } from "../shared/root-session-hub";
+import { attachRuntimeTerminal, openRuntimeHub, registerRuntimeHubSource } from "../shared/runtime-hub";
 import { bold, framedBlock, renderStatusLine, styledSymbol, textComponent, treeGlyphs } from "../shared/tui/card";
 import { findRetryableError } from "./runtime/agent-runner.js";
 import {
@@ -17,9 +19,9 @@ import {
 	unregisterSessionBinding,
 } from "./runtime/coordinator.js";
 import { loadCustomAgents } from "./runtime/custom-agents.js";
-import { readAgentRegistry, readAllAgentRegistries, writeAgentRegistry } from "./runtime/persistence.js";
-import type { AgentConfig, AgentRecord, SubagentType } from "./runtime/types.js";
-import { openAgentBrowser, openAgentInspector } from "./runtime/ui/agent-browser.js";
+import { readAgentRegistry, readRetainedAgentRegistries, writeAgentRegistry } from "./runtime/persistence.js";
+import { type AgentConfig, type AgentRecord, agentKey, type SubagentType } from "./runtime/types.js";
+import { openAgentInspector } from "./runtime/ui/agent-browser.js";
 import { type AgentActivity, AgentWidget } from "./runtime/ui/agent-widget.js";
 import type { AssistantUsage } from "./runtime/usage.js";
 
@@ -419,14 +421,41 @@ export function routeForegroundInput(
 			(record) =>
 				record.parentSessionId === sessionId && record.status === "running" && record.isBackground !== true,
 		)
-		.filter((record) => manager.background(record.id)).length;
+		.filter((record) => manager.background(record.id, record.rootSessionId)).length;
 	return { action: "continue", backgrounded };
+}
+
+export function mergeHubAgentRecords(
+	saved: AgentRecord[],
+	live: AgentRecord[],
+	currentRootSessionId: string,
+): AgentRecord[] {
+	const records = new Map<string, AgentRecord>();
+	const visible = (record: AgentRecord) => record.rootSessionId === currentRootSessionId;
+	for (const record of saved) {
+		if (visible(record)) records.set(agentKey(record.rootSessionId, record.id), record);
+	}
+	for (const record of live) {
+		if (visible(record)) records.set(agentKey(record.rootSessionId, record.id), record);
+	}
+	return [...records.values()].sort((left, right) => right.startedAt - left.startedAt);
+}
+
+export async function attachAgentTerminal(
+	record: AgentRecord,
+	tui: Pick<TUI, "requestRender" | "start" | "stop" | "terminal">,
+): Promise<boolean> {
+	const attachment = record.attachment;
+	if (!attachment?.command || !Array.isArray(attachment.args)) return false;
+	return attachRuntimeTerminal(attachment, tui);
 }
 
 const RETRY_MESSAGE = "retry-failed-request";
 
 export default function subagentsExtension(pi: ExtensionAPI) {
 	let currentCtx: ExtensionContext | undefined;
+	let unregisterHubSource: (() => void) | undefined;
+	const unregisterRootSessionHub = registerRootSessionHub(pi);
 	const manager = getSharedAgentManager();
 	const activityByAgent = getSharedAgentActivity();
 	let currentAgents = new Map<string, AgentConfig>();
@@ -451,41 +480,33 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		}
 		return targets;
 	};
-	const harnessActions = (ctx: ExtensionCommandContext) => ({
-		steer: (record: AgentRecord, message: string) => manager.steer(record.id, message, record.rootSessionId),
-		stop: (record: AgentRecord) => {
-			const stopped = manager.abort(record.id, record.rootSessionId);
-			if (stopped) persistAgent(record);
-			agentWidget.update();
-			return stopped;
-		},
-		followUp: async (record: AgentRecord, prompt: string) => {
-			const updated = await manager.resume(pi, ctx, record.id, prompt, { rootSessionId: record.rootSessionId });
-			if (!updated) return false;
-			persistAgent(updated);
-			agentWidget.update();
-			return true;
-		},
-	});
-	const hubRecords = (): AgentRecord[] => {
-		const records = new Map(
-			readAllAgentRegistries().map((record) => [`${record.rootSessionId}\0${record.id}`, record as AgentRecord]),
+	const hubRecords = (ctx: ExtensionContext): AgentRecord[] => {
+		const sessionId = ctx.sessionManager.getSessionId();
+		return mergeHubAgentRecords(
+			readRetainedAgentRegistries() as AgentRecord[],
+			manager.listAgents(),
+			manager.getRootSessionId(sessionId),
 		);
-		for (const record of manager.listAgents()) records.set(`${record.rootSessionId}\0${record.id}`, record);
-		return [...records.values()].sort((a, b) => b.startedAt - a.startedAt);
 	};
+
 	const hubActions = (ctx: ExtensionCommandContext) => {
 		const liveRecord = (target: AgentRecord) =>
 			manager
 				.listAgents()
 				.find((record) => record.id === target.id && record.rootSessionId === target.rootSessionId);
+		const ensureLiveRecord = (target: AgentRecord) => {
+			const current = liveRecord(target);
+			if (current) return current;
+			manager.restore(readAgentRegistry(target.rootSessionId), false);
+			return liveRecord(target);
+		};
 		return {
 			steer: (target: AgentRecord, message: string) => {
-				const record = liveRecord(target);
+				const record = ensureLiveRecord(target);
 				return record ? manager.steer(record.id, message, record.rootSessionId) : Promise.resolve(false);
 			},
 			stop: (target: AgentRecord) => {
-				const record = liveRecord(target);
+				const record = ensureLiveRecord(target);
 				if (!record) return false;
 				const stopped = manager.abort(record.id, record.rootSessionId);
 				if (stopped) persistAgent(record);
@@ -493,12 +514,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 				return stopped;
 			},
 			followUp: async (target: AgentRecord, prompt: string) => {
-				let record = liveRecord(target);
-				if (!record) {
-					if (manager.getRecord(target.id, target.rootSessionId)) return false;
-					manager.restore([target], false);
-					record = liveRecord(target);
-				}
+				const record = ensureLiveRecord(target);
 				if (!record) return false;
 				const runtime = getSessionRuntime(record.parentSessionId, record.rootSessionId) ?? { pi, ctx };
 				const updated = await manager.resume(runtime.pi, runtime.ctx, record.id, prompt, {
@@ -509,7 +525,33 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 				agentWidget.update();
 				return true;
 			},
+			attach: (target: AgentRecord, tui: Pick<TUI, "requestRender" | "start" | "stop" | "terminal">) =>
+				attachAgentTerminal(target, tui),
 		};
+	};
+	const hubSource = {
+		list: (sourceCtx: ExtensionContext) => {
+			const ctx = sourceCtx as ExtensionCommandContext;
+			const actions = hubActions(ctx);
+			return hubRecords(ctx).map((record) => ({
+				key: `agent:${record.rootSessionId}:${record.id}`,
+				kind: "agent" as const,
+				label: record.id,
+				status: record.status === "completed" ? "idle" : record.status,
+				description: record.description,
+				parent: record.parentAgentId,
+				parentKey: record.parentAgentId ? `agent:${record.rootSessionId}:${record.parentAgentId}` : undefined,
+				lastActivity: record.completedAt ?? record.startedAt,
+				open: async () => {
+					const live = manager.getRecord(record.id, record.rootSessionId) ?? record;
+					await openAgentInspector(ctx, live, actions);
+				},
+				attach: record.attachment
+					? (tui: Pick<TUI, "requestRender" | "start" | "stop" | "terminal">) => actions.attach(record, tui)
+					: undefined,
+				stop: () => actions.stop(record),
+			}));
+		},
 	};
 
 	const agentWidget = new AgentWidget(
@@ -543,6 +585,8 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		currentAgents = loadAgents(ctx.cwd);
 		registerSessionBinding(pi, ctx);
 		if (shouldOwnAgentWidget(manager, sessionId, ctx.hasUI)) {
+			unregisterHubSource?.();
+			unregisterHubSource = registerRuntimeHubSource("subagents", hubSource);
 			registerAgentWidget(agentWidget);
 			agentWidget.setUICtx(ctx.ui);
 			agentWidget.update();
@@ -551,6 +595,9 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async () => {
+		unregisterHubSource?.();
+		unregisterHubSource = undefined;
+		unregisterRootSessionHub();
 		unsubscribeFastRequests();
 		if (currentCtx) unregisterSessionBinding(currentCtx);
 		unregisterAgentWidget(agentWidget);
@@ -558,26 +605,17 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		currentCtx = undefined;
 	});
 
-	pi.registerCommand("subagents", {
-		description: "Browse and inspect the current agent tree",
-		handler: async (_args: string, ctx: ExtensionCommandContext) => {
-			await openAgentBrowser(ctx, visibleRecords(ctx), harnessActions(ctx));
-		},
-	});
-
 	pi.registerCommand("hub", {
-		description: "Browse agents across persisted sessions",
+		description: "Open the shared Hub",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
-			await openAgentBrowser(ctx, hubRecords(), hubActions(ctx));
+			await openRuntimeHub(ctx);
 		},
 	});
 
-	pi.registerCommand("subagent", {
-		description: "Inspect a subagent by id",
-		handler: async (args: string, ctx: ExtensionCommandContext) => {
-			const target = args.trim();
-			const record = findOwnedRecord(ctx, target);
-			await openAgentInspector(ctx, record, harnessActions(ctx));
+	pi.registerShortcut?.("alt+a", {
+		description: "Open the shared Hub",
+		handler: async (ctx: ExtensionContext) => {
+			await openRuntimeHub(ctx);
 		},
 	});
 
@@ -634,6 +672,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 			record.completionDelivered = true;
 			const retried = await manager.retry(pi, ctx, record.id, {
 				onAssistantUsage: () => {},
+				rootSessionId: record.rootSessionId,
 			});
 			if (!retried) {
 				report(`Subagent ${record.id} has no failed request to re-issue.`, "warning");
@@ -703,7 +742,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 						isolation: item.isolated ? "worktree" : undefined,
 						signal: background ? undefined : signal,
 						onToolActivity: (tool) => {
-							const activity = ensureActivity(activityByAgent, id);
+							const activity = ensureActivity(activityByAgent, agentKey(rootSessionId, id));
 							if (tool.type === "start") activity.activeTools.set(tool.toolName, tool.toolName);
 							else {
 								activity.activeTools.delete(tool.toolName);
@@ -712,24 +751,24 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 							agentWidget.update();
 						},
 						onTextDelta: (_delta, fullText) => {
-							ensureActivity(activityByAgent, id).responseText = fullText;
+							ensureActivity(activityByAgent, agentKey(rootSessionId, id)).responseText = fullText;
 						},
 						onSessionCreated: (session) => {
-							ensureActivity(activityByAgent, id).session = session;
-							const record = manager.getRecord(id);
+							ensureActivity(activityByAgent, agentKey(rootSessionId, id)).session = session;
+							const record = manager.getRecord(id, rootSessionId);
 							if (record) persistAgent(record);
 						},
 						onTurnEnd: (turnCount) => {
-							const activity = ensureActivity(activityByAgent, id);
+							const activity = ensureActivity(activityByAgent, agentKey(rootSessionId, id));
 							activity.turnCount = turnCount;
 						},
 						onAssistantUsage: (usage) => {
-							addActivityUsage(ensureActivity(activityByAgent, id), usage);
+							addActivityUsage(ensureActivity(activityByAgent, agentKey(rootSessionId, id)), usage);
 							agentWidget.update();
 						},
 					});
-					ensureActivity(activityByAgent, id);
-					const record = manager.getRecord(id);
+					ensureActivity(activityByAgent, agentKey(rootSessionId, id));
+					const record = manager.getRecord(id, rootSessionId);
 					if (!record) throw new Error(`Subagent record missing after spawn: ${id}`);
 					persistAgent(record);
 					agentWidget.update();
@@ -783,7 +822,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 							toolUses: 0,
 						};
 					}
-					await manager.waitForForeground(record.id);
+					await manager.waitForForeground(record.id, record.rootSessionId);
 					completed++;
 					agentWidget.update();
 					persistAgent(record);

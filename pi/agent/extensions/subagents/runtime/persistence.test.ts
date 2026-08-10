@@ -1,9 +1,15 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentManager } from "./agent-manager";
-import { type PersistedAgent, readAllAgentRegistries, toPersistedAgent } from "./persistence";
+import {
+	type PersistedAgent,
+	readRetainedAgentRegistries,
+	removeAgentRegistryRecord,
+	toPersistedAgent,
+	writeAgentRegistry,
+} from "./persistence";
 import type { AgentRecord } from "./types";
 
 test("removes live runtime handles from persisted agents", () => {
@@ -26,6 +32,14 @@ test("removes live runtime handles from persisted agents", () => {
 		promise: Promise.resolve("done"),
 		session: { dispose() {} },
 		runtime: { session: { dispose() {} } },
+		attachment: {
+			mode: "terminal",
+			sessionName: "pi-agent-agent-1",
+			socketPath: "/tmp/agent-1.sock",
+			command: "rmux",
+			args: ["attach-session", "-t", "pi-agent-agent-1"],
+		},
+		attachedRuntime: { steer() {}, run() {}, stop() {} },
 		outputCleanup() {},
 	} as unknown as AgentRecord;
 
@@ -36,6 +50,14 @@ test("removes live runtime handles from persisted agents", () => {
 	expect(persisted.promise).toBeUndefined();
 	expect(persisted.abortController).toBeUndefined();
 	expect(persisted.outputCleanup).toBeUndefined();
+	expect(persisted.attachedRuntime).toBeUndefined();
+	expect(persisted.attachment).toEqual({
+		mode: "terminal",
+		sessionName: "pi-agent-agent-1",
+		socketPath: "/tmp/agent-1.sock",
+		command: "rmux",
+		args: ["attach-session", "-t", "pi-agent-agent-1"],
+	});
 });
 
 test("restores one root-owned recursive agent tree", () => {
@@ -75,6 +97,83 @@ test("restores one root-owned recursive agent tree", () => {
 	expect(manager.getRootSessionId("child-session")).toBe("root-session");
 });
 
+test("restores running attached agents without reopening them in-process", () => {
+	const manager = new AgentManager(undefined, 1);
+	manager.restore([
+		{
+			id: "attached",
+			type: "task",
+			description: "attached",
+			status: "running",
+			rootSessionId: "root-session",
+			parentSessionId: "root-session",
+			assignment: "delegate",
+			cwd: "/tmp/project",
+			isBackground: true,
+			events: [],
+			toolUses: 0,
+			startedAt: Date.now(),
+			lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
+			compactionCount: 0,
+			executionMode: "attached",
+			attachment: {
+				mode: "terminal",
+				sessionName: "attached",
+				socketPath: "/tmp/attached.sock",
+				command: "true",
+				args: [],
+			},
+		},
+	]);
+
+	expect(manager.getRecord("attached")?.status).toBe("running");
+	const queuedId = manager.spawn({} as never, { cwd: "/tmp/project" } as never, "task", "queued", {
+		description: "queued",
+		rootSessionId: "root-session",
+		parentSessionId: "root-session",
+		assignment: "queued",
+		agentConfig: {} as never,
+		isBackground: true,
+	});
+	expect(manager.getRecord(queuedId)?.status).toBe("queued");
+	manager.abortAll();
+});
+
+test("does not retry an attached session through the in-process runner", async () => {
+	const manager = new AgentManager();
+	manager.restore([
+		{
+			id: "attached",
+			type: "task",
+			description: "attached",
+			status: "error",
+			error: "failed",
+			rootSessionId: "root-session",
+			parentSessionId: "root-session",
+			assignment: "delegate",
+			cwd: "/tmp/project",
+			sessionFile: "/tmp/attached.jsonl",
+			agentConfig: {} as never,
+			events: [],
+			toolUses: 0,
+			startedAt: Date.now(),
+			completedAt: Date.now(),
+			lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
+			compactionCount: 0,
+			executionMode: "attached",
+			attachment: {
+				mode: "terminal",
+				sessionName: "attached",
+				socketPath: "/tmp/attached.sock",
+				command: "true",
+				args: [],
+			},
+		},
+	]);
+
+	expect(await manager.retry({} as never, {} as never, "attached")).toBeUndefined();
+});
+
 test("retains only the newest terminal agents per root session", () => {
 	const removed: string[] = [];
 	const manager = new AgentManager(undefined, undefined, undefined, undefined, (record) => removed.push(record.id), 2);
@@ -106,9 +205,10 @@ test("retains only the newest terminal agents per root session", () => {
 	manager.dispose();
 });
 
-test("discovers persisted agents across root sessions", () => {
+test("discovers retained agents across root sessions", () => {
 	const root = mkdtempSync(join(tmpdir(), "agent-registries-"));
 	try {
+		const now = Date.now();
 		for (const session of ["root-a", "root-b"]) {
 			const dir = join(root, session);
 			mkdirSync(dir);
@@ -116,15 +216,102 @@ test("discovers persisted agents across root sessions", () => {
 				join(dir, "registry.json"),
 				JSON.stringify({
 					version: 1,
-					agents: [{ id: `agent-${session}`, rootSessionId: session }],
+					agents: [
+						{
+							id: `agent-${session}`,
+							rootSessionId: session,
+							status: "completed",
+							startedAt: now,
+							completedAt: now,
+						},
+					],
 				}),
 			);
 		}
 		expect(
-			readAllAgentRegistries(root)
+			readRetainedAgentRegistries(root, 100, now)
 				.map((agent) => agent.id)
 				.sort(),
 		).toEqual(["agent-root-a", "agent-root-b"]);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("prunes stale agents from unopened root registries", () => {
+	const root = mkdtempSync(join(tmpdir(), "agent-retention-"));
+	try {
+		const now = Date.now();
+		const dir = join(root, "unopened-root");
+		mkdirSync(dir);
+		const base = {
+			type: "task",
+			description: "agent",
+			rootSessionId: "unopened-root",
+			parentSessionId: "unopened-root",
+			assignment: "delegate",
+			cwd: "/tmp/project",
+			events: [],
+			toolUses: 0,
+			lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
+			compactionCount: 0,
+		};
+		const agents = [
+			{ ...base, id: "stale", status: "completed", startedAt: now - 11 * 60_000, completedAt: now - 11 * 60_000 },
+			{ ...base, id: "fresh", status: "completed", startedAt: now, completedAt: now },
+			{ ...base, id: "running", status: "running", startedAt: now - 60 * 60_000 },
+		] satisfies PersistedAgent[];
+		const path = join(dir, "registry.json");
+		writeFileSync(path, JSON.stringify({ version: 1, agents }));
+
+		expect(
+			readRetainedAgentRegistries(root, 100, now)
+				.map((agent) => agent.id)
+				.sort(),
+		).toEqual(["fresh", "running"]);
+		expect(
+			(JSON.parse(readFileSync(path, "utf8")) as { agents: PersistedAgent[] }).agents
+				.map((agent) => agent.id)
+				.sort(),
+		).toEqual(["fresh", "running"]);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("merges stale registry snapshots without dropping sibling agents", () => {
+	const root = mkdtempSync(join(tmpdir(), "agent-registry-merge-"));
+	try {
+		const now = Date.now();
+		const base = {
+			type: "task",
+			description: "agent",
+			status: "completed" as const,
+			rootSessionId: "shared-root",
+			parentSessionId: "shared-root",
+			assignment: "delegate",
+			cwd: "/tmp/project",
+			events: [],
+			toolUses: 0,
+			startedAt: now,
+			completedAt: now,
+			lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
+			compactionCount: 0,
+		};
+		const first = { ...base, id: "first" } satisfies AgentRecord;
+		const second = { ...base, id: "second" } satisfies AgentRecord;
+
+		writeAgentRegistry("shared-root", [first], root);
+		writeAgentRegistry("shared-root", [second], root);
+		writeAgentRegistry("shared-root", [{ ...first, result: "updated" }], root);
+
+		expect(readRetainedAgentRegistries(root, 100, now).map((agent) => [agent.id, agent.result])).toEqual([
+			["first", "updated"],
+			["second", undefined],
+		]);
+
+		removeAgentRegistryRecord("shared-root", "first", root);
+		expect(readRetainedAgentRegistries(root, 100, now).map((agent) => agent.id)).toEqual(["second"]);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -199,5 +386,36 @@ test("keeps colliding agent ids addressable by root session", () => {
 	expect(manager.abort("shared-id", "root-b")).toBe(true);
 	expect(rootA.status).toBe("running");
 	expect(rootB.status).toBe("stopped");
+	manager.dispose();
+});
+
+test("spawns the same explicit id in different root sessions", () => {
+	const manager = new AgentManager(undefined, 0);
+	const agentConfig = {
+		name: "task",
+		description: "Task",
+		extensions: false,
+		skills: false,
+		systemPrompt: "Work.",
+		promptMode: "replace",
+	} as const;
+	for (const rootSessionId of ["root-a", "root-b"]) {
+		manager.spawn({} as never, { cwd: "/tmp/project" } as never, "task", "work", {
+			id: "shared-id",
+			description: "shared",
+			rootSessionId,
+			parentSessionId: rootSessionId,
+			assignment: "work",
+			agentConfig,
+			isBackground: true,
+		});
+	}
+
+	expect(
+		manager
+			.listAgents()
+			.map((record) => record.rootSessionId)
+			.sort(),
+	).toEqual(["root-a", "root-b"]);
 	manager.dispose();
 });

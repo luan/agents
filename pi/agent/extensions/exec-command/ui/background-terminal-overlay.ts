@@ -1,3 +1,4 @@
+import { copyToClipboard } from "@earendil-works/pi-coding-agent";
 import { type Component, Key, matchesKey, type TUI, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { truncateToWidthCompat } from "../../shared/tui";
 import type { ExecSessionManager, ExecSessionRecord } from "../tools/exec-session-manager.ts";
@@ -23,16 +24,32 @@ export class BackgroundTerminalOverlay implements Component {
 	private autoScroll = true;
 	private message: string | undefined;
 	private lastOutputInnerWidth = 0;
+	private resizedSessionId: number | undefined;
+	private resizedCols = 0;
+	private resizedRows = 0;
 
 	constructor(
-		private readonly sessions: Pick<ExecSessionManager, "listSessions" | "onSessionUpdate" | "stopSession" | "write">,
+		private readonly sessions: Pick<
+			ExecSessionManager,
+			"listSessions" | "onSessionUpdate" | "resize" | "stopSession" | "write"
+		>,
 		private readonly tui: Pick<TUI, "requestRender" | "terminal">,
 		private readonly theme: OverlayTheme,
 		private readonly done: (result: undefined) => void,
+		private readonly copyText: (text: string) => Promise<void> = copyToClipboard,
+		selectedSessionId?: number,
 	) {
 		this.unsubscribe = sessions.onSessionUpdate(() => {
 			if (!this.closed) this.tui.requestRender();
 		});
+		if (selectedSessionId !== undefined) {
+			const selectedIndex = sessions.listSessions().findIndex((record) => record.id === selectedSessionId);
+			if (selectedIndex >= 0) {
+				this.selectedIndex = selectedIndex;
+				this.mode = "attached";
+				this.attachedSessionId = selectedSessionId;
+			}
+		}
 	}
 
 	handleInput(data: string): void {
@@ -73,6 +90,10 @@ export class BackgroundTerminalOverlay implements Component {
 			this.listScrollOffset = this.selectedIndex;
 			this.message = undefined;
 			this.tui.requestRender();
+			return;
+		}
+		if (isCopyKey(data)) {
+			void this.copySelectedAttachCommand();
 			return;
 		}
 		if (isAttachKey(data)) {
@@ -120,7 +141,7 @@ export class BackgroundTerminalOverlay implements Component {
 		);
 		lines.push(
 			this.row(
-				this.theme.fg("dim", "j/k move · ctrl-u/d page · enter/l/a attach · x kill · g/G top/bottom · q/esc close"),
+				this.theme.fg("dim", "j/k move · ctrl-u/d page · enter/l/a attach · c copy command · x kill · q/esc close"),
 				innerWidth,
 			),
 		);
@@ -277,6 +298,7 @@ export class BackgroundTerminalOverlay implements Component {
 		const outputLines = outputLinesForRender(record.output, innerWidth);
 		this.lastOutputInnerWidth = innerWidth;
 		const viewportHeight = this.attachedViewportHeight();
+		this.resizeAttachedSession(record.id, innerWidth, viewportHeight);
 		const maxScroll = Math.max(0, outputLines.length - viewportHeight);
 		if (this.autoScroll) this.scrollOffset = maxScroll;
 		this.scrollOffset = Math.max(0, Math.min(this.scrollOffset, maxScroll));
@@ -340,6 +362,17 @@ export class BackgroundTerminalOverlay implements Component {
 		return Math.max(1, this.availableRows() - LIST_CHROME_LINES);
 	}
 
+	private resizeAttachedSession(sessionId: number, cols: number, rows: number): void {
+		if (this.resizedSessionId === sessionId && this.resizedCols === cols && this.resizedRows === rows) return;
+		this.resizedSessionId = sessionId;
+		this.resizedCols = cols;
+		this.resizedRows = rows;
+		void this.sessions.resize(sessionId, cols, rows).catch((error) => {
+			this.message = error instanceof Error ? error.message : String(error);
+			this.tui.requestRender();
+		});
+	}
+
 	private attachedOutputLines(): string[] {
 		const record = this.sessions.listSessions().find((item) => item.id === this.attachedSessionId);
 		if (!record) return [];
@@ -369,6 +402,29 @@ export class BackgroundTerminalOverlay implements Component {
 		this.scrollOffset = 0;
 		this.autoScroll = true;
 		this.message = undefined;
+		this.tui.requestRender();
+	}
+
+	private async copySelectedAttachCommand(): Promise<void> {
+		const records = this.sessions.listSessions();
+		this.clampSelection(records.length);
+		const record = records[this.selectedIndex];
+		if (!record) {
+			this.message = "No background terminal selected";
+			this.tui.requestRender();
+			return;
+		}
+		if (!record.attachCommand) {
+			this.message = `Background terminal #${record.id} has no external attach command`;
+			this.tui.requestRender();
+			return;
+		}
+		try {
+			await this.copyText(record.attachCommand);
+			this.message = `Copied attach command for background terminal #${record.id}`;
+		} catch (error) {
+			this.message = error instanceof Error ? error.message : String(error);
+		}
 		this.tui.requestRender();
 	}
 
@@ -481,6 +537,10 @@ function isPageUpKey(data: string): boolean {
 
 function isPageDownKey(data: string): boolean {
 	return matchesKey(data, Key.pageDown) || matchesKey(data, Key.ctrl("d")) || data === "\u0004";
+}
+
+function isCopyKey(data: string): boolean {
+	return data === "c";
 }
 
 function isKillKey(data: string): boolean {
