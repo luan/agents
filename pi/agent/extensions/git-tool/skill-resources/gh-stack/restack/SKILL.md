@@ -36,4 +36,5 @@ ambiguous work with `gs rebase abort`. Do not use raw `git rebase` or `gh stack
 rebase`.
 
 Restacking does not authorize a push. Update remote PRs only when requested,
-using `gs stack submit --update-only --existing-only --no-web`.
+using `gs stack submit --update-only --no-web`. That flag skips a branch with no
+PR, so confirm PR identity from `gs log short` and `gh stack view --json` first.

@@ -26,11 +26,14 @@ Resolve conflicts, stage them, and continue with `gs rebase continue`; abort
 with `gs rebase abort` when resolution is unclear.
 
 Syncing local branches does not authorize remote updates. If requested, update
-exact existing PRs with:
+existing PRs with:
 
 ```bash
-gs stack submit --update-only --existing-only --no-web
+gs stack submit --update-only --no-web
 ```
+
+`--update-only` skips a branch that has no PR. Confirm PR identity from
+`gs log short` and `gh stack view --json` before submitting.
 
 Verify the final local and native stack views. Do not use raw rebase, raw push,
 or `gh stack sync`.

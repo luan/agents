@@ -19,12 +19,14 @@ gs log short
 Update known remote work only:
 
 ```bash
-gs stack submit --update-only --existing-only --no-web
+gs stack submit --update-only --no-web
 ```
 
-This must fail before mutation when any selected branch lacks an exact change
-request or upstream mapping. Add `--force` only when the user explicitly
-authorizes the planned history rewrite.
+`--update-only` skips a branch that has no change request. It does not stop the
+run, and it does not verify the remote head or base. Read `gs log short` first.
+Stop before mutation when any selected branch lacks a change request or an
+upstream mapping. Add `--force` only when the user explicitly authorizes the
+planned history rewrite.
 
 Create remote branches or change requests only when requested:
 

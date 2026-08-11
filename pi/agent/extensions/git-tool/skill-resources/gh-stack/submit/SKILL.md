@@ -29,8 +29,13 @@ missing or ambiguous.
 Update existing PRs only:
 
 ```bash
-gs stack submit --update-only --existing-only --no-web
+gs stack submit --update-only --no-web
 ```
+
+`--update-only` skips a branch that has no PR. It does not stop the run, and it
+does not verify the remote head or base. Treat the preflight views as the
+identity check, and stop before mutation when any selected branch lacks a PR or
+an upstream mapping.
 
 Add `--force` only when the user explicitly authorizes the planned history
 rewrite. Create remote branches or PRs only when requested:

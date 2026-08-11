@@ -24,9 +24,11 @@ gs log short
 | Create layer | `gs branch create <name> --message <message>` |
 | Navigate | `gs up`, `gs down`, `gs top`, `gs bottom`, `gs trunk` |
 | Move layer | `gs branch onto <base> --branch <name> --restack=upstack` |
-| Reorder stack | `gs stack reorder <bottom> ... <top>` |
+| Reorder stack | one `gs branch onto` per layer, from the new bottom upward |
 | Restack | `gs stack restack --branch <name>` |
 | Merge | `gs stack merge --branch <top> --method squash --fail-fast` |
 
-`gs stack reorder` requires every branch in one linear stack exactly once,
-ordered bottom to top. Stop on ambiguous membership or identity errors.
+There is no noninteractive reorder command. `gs stack edit` reorders a stack,
+but it opens an editor. Reorder with one `gs branch onto <base> --branch <name>`
+per layer instead, from the new bottom upward. Stop on ambiguous membership or
+identity errors.
