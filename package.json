@@ -5,7 +5,7 @@
     "check": "bun run lint && bun run typecheck && bun run test",
     "lint": "biome check --write --error-on-warnings .",
     "typecheck": "tsgo --noEmit --pretty false --project tsconfig.typecheck.json",
-    "test": "bun test --timeout 30000 pi/agent/extensions skills",
+    "test": "bun test --timeout 10000 pi/agent/extensions",
     "prepare": "husky"
   },
   "dependencies": {

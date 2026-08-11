@@ -50,3 +50,4 @@ plugins/install-counts-cache.json
 .pi
 artifacts/
 /pi/agent/rmux/exec.conf
+/pi/agent/model-role-selection.json
