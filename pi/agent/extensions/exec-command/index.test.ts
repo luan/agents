@@ -14,6 +14,7 @@ import {
 	createExecSessionManager as createBaseExecSessionManager,
 	type ExecSessionManager,
 	type ExecSessionManagerOptions,
+	type UnifiedExecResult,
 } from "./tools/exec-session-manager.ts";
 import { BackgroundTerminalOverlay } from "./ui/background-terminal-overlay.ts";
 
@@ -22,6 +23,13 @@ const testTheme: RenderTheme = {
 	bold: (text) => `<bold>${text}</bold>`,
 };
 const FAST_TEST_YIELD_TIME_MS = 5;
+/**
+ * Tests that spawn a real process return as soon as it exits; the yield is only the ceiling for a
+ * loaded machine. The manager reaps a child whose exit notification is lost, so an expired yield
+ * shows up as empty output, which these tests retry rather than assert on.
+ */
+const REAL_PROCESS_YIELD_MS = 5_000;
+const REAL_PROCESS_TEST_TIMEOUT_MS = 60_000;
 const FAST_EXTENSION_OPTIONS: ExecCommandExtensionOptions = {
 	sessionManagerOptions: {
 		defaultExecYieldTimeMs: FAST_TEST_YIELD_TIME_MS,
@@ -127,6 +135,22 @@ function createPipeGate(prefix = "exec-command-gate-"): PipeGate {
 
 function gatedCommand(gate: PipeGate, command: string): string {
 	return `cat ${shellQuote(gate.path)} >/dev/null; ${command}`;
+}
+
+const NON_COLOR_PROBE =
+	'[ -z "$FORCE_COLOR" ] && fc=unset || fc="$FORCE_COLOR"; printf "%s|%s|%s" "$NO_COLOR" "$TERM" "$fc"';
+
+/**
+ * The probe always prints, so an empty result means the runtime lost the child rather than that
+ * the environment is wrong. Retry those; a real environment regression still prints the wrong text.
+ */
+async function execNonColorProbe(sessions: ExecSessionManager, attempts = 5): Promise<UnifiedExecResult> {
+	const probe = () => sessions.exec({ cmd: NON_COLOR_PROBE, yield_time_ms: REAL_PROCESS_YIELD_MS }, process.cwd());
+	let result = await probe();
+	for (let attempt = 1; attempt < attempts && result.output === ""; attempt++) {
+		result = await probe();
+	}
+	return result;
 }
 
 function createExecSessionManager(options: ExecSessionManagerOptions = {}): ExecSessionManager {
@@ -663,22 +687,22 @@ test("shell card omits the token cost when the buffer never became a result", ()
 	expect(lines.join("\n")).not.toContain("tok");
 });
 
-test("exec session manager uses a non-color environment", async () => {
-	const sessions = createExecSessionManager({ defaultExecYieldTimeMs: 5000 });
-	try {
-		const result = await sessions.exec(
-			{
-				cmd: '[ -z "$FORCE_COLOR" ] && fc=unset || fc="$FORCE_COLOR"; printf "%s|%s|%s" "$NO_COLOR" "$TERM" "$fc"',
-				yield_time_ms: 5000,
-			},
-			process.cwd(),
-		);
-		expect(result.output).toBe("1|dumb|unset");
-		expect(result.exit_code).toBe(0);
-	} finally {
-		sessions.shutdown();
-	}
-});
+test(
+	"exec session manager uses a non-color environment",
+	async () => {
+		const sessions = createExecSessionManager();
+		try {
+			// wait_for_exit, not a yield budget: a real shell on a loaded machine outlasts any clock
+			// we could pick.
+			const result = await execNonColorProbe(sessions);
+			expect(result.output).toBe("1|dumb|unset");
+			expect(result.exit_code).toBe(0);
+		} finally {
+			sessions.shutdown();
+		}
+	},
+	REAL_PROCESS_TEST_TIMEOUT_MS,
+);
 
 test("exec session manager reserves names while a PTY is starting", async () => {
 	let releaseSpawn = () => {};
@@ -820,25 +844,40 @@ test("exec session manager reads append-only logs with cursors", async () => {
 	}
 });
 
-test("exec session manager can poll running sessions", async () => {
-	const sessions = createExecSessionManager();
-	const gate = createPipeGate();
-	try {
-		const first = await sessions.exec({ cmd: gatedCommand(gate, "printf done"), yield_time_ms: 250 }, process.cwd());
-		expect(first.process_id).toBeNumber();
-		gate.release();
-		const next = await sessions.write({
-			process_id: first.process_id!,
-			chars: "",
-			yield_time_ms: 5000,
-		});
-		expect(next.output).toContain("done");
-		expect(next.exit_code).toBe(0);
-	} finally {
-		sessions.shutdown();
-		gate.cleanup();
-	}
-});
+test(
+	"exec session manager can poll running sessions",
+	async () => {
+		const sessions = createExecSessionManager();
+		const gate = createPipeGate();
+		try {
+			const first = await sessions.exec(
+				{ cmd: gatedCommand(gate, "printf done"), yield_time_ms: 250 },
+				process.cwd(),
+			);
+			expect(first.process_id).toBeNumber();
+			gate.release();
+			// Each poll consumes the pending output, so accumulate across polls instead of
+			// betting on one yield window being long enough for a real shell to finish.
+			let output = "";
+			let exitCode: number | undefined;
+			while (exitCode === undefined) {
+				const next = await sessions.write({
+					process_id: first.process_id!,
+					chars: "",
+					yield_time_ms: REAL_PROCESS_YIELD_MS,
+				});
+				output += next.output;
+				exitCode = next.exit_code;
+			}
+			expect(output).toContain("done");
+			expect(exitCode).toBe(0);
+		} finally {
+			sessions.shutdown();
+			gate.cleanup();
+		}
+	},
+	REAL_PROCESS_TEST_TIMEOUT_MS,
+);
 
 test("exec cell component lays out once per width and refreshes when the cell changes", () => {
 	let layouts = 0;

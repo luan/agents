@@ -1,5 +1,3 @@
-import * as pty from "node-pty";
-
 export interface PtyProcess {
 	readonly pid?: number;
 	readonly name?: string;
@@ -27,6 +25,10 @@ export interface PtyBackend {
 
 export function createNodePtyBackend(): PtyBackend {
 	return {
-		spawn: (file, args, options) => pty.spawn(file, args, options),
+		// Imported on first spawn, never at module load: node-pty installs a SIGCHLD reaper
+		// that swallows exit notifications for every other child in the process, which hangs
+		// anything awaiting a child's exit. Bun never reaches this backend — it runs PTYs in
+		// the node-pty host process — so a Bun agent must not pay that cost for an unused import.
+		spawn: async (file, args, options) => (await import("node-pty")).spawn(file, args, options),
 	};
 }

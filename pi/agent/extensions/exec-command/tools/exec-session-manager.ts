@@ -207,6 +207,8 @@ const MIN_EMPTY_WRITE_YIELD_TIME_MS = 30_000;
 const MAX_YIELD_TIME_MS = 120_000;
 const MAX_COMMAND_HISTORY = 256;
 const DEFAULT_MAX_SESSION_BUFFER_CHARS = UNIFIED_EXEC_OUTPUT_MAX_BYTES;
+const PID_LIVENESS_POLL_MS = 250;
+const LOST_PROCESS_ERROR = "process vanished before reporting an exit status";
 const IS_BUN_RUNTIME = typeof process !== "undefined" && typeof process.versions?.bun === "string";
 const NODE_PTY_HOST = fileURLToPath(new URL("./node-pty-host.mjs", import.meta.url));
 
@@ -1102,6 +1104,36 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			appendOutput(session, `${error.message}\n`);
 			completeSession(session, "session_error", undefined, error.message);
 		});
+
+		// Under heavy process churn the runtime sometimes never reports this child's exit, which
+		// would leave the session running forever and block every caller waiting on it. The pid is
+		// the ground truth, so reap the session once it is gone. One grace tick after the pid
+		// disappears lets a genuinely pending "close" (and its buffered output) win the race.
+		// Without a recorded exit code the outcome is unknown, and reporting an unobserved
+		// success would let a caller trust a command that may never have run.
+		let pidGoneTicks = 0;
+		const livenessPoll = setInterval(() => {
+			if (!isRunning(session)) {
+				clearInterval(livenessPoll);
+				return;
+			}
+			if (child.pid === undefined) return;
+			try {
+				process.kill(child.pid, 0);
+				pidGoneTicks = 0;
+				return;
+			} catch {
+				pidGoneTicks++;
+			}
+			if (pidGoneTicks < 2) return;
+			clearInterval(livenessPoll);
+			if (child.exitCode === null) {
+				completeSession(session, "session_error", undefined, LOST_PROCESS_ERROR);
+				return;
+			}
+			completeSession(session, session.pendingTerminalState ?? "exited", child.exitCode);
+		}, PID_LIVENESS_POLL_MS);
+		livenessPoll.unref?.();
 
 		session.abortCleanup = registerAbortHandler(signal, () => {
 			terminateSession(session, "cancelled");
