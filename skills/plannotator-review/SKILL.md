@@ -1,7 +1,6 @@
 ---
 name: plannotator-review
 description: Open Plannotator's browser-based code review UI for the current worktree or a pull request URL, then act on the feedback that comes back.
-disable-model-invocation: true
 ---
 
 # Plannotator Review
@@ -20,11 +19,5 @@ Behavior:
 2. Wait for it to finish.
 3. If it returns feedback or annotations, address them in the same conversation.
 4. If it returns an approval/LGTM-style message, acknowledge that review passed and continue.
-
-When reporting returned findings outside the UI, use one line per issue:
-
-`path:line: severity: problem. Fix.`
-
-Use `critical`, `risk`, `nit`, or `question`. Skip praise and preamble.
 
 Do not ask the user to copy shell commands into chat. Run the command yourself.
