@@ -885,8 +885,8 @@ describe("fileops extension modes", () => {
 		const text = result.content[0].text;
 
 		expect((text.match(/\*?\d+:needle/g) ?? []).length).toBe(200);
-		expect(text).toContain("Search results truncated at 200 rows");
-		expect(text).toContain("Use a narrower path, glob, or ranges.");
+		expect(text).toContain("Match budget reached");
+		expect(text).toContain("Narrow the pattern, path, or glob to see the rest.");
 	});
 
 	it("caps find output and reports when additional files were omitted", async () => {
@@ -898,8 +898,11 @@ describe("fileops extension modes", () => {
 		const result = await tools.get("find").execute("find", { paths: ["*.txt"] }, undefined, undefined, { cwd });
 		const text = result.content[0].text;
 
-		expect(text.split("\n").filter((line: string) => line.endsWith(".txt"))).toHaveLength(200);
-		expect(text).toContain("Find results truncated at 200 files");
+		// The file window is policy now, not a model-supplied limit, and the
+		// notice names the next call instead of just reporting the cut.
+		expect(text.split("\n").filter((line: string) => line.endsWith(".txt"))).toHaveLength(20);
+		expect(text).toContain("of 205");
+		expect(text).toContain("skip=20");
 	});
 
 	it("registers search and find workflow tools", async () => {
@@ -914,10 +917,12 @@ describe("fileops extension modes", () => {
 		expect(searchResult.content[0].text).toContain("[sample.txt#");
 		expect(searchResult.content[0].text).toContain("2:beta");
 		expect(tools.get("find").parameters.properties.paths).toBeDefined();
+		// `limit` is no longer part of the schema; a stale caller passing it is
+		// ignored rather than rejected, so the full window comes back.
 		const findResult = await tools
 			.get("find")
 			.execute("find", { paths: ["*.txt"], limit: 1 }, undefined, undefined, { cwd });
-		expect(findResult.content[0].text).toBe("other.txt");
+		expect(findResult.content[0].text).toBe("other.txt\nsample.txt");
 		const absoluteFindResult = await tools
 			.get("find")
 			.execute("find", { paths: [join(cwd, "*.txt")], limit: 10 }, undefined, undefined, { cwd });

@@ -28,6 +28,8 @@ import {
 } from "@earendil-works/pi-tui";
 import { createTwoFilesPatch, diffChars } from "diff";
 import { Type } from "typebox";
+import { captureContent } from "../context-guard/pi/capture.ts";
+import { getCurrentContextGuardSessionId } from "../context-guard/pi/current-session.ts";
 import { resolveCommand, runCommand as runExternalCommand } from "../shared/command-runner.ts";
 import { renderCompactSummaryLine } from "../shared/compact-summary.ts";
 import {
@@ -47,6 +49,14 @@ import { githubResourceProvider } from "../shared/github-resources.ts";
 import { historyResourceProvider } from "../shared/history-resources.ts";
 import { createCircularPreviewImageFromBase64, readPreviewImageFromPath } from "../shared/image-preview.ts";
 import { KittyVirtualImage, transmitKittyInlineImageRow } from "../shared/kitty-virtual-image.ts";
+import {
+	approxTokenCount,
+	type BoundedOutput,
+	type BoundOutputOptions,
+	boundOutput,
+	formatTokenCost,
+	GREP_MAX_LINE_CHARS,
+} from "../shared/output-budget.ts";
 import {
 	findResources,
 	formatResourceUri,
@@ -134,11 +144,92 @@ type EditMode = "apply_patch" | "patch" | "hashline" | "replace";
 const EDIT_FRAME_MS = 120;
 const CONTEXT_PROTECTION_READ_BYTES = 50_000;
 const CONTEXT_PROTECTION_READ_LABEL = "Large file read blocked";
+/** Fallback hit cap for the local resource provider's own search. */
 const DEFAULT_SEARCH_RESULT_LIMIT = 200;
-const DEFAULT_FIND_RESULT_LIMIT = 200;
+
+/**
+ * Search and find cost policy.
+ *
+ * The model does not set these: `limit` and `context` are accepted and ignored
+ * so older prompts degrade to the defaults instead of erroring. Cost is a
+ * property of the tool, not of the caller's optimism.
+ *
+ * The caps are scope-aware because the two scopes fail differently: a tree
+ * search must show many files shallowly, while a single-file search is a
+ * strided read of that file and must be capped on rows, not on files.
+ */
+/** Files returned per page, for both search and find. `skip` moves the window. */
+const SEARCH_FILE_WINDOW = 20;
+/** Matches shown per file when the search spans more than one file. */
+const TREE_MATCHES_PER_FILE = 20;
+/** Rows shown when every match lives in one file. */
+const SINGLE_FILE_ROW_BUDGET = 200;
+/**
+ * How many raw matches ripgrep is asked for. Deliberately far above what is
+ * returned: fetching wide keeps the round-robin selection fair, and the excess
+ * never reaches the model.
+ */
+const INTERNAL_FETCH_LIMIT = 2000;
+/**
+ * Lines shown around each match. Policy, not a parameter: the model cannot set
+ * it, because context expansion is what made a high `limit` expensive. Zero
+ * would be cheaper still, but a match with no surrounding lines cannot anchor
+ * an edit, so the tool would be cheap and useless.
+ */
+const SEARCH_CONTEXT_LINES = 2;
+/**
+ * A `limit`/`ranges` request wider than this is not a bounded read; it is a
+ * whole-file read wearing a bound, so the context guard still applies.
+ */
+const BOUNDED_READ_MAX_LINES = 2000;
 
 const READ_SUMMARY_MIN_LINES = 200;
 const READ_SUMMARY_MAX_BYTES = 2 * 1024 * 1024;
+
+type PageWindow<T> = { items: T[]; start: number; end: number; total: number };
+
+/** Take one page from an ordered list. `skip` is clamped, never rejected. */
+function pageWindow<T>(items: readonly T[], skip: unknown, size: number): PageWindow<T> {
+	const total = items.length;
+	const requested = Math.floor(Number(skip ?? 0));
+	const start = Number.isFinite(requested) ? Math.max(0, Math.min(requested, total)) : 0;
+	const page = items.slice(start, start + size);
+	return { items: page, start, end: start + page.length, total };
+}
+
+/**
+ * Name the next call instead of announcing a dead end.
+ *
+ * A bare "truncated" tells the model something is missing but not how to reach
+ * it, so it retries with a wider `limit` it no longer has. The notice carries
+ * the exact `skip` for the next page.
+ */
+function pagingNotice(window: PageWindow<unknown>, label = "files"): string | undefined {
+	if (window.start === 0 && window.end >= window.total) return undefined;
+	const shown = `Showing ${label} ${window.start + 1}-${window.end} of ${window.total}.`;
+	return window.end < window.total
+		? `${shown} Use skip=${window.end} for the next page, or narrow paths/pattern.`
+		: shown;
+}
+
+/**
+ * Interleave per-file lists round-robin so the budget is spread across files
+ * rather than spent on whichever file sorts first.
+ */
+function interleaveByFile<T>(lists: readonly (readonly T[])[], perListCap: number): T[] {
+	const selected: T[] = [];
+	const depth = Math.min(
+		perListCap,
+		lists.reduce((max, list) => Math.max(max, list.length), 0),
+	);
+	for (let index = 0; index < depth; index++) {
+		for (const list of lists) {
+			const item = list[index];
+			if (item !== undefined) selected.push(item);
+		}
+	}
+	return selected;
+}
 type EditConfig = {
 	mode: EditMode;
 	fuzzyMatch: boolean;
@@ -201,8 +292,30 @@ function largeReadGuidance(path: string, bytes: number): ToolTextResult {
 	};
 }
 
+/**
+ * Lines a read request asks for, or Infinity when it asks for the whole file.
+ *
+ * The count matters, not the presence of the argument: `limit: 999999` is a
+ * whole-file read spelled differently.
+ */
+function requestedReadLineCount(params: { limit?: number; ranges?: string[] }, ranges: readonly LineRange[]): number {
+	if (ranges.length > 0) {
+		let total = 0;
+		for (const range of ranges) {
+			if (!Number.isFinite(range.start) || !Number.isFinite(range.end)) return Number.POSITIVE_INFINITY;
+			total += Math.max(0, range.end - range.start + 1);
+		}
+		return total;
+	}
+	if (params.limit !== undefined) {
+		const limit = Math.floor(Number(params.limit));
+		return Number.isFinite(limit) ? Math.max(1, limit) : Number.POSITIVE_INFINITY;
+	}
+	return Number.POSITIVE_INFINITY;
+}
+
 function hasBoundedReadRequest(params: { limit?: number; ranges?: string[] }, ranges: readonly LineRange[]): boolean {
-	return ranges.length > 0 || (params.ranges?.length ?? 0) > 0 || params.limit !== undefined;
+	return requestedReadLineCount(params, ranges) <= BOUNDED_READ_MAX_LINES;
 }
 
 async function maybeBlockLargeWholeFileRead(
@@ -244,14 +357,16 @@ async function trySummarizeWholeFileRead(
 		.map((range) => `${range.startLine}-${range.endLine}`)
 		.join(",");
 	const footer = `[…${summary.elidedLines} lines elided; re-read needed ranges with ${display}:${selector}]`;
+	// The structure summary is itself unbounded — a large file yields a large
+	// outline — so it goes through the same budget as every other read exit.
+	const summaryText = boundOutput(
+		[...(tag ? [formatHashlineHeader(display, tag)] : []), ...rows, "", footer].join("\n"),
+	);
 	return {
-		content: [
-			{
-				type: "text",
-				text: [...(tag ? [formatHashlineHeader(display, tag)] : []), ...rows, "", footer].join("\n"),
-			},
-		],
+		content: [{ type: "text", text: summaryText.text }],
 		details: {
+			outputTokens: summaryText.tokens,
+			outputBounded: summaryText.truncated,
 			hashlineTag: tag,
 			summary: {
 				elidedLines: summary.elidedLines,
@@ -342,8 +457,9 @@ const searchToolSchema = Type.Object({
 	glob: Type.Optional(Type.String({ description: "Filter files by glob pattern, e.g. '*.ts'" })),
 	ignoreCase: Type.Optional(Type.Boolean({ description: "Case-insensitive search" })),
 	literal: Type.Optional(Type.Boolean({ description: "Treat pattern as a literal string instead of regex" })),
-	context: Type.Optional(Type.Number({ description: "Number of lines to show before and after each match" })),
-	limit: Type.Optional(Type.Number({ description: "Maximum number of matches to return" })),
+	skip: Type.Optional(
+		Type.Number({ description: "Number of matching files to skip, for paging through a wide result" }),
+	),
 	ranges: Type.Optional(Type.Array(Type.String({ description: "Single-file line range such as 10 or 10-20" }))),
 });
 
@@ -357,7 +473,7 @@ const findToolSchema = Type.Object({
 	paths: Type.Optional(Type.Array(Type.String({ description: "Glob, path, or resource URI" }))),
 	pattern: Type.Optional(Type.String({ description: "Legacy glob pattern or resource URI" })),
 	path: Type.Optional(Type.String({ description: "Legacy directory, file, or resource URI" })),
-	limit: Type.Optional(Type.Number({ description: "Maximum number of results" })),
+	skip: Type.Optional(Type.Number({ description: "Number of files to skip, for paging through a wide result" })),
 	hidden: Type.Optional(Type.Boolean({ description: "Include hidden files" })),
 	gitignore: Type.Optional(Type.Boolean({ description: "Respect gitignore" })),
 	timeout: Type.Optional(Type.Number({ description: "Timeout in seconds" })),
@@ -531,19 +647,21 @@ function selectedLineEntries(lines: readonly string[], ranges: readonly LineRang
 	return entries;
 }
 
-function resourceReadResult(
+async function resourceReadResult(
 	result: Awaited<ReturnType<typeof readResource>>,
 	params: { offset?: number; limit?: number; raw?: boolean },
 	explicitRanges: readonly LineRange[],
 	snapshots?: InMemorySnapshotStore,
-): ToolTextResult {
+	cwd?: string,
+): Promise<ToolTextResult> {
 	const text = normalizeToLf(result.content);
 	const resourceSummary = summarizeResource(result.resource, result.content);
 	if (params.raw && explicitRanges.length === 0 && params.limit === undefined && params.offset === undefined) {
-		return {
-			content: [{ type: "text", text }],
-			details: { resource: result.resource, resourceSummary },
-		};
+		return boundedTextResult(
+			text,
+			{ resource: result.resource, resourceSummary },
+			{ cwd, label: result.resource.uri },
+		);
 	}
 	const lines = textToDisplayLines(text);
 	const ranges =
@@ -560,10 +678,11 @@ function resourceReadResult(
 				];
 	const entries = selectedLineEntries(lines, ranges);
 	if (params.raw) {
-		return {
-			content: [{ type: "text", text: entries.map(([, line]) => line).join("\n") }],
-			details: { resource: result.resource, resourceSummary, ranges },
-		};
+		return boundedTextResult(
+			entries.map(([, line]) => line).join("\n"),
+			{ resource: result.resource, resourceSummary, ranges },
+			{ cwd, label: result.resource.uri },
+		);
 	}
 	const observedLines =
 		explicitRanges.length > 0 || params.offset !== undefined || params.limit !== undefined
@@ -574,21 +693,119 @@ function resourceReadResult(
 			? recordHashlineSnapshot(snapshots, result.resource.uri, text, observedLines)
 			: undefined;
 	const startLine = ranges[0]?.start ?? 1;
-	const endLine = ranges.at(-1)?.end ?? lines.length;
+	const endLine = Math.min(lines.length, ranges.at(-1)?.end ?? lines.length);
 	const output = entries.map(([line, value]) => `${line}:${value}`).join("\n");
 	const continuation =
-		explicitRanges.length === 0 && endLine < lines.length
+		endLine < lines.length
 			? `\n\n[${lines.length - endLine} more lines in resource. Use offset=${endLine + 1} to continue.]`
 			: "";
+	return boundedTextResult(
+		`${hashlineTag ? `${formatHashlineHeader(result.resource.uri, hashlineTag)}\n` : ""}${output}${continuation}`,
+		{ resource: result.resource, resourceSummary, ranges, offset: startLine, hashlineTag },
+		{ cwd, label: result.resource.uri },
+	);
+}
+
+/**
+ * Return text through the shared output budget.
+ *
+ * Applied at the point the text is produced, so every exit from a read path is
+ * capped: the resource paths return before the whole-file guard runs, and used
+ * to reach the model uncapped.
+ */
+/**
+ * Store output that exceeded the budget, and name where it went.
+ *
+ * Paging back through a bounded result costs what the result would have cost.
+ * The capture store is full-text indexed, so an artifact reference turns "the
+ * rest is gone unless you pay for it again" into a search over the whole thing
+ * at the cost of the part you actually need.
+ *
+ * Fails open: context-guard may be disabled or its core unavailable, and a
+ * read is not worth failing over a missing capture.
+ */
+async function captureFullOutput(text: string, label: string, cwd: string): Promise<string | undefined> {
+	try {
+		const outcome = await captureContent(
+			{ projectDir: cwd, sessionId: getCurrentContextGuardSessionId(), label },
+			text,
+		);
+		return outcome.capture ? `artifact://${outcome.capture.artifactId}` : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Bound output, capturing the whole of it first when the budget will bite.
+ *
+ * The capture only runs when text is actually about to be dropped, so the
+ * common small result pays nothing for it.
+ */
+async function boundedWithCapture(
+	text: string,
+	options: { cwd?: string; label?: string } = {},
+	boundOptions: BoundOutputOptions = {},
+): Promise<BoundedOutput> {
+	const probe = boundOutput(text, boundOptions);
+	if (!probe.truncated || !options.cwd) return probe;
+	const fullOutputRef = await captureFullOutput(text, options.label ?? "read", options.cwd);
+	return fullOutputRef ? boundOutput(text, { ...boundOptions, fullOutputRef }) : probe;
+}
+
+async function boundedTextResult(
+	text: string,
+	details: Record<string, unknown> = {},
+	options: { cwd?: string; label?: string } = {},
+): Promise<ToolTextResult> {
+	const bounded = await boundedWithCapture(text, options);
+	// A bounded resource read names how to get the rest. A silently cut payload
+	// is worse than an expensive one: the model cannot tell what it is missing,
+	// so it either acts on a partial answer or re-fetches the whole thing.
+	const continuation = bounded.truncated
+		? resourceContinuationRef(bounded.text.split("\n").length, details)
+		: undefined;
+	const deliveredText = continuation ? `${bounded.text}\n[continue with ${continuation}]` : bounded.text;
+	// The cost part is attached here, once, rather than in the renderer: the
+	// render path runs on every invalidate, and rebuilding the summary object
+	// each pass resets the card and restarts its async avatar loads.
+	const summary = details.resourceSummary;
+	const withCost =
+		summary && typeof summary === "object"
+			? { ...details, resourceSummary: { ...summary, costPart: readCostPart(bounded.tokens, bounded.truncated) } }
+			: details;
 	return {
-		content: [
-			{
-				type: "text",
-				text: `${hashlineTag ? `${formatHashlineHeader(result.resource.uri, hashlineTag)}\n` : ""}${output}${continuation}`,
-			},
-		],
-		details: { resource: result.resource, resourceSummary, ranges, offset: startLine, hashlineTag },
+		content: [{ type: "text", text: deliveredText }],
+		details: { ...withCost, outputTokens: approxTokenCount(deliveredText), outputBounded: bounded.truncated },
 	};
+}
+
+/**
+ * Where the rest of a bounded resource read lives.
+ *
+ * Resource views already accept `?offset=`/`?limit=`, so the continuation is a
+ * real call the model can make rather than advice to try something narrower.
+ */
+function resourceContinuationRef(deliveredLines: number, details: Record<string, unknown>): string | undefined {
+	const resource = details.resource;
+	if (!resource || typeof resource !== "object") return undefined;
+	const uri = (resource as { uri?: unknown }).uri;
+	if (typeof uri !== "string" || !uri) return undefined;
+	return `${uri}${uri.includes("?") ? "&" : "?"}offset=${deliveredLines}`;
+}
+
+/**
+ * What a read cost, for the title row.
+ *
+ * `read` is the largest token consumer in practice. The title row carries
+ * roles rather than raw colour, so `high` shares `warning` with `elevated`
+ * here instead of the orange the search and find headers use.
+ */
+function readCostPart(tokens: number, wasBounded: boolean): ExplorationReadSummaryPart | undefined {
+	if (tokens <= 0) return undefined;
+	const cost = formatTokenCost(tokens, "read");
+	const role = cost.severity === "severe" ? "error" : cost.severity === "normal" ? "dim" : "warning";
+	return { text: `${cost.text}${wasBounded ? " · bounded" : ""}`, role };
 }
 
 type ResourceReadSummary = {
@@ -605,6 +822,8 @@ type ResourceReadSummary = {
 	meta?: string;
 	subtitleStatus?: ResourceStatus;
 	metaParts?: ExplorationReadSummaryPart[];
+	costPart?: ExplorationReadSummaryPart;
+	uri?: ExplorationReadSummaryPart;
 	statusLabel?: string;
 	statusRole?: string;
 	statusSuffix?: string;
@@ -664,6 +883,9 @@ function resourceIdentifier(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 function resourceAuthor(value: unknown): string | undefined {
+	// Projected payloads carry `author` as a bare login string; raw GitHub
+	// payloads carry a user object. Both render.
+	if (typeof value === "string") return value.trim() ? `@${value.trim()}` : undefined;
 	if (!value || typeof value !== "object") return undefined;
 	const author = value as Record<string, unknown>;
 	const login = resourceString(author.login);
@@ -682,6 +904,9 @@ function resourceAvatarUrlForLogin(login: string): string {
 }
 
 function resourceAvatarUrl(value: unknown): string | undefined {
+	// Projected payloads carry the author as a bare login, the same as
+	// `resourceAuthor` accepts, so the avatar follows the same two shapes.
+	if (typeof value === "string") return value.trim() ? resourceAvatarUrlForLogin(value.trim()) : undefined;
 	if (!value || typeof value !== "object") return undefined;
 	const author = value as Record<string, unknown>;
 	const direct = resourceString(author.avatarUrl) ?? resourceString(author.avatar_url);
@@ -693,7 +918,11 @@ function resourceAuthorPart(value: unknown): ExplorationReadSummaryPart | undefi
 	const text = resourceAuthor(value);
 	if (!text) return undefined;
 	const login =
-		value && typeof value === "object" ? resourceString((value as Record<string, unknown>).login) : undefined;
+		typeof value === "string"
+			? resourceString(value.trim())
+			: value && typeof value === "object"
+				? resourceString((value as Record<string, unknown>).login)
+				: undefined;
 	return {
 		text,
 		role: "muted",
@@ -935,6 +1164,18 @@ function resourceViewLabel(kind: string | undefined): string | undefined {
 	return view && view !== "pr" && view !== "issue" ? view : undefined;
 }
 
+/**
+ * The URI the card was read from, as a link.
+ *
+ * Every card is the result of reading one URI, and once the card replaced the
+ * loading line that URI was nowhere on screen — so there was no way to tell a
+ * `/checks` card from a `/commits` one except by its contents, and no way to
+ * copy the address that produced it.
+ */
+function resourceUriPart(resource: Resource): ExplorationReadSummaryPart {
+	return { text: resource.uri, role: "dim", italic: true, url: resourceOpenUrl(resource) };
+}
+
 function githubIdentifierPart(
 	record: Record<string, unknown>,
 	number: string,
@@ -952,8 +1193,31 @@ function githubIdentifierPart(
 const MERGED_ANSI_FG = "\x1b[38;5;165m";
 const ANSI_FG_RESET = "\x1b[39m";
 
+// ANSI 256-color slot 208 is the orange step between the theme's warning and error roles.
+const ORANGE_ANSI_FG = "\x1b[38;5;208m";
+
 function mergedAnsi(text: string): string {
 	return `${MERGED_ANSI_FG}${text}${ANSI_FG_RESET}`;
+}
+
+/**
+ * Render what a tool result cost, coloured by how unusual that cost is.
+ *
+ * `normal` keeps the subdued card colour so the common case stays quiet; the
+ * escalation only appears when the number is worth reading.
+ */
+function tokenCostLabel(theme: RenderTheme, text: string, toolName: string): string {
+	const cost = formatTokenCost(approxTokenCount(text), toolName);
+	switch (cost.severity) {
+		case "elevated":
+			return theme.fg("warning", cost.text);
+		case "high":
+			return `${ORANGE_ANSI_FG}${cost.text}${ANSI_FG_RESET}`;
+		case "severe":
+			return theme.fg("error", cost.text);
+		default:
+			return theme.fg("dim", cost.text);
+	}
 }
 function italicAnsi(text: string): string {
 	return `\x1b[3m${text}\x1b[23m`;
@@ -1022,6 +1286,7 @@ type PullRequestCheck = {
 	iconRole: string;
 	finished: boolean;
 	rerunning: boolean;
+	url?: string;
 };
 
 function pullRequestCheck(value: Record<string, unknown>): PullRequestCheck {
@@ -1032,6 +1297,13 @@ function pullRequestCheck(value: Record<string, unknown>): PullRequestCheck {
 	const name = resourceString(value.name) ?? resourceString(value.context) ?? "check";
 	const workflow = resourceString(value.workflowName);
 	const label = workflow ? `${workflow} / ${name}` : name;
+	// A check is the one thing on these cards you always want to open.
+	const url =
+		resourceString(value.url) ??
+		resourceString(value.detailsUrl) ??
+		resourceString(value.details_url) ??
+		resourceString(value.targetUrl) ??
+		resourceString(value.target_url);
 	const rerunning =
 		value.rerunning === true ||
 		Boolean(
@@ -1044,23 +1316,27 @@ function pullRequestCheck(value: Record<string, unknown>): PullRequestCheck {
 		status === "COMPLETED" ||
 		Boolean(effectiveState && !["QUEUED", "IN_PROGRESS", "PENDING", "WAITING", "REQUESTED"].includes(effectiveState));
 	if (effectiveState === "SUCCESS")
-		return { name: label, state: "passed", icon: "", iconRole: "success", finished, rerunning };
+		return { name: label, state: "passed", icon: "", iconRole: "success", finished, rerunning, url };
 	if (effectiveState === "SKIPPED" || effectiveState === "NEUTRAL")
-		return { name: label, state: "skipped", icon: "󱃓", iconRole: "muted", finished, rerunning };
+		return { name: label, state: "skipped", icon: "󱃓", iconRole: "muted", finished, rerunning, url };
 	if (effectiveState && ["FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "ERROR"].includes(effectiveState)) {
-		return { name: label, state: "failed", icon: "", iconRole: "error", finished, rerunning };
+		return { name: label, state: "failed", icon: "", iconRole: "error", finished, rerunning, url };
 	}
 	if (status === "COMPLETED")
-		return { name: label, state: "failed", icon: "", iconRole: "error", finished: true, rerunning };
-	if (rerunning) return { name: label, state: "running", icon: "", iconRole: "warning", finished, rerunning };
-	return { name: label, state: "running", icon: "", iconRole: "warning", finished, rerunning };
+		return { name: label, state: "failed", icon: "", iconRole: "error", finished: true, rerunning, url };
+	if (rerunning) return { name: label, state: "running", icon: "", iconRole: "warning", finished, rerunning, url };
+	return { name: label, state: "running", icon: "", iconRole: "warning", finished, rerunning, url };
+}
+
+function pullRequestChecks(record: Record<string, unknown>): PullRequestCheck[] {
+	if (!Array.isArray(record.statusCheckRollup)) return [];
+	return record.statusCheckRollup
+		.filter((check): check is Record<string, unknown> => !!check && typeof check === "object")
+		.map(pullRequestCheck);
 }
 
 function pullRequestCheckRows(record: Record<string, unknown>): ExplorationReadSummaryRow[] {
-	if (!Array.isArray(record.statusCheckRollup)) return [];
-	const checks = record.statusCheckRollup
-		.filter((check): check is Record<string, unknown> => !!check && typeof check === "object")
-		.map(pullRequestCheck);
+	const checks = pullRequestChecks(record);
 	if (checks.length === 0) return [];
 	const total = checks.length;
 	const passed = checks.filter((check) => check.state === "passed").length;
@@ -1115,6 +1391,7 @@ function pullRequestCheckRows(record: Record<string, unknown>): ExplorationReadS
 				icon: check.icon,
 				iconRole: check.iconRole,
 				text: check.name,
+				textUrl: check.url,
 				textRole: check.iconRole,
 			})),
 	);
@@ -1125,6 +1402,7 @@ function pullRequestCheckRows(record: Record<string, unknown>): ExplorationReadS
 			icon: check.icon,
 			iconRole: check.iconRole,
 			text: check.name,
+			textUrl: check.url,
 			textRole: check.iconRole,
 		})),
 	);
@@ -1148,16 +1426,34 @@ function pullRequestStatus(record: Record<string, unknown>): ResourceStatus {
 	return { icon: "󰓂", iconRole: "success", label: "open" };
 }
 
+/**
+ * Why a pull request cannot merge, in the terms the reader is asking about.
+ *
+ * "not ready" collapsed conflicts, failing checks, missing approval and a stale
+ * base into one word, and it was wrong about an approved pull request whose
+ * checks were failing. Each blocker names itself, and the check rollup answers
+ * first because it is the one that changes while you watch.
+ */
 function pullRequestMergeability(record: Record<string, unknown>): ResourceStatus {
 	if (resourceString(record.mergedAt) || resourceString(record.state)?.toUpperCase() === "MERGED")
 		return mergedStatus("");
+	if (record.isDraft === true) return { icon: "", iconRole: "muted", label: "draft" };
 	const decision = resourceString(record.reviewDecision)?.toUpperCase();
-	const mergeable = resourceString(record.mergeable)?.toUpperCase() === "MERGEABLE";
-	const mergeState = resourceString(record.mergeStateStatus)?.toUpperCase() === "CLEAN";
 	if (decision === "CHANGES_REQUESTED") return { icon: "", iconRole: "error", label: "changes requested" };
-	if (record.isDraft === true || !mergeable || !mergeState)
-		return { icon: "", iconRole: "muted", label: "not ready" };
+	const mergeState = resourceString(record.mergeStateStatus)?.toUpperCase();
+	const conflicting = resourceString(record.mergeable)?.toUpperCase() === "CONFLICTING" || mergeState === "DIRTY";
+	if (conflicting) return { icon: "", iconRole: "error", label: "conflicts" };
+	const checks = pullRequestChecks(record);
+	if (checks.some((check) => check.state === "failed"))
+		return { icon: "", iconRole: "error", label: "checks failing" };
+	if (checks.some((check) => check.state === "running"))
+		return { icon: "", iconRole: "warning", label: "checks running" };
+	if (mergeState === "UNSTABLE") return { icon: "", iconRole: "error", label: "checks failing" };
+	if (mergeState === "BEHIND") return { icon: "", iconRole: "warning", label: "behind base" };
 	if (decision === "REVIEW_REQUIRED") return { icon: "", iconRole: "warning", label: "awaiting approval" };
+	if (mergeState === "BLOCKED") return { icon: "", iconRole: "warning", label: "blocked" };
+	if (resourceString(record.mergeable)?.toUpperCase() !== "MERGEABLE" || mergeState !== "CLEAN")
+		return { icon: "", iconRole: "muted", label: "not ready" };
 	return { icon: "", iconRole: "success", label: "ready to merge" };
 }
 
@@ -1234,9 +1530,71 @@ function resourceRelatedRows(record: Record<string, unknown>, kind: string | und
 		});
 	return rows;
 }
+/**
+ * Collection views, so an empty one can say so.
+ *
+ * A `/threads` read that found nothing rendered as an empty card, which reads
+ * as a broken renderer rather than as an answer.
+ */
+const RESOURCE_COLLECTION_KINDS = new Set([
+	"pull-request-files",
+	"pull-request-commits",
+	"pull-request-reviews",
+	"pull-request-threads",
+	"pull-request-checks",
+	"pull-request-comments",
+	"pull-request-issues",
+	"github-comments",
+	"github-comments-page",
+	"github-linked-pulls",
+	"github-labels",
+	"github-assignees",
+]);
+
+function resourceEmptyRow(kind: string): ExplorationReadSummaryRow[] {
+	const noun = kind.replace(/^(?:pull-request|github)-/, "").replace(/-/g, " ");
+	return [{ branch: false, text: `No ${noun}.`, textRole: "muted", italic: true }];
+}
+
+/** A review thread carries its comments; a single line of each identifies it. */
+function threadComments(record: Record<string, unknown>): Record<string, unknown>[] {
+	const comments = record.comments;
+	if (!comments || typeof comments !== "object") return [];
+	const nodes = (comments as Record<string, unknown>).nodes;
+	return Array.isArray(nodes)
+		? nodes.filter((node): node is Record<string, unknown> => Boolean(node) && typeof node === "object")
+		: [];
+}
+
+/**
+ * The body of a single item, as markdown.
+ *
+ * These cards used to print the raw body one row per line, so a comment full of
+ * Graphite's stack markup rendered as a wall of anchor tags. The card already
+ * owns a markdown renderer; an item body is exactly what it is for.
+ */
+function resourceViewMarkdown(record: Record<string, unknown>, kind: string | undefined): string | undefined {
+	if (kind === "github-comment" || kind === "pull-request-review") return resourceString(record.body);
+	if (kind === "pull-request-thread") {
+		const comments = threadComments(record);
+		if (comments.length === 0) return resourceString(record.body);
+		return comments
+			.map((comment) => {
+				const author = resourceAuthor(comment.author);
+				const body = resourceString(comment.bodyText) ?? resourceString(comment.body) ?? "";
+				return author ? `**${author}**\n\n${body}` : body;
+			})
+			.join("\n\n---\n\n");
+	}
+	return undefined;
+}
+
 function resourceViewRows(record: Record<string, unknown>, kind: string | undefined): ExplorationReadSummaryRow[] {
+	if (!kind) return [];
+	const items = resourceItemRecords(record);
+	if (RESOURCE_COLLECTION_KINDS.has(kind) && items.length === 0) return resourceEmptyRow(kind);
 	if (kind === "pull-request-files") {
-		return resourceItemRecords(record)
+		return items
 			.slice(0, 12)
 			.map((file) => {
 				const path = resourceString(file.filename) ?? resourceString(file.path) ?? resourceString(file.name);
@@ -1245,9 +1603,8 @@ function resourceViewRows(record: Record<string, unknown>, kind: string | undefi
 				const deletions = resourceCount(file.deletions);
 				return {
 					branch: false,
-					icon: "",
-					iconRole: "muted",
 					text: path,
+					textUrl: resourceString(file.url),
 					textRole: "text",
 					details: [
 						additions ? { text: `+${additions}`, role: "toolDiffAdded" } : undefined,
@@ -1257,26 +1614,141 @@ function resourceViewRows(record: Record<string, unknown>, kind: string | undefi
 			})
 			.filter((row): row is ExplorationReadSummaryRow => Boolean(row));
 	}
-	if (kind === "github-comments" || kind === "github-comments-page") {
-		return resourceItemRecords(record)
+	if (kind === "pull-request-commits") {
+		return items.slice(0, 12).map((commit) => ({
+			branch: false,
+			prefix: {
+				text: resourceString(commit.sha)?.slice(0, 8) ?? "",
+				role: "mdLink",
+				url: resourceString(commit.url),
+			},
+			text: resourceString(commit.message)?.split(/\r?\n/)[0] ?? "commit",
+			textUrl: resourceString(commit.url),
+			textRole: "text",
+			details: [...(resourceString(commit.author) ? [{ text: resourceString(commit.author)!, role: "muted" }] : [])],
+		}));
+	}
+	if (kind === "pull-request-checks") {
+		// The rollup renderer already groups, counts and hides the quiet ones;
+		// a checks view is that same list read on purpose.
+		return pullRequestCheckRows({ ...record, statusCheckRollup: items });
+	}
+	if (kind === "pull-request-threads") {
+		return items.slice(0, 10).map((thread) => {
+			const location = resourceString(thread.path);
+			const line = thread.line === undefined || thread.line === null ? undefined : String(thread.line);
+			const resolved = thread.isResolved === true;
+			const count = resourceCount(thread.comments);
+			return {
+				branch: false,
+				text: location ? `${location}${line ? `:${line}` : ""}` : "thread",
+				textUrl: resourceString(thread.url),
+				textRole: "text",
+				details: [
+					{ text: resolved ? "resolved" : "unresolved", role: resolved ? "muted" : "warning" },
+					...(count ? [{ text: `${count} comments`, role: "dim" }] : []),
+				],
+				markdown: resourceString(thread.preview),
+			};
+		});
+	}
+	if (kind === "github-comments" || kind === "github-comments-page" || kind === "pull-request-comments") {
+		return items
 			.slice(0, 8)
 			.map((comment) => {
 				const authorRecord = comment.user ?? comment.author;
 				const author = resourceAuthor(authorRecord);
-				const body = resourceBodyPreview(comment.body ?? comment.bodyText);
+				const body = resourceString(comment.body ?? comment.bodyText);
+				const location = resourceString(comment.path);
+				const date = resourceString(comment.date ?? comment.created_at)?.slice(0, 10);
 				if (!author && !body) return undefined;
 				return {
 					branch: false,
 					avatarUrl: resourceAvatarUrl(authorRecord),
 					text: author ?? "comment",
-					textUrl: author?.startsWith("@") ? githubUserUrl(author.slice(1)) : undefined,
+					textUrl: resourceString(comment.url) ?? (author ? githubUserUrl(author.replace(/^@/, "")) : undefined),
 					textRole: "muted",
-					details: body ? [{ text: body, role: "text" }] : undefined,
+					details: [
+						...(location
+							? [
+									{
+										text: `${location}${comment.line === undefined ? "" : `:${String(comment.line)}`}`,
+										role: "dim",
+									},
+								]
+							: []),
+						...(date ? [{ text: date, role: "dim" }] : []),
+					],
+					markdown: body,
 				};
 			})
 			.filter((row): row is ExplorationReadSummaryRow => Boolean(row));
 	}
-	if (kind === "pull-request-diff") {
+	if (kind === "pull-request-reviews") {
+		return items.slice(0, 10).map((review) => {
+			const author = resourceAuthor(review.author ?? review.user);
+			const state = resourceString(review.state)?.toLowerCase();
+			return {
+				branch: false,
+				avatarUrl: resourceAvatarUrl(review.author ?? review.user),
+				text: author ?? "review",
+				textUrl: resourceString(review.url) ?? (author ? githubUserUrl(author.replace(/^@/, "")) : undefined),
+				textRole: "muted",
+				details: state
+					? [
+							{
+								text: state.replace(/_/g, " "),
+								role: state === "changes_requested" ? "error" : state === "approved" ? "success" : "muted",
+							},
+						]
+					: [],
+				markdown: resourceString(review.body ?? review.preview),
+			};
+		});
+	}
+	if (kind === "pull-request-thread") {
+		const comments = threadComments(record);
+		const first = comments[0];
+		const location = resourceString(record.path) ?? resourceString(first?.path);
+		const line = record.line ?? first?.line;
+		const resolved = record.isResolved === true;
+		if (!location) return [];
+		return [
+			{
+				branch: false,
+				text: `${location}${line === undefined || line === null ? "" : `:${String(line)}`}`,
+				textRole: "text",
+				details: [
+					{ text: resolved ? "resolved" : "unresolved", role: resolved ? "muted" : "warning" },
+					{ text: `${comments.length} ${comments.length === 1 ? "comment" : "comments"}`, role: "dim" },
+				],
+			},
+		];
+	}
+	if (kind === "pull-request-review") {
+		const state = resourceString(record.state)?.toLowerCase();
+		if (!state) return [];
+		return [
+			{
+				branch: false,
+				text: state.replace(/_/g, " "),
+				textRole: state === "changes_requested" ? "error" : state === "approved" ? "success" : "muted",
+			},
+		];
+	}
+	if (kind === "pull-request-file") {
+		const patch = resourceString(record.patch);
+		if (!patch) return [];
+		return patch
+			.split(/\r?\n/)
+			.slice(0, 12)
+			.map((line) => ({
+				branch: false,
+				text: line,
+				textRole: line.startsWith("+") ? "toolDiffAdded" : line.startsWith("-") ? "toolDiffRemoved" : "muted",
+			}));
+	}
+	if (kind === "pull-request-diff" || kind === "pull-request-patch") {
 		const diff = resourceString(record.text);
 		if (!diff) return [];
 		return diff
@@ -1403,7 +1875,7 @@ function resourceSummaryList(
 	};
 }
 
-function summarizeResource(resource: Resource, content: string): ResourceReadSummary | undefined {
+export function summarizeResource(resource: Resource, content: string): ResourceReadSummary | undefined {
 	let ref: ResourceRef | undefined;
 	try {
 		ref = parseResourceUri(resource.uri);
@@ -1420,18 +1892,19 @@ function summarizeResource(resource: Resource, content: string): ResourceReadSum
 	if (ref.scheme === "pr") {
 		const status = pullRequestStatus(record);
 		const view = resourceViewLabel(resource.kind);
-		const branch = [
+		// The view name is not repeated here: the URI at the end of this row
+		// already names it, and names the item it belongs to.
+		const branch =
 			resourceString(record.headRefName) && resourceString(record.baseRefName)
 				? `${resourceString(record.baseRefName)}  ${resourceString(record.headRefName)}`
-				: "GitHub",
-			view,
-		]
-			.filter(Boolean)
-			.join(" · ");
+				: "GitHub";
 		const mergeability = pullRequestMergeability(record);
-		const reviewRows = pullRequestReviewRows(record);
-		const checkRows = pullRequestCheckRows(record);
+		// A view already renders what the side column would repeat, and the
+		// checks column beside a checks card was the same list twice.
+		const reviewRows = view === "reviews" || view === "threads" ? [] : pullRequestReviewRows(record);
+		const checkRows = view === "checks" ? [] : pullRequestCheckRows(record);
 		const showBody = !view || view === "body" || view === "body-page";
+		const viewMarkdown = resourceViewMarkdown(record, resource.kind);
 		return {
 			scheme: ref.scheme,
 			icon: status.icon,
@@ -1446,8 +1919,9 @@ function summarizeResource(resource: Resource, content: string): ResourceReadSum
 			subtitle: branch,
 			subtitleStatus: mergeability,
 			author: resourceAuthorPart(record.author),
-			markdown: showBody ? resourceString(record.text ?? record.body) : undefined,
+			markdown: viewMarkdown ?? (showBody ? resourceString(record.text ?? record.body) : undefined),
 			metaParts: resourceStatsParts(record),
+			uri: resourceUriPart(resource),
 			rows: [
 				...pullRequestStackRows(record),
 				...resourceViewRows(record, resource.kind),
@@ -1489,10 +1963,13 @@ function summarizeResource(resource: Resource, content: string): ResourceReadSum
 			repositoryUrl: githubRepositoryUrl(repository),
 			identifier: githubIdentifierPart(record, number, resource),
 			title,
-			subtitle: view === "body" || view === "body-page" ? view : [view, "GitHub"].filter(Boolean).join(" · "),
+			subtitle: "GitHub",
 			statusSuffix: closed && reason && reason !== "COMPLETED" ? italicAnsi(reason.toLowerCase()) : undefined,
 			author: resourceAuthorPart(record.author),
-			markdown: showBody ? resourceString(record.text ?? record.body) : undefined,
+			markdown:
+				resourceViewMarkdown(record, resource.kind) ??
+				(showBody ? resourceString(record.text ?? record.body) : undefined),
+			uri: resourceUriPart(resource),
 			rows: [
 				...resourceViewRows(record, resource.kind),
 				...(showBody ? [] : resourceTaskRows(record)),
@@ -1706,7 +2183,10 @@ function renderResourceSummaryMeta(
 	theme: RenderTheme,
 	avatarFor: (url: string | undefined) => string,
 ): string {
-	const parts = summary.metaParts ?? (summary.meta ? [{ text: summary.meta }] : []);
+	const parts = [
+		...(summary.metaParts ?? (summary.meta ? [{ text: summary.meta }] : [])),
+		...(summary.uri ? [summary.uri] : []),
+	];
 	if (parts.length === 0) return "";
 	const separator = theme.fg("dim", " · ");
 	return ` ${theme.fg("dim", "·")} ${parts.map((part) => renderResourceSummaryPart(part, theme, avatarFor)).join(separator)}`;
@@ -1821,20 +2301,33 @@ function mergeResourceColumns(left: string[], right: string[], width: number): s
 	return lines;
 }
 
+/**
+ * The body of a bare read gets at least this many lines before it is cut.
+ *
+ * The card is as tall as its tallest column, so a body cut at ten lines beside
+ * a twenty-row check column left ten lines of empty card and lost text for
+ * nothing. Ten is the floor, the side column raises it.
+ */
+const RESOURCE_BODY_MIN_LINES = 10;
+
+/** A listing row's body: enough to read the point, not the whole comment. */
+const RESOURCE_ROW_BODY_MAX_LINES = 6;
+
 class ResourceSummaryText implements Component {
 	private readonly avatars = new Map<string, InlineAvatar>();
 	private readonly markdown?: Markdown;
+	// Keyed by row identity so a re-render reuses the same instance.
+	private readonly rowMarkdown = new Map<ExplorationReadSummaryRow, Markdown>();
 
 	constructor(
 		private readonly summary: ResourceReadSummary,
 		private readonly theme: RenderTheme,
 		onInvalidate: () => void,
 	) {
-		this.markdown = summary.markdown
-			? new Markdown(summary.markdown, 0, 0, getMarkdownTheme(), {
-					color: (text) => theme.fg("text", text),
-				})
-			: undefined;
+		const markdownFor = (text: string) =>
+			new Markdown(text, 0, 0, getMarkdownTheme(), { color: (value) => theme.fg("text", value) });
+		this.markdown = summary.markdown ? markdownFor(summary.markdown) : undefined;
+		for (const row of summary.rows ?? []) if (row.markdown) this.rowMarkdown.set(row, markdownFor(row.markdown));
 		if (getCapabilities().images !== "kitty") return;
 		const addAvatar = (url: string | undefined) => {
 			if (url && !this.avatars.has(url)) this.avatars.set(url, new InlineAvatar(url, onInvalidate));
@@ -1853,12 +2346,7 @@ class ResourceSummaryText implements Component {
 		const header = resourceSummaryHeaderLines(this.summary, this.theme, avatarFor, width).map((line) => ` ${line}`);
 		const rows = this.summary.rows ?? [];
 		const footer = rows.filter((row) => row.footer);
-		const left = rows
-			.filter((row) => !row.footer)
-			.map(
-				(row, index, visibleRows) =>
-					` ${renderResourceSummaryRow(row, index, visibleRows.length, this.theme, avatarFor)}`,
-			);
+		const visibleRows = rows.filter((row) => !row.footer);
 		const rightWidth = resourceRightColumnWidth(width);
 		const right = (this.summary.sideRows ?? []).map(
 			(row, index, sideRows) =>
@@ -1866,8 +2354,19 @@ class ResourceSummaryText implements Component {
 		);
 		const leftWidth = width - rightWidth - 3;
 		const markdownWidth = right.length > 0 && leftWidth >= 36 ? leftWidth - 1 : width - 2;
+		const left = visibleRows.flatMap((row, index) => {
+			const line = ` ${renderResourceSummaryRow(row, index, visibleRows.length, this.theme, avatarFor)}`;
+			const body = this.rowMarkdown.get(row);
+			if (!body) return [line];
+			const rendered = body
+				.render(Math.max(1, markdownWidth - 3))
+				.slice(0, RESOURCE_ROW_BODY_MAX_LINES)
+				.map((bodyLine) => `   ${bodyLine}`);
+			return [line, ...rendered];
+		});
 		const renderedMarkdown = this.markdown?.render(Math.max(1, markdownWidth)) ?? [];
-		const markdown = renderedMarkdown.slice(0, 10).map((line) => ` ${line}`);
+		const bodyBudget = Math.max(RESOURCE_BODY_MIN_LINES, right.length - left.length);
+		const markdown = renderedMarkdown.slice(0, bodyBudget).map((line) => ` ${line}`);
 		if (renderedMarkdown.length > markdown.length) markdown.push(` ${this.theme.fg("muted", "… body truncated")}`);
 		const leftColumn = [...markdown, ...left];
 		const body =
@@ -1882,6 +2381,7 @@ class ResourceSummaryText implements Component {
 
 	invalidate(): void {
 		this.markdown?.invalidate();
+		for (const markdown of this.rowMarkdown.values()) markdown.invalidate();
 	}
 }
 
@@ -1948,6 +2448,7 @@ class ResourceReadCardView implements Component {
 	private card?: Component;
 	private cardSummary?: ResourceReadSummary;
 	private resolvedSummary?: ResourceReadSummary;
+	private errorMessage?: string;
 	private cardInitialized = false;
 
 	constructor(
@@ -1965,7 +2466,18 @@ class ResourceReadCardView implements Component {
 		this.invalidate();
 	}
 
+	/**
+	 * A failed read never produces a summary, and the call component outlives
+	 * the result, so without this the loading line kept spinning above the
+	 * error text instead of being replaced by it.
+	 */
+	setError(message: string): void {
+		this.errorMessage = message;
+		this.invalidate();
+	}
+
 	render(width: number): string[] {
+		if (this.errorMessage !== undefined) return [this.theme.fg("error", this.errorMessage)];
 		renderExplorationCall(readAction(this.displayPath, this.context?.cwd), this.theme, this.context);
 		if (isExplorationHidden(this.context?.toolCallId)) return [];
 		const summary = this.resolvedSummary ?? getExplorationReadSummary(this.context?.toolCallId);
@@ -2300,13 +2812,25 @@ function renderPlainReadResult(
 
 function renderReadResult(
 	result: ToolTextResult,
-	options: { expanded?: boolean; isPartial?: boolean },
+	options: { expanded?: boolean; isPartial?: boolean; isError?: boolean },
 	theme: RenderTheme,
 	toolCallId?: string,
 	invalidate: () => void = () => {},
 	lastComponent?: Component,
 ): Component {
 	if (options.isPartial) return EMPTY_VIEW;
+	// A failed read has no resource summary, and the summary card falls back to
+	// its loading state when the summary is missing — so without this the card
+	// spins forever on an error the user never sees. Show the failure instead.
+	if (options.isError) {
+		const message = firstTextContent(result).trim() || "Read failed.";
+		// Replace the call's loading line rather than printing under it.
+		if (lastComponent instanceof ResourceReadCardView) {
+			lastComponent.setError(message);
+			return lastComponent;
+		}
+		return renderText(theme.fg("error", message));
+	}
 	const resource = renderResourceReadResult(result, options, theme, toolCallId, invalidate, lastComponent);
 	if (resource) return resource;
 	const preview = previewImageDetails(result.details?.previewImage);
@@ -2491,7 +3015,7 @@ function renderSearchResult(
 	const header = renderStatusHeader(
 		"Search:",
 		theme,
-		` ${theme.fg("warning", pattern)} ${theme.fg("dim", `${matchCount} match${matchCount === 1 ? "" : "es"} · ${fileText} · in ${shortenDisplayPath(path ?? ".")}`)}`,
+		` ${theme.fg("warning", pattern)} ${theme.fg("dim", `${matchCount} match${matchCount === 1 ? "" : "es"} · ${fileText} · in ${shortenDisplayPath(path ?? ".")} · `)}${tokenCostLabel(theme, text, "search")}`,
 	);
 	return framedBlock(theme, {
 		header,
@@ -2585,14 +3109,14 @@ function renderFindResult(
 	}
 	const outputLines = toolTextLines(output).filter(Boolean);
 	const noResults = /^No (?:files|resources) found\b/i.test(output);
-	const diagnostics = outputLines.filter((line) => /^\[Find results truncated\b/.test(line));
+	const diagnostics = outputLines.filter((line) => /^(?:Showing \w+ \d|\[output bounded\b)/.test(line));
 	const files = noResults ? [] : outputLines.filter((line) => !diagnostics.includes(line));
 	const target = findRequestTarget(request);
 	const where = findRequestWhere(request);
 	const header = renderStatusHeader(
 		"Find:",
 		theme,
-		` ${theme.fg("warning", shortenDisplayPath(target))} ${theme.fg("dim", `${files.length} file${files.length === 1 ? "" : "s"} · in ${shortenDisplayPath(where)}`)}`,
+		` ${theme.fg("warning", shortenDisplayPath(target))} ${theme.fg("dim", `${files.length} file${files.length === 1 ? "" : "s"} · in ${shortenDisplayPath(where)} · `)}${tokenCostLabel(theme, output, "find")}`,
 	);
 	const shown = files.slice(0, options.expanded ? files.length : 20);
 	const lines =
@@ -3809,7 +4333,7 @@ function registerHashlineWorkflowTools(
 		renderResult(result, options, theme, context) {
 			return renderReadResult(
 				result as ToolTextResult,
-				options,
+				{ ...options, isError: context?.isError === true },
 				theme,
 				context?.toolCallId,
 				context?.invalidate,
@@ -3836,11 +4360,12 @@ function registerHashlineWorkflowTools(
 				const resource = parseResourceUri(selectedPath);
 				if (!resource) throw new Error(`Invalid resource URI: ${selectedPath}`);
 				const result = await readResource(resource, resourceContextFromContext(ctx, callCwd, signal));
-				return resourceReadResult(
+				return await resourceReadResult(
 					result,
 					params,
 					explicitRanges,
 					getConfig().mode === "hashline" ? snapshotsForContext(ctx) : undefined,
+					callCwd,
 				);
 			}
 			const absolute = absolutePath(callCwd, selectedPath);
@@ -3904,19 +4429,27 @@ function registerHashlineWorkflowTools(
 				const outputRows = displayEntries.map((entry) =>
 					entry.kind === "ellipsis" ? "…" : `${entry.lineNumber}:${entry.text}`,
 				);
+				const lastShown = Math.min(allLines.length, ranges.at(-1)?.end ?? allLines.length);
 				const output = [
 					...(tag ? [formatHashlineHeader(displayPath(callCwd, absolute), tag)] : []),
 					...outputRows,
+					...(lastShown < allLines.length
+						? [
+								"",
+								`[${allLines.length - lastShown} more lines in file. Use offset=${lastShown + 1} or path:${lastShown + 1}-${allLines.length} to continue.]`,
+							]
+						: []),
 				].join("\n");
 				const visibleEntries = displayEntries.filter((entry) => entry.kind === "line").slice(0, 80);
 				const highlightedRows = await highlightCodeRows(
 					selectedPath,
 					visibleEntries.map((entry) => entry.text),
 				);
-				return {
-					content: [{ type: "text", text: output }],
-					details: { hashlineTag: tag, ranges, highlightedRows },
-				};
+				return await boundedTextResult(
+					output,
+					{ hashlineTag: tag, ranges, highlightedRows },
+					{ cwd: callCwd, label: selectedPath },
+				);
 			}
 			const startLine = Math.max(1, Math.floor(params.offset ?? 1));
 			if (startLine > allLines.length)
@@ -3957,27 +4490,32 @@ function registerHashlineWorkflowTools(
 				output += `\n\n[${remaining} more ${lineWord} in file. Use offset=${endExclusive + 1} or path:${endExclusive + 1}-${allLines.length} to continue.]`;
 			}
 			const visibleSelected = displayEntries.filter((entry) => entry.kind === "line").slice(0, 80);
-			return {
-				content: [{ type: "text", text: output }],
-				details: {
+			return await boundedTextResult(
+				output,
+				{
 					hashlineTag: tag,
 					highlightedRows: await highlightCodeRows(
 						selectedPath,
 						visibleSelected.map((entry) => entry.text),
 					),
 				},
-			};
+				{ cwd: callCwd, label: selectedPath },
+			);
 		},
 	});
 
 	pi.registerTool({
 		name: "search",
 		label: "search",
-		description:
+		description: [
 			"Search file contents or a resource URI. Hashline mode groups local matches under [PATH#TAG] headers.",
+			`Output is truncated to ${SEARCH_FILE_WINDOW} files with ${TREE_MATCHES_PER_FILE} matches each (${SINGLE_FILE_ROW_BUDGET} rows when the search is scoped to one file), 50KB, or 2000 lines, whichever is hit first.`,
+			"Enclosing-block context counts against that budget. Use skip=N to page through files; narrow the pattern, path, or glob to see fewer, better matches.",
+		].join(" "),
 		promptSnippet: "Search file contents and return hashline-editable matches",
 		promptGuidelines: [
 			"Use search for file-content searches when it is active; use read when you already know the path.",
+			`search returns at most ${SEARCH_FILE_WINDOW} files per call; page with skip instead of asking for a wider result.`,
 		],
 		parameters: searchToolSchema,
 		renderShell: "self",
@@ -4016,30 +4554,32 @@ function registerHashlineWorkflowTools(
 					scope: resource,
 					literal: Boolean(params.literal),
 					ignoreCase: Boolean(params.ignoreCase),
-					limit: Number(params.limit ?? DEFAULT_SEARCH_RESULT_LIMIT),
+					limit: INTERNAL_FETCH_LIMIT,
 					context: resourceContextFromContext(ctx, callCwd, signal),
 				});
 				if (hits.length === 0) return { content: [{ type: "text", text: "No matches found" }] };
+				const window = pageWindow(hits, params.skip, SEARCH_FILE_WINDOW);
+				const notice = pagingNotice(window, "results");
+				const bounded = await boundedWithCapture(
+					[
+						window.items.map((hit) => resourceContextText(hit, hit.snippet)).join("\n\n"),
+						...(notice ? [notice] : []),
+					].join("\n\n"),
+					{ cwd: callCwd, label: `search ${params.pattern}` },
+				);
 				return {
-					content: [
-						{
-							type: "text",
-							text: hits.map((hit) => resourceContextText(hit, hit.snippet)).join("\n\n"),
-						},
-					],
-					details: { resources: hits },
+					content: [{ type: "text", text: bounded.text }],
+					details: { resources: window.items, outputTokens: bounded.tokens, outputBounded: bounded.truncated },
 				};
 			}
 			const args = ["--line-number", "--color=never", "--hidden", "--no-heading"];
 			if (params.ignoreCase) args.push("--ignore-case");
 			if (params.literal) args.push("--fixed-strings");
 			if (params.glob) args.push("--glob", String(params.glob));
-			if (params.context && params.context > 0) args.push("-C", String(Math.max(0, Math.floor(params.context))));
-			const resultLimit = Math.max(1, Math.min(1000, Number(params.limit ?? DEFAULT_SEARCH_RESULT_LIMIT)));
-			if (explicitRanges.length === 0) {
-				const rgMaxCount = params.limit === undefined ? resultLimit + 1 : resultLimit;
-				args.push("--max-count", String(rgMaxCount));
-			}
+			// `--max-count` is per file, never global, so it can only serve as the
+			// internal fetch cap. What reaches the model is decided after selection.
+			if (explicitRanges.length === 0) args.push("--max-count", String(INTERNAL_FETCH_LIMIT));
+			args.push("--context", String(SEARCH_CONTEXT_LINES));
 			args.push("--", String(params.pattern), searchPath ? String(searchPath) : ".");
 			const result = await runExternalCommand("rg", args, callCwd, {
 				signal,
@@ -4065,30 +4605,74 @@ function registerHashlineWorkflowTools(
 			}
 			if (byFile.size === 0) return { content: [{ type: "text", text: "No matches found in selected ranges" }] };
 			await preloadBlockLanguages(byFile.keys());
+			const orderedFiles = [...byFile.entries()]
+				.map(([absolute, entries]) => ({
+					absolute,
+					ordered: [...entries.entries()].sort((left, right) => left[0] - right[0]),
+				}))
+				.sort((left, right) => left.absolute.localeCompare(right.absolute));
+			const fileWindow = pageWindow(orderedFiles, params.skip, SEARCH_FILE_WINDOW);
+			// One matching file means the search is a strided read of that file, so
+			// the budget is spent on rows there instead of on breadth.
+			const singleFileScope = orderedFiles.length === 1;
+			const perFileCap = singleFileScope ? SINGLE_FILE_ROW_BUDGET : TREE_MATCHES_PER_FILE;
+			const rowBudget = singleFileScope ? SINGLE_FILE_ROW_BUDGET : SEARCH_FILE_WINDOW * TREE_MATCHES_PER_FILE;
+			// Rotate first, cap second. Capping during the rotation would hand the
+			// budget to whichever files sort first — the bias the rotation removes.
+			const rotated = interleaveByFile(
+				fileWindow.items.map((file) => file.ordered.map((match) => ({ absolute: file.absolute, match }))),
+				perFileCap,
+			);
+			const availableMatches = fileWindow.items.reduce((total, file) => total + file.ordered.length, 0);
+			const selected = rotated.slice(0, rowBudget);
+			let truncatedSearch = selected.length < availableMatches;
+			const selectedByFile = new Map<string, [number, { text: string; isMatch: boolean }][]>();
+			for (const { absolute, match } of selected) {
+				const list = selectedByFile.get(absolute) ?? [];
+				list.push(match);
+				selectedByFile.set(absolute, list);
+			}
 			const sections: string[] = [];
 			const highlightedSections: HighlightedSection[] = [];
 			let emittedRows = 0;
-			let truncatedSearch = false;
-			for (const [absolute, fileEntries] of [...byFile.entries()].sort((left, right) =>
-				left[0].localeCompare(right[0]),
-			)) {
-				const ordered = [...fileEntries.entries()].sort((left, right) => left[0] - right[0]);
-				const cappedOrdered = ordered.slice(0, Math.max(0, resultLimit - emittedRows));
-				emittedRows += cappedOrdered.length;
-				if (cappedOrdered.length < ordered.length) truncatedSearch = true;
+			for (const { absolute } of fileWindow.items) {
+				const fileEntries = byFile.get(absolute) ?? new Map<number, { text: string; isMatch: boolean }>();
+				const cappedOrdered = (selectedByFile.get(absolute) ?? []).sort((left, right) => left[0] - right[0]);
 				if (cappedOrdered.length === 0) continue;
+				if (emittedRows >= rowBudget) {
+					truncatedSearch = true;
+					break;
+				}
 				const display = displayPath(callCwd, absolute);
 				const rawFile = normalizeToLf((await readFile(absolute, "utf-8")).replace(/^\uFEFF/, ""));
 				const fullLines = textToDisplayLines(rawFile);
 				const entryText = new Map(cappedOrdered.map(([lineNumber, entry]) => [lineNumber, entry.text] as const));
-				const displayEntries = buildLineEntriesWithBlockContext(
+				const expanded = buildLineEntriesWithBlockContext(
 					fullLines,
 					cappedOrdered.map(([lineNumber]) => ({ startLine: lineNumber, endLine: lineNumber })),
 					absolute,
 					{ lineText: (lineNumber, sourceText) => entryText.get(lineNumber) ?? sourceText },
 				);
+				// Enclosing-block lines are added after the match cap, so they are the
+				// part of the cost the cap never saw. Charge them to the same budget.
+				const displayEntries: typeof expanded = [];
+				let fileRows = 0;
+				for (const entry of expanded) {
+					if (entry.kind === "line") {
+						if (emittedRows + fileRows >= rowBudget) {
+							truncatedSearch = true;
+							break;
+						}
+						fileRows += 1;
+					}
+					displayEntries.push(entry);
+				}
+				emittedRows += fileRows;
+				if (fileRows === 0) continue;
 				const tag = await recordHashlineFileSnapshot(snapshotsForContext(ctx), absolute, {
-					explicit: cappedOrdered.map(([lineNumber]) => lineNumber),
+					explicit: displayEntries.flatMap((entry) =>
+						entry.kind === "line" && !entry.context ? [entry.lineNumber] : [],
+					),
 					synthetic: displayEntries.flatMap((entry) =>
 						entry.kind === "line" && entry.context ? [entry.lineNumber] : [],
 					),
@@ -4117,22 +4701,40 @@ function registerHashlineWorkflowTools(
 					].join("\n"),
 				);
 			}
-			if (truncatedSearch) {
-				sections.push(
-					[`[Search results truncated at ${resultLimit} rows.]`, "Use a narrower path, glob, or ranges."].join(
-						"\n",
-					),
+			const notices: string[] = [];
+			const paging = pagingNotice(fileWindow);
+			if (paging) notices.push(paging);
+			if (truncatedSearch)
+				notices.push(
+					`Match budget reached: at most ${perFileCap} matches per file and ${rowBudget} rows total, enclosing-block context included. Narrow the pattern, path, or glob to see the rest.`,
 				);
-			}
-			return { content: [{ type: "text", text: sections.join("\n\n") }], details: { highlightedSections } };
+			if (notices.length > 0) sections.push(notices.join(" "));
+			// Search is one-match-per-line, so a single minified line is noise here
+			// and capping it is safe. Document reads deliberately do not do this.
+			const bounded = await boundedWithCapture(
+				sections.join("\n\n"),
+				{ cwd: callCwd, label: `search ${params.pattern}` },
+				{ maxLineChars: GREP_MAX_LINE_CHARS },
+			);
+			return {
+				content: [{ type: "text", text: bounded.text }],
+				details: { highlightedSections, outputTokens: bounded.tokens, outputBounded: bounded.truncated },
+			};
 		},
 	});
 
 	pi.registerTool({
 		...baseFind,
 		name: "find",
-		description: "Find files or resources by glob/path. Accepts {pattern,path} and {paths:[...]} inputs.",
-		promptGuidelines: ["Use find for file discovery by glob or path when it is active."],
+		description: [
+			"Find files or resources by glob/path. Accepts {pattern,path} and {paths:[...]} inputs.",
+			`Output is truncated to ${SEARCH_FILE_WINDOW} files or 50KB, whichever is hit first.`,
+			"Use skip=N to page through the rest, or narrow the glob.",
+		].join(" "),
+		promptGuidelines: [
+			"Use find for file discovery by glob or path when it is active.",
+			`find returns at most ${SEARCH_FILE_WINDOW} files per call; page with skip instead of asking for a wider result.`,
+		],
 		parameters: findToolSchema,
 		renderShell: "self",
 		renderCall(params, theme, context) {
@@ -4160,8 +4762,7 @@ function registerHashlineWorkflowTools(
 					throw new Error("find cannot mix resource URIs with local paths.");
 				}
 				const callCwd = ctx?.cwd ?? cwd;
-				const limit = Math.max(1, Math.min(1000, Number(params.limit ?? DEFAULT_FIND_RESULT_LIMIT)));
-				const resources = (
+				const found = (
 					await Promise.all(
 						resourcePaths.map((path) => {
 							const resource = parseResourceUri(path);
@@ -4169,20 +4770,36 @@ function registerHashlineWorkflowTools(
 							return findResources(resource, resourceContextFromContext(ctx, callCwd, signal));
 						}),
 					)
-				)
-					.flat()
-					.slice(0, limit);
-				const text =
-					resources.length === 0
+				).flat();
+				const window = pageWindow(found, params.skip, SEARCH_FILE_WINDOW);
+				const notice = pagingNotice(window, "resources");
+				const bounded = await boundedWithCapture(
+					window.items.length === 0
 						? "No resources found"
-						: resources.map((item) => resourceContextText(item)).join("\n\n");
-				return { content: [{ type: "text", text }], details: { resources } };
+						: [
+								window.items.map((item) => resourceContextText(item)).join("\n\n"),
+								...(notice ? [notice] : []),
+							].join("\n\n"),
+					{ cwd: callCwd, label: "find" },
+				);
+				return {
+					content: [{ type: "text", text: bounded.text }],
+					details: { resources: window.items, outputTokens: bounded.tokens, outputBounded: bounded.truncated },
+				};
 			}
-			if (!Array.isArray(params.paths)) return baseFind.execute(toolCallId, params, signal, onUpdate, ctx);
 			const callCwd = ctx?.cwd ?? cwd;
-			const limit = Math.max(1, Math.min(1000, Number(params.limit ?? DEFAULT_FIND_RESULT_LIMIT)));
-			const outputs: string[] = [];
-			for (const pattern of params.paths) {
+			// The legacy `{pattern, path}` shape is the one a model reaches for most
+			// naturally, and delegating it to the base tool skipped the window, the
+			// paging notice and the byte budget entirely. Normalise it instead so
+			// there is exactly one bounded path through this tool.
+			const globPaths = Array.isArray(params.paths)
+				? params.paths
+				: typeof params.pattern === "string" && params.pattern.length > 0
+					? [join(typeof params.path === "string" && params.path ? params.path : ".", params.pattern)]
+					: undefined;
+			if (!globPaths) return baseFind.execute(toolCallId, params, signal, onUpdate, ctx);
+			const perPattern: string[][] = [];
+			for (const pattern of globPaths) {
 				const search = splitGlobSearchRoot(callCwd, String(pattern));
 				const rootStat = await stat(search.root).catch(() => undefined);
 				if (!rootStat?.isDirectory()) continue;
@@ -4195,27 +4812,36 @@ function registerHashlineWorkflowTools(
 					allowNonZero: true,
 					extraSearchPaths: FILEOPS_TOOL_SEARCH_PATHS,
 				});
-				outputs.push(
-					...result.stdout
+				perPattern.push(
+					result.stdout
 						.split("\n")
 						.filter(Boolean)
-						.map((file) => displayPath(callCwd, absolutePath(search.root, file))),
+						.map((file) => displayPath(callCwd, absolutePath(search.root, file)))
+						.sort((left, right) => left.localeCompare(right)),
 				);
 			}
-			const allUnique = [...new Set(outputs)].sort((left, right) => left.localeCompare(right));
-			const unique = allUnique.slice(0, limit);
-			const truncatedFind = params.limit === undefined && allUnique.length > limit;
-			const text =
-				unique.length === 0
+			// Rotate across the requested patterns so one broad glob cannot spend the
+			// whole page and hide the narrow pattern the caller also asked for.
+			const seen = new Set<string>();
+			const allUnique = interleaveByFile(perPattern, INTERNAL_FETCH_LIMIT).filter((file) => {
+				if (seen.has(file)) return false;
+				seen.add(file);
+				return true;
+			});
+			const window = pageWindow(allUnique, params.skip, SEARCH_FILE_WINDOW);
+			const notice = pagingNotice(window);
+			const bounded = await boundedWithCapture(
+				window.items.length === 0
 					? "No files found matching pattern"
 					: [
-							...unique,
-							...(truncatedFind
-								? [`[Find results truncated at ${limit} files. Use a narrower glob or path.]`]
-								: []),
-						].join("\n");
+							...[...window.items].sort((left, right) => left.localeCompare(right)),
+							...(notice ? [notice] : []),
+						].join("\n"),
+				{ cwd: callCwd, label: "find" },
+			);
 			return {
-				content: [{ type: "text", text }],
+				content: [{ type: "text", text: bounded.text }],
+				details: { outputTokens: bounded.tokens, outputBounded: bounded.truncated },
 			};
 		},
 	});

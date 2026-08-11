@@ -26,6 +26,14 @@ export type ExplorationReadSummaryRow = {
 	status?: ExplorationReadSummaryPart;
 	details?: ExplorationReadSummaryPart[];
 	avatarUrl?: string;
+	/**
+	 * Body text rendered as markdown under this row.
+	 *
+	 * A comment squeezed onto its author's line was a truncated fragment with
+	 * its formatting intact as literal characters. The author identifies the
+	 * row; the body is a body and renders as one.
+	 */
+	markdown?: string;
 };
 
 export type ExplorationReadSummary = {
@@ -38,6 +46,18 @@ export type ExplorationReadSummary = {
 	subtitleUrl?: string;
 	meta?: string;
 	metaParts?: ExplorationReadSummaryPart[];
+	/**
+	 * What the result cost, rendered at the end of the title row.
+	 *
+	 * On the title row rather than in `metaParts` so it sits in the same place
+	 * for every read, whether or not that read has diff stats to show.
+	 */
+	costPart?: ExplorationReadSummaryPart;
+	/**
+	 * The resource URI this card was read from, rendered at the end of the
+	 * subtitle row and linked to where the view opens on the web.
+	 */
+	uri?: ExplorationReadSummaryPart;
 	statusLabel?: string;
 	statusRole?: string;
 	statusSuffix?: string;
@@ -119,7 +139,12 @@ export function updateExplorationRead(toolCallId: string | undefined, summary: E
 	summariesByToolCallId.set(toolCallId, summary);
 	const entry = entriesByToolCallId.get(toolCallId);
 	if (!entry || entry.action.kind !== "read") return false;
-	if (JSON.stringify(entry.action.summary) === JSON.stringify(summary)) return true;
+	// Identity, not deep equality: this runs on every render, and a resource
+	// summary carries the full record in its metadata — for a PR diff that is
+	// megabytes. Two `JSON.stringify` calls per frame over that object is enough
+	// allocation to drive the heap into continuous scavenging. Summaries are
+	// built once per result and reused, so reference equality is the same test.
+	if (entry.action.summary === summary) return true;
 	entry.action = { ...entry.action, summary };
 	entry.invalidate?.();
 	return true;
@@ -255,7 +280,10 @@ export function renderExplorationSummaryPart(part: ExplorationReadSummaryPart, t
 }
 
 function renderReadSummaryMeta(summary: ExplorationReadSummary, theme: ExplorationRenderTheme): string {
-	const parts = summary.metaParts ?? (summary.meta ? [{ text: summary.meta }] : []);
+	const parts = [
+		...(summary.metaParts ?? (summary.meta ? [{ text: summary.meta }] : [])),
+		...(summary.uri ? [summary.uri] : []),
+	];
 	if (parts.length === 0) return "";
 	const separator = theme.fg("dim", " · ");
 	return ` ${theme.fg("dim", "·")} ${parts.map((part) => renderExplorationSummaryPart(part, theme)).join(separator)}`;
@@ -269,6 +297,7 @@ export function renderExplorationSummaryTitle(
 	const status = summary.statusLabel
 		? `${theme.fg(summary.statusRole ?? summary.iconRole, theme.bold(padLabel ? summary.statusLabel.padEnd(6) : summary.statusLabel))}${summary.statusSuffix ? ` ${summary.statusSuffix}` : ""} `
 		: "";
+	const cost = summary.costPart ? ` ${renderExplorationSummaryPart(summary.costPart, theme)}` : "";
 	if (summary.typeIcon) {
 		const repository = summary.repository
 			? `${renderExplorationSummaryPart(
@@ -278,9 +307,9 @@ export function renderExplorationSummaryTitle(
 			: "";
 		const icon = summary.hideIcon ? "" : `${theme.fg(summary.iconRole, summary.icon)} `;
 		const identifier = summary.identifier ? `${renderExplorationSummaryPart(summary.identifier, theme)} ` : "";
-		return `${theme.fg("text", summary.typeIcon)} ${repository}${theme.fg("text", theme.bold(summary.label))} ${icon}${status}${identifier}${theme.fg("accent", summary.title)}`;
+		return `${theme.fg("text", summary.typeIcon)} ${repository}${theme.fg("text", theme.bold(summary.label))} ${icon}${status}${identifier}${theme.fg("accent", summary.title)}${cost}`;
 	}
-	return `${theme.fg(summary.iconRole, summary.icon)} ${status}${theme.bold(summary.label)} ${theme.fg("accent", summary.title)}`;
+	return `${theme.fg(summary.iconRole, summary.icon)} ${status}${theme.bold(summary.label)} ${theme.fg("accent", summary.title)}${cost}`;
 }
 
 function renderReadSummaryRow(
