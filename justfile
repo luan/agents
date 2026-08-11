@@ -56,7 +56,7 @@ codex-plugins-install:
 
 
 context-guard:
-    cd "{{ repo }}" && cargo build -p context-guard
+    cd "{{ repo }}" && cargo build --release -p context-guard
 
 git-spice-install:
     @checkout="{{ home }}/.local/share/agents/git-spice"; \
