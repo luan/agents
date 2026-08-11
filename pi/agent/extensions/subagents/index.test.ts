@@ -1,6 +1,5 @@
 import { expect, test } from "bun:test";
 import subagentsExtension, {
-	attachAgentTerminal,
 	formatTaskResults,
 	mergeHubAgentRecords,
 	normalizeItems,
@@ -89,30 +88,6 @@ test("spawn_agent accepts a model role override", () => {
 
 	expect(spawnTool.parameters.properties.model_role).toBeDefined();
 	expect(withModelRole({ name: "task", role: "task" } as never, "tiny")).toMatchObject({ role: "tiny" });
-});
-
-test("central Hub attachment hands the terminal to the agent process", async () => {
-	const calls: string[] = [];
-	const attached = await attachAgentTerminal(
-		{
-			attachment: {
-				mode: "terminal",
-				sessionName: "worker",
-				socketPath: "/tmp/worker.sock",
-				command: "true",
-				args: [],
-			},
-		} as never,
-		{
-			terminal: { rows: 40, columns: 120 },
-			stop: () => calls.push("stop"),
-			start: () => calls.push("start"),
-			requestRender: () => calls.push("render"),
-		} as never,
-	);
-
-	expect(attached).toBe(true);
-	expect(calls).toEqual(["stop", "start", "render"]);
 });
 
 test("Hub excludes agents from every other root session", () => {

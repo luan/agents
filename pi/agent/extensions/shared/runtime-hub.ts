@@ -38,12 +38,29 @@ export async function attachRuntimeTerminal(
 	tui.stop();
 	try {
 		return await new Promise<boolean>((resolve) => {
+			let poll: ReturnType<typeof setInterval> | undefined;
+			const settle = (attached: boolean) => {
+				clearInterval(poll);
+				resolve(attached);
+			};
 			const child = spawn(attachment.command, attachment.args, {
 				stdio: "inherit",
 				env: runtimeAttachmentEnv(),
 			});
-			child.once("error", () => resolve(false));
-			child.once("close", (code) => resolve(code === 0));
+			child.once("error", () => settle(false));
+			child.once("exit", (code) => settle(code === 0));
+			// node-pty is loaded in this process and its reaper sometimes consumes the
+			// child's exit notification, which would leave the TUI stopped forever.
+			// A liveness probe is the only reliable end-of-session signal. The exit code
+			// is unknown on that path, so report success rather than a false failure.
+			poll = setInterval(() => {
+				if (child.pid === undefined) return;
+				try {
+					process.kill(child.pid, 0);
+				} catch {
+					settle(child.exitCode === null || child.exitCode === 0);
+				}
+			}, 250);
 		});
 	} finally {
 		tui.start();
