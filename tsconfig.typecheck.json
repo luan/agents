@@ -10,6 +10,7 @@
     "pi/agent/extensions/context7/**/*.ts",
     "pi/agent/extensions/git-tool/**/*.ts",
     "pi/agent/extensions/image-attach/**/*.ts",
+    "pi/agent/extensions/model-roles/**/*.ts",
     "pi/agent/extensions/openai-fast/**/*.ts",
     "pi/agent/extensions/plannotator-events/**/*.ts",
     "pi/agent/extensions/pretty/**/*.ts",

@@ -10,6 +10,7 @@ const child = spawn(process.execPath, [config.cliPath, ...config.args, config.pr
 		PI_ATTACHED_AGENT: "1",
 		PI_SUBAGENT_NAME: config.agentName,
 		PI_ATTACHED_AGENT_CONFIG: configPath,
+		...(config.modelRole ? { PI_ATTACHED_AGENT_MODEL_ROLE: config.modelRole } : {}),
 	},
 	stdio: "inherit",
 });

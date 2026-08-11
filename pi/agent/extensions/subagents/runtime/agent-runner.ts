@@ -20,14 +20,13 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import { loadModelRoles, resolveModelRole, roleColor, roleNames } from "../../model-roles/catalog.js";
 import { detectEnv } from "./env.js";
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "./memory.js";
-import { loadModelCategories, resolveModelCategory } from "./model-categories.js";
-import { resolveDefaultModel } from "./model-resolver.js";
 import { isSubagentOrchestrationToolName } from "./orchestration-tools.js";
 import { buildAgentPrompt, type PromptExtras } from "./prompts.js";
 import { preloadSkills } from "./skill-loader.js";
-import type { AgentConfig, SubagentType, ThinkingLevel } from "./types.js";
+import type { AgentConfig, AgentModelRole, SubagentType, ThinkingLevel } from "./types.js";
 import { type AssistantUsage, readAssistantUsage } from "./usage.js";
 
 const GRACE_TURNS = 5;
@@ -88,8 +87,8 @@ interface RunOptions {
 	onTextDelta?: (delta: string, fullText: string) => void;
 	onSessionCreated?: (session: AgentSession) => void;
 	onRuntimeCreated?: (runtime: AgentSessionRuntime) => void;
-	/** Called after model and thinking settings are resolved. */
-	onRuntimeResolved?: (model: Model<any> | undefined, thinkingLevel: ThinkingLevel | undefined) => void;
+	/** Called after model role resolution. */
+	onRuntimeResolved?: (modelRole: AgentModelRole | undefined) => void;
 	/** Called at the end of each agentic turn with the cumulative count. */
 	onTurnEnd?: (turnCount: number) => void;
 	/**
@@ -202,21 +201,6 @@ function forwardAbortSignal(session: AgentSession, signal?: AbortSignal): () => 
 	return () => signal.removeEventListener("abort", onAbort);
 }
 
-function filterExtensionsByPath<T extends { path: string; resolvedPath: string }>(
-	extensions: readonly T[],
-	allowedPaths: readonly string[],
-): T[] {
-	const normalizedAllowed = allowedPaths.map((path) => path.replaceAll("\\", "/").replace(/^\.\//, ""));
-	return extensions.filter((extension) =>
-		normalizedAllowed.some((allowedPath) =>
-			[extension.path, extension.resolvedPath].some((path) => {
-				const normalizedPath = path.replaceAll("\\", "/");
-				return normalizedPath === allowedPath || normalizedPath.endsWith(`/${allowedPath}`);
-			}),
-		),
-	);
-}
-
 export function resolveSessionRuntimeOptions(modelRegistry: object): Record<string, unknown> {
 	const modelRuntime = (modelRegistry as { runtime?: unknown }).runtime;
 	if (modelRuntime) return { modelRuntime };
@@ -229,11 +213,10 @@ export interface PreparedAgentRun {
 	systemPrompt: string;
 	toolNames: string[];
 	selectedToolNames: Set<string>;
-	extensionPaths?: string[];
-	noExtensions: boolean;
 	noSkills: boolean;
 	model: Model<any> | undefined;
 	thinkingLevel: ThinkingLevel | undefined;
+	modelRole: AgentModelRole | undefined;
 	loader: DefaultResourceLoader;
 	disallowedSet: Set<string> | undefined;
 }
@@ -243,12 +226,12 @@ export async function prepareAgentRun(
 	type: SubagentType,
 	prompt: string,
 	options: Pick<RunOptions, "agentConfig" | "cwd" | "description" | "pi" | "onRuntimeResolved">,
+	loadResources = true,
 ): Promise<PreparedAgentRun> {
 	const agentConfig = options.agentConfig;
 	const effectiveCwd = options.cwd ?? ctx.cwd;
 	const env = await detectEnv(options.pi, effectiveCwd);
 	const extras: PromptExtras = { delegatedTask: { taskName: options.description ?? type, message: prompt } };
-	const extensions = agentConfig.extensions;
 	const skills = agentConfig.skills;
 
 	if (Array.isArray(skills)) {
@@ -282,10 +265,6 @@ export async function prepareAgentRun(
 	const loader = new DefaultResourceLoader({
 		cwd: effectiveCwd,
 		agentDir,
-		noExtensions: extensions === false,
-		extensionsOverride: Array.isArray(extensions)
-			? (base) => ({ ...base, extensions: filterExtensionsByPath(base.extensions, extensions) })
-			: undefined,
 		noSkills,
 		noPromptTemplates: true,
 		noThemes: true,
@@ -293,17 +272,19 @@ export async function prepareAgentRun(
 		systemPromptOverride: () => systemPrompt,
 		appendSystemPromptOverride: () => [],
 	});
-	await loader.reload();
+	if (loadResources) await loader.reload();
 
-	const category = resolveModelCategory(
-		agentConfig.modelCategory,
-		ctx.modelRegistry,
-		loadModelCategories(effectiveCwd),
-	);
-	const model = resolveDefaultModel(category.model ?? ctx.model, ctx.modelRegistry, agentConfig.model);
-	const thinkingLevel =
-		agentConfig.thinking ?? category.thinking ?? (model?.reasoning ? options.pi.getThinkingLevel() : undefined);
-	options.onRuntimeResolved?.(model, thinkingLevel);
+	const catalog = loadModelRoles();
+	const role = resolveModelRole(agentConfig.role, ctx.modelRegistry, catalog);
+	const model = role?.model ?? ctx.model;
+	const thinkingLevel = role?.candidate.thinking ?? (model?.reasoning ? options.pi.getThinkingLevel() : undefined);
+	const modelRole = role
+		? {
+				name: role.roleName,
+				color: roleColor(catalog.roles[role.roleName]!, roleNames(catalog).indexOf(role.roleName)),
+			}
+		: undefined;
+	options.onRuntimeResolved?.(modelRole);
 
 	return {
 		effectiveCwd,
@@ -311,13 +292,10 @@ export async function prepareAgentRun(
 		systemPrompt,
 		toolNames,
 		selectedToolNames,
-		extensionPaths: Array.isArray(extensions)
-			? loader.getExtensions().extensions.map((extension) => extension.resolvedPath)
-			: undefined,
-		noExtensions: extensions === false || Array.isArray(extensions),
 		noSkills,
 		model,
 		thinkingLevel,
+		modelRole,
 		loader,
 		disallowedSet: agentConfig.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined,
 	};
@@ -342,17 +320,12 @@ export async function runAgent(
 		loader,
 		disallowedSet,
 	} = prepared;
-	const extensions = agentConfig.extensions;
 	const noSkills = prepared.noSkills;
 	const loadResources = async (cwd: string, resourceAgentDir: string) => {
 		if (cwd === effectiveCwd && resourceAgentDir === agentDir) return loader;
 		const resourceLoader = new DefaultResourceLoader({
 			cwd,
 			agentDir: resourceAgentDir,
-			noExtensions: extensions === false,
-			extensionsOverride: Array.isArray(extensions)
-				? (base) => ({ ...base, extensions: filterExtensionsByPath(base.extensions, extensions) })
-				: undefined,
 			noSkills,
 			noPromptTemplates: true,
 			noThemes: true,
@@ -419,6 +392,7 @@ export async function runAgent(
 		agentDir,
 		sessionManager,
 	});
+	if (agentConfig.role) sessionManager.appendCustomEntry("model_role", { role: agentConfig.role });
 	const runtime = new AgentSessionRuntime(
 		initialRuntime.session,
 		initialRuntime.services,

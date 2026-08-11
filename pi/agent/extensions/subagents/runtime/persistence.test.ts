@@ -394,7 +394,6 @@ test("spawns the same explicit id in different root sessions", () => {
 	const agentConfig = {
 		name: "task",
 		description: "Task",
-		extensions: false,
 		skills: false,
 		systemPrompt: "Work.",
 		promptMode: "replace",
@@ -417,5 +416,29 @@ test("spawns the same explicit id in different root sessions", () => {
 			.map((record) => record.rootSessionId)
 			.sort(),
 	).toEqual(["root-a", "root-b"]);
+	manager.dispose();
+});
+
+test("suffixes duplicate explicit ids in one root session", () => {
+	const manager = new AgentManager(undefined, 0);
+	const agentConfig = {
+		name: "task",
+		description: "Task",
+		skills: false,
+		systemPrompt: "Work.",
+		promptMode: "replace",
+	} as const;
+	const spawn = () =>
+		manager.spawn({} as never, { cwd: "/tmp/project" } as never, "task", "work", {
+			id: "shared-id",
+			description: "shared",
+			rootSessionId: "root",
+			parentSessionId: "root",
+			assignment: "work",
+			agentConfig,
+			isBackground: true,
+		});
+
+	expect([spawn(), spawn()]).toEqual(["shared-id", "shared-id-2"]);
 	manager.dispose();
 });

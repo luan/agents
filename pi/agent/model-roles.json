@@ -1,0 +1,42 @@
+{
+  "defaultRole": "default",
+  "roles": {
+    "default": {
+      "candidates": [
+        {
+          "model": "openai-codex/gpt-5.6-sol",
+          "thinking": "high"
+        }
+      ],
+      "color": "success"
+    },
+    "smol": {
+      "candidates": [
+        {
+          "model": "openai-codex/gpt-5.6-luna",
+          "thinking": "max",
+          "service_tier": "priority"
+        }
+      ],
+      "color": "warning"
+    },
+    "tiny": {
+      "candidates": [
+        {
+          "model": "openai-codex/gpt-5.6-luna",
+          "thinking": "low"
+        }
+      ],
+      "color": "thinkingLow"
+    },
+    "task": {
+      "candidates": [
+        {
+          "model": "openai-codex/gpt-5.6-luna",
+          "thinking": "xhigh"
+        }
+      ],
+      "color": "thinkingHigh"
+    }
+  }
+}

@@ -58,6 +58,7 @@ type UsageBarCache = {
 
 const WORKING_TIMER_ENTRY_TYPE = "tui:working-timer";
 const MODEL_STATUS_KEYS = new Set(["openai-fast:active"]);
+const MODEL_ROLE_STATUS_KEY = "model-roles:current";
 
 function cleanIdentityPart(value: string | undefined): string | undefined {
 	const text = value
@@ -73,6 +74,10 @@ function readModelStatusBadges(footerData: FooterDataProvider | undefined): stri
 	return [...MODEL_STATUS_KEYS]
 		.map((key) => cleanIdentityPart(statuses.get(key)))
 		.filter((status): status is string => Boolean(status));
+}
+function readModelRoleStatus(footerData: FooterDataProvider | undefined): string | undefined {
+	if (!footerData) return undefined;
+	return cleanIdentityPart(footerData.getExtensionStatuses().get(MODEL_ROLE_STATUS_KEY));
 }
 
 function formatCount(value: number): string {
@@ -311,6 +316,7 @@ export default function (pi: ExtensionAPI) {
 			statusWidth = safeWidth;
 		}
 		state.thinkingLevel = activeCtx?.model?.reasoning ? pi.getThinkingLevel() : undefined;
+		state.modelRoleStatus = readModelRoleStatus(footerDataProvider);
 		state.modelStatusBadges = readModelStatusBadges(footerDataProvider);
 		setWorkingFastMode(footerDataProvider?.getExtensionStatuses().get("openai-fast:request") === "fast");
 		const topStatus = renderEditorTopStatus(state, currentConfig, cwd, theme, statusWidth);
@@ -319,6 +325,7 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	const renderFooterStatus = (width: number, theme: Parameters<typeof renderEditorContextStatus>[1]) => {
+		state.modelRoleStatus = readModelRoleStatus(footerDataProvider);
 		const safeWidth = Math.max(1, width);
 		const detachHint = attachedSubagent ? theme.fg("warning", "Ctrl+] detach") : "";
 		const contextWidth = Math.min(Math.floor(safeWidth * 0.5), safeWidth - visibleWidth(detachHint) - 1);
@@ -388,7 +395,7 @@ export default function (pi: ExtensionAPI) {
 		state.modelLabel = ctx.model?.name ?? "no-model";
 		state.providerLabel = formatProviderLabel(ctx.model?.provider);
 		state.thinkingLevel = ctx.model?.reasoning ? pi.getThinkingLevel() : undefined;
-		state.modelStatusBadges = readModelStatusBadges(footerDataProvider);
+		state.modelRoleStatus = readModelRoleStatus(footerDataProvider);
 		state.contextPercent = usage?.percent ?? (contextWindow > 0 ? (contextUsed / contextWindow) * 100 : null);
 		state.contextTotal = contextWindow;
 		state.contextUsed = contextUsed;

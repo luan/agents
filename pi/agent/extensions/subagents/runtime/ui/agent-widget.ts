@@ -47,14 +47,6 @@ function formatTokens(count: number): string {
 	return `${count} token`;
 }
 
-export function formatAgentModelInfo(
-	agent: { modelName?: string; thinkingLevel?: string },
-	theme: Theme,
-): string | undefined {
-	const parts = [agent.modelName, agent.thinkingLevel ? `effort ${agent.thinkingLevel}` : undefined].filter(Boolean);
-	return parts.length > 0 ? theme.fg("muted", parts.join(" | ")) : undefined;
-}
-
 export function formatMs(ms: number): string {
 	return `${(ms / 1000).toFixed(1)}s`;
 }
@@ -120,8 +112,7 @@ export class AgentWidget {
 			const usage = activity?.lifetimeUsage ?? agent.lifetimeUsage;
 			const tokens = getLifetimeTotal(usage);
 			const stats = [
-				agent.modelName ? theme.fg("dim", agent.modelName) : undefined,
-				agent.thinkingLevel ? theme.fg("dim", `effort ${agent.thinkingLevel}`) : undefined,
+				agent.modelRole ? theme.fg(agent.modelRole.color, agent.modelRole.name) : undefined,
 				agent.fastModeActive ? theme.fg("warning", "⚡ fast") : undefined,
 				theme.fg("dim", usage.cost > 0 ? `$${usage.cost.toFixed(usage.cost < 0.01 ? 4 : 2)}` : "$0.00"),
 				toolUses > 0 ? theme.fg("dim", `${toolUses} tools`) : undefined,

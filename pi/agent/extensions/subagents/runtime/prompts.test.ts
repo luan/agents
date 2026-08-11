@@ -12,7 +12,6 @@ const env: EnvInfo = {
 const replaceAgent: AgentConfig = {
 	name: "reviewer",
 	description: "review",
-	extensions: false,
 	skills: false,
 	systemPrompt: "Review the change.",
 	promptMode: "replace",

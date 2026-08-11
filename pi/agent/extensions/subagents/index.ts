@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@e
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { loadModelRoles } from "../model-roles/catalog.js";
 import { onOpenAIFastRequest } from "../shared/openai-fast-state";
 import { boundOutput } from "../shared/output-budget.ts";
 import { registerResourceProvider } from "../shared/resources.ts";
@@ -32,6 +33,7 @@ type TaskItem = {
 	id?: string;
 	description?: string;
 	role?: string;
+	model_role?: string;
 	assignment: string;
 	isolated?: boolean;
 };
@@ -43,6 +45,7 @@ type TaskParams = {
 	id?: string;
 	description?: string;
 	role?: string;
+	model_role?: string;
 	assignment?: string;
 	isolated?: boolean;
 	background?: boolean;
@@ -54,6 +57,7 @@ export type TaskResult = {
 	agent: string;
 	description?: string;
 	role?: string;
+	model_role?: string;
 	assignment: string;
 	status: AgentRecord["status"];
 	output?: string;
@@ -63,7 +67,6 @@ export type TaskResult = {
 	worktree?: AgentRecord["worktree"];
 	worktreeResult?: AgentRecord["worktreeResult"];
 };
-
 type ToolTheme = ExtensionContext["ui"]["theme"];
 
 function statusMarker(status: AgentRecord["status"] | "pending", theme: ToolTheme): string {
@@ -88,12 +91,13 @@ function statusMarker(status: AgentRecord["status"] | "pending", theme: ToolThem
 
 function taskCallItems(params: Partial<TaskParams>): TaskItem[] {
 	if (Array.isArray(params.tasks)) return params.tasks;
-	if (params.assignment || params.id || params.description || params.role) {
+	if (params.assignment || params.id || params.description || params.role || params.model_role) {
 		return [
 			{
 				id: params.id,
 				description: params.description,
 				role: params.role,
+				model_role: params.model_role,
 				assignment: params.assignment ?? "",
 				isolated: params.isolated,
 			},
@@ -230,8 +234,7 @@ const bundledAgents: AgentConfig[] = [
 	{
 		name: "task",
 		description: "General-purpose implementation agent",
-		modelCategory: "default",
-		extensions: true,
+		role: "task",
 		skills: true,
 		promptMode: "append",
 		systemPrompt: taskAgentPrompt,
@@ -241,9 +244,8 @@ const bundledAgents: AgentConfig[] = [
 	{
 		name: "explore",
 		description: "Fast read-only codebase and documentation scout",
-		modelCategory: "fast",
+		role: "tiny",
 		disallowedTools: readOnlyDisallowedTools,
-		extensions: true,
 		skills: true,
 		promptMode: "replace",
 		systemPrompt:
@@ -254,9 +256,8 @@ const bundledAgents: AgentConfig[] = [
 	{
 		name: "plan",
 		description: "Read-only implementation planner for complex changes",
-		modelCategory: "smart",
+		role: "smol",
 		disallowedTools: readOnlyDisallowedTools,
-		extensions: true,
 		skills: true,
 		promptMode: "replace",
 		systemPrompt:
@@ -267,9 +268,8 @@ const bundledAgents: AgentConfig[] = [
 	{
 		name: "reviewer",
 		description: "Read-only code review agent",
-		modelCategory: "smart",
+		role: "smol",
 		disallowedTools: readOnlyDisallowedTools,
-		extensions: true,
 		skills: true,
 		promptMode: "replace",
 		systemPrompt:
@@ -309,6 +309,7 @@ export function normalizeItems(params: TaskParams): TaskItem[] {
 			id: params.id,
 			description: params.description,
 			role: params.role,
+			model_role: params.model_role,
 			assignment,
 			isolated: params.isolated,
 		},
@@ -337,6 +338,7 @@ function resultFromRecord(record: AgentRecord, item: TaskItem, index: number, ag
 		agent,
 		description: item.description,
 		role: item.role,
+		model_role: item.model_role,
 		assignment: item.assignment,
 		status: record.status,
 		output: record.result,
@@ -390,6 +392,9 @@ const taskItemSchema = Type.Object({
 	id: Type.Optional(Type.String({ description: "Stable agent id, CamelCase, <=32 chars preferred." })),
 	description: Type.Optional(Type.String({ description: "UI label only; the subagent never sees it." })),
 	role: Type.Optional(Type.String({ description: "Specialist identity for the subagent." })),
+	model_role: Type.Optional(
+		Type.String({ description: "Named model role from model-roles.json. Overrides the agent default." }),
+	),
 	assignment: Type.String({ description: "Complete self-contained instructions." }),
 	isolated: Type.Optional(Type.Boolean({ description: "Run in an isolated worktree." })),
 });
@@ -399,6 +404,10 @@ function resolveAgentConfig(agents: Map<string, AgentConfig>, requested: string)
 	if (exact?.enabled !== false) return exact;
 	const lower = requested.toLowerCase();
 	return [...agents.values()].find((agent) => agent.enabled !== false && agent.name.toLowerCase() === lower);
+}
+export function withModelRole(agent: AgentConfig, modelRole: string | undefined): AgentConfig {
+	const role = modelRole?.trim();
+	return role ? { ...agent, role } : agent;
 }
 
 export function shouldOwnAgentWidget(
@@ -708,6 +717,9 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 			id: Type.Optional(Type.String({ description: "Single-spawn display name." })),
 			description: Type.Optional(Type.String({ description: "Single-spawn UI label." })),
 			role: Type.Optional(Type.String({ description: "Single-spawn specialist identity." })),
+			model_role: Type.Optional(
+				Type.String({ description: "Named model role from model-roles.json. Overrides the agent default." }),
+			),
 			assignment: Type.Optional(Type.String({ description: "Single-spawn complete assignment." })),
 			isolated: Type.Optional(Type.Boolean({ description: "Use an isolated git worktree." })),
 			background: Type.Optional(
@@ -726,16 +738,22 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 			const rootSessionId = parentAgent?.rootSessionId ?? parentSessionId;
 			const agentConfig = resolveAgentConfig(currentAgents, taskParams.agent);
 			if (!agentConfig) throw new Error(`Unknown or disabled agent type: ${taskParams.agent}`);
+			const roleCatalog = loadModelRoles();
 			let completed = 0;
 			const spawned = items.map((item, index) => {
 				const name = taskName(item, index);
 				const prompt = assignmentPrompt(taskParams.context, item);
 				let id = name;
 				try {
-					id = manager.spawn(pi, ctx, agentConfig.name as SubagentType, prompt, {
+					const requestedModelRole = item.model_role?.trim();
+					if (requestedModelRole && !roleCatalog.roles[requestedModelRole]) {
+						throw new Error(`Unknown model role: ${requestedModelRole}`);
+					}
+					const selectedAgentConfig = withModelRole(agentConfig, requestedModelRole);
+					id = manager.spawn(pi, ctx, selectedAgentConfig.name as SubagentType, prompt, {
 						description: name,
 						id: item.id,
-						agentConfig,
+						agentConfig: selectedAgentConfig,
 						resolveRuntime: () => getSessionRuntime(parentSessionId, rootSessionId),
 						rootSessionId,
 						parentAgentId: parentAgent?.id,
@@ -791,6 +809,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 								agent: taskParams.agent,
 								description: item.description,
 								role: item.role,
+								model_role: item.model_role,
 								assignment: item.assignment,
 								status: "error" as const,
 								error,
@@ -818,6 +837,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 							agent: taskParams.agent,
 							description: item.description,
 							role: item.role,
+							model_role: item.model_role,
 							assignment: item.assignment,
 							status: "error" as const,
 							error,

@@ -4,14 +4,13 @@ import { createConnection, type Socket } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { getPackageDir } from "@earendil-works/pi-coding-agent";
 import type { PtyProcess } from "../../exec-command/adapter/pty-backend.js";
 import { createRmuxPtyBackend, resolveRmuxBinary } from "../../exec-command/adapter/rmux-pty-backend.ts";
 import { prepareAgentRun, type ToolActivity } from "./agent-runner.js";
 import { isSubagentOrchestrationToolName } from "./orchestration-tools.js";
-import type { AgentAttachment, AgentConfig, AttachedAgentRuntime, SubagentType, ThinkingLevel } from "./types.js";
+import type { AgentAttachment, AgentConfig, AgentModelRole, AttachedAgentRuntime, SubagentType } from "./types.js";
 import { type AssistantUsage, readAssistantUsage } from "./usage.js";
 
 const ATTACHED_GRACE_TURNS = 5;
@@ -23,7 +22,7 @@ interface AttachedRunOptions {
 	cwd: string;
 	sessionDir: string;
 	signal?: AbortSignal;
-	onRuntimeResolved?: (model: Model<any> | undefined, thinkingLevel: ThinkingLevel | undefined) => void;
+	onRuntimeResolved?: (modelRole: AgentModelRole | undefined) => void;
 	onToolActivity?: (activity: ToolActivity) => void;
 	onTextDelta?: (delta: string, fullText: string) => void;
 	onTurnEnd?: (turnCount: number) => void;
@@ -224,7 +223,8 @@ export async function runAttachedAgent(
 	options.signal?.throwIfAborted();
 	const rmuxBinary = resolveRmuxBinary();
 	if (!rmuxBinary) throw new Error("Attachable terminals are unavailable on this machine");
-	const prepared = await prepareAgentRun(ctx, type, prompt, options);
+	// Attached process loads its own extensions. Loading them here overwrites parent resource providers.
+	const prepared = await prepareAgentRun(ctx, type, prompt, options, false);
 	const allowedTools = prepared.toolNames.filter(
 		(name) => !prepared.disallowedSet?.has(name) && !isSubagentOrchestrationToolName(name),
 	);
@@ -243,8 +243,6 @@ export async function runAttachedAgent(
 		"--approve",
 	];
 	if (prepared.noSkills) args.push("--no-skills");
-	if (prepared.noExtensions) args.push("--no-extensions");
-	for (const extension of prepared.extensionPaths ?? []) args.push("--extension", extension);
 	args.push("--extension", controlExtension);
 	if (prepared.thinkingLevel) args.push("--thinking", prepared.thinkingLevel);
 	if (prepared.model?.provider) args.push("--provider", prepared.model.provider);
@@ -262,6 +260,7 @@ export async function runAttachedAgent(
 			cliPath: join(getPackageDir(), "dist", "cli.js"),
 			cwd: prepared.effectiveCwd,
 			agentName: agentId,
+			modelRole: prepared.modelRole?.name,
 			args,
 			prompt,
 		})}\n`,

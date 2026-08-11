@@ -1,27 +1,35 @@
 import { expect, test } from "bun:test";
+import { resolveModelRole } from "../../model-roles/catalog";
 import { parseAgentMarkdown } from "./custom-agents";
-import { DEFAULT_MODEL_CATEGORIES, resolveModelCategory } from "./model-categories";
 
-test("resolves a category model and thinking level", () => {
-	const model = { provider: "openai-codex", id: "gpt-5.6-sol", name: "GPT-5.6 Sol" };
+test("resolves a role candidate and thinking level", () => {
+	const model = {
+		provider: "openai-codex",
+		id: "gpt-5.6-sol",
+		name: "GPT-5.6 Sol",
+		reasoning: true,
+		thinkingLevelMap: { max: "high" },
+	};
 	const registry = {
 		getAvailable: () => [model],
-		getAll: () => [model],
 		find: (provider: string, id: string) => (provider === model.provider && id === model.id ? model : undefined),
 	};
+	const catalog = {
+		defaultRole: "balanced",
+		roles: {
+			balanced: { candidates: [{ model: "openai-codex/gpt-5.6-sol", thinking: "medium" as const }] },
+		},
+	};
 
-	expect(resolveModelCategory("smart", registry, DEFAULT_MODEL_CATEGORIES)).toEqual({
+	expect(resolveModelRole("balanced", registry, catalog)).toMatchObject({
+		roleName: "balanced",
 		model,
-		thinking: "high",
+		candidate: { model: "openai-codex/gpt-5.6-sol", thinking: "medium" },
 	});
 });
 
-test("custom agents select a model category", () => {
-	const agent = parseAgentMarkdown(
-		"worker",
-		"---\nmodel_category: smol\nextensions: false\nskills: false\n---\nDo the work.",
-		"project",
-	);
+test("custom agents select a current model role", () => {
+	const agent = parseAgentMarkdown("worker", "---\nrole: tiny\nskills: false\n---\nDo the work.", "project");
 
-	expect(agent.modelCategory).toBe("smol");
+	expect(agent.role).toBe("tiny");
 });

@@ -248,7 +248,12 @@ export class AgentHarness {
 		const header = [
 			truncateToWidth(`${this.theme.bold(record.description)} ${this.theme.fg("dim", record.id)}`, width, "…"),
 			truncateToWidth(
-				`${statusText(this.theme, record.status)} ${this.theme.fg("dim", `· ${record.type}${record.modelName ? ` · ${record.modelName}` : ""}${record.thinkingLevel ? ` · ${record.thinkingLevel}` : ""}`)}`,
+				`${statusText(this.theme, record.status)} ${[
+					this.theme.fg("dim", `· ${record.type}`),
+					record.modelRole ? this.theme.fg(record.modelRole.color, record.modelRole.name) : undefined,
+				]
+					.filter(Boolean)
+					.join(this.theme.fg("dim", " · "))}`,
 				width,
 				"…",
 			),

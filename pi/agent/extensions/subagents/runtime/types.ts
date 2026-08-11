@@ -16,10 +16,9 @@ export type MemoryScope = "user" | "project" | "local";
 
 /** Isolation mode for agent execution. */
 export type IsolationMode = "worktree";
-
-export interface ModelCategory {
-	model: string;
-	thinking?: ThinkingLevel;
+export interface AgentModelRole {
+	name: string;
+	color: string;
 }
 
 /** Unified agent configuration — used for both default and user-defined agents. */
@@ -31,13 +30,9 @@ export interface AgentConfig {
 	toolNames?: string[];
 	/** Tool denylist — these tools are removed even if the parent defaults or allowlist include them. */
 	disallowedTools?: string[];
-	/** true = inherit all, string[] = only listed, false = none */
-	extensions: true | string[] | false;
-	/** true = inherit all, string[] = only listed, false = none */
+	/** Skills to load: inherit all, only listed skills, or none. */
 	skills: true | string[] | false;
-	modelCategory?: string;
-	model?: string;
-	thinking?: ThinkingLevel;
+	role?: string;
 	maxTurns?: number;
 	systemPrompt: string;
 	promptMode: "replace" | "append";
@@ -91,10 +86,8 @@ export interface AgentRecord {
 	toolUses: number;
 	startedAt: number;
 	completedAt?: number;
-	/** Display label for the effective model used by this agent. */
-	modelName?: string;
-	/** Effective reasoning effort / thinking level used by this agent. */
-	thinkingLevel?: ThinkingLevel;
+	/** Effective model role used by this agent. */
+	modelRole?: AgentModelRole;
 	/** Whether the current provider request is using OpenAI priority service tier. */
 	fastModeActive?: boolean;
 	/** Root Pi session that owns the complete descendant tree. */

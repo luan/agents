@@ -4,8 +4,10 @@ import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil
 import {
 	emitOpenAIFastRequest,
 	getOpenAIFastOverride,
+	getOpenAIFastRoleEnabled,
 	type OpenAIFastOverride,
 	type OpenAIFastRequestEvent,
+	onOpenAIFastRoleChange,
 	setOpenAIFastOverride,
 } from "../shared/openai-fast-state";
 import { defineExtensionTui } from "../shared/tui";
@@ -78,16 +80,20 @@ function isPayloadRecord(payload: unknown): payload is PayloadRecord {
 function modelKey(ctx: ExtensionContext): string {
 	return ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "no-model";
 }
-
-function isFastEnabled(state: SessionState): boolean {
-	if (state.override === "on") return true;
-	if (state.override === "off") return false;
-	return state.config.enabled;
+function sessionFile(ctx: ExtensionContext): string | undefined {
+	return ctx.sessionManager.getSessionFile?.() ?? undefined;
 }
 
-function describeMode(state: SessionState): string {
+function isFastEnabled(ctx: ExtensionContext, state: SessionState): boolean {
+	if (state.override === "on") return true;
+	if (state.override === "off") return false;
+	return getOpenAIFastRoleEnabled(sessionFile(ctx)) || state.config.enabled;
+}
+
+function describeMode(ctx: ExtensionContext, state: SessionState): string {
 	if (state.override === "on") return "on (runtime override)";
 	if (state.override === "off") return "off (runtime override)";
+	if (getOpenAIFastRoleEnabled(sessionFile(ctx))) return "on (model role)";
 	return state.config.enabled ? "on (config default)" : "off (config default)";
 }
 
@@ -117,7 +123,8 @@ function getEligibility(ctx: ExtensionContext): Eligibility {
 function updateStatus(ctx: ExtensionContext, state: SessionState): void {
 	if (!ctx.hasUI) return;
 	const status = fastTui.bind(ctx).status;
-	if (state.config.showStatus && isFastEnabled(state) && getEligibility(ctx).eligible) status.set("active", "fast");
+	if (state.config.showStatus && isFastEnabled(ctx, state) && getEligibility(ctx).eligible)
+		status.set("active", "fast");
 	else status.clear("active");
 }
 
@@ -134,18 +141,18 @@ function updateRequestStatus(ctx: ExtensionContext, active: boolean): void {
 }
 
 function getStatusMessage(ctx: ExtensionContext, state: SessionState): string {
-	const enabled = isFastEnabled(state);
+	const enabled = isFastEnabled(ctx, state);
 	const eligibility = getEligibility(ctx);
 	const injected = state.lastInjectedAt
 		? ` Last injected for ${state.lastInjectedModel ?? "unknown model"} ${Math.max(0, Math.round((Date.now() - state.lastInjectedAt) / 1000))}s ago.`
 		: "";
 	if (enabled && eligibility.eligible) {
-		return `OpenAI Fast mode is ${describeMode(state)} and active for ${eligibility.modelKey}; requests will use service_tier=${FAST_SERVICE_TIER}.${injected}`;
+		return `OpenAI Fast mode is ${describeMode(ctx, state)} and active for ${eligibility.modelKey}; requests will use service_tier=${FAST_SERVICE_TIER}.${injected}`;
 	}
 	if (enabled) {
-		return `OpenAI Fast mode is ${describeMode(state)}, but inactive for ${eligibility.modelKey}: ${eligibility.reason}.${injected}`;
+		return `OpenAI Fast mode is ${describeMode(ctx, state)}, but inactive for ${eligibility.modelKey}: ${eligibility.reason}.${injected}`;
 	}
-	return `OpenAI Fast mode is ${describeMode(state)}. Current model: ${eligibility.modelKey}.${injected}`;
+	return `OpenAI Fast mode is ${describeMode(ctx, state)}. Current model: ${eligibility.modelKey}.${injected}`;
 }
 
 function injectFastServiceTier(
@@ -153,8 +160,8 @@ function injectFastServiceTier(
 	ctx: ExtensionContext,
 	state: SessionState,
 ): PayloadRecord | undefined {
-	if (!isFastEnabled(state) || !getEligibility(ctx).eligible || !isPayloadRecord(payload)) return undefined;
-	if (payload.model !== ctx.model?.id || "service_tier" in payload) return undefined;
+	if (!isFastEnabled(ctx, state) || !getEligibility(ctx).eligible || !isPayloadRecord(payload)) return undefined;
+	if (payload.model !== ctx.model?.id) return undefined;
 	state.lastInjectedAt = Date.now();
 	state.lastInjectedModel = modelKey(ctx);
 	return { ...payload, service_tier: FAST_SERVICE_TIER };
@@ -162,6 +169,11 @@ function injectFastServiceTier(
 
 export default function openAIFastExtension(pi: ExtensionAPI) {
 	const states = new WeakMap<object, SessionState>();
+	const contexts = new Map<string, ExtensionContext>();
+	onOpenAIFastRoleChange((event) => {
+		const ctx = contexts.get(event.sessionFile ?? "");
+		if (ctx) updateStatus(ctx, getState(ctx));
+	});
 
 	function getState(ctx: ExtensionContext): SessionState {
 		let state = states.get(ctx.sessionManager);
@@ -174,16 +186,20 @@ export default function openAIFastExtension(pi: ExtensionAPI) {
 
 	function toggle(ctx: ExtensionContext): void {
 		const state = getState(ctx);
-		state.override = isFastEnabled(state) ? "off" : "on";
+		state.override = isFastEnabled(ctx, state) ? "off" : "on";
 		setOpenAIFastOverride(state.override);
 		updateStatus(ctx, state);
 		ctx.ui.notify(getStatusMessage(ctx, state), "info");
 	}
 
 	pi.on("session_start", (_event, ctx) => {
+		contexts.set(sessionFile(ctx) ?? "", ctx);
 		const state = { config: loadConfig(ctx), override: getOpenAIFastOverride() };
 		states.set(ctx.sessionManager, state);
 		updateStatus(ctx, state);
+	});
+	pi.on("session_shutdown", (_event, ctx) => {
+		contexts.delete(sessionFile(ctx) ?? "");
 	});
 	pi.on("model_select", (_event, ctx) => updateStatus(ctx, getState(ctx)));
 	pi.on("before_provider_request", (event, ctx) => {

@@ -21,6 +21,7 @@ type WritableContextSegments = Record<ContextSegmentKey, number>;
 export type FooterRenderState = GitStatusSummary & {
 	modelLabel: string;
 	providerLabel: string;
+	modelRoleStatus?: string;
 	thinkingLevel?: string;
 	modelStatusBadges: readonly string[];
 	contextPercent: number | null;
@@ -51,6 +52,7 @@ export function emptyFooterState(): FooterRenderState {
 	return {
 		modelLabel: "no-model",
 		providerLabel: "Unknown",
+		modelRoleStatus: undefined,
 		thinkingLevel: undefined,
 		modelStatusBadges: [],
 		contextPercent: null,
@@ -371,8 +373,10 @@ export function renderEditorTopStatus(
 	const modelLabel = theme.fg("muted", state.modelLabel);
 	const thinkingLabel =
 		state.thinkingLevel && state.thinkingLevel !== "off" ? theme.fg("accent", state.thinkingLevel) : "";
+	const modelRoleLabel = state.modelRoleStatus ? theme.fg("success", state.modelRoleStatus) : "";
 	const modelStatusLabels = state.modelStatusBadges.map((badge) => theme.fg("success", badge));
-	const modelParts = [modelLabel, thinkingLabel, ...modelStatusLabels].filter(Boolean);
+	const modelParts = [modelRoleLabel, modelLabel, thinkingLabel, ...modelStatusLabels].filter(Boolean);
+	const coreModelParts = [modelRoleLabel, modelLabel, thinkingLabel].filter(Boolean);
 
 	const safeWidth = width;
 	if (safeWidth <= 0) return "";
@@ -380,10 +384,10 @@ export function renderEditorTopStatus(
 	const shortCwdLabel = theme.fg("accent", formatCwdLabel(basename, config.icons.cwd));
 	const fitted = [
 		[cwdLabel, branchLabel, runtimeLabel, ...modelParts].filter(Boolean).join(sep),
-		[cwdLabel, branchLabel, runtimeLabel, modelLabel, thinkingLabel].filter(Boolean).join(sep),
-		[cwdLabel, branchLabel, modelLabel, thinkingLabel].filter(Boolean).join(sep),
-		[shortCwdLabel, branchLabel, modelLabel, thinkingLabel].filter(Boolean).join(sep),
-		[branchLabel, modelLabel].filter(Boolean).join(sep),
+		[cwdLabel, branchLabel, runtimeLabel, ...coreModelParts].filter(Boolean).join(sep),
+		[cwdLabel, branchLabel, ...coreModelParts].filter(Boolean).join(sep),
+		[shortCwdLabel, branchLabel, ...coreModelParts].filter(Boolean).join(sep),
+		[branchLabel, ...coreModelParts].filter(Boolean).join(sep),
 		modelParts.join(sep),
 		modelLabel,
 	]
@@ -444,8 +448,10 @@ export function renderFooter(
 	const locationBlock = locationVariants.length > 0 ? fitFooterSegment(width, locationVariants) : "";
 
 	const plainModelStr = theme.fg("muted", state.modelLabel);
+	const modelRoleLabel = state.modelRoleStatus ? theme.fg("success", state.modelRoleStatus) : "";
 	const modelStatusLabels = state.modelStatusBadges.map((badge) => theme.fg("success", badge));
 	const modelParts = [
+		modelRoleLabel,
 		plainModelStr,
 		state.thinkingLevel && state.thinkingLevel !== "off" ? theme.fg("accent", state.thinkingLevel) : "",
 		...modelStatusLabels,

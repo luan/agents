@@ -7,7 +7,6 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { Model } from "@earendil-works/pi-ai";
 import {
 	type AgentSession,
 	type ExtensionAPI,
@@ -174,8 +173,9 @@ export class AgentManager {
 			.replace(/[^A-Za-z0-9._-]+/g, "-")
 			.replace(/^-+|-+$/g, "");
 		const localId = requestedId || randomUUID().slice(0, 17);
-		const id = options.parentAgentId ? `${options.parentAgentId}/${localId}` : localId;
-		if (this.findRecord(id, options.rootSessionId)) throw new Error(`Agent id already exists: ${id}`);
+		const baseId = options.parentAgentId ? `${options.parentAgentId}/${localId}` : localId;
+		let id = baseId;
+		for (let suffix = 2; this.findRecord(id, options.rootSessionId); suffix++) id = `${baseId}-${suffix}`;
 		const abortController = new AbortController();
 		const record: AgentRecord = {
 			id,
@@ -272,9 +272,8 @@ export class AgentManager {
 			agentConfig: options.agentConfig,
 			sessionDir,
 			signal: record.abortController?.signal,
-			onRuntimeResolved: (model: Model<any> | undefined, thinkingLevel: AgentRecord["thinkingLevel"]) => {
-				record.modelName = modelLabel(model);
-				record.thinkingLevel = thinkingLevel;
+			onRuntimeResolved: (modelRole: AgentRecord["modelRole"]) => {
+				record.modelRole = modelRole;
 			},
 			cwd: worktreeCwd ?? options.cwd ?? record.cwd,
 			onToolActivity: (activity: ToolActivity) => {
@@ -955,9 +954,4 @@ export class AgentManager {
 			/* ignore */
 		}
 	}
-}
-
-function modelLabel(model: Model<any> | undefined): string | undefined {
-	const name = model?.name || model?.id;
-	return typeof name === "string" && name.trim() ? name.trim() : undefined;
 }

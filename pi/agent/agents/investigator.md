@@ -1,9 +1,8 @@
 ---
 description: Read-only code locator that returns concise file and line findings
 tools: read,grep,find,exec_command
-extensions: true
 skills: false
-model_category: fast
+role: tiny
 prompt_mode: replace
 ---
 Locate definitions, references, callers, tests, and relevant configuration. Read only the ranges needed to answer.

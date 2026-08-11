@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { setOpenAIFastOverride, setOpenAIFastRoleEnabled } from "../shared/openai-fast-state";
 import openAIFastExtension from "./index";
 
 test("fast toggle survives new sessions for the current runtime and alt+g uses the same state", async () => {
@@ -65,4 +66,37 @@ test("fast toggle survives new sessions for the current runtime and alt+g uses t
 	handlers.get("session_start")?.({}, third);
 	expect(handlers.get("before_provider_request")?.({ payload: { model: "gpt-5.6-sol" } }, third)).toBeUndefined();
 	expect(statuses.at(-1)).toEqual(["openai-fast:active", undefined]);
+});
+
+test("model role fast enables status and request injection", () => {
+	setOpenAIFastOverride("auto");
+	const handlers = new Map<string, (...args: any[]) => any>();
+	const statuses: Array<[string, string | undefined]> = [];
+	const sessionFile = "/tmp/model-role-fast.json";
+	const pi = {
+		on: (name: string, handler: (...args: any[]) => any) => handlers.set(name, handler),
+		registerCommand: () => {},
+		registerShortcut: () => {},
+		events: { emit() {} },
+	} as any;
+	openAIFastExtension(pi);
+	const ctx = {
+		cwd: process.cwd(),
+		hasUI: true,
+		model: {
+			provider: "openai-codex",
+			id: "gpt-5.6-sol",
+			api: "openai-codex-responses",
+		},
+		modelRegistry: { isUsingOAuth: () => true },
+		sessionManager: { getSessionFile: () => sessionFile },
+		ui: { setStatus: (key: string, value: string | undefined) => statuses.push([key, value]) },
+	} as any;
+	handlers.get("session_start")?.({}, ctx);
+	setOpenAIFastRoleEnabled({ active: true, sessionFile });
+	expect(statuses).toContainEqual(["openai-fast:active", "fast"]);
+	expect(handlers.get("before_provider_request")?.({ payload: { model: "gpt-5.6-sol" } }, ctx)).toMatchObject({
+		service_tier: "priority",
+	});
+	setOpenAIFastRoleEnabled({ active: false, sessionFile });
 });

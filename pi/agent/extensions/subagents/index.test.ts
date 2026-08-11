@@ -7,6 +7,7 @@ import subagentsExtension, {
 	routeForegroundInput,
 	shouldOwnAgentWidget,
 	type TaskResult,
+	withModelRole,
 } from "./index";
 
 test("spawn_agent accepts self-contained batch tasks without shared context", () => {
@@ -74,6 +75,20 @@ test("spawn_agent keeps terminal placement internal", () => {
 	} as never);
 
 	expect(spawnTool.parameters.properties.attach).toBeUndefined();
+});
+test("spawn_agent accepts a model role override", () => {
+	let spawnTool: any;
+	subagentsExtension({
+		events: { on() {} },
+		on() {},
+		registerTool(tool: any) {
+			if (tool.name === "spawn_agent") spawnTool = tool;
+		},
+		registerCommand() {},
+	} as never);
+
+	expect(spawnTool.parameters.properties.model_role).toBeDefined();
+	expect(withModelRole({ name: "task", role: "task" } as never, "tiny")).toMatchObject({ role: "tiny" });
 });
 
 test("central Hub attachment hands the terminal to the agent process", async () => {

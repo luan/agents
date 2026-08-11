@@ -5,7 +5,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
-import type { AgentConfig, MemoryScope, ThinkingLevel } from "./types.js";
+import type { AgentConfig, MemoryScope } from "./types.js";
 
 /**
  * Scan for custom agent .md files from multiple locations.
@@ -64,11 +64,8 @@ export function parseAgentMarkdown(
 		description: str(fm.description) ?? name,
 		toolNames: parseToolAllowlist(fm.tools),
 		disallowedTools: csvListOptional(fm.disallowed_tools),
-		extensions: inheritField(fm.extensions ?? fm.inherit_extensions),
 		skills: inheritField(fm.skills ?? fm.inherit_skills),
-		modelCategory: str(fm.model_category),
-		model: str(fm.model),
-		thinking: str(fm.thinking) as ThinkingLevel | undefined,
+		role: str(fm.role),
 		maxTurns: nonNegativeInt(fm.max_turns),
 		systemPrompt: body.trim(),
 		promptMode: fm.prompt_mode === "append" ? "append" : "replace",
@@ -136,7 +133,7 @@ function parseMemory(val: unknown): MemoryScope | undefined {
 }
 
 /**
- * Parse an inherit field (extensions, skills).
+ * Parse the skills inheritance field.
  * omitted/true → true (inherit all); false/"none"/empty → false; csv → listed names.
  */
 function inheritField(val: unknown): true | string[] | false {

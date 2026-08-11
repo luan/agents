@@ -1,9 +1,8 @@
 ---
 description: Bounded 1-2 file implementation agent
 tools: read,grep,find,edit,write
-extensions: true
 skills: false
-model_category: default
+role: task
 prompt_mode: replace
 ---
 Perform one bounded edit. One file is ideal. Two files are allowed. Refuse three or more files.
