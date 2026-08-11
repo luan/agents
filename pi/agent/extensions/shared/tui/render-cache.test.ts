@@ -69,6 +69,25 @@ describe("RenderedLineCache", () => {
 	});
 });
 describe("ANSI backgrounds", () => {
+	// The colour actually in effect where a piece of text is drawn, which is what
+	// the terminal paints — not merely which escapes appear somewhere in the line.
+	const effectiveBackground = (rendered: string, text: string): string | undefined =>
+		[...rendered.slice(0, rendered.indexOf(text)).matchAll(/\u001b\[(4[0-7]|49|10[0-7]|48;[0-9;]+)m/g)].at(-1)?.[1];
+
+	test("keeps a background the line painted for itself", () => {
+		const card = "\u001b[48;2;24;26;33m";
+		// A diff row: its own added-row background, then syntax colours inside it.
+		const row = "\u001b[48;2;20;53;31m 2 + \u001b[38;5;244mconst added\u001b[39m;\u001b[0m";
+		const rendered = paintAnsiBackgroundRow(row, 40, card);
+
+		// Re-applying the card colour after every style change overwrote the row
+		// band before a character of it was drawn, so diffs rendered flat.
+		expect(effectiveBackground(rendered, "const added")).toBe("48;2;20;53;31");
+		// It comes back once the row clears its own background, so the padding
+		// past the end of the row is card-coloured rather than transparent.
+		expect(rendered).toContain(`\u001b[0m${card}`);
+	});
+
 	test("reapplies row background after every SGR style change", () => {
 		const background = "\u001b[48;5;17m";
 		const line = "\u001b[38;5;244mCommand\u001b[39m";

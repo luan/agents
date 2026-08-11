@@ -41,14 +41,62 @@ export function keepBackgroundAcrossResets(text: string, backgroundAnsi: string)
 	});
 }
 
-function keepBackgroundAcrossSgr(text: string, backgroundAnsi: string): string {
-	return text.replace(ANSI_SGR_PATTERN, (sequence) => `${sequence}${backgroundAnsi}`);
+type SgrBackgroundEffect = "sets" | "clears" | "other";
+
+/**
+ * What an SGR sequence does to the background colour.
+ *
+ * Parsed rather than pattern-matched because `38`/`48` swallow their arguments:
+ * in `38;5;2` the `2` is a palette index, not "faint", and reading it as a
+ * parameter would misclassify the sequence.
+ */
+function sgrBackgroundEffect(rawParams: string): SgrBackgroundEffect {
+	if (rawParams.trim() === "") return "clears";
+	const params = rawParams.split(";").map((param) => (param === "" ? 0 : Number.parseInt(param, 10)));
+	let effect: SgrBackgroundEffect = "other";
+	for (let index = 0; index < params.length; index++) {
+		const param = params[index]!;
+		if (param === 38 || param === 48) {
+			if (param === 48) effect = "sets";
+			const mode = params[index + 1];
+			index += mode === 5 ? 2 : mode === 2 ? 4 : 1;
+			continue;
+		}
+		if (param === 0 || param === 49) effect = "clears";
+		else if ((param >= 40 && param <= 47) || (param >= 100 && param <= 107)) effect = "sets";
+	}
+	return effect;
+}
+
+/**
+ * Re-apply the row background after style changes that would lose it, and only
+ * those.
+ *
+ * Re-applying after every SGR also overwrote backgrounds the line set for
+ * itself, which is how diff rows lost their added/removed bands: the row
+ * painted green, the next foreground change stamped the card colour back over
+ * it. A line that owns a background keeps it until it clears it.
+ */
+function keepBackgroundAcrossStyles(text: string, backgroundAnsi: string): string {
+	let lineOwnsBackground = false;
+	return text.replace(ANSI_SGR_PATTERN, (sequence, rawParams: string) => {
+		const effect = sgrBackgroundEffect(rawParams);
+		if (effect === "sets") {
+			lineOwnsBackground = true;
+			return sequence;
+		}
+		if (effect === "clears") {
+			lineOwnsBackground = false;
+			return `${sequence}${backgroundAnsi}`;
+		}
+		return lineOwnsBackground ? sequence : `${sequence}${backgroundAnsi}`;
+	});
 }
 
 export function paintAnsiBackgroundRow(line: string, width: number, backgroundAnsi: string | undefined): string {
 	const padded = truncateToWidthCompat(line, width, "", true);
 	if (!backgroundAnsi) return padded;
-	return `${backgroundAnsi}${keepBackgroundAcrossSgr(padded, backgroundAnsi)}${ANSI_RESET}`;
+	return `${backgroundAnsi}${keepBackgroundAcrossStyles(padded, backgroundAnsi)}${ANSI_RESET}`;
 }
 
 export function clampAnsiLine(line: string, width: number): string {
