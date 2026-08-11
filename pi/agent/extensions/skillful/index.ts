@@ -139,7 +139,7 @@ async function safeSkillFilePath(root: string, filePath: string): Promise<string
 	return realFile;
 }
 
-async function readSkillFile(root: string, filePath: string): Promise<string> {
+async function readSkillAsset(root: string, filePath: string): Promise<string> {
 	const safePath = await safeSkillFilePath(root, filePath);
 	if (!safePath) throw new Error(`Skill asset path must stay under ${root}: ${filePath}`);
 	return readFile(safePath, "utf8");
@@ -187,17 +187,14 @@ export default function (pi: ExtensionAPI) {
 				name,
 				assetPath,
 				resolvedPath,
-				await readSkillFile(skillBaseDir(filePath), resolvedPath),
+				await readSkillAsset(skillBaseDir(filePath), resolvedPath),
 			);
 			return {
 				content,
 				details: loadedDetails(name, "read", resolvedPath, skillBaseDir(filePath), estimateTokens(content)),
 			};
 		}
-		const body = rewriteSlashSkillReferences(
-			stripFrontmatter(await readSkillFile(skillBaseDir(filePath), filePath)),
-			state.skills.keys(),
-		);
+		const body = rewriteSlashSkillReferences(stripFrontmatter(await readFile(filePath, "utf8")), state.skills.keys());
 		const content = formatReadSkillContent(name, filePath, body);
 		const details = loadedDetails(name, "read", filePath, skillBaseDir(filePath), estimateTokens(content));
 		return {

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setCodexPluginAliases } from "../codex-native/plugin-aliases";
@@ -413,6 +413,36 @@ describe("skillful extension", () => {
 
 		const all = await findResources("skill://triage/");
 		expect(all.map((resource) => resource.uri).sort()).toEqual(["skill://triage", "skill://triage/OUT-OF-SCOPE.md"]);
+	});
+
+	test("reads a skill whose root document is linked outside its installed directory", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "skillful-linked-root-"));
+		const sourceDir = join(dir, "source");
+		const installedDir = join(dir, "installed");
+		mkdirSync(sourceDir, { recursive: true });
+		mkdirSync(installedDir, { recursive: true });
+		const sourcePath = join(sourceDir, "SKILL.md");
+		const installedPath = join(installedDir, "SKILL.md");
+		const sourceAssetPath = join(sourceDir, "SECRET.md");
+		const installedAssetPath = join(installedDir, "SECRET.md");
+		writeFileSync(sourcePath, "---\nname: linked\n---\n# Linked\n");
+		writeFileSync(sourceAssetPath, "# Secret\n");
+		symlinkSync(sourcePath, installedPath);
+		symlinkSync(sourceAssetPath, installedAssetPath);
+
+		const pi = {
+			getCommands: () => [{ source: "skill", name: "skill:linked", sourceInfo: { path: installedPath } }],
+			on() {},
+			registerTool() {},
+			registerMessageRenderer() {},
+			events: { emit() {} },
+		};
+
+		extension(pi as never);
+
+		const root = await readResource("skill://linked");
+		expect(root.content).toContain("# Linked");
+		await expect(readResource("skill://linked/SECRET.md")).rejects.toThrow("Skill asset path must stay under");
 	});
 
 	test("reinstalls autocomplete provider after reload", async () => {
