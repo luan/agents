@@ -49,3 +49,4 @@ plugins/install-counts-cache.json
 /pi/agent/trust.json
 .pi
 artifacts/
+/pi/agent/rmux/exec.conf
