@@ -17,7 +17,7 @@ export interface ContextGuardCapture {
 export interface ContextGuardCaptureContext {
 	projectDir: string;
 	sessionId?: string;
-	sourceKind?: "command" | "eval";
+	sourceKind?: "command" | "eval" | "read";
 	label?: string;
 	metadata?: Record<string, unknown>;
 	originalCommand?: string;
@@ -103,6 +103,21 @@ export async function captureExecOutput(
 	} finally {
 		clearTimeout(timeout);
 	}
+}
+
+/**
+ * Capture text that did not come from a command.
+ *
+ * A read, a search or a resource view produces output the same way a command
+ * does, and loses it the same way when it exceeds the budget. The core stores
+ * `source_kind` as a free-form string, so the only exec-shaped fields — exit
+ * code, terminal state, elapsed time — are simply absent.
+ */
+export async function captureContent(
+	context: ContextGuardCaptureContext,
+	output: string,
+): Promise<ContextGuardCaptureOutcome> {
+	return captureExecOutput({ sourceKind: "read", ...context }, { output });
 }
 
 export async function captureExecResult(
