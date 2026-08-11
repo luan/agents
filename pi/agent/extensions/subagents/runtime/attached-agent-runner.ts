@@ -14,6 +14,12 @@ import type { AgentAttachment, AgentConfig, AgentModelRole, AttachedAgentRuntime
 import { type AssistantUsage, readAssistantUsage } from "./usage.js";
 
 const ATTACHED_GRACE_TURNS = 5;
+// A launching agent boots a full pi CLI before its bridge extension binds the socket.
+// That boot costs seconds and grows with machine load, so wait long and rely on the
+// liveness probe to fail fast when the terminal dies.
+export const ATTACHED_LAUNCH_TIMEOUT_MS = 60_000;
+const ATTACHED_RECONNECT_TIMEOUT_MS = 5_000;
+const PANE_TAIL_LIMIT = 4_000;
 
 interface AttachedRunOptions {
 	pi: ExtensionAPI;
@@ -159,8 +165,17 @@ function socketPath(rootSessionId: string, agentId: string, launchId: string): s
 	return join(homedir(), ".pi", "agent", "rmux", "agents", `${key}.sock`);
 }
 
-function connect(path: string, timeoutMs = 5000, signal?: AbortSignal): Promise<Socket> {
-	const deadline = Date.now() + timeoutMs;
+interface ConnectOptions {
+	timeoutMs?: number;
+	signal?: AbortSignal;
+	// Reports terminal liveness and output, so waiting stops when the launch is already
+	// dead and so a timeout names what the terminal printed.
+	probe?: () => { exitCode?: number; tail: string };
+}
+
+export function connect(path: string, options: ConnectOptions = {}): Promise<Socket> {
+	const { signal, probe } = options;
+	const deadline = Date.now() + (options.timeoutMs ?? ATTACHED_RECONNECT_TIMEOUT_MS);
 	return new Promise((resolve, reject) => {
 		const attempt = () => {
 			if (signal?.aborted) {
@@ -168,8 +183,16 @@ function connect(path: string, timeoutMs = 5000, signal?: AbortSignal): Promise<
 				return;
 			}
 			if (!existsSync(path)) {
+				const state = probe?.();
+				const detail = state?.tail ? `\n${state.tail}` : "";
+				if (state?.exitCode !== undefined) {
+					reject(
+						new Error(`Attached agent terminal exited (code ${state.exitCode}) before it was ready${detail}`),
+					);
+					return;
+				}
 				if (Date.now() >= deadline) {
-					reject(new Error(`Attached agent socket did not appear: ${path}`));
+					reject(new Error(`Attached agent socket did not appear: ${path}${detail}`));
 					return;
 				}
 				setTimeout(attempt, 50);
@@ -288,6 +311,16 @@ export async function runAttachedAgent(
 		removeConfig();
 		throw error;
 	}
+	// Drain the pane so a boot failure is reported instead of sitting in the backlog.
+	let paneTail = "";
+	let exitCode: number | undefined;
+	child.onData((data) => {
+		paneTail = (paneTail + data).slice(-PANE_TAIL_LIMIT);
+	});
+	child.onExit((event) => {
+		exitCode = event.exitCode;
+	});
+	const probeChild = () => ({ exitCode, tail: paneTail.trim() });
 	let childCleaned = false;
 	const cleanupChild = () => {
 		if (childCleaned) return;
@@ -303,7 +336,11 @@ export async function runAttachedAgent(
 	}
 	let socket: Socket;
 	try {
-		socket = await connect(controlSocket, 5000, options.signal);
+		socket = await connect(controlSocket, {
+			timeoutMs: ATTACHED_LAUNCH_TIMEOUT_MS,
+			signal: options.signal,
+			probe: probeChild,
+		});
 	} catch (error) {
 		options.signal?.removeEventListener("abort", cleanupChild);
 		cleanupChild();
