@@ -139,10 +139,17 @@ function usesImplicitCurrent(scheme: ResourceScheme): boolean {
 	return IMPLICIT_CURRENT_SCHEMES.has(scheme);
 }
 
-function isGitHubCurrentShorthand(scheme: ResourceScheme, authority: string, path: string): boolean {
+/**
+ * `pr://62946/files` — a numeric authority is the item, not a repository.
+ *
+ * The check used to require an empty path, so only the bare item resolved:
+ * every documented view shorthand parsed the number as the authority and the
+ * view as the item, and came back as "collections are listed with find or
+ * search". No GitHub owner is a bare number, so the digits decide it.
+ */
+function isGitHubCurrentShorthand(scheme: ResourceScheme, authority: string): boolean {
 	if (!/^\d+$/.test(authority)) return false;
-	if (scheme === "pr" || scheme === "issue") return path === "";
-	return scheme === "action" && (path === "" || path === "/log");
+	return scheme === "pr" || scheme === "issue" || scheme === "action";
 }
 export function parseResourceUri(value: string): ResourceRef | undefined {
 	const match = /^([a-z][a-z0-9+.-]*):\/\//i.exec(value);
@@ -186,7 +193,7 @@ export function parseResourceUri(value: string): ResourceRef | undefined {
 	if (authority !== "current" && (scheme === "history" || scheme === "vault" || scheme === "local")) {
 		path = `/${authority}${path}`;
 		authority = "current";
-	} else if (authority !== "current" && isGitHubCurrentShorthand(resourceScheme, authority, path)) {
+	} else if (authority !== "current" && isGitHubCurrentShorthand(resourceScheme, authority)) {
 		path = `/${authority}${path}`;
 		authority = "current";
 	}
@@ -245,25 +252,58 @@ function resourceMetadataString(resource: Resource | undefined, key: string): st
 	return typeof value === "string" && value ? value : undefined;
 }
 
+/**
+ * Where a view opens on github.com.
+ *
+ * A view is a different page, not the same page with extra data, so the link a
+ * card carries has to follow the URI down to the view it actually read.
+ */
+function githubViewSuffix(variant: string | undefined, selector: string | undefined): string {
+	switch (variant) {
+		case "files":
+			return "/files";
+		case "commits":
+			return selector ? `/commits/${selector}` : "/commits";
+		case "checks":
+			return "/checks";
+		// Review threads render on the Files changed tab, which is the closest
+		// page GitHub has to a thread listing. A single thread carries its own
+		// anchor, so it never reaches here.
+		case "diff":
+		case "patch":
+		case "threads":
+			return "/files";
+		case "comments":
+			return selector ? `#issuecomment-${selector}` : "";
+		default:
+			return "";
+	}
+}
+
 function githubOpenUrl(ref: ResourceRef, resource: Resource | undefined): string | undefined {
-	const directUrl = resourceMetadataString(resource, "url");
-	if (directUrl) return directUrl;
 	const segments = ref.path.replace(/^\/+/, "").split("/").filter(Boolean);
 	let repository: string | undefined;
 	let number: string | undefined;
+	let rest: string[];
 	if (ref.authority === "current") {
 		repository = resourceMetadataString(resource, "repository");
 		number = segments[0];
+		rest = segments.slice(1);
 	} else if (ref.authority === "github.com") {
 		repository = segments.length >= 2 ? `${segments[0]}/${segments[1]}` : undefined;
 		number = segments[2];
+		rest = segments.slice(3);
 	} else {
 		repository = segments[0] ? `${ref.authority}/${segments[0]}` : undefined;
 		number = segments[1];
+		rest = segments.slice(2);
 	}
-	if (!repository || !number) return undefined;
+	const suffix = githubViewSuffix(rest[0] ?? ref.fragment, rest.slice(1).join("/") || undefined);
+	const directUrl = resourceMetadataString(resource, "url");
+	if (directUrl && !suffix) return directUrl;
+	if (!repository || !number) return directUrl;
 	const route = ref.scheme === "pr" ? "pull" : ref.scheme === "issue" ? "issues" : "actions/runs";
-	return `https://github.com/${repository}/${route}/${encodeURIComponent(number)}`;
+	return `https://github.com/${repository}/${route}/${encodeURIComponent(number)}${suffix}`;
 }
 
 function vaultOpenPath(ref: ResourceRef, resource: Resource | undefined): string {
