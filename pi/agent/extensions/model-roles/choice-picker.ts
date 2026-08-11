@@ -7,6 +7,8 @@ type PickerTheme = {
 	bold(text: string): string;
 };
 
+type ChoiceOptionStyle = (option: string, selected: boolean, theme: PickerTheme) => string;
+
 type PickerTui = Pick<TUI, "requestRender" | "terminal">;
 
 const BORDER = "accent";
@@ -22,10 +24,11 @@ export async function openChoicePicker(
 	title: string,
 	options: string[],
 	initial?: string,
+	optionStyle?: ChoiceOptionStyle,
 ): Promise<string | undefined> {
 	if (!ctx.hasUI || !ctx.ui.custom) return undefined;
 	return ctx.ui.custom<string | undefined>(
-		(tui, theme, _keybindings, done) => new ChoicePicker(tui, theme, done, title, options, initial),
+		(tui, theme, _keybindings, done) => new ChoicePicker(tui, theme, done, title, options, initial, optionStyle),
 		{
 			overlay: true,
 			overlayOptions: { width: "100%", anchor: "bottom-left" },
@@ -43,6 +46,7 @@ class ChoicePicker {
 		private readonly title: string,
 		private readonly options: string[],
 		initial?: string,
+		private readonly optionStyle?: ChoiceOptionStyle,
 	) {
 		this.selected = selectedIndex(options, initial);
 	}
@@ -92,7 +96,11 @@ class ChoicePicker {
 			const currentSuffix = " (current)";
 			const current = option.endsWith(currentSuffix);
 			const label = current ? option.slice(0, -currentSuffix.length) : option;
-			const styledLabel = selected ? this.theme.bold(label) : label;
+			const styledLabel = this.optionStyle
+				? this.optionStyle(label, selected, this.theme)
+				: selected
+					? this.theme.bold(label)
+					: label;
 			const styledCurrent = current ? this.theme.fg("muted", currentSuffix) : "";
 			const raw = ` ${cursor}${styledLabel}${styledCurrent}`;
 			const clipped = truncateToWidth(raw, innerWidth);

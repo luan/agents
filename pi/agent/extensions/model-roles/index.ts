@@ -29,6 +29,14 @@ function isRecord(value: unknown): value is JsonRecord {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+type RoleSessionManager = ExtensionContext["sessionManager"] & {
+	appendCustomEntry(customType: string, data?: unknown): string;
+};
+
+function appendRoleSessionEntry(ctx: ExtensionContext, role: string | null): void {
+	(ctx.sessionManager as RoleSessionManager).appendCustomEntry(ROLE_SESSION_ENTRY, { role });
+}
+
 function attachedModelRole(): string | undefined {
 	const role = process.env[ATTACHED_MODEL_ROLE_ENV]?.trim();
 	delete process.env[ATTACHED_MODEL_ROLE_ENV];
@@ -101,7 +109,7 @@ async function chooseRole(
 	states: WeakMap<object, RoleState>,
 ): Promise<void> {
 	if (!ctx.hasUI) return;
-	const current = sessionRole(ctx) ?? selectedRole(ctx.cwd, catalog.defaultRole);
+	const current = states.get(ctx.sessionManager)?.roleName ?? sessionRole(ctx) ?? selectedRole(catalog.defaultRole);
 	const role = await openModelRolePicker(ctx, catalog, current);
 	if (role) await selectRole(role, scope, ctx, pi, catalog, states);
 }
@@ -124,7 +132,8 @@ async function selectRole(
 			ctx.ui.notify(`No usable model candidate for role "${requestedRole}".`, "error");
 			return;
 		}
-		updateRoleSelection(scope, ctx.cwd, requestedRole);
+		if (scope === "global") updateRoleSelection(scope, requestedRole);
+		appendRoleSessionEntry(ctx, requestedRole);
 		rememberRole(states, ctx, resolved);
 		ctx.ui.notify(`Role: ${roleLabel(requestedRole, resolved)}`, "info");
 	} catch (error) {
@@ -143,8 +152,9 @@ async function clearRole(
 	states: WeakMap<object, RoleState>,
 ): Promise<void> {
 	try {
-		updateRoleSelection(scope, ctx.cwd, undefined);
-		const requestedRole = selectedRole(ctx.cwd, catalog.defaultRole);
+		appendRoleSessionEntry(ctx, null);
+		updateRoleSelection(scope, undefined);
+		const requestedRole = catalog.defaultRole;
 		const resolved = await applyRole(requestedRole, ctx, pi, catalog);
 		if (!resolved) {
 			ctx.ui.notify(`No usable model candidate for role "${requestedRole}".`, "error");
@@ -176,8 +186,11 @@ export default function modelRolesExtension(pi: ExtensionAPI) {
 	const catalog = loadModelRoles();
 	const states = new WeakMap<object, RoleState>();
 
-	pi.on("session_start", async (_event, ctx) => {
-		const requestedRole = sessionRole(ctx) ?? attachedModelRole() ?? selectedRole(ctx.cwd, catalog.defaultRole);
+	pi.on("session_start", async (event, ctx) => {
+		const requestedRole =
+			event.reason === "new"
+				? (attachedModelRole() ?? catalog.defaultRole)
+				: (sessionRole(ctx) ?? attachedModelRole() ?? selectedRole(catalog.defaultRole));
 		const resolved = await applyRole(requestedRole, ctx, pi, catalog);
 		if (!resolved) {
 			updateRoleFast(ctx, false);

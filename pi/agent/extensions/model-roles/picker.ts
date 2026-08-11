@@ -1,6 +1,16 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Key, matchesKey, type OverlayHandle, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import {
+	decodeKittyPrintable,
+	fuzzyFilter,
+	Key,
+	matchesKey,
+	type OverlayHandle,
+	type TUI,
+	truncateToWidth,
+	visibleWidth,
+} from "@earendil-works/pi-tui";
+import {
+	formatModelRoleOption,
 	type ModelRole,
 	type ModelRoleCatalog,
 	moveModelRole,
@@ -8,7 +18,7 @@ import {
 	roleNames,
 	saveModelRoles,
 } from "./catalog.js";
-import { addModelRole, deleteModelRole, editModelRole, setModelRoleDefault } from "./editor.js";
+import { addModelRole, deleteModelRole, editModelRole, renameModelRole, setModelRoleDefault } from "./editor.js";
 
 type PickerTheme = {
 	fg(color: string, text: string): string;
@@ -20,6 +30,20 @@ type PickerTui = Pick<TUI, "requestRender" | "terminal">;
 
 const BORDER = "accent";
 const SELECTED_BACKGROUND = "selectedBg";
+
+function printableText(data: string): string | undefined {
+	const kittyPrintable = decodeKittyPrintable(data);
+	if (kittyPrintable !== undefined) return kittyPrintable;
+	if (
+		!data ||
+		[...data].some((char) => {
+			const code = char.charCodeAt(0);
+			return code < 32 || code === 0x7f || (code >= 0x80 && code <= 0x9f);
+		})
+	)
+		return undefined;
+	return data;
+}
 
 function selectedIndex(names: string[], selected: string | undefined): number {
 	const index = selected ? names.indexOf(selected) : -1;
@@ -53,6 +77,8 @@ export async function openModelRolePicker(
 class ModelRolePicker {
 	private selected = 0;
 	private names: string[] = [];
+	private query = "";
+	private searching = false;
 	private deletePending = false;
 	private deleteTimer?: ReturnType<typeof setTimeout>;
 	private busy = false;
@@ -76,9 +102,27 @@ class ModelRolePicker {
 
 	handleInput(data: string): void {
 		if (this.busy) return;
-		if (this.deletePending && data !== "d") this.clearDeletePending();
-		if (matchesKey(data, Key.escape) || data === "q") {
+		if (matchesKey(data, Key.escape)) {
+			if (this.searching || this.query) {
+				this.searching = false;
+				this.query = "";
+				this.selectCurrent();
+				this.tui.requestRender();
+			} else this.done(undefined);
+			return;
+		}
+		if (!this.searching && data === "q") {
 			this.done(undefined);
+			return;
+		}
+		if (this.searching) {
+			this.handleSearchInput(data);
+			return;
+		}
+		if (this.deletePending && data !== "d") this.clearDeletePending();
+		if (data === "/" || matchesKey(data, Key.ctrl("f"))) {
+			this.searching = true;
+			this.tui.requestRender();
 			return;
 		}
 		if (data === "d") {
@@ -113,7 +157,7 @@ class ModelRolePicker {
 			return;
 		}
 		if (data === "G" || matchesKey(data, Key.end)) {
-			this.select(this.names.length - 1);
+			this.select(this.visibleNames().length - 1);
 			return;
 		}
 		if (matchesKey(data, Key.enter) || data === "\r" || data === "\n") {
@@ -122,6 +166,10 @@ class ModelRolePicker {
 		}
 		if (data === "e") {
 			void this.editSelected();
+			return;
+		}
+		if (data === "r") {
+			void this.renameSelected();
 			return;
 		}
 		if (data === "a") {
@@ -133,24 +181,28 @@ class ModelRolePicker {
 
 	render(width: number): string[] {
 		this.sync();
+		const names = this.visibleNames();
 		const terminalHeight = this.tui.terminal.rows;
 		if (width < 32 || terminalHeight < 8) return [];
 		const innerWidth = Math.max(28, width - 2);
 		const bodyHeight = Math.max(1, Math.min(8, terminalHeight - 5));
-		const start = Math.max(0, Math.min(this.selected - bodyHeight + 1, this.names.length - bodyHeight));
-		const position = this.names.length > 0 ? this.theme.fg("dim", ` ${this.selected + 1}/${this.names.length}`) : "";
+		const start = Math.max(0, Math.min(this.selected - bodyHeight + 1, names.length - bodyHeight));
+		const position = names.length > 0 ? this.theme.fg("dim", ` ${this.selected + 1}/${names.length}`) : "";
 		const lines = [
 			this.frame(`${this.theme.fg("accent", this.theme.bold("Select model role"))}${position}`, innerWidth),
-			this.frame("", innerWidth),
+			this.frame(this.searchLine(innerWidth), innerWidth),
 		];
-		for (const [offset, name] of this.names.slice(start, start + bodyHeight).entries()) {
-			const index = start + offset;
-			lines.push(
-				this.frame(
-					this.renderRole(name, this.catalog.roles[name]!, index === this.selected, innerWidth),
-					innerWidth,
-				),
-			);
+		if (names.length === 0) lines.push(this.frame(this.theme.fg("muted", "No matching roles."), innerWidth));
+		else {
+			for (const [offset, name] of names.slice(start, start + bodyHeight).entries()) {
+				const index = start + offset;
+				lines.push(
+					this.frame(
+						this.renderRole(name, this.catalog.roles[name]!, index === this.selected, innerWidth),
+						innerWidth,
+					),
+				);
+			}
 		}
 		if (this.busy) lines.push(this.frame(this.theme.fg("dim", "Working..."), innerWidth));
 		else if (this.deletePending)
@@ -167,16 +219,53 @@ class ModelRolePicker {
 		this.clearDeletePending();
 		this.busy = true;
 	}
-
 	private sync(): void {
-		const selectedName = this.names[this.selected];
+		const selectedName = this.selectedName();
 		this.names = roleNames(this.catalog);
-		this.selected = selectedIndex(this.names, selectedName);
+		this.selectCurrent(selectedName);
+	}
+
+	private visibleNames(): string[] {
+		return this.query
+			? fuzzyFilter(this.names, this.query, (name) => formatModelRoleOption(name, this.catalog.roles[name]!))
+			: this.names;
+	}
+
+	private selectCurrent(preferredName = this.selectedName()): void {
+		const names = this.visibleNames();
+		const index = preferredName ? names.indexOf(preferredName) : -1;
+		this.selected = index >= 0 ? index : Math.min(this.selected, Math.max(0, names.length - 1));
+	}
+
+	private handleSearchInput(data: string): void {
+		if (matchesKey(data, Key.backspace) || matchesKey(data, Key.delete)) {
+			this.query = this.query.slice(0, -1);
+			this.selectCurrent();
+			this.tui.requestRender();
+			return;
+		}
+		if (matchesKey(data, Key.ctrl("u"))) {
+			this.query = "";
+			this.selectCurrent();
+			this.tui.requestRender();
+			return;
+		}
+		if (matchesKey(data, Key.enter) || data === "\r" || data === "\n") {
+			this.searching = false;
+			this.chooseSelected();
+			return;
+		}
+		const text = printableText(data);
+		if (text === undefined) return;
+		this.query += text;
+		this.selectCurrent();
+		this.tui.requestRender();
 	}
 
 	private move(delta: number): void {
-		if (this.names.length === 0) return;
-		this.selected = Math.max(0, Math.min(this.names.length - 1, this.selected + delta));
+		const names = this.visibleNames();
+		if (names.length === 0) return;
+		this.selected = Math.max(0, Math.min(names.length - 1, this.selected + delta));
 		this.tui.requestRender();
 	}
 	private reorder(delta: number): void {
@@ -188,13 +277,14 @@ class ModelRolePicker {
 	}
 
 	private select(index: number): void {
-		if (this.names.length === 0) return;
-		this.selected = Math.max(0, Math.min(this.names.length - 1, index));
+		const names = this.visibleNames();
+		if (names.length === 0) return;
+		this.selected = Math.max(0, Math.min(names.length - 1, index));
 		this.tui.requestRender();
 	}
 
 	private selectedName(): string | undefined {
-		return this.names[this.selected];
+		return this.visibleNames()[this.selected];
 	}
 
 	private chooseSelected(): void {
@@ -208,10 +298,23 @@ class ModelRolePicker {
 		await this.run(async () => editModelRole(this.ctx, this.catalog, name));
 	}
 
+	private async renameSelected(): Promise<void> {
+		const name = this.selectedName();
+		if (!name) return;
+		await this.run(async () => {
+			const renamed = await renameModelRole(this.ctx, this.catalog, name);
+			if (!renamed) return;
+			this.names = roleNames(this.catalog);
+			this.selectCurrent(renamed);
+		});
+	}
+
 	private async addRole(): Promise<void> {
 		await this.run(async () => {
 			const name = await addModelRole(this.ctx, this.catalog);
-			if (name) this.selected = roleNames(this.catalog).indexOf(name);
+			if (!name) return;
+			this.names = roleNames(this.catalog);
+			this.selectCurrent(name);
 		});
 	}
 
@@ -269,9 +372,14 @@ class ModelRolePicker {
 		return selected ? this.theme.bg(SELECTED_BACKGROUND, rendered) : rendered;
 	}
 
+	private searchLine(width: number): string {
+		const search = this.searching || this.query ? `search ${this.query || "_"}` : "/ search";
+		return truncateToWidth(this.theme.fg("muted", search), width);
+	}
+
 	private hints(width: number): string {
 		return truncateToWidth(
-			"↑↓/jk navigate  ctrl+j/k reorder  enter select  e edit  a add  dd delete  f default  esc/q cancel",
+			"↑↓/jk navigate  ctrl+j/k reorder  enter select  / search  e edit  r rename  a add  dd delete  f default  esc/q cancel",
 			width,
 		);
 	}

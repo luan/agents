@@ -1,5 +1,5 @@
 {
-  "defaultRole": "default",
+  "defaultRole": "balanced",
   "roles": {
     "tiny": {
       "candidates": [
@@ -26,9 +26,9 @@
           "thinking": "low"
         }
       ],
-      "color": "syntaxNumber"
+      "color": "thinkingHigh"
     },
-    "default": {
+    "balanced": {
       "candidates": [
         {
           "model": "openai-codex/gpt-5.6-sol",
@@ -44,7 +44,7 @@
           "thinking": "xhigh"
         }
       ],
-      "color": "thinkingHigh"
+      "color": "syntaxNumber"
     }
   }
 }

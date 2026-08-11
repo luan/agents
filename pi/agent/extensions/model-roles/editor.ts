@@ -52,13 +52,6 @@ function thinkingLevels(ctx: ExtensionContext, candidate: RoleCandidate): Thinki
 	return model ? getSupportedThinkingLevels(model) : ALL_THINKING_LEVELS;
 }
 
-function modeOptions(candidate: RoleCandidate): string[] {
-	const current = candidate.service_tier;
-	const options = ["off", "priority (fast)"];
-	if (current && current !== "off" && current !== "priority") options.unshift(current);
-	return options;
-}
-
 async function openRoleEditor(ctx: ExtensionContext, catalog: ModelRoleCatalog, name: string): Promise<void> {
 	if (!ctx.hasUI || !ctx.ui.custom) return;
 	let editor: RoleEditor | undefined;
@@ -127,7 +120,7 @@ class RoleEditor {
 			return;
 		}
 		if (data === "m") {
-			void this.changeMode();
+			this.changeMode();
 			return;
 		}
 		if (data === "c") {
@@ -244,29 +237,29 @@ class RoleEditor {
 		});
 	}
 
-	private async changeMode(): Promise<void> {
+	private changeMode(): void {
 		const candidate = this.candidate();
 		if (!candidate) return;
-		await this.run(async () => {
-			const current = candidate.service_tier ?? "off";
-			const selected = await openChoicePicker(
-				this.ctx,
-				"Mode",
-				modeOptions(candidate),
-				current === "priority" ? "priority (fast)" : current,
-			);
-			if (!selected) return;
-			if (selected === "off") delete candidate.service_tier;
-			else candidate.service_tier = selected.replace(/ \(fast\)$/, "");
-			this.save();
-		});
+		if (candidate.service_tier === "priority") delete candidate.service_tier;
+		else candidate.service_tier = "priority";
+		this.save();
+		this.tui.requestRender();
 	}
 
 	private async changeColor(): Promise<void> {
 		const role = this.role();
 		const current = roleColor(role, Math.max(0, roleNames(this.catalog).indexOf(this.name)));
 		await this.run(async () => {
-			const selected = await openChoicePicker(this.ctx, "Role color", [...ROLE_COLORS], current);
+			const selected = await openChoicePicker(
+				this.ctx,
+				"Role color",
+				[...ROLE_COLORS],
+				current,
+				(option, isSelected, theme) => {
+					const label = theme.fg(option, option);
+					return isSelected ? theme.bold(label) : label;
+				},
+			);
 			if (!selected) return;
 			role.color = selected as ModelRole["color"];
 			this.save();
@@ -365,6 +358,32 @@ async function selectRoleName(
 export async function editModelRole(ctx: ExtensionContext, catalog: ModelRoleCatalog, name: string): Promise<void> {
 	if (!catalog.roles[name]) return;
 	await openRoleEditor(ctx, catalog, name);
+}
+
+export async function renameModelRole(
+	ctx: ExtensionContext,
+	catalog: ModelRoleCatalog,
+	name: string,
+): Promise<string | undefined> {
+	const nextName = (await ctx.ui.input(`Rename role "${name}"`, name))?.trim();
+	if (!nextName || nextName === name) return undefined;
+	if (!validRoleName(nextName)) {
+		ctx.ui.notify("Role name must start with a letter and use letters, numbers, ., _, or -.", "warning");
+		return undefined;
+	}
+	if (catalog.roles[nextName]) {
+		ctx.ui.notify(`Role "${nextName}" already exists.`, "warning");
+		return undefined;
+	}
+	const entries = Object.entries(catalog.roles);
+	const index = entries.findIndex(([roleName]) => roleName === name);
+	if (index < 0) return undefined;
+	entries[index] = [nextName, entries[index]![1]];
+	catalog.roles = Object.fromEntries(entries);
+	if (catalog.defaultRole === name) catalog.defaultRole = nextName;
+	saveModelRoles(catalog);
+	ctx.ui.notify(`Renamed role "${name}" to "${nextName}".`, "info");
+	return nextName;
 }
 
 export async function addModelRole(ctx: ExtensionContext, catalog: ModelRoleCatalog): Promise<string | undefined> {
