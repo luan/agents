@@ -92,7 +92,6 @@ import {
 } from "../shared/tui";
 import { type CardBackgroundColor, darkerCardBackgroundAnsi, framedBlock } from "../shared/tui/card.ts";
 import { vaultResourceProvider } from "../shared/vault-resources.ts";
-import { estimateTokens } from "../token-burden/parser.ts";
 import { registerAstTools } from "./ast-tools.ts";
 import { buildLineEntriesWithBlockContext } from "./block-context.ts";
 import {
@@ -841,10 +840,10 @@ type ResourceReadSummary = {
 const GITHUB_TYPE_ICON = "";
 
 function resourceSummaryType(scheme: ResourceRef["scheme"]): Pick<ResourceReadSummary, "typeIcon" | "label"> {
-	if (scheme === "pr" || scheme === "issue" || scheme === "action") {
+	if (scheme === "pr" || scheme === "issue") {
 		return {
 			typeIcon: GITHUB_TYPE_ICON,
-			label: scheme === "pr" ? "PR" : scheme === "issue" ? "issue" : "action",
+			label: scheme === "pr" ? "PR" : "issue",
 		};
 	}
 	return { label: scheme };
@@ -941,176 +940,6 @@ function resourceStatsParts(record: Record<string, unknown>): ExplorationReadSum
 		changedFiles ? { text: `${changedFiles} files`, role: "dim" } : undefined,
 	].filter((part): part is ExplorationReadSummaryPart => Boolean(part));
 }
-const REACTION_EMOJI: Record<string, string> = {
-	THUMBS_UP: "👍",
-	THUMBS_DOWN: "👎",
-	LAUGH: "😄",
-	HOORAY: "🎉",
-	CONFUSED: "😕",
-	HEART: "❤️",
-	ROCKET: "🚀",
-	EYES: "👀",
-};
-
-function resourceReactionParts(record: Record<string, unknown>): ExplorationReadSummaryPart[] {
-	if (!Array.isArray(record.reactionGroups)) return [];
-	return record.reactionGroups
-		.filter((group): group is Record<string, unknown> => !!group && typeof group === "object")
-		.map((group) => {
-			const content = resourceString(group.content);
-			const users = group.users;
-			const countValue =
-				users && typeof users === "object" ? (users as Record<string, unknown>).totalCount : group.count;
-			const count = resourceCount(countValue);
-			const numericCount = typeof countValue === "number" ? countValue : Number(countValue);
-			if (!count || !Number.isFinite(numericCount) || numericCount <= 0) return undefined;
-			return { text: `${REACTION_EMOJI[content ?? ""] ?? "•"} ${count}`, role: "muted" };
-		})
-		.filter((part): part is ExplorationReadSummaryPart => Boolean(part));
-}
-
-function resourceReactionRow(record: Record<string, unknown>): ExplorationReadSummaryRow | undefined {
-	const reactions = resourceReactionParts(record);
-	if (reactions.length === 0) return undefined;
-	return {
-		branch: false,
-		footer: true,
-		text: reactions.map((reaction) => reaction.text).join(" · "),
-		textRole: "muted",
-	};
-}
-
-function pullRequestReviewerStatus(state: string): ResourceStatus {
-	if (state === "APPROVED") return { icon: "", iconRole: "success", label: "approved" };
-	if (state === "CHANGES_REQUESTED") return { icon: "", iconRole: "error", label: "changes requested" };
-	if (state === "PENDING") return { icon: "", iconRole: "warning", label: "awaiting review" };
-	return { icon: "", iconRole: "text", label: "commented" };
-}
-
-function pullRequestReviewerRows(record: Record<string, unknown>): ExplorationReadSummaryRow[] {
-	const reviewers = new Map<string, { state: string; timestamp: number }>();
-	const pullRequestAuthor = resourceAuthor(record.author);
-	if (Array.isArray(record.reviews)) {
-		for (const review of record.reviews) {
-			if (!review || typeof review !== "object") continue;
-			const reviewRecord = review as Record<string, unknown>;
-			const name = resourceAuthor(reviewRecord.author);
-			if (!name || name === pullRequestAuthor) continue;
-			const timestamp = Date.parse(resourceString(reviewRecord.submittedAt) ?? "");
-			const current = reviewers.get(name);
-			if (
-				!current ||
-				!Number.isFinite(current.timestamp) ||
-				(Number.isFinite(timestamp) && timestamp >= current.timestamp)
-			) {
-				reviewers.set(name, {
-					state: resourceString(reviewRecord.state)?.toUpperCase() ?? "COMMENTED",
-					timestamp,
-				});
-			}
-		}
-	}
-	if (Array.isArray(record.reviewRequests)) {
-		for (const request of record.reviewRequests) {
-			if (!request || typeof request !== "object") continue;
-			const requestRecord = request as Record<string, unknown>;
-			const name = resourceAuthor(requestRecord.requestedReviewer ?? requestRecord);
-			if (name && !reviewers.has(name))
-				reviewers.set(name, { state: "PENDING", timestamp: Number.NEGATIVE_INFINITY });
-		}
-	}
-	return [...reviewers].map(([name, review]) => {
-		const status = pullRequestReviewerStatus(review.state);
-		return {
-			branch: false,
-			avatarUrl: resourceAvatarUrlForLogin(name.slice(1)),
-			textUrl: githubUserUrl(name.slice(1)),
-			text: name,
-			textRole: "muted",
-			status: { text: status.icon, role: status.iconRole },
-		};
-	});
-}
-
-function pullRequestReviewRows(record: Record<string, unknown>): ExplorationReadSummaryRow[] {
-	const reviewerRows = pullRequestReviewerRows(record);
-	const rows: ExplorationReadSummaryRow[] =
-		reviewerRows.length > 0
-			? [
-					{
-						branch: false,
-						text: "Reviewers",
-						textRole: "toolTitle",
-						bold: true,
-					},
-					...reviewerRows,
-				]
-			: [];
-	const total =
-		typeof record.reviewCommentCount === "number" ? record.reviewCommentCount : Number(record.reviewCommentCount);
-	if (!Number.isFinite(total) || total <= 0) return rows;
-	if (rows.length > 0) rows.push({ branch: false, text: "" });
-	const unresolved =
-		typeof record.unresolvedReviewComments === "number"
-			? record.unresolvedReviewComments
-			: Number(record.unresolvedReviewComments);
-	const resolved = Math.max(0, total - (Number.isFinite(unresolved) ? unresolved : 0));
-	if (Number.isFinite(unresolved) && unresolved > 0) {
-		const authors = Array.isArray(record.unresolvedReviewCommentAuthors)
-			? [
-					...new Set(
-						record.unresolvedReviewCommentAuthors.filter(
-							(author): author is string => typeof author === "string" && author.length > 0,
-						),
-					),
-				]
-			: [];
-		const previews = Array.isArray(record.unresolvedReviewCommentPreviews)
-			? record.unresolvedReviewCommentPreviews
-					.filter((preview): preview is Record<string, unknown> => Boolean(preview) && typeof preview === "object")
-					.map((preview) => {
-						const author = resourceString(preview.author);
-						const firstLine = resourceString(preview.firstLine);
-						if (!author && !firstLine) return undefined;
-						return {
-							branch: false,
-							avatarUrl: author ? resourceAvatarUrlForLogin(author) : undefined,
-							prefix: author ? { text: `@${author}`, role: "muted", url: githubUserUrl(author) } : undefined,
-							text: firstLine ?? "comment",
-							textRole: "muted",
-						};
-					})
-					.filter((row): row is ExplorationReadSummaryRow => Boolean(row))
-			: [];
-		rows.push({
-			branch: false,
-			icon: "",
-			iconRole: "warning",
-			text: `${resourceCount(unresolved) ?? unresolved}/${resourceCount(total) ?? total} unresolved`,
-			textRole: "warning",
-		});
-		rows.push(
-			...(previews.length > 0
-				? previews
-				: authors.map((author) => ({
-						branch: false,
-						avatarUrl: resourceAvatarUrlForLogin(author),
-						text: `@${author}`,
-						textUrl: githubUserUrl(author),
-						textRole: "muted",
-					}))),
-		);
-	} else {
-		rows.push({
-			branch: false,
-			icon: "",
-			iconRole: "success",
-			text: `${resourceCount(resolved) ?? resolved}/${resourceCount(total) ?? total}`,
-			textRole: "success",
-		});
-	}
-	return rows;
-}
 
 function resourceTaskRows(record: Record<string, unknown>): ExplorationReadSummaryRow[] {
 	const body = resourceString(record.body);
@@ -1144,7 +973,9 @@ function resourceTaskRows(record: Record<string, unknown>): ExplorationReadSumma
 }
 
 function resourceTokenCount(content: string): string {
-	return `${estimateTokens(content).toLocaleString()} tokens`;
+	// Estimated, not tokenized: an exact count pulls in the o200k_base vocabulary, which costs
+	// 150ms on an idle machine and near a second on a loaded one, to render one card label.
+	return `${approxTokenCount(content).toLocaleString()} tokens`;
 }
 
 function resourcePathDisplay(path: string): string {
@@ -1235,47 +1066,6 @@ type ResourceStatus = {
 	iconRole: string;
 	label: string;
 };
-
-function resourceStatus(statusValue: unknown, conclusionValue: unknown): ResourceStatus {
-	const status = resourceString(statusValue)?.toUpperCase();
-	const conclusion = resourceString(conclusionValue)?.toUpperCase();
-	if (conclusion === "SUCCESS") return { icon: "", iconRole: "success", label: "passed" };
-	if (conclusion === "CANCELLED" || conclusion === "SKIPPED" || conclusion === "NEUTRAL")
-		return { icon: "", iconRole: "muted", label: "canceled" };
-	if (conclusion) return { icon: "", iconRole: "error", label: "failed" };
-	if (status && !["COMPLETED", "SUCCESS"].includes(status))
-		return { icon: "", iconRole: "warning", label: "running" };
-	return { icon: "", iconRole: "warning", label: "running" };
-}
-
-function resourceRequiredChecks(record: Record<string, unknown>): Set<string> {
-	if (!Array.isArray(record.requiredChecks)) return new Set();
-	return new Set(record.requiredChecks.filter((value): value is string => typeof value === "string"));
-}
-
-function resourceCheckRows(value: unknown, record: Record<string, unknown>): ExplorationReadSummaryRow[] {
-	if (!Array.isArray(value)) return [];
-	const required = resourceRequiredChecks(record);
-	return value
-		.filter((check): check is Record<string, unknown> => !!check && typeof check === "object")
-		.map((check) => {
-			const name = resourceString(check.name) ?? resourceString(check.context) ?? "check";
-			const workflow = resourceString(check.workflowName);
-			const candidates = [name, workflow ? `${workflow} / ${name}` : undefined].filter(
-				(candidate): candidate is string => Boolean(candidate),
-			);
-			const isRequired =
-				check.required === true ||
-				check.isRequired === true ||
-				candidates.some((candidate) => required.has(candidate));
-			const status = resourceStatus(check.status, check.conclusion);
-			return {
-				icon: status.icon,
-				iconRole: status.iconRole,
-				text: `${workflow ? `${workflow} / ` : ""}${name} · ${status.label}${isRequired ? " [required]" : ""}`,
-			};
-		});
-}
 
 type PullRequestCheckState = "passed" | "skipped" | "failed" | "running";
 
@@ -1457,79 +1247,6 @@ function pullRequestMergeability(record: Record<string, unknown>): ResourceStatu
 	return { icon: "", iconRole: "success", label: "ready to merge" };
 }
 
-function pullRequestStackRows(record: Record<string, unknown>): ExplorationReadSummaryRow[] {
-	if (!Array.isArray(record.stack)) return [];
-	const entries = record.stack
-		.filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === "object")
-		.sort((left, right) => Number(left.stackPosition ?? 0) - Number(right.stackPosition ?? 0));
-	if (entries.length < 2) return [];
-	const currentIndex = entries.findIndex((entry) => String(entry.number ?? "") === String(record.number ?? ""));
-	const position = currentIndex === -1 ? `?/${entries.length}` : `${currentIndex + 1}/${entries.length}`;
-	const rows: ExplorationReadSummaryRow[] = [
-		{
-			branch: false,
-			leading: " ",
-			icon: "",
-			iconRole: "accent",
-			text: `stack · ${position}`,
-			textRole: "toolTitle",
-		},
-	];
-	for (const entry of entries) {
-		const number = resourceIdentifier(entry.number) ?? resourceString(entry.id) ?? "?";
-		const title = resourceString(entry.title) ?? "untitled";
-		const status = pullRequestMergeability(entry);
-		const current = String(entry.number ?? "") === String(record.number ?? "");
-		rows.push({
-			branch: false,
-			leading: current ? " " : "  ",
-			leadingRole: current ? "accent" : "muted",
-			icon: status.icon,
-			iconRole: status.iconRole,
-			prefix: githubIdentifierPart(entry, number),
-			text: title,
-			textRole: current ? "toolTitle" : "muted",
-			bold: current,
-			status: { text: status.label, role: status.iconRole },
-		});
-	}
-	return rows;
-}
-function resourceRelatedRows(record: Record<string, unknown>, kind: string | undefined): ExplorationReadSummaryRow[] {
-	if (!kind || (!kind.includes("issues") && !kind.includes("pulls"))) return [];
-	const items = resourceItemRecords(record);
-	if (items.length === 0) return [];
-	const pullRequests = kind.includes("pulls");
-	const label = pullRequests ? "Linked PRs" : "Linked issues";
-	const rows: ExplorationReadSummaryRow[] = [{ branch: false, text: label, textRole: "toolTitle", bold: true }];
-	for (const item of items.slice(0, 8)) {
-		const number = resourceIdentifier(item.number);
-		const title =
-			resourceString(item.title) ?? resourceBodyPreview(item.body) ?? resourceString(item.name) ?? "untitled";
-		const status = pullRequests
-			? pullRequestStatus(item)
-			: resourceString(item.state)?.toUpperCase() === "CLOSED"
-				? { icon: "", iconRole: "error", label: "closed" }
-				: { icon: "", iconRole: "success", label: "open" };
-		rows.push({
-			branch: false,
-			icon: status.icon,
-			iconRole: status.iconRole,
-			prefix: number ? githubIdentifierPart(item, number) : undefined,
-			text: title,
-			textRole: "muted",
-			status: { text: status.label, role: status.iconRole },
-		});
-	}
-	if (items.length > 8)
-		rows.push({
-			branch: false,
-			text: `(${items.length - 8} more)`,
-			textRole: "muted",
-			italic: true,
-		});
-	return rows;
-}
 /**
  * Collection views, so an empty one can say so.
  *
@@ -1538,17 +1255,9 @@ function resourceRelatedRows(record: Record<string, unknown>, kind: string | und
  */
 const RESOURCE_COLLECTION_KINDS = new Set([
 	"pull-request-files",
-	"pull-request-commits",
-	"pull-request-reviews",
 	"pull-request-threads",
 	"pull-request-checks",
-	"pull-request-comments",
-	"pull-request-issues",
 	"github-comments",
-	"github-comments-page",
-	"github-linked-pulls",
-	"github-labels",
-	"github-assignees",
 ]);
 
 function resourceEmptyRow(kind: string): ExplorationReadSummaryRow[] {
@@ -1574,7 +1283,7 @@ function threadComments(record: Record<string, unknown>): Record<string, unknown
  * owns a markdown renderer; an item body is exactly what it is for.
  */
 function resourceViewMarkdown(record: Record<string, unknown>, kind: string | undefined): string | undefined {
-	if (kind === "github-comment" || kind === "pull-request-review") return resourceString(record.body);
+	if (kind === "github-comment") return resourceString(record.body);
 	if (kind === "pull-request-thread") {
 		const comments = threadComments(record);
 		if (comments.length === 0) return resourceString(record.body);
@@ -1614,20 +1323,6 @@ function resourceViewRows(record: Record<string, unknown>, kind: string | undefi
 			})
 			.filter((row): row is ExplorationReadSummaryRow => Boolean(row));
 	}
-	if (kind === "pull-request-commits") {
-		return items.slice(0, 12).map((commit) => ({
-			branch: false,
-			prefix: {
-				text: resourceString(commit.sha)?.slice(0, 8) ?? "",
-				role: "mdLink",
-				url: resourceString(commit.url),
-			},
-			text: resourceString(commit.message)?.split(/\r?\n/)[0] ?? "commit",
-			textUrl: resourceString(commit.url),
-			textRole: "text",
-			details: [...(resourceString(commit.author) ? [{ text: resourceString(commit.author)!, role: "muted" }] : [])],
-		}));
-	}
 	if (kind === "pull-request-checks") {
 		// The rollup renderer already groups, counts and hides the quiet ones;
 		// a checks view is that same list read on purpose.
@@ -1652,7 +1347,7 @@ function resourceViewRows(record: Record<string, unknown>, kind: string | undefi
 			};
 		});
 	}
-	if (kind === "github-comments" || kind === "github-comments-page" || kind === "pull-request-comments") {
+	if (kind === "github-comments") {
 		return items
 			.slice(0, 8)
 			.map((comment) => {
@@ -1684,28 +1379,6 @@ function resourceViewRows(record: Record<string, unknown>, kind: string | undefi
 			})
 			.filter((row): row is ExplorationReadSummaryRow => Boolean(row));
 	}
-	if (kind === "pull-request-reviews") {
-		return items.slice(0, 10).map((review) => {
-			const author = resourceAuthor(review.author ?? review.user);
-			const state = resourceString(review.state)?.toLowerCase();
-			return {
-				branch: false,
-				avatarUrl: resourceAvatarUrl(review.author ?? review.user),
-				text: author ?? "review",
-				textUrl: resourceString(review.url) ?? (author ? githubUserUrl(author.replace(/^@/, "")) : undefined),
-				textRole: "muted",
-				details: state
-					? [
-							{
-								text: state.replace(/_/g, " "),
-								role: state === "changes_requested" ? "error" : state === "approved" ? "success" : "muted",
-							},
-						]
-					: [],
-				markdown: resourceString(review.body ?? review.preview),
-			};
-		});
-	}
 	if (kind === "pull-request-thread") {
 		const comments = threadComments(record);
 		const first = comments[0];
@@ -1725,17 +1398,6 @@ function resourceViewRows(record: Record<string, unknown>, kind: string | undefi
 			},
 		];
 	}
-	if (kind === "pull-request-review") {
-		const state = resourceString(record.state)?.toLowerCase();
-		if (!state) return [];
-		return [
-			{
-				branch: false,
-				text: state.replace(/_/g, " "),
-				textRole: state === "changes_requested" ? "error" : state === "approved" ? "success" : "muted",
-			},
-		];
-	}
 	if (kind === "pull-request-file") {
 		const patch = resourceString(record.patch);
 		if (!patch) return [];
@@ -1748,36 +1410,7 @@ function resourceViewRows(record: Record<string, unknown>, kind: string | undefi
 				textRole: line.startsWith("+") ? "toolDiffAdded" : line.startsWith("-") ? "toolDiffRemoved" : "muted",
 			}));
 	}
-	if (kind === "pull-request-diff" || kind === "pull-request-patch") {
-		const diff = resourceString(record.text);
-		if (!diff) return [];
-		return diff
-			.split(/\r?\n/)
-			.slice(0, 10)
-			.map((line) => ({
-				branch: false,
-				text: line,
-				textRole:
-					line.startsWith("+") && !line.startsWith("+++")
-						? "toolDiffAdded"
-						: line.startsWith("-") && !line.startsWith("---")
-							? "toolDiffRemoved"
-							: line.startsWith("@@")
-								? "accent"
-								: "muted",
-			}));
-	}
 	return [];
-}
-
-function actionLogRows(record: Record<string, unknown>): ExplorationReadSummaryRow[] {
-	if (!Array.isArray(record.logTail)) return [];
-	const lines = record.logTail.filter((line): line is string => typeof line === "string" && line.length > 0);
-	if (lines.length === 0) return [];
-	return [
-		{ branch: false, text: "Log tail", textRole: "toolTitle", bold: true },
-		...lines.map((line) => ({ branch: false, leading: "  ", text: line, textRole: "muted" })),
-	];
 }
 
 function historySummary(resource: Resource, ref: ResourceRef, content: string): ResourceReadSummary {
@@ -1845,21 +1478,17 @@ function resourceSummaryList(
 			? "PRs"
 			: first.scheme === "issue"
 				? "issues"
-				: first.scheme === "action"
-					? "actions"
-					: first.scheme === "history"
-						? "messages"
-						: "resources";
+				: first.scheme === "history"
+					? "messages"
+					: "resources";
 	const singular =
 		first.scheme === "pr"
 			? "PR"
 			: first.scheme === "issue"
 				? "issue"
-				: first.scheme === "action"
-					? "action"
-					: first.scheme === "history"
-						? "message"
-						: "resource";
+				: first.scheme === "history"
+					? "message"
+					: "resource";
 	return {
 		scheme: first.scheme,
 		icon: first.icon,
@@ -1899,11 +1528,8 @@ export function summarizeResource(resource: Resource, content: string): Resource
 				? `${resourceString(record.baseRefName)}  ${resourceString(record.headRefName)}`
 				: "GitHub";
 		const mergeability = pullRequestMergeability(record);
-		// A view already renders what the side column would repeat, and the
-		// checks column beside a checks card was the same list twice.
-		const reviewRows = view === "reviews" || view === "threads" ? [] : pullRequestReviewRows(record);
 		const checkRows = view === "checks" ? [] : pullRequestCheckRows(record);
-		const showBody = !view || view === "body" || view === "body-page";
+		const showBody = !view;
 		const viewMarkdown = resourceViewMarkdown(record, resource.kind);
 		return {
 			scheme: ref.scheme,
@@ -1922,19 +1548,10 @@ export function summarizeResource(resource: Resource, content: string): Resource
 			markdown: viewMarkdown ?? (showBody ? resourceString(record.text ?? record.body) : undefined),
 			metaParts: resourceStatsParts(record),
 			uri: resourceUriPart(resource),
-			rows: [
-				...pullRequestStackRows(record),
-				...resourceViewRows(record, resource.kind),
-				...(showBody ? [] : resourceTaskRows(record)),
-				...resourceRelatedRows(record, resource.kind),
-				resourceReactionRow(record),
-			].filter((row): row is ExplorationReadSummaryRow => Boolean(row)),
-			sideRows: [
-				...reviewRows,
-				...(checkRows.length > 0
-					? [...(reviewRows.length > 0 ? [{ branch: false, text: "" }] : []), ...checkRows]
-					: []),
-			],
+			rows: [...resourceViewRows(record, resource.kind), ...(showBody ? [] : resourceTaskRows(record))].filter(
+				(row): row is ExplorationReadSummaryRow => Boolean(row),
+			),
+			sideRows: checkRows,
 		};
 	}
 	if (ref.scheme === "issue") {
@@ -1951,7 +1568,7 @@ export function summarizeResource(resource: Resource, content: string): Resource
 					? { icon: "", iconRole: "error", label: "closed" }
 					: { icon: "", iconRole: "success", label: "open" };
 		const view = resourceViewLabel(resource.kind);
-		const showBody = !view || view === "body" || view === "body-page";
+		const showBody = !view;
 		return {
 			scheme: ref.scheme,
 			icon: status.icon,
@@ -1970,57 +1587,9 @@ export function summarizeResource(resource: Resource, content: string): Resource
 				resourceViewMarkdown(record, resource.kind) ??
 				(showBody ? resourceString(record.text ?? record.body) : undefined),
 			uri: resourceUriPart(resource),
-			rows: [
-				...resourceViewRows(record, resource.kind),
-				...(showBody ? [] : resourceTaskRows(record)),
-				...resourceRelatedRows(record, resource.kind),
-				resourceReactionRow(record),
-			].filter((row): row is ExplorationReadSummaryRow => Boolean(row)),
-		};
-	}
-	if (ref.scheme === "action") {
-		const status = resourceStatus(record.status, record.conclusion);
-		const actionName =
-			resourceString(record.displayTitle) ??
-			resourceString(record.name) ??
-			resourceString(record.workflowName) ??
-			resource.name;
-		const workflow = resourceString(record.workflowName);
-		const branch = resourceString(record.headBranch);
-		const event = resourceString(record.event);
-		const headSha = resourceString(record.headSha);
-		const repositoryUrl = githubRepositoryUrl(repository);
-		const jobRows = resourceCheckRows(record.jobs, record);
-		const logRows = actionLogRows(record);
-		return {
-			scheme: ref.scheme,
-			icon: status.icon,
-			iconRole: status.iconRole,
-			statusLabel: status.label,
-			statusRole: status.iconRole,
-			...resourceSummaryType(ref.scheme),
-			repository,
-			repositoryUrl,
-			title: actionName,
-			subtitle: [`#${number}`, workflow].filter(Boolean).join(" · "),
-			meta: [branch, event, headSha?.slice(0, 7)].filter(Boolean).join(" · "),
-			listDetails: [
-				workflow ? { text: workflow, role: "toolTitle" } : undefined,
-				branch ? { text: branch, role: "muted" } : undefined,
-				event ? { text: event, role: "muted" } : undefined,
-				headSha
-					? {
-							text: headSha.slice(0, 7),
-							role: "mdLink",
-							url: repositoryUrl ? `${repositoryUrl}/commit/${headSha}` : undefined,
-						}
-					: undefined,
-			].filter((part): part is ExplorationReadSummaryPart => Boolean(part)),
-			rows: [
-				...jobRows,
-				...(jobRows.length > 0 && logRows.length > 0 ? [{ branch: false, text: "" }] : []),
-				...logRows,
-			],
+			rows: [...resourceViewRows(record, resource.kind), ...(showBody ? [] : resourceTaskRows(record))].filter(
+				(row): row is ExplorationReadSummaryRow => Boolean(row),
+			),
 		};
 	}
 	if (ref.scheme === "vault") {
@@ -2401,7 +1970,7 @@ function renderResourceSummaryCard(
 	return new ResourceSummaryCard(box, theme, visible);
 }
 function resourceLoadingIcon(scheme: ResourceRef["scheme"]): string {
-	if (scheme === "pr" || scheme === "issue" || scheme === "action") return GITHUB_TYPE_ICON;
+	if (scheme === "pr" || scheme === "issue") return GITHUB_TYPE_ICON;
 	if (scheme === "history") return "";
 	if (scheme === "vault") return "󱔗";
 	if (scheme === "skill") return "";
@@ -2448,7 +2017,6 @@ class ResourceReadCardView implements Component {
 	private card?: Component;
 	private cardSummary?: ResourceReadSummary;
 	private resolvedSummary?: ResourceReadSummary;
-	private errorMessage?: string;
 	private cardInitialized = false;
 
 	constructor(
@@ -2466,18 +2034,7 @@ class ResourceReadCardView implements Component {
 		this.invalidate();
 	}
 
-	/**
-	 * A failed read never produces a summary, and the call component outlives
-	 * the result, so without this the loading line kept spinning above the
-	 * error text instead of being replaced by it.
-	 */
-	setError(message: string): void {
-		this.errorMessage = message;
-		this.invalidate();
-	}
-
 	render(width: number): string[] {
-		if (this.errorMessage !== undefined) return [this.theme.fg("error", this.errorMessage)];
 		renderExplorationCall(readAction(this.displayPath, this.context?.cwd), this.theme, this.context);
 		if (isExplorationHidden(this.context?.toolCallId)) return [];
 		const summary = this.resolvedSummary ?? getExplorationReadSummary(this.context?.toolCallId);
@@ -2772,6 +2329,7 @@ function renderReadCall(
 	const rawPath = typeof params.path === "string" ? splitReadPathSelector(params.path).path : undefined;
 	const displayPath = readDisplay(params, context?.cwd ?? process.cwd());
 	if (rawPath && isResourceUri(rawPath)) {
+		if (context?.isError === true) return EMPTY_VIEW;
 		if (context?.lastComponent instanceof ResourceReadCardView && context.lastComponent.matches(displayPath))
 			return context.lastComponent;
 		const loading = renderResourceLoading("read", rawPath, theme, context);
@@ -2819,18 +2377,7 @@ function renderReadResult(
 	lastComponent?: Component,
 ): Component {
 	if (options.isPartial) return EMPTY_VIEW;
-	// A failed read has no resource summary, and the summary card falls back to
-	// its loading state when the summary is missing — so without this the card
-	// spins forever on an error the user never sees. Show the failure instead.
-	if (options.isError) {
-		const message = firstTextContent(result).trim() || "Read failed.";
-		// Replace the call's loading line rather than printing under it.
-		if (lastComponent instanceof ResourceReadCardView) {
-			lastComponent.setError(message);
-			return lastComponent;
-		}
-		return renderText(theme.fg("error", message));
-	}
+	if (options.isError) return renderText(theme.fg("error", firstTextContent(result).trim() || "Read failed."));
 	const resource = renderResourceReadResult(result, options, theme, toolCallId, invalidate, lastComponent);
 	if (resource) return resource;
 	const preview = previewImageDetails(result.details?.previewImage);
@@ -4318,7 +3865,6 @@ function registerHashlineWorkflowTools(
 	registerResourceProvider("history", historyResourceProvider());
 	registerResourceProvider("pr", githubResourceProvider(cwd));
 	registerResourceProvider("issue", githubResourceProvider(cwd));
-	registerResourceProvider("action", githubResourceProvider(cwd));
 
 	pi.registerTool({
 		...baseRead,

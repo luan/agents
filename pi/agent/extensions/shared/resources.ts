@@ -2,17 +2,7 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
-export const RESOURCE_SCHEMES = [
-	"skill",
-	"vault",
-	"history",
-	"artifact",
-	"local",
-	"agent",
-	"pr",
-	"issue",
-	"action",
-] as const;
+export const RESOURCE_SCHEMES = ["skill", "vault", "history", "artifact", "local", "agent", "pr", "issue"] as const;
 
 export type ResourceScheme = (typeof RESOURCE_SCHEMES)[number];
 
@@ -133,7 +123,7 @@ function encodeResourcePath(path: string): string {
 		.join("/");
 }
 
-const IMPLICIT_CURRENT_SCHEMES = new Set<ResourceScheme>(["pr", "issue", "action", "history", "vault", "local"]);
+const IMPLICIT_CURRENT_SCHEMES = new Set<ResourceScheme>(["pr", "issue", "history", "vault", "local"]);
 
 function usesImplicitCurrent(scheme: ResourceScheme): boolean {
 	return IMPLICIT_CURRENT_SCHEMES.has(scheme);
@@ -149,7 +139,7 @@ function usesImplicitCurrent(scheme: ResourceScheme): boolean {
  */
 function isGitHubCurrentShorthand(scheme: ResourceScheme, authority: string): boolean {
 	if (!/^\d+$/.test(authority)) return false;
-	return scheme === "pr" || scheme === "issue" || scheme === "action";
+	return scheme === "pr" || scheme === "issue";
 }
 export function parseResourceUri(value: string): ResourceRef | undefined {
 	const match = /^([a-z][a-z0-9+.-]*):\/\//i.exec(value);
@@ -262,15 +252,11 @@ function githubViewSuffix(variant: string | undefined, selector: string | undefi
 	switch (variant) {
 		case "files":
 			return "/files";
-		case "commits":
-			return selector ? `/commits/${selector}` : "/commits";
 		case "checks":
 			return "/checks";
 		// Review threads render on the Files changed tab, which is the closest
 		// page GitHub has to a thread listing. A single thread carries its own
 		// anchor, so it never reaches here.
-		case "diff":
-		case "patch":
 		case "threads":
 			return "/files";
 		case "comments":
@@ -298,11 +284,13 @@ function githubOpenUrl(ref: ResourceRef, resource: Resource | undefined): string
 		number = segments[1];
 		rest = segments.slice(2);
 	}
-	const suffix = githubViewSuffix(rest[0] ?? ref.fragment, rest.slice(1).join("/") || undefined);
+	const selector = rest.slice(1).join("/") || undefined;
+	const suffix = githubViewSuffix(rest[0] ?? ref.fragment, selector);
 	const directUrl = resourceMetadataString(resource, "url");
+	if (directUrl && selector) return directUrl;
 	if (directUrl && !suffix) return directUrl;
 	if (!repository || !number) return directUrl;
-	const route = ref.scheme === "pr" ? "pull" : ref.scheme === "issue" ? "issues" : "actions/runs";
+	const route = ref.scheme === "pr" ? "pull" : "issues";
 	return `https://github.com/${repository}/${route}/${encodeURIComponent(number)}${suffix}`;
 }
 
@@ -325,7 +313,7 @@ export function resourceOpenUrl(value: string | Resource, context: ResourceOpenC
 		return undefined;
 	}
 	if (!ref) return undefined;
-	if (ref.scheme === "pr" || ref.scheme === "issue" || ref.scheme === "action") return githubOpenUrl(ref, resource);
+	if (ref.scheme === "pr" || ref.scheme === "issue") return githubOpenUrl(ref, resource);
 	if (ref.scheme === "vault") {
 		const file = vaultOpenPath(ref, resource);
 		if (!file || file === "context") return undefined;

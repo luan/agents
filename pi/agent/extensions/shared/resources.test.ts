@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { fixtureScript, fixtureScriptDir } from "./fixture-script.ts";
 import { githubResourceProvider } from "./github-resources.ts";
 import {
 	formatResourceUri,
@@ -16,9 +17,15 @@ import {
 import { vaultArtifactName } from "./vault-resources.ts";
 
 const cleanups: Array<() => void> = [];
+const originalPath = process.env.PATH;
+const originalRtkDisabled = process.env.RTK_DISABLED;
 
 afterEach(() => {
 	while (cleanups.length > 0) cleanups.pop()?.();
+	if (originalPath === undefined) delete process.env.PATH;
+	else process.env.PATH = originalPath;
+	if (originalRtkDisabled === undefined) delete process.env.RTK_DISABLED;
+	else process.env.RTK_DISABLED = originalRtkDisabled;
 });
 
 describe("resource URIs", () => {
@@ -39,16 +46,14 @@ describe("resource URIs", () => {
 	});
 
 	it("makes ambient resource scopes implicit", () => {
-		expect(parseResourceUri("pr://16#checks")).toEqual({
+		expect(parseResourceUri("pr://16/checks")).toEqual({
 			scheme: "pr",
 			authority: "current",
-			path: "/16",
-			fragment: "checks",
+			path: "/16/checks",
 			query: {},
 		});
-		expect(formatResourceUri(parseResourceUri("pr://current/16#checks")!)).toBe("pr://16#checks");
+		expect(formatResourceUri(parseResourceUri("pr://current/16/checks")!)).toBe("pr://16/checks");
 		expect(formatResourceUri(parseResourceUri("pr://?state=open")!)).toBe("pr://?state=open");
-		expect(formatResourceUri(parseResourceUri("action://31233002690/log")!)).toBe("action://31233002690/log");
 		expect(formatResourceUri(parseResourceUri("history://")!)).toBe("history://");
 		expect(formatResourceUri(parseResourceUri("history://message-id")!)).toBe("history://message-id");
 		expect(formatResourceUri(parseResourceUri("local://attachment-1.png")!)).toBe("local://attachment-1.png");
@@ -72,9 +77,14 @@ describe("resource URIs", () => {
 	it("maps resource URIs to native open targets", () => {
 		expect(resourceOpenUrl("pr://owner/repo/16")).toBe("https://github.com/owner/repo/pull/16");
 		expect(resourceOpenUrl("issue://owner/repo/2")).toBe("https://github.com/owner/repo/issues/2");
-		expect(resourceOpenUrl("action://owner/repo/31233002690/log")).toBe(
-			"https://github.com/owner/repo/actions/runs/31233002690",
-		);
+		expect(resourceOpenUrl("pr://owner/repo/16/checks")).toBe("https://github.com/owner/repo/pull/16/checks");
+		expect(
+			resourceOpenUrl({
+				uri: "pr://owner/repo/16/comments/IC_node",
+				name: "IC_node",
+				metadata: { url: "https://github.com/owner/repo/pull/16#issuecomment-123" },
+			}),
+		).toBe("https://github.com/owner/repo/pull/16#issuecomment-123");
 		expect(resourceOpenUrl("vault://boo/ticket/0013-make-settings-contributions-ecs-owned")).toBe(
 			"obsidian://open?vault=blueprints&file=boo%2Fticket%2F0013-make-settings-contributions-ecs-owned",
 		);
@@ -116,6 +126,73 @@ describe("GitHub resources", () => {
 		await expect(githubResourceProvider(process.cwd()).read(ref!)).rejects.toThrow(
 			"GitHub collections are listed with find or search, not read",
 		);
+	});
+	it("rejects removed collection filters", async () => {
+		const ref = parseResourceUri("pr://?blocked=true");
+		await expect(githubResourceProvider(process.cwd()).find(ref!)).rejects.toThrow(
+			"Unsupported GitHub query parameter: blocked",
+		);
+	});
+	it("passes collection filters to GitHub CLI", async () => {
+		const gh = fixtureScript(
+			"gh",
+			`#!/bin/sh
+if [ "$*" = "pr list --json number,title,state,url,author,updatedAt --limit 100 --state all --author philip-bcny" ]; then
+	printf '[{"number":7,"title":"Match","state":"OPEN","url":"https://github.com/owner/repo/pull/7","author":{"login":"philip-bcny"}}]'
+else
+	printf 'unexpected gh call: %s\n' "$*" >&2
+	exit 99
+fi
+`,
+		);
+		process.env.PATH = fixtureScriptDir(gh);
+		process.env.RTK_DISABLED = "1";
+
+		const ref = parseResourceUri("pr://?author=philip-bcny&state=all&limit=100");
+		const resources = await githubResourceProvider(process.cwd()).find(ref!);
+
+		expect(resources.map((resource) => resource.uri)).toEqual(["pr://7"]);
+	});
+	it("reads a pull request without enrichment calls", async () => {
+		const gh = fixtureScript(
+			"gh",
+			`#!/bin/sh
+if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+	printf '{"number":7,"title":"Small read","state":"OPEN","url":"https://github.com/owner/repo/pull/7","author":{"login":"philip"},"body":"Body","baseRefName":"main","headRefName":"feature","headRefOid":"abc"}'
+else
+	printf 'unexpected gh call: %s\n' "$*" >&2
+	exit 99
+fi
+`,
+		);
+		process.env.PATH = fixtureScriptDir(gh);
+		process.env.RTK_DISABLED = "1";
+
+		const result = await githubResourceProvider(process.cwd()).read(parseResourceUri("pr://7")!);
+
+		expect(result.resource.metadata?.repository).toBe("owner/repo");
+		expect(result.resource.metadata?.number).toBe(7);
+	});
+	it("includes an exact GitHub item URL in model-visible content", async () => {
+		const gh = fixtureScript(
+			"gh",
+			`#!/bin/sh
+if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+	printf '{"number":7,"title":"Small read","state":"OPEN","url":"https://github.com/owner/repo/pull/7","comments":[{"id":"IC_test","author":{"login":"philip"},"body":"Comment body","createdAt":"2026-08-11T00:00:00Z","url":"https://github.com/owner/repo/pull/7#issuecomment-1"}]}'
+else
+	printf 'unexpected gh call: %s\\n' "$*" >&2
+	exit 99
+fi
+`,
+		);
+		process.env.PATH = fixtureScriptDir(gh);
+		process.env.RTK_DISABLED = "1";
+
+		const result = await githubResourceProvider(process.cwd()).read(
+			parseResourceUri("pr://owner/repo/7/comments/IC_test")!,
+		);
+
+		expect(result.content).toContain("**URL:** https://github.com/owner/repo/pull/7#issuecomment-1");
 	});
 });
 
