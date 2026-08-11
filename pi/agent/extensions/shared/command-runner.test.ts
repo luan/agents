@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveCommand, runCommand } from "./command-runner.ts";
+import { fixtureScript, fixtureScriptDir } from "./fixture-script.ts";
 
 const originalHome = process.env.HOME;
 const originalPath = process.env.PATH;
@@ -31,14 +32,13 @@ describe("command runner", () => {
 	it("runs resolved commands with stdout, stderr, and exit status", async () => {
 		const dir = join(tmpdir(), `pi-command-runner-cwd-${crypto.randomUUID()}`);
 		mkdirSync(dir, { recursive: true });
-		const bin = join(dir, "bin");
-		const tool = join(bin, "tool");
-		mkdirSync(bin);
-		writeFileSync(tool, "#!/bin/sh\nprintf out\nprintf err >&2\nexit 7\n");
-		chmodSync(tool, 0o755);
+		const tool = fixtureScript("tool", "#!/bin/sh\nprintf out\nprintf err >&2\nexit 7\n");
 		process.env.PATH = "";
 
-		const result = await runCommand("tool", [], dir, { allowNonZero: true, extraSearchPaths: [bin] });
+		const result = await runCommand("tool", [], dir, {
+			allowNonZero: true,
+			extraSearchPaths: [fixtureScriptDir(tool)],
+		});
 
 		expect(result).toEqual({ stdout: "out", stderr: "err", exitCode: 7 });
 	});
@@ -46,16 +46,12 @@ describe("command runner", () => {
 	it("rejects oversized command output before converting it to a string", async () => {
 		const dir = join(tmpdir(), `pi-command-runner-output-${crypto.randomUUID()}`);
 		mkdirSync(dir, { recursive: true });
-		const bin = join(dir, "bin");
-		const tool = join(bin, "noisy");
-		mkdirSync(bin);
-		writeFileSync(tool, "#!/bin/sh\nprintf 1234567890\n");
-		chmodSync(tool, 0o755);
+		const tool = fixtureScript("noisy", "#!/bin/sh\nprintf 1234567890\n");
 		process.env.PATH = "";
 
-		await expect(runCommand("noisy", [], dir, { extraSearchPaths: [bin], maxOutputBytes: 4 })).rejects.toThrow(
-			/exceeded 4 bytes of output/,
-		);
+		await expect(
+			runCommand("noisy", [], dir, { extraSearchPaths: [fixtureScriptDir(tool)], maxOutputBytes: 4 }),
+		).rejects.toThrow(/exceeded 4 bytes of output/);
 	});
 
 	it("reports a missing working directory without blaming the command PATH", async () => {

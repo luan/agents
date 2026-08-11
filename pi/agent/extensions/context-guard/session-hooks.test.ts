@@ -1,8 +1,9 @@
 import "./setup-home";
 import { afterEach, describe, expect, it } from "bun:test";
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fixtureScript } from "../shared/fixture-script.ts";
 import piExtension from "./index.js";
 import { getCurrentContextGuardSessionId } from "./pi/current-session.js";
 import { isExecCommandContextGuardEnabled, resetExecCommandContextGuardEnabled } from "./pi/index.js";
@@ -41,11 +42,8 @@ afterEach(() => {
 describe("Context Guard focused extension lifecycle", () => {
 	it("tracks session identity and registers only capture retrieval surfaces", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "context-guard-lifecycle-"));
-		const coreBin = join(dir, "context-guard-core.js");
-		process.env.CONTEXT_GUARD_BIN = coreBin;
-		process.env.CONTEXT_GUARD_PROJECT_DIR = join(dir, "project");
-		writeFileSync(
-			coreBin,
+		process.env.CONTEXT_GUARD_BIN = fixtureScript(
+			"context-guard-core.js",
 			[
 				`#!${process.execPath}`,
 				"let input = '';",
@@ -56,9 +54,8 @@ describe("Context Guard focused extension lifecycle", () => {
 				"  process.stdout.write(JSON.stringify({ ok: true, content: [{ type: 'text', text: JSON.stringify(payload) }] }));",
 				"});",
 			].join("\n"),
-			"utf8",
 		);
-		chmodSync(coreBin, 0o755);
+		process.env.CONTEXT_GUARD_PROJECT_DIR = join(dir, "project");
 
 		const pi = createMockPi();
 		piExtension(pi);
