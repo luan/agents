@@ -284,12 +284,11 @@ function loadAgents(cwd: string): Map<string, AgentConfig> {
 	return agents;
 }
 
-function normalizeItems(params: TaskParams): TaskItem[] {
+export function normalizeItems(params: TaskParams): TaskItem[] {
 	if (!params.agent?.trim()) throw new Error("subagent requires agent");
 	if (Array.isArray(params.tasks)) {
 		if (params.assignment?.trim()) throw new Error("subagent accepts either tasks[] or assignment, not both");
 		if (params.tasks.length === 0) throw new Error("subagent requires at least one tasks[] item");
-		if (!params.context?.trim()) throw new Error("batch task calls require non-empty context");
 		const ids = new Set<string>();
 		return params.tasks.map((item, index) => {
 			const assignment = item.assignment?.trim();

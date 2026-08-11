@@ -41,11 +41,11 @@ function attachArgs(configFile: string, socketPath: string, name: string): strin
 }
 
 function defaultSocketPath(): string {
-	return join(homedir(), ".pi", "agent", "rmux", "exec.sock");
+	return join(homedir(), ".pi", "rmux", "exec.sock");
 }
 
 function defaultConfigPath(): string {
-	return join(homedir(), ".pi", "agent", "rmux", "exec.conf");
+	return join(homedir(), ".pi", "rmux", "exec.conf");
 }
 
 class RmuxPtyProcess implements PtyProcess {

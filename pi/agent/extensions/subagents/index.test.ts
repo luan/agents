@@ -3,10 +3,20 @@ import subagentsExtension, {
 	attachAgentTerminal,
 	formatTaskResults,
 	mergeHubAgentRecords,
+	normalizeItems,
 	routeForegroundInput,
 	shouldOwnAgentWidget,
 	type TaskResult,
 } from "./index";
+
+test("spawn_agent accepts self-contained batch tasks without shared context", () => {
+	expect(
+		normalizeItems({
+			agent: "explore",
+			tasks: [{ id: "rmuxRootCause", assignment: "Find the root cause." }],
+		}),
+	).toEqual([{ id: "rmuxRootCause", assignment: "Find the root cause." }]);
+});
 
 test("returns complete subagent output to the parent", () => {
 	const result: TaskResult = {
