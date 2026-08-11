@@ -6,6 +6,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem, Component } from "@earendil-works/pi-tui";
 import { Box } from "@earendil-works/pi-tui";
 import { renderCompactSummaryLine } from "../shared/compact-summary.ts";
+import { approxTokenCount } from "../shared/output-budget";
 import {
 	formatResourceUri,
 	type Resource,
@@ -17,7 +18,6 @@ import {
 import { registerExtensionMessageRenderer, textComponent } from "../shared/tui";
 import { darkerCardBackgroundAnsi } from "../shared/tui/card";
 import { paintAnsiBackgroundRow } from "../shared/tui/text";
-import { estimateTokens } from "../token-burden/parser";
 import { wrapProvider } from "./autocomplete";
 import { installEditorHighlight, removeEditorHighlight } from "./editor";
 import {
@@ -191,12 +191,12 @@ export default function (pi: ExtensionAPI) {
 			);
 			return {
 				content,
-				details: loadedDetails(name, "read", resolvedPath, skillBaseDir(filePath), estimateTokens(content)),
+				details: loadedDetails(name, "read", resolvedPath, skillBaseDir(filePath), approxTokenCount(content)),
 			};
 		}
 		const body = rewriteSlashSkillReferences(stripFrontmatter(await readFile(filePath, "utf8")), state.skills.keys());
 		const content = formatReadSkillContent(name, filePath, body);
-		const details = loadedDetails(name, "read", filePath, skillBaseDir(filePath), estimateTokens(content));
+		const details = loadedDetails(name, "read", filePath, skillBaseDir(filePath), approxTokenCount(content));
 		return {
 			content,
 			details,
