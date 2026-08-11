@@ -127,19 +127,16 @@ function parseXmlSkillEntries(skillsBlock: string, out: SkillEntry[]): number {
 	const skillPattern = /<skill>([\s\S]*?)<\/skill>/g;
 	const namePattern = /<name>([\s\S]*?)<\/name>/;
 	const descPattern = /<description>([\s\S]*?)<\/description>/;
-	const locPattern = /<location>([\s\S]*?)<\/location>/;
 	let parsedCount = 0;
 
 	for (const match of skillsBlock.matchAll(skillPattern)) {
 		const [fullEntry, inner] = match;
 		const name = inner.match(namePattern)?.[1]?.trim() ?? "unknown";
 		const description = inner.match(descPattern)?.[1]?.trim() ?? "";
-		const location = inner.match(locPattern)?.[1]?.trim() ?? "";
 
 		out.push({
 			name,
 			description,
-			location,
 			chars: fullEntry.length,
 			tokens: estimateTokens(fullEntry),
 		});
@@ -149,21 +146,7 @@ function parseXmlSkillEntries(skillsBlock: string, out: SkillEntry[]): number {
 	return parsedCount;
 }
 
-function splitYamlSkillDescription(value: string): { description: string; location: string } {
-	const trimmed = value.trim();
-	const locationMatch = trimmed.match(/\s+\(([^()\n]*\.md[^()\n]*)\)$/i);
-
-	if (!locationMatch) {
-		return { description: trimmed, location: "" };
-	}
-
-	return {
-		description: trimmed.slice(0, locationMatch.index).trim(),
-		location: locationMatch[1].trim(),
-	};
-}
-
-/** Parse `- name: description (optional/path.md)` entries from the skills block. */
+/** Parse `- name: description` entries from the skills block. */
 function parseYamlSkillEntries(skillsBlock: string, out: SkillEntry[]): void {
 	const skillPattern = /^-\s+([^:\n]+):\s*(.*?)\s*$/gm;
 
@@ -174,12 +157,11 @@ function parseYamlSkillEntries(skillsBlock: string, out: SkillEntry[]): void {
 			continue;
 		}
 
-		const { description, location } = splitYamlSkillDescription(rawDescription);
+		const description = rawDescription.trim();
 
 		out.push({
 			name,
 			description,
-			location,
 			chars: fullEntry.length,
 			tokens: estimateTokens(fullEntry),
 		});

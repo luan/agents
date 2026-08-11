@@ -7,7 +7,6 @@ export enum DisableMode {
 export interface SkillEntry {
 	name: string;
 	description: string;
-	location: string;
 	chars: number;
 	tokens: number;
 }

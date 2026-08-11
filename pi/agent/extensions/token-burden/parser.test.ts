@@ -2,28 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { buildSystemPrompt } from "../system-prompt";
 import { parseSystemPrompt } from "./parser";
 
-const skill = {
-	name: "tdd",
-	description: "Apply test-driven development",
-	filePath: "/skills/tdd/SKILL.md",
-	baseDir: "/skills/tdd",
-	sourceInfo: { path: "/skills/tdd/SKILL.md", source: "test", scope: "project", origin: "top-level" },
-	disableModelInvocation: false,
-};
-
 describe("token-burden system prompt parser", () => {
-	test("detects skill entry locations", () => {
-		const prompt = buildSystemPrompt("base", {
-			cwd: "/repo",
-			selectedTools: ["read"],
-			skills: [skill],
-		});
-
-		const parsed = parseSystemPrompt(prompt);
-
-		expect(parsed.skills[0]?.location).toBe("/skills/tdd/SKILL.md");
-	});
-
 	test("detects structured environment context as metadata footer", () => {
 		const prompt = buildSystemPrompt("base", {
 			cwd: "/repo",
@@ -43,7 +22,7 @@ describe("token-burden system prompt parser", () => {
 		expect(metadata?.content).toContain("<shell>zsh</shell>");
 	});
 
-	test("does not treat parenthesized descriptions as locations", () => {
+	test("parses YAML skill entries", () => {
 		const prompt = [
 			"base",
 			"<skills_instructions>",
@@ -59,21 +38,7 @@ describe("token-burden system prompt parser", () => {
 
 		const parsed = parseSystemPrompt(prompt);
 
-		expect(parsed.skills).toEqual([
-			{
-				name: "fast",
-				description: "Apply test-driven development (quick mode)",
-				location: "",
-				chars: expect.any(Number),
-				tokens: expect.any(Number),
-			},
-			{
-				name: "local",
-				description: "Load a local skill",
-				location: "/skills/local/SKILL.md",
-				chars: expect.any(Number),
-				tokens: expect.any(Number),
-			},
-		]);
+		expect(parsed.skills.map(({ name }) => name)).toEqual(["fast", "local"]);
+		expect(parsed.skills.every(({ chars, tokens }) => chars > 0 && tokens > 0)).toBe(true);
 	});
 });

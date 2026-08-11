@@ -125,12 +125,12 @@ The following skills provide specialized instructions for specific workflows.
 A skill is a set of local instructions stored in a `SKILL.md` file.
 
 ### How to use skills
-- Discovery: The list below is the skills available in this session (name + description + location).
+- Discovery: The list below shows each available skill's name and description. Load skill documents through `skill://`.
 - Trigger rules: If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a skill's description shown below, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.
-- Missing/blocked: If a named skill is not in the list or the skill path cannot be read, say so briefly and continue with the best fallback.
+- Missing/blocked: If a named skill is not in the list or its `skill://` URI cannot be read, say so briefly and continue with the best fallback.
 - How to use a skill:
-  1) After deciding to use a skill, read its root with `read skill://<name>`.
-  2) When the skill references a relative path, read it with `read skill://<name>/<relative-path>`.
+  1) Read the skill root with `read skill://<name>`. Always use this URI, even when a prior load exposes the absolute `SKILL.md` path. Never load a skill through a regular filesystem `read`.
+  2) Read referenced files with `read skill://<name>/<relative-path>`.
   3) Load only files needed for the request. Do not bulk-load folders.
   4) If `scripts/` exist, prefer running or patching them instead of retyping large code blocks.
   5) If `assets/` or templates exist, reuse them instead of recreating from scratch.
@@ -139,7 +139,7 @@ A skill is a set of local instructions stored in a `SKILL.md` file.
   - Announce which skill(s) you are using and why (one short line).
 <available_skills>
 {{#skills}}
-- {{name}}: {{description}} ({{filePath}})
+- {{name}}: {{description}}
 {{/skills}}
 </available_skills>
 </skills_instructions>
