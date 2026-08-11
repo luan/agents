@@ -4,6 +4,7 @@ import { Container } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { captureExecResult } from "../../context-guard/pi/capture.ts";
 import { getCurrentContextGuardSessionId } from "../../context-guard/pi/current-session.ts";
+import { approxTokenCount } from "../../shared/output-budget.ts";
 import { sharedAnimationRenderAllowed } from "../../shared/tui";
 import { resolveRuntimeShell } from "../adapter/runtime-shell.ts";
 import { type RenderTheme, rawCommandToExecCell, renderExecCellComponent } from "./exec-cell-presentation.ts";
@@ -401,6 +402,13 @@ const renderExecCommandResultWithOptionalContext: any = (
 	const shell = displayShell(context?.args);
 	const renderInfo = tracker.getRenderInfo(context?.toolCallId, command ?? "");
 	const details = isUnifiedExecResult(result.details) ? result.details : undefined;
+	// Count the tool result, not the terminal buffer: for a backgrounded command
+	// the buffer is the whole transcript while the result is only a launch
+	// acknowledgement, so counting the buffer bills this call for tokens that
+	// `process_logs` actually paid.
+	const resultText = result.content.find((item) => item.type === "text");
+	const deliveredTokens =
+		resultText?.type === "text" && resultText.text ? approxTokenCount(resultText.text) : undefined;
 	if (renderInfo.sessionId !== undefined) return createEmptyResultComponent();
 	const failed =
 		context?.isError === true ||
@@ -420,6 +428,7 @@ const renderExecCommandResultWithOptionalContext: any = (
 				command: command ?? "",
 				shell,
 				failed,
+				contextTokens: deliveredTokens,
 				contextGuardWrapped: renderInfo.contextGuardWrapped,
 				terminalSession: {
 					operation: "logs",
@@ -452,6 +461,7 @@ const renderExecCommandResultWithOptionalContext: any = (
 			elapsedMs: details?.wall_time_seconds === undefined ? undefined : Math.round(details.wall_time_seconds * 1000),
 			failed,
 			contextGuardWrapped: renderInfo.contextGuardWrapped,
+			contextTokens: deliveredTokens,
 			outputBlock: {
 				output: output ?? "",
 				footer,

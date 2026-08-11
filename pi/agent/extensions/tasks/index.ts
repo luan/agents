@@ -16,6 +16,7 @@ import {
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { boundOutput } from "../shared/output-budget.ts";
 import { hasEnoughTerminalRows } from "../shared/terminal";
 import {
 	type AnimationMount,
@@ -191,7 +192,10 @@ function objectParam(value: unknown): Record<string, unknown> {
 }
 
 function textResult(text: string, details: TaskDetails) {
-	return { content: [{ type: "text" as const, text }], details };
+	// Single construction point for every task result, so bounding here covers
+	// the read actions (`list`, `show`) that grow with the task set. Writes are
+	// far below the budget and pass through untouched.
+	return { content: [{ type: "text" as const, text: boundOutput(text).text }], details };
 }
 
 function taskStorePath(cwd: string, ctx?: ExtensionContext): string {

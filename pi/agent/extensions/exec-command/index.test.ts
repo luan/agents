@@ -595,7 +595,7 @@ test("extension disables bash and activates managed process tools for every mode
 	for (const handler of handlers.get("session_shutdown") ?? []) handler();
 });
 
-test("extension truncates oversized non-exec tool results before session history", () => {
+test("extension bounds exec tool results tightly and other tool results loosely", () => {
 	type Handler = (event?: any) => any;
 	const handlers = new Map<string, Handler[]>();
 	const pi = {
@@ -610,24 +610,57 @@ test("extension truncates oversized non-exec tool results before session history
 	execCommandExtension(pi);
 
 	const toolResultHandlers = handlers.get("tool_result") ?? [];
-	const output = `${"head\n"}${"x".repeat(200000)}${"\ntail"}`;
-	const results = toolResultHandlers.map((handler) =>
-		handler({
-			toolName: "read",
-			content: [{ type: "text", text: output }],
-			details: undefined,
-			isError: false,
-		}),
-	);
+	const boundedText = (toolName: string, text: string): string | undefined =>
+		toolResultHandlers
+			.map((handler) => handler({ toolName, content: [{ type: "text", text }], details: undefined, isError: false }))
+			.find((result) => result?.content)?.content[0].text;
 
-	const patch = results.find((result) => result?.content);
-	const text = patch.content[0].text;
-	expect(text).toStartWith("Total output lines: 3\n\nhead\n");
-	expect(text).toContain("chars truncated");
-	expect(text).toContain("\ntail");
-	expect(text.length).toBeLessThan(41_000);
-	expect(text.split("\n").every((line: string) => line.length <= 430)).toBe(true);
+	// ~20k tokens: over the exec cap, under the fallback ceiling.
+	const output = `${"x".repeat(200)}\n`.repeat(400);
+	const execText = boundedText("exec_command", output);
+	expect(execText).toStartWith("Total output lines: 400\n\n");
+	expect(execText).toContain("truncated");
+	expect(execText!.length).toBeLessThan(41_000);
+
+	// The same payload from an unowned tool stays whole: the fallback is looser.
+	expect(boundedText("read", output)).toBeUndefined();
+
+	// ~200k tokens: even an unaudited tool hits the fallback floor.
+	const hugeOutput = `${"x".repeat(200)}\n`.repeat(4_000);
+	const readText = boundedText("read", hugeOutput);
+	expect(readText).toContain("[output bounded");
+	expect(readText!.length).toBeGreaterThan(41_000);
 	for (const handler of handlers.get("session_shutdown") ?? []) handler();
+});
+
+test("shell card header reports the completed result token cost", () => {
+	const lines = renderExecCellComponent(
+		{
+			kind: "command",
+			status: "done",
+			command: "printf hello",
+			shell: "/bin/zsh",
+			elapsedMs: 486,
+			// A big terminal buffer paired with a small result: a backgrounded
+			// command shows its whole transcript but only hands the model an
+			// acknowledgement, and the card must report what the model received.
+			outputBlock: { output: "x".repeat(4_000) },
+			contextTokens: 1_000,
+		},
+		{ theme: testTheme },
+	).render(200);
+
+	expect(lines.join("\n")).toContain("<dim>completed · 486ms</dim><dim> · </dim><warning>1.0k tok</warning>");
+});
+
+test("shell card omits the token cost when the buffer never became a result", () => {
+	const lines = renderExecCellComponent(
+		{ kind: "command", status: "done", command: "printf hello", shell: "/bin/zsh", elapsedMs: 486 },
+		{ theme: testTheme },
+	).render(200);
+
+	expect(lines.join("\n")).toContain("<dim>completed · 486ms</dim>");
+	expect(lines.join("\n")).not.toContain("tok");
 });
 
 test("exec session manager uses a non-color environment", async () => {

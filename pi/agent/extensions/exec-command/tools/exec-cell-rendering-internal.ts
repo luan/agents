@@ -1,5 +1,6 @@
 import { keyHint } from "@earendil-works/pi-coding-agent";
-import { pulseGlyph, runningFrame, shineText } from "../../shared/tui";
+import { type CostSeverity, formatTokenCost } from "../../shared/output-budget.ts";
+import { ansiFgToRgb, pulseGlyph, type Rgb, rgbFg, runningFrame, shineText, themeRoleAnsi } from "../../shared/tui";
 import { shellSplit } from "../shell/tokenize.ts";
 import type { ExecCommandStatus } from "./exec-command-state.ts";
 
@@ -93,6 +94,7 @@ export function renderShellCardHeader(
 	failed = false,
 	elapsedMs?: number,
 	processId?: number | string,
+	outputTokens?: number,
 ): string {
 	const language = shellLanguage(shell);
 	const icon = theme.fg(language.color, "");
@@ -103,7 +105,43 @@ export function renderShellCardHeader(
 		status,
 		elapsedMs === undefined ? undefined : formatTerminalSessionDuration(elapsedMs),
 	].filter((value): value is string => value !== undefined);
-	return `${icon} ${theme.fg("toolTitle", language.name)} ${theme.fg("dim", meta.join(" · "))}`;
+	let text = `${icon} ${theme.fg("toolTitle", language.name)} ${theme.fg("dim", meta.join(" · "))}`;
+	if (outputTokens !== undefined) {
+		const separator = meta.length > 0 ? theme.fg("dim", " · ") : "";
+		text += `${separator}${renderTokenCost(outputTokens, theme)}`;
+	}
+	return text;
+}
+
+/** `normal` keeps the subdued meta colour; the rest escalate towards error. */
+const COST_SEVERITY_ROLE: Record<CostSeverity, string> = {
+	normal: "dim",
+	elevated: "warning",
+	high: "warning",
+	severe: "error",
+};
+
+/**
+ * Render what a result cost, coloured by severity.
+ *
+ * The theme has no orange role, so `high` is drawn as the colour between the
+ * warning and error roles — literally between the two severities it sits
+ * between. A theme that exposes no real ANSI colour falls back to `warning`.
+ */
+function renderTokenCost(tokens: number, theme: RenderTheme): string {
+	const cost = formatTokenCost(tokens, "exec_command");
+	if (cost.severity === "high") {
+		const orange = blendedOrange(theme);
+		if (orange) return `${rgbFg(orange)}${cost.text}\x1b[39m`;
+	}
+	return theme.fg(COST_SEVERITY_ROLE[cost.severity], cost.text);
+}
+
+function blendedOrange(theme: RenderTheme): Rgb | undefined {
+	const warning = ansiFgToRgb(themeRoleAnsi(theme, "warning"));
+	const error = ansiFgToRgb(themeRoleAnsi(theme, "error"));
+	if (!warning || !error) return undefined;
+	return warning.map((channel, index) => Math.round(channel * 0.4 + error[index]! * 0.6)) as Rgb;
 }
 
 export function renderExecCommandCall(

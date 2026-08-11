@@ -3,6 +3,7 @@ import { type ExtensionAPI, type ExtensionContext, highlightCode } from "@earend
 import { Type } from "typebox";
 import { captureExecOutput } from "../context-guard/pi/capture.ts";
 import { getCurrentContextGuardSessionId } from "../context-guard/pi/current-session.ts";
+import { boundOutput } from "../shared/output-budget.ts";
 import { type CardTheme, darkerCardBackgroundAnsi, framedBlock } from "../shared/tui/card.ts";
 import { EmptyComponent } from "../shared/tui/index.ts";
 import { type KernelResponse, ProcessKernel } from "./process-kernel.ts";
@@ -285,7 +286,12 @@ export default function evalExtension(pi: ExtensionAPI): void {
 					elapsedMs: Date.now() - startedAt,
 				},
 			);
-			const visible = capture.capture?.preview ?? output;
+			// Bound what the model sees. The capture keeps the full stream, so the
+			// notice can point at it instead of the omitted text being lost.
+			const capturedArtifactId = capture.capture?.artifactId;
+			const visible = boundOutput(capture.capture?.preview ?? output, {
+				fullOutputRef: capturedArtifactId ? `artifact://${capturedArtifactId}` : undefined,
+			}).text;
 			return {
 				content: [{ type: "text", text: visible }],
 				details: {

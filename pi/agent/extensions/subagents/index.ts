@@ -3,6 +3,7 @@ import type { Component, TUI } from "@earendil-works/pi-tui";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { onOpenAIFastRequest } from "../shared/openai-fast-state";
+import { boundOutput } from "../shared/output-budget.ts";
 import { registerResourceProvider } from "../shared/resources.ts";
 import { registerRootSessionHub } from "../shared/root-session-hub";
 import { attachRuntimeTerminal, openRuntimeHub, registerRuntimeHubSource } from "../shared/runtime-hub";
@@ -836,8 +837,10 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 				}),
 			);
 			const ordered = results.sort((left, right) => left.index - right.index);
+			// Subagent reports are concatenated here and are otherwise unbounded:
+			// a fan-out of verbose agents would land in context whole.
 			return {
-				content: [{ type: "text" as const, text: formatTaskResults(ordered) }],
+				content: [{ type: "text" as const, text: boundOutput(formatTaskResults(ordered)).text }],
 				details: { results: ordered },
 			};
 		},

@@ -70,6 +70,16 @@ interface ExecCell {
 	elapsedMs?: number;
 	contextGuardWrapped?: boolean;
 	outputBlock?: ExecCellOutputBlock;
+	/**
+	 * Tokens the tool result actually contributed to the context.
+	 *
+	 * Deliberately not derived from `outputBlock.output`: that is the terminal
+	 * buffer drawn in the TUI, which for a backgrounded command is the whole
+	 * transcript while the tool result is only a launch acknowledgement. Those
+	 * differ by orders of magnitude, and reporting the buffer would attribute
+	 * cost to a call that never paid it.
+	 */
+	contextTokens?: number;
 	terminalSession?: TerminalSessionView;
 	writeStdin?: {
 		processId: number | string;
@@ -86,6 +96,7 @@ interface RawCommandToExecCellInput {
 	elapsedMs?: number;
 	contextGuardWrapped?: boolean;
 	outputBlock?: ExecCellOutputBlock;
+	contextTokens?: number;
 }
 
 interface RenderExecCellEnv {
@@ -118,6 +129,7 @@ export function rawCommandToExecCell(input: RawCommandToExecCellInput): ExecCell
 		elapsedMs: input.elapsedMs,
 		contextGuardWrapped: input.contextGuardWrapped,
 		outputBlock: input.outputBlock,
+		contextTokens: input.contextTokens,
 	};
 }
 
@@ -192,6 +204,7 @@ class ExecCellComponent implements Component {
 					this.cell.failed,
 					this.cell.elapsedMs ?? this.cell.terminalSession?.elapsedMs,
 					this.cell.terminalSession?.processId,
+					completedOutputTokens(this.cell),
 				)
 			: renderExecCellHeader(this.cell, this.env.theme);
 		const commandLines = shellCard
@@ -285,6 +298,17 @@ function renderBackgroundTerminalWidgetLine(
 	return fixedVisibleWidth + cachedVisibleWidth(renderedCommand) > width
 		? truncateToWidthCompat(text, width, "...")
 		: text;
+}
+
+/**
+ * Token cost of a finished cell, for the completion header.
+ *
+ * Running cells report nothing: the cost is not settled yet, and counting on
+ * every animation frame would pay for a number that keeps changing.
+ */
+function completedOutputTokens(cell: ExecCell): number | undefined {
+	if (cell.status === "running") return undefined;
+	return cell.contextTokens;
 }
 
 function renderExecCellHeader(cell: ExecCell, theme: RenderTheme): string {

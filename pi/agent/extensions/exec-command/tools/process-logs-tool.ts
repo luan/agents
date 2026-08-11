@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { approxTokenCount, formatTokenCost } from "../../shared/output-budget.ts";
 import { darkerCardBackgroundAnsi, framedBlock, renderStatusLine, textComponent } from "../../shared/tui/card";
 import type { ExecSessionManager } from "./exec-session-manager.ts";
 
@@ -66,13 +67,21 @@ export function registerProcessLogsTool(pi: ExtensionAPI, sessions: ExecSessionM
 				truncated?: boolean;
 				output?: string;
 			};
-			const rawOutput =
-				details.output ??
-				result.content
-					?.filter((part) => part.type === "text" && typeof part.text === "string")
-					.map((part) => part.text)
-					.join("\n") ??
-				"";
+			const textParts = (result.content ?? []).flatMap((part) =>
+				part.type === "text" && typeof part.text === "string" ? [part.text] : [],
+			);
+			const rawOutput = details.output ?? textParts.join("\n");
+			// Count the delivered result, not `details.output`: this card is where
+			// the tokens actually land when a backgrounded command's transcript is
+			// pulled in, and that is the number worth showing.
+			const deliveredText = textParts.join("\n");
+			const cost = deliveredText ? formatTokenCost(approxTokenCount(deliveredText), "process_logs") : undefined;
+			const costRole =
+				cost?.severity === "severe"
+					? "error"
+					: cost?.severity === "high" || cost?.severity === "elevated"
+						? "warning"
+						: "dim";
 			const output = sanitizeProcessOutput(rawOutput).trimEnd();
 			const lines = output ? (expanded ? output.split(/\r?\n/) : output.split(/\r?\n/).slice(-8)) : [];
 			return framedBlock(theme, {
@@ -84,6 +93,7 @@ export function registerProcessLogsTool(pi: ExtensionAPI, sessions: ExecSessionM
 						details.running ? "running" : "exited",
 						`cursor ${details.cursor ?? 0}-${details.next_cursor ?? 0}`,
 						...(details.truncated ? ["earlier output omitted"] : []),
+						...(cost ? [theme.fg(costRole, cost.text)] : []),
 					],
 				}),
 				sections: [{ lines: lines.length ? lines : [theme.fg("muted", "No new output.")] }],

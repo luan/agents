@@ -8,6 +8,7 @@ import {
 import { Key, matchesKey, Text } from "@earendil-works/pi-tui";
 import { captureExecResult } from "../context-guard/pi/capture.ts";
 import { isExecCommandContextGuardEnabled } from "../context-guard/pi/index.ts";
+import { boundOutput } from "../shared/output-budget.ts";
 import { attachRuntimeTerminal, registerRuntimeHubSource } from "../shared/runtime-hub";
 import {
 	type AnimationMount,
@@ -207,16 +208,49 @@ function getCommandArg(args: unknown): string | undefined {
 	return typeof args.cmd === "string" ? args.cmd : undefined;
 }
 
-function truncateTextToolResultContent(content: unknown): unknown[] | undefined {
+/**
+ * Tools this extension owns. Their result is raw terminal scrollback, so it
+ * keeps the tight cap of `formattedTruncateText`: the model needs a window of
+ * the stream, never all of it.
+ */
+const EXEC_OWNED_TOOL_NAMES = new Set(["exec_command", "write_stdin", "process_logs"]);
+
+/**
+ * Fallback ceiling for every other tool, deliberately far looser than the exec
+ * cap.
+ *
+ * Tools bound their own output at the source with `boundOutput` from
+ * shared/output-budget.ts, which caps the cost where it is created instead of
+ * at delivery. This tier is only a floor under tools that have not been
+ * audited yet: high enough that a well-behaved tool never reaches it, low
+ * enough that no single result can be unbounded.
+ */
+const FALLBACK_MAX_BYTES = 160 * 1024;
+const FALLBACK_MAX_LINES = 20_000;
+
+function boundToolResultContent(toolName: unknown, content: unknown): unknown[] | undefined {
 	if (!Array.isArray(content)) return undefined;
+	const execOwned = typeof toolName === "string" && EXEC_OWNED_TOOL_NAMES.has(toolName);
 	let changed = false;
 	const next = content.map((item) => {
 		if (!item || typeof item !== "object" || !("type" in item) || item.type !== "text") return item;
 		if (!("text" in item) || typeof item.text !== "string") return item;
-		const truncated = formattedTruncateText(item.text);
-		if (!truncated.output_truncated) return item;
+		if (execOwned) {
+			const truncated = formattedTruncateText(item.text);
+			if (!truncated.output_truncated) return item;
+			changed = true;
+			return { ...item, text: truncated.output };
+		}
+		// No per-line cap: this tier is a total-size floor for tools that have
+		// not adopted their own budget, and chopping long lines mutilates
+		// legitimate content (a prose field is not noise). maxBytes is the bound.
+		const bounded = boundOutput(item.text, {
+			maxBytes: FALLBACK_MAX_BYTES,
+			maxLines: FALLBACK_MAX_LINES,
+		});
+		if (!bounded.truncated) return item;
 		changed = true;
-		return { ...item, text: truncated.output };
+		return { ...item, text: bounded.text };
 	});
 	return changed ? next : undefined;
 }
@@ -879,7 +913,7 @@ export default function execCommandExtension(pi: ExtensionAPI, options: ExecComm
 		}
 	});
 	pi.on("tool_result", (event) => {
-		const content = truncateTextToolResultContent(event.content);
+		const content = boundToolResultContent(event.toolName, event.content);
 		const patch: { content?: unknown[]; isError?: boolean } = {};
 		if (content) patch.content = content;
 
