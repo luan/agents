@@ -11,7 +11,7 @@ import {
 } from "./catalog.js";
 import { editModelRoles } from "./editor.js";
 import { openModelRolePicker } from "./picker.js";
-import { type RoleScope, selectedRole, updateRoleSelection } from "./selection.js";
+import { isRecord, type RoleScope, selectedRole, updateRoleSelection } from "./selection.js";
 import { installSessionOnlySettings } from "./settings.js";
 
 const ROLE_SESSION_ENTRY = "model_role";
@@ -23,11 +23,6 @@ type RoleState = {
 	modelKey: string;
 	candidate: RoleCandidate;
 };
-type JsonRecord = Record<string, unknown>;
-
-function isRecord(value: unknown): value is JsonRecord {
-	return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 
 type RoleSessionManager = ExtensionContext["sessionManager"] & {
 	appendCustomEntry(customType: string, data?: unknown): string;

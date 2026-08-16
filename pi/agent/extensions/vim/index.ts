@@ -136,17 +136,6 @@ function editorThemeWithSymbols(theme: CustomEditorConstructorArgs[1]): CustomEd
 	} as CustomEditorConstructorArgs[1];
 }
 
-function customEditorBaseArgs(
-	tui: CustomEditorConstructorArgs[0],
-	theme: CustomEditorConstructorArgs[1],
-	kb: CustomEditorConstructorArgs[2],
-): CustomEditorConstructorArgs {
-	const editorConstructor = Object.getPrototypeOf(CustomEditor.prototype)?.constructor as
-		| { length?: number }
-		| undefined;
-	return ((editorConstructor?.length ?? 1) >= 2 ? [tui, theme, kb] : [theme]) as CustomEditorConstructorArgs;
-}
-
 type ModeLabelColorizers = {
 	insert: (s: string) => string;
 	normal: (s: string) => string;
@@ -512,8 +501,7 @@ export class ModalEditor extends CustomEditor {
 		initialMode: Mode = "insert",
 	) {
 		const compatTheme = editorThemeWithSymbols(theme);
-		const baseArgs = customEditorBaseArgs(tui, compatTheme, kb);
-		super(...baseArgs);
+		super(tui, compatTheme, kb);
 		this.mode = initialMode;
 		this.labelColorizers = labelColorizers ?? null;
 		const cursorTui = tui as unknown as {

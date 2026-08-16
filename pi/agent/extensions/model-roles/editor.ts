@@ -1,7 +1,15 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Key, matchesKey, type OverlayHandle, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import {
+	type Component,
+	Input,
+	Key,
+	matchesKey,
+	type OverlayHandle,
+	truncateToWidth,
+	visibleWidth,
+} from "@earendil-works/pi-tui";
 import {
 	defaultRoleColor,
 	formatModelRoleOption,
@@ -16,6 +24,7 @@ import {
 } from "./catalog.js";
 import { openChoicePicker } from "./choice-picker.js";
 import { openModelCandidatePicker } from "./model-picker.js";
+import { bottom, frame, type PickerTheme, type PickerTui } from "./picker-chrome.js";
 
 const DONE = "Done";
 
@@ -25,6 +34,30 @@ function validRoleName(name: string): boolean {
 
 async function editCandidate(ctx: ExtensionContext, current?: RoleCandidate): Promise<RoleCandidate | undefined> {
 	return openModelCandidatePicker(ctx, current);
+}
+
+async function editText(ctx: ExtensionContext, title: string, current: string): Promise<string | undefined> {
+	if (!ctx.hasUI || !ctx.ui.custom) return undefined;
+	return ctx.ui.custom<string | undefined>((tui, theme, _keybindings, done) => {
+		const input = new Input();
+		input.focused = true;
+		input.setValue(current);
+		input.handleInput("\x1b[F");
+		input.onSubmit = (value) => done(value);
+		input.onEscape = () => done(undefined);
+		return {
+			handleInput(data: string) {
+				input.handleInput(data);
+				tui.requestRender();
+			},
+			invalidate() {
+				input.invalidate();
+			},
+			render(width: number) {
+				return [theme.bold(title), ...input.render(width)];
+			},
+		} satisfies Component;
+	});
 }
 const ALL_THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const THINKING_COLORS: Record<ThinkingLevel, string> = {
@@ -36,14 +69,6 @@ const THINKING_COLORS: Record<ThinkingLevel, string> = {
 	xhigh: "thinkingXhigh",
 	max: "thinkingMax",
 };
-
-type EditorTheme = {
-	fg(color: string, text: string): string;
-	bg(color: string, text: string): string;
-	bold(text: string): string;
-};
-
-type EditorTui = Pick<TUI, "requestRender" | "terminal">;
 
 function thinkingLevels(ctx: ExtensionContext, candidate: RoleCandidate): ThinkingLevel[] {
 	const slash = candidate.model.indexOf("/");
@@ -75,8 +100,8 @@ class RoleEditor {
 
 	constructor(
 		private readonly ctx: ExtensionContext,
-		private readonly tui: EditorTui,
-		private readonly theme: EditorTheme,
+		private readonly tui: PickerTui,
+		private readonly theme: PickerTheme,
 		private readonly done: (value: undefined) => void,
 		private readonly catalog: ModelRoleCatalog,
 		private readonly name: string,
@@ -127,6 +152,10 @@ class RoleEditor {
 			void this.changeColor();
 			return;
 		}
+		if (data === "d") {
+			void this.changeDescription();
+			return;
+		}
 		if (data === "a") {
 			void this.addCandidate();
 			return;
@@ -138,15 +167,20 @@ class RoleEditor {
 		const role = this.role();
 		const color = roleColor(role, Math.max(0, roleNames(this.catalog).indexOf(this.name)));
 		const terminalHeight = this.tui.terminal.rows;
-		if (width < 40 || terminalHeight < 10) return [];
+		if (width < 40 || terminalHeight < 11) return [];
 		const innerWidth = Math.max(36, width - 2);
 		const candidates = role.candidates;
-		const bodyHeight = Math.max(1, Math.min(8, terminalHeight - 7));
+		const bodyHeight = Math.max(1, Math.min(8, terminalHeight - 8));
 		const start = Math.max(0, Math.min(this.selected - bodyHeight + 1, candidates.length - bodyHeight));
 		const position = this.theme.fg("dim", ` ${this.selected + 1}/${candidates.length}`);
 		const lines = [
-			this.frame(`${this.theme.fg(color, this.theme.bold(`Edit role: ${this.name}`))}${position}`, innerWidth),
-			this.frame(
+			frame(
+				this.theme,
+				`${this.theme.fg(color, this.theme.bold(`Edit role: ${this.name}`))}${position}`,
+				innerWidth,
+			),
+			frame(
+				this.theme,
 				this.theme.fg(
 					"muted",
 					`${color}  ${candidates.length} candidate${candidates.length === 1 ? "" : "s"}${
@@ -155,29 +189,35 @@ class RoleEditor {
 				),
 				innerWidth,
 			),
-			this.frame("", innerWidth),
+			frame(this.theme, this.theme.fg("muted", role.description || "No description."), innerWidth),
+			frame(this.theme, "", innerWidth),
 		];
 		for (const [offset, candidate] of candidates.slice(start, start + bodyHeight).entries()) {
 			const index = start + offset;
 			lines.push(
-				this.frame(this.renderCandidate(candidate, index, index === this.selected, color, innerWidth), innerWidth),
+				frame(
+					this.theme,
+					this.renderCandidate(candidate, index, index === this.selected, color, innerWidth),
+					innerWidth,
+				),
 			);
 		}
-		if (this.busy) lines.push(this.frame(this.theme.fg("dim", "Working..."), innerWidth));
-		else lines.push(this.frame("", innerWidth));
+		if (this.busy) lines.push(frame(this.theme, this.theme.fg("dim", "Working..."), innerWidth));
+		else lines.push(frame(this.theme, "", innerWidth));
 		lines.push(
-			this.frame(
+			frame(
+				this.theme,
 				this.theme.fg(
 					"dim",
 					truncateToWidth(
-						"↑↓/jk select  enter/e model  t thinking  m mode  c color  a add  x remove  q done",
+						"↑↓/jk select  enter/e model  t thinking  m mode  c color  d description  a add  x remove  q done",
 						innerWidth,
 					),
 				),
 				innerWidth,
 			),
 		);
-		lines.push(this.bottom(innerWidth));
+		lines.push(bottom(this.theme, innerWidth));
 		return lines;
 	}
 
@@ -266,6 +306,19 @@ class RoleEditor {
 		});
 	}
 
+	private async changeDescription(): Promise<void> {
+		const role = this.role();
+		await this.run(async () => {
+			const description = (
+				await editText(this.ctx, `Description for "${this.name}"`, role.description ?? "")
+			)?.trim();
+			if (description === undefined) return;
+			if (description) role.description = description;
+			else delete role.description;
+			this.save();
+		});
+	}
+
 	private async addCandidate(): Promise<void> {
 		await this.run(async () => {
 			const candidate = await editCandidate(this.ctx);
@@ -328,15 +381,6 @@ class RoleEditor {
 		const padded = `${clipped}${" ".repeat(Math.max(0, width - visibleWidth(clipped)))}`;
 		return selected ? this.theme.bg("selectedBg", padded) : padded;
 	}
-
-	private frame(content: string, width: number): string {
-		const clipped = truncateToWidth(content, width);
-		return `${this.theme.fg("accent", "│")}${clipped}${" ".repeat(Math.max(0, width - visibleWidth(clipped)))}${this.theme.fg("accent", "│")}`;
-	}
-
-	private bottom(width: number): string {
-		return this.theme.fg("accent", `└${"─".repeat(Math.max(0, width))}┘`);
-	}
 }
 
 async function selectRoleName(
@@ -381,6 +425,7 @@ export async function renameModelRole(
 	entries[index] = [nextName, entries[index]![1]];
 	catalog.roles = Object.fromEntries(entries);
 	if (catalog.defaultRole === name) catalog.defaultRole = nextName;
+	if (catalog.subagentDefaultRole === name) catalog.subagentDefaultRole = nextName;
 	saveModelRoles(catalog);
 	ctx.ui.notify(`Renamed role "${name}" to "${nextName}".`, "info");
 	return nextName;
@@ -399,9 +444,14 @@ export async function addModelRole(ctx: ExtensionContext, catalog: ModelRoleCata
 	}
 	const candidate = await editCandidate(ctx);
 	if (!candidate) return undefined;
-	if (Object.keys(catalog.roles).length === 0) catalog.defaultRole = name;
+	if (Object.keys(catalog.roles).length === 0) {
+		catalog.defaultRole = name;
+		catalog.subagentDefaultRole = name;
+	}
 	const color = nextRoleColor(catalog);
-	catalog.roles[name] = { candidates: [candidate], color };
+	const description = (await ctx.ui.input(`Description for "${name}"`, ""))?.trim();
+	if (description === undefined) return undefined;
+	catalog.roles[name] = { candidates: [candidate], color, ...(description ? { description } : {}) };
 	saveModelRoles(catalog);
 	ctx.ui.notify(`Added role "${name}".`, "info");
 	return name;
@@ -417,6 +467,13 @@ async function setDefaultRole(ctx: ExtensionContext, catalog: ModelRoleCatalog):
 export function setModelRoleDefault(catalog: ModelRoleCatalog, name: string): boolean {
 	if (!catalog.roles[name]) return false;
 	catalog.defaultRole = name;
+	saveModelRoles(catalog);
+	return true;
+}
+
+export function setModelRoleSubagentDefault(catalog: ModelRoleCatalog, name: string): boolean {
+	if (!catalog.roles[name] || catalog.subagentDefaultRole === name) return false;
+	catalog.subagentDefaultRole = name;
 	saveModelRoles(catalog);
 	return true;
 }
@@ -438,6 +495,7 @@ export async function deleteModelRole(
 	if ((await openChoicePicker(ctx, `Delete role "${name}"?`, ["Yes", "No"])) !== "Yes") return false;
 	delete catalog.roles[name];
 	if (catalog.defaultRole === name) catalog.defaultRole = roleNames(catalog)[0]!;
+	if (catalog.subagentDefaultRole === name) catalog.subagentDefaultRole = roleNames(catalog)[0]!;
 	saveModelRoles(catalog);
 	ctx.ui.notify(`Deleted role "${name}".`, "info");
 	return true;

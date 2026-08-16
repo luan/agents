@@ -1,23 +1,10 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Key, matchesKey, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-
-type PickerTheme = {
-	fg(color: string, text: string): string;
-	bg(color: string, text: string): string;
-	bold(text: string): string;
-};
+import { Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { bottom, frame, type PickerTheme, type PickerTui, selectedIndex } from "./picker-chrome.js";
 
 type ChoiceOptionStyle = (option: string, selected: boolean, theme: PickerTheme) => string;
 
-type PickerTui = Pick<TUI, "requestRender" | "terminal">;
-
-const BORDER = "accent";
 const SELECTED_BACKGROUND = "selectedBg";
-
-function selectedIndex(options: string[], selected: string | undefined): number {
-	const index = selected ? options.indexOf(selected) : -1;
-	return index >= 0 ? index : 0;
-}
 
 export async function openChoicePicker(
 	ctx: ExtensionContext,
@@ -87,8 +74,8 @@ class ChoicePicker {
 		const position =
 			this.options.length > 0 ? this.theme.fg("dim", ` ${this.selected + 1}/${this.options.length}`) : "";
 		const lines = [
-			this.frame(`${this.theme.fg("accent", this.theme.bold(this.title))}${position}`, innerWidth),
-			this.frame("", innerWidth),
+			frame(this.theme, `${this.theme.fg("accent", this.theme.bold(this.title))}${position}`, innerWidth),
+			frame(this.theme, "", innerWidth),
 		];
 		for (const [offset, option] of this.options.slice(start, start + bodyHeight).entries()) {
 			const selected = start + offset === this.selected;
@@ -105,11 +92,11 @@ class ChoicePicker {
 			const raw = ` ${cursor}${styledLabel}${styledCurrent}`;
 			const clipped = truncateToWidth(raw, innerWidth);
 			const padded = `${clipped}${" ".repeat(Math.max(0, innerWidth - visibleWidth(clipped)))}`;
-			lines.push(this.frame(selected ? this.theme.bg(SELECTED_BACKGROUND, padded) : padded, innerWidth));
+			lines.push(frame(this.theme, selected ? this.theme.bg(SELECTED_BACKGROUND, padded) : padded, innerWidth));
 		}
-		lines.push(this.frame("", innerWidth));
-		lines.push(this.frame(this.theme.fg("dim", this.hints(innerWidth)), innerWidth));
-		lines.push(this.bottom(innerWidth));
+		lines.push(frame(this.theme, "", innerWidth));
+		lines.push(frame(this.theme, this.theme.fg("dim", this.hints(innerWidth)), innerWidth));
+		lines.push(bottom(this.theme, innerWidth));
 		return lines;
 	}
 
@@ -130,14 +117,5 @@ class ChoicePicker {
 
 	private hints(width: number): string {
 		return truncateToWidth("↑↓/jk navigate  enter select  esc/q cancel", width);
-	}
-
-	private frame(content: string, width: number): string {
-		const clipped = truncateToWidth(content, width);
-		return `${this.theme.fg(BORDER, "│")}${clipped}${" ".repeat(Math.max(0, width - visibleWidth(clipped)))}${this.theme.fg(BORDER, "│")}`;
-	}
-
-	private bottom(width: number): string {
-		return this.theme.fg(BORDER, `└${"─".repeat(Math.max(0, width))}┘`);
 	}
 }

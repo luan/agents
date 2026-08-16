@@ -20,26 +20,16 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, statSync, unlinkSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { basename, isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 
 import type { ImageContent } from "@earendil-works/pi-ai";
 import { createReadToolDefinition, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Container, Spacer } from "@earendil-works/pi-tui";
 
-import { type PreviewImage, readPreviewImageFromPathSync } from "../shared/image-preview";
-import { KittyVirtualImage } from "../shared/kitty-virtual-image";
-import {
-	type AnimationMount,
-	type EditorUi,
-	type RenderTheme,
-	registerExtensionMessageRenderer,
-	sharedAnimationRenderScheduler,
-	textComponent,
-} from "../shared/tui";
+import type { EditorUi } from "../shared/tui";
 import { installEditorHandleHighlight, removeEditorHandleHighlight } from "./editor";
 import {
 	beginPendingHandle,
@@ -52,11 +42,16 @@ import {
 	setHandleThumbnail,
 } from "./handles";
 import { magickBuffer } from "./magick";
+import {
+	claimImageRenderTarget,
+	clearImagePresentation,
+	registerImagePreviewRenderer,
+	requestImageRender,
+	startPendingImageAnimation,
+} from "./presentation";
 import { renderThumbnailCells } from "./thumbnail";
 
 const PREVIEW_MESSAGE_TYPE = "image-attach-preview";
-const RENDER_TARGET_WIDGET_KEY = "image-attach-render";
-const PENDING_FRAME_MS = 120;
 
 /**
  * Path-shaped tokens ending in an image extension: absolute, `~/`, or `./`. Bare filenames
@@ -151,6 +146,11 @@ function isImageContent(item: unknown): item is ImageContent {
 type LoadImage = (path: string) => Promise<ImageContent | undefined>;
 type ImageLoader = (path: string, ctx: ExtensionContext) => Promise<ImageContent | undefined>;
 
+// The one key for image sameness: pi's processImage output, via file-processor.js:36 or read.js:168.
+export function imageIdentity(image: ImageContent): string {
+	return createHash("sha256").update(image.data).digest("base64");
+}
+
 /**
  * Load every image the message points at — handles first, then bare paths — skipping anything
  * that repeats, fails to load, or is already attached.
@@ -166,7 +166,7 @@ export async function collectImageAttachments(
 		...resolveImageHandles(text, handles).map((entry) => entry.path),
 		...findImagePathTokens(text).flatMap((token) => resolveImagePath(token, cwd) ?? []),
 	];
-	const seenData = new Set(existing.map((image) => image.data));
+	const seen = new Set(existing.map(imageIdentity));
 	const seenPaths = new Set<string>();
 	const attachments: Array<{ path: string; image: ImageContent }> = [];
 
@@ -174,8 +174,10 @@ export async function collectImageAttachments(
 		if (seenPaths.has(path)) continue;
 		seenPaths.add(path);
 		const image = await loadImage(path);
-		if (!image || seenData.has(image.data)) continue;
-		seenData.add(image.data);
+		if (!image) continue;
+		const identity = imageIdentity(image);
+		if (seen.has(identity)) continue;
+		seen.add(identity);
 		attachments.push({ path, image });
 	}
 
@@ -203,9 +205,8 @@ type ClipboardImageModule = {
 /**
  * pi's clipboard reader already covers NSPasteboard, wl-paste, xclip, PowerShell, and
  * Photon format conversion, but `exports` only publishes the package root — so reach it by
- * file path. ponytail: pinned to pi's dist layout; if an upgrade moves the file, capture
- * degrades to "no image found" and the built-in ctrl+v still works. Drop this in favour of a
- * real export when pi publishes one.
+ * file path. Pinned to pi's dist layout; if an upgrade moves the file, capture degrades to
+ * "no image found" and the built-in ctrl+v still works.
  */
 async function loadClipboardImageModule(): Promise<ClipboardImageModule | undefined> {
 	try {
@@ -260,7 +261,7 @@ export async function adoptImageFile(path: string): Promise<string> {
 async function captureClipboardImage(ctx: ExtensionContext): Promise<boolean> {
 	beginPendingHandle();
 	ctx.ui.pasteToEditor(`${PENDING_HANDLE} `);
-	const animation = startPendingAnimation();
+	const animation = startPendingImageAnimation();
 	const generation = imageStateGeneration;
 	let path: string | undefined;
 	let index: number | undefined;
@@ -308,10 +309,9 @@ async function captureClipboardImage(ctx: ExtensionContext): Promise<boolean> {
  * Swap the placeholder for the finished handle, or drop it (with its trailing space) when the
  * capture came back empty. Nothing happens once the placeholder is already gone.
  *
- * ponytail: `setEditorText` is the only way an extension can rewrite the buffer, and it clears
- * the editor's paste-marker store — a `[paste #N]` blob pasted earlier in the same message ends
- * up inlined rather than collapsed. Content is preserved either way. Revisit if pi ever exposes
- * a ranged edit.
+ * `setEditorText` is the only way an extension can rewrite the buffer, and it clears the
+ * editor's paste-marker store — a `[paste #N]` blob pasted earlier in the same message ends
+ * up inlined rather than collapsed. Content is preserved either way.
  */
 function replacePendingHandle(ctx: ExtensionContext, handle: string | undefined): void {
 	const text = ctx.ui.getEditorText();
@@ -319,13 +319,13 @@ function replacePendingHandle(ctx: ExtensionContext, handle: string | undefined)
 	ctx.ui.setEditorText(
 		handle === undefined ? text.replace(`${PENDING_HANDLE} `, "") : text.replace(PENDING_HANDLE, handle),
 	);
-	requestRender();
+	requestImageRender();
 }
 
 /**
- * ponytail: macOS only. Text paste normally never reaches this extension — it matters just
- * for the terminals whose cmd+v has to be remapped onto ctrl+v, so this keeps that remap from
- * costing you ordinary paste. Add wl-paste/xclip/PowerShell branches when a Linux box needs it.
+ * macOS only. Text paste normally never reaches this extension — it matters just for the
+ * terminals whose cmd+v has to be remapped onto ctrl+v, so this keeps that remap from costing
+ * you ordinary paste.
  */
 function readClipboardText(): string | undefined {
 	if (process.platform !== "darwin") return undefined;
@@ -337,92 +337,16 @@ function readClipboardText(): string | undefined {
 // Repaint
 // ---------------------------------------------------------------------------
 
-type RenderTarget = { requestRender(): void };
-
-type WidgetUi = {
-	setWidget?: (
-		key: string,
-		content: ((tui: RenderTarget) => { render: () => string[]; invalidate: () => void }) | undefined,
-		options?: { placement?: "aboveEditor" | "belowEditor" },
-	) => void;
-};
-
-/**
- * Editing the buffer from an extension leaves the screen stale until the next keystroke, and
- * `ExtensionUIContext` has no repaint call. A zero-row widget is the one hook whose factory
- * hands over the TUI, so claim one and keep it purely as a repaint handle.
- */
-let renderTarget: RenderTarget | undefined;
-
-function claimRenderTarget(ctx: ExtensionContext): void {
-	const ui = ctx.ui as unknown as WidgetUi;
-	if (typeof ui.setWidget !== "function") return;
-	ui.setWidget(
-		RENDER_TARGET_WIDGET_KEY,
-		(tui) => {
-			renderTarget = tui;
-			return { render: () => [], invalidate: () => {} };
-		},
-		{ placement: "belowEditor" },
-	);
-}
-
-function requestRender(): void {
-	renderTarget?.requestRender();
-}
-
-/** Repaint on the spinner cadence so the pending handle animates in place. */
-function startPendingAnimation(): AnimationMount | undefined {
-	requestRender();
-	return renderTarget && sharedAnimationRenderScheduler.mount(renderTarget, PENDING_FRAME_MS);
-}
-
-// ---------------------------------------------------------------------------
-// Transcript preview
-// ---------------------------------------------------------------------------
-
-/** Previews shell out to `magick`, and render runs on every frame. Keep them per path. */
-const previewCache = new Map<string, PreviewImage | undefined>();
 function cleanupImageState(): void {
 	imageStateGeneration += 1;
 	for (const path of ownedTempImages) removeOwnedTempImage(path);
 	pastedImages.clear();
 	pastedImageCount = 0;
 	clearHandleThumbnails();
-	previewCache.clear();
 	endPendingHandle();
+	clearImagePresentation();
 }
 process.once("exit", cleanupImageState);
-
-function cachedPreview(path: string): PreviewImage | undefined {
-	if (!previewCache.has(path)) previewCache.set(path, readPreviewImageFromPathSync(path));
-	return previewCache.get(path);
-}
-
-function renderPreviewMessage(paths: readonly string[], theme: RenderTheme): Container {
-	const container = new Container();
-	for (const [index, path] of paths.entries()) {
-		if (index > 0) container.addChild(new Spacer(1));
-		const label = theme.bold?.("Attached image") ?? "Attached image";
-		container.addChild(
-			textComponent(
-				`${theme.fg("success", "•")} ${label}${theme.fg("dim", " · ")}${theme.fg("muted", basename(path))}`,
-			),
-		);
-		const preview = cachedPreview(path);
-		if (preview) {
-			container.addChild(
-				new KittyVirtualImage(
-					preview.data,
-					preview.mimeType,
-					{ fallbackColor: (fallback) => theme.fg("toolOutput", fallback) },
-					{ maxWidthCells: 80, maxHeightCells: 30, sourcePath: preview.sourcePath },
-				),
-			);
-		}
-	}
-	return container;
-}
 
 // ---------------------------------------------------------------------------
 // Extension entry point
@@ -432,10 +356,7 @@ export default function imageAttachExtension(pi: ExtensionAPI, deps?: { loadImag
 	const readImage = deps?.loadImage ?? createReadImageLoader();
 	let unsubscribeTerminalInput: (() => void) | undefined;
 
-	registerExtensionMessageRenderer(pi, PREVIEW_MESSAGE_TYPE, (message, _options, theme) => {
-		const paths = (message.details as { paths?: string[] } | undefined)?.paths ?? [];
-		return renderPreviewMessage(paths, theme as unknown as RenderTheme);
-	});
+	registerImagePreviewRenderer(pi, PREVIEW_MESSAGE_TYPE);
 
 	// Display-only: the images themselves ride along on the user message.
 	pi.on("context", (event) => ({
@@ -458,7 +379,7 @@ export default function imageAttachExtension(pi: ExtensionAPI, deps?: { loadImag
 		unsubscribeTerminalInput = undefined;
 		if (!ctx.hasUI) return;
 		installEditorHandleHighlight(ctx.ui as unknown as EditorUi);
-		claimRenderTarget(ctx);
+		claimImageRenderTarget(ctx);
 		// Rewrite the paste rather than consuming it: the editor still sees a paste (atomic
 		// insert, one undo step) and the TUI still repaints on its own afterwards.
 		unsubscribeTerminalInput = ctx.ui.onTerminalInput((data) => {
@@ -475,7 +396,7 @@ export default function imageAttachExtension(pi: ExtensionAPI, deps?: { loadImag
 					if (generation !== imageStateGeneration) return;
 					repointHandle(index, adopted);
 					setHandleThumbnail(index, thumbnail);
-					requestRender();
+					requestImageRender();
 				})
 				.catch(() => {});
 			return { data: bracketedPaste(`${handle} `) };
@@ -497,6 +418,10 @@ export default function imageAttachExtension(pi: ExtensionAPI, deps?: { loadImag
 			readImage(path, ctx),
 		);
 		if (attachments.length === 0) return { action: "continue" };
+		// Re-encode only accepted attachments; a shrunk payload must never reach imageIdentity.
+		const images = await Promise.all(
+			attachments.map((attachment) => shrinkAttachment(attachment.path, attachment.image)),
+		);
 
 		pi.sendMessage({
 			customType: PREVIEW_MESSAGE_TYPE,
@@ -508,7 +433,7 @@ export default function imageAttachExtension(pi: ExtensionAPI, deps?: { loadImag
 		return {
 			action: "transform",
 			text: appendHandlePaths(event.text, resolveImageHandles(event.text)),
-			images: [...(event.images ?? []), ...attachments.map((attachment) => attachment.image)],
+			images: [...(event.images ?? []), ...images],
 		};
 	});
 }
@@ -528,7 +453,7 @@ const MAX_ATTACHMENT_BASE64 = 1024 * 1024;
  */
 async function shrinkAttachment(path: string, image: ImageContent): Promise<ImageContent> {
 	if (image.data.length <= MAX_ATTACHMENT_BASE64) return image;
-	const reencoded = await magickBuffer(path, ["-strip", "-resize", "2000x2000>", "png:-"]);
+	const reencoded = await magickBuffer(path, NORMALIZE_ARGS);
 	if (!reencoded?.length) return image;
 	const data = reencoded.toString("base64");
 	return data.length < image.data.length ? { type: "image", data, mimeType: "image/png" } : image;
@@ -539,8 +464,7 @@ export function createReadImageLoader(): ImageLoader {
 	return async (path, ctx) => {
 		try {
 			const result = await baseRead.execute("image-attach", { path }, undefined, undefined, ctx);
-			const image = result.content.find(isImageContent);
-			return image && (await shrinkAttachment(path, image));
+			return result.content.find(isImageContent);
 		} catch {
 			return undefined;
 		}

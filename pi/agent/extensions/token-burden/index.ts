@@ -1,25 +1,29 @@
 import * as os from "node:os";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
-import type { ContextUsage, ExtensionCommandContext, ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import type { ExtensionCommandContext, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { buildSessionContext, discoverAndLoadExtensions, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { approxTokenCount, estimateImageTokens } from "../shared/output-budget.ts";
+import { sessionIdFromContext } from "../shared/session-context.ts";
+import { retainedImagesFor } from "../shared/tool-result-images.ts";
+import { getToolPolicy } from "../tool-policy/policy.ts";
 import type { BasePromptTraceResult } from "./base-trace/index.js";
 import { attributeBasePrompt, extractBaseLines, extractContributions } from "./base-trace/index.js";
 import type { LoadedExtension } from "./base-trace/types.js";
-import { buildToolDefinitionsSection, estimateTokens, parseSystemPrompt } from "./parser.js";
+import { buildToolDefinitionsSection, parseSystemPrompt } from "./parser.js";
 import { showReport } from "./report-view.js";
 import { loadAllSkills } from "./skills.js";
 import { applyChanges, loadSettings } from "./skills-persistence.js";
-import { createToolToggleController, loadToolToggleConfig } from "./tool-toggles.js";
-import { DisableMode, type SessionUsageCategory, type SessionUsageData } from "./types.js";
+import { parseDeclaredToolNames, toolReachResolver } from "./tool-reach.ts";
+import {
+	DisableMode,
+	type SessionUsageCategory,
+	type SessionUsageData,
+	type ToolReach,
+	type TurnUsage,
+} from "./types.js";
+import { readTurnUsage, summarizeTurns } from "./usage.ts";
 
-const CONFIG_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "config.json");
-
-/**
- * Resolve the agent directory, matching pi's own resolution logic:
- * 1. Check PI_CODING_AGENT_DIR environment variable
- * 2. Fall back to ~/.pi/agent
- */
+// Matches pi's own resolution: PI_CODING_AGENT_DIR first, then ~/.pi/agent.
 function getAgentDir(): string {
 	const envDir = process.env.PI_CODING_AGENT_DIR;
 	if (envDir) {
@@ -34,35 +38,34 @@ function getAgentDir(): string {
 	return path.join(os.homedir(), ".pi", "agent");
 }
 
-const IMAGE_TOKEN_ESTIMATE = 1200;
-
-function measuredSessionTokens(usage: ContextUsage | undefined): number | undefined {
-	if (typeof usage?.tokens !== "number") {
-		return undefined;
-	}
-
-	return usage.tokens > 0 ? usage.tokens : undefined;
-}
-
 function contentRecords(content: unknown): readonly Record<string, unknown>[] {
 	return Array.isArray(content)
 		? content.filter((part): part is Record<string, unknown> => !!part && typeof part === "object")
 		: [];
 }
 
-function estimateContentTokens(content: unknown): number {
+// A renderer splices images out of the array the session entry holds, so a drawn tool result shows none of them.
+function estimateContentTokens(content: unknown, toolCallId?: string): number {
 	if (typeof content === "string") {
-		return estimateTokens(content);
+		return approxTokenCount(content);
 	}
 
 	let tokens = 0;
+	let sawImage = false;
 	for (const part of contentRecords(content)) {
 		if (part.type === "text" && typeof part.text === "string") {
-			tokens += estimateTokens(part.text);
+			tokens += approxTokenCount(part.text);
 		} else if (part.type === "image") {
-			tokens += IMAGE_TOKEN_ESTIMATE;
+			sawImage = true;
+			tokens += estimateImageTokens(part.data);
 		} else {
-			tokens += estimateTokens(JSON.stringify(part));
+			tokens += approxTokenCount(JSON.stringify(part));
+		}
+	}
+	// Mirrors the `withRetainedImages` guard in tool-result-images.ts:36, which skips restore when an image survived.
+	if (!sawImage) {
+		for (const image of retainedImagesFor(toolCallId)) {
+			tokens += estimateImageTokens(image.data);
 		}
 	}
 	return tokens;
@@ -78,15 +81,15 @@ function addCategory(categories: Map<string, number>, label: string, tokens: num
 function estimateToolCallTokens(part: Record<string, unknown>): number {
 	const name = typeof part.name === "string" ? part.name : "";
 	const input = JSON.stringify(part.arguments ?? {});
-	return estimateTokens(`${name}${input}`);
+	return approxTokenCount(`${name}${input}`);
 }
 
 function addAssistantCategories(categories: Map<string, number>, content: unknown): void {
 	for (const part of contentRecords(content)) {
 		if (part.type === "text" && typeof part.text === "string") {
-			addCategory(categories, "Assistant", estimateTokens(part.text));
+			addCategory(categories, "Assistant", approxTokenCount(part.text));
 		} else if (part.type === "thinking" && typeof part.thinking === "string") {
-			addCategory(categories, "Thinking", estimateTokens(part.thinking));
+			addCategory(categories, "Thinking", approxTokenCount(part.thinking));
 		} else if (part.type === "toolCall") {
 			addCategory(categories, "Assistant", estimateToolCallTokens(part));
 		}
@@ -202,6 +205,22 @@ function commandFromToolResultContent(content: unknown): string | undefined {
 	return undefined;
 }
 
+function nestedReachWeights(
+	record: Record<string, unknown>,
+	resolveReach: (toolName: string) => ToolReach,
+): Map<string, number> | undefined {
+	const calls = (record.details as { calls?: unknown } | undefined)?.calls;
+	if (!Array.isArray(calls)) return undefined;
+	const weights = new Map<string, number>();
+	for (const entry of calls) {
+		const call = entry as { name?: unknown; resultTokens?: unknown } | undefined;
+		if (typeof call?.name !== "string") continue;
+		const tokens = typeof call.resultTokens === "number" && call.resultTokens > 0 ? call.resultTokens : 1;
+		addCategory(weights, `Tool result: ${resolveReach(call.name)}`, tokens);
+	}
+	return weights.size > 0 ? weights : undefined;
+}
+
 function toolResultLabel(record: Record<string, unknown>, commandsByToolCallId: Map<string, string>): string {
 	const toolName = record.toolName;
 	const name = typeof toolName === "string" && toolName.trim() ? toolName.trim() : "unknown";
@@ -217,9 +236,13 @@ function toolResultLabel(record: Record<string, unknown>, commandsByToolCallId: 
 	return `Tool result: ${name}`;
 }
 
-function estimateRawSessionCategories(messages: readonly unknown[]): SessionUsageCategory[] {
+// A turn's growth is exact, but with 6 tool results inside it the provider does not say which carried how much.
+function categoryWeights(
+	messages: readonly unknown[],
+	commandsByToolCallId: Map<string, string>,
+	resolveReach?: (toolName: string) => ToolReach,
+): Map<string, number> {
 	const categories = new Map<string, number>();
-	const commandsByToolCallId = toolCallCommands(messages);
 
 	for (const message of messages) {
 		if (!message || typeof message !== "object") {
@@ -232,15 +255,27 @@ function estimateRawSessionCategories(messages: readonly unknown[]): SessionUsag
 		} else if (record.role === "assistant") {
 			addAssistantCategories(categories, record.content);
 		} else if (record.role === "toolResult") {
-			addCategory(categories, toolResultLabel(record, commandsByToolCallId), estimateContentTokens(record.content));
+			const toolCallId = typeof record.toolCallId === "string" ? record.toolCallId : undefined;
+			const contentTokens = estimateContentTokens(record.content, toolCallId);
+			const nested =
+				resolveReach && (record.toolName === "exec" || record.toolName === "wait")
+					? nestedReachWeights(record, resolveReach)
+					: undefined;
+			if (!nested) {
+				addCategory(categories, toolResultLabel(record, commandsByToolCallId), contentTokens);
+			} else {
+				const labels = [...nested.keys()];
+				const allocated = allocateProportionally([...nested.values()], contentTokens);
+				for (const [index, label] of labels.entries()) addCategory(categories, label, allocated[index] ?? 0);
+			}
 		} else if (record.role === "bashExecution") {
-			addCategory(categories, "User prompts", estimateTokens(`${record.command ?? ""}${record.output ?? ""}`));
+			addCategory(categories, "User prompts", approxTokenCount(`${record.command ?? ""}${record.output ?? ""}`));
 		} else if (record.role === "branchSummary" || record.role === "compactionSummary") {
-			addCategory(categories, "Session summaries", estimateTokens(String(record.summary ?? "")));
+			addCategory(categories, "Session summaries", approxTokenCount(String(record.summary ?? "")));
 		}
 	}
 
-	return [...categories.entries()].map(([label, tokens]) => ({ label, tokens }));
+	return categories;
 }
 
 function allocateProportionally(values: readonly number[], total: number): number[] {
@@ -270,38 +305,75 @@ function allocateProportionally(values: readonly number[], total: number): numbe
 	return allocated;
 }
 
-function scaleCategoriesToUsage(categories: SessionUsageCategory[], tokens: number): SessionUsageCategory[] {
-	if (categories.length === 0) {
-		return tokens > 0 ? [{ label: "Session", tokens }] : [];
+// Turn 1's prompt is the floor and cannot be split from usage alone; later turns split their own growth by weight.
+// Compaction shrinks the prompt, so the accumulated split is dropped for the difference from the floor.
+function attributeContext(
+	messages: readonly unknown[],
+	turns: readonly TurnUsage[],
+	resolveReach?: (toolName: string) => ToolReach,
+): SessionUsageCategory[] {
+	const commandsByToolCallId = toolCallCommands(messages);
+	const estimated = new Map<string, number>();
+	let compactedTokens = 0;
+	let previousMessageIndex: number | undefined;
+	const floorTokens = turns.at(0)?.promptTokens ?? 0;
+
+	for (const turn of turns) {
+		if (previousMessageIndex === undefined) {
+			previousMessageIndex = turn.messageIndex;
+			continue;
+		}
+
+		if (turn.growth < 0) {
+			estimated.clear();
+			compactedTokens = Math.max(0, turn.promptTokens - floorTokens);
+			previousMessageIndex = turn.messageIndex;
+			continue;
+		}
+
+		const weights = categoryWeights(
+			messages.slice(previousMessageIndex, turn.messageIndex),
+			commandsByToolCallId,
+			resolveReach,
+		);
+		const labels = [...weights.keys()];
+		const allocated = allocateProportionally([...weights.values()], turn.growth);
+		for (const [index, label] of labels.entries()) {
+			const tokens = allocated[index] ?? 0;
+			if (tokens > 0) estimated.set(label, (estimated.get(label) ?? 0) + tokens);
+		}
+		previousMessageIndex = turn.messageIndex;
 	}
 
-	const allocated = allocateProportionally(
-		categories.map((category) => category.tokens),
-		Math.round(tokens),
-	);
+	const categories: SessionUsageCategory[] = [{ label: "Session floor", tokens: floorTokens, estimated: false }];
+	if (compactedTokens > 0) {
+		categories.push({ label: "Since compaction", tokens: compactedTokens, estimated: false });
+	}
+	for (const [label, tokens] of estimated) {
+		categories.push({ label, tokens, estimated: true });
+	}
 
-	return categories
-		.map((category, index) => ({ label: category.label, tokens: allocated[index] ?? 0 }))
-		.filter((category) => category.tokens > 0);
+	return categories.filter((category) => category.tokens > 0);
 }
 
-export function buildSessionUsageData(ctx: ExtensionCommandContext): SessionUsageData | undefined {
+export function buildSessionUsageData(
+	ctx: ExtensionCommandContext,
+	resolveReach?: (toolName: string) => ToolReach,
+): SessionUsageData | undefined {
 	const sessionManager = ctx.sessionManager as typeof ctx.sessionManager & { getLeafId?: () => string | undefined };
 	const context = buildSessionContext(ctx.sessionManager.getEntries(), sessionManager.getLeafId?.());
-	const rawCategories = estimateRawSessionCategories(context.messages);
-	const estimatedTokens = rawCategories.reduce((total, category) => total + category.tokens, 0);
-	const usage = ctx.getContextUsage();
-	const measuredTokens = measuredSessionTokens(usage);
-	const sessionTokens = measuredTokens ?? estimatedTokens;
+	const turns = readTurnUsage(context.messages);
+	const totals = summarizeTurns(turns);
 
-	if (sessionTokens <= 0) {
+	if (!totals) {
 		return undefined;
 	}
 
 	return {
-		tokens: sessionTokens,
-		estimated: measuredTokens === undefined,
-		categories: scaleCategoriesToUsage(rawCategories, sessionTokens),
+		tokens: totals.contextTokens,
+		totals,
+		turns,
+		categories: attributeContext(context.messages, turns, resolveReach),
 	};
 }
 
@@ -327,19 +399,29 @@ function systemPromptText(prompt: unknown): string {
 }
 
 const extension: ExtensionFactory = (pi) => {
-	const toolToggles = createToolToggleController(pi, loadToolToggleConfig(CONFIG_PATH).disabledTools, CONFIG_PATH);
-	toolToggles.install();
-
 	pi.registerCommand("token-burden", {
 		description: "Show token budget breakdown and manage skills",
 		handler: async (_args, ctx) => {
 			const prompt = systemPromptText(ctx.getSystemPrompt());
 			const parsed = parseSystemPrompt(prompt);
 
-			// Add tool definitions section (function schemas sent via tool-calling API)
-			const allTools = pi.getAllTools();
-			const activeTools = pi.getActiveTools();
-			const toolSection = buildToolDefinitionsSection(allTools, activeTools);
+			// Imported here, not at the top: jiti's `moduleCache: false` would tax every pi boot with nested-dispatch.ts.
+			const { buildCoreToolDeclarations, buildToolCatalog } = await import("../code-mode/nested-dispatch.ts");
+			const sessionId = sessionIdFromContext(ctx);
+			const policy = getToolPolicy(sessionId);
+			const declarations = buildCoreToolDeclarations(undefined, sessionId, ctx.cwd);
+			const resolveReach = toolReachResolver({
+				activeToolNames: pi.getActiveTools(),
+				catalogToolNames: buildToolCatalog(sessionId, ctx.cwd).map((entry) => entry.name),
+				declaredToolNames: parseDeclaredToolNames(declarations),
+				isHidden: policy?.isHidden,
+			});
+
+			const toolSection = buildToolDefinitionsSection(
+				pi.getAllTools(),
+				resolveReach,
+				declarations ? approxTokenCount(declarations) : 0,
+			);
 			if (toolSection) {
 				parsed.sections.push(toolSection);
 				parsed.totalTokens += toolSection.tokens;
@@ -348,7 +430,7 @@ const extension: ExtensionFactory = (pi) => {
 
 			const usage = ctx.getContextUsage();
 			const contextWindow = usage?.contextWindow ?? ctx.model?.contextWindow;
-			const sessionUsage = buildSessionUsageData(ctx);
+			const sessionUsage = buildSessionUsageData(ctx, resolveReach);
 
 			if (!ctx.hasUI) {
 				return;
@@ -373,14 +455,14 @@ const extension: ExtensionFactory = (pi) => {
 				const baseSection = parsed.sections.find((s) => s.label.startsWith("Base"));
 				const baseText = baseSection?.content ?? "";
 				const { toolLines, guidelineLines } = extractBaseLines(baseText);
-				const baseTokens = estimateTokens(baseText);
+				const baseTokens = approxTokenCount(baseText);
 
 				const { buckets, evidence } = attributeBasePrompt(
 					toolLines,
 					guidelineLines,
 					contributions,
 					baseTokens,
-					estimateTokens,
+					approxTokenCount,
 				);
 
 				const traceErrors = loadErrors.map((e) => ({
@@ -400,6 +482,10 @@ const extension: ExtensionFactory = (pi) => {
 					errors: traceErrors,
 				};
 			};
+
+			const onToolReach = policy
+				? (toolName: string, reach: ToolReach): boolean => policy.setToolReach(toolName, reach).applied
+				: undefined;
 
 			await showReport(
 				parsed,
@@ -441,7 +527,7 @@ const extension: ExtensionFactory = (pi) => {
 					}
 				},
 				onRunTrace,
-				toolToggles.setToolActive,
+				onToolReach,
 				sessionUsage,
 			);
 		},

@@ -7,9 +7,9 @@
  */
 
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 
+import { resolvePathFromBase } from "./skills.js";
 import { DisableMode, type Settings, type SkillInfo } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -105,23 +105,6 @@ function removeFrontmatterField(content: string, key: string): string {
 // ---------------------------------------------------------------------------
 // Apply changes
 // ---------------------------------------------------------------------------
-
-function resolvePathFromBase(input: string, baseDir: string): string {
-	const trimmed = input.trim();
-	if (trimmed === "~") {
-		return path.normalize(os.homedir());
-	}
-	if (trimmed.startsWith("~/")) {
-		return path.join(os.homedir(), trimmed.slice(2));
-	}
-	if (trimmed.startsWith("~")) {
-		return path.join(os.homedir(), trimmed.slice(1));
-	}
-	if (path.isAbsolute(trimmed)) {
-		return path.normalize(trimmed);
-	}
-	return path.resolve(baseDir, trimmed);
-}
 
 function getSkillRelativePath(skillFilePath: string, agentDir: string): string {
 	const skillDir = path.dirname(skillFilePath);

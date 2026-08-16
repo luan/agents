@@ -17,14 +17,18 @@ export interface AgentsFileEntry {
 	tokens: number;
 }
 
-export interface FilterItem {
-	label: string;
-	tokens: number;
-}
-
 export interface BarSegment {
 	label: string;
 	width: number;
+}
+
+// Names match codex's `ToolExposure` enum, ordered by resident cost. tool-policy/policy.ts owns the assignment.
+export enum ToolReach {
+	Direct = "direct",
+	Declared = "declared",
+	Deferred = "deferred",
+	Blocked = "blocked",
+	Unreachable = "unreachable",
 }
 
 export interface ToolEntry {
@@ -32,21 +36,55 @@ export interface ToolEntry {
 	chars: number;
 	tokens: number;
 	content: string;
+	reach: ToolReach;
 }
 
+// One list, not an active/inactive pair: the split is 5 ways and a partition would rebuild on every state change.
 export interface ToolSectionData {
-	active: ToolEntry[];
-	inactive: ToolEntry[];
+	tools: ToolEntry[];
+	/** Schema tokens in the provider's tool array — the direct surface, and nothing else. */
+	residentTokens: number;
+	registeredTokens: number;
+	declarationTokens: number;
+}
+
+export interface TurnUsage {
+	/** 1-based position in the session. */
+	index: number;
+	messageIndex: number;
+	input: number;
+	cacheRead: number;
+	cacheWrite: number;
+	output: number;
+	cost: number;
+	/** input + cacheRead + cacheWrite: the context the provider saw. */
+	promptTokens: number;
+	/** Change in `promptTokens` since the previous turn. Negative after a compaction. */
+	growth: number;
+}
+
+export interface SessionUsageTotals {
+	turns: number;
+	floorTokens: number;
+	contextTokens: number;
+	freshInput: number;
+	cacheRead: number;
+	cacheWrite: number;
+	output: number;
+	cost: number;
+	cachedShare: number;
 }
 
 export interface SessionUsageCategory {
 	label: string;
 	tokens: number;
+	estimated: boolean;
 }
 
 export interface SessionUsageData {
 	tokens: number;
-	estimated: boolean;
+	totals: SessionUsageTotals;
+	turns: TurnUsage[];
 	categories: SessionUsageCategory[];
 }
 
@@ -54,7 +92,6 @@ export interface PromptSection {
 	label: string;
 	chars: number;
 	tokens: number;
-	/** Raw text of this section from the system prompt. */
 	content?: string;
 	tools?: ToolSectionData;
 	children?: {
@@ -72,25 +109,16 @@ export interface ParsedPrompt {
 	skills: SkillEntry[];
 }
 
-/** Item displayed in the interactive table (section or child). */
 export interface TableItem {
 	label: string;
 	tokens: number;
 	chars: number;
-	/** Percentage of total system prompt tokens. */
 	pct: number;
-	/** Whether this item can be drilled into (has children). */
 	drillable: boolean;
-	/** Raw text of this section from the system prompt. */
 	content?: string;
 	tools?: ToolSectionData;
-	/** Children shown when drilling down. */
 	children?: TableItem[];
 }
-
-// ---------------------------------------------------------------------------
-// Skill toggle types
-// ---------------------------------------------------------------------------
 
 export interface SkillInfo {
 	name: string;

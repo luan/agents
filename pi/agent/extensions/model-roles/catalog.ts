@@ -64,10 +64,12 @@ export interface RoleCandidate {
 export interface ModelRole {
 	candidates: RoleCandidate[];
 	color?: RoleColor;
+	description?: string;
 }
 
 export interface ModelRoleCatalog {
 	defaultRole: string;
+	subagentDefaultRole: string;
 	roles: Record<string, ModelRole>;
 }
 
@@ -93,7 +95,8 @@ export function formatModelRoleOption(name: string, role: ModelRole, current = f
 	const fast = role.candidates.some((entry) => entry.service_tier === "priority") ? " · fast" : "";
 	const details = candidate ? `${candidate.model} · ${candidate.thinking}` : "no candidates";
 	const fallbacks = role.candidates.length > 1 ? ` · +${role.candidates.length - 1} fallback` : "";
-	return `${name}${current ? " (current)" : ""} — ${details}${fast}${fallbacks}`;
+	const description = role.description ? ` — ${role.description}` : "";
+	return `${name}${current ? " (current)" : ""} — ${details}${fast}${fallbacks}${description}`;
 }
 
 export function saveModelRoles(catalog: ModelRoleCatalog, agentDir = getAgentDir()): void {
@@ -125,7 +128,7 @@ function parseCandidate(value: unknown): RoleCandidate | undefined {
 
 export function loadModelRoles(agentDir = getAgentDir()): ModelRoleCatalog {
 	const path = join(agentDir, "model-roles.json");
-	if (!existsSync(path)) return { defaultRole: "default", roles: {} };
+	if (!existsSync(path)) return { defaultRole: "default", subagentDefaultRole: "default", roles: {} };
 
 	try {
 		const root = asRecord(JSON.parse(readFileSync(path, "utf8")));
@@ -142,16 +145,27 @@ export function loadModelRoles(agentDir = getAgentDir()): ModelRoleCatalog {
 				roles[name] = {
 					candidates: parsed,
 					color: isRoleColor(entry?.color) ? entry.color : defaultRoleColor(index),
+					...(typeof entry?.description === "string" && entry.description.trim()
+						? { description: entry.description.trim() }
+						: {}),
 				};
 			}
 		}
 		const configuredDefault = typeof root?.defaultRole === "string" ? root.defaultRole : undefined;
 		const defaultRole =
 			configuredDefault && roles[configuredDefault] ? configuredDefault : (Object.keys(roles)[0] ?? "default");
-		return { defaultRole, roles };
+		const configuredSubagentDefault =
+			typeof root?.subagentDefaultRole === "string" ? root.subagentDefaultRole : undefined;
+		const subagentDefaultRole =
+			configuredSubagentDefault && roles[configuredSubagentDefault]
+				? configuredSubagentDefault
+				: roles.task
+					? "task"
+					: defaultRole;
+		return { defaultRole, subagentDefaultRole, roles };
 	} catch (error) {
 		console.warn(`[roles] Ignoring malformed ${path}: ${error instanceof Error ? error.message : error}`);
-		return { defaultRole: "default", roles: {} };
+		return { defaultRole: "default", subagentDefaultRole: "default", roles: {} };
 	}
 }
 

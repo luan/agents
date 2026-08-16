@@ -109,7 +109,7 @@ function resolveBucketId(e: TraceLineEvidence): { id: string; label: string } {
 /**
  * Attribute Base prompt tool and guideline lines to extension sources.
  *
- * Accepts a tokenize function for counting tokens (e.g. estimateTokens).
+ * Accepts a tokenize function for counting tokens (e.g. approxTokenCount).
  */
 export function attributeBasePrompt(
 	toolLines: string[],

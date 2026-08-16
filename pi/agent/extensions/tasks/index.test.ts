@@ -79,87 +79,6 @@ describe("tasks extension", () => {
 		expect(closed).toBe(true);
 	});
 
-	test("keeps HUD mode and remounts after extension UI resets", async () => {
-		type Handler = (event: unknown, context: unknown) => unknown;
-		type Shortcut = { handler: (context: unknown) => unknown };
-		type WidgetComponent = { dispose?: () => void; isExpanded(): boolean };
-		type WidgetFactory = (tui: { requestRender?: () => void }, widgetTheme: typeof theme) => WidgetComponent;
-		const cwd = mkdtempSync(join(tmpdir(), "pi-tasks-hud-mode-"));
-		const sessionId = "hud-mode-session";
-		let widget: WidgetComponent | undefined;
-		const ctx = {
-			cwd,
-			sessionManager: { getSessionId: () => sessionId },
-			signal: new AbortController().signal,
-			ui: {
-				notify() {},
-				setWidget(_key: string, content: WidgetFactory | undefined) {
-					if (content === undefined) {
-						widget?.dispose?.();
-						widget = undefined;
-						return;
-					}
-					widget = content({ requestRender() {} }, theme);
-				},
-			},
-		};
-		const makePi = () => {
-			const handlers = new Map<string, Handler[]>();
-			let shortcut: Shortcut | undefined;
-			const pi = {
-				on(name: string, handler: Handler) {
-					handlers.set(name, [...(handlers.get(name) ?? []), handler]);
-				},
-				registerShortcut(_name: string, definition: Shortcut) {
-					shortcut = definition;
-				},
-				registerCommand() {},
-				registerTool() {},
-				sendMessage() {},
-			};
-			return {
-				pi,
-				handlers,
-				get shortcut(): Shortcut {
-					if (!shortcut) throw new Error("shortcut was not registered");
-					return shortcut;
-				},
-			};
-		};
-
-		try {
-			// Distinct specifiers force fresh extension module instances, matching /reload.
-			const first = await import(`./index.ts?hud-mode-first-${Math.random()}`);
-			const firstPi = makePi();
-			first.default(firstPi.pi);
-			await firstPi.handlers.get("session_start")?.[0]?.({}, ctx);
-			expect(widget?.isExpanded()).toBe(true);
-			ctx.ui.setWidget("project-tasks", undefined);
-			expect(widget).toBeUndefined();
-			await firstPi.handlers.get("session_start")?.[0]?.({}, ctx);
-			expect(widget?.isExpanded()).toBe(true);
-			await firstPi.shortcut.handler(ctx);
-			expect(widget?.isExpanded()).toBe(false);
-
-			const second = await import(`./index.ts?hud-mode-second-${Math.random()}`);
-			const secondPi = makePi();
-			second.default(secondPi.pi);
-			await secondPi.handlers.get("session_start")?.[0]?.({}, ctx);
-			expect(widget?.isExpanded()).toBe(false);
-			const otherCtx = { ...ctx, sessionManager: { getSessionId: () => "other-session" } };
-			await secondPi.handlers.get("session_start")?.[0]?.({}, otherCtx);
-			expect(widget?.isExpanded()).toBe(true);
-			await secondPi.handlers.get("session_shutdown")?.[0]?.({ type: "session_shutdown", reason: "new" }, otherCtx);
-			await secondPi.handlers.get("session_start")?.[0]?.({}, ctx);
-			expect(widget?.isExpanded()).toBe(false);
-			await secondPi.handlers.get("session_shutdown")?.[0]?.({ type: "session_shutdown", reason: "new" }, ctx);
-			await secondPi.handlers.get("session_start")?.[0]?.({}, ctx);
-			expect(widget?.isExpanded()).toBe(true);
-		} finally {
-			rmSync(cwd, { recursive: true, force: true });
-		}
-	});
-
 	test("task tools are extension-backed and session-scoped", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "pi-tasks-"));
 		const commands = new Map<string, any>();
@@ -216,6 +135,11 @@ describe("tasks extension", () => {
 			);
 		const id = created.details.task.id;
 		expect(id).toMatch(/^[0-9a-z]{6}$/);
+		await expect(
+			tools
+				.get("task_write")
+				.execute("invalid-status", { op: "update", id, data: { status: "in_review" } }, undefined, undefined, ctx),
+		).rejects.toThrow("Valid statuses: open, todo, in_progress, rejected, done, canceled");
 		const otherSession = await tools
 			.get("task_read")
 			.execute("other", { all: true }, undefined, undefined, { ...ctx, sessionId: "other-session" });

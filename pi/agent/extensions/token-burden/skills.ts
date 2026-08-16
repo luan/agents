@@ -11,7 +11,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { estimateTokens } from "./parser.js";
+import { approxTokenCount } from "../shared/output-budget.ts";
 import { DisableMode, type Settings, type SkillInfo } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -197,7 +197,7 @@ function scanSkillPath(sourcePath: string, skills: RawSkill[], visitedRealPaths:
 
 /** Estimate the token cost of a skill's list entry in the system prompt. */
 function estimateSkillPromptTokens(skill: { name: string; description: string; filePath: string }): number {
-	return estimateTokens(`- ${skill.name}: ${skill.description} (${skill.filePath})`);
+	return approxTokenCount(`- ${skill.name}: ${skill.description} (${skill.filePath})`);
 }
 
 // ---------------------------------------------------------------------------
@@ -214,7 +214,7 @@ function isPatternEntry(entry: string): boolean {
 	);
 }
 
-function resolvePathFromBase(input: string, baseDir: string): string {
+export function resolvePathFromBase(input: string, baseDir: string): string {
 	const trimmed = input.trim();
 	if (trimmed === "~") {
 		return os.homedir();

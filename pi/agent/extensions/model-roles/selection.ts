@@ -9,7 +9,7 @@ export type RoleSelection = {
 
 type JsonRecord = Record<string, unknown>;
 
-function isRecord(value: unknown): value is JsonRecord {
+export function isRecord(value: unknown): value is JsonRecord {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 

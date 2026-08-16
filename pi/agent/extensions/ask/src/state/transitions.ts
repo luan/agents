@@ -9,13 +9,7 @@ import {
 	setSingleSelection,
 	toggleSelection,
 } from "./answers";
-import {
-	cancelFlow as cancelFlowBase,
-	createInitialState as createInitialStateBase,
-	dismissFlow as dismissFlowBase,
-	moveOption as moveOptionBase,
-	moveTab as moveTabBase,
-} from "./navigation";
+import { cancelFlow as cancelFlowBase, moveOption as moveOptionBase, moveTab as moveTabBase } from "./navigation";
 import {
 	getAnswer,
 	getCurrentOption,
@@ -27,26 +21,6 @@ import {
 import { inputView, navigateView, optionNoteView, questionNoteView, submitView } from "./view";
 
 const SUBMIT_ACTION_COUNT = 3;
-
-export function createInitialState(params: { title?: string; questions: AskState["questions"] }): AskState {
-	return createInitialStateBase(params);
-}
-
-export function moveTab(state: AskState, delta: number): AskState {
-	return moveTabBase(state, delta);
-}
-
-export function moveOption(state: AskState, delta: number): AskState {
-	return moveOptionBase(state, delta);
-}
-
-export function cancelFlow(state: AskState): AskState {
-	return cancelFlowBase(state);
-}
-
-export function dismissFlow(state: AskState): AskState {
-	return dismissFlowBase(state);
-}
 
 function reduceAskState(state: AskState, action: AskAction): AskState {
 	switch (action.type) {

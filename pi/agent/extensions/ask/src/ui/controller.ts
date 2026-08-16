@@ -3,17 +3,14 @@ import { Editor, type EditorTheme } from "@earendil-works/pi-tui";
 import { defineExtensionTui } from "../../../shared/tui";
 import { createInitialState } from "../state/create";
 import { getEditorDraft, saveEditorDraft, submitEditorDraft, syncStateToSelection } from "../state/editor";
+import { cancelFlow, dismissFlow, moveOption, moveTab } from "../state/navigation";
 import { toAskResult } from "../state/result";
 import { getCurrentOption, getCurrentQuestion, isSubmitTab } from "../state/selectors";
 import {
 	applyNumberShortcut,
-	cancelFlow,
 	confirmCurrentSelection,
-	dismissFlow,
 	enterOptionNoteMode,
 	enterQuestionNoteMode,
-	moveOption,
-	moveTab,
 	toggleCurrentMultiOption,
 } from "../state/transitions";
 import { isEditingView } from "../state/view";

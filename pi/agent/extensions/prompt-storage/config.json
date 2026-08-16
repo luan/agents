@@ -2,7 +2,7 @@
   "enabled": true,
   "shortcuts": {
     "stash": "ctrl+s",
-    "pop": "alt+s",
+    "pop": "ctrl+shift+s",
     "history": "ctrl+r"
   },
   "history": {

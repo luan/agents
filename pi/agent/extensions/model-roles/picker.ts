@@ -1,11 +1,9 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
-	decodeKittyPrintable,
 	fuzzyFilter,
 	Key,
 	matchesKey,
 	type OverlayHandle,
-	type TUI,
 	truncateToWidth,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
@@ -18,37 +16,17 @@ import {
 	roleNames,
 	saveModelRoles,
 } from "./catalog.js";
-import { addModelRole, deleteModelRole, editModelRole, renameModelRole, setModelRoleDefault } from "./editor.js";
+import {
+	addModelRole,
+	deleteModelRole,
+	editModelRole,
+	renameModelRole,
+	setModelRoleDefault,
+	setModelRoleSubagentDefault,
+} from "./editor.js";
+import { bottom, frame, type PickerTheme, type PickerTui, printableText, selectedIndex } from "./picker-chrome.js";
 
-type PickerTheme = {
-	fg(color: string, text: string): string;
-	bg(color: string, text: string): string;
-	bold(text: string): string;
-};
-
-type PickerTui = Pick<TUI, "requestRender" | "terminal">;
-
-const BORDER = "accent";
 const SELECTED_BACKGROUND = "selectedBg";
-
-function printableText(data: string): string | undefined {
-	const kittyPrintable = decodeKittyPrintable(data);
-	if (kittyPrintable !== undefined) return kittyPrintable;
-	if (
-		!data ||
-		[...data].some((char) => {
-			const code = char.charCodeAt(0);
-			return code < 32 || code === 0x7f || (code >= 0x80 && code <= 0x9f);
-		})
-	)
-		return undefined;
-	return data;
-}
-
-function selectedIndex(names: string[], selected: string | undefined): number {
-	const index = selected ? names.indexOf(selected) : -1;
-	return index >= 0 ? index : 0;
-}
 
 function fastEnabled(role: ModelRole): boolean {
 	return role.candidates.some((candidate) => candidate.service_tier === "priority");
@@ -177,6 +155,7 @@ class ModelRolePicker {
 			return;
 		}
 		if (data === "f") this.setDefault();
+		if (data === "s") this.setSubagentDefault();
 	}
 
 	render(width: number): string[] {
@@ -189,27 +168,28 @@ class ModelRolePicker {
 		const start = Math.max(0, Math.min(this.selected - bodyHeight + 1, names.length - bodyHeight));
 		const position = names.length > 0 ? this.theme.fg("dim", ` ${this.selected + 1}/${names.length}`) : "";
 		const lines = [
-			this.frame(`${this.theme.fg("accent", this.theme.bold("Select model role"))}${position}`, innerWidth),
-			this.frame(this.searchLine(innerWidth), innerWidth),
+			frame(this.theme, `${this.theme.fg("accent", this.theme.bold("Select model role"))}${position}`, innerWidth),
+			frame(this.theme, this.searchLine(innerWidth), innerWidth),
 		];
-		if (names.length === 0) lines.push(this.frame(this.theme.fg("muted", "No matching roles."), innerWidth));
+		if (names.length === 0) lines.push(frame(this.theme, this.theme.fg("muted", "No matching roles."), innerWidth));
 		else {
 			for (const [offset, name] of names.slice(start, start + bodyHeight).entries()) {
 				const index = start + offset;
 				lines.push(
-					this.frame(
+					frame(
+						this.theme,
 						this.renderRole(name, this.catalog.roles[name]!, index === this.selected, innerWidth),
 						innerWidth,
 					),
 				);
 			}
 		}
-		if (this.busy) lines.push(this.frame(this.theme.fg("dim", "Working..."), innerWidth));
+		if (this.busy) lines.push(frame(this.theme, this.theme.fg("dim", "Working..."), innerWidth));
 		else if (this.deletePending)
-			lines.push(this.frame(this.theme.fg("warning", "Press d again to delete."), innerWidth));
-		else lines.push(this.frame("", innerWidth));
-		lines.push(this.frame(this.theme.fg("dim", this.hints(innerWidth)), innerWidth));
-		lines.push(this.bottom(innerWidth));
+			lines.push(frame(this.theme, this.theme.fg("warning", "Press d again to delete."), innerWidth));
+		else lines.push(frame(this.theme, "", innerWidth));
+		lines.push(frame(this.theme, this.theme.fg("dim", this.hints(innerWidth)), innerWidth));
+		lines.push(bottom(this.theme, innerWidth));
 		return lines;
 	}
 
@@ -325,6 +305,13 @@ class ModelRolePicker {
 		this.tui.requestRender();
 	}
 
+	private setSubagentDefault(): void {
+		const name = this.selectedName();
+		if (!name || !setModelRoleSubagentDefault(this.catalog, name)) return;
+		this.ctx.ui.notify(`Subagent default role: ${name}`, "info");
+		this.tui.requestRender();
+	}
+
 	private async deleteSelected(): Promise<void> {
 		const name = this.selectedName();
 		if (!name) return;
@@ -359,14 +346,21 @@ class ModelRolePicker {
 	private renderRole(name: string, role: ModelRole, selected: boolean, width: number): string {
 		const candidate = role.candidates[0];
 		const cursor = selected ? this.theme.fg("accent", "›") : " ";
-		const defaultMarker = name === this.catalog.defaultRole ? this.theme.fg("warning", "default") : "       ";
+		const markers = [
+			name === this.catalog.defaultRole ? this.theme.fg("warning", "default") : "",
+			name === this.catalog.subagentDefaultRole ? this.theme.fg("accent", "subagent") : "",
+		]
+			.filter(Boolean)
+			.join("+");
+		const defaultMarker = `${markers}${" ".repeat(Math.max(0, 16 - visibleWidth(markers)))}`;
 		const roleText = this.theme.fg(roleColor(role, this.names.indexOf(name)), this.theme.bold(name));
+		const description = role.description ? this.theme.fg("muted", role.description) : "";
 		const model = candidate ? this.theme.fg("muted", candidate.model) : this.theme.fg("warning", "no model");
 		const thinking = candidate ? this.theme.fg("dim", candidate.thinking) : "";
 		const fast = fastEnabled(role) ? this.theme.fg("success", "fast") : "";
 		const fallback =
 			role.candidates.length > 1 ? this.theme.fg("dim", `+${role.candidates.length - 1} fallback`) : "";
-		const raw = ` ${cursor} ${defaultMarker} ${roleText} ${model} ${thinking} ${fast} ${fallback}`;
+		const raw = ` ${cursor} ${defaultMarker} ${roleText} ${model} ${thinking} ${fast} ${fallback} ${description}`;
 		const clipped = truncateToWidth(raw, width);
 		const rendered = `${clipped}${" ".repeat(Math.max(0, width - visibleWidth(clipped)))}`;
 		return selected ? this.theme.bg(SELECTED_BACKGROUND, rendered) : rendered;
@@ -379,17 +373,8 @@ class ModelRolePicker {
 
 	private hints(width: number): string {
 		return truncateToWidth(
-			"↑↓/jk navigate  ctrl+j/k reorder  enter select  / search  e edit  r rename  a add  dd delete  f default  esc/q cancel",
+			"↑↓/jk navigate  ctrl+j/k reorder  enter select  / search  e edit  r rename  a add  dd delete  f default  s subagent  esc/q cancel",
 			width,
 		);
-	}
-
-	private frame(content: string, width: number): string {
-		const clipped = truncateToWidth(content, width);
-		return `${this.theme.fg(BORDER, "│")}${clipped}${" ".repeat(Math.max(0, width - visibleWidth(clipped)))}${this.theme.fg(BORDER, "│")}`;
-	}
-
-	private bottom(width: number): string {
-		return this.theme.fg(BORDER, `└${"─".repeat(Math.max(0, width))}┘`);
 	}
 }

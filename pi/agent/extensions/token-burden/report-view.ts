@@ -6,10 +6,12 @@ import { join } from "node:path";
 
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
-import { matchesKey, truncateToWidth as truncateToWidthRaw, visibleWidth } from "@earendil-works/pi-tui";
-import { defineExtensionTui } from "../shared/tui";
+import { fuzzyFilter, matchesKey, visibleWidth } from "@earendil-works/pi-tui";
+import { getRegisteredTool, type RegisteredToolDefinition } from "../shared/tool-registry.ts";
+import { defineExtensionTui, faint as dim, italic, truncateToWidthCompat } from "../shared/tui";
+import { AGENT_TOOL_NAMES } from "../subagents/tool-names.ts";
 import type { BasePromptTraceResult, TraceBucket, TraceLineEvidence } from "./base-trace/index.js";
-import { TraceCache } from "./base-trace/index.js";
+import { TOOL_REACH_ORDER, toolReachDescription, toolReachLabel } from "./tool-reach.ts";
 import type {
 	ParsedPrompt,
 	SessionUsageData,
@@ -19,8 +21,9 @@ import type {
 	ToolEntry,
 	ToolSectionData,
 } from "./types.js";
-import { DisableMode } from "./types.js";
-import { buildBarSegments, fuzzyFilter } from "./utils.js";
+import { DisableMode, ToolReach } from "./types.js";
+import { formatCost } from "./usage.ts";
+import { buildBarSegments } from "./utils.js";
 
 const tokenBurdenTui = defineExtensionTui({ id: "token-burden" });
 // ---------------------------------------------------------------------------
@@ -45,22 +48,6 @@ const SESSION_COLORS = {
 	thinking: "38;2;203;166;247",
 	tools: "38;2;249;226;175",
 } as const;
-
-let stringEllipsisSupported: boolean | undefined;
-
-function truncateCompat(text: string, maxWidth: number, pad = false): string {
-	if (stringEllipsisSupported === false) {
-		return truncateToWidthRaw(text, maxWidth, undefined, pad);
-	}
-	try {
-		const result = truncateToWidthRaw(text, maxWidth, "…", pad);
-		stringEllipsisSupported = true;
-		return result;
-	} catch {
-		stringEllipsisSupported = false;
-		return truncateToWidthRaw(text, maxWidth, undefined, pad);
-	}
-}
 
 const SESSION_COLOR_PALETTE = [
 	SESSION_COLORS.prompt,
@@ -99,14 +86,6 @@ function bold(text: string): string {
 	return `\u001B[1m${text}\u001B[22m`;
 }
 
-function italic(text: string): string {
-	return `\u001B[3m${text}\u001B[23m`;
-}
-
-function dim(text: string): string {
-	return `\u001B[2m${text}\u001B[22m`;
-}
-
 function fmt(n: number): string {
 	return n.toLocaleString("en-US");
 }
@@ -121,16 +100,22 @@ function rainbowDots(filled: number, total: number): string {
 }
 
 function shortenLabel(label: string): string {
-	if (label.startsWith("Tool definitions")) {
+	if (label.startsWith("Tool schemas")) {
 		return "Tool defs";
+	}
+	if (label.startsWith("Session floor")) {
+		return "Floor";
+	}
+	if (label.startsWith("Since compaction")) {
+		return "Compacted";
 	}
 	if (label.startsWith("Tool result:")) {
 		const toolLabel = label.slice("Tool result:".length).trim();
 		const execMatch = toolLabel.match(/^exec_command\((.*)\)$/);
 		if (execMatch?.[1]) {
-			return truncateCompat(`exec:${execMatch[1]}`, 18);
+			return truncateToWidthCompat(`exec:${execMatch[1]}`, 18, "…");
 		}
-		return truncateCompat(toolLabel, 18);
+		return truncateToWidthCompat(toolLabel, 18, "…");
 	}
 	if (label.startsWith("User")) {
 		return "User";
@@ -159,7 +144,7 @@ function shortenLabel(label: string): string {
 	if (label.startsWith("Tool")) {
 		return "Tools";
 	}
-	return truncateCompat(label, 10);
+	return truncateToWidthCompat(label, 10, "…");
 }
 
 /** Resolve the user's preferred editor: $VISUAL → $EDITOR → vi. */
@@ -248,7 +233,8 @@ function buildTableItems(parsed: ParsedPrompt): TableItem[] {
 // ---------------------------------------------------------------------------
 
 function makeRow(innerW: number): (content: string) => string {
-	return (content: string): string => `${dim("│")}${truncateCompat(` ${content}`, innerW, true)}${dim("│")}`;
+	return (content: string): string =>
+		`${dim("│")}${truncateToWidthCompat(` ${content}`, innerW, "…", true)}${dim("│")}`;
 }
 
 function makeEmptyRow(innerW: number): () => string {
@@ -280,6 +266,14 @@ function renderTitleBorder(innerW: number): string {
 	return dim(`╭${"─".repeat(leftBorder)}${titleText}${"─".repeat(rightBorder)}╮`);
 }
 
+/**
+ * The headline, and the one number on this screen that is not a model of
+ * anything: the last request's prompt, as the provider counted it.
+ *
+ * Before the first reply there is no usage to read, so the estimated system
+ * prompt stands in — marked, because an estimate wearing the headline's
+ * clothes is the thing this view exists to stop.
+ */
 function renderContextWindowBar(
 	lines: string[],
 	parsed: ParsedPrompt,
@@ -290,79 +284,39 @@ function renderContextWindowBar(
 	emptyRow: () => string,
 	divider: () => string,
 ): void {
-	const pct = (parsed.totalTokens / contextWindow) * 100;
-	const label = `${fmt(parsed.totalTokens)} / ${fmt(contextWindow)} tokens (${pct.toFixed(1)}%)`;
-	lines.push(row(label));
+	const measured = sessionUsage && sessionUsage.tokens > 0 ? sessionUsage : undefined;
+	const tokens = measured ? measured.tokens : parsed.totalTokens;
+	const pct = (tokens / contextWindow) * 100;
+	const prefix = measured ? "" : "~";
+	const source = measured ? dim("measured") : dim(italic("estimated"));
+	const label = `${prefix}${fmt(tokens)} / ${fmt(contextWindow)} tokens (${pct.toFixed(1)}%)`;
+	const gap = Math.max(1, innerW - visibleWidth(label) - visibleWidth(source) - 2);
+	lines.push(row(`${label}${" ".repeat(gap)}${source}`));
 
 	const barWidth = innerW - 4;
 	const filled = Math.max(1, Math.round((pct / 100) * barWidth));
-	const empty = barWidth - filled;
-	const bar = `${sgr("36", "█".repeat(filled))}${dim("░".repeat(empty))}`;
-	lines.push(row(bar));
+	const empty = Math.max(0, barWidth - filled);
+	lines.push(row(`${sgr("36", "█".repeat(filled))}${dim("░".repeat(empty))}`));
 
-	if (sessionUsage && sessionUsage.tokens > 0) {
-		lines.push(emptyRow());
-		renderCombinedContextWindowBar(lines, parsed, sessionUsage, contextWindow, innerW, row);
+	if (measured) {
+		const totals = measured.totals;
+		lines.push(
+			row(
+				dim(
+					[
+						`floor ${fmt(totals.floorTokens)}`,
+						`${(totals.cachedShare * 100).toFixed(0)}% cached`,
+						`${fmt(totals.turns)} turn${totals.turns === 1 ? "" : "s"}`,
+						formatCost(totals.cost),
+					].join("  ·  "),
+				),
+			),
+		);
 	}
 
 	lines.push(emptyRow());
 	lines.push(divider());
 	lines.push(emptyRow());
-}
-
-function proportionalColumns(values: readonly number[], columns: number): number[] {
-	if (columns <= 0) {
-		return values.map(() => 0);
-	}
-
-	const total = values.reduce((sum, value) => sum + value, 0);
-	if (total <= 0) {
-		return values.map(() => 0);
-	}
-
-	const rawColumns = values.map((value) => (value / total) * columns);
-	const allocated = rawColumns.map(Math.floor);
-	let remaining = columns - allocated.reduce((sum, value) => sum + value, 0);
-	const largestRemainders = rawColumns
-		.map((value, index) => ({ index, remainder: value - Math.floor(value) }))
-		.sort((left, right) => right.remainder - left.remainder);
-
-	for (let index = 0; index < largestRemainders.length && remaining > 0; index++, remaining--) {
-		const slot = largestRemainders[index];
-		if (slot) {
-			allocated[slot.index] = (allocated[slot.index] ?? 0) + 1;
-		}
-	}
-
-	return allocated;
-}
-
-function renderCombinedContextWindowBar(
-	lines: string[],
-	parsed: ParsedPrompt,
-	sessionUsage: SessionUsageData,
-	contextWindow: number,
-	innerW: number,
-	row: (content: string) => string,
-): void {
-	const totalTokens = parsed.totalTokens + sessionUsage.tokens;
-	const pct = (totalTokens / contextWindow) * 100;
-	const sessionPrefix = sessionUsage.estimated ? "~" : "";
-	const label = `Burden + session: ${fmt(totalTokens)} / ${fmt(contextWindow)} tokens (${pct.toFixed(1)}%; burden ${fmt(parsed.totalTokens)} + session ${sessionPrefix}${fmt(sessionUsage.tokens)})`;
-	lines.push(row(label));
-
-	const barWidth = innerW - 4;
-	const freeTokens = Math.max(0, contextWindow - totalTokens);
-	const [burdenWidth = 0, sessionWidth = 0, freeWidth = 0] = proportionalColumns(
-		[parsed.totalTokens, sessionUsage.tokens, freeTokens],
-		barWidth,
-	);
-	const bar = [
-		sgr("36", "█".repeat(burdenWidth)),
-		sgr(SESSION_COLORS.prompt, "▓".repeat(sessionWidth)),
-		dim("░".repeat(freeWidth)),
-	].join("");
-	lines.push(row(bar));
 }
 
 interface BarCategory {
@@ -377,6 +331,7 @@ function renderStackedBar(
 	innerW: number,
 	row: (content: string) => string,
 ): void {
+	lines.push(row(dim(`System prompt — ${italic(`estimated ~${fmt(parsed.totalTokens)}`)}`)));
 	renderStackedCategories(lines, burdenCategories(parsed), parsed.totalTokens, innerW, row);
 }
 
@@ -419,21 +374,30 @@ function distinctSessionCategoryColor(label: string, index: number, previousColo
 	return preferred;
 }
 
-function combinedCategories(parsed: ParsedPrompt, sessionUsage: SessionUsageData): BarCategory[] {
-	const categories = burdenCategories(parsed);
-	let previousColor = categories.at(-1)?.color;
+/**
+ * The measured context, split.
+ *
+ * The floor leads rather than sorting into place: it is the exact half of this
+ * bar and usually the largest single piece, and putting it first keeps the two
+ * kinds of number from being read as one ranked list.
+ */
+function contextCategories(sessionUsage: SessionUsageData): BarCategory[] {
+	const floor = sessionUsage.categories.filter((category) => !category.estimated);
+	const growth = sessionUsage.categories.filter((category) => category.estimated);
+	const categories: BarCategory[] = floor.map((category, index) => ({
+		label: category.label,
+		tokens: category.tokens,
+		color: SECTION_COLORS[Math.min(index, SECTION_COLORS.length - 1)] ?? "2",
+	}));
 
-	for (const [index, category] of sessionUsage.categories.entries()) {
+	let previousColor = categories.at(-1)?.color;
+	for (const [index, category] of growth.toSorted((left, right) => right.tokens - left.tokens).entries()) {
 		const color = distinctSessionCategoryColor(category.label, index, previousColor);
-		categories.push({
-			label: category.label,
-			tokens: category.tokens,
-			color,
-		});
+		categories.push({ label: category.label, tokens: category.tokens, color });
 		previousColor = color;
 	}
 
-	return categories.filter((category) => category.tokens > 0).toSorted((left, right) => right.tokens - left.tokens);
+	return categories.filter((category) => category.tokens > 0);
 }
 
 function renderStackedCategories(
@@ -473,16 +437,14 @@ function renderStackedCategories(
 	}
 }
 
-function renderCombinedStackedBar(
+function renderContextStackedBar(
 	lines: string[],
-	parsed: ParsedPrompt,
 	sessionUsage: SessionUsageData,
 	innerW: number,
 	row: (content: string) => string,
 ): void {
-	const totalTokens = parsed.totalTokens + sessionUsage.tokens;
-	lines.push(row(dim("Burden + session by category")));
-	renderStackedCategories(lines, combinedCategories(parsed, sessionUsage), totalTokens, innerW, row);
+	lines.push(row(dim(`Context by category — floor measured, ${italic("growth split estimated")}`)));
+	renderStackedCategories(lines, contextCategories(sessionUsage), sessionUsage.tokens, innerW, row);
 }
 
 export function wrapLegendParts(parts: string[], maxWidth: number): string[] {
@@ -506,10 +468,15 @@ export function wrapLegendParts(parts: string[], maxWidth: number): string[] {
 	return rows;
 }
 
+/**
+ * Rows here are all estimates — the provider itemises no part of the prompt —
+ * so they all carry the tilde. It is not decoration: the bar above them is
+ * measured, and the two must not read as the same kind of number.
+ */
 function renderTableRow(item: TableItem, isSelected: boolean, innerW: number): string {
 	const prefix = isSelected ? sgr("36", "▸") : dim("·");
 
-	const tokenStr = `${fmt(item.tokens)} tokens`;
+	const tokenStr = `~${fmt(item.tokens)} tokens`;
 	const pctStr = `${item.pct.toFixed(1)}%`;
 	const suffix = `${tokenStr}   ${pctStr}`;
 
@@ -519,20 +486,24 @@ function renderTableRow(item: TableItem, isSelected: boolean, innerW: number): s
 	const gapMin = 2;
 	const nameMaxWidth = innerW - prefixWidth - suffixWidth - gapMin - 3;
 
-	const truncatedName = truncateCompat(isSelected ? bold(sgr("36", item.label)) : item.label, nameMaxWidth);
+	const truncatedName = truncateToWidthCompat(
+		isSelected ? bold(sgr("36", item.label)) : item.label,
+		nameMaxWidth,
+		"…",
+	);
 	const nameWidth = visibleWidth(truncatedName);
 	const gap = Math.max(1, innerW - prefixWidth - nameWidth - suffixWidth - 3);
 
 	const content = `${prefix} ${truncatedName}${" ".repeat(gap)}${dim(suffix)}`;
 
-	return `${dim("│")}${truncateCompat(` ${content}`, innerW, true)}${dim("│")}`;
+	return `${dim("│")}${truncateToWidthCompat(` ${content}`, innerW, "…", true)}${dim("│")}`;
 }
 
 // ---------------------------------------------------------------------------
 // BudgetOverlay component
 // ---------------------------------------------------------------------------
 
-type Mode = "sections" | "drilldown" | "tools" | "skill-toggle" | "trace" | "trace-drilldown";
+type Mode = "sections" | "drilldown" | "tools" | "turns" | "skill-toggle" | "trace" | "trace-drilldown";
 
 interface OverlayState {
 	mode: Mode;
@@ -542,6 +513,8 @@ interface OverlayState {
 	searchQuery: string;
 	drilldownSection: TableItem | null;
 	toolsSection: TableItem | null;
+	toolTab: ToolTab;
+	toolTabCursor: Map<ToolTab, { selectedIndex: number; scrollOffset: number }>;
 	collapsedToolGroups: Set<string>;
 	pendingChanges: Map<string, DisableMode>;
 	confirmingDiscard: boolean;
@@ -554,52 +527,62 @@ interface ToolRow {
 	kind: "tool";
 	label: string;
 	toolName: string;
-	enabled: boolean;
+	reach: ToolReach;
 	indented?: boolean;
-	chars?: number;
-	tokens?: number;
-	content?: string;
+	chars: number;
+	tokens: number;
+	content: string;
 }
 
 interface ToolGroupRow {
 	kind: "group";
 	label: string;
 	groupKey: string;
-	state: "enabled" | "disabled" | "mixed";
+	reach: ToolReach;
 	tools: ToolRow[];
 	tokens: number;
-	activeCount: number;
-	totalCount: number;
 	collapsed: boolean;
 }
 
 type ToolsRow = ToolRow | ToolGroupRow;
 
-type ToolToggleHandler = (
-	toolName: string,
-	enabled: boolean,
-) => {
-	applied: boolean;
-	activeToolNames: string[];
+/** Ask tool-policy to move a tool to `reach`. False when the policy refuses. */
+export type ToolReachHandler = (toolName: string, reach: ToolReach) => boolean;
+
+/** Glyph and SGR colour per state, in the order the legend reads them. */
+const REACH_STYLE: Record<ToolReach, { glyph: string; color: string }> = {
+	[ToolReach.Direct]: { glyph: "●", color: "32" },
+	[ToolReach.Declared]: { glyph: "◆", color: "36" },
+	[ToolReach.Deferred]: { glyph: "○", color: "38;2;137;180;250" },
+	[ToolReach.Blocked]: { glyph: "✕", color: "31" },
+	[ToolReach.Unreachable]: { glyph: "!", color: "33" },
 };
 
-function partitionTools(tools: ToolSectionData, activeSet: Set<string>): ToolSectionData {
-	const byName = new Map<string, ToolEntry>();
-	for (const tool of [...tools.active, ...tools.inactive]) {
-		byName.set(toolDisplayName(tool), tool);
-	}
+const REACH_CYCLE: readonly ToolReach[] = [ToolReach.Direct, ToolReach.Declared, ToolReach.Deferred, ToolReach.Blocked];
 
-	const active: ToolEntry[] = [];
-	const inactive: ToolEntry[] = [];
-	for (const tool of byName.values()) {
-		if (activeSet.has(toolDisplayName(tool))) {
-			active.push(tool);
-		} else {
-			inactive.push(tool);
-		}
-	}
+/** The state `space` asks for next. `Unreachable` is off the ring, so it enters at `Direct`. */
+export function nextToolReach(reach: ToolReach): ToolReach {
+	const index = REACH_CYCLE.indexOf(reach);
+	return REACH_CYCLE[(index + 1) % REACH_CYCLE.length] ?? ToolReach.Direct;
+}
 
-	return { active, inactive };
+const TOOL_TABS = ["native", "mcp", "apps"] as const;
+type ToolTab = (typeof TOOL_TABS)[number];
+
+const TOOL_TAB_LABELS: Record<ToolTab, string> = { native: "Native", mcp: "MCP", apps: "Apps" };
+
+export function toolTabFor(toolName: string): ToolTab {
+	if (toolName.startsWith("mcp__")) {
+		return "mcp";
+	}
+	if (toolName.startsWith("codex_apps_")) {
+		return "apps";
+	}
+	return "native";
+}
+
+export function filterToolsByTab(tools: readonly ToolEntry[], tab: ToolTab): ToolEntry[] {
+	return tools.filter((tool) => toolTabFor(toolDisplayName(tool)) === tab);
 }
 
 function parseToolContent(tool: ToolEntry): unknown {
@@ -675,6 +658,20 @@ function codexAppToolInfo(tool: ToolEntry): CodexAppToolInfo | undefined {
 	};
 }
 
+const AGENT_TOOL_SET: ReadonlySet<string> = new Set(AGENT_TOOL_NAMES);
+
+// Display prefix only: AGENT_TOOL_NAMES stays bare on the wire and in onToolReach.
+// `functions.` is codex's top-level API namespace, and it never stacks on another one.
+// `mcp__` and `codex_apps_` are namespaces too, spelled with the separators the provider accepts, so toolTabFor sorts them out.
+export function toolRowLabel(toolName: string, reach: ToolReach): string {
+	const namespaced = AGENT_TOOL_SET.has(toolName) ? `collaboration.${toolName}` : toolName;
+	const alreadyNamespaced = namespaced.includes(".") || toolTabFor(toolName) !== "native";
+	if (reach !== ToolReach.Direct || alreadyNamespaced) {
+		return namespaced;
+	}
+	return `functions.${namespaced}`;
+}
+
 function markdownCodeBlock(language: string, content: string): string {
 	let fence = "```";
 	while (content.includes(fence)) {
@@ -684,24 +681,92 @@ function markdownCodeBlock(language: string, content: string): string {
 }
 
 function formatTokenCount(tokens: number): string {
-	return `${fmt(tokens)} ${tokens === 1 ? "token" : "tokens"}`;
+	return `~${fmt(tokens)} ${tokens === 1 ? "token" : "tokens"}`;
 }
 
-function formatToolMarkdown(tool: ToolEntry, headingLevel = 3): string {
+export type ToolDefinitionLookup = (name: string) => RegisteredToolDefinition | undefined;
+
+// A schema of type object with no properties and `additionalProperties: false` admits nothing.
+function schemaAdmitsNoInput(parameters: unknown): boolean {
+	if (!parameters || typeof parameters !== "object") return false;
+	const schema = parameters as Record<string, unknown>;
+	if (schema.type !== "object" || schema.additionalProperties !== false) return false;
+	const properties = schema.properties;
+	if (properties === undefined) return true;
+	if (!properties || typeof properties !== "object") return false;
+	return Object.keys(properties).length === 0;
+}
+
+// pi calls `prepareArguments` with partial arguments on every call, so a probe is a call it already tolerates.
+function discardsArguments(definition: RegisteredToolDefinition): boolean {
+	const prepare = definition.prepareArguments;
+	if (typeof prepare !== "function") return false;
+	try {
+		const prepared = (prepare as (args: unknown) => unknown)({ tokenBurdenProbe: 1 });
+		return !!prepared && typeof prepared === "object" && Object.keys(prepared).length === 0;
+	} catch {
+		return false;
+	}
+}
+
+// Two registry facts identify a placeholder: the schema admits no input, and `prepareArguments` drops every argument.
+// A registration that declares nothing and then drops what arrives is not the schema the model sees.
+// The swap at native-tools.ts:122 keys on the function tool's own name, so the name is the provider type.
+export function providerOwnedToolType(
+	name: string,
+	lookup: ToolDefinitionLookup = getRegisteredTool,
+): string | undefined {
+	const definition = lookup(name);
+	if (!definition) return undefined;
+	const declared = definition.providerToolType;
+	if (typeof declared === "string" && declared.length > 0) return declared;
+	if (!schemaAdmitsNoInput(definition.parameters)) return undefined;
+	return discardsArguments(definition) ? name : undefined;
+}
+
+function providerSchemaLines(providerType: string, placeholder: unknown): string[] {
+	return [
+		"",
+		"#### Input schema",
+		"",
+		"- Owner: the provider. This registration is a placeholder.",
+		`- Provider tool type: \`${providerType}\``,
+		"- The placeholder declares no properties and sets `additionalProperties: false`.",
+		"- `prepareArguments` drops every argument, so nothing the model sends is bound here.",
+		`- The request builder replaces the placeholder with a provider tool of type \`${providerType}\`.`,
+		"- The provider defines that tool's fields. This panel cannot read them.",
+		"",
+		"Placeholder schema:",
+		"",
+		markdownCodeBlock("json", JSON.stringify(placeholder, null, 2)),
+	];
+}
+
+export function formatToolMarkdown(tool: ToolEntry, headingLevel = 3, lookup?: ToolDefinitionLookup): string {
 	const parsed = parseToolContent(tool);
 	const description = objectValue(parsed, "description");
-	const parameters = objectValue(parsed, "parameters");
+	const parameters = objectValue(parsed, "input_schema");
 	const tokens = Number.isFinite(tool.tokens) ? tool.tokens : 0;
 	const chars = Number.isFinite(tool.chars) ? tool.chars : 0;
-	const heading = `${"#".repeat(headingLevel)} ${toolDisplayName(tool)} (${formatTokenCount(tokens)})`;
-	const lines = [heading, "", `- Tokens: ${fmt(tokens)}`, `- Characters: ${fmt(chars)}`];
+	const heading = `${"#".repeat(headingLevel)} ${toolRowLabel(toolDisplayName(tool), tool.reach)} (${formatTokenCount(tokens)})`;
+	const costLabel = tool.reach === ToolReach.Direct ? "Resident tokens" : "Tokens if it were resident";
+	const lines = [
+		heading,
+		"",
+		`- State: ${toolReachLabel(tool.reach)} — ${toolReachDescription(tool.reach)}`,
+		`- ${costLabel}: ~${fmt(tokens)} (estimated from the serialized schema)`,
+		`- Characters: ${fmt(chars)}`,
+	];
 
 	if (typeof description === "string" && description.trim()) {
 		lines.push("", description.trim());
 	}
 
-	if (parameters !== undefined) {
-		lines.push("", "#### Parameters", "", markdownCodeBlock("json", JSON.stringify(parameters, null, 2)));
+	const providerType = providerOwnedToolType(toolDisplayName(tool), lookup);
+	if (providerType) {
+		lines.push(...providerSchemaLines(providerType, parameters ?? {}));
+	} else if (parameters !== undefined) {
+		lines.push("", "#### Input schema", "", markdownCodeBlock("json", JSON.stringify(parameters, null, 2)));
 	} else if (typeof parsed === "object") {
 		lines.push("", "#### Definition", "", markdownCodeBlock("json", JSON.stringify(parsed, null, 2)));
 	} else {
@@ -716,24 +781,96 @@ function formatToolMarkdown(tool: ToolEntry, headingLevel = 3): string {
 	return lines.join("\n");
 }
 
-export function formatToolSectionMarkdown(tools: ToolSectionData): string {
-	const sections = ["# Tool definitions", "", "## Active tools", ""];
+export function formatToolSectionMarkdown(tools: ToolSectionData, lookup?: ToolDefinitionLookup): string {
+	const deferredTokens = tools.registeredTokens - tools.residentTokens;
+	const sections = [
+		"# Tool schemas",
+		"",
+		"Token counts here are estimated from the serialized schemas — the provider reports one prompt total, never a per-tool split. The measured figure these sit inside is the session floor.",
+		"",
+		`- Resident: ~${fmt(tools.residentTokens)} tokens of schema in the tool array the provider sees, so the model calls them without a cell`,
+		`- Declared: ~${fmt(tools.declarationTokens)} tokens of one-line signatures in the system prompt; the body is called from a cell`,
+		`- Deferred: ~${fmt(deferredTokens)} tokens registered and callable from a cell, found through ALL_TOOLS, costing nothing until called`,
+		"",
+	];
 
-	if (tools.active.length === 0) {
-		sections.push("_No active tools._");
-	} else {
-		sections.push(tools.active.map((tool) => formatToolMarkdown(tool)).join("\n\n"));
-	}
-
-	sections.push("", "## Inactive tools", "");
-
-	if (tools.inactive.length === 0) {
-		sections.push("_No inactive tools._");
-	} else {
-		sections.push(tools.inactive.map((tool) => formatToolMarkdown(tool)).join("\n\n"));
+	for (const reach of TOOL_REACH_ORDER) {
+		const entries = tools.tools
+			.filter((tool) => tool.reach === reach)
+			.toSorted((left, right) =>
+				toolRowLabel(toolDisplayName(left), left.reach).localeCompare(
+					toolRowLabel(toolDisplayName(right), right.reach),
+				),
+			);
+		if (entries.length === 0) {
+			continue;
+		}
+		const tokens = entries.reduce((sum, tool) => sum + tool.tokens, 0);
+		sections.push(
+			`## ${toolReachLabel(reach)} (${String(entries.length)}, ${formatTokenCount(tokens)})`,
+			"",
+			toolReachDescription(reach),
+			"",
+			entries.map((tool) => formatToolMarkdown(tool, 3, lookup)).join("\n\n"),
+			"",
+		);
 	}
 
 	return `${sections.join("\n")}\n`;
+}
+
+const REACH_COLUMN_WIDTH = 11;
+const TOKEN_COLUMN_WIDTH = 11;
+
+function countByReach(entries: readonly ToolEntry[], reach: ToolReach): number {
+	return entries.filter((tool) => tool.reach === reach).length;
+}
+
+function plural(count: number, word: string): string {
+	return `${String(count)} ${word}${count === 1 ? "" : "s"}`;
+}
+
+// The Deferred number is a saving stated as a saving: registered, cell-reachable, unspent.
+function renderToolCostSummary(
+	lines: string[],
+	tools: ToolSectionData,
+	innerW: number,
+	row: (content: string) => string,
+): void {
+	const directCount = countByReach(tools.tools, ToolReach.Direct);
+	const declaredCount = countByReach(tools.tools, ToolReach.Declared);
+	const rows: [string, number, string][] = [
+		["Resident", tools.residentTokens, `${plural(directCount, "schema")} in the tool array; no cell needed`],
+		[
+			"Deferred",
+			tools.registeredTokens - tools.residentTokens,
+			`${plural(tools.tools.length - directCount, "tool")} in ALL_TOOLS; free until called`,
+		],
+	];
+
+	if (tools.declarationTokens > 0) {
+		rows.splice(1, 0, [
+			"Declared",
+			tools.declarationTokens,
+			`${plural(declaredCount, "signature")} in the prompt; body runs in a cell`,
+		]);
+	}
+
+	for (const [label, tokens, note] of rows) {
+		const head = `${label.padEnd(13)}${`~${fmt(tokens)} tok`.padStart(12)}`;
+		const noteWidth = Math.max(0, innerW - visibleWidth(head) - 5);
+		lines.push(row(`${head}   ${dim(truncateToWidthCompat(note, noteWidth, "…"))}`));
+	}
+}
+
+function toolLegend(entries: readonly ToolEntry[]): string {
+	return TOOL_REACH_ORDER.map((reach) => ({ reach, count: countByReach(entries, reach) }))
+		.filter(({ count }) => count > 0)
+		.map(
+			({ reach, count }) =>
+				`${sgr(REACH_STYLE[reach].color, REACH_STYLE[reach].glyph)} ${count} ${toolReachLabel(reach)}`,
+		)
+		.join("  ");
 }
 
 class BudgetOverlay {
@@ -745,6 +882,8 @@ class BudgetOverlay {
 		searchQuery: "",
 		drilldownSection: null,
 		toolsSection: null,
+		toolTab: "native",
+		toolTabCursor: new Map(),
 		collapsedToolGroups: new Set(),
 		pendingChanges: new Map(),
 		confirmingDiscard: false,
@@ -764,8 +903,7 @@ class BudgetOverlay {
 	private readonly tui: TUI;
 	private done: (value: null) => void;
 	private onToggleResult?: (result: SkillToggleResult) => boolean;
-	private onToolToggle?: ToolToggleHandler;
-	private traceCache = new TraceCache();
+	private onToolReach?: ToolReachHandler;
 	private onRunTrace?: () => Promise<BasePromptTraceResult>;
 
 	private cachedWidth?: number;
@@ -780,7 +918,7 @@ class BudgetOverlay {
 		done: (value: null) => void,
 		onToggleResult?: (result: SkillToggleResult) => boolean,
 		onRunTrace?: () => Promise<BasePromptTraceResult>,
-		onToolToggle?: ToolToggleHandler,
+		onToolReach?: ToolReachHandler,
 	) {
 		this.tui = tui;
 		this.parsed = parsed;
@@ -797,7 +935,7 @@ class BudgetOverlay {
 		this.done = done;
 		this.onToggleResult = onToggleResult;
 		this.onRunTrace = onRunTrace;
-		this.onToolToggle = onToolToggle;
+		this.onToolReach = onToolReach;
 	}
 
 	// -----------------------------------------------------------------------
@@ -812,6 +950,20 @@ class BudgetOverlay {
 
 		if (this.state.mode === "tools") {
 			this.handleToolsInput(data);
+			return;
+		}
+
+		if (this.state.mode === "turns") {
+			if (isBackKey(data)) {
+				this.state.mode = "sections";
+				this.state.selectedIndex = 0;
+				this.state.scrollOffset = 0;
+				this.invalidate();
+			} else if (isNavigateUpKey(data)) {
+				this.moveSelection(-1);
+			} else if (isNavigateDownKey(data)) {
+				this.moveSelection(1);
+			}
 			return;
 		}
 
@@ -859,6 +1011,17 @@ class BudgetOverlay {
 				this.openSectionInEditor();
 			} else if (this.state.mode === "drilldown") {
 				this.openDrilldownItemInEditor();
+			}
+			return;
+		}
+
+		if (data === "u") {
+			if (this.state.mode === "sections" && (this.sessionUsage?.turns.length ?? 0) > 0) {
+				this.state.mode = "turns";
+				this.state.selectedIndex = 0;
+				this.state.scrollOffset = 0;
+				this.state.searchActive = false;
+				this.invalidate();
 			}
 			return;
 		}
@@ -926,6 +1089,8 @@ class BudgetOverlay {
 			itemCount = this.getFilteredSkills().length;
 		} else if (this.state.mode === "tools") {
 			itemCount = this.getToolsRows().length;
+		} else if (this.state.mode === "turns") {
+			itemCount = this.sessionUsage?.turns.length ?? 0;
 		} else if (this.state.mode === "trace") {
 			itemCount = this.state.traceResult?.buckets.length ?? 0;
 		} else if (this.state.mode === "trace-drilldown") {
@@ -980,6 +1145,8 @@ class BudgetOverlay {
 		if (selected.tools) {
 			this.state.mode = "tools";
 			this.state.toolsSection = selected;
+			this.state.toolTab = "native";
+			this.state.toolTabCursor.clear();
 			this.state.selectedIndex = 0;
 			this.state.scrollOffset = 0;
 			this.state.searchActive = false;
@@ -1002,14 +1169,25 @@ class BudgetOverlay {
 			this.state.mode === "drilldown" ? (this.state.drilldownSection?.children ?? []) : this.tableItems;
 
 		if (this.state.searchActive && this.state.searchQuery) {
-			return fuzzyFilter(baseItems, this.state.searchQuery);
+			return fuzzyFilter(baseItems, this.state.searchQuery, (item) => item.label);
 		}
 
 		return baseItems;
 	}
 
 	private handleToolsInput(data: string): void {
-		if (isBackKey(data)) {
+		// isBackKey matches h, so the tab keys are read first and back narrows to esc or q.
+		if (data === "h" || matchesKey(data, "left")) {
+			this.moveToolTab(-1);
+			return;
+		}
+
+		if (data === "l" || matchesKey(data, "right")) {
+			this.moveToolTab(1);
+			return;
+		}
+
+		if (isCloseKey(data)) {
 			this.state.mode = "sections";
 			this.state.toolsSection = null;
 			this.state.selectedIndex = 0;
@@ -1028,22 +1206,28 @@ class BudgetOverlay {
 			return;
 		}
 
+		/**
+		 * Blocking is on its own key.
+		 *
+		 * It writes tool-policy's persisted hidden set and refuses the tool inside
+		 * cells too, so it is not something enter should do on the way past. Enter
+		 * keeps the harmless meaning it has everywhere else in this overlay: open
+		 * the thing under the cursor.
+		 */
 		if (isForwardKey(data)) {
 			const row = this.getToolsRows()[this.state.selectedIndex];
 			if (row?.kind === "group") {
 				this.toggleToolGroupCollapsed(row);
 			} else if (row) {
-				this.toggleTool(row.toolName, !row.enabled);
+				this.openSelectedToolInEditor();
 			}
 			return;
 		}
 
 		if (data === " ") {
 			const row = this.getToolsRows()[this.state.selectedIndex];
-			if (row?.kind === "group") {
-				this.toggleToolGroup(row);
-			} else if (row) {
-				this.toggleTool(row.toolName, !row.enabled);
+			if (row?.kind === "tool") {
+				this.requestToolReach(row, nextToolReach(row.reach));
 			}
 			return;
 		}
@@ -1053,78 +1237,117 @@ class BudgetOverlay {
 		}
 	}
 
+	/** Saves selectedIndex and scrollOffset per tab, so a short list never inherits a long list's index. */
+	private moveToolTab(delta: number): void {
+		this.state.toolTabCursor.set(this.state.toolTab, {
+			selectedIndex: this.state.selectedIndex,
+			scrollOffset: this.state.scrollOffset,
+		});
+		const index = TOOL_TABS.indexOf(this.state.toolTab);
+		this.state.toolTab = TOOL_TABS[(index + delta + TOOL_TABS.length) % TOOL_TABS.length] ?? "native";
+
+		const saved = this.state.toolTabCursor.get(this.state.toolTab);
+		const rowCount = this.getToolsRows().length;
+		this.state.selectedIndex = Math.min(saved?.selectedIndex ?? 0, Math.max(0, rowCount - 1));
+		this.state.scrollOffset = Math.min(saved?.scrollOffset ?? 0, Math.max(0, rowCount - MAX_VISIBLE_ROWS));
+		if (this.state.selectedIndex < this.state.scrollOffset) {
+			this.state.scrollOffset = this.state.selectedIndex;
+		}
+		this.invalidate();
+	}
+
+	private toolsInTab(tab: ToolTab): ToolEntry[] {
+		return filterToolsByTab(this.state.toolsSection?.tools?.tools ?? [], tab);
+	}
+
+	private toolTabBar(): string {
+		return TOOL_TABS.map((tab) => {
+			const label = `${TOOL_TAB_LABELS[tab]} ${fmt(this.toolsInTab(tab).length)}`;
+			return tab === this.state.toolTab ? bold(sgr("36", label)) : dim(label);
+		}).join(dim("  ·  "));
+	}
+
+	// One block of rows per state in TOOL_REACH_ORDER; inside a block, alphabetical by displayed label.
+	// The codex connectors collapse into one row per app, or 320 of them are the entire view.
 	private getToolsRows(): ToolsRow[] {
-		const tools = this.state.toolsSection?.tools;
-		if (!tools) {
+		const section = this.state.toolsSection?.tools;
+		if (!section) {
 			return [];
 		}
 
-		const entries = [
-			...tools.active.map((tool) => ({ tool, enabled: true })),
-			...tools.inactive.map((tool) => ({ tool, enabled: false })),
-		].map(({ tool, enabled }) => {
-			const toolName = toolDisplayName(tool);
-			const info = codexAppToolInfo(tool);
-			const row: ToolRow = {
-				kind: "tool",
-				label: info?.displayName ?? toolName,
-				toolName,
-				enabled,
-				chars: Number.isFinite(tool.chars) ? tool.chars : 0,
-				tokens: Number.isFinite(tool.tokens) ? tool.tokens : 0,
-				content: typeof tool.content === "string" ? tool.content : "",
-			};
-			return { row, info };
-		});
+		const rows: ToolsRow[] = [];
+		const tabTools = filterToolsByTab(section.tools, this.state.toolTab);
 
-		const regularRows: ToolRow[] = [];
-		const codexGroups = new Map<string, ToolRow[]>();
+		for (const reach of TOOL_REACH_ORDER) {
+			const plainRows: ToolRow[] = [];
+			const codexGroups = new Map<string, ToolRow[]>();
 
-		for (const { row: toolRow, info } of entries) {
-			if (!info) {
-				regularRows.push(toolRow);
-				continue;
+			for (const tool of tabTools) {
+				if (tool.reach !== reach) {
+					continue;
+				}
+				const toolName = toolDisplayName(tool);
+				const info = codexAppToolInfo(tool);
+				const row: ToolRow = {
+					kind: "tool",
+					label: info?.displayName ?? toolRowLabel(toolName, reach),
+					toolName,
+					reach,
+					chars: Number.isFinite(tool.chars) ? tool.chars : 0,
+					tokens: Number.isFinite(tool.tokens) ? tool.tokens : 0,
+					content: typeof tool.content === "string" ? tool.content : "",
+				};
+				if (info) {
+					codexGroups.set(info.appLabel, [...(codexGroups.get(info.appLabel) ?? []), row]);
+				} else {
+					plainRows.push(row);
+				}
 			}
-			codexGroups.set(info.appLabel, [...(codexGroups.get(info.appLabel) ?? []), toolRow]);
-		}
 
-		const sortedRegularRows = regularRows.toSorted((left, right) => {
-			const tokenDelta = (right.tokens ?? 0) - (left.tokens ?? 0);
-			return tokenDelta !== 0 ? tokenDelta : left.label.localeCompare(right.label);
-		});
+			rows.push(...plainRows.toSorted((left, right) => left.label.localeCompare(right.label)));
 
-		const groupRows: ToolsRow[] = [...codexGroups.entries()]
-			.toSorted(([leftLabel], [rightLabel]) => leftLabel.localeCompare(rightLabel))
-			.flatMap(([appLabel, rows]) => {
-				const sortedRows = rows
+			for (const [appLabel, appRows] of [...codexGroups.entries()].toSorted(([left], [right]) =>
+				left.localeCompare(right),
+			)) {
+				const groupKey = `${reach}/${appLabel}`;
+				const sortedRows = appRows
 					.toSorted((left, right) => left.label.localeCompare(right.label))
 					.map((row) => ({ ...row, indented: true }));
-				const activeCount = sortedRows.filter((row) => row.enabled).length;
-				const state = activeCount === 0 ? "disabled" : activeCount === sortedRows.length ? "enabled" : "mixed";
 				const header: ToolGroupRow = {
 					kind: "group",
 					label: `Codex Apps / ${appLabel}`,
-					groupKey: appLabel,
-					state,
+					groupKey,
+					reach,
 					tools: sortedRows,
-					tokens: sortedRows.reduce((sum, row) => sum + (row.enabled ? (row.tokens ?? 0) : 0), 0),
-					activeCount,
-					totalCount: sortedRows.length,
-					collapsed: this.state.collapsedToolGroups.has(appLabel),
+					tokens: sortedRows.reduce((sum, row) => sum + row.tokens, 0),
+					collapsed: this.state.collapsedToolGroups.has(groupKey),
 				};
-				return header.collapsed ? [header] : [header, ...sortedRows];
-			});
+				rows.push(header, ...(header.collapsed ? [] : sortedRows));
+			}
+		}
 
-		return [...sortedRegularRows, ...groupRows];
+		return rows;
 	}
 
-	private toggleTool(toolName: string, enabled: boolean): void {
-		const result = this.onToolToggle?.(toolName, enabled);
-		if (!result?.applied) {
+	// tool-policy owns the legal transitions and pins exec and wait to Direct; a refusal leaves the row.
+	private requestToolReach(row: ToolRow, reach: ToolReach): void {
+		if (!this.onToolReach?.(row.toolName, reach)) {
 			return;
 		}
 
-		this.applyActiveToolNames(result.activeToolNames);
+		const entry = this.state.toolsSection?.tools?.tools.find((tool) => toolDisplayName(tool) === row.toolName);
+		if (entry) {
+			entry.reach = reach;
+		}
+
+		const rows = this.getToolsRows();
+		const movedTo = rows.findIndex((next) => next.kind === "tool" && next.toolName === row.toolName);
+		this.state.selectedIndex =
+			movedTo >= 0 ? movedTo : Math.min(this.state.selectedIndex, Math.max(0, rows.length - 1));
+		this.state.scrollOffset = Math.max(0, Math.min(this.state.scrollOffset, this.state.selectedIndex));
+		if (this.state.selectedIndex >= this.state.scrollOffset + MAX_VISIBLE_ROWS) {
+			this.state.scrollOffset = this.state.selectedIndex - MAX_VISIBLE_ROWS + 1;
+		}
 		this.invalidate();
 	}
 
@@ -1138,85 +1361,6 @@ class BudgetOverlay {
 		this.state.selectedIndex = Math.min(this.state.selectedIndex, Math.max(0, rowCount - 1));
 		this.state.scrollOffset = Math.min(this.state.scrollOffset, Math.max(0, rowCount - MAX_VISIBLE_ROWS));
 		this.invalidate();
-	}
-
-	private toggleToolGroup(row: ToolGroupRow): void {
-		const enabled = row.state !== "enabled";
-		let activeToolNames: string[] | undefined;
-
-		for (const tool of row.tools) {
-			if (tool.enabled === enabled) {
-				continue;
-			}
-			const result = this.onToolToggle?.(tool.toolName, enabled);
-			if (result?.applied) {
-				activeToolNames = result.activeToolNames;
-			}
-		}
-
-		if (activeToolNames) {
-			this.applyActiveToolNames(activeToolNames);
-			this.invalidate();
-		}
-	}
-
-	private applyActiveToolNames(activeToolNames: string[]): void {
-		const activeSet = new Set(activeToolNames);
-		this.parsed = this.withActiveToolNames(this.parsed, activeSet);
-		this.originalParsed = this.withActiveToolNames(this.originalParsed, activeSet);
-		this.originalTotalTokens = this.originalParsed.totalTokens;
-		this.adjustedTotalTokens = this.parsed.totalTokens;
-		this.tableItems = buildTableItems(this.parsed);
-
-		if (this.state.toolsSection) {
-			this.state.toolsSection = this.tableItems.find((item) => item.tools) ?? null;
-		}
-
-		const rowCount = this.getToolsRows().length;
-		if (rowCount === 0) {
-			this.state.selectedIndex = 0;
-			this.state.scrollOffset = 0;
-			return;
-		}
-		this.state.selectedIndex = Math.min(this.state.selectedIndex, rowCount - 1);
-		this.state.scrollOffset = Math.min(this.state.scrollOffset, Math.max(0, rowCount - MAX_VISIBLE_ROWS));
-	}
-
-	private withActiveToolNames(parsed: ParsedPrompt, activeSet: Set<string>): ParsedPrompt {
-		let tokenDelta = 0;
-		let charDelta = 0;
-		const sections = parsed.sections.map((section) => {
-			if (!section.tools) {
-				return { ...section };
-			}
-
-			const nextTools = partitionTools(section.tools, activeSet);
-			const nextTokens = nextTools.active.reduce((sum, tool) => sum + tool.tokens, 0);
-			const nextChars = nextTools.active.reduce((sum, tool) => sum + tool.chars, 0);
-			tokenDelta += nextTokens - section.tokens;
-			charDelta += nextChars - section.chars;
-
-			return {
-				...section,
-				label: `Tool definitions (${String(nextTools.active.length)} active, ${String(nextTools.active.length + nextTools.inactive.length)} total)`,
-				tokens: nextTokens,
-				chars: nextChars,
-				tools: nextTools,
-				children: nextTools.active.map((tool) => ({
-					label: tool.name,
-					chars: tool.chars,
-					tokens: tool.tokens,
-					content: tool.content,
-				})),
-			};
-		});
-
-		return {
-			...parsed,
-			sections,
-			totalTokens: parsed.totalTokens + tokenDelta,
-			totalChars: parsed.totalChars + charDelta,
-		};
 	}
 
 	// -----------------------------------------------------------------------
@@ -1450,6 +1594,14 @@ class BudgetOverlay {
 		}
 	}
 
+	private toolReachHint(): string {
+		const row = this.getToolsRows()[this.state.selectedIndex];
+		if (row?.kind !== "tool" || !this.onToolReach) {
+			return "";
+		}
+		return `${italic("space")} ${toolReachLabel(nextToolReach(row.reach))}  `;
+	}
+
 	private openSelectedToolInEditor(): void {
 		const tool = this.getToolsRows()[this.state.selectedIndex];
 		if (tool?.kind !== "tool" || !tool.content) {
@@ -1461,9 +1613,10 @@ class BudgetOverlay {
 			formatToolMarkdown(
 				{
 					name: tool.toolName,
-					chars: tool.chars ?? tool.content.length,
-					tokens: tool.tokens ?? 0,
+					chars: tool.chars,
+					tokens: tool.tokens,
 					content: tool.content,
+					reach: tool.reach,
 				},
 				2,
 			),
@@ -1529,11 +1682,7 @@ class BudgetOverlay {
 
 	private getFilteredSkills(): SkillInfo[] {
 		if (this.state.searchActive && this.state.searchQuery) {
-			const items = this.discoveredSkills.map((s) => ({
-				...s,
-				label: s.name,
-			}));
-			return fuzzyFilter(items, this.state.searchQuery);
+			return fuzzyFilter(this.discoveredSkills, this.state.searchQuery, (s) => s.name);
 		}
 		return this.discoveredSkills;
 	}
@@ -1575,7 +1724,6 @@ class BudgetOverlay {
 		}
 
 		if (data === "r") {
-			this.traceCache.clear();
 			this.runTrace();
 			return;
 		}
@@ -1639,7 +1787,6 @@ class BudgetOverlay {
 			return;
 		}
 
-		// Check cache first
 		const baseSection = this.parsed.sections.find((s) => s.label.startsWith("Base"));
 		if (!baseSection?.content) {
 			return;
@@ -1651,7 +1798,6 @@ class BudgetOverlay {
 
 		try {
 			const result = await this.onRunTrace();
-			this.traceCache.set(result);
 			this.state.traceResult = result;
 			this.state.traceLoading = false;
 			this.state.selectedIndex = 0;
@@ -1736,7 +1882,7 @@ class BudgetOverlay {
 			const isSelected = i === this.state.selectedIndex;
 
 			const prefix = isSelected ? sgr("36", "▸") : dim("·");
-			const tokenStr = `${fmt(bucket.tokens)} tokens`;
+			const tokenStr = `~${fmt(bucket.tokens)} tokens`;
 			const pctStr = `${bucket.pctOfBase.toFixed(1)}%`;
 			const countStr = `${bucket.lineCount} line${bucket.lineCount === 1 ? "" : "s"}`;
 			const suffix = `${countStr}  ${tokenStr}  ${pctStr}`;
@@ -1747,12 +1893,12 @@ class BudgetOverlay {
 			const nameMaxWidth = innerW - prefixWidth - suffixWidth - gapMin - 3;
 
 			const label = this.getTraceBucketLabel(bucket);
-			const truncatedName = truncateCompat(isSelected ? bold(sgr("36", label)) : label, nameMaxWidth);
+			const truncatedName = truncateToWidthCompat(isSelected ? bold(sgr("36", label)) : label, nameMaxWidth, "…");
 			const nameWidth = visibleWidth(truncatedName);
 			const gap = Math.max(1, innerW - prefixWidth - nameWidth - suffixWidth - 3);
 
 			const content = `${prefix} ${truncatedName}${" ".repeat(gap)}${dim(suffix)}`;
-			lines.push(`${dim("│")}${truncateCompat(` ${content}`, innerW, true)}${dim("│")}`);
+			lines.push(`${dim("│")}${truncateToWidthCompat(` ${content}`, innerW, "…", true)}${dim("│")}`);
 		}
 
 		lines.push(emptyRow());
@@ -1799,7 +1945,7 @@ class BudgetOverlay {
 			const isSelected = i === this.state.selectedIndex;
 
 			const prefix = isSelected ? sgr("36", "▸") : dim("·");
-			const tokenStr = `${fmt(e.tokens)} tok`;
+			const tokenStr = `~${fmt(e.tokens)} tok`;
 			const kindLabel = e.kind === "tool-line" ? "tool" : "guide";
 			const suffix = `${kindLabel}  ${tokenStr}`;
 
@@ -1809,12 +1955,16 @@ class BudgetOverlay {
 			const nameMaxWidth = innerW - prefixWidth - suffixWidth - gapMin - 3;
 
 			const lineText = e.line.startsWith("- ") ? e.line.slice(2) : e.line;
-			const truncatedLine = truncateCompat(isSelected ? bold(sgr("36", lineText)) : lineText, nameMaxWidth);
+			const truncatedLine = truncateToWidthCompat(
+				isSelected ? bold(sgr("36", lineText)) : lineText,
+				nameMaxWidth,
+				"…",
+			);
 			const lineWidth = visibleWidth(truncatedLine);
 			const gap = Math.max(1, innerW - prefixWidth - lineWidth - suffixWidth - 3);
 
 			const content = `${prefix} ${truncatedLine}${" ".repeat(gap)}${dim(suffix)}`;
-			lines.push(`${dim("│")}${truncateCompat(` ${content}`, innerW, true)}${dim("│")}`);
+			lines.push(`${dim("│")}${truncateToWidthCompat(` ${content}`, innerW, "…", true)}${dim("│")}`);
 		}
 
 		lines.push(emptyRow());
@@ -1922,12 +2072,12 @@ class BudgetOverlay {
 			const dupMarker = skill.hasDuplicates ? sgr("35", "²") : " ";
 			const nameStr = isSelected ? bold(sgr("36", skill.name)) : skill.name;
 
-			const tokenStr = `${fmt(skill.tokens)} tok`;
+			const tokenStr = `~${fmt(skill.tokens)} tok`;
 			const suffixWidth = visibleWidth(tokenStr);
 			const prefixWidth = 8;
 			const nameMaxWidth = innerW - prefixWidth - suffixWidth - 4;
 
-			const truncatedName = truncateCompat(nameStr, nameMaxWidth);
+			const truncatedName = truncateToWidthCompat(nameStr, nameMaxWidth, "…");
 			const nameWidth = visibleWidth(truncatedName);
 			const gap = Math.max(1, innerW - prefixWidth - nameWidth - suffixWidth - 3);
 
@@ -1979,6 +2129,16 @@ class BudgetOverlay {
 		lines.push(row(breadcrumb));
 		lines.push(emptyRow());
 
+		// renderToolCostSummary is the session total, so it sits above the tabs and ignores them.
+		const section = this.state.toolsSection?.tools;
+		if (section) {
+			renderToolCostSummary(lines, section, innerW, row);
+			lines.push(emptyRow());
+		}
+
+		lines.push(row(this.toolTabBar()));
+		lines.push(emptyRow());
+
 		const rows = this.getToolsRows();
 
 		if (rows.length === 0) {
@@ -1994,49 +2154,36 @@ class BudgetOverlay {
 			const tool = rows[i];
 			const isSelected = i === this.state.selectedIndex;
 			const prefix = isSelected ? sgr("36", "▸") : dim("·");
+			const style = REACH_STYLE[tool.reach];
+			const statusIcon = sgr(style.color, style.glyph);
+			const indent = tool.kind === "tool" && tool.indented ? "  " : "";
 
-			if (tool.kind === "group") {
-				let statusIcon: string;
-				if (tool.state === "enabled") {
-					statusIcon = sgr("32", "●");
-				} else if (tool.state === "mixed") {
-					statusIcon = sgr("33", "◐");
-				} else {
-					statusIcon = sgr("31", "○");
-				}
-				const groupLabel = `${tool.collapsed ? "▸" : "▾"} ${tool.label}`;
-				const nameStr = isSelected ? bold(sgr("36", groupLabel)) : groupLabel;
-				const tokenStr = `${tool.activeCount}/${tool.totalCount} on   ${fmt(tool.tokens)} tok`;
-				const suffixWidth = visibleWidth(tokenStr);
-				const prefixWidth = 5;
-				const nameMaxWidth = innerW - prefixWidth - suffixWidth - 4;
-				const truncatedName = truncateCompat(nameStr, nameMaxWidth);
-				const nameWidth = visibleWidth(truncatedName);
-				const gap = Math.max(1, innerW - prefixWidth - nameWidth - suffixWidth - 3);
+			const label = tool.kind === "group" ? `${tool.collapsed ? "▸" : "▾"} ${tool.label}` : tool.label;
+			const nameStr = isSelected ? bold(sgr("36", label)) : label;
 
-				const content = `${prefix} ${statusIcon}  ${truncatedName}${" ".repeat(gap)}${dim(tokenStr)}`;
-				lines.push(row(content));
-				continue;
-			}
+			const stateStr =
+				tool.kind === "group"
+					? `${String(tool.tools.length)} ${toolReachLabel(tool.reach)}`
+					: toolReachLabel(tool.reach);
+			const tokenStr = `~${fmt(tool.tokens)} tok`;
+			const suffix = `${stateStr.padStart(REACH_COLUMN_WIDTH)}  ${tokenStr.padStart(TOKEN_COLUMN_WIDTH)}`;
+			const paintedSuffix =
+				tool.reach === ToolReach.Direct
+					? `${sgr(style.color, stateStr.padStart(REACH_COLUMN_WIDTH))}  ${tokenStr.padStart(TOKEN_COLUMN_WIDTH)}`
+					: dim(suffix);
 
-			const statusIcon = tool.enabled ? sgr("32", "●") : sgr("31", "○");
-			const nameStr = isSelected ? bold(sgr("36", tool.label)) : tool.label;
-			const tokenStr = `${fmt(tool.tokens ?? 0)} tok`;
-			const indent = tool.indented ? "  " : "";
-
-			const suffixWidth = visibleWidth(tokenStr);
+			const suffixWidth = visibleWidth(suffix);
 			const prefixWidth = 5 + visibleWidth(indent);
 			const nameMaxWidth = innerW - prefixWidth - suffixWidth - 4;
-			const truncatedName = truncateCompat(nameStr, nameMaxWidth);
+			const truncatedName = truncateToWidthCompat(nameStr, nameMaxWidth, "…");
 			const nameWidth = visibleWidth(truncatedName);
 			const gap = Math.max(1, innerW - prefixWidth - nameWidth - suffixWidth - 3);
 
-			const content = `${prefix} ${indent}${statusIcon}  ${truncatedName}${" ".repeat(gap)}${dim(tokenStr)}`;
-			lines.push(row(content));
+			lines.push(row(`${prefix} ${indent}${statusIcon}  ${truncatedName}${" ".repeat(gap)}${paintedSuffix}`));
 		}
 
 		lines.push(emptyRow());
-		lines.push(row(dim(`${sgr("32", "●")} on  ${sgr("33", "◐")} mixed group  ${sgr("31", "○")} disabled`)));
+		lines.push(row(dim(toolLegend(this.toolsInTab(this.state.toolTab)))));
 
 		if (rows.length > MAX_VISIBLE_ROWS) {
 			const progress = Math.round(((this.state.selectedIndex + 1) / rows.length) * 10);
@@ -2045,6 +2192,85 @@ class BudgetOverlay {
 			lines.push(row(`${dots}  ${dim(countStr)}`));
 			lines.push(emptyRow());
 		}
+	}
+
+	/**
+	 * Every request, as the provider billed it.
+	 *
+	 * `context` is what was sent, `fresh` is the part of it that was not served
+	 * from cache, and the gap between the two columns is the whole argument for
+	 * why a token count alone cannot tell you what a turn cost.
+	 */
+	private renderTurnsView(
+		lines: string[],
+		row: (content: string) => string,
+		emptyRow: () => string,
+		centerRow: (content: string) => string,
+	): void {
+		lines.push(emptyRow());
+		lines.push(row(`${bold("Turns")}  ${dim("← esc to go back")}  ${dim("every column provider-reported")}`));
+		lines.push(emptyRow());
+
+		const turns = this.sessionUsage?.turns ?? [];
+		if (turns.length === 0) {
+			lines.push(centerRow(dim(italic("No completed turns yet"))));
+			lines.push(emptyRow());
+			return;
+		}
+
+		const columns = (cells: [string, string, string, string, string, string]) =>
+			`${cells[0].padStart(4)}${cells[1].padStart(11)}${cells[2].padStart(11)}${cells[3].padStart(11)}${cells[4].padStart(10)}${cells[5].padStart(11)}`;
+
+		lines.push(row(dim(columns(["#", "context", "fresh", "cached", "output", "cost"]))));
+
+		const startIdx = this.state.scrollOffset;
+		const endIdx = Math.min(startIdx + MAX_VISIBLE_ROWS, turns.length);
+		for (let i = startIdx; i < endIdx; i++) {
+			const turn = turns[i];
+			const cells = columns([
+				String(turn.index),
+				fmt(turn.promptTokens),
+				fmt(turn.input),
+				fmt(turn.cacheRead),
+				fmt(turn.output),
+				formatCost(turn.cost),
+			]);
+			lines.push(row(i === this.state.selectedIndex ? sgr("36", cells) : cells));
+		}
+
+		const totals = this.sessionUsage?.totals;
+		if (totals) {
+			lines.push(
+				row(
+					dim(
+						// The context column has no total: each turn's is the whole
+						// prompt, so adding them counts the same tokens once per turn.
+						columns([
+							"Σ",
+							"—",
+							fmt(totals.freshInput),
+							fmt(totals.cacheRead),
+							fmt(totals.output),
+							formatCost(totals.cost),
+						]),
+					),
+				),
+			);
+			lines.push(emptyRow());
+			lines.push(
+				row(
+					dim(
+						`floor ${fmt(totals.floorTokens)}, paid before the first question  ·  ${(totals.cachedShare * 100).toFixed(0)}% of all input cached`,
+					),
+				),
+			);
+		}
+
+		if (turns.length > MAX_VISIBLE_ROWS) {
+			const progress = Math.round(((this.state.selectedIndex + 1) / turns.length) * 10);
+			lines.push(row(`${rainbowDots(progress, 10)}  ${dim(`${this.state.selectedIndex + 1}/${turns.length}`)}`));
+		}
+		lines.push(emptyRow());
 	}
 
 	// -----------------------------------------------------------------------
@@ -2080,13 +2306,13 @@ class BudgetOverlay {
 			);
 		}
 
-		// Zone 2: Stacked section bar
-		renderStackedBar(lines, this.parsed, innerW, row);
-		lines.push(emptyRow());
+		// Zone 2: the measured context first, then the estimate of the prompt inside it
 		if (this.sessionUsage && this.sessionUsage.tokens > 0) {
-			renderCombinedStackedBar(lines, this.parsed, this.sessionUsage, innerW, row);
+			renderContextStackedBar(lines, this.sessionUsage, innerW, row);
 			lines.push(emptyRow());
 		}
+		renderStackedBar(lines, this.parsed, innerW, row);
+		lines.push(emptyRow());
 		lines.push(divider());
 
 		// Zone 3: Interactive table, skill toggle, or trace
@@ -2094,6 +2320,8 @@ class BudgetOverlay {
 			this.renderSkillToggle(lines, innerW, row, emptyRow, centerRow);
 		} else if (this.state.mode === "tools") {
 			this.renderToolsView(lines, innerW, row, emptyRow, centerRow);
+		} else if (this.state.mode === "turns") {
+			this.renderTurnsView(lines, row, emptyRow, centerRow);
 		} else if (this.state.mode === "trace" || this.state.mode === "trace-drilldown") {
 			this.renderTrace(lines, innerW, row, emptyRow, centerRow);
 		} else {
@@ -2108,12 +2336,9 @@ class BudgetOverlay {
 		if (this.state.mode === "skill-toggle") {
 			hints = `${italic("↑↓/jk")} navigate  ${italic("enter/l")} cycle state  ${italic("e")} edit  ${italic("/")} search  ${italic("ctrl+s")} save  ${italic("esc/h/q")} back`;
 		} else if (this.state.mode === "tools") {
-			const selectedTool = this.getToolsRows()[this.state.selectedIndex];
-			const viewHint = selectedTool?.kind === "tool" && selectedTool.content ? `  ${italic("e")} view` : "";
-			hints =
-				selectedTool?.kind === "group"
-					? `${italic("↑↓/jk")} navigate  ${italic("enter/l")} collapse  ${italic("space")} toggle group  ${italic("esc/h/q")} back`
-					: `${italic("↑↓/jk")} navigate  ${italic("enter/l/space")} toggle${viewHint}  ${italic("esc/h/q")} back`;
+			hints = `${italic("↑↓/jk")} navigate  ${italic("h/l")} tab  ${italic("enter")} view  ${this.toolReachHint()}${italic("esc/q")} back`;
+		} else if (this.state.mode === "turns") {
+			hints = `${italic("↑↓/jk")} navigate  ${italic("esc/h/q")} back`;
 		} else if (this.state.mode === "trace") {
 			hints = `${italic("↑↓/jk")} navigate  ${italic("enter/l")} details  ${italic("e")} open  ${italic("r")} refresh  ${italic("esc/h/q")} back`;
 		} else if (this.state.mode === "trace-drilldown") {
@@ -2131,7 +2356,8 @@ class BudgetOverlay {
 			const selected = items[this.state.selectedIndex];
 			const isBase = selected?.label.startsWith("Base");
 			const traceHint = isBase && this.onRunTrace ? `  ${italic("t")} trace` : "";
-			hints = `${italic("↑↓/jk")} navigate  ${italic("enter/l")} drill-in  ${italic("e")} view${traceHint}  ${italic("/")} search  ${italic("esc/q")} close`;
+			const turnsHint = (this.sessionUsage?.turns.length ?? 0) > 0 ? `  ${italic("u")} turns` : "";
+			hints = `${italic("↑↓/jk")} navigate  ${italic("enter/l")} drill-in  ${italic("e")} view${traceHint}${turnsHint}  ${italic("/")} search  ${italic("esc/q")} close`;
 		}
 		lines.push(centerRow(dim(hints)));
 
@@ -2213,7 +2439,7 @@ export async function showReport(
 	discoveredSkills?: SkillInfo[],
 	onToggleResult?: (result: SkillToggleResult) => boolean,
 	onRunTrace?: () => Promise<BasePromptTraceResult>,
-	onToolToggle?: ToolToggleHandler,
+	onToolReach?: ToolReachHandler,
 	sessionUsage?: SessionUsageData,
 ): Promise<void> {
 	await tokenBurdenTui.bind(ctx).overlays.openComponent<null>(
@@ -2227,7 +2453,7 @@ export async function showReport(
 				done,
 				onToggleResult,
 				onRunTrace,
-				onToolToggle,
+				onToolReach,
 			);
 			return {
 				render: (width: number) => overlay.render(width),

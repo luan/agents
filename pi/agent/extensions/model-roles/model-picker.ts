@@ -2,17 +2,16 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
-	decodeKittyPrintable,
 	fuzzyFilter,
 	Key,
 	matchesKey,
 	type OverlayHandle,
-	type TUI,
 	truncateToWidth,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import type { RoleCandidate } from "./catalog.js";
 import { openChoicePicker } from "./choice-picker.js";
+import { bottom, frame, type PickerTheme, type PickerTui, printableText } from "./picker-chrome.js";
 
 type ModelOption = {
 	provider: string;
@@ -22,15 +21,6 @@ type ModelOption = {
 
 type ModelScope = "scoped" | "all";
 
-type PickerTheme = {
-	fg(color: string, text: string): string;
-	bg(color: string, text: string): string;
-	bold(text: string): string;
-};
-
-type PickerTui = Pick<TUI, "requestRender" | "terminal">;
-
-const BORDER = "accent";
 const FAST_SERVICE_TIER = "priority";
 const ALL_THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
@@ -64,20 +54,6 @@ function uniqueModels(models: readonly unknown[]): ModelOption[] {
 
 function searchText(model: ModelOption): string {
 	return `${model.provider} ${model.id} ${model.name ?? ""}`;
-}
-
-function printableText(data: string): string | undefined {
-	const kittyPrintable = decodeKittyPrintable(data);
-	if (kittyPrintable !== undefined) return kittyPrintable;
-	if (
-		!data ||
-		[...data].some((char) => {
-			const code = char.charCodeAt(0);
-			return code < 32 || code === 0x7f || (code >= 0x80 && code <= 0x9f);
-		})
-	)
-		return undefined;
-	return data;
 }
 
 export async function openModelCandidatePicker(
@@ -194,18 +170,20 @@ class ModelCandidatePicker {
 		const start = Math.max(0, Math.min(this.selected - bodyHeight + 1, models.length - bodyHeight));
 		const position = models.length > 0 ? this.theme.fg("dim", ` ${this.selected + 1}/${models.length}`) : "";
 		const lines = [
-			this.frame(`${this.theme.fg("accent", this.theme.bold("Select model"))}${position}`, innerWidth),
-			this.frame(this.searchLine(innerWidth), innerWidth),
+			frame(this.theme, `${this.theme.fg("accent", this.theme.bold("Select model"))}${position}`, innerWidth),
+			frame(this.theme, this.searchLine(innerWidth), innerWidth),
 		];
-		if (models.length === 0) lines.push(this.frame(this.theme.fg("muted", "No matching models."), innerWidth));
+		if (models.length === 0) lines.push(frame(this.theme, this.theme.fg("muted", "No matching models."), innerWidth));
 		else {
 			for (const [offset, model] of models.slice(start, start + bodyHeight).entries()) {
-				lines.push(this.frame(this.renderModel(model, start + offset === this.selected, innerWidth), innerWidth));
+				lines.push(
+					frame(this.theme, this.renderModel(model, start + offset === this.selected, innerWidth), innerWidth),
+				);
 			}
 		}
-		lines.push(this.frame(this.statusLine(innerWidth), innerWidth));
-		lines.push(this.frame(this.theme.fg("dim", this.hints(innerWidth)), innerWidth));
-		lines.push(this.bottom(innerWidth));
+		lines.push(frame(this.theme, this.statusLine(innerWidth), innerWidth));
+		lines.push(frame(this.theme, this.theme.fg("dim", this.hints(innerWidth)), innerWidth));
+		lines.push(bottom(this.theme, innerWidth));
 		return lines;
 	}
 
@@ -378,14 +356,5 @@ class ModelCandidatePicker {
 			? "type search  backspace edit  enter save  ctrl+s scope  esc clear"
 			: `↑↓/jk move  enter save  / search  t thinking  s tier  ctrl+s ${scope}  esc cancel`;
 		return truncateToWidth(text, width);
-	}
-
-	private frame(content: string, width: number): string {
-		const clipped = truncateToWidth(content, width);
-		return `${this.theme.fg(BORDER, "│")}${clipped}${" ".repeat(Math.max(0, width - visibleWidth(clipped)))}${this.theme.fg(BORDER, "│")}`;
-	}
-
-	private bottom(width: number): string {
-		return this.theme.fg(BORDER, `└${"─".repeat(Math.max(0, width))}┘`);
 	}
 }

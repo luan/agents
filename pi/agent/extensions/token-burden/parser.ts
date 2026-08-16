@@ -9,31 +9,23 @@
  *   5. Environment context metadata
  */
 
-import { createRequire } from "node:module";
+/**
+ * Nothing in this file is measured, and it says so.
+ *
+ * The system prompt is text the provider never itemises: usage reports one
+ * prompt total, not a line for the base prompt and another for AGENTS.md. So
+ * the split below is an estimate and stays one. It is deliberately the same
+ * estimate the rest of the repo uses — `approxTokenCount`, bytes over four —
+ * rather than a BPE encoder, because a second opinion that is precise about the
+ * wrong quantity reads as authority it has not earned. The exact figure this
+ * breakdown sits under is the measured session floor.
+ */
 
+import { approxTokenCount } from "../shared/output-budget.ts";
 import type { AgentsFileEntry, ParsedPrompt, PromptSection, SkillEntry, ToolEntry } from "./types.js";
+import { ToolReach } from "./types.js";
 
 export type { ParsedPrompt };
-
-const require = createRequire(import.meta.url);
-
-type Encoder = (text: string) => unknown[];
-let encode: Encoder | undefined;
-
-/**
- * Loaded on first use rather than at import: pulling in the o200k_base BPE tables costs well over
- * 100ms, this module is imported while pi starts up, and nothing counts tokens until the
- * `/token-burden` command runs. Sync require keeps estimateTokens callable from sync code.
- */
-function encoder(): Encoder {
-	encode ??= (require("gpt-tokenizer/encoding/o200k_base") as { encode: Encoder }).encode;
-	return encode;
-}
-
-/** Token count using BPE tokenization (o200k_base encoding). */
-export function estimateTokens(text: string): number {
-	return encoder()(text).length;
-}
 
 // ---------------------------------------------------------------------------
 // Internal helpers (defined before use to satisfy no-use-before-define)
@@ -43,7 +35,7 @@ function measure(label: string, text: string): PromptSection {
 	return {
 		label,
 		chars: text.length,
-		tokens: estimateTokens(text),
+		tokens: approxTokenCount(text),
 		content: text,
 	};
 }
@@ -115,7 +107,7 @@ function parseAgentsFiles(contextBlock: string): AgentsFileEntry[] {
 		files.push({
 			path,
 			chars: blockText.length,
-			tokens: estimateTokens(blockText),
+			tokens: approxTokenCount(blockText),
 		});
 	}
 
@@ -138,7 +130,7 @@ function parseXmlSkillEntries(skillsBlock: string, out: SkillEntry[]): number {
 			name,
 			description,
 			chars: fullEntry.length,
-			tokens: estimateTokens(fullEntry),
+			tokens: approxTokenCount(fullEntry),
 		});
 		parsedCount++;
 	}
@@ -163,7 +155,7 @@ function parseYamlSkillEntries(skillsBlock: string, out: SkillEntry[]): void {
 			name,
 			description,
 			chars: fullEntry.length,
-			tokens: estimateTokens(fullEntry),
+			tokens: approxTokenCount(fullEntry),
 		});
 	}
 }
@@ -274,7 +266,7 @@ export function parseSystemPrompt(prompt: string): ParsedPrompt {
 	}
 
 	const totalChars = prompt.length;
-	const totalTokens = estimateTokens(prompt);
+	const totalTokens = approxTokenCount(prompt);
 
 	return { sections, totalChars, totalTokens, skills };
 }
@@ -289,74 +281,79 @@ interface ToolDefinitionInput {
 	parameters: unknown;
 }
 
+interface JsonSchemaLike {
+	properties?: unknown;
+	required?: unknown;
+}
+
 /**
- * Build a PromptSection for tool definitions (function schemas sent to the LLM).
+ * Serialise one tool the way the provider request does.
  *
- * Tool definitions are not part of the system prompt text — they're sent via
- * the function-calling API — but they consume context window tokens. This
- * builds a section to make that cost visible.
+ * Mirrors `pi-ai`'s `anthropic-messages.js` on the non-strict path: name,
+ * description, and an `input_schema` rebuilt from the schema's `properties` and
+ * `required`. A pretty-printed dump of pi's whole definition object — which is
+ * what this section used to count — is not a payload anybody is billed for, and
+ * it read high by every byte of indentation.
+ */
+function wireFormat(tool: ToolDefinitionInput): unknown {
+	const schema = (tool.parameters ?? {}) as JsonSchemaLike;
+	return {
+		name: tool.name,
+		description: tool.description,
+		input_schema: {
+			type: "object",
+			properties: schema.properties ?? {},
+			required: schema.required ?? [],
+		},
+	};
+}
+
+/**
+ * Build a PromptSection for tool schemas, one entry per registered tool.
+ *
+ * Schemas are not part of the system prompt text — they ride the tool-calling
+ * API — but only for a tool on the direct surface. So the section's own token
+ * count is the direct schemas alone, and every other tool travels in the entry
+ * list carrying the cost it is *not* charging. `declarationTokens` is resident
+ * too, but it is already inside the base prompt section and is passed through
+ * for display rather than added again here.
  *
  * Returns null if there are no tools.
  */
 export function buildToolDefinitionsSection(
 	tools: ToolDefinitionInput[],
-	activeToolNames?: string[],
+	reachOf: (toolName: string) => ToolReach,
+	declarationTokens = 0,
 ): PromptSection | null {
 	if (tools.length === 0) {
 		return null;
 	}
 
-	const activeSet = activeToolNames ? new Set(activeToolNames) : null;
-	const countedTools = activeSet ? tools.filter((tool) => activeSet.has(tool.name)) : tools;
-	const inactiveTools = activeSet ? tools.filter((tool) => !activeSet.has(tool.name)) : [];
+	const entries: ToolEntry[] = tools.map((tool) => {
+		const wire = wireFormat(tool);
+		const serialized = JSON.stringify(wire);
+		return {
+			name: tool.name,
+			chars: serialized.length,
+			tokens: approxTokenCount(serialized),
+			content: JSON.stringify(wire, null, 2),
+			reach: reachOf(tool.name),
+		};
+	});
 
-	function serializeTools(input: ToolDefinitionInput[]): ToolEntry[] {
-		return input.map((tool) => {
-			const serialized = JSON.stringify(tool, null, 2);
-			return {
-				name: tool.name,
-				chars: serialized.length,
-				tokens: estimateTokens(serialized),
-				content: serialized,
-			};
-		});
-	}
-
-	const activeEntries = serializeTools(countedTools);
-	const inactiveEntries = serializeTools(inactiveTools);
-
-	const children: {
-		label: string;
-		chars: number;
-		tokens: number;
-		content?: string;
-	}[] = [];
-	let totalTokens = 0;
-	let totalChars = 0;
-
-	for (const tool of activeEntries) {
-		children.push({
-			label: tool.name,
-			chars: tool.chars,
-			tokens: tool.tokens,
-			content: tool.content,
-		});
-		totalTokens += tool.tokens;
-		totalChars += tool.chars;
-	}
-
-	const label = activeSet
-		? `Tool definitions (${String(countedTools.length)} active, ${String(tools.length)} total)`
-		: `Tool definitions (${String(tools.length)})`;
+	const direct = entries.filter((entry) => entry.reach === ToolReach.Direct);
+	const residentTokens = direct.reduce((sum, entry) => sum + entry.tokens, 0);
+	const registeredTokens = entries.reduce((sum, entry) => sum + entry.tokens, 0);
 
 	return {
-		label,
-		chars: totalChars,
-		tokens: totalTokens,
+		label: `Tool schemas (${String(direct.length)} resident of ${String(entries.length)})`,
+		chars: direct.reduce((sum, entry) => sum + entry.chars, 0),
+		tokens: residentTokens,
 		tools: {
-			active: activeEntries,
-			inactive: inactiveEntries,
+			tools: entries,
+			residentTokens,
+			registeredTokens,
+			declarationTokens,
 		},
-		children,
 	};
 }

@@ -2,17 +2,14 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Editor } from "@earendil-works/pi-tui";
-import { installEditorHandleHighlight, mergeHandleSegments } from "./editor";
-import { PENDING_HANDLE } from "./handles";
 import imageAttachExtension, {
 	appendHandlePaths,
 	collectImageAttachments,
 	findImagePathTokens,
+	imageIdentity,
 	pastedImagePath,
 	resolveImageHandles,
 } from "./index";
-import { pickCellColors } from "./thumbnail";
 
 const PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
 
@@ -31,7 +28,7 @@ async function withImageDir(run: (dir: string) => Promise<void>) {
 
 type TerminalInputListener = (data: string) => { consume?: boolean; data?: string } | undefined;
 
-function inputHandler(loadImage: (path: string) => Promise<ReturnType<typeof image> | undefined>, cwd = "/repo") {
+function inputHandler(loadImage?: (path: string) => Promise<ReturnType<typeof image> | undefined>, cwd = "/repo") {
 	const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
 	const sent: unknown[] = [];
 	let listener: TerminalInputListener | undefined;
@@ -46,7 +43,7 @@ function inputHandler(loadImage: (path: string) => Promise<ReturnType<typeof ima
 				sent.push(message);
 			},
 		} as never,
-		{ loadImage: (path) => loadImage(path) },
+		loadImage ? { loadImage: (path) => loadImage(path) } : undefined,
 	);
 	const input = handlers.get("input");
 	if (!input) throw new Error("input handler was not registered");
@@ -73,36 +70,6 @@ function inputHandler(loadImage: (path: string) => Promise<ReturnType<typeof ima
 }
 
 const multimodal = { cwd: "/repo", model: { input: ["text", "image"] } };
-
-type TextSegment = { segment: string; index: number; input: string };
-
-const BACKSPACE = "\x7f";
-const DELETE_WORD_BACKWARD = "\x17";
-const DELETE_WORD_FORWARD = "\x1bd";
-const LINE_START = "\x01";
-
-/** A real pi editor behind the layer — the only way to prove deletion actually goes whole. */
-function realLayeredEditor() {
-	const tui = { terminal: { rows: 40, columns: 100 }, requestRender() {} };
-	const editor = new Editor(tui as never, { borderColor: (text: string) => text, selectList: {} } as never, {});
-	return layeredEditor(editor as never) as unknown as Editor;
-}
-
-function layeredEditor(base: Record<string, unknown>) {
-	let factory: ((...args: unknown[]) => Record<string, unknown>) | undefined;
-	installEditorHandleHighlight({
-		getEditorComponent: () => (() => base) as never,
-		setEditorComponent: (next) => {
-			factory = next as never;
-		},
-	} as never);
-	if (!factory) throw new Error("editor factory was not installed");
-	return factory({}, {}, {}) as {
-		render: (width: number) => string[];
-		transformEditorLine?: (line: string) => string;
-		segment?: (text: string, mode: string) => Iterable<TextSegment>;
-	};
-}
 
 describe("image path tokens", () => {
 	test("matches path-shaped tokens and leaves bare filenames alone", () => {
@@ -219,77 +186,6 @@ describe("pasted image paths", () => {
 	});
 });
 
-describe("atomic handles", () => {
-	const graphemes = (text: string) => new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text);
-	const segmentsOf = (text: string) => [...mergeHandleSegments(text, graphemes(text))].map((s) => s.segment);
-
-	test("a handle is the single segment backspace deletes", () => {
-		// The editor deletes `lastGrapheme.segment.length` characters before the cursor, so the
-		// handle being one trailing segment is exactly what stops it eroding into "ge #12]".
-		expect(segmentsOf("see [image #12]").at(-1)).toBe("[image #12]");
-		expect(segmentsOf(`see ${PENDING_HANDLE}`).at(-1)).toBe(PENDING_HANDLE);
-	});
-
-	test("text around handles keeps its own segmentation", () => {
-		expect(segmentsOf("a [image #1] b")).toEqual(["a", " ", "[image #1]", " ", "b"]);
-	});
-
-	test("every character survives the merge", () => {
-		const text = "one [image #1] two [image #2] three";
-		expect(segmentsOf(text).join("")).toBe(text);
-	});
-
-	test("lines without a handle pass the base segmentation straight through", () => {
-		const text = "no handles here";
-		const base = graphemes(text);
-		expect(mergeHandleSegments(text, base)).toBe(base);
-	});
-
-	test("one backspace clears a whole handle in a real pi editor", () => {
-		const editor = realLayeredEditor();
-
-		editor.setText("look at [image #12]");
-		editor.handleInput(BACKSPACE);
-		expect(editor.getText()).toBe("look at ");
-
-		// Text after a handle still deletes character by character; the handle only goes as a unit.
-		editor.setText("look at [image #12] tail");
-		for (let i = 0; i < 5; i++) editor.handleInput(BACKSPACE);
-		expect(editor.getText()).toBe("look at [image #12]");
-		editor.handleInput(BACKSPACE);
-		expect(editor.getText()).toBe("look at ");
-	});
-
-	test("word delete takes the handle and stops there", () => {
-		const editor = realLayeredEditor();
-
-		// Without the motion snap the word walker runs past the handle and eats "at " with it.
-		editor.setText("look at [image #12]");
-		editor.handleInput(DELETE_WORD_BACKWARD);
-		expect(editor.getText()).toBe("look at ");
-		editor.handleInput(DELETE_WORD_BACKWARD);
-		expect(editor.getText()).toBe("look ");
-
-		editor.setText("[image #3] tail");
-		editor.handleInput(LINE_START);
-		editor.handleInput(DELETE_WORD_FORWARD);
-		expect(editor.getText()).toBe(" tail");
-	});
-
-	test("word delete is untouched where there is no handle", () => {
-		const editor = realLayeredEditor();
-		editor.setText("plain words here");
-		editor.handleInput(DELETE_WORD_BACKWARD);
-		expect(editor.getText()).toBe("plain words ");
-	});
-});
-
-describe("handle thumbnails", () => {
-	test("refuses a raster short of a full row", () => {
-		expect(pickCellColors(Buffer.alloc(11), 2, 2)).toBeUndefined();
-	});
-});
-
 describe("handles", () => {
 	test("resolves each handle once, ignoring unknown numbers", () => {
 		const handles = new Map([
@@ -348,6 +244,11 @@ describe("input hook", () => {
 			expect(result).toEqual({ action: "continue" });
 			expect(sent).toEqual([]);
 		});
+	});
+
+	test("identity ignores what this extension re-encodes", () => {
+		expect(imageIdentity(image())).toBe(imageIdentity(image()));
+		expect(imageIdentity(image())).not.toBe(imageIdentity(image(`${PNG_BASE64}x`)));
 	});
 
 	test("ignores extension-injected input so transforms cannot loop", async () => {

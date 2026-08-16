@@ -1,55 +1,20 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import {
-	ASK_TOOL_DESCRIPTION,
-	invalidPayloadResponse,
-	nonInteractiveResponse,
-	renderAskToolCall,
-	renderAskToolResult,
-	successfulResponse,
-	validateParams,
-} from "./ask-tool-helpers";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { toolRegistrarFor } from "../../shared/tool-registry.ts";
+import { ASK_TOOL_DESCRIPTION } from "./ask-tool-helpers";
+import { askToolPresentation } from "./ask-tool-presentation";
+import { executeAskTool } from "./ask-tool-runtime";
 import { AskParamsSchema } from "./schema";
 import type { AskParams } from "./types";
-import { runAskFlow } from "./ui/controller";
 
 export function registerAskTool(pi: ExtensionAPI) {
-	pi.registerTool({
+	toolRegistrarFor(pi)({
 		name: "ask_user",
 		label: "Ask User",
-		renderShell: "self",
+		...askToolPresentation,
 		description: ASK_TOOL_DESCRIPTION,
 		promptSnippet:
 			"Clarify ambiguous or preference-sensitive decisions with a short interactive interview before proceeding",
 		parameters: AskParamsSchema,
-		execute: (toolCallId, params, signal, onUpdate, ctx) =>
-			executeAskTool(pi, toolCallId, params as AskParams, signal, onUpdate, ctx),
-		renderCall: renderAskToolCall,
-		renderResult: renderAskToolResult,
+		execute: (_toolCallId, params, _signal, _onUpdate, ctx) => executeAskTool(pi, params as AskParams, ctx),
 	});
-}
-
-interface ExecuteContext extends Pick<ExtensionContext, "cwd" | "hasUI"> {}
-
-async function executeAskTool(
-	pi: ExtensionAPI,
-	_toolCallId: string,
-	params: AskParams,
-	_signal: AbortSignal | undefined,
-	_onUpdate: unknown,
-	ctx: ExecuteContext,
-) {
-	const validation = validateParams(params);
-	if (!validation.ok) {
-		return invalidPayloadResponse(params, validation.issues);
-	}
-	if (!ctx.hasUI) {
-		return nonInteractiveResponse(validation.state);
-	}
-	pi.events.emit("ask:waiting:start", undefined);
-	try {
-		const result = await runAskFlow(ctx as never, params);
-		return successfulResponse(result);
-	} finally {
-		pi.events.emit("ask:waiting:end", undefined);
-	}
 }

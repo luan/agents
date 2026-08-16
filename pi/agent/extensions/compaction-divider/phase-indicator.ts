@@ -1,13 +1,12 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { type ExtensionAPI, InteractiveMode, SessionManager } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { formatTokenCount } from "./format-tokens";
+import { formatTokenCount, splitRule } from "./format-tokens";
 
 const patchKey = Symbol.for("agents.pi.compaction-phases.patch");
 const phaseSetterKey = Symbol.for("agents.pi.compaction-phases.set");
 const reasonOverrideKey = Symbol.for("agents.pi.compaction-reason.override");
 const indicatorPatchKey = Symbol.for("agents.pi.compaction-phases.indicator-patch");
-const horizontalRule = "─";
 // Pi queues terminal renders and throttles them to a 16 ms interval.
 const finalizingRenderDwellMs = 32;
 
@@ -100,12 +99,10 @@ function renderCompactionIndicator(indicator: CompactionIndicator, width: number
 	const spinner = indicator.renderIndicatorVerbatim ? frame : (indicator.spinnerColorFn?.(frame) ?? frame);
 	const message = indicator.messageColorFn?.(indicator.message ?? "") ?? indicator.message ?? "";
 	const label = frame ? `${spinner} ${message}` : message;
-	const remaining = width - visibleWidth(label) - 2;
-	if (remaining < 4) return ["", truncateToWidth(label, width, "")];
-	const left = Math.floor(remaining / 2);
-	const right = remaining - left;
+	const split = splitRule(width, visibleWidth(label));
+	if (!split) return ["", truncateToWidth(label, width, "")];
 	const rule = indicator.messageColorFn ?? ((text: string) => text);
-	return ["", `${rule(horizontalRule.repeat(left))} ${label} ${rule(horizontalRule.repeat(right))}`];
+	return ["", `${rule(split.left)} ${label} ${rule(split.right)}`];
 }
 
 function installIndicatorPatch(indicator: CompactionIndicator): void {

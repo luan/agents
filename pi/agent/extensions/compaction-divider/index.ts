@@ -7,14 +7,12 @@ import {
 	type Theme,
 } from "@earendil-works/pi-coding-agent";
 import { Box, type Component, Markdown, type MarkdownTheme, visibleWidth } from "@earendil-works/pi-tui";
-import { formatTokenCount } from "./format-tokens";
+import { formatTokenCount, splitRule } from "./format-tokens";
 import { installCompactionPhasePatch } from "./phase-indicator";
 
 const patchKey = Symbol.for("agents.pi.compaction-divider.patch");
 // Match OMP's nerd-preset camera glyph because Pi 0.84 has no symbol-preset API.
 const compactionIcon = "\uf083";
-const horizontalRule = "─";
-
 type RenderTheme = Pick<Theme, "fg" | "bg">;
 type CompactionReason = "manual" | "threshold" | "overflow";
 
@@ -102,15 +100,20 @@ class SummaryDividerComponent implements SummaryDivider, Component {
 	}
 
 	render(width: number): string[] {
-		width = Math.max(1, width);
-		if (this.cache?.width === width) return this.cache.lines;
+		try {
+			width = Math.max(1, width);
+			if (this.cache?.width === width) return this.cache.lines;
 
-		// Pi 0.84 inserts Spacer(1) before this component, so omit OMP's leading blank.
-		const lines = this.expanded
-			? [this.renderDivider(width), "", ...this.renderDetail().render(width)]
-			: [this.renderDivider(width), ""];
-		this.cache = { width, lines };
-		return lines;
+			// Pi 0.84 inserts Spacer(1) before this component, so omit OMP's leading blank.
+			// CompactionSummaryMessageComponent can rebuild from incomplete session data; keep boundary visible.
+			const lines = this.expanded
+				? [this.renderDivider(width), "", ...this.renderDetail().render(width)]
+				: [this.renderDivider(width), ""];
+			this.cache = { width, lines };
+			return lines;
+		} catch {
+			return [`${compactionIcon} compacted`, ""];
+		}
 	}
 
 	private renderDivider(width: number): string {
@@ -122,17 +125,14 @@ class SummaryDividerComponent implements SummaryDivider, Component {
 		const label = `${compactionIcon} compacted ${range}${reason}`;
 		const expandKey = keyText("app.tools.expand") || "ctrl+o";
 		const hint = `· ${expandKey}`;
-		const plainWidth = visibleWidth(`${label} ${hint}`);
-		const remaining = width - plainWidth - 2;
+		const split = splitRule(width, visibleWidth(`${label} ${hint}`));
 
-		if (remaining < 4) return this.theme.fg("muted", label);
+		if (!split) return this.theme.fg("muted", label);
 
-		const left = Math.floor(remaining / 2);
-		const right = remaining - left;
 		return (
-			this.theme.fg("dim", horizontalRule.repeat(left)) +
+			this.theme.fg("dim", split.left) +
 			` ${this.theme.fg("muted", label)} ${this.theme.fg("dim", hint)} ` +
-			this.theme.fg("dim", horizontalRule.repeat(right))
+			this.theme.fg("dim", split.right)
 		);
 	}
 
