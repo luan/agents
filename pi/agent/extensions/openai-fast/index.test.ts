@@ -100,3 +100,37 @@ test("model role fast enables status and request injection", () => {
 	});
 	setOpenAIFastRoleEnabled({ active: false, sessionFile });
 });
+
+test("sets the codex routing headers only while fast mode is active", async () => {
+	const handlers = new Map<string, (...args: any[]) => any>();
+	const commands = new Map<string, any>();
+	const pi = {
+		on: (name: string, handler: (...args: any[]) => any) => handlers.set(name, handler),
+		registerCommand: (name: string, command: any) => commands.set(name, command),
+		registerShortcut: () => {},
+		events: { emit() {} },
+	} as any;
+	openAIFastExtension(pi);
+
+	const ctx = {
+		cwd: process.cwd(),
+		hasUI: true,
+		model: { provider: "openai-codex", id: "gpt-5.6-sol", api: "openai-codex-responses" },
+		modelRegistry: { isUsingOAuth: () => true },
+		sessionManager: {},
+		ui: { setStatus: () => {}, notify: () => {} },
+	} as any;
+	handlers.get("session_start")?.({}, ctx);
+
+	const headersWhenOff: Record<string, string | null> = {};
+	handlers.get("before_provider_headers")?.({ headers: headersWhenOff }, ctx);
+	expect(headersWhenOff).toEqual({ "x-codex-routing-hint": null });
+
+	await commands.get("fast").handler("", ctx);
+	const headersWhenActive: Record<string, string | null> = {};
+	handlers.get("before_provider_headers")?.({ headers: headersWhenActive }, ctx);
+	expect(headersWhenActive).toEqual({
+		originator: "codex_cli_rs",
+		"x-codex-routing-hint": "model=gpt-5.6-sol;tier=priority",
+	});
+});

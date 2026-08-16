@@ -16,6 +16,9 @@ const EXTENSION_ID = "openai-fast";
 const PROVIDER_ID = "openai-codex";
 const API_ID = "openai-codex-responses";
 const FAST_SERVICE_TIER = "priority";
+// The priority backend routes on these, not on the body's service_tier.
+const FAST_ORIGINATOR = "codex_cli_rs";
+const ROUTING_HINT_HEADER = "x-codex-routing-hint";
 const SUPPORTED_MODELS = new Set(["gpt-5.4", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
 const SUPPORTED_MODELS_LABEL = "gpt-5.4, gpt-5.5, gpt-5.6-sol, gpt-5.6-terra, or gpt-5.6-luna";
 const fastTui = defineExtensionTui({ id: EXTENSION_ID });
@@ -155,6 +158,16 @@ function getStatusMessage(ctx: ExtensionContext, state: SessionState): string {
 	return `OpenAI Fast mode is ${describeMode(ctx, state)}. Current model: ${eligibility.modelKey}.${injected}`;
 }
 
+function fastRoutingHeaders(ctx: ExtensionContext, state: SessionState): Record<string, string | null> {
+	if (!isFastEnabled(ctx, state) || !getEligibility(ctx).eligible || !ctx.model?.id) {
+		return { [ROUTING_HINT_HEADER]: null };
+	}
+	return {
+		originator: FAST_ORIGINATOR,
+		[ROUTING_HINT_HEADER]: `model=${ctx.model.id};tier=${FAST_SERVICE_TIER}`,
+	};
+}
+
 function injectFastServiceTier(
 	payload: unknown,
 	ctx: ExtensionContext,
@@ -208,6 +221,9 @@ export default function openAIFastExtension(pi: ExtensionAPI) {
 		updateRequestStatus(ctx, Boolean(nextPayload));
 		updateStatus(ctx, state);
 		return nextPayload;
+	});
+	pi.on("before_provider_headers", (event, ctx) => {
+		Object.assign(event.headers, fastRoutingHeaders(ctx, getState(ctx)));
 	});
 	pi.on("message_end", (_event, ctx) => updateRequestStatus(ctx, false));
 	pi.on("agent_end", (_event, ctx) => updateRequestStatus(ctx, false));
