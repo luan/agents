@@ -1,4 +1,6 @@
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
 
@@ -9,38 +11,34 @@ use crate::stow;
 pub fn run() -> Result<()> {
     let root = crate::repo_root();
     assert_no_checkout_paths(&root)?;
-    validate_json(&root.join("plugins/marketplace.json"))?;
     validate_json(&root.join("codex/hooks.json"))?;
-    validate_json(&root.join("plugins/git-tool/.claude-plugin/plugin.json"))?;
-    validate_json(&root.join("plugins/git-tool/hooks/hooks.json"))?;
-    validate_json(&root.join("plugins/gt/.codex-plugin/plugin.json"))?;
-    validate_json(&root.join("plugins/gt/.claude-plugin/plugin.json"))?;
-    validate_json(&root.join("plugins/gs/.codex-plugin/plugin.json"))?;
-    validate_json(&root.join("plugins/gs/.claude-plugin/plugin.json"))?;
     let global_agents = root.join("GLOBAL_AGENTS.md");
     assert_symlink(&root.join("claude/CLAUDE.md"), &global_agents)?;
     assert_symlink(&root.join("codex/AGENTS.md"), &global_agents)?;
     assert_symlink(&root.join("pi/agent/AGENTS.md"), &global_agents)?;
-    assert_symlink(
-        &root.join("claude/local-plugins/plugins/git-tool"),
-        &root.join("plugins/git-tool"),
-    )?;
-    assert_symlink(
-        &root.join("claude/local-plugins/plugins/gt"),
-        &root.join("plugins/gt"),
-    )?;
-    assert_symlink(
-        &root.join("claude/local-plugins/plugins/gs"),
-        &root.join("plugins/gs"),
-    )?;
-    assert_symlink(
-        &root.join("claude/local-plugins/plugins/ghs"),
-        &root.join("plugins/ghs"),
-    )?;
+    // These match `workspaceBinary()` in pi/agent/extensions/shared/workspace.ts.
+    assert_native_host(&root.join("target/release/codex-code-mode-host"))?;
+    assert_native_host(&root.join("target/release/apply_patch"))?;
     stow::run(stow::Mode::DryRun).context("stow dry-run")?;
     Ok(())
 }
 
+fn assert_native_host(path: &Path) -> Result<()> {
+    #[cfg(windows)]
+    let path = path.with_extension("exe");
+    #[cfg(not(windows))]
+    let path = path.to_path_buf();
+    let metadata =
+        fs::metadata(&path).with_context(|| format!("stat native host {}", path.display()))?;
+    if !metadata.is_file() {
+        bail!("native host {} must be a file", path.display());
+    }
+    #[cfg(unix)]
+    if metadata.permissions().mode() & 0o111 == 0 {
+        bail!("native host {} must be executable", path.display());
+    }
+    Ok(())
+}
 fn validate_json(path: &Path) -> Result<()> {
     let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     serde_json::from_str::<serde_json::Value>(&text)
@@ -85,6 +83,7 @@ fn assert_no_checkout_paths(root: &Path) -> Result<()> {
         "claude/",
         "pi/",
         "plugins/",
+        "skills/",
     ];
 
     for rel in tracked_files(root)? {
@@ -136,4 +135,27 @@ fn tracked_files(root: &Path) -> Result<Vec<String>> {
         .filter(|s| !s.is_empty())
         .map(str::to_string)
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_a_missing_native_host() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(assert_native_host(&dir.path().join("missing")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn requires_an_executable_native_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("host");
+        fs::write(&path, b"host").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(assert_native_host(&path).is_err());
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(assert_native_host(&path).is_ok());
+    }
 }

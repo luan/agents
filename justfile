@@ -13,28 +13,31 @@ default:
 check:
     cd "{{ repo }}" && \
     cargo fmt --all -- --check && \
-    cargo clippy --all -- -D warnings && \
-    cargo check --all-targets && \
+    cargo clippy --workspace --all-targets -- -D warnings && \
     bun run check
 
 test:
     cd "{{ repo }}" && \
-    cargo nextest run && \
+    cargo nextest run --workspace && \
     bun run test
 
-build: context-guard
-    cd "{{ repo }}" && cargo build --release -p context-guard -p ct -p vlt
+# Calls a real model and costs money, so it is kept out of `just test`.
+bench-hashline *ARGS:
+    cd "{{ repo }}" && bun bench/hashline/main.ts {{ ARGS }}
+
+build:
+    cd "{{ repo }}" && cargo build --release
 
 link-dry-run:
     cd "{{ repo }}" && cargo xtask link-dry-run
 
-link: codex-plugins-install
+link:
     cd "{{ repo }}" && cargo xtask link
 
 unlink:
     cd "{{ repo }}" && cargo xtask unlink || true
 
-restow: codex-plugins-install
+restow:
     cd "{{ repo }}" && cargo xtask link
 
 doctor:
@@ -51,37 +54,31 @@ node-deps-install:
 pi-node-modules-link:
     cd "{{ repo }}" && cargo xtask link-node-modules
 
-codex-plugins-install:
-    cd "{{ repo }}" && cargo xtask codex-plugins-install
-
-
-context-guard:
-    cd "{{ repo }}" && cargo build --release -p context-guard
 
 git-spice-install:
     @checkout="{{ home }}/.local/share/agents/git-spice"; \
     mkdir -p "$(dirname "$checkout")" "{{ home }}/.local/bin"; \
     if [ -d "$checkout/.git" ]; then \
-        git -C "$checkout" fetch --depth=1 origin luan/github-stacks; \
+        git -C "$checkout" fetch --depth=1 origin +refs/heads/luan/absorb-gh-stack:refs/remotes/origin/luan/absorb-gh-stack; \
     else \
-        git clone --depth=1 --branch luan/github-stacks https://github.com/luan/git-spice.git "$checkout"; \
+        git clone --depth=1 --branch luan/absorb-gh-stack https://github.com/luan/git-spice.git "$checkout"; \
     fi; \
-    git -C "$checkout" checkout --detach --force origin/luan/github-stacks; \
+    git -C "$checkout" checkout --detach --force origin/luan/absorb-gh-stack; \
+    want="$(git -C "$checkout" rev-parse HEAD)"; \
     go_bin=""; old_ifs="$IFS"; IFS=:; \
     for dir in $PATH; do case "$dir/go" in */mise/shims/go) continue;; esac; if [ -x "$dir/go" ]; then go_bin="$dir/go"; break; fi; done; \
     IFS="$old_ifs"; test -n "$go_bin"; \
-    cd "$checkout" && "$go_bin" build -o "{{ home }}/.local/bin/git-spice" go.abhg.dev/gs
+    cd "$checkout" && "$go_bin" build -o "{{ home }}/.local/bin/git-spice" go.abhg.dev/gs; \
+    ln -sf git-spice "{{ home }}/.local/bin/gs"; \
+    "{{ home }}/.local/bin/git-spice" --version | grep -Fq "$want"
 
-install: context-guard git-spice-install
+install: git-spice-install build
     @command -v rtk >/dev/null 2>&1 || { command -v brew >/dev/null 2>&1 && brew install rtk-ai/tap/rtk || echo "warning: rtk install failed or Homebrew is unavailable; continuing without it" >&2; }
     @cargo install --list | grep -q '^git-surgeon ' || cargo binstall git-surgeon --locked --no-confirm || echo "warning: git-surgeon install failed (no prebuilt binary; source build is Unix-only); continuing without it" >&2
-    cargo install --locked --path "{{ repo }}/crates/ct"
+    @if cargo install --list | grep -q '^ct '; then cargo uninstall ct; fi
+    rm -f "{{ home }}/.config/fish/completions/ct.fish"
+    @! command -v ct >/dev/null 2>&1 || { echo "error: ct is still installed at $(command -v ct)" >&2; exit 1; }
     cargo install --locked --path "{{ repo }}/crates/vlt"
-    cargo install --locked --path "{{ repo }}/crates/context-guard"
     claude mcp remove -s user vault 2>/dev/null || true
     claude mcp remove -s user source 2>/dev/null || true
     claude mcp remove -s user apply-patch 2>/dev/null || true
-
-completions:
-    mkdir -p "{{ home }}/.config/fish/completions"
-    ct shell completion fish > "{{ home }}/.config/fish/completions/ct.fish"
