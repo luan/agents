@@ -42,14 +42,20 @@ restow:
 
 doctor:
     cd "{{ repo }}" && cargo xtask doctor
+    @command -v node >/dev/null 2>&1 && echo "node: $(node --version)" || echo "node: missing; the notebook code mode host needs it" >&2
+    cd "{{ repo }}" && bun pi/agent/extensions/code-mode/notebook/deno-binary.ts --check
 
 validate:
     cd "{{ repo }}" && cargo xtask validate
 
-setup: node-deps-install pi-node-modules-link doctor link install validate
+setup: node-deps-install pi-node-modules-link notebook-prewarm doctor link install validate
 
 node-deps-install:
     cd "{{ repo }}" && bun install
+
+# Downloads the pinned Deno once, ~40 MB. A cached, verified binary is a no-op.
+notebook-prewarm:
+    cd "{{ repo }}" && bun pi/agent/extensions/code-mode/notebook/deno-binary.ts
 
 pi-node-modules-link:
     cd "{{ repo }}" && cargo xtask link-node-modules
