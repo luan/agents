@@ -1,7 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-mod codex_plugins;
 mod doctor;
 mod stow;
 mod validate;
@@ -17,12 +16,10 @@ struct Cli {
 enum Cmd {
     /// Preview stow operations without changing the filesystem
     LinkDryRun,
-    /// Install codex plugins, then stow packages into ~/
+    /// Stow packages into ~/
     Link,
     /// Unstow packages from their canonical install locations
     Unlink,
-    /// Install enabled local plugins from the marketplace into ~/.codex
-    CodexPluginsInstall,
     /// Symlink pi/agent/node_modules -> the workspace-root node_modules
     LinkNodeModules,
     /// Run static checks, dry-run stow, and run cargo tests
@@ -35,12 +32,8 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::LinkDryRun => stow::run(stow::Mode::DryRun),
-        Cmd::Link => {
-            codex_plugins::run()?;
-            stow::run(stow::Mode::Link)
-        }
+        Cmd::Link => stow::run(stow::Mode::Link),
         Cmd::Unlink => stow::run(stow::Mode::Unlink),
-        Cmd::CodexPluginsInstall => codex_plugins::run(),
         Cmd::LinkNodeModules => stow::link_pi_node_modules(),
         Cmd::Validate => validate::run(),
         Cmd::Doctor => doctor::run(),

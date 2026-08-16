@@ -144,6 +144,11 @@ pub fn set_term(
     avoid: &[String],
 ) -> Result<PathBuf, CtError> {
     let root = project_dir(project);
+    if matches!(context, None | Some("root")) && root.join("CONTEXT-MAP.md").exists() {
+        return Err(CtError::Validation(
+            "CONTEXT-MAP.md defines named contexts; pass --context <name>".to_string(),
+        ));
+    }
     let path = match context {
         None | Some("root") => root.join("CONTEXT.md"),
         Some(name) => root.join("contexts").join(name).join("CONTEXT.md"),
@@ -255,6 +260,36 @@ mod tests {
         assert!(path.ends_with("myproj/CONTEXT.md"));
         assert!(content.contains("**Customer**:"));
         assert!(content.contains("_Avoid_: Client"));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn set_term_requires_named_context_when_map_exists() {
+        let _guard = CT_BLUEPRINTS_ENV_LOCK.lock().unwrap();
+        let tmp = std::env::temp_dir().join(format!("vlt-context-mapped-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let project = tmp.join("myproj");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(project.join("CONTEXT-MAP.md"), "# Context Map\n").unwrap();
+        unsafe {
+            std::env::set_var("CT_BLUEPRINTS_DIR", &tmp);
+        }
+
+        let error = set_term(
+            Some("/tmp/myproj"),
+            None,
+            "Customer",
+            "A person or organization that places orders.",
+            &[],
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "CONTEXT-MAP.md defines named contexts; pass --context <name>"
+        );
+        assert!(!project.join("CONTEXT.md").exists());
 
         let _ = fs::remove_dir_all(&tmp);
     }

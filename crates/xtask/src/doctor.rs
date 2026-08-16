@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 
-const REQUIRED: &[&str] = &["just", "cargo", "npm", "codex", "claude"];
-const OPTIONAL: &[&str] = &["ct", "wt"];
+const REQUIRED: &[&str] = &["just", "cargo", "go", "bun", "codex", "claude"];
+const OPTIONAL: &[&str] = &["wt", "gs"];
 
 pub fn run() -> Result<()> {
     let mut missing: Vec<&str> = Vec::new();

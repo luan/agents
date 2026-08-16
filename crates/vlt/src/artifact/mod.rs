@@ -179,7 +179,7 @@ impl std::fmt::Display for ResolveError {
 
 impl std::error::Error for ResolveError {}
 
-/// Unified error type for library-level ct operations.
+/// Unified error type for library-level vault operations.
 #[derive(Debug)]
 pub enum CtError {
     Sync(SyncError),
