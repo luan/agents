@@ -1,32 +1,17 @@
-import { describe, expect, test } from "bun:test";
-import { buildCavemanPrompt } from "../../system-prompt/caveman";
+import { expect, test } from "bun:test";
 import { buildAgentPrompt } from "./prompts";
-import type { AgentConfig, EnvInfo } from "./types";
 
-const env: EnvInfo = {
-	isGitRepo: true,
-	branch: "test",
-	platform: "darwin",
-};
+test("a child preserves the inherited prompt and adds one child instruction layer", () => {
+	const prompt = buildAgentPrompt("# Parent", { agentPath: "/root/child", maxConcurrency: 8, maxDepth: 2 });
+	expect(prompt.startsWith("# Parent\n\n")).toBe(true);
+	expect(prompt.split("<sub_agent_context>").length - 1).toBe(1);
+	expect(prompt).toContain("/root/child");
+});
 
-const replaceAgent: AgentConfig = {
-	name: "reviewer",
-	description: "review",
-	skills: false,
-	systemPrompt: "Review the change.",
-	promptMode: "replace",
-};
-
-describe("subagent prompt construction", () => {
-	test("replace agents inherit the active Caveman style", () => {
-		const cavemanPrompt = buildCavemanPrompt("ultra");
-		const prompt = buildAgentPrompt(
-			replaceAgent,
-			"/tmp/no-caveman-config",
-			env,
-			`${cavemanPrompt}\n\n# Project Context`,
-		);
-
-		expect(prompt).toContain(cavemanPrompt);
-	});
+test("a nested child replaces its parent identity instead of accumulating layers", () => {
+	const first = buildAgentPrompt("# Parent", { agentPath: "/root/parent", maxConcurrency: 8, maxDepth: 2 });
+	const nested = buildAgentPrompt(first, { agentPath: "/root/parent/child", maxConcurrency: 8, maxDepth: 2 });
+	expect(nested.split("<sub_agent_context>").length - 1).toBe(1);
+	expect(nested).not.toContain("`/root/parent`,");
+	expect(nested).toContain("`/root/parent/child`,");
 });

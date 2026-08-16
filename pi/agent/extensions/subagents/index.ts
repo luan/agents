@@ -1,664 +1,397 @@
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Component, TUI } from "@earendil-works/pi-tui";
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import type {
+	AgentToolUpdateCallback,
+	ExtensionAPI,
+	ExtensionCommandContext,
+	ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { loadModelRoles } from "../model-roles/catalog.js";
-import { onOpenAIFastRequest } from "../shared/openai-fast-state";
-import { boundOutput } from "../shared/output-budget.ts";
-import { registerResourceProvider } from "../shared/resources.ts";
-import { registerRootSessionHub } from "../shared/root-session-hub";
-import { attachRuntimeTerminal, openRuntimeHub, registerRuntimeHubSource } from "../shared/runtime-hub";
-import { bold, framedBlock, renderStatusLine, styledSymbol, textComponent, treeGlyphs } from "../shared/tui/card";
-import { agentResourceProvider } from "./runtime/agent-resources.ts";
+import { loadModelRoles, roleColor, roleNames } from "../model-roles/catalog.js";
+import { toolRegistrarFor } from "../shared/tool-registry.ts";
 import { findRetryableError } from "./runtime/agent-runner.js";
 import {
-	deliverPendingForSession,
-	getSessionRuntime,
-	getSharedAgentActivity,
-	getSharedAgentManager,
-	persistAgent,
-	registerAgentWidget,
-	registerSessionBinding,
-	unregisterAgentWidget,
-	unregisterSessionBinding,
+	type CoordinatorUpdate,
+	createRootCoordinator,
+	getCoordinatorForSession,
+	latestSubagentTreeCheckpoint,
+	loadSubagentConfig,
+	removeRootCoordinator,
+	SUBAGENT_STATE_ENTRY_TYPE,
+	type SubagentCoordinator,
+	type SubagentSnapshot,
+	type TranscriptSource,
 } from "./runtime/coordinator.js";
-import { loadCustomAgents } from "./runtime/custom-agents.js";
-import { readAgentRegistry, readRetainedAgentRegistries, writeAgentRegistry } from "./runtime/persistence.js";
-import { type AgentConfig, type AgentRecord, agentKey, type SubagentType } from "./runtime/types.js";
-import { openAgentInspector } from "./runtime/ui/agent-browser.js";
-import { type AgentActivity, AgentWidget } from "./runtime/ui/agent-widget.js";
-import type { AssistantUsage } from "./runtime/usage.js";
+import type { ForkTurns } from "./runtime/fork-history.js";
+import type { AgentConfig } from "./runtime/types.js";
+import { type AgentHubSnapshot, type AgentHubSnapshotSource, openAgentHub } from "./runtime/ui/agent-browser.js";
+import { AgentWidget } from "./runtime/ui/agent-widget.js";
+import { getPresentationResolver, unregisterPresentationResolver } from "./runtime/ui/presentation-resolver.js";
+import {
+	createWaitToolPresentation,
+	followupToolPresentation,
+	interruptToolPresentation,
+	listAgentsPresentation,
+	sendMessageToolPresentation,
+	spawnToolPresentation,
+} from "./runtime/ui/tool-presentations.ts";
+import { AGENT_TOOLS } from "./tool-names.ts";
 
-type TaskItem = {
-	id?: string;
-	description?: string;
-	role?: string;
-	model_role?: string;
-	assignment: string;
-	isolated?: boolean;
-};
-
-type TaskParams = {
-	agent: string;
-	context?: string;
-	tasks?: TaskItem[];
-	id?: string;
-	description?: string;
-	role?: string;
-	model_role?: string;
-	assignment?: string;
-	isolated?: boolean;
-	background?: boolean;
-};
-
+type TaskParams = { task_name: string; message: string; fork_turns?: string; model_role?: string };
+type TaskItem = { task_name: string; model_role?: string; message: string };
 export type TaskResult = {
-	index: number;
 	id: string;
-	agent: string;
-	description?: string;
-	role?: string;
 	model_role?: string;
-	assignment: string;
-	status: AgentRecord["status"];
+	model_role_color?: string;
+	message?: string;
+	status: SubagentSnapshot["status"];
 	output?: string;
 	error?: string;
 	durationMs: number;
 	toolUses: number;
-	worktree?: AgentRecord["worktree"];
-	worktreeResult?: AgentRecord["worktreeResult"];
 };
-type ToolTheme = ExtensionContext["ui"]["theme"];
 
-function statusMarker(status: AgentRecord["status"] | "pending", theme: ToolTheme): string {
-	switch (status) {
-		case "completed":
-			return styledSymbol(theme, "status.success", "success");
-		case "running":
-			return styledSymbol(theme, "tool.task", "accent");
-		case "queued":
-		case "pending":
-			return styledSymbol(theme, "status.pending", "muted");
-		case "steered":
-			return styledSymbol(theme, "status.warning", "warning");
-		case "interrupted":
-			return styledSymbol(theme, "status.warning", "warning");
-		case "aborted":
-		case "stopped":
-		case "error":
-			return styledSymbol(theme, "status.error", "error");
-	}
-}
+const taskAgentConfig: AgentConfig = {};
+const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
+const MIN_WAIT_TIMEOUT_MS = 10_000;
+const MAX_WAIT_TIMEOUT_MS = 3_600_000;
+const RETRY_MESSAGE = "retry-failed-request";
+const REPEAT_LIMIT = 3;
 
-function taskCallItems(params: Partial<TaskParams>): TaskItem[] {
-	if (Array.isArray(params.tasks)) return params.tasks;
-	if (params.assignment || params.id || params.description || params.role || params.model_role) {
-		return [
-			{
-				id: params.id,
-				description: params.description,
-				role: params.role,
-				model_role: params.model_role,
-				assignment: params.assignment ?? "",
-				isolated: params.isolated,
-			},
-		];
-	}
-	return [];
-}
-
-function renderTaskCall(args: unknown, theme: ToolTheme): Component {
-	const params = args as Partial<TaskParams>;
-	const items = taskCallItems(params);
-	return textComponent(
-		renderStatusLine(theme, {
-			icon: "pending",
-			title: items.length === 1 ? "Agent" : "Agents",
-			description: params.agent,
-			meta: items.length ? [`${items.length} ${items.length === 1 ? "agent" : "agents"}`] : undefined,
-		}),
-	);
-}
-
-function compactTaskResults(results: TaskResult[]): string {
-	const failed = results.filter((result) => result.status === "error" || result.error).length;
-	const suffix = failed > 0 ? `, ${failed} failed` : "";
-	return `Completed ${results.length} agent${results.length === 1 ? "" : "s"}${suffix}.`;
-}
-
-function renderTaskResult(
-	result: { details?: { results?: TaskResult[]; result?: TaskResult; completed?: number; total?: number } },
-	_options: { isPartial?: boolean } | undefined,
-	theme: ToolTheme,
-): Component {
-	const results = Array.isArray(result.details?.results)
-		? result.details.results
-		: result.details?.result
-			? [result.details.result]
-			: [];
-	if (results.length === 0 && result.details?.total) {
-		return textComponent(
-			renderStatusLine(theme, {
-				icon: "pending",
-				title: "Subagents",
-				description: `${result.details.completed ?? 0}/${result.details.total} subagents`,
-			}),
-		);
-	}
-	const failed = results.some((item) => item.status === "error" || item.error);
-	const active = results.some((item) => item.status === "running" || item.status === "queued");
-	return textComponent(
-		renderStatusLine(theme, {
-			icon: failed ? "error" : active ? "pending" : "success",
-			title: results.length === 1 ? "Agent" : "Agents",
-			description: results.length
-				? active
-					? `Started ${results.length} background agent${results.length === 1 ? "" : "s"}.`
-					: compactTaskResults(results)
-				: "No agent result.",
-		}),
-	);
-}
-
-function singleLinePreview(text: string, width: number): string {
-	const line = text
-		.split(/\r?\n/)
-		.find((candidate) => candidate.trim())
-		?.trim();
-	return line ? truncateToWidth(line, width) : "";
-}
-
-export function renderSubagentList(
-	result: {
-		details?: { agents?: Array<Pick<AgentRecord, "id" | "type" | "description" | "status" | "result" | "error">> };
-	},
-	_options: unknown,
-	theme: ToolTheme,
-): Component {
-	const agents = result.details?.agents ?? [];
-	const tree = treeGlyphs(theme);
-	const lines: string[] = [];
-	if (agents.length === 0) lines.push(theme.fg("dim", "No subagents in this session."));
-	agents.forEach((agent, index) => {
-		const isLast = index === agents.length - 1;
-		lines.push(
-			`${theme.fg("dim", isLast ? tree.last : tree.branch)} ${statusMarker(agent.status, theme)} ${theme.fg(
-				"accent",
-				bold(theme, agent.id),
-			)} ${theme.fg("muted", `${agent.type} · ${truncateToWidth(agent.description, 56)}`)}`,
-		);
-		const output = agent.error || agent.result?.trim();
-		if (output)
-			lines.push(
-				`${theme.fg("dim", isLast ? "  " : `${tree.vertical} `)}${theme.fg("dim", singleLinePreview(output, 82))}`,
-			);
-	});
-	return framedBlock(theme, {
-		header: renderStatusLine(theme, {
-			iconOverride: styledSymbol(theme, "tool.task", "accent"),
-			title: "Subagents",
-			meta: [`${agents.length} total`],
-		}),
-		sections: [{ lines }],
-		borderColor: "borderMuted",
-	});
-}
-
-const taskAgentPrompt = `You are a worker agent for delegated tasks.
-
-You have FULL access to all available tools and MUST use them as needed to complete your task.
-
-<directives>
-- Finish only the assigned work and return the minimum useful result.
-- Prefer narrow lookups, then read only needed ranges. Avoid full-file reads unless necessary.
-- Prefer edits to existing files over creating new files.
-- Never create documentation files (*.md) unless explicitly requested.
-- Skip project-wide gates, formatters, builds, and broad test suites unless explicitly assigned; the parent agent owns final verification.
-- Delegate independent subtasks with spawn_agent when useful, then integrate child results before finishing.
-- Be concise. Do not include filler, repetition, or tool transcripts.
-</directives>`;
-const readOnlyDisallowedTools = [
-	"apply_patch",
-	"ast_edit",
-	"bash",
-	"edit",
-	"followup_task",
-	"send_message",
-	"spawn_agent",
-	"stop_agent",
-	"task_write",
-	"write",
-	"write_stdin",
-];
-
-const bundledAgents: AgentConfig[] = [
-	{
-		name: "task",
-		description: "General-purpose implementation agent",
-		role: "task",
-		skills: true,
-		promptMode: "append",
-		systemPrompt: taskAgentPrompt,
-		source: "default",
-		isDefault: true,
-	},
-	{
-		name: "explore",
-		description: "Fast read-only codebase and documentation scout",
-		role: "tiny",
-		disallowedTools: readOnlyDisallowedTools,
-		skills: true,
-		promptMode: "replace",
-		systemPrompt:
-			"Investigate rapidly. Search broadly, read key sections, and return concise findings with exact source paths. Read-only: never write, edit, or run state-changing commands.",
-		source: "default",
-		isDefault: true,
-	},
-	{
-		name: "plan",
-		description: "Read-only implementation planner for complex changes",
-		role: "smol",
-		disallowedTools: readOnlyDisallowedTools,
-		skills: true,
-		promptMode: "replace",
-		systemPrompt:
-			"Analyze requirements and code, then produce a concise implementation plan covering changes, sequence, edge cases, verification, and critical files. Read-only: do not modify files.",
-		source: "default",
-		isDefault: true,
-	},
-	{
-		name: "reviewer",
-		description: "Read-only code review agent",
-		role: "smol",
-		disallowedTools: readOnlyDisallowedTools,
-		skills: true,
-		promptMode: "replace",
-		systemPrompt:
-			"Identify bugs the author would want fixed before merge. Report only provable, actionable issues introduced by the change. Never edit files or run state-changing commands.",
-		source: "default",
-		isDefault: true,
-	},
-];
-
-function loadAgents(cwd: string): Map<string, AgentConfig> {
-	const agents = new Map(bundledAgents.map((agent) => [agent.name, agent]));
-	for (const [name, agent] of loadCustomAgents(cwd)) agents.set(name, agent);
-	return agents;
+export function normalizeTaskName(value: string): string {
+	const name = value.trim();
+	if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name))
+		throw new Error("task_name must use lowercase letters, digits, and single dashes between words");
+	return name;
 }
 
 export function normalizeItems(params: TaskParams): TaskItem[] {
-	if (!params.agent?.trim()) throw new Error("subagent requires agent");
-	if (Array.isArray(params.tasks)) {
-		if (params.assignment?.trim()) throw new Error("subagent accepts either tasks[] or assignment, not both");
-		if (params.tasks.length === 0) throw new Error("subagent requires at least one tasks[] item");
-		const ids = new Set<string>();
-		return params.tasks.map((item, index) => {
-			const assignment = item.assignment?.trim();
-			if (!assignment) throw new Error(`tasks[${index}].assignment is required`);
-			if (item.id) {
-				const normalized = item.id.toLowerCase();
-				if (ids.has(normalized)) throw new Error(`duplicate task id: ${item.id}`);
-				ids.add(normalized);
-			}
-			return { ...item, assignment };
-		});
+	const message = params.message?.trim();
+	if (!message) throw new Error("subagent requires message");
+	return [{ task_name: normalizeTaskName(params.task_name), model_role: params.model_role, message }];
+}
+
+export function parseForkTurns(value: string | undefined): ForkTurns {
+	const forkTurns = value?.trim() || "all";
+	if (forkTurns === "all" || forkTurns === "none") return forkTurns;
+	if (/^[1-9]\d*$/.test(forkTurns)) {
+		const count = Number(forkTurns);
+		if (Number.isSafeInteger(count)) return count;
 	}
-	const assignment = params.assignment?.trim();
-	if (!assignment) throw new Error("subagent requires assignment or tasks[]");
-	return [
-		{
-			id: params.id,
-			description: params.description,
-			role: params.role,
-			model_role: params.model_role,
-			assignment,
-			isolated: params.isolated,
-		},
-	];
+	throw new Error("fork_turns must be none, all, or a positive integer string");
 }
 
-function taskName(item: TaskItem, index: number): string {
-	return item.id?.trim() || item.description?.trim() || item.role?.trim() || `Subagent-${index + 1}`;
-}
-
-function assignmentPrompt(context: string | undefined, item: TaskItem): string {
-	const sections: string[] = [];
-	if (item.role?.trim()) sections.push(`ROLE\n===================================\n${item.role.trim()}`);
-	if (context?.trim()) sections.push(`CONTEXT\n===================================\n${context.trim()}`);
-	sections.push(`ASSIGNMENT\n===================================\n${item.assignment.trim()}`);
-	sections.push(
-		`COMPLETION\n===================================\nNo progress updates. Execute the assignment, then return only the useful handoff: files changed, decisions made, verification you performed, blockers, and follow-up needed.`,
-	);
-	return sections.join("\n\n");
-}
-
-function resultFromRecord(record: AgentRecord, item: TaskItem, index: number, agent: string): TaskResult {
-	return {
-		index,
-		id: record.id,
-		agent,
-		description: item.description,
-		role: item.role,
-		model_role: item.model_role,
-		assignment: item.assignment,
-		status: record.status,
-		output: record.result,
-		error: record.error,
-		durationMs: (record.completedAt ?? Date.now()) - record.startedAt,
-		toolUses: record.toolUses,
-		worktree: record.worktree,
-		worktreeResult: record.worktreeResult,
-	};
-}
-
-const MODEL_VISIBLE_RESULT_LIMIT = 50 * 1024;
-
-export function formatTaskResults(results: TaskResult[]): string {
-	return results
-		.map((result) => {
-			const heading = `## ${result.description?.trim() || result.id} (${result.status})`;
-			const fullOutput = result.error ? `Error: ${result.error}` : result.output?.trim() || "No output.";
-			const output =
-				fullOutput.length > MODEL_VISIBLE_RESULT_LIMIT
-					? `${fullOutput.slice(0, MODEL_VISIBLE_RESULT_LIMIT)}\n\n[Output truncated; full output remains in agent history.]`
-					: fullOutput;
-			return `${heading}\n${output}`;
-		})
-		.join("\n\n");
-}
-
-function ensureActivity(activityByAgent: Map<string, AgentActivity>, id: string): AgentActivity {
-	let activity = activityByAgent.get(id);
-	if (!activity) {
-		activity = {
-			activeTools: new Map(),
-			toolUses: 0,
-			responseText: "",
-			turnCount: 0,
-			lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
-		};
-		activityByAgent.set(id, activity);
-	}
-	return activity;
-}
-
-function addActivityUsage(activity: AgentActivity, usage: AssistantUsage): void {
-	activity.lifetimeUsage.input += usage.input;
-	activity.lifetimeUsage.output += usage.output;
-	activity.lifetimeUsage.cacheWrite += usage.cacheWrite;
-	activity.lifetimeUsage.cost += usage.cost;
-}
-
-const taskItemSchema = Type.Object({
-	id: Type.Optional(Type.String({ description: "Stable agent id, CamelCase, <=32 chars preferred." })),
-	description: Type.Optional(Type.String({ description: "UI label only; the subagent never sees it." })),
-	role: Type.Optional(Type.String({ description: "Specialist identity for the subagent." })),
-	model_role: Type.Optional(
-		Type.String({ description: "Named model role from model-roles.json. Overrides the agent default." }),
-	),
-	assignment: Type.String({ description: "Complete self-contained instructions." }),
-	isolated: Type.Optional(Type.Boolean({ description: "Run in an isolated worktree." })),
-});
-
-function resolveAgentConfig(agents: Map<string, AgentConfig>, requested: string): AgentConfig | undefined {
-	const exact = agents.get(requested);
-	if (exact?.enabled !== false) return exact;
-	const lower = requested.toLowerCase();
-	return [...agents.values()].find((agent) => agent.enabled !== false && agent.name.toLowerCase() === lower);
-}
 export function withModelRole(agent: AgentConfig, modelRole: string | undefined): AgentConfig {
 	const role = modelRole?.trim();
 	return role ? { ...agent, role } : agent;
 }
 
-export function shouldOwnAgentWidget(
-	manager: Pick<ReturnType<typeof getSharedAgentManager>, "findByChildSessionId">,
-	sessionId: string,
-	hasUI: boolean,
-): boolean {
-	return hasUI && !manager.findByChildSessionId(sessionId);
+function waitTimeout(requestedMs: number | undefined): number {
+	const requested = Number.isFinite(requestedMs) ? (requestedMs as number) : DEFAULT_WAIT_TIMEOUT_MS;
+	return Math.min(Math.max(MIN_WAIT_TIMEOUT_MS, requested), MAX_WAIT_TIMEOUT_MS);
 }
 
-export function routeForegroundInput(
-	manager: Pick<ReturnType<typeof getSharedAgentManager>, "listAgents" | "background">,
-	sessionId: string,
-	event: { source: string; streamingBehavior?: "steer" | "followUp" },
-): { action: "continue"; backgrounded: number } {
-	if (event.source === "extension" || event.streamingBehavior !== "steer") {
-		return { action: "continue", backgrounded: 0 };
+function resultFromSnapshot(
+	agent: SubagentSnapshot,
+	modelRole?: string,
+	message?: string,
+	modelRoleColor?: string,
+): TaskResult {
+	return {
+		id: agent.id,
+		model_role: modelRole,
+		model_role_color: modelRoleColor,
+		message,
+		status: agent.status,
+		output: agent.result,
+		error: agent.error,
+		durationMs: (agent.completedAt ?? Date.now()) - agent.startedAt,
+		toolUses: agent.toolUses,
+	};
+}
+
+type AgentToolDefinition = { name: string; execute: (...args: never[]) => unknown; [key: string]: unknown };
+
+function outcomeKey(tool: string, args: unknown, outcome: string): string {
+	let signature: string;
+	try {
+		signature = JSON.stringify(args) ?? "";
+	} catch {
+		signature = String(args);
 	}
-	const backgrounded = manager
-		.listAgents()
-		.filter(
-			(record) =>
-				record.parentSessionId === sessionId && record.status === "running" && record.isBackground !== true,
-		)
-		.filter((record) => manager.background(record.id, record.rootSessionId)).length;
-	return { action: "continue", backgrounded };
+	return JSON.stringify([tool, signature, outcome]);
 }
 
-export function mergeHubAgentRecords(
-	saved: AgentRecord[],
-	live: AgentRecord[],
-	currentRootSessionId: string,
-): AgentRecord[] {
-	const records = new Map<string, AgentRecord>();
-	const visible = (record: AgentRecord) => record.rootSessionId === currentRootSessionId;
-	for (const record of saved) {
-		if (visible(record)) records.set(agentKey(record.rootSessionId, record.id), record);
+export function createAgentCallBreaker(limit = REPEAT_LIMIT) {
+	const bySession = new Map<string, Map<string, number>>();
+	return {
+		observe(session: string, tool: string, args: unknown, outcome: string): string | undefined {
+			const key = outcomeKey(tool, args, outcome);
+			let counts = bySession.get(session);
+			if (!counts) {
+				counts = new Map();
+				bySession.set(session, counts);
+			}
+			const count = (counts.get(key) ?? 0) + 1;
+			if (count === 1) counts.clear();
+			counts.set(key, count);
+			if (count < limit) return undefined;
+			return `This identical ${tool} call has now produced the same outcome ${count} times and will keep doing so. Stop calling ${tool} with these arguments.`;
+		},
+	};
+}
+
+type AgentCallBreaker = ReturnType<typeof createAgentCallBreaker>;
+function appendOutcomeNote(result: unknown, note: string): unknown {
+	const content = (result as { content?: { type: string; text?: string }[] } | undefined)?.content;
+	const last = Array.isArray(content) ? [...content].reverse().find((part) => part?.type === "text") : undefined;
+	if (!last) return result;
+	last.text = `${last.text ?? ""}\n\n${note}`;
+	return result;
+}
+
+export function withRepeatBreaker(definition: AgentToolDefinition, breaker: AgentCallBreaker): AgentToolDefinition {
+	const inner = definition.execute;
+	return {
+		...definition,
+		async execute(
+			toolCallId: string,
+			params: unknown,
+			signal: AbortSignal | undefined,
+			onUpdate: unknown,
+			ctx: ExtensionContext,
+		) {
+			const session = ctx.sessionManager.getSessionId();
+			try {
+				const result = await (inner as (...args: unknown[]) => unknown).call(
+					definition,
+					toolCallId,
+					params,
+					signal,
+					onUpdate,
+					ctx,
+				);
+				const content = (result as { content?: { type: string; text?: string }[] } | undefined)?.content;
+				const text = Array.isArray(content) ? (content.find((part) => part?.type === "text")?.text ?? "") : "";
+				const note = breaker.observe(session, definition.name, params, text);
+				return note ? appendOutcomeNote(result, note) : result;
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				const note = breaker.observe(session, definition.name, params, message);
+				throw note ? new Error(`${message}\n${note}`) : error;
+			}
+		},
+	} as AgentToolDefinition;
+}
+
+class CoordinatorSnapshotSource implements AgentHubSnapshotSource {
+	private generation = 0;
+	private snapshot: AgentHubSnapshot;
+	private readonly transcripts = new Map<string, TranscriptSource>();
+	private readonly listeners = new Set<(snapshot: AgentHubSnapshot) => void>();
+	private readonly unsubscribe: () => void;
+	constructor(private readonly coordinator: SubagentCoordinator) {
+		this.snapshot = this.buildSnapshot();
+		this.unsubscribe = coordinator.subscribe((event) => {
+			if (event.type === "transcript") return;
+			this.generation++;
+			this.snapshot = this.buildSnapshot();
+			for (const listener of [...this.listeners]) listener(this.snapshot);
+		});
 	}
-	for (const record of live) {
-		if (visible(record)) records.set(agentKey(record.rootSessionId, record.id), record);
+	getSnapshot(): AgentHubSnapshot {
+		return this.snapshot;
 	}
-	return [...records.values()].sort((left, right) => right.startedAt - left.startedAt);
+	subscribe(listener: (snapshot: AgentHubSnapshot) => void): () => void {
+		this.listeners.add(listener);
+		return () => this.listeners.delete(listener);
+	}
+	dispose(): void {
+		this.unsubscribe();
+		this.listeners.clear();
+		this.transcripts.clear();
+	}
+	private buildSnapshot(): AgentHubSnapshot {
+		const agents = this.coordinator.snapshot().map((agent) => {
+			let transcript = this.transcripts.get(agent.id);
+			if (!transcript) {
+				transcript = this.coordinator.transcript(agent.id);
+				if (!transcript) throw new Error(`Transcript unavailable for ${agent.id}`);
+				this.transcripts.set(agent.id, transcript);
+			}
+			return { ...agent, transcript };
+		});
+		return Object.freeze({ generation: this.generation, agents: Object.freeze(agents) });
+	}
 }
 
-export async function attachAgentTerminal(
-	record: AgentRecord,
-	tui: Pick<TUI, "requestRender" | "start" | "stop" | "terminal">,
-): Promise<boolean> {
-	const attachment = record.attachment;
-	if (!attachment?.command || !Array.isArray(attachment.args)) return false;
-	return attachRuntimeTerminal(attachment, tui);
+function collaborationInstructions(maxConcurrency: number, maxDepth: number): string {
+	return `<root_agent_context>\nYou are /root, the primary agent in one root-scoped agent tree.\nThere are ${maxConcurrency} concurrent agent slots including you.\nSubagent nesting is limited to depth ${maxDepth}.\nUse collaboration tools only for concrete independent work.\n</root_agent_context>`;
 }
-
-const RETRY_MESSAGE = "retry-failed-request";
 
 export default function subagentsExtension(pi: ExtensionAPI) {
-	registerResourceProvider("agent", agentResourceProvider());
-	let currentCtx: ExtensionContext | undefined;
-	let unregisterHubSource: (() => void) | undefined;
-	const unregisterRootSessionHub = registerRootSessionHub();
-	const manager = getSharedAgentManager();
-	const activityByAgent = getSharedAgentActivity();
-	let currentAgents = new Map<string, AgentConfig>();
-	const visibleRecords = (ctx: ExtensionContext): AgentRecord[] => {
-		const sessionId = ctx.sessionManager.getSessionId();
-		const owner = manager.findByChildSessionId(sessionId);
-		return manager
-			.listAgents(manager.getRootSessionId(sessionId))
-			.filter((record) => !owner || record.id.startsWith(`${owner.id}/`));
-	};
-	const findOwnedRecord = (ctx: ExtensionContext, id: string): AgentRecord | undefined => {
-		const records = visibleRecords(ctx);
-		return records.find((record) => record.id === id) ?? records.find((record) => record.id.startsWith(id));
-	};
-	/** Retry candidates for completions and error messages: the main turn plus failed subagents. */
-	const retryTargets = (ctx: ExtensionContext) => {
-		const mainError = findRetryableError(ctx.sessionManager.getBranch());
-		const targets = mainError ? [{ value: "main", label: "main", description: mainError }] : [];
-		for (const record of visibleRecords(ctx)) {
-			if (record.status !== "error") continue;
-			targets.push({ value: record.id, label: record.id, description: record.error ?? record.description ?? "" });
-		}
-		return targets;
-	};
-	const hubRecords = (ctx: ExtensionContext): AgentRecord[] => {
-		const sessionId = ctx.sessionManager.getSessionId();
-		return mergeHubAgentRecords(
-			readRetainedAgentRegistries() as AgentRecord[],
-			manager.listAgents(),
-			manager.getRootSessionId(sessionId),
-		);
-	};
-
-	const hubActions = (ctx: ExtensionCommandContext) => {
-		const liveRecord = (target: AgentRecord) =>
-			manager
-				.listAgents()
-				.find((record) => record.id === target.id && record.rootSessionId === target.rootSessionId);
-		const ensureLiveRecord = (target: AgentRecord) => {
-			const current = liveRecord(target);
-			if (current) return current;
-			manager.restore(readAgentRegistry(target.rootSessionId), false);
-			return liveRecord(target);
-		};
-		return {
-			steer: (target: AgentRecord, message: string) => {
-				const record = ensureLiveRecord(target);
-				return record ? manager.steer(record.id, message, record.rootSessionId) : Promise.resolve(false);
-			},
-			stop: (target: AgentRecord) => {
-				const record = ensureLiveRecord(target);
-				if (!record) return false;
-				const stopped = manager.abort(record.id, record.rootSessionId);
-				if (stopped) persistAgent(record);
-				agentWidget.update();
-				return stopped;
-			},
-			followUp: async (target: AgentRecord, prompt: string) => {
-				const record = ensureLiveRecord(target);
-				if (!record) return false;
-				const runtime = getSessionRuntime(record.parentSessionId, record.rootSessionId) ?? { pi, ctx };
-				const updated = await manager.resume(runtime.pi, runtime.ctx, record.id, prompt, {
-					rootSessionId: record.rootSessionId,
-				});
-				if (!updated) return false;
-				persistAgent(updated);
-				agentWidget.update();
-				return true;
-			},
-			attach: (target: AgentRecord, tui: Pick<TUI, "requestRender" | "start" | "stop" | "terminal">) =>
-				attachAgentTerminal(target, tui),
-		};
-	};
-	const hubSource = {
-		list: (sourceCtx: ExtensionContext) => {
-			const ctx = sourceCtx as ExtensionCommandContext;
-			const actions = hubActions(ctx);
-			return hubRecords(ctx).map((record) => ({
-				key: `agent:${record.rootSessionId}:${record.id}`,
-				kind: "agent" as const,
-				label: record.id,
-				status: record.status === "completed" ? "idle" : record.status,
-				description: record.description,
-				parent: record.parentAgentId,
-				parentKey: record.parentAgentId ? `agent:${record.rootSessionId}:${record.parentAgentId}` : undefined,
-				lastActivity: record.completedAt ?? record.startedAt,
-				open: async () => {
-					const live = manager.getRecord(record.id, record.rootSessionId) ?? record;
-					await openAgentInspector(ctx, live, actions);
+	const registerAgentTool = toolRegistrarFor(pi);
+	const breaker = createAgentCallBreaker();
+	const registerCollaborationTool = ((definition: unknown) => {
+		registerAgentTool(withRepeatBreaker(definition as AgentToolDefinition, breaker) as never);
+	}) as ExtensionAPI["registerTool"];
+	const modelRoles = loadModelRoles();
+	const config = loadSubagentConfig();
+	const modelRoleDescription = Object.entries(modelRoles.roles)
+		.map(([name, role]) => `${name}: ${role.description ?? "No description."}`)
+		.join("; ");
+	const modelRoleParameter = Object.keys(modelRoles.roles).length
+		? Type.Union(
+				Object.entries(modelRoles.roles).map(([name, role]) =>
+					Type.Literal(name, { description: role.description ?? "No description." }),
+				),
+				{
+					description: `Model role override for the new agent. Omit to use the configured subagent default role (${modelRoles.subagentDefaultRole}).`,
 				},
-				attach: record.attachment
-					? (tui: Pick<TUI, "requestRender" | "start" | "stop" | "terminal">) => actions.attach(record, tui)
-					: undefined,
-				stop: () => actions.stop(record),
-			}));
-		},
+			)
+		: Type.String({
+				description: `Model role override for the new agent. Omit to use the configured subagent default role (${modelRoles.subagentDefaultRole}).`,
+			});
+	let coordinator: SubagentCoordinator | undefined;
+	let callerPath: string | undefined;
+	let rootSessionId: string | undefined;
+	let ownsRoot = false;
+	let rootTurnActive = false;
+	let source: CoordinatorSnapshotSource | undefined;
+	let widget: AgentWidget | undefined;
+	let unsubscribeDelivery: (() => void) | undefined;
+	const persistedAgentStates = new Map<string, string>();
+
+	const requireCoordinator = (): SubagentCoordinator => {
+		if (!coordinator) throw new Error("Subagent coordinator is unavailable for this session");
+		return coordinator;
+	};
+	const otherLiveAgents = () =>
+		coordinator
+			?.snapshot()
+			.filter(
+				(agent) =>
+					(agent.status === "queued" || agent.status === "running") && agent.id !== (callerPath ?? "/root"),
+			);
+	const deliverRootMessages = () => {
+		if (!ownsRoot || !coordinator) return;
+		for (const message of coordinator.drainRootMessages()) {
+			pi.sendMessage(
+				{
+					customType: "subagent-message",
+					content: `Message Type: MESSAGE\nTask name: /root\nSender: ${message.sender}\nPayload:\n${message.message}`,
+					display: false,
+					details: message,
+				},
+				{ deliverAs: rootTurnActive ? "steer" : "nextTurn", triggerTurn: false },
+			);
+		}
+	};
+	const persistAgentState = (id: string, force = false) => {
+		if (!ownsRoot || !coordinator) return;
+		const agent = coordinator.persistedAgent(id);
+		if (!agent) return;
+		const serialized = JSON.stringify(agent);
+		if (!force && serialized === persistedAgentStates.get(id)) return;
+		pi.appendEntry(SUBAGENT_STATE_ENTRY_TYPE, { version: 1 as const, agent });
+		persistedAgentStates.set(id, serialized);
+	};
+	const persistAllAgentStates = (force = false) => {
+		for (const agent of coordinator?.checkpoint().agents ?? []) persistAgentState(agent.id, force);
+	};
+	const routeCoordinatorUpdate = (event: CoordinatorUpdate) => {
+		if (
+			event.type === "spawned" ||
+			event.type === "started" ||
+			event.type === "checkpoint" ||
+			event.type === "settled" ||
+			event.type === "interrupted"
+		) {
+			persistAgentState(event.agent.id);
+		}
+		if (event.type === "message") {
+			if (event.target === "/root") deliverRootMessages();
+			return;
+		}
+	};
+	const attachRootPresentation = (ctx: ExtensionContext) => {
+		if (!coordinator) return;
+		ownsRoot = true;
+		source = new CoordinatorSnapshotSource(coordinator);
+		unsubscribeDelivery = coordinator.subscribe(routeCoordinatorUpdate);
+		if (ctx.hasUI) {
+			widget = new AgentWidget(source);
+			widget.setUICtx(ctx.ui);
+		}
 	};
 
-	const agentWidget = new AgentWidget(
-		manager,
-		activityByAgent,
-		() => manager.listAgents().filter((agent) => !agent.isBackground),
-		() => (currentCtx ? manager.getRootSessionId(currentCtx.sessionManager.getSessionId()) : undefined),
-	);
-
-	const unsubscribeFastRequests = onOpenAIFastRequest((event) => {
-		if (!event.sessionFile) return;
-		const record = manager.listAgents().find((agent) => agent.sessionFile === event.sessionFile);
-		if (!record) return;
-		record.fastModeActive = event.active;
-		agentWidget.update();
+	pi.on("before_agent_start", (event) => {
+		if (!ownsRoot || event.systemPrompt.includes("<root_agent_context>")) return;
+		return {
+			systemPrompt: `${event.systemPrompt}\n\n${collaborationInstructions(config.maxConcurrency, config.maxDepth)}`,
+		};
 	});
-
-	pi.on("input", (event, ctx) => {
-		const result = routeForegroundInput(manager, ctx.sessionManager.getSessionId(), event);
-		if (result.backgrounded > 0) ctx.ui.notify("Backgrounded foreground subagent.", "info");
-		return { action: result.action };
-	});
-
-	pi.on("session_start", async (_event, ctx) => {
-		currentCtx = ctx;
+	pi.on("session_start", (_event, ctx) => {
 		const sessionId = ctx.sessionManager.getSessionId();
-		const owner = manager.findByChildSessionId(sessionId);
-		const rootSessionId = owner?.rootSessionId ?? sessionId;
-		if (!owner) manager.restore(readAgentRegistry(rootSessionId));
-		writeAgentRegistry(rootSessionId, manager.listAgents(rootSessionId));
-		currentAgents = loadAgents(ctx.cwd);
-		registerSessionBinding(pi, ctx);
-		if (shouldOwnAgentWidget(manager, sessionId, ctx.hasUI)) {
-			unregisterHubSource?.();
-			unregisterHubSource = registerRuntimeHubSource("subagents", hubSource);
-			registerAgentWidget(agentWidget);
-			agentWidget.setUICtx(ctx.ui);
-			agentWidget.update();
+		const existing = getCoordinatorForSession(sessionId);
+		if (existing) {
+			coordinator = existing;
+			rootSessionId = existing.rootSessionId;
+			callerPath = existing.pathForSession(sessionId);
+			if (sessionId === existing.rootSessionId) attachRootPresentation(ctx);
+			return;
 		}
-		deliverPendingForSession(sessionId);
+		coordinator = createRootCoordinator(sessionId, { ...config, rootSessionDir: ctx.sessionManager.getSessionDir() });
+		rootSessionId = sessionId;
+		callerPath = undefined;
+		const checkpoint = latestSubagentTreeCheckpoint(ctx.sessionManager.getBranch());
+		if (checkpoint) coordinator.restore(checkpoint, { pi, ctx });
+		persistedAgentStates.clear();
+		for (const agent of checkpoint?.agents ?? []) persistedAgentStates.set(agent.id, JSON.stringify(agent));
+		attachRootPresentation(ctx);
+	});
+	pi.on("agent_start", () => {
+		if (ownsRoot) rootTurnActive = true;
+		deliverRootMessages();
+	});
+	pi.on("agent_end", () => {
+		if (!ownsRoot) return;
+		rootTurnActive = false;
+	});
+	pi.on("session_compact", () => persistAllAgentStates(true));
+	pi.on("session_shutdown", (event, ctx) => {
+		persistAllAgentStates(true);
+		unregisterPresentationResolver(ctx.sessionManager.getSessionId());
+		unsubscribeDelivery?.();
+		widget?.dispose();
+		source?.dispose();
+		if (ownsRoot && rootSessionId && event.reason !== "reload") removeRootCoordinator(rootSessionId);
+		coordinator = undefined;
+		callerPath = undefined;
+		rootSessionId = undefined;
+		ownsRoot = false;
+		persistedAgentStates.clear();
 	});
 
-	pi.on("session_shutdown", async () => {
-		unregisterHubSource?.();
-		unregisterHubSource = undefined;
-		unregisterRootSessionHub();
-		unsubscribeFastRequests();
-		if (currentCtx) unregisterSessionBinding(currentCtx);
-		unregisterAgentWidget(agentWidget);
-		agentWidget.dispose();
-		currentCtx = undefined;
+	const openHub = async (ctx: ExtensionCommandContext) => {
+		if (!ownsRoot || !source) return;
+		const resolver = getPresentationResolver(ctx.sessionManager.getSessionId());
+		await openAgentHub(ctx, source, resolver?.resolveTool, resolver?.resolveCustomMessage);
+	};
+	pi.registerCommand("subagents", {
+		description: "Open the Agent Hub",
+		handler: async (_args: string, ctx: ExtensionCommandContext) => openHub(ctx),
 	});
-
-	pi.registerCommand("hub", {
-		description: "Open the shared Hub",
-		handler: async (_args: string, ctx: ExtensionCommandContext) => {
-			await openRuntimeHub(ctx);
-		},
-	});
-
 	pi.registerShortcut?.("alt+a", {
-		description: "Open the shared Hub",
-		handler: async (ctx: ExtensionContext) => {
-			await openRuntimeHub(ctx);
-		},
+		description: "Toggle the Agent Hub",
+		handler: async (ctx: ExtensionContext) => openHub(ctx as ExtensionCommandContext),
 	});
-
 	pi.registerCommand("retry", {
 		description: "Re-issue the failed request: /retry [main|<subagent id>]",
-		getArgumentCompletions: (prefix: string) => {
-			if (!currentCtx) return null;
-			const value = prefix.trim();
-			const items = retryTargets(currentCtx).filter((target) => target.value.startsWith(value));
-			return items.length > 0 ? items : null;
-		},
 		handler: async (args: string, ctx: ExtensionCommandContext) => {
 			await ctx.waitForIdle();
 			const target = args.trim();
-			const report = (message: string, level: "info" | "warning" | "error") => {
-				if (ctx.hasUI) ctx.ui.notify(message, level);
-				else console.error(`[retry] ${message}`);
-			};
-			const targets = retryTargets(ctx);
-			const usage = targets.length
-				? `Retryable: ${targets.map((candidate) => candidate.value).join(", ")}.`
-				: "Nothing failed in this session; there is no request to re-issue.";
-
 			const mainError = findRetryableError(ctx.sessionManager.getBranch());
-			if ((!target && mainError) || target === "main") {
-				if (!mainError) {
-					report(`No failed main-session request to re-issue. ${usage}`, "warning");
-					return;
-				}
-				// The failed request is re-issued from the intact transcript: completed tool calls
-				// stay in context and only a hidden nudge is added, so no work is repeated.
+			if (!target || target === "main") {
+				if (!mainError) return ctx.ui.notify("No failed main-session request to re-issue.", "warning");
 				pi.sendMessage(
 					{
 						customType: RETRY_MESSAGE,
@@ -667,307 +400,248 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 					},
 					{ triggerTurn: true },
 				);
-				report(`Re-issuing the failed main request (${mainError}).`, "info");
 				return;
 			}
-
-			const record = target
-				? findOwnedRecord(ctx, target)
-				: visibleRecords(ctx).find((agent) => agent.status === "error");
-			if (!record) {
-				report(
-					target ? `No subagent matches "${target}". ${usage}` : `No retryable subagent found. ${usage}`,
-					"warning",
-				);
-				return;
-			}
-			record.completionDelivered = true;
-			const retried = await manager.retry(pi, ctx, record.id, {
-				onAssistantUsage: () => {},
-				rootSessionId: record.rootSessionId,
-			});
-			if (!retried) {
-				report(`Subagent ${record.id} has no failed request to re-issue.`, "warning");
-				return;
-			}
-			persistAgent(retried);
-			agentWidget.update();
-			report(
-				retried.error ? retried.error : `Subagent ${retried.id} completed after retry.`,
-				retried.error ? "error" : "info",
+			const activeCoordinator = requireCoordinator();
+			const canonical = activeCoordinator.resolve(callerPath, target);
+			const agent = canonical
+				? activeCoordinator.snapshot().find((candidate) => candidate.id === canonical)
+				: undefined;
+			if (!agent || agent.status !== "failed")
+				return ctx.ui.notify(`No failed subagent matches "${target}".`, "warning");
+			await activeCoordinator.followUp(
+				callerPath,
+				canonical!,
+				"Retry the latest failed request without repeating completed work.",
 			);
 		},
 	});
 
-	pi.registerTool({
-		name: "spawn_agent",
+	registerCollaborationTool({
+		name: AGENT_TOOLS.spawnAgent,
 		label: "Spawn Agent",
 		description:
-			"Spawn one or many native Pi agents. Background completion is automatic. After spawning in the background, end the turn instead of polling, listing agents, or sleeping.",
-		promptSnippet: "Spawn agents",
-		renderShell: "self",
-		renderCall: renderTaskCall,
-		renderResult: renderTaskResult,
-		parameters: Type.Object({
-			agent: Type.String({
-				description: "Agent type: task, explore, plan, reviewer, or a custom agent.",
-			}),
-			context: Type.Optional(Type.String({ description: "Shared context prepended to every tasks[] item." })),
-			tasks: Type.Optional(Type.Array(taskItemSchema, { description: "One agent per item." })),
-			id: Type.Optional(Type.String({ description: "Single-spawn display name." })),
-			description: Type.Optional(Type.String({ description: "Single-spawn UI label." })),
-			role: Type.Optional(Type.String({ description: "Single-spawn specialist identity." })),
-			model_role: Type.Optional(
-				Type.String({ description: "Named model role from model-roles.json. Overrides the agent default." }),
-			),
-			assignment: Type.Optional(Type.String({ description: "Single-spawn complete assignment." })),
-			isolated: Type.Optional(Type.Boolean({ description: "Use an isolated git worktree." })),
-			background: Type.Optional(
-				Type.Boolean({ description: "Return immediately and notify on completion. Default true." }),
-			),
-		}),
-		execute: async (_toolCallId, params, signal, onUpdate, ctx) => {
-			currentCtx = ctx;
-			currentAgents = loadAgents(ctx.cwd);
-			const taskParams = params as TaskParams;
-			const items = normalizeItems(taskParams);
-			const background = taskParams.background !== false;
-			const parentSessionId = ctx.sessionManager.getSessionId();
-			if (shouldOwnAgentWidget(manager, parentSessionId, ctx.hasUI)) agentWidget.setUICtx(ctx.ui);
-			const parentAgent = manager.findByChildSessionId(parentSessionId);
-			const rootSessionId = parentAgent?.rootSessionId ?? parentSessionId;
-			const agentConfig = resolveAgentConfig(currentAgents, taskParams.agent);
-			if (!agentConfig) throw new Error(`Unknown or disabled agent type: ${taskParams.agent}`);
-			const roleCatalog = loadModelRoles();
-			let completed = 0;
-			const spawned = items.map((item, index) => {
-				const name = taskName(item, index);
-				const prompt = assignmentPrompt(taskParams.context, item);
-				let id = name;
-				try {
-					const requestedModelRole = item.model_role?.trim();
-					if (requestedModelRole && !roleCatalog.roles[requestedModelRole]) {
-						throw new Error(`Unknown model role: ${requestedModelRole}`);
-					}
-					const selectedAgentConfig = withModelRole(agentConfig, requestedModelRole);
-					id = manager.spawn(pi, ctx, selectedAgentConfig.name as SubagentType, prompt, {
-						description: name,
-						id: item.id,
-						agentConfig: selectedAgentConfig,
-						resolveRuntime: () => getSessionRuntime(parentSessionId, rootSessionId),
-						rootSessionId,
-						parentAgentId: parentAgent?.id,
-						parentSessionId,
-						assignment: prompt,
-						isBackground: background,
-						isolation: item.isolated ? "worktree" : undefined,
-						signal: background ? undefined : signal,
-						onToolActivity: (tool) => {
-							const activity = ensureActivity(activityByAgent, agentKey(rootSessionId, id));
-							if (tool.type === "start") activity.activeTools.set(tool.toolName, tool.toolName);
-							else {
-								activity.activeTools.delete(tool.toolName);
-								activity.toolUses++;
-							}
-							agentWidget.update();
-						},
-						onTextDelta: (_delta, fullText) => {
-							ensureActivity(activityByAgent, agentKey(rootSessionId, id)).responseText = fullText;
-						},
-						onSessionCreated: (session) => {
-							ensureActivity(activityByAgent, agentKey(rootSessionId, id)).session = session;
-							const record = manager.getRecord(id, rootSessionId);
-							if (record) persistAgent(record);
-						},
-						onTurnEnd: (turnCount) => {
-							const activity = ensureActivity(activityByAgent, agentKey(rootSessionId, id));
-							activity.turnCount = turnCount;
-						},
-						onAssistantUsage: (usage) => {
-							addActivityUsage(ensureActivity(activityByAgent, agentKey(rootSessionId, id)), usage);
-							agentWidget.update();
-						},
-					});
-					ensureActivity(activityByAgent, agentKey(rootSessionId, id));
-					const record = manager.getRecord(id, rootSessionId);
-					if (!record) throw new Error(`Subagent record missing after spawn: ${id}`);
-					persistAgent(record);
-					agentWidget.update();
-					return { item, index, record };
-				} catch (error) {
-					return { item, index, error: error instanceof Error ? error.message : String(error), id };
-				}
-			});
-
-			if (background) {
-				const results = spawned.map(({ item, index, record, error, id }) =>
-					record
-						? resultFromRecord(record, item, index, taskParams.agent)
-						: {
-								index,
-								id,
-								agent: taskParams.agent,
-								description: item.description,
-								role: item.role,
-								model_role: item.model_role,
-								assignment: item.assignment,
-								status: "error" as const,
-								error,
-								durationMs: 0,
-								toolUses: 0,
-							},
-				);
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text: `Started ${results.length} background agent${results.length === 1 ? "" : "s"}. Do not poll, call list_agents, or sleep; end this turn. Completion will trigger a follow-up automatically.`,
-						},
-					],
-					details: { results },
-				};
-			}
-
-			const results = await Promise.all(
-				spawned.map(async ({ item, index, record, error, id }) => {
-					if (!record) {
-						return {
-							index,
-							id,
-							agent: taskParams.agent,
-							description: item.description,
-							role: item.role,
-							model_role: item.model_role,
-							assignment: item.assignment,
-							status: "error" as const,
-							error,
-							durationMs: 0,
-							toolUses: 0,
-						};
-					}
-					await manager.waitForForeground(record.id, record.rootSessionId);
-					completed++;
-					agentWidget.update();
-					persistAgent(record);
-					onUpdate?.({
-						content: [{ type: "text" as const, text: `Completed ${completed}/${items.length} agents.` }],
-						details: { completed, total: items.length },
-					});
-					return resultFromRecord(record, item, index, taskParams.agent);
+			(modelRoleDescription ? `Model roles: ${modelRoleDescription}\n` : "") +
+			`Spawns an agent to work on the specified task. If your current task is \`/root/task1\` and you spawn_agent with task_name "task-3" the agent will have canonical task name \`/root/task1/task-3\`.\nYou are then able to refer to this agent as \`task-3\` or \`/root/task1/task-3\` interchangeably. However an agent \`/root/task2/task-3\` would only be able to communicate with this agent via its canonical name \`/root/task1/task-3\`.\nThe spawned agent will have the same tools as you and the ability to spawn its own subagents.\nOmit \`model_role\` to use the configured subagent default role (${modelRoles.subagentDefaultRole}).\nOnly call this tool for a concrete, bounded subtask that can run independently alongside useful local work; otherwise continue locally.\nIt will be able to send you and other running agents messages, and its final answer will be provided to you when it finishes.\nThe new agent's canonical task name will be provided to it along with the message.\n\nNote that passing \`fork_turns="none"\` will not pass any surrounding context to the spawned subagent, which may cause the agent to lack the context it needs to complete its task, whereas \`fork_turns="all"\` will provide the subagent with all surrounding context.`,
+		...spawnToolPresentation,
+		parameters: Type.Object(
+			{
+				task_name: Type.String({
+					description: "Task name for the new agent. Use lowercase letters, digits, and dashes.",
 				}),
-			);
-			const ordered = results.sort((left, right) => left.index - right.index);
-			// Subagent reports are concatenated here and are otherwise unbounded:
-			// a fan-out of verbose agents would land in context whole.
+				message: Type.String({ description: "Initial plain-text task for the new agent." }),
+				fork_turns: Type.Optional(
+					Type.String({
+						description:
+							"Optional number of turns to fork. Defaults to `all`. Use `none`, `all`, or a positive integer string such as `3` to fork only the most recent turns.",
+					}),
+				),
+				model_role: Type.Optional(modelRoleParameter),
+			},
+			{ additionalProperties: false },
+		),
+		async execute(
+			_toolCallId: string,
+			params: unknown,
+			signal: AbortSignal | undefined,
+			_onUpdate: AgentToolUpdateCallback | undefined,
+			ctx: ExtensionContext,
+		) {
+			const item = normalizeItems(params as TaskParams)[0]!;
+			const requestedModelRole = item.model_role?.trim() || modelRoles.subagentDefaultRole;
+			if (requestedModelRole && !modelRoles.roles[requestedModelRole])
+				throw new Error(`Unknown model role: ${requestedModelRole}`);
+			const requestedModelRoleColor = requestedModelRole
+				? roleColor(modelRoles.roles[requestedModelRole]!, roleNames(modelRoles).indexOf(requestedModelRole))
+				: undefined;
+			const forkTurns = parseForkTurns((params as TaskParams).fork_turns);
+			const activeCoordinator = requireCoordinator();
+			const id = activeCoordinator.spawn(callerPath, {
+				taskName: item.task_name,
+				message: item.message,
+				pi,
+				ctx,
+				agentConfig: withModelRole(taskAgentConfig, requestedModelRole),
+				forkTurns,
+				signal,
+			});
+			const agent = activeCoordinator.snapshot().find((candidate) => candidate.id === id)!;
 			return {
-				content: [{ type: "text" as const, text: boundOutput(formatTaskResults(ordered)).text }],
-				details: { results: ordered },
+				content: [
+					{ type: "text" as const, text: `Started agent ${id} asynchronously. Use wait_agent for updates.` },
+				],
+				details: {
+					result: resultFromSnapshot(agent, requestedModelRole, item.message, requestedModelRoleColor),
+				},
 			};
 		},
 	});
 
-	pi.registerTool({
-		name: "list_agents",
+	registerCollaborationTool({
+		name: AGENT_TOOLS.followupTask,
+		label: "Follow Up Agent",
+		description:
+			"Send a follow-up task to an existing non-root target agent and trigger a turn if it is idle. If the target is already running, deliver the task promptly at message boundaries while sampling, or after the pending tool call completes.",
+		...followupToolPresentation,
+		parameters: Type.Object(
+			{
+				target: Type.String({
+					description: "Agent id or canonical task name to send a follow-up task to (from spawn_agent).",
+				}),
+				message: Type.String({ description: "Message text to send to the target agent." }),
+			},
+			{ additionalProperties: false },
+		),
+		async execute(_id: string, params: unknown) {
+			const { target, message } = params as { target: string; message: string };
+			if (target.trim() === "/root") throw new Error("Follow-up tasks can't target the root agent");
+			await requireCoordinator().followUp(callerPath, target, message);
+			return { content: [], details: {} };
+		},
+	});
+
+	registerCollaborationTool({
+		name: AGENT_TOOLS.sendMessage,
+		label: "Send Agent Message",
+		description:
+			"Send a message to an existing agent. The message will be delivered promptly. Does not trigger a new turn.",
+		...sendMessageToolPresentation,
+		parameters: Type.Object(
+			{
+				target: Type.String({ description: "Relative or canonical task name to message (from spawn_agent)." }),
+				message: Type.String({ description: "Message text to queue on the target agent." }),
+			},
+			{ additionalProperties: false },
+		),
+		async execute(_id: string, params: unknown) {
+			const { target, message } = params as { target: string; message: string };
+			const activeCoordinator = requireCoordinator();
+			const canonical = target === "/root" ? "/root" : activeCoordinator.resolve(callerPath, target);
+			const own = callerPath ?? "/root";
+			if (!canonical) throw new Error(`No agent matches "${target}"`);
+			if (canonical === own) throw new Error(`Agent ${own} cannot target itself`);
+			await activeCoordinator.sendMessage(callerPath, canonical, message);
+			return { content: [], details: {} };
+		},
+	});
+
+	registerCollaborationTool({
+		name: AGENT_TOOLS.interruptAgent,
+		label: "Interrupt Agent",
+		description:
+			"Interrupt an agent's current turn, if any, and return its previous status. The agent remains available for messages and follow-up tasks.",
+		...interruptToolPresentation,
+		parameters: Type.Object(
+			{ target: Type.String({ description: "Agent id or canonical task name to interrupt (from spawn_agent)." }) },
+			{ additionalProperties: false },
+		),
+		async execute(_id: string, params: unknown) {
+			const { target } = params as { target: string };
+			const activeCoordinator = requireCoordinator();
+			const canonical = activeCoordinator.resolve(callerPath, target);
+			if (!canonical) throw new Error(`No agent matches "${target}"`);
+			const previous = await activeCoordinator.interrupt(callerPath, canonical);
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text: `Interrupted ${canonical}. Continue it with ${AGENT_TOOLS.followupTask}.`,
+					},
+				],
+				details: { result: { id: canonical, status: previous } },
+			};
+		},
+	});
+
+	registerCollaborationTool({
+		name: AGENT_TOOLS.listAgents,
 		label: "List Agents",
-		description: "List agents owned by the current Pi session.",
-		promptSnippet: "List agents",
-		renderShell: "self",
-		renderCall: (_args: unknown, theme: ToolTheme) =>
-			textComponent(
-				renderStatusLine(theme, { iconOverride: styledSymbol(theme, "tool.task", "accent"), title: "Agents" }),
-			),
-		renderResult: renderSubagentList,
-		parameters: Type.Object({}),
-		execute: async (_toolCallId, _params, _signal, _onUpdate, ctx) => {
-			const agents = visibleRecords(ctx).map((agent) => ({
-				id: agent.id,
-				type: agent.type,
-				description: agent.description,
-				status: agent.status,
-				error: agent.error,
-			}));
+		description: "List live agents in the current root thread tree. Optionally filter by task-path prefix.",
+		...listAgentsPresentation,
+		parameters: Type.Object(
+			{
+				path_prefix: Type.Optional(
+					Type.String({
+						description: "Task-path prefix filter without a trailing slash. Omit to list all live agents.",
+					}),
+				),
+			},
+			{ additionalProperties: false },
+		),
+		async execute(_id: string, params: unknown) {
+			const { path_prefix } = params as { path_prefix?: string };
+			if (path_prefix?.endsWith("/")) throw new Error("path_prefix must not end with /");
+			const agents = requireCoordinator()
+				.snapshot()
+				.filter((agent) => !path_prefix || agent.id.startsWith(path_prefix))
+				.map((agent) => ({
+					id: agent.id,
+					description: agent.description,
+					status: agent.status,
+					result: agent.result,
+					error: agent.error,
+				}));
 			return { content: [{ type: "text" as const, text: JSON.stringify(agents, null, 2) }], details: { agents } };
 		},
 	});
 
-	pi.registerTool({
-		name: "followup_task",
-		label: "Follow Up Agent",
-		description: "Run another turn in an existing agent session, or retry its latest failed turn.",
-		promptSnippet: "Follow up an agent",
-		renderShell: "self",
-		renderCall: (args: unknown, theme: ToolTheme) => {
-			const params = args as { id?: string };
-			return framedBlock(theme, {
-				header: renderStatusLine(theme, {
-					iconOverride: styledSymbol(theme, "tool.task", "accent"),
-					title: "Agent",
-					description: params.id ? `follow up ${params.id}` : "follow up",
-				}),
-				borderColor: "borderMuted",
-			});
-		},
-		renderResult: renderTaskResult,
-		parameters: Type.Object({
-			id: Type.String({ description: "Agent id." }),
-			prompt: Type.Optional(Type.String({ description: "Follow-up assignment." })),
-			retry: Type.Optional(Type.Boolean({ description: "Retry the latest failed turn." })),
+	registerCollaborationTool({
+		name: AGENT_TOOLS.waitAgent,
+		label: "Wait For Agent",
+		description:
+			"Wait for a mailbox update from any live agent, including queued messages and final-status notifications. The wait also ends early when new user input is steered into the active turn. Does not return the content; returns either a summary of which agents have updates (if any), an interruption summary for steered input, or a timeout summary if no activity arrives before the deadline.",
+		...createWaitToolPresentation(() => {
+			const live = otherLiveAgents();
+			return live?.length === 1 ? live[0]?.id : undefined;
 		}),
-		execute: async (_toolCallId, params, signal, _onUpdate, ctx) => {
-			const { id, prompt, retry } = params as { id: string; prompt?: string; retry?: boolean };
-			const record = findOwnedRecord(ctx, id);
-			if (!record) throw new Error(`Agent not found in this session: ${id}`);
-			record.completionDelivered = true;
-			const options = { signal, rootSessionId: record.rootSessionId };
-			const updated = retry
-				? await manager.retry(pi, ctx, record.id, options)
-				: await manager.resume(pi, ctx, record.id, prompt?.trim() || "Continue the delegated task.", options);
-			if (!updated) throw new Error(`Agent not found or not resumable: ${id}`);
-			persistAgent(updated);
-			const result = resultFromRecord(updated, { assignment: prompt ?? "retry" }, 0, updated.type);
-			return { content: [{ type: "text" as const, text: formatTaskResults([result]) }], details: { result } };
-		},
-	});
-
-	pi.registerTool({
-		name: "send_message",
-		label: "Send Agent Message",
-		description: "Steer a running agent after its current tool execution.",
-		promptSnippet: "Message an agent",
-		renderShell: "self",
-		renderCall: renderTaskCall,
-		renderResult: renderTaskResult,
-		parameters: Type.Object({
-			id: Type.String({ description: "Running agent id." }),
-			message: Type.String({ description: "Steering message." }),
-		}),
-		execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
-			const { id, message } = params as { id: string; message: string };
-			const record = findOwnedRecord(ctx, id);
-			if (!record || !(await manager.steer(record.id, message, record.rootSessionId))) {
-				throw new Error(`Running agent not found: ${id}`);
-			}
-			return { content: [{ type: "text" as const, text: `Message sent to ${record.id}.` }], details: {} };
-		},
-	});
-
-	pi.registerTool({
-		name: "stop_agent",
-		label: "Stop Agent",
-		description: "Stop a running or queued agent.",
-		promptSnippet: "Stop an agent",
-		renderShell: "self",
-		renderCall: renderTaskCall,
-		renderResult: renderTaskResult,
-		parameters: Type.Object({ id: Type.String({ description: "Agent id." }) }),
-		execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
-			const { id } = params as { id: string };
-			const record = findOwnedRecord(ctx, id);
-			if (!record || !manager.abort(record.id, record.rootSessionId)) {
-				throw new Error(`Running or queued agent not found: ${id}`);
-			}
-			persistAgent(record);
-			return { content: [{ type: "text" as const, text: `Stopped ${record.id}.` }], details: {} };
+		parameters: Type.Object(
+			{
+				timeout_ms: Type.Optional(
+					Type.Number({
+						minimum: MIN_WAIT_TIMEOUT_MS,
+						maximum: MAX_WAIT_TIMEOUT_MS,
+						description: "Timeout in milliseconds. Defaults to 30000, min 10000, max 3600000.",
+					}),
+				),
+			},
+			{ additionalProperties: false },
+		),
+		async execute(_id: string, params: unknown, signal: AbortSignal | undefined) {
+			const activeCoordinator = requireCoordinator();
+			const startedAt = Date.now();
+			if (!otherLiveAgents()?.length)
+				return {
+					content: [{ type: "text" as const, text: "No other live agents are available for mailbox updates." }],
+					details: { wait: { durationMs: 0, outcome: "none" as const } },
+				};
+			const update = await activeCoordinator.waitForUpdate(
+				signal,
+				waitTimeout((params as { timeout_ms?: number }).timeout_ms),
+			);
+			const text = signal?.aborted
+				? "The mailbox wait ended because new input interrupted the active turn."
+				: !update
+					? "No agent updates arrived before the timeout."
+					: update.type === "message"
+						? `Mailbox update from ${update.sender}.`
+						: update.type === "settled" || update.type === "interrupted"
+							? `Agent update: ${update.agent.id} (${update.agent.status}).`
+							: "Agent transcript updated.";
+			const target =
+				update?.type === "message"
+					? update.sender
+					: update?.type === "settled" || update?.type === "interrupted"
+						? update.agent.id
+						: undefined;
+			const outcome: "aborted" | "updated" | "timeout" = signal?.aborted
+				? "aborted"
+				: update
+					? "updated"
+					: "timeout";
+			return {
+				content: [{ type: "text" as const, text }],
+				details: { wait: { target, durationMs: Date.now() - startedAt, outcome } },
+			};
 		},
 	});
 }
