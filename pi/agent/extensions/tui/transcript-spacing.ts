@@ -2,6 +2,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Component } from "@earendil-works/pi-tui";
+import { paintHalfHeightBackgroundEdges } from "../shared/tui/text.ts";
 
 type ContentBlock = { type: string; thinking?: string };
 type TranscriptComponent = Component & {
@@ -54,7 +55,6 @@ const USER_COMPONENTS = new Set(["UserMessageComponent", "SkillInvocationMessage
 const ANSI_ESCAPE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const OSC_PREFIX = /^(?:\x1b]133;[ABC]\x07)*/;
 const OSC_ESCAPE = /\x1b]133;[ABC]\x07/g;
-const BACKGROUND = /\x1b\[48(?:;[0-9]+)*m/;
 const globalState = globalThis as typeof globalThis & { [PATCH_KEY]?: PatchState | LegacyPatchState };
 
 // Assistant messages are re-filtered on every animation frame, and stripping escapes
@@ -95,13 +95,6 @@ function removeBlankLines(lines: string[], all: boolean): string[] {
 	return compact;
 }
 
-function halfBackground(line: string, glyph: "▄" | "▀", width: number): string {
-	const background = line.match(BACKGROUND)?.[0];
-	if (!background) return line;
-	const prefix = line.match(OSC_PREFIX)?.[0] ?? "";
-	return `${prefix}${background.replace("[48", "[38")}${glyph.repeat(width)}\x1b[39m`;
-}
-
 function patchComponent(component: TranscriptComponent): void {
 	component[ORIGINAL_RENDER] ??= component.render;
 	const original = component[ORIGINAL_RENDER];
@@ -109,10 +102,7 @@ function patchComponent(component: TranscriptComponent): void {
 	component.render = function (width) {
 		const lines = original.call(this, width);
 		if (USER_COMPONENTS.has(name)) {
-			if (lines.length < 2) return lines;
-			lines[0] = halfBackground(lines[0] ?? "", "▄", width);
-			lines[lines.length - 1] = halfBackground(lines.at(-1) ?? "", "▀", width);
-			return lines;
+			return paintHalfHeightBackgroundEdges(lines, width);
 		}
 		if (name !== "AssistantMessageComponent") return lines;
 		if (hasThinking(this)) return removeBlankLines(lines, true);

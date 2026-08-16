@@ -39,6 +39,9 @@ describe("auto compact and resume", () => {
 				expect(compactionReasonGlobal[compactionReasonOverrideKey]).toBe("threshold");
 				compactOptions = options;
 			},
+			sessionManager: {
+				getLeafEntry: () => ({ type: "message" }),
+			},
 		};
 
 		autoCompactResumeExtension(pi);
@@ -77,6 +80,45 @@ describe("auto compact and resume", () => {
 				options: { triggerTurn: true, deliverAs: "followUp" },
 			},
 		]);
+	});
+
+	test("resumes without a second compaction when core already wrote the boundary", () => {
+		let turnEnd: ((event: any, ctx: any) => void) | undefined;
+		let context: ((event: any, ctx: any) => any) | undefined;
+		let agentSettled: ((event: any, ctx: any) => void) | undefined;
+		let compactCalls = 0;
+		const messages: any[] = [];
+		let leaf: any = { type: "message" };
+		const pi = {
+			on(event: string, handler: (event: any, ctx: any) => void) {
+				if (event === "turn_end") turnEnd = handler;
+				if (event === "context") context = handler;
+				if (event === "agent_settled") agentSettled = handler;
+			},
+			sendMessage(message: any, options: any) {
+				messages.push({ message, options });
+			},
+		} as unknown as ExtensionAPI;
+		const ctx = {
+			getContextUsage: () => ({ tokens: 235_000, contextWindow: 272_000, percent: 86 }),
+			hasPendingMessages: () => false,
+			sessionManager: {
+				getLeafEntry: () => leaf,
+			},
+			compact() {
+				compactCalls++;
+			},
+		};
+
+		autoCompactResumeExtension(pi);
+		turnEnd?.({ message: { content: [{ type: "toolCall" }] } }, ctx);
+		leaf = { type: "compaction" };
+		expect(context?.({ messages: [] }, ctx)).toBeUndefined();
+		agentSettled?.({}, ctx);
+
+		expect(compactCalls).toBe(0);
+		expect(messages).toHaveLength(1);
+		expect(compactionReasonGlobal[compactionReasonOverrideKey]).toBeUndefined();
 	});
 
 	test("reads compaction threshold from PI_AUTO_COMPACT_PERCENT", () => {

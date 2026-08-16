@@ -11,6 +11,8 @@ export type SkillReference = {
 	name: string;
 	filePath: string;
 	description?: string;
+	/** Kept out of the listing surfaces. Still loadable through `skill://<name>`. */
+	hidden?: boolean;
 };
 
 type SkillfulLoadStatus = "read";
@@ -26,7 +28,19 @@ export type SkillfulLoadDetails = {
 	loads?: SkillfulLoadDetails[];
 };
 
-export function collectSkills(pi: ExtensionAPI): Map<string, SkillReference[]> {
+/**
+ * Every skill the session can reach.
+ *
+ * Hidden names are not removed here. Hiding is a listing decision — it keeps a
+ * skill out of resident prompt and autocomplete surface — and `skill://<name>`
+ * stays the internal load path either way. Filtering here made `computer-use`
+ * unreadable, and a live probe then spent a cell on `read skill://computer-use`
+ * before it could reach the ten working `mcp__computer_use__*` tools.
+ */
+export function collectSkills(
+	pi: ExtensionAPI,
+	hiddenSkillNames: Iterable<string> = getCodexHiddenSkillNames(),
+): Map<string, SkillReference[]> {
 	const direct = new Map<string, SkillReference>();
 	for (const cmd of pi.getCommands()) {
 		if (cmd.source !== "skill" || !cmd.name.startsWith(SKILL_PREFIX)) continue;
@@ -49,6 +63,14 @@ export function collectSkills(pi: ExtensionAPI): Map<string, SkillReference[]> {
 	for (const alias of getCodexPluginAliases()) {
 		if (!out.has(alias)) out.set(alias, []);
 	}
+	for (const name of hiddenSkillNames) {
+		const references = out.get(name);
+		if (references)
+			out.set(
+				name,
+				references.map((reference) => ({ ...reference, hidden: true })),
+			);
+	}
 	return out;
 }
 
@@ -60,13 +82,10 @@ function pluginAlias(name: string, filePath: string): string | undefined {
 	return normalizedPath.match(/(?:^|\/)\.codex\/plugins\/cache\/[^/]+\/([^/]+)\/[^/]+(?:\/|$)/)?.[1];
 }
 
-export function buildItems(
-	skills: Map<string, SkillReference[]>,
-	hiddenSkillNames: Iterable<string> = getCodexHiddenSkillNames(),
-): AutocompleteItem[] {
-	const hidden = new Set(hiddenSkillNames);
+/** The picker, minus hidden skills. They stay loadable through `skill://<name>`. */
+export function buildItems(skills: Map<string, SkillReference[]>): AutocompleteItem[] {
 	return [...skills.entries()]
-		.filter(([name]) => !hidden.has(name))
+		.filter(([, references]) => references.length === 0 || references.some((reference) => !reference.hidden))
 		.map(([name, references]) => ({
 			value: `$${name}`,
 			label: `$${name}`,

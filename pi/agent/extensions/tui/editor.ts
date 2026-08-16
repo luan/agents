@@ -68,7 +68,7 @@ const ZIPPING_VARIANTS = [
 	["z̊", "i̊", "n̊", "g̊"],
 	["z̸", "i̸", "n̸", "g̸"],
 ] as const;
-export const WORKING_ANIMATION_INTERVAL_MS = 32;
+export const WORKING_ANIMATION_INTERVAL_MS = 60;
 const RAIL_PULSE_MS = 2000;
 const FULL_RAIL_FRAMES = ["▐"] as const;
 const HALF_RAIL_FRAMES = ["▗"] as const;

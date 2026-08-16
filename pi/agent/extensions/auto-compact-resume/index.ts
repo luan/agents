@@ -6,7 +6,7 @@ const compactionReasonOverrideKey = Symbol.for("agents.pi.compaction-reason.over
 const compactionReasonGlobal = globalThis as typeof globalThis & {
 	[compactionReasonOverrideKey]?: "threshold";
 };
-const STOP_FOR_COMPACTION =
+export const AUTO_COMPACT_STOP_MESSAGE =
 	"End the current response immediately. Output no text and do not call tools. Context compaction will run, then the task will resume.";
 
 function compactAtPercent(): number {
@@ -59,15 +59,15 @@ export default function autoCompactResumeExtension(pi: ExtensionAPI) {
 		waitingToCompact = true;
 	});
 
-	pi.on("context", (event) => {
-		if (!waitingToCompact) return;
+	pi.on("context", (event, ctx: ExtensionContext) => {
+		if (!waitingToCompact || ctx.sessionManager.getLeafEntry()?.type === "compaction") return;
 
 		return {
 			messages: [
 				...event.messages,
 				{
 					role: "user",
-					content: [{ type: "text", text: STOP_FOR_COMPACTION }],
+					content: [{ type: "text", text: AUTO_COMPACT_STOP_MESSAGE }],
 					timestamp: Date.now(),
 				},
 			],
@@ -90,6 +90,12 @@ export default function autoCompactResumeExtension(pi: ExtensionAPI) {
 	pi.on("agent_settled", (_event, ctx: ExtensionContext) => {
 		if (!waitingToCompact) return;
 
+		// Core auto-compaction can write the boundary before this handler settles.
+		if (ctx.sessionManager.getLeafEntry()?.type === "compaction") {
+			waitingToCompact = false;
+			resume(ctx);
+			return;
+		}
 		waitingToCompact = false;
 		compacting = true;
 		compactionReasonGlobal[compactionReasonOverrideKey] = "threshold";

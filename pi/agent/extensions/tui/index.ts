@@ -1,7 +1,6 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { buildSessionContext, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { runCommand } from "../shared/command-runner";
 import {
 	parseSubagentUsage,
 	SUBAGENT_USAGE_ENTRY_TYPE,
@@ -50,11 +49,6 @@ const polishedTui = defineExtensionTui({ id: "polished-tui" });
 type FooterFactory = Parameters<ExtensionContext["ui"]["setFooter"]>[0];
 type FooterDataProvider = Parameters<NonNullable<FooterFactory>>[2];
 type UsageTotals = { input: number; output: number; cost: number };
-
-type UsageBarCache = {
-	key: string;
-	lines: string[];
-};
 
 const WORKING_TIMER_ENTRY_TYPE = "tui:working-timer";
 const MODEL_STATUS_KEYS = new Set(["openai-fast:active"]);
@@ -113,6 +107,22 @@ function providerColor(providerLabel: string): string | undefined {
 		default:
 			return undefined;
 	}
+}
+
+function colorHex(hex: string | undefined, text: string): string {
+	if (!hex || !/^[0-9a-f]{6}$/i.test(hex)) return text;
+	const red = Number.parseInt(hex.slice(0, 2), 16);
+	const green = Number.parseInt(hex.slice(2, 4), 16);
+	const blue = Number.parseInt(hex.slice(4, 6), 16);
+	return `\x1b[38;2;${red};${green};${blue}m${text}\x1b[39m`;
+}
+
+function formatQuotaReset(seconds: number): string {
+	const remaining = Math.max(0, Math.floor(seconds));
+	if (remaining >= 86_400) return `${Math.floor(remaining / 86_400)}d${Math.floor((remaining % 86_400) / 3_600)}h`;
+	if (remaining >= 3_600)
+		return `${Math.floor(remaining / 3_600)}h${String(Math.floor((remaining % 3_600) / 60)).padStart(2, "0")}m`;
+	return `${Math.floor(remaining / 60)}m`;
 }
 
 export function getUsageTotals(ctx: ExtensionContext): UsageTotals {
@@ -192,8 +202,6 @@ export default function (pi: ExtensionAPI) {
 
 	let activeProvider: string | null = null;
 	let refreshTimer: ReturnType<typeof setInterval> | null = null;
-	let usageBarCache: UsageBarCache | null = null;
-	let usageBarPendingKey: string | null = null;
 	let usageBarsVisible = currentConfig.usageBars.visible;
 	let workingAnimationTimer: AnimationMount | undefined;
 	let disposed = false;
@@ -234,65 +242,23 @@ export default function (pi: ExtensionAPI) {
 		} catch {}
 	};
 
-	const usageBarKey = (width: number): string =>
-		JSON.stringify({
-			width,
-			provider: state.providerLabel,
-			fetchedAt: state.usage?.fetchedAt ?? 0,
-			windows: state.usage?.windows ?? [],
-		});
-
 	const ensureUsageBarLines = (width: number) => {
-		const key = usageBarKey(width);
-		if (usageBarCache?.key === key) {
-			state.usageLines = usageBarCache.lines;
-			return;
-		}
-
 		if (!state.usage?.windows.length) {
 			state.usageLines = undefined;
-			usageBarCache = null;
-			usageBarPendingKey = null;
 			return;
 		}
-
-		if (usageBarPendingKey === key) return;
-		usageBarPendingKey = key;
-
-		const request = {
-			provider_label: state.providerLabel,
-			provider_color: providerColor(state.providerLabel),
-			windows: state.usage.windows.map((w) => ({
-				label: w.label,
-				used_percent: w.usedPercent,
-				window_secs: w.windowSecs,
-				reset_secs: w.resetSecs,
-			})),
-			width,
-		};
-
-		void runCommand(
-			"ct",
-			["tui", "usage-bar", "--width", String(width)],
-			process.cwd(),
-			undefined,
-			JSON.stringify(request),
-		)
-			.then((result) => {
-				if (usageBarPendingKey !== key) return;
-				usageBarPendingKey = null;
-				const lines = result.stdout.split(/\r?\n/).filter(Boolean);
-				usageBarCache = { key, lines };
-				state.usageLines = lines;
-				refresh();
-			})
-			.catch(() => {
-				if (usageBarPendingKey !== key) return;
-				usageBarPendingKey = null;
-				usageBarCache = null;
-				state.usageLines = undefined;
-				refresh();
-			});
+		const color = providerColor(state.providerLabel);
+		const segments = [colorHex(color, state.providerLabel)];
+		for (const window of state.usage.windows) {
+			const remaining = Math.max(0, Math.min(100, 100 - window.usedPercent));
+			const filled = Math.round((remaining / 100) * 8);
+			const bar = colorHex(color, "▓".repeat(filled)) + colorHex("6c7086", "░".repeat(Math.max(0, 8 - filled)));
+			const reset = window.resetSecs > 0 ? ` ${colorHex("6c7086", `↺${formatQuotaReset(window.resetSecs)}`)}` : "";
+			segments.push(
+				`${colorHex("6c7086", window.label)} ${bar} ${colorHex(color, `${Math.round(remaining)}%`)}${reset}`,
+			);
+		}
+		state.usageLines = [truncateToWidth(segments.join(colorHex("6c7086", " > ")), Math.max(1, width), "")];
 	};
 
 	const renderEditorTopChrome = (
@@ -491,8 +457,6 @@ export default function (pi: ExtensionAPI) {
 		usageCache.set(provider, snapshot);
 		state.usage = snapshot;
 		state.usageLines = undefined;
-		usageBarCache = null;
-		usageBarPendingKey = null;
 		refresh();
 	};
 
@@ -502,8 +466,6 @@ export default function (pi: ExtensionAPI) {
 			activeProvider = null;
 			state.usage = null;
 			state.usageLines = undefined;
-			usageBarCache = null;
-			usageBarPendingKey = null;
 			stopRefreshTimer();
 			refresh();
 			return;
@@ -514,14 +476,10 @@ export default function (pi: ExtensionAPI) {
 		if (cached && cached.windows.length > 0) {
 			state.usage = cached;
 			state.usageLines = undefined;
-			usageBarCache = null;
-			usageBarPendingKey = null;
 			refresh();
 		} else {
 			state.usage = null;
 			state.usageLines = undefined;
-			usageBarCache = null;
-			usageBarPendingKey = null;
 			refresh();
 		}
 

@@ -139,14 +139,27 @@ describe("skillful extension", () => {
 		]);
 	});
 
-	test("hides configured skills from autocomplete while keeping plugin aliases visible", () => {
-		const skills = new Map([
-			["browser", [{ name: "browser:control-in-app-browser", filePath: "/browser/SKILL.md" }]],
-			["control-in-app-browser", [{ name: "control-in-app-browser", filePath: "/browser/SKILL.md" }]],
-		]);
+	// Hidden means unlisted, not unreachable. `skill://<name>` is the internal load
+	// path, so removing a hidden skill from the map broke it: a live probe spent a
+	// cell on `read skill://computer-use` before it could reach the ten working
+	// `mcp__computer_use__*` tools.
+	test("keeps hidden skills loadable while dropping them from the picker", () => {
+		const pi = {
+			getCommands: () => [
+				{
+					source: "skill",
+					name: "skill:control-in-app-browser",
+					sourceInfo: { path: "/Users/x/.codex/plugins/cache/openai-bundled/browser/1.0.0/skills/SKILL.md" },
+				},
+			],
+		} as never;
 
-		expect(buildItems(skills, new Set(["control-in-app-browser"])).map((item) => item.value)).toEqual(["$browser"]);
-		expect(skills.has("control-in-app-browser")).toBe(true);
+		const visible = collectSkills(pi, new Set(["control-in-app-browser"]));
+
+		expect(visible.has("control-in-app-browser")).toBe(true);
+		expect(visible.get("control-in-app-browser")?.[0]?.hidden).toBe(true);
+		expect(visible.has("browser")).toBe(true);
+		expect(buildItems(visible).map((item) => item.value)).toEqual(["$browser"]);
 	});
 
 	test("loads all plugin skills through the plugin alias", async () => {
@@ -239,7 +252,7 @@ describe("skillful extension", () => {
 			message: {
 				customType: "skillful-load",
 				display: true,
-				content: `<skill name="tdd" location="${skillPath}">\nReferences are relative to ${dir}.\n\n# TDD\n\nUse \`$plan\` after the test loop.\n\n</skill>`,
+				content: `The complete document is below, already in context: skill://tdd. Do not read it again this turn.\n\n<skill name="tdd" location="${skillPath}">\nReferences are relative to ${dir}.\n\n# TDD\n\nUse \`$plan\` after the test loop.\n\n</skill>`,
 				details: {
 					extension: "skillful",
 					kind: "skill-load",
@@ -292,6 +305,9 @@ describe("skillful extension", () => {
 		expect(message?.content).toContain('<skill name="tdd"');
 		expect(message?.content).toContain('<skill name="plan"');
 		expect(message?.details?.loads).toHaveLength(2);
+		// Both names, so the model cannot read either back: one live turn paid 377 tokens twice and 542 twice.
+		expect(message?.content).toContain("already in context: skill://tdd, skill://plan");
+		expect(message?.content).toContain("Do not read them again this turn.");
 	});
 
 	test("ignores unknown dollar skill references", async () => {

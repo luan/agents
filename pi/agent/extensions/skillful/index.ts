@@ -1,11 +1,7 @@
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import { relative, sep } from "node:path";
-import { pathToFileURL } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { AutocompleteItem, Component } from "@earendil-works/pi-tui";
-import { Box } from "@earendil-works/pi-tui";
-import { renderCompactSummaryLine } from "../shared/compact-summary.ts";
+import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { approxTokenCount } from "../shared/output-budget";
 import {
 	formatResourceUri,
@@ -15,18 +11,15 @@ import {
 	registerResourceProvider,
 	type SearchHit,
 } from "../shared/resources.ts";
-import { registerExtensionMessageRenderer, textComponent } from "../shared/tui";
-import { darkerCardBackgroundAnsi } from "../shared/tui/card";
-import { paintAnsiBackgroundRow } from "../shared/tui/text";
 import { wrapProvider } from "./autocomplete";
 import { installEditorHighlight, removeEditorHighlight } from "./editor";
+import { registerSkillfulPresentation } from "./presentation";
 import {
 	buildItems,
 	collectSkills,
 	extractDollarSkillReferences,
 	formatReadSkillContent,
 	formatSkillAssetContent,
-	isSkillfulLoadDetails,
 	loadedDetails,
 	resolveSkillAssetPath,
 	rewriteSlashSkillReferences,
@@ -50,63 +43,13 @@ type SkillLoad = {
 	details: SkillfulLoadDetails;
 };
 
-type SkillfulTheme = {
-	fg(role: string, text: string): string;
-	bg(role: string, text: string): string;
-	bold(text: string): string;
-};
-
-function displayPath(filePath: string): string {
-	const home = homedir();
-	return filePath === home ? "~" : filePath.startsWith(`${home}/`) ? `~/${filePath.slice(home.length + 1)}` : filePath;
-}
-
-function halfBackground(line: string, glyph: "▄" | "▀", width: number): string {
-	const background = line.match(/\x1b\[48(?:;[0-9]+)*m/)?.[0];
-	return background ? `${background.replace("[48", "[38")}${glyph.repeat(width)}\x1b[39m` : line;
-}
-
-class SkillLoadComponent implements Component {
-	constructor(
-		private readonly box: Box,
-		private readonly theme: SkillfulTheme,
-	) {}
-
-	render(width: number): string[] {
-		const background =
-			darkerCardBackgroundAnsi(this.theme, "toolPendingBg") ?? this.theme.bg("toolPendingBg", " ").split(" ")[0];
-		const lines = this.box.render(width).map((line) => paintAnsiBackgroundRow(line, width, background));
-		if (lines.length >= 2) {
-			lines[0] = halfBackground(lines[0]!, "▄", width);
-			lines[lines.length - 1] = halfBackground(lines.at(-1)!, "▀", width);
-		}
-		return lines;
-	}
-
-	invalidate(): void {
-		this.box.invalidate();
-	}
-}
-
-function renderSkillLoad(details: SkillfulLoadDetails | undefined, theme: SkillfulTheme): Component {
-	const name = details?.name ?? "unknown";
-	const path = details?.filePath ? displayPath(details.filePath) : `${details?.loads?.length ?? 0} skill files`;
-	const tokens = details?.tokens ?? details?.loads?.reduce((total, load) => total + (load.tokens ?? 0), 0) ?? 0;
-	const tokenLabel = tokens > 0 ? `${tokens.toLocaleString()} tokens` : (details?.status ?? "read");
-	const box = new Box(1, 1, (text) => text);
-	box.addChild(
-		textComponent(
-			renderCompactSummaryLine(theme, {
-				icon: "",
-				label: "skill",
-				name,
-				path,
-				meta: tokenLabel,
-				pathUrl: details?.filePath ? pathToFileURL(details.filePath).href : undefined,
-			}),
-		),
-	);
-	return new SkillLoadComponent(box, theme);
+// A live `$stack` turn injected the body and the model then spent a cell on `read skill://stack`, a byte-identical
+// 377-token second copy; `$ponytail-review` cost another 542. SYSTEM_PROMPT.md.mustache:127 tells it to always read the
+// URI, so naming these as already-present is the half of that contradiction skillful owns.
+function alreadyInContextNotice(loads: readonly SkillLoad[]): string {
+	const names = loads.map((load) => `skill://${load.details.name}`).join(", ");
+	const subject = loads.length === 1 ? "document is" : "documents are";
+	return `The complete ${subject} below, already in context: ${names}. Do not read ${loads.length === 1 ? "it" : "them"} again this turn.`;
 }
 
 async function skillFiles(root: string, directory = root): Promise<string[]> {
@@ -359,10 +302,7 @@ export default function (pi: ExtensionAPI) {
 		refresh();
 	});
 
-	registerExtensionMessageRenderer(pi, SKILLFUL_CUSTOM_TYPE, (message, _options, theme) => {
-		const details = isSkillfulLoadDetails(message.details) ? message.details : undefined;
-		return renderSkillLoad(details, theme);
-	});
+	registerSkillfulPresentation(pi);
 
 	pi.on("before_agent_start", async (event, _ctx) => {
 		refresh();
@@ -391,7 +331,7 @@ export default function (pi: ExtensionAPI) {
 		return {
 			message: {
 				customType: SKILLFUL_CUSTOM_TYPE,
-				content: loads.map((load) => load.content).join("\n\n"),
+				content: [alreadyInContextNotice(loads), ...loads.map((load) => load.content)].join("\n\n"),
 				display: true,
 				details,
 			},

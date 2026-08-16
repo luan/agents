@@ -2,7 +2,11 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { BuildSystemPromptOptions, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import Mustache, { type TemplateSpans } from "mustache";
+import { isCodeModeEnabled } from "../code-mode/mode.ts";
+import { buildCoreToolDeclarations } from "../code-mode/nested-dispatch.ts";
 import { resolveRuntimeShell } from "../exec-command/adapter/runtime-shell.ts";
+import { sessionIdFromContext } from "../shared/session-context.ts";
+import { getRegisteredTool } from "../shared/tool-registry.ts";
 import { buildCavemanPrompt, isCavemanMode, resolveCavemanMode } from "./caveman.ts";
 
 const SYSTEM_PROMPT_TEMPLATE = readFileSync(new URL("./SYSTEM_PROMPT.md.mustache", import.meta.url), "utf8").trimEnd();
@@ -39,6 +43,11 @@ type SystemPromptBuildOptions = BuildSystemPromptOptions & {
 	environmentContext?: EnvironmentContextOptions;
 	now?: Date;
 	cavemanPrompt?: string | null;
+	sessionId?: string;
+	/** Overrides the registry lookup. Tests only; a session always derives it. */
+	coreToolDeclarations?: string | null;
+	/** Overrides code-mode/config.json. Tests only; a session always reads the file. */
+	codeMode?: boolean;
 };
 
 export default async function systemPromptExtension(pi: ExtensionAPI) {
@@ -66,31 +75,80 @@ export default async function systemPromptExtension(pi: ExtensionAPI) {
 			ctx.ui.notify(`Caveman mode set to ${mode}.`, "info");
 		},
 	});
+	// `before_agent_start` runs once per user prompt (agent-session.js:885), and a throw inside it makes pi fall back
+	// to `_baseSystemPrompt` (agent-session.js:906-908) for every later request. Measured on a real boundary in session
+	// 019ffca9: instructions went 90855 -> 28928 chars, 77 -> 34 headings, and `declare const tools`,
+	// `<available_skills>`, `<pi_instructions>` and `<environment_context>` all vanished. Both the base pi handed us
+	// and the prompt we built are kept, so `before_provider_request` can tell that fallback from a real prompt.
+	let lastBaseSystemPrompt: string | undefined;
+	let lastBuiltSystemPrompt: string | undefined;
+
 	pi.on("before_agent_start", (event, ctx) => {
 		const cavemanMode = resolveCavemanMode(ctx.cwd);
+		if (typeof event.systemPrompt === "string") lastBaseSystemPrompt = event.systemPrompt;
 
-		return {
-			systemPrompt: buildSystemPrompt(event.systemPrompt, {
+		try {
+			const systemPrompt = buildSystemPrompt(event.systemPrompt, {
 				...event.systemPromptOptions,
 				cavemanPrompt: cavemanMode ? buildCavemanPrompt(cavemanMode) : null,
 				cwd: ctx.cwd,
-			}),
-		};
+				sessionId: sessionIdFromContext(ctx),
+			});
+			lastBuiltSystemPrompt = systemPrompt;
+			return { systemPrompt };
+		} catch (error) {
+			// `buildCoreToolDeclarations()` throws on conflicting output schemas (nested-dispatch.ts:353) and
+			// `assertTemplateValues` throws on a missing view value, so one bad registration silently downgraded
+			// every later turn. Reuse the last good prompt instead of handing the turn back to pi's base.
+			ctx.ui?.notify?.(
+				`System prompt build failed: ${error instanceof Error ? error.message : String(error)}`,
+				"error",
+			);
+			return lastBuiltSystemPrompt ? { systemPrompt: lastBuiltSystemPrompt } : undefined;
+		}
 	});
+
 	pi.on("before_provider_request", (event, ctx) => {
-		const cavemanMode = resolveCavemanMode(ctx.cwd);
 		const payload = event.payload as Record<string, unknown>;
 		const instructions = payload.instructions;
-		if (!cavemanMode || typeof instructions !== "string") return;
+		if (typeof instructions !== "string") return;
+
+		// An exact match against the base pi handed us: a post-compaction `agent.continue()` (agent-session.js:776)
+		// issues its request without `before_agent_start`, so the override is gone and pi sends the base verbatim.
+		// Comparing whole strings of different lengths is a length check, so this costs nothing per request.
+		const restored =
+			lastBuiltSystemPrompt && instructions === lastBaseSystemPrompt ? lastBuiltSystemPrompt : instructions;
+
+		const cavemanMode = resolveCavemanMode(ctx.cwd);
+		if (!cavemanMode) return restored === instructions ? undefined : { ...payload, instructions: restored };
 
 		const cavemanPrompt = buildCavemanPrompt(cavemanMode);
-		const normalizedInstructions = instructions.split(cavemanPrompt).join("").trimEnd();
+		const normalizedInstructions = restored.split(cavemanPrompt).join("").trimEnd();
 
 		return {
 			...payload,
 			instructions: `${normalizedInstructions}\n\n${cavemanPrompt}`,
 		};
 	});
+}
+
+// `read` gates the resource-URI paragraph and the whole skills catalogue, so testing the active set deleted them.
+// `selectedTools` remains the fallback for a unit test where nothing registered through shared/tool-registry.ts.
+function isToolReachable(name: string, selectedTools: string[], sessionId?: string): boolean {
+	return getRegisteredTool(name, sessionId) !== undefined || selectedTools.includes(name);
+}
+
+const DIRECT_TOOL_ORDER = ["exec", "wait", "ask_user"];
+
+// `selectedTools` is pi's active tool array, which tool-policy/policy.ts has already collapsed to the direct surface.
+function formatDirectToolList(tools: string[]): string {
+	const quoted = [
+		...DIRECT_TOOL_ORDER.filter((name) => tools.includes(name)),
+		...tools.filter((name) => !DIRECT_TOOL_ORDER.includes(name)).toSorted(),
+	].map((name) => `\`${name}\``);
+	if (quoted.length === 0) return "`exec`";
+	if (quoted.length === 1) return quoted[0] as string;
+	return `${quoted.slice(0, -1).join(", ")} and ${quoted.at(-1)}`;
 }
 
 export function buildSystemPrompt(original: string, options: SystemPromptBuildOptions): string {
@@ -113,9 +171,10 @@ export function buildSystemPrompt(original: string, options: SystemPromptBuildOp
 	const skills = providedSkills ?? [];
 	const tools = selectedTools || ["read", "bash", "edit", "write"];
 
-	const hasSearch = tools.includes("search");
-	const hasFind = tools.includes("find");
-	const hasRead = tools.includes("read");
+	const hasFind = isToolReachable("find", tools, options.sessionId);
+	const hasRead = isToolReachable("read", tools, options.sessionId);
+	// Code-mode off makes every declared tool direct, so the bullets below name the tool rather than `tools.<name>`.
+	const codeMode = options.codeMode ?? isCodeModeEnabled();
 
 	const readmePath = original.match(/- Main documentation: (.+)/)?.[1] || null;
 	const docsPath = original.match(/- Additional docs: (.+)/)?.[1] || null;
@@ -125,8 +184,11 @@ export function buildSystemPrompt(original: string, options: SystemPromptBuildOp
 	return renderTemplate("SYSTEM_PROMPT.md.mustache", SYSTEM_PROMPT_TEMPLATE, {
 		appendSystemPrompt: appendSystemPrompt || null,
 		cavemanPrompt: cavemanPrompt || null,
+		codeMode,
 		contextFiles,
 		customPrompt: customPrompt || null,
+		directToolList: formatDirectToolList(tools),
+		toolPrefix: codeMode ? "tools." : "",
 		docsPath: docsPath ?? "null",
 		environmentContext: buildEnvironmentContextView({
 			currentDate: date,
@@ -143,8 +205,12 @@ export function buildSystemPrompt(original: string, options: SystemPromptBuildOp
 		hasFind,
 		hasContextFiles: contextFiles.length > 0,
 		hasRead,
-		hasSearch,
-		hasExecCommand: tools.includes("exec_command"),
+		hasExecCommand: isToolReachable("exec_command", tools, options.sessionId),
+		hasSpawnAgent: isToolReachable("spawn_agent", tools, options.sessionId),
+		coreToolDeclarations:
+			options.coreToolDeclarations !== undefined
+				? options.coreToolDeclarations
+				: (buildCoreToolDeclarations(undefined, options.sessionId, options.cwd) ?? null),
 		includeSkills: hasRead && visibleSkills.length > 0,
 		promptGuidelines: uniqueNonEmptyLines(promptGuidelines ?? []),
 		readmePath: readmePath ?? "null",
