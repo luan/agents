@@ -258,6 +258,36 @@ async function vltJson<T>(args: string[], context: ResourceContext | undefined, 
 	return parseJson<T>(await vlt([...args, "--json"], context, baseCwd));
 }
 
+async function listedContexts(
+	ref: ResourceRef,
+	context: ResourceContext | undefined,
+	baseCwd: string,
+): Promise<ContextRecord[]> {
+	const args = ["context", "list"];
+	if (ref.query.project) args.push("--project", ref.query.project);
+	const value = await vltJson<unknown>(args, context, baseCwd);
+	if (Array.isArray(value)) return value as ContextRecord[];
+	if (value && typeof value === "object" && Array.isArray((value as { contexts?: unknown }).contexts)) {
+		return (value as { contexts: ContextRecord[] }).contexts;
+	}
+	return [];
+}
+
+function missingContextResult(ref: ResourceRef) {
+	const name = contextName(ref);
+	const content = name ? `Vault context "${name}" is not configured.\n` : "No vault context is configured.\n";
+	return {
+		resource: {
+			uri: formatResourceUri(ref),
+			name: name || "CONTEXT.md",
+			kind: "context",
+			mediaType: "text/markdown",
+			size: Buffer.byteLength(content, "utf8"),
+		},
+		content,
+	};
+}
+
 async function readContext(ref: ResourceRef, context: ResourceContext | undefined, baseCwd: string) {
 	const args = ["context", "show"];
 	const name = contextName(ref);
@@ -270,6 +300,9 @@ async function readContext(ref: ResourceRef, context: ResourceContext | undefine
 async function readContextView(ref: ResourceRef, context: ResourceContext | undefined, baseCwd: string) {
 	const view = parseVaultView(ref);
 	if (!view) {
+		const contexts = await listedContexts(ref, context, baseCwd);
+		const requested = contextName(ref) ?? "root";
+		if (!contexts.some((record) => record.name === requested)) return missingContextResult(ref);
 		const data = await readContext(ref, context, baseCwd);
 		const content = typeof data.content === "string" ? data.content : "";
 		const name = contextName(ref);

@@ -25,7 +25,6 @@ export {
 	runningCellElapsedMs,
 	runningFrame,
 	scaleRgb,
-	setSharedAnimationRenderGuard,
 	sharedAnimationRenderAllowed,
 	sharedAnimationRenderScheduler,
 	shineText,
@@ -45,11 +44,17 @@ export { createResource } from "./resources";
 export { createSurfaceRegistry } from "./surfaces";
 export {
 	clampAnsiLine,
+	faint,
+	italic,
 	keepBackgroundAcrossResets,
 	padToVisibleWidth,
 	paintAnsiBackgroundRow,
+	paintHalfHeightBackgroundEdges,
+	paintHalfHeightBackgroundRow,
 	sgrResetsBackground,
 	truncateToWidthCompat,
 } from "./text";
+export { paintTokenCost, renderTokenCost, tokenCostRole } from "./token-cost";
+export { installCompletedToolRenderCache } from "./tool-execution-cache";
 export type { Emphasis, ListItem, OverflowMode, RenderOptions, RenderTheme, Tone, ViewNode } from "./types";
 export { view } from "./view";

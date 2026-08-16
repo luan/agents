@@ -1,6 +1,6 @@
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve, sep } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const RESOURCE_SCHEMES = ["skill", "vault", "history", "artifact", "local", "agent", "pr", "issue"] as const;
 
@@ -13,6 +13,32 @@ export type ResourceRef = {
 	fragment?: string;
 	query: Record<string, string>;
 };
+
+export type PathRef =
+	| { kind: "local"; input: string; path: string }
+	| { kind: "resource"; input: string; uri: string; ref: ResourceRef };
+
+/**
+ * Normalize plain paths and file URLs for local engines.
+ * Resource URIs stay opaque so their registered provider handles them.
+ */
+export function resolvePathRef(value: string, cwd = process.cwd()): PathRef {
+	if (/^file:/i.test(value)) {
+		let path: string;
+		try {
+			path = fileURLToPath(new URL(value));
+		} catch (error) {
+			throw new ResourceError(
+				"malformed_uri",
+				`Malformed file URI: ${value}${error instanceof Error ? ` (${error.message})` : ""}`,
+			);
+		}
+		return { kind: "local", input: value, path: resolve(path) };
+	}
+	const resource = parseResourceUri(value);
+	if (resource) return { kind: "resource", input: value, uri: formatResourceUri(resource), ref: resource };
+	return { kind: "local", input: value, path: resolve(cwd, value) };
+}
 
 export type Resource = {
 	uri: string;
@@ -217,24 +243,56 @@ export function formatResourceUri(ref: ResourceRef): string {
 
 type ResourceOpenContext = Pick<ResourceContext, "cwd" | "sessionId">;
 
-function safeLocalSessionId(sessionId: string): string {
-	const safe = sessionId.replace(/[^a-zA-Z0-9_.-]/g, "_");
-	return safe || "session";
+/**
+ * One filesystem path segment for an arbitrary identifier.
+ *
+ * Two schemes name files after strings they did not choose: `local://` roots a
+ * session directory at a session id handed to it by the host, and `artifact://`
+ * names each file after the tool that produced it — an MCP tool is free to call
+ * itself `github/get-pr`. Either would otherwise let a `/` or a `..` walk out of
+ * the directory the scheme owns. The length cap is the filesystem's own limit on
+ * a name rather than a policy; nothing pi generates comes near it.
+ */
+export function safeResourceSegment(value: string, fallback: string): string {
+	const safe = value
+		.replace(/[^a-zA-Z0-9_.-]+/g, "_")
+		.slice(0, 64)
+		.replace(/^_+|_+$/g, "");
+	return safe || fallback;
 }
 
+/**
+ * Resolve `relativePath` under `root`, refusing anything that leaves it.
+ *
+ * The two session-scoped schemes reach their files the same way and have to
+ * fail the same way, so the containment check is here rather than in each of
+ * them. The ref is quoted back so a rejected URI names itself.
+ */
+export function resolveResourcePath(root: string, relativePath: string, uri: string): string {
+	const base = resolve(root);
+	const path = resolve(base, relativePath.replace(/^\/+/, ""));
+	if (path !== base && !path.startsWith(`${base}${sep}`))
+		throw new ResourceError("invalid_path", `Resource escapes its root: ${uri}`);
+	return path;
+}
+
+/**
+ * Where `local://` keeps a session's scratch files.
+ *
+ * Scratch is the whole policy here: tmpdir is swept by the OS and nothing in it
+ * has to survive a reboot. `artifact://` deliberately does not share this root —
+ * an `artifact://12` quoted in a transcript has to still resolve after a resume,
+ * so artifacts live beside the session file instead.
+ */
 export function localResourceRoot(context: Pick<ResourceContext, "sessionId">): string {
 	if (!context.sessionId) throw new ResourceError("validation_failed", "No session - local:// unavailable");
-	return join(tmpdir(), "pi-local", safeLocalSessionId(context.sessionId));
+	return join(tmpdir(), "pi-local", safeResourceSegment(context.sessionId, "session"));
 }
 
 export function localResourcePath(ref: ResourceRef, context: Pick<ResourceContext, "sessionId">): string {
 	if (ref.scheme !== "local" || ref.authority !== "current")
 		throw new ResourceError("invalid_path", `Invalid local resource URI: ${formatResourceUri(ref)}`);
-	const root = resolve(localResourceRoot(context));
-	const path = resolve(root, ref.path.replace(/^\/+/, ""));
-	if (path !== root && !path.startsWith(`${root}${sep}`))
-		throw new ResourceError("invalid_path", `Local resource escapes its root: ${formatResourceUri(ref)}`);
-	return path;
+	return resolveResourcePath(localResourceRoot(context), ref.path, formatResourceUri(ref));
 }
 
 function resourceMetadataString(resource: Resource | undefined, key: string): string | undefined {
@@ -396,6 +454,12 @@ export async function writeResource(value: string | ResourceRef, request: WriteR
 	const provider = providerFor(ref);
 	if (!provider.write) throw new ResourceError("read_only", `Resource is read-only: ${formatResourceUri(ref)}`);
 	return provider.write(ref, request);
+}
+
+/** The same test `writeResource` throws on, asked before paying for something only a write can use. */
+export function isResourceWritable(value: string | ResourceRef): boolean {
+	const ref = typeof value === "string" ? parseResourceUri(value) : value;
+	return Boolean(ref && providers.get(ref.scheme)?.write);
 }
 export async function resourceCapabilities(
 	value: string | ResourceRef,

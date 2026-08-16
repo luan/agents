@@ -42,8 +42,8 @@ export function runningFrame(elapsedMs: number | undefined, frameMs = RUNNING_FR
  * costs a full-screen repaint several times a second. Freezing the clock past this point makes a
  * stalled cell render identically frame to frame, so the differ finds nothing to repaint.
  *
- * ponytail: a wall-clock cap, not real stall detection. A genuinely slow call just stops spinning
- * once past it. Key off a real "arguments finished streaming" signal if a tool exposes one.
+ * This is a wall-clock cap, not real stall detection. A genuinely slow call just stops spinning
+ * once past it.
  */
 export const RUNNING_ANIMATION_MAX_MS = 60_000;
 
@@ -398,11 +398,11 @@ export class AnimationRenderScheduler {
 	}
 }
 
-export const sharedAnimationRenderScheduler = new AnimationRenderScheduler();
-
-export function setSharedAnimationRenderGuard(guard: (() => boolean) | undefined): void {
-	sharedAnimationRenderScheduler.setRenderGuard(guard);
-}
+const SHARED_ANIMATION_RENDER_SCHEDULER = Symbol.for("agents.sharedAnimationRenderScheduler");
+const animationGlobal = globalThis as typeof globalThis & Record<symbol, AnimationRenderScheduler | undefined>;
+export const sharedAnimationRenderScheduler =
+	animationGlobal[SHARED_ANIMATION_RENDER_SCHEDULER] ?? new AnimationRenderScheduler();
+animationGlobal[SHARED_ANIMATION_RENDER_SCHEDULER] = sharedAnimationRenderScheduler;
 
 export function sharedAnimationRenderAllowed(): boolean {
 	return sharedAnimationRenderScheduler.isRenderAllowed();

@@ -8,23 +8,25 @@
  * `Text`, `Box`, and `Markdown` cache for the same reason; views that build a fresh `Text`
  * per render need this to get the same benefit.
  */
+const MAX_CACHED_RENDERS = 8;
+
 export class RenderedLineCache {
-	private width: number | undefined;
-	private key: string | undefined;
-	private lines: string[] | undefined;
+	private readonly entries = new Map<string, string[]>();
 
 	get(width: number, key: string, produce: () => string[]): string[] {
-		if (this.lines && this.width === width && this.key === key) return this.lines;
+		const entryKey = `${width}\0${key}`;
+		const cached = this.entries.get(entryKey);
+		if (cached) return cached;
 		const lines = produce();
-		this.width = width;
-		this.key = key;
-		this.lines = lines;
+		if (this.entries.size >= MAX_CACHED_RENDERS) {
+			const oldestKey = this.entries.keys().next().value;
+			if (oldestKey !== undefined) this.entries.delete(oldestKey);
+		}
+		this.entries.set(entryKey, lines);
 		return lines;
 	}
 
 	clear(): void {
-		this.lines = undefined;
-		this.width = undefined;
-		this.key = undefined;
+		this.entries.clear();
 	}
 }

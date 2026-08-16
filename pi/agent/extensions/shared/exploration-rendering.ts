@@ -1,4 +1,5 @@
 import { resourceOpenUrl } from "./resources.ts";
+import { italic } from "./tui/text";
 
 type ExplorationStatus = "running" | "done";
 
@@ -79,8 +80,18 @@ type ExplorationAction =
 			renderTarget: string;
 			openUrl?: string;
 			summary?: ExplorationReadSummary;
+			/** What the read cost, rendered on the `Read` row itself. */
+			cost?: ExplorationReadSummaryPart;
+			/** What the read did to the file, rendered after the path it did it to. */
+			details?: ExplorationReadSummaryPart[];
 	  }
 	| { kind: "find" | "search" | "list" | "run"; title: string; body: string };
+
+/** The parts of a read a renderer knows only after the result lands. */
+export interface ReadActionResult {
+	cost?: ExplorationReadSummaryPart;
+	details?: ExplorationReadSummaryPart[];
+}
 
 interface ExplorationRenderTheme {
 	fg(role: string, text: string): string;
@@ -113,17 +124,39 @@ type PiWithEvents = {
 	on?: (event: string, handler: (event: any, context?: any) => void) => void;
 };
 
-const actionByToolName = new Map<string, ArgsToAction>();
-const registeredPis = new WeakSet<object>();
+interface ExplorationSharedState {
+	actionByToolName: Map<string, ArgsToAction>;
+	registeredPis: WeakSet<object>;
+	entriesByToolCallId: Map<string, ExplorationEntry>;
+	pendingInvalidatesByToolCallId: Map<string, () => void>;
+	summariesByToolCallId: Map<string, ExplorationReadSummary>;
+	groupsById: Map<number, ExplorationGroup>;
+	activeExplorationGroupId?: number;
+	nextGroupId: number;
+}
 
-const entriesByToolCallId = new Map<string, ExplorationEntry>();
-const pendingInvalidatesByToolCallId = new Map<string, () => void>();
-const summariesByToolCallId = new Map<string, ExplorationReadSummary>();
-const groupsById = new Map<number, ExplorationGroup>();
-let activeExplorationGroupId: number | undefined;
-let nextGroupId = 1;
+const EXPLORATION_STATE = Symbol.for("agents.explorationRenderingState");
+const globalState = globalThis as typeof globalThis & Record<symbol, ExplorationSharedState | undefined>;
+const state: ExplorationSharedState = globalState[EXPLORATION_STATE] ?? {
+	actionByToolName: new Map(),
+	registeredPis: new WeakSet(),
+	entriesByToolCallId: new Map(),
+	pendingInvalidatesByToolCallId: new Map(),
+	summariesByToolCallId: new Map(),
+	groupsById: new Map(),
+	nextGroupId: 1,
+};
+globalState[EXPLORATION_STATE] = state;
+const {
+	actionByToolName,
+	registeredPis,
+	entriesByToolCallId,
+	pendingInvalidatesByToolCallId,
+	summariesByToolCallId,
+	groupsById,
+} = state;
 
-export function readAction(filePath: string | undefined, cwd?: string): ExplorationAction {
+export function readAction(filePath: string | undefined, cwd?: string, result?: ReadActionResult): ExplorationAction {
 	const path = filePath ?? "";
 	const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(path)?.[1]?.toLowerCase();
 	return {
@@ -132,13 +165,16 @@ export function readAction(filePath: string | undefined, cwd?: string): Explorat
 		path,
 		openUrl: scheme ? resourceOpenUrl(path, { cwd }) : undefined,
 		renderTarget: scheme ? `read:${scheme}:${path}` : "read:file",
+		cost: result?.cost,
+		details: result?.details,
 	};
 }
 export function updateExplorationRead(toolCallId: string | undefined, summary: ExplorationReadSummary): boolean {
 	if (!toolCallId) return false;
-	summariesByToolCallId.set(toolCallId, summary);
 	const entry = entriesByToolCallId.get(toolCallId);
+	// Filed only when owned: `getExplorationReadSummary` told the call renderer to draw what this returned false for.
 	if (!entry || entry.action.kind !== "read") return false;
+	summariesByToolCallId.set(toolCallId, summary);
 	// Identity, not deep equality: this runs on every render, and a resource
 	// summary carries the full record in its metadata — for a PR diff that is
 	// megabytes. Two `JSON.stringify` calls per frame over that object is enough
@@ -157,6 +193,29 @@ export function getExplorationReadSummary(toolCallId: string | undefined): Explo
 
 export function registerExplorationTool(toolName: string, toAction: ArgsToAction): void {
 	actionByToolName.set(toolName, toAction);
+}
+
+/**
+ * The same two records, for a call the agent loop never dispatched.
+ *
+ * Entries arrive through `tool_execution_start` and `tool_execution_end`. A tool called
+ * from a code cell fires neither. `renderResourceReadResult` then reads this registry to
+ * decide who owns the card, finds nothing, and draws its own — beside the one the call
+ * renderer draws from the summary that same pass filed. That printed two identical cards
+ * per read, and would do the same for any tool whose renderers agree through this table.
+ */
+export function recordNestedExplorationStart(toolName: string, toolCallId: string, args: unknown): void {
+	const toAction = actionByToolName.get(toolName);
+	if (!toAction) {
+		resetExplorationGroup();
+		return;
+	}
+	const action = toAction(args);
+	if (action) recordExplorationStart(toolCallId, action);
+}
+
+export function recordNestedExplorationEnd(toolName: string, toolCallId: string): void {
+	if (actionByToolName.has(toolName)) recordExplorationEnd(toolCallId);
 }
 
 export function registerExplorationEventHandlers(pi: PiWithEvents): void {
@@ -275,7 +334,7 @@ function osc8Link(text: string, url: string | undefined): string {
 }
 
 export function renderExplorationSummaryPart(part: ExplorationReadSummaryPart, theme: ExplorationRenderTheme): string {
-	const text = part.italic ? `\x1b[3m${part.text}\x1b[23m` : part.text;
+	const text = part.italic ? italic(part.text) : part.text;
 	return osc8Link(theme.fg(part.role ?? "muted", text), part.url);
 }
 
@@ -326,7 +385,7 @@ function renderReadSummaryRow(
 		: "";
 	const icon = row.icon ? `${theme.fg(row.iconRole ?? "muted", row.icon)} ` : "";
 	const prefix = row.prefix ? `${renderExplorationSummaryPart(row.prefix, theme)} ` : "";
-	const rowText = row.italic ? `\x1b[3m${row.text}\x1b[23m` : row.text;
+	const rowText = row.italic ? italic(row.text) : row.text;
 	const styledRowText = row.bold ? theme.bold(rowText) : rowText;
 	const body = row.textUrl
 		? renderExplorationSummaryPart({ text: styledRowText, role: row.textRole, url: row.textUrl }, theme)
@@ -371,10 +430,22 @@ export function renderExplorationText(
 				text += `\n ${renderReadSummaryRow(row, index, rows.length, theme)}`;
 			return text;
 		}
-		let text = `${marker} ${theme.bold("Read")}${count}`;
+		// The cost belongs to one result, so it is only honest on the title row
+		// while there is one read under it; a coalesced group carries it per row.
+		const single = reads.length === 1 ? reads[0] : undefined;
+		const titleCost =
+			single?.kind === "read" && single.cost
+				? `${theme.fg("dim", " · ")}${renderExplorationSummaryPart(single.cost, theme)}`
+				: "";
+		let text = `${marker} ${theme.bold("Read")}${count}${titleCost}`;
 		for (const [index, read] of reads.entries()) {
 			const branch = index === reads.length - 1 ? "└─" : "├─";
 			text += `\n${theme.fg("dim", `   ${branch} `)}${renderActionBody(read, theme, "accent")}`;
+			if (read.kind !== "read") continue;
+			if (!single && read.cost) text += `${theme.fg("dim", " · ")}${renderExplorationSummaryPart(read.cost, theme)}`;
+			for (const detail of read.details ?? []) {
+				text += `${theme.fg("dim", " · ")}${renderExplorationSummaryPart(detail, theme)}`;
+			}
 		}
 		return text;
 	}
@@ -436,24 +507,24 @@ function recordExplorationStart(toolCallId: string, action: ExplorationAction): 
 	pendingInvalidatesByToolCallId.delete(toolCallId);
 	entriesByToolCallId.set(toolCallId, entry);
 
-	let group = activeExplorationGroupId ? groupsById.get(activeExplorationGroupId) : undefined;
+	let group = state.activeExplorationGroupId ? groupsById.get(state.activeExplorationGroupId) : undefined;
 	if (group) {
 		const previous = entriesByToolCallId.get(group.entryIds.at(-1) ?? "");
 		const previousTarget = previous?.action.kind === "read" ? previous.action.renderTarget : previous?.action.kind;
 		const nextTarget = action.kind === "read" ? action.renderTarget : action.kind;
 		if (previous && previousTarget !== nextTarget) {
-			activeExplorationGroupId = undefined;
+			state.activeExplorationGroupId = undefined;
 			group = undefined;
 		}
 	}
 	if (!group) {
 		group = {
-			id: nextGroupId++,
+			id: state.nextGroupId++,
 			entryIds: [toolCallId],
 			visibleEntryId: toolCallId,
 		};
 		groupsById.set(group.id, group);
-		activeExplorationGroupId = group.id;
+		state.activeExplorationGroupId = group.id;
 		entry.groupId = group.id;
 		return;
 	}
@@ -479,7 +550,7 @@ function recordExplorationEnd(toolCallId: string): void {
 }
 
 function resetExplorationGroup(): void {
-	activeExplorationGroupId = undefined;
+	state.activeExplorationGroupId = undefined;
 }
 
 function clearExplorationGroup(): void {
@@ -487,8 +558,8 @@ function clearExplorationGroup(): void {
 	summariesByToolCallId.clear();
 	pendingInvalidatesByToolCallId.clear();
 	groupsById.clear();
-	activeExplorationGroupId = undefined;
-	nextGroupId = 1;
+	state.activeExplorationGroupId = undefined;
+	state.nextGroupId = 1;
 }
 
 function getGroupForEntry(entry: ExplorationEntry | undefined): ExplorationGroup | undefined {

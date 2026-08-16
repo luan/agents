@@ -19,8 +19,11 @@ const VIEW_BASE_FIELDS: Record<GitHubKind, string> = {
 	issue: "number,title,state,stateReason,url,author,updatedAt,labels,assignees,milestone",
 };
 const LIST_FIELDS = "number,title,state,url,author,updatedAt";
-const THREADS_QUERY = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){number title state isDraft url author{login} baseRefName headRefName headRefOid mergedAt updatedAt additions deletions changedFiles reviewDecision mergeable mergeStateStatus reviewThreads(first:100){nodes{id isResolved path line comments(first:1){totalCount nodes{author{login} bodyText url}}}}}}}`;
-const THREAD_QUERY = `query($id:ID!){node(id:$id){... on PullRequestReviewThread{id isResolved path line comments(first:100){nodes{author{login} bodyText diffHunk url}}}}}`;
+const THREADS_QUERY = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){number title state isDraft url author{login} baseRefName headRefName headRefOid mergedAt updatedAt additions deletions changedFiles reviewDecision mergeable mergeStateStatus reviewThreads(first:100){totalCount nodes{id isResolved path line comments(first:1){totalCount nodes{author{login} bodyText url}}}}}}}`;
+const THREAD_QUERY = `query($id:ID!){node(id:$id){... on PullRequestReviewThread{id isResolved path line comments(first:100){totalCount nodes{author{login} bodyText diffHunk url}}}}}`;
+const REPLY_THREAD_MUTATION = `mutation ReplyToPullRequestReviewThread($threadId:ID!,$body:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$threadId,body:$body}){comment{id}}}`;
+const RESOLVE_THREAD_MUTATION = `mutation ResolvePullRequestReviewThread($threadId:ID!){resolveReviewThread(input:{threadId:$threadId}){thread{id isResolved}}}`;
+const UNRESOLVE_THREAD_MUTATION = `mutation UnresolvePullRequestReviewThread($threadId:ID!){unresolveReviewThread(input:{threadId:$threadId}){thread{id isResolved}}}`;
 
 function parseRecord(text: string): GitHubRecord {
 	const value = JSON.parse(text) as unknown;
@@ -180,7 +183,7 @@ export async function fetchPullRequestFile(
 	baseCwd: string,
 ): Promise<GitHubRecord | undefined> {
 	const repository = await resolveGitHubRepository(target, context, baseCwd);
-	// ponytail: one page keeps reads bounded; add cursor paging when real pull requests exceed this ceiling.
+	// One page bounds the read. A pull request with more than 100 changed files truncates here.
 	const files = parseRecords(
 		await runGhApi(["api", `repos/${repository}/pulls/${itemNumber(target)}/files?per_page=100`], context, baseCwd),
 	);
@@ -225,4 +228,22 @@ export async function fetchPullRequestThread(
 	return data.node && typeof data.node === "object" && !Array.isArray(data.node)
 		? (data.node as GitHubRecord)
 		: undefined;
+}
+
+export async function replyToPullRequestThread(
+	threadId: string,
+	body: string,
+	context: ResourceContext | undefined,
+	baseCwd: string,
+): Promise<void> {
+	await graphql(REPLY_THREAD_MUTATION, { threadId, body }, context, baseCwd);
+}
+
+export async function setPullRequestThreadResolved(
+	threadId: string,
+	resolved: boolean,
+	context: ResourceContext | undefined,
+	baseCwd: string,
+): Promise<void> {
+	await graphql(resolved ? RESOLVE_THREAD_MUTATION : UNRESOLVE_THREAD_MUTATION, { threadId }, context, baseCwd);
 }

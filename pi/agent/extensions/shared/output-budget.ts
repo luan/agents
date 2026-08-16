@@ -1,76 +1,145 @@
-/**
- * Shared output budgeting for tools that can emit unbounded text.
- *
- * Two responsibilities, deliberately together because they share the same
- * notion of "how big is this":
- *
- *   1. `boundOutput` — cap what reaches the model, at the point the cost is
- *      created, rather than at delivery. Tools opt in by calling it.
- *   2. `formatTokenCost` — report what a tool actually spent so the cost is
- *      visible in the card instead of only in the transcript.
- *
- * Nothing here imports from a specific extension: this module is the shared
- * contract, so the dependency arrow points at it and never out of it.
- */
+import { createRequire } from "node:module";
 
-// =============================================================================
-// Budget constants
-// =============================================================================
-
-/**
- * Ceilings on text handed to the model from a single tool call.
- *
- * These are pi core's own numbers, from `core/tools/truncate.ts`, matched
- * deliberately: an override that caps differently from the tool it overrides
- * makes the limit unpredictable from the model's side for no gain.
- *
- * Note what they are — a backstop, not a budget. 50 KB is roughly 12.5k
- * tokens, which is above the 99th percentile of observed reads, so this fires
- * on catastrophes rather than on expensive-but-normal calls. Keeping ordinary
- * calls cheap is the job of the views themselves.
- */
+/** Backstop matching pi core `core/tools/truncate.ts`: 50 KB is ~12.5k tokens, above the p99 of observed reads. */
 export const DEFAULT_MAX_BYTES = 50 * 1024;
 export const DEFAULT_MAX_LINES = 2000;
-/**
- * Per-line character ceiling for LINE-ORIENTED output, where one minified line
- * must not drain the budget.
- *
- * Deliberately not a default: applied to a document or a structured payload it
- * mutilates legitimate content — a long prose field is not noise, and chopping
- * it makes the caller fetch the same data again, costing more than it saved.
- * Callers whose output is one-match-per-line opt in explicitly.
- */
 export const GREP_MAX_LINE_CHARS = 500;
 
 export interface BoundOutputOptions {
 	maxBytes?: number;
 	maxLines?: number;
-	/** Omit to leave long lines intact. See {@link GREP_MAX_LINE_CHARS}. */
 	maxLineChars?: number;
-	/**
-	 * Reference to the full, unbounded output (e.g. `artifact://<id>`). When
-	 * set it is named in the truncation notice so the omitted text stays
-	 * reachable instead of being silently lost.
-	 */
 	fullOutputRef?: string;
 }
 
 export interface BoundedOutput {
 	text: string;
 	truncated: boolean;
-	/** Token estimate of the returned text. */
 	tokens: number;
-	/** Token estimate of the input, before any capping. */
 	originalTokens: number;
 }
 
-/** Estimate tokens the same way the rest of the codebase does: bytes / 4. */
-export function approxTokenCount(text: string): number {
-	return Math.ceil(Buffer.byteLength(text, "utf8") / 4);
+// bytes/4 ran 41-49% low at p01 over 127,213 recorded results, so `read` shipped 8,823 real tokens against 6,000 and
+// still said truncated. Vocab load is 127ms, paid by the first count, not pi's boot; 2.17 is the densest measured.
+const TOKENIZER_MODULE = "gpt-tokenizer/model/gpt-4o";
+const CONSERVATIVE_BYTES_PER_TOKEN = 2.17;
+
+let countExact: ((text: string) => number) | undefined;
+
+function exactCounter(): ((text: string) => number) | undefined {
+	if (countExact) return countExact;
+	try {
+		const { countTokens } = createRequire(import.meta.url)(TOKENIZER_MODULE) as {
+			countTokens: (t: string) => number;
+		};
+		countExact = countTokens;
+	} catch {
+		countExact = undefined;
+	}
+	return countExact;
 }
 
-/** Slice by byte offsets without splitting a UTF-8 sequence. */
-function safeSliceByBytes(text: string, start: number, end?: number): string {
+// BPE cost is superlinear in a whitespace-free run: 2.3ms at 1KB, 16ms at 8KB, 256ms at 32KB, 10s for a 200KB line.
+const EXACT_MAX_RUN_CHARS = 4096;
+
+function longestUnbrokenRun(text: string): number {
+	let longest = 0;
+	let current = 0;
+	for (let index = 0; index < text.length; index++) {
+		const code = text.charCodeAt(index);
+		if (code === 32 || code === 10 || code === 9 || code === 13) {
+			current = 0;
+			continue;
+		}
+		current++;
+		if (current > longest) longest = current;
+	}
+	return longest;
+}
+
+export function approxTokenCount(text: string): number {
+	if (!text) return 0;
+	const exact = exactCounter();
+	if (exact && longestUnbrokenRun(text) <= EXACT_MAX_RUN_CHARS) return exact(text);
+	return Math.ceil(Buffer.byteLength(text, "utf8") / CONSERVATIVE_BYTES_PER_TOKEN);
+}
+
+export function bytesPerTokenOf(text: string): number {
+	const bytes = Buffer.byteLength(text, "utf8");
+	if (bytes === 0) return 4;
+	return bytes / Math.max(1, approxTokenCount(text));
+}
+
+export interface ImageDimensions {
+	readonly width: number;
+	readonly height: number;
+}
+
+const IMAGE_PATCH_PX = 32;
+
+// OpenAI documents no multiplier for GPT-5.6 and no patch budget on its default `auto` detail, so 1.2 is fitted to live gpt-5.6-luna deltas.
+const IMAGE_PATCH_MULTIPLIER = 1.2;
+
+// 128 KB of base64 decodes to 96 KB, which clears a maximal 64 KB EXIF APP1 segment ahead of the JPEG SOF marker.
+const IMAGE_HEADER_BASE64_CHARS = 128 * 1024;
+
+// GIF and WebP headers are unread, so they take the 720x540 `PREVIEW_MAX_WIDTH_PX` cap in image-preview.ts:11.
+const UNREADABLE_IMAGE_TOKENS = 469;
+
+const JPEG_NON_SOF = new Set([0xc4, 0xc8, 0xcc]);
+
+function readPngDimensions(head: Buffer): ImageDimensions | undefined {
+	if (head.length < 24) return undefined;
+	return { width: head.readUInt32BE(16), height: head.readUInt32BE(20) };
+}
+
+function readJpegDimensions(head: Buffer): ImageDimensions | undefined {
+	let offset = 2;
+	while (offset + 9 <= head.length) {
+		if (head[offset] !== 0xff) {
+			offset += 1;
+			continue;
+		}
+		const marker = head[offset + 1] ?? 0;
+		if (marker === 0xff || marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
+			offset += 2;
+			continue;
+		}
+		if (marker === 0xd9 || marker === 0xda) return undefined;
+		if (marker >= 0xc0 && marker <= 0xcf && !JPEG_NON_SOF.has(marker)) {
+			return { height: head.readUInt16BE(offset + 5), width: head.readUInt16BE(offset + 7) };
+		}
+		const segmentLength = head.readUInt16BE(offset + 2);
+		if (segmentLength < 2) return undefined;
+		offset += 2 + segmentLength;
+	}
+	return undefined;
+}
+
+export function readImageDimensions(head: Buffer): ImageDimensions | undefined {
+	if (head.length >= 4 && head[0] === 0x89 && head.subarray(1, 4).toString("latin1") === "PNG") {
+		return readPngDimensions(head);
+	}
+	if (head.length >= 2 && head[0] === 0xff && head[1] === 0xd8) {
+		return readJpegDimensions(head);
+	}
+	return undefined;
+}
+
+export function imageTokensForDimensions(width: number, height: number): number {
+	if (!(width > 0) || !(height > 0)) return UNREADABLE_IMAGE_TOKENS;
+	const patches = Math.ceil(width / IMAGE_PATCH_PX) * Math.ceil(height / IMAGE_PATCH_PX);
+	return Math.round(patches * IMAGE_PATCH_MULTIPLIER);
+}
+
+/** Keyed on dimensions from the header, because a JPEG and a PNG of one image occupy the same context. */
+export function estimateImageTokens(base64Data: unknown): number {
+	if (typeof base64Data !== "string") return UNREADABLE_IMAGE_TOKENS;
+	const dimensions = readImageDimensions(Buffer.from(base64Data.slice(0, IMAGE_HEADER_BASE64_CHARS), "base64"));
+	return dimensions ? imageTokensForDimensions(dimensions.width, dimensions.height) : UNREADABLE_IMAGE_TOKENS;
+}
+
+export function safeSliceByBytes(text: string, start: number, end?: number): string {
 	const buffer = Buffer.from(text, "utf8");
 	let safeStart = Math.min(buffer.length, Math.max(0, start));
 	let safeEnd = Math.min(buffer.length, Math.max(safeStart, end ?? buffer.length));
@@ -79,37 +148,40 @@ function safeSliceByBytes(text: string, start: number, end?: number): string {
 	return buffer.subarray(safeStart, safeEnd).toString("utf8");
 }
 
+export interface MiddleCapOptions {
+	headShare?: number;
+	notice?: (omittedBytes: number) => string;
+}
+
+export function capMiddleByBytes(text: string, maxBytes: number, options: MiddleCapOptions = {}): string {
+	const totalBytes = Buffer.byteLength(text, "utf8");
+	if (totalBytes <= maxBytes) return text;
+	const headBytes = Math.max(0, Math.floor(maxBytes * (options.headShare ?? 0.5)));
+	const tailBytes = Math.max(0, maxBytes - headBytes);
+	const head = headBytes > 0 ? safeSliceByBytes(text.slice(0, headBytes), 0, headBytes) : "";
+	const tailChars = tailBytes > 0 ? text.slice(-tailBytes) : "";
+	const tail = tailBytes > 0 ? safeSliceByBytes(tailChars, Buffer.byteLength(tailChars, "utf8") - tailBytes) : "";
+	const omittedBytes = totalBytes - Buffer.byteLength(head, "utf8") - Buffer.byteLength(tail, "utf8");
+	return `${head}${options.notice?.(omittedBytes) ?? ""}${tail}`;
+}
+
 function capLineChars(line: string, maxChars: number): string {
 	if (line.length <= maxChars) return line;
 	const omitted = line.length - maxChars;
 	return `${line.slice(0, maxChars)}…${omitted} chars elided…`;
 }
 
-/**
- * Cap `text` to a budget, head-biased.
- *
- * Head-biased rather than middle-truncated: the head of a tool result carries
- * the structure a reader needs to decide what to do next, and a middle cut
- * through structured output yields something that no longer parses.
- */
+/** Head-biased, for callers needing a parseable prefix; on 2026-08-10 head bias took continuations from 3% to 48%, so `truncateMiddleByTokens` in tool-bounding.ts is the default. */
 export function boundOutput(text: string, options: BoundOutputOptions = {}): BoundedOutput {
 	const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
 	const maxLines = options.maxLines ?? DEFAULT_MAX_LINES;
 	const maxLineChars = options.maxLineChars;
 	const originalTokens = approxTokenCount(text);
 
-	// Byte-slice BEFORE splitting into lines. Splitting first would allocate an
-	// array proportional to the input rather than to the budget, so one huge
-	// payload could exhaust the heap on the very path meant to prevent that.
 	const totalBytes = Buffer.byteLength(text, "utf8");
 	let truncated = totalBytes > maxBytes;
-	// Narrow by characters before touching Buffer: every UTF-8 character is at
-	// least one byte, so the first `maxBytes` characters always contain the
-	// first `maxBytes` bytes. Without this, `safeSliceByBytes` would allocate a
-	// Buffer the size of the whole input to keep a small prefix.
 	let output = truncated ? safeSliceByBytes(text.slice(0, maxBytes), 0, maxBytes) : text;
 
-	// Cheap pre-check: only pay for line work when a line bound can actually bite.
 	const needsLineWork = maxLineChars !== undefined || output.length > maxLines;
 	if (needsLineWork) {
 		let lines = output.split("\n");
@@ -136,45 +208,45 @@ export function boundOutput(text: string, options: BoundOutputOptions = {}): Bou
 	return { text: withNotice, truncated: true, tokens: approxTokenCount(withNotice), originalTokens };
 }
 
-// =============================================================================
-// Cost reporting
-// =============================================================================
-
 export type CostSeverity = "normal" | "elevated" | "high" | "severe";
 
-interface CostThresholds {
-	/** At or above this, the cost is elevated (~p75 of observed results). */
+export interface CostThresholds {
 	elevated: number;
-	/** At or above this, the cost is high (~p90). */
 	high: number;
-	/** At or above this, the cost is severe (~p99). */
 	severe: number;
 }
 
-/**
- * Thresholds are hardcoded rather than learned at runtime.
- *
- * The numbers come from percentiles measured over 119,597 tool results across
- * 499 recorded sessions. They are a calibration, not a law — capping work
- * lowers the very distributions they were drawn from, so re-derive them from a
- * fresh sweep when they stop feeling right rather than trusting them forever.
- */
-const DEFAULT_THRESHOLDS: CostThresholds = { elevated: 700, high: 1_800, severe: 9_000 };
+// Percentiles over 119,597 tool results in 499 recorded sessions set p75 elevated, p90 high, p99 severe. The p99
+// outgrew the budgets that landed after it, so severe fired on no bounded result. The most a `boundTextWithArtifact`
+// result carries is 0.946 of its budget on the smallest row, so 0.9 is the highest fraction every row reaches.
+const BUDGET_FRACTIONS = { elevated: 0.5, high: 0.7, severe: 0.9 } as const;
 
-const TOOL_THRESHOLDS: Record<string, CostThresholds> = {
-	read: { elevated: 1_500, high: 2_600, severe: 7_000 },
-	// Recalibrated for the post-cap world: a full page of `search` is ~2.4k and a
-	// full page of `find` ~2.9k, so the pre-cap percentiles painted the ordinary
-	// case orange. These flag approaching the budget, not merely using it.
-	search: { elevated: 3_000, high: 5_000, severe: 9_000 },
-	find: { elevated: 3_000, high: 5_000, severe: 9_000 },
-	skill: { elevated: 1_600, high: 2_100, severe: 6_000 },
-	write_stdin: { elevated: 200, high: 700, severe: 9_900 },
-	// Mutations return almost nothing; anything sizeable is worth noticing.
-	edit: { elevated: 50, high: 200, severe: 600 },
-	write: { elevated: 50, high: 200, severe: 600 },
-	apply_patch: { elevated: 50, high: 200, severe: 600 },
-	ast_edit: { elevated: 50, high: 200, severe: 600 },
+function thresholdsForBudget(budget: number): CostThresholds {
+	return {
+		elevated: Math.round(budget * BUDGET_FRACTIONS.elevated),
+		high: Math.round(budget * BUDGET_FRACTIONS.high),
+		severe: Math.round(budget * BUDGET_FRACTIONS.severe),
+	};
+}
+
+/** Covers `read`, `exec`, `wait` and `skill` too: their budget is `DEFAULT_TOOL_TOKEN_BUDGET`. */
+export const DEFAULT_THRESHOLDS: CostThresholds = thresholdsForBudget(6_000);
+
+/** Mutations return a confirmation, so 50 tokens is already a diff worth seeing, well under the 1,000 budget. */
+const MUTATION_THRESHOLDS: CostThresholds = { elevated: 50, high: 200, severe: 600 };
+
+const TERMINAL_THRESHOLDS: CostThresholds = thresholdsForBudget(2_500);
+
+/** Budgets are `TOOL_TOKEN_BUDGETS` in tool-bounding.ts, hardcoded because that file imports this one; 2,500 is the `exec_command` and `write_stdin` row. */
+export const TOOL_THRESHOLDS: Record<string, CostThresholds> = {
+	search: thresholdsForBudget(4_000),
+	find: thresholdsForBudget(3_000),
+	exec_command: TERMINAL_THRESHOLDS,
+	write_stdin: TERMINAL_THRESHOLDS,
+	edit: MUTATION_THRESHOLDS,
+	write: MUTATION_THRESHOLDS,
+	apply_patch: MUTATION_THRESHOLDS,
+	ast_edit: MUTATION_THRESHOLDS,
 };
 
 export function tokenCostSeverity(tokens: number, toolName?: string): CostSeverity {
@@ -185,7 +257,7 @@ export function tokenCostSeverity(tokens: number, toolName?: string): CostSeveri
 	return "normal";
 }
 
-/** Render a token count compactly: 940 → "940", 1240 → "1.2k", 10009 → "10k". */
+/** Render a token count compactly: 940 to "940", 1240 to "1.2k", 10009 to "10k". */
 export function formatTokenCount(tokens: number): string {
 	if (tokens < 1_000) return String(tokens);
 	if (tokens < 10_000) return `${(tokens / 1_000).toFixed(1)}k`;
@@ -193,23 +265,15 @@ export function formatTokenCount(tokens: number): string {
 }
 
 export interface TokenCostLabel {
-	/** Ready to append to a card line, e.g. "1.2k tok". */
 	text: string;
 	severity: CostSeverity;
 	tokens: number;
 }
 
-/**
- * Build the cost label for a tool card.
- *
- * Callers map `severity` to their own palette: `normal` keeps the existing
- * subdued colour, and elevated/high/severe escalate from there.
- */
 export function formatTokenCost(tokens: number, toolName?: string): TokenCostLabel {
 	return { text: `${formatTokenCount(tokens)} tok`, severity: tokenCostSeverity(tokens, toolName), tokens };
 }
 
-/** Convenience for callers holding the raw result text rather than a count. */
 export function formatTokenCostForText(text: string, toolName?: string): TokenCostLabel {
 	return formatTokenCost(approxTokenCount(text), toolName);
 }

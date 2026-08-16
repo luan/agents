@@ -1,11 +1,14 @@
 import type { Component } from "@earendil-works/pi-tui";
-import { Text, truncateToWidth as truncateToWidthRaw, visibleWidth } from "@earendil-works/pi-tui";
+import { Text, visibleWidth } from "@earendil-works/pi-tui";
 import { RenderedLineCache } from "./render-cache";
-import { paintAnsiBackgroundRow } from "./text";
+import { paintAnsiBackgroundRow, truncateToWidthCompat } from "./text";
 
 export type CardTheme = {
 	fg(color: string, text: string): string;
-	getBgAnsi?(color: CardBackgroundColor): string;
+	// Matches `RenderTheme.getBgAnsi` (tui/types.ts:10). The `string` here was the lie: a role can have no background,
+	// `darkerCardBackgroundAnsi` below already guards with `background?.match` and returns undefined, and
+	// tui/render-lines.ts:17 falls back with `??`. Narrowing it cost 29 of the 65 errors `fileops` shows when typechecked.
+	getBgAnsi?(color: CardBackgroundColor): string | undefined;
 	bold?(text: string): string;
 	styledSymbol?(name: string, color: string): string;
 	spinnerFrames?: string[];
@@ -44,20 +47,6 @@ const symbols: Record<string, string> = {
 	"tool.todo": "☑",
 	"tool.task": "◉",
 };
-
-let stringEllipsisSupported: boolean | undefined;
-
-function truncateCompat(text: string, width: number, pad = false): string {
-	if (stringEllipsisSupported === false) return truncateToWidthRaw(text, width, undefined, pad);
-	try {
-		const result = truncateToWidthRaw(text, width, "…", pad);
-		stringEllipsisSupported = true;
-		return result;
-	} catch {
-		stringEllipsisSupported = false;
-		return truncateToWidthRaw(text, width, undefined, pad);
-	}
-}
 
 export function textComponent(text: string): Text {
 	return new Text(text, 0, 0);
@@ -112,7 +101,7 @@ export function darkerCardBackgroundAnsi(
 }
 
 function fitVisible(line: string, width: number): string {
-	return truncateCompat(line, width, true);
+	return truncateToWidthCompat(line, width, "…", true);
 }
 
 export class Card implements Component {
@@ -143,7 +132,7 @@ export class Card implements Component {
 				return `${border(leftGlyphs)}${border(horizontal.repeat(Math.max(0, width - 5)))}${border(right)}`;
 			}
 			const rawLabel = ` ${label} `;
-			const trimmedLabel = truncateCompat(rawLabel, Math.max(0, width - 5));
+			const trimmedLabel = truncateToWidthCompat(rawLabel, Math.max(0, width - 5), "…");
 			const fill = horizontal.repeat(Math.max(0, width - visibleWidth(leftGlyphs) - visibleWidth(trimmedLabel) - 1));
 			return `${border(leftGlyphs)}${trimmedLabel}${border(fill)}${border(right)}`;
 		};

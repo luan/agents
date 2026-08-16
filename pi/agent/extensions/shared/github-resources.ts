@@ -10,6 +10,8 @@ import {
 	type GitHubRecord,
 	type GitHubTarget,
 	listGitHubItems,
+	replyToPullRequestThread,
+	setPullRequestThreadResolved,
 } from "./github-client.ts";
 import {
 	formatResourceUri,
@@ -21,6 +23,8 @@ import {
 	type ResourceProvider,
 	type ResourceRef,
 	type SearchHit,
+	type WriteRequest,
+	type WriteResult,
 } from "./resources.ts";
 
 const COLLECTION_LIMIT = 100;
@@ -95,11 +99,36 @@ function resourceFor(
 	};
 }
 
+/**
+ * GitHub shares one numbering space between issues and pull requests, so `issue://owner/repo/1` can resolve to a pull
+ * request: `gh issue view 1` answers with the pull request, `state` of `MERGED` and a `/pull/1` url. Both the card and
+ * the body report what came back rather than what the scheme asked for.
+ */
+export function githubRecordIsPullRequest(record: GitHubRecord): boolean {
+	if (record.pull_request !== undefined || record.headRefName !== undefined) return true;
+	if (stringValue(record.mergedAt) || stringValue(record.state)?.toUpperCase() === "MERGED") return true;
+	return /\/pull\/\d+(?:$|[/?#])/.test(stringValue(record.url) ?? "");
+}
+
+/** `gh` marshals a GitHub App actor as login `app/<slug>`, and the slug is empty for some apps. */
+export function githubAppSlug(login: string): string | undefined {
+	return login.startsWith("app/") ? login.slice(4) : undefined;
+}
+
+/** A `@app/` header and an `Author: app/` body both came from taking gh's bare app login as a username. */
+export function githubAuthorLabel(login: string, name?: string): string {
+	const slug = githubAppSlug(login);
+	if (slug === undefined) return login;
+	return slug ? `${slug} (app)` : (name ?? "GitHub App");
+}
+
 function authorName(value: unknown): string | undefined {
 	if (typeof value === "string") return value.replace(/^@/, "");
 	if (!value || typeof value !== "object") return undefined;
 	const record = value as GitHubRecord;
-	return stringValue(record.login) ?? stringValue(record.name);
+	const login = stringValue(record.login);
+	if (login) return githubAuthorLabel(login, stringValue(record.name));
+	return stringValue(record.name);
 }
 
 function labelNames(value: unknown): string[] {
@@ -135,7 +164,8 @@ function pushField(lines: string[], label: string, value: unknown): void {
 function renderItem(kind: GitHubKind, record: GitHubRecord): string {
 	const number = String(record.number ?? "?");
 	const title = stringValue(record.title) ?? "Untitled";
-	const lines = [`# ${kind === "pr" ? "Pull request" : "Issue"} #${number}: ${title}`, ""];
+	const pullRequest = kind === "pr" || githubRecordIsPullRequest(record);
+	const lines = [`# ${pullRequest ? "Pull request" : "Issue"} #${number}: ${title}`, ""];
 	pushField(lines, "State", record.state);
 	if (kind === "pr") {
 		pushField(lines, "Draft", record.isDraft);
@@ -313,20 +343,6 @@ function pullRequestFromThreads(data: GitHubRecord): GitHubRecord | undefined {
 		: undefined;
 }
 
-function threadIndexItem(thread: GitHubRecord): GitHubRecord {
-	const comments = thread.comments && typeof thread.comments === "object" ? (thread.comments as GitHubRecord) : {};
-	const first = listValue(comments.nodes)[0];
-	return {
-		id: thread.id,
-		path: thread.path,
-		line: thread.line,
-		isResolved: thread.isResolved === true,
-		comments: Number(comments.totalCount ?? 0),
-		preview: preview(first?.bodyText),
-		url: first?.url,
-	};
-}
-
 function projectThread(thread: GitHubRecord): GitHubRecord {
 	const comments = thread.comments && typeof thread.comments === "object" ? (thread.comments as GitHubRecord) : {};
 	const nodes = listValue(comments.nodes);
@@ -338,6 +354,7 @@ function projectThread(thread: GitHubRecord): GitHubRecord {
 		diffHunk: nodes.find((comment) => stringValue(comment.diffHunk))?.diffHunk,
 		url: nodes.find((comment) => stringValue(comment.url))?.url,
 		comments: {
+			totalCount: Number(comments.totalCount ?? nodes.length),
 			nodes: nodes.map((comment) => ({
 				author: comment.author,
 				body: sanitizeMarkdown(String(comment.bodyText ?? "")),
@@ -348,13 +365,24 @@ function projectThread(thread: GitHubRecord): GitHubRecord {
 
 function renderThread(thread: GitHubRecord): string {
 	const comments = thread.comments && typeof thread.comments === "object" ? (thread.comments as GitHubRecord) : {};
-	return listValue(comments.nodes)
+	const nodes = listValue(comments.nodes);
+	const rendered = nodes
 		.map((comment) => {
 			const author = authorName(comment.author);
 			const body = stringValue(comment.body) ?? "";
-			return author ? `**@${author}**\n\n${body}` : body;
+			return author ? `@${author}: ${body}` : body;
 		})
 		.join("\n\n---\n\n");
+	const omitted = Number(comments.totalCount ?? nodes.length) - nodes.length;
+	return omitted > 0 ? `${rendered}\n\n_${omitted} more comments not shown._` : rendered;
+}
+
+function renderThreadListItem(thread: GitHubRecord): string {
+	const line = thread.line === undefined || thread.line === null ? "" : `:${String(thread.line)}`;
+	const heading =
+		`## ${String(thread.path ?? "")}${line} · ` +
+		`${thread.isResolved === true ? "resolved" : "unresolved"} · ${String(thread.id ?? "")}`;
+	return `${heading}\n\n${renderThread(thread) || "No comments."}`;
 }
 
 async function readThreads(
@@ -377,12 +405,79 @@ async function readThreads(
 	if (!base) throw new ResourceError("not_found", `Pull request not found: ${formatResourceUri(ref)}`);
 	const reviewThreads =
 		base.reviewThreads && typeof base.reviewThreads === "object" ? (base.reviewThreads as GitHubRecord) : {};
-	let threads = listValue(reviewThreads.nodes).map(threadIndexItem);
-	if ("unresolved" in ref.query) threads = threads.filter((thread) => thread.isResolved !== true);
-	const lines = threads.map((thread) =>
-		`${String(thread.id ?? "")} ${String(thread.path ?? "")}:${thread.line ?? ""} ${thread.isResolved === true ? "resolved" : "unresolved"} ${thread.comments ?? 0} comments ${String(thread.preview ?? "")}`.trim(),
-	);
-	return listingResult(ref, base, threads, "pull-request-threads", lines);
+	const nodes = listValue(reviewThreads.nodes);
+	let selected = nodes;
+	if ("unresolved" in ref.query) selected = selected.filter((thread) => thread.isResolved !== true);
+	const lines = selected.map(projectThread).map(renderThreadListItem);
+	const omitted = Number(reviewThreads.totalCount ?? nodes.length) - nodes.length;
+	if (omitted > 0) lines.push(`_${omitted} more review threads not shown._`);
+	return listingResult(ref, base, selected.map(projectThread), "pull-request-threads", lines);
+}
+
+function threadWriteResult(ref: ResourceRef, thread: GitHubRecord, content: string): WriteResult {
+	return {
+		resource: resourceFor(ref, thread, "pull-request-thread", content, "text/markdown"),
+		bytes: Buffer.byteLength(content, "utf8"),
+	};
+}
+
+function normalizeThreadContent(value: string): string {
+	return value.replace(/\r\n/g, "\n").trim();
+}
+
+async function writeThread(
+	ref: ResourceRef,
+	request: WriteRequest,
+	context: ResourceContext | undefined,
+	baseCwd: string,
+): Promise<WriteResult> {
+	const targetValue = target(ref);
+	if (!targetValue.selector || targetValue.view !== "threads") {
+		throw new ResourceError(
+			"unsupported_action",
+			`Only pull request threads can be written: ${formatResourceUri(ref)}`,
+		);
+	}
+	assertQuery(ref, []);
+	const current = await fetchPullRequestThread(targetValue.selector, context, baseCwd);
+	if (!current) throw new ResourceError("not_found", `Pull request thread not found: ${formatResourceUri(ref)}`);
+	const before = projectThread(current);
+	const beforeContent = normalizeThreadContent(renderThread(before));
+	if (request.expectedContent !== undefined && normalizeThreadContent(request.expectedContent) !== beforeContent) {
+		throw new ResourceError(
+			"validation_failed",
+			`Pull request thread changed before write: ${formatResourceUri(ref)}`,
+		);
+	}
+
+	const afterContent = normalizeThreadContent(request.content);
+	if (afterContent === beforeContent) return threadWriteResult(ref, before, renderThread(before));
+	if (afterContent.length === 0) {
+		await setPullRequestThreadResolved(targetValue.selector, true, context, baseCwd);
+		const resolved = { ...before, isResolved: true };
+		return threadWriteResult(ref, resolved, "");
+	}
+	const shouldUnresolve = before.isResolved === true;
+
+	const prefix = beforeContent.length > 0 ? `${beforeContent}\n\n---\n\n` : "";
+	if (!afterContent.startsWith(prefix)) {
+		throw new ResourceError(
+			"validation_failed",
+			`Thread writes can only append a reply or clear content to resolve: ${formatResourceUri(ref)}`,
+		);
+	}
+	const reply = afterContent.slice(prefix.length).trim();
+	if (reply.length === 0 || reply.includes("\n\n---\n\n")) {
+		throw new ResourceError(
+			"validation_failed",
+			`Thread writes can append exactly one reply: ${formatResourceUri(ref)}`,
+		);
+	}
+	await replyToPullRequestThread(targetValue.selector, reply, context, baseCwd);
+	if (shouldUnresolve) {
+		await setPullRequestThreadResolved(targetValue.selector, false, context, baseCwd);
+	}
+	return threadWriteResult(ref, { ...before, isResolved: false }, afterContent);
 }
 
 function assertQuery(ref: ResourceRef, allowed: readonly string[]): void {
@@ -483,6 +578,12 @@ export function githubResourceProvider(baseCwd: string): ResourceProvider {
 			const limit = collectionLimit(ref.query.limit, COLLECTION_LIMIT);
 			const records = await listGitHubItems(kind, targetValue, ref.query, "", limit, context, baseCwd);
 			return records.map((record) => listedResource(ref, record, kind));
+		},
+		async write(ref, request) {
+			if (ref.scheme !== "pr") {
+				throw new ResourceError("read_only", `Resource is read-only: ${formatResourceUri(ref)}`);
+			}
+			return writeThread(ref, request, request.context, baseCwd);
 		},
 		async capabilities(ref) {
 			return githubCapabilities(ref);

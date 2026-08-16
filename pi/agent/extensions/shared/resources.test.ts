@@ -194,6 +194,39 @@ fi
 
 		expect(result.content).toContain("**URL:** https://github.com/owner/repo/pull/7#issuecomment-1");
 	});
+	it("writes pull request threads with GraphQL node IDs only", async () => {
+		const gh = fixtureScript(
+			"gh",
+			`#!/bin/sh
+payload=$(/bin/cat)
+case "$payload" in
+	*'query($id:ID!)'*)
+		printf '%s' '{"data":{"node":{"id":"PRRT_test","isResolved":false,"path":"src/main.ts","line":12,"comments":{"totalCount":1,"nodes":[{"author":{"login":"reviewer"},"bodyText":"Please fix this.","url":"https://github.com/owner/repo/pull/7#discussion_r1"}]}}}}'
+		;;
+	*'addPullRequestReviewThreadReply'*)
+		case "$payload" in
+			*databaseId*) exit 98 ;;
+			*'"threadId":"PRRT_test"'*'"body":"Fixed."'*)
+				printf '%s' '{"data":{"addPullRequestReviewThreadReply":{"comment":{"id":"PRRC_reply"}}}}'
+				;;
+			*) exit 97 ;;
+		esac
+		;;
+	*) exit 99 ;;
+esac
+`,
+		);
+		process.env.PATH = fixtureScriptDir(gh);
+		process.env.RTK_DISABLED = "1";
+
+		const result = await githubResourceProvider(process.cwd()).write!(
+			parseResourceUri("pr://owner/repo/7/threads/PRRT_test")!,
+			{ content: "@reviewer: Please fix this.\n\n---\n\nFixed." },
+		);
+
+		expect(result.resource.metadata?.id).toBe("PRRT_test");
+		expect(result.resource.metadata).not.toHaveProperty("databaseId");
+	});
 });
 
 describe("resource registry", () => {

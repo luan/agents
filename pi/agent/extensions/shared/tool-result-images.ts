@@ -22,9 +22,16 @@ export function detachToolResultImages(toolCallId: string | undefined, result: {
 	content.splice(0, content.length, ...content.filter((item) => !isImageBlock(item)));
 }
 
+/** The blocks `withRetainedImages` puts back, so accounting can price context the rendered result no longer shows. */
+export function retainedImagesFor(toolCallId: string | undefined): readonly ImageContent[] {
+	return (toolCallId ? retainedImages.get(toolCallId) : undefined) ?? [];
+}
+
 // Loose on purpose: this is called with both ExtensionAPI and the narrower api shapes
 // extensions declare for themselves.
-type ContextCapableApi = { on?: (event: string, handler: (event: any) => any) => void };
+// `any[]` rather than a named event, because `ExtensionAPI.on` is a long overload set and
+// no single signature in it is assignable to a two-parameter function type.
+type ContextCapableApi = { on?: (...args: any[]) => void };
 
 type ToolResultMessageLike = { role?: string; toolCallId?: string; content?: unknown[] };
 

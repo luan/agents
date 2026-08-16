@@ -1,6 +1,6 @@
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { paintAnsiBackgroundRow } from "./text";
-import type { RenderOptions, RenderTheme, Tone, ViewNode } from "./types";
+import type { RenderOptions, RenderTheme, ThemeBackgroundRole, Tone, ViewNode } from "./types";
 
 const DEFAULT_THEME: RenderTheme = {
 	fg: (_role, text) => text,
@@ -118,7 +118,7 @@ function style(theme: RenderTheme, tone: Tone, text: string): string {
 	return theme.fg(tone, text);
 }
 
-function paintThemeBackground(line: string, width: number, theme: RenderTheme, role: string): string {
+function paintThemeBackground(line: string, width: number, theme: RenderTheme, role: ThemeBackgroundRole): string {
 	const backgroundAnsi = theme.getBgAnsi?.(role);
 	if (backgroundAnsi) return paintAnsiBackgroundRow(line, width, backgroundAnsi);
 	return theme.bg?.(role, padStyled(line, width)) ?? line;

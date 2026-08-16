@@ -3,8 +3,26 @@ import { truncateToWidth as truncateToWidthRaw, visibleWidth } from "@earendil-w
 const ANSI_RESET = "\x1b[0m";
 const ANSI_SGR_PATTERN = /\x1b\[([0-9;]*)m/g;
 const OSC_SEQUENCE_PATTERN = /\x1b\][^\x07]*(?:\x07|\x1b\\)/g;
+const OSC133_PREFIX = /^(?:\x1b]133;[ABC]\x07)*/;
+const ANSI_BACKGROUND = /\x1b\[48(?:;[0-9]+)*m/;
 
 let stringEllipsisSupported: boolean | undefined;
+
+/**
+ * Italic, as a span that closes itself.
+ *
+ * `\x1b[23m` rather than a full reset: an italic run is nested inside a colour
+ * more often than it wraps one, and resetting here would drop the colour the
+ * caller opened for the rest of its line.
+ */
+export function italic(text: string): string {
+	return `\x1b[3m${text}\x1b[23m`;
+}
+
+/** Faint intensity without changing the surrounding foreground colour. */
+export function faint(text: string): string {
+	return `\x1b[2m${text}\x1b[22m`;
+}
 
 export function truncateToWidthCompat(text: string, width: number, ellipsis: string | undefined, pad = false): string {
 	if (!ellipsis || ellipsis === "" || stringEllipsisSupported === false) {
@@ -97,6 +115,20 @@ export function paintAnsiBackgroundRow(line: string, width: number, backgroundAn
 	const padded = truncateToWidthCompat(line, width, "", true);
 	if (!backgroundAnsi) return padded;
 	return `${backgroundAnsi}${keepBackgroundAcrossStyles(padded, backgroundAnsi)}${ANSI_RESET}`;
+}
+
+export function paintHalfHeightBackgroundRow(line: string, glyph: "▄" | "▀", width: number): string {
+	const background = line.match(ANSI_BACKGROUND)?.[0];
+	if (!background) return line;
+	const prefix = line.match(OSC133_PREFIX)?.[0] ?? "";
+	return `${prefix}${background.replace("[48", "[38")}${glyph.repeat(width)}\x1b[39m`;
+}
+
+export function paintHalfHeightBackgroundEdges(lines: string[], width: number): string[] {
+	if (lines.length < 2) return lines;
+	lines[0] = paintHalfHeightBackgroundRow(lines[0] ?? "", "▄", width);
+	lines[lines.length - 1] = paintHalfHeightBackgroundRow(lines.at(-1) ?? "", "▀", width);
+	return lines;
 }
 
 export function clampAnsiLine(line: string, width: number): string {

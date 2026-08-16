@@ -16,6 +16,7 @@ type RunCommandOptions = {
 	allowNonZero?: boolean;
 	extraSearchPaths?: readonly string[];
 	maxOutputBytes?: number;
+	env?: NodeJS.ProcessEnv;
 };
 
 export function formatCommand(command: string, args: readonly string[]): string {
@@ -85,7 +86,7 @@ export function runCommand(
 
 		const child = spawn(resolvedCommand, args, {
 			cwd,
-			env: process.env,
+			env: options.env ? { ...process.env, ...options.env } : process.env,
 			stdio: ["pipe", "pipe", "pipe"],
 		});
 

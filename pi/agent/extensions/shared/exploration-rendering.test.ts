@@ -205,3 +205,23 @@ test("typed exploration summary title renders without throwing", () => {
 		),
 	).not.toThrow();
 });
+
+test("nested exploration state crosses cache-busted extension modules", async () => {
+	const first = await import("./exploration-rendering.ts?nested-state=first");
+	const second = await import("./exploration-rendering.ts?nested-state=second");
+	const toolName = "cache_busted_read";
+	const toolCallId = "cache-busted-read-call";
+	first.registerExplorationTool(toolName, (args) => first.readAction((args as { path: string }).path));
+	first.recordNestedExplorationStart(toolName, toolCallId, { path: "skill://diagnosing-bugs" });
+
+	expect(
+		second.updateExplorationRead(toolCallId, {
+			icon: "I",
+			iconRole: "muted",
+			label: "skill",
+			title: "diagnosing-bugs",
+			subtitle: "SKILL.md",
+		}),
+	).toBe(true);
+	first.recordNestedExplorationEnd(toolName, toolCallId);
+});
