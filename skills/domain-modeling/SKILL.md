@@ -9,7 +9,7 @@ Actively build and sharpen the project's domain model as you design. Challenge t
 
 ## Vault structure
 
-Load `$vault`, then inspect the project's language with `read vault://current/context#list`, `read vault://current/context`, and `read vault://current/context#check`. Use `read`, `search`, `find`, `write`, and `edit` on vault resources. Use `vlt` only for explicit CLI workflows.
+Load `$vault`, then follow its context routing before inspecting or changing project language. Read `vault://current/context#check` after context edits. Use `read`, `search`, `find`, `write`, and `edit` on vault resources. Use `vlt` only for explicit CLI workflows.
 
 Store durable trade-offs as typed vault artifacts:
 

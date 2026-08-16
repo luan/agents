@@ -3,14 +3,14 @@
 1. Delete dead code completely. No commented-out code, shims, or "just in case."
 2. Comments for WHY / edge cases / surprises only.
 3. All tests pass before committing. You own every failure you can see.
-4. After changing `ct`, run `just install` so the live `ct` binary matches the repo.
-5. Task discipline: if you create or select a task and then execute it in the same session, immediately mark it `in_progress` and assign it to the current session before editing files. Leave tasks open/unassigned only when you are handing them off for future work.
-6. Review discipline: never leave a feature/bug task `in_progress` while waiting for human review, Plannotator feedback, code-review approval, or manual-verification approval. Move it to `in_review` before the wait; move it back to `in_progress` only while actively revising.
-7. Plannotator discipline: never run `plannotator --help`, subcommand `--help`, or other discovery probes. For code review, load/use `$plannotator-review`; for annotation, artifact gates, or rendered HTML, load/use `$plannotator-annotate`; for latest assistant message annotation, load/use `$plannotator-last`; run only the commands documented in the loaded skill. Run Plannotator commands in the foreground without shell/tool timeout wrappers and without backgrounding so returned feedback is captured.
-8. Process discipline: long-running services are managed sessions, not blocking foreground commands.
-9. Tests are exceptional. Add one only for deterministic logic with a plausible regression that direct validation cannot cover more cheaply. Prefer no test for wiring, configuration, trivial adapters, wrappers, or pass-through behavior.
-10. Test behavior, not presentation. Never assert rendered text, snapshots, labels, spacing, widths, colors, glyphs, animation frames, or other TUI output. Delete presentation-only tests instead of updating them.
-11. Skill files are operator-authored instructions. Never test their wording or read them from tests to enforce process policy.
+4. Task discipline: if you create or select a task and then execute it in the same session, immediately mark it `in_progress` and assign it to the current session before editing files. Leave tasks open/unassigned only when you are handing them off for future work.
+5. Review discipline: never leave a feature/bug task `in_progress` while waiting for human review, Plannotator feedback, code-review approval, or manual-verification approval. Move it to `in_review` before the wait; move it back to `in_progress` only while actively revising.
+6. Plannotator discipline: never run `plannotator --help`, subcommand `--help`, or other discovery probes. For code review, load/use `$plannotator-review`; for annotation, artifact gates, or rendered HTML, load/use `$plannotator-annotate`; for latest assistant message annotation, load/use `$plannotator-last`; run only the commands documented in the loaded skill. Run Plannotator commands in the foreground without shell/tool timeout wrappers and without backgrounding so returned feedback is captured.
+7. Process discipline: long-running services are managed sessions, not blocking foreground commands.
+8. Tests are exceptional. Add one only for deterministic logic with a plausible regression that direct validation cannot cover more cheaply. Prefer no test for wiring, configuration, trivial adapters, wrappers, or pass-through behavior.
+9. Test behavior, not presentation. Never assert rendered text, snapshots, labels, spacing, widths, colors, glyphs, animation frames, or other TUI output. Delete presentation-only tests instead of updating them.
+10. Skill files are operator-authored instructions. Never test their wording or read them from tests to enforce process policy.
+11. Always pass `bun test` an absolute path: `bun test "$PWD/pi/agent/extensions/<...>.test.ts"`. A relative path under `pi/` breaks child-process spawning inside the test, so any test that spawns a real kernel or binary fails with a bare exit and no stderr. `package.json`'s `test` script already uses `$PWD`.
 
 ## Repo Purpose
 
@@ -34,9 +34,8 @@ is already loaded.
   scripts.
   Use `~`, `$HOME`, a Stow-managed path, or a stable command installed by
   `just setup`.
-- `just setup` must be idempotent and converge the live machine state: install
-  local Codex plugins, stow links, install `ct`, register MCP servers, and
-  validate.
+- `just setup` must be idempotent and converge the live machine state: Stow
+  links, build Code Mode host, install `vlt` and Git-Spice, register MCP servers, and validate.
 - Shared configuration is the default. Tool-specific files belong under
   `claude/`, `codex/`, or `pi/` only when the tool requires a
   different schema, filename, or runtime registration mechanism.

@@ -33,6 +33,10 @@ Use resource tools first. Use `vlt` only for explicit CLI workflows or operation
 
 Use `read` for known resources. Use `search` for topic matching. Use `find` for artifact discovery and query filters. Use `write` or `edit` for existing artifacts and context docs.
 
+## Context routing
+
+Read `vault://current/context#list` before reading or writing project context. When the list contains a context map, read `vault://current/context?name=map`, select the named context from its ownership descriptions, then read and write that named context. Use the root context only when no context map exists. Pass `--context <name>` to CLI context writes in a mapped project.
+
 ## CLI-only operations
 
 Use `vlt` when the user asks for CLI syntax or when no resource operation exists yet:

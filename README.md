@@ -13,23 +13,15 @@ Shared configuration is the default. Tool-specific folders (`claude/`, `codex/`,
 | `GLOBAL_AGENTS.md` | Global instructions — hand-edited, linked into Claude, Codex, and Pi |
 | `AGENTS.md` | Repo-local guidance for working on this hub |
 | `skills/` | Available as `~/.agents/skills`; also linked to `~/.claude/skills` |
-
-| `plugins/` | Shared plugin sources; tool folders link here |
-| `crates/ct/` | `ct` Rust CLI — repo, MCP, apply-patch, and TUI helpers |
 | `crates/vlt/` | `vlt` Rust CLI — blueprints vault artifact management |
 | `crates/xtask/` | Task automation invoked via `cargo xtask <cmd>` |
+| `crates/apply-patch/` | `apply_patch` CLI — fork of `openai/codex`, see its `UPSTREAM.md` |
+| `crates/code-mode*/` | `codex-code-mode-host` and its protocol — fork of `openai/codex`, see `crates/code-mode/UPSTREAM.md` |
 | `docs/` | Permanent reference docs (architecture, exceptions) |
 
+The `crates/apply-patch/` and `crates/code-mode*/` crates are forks, not vendored copies. Each
+carries an `UPSTREAM.md` recording its pin and every local divergence. Update them by hand.
 
-## `ct` CLI
-
-`ct` is the primary tool installed from `crates/ct/`. It provides:
-
-- `ct apply-patch` — raw patch apply
-- `ct shell completion` — shell completions
-- `ct tui usage-bar` / `ct tui usage-bars` — terminal UI helpers
-
-Use `ct tui usage-bars --sidebar --watch` for a live sidebar.
 
 ## `vlt` CLI
 
@@ -41,16 +33,16 @@ such as `0001-topic.md`; creation dates live in frontmatter.
 ## Setup
 
 ```sh
-just setup          # idempotent: link, install ct, register MCP servers, validate
+just setup          # idempotent: link, install tools, validate
 just link-dry-run   # preview link targets before linking
-just ct-install     # rebuild and reinstall ct + register MCP servers
+just install        # rebuild the Rust Code Mode and apply-patch hosts, vlt, and Git-Spice
 ```
 
 The repo is designed to be the agents home itself. Clone it directly to
 `~/.agents`, or clone it elsewhere and let `just setup` link `~/.agents` to the
 checkout.
 
-Prerequisites: `just`, `cargo`, `npm`, `claude`, `codex`.
+Prerequisites: `just`, `cargo`, `go`, `bun`, `claude`, `codex`.
 
 On Windows, `cargo xtask doctor` additionally verifies that symlinks work
 (requires Developer Mode) and that the repo's tracked symlinks were
