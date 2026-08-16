@@ -1,49 +1,42 @@
-Your patch language names lines to replace, delete, or insert at, then lists the new content. Rule of thumb: a header ending in `:` is followed by `+` body rows; `delete` has no body.
+Line-anchored patch language: name original lines/gaps to replace, insert, cut, or paste; then give new content. `:` headers take `+` body rows; colonless paste `PUT`, `CUT`, `REM`, `MV` take none.
 
 <headers>
-Every file section starts with `[PATH#TAG]`. `TAG` is the 4-hex snapshot tag from your latest `read`/`search`, and is REQUIRED on every section — there is no hashless form. To create a new file, use the `write` tool; hashline only edits files that already exist.
+Section: `[PATH#TAG]`; `TAG`: 4-hex snapshot from latest `read`/`search`, REQUIRED each section. New files: `write`; hashline edits existing files only.
 </headers>
 
 <ops>
-replace N..M:      replace original lines N..M with the body rows below. CAUTION, IT IS INCLUSIVE! MAKE SURE YOU INTEND TO DELETE BOTH ENDS!
-replace block N:   replace the whole syntactic block that BEGINS on line N — header line through closing line — resolved with tree-sitter, so you never count the end. Body rows below. Reach for this to rewrite a whole construct (function/`if`/loop/class body): the end can't be mis-counted or clipped mid-block. Point N at the line that OPENS the construct (the `if`/`function`/`def`/`{`-bearing line), not a closing `}` or a blank line. The span is EXACTLY that node — a leading decorator/attribute/doc-comment is a separate node and is NOT swept in (see rules).
-delete N..M        delete original lines N..M. No body.
-delete block N     delete the whole syntactic block that BEGINS on line N.
-insert before N:   insert the body rows immediately before line N.
-insert after N:    insert the body rows immediately after line N.
-insert after block N: insert the body rows after the syntactic block that BEGINS on line N; use this for adding a sibling after a whole function/if/loop without counting its closer.
-insert head:       insert the body rows at the very start of the file.
-insert tail:       insert the body rows at the very end of the file.
-Single line: `replace N..N:` / `delete N`. The range is the ORIGINAL lines you touch; body length is irrelevant (replacing 1 line with 10 is still `replace N..N:`).
+`PUT N.=M:`: replace original inclusive lines N–M with body.
+`PUT N*:`: replace syntactic block beginning N; closing line resolved.
+`PUT <N:` / `PUT >N:`: insert before/after N; `<1` head, `>$` tail.
+`PUT >N*:`: insert after block N's end, at sibling depth. Append inside block: `PUT >M:`.
+`PUT <N` / `PUT >N` / `PUT N.=M @name` / `PUT N* @name`: paste captured register at gap/range/resolved block; no `:` or body. Unlabeled gap paste: anonymous register; range/block paste: `@name` required.
+`CUT N.=M` / `CUT N*`: delete and capture inclusive lines N–M / block N; anonymous or given `@name`.
+`REM`: delete section file. `MV DEST`: move/rename (quote paths with spaces); prior edits apply to source, final content to `DEST`.
+Single line: `PUT N.=N:` / `CUT N.=N`. Ranges name original inclusive touched lines; body length irrelevant.
 </ops>
 
 <body-rows>
-Body rows appear only under a `:` header. Every body row is:
-  +TEXT     add a new literal line `TEXT`, verbatim (leading whitespace kept). `+` alone adds a blank line.
-There is NO other body row kind. NEVER write `-old` or a bare/context line. To keep a line, leave it out of every range. To insert a literal line starting with `-` or `+`, prefix it: `+-x`, `++x`.
+Only below `:` headers. Row: verbatim `+TEXT` (leading whitespace preserved); `+`: blank. NEVER `-old`, bare, or context rows: range deletes; body is final content. Keep line: exclude it from every range. Literal initial `-`/`+`: `- item` → `+- item`; `+ item` → `++ item`.
 </body-rows>
 
 <rules>
-- Line numbers come from `read`/`search` (`LINE:TEXT`). Copy the `[PATH#TAG]` header; use the bare LINE numbers.
-- Numbers refer to the ORIGINAL file and stay valid for the whole patch — they do not shift as hunks apply.
-- Across calls they do NOT survive: each applied edit mints a fresh `#TAG` and renumbers the file, so the tag and line numbers you just used are dead. Anchor the next edit on the `[PATH#TAG]` and lines from the edit response (or re-`read`), never on pre-edit numbers.
-- A line number is an offset, not a structural boundary: never `insert after N` into a construct you have not read, and never start or end a `replace`/`delete` range mid-expression or mid-block. If unsure what is on those lines, `read` them first.
-- A valid `#TAG` is NOT permission to patch the whole file — it certifies the snapshot, not your knowledge of it. Authority to touch a line comes from having literally seen that line as a `LINE:TEXT` row in a `read`/`search`, not from holding the tag. Every line in a hunk's range, and the lines bounding it, must be lines you actually saw.
-- An elided or partial read is NOT a read of the gap. A `…` (or any collapsed/truncated region) between two excerpts means those lines are UNSEEN — treat them exactly like lines you never opened. Never place a hunk on, or span a range across, an elided region; `read` that range explicitly first. Reconstructing it from memory of "what the code probably looks like" is how ranges drift off-by-N and shred neighboring blocks.
-- On a stale-tag rejection — or any result you cannot fully account for — STOP and re-`read`. Never stack more line-numbered edits onto output you have not re-grounded; that compounds corruption.
-- One hunk per range; the body is the final content, never an old/new pair.
-- Keep every range as tight as the change: a range must cover ONLY lines whose content actually changes. Never widen it to swallow an unchanged signature, brace, or neighboring statement just to rewrite a few lines inside — change one line with `replace N..N`, not the whole block around it. (A range where every line genuinely changes is correctly long; tightness is about excluding unchanged lines, not about being short.) This bounds the blast radius if a number is off: a stale one-line range corrupts one line, while a stale wide range shreds every line it spans. (This is about hand-counted `replace N..M` ranges; the `replace block N` operator is the opposite — tree-sitter fixes the end, so it can't be mis-counted or clipped.)
-- `replace block N` vs `replace N..M`: use `replace block N` to rewrite a WHOLE construct (function / `if` / loop / class body) — tree-sitter resolves its closing line, so a long body can't be mis-counted and a stale end can't clip it mid-block; the edit result echoes the span it matched (`replace block N → resolved lines A-B`), so glance at it to confirm you got what you meant. Use `replace N..M` to change specific lines inside a construct. The resolved span is EXACTLY the node beginning on line N: a leading decorator, attribute, or doc-comment is a separate node and is NOT included. To replace a decorated/annotated definition together with its decorator, point N at the FIRST decorator line (Python parses `@dec` + `def` as one block). A leading line-comment that parses as its own node (e.g. Rust `///`) is not captured by any single opener — use `replace N..M` spanning the comment and the construct.
-- If a patch adds/removes/moves braces, parentheses, blank separator lines around a scope, or an entire function/loop/`if` body, prefer `replace block N:` after reading the opener. Hand-counted ranges are for small leaf edits; scope edits should let the resolver own the closing line.
-- For pure additions adjacent to a whole scope, prefer `insert after block N:` after reading the opener. It resolves the block end with tree-sitter and avoids anchoring on a guessed closing brace.
-- `insert after block N:` only falls back to plain `insert after N:` when no block begins on N (for example a closing delimiter line). If tree-sitter cannot parse the file, the parser is unavailable, or the language is unsupported, the edit rejects; re-read and use plain `insert after N:` only when that exact line landing is intended.
-- To change lines 2 and 5 while keeping 3–4, issue two hunks (`replace 2..2:` and `replace 5..5:`). Untouched lines are simply absent from every range.
-- Pure additions use `insert`, never a widened `replace`. If the change only adds lines, `insert before/after` the spot and keep every existing line out of all ranges. Do NOT `replace` a span of keepers and retype them around the new line "to preserve" them — those retyped keepers are exactly what gets silently dropped when one is forgotten. A keeper that never enters your body cannot be lost. `replace` is only for lines whose own text changes.
-- NEVER use this tool to format code — reordering imports, re-indenting, aligning columns, or any mechanical restyling. That is the project formatter's job; run it instead of hand-editing layout here.
+- Numbers and `#TAG`: latest `read`/`search` `LINE:TEXT`; numbers are original, never shifted by hunks.
+- Each edit renumbers and changes `#TAG` → next numbers from edit response or fresh `read`.
+- Touch displayed lines only; undisplayed hunks REJECTED. Far from read window: re-`read`; confirm construct.
+- Elisions UNSEEN: `…`, `..`, collapsed `N-M:` rows. NEVER hunk in/across one; `read` first.
+- NEVER start/end range mid-expression or mid-block.
+- Ranges: changed lines only; NEVER widen over keepers. Non-adjacent changes: separate hunks.
+- Whole construct: `PUT N*:`; internal lines: `PUT N.=M:`.
+- `PUT N*:` resolves exactly node N. Leading decorators/attributes/doc-comments are separate nodes: point N at first decorator to include both. Standalone line-comments never swept: use `PUT N.=M:`.
+- Block ops: opening line of multi-line construct, NEVER closer, last line, bare inner statement. One statement: plain `PUT N.=N:` / `CUT N.=N` / `PUT >N:`. At closer: `PUT >M:`.
+- Markdown headings are block openers. Block op on `##`/`###`: whole section through deeper headings to next same/higher heading. After section `PUT >N*:`: end body with blank line to separate next heading.
+- Pure addition: `PUT <N:` / `PUT >N:`, NEVER widened `PUT N.=M:`.
+- Move: `CUT`+`PUT`; `CUT 5.=9 @fn` → `@fn`, `PUT >40 @fn` pastes. Single call-local move: unlabeled `CUT` + `PUT >40`. Named registers persist across edit calls.
+- NEVER format/restyle with this tool; run project formatter.
 </rules>
 
 <example>
-Original (the exact shape `read` returns):
+`read` output shape:
 ```
 [greet.py#A1B2]
 1:def greet(name):
@@ -52,48 +45,43 @@ Original (the exact shape `read` returns):
 4:greet("world")
 ```
 
-Insert a guard after line 1:
+Edit, then move:
 ```
 [greet.py#A1B2]
-insert after 1:
-+    if not name: name = "stranger"
+PUT 1.=3:
++def greet(name):
++    print(f"Hi, {name}")
+MV lib/greet.py
 ```
 
-Replace line 2 with two lines:
+Markdown bullets — file receives `- task`:
 ```
-[greet.py#A1B2]
-replace 2..2:
-+    greeting = "Hi"
-+    msg = f"{greeting}, {name}"
-```
-
-Delete line 3:
-```
-[greet.py#A1B2]
-delete 3
+[PLAN.md#A1B2]
+PUT >2:
++- task
++  - nested task
 ```
 
-Add a header and trailer:
+Move `greet` to sibling file via named register; flows across sections:
 ```
 [greet.py#A1B2]
-insert head:
-+# generated header
-insert tail:
-+greet("everyone")
+CUT 1* @fn
+[other.py#3C4D]
+PUT <1 @fn
 ```
 
-Replace the whole `greet` function block — `replace block 1:` resolves lines 1–3 (the `def` header through `print(msg)`); line 4 is a separate statement and stays:
+`PUT 1*:` resolves lines 1–3 (`def` through `print(msg)`); line 4 separate, remains:
 ```
 [greet.py#A1B2]
-replace block 1:
+PUT 1*:
 +def greet(name):
 +    print(f"Hello, {name}")
 ```
 
-A decorator or doc-comment is a SEPARATE block — `replace block` on the `def`/`fn` line keeps it. Point N at the decorator to take both; here line 1 is `@cache`, so anchoring on the `def` (line 2) would resolve only the function and orphan `@cache`:
+Decorator/doc-comment separate block: point N at decorator to include both; anchoring `def` line 2 orphans `@cache`:
 ```
 [svc.py#C3D4]
-replace block 1:
+PUT 1*:
 +@cache
 +def load(key):
 +    return store[key]
@@ -101,36 +89,45 @@ replace block 1:
 </example>
 
 <anti-patterns>
-# WRONG — empty `replace` to delete. RIGHT: delete 4
-replace 4..4:
+# WRONG — empty `PUT` to delete. RIGHT: `CUT 4.=4`
+PUT 4.=4:
 
-# WRONG — range describes post-edit size. RIGHT: replace 1..1: (body length is irrelevant)
-replace 1..2:
+# WRONG — range sized to the post-edit content. RIGHT: `PUT 1.=1:` (body length irrelevant)
+PUT 1.=2:
 +def greet(name):
 
-# WRONG — `-` rows / bare context lines do not exist. The range deletes; the body is only the new content.
-replace 3..3:
+# WRONG — `-` rows / bare context lines do not exist; the range deletes, the body is only new content.
+PUT 3.=3:
     msg = "Hello, " + name
 -   print(msg)
 +   return msg
 # RIGHT
-replace 3..3:
+PUT 3.=3:
 +   return msg
 
-# WRONG — a pure insertion done as a widened `replace`: you only want to add one line after 2,
-# but you replace 2..4, retype the keepers in the body, and drop one (here line 4, `greet("world")`).
-replace 2..4:
+# WRONG — pure insertion as a widened `PUT`: retyped keepers get dropped (here line 4).
+PUT 2.=4:
 +    msg = "Hello, " + name
 +    extra = compute(name)
 +    print(msg)
-# RIGHT — touch nothing you keep; the new line is the whole body.
-insert after 2:
+# RIGHT — touch nothing you keep.
+PUT >2:
 +    extra = compute(name)
+
+# WRONG — `PUT >N*:` anchored on the closing delimiter / last visible line. RIGHT: plain `PUT >M:`
+PUT >3*:
++after()
+# RIGHT
+PUT >3:
++after()
+
+# WRONG — body rows under register PUT; register pastes take no body. RIGHT: bodyless `PUT >20 @fn`.
+PUT >20 @fn:
++function f() {}
 </anti-patterns>
 
 <critical>
-If you remember nothing else:
-1. RE-GROUND AFTER EVERY EDIT. Each applied edit mints a fresh `#TAG` and renumbers the file — the tag and line numbers you just used are now dead. Take the next edit's numbers from the edit response or a fresh `read`, never from pre-edit memory. On a stale-tag rejection or any unexpected result, STOP and re-`read`.
-2. RANGES ARE TIGHT AND IN-BOUNDS. Cover only lines whose content actually changes; never widen a range to swallow an unchanged signature, brace, or statement, and never start or end a range mid-expression or mid-block. A stale one-line range corrupts one line; a stale wide range shreds everything it spans — to rewrite a whole construct, prefer `replace block N` so tree-sitter fixes the end.
-3. THE BODY IS THE FINAL CONTENT. Only `+TEXT` rows under a `:` header — never `-old`/bare context lines, never an old/new pair. The range does the deleting.
+1. RE-GROUND AFTER EVERY EDIT: edits renumber and change `#TAG`; take next numbers from edit response or fresh `read`. Stale tag/surprise: STOP; re-`read`.
+2. RANGES TIGHT: changed lines only. Whole construct: `PUT N*:`.
+3. BODY FINAL CONTENT: every row starts `+`; Markdown bullet: `+- item`, not `- item`.
 </critical>

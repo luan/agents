@@ -75,6 +75,13 @@ export class MismatchError extends Error {
 	static rejectionHeader(details: MismatchDetails): string[] {
 		const pathText = details.path ? ` for ${details.path}` : "";
 		const hashRecognized = details.hashRecognized ?? true;
+		if (!hashRecognized && details.expectedFileHash === details.actualFileHash) {
+			return [
+				`Edit rejected${pathText}: tag ${HL_FILE_HASH_SEP}${details.expectedFileHash} matches current file, but this session has no snapshot record for it.`,
+				`An unrecognized tag cannot authorize numeric line anchors: it does not prove this session saw those lines, and its 4-hex fingerprint can collide. A content assertion can check line text but cannot restore session provenance or disambiguate repeated text.`,
+				`Read the file in this session and retry with its header. If a fresh read still loses its record, keep read and edit in the same session; do not retry this unrecognized tag.`,
+			];
+		}
 		if (!hashRecognized) {
 			return [
 				`Edit rejected${pathText}: tag ${HL_FILE_HASH_SEP}${details.expectedFileHash} is not from this session.`,

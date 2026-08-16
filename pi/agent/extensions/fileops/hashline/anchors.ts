@@ -29,8 +29,21 @@ export function hashlineSnapshotStoreForSession(sessionId: string): InMemorySnap
 	return store;
 }
 
-function absolutePath(cwd: string, path: string): string {
+export function deleteHashlineSnapshotStoreForSession(sessionId: string): void {
+	SESSION_SNAPSHOT_STORES.delete(sessionId);
+}
+
+export type HashlinePathResolver = (path: string, cwd: string) => string | undefined;
+
+const defaultPathResolver: HashlinePathResolver = (path, cwd) => {
+	if (/^[a-z][a-z0-9+.-]*:\/\//i.test(path)) return undefined;
 	return isAbsolute(path) ? path : resolve(cwd, path);
+};
+
+function absolutePath(cwd: string, path: string, resolvePath: HashlinePathResolver = defaultPathResolver): string {
+	const resolved = resolvePath(path, cwd);
+	if (!resolved) throw new Error(`Resource URI cannot anchor hashline edits: ${path}`);
+	return resolved;
 }
 
 function displayPath(cwd: string, absolute: string): string {
@@ -69,7 +82,7 @@ export async function recordHashlineFileSnapshot(
 		return undefined;
 	}
 }
-type SessionEntryLike = {
+export type HashlineSessionEntry = {
 	type?: string;
 	message?: {
 		role?: string;
@@ -81,14 +94,15 @@ type RestoredSnapshot = {
 	path: string;
 	tag: string;
 	lines: Set<number>;
+	displayed: Map<number, string>;
 	synthetic: Set<number>;
 	searchOutput: boolean;
 };
 
-function collectSessionSnapshots(entries: readonly SessionEntryLike[]): Map<string, RestoredSnapshot> {
+function collectSessionSnapshots(entries: readonly HashlineSessionEntry[]): Map<string, RestoredSnapshot> {
 	const snapshots = new Map<string, RestoredSnapshot>();
 	const headerPattern = /^\[([^\]\n]+)#([0-9A-Fa-f]{4})\]\s*$/;
-	const rowPattern = /^(\*| )?([1-9]\d*):/;
+	const rowPattern = /^(\*| )?([1-9]\d*):(.*)$/;
 
 	for (const entry of entries) {
 		if (entry.type !== "message" || entry.message?.role !== "toolResult") continue;
@@ -103,6 +117,7 @@ function collectSessionSnapshots(entries: readonly SessionEntryLike[]): Map<stri
 						path: header[1]!,
 						tag: header[2]!.toUpperCase(),
 						lines: new Set(),
+						displayed: new Map(),
 						synthetic: new Set(),
 						searchOutput: false,
 					};
@@ -114,6 +129,7 @@ function collectSessionSnapshots(entries: readonly SessionEntryLike[]): Map<stri
 				if (!row) continue;
 				const lineNumber = Number(row[2]);
 				current.lines.add(lineNumber);
+				current.displayed.set(lineNumber, row[3] ?? "");
 				if (row[1] === "*") current.searchOutput = true;
 				if (row[1] === " ") current.synthetic.add(lineNumber);
 			}
@@ -125,15 +141,25 @@ function collectSessionSnapshots(entries: readonly SessionEntryLike[]): Map<stri
 export async function restoreHashlineSnapshots(
 	snapshots: InMemorySnapshotStore,
 	cwd: string,
-	entries: readonly SessionEntryLike[],
+	entries: readonly HashlineSessionEntry[],
+	wanted?: ReadonlySet<string>,
+	resolvePath: HashlinePathResolver = defaultPathResolver,
 ): Promise<void> {
 	for (const restored of collectSessionSnapshots(entries).values()) {
-		if (/^[a-z][a-z\d+.-]*:\/\//i.test(restored.path)) continue;
-		const path = absolutePath(cwd, restored.path);
+		const path = resolvePath(restored.path, cwd);
+		if (!path) continue;
+		if (wanted && !wanted.has(`${path}#${restored.tag}`)) continue;
 		try {
 			const info = await stat(path);
 			if (info.size > SNAPSHOT_MAX_BYTES) continue;
 			const { text } = stripBom(await readFile(path, "utf-8"));
+			const liveLines = normalizeToLf(text).split("\n");
+			if (
+				(restored.displayed.size === 0 && text.length > 0) ||
+				[...restored.displayed].some(([line, displayed]) => liveLines[line - 1] !== displayed)
+			) {
+				continue;
+			}
 			const observedLines = restored.searchOutput
 				? {
 						explicit: [...restored.lines].filter((line) => !restored.synthetic.has(line)),

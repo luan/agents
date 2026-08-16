@@ -1,35 +1,27 @@
 /**
  * Stateful, line-oriented classifier for hashline diff text.
  *
- * The {@link Tokenizer} can be fed in chunks ({@link Tokenizer.feed}/{@link
- * Tokenizer.end}) for streaming use, or in one shot ({@link
- * Tokenizer.tokenizeAll}). Each emitted token carries its 1-indexed source
- * line number so downstream consumers (parser, validators, error messages)
- * can refer back to the input precisely.
- *
  * Format shape:
  * ```
  * [path/to/file.ts#1A2B]
- * replace 5..7:
+ * replace 5.=7:
  * +literal new line
  * ```
  */
-
 import {
-	HL_BLOCK_KEYWORD,
-	HL_DELETE_KEYWORD,
+	describeAnchorExamples,
+	HL_CUT_KEYWORD,
 	HL_FILE_HASH_LENGTH,
+	HL_FILE_HASH_SEP,
 	HL_FILE_PREFIX,
 	HL_FILE_SUFFIX,
 	HL_HEADER_COLON,
-	HL_INSERT_AFTER,
-	HL_INSERT_BEFORE,
-	HL_INSERT_HEAD,
-	HL_INSERT_KEYWORD,
-	HL_INSERT_TAIL,
+	HL_MOVE_KEYWORD,
 	HL_PAYLOAD_REPLACE,
-	HL_REPLACE_KEYWORD,
+	HL_PUT_KEYWORD,
+	HL_REM_KEYWORD,
 } from "./format";
+import { HL_LINE_HASH_LENGTH } from "./line-hash";
 import { ABORT_MARKER, BEGIN_PATCH_MARKER, END_PATCH_MARKER } from "./messages";
 import type { Anchor, Cursor, ParsedRange } from "./types";
 
@@ -40,9 +32,16 @@ const CHAR_NINE = 57;
 const CHAR_HASH = 35;
 const CHAR_TAB = 9;
 const CHAR_SPACE = 32;
-const CHAR_DOT = 46;
 const CHAR_HYPHEN = 45;
+const CHAR_DOT = 46;
+const CHAR_EQUALS = 61;
 const CHAR_ELLIPSIS = 0x2026;
+const CHAR_LESS_THAN = 60;
+const CHAR_GREATER_THAN = 62;
+const CHAR_STAR = 42;
+const CHAR_DOLLAR = 36;
+const CHAR_AT = 64;
+const CHAR_UNDERSCORE = 95;
 
 const CHAR_UPPER_A = 65;
 const CHAR_UPPER_F = 70;
@@ -93,75 +92,121 @@ function markerLineEquals(line: string, marker: string): boolean {
 	return end === marker.length && line.startsWith(marker);
 }
 
-export function cloneCursor(cursor: Cursor): Cursor {
-	if (cursor.kind === "before_anchor" || cursor.kind === "after_anchor") {
-		return { kind: cursor.kind, anchor: { ...cursor.anchor } };
+export function splitHashlineLines(text: string): string[] {
+	if (text.length === 0) return [""];
+	const lines: string[] = [];
+	let start = 0;
+	for (let index = 0; index < text.length; index++) {
+		if (text.charCodeAt(index) !== CHAR_LINE_FEED) continue;
+		let end = index;
+		if (end > start && text.charCodeAt(end - 1) === CHAR_CARRIAGE_RETURN) end--;
+		lines.push(text.slice(start, end));
+		start = index + 1;
 	}
+	if (start < text.length) {
+		let end = text.length;
+		if (end > start && text.charCodeAt(end - 1) === CHAR_CARRIAGE_RETURN) end--;
+		lines.push(text.slice(start, end));
+	}
+	return lines;
+}
+
+export function cloneCursor(cursor: Cursor): Cursor {
+	if (cursor.kind === "before_anchor") return { kind: "before_anchor", anchor: { ...cursor.anchor } };
+	if (cursor.kind === "after_anchor") return { kind: "after_anchor", anchor: { ...cursor.anchor } };
 	return cursor;
 }
 
 interface NumberScan {
 	line: number;
+	hash?: string;
+	content?: string;
 	nextIndex: number;
 }
 
 function scanLineNumber(line: string, index: number, end: number): NumberScan | null {
 	if (index >= end || !isNonZeroDigitCode(line.charCodeAt(index))) return null;
-
 	let lineNumber = 0;
 	let nextIndex = index;
 	while (nextIndex < end) {
 		const code = line.charCodeAt(nextIndex);
 		if (!isDigitCode(code)) break;
 		lineNumber = lineNumber * 10 + (code - CHAR_ZERO);
+		if (!Number.isSafeInteger(lineNumber)) return null;
 		nextIndex++;
 	}
+	if (nextIndex < end && line.charCodeAt(nextIndex) === CHAR_HASH) {
+		let cursor = nextIndex + 1;
+		while (cursor < end && isHexDigitCode(line.charCodeAt(cursor))) cursor++;
+		const hash = line.slice(nextIndex + 1, cursor);
+		if (hash.length === HL_LINE_HASH_LENGTH) {
+			return { line: lineNumber, hash: hash.toLowerCase(), nextIndex: cursor };
+		}
+	}
 	return { line: lineNumber, nextIndex };
+}
+
+function scanAnchorContent(line: string, scan: NumberScan, end: number): NumberScan {
+	if (scan.nextIndex >= end || line.charCodeAt(scan.nextIndex) !== CHAR_COLON) return scan;
+	const content = line.slice(scan.nextIndex + 1, end);
+	return content.length === 0 ? scan : { ...scan, content, nextIndex: end };
+}
+
+function anchorFromScan(scan: NumberScan): Anchor {
+	return {
+		line: scan.line,
+		...(scan.hash === undefined ? {} : { hash: scan.hash }),
+		...(scan.content === undefined ? {} : { content: scan.content }),
+	};
+}
+
+/** Parse a bare line-number anchor. Throws on malformed input. */
+export function parseLid(raw: string, lineNum: number): Anchor {
+	const end = trimEndIndex(raw);
+	const numberStart = skipWhitespace(raw, 0, end);
+	const number = scanAnchorContent(raw, scanLineNumber(raw, numberStart, end) ?? { line: 0, nextIndex: -1 }, end);
+	if (number.nextIndex < 0 || skipWhitespace(raw, number.nextIndex, end) !== end) {
+		throw new Error(
+			`line ${lineNum}: expected a line number such as ${describeAnchorExamples("119")}; ` +
+				`got ${JSON.stringify(raw)}. Use ${HL_FILE_PREFIX}PATH${HL_FILE_HASH_SEP}hash${HL_FILE_SUFFIX} from your latest read for file-version binding.`,
+		);
+	}
+	return anchorFromScan(number);
 }
 
 interface RangeScan {
 	range: ParsedRange;
 	nextIndex: number;
+	hadSeparator: boolean;
 }
 
 /**
- * Consume the range separator (whitespace, `-`, `..`, or `…`) between the two
- * numbers of a hunk-header range. Returns the index of the second number, or
- * `null` when the separator is missing or no digit follows it.
+ * Range separator scanner. Canonical input is `.=`, while parsing remains
+ * deliberately lenient for model output: `-`, `=`, `.`, `..`, `…`, mixed
+ * runs, and whitespace-only separators all recover to the same range.
  */
 function scanRangeSeparator(line: string, index: number, end: number): number | null {
 	let cursor = index;
 	let consumedSeparator = false;
 	while (cursor < end) {
 		const code = line.charCodeAt(cursor);
-		if (isWhitespaceCode(code)) {
+		if (
+			isWhitespaceCode(code) ||
+			code === CHAR_HYPHEN ||
+			code === CHAR_DOT ||
+			code === CHAR_EQUALS ||
+			code === CHAR_ELLIPSIS
+		) {
 			cursor++;
-			consumedSeparator = true;
-			continue;
-		}
-		if (code === CHAR_HYPHEN || code === CHAR_ELLIPSIS) {
-			cursor++;
-			consumedSeparator = true;
-			continue;
-		}
-		if (code === CHAR_DOT && cursor + 1 < end && line.charCodeAt(cursor + 1) === CHAR_DOT) {
-			cursor += 2;
 			consumedSeparator = true;
 			continue;
 		}
 		break;
 	}
-	if (!consumedSeparator) return null;
-	if (cursor >= end || !isNonZeroDigitCode(line.charCodeAt(cursor))) return null;
+	if (!consumedSeparator || cursor >= end || !isNonZeroDigitCode(line.charCodeAt(cursor))) return null;
 	return cursor;
 }
 
-/**
- * Scan a numeric range for a hunk header. Canonical form is `A..B`; models
- * also reflexively emit `A-B`, `A B`, and `A…B` (unicode ellipsis), so any of
- * those work as the range separator. With `allowSingle`, a bare `A` is
- * accepted as `A..A`.
- */
 function scanHeaderRange(line: string, index = 0, end = trimEndIndex(line), allowSingle = false): RangeScan | null {
 	const numberStart = skipWhitespace(line, index, end);
 	const start = scanLineNumber(line, numberStart, end);
@@ -169,33 +214,48 @@ function scanHeaderRange(line: string, index = 0, end = trimEndIndex(line), allo
 	const afterFirst = scanRangeSeparator(line, start.nextIndex, end);
 	if (afterFirst === null) {
 		if (!allowSingle) return null;
+		const anchor = scanAnchorContent(line, start, end);
 		return {
-			range: { start: { line: start.line }, end: { line: start.line } },
-			nextIndex: skipWhitespace(line, start.nextIndex, end),
+			range: { start: anchorFromScan(anchor), end: anchorFromScan(anchor) },
+			nextIndex: anchor.content === undefined ? skipWhitespace(line, anchor.nextIndex, end) : end,
+			hadSeparator: false,
 		};
 	}
 	const endNumber = scanLineNumber(line, afterFirst, end);
 	if (endNumber === null) return null;
+	const endAnchor = scanAnchorContent(line, endNumber, end);
 	return {
-		range: { start: { line: start.line }, end: { line: endNumber.line } },
-		nextIndex: skipWhitespace(line, endNumber.nextIndex, end),
+		range: { start: anchorFromScan(start), end: anchorFromScan(endAnchor) },
+		nextIndex: endAnchor.content === undefined ? skipWhitespace(line, endAnchor.nextIndex, end) : end,
+		hadSeparator: true,
 	};
 }
 
 export type BlockTarget =
-	| { kind: "replace"; range: ParsedRange }
-	| { kind: "block"; anchor: Anchor }
-	| { kind: "delete"; range: ParsedRange }
-	| { kind: "delete_block"; anchor: Anchor }
-	| { kind: "insert_before"; anchor: Anchor }
-	| { kind: "insert_after"; anchor: Anchor }
-	| { kind: "insert_after_block"; anchor: Anchor }
-	| { kind: "bof" }
-	| { kind: "eof" };
+	| { kind: "replace"; range: ParsedRange; register?: string }
+	| { kind: "block"; anchor: Anchor; register?: string }
+	| { kind: "insert_before"; anchor: Anchor; register?: string }
+	| { kind: "insert_after"; anchor: Anchor; register?: string }
+	| { kind: "insert_after_block"; anchor: Anchor; register?: string }
+	| { kind: "cut"; range: ParsedRange; register?: string }
+	| { kind: "cut_block"; anchor: Anchor; register?: string }
+	| { kind: "bof"; register?: string }
+	| { kind: "eof"; register?: string }
+	| { kind: "rem" }
+	| { kind: "move"; dest: string };
+
+/** Targets that may carry a `@register` suffix (everything but the file-level ops). */
+type RegisterableTarget = Exclude<BlockTarget, { kind: "rem" } | { kind: "move" }>;
 
 interface TargetScan {
 	target: BlockTarget;
 	nextIndex: number;
+	/**
+	 * Whether the header carried a trailing `:`. The parser uses it to tell a
+	 * literal insertion awaiting body rows (`PUT >40:`) from a bodyless
+	 * anonymous paste (`PUT >40`).
+	 */
+	hadColon: boolean;
 }
 
 function scanKeyword(line: string, index: number, end: number, keyword: string): number | null {
@@ -208,93 +268,203 @@ function scanKeyword(line: string, index: number, end: number, keyword: string):
 	return next;
 }
 
-function consumeOptionalColon(line: string, index: number, end: number): number {
-	const cursor = skipWhitespace(line, index, end);
-	return cursor < end && line.charCodeAt(cursor) === CHAR_COLON ? skipWhitespace(line, cursor + 1, end) : cursor;
+interface ColonScan {
+	nextIndex: number;
+	hadColon: boolean;
 }
 
-function scanInsertTarget(line: string, index: number, end: number): TargetScan | null {
+function consumeOptionalColon(line: string, index: number, end: number): ColonScan {
 	const cursor = skipWhitespace(line, index, end);
-	const beforeEnd = scanKeyword(line, cursor, end, HL_INSERT_BEFORE);
-	if (beforeEnd !== null) {
-		const anchor = scanLineNumber(line, skipWhitespace(line, beforeEnd, end), end);
-		if (anchor === null) return null;
-		const nextIndex = consumeOptionalColon(line, anchor.nextIndex, end);
-		return { target: { kind: "insert_before", anchor: { line: anchor.line } }, nextIndex };
+	if (cursor < end && line.charCodeAt(cursor) === CHAR_COLON) {
+		return { nextIndex: skipWhitespace(line, cursor + 1, end), hadColon: true };
 	}
-	const afterEnd = scanKeyword(line, cursor, end, HL_INSERT_AFTER);
-	if (afterEnd !== null) {
-		// `insert after block N:` — resolve N to a tree-sitter block range at
-		// apply time and insert after its last line. Try the `block` sub-keyword
-		// before falling back to a literal `insert after N:` anchor.
-		const blockEnd = scanKeyword(line, skipWhitespace(line, afterEnd, end), end, HL_BLOCK_KEYWORD);
-		if (blockEnd !== null) {
-			const anchor = scanLineNumber(line, skipWhitespace(line, blockEnd, end), end);
-			if (anchor === null) return null;
-			const nextIndex = consumeOptionalColon(line, anchor.nextIndex, end);
-			return { target: { kind: "insert_after_block", anchor: { line: anchor.line } }, nextIndex };
+	return { nextIndex: cursor, hadColon: false };
+}
+
+/** Maximum accepted register-name length; anything longer fails the header parse. */
+const REGISTER_NAME_MAX = 64;
+
+function isRegisterNameCode(code: number): boolean {
+	return (
+		isDigitCode(code) ||
+		(code >= CHAR_UPPER_A && code <= 90) ||
+		(code >= CHAR_LOWER_A && code <= 122) ||
+		code === CHAR_UNDERSCORE ||
+		code === CHAR_HYPHEN
+	);
+}
+
+/** Scan a `@name` register reference. */
+function scanRegister(line: string, index: number, end: number): { name: string; nextIndex: number } | null {
+	if (index >= end || line.charCodeAt(index) !== CHAR_AT) return null;
+	const start = index + 1;
+	let cursor = start;
+	while (cursor < end && isRegisterNameCode(line.charCodeAt(cursor))) cursor++;
+	if (cursor === start || cursor - start > REGISTER_NAME_MAX) return null;
+	return { name: line.slice(start, cursor), nextIndex: cursor };
+}
+
+/**
+ * Finish a `PUT`/`CUT` header: optional `@register`, optional trailing `:`.
+ * The parser decides whether a body is required; the tokenizer only records
+ * the shape.
+ */
+function finishTargetScan(line: string, index: number, end: number, target: RegisterableTarget): TargetScan {
+	let cursor = skipWhitespace(line, index, end);
+	const register = scanRegister(line, cursor, end);
+	if (register !== null) {
+		target = { ...target, register: register.name };
+		cursor = register.nextIndex;
+	}
+	const colon = consumeOptionalColon(line, cursor, end);
+	return { target, nextIndex: colon.nextIndex, hadColon: colon.hadColon };
+}
+
+/**
+ * Scan the locator of a `PUT` header:
+ *   span — `5` / `5-9` (replace lines), `5*` (replace the block opening at 5)
+ *   gap  — `<5` / `>5` (insert), `>5*` (after the block's end), `<1` (head), `>$` (tail)
+ */
+function scanPutTarget(line: string, index: number, end: number): TargetScan | null {
+	const cursor = skipWhitespace(line, index, end);
+	if (cursor >= end) return null;
+	const sigil = line.charCodeAt(cursor);
+	if (sigil === CHAR_LESS_THAN || sigil === CHAR_GREATER_THAN) {
+		const isAfter = sigil === CHAR_GREATER_THAN;
+		const probe = skipWhitespace(line, cursor + 1, end);
+		if (isAfter && probe < end && line.charCodeAt(probe) === CHAR_DOLLAR) {
+			return finishTargetScan(line, probe + 1, end, { kind: "eof" });
 		}
-		const anchor = scanLineNumber(line, skipWhitespace(line, afterEnd, end), end);
-		if (anchor === null) return null;
-		const nextIndex = consumeOptionalColon(line, anchor.nextIndex, end);
-		return { target: { kind: "insert_after", anchor: { line: anchor.line } }, nextIndex };
+		const scannedAnchor = scanLineNumber(line, probe, end);
+		if (scannedAnchor === null) return null;
+		const anchor = scanAnchorContent(line, scannedAnchor, end);
+		let next = anchor.nextIndex;
+		let block = false;
+		if (next < end && line.charCodeAt(next) === CHAR_STAR) {
+			block = true;
+			next++;
+		}
+		if (isAfter && anchor.content !== undefined) {
+			return {
+				target: { kind: "insert_after", anchor: anchorFromScan(anchor) },
+				nextIndex: end,
+				hadColon: true,
+			};
+		}
+		if (isAfter) {
+			return finishTargetScan(
+				line,
+				next,
+				end,
+				block
+					? { kind: "insert_after_block", anchor: anchorFromScan(anchor) }
+					: { kind: "insert_after", anchor: anchorFromScan(anchor) },
+			);
+		}
+		// `<N*` is the same gap as `<N`: a block anchored at N begins on line N,
+		// so "before the block" is "before line N". The star is dropped.
+		// `<1` is head — mapped to `bof` so it stays position-stable (never
+		// anchor-scoped) and works when creating empty files.
+		if (anchor.content !== undefined) {
+			return {
+				target: anchor.line === 1 ? { kind: "bof" } : { kind: "insert_before", anchor: anchorFromScan(anchor) },
+				nextIndex: end,
+				hadColon: true,
+			};
+		}
+		return finishTargetScan(
+			line,
+			next,
+			end,
+			anchor.line === 1 ? { kind: "bof" } : { kind: "insert_before", anchor: anchorFromScan(anchor) },
+		);
 	}
-	const headEnd = scanKeyword(line, cursor, end, HL_INSERT_HEAD);
-	if (headEnd !== null) return { target: { kind: "bof" }, nextIndex: consumeOptionalColon(line, headEnd, end) };
-	const tailEnd = scanKeyword(line, cursor, end, HL_INSERT_TAIL);
-	if (tailEnd !== null) return { target: { kind: "eof" }, nextIndex: consumeOptionalColon(line, tailEnd, end) };
-	return null;
+	const range = scanHeaderRange(line, cursor, end, true);
+	if (range === null) return null;
+	const next = range.nextIndex;
+	if (next < end && line.charCodeAt(next) === CHAR_STAR) {
+		// Block locators are single opening lines (`N*`), never ranges.
+		if (range.hadSeparator) return null;
+		return finishTargetScan(line, next + 1, end, { kind: "block", anchor: range.range.start });
+	}
+	if (range.range.end.content !== undefined) {
+		return { target: { kind: "replace", range: range.range }, nextIndex: end, hadColon: true };
+	}
+	return finishTargetScan(line, next, end, { kind: "replace", range: range.range });
+}
+
+/** Scan the locator of a `CUT` header: `N.=M` or `N*` (block). */
+function scanCutTarget(line: string, index: number, end: number): TargetScan | null {
+	const range = scanHeaderRange(line, index, end, true);
+	if (range === null) return null;
+	const next = range.nextIndex;
+	if (next < end && line.charCodeAt(next) === CHAR_STAR) {
+		if (range.hadSeparator) return null;
+		return finishTargetScan(line, next + 1, end, { kind: "cut_block", anchor: range.range.start });
+	}
+	if (range.range.end.content !== undefined) {
+		return { target: { kind: "cut", range: range.range }, nextIndex: end, hadColon: false };
+	}
+	return finishTargetScan(line, next, end, { kind: "cut", range: range.range });
+}
+
+function unquotePath(pathText: string): string {
+	if (pathText.length < 2) return pathText;
+	const first = pathText[0];
+	const last = pathText[pathText.length - 1];
+	if ((first === '"' || first === "'") && first === last) return pathText.slice(1, -1);
+	return pathText;
+}
+
+function scanMoveDest(line: string, index: number, end: number): string | null {
+	const cursor = skipWhitespace(line, index, end);
+	if (cursor >= end) return null;
+	const first = line.charCodeAt(cursor);
+	if (first === 34 /* " */ || first === 39 /* ' */) {
+		const quote = line[cursor];
+		let next = cursor + 1;
+		while (next < end) {
+			const ch = line[next];
+			if (ch === "\\" && next + 1 < end) {
+				next += 2;
+				continue;
+			}
+			if (ch === quote) {
+				const after = skipWhitespace(line, next + 1, end);
+				return after === end ? unquotePath(line.slice(cursor, next + 1)) : null;
+			}
+			next++;
+		}
+		return null;
+	}
+	return unquotePath(line.slice(cursor, end).trim());
 }
 
 function scanHunkAnchor(line: string, start: number, end: number): TargetScan | null {
 	const cursor = skipWhitespace(line, start, end);
-	const replaceEnd = scanKeyword(line, cursor, end, HL_REPLACE_KEYWORD);
-	if (replaceEnd !== null) {
-		// `replace block N:` — resolve N to a tree-sitter block range at apply
-		// time. Try the `block` sub-keyword before falling back to a literal
-		// `replace N..M:` range.
-		const blockEnd = scanKeyword(line, skipWhitespace(line, replaceEnd, end), end, HL_BLOCK_KEYWORD);
-		if (blockEnd !== null) {
-			const anchor = scanLineNumber(line, skipWhitespace(line, blockEnd, end), end);
-			if (anchor === null) return null;
-			return {
-				target: { kind: "block", anchor: { line: anchor.line } },
-				nextIndex: consumeOptionalColon(line, anchor.nextIndex, end),
-			};
-		}
-		const range = scanHeaderRange(line, replaceEnd, end, true);
-		if (range === null) return null;
-		return {
-			target: { kind: "replace", range: range.range },
-			nextIndex: consumeOptionalColon(line, range.nextIndex, end),
-		};
+
+	const remEnd = scanKeyword(line, cursor, end, HL_REM_KEYWORD);
+	if (remEnd !== null) {
+		const next = skipWhitespace(line, remEnd, end);
+		if (next !== end) return null;
+		return { target: { kind: "rem" }, nextIndex: next, hadColon: false };
 	}
-	const deleteEnd = scanKeyword(line, cursor, end, HL_DELETE_KEYWORD);
-	if (deleteEnd !== null) {
-		// `delete block N` — resolve N to a tree-sitter block range at apply
-		// time and delete its whole span. Like `delete N..M`, it takes no body
-		// and no trailing colon.
-		const blockEnd = scanKeyword(line, skipWhitespace(line, deleteEnd, end), end, HL_BLOCK_KEYWORD);
-		if (blockEnd !== null) {
-			const anchor = scanLineNumber(line, skipWhitespace(line, blockEnd, end), end);
-			if (anchor === null) return null;
-			const next = skipWhitespace(line, anchor.nextIndex, end);
-			if (next < end && line.charCodeAt(next) === CHAR_COLON) return null;
-			return { target: { kind: "delete_block", anchor: { line: anchor.line } }, nextIndex: next };
-		}
-		const range = scanHeaderRange(line, deleteEnd, end, true);
-		if (range === null) return null;
-		const next = skipWhitespace(line, range.nextIndex, end);
-		if (next < end && line.charCodeAt(next) === CHAR_COLON) return null;
-		return { target: { kind: "delete", range: range.range }, nextIndex: next };
+	const moveEnd = scanKeyword(line, cursor, end, HL_MOVE_KEYWORD);
+	if (moveEnd !== null) {
+		const dest = scanMoveDest(line, moveEnd, end);
+		if (dest === null || dest.length === 0) return null;
+		return { target: { kind: "move", dest }, nextIndex: end, hadColon: false };
 	}
-	const insertEnd = scanKeyword(line, cursor, end, HL_INSERT_KEYWORD);
-	if (insertEnd !== null) return scanInsertTarget(line, insertEnd, end);
+	const putEnd = scanKeyword(line, cursor, end, HL_PUT_KEYWORD);
+	if (putEnd !== null) return scanPutTarget(line, putEnd, end);
+	const cutEnd = scanKeyword(line, cursor, end, HL_CUT_KEYWORD);
+	if (cutEnd !== null) return scanCutTarget(line, cutEnd, end);
 	return null;
 }
 
 interface ParsedHunkHeader {
 	target: BlockTarget;
+	hadColon: boolean;
 }
 
 function tryParseHunkHeader(line: string): ParsedHunkHeader | null {
@@ -304,16 +474,24 @@ function tryParseHunkHeader(line: string): ParsedHunkHeader | null {
 	const scan = scanHunkAnchor(line, start, end);
 	if (scan === null) return null;
 	if (scan.nextIndex !== end) return null;
-	return { target: scan.target };
+	return { target: scan.target, hadColon: scan.hadColon };
+}
+/**
+ * Whether `text` would parse as a hunk header on its own (`PUT …`, `CUT …`,
+ * `REM`, `MV …`). Used to catch an op row mistakenly written as a `+` body row,
+ * which the applier would otherwise insert into the file as literal text.
+ */
+export function isHunkHeaderText(text: string): boolean {
+	const end = trimEndIndex(text);
+	const lead = skipWhitespace(text, 0, end);
+	const isHunkLead =
+		text.startsWith(HL_PUT_KEYWORD, lead) ||
+		text.startsWith(HL_CUT_KEYWORD, lead) ||
+		text.startsWith(HL_REM_KEYWORD, lead) ||
+		text.startsWith(HL_MOVE_KEYWORD, lead);
+	return isHunkLead && tryParseHunkHeader(text) !== null;
 }
 
-/**
- * Parse a `[PATH#tag]` file-header line. Returns `null` for lines that
- * do not start with the file prefix or that fail the strict shape.
- *
- * `*** Begin Patch` / `*** End Patch` / `*** Abort` markers are matched
- * earlier in {@link classifyLine}, so envelope markers never reach here.
- */
 function tryParseHeader(line: string): { path: string; fileHash?: string } | null {
 	if (!line.startsWith(HL_FILE_PREFIX)) return null;
 	const end = trimEndIndex(line);
@@ -322,6 +500,9 @@ function tryParseHeader(line: string): { path: string; fileHash?: string } | nul
 	const bodyEnd = end - FILE_SUFFIX_LENGTH;
 	if (FILE_PREFIX_LENGTH >= bodyEnd) return null;
 
+	// The snapshot tag, when present, is the trailing `#XXXX` block inside the
+	// bracketed header. We detect it from the suffix so the path may
+	// legitimately contain whitespace (e.g. `OneDrive - Company/file.ts`).
 	let pathEnd = bodyEnd;
 	let fileHash: string | undefined;
 	const trailingHashStart = bodyEnd - HL_FILE_HASH_LENGTH - 1;
@@ -339,6 +520,13 @@ function tryParseHeader(line: string): { path: string; fileHash?: string } | nul
 		}
 	}
 
+	// The hashline header grammar uses `#` as the path/tag separator and
+	// does not allow `#` inside filenames. Anything `#` left in the path
+	// body — short tags (`#1A2`), non-hex tags (`#1A2G`), over-long tags
+	// (`#1A2B5`), stale-tag copy-paste (`#1A2B copied from read`), or
+	// line-suffixed tags (`#1A2B:42`) — means the header is malformed.
+	// Surface the focused diagnostic instead of silently mis-routing the
+	// edit or reporting a missing tag downstream.
 	for (let i = FILE_PREFIX_LENGTH; i < pathEnd; i++) {
 		if (line.charCodeAt(i) === CHAR_HASH) return null;
 	}
@@ -349,7 +537,6 @@ function tryParseHeader(line: string): { path: string; fileHash?: string } | nul
 }
 
 interface TokenBase {
-	/** 1-indexed line number in the original input stream. */
 	lineNum: number;
 }
 
@@ -359,7 +546,7 @@ export type Token =
 	| (TokenBase & { kind: "envelope-end" })
 	| (TokenBase & { kind: "abort" })
 	| (TokenBase & { kind: "header"; path: string; fileHash?: string })
-	| (TokenBase & { kind: "op-block"; target: BlockTarget })
+	| (TokenBase & { kind: "op-block"; target: BlockTarget; hadColon: boolean })
 	| (TokenBase & { kind: "payload-literal"; text: string })
 	| (TokenBase & { kind: "raw"; text: string });
 
@@ -368,9 +555,7 @@ function classifyLine(line: string, lineNum: number): Token {
 	if (markerLineEquals(line, BEGIN_PATCH_MARKER)) return { kind: "envelope-begin", lineNum };
 	if (markerLineEquals(line, END_PATCH_MARKER)) return { kind: "envelope-end", lineNum };
 	if (markerLineEquals(line, ABORT_MARKER)) return { kind: "abort", lineNum };
-
 	const firstCode = line.charCodeAt(0);
-
 	if (line.startsWith(HL_FILE_PREFIX)) {
 		const header = tryParseHeader(line);
 		if (header !== null) {
@@ -379,44 +564,25 @@ function classifyLine(line: string, lineNum: number): Token {
 				: { kind: "header", lineNum, path: header.path };
 		}
 	}
-
 	const lead = skipWhitespace(line, 0);
 	const isHunkLead =
-		line.startsWith(HL_REPLACE_KEYWORD, lead) ||
-		line.startsWith(HL_DELETE_KEYWORD, lead) ||
-		line.startsWith(HL_INSERT_KEYWORD, lead);
+		line.startsWith(HL_PUT_KEYWORD, lead) ||
+		line.startsWith(HL_CUT_KEYWORD, lead) ||
+		line.startsWith(HL_REM_KEYWORD, lead) ||
+		line.startsWith(HL_MOVE_KEYWORD, lead);
 	if (isHunkLead) {
 		const hunk = tryParseHunkHeader(line);
-		if (hunk !== null) return { kind: "op-block", lineNum, target: hunk.target };
+		if (hunk !== null) return { kind: "op-block", lineNum, target: hunk.target, hadColon: hunk.hadColon };
 	}
-
-	if (firstCode === CHAR_PAYLOAD_REPLACE) {
-		return { kind: "payload-literal", lineNum, text: line.slice(1) };
-	}
-
+	if (firstCode === CHAR_PAYLOAD_REPLACE) return { kind: "payload-literal", lineNum, text: line.slice(1) };
 	return { kind: "raw", lineNum, text: line };
 }
 
-/**
- * Stateful, line-oriented classifier for hashline diff text. Use the
- * streaming {@link feed}/{@link end} pair to ingest text in chunks (each
- * completed line emits exactly one token; a trailing partial line stays
- * buffered until the next chunk or {@link end}). Use the stateless
- * {@link tokenize}/predicate methods for callers that already hold whole
- * lines and only need classification without buffering.
- */
 export class Tokenizer {
 	#buffer = "";
 	#nextLineNum = 1;
 	#closed = false;
 
-	/**
-	 * Ingest a chunk of input text. Each newline-terminated line in the
-	 * combined buffer produces one token. A trailing partial line (no `\n`
-	 * yet, possibly ending in a lone `\r`) stays buffered until the next
-	 * `feed`/`end` call so CRLF pairs that straddle chunk boundaries are
-	 * still normalized correctly.
-	 */
 	feed(chunk: string): Token[] {
 		if (this.#closed) throw new Error("Tokenizer is closed; call reset() before reusing.");
 		if (chunk.length === 0) return [];
@@ -424,11 +590,6 @@ export class Tokenizer {
 		return this.#drainCompleteLines();
 	}
 
-	/**
-	 * Flush any buffered residual line (the last line of input when it lacks
-	 * a trailing newline) and mark the tokenizer closed. Calling `end` a
-	 * second time returns `[]`; reuse requires `reset`.
-	 */
 	end(): Token[] {
 		if (this.#closed) return [];
 		this.#closed = true;
@@ -437,18 +598,15 @@ export class Tokenizer {
 		if (buf.length === 0) return [];
 		let stop = buf.length;
 		if (buf.charCodeAt(stop - 1) === CHAR_CARRIAGE_RETURN) stop--;
-		const token = classifyLine(buf.slice(0, stop), this.#nextLineNum++);
-		return [token];
+		return [classifyLine(buf.slice(0, stop), this.#nextLineNum++)];
 	}
 
-	/** Discard any buffered text and reset the line counter to 1. */
 	reset(): void {
 		this.#buffer = "";
 		this.#nextLineNum = 1;
 		this.#closed = false;
 	}
 
-	/** Convenience: feed an entire text and immediately flush. */
 	tokenizeAll(text: string): Token[] {
 		this.reset();
 		const first = this.feed(text);
@@ -456,7 +614,6 @@ export class Tokenizer {
 		return last.length === 0 ? first : first.concat(last);
 	}
 
-	/** Stateless one-shot classification. Does not touch the streaming buffer. */
 	tokenize(line: string, lineNum = 0): Token {
 		return classifyLine(line, lineNum);
 	}

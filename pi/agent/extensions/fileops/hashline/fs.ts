@@ -1,3 +1,8 @@
+import type { FileOp } from "./types";
+
+export interface PreflightWriteOptions {
+	fileOp?: FileOp;
+}
 /**
  * Result returned by {@link Filesystem.writeText}. The patcher echoes back
  * `text` so adapters that transform on serialization (e.g. notebooks) can
@@ -45,11 +50,19 @@ export abstract class Filesystem {
 	/** Read the file's full text content. Throw on missing file. */
 	abstract readText(path: string): Promise<string>;
 
-	/** Validate that `path` is writable before a prepared batch starts committing. */
-	async preflightWrite(_path: string): Promise<void> {}
+	/** Validate that path and any file operation are writable before commit. */
+	async preflightWrite(_path: string, _options?: PreflightWriteOptions): Promise<void> {}
 
 	/** Persist `content` at `path`. Returns the actual final text that was written. */
 	abstract writeText(path: string, content: string): Promise<WriteResult>;
+
+	async delete(path: string): Promise<void> {
+		throw new Error(`Filesystem does not support delete: ${path}`);
+	}
+
+	async move(from: string, to: string, _content?: string): Promise<void> {
+		throw new Error(`Filesystem does not support move: ${from} -> ${to}`);
+	}
 
 	/** Return true when the path exists and can be read. Default: probe via {@link readText}. */
 	async exists(path: string): Promise<boolean> {
@@ -98,7 +111,7 @@ export class InMemoryFilesystem extends Filesystem {
 		return { text: content };
 	}
 
-	async exists(path: string): Promise<boolean> {
+	override async exists(path: string): Promise<boolean> {
 		return this.#files.has(path);
 	}
 
@@ -112,9 +125,15 @@ export class InMemoryFilesystem extends Filesystem {
 		return this.#files.get(path);
 	}
 
-	/** Remove a single entry. Returns true when something was removed. */
-	delete(path: string): boolean {
-		return this.#files.delete(path);
+	override async delete(path: string): Promise<void> {
+		if (!this.#files.delete(path)) throw new NotFoundError(path);
+	}
+
+	override async move(from: string, to: string, content?: string): Promise<void> {
+		const current = this.#files.get(from);
+		if (current === undefined) throw new NotFoundError(from);
+		this.#files.set(to, content ?? current);
+		this.#files.delete(from);
 	}
 
 	/** Wipe all entries. */

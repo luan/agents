@@ -24,6 +24,7 @@
  */
 import { applyEdits } from "./apply";
 import { hasBlockEdit, resolveBlockEdits } from "./block";
+import { commitClipboard, forkClipboard, startClipboardBatch } from "./clipboard";
 import { formatHashlineHeader } from "./format";
 import type { Filesystem, WriteResult } from "./fs";
 import { isNotFound } from "./fs";
@@ -32,8 +33,48 @@ import { HEADTAIL_DRIFT_WARNING, missingSnapshotTagMessage } from "./messages";
 import { MismatchError } from "./mismatch";
 import { detectLineEnding, type LineEnding, normalizeToLF, restoreLineEndings, stripBom } from "./normalize";
 import { Recovery, type RecoveryResult } from "./recovery";
-import type { Snapshot, SnapshotStore } from "./snapshots";
-import type { ApplyOptions, ApplyResult, BlockResolution, BlockResolver, Edit, SyntaxValidator } from "./types";
+import { computeFileHash, type Snapshot, type SnapshotStore } from "./snapshots";
+import type {
+	ApplyOptions,
+	ApplyResult,
+	BlockResolution,
+	BlockResolver,
+	Clipboard,
+	Edit,
+	FileOp,
+	SyntaxValidator,
+} from "./types";
+
+export type HashlineChange = {
+	path: string;
+	kind: "update" | "delete";
+	movePath?: string;
+};
+
+export type HashlineContract = {
+	status: "success" | "failure";
+	error: string | null;
+	exact: boolean;
+	result: {
+		changedFiles: string[];
+		createdFiles: string[];
+		deletedFiles: string[];
+		movedFiles: string[];
+		fuzz: number;
+	};
+	changes: HashlineChange[];
+};
+
+export class HashlineApplyError extends Error {
+	readonly name = "HashlineApplyError";
+
+	constructor(
+		message: string,
+		readonly contract: HashlineContract,
+	) {
+		super(message);
+	}
+}
 
 interface PatcherOptions {
 	/** Storage backend used for all reads and writes. */
@@ -41,9 +82,9 @@ interface PatcherOptions {
 	/** Snapshot store that minted and resolves hashline section tags. Required. */
 	snapshots: SnapshotStore;
 	/**
-	 * Resolves `replace block N:` anchors to concrete line spans via tree-sitter.
-	 * Optional: when omitted, any `replace block N:` edit throws on apply (the
-	 * host did not wire a resolver). Plain line-range ops never need it.
+	 * Resolves `PUT N*:` anchors to concrete line spans via tree-sitter.
+	 * Optional: when omitted, any `PUT N*:` edit throws on apply (the host
+	 * did not wire a resolver). Plain line-range ops never need it.
 	 */
 	blockResolver?: BlockResolver;
 	/** Optional apply-time behavior knobs. */
@@ -54,16 +95,18 @@ interface PatcherOptions {
 	validateSyntax?: boolean;
 	/** Permit edits anchored only to synthetic block-context lines. Defaults false. */
 	allowSyntheticContextEdits?: boolean;
+	/** Optional named-register store shared across edit calls. */
+	clipboard?: Clipboard;
 }
 
 /** Per-section result returned by {@link Patcher.apply} / {@link Patcher.commit}. */
-interface PatchSectionResult {
+export interface PatchSectionResult {
 	/** Section path (as authored, after cwd-resolution at parse time). */
 	path: string;
 	/** Filesystem-canonical key for this section (e.g. absolute path). */
 	canonicalPath: string;
-	/** `"noop"` when the apply produced no change; otherwise `"update"`. */
-	op: "update" | "noop";
+	/** Delete removes the file; noop leaves it unchanged. */
+	op: "update" | "delete" | "noop";
 	/** Pre-edit text (LF-normalized, BOM-stripped). */
 	before: string;
 	/** Post-edit text (LF-normalized, BOM-stripped). For `"noop"` equals `before`. */
@@ -81,15 +124,69 @@ interface PatchSectionResult {
 	/** Warnings collected by the parser, applier, and (optionally) recovery. */
 	warnings: string[];
 	/**
-	 * Resolved spans for any `replace block`/`delete block` ops, present when the
+	 * Resolved spans for any `PUT N*:`/`CUT N*` ops, present when the
 	 * apply matched the tagged content. Undefined for patches with no block ops
 	 * (and for resolutions routed through drift recovery, where numbers shift).
 	 */
 	blockResolutions?: BlockResolution[];
+	/** Destination path when this section includes MV. */
+	moveDest?: string;
+	/**
+	 * `"unchecked"` means no validator claimed this format, never that the edit passed. Aggregate it for coverage;
+	 * it is not a warning, because `.txt` and extensionless edits are legitimately unchecked on every call.
+	 */
+	validation: SectionValidation;
 }
+
+type SectionValidation = "checked" | "unchecked";
 
 interface PatcherApplyResult {
 	sections: PatchSectionResult[];
+}
+
+function pushUnique(values: string[], value: string): void {
+	if (!values.includes(value)) values.push(value);
+}
+
+export function hashlineContract(
+	status: HashlineContract["status"],
+	error: string | null,
+	sections: readonly PatchSectionResult[],
+): HashlineContract {
+	const changedFiles: string[] = [];
+	const createdFiles: string[] = [];
+	const deletedFiles: string[] = [];
+	const movedFiles: string[] = [];
+	const changes: HashlineChange[] = [];
+	for (const section of sections) {
+		if (section.op === "noop") continue;
+		pushUnique(changedFiles, section.path);
+		if (section.op === "delete") {
+			pushUnique(deletedFiles, section.path);
+			changes.push({ path: section.path, kind: "delete" });
+			continue;
+		}
+		const change: HashlineChange = {
+			path: section.path,
+			kind: "update",
+		};
+		if (section.moveDest) {
+			change.movePath = section.moveDest;
+			pushUnique(changedFiles, section.moveDest);
+			pushUnique(deletedFiles, section.path);
+			pushUnique(createdFiles, section.moveDest);
+			movedFiles.push(`${section.path} -> ${section.moveDest}`);
+		}
+		changes.push(change);
+	}
+	const exact = sections.every((section) => section.warnings.length === 0);
+	return {
+		status,
+		error,
+		exact,
+		result: { changedFiles, createdFiles, deletedFiles, movedFiles, fuzz: exact ? 0 : 1 },
+		changes,
+	};
 }
 
 /**
@@ -109,19 +206,23 @@ class PreparedSection {
 		readonly normalized: string,
 		readonly applyResult: ApplyResult,
 		readonly parseWarnings: readonly string[],
+		readonly fileOp: FileOp | undefined,
+		readonly validation: SectionValidation,
 	) {}
 
 	/** Convenience: returns true when the apply produced no change. */
 	get isNoop(): boolean {
-		return this.applyResult.text === this.normalized;
+		return this.fileOp === undefined && this.applyResult.text === this.normalized;
 	}
 }
 
 function hasAnchorScopedEdit(edits: readonly Edit[]): boolean {
 	return edits.some((edit) => {
-		if (edit.kind === "delete") return true;
-		// A `replace block N:` edit anchors to concrete content on line N.
-		if (edit.kind === "block") return true;
+		if (edit.kind === "delete" || edit.kind === "block" || edit.kind === "cut") return true;
+		if (edit.kind === "paste") {
+			if (edit.at.kind === "span") return true;
+			return edit.at.cursor.kind === "before_anchor" || edit.at.cursor.kind === "after_anchor";
+		}
 		return edit.cursor.kind === "before_anchor" || edit.cursor.kind === "after_anchor";
 	});
 }
@@ -143,6 +244,13 @@ function snapshotProvesUnchanged(snapshot: Snapshot, currentText: string): boole
 	return snapshot.fullText === currentText;
 }
 
+/** File lines as `read` displays them: a trailing newline does not add a line. */
+function splitDisplayLines(text: string): string[] {
+	const lines = text.split("\n");
+	if (lines.at(-1) === "") lines.pop();
+	return lines;
+}
+
 function mergeWarnings(...sources: ReadonlyArray<readonly string[] | undefined>): string[] {
 	const out: string[] = [];
 	for (const source of sources) {
@@ -152,19 +260,40 @@ function mergeWarnings(...sources: ReadonlyArray<readonly string[] | undefined>)
 	return out;
 }
 
-function syntaxErrorCount(result: ReturnType<SyntaxValidator>): number | null {
-	if (result.kind === "unsupported_language" || result.kind === "parser_unavailable") return null;
-	return result.errorCount;
+/**
+ * Whether a file's brokenness is knowable at all. `unchecked` is a distinct
+ * state from "zero errors": it means no validator claimed this format, so the
+ * edit is unguarded. Naming it stops the old `number | null` from reading as
+ * "passed" at the call site.
+ */
+type SyntaxCheck = { kind: "checked"; errorCount: number; detail?: string } | { kind: "unchecked" };
+
+function syntaxCheck(result: ReturnType<SyntaxValidator>): SyntaxCheck {
+	if (result.kind === "unsupported_language" || result.kind === "parser_unavailable") return { kind: "unchecked" };
+	return {
+		kind: "checked",
+		errorCount: result.errorCount,
+		detail: result.kind === "invalid" ? result.detail : undefined,
+	};
 }
 
-function assertNoNewSyntaxErrors(path: string, before: string, after: string, validator: SyntaxValidator): void {
-	const beforeCount = syntaxErrorCount(validator({ path, text: before }));
-	const afterCount = syntaxErrorCount(validator({ path, text: after }));
-	if (beforeCount === null || afterCount === null) return;
-	if (afterCount <= beforeCount) return;
-	const gained = afterCount - beforeCount;
+/** Returns whether the edit was guarded, so {@link PatchSectionResult.validation} can report coverage. */
+function assertNoNewSyntaxErrors(
+	path: string,
+	before: string,
+	after: string,
+	validator: SyntaxValidator,
+): SectionValidation {
+	const beforeCheck = syntaxCheck(validator({ path, text: before }));
+	const afterCheck = syntaxCheck(validator({ path, text: after }));
+	// One side unchecked leaves the delta undefined, so there is nothing to
+	// refuse on. A file that was already broken likewise never blocks an edit.
+	if (beforeCheck.kind === "unchecked" || afterCheck.kind === "unchecked") return "unchecked";
+	if (afterCheck.errorCount <= beforeCheck.errorCount) return "checked";
+	const gained = afterCheck.errorCount - beforeCheck.errorCount;
+	const because = afterCheck.detail ? ` First error: ${afterCheck.detail}.` : "";
 	throw new Error(
-		`Hashline edit rejected: ${path} would gain ${gained} tree-sitter syntax error${gained === 1 ? "" : "s"} (${beforeCount} before, ${afterCount} after). Re-read and fix the edit before writing.`,
+		`Hashline edit rejected: ${path} would gain ${gained} syntax error${gained === 1 ? "" : "s"} (${beforeCheck.errorCount} before, ${afterCheck.errorCount} after).${because} Re-read and fix the edit before writing.`,
 	);
 }
 
@@ -193,6 +322,7 @@ export class Patcher {
 	readonly recovery: Recovery;
 	readonly blockResolver: BlockResolver | undefined;
 	readonly applyOptions: ApplyOptions;
+	readonly clipboard: Clipboard | undefined;
 
 	readonly syntaxValidator: SyntaxValidator | undefined;
 	readonly validateSyntax: boolean;
@@ -206,42 +336,54 @@ export class Patcher {
 		this.recovery = new Recovery(options.snapshots);
 		this.blockResolver = options.blockResolver;
 		this.applyOptions = options.applyOptions ?? {};
+		this.clipboard = options.clipboard;
 		this.syntaxValidator = options.syntaxValidator;
 		this.validateSyntax = options.validateSyntax ?? true;
 		this.allowSyntheticContextEdits = options.allowSyntheticContextEdits ?? false;
 	}
 
 	/**
-	 * Apply every section in `patch`. `prepare` runs the full apply for each
-	 * section in memory before any write hits the filesystem, so a
-	 * multi-section batch is naturally all-or-nothing. Returns one
-	 * {@link PatchSectionResult} per section in the original patch order.
+	 * Prepare every section before the first write, then commit sections in order.
+	 * A commit failure preserves earlier writes and reports them through
+	 * {@link HashlineApplyError}. Returns one {@link PatchSectionResult} per
+	 * committed section in original patch order.
 	 *
 	 * A single-section no-op apply is returned as an `op: "noop"` result so
 	 * the host can render the no-change diagnostic; a no-op inside a
-	 * multi-section batch throws before any write.
+	 * multi-section batch fails before any write.
 	 */
 	async apply(patch: Patch): Promise<PatcherApplyResult> {
-		// Single-section fast path.
-		if (patch.sections.length === 1) {
-			const prepared = await this.prepare(patch.sections[0]);
-			return { sections: [await this.commit(prepared)] };
-		}
-
-		// Prepare every section first so any failure (stale hash, missing
-		// file, parse error, in-memory no-op) surfaces before any write.
-		const prepared: PreparedSection[] = [];
-		for (const section of patch.sections) prepared.push(await this.prepare(section));
-		assertUniqueCanonicalPaths(prepared);
-		for (const entry of prepared) {
-			if (entry.isNoop) {
-				throw new Error(`Edits to ${entry.section.path} resulted in no changes being made.`);
-			}
-		}
-
+		const clipboard = startClipboardBatch(this.clipboard);
 		const results: PatchSectionResult[] = [];
-		for (const entry of prepared) results.push(await this.commit(entry));
-		return { sections: results };
+		try {
+			if (patch.sections.length === 1) {
+				const prepared = await this.prepare(patch.sections[0], clipboard);
+				const result = await this.commit(prepared);
+				if (this.clipboard) commitClipboard(clipboard, this.clipboard);
+				return { sections: [result] };
+			}
+
+			const prepared: PreparedSection[] = [];
+			const sectionStates: Clipboard[] = [];
+			for (const section of patch.sections) {
+				prepared.push(await this.prepare(section, clipboard));
+				sectionStates.push(forkClipboard(clipboard));
+			}
+			assertUniqueCanonicalPaths(prepared);
+			for (const entry of prepared) {
+				if (entry.isNoop) throw new Error(`Edits to ${entry.section.path} resulted in no changes being made.`);
+			}
+
+			for (let index = 0; index < prepared.length; index++) {
+				results.push(await this.commit(prepared[index]));
+				if (this.clipboard) commitClipboard(sectionStates[index], this.clipboard);
+			}
+			return { sections: results };
+		} catch (error) {
+			if (error instanceof HashlineApplyError) throw error;
+			const message = error instanceof Error ? error.message : String(error);
+			throw new HashlineApplyError(message, hashlineContract("failure", message, results));
+		}
 	}
 
 	/**
@@ -249,13 +391,12 @@ export class Patcher {
 	 * No writes hit the filesystem. Use for CI checks and dry runs.
 	 */
 	async preflight(patch: Patch): Promise<void> {
+		const clipboard = startClipboardBatch(this.clipboard);
 		const prepared: PreparedSection[] = [];
-		for (const section of patch.sections) prepared.push(await this.prepare(section));
+		for (const section of patch.sections) prepared.push(await this.prepare(section, clipboard));
 		assertUniqueCanonicalPaths(prepared);
 		for (const entry of prepared) {
-			if (entry.isNoop) {
-				throw new Error(`Edits to ${entry.section.path} resulted in no changes being made.`);
-			}
+			if (entry.isNoop) throw new Error(`Edits to ${entry.section.path} resulted in no changes being made.`);
 		}
 	}
 
@@ -268,11 +409,14 @@ export class Patcher {
 	 * Throws on parse error, missing tag, missing file, or unrecovered
 	 * tag mismatch ({@link MismatchError}).
 	 */
-	async prepare(section: PatchSection): Promise<PreparedSection> {
-		const { edits, warnings: parseWarnings } = section.parse();
+	async prepare(section: PatchSection, clipboard?: Clipboard): Promise<PreparedSection> {
+		const { edits, warnings: parseWarnings, fileOp } = section.parse();
 		assertSectionHashPresent(section.path, section.fileHash);
 
 		const canonicalPath = this.fs.canonicalPath(section.path);
+		if (fileOp?.kind === "move" && this.fs.canonicalPath(fileOp.dest) === canonicalPath) {
+			throw new Error(`MV destination is the same as ${section.path}.`);
+		}
 		const { exists, rawContent } = await this.#tryRead(section.path);
 		if (!exists) {
 			throw new Error(`File not found: ${section.path}. Use the write tool to create new files.`);
@@ -280,7 +424,7 @@ export class Patcher {
 		// After the existence check so a rejected edit cannot leave side
 		// effects (e.g. a filesystem whose write preflight creates parent
 		// directories).
-		await this.fs.preflightWrite(section.path);
+		await this.fs.preflightWrite(section.path, { fileOp });
 
 		const { bom, text } = stripBom(rawContent);
 		const lineEnding = detectLineEnding(text);
@@ -291,11 +435,14 @@ export class Patcher {
 			canonicalPath,
 			exists,
 			normalized,
-			edits,
+			edits: fileOp?.kind === "rem" ? [] : edits,
+			clipboard: clipboard ?? {},
 		});
-		if (this.validateSyntax && this.syntaxValidator && applyResult.text !== normalized) {
-			assertNoNewSyntaxErrors(section.path, normalized, applyResult.text, this.syntaxValidator);
-		}
+		// A noop never reaches the validator, so it reports `"unchecked"`.
+		const validation: SectionValidation =
+			this.validateSyntax && this.syntaxValidator && applyResult.text !== normalized
+				? assertNoNewSyntaxErrors(section.path, normalized, applyResult.text, this.syntaxValidator)
+				: "unchecked";
 
 		return new PreparedSection(
 			section,
@@ -307,6 +454,8 @@ export class Patcher {
 			normalized,
 			applyResult,
 			parseWarnings,
+			fileOp,
+			validation,
 		);
 	}
 
@@ -317,12 +466,33 @@ export class Patcher {
 	 * filesystem-canonical path.
 	 */
 	async commit(prepared: PreparedSection): Promise<PatchSectionResult> {
-		const { section, normalized, bom, lineEnding, parseWarnings, applyResult, canonicalPath } = prepared;
+		const { section, normalized, bom, lineEnding, parseWarnings, applyResult, canonicalPath, fileOp, validation } =
+			prepared;
 		const after = applyResult.text;
 		const warnings = mergeWarnings(parseWarnings, applyResult.warnings);
 
-		if (after === normalized) {
-			const hash = this.#recordFullSnapshot(canonicalPath, normalized);
+		if (fileOp?.kind === "rem") {
+			await this.fs.delete(section.path);
+			this.snapshots.invalidate(canonicalPath);
+			const fileHash = computeFileHash(normalized);
+			return {
+				path: section.path,
+				canonicalPath,
+				op: "delete",
+				before: normalized,
+				after: normalized,
+				persisted: prepared.rawContent,
+				written: prepared.rawContent,
+				fileHash,
+				header: formatHashlineHeader(section.path, fileHash),
+				warnings,
+				validation,
+			};
+		}
+
+		const moveDest = fileOp?.kind === "move" ? fileOp.dest : undefined;
+		if (after === normalized && moveDest === undefined) {
+			const fileHash = this.#recordFullSnapshot(canonicalPath, normalized);
 			return {
 				path: section.path,
 				canonicalPath,
@@ -331,16 +501,40 @@ export class Patcher {
 				after: normalized,
 				persisted: prepared.rawContent,
 				written: prepared.rawContent,
-				fileHash: hash,
-				header: formatHashlineHeader(section.path, hash),
+				fileHash,
+				header: formatHashlineHeader(section.path, fileHash),
 				warnings,
+				validation,
 			};
 		}
 
 		const persisted = bom + restoreLineEndings(after, lineEnding);
-		const write: WriteResult = await this.fs.writeText(section.path, persisted);
-		const fileHash = this.#recordFullSnapshot(canonicalPath, after);
+		if (moveDest !== undefined) {
+			const destination = this.fs.canonicalPath(moveDest);
+			if (destination === canonicalPath) throw new Error(`MV destination is the same as ${section.path}.`);
+			await this.fs.move(section.path, moveDest, persisted);
+			this.snapshots.relocate(canonicalPath, destination);
+			const fileHash = this.#recordFullSnapshot(destination, after);
+			return {
+				path: moveDest,
+				canonicalPath: destination,
+				op: "update",
+				before: normalized,
+				after,
+				persisted,
+				written: persisted,
+				fileHash,
+				header: formatHashlineHeader(moveDest, fileHash),
+				firstChangedLine: applyResult.firstChangedLine,
+				blockResolutions: applyResult.blockResolutions,
+				moveDest,
+				warnings,
+				validation,
+			};
+		}
 
+		const write: WriteResult = await this.fs.writeText(section.path, persisted);
+		const fileHash = this.#recordFullSnapshot(canonicalPath, normalizeToLF(stripBom(write.text).text));
 		return {
 			path: section.path,
 			canonicalPath,
@@ -354,6 +548,7 @@ export class Patcher {
 			firstChangedLine: applyResult.firstChangedLine,
 			blockResolutions: applyResult.blockResolutions,
 			warnings,
+			validation,
 		};
 	}
 
@@ -371,19 +566,16 @@ export class Patcher {
 		return this.snapshots.record(canonicalPath, normalized);
 	}
 
-	#mismatchError(
-		section: PatchSection,
-		canonicalPath: string,
-		normalized: string,
-		expected: string,
-		hashRecognized: boolean,
-	): MismatchError {
-		const actualFileHash = this.#recordFullSnapshot(canonicalPath, normalized);
+	#mismatchError(section: PatchSection, normalized: string, expected: string, hashRecognized: boolean): MismatchError {
+		const actualFileHash = computeFileHash(normalized);
 		return new MismatchError({
 			path: section.path,
 			expectedFileHash: expected,
 			actualFileHash,
-			fileLines: normalized.split("\n"),
+			// Drop the empty element a trailing newline produces, matching read's textToDisplayLines (index.ts:666).
+			// Keeping it made the rejection preview emit a phantom `N+1:` row, so an anchor copied out of an error
+			// message retried one line too long — worst possible moment to be off by one.
+			fileLines: splitDisplayLines(normalized),
 			anchorLines: section.collectAnchorLines(),
 			hashRecognized,
 		});
@@ -395,21 +587,28 @@ export class Patcher {
 		exists: boolean;
 		normalized: string;
 		edits: readonly Edit[];
+		clipboard: Clipboard;
 	}): ApplyResult {
-		const { section, canonicalPath, exists, normalized, edits } = args;
+		const { section, canonicalPath, exists, normalized, edits, clipboard } = args;
 		const expected = exists ? section.fileHash : undefined;
 		const snapshot = expected !== undefined ? this.snapshots.byHash(canonicalPath, expected) : null;
 		const liveMatches = snapshot !== null && snapshotProvesUnchanged(snapshot, normalized);
 		const observedLineError = snapshot?.unobservedAnchorWarning(section.collectAnchorLines(), {
 			allowSynthetic: this.allowSyntheticContextEdits,
 		});
+		const applyOptions: ApplyOptions = {
+			...this.applyOptions,
+			...(this.syntaxValidator ? { syntaxValidator: this.syntaxValidator } : {}),
+			clipboard,
+			path: section.path,
+		};
 		const blockWarnings: string[] = [];
 		const appendBlockWarnings = (result: ApplyResult): ApplyResult => {
 			const combined = [...blockWarnings, ...(result.warnings ?? [])];
 			return combined.length > 0 ? { ...result, warnings: combined } : result;
 		};
 
-		// Resolve `replace block N:` edits to concrete ranges before recovery
+		// Resolve `PUT N*:` and `CUT N*` edits to concrete ranges before recovery
 		// runs. Block anchors are expressed against the snapshot the section tag
 		// names, so resolve against that exact text:
 		//   - the tag still proves the live content → resolve against the live,
@@ -421,7 +620,7 @@ export class Patcher {
 		if (hasBlockEdit(edits)) {
 			const baseText = expected === undefined || liveMatches ? normalized : snapshot?.fullText;
 			if (baseText === undefined) {
-				throw this.#mismatchError(section, canonicalPath, normalized, expected ?? "", snapshot !== null);
+				throw this.#mismatchError(section, normalized, expected ?? "", snapshot !== null);
 			}
 			resolved = resolveBlockEdits(edits, baseText, section.path, this.blockResolver, {
 				onUnresolved: "throw",
@@ -430,13 +629,11 @@ export class Patcher {
 			});
 		}
 
-		// No tag, or the tag still proves the live content: an edit anchored at
-		// any line is safe to apply, and the resolved block spans line up with
-		// what the caller read, so echo them back. (A drifted file falls through
-		// to recovery below, where line numbers shift, so resolutions are dropped.)
+		// A matching tag proves the content, not that the caller's numbers came from reading it: 13 of 15 corrupting
+		// trials refreshed the tag correctly and still addressed pre-shift lines. Per-line hashes are checked here.
 		if (expected === undefined || liveMatches) {
 			if (expected !== undefined && observedLineError) throw new Error(observedLineError);
-			const result = appendBlockWarnings(applyEdits(normalized, resolved, this.applyOptions));
+			const result = appendBlockWarnings(applyEdits(normalized, resolved, applyOptions));
 			return blockResolutions.length > 0 ? { ...result, blockResolutions } : result;
 		}
 		// Head/tail-only inserts are position-stable: "start"/"end" cannot move
@@ -444,7 +641,7 @@ export class Patcher {
 		// content and warn instead of hard-failing — unlike an anchored
 		// mismatch, which cannot be safely relocated and must reject.
 		if (!hasAnchorScopedEdit(resolved)) {
-			const result = appendBlockWarnings(applyEdits(normalized, resolved, this.applyOptions));
+			const result = appendBlockWarnings(applyEdits(normalized, resolved, applyOptions));
 			return { ...result, warnings: [HEADTAIL_DRIFT_WARNING, ...(result.warnings ?? [])] };
 		}
 		// File drifted: try to replay the edit against the version the tag
@@ -455,10 +652,10 @@ export class Patcher {
 				currentText: normalized,
 				fileHash: expected,
 				edits: resolved,
-				applyOptions: this.applyOptions,
+				applyOptions,
 			});
 			if (recovered) return recoveryToApplyResult(appendBlockWarnings(recovered));
 		}
-		throw this.#mismatchError(section, canonicalPath, normalized, expected, snapshot !== null);
+		throw this.#mismatchError(section, normalized, expected, snapshot !== null);
 	}
 }

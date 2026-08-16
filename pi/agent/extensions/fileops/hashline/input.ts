@@ -1,6 +1,6 @@
 /**
  * Top-level patch parser. Splits an authored hashline input into a list of
- * {@link PatchSection}s, each rooted at a `[PATH#TAG]` header, then exposes
+ * {@link PatchSection}s, each rooted at a `[PATH#HASH]` header, then exposes
  * a {@link Patch} class that gives lazy access to the parsed edits per
  * section.
  *
@@ -10,10 +10,12 @@
 import * as path from "node:path";
 import { applyEdits } from "./apply";
 import { resolveBlockEdits } from "./block";
+import { hasClipboardEdit } from "./clipboard";
 import { HL_FILE_HASH_EXAMPLES, HL_FILE_HASH_LENGTH, HL_FILE_HASH_SEP, HL_FILE_PREFIX, HL_FILE_SUFFIX } from "./format";
+import { CLIPBOARD_INTERLEAVED_SECTIONS } from "./messages";
 import { parsePatch, parsePatchStreaming } from "./parser";
 import { Tokenizer } from "./tokenizer";
-import type { ApplyResult, BlockResolver, Edit, SplitOptions } from "./types";
+import type { ApplyResult, BlockResolver, Clipboard, Edit, FileOp, SplitOptions } from "./types";
 
 // Pure classification — single shared tokenizer is safe.
 const TOKENIZER = new Tokenizer();
@@ -50,7 +52,7 @@ function stripApplyPatchPathNoise(pathText: string): string {
  * Best-effort recovery for bracketed header lines the strict tokenizer
  * rejects. Strips apply_patch keyword noise (`Update File:`, `Update:`,
  * etc.) and an extra leading `***` (some models emit a hybrid
- * `[***foo.ts#TAG]` shape), then expects `PATH(#TAG)?`.
+ * `[***foo.ts#HASH]` shape), then expects `PATH(#HASH)?`.
  * Returns `null` when no clean path can be salvaged.
  */
 function tryParseRecoveryHeader(line: string, cwd?: string): RawSection | null {
@@ -74,8 +76,9 @@ function tryParseRecoveryHeader(line: string, cwd?: string): RawSection | null {
 
 	// Same rule as the strict tokenizer: the hashline header grammar uses
 	// `#` as the path/tag separator and does not allow `#` inside
-	// filenames. Anything `#` left in the path body means the header is
-	// malformed, not a path with an embedded hash.
+	// filenames. Anything `#` left in the path body — short tags, non-hex
+	// tags, over-long tags, stale-tag copy-paste, line-suffixed tags —
+	// means the header is malformed, not a path with an embedded hash.
 	if (pathText.includes("#")) return null;
 
 	const path = normalizeHashlinePath(pathText, cwd);
@@ -87,18 +90,27 @@ function normalizeHashlinePath(rawPath: string, cwd?: string): string {
 	const unquoted = stripApplyPatchPathNoise(unquoteHashlinePath(rawPath.trim()));
 	if (!cwd || !path.isAbsolute(unquoted)) return unquoted;
 	const relative = path.relative(path.resolve(cwd), path.resolve(unquoted));
+	const normalizedRelative = relative.split(path.sep).join("/");
 	const isWithinCwd = relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-	return isWithinCwd ? relative || "." : unquoted;
+	return isWithinCwd ? normalizedRelative || "." : unquoted;
 }
 
 interface RawSection {
 	path: string;
 	fileHash?: string;
 	diff: string;
+	/**
+	 * True when this section coalesced same-path sections that were NOT
+	 * adjacent in the authored input (another file's section sat between
+	 * them). Merging moves the later ops up to the first occurrence, which
+	 * would silently reorder the clipboard register sequence — so clipboard
+	 * ops are rejected in such sections.
+	 */
+	interleaved?: boolean;
 }
 
 /**
- * Parse a `[PATH]` or `[PATH#tag]` header line. Returns `null` for lines that do
+ * Parse a `[PATH]` or `[PATH#hash]` header line. Returns `null` for lines that do
  * not start with `[`. Throws the strict "Input header must be …" error
  * when a bracketed line fails the strict shape (so malformed paths
  * surface immediately instead of being silently re-classified as payload).
@@ -110,12 +122,12 @@ function parseHashlineHeaderLine(line: string, cwd?: string): RawSection | null 
 	const token = TOKENIZER.tokenize(trimmed);
 	if (token.kind !== "header") {
 		// Recovery: try to extract a path from the raw line after stripping
-		// apply_patch noise. This handles `[*** Update File:foo.ts#1A2B]` and
+		// apply_patch noise. This handles `[*** Update File:foo.ts#CB5A]` and
 		// the half-dozen variants models actually emit.
 		const recovered = tryParseRecoveryHeader(trimmed, cwd);
 		if (recovered !== null) return recovered;
 		throw new Error(
-			`Input header must be ${HL_FILE_PREFIX}PATH${HL_FILE_SUFFIX} or ${HL_FILE_PREFIX}PATH${HL_FILE_HASH_SEP}TAG${HL_FILE_SUFFIX} with a ${HL_FILE_HASH_LENGTH}-hex snapshot tag from your latest read/search; got ${JSON.stringify(trimmed)}.`,
+			`Input header must be ${HL_FILE_PREFIX}PATH${HL_FILE_SUFFIX} or ${HL_FILE_PREFIX}PATH${HL_FILE_HASH_SEP}TAG${HL_FILE_SUFFIX} with a ${HL_FILE_HASH_LENGTH}-hex content-hash tag; got ${JSON.stringify(trimmed)}.`,
 		);
 	}
 
@@ -147,7 +159,7 @@ function stripLeadingBlankLines(input: string): string {
  * recognizes as a hashline op. Used by streaming previews to decide whether
  * the partial input is worth treating as a hashline patch yet.
  */
-function containsRecognizableHashlineOperations(input: string): boolean {
+export function containsRecognizableHashlineOperations(input: string): boolean {
 	for (const line of input.split(/\r?\n/)) {
 		if (TOKENIZER.isOp(line)) return true;
 	}
@@ -235,27 +247,50 @@ export class PatchSection {
 	readonly path: string;
 	readonly fileHash: string | undefined;
 	readonly diff: string;
-	#parsed: { edits: Edit[]; warnings: string[] } | undefined;
+	#parsed: { edits: Edit[]; fileOp?: FileOp; warnings: string[] } | undefined;
+
+	#interleavedMerge: boolean;
 
 	constructor(raw: RawSection) {
 		this.path = raw.path;
 		this.fileHash = raw.fileHash;
 		this.diff = raw.diff;
+		this.#interleavedMerge = raw.interleaved === true;
 	}
 
 	/**
 	 * Parse this section's diff body. Cached: subsequent calls return the
-	 * same `{ edits, warnings }` object so callers can safely call this from
+	 * same `{ edits, fileOp?, warnings }` object so callers can safely call this from
 	 * multiple paths (preflight, apply, diff-preview).
 	 */
-	parse(): { edits: Edit[]; warnings: readonly string[] } {
+	parse(): { edits: Edit[]; fileOp?: FileOp; warnings: readonly string[] } {
 		this.#parsed ??= parsePatch(this.diff);
-		return this.#parsed;
+		const parsed = this.#parsed;
+		// Same-path sections merge into their first occurrence; when that merge
+		// crossed another file's section, the authored top-to-bottom register
+		// order is gone, so clipboard ops cannot apply deterministically.
+		if (this.#interleavedMerge && hasClipboardEdit(parsed.edits)) {
+			throw new Error(CLIPBOARD_INTERLEAVED_SECTIONS);
+		}
+		const fileOp =
+			parsed.fileOp === undefined
+				? undefined
+				: parsed.fileOp.kind === "move"
+					? { kind: "move" as const, dest: normalizeHashlinePath(parsed.fileOp.dest) }
+					: parsed.fileOp;
+		return fileOp === parsed.fileOp
+			? parsed
+			: { edits: parsed.edits, ...(fileOp === undefined ? {} : { fileOp }), warnings: parsed.warnings };
 	}
 
 	/** Parsed edits for this section. */
 	get edits(): readonly Edit[] {
 		return this.parse().edits;
+	}
+
+	/** Optional whole-file operation (`REM` / `MV`). */
+	get fileOp(): FileOp | undefined {
+		return this.parse().fileOp;
 	}
 
 	/** Warnings emitted during parsing of this section. */
@@ -265,14 +300,16 @@ export class PatchSection {
 
 	/**
 	 * True when at least one edit anchors to concrete file content. Pure
-	 * `insert head:` / `insert tail:` literal inserts do not count: those
-	 * positions are content-independent.
+	 * `PUT <1:` / `PUT >$:` literal inserts do not count: those are
+	 * safe to apply to files that don't yet exist.
 	 */
 	get hasAnchorScopedEdit(): boolean {
 		return this.edits.some((edit) => {
-			if (edit.kind === "delete") return true;
-			// A `replace block N:` edit anchors to concrete content on line N.
-			if (edit.kind === "block") return true;
+			if (edit.kind === "delete" || edit.kind === "block" || edit.kind === "cut") return true;
+			if (edit.kind === "paste") {
+				if (edit.at.kind === "span") return true;
+				return edit.at.cursor.kind === "before_anchor" || edit.at.cursor.kind === "after_anchor";
+			}
 			return edit.cursor.kind === "before_anchor" || edit.cursor.kind === "after_anchor";
 		});
 	}
@@ -281,12 +318,20 @@ export class PatchSection {
 	collectAnchorLines(): readonly number[] {
 		const lines = new Set<number>();
 		for (const edit of this.edits) {
-			if (edit.kind === "delete") {
+			if (edit.kind === "delete" || edit.kind === "block") {
 				lines.add(edit.anchor.line);
 				continue;
 			}
-			if (edit.kind === "block") {
-				lines.add(edit.anchor.line);
+			if (edit.kind === "cut") {
+				for (let line = edit.range.start.line; line <= edit.range.end.line; line++) lines.add(line);
+				continue;
+			}
+			if (edit.kind === "paste") {
+				if (edit.at.kind === "span") {
+					for (let line = edit.at.range.start.line; line <= edit.at.range.end.line; line++) lines.add(line);
+				} else if (edit.at.cursor.kind === "before_anchor" || edit.at.cursor.kind === "after_anchor") {
+					lines.add(edit.at.cursor.anchor.line);
+				}
 				continue;
 			}
 			if (edit.cursor.kind === "before_anchor" || edit.cursor.kind === "after_anchor") {
@@ -303,53 +348,78 @@ export class PatchSection {
 	 * method directly when you've already validated the file content and
 	 * just want the result.
 	 *
-	 * `blockResolver` resolves any `replace block N:` edits against `text`; an
+	 * `blockResolver` resolves any `PUT N*:` edits against `text`; an
 	 * unresolvable block throws (this is the final, authoritative preview path).
+	 *
+	 * `clipboard` is the register shared by `CUT`/`PASTE` ops. Pass one when
+	 * applying several sections so content can move across files.
 	 */
-	applyTo(text: string, blockResolver?: BlockResolver): ApplyResult {
+	applyTo(text: string, blockResolver?: BlockResolver, clipboard?: Clipboard): ApplyResult {
 		const { edits, warnings } = this.parse();
-		const blockWarnings: string[] = [];
+		const resolveWarnings: string[] = [];
 		const resolved = resolveBlockEdits(edits, text, this.path, blockResolver, {
 			onUnresolved: "throw",
-			onWarning: (message) => blockWarnings.push(message),
+			onWarning: (warning) => resolveWarnings.push(warning),
 		});
-		const result = applyEdits(text, resolved);
-		// Preserve parse/block warnings so consumers don't need to call `parse()`
+		const result = applyEdits(text, resolved, { clipboard: clipboard ?? {}, path: this.path });
+		// Preserve parse warnings so consumers don't need to call `parse()`
 		// separately.
-		const merged = [...warnings, ...blockWarnings, ...(result.warnings ?? [])];
-		return merged && merged.length > 0
+		const merged = [...warnings, ...resolveWarnings, ...(result.warnings ?? [])];
+		return merged.length > 0
 			? { ...result, warnings: merged }
 			: { text: result.text, firstChangedLine: result.firstChangedLine };
 	}
 
 	/**
 	 * Streaming-tolerant counterpart to {@link applyTo}. Uses
-	 * {@link parsePatchStreaming} so a trailing in-flight op (no payload yet)
-	 * does not emit a phantom empty-payload edit. Intended for incremental
-	 * diff previews; the writer path should always use {@link applyTo}.
+	 * {@link parsePatchStreaming} so a trailing in-flight op (no payload yet,
+	 * or a per-token parse error mid-stream) does not throw or emit a phantom
+	 * empty-payload edit. Intended for incremental diff previews; the writer
+	 * path should always use {@link applyTo}.
 	 *
-	 * `blockResolver` resolves any `replace block N:` edits against `text`; an
+	 * `blockResolver` resolves any `PUT N*:` edits against `text`; an
 	 * unresolvable block is silently dropped so a half-written file does not
-	 * throw mid-stream.
+	 * throw mid-stream. A `PASTE` with an empty register is dropped too.
 	 */
-	applyPartialTo(text: string, blockResolver?: BlockResolver): ApplyResult {
+	applyPartialTo(text: string, blockResolver?: BlockResolver, clipboard?: Clipboard): ApplyResult {
 		const { edits, warnings } = parsePatchStreaming(this.diff);
-		const blockWarnings: string[] = [];
+		const resolveWarnings: string[] = [];
 		const resolved = resolveBlockEdits(edits, text, this.path, blockResolver, {
 			onUnresolved: "drop",
-			onWarning: (message) => blockWarnings.push(message),
+			onWarning: (warning) => resolveWarnings.push(warning),
 		});
-		const result = applyEdits(text, resolved);
-		const merged = [...warnings, ...blockWarnings, ...(result.warnings ?? [])];
-		return merged && merged.length > 0
+		const result = applyEdits(text, resolved, {
+			clipboard: clipboard ?? {},
+			onEmptyPaste: "drop",
+			path: this.path,
+		});
+		const merged = [...warnings, ...resolveWarnings, ...(result.warnings ?? [])];
+		return merged.length > 0
 			? { ...result, warnings: merged }
 			: { text: result.text, firstChangedLine: result.firstChangedLine };
+	}
+
+	/**
+	 * A copy of this section rebound to a different target `path`, preserving
+	 * the snapshot tag, diff body, and any cached parse result. Used by the
+	 * patcher's tag-based path recovery to redirect an edit whose authored
+	 * path does not exist onto the file its snapshot tag actually names.
+	 */
+	withPath(path: string): PatchSection {
+		const next = new PatchSection({
+			path,
+			...(this.fileHash !== undefined ? { fileHash: this.fileHash } : {}),
+			diff: this.diff,
+			...(this.#interleavedMerge ? { interleaved: true } : {}),
+		});
+		next.#parsed = this.#parsed;
+		return next;
 	}
 }
 
 /**
  * A parsed hashline patch — zero or more {@link PatchSection}s, each rooted
- * at a `[PATH#TAG]` header. Construct via {@link Patch.parse}.
+ * at a `[PATH#HASH]` header. Construct via {@link Patch.parse}.
  *
  * `Patch` is pure data: parsing is line-anchored and does not look at the
  * filesystem. To apply a patch, hand it to {@link Patcher.apply}.
@@ -399,7 +469,8 @@ export class Patch {
  * fails. Path order is preserved by first occurrence.
  */
 function mergeSamePathSections(sections: RawSection[]): RawSection[] {
-	const byPath = new Map<string, { fileHash?: string; diffs: string[] }>();
+	const byPath = new Map<string, { fileHash?: string; diffs: string[]; interleaved: boolean }>();
+	let previousPath: string | undefined;
 	for (const section of sections) {
 		const existing = byPath.get(section.path);
 		if (existing) {
@@ -413,17 +484,24 @@ function mergeSamePathSections(sections: RawSection[]): RawSection[] {
 				);
 			}
 			if (existing.fileHash === undefined && section.fileHash !== undefined) existing.fileHash = section.fileHash;
+			// Merging across another file's section moves these ops up to the
+			// first occurrence; flag it so clipboard ops can refuse the reorder.
+			if (previousPath !== section.path) existing.interleaved = true;
 			existing.diffs.push(section.diff);
+			previousPath = section.path;
 			continue;
 		}
 		byPath.set(section.path, {
 			...(section.fileHash !== undefined ? { fileHash: section.fileHash } : {}),
 			diffs: [section.diff],
+			interleaved: false,
 		});
+		previousPath = section.path;
 	}
 	return Array.from(byPath, ([sectionPath, entry]) => ({
 		path: sectionPath,
 		...(entry.fileHash !== undefined ? { fileHash: entry.fileHash } : {}),
 		diff: entry.diffs.join("\n"),
+		...(entry.interleaved ? { interleaved: true } : {}),
 	}));
 }

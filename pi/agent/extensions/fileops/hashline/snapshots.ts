@@ -139,6 +139,19 @@ export class Snapshot {
 			`Re-read the exact target range before making further line-numbered edits across unseen gaps.`
 		);
 	}
+
+	relocated(path: string): Snapshot {
+		return new Snapshot(
+			path,
+			this.fullText,
+			this.hash,
+			{
+				explicit: this.#observedLines.explicit === null ? "all" : new Set(this.#observedLines.explicit),
+				synthetic: new Set(this.#observedLines.synthetic),
+			},
+			this.recordedAt,
+		);
+	}
 }
 
 /**
@@ -158,6 +171,9 @@ export abstract class SnapshotStore {
 	/** Drop snapshots belonging to a single path. */
 	abstract invalidate(path: string): void;
 
+	/** Move retained history to a new canonical path. */
+	abstract relocate(from: string, to: string): void;
+
 	/** Drop every snapshot. */
 	abstract clear(): void;
 }
@@ -176,7 +192,7 @@ function normalizeFileHashText(text: string): string {
 	return text.replace(/[ \t\r]+(?=\n|$)/g, "");
 }
 
-function computeFileHash(text: string): string {
+export function computeFileHash(text: string): string {
 	const normalized = normalizeFileHashText(text);
 	let hash = 0x811c9dc5;
 	for (let index = 0; index < normalized.length; index++) {
@@ -229,7 +245,10 @@ export class InMemorySnapshotStore extends SnapshotStore {
 	record(path: string, fullText: string, observedLines: ObservedLines = "all"): string {
 		const hash = computeFileHash(fullText);
 		const history = this.#versions.get(path) ?? [];
-		const existing = history.find((snapshot) => snapshot.hash === hash);
+		// Dedup needs full-text equality, not just tag equality. computeFileHash is 16 bits, so two distinct texts can
+		// share a tag; fusing them under one entry would attach one text's observed lines onto the other's content and
+		// let the patcher authorize edits to lines it never displayed. Upstream records the same fix as issue #4075.
+		const existing = history.find((snapshot) => snapshot.hash === hash && snapshot.fullText === fullText);
 		if (existing) {
 			existing.mergeObservedLines(observedLines);
 			this.#versions.set(path, [existing, ...history.filter((snapshot) => snapshot !== existing)]);
@@ -247,6 +266,22 @@ export class InMemorySnapshotStore extends SnapshotStore {
 		this.#versions.delete(path);
 		const existing = this.#pathOrder.indexOf(path);
 		if (existing !== -1) this.#pathOrder.splice(existing, 1);
+	}
+
+	relocate(from: string, to: string): void {
+		const source = this.#versions.get(from);
+		if (!source) return;
+		const destination = this.#versions.get(to) ?? [];
+		const merged = [...source.map((snapshot) => snapshot.relocated(to)), ...destination];
+		const unique = merged.filter(
+			(snapshot, index) =>
+				merged.findIndex(
+					(candidate) => candidate.hash === snapshot.hash && candidate.fullText === snapshot.fullText,
+				) === index,
+		);
+		this.#versions.set(to, unique.slice(0, this.#maxVersionsPerPath));
+		this.invalidate(from);
+		for (const evicted of touchPathOrder(this.#pathOrder, to, this.#maxPaths)) this.#versions.delete(evicted);
 	}
 
 	clear(): void {

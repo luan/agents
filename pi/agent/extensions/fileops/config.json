@@ -2,6 +2,6 @@
   "mode": "hashline",
   "fuzzyMatch": true,
   "fuzzyThreshold": 0.95,
-  "allowReplaceAll": true,
-  "autoDropPureInsertDuplicates": false
+  "autoDropPureInsertDuplicates": false,
+  "allowReplaceAll": true
 }

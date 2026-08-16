@@ -13,7 +13,6 @@
  * `…` marker instead of echoing every inserted line.
  */
 import { diffLines } from "diff";
-import { findBlockContextLines } from "../block-context.ts";
 import type { CompactDiffOptions, CompactDiffPreview } from "./types";
 
 const DIFF_CONTEXT_LINES = 2;
@@ -22,12 +21,21 @@ function formatNumberedDiffLine(prefix: "+" | "-" | " ", lineNum: number, conten
 	return `${prefix}${lineNum}|${content}`;
 }
 
+/** Host-provided context resolver keeps this package runtime-agnostic. */
+type BlockContextResolver = (
+	fullLines: readonly string[],
+	visible: ReadonlySet<number> | readonly number[],
+	path?: string,
+) => Map<number, string>;
+
 /** Result of {@link generateNumberedDiff}. */
 interface NumberedDiffOptions {
 	/** Context lines around changed regions (default 2). */
 	contextLines?: number;
 	/** Path used for tree-sitter block-boundary context. */
 	path?: string;
+	/** Optional host resolver for structural block context. */
+	blockContext?: BlockContextResolver;
 }
 
 function normalizeContextLines(value: number | undefined): number {
@@ -76,9 +84,10 @@ function addBlockContextRows(
 	rows: string[],
 	oldLines: readonly string[],
 	newLines: readonly string[],
-	path?: string,
+	path: string | undefined,
+	resolveBlockContext: BlockContextResolver | undefined,
 ): void {
-	if (!path) return;
+	if (!path || !resolveBlockContext) return;
 	const oldVisible: number[] = [];
 	const newVisible: number[] = [];
 	const changes: { newPos: number; delta: 1 | -1 }[] = [];
@@ -108,8 +117,8 @@ function addBlockContextRows(
 		for (const change of changes) if (change.newPos <= newLineNumber) shift += change.delta;
 		return newLineNumber - shift;
 	};
-	const contextRows = findBlockContextLines(oldLines, oldVisible, path);
-	for (const [lineNumber, text] of findBlockContextLines(newLines, newVisible, path)) {
+	const contextRows = resolveBlockContext(oldLines, oldVisible, path);
+	for (const [lineNumber, text] of resolveBlockContext(newLines, newVisible, path)) {
 		const oldLineNumber = toOldLineNumber(lineNumber);
 		if (!contextRows.has(oldLineNumber)) contextRows.set(oldLineNumber, text);
 	}
@@ -216,7 +225,7 @@ export function generateNumberedDiff(
 
 		lastWasChange = false;
 	}
-	addBlockContextRows(output, oldContent.split("\n"), newContent.split("\n"), options.path);
+	addBlockContextRows(output, oldContent.split("\n"), newContent.split("\n"), options.path, options.blockContext);
 	return { diff: output.join("\n"), firstChangedLine };
 }
 

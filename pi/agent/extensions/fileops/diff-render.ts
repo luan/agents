@@ -11,7 +11,8 @@ export type RenderTheme = {
 	getFgAnsi?: (role: string) => string | undefined;
 	bold(text: string): string;
 	inverse?: (text: string) => string;
-	getLangIcon?: (language: string | undefined) => string;
+	getLangIcon?: (language: string | undefined) => string | undefined;
+	styledSymbol?: (name: string, role?: string) => string | undefined;
 	tree?: { last: string; branch: string; vertical: string };
 	sep?: { dot: string };
 };
