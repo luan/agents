@@ -8,6 +8,7 @@
  */
 
 import type { AgentToolUpdateCallback, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { getCurrentArtifactSessionId } from "../artifact-store/pi/current-session.ts";
 import { approxTokenCount } from "../shared/output-budget.ts";
@@ -15,8 +16,13 @@ import { boundTextWithArtifact, HARD_MAX_TOOL_TOKENS, resolveToolBudget } from "
 import { toolRegistrarFor } from "../shared/tool-registry.ts";
 import { registerToolResultImageRestore } from "../shared/tool-result-images.ts";
 import { markLiveTurnStarted } from "../shared/tui/index.ts";
+import { getActiveCodeModeRuntime } from "./mode.ts";
 import { buildToolCatalog, callNestedTool, sessionIdOf } from "./nested-dispatch.ts";
 import { registerCodeModePreflightBroker } from "./nested-tool-preflight.ts";
+import type { NotebookLifecycleController } from "./notebook/lifecycle.ts";
+import { createNotebookLifecycle } from "./notebook/lifecycle-host.ts";
+import { notebookToolDefinition } from "./notebook/notebook-tool.ts";
+import { notebookSessionIdentity } from "./notebook/session-identity.ts";
 import {
 	type CellParams,
 	EXEC_DESCRIPTION,
@@ -337,4 +343,28 @@ export default function codeModeExtension(pi: ExtensionAPI): void {
 			);
 		},
 	});
+
+	// Only the notebook backend has state worth controlling, so `notebook` reaches the model only there.
+	if (getActiveCodeModeRuntime() !== "notebook") return;
+	const lifecycles = new Map<string, NotebookLifecycleController>();
+	pi.registerTool(
+		notebookToolDefinition(async (request, ctx, signal) => {
+			const sessionId = sessionIdOf(ctx) ?? "default";
+			let lifecycle = lifecycles.get(sessionId);
+			if (!lifecycle) {
+				const kernel = sessionFor(ctx).ensureNotebookKernel();
+				if (!kernel) throw new Error("Notebook Code Mode is not the active runtime");
+				// One controller per session keeps the journal and the checkpoint schedule continuous.
+				lifecycle = createNotebookLifecycle(kernel, {
+					session: notebookSessionIdentity(ctx),
+					agentDir: getAgentDir(),
+					onNotice: (notice, showInUi) => {
+						if (showInUi) ctx.ui.notify(notice, "info");
+					},
+				});
+				lifecycles.set(sessionId, lifecycle);
+			}
+			return lifecycle.control(request, signal);
+		}),
+	);
 }

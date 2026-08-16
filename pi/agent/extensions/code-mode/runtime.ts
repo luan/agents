@@ -4,7 +4,9 @@
  */
 
 import { approxTokenCount } from "../shared/output-budget.ts";
+import { getActiveCodeModeRuntime } from "./mode.ts";
 import { type NestedRawResult, NestedToolError, normalizeToolArgs, type ToolCatalogEntry } from "./nested-dispatch.ts";
+import { NotebookCellKernel } from "./notebook/index.ts";
 import type { CellOutcome, HostBridge } from "./rust-kernel.ts";
 import { RustCellKernel } from "./rust-kernel.ts";
 
@@ -248,8 +250,11 @@ export interface CollectResult {
 	durationMs: number;
 }
 
+/** What `CellSession` needs from a backend. Both kernels satisfy it. */
+type CellKernel = Pick<RustCellKernel, "run" | "wait" | "reset" | "running">;
+
 export class CellSession {
-	private kernel: RustCellKernel | undefined;
+	private kernel: CellKernel | undefined;
 	private readonly cells = new Map<number, CellRecord>();
 	private nextCellId = 1;
 	private readonly kernelBridge: HostBridge = {
@@ -329,8 +334,23 @@ export class CellSession {
 		return record;
 	}
 
-	private ensureKernel(): RustCellKernel {
-		if (!this.kernel) this.kernel = new RustCellKernel(undefined, this.kernelBridge);
+	/**
+	 * The notebook kernel for this session, started if it is not running. The `notebook` tool controls
+	 * it, and its actions must work before the first cell.
+	 */
+	ensureNotebookKernel(): NotebookCellKernel | undefined {
+		const kernel = this.ensureKernel();
+		return kernel instanceof NotebookCellKernel ? kernel : undefined;
+	}
+
+	private ensureKernel(): CellKernel {
+		// The backend is pinned for the process (mode.ts), so a live kernel never changes underneath a cell.
+		if (!this.kernel) {
+			this.kernel =
+				getActiveCodeModeRuntime() === "notebook"
+					? new NotebookCellKernel(this.kernelBridge)
+					: new RustCellKernel(undefined, this.kernelBridge);
+		}
 		return this.kernel;
 	}
 }
