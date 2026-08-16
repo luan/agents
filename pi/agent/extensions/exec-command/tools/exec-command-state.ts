@@ -1,9 +1,9 @@
 export type ExecCommandStatus = "running" | "done";
 
-interface ExecCommandRenderInfo {
+export interface ExecCommandRenderInfo {
 	status: ExecCommandStatus;
 	elapsedMs?: number;
-	contextGuardWrapped?: boolean;
+	captureWrapped?: boolean;
 	sessionId?: number;
 	output?: string;
 }
@@ -13,7 +13,7 @@ interface ExecEntry {
 	command: string;
 	status: ExecCommandStatus;
 	startedAtMs: number;
-	contextGuardWrapped: boolean;
+	captureWrapped: boolean;
 	sessionId?: number;
 	output?: string;
 	invalidate?: () => void;
@@ -21,9 +21,11 @@ interface ExecEntry {
 
 export interface ExecCommandTracker {
 	getRenderInfo(toolCallId: string | undefined, command: string): ExecCommandRenderInfo;
+	/** True between `recordStart` and `recordEnd`, which is exactly while a call holds the turn. */
+	hasCallInFlight(): boolean;
 	registerRenderContext(toolCallId: string | undefined, invalidate: () => void): void;
 	recordStart(toolCallId: string, command: string): void;
-	recordContextGuardWrapped(toolCallId: string): void;
+	recordCaptureWrapped(toolCallId: string): void;
 	recordPersistentSession(toolCallId: string, processId: number): void;
 	recordOutput(toolCallId: string, output: string): void;
 	recordEnd(toolCallId: string): void;
@@ -36,9 +38,10 @@ export function createExecCommandTracker(): ExecCommandTracker {
 	const commandByToolCallId = new Map<string, string>();
 	const runningCountsByCommand = new Map<string, number>();
 	const sessionBackedToolCallIds = new Set<string>();
-	const contextGuardWrappedToolCallIds = new Set<string>();
+	const captureWrappedToolCallIds = new Set<string>();
 	const toolCallIdBySessionId = new Map<number, string>();
 	const entriesByToolCallId = new Map<string, ExecEntry>();
+	const inFlightToolCallIds = new Set<string>();
 
 	function incrementCommand(command: string): void {
 		runningCountsByCommand.set(command, (runningCountsByCommand.get(command) ?? 0) + 1);
@@ -55,18 +58,21 @@ export function createExecCommandTracker(): ExecCommandTracker {
 	}
 
 	return {
+		hasCallInFlight() {
+			return inFlightToolCallIds.size > 0;
+		},
 		getRenderInfo(toolCallId, command) {
 			const entry = toolCallId ? entriesByToolCallId.get(toolCallId) : undefined;
 			if (!entry) {
 				return {
 					status: (runningCountsByCommand.get(command) ?? 0) > 0 ? "running" : "done",
-					contextGuardWrapped: toolCallId ? contextGuardWrappedToolCallIds.has(toolCallId) : false,
+					captureWrapped: toolCallId ? captureWrappedToolCallIds.has(toolCallId) : false,
 				};
 			}
 			return {
 				status: entry.status,
 				elapsedMs: elapsedMs(entry),
-				contextGuardWrapped: entry.contextGuardWrapped,
+				captureWrapped: entry.captureWrapped,
 				sessionId: entry.sessionId,
 				output: entry.output,
 			};
@@ -77,6 +83,7 @@ export function createExecCommandTracker(): ExecCommandTracker {
 			if (entry) entry.invalidate = invalidate;
 		},
 		recordStart(toolCallId, command) {
+			inFlightToolCallIds.add(toolCallId);
 			const existing = entriesByToolCallId.get(toolCallId);
 			commandByToolCallId.set(toolCallId, command);
 			incrementCommand(command);
@@ -92,14 +99,14 @@ export function createExecCommandTracker(): ExecCommandTracker {
 				command,
 				status: "running",
 				startedAtMs: Date.now(),
-				contextGuardWrapped: contextGuardWrappedToolCallIds.has(toolCallId),
+				captureWrapped: captureWrappedToolCallIds.has(toolCallId),
 			});
 		},
-		recordContextGuardWrapped(toolCallId) {
-			contextGuardWrappedToolCallIds.add(toolCallId);
+		recordCaptureWrapped(toolCallId) {
+			captureWrappedToolCallIds.add(toolCallId);
 			const entry = entriesByToolCallId.get(toolCallId);
-			if (!entry || entry.contextGuardWrapped) return;
-			entry.contextGuardWrapped = true;
+			if (!entry || entry.captureWrapped) return;
+			entry.captureWrapped = true;
 			entry.invalidate?.();
 		},
 		recordPersistentSession(toolCallId, processId) {
@@ -118,6 +125,7 @@ export function createExecCommandTracker(): ExecCommandTracker {
 			entry.invalidate?.();
 		},
 		recordEnd(toolCallId) {
+			inFlightToolCallIds.delete(toolCallId);
 			const command = commandByToolCallId.get(toolCallId);
 			if (!command) return;
 			const entry = entriesByToolCallId.get(toolCallId);
@@ -145,10 +153,11 @@ export function createExecCommandTracker(): ExecCommandTracker {
 			}
 		},
 		clear() {
+			inFlightToolCallIds.clear();
 			commandByToolCallId.clear();
 			runningCountsByCommand.clear();
 			sessionBackedToolCallIds.clear();
-			contextGuardWrappedToolCallIds.clear();
+			captureWrappedToolCallIds.clear();
 			toolCallIdBySessionId.clear();
 			entriesByToolCallId.clear();
 		},

@@ -1,12 +1,7 @@
-import { beforeAll, expect, test } from "bun:test";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { initTheme } from "@earendil-works/pi-coding-agent";
+import { expect, test } from "bun:test";
 import { Container } from "@earendil-works/pi-tui";
 import type { PtyBackend, PtyProcess, PtySpawnOptions } from "./adapter/pty-backend.ts";
-import execCommandExtensionBase, { type ExecCommandExtensionOptions } from "./index.ts";
+import execCommandExtensionBase, { createRtkCommandRewriter, type ExecCommandExtensionOptions } from "./index.ts";
 import { type RenderTheme, rawCommandToExecCell, renderExecCellComponent } from "./tools/exec-cell-presentation.ts";
 import { createExecCommandTracker } from "./tools/exec-command-state.ts";
 import { registerExecCommandTool } from "./tools/exec-command-tool.ts";
@@ -14,22 +9,14 @@ import {
 	createExecSessionManager as createBaseExecSessionManager,
 	type ExecSessionManager,
 	type ExecSessionManagerOptions,
-	type UnifiedExecResult,
 } from "./tools/exec-session-manager.ts";
-import { BackgroundTerminalOverlay } from "./ui/background-terminal-overlay.ts";
+import { registerWriteStdinTool } from "./tools/write-stdin-tool.ts";
 
 const testTheme: RenderTheme = {
 	fg: (role, text) => `<${role}>${text}</${role}>`,
 	bold: (text) => `<bold>${text}</bold>`,
 };
 const FAST_TEST_YIELD_TIME_MS = 5;
-/**
- * Tests that spawn a real process return as soon as it exits; the yield is only the ceiling for a
- * loaded machine. The manager reaps a child whose exit notification is lost, so an expired yield
- * shows up as empty output, which these tests retry rather than assert on.
- */
-const REAL_PROCESS_YIELD_MS = 5_000;
-const REAL_PROCESS_TEST_TIMEOUT_MS = 60_000;
 const FAST_EXTENSION_OPTIONS: ExecCommandExtensionOptions = {
 	sessionManagerOptions: {
 		defaultExecYieldTimeMs: FAST_TEST_YIELD_TIME_MS,
@@ -49,112 +36,217 @@ function stripAnsi(text: string): string {
 	return text.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
 }
 
-beforeAll(() => {
-	initTheme("dark");
-});
-
-test("extension rewrites exec_command commands when rtk is installed", async () => {
-	type Handler = (event: any, ctx: any) => any;
-	let toolCallHandler: Handler | undefined;
+test("rtk rewrites a command when rtk is installed", async () => {
 	const execCalls: string[][] = [];
-	const pi = {
-		registerTool() {},
-		registerCommand() {},
-		getActiveTools: () => [],
-		setActiveTools() {},
-		on: (event: string, handler: Handler) => {
-			if (event === "tool_call") toolCallHandler = handler;
-		},
+	const rewrite = createRtkCommandRewriter({
 		exec: async (_command: string, args: string[]) => {
 			execCalls.push(args);
 			if (args[0] === "--version") return { code: 0, stdout: "rtk 0.23.0", stderr: "" };
 			return { code: 0, stdout: "rtk git status", stderr: "" };
 		},
-	} as any;
-	execCommandExtension(pi);
-	const event = { toolName: "exec_command", input: { cmd: "git status" } };
+	} as any);
 
-	await toolCallHandler?.(event, {});
-
-	expect(event.input.cmd).toBe("rtk git status");
+	expect(await rewrite("git status")).toBe("rtk git status");
+	expect(await rewrite("rtk git status")).toBeUndefined();
 	expect(execCalls).toEqual([["--version"], ["rewrite", "git status"]]);
 });
 
-test("extension leaves exec_command commands unchanged when rtk is unavailable", async () => {
-	type Handler = (event: any, ctx: any) => any;
-	let toolCallHandler: Handler | undefined;
+test("rtk leaves a command unchanged when rtk is unavailable", async () => {
 	const execCalls: string[][] = [];
-	const pi = {
-		registerTool() {},
-		registerCommand() {},
-		getActiveTools: () => [],
-		setActiveTools() {},
-		on: (event: string, handler: Handler) => {
-			if (event === "tool_call") toolCallHandler = handler;
-		},
+	const rewrite = createRtkCommandRewriter({
 		exec: async (_command: string, args: string[]) => {
 			execCalls.push(args);
 			return { code: 1, stdout: "", stderr: "" };
 		},
-	} as any;
-	execCommandExtension(pi);
-	const event = { toolName: "exec_command", input: { cmd: "git status" } };
+	} as any);
 
-	await toolCallHandler?.(event, {});
-
-	expect(event.input.cmd).toBe("git status");
+	expect(await rewrite("git status")).toBeUndefined();
 	expect(execCalls).toEqual([["--version"]]);
 });
 
-function shellQuote(value: string): string {
-	return `'${value.replace(/'/g, `'"'"'`)}'`;
-}
-interface PipeGate {
-	path: string;
-	release(): void;
-	cleanup(): void;
-}
-
-function createPipeGate(prefix = "exec-command-gate-"): PipeGate {
-	const directory = mkdtempSync(join(tmpdir(), prefix));
-	const path = join(directory, "gate");
-	execFileSync("mkfifo", [path]);
-	let released = false;
-	return {
-		path,
-		release() {
-			if (released) return;
-			released = true;
-			writeFileSync(path, "release\n");
+/**
+ * The rewrite used to run from `tool_call`, which a cell's `tools.exec_command(...)` never fires: the
+ * cell ran the raw command and the capture recorded the executed command as the original.
+ */
+test("a cell's exec_command runs the rewrite and captures the model's own command", async () => {
+	let tool: any;
+	const tracker = createExecCommandTracker();
+	const executed: string[] = [];
+	const owners: string[] = [];
+	let captured: any;
+	const sessions = {
+		exec: async (input: any) => {
+			executed.push(input.cmd);
+			owners.push(input.ownerSessionId);
+			return { output: "", process_id: 9, terminal_state: "running", wall_time_seconds: 0.01 };
 		},
-		cleanup() {
-			rmSync(directory, { recursive: true, force: true });
+		getSessionSnapshot: () => undefined,
+		getSessionCommand: () => "rtk git status",
+	} as any;
+	try {
+		registerExecCommandTool({ registerTool: (definition: any) => (tool = definition) } as any, tracker, sessions, {
+			artifactCaptureEnabled: () => true,
+			rewriteCommand: async (command) => (command === "git status" ? "rtk git status" : undefined),
+			onResult: (_input, _result, _ctx, captureContext) => {
+				captured = captureContext;
+				return undefined;
+			},
+		});
+		await tool.execute("cell-exec_command-3", { cmd: "git status" }, undefined, undefined, {
+			cwd: "/tmp",
+			sessionManager: { getSessionId: () => "capture-owner" },
+		});
+
+		expect(executed).toEqual(["rtk git status"]);
+		expect(owners).toEqual(["capture-owner"]);
+		expect(captured?.originalCommand).toBe("git status");
+		expect(captured?.executedCommand).toBe("rtk git status");
+		expect(captured?.ownerSessionId).toBe("capture-owner");
+	} finally {
+		tracker.clear();
+	}
+});
+
+test("exec capture owner falls back to cwd without a session manager", async () => {
+	let tool: any;
+	let input: any;
+	let captured: any;
+	const tracker = createExecCommandTracker();
+	const sessions = {
+		exec: async (value: any) => {
+			input = value;
+			return { output: "", process_id: 9, terminal_state: "running", wall_time_seconds: 0.01 };
 		},
-	};
-}
+		getSessionSnapshot: () => undefined,
+		getSessionCommand: () => "printf hi",
+	} as any;
+	try {
+		registerExecCommandTool({ registerTool: (definition: any) => (tool = definition) } as any, tracker, sessions, {
+			artifactCaptureEnabled: () => true,
+			onResult: (_input, _result, _ctx, captureContext) => {
+				captured = captureContext;
+				return undefined;
+			},
+		});
+		await tool.execute("exec_command-owner-fallback", { cmd: "printf hi" }, undefined, undefined, { cwd: "/tmp" });
+		expect(input.ownerSessionId).toBe("/tmp");
+		expect(captured?.ownerSessionId).toBe("/tmp");
+	} finally {
+		tracker.clear();
+	}
+});
 
-function gatedCommand(gate: PipeGate, command: string): string {
-	return `cat ${shellQuote(gate.path)} >/dev/null; ${command}`;
-}
+test("exec_command refuses timeout aliases before schema validation", () => {
+	let tool: any;
+	const tracker = createExecCommandTracker();
+	try {
+		registerExecCommandTool({ registerTool: (definition: any) => (tool = definition) } as any, tracker, {} as any);
+		expect(() => tool.prepareArguments({ cmd: "sleep 1", timeout_ms: 1000 })).toThrow();
+		expect(() => tool.prepareArguments({ cmd: "sleep 1", timeout: 1000 })).toThrow();
+	} finally {
+		tracker.clear();
+	}
+});
 
-const NON_COLOR_PROBE =
-	'[ -z "$FORCE_COLOR" ] && fc=unset || fc="$FORCE_COLOR"; printf "%s|%s|%s" "$NO_COLOR" "$TERM" "$fc"';
+test("write_stdin schema accepts process names", () => {
+	let tool: any;
+	registerWriteStdinTool({ registerTool: (definition: any) => (tool = definition) } as any, {} as any);
+	const processId = tool.parameters.properties.process_id;
+
+	expect(processId.anyOf.map((schema: any) => schema.type)).toEqual(["number", "string"]);
+});
 
 /**
- * The probe always prints, so an empty result means the runtime lost the child rather than that
- * the environment is wrong. Retry those; a real environment regression still prints the wrong text.
+ * Escape used to read a set filled from `tool_execution_start`, so a long command a cell started could
+ * not be interrupted at all.
  */
-async function execNonColorProbe(sessions: ExecSessionManager, attempts = 5): Promise<UnifiedExecResult> {
-	const probe = () => sessions.exec({ cmd: NON_COLOR_PROBE, yield_time_ms: REAL_PROCESS_YIELD_MS }, process.cwd());
-	let result = await probe();
-	for (let attempt = 1; attempt < attempts && result.output === ""; attempt++) {
-		result = await probe();
+test("escape interrupts an exec_command a cell started", async () => {
+	const handlers = new Map<string, Array<(event: any, ctx: any) => any>>();
+	let tool: any;
+	let terminalInput: ((data: string) => unknown) | undefined;
+	let aborts = 0;
+	let kills = 0;
+	let exitListener = (_event: { exitCode: number }) => {};
+	const notices: string[] = [];
+	const pi = {
+		registerTool: (definition: any) => {
+			if (definition.name === "exec_command") tool = definition;
+		},
+		registerCommand() {},
+		getActiveTools: () => [],
+		setActiveTools() {},
+		on: (event: string, handler: (event: any, ctx: any) => any) => {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+		},
+		exec: async () => ({ code: 1, stdout: "", stderr: "" }),
+	} as any;
+	execCommandExtensionBase(pi, {
+		...FAST_EXTENSION_OPTIONS,
+		sessionManagerOptions: {
+			...FAST_EXTENSION_OPTIONS.sessionManagerOptions,
+			ptyBackend: {
+				spawn: () => ({
+					name: "test-pty",
+					write() {},
+					resize() {},
+					kill() {
+						kills++;
+						exitListener({ exitCode: 0 });
+					},
+					onData() {},
+					onExit(listener: (event: { exitCode: number }) => void) {
+						exitListener = listener;
+					},
+				}),
+			},
+		},
+	});
+	const ctx = {
+		cwd: process.cwd(),
+		hasUI: true,
+		abort: () => aborts++,
+		ui: {
+			onTerminalInput: (handler: (data: string) => unknown) => {
+				terminalInput = handler;
+				return () => {
+					terminalInput = undefined;
+				};
+			},
+			notify: (message: string) => notices.push(message),
+			setStatus() {},
+		},
+		sessionManager: { getSessionId: () => "session" },
+	};
+	for (const handler of handlers.get("session_start") ?? []) handler({ reason: "new" }, ctx);
+
+	try {
+		const running = tool.execute(
+			"cell-exec_command-4",
+			{ cmd: "interactive", tty: true, yield_time_ms: 30_000 },
+			undefined,
+			undefined,
+			ctx,
+		);
+		await Bun.sleep(10);
+		expect(terminalInput?.("\u001b")).toEqual({ consume: true });
+		expect(aborts).toBe(1);
+		expect(notices).toEqual(["Interrupting foreground exec_command (1 killed)..."]);
+		expect(kills).toBe(1);
+
+		const result = await running;
+		expect(result.details.terminal_state).toBe("cancelled");
+		expect(terminalInput?.("\u001b")).toBeUndefined();
+	} finally {
+		for (const handler of handlers.get("session_shutdown") ?? []) handler({}, ctx);
 	}
-	return result;
-}
+});
 
 function createExecSessionManager(options: ExecSessionManagerOptions = {}): ExecSessionManager {
-	const manager = createBaseExecSessionManager({ ...options, minYieldTimeMs: 1 });
+	const manager = createBaseExecSessionManager({
+		minEmptyWriteYieldTimeMs: FAST_TEST_YIELD_TIME_MS,
+		...options,
+		minYieldTimeMs: 1,
+	});
 	return {
 		...manager,
 		exec: (input, cwd, signal, onUpdate) => {
@@ -164,9 +256,7 @@ function createExecSessionManager(options: ExecSessionManagerOptions = {}): Exec
 				login: input.login ?? false,
 			};
 			return manager.exec(
-				input.wait_for_exit || (input.yield_time_ms ?? 0) >= 1000
-					? fastInput
-					: { ...fastInput, yield_time_ms: FAST_TEST_YIELD_TIME_MS },
+				(input.yield_time_ms ?? 0) >= 1000 ? fastInput : { ...fastInput, yield_time_ms: FAST_TEST_YIELD_TIME_MS },
 				cwd,
 				signal,
 				onUpdate,
@@ -199,21 +289,6 @@ test("exec cell facade caches stable component renders by width", () => {
 	expect(component.render(80)).not.toBe(first);
 });
 
-test("exec cell facade does not retain render caches for large output blocks", () => {
-	const component = renderExecCellComponent(
-		{
-			kind: "command",
-			status: "done",
-			command: "printf large",
-			outputBlock: { output: `${"x".repeat(20_000)}\nend` },
-		},
-		{ theme: testTheme },
-	);
-
-	const first = component.render(80);
-	expect(component.render(80)).not.toBe(first);
-});
-
 test("exec cell facade reuses running renders when visible text is unchanged", () => {
 	const component = renderExecCellComponent(
 		{
@@ -227,117 +302,6 @@ test("exec cell facade reuses running renders when visible text is unchanged", (
 
 	const first = component.render(80);
 	expect(component.render(80)).toBe(first);
-});
-
-test("background terminal overlay supports vim navigation, attach, and kill", async () => {
-	let records: any[] = [
-		{
-			id: 3,
-			command: "tail -f /dev/null",
-			output: "tick 1\n",
-			running: true,
-			stdinOpen: false,
-		},
-		{
-			id: 4,
-			attachCommand: "attach node-repl",
-			command: "node repl.js",
-			output: "ready\nprompt\n",
-			running: true,
-			stdinOpen: true,
-		},
-	];
-	const listeners: Array<() => void> = [];
-	const killed: number[] = [];
-	const writes: Array<{ process_id: number; chars: string }> = [];
-	const copied: string[] = [];
-	const resized: Array<{ processId: number; cols: number; rows: number }> = [];
-	let renderRequests = 0;
-	const plainTheme = { fg: (_role: string, text: string) => text, bold: (text: string) => text };
-	const overlay = new BackgroundTerminalOverlay(
-		{
-			listSessions: () => records,
-			write: async (input: { process_id: number; chars: string }) => {
-				writes.push(input);
-				return {} as any;
-			},
-			resize: async (processId: number, cols: number, rows: number) => {
-				resized.push({ processId, cols, rows });
-				return true;
-			},
-			stopSession: (processId: number) => {
-				killed.push(processId);
-				records = records.filter((record) => record.id !== processId);
-				for (const listener of listeners) listener();
-				return true;
-			},
-			onSessionUpdate: (listener) => {
-				listeners.push(listener);
-				return () => listeners.splice(listeners.indexOf(listener), 1);
-			},
-		} as any,
-		{ terminal: { rows: 18 }, requestRender: () => renderRequests++ } as any,
-		plainTheme,
-		() => {},
-		async (text) => {
-			copied.push(text);
-		},
-	);
-
-	overlay.handleInput("j");
-	overlay.handleInput("c");
-	await Promise.resolve();
-	expect(copied).toEqual(["attach node-repl"]);
-
-	overlay.handleInput("l");
-	overlay.render(80);
-	await Promise.resolve();
-	expect(resized).toEqual([{ processId: 4, cols: 76, rows: 8 }]);
-
-	records = [{ ...records[1], output: "ready\nprompt\nnext\n" }];
-	listeners[0]?.();
-	expect(renderRequests).toBeGreaterThan(0);
-
-	overlay.handleInput("h");
-	await Promise.resolve();
-	expect(writes).toEqual([{ process_id: 4, chars: "h" }]);
-
-	overlay.handleInput("\u001d");
-
-	overlay.handleInput("x");
-	expect(killed).toEqual([4]);
-});
-
-test("background terminal overlay closes from interactive mode with escape", () => {
-	const writes: Array<{ process_id: number; chars: string }> = [];
-	let doneCalls = 0;
-	const overlay = new BackgroundTerminalOverlay(
-		{
-			listSessions: () => [
-				{
-					id: 4,
-					command: "node repl.js",
-					output: "ready\n",
-					running: true,
-					stdinOpen: true,
-				},
-			],
-			write: async (input: { process_id: number; chars: string }) => {
-				writes.push(input);
-				return {} as any;
-			},
-			onSessionUpdate: () => () => {},
-		} as any,
-		{ terminal: { rows: 18 }, requestRender() {} } as any,
-		{ fg: (_role: string, text: string) => text, bold: (text: string) => text },
-		() => doneCalls++,
-	);
-
-	overlay.handleInput("l");
-	overlay.handleInput("\u001b");
-
-	expect(doneCalls).toBe(1);
-	expect(writes).toEqual([]);
 });
 
 test("completed render contexts do not keep running-command elapsed timers alive", () => {
@@ -402,66 +366,67 @@ test("completed non-session exec calls leave rendering to result renderer", () =
 	}
 });
 
-test("running render contexts keep only one elapsed timer per tool call", () => {
+test("exec_command tracks a call the agent loop never dispatched", async () => {
 	let tool: any;
 	const tracker = createExecCommandTracker();
-	const sessions = createExecSessionManager();
+	// A cell's `tools.exec_command(...)` fires no `tool_execution_start`, so the entry
+	// has to come from execute. Without it the live terminal card rendered empty.
+	const sessions = {
+		exec: async (_input: any, _cwd: string, _signal: any, onPartial: (partial: { output: string }) => void) => {
+			onPartial({ output: "streaming" });
+			return { output: "streaming", process_id: 7, terminal_state: "running", wall_time_seconds: 0.01 };
+		},
+		getSessionSnapshot: () => ({ running: true, output: "streaming", command: "tail -f log" }),
+		getSessionCommand: () => "tail -f log",
+	} as any;
 	try {
 		registerExecCommandTool({ registerTool: (definition: any) => (tool = definition) } as any, tracker, sessions);
-		tracker.recordStart("call", "tail -f /dev/null");
+		await tool.execute("cell-exec_command-1", { cmd: "tail -f log" }, undefined, undefined, { cwd: "/tmp" });
 
-		const firstState: { elapsedTimer?: ReturnType<typeof setTimeout> } = {};
-		const secondState: { elapsedTimer?: ReturnType<typeof setTimeout> } = {};
-		tool.renderCall({ cmd: "tail -f /dev/null" }, testTheme, {
-			toolCallId: "call",
-			state: firstState,
-			isPartial: true,
+		const info = tracker.getRenderInfo("cell-exec_command-1", "tail -f log");
+		expect(info.sessionId).toBe(7);
+		expect(info.output).toBe("streaming");
+
+		const call = tool.renderCall({ cmd: "tail -f log" }, testTheme, {
+			toolCallId: "cell-exec_command-1",
+			isPartial: false,
 			invalidate() {},
 		});
-		tool.renderCall({ cmd: "tail -f /dev/null" }, testTheme, {
-			toolCallId: "call",
-			state: secondState,
-			isPartial: true,
-			invalidate() {},
-		});
+		const result = tool.renderResult(
+			{ content: [{ type: "text", text: "streaming" }], details: { output: "streaming", process_id: 7 } },
+			{ expanded: false, isPartial: false },
+			testTheme,
+			{ toolCallId: "cell-exec_command-1", args: { cmd: "tail -f log" }, isPartial: false },
+		);
 
-		expect(firstState.elapsedTimer).toBeDefined();
-		expect(secondState.elapsedTimer).toBeUndefined();
-		if (firstState.elapsedTimer) clearTimeout(firstState.elapsedTimer);
+		expect(call).not.toBeInstanceOf(Container);
+		expect(result).toBeInstanceOf(Container);
 	} finally {
 		tracker.clear();
-		sessions.shutdown();
 	}
 });
 
-test("running render contexts without tool call ids de-dupe by command", () => {
+test("write_stdin output renders without repeating its own header row", () => {
 	let tool: any;
-	const tracker = createExecCommandTracker();
-	const sessions = createExecSessionManager();
-	try {
-		registerExecCommandTool({ registerTool: (definition: any) => (tool = definition) } as any, tracker, sessions);
-		tracker.recordStart("call", "tail -f /dev/null");
+	const sessions = {
+		describe: () => ({ command: "python3", running: true, stdinOpen: true }),
+		getSessionTty: () => false,
+	} as any;
+	registerWriteStdinTool({ registerTool: (definition: any) => (tool = definition) } as any, sessions);
 
-		const firstState: { elapsedTimer?: ReturnType<typeof setTimeout> } = {};
-		const secondState: { elapsedTimer?: ReturnType<typeof setTimeout> } = {};
-		tool.renderCall({ cmd: "tail -f /dev/null" }, testTheme, {
-			state: firstState,
-			isPartial: true,
-			invalidate() {},
-		});
-		tool.renderCall({ cmd: "tail -f /dev/null" }, testTheme, {
-			state: secondState,
-			isPartial: true,
-			invalidate() {},
-		});
+	const lines = tool
+		.renderResult(
+			{ content: [{ type: "text", text: "42" }], details: { output: "42\n", stdin_open: false } },
+			{ expanded: false, isPartial: false },
+			testTheme,
+			{ args: { process_id: 3, chars: "print(6*7)\n" }, isPartial: false },
+		)
+		.render(80)
+		.join("\n");
 
-		expect(firstState.elapsedTimer).toBeDefined();
-		expect(secondState.elapsedTimer).toBeUndefined();
-		if (firstState.elapsedTimer) clearTimeout(firstState.elapsedTimer);
-	} finally {
-		tracker.clear();
-		sessions.shutdown();
-	}
+	expect(stripAnsi(lines)).toContain("42");
+	expect(stripAnsi(lines)).not.toContain("Waited for background terminal");
+	expect(stripAnsi(lines)).not.toContain("#?");
 });
 
 test("extension marks nonzero exec results as errors for red status dots", () => {
@@ -516,193 +481,6 @@ test("exec session manager reports spawn failures as session errors, not command
 		sessions.shutdown();
 	}
 });
-
-test("exec command does not register a second Hub entry point", () => {
-	const commands = new Map<string, any>();
-	execCommandExtension({
-		registerTool() {},
-		registerCommand: (name: string, command: any) => commands.set(name, command),
-		getActiveTools: () => [],
-		setActiveTools() {},
-		on() {},
-	} as any);
-
-	expect(commands.has("ps")).toBe(false);
-});
-
-test("extension disables bash and activates managed process tools for every model", () => {
-	type Handler = (event?: any, ctx?: any) => any;
-	const handlers = new Map<string, Handler[]>();
-	let activeTools = ["read", "bash"];
-	const setActiveToolsCalls: string[][] = [];
-	const pi = {
-		registerTool() {},
-		registerCommand() {},
-		getActiveTools: () => activeTools,
-		getAllTools: () => [
-			{ name: "read" },
-			{ name: "bash" },
-			{ name: "exec_command" },
-			{ name: "write_stdin" },
-			{ name: "process_logs" },
-			{ name: "process_list" },
-			{ name: "process_describe" },
-			{ name: "process_wait" },
-			{ name: "process_resize" },
-			{ name: "process_signal" },
-			{ name: "process_restart" },
-			{ name: "process_stop" },
-		],
-		setActiveTools: (next: string[]) => {
-			activeTools = next;
-			setActiveToolsCalls.push(next);
-		},
-		on: (event: string, handler: Handler) => {
-			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
-		},
-	} as any;
-	execCommandExtension(pi);
-
-	for (const handler of handlers.get("session_start") ?? []) {
-		handler(undefined, { model: { provider: "anthropic", id: "claude-sonnet" } });
-	}
-
-	expect(activeTools).toEqual([
-		"read",
-		"exec_command",
-		"write_stdin",
-		"process_logs",
-		"process_list",
-		"process_describe",
-		"process_wait",
-		"process_resize",
-		"process_signal",
-		"process_restart",
-		"process_stop",
-	]);
-	expect(setActiveToolsCalls).toContainEqual(activeTools);
-
-	const block = handlers
-		.get("tool_call")
-		?.map((handler) => handler({ toolName: "bash" }, { model: { provider: "anthropic", id: "claude-sonnet" } }))
-		.find((result) => result?.block);
-
-	expect(block).toEqual({
-		block: true,
-		reason: "bash is disabled. Use exec_command instead.",
-	});
-	const writeBlock = handlers
-		.get("tool_call")
-		?.map((handler) =>
-			handler({ toolName: "write_stdin" }, { model: { provider: "anthropic", id: "claude-sonnet" } }),
-		)
-		.find((result) => result?.block);
-	expect(writeBlock).toBeUndefined();
-
-	for (const handler of handlers.get("model_select") ?? []) {
-		handler(undefined, { model: { provider: "anthropic", id: "claude-sonnet" } });
-	}
-
-	expect(activeTools).toEqual([
-		"read",
-		"exec_command",
-		"write_stdin",
-		"process_logs",
-		"process_list",
-		"process_describe",
-		"process_wait",
-		"process_resize",
-		"process_signal",
-		"process_restart",
-		"process_stop",
-	]);
-	for (const handler of handlers.get("session_shutdown") ?? []) handler();
-});
-
-test("extension bounds exec tool results tightly and other tool results loosely", () => {
-	type Handler = (event?: any) => any;
-	const handlers = new Map<string, Handler[]>();
-	const pi = {
-		registerTool() {},
-		registerCommand() {},
-		getActiveTools: () => [],
-		setActiveTools() {},
-		on: (event: string, handler: Handler) => {
-			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
-		},
-	} as any;
-	execCommandExtension(pi);
-
-	const toolResultHandlers = handlers.get("tool_result") ?? [];
-	const boundedText = (toolName: string, text: string): string | undefined =>
-		toolResultHandlers
-			.map((handler) => handler({ toolName, content: [{ type: "text", text }], details: undefined, isError: false }))
-			.find((result) => result?.content)?.content[0].text;
-
-	// ~20k tokens: over the exec cap, under the fallback ceiling.
-	const output = `${"x".repeat(200)}\n`.repeat(400);
-	const execText = boundedText("exec_command", output);
-	expect(execText).toStartWith("Total output lines: 400\n\n");
-	expect(execText).toContain("truncated");
-	expect(execText!.length).toBeLessThan(41_000);
-
-	// The same payload from an unowned tool stays whole: the fallback is looser.
-	expect(boundedText("read", output)).toBeUndefined();
-
-	// ~200k tokens: even an unaudited tool hits the fallback floor.
-	const hugeOutput = `${"x".repeat(200)}\n`.repeat(4_000);
-	const readText = boundedText("read", hugeOutput);
-	expect(readText).toContain("[output bounded");
-	expect(readText!.length).toBeGreaterThan(41_000);
-	for (const handler of handlers.get("session_shutdown") ?? []) handler();
-});
-
-test("shell card header reports the completed result token cost", () => {
-	const lines = renderExecCellComponent(
-		{
-			kind: "command",
-			status: "done",
-			command: "printf hello",
-			shell: "/bin/zsh",
-			elapsedMs: 486,
-			// A big terminal buffer paired with a small result: a backgrounded
-			// command shows its whole transcript but only hands the model an
-			// acknowledgement, and the card must report what the model received.
-			outputBlock: { output: "x".repeat(4_000) },
-			contextTokens: 1_000,
-		},
-		{ theme: testTheme },
-	).render(200);
-
-	expect(lines.join("\n")).toContain("<dim>completed · 486ms</dim><dim> · </dim><warning>1.0k tok</warning>");
-});
-
-test("shell card omits the token cost when the buffer never became a result", () => {
-	const lines = renderExecCellComponent(
-		{ kind: "command", status: "done", command: "printf hello", shell: "/bin/zsh", elapsedMs: 486 },
-		{ theme: testTheme },
-	).render(200);
-
-	expect(lines.join("\n")).toContain("<dim>completed · 486ms</dim>");
-	expect(lines.join("\n")).not.toContain("tok");
-});
-
-test(
-	"exec session manager uses a non-color environment",
-	async () => {
-		const sessions = createExecSessionManager();
-		try {
-			// wait_for_exit, not a yield budget: a real shell on a loaded machine outlasts any clock
-			// we could pick.
-			const result = await execNonColorProbe(sessions);
-			expect(result.output).toBe("1|dumb|unset");
-			expect(result.exit_code).toBe(0);
-		} finally {
-			sessions.shutdown();
-		}
-	},
-	REAL_PROCESS_TEST_TIMEOUT_MS,
-);
 
 test("exec session manager reserves names while a PTY is starting", async () => {
 	let releaseSpawn = () => {};
@@ -779,14 +557,10 @@ test("exec session manager can use an injected PTY backend", async () => {
 		defaultWriteYieldTimeMs: 250,
 	});
 	try {
-		const first = await sessions.exec(
-			{ cmd: "fake command", tty: true, env: { RMUX_TEST_VALUE: "set" }, yield_time_ms: 250 },
-			process.cwd(),
-		);
+		const first = await sessions.exec({ cmd: "fake command", tty: true, yield_time_ms: 250 }, process.cwd());
 		expect(first.process_id).toBeNumber();
 		expect(first.process_name).toBe("fake-pty");
 		expect(spawnOptions?.cwd).toBe(process.cwd());
-		expect(spawnOptions?.env.RMUX_TEST_VALUE).toBe("set");
 		expect(await sessions.resize(first.process_id!, 120, 40)).toBe(true);
 		expect(resizedTo).toEqual({ cols: 120, rows: 40 });
 
@@ -802,14 +576,56 @@ test("exec session manager can use an injected PTY backend", async () => {
 		expect(named.process_name).toBe("web");
 		expect(spawnOptions?.sessionName).toBe("web");
 		expect(await sessions.resize("web", 100, 30)).toBe(true);
-		expect(await sessions.signal("web", "INT")).toBe(true);
-		expect(written).toBe("hello\u0003");
 	} finally {
 		sessions.shutdown();
 	}
 });
 
-test("exec session manager reads append-only logs with cursors", async () => {
+/**
+ * The regression behind the write_stdin p99: a PTY delta is computed against the
+ * last render, and trimming scrollback used to move the string it was compared
+ * with. Every poll after the first overflow then returned the whole transcript,
+ * clipped to the token ceiling, forever. Silent — the output looked plausible —
+ * and expensive, which is what earns a test.
+ */
+test("write_stdin returns only new output after the pty transcript is trimmed", async () => {
+	let emitData: (data: string) => void = () => {};
+	const processHandle: PtyProcess = {
+		write() {},
+		resize() {},
+		kill() {},
+		onData: (listener) => {
+			emitData = listener;
+		},
+		onExit() {},
+	};
+	const sessions = createExecSessionManager({
+		ptyBackend: { spawn: () => processHandle },
+		defaultExecYieldTimeMs: 250,
+		maxSessionBufferChars: 4_000,
+	});
+	try {
+		const started = await sessions.exec({ cmd: "chatty", tty: true, yield_time_ms: 250 }, process.cwd());
+		const poll = () => sessions.write({ process_id: started.process_id!, yield_time_ms: 1 });
+
+		for (let line = 0; line < 300; line++) emitData(`overflow ${line} ${"b".repeat(50)}\n`);
+		await poll();
+
+		emitData("only this line\n");
+		const afterTrim = await poll();
+		expect(afterTrim.output).toBe("only this line\n");
+
+		// A repainted line supersedes the repaint before it, so a spinner between
+		// two polls costs one line rather than one line per frame.
+		for (let frame = 0; frame < 200; frame++) emitData(`\rframe ${frame}`);
+		const afterRepaints = await poll();
+		expect(afterRepaints.output).toBe("\rframe 199");
+	} finally {
+		sessions.shutdown();
+	}
+});
+
+test("write_stdin until matches only output produced after the call", async () => {
 	let emitData: (data: string) => void = () => {};
 	const processHandle: PtyProcess = {
 		write() {},
@@ -826,58 +642,89 @@ test("exec session manager reads append-only logs with cursors", async () => {
 	});
 	try {
 		const started = await sessions.exec({ cmd: "log producer", tty: true, yield_time_ms: 250 }, process.cwd());
-		emitData("alpha");
-		const first = sessions.logs(started.process_id!, 0, 3);
-		expect(first?.output).toBe("alp");
-		expect(first?.next_cursor).toBe(3);
+		emitData("ready\n");
+		await sessions.write({ process_id: started.process_id!, chars: "", yield_time_ms: 1 });
 
-		const waiting = sessions.wait(started.process_id!, "beta", 1000);
-		emitData("beta");
-		const waited = await waiting;
-		expect(waited?.matched).toBe(true);
-		expect(waited?.timed_out).toBe(false);
-		const second = sessions.logs(started.process_id!, first?.next_cursor);
-		expect(second?.output).toBe("habeta");
-		expect(second?.next_cursor).toBe(9);
+		// "ready" is already in the transcript. A whole-history match would return
+		// instantly and tell the model a prompt appeared that never did.
+		const stale = await sessions.write({ process_id: started.process_id!, until: "ready", yield_time_ms: 20 });
+		expect(stale.until_matched).toBe(false);
+
+		const pending = sessions.write({ process_id: started.process_id!, until: "ready", yield_time_ms: 1_000 });
+		emitData("ready\n");
+		expect((await pending).until_matched).toBe(true);
 	} finally {
 		sessions.shutdown();
 	}
 });
 
-test(
-	"exec session manager can poll running sessions",
-	async () => {
-		const sessions = createExecSessionManager();
-		const gate = createPipeGate();
-		try {
-			const first = await sessions.exec(
-				{ cmd: gatedCommand(gate, "printf done"), yield_time_ms: 250 },
-				process.cwd(),
-			);
-			expect(first.process_id).toBeNumber();
-			gate.release();
-			// Each poll consumes the pending output, so accumulate across polls instead of
-			// betting on one yield window being long enough for a real shell to finish.
-			let output = "";
-			let exitCode: number | undefined;
-			while (exitCode === undefined) {
-				const next = await sessions.write({
-					process_id: first.process_id!,
-					chars: "",
-					yield_time_ms: REAL_PROCESS_YIELD_MS,
-				});
-				output += next.output;
-				exitCode = next.exit_code;
-			}
-			expect(output).toContain("done");
-			expect(exitCode).toBe(0);
-		} finally {
-			sessions.shutdown();
-			gate.cleanup();
-		}
-	},
-	REAL_PROCESS_TEST_TIMEOUT_MS,
-);
+test("exec_command holds through output gaps until the requested yield", async () => {
+	let emitData: (data: string) => void = () => {};
+	let emitExit: (event: { exitCode: number }) => void = () => {};
+	const processHandle: PtyProcess = {
+		write() {},
+		resize() {},
+		kill() {},
+		onData: (listener) => {
+			emitData = listener;
+		},
+		onExit: (listener) => {
+			emitExit = listener;
+		},
+	};
+	const sessions = createExecSessionManager({
+		ptyBackend: { spawn: () => processHandle },
+		defaultExecYieldTimeMs: 1_000,
+		minYieldTimeMs: 5,
+	});
+	try {
+		const pending = sessions.exec({ cmd: "producer", tty: true, yield_time_ms: 1_000 }, process.cwd());
+		setTimeout(() => emitData("phase one\n"), 20);
+		setTimeout(() => emitExit({ exitCode: 0 }), 350);
+		const result = await pending;
+
+		expect(result.output).toBe("phase one\n");
+		expect(result.exit_code).toBe(0);
+		expect(result.process_id).toBeUndefined();
+	} finally {
+		sessions.shutdown();
+	}
+});
+
+test("write_stdin keeps a pure read attached until the process exits", async () => {
+	let emitData: (data: string) => void = () => {};
+	let emitExit: (event: { exitCode: number }) => void = () => {};
+	const processHandle: PtyProcess = {
+		write() {},
+		resize() {},
+		kill() {},
+		onData: (listener) => {
+			emitData = listener;
+		},
+		onExit: (listener) => {
+			emitExit = listener;
+		},
+	};
+	const sessions = createExecSessionManager({
+		ptyBackend: { spawn: () => processHandle },
+		defaultExecYieldTimeMs: 50,
+		minEmptyWriteYieldTimeMs: 2_000,
+		minYieldTimeMs: 5,
+	});
+	try {
+		const started = await sessions.exec({ cmd: "producer", tty: true, yield_time_ms: 50 }, process.cwd());
+		const pending = sessions.write({ process_id: started.process_id!, yield_time_ms: 10 });
+		setTimeout(() => emitData("phase done\n"), 20);
+		setTimeout(() => emitExit({ exitCode: 0 }), 350);
+		const result = await pending;
+
+		expect(result.output).toBe("phase done\n");
+		expect(result.exit_code).toBe(0);
+		expect(result.notice).toContain("clamped from 10ms to 2000ms");
+	} finally {
+		sessions.shutdown();
+	}
+});
 
 test("exec cell component lays out once per width and refreshes when the cell changes", () => {
 	let layouts = 0;

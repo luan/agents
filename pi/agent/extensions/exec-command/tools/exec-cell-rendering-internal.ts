@@ -1,6 +1,5 @@
 import { keyHint } from "@earendil-works/pi-coding-agent";
-import { type CostSeverity, formatTokenCost } from "../../shared/output-budget.ts";
-import { ansiFgToRgb, pulseGlyph, type Rgb, rgbFg, runningFrame, shineText, themeRoleAnsi } from "../../shared/tui";
+import { italic, pulseGlyph, renderTokenCost, runningFrame, shineText } from "../../shared/tui";
 import { shellSplit } from "../shell/tokenize.ts";
 import type { ExecCommandStatus } from "./exec-command-state.ts";
 
@@ -95,11 +94,16 @@ export function renderShellCardHeader(
 	elapsedMs?: number,
 	processId?: number | string,
 	outputTokens?: number,
+	exitCode?: number,
 ): string {
 	const language = shellLanguage(shell);
 	const icon = theme.fg(language.color, "");
+	// A `(0)` on every successful header is noise, so only a non-zero code earns the parenthetical.
+	const code = state === "running" || exitCode === undefined || exitCode === 0 ? "" : ` (${exitCode})`;
 	const status =
-		state === "running" ? "running" : failed ? "failed" : processId === undefined ? "completed" : "exited";
+		state === "running"
+			? "running"
+			: `${failed ? "failed" : processId === undefined ? "completed" : "exited"}${code}`;
 	const meta = [
 		processId === undefined ? undefined : `#${processId}`,
 		status,
@@ -108,40 +112,9 @@ export function renderShellCardHeader(
 	let text = `${icon} ${theme.fg("toolTitle", language.name)} ${theme.fg("dim", meta.join(" · "))}`;
 	if (outputTokens !== undefined) {
 		const separator = meta.length > 0 ? theme.fg("dim", " · ") : "";
-		text += `${separator}${renderTokenCost(outputTokens, theme)}`;
+		text += `${separator}${renderTokenCost(theme, outputTokens, "exec_command")}`;
 	}
 	return text;
-}
-
-/** `normal` keeps the subdued meta colour; the rest escalate towards error. */
-const COST_SEVERITY_ROLE: Record<CostSeverity, string> = {
-	normal: "dim",
-	elevated: "warning",
-	high: "warning",
-	severe: "error",
-};
-
-/**
- * Render what a result cost, coloured by severity.
- *
- * The theme has no orange role, so `high` is drawn as the colour between the
- * warning and error roles — literally between the two severities it sits
- * between. A theme that exposes no real ANSI colour falls back to `warning`.
- */
-function renderTokenCost(tokens: number, theme: RenderTheme): string {
-	const cost = formatTokenCost(tokens, "exec_command");
-	if (cost.severity === "high") {
-		const orange = blendedOrange(theme);
-		if (orange) return `${rgbFg(orange)}${cost.text}\x1b[39m`;
-	}
-	return theme.fg(COST_SEVERITY_ROLE[cost.severity], cost.text);
-}
-
-function blendedOrange(theme: RenderTheme): Rgb | undefined {
-	const warning = ansiFgToRgb(themeRoleAnsi(theme, "warning"));
-	const error = ansiFgToRgb(themeRoleAnsi(theme, "error"));
-	if (!warning || !error) return undefined;
-	return warning.map((channel, index) => Math.round(channel * 0.4 + error[index]! * 0.6)) as Rgb;
 }
 
 export function renderExecCommandCall(
@@ -150,19 +123,19 @@ export function renderExecCommandCall(
 	theme: RenderTheme,
 	failed = false,
 	elapsedMs?: number,
-	contextGuardWrapped = false,
+	captureWrapped = false,
 ): string {
-	return renderCommandText(command, state, theme, failed, elapsedMs, contextGuardWrapped);
+	return renderCommandText(command, state, theme, failed, elapsedMs, captureWrapped);
 }
 
 export function renderSpawnedBackgroundTerminalCall(
 	command: string,
 	theme: RenderTheme,
-	contextGuardWrapped = false,
+	captureWrapped = false,
 	session?: Omit<TerminalSessionView, "operation" | "command">,
 ): string {
 	if (session) return renderTerminalSessionRow({ ...session, operation: "start", command }, theme);
-	return renderCommandText(command, "done", theme, false, undefined, contextGuardWrapped, {
+	return renderCommandText(command, "done", theme, false, undefined, captureWrapped, {
 		done: "Spawned background terminal",
 		running: "Spawning background terminal",
 	});
@@ -384,7 +357,7 @@ export function renderTerminalCommandHeader(
 	theme: RenderTheme,
 	_failed = false,
 	_elapsedMs?: number,
-	_contextGuardWrapped = false,
+	_captureWrapped = false,
 ): string {
 	const [firstLine = "", ...continuationLines] = wrapCommandForDisplay(stripShellWrapper(command));
 	let text = `${theme.bold("$")} ${highlightShellCommand(firstLine, theme)}`;
@@ -400,7 +373,7 @@ function renderCommandText(
 	theme: RenderTheme,
 	failed: boolean,
 	elapsedMs?: number,
-	contextGuardWrapped = false,
+	captureWrapped = false,
 	labels: { done: string; running: string } = { done: "Ran", running: "Running" },
 ): string {
 	const verb = state === "running" ? labels.running : labels.done;
@@ -410,7 +383,7 @@ function renderCommandText(
 		appendRoutingMarkers(
 			`${renderStatusMarker(marker, state, theme, failed)} ${theme.bold(verb)} ${highlightShellCommand(firstLine, theme)}`,
 			theme,
-			{ contextGuardWrapped },
+			{ captureWrapped },
 		),
 		state,
 		theme,
@@ -425,19 +398,15 @@ function renderCommandText(
 function appendRoutingMarkers(
 	text: string,
 	theme: Pick<RenderTheme, "fg">,
-	options: { contextGuardWrapped?: boolean },
+	options: { captureWrapped?: boolean },
 ): string {
-	const markers = [options.contextGuardWrapped ? "via context-guard" : undefined].filter(
+	const markers = [options.captureWrapped ? "via artifact-store" : undefined].filter(
 		(marker): marker is string => marker !== undefined,
 	);
 	if (markers.length === 0) return text;
 	return `${text}${markers
 		.map((marker) => `${theme.fg("dim", " · ")}${theme.fg("mdLink", italic(marker))}`)
 		.join("")}`;
-}
-
-function italic(text: string): string {
-	return `\x1b[3m${text}\x1b[23m`;
 }
 
 function appendElapsed(

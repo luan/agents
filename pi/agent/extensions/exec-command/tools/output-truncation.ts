@@ -1,34 +1,29 @@
-import { CONTEXT_GUARD_CAPTURE_MAX_BYTES } from "../../context-guard/pi/capture.ts";
+import { CAPTURE_MAX_BYTES } from "../../artifact-store/pi/capture.ts";
+import { capMiddleByBytes, safeSliceByBytes } from "../../shared/output-budget.ts";
+import { HARD_MAX_TOOL_TOKENS, resolveToolBudget } from "../../shared/tool-bounding.ts";
 
-const DEFAULT_MAX_OUTPUT_TOKENS = 10_000;
+/**
+ * The default and the ceiling both come from the shared table.
+ *
+ * Truncating here and again in the central `tool_result` bound means the
+ * smaller of the two numbers is the one the model ever sees. Owning a second
+ * default here would make the schema's "defaults to N" false for every call
+ * that does not pass `max_output_tokens` — which is most of them.
+ */
+export const DEFAULT_MAX_OUTPUT_TOKENS = resolveToolBudget("exec_command");
+export const MAX_OUTPUT_TOKENS_CEILING = HARD_MAX_TOOL_TOKENS;
 const DEFAULT_MAX_OUTPUT_LINE_CHARS = 400;
 export const UNIFIED_EXEC_OUTPUT_MAX_BYTES = 1024 * 1024;
 
-export function approxTokenCount(text: string): number {
-	return Math.ceil(Buffer.byteLength(text, "utf8") / 4);
-}
-
-function safeSliceByBytes(text: string, start: number, end?: number): string {
-	const buffer = Buffer.from(text, "utf8");
-	let safeStart = Math.min(buffer.length, Math.max(0, start));
-	let safeEnd = Math.min(buffer.length, Math.max(safeStart, end ?? buffer.length));
-	while (safeStart < buffer.length && (buffer[safeStart]! & 0xc0) === 0x80) safeStart += 1;
-	while (safeEnd > safeStart && (buffer[safeEnd]! & 0xc0) === 0x80) safeEnd -= 1;
-	return buffer.subarray(safeStart, safeEnd).toString("utf8");
-}
-
-export function capHeadTail(text: string, maxBytes: number): string {
-	const totalBytes = Buffer.byteLength(text, "utf8");
-	if (totalBytes <= maxBytes) return text;
-	const headBudget = Math.floor(maxBytes / 2);
-	const tailBudget = maxBytes - headBudget;
-	return safeSliceByBytes(text, 0, headBudget) + safeSliceByBytes(text, totalBytes - tailBudget);
+export function resolveMaxOutputTokens(requested: number | undefined): number {
+	if (requested === undefined || !Number.isFinite(requested)) return DEFAULT_MAX_OUTPUT_TOKENS;
+	return Math.min(MAX_OUTPUT_TOKENS_CEILING, Math.max(1, Math.floor(requested)));
 }
 
 export function appendCaptureOutput(current: string, appended: string): { output: string; truncated: boolean } {
 	const currentBytes = Buffer.byteLength(current, "utf8");
-	if (currentBytes >= CONTEXT_GUARD_CAPTURE_MAX_BYTES) return { output: current, truncated: true };
-	const remaining = CONTEXT_GUARD_CAPTURE_MAX_BYTES - currentBytes;
+	if (currentBytes >= CAPTURE_MAX_BYTES) return { output: current, truncated: true };
+	const remaining = CAPTURE_MAX_BYTES - currentBytes;
 	const appendedBytes = Buffer.byteLength(appended, "utf8");
 	if (appendedBytes <= remaining) return { output: `${current}${appended}`, truncated: false };
 	return { output: `${current}${safeSliceByBytes(appended, 0, remaining)}`, truncated: true };
@@ -38,19 +33,6 @@ function lineCount(text: string): number {
 	if (text.length === 0) return 0;
 	const lines = text.split("\n").length;
 	return text.endsWith("\n") ? lines - 1 : lines;
-}
-
-function truncateMiddleWithTokenBudget(text: string, maxTokens: number): string {
-	const maxBytes = maxTokens * 4;
-	const totalBytes = Buffer.byteLength(text, "utf8");
-	if (totalBytes <= maxBytes) return text;
-	if (maxBytes <= 0) return `…${approxTokenCount(text)} tokens truncated…`;
-	const leftBudget = Math.floor(maxBytes / 2);
-	const rightBudget = maxBytes - leftBudget;
-	const prefix = safeSliceByBytes(text, 0, leftBudget);
-	const suffix = safeSliceByBytes(text, totalBytes - rightBudget);
-	const removedTokens = Math.ceil(Math.max(0, totalBytes - maxBytes) / 4);
-	return `${prefix}…${removedTokens} tokens truncated…${suffix}`;
 }
 
 function truncateLineMiddle(line: string, maxChars: number): string {
@@ -79,18 +61,41 @@ function truncateLongLines(
 	return changed ? { output, output_truncated: true } : { output };
 }
 
-export function formattedTruncateText(text: string): { output: string; output_truncated?: boolean } {
+/** True when `maxTokens` will force `formattedTruncateText` to drop a middle, which is the only loss it cannot mark in place. */
+export function willElideMiddle(text: string, maxTokens: number): boolean {
+	return (
+		text.split("\n").some((line) => line.length > DEFAULT_MAX_OUTPUT_LINE_CHARS) ||
+		Buffer.byteLength(text, "utf8") > maxTokens * 4
+	);
+}
+
+/**
+ * The elision marker names where the dropped bytes went.
+ *
+ * `…N tokens truncated…` alone described a loss the caller could not undo: `consumeOutput` empties `pendingBuffer` in
+ * the same call, so a later drain returns the bytes that arrived next, never the middle this one cut.
+ */
+export function formattedTruncateText(
+	text: string,
+	maxTokens = DEFAULT_MAX_OUTPUT_TOKENS,
+	fullOutputRef?: string,
+): { output: string; output_truncated?: boolean; elided_bytes?: number } {
 	const limitedLines = truncateLongLines(text);
 	const output = limitedLines.output;
-	if (!limitedLines.output_truncated && Buffer.byteLength(output, "utf8") <= DEFAULT_MAX_OUTPUT_TOKENS * 4) {
+	if (!limitedLines.output_truncated && Buffer.byteLength(output, "utf8") <= maxTokens * 4) {
 		return { output };
 	}
-	const truncated =
-		Buffer.byteLength(output, "utf8") > DEFAULT_MAX_OUTPUT_TOKENS * 4
-			? truncateMiddleWithTokenBudget(output, DEFAULT_MAX_OUTPUT_TOKENS)
-			: output;
+	let elidedBytes = 0;
+	const truncated = capMiddleByBytes(output, maxTokens * 4, {
+		notice: (omittedBytes) => {
+			elidedBytes = omittedBytes;
+			const where = fullOutputRef ? `, kept in ${fullOutputRef}` : "";
+			return `…${Math.ceil(omittedBytes / 4)} tokens elided${where}…`;
+		},
+	});
 	return {
 		output: `Total output lines: ${lineCount(text)}\n\n${truncateLongLines(truncated).output}`,
 		output_truncated: true,
+		elided_bytes: elidedBytes,
 	};
 }

@@ -67,8 +67,10 @@ interface ExecCell {
 	command?: string;
 	shell?: string;
 	failed?: boolean;
+	/** Shown on the shell-card header rather than in the Output body, where it read as command output. */
+	exitCode?: number;
 	elapsedMs?: number;
-	contextGuardWrapped?: boolean;
+	captureWrapped?: boolean;
 	outputBlock?: ExecCellOutputBlock;
 	/**
 	 * Tokens the tool result actually contributed to the context.
@@ -93,8 +95,9 @@ interface RawCommandToExecCellInput {
 	shell?: string;
 	status: ExecCommandStatus;
 	failed?: boolean;
+	exitCode?: number;
 	elapsedMs?: number;
-	contextGuardWrapped?: boolean;
+	captureWrapped?: boolean;
 	outputBlock?: ExecCellOutputBlock;
 	contextTokens?: number;
 }
@@ -126,8 +129,9 @@ export function rawCommandToExecCell(input: RawCommandToExecCellInput): ExecCell
 		command: input.command,
 		shell: input.shell,
 		failed: input.failed,
+		exitCode: input.exitCode,
 		elapsedMs: input.elapsedMs,
-		contextGuardWrapped: input.contextGuardWrapped,
+		captureWrapped: input.captureWrapped,
 		outputBlock: input.outputBlock,
 		contextTokens: input.contextTokens,
 	};
@@ -150,18 +154,14 @@ export function renderExecCellComponent(cell: ExecCell, env: RenderExecCellEnv, 
 	return new ExecCellComponent(cell, env);
 }
 
-const MAX_CACHED_RENDER_TEXT_LENGTH = 16_384;
-
-function shouldCacheRenderedLines(cell: ExecCell, text: string): boolean {
-	return (
-		!cell.outputBlock ||
-		(cell.outputBlock.output.length <= MAX_CACHED_RENDER_TEXT_LENGTH && text.length <= MAX_CACHED_RENDER_TEXT_LENGTH)
-	);
+function sameRenderKey(left: readonly unknown[] | undefined, right: readonly unknown[]): boolean {
+	return left?.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 class ExecCellComponent implements Component {
 	private renderedCache?: {
 		width: number;
+		key?: readonly unknown[];
 		lines: string[];
 	};
 
@@ -183,18 +183,23 @@ class ExecCellComponent implements Component {
 	}
 
 	render(width: number): string[] {
-		// The cache has to sit in front of renderExecCell(): shell tokenizing, syntax
-		// highlighting and output limiting all happen in there, and render() is called on
-		// every animation frame.
-		if (this.renderedCache?.width === width && !this.env.resolveCell) return this.renderedCache.lines;
+		// Resolve live sessions before checking the cache. Most animation frames change
+		// neither their formatted header nor their output, so the expensive ANSI layout
+		// stays cached while session polling remains live.
 		if (this.env.resolveCell) this.cell = this.env.resolveCell();
+		else if (this.renderedCache?.width === width) return this.renderedCache.lines;
 		if (this.cell.kind === "spawned-background-terminal" || this.cell.kind === "terminal-wait") {
 			const text = renderExecCellHeader(this.cell, this.env.theme).replace(/\s*\n\s*/g, " ");
+			const key = [text];
+			if (this.renderedCache?.width === width && sameRenderKey(this.renderedCache.key, key)) {
+				return this.renderedCache.lines;
+			}
 			const lines = [truncateToWidthCompat(text, width, "...")];
-			this.renderedCache = { width, lines };
+			this.renderedCache = { width, key, lines };
 			return lines;
 		}
 		const innerWidth = Math.max(1, width - 3);
+		const part = this.env.part ?? "full";
 		const shellCard = this.cell.kind === "command" || this.cell.kind === "terminal-logs";
 		const renderedHeader = shellCard
 			? renderShellCardHeader(
@@ -205,36 +210,62 @@ class ExecCellComponent implements Component {
 					this.cell.elapsedMs ?? this.cell.terminalSession?.elapsedMs,
 					this.cell.terminalSession?.processId,
 					completedOutputTokens(this.cell),
+					this.cell.exitCode ?? this.cell.terminalSession?.exitCode,
 				)
 			: renderExecCellHeader(this.cell, this.env.theme);
-		const commandLines = shellCard
-			? renderTerminalCommandHeader(
-					this.cell.command ?? "",
-					this.cell.status,
-					this.env.theme,
-					this.cell.failed,
-					this.cell.elapsedMs,
-					this.cell.contextGuardWrapped,
-				).split("\n")
-			: renderedHeader.split("\n");
-		const outputLines = this.cell.outputBlock
-			? renderTerminalOutputLines(this.cell.outputBlock.output, this.env.theme, this.cell.outputBlock.footer, {
-					...this.cell.outputBlock.options,
-					expanded: this.env.expanded ?? this.cell.outputBlock.options?.expanded,
-					width: innerWidth,
-				})
-			: [];
+		// `part: "output"` draws the block under a header row another render already
+		// printed. Ignoring it repeated the write_stdin title, with `#?` where the
+		// process id would be: an output-only cell carries no `writeStdin` field.
+		const commandLines =
+			part === "output"
+				? []
+				: shellCard
+					? renderTerminalCommandHeader(
+							this.cell.command ?? "",
+							this.cell.status,
+							this.env.theme,
+							this.cell.failed,
+							this.cell.elapsedMs,
+							this.cell.captureWrapped,
+						).split("\n")
+					: renderedHeader.split("\n");
+		const options = this.cell.outputBlock?.options;
+		const cacheKey = [
+			part,
+			renderedHeader,
+			commandLines.join("\n"),
+			this.cell.outputBlock?.output,
+			this.cell.outputBlock?.footer,
+			this.env.expanded,
+			options?.expanded,
+			options?.maxLines,
+			options?.truncatedAbove,
+			options?.originalTokenCount,
+			this.cell.failed,
+			this.cell.status,
+		];
+		if (this.renderedCache?.width === width && sameRenderKey(this.renderedCache.key, cacheKey)) {
+			return this.renderedCache.lines;
+		}
+		const outputLines =
+			this.cell.outputBlock && part !== "header"
+				? renderTerminalOutputLines(this.cell.outputBlock.output, this.env.theme, this.cell.outputBlock.footer, {
+						...options,
+						expanded: this.env.expanded ?? options?.expanded,
+						width: innerWidth,
+					})
+				: [];
 		const lines = framedBlock(this.env.theme, {
 			header: shellCard ? renderedHeader : "",
 			sections: [
-				{ lines: commandLines },
+				...(commandLines.length > 0 ? [{ lines: commandLines }] : []),
 				...(outputLines.length > 0
 					? [{ label: this.env.theme.fg("toolTitle", "Output"), lines: outputLines }]
 					: []),
 			],
 			borderColor: this.cell.failed ? "error" : this.cell.status === "running" ? "accent" : "dim",
 		}).render(width);
-		this.renderedCache = shouldCacheRenderedLines(this.cell, renderedHeader) ? { width, lines } : undefined;
+		this.renderedCache = { width, key: cacheKey, lines };
 		return lines;
 	}
 }
@@ -317,7 +348,7 @@ function renderExecCellHeader(cell: ExecCell, theme: RenderTheme): string {
 			return renderSpawnedBackgroundTerminalCall(
 				cell.command ?? "",
 				theme,
-				cell.contextGuardWrapped,
+				cell.captureWrapped,
 				cell.terminalSession,
 			);
 		case "terminal-logs":
@@ -343,7 +374,7 @@ function renderExecCellHeader(cell: ExecCell, theme: RenderTheme): string {
 				theme,
 				cell.failed,
 				cell.elapsedMs,
-				cell.contextGuardWrapped,
+				cell.captureWrapped,
 			);
 	}
 }

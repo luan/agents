@@ -2,19 +2,20 @@ import { type ChildProcessByStdio, execFileSync, spawn } from "node:child_proces
 import { randomBytes } from "node:crypto";
 import { resolve } from "node:path";
 import type { Readable } from "node:stream";
-import { fileURLToPath } from "node:url";
-import { createNodePtyBackend, type PtyBackend, type PtyProcess } from "../adapter/pty-backend.ts";
+import { approxTokenCount, capMiddleByBytes } from "../../shared/output-budget.ts";
+import { mintQuietly } from "../../shared/tool-bounding.ts";
+import { createIsolatedNodePtyBackend } from "../adapter/isolated-node-pty-backend.ts";
+import type { PtyBackend, PtyProcess } from "../adapter/pty-backend.ts";
 import { DEFAULT_EXEC_SHELL, isFishShell, resolveRuntimeShell } from "../adapter/runtime-shell.ts";
 import {
 	appendCaptureOutput,
-	approxTokenCount,
-	capHeadTail,
 	formattedTruncateText,
+	resolveMaxOutputTokens,
 	UNIFIED_EXEC_OUTPUT_MAX_BYTES,
+	willElideMiddle,
 } from "./output-truncation.ts";
 
-type ExecTerminalState = "exited" | "timed_out" | "cancelled" | "session_error";
-type ExecInterventionState = "timed_out" | "cancelled";
+type ExecTerminalState = "exited" | "cancelled" | "session_error";
 
 export interface UnifiedExecResult {
 	chunk_id: string;
@@ -22,37 +23,32 @@ export interface UnifiedExecResult {
 	output: string;
 	exit_code?: number;
 	terminal_state?: ExecTerminalState;
-	timed_out?: boolean;
 	cancelled?: boolean;
 	session_error?: string;
 	process_id?: number;
 	process_name?: string;
 	stdin_open?: boolean;
+	/** Set by `write_stdin` when `until` was requested: whether the text arrived. */
+	until_matched?: boolean;
+	/** Set when a requested yield window was clamped. */
+	notice?: string;
 	original_token_count?: number;
 	output_truncated?: boolean;
-	context_guard_capture?: {
+	/** Artifact holding every byte this process has produced. Present whenever a drain elided part of what it returned. */
+	full_output_ref?: string;
+	/** Bytes this drain cut out of `output`. They are in `full_output_ref`, not lost. */
+	output_elided_bytes?: number;
+	artifact_capture?: {
 		artifact_id: string;
 		byte_count: number;
 		line_count: number;
+		returned_bytes: number;
+		omitted_bytes: number;
 	};
-	context_guard_capture_failure?: string;
-	context_guard_capture_truncated?: boolean;
+	artifact_capture_failure?: string;
+	artifact_capture_truncated?: boolean;
 	capture_output?: string;
 	capture_output_truncated?: boolean;
-}
-export interface ProcessLogChunk {
-	process_id: number;
-	process_name?: string;
-	cursor: number;
-	next_cursor: number;
-	output: string;
-	truncated: boolean;
-	running: boolean;
-}
-export interface ProcessWaitResult {
-	process: ExecSessionRecord;
-	matched: boolean;
-	timed_out: boolean;
 }
 
 export type ProcessSelector = number | string;
@@ -64,7 +60,6 @@ interface ExecSessionSnapshot {
 	running: boolean;
 	exitCode?: number;
 	terminalState?: ExecTerminalState;
-	timedOut?: boolean;
 	cancelled?: boolean;
 	sessionError?: string;
 	stdinOpen?: boolean;
@@ -74,13 +69,13 @@ interface ExecSessionSnapshot {
 	outputTruncated: boolean;
 	captureOutput: string;
 	captureOutputTruncated: boolean;
+	/** The artifact a drain already filled for this process, so the exit capture replaces it instead of filing a second copy. */
+	artifactUri?: string;
 }
 
 export interface ExecSessionRecord {
 	id: number;
 	name: string;
-	attachCommand?: string;
-	attachment?: { command: string; args: string[] };
 	command: string;
 	cwd: string;
 	output: string;
@@ -93,24 +88,46 @@ export interface ExecSessionRecord {
 	state: "running" | ExecTerminalState;
 }
 
+export interface ExecProcessSnapshot {
+	id: number;
+	name: string;
+	command: string;
+	cwd: string;
+	ownerSessionId?: string;
+	tty: boolean;
+	stdinOpen: boolean;
+	state: "running" | ExecTerminalState;
+	exitCode?: number;
+	startedAtMs: number;
+	finishedAtMs?: number;
+	output: string;
+	outputTruncated: boolean;
+}
+
+export interface PtyDataEvent {
+	processId: number;
+	data: string;
+}
+
 export interface ExecCommandInput {
 	cmd: string;
 	name?: string;
 	workdir?: string;
 	shell?: string;
 	tty?: boolean;
-	env?: Record<string, string>;
-	timeout_ms?: number;
 	yield_time_ms?: number;
+	max_output_tokens?: number;
 	login?: boolean;
-	wait_for_exit?: boolean;
 	ownerSessionId?: string;
 }
 
-interface WriteStdinInput {
+export interface WriteStdinInput {
 	process_id: ProcessSelector;
 	chars?: string;
+	/** Return as soon as this text appears in output produced after the write. */
+	until?: string;
 	yield_time_ms?: number;
+	max_output_tokens?: number;
 }
 
 type ExecSessionUpdateCallback = (result: UnifiedExecResult) => void;
@@ -118,8 +135,6 @@ type ExecSessionUpdateCallback = (result: UnifiedExecResult) => void;
 interface BaseExecSession {
 	id: number;
 	name: string;
-	attachCommand?: string;
-	attachment?: { command: string; args: string[] };
 	command: string;
 	cwd: string;
 	input: ExecCommandInput;
@@ -128,12 +143,14 @@ interface BaseExecSession {
 	emittedBuffer: string;
 	captureBuffer: string;
 	captureBufferTruncated: boolean;
+	/** URI of the one artifact this process refills as it drains, minted the first time a drain would elide a middle. */
+	artifactUri?: string;
 	logBuffer: string;
 	logStartCursor: number;
 	logEndCursor: number;
 	exitCode: number | null | undefined;
 	terminalState: ExecTerminalState | undefined;
-	pendingTerminalState: ExecInterventionState | undefined;
+	pendingTerminalState: "cancelled" | undefined;
 	sessionError: string | undefined;
 	finalized: boolean;
 	listeners: Set<() => void>;
@@ -141,8 +158,26 @@ interface BaseExecSession {
 	startedAtMs: number;
 	finishedAtMs?: number;
 	hidden: boolean;
-	timeoutTimer?: ReturnType<typeof setTimeout>;
 	abortCleanup?: () => void;
+	/** True before the first process-tree signal, so exit events cannot start a second cleanup. */
+	processCleanupStarted: boolean;
+	/** True while the `exec` call that created this session has not returned. `interruptForeground` targets exactly these. */
+	foreground: boolean;
+}
+
+/** What is still known after `makeResult` deletes a drained session, so `write_stdin` can say more than `Unknown process id 30`. */
+interface SessionHistory {
+	command: string;
+	name: string;
+	tty: boolean;
+	startedAtMs: number;
+	finishedAtMs?: number;
+	terminalState?: ExecTerminalState;
+	exitCode?: number;
+	sessionError?: string;
+	/** Artifact holding the full drain, recorded by `recordSessionArtifact` after `captureExecResult`. */
+	artifactId?: string;
+	snapshot?: ExecProcessSnapshot;
 }
 
 interface PipeExecSession extends BaseExecSession {
@@ -153,6 +188,14 @@ interface PipeExecSession extends BaseExecSession {
 interface PtyExecSession extends BaseExecSession {
 	kind: "pty";
 	child: PtyProcess;
+	/**
+	 * The terminal text as last reflected into `pendingBuffer`.
+	 *
+	 * Kept apart from `buffer` because `buffer` is display state that history
+	 * trimming rewrites: a delta computed against a trimmed string cannot find
+	 * its prefix and degrades to resending everything. See {@link computePtyDelta}.
+	 */
+	terminalRendered: string;
 	terminalCommitted: string;
 	terminalLine: string[];
 	terminalCursor: number;
@@ -171,11 +214,9 @@ export interface ExecSessionManager {
 	): Promise<UnifiedExecResult>;
 	write(input: WriteStdinInput): Promise<UnifiedExecResult>;
 	resize(selector: ProcessSelector, cols: number, rows: number): Promise<boolean>;
-	logs(selector: ProcessSelector, cursor?: number, maxChars?: number): ProcessLogChunk | undefined;
-	wait(selector: ProcessSelector, pattern?: string, timeoutMs?: number): Promise<ProcessWaitResult | undefined>;
+	interrupt(selector: ProcessSelector): Promise<boolean>;
 	describe(selector: ProcessSelector): ExecSessionRecord | undefined;
 	restart(selector: ProcessSelector): Promise<UnifiedExecResult | undefined>;
-	signal(selector: ProcessSelector, signal: "INT" | "TERM" | "KILL"): Promise<boolean>;
 	hasSession(sessionId: number): boolean;
 	getSessionCommand(selector: ProcessSelector): string | undefined;
 	getSessionStdinOpen(selector: ProcessSelector): boolean | undefined;
@@ -184,8 +225,14 @@ export interface ExecSessionManager {
 	listSessions(): ExecSessionRecord[];
 	stopSession(selector: ProcessSelector): boolean;
 	stopAllSessions(): number;
+	/** Terminate every session whose `exec` has not returned. Kills by ownership, for callers that plumbed no `AbortSignal`. */
+	interruptForeground(): number;
+	/** Attach the drain artifact to a finished process so a later `write_stdin` can point at it. */
+	recordSessionArtifact(sessionId: number, artifactId: string): void;
 	onSessionExit(listener: (sessionId: number, command: string) => void): () => void;
 	onSessionUpdate(listener: () => void): () => void;
+	subscribeProcesses(listener: (snapshots: ExecProcessSnapshot[]) => void): () => void;
+	onPtyData(listener: (event: PtyDataEvent) => void): () => void;
 	shutdown(): void;
 }
 
@@ -204,13 +251,13 @@ const DEFAULT_WRITE_YIELD_TIME_MS = 250;
 const MIN_YIELD_TIME_MS = 250;
 const MIN_NON_INTERACTIVE_EXEC_YIELD_TIME_MS = 10_000;
 const MIN_EMPTY_WRITE_YIELD_TIME_MS = 30_000;
+// Keep progress chunks 200ms apart in one response while returning promptly after the stream pauses.
+const OUTPUT_IDLE_TIME_MS = 230;
 const MAX_YIELD_TIME_MS = 120_000;
 const MAX_COMMAND_HISTORY = 256;
 const DEFAULT_MAX_SESSION_BUFFER_CHARS = UNIFIED_EXEC_OUTPUT_MAX_BYTES;
 const PID_LIVENESS_POLL_MS = 250;
 const LOST_PROCESS_ERROR = "process vanished before reporting an exit status";
-const IS_BUN_RUNTIME = typeof process !== "undefined" && typeof process.versions?.bun === "string";
-const NODE_PTY_HOST = fileURLToPath(new URL("./node-pty-host.mjs", import.meta.url));
 
 function resolveWorkdir(baseCwd: string, workdir?: string): string {
 	if (!workdir) return baseCwd;
@@ -263,11 +310,10 @@ function buildSyncedFallbackShellCommand(command: string, env: NodeJS.ProcessEnv
 function resolveExecution(
 	requestedShell: string | undefined,
 	command: string,
-	overrides?: Record<string, string>,
 	tty = false,
 ): { shell: string; command: string; env: NodeJS.ProcessEnv } {
 	const shell = resolveShell(requestedShell);
-	const env = withUnifiedExecEnvironment({ ...process.env, ...overrides }, tty);
+	const env = withUnifiedExecEnvironment({ ...process.env }, tty);
 	if (!shouldSyncFallbackShellEnv(requestedShell, shell)) {
 		return { shell, command, env };
 	}
@@ -307,6 +353,9 @@ function withUnifiedExecEnvironment(env: NodeJS.ProcessEnv, tty: boolean): NodeJ
 }
 function clampYieldTime(value: number | undefined, fallback: number, minYieldTimeMs: number): number {
 	const resolved = value ?? fallback;
+	// An explicit zero is the describe-a-process call: take the current state and
+	// return, without paying a floor the caller did not ask for.
+	if (resolved <= 0) return 0;
 	return Math.min(MAX_YIELD_TIME_MS, Math.max(minYieldTimeMs, resolved));
 }
 
@@ -324,17 +373,24 @@ function clampExecYieldTime(
 	return Math.min(MAX_YIELD_TIME_MS, Math.max(minNonInteractiveExecYieldTimeMs, value));
 }
 
+/**
+ * Writes return after their output settles. Pure reads stay attached until the process exits or the yield expires,
+ * so one command does not become a chain of short polling results. yield-time_ms: 0 remains an immediate snapshot.
+ */
+export function clampedYieldNotice(requestedMs: number | undefined, resolvedMs: number): string | undefined {
+	if (typeof requestedMs !== "number" || !Number.isFinite(requestedMs) || requestedMs === resolvedMs) return undefined;
+	return `yield-time_ms was clamped from ${requestedMs}ms to ${resolvedMs}ms.`;
+}
+
 function clampWriteYieldTime(
 	yieldTimeMs: number | undefined,
 	fallback: number,
-	isEmptyPoll: boolean,
+	isPureRead: boolean,
 	minEmptyWriteYieldTimeMs: number,
 	minYieldTimeMs: number,
 ): number {
 	const value = clampYieldTime(yieldTimeMs, fallback, minYieldTimeMs);
-	if (!isEmptyPoll || yieldTimeMs !== undefined) {
-		return value;
-	}
+	if (!isPureRead || value === 0) return value;
 	return Math.min(MAX_YIELD_TIME_MS, Math.max(minEmptyWriteYieldTimeMs, value));
 }
 
@@ -350,11 +406,11 @@ function stripTerminalControlSequences(text: string, preserveCsi = false, preser
 		.replace(preserveSgr ? /\u001B(?!\[)[@-_]/g : /\u001B[@-_]/g, "");
 }
 
-function sanitizeBinaryOutput(text: string, preserveBackspace = false, preserveSgr = false): string {
+function sanitizeBinaryOutput(text: string): string {
 	let output = "";
 	for (let index = 0; index < text.length; index += 1) {
 		const char = text[index]!;
-		if (preserveSgr && char === "\u001b" && text[index + 1] === "[") {
+		if (char === "\u001b" && text[index + 1] === "[") {
 			let sequenceEnd = index + 2;
 			while (sequenceEnd < text.length) {
 				const code = text.charCodeAt(sequenceEnd);
@@ -371,10 +427,6 @@ function sanitizeBinaryOutput(text: string, preserveBackspace = false, preserveS
 		const code = char.codePointAt(0);
 		if (code === undefined) continue;
 		if (code === 0x09 || code === 0x0a || code === 0x0d) {
-			output += char;
-			continue;
-		}
-		if (preserveBackspace && code === 0x08) {
 			output += char;
 			continue;
 		}
@@ -428,7 +480,7 @@ function compactSgrRuns(text: string): string {
 }
 
 function normalizePipeOutput(text: string): string {
-	return compactSgrRuns(sanitizeBinaryOutput(stripTerminalControlSequences(text, false, true), false, true))
+	return compactSgrRuns(sanitizeBinaryOutput(stripTerminalControlSequences(text, false, true)))
 		.replace(/\r\n/g, "\n")
 		.replace(/\r/g, "\n");
 }
@@ -560,28 +612,82 @@ function applyTerminalOutput(session: PtyExecSession, text: string): string {
 	return session.terminalCommitted + compactTerminalLine(session.terminalLine);
 }
 
-function computePtyDelta(previous: string, current: string): string {
+/**
+ * What changed on a PTY between two renders.
+ *
+ * `line-rewrite` is called out rather than folded into the text because a
+ * repaint supersedes the repaint before it: a spinner that redraws its line
+ * five hundred times between two polls is one line of information, and only the
+ * caller knows whether the earlier frames are still pending.
+ */
+type PtyDelta = { kind: "append" | "line-rewrite"; text: string };
+
+function computePtyDelta(previous: string, current: string): PtyDelta {
 	if (current.startsWith(previous)) {
-		return current.slice(previous.length);
+		return { kind: "append", text: current.slice(previous.length) };
 	}
 
 	const lineStart = previous.lastIndexOf("\n") + 1;
 	const stablePrefix = previous.slice(0, lineStart);
 	if (current.startsWith(stablePrefix)) {
-		return `\r${current.slice(lineStart)}`;
+		return { kind: "line-rewrite", text: `\r${current.slice(lineStart)}` };
 	}
 
-	return current;
+	// Committed history only ever grows and only ever from the tail, so a render
+	// that shares no prefix with the last one means the two came from different
+	// histories. Resending everything is the honest answer; keeping the invariant
+	// so this never fires is the point of `terminalRendered`.
+	return { kind: "append", text: current };
+}
+
+function appendPendingPtyDelta(session: PtyExecSession, delta: PtyDelta): void {
+	// A rewrite carries the whole current line, and everything pending after the
+	// last newline is that same line. Replacing the tail instead of appending is
+	// what keeps a five-hundred-frame progress bar worth one line.
+	if (delta.kind === "line-rewrite") {
+		const tailStart = session.pendingBuffer.lastIndexOf("\n") + 1;
+		session.pendingBuffer = `${session.pendingBuffer.slice(0, tailStart)}${delta.text}`;
+		return;
+	}
+	session.pendingBuffer = capMiddleByBytes(`${session.pendingBuffer}${delta.text}`, UNIFIED_EXEC_OUTPUT_MAX_BYTES);
+}
+
+/**
+ * Drop the oldest committed lines once the transcript outgrows its budget.
+ *
+ * The same prefix leaves `terminalRendered`, so the next delta still finds its
+ * prefix. Trimming one of the two and not the other is what made every poll
+ * after the first megabyte return the whole buffer.
+ */
+function capTerminalHistory(session: PtyExecSession, maxChars: number): void {
+	const overflow = session.terminalCommitted.length - maxChars;
+	if (overflow <= 0) return;
+	const lineBreak = session.terminalCommitted.indexOf("\n", overflow);
+	const dropped = lineBreak === -1 ? session.terminalCommitted.length : lineBreak + 1;
+	session.terminalCommitted = session.terminalCommitted.slice(dropped);
+	session.terminalRendered = session.terminalRendered.slice(dropped);
 }
 
 function generateChunkId(): string {
 	return randomBytes(3).toString("hex");
 }
 
-function consumeOutput(session: ExecSession): {
+/**
+ * Take the output produced since the last drain, bounded to `maxOutputTokens`.
+ *
+ * Destructive on purpose: `pendingBuffer` is emptied so the next call reports what happened next, not what already
+ * shipped. What the bound cuts out is therefore unreachable from a later drain, so `fullOutputRef` — the artifact
+ * `refreshFullOutputRef` fills from `captureBuffer` before this runs — is the only route back to the middle.
+ */
+function consumeOutput(
+	session: ExecSession,
+	maxOutputTokens: number,
+	fullOutputRef?: string,
+): {
 	output: string;
 	original_token_count?: number;
 	output_truncated?: boolean;
+	elided_bytes?: number;
 } {
 	const text = session.pendingBuffer;
 	session.pendingBuffer = "";
@@ -591,7 +697,7 @@ function consumeOutput(session: ExecSession): {
 	}
 
 	return {
-		...formattedTruncateText(text),
+		...formattedTruncateText(text, maxOutputTokens, fullOutputRef),
 		original_token_count: approxTokenCount(text),
 	};
 }
@@ -665,19 +771,16 @@ function killPid(pid: number, signal: NodeJS.Signals): void {
 	}
 }
 
-function signalProcessTree(
-	rootPid: number | undefined,
-	includeRootProcessGroup: boolean,
-	signal: NodeJS.Signals,
-): void {
+function terminateProcessTree(rootPid: number | undefined, includeRootProcessGroup: boolean): void {
 	if (rootPid === undefined || rootPid <= 0) return;
-	const descendants = collectDescendantPids(rootPid);
-	for (const pid of [...descendants.reverse(), rootPid]) killPid(pid, signal);
-	if (includeRootProcessGroup) killPid(-rootPid, signal);
-}
-
-function terminateProcessTree(rootPid: number | undefined, includeRootProcessGroup: boolean, force = false): void {
-	if (rootPid === undefined || rootPid <= 0) return;
+	if (process.platform === "win32") {
+		try {
+			execFileSync("taskkill", ["/PID", String(rootPid), "/T", "/F"], { stdio: "ignore" });
+		} catch {
+			// The process tree already exited or taskkill could not signal it.
+		}
+		return;
+	}
 	const descendants = collectDescendantPids(rootPid);
 	const targets = [...descendants.reverse(), rootPid];
 	for (const pid of targets) {
@@ -686,36 +789,35 @@ function terminateProcessTree(rootPid: number | undefined, includeRootProcessGro
 	if (includeRootProcessGroup) {
 		killPid(-rootPid, "SIGTERM");
 	}
+	for (const pid of targets) {
+		killPid(pid, "SIGKILL");
+	}
+	if (includeRootProcessGroup) {
+		killPid(-rootPid, "SIGKILL");
+	}
+}
 
-	if (force) {
-		for (const pid of targets) {
-			killPid(pid, "SIGKILL");
-		}
-		if (includeRootProcessGroup) {
-			killPid(-rootPid, "SIGKILL");
-		}
+function terminateRemainingDescendants(rootPid: number | undefined): void {
+	if (rootPid === undefined || rootPid <= 0) return;
+	if (process.platform === "win32") {
+		terminateProcessTree(rootPid, false);
 		return;
 	}
-
-	const killTimer = setTimeout(() => {
-		for (const pid of targets) {
-			killPid(pid, "SIGKILL");
-		}
-		if (includeRootProcessGroup) {
-			killPid(-rootPid, "SIGKILL");
-		}
-	}, 500);
-	killTimer.unref?.();
+	// The detached shell owns this process group. After its exit event, only descendants can remain in it.
+	killPid(-rootPid, "SIGTERM");
+	killPid(-rootPid, "SIGKILL");
 }
 
 export function createExecSessionManager(options: ExecSessionManagerOptions = {}): ExecSessionManager {
 	let nextSessionId = 1;
 	const sessions = new Map<number, ExecSession>();
 	const reservedNames = new Set<string>();
-	const commandHistory = new Map<number, string>();
-	const ttyHistory = new Map<number, boolean>();
+	const history = new Map<number, SessionHistory>();
 	const exitListeners = new Set<(sessionId: number, command: string) => void>();
 	const updateListeners = new Set<() => void>();
+	const processListeners = new Set<(snapshots: ExecProcessSnapshot[]) => void>();
+	const ptyDataListeners = new Set<(event: PtyDataEvent) => void>();
+	const ptyBackend = options.ptyBackend ?? createIsolatedNodePtyBackend();
 	const defaultExecYieldTimeMs = options.defaultExecYieldTimeMs ?? DEFAULT_EXEC_YIELD_TIME_MS;
 	const defaultWriteYieldTimeMs = options.defaultWriteYieldTimeMs ?? DEFAULT_WRITE_YIELD_TIME_MS;
 	const minYieldTimeMs = Math.min(MAX_YIELD_TIME_MS, Math.max(1, options.minYieldTimeMs ?? MIN_YIELD_TIME_MS));
@@ -729,17 +831,27 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 	);
 	const maxSessionBufferChars = Math.max(1024, options.maxSessionBufferChars ?? DEFAULT_MAX_SESSION_BUFFER_CHARS);
 
-	function rememberCommand(sessionId: number, command: string, tty: boolean): void {
-		commandHistory.set(sessionId, command);
-		ttyHistory.set(sessionId, tty);
-		if (commandHistory.size <= MAX_COMMAND_HISTORY) {
+	function rememberCommand(session: ExecSession): void {
+		history.set(session.id, {
+			command: session.command,
+			name: session.name,
+			tty: session.interactive,
+			startedAtMs: session.startedAtMs,
+		});
+		if (history.size <= MAX_COMMAND_HISTORY) {
 			return;
 		}
-		const oldest = commandHistory.keys().next().value;
-		if (oldest !== undefined) {
-			commandHistory.delete(oldest);
-			ttyHistory.delete(oldest);
-		}
+		const oldest = history.keys().next().value;
+		if (oldest !== undefined) history.delete(oldest);
+	}
+
+	function rememberOutcome(session: ExecSession): void {
+		const entry = history.get(session.id);
+		if (!entry) return;
+		entry.finishedAtMs = session.finishedAtMs ?? Date.now();
+		entry.terminalState = session.terminalState;
+		entry.exitCode = session.exitCode ?? undefined;
+		entry.sessionError = session.sessionError;
 	}
 
 	function notify(session: ExecSession): void {
@@ -752,6 +864,10 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 	function notifySessionUpdate(): void {
 		for (const listener of updateListeners) {
 			listener();
+		}
+		const snapshots = processSnapshots();
+		for (const listener of processListeners) {
+			listener(snapshots);
 		}
 	}
 
@@ -786,13 +902,50 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		return [...sessions.values()].find((session) => !session.hidden && session.name === selector);
 	}
 
+	/** Why a `write_stdin` to a vanished id failed, stated so the caller can tell a typo from a finished job. */
+	function unreachableProcessMessage(selector: ProcessSelector): string {
+		const entry = typeof selector === "number" ? history.get(selector) : findHistoryByName(selector);
+		if (!entry) {
+			return typeof selector === "number"
+				? `Unknown process id ${selector}: no process with that id has run in this session. Use the process_id exec_command returned.`
+				: `Unknown process "${selector}": no process has that name in this session. Use the process_id exec_command returned.`;
+		}
+		const id = typeof selector === "number" ? selector : entry.name;
+		return `Process ${id} is gone, so write_stdin cannot reach it. ${describeOutcome(entry)} ${describeArtifact(entry)}`;
+	}
+
+	function findHistoryByName(name: string): SessionHistory | undefined {
+		for (const entry of history.values()) if (entry.name === name) return entry;
+		return undefined;
+	}
+
+	function describeOutcome(entry: SessionHistory): string {
+		const command = `\`${entry.command}\``;
+		const ran = entry.finishedAtMs ? ` after ${formatSeconds(entry.finishedAtMs - entry.startedAtMs)}` : "";
+		const ago = entry.finishedAtMs ? `, ${formatSeconds(Date.now() - entry.finishedAtMs)} ago` : "";
+		if (entry.terminalState === "cancelled") return `${command} was killed by pi${ran}${ago}.`;
+		if (entry.terminalState === "session_error") {
+			return `${command} ended with a session error${ran}${ago}: ${entry.sessionError ?? "cause not recorded"}.`;
+		}
+		if (entry.terminalState === "exited") return `${command} exited with code ${entry.exitCode ?? 0}${ran}${ago}.`;
+		return `${command} was started${ran}${ago} and its session was dropped before it reported an exit.`;
+	}
+
+	function describeArtifact(entry: SessionHistory): string {
+		return entry.artifactId
+			? `Its full output is at artifact://${entry.artifactId} — read it with read({path: "artifact://${entry.artifactId}"}).`
+			: "Its output was returned by the call that drained it and is not stored in an artifact.";
+	}
+
+	function formatSeconds(ms: number): string {
+		return `${(Math.max(0, ms) / 1000).toFixed(1)}s`;
+	}
+
 	function toRecord(session: ExecSession): ExecSessionRecord {
 		const running = isRunning(session);
 		return {
 			id: session.id,
 			name: session.name,
-			attachCommand: session.attachCommand,
-			attachment: session.attachment,
 			command: session.command,
 			cwd: session.cwd,
 			ownerSessionId: session.input.ownerSessionId,
@@ -806,47 +959,70 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		};
 	}
 
+	function toProcessSnapshot(session: ExecSession): ExecProcessSnapshot {
+		const running = isRunning(session);
+		return {
+			id: session.id,
+			name: session.name,
+			command: session.command,
+			cwd: session.cwd,
+			ownerSessionId: session.input.ownerSessionId,
+			tty: session.kind === "pty",
+			stdinOpen: running && session.interactive,
+			state: running ? "running" : (session.terminalState ?? "exited"),
+			exitCode: session.terminalState === "exited" ? (session.exitCode ?? 0) : undefined,
+			startedAtMs: session.startedAtMs,
+			finishedAtMs: session.finishedAtMs,
+			output: session.captureBuffer,
+			outputTruncated: session.captureBufferTruncated,
+		};
+	}
+
+	function processSnapshots(): ExecProcessSnapshot[] {
+		const active = Array.from(sessions.values())
+			.filter((session) => !session.hidden)
+			.map(toProcessSnapshot);
+		const retained = Array.from(history.values())
+			.map((entry) => entry.snapshot)
+			.filter((snapshot): snapshot is ExecProcessSnapshot => snapshot !== undefined);
+		return [...retained, ...active];
+	}
+
 	function deleteSession(sessionId: number): boolean {
-		const deleted = sessions.delete(sessionId);
-		if (deleted) {
-			notifySessionUpdate();
-		}
-		return deleted;
+		const session = sessions.get(sessionId);
+		if (!session) return false;
+		const entry = history.get(sessionId);
+		if (entry) entry.snapshot = toProcessSnapshot(session);
+		sessions.delete(sessionId);
+		notifySessionUpdate();
+		return true;
 	}
 
 	function deleteExitedSessions(): void {
 		for (const [sessionId, session] of sessions) {
-			if (!isRunning(session)) sessions.delete(sessionId);
+			if (!isRunning(session) && session.emittedBuffer === session.buffer) deleteSession(sessionId);
 		}
 	}
 
-	function terminateSession(session: ExecSession, reason: ExecInterventionState = "cancelled"): void {
+	function terminateSession(session: ExecSession): void {
 		if (!isRunning(session)) return;
 		session.abortCleanup?.();
 		session.abortCleanup = undefined;
-		if (session.timeoutTimer) {
-			clearTimeout(session.timeoutTimer);
-			session.timeoutTimer = undefined;
-		}
-		session.pendingTerminalState = reason;
+		session.pendingTerminalState = "cancelled";
+		if (session.processCleanupStarted) return;
+		session.processCleanupStarted = true;
 		if (session.kind === "pty") {
-			if (session.child.pid === undefined) session.child.kill();
-			else terminateProcessTree(session.child.pid, false, true);
+			session.child.kill();
 		} else {
-			terminateProcessTree(session.child.pid, true, true);
+			terminateProcessTree(session.child.pid, true);
 		}
-	}
-
-	function scheduleSessionTimeout(session: ExecSession, timeoutMs: number | undefined): void {
-		if (timeoutMs === undefined || !Number.isFinite(timeoutMs) || timeoutMs <= 0) return;
-		session.timeoutTimer = setTimeout(() => terminateSession(session, "timed_out"), timeoutMs);
-		session.timeoutTimer.unref?.();
 	}
 
 	function finalizeSession(session: ExecSession): void {
 		if (session.finalized) return;
 		session.finalized = true;
 		session.finishedAtMs = Date.now();
+		rememberOutcome(session);
 		for (const listener of exitListeners) {
 			listener(session.id, session.command);
 		}
@@ -863,10 +1039,6 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		if (session.terminalState !== undefined) return;
 		session.abortCleanup?.();
 		session.abortCleanup = undefined;
-		if (session.timeoutTimer) {
-			clearTimeout(session.timeoutTimer);
-			session.timeoutTimer = undefined;
-		}
 		session.terminalState = terminalState;
 		session.exitCode = terminalState === "exited" ? (exitCode ?? 0) : undefined;
 		session.sessionError = sessionError;
@@ -877,7 +1049,6 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		if (session.terminalState === undefined) return;
 		result.terminal_state = session.terminalState;
 		if (session.terminalState === "exited") result.exit_code = session.exitCode ?? 0;
-		if (session.terminalState === "timed_out") result.timed_out = true;
 		if (session.terminalState === "cancelled") result.cancelled = true;
 		if (session.terminalState === "session_error" && session.sessionError) {
 			result.session_error = session.sessionError;
@@ -896,59 +1067,105 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 	function appendOutput(session: ExecSession, text: string): void {
 		if (text.length === 0) return;
 		appendLog(session, text);
-		const previous = session.buffer;
 		if (session.kind === "pty") {
-			session.buffer = applyTerminalOutput(session, text);
-			const captured = appendCaptureOutput(session.captureBuffer, session.buffer.slice(previous.length));
+			const rendered = applyTerminalOutput(session, text);
+			const delta = computePtyDelta(session.terminalRendered, rendered);
+			session.terminalRendered = rendered;
+			const captured = appendCaptureOutput(session.captureBuffer, delta.text);
 			session.captureBuffer = captured.output;
 			session.captureBufferTruncated ||= captured.truncated;
-			session.pendingBuffer = capHeadTail(
-				`${session.pendingBuffer}${computePtyDelta(previous, session.buffer)}`,
-				UNIFIED_EXEC_OUTPUT_MAX_BYTES,
-			);
+			appendPendingPtyDelta(session, delta);
+			capTerminalHistory(session, maxSessionBufferChars);
+			session.buffer = session.terminalRendered;
 		} else {
 			const normalized = normalizePipeOutput(text);
 			const captured = appendCaptureOutput(session.captureBuffer, normalized);
 			session.captureBuffer = captured.output;
 			session.captureBufferTruncated ||= captured.truncated;
 			session.buffer = `${session.buffer}${normalized}`;
-			session.pendingBuffer = capHeadTail(`${session.pendingBuffer}${normalized}`, UNIFIED_EXEC_OUTPUT_MAX_BYTES);
-		}
-		if (session.buffer.length > maxSessionBufferChars) {
-			session.buffer = capHeadTail(session.buffer, maxSessionBufferChars);
-			session.emittedBuffer = "";
+			session.pendingBuffer = capMiddleByBytes(
+				`${session.pendingBuffer}${normalized}`,
+				UNIFIED_EXEC_OUTPUT_MAX_BYTES,
+			);
+			if (session.buffer.length > maxSessionBufferChars) {
+				session.buffer = capMiddleByBytes(session.buffer, maxSessionBufferChars);
+				session.emittedBuffer = "";
+			}
 		}
 		notify(session);
 	}
 
-	function waitForExitOrTimeout(session: ExecSession, yieldTimeMs: number): Promise<number> {
-		if (!isRunning(session)) {
-			return Promise.resolve(0);
-		}
+	/**
+	 * Wait until the session exits, `ready` becomes true, or the yield expires.
+	 *
+	 * `ready` rides the same listener set the caller already wakes on, so an
+	 * `until` pattern costs nothing beyond the substring test it performs.
+	 */
+	function waitForYield(
+		session: ExecSession,
+		yieldTimeMs: number,
+		ready?: () => boolean,
+		wakeOnIdle = true,
+	): Promise<number> {
+		const settled = () => !isRunning(session) || ready?.() === true;
+		if (settled()) return Promise.resolve(0);
 
 		const startedAt = Date.now();
 		return new Promise((resolvePromise) => {
-			const onWake = () => {
-				if (isRunning(session)) {
-					return;
-				}
-				cleanup();
-				resolvePromise(Date.now() - startedAt);
-			};
-			const timeout = setTimeout(() => {
-				cleanup();
-				resolvePromise(Date.now() - startedAt);
-			}, yieldTimeMs);
+			let idleTimeout: ReturnType<typeof setTimeout> | undefined;
 			const cleanup = () => {
 				clearTimeout(timeout);
+				if (idleTimeout) clearTimeout(idleTimeout);
 				session.listeners.delete(onWake);
 			};
+			const finish = () => {
+				cleanup();
+				resolvePromise(Date.now() - startedAt);
+			};
+			const onWake = () => {
+				if (settled()) {
+					finish();
+					return;
+				}
+				if (ready || yieldTimeMs === 0 || !wakeOnIdle) return;
+				if (idleTimeout) clearTimeout(idleTimeout);
+				idleTimeout = setTimeout(finish, OUTPUT_IDLE_TIME_MS);
+			};
+			const timeout = setTimeout(finish, yieldTimeMs);
 			session.listeners.add(onWake);
 		});
 	}
 
-	function makeResult(session: ExecSession, waitMs: number): UnifiedExecResult {
-		const consumed = consumeOutput(session);
+	/**
+	 * Refill this process's artifact before a drain cuts a middle out of the same bytes.
+	 *
+	 * One artifact per process, replaced in place, so a chatty job files one growing log rather than one per poll.
+	 * Runs only when the drain is about to elide, so an ordinary small result pays nothing.
+	 */
+	async function refreshFullOutputRef(session: ExecSession, maxOutputTokens: number): Promise<string | undefined> {
+		if (!willElideMiddle(session.pendingBuffer, maxOutputTokens)) return session.artifactUri;
+		if (session.captureBuffer.length === 0) return session.artifactUri;
+		const uri = await mintQuietly(
+			session.captureBuffer,
+			session.name,
+			session.artifactUri,
+			session.input.ownerSessionId,
+		);
+		if (uri) {
+			session.artifactUri = uri;
+			const entry = history.get(session.id);
+			if (entry) entry.artifactId = /^artifact:\/\/(.+)$/.exec(uri)?.[1] ?? entry.artifactId;
+		}
+		return session.artifactUri;
+	}
+
+	function makeResult(
+		session: ExecSession,
+		waitMs: number,
+		maxOutputTokens: number,
+		fullOutputRef?: string,
+	): UnifiedExecResult {
+		const consumed = consumeOutput(session, maxOutputTokens, fullOutputRef);
 		const result: UnifiedExecResult = {
 			chunk_id: generateChunkId(),
 			wall_time_seconds: waitMs / 1000,
@@ -959,6 +1176,10 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		}
 		if (consumed.output_truncated) {
 			result.output_truncated = true;
+			// Carried on the result, not only inside the elision marker: a caller that reads `details` and never parses
+			// the text still gets the pointer. Models copy what a tool hands back, not what it describes.
+			if (fullOutputRef) result.full_output_ref = fullOutputRef;
+			if (consumed.elided_bytes) result.output_elided_bytes = consumed.elided_bytes;
 		}
 		if (isRunning(session)) {
 			result.process_id = session.id;
@@ -1047,22 +1268,14 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		const id = nextSessionId++;
 		const name = input.name ?? uniqueProcessName(processName(undefined, id));
 		const login = input.login ?? true;
-		const execution = resolveExecution(input.shell, input.cmd, input.env, input.tty === true);
+		const execution = resolveExecution(input.shell, input.cmd, input.tty === true);
 		const shellArgs = login ? ["-lc", execution.command] : ["-c", execution.command];
-		const child =
-			input.tty && IS_BUN_RUNTIME
-				? spawn("node", [NODE_PTY_HOST, shell, ...shellArgs], {
-						cwd: workdir,
-						stdio: ["pipe", "pipe", "pipe"],
-						env: execution.env,
-						detached: true,
-					})
-				: spawn(shell, shellArgs, {
-						cwd: workdir,
-						stdio: [input.tty ? "pipe" : "ignore", "pipe", "pipe"],
-						env: execution.env,
-						detached: true,
-					});
+		const child = spawn(shell, shellArgs, {
+			cwd: workdir,
+			stdio: ["ignore", "pipe", "pipe"],
+			env: execution.env,
+			detached: true,
+		});
 
 		const session: PipeExecSession = {
 			kind: "pipe",
@@ -1089,6 +1302,8 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			interactive: Boolean(input.tty),
 			startedAtMs: Date.now(),
 			hidden: true,
+			processCleanupStarted: false,
+			foreground: true,
 		};
 
 		child.stdout.on("data", (data: Buffer) => {
@@ -1096,6 +1311,11 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		});
 		child.stderr.on("data", (data: Buffer) => {
 			appendOutput(session, data.toString("utf8"));
+		});
+		child.once("exit", () => {
+			if (session.processCleanupStarted) return;
+			session.processCleanupStarted = true;
+			terminateRemainingDescendants(child.pid);
 		});
 		child.on("close", (code) => {
 			completeSession(session, session.pendingTerminalState ?? "exited", code ?? 0);
@@ -1136,10 +1356,8 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		livenessPoll.unref?.();
 
 		session.abortCleanup = registerAbortHandler(signal, () => {
-			terminateSession(session, "cancelled");
+			terminateSession(session);
 		});
-
-		scheduleSessionTimeout(session, input.timeout_ms);
 
 		return session;
 	}
@@ -1153,9 +1371,9 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		const id = nextSessionId++;
 		const requestedName = input.name;
 		const login = input.login ?? true;
-		const execution = resolveExecution(input.shell, input.cmd, input.env, true);
+		const execution = resolveExecution(input.shell, input.cmd, true);
 		const shellArgs = login ? ["-lc", execution.command] : ["-c", execution.command];
-		const child = await (options.ptyBackend ?? createNodePtyBackend()).spawn(shell, shellArgs, {
+		const child = await ptyBackend.spawn(shell, shellArgs, {
 			cwd: workdir,
 			env: execution.env,
 			name: process.env.TERM || "xterm-256color",
@@ -1172,8 +1390,6 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			name,
 			cwd: workdir,
 			input: { ...input, name },
-			attachCommand: child.attachCommand,
-			attachment: child.attachment,
 			child,
 			buffer: "",
 			pendingBuffer: "",
@@ -1192,6 +1408,9 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			interactive: true,
 			startedAtMs: Date.now(),
 			hidden: true,
+			processCleanupStarted: false,
+			foreground: true,
+			terminalRendered: "",
 			terminalCommitted: "",
 			terminalLine: [],
 			terminalCursor: 0,
@@ -1200,16 +1419,21 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		};
 
 		child.onData((data) => {
+			const event = { processId: session.id, data };
+			for (const listener of ptyDataListeners) listener(event);
 			appendOutput(session, data);
 		});
-		child.onExit(({ exitCode }) => {
+		child.onExit(({ exitCode, sessionError }) => {
+			if (sessionError) {
+				completeSession(session, "session_error", undefined, sessionError);
+				return;
+			}
 			completeSession(session, session.pendingTerminalState ?? "exited", exitCode ?? 0);
 		});
 
 		session.abortCleanup = registerAbortHandler(signal, () => {
-			terminateSession(session, "cancelled");
+			terminateSession(session);
 		});
-		scheduleSessionTimeout(session, input.timeout_ms);
 
 		return session;
 	}
@@ -1217,9 +1441,14 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 	async function waitForTerminal(session: ExecSession): Promise<number> {
 		const startedAt = Date.now();
 		while (isRunning(session)) {
-			await waitForExitOrTimeout(session, 1_000);
+			await waitForYield(session, 1_000);
 		}
 		return Date.now() - startedAt;
+	}
+
+	/** Text logged after `cursor`, the watermark an `until` match is tested against. */
+	function logSince(session: ExecSession, cursor: number): string {
+		return session.logBuffer.slice(Math.max(0, cursor - session.logStartCursor));
 	}
 
 	const manager: ExecSessionManager = {
@@ -1227,88 +1456,91 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			deleteExitedSessions();
 			let reservedName: string | undefined;
 			if (input.name) {
-				input = { ...input, name: processName(input.name, nextSessionId) };
-				if (nameInUse(input.name)) throw new Error(`Process name already exists: ${input.name}`);
-				reservedName = input.name;
-				reservedNames.add(reservedName);
+				const name = processName(input.name, nextSessionId);
+				if (nameInUse(name)) throw new Error(`Process name already exists: ${name}`);
+				input = { ...input, name };
+				reservedName = name;
+				reservedNames.add(name);
 			}
 			const shell = resolveShell(input.shell);
 			const workdir = resolveWorkdir(cwd, input.workdir);
 			let session: ExecSession;
 			try {
 				session = input.tty
-					? await (async () => {
-							if (options.ptyBackend !== undefined) {
-								return createPtySession(input, workdir, shell, signal);
-							}
-							if (IS_BUN_RUNTIME) {
-								return createPipeSession(input, workdir, shell, signal);
-							}
-							try {
-								return await createPtySession(input, workdir, shell, signal);
-							} catch {
-								return createPipeSession(input, workdir, shell, signal);
-							}
-						})()
+					? await createPtySession(input, workdir, shell, signal)
 					: createPipeSession(input, workdir, shell, signal);
 			} finally {
 				if (reservedName) reservedNames.delete(reservedName);
 			}
 			sessions.set(session.id, session);
-			rememberCommand(session.id, session.command, session.interactive);
+			rememberCommand(session);
 			notifySessionUpdate();
 			const stopStreaming = streamSessionUpdates(session, onUpdate);
 
 			try {
-				const waitedMs = input.wait_for_exit
-					? await waitForTerminal(session)
-					: await waitForExitOrTimeout(
-							session,
-							clampExecYieldTime(
-								input.yield_time_ms,
-								defaultExecYieldTimeMs,
-								session.interactive,
-								minNonInteractiveExecYieldTimeMs,
-								minYieldTimeMs,
-							),
-						);
-				return makeResult(session, waitedMs);
+				const resolvedYieldMs = clampExecYieldTime(
+					input.yield_time_ms,
+					defaultExecYieldTimeMs,
+					session.interactive,
+					minNonInteractiveExecYieldTimeMs,
+					minYieldTimeMs,
+				);
+				const waitedMs = await waitForYield(session, resolvedYieldMs, undefined, false);
+				const maxOutputTokens = resolveMaxOutputTokens(input.max_output_tokens);
+				const result = makeResult(
+					session,
+					waitedMs,
+					maxOutputTokens,
+					await refreshFullOutputRef(session, maxOutputTokens),
+				);
+				const clamped = clampedYieldNotice(input.yield_time_ms, resolvedYieldMs);
+				if (clamped) result.notice = clamped;
+				return result;
 			} finally {
+				session.foreground = false;
 				stopStreaming?.();
 			}
 		},
 		write: async (input) => {
 			const session = resolveSession(input.process_id);
-			if (!session) {
-				throw new Error(
-					typeof input.process_id === "number"
-						? `Unknown process id ${input.process_id}`
-						: `Unknown process ${input.process_id}`,
-				);
-			}
+			if (!session) throw new Error(unreachableProcessMessage(input.process_id));
+			// The watermark is taken before the write, so `until` tests only what
+			// this call provoked. Matching whole history would return instantly on
+			// any pattern the session had already printed once.
+			const watermark = session.logEndCursor;
+			const until = input.until;
 			if (input.chars && input.chars.length > 0) {
-				if (!session.interactive) {
-					throw new Error("stdin is closed for this session; rerun exec_command with tty=true to keep stdin open");
+				// `createPipeSession` gives a non-tty child `stdio[0]: "ignore"`; no pipe exists and none
+				// can be attached later, so naming `tty=true` alone described a call already made.
+				if (!session.interactive || session.kind !== "pty") {
+					throw new Error(
+						`Process ${session.id} has no stdin. exec_command opens stdin only when tty=true, and it cannot be opened after the process starts. Drop \`chars\` to drain or wait on this process, or start a new exec_command with tty=true for work that needs input.`,
+					);
 				}
-				if (session.kind === "pty") {
-					await session.child.write(input.chars);
-				} else {
-					session.child.stdin.write(input.chars);
-				}
+				await session.child.write(input.chars);
 			}
-			const waitedMs = isRunning(session)
-				? await waitForExitOrTimeout(
-						session,
-						clampWriteYieldTime(
-							input.yield_time_ms,
-							defaultWriteYieldTimeMs,
-							!input.chars || input.chars.length === 0,
-							minEmptyWriteYieldTimeMs,
-							minYieldTimeMs,
-						),
-					)
-				: 0;
-			return makeResult(session, waitedMs);
+			const matched = () => (until === undefined ? false : logSince(session, watermark).includes(until));
+			const pureRead = !input.chars || input.chars.length === 0;
+			const resolvedYieldMs = clampWriteYieldTime(
+				input.yield_time_ms,
+				defaultWriteYieldTimeMs,
+				pureRead,
+				minEmptyWriteYieldTimeMs,
+				minYieldTimeMs,
+			);
+			const ready = until === undefined ? undefined : matched;
+			const waitedMs = isRunning(session) ? await waitForYield(session, resolvedYieldMs, ready, !pureRead) : 0;
+			const maxOutputTokens = resolveMaxOutputTokens(input.max_output_tokens);
+			const result = makeResult(
+				session,
+				waitedMs,
+				maxOutputTokens,
+				await refreshFullOutputRef(session, maxOutputTokens),
+			);
+			if (until !== undefined) result.until_matched = matched();
+			const clamped = clampedYieldNotice(input.yield_time_ms, resolvedYieldMs);
+			if (clamped) result.notice = clamped;
+			return result;
 		},
 		resize: async (selector, cols, rows) => {
 			const session = resolveSession(selector);
@@ -1316,50 +1548,16 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			await session.child.resize(Math.max(1, Math.floor(cols)), Math.max(1, Math.floor(rows)));
 			return true;
 		},
-		logs: (selector, cursor = 0, maxChars = UNIFIED_EXEC_OUTPUT_MAX_BYTES) => {
+		interrupt: async (selector) => {
 			const session = resolveSession(selector);
-			if (!session) return undefined;
-			const start = Math.max(session.logStartCursor, Math.min(cursor, session.logEndCursor));
-			const offset = start - session.logStartCursor;
-			const output = session.logBuffer.slice(offset, offset + Math.max(1, Math.floor(maxChars)));
-			return {
-				process_id: session.id,
-				process_name: session.name,
-				cursor: start,
-				next_cursor: start + output.length,
-				output,
-				truncated: cursor < session.logStartCursor,
-				running: isRunning(session),
-			};
-		},
-		wait: async (selector, pattern, timeoutMs = 10_000) => {
-			const session = resolveSession(selector);
-			if (!session) return undefined;
-			const patternMatched = () => (pattern ? session.logBuffer.includes(pattern) : !isRunning(session));
-			const completed = () => patternMatched() || !isRunning(session);
-			if (completed()) {
-				return { process: toRecord(session), matched: patternMatched(), timed_out: false };
+			if (!session || !isRunning(session)) return false;
+			if (session.kind === "pty") {
+				await session.child.write("\u0003");
+				return true;
 			}
-			await new Promise<void>((resolvePromise) => {
-				const onWake = () => {
-					if (!completed()) return;
-					cleanup();
-					resolvePromise();
-				};
-				const timeout = setTimeout(
-					() => {
-						cleanup();
-						resolvePromise();
-					},
-					Math.max(1, timeoutMs),
-				);
-				const cleanup = () => {
-					clearTimeout(timeout);
-					session.listeners.delete(onWake);
-				};
-				session.listeners.add(onWake);
-			});
-			return { process: toRecord(session), matched: patternMatched(), timed_out: !completed() };
+			if (session.child.pid === undefined) return false;
+			killPid(process.platform === "win32" ? session.child.pid : -session.child.pid, "SIGINT");
+			return true;
 		},
 		describe: (selector) => {
 			const session = resolveSession(selector);
@@ -1368,7 +1566,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		restart: async (selector) => {
 			const session = resolveSession(selector);
 			if (!session) return undefined;
-			const input = { ...session.input, name: session.name, workdir: undefined, wait_for_exit: false };
+			const input = { ...session.input, name: session.name, workdir: undefined };
 			const cwd = session.cwd;
 			if (isRunning(session)) {
 				session.hidden = true;
@@ -1379,34 +1577,20 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			notifySessionUpdate();
 			return manager.exec(input, cwd);
 		},
-		signal: async (selector, signal) => {
-			const session = resolveSession(selector);
-			if (!session || !isRunning(session)) return false;
-			if (signal === "INT" && session.interactive) {
-				if (session.kind === "pty") await session.child.write("\u0003");
-				else session.child.stdin.write("\u0003");
-				return true;
-			}
-			if (signal !== "INT") session.pendingTerminalState = "cancelled";
-			if (session.kind === "pty" && session.child.pid === undefined) {
-				session.child.kill();
-			} else {
-				signalProcessTree(session.child.pid, session.kind === "pipe", `SIG${signal}` as NodeJS.Signals);
-			}
-			return true;
-		},
 		hasSession: (sessionId) => {
 			const session = sessions.get(sessionId);
 			return session !== undefined && !session.hidden;
 		},
 		getSessionCommand: (selector) =>
-			resolveSession(selector)?.command ?? (typeof selector === "number" ? commandHistory.get(selector) : undefined),
+			resolveSession(selector)?.command ??
+			(typeof selector === "number" ? history.get(selector)?.command : undefined),
 		getSessionStdinOpen: (selector) => {
 			const session = resolveSession(selector);
 			return session && isRunning(session) ? session.interactive : undefined;
 		},
 		getSessionTty: (selector) =>
-			resolveSession(selector)?.interactive ?? (typeof selector === "number" ? ttyHistory.get(selector) : undefined),
+			resolveSession(selector)?.interactive ??
+			(typeof selector === "number" ? history.get(selector)?.tty : undefined),
 		getSessionSnapshot: (sessionId) => {
 			const session = sessions.get(sessionId);
 			if (!session) return undefined;
@@ -1419,7 +1603,6 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 				running,
 				exitCode: session.terminalState === "exited" ? (session.exitCode ?? 0) : undefined,
 				terminalState: session.terminalState,
-				timedOut: session.terminalState === "timed_out" ? true : undefined,
 				cancelled: session.terminalState === "cancelled" ? true : undefined,
 				sessionError: session.sessionError,
 				stdinOpen: running ? session.interactive : undefined,
@@ -1429,6 +1612,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 				outputTruncated: truncated.output_truncated === true,
 				captureOutput: session.captureBuffer,
 				captureOutputTruncated: session.captureBufferTruncated,
+				artifactUri: session.artifactUri,
 			};
 		},
 		listSessions: () =>
@@ -1456,6 +1640,20 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			}
 			return stopped;
 		},
+		interruptForeground: () => {
+			let stopped = 0;
+			for (const session of sessions.values()) {
+				if (!session.foreground || !isRunning(session)) continue;
+				terminateSession(session);
+				stopped++;
+			}
+			if (stopped > 0) notifySessionUpdate();
+			return stopped;
+		},
+		recordSessionArtifact: (sessionId, artifactId) => {
+			const entry = history.get(sessionId);
+			if (entry) entry.artifactId = artifactId;
+		},
 		onSessionExit: (listener) => {
 			exitListeners.add(listener);
 			return () => exitListeners.delete(listener);
@@ -1464,15 +1662,24 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			updateListeners.add(listener);
 			return () => updateListeners.delete(listener);
 		},
+		subscribeProcesses: (listener) => {
+			processListeners.add(listener);
+			listener(processSnapshots());
+			return () => processListeners.delete(listener);
+		},
+		onPtyData: (listener) => {
+			ptyDataListeners.add(listener);
+			return () => ptyDataListeners.delete(listener);
+		},
 		shutdown: () => {
 			for (const session of sessions.values()) {
 				terminateSession(session);
 			}
-			const hadSessions = sessions.size > 0;
+			const hadProcesses =
+				sessions.size > 0 || Array.from(history.values()).some((entry) => entry.snapshot !== undefined);
 			sessions.clear();
-			commandHistory.clear();
-			ttyHistory.clear();
-			if (hadSessions) {
+			history.clear();
+			if (hadProcesses) {
 				notifySessionUpdate();
 			}
 		},
