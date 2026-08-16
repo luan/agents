@@ -1,8 +1,0 @@
-{
-  "name": "git-tool",
-  "version": "1.2.0",
-  "description": "Config-driven gating plugin. Reads the `agents.git-tool` git config, injects the matching workflow addendum, and reconciles per-repo enablement of the gt (Graphite), gs (Git-Spice), or ghs (GitHub Stacked PRs) skill plugin.",
-  "author": {
-    "name": "Luan"
-  }
-}

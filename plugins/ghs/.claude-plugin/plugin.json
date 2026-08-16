@@ -1,8 +1,0 @@
-{
-  "name": "ghs",
-  "version": "1.0.0",
-  "description": "GitHub Stacked PRs (gh-stack) skills — submit, sync, restack, and stack operations.",
-  "author": {
-    "name": "Luan"
-  }
-}

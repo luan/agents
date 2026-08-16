@@ -1,8 +1,0 @@
-{
-  "name": "gs",
-  "version": "2.0.0",
-  "description": "Git-Spice stacked-branch skills — submit, sync, restack, and stack operations.",
-  "author": {
-    "name": "Luan"
-  }
-}
