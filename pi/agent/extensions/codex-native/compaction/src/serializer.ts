@@ -1,18 +1,7 @@
-import { createHash } from "node:crypto";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type {
-	Api,
-	AssistantMessage,
-	ImageContent,
-	Message,
-	Model,
-	TextContent,
-	ThinkingContent,
-	ToolCall,
-	ToolResultMessage,
-	UserMessage,
-} from "@earendil-works/pi-ai";
+import type { Api, Context, Message, Model } from "@earendil-works/pi-ai";
 import { convertToLlm } from "@earendil-works/pi-coding-agent";
+import { retainedImagesFor } from "../../../shared/tool-result-images";
+import { convertResponsesMessages } from "../../openai-responses-shared";
 
 export type AssistantPhase = "commentary" | "final_answer";
 
@@ -61,6 +50,21 @@ type ResponsesFunctionCallOutputItem = {
 	output: ResponsesInputContentItem[] | string;
 };
 
+type ResponsesCustomToolCallItem = {
+	type: "custom_tool_call";
+	id?: string;
+	call_id: string;
+	name: string;
+	input: string;
+	status: "completed";
+};
+
+type ResponsesCustomToolCallOutputItem = {
+	type: "custom_tool_call_output";
+	call_id: string;
+	output: unknown;
+};
+
 type ResponsesReasoningItem = Record<string, unknown>;
 
 type ResponsesImageGenerationCallItem = {
@@ -76,6 +80,8 @@ export type ResponsesInputItem =
 	| ResponsesAssistantOutputItem
 	| ResponsesFunctionCallItem
 	| ResponsesFunctionCallOutputItem
+	| ResponsesCustomToolCallItem
+	| ResponsesCustomToolCallOutputItem
 	| ResponsesImageGenerationCallItem
 	| ResponsesReasoningItem;
 
@@ -107,19 +113,7 @@ type ResponsesParityReport = {
 	mismatches: string[];
 };
 
-type ParsedTextSignature = {
-	id: string;
-	phase?: AssistantPhase;
-};
-
-type ImageGenerationCallBlock = {
-	type: "image_generation_call";
-	item?: unknown;
-};
-
-type InternalAssistantContent = AssistantMessage["content"][number] | ImageGenerationCallBlock;
-
-const SYNTHETIC_TOOL_RESULT_TEXT = "No result provided";
+const RESPONSES_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex"]);
 
 function sanitizeSurrogates(text: string): string {
 	return text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "");
@@ -131,15 +125,87 @@ function normalizeIdPart(part: string): string {
 	return normalized.replace(/_+$/, "");
 }
 
-function normalizeResponsesFunctionCallItemId(itemId: string | undefined): string | undefined {
+function normalizeCustomToolCallItemId(itemId: string | undefined): string | undefined {
 	if (!itemId) return undefined;
-	const normalizedItemId = normalizeIdPart(itemId);
-	return normalizedItemId.startsWith("fc_") ? normalizedItemId : normalizeIdPart(`fc_${normalizedItemId}`);
+	const withoutFunctionPrefix = itemId.startsWith("fc_ctc_") ? itemId.slice("fc_".length) : itemId;
+	const normalized = normalizeIdPart(withoutFunctionPrefix);
+	return normalized.startsWith("ctc_") ? normalized : normalizeIdPart(`ctc_${normalized}`);
+}
+
+function restoreRetainedToolResultImages(messages: Message[]): Message[] {
+	return messages.map((message) => {
+		if (message.role !== "toolResult") return message;
+		const retainedImages = retainedImagesFor(message.toolCallId);
+		if (retainedImages.length === 0 || message.content.some((item) => item.type === "image")) return message;
+		return { ...message, content: [...message.content, ...retainedImages] };
+	});
+}
+
+// Pi 0.84 derives this map from each tool's constrainedSampling schema. Compaction has no tool catalog,
+// so the mapping is static. `exec` is the only grammar tool compaction sees.
+function convertCodexGrammarToolItems(input: ResponsesInputItem[]): ResponsesInputItem[] {
+	const inputProperties = new Map([["exec", "code"]]);
+	const customToolCallIds = new Set<string>();
+	return input.map((item) => {
+		const candidate = item as {
+			type?: string;
+			id?: string;
+			call_id?: string;
+			name?: string;
+			arguments?: string;
+			output?: unknown;
+		};
+		if (
+			candidate.type === "function_call" &&
+			typeof candidate.call_id === "string" &&
+			typeof candidate.name === "string" &&
+			inputProperties.has(candidate.name)
+		) {
+			customToolCallIds.add(candidate.call_id);
+			let inputValue = "";
+			try {
+				inputValue = JSON.parse(candidate.arguments || "{}")?.[inputProperties.get(candidate.name) as string] || "";
+			} catch {
+				inputValue = "";
+			}
+			return {
+				type: "custom_tool_call",
+				id: normalizeCustomToolCallItemId(candidate.id),
+				call_id: candidate.call_id,
+				name: candidate.name,
+				input: inputValue,
+				status: "completed",
+			};
+		}
+		if (
+			candidate.type === "function_call_output" &&
+			typeof candidate.call_id === "string" &&
+			customToolCallIds.has(candidate.call_id)
+		) {
+			return {
+				type: "custom_tool_call_output",
+				call_id: candidate.call_id,
+				output: candidate.output,
+			};
+		}
+		return item;
+	});
+}
+
+function serializeWithProvider<TApi extends Api>(model: Model<TApi>, messages: Message[]): ResponsesInputItem[] {
+	const restoredMessages = restoreRetainedToolResultImages(messages);
+	const providerInput = convertResponsesMessages(
+		model,
+		{ messages: restoredMessages, systemPrompt: "" } as Context,
+		RESPONSES_TOOL_CALL_PROVIDERS,
+		{ includeSystemPrompt: false },
+	) as unknown as ResponsesInputItem[];
+	return model.provider === "openai-codex" ? convertCodexGrammarToolItems(providerInput) : providerInput;
 }
 
 export function serializeMessagesToCompactRequest<TApi extends Api>(args: {
 	model: Model<TApi>;
-	messages: AgentMessage[];
+	messages: Message[];
 	instructions: string;
 }): NativeCompactionRequestBody {
 	return {
@@ -151,45 +217,18 @@ export function serializeMessagesToCompactRequest<TApi extends Api>(args: {
 
 export function serializeMessagesToResponsesInput<TApi extends Api>(
 	model: Model<TApi>,
-	messages: AgentMessage[],
+	messages: Message[],
 	options: SerializeResponsesMessagesOptions = {},
 ): ResponsesInputItem[] {
-	const llmMessages = convertToLlm(messages);
-	const transformedMessages = transformMessagesForResponses(llmMessages);
-	const input: ResponsesInputItem[] = [];
-
-	if (options.includeInstructionsInInput && options.instructions) {
-		input.push({
+	const input = serializeWithProvider(model, convertToLlm(messages));
+	if (!options.includeInstructionsInInput || !options.instructions) return input;
+	return [
+		{
 			role: model.reasoning ? "developer" : "system",
 			content: sanitizeSurrogates(options.instructions),
-		});
-	}
-
-	let messageIndex = 0;
-	for (const message of transformedMessages) {
-		if (message.role === "user") {
-			const item = serializeUserMessage(message, model);
-			if (item) {
-				input.push(item);
-			}
-			messageIndex++;
-			continue;
-		}
-
-		if (message.role === "assistant") {
-			const items = serializeAssistantMessage(message, messageIndex);
-			if (items.length > 0) {
-				input.push(...items);
-			}
-			messageIndex++;
-			continue;
-		}
-
-		input.push(serializeToolResultMessage(message, model));
-		messageIndex++;
-	}
-
-	return input;
+		},
+		...input,
+	];
 }
 
 export function createResponsesInputParitySignature(input: readonly unknown[]): string[] {
@@ -221,315 +260,6 @@ export function compareResponsesInputParity(
 	};
 }
 
-function transformMessagesForResponses(messages: Message[]): Message[] {
-	const transformed: Message[] = [];
-	let pendingToolCalls: ToolCall[] = [];
-	let existingToolResultIds = new Set<string>();
-
-	for (const message of messages) {
-		if (message.role === "assistant") {
-			if (pendingToolCalls.length > 0) {
-				transformed.push(...createSyntheticToolResults(pendingToolCalls, existingToolResultIds));
-				pendingToolCalls = [];
-				existingToolResultIds = new Set<string>();
-			}
-
-			if (message.stopReason === "error" || message.stopReason === "aborted") {
-				continue;
-			}
-
-			const normalizedContent = message.content.flatMap((block) => {
-				if (block.type !== "thinking") {
-					return [block];
-				}
-
-				return block.thinkingSignature ? [block] : [];
-			});
-
-			const normalizedAssistantMessage: AssistantMessage = {
-				...message,
-				content: normalizedContent,
-			};
-			transformed.push(normalizedAssistantMessage);
-
-			const toolCalls = normalizedContent.filter(isToolCallBlock);
-			if (toolCalls.length > 0) {
-				pendingToolCalls = toolCalls;
-				existingToolResultIds = new Set<string>();
-			}
-			continue;
-		}
-
-		if (message.role === "toolResult") {
-			existingToolResultIds.add(message.toolCallId);
-			transformed.push(message);
-			continue;
-		}
-
-		if (pendingToolCalls.length > 0) {
-			transformed.push(...createSyntheticToolResults(pendingToolCalls, existingToolResultIds));
-			pendingToolCalls = [];
-			existingToolResultIds = new Set<string>();
-		}
-
-		transformed.push(message);
-	}
-
-	return transformed;
-}
-
-function createSyntheticToolResults(
-	pendingToolCalls: readonly ToolCall[],
-	existingToolResultIds: ReadonlySet<string>,
-): ToolResultMessage[] {
-	const syntheticResults: ToolResultMessage[] = [];
-
-	for (const toolCall of pendingToolCalls) {
-		if (existingToolResultIds.has(toolCall.id)) {
-			continue;
-		}
-
-		syntheticResults.push({
-			role: "toolResult",
-			toolCallId: toolCall.id,
-			toolName: toolCall.name,
-			content: [{ type: "text", text: SYNTHETIC_TOOL_RESULT_TEXT }],
-			isError: true,
-			timestamp: Date.now(),
-		});
-	}
-
-	return syntheticResults;
-}
-
-function serializeUserMessage<TApi extends Api>(
-	message: UserMessage,
-	model: Model<TApi>,
-): ResponsesInputMessageItem | undefined {
-	const contentItems = normalizeUserContent(message.content).flatMap((item) => serializeUserContentItem(item, model));
-	if (contentItems.length === 0) {
-		return undefined;
-	}
-
-	return {
-		role: "user",
-		content: contentItems,
-	};
-}
-
-function serializeUserContentItem<TApi extends Api>(
-	item: TextContent | ImageContent,
-	model: Model<TApi>,
-): ResponsesInputContentItem[] {
-	if (item.type === "text") {
-		return [{ type: "input_text", text: sanitizeSurrogates(item.text) }];
-	}
-
-	if (!model.input.includes("image")) {
-		return [];
-	}
-
-	return [
-		{
-			type: "input_image",
-			detail: "auto",
-			image_url: `data:${item.mimeType};base64,${item.data}`,
-		},
-	];
-}
-
-function serializeAssistantMessage(message: AssistantMessage, messageIndex: number): ResponsesInputItem[] {
-	const items: ResponsesInputItem[] = [];
-
-	for (const block of message.content as InternalAssistantContent[]) {
-		if (isImageGenerationCallBlock(block)) {
-			const item = sanitizeImageGenerationCallItem(block.item);
-			if (item) {
-				items.push(item);
-			}
-			continue;
-		}
-
-		if (block.type === "thinking") {
-			const reasoningItem = parseReasoningItem(block);
-			if (reasoningItem) {
-				items.push(reasoningItem);
-			}
-			continue;
-		}
-
-		if (block.type === "text") {
-			const signature = parseTextSignature(block.textSignature);
-			items.push({
-				type: "message",
-				role: "assistant",
-				content: [
-					{
-						type: "output_text",
-						text: sanitizeSurrogates(block.text),
-						annotations: [],
-					},
-				],
-				status: "completed",
-				id: normalizeAssistantMessageId(signature?.id, messageIndex),
-				phase: signature?.phase,
-			});
-			continue;
-		}
-
-		if (block.type === "toolCall") {
-			const [callId, rawItemId] = block.id.split("|");
-			items.push({
-				type: "function_call",
-				id: normalizeResponsesFunctionCallItemId(rawItemId),
-				call_id: callId,
-				name: block.name,
-				arguments: JSON.stringify(block.arguments),
-			});
-		}
-	}
-
-	return items;
-}
-
-function serializeToolResultMessage<TApi extends Api>(
-	message: ToolResultMessage,
-	model: Model<TApi>,
-): ResponsesFunctionCallOutputItem {
-	const [callId] = message.toolCallId.split("|");
-	const textOutput = message.content
-		.filter((item): item is TextContent => item.type === "text")
-		.map((item) => sanitizeSurrogates(item.text))
-		.join("\n");
-	const hasImages = message.content.some((item) => item.type === "image");
-	const hasText = textOutput.length > 0;
-
-	if (hasImages && model.input.includes("image")) {
-		const output: ResponsesInputContentItem[] = [];
-		if (hasText) {
-			output.push({ type: "input_text", text: textOutput });
-		}
-		for (const item of message.content) {
-			if (item.type !== "image") {
-				continue;
-			}
-			output.push({
-				type: "input_image",
-				detail: "auto",
-				image_url: `data:${item.mimeType};base64,${item.data}`,
-			});
-		}
-		return {
-			type: "function_call_output",
-			call_id: callId,
-			output,
-		};
-	}
-
-	return {
-		type: "function_call_output",
-		call_id: callId,
-		output: hasText ? textOutput : "(see attached image)",
-	};
-}
-
-function normalizeUserContent(content: UserMessage["content"]): Array<TextContent | ImageContent> {
-	return typeof content === "string" ? [{ type: "text", text: content }] : content;
-}
-
-function isImageGenerationCallBlock(block: InternalAssistantContent): block is ImageGenerationCallBlock {
-	return block.type === "image_generation_call";
-}
-
-function sanitizeImageGenerationCallItem(item: unknown): ResponsesImageGenerationCallItem | undefined {
-	if (!item || typeof item !== "object") {
-		return undefined;
-	}
-
-	const candidate = item as Record<string, unknown>;
-	if (candidate.type !== "image_generation_call") {
-		return undefined;
-	}
-	if (typeof candidate.id !== "string" || candidate.id === "") {
-		return undefined;
-	}
-	if (typeof candidate.status !== "string" || candidate.status === "") {
-		return undefined;
-	}
-	if (!(typeof candidate.result === "string" || candidate.result === null)) {
-		return undefined;
-	}
-
-	return {
-		type: "image_generation_call",
-		id: candidate.id,
-		status: candidate.status,
-		result: candidate.result,
-		...(typeof candidate.revised_prompt === "string" ? { revised_prompt: candidate.revised_prompt } : {}),
-	};
-}
-
-function parseReasoningItem(block: ThinkingContent): ResponsesReasoningItem | undefined {
-	if (!block.thinkingSignature) {
-		return undefined;
-	}
-
-	try {
-		const parsed = JSON.parse(block.thinkingSignature);
-		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-			return undefined;
-		}
-		return parsed as ResponsesReasoningItem;
-	} catch {
-		return undefined;
-	}
-}
-
-function parseTextSignature(signature: string | undefined): ParsedTextSignature | undefined {
-	if (!signature) {
-		return undefined;
-	}
-
-	if (!signature.startsWith("{")) {
-		return { id: signature };
-	}
-
-	try {
-		const parsed = JSON.parse(signature);
-		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-			return undefined;
-		}
-
-		const record = parsed as Record<string, unknown>;
-		if (record.v !== 1 || typeof record.id !== "string") {
-			return undefined;
-		}
-
-		return {
-			id: record.id,
-			phase: record.phase === "commentary" || record.phase === "final_answer" ? record.phase : undefined,
-		};
-	} catch {
-		return undefined;
-	}
-}
-
-function normalizeAssistantMessageId(id: string | undefined, messageIndex: number): string {
-	if (!id) {
-		return `msg_${messageIndex}`;
-	}
-
-	if (id.length <= 64) {
-		return id;
-	}
-
-	return `msg_${createHash("sha1").update(id).digest("hex").slice(0, 12)}`;
-}
-
-function isToolCallBlock(block: AssistantMessage["content"][number]): block is ToolCall {
-	return block.type === "toolCall";
-}
-
 function describeResponsesInputItem(item: unknown): string {
 	if (!item || typeof item !== "object" || Array.isArray(item)) {
 		return typeof item;
@@ -542,12 +272,12 @@ function describeResponsesInputItem(item: unknown): string {
 		return `message:${typeof record.role === "string" ? record.role : "unknown"}${phase}`;
 	}
 
-	if (type === "function_call") {
-		return `function_call:${typeof record.name === "string" ? record.name : "unknown"}`;
+	if (type === "function_call" || type === "custom_tool_call") {
+		return `${type}:${typeof record.name === "string" ? record.name : "unknown"}`;
 	}
 
-	if (type === "function_call_output") {
-		return "function_call_output";
+	if (type === "function_call_output" || type === "custom_tool_call_output") {
+		return type;
 	}
 
 	if (type === "reasoning") {

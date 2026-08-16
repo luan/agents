@@ -9,7 +9,11 @@ import type {
 import { executeNativeCompaction } from "./compact-client";
 import { writeDebugArtifact } from "./debug";
 import { resolveLatestNativeCompactionEntry } from "./details-store";
-import { rewriteResponsesPayloadWithNativeReplay, serializeLiveTailToResponsesInput } from "./payload-rewrite";
+import {
+	filterNativeCompactionContextMessages,
+	rewriteResponsesPayloadWithNativeReplay,
+	serializeLiveTailToResponsesInput,
+} from "./payload-rewrite";
 import { type NativeCompactionRuntime, resolveNativeCompactionEnvironment } from "./runtime";
 import { type NativeCompactionRequestBody, serializeMessagesToCompactRequest } from "./serializer";
 import { loadExtensionSettings } from "./settings";
@@ -18,6 +22,7 @@ import {
 	createNativeCompactionShimResult,
 	EXTENSION_ID,
 	isNativeCompactionDetails,
+	type NativeCompactionIdentity,
 	type NativeCompactionRequestMeta,
 } from "./types";
 
@@ -45,6 +50,7 @@ type RequestOptionsSnapshot = {
 };
 
 const requestOptionsBySession = new WeakMap<object, RequestOptionsSnapshot>();
+const fallbackNotificationsBySession = new WeakMap<object, Set<string>>();
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
@@ -219,6 +225,17 @@ function getCompactionIdentityDebugInfo(entry: { details?: unknown } | undefined
 		: undefined;
 }
 
+// The compacted window holds provider-issued opaque items (reasoning.encrypted_content),
+// so it stays replayable across models of one provider endpoint. resolveLatestNativeCompactionEntry
+// deliberately omits `model` from the match.
+function nativeCompactionEndpointMatch(runtime: NativeCompactionRuntime): Partial<NativeCompactionIdentity> {
+	return {
+		provider: runtime.provider,
+		api: runtime.api,
+		baseUrl: runtime.baseUrl,
+	};
+}
+
 function cloneOpaqueWindow(window: readonly unknown[]): unknown[] {
 	return window.map((item) => structuredClone(item));
 }
@@ -288,12 +305,10 @@ async function handleSessionBeforeCompact(
 	const runtime = resolution.runtime;
 	const instructions = buildCompactionInstructions(piContext.getSystemPrompt(), event.customInstructions);
 	const branchEntries = piContext.sessionManager.getBranch();
-	const latestNativeCompaction = resolveLatestNativeCompactionEntry(branchEntries, {
-		provider: runtime.provider,
-		api: runtime.api,
-		model: runtime.model,
-		baseUrl: runtime.baseUrl,
-	});
+	const latestNativeCompaction = resolveLatestNativeCompactionEntry(
+		branchEntries,
+		nativeCompactionEndpointMatch(runtime),
+	);
 
 	let requestSource: "session-context" | "latest-native-replay";
 	let request = undefined as ReturnType<typeof serializeMessagesToCompactRequest> | undefined;
@@ -318,7 +333,7 @@ async function handleSessionBeforeCompact(
 		requestSource = "session-context";
 		request = serializeMessagesToCompactRequest({
 			model: runtime.currentModel,
-			messages: piContext.sessionManager.buildSessionContext().messages,
+			messages: filterNativeCompactionContextMessages(piContext.sessionManager.buildSessionContext().messages),
 			instructions,
 		});
 	} else {
@@ -404,9 +419,50 @@ async function handleSessionBeforeCompact(
 		);
 		return undefined;
 	}
+	function summaryText(value: string, maxLength = 500): string {
+		const normalized = value.replace(/\s+/g, " ").trim();
+		return normalized.length <= maxLength ? normalized : `${normalized.slice(0, maxLength - 1)}…`;
+	}
+
+	function compactedMessageText(message: unknown): string {
+		if (!isRecord(message)) return "";
+		if (typeof message.content === "string") return message.content.trim();
+		if (!Array.isArray(message.content)) return "";
+		return message.content
+			.filter(isRecord)
+			.map((block) => (typeof block.text === "string" ? block.text : ""))
+			.join(" ")
+			.trim();
+	}
+
+	function buildNativeCompactionSummary(event: SessionBeforeCompactEvent): string {
+		const preparation = event.preparation;
+		const messages = [...preparation.messagesToSummarize, ...preparation.turnPrefixMessages];
+		const userRequests = messages
+			.filter((message) => isRecord(message) && message.role === "user")
+			.map(compactedMessageText)
+			.filter(Boolean);
+		const fileOps = preparation.fileOps;
+		const modifiedFiles = new Set([...(fileOps?.written ?? []), ...(fileOps?.edited ?? [])]);
+		const readFiles = new Set(fileOps?.read ?? []);
+		const lines = [
+			"Native compaction completed.",
+			`Compacted ${preparation.messagesToSummarize.length} messages across ${userRequests.length} user turns from ${preparation.tokensBefore} tokens.`,
+			`Turn prefix messages retained: ${preparation.turnPrefixMessages.length}.`,
+			`Files modified: ${modifiedFiles.size > 0 ? [...modifiedFiles].sort().join(", ") : "none recorded"}.`,
+			`Files read: ${readFiles.size > 0 ? [...readFiles].sort().join(", ") : "none recorded"}.`,
+			`Last user request: ${summaryText(userRequests.at(-1) ?? "none recorded")}`,
+		];
+		if (preparation.previousSummary) lines.push(`Previous summary: ${summaryText(preparation.previousSummary)}.`);
+		return lines.join("\n");
+	}
+
+	// The provider stores readable compaction prose inside its encrypted window.
+	// Keep a deterministic local marker for the session divider and fallback replay.
 	const compaction = createNativeCompactionShimResult({
 		firstKeptEntryId: event.preparation.firstKeptEntryId,
 		tokensBefore: event.preparation.tokensBefore,
+		summary: buildNativeCompactionSummary(event),
 		details,
 	});
 
@@ -428,6 +484,33 @@ async function handleSessionBeforeCompact(
 	);
 
 	return { compaction };
+}
+
+function notifyCompactionFallback(ctx: ExtensionContext, compactionEntryId: string | undefined, reason: string): void {
+	if (!ctx.hasUI) return;
+	const notificationKey = JSON.stringify([compactionEntryId ?? null, reason]);
+	let notified = fallbackNotificationsBySession.get(ctx.sessionManager);
+	if (!notified) {
+		notified = new Set<string>();
+		fallbackNotificationsBySession.set(ctx.sessionManager, notified);
+	}
+	if (notified.has(notificationKey)) return;
+	notified.add(notificationKey);
+	ctx.ui.notify(`${EXTENSION_ID}: native compaction replay skipped (${reason}); using Pi fallback`, "warning");
+}
+
+function compactionReplayFailureReason(
+	reason: string,
+	entry: { details?: unknown } | undefined,
+	runtime: NativeCompactionRuntime,
+): string {
+	if (reason !== "latest-native-compaction-mismatch") return reason;
+	const previous = getCompactionIdentityDebugInfo(entry);
+	if (!previous) return reason;
+	if (previous.provider !== runtime.provider) {
+		return `compaction invalidated because the provider changed from ${previous.provider} to ${runtime.provider} (${previous.api} to ${runtime.api})`;
+	}
+	return `compaction invalidated because the ${runtime.provider} endpoint changed from ${previous.api} at ${previous.baseUrl} to ${runtime.api} at ${normalizedBaseUrl(runtime.baseUrl)}`;
 }
 
 async function handleBeforeProviderRequest(event: BeforeProviderRequestEvent, ctx: ExtensionContext) {
@@ -467,6 +550,13 @@ async function handleBeforeProviderRequest(event: BeforeProviderRequestEvent, ct
 		event.payload,
 	);
 	if (resolution.ok === false) {
+		notifyCompactionFallback(
+			ctx,
+			latestAnyNativeCompaction.ok
+				? latestAnyNativeCompaction.entry.id
+				: latestAnyNativeCompaction.latestCompaction?.id,
+			resolution.reason,
+		);
 		writeDebugArtifact(
 			"provider-request",
 			{
@@ -486,13 +576,16 @@ async function handleBeforeProviderRequest(event: BeforeProviderRequestEvent, ct
 	}
 
 	const runtime = resolution.runtime;
-	const latestNativeCompaction = resolveLatestNativeCompactionEntry(branchEntries, {
-		provider: runtime.provider,
-		api: runtime.api,
-		model: runtime.model,
-		baseUrl: runtime.baseUrl,
-	});
+	const latestNativeCompaction = resolveLatestNativeCompactionEntry(
+		branchEntries,
+		nativeCompactionEndpointMatch(runtime),
+	);
 	if (!latestNativeCompaction.ok) {
+		notifyCompactionFallback(
+			ctx,
+			latestNativeCompaction.latestCompaction?.id,
+			compactionReplayFailureReason(latestNativeCompaction.reason, latestNativeCompaction.latestCompaction, runtime),
+		);
 		writeDebugArtifact(
 			"provider-request",
 			{
@@ -521,6 +614,7 @@ async function handleBeforeProviderRequest(event: BeforeProviderRequestEvent, ct
 		compactionEntry: latestNativeCompactionEntry,
 	});
 	if (!rewrite.ok) {
+		notifyCompactionFallback(ctx, latestNativeCompactionEntry.id, rewrite.reason);
 		writeDebugArtifact(
 			"provider-request",
 			{

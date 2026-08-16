@@ -1,12 +1,8 @@
 import { afterEach, expect, mock, test } from "bun:test";
 import * as os from "node:os";
 import * as path from "node:path";
-import {
-	createNativeCompactionDetails,
-	DEFAULT_EXTENSION_SETTINGS,
-	type ExtensionSettings,
-	NATIVE_COMPACTION_SHIM_SUMMARY,
-} from "./types";
+import { AUTO_COMPACT_STOP_MESSAGE } from "../../../auto-compact-resume";
+import { createNativeCompactionDetails, DEFAULT_EXTENSION_SETTINGS, type ExtensionSettings } from "./types";
 
 const compactionPhaseSetterKey = Symbol.for("agents.pi.compaction-phases.set");
 const phaseGlobal = globalThis as typeof globalThis & {
@@ -84,6 +80,7 @@ const defaultModel: TestModel = {
 	reasoning: true,
 };
 
+const TEST_NATIVE_COMPACTION_SUMMARY = "Prior native compaction summary.";
 const COMPACTION_SUMMARY_PREFIX = `The conversation history before this point was compacted into the following summary:\n\n<summary>\n`;
 const COMPACTION_SUMMARY_SUFFIX = `\n</summary>`;
 const TEST_CONTEXT_DIR = path.join(os.tmpdir(), "openai-native-compaction-validation");
@@ -230,7 +227,7 @@ function createCompactionEntry(args: {
 		type: "compaction",
 		id: args.id,
 		timestamp: nextTimestamp(),
-		summary: NATIVE_COMPACTION_SHIM_SUMMARY,
+		summary: TEST_NATIVE_COMPACTION_SUMMARY,
 		firstKeptEntryId: args.firstKeptEntryId,
 		tokensBefore: args.tokensBefore ?? 256,
 		details: createNativeCompactionDetails({
@@ -317,6 +314,7 @@ function createContext(
 		model?: TestModel;
 		systemPrompt?: string;
 		sessionContextMessages?: Record<string, unknown>[];
+		uiNotifications?: string[];
 	} = {},
 ) {
 	const branchEntries = args.branchEntries ?? [];
@@ -325,7 +323,10 @@ function createContext(
 		args.sessionContextMessages ?? branchEntries.filter((entry) => entry.type === "message").map(toReplayMessage);
 	return {
 		cwd: TEST_CONTEXT_DIR,
-		hasUI: false,
+		hasUI: args.uiNotifications !== undefined,
+		...(args.uiNotifications === undefined
+			? {}
+			: { ui: { notify: (message: string) => args.uiNotifications?.push(message) } }),
 		getSystemPrompt: () => args.systemPrompt ?? "Current instructions v1",
 		model,
 		modelRegistry: {
@@ -536,7 +537,9 @@ test("manual /compact preserves tool/result ordering + assistant phases and pers
 		"function_call_output",
 		"message:assistant:final_answer",
 	]);
-	expect(result.compaction.summary).toBe(NATIVE_COMPACTION_SHIM_SUMMARY);
+	expect(result.compaction.summary).toContain("Native compaction completed.");
+	expect(result.compaction.summary).toContain("Compacted 4 messages across 1 user turns from 512 tokens.");
+	expect(result.compaction.summary).toContain("Last user request: Check the weekly release status.");
 	expect(result.compaction.firstKeptEntryId).toBe(user.id);
 	expect(result.compaction.tokensBefore).toBe(512);
 	expect((result.compaction.details as { compactedWindow: unknown[] }).compactedWindow).toEqual(compactedWindow);
@@ -812,7 +815,11 @@ test("first native compaction sends the full current session context, including 
 		createContext({
 			model,
 			systemPrompt: "Current instructions include the kept window too",
-			sessionContextMessages: [toReplayMessage(summarizedUser), toReplayMessage(keptUser)],
+			sessionContextMessages: [
+				toReplayMessage(summarizedUser),
+				toReplayMessage(keptUser),
+				{ role: "custom", customType: "image-attach-preview", content: "display only", display: true },
+			],
 		}),
 	);
 
@@ -825,6 +832,7 @@ test("first native compaction sends the full current session context, including 
 	expect(compactRequest.instructions).toBe("Current instructions include the kept window too");
 	expect(await createInputParitySignature(compactRequest.input)).toEqual(["input:user[1]", "input:user[1]"]);
 	expect(JSON.stringify(compactRequest.input)).toContain("Recent kept window context that must also be compacted.");
+	expect(JSON.stringify(compactRequest.input)).not.toContain("display only");
 });
 
 test("repeated native compaction reuses the latest stored compacted window instead of Pi's shim summary", async () => {
@@ -867,7 +875,7 @@ test("repeated native compaction reuses the latest stored compacted window inste
 		preparation: {
 			tokensBefore: 640,
 			firstKeptEntryId: tailUser.id,
-			previousSummary: NATIVE_COMPACTION_SHIM_SUMMARY,
+			previousSummary: TEST_NATIVE_COMPACTION_SUMMARY,
 			messagesToSummarize: [],
 			turnPrefixMessages: [],
 		},
@@ -1016,7 +1024,7 @@ test("first post-compaction turn rewrites to fresh preamble + opaque compacted w
 	expect(JSON.stringify(rewritten.input)).not.toContain("The conversation history before this point was compacted");
 });
 
-test("trailing provider-authored developer prompts survive native replay in place", async () => {
+test("transient context messages and trailing provider prompts survive native replay in place", async () => {
 	const { beforeProviderRequest } = await loadHookHarness();
 	const model = { ...defaultModel, reasoning: true };
 	const keptUser = createUserEntry("kept_for_trailing_prompt", "Older replay context that should disappear.");
@@ -1042,6 +1050,11 @@ test("trailing provider-authored developer prompts survive native replay in plac
 		freshPreamble: "Fresh preamble before replay",
 		trailingPreamble: ["# Juice: 0 !important"],
 	});
+	const transientContextMessage = {
+		role: "user",
+		content: [{ type: "input_text", text: AUTO_COMPACT_STOP_MESSAGE }],
+	};
+	payload.input.splice(payload.input.length - 1, 0, transientContextMessage);
 	const rewritten = (await beforeProviderRequest(
 		{ payload },
 		createContext({ branchEntries, model, systemPrompt: payload.instructions }),
@@ -1050,7 +1063,13 @@ test("trailing provider-authored developer prompts survive native replay in plac
 	const trailingPrompt = payload.input[payload.input.length - 1];
 
 	expect(rewritten.instructions).toBe("Current instructions with trailing provider hint");
-	expect(rewritten.input).toEqual([payload.input[0], ...compactedWindow, ...expectedTail, trailingPrompt]);
+	expect(rewritten.input).toEqual([
+		payload.input[0],
+		...compactedWindow,
+		...expectedTail,
+		transientContextMessage,
+		trailingPrompt,
+	]);
 	expect(rewritten.input[rewritten.input.length - 1]).toEqual(trailingPrompt);
 });
 
@@ -1232,71 +1251,106 @@ test("a second compaction replays only the latest compacted window and keeps fre
 	expect(JSON.stringify(rewritten.input)).not.toContain("Interim question between compactions.");
 });
 
-test("unsupported model/provider switching fails open instead of replaying stale native state", async () => {
+test("a same-provider model switch keeps replaying the native window and a provider switch invalidates it", async () => {
 	const { beforeProviderRequest } = await loadHookHarness();
-	const matchingModel = { ...defaultModel };
-	const switchedModel = {
+	const compactionModel = { ...defaultModel };
+	const sameProviderModel = {
 		...defaultModel,
 		id: "gpt-5-nano",
 	};
-	const unsupportedProviderModel = {
+	const switchedProviderModel = {
 		...defaultModel,
-		provider: "anthropic",
-		api: "anthropic-messages",
-		id: "claude-sonnet-4",
+		provider: "openai-codex",
+		api: "openai-codex-responses",
+		baseUrl: "https://chatgpt.com/backend-api",
+		id: "gpt-5-codex",
 	};
 	const keptUser = createUserEntry("switch_kept_user", "Original context before switching models.");
-	const olderMatchingCompaction = createCompactionEntry({
-		id: "switch_compaction_old",
+	const compactedWindow = [
+		{
+			type: "message",
+			role: "assistant",
+			status: "completed",
+			id: "cmp_window",
+			content: [],
+		},
+	];
+	const compactionEntry = createCompactionEntry({
+		id: "switch_compaction",
 		firstKeptEntryId: keptUser.id,
-		model: matchingModel,
-		compactedWindow: [
-			{
-				type: "message",
-				role: "assistant",
-				status: "completed",
-				id: "cmp_old",
-				content: [],
-			},
-		],
+		model: compactionModel,
+		compactedWindow,
 	});
-	const newerMismatchedCompaction = createCompactionEntry({
-		id: "switch_compaction_new",
-		firstKeptEntryId: keptUser.id,
-		model: switchedModel,
-		compactedWindow: [
-			{
-				type: "message",
-				role: "assistant",
-				status: "completed",
-				id: "cmp_new",
-				content: [],
-			},
-		],
+	const currentUser = createUserEntry("switch_current_user", "Question asked after the model switch.");
+	const branchEntries = [keptUser, compactionEntry, currentUser];
+
+	const sameProviderPayload = await buildPiReplayPayload({
+		model: sameProviderModel,
+		branchEntries,
+		compactionEntry,
+		instructions: "Instructions after the same-provider switch",
+		freshPreamble: "Preamble after the same-provider switch",
 	});
-	const branchEntries = [keptUser, olderMatchingCompaction, newerMismatchedCompaction];
-	const matchingPayload = {
-		model: matchingModel.id,
-		instructions: "Instructions after switching back",
-		input: [{ role: "developer", content: "Fresh preamble after switching back" }],
-	};
-	const mismatchedLatestResult = await beforeProviderRequest(
-		{ payload: matchingPayload },
+	const sameProviderResult = (await beforeProviderRequest(
+		{ payload: sameProviderPayload },
 		createContext({
 			branchEntries,
-			model: matchingModel,
-			systemPrompt: matchingPayload.instructions,
+			model: sameProviderModel,
+			systemPrompt: sameProviderPayload.instructions,
 		}),
-	);
-	const unsupportedProviderResult = await beforeProviderRequest(
-		{ payload: { ...matchingPayload, model: unsupportedProviderModel.id } },
+	)) as { input: unknown[] };
+
+	const providerSwitchNotifications: string[] = [];
+	const providerSwitchPayload = await buildPiReplayPayload({
+		model: switchedProviderModel,
+		branchEntries,
+		compactionEntry,
+		instructions: "Instructions after the provider switch",
+		freshPreamble: "Preamble after the provider switch",
+	});
+	const providerSwitchResult = await beforeProviderRequest(
+		{ payload: providerSwitchPayload },
 		createContext({
 			branchEntries,
-			model: unsupportedProviderModel,
-			systemPrompt: matchingPayload.instructions,
+			model: switchedProviderModel,
+			systemPrompt: providerSwitchPayload.instructions,
+			uiNotifications: providerSwitchNotifications,
 		}),
 	);
 
-	expect(mismatchedLatestResult).toBeUndefined();
-	expect(unsupportedProviderResult).toBeUndefined();
+	expect(sameProviderResult.input).toEqual([
+		sameProviderPayload.input[0],
+		...compactedWindow,
+		...(await serializeResponsesInput(sameProviderModel, [toReplayMessage(currentUser)])),
+	]);
+	expect(providerSwitchResult).toBeUndefined();
+	expect(providerSwitchNotifications).toHaveLength(1);
+	expect(providerSwitchNotifications[0]).toContain("the provider changed from openai to openai-codex");
+});
+
+test("native replay fallback notification fires once per compaction and reason", async () => {
+	const notifications: string[] = [];
+	const { beforeProviderRequest } = await loadHookHarness();
+	const keptUser = createUserEntry("notification_kept_user", "Context before native compaction.");
+	const compactionEntry = createCompactionEntry({
+		id: "notification_compaction",
+		firstKeptEntryId: keptUser.id,
+		compactedWindow: [],
+	});
+	const model = { ...defaultModel };
+	const context = createContext({
+		branchEntries: [keptUser, compactionEntry],
+		model,
+		uiNotifications: notifications,
+	});
+	const payload = { model: model.id, instructions: "Fresh instructions", input: [] };
+
+	await beforeProviderRequest({ payload }, context);
+	await beforeProviderRequest({ payload }, context);
+	await beforeProviderRequest({ payload: { ...payload, instructions: {} } }, context);
+	await beforeProviderRequest({ payload: { ...payload, instructions: {} } }, context);
+
+	expect(notifications).toHaveLength(2);
+	expect(notifications[0]).toContain("expected-pi-replay-mismatch");
+	expect(notifications[1]).toContain("unsupported-instructions");
 });

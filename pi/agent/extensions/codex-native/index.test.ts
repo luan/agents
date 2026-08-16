@@ -2,28 +2,35 @@ import { expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CodexAppServerMcpClient } from "./app-server-mcp.ts";
+import { UNNESTABLE_TOOLS } from "../code-mode/nested-dispatch.ts";
+import { CodexAppServerMcpClient, type CodexAppServerMcpServer } from "./app-server-mcp.ts";
 import {
-	activeCodexAppsToolNames,
 	buildCodexAppRecords,
-	CodexToolsPanel,
-	disabledCodexAppToolKeys,
+	codexMcpWarnings,
+	disabledConnectorIds,
 	discoverCodexAppsTools,
 	discoverCodexPlugins,
-	discoverNodeReplTools,
 	discoverPluginMcpTools,
+	enabledCodexAppsTools,
 	migrateCodexAppsConfig,
 	pluginSkillPaths,
 	systemSkillPaths,
 } from "./codex-apps.ts";
 import {
+	buildImageGenerationRequestBody,
+	collectRecentSessionImages,
+	extractGeneratedImage,
+	loadReferencedImages,
+	readImageGenerationArgs,
+} from "./image-gen.ts";
+import {
 	isCodexWebSocketError,
 	normalizeCodexWebSocketError as normalizeCodexWebSocketErrorMessage,
 	normalizeLegacyFunctionCallIds,
 } from "./index.ts";
-import { LocalMcpClient } from "./local-mcp.ts";
 import {
 	buildGeneratedImageArtifactResult,
+	createImageGenerationTool,
 	createWebSearchTool,
 	getOpenAICodexLatestImagePath,
 	rewriteNativeImageGenerationTool,
@@ -34,8 +41,9 @@ import {
 	supportsNativeWebSearch,
 	WEB_SEARCH_TOOL_NAME,
 } from "./native-tools.ts";
-import { convertResponsesMessages, processResponsesStream } from "./openai-responses-shared.ts";
+import { convertResponsesMessages } from "./openai-responses-shared.ts";
 import { isCodexPluginEnabled } from "./plugin-aliases.ts";
+import { buildSearchRequestBody, createWebRunTool, resolveCodexSearchUrl, WEB_RUN_TOOL_NAME } from "./web-run.ts";
 
 const codexModel = {
 	provider: "openai-codex",
@@ -49,10 +57,66 @@ const codexMiniModel = {
 	input: ["text", "image"],
 };
 
-const testTheme = {
-	fg: (role: string, text: string) => `<${role}>${text}</${role}>`,
-	bold: (text: string) => `<bold>${text}</bold>`,
-};
+/**
+ * A codex app-server that answers the four methods this bridge sends.
+ *
+ * `click` elicits and `list_apps` does not, which is the distinction the real
+ * server makes and the only one these tests turn on. Note the absence of a
+ * `jsonrpc` field: the app-server protocol omits it, and a client that assumed
+ * otherwise would pass against a stricter fake than the real thing.
+ */
+const fakeCodexAppServer = [
+	"const readline = require('node:readline');",
+	"const rl = readline.createInterface({ input: process.stdin });",
+	"const send = (message) => process.stdout.write(JSON.stringify(message) + '\\n');",
+	"let callId;",
+	"rl.on('line', line => {",
+	"  const request = JSON.parse(line);",
+	"  if (request.method === 'initialize') send({ id: request.id, result: {} });",
+	"  else if (request.method === 'thread/start') send({ id: request.id, result: { thread: { id: 'thread-1' } } });",
+	"  else if (request.method === 'mcpServerStatus/list') send({ id: request.id, result: { data: [{ name: 'computer-use', tools: { list_apps: { name: 'list_apps', inputSchema: { type: 'object' } } } }] } });",
+	"  else if (request.method === 'mcpServer/tool/call' && request.params.tool === 'click') { callId = request.id; send({ id: 99, method: 'mcpServer/elicitation/request', params: { mode: 'form', message: 'Allow click?', serverName: request.params.server, threadId: request.params.threadId, turnId: null, requestedSchema: {}, _meta: null } }); }",
+	"  else if (request.method === 'mcpServer/tool/call') send({ id: request.id, result: { content: [{ type: 'text', text: 'ok' }] } });",
+	"  else if (request.id === 99) send(request.error ? { id: callId, error: request.error } : { id: callId, result: { content: [{ type: 'text', text: request.result.action }] } });",
+	"});",
+].join("\n");
+
+const retryingThreadAppServer = [
+	"const readline = require('node:readline');",
+	"const rl = readline.createInterface({ input: process.stdin });",
+	"const send = (message) => process.stdout.write(JSON.stringify(message) + '\\n');",
+	"let threadStarts = 0;",
+	"rl.on('line', line => {",
+	"  const request = JSON.parse(line);",
+	"  if (request.method === 'initialize') send({ id: request.id, result: {} });",
+	"  else if (request.method === 'thread/start') { threadStarts++; send({ id: request.id, result: threadStarts === 1 ? {} : { thread: { id: 'thread-1' } } }); }",
+	"  else if (request.method === 'mcpServer/tool/call') send({ id: request.id, result: { content: [{ type: 'text', text: 'ok' }] } });",
+	"});",
+].join("\n");
+
+function createTestMcpClient(servers: Map<string, CodexAppServerMcpServer>): CodexAppServerMcpClient {
+	return { listServers: async () => servers, close: () => {} } as unknown as CodexAppServerMcpClient;
+}
+
+function nodeReplMcpServer(): CodexAppServerMcpServer {
+	return {
+		enabled: true,
+		serverInfo: { name: "rmcp", version: "1.5.0" },
+		tools: [
+			{
+				name: "js",
+				inputSchema: {
+					type: "object",
+					properties: { code: { type: "string" }, title: { type: "string" }, timeout_ms: { type: "integer" } },
+					required: ["code", "title", "timeout_ms"],
+					additionalProperties: false,
+				},
+			},
+			{ name: "js_reset", inputSchema: { type: "object" } },
+			{ name: "js_add_node_module_dir", inputSchema: { type: "object", properties: { path: { type: "string" } } } },
+		],
+	};
+}
 
 test("normalizes legacy function call item ids at the provider-request boundary", () => {
 	const payload = {
@@ -290,55 +354,6 @@ test("keeps concurrent generated image artifacts attributable to their calls", a
 	expect(result.artifacts[0].path).not.toBe(result.artifacts[1].path);
 });
 
-test("surfaces image artifact metadata in the originating assistant message", async () => {
-	const output = {
-		role: "assistant",
-		content: [],
-		api: "openai-codex-responses",
-		provider: "openai-codex",
-		model: "gpt-5.5",
-		stopReason: "stop",
-		timestamp: Date.now(),
-		usage: {
-			input: 0,
-			output: 0,
-			cacheRead: 0,
-			cacheWrite: 0,
-			totalTokens: 0,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-		},
-	} as any;
-	const events = {
-		async *[Symbol.asyncIterator]() {
-			yield {
-				type: "response.output_item.done",
-				output_index: 0,
-				item: {
-					type: "image_generation_call",
-					id: "ig_origin",
-					status: "completed",
-					result: PNG_BASE64,
-					artifact_result: '{"artifacts":[{"id":"ig_origin","path":"/tmp/generated.png"}]}',
-				},
-			};
-		},
-	};
-	const emitted: any[] = [];
-
-	await processResponsesStream(
-		events as never,
-		output,
-		{ push: (event: any) => emitted.push(event) } as never,
-		codexModel as never,
-	);
-
-	expect(output.content).toHaveLength(2);
-	expect(output.content[1]).toEqual({
-		type: "text",
-		text: '{"artifacts":[{"id":"ig_origin","path":"/tmp/generated.png"}]}',
-	});
-	expect(emitted.map((event) => event.type)).toEqual(["text_start", "text_end"]);
-});
 test("saves native image_generation assistant blocks for display", async () => {
 	const root = await mkdtemp(join(tmpdir(), "codex-native-image-block-test-"));
 	await mkdir(join(root, ".git"));
@@ -459,10 +474,10 @@ test("discovers Codex app tools from Codex cache", async () => {
 	expect(tools[0]?.mcpToolName).toBe("slack_slack_read_channel");
 	expect(tools[0]?.key).toBe("asdk_app_slack:link_slack:slack_slack_read_channel");
 	expect(tools[0]?.connectorName).toBe("Slack");
-	expect(tools[0]?.readOnly).toBe(true);
+	expect(tools[0]?.connectorId).toBe("asdk_app_slack");
 });
 
-test("activates read-only Codex app tools by default and respects explicit toggles", () => {
+test("registers every connector tool by default and drops a switched-off connector", () => {
 	const tools = [
 		{
 			key: "slack:read",
@@ -479,14 +494,14 @@ test("activates read-only Codex app tools by default and respects explicit toggl
 			openWorld: true,
 		},
 		{
-			key: "slack:send",
-			piToolName: "codex_apps_slack_send",
-			mcpToolName: "slack_send",
-			title: "send",
-			description: "send",
+			key: "sites:list",
+			piToolName: "codex_apps_sites_list",
+			mcpToolName: "sites_list",
+			title: "list",
+			description: "list",
 			inputSchema: {},
-			connectorId: "slack",
-			connectorName: "Slack",
+			connectorId: "sites",
+			connectorName: "Sites",
 			connectorDescription: "",
 			readOnly: false,
 			destructive: true,
@@ -494,47 +509,21 @@ test("activates read-only Codex app tools by default and respects explicit toggl
 		},
 	];
 
-	expect(activeCodexAppsToolNames(tools, { enabled: true }, ["read"])).toEqual(["read", "codex_apps_slack_read"]);
-	expect(activeCodexAppsToolNames(tools, { enabled: true, enabledToolKeys: ["slack:send"] }, ["read"])).toEqual([
-		"read",
-		"codex_apps_slack_send",
+	// Write and destructive tools are registered too: nesting made the read-only
+	// default pointless, and a cell can call anything the human left switched on.
+	expect(enabledCodexAppsTools(tools, [], { enabled: true }).map((tool) => tool.piToolName)).toEqual([
+		"codex_apps_slack_read",
+		"codex_apps_sites_list",
 	]);
-	expect(activeCodexAppsToolNames(tools, { enabled: false, enabledToolKeys: ["slack:send"] }, ["read"])).toEqual([
-		"read",
-	]);
+	expect(
+		enabledCodexAppsTools(tools, [], { enabled: true, disabledConnectorIds: ["sites"] }).map(
+			(tool) => tool.piToolName,
+		),
+	).toEqual(["codex_apps_slack_read"]);
+	expect(enabledCodexAppsTools(tools, [], { enabled: false })).toEqual([]);
 });
 
-test("disables every app tool owned by a disabled plugin", () => {
-	const tools = [
-		{
-			key: "sites:read",
-			piToolName: "codex_apps_sites_list",
-			mcpToolName: "list",
-			title: "list",
-			description: "list",
-			inputSchema: {},
-			connectorId: "sites",
-			connectorName: "Sites",
-			connectorDescription: "",
-			readOnly: true,
-			destructive: false,
-			openWorld: false,
-		},
-		{
-			key: "slack:read",
-			piToolName: "codex_apps_slack_read",
-			mcpToolName: "read",
-			title: "read",
-			description: "read",
-			inputSchema: {},
-			connectorId: "slack",
-			connectorName: "Slack",
-			connectorDescription: "",
-			readOnly: true,
-			destructive: false,
-			openWorld: true,
-		},
-	];
+test("a disabled plugin switches off the connectors it owns", () => {
 	const plugins = [
 		{
 			key: "sites",
@@ -543,15 +532,15 @@ test("disables every app tool owned by a disabled plugin", () => {
 			marketplace: "openai-bundled",
 			rootPath: "/plugins/sites",
 			skillPaths: [],
-			connectorIds: ["sites"],
+			connectorIds: ["connector_sites"],
 		},
 	];
-	const disabled = disabledCodexAppToolKeys(tools, plugins, { enabled: true, disabledPluginKeys: ["sites"] });
 
-	expect(activeCodexAppsToolNames(tools, { enabled: true }, ["read"], disabled)).toEqual([
-		"read",
-		"codex_apps_slack_read",
+	expect([...disabledConnectorIds(plugins, { enabled: true, disabledPluginKeys: ["sites"] })].sort()).toEqual([
+		"connector_sites",
+		"sites",
 	]);
+	expect([...disabledConnectorIds(plugins, { enabled: true })]).toEqual([]);
 });
 
 test("builds app surfaces from plugin connector manifests", () => {
@@ -675,335 +664,460 @@ test("does not expose skills from unconfigured marketplace inventory", async () 
 	).toBe(true);
 });
 
-test("uses the Pi-native Computer Use skill instead of the Codex node-repl skill", () => {
+test("discovers the Computer Use plugin alongside the rest", async () => {
+	const root = join(await mkdtemp(join(tmpdir(), "codex-computer-use-test-")), ".codex");
+	const computerUse = join(root, "plugins", "cache", "openai-bundled", "computer-use", "1.0.0");
+	const sites = join(root, "plugins", "cache", "openai-bundled", "sites", "0.1.27");
+	await mkdir(join(computerUse, ".codex-plugin"), { recursive: true });
+	await mkdir(join(sites, ".codex-plugin"), { recursive: true });
+	await Bun.write(
+		join(computerUse, ".codex-plugin", "plugin.json"),
+		JSON.stringify({ name: "computer-use", version: "1.0.0" }),
+	);
+	await Bun.write(join(sites, ".codex-plugin", "plugin.json"), JSON.stringify({ name: "sites", version: "0.1.27" }));
+	await Bun.write(
+		join(root, "config.toml"),
+		'[plugins."computer-use@openai-bundled"]\nenabled = true\n[plugins."sites@openai-bundled"]\nenabled = true\n',
+	);
+
+	// Its MCP helper refuses a caller pi could ever be, but the calls go through
+	// the codex app-server rather than pi, so the plugin is bridgeable again.
+	expect((await discoverCodexPlugins(root)).map((plugin) => plugin.name)).toEqual(["computer-use", "sites"]);
+});
+
+test("reaches a plugin's own MCP server through the codex app-server, and only when enabled", async () => {
+	const root = await mkdtemp(join(tmpdir(), "plugin-mcp-test-"));
+	await Bun.write(
+		join(root, ".mcp.json"),
+		JSON.stringify({
+			mcpServers: {
+				"computer-use": { command: "./bin/launcher", args: ["mcp"] },
+				// A remote connector arrives through `codex_apps` instead, so
+				// registering it here would give every one of its tools a
+				// second name.
+				notion: { type: "http", url: "https://mcp.notion.com/mcp" },
+			},
+		}),
+	);
 	const plugin = {
 		key: "computer-use",
 		name: "computer-use",
 		version: "1.0.0",
 		marketplace: "openai-bundled",
-		rootPath: "/plugins/computer-use",
-		skillPaths: ["/plugins/computer-use/skills"],
+		rootPath: root,
+		skillPaths: [],
+		connectorIds: [],
+		displayName: "Computer Use",
+	};
+	let clientsCreated = 0;
+	const createClient = () => {
+		clientsCreated++;
+		return new CodexAppServerMcpClient({
+			command: process.execPath,
+			args: ["-e", fakeCodexAppServer],
+			cwd: root,
+		});
+	};
+
+	const skipped = await discoverPluginMcpTools(
+		[plugin],
+		{ enabled: true, disabledPluginKeys: ["computer-use"] },
+		createClient,
+	);
+	expect(skipped.tools).toEqual([]);
+	expect(clientsCreated).toBe(0);
+
+	const discovered = await discoverPluginMcpTools([plugin], { enabled: true }, createClient);
+	try {
+		expect(discovered.tools.map((tool) => tool.piToolName)).toEqual(["mcp__computer_use__list_apps"]);
+		expect(discovered.tools.map((tool) => tool.connectorName)).toEqual(["Computer Use"]);
+	} finally {
+		discovered.client?.close();
+	}
+});
+
+test("exposes configured MCP tools without a plugin owner", async () => {
+	const discovered = await discoverPluginMcpTools(
+		[],
+		{ enabled: true },
+		() => createTestMcpClient(new Map([["node_repl", nodeReplMcpServer()]])),
+		[{ name: "node_repl", enabled: true }],
+	);
+
+	expect(discovered.tools.map((tool) => tool.piToolName)).toEqual([
+		"mcp__node_repl__js",
+		"mcp__node_repl__js_reset",
+		"mcp__node_repl__js_add_node_module_dir",
+	]);
+	expect(discovered.tools[0]?.inputSchema).toMatchObject({
+		required: ["code", "title", "timeout_ms"],
+		additionalProperties: false,
+	});
+});
+
+test("keeps MCP tool names unique after sanitization", async () => {
+	const discovered = await discoverPluginMcpTools(
+		[],
+		{ enabled: true },
+		() =>
+			createTestMcpClient(
+				new Map([["node_repl", { enabled: true, tools: [{ name: "foo-bar" }, { name: "foo_bar" }] }]]),
+			),
+		[{ name: "node_repl", enabled: true }],
+	);
+	const names = discovered.tools.map((tool) => tool.piToolName);
+
+	expect(names[0]).toBe("mcp__node_repl__foo_bar");
+	expect(names[1]).toMatch(/^mcp__node_repl__foo_bar_[a-z0-9]+$/);
+	expect(new Set(names).size).toBe(2);
+});
+
+test("does not warn for disabled configured MCP servers", async () => {
+	const discovered = await discoverPluginMcpTools([], { enabled: true }, undefined, [
+		{ name: "computer-use", enabled: false },
+	]);
+
+	expect(discovered.tools).toEqual([]);
+	expect(codexMcpWarnings(discovered.servers)).toEqual([]);
+});
+
+test("config ownership wins when a plugin claims the same MCP server", async () => {
+	const root = await mkdtemp(join(tmpdir(), "configured-mcp-plugin-test-"));
+	await Bun.write(join(root, ".mcp.json"), JSON.stringify({ mcpServers: { node_repl: { command: "node-repl" } } }));
+	const plugin = {
+		key: "node-repl-plugin",
+		name: "node-repl-plugin",
+		version: "1.0.0",
+		marketplace: "test",
+		rootPath: root,
+		skillPaths: [],
 		connectorIds: [],
 	};
 
-	expect(pluginSkillPaths([plugin], { enabled: true })).toEqual([
-		join(import.meta.dir, "skill-resources", "computer-use"),
-	]);
-});
-
-test("does not launch the Computer Use MCP client directly under Pi", async () => {
-	const root = await mkdtemp(join(tmpdir(), "computer-use-mcp-skip-test-"));
-	const server = [
-		"const readline = require('node:readline');",
-		"const rl = readline.createInterface({ input: process.stdin });",
-		"rl.on('line', line => {",
-		"  const request = JSON.parse(line);",
-		"  const result = request.method === 'initialize' ? { protocolVersion: '2025-06-18' } : { tools: [{ name: 'list_apps' }] };",
-		"  if (request.id !== undefined) process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\\n');",
-		"});",
-	].join("\n");
-	await Bun.write(
-		join(root, ".mcp.json"),
-		JSON.stringify({ mcpServers: { "computer-use": { command: process.execPath, args: ["-e", server] } } }),
+	const discovered = await discoverPluginMcpTools(
+		[plugin],
+		{ enabled: true },
+		() => createTestMcpClient(new Map([["node_repl", nodeReplMcpServer()]])),
+		[{ name: "node_repl", enabled: true }],
 	);
-	const surfaces = await discoverPluginMcpTools([
-		{
-			key: "computer-use",
-			name: "computer-use",
-			version: "1.0.0",
-			marketplace: "openai-bundled",
-			rootPath: root,
-			skillPaths: [],
-			connectorIds: [],
-		},
-	]);
 
-	try {
-		expect(surfaces).toEqual([]);
-	} finally {
-		for (const surface of surfaces) surface.client.close();
-	}
+	expect(discovered.tools).toHaveLength(3);
+	expect(discovered.tools.every((tool) => tool.key.startsWith("codex-config:node_repl:"))).toBe(true);
+	expect(discovered.tools.every((tool) => tool.connectorId === "mcp:node_repl")).toBe(true);
 });
 
-test("migrates explicit tool selections to the Computer Use surface once", () => {
-	const config = { enabled: true, enabledToolKeys: ["slack:read"] };
-	const tools = [
-		{
-			key: "computer-use:js",
-			piToolName: "node_repl",
-			mcpToolName: "js",
-			title: "Run JavaScript",
-			description: "Run JavaScript",
-			inputSchema: {},
-			connectorId: "computer-use",
-			connectorName: "Computer Use",
-			connectorDescription: "Control Mac apps",
-			readOnly: false,
-			destructive: false,
-			openWorld: true,
-			defaultEnabled: true,
-		},
-	];
-	const plugins = [
-		{
-			key: "computer-use",
-			name: "computer-use",
-			version: "1.0.0",
-			marketplace: "openai-bundled",
-			rootPath: "/plugins/computer-use",
-			skillPaths: [],
-			connectorIds: [],
-		},
-	];
-
-	expect(migrateCodexAppsConfig(config, tools, plugins)).toBe(true);
-	expect(config.enabledToolKeys).toEqual(["computer-use:js", "slack:read"]);
-	expect(config.surfaceVersion).toBe(1);
-	expect(migrateCodexAppsConfig(config, tools, plugins)).toBe(false);
-});
-
-test("local MCP client keeps a server session and forwards tool calls", async () => {
-	const server = [
-		"const readline = require('node:readline');",
-		"const rl = readline.createInterface({ input: process.stdin });",
-		"let calls = 0;",
-		"rl.on('line', line => {",
-		"  const request = JSON.parse(line);",
-		"  let result;",
-		"  if (request.method === 'initialize') result = { protocolVersion: '2025-06-18' };",
-		"  else if (request.method === 'tools/list') result = { tools: [{ name: 'js', inputSchema: { type: 'object' } }] };",
-		"  else if (request.method === 'tools/call') result = { content: [{ type: 'text', text: String(++calls) }] };",
-		"  if (request.id !== undefined) process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\\n');",
-		"});",
-	].join("\n");
-	const client = new LocalMcpClient({ command: process.execPath, args: ["-e", server], env: {} });
-
-	expect(await client.listTools()).toEqual([{ name: "js", inputSchema: { type: "object" } }]);
-	expect(await client.callTool("js", {})).toEqual({ content: [{ type: "text", text: "1" }] });
-	expect(await client.callTool("js", {})).toEqual({ content: [{ type: "text", text: "2" }] });
-	client.close();
-});
-
-test("local MCP client answers server elicitation requests through its approval callback", async () => {
-	const server = [
-		"const readline = require('node:readline');",
-		"const rl = readline.createInterface({ input: process.stdin });",
-		"let callId;",
-		"rl.on('line', line => {",
-		"  const request = JSON.parse(line);",
-		"  if (request.method === 'initialize') process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { protocolVersion: '2025-06-18' } }) + '\\n');",
-		"  else if (request.method === 'tools/list') process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { tools: [{ name: 'click' }] } }) + '\\n');",
-		"  else if (request.method === 'tools/call') { callId = request.id; process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: 99, method: 'elicitation/create', params: { message: 'Allow click?' } }) + '\\n'); }",
-		"  else if (request.id === 99) process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: callId, result: { content: [{ type: 'text', text: request.result.action }] } }) + '\\n');",
-		"});",
-	].join("\n");
-	const client = new LocalMcpClient({ command: process.execPath, args: ["-e", server], env: {} });
-	let approvalMessage = "";
-
-	try {
-		expect(await client.listTools()).toEqual([{ name: "click" }]);
-		expect(
-			await client.callTool("click", {}, undefined, async (message) => {
-				approvalMessage = message;
-				return true;
-			}),
-		).toEqual({ content: [{ type: "text", text: "accept" }] });
-		expect(approvalMessage).toBe("Allow click?");
-	} finally {
-		client.close();
-	}
-});
-
-test("Codex app-server MCP client proxies tools through a signed Codex parent", async () => {
-	const server = [
-		"const readline = require('node:readline');",
-		"const rl = readline.createInterface({ input: process.stdin });",
-		"let callId;",
-		"rl.on('line', line => {",
-		"  const request = JSON.parse(line);",
-		"  if (request.method === 'initialize') process.stdout.write(JSON.stringify({ id: request.id, result: {} }) + '\\n');",
-		"  else if (request.method === 'thread/start') process.stdout.write(JSON.stringify({ id: request.id, result: { thread: { id: 'thread-1' } } }) + '\\n');",
-		"  else if (request.method === 'mcpServerStatus/list') process.stdout.write(JSON.stringify({ id: request.id, result: { data: [{ name: 'node_repl', tools: { js: { name: 'js', inputSchema: { type: 'object' } } } }] } }) + '\\n');",
-		"  else if (request.method === 'mcpServer/tool/call') { callId = request.id; process.stdout.write(JSON.stringify({ id: 99, method: 'mcpServer/elicitation/request', params: { mode: 'form', message: 'Allow JavaScript?', serverName: 'node_repl', threadId: 'thread-1', turnId: null, requestedSchema: {}, _meta: null } }) + '\\n'); }",
-		"  else if (request.id === 99) process.stdout.write(JSON.stringify({ id: callId, result: { content: [{ type: 'text', text: request.result.action }] } }) + '\\n');",
-		"});",
-	].join("\n");
-	const client = new CodexAppServerMcpClient("node_repl", {
+test("Codex app-server MCP client lists servers and forwards a call", async () => {
+	const client = new CodexAppServerMcpClient({
 		command: process.execPath,
-		args: ["-e", server],
+		args: ["-e", fakeCodexAppServer],
 		cwd: process.cwd(),
 	});
-	let approvalMessage = "";
 
 	try {
-		expect(await client.listTools()).toEqual([{ name: "js", inputSchema: { type: "object" } }]);
-		expect(
-			await client.callTool("js", { code: "1 + 1" }, undefined, async (message) => {
-				approvalMessage = message;
-				return true;
-			}),
-		).toEqual({ content: [{ type: "text", text: "accept" }] });
-		expect(approvalMessage).toBe("Allow JavaScript?");
+		expect([...(await client.listServers()).keys()]).toEqual(["computer-use"]);
+		expect(await client.callTool("computer-use", "list_apps", {})).toEqual({
+			content: [{ type: "text", text: "ok" }],
+		});
 	} finally {
 		client.close();
 	}
 });
 
-test("Codex Tools panel supports vim navigation, filtering, and app tabs", async () => {
-	const tool = {
-		key: "slack:read",
-		piToolName: "codex_apps_slack_read",
-		mcpToolName: "read",
-		title: "Read channel",
-		description: "Read messages from a Slack channel",
-		inputSchema: {},
-		connectorId: "slack",
-		connectorName: "Slack",
-		connectorDescription: "Read and manage Slack",
-		readOnly: true,
-		destructive: false,
-		openWorld: true,
-	};
-	const plugin = {
-		key: "slack",
-		name: "slack",
-		version: "0.1.4",
-		marketplace: "openai-curated-remote",
-		rootPath: "/plugins/slack",
-		skillPaths: [],
-		connectorIds: ["slack"],
-	};
-	const config = { enabled: true, enabledToolKeys: [tool.key] };
-	let saves = 0;
-	let closed = false;
-	const panel = new CodexToolsPanel(
-		testTheme as never,
-		[tool],
-		[plugin],
-		config,
-		async () => {
-			saves++;
-		},
-		() => {
-			closed = true;
-		},
-	);
+// An elicitation arrives while the tool call is still open, so a client that
+// ignored it would hang rather than fail — the expensive, silent kind of bug.
+test("Codex app-server MCP client answers a mid-call elicitation instead of stalling", async () => {
+	const client = new CodexAppServerMcpClient({
+		command: process.execPath,
+		args: ["-e", fakeCodexAppServer],
+		cwd: process.cwd(),
+	});
 
-	panel.handleInput("l");
-	panel.handleInput("/");
-	panel.handleInput("r");
-	panel.handleInput("e");
-	panel.handleInput("\r");
-	panel.handleInput("h");
-	panel.handleInput("j");
-	panel.handleInput("j");
-	panel.handleInput("l");
-	panel.handleInput("\r");
-	await panel.waitForPendingSaves();
-
-	expect(config.enabledToolKeys).toEqual([]);
-	expect(saves).toBe(1);
-	panel.handleInput("q");
-	expect(closed).toBe(true);
-});
-
-test("Codex Tools panel persists per-skill autocomplete visibility", async () => {
-	const config = { enabled: true };
-	let saves = 0;
-	const panel = new CodexToolsPanel(
-		testTheme as never,
-		[],
-		[
-			{
-				key: "browser",
-				name: "browser",
-				version: "1.0.0",
-				marketplace: "openai-bundled",
-				rootPath: "/plugins/browser",
-				skillPaths: ["/plugins/browser/skills"],
-				connectorIds: [],
-			},
-		],
-		config,
-		async () => {
-			saves++;
-		},
-		() => {},
-		[
-			{
-				name: "control-in-app-browser",
-				filePath: "/plugins/browser/skills/control-in-app-browser/SKILL.md",
-				pluginKey: "browser",
-			},
-		],
-	);
-
-	panel.handleInput("/");
-	for (const character of "control-in-app-browser") panel.handleInput(character);
-	panel.handleInput("\r");
-	panel.handleInput(" ");
-	await panel.waitForPendingSaves();
-
-	expect(config.hiddenSkillNames).toEqual(["control-in-app-browser"]);
-	expect(saves).toBe(1);
-});
-
-test("node_repl tools come from cache without spawning the codex app-server", async () => {
-	// CODEX_CLI_PATH points at a binary that cannot exist: if discovery tried to hand the tool list
-	// off to the app-server, the spawn would fail and no tools would come back.
-	const previousCliPath = process.env.CODEX_CLI_PATH;
-	process.env.CODEX_CLI_PATH = join(tmpdir(), "definitely-not-a-codex-binary");
-	const cachePath = join(await mkdtemp(join(tmpdir(), "node-repl-cache-")), "tools.json");
 	try {
-		const cachedTool = {
-			key: "computer-use:js",
-			piToolName: "node_repl",
-			mcpToolName: "js",
-			title: "js",
-			description: "run javascript",
-			inputSchema: { type: "object" },
-			connectorId: "computer-use",
-			connectorName: "Computer Use",
-			connectorDescription: "",
-			readOnly: false,
-			destructive: false,
-			openWorld: false,
-		};
-		await writeFile(cachePath, JSON.stringify({ fetchedAt: Date.now(), tools: [cachedTool] }));
-
-		const surface = await discoverNodeReplTools(cachePath);
-
-		expect(surface?.tools.map((tool) => tool.piToolName)).toEqual(["node_repl"]);
-		// Cache is inside the TTL, so the background refresh must be a no-op rather than a spawn.
-		expect(await surface?.refresh()).toEqual([]);
+		expect(await client.callTool("computer-use", "click", { app: "Dia" })).toEqual({
+			content: [{ type: "text", text: "accept" }],
+		});
 	} finally {
-		if (previousCliPath === undefined) delete process.env.CODEX_CLI_PATH;
-		else process.env.CODEX_CLI_PATH = previousCliPath;
+		client.close();
 	}
 });
 
-test("node_repl discovery refreshes past the cache TTL and reports only newly seen tools", async () => {
-	const previousCliPath = process.env.CODEX_CLI_PATH;
-	process.env.CODEX_CLI_PATH = join(tmpdir(), "definitely-not-a-codex-binary");
-	const cachePath = join(await mkdtemp(join(tmpdir(), "node-repl-stale-")), "tools.json");
+test("rejects a mid-call elicitation from an untrusted server", async () => {
+	const client = new CodexAppServerMcpClient({
+		command: process.execPath,
+		args: ["-e", fakeCodexAppServer],
+		cwd: process.cwd(),
+	});
+
 	try {
-		await writeFile(
-			cachePath,
-			JSON.stringify({
-				fetchedAt: Date.now() - 8 * 24 * 60 * 60 * 1000,
-				tools: [{ key: "computer-use:js", piToolName: "node_repl" }],
-			}),
+		await expect(client.callTool("untrusted", "click", {})).rejects.toThrow(
+			"MCP elicitation rejected for untrusted server untrusted",
 		);
-
-		const surface = await discoverNodeReplTools(cachePath);
-
-		// Stale cache still serves startup immediately...
-		expect(surface?.tools.map((tool) => tool.piToolName)).toEqual(["node_repl"]);
-		// ...and the refresh does reach for the app-server, which cannot spawn here, so it rejects
-		// rather than silently reporting an empty tool list.
-		await expect(surface?.refresh()).rejects.toThrow();
 	} finally {
-		if (previousCliPath === undefined) delete process.env.CODEX_CLI_PATH;
-		else process.env.CODEX_CLI_PATH = previousCliPath;
+		client.close();
 	}
+});
+
+test("retries MCP calls after thread startup fails", async () => {
+	const client = new CodexAppServerMcpClient({
+		command: process.execPath,
+		args: ["-e", retryingThreadAppServer],
+		cwd: process.cwd(),
+	});
+
+	try {
+		await expect(client.callTool("computer-use", "list_apps", {})).rejects.toThrow(
+			"Codex app-server returned an invalid thread",
+		);
+		expect(await client.callTool("computer-use", "list_apps", {})).toEqual({
+			content: [{ type: "text", text: "ok" }],
+		});
+	} finally {
+		client.close();
+	}
+});
+
+test("migration drops the dead per-tool selection and re-enables the bridge once", () => {
+	const config = {
+		enabled: false,
+		enabledToolKeys: ["slack:read"],
+		defaultEnableReadOnly: true,
+		disabledPluginKeys: ["sites"],
+		hiddenSkillNames: ["control-in-app-browser"],
+	};
+
+	expect(migrateCodexAppsConfig(config)).toBe(true);
+	expect(config).toEqual({
+		enabled: true,
+		disabledPluginKeys: ["sites"],
+		hiddenSkillNames: ["control-in-app-browser"],
+		surfaceVersion: 2,
+	});
+	expect(migrateCodexAppsConfig(config)).toBe(false);
+});
+
+test("resolves the Codex search endpoint beside codex/responses", () => {
+	expect(resolveCodexSearchUrl("https://chatgpt.com/backend-api")).toBe(
+		"https://chatgpt.com/backend-api/codex/alpha/search",
+	);
+	expect(resolveCodexSearchUrl("https://chatgpt.com/backend-api/")).toBe(
+		"https://chatgpt.com/backend-api/codex/alpha/search",
+	);
+	expect(resolveCodexSearchUrl("https://chatgpt.com/backend-api/codex")).toBe(
+		"https://chatgpt.com/backend-api/codex/alpha/search",
+	);
+	expect(resolveCodexSearchUrl("https://chatgpt.com/backend-api/codex/responses")).toBe(
+		"https://chatgpt.com/backend-api/codex/alpha/search",
+	);
+	expect(resolveCodexSearchUrl(undefined)).toBe("https://chatgpt.com/backend-api/codex/alpha/search");
+});
+
+test("sends web__run commands verbatim with direct-caller settings", () => {
+	const body = buildSearchRequestBody(
+		{ search_query: [{ q: "latest Rust release" }], response_length: "short" },
+		"gpt-5.6-luna",
+		"session-7",
+	);
+
+	expect(body).toEqual({
+		id: "session-7",
+		model: "gpt-5.6-luna",
+		commands: { search_query: [{ q: "latest Rust release" }], response_length: "short" },
+		settings: { allowed_callers: ["direct"], external_web_access: true },
+	});
+});
+
+test("exposes every web.run command family on web__run", () => {
+	const tool = createWebRunTool();
+	const properties = Object.keys((tool.parameters as { properties: Record<string, unknown> }).properties);
+
+	expect(tool.name).toBe(WEB_RUN_TOOL_NAME);
+	expect(properties).toEqual([
+		"search_query",
+		"image_query",
+		"open",
+		"click",
+		"find",
+		"screenshot",
+		"finance",
+		"weather",
+		"sports",
+		"time",
+		"response_length",
+	]);
+});
+
+test("refuses web__run on a model without native Codex web access", async () => {
+	const tool = createWebRunTool();
+
+	await expect(
+		tool.execute("call-1", { search_query: [{ q: "x" }] } as never, undefined, undefined, {
+			model: { provider: "openai", id: "gpt-5.5" },
+		} as never),
+	).rejects.toThrow("only available with openai-codex models");
+});
+
+test("refuses a web__run call carrying no command", async () => {
+	const tool = createWebRunTool();
+
+	await expect(
+		tool.execute("call-2", {} as never, undefined, undefined, { model: codexModel } as never),
+	).rejects.toThrow("needs at least one command");
+});
+
+const onePixelPng = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==";
+
+async function pngFixtureDir(): Promise<string> {
+	const dir = await mkdtemp(join(tmpdir(), "codex-image-gen-"));
+	await writeFile(join(dir, "seed.png"), Buffer.from(onePixelPng, "base64"));
+	return dir;
+}
+
+test("declares image_generation with a prompt and two reference channels", () => {
+	const tool = createImageGenerationTool();
+	const schema = tool.parameters as { properties: Record<string, unknown>; required: string[] };
+
+	expect(Object.keys(schema.properties)).toEqual(["prompt", "referenced_image_paths", "num_last_images_to_include"]);
+	expect(schema.required).toEqual(["prompt"]);
+	// `prepareArguments: () => ({})` would drop the prompt the model just wrote.
+	expect(tool.prepareArguments).toBeUndefined();
+});
+
+test("refuses image_generation on a model that cannot read images", async () => {
+	const tool = createImageGenerationTool();
+
+	await expect(
+		tool.execute("call-1", { prompt: "a red cube" } as never, undefined, undefined, {
+			model: { provider: "openai-codex", id: "gpt-5.5", input: ["text"] },
+		} as never),
+	).rejects.toThrow("openai-codex model that accepts image input");
+});
+
+test("refuses an image_generation call that names both reference channels", () => {
+	expect(() =>
+		readImageGenerationArgs({
+			prompt: "a red cube",
+			referenced_image_paths: ["a.png"],
+			num_last_images_to_include: 2,
+		}),
+	).toThrow("referenced_image_paths or num_last_images_to_include");
+});
+
+test("accepts a bare prompt string from a cell", () => {
+	expect(readImageGenerationArgs("a red cube")).toEqual({ prompt: "a red cube", referencedImagePaths: [] });
+});
+
+test("refuses an image_generation call with no prompt", () => {
+	expect(() => readImageGenerationArgs({ referenced_image_paths: ["a.png"] })).toThrow("needs a prompt");
+});
+
+test("sends the prompt and every reference as one image_generation request", () => {
+	const body = buildImageGenerationRequestBody("gpt-5.5", "a red cube", [
+		{ data: "AAA", mimeType: "image/png", source: "/tmp/a.png" },
+	]);
+
+	expect(body.tools).toEqual([{ type: "image_generation", output_format: "png" }]);
+	expect(body.stream).toBe(true);
+	expect((body.input as Array<{ content: unknown[] }>)[0].content).toEqual([
+		{ type: "input_text", text: "a red cube" },
+		{ type: "input_image", detail: "auto", image_url: "data:image/png;base64,AAA" },
+	]);
+});
+
+test("names the file when a referenced image path is missing", async () => {
+	const dir = await pngFixtureDir();
+
+	await expect(loadReferencedImages(dir, ["absent.png"])).rejects.toThrow(join(dir, "absent.png"));
+});
+
+test("reads a referenced image relative to the workspace", async () => {
+	const dir = await pngFixtureDir();
+
+	const images = await loadReferencedImages(dir, ["seed.png"]);
+
+	expect(images).toHaveLength(1);
+	expect(images[0]?.mimeType).toBe("image/png");
+	expect(images[0]?.source).toBe(join(dir, "seed.png"));
+});
+
+test("pulls the generated image out of the Codex event stream", async () => {
+	async function* events() {
+		yield { type: "response.created", response: { id: "resp_1" } };
+		yield {
+			type: "response.output_item.done",
+			item: {
+				type: "image_generation_call",
+				id: "ig_1",
+				result: onePixelPng,
+				output_format: "png",
+				revised_prompt: "a red cube on white",
+			},
+		};
+	}
+
+	const { image } = await extractGeneratedImage(events());
+
+	expect(image).toEqual({
+		callId: "ig_1",
+		result: onePixelPng,
+		responseId: "resp_1",
+		outputFormat: "png",
+		revisedPrompt: "a red cube on white",
+	});
+});
+
+test("keeps the assistant text when Codex answers without an image", async () => {
+	async function* events() {
+		yield { type: "response.output_text.delta", delta: "I will not draw that." };
+	}
+
+	const { image, text } = await extractGeneratedImage(events());
+
+	expect(image).toBeUndefined();
+	expect(text).toBe("I will not draw that.");
+});
+
+test("reuses a session image through the artifact path a generated result carries", async () => {
+	const dir = await pngFixtureDir();
+	const artifactText = buildGeneratedImageArtifactResult([
+		{
+			absolutePath: join(dir, "seed.png"),
+			relativePath: "seed.png",
+			latestAbsolutePath: join(dir, "latest.png"),
+			latestRelativePath: "latest.png",
+			responseId: "resp_1",
+			callId: "ig_1",
+			outputFormat: "png",
+			mimeType: "image/png",
+			sha256: "abc",
+		},
+	]);
+	const sessionManager = {
+		getBranch: () => [
+			{ type: "message", message: { role: "toolResult", content: [{ type: "text", text: artifactText }] } },
+		],
+	};
+
+	const images = await collectRecentSessionImages({ sessionManager } as never, 1);
+
+	expect(images.map((image) => image.source)).toEqual([join(dir, "seed.png")]);
+});
+test("caps selected historical images at five", async () => {
+	const entries = Array.from({ length: 8 }, (_, index) => ({
+		type: "message",
+		message: { role: "user", content: [{ type: "image", data: `image-${index}`, mimeType: "image/png" }] },
+	}));
+	const images = await collectRecentSessionImages({ sessionManager: { getBranch: () => entries } } as never, 8);
+	expect(images).toHaveLength(5);
+	expect(images.map((image) => image.data)).toEqual(["image-3", "image-4", "image-5", "image-6", "image-7"]);
+});
+
+test("refuses num_last_images_to_include when the session holds no image", async () => {
+	await expect(collectRecentSessionImages({ sessionManager: { getBranch: () => [] } } as never, 2)).rejects.toThrow(
+		"no earlier image",
+	);
+});
+
+test("lets a cell call image_generation", () => {
+	expect([...UNNESTABLE_TOOLS]).not.toContain("image_generation");
+	expect([...UNNESTABLE_TOOLS]).toContain("web_search");
 });

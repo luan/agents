@@ -1,17 +1,15 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { getEditFreeformToolConfig } from "../fileops/index";
 import { configureImageCapabilities } from "../shared/image-capabilities";
+import { toolRegistrarFor } from "../shared/tool-registry.ts";
 import { registerToolResultImageRestore } from "../shared/tool-result-images";
 import registerCodexAppsBridge from "./codex-apps";
 import registerOpenAINativeCompaction from "./compaction/index";
-import { registerCodexFreeformProvider } from "./freeform-codex";
 import {
 	buildGeneratedImageArtifactResult,
 	createImageGenerationTool,
 	createWebSearchTool,
 	IMAGE_GENERATION_TOOL_NAME,
-	registerNativeActivityMessageRenderers,
 	rewriteNativeImageGenerationTool,
 	rewriteNativeWebSearchTool,
 	saveGeneratedImagesFromAssistantMessage,
@@ -20,6 +18,13 @@ import {
 	WEB_SEARCH_ACTIVITY_MESSAGE_TYPE,
 	WEB_SEARCH_TOOL_NAME,
 } from "./native-tools";
+import {
+	createImageGenerationPresentation,
+	createWebSearchPresentation,
+	registerNativeActivityMessageRenderers,
+} from "./native-tools-presentation";
+import { createWebRunTool } from "./web-run";
+import { createWebRunPresentation } from "./web-run-presentation";
 
 function isCodexModel(model: ExtensionContext["model"] | undefined): boolean {
 	const provider = model?.provider?.toLowerCase() ?? "";
@@ -88,13 +93,16 @@ export function isCodexWebSocketError(message: AssistantMessage): boolean {
 }
 
 export default async function codexNativeExtension(pi: ExtensionAPI) {
-	registerCodexFreeformProvider(pi, { toolName: "edit", ...getEditFreeformToolConfig() });
+	// Pi 0.84 owns Codex transport, Responses replay, retry/recovery, diagnostics, usage, and
+	// constrainedSampling conversion. This composition root owns local tools and lifecycle only.
 	configureImageCapabilities();
 	registerToolResultImageRestore(pi);
 	registerOpenAINativeCompaction(pi);
 	await registerCodexAppsBridge(pi);
-	pi.registerTool(createImageGenerationTool());
-	pi.registerTool(createWebSearchTool());
+	const registerCodexTool = toolRegistrarFor(pi);
+	registerCodexTool({ ...createImageGenerationTool(), ...createImageGenerationPresentation() });
+	registerCodexTool({ ...createWebSearchTool(), ...createWebSearchPresentation() });
+	registerCodexTool({ ...createWebRunTool(), ...createWebRunPresentation() });
 	registerNativeActivityMessageRenderers(pi);
 
 	const applyToolPolicy = (ctx?: ExtensionContext) => {

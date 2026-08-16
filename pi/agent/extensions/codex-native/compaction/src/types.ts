@@ -9,7 +9,6 @@ export const DEFAULT_SUPPORTED_PROVIDERS = ["openai", "openai-codex"] as const;
 export const DEFAULT_SUPPORTED_APIS = ["openai-responses", "openai-codex-responses"] as const;
 const LEGACY_NATIVE_COMPACTION_STRATEGY = "openai-native-compact-v1";
 const NATIVE_COMPACTION_STRATEGY = "openai-native-compact-v2";
-export const NATIVE_COMPACTION_SHIM_SUMMARY = "[OpenAI native compaction checkpoint]";
 
 export type DebugArtifactKind = "provider-request" | "compact-response" | "compaction-event" | "lifecycle";
 
@@ -68,7 +67,6 @@ export type RedactOptions = {
 };
 
 type NativeCompactionStrategy = typeof LEGACY_NATIVE_COMPACTION_STRATEGY | typeof NATIVE_COMPACTION_STRATEGY;
-type NativeCompactionShimSummary = typeof NATIVE_COMPACTION_SHIM_SUMMARY;
 
 export type NativeCompactionRequestMeta = {
 	tokensBefore?: number;
@@ -103,6 +101,7 @@ type CreateNativeCompactionDetailsInput = NativeCompactionIdentity & {
 type CreateNativeCompactionShimResultInput = {
 	firstKeptEntryId: string;
 	tokensBefore: number;
+	summary: string;
 	details: NativeCompactionDetails;
 };
 
@@ -243,15 +242,11 @@ export function createNativeCompactionDetails(input: CreateNativeCompactionDetai
 	};
 }
 
-function createNativeCompactionShimSummary(): NativeCompactionShimSummary {
-	return NATIVE_COMPACTION_SHIM_SUMMARY;
-}
-
 export function createNativeCompactionShimResult(
 	input: CreateNativeCompactionShimResultInput,
 ): CompactionResult<NativeCompactionDetails> {
 	return {
-		summary: createNativeCompactionShimSummary(),
+		summary: input.summary,
 		firstKeptEntryId: input.firstKeptEntryId,
 		tokensBefore: input.tokensBefore,
 		details: input.details,

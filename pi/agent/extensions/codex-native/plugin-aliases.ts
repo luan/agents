@@ -44,9 +44,7 @@ function discoverCodexPluginAliases(): Set<string> {
 			for (const version of readDirectory(join(marketplaceRoot, marketplace, name))) {
 				addManifestAlias(
 					join(marketplaceRoot, marketplace, name, version, ".codex-plugin", "plugin.json"),
-					name,
 					marketplace,
-					root,
 					aliases,
 				);
 			}
@@ -59,9 +57,7 @@ function discoverCodexPluginAliases(): Set<string> {
 		for (const name of readDirectory(pluginsRoot.path)) {
 			addManifestAlias(
 				join(pluginsRoot.path, name, ".codex-plugin", "plugin.json"),
-				name,
 				pluginsRoot.marketplace,
-				root,
 				aliases,
 			);
 		}
@@ -104,12 +100,12 @@ function readDirectory(path: string): string[] {
 	}
 }
 
-function addManifestAlias(path: string, _name: string, marketplace: string, root: string, aliases: Set<string>): void {
+function addManifestAlias(path: string, marketplace: string, aliases: Set<string>): void {
 	try {
 		const manifest = JSON.parse(readFileSync(path, "utf8")) as PluginManifest;
 		if (typeof manifest.name !== "string" || manifest.name.length === 0) return;
 		if (!isCodexPluginInstalled(manifest.name, marketplace, path)) return;
-		const appEnabled = pluginAppIds(manifest, path).some((id) => hasEnabledAppTool(root, id));
+		const appEnabled = pluginAppIds(manifest, path).some((id) => isConnectorEnabled(id));
 		if (isCodexPluginEnabled(manifest.name, marketplace, path, appEnabled)) aliases.add(manifest.name);
 	} catch {}
 }
@@ -135,31 +131,19 @@ function appIdsFromManifest(value: unknown): string[] {
 		.filter((id): id is string => Boolean(id));
 }
 
-function hasEnabledAppTool(root: string, connectorId: string): boolean {
+/**
+ * Whether a connector is switched on, read straight off the config.
+ *
+ * This used to scan the codex apps tool cache to find out whether any single
+ * tool of the connector appeared in `enabledToolKeys`. Connector toggles are
+ * now the unit the config stores, so the answer is two field reads and the
+ * cache never has to be opened.
+ */
+function isConnectorEnabled(connectorId: string): boolean {
 	const config = readJson(join(homedir(), ".pi", "agent", "codex-tools.json"));
-	const enabledToolKeys = Array.isArray(config?.enabledToolKeys)
-		? config.enabledToolKeys.filter((key): key is string => typeof key === "string")
-		: [];
-	if (enabledToolKeys.length === 0) return false;
-	const cacheRoot = join(root, "cache", "codex_apps_tools");
-	for (const file of readDirectory(cacheRoot).filter((name) => name.endsWith(".json"))) {
-		const cached = readJson(join(cacheRoot, file));
-		if (!Array.isArray(cached?.tools)) continue;
-		for (const entry of cached.tools) {
-			if (!entry || typeof entry !== "object") continue;
-			const metadata = entry as Record<string, unknown>;
-			const tool =
-				metadata.tool && typeof metadata.tool === "object" ? (metadata.tool as Record<string, unknown>) : undefined;
-			const meta =
-				tool?._meta && typeof tool._meta === "object" ? (tool._meta as Record<string, unknown>) : undefined;
-			if (meta?.connector_id !== connectorId && metadata.connector_id !== connectorId) continue;
-			const name = typeof tool?.name === "string" ? tool.name.replaceAll(".", "_") : undefined;
-			if (name && enabledToolKeys.some((key) => key.startsWith(`${connectorId}:`) && key.endsWith(`:${name}`))) {
-				return true;
-			}
-		}
-	}
-	return false;
+	if (config?.enabled === false) return false;
+	const disabled = Array.isArray(config?.disabledConnectorIds) ? config.disabledConnectorIds : [];
+	return !disabled.includes(connectorId);
 }
 
 function readPluginConfig(root: string): Map<string, boolean> {

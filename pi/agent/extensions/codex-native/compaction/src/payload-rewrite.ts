@@ -1,11 +1,7 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
-import type {
-	BranchSummaryEntry,
-	CustomMessageEntry,
-	SessionEntry,
-	SessionMessageEntry,
-} from "@earendil-works/pi-coding-agent";
+import { type SessionEntry, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
+import { AUTO_COMPACT_STOP_MESSAGE } from "../../../auto-compact-resume";
 import type { ResponsesCompatibleRequestPayload } from "./runtime";
 import {
 	compareResponsesInputParity,
@@ -105,24 +101,13 @@ function isResponsesInputMessageItem(value: unknown): value is ResponsesInputMes
 	return typeof content === "string" || (Array.isArray(content) && content.every(isResponsesInputContentItem));
 }
 
-function cloneResponsesInputContentItem(item: ResponsesInputContentItem): ResponsesInputContentItem {
-	return item.type === "input_text"
-		? {
-				type: "input_text",
-				text: item.text,
-			}
-		: {
-				type: "input_image",
-				detail: "auto",
-				image_url: item.image_url,
-			};
-}
-
-function cloneResponsesInputMessageItem(item: ResponsesInputMessageItem): ResponsesInputMessageItem {
-	return {
-		role: item.role,
-		content: typeof item.content === "string" ? item.content : item.content.map(cloneResponsesInputContentItem),
-	};
+function isAutoCompactStopTail(items: readonly unknown[]): boolean {
+	return areEquivalentValues(items, [
+		{
+			role: "user",
+			content: [{ type: "input_text", text: AUTO_COMPACT_STOP_MESSAGE }],
+		},
+	]);
 }
 
 function cloneStructuredValue(value: unknown): unknown {
@@ -225,44 +210,31 @@ function areEquivalentValues(left: unknown, right: unknown): boolean {
 	return false;
 }
 
-function toBranchSummaryMessage(entry: BranchSummaryEntry): AgentMessage {
-	return {
-		role: "branchSummary",
-		summary: entry.summary,
-		fromId: entry.fromId,
-		timestamp: new Date(entry.timestamp).getTime(),
-	} as AgentMessage;
+function isNativeCompactionContextMessage(message: AgentMessage): boolean {
+	if (
+		message.role === "custom" &&
+		(message.customType === "codex-web-search-activity" || message.customType === "image-attach-preview")
+	) {
+		return false;
+	}
+	if (
+		message.role === "assistant" &&
+		message.provider === "openai-codex" &&
+		message.stopReason === "error" &&
+		(message.errorMessage === "WebSocket error" ||
+			message.errorMessage?.startsWith("WebSocket connection error") === true)
+	) {
+		return false;
+	}
+	return true;
 }
 
-function toCustomMessage(entry: CustomMessageEntry): AgentMessage {
-	return {
-		role: "custom",
-		customType: entry.customType,
-		content: entry.content,
-		display: entry.display,
-		details: entry.details,
-		timestamp: new Date(entry.timestamp).getTime(),
-	} as AgentMessage;
-}
-
-function toSessionMessage(entry: SessionMessageEntry): AgentMessage {
-	return entry.message;
+export function filterNativeCompactionContextMessages(messages: readonly AgentMessage[]): AgentMessage[] {
+	return messages.filter(isNativeCompactionContextMessage);
 }
 
 function toReplayAgentMessage(entry: SessionEntry): AgentMessage | undefined {
-	if (entry.type === "message") {
-		return toSessionMessage(entry);
-	}
-
-	if (entry.type === "custom_message") {
-		return toCustomMessage(entry);
-	}
-
-	if (entry.type === "branch_summary") {
-		return toBranchSummaryMessage(entry);
-	}
-
-	return undefined;
+	return filterNativeCompactionContextMessages(sessionEntryToContextMessages(entry))[0];
 }
 
 function isPromptEnvelopeItem(item: unknown): item is ResponsesInputMessageItem {
@@ -296,15 +268,19 @@ function extractFreshAuthoritativePreamble(
 		}
 	}
 
-	return {
-		...(typeof payload.instructions === "string" ? { instructions: payload.instructions } : {}),
-		leadingInput: payload.input
-			.slice(0, leadingBoundary)
-			.map((item) => cloneResponsesInputMessageItem(item as ResponsesInputMessageItem)),
-		trailingInput: payload.input
-			.slice(trailingBoundary)
-			.map((item) => cloneResponsesInputMessageItem(item as ResponsesInputMessageItem)),
-	};
+	try {
+		return {
+			...(typeof payload.instructions === "string" ? { instructions: payload.instructions } : {}),
+			leadingInput: payload.input
+				.slice(0, leadingBoundary)
+				.map((item) => cloneStructuredValue(item) as ResponsesInputMessageItem),
+			trailingInput: payload.input
+				.slice(trailingBoundary)
+				.map((item) => cloneStructuredValue(item) as ResponsesInputMessageItem),
+		};
+	} catch {
+		return undefined;
+	}
 }
 
 function collectReplayMessages(entries: readonly SessionEntry[]): AgentMessage[] {
@@ -424,13 +400,27 @@ function buildNativeReplaySegmentsInternal<TApi extends Api>(args: {
 		...preCompactionKeptMessages,
 		...postCompactionTailMessages,
 	]);
-	const originalPiReplayInput: ResponsesInputItem[] = [
-		...freshPreamble.leadingInput,
-		...serializedPiHistoryInput,
-		...freshPreamble.trailingInput,
-	];
+	const freshPreambleCount = freshPreamble.leadingInput.length;
+	const trailingPreambleCount = freshPreamble.trailingInput.length;
+	const actualHistoryEnd = args.payload.input.length - trailingPreambleCount;
+	const actualHistory = args.payload.input.slice(freshPreambleCount, actualHistoryEnd);
+	const expectedHistoryPrefix = actualHistory.slice(0, serializedPiHistoryInput.length);
+	const rawTransientHistoryTail = actualHistory.slice(serializedPiHistoryInput.length);
+	const transientHistoryTail =
+		rawTransientHistoryTail.length === 0 || isAutoCompactStopTail(rawTransientHistoryTail)
+			? cloneResponsesInputSlice(rawTransientHistoryTail)
+			: undefined;
 
-	if (!areEquivalentValues(args.payload.input, originalPiReplayInput)) {
+	if (
+		actualHistory.length < serializedPiHistoryInput.length ||
+		!areEquivalentValues(expectedHistoryPrefix, serializedPiHistoryInput) ||
+		!transientHistoryTail
+	) {
+		const originalPiReplayInput: ResponsesInputItem[] = [
+			...freshPreamble.leadingInput,
+			...serializedPiHistoryInput,
+			...freshPreamble.trailingInput,
+		];
 		const parity = compareResponsesInputParity(args.payload.input, originalPiReplayInput);
 		return {
 			ok: false,
@@ -443,8 +433,13 @@ function buildNativeReplaySegmentsInternal<TApi extends Api>(args: {
 		};
 	}
 
-	const freshPreambleCount = freshPreamble.leadingInput.length;
-	const trailingPreambleCount = freshPreamble.trailingInput.length;
+	const originalPiReplayInput: ResponsesInputItem[] = [
+		...freshPreamble.leadingInput,
+		...serializedPiHistoryInput,
+		...transientHistoryTail,
+		...freshPreamble.trailingInput,
+	];
+
 	const compactionSummaryCount = serializeMessagesToResponsesInput(args.model, [compactionSummaryMessage]).length;
 	const preCompactionKeptCount = serializeMessagesToResponsesInput(args.model, preCompactionKeptMessages).length;
 	const tailStartIndex = freshPreambleCount + compactionSummaryCount + preCompactionKeptCount;

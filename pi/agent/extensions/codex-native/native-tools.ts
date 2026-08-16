@@ -1,15 +1,20 @@
 import { createHash } from "node:crypto";
 import { promises as fsPromises } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
-import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { Container, getImageDimensions, Spacer, type Text } from "@earendil-works/pi-tui";
+import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { readPreviewImageFromPathSync } from "../shared/image-preview";
-import { KittyVirtualImage } from "../shared/kitty-virtual-image";
-import { registerExtensionMessageRenderer, textComponent } from "../shared/tui";
+import { readImageDimensions } from "../shared/image-dimensions";
+import {
+	collectRecentSessionImages,
+	IMAGE_GENERATION_SCHEMA,
+	type ImageGenerationArgs,
+	loadReferencedImages,
+	readImageGenerationArgs,
+	requestCodexGeneratedImage,
+} from "./image-gen";
 
 export const WEB_SEARCH_ACTIVITY_MESSAGE_TYPE = "codex-web-search-activity";
-const IMAGE_SAVE_DISPLAY_MESSAGE_TYPE = "codex-image-generation-display";
+export const IMAGE_SAVE_DISPLAY_MESSAGE_TYPE = "codex-image-generation-display";
 export const WEB_SEARCH_TOOL_NAME = "web_search";
 export const IMAGE_GENERATION_TOOL_NAME = "image_generation";
 
@@ -58,10 +63,6 @@ export type SurfacedWebSearch = {
 	sources: Array<{ title?: string; url: string }>;
 };
 
-type ImageDisplayMessageDetails = {
-	savedImages: SavedGeneratedImage[];
-};
-
 type ImageGenerationCallItem = {
 	type: "image_generation_call";
 	id: string;
@@ -80,7 +81,6 @@ type GeneratedImageForDisplay = {
 };
 
 const displayedGeneratedImageKeys = new Set<string>();
-const registeredRendererApis = new WeakSet<ExtensionAPI>();
 
 function generatedImageKey(responseId: string | undefined, callId: string): string {
 	return `${responseId ?? ""}:${callId}`;
@@ -98,7 +98,7 @@ function isOpenAICodexModel(model: ExtensionContext["model"]): boolean {
 	return (model?.provider ?? "").toLowerCase() === "openai-codex";
 }
 
-function supportsImageInputs(model: ExtensionContext["model"]): boolean {
+export function supportsImageInputs(model: ExtensionContext["model"]): boolean {
 	return Array.isArray(model?.input) && model.input.includes("image");
 }
 
@@ -234,7 +234,7 @@ export async function saveOpenAICodexGeneratedImage(
 	const absolutePath = getOpenAICodexImagePath(workspaceRoot, image.responseId, image.callId, outputFormat);
 	const latestAbsolutePath = getOpenAICodexLatestImagePath(workspaceRoot);
 	const bytes = Buffer.from(image.result, "base64");
-	const dimensions = getImageDimensions(image.result, mimeType);
+	const dimensions = readImageDimensions(image.result, mimeType);
 	await fsPromises.mkdir(dirname(absolutePath), { recursive: true });
 	await fsPromises.writeFile(absolutePath, bytes);
 	await fsPromises.writeFile(latestAbsolutePath, bytes);
@@ -331,151 +331,44 @@ export async function saveGeneratedImagesFromAssistantMessage(
 	return savedImages;
 }
 
-function stringArray(value: unknown): string[] {
-	return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
-}
-
-export function extractWebSearch(item: unknown): SurfacedWebSearch | undefined {
-	if (!item || typeof item !== "object" || (item as { type?: unknown }).type !== "web_search_call") return undefined;
-	const record = item as Record<string, unknown>;
-	const callId =
-		typeof record.id === "string" ? record.id : typeof record.call_id === "string" ? record.call_id : undefined;
-	if (!callId) return undefined;
-
-	const action =
-		typeof record.action === "object" && record.action !== null ? (record.action as Record<string, unknown>) : {};
-	const query =
-		typeof action.query === "string" ? action.query : typeof record.query === "string" ? record.query : undefined;
-	const queries = [...stringArray(action.queries), ...stringArray(record.queries)];
-	if (query && !queries.includes(query)) queries.unshift(query);
-
-	const sources: Array<{ title?: string; url: string }> = [];
-	const seen = new Set<string>();
-	const addSource = (source: unknown) => {
-		if (!source || typeof source !== "object") return;
-		const sourceRecord = source as Record<string, unknown>;
-		const url = typeof sourceRecord.url === "string" ? sourceRecord.url : undefined;
-		if (!url || seen.has(url)) return;
-		seen.add(url);
-		sources.push({
-			url,
-			...(typeof sourceRecord.title === "string" ? { title: sourceRecord.title } : {}),
-		});
-	};
-
-	for (const source of Array.isArray(action.sources) ? action.sources : []) addSource(source);
-	for (const source of Array.isArray(record.results) ? record.results : []) addSource(source);
-
-	return {
-		callId,
-		status: typeof record.status === "string" ? record.status : undefined,
-		query,
-		queries,
-		sources,
-	};
-}
-
-export function buildWebSearchActivityMessage(searches: SurfacedWebSearch[]): string {
-	return searches
-		.map((search, index) => {
-			const lines = [searches.length > 1 ? `Web search results ${index + 1}` : "Web search results"];
-			if (search.queries.length > 0) {
-				lines.push("Queries:");
-				for (const query of search.queries) lines.push(`- ${query}`);
-			}
-			if (search.sources.length > 0) {
-				lines.push("Sources:");
-				for (const source of search.sources.slice(0, 5))
-					lines.push(`- ${source.title ? `${source.title} — ` : ""}${source.url}`);
-			}
-			return lines.join("\n");
-		})
-		.join("\n\n");
-}
-
-function webSearchQueryText(search: SurfacedWebSearch): string {
-	return search.queries.length > 0 ? search.queries.join(", ") : (search.query ?? "web");
-}
-
-function webSearchSources(searches: SurfacedWebSearch[]): Array<{ title?: string; url: string }> {
-	const seen = new Set<string>();
-	const sources: Array<{ title?: string; url: string }> = [];
-	for (const search of searches) {
-		for (const source of search.sources) {
-			if (seen.has(source.url)) continue;
-			seen.add(source.url);
-			sources.push(source);
-		}
-	}
-	return sources;
-}
-
-function webSearchSourceLabel(source: { title?: string; url: string }): string {
-	const title = source.title?.trim();
-	if (title) return title;
-	try {
-		return new URL(source.url).hostname.replace(/^www\./, "");
-	} catch {
-		return source.url;
-	}
-}
-
-function shortenWebSearchSourceLabel(label: string): string {
-	return label.length <= 48 ? label : `${label.slice(0, 45)}...`;
-}
-
-function renderWebSearchResultSummary(searches: SurfacedWebSearch[], theme: any): string | undefined {
-	const sources = webSearchSources(searches);
-	if (sources.length === 0) return undefined;
-	const countLabel = sources.length === 1 ? "1 result" : `${sources.length} results`;
-	const visibleLabels = sources.slice(0, 5).map((source) => shortenWebSearchSourceLabel(webSearchSourceLabel(source)));
-	const hiddenCount = sources.length - visibleLabels.length;
-	const labelsText = hiddenCount > 0 ? `${visibleLabels.join(", ")}, +${hiddenCount} more` : visibleLabels.join(", ");
-	return `${theme.fg("accent", `${countLabel}:`)} ${theme.fg("muted", labelsText)}`;
-}
-
-function renderWebSearchActivity(searches: SurfacedWebSearch[], theme: any): string {
-	const marker = theme.fg("success", "•");
-	const effectiveSearches = searches.length > 0 ? searches : [{ callId: "", queries: [], sources: [] }];
-	const queryText = effectiveSearches.map(webSearchQueryText).join("; ");
-	const resultSummary = renderWebSearchResultSummary(searches, theme);
-	let text = `${marker} ${theme.bold("Web Searched")} ${theme.fg("muted", queryText)}`;
-	if (resultSummary) text += `${theme.fg("dim", " · ")}${resultSummary}`;
-	return text;
-}
+const IMAGE_GENERATION_DESCRIPTION = [
+	"Render an image from a prompt with OpenAI Codex `image_generation`.",
+	"Outputs are saved under `.pi/openai-codex-images/` and mirrored to `latest.png`, and the result carries the artifact path.",
+	"Pass `referenced_image_paths` to edit or match local images, or `num_last_images_to_include` to reuse the most recent images in this session; never both.",
+].join(" ");
 
 export function createImageGenerationTool(): ToolDefinition<any> {
 	return {
 		name: IMAGE_GENERATION_TOOL_NAME,
 		label: IMAGE_GENERATION_TOOL_NAME,
-		renderShell: "self",
-		description:
-			"Generate an image with native OpenAI Codex image_generation. Outputs are saved under `.pi/openai-codex-images/` and mirrored to `latest.png`.",
-		promptSnippet:
-			"Generate an image with native OpenAI Codex image_generation. Outputs are saved under `.pi/openai-codex-images/` and mirrored to `latest.png`.",
-		parameters: Type.Unsafe<Record<string, never>>({
-			type: "object",
-			properties: {},
-			additionalProperties: false,
-		}),
-		prepareArguments: () => ({}),
-		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
-			if (!supportsNativeImageGeneration(ctx.model)) {
-				throw new Error("image_generation is only available with openai-codex gpt-5.5");
+		description: IMAGE_GENERATION_DESCRIPTION,
+		promptSnippet: IMAGE_GENERATION_DESCRIPTION,
+		parameters: Type.Unsafe<ImageGenerationArgs>(IMAGE_GENERATION_SCHEMA),
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			if (!supportsNativeImageGeneration(ctx?.model)) {
+				throw new Error("image_generation needs an openai-codex model that accepts image input");
 			}
-			throw new Error("image_generation is a native openai-codex provider tool and should not execute locally");
-		},
-		renderCall(_args, theme, context) {
-			const text = (context?.lastComponent as Text | undefined) ?? textComponent("");
-			const running = context?.isPartial !== false;
-			const marker = theme.fg(running ? "dim" : "success", "•");
-			text.setText(`${marker} ${theme.bold(running ? "Generating image" : "Generated image")}`);
-			return text;
-		},
-		renderResult(result, { expanded }, theme) {
-			if (!expanded) return new Container();
-			const text = result.content.find((item) => item.type === "text")?.text ?? "(no output)";
-			return textComponent(theme.fg("dim", text));
+			const { prompt, referencedImagePaths, lastImageCount } = readImageGenerationArgs(params);
+			const cwd = ctx?.cwd ?? process.cwd();
+			const referenceImages =
+				referencedImagePaths.length > 0
+					? await loadReferencedImages(cwd, referencedImagePaths)
+					: await collectRecentSessionImages(ctx, lastImageCount ?? 0);
+			const generated = await requestCodexGeneratedImage({ prompt, referenceImages, ctx, signal });
+			const savedImage = await saveOpenAICodexGeneratedImage(cwd, {
+				...generated,
+				revisedPrompt: generated.revisedPrompt ?? prompt,
+			});
+			markGeneratedImageDisplayed(generated.responseId, generated.callId);
+			const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [
+				{ type: "text", text: buildGeneratedImageArtifactResult([savedImage]) },
+			];
+			// Re-checked rather than assumed: `supportsNativeImageGeneration` implies it today (:110), and a model that
+			// cannot read an image must get the path with no pixels.
+			if (supportsImageInputs(ctx?.model)) {
+				content.push({ type: "image", data: generated.result, mimeType: savedImage.mimeType });
+			}
+			return { content, details: { savedImages: [savedImage], referenceCount: referenceImages.length } };
 		},
 	};
 }
@@ -499,98 +392,5 @@ export function createWebSearchTool(): ToolDefinition<any> {
 			}
 			throw new Error("web_search is a native openai-codex provider tool and should not execute locally");
 		},
-		renderCall(_args, theme) {
-			return textComponent(theme.fg("toolTitle", theme.bold(WEB_SEARCH_TOOL_NAME)));
-		},
-		renderResult(result, { expanded }, theme) {
-			if (!expanded) return new Container();
-			const text = result.content.find((item) => item.type === "text")?.text ?? "(no output)";
-			return textComponent(theme.fg("dim", text));
-		},
 	};
-}
-
-function shortenPrompt(prompt: string, max = 96): string {
-	const singleLine = prompt.replace(/\s+/g, " ").trim();
-	if (singleLine.length <= max) return singleLine;
-	return `${singleLine.slice(0, max - 3)}...`;
-}
-
-function renderGeneratedImageActivity(
-	savedImage: SavedGeneratedImage,
-	options: { expanded?: boolean },
-	theme: any,
-): string {
-	const marker = theme.fg("success", "•");
-	const latest = theme.fg("muted", savedImage.latestRelativePath);
-	let text = `${marker} ${theme.bold("Generated image")}${theme.fg("dim", " · ")}${latest}`;
-	if (!options.expanded) return text;
-
-	const details: string[] = [];
-	if (savedImage.revisedPrompt) {
-		details.push(
-			`${theme.fg("accent", "Prompt")} ${theme.fg("muted", shortenPrompt(savedImage.revisedPrompt, 140))}`,
-		);
-	}
-	details.push(`${theme.fg("accent", "File")} ${theme.fg("muted", savedImage.relativePath)}`);
-	details.push(`${theme.fg("accent", "Latest")} ${theme.fg("muted", savedImage.latestRelativePath)}`);
-
-	for (const [index, detail] of details.entries()) {
-		const prefix = index === details.length - 1 ? "  └ " : "  ├ ";
-		text += `\n${theme.fg("dim", prefix)}${detail}`;
-	}
-	return text;
-}
-
-export function renderImageGenerationMessage(
-	message: { content: unknown; details?: ImageDisplayMessageDetails },
-	options: { expanded?: boolean },
-	theme: any,
-) {
-	const savedImage = message.details?.savedImages?.[0];
-	const container = new Container();
-	if (savedImage) {
-		container.addChild(textComponent(renderGeneratedImageActivity(savedImage, options, theme)));
-		const preview = readPreviewImageFromPathSync(savedImage.absolutePath);
-		if (preview) {
-			container.addChild(new Spacer(1));
-			container.addChild(
-				new KittyVirtualImage(
-					preview.data,
-					preview.mimeType,
-					{
-						fallbackColor: (text: string) => theme.fg("toolOutput", text),
-					},
-					{ maxWidthCells: 80, maxHeightCells: 30, sourcePath: preview.sourcePath },
-				),
-			);
-		}
-		return container;
-	}
-	return textComponent(`${theme.fg("success", "•")} ${theme.bold("Generated image")}`);
-}
-
-export function registerNativeActivityMessageRenderers(pi: ExtensionAPI): void {
-	if (registeredRendererApis.has(pi)) return;
-	registeredRendererApis.add(pi);
-	registerExtensionMessageRenderer(pi, IMAGE_SAVE_DISPLAY_MESSAGE_TYPE, (message, renderOptions, theme) =>
-		renderImageGenerationMessage(message as any, renderOptions, theme),
-	);
-	registerExtensionMessageRenderer(pi, WEB_SEARCH_ACTIVITY_MESSAGE_TYPE, (message, renderOptions, theme) =>
-		renderWebSearchMessage(message as any, renderOptions, theme),
-	);
-}
-
-export function renderWebSearchMessage(
-	message: { content: unknown; details?: { searches?: SurfacedWebSearch[] } },
-	options: { expanded?: boolean },
-	theme: any,
-) {
-	const searches = message.details?.searches ?? [];
-	let text = renderWebSearchActivity(searches, theme);
-	if (options.expanded) {
-		const content = typeof message.content === "string" ? message.content : "";
-		if (content.trim()) text += `\n${theme.fg("dim", content)}`;
-	}
-	return textComponent(text);
 }
