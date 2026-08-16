@@ -1,0 +1,23 @@
+{
+	"$schema": "https://unpkg.com/knip@6/schema.json",
+	"entry": [
+		"pi/agent/extensions/*.ts",
+		"pi/agent/extensions/*/index.ts",
+		"pi/agent/extensions/**/*.test.ts",
+		"pi/agent/extensions/**/*.transport-check.ts"
+	],
+	"project": [
+		"pi/agent/extensions/**/*.{ts,mjs}"
+	],
+	"ignoreDependencies": [
+		"@binclusive/tree-sitter-swift-wasm",
+		"@plannotator/pi-extension",
+		"gpt-tokenizer",
+		"tree-sitter-bash",
+		"tree-sitter-go",
+		"tree-sitter-javascript",
+		"tree-sitter-python",
+		"tree-sitter-rust",
+		"tree-sitter-typescript"
+	]
+}

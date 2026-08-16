@@ -1,12 +1,12 @@
 approval_policy = "never"
-model = "gpt-5.6-sol"
-model_reasoning_effort = "high"
+model = "gpt-5.6-terra"
+model_reasoning_effort = "low"
 personality = "pragmatic"
 plan_mode_reasoning_effort = "high"
 sandbox_mode = "danger-full-access"
 web_search = "live"
 
-approvals_reviewer = "user"
+approvals_reviewer = "auto_review"
 
 service_tier = "default"
 
@@ -14,17 +14,14 @@ service_tier = "default"
 
 
 
-notify = ["/Users/luan/.codex/computer-use/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient", "turn-ended"]
+
+notify = ["/Users/luan.santos/.codex/computer-use/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient", "turn-ended"]
 
 [features]
-image_generation = true
-memories = true
-multi_agent = true
-terminal_resize_reflow = true
-goals = true
-hooks = true
-js_repl = false
 chronicle = true
+prevent_idle_sleep = true
+js_repl = false
+memories = true
 
 [notice]
 hide_full_access_warning = true
@@ -36,9 +33,6 @@ enabled = true
 
 [plugins."spreadsheets@openai-primary-runtime"]
 enabled = true
-
-[plugins."gt@agents"]
-enabled = false
 
 [plugins."slack@openai-curated"]
 enabled = true
@@ -76,36 +70,40 @@ inherit = "core"
 [shell_environment_policy.set]
 GIT_USERNAME = "luan"
 BROWSER_USE_AVAILABLE_BACKENDS = "chrome,iab"
-NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = "323bc3e687e17d7e377238d9f4c69111c4d0e6219103b6316d8c52082489533b"
-NODE_REPL_TRUSTED_CODE_PATHS = "/Users/luan/.codex:/Applications/ChatGPT.app/Contents/Resources/cua_node/lib/node_modules"
+NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = "87e84e5b4db45250b323ac54ab2f33585d867d0d13abc198e73a4e28420b657b"
+NODE_REPL_TRUSTED_CODE_PATHS = "/Users/luan.santos/.codex:/Applications/ChatGPT.app/Contents/Resources/cua_node/lib/node_modules"
 
 [tui]
-status_line = [
-  "run-state",
-  "model-with-reasoning",
-  "current-dir",
-  "git-branch",
-  "context-used",
-  "context-window-size",
-  "task-progress",
-]
+status_line = ["model-with-reasoning", "current-dir", "git-branch", "pull-request-number", "context-used", "task-progress", "fast-mode"]
+status_line_use_colors = true
 
 [tui.keymap.composer]
 queue = "alt-enter"
+
+[tui.keymap.global]
+toggle_fast_mode = "alt-g"
+toggle_side_conversation = "alt-i"
+
+[tui.keymap.chat]
+edit_queued_message = "alt-up"
+decrease_reasoning_effort = "alt-,"
+increase_reasoning_effort = "alt-."
+
+[tui.keymap.pager]
 
 [tui.model_availability_nux]
 "gpt-5.5" = 4
 "gpt-5.6-sol" = 3
 
 [marketplaces.openai-bundled]
-last_updated = "2026-08-08T07:15:06Z"
+last_updated = "2026-08-15T06:34:22Z"
 source_type = "local"
-source = "/Users/luan/.codex/.tmp/bundled-marketplaces/openai-bundled"
+source = "/Users/luan.santos/.codex/.tmp/bundled-marketplaces/openai-bundled"
 
 [marketplaces.openai-primary-runtime]
-last_updated = "2026-08-06T03:27:00Z"
+last_updated = "2026-08-14T18:41:24Z"
 source_type = "local"
-source = "/Users/luan/.cache/codex-runtimes/codex-primary-runtime/plugins/openai-primary-runtime"
+source = "/Users/luan.santos/.cache/codex-runtimes/codex-primary-runtime/plugins/openai-primary-runtime"
 
 [projects."~/src/agents"]
 trust_level = "trusted"
@@ -212,6 +210,24 @@ trust_level = "trusted"
 [projects."/Users/luan/Documents/Codex/2026-08-05/ple"]
 trust_level = "trusted"
 
+[projects."/Users/luan.santos/src/codex"]
+trust_level = "trusted"
+
+[projects."/Users/luan.santos/Documents/Codex/2026-08-14/why"]
+trust_level = "trusted"
+
+[projects."/Users/luan.santos/Documents/Codex/2026-08-14/so"]
+trust_level = "trusted"
+
+[projects."/Users/luan.santos/Documents/Codex/2026-08-14/sometimes-my-mouse-get-s-locked"]
+trust_level = "trusted"
+
+[projects."/Users/luan.santos/Documents/Codex/2026-08-15/do-you-have-access-to-collaboration"]
+trust_level = "trusted"
+
+[projects."/Users/luan.santos/Documents/Codex/2026-08-15/create-tiny-subaget-ask-it-to"]
+trust_level = "trusted"
+
 
 [hooks.state]
 
@@ -241,6 +257,7 @@ dictationDictionary = ["skrl", "egui"]
 enabled-reasoning-efforts = ["low", "medium", "high", "xhigh", "ultra", "max"]
 avatar-overlay-mascot-width-px = 89
 realtimeVoiceScreenContextEnabled = true
+preventSleepWhileRunning = true
 
 [desktop.appearanceLightChromeTheme]
 accent = "#0169cc"
@@ -284,16 +301,16 @@ startup_timeout_sec = 120
 NODE_REPL_NATIVE_PIPE_CONNECT_TIMEOUT_MS = "1000"
 NODE_REPL_NODE_MODULE_DIRS = "/Applications/ChatGPT.app/Contents/Resources/cua_node/lib/node_modules"
 NODE_REPL_NODE_PATH = "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node"
-NODE_REPL_TRUSTED_CODE_PATHS = "/Users/luan/.codex:/Applications/ChatGPT.app/Contents/Resources/cua_node/lib/node_modules"
-CODEX_HOME = "/Users/luan/.codex"
-NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = "323bc3e687e17d7e377238d9f4c69111c4d0e6219103b6316d8c52082489533b"
+NODE_REPL_TRUSTED_CODE_PATHS = "/Users/luan.santos/.codex:/Applications/ChatGPT.app/Contents/Resources/cua_node/lib/node_modules"
+CODEX_HOME = "/Users/luan.santos/.codex"
+NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = "87e84e5b4db45250b323ac54ab2f33585d867d0d13abc198e73a4e28420b657b"
 BROWSER_USE_AVAILABLE_BACKENDS = "chrome,iab"
 NODE_REPL_INSTRUCTIONS_USE_CASE_BROWSER = "Control the in-app browser in conjunction with the Browser Plugin."
 NODE_REPL_INSTRUCTIONS_USE_CASE_CHROME = "Control the Chrome browser in conjunction with the Chrome Plugin. Prefer this method of controlling Chrome over alternatives (such as Computer Use) unless the user explicitly mentions an alternative."
 NODE_REPL_INSTRUCTIONS_USE_CASE_COMPUTER_USE = "Control desktop apps on macOS through Computer Use."
 BROWSER_USE_CODEX_APP_BUILD_FLAVOR = "prod"
-BROWSER_USE_CODEX_APP_VERSION = "26.803.41515"
-SKY_CUA_SERVICE_PATH = "/Users/luan/.codex/computer-use/Codex Computer Use.app"
+BROWSER_USE_CODEX_APP_VERSION = "26.810.50856"
+SKY_CUA_SERVICE_PATH = "/Users/luan.santos/.codex/computer-use/Codex Computer Use.app"
 CODEX_CLI_PATH = "/Applications/ChatGPT.app/Contents/Resources/codex"
 
 [mcp_servers.computer-use]
@@ -301,3 +318,7 @@ command = "./Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.
 args = ["mcp"]
 cwd = "."
 enabled = false
+
+[memories]
+generate_memories = true
+use_memories = true

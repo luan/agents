@@ -41,9 +41,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: extractions/setup-just@v2
 
-      # Stubs satisfy `cargo xtask doctor`'s PATH check. xtask itself never
-      # invokes these (only the `just claude-plugins-install` / `just ct-install`
-      # recipes do), so a no-op stub is sufficient for xtask coverage.
+      # Stubs satisfy `cargo xtask doctor`'s PATH check. xtask does not invoke
+      # these tools, so no-op stubs are sufficient for its coverage.
       - name: Stub external tools (codex, claude)
         shell: bash
         run: |
@@ -116,7 +115,6 @@ jobs:
             "$HOME/.claude/statusline.py" \
             "$HOME/.claude/hooks" \
             "$HOME/.claude/rules" \
-            "$HOME/.claude/local-plugins" \
             "$HOME/.codex/AGENTS.md" \
             "$HOME/.codex/config.toml" \
             "$HOME/.pi/agent" \
@@ -127,8 +125,7 @@ jobs:
           done
           for p in \
             "$HOME/.agents/rules/cargo.md" \
-            "$HOME/.agents/skills/commit" \
-            "$HOME/.agents/plugins/marketplace.json"; do
+            "$HOME/.agents/skills/commit"; do
             test -e "$p" || { echo "::error::missing agents-home path: $p"; exit 1; }
           done
 

@@ -1,18 +1,34 @@
 {
   "extends": "./tsconfig.json",
+  // fileops/** is deliberately absent: 48 pre-existing type errors, re-measured 2026-08-13.
+  // 12 are one class: pi's `Theme` is not assignable to the `RenderTheme` declared in fileops/diff-render.ts, by
+  // parameter contravariance on its background properties, which are typed `(role: string, ...)`.
+  // MEASURED, all against the 48 baseline, so nobody repeats them:
+  //   narrow diff-render.ts `bg` to ThemeBackgroundRole ......... 49 (the 12 clear, then resurface via getBgAnsi, +1 new)
+  //   narrow diff-render.ts `getBgAnsi` alone .................... 49
+  //   narrow BOTH .............................................. 50
+  //   derive per property, Parameters<Theme["bg"]>[0] + Parameters<Theme["getBgAnsi"]>[0] ... 50
+  //   add "scrollbarThumb" to shared ThemeBackgroundRole ......... 48 (zero effect; a subset is assignable anyway)
+  // So there are at least two wide properties, and one shared alias cannot fix both: `Theme.bg` and
+  // `Theme.getBgAnsi` take different unions, so ThemeBackgroundRole (= Parameters<Theme["bg"]>[0]) satisfies only `bg`.
+  // Per-property derivation was tried and also lands at 50, so the cause is not union drift between the two
+  // properties either. Six variants measured, none below the 48 baseline; treat this as unexplained, not one line away.
+  // Do not delete the duplicate RenderTheme: it is a superset (name, getFgAnsi, getLangIcon, inverse, required bold).
+  // The remaining 36: exploration-summary narrowing (4 type predicates, arrays of `T | undefined`, 2 missing `scheme`),
+  // 5 "input" literal mismatches, 4 missing properties, 2 ast-tools tool signatures, 1 stale ToolRenderContext import
+  // from @earendil-works/pi-coding-agent, 1 ApplyResult/RecoveryResult looseness in hashline/patcher.ts:458.
   "include": [
     "omp/agent/extensions/tui/**/*.ts",
     "pi/agent/extensions/agents-local/**/*.ts",
     "pi/agent/extensions/ask/**/*.ts",
+    "pi/agent/extensions/code-mode/**/*.ts",
     "pi/agent/extensions/auto-compact-resume/**/*.ts",
     "pi/agent/extensions/compaction-divider/**/*.ts",
-    "pi/agent/extensions/context-guard/**/*.ts",
+    "pi/agent/extensions/artifact-store/**/*.ts",
     "pi/agent/extensions/context7/**/*.ts",
-    "pi/agent/extensions/git-tool/**/*.ts",
     "pi/agent/extensions/image-attach/**/*.ts",
     "pi/agent/extensions/model-roles/**/*.ts",
     "pi/agent/extensions/openai-fast/**/*.ts",
-    "pi/agent/extensions/plannotator-events/**/*.ts",
     "pi/agent/extensions/pretty/**/*.ts",
     "pi/agent/extensions/prompt-storage/**/*.ts",
     "pi/agent/extensions/shared/image-preview.ts",
@@ -21,6 +37,7 @@
     "pi/agent/extensions/subagents/**/*.ts",
     "pi/agent/extensions/system-prompt/**/*.ts",
     "pi/agent/extensions/tasks/**/*.ts",
+    "pi/agent/extensions/token-budget/**/*.ts",
     "pi/agent/extensions/token-burden/**/*.ts",
     "pi/agent/extensions/tui/**/*.ts",
     "pi/agent/extensions/vim/**/*.ts"
