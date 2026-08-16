@@ -1,7 +1,9 @@
 {
   "defaultRole": "balanced",
+  "subagentDefaultRole": "task",
   "roles": {
     "tiny": {
+      "description": "Use for bounded mechanical tasks, quick fact-finding, and narrow codebase searches where latency and cost matter and independent judgment is not required.",
       "candidates": [
         {
           "model": "openai-codex/gpt-5.6-luna",
@@ -11,15 +13,17 @@
       "color": "thinkingLow"
     },
     "smol": {
+      "description": "Use for routine tasks that need more reasoning while keeping cost low.",
       "candidates": [
         {
           "model": "openai-codex/gpt-5.6-luna",
-          "thinking": "max"
+          "thinking": "high"
         }
       ],
       "color": "warning"
     },
     "quick": {
+      "description": "Use for time-sensitive small tasks that need a strong model with light reasoning.",
       "candidates": [
         {
           "model": "openai-codex/gpt-5.6-sol",
@@ -29,6 +33,7 @@
       "color": "thinkingHigh"
     },
     "balanced": {
+      "description": "Use for nuanced review, careful tradeoff analysis, and tasks that need strong independent judgment.",
       "candidates": [
         {
           "model": "openai-codex/gpt-5.6-sol",
@@ -38,6 +43,7 @@
       "color": "success"
     },
     "task": {
+      "description": "Use for substantial delegated coding tasks that need sustained autonomous reasoning and clear ownership of an implementation outcome.",
       "candidates": [
         {
           "model": "openai-codex/gpt-5.6-luna",
