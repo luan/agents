@@ -1,0 +1,22 @@
+{
+	"compilerOptions": {
+		"target": "ES2022",
+		"module": "ESNext",
+		"moduleResolution": "Bundler",
+		"paths": {
+			"pi-libtui": ["../pi-libtui/src/index.ts"],
+			"pi-libtui/mouse": ["../pi-libtui/src/mouse.ts"],
+			"pi-libtui/selection": ["../pi-libtui/src/selection.ts"]
+		},
+		"noEmit": true,
+		"incremental": true,
+		"tsBuildInfoFile": "../../../../../target/tsbuildinfo/pi-annotations.tsbuildinfo",
+		"allowImportingTsExtensions": true,
+		"strict": true,
+		"noUncheckedIndexedAccess": true,
+		"forceConsistentCasingInFileNames": true,
+		"skipLibCheck": true,
+		"types": ["bun"]
+	},
+	"include": ["src/**/*.ts", "test/**/*.ts"]
+}

@@ -1,4 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import type { SelectionActionRequest } from "pi-libtui/selection";
 import type { AnnotationSelection, DraftAnnotation, ResponseAnnotation } from "../core/types.ts";
 import { removeTokenAtom, tokenInsertion, type AnnotationStore } from "../core/store.ts";
@@ -128,10 +129,12 @@ export async function composeAnnotation(
 /** Center new annotation composers on a one-line selection while preserving its lower edge vertically. */
 export function selectionOverlayAnchor(request: SelectionActionRequest): SelectionPoint {
 	const row = request.screenAnchor?.row ?? request.screen.end.row;
-	const col =
-		request.screen.start.row === request.screen.end.row
-			? Math.round((request.screen.start.col + request.screen.end.col) / 2)
-			: request.screen.start.col;
+	const sameRow = request.screen.start.row === request.screen.end.row;
+	const start = Math.min(request.screen.start.col, request.screen.end.col);
+	const end = Math.max(request.screen.start.col, request.screen.end.col);
+	const selectedWidth = sameRow ? visibleWidth(request.text.split("\n", 1)[0] ?? "") : 0;
+	const visualEnd = selectedWidth > 0 ? Math.min(end, start + selectedWidth) : end;
+	const col = sameRow ? Math.round((start + visualEnd) / 2) : request.screen.start.col;
 	return { row, col };
 }
 

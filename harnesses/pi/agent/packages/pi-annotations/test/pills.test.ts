@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { icon, tuiTheme } from "pi-libtui";
 import { annotationIcon, plainPill } from "../src/core/pills.ts";
 import type { AnnotationSelection, DraftAnnotation } from "../src/core/types.ts";
@@ -55,9 +55,33 @@ describe("pill surfaces", () => {
 		const colors = tuiTheme(theme);
 		expect(base).toContain(colors.bgAnsi("surface.selected"));
 		expect(user).toContain(colors.bgAnsi("badge.neutral"));
-		for (const pill of [baseHover, hovered]) expect(pill).toContain(colors.bgAnsi("surface.raised"));
+		for (const pill of [baseHover, hovered]) expect(pill).toContain(colors.bgAnsi("surface.hover"));
 		expect(hovered).toContain("user-hover");
-		expect(bolds).toEqual(["user-hover"]);
+		expect(bolds).toEqual(["base-hover", "user-hover"]);
+	});
+
+	test("chooses a subdued semantic surface when the preferred pill background matches its destination", () => {
+		const theme = recordingTheme([]);
+		const colors = tuiTheme(theme);
+		for (const { state, preferred, fallback } of [
+			{ state: "normal" as const, preferred: "surface.selected" as const, fallback: "badge.neutral" as const },
+			{ state: "hover" as const, preferred: "surface.hover" as const, fallback: "surface.raised" as const },
+		]) {
+			const destination = colors.bgAnsi(preferred);
+			const pill = renderPill(
+				theme,
+				{ icon: "comment", label: "#1" },
+				{
+					surface: "base",
+					state,
+					surroundingBackgroundAnsi: destination,
+				},
+			);
+			expect(pill).toStartWith(destination);
+			expect(pill).toEndWith(destination);
+			expect(pill).toContain(colors.bgAnsi(fallback));
+			expect(colors.bgAnsi(fallback)).not.toBe(destination);
+		}
 	});
 
 	test("does not invent an underlying user-message background", () => {
@@ -80,8 +104,8 @@ describe("pill surfaces", () => {
 		for (const context of [
 			{ surface: "base" as const, background: "surface.selected" as const },
 			{ surface: "user" as const, background: "badge.neutral" as const },
-			{ surface: "base" as const, state: "hover" as const, background: "surface.raised" as const },
-			{ surface: "user" as const, state: "hover" as const, background: "surface.raised" as const },
+			{ surface: "base" as const, state: "hover" as const, background: "surface.hover" as const },
+			{ surface: "user" as const, state: "hover" as const, background: "surface.hover" as const },
 		]) {
 			const destination = "\x1b[48;5;4m";
 			const pill = renderPill(theme, content, {
@@ -107,10 +131,12 @@ describe("pill surfaces", () => {
 		expect(visibleWidth(rendered)).toBe(visibleWidth(plainPill(content)));
 	});
 
-	test("hover detail is borderless and uses the interactive alternate surface", () => {
+	test("hover detail has a visible semantic border and interactive alternate surface", () => {
 		const backgrounds: string[] = [];
 		const lines = annotationDetailLines(recordingTheme(backgrounds), draft, 30);
-		expect(lines.join("\n")).not.toMatch(/[╭╮╰╯│]/);
+		expect(stripTerminalSequences(lines[0]!)).toMatch(/^╭─ Annotation #1 ─+╮$/u);
+		expect(stripTerminalSequences(lines[1]!)).toContain("Selected: selected");
+		expect(stripTerminalSequences(lines.at(-1)!)).toMatch(/^╰─+╯$/u);
 		expect(lines.join("\n")).toContain("Selected: selected");
 		expect(lines.join("\n")).toContain(tuiTheme(recordingTheme([])).bgAnsi("surface.raised"));
 		expect(backgrounds).toEqual([]);
