@@ -10,24 +10,9 @@
   "permissions": {
     "defaultMode": "auto"
   },
-  "hooks": {
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"$HOME/.claude/hooks/context-mode-cache-heal.mjs\""
-          }
-        ]
-      }
-    ]
-  },
-  "worktree": {
-    "baseRef": "fresh"
-  },
   "statusLine": {
     "type": "command",
-    "command": "uv run $HOME/.claude/statusline.py; command -v context-mode >/dev/null 2>&1 && { echo; context-mode statusline; }; true",
+    "command": "uv run $HOME/.claude/statusline.py",
     "padding": 0,
     "refreshInterval": 5
   },
@@ -41,9 +26,7 @@
     "skill-creator@claude-plugins-official": false,
     "lua-lsp@claude-plugins-official": false,
     "linear@claude-plugins-official": false,
-    "notion@claude-plugins-official": false,
-    "context-mode@context-mode": true,
-    "ponytail@ponytail": true
+    "notion@claude-plugins-official": false
   },
   "extraKnownMarketplaces": {
     "claude-plugins-official": {
@@ -51,36 +34,7 @@
         "source": "github",
         "repo": "anthropics/claude-plugins-official"
       }
-    },
-    "context-mode": {
-      "source": {
-        "source": "github",
-        "repo": "mksglu/context-mode"
-      }
-    },
-    "ponytail": {
-      "source": {
-        "source": "github",
-        "repo": "DietrichGebert/ponytail"
-      }
     }
   },
-  "alwaysThinkingEnabled": true,
-  "effortLevel": "high",
-  "promptSuggestionEnabled": true,
-  "tui": "fullscreen",
-  "autoDreamEnabled": true,
-  "showThinkingSummaries": true,
-  "skipDangerousModePermissionPrompt": true,
-  "editorMode": "normal",
-  "verbose": false,
-  "preferredNotifChannel": "notifications_disabled",
-  "autoCompactEnabled": true,
-  "teammateMode": "in-process",
-  "remoteControlAtStartup": false,
-  "inputNeededNotifEnabled": true,
-  "agentPushNotifEnabled": true,
-  "useAutoModeDuringPlan": false,
-  "voiceEnabled": true,
-  "skipWorkflowUsageWarning": true
+  "tui": "fullscreen"
 }

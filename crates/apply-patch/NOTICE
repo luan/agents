@@ -1,8 +1,0 @@
-OpenAI Codex
-Copyright 2025 OpenAI
-
-Forked source revisions:
-- openai/codex b545c94041017d000e2c8b2f6272705d21b85dfb (apply-patch)
-- openai/codex d36a3ead3c896d0552207763ef483262bce9ac73 (path tools)
-
-See UPSTREAM.md for the local divergence.

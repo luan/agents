@@ -1,26 +1,16 @@
 approval_policy = "never"
-model = "gpt-5.6-terra"
-model_reasoning_effort = "low"
+model = "gpt-5.6-sol"
+model_reasoning_effort = "medium"
 personality = "pragmatic"
 plan_mode_reasoning_effort = "high"
 sandbox_mode = "danger-full-access"
 web_search = "live"
 
 approvals_reviewer = "auto_review"
-
 service_tier = "default"
 
-
-
-
-
-
-notify = ["/Users/luan.santos/.codex/computer-use/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient", "turn-ended"]
-
 [features]
-chronicle = true
 prevent_idle_sleep = true
-js_repl = false
 memories = true
 
 [notice]
@@ -67,12 +57,6 @@ enabled = true
 [shell_environment_policy]
 inherit = "core"
 
-[shell_environment_policy.set]
-GIT_USERNAME = "luan"
-BROWSER_USE_AVAILABLE_BACKENDS = "chrome,iab"
-NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = "87e84e5b4db45250b323ac54ab2f33585d867d0d13abc198e73a4e28420b657b"
-NODE_REPL_TRUSTED_CODE_PATHS = "/Users/luan.santos/.codex:/Applications/ChatGPT.app/Contents/Resources/cua_node/lib/node_modules"
-
 [tui]
 status_line = ["model-with-reasoning", "current-dir", "git-branch", "pull-request-number", "context-used", "task-progress", "fast-mode"]
 status_line_use_colors = true
@@ -88,236 +72,6 @@ toggle_side_conversation = "alt-i"
 edit_queued_message = "alt-up"
 decrease_reasoning_effort = "alt-,"
 increase_reasoning_effort = "alt-."
-
-[tui.keymap.pager]
-
-[tui.model_availability_nux]
-"gpt-5.5" = 4
-"gpt-5.6-sol" = 3
-
-[marketplaces.openai-bundled]
-last_updated = "2026-08-15T06:34:22Z"
-source_type = "local"
-source = "/Users/luan.santos/.codex/.tmp/bundled-marketplaces/openai-bundled"
-
-[marketplaces.openai-primary-runtime]
-last_updated = "2026-08-14T18:41:24Z"
-source_type = "local"
-source = "/Users/luan.santos/.cache/codex-runtimes/codex-primary-runtime/plugins/openai-primary-runtime"
-
-[projects."~/src/agents"]
-trust_level = "trusted"
-
-[projects."~/src/sifty"]
-trust_level = "trusted"
-
-[projects."~/src/skrl"]
-trust_level = "trusted"
-
-[projects."/Users/luan.santos/src/agents"]
-trust_level = "trusted"
-
-[projects."/Users/luan.santos/src"]
-trust_level = "trusted"
-
-[projects."/Users/luan/src/sifty"]
-trust_level = "trusted"
-
-[projects."/Users/luan/src/agents"]
-trust_level = "trusted"
-
-[projects."/Users/luan.santos/src/arc"]
-trust_level = "trusted"
-
-[projects."/Users/luan/src/codex"]
-trust_level = "trusted"
-
-[projects."/Users/luan/src/majin"]
-trust_level = "trusted"
-
-[projects."/Users/luan/src/skrl"]
-trust_level = "trusted"
-
-[projects."/Users/luan/src/boo"]
-trust_level = "trusted"
-
-[projects."/Users/luan/src/bootty"]
-trust_level = "trusted"
-
-[projects."/Users/luan/src/bb"]
-trust_level = "trusted"
-
-[projects."/Users/luan/Documents/Codex/2026-06-14/dia-plugin-computer-use-openai-bundled"]
-trust_level = "trusted"
-
-[projects."/Users/luan.santos/src/bootty"]
-trust_level = "trusted"
-
-[projects."/Users/luan.santos/Documents/Codex/2026-06-23/sites-plugin-sites-openai-bundled-create"]
-trust_level = "trusted"
-
-[projects."/Users/luan.santos/Documents/Codex/2026-06-23/sites-plugin-sites-openai-bundled-create-2"]
-trust_level = "trusted"
-
-[projects."/Users/luan.santos/Documents/Codex/2026-06-23/sites-plugin-sites-openai-bundled-create-3"]
-trust_level = "trusted"
-
-[projects."/Users/luan/Documents/Codex/2026-07-11/new-chat"]
-trust_level = "trusted"
-
-[projects."/Users/luan/src/probabola"]
-trust_level = "trusted"
-
-[projects."/Users/luan/Documents/Codex/2026-07-11/hatch-pet-users-luan-codex-skills"]
-trust_level = "trusted"
-
-[projects."/Users/luan.santos/Documents/Codex/2026-07-13/sites-plugin-sites-openai-bundled-create"]
-trust_level = "trusted"
-
-[projects."/Users/luan.santos/Documents/Codex/2026-07-13/what"]
-trust_level = "trusted"
-
-[projects."/Users/luan/src/remeres-map-editor"]
-trust_level = "trusted"
-
-[projects."/Users/luan/src/canary"]
-trust_level = "trusted"
-
-[projects."/Users/luan/dotfiles"]
-trust_level = "trusted"
-
-[projects."/Users/luan/src/skyforce-ripoff"]
-trust_level = "trusted"
-
-[projects."/Users/luan"]
-trust_level = "trusted"
-
-[projects."/Users/luan/Documents/Codex/2026-07-31/realtime-voice-chat"]
-trust_level = "trusted"
-
-[projects."/Users/luan/.config/nvim"]
-trust_level = "trusted"
-
-[projects."/Users/luan/Documents/Codex/2026-08-01/new-chat"]
-trust_level = "trusted"
-
-[projects."/Users/luan/Documents/Codex/2026-08-02/new-chat"]
-trust_level = "trusted"
-
-[projects."/Users/luan/Documents/Codex/2026-08-05/w"]
-trust_level = "trusted"
-
-[projects."/Users/luan/Documents/Codex/2026-08-05/ple"]
-trust_level = "trusted"
-
-[projects."/Users/luan.santos/src/codex"]
-trust_level = "trusted"
-
-[projects."/Users/luan.santos/Documents/Codex/2026-08-14/why"]
-trust_level = "trusted"
-
-[projects."/Users/luan.santos/Documents/Codex/2026-08-14/so"]
-trust_level = "trusted"
-
-[projects."/Users/luan.santos/Documents/Codex/2026-08-14/sometimes-my-mouse-get-s-locked"]
-trust_level = "trusted"
-
-[projects."/Users/luan.santos/Documents/Codex/2026-08-15/do-you-have-access-to-collaboration"]
-trust_level = "trusted"
-
-[projects."/Users/luan.santos/Documents/Codex/2026-08-15/create-tiny-subaget-ask-it-to"]
-trust_level = "trusted"
-
-
-[hooks.state]
-
-[hooks.state."/Users/luan/.codex/hooks.json:stop:0:0"]
-trusted_hash = "sha256:a638898dcc8555db61cebdc42e6ba4e35e78d1df55f8832f4aa7c0996d5a984a"
-
-[hooks.state."/Users/luan.santos/.codex/hooks.json:stop:0:0"]
-trusted_hash = "sha256:a638898dcc8555db61cebdc42e6ba4e35e78d1df55f8832f4aa7c0996d5a984a"
-
-[hooks.state."/Users/luan.santos/.codex/hooks.json:session_start:0:0"]
-trusted_hash = "sha256:5c6ce537866d0968286c0badbf33598f12cf3f1a3b004cbdb1b7dc15631f8167"
-
-[hooks.state."/Users/luan/.codex/hooks.json:session_start:0:0"]
-trusted_hash = "sha256:5c6ce537866d0968286c0badbf33598f12cf3f1a3b004cbdb1b7dc15631f8167"
-
-[desktop]
-appearanceLightCodeThemeId = "codex"
-appearanceTheme = "dark"
-appearanceDarkCodeThemeId = "tokyo-night"
-selected-avatar-id = "custom:kumo"
-show-context-window-usage = true
-dock-icon-preference = "codex-system"
-default-service-tier = "priority"
-followUpQueueMode = "steer"
-conversationDetailMode = "STEPS_COMMANDS"
-dictationDictionary = ["skrl", "egui"]
-enabled-reasoning-efforts = ["low", "medium", "high", "xhigh", "ultra", "max"]
-avatar-overlay-mascot-width-px = 89
-realtimeVoiceScreenContextEnabled = true
-preventSleepWhileRunning = true
-
-[desktop.appearanceLightChromeTheme]
-accent = "#0169cc"
-contrast = 45
-ink = "#0d0d0d"
-opaqueWindows = false
-surface = "#ffffff"
-
-[desktop.appearanceLightChromeTheme.fonts]
-
-[desktop.appearanceLightChromeTheme.semanticColors]
-diffAdded = "#00a240"
-diffRemoved = "#e02e2a"
-skill = "#751ed9"
-
-[desktop.appearanceDarkChromeTheme]
-accent = "#3d59a1"
-contrast = 60
-ink = "#a9b1d6"
-opaqueWindows = true
-surface = "#1a1b26"
-
-[desktop.appearanceDarkChromeTheme.fonts]
-code = "Maple Mono NF"
-ui = "Maple Mono NF"
-
-[desktop.appearanceDarkChromeTheme.semanticColors]
-diffAdded = "#449dab"
-diffRemoved = "#914c54"
-skill = "#9d7cd8"
-
-[desktop.open-in-target-preferences]
-global = "zed"
-
-[mcp_servers.node_repl]
-args = []
-command = "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl"
-startup_timeout_sec = 120
-
-[mcp_servers.node_repl.env]
-NODE_REPL_NATIVE_PIPE_CONNECT_TIMEOUT_MS = "1000"
-NODE_REPL_NODE_MODULE_DIRS = "/Applications/ChatGPT.app/Contents/Resources/cua_node/lib/node_modules"
-NODE_REPL_NODE_PATH = "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node"
-NODE_REPL_TRUSTED_CODE_PATHS = "/Users/luan.santos/.codex:/Applications/ChatGPT.app/Contents/Resources/cua_node/lib/node_modules"
-CODEX_HOME = "/Users/luan.santos/.codex"
-NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = "87e84e5b4db45250b323ac54ab2f33585d867d0d13abc198e73a4e28420b657b"
-BROWSER_USE_AVAILABLE_BACKENDS = "chrome,iab"
-NODE_REPL_INSTRUCTIONS_USE_CASE_BROWSER = "Control the in-app browser in conjunction with the Browser Plugin."
-NODE_REPL_INSTRUCTIONS_USE_CASE_CHROME = "Control the Chrome browser in conjunction with the Chrome Plugin. Prefer this method of controlling Chrome over alternatives (such as Computer Use) unless the user explicitly mentions an alternative."
-NODE_REPL_INSTRUCTIONS_USE_CASE_COMPUTER_USE = "Control desktop apps on macOS through Computer Use."
-BROWSER_USE_CODEX_APP_BUILD_FLAVOR = "prod"
-BROWSER_USE_CODEX_APP_VERSION = "26.810.50856"
-SKY_CUA_SERVICE_PATH = "/Users/luan.santos/.codex/computer-use/Codex Computer Use.app"
-CODEX_CLI_PATH = "/Applications/ChatGPT.app/Contents/Resources/codex"
-
-[mcp_servers.computer-use]
-command = "./Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient"
-args = ["mcp"]
-cwd = "."
-enabled = false
 
 [memories]
 generate_memories = true
