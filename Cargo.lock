@@ -143,6 +143,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "code-mode-host"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "code-mode-protocol",
+ "code-mode-runtime",
+ "pretty_assertions",
+ "proptest",
+ "proptest-derive",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "code-mode-protocol"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,29 @@
+[package]
+name = "code-mode-host"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[[bin]]
+name = "code-mode-host"
+path = "src/main.rs"
+
+[lib]
+doctest = false
+
+[dependencies]
+anyhow = "1"
+code-mode-protocol = { path = "../code-mode-protocol" }
+code-mode-runtime = { path = "../code-mode-runtime" }
+tokio = { version = "1", features = ["io-std", "io-util", "macros", "rt", "sync", "time"] }
+tokio-util = { version = "0.7.18", features = ["rt"] }
+
+[dev-dependencies]
+proptest = "1"
+proptest-derive = "0.6"
+pretty_assertions = "1"
+serde_json = "1"
+
+[lints]
+workspace = true
