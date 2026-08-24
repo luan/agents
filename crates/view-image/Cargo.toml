@@ -1,0 +1,24 @@
+[package]
+name = "view-image"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "view_image"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+image = { version = "0.25.9", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+assert_fs = "1"
+pretty_assertions = "1"
+rstest = "0.26"
