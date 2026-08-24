@@ -1,0 +1,41 @@
+[appearance]
+pi.showCacheMissNotices = true
+pi.theme = "tokyo-night"
+pi.tuiMode = "fullscreen"
+pi.fullscreenExitOutput = "resume-hint"
+pi.terminal.showTerminalProgress = true
+pi.terminal.showImages = true
+pi.quietStartup = false
+pi.markdown.codeBlockIndent = "  "
+pi.markdown.mermaid = "streaming"
+pi.showHardwareCursor = false
+pi.editorPaddingX = 0
+pi.outputPad = 1
+pi-libtui.iconPack = "nerd-fonts"
+pi-libtui.powerline = true
+pi-libtui.softCursor = false
+pi-libtui.powerlineButtons = true
+pi-libtui.insertionCursor = "blinking-bar"
+pi-libtui.navigationCursor = "blinking-block"
+pi-libtui.selectionCursor = "blinking-block"
+
+[behavior]
+pi.enabledModels = [ "openai-codex/gpt-5.6-luna", "openai-codex/gpt-5.6-terra", "openai-codex/gpt-5.6-sol" ]
+pi.compaction.enabled = true
+pi.compaction.reserveTokens = 16384
+pi.compaction.keepRecentTokens = 20000
+pi.branchSummary.skipPrompt = false
+pi-codex-native.cacheDiagnostics = "off"
+pi-codex-native.fallbackCompaction = false
+pi-codex-native.contextWindowPreset = "balanced"
+pi-model-roles.defaultRole = "tiny"
+
+[interaction]
+pi.steeringMode = "one-at-a-time"
+
+[tools]
+pi.defaultTools = []
+pi-skills.catalogVisibility = "when-active"
+pi-code-mode.tools = [ "skill", "web__run", "exec_command", "write_stdin", "tool_search", "apply_patch", "view_image" ]
+pi-code-mode.defaultOutputTokens = 10000
+pi-tool-search.tools = []

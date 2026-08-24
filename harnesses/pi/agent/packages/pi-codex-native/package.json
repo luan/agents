@@ -1,0 +1,44 @@
+{
+  "name": "pi-codex-native",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Headless Codex provider capabilities for pi",
+  "type": "module",
+  "keywords": ["pi-package"],
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "pi": {
+    "extensions": ["./src/extension.ts", "./node_modules/pi-libtui/src/extension.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "dependencies": {
+    "partial-json": "^0.1.7",
+    "pi-libactions": "workspace:*",
+    "pi-libcontext": "workspace:*",
+    "pi-libtui": "workspace:*",
+    "pi-code-mode": "workspace:*",
+    "pi-xsettings": "workspace:*",
+    "proxy-from-env": "^2.1.0",
+    "undici": "^8.10.0"
+  },
+  "bundledDependencies": ["pi-libactions", "pi-libcontext", "pi-libtui", "pi-code-mode", "pi-xsettings"],
+  "devDependencies": {
+    "@earendil-works/pi-agent-core": "0.84.2",
+    "@earendil-works/pi-ai": "0.84.2",
+    "@earendil-works/pi-coding-agent": "0.84.2",
+    "@earendil-works/pi-tui": "0.84.2",
+    "@types/bun": "^1.3.0",
+    "typescript": "^6.0.3"
+  },
+  "scripts": {
+    "typecheck": "tsc --build",
+    "test": "bun test --only-failures test"
+  }
+}

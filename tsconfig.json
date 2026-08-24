@@ -4,6 +4,7 @@
 		{ "path": "harnesses/pi/agent/packages/pi-annotations" },
 		{ "path": "harnesses/pi/agent/packages/pi-apply-patch" },
 		{ "path": "harnesses/pi/agent/packages/pi-code-mode" },
+		{ "path": "harnesses/pi/agent/packages/pi-codex-native" },
 		{ "path": "harnesses/pi/agent/packages/pi-copy-mode" },
 		{ "path": "harnesses/pi/agent/packages/pi-developer-prompt" },
 		{ "path": "harnesses/pi/agent/packages/pi-exec-command" },

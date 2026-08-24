@@ -1,0 +1,55 @@
+{
+  "enableInstallTelemetry": false,
+  "defaultProjectTrust": "always",
+  "enabledModels": [
+    "openai-codex/gpt-5.6-luna",
+    "openai-codex/gpt-5.6-terra",
+    "openai-codex/gpt-5.6-sol"
+  ],
+  "lastChangelogVersion": "0.84.2",
+  "defaultProvider": "openai-codex",
+  "defaultModel": "gpt-5.6-luna",
+  "defaultThinkingLevel": "medium",
+  "packages": [
+    "packages/pi-libtui",
+    "packages/pi-copy-mode",
+    "packages/pi-annotations",
+    "packages/pi-xsettings",
+    "packages/pi-model-roles",
+    "packages/pi-developer-prompt",
+    "packages/pi-codex-native",
+    "packages/pi-skills",
+    "packages/pi-code-mode",
+    "packages/pi-exec-command",
+    "packages/pi-apply-patch",
+    "packages/pi-view-image",
+    "packages/pi-tool-search",
+    "npm:@plannotator/pi-extension"
+  ],
+  "compaction": {
+    "enabled": true,
+    "reserveTokens": 16384,
+    "keepRecentTokens": 20000
+  },
+  "theme": "tokyo-night",
+  "showCacheMissNotices": true,
+  "tuiMode": "fullscreen",
+  "fullscreenExitOutput": "resume-hint",
+  "terminal": {
+    "showTerminalProgress": true,
+    "showImages": true
+  },
+  "steeringMode": "one-at-a-time",
+  "quietStartup": false,
+  "markdown": {
+    "codeBlockIndent": "  ",
+    "mermaid": "streaming"
+  },
+  "defaultTools": [],
+  "showHardwareCursor": false,
+  "branchSummary": {
+    "skipPrompt": false
+  },
+  "editorPaddingX": 0,
+  "outputPad": 1
+}

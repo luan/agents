@@ -15,6 +15,24 @@ trees = []
 seeds = [{ source = "config.toml.seed", target = "config.toml" }]
 
 [[harnesses]]
+name = "pi"
+source = "harnesses/pi"
+target = ".pi"
+# `trees` owns package files and ordinary themes. `package_trees` augments the
+# same package tree with node_modules links; keep each package tree in both
+# lists so there is one package-file manager.
+links = [
+  "agent/AGENTS.md",
+  "agent/SYSTEM.md",
+  "agent/keybindings.json",
+  "agent/settings.json",
+  "agent/xsettings.toml",
+]
+trees = ["agent/packages", "agent/themes"]
+package_trees = ["agent/packages"]
+seeds = []
+
+[[harnesses]]
 name = "pi-skills"
 source = "skills"
 target = ".pi/agent/skills"
