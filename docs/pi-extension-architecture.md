@@ -265,9 +265,10 @@ or merge the extensions.
 
 Register typed settings with `createSettings()` from `pi-xsettings/sdk`. The
 SDK is the only feature-facing settings API; it owns the structural registry
-boundary and runtime validation. A definition chooses one fixed top-level
-category. The registration label is the extension's subcategory; extensions
-do not add another section level.
+boundary and runtime validation. A definition chooses one fixed persistence
+category and may choose a presentation-only page. Changing the page never
+moves its TOML path. The registration label is the extension's default section;
+extensions do not add another navigation level.
 
 Defaults come from the definition. Do not persist them just to make them
 visible. Without the xsettings host, the package runs with those compiled
