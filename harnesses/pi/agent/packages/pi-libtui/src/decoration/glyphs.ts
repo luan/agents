@@ -277,6 +277,11 @@ export function keyIcon(key: KeyId, pack: TuiKeyIconPack = activePack()): string
 	return [...modifiers, baseIcon].join(" ");
 }
 
+/** Render an unstyled key glyph with portable Unicode text presentation. */
+export function keyHintGlyph(key: KeyId, pack: TuiKeyIconPack = activePack()): string {
+	return textPresentation(keyIcon(key, pack), pack);
+}
+
 /**
  * Render a key identifier as a subdued semantic keycap adapted to its destination background.
  * @param theme Active Pi theme used for semantic coloring.
@@ -294,8 +299,7 @@ export function renderKeyHint(
 	const colors = tuiTheme(theme);
 	const keycapBackground = colors.color(KEYCAP_BACKGROUND);
 	const keycapForeground = colors.contrastBackground(keycapBackground);
-	const resolvedPack = pack ?? activePack();
-	const glyph = textPresentation(keyIcon(key, resolvedPack), resolvedPack);
+	const glyph = keyHintGlyph(key, pack);
 	const keycap = colors.bg(keycapBackground, colors.fg(keycapForeground, glyph));
 	return `${keycap}${destinationBackgroundAnsi(colors, background)}`;
 }

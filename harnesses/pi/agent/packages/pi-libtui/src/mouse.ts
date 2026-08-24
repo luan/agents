@@ -5,3 +5,33 @@ export {
 	type TuiMouseEvent,
 	type TuiMouseEventType,
 } from "./mouse/events.ts";
+export {
+	FULLSCREEN_LAYOUT_CAPABILITY_KEY,
+	FULLSCREEN_LAYOUT_PROTOCOL,
+	type FullscreenLayout,
+	type FullscreenLayoutCapability,
+	getFullscreenLayoutCapability,
+	type LayoutBox,
+	type LayoutFrame,
+	type LayoutScrollView,
+	type LayoutScrollViewReference,
+	type LayoutSelectionPoint,
+	publishFullscreenLayoutCapability,
+	resolveFullscreenLayout,
+} from "./mouse/fullscreen-layout.ts";
+export {
+	ensureMouseRegistry,
+	MOUSE_PROTOCOL,
+	MOUSE_REGISTRY_KEY,
+	type ModalPointerShieldOptions,
+	type MouseRegistry,
+	type NativeCopyDeferrer,
+	type OverlayMouseRegion,
+	preserveViewportOnResize,
+	registerModalPointerShield,
+	type ScreenDecorationContext,
+	type ScreenDecoratorRegistration,
+	type ViewportInputHandlerRegistration,
+	type ViewportInputHandlerResult,
+	type ViewportRect,
+} from "./mouse/registry.ts";
