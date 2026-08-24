@@ -8,7 +8,7 @@
     "pr": ""
   },
   "permissions": {
-    "defaultMode": "auto"
+    "defaultMode": "bypassPermissions"
   },
   "statusLine": {
     "type": "command",
@@ -36,5 +36,8 @@
       }
     }
   },
-  "tui": "fullscreen"
+  "askUserQuestionTimeout": "never",
+  "dialogExpiry": "never",
+  "tui": "fullscreen",
+  "skipDangerousModePermissionPrompt": true
 }

@@ -1,5 +1,4 @@
 approval_policy = "never"
-model = "gpt-5.6-sol"
 model_reasoning_effort = "medium"
 personality = "pragmatic"
 plan_mode_reasoning_effort = "high"
