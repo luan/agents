@@ -1,0 +1,23 @@
+[[harnesses]]
+name = "claude"
+source = "harnesses/claude"
+target = ".claude"
+links = ["CLAUDE.md", "settings.json", "statusline.py"]
+trees = []
+seeds = []
+
+[[harnesses]]
+name = "codex"
+source = "harnesses/codex"
+target = ".codex"
+links = ["AGENTS.md", "hooks.json"]
+trees = []
+seeds = [{ source = "config.toml.seed", target = "config.toml" }]
+
+[[harnesses]]
+name = "pi-skills"
+source = "skills"
+target = ".pi/agent/skills"
+links = []
+trees = ["."]
+seeds = []

@@ -8,50 +8,27 @@ default:
     @just --list
 
 setup:
-    @mkdir -p "{{ home }}/.claude" "{{ home }}/.codex"
-    @just _seed "{{ repo }}/codex/config.toml" "{{ home }}/.codex/config.toml"
-    @just _link "{{ repo }}/claude/CLAUDE.md" "{{ home }}/.claude/CLAUDE.md"
-    @just _link "{{ repo }}/claude/settings.json" "{{ home }}/.claude/settings.json"
-    @just _link "{{ repo }}/claude/statusline.py" "{{ home }}/.claude/statusline.py"
-    @just _link "{{ repo }}/codex/AGENTS.md" "{{ home }}/.codex/AGENTS.md"
-    @just _link "{{ repo }}/codex/hooks.json" "{{ home }}/.codex/hooks.json"
-    @just check
+    @cargo build --locked --manifest-path "{{ repo }}/Cargo.toml" --release
+    @cargo xtask harness setup --home "{{ home }}"
+    @just home="{{ home }}" check
 
-check:
-    @test -f "{{ home }}/.codex/config.toml"
-    @just _check-link "{{ repo }}/claude/CLAUDE.md" "{{ home }}/.claude/CLAUDE.md"
-    @just _check-link "{{ repo }}/claude/settings.json" "{{ home }}/.claude/settings.json"
-    @just _check-link "{{ repo }}/claude/statusline.py" "{{ home }}/.claude/statusline.py"
-    @just _check-link "{{ repo }}/codex/AGENTS.md" "{{ home }}/.codex/AGENTS.md"
-    @just _check-link "{{ repo }}/codex/hooks.json" "{{ home }}/.codex/hooks.json"
+rust-fmt:
+    @cargo fmt --all -- --check
+
+rust-lint:
+    # Upstream large_futures ICE workaround; remove when rust-clippy#17601 lands.
+    @cargo clippy --locked --all-targets -- -D warnings -A clippy::large_futures
+
+rust-test:
+    @cargo nextest run --locked
+
+_build:
+    @cargo build --locked --release
+
+_harness-check:
+    @cargo xtask harness check --home "{{ home }}"
+
+check: _build rust-fmt rust-lint rust-test _harness-check
 
 unlink:
-    @just _unlink "{{ repo }}/claude/CLAUDE.md" "{{ home }}/.claude/CLAUDE.md"
-    @just _unlink "{{ repo }}/claude/settings.json" "{{ home }}/.claude/settings.json"
-    @just _unlink "{{ repo }}/claude/statusline.py" "{{ home }}/.claude/statusline.py"
-    @just _unlink "{{ repo }}/codex/AGENTS.md" "{{ home }}/.codex/AGENTS.md"
-    @just _unlink "{{ repo }}/codex/hooks.json" "{{ home }}/.codex/hooks.json"
-
-_seed source target:
-    @if [ ! -e "{{ target }}" ] && [ ! -L "{{ target }}" ]; then cp "{{ source }}" "{{ target }}"; fi
-
-_link source target:
-    @if [ -L "{{ target }}" ]; then \
-        current="$(readlink "{{ target }}")"; \
-        if [ "$current" != "{{ source }}" ]; then \
-            echo "refusing to replace {{ target }} -> $current" >&2; \
-            exit 1; \
-        fi; \
-    elif [ -e "{{ target }}" ]; then \
-        echo "refusing to replace {{ target }}" >&2; \
-        exit 1; \
-    else \
-        ln -s "{{ source }}" "{{ target }}"; \
-    fi
-
-_check-link source target:
-    @test -L "{{ target }}"
-    @test "$(readlink "{{ target }}")" = "{{ source }}"
-
-_unlink source target:
-    @if [ -L "{{ target }}" ] && [ "$(readlink "{{ target }}")" = "{{ source }}" ]; then rm "{{ target }}"; fi
+    @cargo xtask harness unlink --home "{{ home }}"
