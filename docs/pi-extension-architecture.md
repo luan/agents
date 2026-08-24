@@ -81,6 +81,13 @@ Combine files when the complete tool remains small. Keep the fixed ownership.
 Omit `presentation.ts` when Pi owns the presentation. Record that choice in
 the README architecture map.
 
+When an ordinary Pi function tool is available through Code Mode, register its
+existing `ToolDefinition` with `registerCodeModeFunctionTool`. The shared bridge
+must reuse `execute`, `renderCall`, and `renderResult`; feature packages must
+not duplicate nested execution or presentation adapters. Reserve the lower-level
+adapter contract for freeform tools and behavior a `ToolDefinition` cannot
+represent.
+
 ## Presentation readiness
 
 Every tool is presentation-ready before it adds a custom renderer.
@@ -157,6 +164,9 @@ Feature UIs compose semantic `pi-libtui` components for tabs, selectable rows,
 fields, and actions. Pointer parsing, hit geometry, hover, capture, and wheel
 behavior stay inside `pi-libtui`; feature packages do not import mouse
 contracts or register pointer regions for ordinary component interaction.
+Screen-positioned transcript actions use `SelectionActionBar`; the feature owns
+labels and callbacks while libtui owns placement, compositing, and pointer
+geometry.
 
 Before implementing a feature component, inspect the component inventory in
 `pi-libtui/README.md`. Reuse a shared component when its interaction contract
@@ -164,20 +174,18 @@ fits. Add a domain-free primitive to `pi-libtui` when two feature packages need
 the same interaction contract; do not move feature labels, state, actions, or
 workflow into the shared library.
 
-The `pi-libtui` web catalog is the executable component inventory. Every
-reusable visual or structural API and every runtime `pi-libtui` import used by
-a feature package must map to a catalog story. The catalog discovers all Pi
-themes, compares any selected set, exhaustively renders each component's
-relevant appearance modalities, and includes resting, selected, and hover
-states. Its coverage test fails when a feature starts using an unrepresented
-API.
+Validate shared TUI behavior through focused package tests and live Pi sessions
+that exercise the affected extensions. Keep production renderers as the only
+presentation path; a separate showcase must not reimplement or approximate Pi
+appearance, interaction, terminal state, or tool lifecycles.
 
 `pi-libtui` is a deliberate dual-role exception at the package level: it is
 also a Pi extension so generic TUI host compatibility can be installed as a
 dependency. Its extension entry point activates reusable mouse, fullscreen,
-and terminal-color compatibility; it must not register feature tools,
-commands, shortcuts, or feature UI. Keep the library exports side-effect-free
-so normal imports do not activate the host bridge or terminal probes.
+and terminal-color compatibility. It may register package diagnostics such as
+`/libtui:colors`, but it must not register feature tools, feature commands,
+shortcuts, or feature UI. Keep the library exports side-effect-free so normal
+imports do not activate the host bridge or terminal probes.
 
 ## Colors and appearance
 
@@ -186,8 +194,9 @@ foreground tokens (`text.primary`, `text.secondary`, `text.muted`, `accent`,
 `info`, `positive`, `warning`, `negative`, `border`, and `heading`) and
 semantic backgrounds (`surface.*`, `cursor.*`, `action.*`, and `badge.*`) by
 meaning, not by their appearance in one theme. Use `action.*` for interactive
-button surfaces and `badge.*` for non-interactive labels. Use generated
-`swatch(hue, shade)` colors when several stable identities need distinct hues.
+button surfaces and `badge.*` for non-interactive labels. Use
+`tuiTheme(theme).color({ hue, shade })` when several stable identities need
+distinct hues.
 
 Feature packages do not use Pi's tool, message, thinking, markdown, syntax, or
 other host color tokens directly. This rule has no feature-package exception:
@@ -284,10 +293,12 @@ new data shape cannot be expressed by the existing kinds.
 
 ## Custom actions
 
-Register extension actions through the structural `pi-actions/registry/v1`
+Register extension actions through the structural `pi-libactions/registry/v1`
 capability. Use a stable namespaced action ID. Feature extensions do not call
 `pi.registerShortcut` and do not assign default keys. The user-owned
 `keybindings.json` file is the only source of custom action bindings.
+Both global action hosts and modal features read it through the immutable,
+validated keybinding snapshot exported by `pi-libactions/sdk`.
 
 An action remains available when no key is configured. Its owning extension
 must install and load without `pi-xsettings`; a missing action host is a no-op,
