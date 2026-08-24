@@ -1,0 +1,104 @@
+{
+	"$schema": "https://biomejs.dev/schemas/2.5.10/schema.json",
+	"files": {
+		"includes": [
+			"harnesses/pi/agent/packages/pi-*/src/**/*.ts",
+			"harnesses/pi/agent/packages/pi-*/test/**/*.ts",
+			"lint/**/*.ts",
+			"scripts/**/*.ts"
+		]
+	},
+	"formatter": {
+		"enabled": true,
+		"indentStyle": "tab",
+		"indentWidth": 2,
+		"lineWidth": 120
+	},
+	"linter": {
+		"enabled": true,
+		"rules": {
+			"preset": "recommended",
+			"suspicious": {
+				"noControlCharactersInRegex": "off"
+			},
+			"style": {
+				"noNonNullAssertion": "off"
+			}
+		}
+	},
+	"plugins": [
+		{
+			"path": "./lint/pi/no-direct-pi-theme-colors.grit",
+			"includes": ["harnesses/pi/agent/packages/pi-*/src/**/*.ts", "!**/pi-libtui/src/color/theme.ts"]
+		},
+		{
+			"path": "./lint/pi/no-fixed-terminal-colors.grit",
+			"includes": ["harnesses/pi/agent/packages/pi-*/src/**/*.ts", "!**/pi-libtui/src/color/theme.ts"]
+		}
+	],
+	"overrides": [
+		{
+			"includes": ["harnesses/pi/agent/packages/pi-*/src/**/*.ts", "!harnesses/pi/agent/packages/pi-libtui/src/**"],
+			"linter": {
+				"rules": {
+					"style": {
+						"noRestrictedImports": {
+							"level": "error",
+							"options": {
+								"paths": {
+									"@earendil-works/pi-coding-agent": {
+										"importNames": ["getMarkdownTheme"],
+										"message": "Use pi-libtui's semantic Markdown theme instead of Pi-owned color surfaces."
+									},
+									"@earendil-works/pi-tui": {
+										"importNames": ["Editor", "EditorTheme", "Input", "SelectList"],
+										"message": "Use the matching pi-libtui semantic input, editor, or selection component instead of Pi's raw component."
+									},
+									"pi-libtui": {
+										"importNames": [
+											"LiveToolAction",
+											"settleToolCallPreview",
+											"TerminalOutputUpdate",
+											"ToolAction",
+											"ToolActivity",
+											"ToolActivityAction",
+											"ToolActivityOptions",
+											"ToolActivityPayload",
+											"ToolActivityView",
+											"toolCallPreview",
+											"ToolDisclosureAction",
+											"ToolOutput",
+											"ToolOutputOptions",
+											"ToolOutputUpdate",
+											"ToolOutputView",
+											"ToolOutputViewport",
+											"ToolTranscript",
+											"ToolTranscriptOptions",
+											"ToolTranscriptStatus",
+											"ToolViewRegion"
+										],
+										"message": "Import tool presentation APIs from pi-libtui/tool."
+									}
+								},
+								"patterns": [
+									{
+										"group": ["pi-libtui/src/*", "pi-libtui/src/**"],
+										"message": "Import the public pi-libtui or pi-libtui/mouse entry point, not private source files."
+									}
+								]
+							}
+						},
+						"noRestrictedTypes": {
+							"level": "error",
+							"options": {
+								"types": {
+									"ThemeColor": "Use pi-libtui TuiForegroundToken, TuiBackgroundToken, or TuiColor in extension-owned UI."
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	]
+}

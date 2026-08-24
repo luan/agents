@@ -1,0 +1,21 @@
+{
+  "name": "agents",
+  "private": true,
+  "scripts": {
+    "format": "biome format --write",
+    "check:format": "biome check --linter-enabled=false --assist-enabled=false",
+    "lint:pi": "bun run test:lint:pi && biome check --skip=complexity --assist-enabled=false --error-on-warnings",
+    "test:lint:pi": "bun test lint/pi/lint.test.ts",
+    "typecheck": "tsc --build",
+    "test": "cargo build --locked --release && bun run test:pi",
+    "test:pi": "bun test --parallel=10 harnesses/pi/agent/packages",
+    "check:ts": "bun run lint:pi && bun run typecheck && bun run test"
+  },
+  "workspaces": [
+    "harnesses/pi/agent/packages/*"
+  ],
+  "devDependencies": {
+    "@biomejs/biome": "2.5.10"
+  },
+  "packageManager": "bun@1.3.14"
+}

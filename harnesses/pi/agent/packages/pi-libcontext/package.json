@@ -1,0 +1,24 @@
+{
+  "name": "pi-libcontext",
+  "private": true,
+  "version": "0.1.0",
+  "description": "UI-free context-window preference capability for Pi extensions",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./sdk": "./src/sdk.ts"
+  },
+  "dependencies": {},
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.2",
+    "@types/bun": "^1.3.0",
+    "typescript": "^6.0.3"
+  },
+  "scripts": {
+    "typecheck": "tsc --build",
+    "test": "bun test --only-failures test"
+  }
+}
