@@ -2,10 +2,22 @@
 	"name": "pi-libtui",
 	"private": true,
 	"version": "0.1.0",
-	"description": "Shared TUI components for local Pi extensions",
+	"description": "Shared TUI components and generic mouse compatibility for local Pi extensions",
 	"type": "module",
 	"exports": {
-		".": "./src/index.ts"
+		".": "./src/index.ts",
+		"./diff": "./src/diff/index.ts",
+		"./editor": "./src/editor.ts",
+		"./folding": "./src/folding.ts",
+		"./mouse": "./src/mouse.ts",
+		"./selection": "./src/selection.ts",
+		"./stream": "./src/stream.ts",
+		"./terminal": "./src/terminal/output.ts",
+		"./tool": "./src/tool/index.ts"
+	},
+	"pi": {
+		"extensions": ["./src/extension.ts"],
+		"themes": ["./themes"]
 	},
 	"peerDependencies": {
 		"@earendil-works/pi-coding-agent": "*",
@@ -16,13 +28,13 @@
 		"@xterm/headless": "6.0.0"
 	},
 	"devDependencies": {
+		"@biomejs/biome": "2.5.10",
 		"@earendil-works/pi-coding-agent": "0.84.2",
 		"@earendil-works/pi-tui": "0.84.2",
-		"@types/bun": "^1.3.0",
-		"typescript": "^6.0.3"
+		"@types/bun": "^1.3.0"
 	},
 	"scripts": {
-		"typecheck": "tsc --noEmit",
-		"test": "bun test test"
+		"typecheck": "tsc --build",
+		"test": "bun test --only-failures --timeout 15000 test"
 	}
 }

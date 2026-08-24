@@ -1,0 +1,20 @@
+{
+	"$schema": "https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json",
+	"name": "nord",
+	"vars": {
+		"bg": "#2e3440", "surface": "#3b4252", "overlay": "#4c566a", "text": "#eceff4", "subtext": "#d8dee9", "muted": "#7b88a1",
+		"frost1": "#8fbcbb", "frost2": "#88c0d0", "frost3": "#81a1c1", "frost4": "#5e81ac",
+		"red": "#bf616a", "orange": "#d08770", "yellow": "#ebcb8b", "green": "#a3be8c", "purple": "#b48ead"
+	},
+	"colors": {
+		"accent": "frost3", "border": "overlay", "borderAccent": "frost2", "borderMuted": "surface",
+		"success": "green", "error": "red", "warning": "yellow", "muted": "subtext", "dim": "muted", "text": "text", "thinkingText": "subtext",
+		"selectedBg": "surface", "scrollbarThumb": "overlay", "searchMatchBg": "overlay", "searchMatchText": "text",
+		"userMessageBg": "surface", "userMessageText": "text", "customMessageBg": "surface", "customMessageText": "text", "customMessageLabel": "purple",
+		"toolPendingBg": "bg", "toolSuccessBg": "#303b36", "toolErrorBg": "#3d3038", "toolTitle": "frost3", "toolOutput": "subtext",
+		"mdHeading": "orange", "mdLink": "frost2", "mdLinkUrl": "muted", "mdCode": "frost1", "mdCodeBlock": "text", "mdCodeBlockBorder": "overlay", "mdQuote": "subtext", "mdQuoteBorder": "overlay", "mdHr": "overlay", "mdListBullet": "frost2",
+		"toolDiffAdded": "green", "toolDiffRemoved": "red", "toolDiffContext": "subtext",
+		"syntaxComment": "muted", "syntaxKeyword": "purple", "syntaxFunction": "frost2", "syntaxVariable": "frost3", "syntaxString": "green", "syntaxNumber": "orange", "syntaxType": "frost1", "syntaxOperator": "frost2", "syntaxPunctuation": "subtext",
+		"thinkingOff": "surface", "thinkingMinimal": "muted", "thinkingLow": "frost1", "thinkingMedium": "frost3", "thinkingHigh": "purple", "thinkingXhigh": "red", "thinkingMax": "orange", "bashMode": "green"
+	}
+}

@@ -13,7 +13,7 @@ export interface BackgroundSurfaceOptions {
 }
 
 /** Canonical background for multiline tool and foldable content. */
-export const TOOL_SURFACE_BACKGROUND: TuiBackgroundToken = "surface.inset";
+export const TOOL_SURFACE_BACKGROUND: TuiBackgroundToken = "surface.raised";
 
 /** Paint a component's rows edge-to-edge without adding a border, padding, or indentation. */
 export class BackgroundSurface implements Component, TextInteractionTarget {

@@ -1,0 +1,11 @@
+{
+	"$schema": "https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json",
+	"name": "dracula",
+	"vars": { "bg": "#282a36", "surface": "#44475a", "overlay": "#6272a4", "text": "#f8f8f2", "muted": "#8f93a8", "cyan": "#8be9fd", "green": "#50fa7b", "orange": "#ffb86c", "pink": "#ff79c6", "purple": "#bd93f9", "red": "#ff5555", "yellow": "#f1fa8c" },
+	"colors": {
+		"accent": "purple", "border": "overlay", "borderAccent": "cyan", "borderMuted": "surface", "success": "green", "error": "red", "warning": "yellow", "muted": "muted", "dim": "overlay", "text": "text", "thinkingText": "muted",
+		"selectedBg": "surface", "scrollbarThumb": "overlay", "searchMatchBg": "overlay", "searchMatchText": "text", "userMessageBg": "surface", "userMessageText": "text", "customMessageBg": "surface", "customMessageText": "text", "customMessageLabel": "pink", "toolPendingBg": "bg", "toolSuccessBg": "#283a31", "toolErrorBg": "#3c2932", "toolTitle": "purple", "toolOutput": "muted",
+		"mdHeading": "orange", "mdLink": "cyan", "mdLinkUrl": "muted", "mdCode": "green", "mdCodeBlock": "text", "mdCodeBlockBorder": "overlay", "mdQuote": "muted", "mdQuoteBorder": "overlay", "mdHr": "overlay", "mdListBullet": "pink", "toolDiffAdded": "green", "toolDiffRemoved": "red", "toolDiffContext": "muted",
+		"syntaxComment": "muted", "syntaxKeyword": "pink", "syntaxFunction": "green", "syntaxVariable": "orange", "syntaxString": "yellow", "syntaxNumber": "purple", "syntaxType": "cyan", "syntaxOperator": "pink", "syntaxPunctuation": "text", "thinkingOff": "surface", "thinkingMinimal": "muted", "thinkingLow": "cyan", "thinkingMedium": "purple", "thinkingHigh": "pink", "thinkingXhigh": "red", "thinkingMax": "orange", "bashMode": "green"
+	}
+}

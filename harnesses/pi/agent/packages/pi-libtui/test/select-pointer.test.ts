@@ -78,7 +78,7 @@ describe("shared select pointer behavior", () => {
 
 		select.onMouse(mouse("wheel", 14, 0, { wheel: 1 }));
 		select.handleInput("\r");
-		expect(selected).toEqual(["mode-11", "mode-12"]);
+		expect(selected).toEqual(["mode-11", "mode-11"]);
 	});
 
 	test("searchable select keeps fixed pointer rows while filtering", () => {
@@ -168,16 +168,16 @@ describe("shared select pointer behavior", () => {
 		expect(selected).toEqual([]);
 		expect(stripTerminalSequences(picker.render(48)[3]!)).toContain("│ › Role 1  Description 1");
 
-		// Wheel selection is clamped to the list and scrolls the rendered viewport with it.
+		// Wheel scrolls the viewport but leaves the clicked selection unchanged.
 		picker.onMouse(mouse("wheel", 3, 20, { wheel: 1 }));
 		lines = picker.render(48);
-		expect(stripTerminalSequences(lines[2]!)).toContain("│   Role 1  Description 1");
-		expect(stripTerminalSequences(lines[3]!)).toContain("│ › Role 2  Description 2");
+		expect(stripTerminalSequences(lines[2]!)).toContain("│ › Role 1  Description 1");
+		expect(stripTerminalSequences(lines[3]!)).toContain("│   Role 2  Description 2");
 
 		const buttonRow = lines.length - 2;
 		const saveColumn = stripTerminalSequences(lines[buttonRow]!).indexOf("Save");
 		click(picker, buttonRow, saveColumn);
-		expect(selected).toEqual(["role-2"]);
+		expect(selected).toEqual(["role-1"]);
 
 		const cancelColumn = stripTerminalSequences(lines[buttonRow]!).indexOf("Cancel");
 		click(picker, buttonRow, cancelColumn);
@@ -277,8 +277,11 @@ describe("shared select pointer behavior", () => {
 				{ value: "a", label: "A" },
 				{ value: "b", label: "B" },
 				{ value: "c", label: "C" },
+				{ value: "d", label: "D" },
+				{ value: "e", label: "E" },
 			],
 			value: ["a"],
+			maxHeight: 7,
 			theme,
 			onSave: (value) => saved.push(value),
 			onCancel() {},
@@ -290,7 +293,10 @@ describe("shared select pointer behavior", () => {
 		expect(stripTerminalSequences(select.render(50)[secondOptionRow]!)).toStartWith("›");
 		click(select, secondOptionRow);
 		select.onMouse(mouse("wheel", secondOptionRow, 0, { wheel: 1 }));
-		expect(stripTerminalSequences(select.render(50)[secondOptionRow + 1]!)).toStartWith("›");
+		const scrolledOptions = select.render(50).slice(2, 5).map(stripTerminalSequences);
+		expect(scrolledOptions[0]).toStartWith("›");
+		expect(scrolledOptions[0]).toContain("B");
+		expect(scrolledOptions.join("\n")).not.toContain(" A");
 
 		lines = select.render(50);
 		const buttonRow = lines.length - 1;

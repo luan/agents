@@ -152,7 +152,7 @@ describe("SelectableList", () => {
 		expect(activations).toEqual(["Terminal images"]);
 	});
 
-	test("wheel clamps selection and keeps the selected item in the line-budget viewport", () => {
+	test("wheel scrolls the line-budget viewport without changing selection", () => {
 		const changes: number[] = [];
 		const list = new SelectableList({
 			items: ["A", "B", "C", "D"],
@@ -165,15 +165,17 @@ describe("SelectableList", () => {
 
 		list.render(10);
 		list.onMouse(event({ type: "wheel", row: 0, col: 0, wheel: 1 }));
-		list.render(10);
-		list.onMouse(event({ type: "wheel", row: 1, col: 0, wheel: 1 }));
 		expect(list.render(10)).toEqual(["B", "C"]);
 		expect(list.getGeometry()?.startIndex).toBe(1);
 		list.onMouse(event({ type: "wheel", row: 1, col: 0, wheel: 1 }));
-		list.render(10);
-		list.onMouse(event({ type: "wheel", row: 1, col: 0, wheel: 1 }));
-		expect(list.getSelectedIndex()).toBe(3);
-		expect(changes).toEqual([1, 2, 3]);
+		expect(list.render(10)).toEqual(["C", "D"]);
+		expect(list.getSelectedIndex()).toBe(0);
+		expect(changes).toEqual([]);
+
+		list.handleInput("j");
+		expect(list.render(10)).toEqual(["B", "C"]);
+		expect(list.getSelectedIndex()).toBe(1);
+		expect(changes).toEqual([1]);
 	});
 
 	test("external item and selection synchronization is silent", () => {

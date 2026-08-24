@@ -1,0 +1,120 @@
+name: quality
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  CARGO_PROFILE_BENCH_DEBUG: 0
+
+jobs:
+  pi:
+    name: Pi/Bun validation
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-pi
+          cache-on-failure: true
+
+      - name: Install JavaScript dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Check formatting
+        run: bun run check:format
+
+      - name: Lint Pi packages
+        run: bun run lint:pi
+
+      - name: Typecheck Pi packages
+        run: bun run typecheck
+
+      - name: Build release binaries
+        run: cargo build --locked --release
+
+      - name: Check managed harness links
+        run: |
+          harness_home="$RUNNER_TEMP/agents-harness"
+          cargo xtask harness setup --home "$harness_home"
+          cargo xtask harness check --home "$harness_home"
+
+      - name: Check standalone Pi package installs
+        run: |
+          export PATH="$PWD/harnesses/pi/agent/packages/pi-libtui/node_modules/.bin:$PATH"
+          for package in harnesses/pi/agent/packages/*; do
+            if test -f "$package/package.json"; then
+              just pi-install-check "$package"
+            fi
+          done
+
+      - name: Test Pi packages
+        run: bun run test:pi
+
+  rust-format:
+    name: Rust fmt
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  rust-validation:
+    name: Rust validation
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: clippy
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-validation
+          cache-on-failure: true
+
+      - name: Run clippy
+        run: cargo clippy --locked --all-targets -- -D warnings -A clippy::large_futures
+
+      - name: Run tests with nextest
+        run: cargo nextest run --locked

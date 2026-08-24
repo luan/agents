@@ -5,10 +5,12 @@
     "moduleResolution": "Bundler",
     "strict": true,
     "noEmit": true,
+    "incremental": true,
+    "tsBuildInfoFile": "../../../../../target/tsbuildinfo/pi-libtui.tsbuildinfo",
     "allowImportingTsExtensions": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "types": ["bun"]
   },
-  "include": ["src/**/*.ts", "test/**/*.ts"]
+	"include": ["src/**/*.ts", "test/**/*.ts"]
 }

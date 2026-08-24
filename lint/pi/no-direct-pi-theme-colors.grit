@@ -1,0 +1,39 @@
+engine biome(1.0)
+language js(typescript)
+
+or {
+  or {
+    `$receiver.fg($...)` as $call,
+    `$receiver.bg($...)` as $call,
+    `$receiver.getFgAnsi($...)` as $call,
+    `$receiver.getBgAnsi($...)` as $call
+  } where {
+    $receiver <: r".*[Tt]heme.*",
+    $receiver <: not r".*tuiTheme.*"
+  },
+  or {
+    `$alias.fg($...)` as $call,
+    `$alias.bg($...)` as $call,
+    `$alias.getFgAnsi($...)` as $call,
+    `$alias.getBgAnsi($...)` as $call
+  } where {
+    $program <: contains `const $alias = $receiver`,
+    $receiver <: r".*[Tt]heme.*",
+    $receiver <: not r".*tuiTheme.*"
+  },
+  or {
+    `$method($...)` as $call where { $method <: `fg` },
+    `$method($...)` as $call where { $method <: `bg` },
+    `$method($...)` as $call where { $method <: `getFgAnsi` },
+    `$method($...)` as $call where { $method <: `getBgAnsi` }
+  } where {
+    $program <: contains `const { $method } = $receiver`,
+    $receiver <: r".*[Tt]heme.*",
+    $receiver <: not r".*tuiTheme.*"
+  }
+} where {
+  register_diagnostic(
+    span = $call,
+    message = "Style extension-owned UI with tuiTheme(theme) semantic tokens instead of Pi Theme colors."
+  )
+}

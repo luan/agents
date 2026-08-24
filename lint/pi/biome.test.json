@@ -1,0 +1,34 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.10/schema.json",
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "preset": "none",
+      "style": {
+        "noRestrictedImports": {
+          "level": "error",
+          "options": {
+            "paths": {
+              "@earendil-works/pi-coding-agent": {
+                "importNames": ["getMarkdownTheme"],
+                "message": "Use pi-libtui's semantic Markdown theme instead of Pi-owned color surfaces."
+              },
+				"@earendil-works/pi-tui": {
+					"importNames": ["Editor", "EditorTheme", "Input", "SelectList"],
+					"message": "Use the matching pi-libtui semantic input, editor, or selection component instead of Pi's raw component."
+				},
+				"pi-libtui": {
+					"importNames": ["ToolActivity", "ToolTranscript", "toolCallPreview"],
+					"message": "Import tool presentation APIs from pi-libtui/tool."
+				}
+            }
+          }
+        }
+      }
+    }
+  },
+  "plugins": [
+    { "path": "./no-direct-pi-theme-colors.grit" },
+    { "path": "./no-fixed-terminal-colors.grit" }
+  ]
+}

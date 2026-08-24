@@ -1,0 +1,11 @@
+{
+	"$schema": "https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json",
+	"name": "catppuccin-latte",
+	"vars": { "bg": "#eff1f5", "surface": "#dce0e8", "overlay": "#bcc0cc", "text": "#4c4f69", "subtext": "#6c6f85", "muted": "#9ca0b0", "blue": "#1e66f5", "sky": "#04a5e5", "teal": "#179299", "green": "#40a02b", "yellow": "#df8e1d", "peach": "#fe640b", "red": "#d20f39", "mauve": "#8839ef" },
+	"colors": {
+		"accent": "blue", "border": "overlay", "borderAccent": "blue", "borderMuted": "surface", "success": "green", "error": "red", "warning": "yellow", "muted": "subtext", "dim": "muted", "text": "text", "thinkingText": "subtext",
+		"selectedBg": "surface", "scrollbarThumb": "overlay", "searchMatchBg": "overlay", "searchMatchText": "text", "userMessageBg": "surface", "userMessageText": "text", "customMessageBg": "surface", "customMessageText": "text", "customMessageLabel": "mauve", "toolPendingBg": "bg", "toolSuccessBg": "#e4eedf", "toolErrorBg": "#f2dfe3", "toolTitle": "blue", "toolOutput": "subtext",
+		"mdHeading": "peach", "mdLink": "sky", "mdLinkUrl": "muted", "mdCode": "green", "mdCodeBlock": "text", "mdCodeBlockBorder": "overlay", "mdQuote": "subtext", "mdQuoteBorder": "overlay", "mdHr": "overlay", "mdListBullet": "teal", "toolDiffAdded": "green", "toolDiffRemoved": "red", "toolDiffContext": "subtext",
+		"syntaxComment": "muted", "syntaxKeyword": "mauve", "syntaxFunction": "blue", "syntaxVariable": "peach", "syntaxString": "green", "syntaxNumber": "peach", "syntaxType": "teal", "syntaxOperator": "sky", "syntaxPunctuation": "subtext", "thinkingOff": "surface", "thinkingMinimal": "muted", "thinkingLow": "sky", "thinkingMedium": "blue", "thinkingHigh": "mauve", "thinkingXhigh": "red", "thinkingMax": "peach", "bashMode": "green"
+	}
+}

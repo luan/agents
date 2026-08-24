@@ -1,0 +1,22 @@
+engine biome(1.0)
+language js(typescript)
+
+or {
+  JsStringLiteralExpression() as $literal,
+  JsTemplateExpression() as $literal
+} where {
+  $literal <: or {
+    r".*38;5.*",
+    r".*48;5.*",
+    r".*38;2.*",
+    r".*48;2.*",
+    r".*x1b.*3[0-7]m.*",
+    r".*x1b.*4[0-7]m.*",
+    r".*x1b.*9[0-7]m.*",
+    r".*x1b.*10[0-7]m.*"
+  },
+  register_diagnostic(
+    span = $literal,
+    message = "Do not emit fixed terminal colors from feature UI; use pi-libtui semantic tokens or generated swatches."
+  )
+}
