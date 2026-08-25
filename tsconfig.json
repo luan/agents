@@ -2,6 +2,7 @@
 	"files": [],
 	"references": [
 		{ "path": "harnesses/pi/agent/packages/pi-libactions" },
-		{ "path": "harnesses/pi/agent/packages/pi-libcontext" }
+		{ "path": "harnesses/pi/agent/packages/pi-libcontext" },
+		{ "path": "harnesses/pi/agent/packages/pi-libtui" }
 	]
 }
