@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { configureTuiAppearance, DEFAULT_TUI_APPEARANCE, getTuiAppearance, icon } from "pi-libtui";
-import { ensureXSettingsRegistry } from "../src/protocol/settings.ts";
 import { registerTuiSettings } from "../src/config/tui-settings.ts";
+import { ensureXSettingsRegistry } from "../src/protocol/settings.ts";
 
 describe("pi-libtui settings", () => {
 	afterEach(() => configureTuiAppearance(DEFAULT_TUI_APPEARANCE));
@@ -51,9 +51,44 @@ describe("pi-libtui settings", () => {
 			"static",
 			"line",
 			"arc",
+			"pipe",
+			"grow-vertical",
+			"grow-horizontal",
+			"triangle",
+			"circle-quarters",
+			"circle-halves",
+			"bracket-spin",
 			"dots",
 			"quadrants",
 			"sparkle",
+			"braille-wave",
+			"braille-dna",
+			"braille-scan",
+			"braille-rain",
+			"braille-scanline",
+			"braille-pulse",
+			"braille-sparkle",
+			"braille-cascade",
+			"braille-columns",
+			"braille-orbit",
+			"braille-breathe",
+			"braille-wave-rows",
+			"braille-checkerboard",
+			"braille-helix",
+			"scanline",
+			"snake",
+			"fill-sweep",
+			"diagonal-swipe",
+			"dna",
+			"radar",
+			"bounce",
+			"orbit",
+			"conveyor",
+			"heartbeat",
+			"nerd-progress",
+			"nerd-morph",
+			"nerd-pipeline",
+			"nerd-pi-orbit",
 		]);
 		const shimmer = registration?.definitions.find((definition) => definition.key === "shimmer");
 		expect(shimmer?.type).toBe("enum");

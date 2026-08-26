@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { Theme } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { configureTuiAppearance, DEFAULT_TUI_APPEARANCE } from "../src/appearance.ts";
 import { tuiTheme } from "../src/color/theme.ts";
 import type { MotionClock, MotionRenderTarget, MotionTimerHandle } from "../src/motion.ts";
@@ -235,6 +236,15 @@ describe("pure motion frames", () => {
 		expect(configuredAnimationCadenceMs("dots", "off")).toBe(80);
 		expect(configuredAnimationCadenceMs("quadrants", "off")).toBe(100);
 		expect(configuredAnimationCadenceMs("sparkle", "off")).toBe(240);
+		expect(configuredAnimationCadenceMs("dna", "off")).toBe(90);
+		expect(configuredAnimationCadenceMs("radar", "off")).toBe(100);
+		expect(configuredAnimationCadenceMs("bounce", "off")).toBe(110);
+		expect(configuredAnimationCadenceMs("orbit", "off")).toBe(100);
+		expect(configuredAnimationCadenceMs("conveyor", "off")).toBe(120);
+		expect(configuredAnimationCadenceMs("heartbeat", "off")).toBe(110);
+		expect(configuredAnimationCadenceMs("nerd-morph", "off")).toBe(180);
+		expect(configuredAnimationCadenceMs("nerd-pipeline", "off")).toBe(160);
+		expect(configuredAnimationCadenceMs("nerd-pi-orbit", "off")).toBe(140);
 		expect(configuredAnimationCadenceMs("off", "sweep")).toBe(90);
 		expect(configuredAnimationCadenceMs("off", "glow")).toBe(70);
 		expect(configuredAnimationCadenceMs("off", "rainbow")).toBe(80);
@@ -257,6 +267,98 @@ describe("pure motion frames", () => {
 		expect(scheduler.activeTimerCount).toBe(0);
 		expect(renders).toBe(2);
 		mount.dispose();
+	});
+
+	test("keeps every compact marker at its declared width", () => {
+		const colors = tuiTheme(theme);
+		const styles = [
+			["pipe", 1],
+			["grow-vertical", 1],
+			["grow-horizontal", 1],
+			["triangle", 1],
+			["circle-quarters", 1],
+			["circle-halves", 1],
+			["bracket-spin", 1],
+			["braille-wave", 4],
+			["braille-dna", 4],
+			["braille-scan", 4],
+			["braille-rain", 4],
+			["braille-scanline", 3],
+			["braille-pulse", 3],
+			["braille-sparkle", 4],
+			["braille-cascade", 4],
+			["braille-columns", 3],
+			["braille-orbit", 1],
+			["braille-breathe", 1],
+			["braille-wave-rows", 4],
+			["braille-checkerboard", 3],
+			["braille-helix", 4],
+			["scanline", 3],
+			["snake", 2],
+			["fill-sweep", 2],
+			["diagonal-swipe", 2],
+			["dna", 3],
+			["radar", 3],
+			["bounce", 3],
+			["orbit", 3],
+			["conveyor", 3],
+			["heartbeat", 3],
+			["nerd-progress", 1],
+			["nerd-morph", 1],
+			["nerd-pipeline", 3],
+			["nerd-pi-orbit", 3],
+		] as const;
+		configureTuiAppearance({ iconPack: "nerd-fonts" });
+		for (const [markerStyle, width] of styles) {
+			for (let elapsedMs = 0; elapsedMs < 1_000; elapsedMs += 70) {
+				const frame = activityFrame(colors, "Working", elapsedMs, { markerStyle, shimmerStyle: "off" });
+				expect(visibleWidth(Bun.stripANSI(frame.marker))).toBe(width);
+				expect(Bun.stripANSI(frame.text)).toBe("Working");
+			}
+		}
+	});
+
+	test("keeps Unicode arc separate from the Nerd Font progress spinner", () => {
+		const colors = tuiTheme(theme);
+		configureTuiAppearance({ iconPack: "unicode" });
+		expect(Bun.stripANSI(activityFrame(colors, "Working", 0, { markerStyle: "arc", shimmerStyle: "off" }).marker)).toBe(
+			"◜",
+		);
+
+		configureTuiAppearance({ iconPack: "nerd-fonts" });
+		expect(Bun.stripANSI(activityFrame(colors, "Working", 0, { markerStyle: "arc", shimmerStyle: "off" }).marker)).toBe(
+			"◜",
+		);
+		expect(
+			Bun.stripANSI(activityFrame(colors, "Working", 450, { markerStyle: "nerd-progress", shimmerStyle: "off" }).marker),
+		).toBe("");
+	});
+
+	test("renders the referenced four-cell Braille wave at 100 ms cadence", () => {
+		const colors = tuiTheme(theme);
+		const expected = ["⠁⠂⠄⡀", "⠂⠄⡀⢀", "⠄⡀⢀⠠", "⡀⢀⠠⠐", "⢀⠠⠐⠈", "⠠⠐⠈⠁", "⠐⠈⠁⠂", "⠈⠁⠂⠄"];
+		for (const [index, frame] of expected.entries()) {
+			expect(
+				Bun.stripANSI(
+					activityFrame(colors, "Working", index * 100, { markerStyle: "braille-wave", shimmerStyle: "off" }).marker,
+				),
+			).toBe(frame);
+		}
+	});
+
+	test("falls back from Nerd Font markers only when that icon pack is inactive", () => {
+		const colors = tuiTheme(theme);
+		configureTuiAppearance({ iconPack: "unicode" });
+		const fallback = Bun.stripANSI(
+			activityFrame(colors, "Working", 0, { markerStyle: "nerd-pipeline", shimmerStyle: "off" }).marker,
+		);
+		expect(fallback).toBe("|  ");
+
+		configureTuiAppearance({ iconPack: "nerd-fonts" });
+		const nerdFont = Bun.stripANSI(
+			activityFrame(colors, "Working", 0, { markerStyle: "nerd-pipeline", shimmerStyle: "off" }).marker,
+		);
+		expect(nerdFont).toBe("\uf0e7--");
 	});
 
 	test("spinner and glyph frames are deterministic and freeze under reduced motion", () => {

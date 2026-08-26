@@ -104,12 +104,16 @@ smoothness pickers animate every option with the production activity renderer;
 smoothness previews each row at its own repaint cadence.
 
 The marker list keeps the original spinner, pulse, and static choices and adds
-curated one-to-three-cell Unicode, ASCII, and Nerd Font sequences. Text shimmer
+curated one-to-four-cell Unicode, ASCII, Braille, and Nerd Font sequences. Arc
+always uses its rounded Unicode positions; the Fira Code progress spinner is a
+separate Nerd Font choice. Text shimmer
 keeps the original sweep, glow, and rainbow choices and adds rainbow glow plus
 the fast-mode lightning strike and nine variants for every printable ASCII
 character. The rainbow and Nerd Font icon markers adapt the MIT-licensed
 `arpagon/pi-animations` effects. Nerd Font marker choices fall back to compact
 ASCII motion when the Nerd Fonts icon pack is not active.
+The compact Braille catalog is adapted from `unicode-animations` and
+`cli-loaders`; the geometric single-cell sequences come from Unicode Spinner.
 
 Other settings normally need a Pi reload because Pi reads many built-in
 settings during startup. When `/xsettings` is opened from a command context,

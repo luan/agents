@@ -96,7 +96,7 @@ using the documented package root and subpaths so the public API remains stable.
 `pi-xsettings` owns the settings UI and persistence for the shared appearance:
 
 - icon pack: `unicode`, `nerd-fonts`, or `emoji`;
-- activity marker: `off`, `spinner`, `pulse`, `static`, `line`, `arc`, `dots`, `quadrants`, or `sparkle`;
+- activity marker: the original off, spinner, pulse, and static choices plus curated one-to-four-cell Unicode, ASCII, Braille, and Nerd Font animations;
 - text shimmer: `off`, narrow `sweep`, broad `glow`, or semantic `rainbow`;
 - Powerline separators and Powerline button caps;
 - softer virtual cursor;
@@ -109,6 +109,16 @@ be combined with every shimmer option. A static or disabled marker allocates no
 timer when shimmer is also off. If `pi-xsettings` is absent, components still
 use the spinner-without-shimmer defaults. The settings can be changed live
 through `/xsettings` when its host is installed.
+
+Compact marker frames retain a fixed width within each style so activity text
+does not shift. Nerd Font marker styles use their icon frames when the Nerd
+Fonts icon pack is active and fall back to an ASCII line animation otherwise.
+Arc always uses its six rounded Unicode positions. The Fira Code progress
+spinner is a separate Nerd Font-only choice. The compact Braille catalog is
+adapted from
+[`unicode-animations`](https://github.com/gunnargray-dev/unicode-animations) and
+[`cli-loaders`](https://github.com/agilek/cli-loaders); the geometric single-cell
+sequences come from [Unicode Spinner](https://unicode.framer.website/).
 
 ## Architecture
 

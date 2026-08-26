@@ -65,7 +65,7 @@ describe("shared TUI appearance", () => {
 		});
 		configureTuiAppearance({
 			iconPack: "invalid" as never,
-			activityMarker: "orbit" as never,
+			activityMarker: "marquee" as never,
 			shimmer: "flash" as never,
 			powerline: "yes" as never,
 			powerlineButtons: "yes" as never,

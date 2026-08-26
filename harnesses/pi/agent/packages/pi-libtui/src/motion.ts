@@ -251,23 +251,7 @@ export function activityAnimatesText(style = getTuiAppearance().shimmer): boolea
 }
 
 function markerCadenceMs(style: TuiActivityMarkerStyle): number | undefined {
-	switch (style) {
-		case "spinner":
-		case "dots":
-			return 80;
-		case "arc":
-			return 90;
-		case "line":
-		case "quadrants":
-			return 100;
-		case "pulse":
-			return 120;
-		case "sparkle":
-			return 240;
-		case "off":
-		case "static":
-			return undefined;
-	}
+	return style === "pulse" ? 120 : markerAnimation(style)?.cadenceMs;
 }
 
 function shimmerCadenceMs(style: TuiShimmerStyle): number | undefined {
@@ -322,9 +306,322 @@ export const SPINNER_FRAMES = Object.freeze(["⠋", "⠙", "⠹", "⠸", "⠼", 
 /** Curated portable single-cell animation frames. */
 export const LINE_FRAMES = Object.freeze(["-", "\\", "|", "/"] as const);
 export const ARC_FRAMES = Object.freeze(["◜", "◠", "◝", "◞", "◡", "◟"] as const);
+export const NERD_PROGRESS_FRAMES = Object.freeze(["", "", "", "", "", ""] as const);
+export const PIPE_FRAMES = Object.freeze(["┤", "┘", "┴", "└", "├", "┌", "┬", "┐"] as const);
+export const GROW_VERTICAL_FRAMES = Object.freeze(["▁", "▃", "▄", "▅", "▆", "▇", "▆", "▅", "▄", "▃"] as const);
+export const GROW_HORIZONTAL_FRAMES = Object.freeze([
+	"▏",
+	"▎",
+	"▍",
+	"▌",
+	"▋",
+	"▊",
+	"▉",
+	"▊",
+	"▋",
+	"▌",
+	"▍",
+	"▎",
+] as const);
+export const TRIANGLE_FRAMES = Object.freeze(["◢", "◣", "◤", "◥"] as const);
+export const CIRCLE_QUARTER_FRAMES = Object.freeze(["◴", "◷", "◶", "◵"] as const);
+export const CIRCLE_HALF_FRAMES = Object.freeze(["◐", "◓", "◑", "◒"] as const);
+export const BRACKET_SPIN_FRAMES = Object.freeze(["⊏", "⊓", "⊐", "⊔"] as const);
 export const DOT_FRAMES = Object.freeze(["⠁", "⠂", "⠄", "⡀", "⢀", "⠠", "⠐", "⠈"] as const);
 export const QUADRANT_FRAMES = Object.freeze(["▖", "▘", "▝", "▗"] as const);
 export const SPARKLE_FRAMES = Object.freeze(["✦", "✧"] as const);
+export const BRAILLE_WAVE_FRAMES = Object.freeze([
+	"⠁⠂⠄⡀",
+	"⠂⠄⡀⢀",
+	"⠄⡀⢀⠠",
+	"⡀⢀⠠⠐",
+	"⢀⠠⠐⠈",
+	"⠠⠐⠈⠁",
+	"⠐⠈⠁⠂",
+	"⠈⠁⠂⠄",
+] as const);
+export const BRAILLE_DNA_FRAMES = Object.freeze([
+	"⠋⠉⠙⠚",
+	"⠉⠙⠚⠒",
+	"⠙⠚⠒⠂",
+	"⠚⠒⠂⠂",
+	"⠒⠂⠂⠒",
+	"⠂⠂⠒⠲",
+	"⠂⠒⠲⠴",
+	"⠒⠲⠴⠤",
+	"⠲⠴⠤⠄",
+	"⠴⠤⠄⠋",
+	"⠤⠄⠋⠉",
+	"⠄⠋⠉⠙",
+] as const);
+export const BRAILLE_SCAN_FRAMES = Object.freeze([
+	"⠀⠀⠀⠀",
+	"⡇⠀⠀⠀",
+	"⣿⠀⠀⠀",
+	"⢸⡇⠀⠀",
+	"⠀⣿⠀⠀",
+	"⠀⢸⡇⠀",
+	"⠀⠀⣿⠀",
+	"⠀⠀⢸⡇",
+	"⠀⠀⠀⣿",
+	"⠀⠀⠀⢸",
+] as const);
+export const BRAILLE_RAIN_FRAMES = Object.freeze([
+	"⢁⠂⠔⠈",
+	"⠂⠌⡠⠐",
+	"⠄⡐⢀⠡",
+	"⡈⠠⠀⢂",
+	"⠐⢀⠁⠄",
+	"⠠⠁⠊⡀",
+	"⢁⠂⠔⠈",
+	"⠂⠌⡠⠐",
+	"⠄⡐⢀⠡",
+	"⡈⠠⠀⢂",
+	"⠐⢀⠁⠄",
+	"⠠⠁⠊⡀",
+] as const);
+export const BRAILLE_SCANLINE_FRAMES = Object.freeze(["⠉⠉⠉", "⠓⠓⠓", "⠦⠦⠦", "⣄⣄⣄", "⠦⠦⠦", "⠓⠓⠓"] as const);
+export const BRAILLE_PULSE_FRAMES = Object.freeze(["⠀⠶⠀", "⠰⣿⠆", "⢾⣉⡷", "⣏⠀⣹", "⡁⠀⢈"] as const);
+export const BRAILLE_SPARKLE_FRAMES = Object.freeze(["⡡⠊⢔⠡", "⠊⡰⡡⡘", "⢔⢅⠈⢢", "⡁⢂⠆⡍", "⢔⠨⢑⢐", "⠨⡑⡠⠊"] as const);
+export const BRAILLE_CASCADE_FRAMES = Object.freeze([
+	"⠀⠀⠀⠀",
+	"⠀⠀⠀⠀",
+	"⠁⠀⠀⠀",
+	"⠋⠀⠀⠀",
+	"⠞⠁⠀⠀",
+	"⡴⠋⠀⠀",
+	"⣠⠞⠁⠀",
+	"⢀⡴⠋⠀",
+	"⠀⣠⠞⠁",
+	"⠀⢀⡴⠋",
+	"⠀⠀⣠⠞",
+	"⠀⠀⢀⡴",
+	"⠀⠀⠀⣠",
+	"⠀⠀⠀⢀",
+] as const);
+export const BRAILLE_COLUMNS_FRAMES = Object.freeze([
+	"⡀⠀⠀",
+	"⡄⠀⠀",
+	"⡆⠀⠀",
+	"⡇⠀⠀",
+	"⣇⠀⠀",
+	"⣧⠀⠀",
+	"⣷⠀⠀",
+	"⣿⠀⠀",
+	"⣿⡀⠀",
+	"⣿⡄⠀",
+	"⣿⡆⠀",
+	"⣿⡇⠀",
+	"⣿⣇⠀",
+	"⣿⣧⠀",
+	"⣿⣷⠀",
+	"⣿⣿⠀",
+	"⣿⣿⡀",
+	"⣿⣿⡄",
+	"⣿⣿⡆",
+	"⣿⣿⡇",
+	"⣿⣿⣇",
+	"⣿⣿⣧",
+	"⣿⣿⣷",
+	"⣿⣿⣿",
+	"⣿⣿⣿",
+	"⠀⠀⠀",
+] as const);
+export const BRAILLE_ORBIT_FRAMES = Object.freeze(["⠃", "⠉", "⠘", "⠰", "⢠", "⣀", "⡄", "⠆"] as const);
+export const BRAILLE_BREATHE_FRAMES = Object.freeze([
+	"⠀",
+	"⠂",
+	"⠌",
+	"⡑",
+	"⢕",
+	"⢝",
+	"⣫",
+	"⣟",
+	"⣿",
+	"⣟",
+	"⣫",
+	"⢝",
+	"⢕",
+	"⡑",
+	"⠌",
+	"⠂",
+	"⠀",
+] as const);
+export const BRAILLE_WAVE_ROWS_FRAMES = Object.freeze([
+	"⠖⠉⠉⠑",
+	"⡠⠖⠉⠉",
+	"⣠⡠⠖⠉",
+	"⣄⣠⡠⠖",
+	"⠢⣄⣠⡠",
+	"⠙⠢⣄⣠",
+	"⠉⠙⠢⣄",
+	"⠊⠉⠙⠢",
+	"⠜⠊⠉⠙",
+	"⡤⠜⠊⠉",
+	"⣀⡤⠜⠊",
+	"⢤⣀⡤⠜",
+	"⠣⢤⣀⡤",
+	"⠑⠣⢤⣀",
+	"⠉⠑⠣⢤",
+	"⠋⠉⠑⠣",
+] as const);
+export const BRAILLE_CHECKERBOARD_FRAMES = Object.freeze(["⢕⢕⢕", "⡪⡪⡪", "⢊⠔⡡", "⡡⢊⠔"] as const);
+export const BRAILLE_HELIX_FRAMES = Object.freeze([
+	"⢌⣉⢎⣉",
+	"⣉⡱⣉⡱",
+	"⣉⢎⣉⢎",
+	"⡱⣉⡱⣉",
+	"⢎⣉⢎⣉",
+	"⣉⡱⣉⡱",
+	"⣉⢎⣉⢎",
+	"⡱⣉⡱⣉",
+	"⢎⣉⢎⣉",
+	"⣉⡱⣉⡱",
+	"⣉⢎⣉⢎",
+	"⡱⣉⡱⣉",
+	"⢎⣉⢎⣉",
+	"⣉⡱⣉⡱",
+	"⣉⢎⣉⢎",
+	"⡱⣉⡱⣉",
+] as const);
+export const SCANLINE_FRAMES = Object.freeze(["⠉⠉⠉", "⠛⠛⠛", "⠿⠿⠿", "⣿⣿⣿", "⣶⣶⣶", "⣤⣤⣤", "⣀⣀⣀", "⠀⠀⠀"] as const);
+export const SNAKE_FRAMES = Object.freeze([
+	"⣁⡀",
+	"⣉⠀",
+	"⡉⠁",
+	"⠉⠉",
+	"⠈⠙",
+	"⠀⠛",
+	"⠐⠚",
+	"⠒⠒",
+	"⠖⠂",
+	"⠶⠀",
+	"⠦⠄",
+	"⠤⠤",
+	"⠠⢤",
+	"⠀⣤",
+	"⢀⣠",
+	"⣀⣀",
+] as const);
+export const FILL_SWEEP_FRAMES = Object.freeze([
+	"⣀⣀",
+	"⣤⣤",
+	"⣶⣶",
+	"⣿⣿",
+	"⣿⣿",
+	"⣿⣿",
+	"⣶⣶",
+	"⣤⣤",
+	"⣀⣀",
+	"⠀⠀",
+	"⠀⠀",
+] as const);
+export const DIAGONAL_SWIPE_FRAMES = Object.freeze([
+	"⠁⠀",
+	"⠋⠀",
+	"⠟⠁",
+	"⡿⠋",
+	"⣿⠟",
+	"⣿⡿",
+	"⣿⣿",
+	"⣿⣿",
+	"⣾⣿",
+	"⣴⣿",
+	"⣠⣾",
+	"⢀⣴",
+	"⠀⣠",
+	"⠀⢀",
+	"⠀⠀",
+	"⠀⠀",
+] as const);
+export const DNA_FRAMES = Object.freeze(["⠋⠉⠙", "⠙⠒⠚", "⠚⠤⠴", "⠴⠤⠦", "⠦⠒⠋"] as const);
+export const RADAR_FRAMES = Object.freeze(["⠁  ", " ⠂ ", "  ⠄", " ⠂ "] as const);
+export const BOUNCE_FRAMES = Object.freeze(["✦  ", " ✦ ", "  ✦", " ✦ "] as const);
+export const ORBIT_FRAMES = Object.freeze(["◜✦ ", "◠✦ ", "◝✦ ", " ✦◞", " ✦◡", " ✦◟"] as const);
+export const CONVEYOR_FRAMES = Object.freeze(["▰▱▱", "▱▰▱", "▱▱▰", "▱▰▱"] as const);
+export const HEARTBEAT_FRAMES = Object.freeze([" . ", " . ", " - ", "=|=", " - ", " . "] as const);
+export const NERD_MORPH_FRAMES = Object.freeze([
+	"\uf0eb",
+	"\uf013",
+	"\uf0e7",
+	"\uf135",
+	"\uf005",
+	"\uf06d",
+	"\uf0ac",
+	"\uf004",
+] as const);
+export const NERD_PIPELINE_FRAMES = Object.freeze([
+	"\uf0e7--",
+	"-\uf013-",
+	"--\uf121",
+	"-\uf0ad-",
+	"\uf00c--",
+] as const);
+export const NERD_PI_ORBIT_FRAMES = Object.freeze(["*\ue22c.", " \ue22c*", ".\ue22c*", "*\ue22c "] as const);
+const DOUBLE_LINE_FRAMES = Object.freeze(["| ", " /", " -", "\\ "] as const);
+const TRIPLE_LINE_FRAMES = Object.freeze(["|  ", " / ", "  -", " \\ "] as const);
+const QUADRUPLE_LINE_FRAMES = Object.freeze(["|   ", " /  ", "  - ", "   \\"] as const);
+
+type MarkerWidth = 1 | 2 | 3 | 4;
+
+interface MarkerAnimation {
+	readonly frames: readonly string[];
+	readonly cadenceMs: number;
+	readonly width: MarkerWidth;
+	readonly nerdFonts?: true;
+	readonly nerdFrames?: readonly string[];
+}
+
+type AnimatedMarkerStyle = Exclude<TuiActivityMarkerStyle, "off" | "pulse" | "static">;
+
+const MARKER_ANIMATIONS = Object.freeze({
+	spinner: { frames: SPINNER_FRAMES, cadenceMs: 80, width: 1 },
+	line: { frames: LINE_FRAMES, cadenceMs: 100, width: 1 },
+	arc: { frames: ARC_FRAMES, cadenceMs: 90, width: 1 },
+	pipe: { frames: PIPE_FRAMES, cadenceMs: 100, width: 1 },
+	"grow-vertical": { frames: GROW_VERTICAL_FRAMES, cadenceMs: 100, width: 1 },
+	"grow-horizontal": { frames: GROW_HORIZONTAL_FRAMES, cadenceMs: 100, width: 1 },
+	triangle: { frames: TRIANGLE_FRAMES, cadenceMs: 120, width: 1 },
+	"circle-quarters": { frames: CIRCLE_QUARTER_FRAMES, cadenceMs: 120, width: 1 },
+	"circle-halves": { frames: CIRCLE_HALF_FRAMES, cadenceMs: 120, width: 1 },
+	"bracket-spin": { frames: BRACKET_SPIN_FRAMES, cadenceMs: 120, width: 1 },
+	dots: { frames: DOT_FRAMES, cadenceMs: 80, width: 1 },
+	quadrants: { frames: QUADRANT_FRAMES, cadenceMs: 100, width: 1 },
+	sparkle: { frames: SPARKLE_FRAMES, cadenceMs: 240, width: 1 },
+	"braille-wave": { frames: BRAILLE_WAVE_FRAMES, cadenceMs: 100, width: 4 },
+	"braille-dna": { frames: BRAILLE_DNA_FRAMES, cadenceMs: 80, width: 4 },
+	"braille-scan": { frames: BRAILLE_SCAN_FRAMES, cadenceMs: 70, width: 4 },
+	"braille-rain": { frames: BRAILLE_RAIN_FRAMES, cadenceMs: 100, width: 4 },
+	"braille-scanline": { frames: BRAILLE_SCANLINE_FRAMES, cadenceMs: 120, width: 3 },
+	"braille-pulse": { frames: BRAILLE_PULSE_FRAMES, cadenceMs: 180, width: 3 },
+	"braille-sparkle": { frames: BRAILLE_SPARKLE_FRAMES, cadenceMs: 150, width: 4 },
+	"braille-cascade": { frames: BRAILLE_CASCADE_FRAMES, cadenceMs: 60, width: 4 },
+	"braille-columns": { frames: BRAILLE_COLUMNS_FRAMES, cadenceMs: 60, width: 3 },
+	"braille-orbit": { frames: BRAILLE_ORBIT_FRAMES, cadenceMs: 100, width: 1 },
+	"braille-breathe": { frames: BRAILLE_BREATHE_FRAMES, cadenceMs: 100, width: 1 },
+	"braille-wave-rows": { frames: BRAILLE_WAVE_ROWS_FRAMES, cadenceMs: 90, width: 4 },
+	"braille-checkerboard": { frames: BRAILLE_CHECKERBOARD_FRAMES, cadenceMs: 250, width: 3 },
+	"braille-helix": { frames: BRAILLE_HELIX_FRAMES, cadenceMs: 80, width: 4 },
+	scanline: { frames: SCANLINE_FRAMES, cadenceMs: 120, width: 3 },
+	snake: { frames: SNAKE_FRAMES, cadenceMs: 80, width: 2 },
+	"fill-sweep": { frames: FILL_SWEEP_FRAMES, cadenceMs: 100, width: 2 },
+	"diagonal-swipe": { frames: DIAGONAL_SWIPE_FRAMES, cadenceMs: 60, width: 2 },
+	dna: { frames: DNA_FRAMES, cadenceMs: 90, width: 3 },
+	radar: { frames: RADAR_FRAMES, cadenceMs: 100, width: 3 },
+	bounce: { frames: BOUNCE_FRAMES, cadenceMs: 110, width: 3 },
+	orbit: { frames: ORBIT_FRAMES, cadenceMs: 100, width: 3 },
+	conveyor: { frames: CONVEYOR_FRAMES, cadenceMs: 120, width: 3 },
+	heartbeat: { frames: HEARTBEAT_FRAMES, cadenceMs: 110, width: 3 },
+	"nerd-progress": { frames: NERD_PROGRESS_FRAMES, cadenceMs: 90, width: 1, nerdFonts: true },
+	"nerd-morph": { frames: NERD_MORPH_FRAMES, cadenceMs: 180, width: 1, nerdFonts: true },
+	"nerd-pipeline": { frames: NERD_PIPELINE_FRAMES, cadenceMs: 160, width: 3, nerdFonts: true },
+	"nerd-pi-orbit": { frames: NERD_PI_ORBIT_FRAMES, cadenceMs: 140, width: 3, nerdFonts: true },
+} satisfies Record<AnimatedMarkerStyle, MarkerAnimation>);
+
+function markerAnimation(style: TuiActivityMarkerStyle): MarkerAnimation | undefined {
+	if (style === "off" || style === "pulse" || style === "static") return undefined;
+	return MARKER_ANIMATIONS[style];
+}
 
 /** Resolve a cyclic spinner frame without retaining animation state. */
 export function spinnerFrame(
@@ -365,36 +662,32 @@ export function activityFrame(
 		case "off":
 			marker = "";
 			break;
-		case "spinner":
-			marker = colors.fg(
-				"accent",
-				activityGlyph(spinnerFrame(elapsedMs, { cadenceMs: options.cadenceMs, frames: options.frames }), "-"),
-			);
-			break;
 		case "pulse":
 			marker = pulseGlyphFrame(colors, "●", elapsedMs);
 			break;
 		case "static":
 			marker = colors.fg("accent", "●");
 			break;
-		case "line":
-		case "arc":
-		case "dots":
-		case "quadrants":
-		case "sparkle": {
+		default: {
+			const animation = markerAnimation(markerStyle);
+			if (!animation) {
+				marker = "";
+				break;
+			}
+			const configuredFrames = markerStyle === "spinner" ? (options.frames ?? animation.frames) : animation.frames;
 			const frames =
-				markerStyle === "line"
-					? LINE_FRAMES
-					: markerStyle === "arc"
-						? ARC_FRAMES
-						: markerStyle === "dots"
-							? DOT_FRAMES
-							: markerStyle === "quadrants"
-								? QUADRANT_FRAMES
-								: SPARKLE_FRAMES;
+				animation.nerdFrames && appearance.iconPack === "nerd-fonts"
+					? animation.nerdFrames
+					: animation.nerdFonts && appearance.iconPack !== "nerd-fonts"
+						? fallbackFrames(animation.width)
+						: configuredFrames;
 			marker = colors.fg(
 				"accent",
-				activityGlyph(glyphFrame(frames, elapsedMs, options.cadenceMs ?? markerCadenceMs(markerStyle)), "-"),
+				activityGlyph(
+					glyphFrame(frames, elapsedMs, options.cadenceMs ?? animation.cadenceMs),
+					"-".repeat(animation.width),
+					animation.width,
+				),
 			);
 			break;
 		}
@@ -416,9 +709,19 @@ export function activityFrame(
 	return { marker, text: textOutput };
 }
 
-function activityGlyph(value: string, fallback: string): string {
+function activityGlyph(value: string, fallback: string, width: MarkerWidth): string {
 	const safe = sanitizeTuiText(value);
-	return safe === value && safe.trim().length > 0 && visibleWidth(safe) === 1 ? safe : fallback;
+	return safe === value && safe.trim().length > 0 && visibleWidth(safe) === width ? safe : fallback;
+}
+
+function fallbackFrames(width: MarkerWidth): readonly string[] {
+	return width === 1
+		? LINE_FRAMES
+		: width === 2
+			? DOUBLE_LINE_FRAMES
+			: width === 3
+				? TRIPLE_LINE_FRAMES
+				: QUADRUPLE_LINE_FRAMES;
 }
 
 /** Resolve a cyclic glyph frame without retaining animation state. */

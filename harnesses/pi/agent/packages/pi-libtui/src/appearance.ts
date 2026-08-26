@@ -3,7 +3,7 @@ import { bumpTuiRenderEpoch } from "./render-epoch.ts";
 /** Glyph family used to resolve every semantic icon token. */
 export type TuiIconPack = "nerd-fonts" | "unicode" | "emoji";
 
-/** Single-cell marker used by shared activity indicators. */
+/** Compact marker used by shared activity indicators. */
 export type TuiActivityMarkerStyle =
 	| "off"
 	| "spinner"
@@ -11,9 +11,44 @@ export type TuiActivityMarkerStyle =
 	| "static"
 	| "line"
 	| "arc"
+	| "pipe"
+	| "grow-vertical"
+	| "grow-horizontal"
+	| "triangle"
+	| "circle-quarters"
+	| "circle-halves"
+	| "bracket-spin"
 	| "dots"
 	| "quadrants"
-	| "sparkle";
+	| "sparkle"
+	| "braille-wave"
+	| "braille-dna"
+	| "braille-scan"
+	| "braille-rain"
+	| "braille-scanline"
+	| "braille-pulse"
+	| "braille-sparkle"
+	| "braille-cascade"
+	| "braille-columns"
+	| "braille-orbit"
+	| "braille-breathe"
+	| "braille-wave-rows"
+	| "braille-checkerboard"
+	| "braille-helix"
+	| "scanline"
+	| "snake"
+	| "fill-sweep"
+	| "diagonal-swipe"
+	| "dna"
+	| "radar"
+	| "bounce"
+	| "orbit"
+	| "conveyor"
+	| "heartbeat"
+	| "nerd-progress"
+	| "nerd-morph"
+	| "nerd-pipeline"
+	| "nerd-pi-orbit";
 
 /** Text shimmer used independently from the activity marker. */
 export type TuiShimmerStyle = "off" | "sweep" | "glow" | "rainbow";
@@ -81,9 +116,44 @@ export function isTuiActivityMarkerStyle(value: UntrustedAppearanceValue): value
 		value === "static" ||
 		value === "line" ||
 		value === "arc" ||
+		value === "pipe" ||
+		value === "grow-vertical" ||
+		value === "grow-horizontal" ||
+		value === "triangle" ||
+		value === "circle-quarters" ||
+		value === "circle-halves" ||
+		value === "bracket-spin" ||
 		value === "dots" ||
 		value === "quadrants" ||
-		value === "sparkle"
+		value === "sparkle" ||
+		value === "braille-wave" ||
+		value === "braille-dna" ||
+		value === "braille-scan" ||
+		value === "braille-rain" ||
+		value === "braille-scanline" ||
+		value === "braille-pulse" ||
+		value === "braille-sparkle" ||
+		value === "braille-cascade" ||
+		value === "braille-columns" ||
+		value === "braille-orbit" ||
+		value === "braille-breathe" ||
+		value === "braille-wave-rows" ||
+		value === "braille-checkerboard" ||
+		value === "braille-helix" ||
+		value === "scanline" ||
+		value === "snake" ||
+		value === "fill-sweep" ||
+		value === "diagonal-swipe" ||
+		value === "dna" ||
+		value === "radar" ||
+		value === "bounce" ||
+		value === "orbit" ||
+		value === "conveyor" ||
+		value === "heartbeat" ||
+		value === "nerd-progress" ||
+		value === "nerd-morph" ||
+		value === "nerd-pipeline" ||
+		value === "nerd-pi-orbit"
 	);
 }
 
