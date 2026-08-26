@@ -454,6 +454,64 @@ describe("xsettings editor", () => {
 			expect(baseShimmerLines.find((line) => line.includes(label))).toContain(`● ${label}`);
 		shimmerEditor.handleInput("\x1b");
 		expect(sharedMotionScheduler.activeMountCount).toBe(mountsBefore);
+
+		for (const field of [
+			{
+				id: "extensions.pi-libtui.animationSpeed",
+				label: "Animation speed",
+				value: "normal",
+				options: [
+					{ value: "slow", label: "Slow" },
+					{ value: "relaxed", label: "Relaxed" },
+					{ value: "normal", label: "Normal" },
+					{ value: "fast", label: "Fast" },
+					{ value: "very-fast", label: "Very fast" },
+				],
+			},
+			{
+				id: "extensions.pi-libtui.animationSmoothness",
+				label: "Animation smoothness",
+				value: "balanced",
+				options: [
+					{ value: "economy", label: "Economy" },
+					{ value: "balanced", label: "Balanced" },
+					{ value: "smooth", label: "Smooth" },
+					{ value: "ultra", label: "Ultra" },
+				],
+			},
+		] as const) {
+			const editor = new SettingsEditor(
+				[
+					{
+						...field,
+						section: "Animations",
+						description: "Choose animation timing.",
+						type: "enum",
+						defaultValue: field.value,
+						configured: false,
+					},
+				],
+				theme,
+				() => {},
+				() => {},
+				() => {},
+				18,
+				[],
+				undefined,
+				undefined,
+				() => {},
+			);
+			editor.handleInput("\r");
+			expect(sharedMotionScheduler.activeMountCount).toBe(mountsBefore + 1);
+			const timingLines = editor
+				.render(100)
+				.map(stripTerminalSequences)
+				.map((line) => line.normalize("NFD").replace(/\p{M}/gu, ""));
+			for (const option of field.options)
+				expect(timingLines.find((line) => line.includes(option.label))).toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] /u);
+			editor.handleInput("\x1b");
+			expect(sharedMotionScheduler.activeMountCount).toBe(mountsBefore);
+		}
 	});
 
 	test("opens editors through the shared dialog host without replacing the settings UI", () => {

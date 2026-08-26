@@ -37,7 +37,7 @@ describe("settings screen fields", () => {
 		expect(formatSettingValue(none)).toBe("none");
 	});
 
-	test("uses the extension as the subcategory and keeps the setting label plain", () => {
+	test("uses an explicit extension section and keeps the setting label plain", () => {
 		const definition: SettingDefinition = {
 			key: "mode",
 			label: "Mode",
@@ -56,8 +56,27 @@ describe("settings screen fields", () => {
 
 		const field = toUiField({}, registration, definition);
 
-		expect(field.section).toBe("Demo");
+		expect(field.section).toBe("Ignored custom section");
 		expect(field.label).toBe("Mode");
+	});
+
+	test("uses the extension label when a definition has no section", () => {
+		const definition: SettingDefinition = {
+			key: "mode",
+			label: "Mode",
+			description: "Choose a mode.",
+			category: "behavior",
+			type: "enum",
+			default: "off",
+			options: [{ value: "off", label: "Off", description: "" }],
+		};
+		const registration: SettingRegistration = {
+			namespace: "pi-demo",
+			label: "Demo",
+			definitions: [definition],
+		};
+
+		expect(toUiField({}, registration, definition).section).toBe("Demo");
 	});
 
 	test("keeps numeric enum values numeric after the picker converts them to strings", () => {

@@ -12,6 +12,8 @@ describe("pi-libtui settings", () => {
 			activityMarker: "spinner",
 			shimmer: "off",
 			shimmerMarker: false,
+			animationSpeed: "normal",
+			animationSmoothness: "balanced",
 			powerline: false,
 			powerlineButtons: false,
 			softCursor: false,
@@ -29,6 +31,8 @@ describe("pi-libtui settings", () => {
 			"activityMarker",
 			"shimmer",
 			"shimmerMarker",
+			"animationSpeed",
+			"animationSmoothness",
 			"powerline",
 			"powerlineButtons",
 			"softCursor",
@@ -104,12 +108,37 @@ describe("pi-libtui settings", () => {
 			"rainbow-glow",
 			"lightning",
 		]);
+		const animationSpeed = registration?.definitions.find((definition) => definition.key === "animationSpeed");
+		expect(animationSpeed?.type).toBe("enum");
+		if (animationSpeed?.type !== "enum" || !Array.isArray(animationSpeed.options))
+			throw new Error("Animation speed must be an inline enum setting");
+		expect(animationSpeed.options.map((option) => option.value)).toEqual([
+			"slow",
+			"relaxed",
+			"normal",
+			"fast",
+			"very-fast",
+		]);
+		const animationSmoothness = registration?.definitions.find(
+			(definition) => definition.key === "animationSmoothness",
+		);
+		expect(animationSmoothness?.type).toBe("enum");
+		if (animationSmoothness?.type !== "enum" || !Array.isArray(animationSmoothness.options))
+			throw new Error("Animation smoothness must be an inline enum setting");
+		expect(animationSmoothness.options.map((option) => option.value)).toEqual([
+			"economy",
+			"balanced",
+			"smooth",
+			"ultra",
+		]);
 
 		await ensureXSettingsRegistry().publish("pi-libtui", {
 			iconPack: "unicode",
 			activityMarker: "pulse",
 			shimmer: "glow",
 			shimmerMarker: true,
+			animationSpeed: "fast",
+			animationSmoothness: "smooth",
 			powerline: false,
 			powerlineButtons: true,
 			softCursor: true,
@@ -122,6 +151,8 @@ describe("pi-libtui settings", () => {
 			activityMarker: "pulse",
 			shimmer: "glow",
 			shimmerMarker: true,
+			animationSpeed: "fast",
+			animationSmoothness: "smooth",
 			powerline: false,
 			powerlineButtons: true,
 			softCursor: true,

@@ -99,17 +99,24 @@ using the documented package root and subpaths so the public API remains stable.
 - activity marker: the original off, spinner, pulse, and static choices plus curated one-to-four-cell Unicode, ASCII, Braille, and Nerd Font animations;
 - text shimmer: `off`, narrow `sweep`, broad `glow`, semantic `rainbow`, `rainbow-glow`, or fast-mode `lightning`;
 - an independent toggle that sweeps the selected shimmer across marker, separator, and text as one activity unit;
+- animation speed: `slow`, `relaxed`, `normal`, `fast`, or `very-fast`;
+- animation smoothness: `economy`, `balanced`, `smooth`, or `ultra` terminal redraws;
 - Powerline separators and Powerline button caps;
 - softer virtual cursor;
 - insertion, navigation, and selection cursor styles.
 
-The compiled defaults are portable Unicode icons, a Braille spinner, flat
+The compiled defaults are portable Unicode icons, a Braille spinner, normal-speed balanced animation, flat
 separators/buttons, and virtual cursors. Shared activity surfaces use the
-selected marker, shimmer, marker-shimmer toggle, and fastest required cadence. Every marker option can
+selected marker, shimmer, marker-shimmer toggle, timeline speed, and redraw smoothness. Every marker option can
 be combined with every shimmer option. A static or disabled marker allocates no
 timer when shimmer is also off. If `pi-xsettings` is absent, components still
 use the spinner-without-shimmer defaults. The settings can be changed live
 through `/xsettings` when its host is installed.
+
+Speed scales the animation timeline. Smoothness independently caps the shared
+repaint frequency, from roughly 8 redraws per second in economy mode to 40 in
+ultra mode. The scheduler never redraws faster than the selected effects can
+produce a new frame at the configured speed.
 
 Lightning retains `main`'s exact `z`/`i`/`n`/`g` variants and supplies the same
 nine artifact families for every other printable ASCII character. Marker and

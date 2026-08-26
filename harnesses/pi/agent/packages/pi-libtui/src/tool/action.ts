@@ -78,7 +78,6 @@ function renderToolAction(theme: Theme, view: ToolActionView, width: number, act
 export interface LiveToolActionOptions extends ToolActionOptions {
 	requestRender(): void;
 	running?: boolean;
-	cadenceMs?: number;
 	reducedMotion?: boolean;
 }
 
@@ -109,7 +108,6 @@ export class LiveToolAction implements Component {
 	render(width: number): string[] {
 		const activity = this.running
 			? activityFrame(tuiTheme(this.options.theme), sanitizeTuiField(this.view.verb), this.now - this.startedAt, {
-					cadenceMs: this.options.cadenceMs,
 					textTone: "text.secondary",
 					reducedMotion: this.options.reducedMotion,
 				})
@@ -134,7 +132,6 @@ export class LiveToolAction implements Component {
 			this.motion = mountConfiguredAnimation(
 				{ requestRender: this.options.requestRender },
 				{
-					cadenceMs: this.options.cadenceMs,
 					reducedMotion: this.options.reducedMotion,
 					onFrame: (now) => {
 						this.now = now;

@@ -6,6 +6,8 @@ import { tuiTheme } from "../src/color/theme.ts";
 import type { MotionClock, MotionRenderTarget, MotionTimerHandle } from "../src/motion.ts";
 import {
 	activityFrame,
+	animationSmoothnessCadenceMs,
+	animationSpeedMultiplier,
 	configuredAnimationCadenceMs,
 	glyphFrame,
 	mountConfiguredAnimation,
@@ -230,30 +232,35 @@ describe("pure motion frames", () => {
 		expect(staticFrame.text).not.toBe(staticGlow.text);
 	});
 
-	test("uses each configured cadence and stops repainting for static activity", () => {
+	test("separates animation speed from repaint smoothness and stops static activity", () => {
+		expect(animationSpeedMultiplier("slow")).toBe(0.6);
+		expect(animationSpeedMultiplier("relaxed")).toBe(0.8);
+		expect(animationSpeedMultiplier("normal")).toBe(1);
+		expect(animationSpeedMultiplier("fast")).toBe(1.35);
+		expect(animationSpeedMultiplier("very-fast")).toBe(1.7);
+		expect(animationSmoothnessCadenceMs("economy")).toBe(120);
+		expect(animationSmoothnessCadenceMs("balanced")).toBe(60);
+		expect(animationSmoothnessCadenceMs("smooth")).toBe(40);
+		expect(animationSmoothnessCadenceMs("ultra")).toBe(25);
 		expect(configuredAnimationCadenceMs("spinner", "off")).toBe(80);
-		expect(configuredAnimationCadenceMs("pulse", "off")).toBe(120);
-		expect(configuredAnimationCadenceMs("line", "off")).toBe(100);
-		expect(configuredAnimationCadenceMs("arc", "off")).toBe(90);
-		expect(configuredAnimationCadenceMs("dots", "off")).toBe(80);
-		expect(configuredAnimationCadenceMs("quadrants", "off")).toBe(100);
-		expect(configuredAnimationCadenceMs("sparkle", "off")).toBe(240);
-		expect(configuredAnimationCadenceMs("dna", "off")).toBe(90);
-		expect(configuredAnimationCadenceMs("radar", "off")).toBe(100);
-		expect(configuredAnimationCadenceMs("bounce", "off")).toBe(110);
-		expect(configuredAnimationCadenceMs("orbit", "off")).toBe(100);
-		expect(configuredAnimationCadenceMs("conveyor", "off")).toBe(120);
-		expect(configuredAnimationCadenceMs("heartbeat", "off")).toBe(110);
-		expect(configuredAnimationCadenceMs("nerd-morph", "off")).toBe(180);
-		expect(configuredAnimationCadenceMs("nerd-pipeline", "off")).toBe(160);
-		expect(configuredAnimationCadenceMs("nerd-pi-orbit", "off")).toBe(140);
-		expect(configuredAnimationCadenceMs("off", "sweep")).toBe(90);
-		expect(configuredAnimationCadenceMs("off", "glow")).toBe(70);
-		expect(configuredAnimationCadenceMs("off", "rainbow")).toBe(80);
-		expect(configuredAnimationCadenceMs("off", "rainbow-glow")).toBe(80);
-		expect(configuredAnimationCadenceMs("off", "lightning")).toBe(60);
-		expect(configuredAnimationCadenceMs("pulse", "glow")).toBe(70);
+		expect(configuredAnimationCadenceMs("off", "lightning", "ultra")).toBe(60);
+		expect(configuredAnimationCadenceMs("off", "lightning", "ultra", "very-fast")).toBe(35);
+		expect(configuredAnimationCadenceMs("pulse", "glow", "economy")).toBe(120);
 		expect(configuredAnimationCadenceMs("static", "off")).toBeUndefined();
+
+		const colors = tuiTheme(theme);
+		const slow = activityFrame(colors, "Working", 200, {
+			markerStyle: "line",
+			shimmerStyle: "off",
+			animationSpeed: "slow",
+		});
+		const fast = activityFrame(colors, "Working", 200, {
+			markerStyle: "line",
+			shimmerStyle: "off",
+			animationSpeed: "fast",
+		});
+		expect(Bun.stripANSI(slow.marker)).toBe("\\");
+		expect(Bun.stripANSI(fast.marker)).toBe("|");
 
 		const clock = new FakeClock();
 		const scheduler = new MotionScheduler(clock);
@@ -262,12 +269,17 @@ describe("pure motion frames", () => {
 		const mount = mountConfiguredAnimation({ requestRender: () => renders++ }, { scheduler });
 		expect(scheduler.activeTimerCount).toBe(0);
 
-		configureTuiAppearance({ activityMarker: "pulse" });
-		expect(clock.timers.at(-1)?.cadenceMs).toBe(120);
+		configureTuiAppearance({
+			activityMarker: "off",
+			shimmer: "lightning",
+			animationSpeed: "very-fast",
+			animationSmoothness: "ultra",
+		});
+		expect(clock.timers.at(-1)?.cadenceMs).toBe(35);
 		expect(scheduler.activeTimerCount).toBe(1);
 		expect(renders).toBe(1);
 
-		configureTuiAppearance({ activityMarker: "static" });
+		configureTuiAppearance({ activityMarker: "static", shimmer: "off" });
 		expect(scheduler.activeTimerCount).toBe(0);
 		expect(renders).toBe(2);
 		mount.dispose();

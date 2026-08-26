@@ -53,6 +53,12 @@ export type TuiActivityMarkerStyle =
 /** Text shimmer used independently from the activity marker. */
 export type TuiShimmerStyle = "off" | "sweep" | "glow" | "rainbow" | "rainbow-glow" | "lightning";
 
+/** Global pace applied to every configured activity animation. */
+export type TuiAnimationSpeed = "slow" | "relaxed" | "normal" | "fast" | "very-fast";
+
+/** Global repaint frequency used by every configured activity animation. */
+export type TuiAnimationSmoothness = "economy" | "balanced" | "smooth" | "ultra";
+
 /** Cursor presentation policy for one semantic cursor role. */
 export type TuiCursorStyle =
 	| "virtual"
@@ -70,6 +76,8 @@ export interface TuiAppearanceSettings {
 	activityMarker: TuiActivityMarkerStyle;
 	shimmer: TuiShimmerStyle;
 	shimmerMarker: boolean;
+	animationSpeed: TuiAnimationSpeed;
+	animationSmoothness: TuiAnimationSmoothness;
 	powerline: boolean;
 	powerlineButtons: boolean;
 	softCursor: boolean;
@@ -84,6 +92,8 @@ export const DEFAULT_TUI_APPEARANCE: Readonly<TuiAppearanceSettings> = Object.fr
 	activityMarker: "spinner",
 	shimmer: "off",
 	shimmerMarker: false,
+	animationSpeed: "normal",
+	animationSmoothness: "balanced",
 	powerline: false,
 	powerlineButtons: false,
 	softCursor: false,
@@ -92,7 +102,7 @@ export const DEFAULT_TUI_APPEARANCE: Readonly<TuiAppearanceSettings> = Object.fr
 	selectionCursor: "virtual",
 });
 
-const APPEARANCE_PROTOCOL = "pi-libtui/appearance/v3" as const;
+const APPEARANCE_PROTOCOL = "pi-libtui/appearance/v4" as const;
 const APPEARANCE_KEY = Symbol.for(APPEARANCE_PROTOCOL);
 
 interface AppearanceRegistry {
@@ -171,6 +181,16 @@ export function isTuiShimmerStyle(value: UntrustedAppearanceValue): value is Tui
 	);
 }
 
+/** Narrow an external value to one supported animation speed. */
+export function isTuiAnimationSpeed(value: UntrustedAppearanceValue): value is TuiAnimationSpeed {
+	return value === "slow" || value === "relaxed" || value === "normal" || value === "fast" || value === "very-fast";
+}
+
+/** Narrow an external value to one supported animation smoothness. */
+export function isTuiAnimationSmoothness(value: UntrustedAppearanceValue): value is TuiAnimationSmoothness {
+	return value === "economy" || value === "balanced" || value === "smooth" || value === "ultra";
+}
+
 function isCursorStyle(value: UntrustedAppearanceValue): value is TuiCursorStyle {
 	return (
 		value === "virtual" ||
@@ -204,6 +224,10 @@ function mergeAppearance(
 		activityMarker: isTuiActivityMarkerStyle(next.activityMarker) ? next.activityMarker : current.activityMarker,
 		shimmer: isTuiShimmerStyle(next.shimmer) ? next.shimmer : current.shimmer,
 		shimmerMarker: typeof next.shimmerMarker === "boolean" ? next.shimmerMarker : current.shimmerMarker,
+		animationSpeed: isTuiAnimationSpeed(next.animationSpeed) ? next.animationSpeed : current.animationSpeed,
+		animationSmoothness: isTuiAnimationSmoothness(next.animationSmoothness)
+			? next.animationSmoothness
+			: current.animationSmoothness,
 		powerline: typeof next.powerline === "boolean" ? next.powerline : current.powerline,
 		powerlineButtons: typeof next.powerlineButtons === "boolean" ? next.powerlineButtons : current.powerlineButtons,
 		softCursor: typeof next.softCursor === "boolean" ? next.softCursor : current.softCursor,
@@ -219,6 +243,8 @@ function sameAppearance(left: Readonly<TuiAppearanceSettings>, right: Readonly<T
 		left.activityMarker === right.activityMarker &&
 		left.shimmer === right.shimmer &&
 		left.shimmerMarker === right.shimmerMarker &&
+		left.animationSpeed === right.animationSpeed &&
+		left.animationSmoothness === right.animationSmoothness &&
 		left.powerline === right.powerline &&
 		left.powerlineButtons === right.powerlineButtons &&
 		left.softCursor === right.softCursor &&

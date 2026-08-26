@@ -4,6 +4,8 @@ import {
 	getTuiAppearance,
 	subscribeTuiAppearance,
 	type TuiActivityMarkerStyle,
+	type TuiAnimationSmoothness,
+	type TuiAnimationSpeed,
 	type TuiShimmerStyle,
 } from "./appearance.ts";
 import { sanitizeTuiText } from "./content/terminal-text.ts";
@@ -234,15 +236,31 @@ class SharedMotionScheduler extends MotionScheduler {
 /** Process-wide cadence scheduler, initialized only when animation is used. */
 export const sharedMotionScheduler: MotionScheduler = new SharedMotionScheduler();
 
-/** Fastest cadence required by the independently configured marker and shimmer. */
+/** Repaint cadence selected independently from animation pace. */
 export function configuredAnimationCadenceMs(
 	marker = getTuiAppearance().activityMarker,
 	shimmer = getTuiAppearance().shimmer,
+	smoothness: TuiAnimationSmoothness = getTuiAppearance().animationSmoothness,
+	speed: TuiAnimationSpeed = getTuiAppearance().animationSpeed,
 ): number | undefined {
-	const cadences = [markerCadenceMs(marker), shimmerCadenceMs(shimmer)].filter(
+	const intrinsicCadences = [markerCadenceMs(marker), shimmerCadenceMs(shimmer)].filter(
 		(cadence): cadence is number => cadence !== undefined,
 	);
-	return cadences.length > 0 ? Math.min(...cadences) : undefined;
+	if (intrinsicCadences.length === 0) return undefined;
+	const designedCadenceMs = Math.min(...intrinsicCadences) / animationSpeedMultiplier(speed);
+	return Math.max(animationSmoothnessCadenceMs(smoothness), Math.floor(designedCadenceMs));
+}
+
+/** Timeline multiplier for one configured animation speed. */
+export function animationSpeedMultiplier(speed: TuiAnimationSpeed = getTuiAppearance().animationSpeed): number {
+	return speed === "slow" ? 0.6 : speed === "relaxed" ? 0.8 : speed === "fast" ? 1.35 : speed === "very-fast" ? 1.7 : 1;
+}
+
+/** Shared terminal repaint cadence for one configured smoothness. */
+export function animationSmoothnessCadenceMs(
+	smoothness: TuiAnimationSmoothness = getTuiAppearance().animationSmoothness,
+): number {
+	return smoothness === "economy" ? 120 : smoothness === "smooth" ? 40 : smoothness === "ultra" ? 25 : 60;
 }
 
 /** Whether the configured activity presentation animates its text. */
@@ -654,6 +672,7 @@ export function activityFrame(
 		markerStyle?: TuiActivityMarkerStyle;
 		shimmerStyle?: TuiShimmerStyle;
 		shimmerMarker?: boolean;
+		animationSpeed?: TuiAnimationSpeed;
 		cadenceMs?: number;
 		frames?: readonly string[];
 		textTone?: TuiForegroundToken;
@@ -666,6 +685,7 @@ export function activityFrame(
 	const markerStyle = options.reducedMotion && configuredMarker !== "off" ? "static" : configuredMarker;
 	const shimmerStyle = options.reducedMotion ? "off" : (options.shimmerStyle ?? appearance.shimmer);
 	const shimmerMarker = options.shimmerMarker ?? appearance.shimmerMarker;
+	const animationElapsedMs = elapsedMs * animationSpeedMultiplier(options.animationSpeed ?? appearance.animationSpeed);
 	const textTone = options.textTone ?? "text.primary";
 	let markerGlyph: string;
 	let marker: string;
@@ -676,7 +696,7 @@ export function activityFrame(
 			break;
 		case "pulse":
 			markerGlyph = "●";
-			marker = pulseGlyphFrame(colors, markerGlyph, elapsedMs);
+			marker = pulseGlyphFrame(colors, markerGlyph, animationElapsedMs);
 			break;
 		case "static":
 			markerGlyph = "●";
@@ -697,7 +717,7 @@ export function activityFrame(
 						? fallbackFrames(animation.width)
 						: configuredFrames;
 			markerGlyph = activityGlyph(
-				glyphFrame(frames, elapsedMs, options.cadenceMs ?? animation.cadenceMs),
+				glyphFrame(frames, animationElapsedMs, options.cadenceMs ?? animation.cadenceMs),
 				"-".repeat(animation.width),
 				animation.width,
 			);
@@ -709,7 +729,7 @@ export function activityFrame(
 	const textLength = textGraphemes(text).length;
 	const shimmerLength = markerLength + 1 + textLength;
 	if (markerGlyph && shimmerMarker && shimmerStyle !== "off") {
-		marker = paintShimmer(colors, markerGlyph, elapsedMs, shimmerStyle, {
+		marker = paintShimmer(colors, markerGlyph, animationElapsedMs, shimmerStyle, {
 			cadenceMs: options.cadenceMs,
 			baseTone: "accent",
 			highlightTone: options.highlightTone,
@@ -718,7 +738,7 @@ export function activityFrame(
 			totalLength: shimmerLength,
 		});
 	}
-	const textOutput = paintShimmer(colors, text, elapsedMs, shimmerStyle, {
+	const textOutput = paintShimmer(colors, text, animationElapsedMs, shimmerStyle, {
 		cadenceMs: options.cadenceMs,
 		baseTone: textTone,
 		highlightTone: options.highlightTone,

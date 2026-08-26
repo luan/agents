@@ -24,6 +24,16 @@ describe("bounded progress rendering", () => {
 		expect(stripTerminalSequences(frame)).toBe("━━──");
 	});
 
+	test("applies global animation speed to indeterminate progress", () => {
+		const colors = tuiTheme(theme);
+		const slow = progressFrame(colors, { width: 8, elapsedMs: 140, animationSpeed: "slow" });
+		const fast = progressFrame(colors, { width: 8, elapsedMs: 140, animationSpeed: "fast" });
+
+		expect(stripTerminalSequences(slow)).not.toBe(stripTerminalSequences(fast));
+		expect(visibleWidth(slow)).toBe(8);
+		expect(visibleWidth(fast)).toBe(8);
+	});
+
 	test("sanitizes activity and progress labels into one component row", () => {
 		const activity = new ActivityIndicator({
 			theme,

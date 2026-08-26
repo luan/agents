@@ -11,7 +11,9 @@ import {
 } from "@earendil-works/pi-tui";
 import {
 	activityFrame,
+	animationSmoothnessCadenceMs,
 	ComponentStack,
+	configuredAnimationCadenceMs,
 	DialogButtonBar,
 	type DialogHost,
 	type DialogOverlayAnchor,
@@ -19,6 +21,8 @@ import {
 	getTuiAppearance,
 	icon,
 	isTuiActivityMarkerStyle,
+	isTuiAnimationSmoothness,
+	isTuiAnimationSpeed,
 	isTuiShimmerStyle,
 	MultiSelect,
 	SearchableSelect,
@@ -131,9 +135,15 @@ class AnimationSelect extends SearchableSelect<string> {
 		let now = performance.now();
 		const startedAt = now;
 		const markerField = field.id === "extensions.pi-libtui.activityMarker";
-		const options = field.options.filter((option) =>
-			markerField ? isTuiActivityMarkerStyle(option.value) : isTuiShimmerStyle(option.value),
-		);
+		const shimmerField = field.id === "extensions.pi-libtui.shimmer";
+		const speedField = field.id === "extensions.pi-libtui.animationSpeed";
+		const smoothnessField = field.id === "extensions.pi-libtui.animationSmoothness";
+		const options = field.options.filter((option) => {
+			if (markerField) return isTuiActivityMarkerStyle(option.value);
+			if (shimmerField) return isTuiShimmerStyle(option.value);
+			if (speedField) return isTuiAnimationSpeed(option.value);
+			return smoothnessField && isTuiAnimationSmoothness(option.value);
+		});
 		super({
 			title: field.label,
 			showTitle: false,
@@ -147,10 +157,36 @@ class AnimationSelect extends SearchableSelect<string> {
 			renderOption: (option, context) => {
 				const colors = tuiTheme(context.theme);
 				const appearance = getTuiAppearance();
-				const frame = activityFrame(colors, option.label, now - startedAt, {
-					markerStyle: markerField && isTuiActivityMarkerStyle(option.value) ? option.value : appearance.activityMarker,
-					shimmerStyle: !markerField && isTuiShimmerStyle(option.value) ? option.value : appearance.shimmer,
+				const timingField = speedField || smoothnessField;
+				const markerStyle =
+					markerField && isTuiActivityMarkerStyle(option.value)
+						? option.value
+						: timingField
+							? "spinner"
+							: appearance.activityMarker;
+				const shimmerStyle =
+					shimmerField && isTuiShimmerStyle(option.value)
+						? option.value
+						: timingField
+							? "lightning"
+							: appearance.shimmer;
+				const smoothness =
+					smoothnessField && isTuiAnimationSmoothness(option.value) ? option.value : appearance.animationSmoothness;
+				const speed =
+					speedField && isTuiAnimationSpeed(option.value)
+						? option.value
+						: smoothnessField
+							? "very-fast"
+							: appearance.animationSpeed;
+				const cadenceMs =
+					configuredAnimationCadenceMs(markerStyle, shimmerStyle, smoothness, speed) ??
+					animationSmoothnessCadenceMs(smoothness);
+				const elapsedMs = smoothnessField ? Math.floor((now - startedAt) / cadenceMs) * cadenceMs : now - startedAt;
+				const frame = activityFrame(colors, option.label, elapsedMs, {
+					markerStyle,
+					shimmerStyle,
 					shimmerMarker: appearance.shimmerMarker,
+					animationSpeed: speed,
 					textTone: context.selected ? "accent" : "text.primary",
 				});
 				const preview = frame.marker ? `${frame.marker} ${frame.text}` : frame.text;
@@ -161,7 +197,9 @@ class AnimationSelect extends SearchableSelect<string> {
 		this.motion = sharedMotionScheduler.mount(
 			{ requestRender },
 			{
-				cadenceMs: 70,
+				cadenceMs:
+					configuredAnimationCadenceMs("spinner", "lightning", "ultra", "very-fast") ??
+					animationSmoothnessCadenceMs("ultra"),
 				onFrame: (next) => {
 					now = next;
 				},
@@ -526,7 +564,10 @@ export class SettingsEditor extends ComponentStack {
 		};
 		if (field.type === "enum") {
 			const editor =
-				field.id === "extensions.pi-libtui.activityMarker" || field.id === "extensions.pi-libtui.shimmer"
+				field.id === "extensions.pi-libtui.activityMarker" ||
+				field.id === "extensions.pi-libtui.shimmer" ||
+				field.id === "extensions.pi-libtui.animationSpeed" ||
+				field.id === "extensions.pi-libtui.animationSmoothness"
 					? new AnimationSelect(field, this.theme, done, this.requestRender)
 					: new SearchableSelect({
 							title: field.label,

@@ -3,7 +3,14 @@ import type { Component } from "@earendil-works/pi-tui";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { type TuiForegroundToken, type TuiTheme, tuiTheme } from "../color/theme.ts";
 import { sanitizeTuiText } from "../content/terminal-text.ts";
-import { activityFrame, mountConfiguredAnimation, type MotionMount, type MotionScheduler } from "../motion.ts";
+import {
+	activityFrame,
+	animationSpeedMultiplier,
+	mountConfiguredAnimation,
+	type MotionMount,
+	type MotionScheduler,
+} from "../motion.ts";
+import type { TuiAnimationSpeed } from "../appearance.ts";
 import { RenderedLinesCache } from "../render-cache.ts";
 import { icon, type TuiIconName } from "./glyphs.ts";
 
@@ -13,6 +20,7 @@ export interface ProgressFrameOptions {
 	/** A finite value from zero to one. Omit for an indeterminate moving segment. */
 	value?: number;
 	elapsedMs?: number;
+	animationSpeed?: TuiAnimationSpeed;
 	reducedMotion?: boolean;
 	filled?: string;
 	empty?: string;
@@ -35,7 +43,8 @@ export function progressFrame(colors: TuiTheme, options: ProgressFrameOptions): 
 	if (options.reducedMotion) return colors.fg(trackTone, empty.repeat(width));
 	const segmentWidth = Math.max(1, Math.min(width, Math.ceil(width / 4)));
 	const travel = width + segmentWidth;
-	const offset = Math.floor(Math.max(0, options.elapsedMs ?? 0) / 70) % travel;
+	const elapsedMs = Math.max(0, options.elapsedMs ?? 0) * animationSpeedMultiplier(options.animationSpeed);
+	const offset = Math.floor(elapsedMs / 70) % travel;
 	const start = Math.max(0, offset - segmentWidth);
 	const end = Math.min(width, offset);
 	return `${colors.fg(trackTone, empty.repeat(start))}${colors.fg(tone, filled.repeat(Math.max(0, end - start)))}${colors.fg(trackTone, empty.repeat(width - end))}`;
@@ -47,7 +56,6 @@ export interface ActivityIndicatorOptions {
 	label: string;
 	detail?: string;
 	requestRender(): void;
-	cadenceMs?: number;
 	reducedMotion?: boolean;
 	spinnerFrames?: readonly string[];
 	scheduler?: MotionScheduler;
@@ -68,7 +76,6 @@ export class ActivityIndicator implements Component {
 		this.startedAtMs = options.now?.() ?? performance.now();
 		this.nowMs = this.startedAtMs;
 		this.mount = mountConfiguredAnimation(options, {
-			cadenceMs: options.cadenceMs,
 			reducedMotion: options.reducedMotion,
 			maxDurationMs: options.maxDurationMs,
 			scheduler: options.scheduler,
@@ -82,7 +89,6 @@ export class ActivityIndicator implements Component {
 		const elapsedMs = Math.max(0, this.nowMs - this.startedAtMs);
 		const frame = activityFrame(tuiTheme(this.options.theme), rowText(this.options.label), elapsedMs, {
 			frames: this.options.spinnerFrames,
-			cadenceMs: this.options.cadenceMs,
 			reducedMotion: this.options.reducedMotion,
 		});
 		const marker = frame.marker ? `${frame.marker} ` : "";
