@@ -78,6 +78,63 @@ fn pty_process_accepts_input(mut server: Server) {
 }
 
 #[rstest::rstest]
+fn pty_process_resizes_before_forwarding_input(mut server: Server) {
+    let process_id = "resizable";
+    server
+        .exec(&params(
+            process_id,
+            &["sh", "-c", "printf ready; read value; stty size"],
+            true,
+            true,
+        ))
+        .unwrap();
+    assert_eq!(server.resize(process_id, 40, 120).unwrap()["resized"], true);
+    server.write(process_id, b"\n").unwrap();
+
+    let (output, exit_code) = collect_until_exit(&server, process_id);
+
+    assert_eq!(exit_code, 0);
+    assert!(String::from_utf8_lossy(&output).contains("40 120"));
+}
+
+#[rstest::rstest]
+fn running_process_group_accepts_interrupt(mut server: Server) {
+    let process_id = "interruptible";
+    server
+        .exec(&params(
+            process_id,
+            &[
+                "sh",
+                "-c",
+                "trap 'exit 23' INT; printf ready; while :; do sleep 1; done",
+            ],
+            false,
+            false,
+        ))
+        .unwrap();
+    let mut trapped = false;
+    for _ in 0..20 {
+        let response = server.read(process_id, Some(0), None, Some(50)).unwrap();
+        let ready = response["chunks"].as_array().unwrap().iter().any(|chunk| {
+            BASE64_STANDARD
+                .decode(chunk["chunk"].as_str().unwrap())
+                .unwrap()
+                .windows(5)
+                .any(|window| window == b"ready")
+        });
+        if ready {
+            trapped = true;
+            break;
+        }
+    }
+    assert!(trapped, "process did not install its interrupt trap");
+
+    assert_eq!(server.interrupt(process_id).unwrap()["running"], true);
+    let (_, exit_code) = collect_until_exit(&server, process_id);
+    assert_eq!(exit_code, 23);
+}
+
+#[rstest::rstest]
 fn completed_processes_are_reaped_after_final_output_is_read(mut server: Server) {
     let process_id = "command";
     server

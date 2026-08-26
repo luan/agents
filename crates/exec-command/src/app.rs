@@ -1,5 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, Read, Write};
+use std::os::fd::AsFd;
 use std::path::PathBuf;
 use std::process::{Child, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
@@ -41,9 +42,19 @@ enum Request {
         process_id: String,
         chunk: Vec<u8>,
     },
+    Interrupt {
+        request_id: u64,
+        process_id: String,
+    },
     Terminate {
         request_id: u64,
         process_id: String,
+    },
+    Resize {
+        request_id: u64,
+        process_id: String,
+        rows: u16,
+        cols: u16,
     },
     Reap {
         request_id: u64,
@@ -60,7 +71,9 @@ impl Request {
             Self::Exec { request_id, .. }
             | Self::Read { request_id, .. }
             | Self::Write { request_id, .. }
+            | Self::Interrupt { request_id, .. }
             | Self::Terminate { request_id, .. }
+            | Self::Resize { request_id, .. }
             | Self::Reap { request_id, .. }
             | Self::Shutdown { request_id } => *request_id,
         }
@@ -108,7 +121,8 @@ struct ProcessEntry {
     state: Arc<(Mutex<ProcessState>, Condvar)>,
     writer: Mutex<Option<Box<dyn Write + Send>>>,
     killer: Mutex<ProcessKiller>,
-    _control_pty: Option<pty_process::blocking::Pty>,
+    tty: bool,
+    control_pty: pty_process::blocking::Pty,
 }
 
 #[derive(Default)]
@@ -236,6 +250,34 @@ impl Server {
         Ok(json!({ "running": running }))
     }
 
+    pub fn interrupt(&self, process_id: &str) -> Result<serde_json::Value> {
+        let Some(entry) = self.processes.get(process_id) else {
+            return Ok(json!({ "running": false }));
+        };
+        let running = entry
+            .state
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .exit_code
+            .is_none();
+        if running {
+            signal_process_group(entry, rustix::process::Signal::INT)?;
+        }
+        Ok(json!({ "running": running }))
+    }
+
+    pub fn resize(&self, process_id: &str, rows: u16, cols: u16) -> Result<serde_json::Value> {
+        let Some(entry) = self.processes.get(process_id) else {
+            return Ok(json!({ "resized": false }));
+        };
+        if !entry.tty {
+            return Ok(json!({ "resized": false }));
+        }
+        entry.control_pty.resize(PtySize::new(rows, cols))?;
+        Ok(json!({ "resized": true }))
+    }
+
     pub fn reap(&mut self, process_id: &str) -> Result<serde_json::Value> {
         let Some(entry) = self.processes.get(process_id) else {
             return Ok(json!({ "removed": false }));
@@ -329,7 +371,8 @@ fn spawn_pipe(params: &ExecParams) -> Result<Arc<ProcessEntry>> {
             child,
             process_group,
         }),
-        _control_pty: Some(control_pty),
+        tty: false,
+        control_pty,
     }))
 }
 
@@ -350,9 +393,9 @@ fn spawn_pty(params: &ExecParams) -> Result<Arc<ProcessEntry>> {
             .id() as i32,
     )
     .context("spawned command has an invalid process id")?;
-    let pty_file = std::fs::File::from(std::os::fd::OwnedFd::from(pty));
-    let reader = pty_file.try_clone()?;
-    let writer = Box::new(pty_file) as Box<dyn Write + Send>;
+    let reader = std::fs::File::from(pty.as_fd().try_clone_to_owned()?);
+    let writer =
+        Box::new(std::fs::File::from(pty.as_fd().try_clone_to_owned()?)) as Box<dyn Write + Send>;
     let state = fresh_state(1);
     spawn_reader(reader, OutputStream::Pty, Arc::clone(&state));
     spawn_pipe_waiter(Arc::clone(&child), Arc::clone(&state));
@@ -363,7 +406,8 @@ fn spawn_pty(params: &ExecParams) -> Result<Arc<ProcessEntry>> {
             child,
             process_group,
         }),
-        _control_pty: None,
+        tty: true,
+        control_pty: pty,
     }))
 }
 
@@ -464,6 +508,15 @@ fn kill_process(entry: &ProcessEntry) -> Result<()> {
     Ok(())
 }
 
+fn signal_process_group(entry: &ProcessEntry, signal: rustix::process::Signal) -> Result<()> {
+    let killer = entry
+        .killer
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    rustix::process::kill_process_group(killer.process_group, signal)?;
+    Ok(())
+}
+
 fn respond(request_id: u64, result: Result<serde_json::Value>) {
     let response = match result {
         Ok(result) => Response {
@@ -536,7 +589,14 @@ pub fn run_main() -> Result<()> {
                 });
                 continue;
             }
+            Request::Interrupt { process_id, .. } => server.interrupt(&process_id),
             Request::Terminate { process_id, .. } => server.terminate(&process_id),
+            Request::Resize {
+                process_id,
+                rows,
+                cols,
+                ..
+            } => server.resize(&process_id, rows, cols),
             Request::Reap { process_id, .. } => server.reap(&process_id),
             Request::Shutdown { .. } => {
                 server.shutdown();

@@ -40,6 +40,25 @@ export interface WriteStdinInput {
 	max_output_tokens?: number;
 }
 
+export interface ExecProcessSnapshot {
+	readonly id: number;
+	readonly command: string;
+	readonly cwd: string;
+	readonly tty: boolean;
+	readonly stdinOpen: boolean;
+	readonly state: "running" | "exited";
+	readonly exitCode?: number;
+	readonly startedAtMs: number;
+	readonly finishedAtMs?: number;
+	readonly output: string;
+	readonly outputTruncated: boolean;
+}
+
+export interface PtyDataEvent {
+	readonly processId: number;
+	readonly data: string;
+}
+
 export interface ExecSessionManager {
 	exec(
 		input: ExecCommandInput,
@@ -54,6 +73,13 @@ export interface ExecSessionManager {
 	): Promise<UnifiedExecResult>;
 	getSessionCommand(sessionId: number): string | undefined;
 	getSessionTty?(sessionId: number): boolean | undefined;
+	listProcesses?(): readonly ExecProcessSnapshot[];
+	subscribeProcesses?(listener: (snapshots: readonly ExecProcessSnapshot[]) => void): () => void;
+	onPtyData?(listener: (event: PtyDataEvent) => void): () => void;
+	interrupt?(sessionId: number): Promise<boolean>;
+	terminate?(sessionId: number): Promise<boolean>;
+	resize?(sessionId: number, cols: number, rows: number): Promise<boolean>;
+	sendInput?(sessionId: number, chars: string): Promise<boolean>;
 	shutdown(): Promise<void>;
 }
 
@@ -61,7 +87,10 @@ interface Session {
 	id: number;
 	processId: string;
 	command: string;
+	cwd: string;
 	tty: boolean;
+	startedAtMs: number;
+	finishedAtMs?: number;
 	/** Random-access transport window for write_stdin baselines and replay; UI retention belongs to pi-libtui. */
 	bufferChunks: string[];
 	bufferFirstChunk: number;
@@ -84,6 +113,7 @@ interface CompletedSession {
 	command: string;
 	tty: boolean;
 	result: UnifiedExecResult;
+	snapshot: ExecProcessSnapshot;
 }
 
 export interface ExecSessionManagerOptions {
@@ -109,6 +139,9 @@ const MAX_EMPTY_WRITE_YIELD_MS = 300_000;
 const MAX_COMPLETED_SESSIONS = 32;
 const MAX_COMPLETED_OUTPUT_CHARS = 64 * 1024;
 const MAX_ACTIVE_SESSIONS = 64;
+const MAX_PROCESS_SNAPSHOT_OUTPUT_CHARS = 512 * 1024;
+const MAX_PROCESS_COLS = 500;
+const MAX_PROCESS_ROWS = 200;
 
 function clamp(value: number | undefined, fallback: number, maximum: number): number {
 	const minimum = Math.min(MIN_YIELD_MS, maximum);
@@ -204,8 +237,56 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 	const sessions = new Map<number, Session>();
 	const commands = new Map<number, string>();
 	const completed = new Map<number, CompletedSession>();
+	const processListeners = new Set<(snapshots: readonly ExecProcessSnapshot[]) => void>();
+	const ptyListeners = new Set<(event: PtyDataEvent) => void>();
 	let nextSessionId = 1;
 	let stopped = false;
+
+	function activeSnapshot(session: Session): ExecProcessSnapshot {
+		const output = outputTail(session, MAX_PROCESS_SNAPSHOT_OUTPUT_CHARS);
+		return Object.freeze({
+			id: session.id,
+			command: session.command,
+			cwd: session.cwd,
+			tty: session.tty,
+			stdinOpen: session.tty && session.exitCode === undefined,
+			state: session.exitCode === undefined ? "running" : "exited",
+			...(session.exitCode === undefined ? {} : { exitCode: session.exitCode }),
+			startedAtMs: session.startedAtMs,
+			...(session.finishedAtMs === undefined ? {} : { finishedAtMs: session.finishedAtMs }),
+			output,
+			outputTruncated: outputEnd(session) > output.length,
+		});
+	}
+
+	function listProcesses(): readonly ExecProcessSnapshot[] {
+		return Object.freeze(
+			[...[...completed.values()].map(({ snapshot }) => snapshot), ...[...sessions.values()].map(activeSnapshot)].sort(
+				(left, right) => left.id - right.id,
+			),
+		);
+	}
+
+	function emitProcesses(): void {
+		const snapshots = listProcesses();
+		for (const listener of [...processListeners]) {
+			try {
+				listener(snapshots);
+			} catch {
+				// Presentation observers cannot own process lifecycle.
+			}
+		}
+	}
+
+	function emitPtyData(event: PtyDataEvent): void {
+		for (const listener of [...ptyListeners]) {
+			try {
+				listener(event);
+			} catch {
+				// Presentation observers cannot own process lifecycle.
+			}
+		}
+	}
 
 	function rememberCommand(id: number, command: string): void {
 		commands.set(id, command);
@@ -217,15 +298,24 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 	function rememberCompleted(session: Session, elapsedMs: number): void {
 		const originalChars = outputEnd(session);
 		const output = outputTail(session, MAX_COMPLETED_OUTPUT_CHARS);
+		const result: UnifiedExecResult = {
+			chunk_id: chunkId(),
+			wall_time_seconds: elapsedMs / 1000,
+			...truncateOutput(output, MAX_COMPLETED_OUTPUT_CHARS / 4, originalChars),
+			exit_code: session.exitCode ?? 1,
+		};
 		completed.set(session.id, {
 			command: session.command,
 			tty: session.tty,
-			result: {
-				chunk_id: chunkId(),
-				wall_time_seconds: elapsedMs / 1000,
-				...truncateOutput(output, MAX_COMPLETED_OUTPUT_CHARS / 4, originalChars),
-				exit_code: session.exitCode ?? 1,
-			},
+			result,
+			snapshot: Object.freeze({
+				...activeSnapshot(session),
+				state: "exited",
+				stdinOpen: false,
+				exitCode: result.exit_code ?? 1,
+				output: result.output,
+				outputTruncated: result.output_truncated,
+			}),
 		});
 		if (completed.size <= MAX_COMPLETED_SESSIONS) return;
 		const oldest = completed.keys().next().value;
@@ -258,8 +348,10 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			} catch (error) {
 				appendBounded(session, `${error instanceof Error ? error.message : String(error)}\n`, maxSessionBufferChars);
 				session.exitCode = 1;
+				session.finishedAtMs ??= Date.now();
 				session.closed = true;
 				wake(session);
+				emitProcesses();
 				return;
 			}
 			for (const chunk of response.chunks) {
@@ -269,10 +361,14 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 					session.tty ? text : session.normalizers[chunk.stream].write(text),
 					maxSessionBufferChars,
 				);
+				if (session.tty && text) emitPtyData(Object.freeze({ processId: session.id, data: text }));
 				session.lastSeq = Math.max(session.lastSeq, chunk.seq);
 			}
 			session.lastSeq = Math.max(session.lastSeq, response.nextSeq - 1);
-			if (response.exited) session.observedExitCode = response.exitCode ?? 1;
+			if (response.exited) {
+				session.observedExitCode = response.exitCode ?? 1;
+				session.finishedAtMs ??= Date.now();
+			}
 			if (response.closed) {
 				session.closed = true;
 				session.exitCode = response.exitCode ?? session.observedExitCode ?? 1;
@@ -281,6 +377,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 					for (const stream of ["stdout", "stderr", "pty"] as const) {
 						const text = session.decoders[stream].end();
 						appendBounded(session, session.tty ? text : session.normalizers[stream].end(text), maxSessionBufferChars);
+						if (session.tty && text) emitPtyData(Object.freeze({ processId: session.id, data: text }));
 					}
 				}
 				try {
@@ -298,7 +395,10 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 					session.exitCode = 1;
 				}
 			}
-			if (response.chunks.length > 0 || response.exited || response.closed) wake(session);
+			if (response.chunks.length > 0 || response.exited || response.closed) {
+				wake(session);
+				emitProcesses();
+			}
 		}
 	}
 
@@ -354,11 +454,14 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			}
 			const id = nextSessionId++;
 			const shell = resolveRuntimeShell(input.shell ?? env["SHELL"]);
+			const workingDirectory = resolve(cwd, input.workdir ?? ".");
 			const session: Session = {
 				id,
 				processId: `pi-${process.pid}-${id}`,
 				command: input.cmd,
+				cwd: workingDirectory,
 				tty: input.tty ?? false,
+				startedAtMs: Date.now(),
 				bufferChunks: [],
 				bufferFirstChunk: 0,
 				bufferLength: 0,
@@ -387,7 +490,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 					op: "exec",
 					process_id: session.processId,
 					argv: [shell, ...shellArgs(input.cmd, input.login ?? defaultLoginShell, shell)],
-					cwd: resolve(cwd, input.workdir ?? "."),
+					cwd: workingDirectory,
 					env,
 					tty: session.tty,
 					pipe_stdin: session.tty,
@@ -400,8 +503,10 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 				}
 			} catch (error) {
 				sessions.delete(session.id);
+				emitProcesses();
 				throw error;
 			}
+			emitProcesses();
 			void pollLoop(session);
 			try {
 				const idleMs = clamp(input.yield_time_ms, defaultExecYieldTimeMs, maxExecYieldTimeMs);
@@ -419,12 +524,14 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 				if (session.exitCode !== undefined) {
 					rememberCompleted(session, elapsed);
 					sessions.delete(session.id);
+					emitProcesses();
 				}
 				return result;
 			} catch (error) {
 				if (signal?.aborted) {
 					await bridge.request({ op: "terminate", process_id: session.processId }).catch(() => undefined);
 					sessions.delete(session.id);
+					emitProcesses();
 				}
 				throw error;
 			}
@@ -490,6 +597,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			if (session.exitCode !== undefined) {
 				rememberCompleted(session, elapsed);
 				sessions.delete(session.id);
+				emitProcesses();
 			}
 			return result;
 		},
@@ -498,6 +606,62 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		},
 		getSessionTty(sessionId) {
 			return sessions.get(sessionId)?.tty ?? completed.get(sessionId)?.tty;
+		},
+		listProcesses,
+		subscribeProcesses(listener) {
+			processListeners.add(listener);
+			try {
+				listener(listProcesses());
+			} catch {
+				// Presentation observers cannot own process lifecycle.
+			}
+			return () => processListeners.delete(listener);
+		},
+		onPtyData(listener) {
+			ptyListeners.add(listener);
+			return () => ptyListeners.delete(listener);
+		},
+		async interrupt(sessionId) {
+			const session = sessions.get(sessionId);
+			if (!session || session.exitCode !== undefined) return false;
+			const response = await bridge.request<{ running: boolean }>({
+				op: "interrupt",
+				process_id: session.processId,
+			});
+			return response.running;
+		},
+		async terminate(sessionId) {
+			const session = sessions.get(sessionId);
+			if (!session || session.exitCode !== undefined) return false;
+			const response = await bridge.request<{ running: boolean }>({
+				op: "terminate",
+				process_id: session.processId,
+			});
+			return response.running;
+		},
+		async resize(sessionId, cols, rows) {
+			const session = sessions.get(sessionId);
+			if (!session?.tty || session.exitCode !== undefined) return false;
+			const response = await bridge.request<{ resized: boolean }>({
+				op: "resize",
+				process_id: session.processId,
+				cols: Math.min(MAX_PROCESS_COLS, Math.max(1, Math.floor(cols))),
+				rows: Math.min(MAX_PROCESS_ROWS, Math.max(1, Math.floor(rows))),
+			});
+			return response.resized;
+		},
+		async sendInput(sessionId, chars) {
+			const session = sessions.get(sessionId);
+			if (!session || session.exitCode !== undefined) return false;
+			if (!session.tty) throw new Error("stdin is closed for this session; rerun exec_command with tty=true");
+			const response = await bridge.request<{ status: string }>({
+				op: "write",
+				process_id: session.processId,
+				chunk: Array.from(Buffer.from(chars, "utf8")),
+			});
+			if (response.status === "accepted") return true;
+			if (response.status === "unknown_process" || response.status === "stdin_closed") return false;
+			throw new Error(`stdin write was ${response.status}`);
 		},
 		async shutdown() {
 			if (stopped) return;
@@ -509,6 +673,9 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 				sessions.clear();
 				commands.clear();
 				completed.clear();
+				emitProcesses();
+				processListeners.clear();
+				ptyListeners.clear();
 			}
 		},
 	};

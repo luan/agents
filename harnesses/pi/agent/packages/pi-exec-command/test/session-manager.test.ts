@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { ExecBridgeClient } from "../src/bridge-client.ts";
-import { createExecSessionManager } from "../src/session-manager.ts";
+import { createExecSessionManager, type ExecProcessSnapshot } from "../src/session-manager.ts";
 
 test("session output preserves UTF-8 characters split across bridge chunks", async () => {
 	let reads = 0;
@@ -315,5 +315,85 @@ test("write aborts without waiting for a blocked native stdin request", async ()
 	controller.abort();
 	await expect(writing).rejects.toThrow("write_stdin aborted");
 	writeGate.resolve({ status: "accepted" });
+	await manager.shutdown();
+});
+
+test("publishes bounded process snapshots and raw PTY data", async () => {
+	const bridge: ExecBridgeClient = {
+		async request<T>(request: Record<string, unknown>): Promise<T> {
+			if (request["op"] === "exec") return { processId: request["process_id"] } as T;
+			if (request["op"] === "reap") return { removed: true } as T;
+			return {
+				chunks: [{ seq: 1, stream: "pty", chunk: Buffer.from("hello").toString("base64") }],
+				nextSeq: 2,
+				exited: true,
+				exitCode: 0,
+				closed: true,
+			} as T;
+		},
+		async shutdown() {},
+	};
+	const manager = createExecSessionManager({ bridge });
+	const revisions: ReadonlyArray<ExecProcessSnapshot>[] = [];
+	const ptyData: string[] = [];
+	const unsubscribeProcesses = manager.subscribeProcesses?.((snapshots) => revisions.push(snapshots));
+	const unsubscribePty = manager.onPtyData?.((event) => ptyData.push(event.data));
+
+	await manager.exec({ cmd: "hello", shell: "/bin/sh", login: false, tty: true }, "/tmp");
+
+	expect(ptyData).toEqual(["hello"]);
+	expect(revisions.at(-1)).toEqual([
+		expect.objectContaining({
+			id: 1,
+			command: "hello",
+			cwd: "/tmp",
+			tty: true,
+			stdinOpen: false,
+			state: "exited",
+			exitCode: 0,
+			output: "hello",
+		}),
+	]);
+	unsubscribePty?.();
+	unsubscribeProcesses?.();
+	await manager.shutdown();
+});
+
+test("routes process controls through the native process identity", async () => {
+	const requests: Record<string, unknown>[] = [];
+	const bridge: ExecBridgeClient = {
+		async request<T>(request: Record<string, unknown>): Promise<T> {
+			requests.push(request);
+			if (request["op"] === "exec") return { processId: request["process_id"] } as T;
+			if (request["op"] === "read") {
+				await Bun.sleep(5);
+				return { chunks: [], nextSeq: 1, exited: false, closed: false } as T;
+			}
+			if (request["op"] === "write") return { status: "accepted" } as T;
+			if (request["op"] === "resize") return { resized: true } as T;
+			return { running: true } as T;
+		},
+		async shutdown() {},
+	};
+	const manager = createExecSessionManager({ bridge, maxExecYieldTimeMs: 1 });
+	const result = await manager.exec(
+		{ cmd: "interactive", shell: "/bin/sh", login: false, tty: true, yield_time_ms: 1 },
+		"/tmp",
+	);
+	expect(result.session_id).toBe(1);
+
+	expect(await manager.interrupt?.(1)).toBe(true);
+	expect(await manager.resize?.(1, 800, 400)).toBe(true);
+	expect(await manager.sendInput?.(1, "x")).toBe(true);
+	expect(await manager.terminate?.(1)).toBe(true);
+	const nativeId = requests.find(({ op }) => op === "exec")?.["process_id"];
+	expect(requests.filter(({ op }) => op !== "read").map(({ op, process_id }) => [op, process_id])).toEqual([
+		["exec", nativeId],
+		["interrupt", nativeId],
+		["resize", nativeId],
+		["write", nativeId],
+		["terminate", nativeId],
+	]);
+	expect(requests.find(({ op }) => op === "resize")).toEqual(expect.objectContaining({ cols: 500, rows: 200 }));
 	await manager.shutdown();
 });
