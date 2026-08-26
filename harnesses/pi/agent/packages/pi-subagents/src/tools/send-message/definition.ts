@@ -25,9 +25,10 @@ export function createSendMessageTool(
 	return {
 		name: AGENT_TOOLS.sendMessage,
 		label: "Send Agent Message",
-		description: "Send a message to an existing agent without triggering a new turn.",
+		description: "Send an explicit interim coordination message to an existing agent without triggering a new turn.",
 		promptGuidelines: [
 			"Use send_message for coordination or evidence that should reach an existing agent without assigning a new task.",
+			"Do not use send_message to duplicate a final response; successful agent completion is delivered automatically.",
 		],
 		parameters: PARAMETERS,
 		executionMode: "parallel",

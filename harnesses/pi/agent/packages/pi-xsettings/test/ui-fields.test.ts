@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { KeybindingsManager, setKeybindings, stripTerminalSequences, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
+import { Type } from "typebox";
+import type { SettingDefinition, SettingRegistration, SettingValue } from "../src/protocol/settings.ts";
 import { storedEnumValue, toUiField } from "../src/ui/fields.ts";
 import { formatSettingValue } from "../src/ui/settings-editor.ts";
 import { type SettingsScreenField, XSettingsScreen } from "../src/ui/xsettings-screen.ts";
-import type { SettingDefinition, SettingRegistration, SettingValue } from "../src/protocol/settings.ts";
-import { Type } from "typebox";
 
 describe("settings screen fields", () => {
 	const theme = {

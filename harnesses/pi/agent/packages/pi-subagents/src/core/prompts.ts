@@ -24,7 +24,10 @@ There are ${context.maxConcurrency} concurrent agent slots including the root.
 Subagent nesting is limited to depth ${context.maxDepth}.
 - Complete only the assigned task.
 - Use the installed tools and skills available in this child session.
-- Send useful results to the parent.
+- Your final response is delivered automatically to your direct parent as a hidden FINAL_ANSWER mailbox message. Do not send_message the same final response.
+- Use send_message only for an interim MESSAGE that the parent needs before you finish.
+- wait_agent is status-only. Child final responses arrive independently through the mailbox.
+- Relative collaboration targets name your direct children. Canonical /root/... paths address agents elsewhere in the tree.
 - Spawn another agent only for a concrete, bounded subtask that can run independently alongside useful local work.
 </sub_agent_context>`;
 	return `${inherited}\n\n${childContext}`;

@@ -35,6 +35,8 @@ function fakeSession(prompts: string[], turns: Array<ReturnType<typeof deferred<
 			getBranch: () => [],
 		},
 		subscribe: () => () => {},
+		getToolDefinition: () => undefined,
+		extensionRunner: { getMessageRenderer: () => undefined },
 		getSessionStats: () => ({ tokens: { total: 0 }, contextUsage: undefined }),
 		prompt: (message: string) => {
 			prompts.push(message);
@@ -122,14 +124,60 @@ test("uses the root session directory and rejects ambiguous task names", () => {
 	expect(() => coordinator.spawn(undefined, request("bad--name"))).toThrow("single hyphens");
 });
 
-test("returns immutable snapshots and queues root mailbox messages", async () => {
+test("returns immutable snapshots and queues explicit mailbox messages exactly once", async () => {
 	const coordinator = new SubagentCoordinator("root", { maxConcurrency: 1 });
 	coordinator.spawn(undefined, request("worker"));
 	const snapshot = coordinator.snapshot();
 	expect(Object.isFrozen(snapshot)).toBe(true);
 	expect(Object.isFrozen(snapshot[0])).toBe(true);
 	await coordinator.sendMessage("/root/worker", "/root", "done");
-	expect(coordinator.drainRootMessages()).toEqual([{ sender: "/root/worker", message: "done" }]);
+	expect(coordinator.drainMailbox("/root")).toEqual([
+		{ id: 1, type: "MESSAGE", target: "/root", sender: "/root/worker", payload: "done" },
+	]);
+	expect(coordinator.drainMailbox("/root")).toEqual([]);
+});
+
+test("delivers successful nested finals to the direct parent without forging failures", async () => {
+	const session = fakeSession([], []);
+	const runtime = { session, dispose: async () => {} } as never;
+	const run: CoordinatorOptions["run"] = ((_ctx: object, message: string, options: object) => {
+		const callbacks = options as {
+			onRuntimeCreated(runtime: never): void;
+			onSessionCreated(session: never): void;
+		};
+		callbacks.onRuntimeCreated(runtime);
+		callbacks.onSessionCreated(session);
+		return Promise.resolve({
+			responseText: `final:${message}`,
+			error: message.includes("fail") ? "failed" : undefined,
+			session,
+			runtime,
+		});
+	}) as never;
+	const coordinator = createRootCoordinator("nested-mailbox", { maxConcurrency: 3, run });
+	coordinator.spawn(undefined, request("parent"));
+	await flushPromises();
+	expect(coordinator.drainMailbox("/root")[0]).toMatchObject({
+		type: "FINAL_ANSWER",
+		target: "/root",
+		sender: "/root/parent",
+		payload: "final:do parent",
+	});
+
+	coordinator.spawn("/root/parent", request("child"));
+	await flushPromises();
+	expect(coordinator.drainMailbox("/root/parent")[0]).toMatchObject({
+		type: "FINAL_ANSWER",
+		target: "/root/parent",
+		sender: "/root/parent/child",
+		payload: "final:do child",
+	});
+
+	coordinator.spawn("/root/parent", { ...request("failure"), message: "fail" });
+	await flushPromises();
+	expect(coordinator.drainMailbox("/root/parent")).toEqual([]);
+	coordinator.dispose();
+	removeRootCoordinator("nested-mailbox");
 });
 
 test("reserves one concurrency slot for the root", () => {

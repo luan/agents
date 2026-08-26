@@ -9,7 +9,7 @@
     ".": "./src/index.ts"
   },
   "pi": {
-    "extensions": ["./src/extension.ts"]
+    "extensions": ["./src/extension.ts", "./node_modules/pi-libtui/src/extension.ts"]
   },
   "dependencies": {
     "pi-libactions": "workspace:*",

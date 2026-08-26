@@ -54,11 +54,12 @@ export function createSpawnAgentTool(
 		label: "Spawn Agent",
 		description:
 			`${roles ? `Available model roles: ${roles}.\n` : ""}` +
-			"Spawn an agent for one concrete, bounded task that can run independently. The returned canonical task path remains addressable for messages and follow-up turns.",
+			"Spawn an agent for one concrete, bounded task that can run independently. The returned canonical task path remains addressable for messages and follow-up turns. Successful completion is delivered automatically to the direct parent as a hidden FINAL_ANSWER mailbox message.",
 		promptSnippet: "Spawn a concurrent child agent for independent work",
 		promptGuidelines: [
 			"Use spawn_agent only when the delegated task is concrete, bounded, and can run independently alongside useful local work.",
 			"Define file or responsibility ownership in spawn_agent messages when multiple agents may edit the same codebase.",
+			"Do not ask the child to send its final response; successful completion is delivered automatically to its direct parent.",
 		],
 		parameters: PARAMETERS,
 		executionMode: "parallel",

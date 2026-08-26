@@ -11,6 +11,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { type ForkTurns, selectForkedHistory } from "../core/fork-history.ts";
 import type { AgentConfig, AgentModelRole } from "../core/types.ts";
+import { registerPresentationResolver } from "../protocol/presentation.ts";
 import { registerSessionHierarchyProvider, type SessionHierarchyEntry } from "../protocol/session-hierarchy.ts";
 import { type RunResult, resumeAgent, runAgent, type ToolActivity } from "./agent-runner.ts";
 
@@ -51,8 +52,18 @@ export type CoordinatorUpdate =
 			type: "spawned" | "started" | "updated" | "checkpoint" | "settled" | "interrupted";
 			agent: SubagentSnapshot;
 	  }
-	| { type: "message"; target: string; sender: string }
+	| { type: "mailbox"; delivery: CollaborationDelivery }
 	| { type: "transcript"; target: string };
+
+export type CollaborationMessageType = "MESSAGE" | "FINAL_ANSWER";
+
+export interface CollaborationDelivery {
+	readonly id: number;
+	readonly type: CollaborationMessageType;
+	readonly target: string;
+	readonly sender: string;
+	readonly payload: string;
+}
 
 export interface TranscriptSource {
 	getMessages(): readonly AgentMessage[];
@@ -125,6 +136,7 @@ interface LiveAgent extends Omit<Mutable<PersistedSubagentState>, "forkNonBounda
 	turnRuntimes: Map<number, RunResult["runtime"]>;
 	restoredMessages?: readonly AgentMessage[];
 	sessionUnsubscribe?: () => void;
+	presentationUnregister?: () => void;
 	forkNonBoundaryTimestamps: Set<number>;
 	pendingNonBoundaryMessages: string[];
 }
@@ -379,8 +391,9 @@ export class SubagentCoordinator {
 	private readonly agents = new Map<string, LiveAgent>();
 	private readonly childSessions = new Map<string, string>();
 	private readonly listeners = new Set<(event: CoordinatorUpdate) => void>();
-	private readonly rootMessages: Array<{ sender: string; message: string }> = [];
+	private readonly mailboxes = new Map<string, CollaborationDelivery[]>();
 	private readonly queue: LiveAgent[] = [];
+	private nextDeliveryId = 1;
 	private running = 0;
 	private readonly maxConcurrency: number;
 	private readonly maxDepth: number;
@@ -451,21 +464,8 @@ export class SubagentCoordinator {
 	}
 
 	async sendMessage(callerPath: string | undefined, target: string, message: string): Promise<boolean> {
-		if (target === "/root") {
-			const sender = callerPath ?? "/root";
-			this.rootMessages.push({ sender, message });
-			this.emit({ type: "message", target, sender });
-			return true;
-		}
-		const agent = this.requireTarget(callerPath, target);
-		if (agent.status !== "running" || !agent.session) {
-			if (agent.status === "running") agent.pendingRuntimeMessages.push({ message, triggerTurn: false });
-			else agent.pendingMessages.push(message);
-		} else {
-			agent.pendingNonBoundaryMessages.push(compactText(message));
-			await agent.session.steer(message);
-		}
-		this.emit({ type: "message", target: agent.id, sender: callerPath ?? "/root" });
+		const recipient = target === "/root" ? "/root" : this.requireTarget(callerPath, target).id;
+		this.enqueueDelivery("MESSAGE", recipient, callerPath ?? "/root", message);
 		return true;
 	}
 
@@ -600,7 +600,7 @@ export class SubagentCoordinator {
 				resolve(event);
 			};
 			const unsubscribe = this.subscribe((event) => {
-				if (event.type === "message" || event.type === "settled" || event.type === "interrupted") finish(event);
+				if (event.type === "mailbox" || event.type === "settled" || event.type === "interrupted") finish(event);
 			});
 			const abort = () => finish();
 			signal?.addEventListener("abort", abort, { once: true });
@@ -627,8 +627,11 @@ export class SubagentCoordinator {
 	pathForSession(sessionId: string): string | undefined {
 		return this.childSessions.get(sessionId);
 	}
-	drainRootMessages(): readonly { readonly sender: string; readonly message: string }[] {
-		return Object.freeze(this.rootMessages.splice(0).map((message) => Object.freeze({ ...message })));
+	drainMailbox(target: string): readonly CollaborationDelivery[] {
+		const mailbox = this.mailboxes.get(target);
+		if (!mailbox || mailbox.length === 0) return Object.freeze([]);
+		this.mailboxes.delete(target);
+		return Object.freeze(mailbox.splice(0));
 	}
 	resolve(callerPath: string | undefined, target: string): string | undefined {
 		if (target === "/root") return "/root";
@@ -643,6 +646,7 @@ export class SubagentCoordinator {
 		for (const agent of this.agents.values()) {
 			agent.abortController.abort();
 			agent.sessionUnsubscribe?.();
+			agent.presentationUnregister?.();
 			this.disposeRuntime(agent.runtime);
 			for (const runtime of agent.turnRuntimes.values()) this.disposeRuntime(runtime);
 		}
@@ -650,7 +654,7 @@ export class SubagentCoordinator {
 		this.queue.length = 0;
 		this.listeners.clear();
 		this.childSessions.clear();
-		this.rootMessages.length = 0;
+		this.mailboxes.clear();
 	}
 
 	private requireTarget(callerPath: string | undefined, target: string): LiveAgent {
@@ -661,6 +665,13 @@ export class SubagentCoordinator {
 	}
 	private emit(event: CoordinatorUpdate): void {
 		for (const listener of [...this.listeners]) listener(event);
+	}
+	private enqueueDelivery(type: CollaborationMessageType, target: string, sender: string, payload: string): void {
+		const delivery = Object.freeze({ id: this.nextDeliveryId++, type, target, sender, payload });
+		const mailbox = this.mailboxes.get(target) ?? [];
+		mailbox.push(delivery);
+		this.mailboxes.set(target, mailbox);
+		this.emit({ type: "mailbox", delivery });
 	}
 	private recordUserMessage(agent: LiveAgent, message: AgentMessage): void {
 		if (message.role !== "user") return;
@@ -727,6 +738,11 @@ export class SubagentCoordinator {
 	private attachSession(agent: LiveAgent, session: AgentSession, generation: number): void {
 		if (this.disposed || agent.turnGeneration !== generation) return;
 		agent.session = session;
+		agent.presentationUnregister?.();
+		agent.presentationUnregister = registerPresentationResolver(agent.id, {
+			resolveTool: (name) => session.getToolDefinition(name),
+			resolveCustomMessage: (customType) => session.extensionRunner.getMessageRenderer(customType),
+		});
 		agent.transcriptFile = session.sessionManager.getSessionFile?.();
 		agent.restoredMessages = undefined;
 		this.refreshSessionStats(agent, session);
@@ -816,6 +832,7 @@ export class SubagentCoordinator {
 		agent.error = result.error;
 		agent.status = result.error ? "failed" : "idle";
 		agent.completedAt = Date.now();
+		if (!result.error) this.enqueueDelivery("FINAL_ANSWER", agent.parentId ?? "/root", agent.id, result.responseText);
 		this.emit({ type: "settled", agent: snapshotOf(agent) });
 		this.drain();
 	}

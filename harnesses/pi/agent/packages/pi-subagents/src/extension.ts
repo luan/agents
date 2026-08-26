@@ -1,6 +1,8 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getModelRoleCatalog } from "pi-model-roles/sdk";
 import { getSubagentConfig, registerSubagentSettings } from "./config/settings.ts";
+import { registerSubagentActions } from "./contributions/actions.ts";
+import { getPresentationResolver } from "./protocol/presentation.ts";
 import { findRetryableError } from "./runtime/agent-runner.ts";
 import {
 	type CoordinatorUpdate,
@@ -19,12 +21,31 @@ import { createSendMessageTool } from "./tools/send-message/definition.ts";
 import type { CollaborationToolScope } from "./tools/scope.ts";
 import { createSpawnAgentTool } from "./tools/spawn-agent/definition.ts";
 import { createWaitAgentTool } from "./tools/wait-agent/definition.ts";
+import { AgentWidget } from "./ui/agent-widget.ts";
+import { CoordinatorSnapshotSource } from "./ui/coordinator-snapshot-source.ts";
+import { openAgentHub } from "./ui/agent-browser.ts";
+import {
+	createWaitToolPresentation,
+	followupToolPresentation,
+	interruptToolPresentation,
+	listAgentsPresentation,
+	sendMessageToolPresentation,
+	spawnToolPresentation,
+} from "./ui/tool-presentations.ts";
 
 const RETRY_MESSAGE_TYPE = "retry-failed-request";
 const SUBAGENT_MESSAGE_TYPE = "subagent-message";
 
 function rootAgentContext(maxConcurrency: number, maxDepth: number): string {
-	return `<root_agent_context>\nYou are /root, the primary agent in one root-scoped agent tree.\nThere are ${maxConcurrency} concurrent agent slots including you.\nSubagent nesting is limited to depth ${maxDepth}.\nUse collaboration tools only for concrete independent work.\n</root_agent_context>`;
+	return `<root_agent_context>
+You are \`/root\`, the primary agent in one root-scoped agent tree.
+There are ${maxConcurrency} concurrent agent slots including you.
+Subagent nesting is limited to depth ${maxDepth}.
+- Use collaboration tools only for concrete independent work.
+- Successful child final responses arrive automatically as hidden FINAL_ANSWER mailbox messages to their direct parents. Do not ask children to send their final response with send_message.
+- wait_agent is status-only and never carries a child's final response.
+- Explicit send_message remains a separate MESSAGE path for interim coordination.
+</root_agent_context>`;
 }
 
 export default function subagentsExtension(pi: ExtensionAPI): void {
@@ -34,8 +55,11 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	let callerPath: string | undefined;
 	let rootSessionId: string | undefined;
 	let ownsRoot = false;
-	let rootTurnActive = false;
-	let unsubscribeCoordinator: (() => void) | undefined;
+	let turnActive = false;
+	let source: CoordinatorSnapshotSource | undefined;
+	let widget: AgentWidget | undefined;
+	let unsubscribeRouting: (() => void) | undefined;
+	let unregisterAction: (() => void) | undefined;
 	const persistedStates = new Map<string, string>();
 
 	const requireCoordinator = (): SubagentCoordinator => {
@@ -58,17 +82,18 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 
 	registerTools(pi, scope);
 
-	const deliverRootMessages = (): void => {
-		if (!ownsRoot || !coordinator) return;
-		for (const message of coordinator.drainRootMessages()) {
+	const localPath = () => callerPath ?? "/root";
+	const deliverMailbox = (): void => {
+		if (!coordinator) return;
+		for (const delivery of coordinator.drainMailbox(localPath())) {
 			pi.sendMessage(
 				{
 					customType: SUBAGENT_MESSAGE_TYPE,
-					content: `Message Type: MESSAGE\nTask name: /root\nSender: ${message.sender}\nPayload:\n${message.message}`,
+					content: `Message Type: ${delivery.type}\nTask name: ${delivery.target}\nSender: ${delivery.sender}\nPayload:\n${delivery.payload}`,
 					display: false,
-					details: message,
+					details: delivery,
 				},
-				{ deliverAs: rootTurnActive ? "steer" : "nextTurn", triggerTurn: false },
+				{ deliverAs: turnActive ? "steer" : "nextTurn", triggerTurn: false },
 			);
 		}
 	};
@@ -94,16 +119,34 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		) {
 			persistAgentState(event.agent.id);
 		}
-		if (event.type === "message" && event.target === "/root") deliverRootMessages();
+		if (event.type === "mailbox" && event.delivery.target === localPath()) deliverMailbox();
 	};
-	const attachRootRuntime = (): void => {
+	const openHub = async (context: Pick<ExtensionContext, "hasUI" | "ui">): Promise<void> => {
+		if (!ownsRoot || !source) return;
+		await openAgentHub(context, source, getPresentationResolver);
+	};
+	const attachRootPresentation = (context: ExtensionContext): void => {
 		if (!coordinator) return;
 		ownsRoot = true;
-		unsubscribeCoordinator = coordinator.subscribe(routeCoordinatorUpdate);
+		source = new CoordinatorSnapshotSource(coordinator);
+		unregisterAction = registerSubagentActions({ open: openHub });
+		if (context.hasUI) {
+			widget = new AgentWidget(source);
+			widget.setUICtx(context.ui);
+		}
 	};
-	const detachRootRuntime = (): void => {
-		unsubscribeCoordinator?.();
-		unsubscribeCoordinator = undefined;
+	const attachRouting = (): void => {
+		unsubscribeRouting?.();
+		unsubscribeRouting = coordinator?.subscribe(routeCoordinatorUpdate);
+		deliverMailbox();
+	};
+	const detachRootPresentation = (): void => {
+		unregisterAction?.();
+		unregisterAction = undefined;
+		widget?.dispose();
+		widget = undefined;
+		source?.dispose();
+		source = undefined;
 	};
 	const registerRootSettings = (): void => {
 		if (unregisterSettings) return;
@@ -124,7 +167,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		if (checkpoint) coordinator.restore(checkpoint, { pi, ctx: context });
 		persistedStates.clear();
 		for (const agent of checkpoint?.agents ?? []) persistedStates.set(agent.id, JSON.stringify(agent));
-		attachRootRuntime();
+		attachRootPresentation(context);
 	};
 
 	pi.on("before_agent_start", (event) => {
@@ -140,24 +183,21 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			callerPath = existing.pathForSession(sessionId);
 			if (sessionId === existing.rootSessionId) {
 				registerRootSettings();
-				if (liveAgents().length === 0) {
-					removeRootCoordinator(existing.rootSessionId);
-					restoreRootCoordinator(context);
-				} else {
-					attachRootRuntime();
-				}
+				attachRootPresentation(context);
 			}
+			attachRouting();
 			return;
 		}
 		registerRootSettings();
 		restoreRootCoordinator(context);
+		attachRouting();
 	});
 	pi.on("agent_start", () => {
-		if (ownsRoot) rootTurnActive = true;
-		deliverRootMessages();
+		turnActive = true;
+		deliverMailbox();
 	});
 	pi.on("agent_end", () => {
-		if (ownsRoot) rootTurnActive = false;
+		turnActive = false;
 	});
 	pi.on("session_compact", () => persistAllAgentStates(true));
 	pi.on("session_before_tree", (_event, context) => {
@@ -167,24 +207,33 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	});
 	pi.on("session_tree", (_event, context) => {
 		if (!ownsRoot || !rootSessionId) return;
-		detachRootRuntime();
+		unsubscribeRouting?.();
+		unsubscribeRouting = undefined;
+		detachRootPresentation();
 		removeRootCoordinator(rootSessionId);
 		restoreRootCoordinator(context);
+		attachRouting();
 	});
 	pi.on("session_shutdown", (event) => {
 		persistAllAgentStates(true);
-		detachRootRuntime();
+		unsubscribeRouting?.();
+		unsubscribeRouting = undefined;
+		detachRootPresentation();
 		if (ownsRoot && rootSessionId && event.reason !== "reload") removeRootCoordinator(rootSessionId);
 		coordinator = undefined;
 		callerPath = undefined;
 		rootSessionId = undefined;
 		ownsRoot = false;
-		rootTurnActive = false;
+		turnActive = false;
 		persistedStates.clear();
 		unregisterSettings?.();
 		unregisterSettings = undefined;
 	});
 
+	pi.registerCommand("subagents", {
+		description: "Open the Agent Hub",
+		handler: async (_arguments, context) => openHub(context),
+	});
 	pi.registerCommand("retry", {
 		description: "Re-issue the failed request: /retry [main|<subagent id>]",
 		handler: async (argumentsText: string, context: ExtensionCommandContext) => {
@@ -226,10 +275,15 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 
 function registerTools(pi: ExtensionAPI, scope: CollaborationToolScope): void {
 	const breaker = createRepeatBreaker();
-	pi.registerTool(withRepeatBreaker(createSpawnAgentTool(scope), breaker));
-	pi.registerTool(withRepeatBreaker(createFollowupTaskTool(scope), breaker));
-	pi.registerTool(withRepeatBreaker(createSendMessageTool(scope), breaker));
-	pi.registerTool(withRepeatBreaker(createInterruptAgentTool(scope), breaker));
-	pi.registerTool(withRepeatBreaker(createListAgentsTool(scope), breaker));
-	pi.registerTool(withRepeatBreaker(createWaitAgentTool(scope), breaker));
+	pi.registerTool(withRepeatBreaker({ ...createSpawnAgentTool(scope), ...spawnToolPresentation }, breaker));
+	pi.registerTool(withRepeatBreaker({ ...createFollowupTaskTool(scope), ...followupToolPresentation }, breaker));
+	pi.registerTool(withRepeatBreaker({ ...createSendMessageTool(scope), ...sendMessageToolPresentation }, breaker));
+	pi.registerTool(withRepeatBreaker({ ...createInterruptAgentTool(scope), ...interruptToolPresentation }, breaker));
+	pi.registerTool(withRepeatBreaker({ ...createListAgentsTool(scope), ...listAgentsPresentation }, breaker));
+	pi.registerTool(
+		withRepeatBreaker(
+			{ ...createWaitAgentTool(scope), ...createWaitToolPresentation(() => scope.otherLiveAgents()[0]?.id) },
+			breaker,
+		),
+	);
 }

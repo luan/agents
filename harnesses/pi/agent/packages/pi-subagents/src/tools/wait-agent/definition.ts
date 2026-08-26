@@ -33,9 +33,10 @@ export function createWaitAgentTool(
 		name: AGENT_TOOLS.waitAgent,
 		label: "Wait For Agent",
 		description:
-			"Wait for a mailbox update from any live agent. The wait ends on a message, settlement, interruption, timeout, or new input that aborts the active tool call.",
+			"Wait for an agent event. The wait ends on a message, settlement, interruption, timeout, or new input that aborts the active tool call, then returns only a compact status notification. Successful final responses are delivered independently to the parent mailbox.",
 		promptGuidelines: [
 			"Prefer one longer wait_agent call over frequent polling while delegated work is still running.",
+			"Treat wait_agent as status-only; do not expect it to contain the child's final response.",
 		],
 		parameters: PARAMETERS,
 		executionMode: "parallel",
@@ -52,8 +53,8 @@ export function createWaitAgentTool(
 			}
 			const update = await scope.coordinator().waitForUpdate(signal, timeoutMs);
 			const target =
-				update?.type === "message"
-					? update.sender
+				update?.type === "mailbox"
+					? update.delivery.sender
 					: update?.type === "settled" || update?.type === "interrupted"
 						? update.agent.id
 						: undefined;
@@ -64,8 +65,8 @@ export function createWaitAgentTool(
 				? "The mailbox wait ended because new input interrupted the active turn."
 				: !update
 					? "No agent updates arrived before the timeout."
-					: update.type === "message"
-						? `Mailbox update from ${update.sender}.`
+					: update.type === "mailbox"
+						? `Mailbox update from ${update.delivery.sender}.`
 						: update.type === "settled" || update.type === "interrupted"
 							? `Agent update: ${update.agent.id} (${update.agent.status}).`
 							: "Agent transcript updated.";

@@ -4,6 +4,7 @@ import { normalizeTaskName } from "../src/tools/spawn-agent/definition.ts";
 import { createRepeatBreaker } from "../src/tools/repeat-breaker.ts";
 import { agentRecords, MAX_AGENT_RECORDS, MAX_RESULT_TEXT } from "../src/tools/result.ts";
 import {
+	createWaitAgentTool,
 	DEFAULT_WAIT_TIMEOUT_MS,
 	MAX_WAIT_TIMEOUT_MS,
 	MIN_WAIT_TIMEOUT_MS,
@@ -22,6 +23,32 @@ test("clamps mailbox waits to the public bounds", () => {
 	expect(waitTimeout(Number.NaN)).toBe(DEFAULT_WAIT_TIMEOUT_MS);
 	expect(waitTimeout(Number.POSITIVE_INFINITY)).toBe(DEFAULT_WAIT_TIMEOUT_MS);
 	expect(waitTimeout(MAX_WAIT_TIMEOUT_MS + 1)).toBe(MAX_WAIT_TIMEOUT_MS);
+});
+
+test("wait_agent reports mailbox status without exposing its payload", async () => {
+	const tool = createWaitAgentTool({
+		pi: {},
+		callerPath: () => undefined,
+		modelRoles: () => ({ roles: [] }),
+		otherLiveAgents: () => [snapshot(1, "")],
+		coordinator: () =>
+			({
+				waitForUpdate: async () => ({
+					type: "mailbox",
+					delivery: {
+						id: 1,
+						type: "FINAL_ANSWER",
+						target: "/root",
+						sender: "/root/worker",
+						payload: "private final payload",
+					},
+				}),
+			}) as never,
+	} as never);
+	const result = await tool.execute("wait", { timeout_ms: 10_000 }, undefined, undefined, {} as never);
+	const rendered = JSON.stringify(result);
+	expect(rendered).toContain("Mailbox update from /root/worker.");
+	expect(rendered).not.toContain("private final payload");
 });
 
 test("warns only after the same tool outcome repeats three times", () => {
