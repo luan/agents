@@ -118,6 +118,12 @@ repaint frequency, from roughly 8 redraws per second in economy mode to 40 in
 ultra mode. The scheduler never redraws faster than the selected effects can
 produce a new frame at the configured speed.
 
+Feature surfaces may pass one `ActivityAnimationOverrides` value to both
+`activityFrame()` and `mountConfiguredAnimation()`. Omitted fields inherit the
+live global appearance; explicit fields affect only that surface. Sharing the
+same value keeps visible frames and scheduler cadence aligned, including the
+fully static marker-off and shimmer-off case.
+
 Lightning retains `main`'s exact `z`/`i`/`n`/`g` variants and supplies the same
 nine artifact families for every other printable ASCII character. Marker and
 text characters change variants while its strike travels backward through the

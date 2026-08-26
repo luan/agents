@@ -368,6 +368,7 @@ describe("xsettings editor", () => {
 			[
 				{
 					id: "extensions.pi-libtui.activityMarker",
+					preview: "activity-marker",
 					section: "UI & Display",
 					label: "Activity marker",
 					description: "Choose a marker.",
@@ -415,10 +416,48 @@ describe("xsettings editor", () => {
 		expect(sharedMotionScheduler.activeMountCount).toBe(mountsBefore);
 
 		configureTuiAppearance({ activityMarker: "pulse", shimmer: "off" });
+		const overrideEditor = new SettingsEditor(
+			[
+				{
+					id: "extensions.pi-exec-command.activityMarker",
+					preview: "activity-marker",
+					section: "Animations",
+					label: "Exec Command marker",
+					description: "Override the shared marker.",
+					type: "enum",
+					value: "inherit",
+					defaultValue: "inherit",
+					configured: false,
+					options: [
+						{ value: "inherit", label: "Inherit", description: "Use the shared marker." },
+						{ value: "off", label: "Off", description: "No marker." },
+						{ value: "spinner", label: "Spinner", description: "Rotating marker." },
+					],
+				},
+			],
+			theme,
+			() => {},
+			() => {},
+			() => {},
+			18,
+			[],
+			undefined,
+			undefined,
+			() => {},
+		);
+		overrideEditor.handleInput("\r");
+		const overrideLines = overrideEditor.render(100).map(stripTerminalSequences);
+		expect(overrideLines.find((line) => line.includes("Inherit"))).toContain("● Inherit");
+		expect(overrideLines.find((line) => line.includes("Off"))).not.toContain("● Off");
+		overrideEditor.handleInput("\x1b");
+		expect(sharedMotionScheduler.activeMountCount).toBe(mountsBefore);
+
+		configureTuiAppearance({ activityMarker: "pulse", shimmer: "off" });
 		const shimmerEditor = new SettingsEditor(
 			[
 				{
 					id: "extensions.pi-libtui.shimmer",
+					preview: "text-shimmer",
 					section: "UI & Display",
 					label: "Text shimmer",
 					description: "Choose text motion.",
@@ -458,6 +497,7 @@ describe("xsettings editor", () => {
 		for (const field of [
 			{
 				id: "extensions.pi-libtui.animationSpeed",
+				preview: "animation-speed",
 				label: "Animation speed",
 				value: "normal",
 				options: [
@@ -470,6 +510,7 @@ describe("xsettings editor", () => {
 			},
 			{
 				id: "extensions.pi-libtui.animationSmoothness",
+				preview: "animation-smoothness",
 				label: "Animation smoothness",
 				value: "balanced",
 				options: [

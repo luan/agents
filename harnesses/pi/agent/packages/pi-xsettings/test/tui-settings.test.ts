@@ -48,6 +48,7 @@ describe("pi-libtui settings", () => {
 		);
 		const activityMarker = registration?.definitions.find((definition) => definition.key === "activityMarker");
 		expect(activityMarker?.type).toBe("enum");
+		expect(activityMarker?.preview).toBe("activity-marker");
 		if (activityMarker?.type !== "enum" || !Array.isArray(activityMarker.options))
 			throw new Error("Activity marker must be an inline enum setting");
 		expect(activityMarker.options.map((option) => option.value)).toEqual([

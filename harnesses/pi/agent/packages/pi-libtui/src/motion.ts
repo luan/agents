@@ -236,6 +236,15 @@ class SharedMotionScheduler extends MotionScheduler {
 /** Process-wide cadence scheduler, initialized only when animation is used. */
 export const sharedMotionScheduler: MotionScheduler = new SharedMotionScheduler();
 
+/** Per-surface choices. Omitted values inherit the process-wide appearance. */
+export interface ActivityAnimationOverrides {
+	markerStyle?: TuiActivityMarkerStyle;
+	shimmerStyle?: TuiShimmerStyle;
+	shimmerMarker?: boolean;
+	animationSpeed?: TuiAnimationSpeed;
+	animationSmoothness?: TuiAnimationSmoothness;
+}
+
 /** Repaint cadence selected independently from animation pace. */
 export function configuredAnimationCadenceMs(
 	marker = getTuiAppearance().activityMarker,
@@ -292,10 +301,11 @@ function shimmerCadenceMs(style: TuiShimmerStyle): number | undefined {
  */
 export function mountConfiguredAnimation(
 	target: MotionRenderTarget,
-	options: Pick<MotionMountOptions, "onFrame" | "maxDurationMs" | "reducedMotion"> & {
-		cadenceMs?: number;
-		scheduler?: MotionScheduler;
-	} = {},
+	options: ActivityAnimationOverrides &
+		Pick<MotionMountOptions, "onFrame" | "maxDurationMs" | "reducedMotion"> & {
+			cadenceMs?: number;
+			scheduler?: MotionScheduler;
+		} = {},
 ): MotionMount {
 	let timer: MotionMount | undefined;
 	let disposed = false;
@@ -304,7 +314,15 @@ export function mountConfiguredAnimation(
 	const sync = (): void => {
 		timer?.dispose();
 		timer = undefined;
-		const cadenceMs = options.reducedMotion ? undefined : (options.cadenceMs ?? configuredAnimationCadenceMs());
+		const cadenceMs = options.reducedMotion
+			? undefined
+			: (options.cadenceMs ??
+				configuredAnimationCadenceMs(
+					options.markerStyle,
+					options.shimmerStyle,
+					options.animationSmoothness,
+					options.animationSpeed,
+				));
 		const maxDurationMs = expiresAtMs === undefined ? undefined : expiresAtMs - performance.now();
 		if (cadenceMs === undefined || disposed || (maxDurationMs !== undefined && maxDurationMs <= 0)) return;
 		timer = (options.scheduler ?? sharedMotionScheduler).mount(target, {
@@ -668,11 +686,7 @@ export function activityFrame(
 	colors: TuiTheme,
 	text: string,
 	elapsedMs: number,
-	options: {
-		markerStyle?: TuiActivityMarkerStyle;
-		shimmerStyle?: TuiShimmerStyle;
-		shimmerMarker?: boolean;
-		animationSpeed?: TuiAnimationSpeed;
+	options: ActivityAnimationOverrides & {
 		cadenceMs?: number;
 		frames?: readonly string[];
 		textTone?: TuiForegroundToken;

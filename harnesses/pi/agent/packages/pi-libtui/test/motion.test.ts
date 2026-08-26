@@ -283,6 +283,18 @@ describe("pure motion frames", () => {
 		expect(scheduler.activeTimerCount).toBe(0);
 		expect(renders).toBe(2);
 		mount.dispose();
+
+		configureTuiAppearance({ activityMarker: "spinner", shimmer: "off" });
+		const markerless = mountConfiguredAnimation({ requestRender: () => renders++ }, { scheduler, markerStyle: "off" });
+		expect(scheduler.activeTimerCount).toBe(0);
+		configureTuiAppearance({ activityMarker: "off", shimmer: "off" });
+		const explicitSpinner = mountConfiguredAnimation(
+			{ requestRender: () => renders++ },
+			{ scheduler, markerStyle: "spinner" },
+		);
+		expect(scheduler.activeTimerCount).toBe(1);
+		markerless.dispose();
+		explicitSpinner.dispose();
 	});
 
 	test("keeps every compact marker at its declared width", () => {

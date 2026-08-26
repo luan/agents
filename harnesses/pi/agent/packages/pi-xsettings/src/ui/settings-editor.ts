@@ -38,6 +38,7 @@ import type {
 	ListDefinition,
 	SettingOption as ProtocolSettingOption,
 	SettingCategory,
+	SettingPreview,
 	SettingValue,
 } from "../protocol/settings.ts";
 import { RenderLines } from "./fields.ts";
@@ -67,6 +68,7 @@ interface SettingFieldBase {
 	description: string;
 	category?: SettingCategory;
 	section?: string;
+	preview?: SettingPreview;
 	configured: boolean;
 	unsetLabel?: string;
 	emptyLabel?: string;
@@ -134,15 +136,15 @@ class AnimationSelect extends SearchableSelect<string> {
 	constructor(field: EnumSettingField, theme: Theme, done: (value?: string) => void, requestRender: () => void) {
 		let now = performance.now();
 		const startedAt = now;
-		const markerField = field.id === "extensions.pi-libtui.activityMarker";
-		const shimmerField = field.id === "extensions.pi-libtui.shimmer";
-		const speedField = field.id === "extensions.pi-libtui.animationSpeed";
-		const smoothnessField = field.id === "extensions.pi-libtui.animationSmoothness";
+		const markerField = field.preview === "activity-marker";
+		const shimmerField = field.preview === "text-shimmer";
+		const speedField = field.preview === "animation-speed";
+		const smoothnessField = field.preview === "animation-smoothness";
 		const options = field.options.filter((option) => {
-			if (markerField) return isTuiActivityMarkerStyle(option.value);
-			if (shimmerField) return isTuiShimmerStyle(option.value);
-			if (speedField) return isTuiAnimationSpeed(option.value);
-			return smoothnessField && isTuiAnimationSmoothness(option.value);
+			if (markerField) return option.value === "inherit" || isTuiActivityMarkerStyle(option.value);
+			if (shimmerField) return option.value === "inherit" || isTuiShimmerStyle(option.value);
+			if (speedField) return option.value === "inherit" || isTuiAnimationSpeed(option.value);
+			return smoothnessField && (option.value === "inherit" || isTuiAnimationSmoothness(option.value));
 		});
 		super({
 			title: field.label,
@@ -564,10 +566,7 @@ export class SettingsEditor extends ComponentStack {
 		};
 		if (field.type === "enum") {
 			const editor =
-				field.id === "extensions.pi-libtui.activityMarker" ||
-				field.id === "extensions.pi-libtui.shimmer" ||
-				field.id === "extensions.pi-libtui.animationSpeed" ||
-				field.id === "extensions.pi-libtui.animationSmoothness"
+				field.preview !== undefined
 					? new AnimationSelect(field, this.theme, done, this.requestRender)
 					: new SearchableSelect({
 							title: field.label,

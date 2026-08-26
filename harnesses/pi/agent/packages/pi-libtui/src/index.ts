@@ -2,6 +2,7 @@ export {
 	configureTuiAppearance,
 	DEFAULT_TUI_APPEARANCE,
 	getTuiAppearance,
+	TUI_ACTIVITY_MARKER_OPTIONS,
 	isTuiAnimationSmoothness,
 	isTuiAnimationSpeed,
 	isTuiActivityMarkerStyle,
@@ -155,6 +156,7 @@ export {
 	type TransientPillPlacementRequest,
 } from "./decoration/transient-pill.ts";
 export type {
+	ActivityAnimationOverrides,
 	ActivityFrame,
 	MotionClock,
 	MotionMount,
