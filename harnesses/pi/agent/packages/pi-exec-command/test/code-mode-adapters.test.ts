@@ -1,6 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { getCodeModeToolAdapterRegistry } from "pi-code-mode/sdk";
+import { boundTraceResult } from "../../pi-code-mode/src/runtime/trace-values.ts";
+import { renderCodeModeResult } from "../../pi-code-mode/src/ui/presentation.ts";
 import { type CodeModeToolAdapter, registerCodeModeExecAdapters } from "../src/code-mode-adapters.ts";
 import execCommandExtension from "../src/extension.ts";
 import type { ExecSessionManager } from "../src/session-manager.ts";
@@ -163,7 +165,7 @@ test("Code Mode exec invocation reuses the direct tool and manager", async () =>
 			status: "running",
 			result: { ...result, details: { ...(result.details as ExecToolPresentationDetails), phase: "partial" } },
 		},
-		{ theme, requestRender() {}, cwd: "/code-mode", state: {}, lastComponent: undefined },
+		{ theme, requestRender() {}, executionStarted: true, cwd: "/code-mode", state: {}, lastComponent: undefined },
 	);
 	const presentation = adapter.renderTrace?.(
 		{
@@ -173,7 +175,14 @@ test("Code Mode exec invocation reuses the direct tool and manager", async () =>
 			durationMs: 1,
 			result,
 		},
-		{ theme, requestRender() {}, cwd: "/code-mode", state: {}, lastComponent: partialPresentation },
+		{
+			theme,
+			requestRender() {},
+			executionStarted: true,
+			cwd: "/code-mode",
+			state: {},
+			lastComponent: partialPresentation,
+		},
 	);
 	expect(presentation).toBe(partialPresentation);
 	const rendered = Bun.stripANSI(presentation?.render(80).join("\n") ?? "");
@@ -224,14 +233,25 @@ test("Code Mode write_stdin updates the original exec presentation", async () =>
 		{ ...invokeContext, toolCallId: "poll" },
 		new AbortController().signal,
 	);
-	const execTrace = { id: "exec", input: { cmd: "streaming-command" }, status: "done" as const, result: execResult };
-	const writeTrace = { id: "poll", input: { session_id: 7 }, status: "done" as const, result: writeResult };
+	const execTrace = {
+		id: "exec",
+		input: { cmd: "streaming-command" },
+		status: "done" as const,
+		result: boundTraceResult(execResult),
+	};
+	const writeTrace = {
+		id: "poll",
+		input: { session_id: 7 },
+		status: "done" as const,
+		result: boundTraceResult(writeResult),
+	};
 
 	expect(execAdapter.presentationKey?.(execTrace)).toBe("pi-exec-command/session/7");
 	expect(writeAdapter.presentationKey?.(writeTrace)).toBe("pi-exec-command/session/7");
 	const original = execAdapter.renderTrace?.(execTrace, {
 		theme,
 		requestRender() {},
+		executionStarted: true,
 		cwd: "/code-mode",
 		state: {},
 		lastComponent: undefined,
@@ -239,6 +259,7 @@ test("Code Mode write_stdin updates the original exec presentation", async () =>
 	const continued = writeAdapter.renderTrace?.(writeTrace, {
 		theme,
 		requestRender() {},
+		executionStarted: true,
 		cwd: "/code-mode",
 		state: {},
 		lastComponent: original,
@@ -247,8 +268,65 @@ test("Code Mode write_stdin updates the original exec presentation", async () =>
 	expect(continued).toBe(original);
 	const rendered = Bun.stripANSI(original?.render(80).join("\n") ?? "");
 	expect(rendered).toContain("$ streaming-command");
+	expect(rendered).toContain("first");
 	expect(rendered).toContain("last");
-	expect(rendered).not.toContain("first");
+	const replayed = writeAdapter.renderTrace?.(writeTrace, {
+		theme,
+		requestRender() {},
+		executionStarted: true,
+		cwd: "/code-mode",
+		state: {},
+		lastComponent: original,
+	});
+	expect(Bun.stripANSI(replayed?.render(80).join("\n") ?? "").match(/last/g)).toHaveLength(1);
+	const outerResult: Parameters<typeof renderCodeModeResult>[0] = {
+		content: [{ type: "text", text: "done" }],
+		details: {
+			version: 1,
+			tool: "exec",
+			status: "completed",
+			cellId: "cell",
+			isError: false,
+			input: { code: "exec then poll" },
+			timing: { startedAtMs: 0, durationMs: 1_000 },
+			maxOutputTokens: 2_000,
+			output: {
+				textChars: 4,
+				imageCount: 0,
+				imageChars: 0,
+				audioCount: 0,
+				audioChars: 0,
+				textTruncated: false,
+				imagesOmitted: 0,
+			},
+			nestedCalls: [
+				{ ...execTrace, version: 1, name: "exec_command", kind: "function", startedAtMs: 0 },
+				{ ...writeTrace, version: 1, name: "write_stdin", kind: "function", startedAtMs: 1 },
+			],
+		},
+	};
+	const outer = renderCodeModeResult(outerResult, { expanded: false, isPartial: false }, theme, {
+		invalidate() {},
+		lastComponent: undefined,
+		state: {},
+		cwd: "/code-mode",
+		executionStarted: false,
+		isError: false,
+	});
+	const outerRendered = Bun.stripANSI(outer.render(80).join("\n"));
+	expect(outerRendered).not.toContain("Code Mode");
+	expect(outerRendered).toContain("first");
+	expect(outerRendered).toContain("last");
+	renderCodeModeResult(outerResult, { expanded: false, isPartial: false }, theme, {
+		invalidate() {},
+		lastComponent: outer,
+		state: {},
+		cwd: "/code-mode",
+		executionStarted: true,
+		isError: false,
+	});
+	expect(Bun.stripANSI(outer.render(80).join("\n"))).toContain("last");
+	outer.dispose();
 	dispose();
 });
 
@@ -282,7 +360,7 @@ test("Code Mode fallback keeps the nested command when persisted details are mal
 	} as never;
 	const presentation = adapter.renderTrace?.(
 		{ id: "malformed", input: { cmd: "rg -n setEditorComponent" }, status: "done", result: malformed },
-		{ theme, requestRender() {}, cwd: "/code-mode", state: {}, lastComponent: undefined },
+		{ theme, requestRender() {}, executionStarted: true, cwd: "/code-mode", state: {}, lastComponent: undefined },
 	);
 	const rendered = Bun.stripANSI(presentation?.render(80).join("\n") ?? "");
 	expect(rendered).toContain("$ rg -n setEditorComponent");
@@ -295,6 +373,7 @@ test("Code Mode adapters register synchronously and identity-dispose only on rel
 	const handlers = new Map<string, (event: { reason?: string }) => unknown>();
 	const tools: unknown[] = [];
 	const pi = {
+		registerCommand() {},
 		registerTool(tool: unknown) {
 			tools.push(tool);
 		},

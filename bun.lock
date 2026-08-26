@@ -132,6 +132,7 @@
       "version": "0.1.0",
       "dependencies": {
         "pi-code-mode": "workspace:*",
+        "pi-libactions": "workspace:*",
         "pi-libtui": "workspace:*",
         "pi-xsettings": "workspace:*",
       },

@@ -12,6 +12,12 @@ including the shell command transcript and shell-specific action header.
 Nested calls reuse the streaming command or terminal view, including TTY
 projection and selective output expansion.
 
+The package also provides a Process Hub for the current agent hierarchy. Open it with `/ps` or
+the managed `processes.open` action (`alt+s` in this repository). The hub lists
+commands owned by the current agent and its descendants, displays bounded pipe output, attaches
+to retained PTY state, forwards terminal input, and exposes explicit interrupt
+and terminate actions.
+
 ## Install
 
 Build the bridge, then install the package from the repository root:
@@ -111,6 +117,35 @@ bounded by the 30-second wait limit even when it keeps producing output.
 Aborting a call or shutting down the extension terminates the command's
 process group. The bridge is reaped only after its final output has been read.
 
+## Process Hub
+
+The Process Hub aggregates the session-local `ExecSessionManager`s owned by the
+current agent and its descendants. It does not infer processes from transcript
+text, share managers between agents, or own process lifetime. Each manager
+publishes immutable bounded snapshots and raw PTY updates; the owning Rust
+bridge remains authoritative for input, resize, interrupt, termination, exit,
+and reap behavior.
+
+While a process is running, its original `exec_command` transcript row stays
+live from those same snapshots. A compact above-editor widget and status item
+also show running processes when that row is offscreen; both disappear when no
+processes remain active.
+
+In the process list:
+
+- `j`/`k`, arrows, and page keys move through processes;
+- `enter` opens pipe output or attaches to a PTY;
+- `i` sends `SIGINT` to the process group;
+- `x` terminates the process group;
+- `alt+s`, `q`, or `escape` closes the hub.
+
+Pipe output supports normal and page scrolling. PTY mode forwards input
+directly to the selected terminal and resizes the native PTY to its visible
+viewport. During resize, the hub keeps the current projection until the first
+native redraw bytes arrive, then applies the new dimensions before parsing
+that redraw. Press `ctrl+]` to return to the process list. Recently completed
+processes follow the same bounded 32-session retention used by `write_stdin`.
+
 ## Settings
 
 If `pi-xsettings` is installed, edit `~/.pi/agent/xsettings.toml`:
@@ -138,9 +173,12 @@ definitions; reload Pi when changing a default for an already-running bridge.
 | `exec_command` schema and call | `src/tools/exec-command/definition.ts` and `execute.ts` |
 | `write_stdin` schema and call | `src/tools/write-stdin/definition.ts` and `execute.ts` |
 | Session state, waits, limits, and replay | `src/session-manager.ts` |
+| Process snapshots and explicit controls | `src/session-manager.ts` over the native bridge protocol |
 | Bridge process and wire protocol | `src/bridge-client.ts` and `crates/exec-command` |
 | Result/details model | `src/tools/result.ts` and `src/tools/presentation.ts` |
 | TUI rendering | `src/ui/presentation.ts`, `src/ui/command-transcript.ts`, and `src/ui/shell-command-action.ts` map exec semantics onto `pi-libtui`'s generic streaming activity |
+| Process Hub presentation | `src/ui/process-hub.ts` and `src/ui/process-store.ts` compose `pi-libtui` fullscreen, selection, scrollbar, and terminal primitives |
+| Process Hub action | `src/contributions/actions.ts` via `pi-libactions/sdk`; managed keybindings own shortcuts |
 | Code Mode adapter | `src/code-mode-adapters.ts` via `pi-code-mode/sdk` |
 | Public capabilities | `src/index.ts` exports only the versioned presentation-details contract |
 

@@ -14,6 +14,7 @@ import type { ExecToolPresentationDetails } from "../tools/presentation.ts";
 import { CommandTranscript, type CommandTranscriptView } from "./command-transcript.ts";
 
 interface RendererContext {
+	readonly toolCallId?: string;
 	readonly executionStarted: boolean;
 	readonly state?: object;
 	readonly args?: { readonly cmd?: string; readonly shell?: string; readonly session_id?: number };
@@ -22,7 +23,12 @@ interface RendererContext {
 	readonly lastComponent: object | undefined;
 }
 
-export function renderExecCommandCall(args: { cmd: string; shell?: string }, theme: Theme, context: RendererContext) {
+export function renderExecCommandCall(
+	args: { cmd: string; shell?: string },
+	theme: Theme,
+	context: RendererContext,
+	animation?: Readonly<ActivityAnimationOverrides>,
+) {
 	if (context.executionStarted) return new ComponentStack();
 	return toolCallPreview(
 		context.state ?? context,
@@ -47,6 +53,7 @@ export function renderExecResult(
 	options: ToolRenderResultOptions,
 	theme: Theme,
 	context: RendererContext,
+	animation?: Readonly<ActivityAnimationOverrides>,
 ) {
 	settleToolCallPreview(context.state ?? context);
 	if (
@@ -60,7 +67,8 @@ export function renderExecResult(
 				result.details,
 				options.expanded,
 				false,
-				options.isPartial && context.executionStarted,
+				context.executionStarted,
+				context.toolCallId,
 			);
 			return context.lastComponent;
 		}
@@ -90,12 +98,7 @@ export function renderExecResult(
 		});
 	}
 	if (context.lastComponent instanceof ExecPresentation) {
-		context.lastComponent.update(
-			result.details,
-			options.expanded,
-			context.isError,
-			options.isPartial && context.executionStarted,
-		);
+		context.lastComponent.update(result.details, options.expanded, context.isError, context.executionStarted);
 		return context.lastComponent;
 	}
 	return new ExecPresentation(
@@ -104,7 +107,8 @@ export function renderExecResult(
 		result.details,
 		options.expanded,
 		context.isError,
-		options.isPartial && context.executionStarted,
+		context.executionStarted,
+		animation,
 	);
 }
 
@@ -205,6 +209,10 @@ class ExecPresentation {
 	private readonly transcript: CommandTranscript | ToolActivity;
 	/** Monotonic stream revision; output text and retention remain in pi-libtui. */
 	private outputRevision = 0;
+	private execDetails: ExecToolPresentationDetails | undefined;
+	private readonly continuationOutput = new Map<string, string>();
+	private latestContinuation: ExecToolPresentationDetails | undefined;
+	private output: string;
 
 	constructor(
 		theme: Theme,
@@ -212,31 +220,62 @@ class ExecPresentation {
 		details: ExecToolPresentationDetails,
 		expanded: boolean,
 		hostError: boolean,
-		isPartial: boolean,
+		live: boolean,
+		animation?: Readonly<ActivityAnimationOverrides>,
 	) {
+		this.output = details.progress.output;
+		if (details.arguments.kind === "exec_command") this.execDetails = details;
 		const revision = this.nextOutputRevision();
 		this.transcript =
 			details.arguments.kind === "exec_command"
 				? new CommandTranscript({
 						theme,
 						requestRender,
-						view: commandView(details, expanded, hostError, isPartial, revision),
+						view: commandView(details, expanded, hostError, live, revision),
 					})
 				: new ToolActivity({
 						theme,
 						requestRender,
-						view: terminalContinuationView(details, expanded, hostError, isPartial, revision),
+						view: terminalContinuationView(details, expanded, hostError, live, revision),
 						textSelection: "tail",
 					});
 	}
 
-	update(details: ExecToolPresentationDetails, expanded: boolean, hostError: boolean, isPartial: boolean): void {
+	update(
+		details: ExecToolPresentationDetails,
+		expanded: boolean,
+		hostError: boolean,
+		live: boolean,
+		continuationId?: string,
+	): void {
+		if (details.arguments.kind === "exec_command") {
+			this.execDetails = details;
+			this.output = this.mergedOutput();
+			if (this.latestContinuation && this.transcript instanceof CommandTranscript) {
+				const continuation = continuationDetails(details, this.latestContinuation, this.output);
+				this.transcript.update(commandView(continuation, expanded, hostError, live, this.nextOutputRevision()));
+				return;
+			}
+		}
+		if (details.arguments.kind === "write_stdin" && this.execDetails && this.transcript instanceof CommandTranscript) {
+			const key = continuationId ?? details.identifiers.chunkId ?? "continuation";
+			this.continuationOutput.set(key, details.progress.output);
+			this.latestContinuation = details;
+			this.output = this.mergedOutput();
+			const continuation = continuationDetails(this.execDetails, details, this.output);
+			this.transcript.update(commandView(continuation, expanded, hostError, live, this.nextOutputRevision()));
+			return;
+		}
 		const revision = this.nextOutputRevision();
 		if (this.transcript instanceof CommandTranscript) {
-			this.transcript.update(commandView(details, expanded, hostError, isPartial, revision));
+			this.transcript.update(commandView(details, expanded, hostError, live, revision));
 		} else {
-			this.transcript.update(terminalContinuationView(details, expanded, hostError, isPartial, revision));
+			this.transcript.update(terminalContinuationView(details, expanded, hostError, live, revision));
 		}
+	}
+
+	private mergedOutput(): string {
+		return `${this.execDetails?.progress.output ?? ""}${[...this.continuationOutput.values()].join("")}`;
 	}
 
 	private nextOutputRevision(): number {
@@ -269,25 +308,44 @@ class ExecPresentation {
 	}
 }
 
+function continuationDetails(
+	base: ExecToolPresentationDetails,
+	continuation: ExecToolPresentationDetails,
+	output: string,
+): ExecToolPresentationDetails {
+	return {
+		...base,
+		phase: "partial",
+		timing: continuation.timing,
+		progress: {
+			...continuation.progress,
+			output,
+			outputChars: output.length,
+		},
+		identifiers: { ...base.identifiers, chunkId: continuation.identifiers.chunkId },
+		outcome: continuation.outcome,
+	};
+}
+
 function commandView(
 	details: ExecToolPresentationDetails,
 	expanded: boolean,
 	hostError: boolean,
-	isPartial: boolean,
+	live: boolean,
 	outputRevision: number,
 ): CommandTranscriptView {
-	const status = toolStatus(details, hostError, isPartial);
+	const status = toolStatus(details, hostError);
 	const output = details.progress.output || undefined;
 	return {
 		command: command(details),
 		shell: details.arguments.kind === "exec_command" ? details.arguments.shell : undefined,
 		status,
-		running: status === "running" && isPartial,
+		running: live && status === "running",
 		output,
 		outputRevision,
 		tty: details.arguments.tty,
 		outputUpdate: outputUpdate(details),
-		meta: metadata(details, isPartial),
+		meta: metadata(details),
 		// Shell output is the useful failure detail. Do not add a disclosure whose
 		// only extra row restates the exit status already present in the action.
 		failure: output ? undefined : (details.outcome.failure ?? undefined),
@@ -299,12 +357,12 @@ function terminalContinuationView(
 	details: ExecToolPresentationDetails,
 	expanded: boolean,
 	hostError: boolean,
-	isPartial: boolean,
+	live: boolean,
 	outputRevision: number,
 ): ToolActivityView {
-	const status = toolStatus(details, hostError, isPartial);
+	const status = toolStatus(details, hostError);
 	const operation = details.arguments.kind === "write_stdin" ? details.arguments.operation : "poll";
-	const active = isPartial && status === "running";
+	const active = live && status === "running";
 	const update = outputUpdate(details);
 	const verb =
 		operation === "write"
@@ -325,7 +383,7 @@ function terminalContinuationView(
 					: details.arguments.kind === "write_stdin"
 						? `#${details.arguments.sessionId}`
 						: undefined,
-			meta: metadata(details, isPartial),
+			meta: metadata(details),
 		},
 		running: active,
 		payload: details.progress.output
@@ -361,13 +419,9 @@ function terminalOutputUpdate(details: ExecToolPresentationDetails): TerminalOut
 	return details.progress.outputTruncated ? "cumulative-tail" : "cumulative";
 }
 
-function toolStatus(
-	details: ExecToolPresentationDetails,
-	hostError: boolean,
-	isPartial: boolean,
-): ToolTranscriptStatus {
+function toolStatus(details: ExecToolPresentationDetails, hostError: boolean): ToolTranscriptStatus {
 	if (hostError || details.outcome.status === "failed") return "failed";
-	if (details.outcome.status === "running" || (isPartial && details.phase === "partial")) return "running";
+	if (details.outcome.status === "running") return "running";
 	return "succeeded";
 }
 
@@ -378,9 +432,9 @@ function command(details: ExecToolPresentationDetails): string {
 		: `terminal #${details.arguments.sessionId}`;
 }
 
-function metadata(details: ExecToolPresentationDetails, isPartial: boolean): string[] | undefined {
+function metadata(details: ExecToolPresentationDetails): string[] | undefined {
 	const failed = details.outcome.status === "failed";
-	const running = details.outcome.status === "running" || (isPartial && details.phase === "partial");
+	const running = details.outcome.status === "running";
 	const values = [
 		running && details.identifiers.sessionId !== null ? `#${details.identifiers.sessionId}` : undefined,
 		failed && details.outcome.exitCode !== null ? `exit ${details.outcome.exitCode}` : undefined,

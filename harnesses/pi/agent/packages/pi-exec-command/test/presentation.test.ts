@@ -611,7 +611,7 @@ describe("exec tool presentation", () => {
 		expect(rendered).toBe("");
 	});
 
-	test("does not animate a yielded command when replaying its final result", () => {
+	test("keeps a yielded command animated until its continuation completes", () => {
 		const tool = createExecCommandTool({} as never);
 		const args = { cmd: "sleep 30", tty: false };
 		const final = createExecToolResult({
@@ -634,8 +634,33 @@ describe("exec tool presentation", () => {
 			theme,
 			context(args, undefined, { executionStarted: true, isPartial: false }),
 		);
-		expect(sharedMotionScheduler.activeMountCount).toBe(before);
+		expect(sharedMotionScheduler.activeMountCount).toBe(before + 1);
 		expect(Bun.stripANSI(component?.render(60).join("\n") ?? "")).toContain("$ sleep 30");
+
+		const poll = { session_id: 7 };
+		const completed = createExecToolResult({
+			tool: "write_stdin",
+			phase: "final",
+			arguments: normalizeWriteStdinArguments(poll, false),
+			command: args.cmd,
+			result: {
+				chunk_id: "completed",
+				output: "done\n",
+				exit_code: 0,
+				wall_time_seconds: 30,
+				output_truncated: false,
+			},
+		});
+		const settled = createWriteStdinTool({} as never).renderResult?.(
+			completed,
+			{ expanded: false, isPartial: false },
+			theme,
+			context(poll, component, { executionStarted: true, isPartial: false }),
+		);
+
+		expect(settled).toBe(component);
+		expect(sharedMotionScheduler.activeMountCount).toBe(before);
+		expect(Bun.stripANSI(settled?.render(60).join("\n") ?? "")).toContain("done");
 	});
 
 	test("keeps TTY write_stdin results transcript-silent", () => {

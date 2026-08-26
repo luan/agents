@@ -18,10 +18,11 @@
   },
   "dependencies": {
     "pi-code-mode": "workspace:*",
+    "pi-libactions": "workspace:*",
     "pi-libtui": "workspace:*",
     "pi-xsettings": "workspace:*"
   },
-  "bundledDependencies": ["pi-code-mode", "pi-libtui", "pi-xsettings"],
+  "bundledDependencies": ["pi-code-mode", "pi-libactions", "pi-libtui", "pi-xsettings"],
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.84.2",
     "@earendil-works/pi-tui": "0.84.2",
