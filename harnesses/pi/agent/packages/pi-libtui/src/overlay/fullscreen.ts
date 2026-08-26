@@ -18,6 +18,10 @@ type PointerComponent = Component & {
 	onMouse?: (event: TuiMouseEvent) => boolean;
 };
 
+type DisposableComponent = Component & {
+	dispose?(): void;
+};
+
 /**
  * Returns Pi overlay options that cover the terminal from its top-left corner.
  *
@@ -46,6 +50,7 @@ export class FullscreenOverlay implements Component, Focusable {
 	private childWidth = 0;
 	private childHeight = 0;
 	private _focused = false;
+	private disposed = false;
 
 	/**
 	 * Creates a terminal-sized bordered host around a child component.
@@ -58,7 +63,7 @@ export class FullscreenOverlay implements Component, Focusable {
 	constructor(
 		private readonly tui: TUI,
 		private readonly theme: Theme,
-		private readonly child: Component,
+		private readonly child: DisposableComponent,
 		private readonly title: TuiTitleSource = "",
 	) {
 		this.removeAppearanceSubscription = subscribeTuiAppearance(() => this.tui.requestRender());
@@ -93,7 +98,10 @@ export class FullscreenOverlay implements Component, Focusable {
 	 * @returns Nothing.
 	 */
 	dispose(): void {
+		if (this.disposed) return;
+		this.disposed = true;
 		this.removeAppearanceSubscription();
+		this.child.dispose?.();
 	}
 
 	/**
@@ -104,6 +112,7 @@ export class FullscreenOverlay implements Component, Focusable {
 	 */
 	handleInput(data: string): void {
 		this.child.handleInput?.(data);
+		this.tui.requestRender();
 	}
 
 	/**

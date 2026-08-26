@@ -189,9 +189,11 @@ export {
 	mountModalOverlay,
 } from "./overlay/modal-mount.ts";
 export { RenderedLinesCache } from "./render-cache.ts";
+export { applyScrollbar } from "./scrollbar.ts";
 export {
 	highlightSyntaxBlock,
 	SyntaxText,
 	type SyntaxTextOptions,
 	whenSyntaxReady,
 } from "./syntax.ts";
+export { stripTopLevelZoneMarkers } from "./terminal/embedding.ts";

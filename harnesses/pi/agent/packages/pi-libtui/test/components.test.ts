@@ -110,8 +110,34 @@ describe("shared TUI components", () => {
 		expect(child.focused).toBe(true);
 	});
 
+	test("fullscreen overlay renders in the same turn as forwarded input", () => {
+		const inputs: string[] = [];
+		let renders = 0;
+		const overlay = new FullscreenOverlay(
+			{
+				terminal: { rows: 4 },
+				requestRender: () => renders++,
+			} as never,
+			theme,
+			{
+				render: () => ["content"],
+				invalidate() {},
+				handleInput: (data) => {
+					inputs.push(data);
+				},
+			},
+			"Settings",
+		);
+
+		overlay.handleInput("j");
+
+		expect(inputs).toEqual(["j"]);
+		expect(renders).toBe(1);
+	});
+
 	test("fullscreen overlay refreshes and resolves dynamic semantic titles", () => {
 		let renders = 0;
+		let disposals = 0;
 		let title = "Before";
 		const tui = {
 			terminal: { rows: 4 },
@@ -119,16 +145,23 @@ describe("shared TUI components", () => {
 				renders += 1;
 			},
 		};
-		const overlay = new FullscreenOverlay(tui as never, theme, { render: () => ["content"], invalidate() {} }, () => ({
-			label: title,
-			icon: "settings",
-		}));
+		const overlay = new FullscreenOverlay(
+			tui as never,
+			theme,
+			{ render: () => ["content"], invalidate() {}, dispose: () => disposals++ },
+			() => ({
+				label: title,
+				icon: "settings",
+			}),
+		);
 		expect(stripTerminalSequences(overlay.render(30)[0]!)).toContain("⚙ Before");
 		configureTuiAppearance({ iconPack: "emoji" });
 		expect(renders).toBe(1);
 		title = "After";
 		expect(stripTerminalSequences(overlay.render(30)[0]!)).toContain("⚙️ After");
 		overlay.dispose();
+		overlay.dispose();
+		expect(disposals).toBe(1);
 		configureTuiAppearance(DEFAULT_TUI_APPEARANCE);
 		expect(renders).toBe(1);
 	});
