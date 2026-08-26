@@ -58,5 +58,6 @@
   "copy-mode.foldOpenAll": ["shift+r"],
   "copy-mode.foldCloseAll": ["shift+m"],
   "model-roles.select": ["alt+p"],
+  "subagents.open": ["alt+a"],
   "codex.fast.toggle": ["alt+g"]
 }
