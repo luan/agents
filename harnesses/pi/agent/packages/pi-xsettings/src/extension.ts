@@ -175,6 +175,7 @@ function definitionRequiresReload(definition: SettingsScreenField): boolean {
 		definition.id === "extensions.pi-libtui.iconPack" ||
 		definition.id === "extensions.pi-libtui.activityMarker" ||
 		definition.id === "extensions.pi-libtui.shimmer" ||
+		definition.id === "extensions.pi-libtui.shimmerMarker" ||
 		definition.id === "extensions.pi-libtui.powerline" ||
 		definition.id === "extensions.pi-libtui.powerlineButtons" ||
 		definition.id === "extensions.pi-libtui.softCursor"

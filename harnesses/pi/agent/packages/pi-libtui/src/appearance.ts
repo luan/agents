@@ -51,7 +51,7 @@ export type TuiActivityMarkerStyle =
 	| "nerd-pi-orbit";
 
 /** Text shimmer used independently from the activity marker. */
-export type TuiShimmerStyle = "off" | "sweep" | "glow" | "rainbow";
+export type TuiShimmerStyle = "off" | "sweep" | "glow" | "rainbow" | "rainbow-glow" | "lightning";
 
 /** Cursor presentation policy for one semantic cursor role. */
 export type TuiCursorStyle =
@@ -69,6 +69,7 @@ export interface TuiAppearanceSettings {
 	iconPack: TuiIconPack;
 	activityMarker: TuiActivityMarkerStyle;
 	shimmer: TuiShimmerStyle;
+	shimmerMarker: boolean;
 	powerline: boolean;
 	powerlineButtons: boolean;
 	softCursor: boolean;
@@ -82,6 +83,7 @@ export const DEFAULT_TUI_APPEARANCE: Readonly<TuiAppearanceSettings> = Object.fr
 	iconPack: "unicode",
 	activityMarker: "spinner",
 	shimmer: "off",
+	shimmerMarker: false,
 	powerline: false,
 	powerlineButtons: false,
 	softCursor: false,
@@ -90,7 +92,7 @@ export const DEFAULT_TUI_APPEARANCE: Readonly<TuiAppearanceSettings> = Object.fr
 	selectionCursor: "virtual",
 });
 
-const APPEARANCE_PROTOCOL = "pi-libtui/appearance/v2" as const;
+const APPEARANCE_PROTOCOL = "pi-libtui/appearance/v3" as const;
 const APPEARANCE_KEY = Symbol.for(APPEARANCE_PROTOCOL);
 
 interface AppearanceRegistry {
@@ -159,7 +161,14 @@ export function isTuiActivityMarkerStyle(value: UntrustedAppearanceValue): value
 
 /** Narrow an external value to one supported text shimmer. */
 export function isTuiShimmerStyle(value: UntrustedAppearanceValue): value is TuiShimmerStyle {
-	return value === "off" || value === "sweep" || value === "glow" || value === "rainbow";
+	return (
+		value === "off" ||
+		value === "sweep" ||
+		value === "glow" ||
+		value === "rainbow" ||
+		value === "rainbow-glow" ||
+		value === "lightning"
+	);
 }
 
 function isCursorStyle(value: UntrustedAppearanceValue): value is TuiCursorStyle {
@@ -194,6 +203,7 @@ function mergeAppearance(
 		iconPack: isIconPack(next.iconPack) ? next.iconPack : current.iconPack,
 		activityMarker: isTuiActivityMarkerStyle(next.activityMarker) ? next.activityMarker : current.activityMarker,
 		shimmer: isTuiShimmerStyle(next.shimmer) ? next.shimmer : current.shimmer,
+		shimmerMarker: typeof next.shimmerMarker === "boolean" ? next.shimmerMarker : current.shimmerMarker,
 		powerline: typeof next.powerline === "boolean" ? next.powerline : current.powerline,
 		powerlineButtons: typeof next.powerlineButtons === "boolean" ? next.powerlineButtons : current.powerlineButtons,
 		softCursor: typeof next.softCursor === "boolean" ? next.softCursor : current.softCursor,
@@ -208,6 +218,7 @@ function sameAppearance(left: Readonly<TuiAppearanceSettings>, right: Readonly<T
 		left.iconPack === right.iconPack &&
 		left.activityMarker === right.activityMarker &&
 		left.shimmer === right.shimmer &&
+		left.shimmerMarker === right.shimmerMarker &&
 		left.powerline === right.powerline &&
 		left.powerlineButtons === right.powerlineButtons &&
 		left.softCursor === right.softCursor &&

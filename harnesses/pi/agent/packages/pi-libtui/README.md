@@ -97,18 +97,24 @@ using the documented package root and subpaths so the public API remains stable.
 
 - icon pack: `unicode`, `nerd-fonts`, or `emoji`;
 - activity marker: the original off, spinner, pulse, and static choices plus curated one-to-four-cell Unicode, ASCII, Braille, and Nerd Font animations;
-- text shimmer: `off`, narrow `sweep`, broad `glow`, or semantic `rainbow`;
+- text shimmer: `off`, narrow `sweep`, broad `glow`, semantic `rainbow`, `rainbow-glow`, or fast-mode `lightning`;
+- an independent toggle that sweeps the selected shimmer across marker, separator, and text as one activity unit;
 - Powerline separators and Powerline button caps;
 - softer virtual cursor;
 - insertion, navigation, and selection cursor styles.
 
 The compiled defaults are portable Unicode icons, a Braille spinner, flat
 separators/buttons, and virtual cursors. Shared activity surfaces use the
-selected marker, shimmer, and fastest required cadence. Every marker option can
+selected marker, shimmer, marker-shimmer toggle, and fastest required cadence. Every marker option can
 be combined with every shimmer option. A static or disabled marker allocates no
 timer when shimmer is also off. If `pi-xsettings` is absent, components still
 use the spinner-without-shimmer defaults. The settings can be changed live
 through `/xsettings` when its host is installed.
+
+Lightning retains `main`'s exact `z`/`i`/`n`/`g` variants and supplies the same
+nine artifact families for every other printable ASCII character. Marker and
+text characters change variants while its strike travels backward through the
+complete activity unit.
 
 Compact marker frames retain a fixed width within each style so activity text
 does not shift. Nerd Font marker styles use their icon frames when the Nerd

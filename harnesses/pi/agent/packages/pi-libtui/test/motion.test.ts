@@ -12,6 +12,8 @@ import {
 	MotionScheduler,
 	pulseFrame,
 	pulseGlyphFrame,
+	lightningShimmerFrame,
+	rainbowGlowShimmerFrame,
 	rainbowShimmerFrame,
 	shimmerFrame,
 	spinnerFrame,
@@ -248,6 +250,8 @@ describe("pure motion frames", () => {
 		expect(configuredAnimationCadenceMs("off", "sweep")).toBe(90);
 		expect(configuredAnimationCadenceMs("off", "glow")).toBe(70);
 		expect(configuredAnimationCadenceMs("off", "rainbow")).toBe(80);
+		expect(configuredAnimationCadenceMs("off", "rainbow-glow")).toBe(80);
+		expect(configuredAnimationCadenceMs("off", "lightning")).toBe(60);
 		expect(configuredAnimationCadenceMs("pulse", "glow")).toBe(70);
 		expect(configuredAnimationCadenceMs("static", "off")).toBeUndefined();
 
@@ -403,10 +407,72 @@ describe("pure motion frames", () => {
 		expect(later).not.toBe(first);
 	});
 
+	test("rainbow glow preserves text while moving a broad color highlight", () => {
+		const colors = tuiTheme(theme);
+		const first = rainbowGlowShimmerFrame(colors, "Working", 0);
+		const later = rainbowGlowShimmerFrame(colors, "Working", 320);
+		expect(Bun.stripANSI(first)).toBe("Working");
+		expect(Bun.stripANSI(later)).toBe("Working");
+		expect(later).not.toBe(first);
+	});
+
+	test("lightning ports the fast-mode reverse strike and ASCII variants", () => {
+		const colors = tuiTheme(theme);
+		const first = lightningShimmerFrame(colors, "Working", 0);
+		const later = lightningShimmerFrame(colors, "Working", 120);
+		expect(Bun.stripANSI(first).normalize("NFD")).toBe("W\u0307o\u0307r\u0307k\u0307in\u0307g\u0307".normalize("NFD"));
+		expect(visibleWidth(Bun.stripANSI(first))).toBe(visibleWidth("Working"));
+		expect(Bun.stripANSI(later)).not.toBe(Bun.stripANSI(first));
+		expect(first).toContain("\x1b[1;9m");
+		expect(first).toContain("\x1b[9m");
+	});
+
+	test("lightning gives every printable ASCII character nine fixed-width variants", () => {
+		const colors = tuiTheme(theme);
+		for (let codePoint = 0x20; codePoint <= 0x7e; codePoint++) {
+			const character = String.fromCharCode(codePoint);
+			const variants = Array.from({ length: 9 }, (_, frame) =>
+				Bun.stripANSI(lightningShimmerFrame(colors, character, frame * 60)),
+			);
+			expect(new Set(variants).size).toBe(9);
+			for (const variant of variants) expect(visibleWidth(variant)).toBe(1);
+		}
+	});
+
+	test("marker shimmer crosses marker, separator, and text as one unit", () => {
+		const colors = tuiTheme(theme);
+		const plain = activityFrame(colors, "AB", 0, {
+			markerStyle: "line",
+			shimmerStyle: "lightning",
+			shimmerMarker: false,
+		});
+		const textStrike = activityFrame(colors, "AB", 0, {
+			markerStyle: "line",
+			shimmerStyle: "lightning",
+			shimmerMarker: true,
+		});
+		const markerStrike = activityFrame(colors, "AB", 360, {
+			markerStyle: "line",
+			shimmerStyle: "lightning",
+			shimmerMarker: true,
+		});
+		expect(Bun.stripANSI(textStrike.marker).normalize("NFD").replace(/\p{M}/gu, "")).toBe(Bun.stripANSI(plain.marker));
+		expect(visibleWidth(Bun.stripANSI(textStrike.marker))).toBe(1);
+		expect(Bun.stripANSI(textStrike.marker)).not.toBe(Bun.stripANSI(plain.marker));
+		expect(textStrike.marker).not.toContain("\x1b[1;9m");
+		expect(textStrike.text).toContain("\x1b[1;9m");
+		expect(markerStrike.marker).toContain("\x1b[1;9m");
+	});
+
 	test("shimmer keeps grapheme clusters intact", () => {
 		const colors = tuiTheme(theme);
 		const text = "e\u0301 👩🏽‍💻";
-		for (const frame of [shimmerFrame(colors, text, 70), rainbowShimmerFrame(colors, text, 80)]) {
+		for (const frame of [
+			shimmerFrame(colors, text, 70),
+			rainbowShimmerFrame(colors, text, 80),
+			rainbowGlowShimmerFrame(colors, text, 80),
+			lightningShimmerFrame(colors, text, 60, { variantAscii: false }),
+		]) {
 			expect(Bun.stripANSI(frame)).toBe(text);
 			expect(frame).not.toContain("e\u001b[0m\u0301");
 		}
@@ -417,6 +483,12 @@ describe("pure motion frames", () => {
 		expect(pulseGlyphFrame(colors, "●", 600, { reducedMotion: true })).toBe(colors.fg("text.muted", "●"));
 		expect(shimmerFrame(colors, "working", 600, { reducedMotion: true })).toBe(colors.fg("text.secondary", "working"));
 		expect(rainbowShimmerFrame(colors, "working", 600, { reducedMotion: true })).toBe(
+			colors.fg("text.secondary", "working"),
+		);
+		expect(rainbowGlowShimmerFrame(colors, "working", 600, { reducedMotion: true })).toBe(
+			colors.fg("text.secondary", "working"),
+		);
+		expect(lightningShimmerFrame(colors, "working", 600, { reducedMotion: true })).toBe(
 			colors.fg("text.secondary", "working"),
 		);
 	});

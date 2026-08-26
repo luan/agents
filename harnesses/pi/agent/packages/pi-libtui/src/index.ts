@@ -167,6 +167,8 @@ export {
 	MotionScheduler,
 	pulseFrame,
 	pulseGlyphFrame,
+	lightningShimmerFrame,
+	rainbowGlowShimmerFrame,
 	rainbowShimmerFrame,
 	sharedMotionScheduler,
 	shimmerFrame,

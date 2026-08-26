@@ -11,6 +11,7 @@ describe("pi-libtui settings", () => {
 			iconPack: "unicode",
 			activityMarker: "spinner",
 			shimmer: "off",
+			shimmerMarker: false,
 			powerline: false,
 			powerlineButtons: false,
 			softCursor: false,
@@ -27,6 +28,7 @@ describe("pi-libtui settings", () => {
 			"iconPack",
 			"activityMarker",
 			"shimmer",
+			"shimmerMarker",
 			"powerline",
 			"powerlineButtons",
 			"softCursor",
@@ -94,12 +96,20 @@ describe("pi-libtui settings", () => {
 		expect(shimmer?.type).toBe("enum");
 		if (shimmer?.type !== "enum" || !Array.isArray(shimmer.options))
 			throw new Error("Shimmer must be an inline enum setting");
-		expect(shimmer.options.map((option) => option.value)).toEqual(["off", "sweep", "glow", "rainbow"]);
+		expect(shimmer.options.map((option) => option.value)).toEqual([
+			"off",
+			"sweep",
+			"glow",
+			"rainbow",
+			"rainbow-glow",
+			"lightning",
+		]);
 
 		await ensureXSettingsRegistry().publish("pi-libtui", {
 			iconPack: "unicode",
 			activityMarker: "pulse",
 			shimmer: "glow",
+			shimmerMarker: true,
 			powerline: false,
 			powerlineButtons: true,
 			softCursor: true,
@@ -111,6 +121,7 @@ describe("pi-libtui settings", () => {
 			iconPack: "unicode",
 			activityMarker: "pulse",
 			shimmer: "glow",
+			shimmerMarker: true,
 			powerline: false,
 			powerlineButtons: true,
 			softCursor: true,

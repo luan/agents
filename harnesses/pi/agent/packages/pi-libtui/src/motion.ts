@@ -255,7 +255,15 @@ function markerCadenceMs(style: TuiActivityMarkerStyle): number | undefined {
 }
 
 function shimmerCadenceMs(style: TuiShimmerStyle): number | undefined {
-	return style === "sweep" ? 90 : style === "glow" ? 70 : style === "rainbow" ? 80 : undefined;
+	return style === "sweep"
+		? 90
+		: style === "glow"
+			? 70
+			: style === "rainbow" || style === "rainbow-glow"
+				? 80
+				: style === "lightning"
+					? 60
+					: undefined;
 }
 
 /**
@@ -637,7 +645,7 @@ export interface ActivityFrame {
 	text: string;
 }
 
-/** Render the configured activity while keeping text shimmer separate from markers. */
+/** Render the configured activity, optionally shimmering marker and text as one unit. */
 export function activityFrame(
 	colors: TuiTheme,
 	text: string,
@@ -645,6 +653,7 @@ export function activityFrame(
 	options: {
 		markerStyle?: TuiActivityMarkerStyle;
 		shimmerStyle?: TuiShimmerStyle;
+		shimmerMarker?: boolean;
 		cadenceMs?: number;
 		frames?: readonly string[];
 		textTone?: TuiForegroundToken;
@@ -656,21 +665,27 @@ export function activityFrame(
 	const configuredMarker = options.markerStyle ?? appearance.activityMarker;
 	const markerStyle = options.reducedMotion && configuredMarker !== "off" ? "static" : configuredMarker;
 	const shimmerStyle = options.reducedMotion ? "off" : (options.shimmerStyle ?? appearance.shimmer);
+	const shimmerMarker = options.shimmerMarker ?? appearance.shimmerMarker;
 	const textTone = options.textTone ?? "text.primary";
+	let markerGlyph: string;
 	let marker: string;
 	switch (markerStyle) {
 		case "off":
+			markerGlyph = "";
 			marker = "";
 			break;
 		case "pulse":
-			marker = pulseGlyphFrame(colors, "●", elapsedMs);
+			markerGlyph = "●";
+			marker = pulseGlyphFrame(colors, markerGlyph, elapsedMs);
 			break;
 		case "static":
-			marker = colors.fg("accent", "●");
+			markerGlyph = "●";
+			marker = colors.fg("accent", markerGlyph);
 			break;
 		default: {
 			const animation = markerAnimation(markerStyle);
 			if (!animation) {
+				markerGlyph = "";
 				marker = "";
 				break;
 			}
@@ -681,32 +696,89 @@ export function activityFrame(
 					: animation.nerdFonts && appearance.iconPack !== "nerd-fonts"
 						? fallbackFrames(animation.width)
 						: configuredFrames;
-			marker = colors.fg(
-				"accent",
-				activityGlyph(
-					glyphFrame(frames, elapsedMs, options.cadenceMs ?? animation.cadenceMs),
-					"-".repeat(animation.width),
-					animation.width,
-				),
+			markerGlyph = activityGlyph(
+				glyphFrame(frames, elapsedMs, options.cadenceMs ?? animation.cadenceMs),
+				"-".repeat(animation.width),
+				animation.width,
 			);
+			marker = colors.fg("accent", markerGlyph);
 			break;
 		}
 	}
-	const textOutput =
-		shimmerStyle === "off"
-			? colors.fg(textTone, text)
-			: shimmerStyle === "rainbow"
-				? rainbowShimmerFrame(colors, text, elapsedMs, {
-						cadenceMs: options.cadenceMs ?? shimmerCadenceMs(shimmerStyle),
-						baseTone: textTone,
-					})
-				: shimmerFrame(colors, text, elapsedMs, {
-						cadenceMs: options.cadenceMs ?? shimmerCadenceMs(shimmerStyle),
-						width: shimmerStyle === "sweep" ? 1 : 3,
-						baseTone: textTone,
-						highlightTone: options.highlightTone,
-					});
+	const markerLength = textGraphemes(markerGlyph).length;
+	const textLength = textGraphemes(text).length;
+	const shimmerLength = markerLength + 1 + textLength;
+	if (markerGlyph && shimmerMarker && shimmerStyle !== "off") {
+		marker = paintShimmer(colors, markerGlyph, elapsedMs, shimmerStyle, {
+			cadenceMs: options.cadenceMs,
+			baseTone: "accent",
+			highlightTone: options.highlightTone,
+			variantAscii: true,
+			offset: 0,
+			totalLength: shimmerLength,
+		});
+	}
+	const textOutput = paintShimmer(colors, text, elapsedMs, shimmerStyle, {
+		cadenceMs: options.cadenceMs,
+		baseTone: textTone,
+		highlightTone: options.highlightTone,
+		variantAscii: true,
+		offset: markerGlyph && shimmerMarker ? markerLength + 1 : 0,
+		totalLength: markerGlyph && shimmerMarker ? shimmerLength : textLength,
+	});
 	return { marker, text: textOutput };
+}
+
+function paintShimmer(
+	colors: TuiTheme,
+	text: string,
+	elapsedMs: number,
+	style: TuiShimmerStyle,
+	options: {
+		cadenceMs?: number;
+		baseTone: TuiForegroundToken;
+		highlightTone?: TuiForegroundToken;
+		variantAscii: boolean;
+		offset: number;
+		totalLength: number;
+	},
+): string {
+	const cadenceMs = options.cadenceMs ?? shimmerCadenceMs(style);
+	switch (style) {
+		case "off":
+			return colors.fg(options.baseTone, text);
+		case "rainbow":
+			return rainbowShimmerFrame(colors, text, elapsedMs, {
+				cadenceMs,
+				baseTone: options.baseTone,
+				offset: options.offset,
+			});
+		case "rainbow-glow":
+			return rainbowGlowShimmerFrame(colors, text, elapsedMs, {
+				cadenceMs,
+				baseTone: options.baseTone,
+				offset: options.offset,
+				totalLength: options.totalLength,
+			});
+		case "lightning":
+			return lightningShimmerFrame(colors, text, elapsedMs, {
+				cadenceMs,
+				baseTone: options.baseTone,
+				variantAscii: options.variantAscii,
+				offset: options.offset,
+				totalLength: options.totalLength,
+			});
+		case "sweep":
+		case "glow":
+			return shimmerFrame(colors, text, elapsedMs, {
+				cadenceMs,
+				width: style === "sweep" ? 1 : 3,
+				baseTone: options.baseTone,
+				highlightTone: options.highlightTone,
+				offset: options.offset,
+				totalLength: options.totalLength,
+			});
+	}
 }
 
 function activityGlyph(value: string, fallback: string, width: MarkerWidth): string {
@@ -791,6 +863,8 @@ export function shimmerFrame(
 		baseTone?: TuiForegroundToken;
 		highlightTone?: TuiForegroundToken;
 		reducedMotion?: boolean;
+		offset?: number;
+		totalLength?: number;
 	} = {},
 ): string {
 	const characters = textGraphemes(text);
@@ -799,14 +873,16 @@ export function shimmerFrame(
 	const highlightTone = options.highlightTone ?? "accent";
 	if (options.reducedMotion) return colors.fg(baseTone, text);
 	const shineWidth = Math.min(5, Math.max(1, Math.floor(options.width ?? 3)));
-	const cycle = characters.length + shineWidth;
+	const offset = Math.max(0, Math.floor(options.offset ?? 0));
+	const totalLength = Math.max(offset + characters.length, Math.floor(options.totalLength ?? characters.length));
+	const cycle = totalLength + shineWidth;
 	const position = Math.floor(Math.max(0, elapsedMs) / Math.max(1, options.cadenceMs ?? 70)) % cycle;
 	const glow = glowPalette(highlightTone);
 	let currentTone: TuiForegroundColor | undefined;
 	let run = "";
 	let output = "";
 	for (const [index, character] of characters.entries()) {
-		const distance = Math.abs(index - position);
+		const distance = Math.abs(index + offset - position);
 		const tone = distance <= shineWidth ? (glow[distance] ?? baseTone) : baseTone;
 		if (currentTone !== undefined && tone !== currentTone) {
 			output += colors.fg(currentTone, run);
@@ -823,7 +899,43 @@ export function rainbowShimmerFrame(
 	colors: TuiTheme,
 	text: string,
 	elapsedMs: number,
-	options: { cadenceMs?: number; baseTone?: TuiForegroundToken; reducedMotion?: boolean } = {},
+	options: { cadenceMs?: number; baseTone?: TuiForegroundToken; reducedMotion?: boolean; offset?: number } = {},
+): string {
+	const characters = textGraphemes(text);
+	if (characters.length === 0) return "";
+	const baseTone = options.baseTone ?? "text.secondary";
+	if (options.reducedMotion) return colors.fg(baseTone, text);
+	const frame = Math.floor(Math.max(0, elapsedMs) / Math.max(1, options.cadenceMs ?? 80));
+	const offset = Math.max(0, Math.floor(options.offset ?? 0));
+	const hues: readonly TuiHue[] = ["magenta", "blue", "cyan", "green", "yellow", "red"];
+	let output = "";
+	for (const [index, character] of characters.entries()) {
+		const globalIndex = index + offset;
+		const wave = Math.sin((globalIndex - frame * 0.5) * 0.8);
+		if (wave <= 0.3) {
+			output += colors.fg(baseTone, character);
+			continue;
+		}
+		const intensity = (wave - 0.3) / 0.7;
+		const hue = hues[(globalIndex + Math.floor(frame / 2)) % hues.length] ?? "blue";
+		const shade = Math.min(5, Math.max(2, Math.round(2 + intensity * 3))) as 2 | 3 | 4 | 5;
+		output += colors.fg({ hue, shade }, character);
+	}
+	return output;
+}
+
+/** Paint a broad moving rainbow glow while retaining a subdued color trail. */
+export function rainbowGlowShimmerFrame(
+	colors: TuiTheme,
+	text: string,
+	elapsedMs: number,
+	options: {
+		cadenceMs?: number;
+		baseTone?: TuiForegroundToken;
+		reducedMotion?: boolean;
+		offset?: number;
+		totalLength?: number;
+	} = {},
 ): string {
 	const characters = textGraphemes(text);
 	if (characters.length === 0) return "";
@@ -831,19 +943,97 @@ export function rainbowShimmerFrame(
 	if (options.reducedMotion) return colors.fg(baseTone, text);
 	const frame = Math.floor(Math.max(0, elapsedMs) / Math.max(1, options.cadenceMs ?? 80));
 	const hues: readonly TuiHue[] = ["magenta", "blue", "cyan", "green", "yellow", "red"];
-	let output = "";
-	for (const [index, character] of characters.entries()) {
-		const wave = Math.sin((index - frame * 0.5) * 0.8);
-		if (wave <= 0.3) {
-			output += colors.fg(baseTone, character);
-			continue;
-		}
-		const intensity = (wave - 0.3) / 0.7;
-		const hue = hues[(index + Math.floor(frame / 2)) % hues.length] ?? "blue";
-		const shade = Math.min(5, Math.max(2, Math.round(2 + intensity * 3))) as 2 | 3 | 4 | 5;
-		output += colors.fg({ hue, shade }, character);
-	}
-	return output;
+	const offset = Math.max(0, Math.floor(options.offset ?? 0));
+	const totalLength = Math.max(offset + characters.length, Math.floor(options.totalLength ?? characters.length));
+	const position = frame % (totalLength + 5);
+	return characters
+		.map((character, index) => {
+			const globalIndex = index + offset;
+			const distance = Math.abs(globalIndex - position);
+			const hue = hues[(globalIndex + Math.floor(frame / 2)) % hues.length] ?? "blue";
+			const shade = distance === 0 ? 5 : distance === 1 ? 4 : distance <= 3 ? 3 : 2;
+			return colors.fg({ hue, shade }, character);
+		})
+		.join("");
+}
+
+const ASCII_ARTIFACT_MARKS = Object.freeze([
+	"\u0307",
+	"\u030c",
+	"\u0302",
+	"\u0304",
+	"\u0323",
+	"\u0327",
+	"\u0303",
+	"\u030a",
+	"\u0338",
+] as const);
+
+const MAIN_ZIPPING_VARIANTS = Object.freeze({
+	z: Object.freeze(["ż", "ž", "ẑ", "ẕ", "ẓ", "z̧", "z̃", "z̊", "z̸"]),
+	i: Object.freeze(["i", "ǐ", "î", "ī", "ị", "į", "ĩ", "i̊", "i̸"]),
+	n: Object.freeze(["ṅ", "ň", "n̂", "ṉ", "ṇ", "ņ", "ñ", "n̊", "n̸"]),
+	g: Object.freeze(["ġ", "ǧ", "ĝ", "ḡ", "g̣", "ģ", "g̃", "g̊", "g̸"]),
+} satisfies Readonly<Record<string, readonly string[]>>);
+
+const ASCII_ARTIFACT_VARIANTS: Readonly<Record<string, readonly string[]>> = Object.freeze(
+	Object.fromEntries(
+		Array.from({ length: 95 }, (_, offset) => {
+			const character = String.fromCharCode(0x20 + offset);
+			const exact = MAIN_ZIPPING_VARIANTS[character as keyof typeof MAIN_ZIPPING_VARIANTS];
+			const variants = exact ?? ASCII_ARTIFACT_MARKS.map((mark) => `${character}${mark}`.normalize("NFC"));
+			return [character, Object.freeze(variants)] as const;
+		}),
+	),
+);
+
+function artifactAsciiCharacter(character: string, frame: number): string {
+	const variants = ASCII_ARTIFACT_VARIANTS[character];
+	return variants?.[frame % variants.length] ?? character;
+}
+
+/**
+ * Adapt main's fast-mode reverse strike and artifact variants to arbitrary text.
+ * Every printable ASCII cell has nine fixed-width variants; main's z/i/n/g
+ * table is retained exactly and the remaining cells use the same artifact families.
+ */
+export function lightningShimmerFrame(
+	colors: TuiTheme,
+	text: string,
+	elapsedMs: number,
+	options: {
+		cadenceMs?: number;
+		baseTone?: TuiForegroundToken;
+		reducedMotion?: boolean;
+		variantAscii?: boolean;
+		offset?: number;
+		totalLength?: number;
+	} = {},
+): string {
+	const characters = textGraphemes(text);
+	if (characters.length === 0) return "";
+	const baseTone = options.baseTone ?? "text.secondary";
+	if (options.reducedMotion) return colors.fg(baseTone, text);
+	const cadenceMs = Math.max(1, options.cadenceMs ?? 60);
+	const frame = Math.floor(Math.max(0, elapsedMs) / cadenceMs);
+	const offset = Math.max(0, Math.floor(options.offset ?? 0));
+	const totalLength = Math.max(offset + characters.length, Math.floor(options.totalLength ?? characters.length));
+	const popIndex = totalLength - 1 - (Math.floor(frame / 2) % totalLength);
+	const leftIndex = (popIndex + totalLength - 1) % totalLength;
+	const rightIndex = (popIndex + 1) % totalLength;
+	const shinePosition = ((frame * cadenceMs) / 80) % (totalLength + 3);
+	return characters
+		.map((character, index) => {
+			const globalIndex = index + offset;
+			const varied = options.variantAscii === false ? character : artifactAsciiCharacter(character, frame);
+			if (globalIndex === popIndex) return `\x1b[1;9m${colors.fg("warning", varied)}\x1b[22;29m`;
+			if (globalIndex === leftIndex || globalIndex === rightIndex)
+				return `\x1b[9m${colors.fg({ hue: "yellow", shade: 2 }, varied)}\x1b[29m`;
+			const distance = shinePosition - globalIndex;
+			if (distance > 0 && distance < 3) return colors.fg({ hue: glowHue(baseTone), shade: 4 }, varied);
+			return colors.fg(baseTone, varied);
+		})
+		.join("");
 }
 
 const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });

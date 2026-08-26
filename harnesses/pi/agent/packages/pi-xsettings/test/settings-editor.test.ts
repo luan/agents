@@ -431,6 +431,8 @@ describe("xsettings editor", () => {
 						{ value: "sweep", label: "Sweep", description: "Narrow highlight." },
 						{ value: "glow", label: "Glow", description: "Broad highlight." },
 						{ value: "rainbow", label: "Rainbow", description: "Color wave." },
+						{ value: "rainbow-glow", label: "Rainbow glow", description: "Color glow." },
+						{ value: "lightning", label: "Lightning", description: "Fast strike." },
 					],
 				},
 			],
@@ -447,8 +449,9 @@ describe("xsettings editor", () => {
 		shimmerEditor.handleInput("\r");
 		const shimmerLines = shimmerEditor.render(100);
 		const strippedShimmerLines = shimmerLines.map(stripTerminalSequences);
-		for (const label of ["Off", "Sweep", "Glow", "Rainbow"])
-			expect(strippedShimmerLines.find((line) => line.includes(label))).toContain(`● ${label}`);
+		const baseShimmerLines = strippedShimmerLines.map((line) => line.normalize("NFD").replace(/\p{M}/gu, ""));
+		for (const label of ["Off", "Sweep", "Glow", "Rainbow", "Rainbow glow", "Lightning"])
+			expect(baseShimmerLines.find((line) => line.includes(label))).toContain(`● ${label}`);
 		shimmerEditor.handleInput("\x1b");
 		expect(sharedMotionScheduler.activeMountCount).toBe(mountsBefore);
 	});

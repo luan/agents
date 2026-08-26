@@ -104,7 +104,26 @@ export const tuiSettings = createSettings({
 				{ value: "sweep", label: "Sweep", description: "Move a narrow highlight across activity text." },
 				{ value: "glow", label: "Glow", description: "Move a broader multi-step glow across activity text." },
 				{ value: "rainbow", label: "Rainbow", description: "Move a semantic color wave across activity text." },
+				{
+					value: "rainbow-glow",
+					label: "Rainbow glow",
+					description: "Move a broad rainbow glow and subdued color trail across activity text.",
+				},
+				{
+					value: "lightning",
+					label: "Lightning",
+					description: "Move fast-mode strike and shine effects across activity text.",
+				},
 			],
+		},
+		shimmerMarker: {
+			category: "appearance",
+			page: "animations",
+			section: "General",
+			label: "Shimmer marker",
+			description: "Apply the selected text shimmer to the activity marker too.",
+			type: "boolean",
+			default: false,
 		},
 		powerline: {
 			category: "appearance",

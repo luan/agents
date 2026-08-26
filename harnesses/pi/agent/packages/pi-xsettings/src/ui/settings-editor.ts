@@ -150,6 +150,7 @@ class AnimationSelect extends SearchableSelect<string> {
 				const frame = activityFrame(colors, option.label, now - startedAt, {
 					markerStyle: markerField && isTuiActivityMarkerStyle(option.value) ? option.value : appearance.activityMarker,
 					shimmerStyle: !markerField && isTuiShimmerStyle(option.value) ? option.value : appearance.shimmer,
+					shimmerMarker: appearance.shimmerMarker,
 					textTone: context.selected ? "accent" : "text.primary",
 				});
 				const preview = frame.marker ? `${frame.marker} ${frame.text}` : frame.text;
