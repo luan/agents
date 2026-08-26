@@ -266,4 +266,40 @@ describe("settings screen fields", () => {
 
 		expect(stripTerminalSequences(screen.render(100).join("\n"))).toContain("role");
 	});
+
+	test("requests a render in the same turn as keyboard navigation", () => {
+		initTheme("dark", false);
+		setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
+		let renders = 0;
+		const field = (id: string, label: string): SettingsScreenField => ({
+			id,
+			category: "appearance",
+			storagePath: ["appearance", id],
+			section: "General",
+			label,
+			description: `${label} setting.`,
+			type: "boolean",
+			value: false,
+			defaultValue: false,
+			configured: false,
+		});
+		const screen = new XSettingsScreen(
+			[field("first", "First"), field("second", "Second")],
+			theme,
+			() => {},
+			() => {},
+			() => {},
+			24,
+			[],
+			undefined,
+			undefined,
+			() => renders++,
+		);
+
+		screen.render(80);
+		screen.handleInput("j");
+
+		expect(renders).toBe(1);
+		expect(stripTerminalSequences(screen.render(80).join("\n"))).toContain("› Second");
+	});
 });

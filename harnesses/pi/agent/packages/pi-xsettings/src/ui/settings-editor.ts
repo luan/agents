@@ -10,18 +10,24 @@ import {
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import {
+	activityFrame,
 	ComponentStack,
 	DialogButtonBar,
 	type DialogHost,
 	type DialogOverlayAnchor,
 	type DialogOverlayOptions,
+	getTuiAppearance,
 	icon,
+	isTuiActivityMarkerStyle,
+	isTuiShimmerStyle,
 	MultiSelect,
 	SearchableSelect,
 	SelectableList,
 	type SelectableListRenderContext,
 	type SelectableListRow,
 	SemanticInput,
+	sharedMotionScheduler,
+	type MotionMount,
 	tuiTheme,
 } from "pi-libtui";
 import type {
@@ -115,6 +121,57 @@ export type SettingField =
 	| StringListSettingField
 	| MultiEnumSettingField
 	| ListSettingField;
+
+type EditorComponent = Component & { dispose?(): void };
+
+class AnimationSelect extends SearchableSelect<string> {
+	private readonly motion: MotionMount;
+
+	constructor(field: EnumSettingField, theme: Theme, done: (value?: string) => void, requestRender: () => void) {
+		let now = performance.now();
+		const startedAt = now;
+		const markerField = field.id === "extensions.pi-libtui.activityMarker";
+		const options = field.options.filter((option) =>
+			markerField ? isTuiActivityMarkerStyle(option.value) : isTuiShimmerStyle(option.value),
+		);
+		super({
+			title: field.label,
+			showTitle: false,
+			description: field.description,
+			options,
+			selected: options.some((option) => option.value === field.value) ? field.value : undefined,
+			theme,
+			onSelect: done,
+			onCancel: () => done(),
+			requestRender,
+			renderOption: (option, context) => {
+				const colors = tuiTheme(context.theme);
+				const appearance = getTuiAppearance();
+				const frame = activityFrame(colors, option.label, now - startedAt, {
+					markerStyle: markerField && isTuiActivityMarkerStyle(option.value) ? option.value : appearance.activityMarker,
+					shimmerStyle: !markerField && isTuiShimmerStyle(option.value) ? option.value : appearance.shimmer,
+					textTone: context.selected ? "accent" : "text.primary",
+				});
+				const preview = frame.marker ? `${frame.marker} ${frame.text}` : frame.text;
+				const description = option.description ? `  ${colors.fg("text.muted", option.description)}` : "";
+				return `${context.selected ? theme.bold(preview) : preview}${description}`;
+			},
+		});
+		this.motion = sharedMotionScheduler.mount(
+			{ requestRender },
+			{
+				cadenceMs: 70,
+				onFrame: (next) => {
+					now = next;
+				},
+			},
+		);
+	}
+
+	dispose(): void {
+		this.motion.dispose();
+	}
+}
 
 function toolOptionSummary(description?: string): string | undefined {
 	const firstLine = description
@@ -221,7 +278,7 @@ export class SettingsEditor extends ComponentStack {
 	private fields: SettingField[];
 	private filtered: SettingField[];
 	private selectedIndex = 0;
-	private activeEditor: Component | undefined;
+	private activeEditor: EditorComponent | undefined;
 	private closeActiveEditor: (() => void) | undefined;
 	private filterActive = false;
 	private readonly filterInput: SemanticInput;
@@ -245,6 +302,7 @@ export class SettingsEditor extends ComponentStack {
 		private readonly modelOptions: readonly ProtocolSettingOption[] = [],
 		initialFieldId?: string,
 		private readonly dialogHost?: DialogHost,
+		private readonly requestRender: () => void = () => {},
 	) {
 		super([], { height: maxVisible, anchorLastChild: true });
 		this.filterInput = new SemanticInput(theme);
@@ -466,16 +524,20 @@ export class SettingsEditor extends ComponentStack {
 			this.closeEditor();
 		};
 		if (field.type === "enum") {
-			const editor = new SearchableSelect({
-				title: field.label,
-				showTitle: false,
-				description: field.description,
-				options: field.options,
-				selected: field.value,
-				theme: this.theme,
-				onSelect: done,
-				onCancel: () => done(),
-			});
+			const editor =
+				field.id === "extensions.pi-libtui.activityMarker" || field.id === "extensions.pi-libtui.shimmer"
+					? new AnimationSelect(field, this.theme, done, this.requestRender)
+					: new SearchableSelect({
+							title: field.label,
+							showTitle: false,
+							description: field.description,
+							options: field.options,
+							selected: field.value,
+							theme: this.theme,
+							onSelect: done,
+							onCancel: () => done(),
+							requestRender: this.requestRender,
+						});
 			this.openEditor(editor, { title: field.label, width: 48, maxHeight: 18, parent: this.getSelectedDialogAnchor() });
 		} else if (field.type === "string") {
 			this.openEditor(new StringEditor(field, this.theme, done, !this.dialogHost), {
@@ -524,16 +586,21 @@ export class SettingsEditor extends ComponentStack {
 		};
 	}
 
-	private openEditor(editor: Component, options: DialogOverlayOptions): void {
+	private openEditor(editor: EditorComponent, options: DialogOverlayOptions): void {
 		this.activeEditor = editor;
 		this.closeActiveEditor = this.dialogHost?.open(editor, options);
 	}
 
 	private closeEditor(): void {
 		const close = this.closeActiveEditor;
+		this.activeEditor?.dispose?.();
 		this.closeActiveEditor = undefined;
 		this.activeEditor = undefined;
 		close?.();
+	}
+
+	dispose(): void {
+		this.closeEditor();
 	}
 
 	private applyFilter(): void {

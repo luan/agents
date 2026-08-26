@@ -126,6 +126,7 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 					modelOptions,
 					undefined,
 					offsetDialogHost(dialogs, { row: 1, col: 1 }),
+					() => tui.requestRender(),
 				);
 				return new FullscreenOverlay(tui, theme, screen, { label: "Settings", icon: "settings" });
 			},
@@ -172,6 +173,8 @@ function definitionRequiresReload(definition: SettingsScreenField): boolean {
 	return !(
 		definition.id === "pi.theme" ||
 		definition.id === "extensions.pi-libtui.iconPack" ||
+		definition.id === "extensions.pi-libtui.activityMarker" ||
+		definition.id === "extensions.pi-libtui.shimmer" ||
 		definition.id === "extensions.pi-libtui.powerline" ||
 		definition.id === "extensions.pi-libtui.powerlineButtons" ||
 		definition.id === "extensions.pi-libtui.softCursor"

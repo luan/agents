@@ -9,6 +9,8 @@ describe("pi-libtui settings", () => {
 	test("uses portable appearance defaults", () => {
 		expect(DEFAULT_TUI_APPEARANCE).toEqual({
 			iconPack: "unicode",
+			activityMarker: "spinner",
+			shimmer: "off",
 			powerline: false,
 			powerlineButtons: false,
 			softCursor: false,
@@ -23,6 +25,8 @@ describe("pi-libtui settings", () => {
 		const registration = ensureXSettingsRegistry().registrations["pi-libtui"];
 		expect(registration?.definitions.map((definition) => definition.key)).toEqual([
 			"iconPack",
+			"activityMarker",
+			"shimmer",
 			"powerline",
 			"powerlineButtons",
 			"softCursor",
@@ -36,9 +40,31 @@ describe("pi-libtui settings", () => {
 		expect(registration?.definitions.find((definition) => definition.key === "powerlineButtons")?.label).toBe(
 			"Powerline buttons",
 		);
+		const activityMarker = registration?.definitions.find((definition) => definition.key === "activityMarker");
+		expect(activityMarker?.type).toBe("enum");
+		if (activityMarker?.type !== "enum" || !Array.isArray(activityMarker.options))
+			throw new Error("Activity marker must be an inline enum setting");
+		expect(activityMarker.options.map((option) => option.value)).toEqual([
+			"off",
+			"spinner",
+			"pulse",
+			"static",
+			"line",
+			"arc",
+			"dots",
+			"quadrants",
+			"sparkle",
+		]);
+		const shimmer = registration?.definitions.find((definition) => definition.key === "shimmer");
+		expect(shimmer?.type).toBe("enum");
+		if (shimmer?.type !== "enum" || !Array.isArray(shimmer.options))
+			throw new Error("Shimmer must be an inline enum setting");
+		expect(shimmer.options.map((option) => option.value)).toEqual(["off", "sweep", "glow", "rainbow"]);
 
 		await ensureXSettingsRegistry().publish("pi-libtui", {
 			iconPack: "unicode",
+			activityMarker: "pulse",
+			shimmer: "glow",
 			powerline: false,
 			powerlineButtons: true,
 			softCursor: true,
@@ -48,6 +74,8 @@ describe("pi-libtui settings", () => {
 		});
 		expect(getTuiAppearance()).toEqual({
 			iconPack: "unicode",
+			activityMarker: "pulse",
+			shimmer: "glow",
 			powerline: false,
 			powerlineButtons: true,
 			softCursor: true,

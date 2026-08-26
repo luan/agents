@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import {
 	CURSOR_MARKER,
@@ -8,12 +8,21 @@ import {
 	stripTerminalSequences,
 	TUI_KEYBINDINGS,
 } from "@earendil-works/pi-tui";
-import { icon, type DialogHost, tuiTheme, type TuiTitleSource } from "pi-libtui";
+import {
+	configureTuiAppearance,
+	DEFAULT_TUI_APPEARANCE,
+	icon,
+	type DialogHost,
+	sharedMotionScheduler,
+	tuiTheme,
+	type TuiTitleSource,
+} from "pi-libtui";
 import type { SettingValue } from "../src/protocol/settings.ts";
 import { type SettingField, SettingsEditor } from "../src/ui/settings-editor.ts";
 import { Type } from "typebox";
 
 describe("xsettings editor", () => {
+	afterEach(() => configureTuiAppearance(DEFAULT_TUI_APPEARANCE));
 	const theme = {
 		bold: (text: string) => text,
 		fg: (_color: string, text: string) => text,
@@ -349,6 +358,99 @@ describe("xsettings editor", () => {
 		stringEditor.handleInput("new");
 		stringEditor.handleInput("\r");
 		expect(changes).toContainEqual(["label", "new"]);
+	});
+
+	test("previews independently combinable activity markers and text shimmer", () => {
+		initializeTui();
+		const mountsBefore = sharedMotionScheduler.activeMountCount;
+		configureTuiAppearance({ shimmer: "glow" });
+		const markerEditor = new SettingsEditor(
+			[
+				{
+					id: "extensions.pi-libtui.activityMarker",
+					section: "UI & Display",
+					label: "Activity marker",
+					description: "Choose a marker.",
+					type: "enum",
+					value: "spinner",
+					defaultValue: "spinner",
+					configured: false,
+					options: [
+						{ value: "off", label: "Off", description: "No marker." },
+						{ value: "spinner", label: "Spinner", description: "Rotating marker." },
+						{ value: "pulse", label: "Pulse", description: "Pulsing marker." },
+						{ value: "static", label: "Static", description: "Static marker." },
+						{ value: "line", label: "Line", description: "Line marker." },
+						{ value: "arc", label: "Arc", description: "Arc marker." },
+						{ value: "dots", label: "Dots", description: "Moving dot marker." },
+						{ value: "quadrants", label: "Quadrants", description: "Quadrant marker." },
+						{ value: "sparkle", label: "Sparkle", description: "Sparkle marker." },
+					],
+				},
+			],
+			theme,
+			() => {},
+			() => {},
+			() => {},
+			18,
+			[],
+			undefined,
+			undefined,
+			() => {},
+		);
+
+		markerEditor.handleInput("\r");
+		expect(sharedMotionScheduler.activeMountCount).toBe(mountsBefore + 1);
+		const lines = markerEditor.render(100).map(stripTerminalSequences);
+		expect(lines.find((line) => line.includes("Off"))).not.toContain("● Off");
+		expect(lines.find((line) => line.includes("Spinner"))).toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Spinner/u);
+		expect(lines.find((line) => line.includes("Pulse"))).toContain("● Pulse");
+		expect(lines.find((line) => line.includes("Static"))).toContain("● Static");
+		expect(lines.find((line) => line.includes("Line"))).toMatch(/[-\\|/] Line/u);
+		expect(lines.find((line) => line.includes("Arc"))).toMatch(/[◜◠◝◞◡◟] Arc/u);
+		expect(lines.find((line) => line.includes("Dots"))).toMatch(/[⠁⠂⠄⡀⢀⠠⠐⠈] Dots/u);
+		expect(lines.find((line) => line.includes("Quadrants"))).toMatch(/[▖▘▝▗] Quadrants/u);
+		expect(lines.find((line) => line.includes("Sparkle"))).toMatch(/[✦✧] Sparkle/u);
+		markerEditor.handleInput("\x1b");
+		expect(sharedMotionScheduler.activeMountCount).toBe(mountsBefore);
+
+		configureTuiAppearance({ activityMarker: "pulse", shimmer: "off" });
+		const shimmerEditor = new SettingsEditor(
+			[
+				{
+					id: "extensions.pi-libtui.shimmer",
+					section: "UI & Display",
+					label: "Text shimmer",
+					description: "Choose text motion.",
+					type: "enum",
+					value: "off",
+					defaultValue: "off",
+					configured: false,
+					options: [
+						{ value: "off", label: "Off", description: "Steady text." },
+						{ value: "sweep", label: "Sweep", description: "Narrow highlight." },
+						{ value: "glow", label: "Glow", description: "Broad highlight." },
+						{ value: "rainbow", label: "Rainbow", description: "Color wave." },
+					],
+				},
+			],
+			theme,
+			() => {},
+			() => {},
+			() => {},
+			18,
+			[],
+			undefined,
+			undefined,
+			() => {},
+		);
+		shimmerEditor.handleInput("\r");
+		const shimmerLines = shimmerEditor.render(100);
+		const strippedShimmerLines = shimmerLines.map(stripTerminalSequences);
+		for (const label of ["Off", "Sweep", "Glow", "Rainbow"])
+			expect(strippedShimmerLines.find((line) => line.includes(label))).toContain(`● ${label}`);
+		shimmerEditor.handleInput("\x1b");
+		expect(sharedMotionScheduler.activeMountCount).toBe(mountsBefore);
 	});
 
 	test("opens editors through the shared dialog host without replacing the settings UI", () => {

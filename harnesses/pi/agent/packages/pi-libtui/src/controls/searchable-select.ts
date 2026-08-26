@@ -25,6 +25,14 @@ export interface SelectOption<Value extends string = string> {
 	description?: string;
 }
 
+/** State and available content width for a custom searchable-select row. */
+export interface SearchableSelectRowContext {
+	width: number;
+	selected: boolean;
+	hovered: boolean;
+	theme: Theme;
+}
+
 /** Construction options for {@link SearchableSelect}. */
 export interface SearchableSelectOptions<Value extends string> {
 	/** Title rendered above the picker unless the surrounding frame owns it. */
@@ -43,6 +51,10 @@ export interface SearchableSelectOptions<Value extends string> {
 	onSelect(value: Value): void;
 	/** Close the picker without confirming. */
 	onCancel(): void;
+	/** Render option content after the picker-owned cursor prefix. */
+	renderOption?(option: SelectOption<Value>, context: SearchableSelectRowContext): string;
+	/** Invalidate the host after pointer or externally animated state changes. */
+	requestRender?(): void;
 }
 
 /** A fixed-layout searchable picker whose pointer selection is confirmed explicitly. */
@@ -86,7 +98,7 @@ export class SearchableSelect<Value extends string = string> implements Componen
 			maxVisible: SearchableSelect.MAX_VISIBLE,
 			activateOnClick: false,
 			renderItem: (option, context) => this.renderOption(option, context),
-			requestRender() {},
+			requestRender: options.requestRender ?? (() => {}),
 			onActivate: (option) => options.onSelect(option.value),
 		});
 		this.buttons = new DialogButtonBar({
@@ -110,7 +122,7 @@ export class SearchableSelect<Value extends string = string> implements Componen
 					shortcuts: keybindings.getKeys("tui.select.confirm"),
 				},
 			],
-			requestRender() {},
+			requestRender: options.requestRender ?? (() => {}),
 			onActivate: (action) => (action === "save" ? this.confirm() : options.onCancel()),
 		});
 	}
@@ -274,10 +286,22 @@ export class SearchableSelect<Value extends string = string> implements Componen
 	private renderOption(option: SelectOption<Value>, context: SelectableListRenderContext): string {
 		const colors = tuiTheme(this.options.theme);
 		const prefix = context.selected ? colors.fg("accent", "→ ") : "  ";
-		const renderedLabel = this.renderMatchingLabel(option.label, context.selected);
-		const label = context.selected ? this.options.theme.bold(renderedLabel) : renderedLabel;
-		const description = option.description ? `  ${colors.fg("text.muted", option.description)}` : "";
-		const row = truncateToWidth(`${prefix}${label}${description}`, context.width, "");
+		const contentWidth = Math.max(0, context.width - visibleWidth(prefix));
+		let content: string;
+		if (this.options.renderOption) {
+			content = this.options.renderOption(option, {
+				width: contentWidth,
+				selected: context.selected,
+				hovered: context.hovered,
+				theme: this.options.theme,
+			});
+		} else {
+			const renderedLabel = this.renderMatchingLabel(option.label, context.selected);
+			const label = context.selected ? this.options.theme.bold(renderedLabel) : renderedLabel;
+			const description = option.description ? `  ${colors.fg("text.muted", option.description)}` : "";
+			content = `${label}${description}`;
+		}
+		const row = truncateToWidth(`${prefix}${content}`, context.width, "");
 		const padded = row + " ".repeat(Math.max(0, context.width - visibleWidth(row)));
 		return context.hovered && !context.selected ? colors.bg("surface.selected", padded) : padded;
 	}
