@@ -1,0 +1,4 @@
+export const MAX_TASK_NAME_LENGTH = 64;
+export const MAX_AGENT_TARGET_LENGTH = 512;
+export const MAX_AGENT_MESSAGE_LENGTH = 32_768;
+export const MAX_PATH_PREFIX_LENGTH = 512;
