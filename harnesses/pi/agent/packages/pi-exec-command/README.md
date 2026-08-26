@@ -165,6 +165,11 @@ Without the xsettings host, the package uses those compiled defaults. Do not
 create a second settings file. Saving settings republishes the tool
 definitions; reload Pi when changing a default for an already-running bridge.
 
+Running command rows use the shared `pi-libtui.activityMarker` and
+`pi-libtui.shimmer` Appearance settings. Marker choices (`off`, `spinner`,
+`pulse`, `static`) combine independently with text choices (`off`, `sweep`,
+`glow`) and apply live.
+
 ## Architecture
 
 | Concern | Owner |

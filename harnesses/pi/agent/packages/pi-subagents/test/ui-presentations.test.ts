@@ -1,6 +1,13 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
-import { formatAgentCost, formatAgentDuration, formatAgentTokens } from "../src/ui/agent-summary.ts";
+import { configureTuiAppearance, DEFAULT_TUI_APPEARANCE, tuiTheme } from "pi-libtui";
+import {
+	formatAgentCost,
+	formatAgentDuration,
+	formatAgentTokens,
+	renderAgentIdentity,
+	renderAgentStatusMarker,
+} from "../src/ui/agent-summary.ts";
 import { createWaitToolPresentation, spawnToolPresentation } from "../src/ui/tool-presentations.ts";
 
 const theme = {
@@ -11,11 +18,26 @@ const theme = {
 	getBgAnsi: () => "\x1b[48;2;20;24;30m",
 } as never;
 
+afterEach(() => configureTuiAppearance(DEFAULT_TUI_APPEARANCE));
+
 describe("agent presentation formatting", () => {
 	test("keeps small costs and large token counts useful", () => {
 		expect(formatAgentCost(0.0042)).toBe("$0.0042");
 		expect(formatAgentDuration(-50)).toBe("0.0s");
 		expect(formatAgentTokens(1_250_000)).toBe("1.3m tokens");
+	});
+
+	test("keeps running agent shimmer text independent from markers", () => {
+		const colors = tuiTheme(theme);
+		configureTuiAppearance({ activityMarker: "pulse", shimmer: "off" });
+		expect(stripTerminalSequences(renderAgentStatusMarker(colors, "running", 0, 300))).toBe("●");
+		configureTuiAppearance({ activityMarker: "off", shimmer: "glow" });
+		expect(renderAgentStatusMarker(colors, "running", 0, 300)).toBe("");
+		expect(stripTerminalSequences(renderAgentIdentity(colors, "worker", "running", 0, 300))).toBe("worker");
+		configureTuiAppearance({ activityMarker: "pulse" });
+		expect(stripTerminalSequences(renderAgentIdentity(colors, "worker", "running", 0, 300))).toBe("● worker");
+		configureTuiAppearance({ activityMarker: "static", shimmer: "off" });
+		expect(stripTerminalSequences(renderAgentStatusMarker(colors, "running", 0, 300))).toBe("●");
 	});
 
 	test("renders spawn details from the versioned result model", () => {

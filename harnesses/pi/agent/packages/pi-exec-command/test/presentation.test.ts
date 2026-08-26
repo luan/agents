@@ -1,6 +1,12 @@
-import { beforeAll, describe, expect, test } from "bun:test";
+import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { icon, sharedMotionScheduler, whenSyntaxReady } from "pi-libtui";
+import {
+	configureTuiAppearance,
+	DEFAULT_TUI_APPEARANCE,
+	icon,
+	sharedMotionScheduler,
+	whenSyntaxReady,
+} from "pi-libtui";
 import { createExecCommandTool } from "../src/tools/exec-command/definition.ts";
 import { normalizeExecCommandArguments, normalizeWriteStdinArguments } from "../src/tools/presentation.ts";
 import { createExecToolResult } from "../src/tools/result.ts";
@@ -13,6 +19,8 @@ const theme = {
 	getFgAnsi: (token: string) => (token === "text" ? "\x1b[38;2;240;240;240m" : "\x1b[38;2;100;140;200m"),
 	getBgAnsi: () => "\x1b[48;2;20;24;30m",
 } as never as Theme;
+
+afterEach(() => configureTuiAppearance(DEFAULT_TUI_APPEARANCE));
 
 interface ContextOverrides {
 	readonly executionStarted?: boolean;
@@ -276,6 +284,32 @@ describe("exec tool presentation", () => {
 			globalThis.clearInterval = originalClearInterval;
 			performance.now = originalPerformanceNow;
 		}
+	});
+
+	test("switches a running command to the configured activity animation", () => {
+		configureTuiAppearance({ activityMarker: "static", shimmer: "off" });
+		const tool = createExecCommandTool({} as never);
+		const args = { cmd: "sleep 1", tty: false };
+		const partial = createExecToolResult({
+			tool: "exec_command",
+			phase: "partial",
+			arguments: normalizeExecCommandArguments(args, "/tmp", "/bin/zsh"),
+			command: args.cmd,
+		});
+		const active = tool.renderResult?.(
+			partial,
+			{ expanded: false, isPartial: true },
+			theme,
+			context(args),
+		) as unknown as { render(width: number): string[]; dispose(): void };
+
+		expect(Bun.stripANSI(active.render(72).join("\n"))).toContain("● $ sleep 1");
+		configureTuiAppearance({ activityMarker: "off", shimmer: "glow" });
+		expect(Bun.stripANSI(active.render(72).join("\n"))).toContain("$ sleep 1");
+		expect(Bun.stripANSI(active.render(72).join("\n"))).not.toContain("◆");
+		configureTuiAppearance({ activityMarker: "pulse" });
+		expect(Bun.stripANSI(active.render(72).join("\n"))).toContain("● $ sleep 1");
+		active.dispose();
 	});
 
 	test("opens long output from its omission row and keeps expanded scrolling bounded", () => {

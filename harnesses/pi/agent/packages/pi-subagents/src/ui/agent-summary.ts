@@ -1,4 +1,4 @@
-import { icon, spinnerFrame, type TuiTheme } from "pi-libtui";
+import { activityFrame, icon, type TuiForegroundToken, type TuiTheme } from "pi-libtui";
 import type { SubagentSnapshot, SubagentStatus, TranscriptPreview } from "../runtime/coordinator.ts";
 
 type AgentRowSummary = Pick<SubagentSnapshot, "status" | "startedAt" | "completedAt" | "cost" | "modelRole">;
@@ -27,7 +27,7 @@ export function renderAgentStatusMarker(
 ): string {
 	switch (status) {
 		case "running":
-			return colors.fg("accent", spinnerFrame(now - startedAt));
+			return activityFrame(colors, "", now - startedAt).marker;
 		case "idle":
 			return colors.fg("positive", icon("confirm"));
 		case "failed":
@@ -37,6 +37,22 @@ export function renderAgentStatusMarker(
 		case "queued":
 			return colors.fg("text.muted", icon("checkbox-off"));
 	}
+}
+
+/** Render an agent name with activity text and status markers kept independent. */
+export function renderAgentIdentity(
+	colors: TuiTheme,
+	name: string,
+	status: SubagentStatus,
+	startedAt: number,
+	now: number,
+	nameTone: TuiForegroundToken = "text.primary",
+): string {
+	if (status === "running") {
+		const frame = activityFrame(colors, name, now - startedAt, { textTone: nameTone });
+		return frame.marker ? `${frame.marker} ${frame.text}` : frame.text;
+	}
+	return `${renderAgentStatusMarker(colors, status, startedAt, now)} ${colors.fg(nameTone, name)}`;
 }
 
 export function renderAgentMetadata(colors: TuiTheme, agent: AgentRowSummary, now: number, separator = " · "): string {

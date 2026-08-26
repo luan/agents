@@ -17,14 +17,14 @@ import {
 	applyScrollbar,
 	FullscreenOverlay,
 	fullscreenOverlayOptions,
+	mountConfiguredAnimation,
 	SelectableList,
-	sharedMotionScheduler,
 	stripTopLevelZoneMarkers,
 	tuiTheme,
 } from "pi-libtui";
 import type { SubagentSnapshot, TranscriptSource } from "../runtime/coordinator.ts";
 import type { AgentPresentationResolverLookup } from "../protocol/presentation.ts";
-import { renderAgentMetadata, renderAgentStatusMarker } from "./agent-summary.ts";
+import { renderAgentIdentity, renderAgentMetadata } from "./agent-summary.ts";
 import { type AgentTreeRow, agentDisplayName, agentTreeRows } from "./agent-tree.ts";
 import type { AgentCustomMessageRendererResolver, AgentToolRendererResolver } from "../protocol/presentation.ts";
 
@@ -369,16 +369,22 @@ export class AgentHub {
 
 	private agentRow(row: AgentTreeRow<AgentHubAgentSnapshot>, selected: boolean, now: number): string {
 		const colors = tuiTheme(this.theme);
-		const marker = renderAgentStatusMarker(colors, row.agent.status, row.agent.startedAt, now);
 		const metadata = renderAgentMetadata(colors, row.agent, now);
 		const name = agentDisplayName(row.agent.id) ?? row.agent.id;
-		const label = colors.fg(selected ? "accent" : "text.primary", name);
-		return `${colors.fg("text.muted", row.prefix)} ${marker} ${label} ${colors.fg("text.muted", "·")} ${metadata}`;
+		const identity = renderAgentIdentity(
+			colors,
+			name,
+			row.agent.status,
+			row.agent.startedAt,
+			now,
+			selected ? "accent" : "text.primary",
+		);
+		return `${colors.fg("text.muted", row.prefix)} ${identity} ${colors.fg("text.muted", "·")} ${metadata}`;
 	}
 
 	private syncMotion(): void {
 		const running = this.snapshot.agents.some((agent) => agent.status === "running");
-		if (running && !this.motion) this.motion = sharedMotionScheduler.mount(this.tui, { cadenceMs: 120 });
+		if (running && !this.motion) this.motion = mountConfiguredAnimation(this.tui);
 		if (!running && this.motion) {
 			this.motion.dispose();
 			this.motion = undefined;

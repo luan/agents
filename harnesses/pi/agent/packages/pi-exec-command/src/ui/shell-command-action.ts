@@ -3,13 +3,17 @@ import type { Component } from "@earendil-works/pi-tui";
 import { sliceByColumn, stripTerminalSequences, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import {
 	highlightSyntaxBlock,
+	activityAnimatesText,
+	activityFrame,
+	getTuiAppearance,
 	type MotionMount,
+	mountConfiguredAnimation,
 	RenderedLinesCache,
 	sanitizeTuiField,
 	sanitizeTuiText,
-	sharedMotionScheduler,
-	spinnerFrame,
+	type TuiActivityMarkerStyle,
 	type TuiForegroundColor,
+	type TuiShimmerStyle,
 	tuiTheme,
 	whenSyntaxReady,
 } from "pi-libtui";
@@ -34,6 +38,12 @@ export interface ShellCommandActionOptions {
 interface ShellPiece {
 	text: string;
 	tone: TuiForegroundColor;
+}
+
+interface ShellActivity {
+	elapsedMs: number;
+	markerStyle: TuiActivityMarkerStyle;
+	shimmerStyle: TuiShimmerStyle;
 }
 
 /** Width-aware, copy-friendly shell command header with cached token styling. */
@@ -72,12 +82,20 @@ export class ShellCommandAction implements Component {
 		const boundedWidth = Math.max(0, Math.floor(width));
 		if (boundedWidth === 0) return [];
 		this.requestSyntaxReady();
-		const frame = this.running
-			? spinnerFrame(this.now - this.startedAt, { reducedMotion: this.options.reducedMotion })
-			: "";
-		const key = `${this.revision}\0${frame}`;
+		const appearance = getTuiAppearance();
+		const activity = this.running
+			? {
+					elapsedMs: this.now - this.startedAt,
+					markerStyle:
+						this.options.reducedMotion && appearance.activityMarker !== "off"
+							? ("static" as const)
+							: appearance.activityMarker,
+					shimmerStyle: this.options.reducedMotion ? ("off" as const) : appearance.shimmer,
+				}
+			: undefined;
+		const key = `${this.revision}\0${activity?.markerStyle ?? ""}\0${activity?.shimmerStyle ?? ""}\0${activity?.elapsedMs ?? ""}`;
 		return this.cache.get(boundedWidth, key, () =>
-			renderShellCommand(this.options.theme, this.view, boundedWidth, frame, this.options.maxRows, this.pieces),
+			renderShellCommand(this.options.theme, this.view, boundedWidth, activity, this.options.maxRows, this.pieces),
 		);
 	}
 
@@ -103,11 +121,11 @@ export class ShellCommandAction implements Component {
 	}
 
 	private syncMotion(): void {
-		if (this.running && !this.motion && !this.options.reducedMotion) {
-			this.motion = sharedMotionScheduler.mount(
+		if (this.running && !this.motion) {
+			this.motion = mountConfiguredAnimation(
 				{ requestRender: this.options.requestRender },
 				{
-					cadenceMs: 80,
+					reducedMotion: this.options.reducedMotion,
 					onFrame: (now) => {
 						this.now = now;
 					},
@@ -124,14 +142,20 @@ function renderShellCommand(
 	theme: Theme,
 	view: ShellCommandActionView,
 	width: number,
-	frame: string,
+	activity: ShellActivity | undefined,
 	maxRows = 6,
 	pieces: readonly ShellPiece[] = shellPieces(view.command, view.shell),
 ): string[] {
 	const colors = tuiTheme(theme);
 	const promptTone = view.status === "failed" ? "negative" : view.status === "queued" ? "text.muted" : "positive";
 	if (width <= 2) return [colors.fg(promptTone, truncateToWidth("$ ", width, ""))];
-	const prefix = `${frame ? `${colors.fg("accent", frame)} ` : ""}${colors.fg(promptTone, "$")} `;
+	const activityMarker = activity
+		? activityFrame(colors, "", activity.elapsedMs, {
+				markerStyle: activity.markerStyle,
+				shimmerStyle: activity.shimmerStyle,
+			}).marker
+		: "";
+	const prefix = `${activityMarker ? `${activityMarker} ` : ""}${colors.fg(promptTone, "$")} `;
 	const continuation = " ".repeat(visibleWidth(prefix));
 	const contentWidth = Math.max(1, width - visibleWidth(prefix));
 	const rows = wrapPieces(pieces, contentWidth);
@@ -146,6 +170,15 @@ function renderShellCommand(
 	}
 	const rendered = visibleRows.map((row, index) => {
 		const lead = index === 0 ? prefix : continuation;
+		if (activity && activityAnimatesText(activity.shimmerStyle)) {
+			const text = row.map((piece) => piece.text).join("");
+			return `${lead}${
+				activityFrame(colors, text, activity.elapsedMs + index * 70, {
+					markerStyle: activity.markerStyle,
+					shimmerStyle: activity.shimmerStyle,
+				}).text
+			}`;
+		}
 		return `${lead}${row.map((piece) => colors.fg(piece.tone, piece.text)).join("")}`;
 	});
 	if (view.meta?.length) {

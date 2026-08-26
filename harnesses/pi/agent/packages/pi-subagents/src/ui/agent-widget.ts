@@ -1,12 +1,12 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type TUI, truncateToWidth } from "@earendil-works/pi-tui";
 import type { MotionMount } from "pi-libtui";
-import { icon, sharedMotionScheduler, tuiTheme } from "pi-libtui";
+import { icon, mountConfiguredAnimation, tuiTheme } from "pi-libtui";
 import type { AgentHubSnapshot, AgentHubSnapshotSource } from "./agent-browser.ts";
 import {
 	formatAgentTokens,
+	renderAgentIdentity,
 	renderAgentMetadata,
-	renderAgentStatusMarker,
 	renderContextUse,
 	renderTranscriptPreview,
 } from "./agent-summary.ts";
@@ -86,8 +86,8 @@ export class AgentWidget {
 		return [
 			`${colors.fg("accent", `${icon("developer")} Agents`)} ${colors.fg("text.muted", `· ${running} running${queued ? ` · ${queued} queued` : ""}`)}`,
 			...rows.slice(0, 11).map(({ agent, prefix }) => {
-				const marker = renderAgentStatusMarker(colors, agent.status, agent.startedAt, now);
 				const name = agentDisplayName(agent.id) ?? agent.id;
+				const identity = renderAgentIdentity(colors, name, agent.status, agent.startedAt, now, "accent");
 				const metadata = [
 					renderAgentMetadata(colors, agent, now, " · "),
 					colors.fg("text.muted", formatAgentTokens(agent.tokenCount)),
@@ -100,7 +100,7 @@ export class AgentWidget {
 						: colors.fg("info", agent.activity.name)
 					: renderTranscriptPreview(colors, agent.transcript.preview());
 				return truncateToWidth(
-					`${colors.fg("text.muted", prefix)} ${marker} ${colors.fg("accent", name)} ${metadata.join(colors.fg("text.muted", " · "))} ${colors.fg("text.muted", "· ")}${action}`,
+					`${colors.fg("text.muted", prefix)} ${identity} ${metadata.join(colors.fg("text.muted", " · "))} ${colors.fg("text.muted", "· ")}${action}`,
 					width,
 				);
 			}),
@@ -108,7 +108,12 @@ export class AgentWidget {
 	}
 
 	private syncMotion(): void {
-		if (this.tui && !this.motion) this.motion = sharedMotionScheduler.mount(this.tui, { cadenceMs: 120 });
+		const running = this.snapshot.agents.some((agent) => agent.status === "running");
+		if (this.tui && running && !this.motion) this.motion = mountConfiguredAnimation(this.tui);
+		if (!running && this.motion) {
+			this.motion.dispose();
+			this.motion = undefined;
+		}
 	}
 
 	private clear(): void {
