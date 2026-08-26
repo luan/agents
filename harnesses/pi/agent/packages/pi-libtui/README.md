@@ -96,14 +96,19 @@ using the documented package root and subpaths so the public API remains stable.
 `pi-xsettings` owns the settings UI and persistence for the shared appearance:
 
 - icon pack: `unicode`, `nerd-fonts`, or `emoji`;
+- activity marker: `off`, `spinner`, `pulse`, `static`, `line`, `arc`, `dots`, `quadrants`, or `sparkle`;
+- text shimmer: `off`, narrow `sweep`, broad `glow`, or semantic `rainbow`;
 - Powerline separators and Powerline button caps;
 - softer virtual cursor;
 - insertion, navigation, and selection cursor styles.
 
-The compiled defaults are portable Unicode icons, flat separators/buttons, and
-virtual cursors. If `pi-xsettings` is absent, components still use those
-defaults. The settings can be changed live through `/xsettings` when its host
-is installed.
+The compiled defaults are portable Unicode icons, a Braille spinner, flat
+separators/buttons, and virtual cursors. Shared activity surfaces use the
+selected marker, shimmer, and fastest required cadence. Every marker option can
+be combined with every shimmer option. A static or disabled marker allocates no
+timer when shimmer is also off. If `pi-xsettings` is absent, components still
+use the spinner-without-shimmer defaults. The settings can be changed live
+through `/xsettings` when its host is installed.
 
 ## Architecture
 

@@ -1059,6 +1059,19 @@ describe("tool transcript grammar", () => {
 		expect(stripTerminalSequences(live.render(40)[0]!)).toContain("Streaming");
 		live.dispose();
 	});
+
+	test("live actions render the configured shared activity style", () => {
+		configureTuiAppearance({ activityMarker: "off", shimmer: "glow" });
+		const live = new LiveToolAction({
+			theme,
+			view: { verb: "Streaming", status: "running", marker: false },
+			requestRender() {},
+		});
+		expect(stripTerminalSequences(live.render(40)[0]!)).toStartWith("Streaming");
+		configureTuiAppearance({ activityMarker: "pulse" });
+		expect(stripTerminalSequences(live.render(40)[0]!)).toStartWith("● Streaming");
+		live.dispose();
+	});
 });
 
 function escapeRegExp(value: string): string {

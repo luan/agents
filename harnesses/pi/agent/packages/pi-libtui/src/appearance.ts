@@ -3,6 +3,21 @@ import { bumpTuiRenderEpoch } from "./render-epoch.ts";
 /** Glyph family used to resolve every semantic icon token. */
 export type TuiIconPack = "nerd-fonts" | "unicode" | "emoji";
 
+/** Single-cell marker used by shared activity indicators. */
+export type TuiActivityMarkerStyle =
+	| "off"
+	| "spinner"
+	| "pulse"
+	| "static"
+	| "line"
+	| "arc"
+	| "dots"
+	| "quadrants"
+	| "sparkle";
+
+/** Text shimmer used independently from the activity marker. */
+export type TuiShimmerStyle = "off" | "sweep" | "glow" | "rainbow";
+
 /** Cursor presentation policy for one semantic cursor role. */
 export type TuiCursorStyle =
 	| "virtual"
@@ -17,6 +32,8 @@ export type TuiCursorStyle =
 /** Process-wide rendering choices consumed by pi-libtui components. */
 export interface TuiAppearanceSettings {
 	iconPack: TuiIconPack;
+	activityMarker: TuiActivityMarkerStyle;
+	shimmer: TuiShimmerStyle;
 	powerline: boolean;
 	powerlineButtons: boolean;
 	softCursor: boolean;
@@ -28,6 +45,8 @@ export interface TuiAppearanceSettings {
 /** Appearance used when no xsettings host has published an override. */
 export const DEFAULT_TUI_APPEARANCE: Readonly<TuiAppearanceSettings> = Object.freeze({
 	iconPack: "unicode",
+	activityMarker: "spinner",
+	shimmer: "off",
 	powerline: false,
 	powerlineButtons: false,
 	softCursor: false,
@@ -36,7 +55,7 @@ export const DEFAULT_TUI_APPEARANCE: Readonly<TuiAppearanceSettings> = Object.fr
 	selectionCursor: "virtual",
 });
 
-const APPEARANCE_PROTOCOL = "pi-libtui/appearance/v1" as const;
+const APPEARANCE_PROTOCOL = "pi-libtui/appearance/v2" as const;
 const APPEARANCE_KEY = Symbol.for(APPEARANCE_PROTOCOL);
 
 interface AppearanceRegistry {
@@ -51,6 +70,26 @@ type UntrustedAppearanceValue = unknown;
 
 function isIconPack(value: UntrustedAppearanceValue): value is TuiIconPack {
 	return value === "nerd-fonts" || value === "unicode" || value === "emoji";
+}
+
+/** Narrow an external value to one supported activity marker. */
+export function isTuiActivityMarkerStyle(value: UntrustedAppearanceValue): value is TuiActivityMarkerStyle {
+	return (
+		value === "off" ||
+		value === "spinner" ||
+		value === "pulse" ||
+		value === "static" ||
+		value === "line" ||
+		value === "arc" ||
+		value === "dots" ||
+		value === "quadrants" ||
+		value === "sparkle"
+	);
+}
+
+/** Narrow an external value to one supported text shimmer. */
+export function isTuiShimmerStyle(value: UntrustedAppearanceValue): value is TuiShimmerStyle {
+	return value === "off" || value === "sweep" || value === "glow" || value === "rainbow";
 }
 
 function isCursorStyle(value: UntrustedAppearanceValue): value is TuiCursorStyle {
@@ -83,6 +122,8 @@ function mergeAppearance(
 ): TuiAppearanceSettings {
 	return {
 		iconPack: isIconPack(next.iconPack) ? next.iconPack : current.iconPack,
+		activityMarker: isTuiActivityMarkerStyle(next.activityMarker) ? next.activityMarker : current.activityMarker,
+		shimmer: isTuiShimmerStyle(next.shimmer) ? next.shimmer : current.shimmer,
 		powerline: typeof next.powerline === "boolean" ? next.powerline : current.powerline,
 		powerlineButtons: typeof next.powerlineButtons === "boolean" ? next.powerlineButtons : current.powerlineButtons,
 		softCursor: typeof next.softCursor === "boolean" ? next.softCursor : current.softCursor,
@@ -95,6 +136,8 @@ function mergeAppearance(
 function sameAppearance(left: Readonly<TuiAppearanceSettings>, right: Readonly<TuiAppearanceSettings>): boolean {
 	return (
 		left.iconPack === right.iconPack &&
+		left.activityMarker === right.activityMarker &&
+		left.shimmer === right.shimmer &&
 		left.powerline === right.powerline &&
 		left.powerlineButtons === right.powerlineButtons &&
 		left.softCursor === right.softCursor &&

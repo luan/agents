@@ -12,6 +12,8 @@ describe("shared TUI appearance", () => {
 	test("starts with portable defaults", () => {
 		expect(DEFAULT_TUI_APPEARANCE).toEqual({
 			iconPack: "unicode",
+			activityMarker: "spinner",
+			shimmer: "off",
 			powerline: false,
 			powerlineButtons: false,
 			softCursor: false,
@@ -55,12 +57,16 @@ describe("shared TUI appearance", () => {
 	test("ignores invalid values at the shared-state boundary", () => {
 		configureTuiAppearance({
 			iconPack: "emoji",
+			activityMarker: "pulse",
+			shimmer: "glow",
 			powerlineButtons: true,
 			softCursor: true,
 			insertionCursor: "steady-bar",
 		});
 		configureTuiAppearance({
 			iconPack: "invalid" as never,
+			activityMarker: "orbit" as never,
+			shimmer: "flash" as never,
 			powerline: "yes" as never,
 			powerlineButtons: "yes" as never,
 			softCursor: "yes" as never,
@@ -72,6 +78,8 @@ describe("shared TUI appearance", () => {
 		expect(getTuiAppearance()).toEqual({
 			...DEFAULT_TUI_APPEARANCE,
 			iconPack: "emoji",
+			activityMarker: "pulse",
+			shimmer: "glow",
 			powerlineButtons: true,
 			softCursor: true,
 			insertionCursor: "steady-bar",

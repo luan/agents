@@ -4,7 +4,7 @@ import { truncateToWidth } from "@earendil-works/pi-tui";
 import { type TuiForegroundColor, tuiTheme } from "../color/theme.ts";
 import { sanitizeTuiField } from "../content/terminal-text.ts";
 import { icon } from "../decoration/glyphs.ts";
-import { type MotionMount, sharedMotionScheduler, spinnerFrame } from "../motion.ts";
+import { activityFrame, type ActivityFrame, mountConfiguredAnimation, type MotionMount } from "../motion.ts";
 import { RenderedLinesCache } from "../render-cache.ts";
 
 /** Lifecycle state shared by semantic tool transcript rows. */
@@ -60,12 +60,14 @@ export class ToolAction implements Component {
  * @param width Maximum terminal-cell width for the returned row.
  * @returns One ANSI-styled, width-safe transcript row.
  */
-function renderToolAction(theme: Theme, view: ToolActionView, width: number): string {
+function renderToolAction(theme: Theme, view: ToolActionView, width: number, activity?: ActivityFrame): string {
 	const colors = tuiTheme(theme);
 	const status = actionStatus(view.status);
 	const markerValue = view.marker === false ? "" : sanitizeTuiField(view.marker ?? status.glyph);
 	const marker = markerValue ? `${colors.fg(view.markerTone ?? status.tone, markerValue)} ` : "";
-	let line = `${marker}${colors.fg("text.secondary", theme.bold(sanitizeTuiField(view.verb)))}`;
+	const activityMarker = activity?.marker ? `${activity.marker} ` : "";
+	const verb = activity?.text ?? colors.fg("text.secondary", sanitizeTuiField(view.verb));
+	let line = `${activityMarker}${marker}${theme.bold(verb)}`;
 	if (view.detail)
 		line += `${colors.fg("text.muted", " · ")}${colors.fg("text.secondary", sanitizeTuiField(view.detail))}`;
 	if (view.meta?.length)
@@ -82,7 +84,6 @@ export interface LiveToolActionOptions extends ToolActionOptions {
 
 /** Tool action with a shared-scheduler activity glyph composed before its chosen grammar. */
 export class LiveToolAction implements Component {
-	private readonly action: ToolAction;
 	private readonly cache = new RenderedLinesCache();
 	private view: ToolActionView;
 	private running: boolean;
@@ -93,7 +94,6 @@ export class LiveToolAction implements Component {
 	constructor(private readonly options: LiveToolActionOptions) {
 		this.view = options.view;
 		this.running = options.running ?? options.view.status === "running";
-		this.action = new ToolAction({ theme: options.theme, view: this.view });
 		this.syncMotion();
 	}
 
@@ -102,28 +102,26 @@ export class LiveToolAction implements Component {
 		this.view = view;
 		this.running = running;
 		if (started) this.startedAt = performance.now();
-		this.action.update(view);
 		this.cache.clear();
 		this.syncMotion();
 	}
 
 	render(width: number): string[] {
-		const frame = this.running
-			? spinnerFrame(this.now - this.startedAt, {
+		const activity = this.running
+			? activityFrame(tuiTheme(this.options.theme), sanitizeTuiField(this.view.verb), this.now - this.startedAt, {
 					cadenceMs: this.options.cadenceMs,
+					textTone: "text.secondary",
 					reducedMotion: this.options.reducedMotion,
 				})
-			: "";
-		const line = this.action.render(Math.max(0, width - (frame ? 2 : 0)))[0];
-		const key = `${frame}\0${line ?? ""}`;
+			: undefined;
+		const key = `${activity?.marker ?? ""}\0${activity?.text ?? ""}\0${this.view.verb}\0${this.view.detail ?? ""}`;
 		return this.cache.get(width, key, () =>
-			line === undefined ? [] : [`${frame ? `${tuiTheme(this.options.theme).fg("accent", frame)} ` : ""}${line}`],
+			width <= 0 ? [] : [renderToolAction(this.options.theme, this.view, width, activity)],
 		);
 	}
 
 	invalidate(): void {
 		this.cache.clear();
-		this.action.invalidate();
 	}
 
 	dispose(): void {
@@ -132,11 +130,12 @@ export class LiveToolAction implements Component {
 	}
 
 	private syncMotion(): void {
-		if (this.running && !this.motion && !this.options.reducedMotion) {
-			this.motion = sharedMotionScheduler.mount(
+		if (this.running && !this.motion) {
+			this.motion = mountConfiguredAnimation(
 				{ requestRender: this.options.requestRender },
 				{
-					cadenceMs: this.options.cadenceMs ?? 80,
+					cadenceMs: this.options.cadenceMs,
+					reducedMotion: this.options.reducedMotion,
 					onFrame: (now) => {
 						this.now = now;
 					},

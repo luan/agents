@@ -1,4 +1,12 @@
+import { visibleWidth } from "@earendil-works/pi-tui";
 import type { TuiForegroundColor, TuiForegroundToken, TuiHue, TuiTheme } from "./color/theme.ts";
+import {
+	getTuiAppearance,
+	subscribeTuiAppearance,
+	type TuiActivityMarkerStyle,
+	type TuiShimmerStyle,
+} from "./appearance.ts";
+import { sanitizeTuiText } from "./content/terminal-text.ts";
 
 /** A host surface that can schedule a TUI render. */
 export interface MotionRenderTarget {
@@ -226,8 +234,97 @@ class SharedMotionScheduler extends MotionScheduler {
 /** Process-wide cadence scheduler, initialized only when animation is used. */
 export const sharedMotionScheduler: MotionScheduler = new SharedMotionScheduler();
 
+/** Fastest cadence required by the independently configured marker and shimmer. */
+export function configuredAnimationCadenceMs(
+	marker = getTuiAppearance().activityMarker,
+	shimmer = getTuiAppearance().shimmer,
+): number | undefined {
+	const cadences = [markerCadenceMs(marker), shimmerCadenceMs(shimmer)].filter(
+		(cadence): cadence is number => cadence !== undefined,
+	);
+	return cadences.length > 0 ? Math.min(...cadences) : undefined;
+}
+
+/** Whether the configured activity presentation animates its text. */
+export function activityAnimatesText(style = getTuiAppearance().shimmer): boolean {
+	return style !== "off";
+}
+
+function markerCadenceMs(style: TuiActivityMarkerStyle): number | undefined {
+	switch (style) {
+		case "spinner":
+		case "dots":
+			return 80;
+		case "arc":
+			return 90;
+		case "line":
+		case "quadrants":
+			return 100;
+		case "pulse":
+			return 120;
+		case "sparkle":
+			return 240;
+		case "off":
+		case "static":
+			return undefined;
+	}
+}
+
+function shimmerCadenceMs(style: TuiShimmerStyle): number | undefined {
+	return style === "sweep" ? 90 : style === "glow" ? 70 : style === "rainbow" ? 80 : undefined;
+}
+
+/**
+ * Mount the process-wide configured animation and follow live appearance changes.
+ *
+ * The returned mount retains the appearance subscription even for the static
+ * style so switching animations can start the timer without rebuilding the UI.
+ */
+export function mountConfiguredAnimation(
+	target: MotionRenderTarget,
+	options: Pick<MotionMountOptions, "onFrame" | "maxDurationMs" | "reducedMotion"> & {
+		cadenceMs?: number;
+		scheduler?: MotionScheduler;
+	} = {},
+): MotionMount {
+	let timer: MotionMount | undefined;
+	let disposed = false;
+	const expiresAtMs =
+		options.maxDurationMs === undefined ? undefined : performance.now() + Math.max(0, options.maxDurationMs);
+	const sync = (): void => {
+		timer?.dispose();
+		timer = undefined;
+		const cadenceMs = options.reducedMotion ? undefined : (options.cadenceMs ?? configuredAnimationCadenceMs());
+		const maxDurationMs = expiresAtMs === undefined ? undefined : expiresAtMs - performance.now();
+		if (cadenceMs === undefined || disposed || (maxDurationMs !== undefined && maxDurationMs <= 0)) return;
+		timer = (options.scheduler ?? sharedMotionScheduler).mount(target, {
+			cadenceMs,
+			maxDurationMs,
+			onFrame: options.onFrame,
+		});
+	};
+	const unsubscribe = subscribeTuiAppearance(() => {
+		sync();
+		target.requestRender();
+	});
+	sync();
+	return disposable(() => {
+		disposed = true;
+		unsubscribe();
+		timer?.dispose();
+		timer = undefined;
+	});
+}
+
 /** Portable braille spinner frames. */
 export const SPINNER_FRAMES = Object.freeze(["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const);
+
+/** Curated portable single-cell animation frames. */
+export const LINE_FRAMES = Object.freeze(["-", "\\", "|", "/"] as const);
+export const ARC_FRAMES = Object.freeze(["◜", "◠", "◝", "◞", "◡", "◟"] as const);
+export const DOT_FRAMES = Object.freeze(["⠁", "⠂", "⠄", "⡀", "⢀", "⠠", "⠐", "⠈"] as const);
+export const QUADRANT_FRAMES = Object.freeze(["▖", "▘", "▝", "▗"] as const);
+export const SPARKLE_FRAMES = Object.freeze(["✦", "✧"] as const);
 
 /** Resolve a cyclic spinner frame without retaining animation state. */
 export function spinnerFrame(
@@ -235,6 +332,93 @@ export function spinnerFrame(
 	options: { frames?: readonly string[]; cadenceMs?: number; reducedMotion?: boolean } = {},
 ): string {
 	return glyphFrame(options.frames ?? SPINNER_FRAMES, elapsedMs, options.cadenceMs ?? 80, options.reducedMotion);
+}
+
+/** Independently rendered activity marker and text. */
+export interface ActivityFrame {
+	marker: string;
+	text: string;
+}
+
+/** Render the configured activity while keeping text shimmer separate from markers. */
+export function activityFrame(
+	colors: TuiTheme,
+	text: string,
+	elapsedMs: number,
+	options: {
+		markerStyle?: TuiActivityMarkerStyle;
+		shimmerStyle?: TuiShimmerStyle;
+		cadenceMs?: number;
+		frames?: readonly string[];
+		textTone?: TuiForegroundToken;
+		highlightTone?: TuiForegroundToken;
+		reducedMotion?: boolean;
+	} = {},
+): ActivityFrame {
+	const appearance = getTuiAppearance();
+	const configuredMarker = options.markerStyle ?? appearance.activityMarker;
+	const markerStyle = options.reducedMotion && configuredMarker !== "off" ? "static" : configuredMarker;
+	const shimmerStyle = options.reducedMotion ? "off" : (options.shimmerStyle ?? appearance.shimmer);
+	const textTone = options.textTone ?? "text.primary";
+	let marker: string;
+	switch (markerStyle) {
+		case "off":
+			marker = "";
+			break;
+		case "spinner":
+			marker = colors.fg(
+				"accent",
+				activityGlyph(spinnerFrame(elapsedMs, { cadenceMs: options.cadenceMs, frames: options.frames }), "-"),
+			);
+			break;
+		case "pulse":
+			marker = pulseGlyphFrame(colors, "●", elapsedMs);
+			break;
+		case "static":
+			marker = colors.fg("accent", "●");
+			break;
+		case "line":
+		case "arc":
+		case "dots":
+		case "quadrants":
+		case "sparkle": {
+			const frames =
+				markerStyle === "line"
+					? LINE_FRAMES
+					: markerStyle === "arc"
+						? ARC_FRAMES
+						: markerStyle === "dots"
+							? DOT_FRAMES
+							: markerStyle === "quadrants"
+								? QUADRANT_FRAMES
+								: SPARKLE_FRAMES;
+			marker = colors.fg(
+				"accent",
+				activityGlyph(glyphFrame(frames, elapsedMs, options.cadenceMs ?? markerCadenceMs(markerStyle)), "-"),
+			);
+			break;
+		}
+	}
+	const textOutput =
+		shimmerStyle === "off"
+			? colors.fg(textTone, text)
+			: shimmerStyle === "rainbow"
+				? rainbowShimmerFrame(colors, text, elapsedMs, {
+						cadenceMs: options.cadenceMs ?? shimmerCadenceMs(shimmerStyle),
+						baseTone: textTone,
+					})
+				: shimmerFrame(colors, text, elapsedMs, {
+						cadenceMs: options.cadenceMs ?? shimmerCadenceMs(shimmerStyle),
+						width: shimmerStyle === "sweep" ? 1 : 3,
+						baseTone: textTone,
+						highlightTone: options.highlightTone,
+					});
+	return { marker, text: textOutput };
+}
+
+function activityGlyph(value: string, fallback: string): string {
+	const safe = sanitizeTuiText(value);
+	return safe === value && safe.trim().length > 0 && visibleWidth(safe) === 1 ? safe : fallback;
 }
 
 /** Resolve a cyclic glyph frame without retaining animation state. */
@@ -306,7 +490,7 @@ export function shimmerFrame(
 		reducedMotion?: boolean;
 	} = {},
 ): string {
-	const characters = [...text];
+	const characters = textGraphemes(text);
 	if (characters.length === 0) return "";
 	const baseTone = options.baseTone ?? "text.secondary";
 	const highlightTone = options.highlightTone ?? "accent";
@@ -329,6 +513,40 @@ export function shimmerFrame(
 		run += character;
 	}
 	return `${output}${colors.fg(currentTone ?? baseTone, run)}`;
+}
+
+/** Paint a moving semantic rainbow wave over text, adapted from pi-animations' shimmer. */
+export function rainbowShimmerFrame(
+	colors: TuiTheme,
+	text: string,
+	elapsedMs: number,
+	options: { cadenceMs?: number; baseTone?: TuiForegroundToken; reducedMotion?: boolean } = {},
+): string {
+	const characters = textGraphemes(text);
+	if (characters.length === 0) return "";
+	const baseTone = options.baseTone ?? "text.secondary";
+	if (options.reducedMotion) return colors.fg(baseTone, text);
+	const frame = Math.floor(Math.max(0, elapsedMs) / Math.max(1, options.cadenceMs ?? 80));
+	const hues: readonly TuiHue[] = ["magenta", "blue", "cyan", "green", "yellow", "red"];
+	let output = "";
+	for (const [index, character] of characters.entries()) {
+		const wave = Math.sin((index - frame * 0.5) * 0.8);
+		if (wave <= 0.3) {
+			output += colors.fg(baseTone, character);
+			continue;
+		}
+		const intensity = (wave - 0.3) / 0.7;
+		const hue = hues[(index + Math.floor(frame / 2)) % hues.length] ?? "blue";
+		const shade = Math.min(5, Math.max(2, Math.round(2 + intensity * 3))) as 2 | 3 | 4 | 5;
+		output += colors.fg({ hue, shade }, character);
+	}
+	return output;
+}
+
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+function textGraphemes(text: string): string[] {
+	return Array.from(graphemeSegmenter.segment(text), ({ segment }) => segment);
 }
 
 function glowPalette(highlightTone: TuiForegroundToken): readonly TuiForegroundColor[] {

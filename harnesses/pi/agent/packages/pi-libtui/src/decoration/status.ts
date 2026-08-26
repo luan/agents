@@ -3,7 +3,7 @@ import type { Component } from "@earendil-works/pi-tui";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { type TuiForegroundToken, type TuiTheme, tuiTheme } from "../color/theme.ts";
 import { sanitizeTuiText } from "../content/terminal-text.ts";
-import { type MotionMount, type MotionScheduler, sharedMotionScheduler, spinnerFrame } from "../motion.ts";
+import { activityFrame, mountConfiguredAnimation, type MotionMount, type MotionScheduler } from "../motion.ts";
 import { RenderedLinesCache } from "../render-cache.ts";
 import { icon, type TuiIconName } from "./glyphs.ts";
 
@@ -67,10 +67,11 @@ export class ActivityIndicator implements Component {
 	constructor(private readonly options: ActivityIndicatorOptions) {
 		this.startedAtMs = options.now?.() ?? performance.now();
 		this.nowMs = this.startedAtMs;
-		this.mount = (options.scheduler ?? sharedMotionScheduler).mount(options, {
-			cadenceMs: options.cadenceMs ?? 80,
+		this.mount = mountConfiguredAnimation(options, {
+			cadenceMs: options.cadenceMs,
 			reducedMotion: options.reducedMotion,
 			maxDurationMs: options.maxDurationMs,
+			scheduler: options.scheduler,
 			onFrame: (nowMs) => {
 				this.nowMs = nowMs;
 			},
@@ -79,21 +80,20 @@ export class ActivityIndicator implements Component {
 
 	render(width: number): string[] {
 		const elapsedMs = Math.max(0, this.nowMs - this.startedAtMs);
-		const frame = spinnerFrame(elapsedMs, {
+		const frame = activityFrame(tuiTheme(this.options.theme), rowText(this.options.label), elapsedMs, {
 			frames: this.options.spinnerFrames,
 			cadenceMs: this.options.cadenceMs,
 			reducedMotion: this.options.reducedMotion,
 		});
-		const glyph = cellGlyph(frame, "·");
-		const label = rowText(this.options.label);
+		const marker = frame.marker ? `${frame.marker} ` : "";
 		const detailText = this.options.detail === undefined ? undefined : rowText(this.options.detail);
-		const key = `${glyph}\0${label}\0${detailText ?? ""}`;
+		const key = `${frame.marker}\0${frame.text}\0${detailText ?? ""}`;
 		return this.cache.get(width, key, () => {
 			if (width <= 0) return [];
 			const colors = tuiTheme(this.options.theme);
 			const separator = detailText ? colors.fg("text.muted", " · ") : "";
 			const detail = detailText ? colors.fg("text.secondary", detailText) : "";
-			const line = `${colors.fg("accent", glyph)} ${colors.fg("text.primary", label)}${separator}${detail}`;
+			const line = `${marker}${frame.text}${separator}${detail}`;
 			return [truncateToWidth(line, width, "…")];
 		});
 	}

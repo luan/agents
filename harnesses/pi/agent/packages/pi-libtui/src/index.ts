@@ -2,10 +2,14 @@ export {
 	configureTuiAppearance,
 	DEFAULT_TUI_APPEARANCE,
 	getTuiAppearance,
+	isTuiActivityMarkerStyle,
+	isTuiShimmerStyle,
 	subscribeTuiAppearance,
 	type TuiAppearanceSettings,
+	type TuiActivityMarkerStyle,
 	type TuiCursorStyle,
 	type TuiIconPack,
+	type TuiShimmerStyle,
 } from "./appearance.ts";
 export {
 	type TuiBackgroundPaint,
@@ -61,6 +65,7 @@ export {
 export {
 	SearchableSelect,
 	type SearchableSelectOptions,
+	type SearchableSelectRowContext,
 	type SelectOption,
 } from "./controls/searchable-select.ts";
 export {
@@ -146,6 +151,7 @@ export {
 	type TransientPillPlacementRequest,
 } from "./decoration/transient-pill.ts";
 export type {
+	ActivityFrame,
 	MotionClock,
 	MotionMount,
 	MotionMountOptions,
@@ -153,10 +159,15 @@ export type {
 	MotionTimerHandle,
 } from "./motion.ts";
 export {
+	activityAnimatesText,
+	activityFrame,
+	configuredAnimationCadenceMs,
 	glyphFrame,
+	mountConfiguredAnimation,
 	MotionScheduler,
 	pulseFrame,
 	pulseGlyphFrame,
+	rainbowShimmerFrame,
 	sharedMotionScheduler,
 	shimmerFrame,
 	spinnerFrame,

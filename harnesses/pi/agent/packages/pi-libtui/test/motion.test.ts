@@ -1,8 +1,20 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import type { Theme } from "@earendil-works/pi-coding-agent";
+import { configureTuiAppearance, DEFAULT_TUI_APPEARANCE } from "../src/appearance.ts";
 import { tuiTheme } from "../src/color/theme.ts";
 import type { MotionClock, MotionRenderTarget, MotionTimerHandle } from "../src/motion.ts";
-import { glyphFrame, MotionScheduler, pulseFrame, pulseGlyphFrame, shimmerFrame, spinnerFrame } from "../src/motion.ts";
+import {
+	activityFrame,
+	configuredAnimationCadenceMs,
+	glyphFrame,
+	mountConfiguredAnimation,
+	MotionScheduler,
+	pulseFrame,
+	pulseGlyphFrame,
+	rainbowShimmerFrame,
+	shimmerFrame,
+	spinnerFrame,
+} from "../src/motion.ts";
 
 const theme = {
 	name: "motion-test",
@@ -10,6 +22,8 @@ const theme = {
 	getFgAnsi: (token: string) => (token === "accent" ? "\x1b[38;2;80;160;240m" : "\x1b[38;2;180;180;180m"),
 	getBgAnsi: () => "\x1b[48;2;20;20;20m",
 } as never as Theme;
+
+afterEach(() => configureTuiAppearance(DEFAULT_TUI_APPEARANCE));
 
 interface FakeTimer extends MotionTimerHandle {
 	callback: () => void;
@@ -182,6 +196,69 @@ describe("MotionScheduler", () => {
 });
 
 describe("pure motion frames", () => {
+	test("renders activity text independently from optional markers", () => {
+		const colors = tuiTheme(theme);
+		const spinner = activityFrame(colors, "Working", 0, { markerStyle: "spinner", shimmerStyle: "off" });
+		const pulseGlow = activityFrame(colors, "Working", 140, { markerStyle: "pulse", shimmerStyle: "glow" });
+		const markerlessSweep = activityFrame(colors, "Working", 140, { markerStyle: "off", shimmerStyle: "sweep" });
+		const staticGlow = activityFrame(colors, "Working", 140, { markerStyle: "static", shimmerStyle: "glow" });
+		const lineRainbow = activityFrame(colors, "Working", 140, { markerStyle: "line", shimmerStyle: "rainbow" });
+		const arc = activityFrame(colors, "Working", 160, { markerStyle: "arc", shimmerStyle: "off" });
+		const dots = activityFrame(colors, "Working", 240, { markerStyle: "dots", shimmerStyle: "off" });
+		const quadrants = activityFrame(colors, "Working", 200, { markerStyle: "quadrants", shimmerStyle: "off" });
+		const sparkle = activityFrame(colors, "Working", 240, { markerStyle: "sparkle", shimmerStyle: "off" });
+		const staticFrame = activityFrame(colors, "Working", 10_000, { markerStyle: "static", shimmerStyle: "off" });
+
+		expect(Bun.stripANSI(spinner.marker)).toBe("⠋");
+		expect(Bun.stripANSI(pulseGlow.marker)).toBe("●");
+		expect(markerlessSweep.marker).toBe("");
+		expect(Bun.stripANSI(markerlessSweep.text)).toBe("Working");
+		expect(Bun.stripANSI(staticGlow.marker)).toBe("●");
+		expect(["-", "\\", "|", "/"]).toContain(Bun.stripANSI(lineRainbow.marker));
+		expect(Bun.stripANSI(arc.marker)).toBe("◠");
+		expect(Bun.stripANSI(dots.marker)).toBe("⡀");
+		expect(Bun.stripANSI(quadrants.marker)).toBe("▝");
+		expect(Bun.stripANSI(sparkle.marker)).toBe("✧");
+		expect(Bun.stripANSI(lineRainbow.text)).toBe("Working");
+		expect(lineRainbow.text).not.toBe(colors.fg("text.primary", "Working"));
+		expect(staticGlow.text).toBe(pulseGlow.text);
+		expect(Bun.stripANSI(staticFrame.marker)).toBe("●");
+		expect(Bun.stripANSI(staticFrame.text)).toBe("Working");
+		expect(staticFrame.text).not.toBe(staticGlow.text);
+	});
+
+	test("uses each configured cadence and stops repainting for static activity", () => {
+		expect(configuredAnimationCadenceMs("spinner", "off")).toBe(80);
+		expect(configuredAnimationCadenceMs("pulse", "off")).toBe(120);
+		expect(configuredAnimationCadenceMs("line", "off")).toBe(100);
+		expect(configuredAnimationCadenceMs("arc", "off")).toBe(90);
+		expect(configuredAnimationCadenceMs("dots", "off")).toBe(80);
+		expect(configuredAnimationCadenceMs("quadrants", "off")).toBe(100);
+		expect(configuredAnimationCadenceMs("sparkle", "off")).toBe(240);
+		expect(configuredAnimationCadenceMs("off", "sweep")).toBe(90);
+		expect(configuredAnimationCadenceMs("off", "glow")).toBe(70);
+		expect(configuredAnimationCadenceMs("off", "rainbow")).toBe(80);
+		expect(configuredAnimationCadenceMs("pulse", "glow")).toBe(70);
+		expect(configuredAnimationCadenceMs("static", "off")).toBeUndefined();
+
+		const clock = new FakeClock();
+		const scheduler = new MotionScheduler(clock);
+		let renders = 0;
+		configureTuiAppearance({ activityMarker: "static", shimmer: "off" });
+		const mount = mountConfiguredAnimation({ requestRender: () => renders++ }, { scheduler });
+		expect(scheduler.activeTimerCount).toBe(0);
+
+		configureTuiAppearance({ activityMarker: "pulse" });
+		expect(clock.timers.at(-1)?.cadenceMs).toBe(120);
+		expect(scheduler.activeTimerCount).toBe(1);
+		expect(renders).toBe(1);
+
+		configureTuiAppearance({ activityMarker: "static" });
+		expect(scheduler.activeTimerCount).toBe(0);
+		expect(renders).toBe(2);
+		mount.dispose();
+	});
+
 	test("spinner and glyph frames are deterministic and freeze under reduced motion", () => {
 		expect(spinnerFrame(160)).toBe(spinnerFrame(160));
 		expect(glyphFrame(["a", "b"], 120, 100)).toBe("b");
@@ -215,9 +292,30 @@ describe("pure motion frames", () => {
 		expect(new Set(glow.match(/\x1b\[38;[^m]+m/gu) ?? []).size).toBeGreaterThan(2);
 	});
 
+	test("rainbow shimmer preserves text while moving through semantic hues", () => {
+		const colors = tuiTheme(theme);
+		const first = rainbowShimmerFrame(colors, "Working", 0);
+		const later = rainbowShimmerFrame(colors, "Working", 320);
+		expect(Bun.stripANSI(first)).toBe("Working");
+		expect(Bun.stripANSI(later)).toBe("Working");
+		expect(later).not.toBe(first);
+	});
+
+	test("shimmer keeps grapheme clusters intact", () => {
+		const colors = tuiTheme(theme);
+		const text = "e\u0301 👩🏽‍💻";
+		for (const frame of [shimmerFrame(colors, text, 70), rainbowShimmerFrame(colors, text, 80)]) {
+			expect(Bun.stripANSI(frame)).toBe(text);
+			expect(frame).not.toContain("e\u001b[0m\u0301");
+		}
+	});
+
 	test("reduced motion keeps pulse and shimmer at their base tones", () => {
 		const colors = tuiTheme(theme);
 		expect(pulseGlyphFrame(colors, "●", 600, { reducedMotion: true })).toBe(colors.fg("text.muted", "●"));
 		expect(shimmerFrame(colors, "working", 600, { reducedMotion: true })).toBe(colors.fg("text.secondary", "working"));
+		expect(rainbowShimmerFrame(colors, "working", 600, { reducedMotion: true })).toBe(
+			colors.fg("text.secondary", "working"),
+		);
 	});
 });
