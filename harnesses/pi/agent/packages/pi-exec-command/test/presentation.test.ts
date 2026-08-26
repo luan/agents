@@ -3,10 +3,13 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import {
 	configureTuiAppearance,
 	DEFAULT_TUI_APPEARANCE,
+	getTuiAppearance,
 	icon,
 	sharedMotionScheduler,
 	whenSyntaxReady,
 } from "pi-libtui";
+import { DEFAULT_EXEC_COMMAND_SETTINGS } from "../src/contributions/xsettings.ts";
+import type { ExecProcessSnapshot } from "../src/session-manager.ts";
 import { createExecCommandTool } from "../src/tools/exec-command/definition.ts";
 import { normalizeExecCommandArguments, normalizeWriteStdinArguments } from "../src/tools/presentation.ts";
 import { createExecToolResult } from "../src/tools/result.ts";
@@ -52,6 +55,49 @@ function context(args: object, lastComponent?: object, overrides: ContextOverrid
 		isError: false,
 		...overrides,
 	} as never;
+}
+
+function observableRuntime() {
+	let listener: ((snapshots: readonly ExecProcessSnapshot[]) => void) | undefined;
+	let unsubscribeCount = 0;
+	const manager = {
+		subscribeProcesses(next: (snapshots: readonly ExecProcessSnapshot[]) => void) {
+			listener = next;
+			next([]);
+			let subscribed = true;
+			return () => {
+				if (!subscribed) return;
+				subscribed = false;
+				unsubscribeCount += 1;
+				if (listener === next) listener = undefined;
+			};
+		},
+	};
+	return {
+		runtime: { getManager: () => manager as never },
+		publish(snapshots: readonly ExecProcessSnapshot[]) {
+			listener?.(snapshots);
+		},
+		get unsubscribeCount() {
+			return unsubscribeCount;
+		},
+	};
+}
+
+function processSnapshot(overrides: Partial<ExecProcessSnapshot> = {}): ExecProcessSnapshot {
+	return {
+		id: 7,
+		command: "sleep 30",
+		cwd: "/tmp",
+		shell: "/bin/zsh",
+		tty: false,
+		stdinOpen: false,
+		state: "running",
+		startedAtMs: 1_000,
+		output: "",
+		outputTruncated: false,
+		...overrides,
+	};
 }
 
 beforeAll(async () => {
@@ -309,6 +355,34 @@ describe("exec tool presentation", () => {
 		expect(Bun.stripANSI(active.render(72).join("\n"))).not.toContain("◆");
 		configureTuiAppearance({ activityMarker: "pulse" });
 		expect(Bun.stripANSI(active.render(72).join("\n"))).toContain("● $ sleep 1");
+		active.dispose();
+	});
+
+	test("lets exec_command disable its marker without changing the shared default", () => {
+		configureTuiAppearance({ activityMarker: "spinner", shimmer: "off" });
+		const tool = createExecCommandTool({} as never, {
+			...DEFAULT_EXEC_COMMAND_SETTINGS,
+			activityMarker: "off",
+		});
+		const args = { cmd: "sleep 1", tty: false };
+		const partial = createExecToolResult({
+			tool: "exec_command",
+			phase: "partial",
+			arguments: normalizeExecCommandArguments(args, "/tmp", "/bin/zsh"),
+			command: args.cmd,
+		});
+		const timersBefore = sharedMotionScheduler.activeTimerCount;
+		const active = tool.renderResult?.(
+			partial,
+			{ expanded: false, isPartial: true },
+			theme,
+			context(args),
+		) as unknown as { render(width: number): string[]; dispose(): void };
+
+		expect(Bun.stripANSI(active.render(72).join("\n"))).toContain("$ sleep 1");
+		expect(Bun.stripANSI(active.render(72).join("\n"))).not.toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \$/u);
+		expect(sharedMotionScheduler.activeTimerCount).toBe(timersBefore);
+		expect(getTuiAppearance().activityMarker).toBe("spinner");
 		active.dispose();
 	});
 
@@ -646,7 +720,8 @@ describe("exec tool presentation", () => {
 	});
 
 	test("keeps a yielded command animated until its continuation completes", () => {
-		const tool = createExecCommandTool({} as never);
+		const processes = observableRuntime();
+		const tool = createExecCommandTool(processes.runtime);
 		const args = { cmd: "sleep 30", tty: false };
 		const final = createExecToolResult({
 			tool: "exec_command",
@@ -695,6 +770,54 @@ describe("exec tool presentation", () => {
 		expect(settled).toBe(component);
 		expect(sharedMotionScheduler.activeMountCount).toBe(before);
 		expect(Bun.stripANSI(settled?.render(60).join("\n") ?? "")).toContain("done");
+		expect(processes.unsubscribeCount).toBe(1);
+	});
+
+	test("settles a background transcript when the process exits without a continuation", () => {
+		const processes = observableRuntime();
+		const tool = createExecCommandTool(processes.runtime);
+		const args = { cmd: "sleep 30", tty: false };
+		const yielded = createExecToolResult({
+			tool: "exec_command",
+			phase: "final",
+			arguments: normalizeExecCommandArguments(args, "/tmp", "/bin/zsh"),
+			command: args.cmd,
+			result: {
+				chunk_id: "yielded",
+				output: "",
+				session_id: 7,
+				wall_time_seconds: 0.1,
+				output_truncated: false,
+			},
+		});
+		let invalidations = 0;
+		const before = sharedMotionScheduler.activeMountCount;
+		const component = tool.renderResult?.(
+			yielded,
+			{ expanded: false, isPartial: false },
+			theme,
+			context(args, undefined, { executionStarted: true, isPartial: false, invalidate: () => invalidations++ }),
+		);
+		expect(sharedMotionScheduler.activeMountCount).toBe(before + 1);
+
+		processes.publish([processSnapshot({ output: "started\n" })]);
+		expect(Bun.stripANSI(component?.render(60).join("\n") ?? "")).toContain("started");
+		processes.publish([
+			processSnapshot({
+				state: "exited",
+				exitCode: 0,
+				finishedAtMs: 31_000,
+				output: "finished\n",
+			}),
+		]);
+
+		const rendered = Bun.stripANSI(component?.render(60).join("\n") ?? "");
+		expect(rendered).toContain("$ sleep 30");
+		expect(rendered).toContain("finished");
+		expect(rendered).not.toContain("started");
+		expect(sharedMotionScheduler.activeMountCount).toBe(before);
+		expect(processes.unsubscribeCount).toBe(1);
+		expect(invalidations).toBe(2);
 	});
 
 	test("keeps TTY write_stdin results transcript-silent", () => {

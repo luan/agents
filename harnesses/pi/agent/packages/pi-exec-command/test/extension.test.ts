@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { ensureXSettingsRegistry } from "pi-xsettings";
+import { DEFAULT_EXEC_COMMAND_SETTINGS, registerExecCommandXSettings } from "../src/contributions/xsettings.ts";
 import { createExecRuntime } from "../src/extension.ts";
 import { DEFAULT_EXEC_SHELL } from "../src/runtime-shell.ts";
 import type { ExecSessionManager, UnifiedExecResult } from "../src/session-manager.ts";
@@ -17,6 +19,31 @@ function result(overrides: Partial<UnifiedExecResult> = {}): UnifiedExecResult {
 }
 
 describe("tool behavior", () => {
+	test("registers an inherited Exec Command marker override with every shared marker choice", () => {
+		const unregister = registerExecCommandXSettings();
+		try {
+			const definition = ensureXSettingsRegistry().registrations["pi-exec-command"]?.definitions.find(
+				(candidate) => candidate.key === "activityMarker",
+			);
+			expect(DEFAULT_EXEC_COMMAND_SETTINGS.activityMarker).toBe("inherit");
+			expect(definition).toMatchObject({
+				category: "appearance",
+				page: "animations",
+				section: "Exec Command",
+				preview: "activity-marker",
+				type: "enum",
+				default: "inherit",
+			});
+			if (definition?.type !== "enum" || !Array.isArray(definition.options))
+				throw new Error("Exec Command activity marker must be an enum");
+			expect(definition.options.map((option) => option.value)).toEqual(
+				expect.arrayContaining(["inherit", "off", "spinner", "nerd-pi-orbit"]),
+			);
+		} finally {
+			unregister();
+		}
+	});
+
 	test("exec_command returns the bounded manager result with command metadata", async () => {
 		let observed: unknown;
 		const updates: unknown[] = [];
@@ -88,6 +115,7 @@ describe("tool behavior", () => {
 				defaultOutputTokens: 20_000,
 				defaultExecYieldMs: 30_000,
 				defaultLoginShell: false,
+				activityMarker: "inherit",
 			},
 		);
 

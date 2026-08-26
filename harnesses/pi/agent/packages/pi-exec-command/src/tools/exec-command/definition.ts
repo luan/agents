@@ -1,4 +1,5 @@
 import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ActivityAnimationOverrides } from "pi-libtui";
 import { Type } from "typebox";
 import { DEFAULT_EXEC_COMMAND_SETTINGS, type ExecCommandSettings } from "../../contributions/xsettings.ts";
 import { DEFAULT_EXEC_SHELL } from "../../runtime-shell.ts";
@@ -51,9 +52,10 @@ export function createExecCommandTool(
 	runtime: ExecRuntime,
 	settings: Pick<
 		ExecCommandSettings,
-		"defaultOutputTokens" | "defaultExecYieldMs" | "defaultLoginShell"
+		"defaultOutputTokens" | "defaultExecYieldMs" | "defaultLoginShell" | "activityMarker"
 	> = DEFAULT_EXEC_COMMAND_SETTINGS,
 ): ToolDefinition<typeof EXEC_COMMAND_PARAMETERS, ExecToolPresentationDetails> {
+	const animation = execCommandAnimation(settings);
 	return {
 		name: "exec_command",
 		label: "exec_command",
@@ -61,10 +63,10 @@ export function createExecCommandTool(
 		parameters: execCommandParameters(settings),
 		renderShell: "self",
 		renderCall(args, theme, context) {
-			return renderExecCommandCall(args, theme, context);
+			return renderExecCommandCall(args, theme, context, animation);
 		},
 		renderResult(result, options, theme, context) {
-			return renderExecResult(result, options, theme, context);
+			return renderExecResult(result, options, theme, context, animation, () => runtime.getManager());
 		},
 		prepareArguments(args) {
 			if (!args || typeof args !== "object") return args as never;
@@ -103,4 +105,10 @@ export function createExecCommandTool(
 			});
 		},
 	};
+}
+
+function execCommandAnimation(
+	settings: Pick<ExecCommandSettings, "activityMarker">,
+): Readonly<ActivityAnimationOverrides> {
+	return settings.activityMarker === "inherit" ? {} : { markerStyle: settings.activityMarker };
 }

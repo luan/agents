@@ -128,6 +128,7 @@ function sameSettings(left: ExecCommandSettings, right: ExecCommandSettings): bo
 	return (
 		left.defaultOutputTokens === right.defaultOutputTokens &&
 		left.defaultExecYieldMs === right.defaultExecYieldMs &&
-		left.defaultLoginShell === right.defaultLoginShell
+		left.defaultLoginShell === right.defaultLoginShell &&
+		left.activityMarker === right.activityMarker
 	);
 }

@@ -1,4 +1,5 @@
 import { createSettings, type SettingDefinitionInput, type SettingsOf } from "pi-xsettings/sdk";
+import { TUI_ACTIVITY_MARKER_OPTIONS } from "pi-libtui";
 
 const EXEC_OUTPUT_TOKEN_OPTIONS = [1_000, 2_500, 5_000, 10_000, 20_000, 50_000, 100_000] as const;
 const EXEC_YIELD_OPTIONS = [1_000, 5_000, 10_000, 30_000] as const;
@@ -24,6 +25,20 @@ const definitions = {
 		category: "tools",
 		type: "boolean",
 		default: true,
+	},
+	activityMarker: {
+		label: "Exec Command marker",
+		description: "Override the default activity marker for running exec_command rows.",
+		category: "appearance",
+		page: "animations",
+		section: "Exec Command",
+		preview: "activity-marker",
+		type: "enum",
+		default: "inherit",
+		options: [
+			{ value: "inherit", label: "Inherit", description: "Use the default TUI activity marker." },
+			...TUI_ACTIVITY_MARKER_OPTIONS,
+		],
 	},
 } as const satisfies Record<string, SettingDefinitionInput>;
 

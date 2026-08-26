@@ -1,5 +1,5 @@
 import type { AgentToolResult, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
-import { ComponentStack } from "pi-libtui";
+import { type ActivityAnimationOverrides, ComponentStack } from "pi-libtui";
 import type { TuiMouseEvent } from "pi-libtui/mouse";
 import {
 	settleToolCallPreview,
@@ -10,8 +10,12 @@ import {
 	type ToolTranscriptStatus,
 	toolCallPreview,
 } from "pi-libtui/tool";
+import type { ExecProcessSnapshot, ExecSessionManager } from "../session-manager.ts";
 import type { ExecToolPresentationDetails } from "../tools/presentation.ts";
 import { CommandTranscript, type CommandTranscriptView } from "./command-transcript.ts";
+
+type ProcessSnapshotSource = Pick<ExecSessionManager, "subscribeProcesses">;
+type ProcessSnapshotSourceFactory = () => ProcessSnapshotSource;
 
 interface RendererContext {
 	readonly toolCallId?: string;
@@ -35,6 +39,7 @@ export function renderExecCommandCall(
 		new CommandTranscript({
 			theme,
 			requestRender: context.invalidate,
+			animation,
 			view: { command: args.cmd, shell: args.shell, status: "queued" },
 		}),
 	);
@@ -54,6 +59,7 @@ export function renderExecResult(
 	theme: Theme,
 	context: RendererContext,
 	animation?: Readonly<ActivityAnimationOverrides>,
+	processes?: ProcessSnapshotSourceFactory,
 ) {
 	settleToolCallPreview(context.state ?? context);
 	if (
@@ -89,6 +95,7 @@ export function renderExecResult(
 		return new CommandTranscript({
 			theme,
 			requestRender: context.invalidate,
+			animation,
 			view: {
 				command: fallbackCommand,
 				shell: context.args?.shell,
@@ -97,8 +104,22 @@ export function renderExecResult(
 			},
 		});
 	}
+	const processSource =
+		context.executionStarted &&
+		result.details.phase === "final" &&
+		result.details.outcome.status === "running" &&
+		result.details.identifiers.sessionId !== null
+			? processes?.()
+			: undefined;
 	if (context.lastComponent instanceof ExecPresentation) {
-		context.lastComponent.update(result.details, options.expanded, context.isError, context.executionStarted);
+		context.lastComponent.update(
+			result.details,
+			options.expanded,
+			context.isError,
+			context.executionStarted,
+			undefined,
+			processSource,
+		);
 		return context.lastComponent;
 	}
 	return new ExecPresentation(
@@ -109,6 +130,7 @@ export function renderExecResult(
 		context.isError,
 		context.executionStarted,
 		animation,
+		processSource,
 	);
 }
 
@@ -213,16 +235,27 @@ class ExecPresentation {
 	private readonly continuationOutput = new Map<string, string>();
 	private latestContinuation: ExecToolPresentationDetails | undefined;
 	private output: string;
+	private snapshotOutput: string | undefined;
+	private unsubscribeProcesses: (() => void) | undefined;
+	private subscribedSessionId: number | undefined;
+	private expanded: boolean;
+	private hostError: boolean;
+	private live: boolean;
 
 	constructor(
 		theme: Theme,
-		requestRender: () => void,
+		private readonly requestRender: () => void,
 		details: ExecToolPresentationDetails,
 		expanded: boolean,
 		hostError: boolean,
 		live: boolean,
 		animation?: Readonly<ActivityAnimationOverrides>,
+		processes?: ProcessSnapshotSource,
 	) {
+		this.expanded = expanded;
+		this.hostError = hostError;
+		this.live = live;
+		if (details.outcome.status !== "running") this.stopProcessUpdates();
 		this.output = details.progress.output;
 		if (details.arguments.kind === "exec_command") this.execDetails = details;
 		const revision = this.nextOutputRevision();
@@ -231,6 +264,7 @@ class ExecPresentation {
 				? new CommandTranscript({
 						theme,
 						requestRender,
+						animation,
 						view: commandView(details, expanded, hostError, live, revision),
 					})
 				: new ToolActivity({
@@ -239,6 +273,7 @@ class ExecPresentation {
 						view: terminalContinuationView(details, expanded, hostError, live, revision),
 						textSelection: "tail",
 					});
+		this.syncProcess(details, processes);
 	}
 
 	update(
@@ -247,10 +282,16 @@ class ExecPresentation {
 		hostError: boolean,
 		live: boolean,
 		continuationId?: string,
+		processes?: ProcessSnapshotSource,
 	): void {
+		this.expanded = expanded;
+		this.hostError = hostError;
+		this.live = live;
+		if (details.outcome.status !== "running") this.stopProcessUpdates();
 		if (details.arguments.kind === "exec_command") {
 			this.execDetails = details;
 			this.output = this.mergedOutput();
+			this.syncProcess(details, processes);
 			if (this.latestContinuation && this.transcript instanceof CommandTranscript) {
 				const continuation = continuationDetails(details, this.latestContinuation, this.output);
 				this.transcript.update(commandView(continuation, expanded, hostError, live, this.nextOutputRevision()));
@@ -275,7 +316,46 @@ class ExecPresentation {
 	}
 
 	private mergedOutput(): string {
-		return `${this.execDetails?.progress.output ?? ""}${[...this.continuationOutput.values()].join("")}`;
+		return (
+			this.snapshotOutput ??
+			`${this.execDetails?.progress.output ?? ""}${[...this.continuationOutput.values()].join("")}`
+		);
+	}
+
+	private syncProcess(details: ExecToolPresentationDetails, processes: ProcessSnapshotSource | undefined): void {
+		const sessionId = details.identifiers.sessionId;
+		if (!this.live || sessionId === null || !processes?.subscribeProcesses) return;
+		if (this.subscribedSessionId === sessionId) return;
+		this.unsubscribeProcesses?.();
+		this.unsubscribeProcesses = undefined;
+		this.subscribedSessionId = sessionId;
+		let settled = false;
+		const unsubscribe = processes.subscribeProcesses((snapshots) => {
+			const snapshot = snapshots.find(({ id }) => id === sessionId);
+			if (!snapshot) return;
+			this.acceptProcessSnapshot(snapshot);
+			settled ||= snapshot.state === "exited";
+		});
+		this.unsubscribeProcesses = unsubscribe;
+		if (settled) this.stopProcessUpdates();
+	}
+
+	private acceptProcessSnapshot(snapshot: ExecProcessSnapshot): void {
+		if (!this.execDetails || !(this.transcript instanceof CommandTranscript)) return;
+		this.snapshotOutput = snapshot.output;
+		this.execDetails = snapshotDetails(this.execDetails, snapshot);
+		this.output = this.mergedOutput();
+		this.transcript.update(
+			commandView(this.execDetails, this.expanded, this.hostError, this.live, this.nextOutputRevision()),
+		);
+		this.requestRender();
+		if (snapshot.state === "exited") this.stopProcessUpdates();
+	}
+
+	private stopProcessUpdates(): void {
+		this.unsubscribeProcesses?.();
+		this.unsubscribeProcesses = undefined;
+		this.subscribedSessionId = undefined;
 	}
 
 	private nextOutputRevision(): number {
@@ -304,8 +384,36 @@ class ExecPresentation {
 	}
 
 	dispose(): void {
+		this.stopProcessUpdates();
 		this.transcript.dispose();
 	}
+}
+
+function snapshotDetails(
+	base: ExecToolPresentationDetails,
+	snapshot: ExecProcessSnapshot,
+): ExecToolPresentationDetails {
+	const exited = snapshot.state === "exited";
+	const exitCode = exited ? (snapshot.exitCode ?? 1) : null;
+	return {
+		...base,
+		phase: exited ? "final" : "partial",
+		timing: {
+			wallTimeSeconds: Math.max(0, (snapshot.finishedAtMs ?? Date.now()) - snapshot.startedAtMs) / 1_000,
+		},
+		progress: {
+			...base.progress,
+			output: snapshot.output,
+			outputChars: snapshot.output.length,
+			outputTruncated: snapshot.outputTruncated,
+		},
+		identifiers: { ...base.identifiers, sessionId: exited ? null : snapshot.id },
+		outcome: {
+			status: exited ? (exitCode === 0 ? "succeeded" : "failed") : "running",
+			exitCode,
+			failure: exited && exitCode !== 0 ? `Process exited with code ${exitCode}` : null,
+		},
+	};
 }
 
 function continuationDetails(

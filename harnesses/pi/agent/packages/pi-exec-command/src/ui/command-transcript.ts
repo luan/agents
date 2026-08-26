@@ -1,5 +1,6 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
+import type { ActivityAnimationOverrides } from "pi-libtui";
 import type { TuiMouseEvent } from "pi-libtui/mouse";
 import { type TerminalOutputUpdate, ToolActivity, type ToolTranscriptStatus } from "pi-libtui/tool";
 import { ShellCommandAction } from "./shell-command-action.ts";
@@ -26,6 +27,7 @@ export interface CommandTranscriptOptions {
 	previewRows?: number;
 	fullRows?: number;
 	maxCharacters?: number;
+	animation?: Readonly<ActivityAnimationOverrides>;
 }
 
 /** Shell-prompt preset over the domain-free streaming ToolActivity. */
@@ -41,6 +43,7 @@ export class CommandTranscript implements Component {
 			theme: options.theme,
 			view: shellView(view),
 			requestRender: options.requestRender,
+			animation: options.animation,
 		});
 		this.activity = new ToolActivity({
 			...options,

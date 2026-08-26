@@ -155,6 +155,9 @@ If `pi-xsettings` is installed, edit `~/.pi/agent/xsettings.toml`:
 pi-exec-command.defaultOutputTokens = 10000
 pi-exec-command.defaultExecYieldMs = 10000
 pi-exec-command.defaultLoginShell = true
+
+[appearance]
+pi-exec-command.activityMarker = "inherit"
 ```
 
 Available output limits are `1000`, `2500`, `5000`, `10000`, `20000`, `50000`,
@@ -165,10 +168,12 @@ Without the xsettings host, the package uses those compiled defaults. Do not
 create a second settings file. Saving settings republishes the tool
 definitions; reload Pi when changing a default for an already-running bridge.
 
-Running command rows use the shared `pi-libtui.activityMarker` and
-`pi-libtui.shimmer` Appearance settings. Marker choices (`off`, `spinner`,
-`pulse`, `static`) combine independently with text choices (`off`, `sweep`,
-`glow`) and apply live.
+Running command rows inherit the shared `pi-libtui.activityMarker` by default.
+Set `pi-exec-command.activityMarker = "off"` to remove only their marker, or
+select any shared marker style as an Exec Command-specific override. The
+shared shimmer, speed, and smoothness settings still apply. Package-local
+presentation overrides affect new renderers after settings are republished;
+inherited global appearance changes remain live.
 
 ## Architecture
 

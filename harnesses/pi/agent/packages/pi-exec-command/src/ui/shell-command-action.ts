@@ -3,6 +3,7 @@ import type { Component } from "@earendil-works/pi-tui";
 import { sliceByColumn, stripTerminalSequences, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import {
 	highlightSyntaxBlock,
+	type ActivityAnimationOverrides,
 	activityAnimatesText,
 	activityFrame,
 	getTuiAppearance,
@@ -33,6 +34,7 @@ export interface ShellCommandActionOptions {
 	requestRender(): void;
 	maxRows?: number;
 	reducedMotion?: boolean;
+	animation?: Readonly<ActivityAnimationOverrides>;
 }
 
 interface ShellPiece {
@@ -40,10 +42,12 @@ interface ShellPiece {
 	tone: TuiForegroundColor;
 }
 
-interface ShellActivity {
+interface ShellActivity extends ActivityAnimationOverrides {
 	elapsedMs: number;
 	markerStyle: TuiActivityMarkerStyle;
 	shimmerStyle: TuiShimmerStyle;
+	shimmerMarker: boolean;
+	animationSpeed: NonNullable<ActivityAnimationOverrides["animationSpeed"]>;
 }
 
 /** Width-aware, copy-friendly shell command header with cached token styling. */
@@ -83,17 +87,19 @@ export class ShellCommandAction implements Component {
 		if (boundedWidth === 0) return [];
 		this.requestSyntaxReady();
 		const appearance = getTuiAppearance();
+		const markerStyle = this.options.animation?.markerStyle ?? appearance.activityMarker;
+		const shimmerStyle = this.options.animation?.shimmerStyle ?? appearance.shimmer;
 		const activity = this.running
 			? {
+					...this.options.animation,
 					elapsedMs: this.now - this.startedAt,
-					markerStyle:
-						this.options.reducedMotion && appearance.activityMarker !== "off"
-							? ("static" as const)
-							: appearance.activityMarker,
-					shimmerStyle: this.options.reducedMotion ? ("off" as const) : appearance.shimmer,
+					markerStyle: this.options.reducedMotion && markerStyle !== "off" ? ("static" as const) : markerStyle,
+					shimmerStyle: this.options.reducedMotion ? ("off" as const) : shimmerStyle,
+					shimmerMarker: this.options.animation?.shimmerMarker ?? appearance.shimmerMarker,
+					animationSpeed: this.options.animation?.animationSpeed ?? appearance.animationSpeed,
 				}
 			: undefined;
-		const key = `${this.revision}\0${activity?.markerStyle ?? ""}\0${activity?.shimmerStyle ?? ""}\0${activity?.elapsedMs ?? ""}`;
+		const key = `${this.revision}\0${activity?.markerStyle ?? ""}\0${activity?.shimmerStyle ?? ""}\0${activity?.shimmerMarker ?? ""}\0${activity?.animationSpeed ?? ""}\0${activity?.elapsedMs ?? ""}`;
 		return this.cache.get(boundedWidth, key, () =>
 			renderShellCommand(this.options.theme, this.view, boundedWidth, activity, this.options.maxRows, this.pieces),
 		);
@@ -125,6 +131,7 @@ export class ShellCommandAction implements Component {
 			this.motion = mountConfiguredAnimation(
 				{ requestRender: this.options.requestRender },
 				{
+					...this.options.animation,
 					reducedMotion: this.options.reducedMotion,
 					onFrame: (now) => {
 						this.now = now;
@@ -153,6 +160,8 @@ function renderShellCommand(
 		? activityFrame(colors, "", activity.elapsedMs, {
 				markerStyle: activity.markerStyle,
 				shimmerStyle: activity.shimmerStyle,
+				shimmerMarker: activity.shimmerMarker,
+				animationSpeed: activity.animationSpeed,
 			}).marker
 		: "";
 	const prefix = `${activityMarker ? `${activityMarker} ` : ""}${colors.fg(promptTone, "$")} `;
@@ -176,6 +185,8 @@ function renderShellCommand(
 				activityFrame(colors, text, activity.elapsedMs + index * 70, {
 					markerStyle: activity.markerStyle,
 					shimmerStyle: activity.shimmerStyle,
+					shimmerMarker: activity.shimmerMarker,
+					animationSpeed: activity.animationSpeed,
 				}).text
 			}`;
 		}
