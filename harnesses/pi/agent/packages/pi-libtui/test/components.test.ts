@@ -286,6 +286,68 @@ describe("shared TUI components", () => {
 		expect(plain.some((line) => line.includes(" █"))).toBe(true);
 	});
 
+	test("searchable select shrink-wraps when its content fits below the height cap", () => {
+		initializeTui();
+		const select = new SearchableSelect({
+			title: "Mode",
+			showTitle: false,
+			options: [{ value: "default", label: "Default" }],
+			theme,
+			onSelect() {},
+			onCancel() {},
+		});
+		const dialog = new DialogOverlay(theme, select, "Mode");
+		dialog.setMaxHeight(12);
+
+		expect(dialog.render(48)).toHaveLength(6);
+	});
+
+	test("searchable select uses available height before introducing a scrollbar", () => {
+		initializeTui();
+		const select = new SearchableSelect({
+			title: "Mode",
+			showTitle: false,
+			options: Array.from({ length: 15 }, (_, index) => ({
+				value: String(index),
+				label: `Option ${index}`,
+			})),
+			theme,
+			onSelect() {},
+			onCancel() {},
+		});
+		const dialog = new DialogOverlay(theme, select, "Mode");
+		dialog.setMaxHeight(30);
+
+		const plain = dialog.render(48).map(stripTerminalSequences);
+
+		expect(plain).toHaveLength(20);
+		expect(plain.some((line) => line.includes("Option 14"))).toBe(true);
+		expect(plain.some((line) => line.includes("█"))).toBe(false);
+	});
+
+	test("searchable select wraps option descriptions below narrow rows", () => {
+		initializeTui();
+		const select = new SearchableSelect({
+			title: "Speed",
+			showTitle: false,
+			descriptionLayout: "below",
+			options: [
+				{
+					value: "slow",
+					label: "Slow",
+					description: "Run animations at sixty percent of their normal pace.",
+				},
+			],
+			theme,
+			onSelect() {},
+			onCancel() {},
+		});
+
+		const lines = select.render(24).map(stripTerminalSequences);
+		expect(lines.join(" ").replace(/\s+/gu, " ")).toContain("Run animations at sixty percent of their normal pace.");
+		expect(lines.every((line) => visibleWidth(line) <= 24)).toBe(true);
+	});
+
 	test("picker panel renders rich rows and keeps filtering distinct from navigation", () => {
 		initializeTui();
 		const selected: string[] = [];

@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import {
+	type Component,
 	CURSOR_MARKER,
 	KeybindingsManager,
-	type Component,
 	setKeybindings,
 	stripTerminalSequences,
 	TUI_KEYBINDINGS,
@@ -11,15 +11,15 @@ import {
 import {
 	configureTuiAppearance,
 	DEFAULT_TUI_APPEARANCE,
-	icon,
 	type DialogHost,
+	icon,
 	sharedMotionScheduler,
-	tuiTheme,
 	type TuiTitleSource,
+	tuiTheme,
 } from "pi-libtui";
+import { Type } from "typebox";
 import type { SettingValue } from "../src/protocol/settings.ts";
 import { type SettingField, SettingsEditor } from "../src/ui/settings-editor.ts";
-import { Type } from "typebox";
 
 describe("xsettings editor", () => {
 	afterEach(() => configureTuiAppearance(DEFAULT_TUI_APPEARANCE));
@@ -402,7 +402,11 @@ describe("xsettings editor", () => {
 
 		markerEditor.handleInput("\r");
 		expect(sharedMotionScheduler.activeMountCount).toBe(mountsBefore + 1);
-		const lines = markerEditor.render(100).map(stripTerminalSequences);
+		const lines: string[] = [];
+		for (let index = 0; index < 9; index += 1) {
+			lines.push(...markerEditor.render(100).map(stripTerminalSequences));
+			markerEditor.handleInput("j");
+		}
 		expect(lines.find((line) => line.includes("Off"))).not.toContain("● Off");
 		expect(lines.find((line) => line.includes("Spinner"))).toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Spinner/u);
 		expect(lines.find((line) => line.includes("Pulse"))).toContain("● Pulse");
@@ -494,6 +498,7 @@ describe("xsettings editor", () => {
 		shimmerEditor.handleInput("\x1b");
 		expect(sharedMotionScheduler.activeMountCount).toBe(mountsBefore);
 
+		configureTuiAppearance({ activityMarker: "line", shimmer: "glow", animationSpeed: "normal" });
 		for (const field of [
 			{
 				id: "extensions.pi-libtui.animationSpeed",
@@ -544,12 +549,10 @@ describe("xsettings editor", () => {
 			);
 			editor.handleInput("\r");
 			expect(sharedMotionScheduler.activeMountCount).toBe(mountsBefore + 1);
-			const timingLines = editor
-				.render(100)
-				.map(stripTerminalSequences)
-				.map((line) => line.normalize("NFD").replace(/\p{M}/gu, ""));
+			const timingLines = editor.render(100).map(stripTerminalSequences);
 			for (const option of field.options)
-				expect(timingLines.find((line) => line.includes(option.label))).toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] /u);
+				expect(timingLines.find((line) => line.includes(option.label))).toMatch(/[-\\|/] /u);
+			expect(timingLines.join("\n")).not.toMatch(/\p{M}/u);
 			editor.handleInput("\x1b");
 			expect(sharedMotionScheduler.activeMountCount).toBe(mountsBefore);
 		}
@@ -561,12 +564,16 @@ describe("xsettings editor", () => {
 		let dialog: Component | undefined;
 		let parent: { row: number; col: number } | undefined;
 		let dialogTitle: TuiTitleSource | undefined;
+		let dialogWidth: number | string | undefined;
+		let dialogMaxHeight: number | string | undefined;
 		let closed = 0;
 		const dialogs: DialogHost = {
 			open(component, options) {
 				dialog = component;
 				parent = options?.parent;
 				dialogTitle = options?.title;
+				dialogWidth = options?.width;
+				dialogMaxHeight = options?.maxHeight;
 				return () => {
 					closed += 1;
 					dialog = undefined;
@@ -607,6 +614,8 @@ describe("xsettings editor", () => {
 		expect(stripTerminalSequences(dialog!.render(50).join("\n"))).toContain("Minimal");
 		expect(parent).toEqual({ row: 1, col: 32 });
 		expect(dialogTitle).toBe("Mode");
+		expect(dialogWidth).toBe(48);
+		expect(dialogMaxHeight).toBe("90%");
 		dialog!.handleInput?.("j");
 		dialog!.handleInput?.("\r");
 

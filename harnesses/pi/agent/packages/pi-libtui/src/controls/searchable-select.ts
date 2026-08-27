@@ -39,6 +39,8 @@ export interface SearchableSelectOptions<Value extends string> {
 	title: string;
 	/** Optional supporting text rendered below the title. */
 	description?: string;
+	/** Place each option description inline or wrapped below its selectable row. */
+	descriptionLayout?: "inline" | "below";
 	/** Render the title in the content. Disable when the dialog frame owns it. */
 	showTitle?: boolean;
 	/** Complete ordered set of searchable options. */
@@ -243,18 +245,19 @@ export class SearchableSelect<Value extends string = string> implements Componen
 			1,
 			(this.maxHeight ?? Number.POSITIVE_INFINITY) - lines.length - 1 - buttons.length,
 		);
-		this.list.setMaxVisible(Math.min(SearchableSelect.MAX_VISIBLE, availableListRows));
+		this.list.setMaxVisible(this.maxHeight === undefined ? SearchableSelect.MAX_VISIBLE : availableListRows);
 		this.listStart = lines.length;
 		const listLines = this.list.render(width);
 		this.listHeight = Math.max(1, listLines.length);
 		if (listLines.length > 0) {
+			const geometry = this.list.getGeometry();
 			lines.push(
 				...applyScrollbar(listLines, {
 					theme: this.options.theme,
 					width,
 					height: listLines.length,
-					offset: this.list.getGeometry()?.startIndex ?? 0,
-					total: this.optionCount,
+					offset: geometry?.startRow ?? 0,
+					total: geometry?.totalRows ?? this.optionCount,
 				}),
 			);
 		} else lines.push(colors.fg("text.muted", "  No matching options"));
@@ -283,7 +286,7 @@ export class SearchableSelect<Value extends string = string> implements Componen
 		return this.searchHovered ? colors.bg("surface.raised", padded) : padded;
 	}
 
-	private renderOption(option: SelectOption<Value>, context: SelectableListRenderContext): string {
+	private renderOption(option: SelectOption<Value>, context: SelectableListRenderContext): string | string[] {
 		const colors = tuiTheme(this.options.theme);
 		const prefix = context.selected ? colors.fg("accent", "→ ") : "  ";
 		const contentWidth = Math.max(0, context.width - visibleWidth(prefix));
@@ -301,9 +304,17 @@ export class SearchableSelect<Value extends string = string> implements Componen
 			const description = option.description ? `  ${colors.fg("text.muted", option.description)}` : "";
 			content = `${label}${description}`;
 		}
-		const row = truncateToWidth(`${prefix}${content}`, context.width, "");
-		const padded = row + " ".repeat(Math.max(0, context.width - visibleWidth(row)));
-		return context.hovered && !context.selected ? colors.bg("surface.selected", padded) : padded;
+		const fit = (line: string): string => {
+			const clipped = truncateToWidth(line, context.width, "");
+			const padded = clipped + " ".repeat(Math.max(0, context.width - visibleWidth(clipped)));
+			return context.hovered && !context.selected ? colors.bg("surface.selected", padded) : padded;
+		};
+		const row = fit(`${prefix}${content}`);
+		if (this.options.descriptionLayout !== "below" || !option.description) return row;
+		const indent = " ".repeat(visibleWidth(prefix));
+		const descriptionWidth = Math.max(1, context.width - visibleWidth(indent));
+		const description = new Text(colors.fg("text.muted", option.description), 0, 0).render(descriptionWidth);
+		return [row, ...description.map((line) => fit(`${indent}${line}`))];
 	}
 
 	private renderMatchingLabel(label: string, selected: boolean): string {

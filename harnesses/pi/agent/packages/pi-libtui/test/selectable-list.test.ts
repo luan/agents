@@ -40,6 +40,8 @@ describe("SelectableList", () => {
 			width: 24,
 			height: 3,
 			startIndex: 0,
+			startRow: 0,
+			totalRows: 4,
 			items: [
 				{ x: 0, y: 0, width: 24, height: 1, index: 0 },
 				{ x: 0, y: 1, width: 24, height: 2, index: 1 },

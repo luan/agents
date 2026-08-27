@@ -39,6 +39,10 @@ export interface SelectableListGeometry {
 	height: number;
 	/** Index of the first item visible in the current viewport. */
 	startIndex: number;
+	/** Rendered row offset of the first visible item. */
+	startRow: number;
+	/** Total rendered rows across every item. */
+	totalRows: number;
 	/** Interactive geometry for each visible item. */
 	items: readonly SelectableListItemGeometry[];
 }
@@ -241,6 +245,8 @@ export class SelectableList<Item> implements Component {
 				width: boundedWidth,
 				height: 0,
 				startIndex: 0,
+				startRow: 0,
+				totalRows: 0,
 				items: [],
 			};
 			return [];
@@ -288,6 +294,8 @@ export class SelectableList<Item> implements Component {
 			width: boundedWidth,
 			height: lines.length,
 			startIndex: start,
+			startRow: rendered.slice(0, start).reduce((height, item) => height + item.lines.length, 0),
+			totalRows: rendered.reduce((height, item) => height + item.lines.length, 0),
 			items,
 		};
 		return lines;

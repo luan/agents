@@ -24,6 +24,7 @@ import {
 	isTuiAnimationSmoothness,
 	isTuiAnimationSpeed,
 	isTuiShimmerStyle,
+	type MotionMount,
 	MultiSelect,
 	SearchableSelect,
 	SelectableList,
@@ -31,7 +32,6 @@ import {
 	type SelectableListRow,
 	SemanticInput,
 	sharedMotionScheduler,
-	type MotionMount,
 	tuiTheme,
 } from "pi-libtui";
 import type {
@@ -130,8 +130,19 @@ export type SettingField =
 
 type EditorComponent = Component & { dispose?(): void };
 
+const SETTINGS_DIALOG_MAX_HEIGHT = "90%" as const;
+
+function settingDialogWidth(field: SettingField): number {
+	const minimum = field.type === "list" ? 76 : field.type === "string-list" ? 72 : field.type === "string" ? 56 : 48;
+	const content = [field.label, field.description];
+	if ("options" in field) {
+		for (const option of field.options) content.push(option.label, option.description ?? "");
+	}
+	return Math.min(88, Math.max(minimum, ...content.map((line) => visibleWidth(line) + 6)));
+}
+
 class AnimationSelect extends SearchableSelect<string> {
-	private readonly motion: MotionMount;
+	private readonly motion?: MotionMount;
 
 	constructor(field: EnumSettingField, theme: Theme, done: (value?: string) => void, requestRender: () => void) {
 		let now = performance.now();
@@ -146,10 +157,18 @@ class AnimationSelect extends SearchableSelect<string> {
 			if (speedField) return option.value === "inherit" || isTuiAnimationSpeed(option.value);
 			return smoothnessField && (option.value === "inherit" || isTuiAnimationSmoothness(option.value));
 		});
+		const appearance = getTuiAppearance();
+		const previewOptions = (value: string) => ({
+			markerStyle: markerField && isTuiActivityMarkerStyle(value) ? value : appearance.activityMarker,
+			shimmerStyle: shimmerField && isTuiShimmerStyle(value) ? value : appearance.shimmer,
+			smoothness: smoothnessField && isTuiAnimationSmoothness(value) ? value : appearance.animationSmoothness,
+			speed: speedField && isTuiAnimationSpeed(value) ? value : appearance.animationSpeed,
+		});
 		super({
 			title: field.label,
 			showTitle: false,
 			description: field.description,
+			descriptionLayout: "below",
 			options,
 			selected: options.some((option) => option.value === field.value) ? field.value : undefined,
 			theme,
@@ -158,28 +177,7 @@ class AnimationSelect extends SearchableSelect<string> {
 			requestRender,
 			renderOption: (option, context) => {
 				const colors = tuiTheme(context.theme);
-				const appearance = getTuiAppearance();
-				const timingField = speedField || smoothnessField;
-				const markerStyle =
-					markerField && isTuiActivityMarkerStyle(option.value)
-						? option.value
-						: timingField
-							? "spinner"
-							: appearance.activityMarker;
-				const shimmerStyle =
-					shimmerField && isTuiShimmerStyle(option.value)
-						? option.value
-						: timingField
-							? "lightning"
-							: appearance.shimmer;
-				const smoothness =
-					smoothnessField && isTuiAnimationSmoothness(option.value) ? option.value : appearance.animationSmoothness;
-				const speed =
-					speedField && isTuiAnimationSpeed(option.value)
-						? option.value
-						: smoothnessField
-							? "very-fast"
-							: appearance.animationSpeed;
+				const { markerStyle, shimmerStyle, smoothness, speed } = previewOptions(option.value);
 				const cadenceMs =
 					configuredAnimationCadenceMs(markerStyle, shimmerStyle, smoothness, speed) ??
 					animationSmoothnessCadenceMs(smoothness);
@@ -192,25 +190,31 @@ class AnimationSelect extends SearchableSelect<string> {
 					textTone: context.selected ? "accent" : "text.primary",
 				});
 				const preview = frame.marker ? `${frame.marker} ${frame.text}` : frame.text;
-				const description = option.description ? `  ${colors.fg("text.muted", option.description)}` : "";
-				return `${context.selected ? theme.bold(preview) : preview}${description}`;
+				return context.selected ? theme.bold(preview) : preview;
 			},
 		});
-		this.motion = sharedMotionScheduler.mount(
-			{ requestRender },
-			{
-				cadenceMs:
-					configuredAnimationCadenceMs("spinner", "lightning", "ultra", "very-fast") ??
-					animationSmoothnessCadenceMs("ultra"),
-				onFrame: (next) => {
-					now = next;
+		const previewCadences = options
+			.map((option) => {
+				const { markerStyle, shimmerStyle, smoothness, speed } = previewOptions(option.value);
+				return configuredAnimationCadenceMs(markerStyle, shimmerStyle, smoothness, speed);
+			})
+			.filter((cadence): cadence is number => cadence !== undefined);
+		const cadenceMs = previewCadences.length > 0 ? Math.min(...previewCadences) : undefined;
+		if (cadenceMs !== undefined) {
+			this.motion = sharedMotionScheduler.mount(
+				{ requestRender },
+				{
+					cadenceMs,
+					onFrame: (next) => {
+						now = next;
+					},
 				},
-			},
-		);
+			);
+		}
 	}
 
 	dispose(): void {
-		this.motion.dispose();
+		this.motion?.dispose();
 	}
 }
 
@@ -535,7 +539,12 @@ export class SettingsEditor extends ComponentStack {
 				dialogHost: this.dialogHost,
 				showTitle: !this.dialogHost,
 			});
-			this.openEditor(editor, { title: field.label, width: 76, maxHeight: 20, parent: this.getSelectedDialogAnchor() });
+			this.openEditor(editor, {
+				width: settingDialogWidth(field),
+				maxHeight: SETTINGS_DIALOG_MAX_HEIGHT,
+				title: field.label,
+				parent: this.getSelectedDialogAnchor(),
+			});
 			return;
 		}
 		if (field.type === "string-list") {
@@ -553,7 +562,12 @@ export class SettingsEditor extends ComponentStack {
 				dialogHost: this.dialogHost,
 				showTitle: !this.dialogHost,
 			});
-			this.openEditor(editor, { title: field.label, width: 72, maxHeight: 20, parent: this.getSelectedDialogAnchor() });
+			this.openEditor(editor, {
+				width: settingDialogWidth(field),
+				maxHeight: SETTINGS_DIALOG_MAX_HEIGHT,
+				title: field.label,
+				parent: this.getSelectedDialogAnchor(),
+			});
 			return;
 		}
 		if (field.type === "boolean") {
@@ -579,12 +593,17 @@ export class SettingsEditor extends ComponentStack {
 							onCancel: () => done(),
 							requestRender: this.requestRender,
 						});
-			this.openEditor(editor, { title: field.label, width: 48, maxHeight: 18, parent: this.getSelectedDialogAnchor() });
+			this.openEditor(editor, {
+				width: settingDialogWidth(field),
+				maxHeight: SETTINGS_DIALOG_MAX_HEIGHT,
+				title: field.label,
+				parent: this.getSelectedDialogAnchor(),
+			});
 		} else if (field.type === "string") {
 			this.openEditor(new StringEditor(field, this.theme, done, !this.dialogHost), {
+				width: settingDialogWidth(field),
+				maxHeight: SETTINGS_DIALOG_MAX_HEIGHT,
 				title: field.label,
-				width: 56,
-				maxHeight: 12,
 				parent: this.getSelectedDialogAnchor(),
 			});
 		} else {
@@ -608,9 +627,9 @@ export class SettingsEditor extends ComponentStack {
 				onCancel: () => this.closeEditor(),
 			});
 			this.openEditor(editor, {
+				width: settingDialogWidth(field),
+				maxHeight: SETTINGS_DIALOG_MAX_HEIGHT,
 				title: field.label,
-				width: 60,
-				maxHeight: "90%",
 				parent: this.getSelectedDialogAnchor(),
 			});
 		}
