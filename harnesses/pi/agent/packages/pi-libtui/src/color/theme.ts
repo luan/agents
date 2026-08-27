@@ -1,7 +1,6 @@
 import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { type MeasuredTerminalColors, terminalColorsRegistry } from "../terminal-colors.ts";
 import {
-	type Color256Index,
 	color256Index,
 	generateColor256,
 	gray256Index,
@@ -74,6 +73,7 @@ export type TuiBackgroundPaint = TuiBackgroundToken | TuiColor;
 /** The component-facing semantic color facade. */
 export interface TuiTheme {
 	color(token: TuiForegroundColor | TuiBackgroundToken): TuiColor;
+	mixForeground(from: TuiForegroundPaint, to: TuiForegroundPaint, amount: number): TuiColor;
 	fg(paint: TuiForegroundPaint, text: string): string;
 	bg(paint: TuiBackgroundPaint, text: string): string;
 	fgAnsi(paint: TuiForegroundPaint): string;
@@ -83,7 +83,7 @@ export interface TuiTheme {
 
 type SemanticToken = TuiForegroundToken | TuiBackgroundToken;
 type PiThemeBackground = Parameters<Theme["bg"]>[0];
-type ColorRef = SemanticToken | Color256Index;
+type ColorRef = SemanticToken | ColorValue;
 type ColorResolver = ReturnType<typeof createColorResolver>;
 
 interface ThemeAliases {
@@ -256,6 +256,18 @@ function buildTheme(resolver: ColorResolver, aliases: ThemeAliases): TuiTheme {
 		`${ansi(ref, backgroundColor)}${text}${backgroundColor ? "\x1b[49m" : "\x1b[39m"}`;
 	const facade: TuiTheme = {
 		color: (color) => publicColor(typeof color === "string" ? color : swatch(color.hue, color.shade)),
+		mixForeground(from, to, amount) {
+			const left = resolver.rgb(resolve(refForPaint(from)));
+			const right = resolver.rgb(resolve(refForPaint(to)));
+			const position = Math.max(0, Math.min(1, Number.isFinite(amount) ? amount : 0));
+			return createColor(
+				rgb(
+					left.r + (right.r - left.r) * position,
+					left.g + (right.g - left.g) * position,
+					left.b + (right.b - left.b) * position,
+				),
+			);
+		},
 		fg(paintColor, text) {
 			return paint(refForPaint(paintColor), text, false);
 		},

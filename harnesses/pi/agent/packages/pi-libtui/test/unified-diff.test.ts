@@ -21,6 +21,7 @@ function recordingTheme(name: string): TuiTheme {
 	const colors = tuiTheme({ name, getColorMode: () => "truecolor" } as never);
 	return {
 		color: colors.color,
+		mixForeground: colors.mixForeground,
 		fg: (paint: TuiForegroundPaint, text: string) =>
 			`\x1b]1337;${name}:fg:${typeof paint === "string" ? paint : "hue" in paint ? paint.hue : "color"}\x07${text}\x1b[39m`,
 		bg: (paint: TuiBackgroundPaint, text: string) =>

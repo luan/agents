@@ -176,6 +176,8 @@ Feature code uses only the root color API:
   gray ramps at shade `0` through `5`.
 - `TuiColor` is an opaque resolved handle used when a component must carry a
   color between operations without exposing RGB values or palette indexes.
+- `TuiTheme.mixForeground()` interpolates semantic foreground paints through
+  the active terminal color policy for smooth motion without leaking raw RGB.
 
 `src/color/palette.ts`, `src/color/resolver.ts`, and `src/terminal-colors.ts`
 are terminal-boundary implementation. The exact 6×6×6 color256 coordinates,

@@ -14,7 +14,12 @@ const theme = {
 	name: "subagents-test",
 	bold: (text: string) => text,
 	getColorMode: () => "truecolor",
-	getFgAnsi: () => "\x1b[38;2;120;160;220m",
+	getFgAnsi: (token: string) =>
+		({
+			accent: "\x1b[38;2;80;160;240m",
+			dim: "\x1b[38;2;70;80;110m",
+			text: "\x1b[38;2;190;200;220m",
+		})[token] ?? "\x1b[38;2;120;160;220m",
 	getBgAnsi: () => "\x1b[48;2;20;24;30m",
 } as never;
 
@@ -33,7 +38,10 @@ describe("agent presentation formatting", () => {
 		expect(stripTerminalSequences(renderAgentStatusMarker(colors, "running", 0, 300))).toBe("●");
 		configureTuiAppearance({ activityMarker: "off", shimmer: "glow" });
 		expect(renderAgentStatusMarker(colors, "running", 0, 300)).toBe("");
-		expect(stripTerminalSequences(renderAgentIdentity(colors, "worker", "running", 0, 300))).toBe("worker");
+		const shimmeredIdentity = renderAgentIdentity(colors, "worker", "running", 0, 300);
+		expect(stripTerminalSequences(shimmeredIdentity)).toBe("worker");
+		expect(new Set(shimmeredIdentity.match(/\x1b\[38;[^m]+m/gu) ?? []).size).toBeGreaterThan(1);
+		expect(shimmeredIdentity).toContain("\x1b[1m");
 		configureTuiAppearance({ activityMarker: "pulse" });
 		expect(stripTerminalSequences(renderAgentIdentity(colors, "worker", "running", 0, 300))).toBe("● worker");
 		configureTuiAppearance({ activityMarker: "static", shimmer: "off" });

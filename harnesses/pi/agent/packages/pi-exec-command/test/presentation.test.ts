@@ -278,12 +278,12 @@ describe("exec tool presentation", () => {
 		const mountsBefore = sharedMotionScheduler.activeMountCount;
 		const timersBefore = sharedMotionScheduler.activeTimerCount;
 		const timers: FakeMotionTimer[] = [];
-		const originalSetInterval = globalThis.setInterval;
-		const originalClearInterval = globalThis.clearInterval;
+		const originalSetTimeout = globalThis.setTimeout;
+		const originalClearTimeout = globalThis.clearTimeout;
 		const originalPerformanceNow = performance.now;
 		let nowMs = 0;
 
-		globalThis.setInterval = ((callback: TimerHandler, cadenceMs?: number) => {
+		globalThis.setTimeout = ((callback: TimerHandler, cadenceMs?: number) => {
 			if (typeof callback !== "function") throw new TypeError("motion timer callback must be callable");
 			const timer: FakeMotionTimer = {
 				callback: callback as () => void,
@@ -292,11 +292,11 @@ describe("exec tool presentation", () => {
 				unref() {},
 			};
 			timers.push(timer);
-			return timer as unknown as ReturnType<typeof setInterval>;
-		}) as unknown as typeof setInterval;
-		globalThis.clearInterval = ((handle: ReturnType<typeof setInterval>) => {
+			return timer as unknown as ReturnType<typeof setTimeout>;
+		}) as unknown as typeof setTimeout;
+		globalThis.clearTimeout = ((handle: ReturnType<typeof setTimeout>) => {
 			(handle as unknown as FakeMotionTimer).stopped = true;
-		}) as typeof clearInterval;
+		}) as typeof clearTimeout;
 		performance.now = () => nowMs;
 
 		try {
@@ -320,14 +320,14 @@ describe("exec tool presentation", () => {
 			expect(Bun.stripANSI(active.render(72).join("\n"))).toContain("⠙ $ sleep 1");
 
 			active.dispose();
-			expect(timers[0]!.stopped).toBe(true);
+			expect(timers.at(-1)!.stopped).toBe(true);
 			expect(sharedMotionScheduler.activeMountCount).toBe(mountsBefore);
 			expect(sharedMotionScheduler.activeTimerCount).toBe(timersBefore);
 			active.dispose();
 			expect(sharedMotionScheduler.activeMountCount).toBe(mountsBefore);
 		} finally {
-			globalThis.setInterval = originalSetInterval;
-			globalThis.clearInterval = originalClearInterval;
+			globalThis.setTimeout = originalSetTimeout;
+			globalThis.clearTimeout = originalClearTimeout;
 			performance.now = originalPerformanceNow;
 		}
 	});

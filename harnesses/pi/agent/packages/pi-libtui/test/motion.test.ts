@@ -10,11 +10,11 @@ import {
 	animationSpeedMultiplier,
 	configuredAnimationCadenceMs,
 	glyphFrame,
-	mountConfiguredAnimation,
+	lightningShimmerFrame,
 	MotionScheduler,
+	mountConfiguredAnimation,
 	pulseFrame,
 	pulseGlyphFrame,
-	lightningShimmerFrame,
 	rainbowGlowShimmerFrame,
 	rainbowShimmerFrame,
 	shimmerFrame,
@@ -204,9 +204,9 @@ describe("pure motion frames", () => {
 	test("renders activity text independently from optional markers", () => {
 		const colors = tuiTheme(theme);
 		const spinner = activityFrame(colors, "Working", 0, { markerStyle: "spinner", shimmerStyle: "off" });
-		const pulseGlow = activityFrame(colors, "Working", 140, { markerStyle: "pulse", shimmerStyle: "glow" });
+		const pulseGlow = activityFrame(colors, "Working", 300, { markerStyle: "pulse", shimmerStyle: "glow" });
 		const markerlessSweep = activityFrame(colors, "Working", 140, { markerStyle: "off", shimmerStyle: "sweep" });
-		const staticGlow = activityFrame(colors, "Working", 140, { markerStyle: "static", shimmerStyle: "glow" });
+		const staticGlow = activityFrame(colors, "Working", 300, { markerStyle: "static", shimmerStyle: "glow" });
 		const lineRainbow = activityFrame(colors, "Working", 140, { markerStyle: "line", shimmerStyle: "rainbow" });
 		const arc = activityFrame(colors, "Working", 160, { markerStyle: "arc", shimmerStyle: "off" });
 		const dots = activityFrame(colors, "Working", 240, { markerStyle: "dots", shimmerStyle: "off" });
@@ -238,14 +238,14 @@ describe("pure motion frames", () => {
 		expect(animationSpeedMultiplier("normal")).toBe(1);
 		expect(animationSpeedMultiplier("fast")).toBe(1.35);
 		expect(animationSpeedMultiplier("very-fast")).toBe(1.7);
-		expect(animationSmoothnessCadenceMs("economy")).toBe(120);
-		expect(animationSmoothnessCadenceMs("balanced")).toBe(60);
-		expect(animationSmoothnessCadenceMs("smooth")).toBe(40);
-		expect(animationSmoothnessCadenceMs("ultra")).toBe(25);
+		expect(animationSmoothnessCadenceMs("economy")).toBe(80);
+		expect(animationSmoothnessCadenceMs("balanced")).toBe(33);
+		expect(animationSmoothnessCadenceMs("smooth")).toBe(22);
+		expect(animationSmoothnessCadenceMs("ultra")).toBe(16);
 		expect(configuredAnimationCadenceMs("spinner", "off")).toBe(80);
-		expect(configuredAnimationCadenceMs("off", "lightning", "ultra")).toBe(60);
-		expect(configuredAnimationCadenceMs("off", "lightning", "ultra", "very-fast")).toBe(35);
-		expect(configuredAnimationCadenceMs("pulse", "glow", "economy")).toBe(120);
+		expect(configuredAnimationCadenceMs("off", "lightning", "ultra")).toBe(16);
+		expect(configuredAnimationCadenceMs("off", "lightning", "ultra", "very-fast")).toBe(16);
+		expect(configuredAnimationCadenceMs("pulse", "glow", "economy")).toBe(80);
 		expect(configuredAnimationCadenceMs("static", "off")).toBeUndefined();
 
 		const colors = tuiTheme(theme);
@@ -275,7 +275,7 @@ describe("pure motion frames", () => {
 			animationSpeed: "very-fast",
 			animationSmoothness: "ultra",
 		});
-		expect(clock.timers.at(-1)?.cadenceMs).toBe(35);
+		expect(clock.timers.at(-1)?.cadenceMs).toBe(16);
 		expect(scheduler.activeTimerCount).toBe(1);
 		expect(renders).toBe(1);
 
@@ -295,6 +295,44 @@ describe("pure motion frames", () => {
 		expect(scheduler.activeTimerCount).toBe(1);
 		markerless.dispose();
 		explicitSpinner.dispose();
+	});
+
+	test("samples marker and shimmer from one elapsed timeline without changing either pace", () => {
+		const colors = tuiTheme(theme);
+		const markerOnly = activityFrame(colors, "Working", 140, {
+			markerStyle: "spinner",
+			shimmerStyle: "off",
+		});
+		const combined = activityFrame(colors, "Working", 140, {
+			markerStyle: "spinner",
+			shimmerStyle: "glow",
+		});
+		const nextCombined = activityFrame(colors, "Working", 280, {
+			markerStyle: "spinner",
+			shimmerStyle: "glow",
+		});
+
+		expect(Bun.stripANSI(markerOnly.marker)).toBe("⠙");
+		expect(Bun.stripANSI(combined.marker)).toBe("⠙");
+		expect(Bun.stripANSI(nextCombined.marker)).toBe("⠸");
+		expect(nextCombined.text).not.toBe(combined.text);
+	});
+
+	test("samples lightning artifacts on every configured repaint without speeding its strike", () => {
+		const colors = tuiTheme(theme);
+		for (const animationSpeed of ["slow", "normal", "very-fast"] as const) {
+			const frames = Array.from({ length: 12 }, (_, index) => {
+				const frame = activityFrame(colors, "Working...", index * 33, {
+					markerStyle: "pulse",
+					shimmerStyle: "lightning",
+					shimmerMarker: true,
+					animationSpeed,
+					animationSmoothness: "balanced",
+				});
+				return `${frame.marker}${frame.text}`;
+			});
+			expect(new Set(frames).size).toBe(frames.length);
+		}
 	});
 
 	test("keeps every compact marker at its declared width", () => {
@@ -403,23 +441,46 @@ describe("pure motion frames", () => {
 		}
 	});
 
-	test("pulse uses multiple semantic and harmonious glow stops", () => {
+	test("pulse smoothly changes only the marker color", () => {
 		const colors = tuiTheme(theme);
-		const frames = [0, 150, 300, 450, 600, 750, 900, 1_050].map((elapsedMs) => pulseGlyphFrame(colors, "●", elapsedMs));
+		const frames = Array.from({ length: 37 }, (_, index) => pulseGlyphFrame(colors, "●", index * 33));
 		const foregrounds = new Set(frames.flatMap((frame) => frame.match(/\x1b\[38;[^m]+m/gu) ?? []));
 
-		expect(foregrounds.size).toBeGreaterThan(2);
+		expect(foregrounds.size).toBeGreaterThan(20);
+		const markers = [0, 150, 300, 450, 600].map(
+			(elapsedMs) => activityFrame(colors, "Working", elapsedMs, { markerStyle: "pulse", shimmerStyle: "off" }).marker,
+		);
+		expect(markers.map(Bun.stripANSI)).toEqual(["●", "●", "●", "●", "●"]);
+		expect(new Set(markers).size).toBeGreaterThan(2);
 	});
 
-	test("shimmer reaches the final cell and paints a multi-stop glow", () => {
+	test("shimmer reaches the final cell with a continuous cosine glow", () => {
 		const colors = tuiTheme(theme);
-		const text = "working";
-		const cadenceMs = 70;
-		const final = shimmerFrame(colors, text, (text.length - 1) * cadenceMs, { cadenceMs, width: 3 });
-		const glow = shimmerFrame(colors, text, 3 * cadenceMs, { cadenceMs, width: 3 });
+		const text = "working status";
+		const final = shimmerFrame(colors, text, ((text.length - 1 + 10) / 30) * 1_000);
+		const glow = shimmerFrame(colors, text, ((6 + 10) / 30) * 1_000);
 
-		expect(final).toContain(colors.fg("accent", "g"));
-		expect(new Set(glow.match(/\x1b\[38;[^m]+m/gu) ?? []).size).toBeGreaterThan(2);
+		expect(final).toContain(colors.fg("accent", "s"));
+		expect(new Set(glow.match(/\x1b\[38;[^m]+m/gu) ?? []).size).toBeGreaterThan(5);
+		expect(shimmerFrame(colors, text, 10)).toBe(colors.fg("text.secondary", text));
+	});
+
+	test("shimmers marker and text through one shared color ramp", () => {
+		const colors = tuiTheme(theme);
+		const atMarker = activityFrame(colors, "Working", (10 / 30) * 1_000, {
+			markerStyle: "static",
+			shimmerStyle: "glow",
+			shimmerMarker: true,
+		});
+		const atText = activityFrame(colors, "Working", (12 / 30) * 1_000, {
+			markerStyle: "static",
+			shimmerStyle: "glow",
+			shimmerMarker: true,
+		});
+
+		expect(atMarker.marker).toContain(colors.fgAnsi("accent"));
+		expect(atText.text).toContain(colors.fg("accent", "W"));
+		expect(atMarker.text).toContain(colors.fgAnsi("text.muted"));
 	});
 
 	test("rainbow shimmer preserves text while moving through semantic hues", () => {
