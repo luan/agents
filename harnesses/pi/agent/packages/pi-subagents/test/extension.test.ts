@@ -1,9 +1,36 @@
 import { expect, test } from "bun:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { ensureXSettingsRegistry } from "pi-xsettings";
+import { DEFAULT_SUBAGENT_SETTINGS, registerSubagentSettings } from "../src/config/settings.ts";
 import subagentsExtension from "../src/extension.ts";
 import { createRootCoordinator, getCoordinatorForSession, removeRootCoordinator } from "../src/runtime/coordinator.ts";
 
 type TestHandler = (event: object, context: ExtensionContext) => object | undefined | Promise<object | undefined>;
+
+test("registers the Agent Widget indicator override in the Agents animation section", () => {
+	const unregister = registerSubagentSettings();
+	try {
+		const definition = ensureXSettingsRegistry().registrations["pi-subagents"]?.definitions.find(
+			(candidate) => candidate.key === "agentWidgetIndicator",
+		);
+		expect(DEFAULT_SUBAGENT_SETTINGS.agentWidgetIndicator).toBe("inherit");
+		expect(definition).toMatchObject({
+			category: "appearance",
+			page: "animations",
+			section: "Agents",
+			preview: "activity-marker",
+			type: "enum",
+			default: "inherit",
+		});
+		if (definition?.type !== "enum" || !Array.isArray(definition.options))
+			throw new Error("Agent Widget indicator must be an enum");
+		expect(definition.options.map((option) => option.value)).toEqual(
+			expect.arrayContaining(["inherit", "off", "spinner", "nerd-pi-orbit"]),
+		);
+	} finally {
+		unregister();
+	}
+});
 
 test("reconciles an idle coordinator after session-tree navigation", async () => {
 	const handlers = new Map<string, TestHandler[]>();

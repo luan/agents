@@ -73,6 +73,9 @@ namespace is `pi-subagents` in `~/.pi/agent/xsettings.toml`:
 [behavior]
 pi-subagents.maxConcurrency = "8"
 pi-subagents.maxDepth = "2"
+
+[appearance]
+pi-subagents.agentWidgetIndicator = "inherit"
 ```
 
 `maxConcurrency` counts the root agent, so `8` provides seven simultaneous
@@ -87,11 +90,12 @@ otherwise it uses that package's configured subagent default role. Forking can
 copy all parent history, no history, or a positive number of recent turns.
 
 The Agent Widget, Agent Hub, and running collaboration-tool rows use the shared
-`pi-libtui.activityMarker` and `pi-libtui.shimmer` Appearance settings. Marker
-choices (`off`, `spinner`, `static`, and the compact marker catalog) combine independently with text
-choices (`off`, `sweep`, `glow`) and apply live.
+`pi-libtui.activityIndicator` and `pi-libtui.textEffect` Appearance settings.
+Indicator and text-effect choices combine independently and apply live.
 Each Agent Widget row is clickable and opens Agent Hub with that agent selected,
 matching the Process Widget interaction contract.
+The Animations page also has an **Agents** section. Its Agent Widget indicator
+inherits the global activity indicator by default and can be overridden live.
 
 ## Architecture map
 

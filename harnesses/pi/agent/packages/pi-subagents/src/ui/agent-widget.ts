@@ -1,6 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type TUI, truncateToWidth } from "@earendil-works/pi-tui";
-import type { MotionMount } from "pi-libtui";
+import type { ActivityAnimationOverrides, MotionMount } from "pi-libtui";
 import { icon, mountConfiguredAnimation, PointerInteractionController, tuiTheme } from "pi-libtui";
 import type { TuiMouseEvent } from "pi-libtui/mouse";
 import type { AgentHubAgentSnapshot, AgentHubSnapshot, AgentHubSnapshotSource } from "./agent-browser.ts";
@@ -30,6 +30,7 @@ export class AgentWidget {
 	private tui: TUI | undefined;
 	private registered = false;
 	private lastStatus: string | undefined;
+	private animation: Readonly<ActivityAnimationOverrides>;
 	private readonly unsubscribe: () => void;
 	private readonly interaction = new PointerInteractionController<AgentTarget>({
 		key: ({ agent }) => agent.id,
@@ -39,12 +40,22 @@ export class AgentWidget {
 	constructor(
 		source: AgentHubSnapshotSource,
 		private readonly openAgent: (agentId: string) => void = () => {},
+		animation: Readonly<ActivityAnimationOverrides> = {},
 	) {
+		this.animation = animation;
 		this.snapshot = source.getSnapshot();
 		this.unsubscribe = source.subscribe((snapshot) => {
 			this.snapshot = snapshot;
 			this.update();
 		});
+	}
+
+	setAnimation(animation: Readonly<ActivityAnimationOverrides>): void {
+		this.animation = animation;
+		this.motion?.dispose();
+		this.motion = undefined;
+		this.syncMotion();
+		this.tui?.requestRender();
 	}
 
 	setUICtx(ctx: UIContext): void {
@@ -117,6 +128,7 @@ export class AgentWidget {
 					agent.startedAt,
 					now,
 					agent.id === hoveredId ? "accent" : "text.primary",
+					this.animation,
 				);
 				const metadata = [
 					renderAgentMetadata(colors, agent, now, " · "),
@@ -149,7 +161,7 @@ export class AgentWidget {
 
 	private syncMotion(): void {
 		const running = this.snapshot.agents.some((agent) => agent.status === "running");
-		if (this.tui && running && !this.motion) this.motion = mountConfiguredAnimation(this.tui);
+		if (this.tui && running && !this.motion) this.motion = mountConfiguredAnimation(this.tui, this.animation);
 		if (!running && this.motion) {
 			this.motion.dispose();
 			this.motion = undefined;

@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ActivityAnimationOverrides } from "pi-libtui";
 import { getModelRoleCatalog } from "pi-model-roles/sdk";
 import { getSubagentConfig, registerSubagentSettings } from "./config/settings.ts";
 import { registerSubagentActions } from "./contributions/actions.ts";
@@ -131,7 +132,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		source = new CoordinatorSnapshotSource(coordinator);
 		unregisterAction = registerSubagentActions({ open: openHub });
 		if (context.hasUI) {
-			widget = new AgentWidget(source, (agentId) => void openHub(context, agentId));
+			widget = new AgentWidget(source, (agentId) => void openHub(context, agentId), agentWidgetAnimation(config));
 			widget.setUICtx(context.ui);
 		}
 	};
@@ -152,6 +153,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		if (unregisterSettings) return;
 		unregisterSettings = registerSubagentSettings(() => {
 			config = getSubagentConfig();
+			widget?.setAnimation(agentWidgetAnimation(config));
 		});
 		config = getSubagentConfig();
 	};
@@ -271,6 +273,12 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			);
 		},
 	});
+}
+
+function agentWidgetAnimation(
+	config: Pick<ReturnType<typeof getSubagentConfig>, "agentWidgetIndicator">,
+): Readonly<ActivityAnimationOverrides> {
+	return config.agentWidgetIndicator === "inherit" ? {} : { indicatorStyle: config.agentWidgetIndicator };
 }
 
 function registerTools(pi: ExtensionAPI, scope: CollaborationToolScope): void {

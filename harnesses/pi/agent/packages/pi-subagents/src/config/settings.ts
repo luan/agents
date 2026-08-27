@@ -1,8 +1,10 @@
-import { createSettings, type SettingDefinitionInput } from "pi-xsettings/sdk";
+import { TUI_ACTIVITY_INDICATOR_OPTIONS } from "pi-libtui";
+import { createSettings, type SettingDefinitionInput, type SettingsOf } from "pi-xsettings/sdk";
 
 export type SubagentConfig = {
 	readonly maxConcurrency: number;
 	readonly maxDepth: number;
+	readonly agentWidgetIndicator: SubagentSettings["agentWidgetIndicator"];
 };
 
 const definitions = {
@@ -30,15 +32,32 @@ const definitions = {
 			description: `${value} subagent level${value === 1 ? "" : "s"} below the root agent.`,
 		})),
 	},
+	agentWidgetIndicator: {
+		label: "Agent widget indicator",
+		description: "Override the activity indicator beside each running agent in the compact widget.",
+		category: "appearance",
+		page: "animations",
+		section: "Agents",
+		preview: "activity-marker",
+		type: "enum",
+		default: "inherit",
+		options: [
+			{ value: "inherit", label: "Inherit", description: "Use the default TUI activity indicator." },
+			...TUI_ACTIVITY_INDICATOR_OPTIONS,
+		],
+	},
 } as const satisfies Record<string, SettingDefinitionInput>;
 
 const settings = createSettings({ namespace: "pi-subagents", label: "Subagents", definitions });
+export type SubagentSettings = SettingsOf<typeof definitions>;
+export const DEFAULT_SUBAGENT_SETTINGS: Readonly<SubagentSettings> = settings.defaults;
 
 export function getSubagentConfig(): SubagentConfig {
 	const current = settings.get();
 	return {
 		maxConcurrency: Number(current.maxConcurrency),
 		maxDepth: Number(current.maxDepth),
+		agentWidgetIndicator: current.agentWidgetIndicator,
 	};
 }
 

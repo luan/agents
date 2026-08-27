@@ -25,7 +25,7 @@ test("opens the clicked agent row in Agent Hub", () => {
 		},
 	};
 	const opened: string[] = [];
-	const widget = new AgentWidget(source, (agentId) => opened.push(agentId));
+	const widget = new AgentWidget(source, (agentId) => opened.push(agentId), { indicatorStyle: "off" });
 	let renders = 0;
 	let factory:
 		| ((tui: never, theme: Theme) => { render(width: number): string[]; onMouse(event: TuiMouseEvent): boolean })
@@ -42,6 +42,7 @@ test("opens the clicked agent row in Agent Hub", () => {
 	const rendered = Bun.stripANSI(component?.render(100).join("\n") ?? "");
 	expect(rendered).toContain("Agents · 1 running");
 	expect(rendered).toContain("worker");
+	expect(rendered).not.toContain("●");
 	expect(component?.onMouse(mouse("move", 1, 10))).toBe(true);
 	expect(renders).toBeGreaterThan(0);
 	component?.onMouse(mouse("press", 1, 10, 0));

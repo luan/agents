@@ -1,4 +1,10 @@
-import { activityFrame, icon, type TuiForegroundToken, type TuiTheme } from "pi-libtui";
+import {
+	type ActivityAnimationOverrides,
+	activityFrame,
+	icon,
+	type TuiForegroundToken,
+	type TuiTheme,
+} from "pi-libtui";
 import type { SubagentSnapshot, SubagentStatus, TranscriptPreview } from "../runtime/coordinator.ts";
 
 type AgentRowSummary = Pick<SubagentSnapshot, "status" | "startedAt" | "completedAt" | "cost" | "modelRole">;
@@ -47,9 +53,10 @@ export function renderAgentIdentity(
 	startedAt: number,
 	now: number,
 	nameTone: TuiForegroundToken = "text.primary",
+	animation: Readonly<ActivityAnimationOverrides> = {},
 ): string {
 	if (status === "running") {
-		const frame = activityFrame(colors, name, now - startedAt, { textTone: nameTone });
+		const frame = activityFrame(colors, name, now - startedAt, { ...animation, textTone: nameTone });
 		return frame.marker ? `${frame.marker} ${frame.text}` : frame.text;
 	}
 	return `${renderAgentStatusMarker(colors, status, startedAt, now)} ${colors.fg(nameTone, name)}`;
