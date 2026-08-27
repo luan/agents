@@ -11,6 +11,8 @@ import {
 } from "@earendil-works/pi-tui";
 import {
 	activityFrame,
+	activityPresentationCadenceMs,
+	activityPresentationFrame,
 	animationSmoothnessCadenceMs,
 	ComponentStack,
 	configuredAnimationCadenceMs,
@@ -20,13 +22,17 @@ import {
 	type DialogOverlayOptions,
 	getTuiAppearance,
 	icon,
-	isTuiActivityMarkerStyle,
+	isTuiActivityMessageStyle,
+	isTuiActivityIndicatorStyle,
+	isTuiStatusPresentationStyle,
 	isTuiAnimationSmoothness,
 	isTuiAnimationSpeed,
-	isTuiShimmerStyle,
+	isTuiPulseEffectStyle,
+	isTuiTextEffectStyle,
 	type MotionMount,
 	MultiSelect,
 	SearchableSelect,
+	resolveActivityPresentation,
 	SelectableList,
 	type SelectableListRenderContext,
 	type SelectableListRow,
@@ -147,20 +153,31 @@ class AnimationSelect extends SearchableSelect<string> {
 	constructor(field: EnumSettingField, theme: Theme, done: (value?: string) => void, requestRender: () => void) {
 		let now = performance.now();
 		const startedAt = now;
-		const markerField = field.preview === "activity-marker";
-		const shimmerField = field.preview === "text-shimmer";
+		const indicatorField = field.preview === "activity-marker";
+		const messageField = field.preview === "activity-message";
+		const presentationField = field.preview === "status-presentation";
+		const textEffectField = field.preview === "text-effect";
+		const pulseEffectField = field.preview === "pulse-effect";
 		const speedField = field.preview === "animation-speed";
 		const smoothnessField = field.preview === "animation-smoothness";
+		const previewPhase = field.id.includes("thinking") ? "thinking" : field.id.includes("tool") ? "tool" : "working";
 		const options = field.options.filter((option) => {
-			if (markerField) return option.value === "inherit" || isTuiActivityMarkerStyle(option.value);
-			if (shimmerField) return option.value === "inherit" || isTuiShimmerStyle(option.value);
+			if (indicatorField) return option.value === "inherit" || isTuiActivityIndicatorStyle(option.value);
+			if (messageField) return option.value === "inherit" || isTuiActivityMessageStyle(option.value);
+			if (presentationField) return option.value === "inherit" || isTuiStatusPresentationStyle(option.value);
+			if (textEffectField) return option.value === "inherit" || isTuiTextEffectStyle(option.value);
+			if (pulseEffectField) return option.value === "inherit" || isTuiPulseEffectStyle(option.value);
 			if (speedField) return option.value === "inherit" || isTuiAnimationSpeed(option.value);
 			return smoothnessField && (option.value === "inherit" || isTuiAnimationSmoothness(option.value));
 		});
 		const appearance = getTuiAppearance();
 		const previewOptions = (value: string) => ({
-			markerStyle: markerField && isTuiActivityMarkerStyle(value) ? value : appearance.activityMarker,
-			shimmerStyle: shimmerField && isTuiShimmerStyle(value) ? value : appearance.shimmer,
+			indicatorStyle: indicatorField && isTuiActivityIndicatorStyle(value) ? value : appearance.activityIndicator,
+			messageStyle: messageField && isTuiActivityMessageStyle(value) ? value : appearance.activityMessage,
+			presentationStyle:
+				presentationField && isTuiStatusPresentationStyle(value) ? value : appearance.statusPresentation,
+			textEffectStyle: textEffectField && isTuiTextEffectStyle(value) ? value : appearance.textEffect,
+			pulseEffectStyle: pulseEffectField && isTuiPulseEffectStyle(value) ? value : appearance.pulseEffect,
 			smoothness: smoothnessField && isTuiAnimationSmoothness(value) ? value : appearance.animationSmoothness,
 			speed: speedField && isTuiAnimationSpeed(value) ? value : appearance.animationSpeed,
 		});
@@ -177,26 +194,86 @@ class AnimationSelect extends SearchableSelect<string> {
 			requestRender,
 			renderOption: (option, context) => {
 				const colors = tuiTheme(context.theme);
-				const { markerStyle, shimmerStyle, smoothness, speed } = previewOptions(option.value);
+				const {
+					indicatorStyle,
+					messageStyle,
+					presentationStyle,
+					pulseEffectStyle,
+					textEffectStyle,
+					smoothness,
+					speed,
+				} = previewOptions(option.value);
+				if (messageField || presentationField) {
+					const lineWidth = Math.max(10, Math.min(32, context.width - option.label.length - 3));
+					const presentation = resolveActivityPresentation(
+						indicatorStyle,
+						messageStyle,
+						textEffectStyle,
+						appearance.textEffectScope,
+						pulseEffectStyle,
+						presentationStyle,
+					);
+					const frame = activityPresentationFrame(
+						colors,
+						presentation,
+						previewPhase,
+						option.label,
+						now - startedAt,
+						lineWidth,
+						{
+							animationSpeed: speed,
+							animationSmoothness: smoothness,
+						},
+					);
+					const rendered = frame.marker ? `${frame.marker} ${frame.text}` : frame.text;
+					const preview =
+						presentation.kind === "inline" && presentation.messageStyle === "phase"
+							? rendered
+							: `${rendered}  ${option.label}`;
+					return context.selected ? theme.bold(preview) : preview;
+				}
 				const cadenceMs =
-					configuredAnimationCadenceMs(markerStyle, shimmerStyle, smoothness, speed) ??
+					configuredAnimationCadenceMs(indicatorStyle, textEffectStyle, smoothness, speed, pulseEffectStyle) ??
 					animationSmoothnessCadenceMs(smoothness);
 				const elapsedMs = smoothnessField ? Math.floor((now - startedAt) / cadenceMs) * cadenceMs : now - startedAt;
-				const frame = activityFrame(colors, option.label, elapsedMs, {
-					markerStyle,
-					shimmerStyle,
-					shimmerMarker: appearance.shimmerMarker,
+				const frame = activityFrame(colors, textEffectField ? "Working..." : option.label, elapsedMs, {
+					indicatorStyle,
+					textEffectStyle,
+					pulseEffectStyle,
+					textEffectScope: appearance.textEffectScope,
 					animationSpeed: speed,
 					textTone: context.selected ? "accent" : "text.primary",
 				});
-				const preview = frame.marker ? `${frame.marker} ${frame.text}` : frame.text;
+				const animated = frame.marker ? `${frame.marker} ${frame.text}` : frame.text;
+				const preview = textEffectField ? `${animated}  ${option.label}` : animated;
 				return context.selected ? theme.bold(preview) : preview;
 			},
 		});
 		const previewCadences = options
 			.map((option) => {
-				const { markerStyle, shimmerStyle, smoothness, speed } = previewOptions(option.value);
-				return configuredAnimationCadenceMs(markerStyle, shimmerStyle, smoothness, speed);
+				const {
+					indicatorStyle,
+					messageStyle,
+					presentationStyle,
+					pulseEffectStyle,
+					textEffectStyle,
+					smoothness,
+					speed,
+				} = previewOptions(option.value);
+				if (messageField || presentationField)
+					return activityPresentationCadenceMs(
+						resolveActivityPresentation(
+							indicatorStyle,
+							messageStyle,
+							textEffectStyle,
+							appearance.textEffectScope,
+							pulseEffectStyle,
+							presentationStyle,
+						),
+						smoothness,
+						speed,
+					);
+				return configuredAnimationCadenceMs(indicatorStyle, textEffectStyle, smoothness, speed, pulseEffectStyle);
 			})
 			.filter((cadence): cadence is number => cadence !== undefined);
 		const cadenceMs = previewCadences.length > 0 ? Math.min(...previewCadences) : undefined;

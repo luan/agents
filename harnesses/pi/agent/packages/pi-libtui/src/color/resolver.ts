@@ -32,6 +32,9 @@ export function createColorResolver(context: {
 			const background = rgb(value);
 			return contrastRatio(background, rgb(dark)) >= contrastRatio(background, rgb(light)) ? dark : light;
 		},
+		contrastRatio(left: ColorValue, right: ColorValue) {
+			return contrastRatio(rgb(left), rgb(right));
+		},
 	};
 }
 

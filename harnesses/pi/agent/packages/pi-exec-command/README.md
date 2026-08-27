@@ -129,7 +129,9 @@ and reap behavior.
 While a process is running, its original `exec_command` transcript row stays
 live from those same snapshots. A compact above-editor widget and status item
 also show running processes when that row is offscreen; both disappear when no
-processes remain active.
+processes remain active. The widget uses the terminal icon, renders a configurable
+activity indicator and dimmed shell syntax for each process, and opens that
+process directly in the Process Hub when clicked.
 
 In the process list:
 
@@ -157,7 +159,8 @@ pi-exec-command.defaultExecYieldMs = 10000
 pi-exec-command.defaultLoginShell = true
 
 [appearance]
-pi-exec-command.activityMarker = "inherit"
+pi-exec-command.activityIndicator = "inherit"
+pi-exec-command.processWidgetIndicator = "inherit"
 ```
 
 Available output limits are `1000`, `2500`, `5000`, `10000`, `20000`, `50000`,
@@ -168,12 +171,16 @@ Without the xsettings host, the package uses those compiled defaults. Do not
 create a second settings file. Saving settings republishes the tool
 definitions; reload Pi when changing a default for an already-running bridge.
 
-Running command rows inherit the shared `pi-libtui.activityMarker` by default.
-Set `pi-exec-command.activityMarker = "off"` to remove only their marker, or
-select any shared marker style as an Exec Command-specific override. The
-shared shimmer, speed, and smoothness settings still apply. Package-local
+Running command rows inherit the shared `pi-libtui.activityIndicator` by default.
+Set `pi-exec-command.activityIndicator = "off"` to remove only their indicator, or
+select any shared indicator style as an Exec Command-specific override. The
+shared text effect, speed, and smoothness settings still apply. Package-local
 presentation overrides affect new renderers after settings are republished;
 inherited global appearance changes remain live.
+
+The Process Widget indicator follows the same choices through
+`pi-exec-command.processWidgetIndicator`. It inherits the shared indicator by
+default and updates live when changed.
 
 ## Architecture
 

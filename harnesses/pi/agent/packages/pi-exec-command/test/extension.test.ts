@@ -23,9 +23,9 @@ describe("tool behavior", () => {
 		const unregister = registerExecCommandXSettings();
 		try {
 			const definition = ensureXSettingsRegistry().registrations["pi-exec-command"]?.definitions.find(
-				(candidate) => candidate.key === "activityMarker",
+				(candidate) => candidate.key === "activityIndicator",
 			);
-			expect(DEFAULT_EXEC_COMMAND_SETTINGS.activityMarker).toBe("inherit");
+			expect(DEFAULT_EXEC_COMMAND_SETTINGS.activityIndicator).toBe("inherit");
 			expect(definition).toMatchObject({
 				category: "appearance",
 				page: "animations",
@@ -39,6 +39,18 @@ describe("tool behavior", () => {
 			expect(definition.options.map((option) => option.value)).toEqual(
 				expect.arrayContaining(["inherit", "off", "spinner", "nerd-pi-orbit"]),
 			);
+			const widgetDefinition = ensureXSettingsRegistry().registrations["pi-exec-command"]?.definitions.find(
+				(candidate) => candidate.key === "processWidgetIndicator",
+			);
+			expect(DEFAULT_EXEC_COMMAND_SETTINGS.processWidgetIndicator).toBe("inherit");
+			expect(widgetDefinition).toMatchObject({
+				category: "appearance",
+				page: "animations",
+				section: "Exec Command",
+				preview: "activity-marker",
+				type: "enum",
+				default: "inherit",
+			});
 		} finally {
 			unregister();
 		}
@@ -115,7 +127,7 @@ describe("tool behavior", () => {
 				defaultOutputTokens: 20_000,
 				defaultExecYieldMs: 30_000,
 				defaultLoginShell: false,
-				activityMarker: "inherit",
+				activityIndicator: "inherit",
 			},
 		);
 

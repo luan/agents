@@ -6,7 +6,14 @@ export const XSETTINGS_PROTOCOL = "pi-xsettings/registry/v1" as const;
 
 export type SettingCategory = "appearance" | "behavior" | "interaction" | "tools";
 export type SettingPage = "ui" | "ux" | "animations" | "terminal" | "behavior" | "interaction" | "tools";
-export type SettingPreview = "activity-marker" | "text-shimmer" | "animation-speed" | "animation-smoothness";
+export type SettingPreview =
+	| "activity-marker"
+	| "activity-message"
+	| "status-presentation"
+	| "text-effect"
+	| "pulse-effect"
+	| "animation-speed"
+	| "animation-smoothness";
 export type SettingValue = boolean | number | string | SettingValue[] | { [key: string]: SettingValue };
 
 export interface SettingOption {

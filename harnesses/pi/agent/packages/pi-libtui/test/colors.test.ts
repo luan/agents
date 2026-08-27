@@ -67,6 +67,9 @@ describe("generated TUI colors", () => {
 		expect(colors.fgAnsi(colors.mixForeground("text.muted", "accent", 0))).toBe(colors.fgAnsi("text.muted"));
 		expect(colors.fgAnsi(colors.mixForeground("text.muted", "accent", 1))).toBe(colors.fgAnsi("accent"));
 		expect(colors.fgAnsi(colors.mixForeground("text.muted", "accent", 0.5))).toBe("\x1b[38;2;91;114;172m");
+		expect(colors.fgAnsi(colors.adjustForegroundBrightness("accent", -0.4))).toBe("\x1b[38;2;73;97;148m");
+		expect(colors.fgAnsi(colors.adjustForegroundBrightness("accent", 0))).toBe(colors.fgAnsi("accent"));
+		expect(colors.fgAnsi(colors.adjustForegroundBrightness("accent", 0.18))).toBe("\x1b[38;2;146;179;248m");
 		expect(colors.bgAnsi("surface.raised")).toBe("\x1b[48;2;26;27;38m");
 		expect(colors.bgAnsi("surface.selected")).toBe("\x1b[48;2;41;46;66m");
 		const indexedColors = tuiTheme({ ...theme, getColorMode: () => "256color" } as Theme);

@@ -333,7 +333,7 @@ describe("exec tool presentation", () => {
 	});
 
 	test("switches a running command to the configured activity animation", () => {
-		configureTuiAppearance({ activityMarker: "static", shimmer: "off" });
+		configureTuiAppearance({ activityIndicator: "static", textEffect: "off" });
 		const tool = createExecCommandTool({} as never);
 		const args = { cmd: "sleep 1", tty: false };
 		const partial = createExecToolResult({
@@ -350,19 +350,19 @@ describe("exec tool presentation", () => {
 		) as unknown as { render(width: number): string[]; dispose(): void };
 
 		expect(Bun.stripANSI(active.render(72).join("\n"))).toContain("● $ sleep 1");
-		configureTuiAppearance({ activityMarker: "off", shimmer: "glow" });
+		configureTuiAppearance({ activityIndicator: "off", textEffect: "glow" });
 		expect(Bun.stripANSI(active.render(72).join("\n"))).toContain("$ sleep 1");
 		expect(Bun.stripANSI(active.render(72).join("\n"))).not.toContain("◆");
-		configureTuiAppearance({ activityMarker: "pulse" });
+		configureTuiAppearance({ activityIndicator: "static", pulseEffect: "color" });
 		expect(Bun.stripANSI(active.render(72).join("\n"))).toContain("● $ sleep 1");
 		active.dispose();
 	});
 
 	test("lets exec_command disable its marker without changing the shared default", () => {
-		configureTuiAppearance({ activityMarker: "spinner", shimmer: "off" });
+		configureTuiAppearance({ activityIndicator: "spinner", textEffect: "off" });
 		const tool = createExecCommandTool({} as never, {
 			...DEFAULT_EXEC_COMMAND_SETTINGS,
-			activityMarker: "off",
+			activityIndicator: "off",
 		});
 		const args = { cmd: "sleep 1", tty: false };
 		const partial = createExecToolResult({
@@ -382,7 +382,7 @@ describe("exec tool presentation", () => {
 		expect(Bun.stripANSI(active.render(72).join("\n"))).toContain("$ sleep 1");
 		expect(Bun.stripANSI(active.render(72).join("\n"))).not.toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \$/u);
 		expect(sharedMotionScheduler.activeTimerCount).toBe(timersBefore);
-		expect(getTuiAppearance().activityMarker).toBe("spinner");
+		expect(getTuiAppearance().activityIndicator).toBe("spinner");
 		active.dispose();
 	});
 

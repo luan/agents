@@ -96,41 +96,54 @@ using the documented package root and subpaths so the public API remains stable.
 `pi-xsettings` owns the settings UI and persistence for the shared appearance:
 
 - icon pack: `unicode`, `nerd-fonts`, or `emoji`;
-- activity marker: the original off, spinner, pulse, and static choices plus curated one-to-four-cell Unicode, ASCII, Braille, and Nerd Font animations;
-- text shimmer: `off`, narrow `sweep`, broad `glow`, semantic `rainbow`, `rainbow-glow`, or fast-mode `lightning`;
-- an independent toggle that sweeps the selected shimmer across marker, separator, and text as one activity unit;
+- activity indicator: off, spinner, and static plus curated one-to-four-cell Unicode, ASCII, Braille, and Nerd Font animations;
+- activity message: the request phase or rotating typewriter text;
+- text effect: `off`, `sweep`, cosine `glow`, `rainbow`, `rainbow-glow`, `lightning`, `aurora`, `glitch`, or `crush`;
+- pulse effects: independent dim-to-bright or contrasting-color motion composed over any indicator and text effect without changing glyph shape;
+- text-effect scope: the message alone or the whole indicator, separator, and message unit;
+- status presentation: standard inline composition, mixed compositions such as `brainstorm`, or exclusive scenes adapted from `arpagon/pi-animations`;
 - animation speed: `slow`, `relaxed`, `normal`, `fast`, or `very-fast`;
 - animation smoothness: `economy`, `balanced`, `smooth`, or `ultra` terminal redraws;
+- independent indicator, message, text-effect, and presentation overrides for Thinking, Working, and Tool request phases;
 - Powerline separators and Powerline button caps;
 - softer virtual cursor;
 - insertion, navigation, and selection cursor styles.
 
-The compiled defaults are portable Unicode icons, a Braille spinner, normal-speed balanced animation, flat
-separators/buttons, and virtual cursors. Shared activity surfaces use the
-selected marker, shimmer, marker-shimmer toggle, timeline speed, and redraw smoothness. Every marker option can
-be combined with every shimmer option. A static or disabled marker allocates no
-timer when shimmer is also off. If `pi-xsettings` is absent, components still
-use the spinner-without-shimmer defaults. The settings can be changed live
+The compiled defaults are portable Unicode icons, a Braille spinner, the phase
+message, no text effect, standard inline presentation, normal-speed balanced
+animation, flat separators/buttons, and virtual cursors. Inline activity is
+composed as `indicator + message`, then the selected effect scope is painted.
+An exclusive scene replaces that composition. Static activity allocates no
+timer. If `pi-xsettings` is absent, components use the compiled defaults. The settings can be changed live
 through `/xsettings` when its host is installed.
 
 Speed scales the animation timeline. Smoothness independently caps the shared
-repaint frequency, from roughly 8 redraws per second in economy mode to 40 in
-ultra mode. The scheduler never redraws faster than the selected effects can
-produce a new frame at the configured speed.
+repaint frequency, from roughly 13 redraws per second in economy mode to 60 in
+ultra mode. Balanced matches oh-my-pi's 30fps animated loader. Text effects use a
+continuous elapsed-time timeline, while discrete indicators retain their designed
+pace. The scheduler uses deadline-corrected one-shot timers, skips missed ticks,
+and lets Pi coalesce and backpressure the actual terminal paints.
+
+The extension entry point applies the same renderer to Pi's streaming status
+row through public lifecycle and UI APIs. Thinking takes priority over Tool,
+which takes priority over Working; parallel tool calls are tracked independently.
+Each phase inherits General by default and can override its indicator, message,
+text effect, or status presentation without changing extension-owned activity
+surfaces.
 
 Feature surfaces may pass one `ActivityAnimationOverrides` value to both
 `activityFrame()` and `mountConfiguredAnimation()`. Omitted fields inherit the
 live global appearance; explicit fields affect only that surface. Sharing the
 same value keeps visible frames and scheduler cadence aligned, including the
-fully static marker-off and shimmer-off case.
+fully static indicator-off and text-effect-off case.
 
 Lightning retains `main`'s exact `z`/`i`/`n`/`g` variants and supplies the same
 nine artifact families for every other printable ASCII character. Marker and
 text characters change variants while its strike travels backward through the
 complete activity unit.
 
-Compact marker frames retain a fixed width within each style so activity text
-does not shift. Nerd Font marker styles use their icon frames when the Nerd
+Compact indicator frames retain a fixed width within each style so activity text
+does not shift. Nerd Font indicator styles use their icon frames when the Nerd
 Fonts icon pack is active and fall back to an ASCII line animation otherwise.
 Arc always uses its six rounded Unicode positions. The Fira Code progress
 spinner is a separate Nerd Font-only choice. The compact Braille catalog is
@@ -145,7 +158,7 @@ sequences come from [Unicode Spinner](https://unicode.framer.website/).
 | --- | --- |
 | Tool definition | None; the package adds no model-facing tool |
 | Execution owner | None in the library; `src/extension.ts` owns host setup |
-| State owner | Components own local state; `MouseBridgeHost` owns host bridge state |
+| State owner | Components own local state; `MouseBridgeHost` owns host bridge state; `RequestAnimationController` owns active request phase state |
 | Library surface | `src/index.ts`, `src/overlay/`, `src/controls/`, `src/content/`, `src/decoration/`, `src/editor.ts`, `src/syntax.ts`, `src/color/theme.ts`, `src/tool/`, and the public subpaths; `src/color/palette.ts` and `src/color/resolver.ts` remain internal color helpers |
 | Extension host | `src/extension.ts` and `src/host/` |
 | Shared contracts | `src/editor/protocol.ts` through the `src/editor.ts` facade, `src/folding.ts`, `src/selection.ts`, `src/decoration/pointer-interaction.ts`, and the explicit public contracts selected by `src/mouse.ts`; mutable mouse registry storage remains host-internal |

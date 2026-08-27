@@ -18,6 +18,20 @@ pi-libtui.powerlineButtons = true
 pi-libtui.insertionCursor = "blinking-bar"
 pi-libtui.navigationCursor = "blinking-block"
 pi-libtui.selectionCursor = "blinking-block"
+pi-libtui.activityMarker = "spinner"
+pi-libtui.shimmer = "glow"
+pi-libtui.shimmerMarker = true
+pi-libtui.animationSmoothness = "smooth"
+pi-libtui.animationSpeed = "normal"
+pi-libtui.activityLine = "off"
+pi-libtui.activityIndicator = "sparkle"
+pi-libtui.activityMessage = "phase"
+pi-libtui.textEffect = "glow"
+pi-libtui.textEffectScope = "message"
+pi-libtui.statusPresentation = "standard"
+pi-libtui.pulseEffect = "pulse"
+pi-libtui.thinkingPresentation = "pi-pulse"
+pi-exec-command.activityMarker = "off"
 
 [behavior]
 pi.enabledModels = [ "openai-codex/gpt-5.6-luna", "openai-codex/gpt-5.6-terra", "openai-codex/gpt-5.6-sol" ]

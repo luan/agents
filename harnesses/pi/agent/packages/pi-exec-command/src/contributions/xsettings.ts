@@ -1,5 +1,5 @@
+import { TUI_ACTIVITY_INDICATOR_OPTIONS } from "pi-libtui";
 import { createSettings, type SettingDefinitionInput, type SettingsOf } from "pi-xsettings/sdk";
-import { TUI_ACTIVITY_MARKER_OPTIONS } from "pi-libtui";
 
 const EXEC_OUTPUT_TOKEN_OPTIONS = [1_000, 2_500, 5_000, 10_000, 20_000, 50_000, 100_000] as const;
 const EXEC_YIELD_OPTIONS = [1_000, 5_000, 10_000, 30_000] as const;
@@ -26,9 +26,9 @@ const definitions = {
 		type: "boolean",
 		default: true,
 	},
-	activityMarker: {
-		label: "Exec Command marker",
-		description: "Override the default activity marker for running exec_command rows.",
+	activityIndicator: {
+		label: "Exec Command indicator",
+		description: "Override the default activity indicator for running exec_command rows.",
 		category: "appearance",
 		page: "animations",
 		section: "Exec Command",
@@ -36,8 +36,22 @@ const definitions = {
 		type: "enum",
 		default: "inherit",
 		options: [
-			{ value: "inherit", label: "Inherit", description: "Use the default TUI activity marker." },
-			...TUI_ACTIVITY_MARKER_OPTIONS,
+			{ value: "inherit", label: "Inherit", description: "Use the default TUI activity indicator." },
+			...TUI_ACTIVITY_INDICATOR_OPTIONS,
+		],
+	},
+	processWidgetIndicator: {
+		label: "Process widget indicator",
+		description: "Override the activity indicator beside each running process in the compact widget.",
+		category: "appearance",
+		page: "animations",
+		section: "Exec Command",
+		preview: "activity-marker",
+		type: "enum",
+		default: "inherit",
+		options: [
+			{ value: "inherit", label: "Inherit", description: "Use the default TUI activity indicator." },
+			...TUI_ACTIVITY_INDICATOR_OPTIONS,
 		],
 	},
 } as const satisfies Record<string, SettingDefinitionInput>;

@@ -360,14 +360,14 @@ describe("xsettings editor", () => {
 		expect(changes).toContainEqual(["label", "new"]);
 	});
 
-	test("previews independently combinable activity markers and text shimmer", () => {
+	test("previews independently combinable activity indicators and text effects", () => {
 		initializeTui();
 		const mountsBefore = sharedMotionScheduler.activeMountCount;
-		configureTuiAppearance({ shimmer: "glow" });
+		configureTuiAppearance({ textEffect: "glow" });
 		const markerEditor = new SettingsEditor(
 			[
 				{
-					id: "extensions.pi-libtui.activityMarker",
+					id: "extensions.pi-libtui.activityIndicator",
 					preview: "activity-marker",
 					section: "UI & Display",
 					label: "Activity marker",
@@ -379,7 +379,6 @@ describe("xsettings editor", () => {
 					options: [
 						{ value: "off", label: "Off", description: "No marker." },
 						{ value: "spinner", label: "Spinner", description: "Rotating marker." },
-						{ value: "pulse", label: "Pulse", description: "Pulsing marker." },
 						{ value: "static", label: "Static", description: "Static marker." },
 						{ value: "line", label: "Line", description: "Line marker." },
 						{ value: "arc", label: "Arc", description: "Arc marker." },
@@ -409,7 +408,6 @@ describe("xsettings editor", () => {
 		}
 		expect(lines.find((line) => line.includes("Off"))).not.toContain("● Off");
 		expect(lines.find((line) => line.includes("Spinner"))).toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Spinner/u);
-		expect(lines.find((line) => line.includes("Pulse"))).toContain("● Pulse");
 		expect(lines.find((line) => line.includes("Static"))).toContain("● Static");
 		expect(lines.find((line) => line.includes("Line"))).toMatch(/[-\\|/] Line/u);
 		expect(lines.find((line) => line.includes("Arc"))).toMatch(/[◜◠◝◞◡◟] Arc/u);
@@ -419,11 +417,11 @@ describe("xsettings editor", () => {
 		markerEditor.handleInput("\x1b");
 		expect(sharedMotionScheduler.activeMountCount).toBe(mountsBefore);
 
-		configureTuiAppearance({ activityMarker: "pulse", shimmer: "off" });
+		configureTuiAppearance({ activityIndicator: "static", textEffect: "off", pulseEffect: "color" });
 		const overrideEditor = new SettingsEditor(
 			[
 				{
-					id: "extensions.pi-exec-command.activityMarker",
+					id: "extensions.pi-exec-command.activityIndicator",
 					preview: "activity-marker",
 					section: "Animations",
 					label: "Exec Command marker",
@@ -456,18 +454,18 @@ describe("xsettings editor", () => {
 		overrideEditor.handleInput("\x1b");
 		expect(sharedMotionScheduler.activeMountCount).toBe(mountsBefore);
 
-		configureTuiAppearance({ activityMarker: "pulse", shimmer: "off" });
+		configureTuiAppearance({ activityIndicator: "static", textEffect: "off", pulseEffect: "color" });
 		const shimmerEditor = new SettingsEditor(
 			[
 				{
-					id: "extensions.pi-libtui.shimmer",
-					preview: "text-shimmer",
+					id: "extensions.pi-libtui.textEffect",
+					preview: "text-effect",
 					section: "UI & Display",
-					label: "Text shimmer",
+					label: "Text effect",
 					description: "Choose text motion.",
 					type: "enum",
-					value: "off",
-					defaultValue: "off",
+					value: "standard",
+					defaultValue: "standard",
 					configured: false,
 					options: [
 						{ value: "off", label: "Off", description: "Steady text." },
@@ -476,6 +474,61 @@ describe("xsettings editor", () => {
 						{ value: "rainbow", label: "Rainbow", description: "Color wave." },
 						{ value: "rainbow-glow", label: "Rainbow glow", description: "Color glow." },
 						{ value: "lightning", label: "Lightning", description: "Fast strike." },
+						{ value: "aurora", label: "Aurora wave", description: "Luminous wave." },
+						{ value: "glitch", label: "Glitch", description: "Artifact flashes." },
+						{ value: "crush", label: "Crush", description: "Resolving artifacts." },
+					],
+				},
+			],
+			theme,
+			() => {},
+			() => {},
+			() => {},
+			28,
+			[],
+			undefined,
+			undefined,
+			() => {},
+		);
+		shimmerEditor.handleInput("\r");
+		const shimmerLines = shimmerEditor.render(100);
+		const strippedShimmerLines = shimmerLines.map(stripTerminalSequences);
+		const baseShimmerLines = strippedShimmerLines.map((line) => line.normalize("NFD").replace(/\p{M}/gu, ""));
+		for (const label of ["Off", "Sweep", "Glow", "Rainbow", "Rainbow glow", "Lightning"])
+			expect(baseShimmerLines.find((line) => line.includes(label))).toContain("● ");
+		shimmerEditor.handleInput("/");
+		shimmerEditor.handleInput("aurora");
+		expect(
+			shimmerEditor
+				.render(100)
+				.map(stripTerminalSequences)
+				.find((line) => line.includes("Aurora wave")),
+		).toContain("● ");
+		shimmerEditor.handleInput("\x1b");
+		shimmerEditor.handleInput("\x1b");
+		expect(sharedMotionScheduler.activeMountCount).toBe(mountsBefore);
+
+		const lineEditor = new SettingsEditor(
+			[
+				{
+					id: "extensions.pi-libtui.statusPresentation",
+					preview: "status-presentation",
+					section: "Animations",
+					label: "Status presentation",
+					description: "Choose the inline composition or an exclusive presentation.",
+					type: "enum",
+					value: "off",
+					defaultValue: "off",
+					configured: false,
+					options: [
+						{ value: "standard", label: "Standard" },
+						{ value: "neural-pulse", label: "Neural pulse" },
+						{ value: "plasma-wave", label: "Plasma wave" },
+						{ value: "pacman", label: "Pac-Man" },
+						{ value: "starfield", label: "Starfield" },
+						{ value: "block-wave", label: "Block wave" },
+						{ value: "conveyor", label: "Conveyor" },
+						{ value: "accordion", label: "Accordion" },
 					],
 				},
 			],
@@ -489,16 +542,18 @@ describe("xsettings editor", () => {
 			undefined,
 			() => {},
 		);
-		shimmerEditor.handleInput("\r");
-		const shimmerLines = shimmerEditor.render(100);
-		const strippedShimmerLines = shimmerLines.map(stripTerminalSequences);
-		const baseShimmerLines = strippedShimmerLines.map((line) => line.normalize("NFD").replace(/\p{M}/gu, ""));
-		for (const label of ["Off", "Sweep", "Glow", "Rainbow", "Rainbow glow", "Lightning"])
-			expect(baseShimmerLines.find((line) => line.includes(label))).toContain(`● ${label}`);
-		shimmerEditor.handleInput("\x1b");
+		lineEditor.handleInput("\r");
+		expect(sharedMotionScheduler.activeMountCount).toBe(mountsBefore + 1);
+		const lineLines = lineEditor.render(120).map(stripTerminalSequences);
+		expect(lineLines.some((line) => line.includes("legacy"))).toBe(false);
+		expect(lineLines.find((line) => line.includes("Standard"))).not.toMatch(/[█▓▒]/u);
+		expect(lineLines.find((line) => line.includes("Neural pulse"))).toMatch(/[●○].*Neural pulse/u);
+		expect(lineLines.find((line) => line.includes("Pac-Man"))).toMatch(/[ᗧC].*Pac-Man/u);
+		expect(lineLines.find((line) => line.includes("Block wave"))).toMatch(/[█▓▒].*Block wave/u);
+		lineEditor.handleInput("\x1b");
 		expect(sharedMotionScheduler.activeMountCount).toBe(mountsBefore);
 
-		configureTuiAppearance({ activityMarker: "line", shimmer: "glow", animationSpeed: "normal" });
+		configureTuiAppearance({ activityIndicator: "line", textEffect: "glow", animationSpeed: "normal" });
 		for (const field of [
 			{
 				id: "extensions.pi-libtui.animationSpeed",

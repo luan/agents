@@ -47,10 +47,17 @@ settings are stored under the extension namespace:
 [appearance]
 pi.theme = "tokyo-night"
 pi-libtui.iconPack = "nerd-fonts"
-pi-libtui.activityMarker = "pulse"
-pi-libtui.shimmer = "sweep"
+pi-libtui.activityIndicator = "static"
+pi-libtui.pulseEffect = "color"
+pi-libtui.activityMessage = "phase"
+pi-libtui.textEffect = "sweep"
+pi-libtui.textEffectScope = "inline"
+pi-libtui.statusPresentation = "standard"
 pi-libtui.animationSpeed = "normal"
 pi-libtui.animationSmoothness = "balanced"
+pi-libtui.thinkingIndicator = "off"
+pi-libtui.toolTextEffect = "lightning"
+pi-libtui.toolPresentation = "block-wave"
 
 [behavior]
 pi-codex-native.cacheDiagnostics = "status"
@@ -86,34 +93,47 @@ These settings apply live in the current TUI:
 
 - `pi.theme`;
 - `pi-libtui.iconPack`;
-- `pi-libtui.activityMarker`;
-- `pi-libtui.shimmer`;
-- `pi-libtui.shimmerMarker`;
+- `pi-libtui.activityIndicator` and `pi-libtui.activityMessage`;
+- `pi-libtui.textEffect` and `pi-libtui.textEffectScope`;
+- `pi-libtui.statusPresentation`;
 - `pi-libtui.animationSpeed`;
 - `pi-libtui.animationSmoothness`;
+- `pi-libtui.thinkingIndicator`, `pi-libtui.thinkingMessage`, `pi-libtui.thinkingTextEffect`, and `pi-libtui.thinkingPresentation`;
+- `pi-libtui.workingIndicator`, `pi-libtui.workingMessage`, `pi-libtui.workingTextEffect`, and `pi-libtui.workingPresentation`;
+- `pi-libtui.toolIndicator`, `pi-libtui.toolMessage`, `pi-libtui.toolTextEffect`, and `pi-libtui.toolPresentation`;
 - `pi-libtui.powerline`;
 - `pi-libtui.powerlineButtons`; and
 - `pi-libtui.softCursor`.
 
-The shared motion settings are grouped under General on the Animations page;
-tool-specific overrides use their tool name as a section. The activity-marker picker renders every marker with the configured shimmer and
-marker-shimmer toggle. When enabled, the shimmer crosses the marker, separator,
-and text as one unit. The text-shimmer picker renders every shimmer with the configured marker, so
-all combinations can be previewed without coupling the settings. The speed and
+The shared motion settings are grouped under General on the Animations page.
+Thinking, Working, and Tool sections override the request status animation and
+inherit General by default;
+tool-specific overrides use their tool name as a section. The indicator picker
+renders every indicator with the configured text effect and scope. Whole-inline
+scope paints the indicator, separator, and message as one unit. The text-effect
+picker renders every effect with the configured indicator. The speed and
 smoothness pickers animate every option with the production activity renderer;
-smoothness previews each row at its own repaint cadence.
+smoothness previews each row at its own repaint cadence. The status-presentation
+picker previews intentional compositions and exclusive scenes adapted from
+`arpagon/pi-animations`; it defaults to standard and each request phase may inherit
+or override it independently.
 
-The marker list keeps the original spinner, pulse, and static choices and adds
+The indicator list keeps the original spinner and static choices and adds
 curated one-to-four-cell Unicode, ASCII, Braille, and Nerd Font sequences. Arc
 always uses its rounded Unicode positions; the Fira Code progress spinner is a
-separate Nerd Font choice. Text shimmer
-keeps the original sweep, glow, and rainbow choices and adds rainbow glow plus
+separate Nerd Font choice. Pulse and Color
+pulse are independent effects that compose with every indicator and text effect;
+Pulse changes brightness while Color pulse moves toward a contrasting hue. Text
+effects keep the original sweep and rainbow choices, port oh-my-pi's
+fixed-velocity cosine glow, and add rainbow glow plus
 the fast-mode lightning strike and nine variants for every printable ASCII
 character. The rainbow and Nerd Font icon markers adapt the MIT-licensed
-`arpagon/pi-animations` effects. Nerd Font marker choices fall back to compact
+`arpagon/pi-animations` effects. Nerd Font indicator choices fall back to compact
 ASCII motion when the Nerd Fonts icon pack is not active.
-The compact Braille catalog is adapted from `unicode-animations` and
-`cli-loaders`; the geometric single-cell sequences come from Unicode Spinner.
+The compact Braille catalog is adapted from
+[`unicode-animations`](https://github.com/gunnargray-dev/unicode-animations)
+and [`cli-loaders`](https://github.com/agilek/cli-loaders); the geometric
+single-cell sequences come from [Unicode Spinner](https://unicode.framer.website/).
 
 Other settings normally need a Pi reload because Pi reads many built-in
 settings during startup. When `/xsettings` is opened from a command context,
@@ -181,7 +201,7 @@ Interaction, or Tools without changing the TOML path. It defaults to the
 matching category, with `appearance` shown on UI. An explicit definition
 `section` becomes its heading within the page; otherwise the registration
 `label` is used. Animation enums can declare the data-only `preview` kind
-`activity-marker`, `text-shimmer`, `animation-speed`, or
+`activity-marker`, `activity-message`, `text-effect`, `status-presentation`, `animation-speed`, or
 `animation-smoothness`; xsettings then previews global settings and
 extension-owned inherited overrides with the production libtui renderer. The
 namespace becomes the TOML owner key. The SDK

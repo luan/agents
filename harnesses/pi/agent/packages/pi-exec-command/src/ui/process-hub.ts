@@ -31,6 +31,7 @@ export class ProcessHub {
 		private readonly tui: TUI,
 		private readonly theme: Theme,
 		private readonly done: () => void,
+		initialProcessKey?: string,
 	) {
 		const snapshots = model.list();
 		this.selectedKey = snapshots[0]?.key;
@@ -46,6 +47,7 @@ export class ProcessHub {
 			renderItem: (snapshot, context) => this.processRow(snapshot, context.selected || context.hovered),
 		});
 		this.unsubscribe = model.subscribe(() => this.syncSnapshots());
+		if (initialProcessKey) this.openProcess(initialProcessKey);
 	}
 
 	handleInput(data: string): void {
@@ -386,12 +388,13 @@ export class ProcessHub {
 export async function openProcessHub(
 	ctx: Pick<ExtensionContext, "hasUI" | "ui">,
 	sources: readonly ProcessHubSource[],
+	initialProcessKey?: string,
 ): Promise<void> {
 	if (!ctx.hasUI || !ctx.ui.custom) return;
 	const model = new ProcessHubCollection(sources);
 	await ctx.ui.custom<void>(
 		(tui, theme, _keybindings, done) =>
-			new FullscreenOverlay(tui, theme, new ProcessHub(model, tui, theme, done), {
+			new FullscreenOverlay(tui, theme, new ProcessHub(model, tui, theme, done, initialProcessKey), {
 				label: "Process Hub",
 				icon: "tools",
 			}),

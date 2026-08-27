@@ -118,7 +118,7 @@ export class ProcessHubCollection implements ProcessHubModel {
 	}
 }
 
-function processKey(sessionId: string, processId: number): string {
+export function processKey(sessionId: string, processId: number): string {
 	return `${sessionId}\0${processId}`;
 }
 

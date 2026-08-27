@@ -22,6 +22,7 @@ function recordingTheme(name: string): TuiTheme {
 	return {
 		color: colors.color,
 		mixForeground: colors.mixForeground,
+		adjustForegroundBrightness: colors.adjustForegroundBrightness,
 		fg: (paint: TuiForegroundPaint, text: string) =>
 			`\x1b]1337;${name}:fg:${typeof paint === "string" ? paint : "hue" in paint ? paint.hue : "color"}\x07${text}\x1b[39m`,
 		bg: (paint: TuiBackgroundPaint, text: string) =>
@@ -30,6 +31,7 @@ function recordingTheme(name: string): TuiTheme {
 			`\x1b]1337;${name}:fg:${typeof paint === "string" ? paint : "hue" in paint ? paint.hue : "color"}\x07`,
 		bgAnsi: (paint: TuiBackgroundPaint) => `\x1b]1337;${name}:bg:${typeof paint === "string" ? paint : "color"}\x07`,
 		contrastBackground: colors.contrastBackground,
+		strongestForegroundContrast: colors.strongestForegroundContrast,
 	};
 }
 

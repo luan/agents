@@ -173,11 +173,29 @@ function definitionRequiresReload(definition: SettingsScreenField): boolean {
 	return !(
 		definition.id === "pi.theme" ||
 		definition.id === "extensions.pi-libtui.iconPack" ||
-		definition.id === "extensions.pi-libtui.activityMarker" ||
-		definition.id === "extensions.pi-libtui.shimmer" ||
-		definition.id === "extensions.pi-libtui.shimmerMarker" ||
+		definition.id === "extensions.pi-libtui.activityIndicator" ||
+		definition.id === "extensions.pi-libtui.activityMessage" ||
+		definition.id === "extensions.pi-libtui.statusPresentation" ||
+		definition.id === "extensions.pi-libtui.textEffect" ||
+		definition.id === "extensions.pi-libtui.textEffectScope" ||
+		definition.id === "extensions.pi-libtui.pulseEffect" ||
 		definition.id === "extensions.pi-libtui.animationSpeed" ||
 		definition.id === "extensions.pi-libtui.animationSmoothness" ||
+		definition.id === "extensions.pi-libtui.thinkingIndicator" ||
+		definition.id === "extensions.pi-libtui.thinkingMessage" ||
+		definition.id === "extensions.pi-libtui.thinkingTextEffect" ||
+		definition.id === "extensions.pi-libtui.thinkingPulseEffect" ||
+		definition.id === "extensions.pi-libtui.thinkingPresentation" ||
+		definition.id === "extensions.pi-libtui.workingIndicator" ||
+		definition.id === "extensions.pi-libtui.workingMessage" ||
+		definition.id === "extensions.pi-libtui.workingTextEffect" ||
+		definition.id === "extensions.pi-libtui.workingPulseEffect" ||
+		definition.id === "extensions.pi-libtui.workingPresentation" ||
+		definition.id === "extensions.pi-libtui.toolIndicator" ||
+		definition.id === "extensions.pi-libtui.toolMessage" ||
+		definition.id === "extensions.pi-libtui.toolTextEffect" ||
+		definition.id === "extensions.pi-libtui.toolPulseEffect" ||
+		definition.id === "extensions.pi-libtui.toolPresentation" ||
 		definition.id === "extensions.pi-libtui.powerline" ||
 		definition.id === "extensions.pi-libtui.powerlineButtons" ||
 		definition.id === "extensions.pi-libtui.softCursor"

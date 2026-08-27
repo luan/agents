@@ -88,7 +88,7 @@ copy all parent history, no history, or a positive number of recent turns.
 
 The Agent Widget, Agent Hub, and running collaboration-tool rows use the shared
 `pi-libtui.activityMarker` and `pi-libtui.shimmer` Appearance settings. Marker
-choices (`off`, `spinner`, `pulse`, `static`) combine independently with text
+choices (`off`, `spinner`, `static`, and the compact marker catalog) combine independently with text
 choices (`off`, `sweep`, `glow`) and apply live.
 
 ## Architecture map

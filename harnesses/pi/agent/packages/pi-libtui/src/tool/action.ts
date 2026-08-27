@@ -65,9 +65,9 @@ function renderToolAction(theme: Theme, view: ToolActionView, width: number, act
 	const status = actionStatus(view.status);
 	const markerValue = view.marker === false ? "" : sanitizeTuiField(view.marker ?? status.glyph);
 	const marker = markerValue ? `${colors.fg(view.markerTone ?? status.tone, markerValue)} ` : "";
-	const activityMarker = activity?.marker ? `${activity.marker} ` : "";
+	const activityIndicator = activity?.marker ? `${activity.marker} ` : "";
 	const verb = activity?.text ?? colors.fg("text.secondary", sanitizeTuiField(view.verb));
-	let line = `${activityMarker}${marker}${theme.bold(verb)}`;
+	let line = `${activityIndicator}${marker}${theme.bold(verb)}`;
 	if (view.detail)
 		line += `${colors.fg("text.muted", " · ")}${colors.fg("text.secondary", sanitizeTuiField(view.detail))}`;
 	if (view.meta?.length)

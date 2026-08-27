@@ -2,10 +2,19 @@ import { expect, test } from "bun:test";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { ensureActionsRegistry } from "pi-libactions/sdk";
-import { registerProcessHubHost, retainProcessHubAction } from "../src/contributions/actions.ts";
+import {
+	openRegisteredProcessHub,
+	registerProcessHubHost,
+	retainProcessHubAction,
+} from "../src/contributions/actions.ts";
 import type { ExecProcessSnapshot, PtyDataEvent, UnifiedExecResult } from "../src/session-manager.ts";
 import { ProcessHub } from "../src/ui/process-hub.ts";
-import { ProcessHubCollection, type ProcessHubManager, ProcessTerminalStore } from "../src/ui/process-store.ts";
+import {
+	ProcessHubCollection,
+	type ProcessHubManager,
+	ProcessTerminalStore,
+	processKey,
+} from "../src/ui/process-store.ts";
 
 const theme = {
 	name: "process-hub-test",
@@ -31,6 +40,7 @@ function snapshot(overrides: Partial<ExecProcessSnapshot> = {}): ExecProcessSnap
 		output: "pipe-output",
 		outputTruncated: false,
 		...overrides,
+		shell: overrides.shell ?? "/bin/zsh",
 	};
 }
 
@@ -163,6 +173,33 @@ test("TTY resize keeps the current screen until the native process redraws", asy
 	store.dispose();
 });
 
+test("process hub can open directly on one process", () => {
+	const process = snapshot({ id: 7, command: "focused command", output: "focused output" });
+	const manager: ProcessHubManager = {
+		...emptyManager(),
+		listProcesses: () => [process],
+		subscribeProcesses(listener) {
+			listener([process]);
+			return () => {};
+		},
+	};
+	const store = new ProcessTerminalStore(manager);
+	const model = new ProcessHubCollection([{ sessionId: "root", path: "/root", store, manager }]);
+	const hub = new ProcessHub(
+		model,
+		{ terminal: { rows: 16 }, requestRender() {} } as never,
+		theme,
+		() => {},
+		processKey("root", 7),
+	);
+
+	const rendered = stripTerminalSequences(hub.render(80).join("\n"));
+	expect(rendered).toContain("focused output");
+	expect(rendered).not.toContain("enter open");
+	hub.dispose();
+	store.dispose();
+});
+
 test("process collection keeps duplicate child IDs distinct and routes controls to their owners", async () => {
 	const calls: string[] = [];
 	const manager = (owner: string, process: ExecProcessSnapshot): ProcessHubManager => ({
@@ -230,11 +267,13 @@ test("process hub action opens the invoking session and its descendant process s
 	const unrelatedManager = emptyManager();
 	const stores = [manager, childManager, unrelatedManager].map((candidate) => new ProcessTerminalStore(candidate));
 	let opened: readonly string[] = [];
+	let initialProcessKey: string | undefined;
 	const removeHost = registerProcessHubHost("session-a", {
 		store: stores[0]!,
 		manager,
-		open: (_ctx, sources) => {
+		open: (_ctx, sources, initial) => {
 			opened = sources.map(({ path }) => path);
+			initialProcessKey = initial;
 		},
 	});
 	const removeChild = registerProcessHubHost("session-child", {
@@ -254,6 +293,9 @@ test("process hub action opens the invoking session and its descendant process s
 
 	await ensureActionsRegistry().find("processes.open")?.run(context);
 	expect(opened).toEqual(["/root", "/root/child"]);
+	expect(initialProcessKey).toBeUndefined();
+	await openRegisteredProcessHub(context, 42);
+	expect(initialProcessKey).toBe(processKey("session-a", 42));
 	releaseFirst();
 	expect(ensureActionsRegistry().find("processes.open")).toBeDefined();
 	releaseSecond();

@@ -1,12 +1,17 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { registerAction } from "pi-libactions/sdk";
-import type { ProcessHubManager, ProcessHubSource, ProcessTerminalStore } from "../ui/process-store.ts";
+import {
+	type ProcessHubManager,
+	type ProcessHubSource,
+	type ProcessTerminalStore,
+	processKey,
+} from "../ui/process-store.ts";
 import { relatedSessions } from "./session-hierarchy.ts";
 
 interface ProcessHubHost {
 	readonly store: ProcessTerminalStore;
 	readonly manager: ProcessHubManager;
-	open(ctx: ExtensionContext, sources: readonly ProcessHubSource[]): void | Promise<void>;
+	open(ctx: ExtensionContext, sources: readonly ProcessHubSource[], initialProcessKey?: string): void | Promise<void>;
 }
 
 const hosts = new Map<string, ProcessHubHost>();
@@ -33,7 +38,7 @@ export function retainProcessHubAction(): () => void {
 	};
 }
 
-export async function openRegisteredProcessHub(ctx: ExtensionContext): Promise<void> {
+export async function openRegisteredProcessHub(ctx: ExtensionContext, processId?: number): Promise<void> {
 	const sessionId = ctx.sessionManager.getSessionId();
 	const host = hosts.get(sessionId);
 	if (!host) {
@@ -46,7 +51,7 @@ export async function openRegisteredProcessHub(ctx: ExtensionContext): Promise<v
 			? [{ sessionId: session.sessionId, path: session.path, store: related.store, manager: related.manager }]
 			: [];
 	});
-	await host.open(ctx, sources);
+	await host.open(ctx, sources, processId === undefined ? undefined : processKey(sessionId, processId));
 }
 
 export function registerProcessHubHost(sessionId: string, host: ProcessHubHost): () => void {

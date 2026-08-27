@@ -44,6 +44,7 @@ export interface ExecProcessSnapshot {
 	readonly id: number;
 	readonly command: string;
 	readonly cwd: string;
+	readonly shell: string;
 	readonly tty: boolean;
 	readonly stdinOpen: boolean;
 	readonly state: "running" | "exited";
@@ -88,6 +89,7 @@ interface Session {
 	processId: string;
 	command: string;
 	cwd: string;
+	shell: string;
 	tty: boolean;
 	startedAtMs: number;
 	finishedAtMs?: number;
@@ -248,6 +250,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			id: session.id,
 			command: session.command,
 			cwd: session.cwd,
+			shell: session.shell,
 			tty: session.tty,
 			stdinOpen: session.tty && session.exitCode === undefined,
 			state: session.exitCode === undefined ? "running" : "exited",
@@ -460,6 +463,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 				processId: `pi-${process.pid}-${id}`,
 				command: input.cmd,
 				cwd: workingDirectory,
+				shell,
 				tty: input.tty ?? false,
 				startedAtMs: Date.now(),
 				bufferChunks: [],

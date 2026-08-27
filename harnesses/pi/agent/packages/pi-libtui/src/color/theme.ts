@@ -74,11 +74,13 @@ export type TuiBackgroundPaint = TuiBackgroundToken | TuiColor;
 export interface TuiTheme {
 	color(token: TuiForegroundColor | TuiBackgroundToken): TuiColor;
 	mixForeground(from: TuiForegroundPaint, to: TuiForegroundPaint, amount: number): TuiColor;
+	adjustForegroundBrightness(paint: TuiForegroundPaint, amount: number): TuiColor;
 	fg(paint: TuiForegroundPaint, text: string): string;
 	bg(paint: TuiBackgroundPaint, text: string): string;
 	fgAnsi(paint: TuiForegroundPaint): string;
 	bgAnsi(paint: TuiBackgroundPaint): string;
 	contrastBackground(color: TuiColor): TuiColor;
+	strongestForegroundContrast(base: TuiForegroundPaint, candidates: readonly TuiForegroundPaint[]): TuiColor;
 }
 
 type SemanticToken = TuiForegroundToken | TuiBackgroundToken;
@@ -268,6 +270,15 @@ function buildTheme(resolver: ColorResolver, aliases: ThemeAliases): TuiTheme {
 				),
 			);
 		},
+		adjustForegroundBrightness(paint, amount) {
+			const source = resolver.rgb(resolve(refForPaint(paint)));
+			const position = Math.max(-1, Math.min(1, Number.isFinite(amount) ? amount : 0));
+			const adjust =
+				position < 0
+					? (channel: number) => channel * (1 + position)
+					: (channel: number) => channel + (255 - channel) * position;
+			return createColor(rgb(adjust(source.r), adjust(source.g), adjust(source.b)));
+		},
 		fg(paintColor, text) {
 			return paint(refForPaint(paintColor), text, false);
 		},
@@ -282,6 +293,19 @@ function buildTheme(resolver: ColorResolver, aliases: ThemeAliases): TuiTheme {
 		},
 		contrastBackground(color) {
 			return createColor(resolver.contrast(resolve(requireColorRef(color))));
+		},
+		strongestForegroundContrast(base, candidates) {
+			const baseValue = resolve(refForPaint(base));
+			let strongest = baseValue;
+			let ratio = 1;
+			for (const candidate of candidates) {
+				const value = resolve(refForPaint(candidate));
+				const next = resolver.contrastRatio(baseValue, value);
+				if (next <= ratio) continue;
+				strongest = value;
+				ratio = next;
+			}
+			return createColor(strongest);
 		},
 	};
 	return Object.freeze(facade);

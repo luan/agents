@@ -12,9 +12,9 @@ import {
 	RenderedLinesCache,
 	sanitizeTuiField,
 	sanitizeTuiText,
-	type TuiActivityMarkerStyle,
+	type TuiActivityIndicatorStyle,
 	type TuiForegroundColor,
-	type TuiShimmerStyle,
+	type TuiTextEffectStyle,
 	tuiTheme,
 	whenSyntaxReady,
 } from "pi-libtui";
@@ -44,9 +44,9 @@ interface ShellPiece {
 
 interface ShellActivity extends ActivityAnimationOverrides {
 	elapsedMs: number;
-	markerStyle: TuiActivityMarkerStyle;
-	shimmerStyle: TuiShimmerStyle;
-	shimmerMarker: boolean;
+	indicatorStyle: TuiActivityIndicatorStyle;
+	textEffectStyle: TuiTextEffectStyle;
+	textEffectScope: NonNullable<ActivityAnimationOverrides["textEffectScope"]>;
 	animationSpeed: NonNullable<ActivityAnimationOverrides["animationSpeed"]>;
 }
 
@@ -87,19 +87,19 @@ export class ShellCommandAction implements Component {
 		if (boundedWidth === 0) return [];
 		this.requestSyntaxReady();
 		const appearance = getTuiAppearance();
-		const markerStyle = this.options.animation?.markerStyle ?? appearance.activityMarker;
-		const shimmerStyle = this.options.animation?.shimmerStyle ?? appearance.shimmer;
+		const indicatorStyle = this.options.animation?.indicatorStyle ?? appearance.activityIndicator;
+		const textEffectStyle = this.options.animation?.textEffectStyle ?? appearance.textEffect;
 		const activity = this.running
 			? {
 					...this.options.animation,
 					elapsedMs: this.now - this.startedAt,
-					markerStyle: this.options.reducedMotion && markerStyle !== "off" ? ("static" as const) : markerStyle,
-					shimmerStyle: this.options.reducedMotion ? ("off" as const) : shimmerStyle,
-					shimmerMarker: this.options.animation?.shimmerMarker ?? appearance.shimmerMarker,
+					indicatorStyle: this.options.reducedMotion && indicatorStyle !== "off" ? ("static" as const) : indicatorStyle,
+					textEffectStyle: this.options.reducedMotion ? ("off" as const) : textEffectStyle,
+					textEffectScope: this.options.animation?.textEffectScope ?? appearance.textEffectScope,
 					animationSpeed: this.options.animation?.animationSpeed ?? appearance.animationSpeed,
 				}
 			: undefined;
-		const key = `${this.revision}\0${activity?.markerStyle ?? ""}\0${activity?.shimmerStyle ?? ""}\0${activity?.shimmerMarker ?? ""}\0${activity?.animationSpeed ?? ""}\0${activity?.elapsedMs ?? ""}`;
+		const key = `${this.revision}\0${activity?.indicatorStyle ?? ""}\0${activity?.textEffectStyle ?? ""}\0${activity?.textEffectScope ?? ""}\0${activity?.animationSpeed ?? ""}\0${activity?.elapsedMs ?? ""}`;
 		return this.cache.get(boundedWidth, key, () =>
 			renderShellCommand(this.options.theme, this.view, boundedWidth, activity, this.options.maxRows, this.pieces),
 		);
@@ -156,15 +156,15 @@ function renderShellCommand(
 	const colors = tuiTheme(theme);
 	const promptTone = view.status === "failed" ? "negative" : view.status === "queued" ? "text.muted" : "positive";
 	if (width <= 2) return [colors.fg(promptTone, truncateToWidth("$ ", width, ""))];
-	const activityMarker = activity
+	const activityIndicator = activity
 		? activityFrame(colors, "", activity.elapsedMs, {
-				markerStyle: activity.markerStyle,
-				shimmerStyle: activity.shimmerStyle,
-				shimmerMarker: activity.shimmerMarker,
+				indicatorStyle: activity.indicatorStyle,
+				textEffectStyle: activity.textEffectStyle,
+				textEffectScope: activity.textEffectScope,
 				animationSpeed: activity.animationSpeed,
 			}).marker
 		: "";
-	const prefix = `${activityMarker ? `${activityMarker} ` : ""}${colors.fg(promptTone, "$")} `;
+	const prefix = `${activityIndicator ? `${activityIndicator} ` : ""}${colors.fg(promptTone, "$")} `;
 	const continuation = " ".repeat(visibleWidth(prefix));
 	const contentWidth = Math.max(1, width - visibleWidth(prefix));
 	const rows = wrapPieces(pieces, contentWidth);
@@ -179,13 +179,13 @@ function renderShellCommand(
 	}
 	const rendered = visibleRows.map((row, index) => {
 		const lead = index === 0 ? prefix : continuation;
-		if (activity && activityAnimatesText(activity.shimmerStyle)) {
+		if (activity && activityAnimatesText(activity.textEffectStyle)) {
 			const text = row.map((piece) => piece.text).join("");
 			return `${lead}${
 				activityFrame(colors, text, activity.elapsedMs + index * 70, {
-					markerStyle: activity.markerStyle,
-					shimmerStyle: activity.shimmerStyle,
-					shimmerMarker: activity.shimmerMarker,
+					indicatorStyle: activity.indicatorStyle,
+					textEffectStyle: activity.textEffectStyle,
+					textEffectScope: activity.textEffectScope,
 					animationSpeed: activity.animationSpeed,
 				}).text
 			}`;

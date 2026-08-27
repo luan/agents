@@ -2,10 +2,12 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Color256Preview } from "./color/preview.ts";
 import { claimLibtuiExtensionHost } from "./host/extension-host.ts";
 import { FullscreenOverlay, fullscreenOverlayOptions } from "./overlay/fullscreen.ts";
+import { registerRequestAnimation } from "./request-animation.ts";
 
 export default function libtuiExtension(pi: ExtensionAPI): void {
 	const host = claimLibtuiExtensionHost(pi);
 	if (!host) return;
+	registerRequestAnimation(pi);
 	pi.registerCommand("libtui:colors", {
 		description: "Show the active terminal's 256-color palette",
 		handler: async (_args, ctx) => {

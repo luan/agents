@@ -52,7 +52,7 @@ export function createExecCommandTool(
 	runtime: ExecRuntime,
 	settings: Pick<
 		ExecCommandSettings,
-		"defaultOutputTokens" | "defaultExecYieldMs" | "defaultLoginShell" | "activityMarker"
+		"defaultOutputTokens" | "defaultExecYieldMs" | "defaultLoginShell" | "activityIndicator"
 	> = DEFAULT_EXEC_COMMAND_SETTINGS,
 ): ToolDefinition<typeof EXEC_COMMAND_PARAMETERS, ExecToolPresentationDetails> {
 	const animation = execCommandAnimation(settings);
@@ -108,7 +108,7 @@ export function createExecCommandTool(
 }
 
 function execCommandAnimation(
-	settings: Pick<ExecCommandSettings, "activityMarker">,
+	settings: Pick<ExecCommandSettings, "activityIndicator">,
 ): Readonly<ActivityAnimationOverrides> {
-	return settings.activityMarker === "inherit" ? {} : { markerStyle: settings.activityMarker };
+	return settings.activityIndicator === "inherit" ? {} : { indicatorStyle: settings.activityIndicator };
 }

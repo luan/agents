@@ -2,12 +2,14 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import {
 	getTuiAppearance,
 	subscribeTuiAppearance,
-	type TuiActivityMarkerStyle,
+	type TuiActivityIndicatorStyle,
 	type TuiAnimationSmoothness,
 	type TuiAnimationSpeed,
-	type TuiShimmerStyle,
+	type TuiPulseEffectStyle,
+	type TuiTextEffectStyle,
+	type TuiTextEffectScope,
 } from "./appearance.ts";
-import type { TuiColor, TuiForegroundColor, TuiForegroundToken, TuiHue, TuiTheme } from "./color/theme.ts";
+import type { TuiColor, TuiForegroundPaint, TuiForegroundToken, TuiHue, TuiTheme } from "./color/theme.ts";
 import { sanitizeTuiText } from "./content/terminal-text.ts";
 
 /** A host surface that can schedule a TUI render. */
@@ -271,24 +273,26 @@ export const sharedMotionScheduler: MotionScheduler = new SharedMotionScheduler(
 
 /** Per-surface choices. Omitted values inherit the process-wide appearance. */
 export interface ActivityAnimationOverrides {
-	markerStyle?: TuiActivityMarkerStyle;
-	shimmerStyle?: TuiShimmerStyle;
-	shimmerMarker?: boolean;
+	indicatorStyle?: TuiActivityIndicatorStyle;
+	pulseEffectStyle?: TuiPulseEffectStyle;
+	textEffectStyle?: TuiTextEffectStyle;
+	textEffectScope?: TuiTextEffectScope;
 	animationSpeed?: TuiAnimationSpeed;
 	animationSmoothness?: TuiAnimationSmoothness;
 }
 
 /** Repaint cadence selected independently from animation pace. */
 export function configuredAnimationCadenceMs(
-	marker = getTuiAppearance().activityMarker,
-	shimmer = getTuiAppearance().shimmer,
+	indicator = getTuiAppearance().activityIndicator,
+	textEffect = getTuiAppearance().textEffect,
 	smoothness: TuiAnimationSmoothness = getTuiAppearance().animationSmoothness,
 	speed: TuiAnimationSpeed = getTuiAppearance().animationSpeed,
+	pulseEffect: TuiPulseEffectStyle = getTuiAppearance().pulseEffect,
 ): number | undefined {
-	const intrinsicCadenceMs = activityCadenceMs(marker, shimmer);
+	const intrinsicCadenceMs = activityCadenceMs(indicator, textEffect, pulseEffect);
 	if (intrinsicCadenceMs === undefined) return undefined;
 	const designedCadenceMs = intrinsicCadenceMs / animationSpeedMultiplier(speed);
-	return shimmer === "off"
+	return textEffect === "off"
 		? Math.max(animationSmoothnessCadenceMs(smoothness), Math.ceil(designedCadenceMs))
 		: animationSmoothnessCadenceMs(smoothness);
 }
@@ -306,30 +310,36 @@ export function animationSmoothnessCadenceMs(
 }
 
 /** Whether the configured activity presentation animates its text. */
-export function activityAnimatesText(style = getTuiAppearance().shimmer): boolean {
+export function activityAnimatesText(style = getTuiAppearance().textEffect): boolean {
 	return style !== "off";
 }
 
-function markerCadenceMs(style: TuiActivityMarkerStyle): number | undefined {
-	return style === "pulse" ? 120 : markerAnimation(style)?.cadenceMs;
+function markerCadenceMs(style: TuiActivityIndicatorStyle): number | undefined {
+	return markerAnimation(style)?.cadenceMs;
 }
 
-function shimmerCadenceMs(style: TuiShimmerStyle): number | undefined {
+function shimmerCadenceMs(style: TuiTextEffectStyle): number | undefined {
 	return style === "sweep"
 		? 90
 		: style === "glow"
 			? 70
-			: style === "rainbow" || style === "rainbow-glow"
+			: style === "rainbow" || style === "rainbow-glow" || style === "aurora"
 				? 80
-				: style === "lightning"
+				: style === "lightning" || style === "glitch" || style === "crush"
 					? 60
 					: undefined;
 }
 
-function activityCadenceMs(marker: TuiActivityMarkerStyle, shimmer: TuiShimmerStyle): number | undefined {
-	const cadences = [markerCadenceMs(marker), shimmerCadenceMs(shimmer)].filter(
-		(cadence): cadence is number => cadence !== undefined,
-	);
+function activityCadenceMs(
+	indicator: TuiActivityIndicatorStyle,
+	textEffect: TuiTextEffectStyle,
+	pulseEffect: TuiPulseEffectStyle,
+): number | undefined {
+	const cadences = [
+		markerCadenceMs(indicator),
+		shimmerCadenceMs(textEffect),
+		pulseEffect !== "off" ? 33 : undefined,
+	].filter((cadence): cadence is number => cadence !== undefined);
 	return cadences.length > 0 ? Math.min(...cadences) : undefined;
 }
 
@@ -358,10 +368,11 @@ export function mountConfiguredAnimation(
 			? undefined
 			: (options.cadenceMs ??
 				configuredAnimationCadenceMs(
-					options.markerStyle,
-					options.shimmerStyle,
+					options.indicatorStyle,
+					options.textEffectStyle,
 					options.animationSmoothness,
 					options.animationSpeed,
+					options.pulseEffectStyle,
 				));
 		const maxDurationMs = expiresAtMs === undefined ? undefined : expiresAtMs - performance.now();
 		if (cadenceMs === undefined || disposed || (maxDurationMs !== undefined && maxDurationMs <= 0)) return;
@@ -656,7 +667,7 @@ interface MarkerAnimation {
 	readonly nerdFrames?: readonly string[];
 }
 
-type AnimatedMarkerStyle = Exclude<TuiActivityMarkerStyle, "off" | "pulse" | "static">;
+type AnimatedMarkerStyle = Exclude<TuiActivityIndicatorStyle, "off" | "static">;
 
 const MARKER_ANIMATIONS = Object.freeze({
 	spinner: { frames: SPINNER_FRAMES, cadenceMs: 80, width: 1 },
@@ -702,8 +713,8 @@ const MARKER_ANIMATIONS = Object.freeze({
 	"nerd-pi-orbit": { frames: NERD_PI_ORBIT_FRAMES, cadenceMs: 140, width: 3, nerdFonts: true },
 } satisfies Record<AnimatedMarkerStyle, MarkerAnimation>);
 
-function markerAnimation(style: TuiActivityMarkerStyle): MarkerAnimation | undefined {
-	if (style === "off" || style === "pulse" || style === "static") return undefined;
+function markerAnimation(style: TuiActivityIndicatorStyle): MarkerAnimation | undefined {
+	if (style === "off" || style === "static") return undefined;
 	return MARKER_ANIMATIONS[style];
 }
 
@@ -735,38 +746,41 @@ export function activityFrame(
 	} = {},
 ): ActivityFrame {
 	const appearance = getTuiAppearance();
-	const configuredMarker = options.markerStyle ?? appearance.activityMarker;
-	const markerStyle = options.reducedMotion && configuredMarker !== "off" ? "static" : configuredMarker;
-	const shimmerStyle = options.reducedMotion ? "off" : (options.shimmerStyle ?? appearance.shimmer);
-	const shimmerMarker = options.shimmerMarker ?? appearance.shimmerMarker;
+	const configuredMarker = options.indicatorStyle ?? appearance.activityIndicator;
+	const indicatorStyle = options.reducedMotion && configuredMarker !== "off" ? "static" : configuredMarker;
+	const textEffectStyle = options.reducedMotion ? "off" : (options.textEffectStyle ?? appearance.textEffect);
+	const pulseEffectStyle = options.reducedMotion ? "off" : (options.pulseEffectStyle ?? appearance.pulseEffect);
+	const textEffectScope = options.textEffectScope ?? appearance.textEffectScope;
 	const speedMultiplier = animationSpeedMultiplier(options.animationSpeed ?? appearance.animationSpeed);
 	const animationElapsedMs = elapsedMs * speedMultiplier;
 	const sampleCadenceMs =
 		animationSmoothnessCadenceMs(options.animationSmoothness ?? appearance.animationSmoothness) * speedMultiplier;
-	const textTone = options.textTone ?? (shimmerStyle === "off" ? "text.primary" : "text.muted");
+	const textTone = options.textTone ?? (textEffectStyle === "off" ? "text.primary" : "text.muted");
+	const paint =
+		pulseEffectStyle === "pulse"
+			? brightnessPulsingTheme(colors, animationElapsedMs)
+			: pulseEffectStyle === "color"
+				? colorPulsingTheme(colors, animationElapsedMs)
+				: colors;
 	let markerGlyph: string;
 	let marker: string;
-	switch (markerStyle) {
+	switch (indicatorStyle) {
 		case "off":
 			markerGlyph = "";
 			marker = "";
 			break;
-		case "pulse":
-			markerGlyph = "●";
-			marker = pulseGlyphFrame(colors, markerGlyph, animationElapsedMs);
-			break;
 		case "static":
 			markerGlyph = "●";
-			marker = colors.fg("accent", markerGlyph);
+			marker = paint.fg("accent", markerGlyph);
 			break;
 		default: {
-			const animation = markerAnimation(markerStyle);
+			const animation = markerAnimation(indicatorStyle);
 			if (!animation) {
 				markerGlyph = "";
 				marker = "";
 				break;
 			}
-			const configuredFrames = markerStyle === "spinner" ? (options.frames ?? animation.frames) : animation.frames;
+			const configuredFrames = indicatorStyle === "spinner" ? (options.frames ?? animation.frames) : animation.frames;
 			const frames =
 				animation.nerdFrames && appearance.iconPack === "nerd-fonts"
 					? animation.nerdFrames
@@ -778,15 +792,15 @@ export function activityFrame(
 				"-".repeat(animation.width),
 				animation.width,
 			);
-			marker = colors.fg("accent", markerGlyph);
+			marker = paint.fg("accent", markerGlyph);
 			break;
 		}
 	}
 	const markerLength = textGraphemes(markerGlyph).length;
 	const textLength = textGraphemes(text).length;
 	const shimmerLength = markerLength + 1 + textLength;
-	if (markerGlyph && shimmerMarker && shimmerStyle !== "off") {
-		marker = paintShimmer(colors, markerGlyph, animationElapsedMs, shimmerStyle, {
+	if (markerGlyph && textEffectScope === "inline" && textEffectStyle !== "off") {
+		marker = paintShimmer(paint, markerGlyph, animationElapsedMs, textEffectStyle, {
 			cadenceMs: options.cadenceMs,
 			baseTone: textTone,
 			highlightTone: options.highlightTone,
@@ -796,14 +810,14 @@ export function activityFrame(
 			totalLength: shimmerLength,
 		});
 	}
-	const textOutput = paintShimmer(colors, text, animationElapsedMs, shimmerStyle, {
+	const textOutput = paintShimmer(paint, text, animationElapsedMs, textEffectStyle, {
 		cadenceMs: options.cadenceMs,
 		baseTone: textTone,
 		highlightTone: options.highlightTone,
 		variantAscii: true,
 		sampleCadenceMs,
-		offset: markerGlyph && shimmerMarker ? markerLength + 1 : 0,
-		totalLength: markerGlyph && shimmerMarker ? shimmerLength : textLength,
+		offset: markerGlyph && textEffectScope === "inline" ? markerLength + 1 : 0,
+		totalLength: markerGlyph && textEffectScope === "inline" ? shimmerLength : textLength,
 	});
 	return { marker, text: textOutput };
 }
@@ -812,7 +826,7 @@ function paintShimmer(
 	colors: TuiTheme,
 	text: string,
 	elapsedMs: number,
-	style: TuiShimmerStyle,
+	style: TuiTextEffectStyle,
 	options: {
 		cadenceMs?: number;
 		baseTone: TuiForegroundToken;
@@ -846,6 +860,25 @@ function paintShimmer(
 				baseTone: options.baseTone,
 				variantAscii: options.variantAscii,
 				variantCadenceMs: options.sampleCadenceMs,
+				offset: options.offset,
+				totalLength: options.totalLength,
+			});
+		case "aurora":
+			return auroraTextEffectFrame(colors, text, elapsedMs, {
+				cadenceMs,
+				baseTone: options.baseTone,
+				offset: options.offset,
+			});
+		case "glitch":
+			return glitchTextEffectFrame(colors, text, elapsedMs, {
+				cadenceMs,
+				baseTone: options.baseTone,
+				offset: options.offset,
+			});
+		case "crush":
+			return crushTextEffectFrame(colors, text, elapsedMs, {
+				cadenceMs,
+				baseTone: options.baseTone,
 				offset: options.offset,
 				totalLength: options.totalLength,
 			});
@@ -910,6 +943,48 @@ export function pulseFrame(
 	return low + (0.5 - 0.5 * Math.cos(phase * Math.PI * 2)) * (high - low);
 }
 
+const EFFECT_CONTRAST_CANDIDATES = Object.freeze([
+	"accent",
+	"highlight",
+	"info",
+	"positive",
+	"warning",
+	"negative",
+	"text.primary",
+] as const satisfies readonly TuiForegroundPaint[]);
+
+function adaptiveEffectHighlight(colors: TuiTheme, base: TuiForegroundPaint): TuiColor {
+	return colors.strongestForegroundContrast(base, EFFECT_CONTRAST_CANDIDATES);
+}
+
+function transformedForegroundTheme(colors: TuiTheme, transform: (paint: TuiForegroundPaint) => TuiColor): TuiTheme {
+	return {
+		color: colors.color,
+		mixForeground: colors.mixForeground,
+		adjustForegroundBrightness: colors.adjustForegroundBrightness,
+		fg: (paint, text) => colors.fg(transform(paint), text),
+		bg: colors.bg,
+		fgAnsi: (paint) => colors.fgAnsi(transform(paint)),
+		bgAnsi: colors.bgAnsi,
+		contrastBackground: colors.contrastBackground,
+		strongestForegroundContrast: colors.strongestForegroundContrast,
+	};
+}
+
+/** Compose a cosine dim-to-bright pulse over every foreground painted by another activity effect. */
+function brightnessPulsingTheme(colors: TuiTheme, elapsedMs: number): TuiTheme {
+	const amount = pulseFrame(elapsedMs, { low: -0.4, high: 0.18 });
+	return transformedForegroundTheme(colors, (paint) => colors.adjustForegroundBrightness(paint, amount));
+}
+
+/** Compose a cosine color pulse over every foreground painted by another activity effect. */
+function colorPulsingTheme(colors: TuiTheme, elapsedMs: number): TuiTheme {
+	const amount = pulseFrame(elapsedMs, { low: 0.05, high: 0.55 });
+	return transformedForegroundTheme(colors, (paint) =>
+		colors.mixForeground(paint, adaptiveEffectHighlight(colors, paint), amount),
+	);
+}
+
 /** Paint a glyph with a semantic/harmonious glow according to a pure pulse frame. */
 export function pulseGlyphFrame(
 	colors: TuiTheme,
@@ -924,7 +999,7 @@ export function pulseGlyphFrame(
 ): string {
 	const baseTone = options.baseTone ?? "text.muted";
 	if (options.reducedMotion) return colors.fg(baseTone, glyph);
-	const highlightTone = options.highlightTone ?? "accent";
+	const highlightTone = options.highlightTone ?? adaptiveEffectHighlight(colors, baseTone);
 	return colors.fg(
 		colors.mixForeground(baseTone, highlightTone, pulseFrame(elapsedMs, { periodMs: options.periodMs })),
 		glyph,
@@ -940,8 +1015,8 @@ export function shimmerFrame(
 		cadenceMs?: number;
 		width?: number;
 		profile?: "cosine" | "linear";
-		baseTone?: TuiForegroundToken;
-		highlightTone?: TuiForegroundToken;
+		baseTone?: TuiForegroundPaint;
+		highlightTone?: TuiForegroundPaint;
 		reducedMotion?: boolean;
 		offset?: number;
 		totalLength?: number;
@@ -950,7 +1025,7 @@ export function shimmerFrame(
 	const characters = textGraphemes(text);
 	if (characters.length === 0) return "";
 	const baseTone = options.baseTone ?? "text.secondary";
-	const highlightTone = options.highlightTone ?? "accent";
+	const highlightTone = options.highlightTone ?? adaptiveEffectHighlight(colors, baseTone);
 	if (options.reducedMotion) return colors.fg(baseTone, text);
 	if ((options.profile ?? "cosine") === "cosine")
 		return cosineShimmerFrame(colors, characters, elapsedMs, {
@@ -964,8 +1039,8 @@ export function shimmerFrame(
 	const totalLength = Math.max(offset + characters.length, Math.floor(options.totalLength ?? characters.length));
 	const cycle = totalLength + shineWidth;
 	const position = (Math.max(0, elapsedMs) / Math.max(1, options.cadenceMs ?? 70)) % cycle;
-	const glow = glowPalette(highlightTone);
-	let currentTone: TuiForegroundColor | undefined;
+	const glow = glowPalette(colors, baseTone, highlightTone);
+	let currentTone: TuiForegroundPaint | undefined;
 	let run = "";
 	let output = "";
 	for (const [index, character] of characters.entries()) {
@@ -992,8 +1067,8 @@ function cosineShimmerFrame(
 	characters: readonly string[],
 	elapsedMs: number,
 	options: {
-		baseTone: TuiForegroundToken;
-		highlightTone: TuiForegroundToken;
+		baseTone: TuiForegroundPaint;
+		highlightTone: TuiForegroundPaint;
 		offset?: number;
 		totalLength?: number;
 	},
@@ -1092,6 +1167,97 @@ export function rainbowGlowShimmerFrame(
 		.join("");
 }
 
+/** Paint the distinct magenta-blue-cyan wave formerly bundled as a status-row replacement. */
+export function auroraTextEffectFrame(
+	colors: TuiTheme,
+	text: string,
+	elapsedMs: number,
+	options: { cadenceMs?: number; baseTone?: TuiForegroundToken; reducedMotion?: boolean; offset?: number } = {},
+): string {
+	const characters = textGraphemes(text);
+	if (characters.length === 0) return "";
+	const baseTone = options.baseTone ?? "text.secondary";
+	if (options.reducedMotion) return colors.fg(baseTone, text);
+	const frame = Math.max(0, elapsedMs) / Math.max(1, options.cadenceMs ?? 80);
+	const offset = Math.max(0, Math.floor(options.offset ?? 0));
+	const hues: readonly TuiHue[] = ["magenta", "blue", "cyan"];
+	return characters
+		.map((character, index) => {
+			const globalIndex = index + offset;
+			const wave = Math.sin((globalIndex - frame * 0.3) * 0.8);
+			if (wave <= 0.3) return colors.fg(baseTone, character);
+			const hue = hues[Math.floor(globalIndex + frame * 0.5) % hues.length] ?? "blue";
+			const painted = colors.fg(
+				{ hue, shade: Math.max(3, Math.min(5, Math.round(3 + wave * 2))) as 3 | 4 | 5 },
+				character,
+			);
+			return `\x1b[1m${painted}\x1b[22m`;
+		})
+		.join("");
+}
+
+const GLITCH_GLYPHS = "█▓▒░╳╱╲¥£€$#@!?&%~*";
+
+/** Briefly replace isolated message cells with deterministic cyberpunk artifacts. */
+export function glitchTextEffectFrame(
+	colors: TuiTheme,
+	text: string,
+	elapsedMs: number,
+	options: { cadenceMs?: number; baseTone?: TuiForegroundToken; reducedMotion?: boolean; offset?: number } = {},
+): string {
+	const characters = textGraphemes(text);
+	if (characters.length === 0) return "";
+	const baseTone = options.baseTone ?? "text.secondary";
+	if (options.reducedMotion) return colors.fg(baseTone, text);
+	const frame = Math.floor(Math.max(0, elapsedMs) / Math.max(1, options.cadenceMs ?? 60));
+	const offset = Math.max(0, Math.floor(options.offset ?? 0));
+	return characters
+		.map((character, index) => {
+			const globalIndex = index + offset;
+			const roll = deterministicUnit(globalIndex * 3 + frame, Math.floor(frame / 2));
+			if (roll >= 0.18) return colors.fg(baseTone, character);
+			const glyph = GLITCH_GLYPHS[(globalIndex + frame) % GLITCH_GLYPHS.length] ?? character;
+			return colors.fg(
+				roll < 0.12 ? { hue: (["cyan", "magenta", "blue", "yellow"] as const)[globalIndex % 4]!, shade: 5 } : "accent",
+				glyph,
+			);
+		})
+		.join("");
+}
+
+const CRUSH_GLYPHS = "0123456789abcdefABCDEF~!@#$£€%^&*()+=_";
+
+/** Resolve a moving field of artifact cells back into the original message. */
+export function crushTextEffectFrame(
+	colors: TuiTheme,
+	text: string,
+	elapsedMs: number,
+	options: {
+		cadenceMs?: number;
+		baseTone?: TuiForegroundToken;
+		reducedMotion?: boolean;
+		offset?: number;
+		totalLength?: number;
+	} = {},
+): string {
+	const characters = textGraphemes(text);
+	if (characters.length === 0) return "";
+	const baseTone = options.baseTone ?? "text.secondary";
+	if (options.reducedMotion) return colors.fg(baseTone, text);
+	const frame = Math.floor(Math.max(0, elapsedMs) / Math.max(1, options.cadenceMs ?? 60));
+	const offset = Math.max(0, Math.floor(options.offset ?? 0));
+	const totalLength = Math.max(offset + characters.length, Math.floor(options.totalLength ?? characters.length));
+	const head = frame % (totalLength + 8);
+	return characters
+		.map((character, index) => {
+			const globalIndex = index + offset;
+			if (globalIndex < head - 2) return colors.fg(baseTone, character);
+			const glyph = CRUSH_GLYPHS[(globalIndex + frame) % CRUSH_GLYPHS.length] ?? character;
+			return colors.fg({ hue: (["magenta", "blue", "cyan"] as const)[globalIndex % 3]!, shade: 4 }, glyph);
+		})
+		.join("");
+}
+
 const ASCII_ARTIFACT_MARKS = Object.freeze([
 	"\u0307",
 	"\u030c",
@@ -1180,9 +1346,18 @@ function textGraphemes(text: string): string[] {
 	return Array.from(graphemeSegmenter.segment(text), ({ segment }) => segment);
 }
 
-function glowPalette(highlightTone: TuiForegroundToken): readonly TuiForegroundColor[] {
-	const hue = glowHue(highlightTone);
-	return [highlightTone, { hue, shade: 4 }, { hue, shade: 3 }, { hue, shade: 2 }, { hue, shade: 1 }];
+function glowPalette(
+	colors: TuiTheme,
+	baseTone: TuiForegroundPaint,
+	highlightTone: TuiForegroundPaint,
+): readonly TuiForegroundPaint[] {
+	return [
+		highlightTone,
+		colors.mixForeground(baseTone, highlightTone, 0.8),
+		colors.mixForeground(baseTone, highlightTone, 0.6),
+		colors.mixForeground(baseTone, highlightTone, 0.4),
+		colors.mixForeground(baseTone, highlightTone, 0.2),
+	];
 }
 
 function glowHue(tone: TuiForegroundToken): TuiHue {
@@ -1201,4 +1376,9 @@ function glowHue(tone: TuiForegroundToken): TuiHue {
 		default:
 			return "gray";
 	}
+}
+
+function deterministicUnit(seed: number, frame: number): number {
+	const value = Math.sin(seed * 12.9898 + frame * 78.233) * 43_758.5453;
+	return value - Math.floor(value);
 }

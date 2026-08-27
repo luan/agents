@@ -203,16 +203,20 @@ describe("MotionScheduler", () => {
 describe("pure motion frames", () => {
 	test("renders activity text independently from optional markers", () => {
 		const colors = tuiTheme(theme);
-		const spinner = activityFrame(colors, "Working", 0, { markerStyle: "spinner", shimmerStyle: "off" });
-		const pulseGlow = activityFrame(colors, "Working", 300, { markerStyle: "pulse", shimmerStyle: "glow" });
-		const markerlessSweep = activityFrame(colors, "Working", 140, { markerStyle: "off", shimmerStyle: "sweep" });
-		const staticGlow = activityFrame(colors, "Working", 300, { markerStyle: "static", shimmerStyle: "glow" });
-		const lineRainbow = activityFrame(colors, "Working", 140, { markerStyle: "line", shimmerStyle: "rainbow" });
-		const arc = activityFrame(colors, "Working", 160, { markerStyle: "arc", shimmerStyle: "off" });
-		const dots = activityFrame(colors, "Working", 240, { markerStyle: "dots", shimmerStyle: "off" });
-		const quadrants = activityFrame(colors, "Working", 200, { markerStyle: "quadrants", shimmerStyle: "off" });
-		const sparkle = activityFrame(colors, "Working", 240, { markerStyle: "sparkle", shimmerStyle: "off" });
-		const staticFrame = activityFrame(colors, "Working", 10_000, { markerStyle: "static", shimmerStyle: "off" });
+		const spinner = activityFrame(colors, "Working", 0, { indicatorStyle: "spinner", textEffectStyle: "off" });
+		const pulseGlow = activityFrame(colors, "Working", 300, {
+			indicatorStyle: "static",
+			textEffectStyle: "glow",
+			pulseEffectStyle: "color",
+		});
+		const markerlessSweep = activityFrame(colors, "Working", 140, { indicatorStyle: "off", textEffectStyle: "sweep" });
+		const staticGlow = activityFrame(colors, "Working", 300, { indicatorStyle: "static", textEffectStyle: "glow" });
+		const lineRainbow = activityFrame(colors, "Working", 140, { indicatorStyle: "line", textEffectStyle: "rainbow" });
+		const arc = activityFrame(colors, "Working", 160, { indicatorStyle: "arc", textEffectStyle: "off" });
+		const dots = activityFrame(colors, "Working", 240, { indicatorStyle: "dots", textEffectStyle: "off" });
+		const quadrants = activityFrame(colors, "Working", 200, { indicatorStyle: "quadrants", textEffectStyle: "off" });
+		const sparkle = activityFrame(colors, "Working", 240, { indicatorStyle: "sparkle", textEffectStyle: "off" });
+		const staticFrame = activityFrame(colors, "Working", 10_000, { indicatorStyle: "static", textEffectStyle: "off" });
 
 		expect(Bun.stripANSI(spinner.marker)).toBe("⠋");
 		expect(Bun.stripANSI(pulseGlow.marker)).toBe("●");
@@ -226,7 +230,8 @@ describe("pure motion frames", () => {
 		expect(Bun.stripANSI(sparkle.marker)).toBe("✧");
 		expect(Bun.stripANSI(lineRainbow.text)).toBe("Working");
 		expect(lineRainbow.text).not.toBe(colors.fg("text.primary", "Working"));
-		expect(staticGlow.text).toBe(pulseGlow.text);
+		expect(Bun.stripANSI(staticGlow.text)).toBe(Bun.stripANSI(pulseGlow.text));
+		expect(staticGlow.text).not.toBe(pulseGlow.text);
 		expect(Bun.stripANSI(staticFrame.marker)).toBe("●");
 		expect(Bun.stripANSI(staticFrame.text)).toBe("Working");
 		expect(staticFrame.text).not.toBe(staticGlow.text);
@@ -245,18 +250,19 @@ describe("pure motion frames", () => {
 		expect(configuredAnimationCadenceMs("spinner", "off")).toBe(80);
 		expect(configuredAnimationCadenceMs("off", "lightning", "ultra")).toBe(16);
 		expect(configuredAnimationCadenceMs("off", "lightning", "ultra", "very-fast")).toBe(16);
-		expect(configuredAnimationCadenceMs("pulse", "glow", "economy")).toBe(80);
+		expect(configuredAnimationCadenceMs("static", "off", "economy", "normal", "pulse")).toBe(80);
+		expect(configuredAnimationCadenceMs("static", "off", "economy", "normal", "color")).toBe(80);
 		expect(configuredAnimationCadenceMs("static", "off")).toBeUndefined();
 
 		const colors = tuiTheme(theme);
 		const slow = activityFrame(colors, "Working", 200, {
-			markerStyle: "line",
-			shimmerStyle: "off",
+			indicatorStyle: "line",
+			textEffectStyle: "off",
 			animationSpeed: "slow",
 		});
 		const fast = activityFrame(colors, "Working", 200, {
-			markerStyle: "line",
-			shimmerStyle: "off",
+			indicatorStyle: "line",
+			textEffectStyle: "off",
 			animationSpeed: "fast",
 		});
 		expect(Bun.stripANSI(slow.marker)).toBe("\\");
@@ -265,13 +271,13 @@ describe("pure motion frames", () => {
 		const clock = new FakeClock();
 		const scheduler = new MotionScheduler(clock);
 		let renders = 0;
-		configureTuiAppearance({ activityMarker: "static", shimmer: "off" });
+		configureTuiAppearance({ activityIndicator: "static", textEffect: "off" });
 		const mount = mountConfiguredAnimation({ requestRender: () => renders++ }, { scheduler });
 		expect(scheduler.activeTimerCount).toBe(0);
 
 		configureTuiAppearance({
-			activityMarker: "off",
-			shimmer: "lightning",
+			activityIndicator: "off",
+			textEffect: "lightning",
 			animationSpeed: "very-fast",
 			animationSmoothness: "ultra",
 		});
@@ -279,18 +285,21 @@ describe("pure motion frames", () => {
 		expect(scheduler.activeTimerCount).toBe(1);
 		expect(renders).toBe(1);
 
-		configureTuiAppearance({ activityMarker: "static", shimmer: "off" });
+		configureTuiAppearance({ activityIndicator: "static", textEffect: "off" });
 		expect(scheduler.activeTimerCount).toBe(0);
 		expect(renders).toBe(2);
 		mount.dispose();
 
-		configureTuiAppearance({ activityMarker: "spinner", shimmer: "off" });
-		const markerless = mountConfiguredAnimation({ requestRender: () => renders++ }, { scheduler, markerStyle: "off" });
+		configureTuiAppearance({ activityIndicator: "spinner", textEffect: "off" });
+		const markerless = mountConfiguredAnimation(
+			{ requestRender: () => renders++ },
+			{ scheduler, indicatorStyle: "off" },
+		);
 		expect(scheduler.activeTimerCount).toBe(0);
-		configureTuiAppearance({ activityMarker: "off", shimmer: "off" });
+		configureTuiAppearance({ activityIndicator: "off", textEffect: "off" });
 		const explicitSpinner = mountConfiguredAnimation(
 			{ requestRender: () => renders++ },
-			{ scheduler, markerStyle: "spinner" },
+			{ scheduler, indicatorStyle: "spinner" },
 		);
 		expect(scheduler.activeTimerCount).toBe(1);
 		markerless.dispose();
@@ -300,16 +309,16 @@ describe("pure motion frames", () => {
 	test("samples marker and shimmer from one elapsed timeline without changing either pace", () => {
 		const colors = tuiTheme(theme);
 		const markerOnly = activityFrame(colors, "Working", 140, {
-			markerStyle: "spinner",
-			shimmerStyle: "off",
+			indicatorStyle: "spinner",
+			textEffectStyle: "off",
 		});
 		const combined = activityFrame(colors, "Working", 140, {
-			markerStyle: "spinner",
-			shimmerStyle: "glow",
+			indicatorStyle: "spinner",
+			textEffectStyle: "glow",
 		});
 		const nextCombined = activityFrame(colors, "Working", 280, {
-			markerStyle: "spinner",
-			shimmerStyle: "glow",
+			indicatorStyle: "spinner",
+			textEffectStyle: "glow",
 		});
 
 		expect(Bun.stripANSI(markerOnly.marker)).toBe("⠙");
@@ -323,9 +332,9 @@ describe("pure motion frames", () => {
 		for (const animationSpeed of ["slow", "normal", "very-fast"] as const) {
 			const frames = Array.from({ length: 12 }, (_, index) => {
 				const frame = activityFrame(colors, "Working...", index * 33, {
-					markerStyle: "pulse",
-					shimmerStyle: "lightning",
-					shimmerMarker: true,
+					indicatorStyle: "static",
+					textEffectStyle: "lightning",
+					textEffectScope: "inline",
 					animationSpeed,
 					animationSmoothness: "balanced",
 				});
@@ -375,9 +384,9 @@ describe("pure motion frames", () => {
 			["nerd-pi-orbit", 3],
 		] as const;
 		configureTuiAppearance({ iconPack: "nerd-fonts" });
-		for (const [markerStyle, width] of styles) {
+		for (const [indicatorStyle, width] of styles) {
 			for (let elapsedMs = 0; elapsedMs < 1_000; elapsedMs += 70) {
-				const frame = activityFrame(colors, "Working", elapsedMs, { markerStyle, shimmerStyle: "off" });
+				const frame = activityFrame(colors, "Working", elapsedMs, { indicatorStyle, textEffectStyle: "off" });
 				expect(visibleWidth(Bun.stripANSI(frame.marker))).toBe(width);
 				expect(Bun.stripANSI(frame.text)).toBe("Working");
 			}
@@ -387,16 +396,18 @@ describe("pure motion frames", () => {
 	test("keeps Unicode arc separate from the Nerd Font progress spinner", () => {
 		const colors = tuiTheme(theme);
 		configureTuiAppearance({ iconPack: "unicode" });
-		expect(Bun.stripANSI(activityFrame(colors, "Working", 0, { markerStyle: "arc", shimmerStyle: "off" }).marker)).toBe(
-			"◜",
-		);
+		expect(
+			Bun.stripANSI(activityFrame(colors, "Working", 0, { indicatorStyle: "arc", textEffectStyle: "off" }).marker),
+		).toBe("◜");
 
 		configureTuiAppearance({ iconPack: "nerd-fonts" });
-		expect(Bun.stripANSI(activityFrame(colors, "Working", 0, { markerStyle: "arc", shimmerStyle: "off" }).marker)).toBe(
-			"◜",
-		);
 		expect(
-			Bun.stripANSI(activityFrame(colors, "Working", 450, { markerStyle: "nerd-progress", shimmerStyle: "off" }).marker),
+			Bun.stripANSI(activityFrame(colors, "Working", 0, { indicatorStyle: "arc", textEffectStyle: "off" }).marker),
+		).toBe("◜");
+		expect(
+			Bun.stripANSI(
+				activityFrame(colors, "Working", 450, { indicatorStyle: "nerd-progress", textEffectStyle: "off" }).marker,
+			),
 		).toBe("");
 	});
 
@@ -406,7 +417,8 @@ describe("pure motion frames", () => {
 		for (const [index, frame] of expected.entries()) {
 			expect(
 				Bun.stripANSI(
-					activityFrame(colors, "Working", index * 100, { markerStyle: "braille-wave", shimmerStyle: "off" }).marker,
+					activityFrame(colors, "Working", index * 100, { indicatorStyle: "braille-wave", textEffectStyle: "off" })
+						.marker,
 				),
 			).toBe(frame);
 		}
@@ -416,13 +428,13 @@ describe("pure motion frames", () => {
 		const colors = tuiTheme(theme);
 		configureTuiAppearance({ iconPack: "unicode" });
 		const fallback = Bun.stripANSI(
-			activityFrame(colors, "Working", 0, { markerStyle: "nerd-pipeline", shimmerStyle: "off" }).marker,
+			activityFrame(colors, "Working", 0, { indicatorStyle: "nerd-pipeline", textEffectStyle: "off" }).marker,
 		);
 		expect(fallback).toBe("|  ");
 
 		configureTuiAppearance({ iconPack: "nerd-fonts" });
 		const nerdFont = Bun.stripANSI(
-			activityFrame(colors, "Working", 0, { markerStyle: "nerd-pipeline", shimmerStyle: "off" }).marker,
+			activityFrame(colors, "Working", 0, { indicatorStyle: "nerd-pipeline", textEffectStyle: "off" }).marker,
 		);
 		expect(nerdFont).toBe("\uf0e7--");
 	});
@@ -441,17 +453,46 @@ describe("pure motion frames", () => {
 		}
 	});
 
-	test("pulse smoothly changes only the marker color", () => {
+	test("color pulse composes over a stable indicator and text", () => {
 		const colors = tuiTheme(theme);
 		const frames = Array.from({ length: 37 }, (_, index) => pulseGlyphFrame(colors, "●", index * 33));
 		const foregrounds = new Set(frames.flatMap((frame) => frame.match(/\x1b\[38;[^m]+m/gu) ?? []));
 
 		expect(foregrounds.size).toBeGreaterThan(20);
-		const markers = [0, 150, 300, 450, 600].map(
-			(elapsedMs) => activityFrame(colors, "Working", elapsedMs, { markerStyle: "pulse", shimmerStyle: "off" }).marker,
+		const samples = [0, 150, 300, 450, 600].map((elapsedMs) =>
+			activityFrame(colors, "Working", elapsedMs, {
+				indicatorStyle: "static",
+				textEffectStyle: "glow",
+				pulseEffectStyle: "color",
+			}),
 		);
+		const markers = samples.map((sample) => sample.marker);
 		expect(markers.map(Bun.stripANSI)).toEqual(["●", "●", "●", "●", "●"]);
 		expect(new Set(markers).size).toBeGreaterThan(2);
+		expect(new Set(samples.map((sample) => sample.text)).size).toBeGreaterThan(2);
+	});
+
+	test("pulse fades the composed indicator and text from dim to bright without changing glyphs", () => {
+		const colors = tuiTheme(theme);
+		const dim = activityFrame(colors, "Working", 0, {
+			indicatorStyle: "static",
+			textEffectStyle: "off",
+			pulseEffectStyle: "pulse",
+		});
+		const bright = activityFrame(colors, "Working", 600, {
+			indicatorStyle: "static",
+			textEffectStyle: "off",
+			pulseEffectStyle: "pulse",
+		});
+
+		expect(Bun.stripANSI(dim.marker)).toBe("●");
+		expect(Bun.stripANSI(bright.marker)).toBe("●");
+		expect(Bun.stripANSI(dim.text)).toBe("Working");
+		expect(Bun.stripANSI(bright.text)).toBe("Working");
+		expect(dim.marker).not.toBe(bright.marker);
+		expect(dim.text).not.toBe(bright.text);
+		expect(dim.marker).toContain(colors.fgAnsi(colors.adjustForegroundBrightness("accent", -0.4)));
+		expect(bright.marker).toContain(colors.fgAnsi(colors.adjustForegroundBrightness("accent", 0.18)));
 	});
 
 	test("shimmer reaches the final cell with a continuous cosine glow", () => {
@@ -465,17 +506,26 @@ describe("pure motion frames", () => {
 		expect(shimmerFrame(colors, text, 10)).toBe(colors.fg("text.secondary", text));
 	});
 
+	test("glow chooses a visible contrast when its base text already uses the accent", () => {
+		const colors = tuiTheme(theme);
+		const glow = shimmerFrame(colors, "accent text", (10 / 30) * 1_000, { baseTone: "accent" });
+
+		expect(Bun.stripANSI(glow)).toBe("accent text");
+		expect(glow).not.toBe(colors.fg("accent", "accent text"));
+		expect(new Set(glow.match(/\x1b\[38;[^m]+m/gu) ?? []).size).toBeGreaterThan(3);
+	});
+
 	test("shimmers marker and text through one shared color ramp", () => {
 		const colors = tuiTheme(theme);
 		const atMarker = activityFrame(colors, "Working", (10 / 30) * 1_000, {
-			markerStyle: "static",
-			shimmerStyle: "glow",
-			shimmerMarker: true,
+			indicatorStyle: "static",
+			textEffectStyle: "glow",
+			textEffectScope: "inline",
 		});
 		const atText = activityFrame(colors, "Working", (12 / 30) * 1_000, {
-			markerStyle: "static",
-			shimmerStyle: "glow",
-			shimmerMarker: true,
+			indicatorStyle: "static",
+			textEffectStyle: "glow",
+			textEffectScope: "inline",
 		});
 
 		expect(atMarker.marker).toContain(colors.fgAnsi("accent"));
@@ -527,19 +577,19 @@ describe("pure motion frames", () => {
 	test("marker shimmer crosses marker, separator, and text as one unit", () => {
 		const colors = tuiTheme(theme);
 		const plain = activityFrame(colors, "AB", 0, {
-			markerStyle: "line",
-			shimmerStyle: "lightning",
-			shimmerMarker: false,
+			indicatorStyle: "line",
+			textEffectStyle: "lightning",
+			textEffectScope: "message",
 		});
 		const textStrike = activityFrame(colors, "AB", 0, {
-			markerStyle: "line",
-			shimmerStyle: "lightning",
-			shimmerMarker: true,
+			indicatorStyle: "line",
+			textEffectStyle: "lightning",
+			textEffectScope: "inline",
 		});
 		const markerStrike = activityFrame(colors, "AB", 360, {
-			markerStyle: "line",
-			shimmerStyle: "lightning",
-			shimmerMarker: true,
+			indicatorStyle: "line",
+			textEffectStyle: "lightning",
+			textEffectScope: "inline",
 		});
 		expect(Bun.stripANSI(textStrike.marker).normalize("NFD").replace(/\p{M}/gu, "")).toBe(Bun.stripANSI(plain.marker));
 		expect(visibleWidth(Bun.stripANSI(textStrike.marker))).toBe(1);

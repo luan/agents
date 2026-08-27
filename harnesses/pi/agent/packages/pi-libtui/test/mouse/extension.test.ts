@@ -60,6 +60,8 @@ function createContext(widgets: Array<{ key: string; content: WidgetContentBound
 		mode: "tui" as const,
 		ui: {
 			theme: testTheme,
+			setWorkingIndicator() {},
+			setWorkingMessage() {},
 			getTheme: () => testTheme,
 			setTheme() {},
 			setWidget(key: string, content: WidgetContentBoundary) {
@@ -124,7 +126,7 @@ test("duplicate factory copies share one host lease and a later API installs ind
 	for (const factory of factories) factory(first.api);
 
 	expect(first.handlers.get("session_start")).toHaveLength(1);
-	expect(first.handlers.get("session_shutdown")).toHaveLength(1);
+	expect(first.handlers.get("session_shutdown")).toHaveLength(2);
 
 	const widgets: Array<{ key: string; content: WidgetContentBoundary }> = [];
 	const context = createContext(widgets);
@@ -150,17 +152,17 @@ test("duplicate factory copies share one host lease and a later API installs ind
 	expect(replacementCalls).toBe(1);
 	removeReplacement();
 
-	await first.handlers.get("session_shutdown")?.[0]?.({}, context);
+	for (const handler of first.handlers.get("session_shutdown") ?? []) await handler({}, context);
 	expect(widgets.at(-1)).toEqual({ key: "pi-libtui.mouse-bridge", content: undefined });
 	expect(CustomEditor.prototype.render).toBe(originalRender);
 
 	const second = createPiHarness(sharedEventBus);
 	factories[0]!(second.api);
 	expect(second.handlers.get("session_start")).toHaveLength(1);
-	expect(second.handlers.get("session_shutdown")).toHaveLength(1);
+	expect(second.handlers.get("session_shutdown")).toHaveLength(2);
 	const secondWidgets: Array<{ key: string; content: WidgetContentBoundary }> = [];
 	const secondContext = createContext(secondWidgets);
 	await second.handlers.get("session_start")?.[0]?.({}, secondContext);
 	expect(secondWidgets).toHaveLength(1);
-	await second.handlers.get("session_shutdown")?.[0]?.({}, secondContext);
+	for (const handler of second.handlers.get("session_shutdown") ?? []) await handler({}, secondContext);
 });

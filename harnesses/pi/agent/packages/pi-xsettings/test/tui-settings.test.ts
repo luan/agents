@@ -9,11 +9,29 @@ describe("pi-libtui settings", () => {
 	test("uses portable appearance defaults", () => {
 		expect(DEFAULT_TUI_APPEARANCE).toEqual({
 			iconPack: "unicode",
-			activityMarker: "spinner",
-			shimmer: "off",
-			shimmerMarker: false,
+			activityIndicator: "spinner",
+			activityMessage: "phase",
+			textEffect: "off",
+			textEffectScope: "message",
+			pulseEffect: "off",
+			statusPresentation: "standard",
 			animationSpeed: "normal",
 			animationSmoothness: "balanced",
+			thinkingIndicator: "inherit",
+			thinkingMessage: "inherit",
+			thinkingTextEffect: "inherit",
+			thinkingPulseEffect: "inherit",
+			thinkingPresentation: "inherit",
+			workingIndicator: "inherit",
+			workingMessage: "inherit",
+			workingTextEffect: "inherit",
+			workingPulseEffect: "inherit",
+			workingPresentation: "inherit",
+			toolIndicator: "inherit",
+			toolMessage: "inherit",
+			toolTextEffect: "inherit",
+			toolPulseEffect: "inherit",
+			toolPresentation: "inherit",
 			powerline: false,
 			powerlineButtons: false,
 			softCursor: false,
@@ -28,11 +46,29 @@ describe("pi-libtui settings", () => {
 		const registration = ensureXSettingsRegistry().registrations["pi-libtui"];
 		expect(registration?.definitions.map((definition) => definition.key)).toEqual([
 			"iconPack",
-			"activityMarker",
-			"shimmer",
-			"shimmerMarker",
+			"activityIndicator",
+			"activityMessage",
+			"textEffect",
+			"textEffectScope",
+			"pulseEffect",
+			"statusPresentation",
 			"animationSpeed",
 			"animationSmoothness",
+			"thinkingIndicator",
+			"thinkingMessage",
+			"thinkingTextEffect",
+			"thinkingPulseEffect",
+			"thinkingPresentation",
+			"workingIndicator",
+			"workingMessage",
+			"workingTextEffect",
+			"workingPulseEffect",
+			"workingPresentation",
+			"toolIndicator",
+			"toolMessage",
+			"toolTextEffect",
+			"toolPulseEffect",
+			"toolPresentation",
 			"powerline",
 			"powerlineButtons",
 			"softCursor",
@@ -46,15 +82,14 @@ describe("pi-libtui settings", () => {
 		expect(registration?.definitions.find((definition) => definition.key === "powerlineButtons")?.label).toBe(
 			"Powerline buttons",
 		);
-		const activityMarker = registration?.definitions.find((definition) => definition.key === "activityMarker");
-		expect(activityMarker?.type).toBe("enum");
-		expect(activityMarker?.preview).toBe("activity-marker");
-		if (activityMarker?.type !== "enum" || !Array.isArray(activityMarker.options))
+		const activityIndicator = registration?.definitions.find((definition) => definition.key === "activityIndicator");
+		expect(activityIndicator?.type).toBe("enum");
+		expect(activityIndicator?.preview).toBe("activity-marker");
+		if (activityIndicator?.type !== "enum" || !Array.isArray(activityIndicator.options))
 			throw new Error("Activity marker must be an inline enum setting");
-		expect(activityMarker.options.map((option) => option.value)).toEqual([
+		expect(activityIndicator.options.map((option) => option.value)).toEqual([
 			"off",
 			"spinner",
-			"pulse",
 			"static",
 			"line",
 			"arc",
@@ -97,18 +132,51 @@ describe("pi-libtui settings", () => {
 			"nerd-pipeline",
 			"nerd-pi-orbit",
 		]);
-		const shimmer = registration?.definitions.find((definition) => definition.key === "shimmer");
-		expect(shimmer?.type).toBe("enum");
-		if (shimmer?.type !== "enum" || !Array.isArray(shimmer.options))
-			throw new Error("Shimmer must be an inline enum setting");
-		expect(shimmer.options.map((option) => option.value)).toEqual([
+		const statusPresentation = registration?.definitions.find((definition) => definition.key === "statusPresentation");
+		expect(statusPresentation?.type).toBe("enum");
+		expect(statusPresentation?.preview).toBe("status-presentation");
+		if (statusPresentation?.type !== "enum" || !Array.isArray(statusPresentation.options))
+			throw new Error("Status presentation must be an inline enum setting");
+		expect(statusPresentation.options.map((option) => option.value)).toEqual([
+			"standard",
+			"neural-pulse",
+			"plasma-wave",
+			"pacman",
+			"matrix",
+			"pipeline",
+			"starfield",
+			"fire",
+			"icon-morph",
+			"brainstorm",
+			"dev-constellation",
+			"pi-pulse",
+			"orbit-dots",
+			"neon-bounce",
+			"block-wave",
+			"conveyor",
+			"accordion",
+		]);
+		const textEffect = registration?.definitions.find((definition) => definition.key === "textEffect");
+		expect(textEffect?.type).toBe("enum");
+		if (textEffect?.type !== "enum" || !Array.isArray(textEffect.options))
+			throw new Error("Text effect must be an inline enum setting");
+		expect(textEffect.options.map((option) => option.value)).toEqual([
 			"off",
 			"sweep",
 			"glow",
 			"rainbow",
 			"rainbow-glow",
 			"lightning",
+			"aurora",
+			"glitch",
+			"crush",
 		]);
+		const pulseEffect = registration?.definitions.find((definition) => definition.key === "pulseEffect");
+		expect(pulseEffect?.type).toBe("enum");
+		expect(pulseEffect?.label).toBe("Pulse effect");
+		if (pulseEffect?.type !== "enum" || !Array.isArray(pulseEffect.options))
+			throw new Error("Pulse effect must be an inline enum setting");
+		expect(pulseEffect.options.map((option) => option.value)).toEqual(["off", "pulse", "color"]);
 		const animationSpeed = registration?.definitions.find((definition) => definition.key === "animationSpeed");
 		expect(animationSpeed?.type).toBe("enum");
 		if (animationSpeed?.type !== "enum" || !Array.isArray(animationSpeed.options))
@@ -135,11 +203,29 @@ describe("pi-libtui settings", () => {
 
 		await ensureXSettingsRegistry().publish("pi-libtui", {
 			iconPack: "unicode",
-			activityMarker: "pulse",
-			shimmer: "glow",
-			shimmerMarker: true,
+			activityIndicator: "static",
+			pulseEffect: "color",
+			activityMessage: "typewriter",
+			statusPresentation: "starfield",
+			textEffect: "glow",
+			textEffectScope: "inline",
 			animationSpeed: "fast",
 			animationSmoothness: "smooth",
+			thinkingIndicator: "off",
+			thinkingMessage: "phase",
+			thinkingTextEffect: "inherit",
+			thinkingPulseEffect: "inherit",
+			thinkingPresentation: "pacman",
+			workingIndicator: "inherit",
+			workingMessage: "inherit",
+			workingTextEffect: "inherit",
+			workingPulseEffect: "inherit",
+			workingPresentation: "inherit",
+			toolIndicator: "inherit",
+			toolMessage: "inherit",
+			toolTextEffect: "lightning",
+			toolPulseEffect: "color",
+			toolPresentation: "block-wave",
 			powerline: false,
 			powerlineButtons: true,
 			softCursor: true,
@@ -149,11 +235,29 @@ describe("pi-libtui settings", () => {
 		});
 		expect(getTuiAppearance()).toEqual({
 			iconPack: "unicode",
-			activityMarker: "pulse",
-			shimmer: "glow",
-			shimmerMarker: true,
+			activityIndicator: "static",
+			pulseEffect: "color",
+			activityMessage: "typewriter",
+			statusPresentation: "starfield",
+			textEffect: "glow",
+			textEffectScope: "inline",
 			animationSpeed: "fast",
 			animationSmoothness: "smooth",
+			thinkingIndicator: "off",
+			thinkingMessage: "phase",
+			thinkingTextEffect: "inherit",
+			thinkingPulseEffect: "inherit",
+			thinkingPresentation: "pacman",
+			workingIndicator: "inherit",
+			workingMessage: "inherit",
+			workingTextEffect: "inherit",
+			workingPulseEffect: "inherit",
+			workingPresentation: "inherit",
+			toolIndicator: "inherit",
+			toolMessage: "inherit",
+			toolTextEffect: "lightning",
+			toolPulseEffect: "color",
+			toolPresentation: "block-wave",
 			powerline: false,
 			powerlineButtons: true,
 			softCursor: true,

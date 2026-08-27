@@ -34,17 +34,17 @@ describe("agent presentation formatting", () => {
 
 	test("keeps running agent shimmer text independent from markers", () => {
 		const colors = tuiTheme(theme);
-		configureTuiAppearance({ activityMarker: "pulse", shimmer: "off" });
+		configureTuiAppearance({ activityIndicator: "static", textEffect: "off", pulseEffect: "color" });
 		expect(stripTerminalSequences(renderAgentStatusMarker(colors, "running", 0, 300))).toBe("●");
-		configureTuiAppearance({ activityMarker: "off", shimmer: "glow" });
+		configureTuiAppearance({ activityIndicator: "off", textEffect: "glow" });
 		expect(renderAgentStatusMarker(colors, "running", 0, 300)).toBe("");
 		const shimmeredIdentity = renderAgentIdentity(colors, "worker", "running", 0, 300);
 		expect(stripTerminalSequences(shimmeredIdentity)).toBe("worker");
 		expect(new Set(shimmeredIdentity.match(/\x1b\[38;[^m]+m/gu) ?? []).size).toBeGreaterThan(1);
 		expect(shimmeredIdentity).toContain("\x1b[1m");
-		configureTuiAppearance({ activityMarker: "pulse" });
+		configureTuiAppearance({ activityIndicator: "static", pulseEffect: "color" });
 		expect(stripTerminalSequences(renderAgentIdentity(colors, "worker", "running", 0, 300))).toBe("● worker");
-		configureTuiAppearance({ activityMarker: "static", shimmer: "off" });
+		configureTuiAppearance({ activityIndicator: "static", textEffect: "off" });
 		expect(stripTerminalSequences(renderAgentStatusMarker(colors, "running", 0, 300))).toBe("●");
 	});
 

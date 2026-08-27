@@ -1061,14 +1061,14 @@ describe("tool transcript grammar", () => {
 	});
 
 	test("live actions render the configured shared activity style", () => {
-		configureTuiAppearance({ activityMarker: "off", shimmer: "glow" });
+		configureTuiAppearance({ activityIndicator: "off", textEffect: "glow" });
 		const live = new LiveToolAction({
 			theme,
 			view: { verb: "Streaming", status: "running", marker: false },
 			requestRender() {},
 		});
 		expect(stripTerminalSequences(live.render(40)[0]!)).toStartWith("Streaming");
-		configureTuiAppearance({ activityMarker: "pulse" });
+		configureTuiAppearance({ activityIndicator: "static", pulseEffect: "color" });
 		expect(stripTerminalSequences(live.render(40)[0]!)).toStartWith("● Streaming");
 		live.dispose();
 	});
