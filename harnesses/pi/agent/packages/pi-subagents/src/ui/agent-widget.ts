@@ -1,8 +1,9 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type TUI, truncateToWidth } from "@earendil-works/pi-tui";
 import type { MotionMount } from "pi-libtui";
-import { icon, mountConfiguredAnimation, tuiTheme } from "pi-libtui";
-import type { AgentHubSnapshot, AgentHubSnapshotSource } from "./agent-browser.ts";
+import { icon, mountConfiguredAnimation, PointerInteractionController, tuiTheme } from "pi-libtui";
+import type { TuiMouseEvent } from "pi-libtui/mouse";
+import type { AgentHubAgentSnapshot, AgentHubSnapshot, AgentHubSnapshotSource } from "./agent-browser.ts";
 import {
 	formatAgentTokens,
 	renderAgentIdentity,
@@ -15,6 +16,12 @@ import { agentDisplayName, agentsWithAncestors, agentTreeRows } from "./agent-tr
 type HostTheme = Parameters<typeof tuiTheme>[0];
 type UIContext = ExtensionContext["ui"];
 
+interface AgentTarget {
+	readonly agent: AgentHubAgentSnapshot;
+	readonly row: number;
+	readonly width: number;
+}
+
 /** Animated summary driven only by immutable coordinator snapshots. */
 export class AgentWidget {
 	private snapshot: AgentHubSnapshot;
@@ -24,8 +31,15 @@ export class AgentWidget {
 	private registered = false;
 	private lastStatus: string | undefined;
 	private readonly unsubscribe: () => void;
+	private readonly interaction = new PointerInteractionController<AgentTarget>({
+		key: ({ agent }) => agent.id,
+		rect: ({ row, width }) => ({ x: 0, y: row, width, height: 1 }),
+	});
 
-	constructor(source: AgentHubSnapshotSource) {
+	constructor(
+		source: AgentHubSnapshotSource,
+		private readonly openAgent: (agentId: string) => void = () => {},
+	) {
 		this.snapshot = source.getSnapshot();
 		this.unsubscribe = source.subscribe((snapshot) => {
 			this.snapshot = snapshot;
@@ -60,7 +74,11 @@ export class AgentWidget {
 				(tui, theme) => {
 					this.tui = tui;
 					this.syncMotion();
-					return { render: (width) => this.render(theme, width), invalidate() {} };
+					return {
+						render: (width) => this.render(theme, width),
+						onMouse: (event: TuiMouseEvent) => this.onMouse(event),
+						invalidate() {},
+					};
 				},
 				{ placement: "aboveEditor" },
 			);
@@ -81,13 +99,25 @@ export class AgentWidget {
 		const rows = agentTreeRows(
 			agentsWithAncestors(this.snapshot.agents, (agent) => agent.status === "running" || agent.status === "queued"),
 		);
+		const visibleRows = rows.slice(0, 11);
+		this.interaction.setTargets(
+			visibleRows.map(({ agent }, index) => ({ agent, row: index + 1, width: Math.max(0, width) })),
+		);
+		const hoveredId = this.interaction.hoveredTarget()?.agent.id;
 		const running = active.filter((agent) => agent.status === "running").length;
 		const queued = active.length - running;
 		return [
 			`${colors.fg("accent", `${icon("developer")} Agents`)} ${colors.fg("text.muted", `· ${running} running${queued ? ` · ${queued} queued` : ""}`)}`,
-			...rows.slice(0, 11).map(({ agent, prefix }) => {
+			...visibleRows.map(({ agent, prefix }) => {
 				const name = agentDisplayName(agent.id) ?? agent.id;
-				const identity = renderAgentIdentity(colors, name, agent.status, agent.startedAt, now, "accent");
+				const identity = renderAgentIdentity(
+					colors,
+					name,
+					agent.status,
+					agent.startedAt,
+					now,
+					agent.id === hoveredId ? "accent" : "text.primary",
+				);
 				const metadata = [
 					renderAgentMetadata(colors, agent, now, " · "),
 					colors.fg("text.muted", formatAgentTokens(agent.tokenCount)),
@@ -107,6 +137,16 @@ export class AgentWidget {
 		];
 	}
 
+	private onMouse(event: TuiMouseEvent): boolean {
+		return this.interaction.handleMouse(
+			{ ...event, screenCol: event.col, screenRow: event.row },
+			{
+				onHoverChange: () => this.tui?.requestRender(),
+				onActivate: ({ agent }) => this.openAgent(agent.id),
+			},
+		);
+	}
+
 	private syncMotion(): void {
 		const running = this.snapshot.agents.some((agent) => agent.status === "running");
 		if (this.tui && running && !this.motion) this.motion = mountConfiguredAnimation(this.tui);
@@ -120,6 +160,7 @@ export class AgentWidget {
 		this.motion?.dispose();
 		this.motion = undefined;
 		this.tui = undefined;
+		this.interaction.clear();
 		if (this.uiCtx && this.registered) this.uiCtx.setWidget("agents", undefined);
 		if (this.uiCtx && this.lastStatus !== undefined) this.uiCtx.setStatus("subagents", undefined);
 		this.registered = false;

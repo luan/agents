@@ -119,6 +119,33 @@ test("agent transcript embeds the real user renderer without terminal-wide zones
 	hub.dispose();
 });
 
+test("opens with the clicked widget agent selected", () => {
+	const firstTranscript = transcriptWithText("first transcript");
+	const secondTranscript = transcriptWithText("second transcript");
+	const first = agentSnapshot(firstTranscript).agents[0]!;
+	const snapshot: AgentHubSnapshot = {
+		generation: 0,
+		agents: [first, { ...first, id: "/root/second", description: "second", transcript: secondTranscript }],
+	};
+	const source = { getSnapshot: () => snapshot, subscribe: () => () => {} };
+	const tui = { terminal: { rows: 12 }, requestRender() {} } as never;
+	const hub = new AgentHub(source, tui, theme, () => {}, undefined, "/root/second");
+
+	const rendered = stripTerminalSequences(hub.render(90).join("\n"));
+	expect(rendered).toContain("second transcript");
+	expect(rendered).not.toContain("first transcript");
+	hub.dispose();
+});
+
+function transcriptWithText(text: string): AgentHubSnapshot["agents"][number]["transcript"] {
+	return {
+		getMessages: () => [{ role: "user", content: [{ type: "text", text }], timestamp: 1 }],
+		generation: () => 0,
+		preview: () => ({ kind: "user", text }),
+		subscribe: () => () => {},
+	};
+}
+
 function agentSnapshot(transcript: AgentHubSnapshot["agents"][number]["transcript"]): AgentHubSnapshot {
 	return {
 		generation: 0,

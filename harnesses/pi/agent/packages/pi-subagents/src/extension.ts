@@ -121,9 +121,9 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		}
 		if (event.type === "mailbox" && event.delivery.target === localPath()) deliverMailbox();
 	};
-	const openHub = async (context: Pick<ExtensionContext, "hasUI" | "ui">): Promise<void> => {
+	const openHub = async (context: Pick<ExtensionContext, "hasUI" | "ui">, initialAgentId?: string): Promise<void> => {
 		if (!ownsRoot || !source) return;
-		await openAgentHub(context, source, getPresentationResolver);
+		await openAgentHub(context, source, getPresentationResolver, initialAgentId);
 	};
 	const attachRootPresentation = (context: ExtensionContext): void => {
 		if (!coordinator) return;
@@ -131,7 +131,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		source = new CoordinatorSnapshotSource(coordinator);
 		unregisterAction = registerSubagentActions({ open: openHub });
 		if (context.hasUI) {
-			widget = new AgentWidget(source);
+			widget = new AgentWidget(source, (agentId) => void openHub(context, agentId));
 			widget.setUICtx(context.ui);
 		}
 	};

@@ -219,11 +219,19 @@ export class AgentHub {
 		private readonly theme: HostTheme,
 		private readonly done: () => void,
 		private readonly resolvePresentation: AgentPresentationResolverLookup = () => undefined,
+		initialAgentId?: string,
 	) {
 		this.snapshot = source.getSnapshot();
-		this.selectedId = this.snapshot.agents[0]?.id;
+		const rows = agentTreeRows(this.snapshot.agents);
+		this.selectedId = this.snapshot.agents.some((agent) => agent.id === initialAgentId)
+			? initialAgentId
+			: this.snapshot.agents[0]?.id;
 		this.list = new SelectableList({
-			items: agentTreeRows(this.snapshot.agents),
+			items: rows,
+			selectedIndex: Math.max(
+				0,
+				rows.findIndex(({ agent }) => agent.id === this.selectedId),
+			),
 			wrap: false,
 			activateOnClick: false,
 			requestRender: () => this.tui.requestRender(),
@@ -416,11 +424,12 @@ export async function openAgentHub(
 	ctx: Pick<ExtensionContext, "hasUI" | "ui">,
 	source: AgentHubSnapshotSource,
 	resolvePresentation?: AgentPresentationResolverLookup,
+	initialAgentId?: string,
 ): Promise<void> {
 	if (!ctx.hasUI || !ctx.ui.custom) return;
 	await ctx.ui.custom<void>(
 		(tui, theme, _keys, done) => {
-			const hub = new AgentHub(source, tui, theme, done, resolvePresentation);
+			const hub = new AgentHub(source, tui, theme, done, resolvePresentation, initialAgentId);
 			return new FullscreenOverlay(tui, theme, hub, { label: "Agent Hub", icon: "developer" });
 		},
 		{ overlay: true, overlayOptions: fullscreenOverlayOptions() },
