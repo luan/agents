@@ -1,5 +1,11 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { ActivityAnimationOverrides } from "pi-libtui";
+import { existsSync } from "node:fs";
+import {
+	type ExtensionAPI,
+	type ExtensionContext,
+	getAgentDir,
+	SettingsManager,
+} from "@earendil-works/pi-coding-agent";
+import { registerSidePanelProvider, type ActivityAnimationOverrides } from "pi-libtui";
 import { resolveExecCommandBinary } from "./binary.ts";
 import { registerCodeModeExecAdapters } from "./code-mode-adapters.ts";
 import { openRegisteredProcessHub, registerProcessHubHost, retainProcessHubAction } from "./contributions/actions.ts";
@@ -9,10 +15,11 @@ import {
 	registerExecCommandXSettings,
 } from "./contributions/xsettings.ts";
 import { createExecSessionManager, type ExecSessionManager } from "./session-manager.ts";
+import { createExecShellResolver } from "./runtime-shell.ts";
 import { createExecCommandTool } from "./tools/exec-command/definition.ts";
 import type { ExecRuntime } from "./tools/runtime.ts";
 import { createWriteStdinTool } from "./tools/write-stdin/definition.ts";
-import { openProcessHub } from "./ui/process-hub.ts";
+import { ProcessHubPresentation } from "./ui/process-hub-presentation.ts";
 import {
 	type ProcessHubManager,
 	type ProcessHubSource,
@@ -26,6 +33,7 @@ export function createExecRuntime(factory: () => ExecSessionManager): ExecRuntim
 	shutdown(): Promise<void>;
 } {
 	let manager: ExecSessionManager | undefined;
+	let shutdownPromise: Promise<void> | undefined;
 	return {
 		start() {
 			manager ??= factory();
@@ -34,29 +42,60 @@ export function createExecRuntime(factory: () => ExecSessionManager): ExecRuntim
 			manager ??= factory();
 			return manager;
 		},
-		async shutdown() {
+		shutdown() {
+			if (shutdownPromise) return shutdownPromise;
 			const active = manager;
 			manager = undefined;
-			await active?.shutdown();
+			const completion = (active?.shutdown() ?? Promise.resolve()).finally(() => {
+				if (shutdownPromise === completion) shutdownPromise = undefined;
+			});
+			shutdownPromise = completion;
+			return completion;
 		},
 	};
 }
 
 export default function execCommandExtension(pi: ExtensionAPI): void {
 	let settings = { ...DEFAULT_EXEC_COMMAND_SETTINGS };
+	const resolveShell = createExecShellResolver({
+		platform: process.platform,
+		variables: process.env,
+		exists: existsSync,
+	});
+	const preparationRuntime = {
+		configuredShell(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): string | undefined {
+			return SettingsManager.create(ctx.cwd, getAgentDir(), {
+				projectTrusted: ctx.isProjectTrusted(),
+			}).getShellPath();
+		},
+		resolveShell,
+	};
 	const runtime = createExecRuntime(() =>
-		createExecSessionManager({
-			binaryPath: resolveExecCommandBinary,
-			defaultExecYieldTimeMs: settings.defaultExecYieldMs,
-			defaultMaxOutputTokens: settings.defaultOutputTokens,
-			defaultLoginShell: settings.defaultLoginShell,
-		}),
+		createExecSessionManager(
+			{
+				binaryPath: resolveExecCommandBinary,
+				defaultExecYieldTimeMs: settings.defaultExecYieldMs,
+				defaultMaxOutputTokens: settings.defaultOutputTokens,
+				defaultLoginShell: settings.defaultLoginShell,
+			},
+			{
+				now: Date.now,
+				processId: (sessionId) => `pi-${process.pid}-${sessionId}`,
+				resolveShell,
+				schedule: (delayMs, callback) => {
+					const timer = setTimeout(callback, delayMs);
+					return { dispose: () => clearTimeout(timer) };
+				},
+			},
+		),
 	);
 	let disposeCodeModeAdapters: (() => void) | undefined;
 	let processManager: ProcessHubManager | undefined;
 	let processStore: ProcessTerminalStore | undefined;
 	let processWidget: ProcessWidget | undefined;
 	let unregisterProcessHost: (() => void) | undefined;
+	let unregisterSidePanelProvider: (() => void) | undefined;
+	const processHubPresentation = new ProcessHubPresentation();
 	const releaseProcessAction = retainProcessHubAction();
 	const openProcesses = async (
 		ctx: ExtensionContext,
@@ -67,8 +106,9 @@ export default function execCommandExtension(pi: ExtensionAPI): void {
 			ctx.ui.notify("Process Hub is unavailable for this session.", "warning");
 			return;
 		}
-		await openProcessHub(
+		await processHubPresentation.open(
 			ctx,
+			settings.processHubPresentation,
 			sources ?? [
 				{
 					sessionId: ctx.sessionManager.getSessionId(),
@@ -81,10 +121,12 @@ export default function execCommandExtension(pi: ExtensionAPI): void {
 		);
 	};
 	const applySettings = (next: ExecCommandSettings): void => {
-		if (disposeCodeModeAdapters && sameSettings(settings, next)) return;
+		const unchanged = disposeCodeModeAdapters && sameSettings(settings, next);
 		settings = { ...next };
+		if (settings.processHubPresentation === "fullscreen") processHubPresentation.closeSidePanel();
 		processWidget?.setAnimation(processWidgetAnimation(settings));
-		const execCommand = createExecCommandTool(runtime, settings);
+		if (unchanged) return;
+		const execCommand = createExecCommandTool(runtime, preparationRuntime, settings);
 		const writeStdin = createWriteStdinTool(runtime, settings);
 		pi.registerTool(execCommand);
 		pi.registerTool(writeStdin);
@@ -117,8 +159,23 @@ export default function execCommandExtension(pi: ExtensionAPI): void {
 			manager: processManager,
 			open: openProcesses,
 		});
+		if (ctx.mode !== "tui" || !ctx.hasUI) return;
+		unregisterSidePanelProvider?.();
+		unregisterSidePanelProvider = registerSidePanelProvider(
+			{
+				id: "pi-exec-command.process-hub",
+				session: ctx,
+				attach(panel) {
+					return processHubPresentation.attach(panel);
+				},
+			},
+			globalThis,
+		);
 	});
 	pi.on("session_shutdown", async (event) => {
+		unregisterSidePanelProvider?.();
+		unregisterSidePanelProvider = undefined;
+		processHubPresentation.closeSidePanel();
 		unregisterProcessHost?.();
 		unregisterProcessHost = undefined;
 		processWidget?.dispose();
@@ -141,7 +198,8 @@ function sameSettings(left: ExecCommandSettings, right: ExecCommandSettings): bo
 		left.defaultExecYieldMs === right.defaultExecYieldMs &&
 		left.defaultLoginShell === right.defaultLoginShell &&
 		left.activityIndicator === right.activityIndicator &&
-		left.processWidgetIndicator === right.processWidgetIndicator
+		left.processWidgetIndicator === right.processWidgetIndicator &&
+		left.processHubPresentation === right.processHubPresentation
 	);
 }
 

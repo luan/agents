@@ -51,6 +51,20 @@ describe("tool behavior", () => {
 				type: "enum",
 				default: "inherit",
 			});
+			const presentation = ensureXSettingsRegistry().registrations["pi-exec-command"]?.definitions.find(
+				(candidate) => candidate.key === "processHubPresentation",
+			);
+			expect(DEFAULT_EXEC_COMMAND_SETTINGS.processHubPresentation).toBe("side-panel");
+			expect(presentation).toMatchObject({
+				category: "appearance",
+				page: "ui",
+				section: "Exec Command",
+				type: "enum",
+				default: "side-panel",
+			});
+			if (presentation?.type !== "enum" || !Array.isArray(presentation.options))
+				throw new Error("Process Hub presentation must be an enum");
+			expect(presentation.options.map((option) => option.value)).toEqual(["side-panel", "fullscreen"]);
 		} finally {
 			unregister();
 		}
@@ -263,6 +277,33 @@ test("runtime shutdown discards the manager before a new session starts", async 
 	expect(created).toBe(1);
 	await runtime.shutdown();
 	expect(stopped).toBe(1);
+	runtime.start();
+	expect(created).toBe(2);
+});
+
+test("runtime shutdown coalesces callers and can own the next session afterward", async () => {
+	let created = 0;
+	let finishShutdown = () => {};
+	const runtime = createExecRuntime(() => {
+		created += 1;
+		return {
+			exec: async () => result(),
+			write: async () => result(),
+			getSessionCommand: () => undefined,
+			shutdown: () =>
+				new Promise<void>((resolve) => {
+					finishShutdown = resolve;
+				}),
+		};
+	});
+	runtime.start();
+
+	const first = runtime.shutdown();
+	const second = runtime.shutdown();
+	expect(second).toBe(first);
+	finishShutdown();
+	await first;
+
 	runtime.start();
 	expect(created).toBe(2);
 });

@@ -54,9 +54,22 @@ const definitions = {
 			...TUI_ACTIVITY_INDICATOR_OPTIONS,
 		],
 	},
+	processHubPresentation: {
+		label: "Process Hub presentation",
+		description: "Choose where the Process Hub opens when a side-panel host is available.",
+		category: "appearance",
+		page: "ui",
+		section: "Exec Command",
+		type: "enum",
+		default: "side-panel",
+		options: [
+			{ value: "side-panel", label: "Side panel", description: "Open the Process Hub beside the main session." },
+			{ value: "fullscreen", label: "Fullscreen", description: "Open the Process Hub as a fullscreen overlay." },
+		],
+	},
 } as const satisfies Record<string, SettingDefinitionInput>;
 
-const settings = createSettings({ namespace: "pi-exec-command", label: "Exec Command", definitions });
+const settings = createSettings({ namespace: "pi-exec-command", label: "Exec Command", apply: "live", definitions });
 
 export type ExecCommandSettings = SettingsOf<typeof definitions>;
 export const DEFAULT_EXEC_COMMAND_SETTINGS: ExecCommandSettings = { ...settings.defaults };

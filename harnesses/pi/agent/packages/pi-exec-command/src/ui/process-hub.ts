@@ -10,7 +10,7 @@ import {
 
 type ProcessHubMode = "list" | "output" | "terminal";
 
-/** Full-screen process browser. Execution and process lifetime remain manager-owned. */
+/** Process browser. Execution and process lifetime remain manager-owned. */
 export class ProcessHub {
 	focused = true;
 	private mode: ProcessHubMode = "list";

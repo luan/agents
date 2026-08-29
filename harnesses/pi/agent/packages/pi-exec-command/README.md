@@ -161,6 +161,7 @@ pi-exec-command.defaultLoginShell = true
 [appearance]
 pi-exec-command.activityIndicator = "inherit"
 pi-exec-command.processWidgetIndicator = "inherit"
+pi-exec-command.processHubPresentation = "side-panel"
 ```
 
 Available output limits are `1000`, `2500`, `5000`, `10000`, `20000`, `50000`,
@@ -170,6 +171,9 @@ and `100000`. Available default exec waits are `1000`, `5000`, `10000`, and
 Without the xsettings host, the package uses those compiled defaults. Do not
 create a second settings file. Saving settings republishes the tool
 definitions; reload Pi when changing a default for an already-running bridge.
+The Process Hub defaults to a side-panel tab. Set `processHubPresentation` to
+`"fullscreen"` for the original overlay. If `pi-side-panel` is not installed,
+the side-panel choice falls back to that fullscreen overlay.
 
 Running command rows inherit the shared `pi-libtui.activityIndicator` by default.
 Set `pi-exec-command.activityIndicator = "off"` to remove only their indicator, or
@@ -194,7 +198,7 @@ default and updates live when changed.
 | Bridge process and wire protocol | `src/bridge-client.ts` and `crates/exec-command` |
 | Result/details model | `src/tools/result.ts` and `src/tools/presentation.ts` |
 | TUI rendering | `src/ui/presentation.ts`, `src/ui/command-transcript.ts`, and `src/ui/shell-command-action.ts` map exec semantics onto `pi-libtui`'s generic streaming activity |
-| Process Hub presentation | `src/ui/process-hub.ts` and `src/ui/process-store.ts` compose `pi-libtui` fullscreen, selection, scrollbar, and terminal primitives |
+| Process Hub presentation | `src/ui/process-hub.ts`, `src/ui/process-hub-presentation.ts`, and `src/ui/process-store.ts` compose `pi-libtui` side-panel, fullscreen, selection, scrollbar, and terminal primitives |
 | Process Hub action | `src/contributions/actions.ts` via `pi-libactions/sdk`; managed keybindings own shortcuts |
 | Code Mode adapter | `src/code-mode-adapters.ts` via `pi-code-mode/sdk` |
 | Public capabilities | `src/index.ts` exports only the versioned presentation-details contract |
