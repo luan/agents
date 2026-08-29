@@ -20,13 +20,13 @@
     "clangd-lsp@claude-plugins-official": true,
     "context7@claude-plugins-official": true,
     "gopls-lsp@claude-plugins-official": true,
+    "linear@claude-plugins-official": false,
+    "lua-lsp@claude-plugins-official": false,
+    "notion@claude-plugins-official": false,
     "pyright-lsp@claude-plugins-official": true,
     "rust-analyzer-lsp@claude-plugins-official": true,
-    "swift-lsp@claude-plugins-official": true,
     "skill-creator@claude-plugins-official": false,
-    "lua-lsp@claude-plugins-official": false,
-    "linear@claude-plugins-official": false,
-    "notion@claude-plugins-official": false
+    "swift-lsp@claude-plugins-official": true
   },
   "extraKnownMarketplaces": {
     "claude-plugins-official": {
@@ -36,8 +36,11 @@
       }
     }
   },
+  "feedbackDrafts": "notify",
   "askUserQuestionTimeout": "never",
   "dialogExpiry": "never",
   "tui": "fullscreen",
-  "skipDangerousModePermissionPrompt": true
+  "skipDangerousModePermissionPrompt": true,
+  "autoMemoryEnabled": false,
+  "autoDreamEnabled": false
 }
