@@ -223,6 +223,16 @@ export {
 } from "./overlay/framed-editor.ts";
 export { FullscreenOverlay, fullscreenOverlayOptions } from "./overlay/fullscreen.ts";
 export {
+	decorateDetailCard,
+	type DetailCardContent,
+	type HoverDetailCardMount,
+	type HoverDetailCardOptions,
+	type HoverDetailCardTarget,
+	mountHoverDetailCard,
+	overlayTotalWidth,
+	renderDetailCard,
+} from "./overlay/detail-card.ts";
+export {
 	type ModalOverlayComponent,
 	type ModalOverlayMouseEvent,
 	type ModalOverlayMountOptions,
