@@ -15,6 +15,8 @@ export interface VirtualCursorOptions {
 
 /** Semantic purpose used to resolve a configured cursor policy. */
 export type CursorRole = "insertion" | "navigation" | "selection";
+export type NativeCursorStyle = Exclude<TuiCursorStyle, "virtual">;
+export type CursorPresentation = { readonly role: CursorRole } | { readonly style: NativeCursorStyle };
 
 /** Options shared by semantic cursor rendering and cursor markers. */
 export interface SemanticCursorOptions {
@@ -35,6 +37,15 @@ const CURSOR_ROLE_MARKERS: Record<CursorRole, string> = {
 };
 
 const CURSOR_ROLE_PATTERN = /\x1b_pi-libtui:cursor:(insertion|navigation|selection)\x07/gu;
+const CURSOR_STYLE_PATTERN =
+	/\x1b_pi-libtui:cursor-style:(terminal-default|blinking-block|steady-block|blinking-underline|steady-underline|blinking-bar|steady-bar)\x07/gu;
+
+function firstMarkerMatch(pattern: RegExp, text: string): RegExpExecArray | null {
+	pattern.lastIndex = 0;
+	const match = pattern.exec(text);
+	pattern.lastIndex = 0;
+	return match;
+}
 
 /**
  * Resolves the configured cursor style for a semantic role.
@@ -59,6 +70,18 @@ export function isNativeCursorStyle(style: TuiCursorStyle): boolean {
 	return style !== "virtual";
 }
 
+function isProjectedNativeCursorStyle(style: string | undefined): style is NativeCursorStyle {
+	return (
+		style === "terminal-default" ||
+		style === "blinking-block" ||
+		style === "steady-block" ||
+		style === "blinking-underline" ||
+		style === "steady-underline" ||
+		style === "blinking-bar" ||
+		style === "steady-bar"
+	);
+}
+
 /**
  * Finds the semantic role paired with Pi's active cursor position in the visible viewport.
  *
@@ -67,25 +90,47 @@ export function isNativeCursorStyle(style: TuiCursorStyle): boolean {
  * @returns The active semantic role, or `undefined` when no valid paired marker exists.
  */
 export function findCursorRole(lines: readonly string[], height: number): CursorRole | undefined {
+	const presentation = findCursorPresentation(lines, height);
+	return presentation && "role" in presentation ? presentation.role : undefined;
+}
+
+/** Finds semantic or projected native cursor presentation in the visible viewport. */
+export function findCursorPresentation(lines: readonly string[], height: number): CursorPresentation | undefined {
 	const top = Math.max(0, lines.length - height);
 	for (let row = lines.length - 1; row >= top; row -= 1) {
 		const line = lines[row] ?? "";
 		const cursor = line.indexOf(CURSOR_MARKER);
-		const roleMatch =
-			cursor >= 0
-				? CURSOR_ROLE_PATTERN.exec(line.slice(cursor + CURSOR_MARKER.length))
-				: [...line.matchAll(CURSOR_ROLE_PATTERN)].at(-1);
-		const role = cursor >= 0 && roleMatch?.index !== 0 ? undefined : roleMatch?.[1];
-		CURSOR_ROLE_PATTERN.lastIndex = 0;
-		if (cursor >= 0 && (role === "insertion" || role === "navigation" || role === "selection")) return role;
+		const afterCursor = cursor >= 0 ? line.slice(cursor + CURSOR_MARKER.length) : "";
+		const roleMatch = cursor >= 0 ? firstMarkerMatch(CURSOR_ROLE_PATTERN, afterCursor) : undefined;
+		const styleMatch = cursor >= 0 ? firstMarkerMatch(CURSOR_STYLE_PATTERN, afterCursor) : undefined;
+		const role = roleMatch?.index === 0 ? roleMatch[1] : undefined;
+		const style = styleMatch?.index === 0 ? styleMatch[1] : undefined;
+		if (role === "insertion" || role === "navigation" || role === "selection") return { role };
+		if (isProjectedNativeCursorStyle(style)) return { style };
 		// Virtual navigation and selection cursors deliberately omit Pi's marker.
 		// Virtual insertion never does, so an unpaired insertion role is stale.
-		if (cursor < 0 && (role === "navigation" || role === "selection")) return role;
+		if (cursor < 0) {
+			const virtualRole = [...line.matchAll(CURSOR_ROLE_PATTERN)].at(-1)?.[1];
+			if (virtualRole === "navigation" || virtualRole === "selection") return { role: virtualRole };
+		}
 		// Pi selects the first cursor marker on the bottom-most marked line. A
 		// role elsewhere must not style that cursor.
 		if (cursor >= 0) return undefined;
 	}
 	return undefined;
+}
+
+/** Attaches an embedded terminal's concrete native cursor style to its projected cursor position. */
+export function markNativeCursorPosition(line: string, style: NativeCursorStyle): string {
+	const marker = line.indexOf(CURSOR_MARKER);
+	if (marker < 0) return line;
+	const after = marker + CURSOR_MARKER.length;
+	if (
+		firstMarkerMatch(CURSOR_ROLE_PATTERN, line.slice(after))?.index === 0 ||
+		firstMarkerMatch(CURSOR_STYLE_PATTERN, line.slice(after))?.index === 0
+	)
+		return line;
+	return `${line.slice(0, after)}\x1b_pi-libtui:cursor-style:${style}\x07${line.slice(after)}`;
 }
 
 /**
@@ -113,7 +158,7 @@ export function markSemanticCursorPosition(line: string, role: CursorRole): stri
  * @returns The line with semantic role metadata removed and other content preserved.
  */
 export function stripCursorRoleMarkers(line: string): string {
-	return line.replaceAll(CURSOR_ROLE_PATTERN, "");
+	return line.replaceAll(CURSOR_ROLE_PATTERN, "").replaceAll(CURSOR_STYLE_PATTERN, "");
 }
 
 /**

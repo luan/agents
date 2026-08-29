@@ -217,6 +217,26 @@
         "@earendil-works/pi-tui": "*",
       },
     },
+    "harnesses/pi/agent/packages/pi-side-chat": {
+      "name": "pi-side-chat",
+      "version": "0.1.0",
+      "dependencies": {
+        "pi-libactions": "workspace:*",
+        "pi-libtui": "workspace:*",
+      },
+      "devDependencies": {
+        "@earendil-works/pi-agent-core": "0.84.2",
+        "@earendil-works/pi-coding-agent": "0.84.2",
+        "@earendil-works/pi-tui": "0.84.2",
+        "@types/bun": "^1.3.0",
+        "typescript": "^6.0.3",
+      },
+      "peerDependencies": {
+        "@earendil-works/pi-agent-core": "0.84.2",
+        "@earendil-works/pi-coding-agent": "0.84.2",
+        "@earendil-works/pi-tui": "0.84.2",
+      },
+    },
     "harnesses/pi/agent/packages/pi-side-panel": {
       "name": "pi-side-panel",
       "version": "0.1.0",
@@ -681,6 +701,8 @@
     "pi-libtui": ["pi-libtui@workspace:harnesses/pi/agent/packages/pi-libtui"],
 
     "pi-model-roles": ["pi-model-roles@workspace:harnesses/pi/agent/packages/pi-model-roles"],
+
+    "pi-side-chat": ["pi-side-chat@workspace:harnesses/pi/agent/packages/pi-side-chat"],
 
     "pi-side-panel": ["pi-side-panel@workspace:harnesses/pi/agent/packages/pi-side-panel"],
 

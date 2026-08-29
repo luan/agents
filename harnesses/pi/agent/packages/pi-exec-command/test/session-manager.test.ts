@@ -41,6 +41,62 @@ test("session output preserves UTF-8 characters split across bridge chunks", asy
 	await manager.shutdown();
 });
 
+test("drains a closed native backlog before completing the session", async () => {
+	let reads = 0;
+	const bridge: ExecBridgeClient = {
+		async request<T>(request: Record<string, unknown>): Promise<T> {
+			if (request["op"] === "exec") return { processId: "test" } as T;
+			if (request["op"] === "reap") return { removed: true } as T;
+			reads += 1;
+			return {
+				chunks: [
+					{
+						seq: reads,
+						stream: "stdout",
+						chunk: Buffer.from(reads === 1 ? "before-" : "tail").toString("base64"),
+					},
+				],
+				nextSeq: reads + 1,
+				more: reads === 1,
+				exited: true,
+				exitCode: 0,
+				closed: true,
+			} as T;
+		},
+		async shutdown() {},
+	};
+	const manager = createManager({ bridge });
+
+	const result = await manager.exec({ cmd: "backlog", shell: "/bin/sh", login: false }, "/tmp");
+
+	expect(result.output).toBe("before-tail");
+	expect(reads).toBe(2);
+	await manager.shutdown();
+});
+
+test("fails a session instead of accepting output after a sequence gap", async () => {
+	const bridge: ExecBridgeClient = {
+		async request<T>(request: Record<string, unknown>): Promise<T> {
+			if (request["op"] === "exec") return { processId: "test" } as T;
+			return {
+				chunks: [{ seq: 2, stream: "stdout", chunk: Buffer.from("missing-prefix").toString("base64") }],
+				nextSeq: 3,
+				exited: false,
+				closed: false,
+			} as T;
+		},
+		async shutdown() {},
+	};
+	const manager = createManager({ bridge });
+
+	const result = await manager.exec({ cmd: "gap", shell: "/bin/sh", login: false }, "/tmp");
+
+	expect(result.exit_code).toBe(1);
+	expect(result.output).toContain("invalid read result");
+	expect(result.output).not.toContain("missing-prefix");
+	await manager.shutdown();
+});
+
 test("a throwing progress observer cannot own session cleanup", async () => {
 	let shutdown = false;
 	let reads = 0;

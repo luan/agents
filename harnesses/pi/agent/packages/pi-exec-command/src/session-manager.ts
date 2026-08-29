@@ -1,6 +1,12 @@
+import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import { type BridgeReadResponse, createExecBridgeClient, type ExecBridgeClient } from "./bridge-client.ts";
+import {
+	type BridgeReadResponse,
+	createExecBridgeClient,
+	type ExecBridgeClient,
+	parseExecBridgeReadResponse,
+} from "./bridge-client.ts";
 import {
 	appendBounded,
 	chunkId,
@@ -144,6 +150,7 @@ const MAX_ACTIVE_SESSIONS = 64;
 const MAX_PROCESS_SNAPSHOT_OUTPUT_CHARS = 512 * 1024;
 const MAX_PROCESS_COLS = 500;
 const MAX_PROCESS_ROWS = 200;
+const BRIDGE_READ_IDLE_TIMEOUT_MS = 30_000;
 
 function clamp(value: number | undefined, fallback: number, maximum: number): number {
 	const minimum = Math.min(MIN_YIELD_MS, maximum);
@@ -212,16 +219,16 @@ function publishUpdate(onUpdate: ((result: UnifiedExecResult) => void) | undefin
 export function createExecSessionManager(options: ExecSessionManagerOptions = {}): ExecSessionManager {
 	const bridge =
 		options.bridge ??
-		createExecBridgeClient(
-			options.binaryPath ??
+		createExecBridgeClient({
+			binaryPath:
+				options.binaryPath ??
 				(() => {
 					throw new Error("exec_command bridge path was not configured");
 				}),
-		);
-	const env = { ...(options.env ?? process.env) };
+			spawnBridge: (binaryPath) => spawn(binaryPath, [], { stdio: "pipe", env }),
+		});
 	const maxSessionBufferChars = Math.max(1024, options.maxSessionBufferChars ?? DEFAULT_SESSION_BUFFER_CHARS);
 	const maxExecYieldTimeMs = Math.min(MAX_EXEC_YIELD_MS, Math.max(1, options.maxExecYieldTimeMs ?? MAX_EXEC_YIELD_MS));
-	const pollWaitMs = Math.min(250, maxExecYieldTimeMs);
 	const minEmptyWriteYieldTimeMs = Math.max(
 		MIN_YIELD_MS,
 		options.minEmptyWriteYieldTimeMs ?? DEFAULT_EMPTY_WRITE_YIELD_MS,
@@ -243,6 +250,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 	const ptyListeners = new Set<(event: PtyDataEvent) => void>();
 	let nextSessionId = 1;
 	let stopped = false;
+	let shutdownPromise: Promise<void> | undefined;
 
 	function activeSnapshot(session: Session): ExecProcessSnapshot {
 		const output = outputTail(session, MAX_PROCESS_SNAPSHOT_OUTPUT_CHARS);
@@ -263,16 +271,14 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 	}
 
 	function listProcesses(): readonly ExecProcessSnapshot[] {
-		return Object.freeze(
-			[...[...completed.values()].map(({ snapshot }) => snapshot), ...[...sessions.values()].map(activeSnapshot)].sort(
-				(left, right) => left.id - right.id,
-			),
-		);
+		const snapshots = Array.from(completed.values(), ({ snapshot }) => snapshot);
+		for (const session of sessions.values()) snapshots.push(activeSnapshot(session));
+		return Object.freeze(snapshots.sort((left, right) => left.id - right.id));
 	}
 
 	function emitProcesses(): void {
 		const snapshots = listProcesses();
-		for (const listener of [...processListeners]) {
+		for (const listener of processListeners) {
 			try {
 				listener(snapshots);
 			} catch {
@@ -282,7 +288,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 	}
 
 	function emitPtyData(event: PtyDataEvent): void {
-		for (const listener of [...ptyListeners]) {
+		for (const listener of ptyListeners) {
 			try {
 				listener(event);
 			} catch {
@@ -342,12 +348,17 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		while (!stopped && !session.closed) {
 			let response: BridgeReadResponse;
 			try {
-				response = await bridge.request<BridgeReadResponse>({
+				const result = await bridge.request<unknown>({
 					op: "read",
 					process_id: session.processId,
 					after_seq: session.lastSeq,
-					wait_ms: pollWaitMs,
+					// Native output and lifecycle changes wake this read immediately. The
+					// timeout only recovers a lost wake without steady idle bridge traffic.
+					wait_ms: BRIDGE_READ_IDLE_TIMEOUT_MS,
 				});
+				const parsed = parseExecBridgeReadResponse(result, session.lastSeq + 1);
+				if (!parsed) throw new Error("exec_command_bridge emitted an invalid read result");
+				response = parsed;
 			} catch (error) {
 				appendBounded(session, `${error instanceof Error ? error.message : String(error)}\n`, maxSessionBufferChars);
 				session.exitCode = 1;
@@ -358,21 +369,20 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 				return;
 			}
 			for (const chunk of response.chunks) {
-				const text = session.decoders[chunk.stream].write(Buffer.from(chunk.chunk, "base64"));
+				const text = session.decoders[chunk.stream].write(chunk.bytes);
 				appendBounded(
 					session,
 					session.tty ? text : session.normalizers[chunk.stream].write(text),
 					maxSessionBufferChars,
 				);
 				if (session.tty && text) emitPtyData(Object.freeze({ processId: session.id, data: text }));
-				session.lastSeq = Math.max(session.lastSeq, chunk.seq);
 			}
-			session.lastSeq = Math.max(session.lastSeq, response.nextSeq - 1);
+			session.lastSeq = response.nextSeq - 1;
 			if (response.exited) {
 				session.observedExitCode = response.exitCode ?? 1;
 				session.finishedAtMs ??= Date.now();
 			}
-			if (response.closed) {
+			if (response.closed && response.more !== true) {
 				session.closed = true;
 				session.exitCode = response.exitCode ?? session.observedExitCode ?? 1;
 				if (!session.decodersFlushed) {
@@ -400,7 +410,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			}
 			if (response.chunks.length > 0 || response.exited || response.closed) {
 				wake(session);
-				emitProcesses();
+				if (!session.tty || response.exited || response.closed) emitProcesses();
 			}
 		}
 	}
@@ -562,7 +572,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 					bridge.request<{ status: string }>({
 						op: "write",
 						process_id: session.processId,
-						chunk: Array.from(Buffer.from(chars, "utf8")),
+						chunk: chars,
 					}),
 					signal,
 					"write_stdin",
@@ -661,26 +671,29 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			const response = await bridge.request<{ status: string }>({
 				op: "write",
 				process_id: session.processId,
-				chunk: Array.from(Buffer.from(chars, "utf8")),
+				chunk: chars,
 			});
 			if (response.status === "accepted") return true;
 			if (response.status === "unknown_process" || response.status === "stdin_closed") return false;
 			throw new Error(`stdin write was ${response.status}`);
 		},
-		async shutdown() {
-			if (stopped) return;
+		shutdown() {
+			if (shutdownPromise) return shutdownPromise;
 			stopped = true;
 			for (const session of sessions.values()) wake(session);
-			try {
-				await bridge.shutdown();
-			} finally {
-				sessions.clear();
-				commands.clear();
-				completed.clear();
-				emitProcesses();
-				processListeners.clear();
-				ptyListeners.clear();
-			}
+			shutdownPromise = (async () => {
+				try {
+					await bridge.shutdown();
+				} finally {
+					sessions.clear();
+					commands.clear();
+					completed.clear();
+					emitProcesses();
+					processListeners.clear();
+					ptyListeners.clear();
+				}
+			})();
+			return shutdownPromise;
 		},
 	};
 }

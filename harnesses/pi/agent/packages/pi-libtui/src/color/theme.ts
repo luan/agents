@@ -83,6 +83,16 @@ export interface TuiTheme {
 	strongestForegroundContrast(base: TuiForegroundPaint, candidates: readonly TuiForegroundPaint[]): TuiColor;
 }
 
+/** Complete Pi theme document derived from a host theme with shifted surfaces for an adjacent TUI. */
+export interface TuiThemeVariation {
+	readonly $schema: string;
+	readonly name: string;
+	readonly colors: Readonly<Record<string, string>>;
+}
+
+/** Light/dark appearance derived from the surface behind the active Pi theme. */
+export type TuiThemeAppearance = "dark" | "light";
+
 type SemanticToken = TuiForegroundToken | TuiBackgroundToken;
 type PiThemeBackground = Parameters<Theme["bg"]>[0];
 type ColorRef = SemanticToken | ColorValue;
@@ -109,6 +119,102 @@ const themeCache = new WeakMap<Theme, CachedTheme>();
 
 export function tuiTheme(theme: Theme): TuiTheme {
 	return ensureCachedTheme(theme).facade;
+}
+
+/** Resolve the active Pi surface appearance for adjacent applications that cannot query the outer terminal. */
+export function tuiThemeAppearance(theme: Theme): TuiThemeAppearance {
+	const background =
+		terminalColorsRegistry().current()?.defaultBackground ??
+		hostBackgroundColor(theme, "toolPendingBg") ??
+		rgb(24, 24, 24);
+	return yiqLuminance(background) > 127 ? "light" : "dark";
+}
+
+const VARIATION_FOREGROUND_TOKENS = [
+	"accent",
+	"border",
+	"borderAccent",
+	"borderMuted",
+	"success",
+	"error",
+	"warning",
+	"muted",
+	"dim",
+	"text",
+	"thinkingText",
+	"searchMatchText",
+	"userMessageText",
+	"customMessageText",
+	"customMessageLabel",
+	"toolTitle",
+	"toolOutput",
+	"mdHeading",
+	"mdLink",
+	"mdLinkUrl",
+	"mdCode",
+	"mdCodeBlock",
+	"mdCodeBlockBorder",
+	"mdQuote",
+	"mdQuoteBorder",
+	"mdHr",
+	"mdListBullet",
+	"toolDiffAdded",
+	"toolDiffRemoved",
+	"toolDiffContext",
+	"syntaxComment",
+	"syntaxKeyword",
+	"syntaxFunction",
+	"syntaxVariable",
+	"syntaxString",
+	"syntaxNumber",
+	"syntaxType",
+	"syntaxOperator",
+	"syntaxPunctuation",
+	"thinkingOff",
+	"thinkingMinimal",
+	"thinkingLow",
+	"thinkingMedium",
+	"thinkingHigh",
+	"thinkingXhigh",
+	"thinkingMax",
+	"bashMode",
+] as const satisfies readonly ThemeColor[];
+
+const VARIATION_BACKGROUND_TOKENS = [
+	"selectedBg",
+	"scrollbarThumb",
+	"searchMatchBg",
+	"userMessageBg",
+	"customMessageBg",
+	"toolPendingBg",
+	"toolSuccessBg",
+	"toolErrorBg",
+] as const satisfies readonly PiThemeBackground[];
+
+/** Derive a complete non-persisted Pi theme that remains related to, but distinct from, its host. */
+export function createTuiThemeVariation(theme: Theme, name: string): TuiThemeVariation {
+	const colors: Record<string, string> = {};
+	for (const token of VARIATION_FOREGROUND_TOKENS) colors[token] = cssColor(hostForegroundColor(theme, token));
+	for (const token of VARIATION_BACKGROUND_TOKENS) colors[token] = cssColor(hostBackgroundColor(theme, token));
+
+	const selected = colors.selectedBg ?? "";
+	const inset = colors.toolPendingBg ?? selected;
+	colors.selectedBg = inset;
+	colors.scrollbarThumb = inset;
+	colors.searchMatchBg = inset;
+	colors.userMessageBg = inset;
+	colors.toolPendingBg = selected;
+	colors.accent = colors.mdHeading || colors.accent || "";
+	colors.borderAccent = colors.accent;
+	colors.customMessageLabel = colors.accent;
+	colors.toolTitle = colors.accent;
+
+	return {
+		$schema:
+			"https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json",
+		name,
+		colors,
+	};
 }
 
 function ensureCachedTheme(theme: Theme): CachedTheme {
@@ -369,6 +475,15 @@ function parseAnsiColor(ansi: string, kind: "foreground" | "background"): RgbCol
 	const code = Number(basic[1]);
 	const index = code >= 100 ? code - 92 : code >= 90 ? code - 82 : code >= 40 ? code - 40 : code - 30;
 	return xtermColor(index);
+}
+
+function cssColor(color: RgbColor | undefined): string {
+	if (!color) return "";
+	const channel = (value: number) =>
+		Math.max(0, Math.min(255, Math.round(value)))
+			.toString(16)
+			.padStart(2, "0");
+	return `#${channel(color.r)}${channel(color.g)}${channel(color.b)}`;
 }
 
 function themeFingerprint(theme: Theme): string {

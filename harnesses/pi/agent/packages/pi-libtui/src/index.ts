@@ -37,6 +37,7 @@ export {
 	type ActivityPresentationOptions,
 } from "./activity-presentation.ts";
 export {
+	createTuiThemeVariation,
 	type TuiBackgroundPaint,
 	type TuiBackgroundToken,
 	type TuiColor,
@@ -289,3 +290,15 @@ export {
 	whenSyntaxReady,
 } from "./syntax.ts";
 export { stripTopLevelZoneMarkers } from "./terminal/embedding.ts";
+export {
+	type TerminalBridgeBinaryOptions,
+	resolveTerminalBridgeBinary,
+} from "./terminal/bridge-binary.ts";
+export {
+	createTerminalBridgeClient,
+	parseTerminalBridgeReadResponse,
+	type TerminalBridgeClient,
+	type TerminalBridgeClientDependencies,
+	type TerminalBridgeReadResponse,
+} from "./terminal/bridge-client.ts";
+export { PtyPane, type PtyPaneOptions, PtyProcess, type PtyProcessOptions } from "./terminal/pty-pane.ts";

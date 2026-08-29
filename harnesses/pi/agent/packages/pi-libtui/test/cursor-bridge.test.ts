@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { CURSOR_MARKER, type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import { configureTuiAppearance, DEFAULT_TUI_APPEARANCE } from "../src/appearance.ts";
-import { renderSemanticCursor } from "../src/cursor.ts";
+import { markNativeCursorPosition, renderSemanticCursor } from "../src/cursor.ts";
 import { installCursorBridge } from "../src/host/cursor-bridge.ts";
 
 // type-boundary: The cursor bridge fixture implements only the TUI surface used by the compatibility patch.
@@ -65,6 +65,18 @@ describe("semantic hardware cursor bridge", () => {
 		dispose();
 		expect(fixture.visible).toBe(false);
 		expect(fixture.writes.at(-1)).toBe("\x1b[0 q");
+	});
+
+	test("applies an embedded terminal's projected native cursor shape", () => {
+		const fixture = new CursorTuiFixture();
+		const dispose = installCursorBridge(fixture as TuiBoundary as TUI);
+		const lines = [markNativeCursorPosition(`copy ${CURSOR_MARKER}x`, "blinking-block")];
+
+		expect(fixture.extractCursorPosition(lines, 1)).toEqual({ row: 0, col: 5 });
+		expect(fixture.visible).toBe(true);
+		expect(fixture.writes).toEqual(["\x1b[1 q"]);
+		expect(lines[0]).toBe("copy x");
+		dispose();
 	});
 
 	test("restores a live hardware-cursor preference after a native role", () => {

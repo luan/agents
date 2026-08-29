@@ -4,8 +4,10 @@ import { subscribeTuiAppearance } from "../appearance.ts";
 import { renderEditorPasteMarkerPills } from "../decoration/editor-pills.ts";
 import { ensureEditorRegistry } from "../editor.ts";
 import { ensureMouseRegistry } from "../mouse.ts";
+import { sharedMotionScheduler } from "../motion.ts";
 import { ensureSplitPaneRegistry } from "../split-pane.ts";
 import { measureTerminalColors, terminalColorsRegistry } from "../terminal-colors.ts";
+import { shutdownPtyHost } from "../terminal/pty-host.ts";
 import { installCursorBridge } from "./cursor-bridge.ts";
 import { installEditorBridge } from "./editor-bridge.ts";
 import { installMouseBridge } from "./mouse-bridge.ts";
@@ -22,6 +24,7 @@ class LibtuiHostWidget implements Component {
 	private removeSplitPaneBridge: () => void;
 	private readonly removeAppearanceSubscription: () => void;
 	private readonly removeColorSubscription: () => void;
+	private readonly removeFocusSubscription: () => void;
 	private terminalColorsReady = false;
 	private fallbackTheme: Theme | undefined;
 	private disposed = false;
@@ -41,6 +44,11 @@ class LibtuiHostWidget implements Component {
 		);
 		this.removeAppearanceSubscription = subscribeTuiAppearance(() => tui.requestRender());
 		this.removeColorSubscription = terminalColorsRegistry().subscribe(() => tui.requestRender());
+		this.removeFocusSubscription = tui.addInputListener((data) => {
+			const focused = data === "\x1b[I" ? true : data === "\x1b[O" ? false : undefined;
+			if (focused !== undefined) sharedMotionScheduler.setPaused(!focused);
+			return undefined;
+		});
 		void this.loadTerminalColors();
 	}
 
@@ -80,6 +88,8 @@ class LibtuiHostWidget implements Component {
 		this.removeSplitPaneBridge();
 		this.removeAppearanceSubscription();
 		this.removeColorSubscription();
+		this.removeFocusSubscription();
+		sharedMotionScheduler.setPaused(false);
 	}
 
 	private async loadTerminalColors(): Promise<void> {
@@ -107,7 +117,7 @@ class LibtuiHostWidget implements Component {
 interface HostRegistration {
 	readonly protocol: typeof HOST_PROTOCOL;
 	start(ctx: ExtensionContext): void;
-	shutdown(ctx: ExtensionContext): void;
+	shutdown(ctx: ExtensionContext, preservePtys: boolean): Promise<void>;
 }
 
 interface HostCapability {
@@ -188,16 +198,17 @@ function createHostRegistration(): HostRegistration {
 			// A zero-height widget obtains Pi's stable TUI reference without changing the existing spacer row.
 			ctx.ui.setWidget(WIDGET_KEY, (tui) => new LibtuiHostWidget(tui, ctx.ui));
 		},
-		shutdown(ctx) {
-			if (ctx.mode !== "tui") return;
+		async shutdown(ctx, preservePtys) {
+			if (ctx.mode !== "tui" || !ctx.hasUI || activeSession?.sessionManager !== ctx.sessionManager) return;
 			clearSession();
+			if (!preservePtys) await shutdownPtyHost();
 		},
 	};
 }
 
 export interface LibtuiExtensionHost {
 	start(ctx: ExtensionContext): void;
-	shutdown(ctx: ExtensionContext): void;
+	shutdown(ctx: ExtensionContext, preservePtys: boolean): Promise<void>;
 	release(): void;
 }
 
@@ -211,7 +222,7 @@ export function claimLibtuiExtensionHost(pi: ExtensionAPI): LibtuiExtensionHost 
 	capability.set(key, registration);
 	return {
 		start: (ctx) => registration.start(ctx),
-		shutdown: (ctx) => registration.shutdown(ctx),
+		shutdown: (ctx, preservePtys) => registration.shutdown(ctx, preservePtys),
 		release() {
 			if (capability.get(key) === registration) capability.delete(key);
 		},

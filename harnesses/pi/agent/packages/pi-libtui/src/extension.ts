@@ -23,8 +23,8 @@ export default function libtuiExtension(pi: ExtensionAPI): void {
 		},
 	});
 	pi.on("session_start", (_event, ctx) => host.start(ctx));
-	pi.on("session_shutdown", (_event, ctx) => {
-		host.shutdown(ctx);
-		host.release();
+	pi.on("session_shutdown", async (event, ctx) => {
+		await host.shutdown(ctx, event.reason === "reload");
+		if (event.reason === "reload" || event.reason === "quit") host.release();
 	});
 }

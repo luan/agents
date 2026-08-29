@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { CURSOR_MARKER, stripTerminalSequences } from "@earendil-works/pi-tui";
 import { TerminalOutput } from "../src/terminal/output.ts";
 import { type ProjectionScheduler, type ProjectionTimer, TerminalProjection } from "../src/terminal/projection.ts";
+import { findCursorPresentation } from "../src/cursor.ts";
 
 interface ScheduledTask {
 	at: number;
@@ -119,8 +120,8 @@ test("TerminalOutput delegates burst repaint throttling to its projection", asyn
 	}
 	await output.drain();
 
-	// Parsing does not bypass TerminalProjection's scheduled repaint path.
-	expect(renders).toBe(0);
+	// The burst reaches the host in one microtask-coalesced repaint.
+	expect(renders).toBe(1);
 	expect(output.render(40).join("\n")).toContain("x".repeat(40));
 	output.dispose();
 });
@@ -160,6 +161,29 @@ describe("TerminalProjection", () => {
 
 		await write(projection, "\x1b[2;3HX");
 		expect(projection.renderLines()[1]).toBe(`  X${CURSOR_MARKER}`);
+		projection.dispose();
+	});
+
+	test("tracks whether the projected application requested terminal focus events", async () => {
+		const projection = new TerminalProjection({ requestRender() {} });
+		expect(projection.acceptsFocusEvents).toBe(false);
+		await write(projection, "\x1b[?1004h");
+		expect(projection.acceptsFocusEvents).toBe(true);
+		await write(projection, "\x1b[?1004l");
+		expect(projection.acceptsFocusEvents).toBe(false);
+		projection.dispose();
+	});
+
+	test("projects the embedded application's cursor visibility and native shape", async () => {
+		const projection = new TerminalProjection({ requestRender() {}, cols: 8, rows: 2 });
+		await write(projection, "copy\x1b[1 q");
+		expect(findCursorPresentation(projection.renderLines(), 2)).toEqual({ style: "blinking-block" });
+
+		await write(projection, "\x1b[?25l");
+		expect(projection.renderLines().join("\n")).not.toContain(CURSOR_MARKER);
+
+		await write(projection, "\x1b[5 q\x1b[?25h");
+		expect(findCursorPresentation(projection.renderLines(), 2)).toEqual({ style: "blinking-bar" });
 		projection.dispose();
 	});
 
@@ -229,6 +253,29 @@ describe("TerminalProjection", () => {
 		expect(renders).toBe(1);
 		scheduler.advance(1);
 		expect(renders).toBe(2);
+		projection.dispose();
+	});
+
+	test("publishes synchronized output as one complete frame", async () => {
+		const scheduler = new FakeScheduler();
+		let renders = 0;
+		const projection = new TerminalProjection({
+			requestRender: () => (renders += 1),
+			cols: 20,
+			rows: 2,
+			repaintIntervalMs: 0,
+			scheduler,
+		});
+
+		await write(projection, "\x1b[?2026h");
+		await write(projection, "complete frame");
+		scheduler.advance();
+		expect(renders).toBe(0);
+
+		await write(projection, "\x1b[?2026l");
+		scheduler.advance();
+		expect(renders).toBe(1);
+		expect(projection.renderLines({ cursor: false })[0]).toContain("complete frame");
 		projection.dispose();
 	});
 

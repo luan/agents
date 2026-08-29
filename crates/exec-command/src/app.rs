@@ -14,7 +14,11 @@ use pty_process::Size as PtySize;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+// Backpressure one slow reader without dropping its output. Raise this only when a measured
+// consumer benefits from a larger per-process burst budget.
 const RETAINED_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
+// Bounds native process and reader-thread ownership. Raise this only with a measured concurrent
+// workload and an explicit file-descriptor/thread budget.
 const MAX_ACTIVE_PROCESSES: usize = 64;
 
 #[derive(Debug, Deserialize)]
@@ -29,6 +33,8 @@ enum Request {
         tty: bool,
         pipe_stdin: bool,
         arg0: Option<String>,
+        rows: Option<u16>,
+        cols: Option<u16>,
     },
     Read {
         request_id: u64,
@@ -40,7 +46,7 @@ enum Request {
     Write {
         request_id: u64,
         process_id: String,
-        chunk: Vec<u8>,
+        chunk: String,
     },
     Interrupt {
         request_id: u64,
@@ -88,7 +94,7 @@ struct Response {
     error: Option<String>,
 }
 
-#[derive(Clone, Copy, Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum OutputStream {
     Stdout,
@@ -110,6 +116,7 @@ struct ProcessState {
     exit_code: Option<i32>,
     open_streams: usize,
     closed: bool,
+    accepting_output: bool,
 }
 
 struct ProcessKiller {
@@ -157,10 +164,18 @@ impl Server {
         max_bytes: Option<usize>,
         wait_ms: Option<u64>,
     ) -> Result<serde_json::Value> {
-        let entry = self
-            .processes
-            .get(process_id)
-            .with_context(|| format!("unknown process id {process_id}"))?;
+        let entry = self.processes.get(process_id).cloned();
+        Self::read_entry(entry, process_id, after_seq, max_bytes, wait_ms)
+    }
+
+    fn read_entry(
+        entry: Option<Arc<ProcessEntry>>,
+        process_id: &str,
+        after_seq: Option<u64>,
+        max_bytes: Option<usize>,
+        wait_ms: Option<u64>,
+    ) -> Result<serde_json::Value> {
+        let entry = entry.with_context(|| format!("unknown process id {process_id}"))?;
         let after_seq = after_seq.unwrap_or(0);
         let max_bytes = max_bytes.unwrap_or(usize::MAX);
         let deadline = Instant::now() + Duration::from_millis(wait_ms.unwrap_or(0));
@@ -168,10 +183,14 @@ impl Server {
         let mut state = lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        acknowledge_output(&mut state, after_seq);
+        wake.notify_all();
         loop {
-            let has_output = state.chunks.iter().any(|chunk| chunk.seq > after_seq);
-            if has_output || state.closed || state.exit_code.is_some() || Instant::now() >= deadline
-            {
+            let has_output = state
+                .chunks
+                .back()
+                .is_some_and(|chunk| chunk.seq > after_seq);
+            if has_output || state.closed || Instant::now() >= deadline {
                 break;
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -185,7 +204,7 @@ impl Server {
         }
 
         let mut bytes = 0;
-        let mut chunks = Vec::new();
+        let mut chunks: Vec<(u64, u64, OutputStream, Vec<u8>)> = Vec::new();
         let mut next_seq = state.next_seq.max(1);
         for chunk in state.chunks.iter().filter(|chunk| chunk.seq > after_seq) {
             if !chunks.is_empty() && bytes + chunk.bytes.len() > max_bytes {
@@ -193,18 +212,40 @@ impl Server {
             }
             bytes += chunk.bytes.len();
             next_seq = chunk.seq + 1;
-            chunks.push(json!({
-                "seq": chunk.seq,
-                "stream": chunk.stream,
-                "chunk": BASE64_STANDARD.encode(&chunk.bytes),
-            }));
+            if let Some((_, last_seq, stream, grouped)) = chunks.last_mut() {
+                if *stream == chunk.stream {
+                    *last_seq = chunk.seq;
+                    grouped.extend_from_slice(&chunk.bytes);
+                    if bytes >= max_bytes {
+                        break;
+                    }
+                    continue;
+                }
+            }
+            chunks.push((chunk.seq, chunk.seq, chunk.stream, chunk.bytes.clone()));
             if bytes >= max_bytes {
                 break;
             }
         }
+        let chunks: Vec<_> = chunks
+            .into_iter()
+            .map(|(start_seq, seq, stream, bytes)| {
+                json!({
+                    "startSeq": start_seq,
+                    "seq": seq,
+                    "stream": stream,
+                    "chunk": BASE64_STANDARD.encode(bytes),
+                })
+            })
+            .collect();
+        let more = state
+            .chunks
+            .back()
+            .is_some_and(|chunk| chunk.seq >= next_seq);
         Ok(json!({
             "chunks": chunks,
             "nextSeq": next_seq,
+            "more": more,
             "exited": state.exit_code.is_some(),
             "exitCode": state.exit_code,
             "closed": state.closed,
@@ -297,13 +338,14 @@ impl Server {
 
     pub fn shutdown(&mut self) {
         for entry in self.processes.values() {
-            let running = entry
-                .state
-                .0
+            let (lock, wake) = &*entry.state;
+            let mut state = lock
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .exit_code
-                .is_none();
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let running = state.exit_code.is_none();
+            state.accepting_output = false;
+            wake.notify_all();
+            drop(state);
             if running {
                 let _ = kill_process(entry);
             }
@@ -320,6 +362,8 @@ pub struct ExecParams {
     pub tty: bool,
     pub pipe_stdin: bool,
     pub arg0: Option<String>,
+    pub rows: Option<u16>,
+    pub cols: Option<u16>,
 }
 
 fn fresh_state(open_streams: usize) -> Arc<(Mutex<ProcessState>, Condvar)> {
@@ -327,6 +371,7 @@ fn fresh_state(open_streams: usize) -> Arc<(Mutex<ProcessState>, Condvar)> {
         Mutex::new(ProcessState {
             next_seq: 1,
             open_streams,
+            accepting_output: true,
             ..ProcessState::default()
         }),
         Condvar::new(),
@@ -378,7 +423,12 @@ fn spawn_pipe(params: &ExecParams) -> Result<Arc<ProcessEntry>> {
 
 fn spawn_pty(params: &ExecParams) -> Result<Arc<ProcessEntry>> {
     let (pty, pts) = open_pty()?;
-    pty.resize(PtySize::new(24, 80))?;
+    let rows = params.rows.unwrap_or(24);
+    let cols = params.cols.unwrap_or(80);
+    if rows == 0 || cols == 0 {
+        anyhow::bail!("PTY size must be non-zero");
+    }
+    pty.resize(PtySize::new(rows, cols))?;
     let program = params.arg0.as_ref().unwrap_or(&params.argv[0]);
     let command = PtyCommand::new(program)
         .args(&params.argv[1..])
@@ -439,17 +489,35 @@ fn append_output(
     let mut state = lock
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    while state.accepting_output
+        && state.retained_bytes > 0
+        && state.retained_bytes + bytes.len() > RETAINED_OUTPUT_BYTES
+    {
+        state = wake
+            .wait(state)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    }
+    if !state.accepting_output {
+        return;
+    }
     let seq = state.next_seq;
     state.next_seq += 1;
     state.retained_bytes += bytes.len();
     state.chunks.push_back(OutputChunk { seq, stream, bytes });
-    while state.retained_bytes > RETAINED_OUTPUT_BYTES {
+    wake.notify_all();
+}
+
+fn acknowledge_output(state: &mut ProcessState, after_seq: u64) {
+    while state
+        .chunks
+        .front()
+        .is_some_and(|chunk| chunk.seq <= after_seq)
+    {
         let Some(removed) = state.chunks.pop_front() else {
             break;
         };
         state.retained_bytes = state.retained_bytes.saturating_sub(removed.bytes.len());
     }
-    wake.notify_all();
 }
 
 fn close_stream(state: &Arc<(Mutex<ProcessState>, Condvar)>) {
@@ -563,6 +631,8 @@ pub fn run_main() -> Result<()> {
                 tty,
                 pipe_stdin,
                 arg0,
+                rows,
+                cols,
                 ..
             } => server.exec(&ExecParams {
                 process_id,
@@ -572,6 +642,8 @@ pub fn run_main() -> Result<()> {
                 tty,
                 pipe_stdin,
                 arg0,
+                rows,
+                cols,
             }),
             Request::Read {
                 process_id,
@@ -579,16 +651,19 @@ pub fn run_main() -> Result<()> {
                 max_bytes,
                 wait_ms,
                 ..
-            } => server.read(&process_id, after_seq, max_bytes, wait_ms),
-            Request::Write {
-                process_id, chunk, ..
             } => {
                 let entry = server.processes.get(&process_id).cloned();
                 std::thread::spawn(move || {
-                    respond(request_id, Server::write_entry(entry, &chunk));
+                    respond(
+                        request_id,
+                        Server::read_entry(entry, &process_id, after_seq, max_bytes, wait_ms),
+                    );
                 });
                 continue;
             }
+            Request::Write {
+                process_id, chunk, ..
+            } => server.write(&process_id, chunk.as_bytes()),
             Request::Interrupt { process_id, .. } => server.interrupt(&process_id),
             Request::Terminate { process_id, .. } => server.terminate(&process_id),
             Request::Resize {

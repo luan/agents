@@ -1,6 +1,6 @@
 import { type TUI, TuiAltScreen, TuiMainScreen } from "@earendil-works/pi-tui";
 import type { TuiCursorStyle } from "../appearance.ts";
-import { cursorStyle, findCursorRole, isNativeCursorStyle, stripCursorRoleMarkers } from "../cursor.ts";
+import { cursorStyle, findCursorPresentation, isNativeCursorStyle, stripCursorRoleMarkers } from "../cursor.ts";
 
 const INSTALLATION_KEY = Symbol.for("pi-libtui/cursor-bridge/v1");
 const PROTOCOL = "pi-libtui/cursor-bridge/v1" as const;
@@ -110,13 +110,17 @@ function setVisible(bridge: CursorBridgeInstallation, renderer: object, state: C
 	}
 }
 
-function applyCursorRole(
+function applyCursorPresentation(
 	bridge: CursorBridgeInstallation,
 	renderer: object,
-	role: ReturnType<typeof findCursorRole>,
+	presentation: ReturnType<typeof findCursorPresentation>,
 ): void {
 	const state = stateFor(bridge, renderer);
-	const style = role ? cursorStyle(role) : "virtual";
+	const style = presentation
+		? "style" in presentation
+			? presentation.style
+			: cursorStyle(presentation.role)
+		: "virtual";
 	if (isNativeCursorStyle(style)) {
 		state.forcingVisible = true;
 		setVisible(bridge, renderer, state, true);
@@ -150,9 +154,9 @@ function installPrototype(prototype: object): () => void {
 	let bridge: CursorBridgeInstallation;
 
 	const extract: ExtractCursorPosition = function (this: object, lines, height) {
-		const activeRole = findCursorRole(lines, height);
+		const presentation = findCursorPresentation(lines, height);
 		for (let index = 0; index < lines.length; index += 1) lines[index] = stripCursorRoleMarkers(lines[index] ?? "");
-		applyCursorRole(bridge, this, activeRole);
+		applyCursorPresentation(bridge, this, presentation);
 		return Reflect.apply(originalExtract, this, [lines, height]) as CursorPosition;
 	};
 	const setHardwareCursor: SetShowHardwareCursor = function (this: object, enabled) {

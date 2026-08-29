@@ -1,5 +1,6 @@
 import { CURSOR_MARKER } from "@earendil-works/pi-tui";
 import { type IBufferCell, type IBufferLine, Terminal } from "@xterm/headless";
+import { markNativeCursorPosition, type NativeCursorStyle } from "../cursor.ts";
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
@@ -9,11 +10,23 @@ const MAX_COLS = 500;
 const MAX_ROWS = 200;
 const MAX_SCROLLBACK = 10_000;
 
-// type-boundary: @xterm/headless 6 keeps synchronous writes on its private core
-// even though the public Terminal type omits it. Use that installed runtime
-// seam only for the first snapshot; remove it when Terminal exposes writeSync.
-type SyncWriteTerminal = Terminal & {
-	_core?: { _writeBuffer?: { writeSync?: (data: string | Uint8Array) => void } };
+/** Clamp a PTY and its projection to the same supported viewport. */
+export function normalizeTerminalDimensions(cols: number, rows: number): readonly [number, number] {
+	return [clampDimension(cols, MAX_COLS), clampDimension(rows, MAX_ROWS)];
+}
+
+// type-boundary: @xterm/headless 6 keeps its low-latency user-input hint on the
+// private write buffer. The hint retains public write ordering, async handlers,
+// and slicing; remove this seam when Terminal exposes it.
+type ProjectionTerminal = Terminal & {
+	_core?: {
+		_writeBuffer?: { handleUserInput?: () => void };
+		_inputHandler?: {
+			onRequestRefreshRows?: (listener: (range: { start: number; end: number } | undefined) => void) => {
+				dispose(): void;
+			};
+		};
+	};
 };
 
 export interface ProjectionTimer {
@@ -47,6 +60,13 @@ export interface RenderTerminalLinesOptions {
 const SYSTEM_SCHEDULER: ProjectionScheduler = {
 	now: () => Date.now(),
 	schedule(callback, delayMs) {
+		if (delayMs <= 0) {
+			let disposed = false;
+			queueMicrotask(() => {
+				if (!disposed) callback();
+			});
+			return { dispose: () => (disposed = true) };
+		}
 		const handle = setTimeout(callback, delayMs);
 		handle.unref?.();
 		return { dispose: () => clearTimeout(handle) };
@@ -63,6 +83,8 @@ const SYSTEM_SCHEDULER: ProjectionScheduler = {
 export class TerminalProjection {
 	private readonly terminal: Terminal;
 	private readonly parsedSubscription: { dispose(): void };
+	private readonly dirtyRowsSubscription: { dispose(): void } | undefined;
+	private readonly cursorSubscriptions: readonly { dispose(): void }[];
 	private readonly requestRender: () => void;
 	private readonly scheduler: ProjectionScheduler;
 	private readonly repaintIntervalMs: number;
@@ -73,24 +95,51 @@ export class TerminalProjection {
 	private renderedRevision = -1;
 	private renderedKey = "";
 	private renderedLines: string[] | undefined;
+	private readonly projectedRows = new Map<
+		number,
+		{ cursorColumn: number | undefined; cursorStyle: NativeCursorStyle | undefined; value: string }
+	>();
+	private projectedBufferType: "normal" | "alternate" | undefined;
+	private projectedBaseY = 0;
 	private contentEndRow = 0;
-	private hasParsedWrite = false;
-	private initialRepaintPending = false;
+	private cursorVisible = true;
+	private cursorStyle: NativeCursorStyle | undefined;
 
 	constructor(options: TerminalProjectionOptions) {
+		const [cols, rows] = normalizeTerminalDimensions(options.cols ?? DEFAULT_COLS, options.rows ?? DEFAULT_ROWS);
 		this.requestRender = options.requestRender;
 		this.scheduler = options.scheduler ?? SYSTEM_SCHEDULER;
 		this.repaintIntervalMs = clampNonNegative(options.repaintIntervalMs ?? DEFAULT_REPAINT_INTERVAL_MS);
 		this.terminal = new Terminal({
 			allowProposedApi: true,
-			cols: clampDimension(options.cols ?? DEFAULT_COLS, MAX_COLS),
-			rows: clampDimension(options.rows ?? DEFAULT_ROWS, MAX_ROWS),
+			cols,
+			rows,
 			scrollback: clampNonNegative(options.scrollback ?? DEFAULT_SCROLLBACK, MAX_SCROLLBACK),
 			convertEol: false,
 		});
 		this.parsedSubscription = this.terminal.onWriteParsed(() => {
 			this.markParsed();
 		});
+		this.cursorSubscriptions = [
+			this.terminal.parser.registerCsiHandler({ prefix: "?", final: "h" }, (params) => {
+				if (params.includes(25)) this.cursorVisible = true;
+				return false;
+			}),
+			this.terminal.parser.registerCsiHandler({ prefix: "?", final: "l" }, (params) => {
+				if (params.includes(25)) this.cursorVisible = false;
+				return false;
+			}),
+			this.terminal.parser.registerCsiHandler({ intermediates: " ", final: "q" }, (params) => {
+				this.cursorStyle = nativeCursorStyle(params[0]);
+				return false;
+			}),
+		];
+		// type-boundary: @xterm/headless 6 exposes dirty viewport rows only on its
+		// private input handler. Cache correctness falls back to full invalidation
+		// when that installed structural seam is unavailable.
+		this.dirtyRowsSubscription = (this.terminal as ProjectionTerminal)._core?._inputHandler?.onRequestRefreshRows?.(
+			(range) => this.invalidateProjectedRows(range),
+		);
 	}
 
 	get cols(): number {
@@ -101,28 +150,16 @@ export class TerminalProjection {
 		return this.terminal.rows;
 	}
 
-	/** Parse the first snapshot before an unrelated host repaint can see an empty surface. */
+	get acceptsFocusEvents(): boolean {
+		return this.terminal.modes.sendFocusMode;
+	}
+
+	/** Route interactive bytes through xterm's immediate, ordered input path. */
 	write(data: string | Uint8Array): void {
 		if (this.disposed || data.length === 0) return;
-		if (!this.hasParsedWrite) {
-			const writeBuffer = (this.terminal as SyncWriteTerminal)._core?._writeBuffer;
-			const writeSync = writeBuffer?.writeSync;
-			if (writeBuffer && writeSync) {
-				writeSync.call(writeBuffer, data);
-				this.hasParsedWrite = true;
-				this.markParsed(false);
-				this.initialRepaintPending = true;
-				queueMicrotask(() => {
-					if (this.disposed || !this.initialRepaintPending) return;
-					this.initialRepaintPending = false;
-					this.scheduleRender();
-				});
-				return;
-			}
-		}
-		this.initialRepaintPending = false;
+		const writeBuffer = (this.terminal as ProjectionTerminal)._core?._writeBuffer;
+		writeBuffer?.handleUserInput?.call(writeBuffer);
 		this.terminal.write(data);
-		this.hasParsedWrite = true;
 	}
 
 	/** Resolve after every previously queued write has been parsed. */
@@ -133,10 +170,10 @@ export class TerminalProjection {
 
 	resize(cols: number, rows: number): boolean {
 		if (this.disposed) return false;
-		const nextCols = clampDimension(cols, MAX_COLS);
-		const nextRows = clampDimension(rows, MAX_ROWS);
+		const [nextCols, nextRows] = normalizeTerminalDimensions(cols, rows);
 		if (nextCols === this.terminal.cols && nextRows === this.terminal.rows) return false;
 		this.terminal.resize(nextCols, nextRows);
+		this.projectedRows.clear();
 		this.bufferRevision += 1;
 		this.scheduleRender();
 		return true;
@@ -149,6 +186,11 @@ export class TerminalProjection {
 			return this.renderedLines;
 		}
 		const buffer = this.terminal.buffer.active;
+		if (buffer.type !== this.projectedBufferType || buffer.baseY !== this.projectedBaseY) {
+			this.projectedRows.clear();
+			this.projectedBufferType = buffer.type;
+			this.projectedBaseY = buffer.baseY;
+		}
 		const includeScrollback = options.includeScrollback ?? false;
 		const firstRow = includeScrollback ? 0 : buffer.viewportY;
 		const endRow = includeScrollback
@@ -162,8 +204,20 @@ export class TerminalProjection {
 		const cell = buffer.getNullCell();
 		for (let offset = 0; offset < rowCount; offset += 1) {
 			const bufferRow = boundedFirstRow + offset;
-			const cursorColumn = options.cursor !== false && bufferRow === cursorLine ? buffer.cursorX : undefined;
-			lines.push(projectLine(buffer.getLine(bufferRow), this.terminal.cols, cursorColumn, cell));
+			const cursorColumn =
+				options.cursor !== false && this.cursorVisible && bufferRow === cursorLine ? buffer.cursorX : undefined;
+			const cached = this.projectedRows.get(bufferRow);
+			if (cached && cached.cursorColumn === cursorColumn && cached.cursorStyle === this.cursorStyle) {
+				lines.push(cached.value);
+				continue;
+			}
+			const projected = projectLine(buffer.getLine(bufferRow), this.terminal.cols, cursorColumn, cell);
+			const value =
+				cursorColumn !== undefined && this.cursorStyle
+					? markNativeCursorPosition(projected, this.cursorStyle)
+					: projected;
+			this.projectedRows.set(bufferRow, { cursorColumn, cursorStyle: this.cursorStyle, value });
+			lines.push(value);
 		}
 		this.renderedRevision = this.bufferRevision;
 		this.renderedKey = cacheKey;
@@ -174,19 +228,33 @@ export class TerminalProjection {
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
-		this.initialRepaintPending = false;
 		this.repaintTimer?.dispose();
 		this.repaintTimer = undefined;
 		this.parsedSubscription.dispose();
+		this.dirtyRowsSubscription?.dispose();
+		for (const subscription of this.cursorSubscriptions) subscription.dispose();
 		this.terminal.dispose();
 		this.renderedLines = undefined;
+		this.projectedRows.clear();
 	}
 
-	private markParsed(schedule = true): void {
+	private markParsed(): void {
+		if (!this.dirtyRowsSubscription) this.projectedRows.clear();
 		const buffer = this.terminal.buffer.active;
 		this.contentEndRow = Math.max(this.contentEndRow, buffer.baseY + buffer.cursorY);
 		this.bufferRevision += 1;
-		if (schedule) this.scheduleRender();
+		// Synchronized output is one atomic frame even when its bytes cross native
+		// reads. Publishing the body early causes tearing and burns an extra host frame.
+		if (!this.terminal.modes.synchronizedOutputMode) this.scheduleRender();
+	}
+
+	private invalidateProjectedRows(range: { start: number; end: number } | undefined): void {
+		if (!range) {
+			this.projectedRows.clear();
+			return;
+		}
+		const viewportY = this.terminal.buffer.active.viewportY;
+		for (let row = range.start; row <= range.end; row += 1) this.projectedRows.delete(viewportY + row);
 	}
 
 	private scheduleRender(): void {
@@ -204,6 +272,17 @@ export class TerminalProjection {
 			}
 		}, delay);
 	}
+}
+
+function nativeCursorStyle(parameter: number | number[] | undefined): NativeCursorStyle {
+	const value = Array.isArray(parameter) ? parameter[0] : parameter;
+	if (value === 1) return "blinking-block";
+	if (value === 2) return "steady-block";
+	if (value === 3) return "blinking-underline";
+	if (value === 4) return "steady-underline";
+	if (value === 5) return "blinking-bar";
+	if (value === 6) return "steady-bar";
+	return "terminal-default";
 }
 
 function projectLine(
@@ -242,6 +321,7 @@ function projectLine(
 
 /** Only these inert visual attributes can be replayed into Pi's renderer. */
 function cellStyle(cell: IBufferCell): string {
+	if (cell.isAttributeDefault()) return "";
 	const codes: number[] = [];
 	if (cell.isBold()) codes.push(1);
 	if (cell.isDim()) codes.push(2);

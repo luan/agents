@@ -45,7 +45,7 @@ Pi-native behavior.
 
 | Import path | Principal exports / capability | Owner | Import side effects | Host required |
 | --- | --- | --- | --- | --- |
-| `pi-libtui` | Common TUI components: layouts, dialogs, pickers, inputs, mounted selection actions, semantic colors, icons, cursors, `applyScrollbar`, `PointerInteractionController`, `RenderedLinesCache`, `SyntaxText`, and motion/progress | `pi-libtui` owns component and mounting mechanics; consumers own selection eligibility and action payloads | None; registries, appearance, and the shared motion scheduler initialize only when explicitly used | No for rendering; yes only for Pi-native bridges |
+| `pi-libtui` | Common TUI components: layouts, split panes, side-panel contribution protocol, dialogs, pickers, inputs, mounted selection actions, semantic colors, icons, cursors, `PtyProcess`, `PtyPane`, `applyScrollbar`, `PointerInteractionController`, `RenderedLinesCache`, `SyntaxText`, and motion/progress | `pi-libtui` owns component and mounting mechanics; consumers own pane contents, selection eligibility, and action payloads | None; registries, appearance, and the shared motion scheduler initialize only when explicitly used | No for rendering; yes for panes and Pi-native bridges |
 | `pi-libtui/diff` | `createUnifiedDiffModel`, `parseUnifiedDiff`, `renderUnifiedDiff`, `UnifiedDiffView`, and bounded diff models/viewports | Consumer supplies diff input and theme; `pi-libtui` owns parsing/rendering | None on import or render | No |
 | `pi-libtui/editor` | `ensureEditorRegistry`, `dispatchEditorPaste`, `dispatchEditorRender`, `SemanticEditor`, `semanticEditorTheme`, and editor registry contracts | Editor host and feature packages share the registry | Explicit `ensureEditorRegistry` creates or reuses a process-global capability | Only to connect the registry to Pi's editor |
 | `pi-libtui/folding` | `ensureFoldingRegistry`, `foldTargetAt`, `clearFoldingCurrent`, and fold-target contracts | Foldable feature owns targets; copy-mode host owns keyboard consumption | Explicit `ensureFoldingRegistry` creates or reuses a process-global capability | Only for host keyboard/copy-mode integration |
@@ -56,9 +56,9 @@ Pi-native behavior.
 | `pi-libtui/tool` | `ToolAction`, `LiveToolAction`, `ToolDisclosureAction`, `ToolActivity`, `ToolOutput`, `ToolTranscript`, `ToolViewRegion`, and tool-call preview helpers | `pi-libtui` owns generic presentation; feature packages own tool semantics | None on import; instances are local state | No for rendering |
 
 The package manifest separately loads `src/extension.ts` as a Pi extension. That
-entry point installs mouse, cursor, and editor bridges, terminal-color fallback
-behavior, and the `/libtui:colors` diagnostic; it registers no model-facing tools,
-shortcuts, or feature UI.
+entry point installs mouse, cursor, editor, and shared native PTY compatibility,
+terminal-color fallback behavior, and the `/libtui:colors` diagnostic; it
+registers no model-facing tools, shortcuts, or feature UI.
 Importing any table entry does not load or invoke that extension.
 
 Tool presentation has three deliberate layers. `ToolTranscript` is the small
@@ -89,6 +89,11 @@ The root library surface keeps these implementation boundaries:
 | Glyphs, status, pills, and pointer interaction | `src/decoration/glyphs.ts`, `src/decoration/status.ts`, `src/decoration/editor-pills.ts`, `src/decoration/powerline-pill.ts`, `src/decoration/transient-pill.ts`, `src/decoration/pointer-interaction.ts` |
 | Editor protocol and presentation | `src/editor/protocol.ts`, `src/editor/presentation.ts` (re-exported by `src/editor.ts`) |
 | Syntax highlighting | `src/syntax.ts` |
+| Shared native PTY lifecycle | `src/terminal/bridge-client.ts`, `src/terminal/pty-host.ts`, and `src/terminal/pty-pane.ts` |
+
+The extension host keeps the shared PTY host alive across an extension reload
+so feature-owned process leases can reattach without losing terminal state. A
+session switch or quit shuts the host down.
 
 These are implementation paths, not additional package exports. Consumers keep
 using the documented package root and subpaths so the public API remains stable.
@@ -123,6 +128,10 @@ the terminal cannot fit one pane cell, its border and gap, and the minimum main 
 has no restored cell width. `onResize` runs once when a pointer drag commits so
 the owning feature can persist that width without coupling persistence to the
 shared geometry host.
+Components whose input becomes visible only after asynchronous output may implement
+`defersInputRender()`. The host then skips Pi's unchanged post-input frame and paints
+when the component requests its output frame; synchronous components retain Pi's
+normal immediate repaint.
 It is available only in fullscreen mode. Protocol v2 selects the highest-priority
 contribution and uses the latest mount to break ties. A pane factory receives the
 active `tui`, allocated pane viewport-size and render-request access, plus
@@ -235,6 +244,10 @@ measured RGB values remain exact. `TuiTheme.color()` creates handles;
 Feature code uses only the root color API:
 
 - `tuiTheme(theme)` creates the semantic facade.
+- `createTuiThemeVariation(theme, name)` creates a complete, non-persisted Pi
+  theme document with related but shifted surfaces for an adjacent full TUI.
+- `tuiThemeAppearance(theme)` resolves the active surface to `dark` or `light`
+  for an embedded application that cannot query the outer terminal background.
 - `TuiForegroundToken` and `TuiBackgroundToken` name reusable roles.
 - `TuiSwatch` selects one of the red, green, yellow, blue, magenta, cyan, or
   gray ramps at shade `0` through `5`.

@@ -152,9 +152,14 @@ test("duplicate factory copies share one host lease and a later API installs ind
 	expect(replacementCalls).toBe(1);
 	removeReplacement();
 
-	for (const handler of first.handlers.get("session_shutdown") ?? []) await handler({}, context);
+	for (const handler of first.handlers.get("session_shutdown") ?? []) await handler({ reason: "switch" }, context);
 	expect(widgets.at(-1)).toEqual({ key: "pi-libtui.mouse-bridge", content: undefined });
 	expect(CustomEditor.prototype.render).toBe(originalRender);
+	const lateCopyName = "after-switch";
+	const lateCopy = await import(`../../src/extension.ts?host-copy=${lateCopyName}`);
+	lateCopy.default(first.api);
+	expect(first.handlers.get("session_start")).toHaveLength(1);
+	for (const handler of first.handlers.get("session_shutdown") ?? []) await handler({ reason: "reload" }, context);
 
 	const second = createPiHarness(sharedEventBus);
 	factories[0]!(second.api);
@@ -164,5 +169,6 @@ test("duplicate factory copies share one host lease and a later API installs ind
 	const secondContext = createContext(secondWidgets);
 	await second.handlers.get("session_start")?.[0]?.({}, secondContext);
 	expect(secondWidgets).toHaveLength(1);
-	for (const handler of second.handlers.get("session_shutdown") ?? []) await handler({}, secondContext);
+	for (const handler of second.handlers.get("session_shutdown") ?? [])
+		await handler({ reason: "reload" }, secondContext);
 });

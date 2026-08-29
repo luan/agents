@@ -1,14 +1,18 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { Theme } from "@earendil-works/pi-coding-agent";
+import { CURSOR_MARKER } from "@earendil-works/pi-tui";
 import { configureTuiAppearance, DEFAULT_TUI_APPEARANCE } from "../src/appearance.ts";
 import { tuiTheme } from "../src/color/theme.ts";
 import { SemanticInput } from "../src/controls/semantic-input.ts";
 import {
+	findCursorPresentation,
 	findCursorRole,
+	markNativeCursorPosition,
 	markEditorCursor,
 	removeUnmarkedEditorCursor,
 	renderSemanticCursor,
 	renderVirtualCursor,
+	stripCursorRoleMarkers,
 } from "../src/cursor.ts";
 
 describe("TUI cursor cleanup", () => {
@@ -113,6 +117,12 @@ describe("TUI cursor cleanup", () => {
 		expect(findCursorRole([`\x1b_pi:c\x07x${navigation}`], 1)).toBeUndefined();
 		expect(findCursorRole([navigation], 1)).toBe("navigation");
 		expect(findCursorRole([navigation, "stale \x1b_pi-libtui:cursor:insertion\x07"], 2)).toBe("navigation");
+	});
+
+	test("preserves a projected terminal's concrete native cursor style", () => {
+		const rendered = markNativeCursorPosition(`x${CURSOR_MARKER}`, "blinking-block");
+		expect(findCursorPresentation([rendered], 1)).toEqual({ style: "blinking-block" });
+		expect(stripCursorRoleMarkers(rendered)).toBe(`x${CURSOR_MARKER}`);
 	});
 
 	test("does not invent a semantic cursor for an unfocused editor", () => {
