@@ -13,7 +13,7 @@ import { type ForkTurns, selectForkedHistory } from "../core/fork-history.ts";
 import type { AgentConfig, AgentModelRole } from "../core/types.ts";
 import { registerPresentationResolver } from "../protocol/presentation.ts";
 import { registerSessionHierarchyProvider, type SessionHierarchyEntry } from "../protocol/session-hierarchy.ts";
-import { type RunResult, resumeAgent, runAgent, type ToolActivity } from "./agent-runner.ts";
+import { type RunResult, resumeAgent, runAgent, sendAgentTask, type ToolActivity } from "./agent-runner.ts";
 
 export const DEFAULT_MAX_CONCURRENCY = 8;
 export const DEFAULT_MAX_DEPTH = 2;
@@ -476,7 +476,13 @@ export class SubagentCoordinator {
 			return;
 		}
 		if (agent.status === "running") {
-			if (agent.session) await agent.session.followUp(message);
+			if (agent.session)
+				await sendAgentTask(
+					agent.session,
+					message,
+					{ agentPath: agent.id },
+					{ deliverAs: "followUp", triggerTurn: true },
+				);
 			else agent.pendingRuntimeMessages.push({ message, triggerTurn: true });
 			return;
 		}
@@ -777,7 +783,8 @@ export class SubagentCoordinator {
 			this.emit({ type: "transcript", target: agent.id });
 		});
 		for (const pending of agent.pendingRuntimeMessages.splice(0)) {
-			if (pending.triggerTurn) void session.followUp(pending.message);
+			if (pending.triggerTurn)
+				void sendAgentTask(session, pending.message, { agentPath: agent.id }, { deliverAs: "nextTurn" });
 			else {
 				agent.pendingNonBoundaryMessages.push(compactText(pending.message));
 				void session.steer(pending.message);
@@ -789,6 +796,7 @@ export class SubagentCoordinator {
 	private async continue(agent: LiveAgent, message: string, generation: number): Promise<void> {
 		try {
 			const result = await resumeAgent(agent.session!, message, {
+				collaboration: { agentPath: agent.id },
 				signal: agent.abortController.signal,
 				onToolActivity: (activity) => this.recordToolActivity(agent, activity, generation),
 				onUserMessage: (user) => this.recordUserMessage(agent, user),

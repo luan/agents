@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -11,6 +11,7 @@ import {
 	resolveChildToolNames,
 	resumeAgent,
 	runAgent,
+	sendAgentTask,
 } from "../src/runtime/agent-runner.ts";
 
 function model(id: string, reasoning = true): Model<Api> {
@@ -201,6 +202,27 @@ test("resumeAgent releases subscriptions and abort forwarding when prompting fai
 	expect(listeners).toHaveLength(2);
 	expect(unsubscribeCount).toBe(2);
 	expect(abortCount).toBe(0);
+});
+
+test("delivers assigned work as a hidden child task", async () => {
+	const sent: Array<{ message: object; options: object | undefined }> = [];
+	const session = {
+		sendCustomMessage: async (message: object, options: object | undefined) => sent.push({ message, options }),
+	} as never;
+
+	await sendAgentTask(session, "inspect the shared path", { agentPath: "/root/review" }, { triggerTurn: true });
+
+	expect(sent).toEqual([
+		{
+			message: {
+				customType: "subagent-task",
+				content: "Message Type: NEW_TASK\nTask name: /root/review\nSender: /root\nPayload:\ninspect the shared path",
+				display: false,
+				details: { version: 1, target: "/root/review", sender: "/root" },
+			},
+			options: { triggerTurn: true },
+		},
+	]);
 });
 
 test("inherits the parent's active tool names and installed project skills", async () => {

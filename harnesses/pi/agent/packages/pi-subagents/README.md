@@ -34,7 +34,8 @@ not be hidden inside a Code Mode cell.
 Ask the model to delegate a concrete, bounded task. `spawn_agent` returns the
 new canonical path, such as `/root/review` or `/root/review/tests`. A relative
 target resolves from the calling agent; a canonical path can address an agent
-anywhere in the same tree.
+anywhere in the same tree. The assigned work arrives as a hidden child-specific
+`NEW_TASK` message rather than an end-user prompt.
 
 A successful child response is delivered independently to its direct parent as
 a hidden `FINAL_ANSWER` mailbox message. An active parent receives it in the
@@ -87,7 +88,9 @@ reloads; an active tree keeps its original limits until its agents settle.
 
 Model choice comes from `pi-model-roles`. A spawn can select a role explicitly;
 otherwise it uses that package's configured subagent default role. Forking can
-copy all parent history, no history, or a positive number of recent turns.
+copy all parent conversational history, no history, or a positive number of
+recent turns. Historical tool calls, tool results, and collaboration messages
+are not copied into the child context.
 
 The Agent Widget, Agent Hub, and running collaboration-tool rows use the shared
 `pi-libtui.activityIndicator` and `pi-libtui.textEffect` Appearance settings.

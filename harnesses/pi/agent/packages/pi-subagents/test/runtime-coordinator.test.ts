@@ -44,6 +44,13 @@ function fakeSession(prompts: string[], turns: Array<ReturnType<typeof deferred<
 			turns.push(turn);
 			return turn.promise;
 		},
+		sendCustomMessage: (message: { content: string }, options?: { triggerTurn?: boolean }) => {
+			prompts.push(message.content);
+			if (!options?.triggerTurn) return Promise.resolve();
+			const turn = deferred<void>();
+			turns.push(turn);
+			return turn.promise;
+		},
 		abort: async () => {},
 	} as never;
 }
@@ -256,15 +263,22 @@ test("serializes immediate post-interrupt follow-ups for initial and resumed tur
 
 	initial.resolve({ responseText: "partial", session, runtime } as never);
 	await flushPromises();
-	expect(prompts).toEqual(["continue initial"]);
+	expect(prompts).toEqual([
+		"Message Type: NEW_TASK\nTask name: /root/worker\nSender: /root\nPayload:\ncontinue initial",
+	]);
 
 	await coordinator.interrupt(undefined, "/root/worker");
 	await coordinator.followUp(undefined, "/root/worker", "continue resumed");
-	expect(prompts).toEqual(["continue initial"]);
+	expect(prompts).toEqual([
+		"Message Type: NEW_TASK\nTask name: /root/worker\nSender: /root\nPayload:\ncontinue initial",
+	]);
 
 	turns[0]?.resolve();
 	await flushPromises();
-	expect(prompts).toEqual(["continue initial", "continue resumed"]);
+	expect(prompts).toEqual([
+		"Message Type: NEW_TASK\nTask name: /root/worker\nSender: /root\nPayload:\ncontinue initial",
+		"Message Type: NEW_TASK\nTask name: /root/worker\nSender: /root\nPayload:\ncontinue resumed",
+	]);
 	removeRootCoordinator(rootId);
 });
 

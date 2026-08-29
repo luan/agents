@@ -19,6 +19,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { listCodeModeToolNames } from "pi-code-mode/sdk";
 import { getModelRoleCatalog, resolveModelRole, seedChildModelRole } from "pi-model-roles/sdk";
+import { SUBAGENT_TASK_MESSAGE_TYPE } from "../core/fork-history.ts";
 import { buildAgentPrompt } from "../core/prompts.ts";
 import type { AgentConfig, AgentModelRole } from "../core/types.ts";
 import { createNestedToolActivityReader } from "./nested-tool-activity.ts";
@@ -63,6 +64,33 @@ export interface RunResult {
 interface AgentTurnResult {
 	responseText: string;
 	error?: string;
+}
+
+type AgentTaskContext = { agentPath: string };
+
+function parentAgentPath(agentPath: string): string {
+	return agentPath.slice(0, agentPath.lastIndexOf("/")) || "/root";
+}
+
+function taskContent(prompt: string, context: AgentTaskContext): string {
+	return `Message Type: NEW_TASK\nTask name: ${context.agentPath}\nSender: ${parentAgentPath(context.agentPath)}\nPayload:\n${prompt}`;
+}
+
+export function sendAgentTask(
+	session: AgentSession,
+	prompt: string,
+	context: AgentTaskContext,
+	options: { deliverAs?: "followUp" | "nextTurn"; triggerTurn?: boolean } = {},
+): Promise<void> {
+	return session.sendCustomMessage(
+		{
+			customType: SUBAGENT_TASK_MESSAGE_TYPE,
+			content: taskContent(prompt, context),
+			display: false,
+			details: { version: 1, target: context.agentPath, sender: parentAgentPath(context.agentPath) },
+		},
+		options,
+	);
 }
 
 /** Error of the latest turn when it ended in a provider failure, else undefined. */
@@ -274,7 +302,8 @@ export async function runAgent(ctx: ExtensionContext, prompt: string, options: R
 	const collector = collectResponseText(session, options.onUserMessage);
 	const cleanupAbort = forwardAbortSignal(session, options.signal);
 	try {
-		await session.prompt(prompt);
+		if (options.collaboration) await sendAgentTask(session, prompt, options.collaboration, { triggerTurn: true });
+		else await session.prompt(prompt);
 	} finally {
 		unsubscribeTools();
 		collector.unsubscribe();
@@ -294,6 +323,7 @@ export async function resumeAgent(
 	session: AgentSession,
 	prompt: string,
 	options: {
+		collaboration?: AgentTaskContext;
 		onToolActivity?: (activity: ToolActivity) => void;
 		onUserMessage?: (message: AgentMessage) => void;
 		signal?: AbortSignal;
@@ -303,7 +333,8 @@ export async function resumeAgent(
 	const cleanupAbort = forwardAbortSignal(session, options.signal);
 	const unsubscribeTools = subscribeToolActivity(session, options.onToolActivity);
 	try {
-		await session.prompt(prompt);
+		if (options.collaboration) await sendAgentTask(session, prompt, options.collaboration, { triggerTurn: true });
+		else await session.prompt(prompt);
 	} finally {
 		collector.unsubscribe();
 		unsubscribeTools();
