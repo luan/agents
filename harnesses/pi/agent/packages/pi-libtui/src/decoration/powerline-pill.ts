@@ -94,7 +94,9 @@ export function renderPill(
 	const left = `${destinationBackground ?? ""}${capColor}${leftSeparator}\x1b[39m${destinationBackground ?? ""}`;
 	const glyph = pillIcon(content.icon);
 	const bodyContent = glyph
-		? `${colors.fg(content.iconTone ?? effectiveForeground, glyph)} ${colors.fg(effectiveForeground, content.label)}`
+		? content.label
+			? `${colors.fg(content.iconTone ?? effectiveForeground, glyph)} ${colors.fg(effectiveForeground, content.label)}`
+			: colors.fg(content.iconTone ?? effectiveForeground, glyph)
 		: colors.fg(effectiveForeground, content.label);
 	const body = colors.bg(background, bodyContent);
 	const right = `${restore}${capColor}${rightSeparator}\x1b[39m${restore}`;

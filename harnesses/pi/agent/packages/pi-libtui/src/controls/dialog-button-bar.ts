@@ -21,8 +21,8 @@ export interface DialogButtonSpec<Value extends string = string> {
 	background: TuiBackgroundToken;
 	/** User-configured shortcuts; the first is displayed and every shortcut activates. */
 	shortcuts?: readonly KeyId[];
-	/** Start buttons grow from the left; end buttons grow from the right. */
-	align?: "start" | "end";
+	/** Start/end buttons grow from their edge; center buttons share one centered group. */
+	align?: "start" | "center" | "end";
 }
 
 /** Interactive geometry and identity for one rendered dialog button. */
@@ -199,8 +199,25 @@ export class DialogButtonBar<Value extends string = string> implements Component
 			endX = x - gap;
 		}
 
+		const centered = [...this.config.buttons.entries()].filter(([, button]) => button.align === "center");
+		const centeredWidths = centered.map(([, button]) => buttonWidthFor(visibleWidth(` ${plainLabel(button)} `)));
+		const centeredWidth =
+			centeredWidths.reduce((total, width) => total + width, 0) + gap * Math.max(0, centered.length - 1);
+		let centerX = Math.max(startX, Math.min(Math.floor((boundedWidth - centeredWidth) / 2), endX - centeredWidth));
+		for (const [[index, button], buttonWidth] of centered.map(
+			(entry, index) => [entry, centeredWidths[index]!] as const,
+		)) {
+			if (centerX + buttonWidth > endX) break;
+			const label = ` ${plainLabel(button)} `;
+			const labelWidth = visibleWidth(label);
+			cells[centerX] = this.renderButton(button, index, fitLabel(label, labelWidth));
+			for (let offset = 1; offset < buttonWidth; offset += 1) cells[centerX + offset] = "";
+			geometry.push({ x: centerX, y: 0, width: buttonWidth, height: 1, index, value: button.value });
+			centerX += buttonWidth + gap;
+		}
+
 		const leadingWidth = Math.max(0, endX - startX);
-		if (this.config.leading && leadingWidth > 0) {
+		if (this.config.leading && leadingWidth > 0 && centered.length === 0) {
 			const content = truncateToWidth(this.config.leading(leadingWidth), leadingWidth, "");
 			cells[startX] = content;
 			for (let offset = 1; offset < visibleWidth(content); offset += 1) cells[startX + offset] = "";

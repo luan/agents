@@ -1,7 +1,7 @@
 # pi-libtui
 
 `pi-libtui` contains the shared terminal UI pieces used by this repository's
-Pi extensions: layouts, dialogs, pickers, selection actions, semantic colors,
+Pi extensions: layouts, split panes, dialogs, pickers, selection actions, semantic colors,
 icons, cursors, syntax highlighting, animated tool surfaces, streamed output,
 diffs, terminal projection, and the protocols those pieces need.
 
@@ -80,8 +80,10 @@ The root library surface keeps these implementation boundaries:
 | Capability | Implementation modules |
 | --- | --- |
 | Layout and rendering infrastructure | `src/background-surface.ts`, `src/component-stack.ts`, `src/line-layout.ts`, `src/render-cache.ts`, `src/scrollbar.ts` |
-| Overlays | `src/overlay/anchored.ts`, `src/overlay/dialog.ts`, `src/overlay/fullscreen.ts`, `src/overlay/modal-mount.ts` |
-| Actions and navigation | `src/controls/action-panel.ts`, `src/controls/dialog-button-bar.ts`, `src/controls/selection-action-bar.ts` (including fullscreen mounting), `src/controls/tab.ts` |
+| Fullscreen split panes | `src/split-pane.ts` and `src/host/split-pane-bridge.ts` |
+| Side-panel contribution protocol | `src/side-panel.ts` |
+| Overlays | `src/overlay/anchored.ts`, `src/overlay/dialog.ts`, `src/overlay/fullscreen.ts`, `src/overlay/hover-tooltip.ts`, `src/overlay/modal-mount.ts` |
+| Actions and navigation | `src/controls/action-panel.ts`, `src/controls/dialog-button-bar.ts`, `src/controls/screen-icon-actions.ts`, `src/controls/selection-action-bar.ts` (including fullscreen mounting), `src/controls/tab.ts` |
 | Choices and fields | `src/controls/selectable-list.ts`, `src/controls/semantic-input.ts`, `src/controls/searchable-select.ts`, `src/controls/picker-panel.ts`, `src/controls/multi-select.ts` |
 | Text content | `src/content/text.ts` |
 | Glyphs, status, pills, and pointer interaction | `src/decoration/glyphs.ts`, `src/decoration/status.ts`, `src/decoration/editor-pills.ts`, `src/decoration/powerline-pill.ts`, `src/decoration/transient-pill.ts`, `src/decoration/pointer-interaction.ts` |
@@ -90,6 +92,55 @@ The root library surface keeps these implementation boundaries:
 
 These are implementation paths, not additional package exports. Consumers keep
 using the documented package root and subpaths so the public API remains stable.
+
+## Fullscreen split panes
+
+`mountSplitPane()` composes one extension-owned pane beside Pi's complete
+fullscreen layout. Pi's transcript, editor, widgets, status, and footer remain
+inside the main pane and reflow to its allocated width. The most recently
+mounted contribution is visible; disposing it restores the previous
+contribution, or Pi's unwrapped layout when none remains.
+
+```ts
+const unmount = mountSplitPane({
+	id: "example.details",
+	position: "right",
+	size: 32,
+	initialRatio: 0.4,
+	minMainSize: 1,
+	priority: 10,
+	onResize: (size) => saveCommittedWidth(size),
+	component: (host, theme) => new DetailsPane(host, theme),
+});
+```
+
+The pane and Pi's main surface are separated by a semantic vertical border.
+Drag that border with the primary mouse button across all available terminal
+space; Pi retains only the contribution's `minMainSize`. The preferred width
+survives temporary pane replacement within the session. The pane hides when
+the terminal cannot fit one pane cell, its border and gap, and the minimum main size.
+`initialRatio` derives the first width from the terminal when the contribution
+has no restored cell width. `onResize` runs once when a pointer drag commits so
+the owning feature can persist that width without coupling persistence to the
+shared geometry host.
+It is available only in fullscreen mode. Protocol v2 selects the highest-priority
+contribution and uses the latest mount to break ties. A pane factory receives the
+active `tui`, allocated pane viewport-size and render-request access, plus
+`focus()`, `blur()`, and `isFocused()`. Focus captures Pi's current component and restores it only
+while the pane still owns focus, so an overlay or another component that takes
+focus is not displaced. Clicking either pane focuses it without consuming the
+click, preserving native selection and component behavior. Contributed
+`ScrollView` layout nodes remain visible to Pi's native selection engine. Input
+and mouse events are safely forwarded through the host wrapper to the
+contributed component. `pi-libtui` owns layout composition, focus restoration,
+and cleanup.
+
+Pi 0.84.x exposes `setLayoutRoot()` but no layout-root getter. The extension
+host therefore reads and validates that one private field, and guards focus
+capture through `getFocusedComponent()` when that method is present. Its
+prototype patch uses a versioned, ref-counted lease. If the expected shape is
+absent, the bridge leaves Pi's layout unchanged. Regular rendering, and imports
+of the side-effect-free library surface, are never patched.
 
 ## Appearance settings
 
@@ -191,6 +242,18 @@ Feature code uses only the root color API:
   color between operations without exposing RGB values or palette indexes.
 - `TuiTheme.mixForeground()` interpolates semantic foreground paints through
   the active terminal color policy for smooth motion without leaking raw RGB.
+
+`TabBar` renders semantic pill tabs with semantic or explicit glyph icons plus
+an optional close affordance with independent hit geometry and pointer drag
+reordering. Close hover changes only the glyph foreground so the tab pill stays
+stable.
+`mountScreenIconActions()` places dynamic icon-only actions at the top-right of
+the complete screen. It owns pointer hit regions, hover paint, activation, and
+borderless dim-pill tooltips with configured key hints while leaving action
+registration to the feature package. `mountHoverTooltip()` supplies that same
+compact behavior. `mountHoverDetailCard()` supplies reusable structured hover
+content for annotation-like attachments. `DialogButtonBar` supports start,
+center, and end-aligned button groups.
 
 `src/color/palette.ts`, `src/color/resolver.ts`, and `src/terminal-colors.ts`
 are terminal-boundary implementation. The exact 6×6×6 color256 coordinates,

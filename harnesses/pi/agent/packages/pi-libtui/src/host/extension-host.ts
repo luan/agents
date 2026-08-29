@@ -4,10 +4,12 @@ import { subscribeTuiAppearance } from "../appearance.ts";
 import { renderEditorPasteMarkerPills } from "../decoration/editor-pills.ts";
 import { ensureEditorRegistry } from "../editor.ts";
 import { ensureMouseRegistry } from "../mouse.ts";
-import { terminalColorsRegistry, measureTerminalColors } from "../terminal-colors.ts";
+import { ensureSplitPaneRegistry } from "../split-pane.ts";
+import { measureTerminalColors, terminalColorsRegistry } from "../terminal-colors.ts";
 import { installCursorBridge } from "./cursor-bridge.ts";
 import { installEditorBridge } from "./editor-bridge.ts";
 import { installMouseBridge } from "./mouse-bridge.ts";
+import { installSplitPaneBridge } from "./split-pane-bridge.ts";
 
 const WIDGET_KEY = "pi-libtui.mouse-bridge";
 const HOST_CAPABILITY_KEY = Symbol.for("pi-libtui/extension-host/v1");
@@ -17,6 +19,7 @@ class LibtuiHostWidget implements Component {
 	private mode: TUI["mode"];
 	private removeMouseBridge: () => void;
 	private removeCursorBridge: () => void;
+	private removeSplitPaneBridge: () => void;
 	private readonly removeAppearanceSubscription: () => void;
 	private readonly removeColorSubscription: () => void;
 	private terminalColorsReady = false;
@@ -30,6 +33,12 @@ class LibtuiHostWidget implements Component {
 		this.mode = tui.mode;
 		this.removeMouseBridge = installMouseBridge(tui, ensureMouseRegistry());
 		this.removeCursorBridge = installCursorBridge(tui);
+		this.removeSplitPaneBridge = installSplitPaneBridge(
+			tui,
+			() => this.ui.theme,
+			ensureSplitPaneRegistry(),
+			ensureMouseRegistry(),
+		);
 		this.removeAppearanceSubscription = subscribeTuiAppearance(() => tui.requestRender());
 		this.removeColorSubscription = terminalColorsRegistry().subscribe(() => tui.requestRender());
 		void this.loadTerminalColors();
@@ -37,11 +46,26 @@ class LibtuiHostWidget implements Component {
 
 	render(): string[] {
 		if (this.tui.mode !== this.mode) {
-			this.removeMouseBridge();
-			this.removeCursorBridge();
+			// Acquire the new renderer leases before releasing the old ones so a mode
+			// switch never briefly removes shared prototype bridges.
+			const removeMouseBridge = installMouseBridge(this.tui, ensureMouseRegistry());
+			const removeCursorBridge = installCursorBridge(this.tui);
+			const removeSplitPaneBridge = installSplitPaneBridge(
+				this.tui,
+				() => this.ui.theme,
+				ensureSplitPaneRegistry(),
+				ensureMouseRegistry(),
+			);
+			const previousMouseBridge = this.removeMouseBridge;
+			const previousCursorBridge = this.removeCursorBridge;
+			const previousSplitPaneBridge = this.removeSplitPaneBridge;
 			this.mode = this.tui.mode;
-			this.removeMouseBridge = installMouseBridge(this.tui, ensureMouseRegistry());
-			this.removeCursorBridge = installCursorBridge(this.tui);
+			this.removeMouseBridge = removeMouseBridge;
+			this.removeCursorBridge = removeCursorBridge;
+			this.removeSplitPaneBridge = removeSplitPaneBridge;
+			previousSplitPaneBridge();
+			previousCursorBridge();
+			previousMouseBridge();
 		}
 		this.applyHarmoniousFallback();
 		return [];
@@ -53,6 +77,7 @@ class LibtuiHostWidget implements Component {
 		this.disposed = true;
 		this.removeMouseBridge();
 		this.removeCursorBridge();
+		this.removeSplitPaneBridge();
 		this.removeAppearanceSubscription();
 		this.removeColorSubscription();
 	}

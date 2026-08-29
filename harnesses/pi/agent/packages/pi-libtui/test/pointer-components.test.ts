@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { stripTerminalSequences } from "@earendil-works/pi-tui";
+import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { TabBar } from "../src/controls/tab.ts";
 import type { TuiMouseEvent } from "../src/mouse.ts";
 import { DialogOverlay } from "../src/overlay/dialog.ts";
@@ -99,7 +99,9 @@ describe("structural pointer components", () => {
 		tabs.onChange = (tab) => selected.push(tab.id);
 		const initial = tabs.render(9)[0]!;
 
-		expect(stripTerminalSequences(initial)).toBe(" A    Lon");
+		expect(visibleWidth(initial)).toBe(9);
+		expect(stripTerminalSequences(initial)).toContain("A");
+		expect(stripTerminalSequences(initial)).toContain("Long");
 		expect(tabs.onMouse(mouse("move", 0, 8))).toBe(true);
 		expect(tabs.render(9)[0]).not.toBe(initial);
 		expect(tabs.onMouse(mouse("release", 0, 8, 1))).toBe(true);
@@ -109,5 +111,41 @@ describe("structural pointer components", () => {
 		expect(tabs.onMouse(mouse("release", 0, 9, 0))).toBe(false);
 		expect(selected).toEqual(["b"]);
 		expect(tabs.onMouse(mouse("leave", 0, 0))).toBe(false);
+	});
+
+	test("tab bar closes tabs without confusing close with tab selection", () => {
+		const selected: string[] = [];
+		const closed: string[] = [];
+		const tabs = new TabBar([{ id: "side", label: "Side" }], theme);
+		tabs.onChange = (tab) => selected.push(tab.id);
+		tabs.onClose = (tab) => closed.push(tab.id);
+		tabs.render(20);
+
+		expect(tabs.onMouse(mouse("release", 0, 1, 0))).toBe(true);
+		expect(tabs.onMouse(mouse("release", 0, 6, 0))).toBe(true);
+		expect(selected).toEqual([]);
+		expect(closed).toEqual(["side"]);
+	});
+
+	test("tab bar drags tabs into a new order and highlights only the close foreground", () => {
+		const moved: Array<{ id: string; from: number; to: number }> = [];
+		const tabs = new TabBar(
+			[
+				{ id: "one", label: "One" },
+				{ id: "two", label: "Two" },
+			],
+			theme,
+		);
+		tabs.onMove = (tab, from, to) => moved.push({ id: tab.id, from, to });
+		tabs.onClose = () => {};
+		const normal = tabs.render(30)[0]!;
+		tabs.onMouse(mouse("move", 0, 5));
+		const closeHovered = tabs.render(30)[0]!;
+		expect(Bun.stripANSI(closeHovered)).toBe(Bun.stripANSI(normal));
+		expect(closeHovered).not.toBe(normal);
+		tabs.onMouse(mouse("press", 0, 2, 0));
+		tabs.onMouse({ ...mouse("drag", 0, 10, 0), button: 0 });
+		tabs.onMouse(mouse("release", 0, 10, 0));
+		expect(moved).toEqual([{ id: "one", from: 0, to: 1 }]);
 	});
 });

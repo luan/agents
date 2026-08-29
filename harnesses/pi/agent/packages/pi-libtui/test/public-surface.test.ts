@@ -17,6 +17,7 @@ const CAPABILITY_KEYS = [
 	Symbol.for("pi-libtui/folding/registry/v2"),
 	Symbol.for("pi-libtui/mouse/registry/v1"),
 	Symbol.for("pi-libtui/selection/v1"),
+	Symbol.for("pi-libtui/split-panes/v2"),
 	Symbol.for("pi-libtui.motionScheduler.v1"),
 ] as const;
 

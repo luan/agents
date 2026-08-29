@@ -751,6 +751,26 @@ describe("shared TUI components", () => {
 		expect(buttons.handleMouse({ type: "release", row: 0, col: 19, button: 0 })).toBe(true);
 	});
 
+	test("dialog buttons can form a centered action group", () => {
+		const buttons = new DialogButtonBar({
+			theme: ansiTheme,
+			buttons: [
+				{
+					value: "new",
+					label: "New",
+					foreground: "text.primary",
+					background: "action.neutral",
+					align: "center",
+				},
+			],
+			requestRender() {},
+			onActivate() {},
+		});
+
+		expect(stripTerminalSequences(buttons.render(20)[0]!).trim()).toBe("New");
+		expect(buttons.getGeometry()?.buttons).toEqual([{ x: 7, y: 0, width: 5, height: 1, index: 0, value: "new" }]);
+	});
+
 	test("powerline separators derive exact truecolor and 256-color cap foregrounds", () => {
 		configureTuiAppearance({ iconPack: "nerd-fonts", powerline: true });
 		const pillTheme = (backgroundAnsi: string): Theme =>

@@ -88,6 +88,13 @@ export {
 	type PickerRowContext,
 } from "./controls/picker-panel.ts";
 export {
+	mountScreenIconActions,
+	type ScreenIconAction,
+	type ScreenIconActionsMount,
+	type ScreenIconActionsOptions,
+	screenIconActionsWidth,
+} from "./controls/screen-icon-actions.ts";
+export {
 	SearchableSelect,
 	type SearchableSelectOptions,
 	type SearchableSelectRowContext,
@@ -233,6 +240,14 @@ export {
 	renderDetailCard,
 } from "./overlay/detail-card.ts";
 export {
+	compositeHoverTooltip,
+	findScreenTextRect,
+	type HoverTooltipMount,
+	type HoverTooltipMountOptions,
+	type HoverTooltipTarget,
+	mountHoverTooltip,
+} from "./overlay/hover-tooltip.ts";
+export {
 	type ModalOverlayComponent,
 	type ModalOverlayMouseEvent,
 	type ModalOverlayMountOptions,
@@ -241,6 +256,32 @@ export {
 } from "./overlay/modal-mount.ts";
 export { RenderedLinesCache } from "./render-cache.ts";
 export { applyScrollbar } from "./scrollbar.ts";
+export {
+	ensureSplitPaneRegistry,
+	type MountedSplitPane,
+	mountSplitPane,
+	SPLIT_PANE_PROTOCOL,
+	SPLIT_PANE_REGISTRY_KEY,
+	type SplitPaneComponent,
+	type SplitPaneComponentFactory,
+	type SplitPaneDefinition,
+	type SplitPaneHost,
+	type SplitPanePosition,
+	type SplitPaneRegistry,
+} from "./split-pane.ts";
+export {
+	ensureSidePanelRegistry,
+	registerSidePanelProvider,
+	SIDE_PANEL_PROTOCOL,
+	SIDE_PANEL_REGISTRY_KEY,
+	type SidePanelContent,
+	type SidePanelEmptyAction,
+	type SidePanelHeaderAction,
+	type SidePanelProvider,
+	type SidePanelRegistry,
+	type SidePanelSession,
+	type SidePanelTab,
+} from "./side-panel.ts";
 export {
 	highlightSyntaxBlock,
 	SyntaxText,

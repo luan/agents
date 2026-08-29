@@ -2,6 +2,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { tuiTheme } from "../color/theme.ts";
 import { icon, type TuiIconName } from "../decoration/glyphs.ts";
+import { renderPill } from "../decoration/powerline-pill.ts";
 import type { TuiMouseEvent } from "../mouse.ts";
 
 /** One selectable item rendered by a {@link TabBar}. */
@@ -11,11 +12,7 @@ export interface Tab {
 	/** Human-readable text rendered after the optional icon. */
 	label: string;
 	/** Semantic icon resolved from the active pi-libtui icon pack on each render. */
-	icon?: TuiIconName;
-}
-
-function tabLabel(tab: Tab): string {
-	return tab.icon ? `${icon(tab.icon)} ${tab.label}` : tab.label;
+	icon?: TuiIconName | { readonly glyph: string };
 }
 
 /**
@@ -26,9 +23,17 @@ function tabLabel(tab: Tab): string {
 export class TabBar implements Component {
 	private activeIndex: number;
 	private hoverIndex: number | undefined;
-	private renderedTabs: Array<{ index: number; x: number; width: number }> = [];
+	private hoverCloseIndex: number | undefined;
+	private pressedIndex: number | undefined;
+	private pressedClose = false;
+	private dragTargetIndex: number | undefined;
+	private renderedTabs: Array<{ index: number; x: number; width: number; closeX?: number; closeWidth?: number }> = [];
 	/** Called after the active tab changes, with the selected tab and its zero-based index. */
 	onChange?: (tab: Tab, index: number) => void;
+	/** Called when a tab's shared close affordance is clicked. Defining it enables closing every tab. */
+	onClose?: (tab: Tab, index: number) => void;
+	/** Called after a primary-button drag requests a new zero-based tab position. */
+	onMove?: (tab: Tab, fromIndex: number, toIndex: number) => void;
 
 	/**
 	 * Creates a tab bar.
@@ -74,6 +79,12 @@ export class TabBar implements Component {
 	onMouse(event: TuiMouseEvent): boolean {
 		if (event.type === "leave") {
 			this.hoverIndex = undefined;
+			this.hoverCloseIndex = undefined;
+			if (event.button === undefined) {
+				this.pressedIndex = undefined;
+				this.pressedClose = false;
+				this.dragTargetIndex = undefined;
+			}
 			return false;
 		}
 		const hit =
@@ -81,7 +92,37 @@ export class TabBar implements Component {
 				? this.renderedTabs.find((tab) => event.col >= tab.x && event.col < tab.x + tab.width)
 				: undefined;
 		this.hoverIndex = hit?.index;
-		if (event.type === "release" && event.button === 0 && hit) this.select(hit.index);
+		const closeHit =
+			hit?.closeX !== undefined &&
+			hit.closeWidth !== undefined &&
+			event.col >= hit.closeX &&
+			event.col < hit.closeX + hit.closeWidth;
+		this.hoverCloseIndex = closeHit ? hit.index : undefined;
+		if (event.type === "press" && event.button === 0 && hit) {
+			this.pressedIndex = hit.index;
+			this.pressedClose = closeHit;
+			this.dragTargetIndex = hit.index;
+			return true;
+		}
+		if (event.type === "drag" && event.button === 0 && hit && this.pressedIndex !== undefined) {
+			this.dragTargetIndex = hit.index;
+			return true;
+		}
+		if (event.type === "release" && event.button === 0 && hit) {
+			const from = this.pressedIndex;
+			const tab = this.tabs[from ?? hit.index];
+			if (tab && from !== undefined && this.pressedClose && closeHit && from === hit.index) {
+				this.onClose?.(tab, from);
+			} else if (tab && from !== undefined && this.dragTargetIndex !== undefined && from !== this.dragTargetIndex) {
+				this.onMove?.(tab, from, this.dragTargetIndex);
+			} else if (from === undefined && closeHit) {
+				const direct = this.tabs[hit.index];
+				if (direct) this.onClose?.(direct, hit.index);
+			} else this.select(hit.index);
+			this.pressedIndex = undefined;
+			this.pressedClose = false;
+			this.dragTargetIndex = undefined;
+		}
 		return hit !== undefined;
 	}
 
@@ -99,23 +140,43 @@ export class TabBar implements Component {
 	render(width: number): string[] {
 		const colors = tuiTheme(this.theme);
 		const chunks = this.tabs.map((tab, index) => {
-			const label = ` ${tabLabel(tab)} `;
-			return index === this.activeIndex
-				? colors.bg("surface.selected", colors.fg("accent", label))
-				: index === this.hoverIndex
-					? colors.bg("surface.hover", colors.fg("text.secondary", label))
-					: colors.fg("text.secondary", label);
+			const active = index === this.activeIndex;
+			const close = closeGlyph
+				? ` ${colors.fg(index === this.hoverCloseIndex ? "accent" : "text.muted", closeGlyph)} `
+				: "";
+			return renderPill(
+				this.theme,
+				{ icon: tab.icon ?? false, label: `${tab.label}${close}` },
+				active ? "surface.selected" : index === this.hoverIndex ? "surface.hover" : "surface.raised",
+				active ? "accent" : "text.secondary",
+				undefined,
+				"\x1b[49m",
+			);
 		});
 		const boundedWidth = Math.max(0, Math.floor(width));
 		let x = 0;
-		this.renderedTabs = this.tabs.flatMap((tab, index) => {
-			const tabWidth = visibleWidth(` ${tabLabel(tab)} `);
+		this.renderedTabs = this.tabs.flatMap((_tab, index) => {
+			const tabWidth = visibleWidth(chunks[index] ?? "");
 			const renderedWidth = Math.max(0, Math.min(tabWidth, boundedWidth - x));
-			const span = renderedWidth > 0 ? [{ index, x, width: renderedWidth }] : [];
-			x += tabWidth + 2;
+			const closeWidth = closeGlyph ? visibleWidth(closeGlyph) : undefined;
+			const closeX = closeGlyph ? x + tabWidth - 2 - visibleWidth(closeGlyph) : undefined;
+			const span =
+				renderedWidth > 0
+					? [
+							{
+								index,
+								x,
+								width: renderedWidth,
+								...(closeX !== undefined && closeWidth !== undefined && closeX + closeWidth <= x + renderedWidth
+									? { closeX, closeWidth }
+									: {}),
+							},
+						]
+					: [];
+			x += tabWidth + 1;
 			return span;
 		});
-		return [`\x1b[49m${truncateToWidth(chunks.join("  "), boundedWidth, "")}\x1b[49m`];
+		return [`\x1b[49m${truncateToWidth(chunks.join(" "), boundedWidth, "")}\x1b[49m`];
 	}
 
 	private select(index: number): void {
