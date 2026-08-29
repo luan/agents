@@ -59,6 +59,11 @@
   "copy-mode.foldCloseAll": ["shift+m"],
   "model-roles.select": ["alt+p"],
   "subagents.open": ["alt+a"],
+  "side-panel.toggle": ["ctrl+shift+b", "super+alt+b"],
+  "side-panel.focus.next": ["alt+]"],
+  "side-panel.tab.previous": ["alt+h"],
+  "side-panel.tab.next": ["alt+l"],
+  "side-panel.zoom": ["alt+shift+z"],
   "processes.open": ["alt+s"],
   "codex.fast.toggle": ["alt+g"]
 }

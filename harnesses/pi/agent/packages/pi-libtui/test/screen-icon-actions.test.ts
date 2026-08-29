@@ -41,10 +41,10 @@ test("mounts icon-only top-right actions with pointer tooltips", () => {
 	expect(hovered).toContain("⌥");
 	expect(hovered).toContain("⇧");
 	expect(hovered).not.toContain("╭");
-	expand?.onMouse(mouse("release"));
+	expand?.onMouse(mouse("release", undefined));
 	expect(activated).toEqual(["expand"]);
 	expand?.onMouse(mouse("press"));
-	expand?.onMouse(mouse("release"));
+	expand?.onMouse(mouse("release", undefined));
 	expect(activated).toEqual(["expand", "expand"]);
 
 	visible = false;
@@ -53,14 +53,14 @@ test("mounts icon-only top-right actions with pointer tooltips", () => {
 	mount.dispose();
 });
 
-function mouse(type: "move" | "press" | "release") {
+function mouse(type: "move" | "press" | "release", button: 0 | undefined = type === "move" ? undefined : 0) {
 	return {
 		type,
 		row: 0,
 		col: 0,
 		screenRow: 0,
 		screenCol: 0,
-		button: type === "move" ? undefined : (0 as const),
+		button,
 		wheel: undefined,
 		shift: false,
 		alt: false,

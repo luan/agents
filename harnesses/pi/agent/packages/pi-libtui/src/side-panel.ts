@@ -69,12 +69,30 @@ export interface SidePanelRegistry {
 	readonly version: 1;
 	register(provider: SidePanelProvider): () => void;
 	providers(): readonly SidePanelProvider[];
-	onRegister(listener: (provider: SidePanelProvider) => void): () => void;
+	installHost(): SidePanelHost;
+	hasHost(): boolean;
+}
+
+export interface SidePanelHost {
+	attach(
+		session: object,
+		panel: SidePanelSession,
+		onError: (provider: SidePanelProvider, error: unknown) => void,
+	): () => void;
+	dispose(): void;
 }
 
 interface RegistryState {
 	readonly providers: Map<string, SidePanelProvider>;
-	readonly listeners: Set<(provider: SidePanelProvider) => void>;
+	host?: HostState;
+}
+
+interface HostState {
+	readonly identity: object;
+	session?: object;
+	panel?: SidePanelSession;
+	onError?: (provider: SidePanelProvider, error: unknown) => void;
+	readonly attachments: Map<string, { readonly provider: SidePanelProvider; readonly dispose?: () => void }>;
 }
 
 const state = new WeakMap<SidePanelRegistry, RegistryState>();
@@ -88,7 +106,8 @@ function isRegistry(value: UntrustedRegistry): value is SidePanelRegistry {
 		candidate.version === 1 &&
 		typeof candidate.register === "function" &&
 		typeof candidate.providers === "function" &&
-		typeof candidate.onRegister === "function"
+		typeof candidate.installHost === "function" &&
+		typeof candidate.hasHost === "function"
 	);
 }
 
@@ -97,10 +116,38 @@ function registryState(registry: SidePanelRegistry): RegistryState {
 	if (existing) return existing;
 	const created = {
 		providers: new Map<string, SidePanelProvider>(),
-		listeners: new Set<(provider: SidePanelProvider) => void>(),
 	};
 	state.set(registry, created);
 	return created;
+}
+
+function releaseAttachment(host: HostState, id: string): void {
+	const attachment = host.attachments.get(id);
+	if (!attachment) return;
+	host.attachments.delete(id);
+	try {
+		attachment.dispose?.();
+	} catch {
+		// Optional providers cannot block the host lifecycle.
+	}
+}
+
+function attachProvider(host: HostState, provider: SidePanelProvider): void {
+	if (!host.panel || provider.session !== host.session) return;
+	if (host.attachments.get(provider.id)?.provider === provider) return;
+	releaseAttachment(host, provider.id);
+	try {
+		host.attachments.set(provider.id, { provider, dispose: provider.attach(host.panel) });
+	} catch (error) {
+		host.onError?.(provider, error);
+	}
+}
+
+function detachSession(host: HostState): void {
+	for (const id of [...host.attachments.keys()]) releaseAttachment(host, id);
+	host.session = undefined;
+	host.panel = undefined;
+	host.onError = undefined;
 }
 
 export function ensureSidePanelRegistry(scope: typeof globalThis = globalThis): SidePanelRegistry {
@@ -111,29 +158,50 @@ export function ensureSidePanelRegistry(scope: typeof globalThis = globalThis): 
 		version: 1,
 		register(provider) {
 			const current = registryState(registry);
+			const replaced = current.providers.get(provider.id);
+			if (replaced && current.host) releaseAttachment(current.host, provider.id);
 			current.providers.set(provider.id, provider);
-			for (const listener of [...current.listeners]) {
-				try {
-					listener(provider);
-				} catch {
-					// Optional consumers must not prevent independent providers from registering.
-				}
-			}
+			if (current.host) attachProvider(current.host, provider);
 			return () => {
-				if (current.providers.get(provider.id) === provider) current.providers.delete(provider.id);
+				if (current.providers.get(provider.id) !== provider) return;
+				current.providers.delete(provider.id);
+				if (current.host?.attachments.get(provider.id)?.provider === provider) {
+					releaseAttachment(current.host, provider.id);
+				}
 			};
 		},
 		providers: () => [...registryState(registry).providers.values()],
-		onRegister(listener) {
-			registryState(registry).listeners.add(listener);
-			return () => registryState(registry).listeners.delete(listener);
+		installHost() {
+			const current = registryState(registry);
+			if (current.host) detachSession(current.host);
+			const host: HostState = { identity: {}, attachments: new Map() };
+			current.host = host;
+			return {
+				attach(session, panel, onError) {
+					if (current.host !== host) return () => {};
+					detachSession(host);
+					host.session = session;
+					host.panel = panel;
+					host.onError = onError;
+					for (const provider of current.providers.values()) attachProvider(host, provider);
+					return () => {
+						if (current.host === host && host.session === session && host.panel === panel) detachSession(host);
+					};
+				},
+				dispose() {
+					if (current.host !== host) return;
+					detachSession(host);
+					current.host = undefined;
+				},
+			};
 		},
+		hasHost: () => registryState(registry).host !== undefined,
 	};
 	registryState(registry);
 	slots[SIDE_PANEL_REGISTRY_KEY] = registry;
 	return registry;
 }
 
-export function registerSidePanelProvider(provider: SidePanelProvider): () => void {
-	return ensureSidePanelRegistry().register(provider);
+export function registerSidePanelProvider(provider: SidePanelProvider, scope: typeof globalThis): () => void {
+	return ensureSidePanelRegistry(scope).register(provider);
 }

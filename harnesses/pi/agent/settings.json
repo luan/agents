@@ -12,6 +12,7 @@
   "defaultThinkingLevel": "medium",
   "packages": [
     "packages/pi-libtui",
+    "packages/pi-side-panel",
     "packages/pi-copy-mode",
     "packages/pi-annotations",
     "packages/pi-xsettings",

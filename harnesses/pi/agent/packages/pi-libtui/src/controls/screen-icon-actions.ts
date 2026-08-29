@@ -111,9 +111,9 @@ export function mountScreenIconActions<Value extends string>(
 				}
 				hovered = action.value;
 				if (event.type === "press" && event.button === 0) pressed = action.value;
-				if (event.type === "release" && event.button === 0) {
+				if (event.type === "release") {
 					pressed = undefined;
-					options.onActivate(action.value);
+					if (event.button === 0 || event.button === undefined) options.onActivate(action.value);
 				}
 				return true;
 			},
