@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { ActivityAnimationOverrides } from "pi-libtui";
+import { registerSidePanelProvider, type ActivityAnimationOverrides } from "pi-libtui";
 import { getModelRoleCatalog } from "pi-model-roles/sdk";
 import { getSubagentConfig, registerSubagentSettings } from "./config/settings.ts";
 import { registerSubagentActions } from "./contributions/actions.ts";
@@ -18,13 +18,14 @@ import { createFollowupTaskTool } from "./tools/followup-task/definition.ts";
 import { createInterruptAgentTool } from "./tools/interrupt-agent/definition.ts";
 import { createListAgentsTool } from "./tools/list-agents/definition.ts";
 import { createRepeatBreaker, withRepeatBreaker } from "./tools/repeat-breaker.ts";
-import { createSendMessageTool } from "./tools/send-message/definition.ts";
 import type { CollaborationToolScope } from "./tools/scope.ts";
+import { createSendMessageTool } from "./tools/send-message/definition.ts";
 import { createSpawnAgentTool } from "./tools/spawn-agent/definition.ts";
 import { createWaitAgentTool } from "./tools/wait-agent/definition.ts";
+import { openAgentHub } from "./ui/agent-browser.ts";
+import { AgentHubPresentation } from "./ui/agent-hub-presentation.ts";
 import { AgentWidget } from "./ui/agent-widget.ts";
 import { CoordinatorSnapshotSource } from "./ui/coordinator-snapshot-source.ts";
-import { openAgentHub } from "./ui/agent-browser.ts";
 import {
 	createWaitToolPresentation,
 	followupToolPresentation,
@@ -61,6 +62,8 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	let widget: AgentWidget | undefined;
 	let unsubscribeRouting: (() => void) | undefined;
 	let unregisterAction: (() => void) | undefined;
+	let unregisterSidePanelProvider: (() => void) | undefined;
+	let hubPresentation: AgentHubPresentation | undefined;
 	const persistedStates = new Map<string, string>();
 
 	const requireCoordinator = (): SubagentCoordinator => {
@@ -124,13 +127,31 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	};
 	const openHub = async (context: Pick<ExtensionContext, "hasUI" | "ui">, initialAgentId?: string): Promise<void> => {
 		if (!ownsRoot || !source) return;
-		await openAgentHub(context, source, getPresentationResolver, initialAgentId);
+		if (!hubPresentation) {
+			await openAgentHub(context, source, Date.now, getPresentationResolver, initialAgentId);
+			return;
+		}
+		await hubPresentation.open(context, config.agentHubPresentation, initialAgentId);
 	};
 	const attachRootPresentation = (context: ExtensionContext): void => {
 		if (!coordinator) return;
 		ownsRoot = true;
 		source = new CoordinatorSnapshotSource(coordinator);
-		unregisterAction = registerSubagentActions({ open: openHub });
+		hubPresentation = new AgentHubPresentation(source, Date.now, getPresentationResolver);
+		unregisterSidePanelProvider?.();
+		unregisterSidePanelProvider = registerSidePanelProvider(
+			{
+				id: "pi-subagents.agent-hub",
+				session: context,
+				attach(panel) {
+					return hubPresentation?.attach(panel);
+				},
+			},
+			globalThis,
+		);
+		unregisterAction = registerSubagentActions({
+			open: openHub,
+		});
 		if (context.hasUI) {
 			widget = new AgentWidget(source, (agentId) => void openHub(context, agentId), agentWidgetAnimation(config));
 			widget.setUICtx(context.ui);
@@ -142,6 +163,10 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		deliverMailbox();
 	};
 	const detachRootPresentation = (): void => {
+		unregisterSidePanelProvider?.();
+		unregisterSidePanelProvider = undefined;
+		hubPresentation?.closeSidePanel();
+		hubPresentation = undefined;
 		unregisterAction?.();
 		unregisterAction = undefined;
 		widget?.dispose();
@@ -153,6 +178,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		if (unregisterSettings) return;
 		unregisterSettings = registerSubagentSettings(() => {
 			config = getSubagentConfig();
+			if (config.agentHubPresentation === "fullscreen") hubPresentation?.closeSidePanel();
 			widget?.setAnimation(agentWidgetAnimation(config));
 		});
 		config = getSubagentConfig();

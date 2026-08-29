@@ -4,16 +4,16 @@ import {
 	type AgentSession,
 	type AgentSessionEvent,
 	type AgentSessionRuntime,
+	type CreateAgentSessionRuntimeResult,
 	createAgentSession,
 	createAgentSessionRuntime,
-	type CreateAgentSessionRuntimeResult,
 	DefaultResourceLoader,
 	type ExtensionAPI,
 	type ExtensionContext,
 	getAgentDir,
 	type ModelRuntime,
-	SessionManager,
 	type SessionEntry,
+	SessionManager,
 	type SessionStartEvent,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
@@ -42,7 +42,12 @@ export interface ToolActivity {
 export interface RunOptions {
 	pi: ExtensionAPI;
 	agentConfig: AgentConfig;
-	collaboration?: { agentPath: string; maxConcurrency: number; maxDepth: number };
+	collaboration?: {
+		agentPath: string;
+		maxConcurrency: number;
+		maxDepth: number;
+		completionDelivery?: "none" | "parent";
+	};
 	signal?: AbortSignal;
 	cwd?: string;
 	sessionDir?: string;

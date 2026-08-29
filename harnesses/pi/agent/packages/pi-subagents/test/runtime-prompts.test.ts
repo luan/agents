@@ -17,3 +17,14 @@ test("uses the generic role only when no parent prompt exists", () => {
 	expect(buildAgentPrompt()).toContain("general-purpose coding agent");
 	expect(buildAgentPrompt("parent role")).toBe("parent role");
 });
+
+test("describes transcript-only completion without claiming mailbox delivery", () => {
+	const prompt = buildAgentPrompt("parent role", {
+		agentPath: "/root/retained",
+		maxConcurrency: 8,
+		maxDepth: 2,
+		completionDelivery: "none",
+	});
+	expect(prompt).toContain("responses remain in this session transcript");
+	expect(prompt).not.toContain("final response is delivered automatically");
+});

@@ -2,15 +2,15 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SESSION_HIERARCHY, type SessionHierarchyEntry } from "../src/protocol/session-hierarchy.ts";
 import {
 	type CoordinatorOptions,
 	createRootCoordinator,
 	removeRootCoordinator,
 	SubagentCoordinator,
-	subagentSessionDir,
 	type SubagentTreeCheckpoint,
+	subagentSessionDir,
 } from "../src/runtime/coordinator.ts";
-import { SESSION_HIERARCHY, type SessionHierarchyEntry } from "../src/protocol/session-hierarchy.ts";
 
 function deferred<T>() {
 	let resolve!: (value: T) => void;
@@ -129,6 +129,7 @@ test("uses the root session directory and rejects ambiguous task names", () => {
 	expect(subagentSessionDir("/tmp/root", "/root/parent/child")).toBe("/tmp/root/subagents/parent/child");
 	const coordinator = new SubagentCoordinator("root", { maxConcurrency: 1 });
 	expect(() => coordinator.spawn(undefined, request("bad--name"))).toThrow("single hyphens");
+	expect(() => coordinator.spawn(undefined, request("side"))).toThrow("reserved");
 });
 
 test("returns immutable snapshots and queues explicit mailbox messages exactly once", async () => {
@@ -185,6 +186,33 @@ test("delivers successful nested finals to the direct parent without forging fai
 	expect(coordinator.drainMailbox("/root/parent")).toEqual([]);
 	coordinator.dispose();
 	removeRootCoordinator("nested-mailbox");
+});
+
+test("can retain a successful session without delivering its final response", async () => {
+	const session = fakeSession([], []);
+	const runtime = { session, dispose: async () => {} } as never;
+	const run: CoordinatorOptions["run"] = ((_ctx: object, _message: string, options: object) => {
+		const callbacks = options as {
+			onRuntimeCreated(runtime: never): void;
+			onSessionCreated(session: never): void;
+		};
+		callbacks.onRuntimeCreated(runtime);
+		callbacks.onSessionCreated(session);
+		return Promise.resolve({ responseText: "side result", session, runtime });
+	}) as never;
+	const coordinator = createRootCoordinator("retained-root", { maxConcurrency: 2, run });
+	coordinator.spawn(undefined, { ...request("retained"), completionDelivery: "none" });
+	await flushPromises();
+
+	expect(coordinator.snapshot().find(({ id }) => id === "/root/retained")?.status).toBe("idle");
+	expect(coordinator.drainMailbox("/root")).toEqual([]);
+	expect(coordinator.persistedAgent("/root/retained")?.completionDelivery).toBe("none");
+	const restored = new SubagentCoordinator("restored-retained");
+	restored.restore({ version: 1, agents: coordinator.checkpoint().agents });
+	expect(restored.persistedAgent("/root/retained")?.completionDelivery).toBe("none");
+	restored.dispose();
+	coordinator.dispose();
+	removeRootCoordinator("retained-root");
 });
 
 test("reserves one concurrency slot for the root", () => {

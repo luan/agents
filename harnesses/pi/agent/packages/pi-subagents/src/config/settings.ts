@@ -5,6 +5,7 @@ export type SubagentConfig = {
 	readonly maxConcurrency: number;
 	readonly maxDepth: number;
 	readonly agentWidgetIndicator: SubagentSettings["agentWidgetIndicator"];
+	readonly agentHubPresentation: SubagentSettings["agentHubPresentation"];
 };
 
 const definitions = {
@@ -39,11 +40,26 @@ const definitions = {
 		page: "animations",
 		section: "Agents",
 		preview: "activity-marker",
+		apply: "live",
 		type: "enum",
 		default: "inherit",
 		options: [
 			{ value: "inherit", label: "Inherit", description: "Use the default TUI activity indicator." },
 			...TUI_ACTIVITY_INDICATOR_OPTIONS,
+		],
+	},
+	agentHubPresentation: {
+		label: "Agent Hub presentation",
+		description: "Choose where the Agent Hub opens when a side-panel host is available.",
+		category: "appearance",
+		page: "ui",
+		section: "Subagents",
+		apply: "live",
+		type: "enum",
+		default: "side-panel",
+		options: [
+			{ value: "side-panel", label: "Side panel", description: "Open the Agent Hub beside the main session." },
+			{ value: "fullscreen", label: "Fullscreen", description: "Open the Agent Hub as a fullscreen overlay." },
 		],
 	},
 } as const satisfies Record<string, SettingDefinitionInput>;
@@ -58,6 +74,7 @@ export function getSubagentConfig(): SubagentConfig {
 		maxConcurrency: Number(current.maxConcurrency),
 		maxDepth: Number(current.maxDepth),
 		agentWidgetIndicator: current.agentWidgetIndicator,
+		agentHubPresentation: current.agentHubPresentation,
 	};
 }
 

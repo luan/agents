@@ -27,6 +27,20 @@ test("registers the Agent Widget indicator override in the Agents animation sect
 		expect(definition.options.map((option) => option.value)).toEqual(
 			expect.arrayContaining(["inherit", "off", "spinner", "nerd-pi-orbit"]),
 		);
+		const presentation = ensureXSettingsRegistry().registrations["pi-subagents"]?.definitions.find(
+			(candidate) => candidate.key === "agentHubPresentation",
+		);
+		expect(DEFAULT_SUBAGENT_SETTINGS.agentHubPresentation).toBe("side-panel");
+		expect(presentation).toMatchObject({
+			category: "appearance",
+			page: "ui",
+			section: "Subagents",
+			type: "enum",
+			default: "side-panel",
+		});
+		if (presentation?.type !== "enum" || !Array.isArray(presentation.options))
+			throw new Error("Agent Hub presentation must be an enum");
+		expect(presentation.options.map((option) => option.value)).toEqual(["side-panel", "fullscreen"]);
 	} finally {
 		unregister();
 	}

@@ -6,8 +6,8 @@ import {
 	buildSessionContext,
 	type ExtensionAPI,
 	type ExtensionContext,
-	SessionManager,
 	type SessionEntry,
+	SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import { type ForkTurns, selectForkedHistory } from "../core/fork-history.ts";
 import type { AgentConfig, AgentModelRole } from "../core/types.ts";
@@ -56,6 +56,7 @@ export type CoordinatorUpdate =
 	| { type: "transcript"; target: string };
 
 export type CollaborationMessageType = "MESSAGE" | "FINAL_ANSWER";
+export type CompletionDeliveryPolicy = "none" | "parent";
 
 export interface CollaborationDelivery {
 	readonly id: number;
@@ -81,6 +82,8 @@ export interface SpawnRequest {
 	forkTurns?: ForkTurns;
 	cwd?: string;
 	signal?: AbortSignal;
+	/** Where a successful final response is delivered. Defaults to the direct parent. */
+	completionDelivery?: CompletionDeliveryPolicy;
 }
 
 export interface PersistedSubagentState {
@@ -104,6 +107,7 @@ export interface PersistedSubagentState {
 	readonly transcriptFile?: string;
 	readonly transcriptGeneration: number;
 	readonly forkNonBoundaryTimestamps?: readonly number[];
+	readonly completionDelivery?: CompletionDeliveryPolicy;
 }
 
 export interface SubagentTreeCheckpoint {
@@ -190,6 +194,7 @@ function isPersistedAgentState(value: object | null | undefined): value is Persi
 	const status = "status" in value ? value.status : undefined;
 	const requestedRole = "requestedRole" in value ? value.requestedRole : undefined;
 	const role = "modelRole" in value ? value.modelRole : undefined;
+	const completionDelivery = "completionDelivery" in value ? value.completionDelivery : undefined;
 	return (
 		"cwd" in value &&
 		typeof value.cwd === "string" &&
@@ -227,7 +232,8 @@ function isPersistedAgentState(value: object | null | undefined): value is Persi
 			(Array.isArray(value.forkNonBoundaryTimestamps) &&
 				value.forkNonBoundaryTimestamps.every(
 					(timestamp) => typeof timestamp === "number" && Number.isFinite(timestamp),
-				)))
+				))) &&
+		(completionDelivery === undefined || completionDelivery === "parent" || completionDelivery === "none")
 	);
 }
 
@@ -383,6 +389,7 @@ function persistedStateOf(agent: LiveAgent): PersistedSubagentState {
 		transcriptFile: agent.session?.sessionManager.getSessionFile?.() ?? agent.transcriptFile,
 		transcriptGeneration: agent.transcriptGeneration,
 		forkNonBoundaryTimestamps: Object.freeze([...agent.forkNonBoundaryTimestamps].sort((a, b) => a - b)),
+		completionDelivery: agent.completionDelivery,
 	});
 }
 
@@ -419,6 +426,9 @@ export class SubagentCoordinator {
 		if (depth(parent) >= this.maxDepth) throw new Error(`Agent depth limit ${this.maxDepth} reached at ${parent}`);
 		if (!canonicalTaskName(request.taskName))
 			throw new Error("task_name must use lowercase letters, digits, and single hyphens");
+		if (!callerPath && request.taskName === "side" && request.completionDelivery !== "none") {
+			throw new Error('task_name "side" is reserved for the interactive side session');
+		}
 		const id = `${parent}/${request.taskName}`;
 		if (this.agents.has(id)) throw new Error(`task_name "${request.taskName}" is already used by ${id}`);
 		const messages = buildSessionContext(
@@ -439,6 +449,7 @@ export class SubagentCoordinator {
 			tokenCount: 0,
 			compactions: 0,
 			requestedRole: request.agentConfig.role,
+			completionDelivery: request.completionDelivery ?? "parent",
 			transcriptGeneration: 0,
 			compacting: false,
 			activeTools: [],
@@ -554,6 +565,7 @@ export class SubagentCoordinator {
 				contextPercent: saved.contextPercent,
 				compactions: saved.compactions,
 				requestedRole: saved.requestedRole,
+				completionDelivery: saved.completionDelivery ?? "parent",
 				modelRole: saved.modelRole ? { ...saved.modelRole } : undefined,
 				transcriptGeneration: saved.transcriptGeneration,
 				transcriptFile,
@@ -720,7 +732,12 @@ export class SubagentCoordinator {
 		void this.run(request.ctx, initialMessage, {
 			pi: request.pi,
 			agentConfig: request.agentConfig,
-			collaboration: { agentPath: agent.id, maxConcurrency: this.maxConcurrency, maxDepth: this.maxDepth },
+			collaboration: {
+				agentPath: agent.id,
+				maxConcurrency: this.maxConcurrency,
+				maxDepth: this.maxDepth,
+				completionDelivery: agent.completionDelivery,
+			},
 			cwd: request.cwd,
 			sessionDir: subagentSessionDir(this.rootSessionDir ?? request.ctx.sessionManager.getSessionDir(), agent.id),
 			signal: agent.abortController.signal,
@@ -840,7 +857,9 @@ export class SubagentCoordinator {
 		agent.error = result.error;
 		agent.status = result.error ? "failed" : "idle";
 		agent.completedAt = Date.now();
-		if (!result.error) this.enqueueDelivery("FINAL_ANSWER", agent.parentId ?? "/root", agent.id, result.responseText);
+		if (!result.error && agent.completionDelivery !== "none") {
+			this.enqueueDelivery("FINAL_ANSWER", agent.parentId ?? "/root", agent.id, result.responseText);
+		}
 		this.emit({ type: "settled", agent: snapshotOf(agent) });
 		this.drain();
 	}

@@ -42,6 +42,7 @@ test("agent transcripts use the child session's tool renderer and retain it acro
 		tui,
 		theme,
 		() => {},
+		() => 1_000,
 		() => ({
 			resolveTool(name) {
 				resolutions++;
@@ -77,6 +78,7 @@ test("agent transcript detail supports mouse-wheel scrolling and displays a scro
 		tui,
 		theme,
 		() => {},
+		() => 1_000,
 		() => ({
 			resolveTool: () => ({
 				name: "custom_tool",
@@ -111,7 +113,13 @@ test("agent transcript embeds the real user renderer without terminal-wide zones
 	};
 	const source = { getSnapshot: () => agentSnapshot(transcript), subscribe: () => () => {} };
 	const tui = { terminal: { rows: 12 }, requestRender() {} } as never;
-	const hub = new AgentHub(source, tui, theme, () => {});
+	const hub = new AgentHub(
+		source,
+		tui,
+		theme,
+		() => {},
+		() => 1_000,
+	);
 
 	const rendered = hub.render(90).join("\n");
 	expect(stripTerminalSequences(rendered)).toContain("nested user message");
@@ -129,7 +137,15 @@ test("opens with the clicked widget agent selected", () => {
 	};
 	const source = { getSnapshot: () => snapshot, subscribe: () => () => {} };
 	const tui = { terminal: { rows: 12 }, requestRender() {} } as never;
-	const hub = new AgentHub(source, tui, theme, () => {}, undefined, "/root/second");
+	const hub = new AgentHub(
+		source,
+		tui,
+		theme,
+		() => {},
+		() => 1_000,
+		undefined,
+		"/root/second",
+	);
 
 	const rendered = stripTerminalSequences(hub.render(90).join("\n"));
 	expect(rendered).toContain("second transcript");

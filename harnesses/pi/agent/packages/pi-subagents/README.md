@@ -52,11 +52,9 @@ In Pi's interactive TUI:
 /retry /root/review     retry one failed subagent
 ```
 
-The package registers the `subagents.open` action. It does not register a
-shortcut directly. This repository binds the action to `alt+a` in the managed
-`keybindings.json`; reload Pi after changing that file.
-
-Every agent gets a separate transcript beneath the root session directory.
+Every agent gets a separate transcript beneath the root session directory. A
+root started with `--no-session` keeps those transcripts in temporary storage
+instead of the working directory.
 Root-session checkpoints preserve the tree across reload, resume, fork, clone,
 and tree navigation. Shutting down an agent does not delete its transcript.
 
@@ -77,6 +75,7 @@ pi-subagents.maxDepth = "2"
 
 [appearance]
 pi-subagents.agentWidgetIndicator = "inherit"
+pi-subagents.agentHubPresentation = "side-panel"
 ```
 
 `maxConcurrency` counts the root agent, so `8` provides seven simultaneous
@@ -85,6 +84,9 @@ subagent slots. The available values are `2`, `4`, `8`, `16`, and `32`.
 `4`. The compiled defaults are concurrency `8` and depth `2`, including when
 the xsettings host is absent. Changed limits apply when an idle root tree
 reloads; an active tree keeps its original limits until its agents settle.
+The Agent Hub defaults to a side-panel tab. Set `agentHubPresentation` to
+`"fullscreen"` for the original overlay. If `pi-side-panel` is not installed,
+the side-panel choice falls back to that fullscreen overlay.
 
 Model choice comes from `pi-model-roles`. A spawn can select a role explicitly;
 otherwise it uses that package's configured subagent default role. Forking can
@@ -111,7 +113,7 @@ inherits the global activity indicator by default and can be overridden live.
 | State and mailbox owner | `src/runtime/coordinator.ts`; each child Pi session owns its transcript |
 | Agent execution and prompt assembly | `src/runtime/agent-runner.ts`, `src/core/prompts.ts`, and `src/core/types.ts` |
 | History forking and nested activity | `src/core/fork-history.ts` and `src/runtime/nested-tool-activity.ts` |
-| Native boundary | None; the package uses Pi's session, model, and tool APIs directly |
+| Native boundary | Pi's session, model, and tool APIs |
 | Typed settings | `src/config/settings.ts` via `pi-xsettings/sdk` |
 | Keyboard action | `src/contributions/actions.ts` via `pi-libactions/sdk` |
 | Presentation owner | `src/ui/agent-browser.ts`, `src/ui/agent-summary.ts`, `src/ui/agent-tree.ts`, `src/ui/agent-widget.ts`, and `src/ui/tool-presentations.ts` using `pi-libtui`; `src/protocol/presentation.ts` bridges child renderer capabilities |

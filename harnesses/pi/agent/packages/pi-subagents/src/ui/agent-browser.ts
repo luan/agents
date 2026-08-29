@@ -195,7 +195,7 @@ export class AgentTranscriptRenderer {
 	}
 }
 
-/** Read-only full-screen Agent Hub backed by immutable coordinator snapshots. */
+/** Read-only Agent Hub backed by immutable coordinator snapshots. */
 export class AgentHub {
 	focused = true;
 	private snapshot: AgentHubSnapshot;
@@ -218,6 +218,7 @@ export class AgentHub {
 		private readonly tui: TUI,
 		private readonly theme: HostTheme,
 		private readonly done: () => void,
+		private readonly now: () => number,
 		private readonly resolvePresentation: AgentPresentationResolverLookup = () => undefined,
 		initialAgentId?: string,
 	) {
@@ -237,7 +238,7 @@ export class AgentHub {
 			requestRender: () => this.tui.requestRender(),
 			onSelectionChange: ({ agent }) => this.selectAgent(agent.id),
 			onActivate: ({ agent }) => this.selectAgent(agent.id),
-			renderItem: (row, context) => this.agentRow(row, context.selected || context.hovered, Date.now()),
+			renderItem: (row, context) => this.agentRow(row, context.selected || context.hovered, this.now()),
 		});
 		this.bindTranscript();
 		this.unsubscribe = source.subscribe((snapshot) => {
@@ -423,13 +424,14 @@ export class AgentHub {
 export async function openAgentHub(
 	ctx: Pick<ExtensionContext, "hasUI" | "ui">,
 	source: AgentHubSnapshotSource,
+	now: () => number,
 	resolvePresentation?: AgentPresentationResolverLookup,
 	initialAgentId?: string,
 ): Promise<void> {
 	if (!ctx.hasUI || !ctx.ui.custom) return;
 	await ctx.ui.custom<void>(
 		(tui, theme, _keys, done) => {
-			const hub = new AgentHub(source, tui, theme, done, resolvePresentation, initialAgentId);
+			const hub = new AgentHub(source, tui, theme, done, now, resolvePresentation, initialAgentId);
 			return new FullscreenOverlay(tui, theme, hub, { label: "Agent Hub", icon: "developer" });
 		},
 		{ overlay: true, overlayOptions: fullscreenOverlayOptions() },
