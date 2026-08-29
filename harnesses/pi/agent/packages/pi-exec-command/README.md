@@ -126,12 +126,13 @@ publishes immutable bounded snapshots and raw PTY updates; the owning Rust
 bridge remains authoritative for input, resize, interrupt, termination, exit,
 and reap behavior.
 
-While a process is running, its original `exec_command` transcript row stays
-live from those same snapshots. A compact above-editor widget and status item
-also show running processes when that row is offscreen; both disappear when no
-processes remain active. The widget uses the terminal icon, renders a configurable
-activity indicator and dimmed shell syntax for each process, and opens that
-process directly in the Process Hub when clicked.
+The original `exec_command` transcript row stays live from those same snapshots.
+A compact above-editor widget and status item also show running processes when
+that row is offscreen; both disappear when no processes remain active. The
+widget uses the terminal icon, renders a configurable activity indicator and
+dimmed shell syntax for each process, and opens that process directly in the
+Process Hub when clicked. Running commands never claim the generic split-pane
+slot automatically.
 
 In the process list:
 
