@@ -1,0 +1,31 @@
+{
+  "name": "pi-tuicr",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Tuicr review integration with optional side-panel tabs",
+  "type": "module",
+  "keywords": ["pi-package"],
+  "exports": { ".": "./src/index.ts" },
+  "pi": {
+    "extensions": ["./src/extension.ts", "./node_modules/pi-libtui/src/extension.ts"]
+  },
+  "dependencies": {
+    "pi-libactions": "workspace:*",
+    "pi-libtui": "workspace:*"
+  },
+  "bundledDependencies": ["pi-libactions", "pi-libtui"],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.2",
+    "@earendil-works/pi-tui": "0.84.2"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.2",
+    "@earendil-works/pi-tui": "0.84.2",
+    "@types/bun": "^1.3.0",
+    "typescript": "^6.0.3"
+  },
+  "scripts": {
+    "typecheck": "tsc --build",
+    "test": "bun test --only-failures test"
+  }
+}

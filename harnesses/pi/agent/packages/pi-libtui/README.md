@@ -82,7 +82,7 @@ The root library surface keeps these implementation boundaries:
 | Layout and rendering infrastructure | `src/background-surface.ts`, `src/component-stack.ts`, `src/line-layout.ts`, `src/render-cache.ts`, `src/scrollbar.ts` |
 | Fullscreen split panes | `src/split-pane.ts` and `src/host/split-pane-bridge.ts` |
 | Side-panel contribution protocol | `src/side-panel.ts` |
-| Overlays | `src/overlay/anchored.ts`, `src/overlay/dialog.ts`, `src/overlay/fullscreen.ts`, `src/overlay/hover-tooltip.ts`, `src/overlay/modal-mount.ts` |
+| Overlays | `src/overlay/anchored.ts`, `src/overlay/dialog.ts`, `src/overlay/floating.ts`, `src/overlay/fullscreen.ts`, `src/overlay/hover-tooltip.ts`, `src/overlay/modal-mount.ts` |
 | Actions and navigation | `src/controls/action-panel.ts`, `src/controls/dialog-button-bar.ts`, `src/controls/screen-icon-actions.ts`, `src/controls/selection-action-bar.ts` (including fullscreen mounting), `src/controls/tab.ts` |
 | Choices and fields | `src/controls/selectable-list.ts`, `src/controls/semantic-input.ts`, `src/controls/searchable-select.ts`, `src/controls/picker-panel.ts`, `src/controls/multi-select.ts` |
 | Text content | `src/content/text.ts` |

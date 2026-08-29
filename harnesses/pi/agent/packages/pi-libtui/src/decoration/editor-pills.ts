@@ -1,6 +1,6 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import type { TuiForegroundColor } from "../color/theme.ts";
+import { type TuiForegroundColor, tuiTheme } from "../color/theme.ts";
 import type { PillContent } from "./glyphs.ts";
 import { backgroundAnsiAtColumn, contrastingPillBackground, renderPill } from "./powerline-pill.ts";
 
@@ -35,6 +35,8 @@ export interface EditorTokenPillResult {
 	pills: readonly EditorTokenPillGeometry[];
 }
 
+const NO_PILLS: readonly EditorTokenPillGeometry[] = [];
+
 function escapeRegExp(value: string): string {
 	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -46,11 +48,14 @@ export function renderEditorTokenPills(
 	theme: Theme,
 	tokens: readonly EditorTokenPresentation[],
 ): EditorTokenPillResult {
+	const present = tokens.filter(
+		(presentation) => presentation.token && lines.some((line) => line.includes(presentation.token)),
+	);
+	if (present.length === 0) return { lines: [...lines], pills: NO_PILLS };
 	const boundedWidth = Math.max(0, Math.floor(width));
 	const pills: EditorTokenPillGeometry[] = [];
 	let rendered = [...lines];
-	for (const presentation of tokens) {
-		if (!presentation.token) continue;
+	for (const presentation of present) {
 		const escaped = escapeRegExp(presentation.token);
 		const pattern = new RegExp(`(?:\\x1b\\[7m(${escaped})\\x1b\\[0m)|(${escaped})`, "gu");
 		rendered = rendered.map((line, lineIndex) =>
@@ -78,6 +83,7 @@ export function renderEditorPasteMarkerPills(
 	width: number,
 	theme: Theme,
 ): EditorTokenPillResult {
+	if (!lines.some((line) => line.includes("[paste #"))) return { lines: [...lines], pills: NO_PILLS };
 	const boundedWidth = Math.max(0, Math.floor(width));
 	const pills: EditorTokenPillGeometry[] = [];
 	const rendered = lines.map((line, lineIndex) =>
@@ -131,7 +137,9 @@ function replaceMatches(
 					inverse: inverseValue !== undefined,
 				});
 			} else {
-				const background = contrastingPillBackground(theme, destination);
+				const colors = tuiTheme(theme);
+				const contrast = contrastingPillBackground(theme, destination);
+				const background = colors.mixForeground(colors.contrastBackground(contrast), contrast, 0.2);
 				pill = renderPill(theme, content, background, "text.primary", undefined, destination);
 			}
 			const pillWidth = visibleWidth(pill);

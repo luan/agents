@@ -48,7 +48,10 @@ export {
 	type TuiShade,
 	type TuiSwatch,
 	type TuiTheme,
+	type TuiThemeAppearance,
+	type TuiThemeVariation,
 	tuiTheme,
+	tuiThemeAppearance,
 } from "./color/theme.ts";
 export {
 	ComponentStack,
@@ -230,6 +233,7 @@ export {
 	type FramedEditorOverlayOptions,
 } from "./overlay/framed-editor.ts";
 export { FullscreenOverlay, fullscreenOverlayOptions } from "./overlay/fullscreen.ts";
+export { FloatingOverlay, type FloatingOverlayOptions } from "./overlay/floating.ts";
 export {
 	decorateDetailCard,
 	type DetailCardContent,

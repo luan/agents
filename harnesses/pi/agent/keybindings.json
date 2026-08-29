@@ -64,6 +64,7 @@
   "side-panel.chat.new": ["alt+i"],
   "side-panel.tab.previous": ["alt+h"],
   "side-panel.tab.next": ["alt+l"],
+  "side-panel.tuicr.open": ["ctrl+shift+g"],
   "side-panel.zoom": ["alt+shift+z"],
   "processes.open": ["alt+s"],
   "codex.fast.toggle": ["alt+g"]

@@ -12,14 +12,28 @@ const theme = {
 } as never as Theme;
 
 describe("editor token pills", () => {
-	test("chooses a pill surface distinct from the editor destination", () => {
+	test("chooses a subdued pill surface distinct from a dark editor destination", () => {
 		const destination = "\x1b[48;2;30;34;42m";
 		const rendered = renderEditorPasteMarkerPills([`${destination}[paste #1 +30 lines]\x1b[49m`], 40, theme).lines[0]!;
 		const backgrounds = [...rendered.matchAll(/\x1b\[48;2;\d+;\d+;\d+m/gu)].map((match) => match[0]);
 		expect(backgrounds).toContain(destination);
-		expect(backgrounds.some((background) => background !== destination)).toBe(true);
+		expect(backgrounds).toContain("\x1b[48;2;68;71;78m");
 		expect(stripTerminalSequences(rendered)).toContain("paste #1 +30 lines");
 		expect(parseBackgroundAnsi(backgrounds.find((background) => background !== destination) ?? "")).toBeDefined();
+	});
+
+	test("chooses a subdued pill surface distinct from a light editor destination", () => {
+		const lightTheme = {
+			name: "light-editor-token-test",
+			getColorMode: () => "truecolor",
+			getFgAnsi: () => "\x1b[38;2;25;25;25m",
+			getBgAnsi: () => "\x1b[48;2;235;235;235m",
+		} as never as Theme;
+		const destination = "\x1b[48;2;235;235;235m";
+		const rendered = renderEditorPasteMarkerPills([`${destination}[paste #1 +30 lines]\x1b[49m`], 40, lightTheme)
+			.lines[0]!;
+
+		expect(rendered).toContain("\x1b[48;2;193;193;193m");
 	});
 
 	test("renders a private atomic token without changing the cursor text around it", () => {
@@ -33,6 +47,7 @@ describe("editor token pills", () => {
 		expect(plain).toContain(" after");
 		expect(rendered).not.toContain(token);
 		expect(rendered).toContain(tuiTheme(theme).fgAnsi({ hue: "magenta", shade: 2 }));
+		expect(rendered).toContain("\x1b[48;2;68;71;78m");
 	});
 
 	test("lets a feature renderer preserve inverse and destination state", () => {

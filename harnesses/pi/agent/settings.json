@@ -14,6 +14,7 @@
     "packages/pi-libtui",
     "packages/pi-side-panel",
     "packages/pi-side-chat",
+    "packages/pi-tuicr",
     "packages/pi-copy-mode",
     "packages/pi-annotations",
     "packages/pi-xsettings",
