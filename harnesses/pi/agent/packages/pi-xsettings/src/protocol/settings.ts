@@ -14,6 +14,7 @@ export type SettingPreview =
 	| "pulse-effect"
 	| "animation-speed"
 	| "animation-smoothness";
+export type SettingApply = "live" | "reload";
 export type SettingValue = boolean | number | string | SettingValue[] | { [key: string]: SettingValue };
 
 export interface SettingOption {
@@ -76,6 +77,7 @@ interface SettingDefinitionBase {
 	page?: SettingPage;
 	section?: string;
 	preview?: SettingPreview;
+	apply?: SettingApply;
 }
 
 export type SettingDefinition =

@@ -64,6 +64,7 @@ const TEMPLATES = [
 		description: "Color theme used by Pi.",
 		category: "appearance",
 		section: "Style",
+		apply: "live",
 		type: "enum",
 		default: "dark",
 		options: [],

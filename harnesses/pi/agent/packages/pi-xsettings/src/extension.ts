@@ -6,21 +6,38 @@ import {
 	FullscreenOverlay,
 	fullscreenOverlayOptions,
 	offsetDialogHost,
+	registerSidePanelProvider,
+	type SidePanelSession,
 } from "pi-libtui";
-import { configuredPiValues, piSettingDefinitions, syncPiSettingsJson } from "./config/pi-settings.ts";
-import { type SettingsRecord, XSettingsStore } from "./config/store.ts";
+import { configuredPiValues, syncPiSettingsJson } from "./config/pi-settings.ts";
+import { XSettingsStore } from "./config/store.ts";
+import {
+	DEFAULT_XSETTINGS_PRESENTATION_SETTINGS,
+	registerXSettingsPresentationSettings,
+} from "./config/presentation.ts";
 import { registerTuiSettings, tuiSettings } from "./config/tui-settings.ts";
-import { ensureXSettingsRegistry, type SettingRegistration } from "./protocol/settings.ts";
+import { ensureXSettingsRegistry } from "./protocol/settings.ts";
 import { attachActionShortcuts } from "./runtime/actions.ts";
-import { applyLiveTheme, applySavedSettings } from "./runtime/apply.ts";
 import { publishAllSettings, resolveRegistrationValues } from "./runtime/settings.ts";
-import { storedEnumValue, toUiField } from "./ui/fields.ts";
-import { type SettingsScreenField, XSettingsScreen } from "./ui/xsettings-screen.ts";
+import { XSettingsEditorSession } from "./ui/editor-session.ts";
+
+const SETTINGS_TAB_ID = "pi-xsettings.settings";
 
 export default function xsettingsExtension(pi: ExtensionAPI): void {
 	const store = new XSettingsStore();
 	const registry = ensureXSettingsRegistry();
 	const unregisterTuiSettings = registerTuiSettings();
+	let presentation = DEFAULT_XSETTINGS_PRESENTATION_SETTINGS.presentation;
+	let panel: SidePanelSession | undefined;
+	let panelContext: ExtensionContext | undefined;
+	let panelEditor: XSettingsEditorSession | undefined;
+	let panelTabOpen = false;
+	let removeEmptyAction: (() => void) | undefined;
+	let unregisterSidePanelProvider: (() => void) | undefined;
+	const unregisterPresentationSettings = registerXSettingsPresentationSettings((settings) => {
+		presentation = settings.presentation;
+		if (presentation === "fullscreen") closePanelEditor();
+	});
 	const detachShortcuts = attachActionShortcuts(pi, loadActionKeybindings());
 	const initialization = initialize();
 	const pendingRegistrations = new Set<Promise<void>>();
@@ -58,76 +75,39 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 		}
 		await initialization;
 		await settleRegistrations();
-		let settingsChanged = false;
-		let reloadRequired = false;
-		let document = await store.load();
-		const piDefinitions = piSettingDefinitions(pi, ctx);
-		const registrations = Object.values(registry.registrations).filter(
-			(value): value is SettingRegistration => value !== undefined,
-		);
-		const registrationValues = new Map(
-			registrations.map((registration) => [registration.namespace, resolveRegistrationValues(registration, document)]),
-		);
-		const fields: SettingsScreenField[] = [
-			...piDefinitions.map((definition) => toUiField(document, undefined, definition)),
-			...registrations.flatMap((registration) =>
-				registration.definitions.map((definition) =>
-					toUiField(document, registration, definition, registrationValues.get(registration.namespace)),
-				),
-			),
-		];
-		const enabledModels = piDefinitions.find((definition) => definition.key === "enabledModels");
-		const modelOptions = enabledModels?.type === "multi-enum" ? enabledModels.options : [];
-		let pendingWrite = Promise.resolve();
+		if (presentation === "side-panel" && panel) {
+			if (panelTabOpen) {
+				panel.activate(SETTINGS_TAB_ID);
+				panel.show({ focus: true });
+				return;
+			}
+			panelEditor = await XSettingsEditorSession.create(pi, ctx, store, registry);
+			panelTabOpen = true;
+			panel.addTab(
+				{
+					id: SETTINGS_TAB_ID,
+					label: "Settings",
+					icon: "settings",
+					closeIcon: "close",
+					create: (host, theme) => panelEditor!.createScreen(host.tui, theme, closePanelEditor, { heightOffset: 1 }),
+					onClose: finishPanelEditor,
+				},
+				{ activate: true, focus: true },
+			);
+			return;
+		}
+		const editor = await XSettingsEditorSession.create(pi, ctx, store, registry);
 		await ctx.ui.custom<void>(
 			(tui, theme, _keybindings, done) => {
 				const dialogs = new DialogOverlayHost(tui, theme);
-				const persist = (definition: SettingsScreenField, write: () => Promise<SettingsRecord>): void => {
-					settingsChanged = true;
-					reloadRequired ||= definitionRequiresReload(definition);
-					pendingWrite = pendingWrite.then(async () => {
-						document = await write();
-						await publishAllSettings(registry, document);
-						await syncPiSettingsJson(configuredPiValues(document));
-					});
-				};
 				const close = (): void => {
 					dialogs.dispose();
 					done();
 				};
-				const screen = new XSettingsScreen(
-					fields,
-					theme,
-					(id, value) => {
-						const definition = fields.find((field) => field.id === id);
-						if (!definition) return;
-						let storedValue = value;
-						if (definition.type === "enum") {
-							if (typeof value !== "string") return;
-							storedValue = storedEnumValue(definition, value);
-						}
-						if (definition.id === "pi.theme" && typeof storedValue === "string" && !applyLiveTheme(ctx, storedValue))
-							return;
-						persist(definition, () => store.set(definition.storagePath, storedValue));
-					},
-					(id) => {
-						const definition = fields.find((field) => field.id === id);
-						if (!definition) return;
-						if (
-							definition.id === "pi.theme" &&
-							typeof definition.defaultValue === "string" &&
-							!applyLiveTheme(ctx, definition.defaultValue)
-						)
-							return;
-						persist(definition, () => store.unset(definition.storagePath));
-					},
-					close,
-					() => Math.max(6, tui.terminal.rows - 2),
-					modelOptions,
-					undefined,
-					offsetDialogHost(dialogs, { row: 1, col: 1 }),
-					() => tui.requestRender(),
-				);
+				const screen = editor.createScreen(tui, theme, close, {
+					heightOffset: 2,
+					dialogHost: offsetDialogHost(dialogs, { row: 1, col: 1 }),
+				});
 				return new FullscreenOverlay(tui, theme, screen, { label: "Settings", icon: "settings" });
 			},
 			{
@@ -135,8 +115,27 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 				overlayOptions: fullscreenOverlayOptions(),
 			},
 		);
-		await pendingWrite;
-		await applySavedSettings(ctx, settingsChanged, reloadRequired);
+		await editor.finish();
+	}
+
+	function closePanelEditor(): void {
+		if (!panelTabOpen) return;
+		panelTabOpen = false;
+		panel?.removeTab(SETTINGS_TAB_ID);
+		finishPanelEditor();
+	}
+
+	function finishPanelEditor(): void {
+		if (!panelEditor) return;
+		panelTabOpen = false;
+		const editor = panelEditor;
+		panelEditor = undefined;
+		void editor.finish().catch((error) => {
+			panelContext?.ui.notify(
+				`Could not apply settings: ${error instanceof Error ? error.message : String(error)}`,
+				"error",
+			);
+		});
 	}
 
 	const unregisterAction = registerAction({
@@ -149,6 +148,44 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 		handler: async (_args, ctx) => open(ctx),
 	});
 	pi.on("session_start", async (_event, ctx) => {
+		if (ctx.mode !== "tui" || !ctx.hasUI) return;
+		panelContext = ctx;
+		activeSession = ctx.sessionManager;
+		unregisterAction?.();
+		unregisterAction = registerAction({
+			id: "xsettings.toggle",
+			description: "Open extension settings",
+			run: open,
+		});
+		unregisterCursorAction?.();
+		unregisterCursorAction = registerAction({
+			id: "xsettings.cursor.toggle",
+			description: "Toggle focus between the settings sidebar and content",
+			run: () => activeScreen?.toggleCursor(),
+		});
+		unregisterSidePanelProvider?.();
+		unregisterSidePanelProvider = registerSidePanelProvider(
+			{
+				id: "pi-xsettings.settings",
+				session: ctx,
+				attach(nextPanel) {
+					panel = nextPanel;
+					removeEmptyAction = nextPanel.registerEmptyAction({
+						id: "xsettings.toggle",
+						label: "Settings",
+						actionId: "xsettings.toggle",
+					});
+					return () => {
+						if (panel !== nextPanel) return;
+						removeEmptyAction?.();
+						removeEmptyAction = undefined;
+						closePanelEditor();
+						panel = undefined;
+					};
+				},
+			},
+			globalThis,
+		);
 		try {
 			await initialization;
 			await settleRegistrations();
@@ -161,43 +198,16 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 	});
 	pi.on("session_shutdown", (event) => {
 		if (event.reason !== "reload" && event.reason !== "quit") return;
+		unregisterSidePanelProvider?.();
+		unregisterSidePanelProvider = undefined;
+		closePanelEditor();
+		panel = undefined;
+		panelContext = undefined;
 		detachShortcuts();
 		detachRegistration();
 		unregisterTuiSettings();
+		unregisterPresentationSettings();
 		configureTuiAppearance(tuiSettings.defaults);
 		unregisterAction();
 	});
-}
-
-function definitionRequiresReload(definition: SettingsScreenField): boolean {
-	return !(
-		definition.id === "pi.theme" ||
-		definition.id === "extensions.pi-libtui.iconPack" ||
-		definition.id === "extensions.pi-libtui.activityIndicator" ||
-		definition.id === "extensions.pi-libtui.activityMessage" ||
-		definition.id === "extensions.pi-libtui.statusPresentation" ||
-		definition.id === "extensions.pi-libtui.textEffect" ||
-		definition.id === "extensions.pi-libtui.textEffectScope" ||
-		definition.id === "extensions.pi-libtui.pulseEffect" ||
-		definition.id === "extensions.pi-libtui.animationSpeed" ||
-		definition.id === "extensions.pi-libtui.animationSmoothness" ||
-		definition.id === "extensions.pi-libtui.thinkingIndicator" ||
-		definition.id === "extensions.pi-libtui.thinkingMessage" ||
-		definition.id === "extensions.pi-libtui.thinkingTextEffect" ||
-		definition.id === "extensions.pi-libtui.thinkingPulseEffect" ||
-		definition.id === "extensions.pi-libtui.thinkingPresentation" ||
-		definition.id === "extensions.pi-libtui.workingIndicator" ||
-		definition.id === "extensions.pi-libtui.workingMessage" ||
-		definition.id === "extensions.pi-libtui.workingTextEffect" ||
-		definition.id === "extensions.pi-libtui.workingPulseEffect" ||
-		definition.id === "extensions.pi-libtui.workingPresentation" ||
-		definition.id === "extensions.pi-libtui.toolIndicator" ||
-		definition.id === "extensions.pi-libtui.toolMessage" ||
-		definition.id === "extensions.pi-libtui.toolTextEffect" ||
-		definition.id === "extensions.pi-libtui.toolPulseEffect" ||
-		definition.id === "extensions.pi-libtui.toolPresentation" ||
-		definition.id === "extensions.pi-libtui.powerline" ||
-		definition.id === "extensions.pi-libtui.powerlineButtons" ||
-		definition.id === "extensions.pi-libtui.softCursor"
-	);
 }

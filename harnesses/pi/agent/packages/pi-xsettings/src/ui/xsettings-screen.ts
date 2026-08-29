@@ -10,7 +10,7 @@ import {
 	type TuiIconName,
 } from "pi-libtui";
 import type { TuiMouseEvent } from "pi-libtui/mouse";
-import type { SettingCategory, SettingOption, SettingPage, SettingValue } from "../protocol/settings.ts";
+import type { SettingApply, SettingCategory, SettingOption, SettingPage, SettingValue } from "../protocol/settings.ts";
 import { settingOptionsFromValue } from "../runtime/options.ts";
 import { type SettingField, SettingsEditor } from "./settings-editor.ts";
 
@@ -41,6 +41,7 @@ function pageFor(field: Pick<SettingsScreenField, "category" | "page">): Setting
 }
 
 export type SettingsScreenField = SettingField & {
+	apply?: SettingApply;
 	category: SettingCategory;
 	page?: SettingPage;
 	storagePath: string[];

@@ -2,6 +2,7 @@ import {
 	ensureXSettingsRegistry,
 	type ListDefinition,
 	type SettingCategory,
+	type SettingApply,
 	type SettingDefinition,
 	type SettingOption,
 	type SettingOptions,
@@ -22,6 +23,7 @@ interface DefinitionBase {
 	page?: SettingPage;
 	section?: string;
 	preview?: SettingPreview;
+	apply?: SettingApply;
 }
 
 export interface ListSettingDefinitionInput<Schema extends TSchema = TSchema> extends DefinitionBase {
@@ -98,6 +100,7 @@ export interface SettingsClient<Definitions extends Record<string, SettingDefini
 export interface CreateSettingsOptions<Definitions extends Record<string, SettingDefinitionInput>> {
 	namespace: string;
 	label: string;
+	apply?: SettingApply;
 	definitions: Definitions;
 }
 
@@ -105,7 +108,7 @@ export function createSettings<const Definitions extends Record<string, SettingD
 	options: CreateSettingsOptions<Definitions>,
 ): SettingsClient<Definitions> {
 	const definitions = Object.entries(options.definitions).map(([key, definition]) =>
-		toProtocolDefinition(key, definition),
+		toProtocolDefinition(key, definition, options.apply),
 	);
 	const defaults = resolveValues(options.definitions, Object.create(null) as Readonly<Record<string, SettingValue>>);
 	let current = cloneSettings(defaults);
@@ -130,7 +133,12 @@ export function createSettings<const Definitions extends Record<string, SettingD
 	};
 }
 
-function toProtocolDefinition(key: string, definition: SettingDefinitionInput): SettingDefinition {
+function toProtocolDefinition(
+	key: string,
+	definition: SettingDefinitionInput,
+	defaultApply?: SettingApply,
+): SettingDefinition {
+	const apply = definition.apply ?? defaultApply ?? "reload";
 	if (definition.type === "list") {
 		if (!validValue(definition, definition.default)) {
 			throw new Error(`Invalid default for list setting "${key}".`);
@@ -138,6 +146,7 @@ function toProtocolDefinition(key: string, definition: SettingDefinitionInput): 
 		return {
 			...definition,
 			key,
+			apply,
 			default: cloneValue(definition.default),
 		};
 	}
@@ -146,11 +155,12 @@ function toProtocolDefinition(key: string, definition: SettingDefinitionInput): 
 		if (!validValue(definition, defaultValue)) {
 			throw new Error(`Invalid default for string-list setting "${key}".`);
 		}
-		return { ...definition, key, default: defaultValue };
+		return { ...definition, key, apply, default: defaultValue };
 	}
 	return {
 		...definition,
 		key,
+		apply,
 		...(definition.type === "multi-enum" ? { default: [...definition.default] } : {}),
 	} as SettingDefinition;
 }

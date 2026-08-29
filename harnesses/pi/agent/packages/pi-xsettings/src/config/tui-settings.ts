@@ -72,6 +72,7 @@ const inheritedPresentationOptions = [
 export const tuiSettings = createSettings({
 	namespace: "pi-libtui",
 	label: "TUI",
+	apply: "live",
 	definitions: {
 		iconPack: {
 			category: "appearance",

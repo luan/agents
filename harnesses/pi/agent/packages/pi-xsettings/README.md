@@ -35,6 +35,10 @@ move, `h`/`l` or left/right to change pages, Tab/Shift+Tab to move between
 sections, and Enter to edit. Reset removes the saved value and restores its
 default.
 
+Xsettings itself defaults to a side-panel tab. Its **Settings presentation**
+choice can switch it to the original fullscreen overlay. If `pi-side-panel` is
+not installed, the side-panel choice falls back to the fullscreen overlay.
+
 ## `xsettings.toml`
 
 The active file is `~/.pi/agent/xsettings.toml`. This repository keeps its

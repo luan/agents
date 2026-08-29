@@ -70,6 +70,38 @@ describe("structural registries", () => {
 		unregister();
 	});
 
+	test("settings declare whether saved values apply live or after reload", () => {
+		const client = createSettings({
+			namespace: "demo",
+			label: "Demo",
+			apply: "live",
+			definitions: {
+				immediate: {
+					label: "Immediate",
+					description: "Apply immediately.",
+					category: "behavior",
+					type: "boolean",
+					default: false,
+				},
+				restart: {
+					label: "Restart",
+					description: "Apply after reload.",
+					category: "behavior",
+					apply: "reload",
+					type: "boolean",
+					default: false,
+				},
+			},
+		});
+		const unregister = client.register();
+
+		expect(ensureXSettingsRegistry().registrations.demo?.definitions.map(({ key, apply }) => [key, apply])).toEqual([
+			["immediate", "live"],
+			["restart", "reload"],
+		]);
+		unregister();
+	});
+
 	test("dynamic multi-selects keep valid choices and drop stale options", async () => {
 		const client = createSettings({
 			namespace: "tools",

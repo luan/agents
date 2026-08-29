@@ -31,6 +31,7 @@ export function toUiField(
 	const persistence = {
 		page: definition.page ?? (definition.category === "appearance" ? "ui" : definition.category),
 		section: definition.section ?? registration?.label ?? "General",
+		apply: definition.apply ?? "reload",
 		storagePath,
 		configured,
 		...(id === "pi.defaultTools"
