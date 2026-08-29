@@ -278,6 +278,7 @@
       "name": "pi-subagents",
       "version": "0.1.0",
       "dependencies": {
+        "pi-code-mode": "workspace:*",
         "pi-libactions": "workspace:*",
         "pi-libcontext": "workspace:*",
         "pi-libtui": "workspace:*",

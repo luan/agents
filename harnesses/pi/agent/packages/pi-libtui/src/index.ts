@@ -1,41 +1,40 @@
 export {
+	type ActivityPresentationOptions,
+	activityPresentationCadenceMs,
+	activityPresentationFrame,
+} from "./activity-presentation.ts";
+export {
 	configureTuiAppearance,
 	DEFAULT_TUI_APPEARANCE,
 	getTuiAppearance,
-	requestPhaseAnimation,
-	resolveActivityPresentation,
-	TUI_ACTIVITY_INDICATOR_OPTIONS,
-	TUI_STATUS_PRESENTATION_OPTIONS,
+	isTuiActivityIndicatorStyle,
 	isTuiActivityMessageStyle,
-	isTuiStatusPresentationStyle,
 	isTuiAnimationSmoothness,
 	isTuiAnimationSpeed,
-	isTuiActivityIndicatorStyle,
-	isTuiTextEffectStyle,
-	isTuiTextEffectScope,
 	isTuiPulseEffectStyle,
+	isTuiStatusPresentationStyle,
+	isTuiTextEffectScope,
+	isTuiTextEffectStyle,
+	requestPhaseAnimation,
+	resolveActivityPresentation,
 	subscribeTuiAppearance,
-	type TuiAppearanceSettings,
-	type TuiStatusPresentationStyle,
-	type TuiActivityMessageStyle,
+	TUI_ACTIVITY_INDICATOR_OPTIONS,
+	TUI_STATUS_PRESENTATION_OPTIONS,
 	type TuiActivityIndicatorStyle,
+	type TuiActivityMessageStyle,
 	type TuiActivityPresentation,
+	type TuiAnimationOverride,
 	type TuiAnimationSmoothness,
 	type TuiAnimationSpeed,
-	type TuiAnimationOverride,
+	type TuiAppearanceSettings,
 	type TuiCursorStyle,
 	type TuiIconPack,
-	type TuiRequestPhase,
-	type TuiTextEffectStyle,
-	type TuiTextEffectScope,
 	type TuiPulseEffectStyle,
+	type TuiRequestPhase,
+	type TuiStatusPresentationStyle,
+	type TuiTextEffectScope,
+	type TuiTextEffectStyle,
 } from "./appearance.ts";
-export { statusPresentationFrame } from "./status-presentation.ts";
-export {
-	activityPresentationCadenceMs,
-	activityPresentationFrame,
-	type ActivityPresentationOptions,
-} from "./activity-presentation.ts";
 export {
 	createTuiThemeVariation,
 	type TuiBackgroundPaint,
@@ -202,11 +201,11 @@ export {
 	animationSpeedMultiplier,
 	configuredAnimationCadenceMs,
 	glyphFrame,
-	mountConfiguredAnimation,
+	lightningShimmerFrame,
 	MotionScheduler,
+	mountConfiguredAnimation,
 	pulseFrame,
 	pulseGlyphFrame,
-	lightningShimmerFrame,
 	rainbowGlowShimmerFrame,
 	rainbowShimmerFrame,
 	sharedMotionScheduler,
@@ -219,6 +218,16 @@ export {
 	type AnchoredOverlayRequest,
 	placeAnchoredOverlay,
 } from "./overlay/anchored.ts";
+export {
+	type DetailCardContent,
+	decorateDetailCard,
+	type HoverDetailCardMount,
+	type HoverDetailCardOptions,
+	type HoverDetailCardTarget,
+	mountHoverDetailCard,
+	overlayTotalWidth,
+	renderDetailCard,
+} from "./overlay/detail-card.ts";
 export {
 	type DialogHost,
 	DialogOverlay,
@@ -235,16 +244,6 @@ export {
 export { FullscreenOverlay, fullscreenOverlayOptions } from "./overlay/fullscreen.ts";
 export { FloatingOverlay, type FloatingOverlayOptions } from "./overlay/floating.ts";
 export {
-	decorateDetailCard,
-	type DetailCardContent,
-	type HoverDetailCardMount,
-	type HoverDetailCardOptions,
-	type HoverDetailCardTarget,
-	mountHoverDetailCard,
-	overlayTotalWidth,
-	renderDetailCard,
-} from "./overlay/detail-card.ts";
-export {
 	compositeHoverTooltip,
 	findScreenTextRect,
 	type HoverTooltipMount,
@@ -254,26 +253,13 @@ export {
 } from "./overlay/hover-tooltip.ts";
 export {
 	type ModalOverlayComponent,
-	type ModalOverlayMouseEvent,
 	type ModalOverlayMountOptions,
+	type ModalOverlayMouseEvent,
 	type MountedModalOverlayComponent,
 	mountModalOverlay,
 } from "./overlay/modal-mount.ts";
 export { RenderedLinesCache } from "./render-cache.ts";
 export { applyScrollbar } from "./scrollbar.ts";
-export {
-	ensureSplitPaneRegistry,
-	type MountedSplitPane,
-	mountSplitPane,
-	SPLIT_PANE_PROTOCOL,
-	SPLIT_PANE_REGISTRY_KEY,
-	type SplitPaneComponent,
-	type SplitPaneComponentFactory,
-	type SplitPaneDefinition,
-	type SplitPaneHost,
-	type SplitPanePosition,
-	type SplitPaneRegistry,
-} from "./split-pane.ts";
 export {
 	ensureSidePanelRegistry,
 	registerSidePanelProvider,
@@ -288,15 +274,28 @@ export {
 	type SidePanelTab,
 } from "./side-panel.ts";
 export {
+	ensureSplitPaneRegistry,
+	type MountedSplitPane,
+	mountSplitPane,
+	SPLIT_PANE_PROTOCOL,
+	SPLIT_PANE_REGISTRY_KEY,
+	type SplitPaneComponent,
+	type SplitPaneComponentFactory,
+	type SplitPaneDefinition,
+	type SplitPaneHost,
+	type SplitPanePosition,
+	type SplitPaneRegistry,
+} from "./split-pane.ts";
+export { statusPresentationFrame } from "./status-presentation.ts";
+export {
 	highlightSyntaxBlock,
 	SyntaxText,
 	type SyntaxTextOptions,
 	whenSyntaxReady,
 } from "./syntax.ts";
-export { stripTopLevelZoneMarkers } from "./terminal/embedding.ts";
 export {
-	type TerminalBridgeBinaryOptions,
 	resolveTerminalBridgeBinary,
+	type TerminalBridgeBinaryOptions,
 } from "./terminal/bridge-binary.ts";
 export {
 	createTerminalBridgeClient,
@@ -305,4 +304,5 @@ export {
 	type TerminalBridgeClientDependencies,
 	type TerminalBridgeReadResponse,
 } from "./terminal/bridge-client.ts";
+export { stripTopLevelZoneMarkers } from "./terminal/embedding.ts";
 export { PtyPane, type PtyPaneOptions, PtyProcess, type PtyProcessOptions } from "./terminal/pty-pane.ts";

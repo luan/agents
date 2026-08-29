@@ -211,7 +211,9 @@ export class ProcessTerminalStore {
 	}
 
 	private createTerminal(): TerminalProjection {
-		return new TerminalProjection({ requestRender: () => this.emit() });
+		return new TerminalProjection({
+			requestRender: () => this.emit(),
+		});
 	}
 
 	private emit(): void {

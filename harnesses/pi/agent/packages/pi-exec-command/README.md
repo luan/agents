@@ -149,6 +149,11 @@ native redraw bytes arrive, then applies the new dimensions before parsing
 that redraw. Press `ctrl+]` to return to the process list. Recently completed
 processes follow the same bounded 32-session retention used by `write_stdin`.
 
+Embedded terminal surfaces advertise `TERM=xterm-256color` and
+`COLORTERM=truecolor`, matching the ANSI and RGB capabilities of their shared
+headless terminal projection even when Pi itself was launched from a reduced
+environment.
+
 ## Settings
 
 If `pi-xsettings` is installed, edit `~/.pi/agent/xsettings.toml`:
