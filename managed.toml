@@ -10,7 +10,7 @@ seeds = []
 name = "codex"
 source = "harnesses/codex"
 target = ".codex"
-links = ["AGENTS.md", "hooks.json"]
+links = ["AGENTS.md"]
 trees = []
 seeds = [{ source = "config.toml.seed", target = "config.toml" }]
 

@@ -10,6 +10,20 @@
   "permissions": {
     "defaultMode": "bypassPermissions"
   },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '~/.claude/hooks/herdr-agent-state.sh' session",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
   "statusLine": {
     "type": "command",
     "command": "uv run $HOME/.claude/statusline.py",
@@ -40,7 +54,7 @@
   "askUserQuestionTimeout": "never",
   "dialogExpiry": "never",
   "tui": "fullscreen",
-  "skipDangerousModePermissionPrompt": true,
   "autoMemoryEnabled": false,
-  "autoDreamEnabled": false
+  "autoDreamEnabled": false,
+  "skipDangerousModePermissionPrompt": true
 }

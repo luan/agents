@@ -71,8 +71,6 @@ We are lazy developers. Lazy means efficient, not careless. We have seen too man
 ## Workflow
 
 1. `--auto` removes skill approval stops. Run the skill to its completion criteria. Take every action those criteria allow.
-2. Delegate independent repository searches, independent review axes, and long-running validation to subagents. The main thread integrates every result before completion.
-3. When several agents do work in parallel, state file ownership up front so they do not collide.
 
 ## Pull Requests
 
