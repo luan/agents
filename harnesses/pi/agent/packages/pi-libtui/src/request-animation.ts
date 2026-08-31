@@ -152,6 +152,9 @@ export function registerRequestAnimation(pi: ExtensionAPI): RequestAnimationCont
 	pi.on("tool_execution_start", (event) => controller.startTool(event.toolCallId));
 	pi.on("tool_execution_end", (event) => controller.finishTool(event.toolCallId));
 	pi.on("session_before_switch", (_event, context) => controller.finish(context));
-	pi.on("session_shutdown", (_event, context) => controller.dispose(context));
+	pi.on("session_shutdown", (event, context) => {
+		if (event.reason === "reload" || event.reason === "quit") controller.dispose(context);
+		else controller.finish(context);
+	});
 	return controller;
 }

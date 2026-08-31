@@ -160,6 +160,25 @@ describe("MotionScheduler", () => {
 		mount.dispose();
 	});
 
+	test("pauses and resumes registered animations without dropping them", () => {
+		const clock = new FakeClock();
+		const scheduler = new MotionScheduler(clock);
+		let renders = 0;
+		const mount = scheduler.mount({ requestRender: () => renders++ }, { cadenceMs: 40 });
+
+		scheduler.setPaused(true);
+		expect(scheduler.activeTimerCount).toBe(0);
+		clock.tick(40, 40);
+		expect(renders).toBe(0);
+		expect(scheduler.activeMountCount).toBe(1);
+
+		scheduler.setPaused(false);
+		expect(scheduler.activeTimerCount).toBe(1);
+		clock.tick(40, 80);
+		expect(renders).toBe(1);
+		mount.dispose();
+	});
+
 	test("expires abandoned mounts without replaying stale animation frames", () => {
 		const clock = new FakeClock();
 		const scheduler = new MotionScheduler(clock);

@@ -1,9 +1,9 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import type { Theme } from "@earendil-works/pi-coding-agent";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { configureTuiAppearance, DEFAULT_TUI_APPEARANCE } from "../src/appearance.ts";
 import type { MotionClock, MotionTimerHandle } from "../src/motion.ts";
 import { MotionScheduler } from "../src/motion.ts";
-import { RequestAnimationController } from "../src/request-animation.ts";
+import { registerRequestAnimation, RequestAnimationController } from "../src/request-animation.ts";
 
 const theme = {
 	name: "request-animation-test",
@@ -55,9 +55,33 @@ class FakeUi {
 	}
 }
 
+beforeEach(() => configureTuiAppearance(DEFAULT_TUI_APPEARANCE));
 afterEach(() => configureTuiAppearance(DEFAULT_TUI_APPEARANCE));
 
 describe("request animation", () => {
+	test("retains live appearance updates across session switches", async () => {
+		type LifecycleHandler = (event: { reason?: string }, context: { ui: FakeUi }) => void | Promise<void>;
+		// type-boundary: The registration harness implements only ExtensionAPI.on for lifecycle behavior.
+		type ExtensionApiBoundary = unknown;
+		const handlers = new Map<string, LifecycleHandler>();
+		const boundary: ExtensionApiBoundary = {
+			on(name: string, handler: LifecycleHandler) {
+				handlers.set(name, handler);
+			},
+		};
+		registerRequestAnimation(boundary as ExtensionAPI);
+		const first = new FakeUi();
+		await handlers.get("agent_start")?.({}, { ui: first });
+		await handlers.get("session_shutdown")?.({ reason: "switch" }, { ui: first });
+
+		const second = new FakeUi();
+		await handlers.get("agent_start")?.({}, { ui: second });
+		configureTuiAppearance({ activityIndicator: "static", textEffect: "off" });
+
+		expect(second.text).toBe("● Working...");
+		await handlers.get("session_shutdown")?.({ reason: "reload" }, { ui: second });
+	});
+
 	test("tracks thinking, parallel tools, and working with the documented priority", () => {
 		const clock = new FakeClock();
 		const ui = new FakeUi();

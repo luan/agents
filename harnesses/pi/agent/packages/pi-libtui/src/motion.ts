@@ -57,7 +57,7 @@ interface TargetRegistration {
 }
 
 interface CadenceBucket {
-	timer: MotionTimerHandle;
+	timer?: MotionTimerHandle;
 	targets: Map<MotionRenderTarget, TargetRegistration>;
 }
 
@@ -116,6 +116,7 @@ export class MotionScheduler {
 	private readonly targetsByRequest = new WeakMap<MotionRenderTarget["requestRender"], MotionRenderTarget>();
 	private nextRegistrationId = 1;
 	private mountCount = 0;
+	private paused = false;
 
 	constructor(private readonly clock: MotionClock = systemClock) {}
 
@@ -127,9 +128,7 @@ export class MotionScheduler {
 		let bucket = this.buckets.get(cadenceMs);
 		if (!bucket) {
 			const targets = new Map<MotionRenderTarget, TargetRegistration>();
-			const timer = this.clock.start(() => this.tick(cadenceMs, targets), cadenceMs);
-			timer.unref?.();
-			bucket = { timer, targets };
+			bucket = { targets };
 			this.buckets.set(cadenceMs, bucket);
 		}
 		const targetRegistration = bucket.targets.get(target) ?? { registrations: new Map() };
@@ -141,6 +140,7 @@ export class MotionScheduler {
 			expiresAtMs: maxDurationMs === undefined ? undefined : this.clock.now() + Math.max(0, maxDurationMs),
 		});
 		bucket.targets.set(target, targetRegistration);
+		if (!this.paused) this.startTimer(cadenceMs, bucket);
 		this.mountCount++;
 		return disposable(() => {
 			const currentBucket = this.buckets.get(cadenceMs);
@@ -149,9 +149,23 @@ export class MotionScheduler {
 			this.mountCount--;
 			if (currentTarget.registrations.size === 0) currentBucket.targets.delete(target);
 			if (currentBucket.targets.size > 0) return;
-			this.clock.stop(currentBucket.timer);
+			if (currentBucket.timer) this.clock.stop(currentBucket.timer);
 			this.buckets.delete(cadenceMs);
 		});
+	}
+
+	/** Suspend timers without discarding registrations, then resume their cadences intact. */
+	setPaused(paused: boolean): void {
+		if (this.paused === paused) return;
+		this.paused = paused;
+		for (const [cadenceMs, bucket] of this.buckets) {
+			if (paused) {
+				if (bucket.timer) this.clock.stop(bucket.timer);
+				bucket.timer = undefined;
+			} else {
+				this.startTimer(cadenceMs, bucket);
+			}
+		}
 	}
 
 	private canonicalTarget(target: MotionRenderTarget): MotionRenderTarget {
@@ -170,6 +184,7 @@ export class MotionScheduler {
 	}
 
 	private tick(cadenceMs: number, targets: Map<MotionRenderTarget, TargetRegistration>): void {
+		if (this.paused) return;
 		const nowMs = this.clock.now();
 		for (const [target, registration] of targets) {
 			for (const current of registration.registrations.values()) {
@@ -206,8 +221,14 @@ export class MotionScheduler {
 		if (targets.size > 0) return;
 		const bucket = this.buckets.get(cadenceMs);
 		if (!bucket || bucket.targets !== targets) return;
-		this.clock.stop(bucket.timer);
+		if (bucket.timer) this.clock.stop(bucket.timer);
 		this.buckets.delete(cadenceMs);
+	}
+
+	private startTimer(cadenceMs: number, bucket: CadenceBucket): void {
+		if (bucket.timer || bucket.targets.size === 0) return;
+		bucket.timer = this.clock.start(() => this.tick(cadenceMs, bucket.targets), cadenceMs);
+		bucket.timer.unref?.();
 	}
 
 	private fastestCadence(target: MotionRenderTarget): number | undefined {
@@ -221,7 +242,7 @@ export class MotionScheduler {
 
 	/** Number of live cadence timers. */
 	get activeTimerCount(): number {
-		return this.buckets.size;
+		return [...this.buckets.values()].filter((bucket) => bucket.timer !== undefined).length;
 	}
 
 	/** Number of live mounts, including shared target/cadence registrations. */
@@ -261,6 +282,10 @@ class SharedMotionScheduler extends MotionScheduler {
 
 	override get activeTimerCount(): number {
 		return resolveSharedMotionScheduler().activeTimerCount;
+	}
+
+	override setPaused(paused: boolean): void {
+		resolveSharedMotionScheduler().setPaused(paused);
 	}
 
 	override get activeMountCount(): number {
