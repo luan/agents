@@ -28,7 +28,9 @@
     "packages/pi-apply-patch",
     "packages/pi-view-image",
     "packages/pi-tool-search",
-    "npm:@plannotator/pi-extension"
+		"packages/pi-custom-editor",
+		"packages/pi-prompt-storage",
+		"npm:@plannotator/pi-extension"
   ],
   "compaction": {
     "enabled": true,

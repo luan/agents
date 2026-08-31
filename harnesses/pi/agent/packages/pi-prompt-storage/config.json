@@ -1,0 +1,5 @@
+{
+	"shortcuts": { "stash": "ctrl+s" },
+	"history": { "includeSlashCommands": true, "maxResults": 120 },
+	"picker": { "maxVisible": 10, "enterAction": "pop" }
+}
