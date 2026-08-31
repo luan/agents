@@ -81,7 +81,7 @@ const ICONS: Record<TuiIconPack, Record<TuiIconName, string>> = {
 		edit: "",
 		delete: "",
 		reset: "",
-		close: "󰿅",
+		close: "󰅙",
 		cancel: "󰜺",
 		confirm: "",
 		search: "",

@@ -139,6 +139,7 @@ export class TabBar implements Component {
 	 */
 	render(width: number): string[] {
 		const colors = tuiTheme(this.theme);
+		const closeGlyph = this.onClose ? icon("close") : undefined;
 		const chunks = this.tabs.map((tab, index) => {
 			const active = index === this.activeIndex;
 			const close = closeGlyph

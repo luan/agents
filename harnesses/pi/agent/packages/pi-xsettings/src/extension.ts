@@ -97,7 +97,6 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 					id: SETTINGS_TAB_ID,
 					label: "Settings",
 					icon: "settings",
-					closeIcon: "close",
 					create: (host, theme) => {
 						const screen = panelEditor!.createScreen(host.tui, theme, closePanelEditor, {
 							heightOffset: 1,
