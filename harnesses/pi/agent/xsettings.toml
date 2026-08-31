@@ -32,6 +32,14 @@ pi-libtui.statusPresentation = "standard"
 pi-libtui.pulseEffect = "pulse"
 pi-libtui.thinkingPresentation = "pi-pulse"
 pi-exec-command.activityMarker = "off"
+pi-custom-editor.preset = "compact-field"
+pi-custom-editor.bottomTreatment = "preset"
+pi-custom-editor.railTone = "accent"
+pi-custom-editor.rightRail = "preset"
+pi-custom-editor.promptMarker = "preset"
+pi-custom-editor.footer = "preset"
+pi-custom-editor.workingPlacement = "bottom-left-start"
+pi-custom-editor.statusSeparator = "preset"
 
 [behavior]
 pi.enabledModels = [ "openai-codex/gpt-5.6-luna", "openai-codex/gpt-5.6-terra", "openai-codex/gpt-5.6-sol" ]
