@@ -55,6 +55,8 @@ export interface SearchableSelectOptions<Value extends string> {
 	onCancel(): void;
 	/** Render option content after the picker-owned cursor prefix. */
 	renderOption?(option: SelectOption<Value>, context: SearchableSelectRowContext): string;
+	/** Render a candidate preview below the option list as selection changes. */
+	renderPreview?(option: SelectOption<Value>, width: number): readonly string[];
 	/** Invalidate the host after pointer or externally animated state changes. */
 	requestRender?(): void;
 }
@@ -102,6 +104,7 @@ export class SearchableSelect<Value extends string = string> implements Componen
 			renderItem: (option, context) => this.renderOption(option, context),
 			requestRender: options.requestRender ?? (() => {}),
 			onActivate: (option) => options.onSelect(option.value),
+			onSelectionChange: () => options.requestRender?.(),
 		});
 		this.buttons = new DialogButtonBar({
 			theme: options.theme,
@@ -241,9 +244,11 @@ export class SearchableSelect<Value extends string = string> implements Componen
 		lines.push(this.renderSearch(width));
 
 		const buttons = this.buttons.render(width);
+		const selected = this.list.getSelectedItem();
+		const preview = selected && this.options.renderPreview ? [...this.options.renderPreview(selected, width)] : [];
 		const availableListRows = Math.max(
 			1,
-			(this.maxHeight ?? Number.POSITIVE_INFINITY) - lines.length - 1 - buttons.length,
+			(this.maxHeight ?? Number.POSITIVE_INFINITY) - lines.length - 1 - buttons.length - preview.length,
 		);
 		this.list.setMaxVisible(this.maxHeight === undefined ? SearchableSelect.MAX_VISIBLE : availableListRows);
 		this.listStart = lines.length;
@@ -261,6 +266,7 @@ export class SearchableSelect<Value extends string = string> implements Componen
 				}),
 			);
 		} else lines.push(colors.fg("text.muted", "  No matching options"));
+		if (preview.length > 0) lines.push("", ...preview);
 
 		lines.push("");
 		this.buttonRow = lines.length;

@@ -87,7 +87,7 @@ The root library surface keeps these implementation boundaries:
 | Choices and fields | `src/controls/selectable-list.ts`, `src/controls/semantic-input.ts`, `src/controls/searchable-select.ts`, `src/controls/picker-panel.ts`, `src/controls/multi-select.ts` |
 | Text content | `src/content/text.ts` |
 | Glyphs, status, pills, and pointer interaction | `src/decoration/glyphs.ts`, `src/decoration/status.ts`, `src/decoration/editor-pills.ts`, `src/decoration/powerline-pill.ts`, `src/decoration/transient-pill.ts`, `src/decoration/pointer-interaction.ts` |
-| Editor protocol and presentation | `src/editor/protocol.ts`, `src/editor/presentation.ts` (re-exported by `src/editor.ts`) |
+| Editor protocol and presentation | `src/editor/protocol.ts`, `src/editor/presentation.ts`, `src/editor/chrome.ts`, `src/editor/composition.ts`, and `src/editor/layout.ts` (re-exported by `src/editor.ts`) |
 | Syntax highlighting | `src/syntax.ts` |
 | Shared native PTY lifecycle | `src/terminal/bridge-client.ts`, `src/terminal/pty-host.ts`, and `src/terminal/pty-pane.ts` |
 

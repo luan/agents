@@ -12,14 +12,19 @@ export interface FloatingOverlayOptions {
 	readonly overlay: Component;
 	readonly overlayWidth: (availableWidth: number) => number;
 	readonly align?: "start" | "end";
+	/** Top row in the base component. Values are clamped to keep the overlay visible. */
+	readonly top?: number | (() => number);
 	readonly maxHeight?: () => number;
 	readonly surface?: { readonly theme: Theme; readonly background: TuiBackgroundToken };
+	/** Consume a primary press outside the overlay and notify its owner. */
+	readonly onOutsidePress?: () => void;
 }
 
 /** Composites a focus-owning child over ordinary content and owns its pointer geometry. */
 export class FloatingOverlay implements Component, Focusable {
 	private readonly renderedOverlay: Component;
 	private overlayX = 0;
+	private overlayY = 0;
 	private overlayWidth = 0;
 	private overlayHeight = 0;
 
@@ -56,10 +61,14 @@ export class FloatingOverlay implements Component, Focusable {
 		if (
 			event.col >= this.overlayX &&
 			event.col < this.overlayX + this.overlayWidth &&
-			event.row >= 0 &&
-			event.row < this.overlayHeight
+			event.row >= this.overlayY &&
+			event.row < this.overlayY + this.overlayHeight
 		)
-			return overlay.onMouse?.({ ...event, col: event.col - this.overlayX }) === true;
+			return overlay.onMouse?.({ ...event, row: event.row - this.overlayY, col: event.col - this.overlayX }) === true;
+		if (event.type === "press" && event.button === 0 && this.options.onOutsidePress) {
+			this.options.onOutsidePress();
+			return true;
+		}
 		return base.onMouse?.(event) === true;
 	}
 
@@ -74,9 +83,11 @@ export class FloatingOverlay implements Component, Focusable {
 			(this.options.overlay as HeightAwareComponent).setMaxHeight?.(Math.max(0, Math.floor(maxHeight)));
 		const overlay = this.renderedOverlay.render(this.overlayWidth);
 		this.overlayHeight = overlay.length;
-		return Array.from({ length: Math.max(base.length, overlay.length) }, (_, row) => {
+		const requestedTop = typeof this.options.top === "function" ? this.options.top() : (this.options.top ?? 0);
+		this.overlayY = Math.max(0, Math.min(Math.floor(requestedTop), Math.max(0, base.length - overlay.length)));
+		return Array.from({ length: Math.max(base.length, this.overlayY + overlay.length) }, (_, row) => {
 			const line = base[row] ?? "";
-			const floating = overlay[row];
+			const floating = overlay[row - this.overlayY];
 			return floating === undefined
 				? line
 				: compositeTuiLine(line, floating, this.overlayX, this.overlayWidth, boundedWidth);

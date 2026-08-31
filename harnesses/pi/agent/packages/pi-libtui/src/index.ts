@@ -36,6 +36,13 @@ export {
 	type TuiTextEffectStyle,
 } from "./appearance.ts";
 export {
+	BackgroundSurface,
+	type BackgroundSurfaceOptions,
+	type HalfBlockSurfaceEdge,
+	halfBlockSurfaceEdge,
+	TOOL_SURFACE_BACKGROUND,
+} from "./background-surface.ts";
+export {
 	createTuiThemeVariation,
 	type TuiBackgroundPaint,
 	type TuiBackgroundToken,
@@ -104,6 +111,11 @@ export {
 	type SelectOption,
 } from "./controls/searchable-select.ts";
 export {
+	SelectBox,
+	type SelectBoxOptions,
+	type SelectBoxRowContext,
+} from "./controls/select-box.ts";
+export {
 	SelectableList,
 	type SelectableListGeometry,
 	type SelectableListItemGeometry,
@@ -150,7 +162,9 @@ export {
 } from "./decoration/editor-pills.ts";
 export {
 	icon,
+	keyHintGlyph,
 	type PillContent,
+	renderKeyHint,
 	renderPillText,
 	type TuiIconName,
 	type TuiKeyIconPack,
@@ -236,13 +250,13 @@ export {
 	type DialogOverlayOptions,
 	offsetDialogHost,
 } from "./overlay/dialog.ts";
+export { FloatingOverlay, type FloatingOverlayOptions } from "./overlay/floating.ts";
 export {
 	FramedEditorOverlay,
 	type FramedEditorOverlayGeometry,
 	type FramedEditorOverlayOptions,
 } from "./overlay/framed-editor.ts";
 export { FullscreenOverlay, fullscreenOverlayOptions } from "./overlay/fullscreen.ts";
-export { FloatingOverlay, type FloatingOverlayOptions } from "./overlay/floating.ts";
 export {
 	compositeHoverTooltip,
 	findScreenTextRect,

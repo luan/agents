@@ -49,9 +49,18 @@ describe("public module boundaries", () => {
 			"EDITOR_PROTOCOL",
 			"EDITOR_REGISTRY_KEY",
 			"SemanticEditor",
+			"composeEditorStatus",
 			"dispatchEditorPaste",
 			"dispatchEditorRender",
+			"editorCompositionCadenceMs",
+			"editorCompositionContentWidth",
+			"editorStatusSeparator",
 			"ensureEditorRegistry",
+			"installEditorLayer",
+			"installEditorMinimumRows",
+			"renderEditorComposition",
+			"renderEditorCompositionPreview",
+			"renderEditorCompositionStatus",
 			"semanticEditorTheme",
 		]);
 	});

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { configureTuiAppearance, DEFAULT_TUI_APPEARANCE } from "../src/appearance.ts";
-import { BackgroundSurface } from "../src/background-surface.ts";
+import { BackgroundSurface, halfBlockSurfaceEdge } from "../src/background-surface.ts";
 import { tuiTheme } from "../src/color/theme.ts";
 import { icon } from "../src/decoration/glyphs.ts";
 import { ProgressBar, progressFrame } from "../src/decoration/status.ts";
@@ -67,6 +67,14 @@ describe("tool transcript grammar", () => {
 		const [line] = surface.render(20);
 		expect(line).toMatch(/\x1b\[0m\x1b\[48;[^m]+m {10}/u);
 		expect(visibleWidth(line!)).toBe(20);
+	});
+
+	test("half-block surface edges leave a soft cell boundary", () => {
+		const top = halfBlockSurfaceEdge(theme, "surface.selected", "top", 4);
+		const bottom = halfBlockSurfaceEdge(theme, "surface.selected", "bottom", 4);
+		expect(stripTerminalSequences(top)).toBe("▄▄▄▄");
+		expect(stripTerminalSequences(bottom)).toBe("▀▀▀▀");
+		expect(top).toContain(tuiTheme(theme).fgAnsi(tuiTheme(theme).color("surface.selected")));
 	});
 
 	test("tool surfaces start after one output row and include the action row", () => {

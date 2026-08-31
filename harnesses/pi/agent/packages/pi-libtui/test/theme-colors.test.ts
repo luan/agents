@@ -163,6 +163,8 @@ describe("TUI theme colors", () => {
 		expect(lightHunk.b - Math.max(lightHunk.r, lightHunk.g)).toBeGreaterThan(0);
 		expect(lightHunkGutter.b - Math.max(lightHunkGutter.r, lightHunkGutter.g)).toBeGreaterThan(0);
 		expect(tuiTheme(lightTheme).fgAnsi("border")).toBe("\x1b[38;2;100;120;140m");
+		expect(tuiTheme(darkTheme).bgAnsi("surface.editor")).toBe("\x1b[48;2;19;22;28m");
+		expect(tuiTheme(lightTheme).bgAnsi("surface.editor")).toBe("\x1b[48;2;235;238;242m");
 		expect(tuiTheme(lightTheme).bgAnsi("surface.raised")).toBe("\x1b[48;2;235;238;242m");
 		expect(tuiTheme(lightTheme).bgAnsi("surface.selected")).toBe("\x1b[48;2;210;215;225m");
 		expect(tuiTheme(lightTheme).bgAnsi("surface.inset")).toMatch(/^\x1b\[48;2;/);

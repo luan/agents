@@ -11,6 +11,8 @@ export interface SelectableListRenderContext {
 	selected: boolean;
 	/** Whether the pointer currently hovers this item's target. */
 	hovered: boolean;
+	/** Whether the preceding item is selected, for stable shared boundaries. */
+	previousSelected: boolean;
 }
 
 /** Interactive terminal-cell geometry for one visible list item. */
@@ -54,7 +56,9 @@ export interface SelectableListRow {
 	/** Decorative columns rendered before, but excluded from, the selectable row. */
 	leading?: string;
 	/** Selectable row content rendered after any excluded leading columns. */
-	content: string;
+	content: string | readonly string[];
+	/** Optional pointer target relative to the content rows. Defaults to all content after `leading`. */
+	target?: { x: number; y: number; width: number; height: number };
 }
 
 /** Construction options for {@link SelectableList}. */
@@ -260,6 +264,7 @@ export class SelectableList<Item> implements Component {
 					index,
 					selected: index === this.selectedIndex,
 					hovered: index === this.hoverIndex,
+					previousSelected: index > 0 && index - 1 === this.selectedIndex,
 				}),
 				boundedWidth,
 			),
@@ -366,10 +371,20 @@ function normalizeItem(rendered: string | string[] | SelectableListRow, width: n
 	const before = (rendered.before ?? []).map((line) => truncateToWidth(line, width, ""));
 	const leading = truncateToWidth(rendered.leading ?? "", width, "");
 	const x = visibleWidth(leading);
-	const row = truncateToWidth(`${leading}${rendered.content}`, width, "");
+	const content = typeof rendered.content === "string" ? [rendered.content] : rendered.content;
+	const rows = (content.length > 0 ? content : [""]).map((line) => truncateToWidth(`${leading}${line}`, width, ""));
+	const requested = rendered.target;
+	const targetX = requested ? Math.max(0, Math.min(width, Math.floor(requested.x))) : x;
+	const targetY = requested ? Math.max(0, Math.min(rows.length, Math.floor(requested.y))) : 0;
+	const targetWidth = requested
+		? Math.max(0, Math.min(width - targetX, Math.floor(requested.width)))
+		: Math.max(0, width - x);
+	const targetHeight = requested
+		? Math.max(0, Math.min(rows.length - targetY, Math.floor(requested.height)))
+		: rows.length;
 	return {
-		lines: [...before, row],
-		target: { x, y: before.length, width: Math.max(0, width - x), height: 1 },
+		lines: [...before, ...rows],
+		target: { x: targetX, y: before.length + targetY, width: targetWidth, height: targetHeight },
 	};
 }
 

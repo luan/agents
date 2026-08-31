@@ -1,19 +1,34 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { type TuiBackgroundToken, tuiTheme } from "./color/theme.ts";
+import { type TuiBackgroundPaint, type TuiBackgroundToken, tuiTheme } from "./color/theme.ts";
 import { TEXT_INTERACTION_TARGET, type TextInteractionTarget, type TuiMouseEvent } from "./mouse.ts";
 import { getTuiRenderEpoch } from "./render-epoch.ts";
 
 export interface BackgroundSurfaceOptions {
 	theme: Theme;
 	component: Component;
-	background?: TuiBackgroundToken;
+	background?: TuiBackgroundPaint;
 	/** Leave shorter content unpainted. Defaults to one rendered row. */
 	minimumRows?: number;
 }
 
+export type HalfBlockSurfaceEdge = "top" | "bottom";
+
 /** Canonical background for multiline tool and foldable content. */
 export const TOOL_SURFACE_BACKGROUND: TuiBackgroundToken = "surface.raised";
+
+/** Paint a half-cell cap for a raised or selected surface. */
+export function halfBlockSurfaceEdge(
+	theme: Theme,
+	background: TuiBackgroundPaint,
+	edge: HalfBlockSurfaceEdge,
+	width: number,
+): string {
+	const boundedWidth = Math.max(0, Math.floor(width));
+	const colors = tuiTheme(theme);
+	const foreground = typeof background === "string" ? colors.color(background) : background;
+	return colors.fg(foreground, (edge === "top" ? "▄" : "▀").repeat(boundedWidth));
+}
 
 /** Paint a component's rows edge-to-edge without adding a border, padding, or indentation. */
 export class BackgroundSurface implements Component, TextInteractionTarget {

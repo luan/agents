@@ -38,8 +38,12 @@ export interface MultiSelectOptions<Value extends string> {
 	theme: Theme;
 	/** Persist the selected values in their current order. */
 	onSave(value: Value[]): void;
+	/** Preview a changed selection without persisting it. */
+	onChange?(value: Value[]): void;
 	/** Close without saving, after the component's unsaved-change confirmation. */
 	onCancel(): void;
+	/** Require a second cancel before discarding changes. Defaults to true. */
+	confirmDiscard?: boolean;
 }
 
 /** A mouseable multi-select with optional ordering and explicit Save and Cancel actions. */
@@ -172,10 +176,7 @@ export class MultiSelect<Value extends string = string> implements Component, Fo
 		const selected = options[this.selectedIndex];
 		if (!selected) return;
 		if (matchesKey(data, "space")) {
-			const index = this.value.indexOf(selected.value);
-			if (index >= 0) this.value.splice(index, 1);
-			else this.value.push(selected.value);
-			this.selectedIndex = this.displayOptions().findIndex((option) => option.value === selected.value);
+			this.toggle(selected.value);
 			return;
 		}
 		const moveLeft = matchesKey(data, "left") || data === "h";
@@ -187,6 +188,7 @@ export class MultiSelect<Value extends string = string> implements Component, Fo
 		if (next < 0 || next >= this.value.length) return;
 		[this.value[index], this.value[next]] = [this.value[next]!, this.value[index]!];
 		this.selectedIndex = this.displayOptions().findIndex((option) => option.value === selected.value);
+		this.settings.onChange?.([...this.value]);
 	}
 
 	/**
@@ -362,6 +364,7 @@ export class MultiSelect<Value extends string = string> implements Component, Fo
 		if (index >= 0) this.value.splice(index, 1);
 		else this.value.push(value);
 		this.selectedIndex = this.displayOptions().findIndex((option) => option.value === value);
+		this.settings.onChange?.([...this.value]);
 	}
 
 	private save(): void {
@@ -369,7 +372,7 @@ export class MultiSelect<Value extends string = string> implements Component, Fo
 	}
 
 	private cancel(): void {
-		if (this.hasUnsavedChanges() && !this.discardWarning) {
+		if (this.settings.confirmDiscard !== false && this.hasUnsavedChanges() && !this.discardWarning) {
 			this.discardWarning = true;
 			return;
 		}

@@ -58,6 +58,10 @@ export interface PickerPanelOptions<Value extends string> {
 	maxVisible?: number;
 	/** Text displayed when the current query has no matches. */
 	emptyMessage?: string;
+	/** Label for the confirmation button. Defaults to Save. */
+	confirmLabel?: string;
+	/** Optional picker-specific shortcuts appended to the navigation hint. */
+	navigationHint?: string;
 	/** Custom option renderer; output is fitted to the available width. */
 	renderOption?: (option: PickerOption<Value>, context: PickerRowContext) => string;
 	/** Receive the confirmed option value. */
@@ -136,7 +140,7 @@ export class PickerPanel<Value extends string = string> implements Component, Fo
 				},
 				{
 					value: "save",
-					label: "Save",
+					label: options.confirmLabel ?? "Save",
 					icon: "confirm",
 					foreground: "positive",
 					background: "action.positive",
@@ -157,6 +161,12 @@ export class PickerPanel<Value extends string = string> implements Component, Fo
 	set focused(value: boolean) {
 		this._focused = value;
 		this.input.focused = value && this.searching;
+	}
+
+	/** Value to select when the current row is removed: the row above, or the next row when already first. */
+	getFallbackValueAfterRemoval(): Value | undefined {
+		const index = this.list.getSelectedIndex();
+		return (this.filtered[index - 1] ?? this.filtered[index + 1])?.value;
 	}
 
 	/**
@@ -408,7 +418,10 @@ export class PickerPanel<Value extends string = string> implements Component, Fo
 			this.options.keybindings.getKeys("tui.select.down")[0],
 		].filter((key): key is NonNullable<typeof key> => key !== undefined);
 		const hints = keys.map((key) => renderKeyHint(this.options.theme, key));
-		return `${hints.join(" ")}${hints.length > 0 ? " " : ""}${colors.fg("text.muted", "move")}`;
+		const navigation = `${hints.join(" ")}${hints.length > 0 ? " " : ""}${colors.fg("text.muted", "move")}`;
+		return this.options.navigationHint
+			? `${navigation} ${colors.fg("text.muted", `· ${this.options.navigationHint}`)}`
+			: navigation;
 	}
 
 	private leaveSearch(): void {

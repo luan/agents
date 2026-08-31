@@ -32,6 +32,8 @@ export type TuiForegroundToken =
 
 export type TuiBackgroundToken =
 	| "surface.base"
+	| "surface.editor"
+	| "surface.accent"
 	| "surface.raised"
 	| "surface.inset"
 	| "surface.cursor"
@@ -104,6 +106,7 @@ interface ThemeAliases {
 	readonly border?: RgbColor;
 	readonly heading?: RgbColor;
 	readonly raised?: RgbColor;
+	readonly editor?: RgbColor;
 	readonly selected?: RgbColor;
 	readonly accent?: RgbColor;
 }
@@ -233,7 +236,7 @@ function createTuiTheme(
 	measurements: MeasuredTerminalColors | undefined,
 ): { facade: TuiTheme; resolver: ColorResolver } {
 	let resolver: ColorResolver;
-	let aliases: ThemeAliases = {};
+	let aliases: ThemeAliases = { editor: hostBackgroundColor(theme, "customMessageBg") };
 	if (theme.name === "harmonious" && measurements?.indexedPalette === "generated") {
 		const resolvedPalette = measurements.ansiBase16
 			? generateColor256(
@@ -275,6 +278,7 @@ function createTuiTheme(
 			output: theme.getColorMode?.() === "256color" ? "quantized-indexed" : "truecolor",
 		});
 		aliases = {
+			...aliases,
 			secondary: hostForegroundColor(theme, "muted"),
 			muted: hostForegroundColor(theme, "dim"),
 			border: hostForegroundColor(theme, "border"),
@@ -293,10 +297,21 @@ function buildTheme(resolver: ColorResolver, aliases: ThemeAliases): TuiTheme {
 	const selected = aliases.selected ?? swatch("blue", 1);
 	const selectedCursor = color256Index(5, 3, 0);
 	const lightSurface = yiqLuminance(resolver.rgb(background)) > yiqLuminance(resolver.rgb(foreground));
-	const added = lightSurface ? swatch("green", 1) : swatch("green", 2);
-	const removed = lightSurface ? swatch("red", 1) : swatch("red", 2);
-	const addedGutter = lightSurface ? swatch("green", 2) : swatch("green", 1);
-	const removedGutter = lightSurface ? swatch("red", 2) : swatch("red", 1);
+	const editorBase = aliases.editor ?? aliases.raised ?? gray256Index(1);
+	const editorRgb = resolver.rgb(editorBase);
+	const editorSurface =
+		yiqLuminance(editorRgb) > 127 ? editorBase : rgb(editorRgb.r * 0.78, editorRgb.g * 0.78, editorRgb.b * 0.78);
+	const backgroundRgb = resolver.rgb(background);
+	const accentRgb = resolver.rgb(aliases.accent ?? swatch("blue", 5));
+	const accentSurface = rgb(
+		Math.round(backgroundRgb.r * 0.82 + accentRgb.r * 0.18),
+		Math.round(backgroundRgb.g * 0.82 + accentRgb.g * 0.18),
+		Math.round(backgroundRgb.b * 0.82 + accentRgb.b * 0.18),
+	);
+	const added = lightSurface ? swatch("green", 2) : swatch("green", 1);
+	const removed = lightSurface ? swatch("red", 2) : swatch("red", 1);
+	const addedGutter = lightSurface ? swatch("green", 1) : swatch("green", 2);
+	const removedGutter = lightSurface ? swatch("red", 1) : swatch("red", 2);
 	const semantic = {
 		"text.primary": foreground,
 		"text.secondary": aliases.secondary ?? gray256Index(12),
@@ -312,6 +327,8 @@ function buildTheme(resolver: ColorResolver, aliases: ThemeAliases): TuiTheme {
 		warning: swatch("yellow", 5),
 		negative: swatch("red", 5),
 		"surface.base": background,
+		"surface.editor": editorSurface,
+		"surface.accent": accentSurface,
 		"surface.raised": aliases.raised ?? gray256Index(1),
 		"surface.inset": background,
 		"surface.cursor": color256Index(0, 1, 2),
@@ -328,11 +345,11 @@ function buildTheme(resolver: ColorResolver, aliases: ThemeAliases): TuiTheme {
 		"badge.warning": swatch("yellow", 1),
 		"badge.negative": swatch("red", 1),
 		// Hunk headers are structural separators, not selected rows. Keep the
-		// narrow fold cell one blue step darker than the full header surface.
-		"diff.hunk": swatch("blue", 2),
-		"diff.hunkGutter": swatch("blue", 1),
-		"diff.hunkHover": swatch("blue", 3),
-		"diff.hunkGutterHover": swatch("blue", 2),
+		// narrow fold cell one blue step brighter than the full header surface.
+		"diff.hunk": swatch("blue", 1),
+		"diff.hunkGutter": swatch("blue", 2),
+		"diff.hunkHover": swatch("blue", 2),
+		"diff.hunkGutterHover": swatch("blue", 3),
 		"diff.added": added,
 		"diff.removed": removed,
 		"diff.addedGutter": addedGutter,
@@ -502,7 +519,9 @@ function themeFingerprint(theme: Theme): string {
 	] as const satisfies readonly ThemeColor[];
 	const foregrounds = typeof theme.getFgAnsi === "function" ? colors.map((color) => theme.getFgAnsi(color)) : [];
 	const backgrounds =
-		typeof theme.getBgAnsi === "function" ? [theme.getBgAnsi("toolPendingBg"), theme.getBgAnsi("selectedBg")] : [];
+		typeof theme.getBgAnsi === "function"
+			? [theme.getBgAnsi("toolPendingBg"), theme.getBgAnsi("customMessageBg"), theme.getBgAnsi("selectedBg")]
+			: [];
 	const colorMode = typeof theme.getColorMode === "function" ? theme.getColorMode() : "truecolor";
 	return [theme.name ?? "", colorMode, ...backgrounds, ...foregrounds].join("|");
 }

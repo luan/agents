@@ -154,6 +154,47 @@ describe("SelectableList", () => {
 		expect(activations).toEqual(["Terminal images"]);
 	});
 
+	test("keeps every content line in a structured row selectable", () => {
+		const activations: string[] = [];
+		const list = new SelectableList({
+			items: ["Theme"],
+			renderItem: (item) => ({
+				before: ["Appearance", "──────────"],
+				content: [item, "Color theme used by Pi."],
+			}),
+			requestRender() {},
+			onActivate: (item) => activations.push(item),
+		});
+
+		expect(list.render(30)).toEqual(["Appearance", "──────────", "Theme", "Color theme used by Pi."]);
+		expect(list.getGeometry()?.items).toEqual([{ x: 0, y: 2, width: 30, height: 2, index: 0 }]);
+		expect(list.onMouse(event({ type: "move", row: 1, col: 2 }))).toBe(false);
+		list.onMouse(event({ type: "press", row: 3, col: 2, button: 0 }));
+		list.onMouse(event({ type: "release", row: 3, col: 2, button: 0 }));
+		expect(activations).toEqual(["Theme"]);
+	});
+
+	test("can restrict pointer interaction to one control inside a multi-line row", () => {
+		const activations: string[] = [];
+		const list = new SelectableList({
+			items: ["Theme"],
+			renderItem: (item) => ({
+				before: ["──────────"],
+				content: [`${item}             Dark`, "Color theme used by Pi."],
+				target: { x: 18, y: 0, width: 4, height: 1 },
+			}),
+			requestRender() {},
+			onActivate: (item) => activations.push(item),
+		});
+
+		list.render(30);
+		expect(list.getGeometry()?.items).toEqual([{ x: 18, y: 1, width: 4, height: 1, index: 0 }]);
+		expect(list.onMouse(event({ type: "move", row: 2, col: 2 }))).toBe(false);
+		list.onMouse(event({ type: "press", row: 1, col: 19, button: 0 }));
+		list.onMouse(event({ type: "release", row: 1, col: 19, button: 0 }));
+		expect(activations).toEqual(["Theme"]);
+	});
+
 	test("wheel scrolls the line-budget viewport without changing selection", () => {
 		const changes: number[] = [];
 		const list = new SelectableList({
