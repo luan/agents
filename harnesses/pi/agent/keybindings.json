@@ -5,6 +5,8 @@
   "tui.select.down": ["down", "ctrl+n"],
   "tui.editor.undo": ["ctrl+_"],
   "tui.input.copy": ["alt+c"],
+  "tui.altScreen.searchPrevious": ["shift+enter"],
+  "tui.editor.deleteToLineStart": ["ctrl+u", "super+backspace"],
   "app.model.cycleForward": ["ctrl+t"],
   "app.model.cycleBackward": ["ctrl+shift+t"],
   "app.model.select": [],

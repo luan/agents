@@ -21,25 +21,21 @@ pi-libtui.selectionCursor = "blinking-block"
 pi-libtui.activityMarker = "spinner"
 pi-libtui.shimmer = "glow"
 pi-libtui.shimmerMarker = true
-pi-libtui.animationSmoothness = "smooth"
 pi-libtui.animationSpeed = "normal"
 pi-libtui.activityLine = "off"
-pi-libtui.activityIndicator = "sparkle"
-pi-libtui.activityMessage = "phase"
-pi-libtui.textEffect = "glow"
 pi-libtui.textEffectScope = "message"
 pi-libtui.statusPresentation = "standard"
-pi-libtui.pulseEffect = "pulse"
-pi-libtui.thinkingPresentation = "pi-pulse"
+pi-libtui.activityIndicator = "sparkle"
+pi-libtui.textEffect = "glow"
+pi-libtui.pulseEffect = "off"
 pi-exec-command.activityMarker = "off"
 pi-custom-editor.preset = "compact-field"
 pi-custom-editor.bottomTreatment = "preset"
 pi-custom-editor.railTone = "accent"
-pi-custom-editor.rightRail = "preset"
 pi-custom-editor.promptMarker = "preset"
 pi-custom-editor.footer = "preset"
-pi-custom-editor.workingPlacement = "bottom-left-start"
 pi-custom-editor.statusSeparator = "preset"
+pi-custom-editor.workingPlacement = "bottom-left-start"
 
 [behavior]
 pi.enabledModels = [ "openai-codex/gpt-5.6-luna", "openai-codex/gpt-5.6-terra", "openai-codex/gpt-5.6-sol" ]
@@ -50,7 +46,7 @@ pi.branchSummary.skipPrompt = false
 pi-codex-native.cacheDiagnostics = "off"
 pi-codex-native.fallbackCompaction = false
 pi-codex-native.contextWindowPreset = "balanced"
-pi-model-roles.defaultRole = "tiny"
+pi-model-roles.defaultRole = "balanced"
 
 [interaction]
 pi.steeringMode = "one-at-a-time"
