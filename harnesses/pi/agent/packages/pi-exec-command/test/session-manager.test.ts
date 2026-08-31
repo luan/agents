@@ -1,6 +1,52 @@
 import { expect, test } from "bun:test";
 import type { ExecBridgeClient } from "../src/bridge-client.ts";
-import { createExecSessionManager, type ExecProcessSnapshot } from "../src/session-manager.ts";
+import {
+	createExecSessionManager,
+	type ExecProcessSnapshot,
+	type ExecSessionManagerOptions,
+	type ExecSessionRuntime,
+} from "../src/session-manager.ts";
+
+function systemRuntime(): ExecSessionRuntime {
+	return {
+		now: Date.now,
+		processId: (sessionId) => `test-${sessionId}`,
+		resolveShell: (shell) => (!shell || shell.endsWith("fish") ? "/bin/sh" : shell),
+		schedule: (delayMs, callback) => {
+			const timer = setTimeout(callback, delayMs);
+			return { dispose: () => clearTimeout(timer) };
+		},
+	};
+}
+
+function createManager(options: ExecSessionManagerOptions, runtime = systemRuntime()) {
+	return createExecSessionManager(options, runtime);
+}
+
+class ManualRuntime implements ExecSessionRuntime {
+	private time = 0;
+	private readonly timers = new Set<{ at: number; callback: () => void }>();
+
+	now = (): number => this.time;
+	processId = (sessionId: number): string => `test-${sessionId}`;
+	resolveShell = (shell?: string): string => (!shell || shell.endsWith("fish") ? "/bin/sh" : shell);
+	schedule = (delayMs: number, callback: () => void): { dispose(): void } => {
+		const timer = { at: this.time + delayMs, callback };
+		this.timers.add(timer);
+		return { dispose: () => this.timers.delete(timer) };
+	};
+	advance(durationMs: number): void {
+		const target = this.time + durationMs;
+		for (;;) {
+			const next = [...this.timers].filter((timer) => timer.at <= target).sort((a, b) => a.at - b.at)[0];
+			if (!next) break;
+			this.timers.delete(next);
+			this.time = next.at;
+			next.callback();
+		}
+		this.time = target;
+	}
+}
 
 test("session output preserves UTF-8 characters split across bridge chunks", async () => {
 	let reads = 0;
@@ -29,7 +75,7 @@ test("session output preserves UTF-8 characters split across bridge chunks", asy
 		},
 		async shutdown() {},
 	};
-	const manager = createExecSessionManager({ bridge });
+	const manager = createManager({ bridge });
 	const updates: string[] = [];
 	const result = await manager.exec({ cmd: "unicode", shell: "/bin/sh", login: false }, "/tmp", undefined, (update) =>
 		updates.push(update.output),
@@ -119,7 +165,7 @@ test("a throwing progress observer cannot own session cleanup", async () => {
 			shutdown = true;
 		},
 	};
-	const manager = createExecSessionManager({ bridge });
+	const manager = createManager({ bridge });
 
 	const result = await manager.exec({ cmd: "observer", shell: "/bin/sh", login: false }, "/tmp", undefined, () => {
 		updates += 1;
@@ -146,7 +192,7 @@ test("a completed session can be polled again", async () => {
 		},
 		async shutdown() {},
 	};
-	const manager = createExecSessionManager({ bridge });
+	const manager = createManager({ bridge });
 	const first = await manager.exec({ cmd: "done", shell: "/bin/sh", login: false }, "/tmp");
 	const replay = await manager.write({ session_id: 1 });
 	expect(first.output).toBe("done");
@@ -175,7 +221,7 @@ test("configured defaults control shell mode and returned output", async () => {
 		},
 		async shutdown() {},
 	};
-	const manager = createExecSessionManager({
+	const manager = createManager({
 		bridge,
 		defaultLoginShell: false,
 		defaultMaxOutputTokens: 1_000,
@@ -203,7 +249,7 @@ test("manager replaces a fish environment shell before spawning", async () => {
 		},
 		async shutdown() {},
 	};
-	const manager = createExecSessionManager({ bridge, env: { SHELL: "/opt/homebrew/bin/fish" } });
+	const manager = createManager({ bridge, env: { SHELL: "/opt/homebrew/bin/fish" } });
 
 	await manager.exec({ cmd: "printf ok", login: false }, "/tmp");
 
@@ -214,11 +260,12 @@ test("manager replaces a fish environment shell before spawning", async () => {
 });
 
 test("continuous output cannot extend execution past the hard wait limit", async () => {
+	const runtime = new ManualRuntime();
 	let sequence = 0;
 	const bridge: ExecBridgeClient = {
 		async request<T>(request: Record<string, unknown>): Promise<T> {
 			if (request["op"] === "exec") return { processId: "test" } as T;
-			await Bun.sleep(25);
+			runtime.advance(25);
 			sequence += 1;
 			return {
 				chunks: [{ seq: sequence, stream: "stdout", chunk: Buffer.from(".").toString("base64") }],
@@ -229,14 +276,14 @@ test("continuous output cannot extend execution past the hard wait limit", async
 		},
 		async shutdown() {},
 	};
-	const manager = createExecSessionManager({ bridge, maxExecYieldTimeMs: 250 });
-	const started = performance.now();
-	const result = await manager.exec({ cmd: "stream", shell: "/bin/sh", login: false, yield_time_ms: 250 }, "/tmp");
-	const elapsed = performance.now() - started;
+	const sessionManager = createManager({ bridge, maxExecYieldTimeMs: 250 }, runtime);
+	const result = await sessionManager.exec(
+		{ cmd: "stream", shell: "/bin/sh", login: false, yield_time_ms: 250 },
+		"/tmp",
+	);
 	expect(result.session_id).toBe(1);
-	expect(elapsed).toBeGreaterThanOrEqual(225);
-	expect(elapsed).toBeLessThan(450);
-	await manager.shutdown();
+	expect(result.wall_time_seconds).toBe(0.25);
+	await sessionManager.shutdown();
 });
 
 test("completed replay evicts the oldest session after its fixed bound", async () => {
@@ -254,7 +301,7 @@ test("completed replay evicts the oldest session after its fixed bound", async (
 		},
 		async shutdown() {},
 	};
-	const manager = createExecSessionManager({ bridge });
+	const manager = createManager({ bridge });
 	for (let index = 0; index < 33; index += 1) {
 		await manager.exec({ cmd: `command-${index}`, shell: "/bin/sh", login: false }, "/tmp");
 	}
@@ -270,7 +317,7 @@ test("failed process starts do not consume active session slots", async () => {
 		},
 		async shutdown() {},
 	};
-	const manager = createExecSessionManager({ bridge });
+	const manager = createManager({ bridge });
 	for (let index = 0; index < 65; index += 1) {
 		await expect(manager.exec({ cmd: `fail-${index}`, shell: "/bin/sh", login: false }, "/tmp")).rejects.toThrow(
 			"spawn failed",
@@ -298,7 +345,7 @@ test("an abort racing process creation terminates the spawned command", async ()
 		},
 		async shutdown() {},
 	};
-	const manager = createExecSessionManager({ bridge });
+	const manager = createManager({ bridge });
 	const controller = new AbortController();
 	const execution = manager.exec({ cmd: "sleep", shell: "/bin/sh", login: false }, "/tmp", controller.signal);
 	await Promise.resolve();
@@ -317,14 +364,13 @@ test("rejects a process after the active session limit", async () => {
 		async request<T>(request: Record<string, unknown>): Promise<T> {
 			if (request["op"] === "exec") return { processId: request["process_id"] } as T;
 			if (request["op"] === "terminate") return { terminated: true } as T;
-			await Bun.sleep(1);
-			return { chunks: [], nextSeq: 1, exited: false, closed: false } as T;
+			return await new Promise<T>(() => undefined);
 		},
 		async shutdown() {
 			stopped = true;
 		},
 	};
-	const manager = createExecSessionManager({ bridge, maxExecYieldTimeMs: 250 });
+	const manager = createManager({ bridge, maxExecYieldTimeMs: 250 });
 	const active = Array.from({ length: 64 }, (_, index) =>
 		manager.exec({ cmd: `sleep-${index}`, shell: "/bin/sh", login: false, yield_time_ms: 250 }, "/tmp"),
 	);
@@ -346,7 +392,7 @@ test("shutdown rejects a pending execution instead of returning a phantom sessio
 		},
 		async shutdown() {},
 	};
-	const manager = createExecSessionManager({ bridge, maxExecYieldTimeMs: 30_000 });
+	const manager = createManager({ bridge, maxExecYieldTimeMs: 30_000 });
 	const execution = manager.exec({ cmd: "sleep", shell: "/bin/sh", login: false }, "/tmp");
 	await Promise.resolve();
 	await manager.shutdown();
@@ -354,6 +400,7 @@ test("shutdown rejects a pending execution instead of returning a phantom sessio
 });
 
 test("write aborts without waiting for a blocked native stdin request", async () => {
+	const runtime = new ManualRuntime();
 	const writeGate = Promise.withResolvers<{ status: string }>();
 	const bridge: ExecBridgeClient = {
 		async request<T>(request: Record<string, unknown>): Promise<T> {
@@ -363,15 +410,18 @@ test("write aborts without waiting for a blocked native stdin request", async ()
 		},
 		async shutdown() {},
 	};
-	const manager = createExecSessionManager({ bridge, defaultExecYieldTimeMs: 1 });
-	const started = await manager.exec({ cmd: "interactive", shell: "/bin/sh", login: false, tty: true }, "/tmp");
+	const sessionManager = createManager({ bridge, defaultExecYieldTimeMs: 1 }, runtime);
+	const starting = sessionManager.exec({ cmd: "interactive", shell: "/bin/sh", login: false, tty: true }, "/tmp");
+	await Promise.resolve();
+	runtime.advance(250);
+	const started = await starting;
 	const controller = new AbortController();
-	const writing = manager.write({ session_id: started.session_id!, chars: "x" }, controller.signal);
+	const writing = sessionManager.write({ session_id: started.session_id!, chars: "x" }, controller.signal);
 
 	controller.abort();
 	await expect(writing).rejects.toThrow("write_stdin aborted");
 	writeGate.resolve({ status: "accepted" });
-	await manager.shutdown();
+	await sessionManager.shutdown();
 });
 
 test("publishes bounded process snapshots and raw PTY data", async () => {
@@ -389,7 +439,7 @@ test("publishes bounded process snapshots and raw PTY data", async () => {
 		},
 		async shutdown() {},
 	};
-	const manager = createExecSessionManager({ bridge });
+	const manager = createManager({ bridge });
 	const revisions: ReadonlyArray<ExecProcessSnapshot>[] = [];
 	const ptyData: string[] = [];
 	const unsubscribeProcesses = manager.subscribeProcesses?.((snapshots) => revisions.push(snapshots));
@@ -416,14 +466,14 @@ test("publishes bounded process snapshots and raw PTY data", async () => {
 });
 
 test("routes process controls through the native process identity", async () => {
+	const runtime = new ManualRuntime();
 	const requests: Record<string, unknown>[] = [];
 	const bridge: ExecBridgeClient = {
 		async request<T>(request: Record<string, unknown>): Promise<T> {
 			requests.push(request);
 			if (request["op"] === "exec") return { processId: request["process_id"] } as T;
 			if (request["op"] === "read") {
-				await Bun.sleep(5);
-				return { chunks: [], nextSeq: 1, exited: false, closed: false } as T;
+				return await new Promise<T>(() => undefined);
 			}
 			if (request["op"] === "write") return { status: "accepted" } as T;
 			if (request["op"] === "resize") return { resized: true } as T;
@@ -431,17 +481,20 @@ test("routes process controls through the native process identity", async () => 
 		},
 		async shutdown() {},
 	};
-	const manager = createExecSessionManager({ bridge, maxExecYieldTimeMs: 1 });
-	const result = await manager.exec(
+	const sessionManager = createManager({ bridge, maxExecYieldTimeMs: 1 }, runtime);
+	const execution = sessionManager.exec(
 		{ cmd: "interactive", shell: "/bin/sh", login: false, tty: true, yield_time_ms: 1 },
 		"/tmp",
 	);
+	await Promise.resolve();
+	runtime.advance(1);
+	const result = await execution;
 	expect(result.session_id).toBe(1);
 
-	expect(await manager.interrupt?.(1)).toBe(true);
-	expect(await manager.resize?.(1, 800, 400)).toBe(true);
-	expect(await manager.sendInput?.(1, "x")).toBe(true);
-	expect(await manager.terminate?.(1)).toBe(true);
+	expect(await sessionManager.interrupt?.(1)).toBe(true);
+	expect(await sessionManager.resize?.(1, 800, 400)).toBe(true);
+	expect(await sessionManager.sendInput?.(1, "x")).toBe(true);
+	expect(await sessionManager.terminate?.(1)).toBe(true);
 	const nativeId = requests.find(({ op }) => op === "exec")?.["process_id"];
 	expect(requests.filter(({ op }) => op !== "read").map(({ op, process_id }) => [op, process_id])).toEqual([
 		["exec", nativeId],
@@ -451,5 +504,5 @@ test("routes process controls through the native process identity", async () => 
 		["terminate", nativeId],
 	]);
 	expect(requests.find(({ op }) => op === "resize")).toEqual(expect.objectContaining({ cols: 500, rows: 200 }));
-	await manager.shutdown();
+	await sessionManager.shutdown();
 });

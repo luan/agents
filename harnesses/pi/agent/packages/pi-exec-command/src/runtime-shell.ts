@@ -1,44 +1,62 @@
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { win32 } from "node:path";
 
-function firstExistingShell(candidates: readonly string[], fallback: string): string {
-	return candidates.find((candidate) => existsSync(candidate)) ?? fallback;
+export interface ExecShellEnvironment {
+	readonly platform: NodeJS.Platform;
+	readonly variables: Readonly<Record<string, string | undefined>>;
+	exists(path: string): boolean;
 }
 
-function defaultWindowsShell(): string {
-	const programFiles = process.env["ProgramFiles"] ?? "C:\\Program Files";
-	const programFilesX86 = process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)";
-	const localAppData = process.env["LOCALAPPDATA"];
+export type ExecShellResolver = (shell?: string) => string;
+
+function firstExistingShell(
+	candidates: readonly string[],
+	fallback: string,
+	exists: (path: string) => boolean,
+): string {
+	return candidates.find(exists) ?? fallback;
+}
+
+function defaultWindowsShell(environment: ExecShellEnvironment): string {
+	const programFiles = environment.variables["ProgramFiles"] ?? "C:\\Program Files";
+	const programFilesX86 = environment.variables["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)";
+	const localAppData = environment.variables["LOCALAPPDATA"];
 	const candidates = [`${programFiles}\\Git\\bin\\bash.exe`, `${programFilesX86}\\Git\\bin\\bash.exe`];
 	if (localAppData) candidates.push(`${localAppData}\\Programs\\Git\\bin\\bash.exe`);
-	return firstExistingShell(candidates, "bash.exe");
+	return firstExistingShell(candidates, "bash.exe", environment.exists);
 }
 
-export const DEFAULT_EXEC_SHELL =
-	process.platform === "win32"
-		? defaultWindowsShell()
-		: process.platform === "darwin"
-			? firstExistingShell(["/bin/zsh", "/bin/bash", "/bin/sh"], "/bin/sh")
-			: firstExistingShell(["/bin/bash", "/bin/zsh", "/bin/sh"], "/bin/sh");
+function defaultExecShell(environment: ExecShellEnvironment): string {
+	if (environment.platform === "win32") return defaultWindowsShell(environment);
+	return environment.platform === "darwin"
+		? firstExistingShell(["/bin/zsh", "/bin/bash", "/bin/sh"], "/bin/sh", environment.exists)
+		: firstExistingShell(["/bin/bash", "/bin/zsh", "/bin/sh"], "/bin/sh", environment.exists);
+}
 
 function shellName(shell: string | undefined): string | undefined {
 	return shell?.replace(/\\/g, "/").split("/").pop()?.toLowerCase();
 }
 
-function translateWindowsPosixShell(shell: string): string {
+function translateWindowsPosixShell(shell: string, fallback: string, exists: (path: string) => boolean): string {
 	const marker = "\\bin\\bash.exe";
-	if (!DEFAULT_EXEC_SHELL.toLowerCase().endsWith(marker)) return shell;
-	const gitRoot = DEFAULT_EXEC_SHELL.slice(0, -marker.length);
+	if (!fallback.toLowerCase().endsWith(marker)) return shell;
+	const gitRoot = fallback.slice(0, -marker.length);
 	const relative = shell.replace(/^\/+/, "").replace(/\//g, "\\");
-	for (const candidate of [join(gitRoot, `${relative}.exe`), join(gitRoot, relative)]) {
-		if (existsSync(candidate)) return candidate;
+	for (const candidate of [win32.join(gitRoot, `${relative}.exe`), win32.join(gitRoot, relative)]) {
+		if (exists(candidate)) return candidate;
 	}
 	return shell;
 }
 
-/** Resolve a shell that accepts the POSIX command grammar used by exec_command. */
-export function resolveRuntimeShell(shell: string | undefined): string {
-	if (!shell || shellName(shell) === "fish") return DEFAULT_EXEC_SHELL;
-	if (process.platform === "win32" && shell.startsWith("/")) return translateWindowsPosixShell(shell);
-	return shell;
+/** Create a deterministic resolver for the POSIX command grammar used by exec_command. */
+export function createExecShellResolver(environment: ExecShellEnvironment): ExecShellResolver {
+	const fallback = defaultExecShell(environment);
+	const environmentShell = environment.variables["SHELL"];
+	return (shell) => {
+		const selected = shell ?? environmentShell;
+		if (!selected || shellName(selected) === "fish") return fallback;
+		if (environment.platform === "win32" && selected.startsWith("/")) {
+			return translateWindowsPosixShell(selected, fallback, environment.exists);
+		}
+		return selected;
+	};
 }

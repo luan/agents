@@ -17,7 +17,7 @@ import {
 	takeOutput,
 	truncateOutput,
 } from "./output.ts";
-import { resolveRuntimeShell } from "./runtime-shell.ts";
+import type { ExecShellResolver } from "./runtime-shell.ts";
 
 export interface UnifiedExecResult {
 	chunk_id: string;
@@ -137,6 +137,13 @@ export interface ExecSessionManagerOptions {
 	defaultLoginShell?: boolean;
 }
 
+export interface ExecSessionRuntime {
+	now(): number;
+	processId(sessionId: number): string;
+	resolveShell: ExecShellResolver;
+	schedule(delayMs: number, callback: () => void): { dispose(): void };
+}
+
 const DEFAULT_SESSION_BUFFER_CHARS = 8 * 1024 * 1024;
 const DEFAULT_EXEC_YIELD_MS = 10_000;
 const DEFAULT_WRITE_YIELD_MS = 250;
@@ -216,7 +223,11 @@ function publishUpdate(onUpdate: ((result: UnifiedExecResult) => void) | undefin
 	}
 }
 
-export function createExecSessionManager(options: ExecSessionManagerOptions = {}): ExecSessionManager {
+export function createExecSessionManager(
+	options: ExecSessionManagerOptions,
+	runtime: ExecSessionRuntime,
+): ExecSessionManager {
+	const env = { ...(options.env ?? process.env) };
 	const bridge =
 		options.bridge ??
 		createExecBridgeClient({
@@ -362,7 +373,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			} catch (error) {
 				appendBounded(session, `${error instanceof Error ? error.message : String(error)}\n`, maxSessionBufferChars);
 				session.exitCode = 1;
-				session.finishedAtMs ??= Date.now();
+				session.finishedAtMs ??= runtime.now();
 				session.closed = true;
 				wake(session);
 				emitProcesses();
@@ -380,7 +391,7 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 			session.lastSeq = response.nextSeq - 1;
 			if (response.exited) {
 				session.observedExitCode = response.exitCode ?? 1;
-				session.finishedAtMs ??= Date.now();
+				session.finishedAtMs ??= runtime.now();
 			}
 			if (response.closed && response.more !== true) {
 				session.closed = true;
@@ -424,26 +435,26 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 		onProgress?: (elapsedMs: number) => void,
 	): Promise<number> {
 		if (stopped || session.exitCode !== undefined || signal?.aborted) return Promise.resolve(0);
-		const started = Date.now();
+		const started = runtime.now();
 		return new Promise((resolvePromise, reject) => {
-			let idleTimer: ReturnType<typeof setTimeout>;
-			let hardTimer: ReturnType<typeof setTimeout>;
+			let idleTimer: { dispose(): void } | undefined;
+			let hardTimer: { dispose(): void } | undefined;
 			const cleanup = () => {
-				clearTimeout(idleTimer);
-				clearTimeout(hardTimer);
+				idleTimer?.dispose();
+				hardTimer?.dispose();
 				session.waiters.delete(onWake);
 				signal?.removeEventListener("abort", onAbort);
 			};
 			const finish = () => {
 				cleanup();
-				resolvePromise(Date.now() - started);
+				resolvePromise(runtime.now() - started);
 			};
 			const resetIdle = () => {
-				clearTimeout(idleTimer);
-				idleTimer = setTimeout(finish, idleMs);
+				idleTimer?.dispose();
+				idleTimer = runtime.schedule(idleMs, finish);
 			};
 			const onWake = () => {
-				if (session.version !== baselineVersion) onProgress?.(Date.now() - started);
+				if (session.version !== baselineVersion) onProgress?.(runtime.now() - started);
 				if (stopped || session.exitCode !== undefined) finish();
 				else if (session.version !== baselineVersion) resetIdle();
 			};
@@ -451,8 +462,8 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 				cleanup();
 				reject(abortError("exec_command"));
 			};
-			idleTimer = setTimeout(finish, idleMs);
-			hardTimer = setTimeout(finish, Math.max(idleMs, hardLimitMs));
+			idleTimer = runtime.schedule(idleMs, finish);
+			hardTimer = runtime.schedule(Math.max(idleMs, hardLimitMs), finish);
 			session.waiters.add(onWake);
 			signal?.addEventListener("abort", onAbort, { once: true });
 		});
@@ -466,16 +477,16 @@ export function createExecSessionManager(options: ExecSessionManagerOptions = {}
 				throw new Error(`exec_command supports at most ${MAX_ACTIVE_SESSIONS} active sessions`);
 			}
 			const id = nextSessionId++;
-			const shell = resolveRuntimeShell(input.shell ?? env["SHELL"]);
+			const shell = runtime.resolveShell(input.shell ?? env["SHELL"]);
 			const workingDirectory = resolve(cwd, input.workdir ?? ".");
 			const session: Session = {
 				id,
-				processId: `pi-${process.pid}-${id}`,
+				processId: runtime.processId(id),
 				command: input.cmd,
 				cwd: workingDirectory,
 				shell,
 				tty: input.tty ?? false,
-				startedAtMs: Date.now(),
+				startedAtMs: runtime.now(),
 				bufferChunks: [],
 				bufferFirstChunk: 0,
 				bufferLength: 0,

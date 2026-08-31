@@ -3,12 +3,25 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveExecCommandBinary } from "../src/binary.ts";
-import { createExecSessionManager } from "../src/session-manager.ts";
+import { createExecSessionManager, type ExecSessionRuntime } from "../src/session-manager.ts";
 import { createExecCommandTool } from "../src/tools/exec-command/definition.ts";
+import { TEST_EXEC_COMMAND_PREPARATION_RUNTIME } from "./exec-command-preparation-runtime.ts";
 
 function manager() {
-	// These tests cover the native bridge protocol; session-manager.test.ts covers the public 250 ms wait bound.
-	return createExecSessionManager({ binaryPath: resolveExecCommandBinary, maxExecYieldTimeMs: 50 });
+	// These tests cover the native bridge protocol; session-manager.test.ts covers wait policy with a manual clock.
+	return createExecSessionManager({ binaryPath: resolveExecCommandBinary, maxExecYieldTimeMs: 50 }, systemRuntime());
+}
+
+function systemRuntime(): ExecSessionRuntime {
+	return {
+		now: Date.now,
+		processId: (sessionId) => `integration-${process.pid}-${sessionId}`,
+		resolveShell: (shell) => shell ?? "/bin/sh",
+		schedule: (delayMs, callback) => {
+			const timer = setTimeout(callback, delayMs);
+			return { dispose: () => clearTimeout(timer) };
+		},
+	};
 }
 
 async function waitForPid(path: string): Promise<number> {
@@ -40,7 +53,7 @@ async function expectProcessGone(pid: number): Promise<void> {
 test("the registered tool runs a real pipe command and reports its presentation transition", async () => {
 	const sessions = manager();
 	try {
-		const tool = createExecCommandTool({ getManager: () => sessions });
+		const tool = createExecCommandTool({ getManager: () => sessions }, TEST_EXEC_COMMAND_PREPARATION_RUNTIME);
 		const updates: unknown[] = [];
 		const result = await tool.execute(
 			"integration",

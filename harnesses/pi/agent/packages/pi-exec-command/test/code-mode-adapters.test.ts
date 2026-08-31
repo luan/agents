@@ -7,6 +7,7 @@ import { type CodeModeToolAdapter, registerCodeModeExecAdapters } from "../src/c
 import execCommandExtension from "../src/extension.ts";
 import type { ExecSessionManager } from "../src/session-manager.ts";
 import { createExecCommandTool } from "../src/tools/exec-command/definition.ts";
+import { TEST_EXEC_COMMAND_PREPARATION_RUNTIME } from "./exec-command-preparation-runtime.ts";
 import type { ExecToolPresentationDetails } from "../src/tools/presentation.ts";
 import { createWriteStdinTool } from "../src/tools/write-stdin/definition.ts";
 
@@ -68,8 +69,11 @@ test("root and child exec adapters keep their own session managers", async () =>
 			getSessionCommand: () => "vim",
 			shutdown: async () => undefined,
 		}) satisfies ExecSessionManager;
-	const rootTool = createExecCommandTool({ getManager: () => manager("root") });
-	const childTool = createExecCommandTool({ getManager: () => manager("child") });
+	const rootTool = createExecCommandTool({ getManager: () => manager("root") }, TEST_EXEC_COMMAND_PREPARATION_RUNTIME);
+	const childTool = createExecCommandTool(
+		{ getManager: () => manager("child") },
+		TEST_EXEC_COMMAND_PREPARATION_RUNTIME,
+	);
 	const rootOwner = {};
 	const childOwner = {};
 	const rootScope = {};
@@ -121,7 +125,7 @@ test("Code Mode exec invocation reuses the direct tool and manager", async () =>
 		shutdown: async () => undefined,
 	} satisfies ExecSessionManager;
 	const runtime = { getManager: () => manager };
-	const directExec = createExecCommandTool(runtime);
+	const directExec = createExecCommandTool(runtime, TEST_EXEC_COMMAND_PREPARATION_RUNTIME);
 	const directWrite = createWriteStdinTool(runtime);
 	const dispose = registerCodeModeExecAdapters([directExec, directWrite]);
 	const adapter = adapters.get("exec_command")!;
@@ -215,7 +219,10 @@ test("Code Mode write_stdin updates the original exec presentation", async () =>
 		shutdown: async () => undefined,
 	} satisfies ExecSessionManager;
 	const runtime = { getManager: () => manager };
-	const dispose = registerCodeModeExecAdapters([createExecCommandTool(runtime), createWriteStdinTool(runtime)]);
+	const dispose = registerCodeModeExecAdapters([
+		createExecCommandTool(runtime, TEST_EXEC_COMMAND_PREPARATION_RUNTIME),
+		createWriteStdinTool(runtime),
+	]);
 	const invokeContext = {
 		cwd: "/code-mode",
 		toolCallId: "call",
@@ -338,7 +345,7 @@ test("Code Mode fallback keeps the nested command when persisted details are mal
 		getSessionCommand: () => undefined,
 		shutdown: async () => undefined,
 	} satisfies ExecSessionManager;
-	const directExec = createExecCommandTool({ getManager: () => manager });
+	const directExec = createExecCommandTool({ getManager: () => manager }, TEST_EXEC_COMMAND_PREPARATION_RUNTIME);
 	const dispose = registerCodeModeExecAdapters([directExec]);
 	const adapter = adapters.get("exec_command")!;
 	const result = await adapter.invoke(

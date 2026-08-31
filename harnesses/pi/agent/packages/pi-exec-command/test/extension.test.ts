@@ -2,10 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { ensureXSettingsRegistry } from "pi-xsettings";
 import { DEFAULT_EXEC_COMMAND_SETTINGS, registerExecCommandXSettings } from "../src/contributions/xsettings.ts";
 import { createExecRuntime } from "../src/extension.ts";
-import { DEFAULT_EXEC_SHELL } from "../src/runtime-shell.ts";
 import type { ExecSessionManager, UnifiedExecResult } from "../src/session-manager.ts";
 import { createExecCommandTool } from "../src/tools/exec-command/definition.ts";
 import { createWriteStdinTool } from "../src/tools/write-stdin/definition.ts";
+import { TEST_EXEC_COMMAND_PREPARATION_RUNTIME } from "./exec-command-preparation-runtime.ts";
 
 function result(overrides: Partial<UnifiedExecResult> = {}): UnifiedExecResult {
 	return {
@@ -82,7 +82,7 @@ describe("tool behavior", () => {
 			getSessionCommand: () => undefined,
 			shutdown: async () => undefined,
 		} satisfies ExecSessionManager;
-		const tool = createExecCommandTool({ getManager: () => manager });
+		const tool = createExecCommandTool({ getManager: () => manager }, TEST_EXEC_COMMAND_PREPARATION_RUNTIME);
 		const toolResult = await tool.execute("call", { cmd: "printf ok" }, undefined, (update) => updates.push(update), {
 			cwd: "/work",
 			isProjectTrusted: () => true,
@@ -135,15 +135,12 @@ describe("tool behavior", () => {
 			getSessionCommand: () => undefined,
 			shutdown: async () => undefined,
 		} satisfies ExecSessionManager;
-		const tool = createExecCommandTool(
-			{ getManager: () => manager },
-			{
-				defaultOutputTokens: 20_000,
-				defaultExecYieldMs: 30_000,
-				defaultLoginShell: false,
-				activityIndicator: "inherit",
-			},
-		);
+		const tool = createExecCommandTool({ getManager: () => manager }, TEST_EXEC_COMMAND_PREPARATION_RUNTIME, {
+			defaultOutputTokens: 20_000,
+			defaultExecYieldMs: 30_000,
+			defaultLoginShell: false,
+			activityIndicator: "inherit",
+		});
 
 		await tool.execute("call", { cmd: "printf ok" }, undefined, undefined, {
 			cwd: "/work",
@@ -159,7 +156,7 @@ describe("tool behavior", () => {
 		expect(properties["max_output_tokens"]?.default).toBe(20_000);
 		expect(properties["login"]?.default).toBe(false);
 		expect(properties["shell"]?.description).toBe(
-			`Shell binary to launch. Defaults to Pi's configured shell, then $SHELL; Fish falls back to ${DEFAULT_EXEC_SHELL}.`,
+			"Shell binary to launch. Defaults to Pi's configured shell, then $SHELL; Fish falls back to a compatible POSIX shell.",
 		);
 		expect(tool.description).toBe("Runs a command in a PTY, returning output or a session ID for ongoing interaction.");
 		expect(observed).toMatchObject({ login: false });
@@ -176,7 +173,7 @@ describe("tool behavior", () => {
 			getSessionCommand: () => undefined,
 			shutdown: async () => undefined,
 		} satisfies ExecSessionManager;
-		const tool = createExecCommandTool({ getManager: () => manager });
+		const tool = createExecCommandTool({ getManager: () => manager }, TEST_EXEC_COMMAND_PREPARATION_RUNTIME);
 
 		const toolResult = await tool.execute(
 			"call",
@@ -244,7 +241,7 @@ describe("tool behavior", () => {
 			getSessionCommand: () => undefined,
 			shutdown: async () => undefined,
 		} satisfies ExecSessionManager;
-		const tool = createExecCommandTool({ getManager: () => manager });
+		const tool = createExecCommandTool({ getManager: () => manager }, TEST_EXEC_COMMAND_PREPARATION_RUNTIME);
 		const toolResult = await tool.execute("call", { cmd: "fail", shell: "/bin/sh" }, undefined, undefined, {
 			cwd: "/work",
 			isProjectTrusted: () => true,

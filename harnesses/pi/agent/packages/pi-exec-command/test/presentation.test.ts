@@ -11,6 +11,7 @@ import {
 import { DEFAULT_EXEC_COMMAND_SETTINGS } from "../src/contributions/xsettings.ts";
 import type { ExecProcessSnapshot } from "../src/session-manager.ts";
 import { createExecCommandTool } from "../src/tools/exec-command/definition.ts";
+import { TEST_EXEC_COMMAND_PREPARATION_RUNTIME } from "./exec-command-preparation-runtime.ts";
 import { normalizeExecCommandArguments, normalizeWriteStdinArguments } from "../src/tools/presentation.ts";
 import { createExecToolResult } from "../src/tools/result.ts";
 import { createWriteStdinTool } from "../src/tools/write-stdin/definition.ts";
@@ -106,7 +107,7 @@ beforeAll(async () => {
 
 describe("exec tool presentation", () => {
 	test("syntax-colors shell commands through shared Shiki without changing their source", () => {
-		const tool = createExecCommandTool({} as never);
+		const tool = createExecCommandTool({} as never, TEST_EXEC_COMMAND_PREPARATION_RUNTIME);
 		const source = "echo \"$HOME\" && printf '%s\\n' ok";
 		const component = tool.renderCall?.(
 			{ cmd: source },
@@ -124,7 +125,7 @@ describe("exec tool presentation", () => {
 	});
 
 	test("uses the configured shell language and keeps unsupported shells on the POSIX fallback", () => {
-		const tool = createExecCommandTool({} as never);
+		const tool = createExecCommandTool({} as never, TEST_EXEC_COMMAND_PREPARATION_RUNTIME);
 		const source = "set -l value 1";
 		const renderForShell = (shell: string) => {
 			const args = { cmd: source, tty: false };
@@ -161,7 +162,7 @@ describe("exec tool presentation", () => {
 	});
 
 	test("falls back compactly for malformed restored presentation details", () => {
-		const tool = createExecCommandTool({} as never);
+		const tool = createExecCommandTool({} as never, TEST_EXEC_COMMAND_PREPARATION_RUNTIME);
 		const args = { cmd: "pwd", tty: false };
 		const valid = createExecToolResult({
 			tool: "exec_command",
@@ -194,7 +195,7 @@ describe("exec tool presentation", () => {
 	});
 
 	test("does not invent a shell command when restored details contain no command", () => {
-		const tool = createExecCommandTool({} as never);
+		const tool = createExecCommandTool({} as never, TEST_EXEC_COMMAND_PREPARATION_RUNTIME);
 		const result = createExecToolResult({
 			tool: "exec_command",
 			phase: "final",
@@ -221,7 +222,7 @@ describe("exec tool presentation", () => {
 	});
 
 	test("moves from a compact command preview to a reused streamed result surface", () => {
-		const tool = createExecCommandTool({} as never);
+		const tool = createExecCommandTool({} as never, TEST_EXEC_COMMAND_PREPARATION_RUNTIME);
 		const args = { cmd: "bun test --only-failures", tty: false };
 		const call = tool.renderCall?.(args, theme, context(args, undefined, { executionStarted: false }));
 		expect(Bun.stripANSI(call?.render(72).join("\n") ?? "")).toContain("bun test --only-failures");
@@ -267,7 +268,7 @@ describe("exec tool presentation", () => {
 	});
 
 	test("animates a live partial presentation through shared motion and disposes cleanly", () => {
-		const tool = createExecCommandTool({} as never);
+		const tool = createExecCommandTool({} as never, TEST_EXEC_COMMAND_PREPARATION_RUNTIME);
 		const args = { cmd: "sleep 1", tty: false };
 		const partial = createExecToolResult({
 			tool: "exec_command",
@@ -334,7 +335,7 @@ describe("exec tool presentation", () => {
 
 	test("switches a running command to the configured activity animation", () => {
 		configureTuiAppearance({ activityIndicator: "static", textEffect: "off" });
-		const tool = createExecCommandTool({} as never);
+		const tool = createExecCommandTool({} as never, TEST_EXEC_COMMAND_PREPARATION_RUNTIME);
 		const args = { cmd: "sleep 1", tty: false };
 		const partial = createExecToolResult({
 			tool: "exec_command",
@@ -360,7 +361,7 @@ describe("exec tool presentation", () => {
 
 	test("lets exec_command disable its marker without changing the shared default", () => {
 		configureTuiAppearance({ activityIndicator: "spinner", textEffect: "off" });
-		const tool = createExecCommandTool({} as never, {
+		const tool = createExecCommandTool({} as never, TEST_EXEC_COMMAND_PREPARATION_RUNTIME, {
 			...DEFAULT_EXEC_COMMAND_SETTINGS,
 			activityIndicator: "off",
 		});
@@ -387,7 +388,7 @@ describe("exec tool presentation", () => {
 	});
 
 	test("opens long output from its omission row and keeps expanded scrolling bounded", () => {
-		const tool = createExecCommandTool({} as never);
+		const tool = createExecCommandTool({} as never, TEST_EXEC_COMMAND_PREPARATION_RUNTIME);
 		const args = { cmd: "long-output", tty: false };
 		const result = createExecToolResult({
 			tool: "exec_command",
@@ -524,7 +525,7 @@ describe("exec tool presentation", () => {
 	});
 
 	test("does not disclose a second failure view when shell output already explains it", () => {
-		const tool = createExecCommandTool({} as never);
+		const tool = createExecCommandTool({} as never, TEST_EXEC_COMMAND_PREPARATION_RUNTIME);
 		const args = { cmd: "cat missing", tty: false };
 		const result = createExecToolResult({
 			tool: "exec_command",
@@ -567,7 +568,7 @@ describe("exec tool presentation", () => {
 	});
 
 	test("projects TTY rewrites instead of printing terminal controls", async () => {
-		const tool = createExecCommandTool({} as never);
+		const tool = createExecCommandTool({} as never, TEST_EXEC_COMMAND_PREPARATION_RUNTIME);
 		const args = { cmd: "progress", tty: true };
 		const details = createExecToolResult({
 			tool: "exec_command",
@@ -607,7 +608,7 @@ describe("exec tool presentation", () => {
 	});
 
 	test("preserves a TTY emulator when partial output becomes a truncated cumulative tail", () => {
-		const tool = createExecCommandTool({} as never);
+		const tool = createExecCommandTool({} as never, TEST_EXEC_COMMAND_PREPARATION_RUNTIME);
 		const args = { cmd: "progress", tty: true };
 		const arguments_ = normalizeExecCommandArguments(args, "/tmp", "/bin/zsh");
 		const cumulative = `\x1b[31m${"red ".repeat(80)}`;
@@ -645,7 +646,7 @@ describe("exec tool presentation", () => {
 	});
 
 	test("replaces a truncated pipe tail when its bounded window advances", () => {
-		const tool = createExecCommandTool({} as never);
+		const tool = createExecCommandTool({} as never, TEST_EXEC_COMMAND_PREPARATION_RUNTIME);
 		const args = { cmd: "stream", tty: false };
 		const arguments_ = normalizeExecCommandArguments(args, "/tmp", "/bin/zsh");
 		const partial = (chunkId: string, output: string) =>
@@ -721,7 +722,7 @@ describe("exec tool presentation", () => {
 
 	test("keeps a yielded command animated until its continuation completes", () => {
 		const processes = observableRuntime();
-		const tool = createExecCommandTool(processes.runtime);
+		const tool = createExecCommandTool(processes.runtime, TEST_EXEC_COMMAND_PREPARATION_RUNTIME);
 		const args = { cmd: "sleep 30", tty: false };
 		const final = createExecToolResult({
 			tool: "exec_command",
@@ -775,7 +776,7 @@ describe("exec tool presentation", () => {
 
 	test("settles a background transcript when the process exits without a continuation", () => {
 		const processes = observableRuntime();
-		const tool = createExecCommandTool(processes.runtime);
+		const tool = createExecCommandTool(processes.runtime, TEST_EXEC_COMMAND_PREPARATION_RUNTIME);
 		const args = { cmd: "sleep 30", tty: false };
 		const yielded = createExecToolResult({
 			tool: "exec_command",
@@ -846,7 +847,7 @@ describe("exec tool presentation", () => {
 	});
 
 	test("keeps replayed partial results static", () => {
-		const tool = createExecCommandTool({} as never);
+		const tool = createExecCommandTool({} as never, TEST_EXEC_COMMAND_PREPARATION_RUNTIME);
 		const args = { cmd: "long-running-task" };
 		const details = createExecToolResult({
 			tool: "exec_command",
@@ -868,7 +869,7 @@ describe("exec tool presentation", () => {
 	});
 
 	test("renders missing persisted details as a compact failure instead of raw JSON", () => {
-		const tool = createExecCommandTool({} as never);
+		const tool = createExecCommandTool({} as never, TEST_EXEC_COMMAND_PREPARATION_RUNTIME);
 		const args = { cmd: "broken-command" };
 		const component = tool.renderResult?.(
 			{ content: [{ type: "text", text: "spawn failed" }], details: undefined as never },

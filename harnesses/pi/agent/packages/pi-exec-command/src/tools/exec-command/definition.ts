@@ -2,12 +2,11 @@ import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding
 import type { ActivityAnimationOverrides } from "pi-libtui";
 import { Type } from "typebox";
 import { DEFAULT_EXEC_COMMAND_SETTINGS, type ExecCommandSettings } from "../../contributions/xsettings.ts";
-import { DEFAULT_EXEC_SHELL } from "../../runtime-shell.ts";
 import { renderExecCommandCall, renderExecResult } from "../../ui/presentation.ts";
 import type { ExecToolPresentationDetails } from "../presentation.ts";
 import { createExecToolResult } from "../result.ts";
 import type { ExecRuntime } from "../runtime.ts";
-import { executeExecCommand, prepareExecCommandExecution } from "./execute.ts";
+import { type ExecCommandPreparationRuntime, executeExecCommand, prepareExecCommandExecution } from "./execute.ts";
 
 function execCommandParameters(
 	settings: Pick<ExecCommandSettings, "defaultOutputTokens" | "defaultExecYieldMs" | "defaultLoginShell">,
@@ -19,7 +18,8 @@ function execCommandParameters(
 		),
 		shell: Type.Optional(
 			Type.String({
-				description: `Shell binary to launch. Defaults to Pi's configured shell, then $SHELL; Fish falls back to ${DEFAULT_EXEC_SHELL}.`,
+				description:
+					"Shell binary to launch. Defaults to Pi's configured shell, then $SHELL; Fish falls back to a compatible POSIX shell.",
 			}),
 		),
 		tty: Type.Optional(
@@ -50,6 +50,7 @@ export const EXEC_COMMAND_PARAMETERS = execCommandParameters(DEFAULT_EXEC_COMMAN
 
 export function createExecCommandTool(
 	runtime: ExecRuntime,
+	preparationRuntime: ExecCommandPreparationRuntime,
 	settings: Pick<
 		ExecCommandSettings,
 		"defaultOutputTokens" | "defaultExecYieldMs" | "defaultLoginShell" | "activityIndicator"
@@ -76,7 +77,7 @@ export function createExecCommandTool(
 			return input as never;
 		},
 		async execute(_toolCallId, params, signal, onUpdate, ctx: ExtensionContext) {
-			const prepared = prepareExecCommandExecution(params, ctx, settings);
+			const prepared = prepareExecCommandExecution(params, ctx, preparationRuntime, settings);
 			onUpdate?.(
 				createExecToolResult({
 					tool: "exec_command",
@@ -85,7 +86,7 @@ export function createExecCommandTool(
 					command: params.cmd,
 				}),
 			);
-			const execution = await executeExecCommand(runtime, prepared.input, ctx, signal, settings, (progress) => {
+			const execution = await executeExecCommand(runtime, prepared, ctx, signal, (progress) => {
 				onUpdate?.(
 					createExecToolResult({
 						tool: "exec_command",
