@@ -1,9 +1,9 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import type { TUI } from "@earendil-works/pi-tui";
+import type { KeyId, TUI } from "@earendil-works/pi-tui";
 import type { DialogHost } from "pi-libtui";
 import { configuredPiValues, piSettingDefinitions, syncPiSettingsJson } from "../config/pi-settings.ts";
-import type { SettingsRecord, XSettingsStore } from "../config/store.ts";
-import type { SettingRegistration, XSettingsRegistry } from "../protocol/settings.ts";
+import { setPath, type SettingsRecord, type XSettingsStore } from "../config/store.ts";
+import type { SettingRegistration, SettingValue, XSettingsRegistry } from "../protocol/settings.ts";
 import { applyLiveTheme, applySavedSettings } from "../runtime/apply.ts";
 import { publishAllSettings, resolveRegistrationValues } from "../runtime/settings.ts";
 import { storedEnumValue, toUiField } from "./fields.ts";
@@ -61,7 +61,7 @@ export class XSettingsEditorSession {
 		tui: TUI,
 		theme: Theme,
 		onClose: () => void,
-		options: { readonly heightOffset: number; readonly dialogHost?: DialogHost },
+		options: { readonly heightOffset: number; readonly dialogHost?: DialogHost; readonly sidebarToggleKey?: KeyId },
 	): XSettingsScreen {
 		return new XSettingsScreen(
 			this.fields,
@@ -99,6 +99,8 @@ export class XSettingsEditorSession {
 			undefined,
 			options.dialogHost,
 			() => tui.requestRender(),
+			options.sidebarToggleKey,
+			(id, value) => this.preview(id, value),
 		);
 	}
 
@@ -115,5 +117,25 @@ export class XSettingsEditorSession {
 			await publishAllSettings(this.registry, this.document);
 			await syncPiSettingsJson(configuredPiValues(this.document));
 		});
+	}
+
+	private preview(id: string, value: SettingValue): void {
+		const definition = this.fields.find((field) => field.id === id);
+		if (!definition || (definition.id !== "pi.theme" && definition.apply !== "live")) return;
+		let storedValue = value;
+		if (definition.type === "enum") {
+			if (typeof value !== "string") return;
+			storedValue = storedEnumValue(definition, value);
+		}
+		if (definition.id === "pi.theme") {
+			if (typeof storedValue === "string") applyLiveTheme(this.context, storedValue);
+			return;
+		}
+		const namespace = definition.storagePath[1];
+		const registration = namespace ? this.registry.registrations[namespace] : undefined;
+		if (!registration) return;
+		const previewDocument = structuredClone(this.document);
+		setPath(previewDocument, definition.storagePath, storedValue);
+		void this.registry.publish(namespace, resolveRegistrationValues(registration, previewDocument));
 	}
 }

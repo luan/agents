@@ -27,13 +27,23 @@ default `~/.pi/agent/keybindings.json` binds it to `ctrl+,`; the command still
 works when the action has no key. Keybindings are read when extensions load, so
 reload Pi after changing that file.
 
-`/xsettings` requires the interactive TUI. Its left sidebar contains seven
-pages: UI, UX, Animations, Terminal, Behavior, Interaction, and Tools.
-Extension settings appear under the label supplied when the extension
-registers them. Use `/` to filter the current page, arrow keys or `j`/`k` to
-move, `h`/`l` or left/right to change pages, Tab/Shift+Tab to move between
-sections, and Enter to edit. Reset removes the saved value and restores its
-default.
+`/xsettings` requires the interactive TUI. Its left sidebar contains eight
+pages: UI, Editor, UX, Animations, Terminal, Behavior, Interaction, and Tools, with
+each page's sections listed underneath in a dimmer color. Extension settings
+appear under the label supplied when the extension registers them. The search
+field at the top of the sidebar filters settings across every page. Use `/` to
+focus it or Tab to toggle focus between the sidebar and content. In the
+sidebar, arrow keys or `j`/`k` move across pages and sections without changing
+the content; Enter opens the highlighted destination and returns focus to the
+content. In the content, `h`/`l` or left/right change pages and Enter edits the
+selected setting. Backspace removes the saved value and restores its default.
+Each pane shows only the key hints relevant to its current focus.
+
+The content pane groups settings under section headings. Each setting keeps its
+help text visible and places its current value in a control on the right, or
+below the help text when the terminal is narrow. Pointer interaction is limited
+to that control. When Powerline buttons are enabled, these controls use the
+same pill caps.
 
 Xsettings itself defaults to a side-panel tab. Its **Settings presentation**
 choice can switch it to the original fullscreen overlay. If `pi-side-panel` is
@@ -175,7 +185,12 @@ const settings = createSettings({
       type: "enum",
       default: "safe",
       options: [
-        { value: "safe", label: "Safe", description: "Use conservative behavior." },
+        {
+          value: "safe",
+          label: "Safe",
+          description: "Use conservative behavior.",
+          color: { hue: "green", shade: 3 },
+        },
         { value: "fast", label: "Fast", description: "Prefer speed." },
       ],
     },
@@ -200,18 +215,23 @@ Use `stringListSetting()` for a list of strings with a minimum length. Use
 structured records; xsettings supplies the editor and persistence.
 
 Every definition names one of the four persistence categories. The optional
-presentation-only `page` chooses UI, UX, Animations, Terminal, Behavior,
+presentation-only `page` chooses UI, Editor, UX, Animations, Terminal, Behavior,
 Interaction, or Tools without changing the TOML path. It defaults to the
 matching category, with `appearance` shown on UI. An explicit definition
 `section` becomes its heading within the page; otherwise the registration
 `label` is used. Animation enums can declare the data-only `preview` kind
 `activity-marker`, `activity-message`, `text-effect`, `status-presentation`, `animation-speed`, or
-`animation-smoothness`; xsettings then previews global settings and
-extension-owned inherited overrides with the production libtui renderer. The
+`animation-smoothness`, or `editor-composition`; xsettings then previews global
+settings, extension-owned inherited overrides, and declarative editor candidates
+with the production libtui renderer. The
 namespace becomes the TOML owner key. The SDK
 validates defaults and host-published values; invalid values fall back to the
 compiled default, enum values resolve to valid options, and multi-enum values
 drop stale choices.
+
+Enum options may include a semantic pi-libtui `color`. Xsettings applies it to
+the current value and picker label; the extension still owns the option's
+meaning and palette identity.
 
 An extension can register before `pi-xsettings` loads. The registry delivers
 the current values when the host publishes them. When the host is absent,
@@ -261,7 +281,7 @@ when this host is absent.
 - **`/xsettings` says it needs the interactive TUI:** run it from Pi's TUI,
   not print, RPC, or another non-interactive mode.
 - **A setting is not shown:** check its category, page, namespace, and key. The
-  UI only shows registered definitions on the seven fixed pages.
+  UI only shows registered definitions on the eight fixed pages.
 - **A value resets immediately:** the TOML value failed the definition's type,
   option, minimum-length, or schema validation.
 - **An extension did not react to a change:** xsettings publishes values

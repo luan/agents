@@ -1,9 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
-import { XSETTINGS_REGISTRY_KEY, ensureXSettingsRegistry } from "../src/protocol/settings.ts";
 import {
 	DEFAULT_XSETTINGS_PRESENTATION_SETTINGS,
 	registerXSettingsPresentationSettings,
 } from "../src/config/presentation.ts";
+import { ensureXSettingsRegistry, XSETTINGS_REGISTRY_KEY } from "../src/protocol/settings.ts";
 
 afterEach(() => {
 	delete (globalThis as Record<PropertyKey, unknown>)[XSETTINGS_REGISTRY_KEY];

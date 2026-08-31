@@ -10,16 +10,17 @@ import {
 	type SidePanelSession,
 } from "pi-libtui";
 import { configuredPiValues, syncPiSettingsJson } from "./config/pi-settings.ts";
-import { XSettingsStore } from "./config/store.ts";
 import {
 	DEFAULT_XSETTINGS_PRESENTATION_SETTINGS,
 	registerXSettingsPresentationSettings,
 } from "./config/presentation.ts";
+import { XSettingsStore } from "./config/store.ts";
 import { registerTuiSettings, tuiSettings } from "./config/tui-settings.ts";
 import { ensureXSettingsRegistry } from "./protocol/settings.ts";
 import { attachActionShortcuts } from "./runtime/actions.ts";
 import { publishAllSettings, resolveRegistrationValues } from "./runtime/settings.ts";
 import { XSettingsEditorSession } from "./ui/editor-session.ts";
+import type { XSettingsScreen } from "./ui/xsettings-screen.ts";
 
 const SETTINGS_TAB_ID = "pi-xsettings.settings";
 
@@ -34,11 +35,19 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 	let panelTabOpen = false;
 	let removeEmptyAction: (() => void) | undefined;
 	let unregisterSidePanelProvider: (() => void) | undefined;
+	let activeSession: ExtensionContext["sessionManager"] | undefined;
+	let activeScreen: XSettingsScreen | undefined;
 	const unregisterPresentationSettings = registerXSettingsPresentationSettings((settings) => {
 		presentation = settings.presentation;
 		if (presentation === "fullscreen") closePanelEditor();
 	});
-	const detachShortcuts = attachActionShortcuts(pi, loadActionKeybindings());
+	const actionKeybindings = loadActionKeybindings();
+	const sidebarToggleKey = actionKeybindings["xsettings.cursor.toggle"]?.[0];
+	const shortcutBindings = { ...actionKeybindings };
+	// Tab is contextual inside the settings screen; Pi rejects it as a global
+	// extension shortcut because the editor already owns that key.
+	delete shortcutBindings["xsettings.cursor.toggle"];
+	const detachShortcuts = attachActionShortcuts(pi, shortcutBindings);
 	const initialization = initialize();
 	const pendingRegistrations = new Set<Promise<void>>();
 
@@ -89,7 +98,14 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 					label: "Settings",
 					icon: "settings",
 					closeIcon: "close",
-					create: (host, theme) => panelEditor!.createScreen(host.tui, theme, closePanelEditor, { heightOffset: 1 }),
+					create: (host, theme) => {
+						const screen = panelEditor!.createScreen(host.tui, theme, closePanelEditor, {
+							heightOffset: 1,
+							sidebarToggleKey,
+						});
+						activeScreen = screen;
+						return screen;
+					},
 					onClose: finishPanelEditor,
 				},
 				{ activate: true, focus: true },
@@ -101,13 +117,16 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 			(tui, theme, _keybindings, done) => {
 				const dialogs = new DialogOverlayHost(tui, theme);
 				const close = (): void => {
+					activeScreen = undefined;
 					dialogs.dispose();
 					done();
 				};
 				const screen = editor.createScreen(tui, theme, close, {
 					heightOffset: 2,
 					dialogHost: offsetDialogHost(dialogs, { row: 1, col: 1 }),
+					sidebarToggleKey,
 				});
+				activeScreen = screen;
 				return new FullscreenOverlay(tui, theme, screen, { label: "Settings", icon: "settings" });
 			},
 			{
@@ -120,6 +139,7 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 
 	function closePanelEditor(): void {
 		if (!panelTabOpen) return;
+		activeScreen = undefined;
 		panelTabOpen = false;
 		panel?.removeTab(SETTINGS_TAB_ID);
 		finishPanelEditor();
@@ -127,6 +147,7 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 
 	function finishPanelEditor(): void {
 		if (!panelEditor) return;
+		activeScreen = undefined;
 		panelTabOpen = false;
 		const editor = panelEditor;
 		panelEditor = undefined;
@@ -138,11 +159,8 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 		});
 	}
 
-	const unregisterAction = registerAction({
-		id: "xsettings.toggle",
-		description: "Open extension settings",
-		run: open,
-	});
+	let unregisterAction: (() => void) | undefined;
+	let unregisterCursorAction: (() => void) | undefined;
 	pi.registerCommand("xsettings", {
 		description: "Open extension settings",
 		handler: async (_args, ctx) => open(ctx),
@@ -208,6 +226,9 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 		unregisterTuiSettings();
 		unregisterPresentationSettings();
 		configureTuiAppearance(tuiSettings.defaults);
-		unregisterAction();
+		unregisterAction?.();
+		unregisterAction = undefined;
+		unregisterCursorAction?.();
+		unregisterCursorAction = undefined;
 	});
 }

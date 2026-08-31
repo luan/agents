@@ -1,7 +1,6 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import {
 	type Component,
-	type Focusable,
 	getKeybindings,
 	matchesKey,
 	Spacer,
@@ -14,32 +13,38 @@ import {
 	activityPresentationCadenceMs,
 	activityPresentationFrame,
 	animationSmoothnessCadenceMs,
+	BackgroundSurface,
 	ComponentStack,
 	configuredAnimationCadenceMs,
 	DialogButtonBar,
 	type DialogHost,
+	DialogOverlay,
 	type DialogOverlayAnchor,
 	type DialogOverlayOptions,
+	FloatingOverlay,
 	getTuiAppearance,
+	halfBlockSurfaceEdge,
 	icon,
-	isTuiActivityMessageStyle,
 	isTuiActivityIndicatorStyle,
-	isTuiStatusPresentationStyle,
+	isTuiActivityMessageStyle,
 	isTuiAnimationSmoothness,
 	isTuiAnimationSpeed,
 	isTuiPulseEffectStyle,
+	isTuiStatusPresentationStyle,
 	isTuiTextEffectStyle,
 	type MotionMount,
 	MultiSelect,
-	SearchableSelect,
+	renderPill,
 	resolveActivityPresentation,
 	SelectableList,
 	type SelectableListRenderContext,
 	type SelectableListRow,
+	SelectBox,
 	SemanticInput,
 	sharedMotionScheduler,
 	tuiTheme,
 } from "pi-libtui";
+import { renderEditorCompositionPreview } from "pi-libtui/editor";
 import type {
 	ListDefinition,
 	SettingOption as ProtocolSettingOption,
@@ -55,6 +60,8 @@ export interface SettingOption {
 	value: string;
 	label: string;
 	description?: string;
+	color?: ProtocolSettingOption["color"];
+	preview?: ProtocolSettingOption["preview"];
 }
 
 function groupFieldsBySection(fields: readonly SettingField[]): SettingField[] {
@@ -134,7 +141,7 @@ export type SettingField =
 	| MultiEnumSettingField
 	| ListSettingField;
 
-type EditorComponent = Component & { dispose?(): void };
+type EditorComponent = Component & { dispose?(): void; setMaxHeight?(height: number): void };
 
 const SETTINGS_DIALOG_MAX_HEIGHT = "90%" as const;
 
@@ -147,10 +154,16 @@ function settingDialogWidth(field: SettingField): number {
 	return Math.min(88, Math.max(minimum, ...content.map((line) => visibleWidth(line) + 6)));
 }
 
-class AnimationSelect extends SearchableSelect<string> {
+class AnimationSelect extends SelectBox<string> {
 	private readonly motion?: MotionMount;
 
-	constructor(field: EnumSettingField, theme: Theme, done: (value?: string) => void, requestRender: () => void) {
+	constructor(
+		field: EnumSettingField,
+		theme: Theme,
+		done: (value?: string) => void,
+		preview: (value: string) => void,
+		requestRender: () => void,
+	) {
 		let now = performance.now();
 		const startedAt = now;
 		const indicatorField = field.preview === "activity-marker";
@@ -182,17 +195,16 @@ class AnimationSelect extends SearchableSelect<string> {
 			speed: speedField && isTuiAnimationSpeed(value) ? value : appearance.animationSpeed,
 		});
 		super({
-			title: field.label,
-			showTitle: false,
-			description: field.description,
-			descriptionLayout: "below",
+			bordered: false,
 			options,
 			selected: options.some((option) => option.value === field.value) ? field.value : undefined,
 			theme,
 			onSelect: done,
+			onPreview: preview,
 			onCancel: () => done(),
 			requestRender,
 			renderOption: (option, context) => {
+				if (context.query) return context.highlight(option.label);
 				const colors = tuiTheme(context.theme);
 				const {
 					indicatorStyle,
@@ -295,6 +307,55 @@ class AnimationSelect extends SearchableSelect<string> {
 	}
 }
 
+class EditorCompositionSelect extends SelectBox<string> {
+	private readonly motion: MotionMount;
+
+	constructor(
+		field: EnumSettingField,
+		theme: Theme,
+		done: (value?: string) => void,
+		preview: (value: string) => void,
+		requestRender: () => void,
+	) {
+		let now = performance.now();
+		const startedAt = now;
+		const options = field.options.filter((option) => option.preview !== undefined);
+		super({
+			theme,
+			title: field.label,
+			bordered: false,
+			showHint: true,
+			options,
+			selected: options.some((option) => option.value === field.value) ? field.value : undefined,
+			onSelect: done,
+			onPreview: preview,
+			onCancel: () => done(),
+			requestRender,
+			renderOption: (option, context) => {
+				const label = context.highlight(option.label);
+				return context.selected ? theme.bold(label) : label;
+			},
+			renderPreview: (option, width) => {
+				const preview = options.find((candidate) => candidate.value === option.value)?.preview;
+				return preview ? renderEditorCompositionPreview(theme, preview, width, now - startedAt) : [];
+			},
+		});
+		this.motion = sharedMotionScheduler.mount(
+			{ requestRender },
+			{
+				cadenceMs: animationSmoothnessCadenceMs(getTuiAppearance().animationSmoothness),
+				onFrame: (next) => {
+					now = next;
+				},
+			},
+		);
+	}
+
+	dispose(): void {
+		this.motion.dispose();
+	}
+}
+
 function toolOptionSummary(description?: string): string | undefined {
 	const firstLine = description
 		?.split(/\r?\n/)
@@ -369,50 +430,17 @@ class StringEditor extends ComponentStack {
 	}
 }
 
-class FilterView implements Component, Focusable {
-	private _focused = false;
-
-	constructor(
-		private readonly input: SemanticInput,
-		private readonly renderLines: (width: number) => string[],
-	) {}
-
-	get focused(): boolean {
-		return this._focused;
-	}
-	set focused(value: boolean) {
-		this._focused = value;
-		this.input.focused = value;
-	}
-
-	handleInput(data: string): void {
-		this.input.handleInput(data);
-	}
-	invalidate(): void {
-		this.input.invalidate();
-	}
-	render(width: number): string[] {
-		return this.renderLines(width);
-	}
-}
-
 export class SettingsEditor extends ComponentStack {
 	private fields: SettingField[];
 	private filtered: SettingField[];
 	private selectedIndex = 0;
 	private activeEditor: EditorComponent | undefined;
 	private closeActiveEditor: (() => void) | undefined;
-	private filterActive = false;
-	private readonly filterInput: SemanticInput;
+	private floatingEditor: FloatingOverlay | undefined;
+	private replaceBaseEditor = false;
+	private readonly baseView = new ComponentStack([]);
 	private readonly list: SelectableList<SettingField>;
-	private readonly filterView: FilterView;
 	private readonly emptyView = new RenderLines(() => [this.colors().fg("text.muted", "No matching settings")]);
-	private descriptionAtBottom = false;
-	private readonly descriptionView = new RenderLines((width) => {
-		if (!this.descriptionAtBottom) return [];
-		const field = this.filtered[this.selectedIndex];
-		return field?.description ? [truncateToWidth(this.colors().fg("text.muted", field.description), width, "")] : [];
-	});
 
 	constructor(
 		fields: readonly SettingField[],
@@ -425,19 +453,10 @@ export class SettingsEditor extends ComponentStack {
 		initialFieldId?: string,
 		private readonly dialogHost?: DialogHost,
 		private readonly requestRender: () => void = () => {},
+		private readonly parentLabel?: string,
+		private readonly onPreview?: (id: string, value: SettingValue) => void,
 	) {
 		super([], { height: maxVisible, anchorLastChild: true });
-		this.filterInput = new SemanticInput(theme);
-		this.filterView = new FilterView(this.filterInput, (width) => {
-			const query = this.filterInput.getValue();
-			if (!this.filterActive && !query) return [];
-			const lines = this.filterActive
-				? this.filterInput
-						.render(Math.max(1, width - 3))
-						.map((line) => `/ ${line.startsWith("> ") ? line.slice(2) : line}`)
-				: [this.colors().fg("text.muted", `/ ${query}`)];
-			return [...lines, ""];
-		});
 		this.fields = groupFieldsBySection(fields);
 		this.filtered = [...this.fields];
 		this.selectedIndex = Math.max(
@@ -455,14 +474,6 @@ export class SettingsEditor extends ComponentStack {
 			},
 			onActivate: () => this.activate(),
 		});
-		this.filterInput.onSubmit = () => {
-			this.filterActive = false;
-		};
-		this.filterInput.onEscape = () => {
-			this.filterInput.setValue("");
-			this.applyFilter();
-			this.filterActive = false;
-		};
 	}
 
 	private colors() {
@@ -479,30 +490,13 @@ export class SettingsEditor extends ComponentStack {
 			this.activeEditor.handleInput?.(data);
 			return true;
 		}
-		if (this.filterActive) {
-			this.filterInput.handleInput(data);
-			this.applyFilter();
-			return true;
-		}
 		const keybindings = getKeybindings();
-		if (data === "/") {
-			this.filterActive = true;
-			return true;
-		}
 		if (keybindings.matches(data, "tui.select.up") || data === "k") {
 			this.list.handleInput(data);
 			return true;
 		}
 		if (keybindings.matches(data, "tui.select.down") || data === "j") {
 			this.list.handleInput(data);
-			return true;
-		}
-		if (matchesKey(data, "tab")) {
-			this.moveSection(1);
-			return true;
-		}
-		if (matchesKey(data, "shift+tab")) {
-			this.moveSection(-1);
 			return true;
 		}
 		if (matchesKey(data, "backspace")) {
@@ -529,71 +523,146 @@ export class SettingsEditor extends ComponentStack {
 	}
 
 	render(width: number): string[] {
-		if (this.activeEditor && !this.dialogHost) {
-			this.setChildren([this.activeEditor]);
-			return super.render(width);
-		}
 		this.list.setSelectedIndex(this.selectedIndex);
-		const hasFilter = this.filterActive || Boolean(this.filterInput.getValue());
-		this.descriptionAtBottom = !this.descriptionFitsInline(width);
-		const maxVisible = this.maxVisibleRows();
-		this.list.setMaxVisible(Math.max(1, maxVisible - (hasFilter ? 2 : 0) - (this.descriptionAtBottom ? 1 : 0)));
-		const children: Component[] = [];
-		if (hasFilter) children.push(this.filterView);
-		children.push(this.filtered.length > 0 ? this.list : this.emptyView);
-		children.push(this.descriptionView);
-		this.setChildren(children);
-		this.setActiveChild(this.filterActive ? this.filterView : this.filtered.length > 0 ? this.list : this.emptyView);
+		this.list.setMaxVisible(Math.max(1, this.maxVisibleRows() - (this.parentLabel ? 2 : 0)));
+		const content = this.filtered.length > 0 ? this.list : this.emptyView;
+		const parentLabel = this.parentLabel;
+		const children: Component[] = parentLabel
+			? [
+					new RenderLines(() => [
+						this.theme.bold(this.colors().fg("heading", parentLabel)),
+						this.colors().fg("border", "─".repeat(Math.max(1, width))),
+					]),
+					content,
+				]
+			: [content];
+		this.baseView.setChildren(children);
+		this.baseView.setActiveChild(content);
+		if (this.replaceBaseEditor) this.activeEditor?.setMaxHeight?.(this.maxVisibleRows());
+		const rendered = this.replaceBaseEditor
+			? (this.activeEditor ?? this.baseView)
+			: this.activeEditor && this.floatingEditor
+				? this.floatingEditor
+				: this.baseView;
+		this.setChildren([rendered]);
+		this.setActiveChild(rendered);
 		return super.render(width);
 	}
 
+	setFields(fields: readonly SettingField[]): void {
+		const selectedId = this.filtered[this.selectedIndex]?.id;
+		this.fields = groupFieldsBySection(fields);
+		this.filtered = [...this.fields];
+		const retained = selectedId ? this.filtered.findIndex((field) => field.id === selectedId) : -1;
+		this.selectedIndex = retained >= 0 ? retained : 0;
+		this.list.setItems(this.filtered, this.selectedIndex);
+	}
+
+	getSelectedFieldId(): string | undefined {
+		return this.filtered[this.selectedIndex]?.id;
+	}
+
+	selectField(id: string): boolean {
+		const index = this.filtered.findIndex((field) => field.id === id);
+		if (index < 0) return false;
+		this.selectedIndex = index;
+		this.list.setSelectedIndex(index);
+		return true;
+	}
+
 	private renderField(field: SettingField, context: SelectableListRenderContext): SelectableListRow {
-		const labelWidth = Math.min(34, Math.max(...this.fields.map((field) => visibleWidth(field.label))) + 2);
 		const section = field.section ?? "General";
 		const previousSection = this.filtered[context.index - 1]?.section ?? (context.index > 0 ? "General" : undefined);
 		const startsSection = context.index === 0 || previousSection !== section;
-		const label = truncateToWidth(field.label, Math.max(1, labelWidth - 2), "");
-		const padded = label + " ".repeat(Math.max(1, labelWidth - visibleWidth(label)));
-		const value = truncateToWidth(formatSettingValue(field), Math.max(1, context.width - labelWidth - 2), "");
-		const valueColor = isDefault(field) ? "text.secondary" : "heading";
-		const renderedValue = this.colors().fg(valueColor, value);
-		const emphasized = context.selected || context.hovered;
-		const cursor = context.selected ? this.colors().fg("accent", "› ") : "  ";
-		const row = truncateToWidth(
-			`${cursor}${emphasized ? this.colors().fg("accent", padded) : padded}${renderedValue}`,
-			context.width,
-			"",
-		);
+		const colors = this.colors();
+		const width = Math.max(1, context.width);
+		const valueText = formatSettingValue(field);
+		const optionColor =
+			field.type === "enum" ? field.options.find((option) => option.value === field.value)?.color : undefined;
+		const valueColor = optionColor ?? (isDefault(field) ? "text.secondary" : "heading");
+		const surface = context.selected ? "surface.selected" : undefined;
 		const before: string[] = [];
 		if (startsSection) {
-			before.push(this.theme.underline(this.colors().fg("text.secondary", section)));
+			if (context.index > 0) {
+				before.push(
+					context.previousSelected ? halfBlockSurfaceEdge(this.theme, "surface.selected", "bottom", width) : "",
+				);
+			}
+			before.push(this.theme.bold(colors.fg("heading", section)));
+			before.push(
+				surface ? halfBlockSurfaceEdge(this.theme, surface, "top", width) : colors.fg("border", "─".repeat(width)),
+			);
+		} else {
+			before.push(
+				surface
+					? halfBlockSurfaceEdge(this.theme, surface, "top", width)
+					: context.previousSelected
+						? halfBlockSurfaceEdge(this.theme, "surface.selected", "bottom", width)
+						: colors.fg("border", "─".repeat(width)),
+			);
 		}
-		const description =
-			context.selected && !this.descriptionAtBottom ? `  ${this.colors().fg("text.muted", field.description)}` : "";
+
+		const powerlineControl = getTuiAppearance().powerlineButtons;
+		const selectSuffix = field.type === "enum" ? " ⯆" : "";
+		const controlWidth = Math.min(
+			Math.max(4, visibleWidth(valueText) + visibleWidth(selectSuffix) + 2 + (powerlineControl ? 2 : 0)),
+			Math.max(4, Math.floor(width * 0.42)),
+		);
+		const controlBodyWidth = Math.max(1, controlWidth - (powerlineControl ? 2 : 0));
+		const leftWidth = width - controlWidth - 4;
+		const stacked = leftWidth < 22;
+		const labelTone = context.selected ? "accent" : "text.primary";
+		const cursor = "  ";
+		const clippedValue = truncateToWidth(
+			valueText,
+			Math.max(1, controlBodyWidth - visibleWidth(selectSuffix) - 1),
+			"…",
+		);
+		const controlLabel =
+			field.type === "enum"
+				? ` ${clippedValue}${selectSuffix} `
+				: ` ${clippedValue}${" ".repeat(Math.max(1, controlBodyWidth - visibleWidth(clippedValue) - 1))}`;
+		const controlBackground = context.hovered ? "surface.hover" : "surface.raised";
+		const renderedValue = powerlineControl
+			? renderPill(
+					this.theme,
+					{ icon: false, label: controlLabel },
+					controlBackground,
+					valueColor,
+					undefined,
+					undefined,
+					true,
+				)
+			: colors.bg(controlBackground, colors.fg(valueColor, controlLabel));
+		const labelWidth = stacked ? Math.max(1, width - 2) : Math.max(1, leftWidth - 2);
+		const label = this.theme.bold(colors.fg(labelTone, truncateToWidth(field.label, labelWidth, "…")));
+		const title = stacked
+			? `${cursor}${label}`
+			: `${cursor}${label}${" ".repeat(Math.max(1, leftWidth - visibleWidth(label) - 1))}${renderedValue}`;
+		const descriptionWidth = stacked ? Math.max(1, width - 2) : Math.max(1, leftWidth - 2);
+		const descriptionTone = surface ? colors.contrastBackground(colors.color(surface)) : "text.muted";
+		const descriptions = new Text(colors.fg(descriptionTone, field.description), 0, 0)
+			.render(descriptionWidth)
+			.map((line) => `  ${line}`);
+		const rows = stacked ? [title, ...descriptions, `  ${renderedValue}`] : [title, ...descriptions];
+		const controlX = stacked ? visibleWidth(cursor) : Math.max(0, visibleWidth(title) - visibleWidth(renderedValue));
+		const controlY = stacked ? 1 + descriptions.length : 0;
+		const paddedRows = rows.map((line) => {
+			const clipped = truncateToWidth(line, width, "");
+			return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped)));
+		});
+		const rendered = surface
+			? new BackgroundSurface({
+					theme: this.theme,
+					component: new RenderLines(() => paddedRows),
+					background: surface,
+				}).render(width)
+			: paddedRows;
 		return {
 			before,
-			content: `${row}${description}`,
+			content: rendered,
+			target: { x: controlX, y: controlY, width: visibleWidth(renderedValue), height: 1 },
 		};
-	}
-
-	private descriptionFitsInline(width: number): boolean {
-		const field = this.filtered[this.selectedIndex];
-		if (!field?.description) return true;
-		const labelWidth = Math.min(34, Math.max(...this.fields.map((candidate) => visibleWidth(candidate.label))) + 2);
-		return 2 + labelWidth + visibleWidth(formatSettingValue(field)) + 2 + visibleWidth(field.description) <= width;
-	}
-
-	private moveSection(delta: number): void {
-		if (this.filtered.length === 0) return;
-		const sections = [...new Set(this.filtered.map((field) => field.section ?? "General"))];
-		const current = this.filtered[this.selectedIndex]?.section ?? "General";
-		const index = sections.indexOf(current);
-		const next = sections[(index + delta + sections.length) % sections.length];
-		const selected = this.filtered.findIndex((field) => (field.section ?? "General") === next);
-		if (selected >= 0) {
-			this.selectedIndex = selected;
-			this.list.setSelectedIndex(selected);
-		}
 	}
 
 	private activate(): void {
@@ -651,31 +720,50 @@ export class SettingsEditor extends ComponentStack {
 			this.apply(field.id, !field.value);
 			return;
 		}
+		let previewed = false;
+		const preview = (value: string): void => {
+			if (!this.onPreview) return;
+			previewed = true;
+			this.onPreview(field.id, value);
+		};
 		const done = (value?: string): void => {
 			if (value !== undefined) this.apply(field.id, value);
+			else if (previewed) this.onPreview?.(field.id, field.value);
 			this.closeEditor();
 		};
 		if (field.type === "enum") {
+			if (field.preview === "editor-composition") {
+				this.openReplacementEditor(new EditorCompositionSelect(field, this.theme, done, preview, this.requestRender));
+				return;
+			}
 			const editor =
 				field.preview !== undefined
-					? new AnimationSelect(field, this.theme, done, this.requestRender)
-					: new SearchableSelect({
-							title: field.label,
-							showTitle: false,
-							description: field.description,
+					? new AnimationSelect(field, this.theme, done, preview, this.requestRender)
+					: new SelectBox({
+							theme: this.theme,
+							bordered: false,
 							options: field.options,
 							selected: field.value,
-							theme: this.theme,
 							onSelect: done,
+							onPreview: preview,
 							onCancel: () => done(),
 							requestRender: this.requestRender,
+							renderOption: (option, context) => {
+								const color = field.options.find((candidate) => candidate.value === option.value)?.color;
+								const label = context.query
+									? context.highlight(option.label)
+									: color
+										? tuiTheme(context.theme).fg(color, option.label)
+										: option.label;
+								return context.selected ? context.theme.bold(label) : label;
+							},
 						});
-			this.openEditor(editor, {
-				width: settingDialogWidth(field),
-				maxHeight: SETTINGS_DIALOG_MAX_HEIGHT,
-				title: field.label,
-				parent: this.getSelectedDialogAnchor(),
-			});
+			this.openSelectBox(
+				editor,
+				field.options.map((option) => option.label),
+				field.preview === undefined ? undefined : settingDialogWidth(field),
+				() => done(),
+			);
 		} else if (field.type === "string") {
 			this.openEditor(new StringEditor(field, this.theme, done, !this.dialogHost), {
 				width: settingDialogWidth(field),
@@ -688,6 +776,11 @@ export class SettingsEditor extends ComponentStack {
 				field.category === "tools"
 					? field.options.map((option) => ({ ...option, description: toolOptionSummary(option.description) }))
 					: field.options;
+			let previewedValues = false;
+			const cancel = () => {
+				if (previewedValues) this.onPreview?.(field.id, field.value);
+				this.closeEditor();
+			};
 			const editor = new MultiSelect({
 				title: field.label,
 				showTitle: false,
@@ -701,7 +794,12 @@ export class SettingsEditor extends ComponentStack {
 					this.apply(field.id, value);
 					this.closeEditor();
 				},
-				onCancel: () => this.closeEditor(),
+				onChange: (value) => {
+					previewedValues = true;
+					this.onPreview?.(field.id, value);
+				},
+				onCancel: cancel,
+				confirmDiscard: false,
 			});
 			this.openEditor(editor, {
 				width: settingDialogWidth(field),
@@ -715,7 +813,9 @@ export class SettingsEditor extends ComponentStack {
 	private getSelectedDialogAnchor(): DialogOverlayAnchor | undefined {
 		const geometry = this.list.getGeometry();
 		const item = geometry?.items.find((candidate) => candidate.index === this.selectedIndex);
-		const span = this.getSpans().find((candidate) => candidate.component === this.list);
+		const span =
+			this.baseView.getSpans().find((candidate) => candidate.component === this.list) ??
+			this.getSpans().find((candidate) => candidate.component === this.list);
 		if (!item || !span) return undefined;
 		return {
 			row: span.row + item.y,
@@ -725,7 +825,50 @@ export class SettingsEditor extends ComponentStack {
 
 	private openEditor(editor: EditorComponent, options: DialogOverlayOptions): void {
 		this.activeEditor = editor;
+		this.replaceBaseEditor = false;
 		this.closeActiveEditor = this.dialogHost?.open(editor, options);
+		if (!this.dialogHost) {
+			const field = this.filtered[this.selectedIndex];
+			const width = typeof options.width === "number" ? options.width : field ? settingDialogWidth(field) : 48;
+			this.floatingEditor = new FloatingOverlay({
+				base: this.baseView,
+				overlay: new DialogOverlay(this.theme, editor, options.title),
+				overlayWidth: (available) => Math.min(available, width),
+				align: "end",
+				top: () => this.getSelectedDialogAnchor()?.row ?? 0,
+				maxHeight: () => this.maxVisibleRows(),
+				surface: { theme: this.theme, background: "surface.raised" },
+			});
+		}
+		this.requestRender();
+	}
+
+	private openSelectBox(
+		editor: EditorComponent,
+		labels: readonly string[],
+		preferredWidth: number | undefined,
+		onOutsidePress: () => void,
+	): void {
+		this.activeEditor = editor;
+		this.replaceBaseEditor = false;
+		const width = preferredWidth ?? Math.min(48, Math.max(16, ...labels.map((label) => visibleWidth(label) + 6)));
+		this.floatingEditor = new FloatingOverlay({
+			base: this.baseView,
+			overlay: editor,
+			overlayWidth: (available) => Math.min(available, width),
+			align: "end",
+			top: () => this.getSelectedDialogAnchor()?.row ?? 0,
+			maxHeight: () => this.maxVisibleRows(),
+			surface: { theme: this.theme, background: "surface.raised" },
+			onOutsidePress,
+		});
+		this.requestRender();
+	}
+
+	private openReplacementEditor(editor: EditorComponent): void {
+		this.activeEditor = editor;
+		this.replaceBaseEditor = true;
+		this.requestRender();
 	}
 
 	private closeEditor(): void {
@@ -733,26 +876,14 @@ export class SettingsEditor extends ComponentStack {
 		this.activeEditor?.dispose?.();
 		this.closeActiveEditor = undefined;
 		this.activeEditor = undefined;
+		this.floatingEditor = undefined;
+		this.replaceBaseEditor = false;
 		close?.();
+		this.requestRender();
 	}
 
 	dispose(): void {
 		this.closeEditor();
-	}
-
-	private applyFilter(): void {
-		const selectedId = this.filtered[this.selectedIndex]?.id;
-		const tokens = this.filterInput.getValue().toLowerCase().trim().split(/\s+/).filter(Boolean);
-		this.filtered =
-			tokens.length > 0
-				? this.fields.filter((field) => {
-						const text = `${field.section ?? ""} ${field.label} ${field.description}`.toLowerCase();
-						return tokens.every((token) => text.includes(token));
-					})
-				: [...this.fields];
-		const retained = selectedId ? this.filtered.findIndex((field) => field.id === selectedId) : -1;
-		this.selectedIndex = retained >= 0 ? retained : 0;
-		this.list.setItems(this.filtered, this.selectedIndex);
 	}
 
 	private apply(id: string, value: SettingValue): void {
@@ -766,7 +897,7 @@ export class SettingsEditor extends ComponentStack {
 
 	private reset(): void {
 		const field = this.filtered[this.selectedIndex];
-		if (!field || !field.configured) return;
+		if (!field?.configured) return;
 		const update = (candidate: SettingField): SettingField =>
 			candidate.id === field.id
 				? ({ ...candidate, value: candidate.defaultValue, configured: false } as SettingField)

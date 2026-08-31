@@ -1,7 +1,7 @@
+import { checkSchema } from "../config/schema.ts";
+import { getPath, type SettingsRecord, type StoredSettingValue } from "../config/store.ts";
 import type { SettingDefinition, SettingRegistration, SettingValue, XSettingsRegistry } from "../protocol/settings.ts";
 import { settingPath } from "../protocol/settings.ts";
-import { getPath, type SettingsRecord, type StoredSettingValue } from "../config/store.ts";
-import { checkSchema } from "../config/schema.ts";
 import { resolveSettingOptions } from "./options.ts";
 
 function validSettingValue(

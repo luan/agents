@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { KeybindingsManager, setKeybindings, stripTerminalSequences, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
+import { tuiTheme } from "pi-libtui";
 import { Type } from "typebox";
 import type { SettingDefinition, SettingRegistration, SettingValue } from "../src/protocol/settings.ts";
 import { storedEnumValue, toUiField } from "../src/ui/fields.ts";
@@ -149,7 +150,7 @@ describe("settings screen fields", () => {
 		screen.handleInput("l");
 		screen.handleInput("h");
 		screen.handleInput("\r");
-		screen.handleInput("j");
+		screen.handleInput("\x1b[B");
 		screen.handleInput("\r");
 		screen.handleInput("h");
 		screen.handleInput("l");
@@ -290,6 +291,10 @@ describe("settings screen fields", () => {
 		initTheme("dark", false);
 		setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
 		let renders = 0;
+		const selectionTheme = {
+			...theme,
+			bg: (_color: string, text: string) => `<bg>${text}</bg>`,
+		} as Theme;
 		const field = (id: string, label: string): SettingsScreenField => ({
 			id,
 			category: "appearance",
@@ -304,7 +309,7 @@ describe("settings screen fields", () => {
 		});
 		const screen = new XSettingsScreen(
 			[field("first", "First"), field("second", "Second")],
-			theme,
+			selectionTheme,
 			() => {},
 			() => {},
 			() => {},
@@ -319,6 +324,7 @@ describe("settings screen fields", () => {
 		screen.handleInput("j");
 
 		expect(renders).toBe(1);
-		expect(stripTerminalSequences(screen.render(80).join("\n"))).toContain("› Second");
+		const selectedLine = screen.render(80).find((line) => stripTerminalSequences(line).includes("Second"));
+		expect(selectedLine).toContain(tuiTheme(selectionTheme).bgAnsi("surface.selected"));
 	});
 });

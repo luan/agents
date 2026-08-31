@@ -4,11 +4,11 @@ export {
 	ensureActionsRegistry,
 } from "pi-libactions/sdk";
 export {
-	XSETTINGS_REGISTRY_KEY,
+	ensureXSettingsRegistry,
 	type SettingDefinition,
 	type SettingOption,
 	type SettingRegistration,
 	type SettingValue,
+	XSETTINGS_REGISTRY_KEY,
 	type XSettingsRegistry,
-	ensureXSettingsRegistry,
 } from "./protocol/settings.ts";

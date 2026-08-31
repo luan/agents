@@ -1,8 +1,8 @@
 import { mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { dirname, join } from "node:path";
-import { settingPath, type SettingDefinition, type SettingOption, type SettingValue } from "../protocol/settings.ts";
+import { type SettingDefinition, type SettingOption, type SettingValue, settingPath } from "../protocol/settings.ts";
 import { getPath, type SettingsRecord } from "./store.ts";
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };

@@ -1,11 +1,12 @@
 import type { TuiForegroundColor } from "pi-libtui";
+import type { EditorCompositionPreview } from "pi-libtui/editor";
 import type { TSchema } from "typebox";
 
 export const XSETTINGS_REGISTRY_KEY = Symbol.for("pi-xsettings/registry/v1");
 export const XSETTINGS_PROTOCOL = "pi-xsettings/registry/v1" as const;
 
 export type SettingCategory = "appearance" | "behavior" | "interaction" | "tools";
-export type SettingPage = "ui" | "ux" | "animations" | "terminal" | "behavior" | "interaction" | "tools";
+export type SettingPage = "ui" | "editor" | "ux" | "animations" | "terminal" | "behavior" | "interaction" | "tools";
 export type SettingPreview =
 	| "activity-marker"
 	| "activity-message"
@@ -13,7 +14,8 @@ export type SettingPreview =
 	| "text-effect"
 	| "pulse-effect"
 	| "animation-speed"
-	| "animation-smoothness";
+	| "animation-smoothness"
+	| "editor-composition";
 export type SettingApply = "live" | "reload";
 export type SettingValue = boolean | number | string | SettingValue[] | { [key: string]: SettingValue };
 
@@ -22,6 +24,8 @@ export interface SettingOption {
 	label: string;
 	description: string;
 	color?: TuiForegroundColor;
+	/** Declarative candidate rendered by the production pi-libtui editor composition renderer. */
+	preview?: EditorCompositionPreview;
 }
 
 export type SettingOptions =

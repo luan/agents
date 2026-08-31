@@ -1,8 +1,10 @@
+import type { Static, TSchema } from "typebox";
+import { checkSchema } from "./config/schema.ts";
 import {
 	ensureXSettingsRegistry,
 	type ListDefinition,
-	type SettingCategory,
 	type SettingApply,
+	type SettingCategory,
 	type SettingDefinition,
 	type SettingOption,
 	type SettingOptions,
@@ -10,8 +12,6 @@ import {
 	type SettingPreview,
 	type SettingValue,
 } from "./protocol/settings.ts";
-import type { Static, TSchema } from "typebox";
-import { checkSchema } from "./config/schema.ts";
 import { resolveSettingOptions } from "./runtime/options.ts";
 
 export type { ListDefinition, ListItemField, SettingPage } from "./protocol/settings.ts";

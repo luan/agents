@@ -3,7 +3,7 @@ import { lstat, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "smol-toml";
-import { stringifyXSettings, type SettingsRecord, XSettingsStore } from "../src/config/store.ts";
+import { type SettingsRecord, stringifyXSettings, XSettingsStore } from "../src/config/store.ts";
 import type { SettingValue } from "../src/protocol/settings.ts";
 
 describe("xsettings.toml", () => {

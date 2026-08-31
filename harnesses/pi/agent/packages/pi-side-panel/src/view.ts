@@ -138,6 +138,7 @@ export class SidePanelView extends VStack implements Focusable {
 	private header: SidePanelHeader | undefined;
 	private body: SidePanelContent | undefined;
 	private bodyTab: SidePanelTab | undefined;
+	private providerInputActions: readonly string[] = [];
 	private _focused = false;
 
 	constructor(
@@ -204,6 +205,8 @@ export class SidePanelView extends VStack implements Focusable {
 		if (this.body) this.removeChild(this.body);
 		const tabs = this.model.tabs();
 		const active = this.model.activeTab();
+		const emptyActions = this.model.emptyActions();
+		this.providerInputActions = emptyActions.map((action) => action.actionId);
 		const activeIndex = Math.max(
 			0,
 			tabs.findIndex((tab) => tab.id === active?.id),
@@ -226,9 +229,7 @@ export class SidePanelView extends VStack implements Focusable {
 			this.body?.dispose?.();
 			this.body = active
 				? active.create(this.host, this.theme)
-				: new EmptySidePanel(this.model.emptyActions(), this.theme, this.host, this.bindings, (id) =>
-						this.model.runAction(id),
-					);
+				: new EmptySidePanel(emptyActions, this.theme, this.host, this.bindings, (id) => this.model.runAction(id));
 			this.bodyTab = active;
 		}
 		const body = this.body;
@@ -257,6 +258,9 @@ export class SidePanelView extends VStack implements Focusable {
 
 	private inputAction(data: string): string | undefined {
 		for (const id of PANEL_INPUT_ACTIONS) {
+			if ((this.bindings[id] ?? []).some((key) => matchesKey(data, key))) return id;
+		}
+		for (const id of this.providerInputActions) {
 			if ((this.bindings[id] ?? []).some((key) => matchesKey(data, key))) return id;
 		}
 		for (const id of this.model.activeTab()?.inputActions ?? []) {

@@ -12,7 +12,9 @@ does not register default shortcuts.
 
 Feature packages contribute tabs and empty-state actions through the optional
 `pi-libtui` side-panel protocol. A contributor has no runtime dependency on
-this package and must continue to work when the host is absent.
+this package and must continue to work when the host is absent. While panel
+content has focus, the host handles contributed action keybindings before
+forwarding input so an embedded TUI cannot run the action in its child session.
 
 ## Architecture
 
