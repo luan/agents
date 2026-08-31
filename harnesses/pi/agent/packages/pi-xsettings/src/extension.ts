@@ -213,13 +213,15 @@ export default function xsettingsExtension(pi: ExtensionAPI): void {
 			);
 		}
 	});
-	pi.on("session_shutdown", (event) => {
+	pi.on("session_shutdown", (event, context) => {
+		if (context.mode !== "tui" || !context.hasUI || activeSession !== context.sessionManager) return;
 		if (event.reason !== "reload" && event.reason !== "quit") return;
 		unregisterSidePanelProvider?.();
 		unregisterSidePanelProvider = undefined;
 		closePanelEditor();
 		panel = undefined;
 		panelContext = undefined;
+		activeSession = undefined;
 		detachShortcuts();
 		detachRegistration();
 		unregisterTuiSettings();

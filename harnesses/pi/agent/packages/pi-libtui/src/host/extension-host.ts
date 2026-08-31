@@ -169,6 +169,7 @@ function createHostRegistration(): HostRegistration {
 	const editorRegistry = ensureEditorRegistry();
 	let activeSession:
 		| {
+				readonly sessionManager: ExtensionContext["sessionManager"];
 				readonly ui: ExtensionContext["ui"];
 				readonly removeEditorBridge: () => void;
 				readonly removeEditorDecorator: () => void;
@@ -187,14 +188,14 @@ function createHostRegistration(): HostRegistration {
 	return {
 		protocol: HOST_PROTOCOL,
 		start(ctx) {
-			if (ctx.mode !== "tui") return;
+			if (ctx.mode !== "tui" || !ctx.hasUI) return;
 			clearSession();
 			const removeEditorBridge = installEditorBridge(editorRegistry);
 			const removeEditorDecorator = editorRegistry.registerRenderDecorator({
 				id: "pi-libtui.native-paste-markers",
 				decorate: (lines, width) => renderEditorPasteMarkerPills(lines, width, ctx.ui.theme).lines,
 			});
-			activeSession = { ui: ctx.ui, removeEditorBridge, removeEditorDecorator };
+			activeSession = { sessionManager: ctx.sessionManager, ui: ctx.ui, removeEditorBridge, removeEditorDecorator };
 			// A zero-height widget obtains Pi's stable TUI reference without changing the existing spacer row.
 			ctx.ui.setWidget(WIDGET_KEY, (tui) => new LibtuiHostWidget(tui, ctx.ui));
 		},

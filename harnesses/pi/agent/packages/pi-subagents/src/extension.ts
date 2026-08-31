@@ -14,6 +14,7 @@ import {
 	SUBAGENT_STATE_ENTRY_TYPE,
 	type SubagentCoordinator,
 } from "./runtime/coordinator.ts";
+import { subagentSessionRoot } from "./runtime/session-root.ts";
 import { createFollowupTaskTool } from "./tools/followup-task/definition.ts";
 import { createInterruptAgentTool } from "./tools/interrupt-agent/definition.ts";
 import { createListAgentsTool } from "./tools/list-agents/definition.ts";
@@ -188,7 +189,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		const checkpoint = latestSubagentTreeCheckpoint(context.sessionManager.getBranch());
 		coordinator = createRootCoordinator(sessionId, {
 			...config,
-			rootSessionDir: context.sessionManager.getSessionDir(),
+			rootSessionDir: subagentSessionRoot(context),
 		});
 		rootSessionId = sessionId;
 		callerPath = undefined;

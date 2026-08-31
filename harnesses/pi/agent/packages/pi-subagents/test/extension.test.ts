@@ -1,11 +1,38 @@
 import { expect, test } from "bun:test";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ensureXSettingsRegistry } from "pi-xsettings";
 import { DEFAULT_SUBAGENT_SETTINGS, registerSubagentSettings } from "../src/config/settings.ts";
 import subagentsExtension from "../src/extension.ts";
 import { createRootCoordinator, getCoordinatorForSession, removeRootCoordinator } from "../src/runtime/coordinator.ts";
+import { subagentSessionRoot } from "../src/runtime/session-root.ts";
 
 type TestHandler = (event: object, context: ExtensionContext) => object | undefined | Promise<object | undefined>;
+
+test("keeps sessionless child sessions out of the working directory", () => {
+	const context = {
+		cwd: "/tmp/project",
+		sessionManager: {
+			getSessionDir: () => "/tmp/project",
+			getSessionFile: () => undefined,
+			getSessionId: () => "sessionless-root",
+		},
+	} as never as ExtensionContext;
+
+	expect(subagentSessionRoot(context)).toBe(join(tmpdir(), "pi-subagents", "sessionless-root"));
+});
+
+test("keeps persistent child sessions under Pi's session directory", () => {
+	const context = {
+		sessionManager: {
+			getSessionDir: () => "/tmp/pi-sessions/project",
+			getSessionFile: () => "/tmp/pi-sessions/project/root.jsonl",
+		},
+	} as never as ExtensionContext;
+
+	expect(subagentSessionRoot(context)).toBe("/tmp/pi-sessions/project");
+});
 
 test("registers the Agent Widget indicator override in the Agents animation section", () => {
 	const unregister = registerSubagentSettings();
@@ -70,6 +97,7 @@ test("reconciles an idle coordinator after session-tree navigation", async () =>
 		sessionManager: {
 			getSessionId: () => "extension-tree-root",
 			getSessionDir: () => "/tmp/extension-tree-root",
+			getSessionFile: () => "/tmp/extension-tree-root/root.jsonl",
 			getBranch: () => [],
 		},
 	} as never as ExtensionContext;
@@ -206,6 +234,7 @@ function extensionContext(sessionId: string): ExtensionContext {
 		sessionManager: {
 			getSessionId: () => sessionId,
 			getSessionDir: () => `/tmp/${sessionId}`,
+			getSessionFile: () => `/tmp/${sessionId}/root.jsonl`,
 			getBranch: () => [],
 			getEntries: () => [],
 			getLeafId: () => undefined,

@@ -58,6 +58,7 @@ function createPiHarness(eventBus?: object): {
 function createContext(widgets: Array<{ key: string; content: WidgetContentBoundary }>): ExtensionContext {
 	const contextHarness = {
 		mode: "tui" as const,
+		hasUI: true,
 		ui: {
 			theme: testTheme,
 			setWorkingIndicator() {},
@@ -93,6 +94,7 @@ test("lifecycle mounts and removes the invisible bridge", async () => {
 	const notifications: string[] = [];
 	const contextHarness = {
 		mode: "tui",
+		hasUI: true,
 		ui: {
 			setWidget(key: string, content: WidgetContentBoundary) {
 				widgets.push({ key, content });
@@ -112,6 +114,35 @@ test("lifecycle mounts and removes the invisible bridge", async () => {
 	await events.get("session_shutdown")?.({}, eventContext);
 	expect(widgets.at(-1)).toEqual({ key: "pi-libtui.mouse-bridge", content: undefined });
 	expect(notifications).toEqual([]);
+});
+
+test("does not claim the shared TUI host for a non-UI TUI session", async () => {
+	const events = new Map<string, EventHandler>();
+	const piHarness = {
+		on(name: string, handler: EventHandler) {
+			events.set(name, handler);
+		},
+		registerCommand() {},
+	};
+	const boundary: ExtensionApiBoundary = piHarness;
+	mouseExtension(boundary as ExtensionAPI);
+
+	const widgets: Array<{ key: string; content: WidgetContentBoundary }> = [];
+	const contextBoundary: ExtensionContextBoundary = {
+		mode: "tui",
+		hasUI: false,
+		ui: {
+			setWidget(key: string, content: WidgetContentBoundary) {
+				widgets.push({ key, content });
+			},
+		},
+	};
+	const context = contextBoundary as ExtensionContext;
+
+	await events.get("session_start")?.({}, context);
+	await events.get("session_shutdown")?.({ reason: "quit" }, context);
+
+	expect(widgets).toEqual([]);
 });
 
 test("duplicate factory copies share one host lease and a later API installs independently", async () => {
