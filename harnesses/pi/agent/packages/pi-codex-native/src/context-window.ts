@@ -1,24 +1,16 @@
-import type { ExtensionAPI, ExtensionContext, SessionBeforeCompactEvent } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
+import type { ExtensionAPI, ExtensionContext, SessionBeforeCompactEvent } from "@earendil-works/pi-coding-agent";
 import { registerAction } from "pi-libactions/sdk";
-import { tuiTheme, type TuiForegroundColor } from "pi-libtui";
-import { CONTEXT_WINDOW_PRESETS, requestedContextWindowPreset, type ContextWindowPreset } from "pi-libcontext/sdk";
-import { getCodexNativeSettings, type CodexNativeSettings } from "./contributions/xsettings.ts";
+import { CONTEXT_WINDOW_PRESETS, type ContextWindowPreset, requestedContextWindowPreset } from "pi-libcontext/sdk";
+import { tuiTheme } from "pi-libtui";
+import {
+	CODEX_CONTEXT_COLORS,
+	CODEX_CONTEXT_WINDOWS,
+	type CodexNativeSettings,
+	codexContextWindowLabel,
+	getCodexNativeSettings,
+} from "./contributions/xsettings.ts";
 
-const WINDOWS: Readonly<Record<ContextWindowPreset, number>> = {
-	smart: 180_000,
-	balanced: 272_000,
-	enhanced: 400_000,
-	large: 600_000,
-	max: 1_000_000,
-};
-const COLORS = {
-	smart: { hue: "green", shade: 3 },
-	balanced: { hue: "cyan", shade: 3 },
-	enhanced: { hue: "blue", shade: 4 },
-	large: { hue: "magenta", shade: 4 },
-	max: { hue: "red", shade: 5 },
-} as const satisfies Readonly<Record<ContextWindowPreset, TuiForegroundColor>>;
 // Pi does not expose the effective compaction threshold. Match its compiled
 // default until a public API exposes the configured reserve.
 const DEFAULT_COMPACTION_RESERVE = 16_384;
@@ -29,10 +21,6 @@ function eligible(model: Model<Api> | undefined): model is Model<Api> {
 	return (
 		model?.provider === "openai-codex" && model.api === "openai-codex-responses" && model.id.startsWith("gpt-5.6-")
 	);
-}
-
-function label(preset: ContextWindowPreset): string {
-	return `${preset[0]!.toUpperCase()}${preset.slice(1)} (${WINDOWS[preset] / 1_000}k)`;
 }
 
 export default function registerContextWindow(
@@ -67,7 +55,7 @@ export default function registerContextWindow(
 		const colors = tuiTheme(ctx.ui.theme);
 		ctx.ui.setStatus(
 			"codex-native-context",
-			eligible(ctx.model) ? colors.fg(COLORS[preset], label(preset)) : undefined,
+			eligible(ctx.model) ? colors.fg(CODEX_CONTEXT_COLORS[preset], codexContextWindowLabel(preset)) : undefined,
 		);
 	}
 
@@ -77,7 +65,7 @@ export default function registerContextWindow(
 			return;
 		}
 		const preset = effectivePreset(ctx);
-		const contextWindow = WINDOWS[preset];
+		const contextWindow = CODEX_CONTEXT_WINDOWS[preset];
 		if (ctx.model.contextWindow === contextWindow) {
 			updateStatus(ctx);
 			return;
@@ -98,7 +86,7 @@ export default function registerContextWindow(
 			CONTEXT_WINDOW_PRESETS[(CONTEXT_WINDOW_PRESETS.indexOf(current) + 1) % CONTEXT_WINDOW_PRESETS.length]!;
 		state.upgradedPreset = undefined;
 		await apply(ctx);
-		ctx.ui.notify(`Codex context: ${label(effectivePreset(ctx))}`, "info");
+		ctx.ui.notify(`Codex context: ${codexContextWindowLabel(effectivePreset(ctx))}`, "info");
 	}
 
 	async function beforeCompact(event: SessionBeforeCompactEvent, ctx: ExtensionContext) {
@@ -110,7 +98,10 @@ export default function registerContextWindow(
 		if (index < CONTEXT_WINDOW_PRESETS.length - 1) {
 			stateFor(ctx).upgradedPreset = CONTEXT_WINDOW_PRESETS[index + 1]!;
 			await apply(ctx);
-			ctx.ui.notify(`Skipped compaction; Codex context upgraded to ${label(effectivePreset(ctx))}.`, "info");
+			ctx.ui.notify(
+				`Skipped compaction; Codex context upgraded to ${codexContextWindowLabel(effectivePreset(ctx))}.`,
+				"info",
+			);
 			return { cancel: true } as const;
 		}
 		// At the largest supported tier, normal compaction is the only safe path.
@@ -123,7 +114,10 @@ export default function registerContextWindow(
 		if (usage?.tokens === null || usage?.tokens === undefined) return;
 		const current = effectivePreset(ctx);
 		const index = CONTEXT_WINDOW_PRESETS.indexOf(current);
-		if (index >= CONTEXT_WINDOW_PRESETS.length - 1 || usage.tokens <= WINDOWS[current] - DEFAULT_COMPACTION_RESERVE)
+		if (
+			index >= CONTEXT_WINDOW_PRESETS.length - 1 ||
+			usage.tokens <= CODEX_CONTEXT_WINDOWS[current] - DEFAULT_COMPACTION_RESERVE
+		)
 			return;
 		stateFor(ctx).upgradedPreset = CONTEXT_WINDOW_PRESETS[index + 1]!;
 		await apply(ctx);

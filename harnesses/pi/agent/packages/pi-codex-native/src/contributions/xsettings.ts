@@ -1,4 +1,26 @@
+import type { ContextWindowPreset } from "pi-libcontext/sdk";
+import type { TuiForegroundColor } from "pi-libtui";
 import { createSettings, type SettingDefinitionInput, type SettingsOf } from "pi-xsettings/sdk";
+
+export const CODEX_CONTEXT_WINDOWS: Readonly<Record<ContextWindowPreset, number>> = {
+	smart: 180_000,
+	balanced: 272_000,
+	enhanced: 400_000,
+	large: 600_000,
+	max: 1_000_000,
+};
+
+export const CODEX_CONTEXT_COLORS = {
+	smart: { hue: "green", shade: 3 },
+	balanced: { hue: "cyan", shade: 3 },
+	enhanced: { hue: "blue", shade: 4 },
+	large: { hue: "magenta", shade: 4 },
+	max: { hue: "red", shade: 5 },
+} as const satisfies Readonly<Record<ContextWindowPreset, TuiForegroundColor>>;
+
+export function codexContextWindowLabel(preset: ContextWindowPreset): string {
+	return `${preset[0]!.toUpperCase()}${preset.slice(1)} (${CODEX_CONTEXT_WINDOWS[preset] / 1_000}k)`;
+}
 
 const definitions = {
 	cacheDiagnostics: {
@@ -34,11 +56,36 @@ const definitions = {
 		type: "enum",
 		default: "balanced",
 		options: [
-			{ value: "smart", label: "Smart (180k)", description: "Best for short coding tasks in the model's smart zone." },
-			{ value: "balanced", label: "Balanced (272k)", description: "Codex-preferred default window." },
-			{ value: "enhanced", label: "Enhanced (400k)", description: "Large tasks that may finish without compaction." },
-			{ value: "large", label: "Large (600k)", description: "Large projects and long-running orchestration." },
-			{ value: "max", label: "Max (1M)", description: "Maximum context; quality may degrade at this size." },
+			{
+				value: "smart",
+				label: "Smart (180k)",
+				description: "Best for short coding tasks in the model's smart zone.",
+				color: CODEX_CONTEXT_COLORS.smart,
+			},
+			{
+				value: "balanced",
+				label: "Balanced (272k)",
+				description: "Codex-preferred default window.",
+				color: CODEX_CONTEXT_COLORS.balanced,
+			},
+			{
+				value: "enhanced",
+				label: "Enhanced (400k)",
+				description: "Large tasks that may finish without compaction.",
+				color: CODEX_CONTEXT_COLORS.enhanced,
+			},
+			{
+				value: "large",
+				label: "Large (600k)",
+				description: "Large projects and long-running orchestration.",
+				color: CODEX_CONTEXT_COLORS.large,
+			},
+			{
+				value: "max",
+				label: "Max (1M)",
+				description: "Maximum context; quality may degrade at this size.",
+				color: CODEX_CONTEXT_COLORS.max,
+			},
 		],
 	},
 	contextAutoUpgrade: {

@@ -1,19 +1,37 @@
 import { afterEach, expect, test } from "bun:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
-import registerContextWindow from "../src/context-window.ts";
-import { DEFAULT_CODEX_NATIVE_SETTINGS } from "../src/contributions/xsettings.ts";
 import { ensureActionsRegistry } from "pi-libactions/sdk";
 import { ensureContextWindowSourceRegistry } from "pi-libcontext/sdk";
+import { ensureXSettingsRegistry } from "pi-xsettings";
+import registerContextWindow from "../src/context-window.ts";
+import {
+	CODEX_CONTEXT_COLORS,
+	DEFAULT_CODEX_NATIVE_SETTINGS,
+	registerCodexNativeXSettings,
+} from "../src/contributions/xsettings.ts";
 
 const ACTIONS_KEY = Symbol.for("pi-libactions/registry/v1");
 const SOURCES_KEY = Symbol.for("pi-libcontext/sources/v1");
+const XSETTINGS_KEY = Symbol.for("pi-xsettings/registry/v1");
 type TestEvent = { reason?: string; toolResults?: readonly object[] };
 type Handler = (event: TestEvent, ctx: ExtensionContext) => unknown;
 
 afterEach(() => {
 	delete (globalThis as Record<PropertyKey, unknown>)[ACTIONS_KEY];
 	delete (globalThis as Record<PropertyKey, unknown>)[SOURCES_KEY];
+	delete (globalThis as Record<PropertyKey, unknown>)[XSETTINGS_KEY];
+});
+
+test("publishes the context preset colors to xsettings", () => {
+	const unregister = registerCodexNativeXSettings();
+	const definition = ensureXSettingsRegistry().registrations["pi-codex-native"]?.definitions.find(
+		(candidate) => candidate.key === "contextWindowPreset",
+	);
+	if (definition?.type !== "enum" || "source" in definition.options) throw new Error("missing context enum");
+
+	expect(definition.options.map(({ value, color }) => [value, color])).toEqual(Object.entries(CODEX_CONTEXT_COLORS));
+	unregister();
 });
 
 function harness(policy: "never" | "mid-turn" | "always" = "never") {
