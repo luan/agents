@@ -6,6 +6,7 @@
       "name": "agents",
       "devDependencies": {
         "@biomejs/biome": "2.5.10",
+        "typescript": "6.0.3",
       },
     },
     "harnesses/pi/agent/packages/pi-annotations": {

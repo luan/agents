@@ -15,7 +15,8 @@
     "harnesses/pi/agent/packages/*"
   ],
   "devDependencies": {
-    "@biomejs/biome": "2.5.10"
+    "@biomejs/biome": "2.5.10",
+    "typescript": "6.0.3"
   },
   "packageManager": "bun@1.3.14"
 }
