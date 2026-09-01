@@ -58,13 +58,13 @@ function context(args: object, lastComponent?: object, overrides: ContextOverrid
 	} as never;
 }
 
-function observableRuntime() {
+function observableRuntime(initialSnapshots: readonly ExecProcessSnapshot[] = []) {
 	let listener: ((snapshots: readonly ExecProcessSnapshot[]) => void) | undefined;
 	let unsubscribeCount = 0;
 	const manager = {
 		subscribeProcesses(next: (snapshots: readonly ExecProcessSnapshot[]) => void) {
 			listener = next;
-			next([]);
+			next(initialSnapshots);
 			let subscribed = true;
 			return () => {
 				if (!subscribed) return;
@@ -819,6 +819,47 @@ describe("exec tool presentation", () => {
 		expect(sharedMotionScheduler.activeMountCount).toBe(before);
 		expect(processes.unsubscribeCount).toBe(1);
 		expect(invalidations).toBe(2);
+	});
+
+	test("incorporates the initial process snapshot without re-entering Pi rendering", () => {
+		const processes = observableRuntime([processSnapshot({ output: "first\n" })]);
+		const tool = createExecCommandTool(processes.runtime, TEST_EXEC_COMMAND_PREPARATION_RUNTIME);
+		const args = { cmd: "sleep 30", tty: false };
+		const yielded = createExecToolResult({
+			tool: "exec_command",
+			phase: "final",
+			arguments: normalizeExecCommandArguments(args, "/tmp", "/bin/zsh"),
+			command: args.cmd,
+			result: {
+				chunk_id: "yielded",
+				output: "",
+				session_id: 7,
+				wall_time_seconds: 0.1,
+				output_truncated: false,
+			},
+		});
+		let component: ReturnType<NonNullable<typeof tool.renderResult>> | undefined;
+		let renders = 0;
+		const render = () => {
+			renders += 1;
+			if (renders > 20) throw new Error("process snapshot caused recursive rendering");
+			component = tool.renderResult?.(
+				yielded,
+				{ expanded: false, isPartial: false },
+				theme,
+				context(args, component, { executionStarted: true, isPartial: false, invalidate: render }),
+			);
+		};
+		render();
+
+		const initialPayload = component?.render(60).slice(1).map(Bun.stripANSI);
+		expect(initialPayload?.length).toBeGreaterThan(0);
+		expect(renders).toBe(1);
+
+		processes.publish([processSnapshot({ output: "second\n" })]);
+		const nextPayload = component?.render(60).slice(1).map(Bun.stripANSI);
+		expect(renders).toBe(2);
+		expect(nextPayload).not.toEqual(initialPayload);
 	});
 
 	test("keeps TTY write_stdin results transcript-silent", () => {

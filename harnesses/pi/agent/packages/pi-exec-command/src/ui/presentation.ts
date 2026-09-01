@@ -330,12 +330,15 @@ class ExecPresentation {
 		this.unsubscribeProcesses = undefined;
 		this.subscribedSessionId = sessionId;
 		let settled = false;
+		let subscribing = true;
 		const unsubscribe = processes.subscribeProcesses((snapshots) => {
 			const snapshot = snapshots.find(({ id }) => id === sessionId);
 			if (!snapshot) return;
 			this.acceptProcessSnapshot(snapshot);
+			if (!subscribing) this.requestRender();
 			settled ||= snapshot.state === "exited";
 		});
+		subscribing = false;
 		this.unsubscribeProcesses = unsubscribe;
 		if (settled) this.stopProcessUpdates();
 	}
@@ -348,7 +351,6 @@ class ExecPresentation {
 		this.transcript.update(
 			commandView(this.execDetails, this.expanded, this.hostError, this.live, this.nextOutputRevision()),
 		);
-		this.requestRender();
 		if (snapshot.state === "exited") this.stopProcessUpdates();
 	}
 

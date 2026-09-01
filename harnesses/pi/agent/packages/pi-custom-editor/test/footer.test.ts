@@ -4,6 +4,7 @@ import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { configureTuiAppearance, DEFAULT_TUI_APPEARANCE, tuiTheme } from "pi-libtui";
 import { TuiState } from "../src/runtime/state.ts";
 import { contextStatus, workingStatus } from "../src/ui/footer.ts";
+import { renderStatusGroups } from "../src/ui/status.ts";
 
 const theme = {
 	name: "custom-editor-footer-test",
@@ -20,6 +21,44 @@ const theme = {
 } as never as Theme;
 
 describe("custom editor footer", () => {
+	test("reuses session usage across animation frames", () => {
+		let reads = 0;
+		const entries = [
+			{ type: "message", message: { role: "assistant", usage: { input: 12, output: 8, cost: { total: 0.1 } } } },
+		];
+		const ctx = {
+			cwd: "/tmp",
+			model: { name: "test", provider: "test" },
+			getContextUsage: () => undefined,
+			sessionManager: {
+				getEntries: () => {
+					reads++;
+					return entries;
+				},
+				getSessionName: () => undefined,
+				getSessionId: () => "session",
+			},
+		} as never as ExtensionContext;
+		const state = new TuiState();
+		const options = {
+			ctx,
+			state,
+			theme,
+			left: ["tokens"] as const,
+			right: [] as const,
+			separator: "space" as const,
+			width: 40,
+		};
+
+		expect(renderStatusGroups(options).left).toContain("↑12 ↓8");
+		renderStatusGroups(options);
+		expect(reads).toBe(1);
+
+		state.start(1);
+		renderStatusGroups(options);
+		expect(reads).toBe(2);
+	});
+
 	test("keeps low nonzero context usage visibly colored by its window preset", () => {
 		const ctx = {
 			getContextUsage: () => ({ tokens: 8_000, contextWindow: 272_000, percent: 2.8 }),

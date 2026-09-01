@@ -1,6 +1,6 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
-import { sliceByColumn, stripTerminalSequences, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { sliceByColumn, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import {
 	highlightSyntaxBlock,
 	type ActivityAnimationOverrides,
@@ -11,7 +11,7 @@ import {
 	mountConfiguredAnimation,
 	RenderedLinesCache,
 	sanitizeTuiField,
-	sanitizeTuiText,
+	sanitizeTuiTextPreview,
 	type TuiActivityIndicatorStyle,
 	type TuiForegroundColor,
 	type TuiTextEffectStyle,
@@ -59,13 +59,15 @@ export class ShellCommandAction implements Component {
 	private now = this.startedAt;
 	private motion: MotionMount | undefined;
 	private revision = 0;
-	private pieces: readonly ShellPiece[];
+	private pieces: readonly ShellPiece[] = [];
+	private piecesCommand: string | undefined;
+	private piecesShell: string | undefined;
+	private piecesMaximumCharacters = 0;
 	private disposed = false;
 	private syntaxReadyRequested = false;
 
 	constructor(private readonly options: ShellCommandActionOptions) {
 		this.view = options.view;
-		this.pieces = shellPieces(sanitizeTuiText(options.view.command), options.view.shell);
 		this.running = options.view.running ?? options.view.status === "running";
 		this.syncMotion();
 	}
@@ -73,7 +75,7 @@ export class ShellCommandAction implements Component {
 	update(view: ShellCommandActionView, running = view.running ?? view.status === "running"): void {
 		if (!this.running && running) this.startedAt = performance.now();
 		if (view.command !== this.view.command || view.shell !== this.view.shell) {
-			this.pieces = shellPieces(sanitizeTuiText(view.command), view.shell);
+			this.piecesCommand = undefined;
 		}
 		this.view = view;
 		this.running = running;
@@ -101,7 +103,14 @@ export class ShellCommandAction implements Component {
 			: undefined;
 		const key = `${this.revision}\0${activity?.indicatorStyle ?? ""}\0${activity?.textEffectStyle ?? ""}\0${activity?.textEffectScope ?? ""}\0${activity?.animationSpeed ?? ""}\0${activity?.elapsedMs ?? ""}`;
 		return this.cache.get(boundedWidth, key, () =>
-			renderShellCommand(this.options.theme, this.view, boundedWidth, activity, this.options.maxRows, this.pieces),
+			renderShellCommand(
+				this.options.theme,
+				this.view,
+				boundedWidth,
+				activity,
+				this.commandPieces(boundedWidth),
+				this.options.maxRows,
+			),
 		);
 	}
 
@@ -120,10 +129,28 @@ export class ShellCommandAction implements Component {
 		this.syntaxReadyRequested = true;
 		whenSyntaxReady(() => {
 			if (this.disposed) return;
-			this.pieces = shellPieces(sanitizeTuiText(this.view.command), this.view.shell);
+			this.piecesCommand = undefined;
 			this.cache.clear();
 			this.options.requestRender();
 		});
+	}
+
+	private commandPieces(width: number): readonly ShellPiece[] {
+		const rows = Math.max(1, Math.floor(this.options.maxRows ?? 6));
+		// The header cannot reveal more cells. Increase the source budget only if the header becomes expandable.
+		const maximumCharacters = Math.max(1, width * rows + 1);
+		if (
+			this.piecesCommand === this.view.command &&
+			this.piecesShell === this.view.shell &&
+			this.piecesMaximumCharacters === maximumCharacters
+		) {
+			return this.pieces;
+		}
+		this.pieces = shellPieces(this.view.command, this.view.shell, maximumCharacters);
+		this.piecesCommand = this.view.command;
+		this.piecesShell = this.view.shell;
+		this.piecesMaximumCharacters = maximumCharacters;
+		return this.pieces;
 	}
 
 	private syncMotion(): void {
@@ -150,8 +177,8 @@ function renderShellCommand(
 	view: ShellCommandActionView,
 	width: number,
 	activity: ShellActivity | undefined,
+	pieces: readonly ShellPiece[],
 	maxRows = 6,
-	pieces: readonly ShellPiece[] = shellPieces(view.command, view.shell),
 ): string[] {
 	const colors = tuiTheme(theme);
 	const promptTone = view.status === "failed" ? "negative" : view.status === "queued" ? "text.muted" : "positive";
@@ -167,8 +194,8 @@ function renderShellCommand(
 	const prefix = `${activityIndicator ? `${activityIndicator} ` : ""}${colors.fg(promptTone, "$")} `;
 	const continuation = " ".repeat(visibleWidth(prefix));
 	const contentWidth = Math.max(1, width - visibleWidth(prefix));
-	const rows = wrapPieces(pieces, contentWidth);
 	const limit = Math.max(1, Math.floor(maxRows));
+	const rows = wrapPieces(pieces, contentWidth, limit);
 	const visibleRows = rows.slice(0, limit);
 	if (rows.length > limit) {
 		const last = visibleRows.length - 1;
@@ -217,8 +244,8 @@ function trimPieces(pieces: readonly ShellPiece[], width: number): ShellPiece[] 
 	return result;
 }
 
-function shellPieces(command: string, shell?: string): ShellPiece[] {
-	const source = stripTerminalSequences(command).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, " ");
+function shellPieces(command: string, shell?: string, maximumCharacters = Number.POSITIVE_INFINITY): ShellPiece[] {
+	const source = sanitizeTuiTextPreview(command, maximumCharacters);
 	const sourceLines = source.split("\n");
 	const highlightedLines = highlightSyntaxBlock(source, shellSyntaxFilename(shell));
 	const pieces: ShellPiece[] = [];
@@ -250,23 +277,33 @@ function shellSyntaxFilename(shell: string | undefined): string {
 	return (basename && SHELL_SYNTAX_FILENAMES[basename as keyof typeof SHELL_SYNTAX_FILENAMES]) || "script.sh";
 }
 
-function wrapPieces(pieces: readonly ShellPiece[], width: number): ShellPiece[][] {
+function wrapPieces(pieces: readonly ShellPiece[], width: number, rowLimit = Number.POSITIVE_INFINITY): ShellPiece[][] {
 	const rows: ShellPiece[][] = [[]];
 	let used = 0;
 	const nextRow = () => {
 		rows.push([]);
 		used = 0;
+		return rows.length > rowLimit;
+	};
+	const finish = () => {
+		for (const row of rows) {
+			const last = row.at(-1);
+			if (!last || !/^\s+$/u.test(last.text)) continue;
+			last.text = last.text.trimEnd();
+			if (!last.text) row.pop();
+		}
+		return rows;
 	};
 	for (const piece of pieces) {
 		if (piece.text === "\n") {
-			nextRow();
+			if (nextRow()) return finish();
 			continue;
 		}
 		let text = used === 0 ? piece.text.replace(/^\s+/u, "") : piece.text;
 		while (text.length > 0) {
 			const available = width - used;
 			if (available <= 0) {
-				nextRow();
+				if (nextRow()) return finish();
 				text = text.replace(/^\s+/u, "");
 				continue;
 			}
@@ -277,13 +314,13 @@ function wrapPieces(pieces: readonly ShellPiece[], width: number): ShellPiece[][
 				break;
 			}
 			if (/^\s+$/u.test(text) || (used > 0 && textWidth <= width)) {
-				nextRow();
+				if (nextRow()) return finish();
 				text = text.replace(/^\s+/u, "");
 				continue;
 			}
 			const chunk = sliceByColumn(text, 0, available, true);
 			if (!chunk) {
-				nextRow();
+				if (nextRow()) return finish();
 				continue;
 			}
 			rows.at(-1)!.push({ ...piece, text: chunk });
@@ -292,11 +329,5 @@ function wrapPieces(pieces: readonly ShellPiece[], width: number): ShellPiece[][
 			used += chunkWidth;
 		}
 	}
-	for (const row of rows) {
-		const last = row.at(-1);
-		if (!last || !/^\s+$/u.test(last.text)) continue;
-		last.text = last.text.trimEnd();
-		if (!last.text) row.pop();
-	}
-	return rows;
+	return finish();
 }

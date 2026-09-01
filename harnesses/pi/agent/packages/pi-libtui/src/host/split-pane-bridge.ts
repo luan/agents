@@ -11,6 +11,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { tuiTheme } from "../color/theme.ts";
 import type { LayoutBox, MouseRect, MouseRegistry, TuiMouseEvent } from "../mouse.ts";
+import { RenderedLinesCache } from "../render-cache.ts";
 import type { MountedSplitPane, SplitPaneComponent, SplitPaneHost, SplitPaneRegistry } from "../split-pane.ts";
 import { intersect, isComponent, rendererLayoutFrame } from "./pi-layout-adapter.ts";
 
@@ -155,6 +156,7 @@ class SafeSplitPane extends VStack implements Focusable {
 	private readonly removePaneFocusRegion: () => void;
 	private _focused = false;
 	private restoreFocus: Component | null | undefined;
+	private readonly renderCache = new RenderedLinesCache();
 
 	constructor(
 		private readonly renderer: object,
@@ -168,7 +170,10 @@ class SafeSplitPane extends VStack implements Focusable {
 		const host: SplitPaneHost = {
 			tui: renderer as TUI,
 			getTerminalSize: () => ({ columns: rendererColumns(renderer), rows: this.viewportRows() }),
-			requestRender: () => requestRender(renderer),
+			requestRender: () => {
+				this.renderCache.clear();
+				requestRender(renderer);
+			},
 			focus: () => this.focus(),
 			blur: () => this.blur(),
 			isFocused: () => this.isFocused(),
@@ -206,6 +211,7 @@ class SafeSplitPane extends VStack implements Focusable {
 	}
 
 	set focused(value: boolean) {
+		if (this._focused !== value) this.renderCache.clear();
 		this._focused = value;
 		try {
 			if (this.child && isFocusable(this.child)) this.child.focused = value;
@@ -219,6 +225,7 @@ class SafeSplitPane extends VStack implements Focusable {
 	}
 
 	handleInput(data: string): void {
+		this.renderCache.clear();
 		let deferred = false;
 		try {
 			deferred = this.child?.defersInputRender?.(data) === true;
@@ -235,7 +242,9 @@ class SafeSplitPane extends VStack implements Focusable {
 
 	onMouse(event: TuiMouseEvent): boolean {
 		try {
-			return this.child?.onMouse?.(event) === true;
+			const handled = this.child?.onMouse?.(event) === true;
+			if (handled) this.renderCache.clear();
+			return handled;
 		} catch {
 			return false;
 		}
@@ -267,19 +276,23 @@ class SafeSplitPane extends VStack implements Focusable {
 	}
 
 	render(width: number): string[] {
-		try {
-			const lines = this.child?.render(width) ?? [];
-			if (!Array.isArray(lines) || !lines.every((line) => typeof line === "string")) return [];
-			const bounded = lines.slice(0, this.viewportRows());
-			return this.child?.rendersWithinWidth === true
-				? bounded
-				: bounded.map((line) => truncateToWidth(line, width, ""));
-		} catch {
-			return [];
-		}
+		const rows = this.viewportRows();
+		return this.renderCache.get(width, `${rows}`, () => {
+			try {
+				const lines = this.child?.render(width) ?? [];
+				if (!Array.isArray(lines) || !lines.every((line) => typeof line === "string")) return [];
+				const bounded = lines.slice(0, rows);
+				return this.child?.rendersWithinWidth === true
+					? bounded
+					: bounded.map((line) => truncateToWidth(line, width, ""));
+			} catch {
+				return [];
+			}
+		});
 	}
 
 	invalidate(): void {
+		this.renderCache.clear();
 		try {
 			this.child?.invalidate();
 		} catch {

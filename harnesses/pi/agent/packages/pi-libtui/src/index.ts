@@ -65,7 +65,12 @@ export {
 	type ComponentStackOptions,
 	type ComponentStackSpan,
 } from "./component-stack.ts";
-export { sanitizeTuiField, sanitizeTuiText } from "./content/terminal-text.ts";
+export {
+	sanitizeTuiField,
+	sanitizeTuiFieldPreview,
+	sanitizeTuiText,
+	sanitizeTuiTextPreview,
+} from "./content/terminal-text.ts";
 export {
 	MarkdownText,
 	type MarkdownTextOptions,

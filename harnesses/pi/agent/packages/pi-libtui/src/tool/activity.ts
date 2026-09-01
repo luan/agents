@@ -421,6 +421,9 @@ export class ToolActivity implements Component {
 
 function hasMoreText(text: string, previewRows: number, width?: number): boolean {
 	if (width !== undefined && width > 0) {
+		// Disclosure needs only a conservative answer; never wrap hidden output during animated renders.
+		const budget = Math.max(256, Math.max(1, Math.floor(previewRows)) * Math.max(1, Math.floor(width)) * 2);
+		if (text.length > budget) return true;
 		const visibleText = sanitizeTuiText(text).replace(/\n$/u, "");
 		const wrapped = visibleText.length === 0 ? [] : wrapTextWithAnsi(visibleText, width);
 		return wrapped.length > previewRows;

@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import type { Theme } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { configureTuiAppearance, DEFAULT_TUI_APPEARANCE, whenSyntaxReady } from "pi-libtui";
 import type { TuiMouseEvent } from "pi-libtui/mouse";
 import type { ExecProcessSnapshot, PtyDataEvent, UnifiedExecResult } from "../src/session-manager.ts";
@@ -91,6 +92,20 @@ test("renders animated syntax-highlighted process rows and opens the clicked pro
 	component?.onMouse(mouse("press", 1, 10, 0));
 	component?.onMouse(mouse("release", 1, 10, 0));
 	expect(opened).toEqual([3]);
+
+	snapshots = [
+		{
+			...snapshots[0]!,
+			command: `echo \x1b]52;c;secret\x07${"🙂\u0301".repeat(50_000)}`,
+			output: `${"x".repeat(100_000)}\n`,
+		},
+	];
+	processListener?.(snapshots);
+	const boundedRows = component?.render(40) ?? [];
+	expect(boundedRows.every((row) => visibleWidth(row) <= 40)).toBeTrue();
+	expect(Bun.stripANSI(boundedRows[1] ?? "")).toContain("...");
+	expect(boundedRows.join("\n")).not.toContain("\x1b]52");
+	expect(boundedRows.join("\n")).not.toContain("secret");
 
 	snapshots = [{ ...snapshots[0]!, state: "exited", exitCode: 0, finishedAtMs: Date.now() }];
 	processListener?.(snapshots);

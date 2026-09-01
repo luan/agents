@@ -60,6 +60,26 @@ describe("exec command UI", () => {
 		command.dispose();
 	});
 
+	test("bounds large command headers to their visible rows", () => {
+		const command = new CommandTranscript({
+			theme,
+			requestRender() {},
+			view: {
+				command: `printf \x1b]52;c;secret\x07${"🙂\u0301".repeat(50_000)}\nignored`,
+				status: "running",
+			},
+		});
+		const rendered = command.render(40);
+
+		expect(rendered.length).toBeGreaterThan(1);
+		expect(rendered.length).toBeLessThanOrEqual(6);
+		expect(rendered.every((line) => visibleWidth(line) <= 40)).toBe(true);
+		expect(stripTerminalSequences(rendered.at(-1) ?? "").trimEnd()).toEndWith("…");
+		expect(rendered.join("\n")).not.toContain("\x1b]52");
+		expect(rendered.join("\n")).not.toContain("secret");
+		command.dispose();
+	});
+
 	test("replaces output when callers omit revisions", () => {
 		const command = new CommandTranscript({
 			theme,

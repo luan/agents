@@ -7,6 +7,18 @@ export function sanitizeTuiText(text: string): string {
 		.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/gu, "�");
 }
 
+/** Sanitize a bounded display prefix without splitting a UTF-16 surrogate pair. */
+export function sanitizeTuiTextPreview(text: string, maximumCharacters: number): string {
+	if (maximumCharacters === Number.POSITIVE_INFINITY) return sanitizeTuiText(text);
+	const limit = Math.max(1, Math.floor(Number.isFinite(maximumCharacters) ? maximumCharacters : 1));
+	if (text.length <= limit) return sanitizeTuiText(text);
+	let end = limit;
+	const last = text.charCodeAt(end - 1);
+	const next = text.charCodeAt(end);
+	if (last >= 0xd800 && last <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) end -= 1;
+	return `${sanitizeTuiText(text.slice(0, end))}…`;
+}
+
 /** Preserve SGR styling while removing terminal controls with side effects. */
 export function sanitizeTuiAnsi(text: string): string {
 	return sanitizeTuiAnsiChunk(text).text;
@@ -48,6 +60,11 @@ function boundPending(pending: string, maximum: number): string {
 /** Sanitize and flatten one action-row field. */
 export function sanitizeTuiField(text: string): string {
 	return sanitizeTuiText(text).replace(/[\n\t]+/gu, " ");
+}
+
+/** Sanitize and flatten a bounded action-row prefix. */
+export function sanitizeTuiFieldPreview(text: string, maximumCharacters: number): string {
+	return sanitizeTuiTextPreview(text, maximumCharacters).replace(/[\n\t]+/gu, " ");
 }
 
 function sanitizePlainSegment(text: string): string {

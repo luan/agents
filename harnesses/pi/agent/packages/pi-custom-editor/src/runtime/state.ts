@@ -52,10 +52,6 @@ export class TuiState {
 		this.revision++;
 	}
 
-	touch(): void {
-		this.revision++;
-	}
-
 	elapsed(now = Date.now()): number {
 		return this.startedAtMs === undefined ? 0 : Math.max(0, now - this.startedAtMs);
 	}

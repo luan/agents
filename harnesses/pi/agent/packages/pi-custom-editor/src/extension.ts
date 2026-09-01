@@ -113,12 +113,6 @@ export default function tuiExtension(pi: ExtensionAPI): void {
 			requestRender();
 		}
 	});
-	pi.on("message_update", (_event, ctx) => {
-		if (isActive(ctx)) {
-			state.touch();
-			requestRender();
-		}
-	});
 	pi.on("session_shutdown", (_event, ctx) => {
 		if (!isActive(ctx)) return;
 		ctx.ui.setWorkingVisible(true);

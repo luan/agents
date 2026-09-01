@@ -1080,6 +1080,24 @@ describe("tool transcript grammar", () => {
 		expect(stripTerminalSequences(live.render(40)[0]!)).toStartWith("● Streaming");
 		live.dispose();
 	});
+
+	test("bounds hidden text in animated actions and output disclosure", () => {
+		const activity = new ToolActivity({
+			theme,
+			requestRender() {},
+			view: {
+				action: { verb: `Run ${"🙂\u0301".repeat(50_000)}`, status: "running" },
+				running: true,
+				payload: { kind: "text", text: "x".repeat(100_000), revision: 1 },
+			},
+		});
+		const rendered = activity.render(40);
+
+		expect(rendered.every((line) => visibleWidth(line) <= 40)).toBe(true);
+		expect(stripTerminalSequences(rendered[0] ?? "")).toContain("Run");
+		expect(stripTerminalSequences(rendered.join("\n"))).toContain("omitted");
+		activity.dispose();
+	});
 });
 
 function escapeRegExp(value: string): string {

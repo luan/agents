@@ -58,6 +58,7 @@ export class CodeModeResultComponent implements PresentationComponent {
 	private readonly disclosure: CodeModeDisclosure;
 	private readonly stack = new ComponentStack();
 	private compactResult: LazyCodeModeResult | undefined;
+	private snapshot: CodeModePresentationSnapshot;
 
 	constructor(
 		private readonly theme: Theme,
@@ -68,11 +69,18 @@ export class CodeModeResultComponent implements PresentationComponent {
 		private readonly cwd: string,
 		private readonly executionStarted: boolean,
 	) {
+		this.snapshot = codeModePresentationSnapshot(result, hostError, expanded);
 		this.disclosure = new CodeModeDisclosure(theme, requestRender, disclosureView(result, expanded));
 		this.rebuild();
 	}
 
 	update(result: AgentToolResult<CodeModeToolDetails>, hostError: boolean, expanded: boolean): void {
+		const snapshot = codeModePresentationSnapshot(result, hostError, expanded);
+		if (sameCodeModePresentation(this.snapshot, snapshot)) {
+			this.result = result;
+			return;
+		}
+		this.snapshot = snapshot;
 		this.result = result;
 		this.hostError = hostError;
 		this.expanded = expanded;
@@ -152,6 +160,137 @@ export class CodeModeResultComponent implements PresentationComponent {
 		this.disclosure.update(disclosureView(this.result, this.expanded), nested);
 		this.stack.setChildren([this.disclosure]);
 	}
+}
+
+interface ContentItemSnapshot {
+	readonly item: object | undefined;
+	readonly type: unknown;
+	readonly text: unknown;
+}
+
+interface NestedTraceSnapshot {
+	readonly id: string;
+	readonly name: string;
+	readonly kind: NestedToolTrace["kind"];
+	readonly input: unknown;
+	readonly status: NestedToolTrace["status"];
+	readonly startedAtMs: number;
+	readonly durationMs: number | undefined;
+	readonly error: string | undefined;
+	readonly value: unknown;
+	readonly resultContent: readonly ContentItemSnapshot[];
+	readonly resultDetails: unknown;
+	readonly presentationKey: string;
+}
+
+interface CodeModePresentationSnapshot {
+	readonly hostError: boolean;
+	readonly expanded: boolean;
+	readonly tool: CodeModeToolDetails["tool"] | undefined;
+	readonly status: CodeModeToolDetails["status"] | undefined;
+	readonly cellId: string | undefined;
+	readonly isError: boolean | undefined;
+	readonly scriptError: string | undefined;
+	readonly missingCell: boolean | undefined;
+	readonly durationMs: number | undefined;
+	readonly code: string | undefined;
+	readonly notificationText: string | undefined;
+	readonly notificationTruncated: boolean | undefined;
+	readonly content: readonly ContentItemSnapshot[];
+	readonly traces: readonly NestedTraceSnapshot[];
+}
+
+function codeModePresentationSnapshot(
+	result: AgentToolResult<CodeModeToolDetails>,
+	hostError: boolean,
+	expanded: boolean,
+): CodeModePresentationSnapshot {
+	const details = result.details;
+	return {
+		hostError,
+		expanded,
+		tool: details?.tool,
+		status: details?.status,
+		cellId: details?.cellId,
+		isError: details?.isError,
+		scriptError: details?.scriptError,
+		missingCell: details?.missingCell,
+		durationMs: details?.timing?.durationMs,
+		code: codeText(details?.input),
+		notificationText: details?.notification?.text,
+		notificationTruncated: details?.notification?.truncated,
+		content: contentSnapshot(result.content),
+		traces: restoredNestedCalls(details).map((trace) => ({
+			id: trace.id,
+			name: trace.name,
+			kind: trace.kind,
+			input: trace.input,
+			status: trace.status,
+			startedAtMs: trace.startedAtMs,
+			durationMs: trace.durationMs,
+			error: trace.error,
+			value: trace.value,
+			resultContent: contentSnapshot(trace.result?.content),
+			resultDetails: trace.result?.details,
+			presentationKey: tracePresentationKey(trace),
+		})),
+	};
+}
+
+function contentSnapshot(content: readonly unknown[] | undefined): ContentItemSnapshot[] {
+	if (!content) return [];
+	return content.map((value) => ({
+		item: value && typeof value === "object" ? value : undefined,
+		type: value && typeof value === "object" ? Reflect.get(value, "type") : undefined,
+		text: value && typeof value === "object" ? Reflect.get(value, "text") : value,
+	}));
+}
+
+function sameCodeModePresentation(left: CodeModePresentationSnapshot, right: CodeModePresentationSnapshot): boolean {
+	return (
+		left.hostError === right.hostError &&
+		left.expanded === right.expanded &&
+		left.tool === right.tool &&
+		left.status === right.status &&
+		left.cellId === right.cellId &&
+		left.isError === right.isError &&
+		left.scriptError === right.scriptError &&
+		left.missingCell === right.missingCell &&
+		left.durationMs === right.durationMs &&
+		left.code === right.code &&
+		left.notificationText === right.notificationText &&
+		left.notificationTruncated === right.notificationTruncated &&
+		sameContentSnapshot(left.content, right.content) &&
+		left.traces.length === right.traces.length &&
+		left.traces.every((trace, index) => sameNestedTraceSnapshot(trace, right.traces[index]!))
+	);
+}
+
+function sameNestedTraceSnapshot(left: NestedTraceSnapshot, right: NestedTraceSnapshot): boolean {
+	return (
+		left.id === right.id &&
+		left.name === right.name &&
+		left.kind === right.kind &&
+		left.input === right.input &&
+		left.status === right.status &&
+		left.startedAtMs === right.startedAtMs &&
+		left.durationMs === right.durationMs &&
+		left.error === right.error &&
+		left.value === right.value &&
+		left.resultDetails === right.resultDetails &&
+		left.presentationKey === right.presentationKey &&
+		sameContentSnapshot(left.resultContent, right.resultContent)
+	);
+}
+
+function sameContentSnapshot(left: readonly ContentItemSnapshot[], right: readonly ContentItemSnapshot[]): boolean {
+	return (
+		left.length === right.length &&
+		left.every(
+			(item, index) =>
+				item.item === right[index]!.item && item.type === right[index]!.type && item.text === right[index]!.text,
+		)
+	);
 }
 
 /** Delay syntax setup until compact result content is actually visible. */

@@ -8,6 +8,8 @@ import { formatDuration, type TuiState } from "../runtime/state.ts";
 
 export type Usage = { input: number; output: number; cost: number };
 
+const usageByState = new WeakMap<TuiState, { revision: number; usage: Usage }>();
+
 function count(value: number): string {
 	if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
 	if (value >= 1000) return `${Math.round(value / 1000)}k`;
@@ -32,6 +34,14 @@ export function readUsage(ctx: ExtensionContext): Usage {
 		total.cost += entry.message.usage?.cost?.total ?? 0;
 	}
 	return total;
+}
+
+function currentUsage(ctx: ExtensionContext, state: TuiState): Usage {
+	const cached = usageByState.get(state);
+	if (cached?.revision === state.revision) return cached.usage;
+	const usage = readUsage(ctx);
+	usageByState.set(state, { revision: state.revision, usage });
+	return usage;
 }
 
 export function workingStatus(state: TuiState, theme: Theme, width: number): string {
@@ -111,7 +121,7 @@ export interface StatusRenderOptions {
 export function renderStatusGroups(options: StatusRenderOptions): EditorCompositionStatus {
 	const { ctx, state, theme } = options;
 	const colors = tuiTheme(theme);
-	const usage = readUsage(ctx);
+	const usage = currentUsage(ctx, state);
 	const context = ctx.getContextUsage();
 	const contextMeta = contextPreset(state.contextStatus, theme);
 	const sessionName = ctx.sessionManager.getSessionName();

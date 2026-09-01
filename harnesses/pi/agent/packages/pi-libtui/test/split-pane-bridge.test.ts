@@ -215,6 +215,43 @@ describe("split-pane bridge", () => {
 		removePane();
 	});
 
+	test("reuses unchanged pane output across unrelated main renders", () => {
+		const panes = registry();
+		const tui = new FullscreenTuiFixture(fill("M"));
+		let host: SplitPaneHost | undefined;
+		let paneRenders = 0;
+		const removePane = panes.mount({
+			id: "cached",
+			position: "right",
+			component: (nextHost) => {
+				host = nextHost;
+				return {
+					render: (width) => {
+						paneRenders++;
+						return ["P".repeat(width)];
+					},
+					invalidate() {},
+				};
+			},
+			size: 20,
+			minMainSize: 1,
+		});
+		const removeBridge = installSplitPaneBridge(tui as TuiBoundary as TUI, () => theme, panes, mouseRegistry());
+
+		render(tui.layoutRoot, 80);
+		const measuredRenders = paneRenders;
+		expect(measuredRenders).toBeGreaterThan(0);
+		render(tui.layoutRoot, 80);
+		expect(paneRenders).toBe(measuredRenders);
+
+		host?.requestRender();
+		render(tui.layoutRoot, 80);
+		expect(paneRenders).toBeGreaterThan(measuredRenders);
+
+		removeBridge();
+		removePane();
+	});
+
 	test("derives an initial pane width from the terminal", () => {
 		const panes = registry();
 		const tui = new FullscreenTuiFixture(fill("M"));

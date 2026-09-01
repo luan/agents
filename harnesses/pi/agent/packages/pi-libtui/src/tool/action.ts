@@ -2,7 +2,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { type TuiForegroundColor, tuiTheme } from "../color/theme.ts";
-import { sanitizeTuiField } from "../content/terminal-text.ts";
+import { sanitizeTuiFieldPreview } from "../content/terminal-text.ts";
 import { icon } from "../decoration/glyphs.ts";
 import { activityFrame, type ActivityFrame, mountConfiguredAnimation, type MotionMount } from "../motion.ts";
 import { RenderedLinesCache } from "../render-cache.ts";
@@ -63,15 +63,15 @@ export class ToolAction implements Component {
 function renderToolAction(theme: Theme, view: ToolActionView, width: number, activity?: ActivityFrame): string {
 	const colors = tuiTheme(theme);
 	const status = actionStatus(view.status);
-	const markerValue = view.marker === false ? "" : sanitizeTuiField(view.marker ?? status.glyph);
+	const markerValue = view.marker === false ? "" : actionField(view.marker ?? status.glyph, width);
 	const marker = markerValue ? `${colors.fg(view.markerTone ?? status.tone, markerValue)} ` : "";
 	const activityIndicator = activity?.marker ? `${activity.marker} ` : "";
-	const verb = activity?.text ?? colors.fg("text.secondary", sanitizeTuiField(view.verb));
+	const verb = activity?.text ?? colors.fg("text.secondary", actionField(view.verb, width));
 	let line = `${activityIndicator}${marker}${theme.bold(verb)}`;
 	if (view.detail)
-		line += `${colors.fg("text.muted", " · ")}${colors.fg("text.secondary", sanitizeTuiField(view.detail))}`;
+		line += `${colors.fg("text.muted", " · ")}${colors.fg("text.secondary", actionField(view.detail, width))}`;
 	if (view.meta?.length)
-		line += `${colors.fg("text.muted", " · ")}${colors.fg("text.muted", view.meta.map(sanitizeTuiField).join(" · "))}`;
+		line += `${colors.fg("text.muted", " · ")}${colors.fg("text.muted", view.meta.map((value) => actionField(value, width)).join(" · "))}`;
 	return truncateToWidth(line, Math.max(0, width), "…");
 }
 
@@ -106,13 +106,14 @@ export class LiveToolAction implements Component {
 	}
 
 	render(width: number): string[] {
+		const verb = actionField(this.view.verb, width);
 		const activity = this.running
-			? activityFrame(tuiTheme(this.options.theme), sanitizeTuiField(this.view.verb), this.now - this.startedAt, {
+			? activityFrame(tuiTheme(this.options.theme), verb, this.now - this.startedAt, {
 					textTone: "text.secondary",
 					reducedMotion: this.options.reducedMotion,
 				})
 			: undefined;
-		const key = `${activity?.marker ?? ""}\0${activity?.text ?? ""}\0${this.view.verb}\0${this.view.detail ?? ""}`;
+		const key = `${activity?.marker ?? ""}\0${activity?.text ?? ""}`;
 		return this.cache.get(width, key, () =>
 			width <= 0 ? [] : [renderToolAction(this.options.theme, this.view, width, activity)],
 		);
@@ -143,6 +144,11 @@ export class LiveToolAction implements Component {
 			this.motion = undefined;
 		}
 	}
+}
+
+function actionField(value: string, width: number): string {
+	const maximumCharacters = Math.max(1, Math.floor(width) * 2);
+	return sanitizeTuiFieldPreview(value, maximumCharacters);
 }
 
 function actionStatus(status: ToolTranscriptStatus): {

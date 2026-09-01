@@ -515,6 +515,48 @@ describe("Code Mode presentation", () => {
 		}
 	});
 
+	test("does not rebuild unchanged nested traces during animation repaints", () => {
+		let rebuilds = 0;
+		let requestNestedRender: (() => void) | undefined;
+		const disposeAdapter = registerNestedToolAdapter({
+			name: "exec_command",
+			kind: "function",
+			parameters: {},
+			invoke: () => ({ content: [], details: undefined }),
+			renderTrace(_trace, context) {
+				rebuilds += 1;
+				requestNestedRender = context.requestRender;
+				return { render: () => ["running"], invalidate() {} };
+			},
+		});
+		try {
+			const value = resultWithNestedTrace("running", "");
+			value.details.nestedCalls[0]!.id = "animation-repaint";
+			let component: ReturnType<typeof renderCodeModeResult>;
+			const rendererContext = context({ code: "sleep" });
+			rendererContext.invalidate = () => {
+				component.invalidate();
+				component = renderCodeModeResult(
+					{ ...value },
+					{ expanded: false, isPartial: true },
+					theme,
+					context({ code: "sleep" }, component),
+				);
+			};
+			component = renderCodeModeResult(value, { expanded: false, isPartial: true }, theme, rendererContext);
+
+			for (let index = 0; index < 100; index += 1) requestNestedRender?.();
+			expect(rebuilds).toBe(1);
+
+			value.details.nestedCalls[0]!.status = "done";
+			rendererContext.invalidate();
+			expect(rebuilds).toBe(2);
+			component.dispose();
+		} finally {
+			disposeAdapter();
+		}
+	});
+
 	test("invalidates the outer disclosure when a nested renderer streams", () => {
 		let line = "first chunk";
 		let requestNestedRender: (() => void) | undefined;
