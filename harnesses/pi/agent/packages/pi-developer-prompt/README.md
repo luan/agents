@@ -35,8 +35,10 @@ For each agent start, the extension creates three separate parts:
    repository-instruction message; it is not mapped to a developer message.
 
 The extension remembers the envelope for the session so compaction and
-provider retries can rebuild it. Old prompt-audit copies are removed from
-compaction and tree summaries.
+provider retries can rebuild it. The public envelope service also lets a
+non-user-triggered turn prime that same state before it starts; this keeps
+hidden subagent tasks on the provider's native developer-message path. Old
+prompt-audit copies are removed from compaction and tree summaries.
 
 ## Add a developer contribution
 

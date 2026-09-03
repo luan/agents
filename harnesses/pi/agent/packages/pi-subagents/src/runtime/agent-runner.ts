@@ -20,6 +20,7 @@ import {
 import { listCodeModeToolNames } from "pi-code-mode/sdk";
 import { getModelRoleCatalog, resolveModelRole, seedChildModelRole } from "pi-model-roles/sdk";
 import { SUBAGENT_TASK_MESSAGE_TYPE } from "../core/fork-history.ts";
+import { primePromptEnvelope } from "../protocol/prompt-envelope.ts";
 import { buildAgentPrompt } from "../core/prompts.ts";
 import type { AgentConfig, AgentModelRole } from "../core/types.ts";
 import { createNestedToolActivityReader } from "./nested-tool-activity.ts";
@@ -276,8 +277,6 @@ export async function runAgent(ctx: ExtensionContext, prompt: string, options: R
 			resourceLoader,
 			sessionStartEvent,
 		});
-		const activeTools = result.session.getActiveToolNames().filter((toolName) => toolNames.includes(toolName));
-		result.session.setActiveToolsByName(activeTools);
 		return {
 			...result,
 			services: {
@@ -300,6 +299,23 @@ export async function runAgent(ctx: ExtensionContext, prompt: string, options: R
 	await session.bindExtensions({
 		onError: (error) => {
 			options.onToolActivity?.({ type: "end", toolName: `extension-error:${error.extensionPath}` });
+		},
+	});
+	const availableTools = new Set(session.getAllTools().map((tool) => tool.name));
+	const activeTools = toolNames.filter((toolName) => availableTools.has(toolName));
+	session.setActiveToolsByName(activeTools);
+	primePromptEnvelope({
+		provider: model?.provider,
+		activeTools,
+		sessionId: session.sessionManager.getSessionId(),
+		prompt,
+		cwd: effectiveCwd,
+		piSystemPrompt: session.systemPrompt,
+		systemPromptOptions: {
+			cwd: effectiveCwd,
+			customPrompt: session.systemPrompt,
+			selectedTools: activeTools,
+			skills: loader.getSkills().skills,
 		},
 	});
 

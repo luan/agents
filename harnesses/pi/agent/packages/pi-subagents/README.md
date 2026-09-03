@@ -70,19 +70,27 @@ namespace is `pi-subagents` in `~/.pi/agent/xsettings.toml`:
 
 ```toml
 [behavior]
-pi-subagents.maxConcurrency = "8"
+pi-subagents.maxConcurrency = "4"
 pi-subagents.maxDepth = "2"
+pi-subagents.multiAgentMode = "explicit-requests"
 
 [appearance]
 pi-subagents.agentWidgetIndicator = "inherit"
 pi-subagents.agentHubPresentation = "side-panel"
 ```
 
-`maxConcurrency` counts the root agent, so `8` provides seven simultaneous
+`maxConcurrency` counts the root agent, so `4` provides three simultaneous
 subagent slots. The available values are `2`, `4`, `8`, `16`, and `32`.
 `maxDepth` counts levels below `/root`; its available values are `1` through
 `4`. The compiled defaults are concurrency `8` and depth `2`, including when
-the xsettings host is absent. Changed limits apply when an idle root tree
+the xsettings host is absent. The concurrency default matches Codex.
+`multiAgentMode` is an ordered delegation spectrum:
+`direct-requests-only`, `explicit-requests`, `proactive-read-only`,
+`proactive-mechanical`, and `proactive`. The default `explicit-requests` policy
+matches Codex at non-Ultra reasoning efforts. The two endpoint policies use
+Codex's exact explicit-request and proactive instructions; Pi exposes the
+spectrum as a setting because it does not implement Codex's Ultra mode.
+Changed limits apply when an idle root tree
 reloads; an active tree keeps its original limits until its agents settle.
 The Agent Hub defaults to a side-panel tab. Set `agentHubPresentation` to
 `"fullscreen"` for the original overlay. If `pi-side-panel` is not installed,
@@ -112,6 +120,7 @@ inherits the global activity indicator by default and can be overridden live.
 | Execution owner | Named tool `definition.ts` modules delegate stateful work to `src/runtime/coordinator.ts` |
 | State and mailbox owner | `src/runtime/coordinator.ts`; each child Pi session owns its transcript |
 | Agent execution and prompt assembly | `src/runtime/agent-runner.ts`, `src/core/prompts.ts`, and `src/core/types.ts` |
+| Codex-compatible role and delegation instructions | `src/core/instructions.ts` contributed as developer messages by `src/contributions/developer-prompt.ts` |
 | History forking and nested activity | `src/core/fork-history.ts` and `src/runtime/nested-tool-activity.ts` |
 | Native boundary | Pi's session, model, and tool APIs |
 | Typed settings | `src/config/settings.ts` via `pi-xsettings/sdk` |

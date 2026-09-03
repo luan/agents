@@ -1,9 +1,11 @@
 import { TUI_ACTIVITY_INDICATOR_OPTIONS } from "pi-libtui";
 import { createSettings, type SettingDefinitionInput, type SettingsOf } from "pi-xsettings/sdk";
+import type { MultiAgentMode } from "../core/instructions.ts";
 
 export type SubagentConfig = {
 	readonly maxConcurrency: number;
 	readonly maxDepth: number;
+	readonly multiAgentMode: MultiAgentMode;
 	readonly agentWidgetIndicator: SubagentSettings["agentWidgetIndicator"];
 	readonly agentHubPresentation: SubagentSettings["agentHubPresentation"];
 };
@@ -14,7 +16,7 @@ const definitions = {
 		description: "Maximum agents in one tree, including the root agent.",
 		category: "behavior",
 		type: "enum",
-		default: "8",
+		default: "4",
 		options: [2, 4, 8, 16, 32].map((value) => ({
 			value: String(value),
 			label: String(value),
@@ -32,6 +34,45 @@ const definitions = {
 			label: String(value),
 			description: `${value} subagent level${value === 1 ? "" : "s"} below the root agent.`,
 		})),
+	},
+	multiAgentMode: {
+		label: "Delegation policy",
+		description:
+			"Choose how readily agents may delegate work, from direct user requests only to fully proactive delegation.",
+		category: "behavior",
+		page: "behavior",
+		section: "Subagents",
+		apply: "live",
+		type: "enum",
+		default: "explicit-requests",
+		options: [
+			{
+				value: "direct-requests-only",
+				label: "Direct requests only",
+				description:
+					"Only the user's explicit request authorizes delegation; skills and AGENTS.md cannot authorize it.",
+			},
+			{
+				value: "explicit-requests",
+				label: "Codex explicit",
+				description: "The user, an applicable skill, or AGENTS.md must explicitly authorize delegation.",
+			},
+			{
+				value: "proactive-read-only",
+				label: "Proactive read-only",
+				description: "Agents may proactively delegate bounded investigation and analysis, but not mutations.",
+			},
+			{
+				value: "proactive-mechanical",
+				label: "Proactive mechanical",
+				description: "Agents may also consider delegating bounded mechanical edits and verification.",
+			},
+			{
+				value: "proactive",
+				label: "Codex proactive",
+				description: "Agents should delegate parallel work whenever it could save time or improve quality.",
+			},
+		],
 	},
 	agentWidgetIndicator: {
 		label: "Agent widget indicator",
@@ -73,6 +114,7 @@ export function getSubagentConfig(): SubagentConfig {
 	return {
 		maxConcurrency: Number(current.maxConcurrency),
 		maxDepth: Number(current.maxDepth),
+		multiAgentMode: current.multiAgentMode,
 		agentWidgetIndicator: current.agentWidgetIndicator,
 		agentHubPresentation: current.agentHubPresentation,
 	};

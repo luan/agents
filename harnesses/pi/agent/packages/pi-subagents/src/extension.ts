@@ -3,6 +3,11 @@ import { registerSidePanelProvider, type ActivityAnimationOverrides } from "pi-l
 import { getModelRoleCatalog } from "pi-model-roles/sdk";
 import { getSubagentConfig, registerSubagentSettings } from "./config/settings.ts";
 import { registerSubagentActions } from "./contributions/actions.ts";
+import {
+	hasDeveloperPromptHost,
+	registerCurrentSubagentPromptContributions,
+} from "./contributions/developer-prompt.ts";
+import { multiAgentModeInstructions, multiAgentRoleInstructions } from "./core/instructions.ts";
 import { getPresentationResolver } from "./protocol/presentation.ts";
 import { findRetryableError } from "./runtime/agent-runner.ts";
 import {
@@ -39,18 +44,6 @@ import {
 const RETRY_MESSAGE_TYPE = "retry-failed-request";
 const SUBAGENT_MESSAGE_TYPE = "subagent-message";
 
-function rootAgentContext(maxConcurrency: number, maxDepth: number): string {
-	return `<root_agent_context>
-You are \`/root\`, the primary agent in one root-scoped agent tree.
-There are ${maxConcurrency} concurrent agent slots including you.
-Subagent nesting is limited to depth ${maxDepth}.
-- Use collaboration tools only for concrete independent work.
-- Successful child final responses arrive automatically as hidden FINAL_ANSWER mailbox messages to their direct parents. Do not ask children to send their final response with send_message.
-- wait_agent is status-only and never carries a child's final response.
-- Explicit send_message remains a separate MESSAGE path for interim coordination.
-</root_agent_context>`;
-}
-
 export default function subagentsExtension(pi: ExtensionAPI): void {
 	let config = getSubagentConfig();
 	let unregisterSettings: (() => void) | undefined;
@@ -65,6 +58,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	let unregisterAction: (() => void) | undefined;
 	let unregisterSidePanelProvider: (() => void) | undefined;
 	let hubPresentation: AgentHubPresentation | undefined;
+	let unregisterPromptContributions: (() => void) | undefined = registerCurrentSubagentPromptContributions();
 	const persistedStates = new Map<string, string>();
 
 	const requireCoordinator = (): SubagentCoordinator => {
@@ -83,6 +77,11 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		callerPath: () => callerPath,
 		modelRoles: getModelRoleCatalog,
 		otherLiveAgents: liveAgents,
+	};
+	const resolveAgentPath = (sessionId: string): string => {
+		const sessionCoordinator = getCoordinatorForSession(sessionId);
+		if (!sessionCoordinator || sessionId === sessionCoordinator.rootSessionId) return "/root";
+		return sessionCoordinator.pathForSession(sessionId) ?? "/root";
 	};
 
 	registerTools(pi, scope);
@@ -198,11 +197,17 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		for (const agent of checkpoint?.agents ?? []) persistedStates.set(agent.id, JSON.stringify(agent));
 		attachRootPresentation(context);
 	};
-
-	pi.on("before_agent_start", (event) => {
-		if (!ownsRoot || event.systemPrompt.includes("<root_agent_context>")) return;
-		return { systemPrompt: `${event.systemPrompt}\n\n${rootAgentContext(config.maxConcurrency, config.maxDepth)}` };
+	pi.on("before_agent_start", (event, context) => {
+		if (hasDeveloperPromptHost()) return;
+		const current = getSubagentConfig();
+		const role = multiAgentRoleInstructions(
+			resolveAgentPath(context.sessionManager.getSessionId()),
+			current.maxConcurrency,
+		);
+		const mode = multiAgentModeInstructions(current.multiAgentMode);
+		return { systemPrompt: `${event.systemPrompt}\n\n<multi_agent_role>${role}</multi_agent_role>\n\n${mode}` };
 	});
+
 	pi.on("session_start", (_event, context) => {
 		const sessionId = context.sessionManager.getSessionId();
 		const existing = getCoordinatorForSession(sessionId);
@@ -257,6 +262,8 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		persistedStates.clear();
 		unregisterSettings?.();
 		unregisterSettings = undefined;
+		unregisterPromptContributions?.();
+		unregisterPromptContributions = undefined;
 	});
 
 	pi.registerCommand("subagents", {

@@ -40,6 +40,7 @@ test("registers the Agent Widget indicator override in the Agents animation sect
 		const definition = ensureXSettingsRegistry().registrations["pi-subagents"]?.definitions.find(
 			(candidate) => candidate.key === "agentWidgetIndicator",
 		);
+		expect(DEFAULT_SUBAGENT_SETTINGS.maxConcurrency).toBe("4");
 		expect(DEFAULT_SUBAGENT_SETTINGS.agentWidgetIndicator).toBe("inherit");
 		expect(definition).toMatchObject({
 			category: "appearance",
@@ -68,6 +69,25 @@ test("registers the Agent Widget indicator override in the Agents animation sect
 		if (presentation?.type !== "enum" || !Array.isArray(presentation.options))
 			throw new Error("Agent Hub presentation must be an enum");
 		expect(presentation.options.map((option) => option.value)).toEqual(["side-panel", "fullscreen"]);
+		const policy = ensureXSettingsRegistry().registrations["pi-subagents"]?.definitions.find(
+			(candidate) => candidate.key === "multiAgentMode",
+		);
+		expect(DEFAULT_SUBAGENT_SETTINGS.multiAgentMode).toBe("explicit-requests");
+		expect(policy).toMatchObject({
+			category: "behavior",
+			page: "behavior",
+			section: "Subagents",
+			type: "enum",
+			default: "explicit-requests",
+		});
+		if (policy?.type !== "enum" || !Array.isArray(policy.options)) throw new Error("Delegation policy must be an enum");
+		expect(policy.options.map((option) => option.value)).toEqual([
+			"direct-requests-only",
+			"explicit-requests",
+			"proactive-read-only",
+			"proactive-mechanical",
+			"proactive",
+		]);
 	} finally {
 		unregister();
 	}

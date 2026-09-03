@@ -176,6 +176,44 @@ test("injects prompt-aware developer messages when both system prompts are empty
 	]);
 });
 
+test("primes developer messages for a custom-triggered turn without before_agent_start", () => {
+	const harness = extensionHarness();
+	const sessionStart = harness.handlers.get("session_start");
+	const beforeRequest = harness.handlers.get("before_provider_request");
+	if (!sessionStart || !beforeRequest) throw new Error("prompt handlers were not registered");
+	registerDeveloperMessageContribution({ id: "subagent-mode", content: "Explicit delegation only." });
+	registerSystemPromptPayloadAdapter({
+		provider: "test",
+		readSystemPrompt: (payload) => (payload as { prompt: string }).prompt,
+		replaceSystemPrompt: (payload, systemPrompt) => ({ ...(payload as object), prompt: systemPrompt }),
+		replaceDeveloperMessages: (payload, messages) => ({ ...(payload as object), developer: messages }),
+	});
+	const context = harness.context("custom-turn");
+	sessionStart({}, context);
+	getPromptEnvelopeService()?.capture({
+		provider: "test",
+		activeTools: ["read"],
+		sessionId: "custom-turn",
+		prompt: "Hidden task.",
+		cwd: "/repo",
+		piSystemPrompt: "Pi base",
+		systemPromptOptions: { cwd: "/repo", customPrompt: "Owned prompt." },
+	});
+
+	expect(beforeRequest({ payload: { prompt: "Pi base", input: [] } }, context)).toEqual({
+		prompt: "Owned prompt.",
+		input: [],
+		developer: [
+			{ id: "subagent-mode", content: "Explicit delegation only." },
+			{ id: "environment", content: expect.stringContaining("<environment_context>") },
+		],
+	});
+	expect(harness.auditEntries).toHaveLength(1);
+	expect(harness.auditEntries[0]?.data).toEqual({
+		entries: expect.arrayContaining([{ role: "developer", id: "subagent-mode", content: "Explicit delegation only." }]),
+	});
+});
+
 test("sends AGENTS.md as one contextual user message before conversation history", () => {
 	const harness = extensionHarness();
 	const beforeStart = harness.handlers.get("before_agent_start");

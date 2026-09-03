@@ -12,4 +12,7 @@ test("keeps immediate and duplicate work out of delegated tasks", () => {
 			"Do not duplicate work between the main rollout and delegated subtasks.",
 		]),
 	);
+	expect(tool.promptGuidelines).not.toEqual(
+		expect.arrayContaining([expect.stringContaining("Do not spawn sub-agents unless")]),
+	);
 });

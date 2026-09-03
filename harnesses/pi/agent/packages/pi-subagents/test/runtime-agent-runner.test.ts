@@ -77,9 +77,7 @@ test("replaces inherited collaboration identity at the runner boundary", async (
 	expect(prepared.systemPrompt.match(/<sub_agent_context>/g)).toHaveLength(1);
 	expect(prepared.systemPrompt).not.toContain("root identity");
 	expect(prepared.systemPrompt).not.toContain("old identity");
-	expect(prepared.systemPrompt).toContain(
-		"Spawn another agent only for a concrete, bounded subtask that can run independently alongside useful local work.",
-	);
+	expect(prepared.systemPrompt).not.toContain("multi-agent delegation");
 });
 
 test("uses scoped models and reports the effective requested role", async () => {

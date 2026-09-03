@@ -33,6 +33,7 @@ export function registerDeveloperPromptExtension(pi: ExtensionAPI): void {
 	registerPromptAuditEntryRenderers(pi);
 	const unregisterXSettings = registerDeveloperPromptXSettings();
 	const sessions = new Map<string, SessionPromptState>();
+	const contexts = new Map<string, ExtensionContext>();
 	const requests = promptEnvelopeRequests();
 	const buildEnvelope = (request: PromptEnvelopeRequest) => {
 		const systemPrompt = buildProviderInstructions(request.systemPromptOptions, request.piSystemPrompt);
@@ -47,7 +48,23 @@ export function registerDeveloperPromptExtension(pi: ExtensionAPI): void {
 	const envelopeService: PromptEnvelopeService = {
 		capture(request) {
 			requests.set(request.sessionId, request);
-			return buildEnvelope(request);
+			const envelope = buildEnvelope(request);
+			const state = sessionStateById(sessions, request.sessionId);
+			state.base = request.piSystemPrompt;
+			state.developerMessages = envelope.developerMessages;
+			state.agentsContext = envelope.contextualUserMessages[0]?.content;
+			state.lastGood = envelope.systemPrompt;
+			state.lastGoodProvider = request.provider;
+			const context = contexts.get(request.sessionId);
+			if (context) {
+				publishPromptAuditEntries(
+					pi,
+					context.sessionManager.getBranch(),
+					envelope,
+					getDeveloperPromptSettings().auditEntries,
+				);
+			}
+			return envelope;
 		},
 		current(sessionId, overrides) {
 			const request = requests.get(sessionId);
@@ -58,31 +75,32 @@ export function registerDeveloperPromptExtension(pi: ExtensionAPI): void {
 		},
 	};
 	const unregisterEnvelopeService = registerPromptEnvelopeService(envelopeService);
+	pi.on("session_start", (_event, ctx) => {
+		contexts.set(ctx.sessionManager.getSessionId(), ctx);
+	});
 	pi.on("before_agent_start", (event, ctx) => {
 		const state = sessionState(sessions, ctx);
-		state.base = event.systemPrompt;
 		try {
 			const provider = ctx.model?.provider;
 			const activeTools = pi.getActiveTools();
+			const sessionId = ctx.sessionManager.getSessionId();
 			const envelope = envelopeService.capture({
 				provider,
 				activeTools,
-				sessionId: ctx.sessionManager.getSessionId(),
+				sessionId,
 				prompt: event.prompt,
 				systemPromptOptions: event.systemPromptOptions,
 				cwd: ctx.cwd,
 				piSystemPrompt: event.systemPrompt,
 			});
-			state.developerMessages = envelope.developerMessages;
-			state.agentsContext = envelope.contextualUserMessages[0]?.content;
-			state.lastGood = envelope.systemPrompt;
-			state.lastGoodProvider = provider;
-			publishPromptAuditEntries(
-				pi,
-				ctx.sessionManager.getBranch(),
-				envelope,
-				getDeveloperPromptSettings().auditEntries,
-			);
+			if (!contexts.has(sessionId)) {
+				publishPromptAuditEntries(
+					pi,
+					ctx.sessionManager.getBranch(),
+					envelope,
+					getDeveloperPromptSettings().auditEntries,
+				);
+			}
 			return { systemPrompt: envelope.systemPrompt };
 		} catch (error) {
 			try {
@@ -152,6 +170,7 @@ export function registerDeveloperPromptExtension(pi: ExtensionAPI): void {
 	pi.on("session_shutdown", (event, ctx) => {
 		const sessionId = ctx.sessionManager.getSessionId();
 		sessions.delete(sessionId);
+		contexts.delete(sessionId);
 		requests.delete(sessionId);
 		if (event.reason === "reload" || event.reason === "quit") {
 			unregisterEnvelopeService();
@@ -165,7 +184,10 @@ function replaceArray<T>(target: T[], replacement: T[] | undefined): void {
 }
 
 function sessionState(sessions: Map<string, SessionPromptState>, ctx: ExtensionContext): SessionPromptState {
-	const id = ctx.sessionManager.getSessionId();
+	return sessionStateById(sessions, ctx.sessionManager.getSessionId());
+}
+
+function sessionStateById(sessions: Map<string, SessionPromptState>, id: string): SessionPromptState {
 	let state = sessions.get(id);
 	if (!state) {
 		state = { developerMessages: [] };

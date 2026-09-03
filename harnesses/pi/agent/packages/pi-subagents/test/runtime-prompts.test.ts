@@ -3,7 +3,7 @@ import { buildAgentPrompt } from "../src/core/prompts.ts";
 
 test("replaces inherited collaboration identity with one child context", () => {
 	const prompt = buildAgentPrompt(
-		"Base\n<root_agent_context>old root</root_agent_context>\n<sub_agent_context>old child</sub_agent_context>",
+		"Base\n<root_agent_context>old root</root_agent_context>\n<sub_agent_context>old child</sub_agent_context>\n<multi_agent_role>old role</multi_agent_role>\n<multi_agent_mode>old mode</multi_agent_mode>",
 		{ agentPath: "/root/reviewer", maxConcurrency: 8, maxDepth: 2 },
 	);
 	expect(prompt).toContain("Base");
@@ -11,6 +11,8 @@ test("replaces inherited collaboration identity with one child context", () => {
 	expect(prompt.match(/<sub_agent_context>/g)).toHaveLength(1);
 	expect(prompt).not.toContain("old root");
 	expect(prompt).not.toContain("old child");
+	expect(prompt).not.toContain("old role");
+	expect(prompt).not.toContain("old mode");
 });
 
 test("uses the generic role only when no parent prompt exists", () => {

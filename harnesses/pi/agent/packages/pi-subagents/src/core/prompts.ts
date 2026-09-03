@@ -11,12 +11,16 @@ export interface SubagentPromptContext {
 
 const ROOT_CONTEXT = /\n*<root_agent_context>[\s\S]*?<\/root_agent_context>\n*/g;
 const CHILD_CONTEXT = /\n*<sub_agent_context>[\s\S]*?<\/sub_agent_context>\n*/g;
+const MULTI_AGENT_ROLE = /\n*<multi_agent_role>[\s\S]*?<\/multi_agent_role>\n*/g;
+const MULTI_AGENT_MODE = /\n*<multi_agent_mode>[\s\S]*?<\/multi_agent_mode>\n*/g;
 
 /** Replace the inherited agent identity instead of accumulating one layer per nesting level. */
 export function buildAgentPrompt(parentSystemPrompt?: string, context?: SubagentPromptContext): string {
 	const inherited = (parentSystemPrompt || GENERIC_BASE)
 		.replace(ROOT_CONTEXT, "\n")
 		.replace(CHILD_CONTEXT, "\n")
+		.replace(MULTI_AGENT_ROLE, "\n")
+		.replace(MULTI_AGENT_MODE, "\n")
 		.trim();
 	if (!context) return inherited;
 	const deliveryGuidance =
@@ -33,15 +37,12 @@ export function buildAgentPrompt(parentSystemPrompt?: string, context?: Subagent
 			: "- Complete only the assigned task.";
 	const childContext = `<sub_agent_context>
 ${identity}
-There are ${context.maxConcurrency} concurrent agent slots including the root.
-Subagent nesting is limited to depth ${context.maxDepth}.
 ${taskGuidance}
 - Use the installed tools and skills available in this child session.
 ${deliveryGuidance}
 - Use send_message only for an interim MESSAGE that the parent needs before you finish.
 - wait_agent is status-only. Child final responses arrive independently through the mailbox.
 - Relative collaboration targets name your direct children. Canonical /root/... paths address agents elsewhere in the tree.
-- Spawn another agent only for a concrete, bounded subtask that can run independently alongside useful local work.
 </sub_agent_context>`;
 	return `${inherited}\n\n${childContext}`;
 }
