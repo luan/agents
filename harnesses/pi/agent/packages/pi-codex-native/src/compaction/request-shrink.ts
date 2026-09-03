@@ -1,6 +1,7 @@
 import type { NativeCompactionRequestBody, ResponsesInputItem } from "./serializer.ts";
 
 export const COMPACTION_TRUNCATED_TOOL_OUTPUT_MESSAGE = "Output exceeded the available model context and was truncated";
+export const OPENAI_CODEX_COMPACTION_ENDPOINT_BUDGET_TOKENS = 872_000;
 const CODEX_EFFECTIVE_CONTEXT_WINDOW_PERCENT = 95;
 
 export type NativeCompactionShrinkResult = {
@@ -46,7 +47,10 @@ function rewriteToolOutputItem(item: ResponsesInputItem): { recognized: boolean;
 export function resolveNativeCompactionRequestBudget(options: NativeCompactionBudgetOptions): number | undefined {
 	const contextWindow = options.contextWindow;
 	if (typeof contextWindow !== "number" || !Number.isFinite(contextWindow) || contextWindow <= 0) return undefined;
-	return Math.floor((contextWindow * CODEX_EFFECTIVE_CONTEXT_WINDOW_PERCENT) / 100);
+	return Math.min(
+		Math.floor((contextWindow * CODEX_EFFECTIVE_CONTEXT_WINDOW_PERCENT) / 100),
+		OPENAI_CODEX_COMPACTION_ENDPOINT_BUDGET_TOKENS,
+	);
 }
 
 export async function shrinkNativeCompactionRequestForEndpoint(

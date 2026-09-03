@@ -212,6 +212,31 @@ function areEquivalentValues(left: unknown, right: unknown): boolean {
 	return false;
 }
 
+const GENERATED_PI_MESSAGE_ID = /^msg_pi_\d+(?:_\d+)?$/;
+
+function areEquivalentReplayItems(left: readonly unknown[], right: readonly unknown[]): boolean {
+	if (left.length !== right.length) return false;
+	return left.every((leftItem, index) => {
+		const rightItem = right[index];
+		// Segment serialization restarts Pi's generated assistant-message index.
+		if (
+			isRecord(leftItem) &&
+			isRecord(rightItem) &&
+			leftItem.type === "message" &&
+			rightItem.type === "message" &&
+			leftItem.role === "assistant" &&
+			rightItem.role === "assistant" &&
+			typeof leftItem.id === "string" &&
+			typeof rightItem.id === "string" &&
+			GENERATED_PI_MESSAGE_ID.test(leftItem.id) &&
+			GENERATED_PI_MESSAGE_ID.test(rightItem.id)
+		) {
+			return areEquivalentValues({ ...leftItem, id: "msg_pi_generated" }, { ...rightItem, id: "msg_pi_generated" });
+		}
+		return areEquivalentValues(leftItem, rightItem);
+	});
+}
+
 function isNativeCompactionContextMessage(message: AgentMessage): boolean {
 	if (
 		message.role === "custom" &&
@@ -427,7 +452,7 @@ function buildNativeReplaySegmentsInternal<TApi extends Api>(args: {
 
 	if (
 		actualHistory.length < serializedPiHistoryInput.length ||
-		!areEquivalentValues(expectedHistoryPrefix, serializedPiHistoryInput) ||
+		!areEquivalentReplayItems(expectedHistoryPrefix, serializedPiHistoryInput) ||
 		!transientHistoryTail
 	) {
 		const originalPiReplayInput: ResponsesInputItem[] = [

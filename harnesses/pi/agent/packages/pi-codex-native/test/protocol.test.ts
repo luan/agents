@@ -139,6 +139,45 @@ test("native custom tool events become a Pi tool call", async () => {
 	expect(output.stopReason).toBe("toolUse");
 });
 
+test("stored native custom tool calls replay without current grammar metadata", () => {
+	const input = convertResponsesMessages(
+		model,
+		{
+			messages: [
+				{
+					role: "assistant",
+					provider: "openai-codex",
+					api: "openai-codex-responses",
+					model: "gpt-5.6-sol",
+					content: [{ type: "toolCall", id: "call_1|ctc_1", name: "exec", arguments: { code: "return 1" } }],
+					stopReason: "toolUse",
+					timestamp: 1,
+				},
+				{
+					role: "toolResult",
+					toolCallId: "call_1|ctc_1",
+					toolName: "exec",
+					content: [{ type: "text", text: "1" }],
+					isError: false,
+					timestamp: 2,
+				},
+			],
+		} as never,
+		new Set(["openai-codex"]),
+	);
+
+	expect(input).toEqual([
+		{
+			type: "custom_tool_call",
+			id: "ctc_1",
+			call_id: "call_1",
+			name: "exec",
+			input: "return 1",
+		},
+		{ type: "custom_tool_call_output", call_id: "call_1", output: "1" },
+	]);
+});
+
 test("native web search items replay as Responses input", () => {
 	const input = convertResponsesMessages(
 		model,

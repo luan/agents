@@ -93,6 +93,16 @@ function sanitizeSurrogates(text: string): string {
 	return text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "");
 }
 
+function storedCustomToolInputProperty(toolName: string, arguments_: Record<string, unknown>): string {
+	// Pi's public ToolInfo omits constrained sampling, so resumed sessions recover
+	// the grammar input property from the provider-issued ctc item and its arguments.
+	const stringProperties = Object.entries(arguments_).filter((entry): entry is [string, string] => {
+		return typeof entry[1] === "string";
+	});
+	if (stringProperties.length === 1) return stringProperties[0]![0];
+	throw new Error(`Stored custom tool call "${toolName}" does not have exactly one string input property.`);
+}
+
 function parseResponsesThinkingSignature(signature: string): ResponseInput[number] | undefined {
 	try {
 		return JSON.parse(signature) as ResponseInput[number];
@@ -197,7 +207,9 @@ export function convertResponsesMessages<TApi extends Api>(
 					});
 				} else if (block.type === "toolCall") {
 					const [callId, itemIdRaw] = block.id.split("|");
-					const customInputProperty = options?.grammarToolInputProperties?.get(block.name);
+					const customInputProperty =
+						options?.grammarToolInputProperties?.get(block.name) ??
+						(itemIdRaw?.startsWith("ctc_") ? storedCustomToolInputProperty(block.name, block.arguments) : undefined);
 					let itemId: string | undefined = itemIdRaw;
 					if (customInputProperty !== undefined && itemId?.startsWith("fc_")) {
 						itemId = `ctc_${itemId.slice(3)}`;
@@ -240,7 +252,7 @@ export function convertResponsesMessages<TApi extends Api>(
 			const hasImages = toolContent.some((c) => c.type === "image");
 			const hasAudio = toolContent.some((c) => c.type === "audio");
 			const hasText = textResult.length > 0;
-			const [callId] = msg.toolCallId.split("|");
+			const [callId, itemId] = msg.toolCallId.split("|");
 			const output =
 				hasAudio || (hasImages && model.input.includes("image"))
 					? [
@@ -261,9 +273,10 @@ export function convertResponsesMessages<TApi extends Api>(
 						]
 					: sanitizeSurrogates(hasText ? textResult : "(see attached image)");
 			messages.push({
-				type: options?.grammarToolInputProperties?.has(msg.toolName)
-					? "custom_tool_call_output"
-					: "function_call_output",
+				type:
+					options?.grammarToolInputProperties?.has(msg.toolName) || itemId?.startsWith("ctc_")
+						? "custom_tool_call_output"
+						: "function_call_output",
 				call_id: callId!,
 				output,
 			} as ResponseInput[number]);

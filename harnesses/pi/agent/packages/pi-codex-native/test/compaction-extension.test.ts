@@ -143,13 +143,67 @@ test("the provider hook restores the remote replay window after session resume",
 			timestamp: 2,
 		},
 	};
+	const assistantTail = {
+		type: "message",
+		id: "assistant-tail",
+		timestamp: "2026-08-17T00:00:03.000Z",
+		message: {
+			role: "assistant",
+			content: [{ type: "toolCall", id: "call_1|ctc_1", name: "exec", arguments: { code: "pwd" } }],
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			stopReason: "toolUse",
+			timestamp: 3,
+		},
+	};
+	const toolTail = {
+		type: "message",
+		id: "tool-tail",
+		timestamp: "2026-08-17T00:00:04.000Z",
+		message: {
+			role: "toolResult",
+			toolCallId: "call_1|ctc_1",
+			toolName: "exec",
+			content: [{ type: "text", text: "/repo" }],
+			isError: false,
+			timestamp: 4,
+		},
+	};
+	const switchedModelTail = {
+		type: "message",
+		id: "switched-model-tail",
+		timestamp: "2026-08-17T00:00:05.000Z",
+		message: {
+			role: "assistant",
+			content: [{ type: "text", text: "continued after switching models" }],
+			api: model.api,
+			provider: model.provider,
+			model: "gpt-5.6-terra",
+			stopReason: "stop",
+			timestamp: 5,
+		},
+	};
 	const summaryMessage = {
 		role: "compactionSummary",
 		summary: compaction.summary,
 		tokensBefore: compaction.tokensBefore,
 		timestamp: new Date(compaction.timestamp).getTime(),
 	};
-	const piReplay = serializeMessagesToResponsesInput(model, [summaryMessage, kept.message, tail.message] as never);
+	const piReplay = serializeMessagesToResponsesInput(model, [
+		summaryMessage,
+		kept.message,
+		tail.message,
+		assistantTail.message,
+		toolTail.message,
+		switchedModelTail.message,
+	] as never);
+	const generatedPiMessage = piReplay.find(
+		(item) =>
+			(item as { type?: string; role?: string }).type === "message" && (item as { role?: string }).role === "assistant",
+	) as { id?: string } | undefined;
+	if (!generatedPiMessage) throw new Error("expected a generated Pi assistant message");
+	generatedPiMessage.id = "msg_pi_999";
 	const agentsContext = {
 		role: "user",
 		content: [
@@ -181,16 +235,31 @@ test("the provider hook restores the remote replay window after session resume",
 				}),
 			},
 			sessionManager: {
-				getBranch: () => [kept, compaction, tail],
+				getBranch: () => [kept, compaction, tail, assistantTail, toolTail, switchedModelTail],
 			},
 			hasUI: false,
 		},
 	);
 	const rewritten = result as { input: unknown[] };
-	expect(rewritten.input).toEqual([
-		agentsContext,
-		...compactedWindow,
-		...serializeMessagesToResponsesInput(model, [tail.message] as never),
+	const expectedTail = serializeMessagesToResponsesInput(model, [
+		tail.message,
+		assistantTail.message,
+		toolTail.message,
+		switchedModelTail.message,
+	] as never);
+	const expectedGeneratedPiMessage = expectedTail.find(
+		(item) =>
+			(item as { type?: string; role?: string }).type === "message" && (item as { role?: string }).role === "assistant",
+	) as { id?: string } | undefined;
+	if (!expectedGeneratedPiMessage) throw new Error("expected a generated Pi assistant tail message");
+	expectedGeneratedPiMessage.id = "msg_pi_999";
+	expect(rewritten.input).toEqual([agentsContext, ...compactedWindow, ...expectedTail]);
+	expect(rewritten.input.map((item) => (item as { type?: string }).type).filter(Boolean)).toEqual([
+		"message",
+		"compaction",
+		"custom_tool_call",
+		"custom_tool_call_output",
+		"message",
 	]);
 	expect(JSON.stringify(rewritten.input)).not.toContain("old context");
 });

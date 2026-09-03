@@ -9,6 +9,7 @@ import {
 import { executeRemoteCompactionV2, withRemoteCompactionV2Feature } from "../src/compaction/remote-v2-client.ts";
 import {
 	COMPACTION_TRUNCATED_TOOL_OUTPUT_MESSAGE,
+	OPENAI_CODEX_COMPACTION_ENDPOINT_BUDGET_TOKENS,
 	resolveNativeCompactionRequestBudget,
 	shrinkNativeCompactionRequestForEndpoint,
 } from "../src/compaction/request-shrink.ts";
@@ -179,7 +180,7 @@ describe("remote-v2 history", () => {
 		]);
 	});
 
-	test("retains the newest real user message when the budget is exhausted", () => {
+	test("strictly bounds retained real user messages", () => {
 		const compaction = { type: "compaction", encrypted_content: "opaque" };
 		const window = buildRemoteCompactionV2Window(
 			[
@@ -189,10 +190,19 @@ describe("remote-v2 history", () => {
 			compaction,
 			0,
 		);
-		expect(window).toEqual([
-			{ type: "message", role: "user", content: [{ type: "input_text", text: "new message" }] },
+		expect(window).toEqual([compaction]);
+	});
+
+	test("retains consecutive newest user messages only while they fit", () => {
+		const compaction = { type: "compaction", encrypted_content: "opaque" };
+		const old = { role: "user", content: [{ type: "input_text", text: "1234" }] };
+		const recent = { role: "user", content: [{ type: "input_text", text: "12345678" }] };
+		expect(buildRemoteCompactionV2Window([old, recent], compaction, 3)).toEqual([
+			{ ...old, type: "message" },
+			{ ...recent, type: "message" },
 			compaction,
 		]);
+		expect(buildRemoteCompactionV2Window([old, recent], compaction, 1)).toEqual([compaction]);
 	});
 });
 
@@ -203,6 +213,10 @@ describe("remote-v2 request shrinking", () => {
 				contextWindow: 200_000,
 			}),
 		).toBe(190_000);
+		expect(resolveNativeCompactionRequestBudget({ contextWindow: 1_000_000 })).toBe(
+			OPENAI_CODEX_COMPACTION_ENDPOINT_BUDGET_TOKENS,
+		);
+		expect(resolveNativeCompactionRequestBudget({ contextWindow: 900_000 })).toBe(855_000);
 	});
 
 	test("truncates trailing tool outputs until the request fits", async () => {
