@@ -2,7 +2,6 @@ import { afterEach, expect, test } from "bun:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { ensureActionsRegistry } from "@luan.sh/pi-libactions/sdk";
-import { ensureContextWindowSourceRegistry } from "../src/protocol/context-window.ts";
 import { ensureXSettingsRegistry } from "@luan.sh/pi-xsettings";
 import registerContextWindow from "../src/context-window.ts";
 import {
@@ -10,6 +9,7 @@ import {
 	DEFAULT_CODEX_NATIVE_SETTINGS,
 	registerCodexNativeXSettings,
 } from "../src/contributions/xsettings.ts";
+import { ensureContextWindowSourceRegistry } from "../src/protocol/context-window.ts";
 
 const ACTIONS_KEY = Symbol.for("pi-libactions/registry/v1");
 const SOURCES_KEY = Symbol.for("pi-codex-native/sources/v1");

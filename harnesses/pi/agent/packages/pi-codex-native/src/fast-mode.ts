@@ -1,8 +1,9 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { registerAction } from "@luan.sh/pi-libactions/sdk";
+import { registerAction } from "pi-libactions/sdk";
+import { codexCompatibility } from "./compatibility.ts";
 import {
-	DEFAULT_CODEX_NATIVE_SETTINGS,
 	type CodexNativeSettings,
+	DEFAULT_CODEX_NATIVE_SETTINGS,
 	getCodexNativeSettings,
 } from "./contributions/xsettings.ts";
 
@@ -16,13 +17,14 @@ type ModelWithServiceTier = NonNullable<ExtensionContext["model"]> & { serviceTi
 // type-boundary: Pi exposes provider payloads without a type; isRecord narrows the payload before mutation.
 type UntrustedProviderValue = unknown;
 type Payload = Record<string, UntrustedProviderValue>;
+const ownedHeaders = new WeakMap<object, { originator?: string; routingHint?: string }>();
 
 function isRecord(value: UntrustedProviderValue): value is Payload {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function eligible(ctx: ExtensionContext): boolean {
-	return ctx.model?.provider === "openai-codex" && ctx.model.api === "openai-codex-responses";
+	return codexCompatibility(ctx.model)?.features.fastMode === true;
 }
 
 function fastModeEnabled(ctx: ExtensionContext, state: State): boolean {
@@ -57,6 +59,10 @@ export default function registerFastMode(
 	}
 
 	function toggle(ctx: ExtensionContext): void {
+		if (!eligible(ctx)) {
+			ctx.ui.notify("Fast mode is not supported by the active model", "warning");
+			return;
+		}
 		const state = stateFor(ctx);
 		state.enabled = !state.enabled;
 		const enabled = fastModeEnabled(ctx, state);
@@ -90,14 +96,25 @@ export default function registerFastMode(
 		return { ...event.payload, service_tier: FAST_SERVICE_TIER };
 	});
 	pi.on("before_provider_headers", (event, ctx) => {
-		if (!eligible(ctx) || !ctx.model) return;
 		const state = stateFor(ctx);
-		if (!fastModeEnabled(ctx, state)) {
-			event.headers[ROUTING_HINT] = null;
+		const model = ctx.model;
+		const compatibility = model ? codexCompatibility(model) : undefined;
+		const enabled = fastModeEnabled(ctx, state);
+		if (!enabled || compatibility?.features.fastMode !== true || !model) {
+			const owned = ownedHeaders.get(event.headers as object);
+			if (owned?.originator !== undefined && event.headers.originator === owned.originator)
+				event.headers.originator = null;
+			if (owned?.routingHint !== undefined && event.headers[ROUTING_HINT] === owned.routingHint)
+				event.headers[ROUTING_HINT] = null;
+			ownedHeaders.delete(event.headers as object);
 			return;
 		}
 		event.headers.originator = FAST_ORIGINATOR;
-		event.headers[ROUTING_HINT] = `model=${ctx.model.id};tier=${FAST_SERVICE_TIER}`;
+		event.headers[ROUTING_HINT] = `model=${model.id};tier=${FAST_SERVICE_TIER}`;
+		ownedHeaders.set(event.headers as object, {
+			originator: FAST_ORIGINATOR,
+			routingHint: event.headers[ROUTING_HINT] as string,
+		});
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
 		if (currentContext?.sessionManager === ctx.sessionManager) currentContext = undefined;

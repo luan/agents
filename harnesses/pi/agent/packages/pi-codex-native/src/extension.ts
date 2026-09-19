@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { registerCodeModeFunctionTool } from "@luan.sh/pi-code-mode/sdk";
 import registerNativeCompaction from "./compaction/index.ts";
+import { applyCodexCompatibility } from "./compatibility.ts";
 import registerContextWindow from "./context-window.ts";
 import { registerCodexNativeXSettings } from "./contributions/xsettings.ts";
 import { type CodexDiagnosticsController, createCodexDiagnosticsController } from "./diagnostics/controller.ts";
@@ -68,6 +69,20 @@ export default function codexNativeExtension(pi: ExtensionAPI): void {
 	const webRunTool = createWebRunTool();
 	const unregisterCodeModeWebRun = registerCodeModeFunctionTool(webRunTool);
 	const runtime = registerOpenAICodexProvider(pi);
+	let applyingModelCompatibility = false;
+	const applyModelCompatibility = async (_event: unknown, ctx: ExtensionContext): Promise<void> => {
+		if (applyingModelCompatibility || !ctx.model) return;
+		const model = applyCodexCompatibility(ctx.model);
+		if (!model || model === ctx.model) return;
+		applyingModelCompatibility = true;
+		try {
+			await pi.setModel(model);
+		} finally {
+			applyingModelCompatibility = false;
+		}
+	};
+	pi.on("session_start", applyModelCompatibility);
+	pi.on("model_select", applyModelCompatibility);
 	const diagnostics = createCodexDiagnosticsController(runtime);
 	pi.registerTool(webRunTool);
 	const contextWindow = registerContextWindow(pi);

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { registerTextVerbosity } from "../src/provider/text-verbosity.ts";
 import { DEFAULT_CODEX_NATIVE_SETTINGS } from "../src/contributions/xsettings.ts";
+import { registerTextVerbosity } from "../src/provider/text-verbosity.ts";
 
 type Handler = (event: { payload?: unknown }, ctx: ExtensionContext) => unknown;
 

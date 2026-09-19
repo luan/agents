@@ -6,6 +6,7 @@ const PROMPT_ENVELOPE_REQUESTS_KEY = Symbol.for("pi-developer-messages/envelope-
 
 export interface PromptEnvelopeRequest {
 	provider?: string;
+	api?: string;
 	activeTools: string[];
 	sessionId: string;
 	prompt?: string;
@@ -24,7 +25,7 @@ export interface PromptEnvelopeService {
 	capture(request: PromptEnvelopeRequest): PromptEnvelope;
 	current(
 		sessionId: string,
-		overrides?: Pick<PromptEnvelopeRequest, "provider" | "activeTools" | "cwd">,
+		overrides?: Pick<PromptEnvelopeRequest, "provider" | "api" | "activeTools" | "cwd">,
 	): PromptEnvelope | undefined;
 	clear(sessionId: string): void;
 }

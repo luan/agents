@@ -56,5 +56,6 @@ export function injectAgentsContext<T extends AgentMessageLike>(
 		...filtered,
 	];
 }
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
+
 import { dirname, resolve } from "node:path";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";

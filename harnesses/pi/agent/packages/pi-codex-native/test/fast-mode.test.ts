@@ -1,8 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import registerFastMode from "../src/fast-mode.ts";
-import { DEFAULT_CODEX_NATIVE_SETTINGS } from "../src/contributions/xsettings.ts";
 import { ensureActionsRegistry } from "@luan.sh/pi-libactions/sdk";
+import { DEFAULT_CODEX_NATIVE_SETTINGS } from "../src/contributions/xsettings.ts";
+import registerFastMode from "../src/fast-mode.ts";
 
 const REGISTRY_KEY = Symbol.for("pi-libactions/registry/v1");
 
@@ -111,11 +111,12 @@ test("Fast mode applies the selected model's requested priority tier through pro
 
 test("Fast mode ignores a requested tier for unsupported providers", async () => {
 	const handlers = new Map<string, Handler>();
+	const notices: string[] = [];
 	const ctx = {
 		model: { provider: "anthropic", api: "anthropic-messages", id: "claude", serviceTier: "priority" },
 		sessionManager: {},
 		hasUI: true,
-		ui: { notify() {}, setStatus() {} },
+		ui: { notify: (message: string) => notices.push(message), setStatus() {} },
 	} as unknown as ExtensionContext;
 	const registration = registerFastMode({
 		on(name: string, handler: Handler) {
@@ -125,5 +126,8 @@ test("Fast mode ignores a requested tier for unsupported providers", async () =>
 	} as never);
 
 	expect(handlers.get("before_provider_request")?.({ payload: {} }, ctx)).toBeUndefined();
+	const registry = ensureActionsRegistry();
+	await registry.find("codex.fast.toggle")?.run(ctx);
+	expect(notices).toEqual(["Fast mode is not supported by the active model"]);
 	registration.dispose();
 });

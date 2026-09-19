@@ -1,6 +1,6 @@
-# @luan.sh/pi-codex-native&nbsp;[<img src="https://pi.luan.sh/icons/pi.svg" width="14" alt="Pi gallery">](https://pi.dev/packages/@luan.sh/pi-codex-native)&nbsp;[<img src="https://pi.luan.sh/icons/npm.svg" width="14" alt="npm">](https://www.npmjs.com/package/@luan.sh/pi-codex-native)
+# pi-codex-native
 
-`@luan.sh/pi-codex-native` adds the `openai-codex` provider to Pi. It talks
+`pi-codex-native` adds the `openai-codex` provider to Pi. It talks
 to the ChatGPT-backed Codex Responses endpoint, keeps the provider's native
 request and response format, and registers the `web__run` tool.
 
@@ -8,25 +8,28 @@ It is an OpenAI Codex subscription provider (ChatGPT Plus/Pro). It is not a
 general OpenAI API adapter, and it does not add shell, file, Code Mode, MCP,
 or image-generation tools.
 
+Upstream attribution for the ported transport and conversion code is in
+`UPSTREAM.md`.
+
 ## Preview
 
-![@luan.sh/pi-codex-native in Bootty](https://pi.luan.sh/media/previews/pi-codex-native-695375265293.png)
+![pi-codex-native in Bootty](https://github.com/luan/agents/releases/download/v0.3.2/pi-codex-native.png)
 
-[Watch the demo](https://pi.luan.sh/media/previews/pi-codex-native-38742cb8baf1.mp4).
+[Watch the demo](https://github.com/luan/agents/releases/download/v0.3.2/pi-codex-native.mp4).
 
 ## Install
 
 ```sh
-pi install npm:@luan.sh/pi-codex-native
+pi install npm:pi-codex-native
 ```
 
 Optional companions:
 
-- `pi install npm:@luan.sh/pi-xsettings` adds the `/xsettings` UI for the
+- `pi install npm:pi-xsettings` adds the `/xsettings` UI for the
   settings below and binds the package's actions to keys from
   `keybindings.json`. Without it, compiled defaults apply and no keys are
   bound.
-- `pi install npm:@luan.sh/pi-code-mode` exposes `web__run` inside Code Mode
+- `pi install npm:@cfcluan/pi-code-mode` exposes `web__run` inside Code Mode
   scripts as well as directly. Without it, `web__run` is only a direct tool.
 
 ## Sign in and use
@@ -69,8 +72,8 @@ pi --model openai-codex/gpt-5.6-luna
 ## Fast mode
 
 Fast mode sends Codex priority routing (`service_tier: "priority"` plus the
-`x-codex-routing-hint` header) on every request. It only affects models whose
-provider is `openai-codex` and API is `openai-codex-responses`. When enabled
+`x-codex-routing-hint` header) on every request. It affects native models and
+explicitly registered compatible routes. When enabled
 the footer shows `fast`. Each session starts from the `fastModeDefault`
 setting; a model role that already sets `serviceTier: "priority"` keeps fast
 mode on even if you toggle it off.
@@ -83,7 +86,7 @@ window from a preset: `smart` (180k), `balanced` (272k), `enhanced` (400k),
 extension may request a preset through the provider-owned
 [context-window capability](context-window-protocol.md); without one, the
 `contextWindowPreset` setting is used. Its published capability identity is
-preserved for compatibility with older `@luan.sh/pi-codex-native` SDK copies.
+preserved for compatibility with older `pi-codex-native` SDK copies.
 
 `contextAutoUpgrade` controls what happens when Pi reaches its compaction
 threshold: `never` compacts, `mid-turn` moves to the next tier after a tool
@@ -111,13 +114,46 @@ example:
 }
 ```
 
-Keys take effect only when `@luan.sh/pi-xsettings` is installed; the file is
+Keys take effect only when `pi-xsettings` is installed; the file is
 read on load, so reload extensions after editing it.
 
 ## Settings
 
-Settings use namespace `@luan.sh/pi-codex-native` (label "Codex Native"), all in the
-`behavior` category. Edit them with `/xsettings` when `@luan.sh/pi-xsettings`
+### Codex-compatible providers
+
+Portable request features can be enabled for another OpenAI-compatible route
+without changing Pi's provider or proxy. An integration registers the route
+at extension load time:
+
+```ts
+import { registerCodexCompatibleProvider } from "@luan.sh/pi-codex-native";
+
+const unregister = registerCodexCompatibleProvider({
+  provider: "litellm",
+  model: "gpt-5.6-luna",
+  api: "openai-completions",
+  features: { fastMode: true, textVerbosity: true, contextWindow: true },
+  textVerbosityFormat: "chat-completions",
+});
+```
+
+The returned disposer should be called when the integration itself is torn
+down; a session shutdown (`/new`, `/resume`, or `/fork`) is not extension
+teardown. The
+registration only affects the listed model/API and does not enable native
+Codex authentication, remote compaction, or `web__run`. Native
+`openai-codex`/Responses behavior remains the default. Chat Completions
+verbosity is sent as a top-level `verbosity` field; Responses uses
+`text.verbosity`.
+
+The registry covers ordinary Pi provider-request mutations and local model
+metadata only. Native authentication, the Codex Responses transport, remote
+compaction, prompt-envelope/response handling, diagnostics tied to native
+transport, and `web__run` are intentionally not registered for compatible
+providers because they use separate Codex services or wire protocols.
+
+Settings use namespace `pi-codex-native` (label "Codex Native"), all in the
+`behavior` category. Edit them with `/xsettings` when `pi-xsettings`
 is installed; otherwise the defaults apply.
 
 | Key | Default | Values |
@@ -146,7 +182,7 @@ is installed; otherwise the defaults apply.
 `time` operations plus `response_length` and `settings.search_context_size`.
 It rejects a non-Codex active model before starting the native process.
 
-Requires a Rust toolchain (https://rustup.rs). The `web-run` binary builds
+Requires a Rust toolchain (https://rustup.rs). The `web_run` binary builds
 itself on first use under Pi's agent directory (`native/web-run/<version>/`).
 Set `PI_CODEX_WEB_RUN_BIN` to use a prebuilt binary.
 
@@ -164,7 +200,7 @@ from `PI_CODEX_BASE_URL` or the default Codex backend.
 - Browser login cannot return to Pi: make sure port `1455` is free. Set
   `PI_OAUTH_CALLBACK_HOST` if the callback must bind to a host other than
   `127.0.0.1`.
-- `web-run` fails to build: make sure `cargo` is on `PATH`, or point
+- `web_run` fails to build: make sure `cargo` is on `PATH`, or point
   `PI_CODEX_WEB_RUN_BIN` at a prebuilt binary.
 - `web__run` rejects the model: the active model must use provider
   `openai-codex` and API `openai-codex-responses`.

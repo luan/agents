@@ -6,21 +6,22 @@ import {
 	removePromptAuditMessages,
 } from "./audit-entries.ts";
 import { AGENTS_CONTEXT_MESSAGE_ID, injectAgentsContext, renderAgentsContext } from "./context-messages.ts";
+import { getDeveloperPromptSettings, registerDeveloperPromptXSettings } from "./contributions/xsettings.ts";
 import { composeDeveloperMessages, type DeveloperMessage } from "./developer-messages.ts";
-import { getSystemPromptPayloadAdapterRegistry } from "./provider-payload.ts";
 import {
-	promptEnvelopeRequests,
-	registerPromptEnvelopeService,
 	type PromptEnvelopeRequest,
 	type PromptEnvelopeService,
+	promptEnvelopeRequests,
+	registerPromptEnvelopeService,
 } from "./prompt-envelope.ts";
 import { buildProviderInstructions } from "./provider-instructions.ts";
-import { getDeveloperPromptSettings, registerDeveloperPromptXSettings } from "./contributions/xsettings.ts";
+import { findSystemPromptPayloadAdapter } from "./provider-payload.ts";
 
 interface SessionPromptState {
 	base?: string;
 	lastGood?: string;
 	lastGoodProvider?: string;
+	lastGoodApi?: string;
 	developerMessages: DeveloperMessage[];
 	agentsContext?: string;
 }
@@ -55,6 +56,7 @@ export function registerDeveloperPromptExtension(pi: ExtensionAPI): void {
 			state.agentsContext = envelope.contextualUserMessages[0]?.content;
 			state.lastGood = envelope.systemPrompt;
 			state.lastGoodProvider = request.provider;
+			state.lastGoodApi = request.api;
 			const context = contexts.get(request.sessionId);
 			if (context) {
 				publishPromptAuditEntries(
@@ -86,6 +88,7 @@ export function registerDeveloperPromptExtension(pi: ExtensionAPI): void {
 			const sessionId = ctx.sessionManager.getSessionId();
 			const envelope = envelopeService.capture({
 				provider,
+				api: ctx.model?.api,
 				activeTools,
 				sessionId,
 				prompt: event.prompt,
@@ -111,7 +114,11 @@ export function registerDeveloperPromptExtension(pi: ExtensionAPI): void {
 			} catch {
 				// A UI failure must not remove the last valid prompt.
 			}
-			if (state.lastGood !== undefined && state.lastGoodProvider === ctx.model?.provider) {
+			if (
+				state.lastGood !== undefined &&
+				state.lastGoodProvider === ctx.model?.provider &&
+				(state.lastGoodApi === undefined || state.lastGoodApi === ctx.model?.api)
+			) {
 				return { systemPrompt: state.lastGood };
 			}
 			state.agentsContext = undefined;
@@ -141,10 +148,16 @@ export function registerDeveloperPromptExtension(pi: ExtensionAPI): void {
 	pi.on("before_provider_request", (event, ctx) => {
 		const state = sessionState(sessions, ctx);
 		const provider = ctx.model?.provider;
-		if (state.base === undefined || state.lastGood === undefined || !provider || state.lastGoodProvider !== provider)
+		if (
+			state.base === undefined ||
+			state.lastGood === undefined ||
+			!provider ||
+			state.lastGoodProvider !== provider ||
+			(state.lastGoodApi !== undefined && state.lastGoodApi !== ctx.model?.api)
+		)
 			return;
-		const adapter = getSystemPromptPayloadAdapterRegistry().get(provider);
-		if (!adapter) return;
+		const adapter = findSystemPromptPayloadAdapter(provider, ctx.model?.api, ctx.model?.id);
+		if (!adapter || adapter.enabled?.(provider, ctx.model?.api, ctx.model?.id) === false) return;
 		let payload = event.payload;
 		let changed = false;
 		if (adapter.readSystemPrompt(payload) === state.base) {
@@ -152,11 +165,12 @@ export function registerDeveloperPromptExtension(pi: ExtensionAPI): void {
 			changed = true;
 		}
 		if (adapter.replaceDeveloperMessages) {
-			payload = adapter.replaceDeveloperMessages(
+			const next = adapter.replaceDeveloperMessages(
 				payload,
 				state.developerMessages.map(({ id, content }) => ({ id, content })),
 			);
-			changed = true;
+			changed = next !== payload;
+			payload = next;
 		}
 		return changed ? payload : undefined;
 	});

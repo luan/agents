@@ -1,12 +1,8 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, SessionBeforeCompactEvent } from "@earendil-works/pi-coding-agent";
-import { registerAction } from "@luan.sh/pi-libactions/sdk";
-import {
-	CONTEXT_WINDOW_PRESETS,
-	type ContextWindowPreset,
-	requestedContextWindowPreset,
-} from "./protocol/context-window.ts";
-import { tuiTheme } from "@luan.sh/pi-libtui";
+import { registerAction } from "pi-libactions/sdk";
+import { tuiTheme } from "pi-libtui";
+import { codexCompatibility } from "./compatibility.ts";
 import {
 	CODEX_CONTEXT_COLORS,
 	CODEX_CONTEXT_WINDOWS,
@@ -14,6 +10,11 @@ import {
 	codexContextWindowLabel,
 	getCodexNativeSettings,
 } from "./contributions/xsettings.ts";
+import {
+	CONTEXT_WINDOW_PRESETS,
+	type ContextWindowPreset,
+	requestedContextWindowPreset,
+} from "./protocol/context-window.ts";
 
 // Pi does not expose the effective compaction threshold. Match its compiled
 // default until a public API exposes the configured reserve.
@@ -22,11 +23,8 @@ const DEFAULT_COMPACTION_RESERVE = 16_384;
 type State = { preset: ContextWindowPreset; upgradedPreset?: ContextWindowPreset };
 
 function eligible(model: Model<Api> | undefined): model is Model<Api> {
-	return (
-		model?.provider === "openai-codex" &&
-		model.api === "openai-codex-responses" &&
-		(model.id.startsWith("gpt-5.6-") || model.id === "gpt-6-astra")
-	);
+	if (!model) return false;
+	return codexCompatibility(model)?.features.contextWindow === true;
 }
 
 export default function registerContextWindow(

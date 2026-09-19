@@ -41,7 +41,7 @@ test("Codex keeps the base prompt, skill catalogue, AGENTS.md, and user request 
 	} as never);
 	const context = {
 		cwd: "/repo",
-		model: { provider: "openai-codex" },
+		model: { provider: "openai-codex", api: "openai-codex-responses", id: "gpt-5.6-sol" },
 		sessionManager: { getSessionId: () => "session-1", getBranch: () => [] },
 		ui: { notify() {} },
 	};
@@ -122,10 +122,14 @@ test("the Codex adapter replaces its tagged messages and preserves equal provide
 	const registry = slots[PAYLOAD_ADAPTERS_KEY] as Map<
 		string,
 		{
+			provider?: string;
+			api?: string;
 			replaceDeveloperMessages(payload: unknown, messages: readonly { id: string; content: string }[]): unknown;
 		}
 	>;
-	const adapter = registry.get("openai-codex");
+	const adapter = [...registry.values()].find(
+		(candidate) => candidate.provider === "openai-codex" && candidate.api === "openai-codex-responses",
+	);
 	if (!adapter) throw new Error("The Codex prompt payload adapter was not registered");
 	const payload = {
 		model: "gpt-5.6-sol",
@@ -173,7 +177,7 @@ test("disposing the Codex payload adapter removes payload handling", () => {
 	} as never);
 	const context = {
 		cwd: "/repo",
-		model: { provider: "openai-codex" },
+		model: { provider: "openai-codex", api: "openai-codex-responses", id: "gpt-5.6-sol" },
 		sessionManager: { getSessionId: () => "session-1", getBranch: () => [] },
 		ui: { notify() {} },
 	};

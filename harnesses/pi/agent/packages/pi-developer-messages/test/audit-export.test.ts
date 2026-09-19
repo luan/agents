@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { DEVELOPER_AUDIT_ENTRY_TYPE } from "../src/audit-entries.ts";
 
 test("Pi's HTML export retains prompt audit entry data", async () => {
