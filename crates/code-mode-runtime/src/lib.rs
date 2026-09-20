@@ -7,8 +7,7 @@
     clippy::needless_continue,
     clippy::needless_pass_by_value,
     clippy::similar_names,
-    clippy::single_match_else,
-    clippy::unused_async_trait_impl
+    clippy::single_match_else
 )]
 
 mod cell_actor;
