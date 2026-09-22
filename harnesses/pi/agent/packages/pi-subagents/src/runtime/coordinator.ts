@@ -123,27 +123,30 @@ export interface PersistedSubagentEvent {
 
 type Mutable<T> = { -readonly [Key in keyof T]: T[Key] };
 
+// A queued retry cannot acquire the agent until this turn releases it.
+interface ActiveTurn {
+	readonly abortController: AbortController;
+	readonly activeTools: string[];
+	latestInnerTool?: string;
+	runtime?: RunResult["runtime"];
+}
+
 interface LiveAgent extends Omit<Mutable<PersistedSubagentState>, "forkNonBoundaryTimestamps"> {
 	rootSessionId: string;
 	compacting: boolean;
-	activeTools: string[];
-	latestInnerTool?: string;
 	session?: AgentSession;
 	runtime?: RunResult["runtime"];
-	abortController: AbortController;
+	turn?: ActiveTurn;
 	request?: SpawnRequest;
 	forkedHistory: AgentMessage[];
 	pendingMessage?: string;
 	pendingMessages: string[];
-	pendingRuntimeMessages: { message: string; triggerTurn: boolean }[];
-	turnGeneration: number;
-	activeTurnGeneration?: number;
-	turnRuntimes: Map<number, RunResult["runtime"]>;
+	pendingRuntimeMessages: string[];
 	restoredMessages?: readonly AgentMessage[];
 	sessionUnsubscribe?: () => void;
 	presentationUnregister?: () => void;
-	forkNonBoundaryTimestamps: Set<number>;
-	pendingNonBoundaryMessages: string[];
+	// Legacy user-message deliveries; current mailbox messages use custom entries.
+	forkNonBoundaryTimestamps: ReadonlySet<number>;
 }
 
 export interface CoordinatorOptions {
@@ -356,8 +359,8 @@ function messageCost(message: AgentMessage): number {
 }
 
 function snapshotOf(agent: LiveAgent): SubagentSnapshot {
-	const activeTool = agent.activeTools.at(-1);
-	const visibleTool = activeTool === "exec" && agent.latestInnerTool ? agent.latestInnerTool : activeTool;
+	const activeTool = agent.turn?.activeTools.at(-1);
+	const visibleTool = activeTool === "exec" && agent.turn?.latestInnerTool ? agent.turn.latestInnerTool : activeTool;
 	return Object.freeze({
 		id: agent.id,
 		rootSessionId: agent.rootSessionId,
@@ -424,8 +427,8 @@ export class SubagentCoordinator {
 	private readonly maxConcurrency: number;
 	private readonly maxDepth: number;
 	private rootSessionDir?: string;
-	private disposed = false;
-	private readonly disposedRuntimes = new Set<RunResult["runtime"]>();
+	private readonly lifetime = new AbortController();
+	private readonly disposedRuntimes = new WeakSet<RunResult["runtime"]>();
 	private readonly run: typeof runAgent;
 
 	constructor(rootSessionId: string, options: CoordinatorOptions = {}) {
@@ -440,6 +443,9 @@ export class SubagentCoordinator {
 	}
 
 	spawn(callerPath: string | undefined, request: SpawnRequest): string {
+		this.lifetime.signal.throwIfAborted();
+		// Once registered, the child belongs to the coordinator and outlives the spawning call.
+		request.signal?.throwIfAborted();
 		if (!this.rootSessionDir && !callerPath) this.rootSessionDir = request.ctx.sessionManager.getSessionDir();
 		const parent = callerPath ?? "/root";
 		if (depth(parent) >= this.maxDepth) throw new Error(`Agent depth limit ${this.maxDepth} reached at ${parent}`);
@@ -472,8 +478,6 @@ export class SubagentCoordinator {
 			completionDelivery: request.completionDelivery ?? "parent",
 			transcriptGeneration: 0,
 			compacting: false,
-			activeTools: [],
-			abortController: new AbortController(),
 			request,
 			forkedHistory: selectForkedHistory(
 				messages,
@@ -482,10 +486,7 @@ export class SubagentCoordinator {
 			),
 			pendingMessages: [],
 			pendingRuntimeMessages: [],
-			turnGeneration: 0,
-			turnRuntimes: new Map(),
 			forkNonBoundaryTimestamps: new Set(),
-			pendingNonBoundaryMessages: [],
 		};
 		this.agents.set(id, agent);
 		this.emit({ type: "spawned", agent: snapshotOf(agent) });
@@ -495,6 +496,7 @@ export class SubagentCoordinator {
 	}
 
 	async sendMessage(callerPath: string | undefined, target: string, message: string): Promise<boolean> {
+		this.lifetime.signal.throwIfAborted();
 		const recipient = target === "/root" ? "/root" : this.requireTarget(callerPath, target).id;
 		this.enqueueDelivery("MESSAGE", recipient, callerPath ?? "/root", message);
 		return true;
@@ -514,7 +516,7 @@ export class SubagentCoordinator {
 					{ agentPath: agent.id },
 					{ deliverAs: "followUp", triggerTurn: true },
 				);
-			else agent.pendingRuntimeMessages.push({ message, triggerTurn: true });
+			else agent.pendingRuntimeMessages.push(message);
 			return;
 		}
 		if (!agent.session && !agent.request)
@@ -524,9 +526,8 @@ export class SubagentCoordinator {
 		agent.completedAt = undefined;
 		agent.result = undefined;
 		agent.error = undefined;
-		agent.abortController = new AbortController();
 		if (agent.session) agent.pendingMessage = message;
-		else if (agent.activeTurnGeneration !== undefined) agent.pendingMessage = message;
+		else if (agent.turn !== undefined) agent.pendingMessage = message;
 		else if (agent.restoredMessages && agent.request) {
 			agent.request = { ...agent.request, message };
 			agent.forkedHistory = [...agent.restoredMessages];
@@ -542,7 +543,7 @@ export class SubagentCoordinator {
 		if (previous === "queued") {
 			const index = this.queue.indexOf(agent);
 			if (index >= 0) this.queue.splice(index, 1);
-		} else if (previous === "running") agent.abortController.abort();
+		} else if (previous === "running") agent.turn?.abortController.abort();
 		else throw new Error(`Agent ${agent.id} has no active turn`);
 		agent.status = "interrupted";
 		agent.completedAt = Date.now();
@@ -565,6 +566,7 @@ export class SubagentCoordinator {
 	}
 
 	restore(checkpoint: SubagentTreeCheckpoint, runtime?: Pick<SpawnRequest, "ctx" | "pi">): void {
+		this.lifetime.signal.throwIfAborted();
 		if (this.agents.size > 0) throw new Error("Cannot restore agent history into a non-empty coordinator");
 		for (const saved of checkpoint.agents) {
 			const wasActive = saved.status === "queued" || saved.status === "running";
@@ -593,8 +595,6 @@ export class SubagentCoordinator {
 				status: wasActive ? "interrupted" : saved.status,
 				completedAt: wasActive ? Date.now() : saved.completedAt,
 				compacting: false,
-				activeTools: [],
-				abortController: new AbortController(),
 				request: runtime
 					? {
 							taskName: saved.id.split("/").at(-1)!,
@@ -612,37 +612,36 @@ export class SubagentCoordinator {
 				forkedHistory: [],
 				pendingMessages: [],
 				pendingRuntimeMessages: [],
-				turnGeneration: 0,
-				turnRuntimes: new Map(),
 				restoredMessages,
 				forkNonBoundaryTimestamps: new Set(saved.forkNonBoundaryTimestamps ?? []),
-				pendingNonBoundaryMessages: [],
 			};
 			this.agents.set(agent.id, agent);
 		}
 	}
 
 	subscribe(listener: (event: CoordinatorUpdate) => void): () => void {
+		if (this.lifetime.signal.aborted) return () => {};
 		this.listeners.add(listener);
 		return () => this.listeners.delete(listener);
 	}
 	waitForUpdate(signal?: AbortSignal, timeoutMs = 30_000): Promise<CoordinatorUpdate | undefined> {
+		const cancellation = AbortSignal.any([this.lifetime.signal, signal].filter((value) => value !== undefined));
+		if (cancellation.aborted) return Promise.resolve(undefined);
 		return new Promise((resolve) => {
 			let timer: ReturnType<typeof setTimeout> | undefined;
 			const finish = (event?: CoordinatorUpdate) => {
 				unsubscribe();
 				if (timer) clearTimeout(timer);
-				signal?.removeEventListener("abort", abort);
+				cancellation.removeEventListener("abort", abort);
 				resolve(event);
 			};
 			const unsubscribe = this.subscribe((event) => {
 				if (event.type === "mailbox" || event.type === "settled" || event.type === "interrupted") finish(event);
 			});
 			const abort = () => finish();
-			signal?.addEventListener("abort", abort, { once: true });
+			cancellation.addEventListener("abort", abort, { once: true });
 			timer = setTimeout(() => finish(), timeoutMs);
 			timer.unref();
-			if (signal?.aborted) abort();
 		});
 	}
 
@@ -677,14 +676,13 @@ export class SubagentCoordinator {
 	}
 
 	dispose(): void {
-		if (this.disposed) return;
-		this.disposed = true;
+		if (this.lifetime.signal.aborted) return;
+		this.lifetime.abort(new Error("Subagent coordinator is disposed"));
 		for (const agent of this.agents.values()) {
-			agent.abortController.abort();
-			agent.sessionUnsubscribe?.();
-			agent.presentationUnregister?.();
+			agent.turn?.abortController.abort();
+			this.unregisterSession(agent);
 			this.disposeRuntime(agent.runtime);
-			for (const runtime of agent.turnRuntimes.values()) this.disposeRuntime(runtime);
+			this.disposeRuntime(agent.turn?.runtime);
 		}
 		this.agents.clear();
 		this.queue.length = 0;
@@ -694,6 +692,7 @@ export class SubagentCoordinator {
 	}
 
 	private requireTarget(callerPath: string | undefined, target: string): LiveAgent {
+		this.lifetime.signal.throwIfAborted();
 		const id = this.resolve(callerPath, target);
 		const agent = id ? this.agents.get(id) : undefined;
 		if (!agent) throw new Error(`No agent matches "${target}"`);
@@ -709,17 +708,9 @@ export class SubagentCoordinator {
 		this.mailboxes.set(target, mailbox);
 		this.emit({ type: "mailbox", delivery });
 	}
-	private recordUserMessage(agent: LiveAgent, message: AgentMessage): void {
-		if (message.role !== "user") return;
-		const text = contentText(message.content);
-		const index = agent.pendingNonBoundaryMessages.indexOf(text);
-		if (index < 0) return;
-		agent.pendingNonBoundaryMessages.splice(index, 1);
-		agent.forkNonBoundaryTimestamps.add(message.timestamp);
-	}
 	private drain(): void {
 		while (this.running < Math.max(0, this.maxConcurrency - 1)) {
-			const index = this.queue.findIndex((agent) => agent.activeTurnGeneration === undefined);
+			const index = this.queue.findIndex((agent) => agent.turn === undefined);
 			if (index < 0) return;
 			const [agent] = this.queue.splice(index, 1);
 			if (!agent) return;
@@ -727,8 +718,8 @@ export class SubagentCoordinator {
 		}
 	}
 	private start(agent: LiveAgent): void {
-		const generation = ++agent.turnGeneration;
-		agent.activeTurnGeneration = generation;
+		const turn: ActiveTurn = { abortController: new AbortController(), activeTools: [] };
+		agent.turn = turn;
 		agent.status = "running";
 		agent.startedAt = Date.now();
 		this.running++;
@@ -737,7 +728,7 @@ export class SubagentCoordinator {
 			const message = agent.pendingMessage;
 			agent.pendingMessage = undefined;
 			if (!message) throw new Error(`Agent ${agent.id} has no pending follow-up message`);
-			void this.continue(agent, [...agent.pendingMessages.splice(0), message].join("\n\n"), generation);
+			void this.continue(agent, [...agent.pendingMessages.splice(0), message].join("\n\n"), turn);
 			return;
 		}
 		const request = agent.request;
@@ -758,31 +749,30 @@ export class SubagentCoordinator {
 			},
 			cwd: request.cwd,
 			sessionDir: subagentSessionDir(this.rootSessionDir ?? request.ctx.sessionManager.getSessionDir(), agent.id),
-			signal: agent.abortController.signal,
+			signal: turn.abortController.signal,
 			forkedHistory: agent.forkedHistory,
 			onRuntimeResolved: (selection) => {
-				if (this.disposed || agent.turnGeneration !== generation) return;
+				if (!this.ownsTurn(agent, turn)) return;
 				agent.model = selection.model;
 				agent.thinkingLevel = selection.thinkingLevel;
 				this.emit({ type: "checkpoint", agent: snapshotOf(agent) });
 			},
 			onRuntimeCreated: (runtime) => {
-				if (this.disposed || agent.turnGeneration !== generation) this.disposeRuntime(runtime);
-				else agent.turnRuntimes.set(generation, runtime);
+				if (!this.ownsTurn(agent, turn)) this.disposeRuntime(runtime);
+				else turn.runtime = runtime;
 			},
-			onToolActivity: (activity) => this.recordToolActivity(agent, activity, generation),
-			onUserMessage: (message) => this.recordUserMessage(agent, message),
-			onSessionCreated: (session) => this.attachSession(agent, session, generation),
+			onToolActivity: (activity) => this.recordToolActivity(agent, activity, turn),
+			onSessionCreated: (session) => this.attachSession(agent, session, turn),
 		}).then(
-			(result) => this.finish(agent, result, generation),
-			(error: object) => this.fail(agent, error, generation),
+			(result) => this.finish(agent, result, turn),
+			(error: object) => this.fail(agent, error, turn),
 		);
 	}
 
-	private attachSession(agent: LiveAgent, session: AgentSession, generation: number): void {
-		if (this.disposed || agent.turnGeneration !== generation) return;
+	private attachSession(agent: LiveAgent, session: AgentSession, turn: ActiveTurn): void {
+		if (!this.ownsTurn(agent, turn)) return;
+		this.unregisterSession(agent);
 		agent.session = session;
-		agent.presentationUnregister?.();
 		agent.presentationUnregister = registerPresentationResolver(agent.id, {
 			resolveTool: (name) => session.getToolDefinition(name),
 			resolveCustomMessage: (customType) => session.extensionRunner.getMessageRenderer(customType),
@@ -820,44 +810,50 @@ export class SubagentCoordinator {
 			if (changed) this.emit({ type: "updated", agent: snapshotOf(agent) });
 			this.emit({ type: "transcript", target: agent.id });
 		});
-		for (const pending of agent.pendingRuntimeMessages.splice(0)) {
-			if (pending.triggerTurn)
-				void sendAgentTask(session, pending.message, { agentPath: agent.id }, { deliverAs: "nextTurn" });
-			else {
-				agent.pendingNonBoundaryMessages.push(compactText(pending.message));
-				void session.steer(pending.message);
-			}
+		for (const message of agent.pendingRuntimeMessages.splice(0)) {
+			void sendAgentTask(session, message, { agentPath: agent.id }, { deliverAs: "nextTurn" });
 		}
 		this.emit({ type: "checkpoint", agent: snapshotOf(agent) });
 	}
 
-	private async continue(agent: LiveAgent, message: string, generation: number): Promise<void> {
+	private unregisterSession(agent: LiveAgent): void {
+		agent.sessionUnsubscribe?.();
+		agent.sessionUnsubscribe = undefined;
+		agent.presentationUnregister?.();
+		agent.presentationUnregister = undefined;
+		const sessionId = agent.session?.sessionManager.getSessionId();
+		if (sessionId && this.childSessions.get(sessionId) === agent.id) {
+			this.childSessions.delete(sessionId);
+			if (directory.sessionRoots.get(sessionId) === this.rootSessionId) directory.sessionRoots.delete(sessionId);
+		}
+	}
+
+	private async continue(agent: LiveAgent, message: string, turn: ActiveTurn): Promise<void> {
 		try {
 			const result = await resumeAgent(agent.session!, message, {
 				collaboration: { agentPath: agent.id },
-				signal: agent.abortController.signal,
-				onToolActivity: (activity) => this.recordToolActivity(agent, activity, generation),
-				onUserMessage: (user) => this.recordUserMessage(agent, user),
+				signal: turn.abortController.signal,
+				onToolActivity: (activity) => this.recordToolActivity(agent, activity, turn),
 			});
-			this.finish(agent, { ...result, session: agent.session!, runtime: agent.runtime! }, generation);
+			this.finish(agent, { ...result, session: agent.session!, runtime: agent.runtime! }, turn);
 		} catch (error) {
-			this.fail(agent, error instanceof Error ? error : new Error(String(error)), generation);
+			this.fail(agent, error instanceof Error ? error : new Error(String(error)), turn);
 		}
 	}
-	private releaseTurn(agent: LiveAgent, generation: number): boolean {
-		if (agent.activeTurnGeneration !== generation) return false;
-		agent.activeTurnGeneration = undefined;
+	private ownsTurn(agent: LiveAgent, turn: ActiveTurn): boolean {
+		return !this.lifetime.signal.aborted && agent.turn === turn;
+	}
+	private releaseTurn(agent: LiveAgent, turn: ActiveTurn): boolean {
+		if (agent.turn !== turn) return false;
+		agent.turn = undefined;
 		this.running = Math.max(0, this.running - 1);
 		return true;
 	}
-	private finish(agent: LiveAgent, result: RunResult, generation: number): void {
-		const turnRuntime = agent.turnRuntimes.get(generation);
-		agent.turnRuntimes.delete(generation);
-		const released = this.releaseTurn(agent, generation);
+	private finish(agent: LiveAgent, result: RunResult, turn: ActiveTurn): void {
+		const turnRuntime = turn.runtime;
+		const released = this.releaseTurn(agent, turn);
 		const preserveInterruptedTurn =
-			!this.disposed &&
-			agent.turnGeneration === generation &&
-			(agent.status === "queued" || agent.status === "interrupted");
+			!this.lifetime.signal.aborted && released && (agent.status === "queued" || agent.status === "interrupted");
 		if (preserveInterruptedTurn) {
 			agent.session = result.session;
 			agent.runtime = result.runtime;
@@ -865,7 +861,7 @@ export class SubagentCoordinator {
 			if (released) this.drain();
 			return;
 		}
-		if (this.disposed || agent.status !== "running" || agent.turnGeneration !== generation) {
+		if (this.lifetime.signal.aborted || !released || agent.status !== "running") {
 			if (result.runtime !== agent.runtime) this.disposeRuntime(result.runtime);
 			if (turnRuntime !== result.runtime && turnRuntime !== agent.runtime) this.disposeRuntime(turnRuntime);
 			if (released) this.drain();
@@ -884,13 +880,12 @@ export class SubagentCoordinator {
 		this.emit({ type: "settled", agent: snapshotOf(agent) });
 		this.drain();
 	}
-	private fail(agent: LiveAgent, error: object, generation: number): void {
-		const turnRuntime = agent.turnRuntimes.get(generation);
-		agent.turnRuntimes.delete(generation);
-		const released = this.releaseTurn(agent, generation);
+	private fail(agent: LiveAgent, error: object, turn: ActiveTurn): void {
+		const turnRuntime = turn.runtime;
+		const released = this.releaseTurn(agent, turn);
 		const preserveInterruptedTurn =
-			!this.disposed &&
-			agent.turnGeneration === generation &&
+			!this.lifetime.signal.aborted &&
+			released &&
 			(agent.status === "queued" || agent.status === "interrupted") &&
 			Boolean(agent.session && turnRuntime);
 		if (preserveInterruptedTurn) {
@@ -899,9 +894,15 @@ export class SubagentCoordinator {
 			return;
 		}
 		if (turnRuntime !== agent.runtime) this.disposeRuntime(turnRuntime);
-		if (this.disposed || agent.status !== "running" || agent.turnGeneration !== generation) {
+		if (this.lifetime.signal.aborted || !released || agent.status !== "running") {
 			if (released) this.drain();
 			return;
+		}
+		if (turnRuntime && turnRuntime !== agent.runtime && agent.session === turnRuntime.session) {
+			// Startup failed: retain transcript history, never resume the disposed session.
+			agent.restoredMessages = Object.freeze([...agent.session.state.messages]);
+			this.unregisterSession(agent);
+			agent.session = undefined;
 		}
 		agent.error = error instanceof Error ? error.message : String(error);
 		agent.result = "";
@@ -910,15 +911,15 @@ export class SubagentCoordinator {
 		this.emit({ type: "settled", agent: snapshotOf(agent) });
 		this.drain();
 	}
-	private recordToolActivity(agent: LiveAgent, activity: ToolActivity, generation: number): void {
-		if (agent.turnGeneration !== generation) return;
+	private recordToolActivity(agent: LiveAgent, activity: ToolActivity, turn: ActiveTurn): void {
+		if (!this.ownsTurn(agent, turn)) return;
 		if (activity.type === "start") {
-			agent.activeTools.push(activity.toolName);
-			if (activity.nested) agent.latestInnerTool = activity.toolName;
+			turn.activeTools.push(activity.toolName);
+			if (activity.nested) turn.latestInnerTool = activity.toolName;
 		} else {
-			const index = agent.activeTools.lastIndexOf(activity.toolName);
-			if (index >= 0) agent.activeTools.splice(index, 1);
-			if (activity.toolName === "exec" && !activity.nested) agent.latestInnerTool = undefined;
+			const index = turn.activeTools.lastIndexOf(activity.toolName);
+			if (index >= 0) turn.activeTools.splice(index, 1);
+			if (activity.toolName === "exec" && !activity.nested) turn.latestInnerTool = undefined;
 			agent.toolUses++;
 		}
 		this.emit({ type: "updated", agent: snapshotOf(agent) });

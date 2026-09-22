@@ -1,5 +1,5 @@
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { clampThinkingLevel, getSupportedThinkingLevels, type Api, type Model } from "@earendil-works/pi-ai";
+import { type Api, clampThinkingLevel, getSupportedThinkingLevels, type Model } from "@earendil-works/pi-ai";
 import {
 	type AgentSession,
 	type AgentSessionEvent,
@@ -19,9 +19,9 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { listCodeModeToolNames } from "@luan.sh/pi-code-mode/sdk";
 import { SUBAGENT_TASK_MESSAGE_TYPE } from "../core/fork-history.ts";
-import { primePromptEnvelope } from "../protocol/prompt-envelope.ts";
 import { buildAgentPrompt } from "../core/prompts.ts";
 import type { AgentConfig, AgentModelReference } from "../core/types.ts";
+import { primePromptEnvelope } from "../protocol/prompt-envelope.ts";
 import { createNestedToolActivityReader } from "./nested-tool-activity.ts";
 
 type AssistantContent = Extract<AgentMessage, { role: "assistant" }>["content"];
@@ -53,7 +53,6 @@ export interface RunOptions {
 	sessionDir?: string;
 	forkedHistory?: AgentMessage[];
 	onToolActivity?: (activity: ToolActivity) => void;
-	onUserMessage?: (message: AgentMessage) => void;
 	onSessionCreated?: (session: AgentSession) => void;
 	onRuntimeCreated?: (runtime: AgentSessionRuntime) => void;
 	onRuntimeResolved?: (selection: { model?: AgentModelReference; thinkingLevel?: ThinkingLevel }) => void;
@@ -113,10 +112,9 @@ function getActiveTurnError(session: AgentSession): string | undefined {
 	return findRetryableError(session.sessionManager.getBranch());
 }
 
-function collectResponseText(session: AgentSession, onUserMessage?: (message: AgentMessage) => void) {
+function collectResponseText(session: AgentSession) {
 	let response = "";
 	const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
-		if (event.type === "message_start" && event.message.role === "user") onUserMessage?.(event.message);
 		if (event.type === "message_start") response = "";
 		if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
 			response += event.assistantMessageEvent.delta;
@@ -286,7 +284,10 @@ export function resolveThinkingLevel(
 }
 
 export async function runAgent(ctx: ExtensionContext, prompt: string, options: RunOptions): Promise<RunResult> {
+	options.signal?.throwIfAborted();
+	const modelRuntime = modelRuntimeFor(ctx.modelRegistry);
 	const prepared = await prepareAgentRun(ctx, options);
+	options.signal?.throwIfAborted();
 	const { effectiveCwd, agentDir, systemPrompt, toolNames, model, thinkingLevel, loader } = prepared;
 	const loadResources = async (cwd: string, resourceAgentDir: string) => {
 		if (cwd === effectiveCwd && resourceAgentDir === agentDir) return loader;
@@ -328,7 +329,7 @@ export async function runAgent(ctx: ExtensionContext, prompt: string, options: R
 			agentDir: runtimeAgentDir,
 			sessionManager: runtimeSessionManager,
 			settingsManager,
-			modelRuntime: modelRuntimeFor(ctx.modelRegistry),
+			modelRuntime,
 			model,
 			thinkingLevel,
 			tools: toolNames,
@@ -377,9 +378,10 @@ export async function runAgent(ctx: ExtensionContext, prompt: string, options: R
 	});
 
 	const unsubscribeTools = subscribeToolActivity(session, options.onToolActivity);
-	const collector = collectResponseText(session, options.onUserMessage);
+	const collector = collectResponseText(session);
 	const cleanupAbort = forwardAbortSignal(session, options.signal);
 	try {
+		options.signal?.throwIfAborted();
 		if (options.collaboration) await sendAgentTask(session, prompt, options.collaboration, { triggerTurn: true });
 		else await session.prompt(prompt);
 	} finally {
@@ -403,11 +405,11 @@ export async function resumeAgent(
 	options: {
 		collaboration?: AgentTaskContext;
 		onToolActivity?: (activity: ToolActivity) => void;
-		onUserMessage?: (message: AgentMessage) => void;
 		signal?: AbortSignal;
 	} = {},
 ): Promise<AgentTurnResult> {
-	const collector = collectResponseText(session, options.onUserMessage);
+	options.signal?.throwIfAborted();
+	const collector = collectResponseText(session);
 	const cleanupAbort = forwardAbortSignal(session, options.signal);
 	const unsubscribeTools = subscribeToolActivity(session, options.onToolActivity);
 	try {
