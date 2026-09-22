@@ -373,6 +373,7 @@ export class XSettingsScreen extends ComponentStack {
 			requestRender,
 		});
 		this.rebuild(initialFieldId);
+		this.setChildren([this.pageColumns]);
 	}
 
 	private keyHint(key: KeyId | undefined): string {
@@ -441,15 +442,6 @@ export class XSettingsScreen extends ComponentStack {
 		this.requestRender();
 	}
 
-	invalidate(): void {
-		super.invalidate();
-	}
-
-	render(width: number): string[] {
-		this.refreshLayout();
-		return super.render(width);
-	}
-
 	private rebuild(initialFieldId?: string): void {
 		this.editor?.dispose();
 		const editorDialogs = this.dialogHost
@@ -481,7 +473,6 @@ export class XSettingsScreen extends ComponentStack {
 		);
 		this.pageColumns.setEditor(this.editor);
 		this.syncSidebarSelection(initialFieldId);
-		this.refreshLayout();
 	}
 
 	private sidebarEntries(): SidebarEntry[] {
@@ -560,11 +551,6 @@ export class XSettingsScreen extends ComponentStack {
 
 	dispose(): void {
 		this.editor?.dispose();
-	}
-
-	private refreshLayout(): void {
-		this.setChildren([this.pageColumns]);
-		this.setActiveChild(this.pageColumns);
 	}
 
 	private movePage(delta: number): void {

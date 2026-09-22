@@ -310,11 +310,15 @@ export class StructuredListEditor extends ComponentStack {
 	}
 
 	private closeEditor(): void {
+		this.dispose();
+		this.refreshLayout();
+	}
+
+	dispose(): void {
 		const close = this.closeActiveEditor;
 		this.closeActiveEditor = undefined;
 		this.activeEditor = undefined;
 		close?.();
-		this.refreshLayout();
 	}
 
 	private reorder(frame: ListFrame, delta: number): void {

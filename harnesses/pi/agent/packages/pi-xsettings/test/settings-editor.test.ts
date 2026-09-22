@@ -979,9 +979,19 @@ describe("xsettings editor", () => {
 		expect(resetLine).toContain(semantic.fgAnsi("text.secondary"));
 	});
 
-	test("edits an ordered structured list with xsettings-owned inline UI", () => {
+	test.each([false, true])("edits and disposes a structured list (hosted: %s)", (hosted) => {
 		initializeTui();
 		const changes: SettingValue[] = [];
+		const dialogs: Component[] = [];
+		const closed: number[] = [];
+		const dialogHost: DialogHost = {
+			open(component) {
+				dialogs.push(component);
+				return () => {
+					closed.push(dialogs.indexOf(component));
+				};
+			},
+		};
 		const editor = new SettingsEditor(
 			[
 				{
@@ -1009,15 +1019,28 @@ describe("xsettings editor", () => {
 			(_id, value) => changes.push(value),
 			() => {},
 			() => {},
+			18,
+			[],
+			undefined,
+			hosted ? dialogHost : undefined,
 		);
 
 		expect(stripTerminalSequences(editor.render(80).join("\n"))).toContain("2 roles");
 		editor.handleInput("\r");
-		const inline = stripTerminalSequences(editor.render(80).join("\n"));
+		const inline = stripTerminalSequences((dialogs.at(-1) ?? editor).render(80).join("\n"));
 		expect(inline).toContain("Configure roles.");
 		editor.handleInput("j");
 		editor.handleInput("\x0b");
 		editor.handleInput("\x13");
+		expect(changes).toEqual([[{ name: "b" }, { name: "a" }]]);
+		editor.handleInput("\r");
+		editor.handleInput("\r");
+		editor.handleInput("\r");
+		if (hosted) expect(dialogs).toHaveLength(3);
+		editor.handleInput("unsaved");
+		editor.dispose();
+		editor.dispose();
+		expect(closed).toEqual(hosted ? [0, 2, 1] : []);
 		expect(changes).toEqual([[{ name: "b" }, { name: "a" }]]);
 	});
 });
