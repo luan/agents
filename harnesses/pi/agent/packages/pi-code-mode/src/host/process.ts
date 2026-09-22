@@ -14,6 +14,7 @@ export class CodeModeHostProcess {
 	private readonly onMessage: (message: unknown) => void;
 	private readonly onFailure: (error: Error) => void;
 	private child: ChildProcessWithoutNullStreams | undefined;
+	private startup: AbortController | undefined;
 	private buffer = Buffer.alloc(0);
 	private stderr = "";
 	private queuedWriteBytes = 0;
@@ -29,7 +30,12 @@ export class CodeModeHostProcess {
 	}
 
 	async start(): Promise<void> {
-		const child = spawn(await this.binary(), [], {
+		const startup = new AbortController();
+		this.startup = startup;
+		const binary = await this.binary();
+		if (startup.signal.aborted) throw new Error("Code-mode host startup was cancelled");
+		this.startup = undefined;
+		const child = spawn(binary, [], {
 			stdio: ["pipe", "pipe", "pipe"],
 			shell: false,
 		});
@@ -42,9 +48,11 @@ export class CodeModeHostProcess {
 		child.stderr.on("data", (chunk: Buffer) => {
 			if (this.child === child) this.stderr = (this.stderr + chunk.toString()).slice(-16_384);
 		});
-		child.on("error", (error) => {
+		const fail = (error: Error): void => {
 			if (this.child === child) this.onFailure(error);
-		});
+		};
+		child.on("error", fail);
+		for (const pipe of [child.stdin, child.stdout, child.stderr]) pipe.on("error", fail);
 		child.on("close", (code) => {
 			if (this.child === child)
 				this.onFailure(
@@ -67,12 +75,15 @@ export class CodeModeHostProcess {
 			throw new Error(`Code-mode write queue exceeds ${MAX_QUEUED_WRITE_BYTES} bytes`);
 		this.queuedWriteBytes += frame.length;
 		child.stdin.write(frame, (error) => {
+			if (this.child !== child) return;
 			this.queuedWriteBytes = Math.max(0, this.queuedWriteBytes - frame.length);
-			if (error && this.child === child) this.onFailure(error);
+			if (error) this.onFailure(error);
 		});
 	}
 
 	kill(): void {
+		this.startup?.abort();
+		this.startup = undefined;
 		this.queuedWriteBytes = 0;
 		const child = this.child;
 		this.child = undefined;
@@ -94,6 +105,7 @@ export class CodeModeHostProcess {
 				this.onMessage(JSON.parse(payload.toString("utf8")));
 			} catch (error) {
 				this.onFailure(error instanceof Error ? error : new Error(String(error)));
+				return;
 			}
 		}
 	}

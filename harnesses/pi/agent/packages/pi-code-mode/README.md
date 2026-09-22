@@ -210,7 +210,8 @@ toolCallId, extensionContext, signal }` and may return `{ block: true, reason }`
 | Adapter, hierarchy, preflight contracts and function-tool bridge | `src/protocol/` |
 | Native host client and protocol | `src/host/` |
 | `exec` / `wait` tool definitions | `src/tools/exec/`, `src/tools/wait/` |
-| Transcript presentation | `src/ui/presentation.ts` |
+| Transcript presentation and nested-call ownership | `src/ui/presentation.ts` |
+| Code/result disclosure and lazy syntax tabs | `src/ui/code-disclosure.ts` |
 
 ## Develop
 

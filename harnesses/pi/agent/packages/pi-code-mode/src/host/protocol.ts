@@ -5,6 +5,9 @@ export const MAX_CODE_MODE_OUTPUT_TOKENS = 100_000;
 export const DEFAULT_CODE_MODE_OUTPUT_TOKENS = 10_000;
 export const DEFAULT_CODE_MODE_EXEC_YIELD_MS = 30_000;
 
+// type-boundary: User-supplied exec pragma JSON is immediately narrowed by isRecord and parseInteger.
+type ExecPragmaValue = unknown;
+
 export function toWireToolDefinition(tool: NestedToolAdapter) {
 	if (tool.kind === "function" && !tool.parameters)
 		throw new Error(`Function code-mode tool requires inputSchema: ${tool.name}`);
@@ -28,7 +31,8 @@ export function parseExecSource(source: string): {
 	const trimmed = first?.trimStart() ?? "";
 	if (!trimmed.startsWith("// @exec:")) return { code: source, yieldTimeMs: null, maxOutputTokens: null };
 	if (rest.join("\n").trim() === "") throw new Error("exec pragma must be followed by JavaScript source");
-	const options = JSON.parse(trimmed.slice("// @exec:".length).trim()) as Record<string, unknown>;
+	const options: ExecPragmaValue = JSON.parse(trimmed.slice("// @exec:".length).trim());
+	if (!isRecord(options)) throw new Error("exec pragma must be a JSON object");
 	for (const key of Object.keys(options))
 		if (key !== "yield_time_ms" && key !== "max_output_tokens")
 			throw new Error(`Unsupported exec pragma field: ${key}`);

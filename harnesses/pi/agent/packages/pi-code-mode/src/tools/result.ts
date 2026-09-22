@@ -1,5 +1,5 @@
 import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
-import type { CodeModeToolDetails, RuntimeContentItem, RuntimeResponse } from "../protocol/types.ts";
+import type { CodeModeToolDetails, NestedToolTrace, RuntimeContentItem, RuntimeResponse } from "../protocol/types.ts";
 import { sanitizeTraceInput } from "../runtime/trace-values.ts";
 
 const MAX_OUTPUT_IMAGE_COUNT = 4;
@@ -29,13 +29,6 @@ export function toCodeModeToolResult(
 	const startedAtMs = options.startedAtMs ?? Date.now();
 	const scriptError = response.kind === "result" ? response.errorText : undefined;
 	const isError = Boolean(scriptError || ("missingCell" in response && response.missingCell));
-	const status = scriptError
-		? `Script error: ${scriptError}`
-		: response.kind === "yielded"
-			? `Still running (exec cell "${response.cellId}"). Use wait near expected completion.`
-			: response.kind === "terminated"
-				? "Script terminated"
-				: "Script completed";
 	let imageChars = 0;
 	let imageCount = 0;
 	let audioChars = 0;
@@ -71,14 +64,6 @@ export function toCodeModeToolResult(
 		Math.max(1, options.requestedTokens ?? response.maxOutputTokens ?? 10_000),
 	);
 	const maxTextChars = maxTokens * 4;
-	const nestedSummary = response.nestedCalls?.length
-		? response.nestedCalls
-				.map((trace) => {
-					const verb = trace.status === "running" ? "Running" : trace.status === "error" ? "Failed" : "Ran";
-					return `• ${verb} ${trace.name}`;
-				})
-				.join("\n")
-		: undefined;
 	const details: CodeModeToolDetails = {
 		version: 1,
 		tool,
@@ -101,9 +86,10 @@ export function toCodeModeToolResult(
 		...(scriptError ? { scriptError } : {}),
 		...(response.kind === "result" && response.missingCell ? { missingCell: true } : {}),
 	};
+	const summary = nestedSummary(details.nestedCalls);
 	const resultContent: CodeModeContent[] = [
-		...(nestedSummary ? [{ type: "text" as const, text: nestedSummary }] : []),
-		{ type: "text", text: status },
+		...(summary ? [{ type: "text" as const, text: summary }] : []),
+		{ type: "text", text: resultStatusText(details) },
 		...truncateTextContent(content, maxTextChars),
 	];
 	return {
@@ -144,4 +130,22 @@ function truncateTextContent(content: readonly CodeModeContent[], maxChars: numb
 		}
 	}
 	return output;
+}
+
+export function nestedSummary(traces: readonly NestedToolTrace[]): string {
+	return traces
+		.map(
+			(trace) =>
+				`• ${trace.status === "running" ? "Running" : trace.status === "error" ? "Failed" : "Ran"} ${trace.name}`,
+		)
+		.join("\n");
+}
+
+export function resultStatusText(details: Pick<CodeModeToolDetails, "scriptError" | "status" | "cellId">): string {
+	if (!details || typeof details !== "object") return "Script failed";
+	if (details.scriptError) return `Script error: ${details.scriptError}`;
+	if (details.status === "yielded")
+		return `Still running (exec cell "${details.cellId}"). Use wait near expected completion.`;
+	if (details.status === "terminated") return "Script terminated";
+	return "Script completed";
 }

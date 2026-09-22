@@ -1,7 +1,11 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { setImmediate } from "node:timers/promises";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import * as childProcess from "node:child_process";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { resolveCodeModeHostBinary } from "../../src/host/binary.ts";
 import { CodeModeHostClient } from "../../src/host/client.ts";
+import { CodeModeHostConnection } from "../../src/host/connection.ts";
+import type { HostMessage } from "../../src/host/protocol.ts";
 import type { NestedToolAdapter, RuntimeResponse, ToolExecutionContext } from "../../src/protocol/types.ts";
 
 const clients: CodeModeHostClient[] = [];
@@ -123,6 +127,7 @@ describe("TypeScript client to release host", () => {
 	test("runs independent nested calls in parallel", async () => {
 		let active = 0;
 		let maximum = 0;
+		const bothStarted = Promise.withResolvers<void>();
 		const delayed: NestedToolAdapter = {
 			name: "delayed",
 			kind: "function",
@@ -130,7 +135,8 @@ describe("TypeScript client to release host", () => {
 			async invoke(input) {
 				active++;
 				maximum = Math.max(maximum, active);
-				await Bun.sleep(25);
+				if (active === 2) bothStarted.resolve();
+				await bothStarted.promise;
 				active--;
 				return { content: [{ type: "text", text: (input as { value: string }).value }], details: undefined };
 			},
@@ -176,10 +182,173 @@ describe("TypeScript client to release host", () => {
 	test("aborts active execution and shuts down the host", async () => {
 		const host = client();
 		const controller = new AbortController();
-		const execution = host.execute("while (true) {}", context(), [], controller.signal);
-		setTimeout(() => controller.abort(), 25);
+		const execution = host.execute(
+			'await notify("ready"); while (true) {}',
+			{
+				...context(),
+				onUpdate(update) {
+					if (update.content.some((item) => item.type === "text" && item.text === "ready")) controller.abort();
+				},
+			},
+			[],
+			controller.signal,
+		);
 
 		await expect(execution).rejects.toMatchObject({ name: "AbortError" });
 		await host.shutdown();
 	}, 10_000);
+});
+
+test("shutdown cancels pending host startup and prevents reuse of the closed client", async () => {
+	const binary = Promise.withResolvers<string>();
+	const host = new CodeModeHostClient({ binary: () => binary.promise });
+	clients.push(host);
+	const starting = host.start();
+	const outcome = starting.then(
+		() => "started",
+		(error: Error) => error.message,
+	);
+	await host.shutdown();
+	binary.resolve(await resolveCodeModeHostBinary());
+	expect(await outcome).toMatch(/cancelled|shut down/i);
+	await expect(host.start()).rejects.toThrow("shut down");
+});
+
+test("failed binary discovery can be retried before shutdown", async () => {
+	let attempts = 0;
+	const host = new CodeModeHostClient({
+		binary: async () => {
+			if (++attempts === 1) throw new Error("binary unavailable");
+			return resolveCodeModeHostBinary();
+		},
+	});
+	clients.push(host);
+	await expect(host.start()).rejects.toThrow("binary unavailable");
+	const result = await host.execute('text("recovered")', context(), []);
+	expect(textItems(result)).toEqual(["recovered"]);
+	expect(attempts).toBe(2);
+});
+
+test.each(["execute", "wait"] as const)(
+	"cancelling %s does not wait for or cancel shared host startup",
+	async (operation) => {
+		const binary = Promise.withResolvers<string>();
+		const host = new CodeModeHostClient({ binary: () => binary.promise });
+		clients.push(host);
+		const controller = new AbortController();
+		let cancelled = false;
+		const first = (
+			operation === "execute"
+				? host.execute('store("cancelled", true)', context("cancelled"), [], controller.signal)
+				: host.wait("missing", 0, context("cancelled"), controller.signal)
+		).catch((error: Error) => {
+			cancelled = error.name === "AbortError";
+		});
+		const second = host.execute('text(load("cancelled") ?? "kept")', context("kept"), []);
+		void second.catch(() => {});
+		try {
+			controller.abort();
+			await setImmediate();
+			expect(cancelled).toBe(true);
+			binary.resolve(await resolveCodeModeHostBinary());
+			expect(textItems(await second)).toEqual(["kept"]);
+			await first;
+		} finally {
+			binary.resolve(await resolveCodeModeHostBinary());
+			await host.shutdown();
+			await Promise.allSettled([first, second]);
+		}
+	},
+);
+
+test.each(["source", "schema"] as const)("rejects invalid %s before starting the host", async (invalid) => {
+	let attempts = 0;
+	const host = new CodeModeHostClient({
+		binary: async () => {
+			attempts++;
+			throw new Error("unexpected host startup");
+		},
+	});
+	clients.push(host);
+	const tool: NestedToolAdapter = {
+		name: "invalid",
+		kind: "function",
+		invoke: async () => ({ content: [], details: undefined }),
+	};
+	await expect(
+		host.execute(invalid === "source" ? " " : 'text("ok")', context(), invalid === "schema" ? [tool] : []),
+	).rejects.toThrow(invalid === "source" ? "non-empty" : "inputSchema");
+	expect(attempts).toBe(0);
+});
+
+test.each(["stdin", "stdout", "stderr"] as const)(
+	"host %s failure rejects execution and permits recovery",
+	async (pipe) => {
+		const spawned = spyOn(childProcess, "spawn");
+		const host = client();
+		let child: childProcess.ChildProcess | undefined;
+		try {
+			await host.start();
+			const result = spawned.mock.results[0];
+			if (result?.type !== "return") throw new Error("host child was not spawned");
+			child = result.value;
+			spawned.mockRestore();
+			const ready = Promise.withResolvers<void>();
+			let failure: string | undefined;
+			const execution = host
+				.execute(
+					'await notify("ready"); await new Promise(() => {})',
+					{
+						...context(),
+						onUpdate: () => ready.resolve(),
+					},
+					[],
+				)
+				.catch((error: Error) => {
+					failure = error.message;
+				});
+			await ready.promise;
+			expect(() => child?.[pipe]?.emit("error", new Error("host pipe failed"))).not.toThrow();
+			await setImmediate();
+			expect(failure).toBe("host pipe failed");
+			await execution;
+			const recovered = await host.execute('text("recovered")', context(), []);
+			expect(textItems(recovered)).toEqual(["recovered"]);
+		} finally {
+			spawned.mockRestore();
+			child?.kill("SIGKILL");
+			await host.shutdown();
+		}
+	},
+);
+
+test.each(["{", "null"])("a rejected frame discards subsequent buffered events: %s", async (invalid) => {
+	const spawned = spyOn(childProcess, "spawn");
+	const messages: HostMessage[] = [];
+	const failures: Error[] = [];
+	const connection = new CodeModeHostConnection({
+		binary: resolveCodeModeHostBinary,
+		onMessage: (message) => messages.push(message),
+		onFailure: (error) => failures.push(error),
+	});
+	try {
+		await connection.start();
+		const child = spawned.mock.results[0];
+		if (child?.type !== "return" || !child.value.stdout) throw new Error("host child was not spawned");
+		spawned.mockRestore();
+		const frames = [invalid, JSON.stringify({ type: "cell/closed", cellId: "stale" })].map((text) => {
+			const payload = Buffer.from(text);
+			const header = Buffer.alloc(4);
+			header.writeUInt32LE(payload.length);
+			return Buffer.concat([header, payload]);
+		});
+		child.value.stdout.emit("data", Buffer.concat(frames));
+		expect(failures).toHaveLength(1);
+		expect(messages).toEqual([]);
+		await connection.start();
+		expect(connection.running).toBe(true);
+	} finally {
+		spawned.mockRestore();
+		connection.close(new Error("test complete"));
+	}
 });

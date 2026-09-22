@@ -2,6 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { parseExecSource, parseRuntimeResponse, toWireToolDefinition } from "../../src/host/protocol.ts";
 
 describe("exec source protocol", () => {
+	test.each(["null", "true", "1", '"text"', "[]"])("rejects a non-object pragma: %s", (value) => {
+		expect(() => parseExecSource(`// @exec: ${value}\ntext("ok")`)).toThrow("exec pragma must be a JSON object");
+	});
+
 	test("parses the supported pragma", () => {
 		expect(parseExecSource('// @exec: {"yield_time_ms": 250, "max_output_tokens": 123}\ntext("ok")')).toEqual({
 			code: 'text("ok")',

@@ -1,6 +1,4 @@
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use code_mode_protocol::ToolName;
@@ -56,6 +54,7 @@ proptest! {
 
 #[tokio::test(start_paused = true)]
 async fn execute_waits_for_nested_tool_during_yield_grace() {
+    let _clock = hold_virtual_time();
     let delegate = Arc::new(ReleasableToolDelegate::default());
     let service = InProcessCodeModeSession::with_delegate(delegate.clone());
     let request = ExecuteRequest {
@@ -66,10 +65,9 @@ async fn execute_waits_for_nested_tool_during_yield_grace() {
     };
     let started = service.execute(request).await.unwrap();
     let response = tokio::spawn(started.initial_response());
-    wait_until_tool_started(&delegate).await;
+    delegate.tool_started.notified().await;
     tokio::time::advance(Duration::from_millis(10_500)).await;
     delegate.release_tool();
-    wait_until_finished(&response).await;
     let response = response.await.unwrap().unwrap();
 
     assert_eq!(
@@ -86,6 +84,7 @@ async fn execute_waits_for_nested_tool_during_yield_grace() {
 
 #[tokio::test(start_paused = true)]
 async fn wait_waits_for_nested_tool_during_yield_grace() {
+    let _clock = hold_virtual_time();
     let delegate = Arc::new(ReleasableToolDelegate::default());
     let service = InProcessCodeModeSession::with_delegate(delegate.clone());
     let initial_response = service
@@ -115,7 +114,6 @@ async fn wait_waits_for_nested_tool_during_yield_grace() {
     tokio::task::yield_now().await;
     tokio::time::advance(Duration::from_millis(10_500)).await;
     delegate.release_tool();
-    wait_until_finished(&response).await;
     let response = response.await.unwrap();
 
     assert_eq!(
@@ -130,30 +128,20 @@ async fn wait_waits_for_nested_tool_during_yield_grace() {
     );
 }
 
-async fn wait_until_finished<T>(task: &tokio::task::JoinHandle<T>) {
-    for _ in 0..10_000 {
-        if task.is_finished() {
-            return;
-        }
-        tokio::task::yield_now().await;
-    }
-    panic!("code-mode response did not finish while virtual time was held in the grace period");
-}
-
-async fn wait_until_tool_started(delegate: &ReleasableToolDelegate) {
-    for _ in 0..10_000 {
-        if delegate.tool_started.load(Ordering::Acquire) {
-            return;
-        }
-        tokio::task::yield_now().await;
-    }
-    panic!("nested code-mode tool did not start");
+// Tokio inhibits automatic clock advancement while a blocking task is alive.
+// Hold it until this guard drops so V8 can respond without racing virtual deadlines.
+fn hold_virtual_time() -> tokio::sync::oneshot::Sender<()> {
+    let (release, wait) = tokio::sync::oneshot::channel();
+    tokio::task::spawn_blocking(move || {
+        let _ = wait.blocking_recv();
+    });
+    release
 }
 
 #[derive(Default)]
 struct ReleasableToolDelegate {
     tool_release: Notify,
-    tool_started: AtomicBool,
+    tool_started: Notify,
 }
 
 impl ReleasableToolDelegate {
@@ -168,7 +156,7 @@ impl CodeModeSessionDelegate for ReleasableToolDelegate {
         _invocation: CodeModeNestedToolCall,
         cancellation_token: CancellationToken,
     ) -> ToolInvocationFuture<'_> {
-        self.tool_started.store(true, Ordering::Release);
+        self.tool_started.notify_one();
         Box::pin(async move {
             tokio::select! {
                 () = self.tool_release.notified() => Ok(JsonValue::Null),

@@ -1,6 +1,6 @@
 import { CodeModeHostCellOperations } from "./cell-operations.ts";
 import { CodeModeHostDelegation } from "./delegation.ts";
-import { abortError, cancelOperation, throwIfAborted, toError } from "./operation.ts";
+import { abortError, cancelOperation, startSession, throwIfAborted, toError } from "./operation.ts";
 import {
 	DEFAULT_CODE_MODE_EXEC_YIELD_MS,
 	executionCellId,
@@ -46,12 +46,13 @@ export class CodeModeHostClient {
 		defaults: { yieldTimeMs?: number; maxOutputTokens?: number } = {},
 	): Promise<RuntimeResponse & { maxOutputTokens: number }> {
 		throwIfAborted(signal);
-		await this.start();
-		throwIfAborted(signal);
 		const { code, yieldTimeMs, maxOutputTokens } = parseExecSource(source);
+		const enabledTools = tools.map(toWireToolDefinition);
 		const effectiveYield =
 			referencedYieldTime(code, tools) ?? yieldTimeMs ?? defaults.yieldTimeMs ?? DEFAULT_CODE_MODE_EXEC_YIELD_MS;
 		const effectiveMaxOutputTokens = maxOutputTokens ?? defaults.maxOutputTokens ?? 10_000;
+		await startSession(this.session, signal);
+		throwIfAborted(signal);
 		const id = this.session.nextRequestId();
 		const initial = this.session.expectInitial(id);
 		void initial.catch(() => undefined);
@@ -63,7 +64,7 @@ export class CodeModeHostClient {
 				sessionId: this.session.id,
 				request: {
 					tool_call_id: `exec-${id}`,
-					enabled_tools: tools.map(toWireToolDefinition),
+					enabled_tools: enabledTools,
 					source: code,
 					yield_time_ms: effectiveYield,
 					max_output_tokens: effectiveMaxOutputTokens,

@@ -1,3 +1,5 @@
+import { setTimeout as delay } from "node:timers/promises";
+import { toError } from "./operation.js";
 import { randomUUID } from "node:crypto";
 import { CodeModeHostConnection } from "./connection.js";
 import type { HostMessage } from "./protocol.js";
@@ -17,6 +19,7 @@ export class CodeModeHostSession {
 	private readonly shutdownGraceMs: number;
 	private readonly onFailure: (error: Error) => void;
 	private ready: Promise<void> | undefined;
+	private closed = false;
 
 	constructor(options: HostSessionOptions) {
 		this.shutdownGraceMs = options.shutdownGraceMs ?? DEFAULT_SHUTDOWN_GRACE_MS;
@@ -32,13 +35,14 @@ export class CodeModeHostSession {
 	}
 
 	async start(): Promise<void> {
+		if (this.closed) throw new Error("Code-mode host is shut down");
 		if (this.ready) return this.ready;
 		const ready = this.startSession();
 		this.ready = ready;
 		try {
 			await ready;
 		} catch (error) {
-			this.connection.close(toError(error));
+			if (this.ready === ready) this.connection.close(toError(error));
 			throw error;
 		}
 	}
@@ -72,26 +76,20 @@ export class CodeModeHostSession {
 	}
 
 	async shutdown(): Promise<void> {
-		if (!this.connection.running) return;
+		this.closed = true;
+		const deadline = new AbortController();
 		try {
-			await Promise.race([
-				this.connection.request({
-					method: "session/shutdown",
-					sessionId: this.id,
-				}),
-				shutdownDeadline(this.shutdownGraceMs),
-			]);
+			if (this.connection.running) {
+				await Promise.race([
+					this.connection.request({ method: "session/shutdown", sessionId: this.id }),
+					delay(this.shutdownGraceMs, undefined, { signal: deadline.signal }),
+				]);
+			}
 		} catch {
 			// Process teardown below is authoritative.
+		} finally {
+			deadline.abort();
+			this.connection.close(new Error("Code-mode host shut down"));
 		}
-		this.connection.close(new Error("Code-mode host shut down"));
 	}
-}
-
-function shutdownDeadline(delayMs: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, delayMs));
-}
-
-function toError(error: unknown): Error {
-	return error instanceof Error ? error : new Error(String(error));
 }

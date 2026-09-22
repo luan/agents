@@ -536,6 +536,56 @@ describe("Code Mode presentation", () => {
 		}
 	});
 
+	test.each(["throws", "declines"])(
+		"recovers when a nested renderer %s and disposes replaced components",
+		(failure) => {
+			let fail = false;
+			let disposed = 0;
+			const previous: Array<NestedToolPresentationComponent | undefined> = [];
+			const disposeAdapter = registerNestedToolAdapter({
+				name: "exec_command",
+				kind: "function",
+				parameters: {},
+				invoke: () => ({ content: [], details: undefined }),
+				renderTrace(_trace, context) {
+					previous.push(context.lastComponent);
+					if (fail) {
+						if (failure === "throws") throw new Error("renderer unavailable");
+						return undefined;
+					}
+					return {
+						render: () => ["custom output"],
+						invalidate() {},
+						dispose: () => {
+							disposed++;
+						},
+					};
+				},
+			});
+			const value = result();
+			const component = renderCodeModeResult(value, { expanded: false, isPartial: false }, theme, context({}));
+			try {
+				expect(component.render(80).join("\n")).toContain("custom output");
+				fail = true;
+				value.details.nestedCalls[0]!.durationMs = 9;
+				component.update(value, false, false);
+				expect(Bun.stripANSI(component.render(80).join("\n"))).toContain("Used exec_command");
+				expect(disposed).toBe(1);
+				expect(previous[1]).toBeDefined();
+
+				fail = false;
+				value.details.nestedCalls[0]!.durationMs = 10;
+				component.update(value, false, false);
+				expect(component.render(80).join("\n")).toContain("custom output");
+				expect(previous[2]).toBeUndefined();
+			} finally {
+				component.dispose();
+				disposeAdapter();
+			}
+			expect(disposed).toBe(2);
+		},
+	);
+
 	test("rebuilds nested traces when the host mutates one result object in place", () => {
 		let output = "first chunk";
 		const disposeAdapter = registerNestedToolAdapter({

@@ -1,10 +1,12 @@
 import type { AgentToolResult, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth } from "@earendil-works/pi-tui";
-import { ComponentStack, icon, SyntaxText, sanitizeTuiField, TabBar, tuiTheme } from "@luan.sh/pi-libtui";
+import { ComponentStack } from "@luan.sh/pi-libtui";
 import type { TuiMouseEvent } from "@luan.sh/pi-libtui/mouse";
 import { ToolActivity, type ToolTranscriptStatus } from "@luan.sh/pi-libtui/tool";
 import { getNestedToolAdapterRegistry, type NestedToolPresentationComponent } from "../protocol/nested-tools.ts";
 import type { CodeModeToolDetails, NestedToolTrace } from "../protocol/types.ts";
+import { nestedSummary, resultStatusText } from "../tools/result.ts";
+
+import { CodeModeDisclosure, LazyCodeModeResult, type CodeDisclosureView } from "./code-disclosure.ts";
 
 interface RendererContext {
 	readonly state: object;
@@ -106,8 +108,27 @@ export class CodeModeResultComponent implements PresentationComponent {
 	}
 
 	private rebuild(): void {
-		const details = this.result.details;
-		const traces = restoredNestedCalls(details);
+		const traces = restoredNestedCalls(this.result.details);
+		const nested = this.rebuildNested(traces);
+		if (!hasTranscriptResult(this.result, this.hostError)) {
+			this.stack.setChildren([]);
+			return;
+		}
+		if (!this.expanded && !hasCodeModeFailure(this.result, this.hostError)) {
+			const output = traces.length === 0 ? scriptOutput(this.result) : "";
+			this.updateCompactResult(output);
+			this.stack.setChildren(this.compactResult ? [...nested, this.compactResult] : nested);
+			return;
+		}
+
+		// Keep the nested rows inside the disclosure payload. The outer activity
+		// owns the single fold state and bounded viewport for the complete result;
+		// nested activities still retain their own row-level interaction contracts.
+		this.disclosure.update(disclosureView(this.result, this.expanded), nested);
+		this.stack.setChildren([this.disclosure]);
+	}
+
+	private rebuildNested(traces: readonly NestedToolTrace[]): PresentationComponent[] {
 		const activeIds = new Set(traces.map((trace) => trace.id));
 		for (const [id, view] of this.nested) {
 			if (activeIds.has(id)) continue;
@@ -123,14 +144,16 @@ export class CodeModeResultComponent implements PresentationComponent {
 			if (view) view.update(trace, this.expanded, localOwner);
 			else {
 				view = new NestedCallView(
-					this.theme,
-					this.requestRender,
+					{
+						theme: this.theme,
+						requestRender: this.requestRender,
+						cwd: this.cwd,
+						executionStarted: this.executionStarted,
+						continuation: this.result.details?.tool === "wait",
+						invalidateOwner: () => this.disclosure.invalidate(),
+					},
 					trace,
 					this.expanded,
-					this.cwd,
-					this.executionStarted,
-					details?.tool === "wait",
-					() => this.disclosure.invalidate(),
 					localOwner,
 				);
 				this.nested.set(trace.id, view);
@@ -138,28 +161,17 @@ export class CodeModeResultComponent implements PresentationComponent {
 			if (!localOwner && view.isVisible) localOwners.set(view.ownerKey, view);
 			if (view.isVisible && isTranscriptTrace(trace)) nested.push(view.component);
 		}
-		if (!hasTranscriptResult(this.result, this.hostError)) {
-			this.stack.setChildren([]);
-			return;
-		}
-		if (!this.expanded && !hasCodeModeFailure(this.result, this.hostError)) {
-			const output = traces.length === 0 ? scriptOutput(this.result) : "";
-			if (output) {
-				if (this.compactResult) this.compactResult.update(output);
-				else this.compactResult = new LazyCodeModeResult(this.theme, output, this.requestRender);
-			} else if (this.compactResult) {
-				this.compactResult.dispose();
-				this.compactResult = undefined;
-			}
-			this.stack.setChildren(this.compactResult ? [...nested, this.compactResult] : nested);
-			return;
-		}
+		return nested;
+	}
 
-		// Keep the nested rows inside the disclosure payload. The outer activity
-		// owns the single fold state and bounded viewport for the complete result;
-		// nested activities still retain their own row-level interaction contracts.
-		this.disclosure.update(disclosureView(this.result, this.expanded), nested);
-		this.stack.setChildren([this.disclosure]);
+	private updateCompactResult(output: string): void {
+		if (output) {
+			if (this.compactResult) this.compactResult.update(output);
+			else this.compactResult = new LazyCodeModeResult(this.theme, output, this.requestRender);
+		} else if (this.compactResult) {
+			this.compactResult.dispose();
+			this.compactResult = undefined;
+		}
 	}
 }
 
@@ -248,336 +260,29 @@ function contentSnapshot(content: readonly unknown[] | undefined): ContentItemSn
 }
 
 function sameCodeModePresentation(left: CodeModePresentationSnapshot, right: CodeModePresentationSnapshot): boolean {
+	const { content: leftContent, traces: leftTraces, ...leftFields } = left;
+	const { content: rightContent, traces: rightTraces, ...rightFields } = right;
 	return (
-		left.hostError === right.hostError &&
-		left.expanded === right.expanded &&
-		left.tool === right.tool &&
-		left.status === right.status &&
-		left.cellId === right.cellId &&
-		left.isError === right.isError &&
-		left.scriptError === right.scriptError &&
-		left.missingCell === right.missingCell &&
-		left.durationMs === right.durationMs &&
-		left.code === right.code &&
-		left.notificationText === right.notificationText &&
-		left.notificationTruncated === right.notificationTruncated &&
-		sameContentSnapshot(left.content, right.content) &&
-		left.traces.length === right.traces.length &&
-		left.traces.every((trace, index) => sameNestedTraceSnapshot(trace, right.traces[index]!))
+		sameFields(leftFields, rightFields) &&
+		sameContentSnapshot(leftContent, rightContent) &&
+		leftTraces.length === rightTraces.length &&
+		leftTraces.every((trace, index) => sameNestedTraceSnapshot(trace, rightTraces[index]!))
 	);
 }
 
 function sameNestedTraceSnapshot(left: NestedTraceSnapshot, right: NestedTraceSnapshot): boolean {
-	return (
-		left.id === right.id &&
-		left.name === right.name &&
-		left.kind === right.kind &&
-		left.input === right.input &&
-		left.status === right.status &&
-		left.startedAtMs === right.startedAtMs &&
-		left.durationMs === right.durationMs &&
-		left.error === right.error &&
-		left.value === right.value &&
-		left.resultDetails === right.resultDetails &&
-		left.presentationKey === right.presentationKey &&
-		sameContentSnapshot(left.resultContent, right.resultContent)
-	);
+	const { resultContent: leftContent, ...leftFields } = left;
+	const { resultContent: rightContent, ...rightFields } = right;
+	return sameFields(leftFields, rightFields) && sameContentSnapshot(leftContent, rightContent);
 }
 
 function sameContentSnapshot(left: readonly ContentItemSnapshot[], right: readonly ContentItemSnapshot[]): boolean {
-	return (
-		left.length === right.length &&
-		left.every(
-			(item, index) =>
-				item.item === right[index]!.item && item.type === right[index]!.type && item.text === right[index]!.text,
-		)
-	);
+	return left.length === right.length && left.every((item, index) => sameFields(item, right[index]!));
 }
 
-/** Delay syntax setup until compact result content is actually visible. */
-class LazyCodeModeResult implements PresentationComponent {
-	private result: SyntaxText | undefined;
-
-	constructor(
-		private readonly theme: Theme,
-		private text: string,
-		private readonly requestRender: () => void,
-	) {}
-
-	update(text: string): void {
-		this.text = text;
-		this.result?.setText(prettify(text));
-	}
-
-	render(width: number): string[] {
-		return this.ensureResult().render(width);
-	}
-
-	invalidate(): void {
-		this.result?.invalidate();
-	}
-
-	dispose(): void {
-		this.result?.invalidate();
-		this.result = undefined;
-	}
-
-	private ensureResult(): SyntaxText {
-		this.result ??= new SyntaxText({
-			theme: this.theme,
-			text: prettify(this.text),
-			path: ".json",
-			maxRows: 1_000,
-			requestRender: this.requestRender,
-		});
-		return this.result;
-	}
-}
-
-interface CodeDisclosureView {
-	tool: "exec" | "wait";
-	code: string;
-	result: string;
-	meta?: string;
-	initialMode?: string;
-}
-
-class CodeModeDisclosure implements PresentationComponent {
-	private readonly activity: ToolActivity;
-	private readonly action: CodeModeAction;
-	private readonly nestedBody = new ComponentStack();
-	private readonly body = new ComponentStack();
-	private tabs: LazyCodeModeTabs | undefined;
-	private view: CodeDisclosureView;
-
-	constructor(
-		private readonly theme: Theme,
-		private readonly requestRender: () => void,
-		view: CodeDisclosureView,
-	) {
-		this.view = view;
-		this.action = new CodeModeAction(theme, view);
-		this.updateBody([]);
-		this.activity = new ToolActivity({
-			theme,
-			requestRender,
-			maxHeight: 20,
-			action: this.action,
-			view: this.activityView(),
-		});
-	}
-
-	update(view: CodeDisclosureView, nested: readonly PresentationComponent[] = []): void {
-		this.view = view;
-		this.action.update(view);
-		this.updateBody(nested);
-		this.activity.update(this.activityView(), this.action);
-	}
-
-	render(width: number): string[] {
-		return this.activity.render(width);
-	}
-	get children() {
-		return this.activity.children;
-	}
-
-	invalidate(): void {
-		this.activity.invalidate();
-	}
-
-	dispose(): void {
-		this.activity.dispose();
-		this.tabs?.dispose();
-	}
-
-	private activityView() {
-		const hasDetails = this.body.getChildren().length > 0;
-		const full = this.tabs ? this.body : undefined;
-		return {
-			action: { verb: codeModeLabel(this.view), status: "succeeded" as const, marker: false as const },
-			payload: hasDetails
-				? {
-						kind: "component" as const,
-						preview: this.nestedBody,
-						...(full ? { full } : {}),
-					}
-				: undefined,
-			mode: this.view.initialMode === "details" && full ? ("full" as const) : ("preview" as const),
-		};
-	}
-
-	private updateBody(nested: readonly PresentationComponent[]): void {
-		if (this.view.code || this.view.result) {
-			if (this.tabs) this.tabs.update(this.view.code, this.view.result);
-			else this.tabs = new LazyCodeModeTabs(this.theme, this.view.code, this.view.result, this.requestRender);
-		} else if (this.tabs) {
-			this.tabs.dispose();
-			this.tabs = undefined;
-		}
-		this.nestedBody.setChildren(nested);
-		this.body.setChildren(this.tabs ? [this.tabs, ...nested] : nested);
-	}
-}
-
-/** Delay both Shiki construction and rendering until the details tab is visible. */
-class LazyCodeModeTabs implements PresentationComponent {
-	private tabs: CodeModeTabs | undefined;
-
-	constructor(
-		private readonly theme: Theme,
-		private code: string,
-		private result: string,
-		private readonly requestRender: () => void,
-	) {}
-
-	update(code: string, result: string): void {
-		this.code = code;
-		this.result = result;
-		this.tabs?.update(code, result);
-	}
-
-	render(width: number): string[] {
-		return this.ensureTabs().render(width);
-	}
-
-	handleInput(data: string): boolean {
-		return this.tabs?.handleInput(data) ?? false;
-	}
-
-	onMouse(event: Parameters<TabBar["onMouse"]>[0]): boolean {
-		return this.tabs?.onMouse(event) ?? false;
-	}
-
-	invalidate(): void {
-		this.tabs?.invalidate();
-	}
-
-	dispose(): void {
-		this.tabs?.invalidate();
-		this.tabs = undefined;
-	}
-
-	private ensureTabs(): CodeModeTabs {
-		if (!this.tabs) this.tabs = new CodeModeTabs(this.theme, this.code, this.result, this.requestRender);
-		return this.tabs;
-	}
-}
-
-class CodeModeAction implements PresentationComponent {
-	constructor(
-		private readonly theme: Theme,
-		private view: CodeDisclosureView,
-	) {}
-
-	update(view: CodeDisclosureView): void {
-		this.view = view;
-	}
-
-	render(width: number): string[] {
-		const colors = tuiTheme(this.theme);
-		return [
-			colors.fg(
-				"text.muted",
-				truncateToWidth(`${icon("code-mode")} ${codeModeLabel(this.view)}`, Math.max(0, width), "…"),
-			),
-		];
-	}
-
-	invalidate(): void {}
-}
-
-class CodeModeTabs implements PresentationComponent {
-	private readonly tabs: TabBar;
-	private active = 0;
-	private readonly code: SyntaxText;
-	private readonly result: SyntaxText;
-	private cachedWidth = -1;
-	private cachedActive = -1;
-	private knownContentHeight = 0;
-	private cachedActiveLines: string[] | undefined;
-	private cachedLines: string[] | undefined;
-
-	constructor(theme: Theme, code: string, result: string, requestRender: () => void) {
-		this.code = new SyntaxText({
-			theme,
-			text: code || "(no code)",
-			path: ".js",
-			maxRows: 500,
-			requestRender,
-		});
-		this.result = new SyntaxText({
-			theme,
-			text: result ? prettify(result) : "(no result)",
-			path: ".json",
-			maxRows: 1_000,
-			requestRender,
-		});
-		this.tabs = new TabBar(
-			[
-				{ id: "code", label: "Code" },
-				{ id: "result", label: "Result" },
-			],
-			theme,
-		);
-		this.tabs.onChange = (_tab, index) => {
-			this.active = index;
-			this.cachedLines = undefined;
-			requestRender();
-		};
-	}
-
-	update(code: string, result: string): void {
-		this.code.setText(code || "(no code)");
-		this.result.setText(result ? prettify(result) : "(no result)");
-		this.cachedLines = undefined;
-	}
-
-	render(width: number): string[] {
-		if (this.cachedWidth !== width) this.knownContentHeight = 0;
-		const active = this.active === 0 ? this.code.render(width) : this.result.render(width);
-		this.knownContentHeight = Math.max(this.knownContentHeight, active.length);
-		if (
-			this.cachedWidth === width &&
-			this.cachedActive === this.active &&
-			this.cachedActiveLines === active &&
-			this.cachedLines
-		) {
-			return this.cachedLines;
-		}
-		const lines = [
-			...this.tabs.render(width),
-			...active,
-			...Array.from({ length: this.knownContentHeight - active.length }, () => ""),
-		];
-		this.cachedWidth = width;
-		this.cachedActive = this.active;
-		this.cachedActiveLines = active;
-		this.cachedLines = lines;
-		return lines;
-	}
-
-	handleInput(data: string): boolean {
-		return this.tabs.handleInput(data);
-	}
-
-	onMouse(event: Parameters<TabBar["onMouse"]>[0]): boolean {
-		return event.row === 0 ? this.tabs.onMouse(event) : false;
-	}
-
-	invalidate(): void {
-		this.tabs.invalidate();
-		this.code.invalidate();
-		this.result.invalidate();
-		this.knownContentHeight = 0;
-		this.cachedWidth = -1;
-		this.cachedActive = -1;
-		this.cachedActiveLines = undefined;
-		this.cachedLines = undefined;
-	}
-}
-
-function codeModeLabel(view: CodeDisclosureView): string {
-	return `Code Mode · ${view.tool}${view.meta ? ` · ${sanitizeTuiField(view.meta)}` : ""}`;
+/** Snapshot records have fixed keys; compare references without traversing tool-owned values. */
+function sameFields<T extends object>(left: T, right: T): boolean {
+	return (Object.keys(left) as (keyof T)[]).every((key) => left[key] === right[key]);
 }
 
 function disclosureView(result: AgentToolResult<CodeModeToolDetails>, expanded: boolean): CodeDisclosureView {
@@ -598,31 +303,29 @@ function disclosureView(result: AgentToolResult<CodeModeToolDetails>, expanded: 
 	};
 }
 
-function prettify(text: string): string {
-	try {
-		return JSON.stringify(JSON.parse(text), null, 2);
-	} catch {
-		return text;
-	}
+interface NestedCallHost {
+	readonly theme: Theme;
+	readonly requestRender: () => void;
+	readonly cwd: string;
+	readonly executionStarted: boolean;
+	readonly continuation: boolean;
+	readonly invalidateOwner: () => void;
 }
 
 class NestedCallView {
 	readonly originId: string;
-	private custom: NestedToolPresentationComponent | undefined;
-	private fallback: ToolActivity | undefined;
+	private renderer:
+		| { kind: "custom"; component: NestedToolPresentationComponent }
+		| { kind: "fallback"; component: ToolActivity }
+		| undefined;
 	private hidden = false;
 	private presentationKey: string;
 	private readonly state = {};
 
 	constructor(
-		private readonly theme: Theme,
-		private readonly requestRender: () => void,
+		private readonly host: NestedCallHost,
 		private trace: NestedToolTrace,
 		private expanded: boolean,
-		private readonly cwd: string,
-		private readonly executionStarted: boolean,
-		private readonly continuation: boolean,
-		private readonly invalidateOwner: () => void,
 		localOwner?: NestedCallView,
 	) {
 		this.originId = trace.id;
@@ -645,21 +348,20 @@ class NestedCallView {
 
 	dispose(): void {
 		releaseTracePresentation(this.presentationKey, this);
-		this.custom?.dispose?.();
-		this.fallback?.dispose();
+		this.renderer?.component.dispose?.();
 	}
 
 	render(width: number): string[] {
-		return this.hidden ? [] : (this.custom ?? this.fallback!).render(width);
+		return this.hidden ? [] : (this.renderer?.component.render(width) ?? []);
 	}
 
 	invalidate(): void {
-		(this.custom ?? this.fallback!)?.invalidate();
+		this.renderer?.component.invalidate();
 	}
 
 	get children(): readonly PresentationComponent[] {
 		if (this.hidden) return [];
-		const component = this.custom ?? this.fallback;
+		const component = this.renderer?.component;
 		if (!component) return [];
 		return "children" in component
 			? ((component as PresentationComponent & { children: readonly PresentationComponent[] }).children ?? [])
@@ -668,7 +370,7 @@ class NestedCallView {
 
 	getSpans() {
 		if (this.hidden) return [];
-		const component = this.custom ?? this.fallback;
+		const component = this.renderer?.component;
 		return component && "getSpans" in component
 			? (component as PresentationComponent & { getSpans(): readonly unknown[] }).getSpans()
 			: [];
@@ -676,13 +378,13 @@ class NestedCallView {
 
 	onMouse(event: TuiMouseEvent): boolean {
 		if (this.hidden) return false;
-		const component = this.custom ?? this.fallback;
+		const component = this.renderer?.component;
 		return component?.onMouse?.(event) ?? false;
 	}
 
 	handleViewportInput(data: string): boolean {
 		if (this.hidden) return false;
-		const component = this.custom ?? this.fallback;
+		const component = this.renderer?.component;
 		if (!component) return false;
 		return (
 			component.handleViewportInput?.(data) ??
@@ -705,7 +407,7 @@ class NestedCallView {
 		if (this.hidden || tracePresentationKey(trace) !== this.presentationKey) return;
 		this.trace = trace;
 		this.rebuild();
-		this.invalidateOwner();
+		this.host.invalidateOwner();
 	}
 
 	private route(localOwner?: NestedCallView): void {
@@ -715,46 +417,49 @@ class NestedCallView {
 			localOwner.acceptContinuation(this.trace);
 			return;
 		}
-		this.hidden = !claimTracePresentation(this, isTranscriptTrace(this.trace), !this.continuation);
+		this.hidden = !claimTracePresentation(this, isTranscriptTrace(this.trace), !this.host.continuation);
 		if (!this.hidden) this.rebuild();
 	}
 
 	private rebuild(): void {
-		const adapter = getNestedToolAdapterRegistry().adapters.get(this.trace.name);
-		const previous = this.custom;
-		let next: NestedToolPresentationComponent | undefined;
-		try {
-			const candidate = adapter?.renderTrace?.(this.trace, {
-				theme: this.theme,
-				requestRender: () => {
-					this.invalidateOwner();
-					this.requestRender();
-				},
-				executionStarted: this.executionStarted,
-				cwd: this.cwd,
-				state: this.state,
-				lastComponent: previous,
-			});
-			if (candidate && typeof candidate.render === "function" && typeof candidate.invalidate === "function")
-				next = candidate;
-		} catch {
-			next = undefined;
-		}
-		if (previous && previous !== next) previous.dispose?.();
-		this.custom = next;
-		if (next) {
-			this.fallback?.dispose();
-			this.fallback = undefined;
+		const custom = this.renderCustom();
+		if (custom) {
+			if (this.renderer?.component !== custom) this.renderer?.component.dispose?.();
+			this.renderer = { kind: "custom", component: custom };
 			return;
 		}
 		const view = fallbackView(this.trace, this.expanded);
-		if (this.fallback) this.fallback.update(view);
-		else
-			this.fallback = new ToolActivity({
-				theme: this.theme,
-				requestRender: this.requestRender,
-				view,
+		if (this.renderer?.kind === "fallback") {
+			this.renderer.component.update(view);
+			return;
+		}
+		this.renderer?.component.dispose?.();
+		this.renderer = {
+			kind: "fallback",
+			component: new ToolActivity({ theme: this.host.theme, requestRender: this.host.requestRender, view }),
+		};
+	}
+
+	private renderCustom(): NestedToolPresentationComponent | undefined {
+		const adapter = getNestedToolAdapterRegistry().adapters.get(this.trace.name);
+		try {
+			const candidate = adapter?.renderTrace?.(this.trace, {
+				theme: this.host.theme,
+				requestRender: () => {
+					this.host.invalidateOwner();
+					this.host.requestRender();
+				},
+				executionStarted: this.host.executionStarted,
+				cwd: this.host.cwd,
+				state: this.state,
+				lastComponent: this.renderer?.kind === "custom" ? this.renderer.component : undefined,
 			});
+			if (candidate && typeof candidate.render === "function" && typeof candidate.invalidate === "function")
+				return candidate;
+		} catch {
+			// Optional adapters may fail; the trace still has a built-in presentation.
+		}
+		return undefined;
 	}
 }
 
@@ -813,12 +518,7 @@ function nestedStatus(trace: NestedToolTrace): ToolTranscriptStatus {
 }
 
 function scriptOutput(result: AgentToolResult<CodeModeToolDetails>): string {
-	const texts = (Array.isArray(result.content) ? result.content : []).flatMap((item) => {
-		if (!item || typeof item !== "object") return [];
-		const type = Reflect.get(item, "type");
-		const text = Reflect.get(item, "text");
-		return type === "text" && typeof text === "string" ? [text] : [];
-	});
+	const texts = textContent(result.content);
 	const traces = restoredNestedCalls(result.details);
 	if (result.details?.notification) return texts.join("\n");
 	if (traces.length > 0 && texts[0] === nestedSummary(traces)) texts.shift();
@@ -827,7 +527,7 @@ function scriptOutput(result: AgentToolResult<CodeModeToolDetails>): string {
 }
 
 function hasTranscriptResult(result: AgentToolResult<CodeModeToolDetails>, hostError: boolean): boolean {
-	if (hostError || result.details?.isError || result.details?.scriptError) return true;
+	if (hasCodeModeFailure(result, hostError)) return true;
 	if (result.details?.notification) return true;
 	if (result.details?.tool === "wait") return false;
 	const traces = restoredNestedCalls(result.details);
@@ -864,24 +564,6 @@ function tracePresentationKey(trace: NestedToolTrace): string {
 	}
 }
 
-function nestedSummary(traces: readonly NestedToolTrace[]): string {
-	return traces
-		.map(
-			(trace) =>
-				`• ${trace.status === "running" ? "Running" : trace.status === "error" ? "Failed" : "Ran"} ${trace.name}`,
-		)
-		.join("\n");
-}
-
-function resultStatusText(details: CodeModeToolDetails): string {
-	if (!details || typeof details !== "object") return "Script failed";
-	if (details.scriptError) return `Script error: ${details.scriptError}`;
-	if (details.status === "yielded")
-		return `Still running (exec cell "${details.cellId}"). Use wait near expected completion.`;
-	if (details.status === "terminated") return "Script terminated";
-	return "Script completed";
-}
-
 // type-boundary: restored Code Mode details may predate the current trace schema; this validator narrows each entry.
 type RestoredTraceValue = unknown;
 
@@ -908,17 +590,20 @@ function isNestedToolTrace(value: RestoredTraceValue): value is NestedToolTrace 
 }
 
 function traceOutput(trace: NestedToolTrace): string {
-	if (trace.error) return "";
-	const content = trace.result?.content;
-	if (!Array.isArray(content)) return "";
-	return content
-		.flatMap((item) => {
-			if (!item || typeof item !== "object") return [];
-			const type = Reflect.get(item, "type");
-			const text = Reflect.get(item, "text");
-			return type === "text" && typeof text === "string" ? [text] : [];
-		})
-		.join("\n");
+	return trace.error ? "" : textContent(trace.result?.content).join("\n");
+}
+
+// type-boundary: restored Pi content may use older schemas; textContent validates text items before rendering.
+type RestoredContent = unknown;
+
+function textContent(content: RestoredContent): string[] {
+	if (!Array.isArray(content)) return [];
+	return content.flatMap((item) => {
+		if (!item || typeof item !== "object") return [];
+		const type = Reflect.get(item, "type");
+		const text = Reflect.get(item, "text");
+		return type === "text" && typeof text === "string" ? [text] : [];
+	});
 }
 
 function codeText(input: unknown): string | undefined {

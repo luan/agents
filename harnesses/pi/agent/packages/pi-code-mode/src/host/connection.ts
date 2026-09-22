@@ -47,7 +47,7 @@ export class CodeModeHostConnection {
 		try {
 			await ready;
 		} catch (error) {
-			this.failAll(error instanceof Error ? error : new Error(String(error)));
+			if (this.ready === ready) this.failAll(error instanceof Error ? error : new Error(String(error)));
 			throw error;
 		}
 	}

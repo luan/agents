@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { setImmediate } from "node:timers/promises";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { NestedToolAdapter, RuntimeResponse, ToolExecutionContext } from "../../src/protocol/types.ts";
 import { CodeModeDelegateRuntime, normalizeToolResult } from "../../src/runtime/delegation.ts";
@@ -142,45 +143,67 @@ describe("nested tool trace lifecycle", () => {
 			],
 		});
 	});
+});
 
-	test("teardown drops late delegate responses after the transport closes", async () => {
-		let aborted = false;
-		const runtime = new CodeModeDelegateRuntime(() => {
-			throw new Error("transport closed");
-		});
-		const adapter: NestedToolAdapter = {
-			name: "wait",
-			kind: "function",
-			parameters: { type: "object" },
-			invoke(_input, _context, signal) {
-				return new Promise((_resolve, reject) => {
-					signal.addEventListener("abort", () => {
-						aborted = true;
-						reject(new Error("aborted"));
-					});
-				});
-			},
-		};
-		runtime.bindCell(
-			"cell-clear",
-			{ cwd: process.cwd(), toolCallId: "exec-clear", extensionContext: {} as ExtensionContext },
-			new Map([[adapter.name, adapter]]),
-		);
-		runtime.handleRequest({
-			id: 2,
-			request: {
-				type: "tool/invoke",
-				invocation: {
-					cell_id: "cell-clear",
-					input: {},
-					runtime_tool_call_id: "runtime-clear",
-					tool_name: { name: adapter.name },
-				},
-			},
-		});
-		await Bun.sleep(0);
-		runtime.clear();
-		await Bun.sleep(0);
-		expect(aborted).toBe(true);
+test.each([
+	["cancel", false],
+	["cancel", true],
+	["clear", false],
+	["clear", true],
+] as const)("%s suppresses late nested tool output (failure: %j)", async (action, fail) => {
+	const started = Promise.withResolvers<void>();
+	const finish = Promise.withResolvers<void>();
+	const sent: object[] = [];
+	let updates = 0;
+	let aborted = false;
+	const runtime = new CodeModeDelegateRuntime((message) => {
+		if (message !== null && typeof message === "object") sent.push(message);
 	});
+	const adapter: NestedToolAdapter = {
+		name: "deferred",
+		kind: "function",
+		parameters: { type: "object" },
+		async invoke(_input, context, signal) {
+			started.resolve();
+			await finish.promise;
+			aborted = signal.aborted;
+			const result = { content: [{ type: "text" as const, text: "late" }], details: undefined };
+			context.onUpdate?.(result);
+			if (fail) throw new Error("late failure");
+			return result;
+		},
+	};
+	runtime.bindCell(
+		"cell",
+		{
+			cwd: process.cwd(),
+			toolCallId: "exec-cancel",
+			extensionContext: {} as ExtensionContext,
+			onUpdate: () => {
+				updates++;
+			},
+		},
+		new Map([[adapter.name, adapter]]),
+	);
+	runtime.handleRequest({
+		id: 7,
+		request: {
+			type: "tool/invoke",
+			invocation: {
+				cell_id: "cell",
+				input: {},
+				runtime_tool_call_id: "nested",
+				tool_name: { name: adapter.name },
+			},
+		},
+	});
+	await started.promise;
+	const before = updates;
+	if (action === "cancel") runtime.cancel(7);
+	else runtime.clear();
+	finish.resolve();
+	await setImmediate();
+	expect(aborted).toBe(true);
+	expect(updates).toBe(before);
+	expect(sent).toEqual([]);
 });

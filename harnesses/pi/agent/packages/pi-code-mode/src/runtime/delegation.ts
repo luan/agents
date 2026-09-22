@@ -22,7 +22,6 @@ const MAX_NESTED_TRACE_COUNT = 50;
 
 export class CodeModeDelegateRuntime {
 	private readonly runtimeId = randomUUID();
-	private generation = 0;
 	private readonly contexts = new Map<string, ToolExecutionContext>();
 	private readonly tools = new Map<string, Map<string, NestedToolAdapter>>();
 	private readonly controllers = new Map<number, AbortController>();
@@ -58,7 +57,6 @@ export class CodeModeDelegateRuntime {
 	}
 
 	clear(): void {
-		this.generation += 1;
 		for (const controller of this.controllers.values()) controller.abort();
 		this.controllers.clear();
 		this.contexts.clear();
@@ -75,7 +73,7 @@ export class CodeModeDelegateRuntime {
 		if (this.controllers.has(message.id)) throw new Error(`Duplicate nested tool request: ${message.id}`);
 		const controller = new AbortController();
 		this.controllers.set(message.id, controller);
-		void this.invoke(message, controller, this.generation);
+		void this.invoke(message, controller);
 	}
 
 	attach(response: RuntimeResponse): RuntimeResponse {
@@ -84,11 +82,7 @@ export class CodeModeDelegateRuntime {
 		return nestedCalls?.length ? { ...response, nestedCalls } : response;
 	}
 
-	private async invoke(
-		message: DelegateRequestMessage,
-		controller: AbortController,
-		generation: number,
-	): Promise<void> {
+	private async invoke(message: DelegateRequestMessage, controller: AbortController): Promise<void> {
 		let trace: NestedToolTrace | undefined;
 		let traceContext: ToolExecutionContext | undefined;
 		let traceCellId: string | undefined;
@@ -125,7 +119,8 @@ export class CodeModeDelegateRuntime {
 						notification: { text, truncated: text.length < message.request.text.length },
 					} satisfies CodeModeToolDetails,
 				});
-				this.respond(message.id, { status: "ok", value: { type: "notification/delivered" } });
+				if (!controller.signal.aborted)
+					this.respond(message.id, { status: "ok", value: { type: "notification/delivered" } });
 				return;
 			}
 
@@ -156,14 +151,14 @@ export class CodeModeDelegateRuntime {
 					...context,
 					toolCallId,
 					onUpdate: (update) => {
-						if (generation !== this.generation) return;
+						if (controller.signal.aborted) return;
 						trace!.result = boundTraceResult(update);
 						this.emitTraceUpdate(traceCellId!, traceContext!);
 					},
 				},
 				controller.signal,
 			);
-			if (generation !== this.generation) return;
+			if (controller.signal.aborted) return;
 			trace.status = "done";
 			trace.durationMs = Date.now() - trace.startedAtMs;
 			trace.result = boundTraceResult(result);
@@ -175,7 +170,7 @@ export class CodeModeDelegateRuntime {
 				value: { type: "tool/result", result: nestedValue },
 			});
 		} catch (error) {
-			if (generation !== this.generation) return;
+			if (controller.signal.aborted) return;
 			if (trace && traceCellId && traceContext) {
 				trace.status = "error";
 				trace.durationMs = Date.now() - trace.startedAtMs;

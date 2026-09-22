@@ -1,5 +1,5 @@
 import type { CodeModeHostDelegation } from "./delegation.js";
-import { operationAbort, throwIfAborted } from "./operation.js";
+import { operationAbort, startSession, throwIfAborted } from "./operation.js";
 import { isMissingRuntimeOutcome, parseRuntimeResponse, runtimeOutcome } from "./protocol.js";
 import type { CodeModeHostSession } from "./session.js";
 import type { RuntimeResponse, ToolExecutionContext } from "../protocol/types.js";
@@ -53,8 +53,7 @@ export class CodeModeHostCellOperations {
 		request: Record<string, unknown>,
 		invalidOutcomeMessage: string,
 	): Promise<RuntimeResponse> {
-		throwIfAborted(signal);
-		await this.session.start();
+		await startSession(this.session, signal);
 		throwIfAborted(signal);
 		this.delegation.updateCellContext(cellId, context);
 		const id = this.session.nextRequestId();

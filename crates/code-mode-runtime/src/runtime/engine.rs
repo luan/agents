@@ -237,31 +237,20 @@ fn run_runtime(
         &control_rx,
         initial_pending_frontier,
     ) {
-        match command {
+        let result = match command {
             RuntimeCommand::Terminate => break,
             RuntimeCommand::ToolResponse { id, result } => {
-                if let Err(error_text) =
-                    module_loader::resolve_tool_response(scope, &id, Ok(result))
-                {
-                    capture_scope_send_error(scope, &event_tx, Some(error_text));
-                    return;
-                }
+                module_loader::resolve_tool_response(scope, &id, Ok(result))
             }
             RuntimeCommand::ToolError { id, error_text } => {
-                if let Err(runtime_error) =
-                    module_loader::resolve_tool_response(scope, &id, Err(error_text))
-                {
-                    capture_scope_send_error(scope, &event_tx, Some(runtime_error));
-                    return;
-                }
+                module_loader::resolve_tool_response(scope, &id, Err(error_text))
             }
-            RuntimeCommand::TimeoutFired { id } => {
-                if let Err(runtime_error) = timers::invoke_timeout_callback(scope, id) {
-                    capture_scope_send_error(scope, &event_tx, Some(runtime_error));
-                    return;
-                }
-            }
-            RuntimeCommand::ObservePendingFrontier => {}
+            RuntimeCommand::TimeoutFired { id } => timers::invoke_timeout_callback(scope, id),
+            RuntimeCommand::ObservePendingFrontier => Ok(()),
+        };
+        if let Err(error_text) = result {
+            capture_scope_send_error(scope, &event_tx, Some(error_text));
+            return;
         }
 
         scope.perform_microtask_checkpoint();
@@ -291,23 +280,16 @@ fn next_runtime_command(
     control_rx: &std_mpsc::Receiver<RuntimeControlCommand>,
     initial_pending_frontier: bool,
 ) -> Option<RuntimeCommand> {
-    let mut pending_frontier_reported = !initial_pending_frontier;
+    let mut check_queued_commands = !initial_pending_frontier;
     loop {
-        if !pending_frontier_reported {
-            pending_frontier_reported = true;
-            let _ = event_tx.send(RuntimeEvent::Pending);
-            match control_rx.recv().ok()? {
-                RuntimeControlCommand::Continue => return command_rx.recv().ok(),
-                RuntimeControlCommand::Resume => {}
-                RuntimeControlCommand::Terminate => return Some(RuntimeCommand::Terminate),
+        if check_queued_commands {
+            match command_rx.try_recv() {
+                Ok(command) => return Some(command),
+                Err(std_mpsc::TryRecvError::Disconnected) => return None,
+                Err(std_mpsc::TryRecvError::Empty) => {}
             }
         }
-
-        match command_rx.try_recv() {
-            Ok(command) => return Some(command),
-            Err(std_mpsc::TryRecvError::Disconnected) => return None,
-            Err(std_mpsc::TryRecvError::Empty) => {}
-        }
+        check_queued_commands = true;
 
         let _ = event_tx.send(RuntimeEvent::Pending);
         match control_rx.recv().ok()? {
