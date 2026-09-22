@@ -140,16 +140,16 @@ export class DialogOverlay implements Component, Focusable {
 		const child = this.child as PointerComponent;
 		if (typeof child.onMouse !== "function") return false;
 		const translated = { ...event, row: event.row - 1, col: event.col - 1 };
-		if (
+		const clipped =
 			event.type !== "leave" &&
 			(translated.row < 0 ||
 				translated.row >= this.childHeight ||
 				translated.col < 0 ||
-				translated.col >= this.childWidth)
-		)
-			return false;
+				translated.col >= this.childWidth);
+		if (clipped) translated.type = "leave";
 		try {
-			return child.onMouse(translated) === true;
+			const handled = child.onMouse(translated) === true;
+			return !clipped && handled;
 		} catch {
 			return false;
 		}

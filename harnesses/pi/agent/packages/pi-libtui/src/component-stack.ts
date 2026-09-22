@@ -193,8 +193,11 @@ export class ComponentStack implements Component, Focusable {
 	/** Dispatch a normalized pointer event to the child span under its coordinates. */
 	onMouse(event: TuiMouseEvent): boolean {
 		if (event.type === "leave") {
-			const handled = this.hoveredSpan ? this.dispatch(this.hoveredSpan, event) : false;
+			const targets = new Set([this.capturedSpan, this.hoveredSpan]);
+			this.capturedSpan = undefined;
 			this.hoveredSpan = undefined;
+			let handled = false;
+			for (const span of targets) if (span) handled = this.dispatch(span, event) || handled;
 			return handled;
 		}
 

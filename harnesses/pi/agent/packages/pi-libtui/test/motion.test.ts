@@ -3,7 +3,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { configureTuiAppearance, DEFAULT_TUI_APPEARANCE } from "../src/appearance.ts";
 import { tuiTheme } from "../src/color/theme.ts";
-import type { MotionClock, MotionRenderTarget, MotionTimerHandle } from "../src/motion.ts";
+import type { MotionClock, MotionMount, MotionRenderTarget, MotionTimerHandle } from "../src/motion.ts";
 import {
 	activityFrame,
 	animationSmoothnessCadenceMs,
@@ -65,13 +65,55 @@ class FakeClock implements MotionClock {
 
 	tick(cadenceMs: number, nowMs: number): void {
 		this.currentMs = nowMs;
-		for (const timer of this.timers) {
+		for (const timer of [...this.timers]) {
 			if (!timer.stopped && timer.cadenceMs === cadenceMs) timer.callback();
 		}
 	}
 }
 
 describe("MotionScheduler", () => {
+	test.each(["frame", "render"] as const)(
+		"disposing during a failing %s callback releases each mount once",
+		(phase) => {
+			const clock = new FakeClock();
+			const scheduler = new MotionScheduler(clock);
+			const fail = () => {
+				mount.dispose();
+				throw new Error("surface closed");
+			};
+			const mount = scheduler.mount(
+				{ requestRender: phase === "render" ? fail : () => {} },
+				{ cadenceMs: 40, onFrame: phase === "frame" ? fail : undefined },
+			);
+			clock.tick(40, 40);
+			expect(scheduler.activeMountCount).toBe(0);
+			expect(scheduler.activeTimerCount).toBe(0);
+			expect(clock.timers[0]?.stopped).toBe(true);
+		},
+	);
+
+	test("mounts created during a frame wait until the next tick", () => {
+		const clock = new FakeClock();
+		const scheduler = new MotionScheduler(clock);
+		const frames: string[] = [];
+		const target = { requestRender() {} };
+		let added: MotionMount | undefined;
+		const first = scheduler.mount(target, {
+			cadenceMs: 40,
+			onFrame() {
+				frames.push("first");
+				added ??= scheduler.mount(target, { cadenceMs: 40, onFrame: () => frames.push("added") });
+			},
+		});
+		clock.tick(40, 40);
+		expect(frames).toEqual(["first"]);
+		clock.tick(40, 80);
+		expect(frames).toEqual(["first", "first", "added"]);
+		first.dispose();
+		added?.dispose();
+		expect(scheduler.activeTimerCount).toBe(0);
+	});
+
 	test("shares unreferenced cadence timers and releases them by reference count", () => {
 		const clock = new FakeClock();
 		const scheduler = new MotionScheduler(clock);

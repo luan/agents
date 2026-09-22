@@ -67,7 +67,7 @@ export interface ToolViewRegionOptions {
 }
 
 type InteractionTarget = "body" | "header";
-type PressedInteraction = { target: InteractionTarget; button: 0 | 1 | 2 };
+type PressedInteraction = { target: InteractionTarget; button: 0 | 2 };
 
 /**
  * Owns one payload's modes, fold state, pointer state, and bounded expanded viewport.
@@ -114,11 +114,11 @@ export class ToolViewRegion implements Component, TextInteractionTarget, FoldTar
 	/** Replace streamed mode contents without replacing this interaction target. */
 	updateModes(modes: readonly ToolViewMode[], requestedMode?: string): void {
 		if (modes.length === 0) throw new Error("ToolViewRegion requires at least one mode");
+		const previousModes = this.modes;
 		const previousMode = this.getMode();
 		const previousComponent = this.mode().component as Component & { setViewportFocus?(focused: boolean): void };
 		const headerHovered = this.hoveredTarget === "header";
 		this.setOmissionRowHovered(false);
-		if (this.options.disposeReplacedModes !== false) disposeRemovedModes(this.modes, modes);
 		this.modes = modes;
 		const wanted = requestedMode ?? previousMode;
 		const requested = modes.findIndex((mode) => mode.id === wanted);
@@ -128,6 +128,7 @@ export class ToolViewRegion implements Component, TextInteractionTarget, FoldTar
 			this.pressed = undefined;
 			if (this.focused) previousComponent.setViewportFocus?.(false);
 		}
+		if (this.options.disposeReplacedModes !== false) disposeRemovedModes(previousModes, modes);
 		this.hintGeometry = [];
 		this.sourceHintGeometry = [];
 		if (this.focused) {
@@ -285,8 +286,6 @@ export class ToolViewRegion implements Component, TextInteractionTarget, FoldTar
 		const boundedHeight = Math.max(1, Math.floor(height));
 		const inside =
 			this.canExpand() && event.row >= 0 && event.row < boundedHeight && event.col >= 0 && event.col < boundedWidth;
-		const headerCanOpen = this.isFolded();
-		const interactive = inside && (this.isExpanded() || headerCanOpen);
 		if (event.type === "leave") {
 			const changed = this.hoveredTarget === "header" || this.pressed?.target === "header";
 			if (this.hoveredTarget === "header") this.hoveredTarget = undefined;
@@ -295,19 +294,15 @@ export class ToolViewRegion implements Component, TextInteractionTarget, FoldTar
 			if (changed) this.options.requestRender();
 			return false;
 		}
-		if (interactive) ensureFoldingRegistry().setCurrent(this);
+		if (inside) ensureFoldingRegistry().setCurrent(this);
 		if (event.type === "enter" || event.type === "move") {
-			const changed = this.hoveredTarget !== (interactive ? "header" : undefined);
-			this.hoveredTarget = interactive ? "header" : undefined;
+			const changed = this.hoveredTarget !== (inside ? "header" : undefined);
+			this.hoveredTarget = inside ? "header" : undefined;
 			if (changed) this.options.requestRender();
-			return interactive;
+			return inside;
 		}
-		if (event.type === "press" && inside && event.button === 0 && interactive) {
-			this.pressed = { target: "header", button: 0 };
-			return true;
-		}
-		if (event.type === "press" && inside && event.button === 2 && interactive) {
-			this.pressed = { target: "header", button: 2 };
+		if (event.type === "press" && inside && (event.button === 0 || event.button === 2)) {
+			this.pressed = { target: "header", button: event.button };
 			return true;
 		}
 		if (event.type === "drag") {
@@ -319,18 +314,10 @@ export class ToolViewRegion implements Component, TextInteractionTarget, FoldTar
 			const changed = this.hoveredTarget === "header" || pressed?.target === "header";
 			this.pressed = pressed?.target === "header" ? undefined : pressed;
 			this.hoveredTarget = undefined;
-			const activate =
-				pressed?.target === "header" &&
-				(pressed.button === 0 || pressed.button === 2) &&
-				inside &&
-				this.isFolded() &&
-				headerCanOpen;
-			const collapse =
-				pressed?.target === "header" && (pressed.button === 0 || pressed.button === 2) && inside && this.isExpanded();
-			if (activate) this.open();
-			if (collapse) this.collapse();
-			if (changed && !activate && !collapse) this.options.requestRender();
-			return activate || collapse;
+			const clicked = pressed?.target === "header" && pressed.button === event.button && inside;
+			if (clicked) this.toggle();
+			else if (changed) this.options.requestRender();
+			return clicked;
 		}
 		return false;
 	}

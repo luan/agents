@@ -1188,3 +1188,62 @@ describe("tool transcript body indent", () => {
 		activity.dispose();
 	});
 });
+
+test.each([
+	{ expanded: false, release: undefined },
+	{ expanded: true, release: undefined },
+	{ expanded: false, release: 2 },
+	{ expanded: true, release: 2 },
+] as const)("header release must match its pressed button (%j)", ({ expanded, release }) => {
+	const region = new ToolViewRegion({
+		theme,
+		modes: [
+			{ id: "preview", component: component("preview") },
+			{ id: "full", component: component("full") },
+		],
+		requestRender() {},
+	});
+	const disclosure = new ToolDisclosureAction(theme, component("action"), region, () => {});
+	try {
+		if (expanded) region.open();
+		disclosure.render(30);
+		expect(disclosure.onMouse(mouse("press", 0, 4, 0))).toBe(true);
+		expect(disclosure.onMouse(mouse("release", 0, 4, release))).toBe(false);
+		expect(region.isExpanded()).toBe(expanded);
+	} finally {
+		disclosure.dispose();
+	}
+});
+
+test("streamed mode replacement releases focus before disposing its old component", () => {
+	let oldFocused = false;
+	let oldDisposed = false;
+	let nextFocused = false;
+	const old = {
+		...component("old"),
+		setViewportFocus(focused: boolean) {
+			if (oldDisposed) throw new Error("cannot focus a disposed component");
+			oldFocused = focused;
+		},
+		dispose() {
+			expect(oldFocused).toBe(false);
+			oldDisposed = true;
+		},
+	};
+	const next = {
+		...component("next"),
+		setViewportFocus(focused: boolean) {
+			nextFocused = focused;
+		},
+	};
+	const region = new ToolViewRegion({ theme, modes: [{ id: "preview", component: old }], requestRender() {} });
+	try {
+		region.setViewportFocus(true);
+		expect(() => region.updateModes([{ id: "preview", component: next }])).not.toThrow();
+		expect(oldDisposed).toBe(true);
+		expect(nextFocused).toBe(true);
+	} finally {
+		region.setViewportFocus(false);
+		region.dispose();
+	}
+});

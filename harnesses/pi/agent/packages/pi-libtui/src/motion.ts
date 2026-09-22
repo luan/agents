@@ -47,18 +47,13 @@ export interface MotionMountOptions {
 }
 
 interface MotionRegistration {
-	id: number;
 	onFrame?: (nowMs: number) => void;
 	expiresAtMs?: number;
 }
 
-interface TargetRegistration {
-	registrations: Map<number, MotionRegistration>;
-}
-
 interface CadenceBucket {
 	timer?: MotionTimerHandle;
-	targets: Map<MotionRenderTarget, TargetRegistration>;
+	targets: Map<MotionRenderTarget, Set<MotionRegistration>>;
 }
 
 const systemClock: MotionClock = {
@@ -114,8 +109,6 @@ const systemClock: MotionClock = {
 export class MotionScheduler {
 	private readonly buckets = new Map<number, CadenceBucket>();
 	private readonly targetsByRequest = new WeakMap<MotionRenderTarget["requestRender"], MotionRenderTarget>();
-	private nextRegistrationId = 1;
-	private mountCount = 0;
 	private paused = false;
 
 	constructor(private readonly clock: MotionClock = systemClock) {}
@@ -127,27 +120,24 @@ export class MotionScheduler {
 		const cadenceMs = Number.isFinite(options.cadenceMs) ? Math.max(16, Math.floor(options.cadenceMs)) : 120;
 		let bucket = this.buckets.get(cadenceMs);
 		if (!bucket) {
-			const targets = new Map<MotionRenderTarget, TargetRegistration>();
+			const targets = new Map<MotionRenderTarget, Set<MotionRegistration>>();
 			bucket = { targets };
 			this.buckets.set(cadenceMs, bucket);
 		}
-		const targetRegistration = bucket.targets.get(target) ?? { registrations: new Map() };
-		const id = this.nextRegistrationId++;
+		const registrations = bucket.targets.get(target) ?? new Set<MotionRegistration>();
 		const maxDurationMs = Number.isFinite(options.maxDurationMs) ? options.maxDurationMs : undefined;
-		targetRegistration.registrations.set(id, {
-			id,
+		const registration: MotionRegistration = {
 			onFrame: options.onFrame,
 			expiresAtMs: maxDurationMs === undefined ? undefined : this.clock.now() + Math.max(0, maxDurationMs),
-		});
-		bucket.targets.set(target, targetRegistration);
+		};
+		registrations.add(registration);
+		bucket.targets.set(target, registrations);
 		if (!this.paused) this.startTimer(cadenceMs, bucket);
-		this.mountCount++;
 		return disposable(() => {
 			const currentBucket = this.buckets.get(cadenceMs);
 			const currentTarget = currentBucket?.targets.get(target);
-			if (!currentBucket || !currentTarget?.registrations.delete(id)) return;
-			this.mountCount--;
-			if (currentTarget.registrations.size === 0) currentBucket.targets.delete(target);
+			if (!currentBucket || !currentTarget?.delete(registration)) return;
+			if (currentTarget.size === 0) currentBucket.targets.delete(target);
 			if (currentBucket.targets.size > 0) return;
 			if (currentBucket.timer) this.clock.stop(currentBucket.timer);
 			this.buckets.delete(cadenceMs);
@@ -183,40 +173,37 @@ export class MotionScheduler {
 		return canonical;
 	}
 
-	private tick(cadenceMs: number, targets: Map<MotionRenderTarget, TargetRegistration>): void {
+	private tick(cadenceMs: number, targets: Map<MotionRenderTarget, Set<MotionRegistration>>): void {
 		if (this.paused) return;
 		const nowMs = this.clock.now();
-		for (const [target, registration] of targets) {
-			for (const current of registration.registrations.values()) {
-				if (current.expiresAtMs === undefined || nowMs < current.expiresAtMs) continue;
-				registration.registrations.delete(current.id);
-				this.mountCount--;
-			}
-			if (registration.registrations.size === 0) {
-				targets.delete(target);
-				continue;
-			}
-			for (const current of registration.registrations.values()) {
+		// Callbacks may replace or remove mounts. New registrations start on the next tick.
+		const frame = Array.from(targets, ([target, registrations]) => ({
+			target,
+			registrations,
+			current: [...registrations],
+		}));
+		for (const { target, registrations, current } of frame) {
+			if (targets.get(target) !== registrations) continue;
+			for (const registration of current) {
+				if (!registrations.has(registration)) continue;
+				if (registration.expiresAtMs !== undefined && nowMs >= registration.expiresAtMs) {
+					registrations.delete(registration);
+					continue;
+				}
 				try {
-					current.onFrame?.(nowMs);
+					registration.onFrame?.(nowMs);
 				} catch {
-					registration.registrations.delete(current.id);
-					this.mountCount--;
+					registrations.delete(registration);
 				}
 			}
-			if (registration.registrations.size === 0) {
-				targets.delete(target);
-				continue;
-			}
-			if (this.fastestCadence(target) === cadenceMs) {
+			if (registrations.size > 0 && this.fastestCadence(target) === cadenceMs) {
 				try {
 					target.requestRender();
 				} catch {
-					this.mountCount -= registration.registrations.size;
-					registration.registrations.clear();
-					targets.delete(target);
+					registrations.clear();
 				}
 			}
+			if (registrations.size === 0 && targets.get(target) === registrations) targets.delete(target);
 		}
 		if (targets.size > 0) return;
 		const bucket = this.buckets.get(cadenceMs);
@@ -247,7 +234,11 @@ export class MotionScheduler {
 
 	/** Number of live mounts, including shared target/cadence registrations. */
 	get activeMountCount(): number {
-		return this.mountCount;
+		let count = 0;
+		for (const bucket of this.buckets.values()) {
+			for (const registrations of bucket.targets.values()) count += registrations.size;
+		}
+		return count;
 	}
 }
 

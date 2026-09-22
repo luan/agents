@@ -394,6 +394,7 @@ class SplitDivider implements Component {
 			return true;
 		}
 		if (event.type === "leave") {
+			this.dragging = false;
 			this.setHovered(false);
 			return true;
 		}
